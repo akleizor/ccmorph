@@ -1,5 +1,5 @@
-# ccproteus-base.zsh — Shared primitives: portable file metadata, logging, executable resolution, the environment-name lists, Claude Code's own CLI surface and value checks.
-# Sourced by ccproteus.sh after ccproteus-ui.zsh (see its Modules block); never run directly.
+# ccmorph-base.zsh — Shared primitives: portable file metadata, logging, executable resolution, the environment-name lists, Claude Code's own CLI surface and value checks.
+# Sourced by ccmorph.sh after ccmorph-ui.zsh (see its Modules block); never run directly.
 # Runs code at load (zsh/stat, the env-name lists, the verb cache), so it loads first.
 
 # ── File metadata, portably ──────────────────────────────────────────────────
@@ -12,7 +12,7 @@ zmodload -F zsh/stat b:zstat 2>/dev/null
 
 # zstat arrays are indexed 1-based below; a caller's KSH_ARRAYS would shift them.
 # Size in bytes; 0 when unknowable, which both callers already treat as "skip".
-_ccp_size() {
+_ccm_size() {
   setopt localoptions noksharrays
   local -a s
   if zstat -A s +size "$1" 2>/dev/null; then
@@ -24,7 +24,7 @@ _ccp_size() {
 
 # Mtime as a unix timestamp; nonzero exit when unknowable, so a caller can
 # `|| continue` rather than treat a missing file as epoch 0 (infinitely stale).
-_ccp_mtime() {
+_ccm_mtime() {
   setopt localoptions noksharrays
   local -a s
   zstat -A s +mtime "$1" 2>/dev/null || return 1
@@ -32,59 +32,59 @@ _ccp_mtime() {
 }
 
 # External utility calls use `command` so sourced user functions and aliases cannot
-# alter ccproteus behavior; this is isolation from shell overrides, not from PATH.
+# alter ccmorph behavior; this is isolation from shell overrides, not from PATH.
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 
-_ccp_log_init() {
+_ccm_log_init() {
   setopt localoptions noksharrays
   # Create the log 0600 before any writer appends at the caller's umask.
-  if [[ ! -e "$_CCPROTEUS_LOG" ]]; then
-    ( umask 077; : >> "$_CCPROTEUS_LOG" ) 2>/dev/null || :
-  elif [[ -f "$_CCPROTEUS_LOG" && ! -L "$_CCPROTEUS_LOG" && -O "$_CCPROTEUS_LOG" ]]; then
+  if [[ ! -e "$_CCMORPH_LOG" ]]; then
+    ( umask 077; : >> "$_CCMORPH_LOG" ) 2>/dev/null || :
+  elif [[ -f "$_CCMORPH_LOG" && ! -L "$_CCMORPH_LOG" && -O "$_CCMORPH_LOG" ]]; then
     # An older/looser log keeps its mode otherwise. Own regular file only: never
     # chmod through a planted symlink. zstat first, so no fork when already private.
-    local -a _ccp_st
-    zstat -A _ccp_st +mode "$_CCPROTEUS_LOG" 2>/dev/null &&
-      (( _ccp_st[1] & 8#077 )) && command chmod go-rwx "$_CCPROTEUS_LOG" 2>/dev/null || :
+    local -a _ccm_st
+    zstat -A _ccm_st +mode "$_CCMORPH_LOG" 2>/dev/null &&
+      (( _ccm_st[1] & 8#077 )) && command chmod go-rwx "$_CCMORPH_LOG" 2>/dev/null || :
   fi
 }
 
-_ccp_log() {
+_ccm_log() {
   # Append a timestamped line to the log. Best-effort — never fatal.
   local ts
-  _ccp_log_init
+  _ccm_log_init
   ts=$(command date '+%Y-%m-%d %H:%M:%S' 2>/dev/null) || ts="?"
-  print -r -- "$ts [$$] $1" >> "$_CCPROTEUS_LOG" 2>/dev/null || :
+  print -r -- "$ts [$$] $1" >> "$_CCMORPH_LOG" 2>/dev/null || :
 
   # Auto-rotate: if the log exceeds the cap, keep the last half.
-  # _ccp_size, not `stat -f %z`: that spelling is BSD-only, so on Linux it failed,
+  # _ccm_size, not `stat -f %z`: that spelling is BSD-only, so on Linux it failed,
   # the `|| echo 0` reported an empty log, and rotation NEVER ran — a silent
   # unbounded log on exactly the platform nobody here would notice it on.
-  if [[ -f "$_CCPROTEUS_LOG" ]] &&
-     (( $(_ccp_size "$_CCPROTEUS_LOG") > _CCPROTEUS_LOG_MAX )); then
+  if [[ -f "$_CCMORPH_LOG" ]] &&
+     (( $(_ccm_size "$_CCMORPH_LOG") > _CCMORPH_LOG_MAX )); then
     # mktemp, not a fixed .tmp name: under the /tmp fallback the name is
     # guessable, and a planted symlink there would be installed AS the log.
-    local _ccp_rot
-    _ccp_rot=$(command mktemp "$_CCPROTEUS_LOG.XXXXXX" 2>/dev/null) &&
-      command tail -n 500 "$_CCPROTEUS_LOG" > "$_ccp_rot" 2>/dev/null &&
-      command mv -f "$_ccp_rot" "$_CCPROTEUS_LOG" 2>/dev/null || :
+    local _ccm_rot
+    _ccm_rot=$(command mktemp "$_CCMORPH_LOG.XXXXXX" 2>/dev/null) &&
+      command tail -n 500 "$_CCMORPH_LOG" > "$_ccm_rot" 2>/dev/null &&
+      command mv -f "$_ccm_rot" "$_CCMORPH_LOG" 2>/dev/null || :
   fi
 }
 
 # ── Executable resolution ────────────────────────────────────────────────────
-# ONE resolver for every configured executable seam (CCPROTEUS_PRELAUNCH): a bare
+# ONE resolver for every configured executable seam (CCMORPH_PRELAUNCH): a bare
 # name resolves through PATH the way invoking it would, and the result is
 # canonicalized ONCE (:A). `[[ -x ]]` on a bare name tests $PWD, not PATH, and a
 # relative path would resolve against wherever the launch ran.
-_ccp_resolve_exe() {  # $1 = env var name (for messages), $2 = configured value
+_ccm_resolve_exe() {  # $1 = env var name (for messages), $2 = configured value
   local var="$1" val="$2"
   if [[ "$val" != */* ]]; then
     val="${commands[$val]:-}"
-    [[ -n "$val" ]] || { _ccp_err "$var is not on PATH: $2"; return 1 }
+    [[ -n "$val" ]] || { _ccm_err "$var is not on PATH: $2"; return 1 }
   fi
   val="${val:A}"
-  [[ -x "$val" ]] || { _ccp_err "$var is not executable: $val"; return 1 }
+  [[ -x "$val" ]] || { _ccm_err "$var is not executable: $val"; return 1 }
   print -r -- "$val"
 }
 
@@ -104,7 +104,7 @@ _ccp_resolve_exe() {  # $1 = env var name (for messages), $2 = configured value
 # output_tokens (variance swamps it). ARCHITECTURE.md section 6 has the evidence
 # and the method that does work.
 # Gateway role mappings belong to the profile, independent of credential type.
-_CCPROTEUS_MODEL_MAPPING_ENV=(
+_CCMORPH_MODEL_MAPPING_ENV=(
   ANTHROPIC_DEFAULT_FABLE_MODEL
   ANTHROPIC_DEFAULT_OPUS_MODEL
   ANTHROPIC_DEFAULT_OPUS_MODEL_NAME
@@ -117,12 +117,12 @@ _CCPROTEUS_MODEL_MAPPING_ENV=(
 # Client tuning keys. They shape how Claude Code behaves, not which backend,
 # account or credential a launch reaches, so a profile that does not declare one
 # lets the shell's own value through. A profile that does declare one wins. The
-# launcher records the ones it set in CCPROTEUS_SET_ENV (names only) so a NESTED
+# launcher records the ones it set in CCMORPH_SET_ENV (names only) so a NESTED
 # launch clears them rather than inherit an outer session's value (and a launch
 # inside a Claude Code child session also clears CLAUDE_CODE_SIMPLE, which `claude
 # --bare` sets itself and no launch records). Every key here
-# must also be in _CCPROTEUS_PROFILE_ENV (a profile may declare it).
-_CCPROTEUS_TUNING_ENV=(
+# must also be in _CCMORPH_PROFILE_ENV (a profile may declare it).
+_CCMORPH_TUNING_ENV=(
   CLAUDE_CODE_SIMPLE
   MAX_THINKING_TOKENS
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
@@ -130,10 +130,10 @@ _CCPROTEUS_TUNING_ENV=(
 # Keys that pick the backend or account a launch reaches, or carry its credential.
 # ALWAYS cleared before a launch: a profile declares what it needs and nothing
 # comes from the calling shell. A profile may not declare these via env. lines
-# (they are not in _CCPROTEUS_PROFILE_ENV); the launcher sets its own credential and
-# endpoint itself. `ccproteus _backend_env` prints this list for the Remote Control
+# (they are not in _CCMORPH_PROFILE_ENV); the launcher sets its own credential and
+# endpoint itself. `ccmorph _backend_env` prints this list for the Remote Control
 # add-on, which builds its own strip list from it.
-_CCPROTEUS_BACKEND_ENV=(
+_CCMORPH_BACKEND_ENV=(
   CLAUDE_CODE_OAUTH_TOKEN
   CLAUDE_CODE_OAUTH_REFRESH_TOKEN
   CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
@@ -174,15 +174,15 @@ _CCPROTEUS_BACKEND_ENV=(
 )
 # The keys a launch sets for itself, only sometimes. Each is cleared before a
 # launch so a nested one never inherits an outer session's value.
-_CCPROTEUS_LAUNCH_ENV=(
+_CCMORPH_LAUNCH_ENV=(
   ANTHROPIC_MODEL
   CLAUDE_CODE_AUTO_COMPACT_WINDOW
-  CCPROTEUS_ADVISE
-  CCPROTEUS_TASK
-  CCPROTEUS_ATTEMPT
+  CCMORPH_ADVISE
+  CCMORPH_TASK
+  CCMORPH_ATTEMPT
 )
-_CCPROTEUS_PROFILE_ENV=(
-  "${_CCPROTEUS_MODEL_MAPPING_ENV[@]}"
+_CCMORPH_PROFILE_ENV=(
+  "${_CCMORPH_MODEL_MAPPING_ENV[@]}"
   CLAUDE_CODE_ALWAYS_ENABLE_EFFORT
   CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY
   ENABLE_TOOL_SEARCH
@@ -196,13 +196,13 @@ _CCPROTEUS_PROFILE_ENV=(
   # Stops the per-turn session-state classifier call, which costs a slow local
   # model a cold ~4.5k-token prefill (~15 s) after every turn, even in minimal mode.
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
-  CCPROTEUS_REPAIR_TOOL_REFERENCES
-  CCPROTEUS_RANDOM_DEVICE_ID
-  CCPROTEUS_AFFINITY_HEADER
-  CCPROTEUS_STALL_TIMEOUT
-  CCPROTEUS_UPSTREAM_PROXY
+  CCMORPH_REPAIR_TOOL_REFERENCES
+  CCMORPH_RANDOM_DEVICE_ID
+  CCMORPH_AFFINITY_HEADER
+  CCMORPH_STALL_TIMEOUT
+  CCMORPH_UPSTREAM_PROXY
   # Path to the profile's request-hooks module, loaded by the gateway shim.
-  CCPROTEUS_SHIM_HOOKS
+  CCMORPH_SHIM_HOOKS
   CLAUDE_CODE_MAX_CONTEXT_TOKENS
   CLAUDE_CODE_AUTO_COMPACT_WINDOW
   CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
@@ -225,7 +225,7 @@ _CCPROTEUS_PROFILE_ENV=(
   # The engine kill switch that makes a [1m] tag stop meaning 1,000,000. Allowlisted so
   # a conf can declare it AND so the launcher clears any ambient copy -- it only clears
   # keys on this list, so without membership an exported value reached the engine while
-  # ccproteus could not see it, and both trigger mirrors computed from the wrong ceiling.
+  # ccmorph could not see it, and both trigger mirrors computed from the wrong ceiling.
   CLAUDE_CODE_DISABLE_1M_CONTEXT
   # Makes /model list what the endpoint serves, labelled "From gateway", instead
   # of only Claude Code's built-in catalogue. Claude Code GETs
@@ -254,10 +254,10 @@ _CCPROTEUS_PROFILE_ENV=(
 
 # Is this word one of Claude Code's own subcommands? ASKED, never hardcoded.
 #
-# ccproteus has no business knowing another tool's surface. A baked-in verb list is
+# ccmorph has no business knowing another tool's surface. A baked-in verb list is
 # wrong the moment Claude Code ships a new subcommand -- and it ships often -- so the
 # answer comes from the installed binary's own `--help`. That way a subcommand added
-# tomorrow works today, and one removed stops being special without a ccproteus
+# tomorrow works today, and one removed stops being special without a ccmorph
 # release. `claude --help` costs ~0.2s and is asked at most once per launch, cached in
 # a global for the second reader.
 #
@@ -267,15 +267,15 @@ _CCPROTEUS_PROFILE_ENV=(
 # Claude Code hides from `--help` therefore costs a picker prompt.
 #
 # On failure it answers NO, deliberately. An unknown word then falls through to the
-# profile reading, which is what a bare `ccproteus <word>` has always meant, and
+# profile reading, which is what a bare `ccmorph <word>` has always meant, and
 # Claude Code treats a word it does not recognise as a prompt rather than an error --
 # so the worst case of a wrong answer is the behaviour that predates this function.
 #
-# The cache lives for THIS process only, which is the whole life of one ccproteus
+# The cache lives for THIS process only, which is the whole life of one ccmorph
 # invocation. Nothing is remembered across runs on purpose: `npm i -g
 # @anthropic-ai/claude-code` between two launches must take effect on the second,
 # and a stale cached surface is exactly the drift this function exists to avoid.
-typeset -g _CCPROTEUS_CLAUDE_VERBS=""
+typeset -g _CCMORPH_CLAUDE_VERBS=""
 
 # One capture of the installed binary's own `claude --help`: the single
 # subprocess both native-surface readers parse, Commands for the verbs and
@@ -283,53 +283,53 @@ typeset -g _CCPROTEUS_CLAUDE_VERBS=""
 # answers — an unreachable binary must not be re-asked for every token a
 # launch scan steps over — and reset by re-sourcing, like the caches that
 # parse it.
-typeset -g _CCPROTEUS_CLAUDE_HELP=""
-typeset -g _CCPROTEUS_CLAUDE_HELP_PROBED=0
+typeset -g _CCMORPH_CLAUDE_HELP=""
+typeset -g _CCMORPH_CLAUDE_HELP_PROBED=0
 
-_ccp_claude_help() {
-  (( _CCPROTEUS_CLAUDE_HELP_PROBED )) && return 0
-  _CCPROTEUS_CLAUDE_HELP_PROBED=1
+_ccm_claude_help() {
+  (( _CCMORPH_CLAUDE_HELP_PROBED )) && return 0
+  _CCMORPH_CLAUDE_HELP_PROBED=1
   # Whatever the binary prints is the answer, its exit status is not: a
   # failing run that still prints its surface is read, an empty one is not.
-  _CCPROTEUS_CLAUDE_HELP="$(command claude --help 2>/dev/null)"
+  _CCMORPH_CLAUDE_HELP="$(command claude --help 2>/dev/null)"
   return 0
 }
 
-_ccp_claude_verbs() {
-  [[ -n "$_CCPROTEUS_CLAUDE_VERBS" ]] && { print -r -- "$_CCPROTEUS_CLAUDE_VERBS"; return 0 }
+_ccm_claude_verbs() {
+  [[ -n "$_CCMORPH_CLAUDE_VERBS" ]] && { print -r -- "$_CCMORPH_CLAUDE_VERBS"; return 0 }
 
   # `Commands:` section only, two-space-indented leading word per row. Anything the
   # binary does not list is not a subcommand, by definition.
   local out
-  _ccp_claude_help
-  out="$(print -r -- "$_CCPROTEUS_CLAUDE_HELP" |
+  _ccm_claude_help
+  out="$(print -r -- "$_CCMORPH_CLAUDE_HELP" |
         command sed -n '/^Commands:/,$p' |
         command grep -oE '^  [a-z][a-z0-9|-]*' |
         command tr -d ' ' |
         command tr '|' '\n')"
 
-  _CCPROTEUS_CLAUDE_VERBS="$out"
+  _CCMORPH_CLAUDE_VERBS="$out"
   print -r -- "$out"
 }
 
-_ccp_is_claude_subcommand() {
+_ccm_is_claude_subcommand() {
   local word="${1:-}"
   [[ -n "$word" ]] || return 1
 
-  # ccproteus's OWN verbs win, always, regardless of what Claude Code also calls them.
-  # `rm` is the collision that matters: both tools have one, and `ccproteus rm` has
+  # ccmorph's OWN verbs win, always, regardless of what Claude Code also calls them.
+  # `rm` is the collision that matters: both tools have one, and `ccmorph rm` has
   # always meant "delete an profile". This check is first so the answer cannot change
-  # when Claude Code adds a verb ccproteus already uses.
+  # when Claude Code adds a verb ccmorph already uses.
   case "$word" in
     list|inspect|show|add|config|login|default|use|rm|mv|get|set|context|cred|secret|creds|probe|hop|help|version|run|start) return 1 ;;
     # The retired window verb, spelled without writing it: it must still be reserved
     # (never read as an profile name, never forwarded to Claude Code) while the word
-    # itself is gone from this source. `$_ccp_retired_verb` is set beside the version.
-    ("$_ccp_retired_verb") return 1 ;;
+    # itself is gone from this source. `$_ccm_retired_verb` is set beside the version.
+    ("$_ccm_retired_verb") return 1 ;;
   esac
 
   local verb
-  for verb in ${(f)"$(_ccp_claude_verbs)"}; do
+  for verb in ${(f)"$(_ccm_claude_verbs)"}; do
     [[ "$word" == "$verb" ]] && return 0
   done
   return 1
@@ -337,7 +337,7 @@ _ccp_is_claude_subcommand() {
 
 # Which native options take a value, and how the value is given: the Options
 # section of the installed binary's own `claude --help`, the same source of
-# truth _ccp_claude_verbs reads for Commands. A value is marked <required> or
+# truth _ccm_claude_verbs reads for Commands. A value is marked <required> or
 # [optional] after the (comma-separated) spellings:
 #   --system-prompt <prompt>   -r, --resume [value]   --verbose
 # The launch scans need this because an option VALUE can look exactly like a
@@ -345,25 +345,25 @@ _ccp_is_claude_subcommand() {
 # `--continue` as the prompt — and a scan that does not know the arity reads
 # that value as the flag.
 #
-# Same caching contract as _CCPROTEUS_CLAUDE_VERBS: this process only, so a
+# Same caching contract as _CCMORPH_CLAUDE_VERBS: this process only, so a
 # binary installed between two launches is re-read on the second. Re-sourcing
 # resets it for the same reason the verb cache resets. The table is parsed at
 # most once however it comes out: an empty one would otherwise be re-parsed
 # for every option token the model loop steps over.
-typeset -gA _CCPROTEUS_CLAUDE_OPT_ARITY=()
-typeset -g _CCPROTEUS_CLAUDE_OPT_ARITY_PROBED=0
+typeset -gA _CCMORPH_CLAUDE_OPT_ARITY=()
+typeset -g _CCMORPH_CLAUDE_OPT_ARITY_PROBED=0
 
-_ccp_claude_opt_arities() {
-  (( _CCPROTEUS_CLAUDE_OPT_ARITY_PROBED )) && return 0
-  _CCPROTEUS_CLAUDE_OPT_ARITY_PROBED=1
+_ccm_claude_opt_arities() {
+  (( _CCMORPH_CLAUDE_OPT_ARITY_PROBED )) && return 0
+  _CCMORPH_CLAUDE_OPT_ARITY_PROBED=1
 
   # Option rows only: two-space indent, dash-leading. A wrapped description
   # continues at the description column, so it never matches. The spec is the
   # row up to the column alignment: the spellings, then the placeholder when
   # there is one.
   local out spec arity spelling
-  _ccp_claude_help
-  out="$(print -r -- "$_CCPROTEUS_CLAUDE_HELP" |
+  _ccm_claude_help
+  out="$(print -r -- "$_CCMORPH_CLAUDE_HELP" |
         command sed -n '/^Options:/,/^Commands:/p' |
         command grep -E '^  -' |
         command sed -e 's/^  //' -e 's/  .*$//')"
@@ -376,7 +376,7 @@ _ccp_claude_opt_arities() {
       *)   arity=flag ;;
     esac
     for spelling in ${(s:, :)spec}; do
-      _CCPROTEUS_CLAUDE_OPT_ARITY[$spelling]="$arity"
+      _CCMORPH_CLAUDE_OPT_ARITY[$spelling]="$arity"
     done
   done
 
@@ -390,16 +390,16 @@ _ccp_claude_opt_arities() {
 #      it looks like. An [optional] value is taken only when it could be one.
 #   1  the spelling alone.
 #   0  the installed binary does not list the spelling: it will reject the
-#      launch, so ccproteus reads nothing on its behalf.
-_ccp_claude_option_step() {
+#      launch, so ccmorph reads nothing on its behalf.
+_ccm_claude_option_step() {
   REPLY=0
   local opt="$1"
 
   # --spelling=value carries its value inside the token: one token, always.
   [[ "$opt" == --*\=* ]] && opt="${opt%%=*}"
 
-  _ccp_claude_opt_arities
-  local arity="${_CCPROTEUS_CLAUDE_OPT_ARITY[$opt]:-}"
+  _ccm_claude_opt_arities
+  local arity="${_CCMORPH_CLAUDE_OPT_ARITY[$opt]:-}"
   [[ -n "$arity" ]] || return 0
 
   # A known option owns at least itself; an embedded value owns nothing more.
@@ -415,7 +415,7 @@ _ccp_claude_option_step() {
   return 0
 }
 
-_ccp_launch_has_claude_subcommand() {
+_ccm_launch_has_claude_subcommand() {
   local arg
   while (( $# > 0 )); do
     arg="$1"
@@ -430,29 +430,29 @@ _ccp_launch_has_claude_subcommand() {
       # parses its own argv: `--verbose mcp get` and `--model foo mcp get`
       # are subcommand launches, `--system-prompt mcp get` is not (the prompt
       # value is not a command). An option the installed binary does not list
-      # ends the walk — ccproteus knows nothing about it and claims nothing.
+      # ends the walk — ccmorph knows nothing about it and claims nothing.
       # The slice hands the walker the option and the token after it when one
       # exists, so an empty value token is still passed as a value.
       -?*)
-        _ccp_claude_option_step "${@:1:2}"
+        _ccm_claude_option_step "${@:1:2}"
         (( REPLY > 0 )) || return 1
         shift "$REPLY"
         continue
         ;;
     esac
-    _ccp_is_claude_subcommand "$arg"
+    _ccm_is_claude_subcommand "$arg"
     return $?
   done
   return 1
 }
 
-# Whether the launch's argv holds, after $1, a token _ccp_launch's first scan
+# Whether the launch's argv holds, after $1, a token _ccm_launch's first scan
 # would claim for itself: one of that scan's own flag spellings. That scan
 # stops at its `--` separator -- nothing after it is claimed -- so this
 # look-ahead stops there too, which also keeps the separator itself from ever
 # being stepped as an option's value. The spellings mirror the cases of that
 # scan.
-_ccp_launch_has_flag_ahead() {
+_ccm_launch_has_flag_ahead() {
   shift  # $1 is the option being stepped; the claimable tokens come after it.
   local arg
   for arg in "$@"; do
@@ -473,7 +473,7 @@ _ccp_launch_has_flag_ahead() {
 # Scope and ownership), so the MCP delimiter in `mcp add demo -- npx -y server`
 # and the literal prompt value in `-p --` must both arrive intact. Deleting the
 # first exact `--` wherever it appeared removed those too, one argument short.
-_ccp_run_separator_index() {
+_ccm_run_separator_index() {
   local i=0
   REPLY=0
   while (( $# > 0 )); do
@@ -507,29 +507,29 @@ _ccp_run_separator_index() {
   return 0
 }
 
-_ccp_valid() {
+_ccm_valid() {
   # Case-blind on the reserved names: 'Active' must not name a profile either.
   [[ -n "$1" &&
      "$1" != *[^A-Za-z0-9_]* &&
      "${(L)1}" != active &&
-     "${(L)1}" != ccproteus ]]
+     "${(L)1}" != ccmorph ]]
 }
 
-_ccp_exists() {
-  [[ -f "$_CCPROTEUS_DIR/$1.conf" &&
-     ! -L "$_CCPROTEUS_DIR/$1.conf" ]]
+_ccm_exists() {
+  [[ -f "$_CCMORPH_DIR/$1.conf" &&
+     ! -L "$_CCMORPH_DIR/$1.conf" ]]
 }
 
-_ccp_err() {
-  print -u2 "${_ccp_red}ccproteus:${_ccp_reset} $1"
-  _ccp_log "ERROR $1"
+_ccm_err() {
+  print -u2 "${_ccm_red}ccmorph:${_ccm_reset} $1"
+  _ccm_log "ERROR $1"
   return 1
 }
 
-_ccp_clean_value() {
+_ccm_clean_value() {
   [[ "$1" != *$'\n'* && "$1" != *$'\r'* ]]
 }
 
-_ccp_relay_valid() {
+_ccm_relay_valid() {
   [[ -n "$1" && "$1" != *[^A-Za-z0-9_.-]* ]]
 }

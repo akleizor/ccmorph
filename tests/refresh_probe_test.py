@@ -59,7 +59,7 @@ class DiagnosticWording(unittest.TestCase):
 
     def test_partial_probe_failure_prints_its_reason(self):
         import contextlib
-        with unittest.mock.patch.object(rmr, "ccproteus_env", return_value={"ANTHROPIC_API_KEY": "k"}), \
+        with unittest.mock.patch.object(rmr, "ccmorph_env", return_value={"ANTHROPIC_API_KEY": "k"}), \
                 unittest.mock.patch.object(rmr, "prior_values", return_value={}), \
                 unittest.mock.patch.object(rmr, "list_models", return_value=(["known", "failed"], {"known": 300000}, [])), \
                 unittest.mock.patch.object(rmr, "probe", return_value=("anthropic:error", None, "gateway timed out")), \
@@ -83,14 +83,14 @@ class SafeDiscovery(unittest.TestCase):
                       ["--declared-only", "--allow-inference", "--model", "a"]):
             with self.subTest(flags=flags), \
                     unittest.mock.patch.object(sys, "argv", ["probe", "--profile", "gw", *flags]), \
-                    unittest.mock.patch.object(rmr, "ccproteus_env") as route, \
+                    unittest.mock.patch.object(rmr, "ccmorph_env") as route, \
                     self.assertRaises(SystemExit) as raised:
                 rmr.main()
             self.assertEqual(raised.exception.code, 2)
             route.assert_not_called()
 
     def test_direct_discovery_default_never_builds_or_sends_a_prompt(self):
-        with unittest.mock.patch.object(rmr, "ccproteus_env", return_value={
+        with unittest.mock.patch.object(rmr, "ccmorph_env", return_value={
                 "ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gw"}), \
                 unittest.mock.patch.object(rmr, "list_models", return_value=(["a", "b"], {"a": 128000}, [])), \
                 unittest.mock.patch.object(rmr, "payload") as payload, \
@@ -119,7 +119,7 @@ class PartialDiscoveryStatus(unittest.TestCase):
                 self.assertIn("gpt-5.6-sol", err.getvalue())
                 self.assertIn("unresolved", err.getvalue())
                 # Disclosing it is half the job; the remedy has to come with it.
-                self.assertIn("ccproteus context profile gpt-5.6-sol", err.getvalue())
+                self.assertIn("ccmorph context profile gpt-5.6-sol", err.getvalue())
                 self.assertNotIn("matches discovery", out.getvalue())
 
     def test_a_dead_end_names_the_free_fix_not_only_the_paid_one(self):
@@ -141,10 +141,10 @@ class PartialDiscoveryStatus(unittest.TestCase):
             self.assertEqual(rmr.main(), 1)
         message = err.getvalue()
         # The free fix, with the profile and model already filled in.
-        self.assertIn("ccproteus context gateway deepseek-v4.1-flash", message)
+        self.assertIn("ccmorph context gateway deepseek-v4.1-flash", message)
         # The paid one stays disclosed as such, and stays last.
         self.assertIn("--allow-inference", message)
-        self.assertLess(message.index("ccproteus context"), message.index("--allow-inference"))
+        self.assertLess(message.index("ccmorph context"), message.index("--allow-inference"))
         # And what happens if the reader does nothing.
         self.assertIn("200,000", message)
 
@@ -163,11 +163,11 @@ class DiscoveryDeadline(unittest.TestCase):
             time.sleep(HANG_TIMEOUT)
             raise AssertionError("the run deadline never interrupted this phase")
 
-        for slow_phase in ("ccproteus_env", "list_models", "route_stop", "probe"):
+        for slow_phase in ("ccmorph_env", "list_models", "route_stop", "probe"):
             with self.subTest(phase=slow_phase), \
                     unittest.mock.patch.object(rmr, "prior_values", return_value={}), \
-                    unittest.mock.patch.object(rmr, "ccproteus_env", return_value={
-                        "ANTHROPIC_API_KEY": "k", "CCPROTEUS_ROUTE_HANDLE": "handle"}), \
+                    unittest.mock.patch.object(rmr, "ccmorph_env", return_value={
+                        "ANTHROPIC_API_KEY": "k", "CCMORPH_ROUTE_HANDLE": "handle"}), \
                     unittest.mock.patch.object(rmr, "list_models", return_value=(["a"], {"a": 123000}, [])), \
                     unittest.mock.patch.object(rmr, "route_stop"), \
                     unittest.mock.patch.object(rmr, "probe"), \
@@ -189,8 +189,8 @@ class DiscoveryDeadline(unittest.TestCase):
         # values recorded before cleanup survive, and the operator still
         # gets the deadline note.
         with unittest.mock.patch.object(rmr, "prior_values", return_value={}), \
-                unittest.mock.patch.object(rmr, "ccproteus_env", return_value={
-                    "ANTHROPIC_API_KEY": "k", "CCPROTEUS_ROUTE_HANDLE": "handle"}), \
+                unittest.mock.patch.object(rmr, "ccmorph_env", return_value={
+                    "ANTHROPIC_API_KEY": "k", "CCMORPH_ROUTE_HANDLE": "handle"}), \
                 unittest.mock.patch.object(rmr, "list_models", return_value=(["a"], {"a": 123000}, [])), \
                 unittest.mock.patch.object(rmr, "route_stop", side_effect=rmr.RunDeadline) as stop:
             values, notes, _ = rmr.probe_all(["gw"], 1, deadline=30)
@@ -202,7 +202,7 @@ class DiscoveryDeadline(unittest.TestCase):
         for previous in ({"gw:a": 1000000},):
             with self.subTest(previous=previous), \
                     unittest.mock.patch.object(rmr, "prior_values", return_value=previous), \
-                    unittest.mock.patch.object(rmr, "ccproteus_env", return_value={"ANTHROPIC_API_KEY": "k"}), \
+                    unittest.mock.patch.object(rmr, "ccmorph_env", return_value={"ANTHROPIC_API_KEY": "k"}), \
                     unittest.mock.patch.object(rmr, "list_models", return_value=(["a"], {"a": 200000}, [])), \
                     unittest.mock.patch.object(rmr, "probe") as probe:
                 values, _, _ = rmr.probe_all(["gw"], 1, mode="auto")
@@ -213,15 +213,15 @@ class DiscoveryDeadline(unittest.TestCase):
 class RouteScopedMetadata(unittest.TestCase):
     def test_other_routes_legacy_limit_does_not_become_a_scoped_fact(self):
         with unittest.mock.patch.object(rmr, "prior_values", return_value={"a": 1000000}), \
-                unittest.mock.patch.object(rmr, "ccproteus_env", return_value={"ANTHROPIC_API_KEY": "k"}), \
+                unittest.mock.patch.object(rmr, "ccmorph_env", return_value={"ANTHROPIC_API_KEY": "k"}), \
                 unittest.mock.patch.object(rmr, "list_models", return_value=(["a"], {"a": 200000}, [])):
             values, _, _ = rmr.probe_all(["other"], 1)
         self.assertEqual(values, {"other:a": 200000})
 
     def test_deadline_attempts_bounded_route_cleanup(self):
         with unittest.mock.patch.object(rmr, "prior_values", return_value={}), \
-                unittest.mock.patch.object(rmr, "ccproteus_env", return_value={
-                    "ANTHROPIC_API_KEY": "k", "CCPROTEUS_ROUTE_HANDLE": "H"}), \
+                unittest.mock.patch.object(rmr, "ccmorph_env", return_value={
+                    "ANTHROPIC_API_KEY": "k", "CCMORPH_ROUTE_HANDLE": "H"}), \
                 unittest.mock.patch.object(rmr, "list_models", side_effect=rmr.RunDeadline), \
                 unittest.mock.patch.object(rmr, "route_stop") as stop:
             rmr.probe_all(["gw"], 1, deadline=0.1)
@@ -263,12 +263,12 @@ class MetadataCompatibility(unittest.TestCase):
     def test_real_route_subprocess_is_killed_on_deadline(self):
         import subprocess
         with tempfile.TemporaryDirectory() as tmp:
-            script = Path(tmp) / "ccproteus.sh"
-            script.write_text('ccproteus() { exec sleep 30; }\n')
+            script = Path(tmp) / "ccmorph.sh"
+            script.write_text('ccmorph() { exec sleep 30; }\n')
             # The outer wait includes cold interpreter startup; the deadline must
             # interrupt the blocking route, not benchmark the host's scheduler.
-            env = {**os.environ, "CCPROTEUS_LIB_DIR": tmp,
-                   "CCPROTEUS_STATE_DIR": tmp}
+            env = {**os.environ, "CCMORPH_LIB_DIR": tmp,
+                   "CCMORPH_STATE_DIR": tmp}
             result = subprocess.run([sys.executable, str(SCRIPT), "--profile", "gw",
                                      "--deadline", "0.2"], env=env,
                                     capture_output=True, text=True, timeout=HANG_TIMEOUT)
@@ -318,14 +318,14 @@ class DiscoveryHTTP(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name)
         self.base = f"http://127.0.0.1:{self.server.server_port}"
-        self.script = self.root / "ccproteus.sh"
+        self.script = self.root / "ccmorph.sh"
         self.script.write_text(
-            'ccproteus() { printf "%s\\n" "ANTHROPIC_API_KEY=canary" '
+            'ccmorph() { printf "%s\\n" "ANTHROPIC_API_KEY=canary" '
             f'"ANTHROPIC_BASE_URL={self.base}"; }}\n')
         self.conf = self.root / "gw.conf"
         self.conf.write_text("type=apikey\napi_key=canary\n")
-        self.env = {**os.environ, "CCPROTEUS_LIB_DIR": tmp.name,
-                    "CCPROTEUS_STATE_DIR": tmp.name}
+        self.env = {**os.environ, "CCMORPH_LIB_DIR": tmp.name,
+                    "CCMORPH_STATE_DIR": tmp.name}
         self.command = [sys.executable, str(SCRIPT), "--profile", "gw"]
 
     def test_real_cli_gets_metadata_without_post_and_persists_it(self):
@@ -346,7 +346,7 @@ class DiscoveryHTTP(unittest.TestCase):
         # fallback. Exercise the real CLI with only the catalogue I/O seams offline.
         self.rows[-1]["capabilities"].pop("chat_completion")
         with unittest.mock.patch.dict(os.environ, self.env), \
-                unittest.mock.patch.object(rmr, "CCPROTEUS", self.script), \
+                unittest.mock.patch.object(rmr, "CCMORPH", self.script), \
                 unittest.mock.patch.object(sys, "argv", self.command[1:]), \
                 unittest.mock.patch.object(rmr, "fetch_catalogue", return_value={}) as fetch, \
                 unittest.mock.patch.object(rmr, "fetch_canonical_catalogue", return_value={}) as canonical, \
@@ -367,7 +367,7 @@ class DiscoveryHTTP(unittest.TestCase):
         import subprocess
         stored = self.conf.read_text()
         # Route setup is inside the whole-run deadline. It cannot promise a GET.
-        self.script.write_text('ccproteus() { exec sleep 30; }\n')
+        self.script.write_text('ccmorph() { exec sleep 30; }\n')
         slow = subprocess.run(self.command + ["--deadline", "0.2"], env=self.env,
                               capture_output=True, text=True, timeout=HANG_TIMEOUT)
         self.assertIn("deadline reached", slow.stderr)
@@ -407,7 +407,7 @@ class DiscoveryHTTP(unittest.TestCase):
         self.assertEqual(self.requests, [("GET", "/v1/models", "2023-06-01")])
 
 
-class CcproteusEnv(unittest.TestCase):
+class CCMorphEnv(unittest.TestCase):
     def test_profile_and_packaged_script_are_positional_arguments(self):
         import subprocess
         saved = rmr.subprocess.run
@@ -419,23 +419,23 @@ class CcproteusEnv(unittest.TestCase):
 
         rmr.subprocess.run = fake_run
         try:
-            self.assertEqual(rmr.ccproteus_env("name; touch /tmp/pwned"), {"KEY": "value"})
+            self.assertEqual(rmr.ccmorph_env("name; touch /tmp/pwned"), {"KEY": "value"})
         finally:
             rmr.subprocess.run = saved
         self.assertEqual(
             calls[0][-3:],
-            ["refresh-model-registry", str(rmr.CCPROTEUS),
+            ["refresh-model-registry", str(rmr.CCMORPH),
              "name; touch /tmp/pwned"])
         self.assertIn('source "$1"', calls[0][2])
         # _route_env, not _env: a provider profile has no endpoint until its
-        # bridge runs, and only _route_env starts one (see ccproteus_env).
-        self.assertIn('ccproteus _route_env "$2"', calls[0][2])
+        # bridge runs, and only _route_env starts one (see ccmorph_env).
+        self.assertIn('ccmorph _route_env "$2"', calls[0][2])
 
     def test_routed_profiles_are_chosen_by_conf_type(self):
         # Every routed type has a listing to size, a provider included; a sub or
         # token profile answers natively and is never swept.
         with tempfile.TemporaryDirectory() as tmp, \
-                unittest.mock.patch.dict(os.environ, {"CCPROTEUS_STATE_DIR": tmp}):
+                unittest.mock.patch.dict(os.environ, {"CCMORPH_STATE_DIR": tmp}):
             for name, kind in (("gw", "apikey"), ("old", "proxy"), ("codex", "provider"),
                                ("me", "sub"), ("tk", "token")):
                 Path(tmp, f"{name}.conf").write_text(f"type={kind}\n")
@@ -494,8 +494,8 @@ class ClaudeModelsAreProbed(unittest.TestCase):
         import io
         import contextlib
         saved = {k: getattr(rmr, k) for k in
-                 ("ccproteus_env", "list_models", "probe")}
-        rmr.ccproteus_env = lambda profile: {
+                 ("ccmorph_env", "list_models", "probe")}
+        rmr.ccmorph_env = lambda profile: {
             "ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "http://x"}
         rmr.list_models = lambda base, key, timeout=None, opener=None: (models, {}, [])
         rmr.probe = lambda base, key, model, blob, timeout=None, opener=None, bisect=0: (
@@ -504,7 +504,7 @@ class ClaudeModelsAreProbed(unittest.TestCase):
         try:
             # An isolated state dir: the operator's real gateway.conf must not leak in.
             with tempfile.TemporaryDirectory() as tmp, \
-                    unittest.mock.patch.dict(os.environ, {"CCPROTEUS_STATE_DIR": tmp}), \
+                    unittest.mock.patch.dict(os.environ, {"CCMORPH_STATE_DIR": tmp}), \
                     contextlib.redirect_stderr(io.StringIO()):
                 return rmr.probe_all(["gateway"], jobs=1, mode="probe-all")
         finally:
@@ -525,8 +525,8 @@ class ClaudeModelsAreProbed(unittest.TestCase):
         import contextlib
         probed = []
         saved = {k: getattr(rmr, k) for k in
-                 ("ccproteus_env", "list_models", "probe")}
-        rmr.ccproteus_env = lambda profile: {
+                 ("ccmorph_env", "list_models", "probe")}
+        rmr.ccmorph_env = lambda profile: {
             "ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "http://x"}
         rmr.list_models = lambda base, key, timeout=None, opener=None: (
             ["a", "b", "c"], {"a": 128_000, "b": 1_000_000}, [])
@@ -597,8 +597,8 @@ class ProbeOutputStaysOnPoint(unittest.TestCase):
         import contextlib
         import tempfile
         with tempfile.TemporaryDirectory() as tmp, \
-                unittest.mock.patch.dict(os.environ, {"CCPROTEUS_STATE_DIR": tmp}), \
-                unittest.mock.patch.object(rmr, "ccproteus_env", return_value={"ANTHROPIC_API_KEY": "k"}), \
+                unittest.mock.patch.dict(os.environ, {"CCMORPH_STATE_DIR": tmp}), \
+                unittest.mock.patch.object(rmr, "ccmorph_env", return_value={"ANTHROPIC_API_KEY": "k"}), \
                 unittest.mock.patch.object(rmr, "prior_values", return_value={}), \
                 unittest.mock.patch.object(rmr, "prior_catalogue_tags", return_value={}), \
                 unittest.mock.patch.object(rmr, "list_models", return_value=(models, {}, [])), \
@@ -696,10 +696,10 @@ class ModelScope(unittest.TestCase):
             return (f"{m}:declared", 123456, "")
 
         saved_list = rmr.list_models
-        saved_env = rmr.ccproteus_env
+        saved_env = rmr.ccmorph_env
         saved_probe = rmr.probe
         rmr.list_models = lambda base, key, timeout=None, opener=None: (list(self.CATALOG), {}, [])
-        rmr.ccproteus_env = lambda p: {
+        rmr.ccmorph_env = lambda p: {
             "ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "http://x"}
         rmr.probe = fake_probe
         try:
@@ -707,7 +707,7 @@ class ModelScope(unittest.TestCase):
                 values, _, _ = rmr.probe_all(["pv"], jobs=4, mode="auto", only_models=only)
         finally:
             rmr.list_models = saved_list
-            rmr.ccproteus_env = saved_env
+            rmr.ccmorph_env = saved_env
             rmr.probe = saved_probe
         return probed, values
 
@@ -732,7 +732,7 @@ if __name__ == "__main__":  # pragma: no cover
 
 class ProfileCommitOrdering(unittest.TestCase):
     def test_stale_same_profile_result_is_rejected_and_other_profile_survives(self):
-        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.dict(os.environ, {"CCPROTEUS_STATE_DIR": tmp}):
+        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.dict(os.environ, {"CCMORPH_STATE_DIR": tmp}):
             for name in ("a", "b"):
                 Path(tmp, name + ".conf").write_text("type=apikey\napi_key=canary\n")
             identities = {name: rmr.store.profile_identity(name) for name in ("a", "b")}
@@ -741,7 +741,7 @@ class ProfileCommitOrdering(unittest.TestCase):
             self.assertEqual(rmr.prior_values(), {"a:m": 500000, "b:m": 300000})
 
     def test_new_model_write_preserves_existing_values_and_manual_pin(self):
-        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.dict(os.environ, {"CCPROTEUS_STATE_DIR": tmp}):
+        with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.dict(os.environ, {"CCMORPH_STATE_DIR": tmp}):
             Path(tmp, "a.conf").write_text("type=apikey\napi_key=canary\ncontext_window.manual=100000\n")
             for model, value in (("one", 200000), ("two", 300000)):
                 identities = {"a": rmr.store.profile_identity("a")}
@@ -753,15 +753,15 @@ class ProfileCommitOrdering(unittest.TestCase):
 class AmbientProxyIsUsed(unittest.TestCase):
     """A private endpoint is reached through the caller's own proxy.
 
-    ccproteus ships no transport: a bridge exports HTTPS_PROXY and ccproteus passes
+    ccmorph ships no transport: a bridge exports HTTPS_PROXY and ccmorph passes
     it through. This tool is one of the consumers that must inherit it, and the
     bug this pins is the opposite of inheritance -- an opener that installs its
     own empty ProxyHandler silently BLANKS the operator's bridge, so probing off
     the private network could only ever time out.
     """
 
-    def test_env_asks_ccproteus_for_the_route(self):
-        """ccproteus_env goes through _route_env, which starts a provider bridge."""
+    def test_env_asks_ccmorph_for_the_route(self):
+        """ccmorph_env goes through _route_env, which starts a provider bridge."""
         import subprocess
         saved = rmr.subprocess.run
         scripts = []
@@ -774,11 +774,11 @@ class AmbientProxyIsUsed(unittest.TestCase):
 
         rmr.subprocess.run = fake_run
         try:
-            env = rmr.ccproteus_env("gw")
+            env = rmr.ccmorph_env("gw")
         finally:
             rmr.subprocess.run = saved
         self.assertIn("_route_env", scripts[0],
-                      "probe must resolve the route through ccproteus, "
+                      "probe must resolve the route through ccmorph, "
                       "the same seam a launch uses")
         self.assertEqual(env.get("ANTHROPIC_BASE_URL"), "https://gw")
 
@@ -826,8 +826,8 @@ class FailureIsExplained(unittest.TestCase):
     def _probe_failing(self, exc):
         import io
         import contextlib
-        saved = {k: getattr(rmr, k) for k in ("ccproteus_env", "list_models")}
-        rmr.ccproteus_env = lambda profile: {
+        saved = {k: getattr(rmr, k) for k in ("ccmorph_env", "list_models")}
+        rmr.ccmorph_env = lambda profile: {
             "ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gw"}
 
         def boom(base, key, timeout=None, opener=None):
@@ -1119,7 +1119,7 @@ class InferenceDisclosesItsCost(unittest.TestCase):
             return ("anthropic:declared", 200000, "")
         with contextlib.redirect_stderr(err), \
                 unittest.mock.patch.object(rmr, "prior_values", return_value={}), \
-                unittest.mock.patch.object(rmr, "ccproteus_env", return_value={"ANTHROPIC_API_KEY": "k"}), \
+                unittest.mock.patch.object(rmr, "ccmorph_env", return_value={"ANTHROPIC_API_KEY": "k"}), \
                 unittest.mock.patch.object(rmr, "list_models", return_value=(["m"], {}, [])), \
                 unittest.mock.patch.object(rmr, "probe", side_effect=send):
             values, _, _ = rmr.probe_all(["gw"], 1, mode="auto", only_models={"m"})
@@ -1305,7 +1305,7 @@ class CatalogueFallback(unittest.TestCase):
         # "a" is declared by the gateway itself and must win outright; "b" has no
         # gateway metadata and is filled from the catalogue, tagged as such.
         with unittest.mock.patch.object(rmr, "prior_values", return_value={}), \
-                unittest.mock.patch.object(rmr, "ccproteus_env", return_value={"ANTHROPIC_API_KEY": "k"}), \
+                unittest.mock.patch.object(rmr, "ccmorph_env", return_value={"ANTHROPIC_API_KEY": "k"}), \
                 unittest.mock.patch.object(rmr, "list_models", return_value=(
                     ["claude-x", "acme/solo"], {"claude-x": 128000},
                     [{"id": "claude-x", "owned_by": "x"}, {"id": "acme/solo", "owned_by": "acme"}])), \
@@ -1318,7 +1318,7 @@ class CatalogueFallback(unittest.TestCase):
     def test_catalogue_fetched_at_most_once_per_run(self):
         rows = [{"id": "a", "owned_by": "acme"}, {"id": "b", "owned_by": "other-co"}]
         with unittest.mock.patch.object(rmr, "prior_values", return_value={}), \
-                unittest.mock.patch.object(rmr, "ccproteus_env", return_value={"ANTHROPIC_API_KEY": "k"}), \
+                unittest.mock.patch.object(rmr, "ccmorph_env", return_value={"ANTHROPIC_API_KEY": "k"}), \
                 unittest.mock.patch.object(rmr, "list_models", return_value=(["a", "b"], {}, rows)), \
                 unittest.mock.patch.object(rmr, "fetch_catalogue",
                                           return_value={"acme": {"models": {"a": {"limit": {"context": 1}}}},
@@ -1331,18 +1331,18 @@ class CatalogueFallback(unittest.TestCase):
         # value must replace it, unlike a genuinely probed/declared prior value
         # which stays pinned.
         with unittest.mock.patch.dict(os.environ), tempfile.TemporaryDirectory() as tmp:
-            os.environ["CCPROTEUS_STATE_DIR"] = tmp
+            os.environ["CCMORPH_STATE_DIR"] = tmp
             conf = Path(tmp, "gw.conf")
             conf.write_text("type=apikey\napi_key=canary\n")
             identity = rmr.store.profile_identity("gw")
             rmr.store.save_discovered("gw", {"m": 50000}, identity,
                                       sources={"m": {"source": "catalogue", "value": 50000,
                                                      "input": None, "context": 50000, "fetched": "2020-01-01"}})
-            with unittest.mock.patch.object(rmr, "ccproteus_env", return_value={"ANTHROPIC_API_KEY": "k"}), \
+            with unittest.mock.patch.object(rmr, "ccmorph_env", return_value={"ANTHROPIC_API_KEY": "k"}), \
                     unittest.mock.patch.object(rmr, "list_models", return_value=(
                         ["m"], {"m": 900000}, [{"id": "m", "owned_by": "acme"}])):
                 values, _, _ = rmr.probe_all(["gw"], 1, mode="declared-only")
-            with unittest.mock.patch.object(rmr, "ccproteus_env", return_value={"ANTHROPIC_API_KEY": "k"}), \
+            with unittest.mock.patch.object(rmr, "ccmorph_env", return_value={"ANTHROPIC_API_KEY": "k"}), \
                     unittest.mock.patch.object(rmr, "list_models", return_value=(
                         ["m"], {"m": 50000}, [{"id": "m", "owned_by": "acme"}])):
                 same_values, _, same_sources = rmr.probe_all(["gw"], 1, mode="declared-only")
@@ -1356,7 +1356,7 @@ class CatalogueFallback(unittest.TestCase):
         # that would silently promote an unverified guess to trusted after just one
         # more refresh that changed nothing about it.
         with unittest.mock.patch.dict(os.environ), tempfile.TemporaryDirectory() as tmp:
-            os.environ["CCPROTEUS_STATE_DIR"] = tmp
+            os.environ["CCMORPH_STATE_DIR"] = tmp
             conf = Path(tmp, "gw.conf")
             conf.write_text("type=apikey\napi_key=canary\n")
             identity = rmr.store.profile_identity("gw")
@@ -1364,7 +1364,7 @@ class CatalogueFallback(unittest.TestCase):
                                       sources={"acme/solo": {"source": "catalogue", "value": 100000,
                                                              "input": 100000, "context": 128000,
                                                              "fetched": "2020-01-01"}})
-            env_patch = unittest.mock.patch.object(rmr, "ccproteus_env",
+            env_patch = unittest.mock.patch.object(rmr, "ccmorph_env",
                                                    return_value={"ANTHROPIC_API_KEY": "k"})
             listing_patch = unittest.mock.patch.object(rmr, "list_models", return_value=(
                 ["acme/solo"], {}, [{"id": "acme/solo", "owned_by": "acme"}]))
@@ -1458,10 +1458,10 @@ class CanonicalCatalogueFallback(unittest.TestCase):
         }
         rows = [{"id": "widget", "owned_by": "cloudsway"}]
         with unittest.mock.patch.dict(os.environ), tempfile.TemporaryDirectory() as tmp:
-            os.environ["CCPROTEUS_STATE_DIR"] = tmp
+            os.environ["CCMORPH_STATE_DIR"] = tmp
             Path(tmp, "gw.conf").write_text("type=apikey\napi_key=canary\n")
             with unittest.mock.patch.object(rmr, "prior_values", return_value={}), \
-                    unittest.mock.patch.object(rmr, "ccproteus_env", return_value={"ANTHROPIC_API_KEY": "k"}), \
+                    unittest.mock.patch.object(rmr, "ccmorph_env", return_value={"ANTHROPIC_API_KEY": "k"}), \
                     unittest.mock.patch.object(rmr, "list_models", return_value=(["widget"], {}, rows)), \
                     unittest.mock.patch.object(rmr, "fetch_catalogue", return_value=provider_catalogue), \
                     unittest.mock.patch.object(rmr, "fetch_canonical_catalogue",
@@ -1475,10 +1475,10 @@ class CanonicalCatalogueFallback(unittest.TestCase):
         rows = [{"id": "claude-x", "owned_by": "anthropic"}]
         provider_catalogue = {"anthropic": {"models": {"claude-x": {"limit": {"context": 400000}}}}}
         with unittest.mock.patch.dict(os.environ), tempfile.TemporaryDirectory() as tmp:
-            os.environ["CCPROTEUS_STATE_DIR"] = tmp
+            os.environ["CCMORPH_STATE_DIR"] = tmp
             Path(tmp, "gw.conf").write_text("type=apikey\napi_key=canary\n")
             with unittest.mock.patch.object(rmr, "prior_values", return_value={}), \
-                    unittest.mock.patch.object(rmr, "ccproteus_env", return_value={"ANTHROPIC_API_KEY": "k"}), \
+                    unittest.mock.patch.object(rmr, "ccmorph_env", return_value={"ANTHROPIC_API_KEY": "k"}), \
                     unittest.mock.patch.object(rmr, "list_models", return_value=(["claude-x"], {}, rows)), \
                     unittest.mock.patch.object(rmr, "fetch_catalogue", return_value=provider_catalogue), \
                     unittest.mock.patch.object(rmr, "fetch_canonical_catalogue",

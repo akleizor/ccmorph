@@ -29,14 +29,14 @@ import pytest
 from support import HANG_TIMEOUT
 
 ROOT = Path(__file__).resolve().parent
-# The argv `_ccp_adapter_start` builds for a selected launch, minus the parent pid.
+# The argv `_ccm_adapter_start` builds for a selected launch, minus the parent pid.
 LAUNCH_ARGV = ['gw', '--auto', '--model', 'claude-sonnet-4-5']
 SUPPORT = ('fake_adapter.py', 'fake_adapter_serve.sh', Path(__file__).name)
 
 
 def _install(tmp_path: Path) -> str:
     """The fake where the launcher looks for one: a routed profile's state dir."""
-    path = tmp_path / 'ccproteus-adapter'
+    path = tmp_path / 'ccmorph-adapter'
     path.write_text(fake_adapter.script('echo PORT=45999'))
     path.chmod(0o755)
     return str(path)
@@ -90,13 +90,13 @@ def test_the_fake_records_the_pid_its_teardown_reaps(tmp_path):
     """The record is the handle a teardown can kill by; a detached fake has none.
 
     Nothing holds the Popen: the launcher starts the fake itself, from inside
-    `ccproteus`, so a test that wants to stop it needs the pid written where the
+    `ccmorph`, so a test that wants to stop it needs the pid written where the
     teardown looks -- the adapter's own path plus `.pid`.
     """
     fake = _start(tmp_path)
     try:
         assert fake.stdout.readline() == 'PORT=45999\n'
-        assert (tmp_path / 'ccproteus-adapter.pid').read_text().strip() == str(fake.pid)
+        assert (tmp_path / 'ccmorph-adapter.pid').read_text().strip() == str(fake.pid)
     finally:
         _reap(fake)
 
@@ -112,7 +112,7 @@ def test_reap_ends_a_fake_whose_parent_never_dies_issue_347(tmp_path):
     fake = _start(tmp_path, *LAUNCH_ARGV, '--parent-pid', str(os.getpid()))
     try:
         assert fake.stdout.readline() == 'PORT=45999\n'
-        assert fake_adapter.reap(tmp_path / 'ccproteus-adapter') is True
+        assert fake_adapter.reap(tmp_path / 'ccmorph-adapter') is True
         assert fake.wait(timeout=HANG_TIMEOUT) == -signal.SIGKILL
     finally:
         _reap(fake)
@@ -127,8 +127,8 @@ def test_reap_never_signals_a_pid_it_did_not_start_issue_347(tmp_path):
     """
     bystander = subprocess.Popen(['/bin/sleep', '300'])
     try:
-        (tmp_path / 'ccproteus-adapter.pid').write_text(f'{bystander.pid}\n')
-        assert fake_adapter.reap(tmp_path / 'ccproteus-adapter') is False
+        (tmp_path / 'ccmorph-adapter.pid').write_text(f'{bystander.pid}\n')
+        assert fake_adapter.reap(tmp_path / 'ccmorph-adapter') is False
         assert bystander.poll() is None
     finally:
         _reap(bystander)
@@ -137,7 +137,7 @@ def test_reap_never_signals_a_pid_it_did_not_start_issue_347(tmp_path):
 def test_reap_without_a_record_does_nothing(tmp_path):
     """No record is the ordinary end of a healthy test: nothing to do, no error."""
     _install(tmp_path)
-    assert fake_adapter.reap(tmp_path / 'ccproteus-adapter') is False
+    assert fake_adapter.reap(tmp_path / 'ccmorph-adapter') is False
 
 
 def test_the_fake_ends_when_its_own_launcher_is_gone_gh_434(tmp_path):
@@ -160,14 +160,14 @@ def test_the_fake_ends_when_its_own_launcher_is_gone_gh_434(tmp_path):
         # The record may not exist the instant the starter exits: wait on the
         # event itself, bounded by the shared bound.
         subprocess.run(['/bin/sh', '-c', 'while [ ! -s "$1" ]; do sleep 0.05; done', '_',
-                        str(tmp_path / 'ccproteus-adapter.pid')], timeout=HANG_TIMEOUT)
-        fake_pid = int((tmp_path / 'ccproteus-adapter.pid').read_text().strip())
+                        str(tmp_path / 'ccmorph-adapter.pid')], timeout=HANG_TIMEOUT)
+        fake_pid = int((tmp_path / 'ccmorph-adapter.pid').read_text().strip())
         watcher = subprocess.run(
             ['/bin/sh', '-c', 'while kill -0 "$1" 2>/dev/null; do sleep 0.2; done', '_',
              str(fake_pid)], timeout=HANG_TIMEOUT)
         assert watcher.returncode == 0, 'the orphaned fake never left'
     finally:
-        fake_adapter.reap(tmp_path / 'ccproteus-adapter')
+        fake_adapter.reap(tmp_path / 'ccmorph-adapter')
         _reap(bystander, starter)
 
 
@@ -211,6 +211,6 @@ def test_no_test_file_ships_its_own_unbounded_adapter_fake():
         if path.suffix == '.zsh':
             offenders += [f'{path.name}:{number}' for number, line in _logical_lines(text)
                           if 'adapter' in line and fake_adapter.LOOP in line]
-        elif 'ccproteus-adapter' in text and fake_adapter.LOOP in text:
+        elif 'ccmorph-adapter' in text and fake_adapter.LOOP in text:
             offenders.append(path.name)
     assert offenders == []

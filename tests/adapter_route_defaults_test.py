@@ -1,16 +1,16 @@
 """The adapter-route defaults vs a settings layer that sets the key to "".
 
-`_ccp_launch_diagnostics` decides whether the settings layers already make a
+`_ccm_launch_diagnostics` decides whether the settings layers already make a
 choice for one of the three adapter-route defaults. Its own rule is that only a
 NON-EMPTY string is a real choice: Claude Code reads an empty value as unset, so
 counting `""` as a choice both skips the default and leaves the engine with
 nothing -- the mid-conversation-system turn, the advisor tool and the per-turn
 effort all come back, which is the thrash the default exists to prevent. Its
-answer reaches `_ccp_launch` as a `chosen` record from the one interpreter run
+answer reaches `_ccm_launch` as a `chosen` record from the one interpreter run
 per launch, #332.
 
 A real launch is the only place this is observable: the predicate is one step
-inside `_ccp_launch`, and the generated settings.json carries the layer. Each
+inside `_ccm_launch`, and the generated settings.json carries the layer. Each
 case copies the shipped library into an isolated state dir, stubs `claude`,
 `curl` and the adapter, and launches a routed profile offline.
 """
@@ -29,8 +29,8 @@ import pytest
 from support import HANG_TIMEOUT
 
 ROOT = Path(__file__).resolve().parents[1]
-LIB_FILES = ('libexec/model-window', 'libexec/settings-compose', 'lib/ccproteus.sh',
-             *sorted(f'lib/{p.name}' for p in (ROOT / 'lib').glob('ccproteus-*.zsh')),
+LIB_FILES = ('libexec/model-window', 'libexec/settings-compose', 'lib/ccmorph.sh',
+             *sorted(f'lib/{p.name}' for p in (ROOT / 'lib').glob('ccmorph-*.zsh')),
              'share/window-sources.json', 'share/model-catalogue.json')
 
 # The exact default the launch path installs for every adapter route.
@@ -57,7 +57,7 @@ ROUTE_DEFAULT = '-mid_conv_system,-mid_conv_tool_change,-per_turn_effort'
 # gateway's model list is its own interpreter, and this issue leaves that lookup
 # alone (it is the start the no-model shape pays for its saved default too). A
 # launch whose route trips the hazard warning pays one more again: rendering the
-# advisory into CCPROTEUS_ADVISE is an interpreter of its own, and #433 leaves
+# advisory into CCMORPH_ADVISE is an interpreter of its own, and #433 leaves
 # that encoder alone. Pinning each keeps a fix to one shape from paying for
 # another with a new interpreter.
 PYTHON_STARTS_PER_LAUNCH = 6
@@ -80,7 +80,7 @@ GH433_VOLATILE = ('PWD', 'OLDPWD', 'SHLVL', '_', 'TMPDIR', 'LOGNAME')
 # And the one value the launcher mints fresh on every launch. It cannot be
 # compared -- it is a new id each time -- so the golden pins that the launch sets
 # the key, and nothing about what it set it to.
-GH433_MINTED = ('CCPROTEUS_RELAY_ID',)
+GH433_MINTED = ('CCMORPH_RELAY_ID',)
 
 CLAUDE = '''#!/bin/sh
 case "$1" in --help) exit 0 ;; esac
@@ -108,7 +108,7 @@ for a do case "$a" in *http_code*) echo 200; exit 0 ;; esac; done
 exit 1
 '''
 # The launcher relies on the adapter's own --parent-pid poll to stop it
-# (ccproteus.sh _ccp_adapter_start): a stub that ignores the flag outlives a
+# (ccmorph.sh _ccm_adapter_start): a stub that ignores the flag outlives a
 # hard-killed launch forever (issues #385/#386, GH-330).
 ADAPTER = fake_adapter.script('echo PORT=45999')
 
@@ -137,7 +137,7 @@ class Launch:
 
     def __init__(self, home: Path):
         self.home = home
-        self.state = home / '.config/ccproteus'
+        self.state = home / '.config/ccmorph'
         self.state.mkdir(parents=True)
         (home / 'bin').mkdir()
         (home / '.claude').mkdir()
@@ -147,8 +147,8 @@ class Launch:
         for name in LIB_FILES:
             (self.state / name).parent.mkdir(exist_ok=True)
             shutil.copy(ROOT / name, self.state / name)
-        (self.state / 'libexec/ccproteus-adapter').write_text(ADAPTER)
-        (self.state / 'libexec/ccproteus-adapter').chmod(0o755)
+        (self.state / 'libexec/ccmorph-adapter').write_text(ADAPTER)
+        (self.state / 'libexec/ccmorph-adapter').chmod(0o755)
         (self.state / 'gw.conf').write_text(GW_CONF)
         # PATH carries no directory of this host's: the environment a launch is
         # handed is compared byte for byte against a golden (GH-433), and
@@ -157,7 +157,7 @@ class Launch:
         # /usr/bin on every host this repo runs its suites on, and both are here.
         self.env = {'HOME': str(home), 'PATH': f'{home}/bin:/usr/bin:/bin',
                     'LANG': 'C.UTF-8', 'XDG_CONFIG_HOME': str(home / '.config'),
-                    'CCPROTEUS_STATE_DIR': str(self.state), 'CCPROTEUS_LIB_DIR': str(self.state / 'lib')}
+                    'CCMORPH_STATE_DIR': str(self.state), 'CCMORPH_LIB_DIR': str(self.state / 'lib')}
         assert shutil.which('zsh', path=self.env['PATH']), f'no zsh on {self.env["PATH"]}'
         self.last = None
 
@@ -172,7 +172,7 @@ class Launch:
         layer.write_text(json.dumps({'env': env_block}))
 
     def run(self) -> dict:
-        result = subprocess.run([str(ROOT / "bin/ccproteus"), 'run', 'gw'], env=self.env,
+        result = subprocess.run([str(ROOT / "bin/ccmorph"), 'run', 'gw'], env=self.env,
                                 stdin=subprocess.DEVNULL, capture_output=True, text=True,
                                 timeout=HANG_TIMEOUT)
         self.last = result
@@ -191,7 +191,7 @@ def launch(tmp_path):
     # The launch leaves its adapter stub detached, and `--parent-pid` only
     # reaches it while the launcher's number stays dead (#347). The stub records
     # what it started as; this kills that exact pid.
-    fake_adapter.reap(made.state / 'libexec/ccproteus-adapter')
+    fake_adapter.reap(made.state / 'libexec/ccmorph-adapter')
 
 
 def test_empty_caps_in_the_canon_layer_still_gets_the_route_default(launch):
@@ -212,7 +212,7 @@ def test_a_declared_caps_value_still_wins_over_the_default(launch):
     declared = 'claude-*=-per_turn_effort'
     launch.profile_settings({'CLAUDE_CODE_MODEL_CAPABILITIES': declared})
     row = launch.run()
-    assert row['caps'] is None, 'a declared mask must not be replaced by the ccproteus default'
+    assert row['caps'] is None, 'a declared mask must not be replaced by the ccmorph default'
     assert row['settings_env']['CLAUDE_CODE_MODEL_CAPABILITIES'] == declared, \
         'the layer value must reach the engine untouched'
 
@@ -234,11 +234,11 @@ def test_one_blanked_key_does_not_withhold_the_other_defaults(launch):
 
 
 def test_a_profile_tombstone_removes_a_canon_key_so_the_default_applies(launch):
-    """A key the profile deleted (settings-compose's $ccproteusUnset) is not chosen."""
+    """A key the profile deleted (settings-compose's $ccmorphUnset) is not chosen."""
     launch.canonical_settings({'CLAUDE_CODE_DISABLE_ADVISOR_TOOL': '0'})
     layer = launch.state / 'profiles/gw/settings.profile.json'
     layer.parent.mkdir(parents=True, exist_ok=True)
-    layer.write_text(json.dumps({'$ccproteusUnset': [['env', 'CLAUDE_CODE_DISABLE_ADVISOR_TOOL']]}))
+    layer.write_text(json.dumps({'$ccmorphUnset': [['env', 'CLAUDE_CODE_DISABLE_ADVISOR_TOOL']]}))
     row = launch.run()
     assert row['advisor'] == '1', 'a tombstoned canon value must not count as a choice'
 
@@ -248,17 +248,17 @@ def test_a_whole_env_tombstone_removes_every_canon_key(launch):
     launch.canonical_settings({'CLAUDE_CODE_DISABLE_ADVISOR_TOOL': '0'})
     layer = launch.state / 'profiles/gw/settings.profile.json'
     layer.parent.mkdir(parents=True, exist_ok=True)
-    layer.write_text(json.dumps({'$ccproteusUnset': [['env']]}))
+    layer.write_text(json.dumps({'$ccmorphUnset': [['env']]}))
     row = launch.run()
     assert row['advisor'] == '1', 'a whole-env tombstone must not leave canon keys chosen'
 
 
 def test_a_tombstoned_canon_compaction_percent_gets_the_default(launch):
-    """The percentage reader honours $ccproteusUnset like every other reader."""
+    """The percentage reader honours $ccmorphUnset like every other reader."""
     launch.canonical_settings({'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE': '70'})
     layer = launch.state / 'profiles/gw/settings.profile.json'
     layer.parent.mkdir(parents=True, exist_ok=True)
-    layer.write_text(json.dumps({'$ccproteusUnset': [['env', 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE']]}))
+    layer.write_text(json.dumps({'$ccmorphUnset': [['env', 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE']]}))
     row = launch.run()
     assert row['pct'] == '75'
 
@@ -268,7 +268,7 @@ def test_a_malformed_tombstone_is_ignored_so_the_canon_percent_is_kept(launch):
     launch.canonical_settings({'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE': '70'})
     layer = launch.state / 'profiles/gw/settings.profile.json'
     layer.parent.mkdir(parents=True, exist_ok=True)
-    layer.write_text(json.dumps({'$ccproteusUnset': [['env', ['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE']]]}))
+    layer.write_text(json.dumps({'$ccmorphUnset': [['env', ['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE']]]}))
     row = launch.run()
     assert row['pct'] is None and row['settings_env']['CLAUDE_AUTOCOMPACT_PCT_OVERRIDE'] == '70'
 
@@ -278,7 +278,7 @@ def test_a_malformed_tombstone_does_not_crash_the_advisor_reader(launch):
     launch.canonical_settings({'CLAUDE_CODE_DISABLE_ADVISOR_TOOL': '0'})
     layer = launch.state / 'profiles/gw/settings.profile.json'
     layer.parent.mkdir(parents=True, exist_ok=True)
-    layer.write_text(json.dumps({'$ccproteusUnset': [['env', ['X']]]}))
+    layer.write_text(json.dumps({'$ccmorphUnset': [['env', ['X']]]}))
     row = launch.run()
     assert row['advisor'] is None and row['settings_env']['CLAUDE_CODE_DISABLE_ADVISOR_TOOL'] == '0'
 
@@ -344,7 +344,7 @@ def _gh433_arrange(launch, case):
         # the trigger against.
         (launch.home / '.claude/settings.json').write_text(json.dumps({'availableModels': HAZARD_MODELS}))
         if case == 'hazard-withheld':
-            launch.env['CCPROTEUS_WITHHOLD_FATAL'] = '1'
+            launch.env['CCMORPH_WITHHOLD_FATAL'] = '1'
     else:
         assert case == 'gateway'
 
@@ -406,14 +406,14 @@ def test_a_launch_writes_what_it_wrote_before_gh433(launch, case):
 
     # A golden that recorded "no advisory" as "no advisory" would pass for the
     # wrong reason, so the two cases that must carry one say what it has to say.
-    advise = got['env'].get('CCPROTEUS_ADVISE', '')
+    advise = got['env'].get('CCMORPH_ADVISE', '')
     if case == 'hazard':
         assert 'compacts at 135k' in advise and 'lower model limits: kimi-k3 limit 40k' in advise, advise
     elif case == 'hazard-withheld':
         assert 'hidden from /model: kimi-k3 limit 40k' in advise, advise
         assert 'kimi-k3' not in got['files']['settings.json'], 'the withhold edits the generated settings'
     else:
-        assert 'CCPROTEUS_ADVISE' not in got['env'], advise
+        assert 'CCMORPH_ADVISE' not in got['env'], advise
 
     if os.environ.get(GH433_REGEN):
         golden = json.loads(GH433_SNAPSHOT.read_text()) if GH433_SNAPSHOT.exists() else {}
@@ -433,12 +433,12 @@ def test_a_killed_launch_leaves_no_adapter_stub_behind(launch):
     # Hold the launch open so the stub is up when the launcher is killed.
     (launch.home / 'bin' / 'claude').write_text('#!/bin/sh\nsleep 5\n')
     (launch.home / 'bin' / 'claude').chmod(0o755)
-    proc = subprocess.Popen([str(ROOT / "bin/ccproteus"), 'run', 'gw'], env=launch.env,
+    proc = subprocess.Popen([str(ROOT / "bin/ccmorph"), 'run', 'gw'], env=launch.env,
                             stdin=subprocess.DEVNULL,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     stub_pid = 0
     try:
-        stub = launch.state / 'libexec/ccproteus-adapter'
+        stub = launch.state / 'libexec/ccmorph-adapter'
         deadline = time.monotonic() + HANG_TIMEOUT
         pids = []
         while time.monotonic() < deadline:
@@ -451,7 +451,7 @@ def test_a_killed_launch_leaves_no_adapter_stub_behind(launch):
         stub_pid = int(pids[0])
         parent = int(subprocess.run(['ps', '-o', 'ppid=', '-p', str(stub_pid)],
                                     capture_output=True, text=True, timeout=HANG_TIMEOUT).stdout)
-        # `ccproteus` sources its library and launches in its own process, so
+        # `ccmorph` sources its library and launches in its own process, so
         # the stub's parent is the launch itself.
         assert parent == proc.pid, 'the stub must watch the launch process'
         proc.kill()  # SIGKILL skips the EXIT trap that normally stops the stub

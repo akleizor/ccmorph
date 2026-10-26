@@ -20,7 +20,7 @@ def test_blocked_catalogue_uses_bundled_canonical_snapshot():
 
 
 def test_requested_model_can_use_catalogue_when_gateway_listing_times_out():
-    with patch.object(probe, 'ccproteus_env', return_value={'ANTHROPIC_API_KEY': 'canary'}), \
+    with patch.object(probe, 'ccmorph_env', return_value={'ANTHROPIC_API_KEY': 'canary'}), \
             patch.object(probe, 'list_models', side_effect=TimeoutError('slow')), \
             patch.object(probe, 'prior_values', return_value={}), \
             patch.object(probe, 'prior_catalogue_tags', return_value={}), \
@@ -33,7 +33,7 @@ def test_requested_model_can_use_catalogue_when_gateway_listing_times_out():
 def test_first_launch_resolves_bundled_model_locally_without_writing():
     import os
     import tempfile
-    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'CCPROTEUS_STATE_DIR': tmp}, clear=True):
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'CCMORPH_STATE_DIR': tmp}, clear=True):
         conf = Path(tmp) / 'sample.conf'
         conf.write_text('type=apikey\napi_key=canary\n')
         before = conf.read_text()

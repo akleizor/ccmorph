@@ -1,17 +1,17 @@
-# ccproteus machine-local overrides. Copy to local.sh and edit.
+# ccmorph machine-local overrides. Copy to local.sh and edit.
 #
 # This is the single seam where a host's own tooling opts into optional
-# behavior without ccproteus carrying any knowledge of that tooling. It is
+# behavior without ccmorph carrying any knowledge of that tooling. It is
 # gitignored and never ships: a fresh install has no local.sh, every opt-in
 # below defaults off, and no tracked source names any host's layout.
 #
-# Trust: this file is executable zsh, sourced by ccproteus in its own process.
-# It grants no privilege beyond writing lib/ccproteus.sh beside it. A bug here is a
-# host configuration error; ccproteus does not manage the user's shell startup.
+# Trust: this file is executable zsh, sourced by ccmorph in its own process.
+# It grants no privilege beyond writing lib/ccmorph.sh beside it. A bug here is a
+# host configuration error; ccmorph does not manage the user's shell startup.
 
 # ── Context windows ───────────────────────────────────────────────────────
 # Each profile owns manual and discovered limits in its .conf file.
-# `ccproteus probe <profile>` reads metadata without inference by default.
+# `ccmorph probe <profile>` reads metadata without inference by default.
 # Context sizing is automatic; existing manual limits are preserved on upgrade.
 # Legacy registry import uses model-registry (or model-registry.conf) under the
 # state root; there is no separate registry-path setting.
@@ -21,10 +21,10 @@
 # CLAUDE_CONFIG_DIR set to the launching profile. For host state that must be in
 # place before Claude reads its config. Output is discarded, it is killed after
 # 10s, and a failure never blocks the launch.
-# export CCPROTEUS_PRELAUNCH="$HOME/.local/bin/my-prelaunch"
+# export CCMORPH_PRELAUNCH="$HOME/.local/bin/my-prelaunch"
 
 # ── Reaching a private endpoint ─────────────────────────────────────────────
-# Nothing to set here. ccproteus ships no transport: start your bridge's local
+# Nothing to set here. ccmorph ships no transport: start your bridge's local
 # proxy and export HTTPS_PROXY for the command, e.g.
-#   HTTPS_PROXY=http://127.0.0.1:<port> ccproteus run <profile>
-# ccproteus passes that value through unchanged to every network consumer.
+#   HTTPS_PROXY=http://127.0.0.1:<port> ccmorph run <profile>
+# ccmorph passes that value through unchanged to every network consumer.

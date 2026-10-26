@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export metadata-only ccproteus receipts for ccusage, one project per profile.
+"""Export metadata-only ccmorph receipts for ccusage, one project per profile.
 
 Usage: usage-export --output ROOT [--since YYYYMMDD]
 Then: CLAUDE_CONFIG_DIR=ROOT ccusage claude daily --instances --config ROOT/ccusage.json
@@ -107,7 +107,7 @@ def convert(row):
         "message": {"role": "assistant", "id": key, "model": model, "usage": tokens},
         # The recorded identities are copied verbatim, so a mapped row keeps the
         # picker's id next to what actually answered.
-        "ccproteus": {"profile": row.get("profile"), "task": row.get("task"),
+        "ccmorph": {"profile": row.get("profile"), "task": row.get("task"),
                      "attempt": row.get("attempt"), "costSource": source,
                      "requestedModel": requested if isinstance(requested, str) else None,
                      "servedModel": served if isinstance(served, str) else None,
@@ -132,11 +132,11 @@ def atomic_write(path, text):
 
 def owned_days(projects):
     """The day files this exporter owns, each with the stamp it had: a regular file named
-    YYYY-MM-DD.jsonl for a real calendar date, directly in a `ccproteus-<profile>` folder.
+    YYYY-MM-DD.jsonl for a real calendar date, directly in a `ccmorph-<profile>` folder.
     A symlink, another name or another folder is never ours, however much it looks
     like an export."""
     days = {}
-    for folder in projects.glob("ccproteus-*"):
+    for folder in projects.glob("ccmorph-*"):
         if folder.is_symlink() or not folder.is_dir():
             continue
         for entry in os.scandir(folder):
@@ -182,7 +182,7 @@ def export(root, output, since=None):
         if key in seen:
             continue
         seen.add(key)
-        folder = "ccproteus-" + UNSAFE.sub("_", record["ccproteus"]["profile"] or "unknown")
+        folder = "ccmorph-" + UNSAFE.sub("_", record["ccmorph"]["profile"] or "unknown")
         days.setdefault((folder, stamp.astimezone().strftime("%Y-%m-%d")), []).append(record)
     # Validate the whole input before replacing any prior export.
     for (folder, day), records in days.items():
@@ -209,13 +209,13 @@ def export(root, output, since=None):
     rows = [r for records in days.values() for r in records]
     return {"rows": len(seen), "days": len({d for _, d in days}), "unpriced": unpriced,
             "usd": sum(r.get("costUSD", 0) for r in rows),
-            "gateway_rows": sum(r["ccproteus"]["costSource"] == "gateway" for r in rows)}
+            "gateway_rows": sum(r["ccmorph"]["costSource"] == "gateway" for r in rows)}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--source", type=Path, default=Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "ccproteus/usage")
+    parser.add_argument("--source", type=Path, default=Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "ccmorph/usage")
     parser.add_argument("--since", help="First local date to export, YYYYMMDD; default all history")
     args = parser.parse_args()
     try:

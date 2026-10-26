@@ -1,4 +1,4 @@
-# ccproteus — architecture
+# ccmorph — architecture
 
 **The one question this document answers:** how does a Claude Code session get
 pointed at a chosen account or backend, and what does each profile control?
@@ -15,32 +15,32 @@ adds clamping of the generated fallback level and `apply.go` adds cross-format
 the `reasoningEffort` block itself is byte-identical. Re-verify after upgrading;
 do not carry these citations forward unchecked.
 
-The repo suite: `tests/ccproteus_test.zsh` (112 zsh tests),
+The repo suite: `tests/ccmorph_test.zsh` (112 zsh tests),
 `tests/install_test.zsh` (installer against a throwaway `$HOME`),
 `tests/adapter_test.py` and `tests/gateway_shim_test.py`. Run them all with
-`zsh tests/ccproteus_test.zsh && zsh tests/install_test.zsh && python3 -m pytest tests/`.
+`zsh tests/ccmorph_test.zsh && zsh tests/install_test.zsh && python3 -m pytest tests/`.
 
 ## Scope and ownership
 
-ccproteus owns profile selection, its profile configuration, automatic backend
+ccmorph owns profile selection, its profile configuration, automatic backend
 compatibility, and the child processes it starts. It integrates with other tools
 through their supported commands and configuration interfaces; integration does
 not transfer ownership of those tools.
 
-- Anthropic owns the `claude` executable and its command vocabulary. ccproteus
+- Anthropic owns the `claude` executable and its command vocabulary. ccmorph
   never ships that name, renames it, installs over it, or registers a shell alias
   or function in its place. Users may create personal aliases themselves.
 - Shell startup files, PATH ordering, global package wiring, unrelated services,
   and another product's configuration remain with their owners. Installation,
   upgrade, uninstall, and migration preserve them; an obsolete integration is
-  reported rather than silently repaired outside ccproteus's scope.
-- ccproteus owns each profile's generated `settings.json` (canonical settings plus
+  reported rather than silently repaired outside ccmorph's scope.
+- ccmorph owns each profile's generated `settings.json` (canonical settings plus
   the profile's own `settings.profile.json` layer, see
   [Launch contract](#launch-contract-arguments-pass-through)). Edits Claude Code or the
   user make to that file are carried into the layer, never discarded; the layer and
   `~/.claude/settings.json` are edited only for the requested supported fields, and
   conversation history is preserved.
-  One narrow exception repairs Claude plugin index paths invalidated by ccproteus's
+  One narrow exception repairs Claude plugin index paths invalidated by ccmorph's
   own shared-plugin topology; package intent, installation, wiring, cache contents,
   and marketplace source identity remain with apm and Claude.
   Permission bypass remains an explicit host opt-in.
@@ -53,40 +53,40 @@ Installer preservation tests and the public command manifest enforce the boundar
 
 ## Code layout
 
-`lib/ccproteus.sh` is the runtime's only entry point: the `ccproteus` command, the helpers
-and agent dispatch (`source lib/ccproteus.sh && _ccp_launch -a …`) load the library through
+`lib/ccmorph.sh` is the runtime's only entry point: the `ccmorph` command, the helpers
+and agent dispatch (`source lib/ccmorph.sh && _ccm_launch -a …`) load the library through
 it and nothing else. (Two callers fall outside the runtime and are the only exception:
-`install.sh` sources `lib/ccproteus-ui.zsh` directly for its colour helpers, and the picker
+`install.sh` sources `lib/ccmorph-ui.zsh` directly for its colour helpers, and the picker
 tests source that module as a library in its own right.) It resolves the state and code
-paths, sets the globals `local.sh` may read, sources `local.sh` and `ccproteus-ui.zsh`,
+paths, sets the globals `local.sh` may read, sources `local.sh` and `ccmorph-ui.zsh`,
 then sources each module below, in this order. Every file named here must sit beside
-`ccproteus.sh` in `lib/`; a module that fails to load fails the whole source.
+`ccmorph.sh` in `lib/`; a module that fails to load fails the whole source.
 Each module has one purpose; a function lives in exactly one.
 
-The repository and the installed copy under `~/.config/ccproteus` share one layout:
-`bin/ccproteus` (the command), `lib/` (`ccproteus.sh` and the modules), `libexec/`
-(internal executables: `ccproteus-adapter`, `gateway-shim`, `model-window`,
+The repository and the installed copy under `~/.config/ccmorph` share one layout:
+`bin/ccmorph` (the command), `lib/` (`ccmorph.sh` and the modules), `libexec/`
+(internal executables: `ccmorph-adapter`, `gateway-shim`, `model-window`,
 `refresh-model-registry`, `settings-compose`) and `share/` (data:
 `model-catalogue.json`, `window-sources.json`). `lib/` finds `libexec/` and `share/`
-beside itself. `CCPROTEUS_LIB_DIR` names the `lib/` directory.
+beside itself. `CCMORPH_LIB_DIR` names the `lib/` directory.
 
 | Module | Purpose |
 |---|---|
-| `ccproteus-base.zsh` | Shared primitives: portable file metadata, logging, executable resolution, the environment-name lists, Claude Code's own CLI surface and value checks. |
-| `ccproteus-models.zsh` | Models: the session's model and state on resume, gateway /v1/models listings, published windows, route ceilings and model lookup. |
-| `ccproteus-context.zsh` | Context window and settings: auto-compact trigger maths, window hazards and advisories, settings layering and the projection into CLAUDE_CONFIG_DIR. |
-| `ccproteus-store.zsh` | Profile state files: stale-file cleanup, state and profile-home migration, directory security, atomic writes, profile reads and validation. |
-| `ccproteus-profiles.zsh` | Profile homes and choices: the shared harness layer linked into each profile home, profile and value pickers, sign-in state, and committing a new profile. |
-| `ccproteus-cli.zsh` | The `ccproteus` command: the config store, doctor, help, usage and the verb dispatcher. |
-| `ccproteus-providers.zsh` | The dialect adapter and the provider proxy (cliproxyapi): start, stop, login and listing. |
-| `ccproteus-launch.zsh` | Launching Claude Code: the project picker, the forked claude child, _ccp_launch and the relay driver. |
+| `ccmorph-base.zsh` | Shared primitives: portable file metadata, logging, executable resolution, the environment-name lists, Claude Code's own CLI surface and value checks. |
+| `ccmorph-models.zsh` | Models: the session's model and state on resume, gateway /v1/models listings, published windows, route ceilings and model lookup. |
+| `ccmorph-context.zsh` | Context window and settings: auto-compact trigger maths, window hazards and advisories, settings layering and the projection into CLAUDE_CONFIG_DIR. |
+| `ccmorph-store.zsh` | Profile state files: stale-file cleanup, state and profile-home migration, directory security, atomic writes, profile reads and validation. |
+| `ccmorph-profiles.zsh` | Profile homes and choices: the shared harness layer linked into each profile home, profile and value pickers, sign-in state, and committing a new profile. |
+| `ccmorph-cli.zsh` | The `ccmorph` command: the config store, doctor, help, usage and the verb dispatcher. |
+| `ccmorph-providers.zsh` | The dialect adapter and the provider proxy (cliproxyapi): start, stop, login and listing. |
+| `ccmorph-launch.zsh` | Launching Claude Code: the project picker, the forked claude child, _ccm_launch and the relay driver. |
 
 ## 1. Profile model
 
 A profile's editable configuration is `<name>.conf`, holding `key=value` lines.
 It includes manual `context_window.<model>` overrides and, in the same file, a
 `context_discovered` JSON blob (`{route: <fingerprint>, models: {<id>: <tokens>}}`)
-holding limits `ccproteus probe` discovered for the profile's current route.
+holding limits `ccmorph probe` discovered for the profile's current route.
 There is no separate shared registry file: `rm` and `mv` move or delete the whole
 `.conf`, discovered data included, with no registry-prefix bookkeeping. `add`
 refuses orphaned private state left by a manually deleted configuration. Shared
@@ -94,14 +94,14 @@ conversation history survives profile removal. All `*.conf` are gitignored: they
 carry credentials and never enter history.
 
 **The key set is a contract, and the layout is one too.** Which keys a profile may
-carry is decided in `_ccp_read` (ccproteus-store.zsh) by type — one shared list, one list
+carry is decided in `_ccm_read` (ccmorph-store.zsh) by type — one shared list, one list
 per type, the `env.` allowlist, and the removed keys that report themselves and are
 ignored. Unknown keys and wrong-type keys refuse the profile. `profile.conf.example`
 is the same contract in human form: what it names must load, and every accepted key
 must appear in it, both pinned by `test_the_profile_template_is_a_valid_conf_naming_every_key`.
 Ordering is separate and has one owner: `CONF_SECTIONS` with `canonical_conf()` in
 model-window. Every writer goes through it — `replace_fields` for `context_discovered`
-and `context_window.<model>`, and `_ccp_config_store` for model, effort, mappings and
+and `context_window.<model>`, and `_ccm_config_store` for model, effort, mappings and
 a first configure — so a file rewritten by any of them comes out in the same five
 sections (connection, model choice, behaviour, context, machine-written state),
 regardless of how it was hand-edited. Comments travel with the key line below them,
@@ -110,7 +110,7 @@ and a line the layout does not know keeps its place after the known ones.
 **Migration off the legacy shared registry runs automatically.** `model-window
 --migrate` looks for a legacy `model-registry` file and per-profile
 `cache/context-window` files; `install.sh` invokes it on every install/upgrade,
-and `ccproteus-store.zsh`'s `_ccp_migrate_state` invokes it again from the CLI path the
+and `ccmorph-store.zsh`'s `_ccm_migrate_state` invokes it again from the CLI path the
 first time it sees leftover legacy state (so a host that skips reinstalling still
 gets migrated on next use). A row scoped to a profile (`<profile>:<model>`)
 migrates straight into that profile's `context_discovered`. An unscoped legacy
@@ -122,19 +122,19 @@ belong to. Migrated source files are never deleted, only renamed to `.migrated`
 
 ### One state root, and the overrides that must reach all of it
 
-The state root is `$CCPROTEUS_STATE_DIR`, else `$XDG_CONFIG_HOME/ccproteus`, else
-`~/.config/ccproteus`. Profile runtime state is `profiles/<name>` **under that
+The state root is `$CCMORPH_STATE_DIR`, else `$XDG_CONFIG_HOME/ccmorph`, else
+`~/.config/ccmorph`. Profile runtime state is `profiles/<name>` **under that
 root**, not a sibling of `~/.claude`. Both overrides therefore mean what they
 say: every reader — launcher, adapter, and context migration — derives the
 profile directory from the same root. Overrides select a location; changing one
 after migration does not move an existing state tree. A hardcoded
 `~/.claude-profiles` silently ignored both, which is
-the same class of bug the state/code split in `ccproteus.sh`'s header exists to
+the same class of bug the state/code split in `ccmorph.sh`'s header exists to
 prevent: a host that set `XDG_CONFIG_HOME` got its confs in one place and its
 profile homes in another, and the two disagreed about which machine they were on.
 
 **The rename runs itself, once, and is conservative in every direction.**
-`_ccp_migrate_profile_home` runs inside `_ccp_secure_dirs`, so it is on both the
+`_ccm_migrate_profile_home` runs inside `_ccm_secure_dirs`, so it is on both the
 install path and the ordinary CLI path — a host that never reinstalls migrates on
 next use. It holds an exclusive `flock` on a lock file in the state root, so two
 concurrent launches cannot both move the same directory. Its rules:
@@ -156,7 +156,7 @@ concurrent launches cannot both move the same directory. Its rules:
 - **Already-migrated and fresh installs are no-ops**, checked before spawning an
   interpreter or taking the lock: a legacy symlink already resolving to the target
   returns immediately, and a host with no legacy path never gains one.
-- **`ccproteus doctor` stays read-only**, so it does not migrate. It falls back to
+- **`ccmorph doctor` stays read-only**, so it does not migrate. It falls back to
   reading the legacy path when the new one does not yet exist, so diagnostics on a
   pre-migration host still describe the profiles that are actually there.
 
@@ -166,7 +166,7 @@ Uninstall retains profile state, as before.
 
 Context migration (`model-window`) reads its per-profile `cache/context-window`
 files from the new root, and falls back to the legacy root only when the new one
-does not exist and no explicit `CCPROTEUS_PROFILE_DIRS` was given — legacy cache
+does not exist and no explicit `CCMORPH_PROFILE_DIRS` was given — legacy cache
 recovery must still work on a host whose profile move has not happened yet.
 
 | Type | What it sets | Backend |
@@ -184,7 +184,7 @@ credential type.
 Recognised keys: `type`, `email`, `token`, `base_url`, `api_key`, `model`,
 `effort`, `effort.<model>`, `model_defaults`, `model_map` (apikey only), `adapter`,
 `context_window.<model>`, and `env.<NAME>` for the model-behaviour variables listed in
-`_CCPROTEUS_PROFILE_ENV`.
+`_CCMORPH_PROFILE_ENV`.
 
 The live subagent-model knob is `CLAUDE_CODE_SUBAGENT_MODEL`, owned by the
 profile `.conf` as `env.` and passed in the launch environment (forces every
@@ -193,29 +193,29 @@ so bulk subagent fan-out does not run on the session's own model.
 
 ### The env lists and the sweep
 
-Three lists in `ccproteus-base.zsh` decide what a launch clears from its environment:
+Three lists in `ccmorph-base.zsh` decide what a launch clears from its environment:
 
-- `_CCPROTEUS_PROFILE_ENV` is the set of keys a conf may declare as `env.<NAME>`.
-- `_CCPROTEUS_TUNING_ENV` (`CLAUDE_CODE_SIMPLE`, `MAX_THINKING_TOKENS`,
+- `_CCMORPH_PROFILE_ENV` is the set of keys a conf may declare as `env.<NAME>`.
+- `_CCMORPH_TUNING_ENV` (`CLAUDE_CODE_SIMPLE`, `MAX_THINKING_TOKENS`,
   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`) is a subset of it: client tuning that
   does not pick a backend or account. The shell's value **passes through** unless the
   profile declares the key. The launcher records the tuning keys it set in
-  `CCPROTEUS_SET_ENV` (names only); a nested launch clears those, since they are the
+  `CCMORPH_SET_ENV` (names only); a nested launch clears those, since they are the
   outer session's values, not the shell's. `CLAUDE_CODE_SIMPLE` is also cleared inside
   a Claude Code child session (`CLAUDE_CODE_CHILD_SESSION=1`; `CLAUDECODE=1` alone is set in every shell Claude Code spawns and does not count), because `claude --bare` sets it itself and
   no launch records it.
-- `_CCPROTEUS_BACKEND_ENV` (provider switches, base URL, API keys, OAuth tokens) is
+- `_CCMORPH_BACKEND_ENV` (provider switches, base URL, API keys, OAuth tokens) is
   **always cleared** and is not declarable by a profile; the launcher sets its own
-  credential and endpoint. `ccproteus _backend_env` prints it, answered before any state
+  credential and endpoint. `ccmorph _backend_env` prints it, answered before any state
   work, so the Remote Control add-on builds its strip list from this one list.
 
-Every other key on `_CCPROTEUS_PROFILE_ENV`, plus `_CCPROTEUS_LAUNCH_ENV` (keys a launch
+Every other key on `_CCMORPH_PROFILE_ENV`, plus `_CCMORPH_LAUNCH_ENV` (keys a launch
 sets for itself), is cleared unconditionally. The permit set and the clear set once
 diverged: `MAX_CONTEXT_TOKENS`, `AUTO_COMPACT_WINDOW` and `AUTOCOMPACT_PCT_OVERRIDE`
 were permitted but never cleared, so exporting one in a shell silently changed
 compaction for every profile that omitted it.
 
-Consequence: never remove a key from `_CCPROTEUS_PROFILE_ENV` to "clean up" an unused
+Consequence: never remove a key from `_CCMORPH_PROFILE_ENV` to "clean up" an unused
 setting. Removing it stops the value being cleared, which reintroduces the leak. A key
 joins the tuning list only if a shell value is harmless to every backend.
 
@@ -234,31 +234,31 @@ MCP credentials (through capsules), settings, history, and tooling are **global 
 
 | Concern | Scope | Mechanism |
 |---|---|---|
-| Profile configuration and model credential injection | per profile | `~/.config/ccproteus/<name>.conf` + `~/.config/ccproteus/profiles/<name>/` |
+| Profile configuration and model credential injection | per profile | `~/.config/ccmorph/<name>.conf` + `~/.config/ccmorph/profiles/<name>/` |
 | claude.ai sign-in and native secure storage | per profile | no launch sets `CLAUDE_SECURESTORAGE_CONFIG_DIR` except a private launch, which sets it to the real profile dir so the key is unchanged; otherwise Claude Code keys the keychain entry by the profile's `CLAUDE_CONFIG_DIR`; an interactive login stays in its profile and no other profile can see it. |
 | MCP credentials | global | owned by MCP capsules (`~/.agents/mcp/<name>/state/`); every profile reaches the same local service, so one grant serves every profile and every agent. A remote OAuth MCP joins as a capsule, never through Claude Code's per-profile store. |
-| Session history | per profile | each profile keeps its own `projects/`, as a plain `CLAUDE_CONFIG_DIR` does. A hop, or `--resume <id>` naming a session from another profile or from native `~/.claude/projects/`, links that one transcript and its sidecar dir into the target (`_ccp_carry_session`); Claude Code appends through the link, so the history stays one file. A profile from the shared-history layout has its `projects` link removed (never the target) at the next launch. |
+| Session history | per profile | each profile keeps its own `projects/`, as a plain `CLAUDE_CONFIG_DIR` does. A hop, or `--resume <id>` naming a session from another profile or from native `~/.claude/projects/`, links that one transcript and its sidecar dir into the target (`_ccm_carry_session`); Claude Code appends through the link, so the history stays one file. A profile from the shared-history layout has its `projects` link removed (never the target) at the next launch. |
 | Adapter probe cache | **per endpoint**, shared across profiles | `.adapter-cache/<sha256(base_url)[:16]>.json`, beside the profile dirs — keyed by endpoint so a second profile on an already-classified gateway starts instantly; the stored `endpoint` is re-checked on read, so a moved URL or hash collision re-probes instead of mis-serving |
 | Adapter runtime config, auth, and log | per launch | mode-0700 directory under `${TMPDIR:-/tmp}`; removed on exit |
 | `settings.json` | **generated** per profile | canonical `~/.claude/settings.json` + the profile's `settings.profile.json` layer + saved model defaults, written by `settings-compose` at launch; edits made to it are folded back into the layer — see [Launch contract](#launch-contract-arguments-pass-through) |
-| Shared harness layer — `skills`, `plugins`, `commands`, `hooks`, `output-styles`, `agents`, `session-env`, `file-history`, `CLAUDE.md`, `keybindings.json`, `settings.local.json` | global | one manifest (`_CCPROTEUS_SHARED_DIRS`/`_FILES`), symlinked into `~/.claude`. Dirs are created-and-linked even while empty, so content installed later reaches every profile; a file appearing in `~/.claude` after a profile existed is linked by the next launch's setup pass. A profile-local REAL dir is merged into the shared store and linked only for the mergeable stores — `agents`, `session-env`, `file-history` — never overwriting an existing entry. Links move as links, not followed (a symlinked dir is one link): an absolute link as is, a relative one rewritten to an absolute path — into the shared store when its target is inside the migrated tree, else to the target's physical path — and its backup entry is removed only once the new link exists; any other one is refused and moved nowhere, to be reconciled through its owning tool instead. A profile-local real file is a deliberate override, respected. Claude may persist the profile spelling used during installation in its plugin indexes; `_ccp_normalize_plugin_index_paths` maps only those stale `installLocation`/`installPath` prefixes back to an existing canonical `~/.claude/plugins` target. It never changes source URLs, package metadata, or missing targets. |
+| Shared harness layer — `skills`, `plugins`, `commands`, `hooks`, `output-styles`, `agents`, `session-env`, `file-history`, `CLAUDE.md`, `keybindings.json`, `settings.local.json` | global | one manifest (`_CCMORPH_SHARED_DIRS`/`_FILES`), symlinked into `~/.claude`. Dirs are created-and-linked even while empty, so content installed later reaches every profile; a file appearing in `~/.claude` after a profile existed is linked by the next launch's setup pass. A profile-local REAL dir is merged into the shared store and linked only for the mergeable stores — `agents`, `session-env`, `file-history` — never overwriting an existing entry. Links move as links, not followed (a symlinked dir is one link): an absolute link as is, a relative one rewritten to an absolute path — into the shared store when its target is inside the migrated tree, else to the target's physical path — and its backup entry is removed only once the new link exists; any other one is refused and moved nowhere, to be reconciled through its owning tool instead. A profile-local real file is a deliberate override, respected. Claude may persist the profile spelling used during installation in its plugin indexes; `_ccm_normalize_plugin_index_paths` maps only those stale `installLocation`/`installPath` prefixes back to an existing canonical `~/.claude/plugins` target. It never changes source URLs, package metadata, or missing targets. |
 | Translator instance | per credential domain | one adapter per credential domain when translation is required; native endpoints use none |
 | MCP servers | per profile | each profile keeps the `mcpServers` it was seeded with at provision (or added via `claude mcp add`); nothing projects an external set onto it at launch. |
 
 ### Launch contract: arguments pass through
 
-`ccproteus run <profile> [arguments]` hands Claude Code the caller's arguments
+`ccmorph run <profile> [arguments]` hands Claude Code the caller's arguments
 exactly as given. Nothing is inserted, removed or rewritten, so no subcommand —
-listed, hidden or released tomorrow — meets a flag ccproteus invented, and ccproteus
+listed, hidden or released tomorrow — meets a flag ccmorph invented, and ccmorph
 never needs Claude Code's command grammar. (The additions are a hop's resume,
-which is ccproteus's own relaunch.) Launch state reaches Claude Code through the
+which is ccmorph's own relaunch.) Launch state reaches Claude Code through the
 two channels it reads at
 every entry point — a session, any subcommand, the sessions Remote Control spawns:
 
 | State | Channel | Why |
 |---|---|---|
 | Profile | `CLAUDE_CONFIG_DIR=profiles/<name>` | Claude Code's only user settings root |
-| Endpoint, credential, launch model, per-session compaction budget, advisory text | process environment (`ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, `CCPROTEUS_ADVISE`) | per launch; nothing on disk, parallel sessions never collide |
+| Endpoint, credential, launch model, per-session compaction budget, advisory text | process environment (`ANTHROPIC_BASE_URL`, `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`, `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, `CCMORPH_ADVISE`) | per launch; nothing on disk, parallel sessions never collide |
 | Canonical settings, profile layer, saved model and effort defaults, the default model's `autoCompactWindow`, a static advisory `SessionStart` hook | generated `profiles/<name>/settings.json` | per profile; read natively everywhere |
 
 Verified **[wire]** against Claude Code 2.1.283 with a recording gateway:
@@ -280,7 +280,7 @@ first folds pending edits — the difference between `settings.json` and the cop
 written (`cache/settings.base.json`) — into `settings.profile.json`, before any reader
 consults the layer; removing a key that came from canonical settings is recorded as
 a removal. It then writes `settings.json` = canonical + layer + saved defaults, only
-when that changes, keeping the previous version in `backups/`. Keys ccproteus renders
+when that changes, keeping the previous version in `backups/`. Keys ccmorph renders
 from the conf (`model`, `effortLevel`, per-model effort, tier mappings,
 `availableModels`, the advisory hook) are never folded, so an in-session `/model`
 choice stays session-local as before. A missing `settings.json` is regenerated, never
@@ -299,14 +299,14 @@ launched model (explicit, picked, resumed) is per-session: parallel sessions sha
 one `settings.json`, so its budget rides `CLAUDE_CODE_AUTO_COMPACT_WINDOW` unless the
 user saved a budget, which always wins.
 
-**A caller's `--model` is never rewritten.** ccproteus used to swap an explicit
+**A caller's `--model` is never rewritten.** ccmorph used to swap an explicit
 `--model claude-…` for its `[1m]` id on a 1M route; it now leaves the flag as typed
-and names the `[1m]` id on stderr. Models ccproteus chooses itself (the default, the
+and names the `[1m]` id on stderr. Models ccmorph chooses itself (the default, the
 picker, a resume) still launch with the derived id.
 
 ### Interactive selection is one flag, resolved per verb
 
-`ccproteus run -i` resolves one saved profile through a credential-free `fzf`
+`ccmorph run -i` resolves one saved profile through a credential-free `fzf`
 list, then enters the same launch pipeline as an explicit profile name. The
 sentinel is never stored or passed to Claude Code, and selection never changes
 the saved default. With no `--model` given, `-i` resolves the profile first
@@ -320,10 +320,10 @@ semantics stay unchanged when the flag is absent; an omitted model/effort value
 opens its picker. `set` and `get` also offer their setting names when omitted.
 `rm` and `mv` remain explicit-target operations, never inferred from a menu.
 
-All ccproteus-owned prompts use the standalone `ccproteus-ui.zsh` module.
-`ccp_ui_select native|search` accepts tab-separated ID/label/description rows;
-`ccp_ui_input` owns text and hidden credential entry; `ccp_ui_confirm` uses the
-native selector with No selected by default. `ccp_ui_list` renders instructions
+All ccmorph-owned prompts use the standalone `ccmorph-ui.zsh` module.
+`ccm_ui_select native|search` accepts tab-separated ID/label/description rows;
+`ccm_ui_input` owns text and hidden credential entry; `ccm_ui_confirm` uses the
+native selector with No selected by default. `ccm_ui_list` renders instructions
 for existing piped-input flows. The module has no profile or persistence logic.
 
 Native selection uses one Claude Code-style layout for sign-in, settings,
@@ -339,7 +339,7 @@ dark-theme roles; native ANSI and fzf colors derive from the same values. Profil
 single `fzf` adapter, including Claude aliases and unavailable-list keep/custom
 choices. Both adapters share label rendering, column widths, and theme tokens.
 Only the module handles key reads, terminal modes, cursor movement, and fzf argv.
-The source installer ships it beside `lib/ccproteus.sh`.
+The source installer ships it beside `lib/ccmorph.sh`.
 
 `TERM=dumb` and search without fzf use the module's numbered renderer. `NO_COLOR`
 removes styling. Esc/EOF cancels selection; confirmations never default to Yes.
@@ -349,12 +349,12 @@ arguments and the existing piped configuration sequence retain their behavior.
 
 `add` offers profile types and discovered providers, then only the corresponding
 sign-in fields. `config` separates model/reasoning from connection editing.
-Model rows come from `_ccp_value_rows`: API-key endpoints advertise their own
+Model rows come from `_ccm_value_rows`: API-key endpoints advertise their own
 models; subscription/token profiles use Claude aliases; provider profiles reuse
 saved rows. Model discovery failure still permits keeping the current default or
 entering a custom ID. No versioned model catalogue is embedded in the UI.
 Cancellation writes no pending configuration. Claude Code's native `/model`
-menu remains vendor-owned; ccproteus supplies supported configuration only.
+menu remains vendor-owned; ccmorph supplies supported configuration only.
 
 ### settings.json is layered, not global
 
@@ -365,7 +365,7 @@ The launch line passes `~/.claude/settings.json`, but every profile also has a r
 This is not drift to be cleaned up. Claude Code writes those files itself — theme,
 onboarding state, the model last chosen — so a populated per-profile file is expected,
 not the failure; an empty `hooks` block is what a host's own verifier (if any) should
-flag. `ccproteus` removes a profile-local `settings.json` only when it is a *symlink*,
+flag. `ccmorph` removes a profile-local `settings.json` only when it is a *symlink*,
 which is the mechanism that keeps a real file authoritative.
 
 Two consequences worth holding:
@@ -379,10 +379,10 @@ Two consequences worth holding:
 
 ### Host opt-ins live in `local.sh`, never in shipped source
 
-`ccproteus.sh` sources `~/.config/ccproteus/local.sh` at load if it exists. That file
+`ccmorph.sh` sources `~/.config/ccmorph/local.sh` at load if it exists. That file
 is gitignored and never ships — it is the single seam where a host's own tooling
 opts into optional behavior without the product carrying any knowledge of that
-tooling. Host opt-ins via `local.sh`: `CCPROTEUS_PRELAUNCH`, naming an executable
+tooling. Host opt-ins via `local.sh`: `CCMORPH_PRELAUNCH`, naming an executable
 to run before launch. Legacy context migration reads `model-registry` or
 `model-registry.conf` under the state root. Profile caches live under that same
 root's `profiles/` directory, with recovery from the old `~/.claude-profiles`
@@ -393,12 +393,12 @@ pins that. A hardcoded institution path in shipped code is contamination; an
 env var read from `local.sh` is the fix.
 
 **Trust boundary.** `local.sh` is *trusted executable zsh*, not sandboxed
-configuration — it is sourced into the ccproteus process alongside the library
-itself, and anyone who can write it can already write `ccproteus.sh` beside it, so
+configuration — it is sourced into the ccmorph process alongside the library
+itself, and anyone who can write it can already write `ccmorph.sh` beside it, so
 it grants no new privilege. It follows that a bug in your own `local.sh` (a stray
 `set -e`, a bad `export`) is a config error to fix in that file. Under ordinary
 interactive zsh options, a
-*parse* error in it does not brick ccproteus — zsh contains the failed nested
+*parse* error in it does not brick ccmorph — zsh contains the failed nested
 `source`, so the outer source succeeds and the launchers defined after the source
 line still load (proven by `test_broken_local_sh_does_not_abort_the_source`, which
 asserts both the source's exit status and the final launcher). This guarantee is
@@ -407,7 +407,7 @@ the "config error to fix in that file" case above, not a supported input.
 
 ### Runtime logging is ephemeral and optional
 
-Launch and adapter stderr go to `${TMPDIR:-/tmp}/ccproteus-$UID.log`, not durable
+Launch and adapter stderr go to `${TMPDIR:-/tmp}/ccmorph-$UID.log`, not durable
 state under the home directory. A sandbox may deny writes across directory trees;
 a shell redirection to an unwritable log fails before the adapter process starts.
 The adapter therefore probes the log path first and falls back to `/dev/null`, so
@@ -448,7 +448,7 @@ profile and nothing else. No change to `codex` or `gateway`, no new service.
 2. No adapter setting is needed. ollama answers `/v1/messages` itself **[wire]**;
    automatic launch classification keeps the native path. A future local server
    speaking OpenAI only is handled by the same automatic adapter path.
-3. Nothing. `_ccp_launch_window` reads `num_ctx` from the endpoint's own
+3. Nothing. `_ccm_launch_window` reads `num_ctx` from the endpoint's own
    `/api/show` at launch, so an authored copy could only drift from it.
 4. Nothing else required — an unprobed tag is clamped to Claude Code's 200,000
    default. Optionally, the internal model-window resolver records
@@ -461,45 +461,45 @@ ollama truncates silently — so the advertised figure over-promises without err
 
 ## 2b. Reaching a private endpoint
 
-**ccproteus ships no transport.** Bridging to an endpoint this process tree cannot
+**ccmorph ships no transport.** Bridging to an endpoint this process tree cannot
 dial is a separate product: it starts a local CONNECT proxy, and the caller runs
-`HTTPS_PROXY=http://127.0.0.1:<port> ccproteus run <profile>`.
+`HTTPS_PROXY=http://127.0.0.1:<port> ccmorph run <profile>`.
 
-ccproteus's whole duty is to pass that ambient value through **unchanged** —
+ccmorph's whole duty is to pass that ambient value through **unchanged** —
 `HTTPS_PROXY`, `https_proxy` and `NO_PROXY` reach the Claude child, the adapter,
-`ccproteus-adapter`'s cliproxyapi, model listing, and `refresh-model-registry`
+`ccmorph-adapter`'s cliproxyapi, model listing, and `refresh-model-registry`
 exactly as exported. `HTTPS_PROXY` is deliberately absent from
-`_CCPROTEUS_PROFILE_ENV`, so [the launch sweep](#the-env-lists-and-the-sweep)
+`_CCMORPH_PROFILE_ENV`, so [the launch sweep](#the-env-lists-and-the-sweep)
 never clears it, and no launch path sets or blanks it.
 
-The one exception is a probe of ccproteus's own loopback services — adapter and
+The one exception is a probe of ccmorph's own loopback services — adapter and
 provider-bridge readiness on `127.0.0.1`. Those carry `--noproxy '*'`, because an
 ambient proxy answers `000` for a service that is serving perfectly, and readiness
 would never arrive.
 
 **Why the seam is gone.** Until 2026-10 a profile could declare `transport=<token>`
-and ccproteus called out to a host runner to open the crossing. Every consumer then
+and ccmorph called out to a host runner to open the crossing. Every consumer then
 had to be handed the resulting proxy explicitly — and each of those sites spelled
-the hand-off as `HTTPS_PROXY="${_ccp_route_https_proxy:-}"`, which **blanks** an
+the hand-off as `HTTPS_PROXY="${_ccm_route_https_proxy:-}"`, which **blanks** an
 ambient proxy when no runner ran. A user who had already bridged correctly got
 their proxy deleted by the tool that was supposed to use it. Removing the seam
 removes the override: there is one value, the caller's, and it is never rewritten.
 `test_shipped_surface_never_names_the_transport_product` pins the boundary from
-this side: ccproteus ships no transport file, path, or even name.
+this side: ccmorph ships no transport file, path, or even name.
 
-A conf still carrying `transport=` keeps launching: `_ccp_read` prints one line
+A conf still carrying `transport=` keeps launching: `_ccm_read` prints one line
 naming the replacement and ignores the key.
 
 ## 3. The adapter
 
 Claude Code speaks exactly one dialect: Anthropic `/v1/messages`. A gateway that
 also serves OpenAI-shaped models needs translation. Automatic launch classification
-selects native pass-through or `ccproteus-adapter`; nothing about it is specific to
+selects native pass-through or `ccmorph-adapter`; nothing about it is specific to
 a vendor or model list.
 
 Lifecycle, per session:
 
-1. Read endpoint and credential from the profile via `ccproteus _env`.
+1. Read endpoint and credential from the profile via `ccmorph _env`.
 2. Ask the endpoint what it serves. Discovery must **not** send
    `anthropic-version`, or proxies rewrite non-Claude ids into
    `claude-fable-5-dd-<reversed-id>` **[wire]**.
@@ -518,7 +518,7 @@ A launch is per session. A non-Claude client that outlives sessions — Hermes
 — needs a fixed address and a fixed credential instead, on the same adapter:
 
 ```
-ccproteus-adapter <profile> --auto --model <id> --port <n> --inbound-token-file <path>
+ccmorph-adapter <profile> --auto --model <id> --port <n> --inbound-token-file <path>
 ```
 
 Loopback only, like every route the adapter serves. The port is served exactly
@@ -537,7 +537,7 @@ outbound rules below apply unchanged — the same task-tag, hooks and
 identifier handling as every other profile's traffic **[test]**.
 
 Without `--parent-pid` the adapter runs until signalled; running it as a
-service is the caller's job, not ccproteus's.
+service is the caller's job, not ccmorph's.
 
 ### Why a credentialled endpoint gets its own instance
 
@@ -561,11 +561,11 @@ for one process per profile.
   inherits the launcher's environment — including any ambient proxy. Nothing on the
   launch path sets or clears `HTTPS_PROXY` for it **[test]**.
 - **A subprocess that must REACH the endpoint asks for the route, not just the
-  environment.** `ccproteus _env` answers "what does this account launch as", which
+  environment.** `ccmorph _env` answers "what does this account launch as", which
   for every type but `provider` is also enough to dial it. A `provider` has no
-  endpoint until its bridge process runs, so `ccproteus _route_env` starts one and
-  prints `CCPROTEUS_ROUTE_HANDLE`; the caller owns that bridge and retires it with
-  `ccproteus _route_stop <handle>` **[test]**.
+  endpoint until its bridge process runs, so `ccmorph _route_env` starts one and
+  prints `CCMORPH_ROUTE_HANDLE`; the caller owns that bridge and retires it with
+  `ccmorph _route_stop <handle>` **[test]**.
 
 ### When no translator is needed at all
 
@@ -602,17 +602,17 @@ is identifier randomisation **[test]**:
 
 | Profile key | Shim flag | Effect |
 |---|---|---|
-| `env.CCPROTEUS_RANDOM_DEVICE_ID=1` | `--random-device-id` | On `POST /v1/messages` and `/count_tokens`, `device_id` inside `metadata.user_id` (a JSON string) becomes a random 64-hex value minted once per session and stable within it (keyed by the session id, held in memory only). `session_id`, `account_uuid`, every other key and every header are untouched, so prompt caching and gateway affinity do not move. A body it cannot parse, or whose `user_id` is not that JSON shape, goes upstream byte-identical. |
+| `env.CCMORPH_RANDOM_DEVICE_ID=1` | `--random-device-id` | On `POST /v1/messages` and `/count_tokens`, `device_id` inside `metadata.user_id` (a JSON string) becomes a random 64-hex value minted once per session and stable within it (keyed by the session id, held in memory only). `session_id`, `account_uuid`, every other key and every header are untouched, so prompt caching and gateway affinity do not move. A body it cannot parse, or whose `user_id` is not that JSON shape, goes upstream byte-identical. |
 
 A rewrite that exists only because one gateway misbehaves is not core. A profile
-opts into a request-hooks module with `env.CCPROTEUS_SHIM_HOOKS=<file>`; the
-adapter ferries the profile's `CCPROTEUS_*` env keys into the shim's environment
+opts into a request-hooks module with `env.CCMORPH_SHIM_HOOKS=<file>`; the
+adapter ferries the profile's `CCMORPH_*` env keys into the shim's environment
 and the shim loads the module at startup, dying at spawn if the file is missing
 or the module exits **[test]**. The module's `user_agent`, `repair_request` and
 `outbound_headers` hooks then restate the `User-Agent`, rewrite the body and add
 headers; the adapter's passthrough entries take their `User-Agent` from its
 `translator_user_agent` **[test]**. The contract is generic — any module a user
-writes works — and ccproteus's own quirks module ships as a private add-on,
+writes works — and ccmorph's own quirks module ships as a private add-on,
 outside the public snapshot, so no core release names the gateway it serves.
 
 ### Transport retry and the provider breaker (direct route only)
@@ -622,7 +622,7 @@ to the translator path's shim: with no translator underneath, nobody else retrie
 behind cliproxyapi a shim retry would multiply its own `request-retry`. On a 429, 5xx or
 refused connection — and only before the client has any byte — the shim resends the same
 body to the same target twice, waiting a random interval each time (full jitter, up to
-0.5 s then 1 s; `CCPROTEUS_RETRY_BASE` sets the base and the tests set it to 0). A stall is
+0.5 s then 1 s; `CCMORPH_RETRY_BASE` sets the base and the tests set it to 0). A stall is
 not retried: it already waited the stall timeout and Claude Code retries it itself
 **[test]**. Each retry is the same bytes to the same target, so no retry can move a call
 to another model or provider, and the tier cannot change under load **[test]**.
@@ -642,12 +642,12 @@ keeps a blip from taking a single-provider route offline.
 ### The usage sidecar: one metadata row per response id
 
 The adapter hands the selected route to `gateway-shim` in
-`CCPROTEUS_MODEL_ROUTE` (it needs the spec anyway to prepare a newly picked
+`CCMORPH_MODEL_ROUTE` (it needs the spec anyway to prepare a newly picked
 model). A shim holding that spec writes one metadata-only row for every
 `/v1/messages` response it relays, at
 
 ```
-${XDG_STATE_HOME:-~/.local/state}/ccproteus/usage/<sha256(response_id)>.json
+${XDG_STATE_HOME:-~/.local/state}/ccmorph/usage/<sha256(response_id)>.json
 ```
 
 so a response id quoted in a Claude Code transcript joins to what that turn
@@ -689,9 +689,9 @@ of the profile and the adapter's route identity; that identity is itself a
 digest of `upstream + key`, so it, the key, its hash, the rendered config path
 and the token are never written anywhere in the row.
 
-**Task tags.** A launch through the adapter may carry `CCPROTEUS_TASK` (opaque
-id, `[A-Za-z0-9._-]{1,64}`) and `CCPROTEUS_ATTEMPT` (digits). The launcher turns the
-well-formed ones into Claude Code's `ANTHROPIC_CUSTOM_HEADERS` (`x-ccproteus-task`,
+**Task tags.** A launch through the adapter may carry `CCMORPH_TASK` (opaque
+id, `[A-Za-z0-9._-]{1,64}`) and `CCMORPH_ATTEMPT` (digits). The launcher turns the
+well-formed ones into Claude Code's `ANTHROPIC_CUSTOM_HEADERS` (`x-ccmorph-task`,
 `-attempt`) and clears the variables so the session's children never inherit
 them; a direct (no-adapter) launch carries none. Because the generated settings
 strip every key the launch sets itself (the process environment must win), the
@@ -714,9 +714,9 @@ stripped, which is what the gateway is asked for — the shell strips that marke
 it hands the adapter a model to prepare, and a native client's `claude-sonnet-5-5[1m]`
 picker row reaches the wire as `claude-sonnet-5-5` because Claude Code normalizes it,
 so the launch, preparation and the request all resolve one key. The marker is
-ccproteus's own tag, never part of a model id, so a key carrying it names nothing:
+ccmorph's own tag, never part of a model id, so a key carrying it names nothing:
 reading the profile refuses one with a plain error — at launch, and in the
-`ccproteus _env` the adapter reads the map through — instead of running a map that
+`ccmorph _env` the adapter reads the map through — instead of running a map that
 decides nothing **[test]**. Mapped targets are final: no family substitution or
 recursive mapping. Responses keep the requested picker identity, while the usage row
 records the gateway target separately. Missing maps and unknown keys retain the
@@ -730,10 +730,10 @@ The map applies to any matching request on that profile, including subagents; it
 does not install a default map. Existing RC `tier.*` pins
 run earlier in the proxy, so a map sees the pinned ID when a host has one.
 Outcomes are appended with `python3 libexec/gateway-shim outcome <task>
-accepted|rejected|escalated|parked` to `<state>/ccproteus/outcomes.jsonl`
+accepted|rejected|escalated|parked` to `<state>/ccmorph/outcomes.jsonl`
 (`{task, outcome, timestamp}`), joined to rows by task.
 
-**Ownership.** The shim owns the write, ccproteus owns the format and the
+**Ownership.** The shim owns the write, ccmorph owns the format and the
 retention, and the consumer — Helm, or anything joining response ids — reads
 these files and nothing else. Nothing reads them back into a launch, they never
 travel to a remote host, and they sit under the XDG *state* root rather than the
@@ -755,7 +755,7 @@ whose id never reaches the client cannot be attributed: the shim's own
 unexpected-EOF retry consumes an upstream 500 whose body carries no id, so that
 call produces no row at all. Capture is off unless the adapter passed the route
 spec, so a hand-launched shim writes nothing. Every session that runs through
-`ccproteus-adapter` carries the shim — it is the stable request shim, interposed
+`ccmorph-adapter` carries the shim — it is the stable request shim, interposed
 with `--preserve-tool-ids` where the upstream does not recycle ids — but a
 profile that never starts the adapter has no shim and therefore no rows:
 native, direct endpoints and any route still served by the shared brew
@@ -769,11 +769,11 @@ is not the model that answered and a list price is not what was paid. `scripts/u
 reads the sidecar receipts and writes only what the gateway itself recorded, at
 
 ```
-${XDG_STATE_HOME:-~/.local/state}/ccproteus/usage-summary.json
+${XDG_STATE_HOME:-~/.local/state}/ccmorph/usage-summary.json
 ```
 
 beside the index that makes a repeat run cheap,
-`${XDG_STATE_HOME:-~/.local/state}/ccproteus/usage-summary.sqlite`. The command takes
+`${XDG_STATE_HOME:-~/.local/state}/ccmorph/usage-summary.sqlite`. The command takes
 `--source` (the receipts) and `--state` (both output files), each defaulting to the state
 root as above **[test]**, and prints its run report — `read`, `statted`, `removed`,
 `written`, `days` — as JSON. It is private (`scripts/`), stdlib only, and starts no service:
@@ -907,13 +907,13 @@ Two separate things, often confused:
 | `[1m]` model suffix | any id | window becomes 1M, on any endpoint — the first test in the chain |
 | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | ids whose name does **not** start with `claude-` | functional — drives compaction |
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | any id | a ceiling on the compaction trigger, capped by the window above |
-| `context_window.<model>` | one profile/model pair | manual context limit stored in the profile configuration; wins over discovered values. Set with `ccproteus context <profile> <model> <tokens>`, cleared with `auto` |
-| `context_discovered` | one profile, route-bound | JSON blob in the same `.conf`; limits `ccproteus probe` discovered for the profile's current route, invalidated when the route changes |
+| `context_window.<model>` | one profile/model pair | manual context limit stored in the profile configuration; wins over discovered values. Set with `ccmorph context <profile> <model> <tokens>`, cleared with `auto` |
+| `context_discovered` | one profile, route-bound | JSON blob in the same `.conf`; limits `ccmorph probe` discovered for the profile's current route, invalidated when the route changes |
 
 So on one profile a `claude-*` model and a routed model get different windows from
 the same config, and both are correct.
 
-For a routed id, the launcher reads only local data. `_ccp_launch_window`
+For a routed id, the launcher reads only local data. `_ccm_launch_window`
 uses the canonical `model-window` resolver: an explicit `CLAUDE_CODE_MAX_CONTEXT_TOKENS`
 pin wins outright; otherwise the profile's exact manual override
 (`context_window.<model>`) wins over its `context_discovered` metadata, which is
@@ -994,7 +994,7 @@ Two consequences:
   350,000 was already honest — the window was never the bug.
 - **The window is the only lever on the trigger.** `aY` takes
   `min(context window, CLAUDE_CODE_AUTO_COMPACT_WINDOW)`, so raising one without the
-  other changes nothing. `_ccp_launch` sets both together or neither.
+  other changes nothing. `_ccm_launch` sets both together or neither.
 
 ### The invariant: compaction must fire before the endpoint refuses
 
@@ -1032,7 +1032,7 @@ model is recoverable, a session past its wall is not. Two traps, both found by p
 
 - The field appears **only** on the Anthropic-shaped route and **only** when
   `anthropic-version` is sent. Without the header the same endpoint answers four bare
-  fields, which is why `ccproteus models` — which drops the header deliberately to keep
+  fields, which is why `ccmorph models` — which drops the header deliberately to keep
   ids readable — cannot supply it.
 - Sending the header is what makes translators disguise non-Claude ids as
   `claude-<cover>-dd-<reversed id>`, so `gpt-5.6-sol` comes back as
@@ -1055,8 +1055,8 @@ would have cut the window fivefold, so a `[1m]` profile keeps what Claude Code k
 **[test]**. A conf that pins a ceiling also still wins — an author may want a smaller
 budget on purpose, so derivation fills a gap rather than overruling one **[test]**.
 
-`_ccp_invariant_warn` is that check (a launch reaches the same two halves through the
-one interpreter it runs, `_ccp_launch_diagnostics`) and it names any offender, rather than
+`_ccm_invariant_warn` is that check (a launch reaches the same two halves through the
+one interpreter it runs, `_ccm_launch_diagnostics`) and it names any offender, rather than
 leaving it to arithmetic in this document that stops being done. It reads each
 profile's `availableModels`, undoes the translator disguise, and compares the ceiling
 in that profile's `context_discovered` data against the trigger the id will actually
@@ -1114,8 +1114,8 @@ Hence the rule that makes the invariant maintainable rather than a coincidence:
 
 > **The route ceiling is the max; the budget is per model; a model the budget
 > cannot protect is named, not hidden.**
-> `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is fixed at process start, so ccproteus sets it
-> to the LARGEST probed window the route serves (`_ccp_launch_window`) — a
+> `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is fixed at process start, so ccmorph sets it
+> to the LARGEST probed window the route serves (`_ccm_launch_window`) — a
 > mid-session `/model` switch can then never run clamped below its real window.
 > The launched model's own limit rides the native `autoCompactWindow` setting
 > instead, written into the generated settings, so the compaction trigger is
@@ -1135,7 +1135,7 @@ Hence the rule that makes the invariant maintainable rather than a coincidence:
 > already yields per-model windows. In a session capped at 1,000,000, a switch to
 > `claude-haiku-4-5` self-corrects to a 200,000 window and a 144,000 trigger, and
 > `claude-opus-5[1m]` sits at 1,000,000/784,000 — each at ~78% of its OWN ceiling,
-> natively, with nothing from ccproteus.
+> natively, with nothing from ccmorph.
 >
 > The gap is narrower than "one window per session" suggests, and it is entirely
 > in the **non-claude** family: every routed model shares the single env ceiling,
@@ -1157,8 +1157,8 @@ Hence the rule that makes the invariant maintainable rather than a coincidence:
 > it stops compacting, largest first, because the useful warning is the 700k model
 > that dies at 700k and not the 258k one nobody would take into a long session.
 > Below the trigger every model is safe; the person holding the session is the one
-> who knows whether it will grow past that. `CCPROTEUS_WITHHOLD_FATAL=1` switches to
-> removal (`_ccp_withhold_fatal_switches`, generated settings only — the layer always
+> who knows whether it will grow past that. `CCMORPH_WITHHOLD_FATAL=1` switches to
+> removal (`_ccm_withhold_fatal_switches`, generated settings only — the layer always
 > keeps every model, and a session launched on a smaller one offers the whole route
 > again).
 >
@@ -1172,10 +1172,10 @@ Hence the rule that makes the invariant maintainable rather than a coincidence:
 `min(usable − usable×reserve, usable×pct/100, usable − 13000)` **[src]** — a ceiling,
 never a floor, so the 90 it carried could only ever compact *sooner*.
 
-ccproteus ships **no display machinery** for any of this. A v1.7.x statusline
+ccmorph ships **no display machinery** for any of this. A v1.7.x statusline
 (display-only — it repainted a number the engine never used) was removed; a
 leftover `statusLine` entry it wired into a profile is cleaned up by
-`_ccp_unwire_statusline` at provisioning, and a statusLine the user set
+`_ccm_unwire_statusline` at provisioning, and a statusLine the user set
 themselves is never touched. What the engine budgets, its own surfaces
 (`/context`, `/autocompact`, the built-in indicator, any statusLine the user
 runs) display natively.
@@ -1197,7 +1197,7 @@ Mid-session, the running engine re-reads nothing from disk — verified live
 flag layer in-process) moves the trigger inside a session. So per-model
 exactness is delivered at launch, the ceiling covers every switch target, a
 model the session's budget cannot compact is named by the live advisory (and
-withheld only under the opt-in `CCPROTEUS_WITHHOLD_FATAL`) rather than hidden by
+withheld only under the opt-in `CCMORPH_WITHHOLD_FATAL`) rather than hidden by
 default, and a switched-into model becomes exact again when explicitly
 selected for a future launch.
 
@@ -1205,16 +1205,16 @@ Context limits are configuration or discovered data, never constants in the
 source. the internal model-window resolver sets or removes an
 exact manual override in the profile `.conf`. That same `.conf` also holds
 `context_discovered`, a JSON blob keyed by the profile's current route
-fingerprint that `ccproteus probe` writes. A tier alias (`opus`, `fable`) resolves
+fingerprint that `ccmorph probe` writes. A tier alias (`opus`, `fable`) resolves
 through the profile's own `ANTHROPIC_DEFAULT_<TIER>_MODEL` to the model that
-actually answers. The only numbers in `ccproteus.sh` are `_CCPROTEUS_ACW_MIN` /
-`_CCPROTEUS_ACW_MAX`, which are Claude Code's own schema bounds on the setting
+actually answers. The only numbers in `ccmorph.sh` are `_CCMORPH_ACW_MIN` /
+`_CCMORPH_ACW_MAX`, which are Claude Code's own schema bounds on the setting
 (`.int().min(1e5).max(1e6)`) — a value outside them is dropped silently, which
 would put the session back on the default budget.
 `test_no_context_window_is_written_into_the_source` fails the build if a window
 literal reappears.
 
-`ccproteus probe <account>` is metadata-only by default. It spends 0 inference
+`ccmorph probe <account>` is metadata-only by default. It spends 0 inference
 tokens, runs under a 30s whole-run deadline with `min(1s, 10%)` reserved for
 cleanup, and records positive integer gateway fields even when their values are
 equal. It preserves an existing discovered value for a model already known on
@@ -1225,7 +1225,7 @@ change (endpoint or credential) invalidates the whole
 `context_discovered` blob for that profile, so stale data from a retired route
 can never masquerade as proof for the new one.
 
-Inference probing is a paid last resort: `ccproteus probe <account> --model <id>
+Inference probing is a paid last resort: `ccmorph probe <account> --model <id>
 --allow-inference` requires a single profile/model pair, skips already known
 windows unless `--probe-all` is also set, and uses a 10s per-request
 `--probe-timeout` by default. `--bisect` additionally enables hidden-ceiling
@@ -1271,13 +1271,13 @@ Claude Code builds a row three ways and only one lets a description through **[s
 
 The third reads `{value, label, description}` back verbatim from the profile's own
 `.claude.json`, and was already in use there — the stray `Fable` row came through it.
-So `_ccp_project_picker` writes the rows at every launch and discovery stays **off** for
+So `_ccm_project_picker` writes the rows at every launch and discovery stays **off** for
 such a profile: discovery is added first, and its hardcoded string would win the dedupe.
 Keeping discovery off also keeps it out of the launch/add critical path; the background
 helper may refresh the cached model inventory for the next launch.
 
 A row's description names the route it came from. A profile declares `tag=<name>` in its
-conf (for example, `Primary` or `Alternate`); the launcher passes it to `_ccp_project_picker`,
+conf (for example, `Primary` or `Alternate`); the launcher passes it to `_ccm_project_picker`,
 which stamps it on every projected row. A profile that declares none falls back to the
 concise built-in `Gateway`, so an untagged route still reads honestly **[test]**. This is
 a bootstrap display value, not a capability claim — it says where the model comes from and
@@ -1297,8 +1297,8 @@ different
 route. Existence is the endpoint's fact, capacity is `model-window`'s, and fusing the two
 questions into one `if` answered neither. A model whose window is genuinely too small to
 compact remains selectable and is handled downstream, where the real budget is known: the
-live launch advisory names it, and `CCPROTEUS_WITHHOLD_FATAL=1` removes it from that session
-only. Note the split precisely — both of those read a **probed** wall (`_ccp_hazard_set`
+live launch advisory names it, and `CCMORPH_WITHHOLD_FATAL=1` removes it from that session
+only. Note the split precisely — both of those read a **probed** wall (`_ccm_hazard_set`
 skips any model without one), so they speak about known-and-small models; an *unprobed*
 model is covered instead by the unprobed advisory and conservative compaction fallback below. Projection is a full replacement, like the MCP projection,
 so a withdrawn model stops being offered instead of lingering — and an unreachable
@@ -1333,12 +1333,12 @@ allowlist. A listed model may still fail inference if the gateway's capability c
 is wrong or its protocol has not been classified. Classification remains separate;
 listing does not probe every model or promise every model accepts `/v1/messages`.
 
-A ceiling comes from local data at **launch**: `_ccp_launch_window` reads
+A ceiling comes from local data at **launch**: `_ccm_launch_window` reads
 the profile's manual override first, then its `context_discovered` entry for
 that exact model, then a glob match within the same blob.
 This rule once also governed which rows the picker offered; it no longer does,
 since a row needs no ceiling. It still decides every window. When a metadata refresh conflicts with
-an existing discovered value for that model, ccproteus keeps the existing value, discloses the
+an existing discovered value for that model, ccmorph keeps the existing value, discloses the
 listing's different claim, and requires an explicit retest before replacing it.
 
 An unprobed launch gets the resolver's **conservative compaction fallback** through
@@ -1374,7 +1374,7 @@ stale the day a route was reprobed, and the session budgets the real window
 engine-side anyway. `availableModels` is written from the endpoint inventory, not the
 discovered-window data, so newly served chat-capable models are selectable before any paid
 ceiling probe. Known sub-trigger models are still named by that invariant check, and
-`CCPROTEUS_WITHHOLD_FATAL=1` can remove them from that launch's generated settings.
+`CCMORPH_WITHHOLD_FATAL=1` can remove them from that launch's generated settings.
 
 ### Hiding the models the profile cannot serve
 
@@ -1451,11 +1451,11 @@ Two distinct reasons to set one:
 
 **A mapping does not buy the `[1m]` window, and it is important not to believe it does.**
 For a `claude-*` id the window is chosen by the id: `[1m]` reads 1M, a bare `claude-`
-prefix takes a hardcoded 200,000 and ignores the env ceiling. ccproteus derives the
+prefix takes a hardcoded 200,000 and ignores the env ceiling. ccmorph derives the
 suffixed `send_id` only when the **launch target itself** starts with `claude-` — the gate
-`"$_send_target" == claude-*` in `ccproteus-launch.zsh`; a bare alias never does, and the mapped
+`"$_send_target" == claude-*` in `ccmorph-launch.zsh`; a bare alias never does, and the mapped
 target is read separately, for budget sizing alone, where `_pmodel="${_palias[$_pbare]}"` in
-`ccproteus-launch.zsh` swaps the alias for the model behind it. So mapping `opus` → `claude-opus-5`
+`ccmorph-launch.zsh` swaps the alias for the model behind it. So mapping `opus` → `claude-opus-5`
 leaves a `--model opus` launch on the 200,000 family ceiling — the mapping changes which
 model answers, not which window it gets. Two further limits: the tag is inert under
 `CLAUDE_CODE_DISABLE_1M_CONTEXT` **[src]**, and an explicit `claude-opus-5[1m]` row is
@@ -1476,9 +1476,9 @@ Complements, still useful:
 
 | Need | Do this |
 |---|---|
-| Everything an account is set to | `ccproteus inspect <account>` |
-| Choose at launch | `ccproteus <account> -i` |
-| Save a default you cannot spell from memory | `ccproteus set <account> model -i` |
+| Everything an account is set to | `ccmorph inspect <account>` |
+| Choose at launch | `ccmorph <account> -i` |
+| Save a default you cannot spell from memory | `ccmorph set <account> model -i` |
 | An id the picker cannot show, e.g. an effort suffix | `/model <exact-id>` |
 
 `/model <id>` accepts an id outside the catalogue. Verified: a session on
@@ -1491,10 +1491,10 @@ The confirmation dialog names the real cost: the conversation is prompt-cached p
 model, so switching re-reads the full history on the next message. Cheap once,
 expensive if repeated.
 
-### Model defaults belong to ccproteus; inline choices belong to the session
+### Model defaults belong to ccmorph; inline choices belong to the session
 
 The profile `.conf` owns configured `model`, `effort`, `effort.<model>` and model
-tier/helper mappings. `ccproteus set <profile> model|effort` changes future defaults;
+tier/helper mappings. `ccmorph set <profile> model|effort` changes future defaults;
 advanced values are edited directly in the same file. Unused fields stay absent.
 Other native settings remain in profile `settings.json` over shared settings.
 
@@ -1505,7 +1505,7 @@ defaults. Subsequent native writes are not re-imported. Explicit setters use the
 same transaction, and read-only inspection does not mutate a profile.
 
 Claude Code's `/model` and `/effort` still write native preferences and may display
-“saved as default.” Those writes are not the ccproteus defaults. Launch preparation
+“saved as default.” Those writes are not the ccmorph defaults. Launch preparation
 first seeds the conf if needed, then transactionally removes only native model,
 effort, per-model effort and model-mapping preferences from the profile's
 settings layer. Unrelated fields and shared settings stay untouched; concurrent
@@ -1524,7 +1524,7 @@ for one invocation. Configured per-model effort retains native precedence over a
 general effort default, without adopting per-model effort written by an earlier
 interactive session. Adapter-only controls stay outside Claude's settings.
 
-The guarantee applies to ccproteus-launched profiles, not an independently launched
+The guarantee applies to ccmorph-launched profiles, not an independently launched
 native `claude` executable. Installation does not take ownership of that command.
 The optional `tests/native_session_defaults_smoke.py` exercises actual native TUI
 changes, shared-skill discovery and effective settings across sequential and
@@ -1535,25 +1535,25 @@ Two defects of the undeclared kind, found by a three-way adversarial audit at v1
 and fixed in v1.15.3:
 
 - **A default may fill a gap, never overrule a choice.** The compaction trigger comes
-  from the fleet manifest `~/.agents/runtime/policies/context.json`; ccproteus carries
+  from the fleet manifest `~/.agents/runtime/policies/context.json`; ccmorph carries
   that default into every Claude profile only when neither the profile conf nor either
   settings layer declares an engine-valid `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`. Both layers
   are consulted before injecting **[test]**. An absent manifest uses the built-in 75%; a
   present invalid manifest stops an unoverridden launch. The general trap: proving "the user
   did not set this" has to happen *before* the write, because merge order will not do it
   for you.
-- **Ownership is proven by exact path, never by a suffix.** `_ccp_unwire_statusline`
-  matched `command.endswith("/ccproteus/statusline")` — a strictly broader class than
-  ccproteus ever wrote, so a personal bar at `~/bin/ccproteus/statusline` was deleted
+- **Ownership is proven by exact path, never by a suffix.** `_ccm_unwire_statusline`
+  matched `command.endswith("/ccmorph/statusline")` — a strictly broader class than
+  ccmorph ever wrote, so a personal bar at `~/bin/ccmorph/statusline` was deleted
   while the function's own comment promised the opposite. The v1.7 wire function it
   cleans up after wrote an exact path *and* refused to replace an existing command, so
-  an exact match cannot miss anything ccproteus installed; both the state-dir and
+  an exact match cannot miss anything ccmorph installed; both the state-dir and
   lib-dir spellings are checked, since a pre-1.8 profile may hold either **[test]**.
 
 One finding was deliberately **not** fixed, recorded so it is not rediscovered as new:
 `set_allowed` replaces `availableModels` wholesale, and for routed profiles that is
 declared — the table above gives gateway's list as tier aliases plus the projected
-served ids, withdrawal semantics are stated at `_ccp_project_picker`, and
+served ids, withdrawal semantics are stated at `_ccm_project_picker`, and
 `test_projection_never_drops_the_profiles_own_model` pins what survives — and the
 launch's own `--model` survives with it when the shim serves it, because a hop
 relaunches on a `model_map` alias the endpoint never lists and dropping it silently
@@ -1567,7 +1567,7 @@ only by coincidence (its endpoint serves no above-trigger probed model, and its 
 curated entry equals the stored model). Latent, not live — no profile loses data as of
 v1.15.3. The fix, when a second curated entry appears in a routed profile, is a conf
 declaration in the shape of `adapter=true`: projection-owned by default, hand-curated
-makes ccproteus read-and-warn.
+makes ccmorph read-and-warn.
 
 ## 5c. Why the picker can show five identical rows
 
@@ -1599,7 +1599,7 @@ single `"GPT 5.6 Sol"` **[src]**. Fixing it at source needs both a root-owned co
 edit and cliproxyapi ≥ 7.2.113, since 7.2.70's alias struct has no `display-name`
 field.
 
-The ccproteus adapter is not affected: it emits `name == alias == real id` and no
+The ccmorph adapter is not affected: it emits `name == alias == real id` and no
 `display-name`, so labels fall back to real ids and are already distinct. Adding
 effort variants there would mean minting ids the endpoint does not serve, against a
 live-probed inventory — rejected.
@@ -1668,9 +1668,9 @@ Operational notes:
 
 - The edited file is `/opt/homebrew/etc/cliproxyapi.conf` — outside any repo, so it
   is not version-controlled. Backup of the pre-change state:
-  `~/.config/ccproteus/backup-cliproxyapi.conf.20260802` (mode 600).
+  `~/.config/ccmorph/backup-cliproxyapi.conf.20260802` (mode 600).
 - Rollback is the cached 7.2.70 bottle; the Cellar keeps only the current version.
-- `~/.config/ccproteus/profiles/<name>/cache/gateway-models.json` must be deleted after any
+- `~/.config/ccmorph/profiles/<name>/cache/gateway-models.json` must be deleted after any
   change to the advertised set, or the picker serves the stale list. It is keyed on
   base URL only.
 
@@ -1732,7 +1732,7 @@ This is the only effort mechanism that survives a model switch, because the leve
 *is* the id — where `/effort` is session state that a `/model` change can outlive.
 
 Confirmed on the real routes, not just a hand-built config: both the brew `:<translator-port>`
-and a live ccproteus adapter return 200 for `gpt-5.6-sol(low)` and
+and a live ccmorph adapter return 200 for `gpt-5.6-sol(low)` and
 `gpt-5.6-sol(max)` **[wire]**. This mattered because each route builds its model
 allowlist from the endpoint's `/v1/models`, which advertises no parenthesised
 forms — the suffix is stripped before that match, so the allowlist is not a
@@ -1767,7 +1767,7 @@ union. These requests bypassed the local adapter entirely **[wire]**.
 Every adapter launch therefore sets `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1`; a route
 that does serve the advisor declares `env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL=0`. This native Claude Code
 control prevents the optional advisor from being offered; ordinary tools remain
-available. ccproteus accepts and isolates the control, but does not infer advisor
+available. ccmorph accepts and isolates the control, but does not infer advisor
 support from model names, strip arbitrary tool definitions, or emulate the
 server-side consultation. Restoring advisor requires upstream support for its
 schema, beta, result blocks and accounting, followed by a new route test.
@@ -1778,10 +1778,10 @@ thinking. The gateway rejects the field with a 400 (`Extra inputs are not permit
 path (`thinking.` becomes `***.`), so Claude Code's fallback never matches. The adapter's translator
 config therefore filters `thinking.block_binding` for the Claude passthrough, last in the chain.
 
-**Nested launches.** Every launch clears the route flags, so a `ccproteus run` started
+**Nested launches.** Every launch clears the route flags, so a `ccmorph run` started
 inside a Remote Control bridge session would reach the session's route (its loopback
 `HTTPS_PROXY` is inherited) without the advisor opt-out and be rejected with a 400.
-The add-on's session sets `CCPROTEUS_EDGE_ROUTE_ENV` (`KEY=VALUE` per line, the
+The add-on's session sets `CCMORPH_EDGE_ROUTE_ENV` (`KEY=VALUE` per line, the
 effective `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` and `CLAUDE_CODE_MODEL_CAPABILITIES`,
 defaults included). A launch re-applies exactly those lines after clearing, only when
 `HTTPS_PROXY` is `http://127.0.0.1:<port>`, the profile has no `ANTHROPIC_BASE_URL`
@@ -1798,11 +1798,11 @@ compatibility.
 
 | Gap | Detail |
 |---|---|
-| ~~Entry points live outside the repo~~ | **Closed, then removed entirely.** There is now ONE tracked entry point: the `ccproteus` executable at the repo root, which sources the library in its own process. No shell function, no startup-file block, no shadow of the native CLI, and no second command for the mid-session hop — that is `ccproteus hop`. The permission bypass that used to ride along outside review as a silent env-var opt-in is gone; `--dangerously-skip-permissions` only ever reaches a launch as an explicit flag the caller typed **[test]**. |
+| ~~Entry points live outside the repo~~ | **Closed, then removed entirely.** There is now ONE tracked entry point: the `ccmorph` executable at the repo root, which sources the library in its own process. No shell function, no startup-file block, no shadow of the native CLI, and no second command for the mid-session hop — that is `ccmorph hop`. The permission bypass that used to ride along outside review as a silent env-var opt-in is gone; `--dangerously-skip-permissions` only ever reaches a launch as an explicit flag the caller typed **[test]**. |
 | No launch preflight for a plain proxy | An adapter profile fails loudly (`adapter for 'gateway' did not become ready`). A plain `proxy` profile never checks its endpoint, so a down backend first appears as a mid-session API error. Low severity: the brew `:<translator-port>` plist carries `KeepAlive: true`, so launchd restarts it — the gap is the error message, not availability. |
 | Mid-session `408` | `stream disconnected before completion` appears intermittently on the gpt route. A fault-injection proxy exists; Claude Code's recovery behaviour is uncharacterised. |
 | Forced summarisation compact | Never observed. Context would not grow past 47k against the windows in use. |
-| The invariant check is only as current as the last probe | `_ccp_invariant_warn` — reached from a launch through `_ccp_launch_diagnostics` — compares each offered model against the profile's own `context_discovered` data at launch, so a widened allowlist is caught. What it cannot catch is a ceiling that changed since it was last discovered, or a model that was never discovered at all — an unknown id is passed over rather than flagged, on the grounds that a check which cries wolf gets ignored. Refresh metadata with `ccproteus probe <account>`; use `--allow-inference` only as an explicit paid last resort. |
+| The invariant check is only as current as the last probe | `_ccm_invariant_warn` — reached from a launch through `_ccm_launch_diagnostics` — compares each offered model against the profile's own `context_discovered` data at launch, so a widened allowlist is caught. What it cannot catch is a ceiling that changed since it was last discovered, or a model that was never discovered at all — an unknown id is passed over rather than flagged, on the grounds that a check which cries wolf gets ignored. Refresh metadata with `ccmorph probe <account>`; use `--allow-inference` only as an explicit paid last resort. |
 
 ## 8. Re-verifying any claim here
 

@@ -1,17 +1,17 @@
 # Remote Control bridge (add-on)
 
 Drive Claude Code from the Claude iPhone app on a claude.ai subscription, while every
-model call is served by a ccproteus endpoint profile.
+model call is served by a ccmorph endpoint profile.
 
 ```sh
 addons/remote-control/install.sh          # commands on PATH + supervisor LaunchAgent
-ccproteus-rc gateway                       # serve the current folder to the Claude app
-ccproteus-rc gateway --probe               # one prompt through the same wiring
-ccproteus-rc gateway -- --continue         # reattach the session last served here
+ccmorph-rc gateway                       # serve the current folder to the Claude app
+ccmorph-rc gateway --probe               # one prompt through the same wiring
+ccmorph-rc gateway -- --continue         # reattach the session last served here
 ```
 
 Pass-through: anything after `--` goes to `claude remote-control` unchanged.
-`ccproteus-rc-hosts` (LaunchAgent `com.ccproteus.rc-hosts`, installed by install.sh) keeps every folder listed in
+`ccmorph-rc-hosts` (LaunchAgent `com.ccmorph.rc-hosts`, installed by install.sh) keeps every folder listed in
 `rc-hosts` served and relaunches a dead host within seconds; an archived pinned
 conversation's host is deleted after `idle_days` (default 1). A phone session whose
 turn a host restart cut off is handed back to its host once that host is up again,
@@ -24,7 +24,7 @@ unmerged work. A days value that is not a valid number falls back to its default
 never a crash.
 One folder is one host: `.claude/rc-host.json` in the folder keeps its environment,
 so a restart, reboot or Ctrl-C reattaches the same row in the app and its session
-instead of registering a new one. `ccproteus-rc` marks the folder trusted before
+instead of registering a new one. `ccmorph-rc` marks the folder trusted before
 launching, so nothing waits on a first-run prompt.
 
 Thinking: shown collapsed as "omitted" (a gateway rejects the live-thinking mode, and
@@ -53,7 +53,7 @@ Nothing starts by itself. From any terminal, including SSH from the phone, serve
 your home folder as one generic entry the app can start sessions in:
 
 ```sh
-tmux new-session -d -s rc-bridge -c ~ 'ccproteus-rc gateway -- --no-create-session-in-dir'
+tmux new-session -d -s rc-bridge -c ~ 'ccmorph-rc gateway -- --no-create-session-in-dir'
 ```
 
 Sessions started from the phone begin in `~` and can move into any repository;
@@ -64,7 +64,7 @@ rather than stopped left `~/.claude/projects/<folder>/bridge-pointer.json` behin
 Check the `pid` in it is gone, move the file aside, and start again.
 
 Credentials inherited from the calling shell (`CLAUDE_CODE_OAUTH_TOKEN`,
-`ANTHROPIC_API_KEY`, ...) are dropped, as in every ccproteus launch: the session
+`ANTHROPIC_API_KEY`, ...) are dropped, as in every ccmorph launch: the session
 always signs in with the account profile's own claude.ai login.
 
 ## How it works
@@ -72,7 +72,7 @@ always signs in with the account profile's own claude.ai login.
 Remote Control is offered only to a claude.ai-authenticated process talking to
 api.anthropic.com, so that stays true. A loopback mitmproxy, trusted by this process
 tree only, moves `api.anthropic.com/v1/messages` to the route profile (through its
-`ccproteus-adapter` when the endpoint needs one). Bridge, OAuth and telemetry traffic
+`ccmorph-adapter` when the endpoint needs one). Bridge, OAuth and telemetry traffic
 reach Anthropic untouched; other hosts are not intercepted at all.
 
 One exception, for open speed: the phone opens a session by downloading every event
@@ -96,15 +96,15 @@ the Mac is never touched.
 
 ## Boundary
 
-Uses only `ccproteus _route_env`/`_route_stop` (the route profile, plus a running
-bridge when it is a provider), `ccproteus _env` (the account), `ccproteus _backend_env` (the names a launch never
+Uses only `ccmorph _route_env`/`_route_stop` (the route profile, plus a running
+bridge when it is a provider), `ccmorph _env` (the account), `ccmorph _backend_env` (the names a launch never
 inherits) and
-`ccproteus-adapter <profile> --auto --parent-pid`.
-ccproteus core names no file or path of this directory; deleting it removes the feature.
+`ccmorph-adapter <profile> --auto --parent-pid`.
+ccmorph core names no file or path of this directory; deleting it removes the feature.
 The one seam is an environment variable, not a file: the session carries
-`CCPROTEUS_EDGE_ROUTE_ENV` (`KEY=VALUE` per line, the effective values of
+`CCMORPH_EDGE_ROUTE_ENV` (`KEY=VALUE` per line, the effective values of
 `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` and `CLAUDE_CODE_MODEL_CAPABILITIES`, adapter
-defaults included), and a `ccproteus run` started inside the session re-applies those
+defaults included), and a `ccmorph run` started inside the session re-applies those
 lines when its `HTTPS_PROXY` is a loopback proxy, so the nested request is not
 rejected by the route. Without the add-on the variable is never set and nothing changes.
 

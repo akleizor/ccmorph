@@ -1,12 +1,12 @@
 <div align="center">
 
-# ccproteus
+# ccmorph
 
 **Every Claude Code account, API key and gateway behind one command.**
 
 [Install](#install) · [Quick start](#quick-start) · [Usage](#usage) · [Docs](docs/guide.md)
 
-<img src="assets/demo.gif" alt="Terminal demo: a conversation started on the work profile continues on the personal profile after ccproteus hop" width="780">
+<img src="assets/demo.gif" alt="Terminal demo: a conversation started on the work profile continues on the personal profile after ccmorph hop" width="780">
 
 </div>
 
@@ -15,7 +15,7 @@
 - **One profile per backend.** Each subscription, API key or gateway gets its own
   login, settings and session history. Skills, plugins, hooks and `CLAUDE.md`
   stay shared.
-- **Hop mid-session.** `ccproteus hop <profile>` moves a running conversation to
+- **Hop mid-session.** `ccmorph hop <profile>` moves a running conversation to
   another profile, keeping its model and effort.
 - **Any endpoint.** Gateways that do not speak Anthropic's API are translated
   automatically through a per-launch adapter.
@@ -26,7 +26,7 @@
 
 ```
                    +--> work       subscription login  -->  Anthropic
-ccproteus run  ----+--> personal   API key             -->  Anthropic API
+ccmorph run  ------+--> personal   API key             -->  Anthropic API
                    +--> gateway    API key             -->  any other model API
                                                             (translated for you)
 ```
@@ -40,11 +40,11 @@ ccproteus run  ----+--> personal   API key             -->  Anthropic API
 ## Install
 
 ```sh
-git clone https://github.com/akleizor/ccproteus && cd ccproteus && ./install.sh
-ccproteus --version
+git clone https://github.com/akleizor/ccmorph && cd ccmorph && ./install.sh
+ccmorph --version
 ```
 
-The installer copies the runtime (`lib/`, `libexec/`, `share/`) into `~/.config/ccproteus` and the `ccproteus`
+The installer copies the runtime (`lib/`, `libexec/`, `share/`) into `~/.config/ccmorph` and the `ccmorph`
 command into `~/.local/bin`. It never edits shell startup files; if
 `~/.local/bin` is not on your `PATH`, it prints the line to add.
 
@@ -56,45 +56,45 @@ To update, re-run `./install.sh` from a fresh clone; profiles, credentials, and 
 A fresh install has no profiles.
 
 ```sh
-ccproteus add work         # create a profile: login or credential paste
-ccproteus list             # see profiles; the default is marked
-ccproteus use work         # make it the default for `ccproteus run`
-ccproteus run              # launch Claude Code on the default profile
+ccmorph add work         # create a profile: login or credential paste
+ccmorph list             # see profiles; the default is marked
+ccmorph use work         # make it the default for `ccmorph run`
+ccmorph run              # launch Claude Code on the default profile
 ```
 
 ## Usage
 
 ```sh
-ccproteus run <profile>              # launch on a profile for this session
-ccproteus run -i                     # choose the profile, then the model
-ccproteus run <profile> --model <id> # profile plus explicit model
-ccproteus run work mcp list          # native Claude Code arguments pass through
-ccproteus config <profile>           # change model, reasoning, or connection
-ccproteus set <profile> model -i     # save a default model, chosen from the endpoint
-ccproteus inspect [<profile>]        # effective settings and where each came from
-ccproteus doctor [<profile>]         # check why a profile is not working
+ccmorph run <profile>              # launch on a profile for this session
+ccmorph run -i                     # choose the profile, then the model
+ccmorph run <profile> --model <id> # profile plus explicit model
+ccmorph run work mcp list          # native Claude Code arguments pass through
+ccmorph config <profile>           # change model, reasoning, or connection
+ccmorph set <profile> model -i     # save a default model, chosen from the endpoint
+ccmorph inspect [<profile>]        # effective settings and where each came from
+ccmorph doctor [<profile>]         # check why a profile is not working
 ```
 
 To switch a running session, use a leading `!` in the Claude Code prompt:
 
 ```
-! ccproteus hop personal
+! ccmorph hop personal
 ```
 
-`ccproteus --help` shows everyday commands, `ccproteus help all` the full list, and
-`ccproteus help <command>` the details of one.
+`ccmorph --help` shows everyday commands, `ccmorph help all` the full list, and
+`ccmorph help <command>` the details of one.
 
 ## Usage and cost
 
 Each turn a gateway profile serves writes one receipt under
-`~/.local/state/ccproteus/usage/`: tokens, the model that answered, and the
+`~/.local/state/ccmorph/usage/`: tokens, the model that answered, and the
 cost the gateway billed when it reports one. No prompt, header or credential is
 stored. Export the receipts and read them with ccusage:
 
 ```sh
-scripts/usage-export --output ~/.cache/ccproteus-usage
-CLAUDE_CONFIG_DIR=~/.cache/ccproteus-usage ccusage claude daily --instances \
-  --config ~/.cache/ccproteus-usage/ccusage.json
+scripts/usage-export --output ~/.cache/ccmorph-usage
+CLAUDE_CONFIG_DIR=~/.cache/ccmorph-usage ccusage claude daily --instances \
+  --config ~/.cache/ccmorph-usage/ccusage.json
 ```
 
 Each profile is one ccusage project. A billed cost is used as is; a turn the
@@ -103,15 +103,15 @@ Subscription profiles talk to Anthropic directly and write no receipts.
 
 ## Configuration
 
-A profile is one file, `~/.config/ccproteus/<name>.conf`, of `key=value` lines;
+A profile is one file, `~/.config/ccmorph/<name>.conf`, of `key=value` lines;
 `profile.conf.example` is the template and lists every allowed key. Runtime state
-lives under `~/.config/ccproteus/profiles/<name>`. The state root is
-`$CCPROTEUS_STATE_DIR`, else `$XDG_CONFIG_HOME/ccproteus`, else `~/.config/ccproteus`.
-Use `ccproteus rm` and `ccproteus mv` rather than editing files by hand.
+lives under `~/.config/ccmorph/profiles/<name>`. The state root is
+`$CCMORPH_STATE_DIR`, else `$XDG_CONFIG_HOME/ccmorph`, else `~/.config/ccmorph`.
+Use `ccmorph rm` and `ccmorph mv` rather than editing files by hand.
 
 Common keys: `type`, `base_url`, `api_key`, `model`, `effort`,
 `excluded_models`, and `context_window.<model>`. To reach a private endpoint,
-export `HTTPS_PROXY` for the command; ccproteus passes it through unchanged.
+export `HTTPS_PROXY` for the command; ccmorph passes it through unchanged.
 
 The [user guide](docs/guide.md) covers every setting, gateway behavior, context
 windows and probing, switching, and state migration.

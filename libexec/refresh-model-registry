@@ -32,13 +32,13 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-LIB_DIR = Path(os.environ.get("CCPROTEUS_LIB_DIR") or Path(__file__).resolve().parent.parent / "lib")
-CCPROTEUS = LIB_DIR / "ccproteus.sh"
+LIB_DIR = Path(os.environ.get("CCMORPH_LIB_DIR") or Path(__file__).resolve().parent.parent / "lib")
+CCMORPH = LIB_DIR / "ccmorph.sh"
 SHARE_DIR = LIB_DIR.parent / "share"
 
 
 def _state_dir() -> Path:
-    """Where ccproteus keeps state — profiles, the registry, the active marker.
+    """Where ccmorph keeps state — profiles, the registry, the active marker.
 
     NOT beside this script. The registry is state that survives upgrades, and this
     file is code that an upgrade replaces; resolving it from __file__ only ever
@@ -46,9 +46,9 @@ def _state_dir() -> Path:
     install the script sits in a read-only prefix, so writing the registry beside
     it fails, or worse writes into a versioned directory the next upgrade discards.
     """
-    return Path(os.environ.get("CCPROTEUS_STATE_DIR")
+    return Path(os.environ.get("CCMORPH_STATE_DIR")
                 or Path(os.environ.get("XDG_CONFIG_HOME")
-                        or Path.home() / ".config") / "ccproteus")
+                        or Path.home() / ".config") / "ccmorph")
 
 
 _store_spec = importlib.util.spec_from_loader(
@@ -61,7 +61,7 @@ _store_spec.loader.exec_module(store)
 OVERSHOOT_CHARS = 6_000_000
 PROBE_TIMEOUT = 10
 LIST_TIMEOUT = 5
-USER_AGENT = "ccproteus-refresh-model-registry"
+USER_AGENT = "ccmorph-refresh-model-registry"
 RUN_TIMEOUT = 30
 
 
@@ -92,12 +92,12 @@ SHAPES = (
 
 
 class RouteUnavailable(Exception):
-    """ccproteus could not produce a reachable endpoint for a profile."""
+    """ccmorph could not produce a reachable endpoint for a profile."""
 
 
 class SameOriginRedirect(urllib.request.HTTPRedirectHandler):
     """Never carry the credential to another origin (mirrors the class of the
-    same name in ccproteus-adapter): urllib copies request headers, including
+    same name in ccmorph-adapter): urllib copies request headers, including
     x-api-key/Authorization, onto a redirect target. Same-origin redirects
     follow; a cross-origin one fails as a transport error."""
 
@@ -117,7 +117,7 @@ def build_opener() -> urllib.request.OpenerDirector:
     """The opener every request for one route goes through.
 
     No ProxyHandler of our own: urllib's default one reads HTTPS_PROXY/NO_PROXY
-    from the environment, which is exactly the contract ccproteus keeps everywhere
+    from the environment, which is exactly the contract ccmorph keeps everywhere
     else -- an ambient proxy exported by whatever bridge the operator runs reaches
     this probe unchanged, and no proxy means a direct request.
     """
@@ -130,16 +130,16 @@ def build_opener() -> urllib.request.OpenerDirector:
 urllib.request.install_opener(build_opener())
 
 
-def ccproteus_env(profile: str) -> dict[str, str]:
-    """Endpoint and credential, from ccproteus, the only definition.
+def ccmorph_env(profile: str) -> dict[str, str]:
+    """Endpoint and credential, from ccmorph, the only definition.
 
     `_route_env` rather than `_env`: a provider profile has no endpoint until its
     bridge process runs, and only _route_env starts one. It hands back a handle to
     retire with route_stop(); every other type answers with _env's own output.
     """
     out = subprocess.run(
-        ["zsh", "-c", 'source "$1" && ccproteus _route_env "$2"',
-         "refresh-model-registry", str(CCPROTEUS), profile],
+        ["zsh", "-c", 'source "$1" && ccmorph _route_env "$2"',
+         "refresh-model-registry", str(CCMORPH), profile],
         # Starting a provider bridge is not a local read. 60s was the budget for
         # printing a config file.
         capture_output=True, text=True, timeout=180,
@@ -150,7 +150,7 @@ def ccproteus_env(profile: str) -> dict[str, str]:
         # with `--profile` naming one account, that traceback-shaped line was the
         # only thing the user ever saw.
         raise RouteUnavailable(out.stderr.strip() or
-                               f"ccproteus could not resolve a route for {profile}")
+                               f"ccmorph could not resolve a route for {profile}")
     env = {}
     for line in out.stdout.splitlines():
         if "=" in line:
@@ -160,7 +160,7 @@ def ccproteus_env(profile: str) -> dict[str, str]:
 
 
 def route_stop(handle: str) -> None:
-    """Retire a route opened by ccproteus_env.
+    """Retire a route opened by ccmorph_env.
 
     Best-effort: a route left up is reused by the next caller (shared by design),
     so failing to close one must never fail a run that already got its numbers.
@@ -169,8 +169,8 @@ def route_stop(handle: str) -> None:
         return
     try:
         subprocess.run(
-            ["zsh", "-c", 'source "$1" && ccproteus _route_stop "$2"',
-             "refresh-model-registry", str(CCPROTEUS), handle],
+            ["zsh", "-c", 'source "$1" && ccmorph _route_stop "$2"',
+             "refresh-model-registry", str(CCMORPH), handle],
             capture_output=True, text=True, timeout=30)
     except Exception:  # noqa: BLE001
         pass
@@ -212,7 +212,7 @@ def why_unreachable(exc: Exception, base: str) -> str:
 
 
 def routed_profiles() -> list[str]:
-    """Profiles with a routed endpoint: every one has a listing ccproteus can size."""
+    """Profiles with a routed endpoint: every one has a listing ccmorph can size."""
     names = []
     for conf in sorted(_state_dir().glob("*.conf")):
         try:
@@ -750,7 +750,7 @@ def probe(base: str, key: str, model: str, blob: str,
           ) -> tuple[str, int | None, str]:
     """Return (kind, value, note). kind is prefixed with the shape that answered.
 
-    A value read on either shape may be recorded: a ccproteus adapter=true
+    A value read on either shape may be recorded: a ccmorph adapter=true
     profile puts a translator in front of its endpoint, so a model answering
     only the OpenAI shape is still selectable in a session and its ceiling
     still belongs in the registry.
@@ -943,11 +943,11 @@ def probe_all(profiles: list[str] | None, jobs: int,
                     baseline = prior_values([profile])
                     catalogue_tags = prior_catalogue_tags([profile])
                 try:
-                    env = ccproteus_env(profile)
+                    env = ccmorph_env(profile)
                 except (RouteUnavailable, subprocess.TimeoutExpired) as exc:
-                    notes.append((str(exc).replace("ccproteus:", "").strip(), profile))
+                    notes.append((str(exc).replace("ccmorph:", "").strip(), profile))
                     continue
-                handle = env.get("CCPROTEUS_ROUTE_HANDLE", "")
+                handle = env.get("CCMORPH_ROUTE_HANDLE", "")
                 key = env.get("ANTHROPIC_API_KEY")
                 if not key:
                     notes.append(("profile has no api key, skipped", profile))
@@ -1264,8 +1264,8 @@ def report_unresolved(models: list[str], profiles: list[str] | None) -> None:
     print(f"\n{len(models)} unresolved, running at Claude Code's "
           f"{store.CC_DEFAULT_WINDOW:,}-token default:", file=sys.stderr)
     print("  " + ", ".join(models), file=sys.stderr)
-    print(f"Set it:      ccproteus context {account} {model} <tokens>", file=sys.stderr)
-    print(f"Measure it:  ccproteus probe {account} --model {model} --allow-inference"
+    print(f"Set it:      ccmorph context {account} {model} <tokens>", file=sys.stderr)
+    print(f"Measure it:  ccmorph probe {account} --model {model} --allow-inference"
           "   (one large prompt, may be billed)", file=sys.stderr)
 
 

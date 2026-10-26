@@ -1,6 +1,6 @@
 # Security
 
-ccproteus stores credentials on disk. This document says exactly where, what
+ccmorph stores credentials on disk. This document says exactly where, what
 protects them, and what does not — so you can decide whether to trust it with an
 API key before you do.
 
@@ -10,7 +10,7 @@ Open an issue for anything already public. For anything that would expose a
 credential if described publicly, contact the maintainer directly rather than
 filing a public issue, and allow time for a fix before disclosure.
 
-Include the ccproteus version (`ccproteus --version`), your OS and zsh version, and
+Include the ccmorph version (`ccmorph --version`), your OS and zsh version, and
 the smallest reproduction you have. Never paste a real key, token, or `.conf` file
 into a report — describe the shape instead.
 
@@ -23,10 +23,10 @@ tags; update rather than patch in place.
 
 | Path | Holds | Mode |
 |---|---|---|
-| `~/.config/ccproteus/<name>.conf` | one profile: API key, OAuth token, or an email for a subscription login | `600` |
-| `~/.config/ccproteus/` | the state root (honours `CCPROTEUS_STATE_DIR`, then `XDG_CONFIG_HOME`) | `700` |
-| `~/.config/ccproteus/profiles/<name>/` | that profile's Claude Code config, including its own auth state | `700` |
-| `${TMPDIR}/ccproteus-<uid>.log` | launch and adapter diagnostics | ephemeral; created `600`, and an existing log of ours is tightened to `600` |
+| `~/.config/ccmorph/<name>.conf` | one profile: API key, OAuth token, or an email for a subscription login | `600` |
+| `~/.config/ccmorph/` | the state root (honours `CCMORPH_STATE_DIR`, then `XDG_CONFIG_HOME`) | `700` |
+| `~/.config/ccmorph/profiles/<name>/` | that profile's Claude Code config, including its own auth state | `700` |
+| `${TMPDIR}/ccmorph-<uid>.log` | launch and adapter diagnostics | ephemeral; created `600`, and an existing log of ours is tightened to `600` |
 | `<profile>/adapter/` | a rendered translator config, created per session | `700`, removed on exit |
 
 Every `*.conf` is gitignored, including the manual `context_window.<model>`
@@ -39,7 +39,7 @@ credential has ever been tracked in this repository.
   place, so an interrupted write cannot leave a half-file that still parses.
 - **Modes set before content.** Files are created `600` and directories `700`
   before anything is written to them, not fixed up afterwards.
-- **Symlink refusal.** ccproteus removes a profile-local `settings.json` only when
+- **Symlink refusal.** ccmorph removes a profile-local `settings.json` only when
   it is a symlink, and refuses to generate settings through a symlinked
   `settings.json` or `settings.profile.json`. Writers refuse to follow a symlink
   into a location they did not choose.
@@ -52,7 +52,7 @@ credential has ever been tracked in this repository.
 - **No credential on a command line.** Credentials reach Claude Code and the
   translator through the environment or a `600` file, never as an argument, so
   they do not appear in `ps` output.
-- **Secret prompts do not echo.** `ccproteus add` reads keys and tokens with
+- **Secret prompts do not echo.** `ccmorph add` reads keys and tokens with
   `read -rs`, so they do not reach your terminal or your shell history.
 - **Per-credential isolation.** A profile holding a credential gets its own
   translator instance. A shared instance would let one profile spend another's
@@ -74,17 +74,17 @@ Know these before trusting the tool with a key.
 - **Credentials are stored unencrypted**, protected by file permissions alone.
   Anything running as your user can read them. There is no keychain integration
   and no passphrase.
-- **`ccproteus cred <profile>` prints a stored credential to stdout** by design,
+- **`ccmorph cred <profile>` prints a stored credential to stdout** by design,
   for piping into another command. Redirect them deliberately; a shell that logs
   command output will capture the value.
-- **`local.sh` is trusted executable zsh**, sourced into ccproteus's process on
-  launch. Anyone who can write it can already write `lib/ccproteus.sh` beside it, so it
+- **`local.sh` is trusted executable zsh**, sourced into ccmorph's process on
+  launch. Anyone who can write it can already write `lib/ccmorph.sh` beside it, so it
   grants no new privilege — but it is code, not configuration. Read anything you
   copy into it.
 - **`--uninstall` deliberately leaves your profiles in place**, credentials and
   per-profile runtime state included. Removing the state root
-  (`~/.config/ccproteus`, which now holds `profiles/`) is a separate, manual step.
-- **A gateway you point a profile at receives your prompts.** ccproteus does not
+  (`~/.config/ccmorph`, which now holds `profiles/`) is a separate, manual step.
+- **A gateway you point a profile at receives your prompts.** ccmorph does not
   inspect, filter, or retain them, and adds no telemetry of its own — but pointing
   a profile at an endpoint is a decision to send your conversations there.
 - **Discovered context limits (`context_discovered` in a profile's `.conf`) are
@@ -96,10 +96,10 @@ Know these before trusting the tool with a key.
 
 ## Network behavior
 
-ccproteus itself makes only metadata requests — model listings and reachability
+ccmorph itself makes only metadata requests — model listings and reachability
 probes — never inference, except where it says so:
 
-- `ccproteus probe` is metadata-only by default. Context-limit inference requires
+- `ccmorph probe` is metadata-only by default. Context-limit inference requires
   `--allow-inference` and a selected profile/model. Accepted requests may be billed.
 - Automatic compatibility uses cache and per-model protocol metadata first. If
   those cannot answer, it may send up to four requests for the selected model,

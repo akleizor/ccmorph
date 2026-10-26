@@ -1,6 +1,6 @@
 """Run a command under a pty and print what the terminal saw.
 
-`run_under_a_terminal` in `tests/ccproteus_test.zsh` calls this. A test cannot
+`run_under_a_terminal` in `tests/ccmorph_test.zsh` calls this. A test cannot
 fake `-t`, so a terminal is the only way to reproduce the launcher's own
 condition for asking a model-less routed route to pick a model. The pty is
 drained (the launch can out-talk the terminal buffer) and the child is killed at

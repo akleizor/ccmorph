@@ -1,16 +1,16 @@
 #!/usr/bin/env zsh
-# ccproteus one-click installer.
+# ccmorph one-click installer.
 #
 # Ships the INFRASTRUCTURE only — never any profile or token. Profiles
 # (*.conf), runtime state, and credentials are gitignored and are created by
-# the user after install via `ccproteus add`. A fresh install therefore starts
+# the user after install via `ccmorph add`. A fresh install therefore starts
 # empty, like a newly-installed app.
 #
-# Run:  ./install.sh          (from a clone/download of the ccproteus repo)
+# Run:  ./install.sh          (from a clone/download of the ccmorph repo)
 # Idempotent: re-running updates files in place.
 # Uninstall: ./install.sh --uninstall
 #
-# This installer does NOT edit your shell. ccproteus is one executable; the only
+# This installer does NOT edit your shell. ccmorph is one executable; the only
 # requirement is that its directory be on your PATH, which this script checks and
 # reports rather than arranging behind your back. It does REMOVE a managed block
 # left by an older version, because that block sourced a library that no longer
@@ -26,7 +26,7 @@ if [ -z "${ZSH_VERSION:-}" ]; then
   if command -v zsh >/dev/null 2>&1; then
     exec zsh "$0" "$@"
   fi
-  echo "ccproteus requires zsh, and no zsh was found on PATH." >&2
+  echo "ccmorph requires zsh, and no zsh was found on PATH." >&2
   echo "  macOS: zsh ships with the system (/bin/zsh)." >&2
   echo "  Linux: install it first — apt install zsh, dnf install zsh, apk add zsh." >&2
   exit 1
@@ -36,47 +36,47 @@ set -eu
 
 # This installer keeps code and state in ONE directory, which is right for a
 # clone-install: an upgrade replaces the components and leaves everything else
-# alone, and ccproteus.sh derives its own library path, so it finds its helpers
+# alone, and ccmorph.sh derives its own library path, so it finds its helpers
 # beside it either way. A package manager separates them instead — the library
 # lands in a read-only prefix and only this path stays writable. Both work
 # because the runtime no longer assumes they are the same place.
-# XDG_CONFIG_HOME is honoured here exactly as ccproteus.sh honours it, or the two
+# XDG_CONFIG_HOME is honoured here exactly as ccmorph.sh honours it, or the two
 # would disagree about where profiles live on a machine that sets it.
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ccproteus"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ccmorph"
 BIN_DIR="$HOME/.local/bin"
 SRC="${0:A:h}"                       # dir this script lives in (the repo root)
 
-# A module is any ccproteus-*.zsh beside ccproteus.sh. Enumerated rather than
-# listed, so a new module ships with no edit here (only ccproteus.sh's own loader
+# A module is any ccmorph-*.zsh beside ccmorph.sh. Enumerated rather than
+# listed, so a new module ships with no edit here (only ccmorph.sh's own loader
 # block has to name it). (N) keeps a standalone install.sh — which has no module
 # beside it — working.
-MODULES=("$SRC"/lib/ccproteus-*.zsh(N:t))
+MODULES=("$SRC"/lib/ccmorph-*.zsh(N:t))
 
 # Every tracked runtime component the launcher depends on — one list; data
 # files (no exec bit) are subtracted to derive EXECUTABLES, so a new component
 # is added exactly once. Modules are data: they are sourced, never run.
 # Paths are relative to the repo root and installed with the same structure.
-LIBS=(lib/ccproteus.sh ${MODULES/#/lib/})
-EXECUTABLES=(bin/ccproteus libexec/ccproteus-adapter libexec/gateway-shim libexec/model-window libexec/settings-compose libexec/refresh-model-registry)
+LIBS=(lib/ccmorph.sh ${MODULES/#/lib/})
+EXECUTABLES=(bin/ccmorph libexec/ccmorph-adapter libexec/gateway-shim libexec/model-window libexec/settings-compose libexec/refresh-model-registry)
 DATA_FILES=(share/model-catalogue.json share/window-sources.json)
 COMPONENTS=($LIBS $EXECUTABLES $DATA_FILES)
 
 # ---- uninstall ------------------------------------------------------------
 # Must run before the UI module is sourced: a standalone install.sh (no sibling
-# ccproteus-ui.zsh) must still be able to remove the command.
+# ccmorph-ui.zsh) must still be able to remove the command.
 if [[ "${1:-}" == "--uninstall" ]]; then
-  rm -f "$BIN_DIR/ccproteus" "$BIN_DIR/ccrelay"
+  rm -f "$BIN_DIR/ccmorph" "$BIN_DIR/ccrelay"
   print -r -- "Left $CONFIG_DIR in place (it holds your profiles). Remove it by hand if you truly want them gone."
   print -r -- "Open a new shell to finish."
   exit 0
 fi
 
-source "$SRC/lib/ccproteus-ui.zsh" 2>/dev/null || true
+source "$SRC/lib/ccmorph-ui.zsh" 2>/dev/null || true
 
-c_ok() { print -r -- "${_ccp_accent:-}$*${_ccp_reset:-}"; }
-c_y()  { print -r -- "${_ccp_yellow:-}$*${_ccp_reset:-}"; }
-c_r()  { print -r -- "${_ccp_red:-}$*${_ccp_reset:-}"; }
-c_dim(){ print -r -- "${_ccp_gray:-}$*${_ccp_reset:-}"; }
+c_ok() { print -r -- "${_ccm_accent:-}$*${_ccm_reset:-}"; }
+c_y()  { print -r -- "${_ccm_yellow:-}$*${_ccm_reset:-}"; }
+c_r()  { print -r -- "${_ccm_red:-}$*${_ccm_reset:-}"; }
+c_dim(){ print -r -- "${_ccm_gray:-}$*${_ccm_reset:-}"; }
 
 # ---- prior state, read BEFORE anything is written -------------------------
 # An update must be able to SAY it is an update. Every fact below describes the
@@ -84,13 +84,13 @@ c_dim(){ print -r -- "${_ccp_gray:-}$*${_ccp_reset:-}"; }
 # preserved — a re-run that prints "fresh install" over someone's eight live
 # profiles reads as data loss and teaches them never to update again.
 PRIOR_VERSION=""
-if [[ -r "$CONFIG_DIR/lib/ccproteus.sh" ]]; then
+if [[ -r "$CONFIG_DIR/lib/ccmorph.sh" ]]; then
   # Grep the assignment rather than sourcing: the installed copy may be older
   # or newer than this one, and sourcing it here would run its whole init.
-  PRIOR_VERSION="$(grep -m1 '^_CCPROTEUS_VERSION=' "$CONFIG_DIR/lib/ccproteus.sh" 2>/dev/null)"
+  PRIOR_VERSION="$(grep -m1 '^_CCMORPH_VERSION=' "$CONFIG_DIR/lib/ccmorph.sh" 2>/dev/null)"
   PRIOR_VERSION="${${PRIOR_VERSION#*=}//\"/}"
 fi
-NEW_VERSION="$(grep -m1 '^_CCPROTEUS_VERSION=' "$SRC/lib/ccproteus.sh" 2>/dev/null)"
+NEW_VERSION="$(grep -m1 '^_CCMORPH_VERSION=' "$SRC/lib/ccmorph.sh" 2>/dev/null)"
 NEW_VERSION="${${NEW_VERSION#*=}//\"/}"
 
 # Profiles are the thing a user fears losing, so they are counted, not guessed.
@@ -101,9 +101,9 @@ IS_UPDATE=0
 
 if (( IS_UPDATE )); then
   if [[ -n "$PRIOR_VERSION" && "$PRIOR_VERSION" != "$NEW_VERSION" ]]; then
-    c_dim "Updating ccproteus ${PRIOR_VERSION} -> ${NEW_VERSION}"
+    c_dim "Updating ccmorph ${PRIOR_VERSION} -> ${NEW_VERSION}"
   else
-    c_dim "Re-running ccproteus ${NEW_VERSION} installer (update in place)"
+    c_dim "Re-running ccmorph ${NEW_VERSION} installer (update in place)"
   fi
 fi
 
@@ -128,7 +128,7 @@ fi
 if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null; then
   _pyver="$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))' 2>/dev/null || print unknown)"
   c_r "python3 is too old: found ${_pyver}, need 3.8 or newer."
-  c_dim "  ccproteus's helpers are stdlib-only but use 3.8 syntax (gateway-shim)."
+  c_dim "  ccmorph's helpers are stdlib-only but use 3.8 syntax (gateway-shim)."
   c_dim "  macOS: brew install python3.  Linux: your distro's python3.8+ package."
   exit 1
 fi
@@ -151,8 +151,8 @@ _offer() {   # $1 = human reason block (already printed), $2.. = command
     c_dim "  non-interactive — skipped. Run yourself: $*"
     return 1
   fi
-  if (( $+functions[ccp_ui_confirm] )); then
-    ccp_ui_confirm "Install now? $*" || { c_dim "  skipped. Run yourself when ready: $*"; return 1 }
+  if (( $+functions[ccm_ui_confirm] )); then
+    ccm_ui_confirm "Install now? $*" || { c_dim "  skipped. Run yourself when ready: $*"; return 1 }
   else
     # The UI module was not beside install.sh — fall back to a plain read.
     local answer
@@ -165,7 +165,7 @@ _offer() {   # $1 = human reason block (already printed), $2.. = command
 }
 
 # The dialect translator. `adapter=true` profiles front a gateway whose
-# non-Anthropic models speak OpenAI dialects Claude Code cannot; ccproteus-adapter
+# non-Anthropic models speak OpenAI dialects Claude Code cannot; ccmorph-adapter
 # shells out to this to translate. Claude-family models need none of it, which is
 # why this is a warning and not a hard requirement — and why the note says which
 # half of the catalogue is at stake instead of just naming a missing binary.
@@ -205,7 +205,7 @@ if [[ "$SRC" != "$CONFIG_REAL" ]]; then
   mkdir -p "$CONFIG_DIR"/{bin,lib,libexec,share}
   for _f in "${COMPONENTS[@]}"; do cp "$SRC/$_f" "$CONFIG_DIR/$_f"; done
 fi
-cp "$SRC/bin/ccproteus" "$BIN_DIR/ccproteus"
+cp "$SRC/bin/ccmorph" "$BIN_DIR/ccmorph"
 # The opt-in reference, so a host can see every seam without reading the source.
 # Copied, never activated: local.sh itself stays absent until someone writes it.
 # Same directory guard as above: in-place, this is a copy onto itself.
@@ -214,22 +214,22 @@ if [[ "$SRC" != "$CONFIG_REAL" ]]; then
   cp "$SRC/profile.conf.example" "$CONFIG_DIR/profile.conf.example"
 fi
 chmod +x "${EXECUTABLES[@]/#/$CONFIG_DIR/}"
-chmod +x "$BIN_DIR/ccproteus"
+chmod +x "$BIN_DIR/ccmorph"
 # Move profile homes through the same guarded owner used by normal launches.
-CCPROTEUS_STATE_DIR="$CONFIG_DIR" CCPROTEUS_LIB_DIR="$CONFIG_DIR/lib" zsh -fc \
-  'source "$CCPROTEUS_LIB_DIR/ccproteus.sh"; _ccp_secure_dirs' || exit 1
+CCMORPH_STATE_DIR="$CONFIG_DIR" CCMORPH_LIB_DIR="$CONFIG_DIR/lib" zsh -fc \
+  'source "$CCMORPH_LIB_DIR/ccmorph.sh"; _ccm_secure_dirs' || exit 1
 # Consolidate legacy context state only after the owning tool is installed.
-CCPROTEUS_STATE_DIR="$CONFIG_DIR" "$CONFIG_DIR/libexec/model-window" --migrate
-# The retired wrapper: `ccrelay` is now `ccproteus hop`. Removed rather than left
+CCMORPH_STATE_DIR="$CONFIG_DIR" "$CONFIG_DIR/libexec/model-window" --migrate
+# The retired wrapper: `ccrelay` is now `ccmorph hop`. Removed rather than left
 # behind, because the old script sources a library that no longer defines it and
 # would answer with a load failure instead of saying what replaced it.
 rm -f "$BIN_DIR/ccrelay"
-c_ok "Installed infrastructure to $CONFIG_DIR and the ccproteus command to $BIN_DIR"
+c_ok "Installed infrastructure to $CONFIG_DIR and the ccmorph command to $BIN_DIR"
 
 # Startup files are user-owned. Older releases may have left a managed block;
 # report it without editing the file so installation is byte-for-byte safe.
-if [[ -f "${ZDOTDIR:-$HOME}/.zshrc" ]] && grep -qF '# >>> ccproteus >>>' "${ZDOTDIR:-$HOME}/.zshrc"; then
-  c_y "Found a legacy ccproteus block in ${ZDOTDIR:-$HOME}/.zshrc; remove it by hand if desired."
+if [[ -f "${ZDOTDIR:-$HOME}/.zshrc" ]] && grep -qF '# >>> ccmorph >>>' "${ZDOTDIR:-$HOME}/.zshrc"; then
+  c_y "Found a legacy ccmorph block in ${ZDOTDIR:-$HOME}/.zshrc; remove it by hand if desired."
 fi
 
 # ---- PATH ------------------------------------------------------------------
@@ -238,7 +238,7 @@ fi
 # already on PATH on most machines, so for most people there is nothing to do.
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
   print ""
-  c_y "$BIN_DIR is not on your PATH, so 'ccproteus' will not be found yet."
+  c_y "$BIN_DIR is not on your PATH, so 'ccmorph' will not be found yet."
   c_dim "  Add this line to your shell configuration yourself, then open a new terminal:"
   print "  export PATH=\"$BIN_DIR:\$PATH\""
 fi
@@ -249,9 +249,9 @@ if (( IS_UPDATE )); then
   # gitignored, so they were always safe — but "always safe" is invisible, and an
   # update that looks destructive is an update nobody runs twice.
   if [[ -n "$PRIOR_VERSION" && "$PRIOR_VERSION" != "$NEW_VERSION" ]]; then
-    c_ok "Done. Updated ccproteus ${PRIOR_VERSION} -> ${NEW_VERSION}."
+    c_ok "Done. Updated ccmorph ${PRIOR_VERSION} -> ${NEW_VERSION}."
   else
-    c_ok "Done. ccproteus ${NEW_VERSION} reinstalled in place."
+    c_ok "Done. ccmorph ${NEW_VERSION} reinstalled in place."
   fi
   kept=()
   (( ${#PRIOR_PROFILES} )) && kept+=("${#PRIOR_PROFILES} profile(s)")
@@ -260,14 +260,14 @@ if (( IS_UPDATE )); then
   if (( ${#kept} )); then
     c_dim "Preserved: ${(j:, :)kept}"
   fi
-  c_dim "The new code is live immediately — ccproteus reads it on each run."
+  c_dim "The new code is live immediately — ccmorph reads it on each run."
 else
-  c_ok "Done. ccproteus is installed (no profiles — fresh install)."
+  c_ok "Done. ccmorph is installed (no profiles — fresh install)."
   c_dim "Start here:"
-  print "  ccproteus add <name>     # create your first account"
-  print "  ccproteus use <name>     # choose the default profile"
-  print "  ccproteus run            # launch Claude Code on the default profile"
-  print "  ccproteus list           # see profiles"
+  print "  ccmorph add <name>     # create your first account"
+  print "  ccmorph use <name>     # choose the default profile"
+  print "  ccmorph run            # launch Claude Code on the default profile"
+  print "  ccmorph list           # see profiles"
 fi
 
 # Context discovery is metadata-only and automatic on add/unknown launch.

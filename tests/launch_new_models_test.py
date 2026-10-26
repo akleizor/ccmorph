@@ -26,7 +26,7 @@ CATALOGUE = {"openai": {"models": {"gpt-5": {"limit": {"context": 400000, "input
 
 
 def test_launch_sizes_only_new_models_and_remembers_misses():
-    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'CCPROTEUS_STATE_DIR': tmp}, clear=True):
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'CCMORPH_STATE_DIR': tmp}, clear=True):
         conf = Path(tmp) / 'gw.conf'
         conf.write_text('type=apikey\nbase_url=https://gw.invalid\napi_key=canary\nexcluded_models=hidden-new\n')
         _, fields = probe.store.read_conf(conf)
@@ -85,7 +85,7 @@ def test_internal_model_is_sized_from_its_validation_refusal():
 
 def test_provider_profile_keeps_windows_sized_through_its_bridge():
     # A provider conf stores no endpoint or key; launch passes the bridge's own.
-    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'CCPROTEUS_STATE_DIR': tmp}, clear=True):
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'CCMORPH_STATE_DIR': tmp}, clear=True):
         (Path(tmp) / 'codex.conf').write_text('type=provider\nprovider=codex\n')
         listing = json.dumps({"data": [{"id": "claude-fable-5-dd-los-6-tpg", "context_length": 272000}]})
         with patch.object(probe, '_fetch_json_dict', side_effect=AssertionError('declared size needs no catalogue')):
@@ -137,7 +137,7 @@ def test_shipped_sources_follow_the_contract():
 
 def test_unreachable_source_leaves_the_model_for_the_next_launch():
     # Storing the bare declaration while the source is down would pin it forever.
-    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'CCPROTEUS_STATE_DIR': tmp}, clear=True):
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'CCMORPH_STATE_DIR': tmp}, clear=True):
         (Path(tmp) / 'codex.conf').write_text('type=provider\nprovider=codex\nwindow_sources=codex\n')
         listing = json.dumps({"data": [{"id": "gpt-6-sol", "owned_by": "openai", "context_length": 272000}]})
         with patch.object(probe, '_fetch_json_dict', return_value={}):
@@ -148,7 +148,7 @@ def test_unreachable_source_leaves_the_model_for_the_next_launch():
 
 
 def test_unreachable_source_is_fetched_once_per_retry_window():
-    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'CCPROTEUS_STATE_DIR': tmp}, clear=True):
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'CCMORPH_STATE_DIR': tmp}, clear=True):
         (Path(tmp) / 'codex.conf').write_text('type=provider\nprovider=codex\nwindow_sources=codex\n')
         listing = json.dumps({"data": [{"id": "gpt-6-sol", "owned_by": "openai", "context_length": 272000}]})
         calls = []
@@ -167,7 +167,7 @@ def test_unreachable_source_is_fetched_once_per_retry_window():
 
 
 def test_provider_bridge_is_never_validated_with_a_request():
-    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'CCPROTEUS_STATE_DIR': tmp}, clear=True):
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'CCMORPH_STATE_DIR': tmp}, clear=True):
         (Path(tmp) / 'codex.conf').write_text('type=provider\nprovider=codex\n')
         listing = json.dumps({"data": [{"id": "gpt-unknown", "owned_by": "openai"}]})
         with patch.object(probe, 'validation_window', side_effect=AssertionError('quota spent')):

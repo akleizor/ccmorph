@@ -24,8 +24,8 @@ def setup(tmp_path, excluded):
                                   f'env > "{tmp_path}/claude.env"\n')
     for f in bindir.iterdir():
         f.chmod(0o755)
-    return state, {**os.environ, 'HOME': str(tmp_path), 'CCPROTEUS_STATE_DIR': str(state),
-                   'CCPROTEUS_LIB_DIR': str(ROOT / "lib"), 'PATH': f'{bindir}:{os.environ["PATH"]}',
+    return state, {**os.environ, 'HOME': str(tmp_path), 'CCMORPH_STATE_DIR': str(state),
+                   'CCMORPH_LIB_DIR': str(ROOT / "lib"), 'PATH': f'{bindir}:{os.environ["PATH"]}',
                    'LISTING': json.dumps({'data': [{'id': m} for m in IDS]})}
 
 
@@ -38,14 +38,14 @@ def claude_calls(tmp_path):
 
 
 def zsh(script, env):
-    return subprocess.run(['zsh', '-fc', 'source "$1"\n' + script, '_', str(ROOT / 'lib/ccproteus.sh')],
+    return subprocess.run(['zsh', '-fc', 'source "$1"\n' + script, '_', str(ROOT / 'lib/ccmorph.sh')],
                           env=env, text=True, capture_output=True, timeout=HANG_TIMEOUT, stdin=subprocess.DEVNULL)
 
 
 def set_model_i(tmp_path, excluded):
     state, env = setup(tmp_path, excluded)
     # fzf stub echoes every row; the picker returns the first (sorted) one it was offered.
-    r = zsh('_ccp_gw_models_json() { REPLY="$LISTING"; }\nccproteus set demo model -i', env)
+    r = zsh('_ccm_gw_models_json() { REPLY="$LISTING"; }\nccmorph set demo model -i', env)
     assert r.returncode == 0, r.stderr
     return (state / 'demo.conf').read_text()
 
@@ -60,7 +60,7 @@ def test_set_model_interactive_offers_everything_not_excluded(tmp_path):
 
 def test_launch_stops_when_exclusions_leave_no_rows(tmp_path):
     state, env = setup(tmp_path, 'blocked,allowed,future-model')
-    r = zsh('_ccp_models_listing() { REPLY="$LISTING"; }\nccproteus run demo -p hi', env)
+    r = zsh('_ccm_models_listing() { REPLY="$LISTING"; }\nccmorph run demo -p hi', env)
     assert r.returncode != 0
     assert 'no cached or served picker models remain' in r.stderr
     assert '-p hi' not in claude_calls(tmp_path)
@@ -71,7 +71,7 @@ def test_launch_stops_when_exclusions_leave_no_rows(tmp_path):
 
 def test_launch_projects_filtered_rows_and_keeps_discovery_off(tmp_path):
     state, env = setup(tmp_path, 'blocked')
-    r = zsh('_ccp_models_listing() { REPLY="$LISTING"; }\nccproteus run demo -p hi', env)
+    r = zsh('_ccm_models_listing() { REPLY="$LISTING"; }\nccmorph run demo -p hi', env)
     assert r.returncode == 0, r.stderr
     assert '-p hi' in claude_calls(tmp_path)
     assert 'GATEWAY_MODEL_DISCOVERY' not in (tmp_path / 'claude.env').read_text()
@@ -91,9 +91,9 @@ def test_probe_model_interactive_honours_exclusions(tmp_path):
     stub.write_text(f'#!/bin/sh\necho "$@" > "{tmp_path}/probe.args"\n')
     stub.chmod(0o755)
     state, env = setup(tmp_path, 'allowed')
-    env['CCPROTEUS_LIB_DIR'] = str(lib)
-    r = subprocess.run(['zsh', '-fc', 'source "$1"\n_ccp_gw_models_json() { REPLY="$LISTING"; }\nccproteus probe demo --model -i',
-                        '_', str(lib / 'ccproteus.sh')], env=env, text=True, capture_output=True,
+    env['CCMORPH_LIB_DIR'] = str(lib)
+    r = subprocess.run(['zsh', '-fc', 'source "$1"\n_ccm_gw_models_json() { REPLY="$LISTING"; }\nccmorph probe demo --model -i',
+                        '_', str(lib / 'ccmorph.sh')], env=env, text=True, capture_output=True,
                        timeout=HANG_TIMEOUT, stdin=subprocess.DEVNULL)
     assert r.returncode == 0, r.stderr
     assert '--model blocked' in (tmp_path / 'probe.args').read_text()

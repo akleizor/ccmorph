@@ -25,19 +25,19 @@ def env(tmp_path):
     return {
         'HOME': str(tmp_path),
         'XDG_CONFIG_HOME': str(tmp_path / '.config'),
-        'CCPROTEUS_STATE_DIR': str(state), 'CCPROTEUS_LIB_DIR': str(ROOT / "lib"),
+        'CCMORPH_STATE_DIR': str(state), 'CCMORPH_LIB_DIR': str(ROOT / "lib"),
         'PATH': f'{ROOT / "bin"}{os.pathsep}{os.environ["PATH"]}',
-        'CLAUDE_CODE_SESSION_ID': 'snapshot-test', 'CCPROTEUS_RELAY_ID': '123.456.789',
+        'CLAUDE_CODE_SESSION_ID': 'snapshot-test', 'CCMORPH_RELAY_ID': '123.456.789',
     }
 
 
 @pytest.mark.parametrize('args', ['--help', 'hop demo', 'hop missing'])
 def test_public_function_survives_without_private_helpers(env, args):
-    captured = shell('source "$CCPROTEUS_LIB_DIR/ccproteus.sh"; functions ccproteus', env)
+    captured = shell('source "$CCMORPH_LIB_DIR/ccmorph.sh"; functions ccmorph', env)
     assert captured.returncode == 0, captured.stderr
     # Claude replays public functions, not their private helpers/globals, and
     # disables bare glob qualifiers in its command shell.
-    script = captured.stdout + '\nunsetopt bareglobqual\nccproteus ' + args
+    script = captured.stdout + '\nunsetopt bareglobqual\nccmorph ' + args
     result = shell(script, env)
     assert 'command not found' not in result.stderr
     if args == '--help':
@@ -46,7 +46,7 @@ def test_public_function_survives_without_private_helpers(env, args):
     elif args == 'hop demo':
         assert result.returncode == 0, result.stderr
         assert 'Switch queued' in result.stdout
-        relay = Path(env['CCPROTEUS_STATE_DIR']) / '.reswitch.123.456.789'
+        relay = Path(env['CCMORPH_STATE_DIR']) / '.reswitch.123.456.789'
         assert relay.read_text() == 'profile=demo\nsession=snapshot-test\n'
     else:
         assert result.returncode == 1
@@ -55,9 +55,9 @@ def test_public_function_survives_without_private_helpers(env, args):
 
 def test_sourced_function_restores_options_without_changing_callers(env):
     result = shell('''
-source "$CCPROTEUS_LIB_DIR/ccproteus.sh"
+source "$CCMORPH_LIB_DIR/ccmorph.sh"
 unsetopt bareglobqual
-ccproteus --help || exit $?
+ccmorph --help || exit $?
 [[ -o bareglobqual ]] && exit 9
 exit 0
 ''', env)
@@ -79,11 +79,11 @@ alias rm='false'
 alias python3='false'
 alias sed='false'
 alias tr='false'
-source "$CCPROTEUS_LIB_DIR/ccproteus.sh"
-_ccp_claude_verbs
-ccproteus rm demo
+source "$CCMORPH_LIB_DIR/ccmorph.sh"
+_ccm_claude_verbs
+ccmorph rm demo
 ''', env)
     assert result.returncode == 0, result.stderr
     assert 'probe' in result.stdout
-    assert not (Path(env['CCPROTEUS_STATE_DIR']) / 'demo.conf').exists()
+    assert not (Path(env['CCMORPH_STATE_DIR']) / 'demo.conf').exists()
     assert 'poisoned-' not in result.stderr

@@ -1,4 +1,4 @@
-"""ccproteus-rc-hosts: config parsing and the relaunch policy."""
+"""ccmorph-rc-hosts: config parsing and the relaunch policy."""
 import importlib.machinery
 import importlib.util
 import os
@@ -8,7 +8,7 @@ import pytest
 
 from support import HANG_TIMEOUT
 
-SCRIPT = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccproteus-rc-hosts"
+SCRIPT = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccmorph-rc-hosts"
 
 
 def load():
@@ -21,10 +21,10 @@ def load():
 
 @pytest.fixture(autouse=True)
 def state_dir(tmp_path, monkeypatch):
-    """A loaded module computes LOGS/EDGES/BUSY from CCPROTEUS_STATE_DIR at import;
-    without this, every test reaching Host.start() wrote into ~/.config/ccproteus
+    """A loaded module computes LOGS/EDGES/BUSY from CCMORPH_STATE_DIR at import;
+    without this, every test reaching Host.start() wrote into ~/.config/ccmorph
     (issue #179: 505 pytest logs in the live .rc-bridge directory)."""
-    monkeypatch.setenv("CCPROTEUS_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("CCMORPH_STATE_DIR", str(tmp_path / "state"))
 
 
 def test_one_route_line_serves_every_folder_and_a_folder_may_override(tmp_path):
@@ -49,7 +49,7 @@ def test_one_route_line_serves_every_folder_and_a_folder_may_override(tmp_path):
 def test_only_a_pin_that_names_a_conversation_is_hosted(tmp_path, line, kept):
     """A valueless `--session-id` crashed Host construction with IndexError, out of
     main() at every config reload (issue #342). It may not be hosted unpinned
-    either: the bridge treats any `--session-id` as a pin (`ccproteus-rc` skips
+    either: the bridge treats any `--session-id` as a pin (`ccmorph-rc` skips
     keep_host for one), so an unpinned host would take worktree mode and git-init
     the folder. Args the line does carry still pass through unchanged."""
     m = load()
@@ -754,7 +754,7 @@ def run_main(m, monkeypatch, tmp_path, cfg, start, sleep=None,
 
 def test_the_attached_config_spelling_names_the_file_watched(tmp_path, monkeypatch):
     """`--config=PATH` named nothing: main() read only the exact string
-    `--config`, so the equals spelling used across ccproteus's other CLIs
+    `--config`, so the equals spelling used across ccmorph's other CLIs
     (`--profile=`, `--model=`, `--effort=`) silently watched the default file
     instead (issue #417). The separate spelling is the argv every other
     run_main test drives."""
@@ -802,7 +802,7 @@ def test_the_usage_line_survives_an_interpreter_without_docstrings(monkeypatch, 
     with pytest.raises(SystemExit) as done:
         m.main(["--help"])
     assert done.value.code == 0
-    assert "usage: ccproteus-rc-hosts" in capsys.readouterr().out
+    assert "usage: ccmorph-rc-hosts" in capsys.readouterr().out
 
 
 class DyingProc(FakeProc):
@@ -877,9 +877,9 @@ def test_host_stdin_stays_open(tmp_path, monkeypatch):
 
 
 def test_a_started_host_logs_nowhere_under_the_users_config(tmp_path, monkeypatch):
-    """Every host log used to land in ~/.config/ccproteus (issue #179): 505 pytest
+    """Every host log used to land in ~/.config/ccmorph (issue #179): 505 pytest
     logs sat in the live .rc-bridge directory. The user's config dir is simulated
-    with HOME/XDG_CONFIG_HOME; CCPROTEUS_STATE_DIR stays whatever the test run
+    with HOME/XDG_CONFIG_HOME; CCMORPH_STATE_DIR stays whatever the test run
     provides, so the isolation itself is what this asserts."""
     home = tmp_path / "home"
     home.mkdir()
@@ -894,7 +894,7 @@ def test_a_started_host_logs_nowhere_under_the_users_config(tmp_path, monkeypatc
     assert not (home / ".config").exists()               # nothing reached the user's config
 
 
-def test_session_args_reach_ccproteus_rc_after_a_separator(tmp_path, monkeypatch):
+def test_session_args_reach_ccmorph_rc_after_a_separator(tmp_path, monkeypatch):
     m = load()
     seen = {}
     class P:
@@ -1418,7 +1418,7 @@ def test_a_folder_listed_for_hosting_is_made_a_repo_before_worktree_mode(tmp_pat
 
 
 def test_the_permission_flag_goes_after_the_separator(tmp_path, monkeypatch):
-    """Bare args reach ccproteus-rc, which exits 2 on a flag it does not know; only
+    """Bare args reach ccmorph-rc, which exits 2 on a flag it does not know; only
     what follows `--` reaches claude. A line with no args must still get the `--`
     so the flag has somewhere to go."""
     m = load()
@@ -1657,11 +1657,11 @@ def test_an_edge_on_a_fresh_state_dir_makes_the_bridge_dir_and_starts(tmp_path, 
 @pytest.mark.parametrize("command, ours", [
     # The shape `ps -o command=` prints for the pid the record holds: the edge's own
     # argv, not the /usr/bin/script wrapper the supervisor starts it through.
-    pytest.param("python3 /x/addons/remote-control/ccproteus-rc gw --edge", True, id="this-routes-edge"),
-    pytest.param("python3 /x/addons/remote-control/ccproteus-rc ds --edge", False, id="another-routes-edge"),
-    pytest.param("python3 /x/addons/remote-control/ccproteus-rc gw -- --session-id session_01X", False,
+    pytest.param("python3 /x/addons/remote-control/ccmorph-rc gw --edge", True, id="this-routes-edge"),
+    pytest.param("python3 /x/addons/remote-control/ccmorph-rc ds --edge", False, id="another-routes-edge"),
+    pytest.param("python3 /x/addons/remote-control/ccmorph-rc gw -- --session-id session_01X", False,
                  id="a-bridge-of-the-same-route"),
-    pytest.param("grep -r ccproteus-rc --edge gw", False, id="something-that-merely-mentions-it"),
+    pytest.param("grep -r ccmorph-rc --edge gw", False, id="something-that-merely-mentions-it"),
 ])
 def test_only_this_routes_own_edge_process_is_signalled(monkeypatch, command, ours):
     """A record's pid can be recycled by anything, so the signal waits for the

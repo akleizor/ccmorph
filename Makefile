@@ -1,4 +1,4 @@
-# ccproteus — test and release.
+# ccmorph — test and release.
 #
 # `make release` exists because a release tarball must never be built from a
 # working tree. This repository's own working directory doubles as the runtime
@@ -7,15 +7,15 @@
 # mistake unrepresentable rather than merely discouraged.
 
 SHELL := /bin/sh
-VERSION := $(shell grep -m1 '^_CCPROTEUS_VERSION=' lib/ccproteus.sh | cut -d'"' -f2)
+VERSION := $(shell grep -m1 '^_CCMORPH_VERSION=' lib/ccmorph.sh | cut -d'"' -f2)
 TAG := v$(VERSION)
 DIST := dist
-TARBALL := $(DIST)/ccproteus-$(TAG).tar.gz
+TARBALL := $(DIST)/ccmorph-$(TAG).tar.gz
 
 .PHONY: help test test-zsh test-py check-version release clean
 
 help:
-	@echo "ccproteus $(VERSION)"
+	@echo "ccmorph $(VERSION)"
 	@echo "  make test           run every suite"
 	@echo "  make check-version  version, changelog and tag must agree"
 	@echo "  make release        verify, then build $(TARBALL) + .sha256"
@@ -23,7 +23,7 @@ help:
 test: test-zsh test-py
 
 test-zsh:
-	zsh tests/ccproteus_test.zsh
+	zsh tests/ccmorph_test.zsh
 	zsh tests/install_test.zsh
 
 test-py:
@@ -34,7 +34,7 @@ test-py:
 # manager resolves. A release that disagrees with itself is how v1.5.1 came to
 # have a changelog entry and no tag, invisible to anything resolving by tag.
 check-version:
-	@test -n "$(VERSION)" || { echo "no _CCPROTEUS_VERSION in lib/ccproteus.sh"; exit 1; }
+	@test -n "$(VERSION)" || { echo "no _CCMORPH_VERSION in lib/ccmorph.sh"; exit 1; }
 	@grep -q '^## $(TAG) ' CHANGELOG.md || { \
 	  echo "CHANGELOG.md has no '## $(TAG)' section"; exit 1; }
 	@head -20 CHANGELOG.md | grep -q '^## $(TAG) ' || { \
@@ -47,8 +47,8 @@ check-version:
 # Built from the TAG, never from the working tree — see the note at the top.
 release: check-version test
 	@mkdir -p $(DIST)
-	git archive --format=tar.gz --prefix=ccproteus-$(TAG)/ -o $(TARBALL) $(TAG)
-	@cd $(DIST) && shasum -a 256 ccproteus-$(TAG).tar.gz > ccproteus-$(TAG).tar.gz.sha256
+	git archive --format=tar.gz --prefix=ccmorph-$(TAG)/ -o $(TARBALL) $(TAG)
+	@cd $(DIST) && shasum -a 256 ccmorph-$(TAG).tar.gz > ccmorph-$(TAG).tar.gz.sha256
 	@echo
 	@echo "$(TARBALL)"
 	@cat $(TARBALL).sha256

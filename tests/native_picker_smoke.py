@@ -18,14 +18,14 @@ with tempfile.TemporaryDirectory(prefix='picker-live-', dir=root) as temp:
     state.mkdir()
     (state / 'demo.conf').write_text('type=apikey\napi_key=synthetic-key\nmodel_defaults=1\n')
     env = dict(os.environ, HOME=temp, ZDOTDIR=temp, XDG_CONFIG_HOME=str(home / '.config'),
-               CCPROTEUS_STATE_DIR=str(state), CCPROTEUS_LIB_DIR=str(root), TERM='xterm-256color',
+               CCMORPH_STATE_DIR=str(state), CCMORPH_LIB_DIR=str(root), TERM='xterm-256color',
                FZF_DEFAULT_OPTS='', FZF_DEFAULT_OPTS_FILE='')
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 110, 0, 0))
     def terminal():
         os.setsid()
         fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-    proc = subprocess.Popen([str(root / 'bin/ccproteus'), 'set', 'demo', 'effort'],
+    proc = subprocess.Popen([str(root / 'bin/ccmorph'), 'set', 'demo', 'effort'],
                             env=env, cwd=temp, stdin=slave, stdout=slave, stderr=slave,
                             preexec_fn=terminal)
     os.close(slave)

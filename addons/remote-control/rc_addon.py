@@ -1,4 +1,4 @@
-"""mitmproxy addon: thin shell around rc_route. Loaded only by ccproteus-rc.
+"""mitmproxy addon: thin shell around rc_route. Loaded only by ccmorph-rc.
 
 Configuration arrives through the environment, never argv. The route key itself
 arrives as a 0600 file that is deleted on read, so it is in neither the process
@@ -62,7 +62,7 @@ def running() -> None:
 
 
 def done() -> None:
-    # ccproteus-rc runs a private per-launch copy of this addon (addon.* under its
+    # ccmorph-rc runs a private per-launch copy of this addon (addon.* under its
     # state dir); remove it with the proxy. Never touch the source directory.
     here = Path(__file__).resolve().parent
     if here.name.startswith("addon."):

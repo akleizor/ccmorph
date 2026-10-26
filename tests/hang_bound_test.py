@@ -197,7 +197,7 @@ def test_no_zsh_embedded_python_bounds_a_wait_with_a_number():
 # The same deadline in zsh's hands: embedded python reading another clock from
 # the time module, or zsh arithmetic on its own wall clocks. Bare `monotonic()`
 # is deliberately absent — another change owns that spelling — and a name on
-# the right (`+ CCPROTEUS_TEST_HANG_TIMEOUT`) is the shared bound, not a budget
+# the right (`+ CCMORPH_TEST_HANG_TIMEOUT`) is the shared bound, not a budget
 # the suite picked.
 ZSH_CLOCK_DEADLINE = re.compile(
     r"\b(monotonic_ns|time_ns|perf_counter_ns|perf_counter|time)\s*\(\s*\)\s*\+\s*\(?\s*[0-9.]")
@@ -227,11 +227,11 @@ ZSH_DONE = re.compile(r"\bdone\b")
 ZSH_COUNTED_FOR = re.compile(
     r"\s*(?:\w+\s+in\s*(?:\{[^}]*\.\.[^}]*\}|\$\(\s*seq\b|`\s*seq\b)|\(\(\s*[^;)]+;\s*[^;)])")
 # A C-style count that reads the shared bound in its own header is that bound,
-# not a budget the loop picked: `i < CCPROTEUS_TEST_HANG_TIMEOUT * 10` iterations
+# not a budget the loop picked: `i < CCMORPH_TEST_HANG_TIMEOUT * 10` iterations
 # of at least a 0.1 s sleep never finish before the bound does, and the
 # environment override scales it. Same rule the deadline regexes apply to a name
 # on the right of `+`.
-ZSH_SHARED_COUNT = re.compile(r"\s*\(\([^)]*\bCCPROTEUS_TEST_HANG_TIMEOUT\b[^)]*\)\)")
+ZSH_SHARED_COUNT = re.compile(r"\s*\(\([^)]*\bCCMORPH_TEST_HANG_TIMEOUT\b[^)]*\)\)")
 ZSH_COUNTED_REPEAT = re.compile(r"\s*([0-9]+|\$)")
 # A `sleep` that is a wait — not the suite defining or removing one.
 ZSH_SLEEP = re.compile(r"(?<!unfunction )\bsleep\b(?!\s*\()")
@@ -285,7 +285,7 @@ def zsh_counted_sleep_loops(text):
     `sleep` somewhere inside. The count is the same fixed wall-clock budget the
     AST check reads in `range(...)` loops; an event loop (`while`, `until`,
     `for ((;;))`, a plain word list) is a poll and stays quiet, and so is a
-    C-style count taken from `CCPROTEUS_TEST_HANG_TIMEOUT` in the header itself —
+    C-style count taken from `CCMORPH_TEST_HANG_TIMEOUT` in the header itself —
     it expires no earlier than the shared bound. Quoted text is blanked and
     heredoc bodies skipped, so data never parses as zsh; a sleep reports the
     innermost counted loop around it."""
@@ -385,10 +385,10 @@ def test_the_zsh_scanner_reads_the_language_it_polices():
         for sig in TERM HUP; do sleep 0.1; done
         for ((;;)); do [[ -s ready ]] && break; sleep 0.1; done
         select opt in a b; do sleep 1; done
-        while (( ++pass <= 3 && ( $#_ccp_test_leaked || $#_ccp_test_kids ) )); do
+        while (( ++pass <= 3 && ( $#_ccm_test_leaked || $#_ccm_test_kids ) )); do
           command sleep 0.2
         done
-        for (( i = 0; i < CCPROTEUS_TEST_HANG_TIMEOUT * 10; i++ )); do
+        for (( i = 0; i < CCMORPH_TEST_HANG_TIMEOUT * 10; i++ )); do
           [[ -s out ]] && break
           sleep 0.1
         done
@@ -396,7 +396,7 @@ def test_the_zsh_scanner_reads_the_language_it_polices():
     # the shared bound must be the count, in the header: naming it only in the
     # body leaves a literal budget standing
     assert loops("""
-        for (( i = 0; i < 100; i++ )); do x=$CCPROTEUS_TEST_HANG_TIMEOUT; sleep 0.1; done
+        for (( i = 0; i < 100; i++ )); do x=$CCMORPH_TEST_HANG_TIMEOUT; sleep 0.1; done
         """) == [1]
     # quoted text and heredoc bodies are data, not zsh
     assert loops("""
@@ -425,7 +425,7 @@ def test_the_zsh_scanner_reads_the_language_it_polices():
     assert ZSH_WALL_DEADLINE.search("local d=$(( EPOCHREALTIME + 10 ))")
     assert ZSH_WALL_DEADLINE.search("(( deadline = SECONDS + 30 ))")
     assert not ZSH_WALL_DEADLINE.search(
-        "(( deadline = EPOCHREALTIME + CCPROTEUS_TEST_HANG_TIMEOUT ))")
+        "(( deadline = EPOCHREALTIME + CCMORPH_TEST_HANG_TIMEOUT ))")
 
 
 def test_the_ast_deadline_check_names_every_clock():
@@ -442,9 +442,9 @@ def test_the_ast_deadline_check_names_every_clock():
 
 def test_hang_bound_reads_its_environment_override():
     def read_bound(override):
-        env = {k: v for k, v in os.environ.items() if k != "CCPROTEUS_TEST_HANG_TIMEOUT"}
+        env = {k: v for k, v in os.environ.items() if k != "CCMORPH_TEST_HANG_TIMEOUT"}
         if override is not None:
-            env["CCPROTEUS_TEST_HANG_TIMEOUT"] = override
+            env["CCMORPH_TEST_HANG_TIMEOUT"] = override
         result = subprocess.run([sys.executable, "-c", "import support; print(support.HANG_TIMEOUT)"],
                                 cwd=TESTS, env=env, capture_output=True, text=True,
                                 timeout=HANG_TIMEOUT)

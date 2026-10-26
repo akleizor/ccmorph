@@ -9,13 +9,13 @@ per-launch `--settings` argument:
     settings.json = canonical (~/.claude/settings.json)
                     + settings.policy.json    (optional shared policy, usually a symlink)
                     + settings.profile.json   (this profile's own differences)
-                    + ccproteus's saved model defaults
+                    + ccmorph's saved model defaults
 
 Claude Code also WRITES settings.json (/config, plugin installs, "always allow").
 Before each rewrite those edits are recovered by comparing the file with the copy
 last written (cache/settings.base.json) and folded into settings.profile.json, so
 they stay with the profile exactly as they did when settings.json was the layer.
-Keys ccproteus renders from <profile>.conf are not folded: an in-session /model or
+Keys ccmorph renders from <profile>.conf are not folded: an in-session /model or
 effort choice stays session-local, as before.
 
 Credentials never land here. Every variable the launch passes in the process
@@ -52,13 +52,13 @@ PENDING = "cache/settings.base.pending.json"
 LOCK = "cache/.settings.lock"
 BACKUPS = "backups"
 KEEP_BACKUPS = 10
-UNSET = "$ccproteusUnset"
+UNSET = "$ccmorphUnset"
 # A static hook: it prints this launch's advisory when the launch left one, and
 # nothing for any other entry point. No per-launch state lives in the file.
-ADVISE_COMMAND = '[ -n "$CCPROTEUS_ADVISE" ] && printf "%s" "$CCPROTEUS_ADVISE" || true'
+ADVISE_COMMAND = '[ -n "$CCMORPH_ADVISE" ] && printf "%s" "$CCMORPH_ADVISE" || true'
 # The first release read the advisory from a file; its entry may still sit in a
 # profile's generated settings.
-ADVISE_COMMANDS = (ADVISE_COMMAND, 'f="$CCPROTEUS_ADVISE_FILE"; [ -n "$f" ] && [ -f "$f" ] && cat "$f" || true')
+ADVISE_COMMANDS = (ADVISE_COMMAND, 'f="$CCMORPH_ADVISE_FILE"; [ -n "$f" ] && [ -f "$f" ] && cat "$f" || true')
 OWNED_TOP = ("model", "effortLevel", "availableModels")
 OWNED_ENV = ("ANTHROPIC_MODEL", "CLAUDE_CODE_EFFORT_LEVEL")
 MISSING = object()
@@ -210,7 +210,7 @@ def merge(base: dict, override: dict, path: tuple = ()) -> dict:
 
 
 def without_advise(doc: dict) -> dict:
-    """The document with ccproteus's own SessionStart entry taken out."""
+    """The document with ccmorph's own SessionStart entry taken out."""
     doc = copy.deepcopy(doc)
     hooks = doc.get("hooks")
     if isinstance(hooks, dict) and isinstance(hooks.get("SessionStart"), list):
@@ -475,7 +475,7 @@ def carries_policy(profile_dir: Path, policy: dict) -> bool:
 
         return held(policy, ())
     except Exception:
-        # Everything that stops the comparison -- an unreadable file, a layer ccproteus
+        # Everything that stops the comparison -- an unreadable file, a layer ccmorph
         # cannot parse, a policy nested past what the readers can walk (#318) -- is not
         # carried: a launch must not start on a guess, and this walk not finishing is one.
         return False
@@ -570,9 +570,9 @@ def main(argv: list[str]) -> int:
     m = sub.add_parser("materialize")
     m.add_argument("profile_dir", type=Path)
     m.add_argument("--canonical", type=Path, default=Path.home() / ".claude" / "settings.json")
-    m.add_argument("--saved", default="{}", help="ccproteus's model defaults as JSON")
+    m.add_argument("--saved", default="{}", help="ccmorph's model defaults as JSON")
     m.add_argument("--strip", action="append", default=[], help="env key the launch sets itself")
-    m.add_argument("--mapping", action="append", default=[], help="tier-mapping env key ccproteus owns")
+    m.add_argument("--mapping", action="append", default=[], help="tier-mapping env key ccmorph owns")
     m.add_argument("--acw", help="derived autoCompactWindow, or 'none'; omitted keeps the last one")
     f = sub.add_parser("fold")
     f.add_argument("profile_dir", type=Path)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Optional real-Claude TUI check; isolated home, synthetic token, no inference.
 
-Run: python3 tests/native_session_defaults_smoke.py /path/to/claude [ccproteus]
+Run: python3 tests/native_session_defaults_smoke.py /path/to/claude [ccmorph]
 """
 import fcntl
 import json
@@ -118,10 +118,10 @@ def discovery(cli, home, env, expected_model: str | None = 'sonnet',
 
 def main():
     native = Path(sys.argv[1]).resolve()
-    cli = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else ROOT / "bin/ccproteus"
-    with tempfile.TemporaryDirectory(prefix='ccproteus-session-defaults-') as td:
+    cli = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else ROOT / "bin/ccmorph"
+    with tempfile.TemporaryDirectory(prefix='ccmorph-session-defaults-') as td:
         home = Path(td).resolve()
-        config = home / '.config/ccproteus'
+        config = home / '.config/ccmorph'
         profile = config / 'profiles/demo'
         bindir = home / 'bin'
         for directory in (config, profile, bindir, home / '.claude'):
@@ -144,9 +144,9 @@ def main():
             'projects': {str(home): {'hasTrustDialogAccepted': True,
                                      'hasCompletedProjectOnboarding': True}}}))
         env = {k: v for k, v in os.environ.items()
-               if not k.startswith(('CLAUDE', 'ANTHROPIC', 'CCPROTEUS', '_CCPROTEUS'))}
+               if not k.startswith(('CLAUDE', 'ANTHROPIC', 'CCMORPH', '_CCMORPH'))}
         env.update(HOME=str(home), ZDOTDIR=str(home), XDG_CONFIG_HOME=str(home / '.config'),
-                   CCPROTEUS_STATE_DIR=str(config), CCPROTEUS_LIB_DIR=str(ROOT / "lib"),
+                   CCMORPH_STATE_DIR=str(config), CCMORPH_LIB_DIR=str(ROOT / "lib"),
                    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1', TERM='xterm-256color',
                    PATH=f'{bindir}:' + env['PATH'])
         discovery(cli, home, env)

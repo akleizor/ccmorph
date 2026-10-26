@@ -25,9 +25,9 @@ Ids are minted as toolu_shim_<per-process-random>_<n>. The random half is
 load-bearing, not decoration — see _unique().
 
 Metadata sidecar: when the adapter launches this shim it also hands over the
-selected route (CCPROTEUS_MODEL_ROUTE), and every /v1/messages response then
+selected route (CCMORPH_MODEL_ROUTE), and every /v1/messages response then
 drops one metadata-only row at
-${XDG_STATE_HOME:-~/.local/state}/ccproteus/usage/<sha256(response_id)>.json
+${XDG_STATE_HOME:-~/.local/state}/ccmorph/usage/<sha256(response_id)>.json
 (a recycled id spills to <sha256(response_id.turn_id)>.json, or on to a further
 <sha256(response_id.turn_id.N)>.json, instead of overwriting), so a response id
 quoted in a transcript can be joined to what that
@@ -42,9 +42,9 @@ opt-in: --random-device-id swaps the `device_id` inside `metadata.user_id` for a
 random 64-hex value minted once per session (the session id passes through, so
 caching and affinity are untouched). A launcher that may be killed outright
 passes --parent-pid=<pid>: the shim exits when that process disappears,
-ccproteus-adapter's own flag of that name.
+ccmorph-adapter's own flag of that name.
 
-Per-profile request hooks (issue 438): when CCPROTEUS_SHIM_HOOKS points at a
+Per-profile request hooks (issue 438): when CCMORPH_SHIM_HOOKS points at a
 Python module, the shim loads it once at startup and calls it on every request
 — user_agent(client_ua) -> str rewrites the outbound User-Agent,
 repair_request(payload) -> bool mutates the parsed request body (True means
@@ -89,17 +89,17 @@ HOP_BY_HOP = frozenset({
 # the response body in the clear to rewrite it (see _proxy).
 REQUEST_DROP = HOP_BY_HOP | {"accept-encoding"}
 
-# ccproteus's own tags — any x-ccproteus-* header, listed here or not — end at the
+# ccmorph's own tags — any x-ccmorph-* header, listed here or not — end at the
 # shim: the launcher writes them into ANTHROPIC_CUSTOM_HEADERS, and a session
 # started before a tag was retired still carries it. Claude Code's identifiers
 # pass through so the request keeps its normal shape; only --random-device-id
 # rewrites device_id (a per-profile opt-in).
-INTERNAL_PREFIX = "x-ccproteus-"
+INTERNAL_PREFIX = "x-ccmorph-"
 
 # The POST bodies that carry `metadata.user_id` (--random-device-id).
 METADATA_PATHS = frozenset({"/v1/messages", "/v1/messages/count_tokens"})
 
-# Per-profile request hooks (issue 438): when CCPROTEUS_SHIM_HOOKS points at a
+# Per-profile request hooks (issue 438): when CCMORPH_SHIM_HOOKS points at a
 # module, main() loads it once into HOOKS. The module may define:
 #   user_agent(client_ua) -> str          outbound User-Agent
 #   repair_request(payload) -> bool       mutate the parsed request body;
@@ -108,7 +108,7 @@ METADATA_PATHS = frozenset({"/v1/messages", "/v1/messages/count_tokens"})
 # Nothing gateway-specific lives in this file; the module does.
 HOOKS = None
 
-# Task tags. The launcher turns CCPROTEUS_TASK / CCPROTEUS_ATTEMPT into these request headers
+# Task tags. The launcher turns CCMORPH_TASK / CCMORPH_ATTEMPT into these request headers
 # (Claude Code's ANTHROPIC_CUSTOM_HEADERS); they end here, never upstream.
 TASK_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")    # opaque id: no slash, so no path or repo
 OUTCOMES = ("accepted", "rejected", "escalated", "parked")
@@ -117,8 +117,8 @@ NO_TAGS = {"task": None, "attempt": 1}
 
 def task_tags(headers):
     """The whitelisted task/attempt tags from the request headers."""
-    task = (headers.get("x-ccproteus-task") or "").strip()
-    attempt = (headers.get("x-ccproteus-attempt") or "").strip()
+    task = (headers.get("x-ccmorph-task") or "").strip()
+    attempt = (headers.get("x-ccmorph-attempt") or "").strip()
     return {"task": task if TASK_RE.fullmatch(task) else None,
             # fullmatch on ASCII digits only: isdigit() also accepts "²", which raises in int().
             "attempt": int(attempt) if re.fullmatch(r"[0-9]{1,3}", attempt) and 0 < int(attempt) < 1000 else 1}
@@ -131,8 +131,8 @@ def load_hooks(path):
     a module that is not there must fail at startup, never serve with its
     rewrites silently missing."""
     if not os.path.isfile(path):
-        sys.exit(f"gateway-shim: CCPROTEUS_SHIM_HOOKS is not a file: {path}")
-    spec = importlib.util.spec_from_file_location("ccproteus_shim_hooks", path)
+        sys.exit(f"gateway-shim: CCMORPH_SHIM_HOOKS is not a file: {path}")
+    spec = importlib.util.spec_from_file_location("ccmorph_shim_hooks", path)
     if not spec or not spec.loader:
         sys.exit(f"gateway-shim: cannot load hooks module: {path}")
     module = importlib.util.module_from_spec(spec)
@@ -160,7 +160,7 @@ EOF_RETRIES = 1
 # Claude Code retries that itself.
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504, 529})
 TRANSPORT_RETRIES = 2
-RETRY_BASE = float(os.environ.get("CCPROTEUS_RETRY_BASE") or 0.5)
+RETRY_BASE = float(os.environ.get("CCMORPH_RETRY_BASE") or 0.5)
 
 
 def retry_delay(retry):
@@ -223,7 +223,7 @@ class Breaker:
 
 def breaker_message(seconds):
     return (f"the provider failed {BREAKER_FAILURES} requests within {BREAKER_WINDOW // 60} min; "
-            f"ccproteus holds calls to it for {seconds:.0f}s more, then tries one")
+            f"ccmorph holds calls to it for {seconds:.0f}s more, then tries one")
 
 # Sidecar vocabulary. PARSE_NEEDLES is the existing id-rewriting hot-path
 # filter; a capturing shim widens it by the two events that carry the response
@@ -248,7 +248,7 @@ CACHE_CREATION_BUCKETS = ("ephemeral_5m_input_tokens", "ephemeral_1h_input_token
 # waits far longer on an open request, so without this a stalled gateway shows as a
 # reply that never comes. An error is visible and Claude Code retries it. Generous
 # by default: a gateway that buffers extended thinking sends nothing until it is done.
-STALL_TIMEOUT = float(os.environ.get("CCPROTEUS_STALL_TIMEOUT") or 300)
+STALL_TIMEOUT = float(os.environ.get("CCMORPH_STALL_TIMEOUT") or 300)
 # The exceptions that mean "the provider said nothing". Named as a tuple because
 # on 3.9 (the macOS system python, which launches this shim) socket.timeout is
 # not TimeoutError: the stall arm and the no-retry rule must both see it.
@@ -256,13 +256,13 @@ STALL_ERRORS = (TimeoutError, socket.timeout)
 
 
 def stall_message(seconds):
-    return f"gateway sent nothing for {seconds:.0f}s; ended by ccproteus so the session can retry"
+    return f"gateway sent nothing for {seconds:.0f}s; ended by ccmorph so the session can retry"
 
 
 
 class SameOriginRedirect(urllib.request.HTTPRedirectHandler):
     """Never carry the credential to another origin (mirrors the class of the
-    same name in ccproteus-adapter): urllib copies request headers, including
+    same name in ccmorph-adapter): urllib copies request headers, including
     x-api-key/Authorization, onto a redirect target. Same-origin redirects
     follow; a cross-origin one fails as a transport error."""
 
@@ -279,7 +279,7 @@ class SameOriginRedirect(urllib.request.HTTPRedirectHandler):
 
 OPENER = urllib.request.build_opener(SameOriginRedirect())
 # Loopback target (the translator): no proxy, whatever http_proxy says (same reason
-# as --noproxy '*' in ccproteus.sh). A remote target and the catalogue keep OPENER.
+# as --noproxy '*' in ccmorph.sh). A remote target and the catalogue keep OPENER.
 LOOPBACK = urllib.request.build_opener(urllib.request.ProxyHandler({}), SameOriginRedirect())
 
 
@@ -607,7 +607,7 @@ class UsageSidecar:
     session, no prompt, no header and no credential in it — the launch route
     is represented by `route_id`, which is a domain-separated digest of the
     profile and the adapter's route identity. That identity is itself a digest
-    of upstream+key (ccproteus-adapter), so neither it, nor the key, its hash,
+    of upstream+key (ccmorph-adapter), so neither it, nor the key, its hash,
     the rendered config path or the token is ever written here.
 
     Rows are written at message_start and again on every usage update, each
@@ -635,7 +635,7 @@ class UsageSidecar:
     def __init__(self, profile, identity):
         self.profile = profile
         self.route_id = hashlib.sha256(
-            "ccproteus-route-v1\0{}\0{}".format(profile, identity).encode()).hexdigest()
+            "ccmorph-route-v1\0{}\0{}".format(profile, identity).encode()).hexdigest()
 
     def _start(self, response_id, requested, response_model, usage):
         return {
@@ -695,7 +695,7 @@ class UsageSidecar:
     def _write(self, record):
         root = os.environ.get("XDG_STATE_HOME", "").strip() or os.path.join(
             os.path.expanduser("~"), ".local", "state")
-        directory = os.path.join(root, "ccproteus", "usage")
+        directory = os.path.join(root, "ccmorph", "usage")
         os.makedirs(directory, mode=0o700, exist_ok=True)
         # The consumer joins on sha256(response_id).json, so that is the primary
         # name. A gateway that recycles an id must not overwrite the earlier
@@ -780,7 +780,7 @@ class IdShim(BaseHTTPRequestHandler):
     target = "http://127.0.0.1:0"
     # All off by default: the shim's shipped behavior is id-rewriting only,
     # exactly as before. The adapter turns these on per profile; the profile's
-    # request hooks (CCPROTEUS_SHIM_HOOKS) come through the HOOKS module.
+    # request hooks (CCMORPH_SHIM_HOOKS) come through the HOOKS module.
     model_routes = None
     inbound = None
     preserve_ids = False
@@ -1336,7 +1336,7 @@ def record_outcome(task, result):
         sys.exit(f"usage: {sys.argv[0]} outcome <task> {'|'.join(OUTCOMES)}")
     root = os.environ.get("XDG_STATE_HOME", "").strip() or os.path.join(
         os.path.expanduser("~"), ".local", "state")
-    directory = os.path.join(root, "ccproteus")
+    directory = os.path.join(root, "ccmorph")
     os.makedirs(directory, mode=0o700, exist_ok=True)
     row = {"task": task, "outcome": result,
            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()}
@@ -1350,7 +1350,7 @@ def report(days):
     """Read-only spend window and verdict cohort; accepted costs span the whole task."""
     root = os.environ.get("XDG_STATE_HOME", "").strip() or os.path.join(
         os.path.expanduser("~"), ".local", "state")
-    base = os.path.join(root, "ccproteus")
+    base = os.path.join(root, "ccmorph")
 
     def model_id(value):
         # The shim strips the context suffix before sending a model upstream.
@@ -1436,7 +1436,7 @@ def report(days):
     def pct(part, whole):
         return "n/a" if not whole else "{:.1f}%".format(100.0 * part / whole)
 
-    print("ccproteus routing report, last {:g} day(s)".format(days))
+    print("ccmorph routing report, last {:g} day(s)".format(days))
     print("total spend ${:.2f}".format(total))
     print("unknown spend {} rows (no cost reported, not estimated)".format(unknown))
     print("spend by served model")
@@ -1485,12 +1485,12 @@ def main():
     port = int(args[0])
     target = args[1]
     IdShim.target = target
-    route_spec = os.environ.get("CCPROTEUS_MODEL_ROUTE")
+    route_spec = os.environ.get("CCMORPH_MODEL_ROUTE")
     IdShim.model_routes = ModelRoutes(json.loads(route_spec)) if route_spec else None
-    inbound = os.environ.get("CCPROTEUS_INBOUND")
+    inbound = os.environ.get("CCMORPH_INBOUND")
     IdShim.inbound = json.loads(inbound) if inbound else None
     global HOOKS
-    hooks_path = os.environ.get("CCPROTEUS_SHIM_HOOKS", "").strip()
+    hooks_path = os.environ.get("CCMORPH_SHIM_HOOKS", "").strip()
     if hooks_path:
         HOOKS = load_hooks(hooks_path)
     IdShim.preserve_ids = "--preserve-tool-ids" in flags
@@ -1500,7 +1500,7 @@ def main():
     server = ThreadingHTTPServer(("127.0.0.1", port), IdShim)
     server.daemon_threads = True
     if parent_pid:
-        # ccproteus-adapter's contract: die with the launcher even under SIGKILL,
+        # ccmorph-adapter's contract: die with the launcher even under SIGKILL,
         # which no in-process cleanup can cover (killed suite runs left shims
         # listening 12-17 h). os._exit: an orphaned shim has nothing to flush.
         watched = int(parent_pid[0])

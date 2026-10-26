@@ -76,7 +76,7 @@ def read_day_in(output, folder, day):
 
 
 def read_day(output, day):
-    path = output / "projects" / "ccproteus-ledger" / f"{day}.jsonl"
+    path = output / "projects" / "ccmorph-ledger" / f"{day}.jsonl"
     return [json.loads(l) for l in path.read_text().splitlines() if l]
 
 
@@ -148,7 +148,7 @@ def test_unpriced_model_with_a_gateway_cost_still_exports(tmp_path):
 
     assert stats["unpriced"] == 0 and stats["usd"] == 2.5
     record = read_day(output, "2026-10-16")[0]
-    assert record["ccproteus"]["costSource"] == "gateway"
+    assert record["ccmorph"]["costSource"] == "gateway"
 
 
 @pytest.mark.parametrize("tokens, costs, expected_rows, expected_usd", [
@@ -184,7 +184,7 @@ def test_a_malformed_receipt_still_fails_the_export(tmp_path, since, damage):
                else {**receipt("b", "claude-opus-5-5", "2026-10-16T02:00:00Z"),
                      "usage": {"input_tokens": 10 ** 400}})
     write(rows, "b.json", damaged)
-    ledger = output / "projects" / "ccproteus-ledger"
+    ledger = output / "projects" / "ccmorph-ledger"
     ledger.mkdir(parents=True)
     prior = ledger / "2026-10-16.jsonl"
     prior.write_text("previous export\n")
@@ -212,7 +212,7 @@ def test_a_rerun_drops_days_whose_last_usable_receipt_is_gone(tmp_path, gone):
     receipt supports a day, its exported file must leave the consumer's input too, or
     the summary reports a cost the consumer still shows."""
     rows, output = tmp_path / "rows", tmp_path / "out"
-    ledger = output / "projects" / "ccproteus-ledger"
+    ledger = output / "projects" / "ccmorph-ledger"
     rows.mkdir()
     write(rows, "a.json", receipt("a", "claude-opus-5-5", "2026-10-15T01:00:00+00:00"))
     write(rows, "b.json", receipt("b", "claude-opus-5-5", "2026-10-16T01:00:00+00:00", cost=1.25))
@@ -244,7 +244,7 @@ def test_another_run_touching_a_stale_day_is_never_undone(tmp_path, monkeypatch,
     that run's snapshot, not ours to remove, and a day it removed first is already the state
     this run wanted, so this run still finishes."""
     rows, output = tmp_path / "rows", tmp_path / "out"
-    ledger = output / "projects" / "ccproteus-ledger"
+    ledger = output / "projects" / "ccmorph-ledger"
     rows.mkdir()
     write(rows, "a.json", receipt("a", "claude-opus-5-5", "2026-10-15T01:00:00+00:00"))
     ledger.mkdir(parents=True)
@@ -291,7 +291,7 @@ def test_a_since_rerun_reconciles_only_its_range(tmp_path):
     """--since rewrites its own range and nothing else: the day it has no receipt for
     goes, an earlier day stays, and every file the exporter does not own is left alone."""
     rows, output = tmp_path / "rows", tmp_path / "out"
-    ledger = output / "projects" / "ccproteus-ledger"
+    ledger = output / "projects" / "ccmorph-ledger"
     rows.mkdir()
     for rid, day in [("a", "2026-10-14"), ("b", "2026-10-16"), ("c", "2026-10-17")]:
         write(rows, f"{rid}.json", receipt(rid, "claude-opus-5-5", f"{day}T01:00:00+00:00"))
@@ -362,7 +362,7 @@ def test_since_filters_by_local_day(tmp_path, since, expected_days, expected_unp
 
     stats = ue.export(rows, output, boundary)
 
-    ledger = output / "projects" / "ccproteus-ledger"
+    ledger = output / "projects" / "ccmorph-ledger"
     assert {p.stem: [r["timestamp"] for r in read_day(output, p.stem)]
             for p in ledger.glob("*.jsonl")} == expected_days
     assert stats["rows"] == sum(len(records) for records in expected_days.values())
@@ -382,11 +382,11 @@ def test_a_mapped_receipt_is_grouped_by_the_served_model(tmp_path):
     day = read_day(output, "2026-10-16")
     assert [r["message"]["model"] for r in day] == ["gpt-6.1-sol"]
     record = day[0]
-    assert "costUSD" not in record and record["ccproteus"]["costSource"] == "list"
+    assert "costUSD" not in record and record["ccmorph"]["costSource"] == "list"
     assert stats["usd"] == 0 and stats["rows"] == 1 and stats["unpriced"] == 0 and stats["gateway_rows"] == 0
-    assert record["ccproteus"]["requestedModel"] == "claude-sonnet-5-5[1m]"
-    assert record["ccproteus"]["servedModel"] == "gpt-6.1-sol"
-    assert record["ccproteus"]["responseModel"] == "claude-sonnet-5-5"
+    assert record["ccmorph"]["requestedModel"] == "claude-sonnet-5-5[1m]"
+    assert record["ccmorph"]["servedModel"] == "gpt-6.1-sol"
+    assert record["ccmorph"]["responseModel"] == "claude-sonnet-5-5"
 
 
 def test_a_doubled_marker_is_stripped_only_once(tmp_path):
@@ -402,8 +402,8 @@ def test_a_doubled_marker_is_stripped_only_once(tmp_path):
 
     record = read_day(output, "2026-10-16")[0]
     assert record["message"]["model"] == "gpt-6.1-sol[1m]" and "costUSD" not in record
-    assert record["ccproteus"]["requestedModel"] == "gpt-6.1-sol[1m]"
-    assert record["ccproteus"]["servedModel"] == "gpt-6.1-sol[1m][1m]"
+    assert record["ccmorph"]["requestedModel"] == "gpt-6.1-sol[1m]"
+    assert record["ccmorph"]["servedModel"] == "gpt-6.1-sol[1m][1m]"
 
 
 def test_a_mapped_gateway_cost_stays_authoritative(tmp_path):
@@ -416,7 +416,7 @@ def test_a_mapped_gateway_cost_stays_authoritative(tmp_path):
     stats = ue.export(rows, output)
 
     record = read_day(output, "2026-10-16")[0]
-    assert record["costUSD"] == 7 and record["ccproteus"]["costSource"] == "gateway"
+    assert record["costUSD"] == 7 and record["ccmorph"]["costSource"] == "gateway"
     assert record["message"]["model"] == "gpt-6.1-sol"
     assert stats["usd"] == 7 and stats["gateway_rows"] == 1 and stats["unpriced"] == 0
 
@@ -434,7 +434,7 @@ def test_a_served_marker_is_stripped_once_for_grouping_and_kept_in_metadata(tmp_
 
     record = read_day(output, "2026-10-16")[0]
     assert record["message"]["model"] == "gpt-6.1-sol"
-    assert record["ccproteus"]["servedModel"] == "gpt-6.1-sol[1m]"
+    assert record["ccmorph"]["servedModel"] == "gpt-6.1-sol[1m]"
 
 
 def test_an_unmapped_1m_row_keeps_its_response_identity(tmp_path):
@@ -449,9 +449,9 @@ def test_an_unmapped_1m_row_keeps_its_response_identity(tmp_path):
 
     record = read_day(output, "2026-10-16")[0]
     assert record["message"]["model"] == "claude-opus-5-5[1m]"
-    assert record["ccproteus"]["requestedModel"] == "claude-opus-5-5[1m]"
-    assert record["ccproteus"]["servedModel"] == "claude-opus-5-5[1m]"
-    assert record["ccproteus"]["responseModel"] == "claude-opus-5-5[1m]"
+    assert record["ccmorph"]["requestedModel"] == "claude-opus-5-5[1m]"
+    assert record["ccmorph"]["servedModel"] == "claude-opus-5-5[1m]"
+    assert record["ccmorph"]["responseModel"] == "claude-opus-5-5[1m]"
 
 
 def test_an_unmapped_row_keeps_the_response_identity_when_it_differs_from_served(tmp_path):
@@ -467,8 +467,8 @@ def test_an_unmapped_row_keeps_the_response_identity_when_it_differs_from_served
 
     record = read_day(output, "2026-10-16")[0]
     assert record["message"]["model"] == "claude-opus-5-5"
-    assert record["ccproteus"]["servedModel"] == "claude-opus-5-5[1m]"
-    assert record["ccproteus"]["responseModel"] == "claude-opus-5-5"
+    assert record["ccmorph"]["servedModel"] == "claude-opus-5-5[1m]"
+    assert record["ccmorph"]["responseModel"] == "claude-opus-5-5"
 
 
 def test_a_non_claude_row_asked_for_and_served_the_same_keeps_the_response_identity(tmp_path):
@@ -483,9 +483,9 @@ def test_a_non_claude_row_asked_for_and_served_the_same_keeps_the_response_ident
 
     record = read_day(output, "2026-10-16")[0]
     assert record["message"]["model"] == "kimi-k3-0717"
-    assert record["ccproteus"]["requestedModel"] == "Int_Kimi_K3_20260717"
-    assert record["ccproteus"]["servedModel"] == "Int_Kimi_K3_20260717"
-    assert record["ccproteus"]["responseModel"] == "kimi-k3-0717"
+    assert record["ccmorph"]["requestedModel"] == "Int_Kimi_K3_20260717"
+    assert record["ccmorph"]["servedModel"] == "Int_Kimi_K3_20260717"
+    assert record["ccmorph"]["responseModel"] == "kimi-k3-0717"
 
 
 def test_a_served_id_without_a_requested_id_is_not_treated_as_a_map(tmp_path):
@@ -500,8 +500,8 @@ def test_a_served_id_without_a_requested_id_is_not_treated_as_a_map(tmp_path):
 
     record = read_day(output, "2026-10-16")[0]
     assert record["message"]["model"] == "claude-sonnet-5-5"
-    assert record["ccproteus"]["requestedModel"] is None
-    assert record["ccproteus"]["servedModel"] == "gpt-6.1-sol"
+    assert record["ccmorph"]["requestedModel"] is None
+    assert record["ccmorph"]["servedModel"] == "gpt-6.1-sol"
 
 
 def test_a_legacy_row_without_served_model_exports_unchanged(tmp_path):
@@ -519,12 +519,12 @@ def test_a_legacy_row_without_served_model_exports_unchanged(tmp_path):
 
     day = read_day(output, "2026-10-16")
     assert [r["message"]["model"] for r in day] == ["claude-opus-5-5"] * 3
-    assert all("costUSD" not in r and r["ccproteus"]["costSource"] == "list" for r in day)
-    assert day[0]["ccproteus"]["requestedModel"] is None and day[0]["ccproteus"]["servedModel"] is None
-    assert day[0]["ccproteus"]["responseModel"] == "claude-opus-5-5"
-    assert day[1]["ccproteus"]["requestedModel"] == "claude-opus-4-5"
-    assert day[1]["ccproteus"]["servedModel"] is None
-    assert day[2]["ccproteus"]["servedModel"] is None
+    assert all("costUSD" not in r and r["ccmorph"]["costSource"] == "list" for r in day)
+    assert day[0]["ccmorph"]["requestedModel"] is None and day[0]["ccmorph"]["servedModel"] is None
+    assert day[0]["ccmorph"]["responseModel"] == "claude-opus-5-5"
+    assert day[1]["ccmorph"]["requestedModel"] == "claude-opus-4-5"
+    assert day[1]["ccmorph"]["servedModel"] is None
+    assert day[2]["ccmorph"]["servedModel"] is None
     assert stats["unpriced"] == 0 and stats["rows"] == 3
 
 
@@ -538,8 +538,8 @@ def test_receipts_of_two_profiles_land_in_two_profile_folders(tmp_path):
     ue.export(rows, output)
 
     folders = sorted(p.name for p in (output / "projects").iterdir())
-    assert folders == ["ccproteus-a_b", "ccproteus-unknown", "ccproteus-work"]
-    assert len(read_day_in(output, "ccproteus-work", "2026-10-16")) == 1
+    assert folders == ["ccmorph-a_b", "ccmorph-unknown", "ccmorph-work"]
+    assert len(read_day_in(output, "ccmorph-work", "2026-10-16")) == 1
 
 
 def test_a_profile_that_is_not_a_name_fails_the_export_cleanly(tmp_path):

@@ -20,7 +20,7 @@ def load(path, name):
 
 class RemoteControlTrustSeed(unittest.TestCase):
     def test_remote_control_trust_seed_keeps_claude_json_private(self):
-        rc = load(ROOT / "addons/remote-control/ccproteus-rc", "rc_cred")
+        rc = load(ROOT / "addons/remote-control/ccmorph-rc", "rc_cred")
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Path(tmp, ".claude.json")
             cfg.write_text('{"oauthAccount":{"emailAddress":"a@example.com"}}')

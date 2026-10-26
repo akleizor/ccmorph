@@ -16,7 +16,7 @@ from unittest.mock import Mock, patch
 
 from support import HANG_TIMEOUT
 
-ADAPTER = Path(__file__).resolve().parents[1] / 'libexec/ccproteus-adapter'
+ADAPTER = Path(__file__).resolve().parents[1] / 'libexec/ccmorph-adapter'
 loader = importlib.machinery.SourceFileLoader('adapter_auto', str(ADAPTER))
 spec = importlib.util.spec_from_loader('adapter_auto', loader)
 assert spec is not None
@@ -220,12 +220,12 @@ class AutoDetectionTest(unittest.TestCase):
                  "gpt-6.1-sol-bare")):
             with self.subTest(mapping=mapping):
                 env = {"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gateway",
-                       "CCPROTEUS_MODEL_MAP": json.dumps(mapping)}
+                       "CCMORPH_MODEL_MAP": json.dumps(mapping)}
                 with patch.object(ad, "profile_env", return_value=env), \
                      patch.object(ad, "classify", return_value=[row()]) as classify, \
                      patch.object(ad, "front_directly", return_value=0) as front, \
                      patch.object(ad.os, "dup2"), \
-                     patch.object(ad.sys, "argv", ["ccproteus-adapter", "demo", "--auto", "--model",
+                     patch.object(ad.sys, "argv", ["ccmorph-adapter", "demo", "--auto", "--model",
                                                     "claude-sonnet-5-5[1m]"]):
                     self.assertEqual(ad.main(), 0)
                 self.assertEqual(classify.call_args.args[3], expected)
@@ -278,7 +278,7 @@ class AutoDetectionTest(unittest.TestCase):
 
         def start_edge(command, *, env, **kwargs):
             nonlocal edge
-            route = json.loads(env['CCPROTEUS_MODEL_ROUTE'])
+            route = json.loads(env['CCMORPH_MODEL_ROUTE'])
             self.assertEqual(ad.dialect_auto(upstream, 'k', 'm')[0], 'anthropic')
             self.assertEqual(route['models'], ['m'])
             self.assertEqual(route['model_map'], mapping)
@@ -327,7 +327,7 @@ class AutoDetectionTest(unittest.TestCase):
              patch.dict(ad.os.environ, {'HOME': td, 'XDG_STATE_HOME': td}), \
              patch.object(ad, 'profile_env', return_value={
                  'ANTHROPIC_API_KEY': 'k', 'ANTHROPIC_BASE_URL': upstream,
-                 'CCPROTEUS_MODEL_MAP': json.dumps(mapping)}), \
+                 'CCMORPH_MODEL_MAP': json.dumps(mapping)}), \
              patch.object(ad, 'PROFILE_DIRS', Path(td)), \
              patch.object(ad, 'classify', return_value=[row()]) as classify, \
              patch.object(ad, 'render', side_effect=AssertionError('translator config')), \
@@ -338,7 +338,7 @@ class AutoDetectionTest(unittest.TestCase):
              patch.object(shim, 'UsageSidecar', return_value=None), \
              patch.object(ad.signal, 'signal'), patch.object(ad.os, 'dup2'), \
              patch.object(ad.time, 'sleep', side_effect=exercise_requests), \
-             patch.object(ad.sys, 'argv', ['ccproteus-adapter', 'demo', '--auto', '--model', 'm']), \
+             patch.object(ad.sys, 'argv', ['ccmorph-adapter', 'demo', '--auto', '--model', 'm']), \
              contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             threading.Thread(target=gateway.serve_forever, daemon=True).start()
             try:
@@ -370,7 +370,7 @@ class AutoDetectionTest(unittest.TestCase):
                  patch.object(ad, 'front_directly', return_value=0) as front, \
                  patch.object(ad, 'free_port', side_effect=AssertionError('translator state')), \
                  patch.object(ad.os, 'dup2'), \
-                 patch.object(ad.sys, 'argv', ['ccproteus-adapter', 'demo', '--auto', '--model', 'm']):
+                 patch.object(ad.sys, 'argv', ['ccmorph-adapter', 'demo', '--auto', '--model', 'm']):
                 self.assertEqual(ad.main(), 0)
             self.assertEqual(front.call_args.args[1], 'https://gateway')
 
@@ -399,7 +399,7 @@ class AutoDetectionTest(unittest.TestCase):
 
     def test_the_direct_route_hands_profile_keys_to_the_shim_env(self):
         # Profile request quirks ride in the shim's environment for its hooks
-        # module to read, not in new shim flags: every CCPROTEUS_* key the
+        # module to read, not in new shim flags: every CCMORPH_* key the
         # profile set is ferried through unchanged.
         seen = []
 
@@ -413,14 +413,14 @@ class AutoDetectionTest(unittest.TestCase):
         args = SimpleNamespace(profile='demo', port=None, token=None,
                                reserved=None, inbound_token=False,
                                parent_pid=None)
-        extras = {'CCPROTEUS_SHIM_HOOKS': '/stable/hooks.py',
-                  'CCPROTEUS_REPAIR_TOOL_REFERENCES': '1'}
+        extras = {'CCMORPH_SHIM_HOOKS': '/stable/hooks.py',
+                  'CCMORPH_REPAIR_TOOL_REFERENCES': '1'}
         with patch.object(ad.subprocess, 'Popen', side_effect=spawn):
             with self.assertRaises(Spawned):
                 ad.front_directly(args, 'https://gateway', 'k', 'id', [row()], extras)
         command, env = seen[0]
-        self.assertEqual(env.get('CCPROTEUS_SHIM_HOOKS'), '/stable/hooks.py')
-        self.assertEqual(env.get('CCPROTEUS_REPAIR_TOOL_REFERENCES'), '1')
+        self.assertEqual(env.get('CCMORPH_SHIM_HOOKS'), '/stable/hooks.py')
+        self.assertEqual(env.get('CCMORPH_REPAIR_TOOL_REFERENCES'), '1')
         self.assertNotIn('--repair-tool-references', command)
         self.assertNotIn('--affinity-header', command)
 

@@ -1,7 +1,7 @@
 """The fake adapter the launch tests install in an isolated state dir.
 
 The real adapter is reaped by `--parent-pid`: `check_parent` in
-`ccproteus-adapter` polls the pid it was started with and shuts down when it is
+`ccmorph-adapter` polls the pid it was started with and shuts down when it is
 gone. That is the only thing that can reap it, because the launcher's own
 teardown is a trap, and a launcher killed outright -- SIGKILL runs no trap --
 leaves nothing else watching. The body here polls the same pid, for the same

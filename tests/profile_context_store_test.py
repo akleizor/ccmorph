@@ -22,7 +22,7 @@ class ProfileContextStore(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.state = self.root / "state"
         self.state.mkdir()
-        self.env = patch.dict(os.environ, {"HOME": str(self.root), "CCPROTEUS_STATE_DIR": str(self.state)}, clear=True)
+        self.env = patch.dict(os.environ, {"HOME": str(self.root), "CCMORPH_STATE_DIR": str(self.state)}, clear=True)
         self.env.start()
         self.addCleanup(self.env.stop)
         self.a = self.state / "a.conf"

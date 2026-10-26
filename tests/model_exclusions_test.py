@@ -22,15 +22,15 @@ def project(tmp_path, served, excluded='blocked', *, offline=False, cached=None,
     settings = {'model': 'blocked', 'availableModels': current or ['blocked', 'allowed', 'opus'],
                 'permissions': {'deny': ['Bash(rm *)']}}
     (home / 'settings.json').write_text(json.dumps(settings))
-    env = {**os.environ, 'HOME': str(tmp_path), 'CCPROTEUS_STATE_DIR': str(state),
-           'CCPROTEUS_LIB_DIR': str(ROOT / "lib"), 'LISTING': json.dumps({'data': [{'id': m} for m in served]}),
+    env = {**os.environ, 'HOME': str(tmp_path), 'CCMORPH_STATE_DIR': str(state),
+           'CCMORPH_LIB_DIR': str(ROOT / "lib"), 'LISTING': json.dumps({'data': [{'id': m} for m in served]}),
            'OFFLINE': '1' if offline else '0'}
     script = '''source "$1"
-_ccp_models_listing() { [[ "$OFFLINE" == 1 ]] && return 1; REPLY="$LISTING"; }
-_ccp_read demo || exit
-_ccp_project_picker demo https://example.invalid synthetic blocked Test
+_ccm_models_listing() { [[ "$OFFLINE" == 1 ]] && return 1; REPLY="$LISTING"; }
+_ccm_read demo || exit
+_ccm_project_picker demo https://example.invalid synthetic blocked Test
 '''
-    result = subprocess.run(['zsh', '-fc', script, '_', str(ROOT / 'lib/ccproteus.sh')],
+    result = subprocess.run(['zsh', '-fc', script, '_', str(ROOT / 'lib/ccmorph.sh')],
                             env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
     return result, json.loads((home / '.claude.json').read_text()), json.loads((home / 'settings.json').read_text())
 
@@ -82,16 +82,16 @@ def test_cli_pickers_filter_but_catalogue_stays_unfiltered(tmp_path):
     fzf = bindir / 'fzf'
     fzf.write_text('#!/usr/bin/env python3\nimport sys\nsys.stdout.write(sys.stdin.read())\n')
     fzf.chmod(0o755)
-    env = {**os.environ, 'HOME': str(tmp_path), 'CCPROTEUS_STATE_DIR': str(tmp_path / 'state'),
-           'CCPROTEUS_LIB_DIR': str(ROOT / "lib"), 'PATH': str(bindir) + ':' + os.environ['PATH'],
+    env = {**os.environ, 'HOME': str(tmp_path), 'CCMORPH_STATE_DIR': str(tmp_path / 'state'),
+           'CCMORPH_LIB_DIR': str(ROOT / "lib"), 'PATH': str(bindir) + ':' + os.environ['PATH'],
            'LISTING': json.dumps({'data': [{'id': m, 'owned_by': 'test'} for m in ids]})}
     script = '''source "$1"
-_ccp_gw_models_json() { REPLY="$LISTING"; }
-_ccp_pick_value model demo
-ccproteus _menu demo
-ccproteus models demo
+_ccm_gw_models_json() { REPLY="$LISTING"; }
+_ccm_pick_value model demo
+ccmorph _menu demo
+ccmorph models demo
 '''
-    r = subprocess.run(['zsh', '-fc', script, '_', str(ROOT / 'lib/ccproteus.sh')],
+    r = subprocess.run(['zsh', '-fc', script, '_', str(ROOT / 'lib/ccmorph.sh')],
                        env=env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
     assert r.returncode == 0, r.stderr
     # The fzf fixture returns every input line; picker functions return its first ID.
@@ -99,20 +99,20 @@ ccproteus models demo
     catalogue = [line.split('\t')[0] for line in r.stdout.splitlines()[2:]]
     assert set(catalogue) == set(ids)
     filtered = subprocess.run(
-        ['zsh', '-fc', 'source "$1"; _ccp_gw_models_json() { REPLY="$LISTING"; }; ccproteus models demo --filtered',
-         '_', str(ROOT / 'lib/ccproteus.sh')],
+        ['zsh', '-fc', 'source "$1"; _ccm_gw_models_json() { REPLY="$LISTING"; }; ccmorph models demo --filtered',
+         '_', str(ROOT / 'lib/ccmorph.sh')],
         env=env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
     assert filtered.returncode == 0, filtered.stderr
     assert {line.split('\t')[0] for line in filtered.stdout.splitlines()} == {'allowed', 'future-model'}
     filtered_json = subprocess.run(
-        ['zsh', '-fc', 'source "$1"; _ccp_gw_models_json() { REPLY="$LISTING"; }; ccproteus models demo --filtered-json',
-         '_', str(ROOT / 'lib/ccproteus.sh')],
+        ['zsh', '-fc', 'source "$1"; _ccm_gw_models_json() { REPLY="$LISTING"; }; ccmorph models demo --filtered-json',
+         '_', str(ROOT / 'lib/ccmorph.sh')],
         env=env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
     assert filtered_json.returncode == 0, filtered_json.stderr
     assert {row['id'] for row in json.loads(filtered_json.stdout)['data']} == {'allowed', 'future-model'}
     # Both selection surfaces derive the same visible IDs, unlike the raw catalogue.
-    r = subprocess.run(['zsh', '-fc', 'source "$1"; _ccp_gw_models_json() { REPLY="$LISTING"; }; _ccp_gw_models demo picker',
-                        '_', str(ROOT / 'lib/ccproteus.sh')], env=env, text=True,
+    r = subprocess.run(['zsh', '-fc', 'source "$1"; _ccm_gw_models_json() { REPLY="$LISTING"; }; _ccm_gw_models demo picker',
+                        '_', str(ROOT / 'lib/ccmorph.sh')], env=env, text=True,
                        capture_output=True, timeout=HANG_TIMEOUT)
     assert r.returncode == 0, r.stderr
     assert {line.split('\t')[0] for line in r.stdout.splitlines()} == {row['value'] for row in cache['additionalModelOptionsCache']}

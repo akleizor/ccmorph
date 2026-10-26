@@ -153,7 +153,7 @@ def compact_status_events(stdout):
 
 
 def run_case(claude_bin, label, *, window, pct, force_turns, timeout):
-    tmp = tempfile.mkdtemp(prefix="ccproteus-canary-")
+    tmp = tempfile.mkdtemp(prefix="ccmorph-canary-")
     srv = None
     try:
         home, config_dir, cwd = (Path(tmp, n) for n in ("home", "claude-config", "cwd"))
@@ -188,7 +188,7 @@ def run_case(claude_bin, label, *, window, pct, force_turns, timeout):
             "message": {"role": "user", "content": "read the canary file"},
         }) + "\n"
 
-        # ccproteus never issues --autocompact on the CLI; the overlay is the
+        # ccmorph never issues --autocompact on the CLI; the overlay is the
         # native `autoCompactWindow` settings key. Match that here.
         argv = [
             str(claude_bin), "-p",

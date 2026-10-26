@@ -1,15 +1,15 @@
-# ccproteus profile template: ~/.config/ccproteus/<name>.conf
+# ccmorph profile template: ~/.config/ccmorph/<name>.conf
 #
-# Prefer `ccproteus add <name>` and `ccproteus config <name>`; they write this file.
-# Edit by hand only for the advanced keys below, then run `ccproteus inspect <name>`.
+# Prefer `ccmorph add <name>` and `ccmorph config <name>`; they write this file.
+# Edit by hand only for the advanced keys below, then run `ccmorph inspect <name>`.
 #
-# Rules (enforced when the profile is read, by _ccp_read in lib/ccproteus-store.zsh):
+# Rules (enforced when the profile is read, by _ccm_read in lib/ccmorph-store.zsh):
 #   - one key=value per line; `#` starts a comment line; no blank or `null` values
 #   - each key appears once; an unknown key, or a key not valid for the profile's
 #     type, refuses the profile
 #   - set only what you need; an absent key means the default
 #
-# Layout: ccproteus rewrites the file into the five sections below, in this order,
+# Layout: ccmorph rewrites the file into the five sections below, in this order,
 # whenever it saves (config, set, launch, probe). A comment block stays attached
 # to the key line under it.
 
@@ -45,10 +45,10 @@ model=claude-opus-5-5
 effort=medium
 
 # ── 3. Behaviour — other launch environment ──────────────────────────────────
-# monthly_budget_usd=<n>  positive number; Stark's spend cap, ccproteus keeps it unused
+# monthly_budget_usd=<n>  positive number; Stark's spend cap, ccmorph keeps it unused
 # private=1    run from a throwaway view: config and settings are linked in,
 #              transcripts, prompt history and session state are deleted on exit
-# env.<NAME>   only names in _CCPROTEUS_PROFILE_ENV (lib/ccproteus-base.zsh); sub and token
+# env.<NAME>   only names in _CCMORPH_PROFILE_ENV (lib/ccmorph-base.zsh); sub and token
 #              profiles accept the section 2 model keys only
 
 # ── 4. Context ──────────────────────────────────────────────────────────────
@@ -58,4 +58,4 @@ effort=medium
 
 # ── 5. Machine-written — never edit ─────────────────────────────────────────
 # model_defaults=1         this profile owns its model defaults (written once)
-# context_discovered={...} limits `ccproteus probe` found for this route
+# context_discovered={...} limits `ccmorph probe` found for this route

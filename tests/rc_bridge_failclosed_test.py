@@ -71,8 +71,8 @@ def test_dead_route_fails_closed_and_key_file_is_consumed(tmp_path):
 def _launcher():
     import importlib.machinery
     import importlib.util
-    path = ADDON.parent / "ccproteus-rc"
-    loader = importlib.machinery.SourceFileLoader("ccproteus_rc_fc", str(path))
+    path = ADDON.parent / "ccmorph-rc"
+    loader = importlib.machinery.SourceFileLoader("ccmorph_rc_fc", str(path))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     mod = importlib.util.module_from_spec(spec)
     loader.exec_module(mod)
@@ -147,7 +147,7 @@ def test_launcher_proxy_never_falls_back_to_anthropic(tmp_path):
 def test_addon_dated_epoch_still_loads(tmp_path):
     """mitmproxy loads a -s script only when its mtime is newer than its last load
     (initially 0). A sync that delivered the tree with 1970 timestamps left every
-    private copy unloadable: the key file was never consumed and ccproteus-rc refused
+    private copy unloadable: the key file was never consumed and ccmorph-rc refused
     to start (2026-09-29). The private copy must carry a fresh mtime."""
     rc = _launcher()
     src = tmp_path / "src"

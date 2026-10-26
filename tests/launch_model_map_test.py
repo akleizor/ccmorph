@@ -1,7 +1,7 @@
 """Model-map agreement across the real shell launch, adapter, and gateway shim.
 
 Only Claude Code and its upstream are fake. Each case copies the shipped library
-into a private HOME and runs the public ``ccproteus run`` entry point. A map is
+into a private HOME and runs the public ``ccmorph run`` entry point. A map is
 keyed by the wire model id: the launcher strips the ``[1m]`` window marker before
 the adapter prepares a model, and Claude Code normalizes the same marker to the
 bare id on the wire (observed for 2.1.301 during #232), so the stub reproduces
@@ -32,8 +32,8 @@ ROOT = Path(__file__).resolve().parents[1]
 FULL = "claude-sonnet-5-5[1m]"
 BARE = "claude-sonnet-5-5"
 LIB_FILES = (
-    "bin/ccproteus", "lib/ccproteus.sh", *sorted(f"lib/{p.name}" for p in (ROOT / "lib").glob("ccproteus-*.zsh")),
-    "libexec/ccproteus-adapter", "libexec/gateway-shim", "libexec/model-window", "libexec/settings-compose",
+    "bin/ccmorph", "lib/ccmorph.sh", *sorted(f"lib/{p.name}" for p in (ROOT / "lib").glob("ccmorph-*.zsh")),
+    "libexec/ccmorph-adapter", "libexec/gateway-shim", "libexec/model-window", "libexec/settings-compose",
     "share/window-sources.json", "share/model-catalogue.json",
 )
 
@@ -67,7 +67,7 @@ try:
     # 20 s, prepare timeout+5) outlast any small literal; read the suite's
     # shared bound through support.py's override.
     with opener.open(request, timeout=float(os.environ.get(
-        "CCPROTEUS_TEST_HANG_TIMEOUT", "120"))) as response:
+        "CCMORPH_TEST_HANG_TIMEOUT", "120"))) as response:
         row["status"] = response.status
         row["response"] = json.load(response)
 except urllib.error.HTTPError as error:
@@ -130,7 +130,7 @@ def launch(tmp_path):
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Gateway)
     base = f"http://127.0.0.1:{server.server_address[1]}"
-    state = tmp_path / ".config/ccproteus"
+    state = tmp_path / ".config/ccmorph"
     state.mkdir(parents=True)
     (tmp_path / ".claude").mkdir()
     bin_dir = tmp_path / "bin"
@@ -154,11 +154,11 @@ def launch(tmp_path):
     env = {
         "HOME": str(tmp_path), "PATH": f"{bin_dir}:/usr/bin:/bin",
         "LANG": "C.UTF-8", "XDG_CONFIG_HOME": str(tmp_path / ".config"),
-        "TMPDIR": str(temp_dir), "CCPROTEUS_STATE_DIR": str(state),
-        "CCPROTEUS_LIB_DIR": str(state / "lib"),
+        "TMPDIR": str(temp_dir), "CCMORPH_STATE_DIR": str(state),
+        "CCMORPH_LIB_DIR": str(state / "lib"),
         # One knob for every bound in the suite, the stub's own read included
         # (support.py's override).
-        "CCPROTEUS_TEST_HANG_TIMEOUT": str(HANG_TIMEOUT),
+        "CCMORPH_TEST_HANG_TIMEOUT": str(HANG_TIMEOUT),
     }
 
     def run(model_map, requested, expected):
@@ -169,7 +169,7 @@ def launch(tmp_path):
             f"type=apikey\nbase_url={base}\napi_key=offline-key\nadapter=true\n"
             f"model_map={json.dumps(model_map)}\n")
         process = subprocess.Popen(
-            [str(state / "bin/ccproteus"), "run", "gw", "--model", requested],
+            [str(state / "bin/ccmorph"), "run", "gw", "--model", requested],
             cwd=tmp_path, env=env, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             start_new_session=True,
@@ -197,7 +197,7 @@ def launch(tmp_path):
                 pass
         log = tmp_path / "launch.json"
         row = json.loads(log.read_text()) if log.exists() else None
-        adapter_log = temp_dir / f"ccproteus-{os.getuid()}.log"
+        adapter_log = temp_dir / f"ccmorph-{os.getuid()}.log"
         adapter_text = adapter_log.read_text() if adapter_log.exists() else ""
         detail = (f"exit={process.returncode}\nstdout={stdout}\nstderr={stderr}\n"
                   f"launch={row}\nupstream={requests}\nadapter={adapter_text}")

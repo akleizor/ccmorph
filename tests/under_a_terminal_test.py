@@ -1,6 +1,6 @@
 """The pty deadline must not turn a busy machine into a suite failure (#365).
 
-`run_under_a_terminal` (tests/ccproteus_test.zsh) runs a whole suite under a pty
+`run_under_a_terminal` (tests/ccmorph_test.zsh) runs a whole suite under a pty
 and kills it at a deadline. On a loaded machine that child needs minutes, so a
 fixed wall-clock deadline kills a healthy run and the parent test fails with
 output that stops mid-line. These cases drive the deadline's `wait_for` through a
@@ -89,5 +89,5 @@ def test_the_launcher_suite_has_one_pty_runner():
     # it gets this file's load-aware deadline, the drain and the process-group
     # kill. An inline runner keeps a fixed wall-clock kill and fails a healthy
     # launch on a busy machine (#421).
-    suite = (Path(__file__).resolve().parent / "ccproteus_test.zsh").read_text()
+    suite = (Path(__file__).resolve().parent / "ccmorph_test.zsh").read_text()
     assert "subprocess.Popen" not in suite

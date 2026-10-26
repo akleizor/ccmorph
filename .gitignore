@@ -19,14 +19,14 @@
 
 # ── Credentials ──────────────────────────────────────────────────────────────
 # One profile per file, holding an API key, an OAuth token, or an account email.
-# Mode 0600, created by `ccproteus add`, never tracked in this repository's
+# Mode 0600, created by `ccmorph add`, never tracked in this repository's
 # history — verified by `git log --all --diff-filter=A`.
 *.conf
 # Per-profile system prompts: profile-local, and prompts can quote private work.
 *.system.md
 
 # ── Machine-local state ──────────────────────────────────────────────────────
-# Probed context ceilings, written by `ccproteus probe`. Machine-local because
+# Probed context ceilings, written by `ccmorph probe`. Machine-local because
 # a ceiling is a property of the ROUTE this host takes to a gateway; another
 # host's registry is wrong here, sometimes dangerously (too high means a session
 # dies mid-conversation instead of compacting).
@@ -43,14 +43,14 @@ model-registry*.migrated*
 active
 # Mid-session relay handoff: written by `ccrelay`, consumed by the next launch.
 .reswitch.*
-# Host opt-ins, sourced by ccproteus.sh at load. Trusted executable zsh, and the
+# Host opt-ins, sourced by ccmorph.sh at load. Trusted executable zsh, and the
 # one seam where a machine's own tooling turns on behaviour the product knows
 # nothing about — so by construction it is never shippable.
 local.sh
 
 # ── Runtime output ───────────────────────────────────────────────────────────
-# Rotated in place by _ccp_log. Diagnostics, not state: safe to delete.
-ccproteus.log
+# Rotated in place by _ccm_log. Diagnostics, not state: safe to delete.
+ccmorph.log
 # Snapshots taken before a risky edit, and profile dirs left behind by a deleted
 # conf. Both hold credential-shaped content, so they are ignored rather than
 # tidied away by hand.
@@ -62,7 +62,7 @@ auth/
 # Claude-compatible per-profile runtime homes, including private authentication.
 profiles/
 # Hand-made copies of the runtime, from before a risky change. Two exist on the
-# author's machine and one is mode 0600; a narrower `ccproteus.sh.bak-*` rule left
+# author's machine and one is mode 0600; a narrower `ccmorph.sh.bak-*` rule left
 # every other spelling exposed, so match the suffix wherever it lands. Verified by
 # swapping this file in and watching both reappear as untracked.
 *.bak
@@ -98,8 +98,8 @@ __pycache__/
 *~
 .impeccable/hook.cache.json
 
-# ccproteus-rc-hosts folder list: machine-local (paths, route choice)
+# ccmorph-rc-hosts folder list: machine-local (paths, route choice)
 rc-hosts
 
-# ccproteus-rc: the folder's kept Remote Control host
+# ccmorph-rc: the folder's kept Remote Control host
 .claude/rc-host.json

@@ -2,7 +2,7 @@
 
 Backend, account and credential keys are ALWAYS cleared; client tuning keys pass
 through when the profile does not declare them; a nested launch clears the tuning
-keys an outer ccproteus session set. Real `ccproteus` against an isolated HOME with a
+keys an outer ccmorph session set. Real `ccmorph` against an isolated HOME with a
 stub `claude` that prints its environment.
 """
 import importlib.machinery
@@ -19,7 +19,7 @@ from support import HANG_TIMEOUT  # noqa: E402
 
 TUNING = ("MAX_THINKING_TOKENS", "CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
 # Pinned literally (#106): deriving this from the launcher would let a name dropped from
-# _CCPROTEUS_BACKEND_ENV vanish from the leak checks too. Every name Claude Code reads that it must list (#88).
+# _CCMORPH_BACKEND_ENV vanish from the leak checks too. Every name Claude Code reads that it must list (#88).
 BACKEND = (
     'CLAUDE_CODE_OAUTH_TOKEN',
     'CLAUDE_CODE_OAUTH_REFRESH_TOKEN',
@@ -66,7 +66,7 @@ def box(tmp_path):
     b = Box(tmp_path)
     (tmp_path / 'bin/claude').write_text(
         '#!/bin/sh\n[ "$1" = --help ] && exit 0\n'
-        'env | grep -E "^(MAX_THINKING|CLAUDE_CODE_|AWS_|ANTHROPIC_|CCPROTEUS_SET)" | sort >> "$HOME/env.log"\n'
+        'env | grep -E "^(MAX_THINKING|CLAUDE_CODE_|AWS_|ANTHROPIC_|CCMORPH_SET)" | sort >> "$HOME/env.log"\n'
         'echo "--" >> "$HOME/env.log"\n')
     b.conf('plain', 'type=sub\nemail=me@example.invalid\n')
     b.conf('tuned', 'type=apikey\napi_key=k\nenv.MAX_THINKING_TOKENS=0\n')
@@ -86,7 +86,7 @@ def test_an_ambient_thinking_budget_reaches_a_profile_that_does_not_set_one(box)
     for line in ('MAX_THINKING_TOKENS=4096', 'CLAUDE_CODE_SIMPLE=1',
                  'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1'):
         assert line in out.splitlines(), out
-    assert 'CCPROTEUS_SET_ENV' not in out
+    assert 'CCMORPH_SET_ENV' not in out
 
 
 def test_a_profile_that_declares_a_tuning_key_wins_over_the_shell(box):
@@ -94,16 +94,16 @@ def test_a_profile_that_declares_a_tuning_key_wins_over_the_shell(box):
     assert box.run('run', 'tuned').returncode == 0
     out = seen(box)[0].splitlines()
     assert 'MAX_THINKING_TOKENS=0' in out and 'MAX_THINKING_TOKENS=4096' not in out
-    assert 'CCPROTEUS_SET_ENV=MAX_THINKING_TOKENS' in out
+    assert 'CCMORPH_SET_ENV=MAX_THINKING_TOKENS' in out
 
 
 def test_a_nested_launch_does_not_inherit_the_outer_sessions_tuning(box):
     # Outer launch exports MAX_THINKING_TOKENS=0 from its profile; the stub then
-    # launches `ccproteus run plain` from inside that environment.
+    # launches `ccmorph run plain` from inside that environment.
     (box.home / 'bin/claude').write_text(
         '#!/bin/sh\n[ "$1" = --help ] && exit 0\n'
-        'if [ -z "$NESTED" ]; then NESTED=1 "' + str(ROOT / "bin/ccproteus") + '" run plain; exit; fi\n'
-        'echo "MTT=${MAX_THINKING_TOKENS-<unset>} SET=${CCPROTEUS_SET_ENV-<unset>}" >> "$HOME/env.log"\n'
+        'if [ -z "$NESTED" ]; then NESTED=1 "' + str(ROOT / "bin/ccmorph") + '" run plain; exit; fi\n'
+        'echo "MTT=${MAX_THINKING_TOKENS-<unset>} SET=${CCMORPH_SET_ENV-<unset>}" >> "$HOME/env.log"\n'
         'echo "--" >> "$HOME/env.log"\n')
     assert box.run('run', 'tuned').returncode == 0
     assert seen(box)[0].strip() == 'MTT=<unset> SET=<unset>'
@@ -111,10 +111,10 @@ def test_a_nested_launch_does_not_inherit_the_outer_sessions_tuning(box):
 
 def _simple_stub(box, profile='plain'):
     # Outer stub plays `claude --bare`: it sets SIMPLE and the child-session marker itself, then
-    # launches `ccproteus run plain`; the nested stub records what it inherited.
+    # launches `ccmorph run plain`; the nested stub records what it inherited.
     (box.home / 'bin/claude').write_text(
         '#!/bin/sh\n[ "$1" = --help ] && exit 0\n'
-        'if [ -z "$NESTED" ]; then NESTED=1 CLAUDE_CODE_CHILD_SESSION=1 CLAUDE_CODE_SIMPLE=1 "' + str(ROOT / "bin/ccproteus") + '" run ' + profile + '; exit; fi\n'
+        'if [ -z "$NESTED" ]; then NESTED=1 CLAUDE_CODE_CHILD_SESSION=1 CLAUDE_CODE_SIMPLE=1 "' + str(ROOT / "bin/ccmorph") + '" run ' + profile + '; exit; fi\n'
         'echo "SIMPLE=${CLAUDE_CODE_SIMPLE-<unset>}" >> "$HOME/env.log"\n'
         'echo "--" >> "$HOME/env.log"\n')
 
@@ -159,7 +159,7 @@ def test_the_launcher_lists_every_pinned_backend_name(tmp_path):
 
 
 def _rc():
-    loader = importlib.machinery.SourceFileLoader("rc_env_rules", str(ROOT / "addons/remote-control/ccproteus-rc"))
+    loader = importlib.machinery.SourceFileLoader("rc_env_rules", str(ROOT / "addons/remote-control/ccmorph-rc"))
     mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
     loader.exec_module(mod)
     return mod
@@ -167,9 +167,9 @@ def _rc():
 
 def test_the_addon_strips_exactly_the_launchers_backend_list_plus_proxies(tmp_path, monkeypatch):
     monkeypatch.setenv('HOME', str(tmp_path))
-    monkeypatch.delenv('CCPROTEUS_STATE_DIR', raising=False)
+    monkeypatch.delenv('CCMORPH_STATE_DIR', raising=False)
     rc = _rc()
-    listed = subprocess.run(['zsh', '-c', 'source "$1" && ccproteus _backend_env', 'x', str(ROOT / 'lib/ccproteus.sh')],
+    listed = subprocess.run(['zsh', '-c', 'source "$1" && ccmorph _backend_env', 'x', str(ROOT / 'lib/ccmorph.sh')],
                             capture_output=True, text=True, check=True, timeout=HANG_TIMEOUT).stdout.split()
     assert listed and set(listed) >= set(BACKEND)
     assert set(rc.strip_env()) == set(listed) | set(rc.PROXY_ENV)
@@ -177,9 +177,9 @@ def test_the_addon_strips_exactly_the_launchers_backend_list_plus_proxies(tmp_pa
 
 def test_the_seam_leaves_home_alone_and_ignores_local_sh_output(tmp_path, monkeypatch):
     monkeypatch.setenv('HOME', str(tmp_path))
-    monkeypatch.delenv('CCPROTEUS_STATE_DIR', raising=False)
+    monkeypatch.delenv('CCMORPH_STATE_DIR', raising=False)
     monkeypatch.delenv('XDG_CONFIG_HOME', raising=False)
-    state = tmp_path / '.config/ccproteus'
+    state = tmp_path / '.config/ccmorph'
     state.mkdir(parents=True)
     (state / 'local.sh').write_text('print "PATH HOME ready"\n')
     before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob('*'))
@@ -197,7 +197,7 @@ def _nested_stub(box, apply_settings):
            "try: os.environ.update(json.load(open(cfg + '/settings.json')).get('env', {}))\n"
            'except Exception: pass\n' if apply_settings else '')
         + "if not os.environ.get('NESTED'):\n    os.environ['NESTED'] = '1'\n"
-        f"    os.execv('{ROOT}/bin/ccproteus', ['ccproteus', 'run', 'plain'])\n"
+        f"    os.execv('{ROOT}/bin/ccmorph', ['ccmorph', 'run', 'plain'])\n"
         "open(os.environ['HOME'] + '/env.log', 'a').write('MTT=' + os.environ.get('MAX_THINKING_TOKENS', '<unset>') + '\\n--\\n')\n")
 
 
@@ -215,6 +215,6 @@ def test_a_tuning_key_from_the_outer_profiles_settings_layer_is_not_inherited(bo
 
 @pytest.mark.parametrize('junk', ['PATH', 'bad-name', 'PATH MAX_THINKING_TOKENS'])
 def test_an_inherited_set_env_only_unsets_tuning_keys(box, junk):
-    box.env['CCPROTEUS_SET_ENV'] = junk
+    box.env['CCMORPH_SET_ENV'] = junk
     assert box.run('run', 'plain').returncode == 0
     assert seen(box) != []

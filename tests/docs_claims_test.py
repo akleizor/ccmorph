@@ -65,8 +65,8 @@ def test_unreleased_never_names_the_retired_role_feature():
     them on 2026-10-15 and removed them on 2026-10-18, so no release was cut while
     they existed — and the section read as a description of today must not name
     them at all. The boundary is "not a letter", not `\\b`, because the spellings
-    that shipped are joined by an underscore (`CCPROTEUS_ROLE`, `role=`,
-    `x-ccproteus-role`) where `\\b` finds no boundary. Spliced so this file is not
+    that shipped are joined by an underscore (`CCMORPH_ROLE`, `role=`,
+    `x-ccmorph-role`) where `\\b` finds no boundary. Spliced so this file is not
     a hit for the name it guards; an entry that later needs the word for a message
     role should say so in a narrower guard rather than widen this one."""
     stale = "ro" "le"

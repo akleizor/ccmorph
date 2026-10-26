@@ -1,16 +1,16 @@
-# ccproteus
+# ccmorph
 
 Before changing launch, installation, packaging, migration, or recovery behavior,
 read [Scope and ownership](ARCHITECTURE.md#scope-and-ownership). That section is
 the project-wide authority for integration boundaries.
 
 Verification: while iterating, run only the tests for what you touched
-(`CCPROTEUS_TEST_FILTER=<name> zsh tests/ccproteus_test.zsh`,
-`CCPROTEUS_LIB_DIR="$PWD/lib" python3 -m pytest tests/<file>.py -q`). Run the full set
+(`CCMORPH_TEST_FILTER=<name> zsh tests/ccmorph_test.zsh`,
+`CCMORPH_LIB_DIR="$PWD/lib" python3 -m pytest tests/<file>.py -q`). Run the full set
 once, before you commit or open the PR, never again for the same diff:
-`zsh tests/ccproteus_test.zsh` (shards across the cores that help; about 40 s),
+`zsh tests/ccmorph_test.zsh` (shards across the cores that help; about 40 s),
 `zsh tests/install_test.zsh`, `zsh tests/cli_configure_test.zsh`, and
-`CCPROTEUS_LIB_DIR="$PWD/lib" uv run --with pytest --with pytest-xdist --with pytest-timeout python -m pytest tests/ -q`
+`CCMORPH_LIB_DIR="$PWD/lib" uv run --with pytest --with pytest-xdist --with pytest-timeout python -m pytest tests/ -q`
 (parallel whenever xdist is present; about 50 s). These are light and run bare, not under `rig run build`.
 Use isolated test homes; do not run the installer against the operator's home as
 a smoke test.
@@ -23,7 +23,7 @@ Intent: [INTENT.md](INTENT.md) is the Alex-approved v0 starting point; changes r
 
 Repo-specific part of `~/.agents/AGENTS.md` Task Queue.
 
-**Security: nightly.** ccproteus holds every profile's credentials and routes
+**Security: nightly.** ccmorph holds every profile's credentials and routes
 every Claude Code session on this Mac.
 
 **Merge rule (Alex, 2026-10-17): the Hive SOP's risk classes.** Every PR gets
@@ -32,24 +32,24 @@ homes on its exact head; only failures the PR introduced count (a failing test
 is checked on `origin/main` and rerun alone). Behaviour changes merge after a
 clean review like any other. High risk waits for Alex's ✅ on the exact head:
 auth or credentials, which backend or provider a profile reaches, permissions,
-the `_ccp_launch -a` entry point, and changes to this rule.
+the `_ccm_launch -a` entry point, and changes to this rule.
 
-**ccproteus focus:** maintenance and patching, not new features. Every patch
+**ccmorph focus:** maintenance and patching, not new features. Every patch
 ships with regression tests in `tests/` that fail before the fix, and merges
 only when the four Verification suites above show no failure it introduced;
 an untested change does not merge. A bug fix that restores intended behaviour
 is maintenance. A new behaviour at launch, in the model picker, or in which
-backend a profile reaches is a product decision (`proposed`). The live install is `~/.config/ccproteus`: never run, edit or
+backend a profile reaches is a product decision (`proposed`). The live install is `~/.config/ccmorph`: never run, edit or
 fast-forward it, and never run the installer against a real home; merged
 work reaches it when a session there next integrates `origin/main`.
 
 **External contract:** `~/.agents` agent-dispatch, which launches every Hive
-and spawned job, runs `source lib/ccproteus.sh && _ccp_launch -a <profile> <args>`.
-Renaming or changing that entry point is a one-way door; the `_ccp_launch -a`
-cases in `tests/ccproteus_test.zsh` guard it and must keep passing unchanged.
+and spawned job, runs `source lib/ccmorph.sh && _ccm_launch -a <profile> <args>`.
+Renaming or changing that entry point is a one-way door; the `_ccm_launch -a`
+cases in `tests/ccmorph_test.zsh` guard it and must keep passing unchanged.
 
 **In the Hive microVM** (Ubuntu): `sudo apt-get install -y zsh` once, and run
-the Python suite as `CCPROTEUS_LIB_DIR="$PWD/lib" uv run --with pytest --with pytest-xdist --with pytest-timeout python -m
+the Python suite as `CCMORPH_LIB_DIR="$PWD/lib" uv run --with pytest --with pytest-xdist --with pytest-timeout python -m
 pytest tests/ -q`. The VM proves Linux; a change to a macOS-only path (BSD
 tools, Keychain, launchd) says so under Merge danger.
-- Vault: research, decisions and reports go to the Obsidian vault `20 Projects/ccproteus/` as `<Subject> — <Kind> — YYYY-MM-DD.md` (rules: llm-wiki skill); progress stays in Discord.
+- Vault: research, decisions and reports go to the Obsidian vault `20 Projects/ccmorph/` as `<Subject> — <Kind> — YYYY-MM-DD.md` (rules: llm-wiki skill); progress stays in Discord.
