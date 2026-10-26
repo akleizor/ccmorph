@@ -1,4 +1,4 @@
-# ccproteus user guide
+# ccmorph user guide
 
 The full reference behind the [README](../README.md): installation details, profile
 settings, model and context-window handling, switching, and state layout. For the
@@ -6,7 +6,7 @@ reasoning behind each behavior, see [ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ## Install details
 
-That is the whole install. ccproteus installs only its own command and runtime.
+That is the whole install. ccmorph installs only its own command and runtime.
 It never edits shell startup files, including obsolete integration blocks:
 it reports those for the user to remove.
 
@@ -21,7 +21,7 @@ what each one unlocks, and installs on confirm — never silently):
 | `cliproxyapi` | non-native custom endpoints — automatic dialect translation | only the endpoint's Claude-family models are reachable |
 | `fzf` | searchable profile and model pickers | numbered choices in a terminal; explicit arguments in scripts |
 
-The installer copies the runtime (`lib/`, `libexec/`, `share/`) into `~/.config/ccproteus` and the `ccproteus`
+The installer copies the runtime (`lib/`, `libexec/`, `share/`) into `~/.config/ccmorph` and the `ccmorph`
 command into `~/.local/bin`. It does not edit your shell config; if
 `~/.local/bin` is not already on your `PATH` it says so and prints the one line
 to add.
@@ -41,29 +41,29 @@ new code is live on the next run. `./install.sh --uninstall` removes the command
 and leaves your profiles alone.
 
 Profile runtime state moved from `~/.claude-profiles` to
-`~/.config/ccproteus/profiles`, so everything ccproteus stores now sits under one
-root that honours `CCPROTEUS_STATE_DIR` and `XDG_CONFIG_HOME`. The move happens
+`~/.config/ccmorph/profiles`, so everything ccmorph stores now sits under one
+root that honours `CCMORPH_STATE_DIR` and `XDG_CONFIG_HOME`. The move happens
 once, by itself, on the next install or command — see *Where state lives* below.
 
 Confirm it:
 
 ```sh
-ccproteus --version
+ccmorph --version
 ```
 
 Then set up your first profile:
 
 ```sh
-ccproteus add work         # one-time login or credential paste
-ccproteus list             # see profiles
-ccproteus use work         # choose what `ccproteus run` launches
-ccproteus run work         # launch on it explicitly
+ccmorph add work         # one-time login or credential paste
+ccmorph list             # see profiles
+ccmorph use work         # choose what `ccmorph run` launches
+ccmorph run work         # launch on it explicitly
 ```
 
-`ccproteus add` asks which kind of profile (see *Profile types* below) and prompts
+`ccmorph add` asks which kind of profile (see *Profile types* below) and prompts
 only for what that kind needs: a subscription opens the normal browser login, an
 API key or gateway asks for the key and base URL. Nothing is written outside
-`~/.config/ccproteus` and the profile directory.
+`~/.config/ccmorph` and the profile directory.
 
 A fresh install has **no profiles** — like a newly installed app. Nothing is
 carried over from the machine it was built on.
@@ -71,7 +71,7 @@ carried over from the machine it was built on.
 If you were handed a working profile by a colleague, copy the `.conf` in but
 **use your own credential**. The model picker offers every chat-capable model the
 endpoint serves, probed or not, so a copied profile works immediately. Running
-`ccproteus probe <profile>` is still worth it — by default it records published
+`ccmorph probe <profile>` is still worth it — by default it records published
 metadata only, without inference tokens — but a model with no known window is
 budgeted at Claude Code's 200,000 default. A colleague's discovered context data
 (`context_discovered` in that `.conf`) is bound to their route's fingerprint, so
@@ -81,7 +81,7 @@ on your own route.
 ## Profile types
 
 A profile is the unit you choose and isolate. Its runtime state lives under
-`~/.config/ccproteus/profiles/<name>`.
+`~/.config/ccmorph/profiles/<name>`.
 
 | Type | What it holds | Backend |
 |---|---|---|
@@ -93,25 +93,25 @@ A profile is the unit you choose and isolate. Its runtime state lives under
 New profiles use `apikey`; endpoint, dialect, network route, model, and effort are
 separate settings rather than additional profile types.
 
-A profile is one file, `~/.config/ccproteus/<name>.conf`, holding `key=value`
+A profile is one file, `~/.config/ccmorph/<name>.conf`, holding `key=value`
 lines. All `*.conf` are gitignored: they carry credentials and never enter
 history.
 
 ```sh
-ccproteus list               # list profiles; the default is marked
-ccproteus inspect [<profile>] # effective configuration and its sources
-ccproteus use <profile>      # make it the default for new sessions
-ccproteus add <profile>      # create one with guided setup
-ccproteus config <profile>   # choose which settings to change
-ccproteus login <profile>    # re-authenticate a provider-backed profile
-ccproteus rm <profile>       # remove it and its config directory
-ccproteus mv <old> <new>     # rename it
-ccproteus cred <profile>      # print its credential to stdout
+ccmorph list               # list profiles; the default is marked
+ccmorph inspect [<profile>] # effective configuration and its sources
+ccmorph use <profile>      # make it the default for new sessions
+ccmorph add <profile>      # create one with guided setup
+ccmorph config <profile>   # choose which settings to change
+ccmorph login <profile>    # re-authenticate a provider-backed profile
+ccmorph rm <profile>       # remove it and its config directory
+ccmorph mv <old> <new>     # rename it
+ccmorph cred <profile>      # print its credential to stdout
 ```
 
-`ccproteus --help` shows everyday actions. Use `ccproteus help all` for the full
-command list and `ccproteus help <command>` for details. Management commands also
-accept `--help`; `ccproteus run <profile> --help` still opens Claude's native help.
+`ccmorph --help` shows everyday actions. Use `ccmorph help all` for the full
+command list and `ccmorph help <command>` for details. Management commands also
+accept `--help`; `ccmorph run <profile> --help` still opens Claude's native help.
 Help and version requests do not load host overrides, migrate state, or launch.
 
 In a terminal, `config` asks what you want to change: **model and reasoning** or
@@ -135,25 +135,25 @@ The existing piped-input configuration sequence is unchanged for scripts.
 
 ### Reusable CLI UI
 
-[`lib/ccproteus-ui.zsh`](../lib/ccproteus-ui.zsh) owns every interactive renderer and theme.
+[`lib/ccmorph-ui.zsh`](../lib/ccmorph-ui.zsh) owns every interactive renderer and theme.
 It can be sourced on its own: no profile store, launcher, or external dependency
 is needed for native menus. Commands supply content and select `native` or
 `search`; they do not implement key handling, cursor movement, or styling.
 
 ```zsh
-source ./lib/ccproteus-ui.zsh
+source ./lib/ccmorph-ui.zsh
 rows=$'defaults\tModel and reasoning\tDefaults for new sessions\nconnection\tConnection\tEndpoint or API key'
-choice=$(ccp_ui_select native 'Settings — demo' "$rows") || return
+choice=$(ccm_ui_select native 'Settings — demo' "$rows") || return
 # Use `search` for a model/profile catalogue; selected IDs alone go to stdout.
-ccp_ui_input 'Profile name: ' || return  # result in REPLY
-ccp_ui_input 'API key: ' secret || return  # echo disabled before the prompt
-ccp_ui_confirm 'Continue?' || return  # native No/Yes; piped input uses y/N
+ccm_ui_input 'Profile name: ' || return  # result in REPLY
+ccm_ui_input 'API key: ' secret || return  # echo disabled before the prompt
+ccm_ui_confirm 'Continue?' || return  # native No/Yes; piped input uses y/N
 ```
 
-`ccp_ui_list` renders the same rows for scripted instructions. `NO_COLOR` disables
+`ccm_ui_list` renders the same rows for scripted instructions. `NO_COLOR` disables
 styling; `TERM=dumb` and missing `fzf` use numbered choices. The installer ships
 this module. Claude Code's own in-session menus are
-owned by Claude Code, not rendered or replaced by ccproteus.
+owned by Claude Code, not rendered or replaced by ccmorph.
 
 Profile pickers offer only usable profiles: `models` lists API-key profiles,
 `cred` lists stored keys/tokens, and `login` lists provider-backed accounts.
@@ -172,16 +172,16 @@ Each profile can carry its own default model and effort, used by every new
 session on it. `get` reads one setting; `set` writes one:
 
 ```sh
-ccproteus get <profile> model             # or effort
-ccproteus set <profile> model kimi-k3
-ccproteus set <profile> effort xhigh      # low | medium | high | xhigh
-ccproteus set <profile> model -i          # choose from what the endpoint serves
-ccproteus set <profile> model             # a missing value asks the same way
-ccproteus set -i                          # choose the profile too
+ccmorph get <profile> model             # or effort
+ccmorph set <profile> model kimi-k3
+ccmorph set <profile> effort xhigh      # low | medium | high | xhigh
+ccmorph set <profile> model -i          # choose from what the endpoint serves
+ccmorph set <profile> model             # a missing value asks the same way
+ccmorph set -i                          # choose the profile too
 ```
 
 `-i` — or simply omitting the value — asks instead of failing. A model id cannot
-be enumerated in advance, since a gateway's listing changes without ccproteus
+be enumerated in advance, since a gateway's listing changes without ccmorph
 knowing, so being asked is the only reliable way to spell one correctly; the
 model list comes from the endpoint itself, and effort from Claude Code's four
 levels. `-i` works the same way on `run`, `set`, `get`, `context`, `inspect`,
@@ -192,23 +192,23 @@ whether `fzf` is installed; `TERM=dumb` uses the numbered fallback. Scripts shou
 stay explicit — destructive operations should not be a menu selection.
 
 `set` writes the profile's saved model or effort default. Native `/model` and
-`/effort` choices affect the current session, not the next ccproteus launch.
+`/effort` choices affect the current session, not the next ccmorph launch.
 It prints the bare value to stdout
-(so `m=$(ccproteus get gw model)` and existing scripts keep working) and confirms
+(so `m=$(ccmorph get gw model)` and existing scripts keep working) and confirms
 the save on stderr. `inspect` reports the effective selection.
 
-`ccproteus inspect` is the one to reach for when a session does not behave as
+`ccmorph inspect` is the one to reach for when a session does not behave as
 expected: every line names the layer its value came from, and the last line is
 the command the launcher will actually run.
 
 ### Saved defaults versus session choices
 
-`ccproteus set <profile> model|effort <value>` changes future launch defaults.
+`ccmorph set <profile> model|effort <value>` changes future launch defaults.
 Claude's `/model` and `/effort` change the current session. Claude may still say
-it saved a default and write its own settings; ccproteus does not adopt those
+it saved a default and write its own settings; ccmorph does not adopt those
 writes as configured defaults on the next launch.
 
-The profile's `~/.config/ccproteus/<profile>.conf` owns model defaults and mappings,
+The profile's `~/.config/ccmorph/<profile>.conf` owns model defaults and mappings,
 alongside connection settings. The keys a profile may carry are fixed by its type,
 and `profile.conf.example` (installed beside the library) is the template: copy it,
 or read it in full. In brief:
@@ -239,7 +239,7 @@ picker row, resolves to it: helper calls and subagents follow, so a cross-family
 mapping answers from a different model than the row's name suggests.
 
 A mapping does **not** grant the 1M window. For a `claude-*` id the window comes
-from the id itself, and ccproteus adds the `[1m]` suffix only to an explicit launch
+from the id itself, and ccmorph adds the `[1m]` suffix only to an explicit launch
 target — never to a tier alias — so a mapped `opus` still runs at 200,000. For 1M,
 launch the suffixed id (`--model claude-opus-5[1m]`) and make sure
 `availableModels` does not also permit the bare `opus`, which would shadow that
@@ -250,18 +250,18 @@ imported once, preserving current defaults. `model_defaults=1` records that the
 profile has adopted this separation; keep that marker when editing defaults.
 
 Other Claude preferences live in the profile's layer,
-`~/.config/ccproteus/profiles/<profile>/settings.profile.json`. At each launch ccproteus
+`~/.config/ccmorph/profiles/<profile>/settings.profile.json`. At each launch ccmorph
 writes the profile's `settings.json` from `~/.claude/settings.json`, that layer and the
 configured model values, and carries any edit Claude Code made to `settings.json`
 back into the layer first. Your arguments reach Claude Code exactly as typed:
-`ccproteus run <profile> mcp list`, `remote-control`, `-p …` or any future
-subcommand need nothing from ccproteus. No write-back hook, credential copy, or
+`ccmorph run <profile> mcp list`, `remote-control`, `-p …` or any future
+subcommand need nothing from ccmorph. No write-back hook, credential copy, or
 transcript rewrite is needed. Explicit launch flags win for that invocation;
 configured per-model effort overrides general effort. Managed policy remains
 authoritative.
 
-This applies to sessions launched through `ccproteus run` (including a personal
-alias pointing to it). Installing ccproteus does not replace or change independently
+This applies to sessions launched through `ccmorph run` (including a personal
+alias pointing to it). Installing ccmorph does not replace or change independently
 launched native `claude`. Existing sessions need a relaunch to adopt the new
 launch behavior.
 
@@ -274,10 +274,10 @@ allowlist:
 excluded_models=unwanted-model,text-embedding-3-large
 ```
 
-ccproteus refreshes the gateway catalogue and generates Claude's native
+ccmorph refreshes the gateway catalogue and generates Claude's native
 `availableModels` minus these IDs. Command-line selection (`--model -i`,
 `set <profile> model -i`) honors the same exclusions. Newly added models appear
-automatically. Use `ccproteus models <profile>` to inspect the unfiltered
+automatically. Use `ccmorph models <profile>` to inspect the unfiltered
 chat-capable gateway catalogue, including models excluded from selection.
 Matching is exact and case-sensitive; derived `[1m]` variants and configured tier
 aliases targeting an excluded ID are excluded too. Cached rows are filtered even
@@ -291,7 +291,7 @@ excluding models, then relaunch with the gateway reachable to refresh the list.
 ### Historical tool references
 
 For a gateway session failing with `Tool reference '…' not found in available tools`,
-the fix is a request-hooks module: `env.CCPROTEUS_SHIM_HOOKS=<file>` points the
+the fix is a request-hooks module: `env.CCMORPH_SHIM_HOOKS=<file>` points the
 shim at a module whose repair hook converts only unresolved historical
 `tool_reference` blocks into text containing the tool name (the hook contract is
 documented in the shim's header). References declared in the current request
@@ -302,7 +302,7 @@ Default: off.
 ### Identifier handling
 
 By default the shim forwards `metadata` and every header exactly as Claude Code sent
-them. A profile opts in with `env.CCPROTEUS_RANDOM_DEVICE_ID=1` to send a random
+them. A profile opts in with `env.CCMORPH_RANDOM_DEVICE_ID=1` to send a random
 per-session `device_id` in `metadata.user_id` instead of the real one (the session
 id passes through, so caching is unaffected). Relaunch to apply.
 
@@ -314,11 +314,11 @@ unreadably, or stall. Claude Code and the Claude apps see only Anthropic ids: an
 unserved `claude-*` id goes to a served model of the same family at the same
 version or newer — never an older one, and through unchanged when none exists —
 replies carry that Anthropic id, and hex-wrapped gateway errors are unwrapped so
-Code's own recovery can run. A gateway silent for `env.CCPROTEUS_STALL_TIMEOUT`
+Code's own recovery can run. A gateway silent for `env.CCMORPH_STALL_TIMEOUT`
 seconds (default 300), before its reply or mid-stream, ends the turn with an error
 Claude Code can retry instead of a reply that never comes. A gateway that already
 speaks Anthropic is fronted by the shim alone, with no translator.
-Set `env.CCPROTEUS_UPSTREAM_PROXY` (an `http://` CONNECT proxy) to send the
+Set `env.CCMORPH_UPSTREAM_PROXY` (an `http://` CONNECT proxy) to send the
 translator's upstream calls through a proxy, e.g. a loopback bridge holding the
 macOS Local Network grant for a gateway on the LAN.
 
@@ -355,66 +355,66 @@ Startup identifies the connecting and native-Claude handoff stages. If adapter
 startup lasts over one second it shows progress, then repeats the wait status
 every five seconds. A selected-model startup that is not ready within 45 seconds
 stops with the log location instead of waiting silently for ten minutes. This
-bounds ccproteus's adapter wait, not Claude Code's subsequent MCP initialization
+bounds ccmorph's adapter wait, not Claude Code's subsequent MCP initialization
 or the gateway's time to answer a real prompt.
 
 ## Switching
 
 ```sh
-ccproteus run                        # the default profile
-ccproteus run <profile>              # this session only
-ccproteus run -i                     # ask which profile, then which model
-ccproteus run --model -i              # default profile, ask only for model
-ccproteus run <profile> --model -i    # named profile, ask only for model
-ccproteus run <profile> --model <id> # profile plus explicit model
-ccproteus hop <profile>              # hop a RUNNING session, keeping model + effort
+ccmorph run                        # the default profile
+ccmorph run <profile>              # this session only
+ccmorph run -i                     # ask which profile, then which model
+ccmorph run --model -i              # default profile, ask only for model
+ccmorph run <profile> --model -i    # named profile, ask only for model
+ccmorph run <profile> --model <id> # profile plus explicit model
+ccmorph hop <profile>              # hop a RUNNING session, keeping model + effort
 ```
 
-After the optional profile and ccproteus's interactive selection flag, native
-arguments pass through to Claude Code. `ccproteus run work -p 'summarise this'`
-and `ccproteus run work --resume <session-id>` work as
-you would expect. A leading flag belongs after the verb: `ccproteus run -p 'hi'`.
+After the optional profile and ccmorph's interactive selection flag, native
+arguments pass through to Claude Code. `ccmorph run work -p 'summarise this'`
+and `ccmorph run work --resume <session-id>` work as
+you would expect. A leading flag belongs after the verb: `ccmorph run -p 'hi'`.
 
 Claude Code's own subcommands work the same way, on the default profile or a named
-one — and going through ccproteus is what points them at the right profile's config
+one — and going through ccmorph is what points them at the right profile's config
 directory, which matters because MCP servers, logins and plugins are per-profile:
 
 ```sh
-ccproteus run mcp list         # the default profile's MCP servers
-ccproteus run work mcp list    # the work profile's
-ccproteus run doctor           # diagnose the default profile's install
+ccmorph run mcp list         # the default profile's MCP servers
+ccmorph run work mcp list    # the work profile's
+ccmorph run doctor           # diagnose the default profile's install
 ```
 
-An *unrecognised* top-level word is an error. If it matches a profile, ccproteus
-prints the explicit replacement: `ccproteus run <profile>`.
+An *unrecognised* top-level word is an error. If it matches a profile, ccmorph
+prints the explicit replacement: `ccmorph run <profile>`.
 
-A bare `ccproteus` prints usage, the way `git` and `docker` do — launching always
+A bare `ccmorph` prints usage, the way `git` and `docker` do — launching always
 uses `run`, so nothing starts a session by accident.
 
 `-i` is the one spelling for interactive selection, at launch and everywhere else.
-At launch it chooses the profile first, then the model when ccproteus can list
+At launch it chooses the profile first, then the model when ccmorph can list
 models. With a named profile you can use Claude Code's native `--model <id>`
-instead, or `ccproteus set <profile> model -i` to pick from the endpoint's listing.
+instead, or `ccmorph set <profile> model -i` to pick from the endpoint's listing.
 
-`ccproteus hop` queues the switch and asks you to exit; the relay then resumes the
+`ccmorph hop` queues the switch and asks you to exit; the relay then resumes the
 session on the new profile with its current model and effort intact. It only
 works **from inside a running Claude Code session** — it reads that session's
 id, model, and effort to hand them to the next one. In the Claude Code prompt,
 run it with a leading `!`:
 
 ```
-! ccproteus hop personal
+! ccmorph hop personal
 ```
 
 In a plain terminal it exits with `not inside a Claude Code session`, and a
 session started by plain `claude` (bypassing the launcher) reports `this session
-was not launched by the ccproteus relay` — start it with `ccproteus` and hop from
+was not launched by the ccmorph relay` — start it with `ccmorph` and hop from
 there.
 
 ## What is isolated, and what is shared
 
 Each profile gets its own `CLAUDE_CONFIG_DIR` under
-`~/.config/ccproteus/profiles/<name>`, so profile state, settings layers, and
+`~/.config/ccmorph/profiles/<name>`, so profile state, settings layers, and
 model choices never bleed between profiles.
 
 Deliberately **shared** — your harness is per-machine, not per-profile: skills,
@@ -430,10 +430,10 @@ people. `ARCHITECTURE.md` §2 has the reasoning and the full table.
 
 ### Where state lives
 
-Everything ccproteus stores is under one root: profile `.conf` files sit in it,
+Everything ccmorph stores is under one root: profile `.conf` files sit in it,
 and profile runtime state sits in `profiles/<name>` beneath it. The root is
-`$CCPROTEUS_STATE_DIR` if you set it, otherwise `$XDG_CONFIG_HOME/ccproteus`,
-otherwise `~/.config/ccproteus`. The launcher, adapter, and context migration derive the profile directory from
+`$CCMORPH_STATE_DIR` if you set it, otherwise `$XDG_CONFIG_HOME/ccmorph`,
+otherwise `~/.config/ccmorph`. The launcher, adapter, and context migration derive the profile directory from
 that root. These variables select a location; changing them after migration does
 not automatically move an existing state tree.
 
@@ -448,7 +448,7 @@ once:
 - If both locations already hold a real directory, the move **refuses** and
   changes nothing rather than merging two profile homes. Same for a rename that
   would cross filesystems: it is reported and nothing is copied. Resolve it by
-  hand, then run any ccproteus command again.
+  hand, then run any ccmorph command again.
 - An already-migrated host keeps the existing compatibility link unchanged.
   Fresh installs create only the nested directory, with no legacy link.
 
@@ -476,12 +476,12 @@ launch settings.
 
 Context limits are managed automatically from endpoint metadata and route-bound
 profile state. `probe` is the explicit command for refreshing metadata, and
-`ccproteus context <profile> <model> [tokens|auto]` reads, sets, or clears one
+`ccmorph context <profile> <model> [tokens|auto]` reads, sets, or clears one
 model's limit by hand — the free answer for a model too new for the gateway and
 every catalogue to publish a size, where the only alternative is a paid probe.
 `auto` returns that model to discovery.
 
-`ccproteus probe <profile>` refreshes that profile's discovered context data,
+`ccmorph probe <profile>` refreshes that profile's discovered context data,
 stored as `context_discovered` in the same `.conf`. The default probe is
 metadata-only: it lists the route, accepts positive integer context fields even
 when they are equal, preserves existing readings for the current route, and
@@ -497,7 +497,7 @@ If gateway metadata is missing, discovery consults the maintained
 [Models.dev catalogue](https://models.dev): an exact provider/model match first,
 then an unambiguous canonical model ID. It uses the smaller of published input
 and combined-context limits when both exist. These values are labelled
-`catalogue-estimate` by `ccproteus inspect`, recorded with source/date in the profile,
+`catalogue-estimate` by `ccmorph inspect`, recorded with source/date in the profile,
 and replaced by gateway-declared values when those become available. They are
 not proof of a custom gateway's enforced limit. Ambiguous aliases remain unknown;
 manual overrides and verified gateway values are never replaced by estimates.
@@ -519,7 +519,7 @@ Supporting a new provider is one entry in the shipped file; installs and upgrade
 replace it, so add entries upstream, not locally.
 
 Paid probing is explicit. Use
-`ccproteus probe <profile> --model <id> --allow-inference` when metadata cannot
+`ccmorph probe <profile> --model <id> --allow-inference` when metadata cannot
 answer one profile/model pair. Known models are skipped unless `--probe-all` is
 also set. `--bisect` additionally enables hidden-ceiling search and requires
 `--allow-inference`. Bisection starts only after an explicit context-overflow
@@ -539,21 +539,21 @@ over the derived number.
 
 ### A note on the `claude` command
 
-`claude` remains Anthropic's command. To use a ccproteus profile, run
-`ccproteus run [profile]`. Personal aliases are the user's choice and are not a
-ccproteus installation or configuration feature. An alias does not add profile
-flags to Anthropic's CLI; profile selection belongs to `ccproteus run`.
+`claude` remains Anthropic's command. To use a ccmorph profile, run
+`ccmorph run [profile]`. Personal aliases are the user's choice and are not a
+ccmorph installation or configuration feature. An alias does not add profile
+flags to Anthropic's CLI; profile selection belongs to `ccmorph run`.
 
 ### Reaching a private endpoint
 
-ccproteus ships no transport. If a gateway is only reachable through a bridge,
+ccmorph ships no transport. If a gateway is only reachable through a bridge,
 run the bridge's local proxy and export `HTTPS_PROXY` for the command:
 
 ```sh
-HTTPS_PROXY=http://127.0.0.1:<port> ccproteus run <profile>
+HTTPS_PROXY=http://127.0.0.1:<port> ccmorph run <profile>
 ```
 
-ccproteus passes `HTTPS_PROXY`, `https_proxy` and `NO_PROXY` through unchanged to
+ccmorph passes `HTTPS_PROXY`, `https_proxy` and `NO_PROXY` through unchanged to
 every network consumer — the Claude child, the adapter, model listing and
 metadata discovery. Its own loopback health checks never go through a proxy.
 `ARCHITECTURE.md` has the detail.
@@ -569,7 +569,7 @@ changing behavior — most of its sections exist because something was once a bu
 
 ```sh
 make test                        # everything below
-zsh tests/ccproteus_test.zsh      # profiles, launch, routing, model choosers
+zsh tests/ccmorph_test.zsh      # profiles, launch, routing, model choosers
 zsh tests/install_test.zsh       # the installer against a throwaway $HOME
 python3 -m pytest tests/         # adapter + gateway shim
 ```

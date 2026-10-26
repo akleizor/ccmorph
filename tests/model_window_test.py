@@ -35,7 +35,7 @@ def run(profile, model, windows=None, manual=None, env=None, fields=False, model
         Path(tmp, f"{profile}.conf").write_text("".join(f"{key}={value}\n" for key, value in fields_doc.items()))
         e = {key: value for key, value in os.environ.items()
              if key not in ("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "MODEL_WINDOW_REGISTRY", "MODEL_WINDOW_PROFILE_CONF", "MODEL_WINDOW_ENDPOINT_JSON")}
-        e.update(CCPROTEUS_STATE_DIR=tmp)
+        e.update(CCMORPH_STATE_DIR=tmp)
         e.update(env or {})
         argv = ["python3", str(SCRIPT)] + (["--fields"] if fields else []) + [profile, model]
         result = subprocess.run(argv, env=e, capture_output=True, text=True, timeout=HANG_TIMEOUT)
@@ -47,7 +47,7 @@ def run(profile, model, windows=None, manual=None, env=None, fields=False, model
 class Resolver(unittest.TestCase):
     def test_locked_interrupt_cancels_without_traceback_and_releases_lock(self):
         with tempfile.TemporaryDirectory() as tmp:
-            env = {**os.environ, 'CCPROTEUS_STATE_DIR': tmp}
+            env = {**os.environ, 'CCMORPH_STATE_DIR': tmp}
             # Only signal the parent lock runner created by this test.
             result = subprocess.run([
                 'python3', str(SCRIPT), '--locked', 'demo', 'python3', '-c',
@@ -208,7 +208,7 @@ class MappedTarget(unittest.TestCase):
         self.assertNotEqual(result["window"], 1000000)
 
     def test_a_native_route_ignores_the_map(self):
-        # The shell drops model_map on a native route (ccproteus-models `_ccp_models_…`
+        # The shell drops model_map on a native route (ccmorph-models `_ccm_models_…`
         # gate): no shim runs there, so the map decides nothing and must not be
         # consulted here either.
         _, result, _ = run("gw", "claude-opus-5", {"claude-opus-5": 1000000, "small-target": 128000},
@@ -231,11 +231,11 @@ def test_model_choice_does_not_change_the_route():
 
 
 def test_every_shell_mapping_key_is_excluded_from_the_route():
-    # ccproteus.sh owns the mapping list; the fingerprint must ignore all of it.
+    # ccmorph.sh owns the mapping list; the fingerprint must ignore all of it.
     import re
     root = Path(__file__).resolve().parents[1]
-    shell = "".join(p.read_text() for p in [root / "lib/ccproteus.sh", *sorted((root / "lib").glob("ccproteus-*.zsh"))])
-    block = re.search(r"_CCPROTEUS_MODEL_MAPPING_ENV=\(\n(.*?)\n\)", shell, re.S).group(1)
+    shell = "".join(p.read_text() for p in [root / "lib/ccmorph.sh", *sorted((root / "lib").glob("ccmorph-*.zsh"))])
+    block = re.search(r"_CCMORPH_MODEL_MAPPING_ENV=\(\n(.*?)\n\)", shell, re.S).group(1)
     keys = [k.strip() for k in block.splitlines() if k.strip().startswith("ANTHROPIC_")]
     assert keys
     for key in keys:
@@ -254,13 +254,13 @@ def test_real_id_and_exclusion_share_one_rule():
 
 class ConfLayout(unittest.TestCase):
     def test_canonical_conf_groups_keys_keeps_comments_and_values(self):
-        messy = ("context_discovered={}\n# why the shim flag\nenv.CCPROTEUS_REPAIR_TOOL_REFERENCES=1\n"
+        messy = ("context_discovered={}\n# why the shim flag\nenv.CCMORPH_REPAIR_TOOL_REFERENCES=1\n"
                  "model=m\napi_key=k\nmodel_defaults=1\nenv.ANTHROPIC_DEFAULT_OPUS_MODEL=o\n"
                  "type=apikey\ncontext_window.m=1000\neffort=high\n\nbase_url=https://g.invalid\n")
         tidy = store.canonical_conf(messy)
         self.assertEqual(tidy, "type=apikey\nbase_url=https://g.invalid\napi_key=k\n\n"
                                "model=m\neffort=high\nenv.ANTHROPIC_DEFAULT_OPUS_MODEL=o\n\n"
-                               "# why the shim flag\nenv.CCPROTEUS_REPAIR_TOOL_REFERENCES=1\n\n"
+                               "# why the shim flag\nenv.CCMORPH_REPAIR_TOOL_REFERENCES=1\n\n"
                                "context_window.m=1000\n\nmodel_defaults=1\ncontext_discovered={}\n")
         self.assertEqual(store.canonical_conf(tidy), tidy)
 

@@ -37,7 +37,7 @@ def _fake_native(home):
 
 def _isolated_env(home):
     native = home / 'native'
-    env = {k: v for k, v in os.environ.items() if not k.startswith(('CCPROTEUS_', '_CCPROTEUS_', 'CLAUDE_', 'ANTHROPIC_'))}
+    env = {k: v for k, v in os.environ.items() if not k.startswith(('CCMORPH_', '_CCMORPH_', 'CLAUDE_', 'ANTHROPIC_'))}
     env.update(HOME=str(home), ZDOTDIR=str(home), XDG_CONFIG_HOME=str(home / '.config'),
                PATH=f'{home}/.local/bin:{native}:/opt/homebrew/bin:/usr/bin:/bin')
     return env
@@ -58,7 +58,7 @@ class InstalledCliTest(unittest.TestCase):
         cls.native_before = cls.native.readlink()
         cls.native_bytes = cls.native_before.read_bytes()
         cls.env = _isolated_env(home)
-        cls.cli = str(home / '.local/bin/ccproteus')
+        cls.cli = str(home / '.local/bin/ccmorph')
 
         installed = cls._run_cli(['zsh', str(ROOT / 'install.sh')])
         assert installed.returncode == 0, installed.stdout + installed.stderr
@@ -66,7 +66,7 @@ class InstalledCliTest(unittest.TestCase):
         help_result = cls._run_cli([cls.cli, '--help'])
         assert help_result.returncode == 0, help_result.stderr
         assert help_result.stderr == ''
-        assert 'ccproteus help <command>' in help_result.stdout
+        assert 'ccmorph help <command>' in help_result.stdout
         cls.help_stdout = help_result.stdout
         added = cls._run_cli([cls.cli, 'add', 'demo'], 'token\nexample-token\nn\n')
         assert added.returncode == 0, added.stdout + added.stderr
@@ -77,7 +77,7 @@ class InstalledCliTest(unittest.TestCase):
         # makes the refused two-profile launch a refusal about the rule, not
         # about a missing profile. Copy only synthetic fixture state, never
         # an operator's credentials.
-        (home / '.config/ccproteus/other.conf').write_text('type=token\ntoken=other-example\n')
+        (home / '.config/ccmorph/other.conf').write_text('type=token\ntoken=other-example\n')
 
     @classmethod
     def _run_cli(cls, argv, input=''):
@@ -110,7 +110,7 @@ class InstalledCliTest(unittest.TestCase):
         self.assertTrue(self.native.exists())
         self.assertEqual(self.native.readlink(), self.native_before)
         self.assertFalse((self.home / '.local/bin/claude').exists())
-        self.assertIn('ccproteus config [profile]', self.help_stdout)
+        self.assertIn('ccmorph config [profile]', self.help_stdout)
 
     def test_configured_profile_reports_model_without_token(self):
         self.assertEqual(self._run_cli([self.cli, 'get', 'demo', 'model']).stdout.strip(), 'sonnet')
@@ -122,15 +122,15 @@ class InstalledCliTest(unittest.TestCase):
 
     def test_run_launches_named_profile(self):
         profile, _ = self._launch([self.cli, 'run', 'demo', '--version'])
-        self.assertEqual(profile, str(self.home / '.config/ccproteus/profiles/demo'))
+        self.assertEqual(profile, str(self.home / '.config/ccmorph/profiles/demo'))
 
     def test_run_launches_default_profile(self):
         profile, _ = self._launch([self.cli, 'run', '--version'])
-        self.assertEqual(profile, str(self.home / '.config/ccproteus/profiles/demo'))
+        self.assertEqual(profile, str(self.home / '.config/ccmorph/profiles/demo'))
 
     def test_run_launches_other_profile(self):
         profile, _ = self._launch([self.cli, 'run', 'other', '--version'])
-        self.assertEqual(profile, str(self.home / '.config/ccproteus/profiles/other'))
+        self.assertEqual(profile, str(self.home / '.config/ccmorph/profiles/other'))
 
     def test_run_forwards_arguments(self):
         self.assertEqual(self._launch([self.cli, 'run', 'demo', 'mcp', 'list'])[1], ['mcp', 'list'])

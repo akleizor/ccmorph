@@ -14,17 +14,17 @@ class ContextOverride(unittest.TestCase):
     def test_exact_set_get_reset_and_validation_preserve_other_state(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
-            state = home / '.config/ccproteus'
+            state = home / '.config/ccmorph'
             state.mkdir(parents=True)
             conf = state / 'gw.conf'
             conf.write_text('type=apikey\napi_key=secret-context_window.a.b=keep\ncontext_window.axb=654321\n')
             cache = state / 'profiles/gw/cache/context-window'
             cache.parent.mkdir(parents=True)
             cache.write_text('a.b\t200000\nother\t300000\n')
-            env = {k: v for k, v in os.environ.items() if not k.startswith(('CCPROTEUS', '_CCPROTEUS', 'CLAUDE_', 'MODEL_WINDOW'))}
-            env.update(HOME=tmp, XDG_CONFIG_HOME=str(home / '.config'), CCPROTEUS_STATE_DIR=str(state), CCPROTEUS_LIB_DIR=str(ROOT / "lib"))
+            env = {k: v for k, v in os.environ.items() if not k.startswith(('CCMORPH', '_CCMORPH', 'CLAUDE_', 'MODEL_WINDOW'))}
+            env.update(HOME=tmp, XDG_CONFIG_HOME=str(home / '.config'), CCMORPH_STATE_DIR=str(state), CCMORPH_LIB_DIR=str(ROOT / "lib"))
             def cli(*args):
-                return subprocess.run([str(ROOT / "bin/ccproteus"), *args], env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
+                return subprocess.run([str(ROOT / "bin/ccmorph"), *args], env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
             result = cli('set', 'gw', 'context', 'a.b', '131072')
             self.assertNotEqual(result.returncode, 0)
             result = subprocess.run([str(ROOT / 'libexec/model-window'), '--context', 'gw', 'a.b', '131072'], env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
@@ -36,7 +36,7 @@ class ContextOverride(unittest.TestCase):
             resolved = subprocess.run([str(ROOT / 'libexec/model-window'), 'gw', 'a.b'], env=env,
                                       capture_output=True, text=True, timeout=HANG_TIMEOUT)
             self.assertEqual(json.loads(resolved.stdout)['window'], 131072)
-            validated = subprocess.run(['zsh', '-c', 'source "$1"; _ccp_read gw', 'test', str(ROOT / 'lib/ccproteus.sh')],
+            validated = subprocess.run(['zsh', '-c', 'source "$1"; _ccm_read gw', 'test', str(ROOT / 'lib/ccmorph.sh')],
                                        env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
             self.assertEqual(validated.returncode, 0, validated.stderr)
             self.assertEqual(subprocess.run([str(ROOT / 'libexec/model-window'), '--context', 'gw', 'claude-opus-5', '1000000'], env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT).returncode, 0)

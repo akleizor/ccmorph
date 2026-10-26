@@ -159,9 +159,9 @@ def test_pinned_tier_covers_full_ids(model, sent):
 def _launcher():
     import importlib.machinery
     import importlib.util
-    path = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccproteus-rc"
-    loader = importlib.machinery.SourceFileLoader("ccproteus_rc", str(path))
-    spec = importlib.util.spec_from_loader("ccproteus_rc", loader)
+    path = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccmorph-rc"
+    loader = importlib.machinery.SourceFileLoader("ccmorph_rc", str(path))
+    spec = importlib.util.spec_from_loader("ccmorph_rc", loader)
     mod = importlib.util.module_from_spec(spec)
     loader.exec_module(mod)
     return mod
@@ -186,7 +186,7 @@ def test_a_folder_is_trusted_before_the_host_starts(tmp_path):
 
 def test_inherited_credentials_never_reach_the_session(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("CCPROTEUS_STATE_DIR", raising=False)
+    monkeypatch.delenv("CCMORPH_STATE_DIR", raising=False)
     rc = _launcher()
     for var in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"):
         assert var in rc.strip_env()
@@ -214,11 +214,11 @@ def test_route_profile_is_resolved_through_route_env(monkeypatch):
     def fake_run(cmd, **kw):
         seen.append(cmd[2])
         return rc.subprocess.CompletedProcess(cmd, 0, "ANTHROPIC_BASE_URL=https://gw\n"
-                                                      "CCPROTEUS_ROUTE_HANDLE=provider|1|/t|/a\n", "")
+                                                      "CCMORPH_ROUTE_HANDLE=provider|1|/t|/a\n", "")
     monkeypatch.setattr(rc.subprocess, "run", fake_run)
     env = rc.resolve_route("gw")
     assert seen and "_route_env" in seen[0]
-    assert env["CCPROTEUS_ROUTE_HANDLE"] == "provider|1|/t|/a"
+    assert env["CCMORPH_ROUTE_HANDLE"] == "provider|1|/t|/a"
 
 
 def test_adapter_keeps_the_ambient_proxy_but_no_inherited_credential(monkeypatch):
@@ -425,7 +425,7 @@ def test_session_keeps_claude_prompt_prefix_stable_behind_the_adapter():
     assert env["CLAUDE_CODE_MODEL_CAPABILITIES"] == rc.ADAPTER_MODEL_CAPABILITIES
     root = rc.Path(rc.__file__).resolve().parents[2]
     assert rc.ADAPTER_MODEL_CAPABILITIES in "".join(
-        p.read_text() for p in [root / "lib/ccproteus.sh", *sorted((root / "lib").glob("ccproteus-*.zsh"))])
+        p.read_text() for p in [root / "lib/ccmorph.sh", *sorted((root / "lib").glob("ccmorph-*.zsh"))])
     # A value the caller set is never overruled.
     own = rc.session_env({"CLAUDE_CODE_MODEL_CAPABILITIES": "x=-y"}, {}, route_models=False)
     assert own["CLAUDE_CODE_MODEL_CAPABILITIES"] == "x=-y"

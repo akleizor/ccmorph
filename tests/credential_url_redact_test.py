@@ -12,13 +12,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def home_env(tmp, **extra):
     home = Path(tmp)
-    state = home / ".config/ccproteus"
+    state = home / ".config/ccmorph"
     state.mkdir(parents=True, exist_ok=True)
     (home / ".claude/projects").mkdir(parents=True, exist_ok=True)
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith(("CCPROTEUS", "_CCPROTEUS", "CLAUDE_", "ANTHROPIC_", "AWS_"))}
+           if not k.startswith(("CCMORPH", "_CCMORPH", "CLAUDE_", "ANTHROPIC_", "AWS_"))}
     env.update(HOME=tmp, XDG_CONFIG_HOME=str(home / ".config"), TMPDIR=tmp,
-               CCPROTEUS_STATE_DIR=str(state), CCPROTEUS_LIB_DIR=str(ROOT / "lib"),
+               CCMORPH_STATE_DIR=str(state), CCMORPH_LIB_DIR=str(ROOT / "lib"),
                LANG="C.UTF-8", LC_ALL="C.UTF-8", **extra)
     return env, state
 
@@ -29,9 +29,9 @@ class UrlRedaction(unittest.TestCase):
             env, state = home_env(tmp)
             (state / "gw.conf").write_text(
                 "type=apikey\napi_key=sk-x\nbase_url=http://user:HUNTER2pw@127.0.0.1:1/?token=QTOK\n")
-            result = subprocess.run([str(ROOT / "bin/ccproteus"), "models", "gw"], env=env,
+            result = subprocess.run([str(ROOT / "bin/ccmorph"), "models", "gw"], env=env,
                                     capture_output=True, text=True, timeout=HANG_TIMEOUT)
-            log = Path(tmp, f"ccproteus-{os.getuid()}.log")
+            log = Path(tmp, f"ccmorph-{os.getuid()}.log")
             text = result.stdout + result.stderr + (log.read_text() if log.exists() else "")
             self.assertIn("could not reach", text)
             self.assertIn("http://127.0.0.1:1", text)

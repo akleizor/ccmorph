@@ -70,7 +70,7 @@ with what else is running — shown next.
 
 ## Round 6: `main` and this branch, same command, back to back
 
-`CCPROTEUS_LIB_DIR=$PWD/lib uv run --with pytest --with pytest-xdist --with pytest-timeout python -m pytest tests/ -q`,
+`CCMORPH_LIB_DIR=$PWD/lib uv run --with pytest --with pytest-xdist --with pytest-timeout python -m pytest tests/ -q`,
 first in a worktree of `origin/main` and then in this worktree, nothing else of mine
 running between them. The branch side was profiled on `a105f8b`, the pre-rebase commit
 carrying the code every later head of this branch still has:
@@ -110,16 +110,16 @@ them is a real integration case: a PTY picker, model selection through the real 
 doctor, the routed-launch cases, adapter endpoints. Nothing in the tail is collection,
 and nothing in it is a synthetic stand-in for a launch.
 
-What the run starts (`.hive/round6-head-summary.log`): 266 `python`, 209 `ccproteus`,
-195 `git`, 182 `zsh` sourcing `ccproteus.sh`, 83 `zsh`, 23 `model-window`, 22 `python3`,
-11 `ps`, 7 `pgrep`, 3 `ccproteus-adapter`, 3 `claude`, 3 `publish`. Cost by file: the
+What the run starts (`.hive/round6-head-summary.log`): 266 `python`, 209 `ccmorph`,
+195 `git`, 182 `zsh` sourcing `ccmorph.sh`, 83 `zsh`, 23 `model-window`, 22 `python3`,
+11 `ps`, 7 `pgrep`, 3 `ccmorph-adapter`, 3 `claude`, 3 `publish`. Cost by file: the
 five most expensive files hold 93.8 s of the 168.3 s attributed to a test,
 `tests/launch_env_rules_test.py` alone 39.2 s over 51 tests and 52 spawns.
 
 **The dominant controllable cost this profile names is the number of real launches
-and the interpreter starts inside each of them** — about two hundred `ccproteus`
+and the interpreter starts inside each of them** — about two hundred `ccmorph`
 launches and 266 `python` starts per run, each launch a fresh interpreter reading a
-232 kB `ccproteus.sh` and a settings compose. The repository already knows this and pins
+232 kB `ccmorph.sh` and a settings compose. The repository already knows this and pins
 it itself; the `PYTHON_STARTS_PER_LAUNCH` block is quoted from
 `tests/adapter_route_defaults_test.py:38–45`:
 

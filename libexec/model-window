@@ -31,8 +31,8 @@ ROUTE_FIELDS = ("type", "base_url", "provider", "adapter", "api_key", "token")
 
 
 def _state_dir() -> Path:
-    return Path(os.environ.get("CCPROTEUS_STATE_DIR") or
-                Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ccproteus")
+    return Path(os.environ.get("CCMORPH_STATE_DIR") or
+                Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ccmorph")
 
 
 def profile_path(profile: str) -> Path:
@@ -189,7 +189,7 @@ def profile_windows(profile: str) -> dict[str, int]:
 @contextlib.contextmanager
 def profile_lock(profile: str):
     path = profile_path(profile)
-    if str(path) in os.environ.get("CCPROTEUS_PROFILE_LOCK_HELD", "").split(":"):
+    if str(path) in os.environ.get("CCMORPH_PROFILE_LOCK_HELD", "").split(":"):
         yield
         return
     # The lock has no configuration data. Keep its inode stable across remove/recreate.
@@ -201,7 +201,7 @@ def profile_lock(profile: str):
 # Canonical layout of a <profile>.conf. Every writer emits this order, so two
 # profiles of one type read the same way: connection, model choice, behaviour,
 # context, then machine-written state. A comment block travels with the key line
-# below it. What is valid is the shell reader's call (`_ccp_read`), not this one's;
+# below it. What is valid is the shell reader's call (`_ccm_read`), not this one's;
 # an unrecognised line keeps its place after the known ones.
 CONF_SECTIONS = (
     ("type", "provider", "email", "token", "base_url", "api_key", "adapter", "tag"),
@@ -645,7 +645,7 @@ def main(argv: list[str]) -> int:
             with contextlib.ExitStack() as locks:
                 for profile in profiles:
                     locks.enter_context(profile_lock(profile))
-                env = {**os.environ, "CCPROTEUS_PROFILE_LOCK_HELD": ":".join(str(profile_path(profile)) for profile in profiles)}
+                env = {**os.environ, "CCMORPH_PROFILE_LOCK_HELD": ":".join(str(profile_path(profile)) for profile in profiles)}
                 import subprocess
                 return subprocess.run(argv[3:], env=env).returncode
         if len(argv) in (4, 5) and argv[1] == "--context":
@@ -675,7 +675,7 @@ def main(argv: list[str]) -> int:
             return 2
         record = resolve(argv[1], argv[2])
         if record.get("unprobed"):
-            print(f"model-window: no known context limit for {argv[2]} on {argv[1]}; using {CC_DEFAULT_WINDOW:,}-token fallback. Run: ccproteus probe {argv[1]}", file=sys.stderr)
+            print(f"model-window: no known context limit for {argv[2]} on {argv[1]}; using {CC_DEFAULT_WINDOW:,}-token fallback. Run: ccmorph probe {argv[1]}", file=sys.stderr)
         print(json.dumps(record))
         return 0
     except KeyboardInterrupt:

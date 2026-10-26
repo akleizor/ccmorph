@@ -1,6 +1,6 @@
-# The tail of every fake ccproteus-adapter: read the --parent-pid it was started
+# The tail of every fake ccmorph-adapter: read the --parent-pid it was started
 # with, then serve until that pid is gone, the way check_parent in
-# ccproteus-adapter does. One copy, shared by the Python and the zsh launch tests
+# ccmorph-adapter does. One copy, shared by the Python and the zsh launch tests
 # (#373, GH-330). GH-434: a recycled pid can keep the named parent "alive"
 # forever, so a serve that gave --parent-pid also leaves when its own launcher
 # is gone (ppid 1) -- a serve started without one keeps serving, by contract.

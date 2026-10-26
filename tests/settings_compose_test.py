@@ -12,7 +12,7 @@ import pytest
 from support import HANG_TIMEOUT
 
 HELPER = Path(__file__).resolve().parent.parent / "libexec/settings-compose"
-ADVISE = '[ -n "$CCPROTEUS_ADVISE" ] && printf "%s" "$CCPROTEUS_ADVISE" || true'
+ADVISE = '[ -n "$CCMORPH_ADVISE" ] && printf "%s" "$CCMORPH_ADVISE" || true'
 # Nested too deep for any settings file to be held: it fails while the policy is
 # decoded, or, on an interpreter that decodes it anyway, while it is copied in.
 TOO_DEEP = '{"sandbox":' + "[" * 2000 + "0" + "]" * 2000 + "}"
@@ -239,7 +239,7 @@ def test_fold_makes_pending_edits_visible_before_the_next_projection(home):
 def test_the_first_releases_file_based_hook_is_never_folded(home):
     canonical, profile = home
     put(canonical, {})
-    legacy = 'f="$CCPROTEUS_ADVISE_FILE"; [ -n "$f" ] && [ -f "$f" ] && cat "$f" || true'
+    legacy = 'f="$CCMORPH_ADVISE_FILE"; [ -n "$f" ] && [ -f "$f" ] && cat "$f" || true'
     doc = {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": legacy}]}]}}
     put(profile / "settings.json", doc)
     put(profile / "settings.profile.json", {})
@@ -308,7 +308,7 @@ def test_a_projection_interrupted_after_writing_settings_is_not_folded_as_an_edi
     (profile / "settings.json").write_bytes(data)
     fold(canonical, profile)
     assert "autoCompactWindow" not in get(profile / "settings.profile.json"), \
-        "a budget ccproteus derived must never become the profile's own choice"
+        "a budget ccmorph derived must never become the profile's own choice"
     assert (profile / "cache" / "settings.base.json").read_bytes() == data
     assert not (profile / "cache" / "settings.base.pending.json").exists()
 
@@ -412,10 +412,10 @@ def test_a_tombstone_in_the_shared_policy_never_reaches_settings(home, tmp_path)
     canonical, profile = home
     put(canonical, {"theme": "dark"})
     shared = tmp_path / "agents" / "policy.json"
-    put(shared, {"$ccproteusUnset": [["theme"]], "verbose": True})
+    put(shared, {"$ccmorphUnset": [["theme"]], "verbose": True})
     (profile / "settings.policy.json").symlink_to(shared)
     doc = run(canonical, profile)
-    assert "$ccproteusUnset" not in doc and doc["theme"] == "dark" and doc["verbose"] is True
+    assert "$ccmorphUnset" not in doc and doc["theme"] == "dark" and doc["verbose"] is True
 
 
 SANDBOX = {"sandbox": {"enabled": True, "filesystem": {"denyRead": ["~/Documents"]}}}
@@ -460,7 +460,7 @@ def break_the_projection(profile: Path, canonical: Path, broken: str) -> None:
     elif broken == "deep-canonical":
         canonical.write_text(TOO_DEEP_TO_DECODE)
     elif broken == "malformed-tombstones":
-        put(profile / "settings.profile.json", {"$ccproteusUnset": None})
+        put(profile / "settings.profile.json", {"$ccmorphUnset": None})
     else:
         canonical.write_text("{")
 
@@ -520,7 +520,7 @@ def test_a_layer_tombstone_added_since_generation_refuses_the_fallback_issue_319
     link_policy(profile, tmp_path, SANDBOX)
     assert materialize(compose, canonical, profile) == 0
     before = (profile / "settings.json").read_bytes()
-    put(profile / "settings.profile.json", {"$ccproteusUnset": [["sandbox", "enabled"]]})
+    put(profile / "settings.profile.json", {"$ccmorphUnset": [["sandbox", "enabled"]]})
     break_the_lock(profile)
     assert materialize(compose, canonical, profile) == 3
     assert "settings.policy.json" in capsys.readouterr().err
@@ -549,7 +549,7 @@ def test_a_comparison_that_cannot_finish_is_not_carried_issue_319(home, tmp_path
         (profile / "settings.policy.json").symlink_to(deep)
     else:
         link_policy(profile, tmp_path, SANDBOX)
-        put(profile / "settings.profile.json", {"$ccproteusUnset": None})
+        put(profile / "settings.profile.json", {"$ccmorphUnset": None})
     break_the_lock(profile)
     assert materialize(compose, canonical, profile) == 3
     assert "settings.policy.json" in capsys.readouterr().err

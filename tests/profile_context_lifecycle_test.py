@@ -21,7 +21,7 @@ class ProfileCommands(unittest.TestCase):
         import subprocess
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
-            state = home / '.config/ccproteus'
+            state = home / '.config/ccmorph'
             state.mkdir(parents=True)
             profiles = state / 'profiles'
             (profiles / 'gw').mkdir(parents=True)
@@ -33,11 +33,11 @@ class ProfileCommands(unittest.TestCase):
             registry = state / 'model-registry'
             registry.write_text('gw:m=123456\nother:m=222222\n')
             (state / 'other.conf').write_text('type=apikey\napi_key=other\n')
-            env = {k: v for k, v in os.environ.items() if not k.startswith(('CCPROTEUS', '_CCPROTEUS', 'CLAUDE_', 'MODEL_WINDOW'))}
+            env = {k: v for k, v in os.environ.items() if not k.startswith(('CCMORPH', '_CCMORPH', 'CLAUDE_', 'MODEL_WINDOW'))}
             env.update(HOME=tmp, XDG_CONFIG_HOME=str(home / '.config'),
-                       CCPROTEUS_STATE_DIR=str(state), CCPROTEUS_LIB_DIR=str(SCRIPT.parent.parent / "lib"))
+                       CCMORPH_STATE_DIR=str(state), CCMORPH_LIB_DIR=str(SCRIPT.parent.parent / "lib"))
             def run(*args, answer=None):
-                return subprocess.run([str(SCRIPT.parent.parent / 'bin/ccproteus'), *args], env=env,
+                return subprocess.run([str(SCRIPT.parent.parent / 'bin/ccmorph'), *args], env=env,
                                       input=answer, capture_output=True, text=True, timeout=HANG_TIMEOUT)
             renamed = run('mv', 'gw', 'renamed')
             self.assertEqual(renamed.returncode, 0, renamed.stderr)
@@ -66,10 +66,10 @@ class ProfileCommands(unittest.TestCase):
 
 class ProfileDiscoveryLifecycle(unittest.TestCase):
     def test_manual_override_skips_paid_probe_without_becoming_discovered_data(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"CCPROTEUS_STATE_DIR": tmp}):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"CCMORPH_STATE_DIR": tmp}):
             conf = Path(tmp, "gw.conf")
             conf.write_text('type=apikey\napi_key=canary\ncontext_window.manual=333333\n')
-            with patch.object(rmr, 'ccproteus_env', return_value={'ANTHROPIC_API_KEY': 'k'}), \
+            with patch.object(rmr, 'ccmorph_env', return_value={'ANTHROPIC_API_KEY': 'k'}), \
                     patch.object(rmr, 'list_models', return_value=(['manual'], {}, [])), \
                     patch.object(rmr, 'probe') as paid:
                 values, notes, _ = rmr.probe_all(['gw'], 1, mode='auto', only_models={'manual'})

@@ -1,4 +1,4 @@
-"""Model selection through the shipped `ccproteus` command, end to end.
+"""Model selection through the shipped `ccmorph` command, end to end.
 
 One test per path that decides which model (and which window) Claude Code gets:
 `--model <id>`, `--model=<id>`, `--model -i`, `set <profile> model`, the profile
@@ -11,7 +11,7 @@ launch is a stack of interpreter startups, so stacking several in one id puts it
 over pytest.ini's 60 s per-test cap on a loaded host (#429) — the same
 one-expensive-launch floor the installed-CLI suite was split to in #424.
 
-Mid-session `/model` is Claude Code's own; ccproteus controls only what it writes
+Mid-session `/model` is Claude Code's own; ccmorph controls only what it writes
 before launch (`ANTHROPIC_MODEL`, the window variables, settings.json), and that
 is what the last test pins.
 """
@@ -27,8 +27,8 @@ import fake_adapter
 from support import HANG_TIMEOUT
 
 ROOT = Path(__file__).resolve().parents[1]
-LIB_FILES = ('libexec/model-window', 'libexec/settings-compose', 'lib/ccproteus.sh',
-             *sorted(f'lib/{p.name}' for p in (ROOT / 'lib').glob('ccproteus-*.zsh')),
+LIB_FILES = ('libexec/model-window', 'libexec/settings-compose', 'lib/ccmorph.sh',
+             *sorted(f'lib/{p.name}' for p in (ROOT / 'lib').glob('ccmorph-*.zsh')),
              'share/window-sources.json', 'share/model-catalogue.json')
 
 CLAUDE = '''#!/bin/sh
@@ -58,7 +58,7 @@ class ModelSelection(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.home = Path(tmp.name)
-        self.state = self.home / '.config/ccproteus'
+        self.state = self.home / '.config/ccmorph'
         self.state.mkdir(parents=True)
         (self.home / 'bin').mkdir()
         for name, body in (('claude', CLAUDE), ('curl', CURL)):
@@ -67,16 +67,16 @@ class ModelSelection(unittest.TestCase):
         for name in LIB_FILES:
             (self.state / name).parent.mkdir(exist_ok=True)
             shutil.copy(ROOT / name, self.state / name)
-        (self.state / 'libexec/ccproteus-adapter').write_text(ADAPTER)
-        (self.state / 'libexec/ccproteus-adapter').chmod(0o755)
+        (self.state / 'libexec/ccmorph-adapter').write_text(ADAPTER)
+        (self.state / 'libexec/ccmorph-adapter').chmod(0o755)
         # A launch leaves the stub detached, and `--parent-pid` only reaches it
         # while the launcher's number stays dead (#347). Registered after
         # tmp.cleanup, so this LIFO cleanup kills the stub's recorded pid first.
-        self.addCleanup(fake_adapter.reap, self.state / 'libexec/ccproteus-adapter')
+        self.addCleanup(fake_adapter.reap, self.state / 'libexec/ccmorph-adapter')
         path = f'{self.home}/bin:/usr/bin:/bin:{Path(shutil.which("zsh")).parent}'
         self.env = {'HOME': str(self.home), 'PATH': path, 'LANG': 'C.UTF-8',
                     'XDG_CONFIG_HOME': str(self.home / '.config'),
-                    'CCPROTEUS_STATE_DIR': str(self.state), 'CCPROTEUS_LIB_DIR': str(self.state / 'lib')}
+                    'CCMORPH_STATE_DIR': str(self.state), 'CCMORPH_LIB_DIR': str(self.state / 'lib')}
         # Native token profile (no routing) and a routed gateway with pinned windows.
         (self.state / 'tp.conf').write_text('type=token\ntoken=t\nmodel=sonnet\n')
         (self.state / 'gw.conf').write_text(
@@ -84,7 +84,7 @@ class ModelSelection(unittest.TestCase):
             'context_window.claude-opus-5=1000000\ncontext_window.claude-haiku-4-5=200000\n'
             'context_window.pinned-x=424242\n')
 
-    def cli(self, *args, tool='bin/ccproteus', stdin=subprocess.DEVNULL):
+    def cli(self, *args, tool='bin/ccmorph', stdin=subprocess.DEVNULL):
         return subprocess.run([str(ROOT / tool), *args], env=self.env, stdin=stdin,
                               capture_output=True, text=True, timeout=HANG_TIMEOUT)
 
@@ -183,7 +183,7 @@ class ModelSelection(unittest.TestCase):
         self.assertEqual(self.window('gw', 'disc-model')['window'], 111111)
 
     def test_launch_writes_the_window_and_default_for_the_session_to_switch_within(self):
-        # Claude Code owns /model; ccproteus fixes the default and the window it starts with.
+        # Claude Code owns /model; ccmorph fixes the default and the window it starts with.
         self.assertEqual(self.cli('set', 'gw', 'model', 'pinned-x').returncode, 0)
         row = self.launch('gw')
         self.assertEqual(row['env']['ANTHROPIC_MODEL'], 'pinned-x')

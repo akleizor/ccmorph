@@ -9,20 +9,20 @@ from support import HANG_TIMEOUT
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run(home, state, script='_ccp_secure_dirs', extra=None):
+def run(home, state, script='_ccm_secure_dirs', extra=None):
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith(('CCPROTEUS_', '_CCPROTEUS_', 'CLAUDE_', 'ANTHROPIC_'))}
-    env.update(HOME=str(home), ZDOTDIR=str(home), CCPROTEUS_STATE_DIR=str(state),
-               CCPROTEUS_LIB_DIR=str(ROOT / "lib"))
+           if not k.startswith(('CCMORPH_', '_CCMORPH_', 'CLAUDE_', 'ANTHROPIC_'))}
+    env.update(HOME=str(home), ZDOTDIR=str(home), CCMORPH_STATE_DIR=str(state),
+               CCMORPH_LIB_DIR=str(ROOT / "lib"))
     env.update(extra or {})
     return subprocess.run(['zsh', '-fc', 'source "$1"; ' + script, '_',
-                           str(ROOT / 'lib/ccproteus.sh')], env=env, text=True,
+                           str(ROOT / 'lib/ccmorph.sh')], env=env, text=True,
                           capture_output=True, timeout=HANG_TIMEOUT)
 
 
 def test_migration_preserves_inodes_symlinks_and_old_session_access(tmp_path):
     home = tmp_path
-    state = home / '.config/ccproteus'
+    state = home / '.config/ccmorph'
     old = home / '.claude-profiles'
     profile = old / 'demo'
     profile.mkdir(parents=True, mode=0o700)
@@ -92,7 +92,7 @@ def plugin_indexes(home, state):
 
 
 def test_plugin_index_paths_follow_shared_plugin_topology(tmp_path):
-    state = tmp_path / '.config/ccproteus'
+    state = tmp_path / '.config/ccmorph'
     plugins, known_before, installed_before = plugin_indexes(tmp_path, state)
 
     result = run(tmp_path, state)
@@ -119,7 +119,7 @@ def test_plugin_index_paths_follow_shared_plugin_topology(tmp_path):
 
 
 def test_malformed_plugin_index_does_not_block_profile_setup(tmp_path):
-    state = tmp_path / '.config/ccproteus'
+    state = tmp_path / '.config/ccmorph'
     plugins = tmp_path / '.claude/plugins'
     plugins.mkdir(parents=True)
     malformed = plugins / 'known_marketplaces.json'
@@ -132,19 +132,19 @@ def test_malformed_plugin_index_does_not_block_profile_setup(tmp_path):
 
 
 def test_doctor_does_not_normalize_plugin_indexes(tmp_path):
-    state = tmp_path / '.config/ccproteus'
+    state = tmp_path / '.config/ccmorph'
     state.mkdir(parents=True)
     (state / 'demo.conf').write_text('type=token\ntoken=synthetic\n')
     plugins, _, _ = plugin_indexes(tmp_path, state)
     before = (plugins / 'known_marketplaces.json').read_bytes()
 
-    run(tmp_path, state, 'ccproteus doctor demo')
+    run(tmp_path, state, 'ccmorph doctor demo')
     assert (plugins / 'known_marketplaces.json').read_bytes() == before
 
 
 def test_fresh_install_uses_state_profiles_without_legacy_alias(tmp_path):
     state = tmp_path / 'custom-state'
-    result = run(tmp_path, state, '_ccp_secure_dirs; print -r -- "$_CCPROTEUS_PROFILE_DIRS"')
+    result = run(tmp_path, state, '_ccm_secure_dirs; print -r -- "$_CCMORPH_PROFILE_DIRS"')
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == str(state / 'profiles')
     assert (state / 'profiles').is_dir()
@@ -152,14 +152,14 @@ def test_fresh_install_uses_state_profiles_without_legacy_alias(tmp_path):
 
 
 def test_doctor_observes_legacy_home_without_migrating(tmp_path):
-    state = tmp_path / '.config/ccproteus'
+    state = tmp_path / '.config/ccmorph'
     state.mkdir(parents=True)
     (state / 'demo.conf').write_text('type=token\ntoken=synthetic\n')
     old = tmp_path / '.claude-profiles'
     profile = old / 'demo'
     profile.mkdir(parents=True)
     (profile / 'settings.json').write_text('{}')
-    result = run(tmp_path, state, 'ccproteus doctor demo')
+    result = run(tmp_path, state, 'ccmorph doctor demo')
     assert str(profile) in result.stdout
     assert old.is_dir() and not old.is_symlink()
     assert not (state / 'profiles').exists()
@@ -167,7 +167,7 @@ def test_doctor_observes_legacy_home_without_migrating(tmp_path):
 
 
 def test_collision_refuses_without_merging_or_overwriting(tmp_path):
-    state = tmp_path / '.config/ccproteus'
+    state = tmp_path / '.config/ccmorph'
     old = tmp_path / '.claude-profiles'
     target = state / 'profiles'
     old.mkdir()
@@ -184,7 +184,7 @@ def test_collision_refuses_without_merging_or_overwriting(tmp_path):
 
 def test_concurrent_migration_converges_on_one_directory(tmp_path):
     from concurrent.futures import ThreadPoolExecutor
-    state = tmp_path / '.config/ccproteus'
+    state = tmp_path / '.config/ccmorph'
     old = tmp_path / '.claude-profiles'
     old.mkdir()
     (old / 'fixture').write_text('one')
@@ -195,7 +195,7 @@ def test_concurrent_migration_converges_on_one_directory(tmp_path):
 
 
 def test_unrelated_legacy_symlink_refused(tmp_path):
-    state = tmp_path / '.config/ccproteus'
+    state = tmp_path / '.config/ccmorph'
     other = tmp_path / 'unrelated'
     other.mkdir()
     old = tmp_path / '.claude-profiles'
@@ -207,7 +207,7 @@ def test_unrelated_legacy_symlink_refused(tmp_path):
 
 
 def test_cross_device_move_refused_without_copy(tmp_path):
-    state = tmp_path / '.config/ccproteus'
+    state = tmp_path / '.config/ccmorph'
     old = tmp_path / '.claude-profiles'
     old.mkdir()
     fixture = old / 'fixture'
@@ -224,7 +224,7 @@ def test_cross_device_move_refused_without_copy(tmp_path):
 
 
 def test_failed_alias_creation_restores_original_directory(tmp_path):
-    state = tmp_path / '.config/ccproteus'
+    state = tmp_path / '.config/ccmorph'
     old = tmp_path / '.claude-profiles'
     old.mkdir()
     (old / 'fixture').write_text('untouched')

@@ -5,7 +5,7 @@
     "anthropic-version": "2023-06-01",
     "User-Agent": "Anthropic/Python 0.69.0",
     "X-Stainless-Lang": "python",
-    "x-ccproteus-task": "hermes-chat"
+    "x-ccmorph-task": "hermes-chat"
   },
   "body": {
     "model": "m-anthropic",

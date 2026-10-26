@@ -115,7 +115,7 @@ def write_hooks(case, text):
     """Write a hooks module to scratch space and return its path (issue 438).
     The hooks seam is module-shaped, so the core tests build their own tiny
     module instead of naming a real one."""
-    d = tempfile.mkdtemp(prefix="ccproteus-hooks-")
+    d = tempfile.mkdtemp(prefix="ccmorph-hooks-")
     case.addCleanup(shutil.rmtree, d, ignore_errors=True)
     path = Path(d) / "hooks.py"
     path.write_text(text)
@@ -765,7 +765,7 @@ class TransportRetryTest(unittest.TestCase):
         resp = self.post()
         self.assertEqual(resp.status, 503)
         message = json.loads(resp.read())["error"]["message"]
-        self.assertIn("ccproteus", message)
+        self.assertIn("ccmorph", message)
         self.assertIn("then tries one", message)
         # Every call the shim ever made went to the one target, with the one
         # model: an open breaker is never a reason to try anywhere else.
@@ -932,7 +932,7 @@ class FramingTest(unittest.TestCase):
 def load_shim_module():
     """Import gateway-shim as a module. It has no .py extension, so it
     needs an explicit SourceFileLoader."""
-    loader = importlib.machinery.SourceFileLoader("ccproteus_gateway_shim", str(SHIM))
+    loader = importlib.machinery.SourceFileLoader("ccmorph_gateway_shim", str(SHIM))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
@@ -1082,7 +1082,7 @@ def outbound_headers(headers, session):
 
 
 class ShimHooksTest(unittest.TestCase):
-    """The CCPROTEUS_SHIM_HOOKS seam (issue 438): a profile points the shim at
+    """The CCMORPH_SHIM_HOOKS seam (issue 438): a profile points the shim at
     a module whose functions rewrite its outbound requests — the User-Agent,
     the body, or the headers. Everything gateway-specific lives in such a
     module; the shim itself stays generic. These tests build the module in
@@ -1092,7 +1092,7 @@ class ShimHooksTest(unittest.TestCase):
         RecordingUpstream.seen = []
         srv = serve(RecordingUpstream)
         self.addCleanup(srv.shutdown)
-        env = {"CCPROTEUS_SHIM_HOOKS": str(hooks)} if hooks is not None else None
+        env = {"CCMORPH_SHIM_HOOKS": str(hooks)} if hooks is not None else None
         _, port = start_shim(self, f"http://127.0.0.1:{srv.server_address[1]}",
                              env=env, flags=flags)
         req = urllib.request.Request(
@@ -1153,9 +1153,9 @@ class ShimHooksTest(unittest.TestCase):
         # startup, never serve with its rewrites silently missing.
         out = subprocess.run([sys.executable, str(SHIM), "0", "http://127.0.0.1:1"],
                              capture_output=True, text=True, timeout=HANG_TIMEOUT,
-                             env=dict(os.environ, CCPROTEUS_SHIM_HOOKS="/nonexistent/hooks.py"))
+                             env=dict(os.environ, CCMORPH_SHIM_HOOKS="/nonexistent/hooks.py"))
         self.assertNotEqual(out.returncode, 0)
-        self.assertIn("CCPROTEUS_SHIM_HOOKS", out.stdout + out.stderr)
+        self.assertIn("CCMORPH_SHIM_HOOKS", out.stdout + out.stderr)
 
 
 # --- usage sidecar ----------------------------------------------------------
@@ -1213,13 +1213,13 @@ class RecordingUpstream(BaseHTTPRequestHandler):
 
 
 class InboundTokenTest(unittest.TestCase):
-    """With CCPROTEUS_INBOUND the client holds only a token; the real key goes upstream."""
+    """With CCMORPH_INBOUND the client holds only a token; the real key goes upstream."""
 
     def call(self, token):
         RecordingUpstream.seen = []
         srv = serve(RecordingUpstream)
         self.addCleanup(srv.shutdown)
-        env = {"CCPROTEUS_INBOUND": json.dumps(
+        env = {"CCMORPH_INBOUND": json.dumps(
             {"sha256": hashlib.sha256(b"tok").hexdigest(), "key": "real"})}
         _, port = start_shim(self, f"http://127.0.0.1:{srv.server_address[1]}", env)
         req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/models", data=b"{}",
@@ -1501,7 +1501,7 @@ class UsageSidecarTest(unittest.TestCase):
         # The primary row is named sha256(response_id).json — the name a
         # consumer computes from a transcript's message id. Only a recycled id
         # (same id, different turn) spills to sha256(id.turn_id).json.
-        return (self.state / "ccproteus" / "usage"
+        return (self.state / "ccmorph" / "usage"
                 / (hashlib.sha256(response_id.encode()).hexdigest() + ".json"))
 
     def row_for(self, response_id):
@@ -1509,7 +1509,7 @@ class UsageSidecarTest(unittest.TestCase):
         turn-id suffix in the filename. Polls until the row appears."""
         deadline = time.monotonic() + HANG_TIMEOUT
         while time.monotonic() < deadline:
-            rows = [p for p in (self.state / "ccproteus" / "usage").glob("*.json")
+            rows = [p for p in (self.state / "ccmorph" / "usage").glob("*.json")
                     if json.loads(p.read_text()).get("response_id") == response_id]
             if len(rows) == 1:
                 return rows[0]
@@ -1518,7 +1518,7 @@ class UsageSidecarTest(unittest.TestCase):
 
     def rows(self):
         return {p.name: json.loads(p.read_text())
-                for p in (self.state / "ccproteus" / "usage").glob("*.json")}
+                for p in (self.state / "ccmorph" / "usage").glob("*.json")}
 
     def wait_for(self, path, predicate=bool):
         """The shim writes the row after the client has its bytes, so every row
@@ -1540,7 +1540,7 @@ class UsageSidecarTest(unittest.TestCase):
         return urllib.request.urlopen(request, timeout=HANG_TIMEOUT)
 
     def test_nonstream_message_is_one_complete_row(self):
-        with self.post(self.shim(env={"CCPROTEUS_MODEL_ROUTE": ROUTE_SPEC})) as r:
+        with self.post(self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})) as r:
             self.assertEqual(upstream_bytes(self, r.read()), CAPTURE_JSON)
         # The row sits at exactly sha256(response_id).json, the consumer's join key.
         row_path = self.row_for("msg_capture_json")
@@ -1563,7 +1563,7 @@ class UsageSidecarTest(unittest.TestCase):
             "cache_creation": {"ephemeral_5m_input_tokens": 2}})
         # Private by mode, and nothing secret-derived is in the row: not the
         # identity digest, not the key, not its hash, not the rendered config path.
-        self.assertEqual((self.state / "ccproteus" / "usage").stat().st_mode & 0o077, 0)
+        self.assertEqual((self.state / "ccmorph" / "usage").stat().st_mode & 0o077, 0)
         self.assertEqual(row_path.stat().st_mode & 0o077, 0)
         text = json.dumps(row)
         for secret in (IDENTITY, hashlib.sha256(b"k").hexdigest(), "/nowhere/gateway.conf"):
@@ -1573,7 +1573,7 @@ class UsageSidecarTest(unittest.TestCase):
         # Two upstream 503s, then the real message: the row records both retries,
         # and `attempt` is still the launcher's tag, not the shim's count.
         CaptureUpstream.fail_first = 2
-        port = self.shim(env={"CCPROTEUS_MODEL_ROUTE": ROUTE_SPEC, "CCPROTEUS_RETRY_BASE": "0"},
+        port = self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC, "CCMORPH_RETRY_BASE": "0"},
                          flags=("--retry-transport",))
         with self.post(port) as r:
             self.assertEqual(upstream_bytes(self, r.read()), CAPTURE_JSON)
@@ -1585,7 +1585,7 @@ class UsageSidecarTest(unittest.TestCase):
         # Flag off: the shim still re-sends once, for the exact unexpected-EOF
         # 500, and the row says so in the same field.
         CaptureUpstream.eof_first = 1
-        with self.post(self.shim(env={"CCPROTEUS_MODEL_ROUTE": ROUTE_SPEC})) as r:
+        with self.post(self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})) as r:
             self.assertEqual(upstream_bytes(self, r.read()), CAPTURE_JSON)
         row = self.wait_for(self.row_path("msg_capture_json"))
         self.assertEqual(row["retries"], 1)
@@ -1601,7 +1601,7 @@ class UsageSidecarTest(unittest.TestCase):
                 spec = dict(json.loads(ROUTE_SPEC), config=None,
                             model_map={"claude-sonnet-5-5": "gpt-6.1-sol"})
                 asked = "claude-sonnet-5-5[1m]"
-                with self.post(self.shim(env={"CCPROTEUS_MODEL_ROUTE": json.dumps(spec)}),
+                with self.post(self.shim(env={"CCMORPH_MODEL_ROUTE": json.dumps(spec)}),
                                body=json.dumps({"model": asked, "messages": []}).encode()) as r:
                     data = r.read()
                 self.assertEqual(json.loads(seen[0])["model"], "gpt-6.1-sol")
@@ -1621,7 +1621,7 @@ class UsageSidecarTest(unittest.TestCase):
         seen = []
         CaptureUpstream.on_body = seen.append
         self.addCleanup(setattr, CaptureUpstream, "on_body", None)
-        port = self.shim(env={"CCPROTEUS_MODEL_ROUTE": json.dumps(spec)})
+        port = self.shim(env={"CCMORPH_MODEL_ROUTE": json.dumps(spec)})
         for asked, expected in (("m", "mapped"), ("m[1m]", "mapped"), ("unknown", "unknown")):
             with self.post(port, body=json.dumps({"model": asked}).encode()) as r:
                 r.read()
@@ -1636,7 +1636,7 @@ class UsageSidecarTest(unittest.TestCase):
             spec = dict(json.loads(ROUTE_SPEC), config=None, profile=profile)
             if mapping is not None:
                 spec["model_map"] = mapping
-            with self.post(self.shim(env={"CCPROTEUS_MODEL_ROUTE": json.dumps(spec)})) as r:
+            with self.post(self.shim(env={"CCMORPH_MODEL_ROUTE": json.dumps(spec)})) as r:
                 r.read()
             self.assertEqual(json.loads(seen[-1])["model"], expected)
         self.assertEqual(seen[-1], REQUEST_BODY)
@@ -1646,7 +1646,7 @@ class UsageSidecarTest(unittest.TestCase):
         CaptureUpstream.on_body = seen.append
         self.addCleanup(setattr, CaptureUpstream, "on_body", None)
         spec = dict(json.loads(ROUTE_SPEC), config=None, model_map={"m": "target"})
-        with self.post(self.shim(env={"CCPROTEUS_MODEL_ROUTE": json.dumps(spec)}),
+        with self.post(self.shim(env={"CCMORPH_MODEL_ROUTE": json.dumps(spec)}),
                        path="/v1/messages/count_tokens") as r:
             r.read()
         self.assertEqual(json.loads(seen[0])["model"], "target")
@@ -1656,7 +1656,7 @@ class UsageSidecarTest(unittest.TestCase):
         body = json.loads(CAPTURE_JSON)
         body["usage"]["cost"] = 0.072112
         CaptureUpstream.json_body = json.dumps(body).encode()
-        with self.post(self.shim(env={"CCPROTEUS_MODEL_ROUTE": ROUTE_SPEC})) as r:
+        with self.post(self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})) as r:
             r.read()
         row = self.wait_for(self.row_path("msg_capture_json"))
         self.assertEqual(row["usage"]["cost"], 0.072112)
@@ -1762,7 +1762,7 @@ class UsageSidecarTest(unittest.TestCase):
         sidecar = shim.UsageSidecar("p", "identity")
         for link in (None, OSError(errno.ENOTSUP, "unsupported")):
             with self.subTest(hardlinks=link is None):
-                shutil.rmtree(self.state / "ccproteus", ignore_errors=True)
+                shutil.rmtree(self.state / "ccmorph", ignore_errors=True)
                 records = []
                 for i in range(8):
                     record = sidecar._start("msg_race", "m", "m", {"output_tokens": i})
@@ -1894,7 +1894,7 @@ class UsageSidecarTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)}):
             sidecar._write(first)
             sidecar._write(second)
-            spill = next(p for p in (self.state / "ccproteus" / "usage").glob("*.json")
+            spill = next(p for p in (self.state / "ccmorph" / "usage").glob("*.json")
                          if p != self.row_path("msg_spill_stable"))
             self.row_path("msg_spill_stable").unlink()
             second["usage"]["output_tokens"] = 9
@@ -1913,7 +1913,7 @@ class UsageSidecarTest(unittest.TestCase):
         sidecar = shim.UsageSidecar("p", "identity")
         for link in (None, OSError(errno.ENOTSUP, "unsupported")):
             with self.subTest(hardlinks=link is None):
-                shutil.rmtree(self.state / "ccproteus", ignore_errors=True)
+                shutil.rmtree(self.state / "ccmorph", ignore_errors=True)
                 unrelated = sidecar._start("msg_a", "m", "m", {"cost": 1})
                 aliased = sidecar._start("msg_a", "m", "m", {"cost": 2})
                 other = sidecar._start("msg_a." + aliased["turn_id"], "m", "m", {"cost": 3})
@@ -1946,7 +1946,7 @@ class UsageSidecarTest(unittest.TestCase):
                     with self.assertRaises(FileExistsError):
                         sidecar._write(blocked)
                     self.assertEqual(self.rows(), before)
-                    usage = self.state / "ccproteus" / "usage"
+                    usage = self.state / "ccmorph" / "usage"
                     self.assertEqual(list(usage.glob("*.tmp")), [])
 
     def test_stream_exits_do_not_retain_shared_claims(self):
@@ -2013,8 +2013,8 @@ class UsageSidecarTest(unittest.TestCase):
     def test_route_id_is_stable_across_processes_and_never_the_identity(self):
         route_ids = set()
         for _ in range(2):                 # two shim PROCESSES, one route spec
-            shutil.rmtree(self.state / "ccproteus" / "usage", ignore_errors=True)
-            with self.post(self.shim(env={"CCPROTEUS_MODEL_ROUTE": ROUTE_SPEC})) as r:
+            shutil.rmtree(self.state / "ccmorph" / "usage", ignore_errors=True)
+            with self.post(self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})) as r:
                 r.read()
             route_ids.add(self.wait_for(self.row_for("msg_capture_json"))["route_id"])
         self.assertEqual(len(route_ids), 1, "route_id changed between shim processes")
@@ -2023,13 +2023,13 @@ class UsageSidecarTest(unittest.TestCase):
         self.assertNotIn(route_id, (IDENTITY, hashlib.sha256(IDENTITY.encode()).hexdigest()))
 
     def test_capture_leaves_the_response_bytes_alone(self):
-        with self.post(self.shim(env={"CCPROTEUS_MODEL_ROUTE": ROUTE_SPEC})) as r:
+        with self.post(self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})) as r:
             body = r.read()
         self.assertEqual(upstream_bytes(self, body), CAPTURE_JSON)
 
     def test_sse_row_saved_at_message_start_and_finalized_at_message_stop(self):
         CaptureUpstream.mode = "sse"
-        with self.post(self.shim(env={"CCPROTEUS_MODEL_ROUTE": ROUTE_SPEC})) as r:
+        with self.post(self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})) as r:
             body = r.read()
         row_path = self.row_for("msg_capture_sse")
         row = self.wait_for(row_path, lambda r: r["complete"])
@@ -2046,7 +2046,7 @@ class UsageSidecarTest(unittest.TestCase):
         """The row is durable from message_start on: kill the shim or the
         process mid-turn and the incomplete row is still there."""
         CaptureUpstream.mode = "gated"
-        port = self.shim(env={"CCPROTEUS_MODEL_ROUTE": ROUTE_SPEC})
+        port = self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=HANG_TIMEOUT)
         self.addCleanup(conn.close)
         conn.putrequest("POST", "/v1/messages", skip_accept_encoding=True)
@@ -2077,7 +2077,7 @@ class UsageSidecarTest(unittest.TestCase):
 
     def test_truncated_stream_leaves_an_incomplete_row(self):
         CaptureUpstream.mode = "truncated"
-        with self.post(self.shim(env={"CCPROTEUS_MODEL_ROUTE": ROUTE_SPEC})) as r:
+        with self.post(self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})) as r:
             r.read()
         row = self.wait_for(self.row_for("msg_capture_sse"))
         self.assertEqual(len(self.rows()), 1)
@@ -2105,7 +2105,7 @@ class UsageSidecarTest(unittest.TestCase):
         self.assertIs(row["complete"], False)
 
     def test_unrelated_endpoints_are_never_captured(self):
-        port = self.shim(env={"CCPROTEUS_MODEL_ROUTE": ROUTE_SPEC})
+        port = self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})
         with self.post(port, path="/json") as r:
             self.assertEqual(r.status, 200)
         try:
@@ -2113,18 +2113,18 @@ class UsageSidecarTest(unittest.TestCase):
                 f"http://127.0.0.1:{port}/v1/messages", method="GET"), timeout=HANG_TIMEOUT).read()
         except urllib.error.HTTPError:
             pass                            # the stub answers POST only
-        self.assertFalse((self.state / "ccproteus" / "usage").exists())
+        self.assertFalse((self.state / "ccmorph" / "usage").exists())
 
     def test_no_route_spec_writes_nothing(self):
-        port = self.shim(env={"CCPROTEUS_MODEL_ROUTE": ""})
+        port = self.shim(env={"CCMORPH_MODEL_ROUTE": ""})
         with self.post(port) as r:
             self.assertEqual(upstream_bytes(self, r.read()), CAPTURE_JSON)
-        self.assertFalse((self.state / "ccproteus" / "usage").exists())
+        self.assertFalse((self.state / "ccmorph" / "usage").exists())
 
     def test_unwritable_state_directory_never_changes_the_response(self):
         # A file where the sidecar wants its directory: every write fails.
-        (self.state / "ccproteus").write_text("not a directory")
-        with self.post(self.shim(env={"CCPROTEUS_MODEL_ROUTE": ROUTE_SPEC})) as r:
+        (self.state / "ccmorph").write_text("not a directory")
+        with self.post(self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})) as r:
             body = r.read()
         self.assertEqual(upstream_bytes(self, body), CAPTURE_JSON)
 
@@ -2135,13 +2135,13 @@ class UsageSidecarTest(unittest.TestCase):
         self.seen = []
         CaptureUpstream.on_body = self.seen.append
         self.addCleanup(setattr, CaptureUpstream, "on_body", None)
-        return self.shim(env={"CCPROTEUS_MODEL_ROUTE": ROUTE_SPEC})
+        return self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})
 
     def row(self):
         return self.wait_for(self.row_path("msg_capture_json"))
 
     def test_task_tags_the_row_and_never_changes_the_model(self):
-        h = {"x-ccproteus-task": "issue-42", "x-ccproteus-attempt": "2"}
+        h = {"x-ccmorph-task": "issue-42", "x-ccmorph-attempt": "2"}
         port = self.tag_shim()
         with self.post(port, headers=h) as r:
             r.read()
@@ -2163,7 +2163,7 @@ class UsageSidecarTest(unittest.TestCase):
         port = self.tag_shim()
         for task in ("ok", "/etc/passwd", "a b"):
             self.seen.clear()
-            with self.post(port, headers={"x-ccproteus-task": task}) as r:
+            with self.post(port, headers={"x-ccmorph-task": task}) as r:
                 r.read()
             self.assertEqual(self.seen[0], REQUEST_BODY, task)
         # Every request answers with the same response id, so each spills to its own row.
@@ -2178,20 +2178,20 @@ class UsageSidecarTest(unittest.TestCase):
     # raw regexes must refuse one outright (record_outcome takes argv, no strip).
     def test_tags_are_ascii_full_matches(self):
         shim = load_shim_module()
-        self.assertEqual(shim.task_tags({"x-ccproteus-attempt": "\xb2"})["attempt"], 1)
-        self.assertEqual(shim.task_tags({"x-ccproteus-task": "x\n"})["task"], "x")
+        self.assertEqual(shim.task_tags({"x-ccmorph-attempt": "\xb2"})["attempt"], 1)
+        self.assertEqual(shim.task_tags({"x-ccmorph-task": "x\n"})["task"], "x")
         self.assertIsNone(shim.TASK_RE.fullmatch("x\n"))
 
-    def test_ccproteus_headers_never_reach_the_upstream(self):
+    def test_ccmorph_headers_never_reach_the_upstream(self):
         port = self.tag_shim()
         CaptureUpstream.on_headers = self.seen.append
         self.addCleanup(setattr, CaptureUpstream, "on_headers", None)
         # #387: the retired role tag is the header a session started before #348
-        # still carries. Any x-ccproteus-* name ends here, listed or not.
-        h = {"x-ccproteus-task": "t1", "x-ccproteus-attempt": "1", "x-ccproteus-role": "build"}
+        # still carries. Any x-ccmorph-* name ends here, listed or not.
+        h = {"x-ccmorph-task": "t1", "x-ccmorph-attempt": "1", "x-ccmorph-role": "build"}
         with self.post(port, headers=h) as r:
             r.read()
-        self.assertFalse([k for k in self.seen[-1] if k.lower().startswith("x-ccproteus")])
+        self.assertFalse([k for k in self.seen[-1] if k.lower().startswith("x-ccmorph")])
 
     def test_outcome_appends_a_row_keyed_by_task(self):
         env = dict(os.environ, XDG_STATE_HOME=str(self.state))
@@ -2207,7 +2207,7 @@ class UsageSidecarTest(unittest.TestCase):
                              capture_output=True, timeout=HANG_TIMEOUT)
         self.assertNotEqual(bad.returncode, 0)
         self.assertIn(b"usage:", bad.stderr)
-        lines = [json.loads(x) for x in (self.state / "ccproteus" / "outcomes.jsonl").read_text().splitlines()]
+        lines = [json.loads(x) for x in (self.state / "ccmorph" / "outcomes.jsonl").read_text().splitlines()]
         self.assertEqual([(x["task"], x["outcome"]) for x in lines],
                          [("issue-42", "accepted"), ("issue-42", "parked")])
 
@@ -2292,7 +2292,7 @@ class GatewayEdgeTest(unittest.TestCase):
         spec = {"profile": "edge", "identity": "i", "upstream": upstream, "models": [],
                 "model_map": mapping or {},
                 "timeout": 5, "key_sha256": hashlib.sha256(self.KEY.encode()).hexdigest()}
-        self.proc, port = start_shim(self, upstream, env={"CCPROTEUS_MODEL_ROUTE": json.dumps(spec),
+        self.proc, port = start_shim(self, upstream, env={"CCMORPH_MODEL_ROUTE": json.dumps(spec),
                                                           "XDG_STATE_HOME": tempfile.mkdtemp()},
                                      flags=["--preserve-tool-ids"])
         req = urllib.request.Request(
@@ -2916,7 +2916,7 @@ class StallDeadlineTest(unittest.TestCase):
         srv = serve(StallUpstream)
         self.addCleanup(srv.shutdown)
         _, port = start_shim(self, f"http://127.0.0.1:{srv.server_address[1]}",
-                             env={"CCPROTEUS_STALL_TIMEOUT": "1"})
+                             env={"CCMORPH_STALL_TIMEOUT": "1"})
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/v1/messages", data=b'{"model":"m"}', method="POST",
             headers={"content-type": "application/json", "x-case": case})

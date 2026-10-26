@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_fixed_defaults_are_not_environment_overrides():
     expected = {
-        'ccproteus-adapter': {'LOCK_WAIT': 120, 'JOBS': 8},
+        'ccmorph-adapter': {'LOCK_WAIT': 120, 'JOBS': 8},
         'refresh-model-registry': {
             'CATALOGUE_URL': 'https://models.dev/api.json',
             'CANONICAL_CATALOGUE_URL': 'https://models.dev/models.json',
@@ -35,15 +35,15 @@ def test_provider_uses_path_not_private_override(tmp_path):
     env = {
         **os.environ,
         'HOME': str(tmp_path),
-        'CCPROTEUS_STATE_DIR': str(tmp_path / 'state'),
-        'CCPROTEUS_LIB_DIR': str(ROOT / "lib"),
-        'CCPROTEUS_PROVIDER_BIN': '/nonexistent/ignored-override',
+        'CCMORPH_STATE_DIR': str(tmp_path / 'state'),
+        'CCMORPH_LIB_DIR': str(ROOT / "lib"),
+        'CCMORPH_PROVIDER_BIN': '/nonexistent/ignored-override',
         'PATH': f'{tmp_path}:/usr/bin:/bin',
     }
     result = subprocess.run(
         ['/bin/zsh', '-f', '-c',
-         'source "$1"; _ccp_provider_bin || exit; print -r -- "$REPLY"',
-         'test', str(ROOT / 'lib/ccproteus.sh')],
+         'source "$1"; _ccm_provider_bin || exit; print -r -- "$REPLY"',
+         'test', str(ROOT / 'lib/ccmorph.sh')],
         env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr

@@ -7,10 +7,10 @@ emulate -L zsh
 
 REPO="${0:A:h:h}"
 # Derived, never hand-listed: install.sh enumerates this same glob, so a module
-# added beside ccproteus.sh is covered here with no edit — and a module dropped
+# added beside ccmorph.sh is covered here with no edit — and a module dropped
 # from the repo cannot leave a stale name behind in the manifest below.
-module_files=("$REPO"/lib/ccproteus-*.zsh(N:t))   # not `modules`: a readonly zsh special
-TMP=$(mktemp -d /tmp/ccproteus-install-test.XXXXXX)
+module_files=("$REPO"/lib/ccmorph-*.zsh(N:t))   # not `modules`: a readonly zsh special
+TMP=$(mktemp -d /tmp/ccmorph-install-test.XXXXXX)
 trap 'rm -rf "$TMP"' EXIT
 
 passed=0; failed=0
@@ -49,56 +49,56 @@ d=$(fresh_env fresh)
 run_installer "$d"; rc=$?
 [[ $rc -eq 0 ]] && ok "fresh install exits 0" || { fail "fresh install rc=$rc"; cat "$d/out" }
 # The installed surface is EXACTLY the manifest — nothing extra ever rides
-# along (this is what keeps any other product from shipping inside ccproteus),
+# along (this is what keeps any other product from shipping inside ccmorph),
 # and nothing missing either, which subsumes a per-component presence loop.
-(( ${#module_files} )) || fail "no ccproteus-*.zsh module found beside ccproteus.sh — the manifest below would be silently short"
-want=(bin/ccproteus lib/ccproteus.sh ${module_files/#/lib/} libexec/ccproteus-adapter libexec/gateway-shim libexec/model-window libexec/settings-compose libexec/refresh-model-registry share/model-catalogue.json share/window-sources.json local.sh.example profile.conf.example profiles)
-got=(${(f)"$(cd "$d/home/.config/ccproteus" && print -l *(N) {bin,lib,libexec,share}/*(N.) | grep -vxE 'bin|lib|libexec|share')"})
+(( ${#module_files} )) || fail "no ccmorph-*.zsh module found beside ccmorph.sh — the manifest below would be silently short"
+want=(bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/ccmorph-adapter libexec/gateway-shim libexec/model-window libexec/settings-compose libexec/refresh-model-registry share/model-catalogue.json share/window-sources.json local.sh.example profile.conf.example profiles)
+got=(${(f)"$(cd "$d/home/.config/ccmorph" && print -l *(N) {bin,lib,libexec,share}/*(N.) | grep -vxE 'bin|lib|libexec|share')"})
 extra=(${got:|want}); missing=(${want:|got})
 (( ${#extra} == 0 && ${#missing} == 0 )) \
   && ok "install places exactly its own manifest" \
   || fail "manifest drift — extra: ${extra[*]:-none}, missing: ${missing[*]:-none}"
 bin_got=("$d/home/.local/bin/"*(N:t))
-[[ "${(j:,:)bin_got}" == "ccproteus" ]] \
-  && ok "bin dir holds exactly the ccproteus command" || fail "bin dir: ${bin_got[*]}"
+[[ "${(j:,:)bin_got}" == "ccmorph" ]] \
+  && ok "bin dir holds exactly the ccmorph command" || fail "bin dir: ${bin_got[*]}"
 # The opt-in reference ships; the opt-in itself does not. An installed local.sh
 # would silently turn features on that the installing host never asked for.
-[[ -f "$d/home/.config/ccproteus/local.sh.example" ]] \
+[[ -f "$d/home/.config/ccmorph/local.sh.example" ]] \
   && ok "opt-in reference installed" || fail "local.sh.example missing"
-[[ -f "$d/home/.config/ccproteus/profile.conf.example" ]] \
+[[ -f "$d/home/.config/ccmorph/profile.conf.example" ]] \
   && ok "profile template installed" || fail "profile.conf.example missing"
-[[ ! -e "$d/home/.config/ccproteus/local.sh" ]] \
+[[ ! -e "$d/home/.config/ccmorph/local.sh" ]] \
   && ok "no local.sh activated on a fresh install" || fail "install activated local.sh"
-# The rc must be left ALONE. ccproteus is one executable, so there is nothing to
+# The rc must be left ALONE. ccmorph is one executable, so there is nothing to
 # wire; an installer that edits a startup file makes every session's behaviour
 # depend on whether one file was sourced.
-grep -qF '# >>> ccproteus >>>' "$d/home/.zshrc" \
-  && fail "installer wired the rc — ccproteus needs no shell integration" \
+grep -qF '# >>> ccmorph >>>' "$d/home/.zshrc" \
+  && fail "installer wired the rc — ccmorph needs no shell integration" \
   || ok "rc left untouched"
 
 # --- 2. legacy startup wiring is reported but never edited --------------------
 print 'export BEFORE=1' > "$d/home/.zshrc"
-print '# >>> ccproteus >>>' >> "$d/home/.zshrc"
-print 'source "/old/path/lib/ccproteus.sh"' >> "$d/home/.zshrc"
+print '# >>> ccmorph >>>' >> "$d/home/.zshrc"
+print 'source "/old/path/lib/ccmorph.sh"' >> "$d/home/.zshrc"
 print '# missing end marker' >> "$d/home/.zshrc"
 print 'export AFTER=1' >> "$d/home/.zshrc"
 original=$(<"$d/home/.zshrc")
 run_installer "$d"; rc=$?
 (( rc == 0 )) && ok "legacy startup block does not fail install" || fail "legacy block install rc=$rc"
 [[ "$(<"$d/home/.zshrc")" == "$original" ]] && ok "installer leaves partial rc byte-identical" || fail "installer edited partial rc"
-grep -qiF 'legacy ccproteus block' "$d/out" && ok "legacy rc ownership is reported" || fail "legacy rc was not reported"
+grep -qiF 'legacy ccmorph block' "$d/out" && ok "legacy rc ownership is reported" || fail "legacy rc was not reported"
 
 # --- 2b. an IN-PLACE install (clone already at the target) succeeds -----------
-# The normal update path on a machine whose repo lives at ~/.config/ccproteus:
+# The normal update path on a machine whose repo lives at ~/.config/ccmorph:
 # SRC == CONFIG_DIR, so every copy is a copy onto itself. cp refuses that, and
 # under `set -e` the run aborted before the rc was ever wired — an update that
 # reported failure and left the install half-applied. Exercised by installing
 # from a COPY of the repo placed at the target path.
 d=$(fresh_env inplace)
-target="$d/home/.config/ccproteus"
+target="$d/home/.config/ccmorph"
 mkdir -p "$target"
 mkdir -p "$target"/{bin,lib,libexec,share}
-for f in bin/ccproteus lib/ccproteus.sh ${module_files/#/lib/} libexec/ccproteus-adapter libexec/gateway-shim libexec/model-window libexec/settings-compose libexec/refresh-model-registry share/model-catalogue.json share/window-sources.json local.sh.example profile.conf.example install.sh; do
+for f in bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/ccmorph-adapter libexec/gateway-shim libexec/model-window libexec/settings-compose libexec/refresh-model-registry share/model-catalogue.json share/window-sources.json local.sh.example profile.conf.example install.sh; do
   cp "$REPO/$f" "$target/$f"
 done
 env -i HOME="$d/home" ZDOTDIR="$d/home" \
@@ -107,9 +107,9 @@ env -i HOME="$d/home" ZDOTDIR="$d/home" \
 rc=$?
 [[ $rc -eq 0 ]] && ok "in-place install exits 0" \
   || { fail "in-place install rc=$rc"; cat "$d/out2" }
-grep -qF '# >>> ccproteus >>>' "$d/home/.zshrc" \
+grep -qF '# >>> ccmorph >>>' "$d/home/.zshrc" \
   && fail "in-place install wired the rc" || ok "in-place install leaves the rc alone"
-[[ -x "$d/home/.local/bin/ccproteus" ]] \
+[[ -x "$d/home/.local/bin/ccmorph" ]] \
   && ok "in-place install still places the command" || fail "in-place install skipped the command"
 
 # --- 2c. upgrading migrates legacy registry data INTO the owning profile's conf --
@@ -121,36 +121,36 @@ grep -qF '# >>> ccproteus >>>' "$d/home/.zshrc" \
 # is no cross-profile fallback and no rename-in-place: a bare (unscoped) row with no
 # owning profile is left unattributed rather than guessed at.
 d=$(fresh_env upgrade)
-mkdir -p "$d/home/.config/ccproteus"
+mkdir -p "$d/home/.config/ccmorph"
 print -r -- 'type=apikey
 base_url=http://gw.invalid
-api_key=sk_test' > "$d/home/.config/ccproteus/work.conf"
-print -r -- 'work:claude-opus-5=1000000' > "$d/home/.config/ccproteus/model-registry.conf"
+api_key=sk_test' > "$d/home/.config/ccmorph/work.conf"
+print -r -- 'work:claude-opus-5=1000000' > "$d/home/.config/ccmorph/model-registry.conf"
 run_installer "$d"; rc=$?
 (( rc == 0 )) || { fail "upgrade install rc=$rc"; cat "$d/out" }
-[[ ! -e "$d/home/.config/ccproteus/model-registry.conf" ]] \
+[[ ! -e "$d/home/.config/ccmorph/model-registry.conf" ]] \
   && ok "migration archives the legacy registry rather than leaving it live" \
   || fail "the legacy registry survived under its live name, and will be parsed as a profile"
-[[ -f "$d/home/.config/ccproteus/model-registry.conf.migrated" ]] \
+[[ -f "$d/home/.config/ccmorph/model-registry.conf.migrated" ]] \
   && ok "the legacy registry is kept as a .migrated backup" \
   || fail "migration destroyed the legacy registry instead of archiving it"
-grep -qF 'context_discovered=' "$d/home/.config/ccproteus/work.conf" \
+grep -qF 'context_discovered=' "$d/home/.config/ccmorph/work.conf" \
   && ok "migration writes the probed window into the owning profile's own conf" \
   || fail "migration did not carry the scoped row into work.conf"
-grep -qF '1000000' "$d/home/.config/ccproteus/work.conf" \
+grep -qF '1000000' "$d/home/.config/ccmorph/work.conf" \
   && ok "migration preserves the probed value" \
   || fail "migration lost the probed window's value"
 
 # Re-running install again (nothing left to migrate) must not error or re-migrate.
 run_installer "$d"; rc=$?
 (( rc == 0 )) || { fail "second install after migration rc=$rc"; cat "$d/out" }
-[[ ! -e "$d/home/.config/ccproteus/model-registry" ]] \
+[[ ! -e "$d/home/.config/ccmorph/model-registry" ]] \
   && ok "a second install does not resurrect the legacy registry" \
   || fail "a second install re-created the legacy registry"
 
-# --- 2d. a module added beside ccproteus.sh ships with no installer edit -------
+# --- 2d. a module added beside ccmorph.sh ships with no installer edit -------
 # The whole point of deriving the module set: parts 3–4 of the module split add
-# more ccproteus-*.zsh files, and a name missed in the installer's manifest means
+# more ccmorph-*.zsh files, and a name missed in the installer's manifest means
 # a module that never ships — the library then fails to source at launch, in the
 # operator's profile home, where no test can see it. The probe is inert: the
 # loader names its modules explicitly, so nothing sources this one.
@@ -158,16 +158,16 @@ d=$(fresh_env probe)
 mkdir -p "$d/src"
 mkdir -p "$d/src"
 (cd "$REPO" && cp -R bin lib libexec share *(.) "$d/src/")
-print -r -- '# a module that exists only in this test' > "$d/src/lib/ccproteus-zz-probe.zsh"
+print -r -- '# a module that exists only in this test' > "$d/src/lib/ccmorph-zz-probe.zsh"
 env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin:/opt/homebrew/bin" \
   zsh "$d/src/install.sh" >"$d/out" 2>&1 </dev/null
 rc=$?
 (( rc == 0 )) && ok "install from a tree with an extra module exits 0" \
   || { fail "probe install rc=$rc"; cat "$d/out"; }
-[[ -f "$d/home/.config/ccproteus/lib/ccproteus-zz-probe.zsh" ]] \
-  && ok "a module added beside ccproteus.sh ships with no installer edit" \
-  || fail "an extra ccproteus-*.zsh was not installed — the module list is hand-copied again"
-[[ ! -x "$d/home/.config/ccproteus/lib/ccproteus-zz-probe.zsh" ]] \
+[[ -f "$d/home/.config/ccmorph/lib/ccmorph-zz-probe.zsh" ]] \
+  && ok "a module added beside ccmorph.sh ships with no installer edit" \
+  || fail "an extra ccmorph-*.zsh was not installed — the module list is hand-copied again"
+[[ ! -x "$d/home/.config/ccmorph/lib/ccmorph-zz-probe.zsh" ]] \
   && ok "an installed module is data, not an executable" \
   || fail "an installed module carries the exec bit"
 
@@ -175,7 +175,7 @@ rc=$?
 d=$(fresh_env symlink)
 mkdir -p "$d/dotfiles"
 print 'export KEEP=1' > "$d/dotfiles/zshrc"
-print '# >>> ccproteus >>>' >> "$d/dotfiles/zshrc"
+print '# >>> ccmorph >>>' >> "$d/dotfiles/zshrc"
 ln -s "$d/dotfiles/zshrc" "$d/home/.zshrc"
 original=$(<"$d/dotfiles/zshrc")
 run_installer "$d"
@@ -184,13 +184,13 @@ run_installer "$d"
 # --- 4. uninstall also leaves startup files untouched ------------------------
 d=$(fresh_env uninstall)
 run_installer "$d" >/dev/null
-print '# >>> ccproteus >>>' >> "$d/home/.zshrc"
+print '# >>> ccmorph >>>' >> "$d/home/.zshrc"
 print 'export TAIL=1' >> "$d/home/.zshrc"
 original=$(<"$d/home/.zshrc")
 env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
   zsh "$REPO/install.sh" --uninstall >/dev/null 2>&1
 [[ "$(<"$d/home/.zshrc")" == "$original" ]] && ok "uninstall leaves rc byte-identical" || fail "uninstall edited rc"
-[[ ! -e "$d/home/.local/bin/ccproteus" ]] && ok "uninstall removes the command" || fail "uninstall left the command on PATH"
+[[ ! -e "$d/home/.local/bin/ccmorph" ]] && ok "uninstall removes the command" || fail "uninstall left the command on PATH"
 
 # --- 6. a RE-RUN is an update: user state survives, and it says so ----------
 # The guarantee people actually care about. Profiles (which now carry their own
@@ -200,14 +200,14 @@ env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
 # silently, and a re-run that looks destructive is one nobody runs twice.
 d=$(fresh_env update)
 run_installer "$d" >/dev/null
-cfg="$d/home/.config/ccproteus"
+cfg="$d/home/.config/ccmorph"
 
 # User state, as a real install would hold it. Probed/manual context now lives
 # INSIDE the owning profile's own conf (context_discovered / context_window.*),
 # not in a separate registry file — a re-run must leave that line alone too.
 print 'type=apikey\napi_key=sk_test\nbase_url=https://example.invalid\nadapter=true\ncontext_window.claude-opus-5=1000000' > "$cfg/work.conf"
 print 'type=sub'                                   > "$cfg/personal.conf"
-print 'export CCPROTEUS_TEST_LOCAL=1'               > "$cfg/local.sh"
+print 'export CCMORPH_TEST_LOCAL=1'               > "$cfg/local.sh"
 print 'active-marker'                              > "$cfg/active"
 
 run_installer "$d"; rc=$?
@@ -220,15 +220,15 @@ done
 grep -qF 'sk_test'  "$cfg/work.conf"     && ok "re-run preserved profile credentials" || fail "profile clobbered"
 grep -qF 'context_window.claude-opus-5=1000000' "$cfg/work.conf" \
   && ok "re-run preserved the profile's own manual context" || fail "profile's context_window entry clobbered"
-grep -qF 'CCPROTEUS_TEST_LOCAL' "$cfg/local.sh" && ok "re-run preserved local.sh"       || fail "local.sh clobbered"
+grep -qF 'CCMORPH_TEST_LOCAL' "$cfg/local.sh" && ok "re-run preserved local.sh"       || fail "local.sh clobbered"
 
 # And it REPORTS an update rather than claiming a fresh install.
 grep -qiF 'fresh install' "$d/out" && fail "re-run still claims 'fresh install'" || ok "re-run does not claim fresh install"
-grep -qiE 'reinstalled in place|Updated ccproteus' "$d/out" && ok "re-run reports an update" || { fail "re-run did not report an update"; cat "$d/out" }
+grep -qiE 'reinstalled in place|Updated ccmorph' "$d/out" && ok "re-run reports an update" || { fail "re-run did not report an update"; cat "$d/out" }
 grep -qiF 'Preserved:' "$d/out" && ok "re-run names what it preserved" || fail "re-run did not name preserved state"
 
 # And a re-run still leaves the rc alone.
-grep -qF '# >>> ccproteus >>>' "$d/home/.zshrc" \
+grep -qF '# >>> ccmorph >>>' "$d/home/.zshrc" \
   && fail "re-run wired the rc" || ok "re-run leaves the rc alone"
 
 # --- 7. missing optional deps warn, and never install unattended ------------

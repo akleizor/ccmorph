@@ -1,8 +1,8 @@
 """Regression tests for user-facing behaviour no other suite pinned down.
 
 Covers the profile lifecycle commands (use, list, mv, rm, login), the launch
-guards of `ccproteus run`, and the credential environment a launch hands Claude
-Code per profile type. Everything runs the real `ccproteus` executable against an
+guards of `ccmorph run`, and the credential environment a launch hands Claude
+Code per profile type. Everything runs the real `ccmorph` executable against an
 isolated HOME with a stub `claude`; nothing touches the network or a real home.
 """
 import os
@@ -20,14 +20,14 @@ ROOT = Path(__file__).resolve().parents[1]
 class Box:
     def __init__(self, home):
         self.home = home
-        self.state = home / '.config/ccproteus'
+        self.state = home / '.config/ccmorph'
         (self.state / 'profiles').mkdir(parents=True)
         (home / 'bin').mkdir()
         (home / '.claude/projects').mkdir(parents=True)
         claude = home / 'bin/claude'
         claude.write_text(
             '#!/bin/sh\n'
-            '# `claude --help` is how ccproteus discovers subcommands; not a launch.\n'
+            '# `claude --help` is how ccmorph discovers subcommands; not a launch.\n'
             '[ "$1" = --help ] && exit 0\n'
             '{ printf "ARGS"; for a do printf " [%s]" "$a"; done; echo\n'
             '  echo "TOKEN=${CLAUDE_CODE_OAUTH_TOKEN-<unset>}"\n'
@@ -38,9 +38,9 @@ class Box:
         claude.chmod(claude.stat().st_mode | stat.S_IXUSR)
         self.env = {k: v for k, v in os.environ.items()
                     if k != 'CLAUDECODE'
-                    and not k.startswith(('CCPROTEUS', '_CCPROTEUS', 'CLAUDE_', 'ANTHROPIC_'))}
+                    and not k.startswith(('CCMORPH', '_CCMORPH', 'CLAUDE_', 'ANTHROPIC_'))}
         self.env.update(HOME=str(home), ZDOTDIR=str(home), XDG_CONFIG_HOME=str(home / '.config'),
-                        CCPROTEUS_STATE_DIR=str(self.state), CCPROTEUS_LIB_DIR=str(ROOT / "lib"),
+                        CCMORPH_STATE_DIR=str(self.state), CCMORPH_LIB_DIR=str(ROOT / "lib"),
                         PATH=f'{home}/bin:{os.environ["PATH"]}', LANG='C.UTF-8', LC_ALL='C.UTF-8',
                         NO_COLOR='1')
 
@@ -48,7 +48,7 @@ class Box:
         (self.state / f'{name}.conf').write_text(text)
 
     def run(self, *args, answer=None):
-        return subprocess.run([str(ROOT / "bin/ccproteus"), *args], env=self.env, input=answer or '',
+        return subprocess.run([str(ROOT / "bin/ccmorph"), *args], env=self.env, input=answer or '',
                               capture_output=True, text=True, timeout=HANG_TIMEOUT)
 
     @property
@@ -109,7 +109,7 @@ def test_list_marks_the_default_and_labels_every_profile_type(box):
 
 def test_list_with_no_profiles_points_at_add(box):
     out = box.run('list')
-    assert out.returncode == 0 and 'ccproteus add' in out.stdout
+    assert out.returncode == 0 and 'ccmorph add' in out.stdout
 
 
 # --- mv / rm ------------------------------------------------------------------
@@ -254,7 +254,7 @@ def test_a_subscription_profile_launches_with_no_injected_credential(box):
 
 @pytest.mark.parametrize('argv, forwarded', [
     (('--', '--continue', '-p', 'hi'), 'ARGS [--continue] [-p] [hi]'),
-    # GH-321: `-a` after the profile is claude's value, not ccproteus's flag.
+    # GH-321: `-a` after the profile is claude's value, not ccmorph's flag.
     (('--system-prompt', '-a'), 'ARGS [--system-prompt] [-a]'),
 ])
 def test_run_forwards_claude_arguments_and_swallows_its_own_separator(box, argv, forwarded):
@@ -277,7 +277,7 @@ def test_retired_verbs_point_at_their_replacement_and_launch_nothing(box):
                      ('creds', 'cred'), ('secret', 'cred')):
         out = box.run(old, 'tok')
         assert out.returncode == 1, old
-        assert f"unknown command '{old}'. Run: ccproteus {new} tok" in out.stderr, (old, out.stderr)
+        assert f"unknown command '{old}'. Run: ccmorph {new} tok" in out.stderr, (old, out.stderr)
     assert box.log() == '' and box.active is None
 
 

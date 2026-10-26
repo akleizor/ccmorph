@@ -1,7 +1,7 @@
 """ARCHITECTURE.md's pointers must land where the sentence says they do: an
 in-page anchor on a heading, a code citation on the one line it names.
 
-Issue #396: the send_id paragraph cited two `ccproteus.sh` line numbers, and both
+Issue #396: the send_id paragraph cited two `ccmorph.sh` line numbers, and both
 had drifted into unrelated code -- a reader following either landed in a TERM/HUP
 trap or the model picker and concluded the doc meant something else. #105 was the
 same failure on the launch-sweep anchor. A line number moves with every unrelated
@@ -18,14 +18,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DOC = ROOT / "ARCHITECTURE.md"
 
-# A citation and the code it names, as (`GATE` in `ccproteus.sh`), allowing the one
-# word the prose puts between them ("the gate `GATE` in `ccproteus.sh`", "the
-# `READ` in `ccproteus.sh`"): a citation the pattern cannot see is one this test
+# A citation and the code it names, as (`GATE` in `ccmorph.sh`), allowing the one
+# word the prose puts between them ("the gate `GATE` in `ccmorph.sh`", "the
+# `READ` in `ccmorph.sh`"): a citation the pattern cannot see is one this test
 # would pass while it lies. The file is whichever module holds the code -- since
-# #352 the cited function may live in any of them -- and only ccproteus library
+# #352 the cited function may live in any of them -- and only ccmorph library
 # files match: the doc also writes "in `model-window`" and "in `anthropic-beta`",
 # which name a helper executable and an HTTP header, not a library.
-CITATION = re.compile(r"`([^`]+)`(?:\s+\w+)?\s+in\s+`(ccproteus(?:-[\w.-]+)?\.zsh|ccproteus\.sh)`")
+CITATION = re.compile(r"`([^`]+)`(?:\s+\w+)?\s+in\s+`(ccmorph(?:-[\w.-]+)?\.zsh|ccmorph\.sh)`")
 
 
 def _slug(h):
@@ -43,13 +43,13 @@ def test_architecture_anchors_resolve():
 
 def test_architecture_cites_code_the_reader_can_land_on_issue_396():
     citations = CITATION.findall(DOC.read_text())
-    assert citations, "ARCHITECTURE.md cites no ccproteus module code"
+    assert citations, "ARCHITECTURE.md cites no ccmorph module code"
     for token, name in citations:
         source = ROOT / "lib" / name
         assert source.is_file(), (
             f"ARCHITECTURE.md cites {token!r} in {name}, which is not a file")
         # Split on `\n`, never `splitlines()`: the cited module may carry literal
-        # U+2028 and U+2029 inside its JS-whitespace tables (ccproteus-context.zsh
+        # U+2028 and U+2029 inside its JS-whitespace tables (ccmorph-context.zsh
         # does), and `splitlines()` counts those as line breaks, so it sees more
         # lines than the file has and every count below those tables comes out
         # wrong.

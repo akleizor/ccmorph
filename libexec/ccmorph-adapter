@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Put a dialect translator in front of one ccproteus profile's endpoint.
+"""Put a dialect translator in front of one ccmorph profile's endpoint.
 
 Why
 ---
@@ -17,7 +17,7 @@ not bound to it, so a shared instance lets any profile pointing at it spend any
 other profile's credential. Both are why this runs one instance per profile, with
 its config rendered at launch and removed on exit.
 
-Modular per profile, which is ccproteus's core design:
+Modular per profile, which is ccmorph's core design:
   - the endpoint and credential come from the profile, and nowhere else
   - only the reusable probe cache persists; credential-bearing runtime is temporary
   - the instance binds loopback on an ephemeral port (a fixed one with --port)
@@ -30,19 +30,19 @@ reveals neither dialect nor limits -- its fields are id/object/created/owned_by/
 capabilities, and owned_by does not predict dialect. Probe verdicts are cached per
 endpoint and only unseen model ids are probed on later starts, so a new model costs
 one probe rather than a full re-sweep. It sits beside the profile directories, under
-ccproteus's own state root, so CCPROTEUS_STATE_DIR and XDG_CONFIG_HOME relocate it
-together with everything else ccproteus stores.
+ccmorph's own state root, so CCMORPH_STATE_DIR and XDG_CONFIG_HOME relocate it
+together with everything else ccmorph stores.
 
 Gateway behaviors that require workarounds — unbidden reasoning, deterministic
 tool_use ids, ignored budget_tokens — are each handled at the point of the
 workaround and explained in the comment there. The probe cache is per-endpoint,
 shared by every profile pointed at it, at
-~/.config/ccproteus/profiles/.adapter-cache/<sha256(base_url)[:16]>.json; delete that
+~/.config/ccmorph/profiles/.adapter-cache/<sha256(base_url)[:16]>.json; delete that
 file to force re-probing after a gateway changes.
 
-Contract with ccproteus
+Contract with ccmorph
 ----------------------
-    ccproteus-adapter <profile>
+    ccmorph-adapter <profile>
 
 Prints exactly one line to stdout when ready:
 
@@ -56,7 +56,7 @@ when --parent-pid disappears.
 
 A long-lived endpoint for a non-Claude client (Hermes) fixes both instead:
 
-    ccproteus-adapter <profile> --auto --model <id> --port <n> --inbound-token-file <path>
+    ccmorph-adapter <profile> --auto --model <id> --port <n> --inbound-token-file <path>
 
 The port is served exactly as given, and the token file must be a regular 0600
 file owned by the user holding at least 32 characters; its token is accepted
@@ -113,8 +113,8 @@ def _find_translator() -> str:
 
 
 TRANSLATOR = _find_translator()
-LIB_DIR = Path(os.environ.get("CCPROTEUS_LIB_DIR") or Path(__file__).resolve().parent.parent / "lib")
-CCPROTEUS = LIB_DIR / "ccproteus.sh"
+LIB_DIR = Path(os.environ.get("CCMORPH_LIB_DIR") or Path(__file__).resolve().parent.parent / "lib")
+CCMORPH = LIB_DIR / "ccmorph.sh"
 # The id-uniquifier sits between Claude Code and the translator: some gateways
 # mint deterministic tool_use ids (Bash_0 on every response), and
 # Claude Code's transcript repair treats repeats as corrupt duplicates and
@@ -122,14 +122,14 @@ CCPROTEUS = LIB_DIR / "ccproteus.sh"
 # 2026-08-16 kimi session deaths. The shim rewrites each id unique at the
 # wire so the placeholder never enters the model's context.
 GATEWAY_SHIM = str(Path(__file__).with_name("gateway-shim"))
-PROFILE_DIRS = Path(os.environ.get("CCPROTEUS_STATE_DIR") or
-                    Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ccproteus") / "profiles"
+PROFILE_DIRS = Path(os.environ.get("CCMORPH_STATE_DIR") or
+                    Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ccmorph") / "profiles"
 PROBE_TIMEOUT = 60   # a dialect silent for a minute is not going to answer
 READY_TIMEOUT = 90
 PARENT_POLL = 2  # seconds between parent-liveness checks
 JOBS = 8
 # How long to wait for another process's classification before falling back to the
-# cache. Must stay under _ccp_adapter_start's readiness budget (3000 x 0.2s = 600s)
+# cache. Must stay under _ccm_adapter_start's readiness budget (3000 x 0.2s = 600s)
 # or a launch fails on "adapter did not become ready" while the holder is healthy.
 LOCK_WAIT = 120
 # Overall budget for classifying a single --model launch (inventory skipped,
@@ -169,7 +169,7 @@ THINKING_PROBE_VERSION = 2
 
 
 def log(msg: str) -> None:
-    print(f"ccproteus-adapter: {msg}", file=sys.stderr, flush=True)
+    print(f"ccmorph-adapter: {msg}", file=sys.stderr, flush=True)
 
 
 def die(msg: str) -> None:
@@ -249,11 +249,11 @@ def profile_env(profile: str) -> dict[str, str]:
         # The profile name is a positional argument, never interpolated into the
         # script: it reaches this process from a caller's command line and `zsh -c`
         # would otherwise execute anything it contains.
-        ["zsh", "-c", 'source "$1" && ccproteus _env "$2"',
-         "ccproteus-adapter", str(CCPROTEUS), profile],
+        ["zsh", "-c", 'source "$1" && ccmorph _env "$2"',
+         "ccmorph-adapter", str(CCMORPH), profile],
         capture_output=True, text=True, timeout=90)
     if out.returncode != 0:
-        die(f"ccproteus _env {profile} failed: {out.stderr.strip()}")
+        die(f"ccmorph _env {profile} failed: {out.stderr.strip()}")
     env = {}
     for line in out.stdout.splitlines():
         if "=" in line:
@@ -557,7 +557,7 @@ def classify(base: str, key: str, cache: Path,
     # A sidecar .lock file so it survives the cache's own rewrite.
     #
     # Bounded, and it says so while waiting. A blocking LOCK_EX here could outlast
-    # the caller: _ccp_adapter_start gives readiness 3000 x 0.2s = 600s, while the
+    # the caller: _ccm_adapter_start gives readiness 3000 x 0.2s = 600s, while the
     # holder's sweep is N models x up to 4 dialect probes x PROBE_TIMEOUT and can
     # run far longer on a slow gateway — so the launch used to sit silent in flock()
     # and then fail with "adapter did not become ready" while the warmup was
@@ -848,8 +848,8 @@ def q(value: str) -> str:
 
 def load_hooks(path: str):
     """Load a profile's request-hooks module (same contract as the shim's
-    CCPROTEUS_SHIM_HOOKS): a standalone file, never importing the shim."""
-    spec = importlib.util.spec_from_file_location("ccproteus_hooks", path)
+    CCMORPH_SHIM_HOOKS): a standalone file, never importing the shim."""
+    spec = importlib.util.spec_from_file_location("ccmorph_hooks", path)
     if spec is None or spec.loader is None:
         raise OSError(f"cannot load request hooks: {path}")
     module = importlib.util.module_from_spec(spec)
@@ -908,7 +908,7 @@ def render(rows, key, port, upstream, authdir, proxy="", hooks_path="") -> str:
     nothink = {r["model"] for r in rows
                if r.get("nothink") and r["dialect"] == "anthropic"}
 
-    # env.CCPROTEUS_UPSTREAM_PROXY sends the translator's upstream calls through an
+    # env.CCMORPH_UPSTREAM_PROXY sends the translator's upstream calls through an
     # HTTP CONNECT proxy. macOS denies a LAN gateway to a translator started under a
     # launchd-owned tmux server ("connect: no route to host"); a loopback proxy
     # holding a Local Network grant dials it instead.
@@ -1108,7 +1108,7 @@ def read_inbound_token(path: str) -> str:
 
     Everything is judged through the one O_NOFOLLOW fd, so there is no window
     between the check and the read for the file to be swapped. The token is a
-    credential: it travels to the shim as a sha256 in CCPROTEUS_INBOUND and
+    credential: it travels to the shim as a sha256 in CCMORPH_INBOUND and
     nowhere else — every message below names the path, never the content."""
 
     def refuse(why: str):
@@ -1155,7 +1155,7 @@ def read_inbound_token(path: str) -> str:
 
 
 # Loopback probe: no proxy, whatever http_proxy says (same reason as --noproxy '*'
-# in ccproteus.sh -- a proxy cannot reach this machine's 127.0.0.1).
+# in ccmorph.sh -- a proxy cannot reach this machine's 127.0.0.1).
 LOOPBACK = urllib.request.build_opener(urllib.request.ProxyHandler({}), SameOriginRedirect())
 
 
@@ -1245,7 +1245,7 @@ def front_directly(args, upstream: str, key: str, route_identity: str,
     shim_args = [sys.executable, GATEWAY_SHIM, str(port), upstream,
                  "--preserve-tool-ids", "--retry-transport"]
     shim_args += privacy_args
-    shim_env = dict(os.environ, CCPROTEUS_MODEL_ROUTE=json.dumps({
+    shim_env = dict(os.environ, CCMORPH_MODEL_ROUTE=json.dumps({
         "profile": args.profile, "identity": route_identity, "upstream": upstream,
         "models_url": api_url(upstream, "/v1/models"),
         "models": [r["model"] for r in usable],
@@ -1256,7 +1256,7 @@ def front_directly(args, upstream: str, key: str, route_identity: str,
     shim_env.update(shim_extras)
     token = args.token
     if token:
-        shim_env["CCPROTEUS_INBOUND"] = json.dumps(
+        shim_env["CCMORPH_INBOUND"] = json.dumps(
             {"sha256": hashlib.sha256(token.encode()).hexdigest(), "key": key})
     release_port_reservation(args)
     shim = subprocess.Popen(shim_args, env=shim_env, stdin=subprocess.DEVNULL,
@@ -1291,7 +1291,7 @@ def front_directly(args, upstream: str, key: str, route_identity: str,
             break
         time.sleep(0.4)
     log("gateway-shim interposed (Anthropic model ids; readable gateway errors"
-        f"{'; profile request hooks' if shim_extras.get('CCPROTEUS_SHIM_HOOKS') else ''})")
+        f"{'; profile request hooks' if shim_extras.get('CCMORPH_SHIM_HOOKS') else ''})")
     # Only a minted --inbound-token is printed; a file token is a long-lived
     # credential whose stdout may be redirected to a file.
     if args.inbound_token:
@@ -1359,7 +1359,7 @@ def main() -> int:
         except OSError:
             die(f"--port {args.port}: is in use")
 
-    # ccproteus's own [1m] marker (a context-window variant, not a distinct
+    # ccmorph's own [1m] marker (a context-window variant, not a distinct
     # model id on the gateway) is the shell layer's concern; strip only that
     # exact suffix so the id classify() and the gateway both recognize is the
     # real one, without guessing at any other vendor dialect's naming.
@@ -1368,7 +1368,7 @@ def main() -> int:
         required_model = required_model[: -len("[1m]")]
     required_model = required_model or None
 
-    # Detach stdin from whatever the launcher handed us. ccproteus starts this
+    # Detach stdin from whatever the launcher handed us. ccmorph starts this
     # adapter in the foreground of Claude Code's controlling terminal, redirecting
     # only stdout/stderr -- so fd 0 is inherited straight from the tty. This process
     # never reads stdin, but a foreground process that merely holds the tty open
@@ -1386,9 +1386,9 @@ def main() -> int:
         pass  # a missing /dev/null is not worth aborting a launch over
 
     env = profile_env(args.profile)
-    model_map = json.loads(env.get("CCPROTEUS_MODEL_MAP", "{}"))
+    model_map = json.loads(env.get("CCMORPH_MODEL_MAP", "{}"))
     # Preparation keys the map by the wire model id, like the shim's request-side
-    # lookup: never by the spelling the caller used. ccproteus.sh refuses a [1m] key
+    # lookup: never by the spelling the caller used. ccmorph.sh refuses a [1m] key
     # when it reads the profile, which profile_env() runs first.
     if args.model and not args.ensure_config:
         required_model = model_map.get(required_model, required_model)
@@ -1398,15 +1398,15 @@ def main() -> int:
     upstream = (env.get("ANTHROPIC_BASE_URL") or "").rstrip("/")
     if not upstream:
         die(f"profile {args.profile} has no base_url to front")
-    upstream_proxy = env.get("CCPROTEUS_UPSTREAM_PROXY", "").strip()
-    # Profile request quirks ride as CCPROTEUS_* env to the shim's hooks module,
+    upstream_proxy = env.get("CCMORPH_UPSTREAM_PROXY", "").strip()
+    # Profile request quirks ride as CCMORPH_* env to the shim's hooks module,
     # not as shim flags: whatever the profile declared is ferried through
     # untouched. The hooks path is validated here, before anything is spawned,
     # so a stale profile fails loudly at launch instead of inside the shim.
-    shim_extras = {k: v for k, v in env.items() if k.startswith("CCPROTEUS_")}
-    hooks_path = shim_extras.get("CCPROTEUS_SHIM_HOOKS", "").strip()
+    shim_extras = {k: v for k, v in env.items() if k.startswith("CCMORPH_")}
+    hooks_path = shim_extras.get("CCMORPH_SHIM_HOOKS", "").strip()
     if hooks_path and not os.path.isfile(hooks_path):
-        die(f"profile {args.profile} points CCPROTEUS_SHIM_HOOKS at a missing file: "
+        die(f"profile {args.profile} points CCMORPH_SHIM_HOOKS at a missing file: "
             f"{hooks_path}")
 
     # Dialect classification is a property of the ENDPOINT, not the profile: the
@@ -1471,7 +1471,7 @@ def main() -> int:
     if not usable:
         if args.auto and not required_model:
             print("EXIT=no declared or cached model protocol; set a model with "
-                  f"ccproteus set {args.profile} model <model-id> and retry "
+                  f"ccmorph set {args.profile} model <model-id> and retry "
                   "(the compatibility check may incur a small charge)", flush=True)
             return 1
         die("no usable models on this endpoint; refusing to start")
@@ -1485,10 +1485,10 @@ def main() -> int:
     # forwards the client's metadata and headers as sent. Request rewrites that
     # exist only for one gateway are not flags: they ride in shim_extras for the
     # profile's hooks module to read.
-    privacy_args = ["--random-device-id"] if env.get("CCPROTEUS_RANDOM_DEVICE_ID") == "1" else []
-    stall = env.get("CCPROTEUS_STALL_TIMEOUT", "").strip()
+    privacy_args = ["--random-device-id"] if env.get("CCMORPH_RANDOM_DEVICE_ID") == "1" else []
+    stall = env.get("CCMORPH_STALL_TIMEOUT", "").strip()
     if stall:
-        os.environ["CCPROTEUS_STALL_TIMEOUT"] = stall
+        os.environ["CCMORPH_STALL_TIMEOUT"] = stall
     # Every route the adapter serves goes through the gateway edge (gateway-shim):
     # Anthropic model ids in and out, a moving catalogue, readable errors, stall
     # deadlines. A gateway that already speaks Anthropic needs no translator, so the
@@ -1498,7 +1498,7 @@ def main() -> int:
                               privacy_args, model_map)
 
     state = Path(tempfile.mkdtemp(
-        prefix=f"ccproteus-adapter-{os.getuid()}-",
+        prefix=f"ccmorph-adapter-{os.getuid()}-",
         dir=os.environ.get("TMPDIR") or "/tmp"))
     state.chmod(0o700)
     atexit.register(shutil.rmtree, state, ignore_errors=True)
@@ -1527,7 +1527,7 @@ def main() -> int:
         for spelling in (json.dumps(key)[1:-1], key):
             text = text.replace(spelling, "<redacted>")
         if upstream_proxy:
-            # Same shape as ccproteus.sh _ccp_redact_url: no userinfo, no query.
+            # Same shape as ccmorph.sh _ccm_redact_url: no userinfo, no query.
             u = urllib.parse.urlsplit(upstream_proxy)
             host = (u.hostname or "") + (f":{u.port}" if u.port else "")
             safe = urllib.parse.urlunsplit((u.scheme, host, u.path, "", ""))
@@ -1540,7 +1540,7 @@ def main() -> int:
         conf.unlink(missing_ok=True)
         # Name the command, not just the concept: this fires on a first run
         # against a copied profile, where the reader has never heard of the
-        # translator and reasonably reads a missing path as "ccproteus is broken".
+        # translator and reasonably reads a missing path as "ccmorph is broken".
         die(f"translator not found or not executable: {TRANSLATOR}\n"
             "This endpoint needs cliproxyapi for automatic protocol compatibility.\n"
             "  brew install cliproxyapi\n"
@@ -1568,7 +1568,7 @@ def main() -> int:
         """Stop the children, remove the credential, exit with `status`.
 
         Signal handlers call this with no arguments and exit 0 -- an orderly stop we
-        were told to make. Failure paths pass status=1: the contract with ccproteus
+        were told to make. Failure paths pass status=1: the contract with ccmorph
         is that anything short of "printed PORT and served" exits non-zero, so the
         caller can abort the launch instead of pointing Claude Code at a dead port.
         """
@@ -1604,7 +1604,7 @@ def main() -> int:
                 return
             time.sleep(0.4)
         # Never served within READY_TIMEOUT: a failure, so exit non-zero. Exiting 0
-        # here made a timed-out launch look successful to ccproteus, which then ran
+        # here made a timed-out launch look successful to ccmorph, which then ran
         # Claude Code against a port nothing was listening on.
         log(f"{what} did not serve on :{p} within {READY_TIMEOUT}s; "
             f"see {state/'translator.log'}")
@@ -1622,7 +1622,7 @@ def main() -> int:
     shim_args += privacy_args
     if not recycles_ids:
         shim_args.append("--preserve-tool-ids")
-    shim_env = dict(os.environ, CCPROTEUS_MODEL_ROUTE=json.dumps({
+    shim_env = dict(os.environ, CCMORPH_MODEL_ROUTE=json.dumps({
         "adapter": str(Path(__file__).resolve()), "profile": args.profile,
         "config": str(conf), "port": port, "identity": route_identity, "upstream": upstream,
         "models": [r["model"] for r in usable],
@@ -1631,7 +1631,7 @@ def main() -> int:
     shim_env.update(shim_extras)
     token = args.token
     if token:
-        shim_env["CCPROTEUS_INBOUND"] = json.dumps(
+        shim_env["CCMORPH_INBOUND"] = json.dumps(
             {"sha256": hashlib.sha256(token.encode()).hexdigest(), "key": key})
     release_port_reservation(args)
     shim = subprocess.Popen(
@@ -1642,7 +1642,7 @@ def main() -> int:
     _why = ["prepare models selected mid-session"]
     if any(r.get("id_recycle") for r in usable):
         _why.append("upstream recycles tool_use ids")
-    if shim_extras.get("CCPROTEUS_SHIM_HOOKS"):
+    if shim_extras.get("CCMORPH_SHIM_HOOKS"):
         _why.append("profile request hooks")
     log(f"gateway-shim interposed ({'; '.join(_why)})")
 

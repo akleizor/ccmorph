@@ -1,24 +1,24 @@
 #!/bin/zsh
-# Opt-in install of Remote Control. The core installer never runs this; ccproteus
+# Opt-in install of Remote Control. The core installer never runs this; ccmorph
 # works identically with or without it.
 #   addons/remote-control/install.sh              link the commands, start the supervisor
 #   addons/remote-control/install.sh --uninstall  stop the supervisor, remove what this added
 #
-# The supervisor (ccproteus-rc-hosts) runs as a LaunchAgent: it starts at login,
+# The supervisor (ccmorph-rc-hosts) runs as a LaunchAgent: it starts at login,
 # relaunches itself if it dies, and keeps every folder listed in rc-hosts served.
 set -eu
 HERE="${0:A:h}"
 BIN="$HOME/.local/bin"
-LABEL="com.ccproteus.rc-hosts"
+LABEL="com.ccmorph.rc-hosts"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-LOG="$HOME/Library/Logs/ccproteus/rc-hosts.log"
-STATE="${CCPROTEUS_STATE_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/ccproteus}"
+LOG="$HOME/Library/Logs/ccmorph/rc-hosts.log"
+STATE="${CCMORPH_STATE_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/ccmorph}"
 DOMAIN="gui/$(id -u)"
 
 if [[ "${1:-}" == --uninstall ]]; then
   launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
   rm -f "$PLIST"
-  for cmd in ccproteus-rc ccproteus-rc-hosts; do
+  for cmd in ccmorph-rc ccmorph-rc-hosts; do
     [[ -L "$BIN/$cmd" && "$(readlink "$BIN/$cmd")" == "$HERE/$cmd" ]] && rm "$BIN/$cmd"
   done
   print "removed $LABEL and its commands (rc-hosts and hosts' state are kept)"
@@ -27,7 +27,7 @@ fi
 
 command -v mitmdump >/dev/null || print -u2 "note: mitmdump not found — brew install mitmproxy"
 mkdir -p "$BIN"
-for cmd in ccproteus-rc ccproteus-rc-hosts; do
+for cmd in ccmorph-rc ccmorph-rc-hosts; do
   if [[ -e "$BIN/$cmd" && ! -L "$BIN/$cmd" ]] || [[ -L "$BIN/$cmd" && "$(readlink "$BIN/$cmd")" != "$HERE/$cmd" ]]; then
     print -u2 "refusing: $BIN/$cmd exists and is not this add-on's link"
     exit 1
@@ -36,7 +36,7 @@ for cmd in ccproteus-rc ccproteus-rc-hosts; do
 done
 
 [[ -e "$STATE/rc-hosts" ]] || cat > "$STATE/rc-hosts" <<'CONF'
-# One Remote Control host per folder, kept up by the com.ccproteus.rc-hosts
+# One Remote Control host per folder, kept up by the com.ccmorph.rc-hosts
 # LaunchAgent. Edits apply within seconds.
 #route=<endpoint profile>
 #permission=bypassPermissions
@@ -53,7 +53,7 @@ cat > "$PLIST" <<PL
 <dict>
 	<key>Label</key><string>$LABEL</string>
 	<key>ProcessType</key><string>Interactive</string>
-	<key>ProgramArguments</key><array><string>$HERE/ccproteus-rc-hosts</string></array>
+	<key>ProgramArguments</key><array><string>$HERE/ccmorph-rc-hosts</string></array>
 	<key>EnvironmentVariables</key><dict>
 		<key>PATH</key><string>$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
 	</dict>

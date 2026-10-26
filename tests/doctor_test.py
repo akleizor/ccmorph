@@ -34,10 +34,10 @@ def run_doctor(tmp_path, conf, curl=None):
         c.write_text(curl)
         c.chmod(0o755)
     env = {**os.environ, "HOME": str(home), "PATH": f"{bindir}:{os.environ['PATH']}",
-           "CCPROTEUS_STATE_DIR": str(state), "CCPROTEUS_LIB_DIR": str(ROOT / "lib"),
+           "CCMORPH_STATE_DIR": str(state), "CCMORPH_LIB_DIR": str(ROOT / "lib"),
            "CURL_ARGS": str(bindir / "curl.args"), "CURL_CALLED": str(bindir / "called"),
            "DOCTOR_MARKER": str(bindir / "doctor.marker")}
-    result = subprocess.run([str(ROOT / "bin/ccproteus"), "doctor", "demo"], env=env,
+    result = subprocess.run([str(ROOT / "bin/ccmorph"), "doctor", "demo"], env=env,
                             capture_output=True, text=True, timeout=HANG_TIMEOUT)
     return result, state / "demo.conf", bindir
 
@@ -47,7 +47,7 @@ def test_doctor_auth_redaction_and_no_mutation(tmp_path):
 printf '%s\\n' "$@" > "$CURL_ARGS"
 [ "$1" = -K ] && cat >> "$CURL_ARGS"
 printf '%s\\n' '{"data":[]}'
-printf '%s\\n' '__CCPROTEUS_STATUS__200'
+printf '%s\\n' '__CCMORPH_STATUS__200'
 """
     conf = "type=apikey\nbase_url=https://user:secret@example.test/api\napi_key=secret-key\n"
     result, path, bindir = run_doctor(tmp_path, conf, curl)
@@ -72,7 +72,7 @@ printf '%s\\n' '__CCPROTEUS_STATUS__200'
 def test_doctor_rejects_malformed_listing(tmp_path):
     curl = """#!/bin/sh
 printf '%s\n' '{"data":"not-a-list"}'
-printf '%s\n' '__CCPROTEUS_STATUS__200'
+printf '%s\n' '__CCMORPH_STATUS__200'
 """
     result, _, _ = run_doctor(tmp_path, "type=apikey\nbase_url=https://example.test\napi_key=k\n", curl)
     assert result.returncode != 0
@@ -81,7 +81,7 @@ printf '%s\n' '__CCPROTEUS_STATUS__200'
 
 OK_CURL = """#!/bin/sh
 printf '%s\n' '{"data":[]}'
-printf '%s\n' '__CCPROTEUS_STATUS__200'
+printf '%s\n' '__CCMORPH_STATUS__200'
 """
 
 
@@ -136,8 +136,8 @@ def test_doctor_rejects_invalid_profile_settings_json(tmp_path):
     assert "invalid JSON" in result.stdout
 
 
-ADAPTER_PS_ROWS = ("'4000 1 /bin/echo ccproteus-adapter demo' "
-                   "'4321 1 /usr/bin/python3 /usr/local/bin/ccproteus-adapter demo --auto' "
+ADAPTER_PS_ROWS = ("'4000 1 /bin/echo ccmorph-adapter demo' "
+                   "'4321 1 /usr/bin/python3 /usr/local/bin/ccmorph-adapter demo --auto' "
                    "'4322 4321 /usr/local/bin/cliproxyapi -config /tmp/config.yaml' "
                    "'4323 4321 /usr/bin/Python /usr/local/bin/gateway-shim --port 4568'")
 
@@ -182,7 +182,7 @@ def assert_adapter_report(out):
 def test_doctor_reports_existing_adapter_without_starting_it(tmp_path, slow):
     curl = """#!/bin/sh
 printf '%s\n' '{"data":[]}'
-printf '%s\n' '__CCPROTEUS_STATUS__200'
+printf '%s\n' '__CCMORPH_STATUS__200'
 """
     conf = "type=apikey\nbase_url=https://example.test\napi_key=k\nadapter=true\n"
     # Stubs first: run_doctor only fills in what is missing, so doctor's single
@@ -198,7 +198,7 @@ printf '%s\n' '__CCPROTEUS_STATUS__200'
 def test_doctor_tolerates_a_conf_that_still_declares_removed_keys(tmp_path):
     """Removed keys (transport, forward_ip, subagent_model, lean) were removed,
     not reserved: an old conf carrying any or all of them must still be checkable."""
-    curl = "#!/bin/sh\nprintf '%s\\n' '{\"data\":[]}'\nprintf '%s\\n' '__CCPROTEUS_STATUS__200'\n"
+    curl = "#!/bin/sh\nprintf '%s\\n' '{\"data\":[]}'\nprintf '%s\\n' '__CCMORPH_STATUS__200'\n"
     result, _, _ = run_doctor(
         tmp_path / "legacy",
         "type=apikey\nbase_url=https://example.test\napi_key=k\ntransport=tunnel\n"
@@ -215,7 +215,7 @@ def test_doctor_invalid_url_skips_request(tmp_path):
     curl = """#!/bin/sh
 printf '%s\n' called >> "$CURL_CALLED"
 printf '%s\n' '{"data":[]}'
-printf '%s\n' '__CCPROTEUS_STATUS__200'
+printf '%s\n' '__CCMORPH_STATUS__200'
 """
     result, _, bindir = run_doctor(tmp_path, "type=apikey\nbase_url=https://example.test/path?token=secret\napi_key=k\n", curl)
     assert result.returncode != 0
@@ -266,10 +266,10 @@ def test_run_doctor_remains_native_passthrough(tmp_path):
         "HTTPServer(('127.0.0.1', 0), H).serve_forever()\n")
     (bindir / "cliproxyapi").chmod(0o755)
     env = {**os.environ, "HOME": str(home), "PATH": f"{bindir}:{os.environ['PATH']}",
-           "CCPROTEUS_STATE_DIR": str(state), "CCPROTEUS_LIB_DIR": str(ROOT / "lib"),
+           "CCMORPH_STATE_DIR": str(state), "CCMORPH_LIB_DIR": str(ROOT / "lib"),
            "NATIVE_OUT": str(tmp_path / "native")}
     # Provider readiness alone has a 30-second budget; this is not a launch-speed test.
-    process = subprocess.Popen([str(ROOT / "bin/ccproteus"), "run", "doctor"], env=env,
+    process = subprocess.Popen([str(ROOT / "bin/ccmorph"), "run", "doctor"], env=env,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                text=True, start_new_session=True)
     try:
@@ -291,7 +291,7 @@ def test_doctor_terminal_statuses(tmp_path):
     _, conf, bindir = run_doctor(tmp_path, "type=sub\nemail=test@example.test\n")
     env = {**os.environ, "HOME": str(tmp_path / "home"),
            "PATH": f"{bindir}:{os.environ['PATH']}",
-           "CCPROTEUS_STATE_DIR": str(conf.parent), "CCPROTEUS_LIB_DIR": str(ROOT / "lib"),
+           "CCMORPH_STATE_DIR": str(conf.parent), "CCMORPH_LIB_DIR": str(ROOT / "lib"),
            "TERM": "xterm-256color"}
     env.pop("NO_COLOR", None)
     for overrides, profile, expected, code in [
@@ -303,7 +303,7 @@ def test_doctor_terminal_statuses(tmp_path):
         master, slave = pty.openpty()
         result = None
         try:
-            result = subprocess.Popen([str(ROOT / "bin/ccproteus"), "doctor", profile],
+            result = subprocess.Popen([str(ROOT / "bin/ccmorph"), "doctor", profile],
                                       env={**env, **overrides}, stdin=subprocess.DEVNULL,
                                       stdout=slave, stderr=slave)
             os.close(slave)

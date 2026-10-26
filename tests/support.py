@@ -7,5 +7,5 @@ import os
 # cap reports a single hung wait first, with a thread dump, while this bound holds
 # the waits the cap cannot see — a test that polls a spawned process several times
 # over, where the cap would fire in the middle of the polling.
-# Override with CCPROTEUS_TEST_HANG_TIMEOUT.
-HANG_TIMEOUT = float(os.environ.get("CCPROTEUS_TEST_HANG_TIMEOUT", "120"))
+# Override with CCMORPH_TEST_HANG_TIMEOUT.
+HANG_TIMEOUT = float(os.environ.get("CCMORPH_TEST_HANG_TIMEOUT", "120"))

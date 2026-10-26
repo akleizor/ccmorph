@@ -33,7 +33,7 @@ from pathlib import Path
 
 TOOL_TYPE = "advisor_20260301"
 BETA = "advisor-tool-2026-03-01"
-MARKER = "CCPROTEUS-ADVISOR-SMOKE-SUBAGENT-MARKER"
+MARKER = "CCMORPH-ADVISOR-SMOKE-SUBAGENT-MARKER"
 # Every path the child could read shared state from; all of them stay private.
 SANDBOX_DIRS = ("home", "claude-config", "securestorage", "xdg", "zdotdir", "project")
 
@@ -158,7 +158,7 @@ def run_cli(argv, cwd, env, timeout):
 
 def run_case(claude_bin, label, *, disable, subagent, timeout):
     """One CLI run against a fresh stub and a 0700 sandbox of private dirs."""
-    tmp = tempfile.mkdtemp(prefix="ccproteus-advisor-smoke-")
+    tmp = tempfile.mkdtemp(prefix="ccmorph-advisor-smoke-")
     os.chmod(tmp, 0o700)
     path = {name: Path(tmp, name) for name in SANDBOX_DIRS}
     for directory in path.values():
@@ -168,11 +168,11 @@ def run_case(claude_bin, label, *, disable, subagent, timeout):
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:
-        # Nothing inherited may reach the child: no Claude/Anthropic/ccproteus
+        # Nothing inherited may reach the child: no Claude/Anthropic/ccmorph
         # vars, no proxy vars — it must not find shared hooks, MCP, plugins,
         # settings, credentials or caches.
         env = {k: v for k, v in os.environ.items()
-               if not (k.startswith(("CLAUDE", "ANTHROPIC", "CCPROTEUS", "_CCPROTEUS"))
+               if not (k.startswith(("CLAUDE", "ANTHROPIC", "CCMORPH", "_CCMORPH"))
                        or k.endswith("_PROXY") or k in ("no_proxy", "NO_PROXY"))}
         env.update({"HOME": str(path["home"]),
                     "CLAUDE_CONFIG_DIR": str(path["claude-config"]),

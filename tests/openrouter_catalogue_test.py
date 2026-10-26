@@ -60,7 +60,7 @@ def test_listing_publishes_windows_and_drops_non_chat_models():
 
 
 def test_new_openrouter_profile_resolves_every_model_without_a_manual_number():
-    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'CCPROTEUS_STATE_DIR': tmp}, clear=True):
+    with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'CCMORPH_STATE_DIR': tmp}, clear=True):
         conf = Path(tmp) / 'or.conf'
         conf.write_text('type=apikey\nbase_url=https://openrouter.ai/api\napi_key=canary\n')
         assert probe.size_listing('or', FIXTURE.decode(), 'https://openrouter.ai/api', 'canary') == 0

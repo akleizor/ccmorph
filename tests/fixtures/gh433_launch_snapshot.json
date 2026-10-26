@@ -5,24 +5,24 @@
       "ANTHROPIC_API_KEY": "k",
       "ANTHROPIC_BASE_URL": "http://127.0.0.1:45999",
       "ANTHROPIC_MODEL": "claude-sonnet-4-5",
-      "CCPROTEUS_LIB_DIR": "$HOME/.config/ccproteus/lib",
-      "CCPROTEUS_RELAY_ID": "<minted per launch>",
-      "CCPROTEUS_STATE_DIR": "$HOME/.config/ccproteus",
-      "CCPROTEUS_SUBCOMMAND_LAUNCH": "0",
+      "CCMORPH_LIB_DIR": "$HOME/.config/ccmorph/lib",
+      "CCMORPH_RELAY_ID": "<minted per launch>",
+      "CCMORPH_STATE_DIR": "$HOME/.config/ccmorph",
+      "CCMORPH_SUBCOMMAND_LAUNCH": "0",
       "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "75",
       "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT": "1",
       "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1",
       "CLAUDE_CODE_MODEL_CAPABILITIES": "-mid_conv_system,-mid_conv_tool_change,-per_turn_effort",
-      "CLAUDE_CONFIG_DIR": "$HOME/.config/ccproteus/profiles/gw",
+      "CLAUDE_CONFIG_DIR": "$HOME/.config/ccmorph/profiles/gw",
       "HOME": "$HOME",
       "LANG": "C.UTF-8",
       "PATH": "$HOME/bin:/usr/bin:/bin",
       "XDG_CONFIG_HOME": "$HOME/.config"
     },
     "files": {
-      "cache/settings.base.json": "{\n  \"modelSettings\": {},\n  \"model\": \"claude-sonnet-4-5\",\n  \"autoCompactWindow\": 200000,\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"[ -n \\\"$CCPROTEUS_ADVISE\\\" ] && printf \\\"%s\\\" \\\"$CCPROTEUS_ADVISE\\\" || true\"\n          }\n        ]\n      }\n    ]\n  }\n}\n",
+      "cache/settings.base.json": "{\n  \"modelSettings\": {},\n  \"model\": \"claude-sonnet-4-5\",\n  \"autoCompactWindow\": 200000,\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"[ -n \\\"$CCMORPH_ADVISE\\\" ] && printf \\\"%s\\\" \\\"$CCMORPH_ADVISE\\\" || true\"\n          }\n        ]\n      }\n    ]\n  }\n}\n",
       "gw.conf": "type=apikey\nbase_url=https://gw.invalid\napi_key=k\nadapter=true\n\nmodel=claude-sonnet-4-5\n\nmodel_defaults=1\n",
-      "settings.json": "{\n  \"modelSettings\": {},\n  \"model\": \"claude-sonnet-4-5\",\n  \"autoCompactWindow\": 200000,\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"[ -n \\\"$CCPROTEUS_ADVISE\\\" ] && printf \\\"%s\\\" \\\"$CCPROTEUS_ADVISE\\\" || true\"\n          }\n        ]\n      }\n    ]\n  }\n}\n"
+      "settings.json": "{\n  \"modelSettings\": {},\n  \"model\": \"claude-sonnet-4-5\",\n  \"autoCompactWindow\": 200000,\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"[ -n \\\"$CCMORPH_ADVISE\\\" ] && printf \\\"%s\\\" \\\"$CCMORPH_ADVISE\\\" || true\"\n          }\n        ]\n      }\n    ]\n  }\n}\n"
     },
     "stderr": ""
   },
@@ -31,24 +31,24 @@
     "env": {
       "ANTHROPIC_API_KEY": "k",
       "ANTHROPIC_BASE_URL": "http://127.0.0.1:45999",
-      "CCPROTEUS_LIB_DIR": "$HOME/.config/ccproteus/lib",
-      "CCPROTEUS_RELAY_ID": "<minted per launch>",
-      "CCPROTEUS_STATE_DIR": "$HOME/.config/ccproteus",
-      "CCPROTEUS_SUBCOMMAND_LAUNCH": "0",
+      "CCMORPH_LIB_DIR": "$HOME/.config/ccmorph/lib",
+      "CCMORPH_RELAY_ID": "<minted per launch>",
+      "CCMORPH_STATE_DIR": "$HOME/.config/ccmorph",
+      "CCMORPH_SUBCOMMAND_LAUNCH": "0",
       "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "75",
       "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT": "1",
       "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1",
       "CLAUDE_CODE_MODEL_CAPABILITIES": "-mid_conv_system,-mid_conv_tool_change,-per_turn_effort",
-      "CLAUDE_CONFIG_DIR": "$HOME/.config/ccproteus/profiles/gw",
+      "CLAUDE_CONFIG_DIR": "$HOME/.config/ccmorph/profiles/gw",
       "HOME": "$HOME",
       "LANG": "C.UTF-8",
       "PATH": "$HOME/bin:/usr/bin:/bin",
       "XDG_CONFIG_HOME": "$HOME/.config"
     },
     "files": {
-      "cache/settings.base.json": "{\n  \"modelSettings\": {},\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"[ -n \\\"$CCPROTEUS_ADVISE\\\" ] && printf \\\"%s\\\" \\\"$CCPROTEUS_ADVISE\\\" || true\"\n          }\n        ]\n      }\n    ]\n  }\n}\n",
+      "cache/settings.base.json": "{\n  \"modelSettings\": {},\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"[ -n \\\"$CCMORPH_ADVISE\\\" ] && printf \\\"%s\\\" \\\"$CCMORPH_ADVISE\\\" || true\"\n          }\n        ]\n      }\n    ]\n  }\n}\n",
       "gw.conf": "type=apikey\nbase_url=https://gw.invalid\napi_key=k\nadapter=true\n\nmodel_defaults=1\n",
-      "settings.json": "{\n  \"modelSettings\": {},\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"[ -n \\\"$CCPROTEUS_ADVISE\\\" ] && printf \\\"%s\\\" \\\"$CCPROTEUS_ADVISE\\\" || true\"\n          }\n        ]\n      }\n    ]\n  }\n}\n"
+      "settings.json": "{\n  \"modelSettings\": {},\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"[ -n \\\"$CCMORPH_ADVISE\\\" ] && printf \\\"%s\\\" \\\"$CCMORPH_ADVISE\\\" || true\"\n          }\n        ]\n      }\n    ]\n  }\n}\n"
     },
     "stderr": ""
   },
@@ -58,26 +58,26 @@
       "ANTHROPIC_API_KEY": "k",
       "ANTHROPIC_BASE_URL": "http://127.0.0.1:45999",
       "ANTHROPIC_MODEL": "claude-sonnet-4-5",
-      "CCPROTEUS_ADVISE": "{\"systemMessage\": \"ccproteus: compacts at 135k; lower model limits: kimi-k3 limit 40k. Start a new session on a lower-limit model to size compaction for it. Set CCPROTEUS_WITHHOLD_FATAL=1 to hide these choices.\"}",
-      "CCPROTEUS_LIB_DIR": "$HOME/.config/ccproteus/lib",
-      "CCPROTEUS_RELAY_ID": "<minted per launch>",
-      "CCPROTEUS_STATE_DIR": "$HOME/.config/ccproteus",
-      "CCPROTEUS_SUBCOMMAND_LAUNCH": "0",
+      "CCMORPH_ADVISE": "{\"systemMessage\": \"ccmorph: compacts at 135k; lower model limits: kimi-k3 limit 40k. Start a new session on a lower-limit model to size compaction for it. Set CCMORPH_WITHHOLD_FATAL=1 to hide these choices.\"}",
+      "CCMORPH_LIB_DIR": "$HOME/.config/ccmorph/lib",
+      "CCMORPH_RELAY_ID": "<minted per launch>",
+      "CCMORPH_STATE_DIR": "$HOME/.config/ccmorph",
+      "CCMORPH_SUBCOMMAND_LAUNCH": "0",
       "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "75",
       "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT": "1",
       "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1",
       "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "400000",
       "CLAUDE_CODE_MODEL_CAPABILITIES": "-mid_conv_system,-mid_conv_tool_change,-per_turn_effort",
-      "CLAUDE_CONFIG_DIR": "$HOME/.config/ccproteus/profiles/gw",
+      "CLAUDE_CONFIG_DIR": "$HOME/.config/ccmorph/profiles/gw",
       "HOME": "$HOME",
       "LANG": "C.UTF-8",
       "PATH": "$HOME/bin:/usr/bin:/bin",
       "XDG_CONFIG_HOME": "$HOME/.config"
     },
     "files": {
-      "cache/settings.base.json": "{\n  \"availableModels\": [\n    \"claude-sonnet-4-5\",\n    \"gpt-6-astra\",\n    \"kimi-k3\"\n  ],\n  \"modelSettings\": {},\n  \"model\": \"claude-sonnet-4-5\",\n  \"autoCompactWindow\": 200000,\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"[ -n \\\"$CCPROTEUS_ADVISE\\\" ] && printf \\\"%s\\\" \\\"$CCPROTEUS_ADVISE\\\" || true\"\n          }\n        ]\n      }\n    ]\n  }\n}\n",
+      "cache/settings.base.json": "{\n  \"availableModels\": [\n    \"claude-sonnet-4-5\",\n    \"gpt-6-astra\",\n    \"kimi-k3\"\n  ],\n  \"modelSettings\": {},\n  \"model\": \"claude-sonnet-4-5\",\n  \"autoCompactWindow\": 200000,\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"[ -n \\\"$CCMORPH_ADVISE\\\" ] && printf \\\"%s\\\" \\\"$CCMORPH_ADVISE\\\" || true\"\n          }\n        ]\n      }\n    ]\n  }\n}\n",
       "gw.conf": "type=apikey\nbase_url=https://gw.invalid\napi_key=k\nadapter=true\n\nmodel=claude-sonnet-4-5\n\ncontext_window.claude-sonnet-4-5=200000\ncontext_window.gpt-6-astra=400000\ncontext_window.kimi-k3=40000\n\nmodel_defaults=1\n",
-      "settings.json": "{\n  \"availableModels\": [\n    \"claude-sonnet-4-5\",\n    \"gpt-6-astra\",\n    \"kimi-k3\"\n  ],\n  \"modelSettings\": {},\n  \"model\": \"claude-sonnet-4-5\",\n  \"autoCompactWindow\": 200000,\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"[ -n \\\"$CCPROTEUS_ADVISE\\\" ] && printf \\\"%s\\\" \\\"$CCPROTEUS_ADVISE\\\" || true\"\n          }\n        ]\n      }\n    ]\n  }\n}\n"
+      "settings.json": "{\n  \"availableModels\": [\n    \"claude-sonnet-4-5\",\n    \"gpt-6-astra\",\n    \"kimi-k3\"\n  ],\n  \"modelSettings\": {},\n  \"model\": \"claude-sonnet-4-5\",\n  \"autoCompactWindow\": 200000,\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"[ -n \\\"$CCMORPH_ADVISE\\\" ] && printf \\\"%s\\\" \\\"$CCMORPH_ADVISE\\\" || true\"\n          }\n        ]\n      }\n    ]\n  }\n}\n"
     },
     "stderr": ""
   },
@@ -87,27 +87,27 @@
       "ANTHROPIC_API_KEY": "k",
       "ANTHROPIC_BASE_URL": "http://127.0.0.1:45999",
       "ANTHROPIC_MODEL": "claude-sonnet-4-5",
-      "CCPROTEUS_ADVISE": "{\"systemMessage\": \"ccproteus: compacts at 135k; hidden from /model: kimi-k3 limit 40k. Start a new session to use them, or set CCPROTEUS_WITHHOLD_FATAL=0 to show them.\"}",
-      "CCPROTEUS_LIB_DIR": "$HOME/.config/ccproteus/lib",
-      "CCPROTEUS_RELAY_ID": "<minted per launch>",
-      "CCPROTEUS_STATE_DIR": "$HOME/.config/ccproteus",
-      "CCPROTEUS_SUBCOMMAND_LAUNCH": "0",
-      "CCPROTEUS_WITHHOLD_FATAL": "1",
+      "CCMORPH_ADVISE": "{\"systemMessage\": \"ccmorph: compacts at 135k; hidden from /model: kimi-k3 limit 40k. Start a new session to use them, or set CCMORPH_WITHHOLD_FATAL=0 to show them.\"}",
+      "CCMORPH_LIB_DIR": "$HOME/.config/ccmorph/lib",
+      "CCMORPH_RELAY_ID": "<minted per launch>",
+      "CCMORPH_STATE_DIR": "$HOME/.config/ccmorph",
+      "CCMORPH_SUBCOMMAND_LAUNCH": "0",
+      "CCMORPH_WITHHOLD_FATAL": "1",
       "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "75",
       "CLAUDE_CODE_ALWAYS_ENABLE_EFFORT": "1",
       "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "1",
       "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "400000",
       "CLAUDE_CODE_MODEL_CAPABILITIES": "-mid_conv_system,-mid_conv_tool_change,-per_turn_effort",
-      "CLAUDE_CONFIG_DIR": "$HOME/.config/ccproteus/profiles/gw",
+      "CLAUDE_CONFIG_DIR": "$HOME/.config/ccmorph/profiles/gw",
       "HOME": "$HOME",
       "LANG": "C.UTF-8",
       "PATH": "$HOME/bin:/usr/bin:/bin",
       "XDG_CONFIG_HOME": "$HOME/.config"
     },
     "files": {
-      "cache/settings.base.json": "{\n  \"availableModels\": [\n    \"claude-sonnet-4-5\",\n    \"gpt-6-astra\",\n    \"kimi-k3\"\n  ],\n  \"modelSettings\": {},\n  \"model\": \"claude-sonnet-4-5\",\n  \"autoCompactWindow\": 200000,\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"[ -n \\\"$CCPROTEUS_ADVISE\\\" ] && printf \\\"%s\\\" \\\"$CCPROTEUS_ADVISE\\\" || true\"\n          }\n        ]\n      }\n    ]\n  }\n}\n",
+      "cache/settings.base.json": "{\n  \"availableModels\": [\n    \"claude-sonnet-4-5\",\n    \"gpt-6-astra\",\n    \"kimi-k3\"\n  ],\n  \"modelSettings\": {},\n  \"model\": \"claude-sonnet-4-5\",\n  \"autoCompactWindow\": 200000,\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"[ -n \\\"$CCMORPH_ADVISE\\\" ] && printf \\\"%s\\\" \\\"$CCMORPH_ADVISE\\\" || true\"\n          }\n        ]\n      }\n    ]\n  }\n}\n",
       "gw.conf": "type=apikey\nbase_url=https://gw.invalid\napi_key=k\nadapter=true\n\nmodel=claude-sonnet-4-5\n\ncontext_window.claude-sonnet-4-5=200000\ncontext_window.gpt-6-astra=400000\ncontext_window.kimi-k3=40000\n\nmodel_defaults=1\n",
-      "settings.json": "{\n  \"availableModels\": [\n    \"claude-sonnet-4-5\",\n    \"gpt-6-astra\"\n  ],\n  \"modelSettings\": {},\n  \"model\": \"claude-sonnet-4-5\",\n  \"autoCompactWindow\": 200000,\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"[ -n \\\"$CCPROTEUS_ADVISE\\\" ] && printf \\\"%s\\\" \\\"$CCPROTEUS_ADVISE\\\" || true\"\n          }\n        ]\n      }\n    ]\n  }\n}\n"
+      "settings.json": "{\n  \"availableModels\": [\n    \"claude-sonnet-4-5\",\n    \"gpt-6-astra\"\n  ],\n  \"modelSettings\": {},\n  \"model\": \"claude-sonnet-4-5\",\n  \"autoCompactWindow\": 200000,\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"[ -n \\\"$CCMORPH_ADVISE\\\" ] && printf \\\"%s\\\" \\\"$CCMORPH_ADVISE\\\" || true\"\n          }\n        ]\n      }\n    ]\n  }\n}\n"
     },
     "stderr": ""
   },
@@ -115,22 +115,22 @@
     "argv": [],
     "env": {
       "ANTHROPIC_MODEL": "claude-sonnet-4-5",
-      "CCPROTEUS_LIB_DIR": "$HOME/.config/ccproteus/lib",
-      "CCPROTEUS_RELAY_ID": "<minted per launch>",
-      "CCPROTEUS_STATE_DIR": "$HOME/.config/ccproteus",
-      "CCPROTEUS_SUBCOMMAND_LAUNCH": "0",
+      "CCMORPH_LIB_DIR": "$HOME/.config/ccmorph/lib",
+      "CCMORPH_RELAY_ID": "<minted per launch>",
+      "CCMORPH_STATE_DIR": "$HOME/.config/ccmorph",
+      "CCMORPH_SUBCOMMAND_LAUNCH": "0",
       "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "75",
       "CLAUDE_CODE_OAUTH_TOKEN": "t",
-      "CLAUDE_CONFIG_DIR": "$HOME/.config/ccproteus/profiles/gw",
+      "CLAUDE_CONFIG_DIR": "$HOME/.config/ccmorph/profiles/gw",
       "HOME": "$HOME",
       "LANG": "C.UTF-8",
       "PATH": "$HOME/bin:/usr/bin:/bin",
       "XDG_CONFIG_HOME": "$HOME/.config"
     },
     "files": {
-      "cache/settings.base.json": "{\n  \"modelSettings\": {},\n  \"model\": \"claude-sonnet-4-5\",\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"[ -n \\\"$CCPROTEUS_ADVISE\\\" ] && printf \\\"%s\\\" \\\"$CCPROTEUS_ADVISE\\\" || true\"\n          }\n        ]\n      }\n    ]\n  }\n}\n",
+      "cache/settings.base.json": "{\n  \"modelSettings\": {},\n  \"model\": \"claude-sonnet-4-5\",\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"[ -n \\\"$CCMORPH_ADVISE\\\" ] && printf \\\"%s\\\" \\\"$CCMORPH_ADVISE\\\" || true\"\n          }\n        ]\n      }\n    ]\n  }\n}\n",
       "gw.conf": "type=token\ntoken=t\n\nmodel=claude-sonnet-4-5\n\nmodel_defaults=1\n",
-      "settings.json": "{\n  \"modelSettings\": {},\n  \"model\": \"claude-sonnet-4-5\",\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"[ -n \\\"$CCPROTEUS_ADVISE\\\" ] && printf \\\"%s\\\" \\\"$CCPROTEUS_ADVISE\\\" || true\"\n          }\n        ]\n      }\n    ]\n  }\n}\n"
+      "settings.json": "{\n  \"modelSettings\": {},\n  \"model\": \"claude-sonnet-4-5\",\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": [\n          {\n            \"type\": \"command\",\n            \"command\": \"[ -n \\\"$CCMORPH_ADVISE\\\" ] && printf \\\"%s\\\" \\\"$CCMORPH_ADVISE\\\" || true\"\n          }\n        ]\n      }\n    ]\n  }\n}\n"
     },
     "stderr": ""
   }

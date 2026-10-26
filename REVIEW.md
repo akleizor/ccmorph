@@ -1,6 +1,6 @@
-# Reviewing ccproteus
+# Reviewing ccmorph
 
-ccproteus holds every profile's credentials and routes every Claude Code session
+ccmorph holds every profile's credentials and routes every Claude Code session
 on this Mac, so a bug here is a session reaching the wrong backend, leaking a
 credential, or losing the user's choice.
 
@@ -14,7 +14,7 @@ credential, or losing the user's choice.
 
 - **Backend, identity or credential env leaking into a launch or `claude auth` call** — a provider, identity or token name left set — `example: 4b80ca8 fix(launch): clear more provider, identity and credential env names`; also `e95b598 fix(auth): scrub CLAUDE_SECURESTORAGE_CONFIG_DIR around claude auth calls`.
 - **A nested launch inheriting the parent session's state** — `CLAUDECODE`, `CLAUDE_CODE_SIMPLE` or another child-session var — `example: c3ebf44 fix(launch): a nested launch does not inherit claude --bare's CLAUDE_CODE_SIMPLE`.
-- **One reader skipping the merged view** — a `$ccproteusUnset` tombstone that counts in one settings path and not another — `example: 189b398 fix(settings): every layer reader honours $ccproteusUnset`; also `9bce711 fix(settings): ignore a shared policy's tombstones in the readers too`.
+- **One reader skipping the merged view** — a `$ccmorphUnset` tombstone that counts in one settings path and not another — `example: 189b398 fix(settings): every layer reader honours $ccmorphUnset`; also `9bce711 fix(settings): ignore a shared policy's tombstones in the readers too`.
 - **The user's choice silently overruled** — a picked model or saved setting ignored, or an older model substituted — `example: 1e7a17c fix(launch): stop the role default overwriting a picked model`; also `9963261 fix(shim): never fall back to an older model`.
 - **Signals or exit status lost between launcher and claude** — TERM/HUP not forwarded, the tty or the exit code dropped — `example: 63ba318 fix(launch): forward TERM and HUP from the launcher to claude`.
 - **A shim rewrite corrupting the forwarded body** — UTF-8/CJK, surrogates, signed thinking, opaque tool input — `example: 5e9d09e fix(shim): keep CJK as UTF-8 when stripping metadata and repairing references`; also `52d918f fix(gateway): keep signed thinking and opaque tool input in sanitation`.
@@ -31,7 +31,7 @@ introduce is a new issue, not a finding.
 
 ## Where the rules live
 
-Scope, high-risk classes, the `_ccp_launch -a` contract, test homes and the
+Scope, high-risk classes, the `_ccm_launch -a` contract, test homes and the
 Verification suites are in [AGENTS.md](AGENTS.md) and
 [ARCHITECTURE.md#scope-and-ownership](ARCHITECTURE.md#scope-and-ownership); check
 the diff against them, do not restate them.

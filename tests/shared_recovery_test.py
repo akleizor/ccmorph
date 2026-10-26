@@ -20,12 +20,12 @@ def migrate(tmp_path, name):
     (shared / "private").write_text("shared content")
     (original / "new").write_text("new content")
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith(("CCPROTEUS_", "_CCPROTEUS_", "CLAUDE_", "ANTHROPIC_"))}
+           if not k.startswith(("CCMORPH_", "_CCMORPH_", "CLAUDE_", "ANTHROPIC_"))}
     env.update(HOME=str(tmp_path), ZDOTDIR=str(tmp_path),
-               CCPROTEUS_STATE_DIR=str(tmp_path / "state"), CCPROTEUS_LIB_DIR=str(ROOT / "lib"))
+               CCMORPH_STATE_DIR=str(tmp_path / "state"), CCMORPH_LIB_DIR=str(ROOT / "lib"))
     result = subprocess.run(
-        ["zsh", "-fc", 'source "$1"; _ccp_migrate_projects "$2" "$3"', "_",
-         str(ROOT / "lib/ccproteus.sh"), str(original), str(shared)],
+        ["zsh", "-fc", 'source "$1"; _ccm_migrate_projects "$2" "$3"', "_",
+         str(ROOT / "lib/ccmorph.sh"), str(original), str(shared)],
         env=env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
     return result, original, shared
 
@@ -75,21 +75,21 @@ def test_a_profile_with_its_own_agents_directory_launches(tmp_path):
     # symlink in its place. Before the fix this returned 1 and printed "shared
     # 'agents' collision", so every launch of that profile was blocked.
     home = tmp_path / "home"
-    profile = home / ".config/ccproteus/profiles/gw"
+    profile = home / ".config/ccmorph/profiles/gw"
     (profile / "agents").mkdir(parents=True)
     (profile / "agents" / "reviewer.md").write_text("my reviewer")
     (home / ".claude" / "agents").mkdir(parents=True)
     (home / ".claude" / "agents" / "other.md").write_text("shared other")
-    (home / ".config/ccproteus/gw.conf").write_text("type=sub\nemail=me@example.invalid\n")
+    (home / ".config/ccmorph/gw.conf").write_text("type=sub\nemail=me@example.invalid\n")
 
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith(("CCPROTEUS_", "_CCPROTEUS_", "CLAUDE_", "ANTHROPIC_"))}
+           if not k.startswith(("CCMORPH_", "_CCMORPH_", "CLAUDE_", "ANTHROPIC_"))}
     env.update(HOME=str(home), ZDOTDIR=str(home), XDG_CONFIG_HOME=str(home / ".config"),
-               CCPROTEUS_STATE_DIR=str(home / ".config/ccproteus"), CCPROTEUS_LIB_DIR=str(ROOT / "lib"))
+               CCMORPH_STATE_DIR=str(home / ".config/ccmorph"), CCMORPH_LIB_DIR=str(ROOT / "lib"))
     result = subprocess.run(
         ["zsh", "-fc",
-         'source "$1"; typeset -gA _ccp=(type sub); _ccp_setup_dir_unlocked gw', "_",
-         str(ROOT / "lib/ccproteus.sh")],
+         'source "$1"; typeset -gA _ccm=(type sub); _ccm_setup_dir_unlocked gw', "_",
+         str(ROOT / "lib/ccmorph.sh")],
         env=env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
 
     assert result.returncode == 0, result.stderr
@@ -103,11 +103,11 @@ def test_a_profile_with_its_own_agents_directory_launches(tmp_path):
 def provision_agents(tmp_path, build, *, state_link=False, script=None):
     """Provision profile gw whose real agents/ is filled by build(agents_dir, home).
 
-    With state_link, ~/.config/ccproteus is a symlink to another directory, so the
+    With state_link, ~/.config/ccmorph is a symlink to another directory, so the
     profile's physical path differs from its spelled one.
     """
     home = tmp_path / "home"
-    state = home / ".config/ccproteus"
+    state = home / ".config/ccmorph"
     if state_link:
         real = tmp_path / "elsewhere" / "ccs"
         real.mkdir(parents=True)
@@ -119,25 +119,25 @@ def provision_agents(tmp_path, build, *, state_link=False, script=None):
     (state / "gw.conf").write_text("type=sub\nemail=me@example.invalid\n")
     build(profile / "agents", home)
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith(("CCPROTEUS_", "_CCPROTEUS_", "CLAUDE_", "ANTHROPIC_"))}
+           if not k.startswith(("CCMORPH_", "_CCMORPH_", "CLAUDE_", "ANTHROPIC_"))}
     env.update(HOME=str(home), ZDOTDIR=str(home), XDG_CONFIG_HOME=str(home / ".config"),
-               CCPROTEUS_STATE_DIR=str(state), CCPROTEUS_LIB_DIR=str(ROOT / "lib"))
-    script = script or 'source "$1"; typeset -gA _ccp=(type sub); _ccp_setup_dir_unlocked gw'
-    result = subprocess.run(["zsh", "-fc", script, "_", str(ROOT / "lib/ccproteus.sh")],
+               CCMORPH_STATE_DIR=str(state), CCMORPH_LIB_DIR=str(ROOT / "lib"))
+    script = script or 'source "$1"; typeset -gA _ccm=(type sub); _ccm_setup_dir_unlocked gw'
+    result = subprocess.run(["zsh", "-fc", script, "_", str(ROOT / "lib/ccmorph.sh")],
                             env=env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
     return result, home, profile
 
 
 def test_env_output_stays_clean_while_relative_agent_links_migrate(tmp_path):
     # Constraint 1 (#70): a `local` re-declared inside the merge loop makes zsh
-    # print `tgt=...`, which `ccproteus _env` emits and a launch exports.
+    # print `tgt=...`, which `ccmorph _env` emits and a launch exports.
     def build(agents, home):
         (home / "dot").mkdir()
         for n in ("a", "b", "c"):
             (home / "dot" / f"{n}.md").write_text(n)
             (agents / f"{n}.md").symlink_to(f"../../../../../dot/{n}.md")
     result, home, profile = provision_agents(
-        tmp_path, build, script='source "$1"; ccproteus _env gw')
+        tmp_path, build, script='source "$1"; ccmorph _env gw')
     assert result.returncode == 0, result.stderr
     lines = result.stdout.splitlines()
     assert lines, result.stderr
@@ -169,7 +169,7 @@ def test_relative_agent_link_outside_the_tree_becomes_absolute_physical(tmp_path
 
 def test_relative_agent_link_inside_the_tree_points_into_the_shared_store(tmp_path):
     # Constraint 3: b.md -> a.md must follow a.md into the shared store, not
-    # the profile dir, so it survives `ccproteus rm/mv` of the profile.
+    # the profile dir, so it survives `ccmorph rm/mv` of the profile.
     def build(agents, home):
         (agents / "a.md").write_text("a")
         (agents / "sub").mkdir()

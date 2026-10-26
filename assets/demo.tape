@@ -18,16 +18,16 @@ Type "source assets/demo/setup.sh" Enter
 Show
 
 Type "# Three profiles: a subscription, an API key, a gateway" Enter
-Type "ccproteus list" Enter
+Type "ccmorph list" Enter
 Sleep 3s
 Type "# Start a session on work" Enter
-Type "ccproteus run work" Enter
+Type "ccmorph run work" Enter
 Sleep 1.5s
 Type "add a --verbose flag to the CLI" Enter
 Sleep 3s
 Type "# Out of quota? Move this conversation to the other profile" Enter
 Sleep 2s
-Type "! ccproteus hop personal" Enter
+Type "! ccmorph hop personal" Enter
 Sleep 3s
 Type "/exit" Enter
 Sleep 3.5s

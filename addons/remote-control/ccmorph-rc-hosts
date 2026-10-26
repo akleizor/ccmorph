@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """Keep one Remote Control host alive per folder listed in a config file.
 
-    ccproteus-rc-hosts [--config PATH]      (run by the com.ccproteus.rc-hosts LaunchAgent)
+    ccmorph-rc-hosts [--config PATH]      (run by the com.ccmorph.rc-hosts LaunchAgent)
 
-Config (default $CCPROTEUS_STATE_DIR/rc-hosts, i.e. ~/.config/ccproteus/rc-hosts):
+Config (default $CCMORPH_STATE_DIR/rc-hosts, i.e. ~/.config/ccmorph/rc-hosts):
 
-    route=profile                    # ccproteus profile serving inference for every folder
+    route=profile                    # ccmorph profile serving inference for every folder
     ~/project                     # one folder per line
     ~/code/secondary-project route=ds    # a folder may name its own route
     ~/x -- --session-id session_01…   # args after -- go to remote-control (one
                                       # conversation pinned by id)
 
-Each folder gets `ccproteus-rc <route>` (under a pty: remote-control is a terminal
-program). A host that exits is relaunched with backoff, and ccproteus-rc resumes the
+Each folder gets `ccmorph-rc <route>` (under a pty: remote-control is a terminal
+program). A host that exits is relaunched with backoff, and ccmorph-rc resumes the
 folder's previous host, so a network drop or 403 costs a restart, not the sessions.
 A live edge from a previous run is reused only when it pins the configured tiers;
 otherwise it is stopped and replaced -- and only ever by the pid its own record
@@ -77,14 +77,14 @@ from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-STATE_ROOT = Path(os.environ.get("CCPROTEUS_STATE_DIR") or
-                  Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ccproteus")
+STATE_ROOT = Path(os.environ.get("CCMORPH_STATE_DIR") or
+                  Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ccmorph")
 LOGS = STATE_ROOT / "profiles" / ".rc-bridge" / "logs"
 EDGES = STATE_ROOT / "profiles" / ".rc-bridge" / "edges"
 
 
 def edge_ready(route: str) -> dict | None:
-    """The route's shared edge (ccproteus-rc --edge) is up: alive and its proxy answers.
+    """The route's shared edge (ccmorph-rc --edge) is up: alive and its proxy answers.
 
     Its record is the only account of what an edge started before this run serves,
     so the caller gets that record, not just a verdict.
@@ -103,7 +103,7 @@ def is_our_edge(pid: int, route: str) -> bool:
 
     A record outlives the edge that wrote it and a pid can be recycled, so a live
     pid in one is no proof of ownership. The argv `ps` prints for an edge is
-    `python3 <...>/ccproteus-rc <route> --edge`; anything else -- another route's
+    `python3 <...>/ccmorph-rc <route> --edge`; anything else -- another route's
     edge included -- is left alone, and so is a command line that cannot be read.
     """
     try:
@@ -112,7 +112,7 @@ def is_our_edge(pid: int, route: str) -> bool:
     except (OSError, ValueError, subprocess.SubprocessError):
         return False
     argv = ps.split()
-    return "--edge" in argv and route in argv and any(a.endswith("/ccproteus-rc") for a in argv)
+    return "--edge" in argv and route in argv and any(a.endswith("/ccmorph-rc") for a in argv)
 
 
 TICK = 1               # a dead host is relaunched within seconds, not minutes
@@ -297,7 +297,7 @@ class Host:
         one from the phone. An empty base commit is enough; existing files stay
         untracked and untouched.
         """
-        git = ["git", "-C", self.folder, "-c", "user.email=rc@local", "-c", "user.name=ccproteus-rc"]
+        git = ["git", "-C", self.folder, "-c", "user.email=rc@local", "-c", "user.name=ccmorph-rc"]
         if subprocess.run(git + ["rev-parse", "--verify", "-q", "HEAD"], capture_output=True).returncode:
             r = subprocess.run(git + ["init", "-q"], capture_output=True, text=True)
             if r.returncode:
@@ -385,7 +385,7 @@ class Host:
         out = open(self.logfile, "ab")
         env = self.child_env()
         # Everything after `--` belongs to `claude remote-control`; bare arguments
-        # belong to `ccproteus-rc` and it rejects flags it does not know (rc=2, retried
+        # belong to `ccmorph-rc` and it rejects flags it does not know (rc=2, retried
         # forever). So the permission flag goes after the separator, and a config line
         # with no args still needs the separator to exist.
         # A repo host names its spawn mode: left to the profile, a first run stops at
@@ -407,7 +407,7 @@ class Host:
             extra += ("--spawn=worktree",)
         claude_args = ("--edge",) if self.edge else ("--", *self.args, *extra)
         self.proc = subprocess.Popen(
-            ["/usr/bin/script", "-q", "/dev/null", str(HERE / "ccproteus-rc"), self.route,
+            ["/usr/bin/script", "-q", "/dev/null", str(HERE / "ccmorph-rc"), self.route,
              *claude_args],
             # stdin is a pipe held open, never /dev/null: script(1) turns EOF into a ^D
             # on the pty, which a terminal program reads as "quit".
@@ -557,9 +557,9 @@ LOGIN_ERRORS = (*TRANSIENT, KeyError, SystemExit, subprocess.SubprocessError)
 
 @functools.lru_cache(maxsize=None)
 def rc_module():
-    """The launcher module (ccproteus-rc), loaded once: its pinned_tiers() is the one
+    """The launcher module (ccmorph-rc), loaded once: its pinned_tiers() is the one
     description of the tier map this supervisor shares with a live edge."""
-    loader = importlib.machinery.SourceFileLoader("ccproteus_rc", str(HERE / "ccproteus-rc"))
+    loader = importlib.machinery.SourceFileLoader("ccmorph_rc", str(HERE / "ccmorph-rc"))
     return loader.load_module()
 
 
@@ -1100,14 +1100,14 @@ def config_path(value: str) -> str:
 
 
 def main(argv: list[str]) -> int:
-    # --config PATH and --config=PATH are one flag, as in every other ccproteus
+    # --config PATH and --config=PATH are one flag, as in every other ccmorph
     # CLI; a missing or flag-like value is a usage error (issue #417: the old
     # exact-string match silently watched the default file instead). -OO strips
     # __doc__, so the help text must not require it.
-    ap = argparse.ArgumentParser(prog="ccproteus-rc-hosts",
+    ap = argparse.ArgumentParser(prog="ccmorph-rc-hosts",
                                  description=(__doc__ or "").split("\n\n")[0])
     ap.add_argument("--config", metavar="PATH", type=config_path,
-                    help="folder list to watch (default: $CCPROTEUS_STATE_DIR/rc-hosts)")
+                    help="folder list to watch (default: $CCMORPH_STATE_DIR/rc-hosts)")
     args = ap.parse_args(argv)
     config = Path(args.config) if args.config else STATE_ROOT / "rc-hosts"
     os.environ["PATH"] = os.pathsep.join([str(Path.home() / ".local/bin"), "/opt/homebrew/bin",

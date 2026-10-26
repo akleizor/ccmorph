@@ -47,13 +47,13 @@ class Slow(http.server.BaseHTTPRequestHandler):
 
 def home_env(tmp, **extra):
     home = Path(tmp)
-    state = home / ".config/ccproteus"
+    state = home / ".config/ccmorph"
     state.mkdir(parents=True, exist_ok=True)
     (home / ".claude/projects").mkdir(parents=True, exist_ok=True)
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith(("CCPROTEUS", "_CCPROTEUS", "CLAUDE_", "ANTHROPIC_", "AWS_"))}
+           if not k.startswith(("CCMORPH", "_CCMORPH", "CLAUDE_", "ANTHROPIC_", "AWS_"))}
     env.update(HOME=tmp, XDG_CONFIG_HOME=str(home / ".config"), TMPDIR=tmp,
-               CCPROTEUS_STATE_DIR=str(state), CCPROTEUS_LIB_DIR=str(ROOT / "lib"),
+               CCMORPH_STATE_DIR=str(state), CCMORPH_LIB_DIR=str(ROOT / "lib"),
                LANG="C.UTF-8", LC_ALL="C.UTF-8", **extra)
     return env, state
 
@@ -68,7 +68,7 @@ class CredentialArgv(unittest.TestCase):
             (state / "gw.conf").write_text(
                 f"type=apikey\napi_key={key}\nbase_url=http://127.0.0.1:{server.server_address[1]}\n")
             for verb in (["models", "gw"], ["doctor", "gw"]):
-                proc = subprocess.Popen([str(ROOT / "bin/ccproteus"), *verb], env=env,
+                proc = subprocess.Popen([str(ROOT / "bin/ccmorph"), *verb], env=env,
                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 seen = False
                 deadline = time.monotonic() + HANG_TIMEOUT
@@ -79,8 +79,8 @@ class CredentialArgv(unittest.TestCase):
                 if proc.poll() is None:
                     proc.kill()
                     proc.wait(timeout=HANG_TIMEOUT)
-                    self.fail(f"`ccproteus {verb[0]}` did not exit within the hang bound")
-                self.assertFalse(seen, f"`ccproteus {verb[0]}` put the API key on a process command line")
+                    self.fail(f"`ccmorph {verb[0]}` did not exit within the hang bound")
+                self.assertFalse(seen, f"`ccmorph {verb[0]}` put the API key on a process command line")
         server.shutdown()
 
 

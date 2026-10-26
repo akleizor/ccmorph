@@ -1,5 +1,5 @@
 #!/usr/bin/env zsh
-# The one command. ccproteus is an ordinary executable on PATH: it sources its own
+# The one command. ccmorph is an ordinary executable on PATH: it sources its own
 # library in its own process, launches Claude Code, and exits.
 #
 # It deliberately does NOT touch the user's shell. An earlier design shipped the
@@ -8,21 +8,21 @@
 # answered its own first documented step with "command not found". Overriding
 # `claude` was the same mistake one level up: a switcher that shadows the tool it
 # switches makes every session's behaviour depend on whether one file was sourced.
-# Anyone who wants `claude` to mean "launch through ccproteus" can write that
+# Anyone who wants `claude` to mean "launch through ccmorph" can write that
 # alias themselves; it is a personal convention, not this product.
 #
 # The library is found relative to this script (../lib), so it works from
-# ~/.config/ccproteus (install.sh) and from a source checkout, with no wiring.
+# ~/.config/ccmorph (install.sh) and from a source checkout, with no wiring.
 emulate -L zsh
 set -eu
 
 # Help, version and doctor must not source host opt-ins: local.sh is executable
 # zsh and may mutate state. Detect read-only requests before loading the library.
 case "${1:-}" in
-  doctor|''|-h|--help|help|-v|-V|--version|version) export CCPROTEUS_DOCTOR_READONLY=1 ;;
+  doctor|''|-h|--help|help|-v|-V|--version|version) export CCMORPH_DOCTOR_READONLY=1 ;;
   *)
     if (( $# == 2 )) && [[ "$2" == (-h|--help) && "$1" != (run|probe|measure) ]]; then
-      export CCPROTEUS_DOCTOR_READONLY=1
+      export CCMORPH_DOCTOR_READONLY=1
     fi
     ;;
 esac
@@ -38,14 +38,14 @@ while [[ -L "$self" ]]; do
 done
 here="${self:h:A}"
 
-# An explicit CCPROTEUS_LIB_DIR is authoritative and FAILS when wrong, rather than
+# An explicit CCMORPH_LIB_DIR is authoritative and FAILS when wrong, rather than
 # quietly running a different library than the caller named. This is also the seam
-# a running Claude Code session inherits, so `! ccproteus hop <account>` from inside
+# a running Claude Code session inherits, so `! ccmorph hop <account>` from inside
 # a session reaches the same library that launched it.
-if [[ -n "${CCPROTEUS_LIB_DIR:-}" ]]; then
-  lib="$CCPROTEUS_LIB_DIR/ccproteus.sh"
+if [[ -n "${CCMORPH_LIB_DIR:-}" ]]; then
+  lib="$CCMORPH_LIB_DIR/ccmorph.sh"
   [[ -r "$lib" ]] || {
-    print -u2 -- "ccproteus: CCPROTEUS_LIB_DIR is set but has no readable ccproteus.sh"
+    print -u2 -- "ccmorph: CCMORPH_LIB_DIR is set but has no readable ccmorph.sh"
     print -u2 -- "  looked for: $lib"
     exit 1
   }
@@ -56,32 +56,32 @@ else
   # config directory. XDG_CONFIG_HOME is honoured exactly as the library honours
   # it, or the two would disagree about where they live on the same machine.
   for candidate in \
-    "$here/../lib/ccproteus.sh" \
-    "${XDG_CONFIG_HOME:-$HOME/.config}/ccproteus/lib/ccproteus.sh"
+    "$here/../lib/ccmorph.sh" \
+    "${XDG_CONFIG_HOME:-$HOME/.config}/ccmorph/lib/ccmorph.sh"
   do
     [[ -r "$candidate" ]] && { lib="${candidate:A}"; break }
   done
   [[ -n "$lib" ]] || {
-    print -u2 -- "ccproteus: cannot find ccproteus.sh near $here"
+    print -u2 -- "ccmorph: cannot find ccmorph.sh near $here"
     print -u2 -- "  looked in: $here/../lib and"
-    print -u2 -- "             ${XDG_CONFIG_HOME:-$HOME/.config}/ccproteus/lib"
-    print -u2 -- "  Set CCPROTEUS_LIB_DIR to the directory holding ccproteus.sh."
+    print -u2 -- "             ${XDG_CONFIG_HOME:-$HOME/.config}/ccmorph/lib"
+    print -u2 -- "  Set CCMORPH_LIB_DIR to the directory holding ccmorph.sh."
     exit 1
   }
 fi
 
 # Hand the library its own directory explicitly, so a child session's `hop`
 # reaches the same library that launched it.
-CCPROTEUS_LIB_DIR="${lib:h}"
-export CCPROTEUS_LIB_DIR
+CCMORPH_LIB_DIR="${lib:h}"
+export CCMORPH_LIB_DIR
 
 # `set -eu` belongs to this preamble only: the library and the launch it runs are
 # long-lived interactive code with their own error handling, and inheriting -e
 # would turn every non-zero probe into an aborted launch.
 unsetopt err_exit nounset
 source "$lib" || {
-  print -u2 -- "ccproteus: failed to load $lib"
+  print -u2 -- "ccmorph: failed to load $lib"
   exit 1
 }
 
-ccproteus "$@"
+ccmorph "$@"

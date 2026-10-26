@@ -17,17 +17,17 @@ def _adapter_start_run(home, selected, delay):
     lib = Path(home) / 'lib'
     lib.mkdir()
     (lib.parent / 'libexec').mkdir()
-    for f in (ROOT / 'lib').glob('ccproteus-*.zsh'):
+    for f in (ROOT / 'lib').glob('ccmorph-*.zsh'):
         (lib / f.name).write_bytes(f.read_bytes())
     log = Path(home) / 'args'
-    adapter = lib.parent / 'libexec/ccproteus-adapter'
+    adapter = lib.parent / 'libexec/ccmorph-adapter'
     adapter.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$ARG_LOG"\n'
                        f'sleep {delay}\nprintf "PORT=12345\\n"\n')
     adapter.chmod(0o755)
-    env = {**os.environ, 'HOME': home, 'CCPROTEUS_LIB_DIR': str(lib), 'ARG_LOG': str(log)}
-    script = 'source "$1"; _ccp_adapter_start gw "$2"'
+    env = {**os.environ, 'HOME': home, 'CCMORPH_LIB_DIR': str(lib), 'ARG_LOG': str(log)}
+    script = 'source "$1"; _ccm_adapter_start gw "$2"'
     start = time.monotonic()
-    result = subprocess.run(['zsh', '-c', script, 'test', str(ROOT / 'lib/ccproteus.sh'), selected],
+    result = subprocess.run(['zsh', '-c', script, 'test', str(ROOT / 'lib/ccmorph.sh'), selected],
                             env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
     # A launch that failed before the adapter ran leaves no argv log; reading it
     # unconditionally would mask the launcher's own message with FileNotFound,
@@ -42,7 +42,7 @@ def _adapter_start_run(home, selected, delay):
                  id='window-marker-stripped-issue-232'),
 ])
 def test_adapter_receives_the_wire_model_id(selected, wire):
-    # The [1m] window marker is ccproteus's own tag: the shell strips it before
+    # The [1m] window marker is ccmorph's own tag: the shell strips it before
     # handing the adapter the model to prepare (#232).
     with tempfile.TemporaryDirectory() as tmp:
         result, _, argv = _adapter_start_run(tmp, selected, 0)
@@ -68,9 +68,9 @@ def test_adapter_alias_uses_profile_settings_before_startup():
         settings = state / 'profiles/gw/settings.json'
         settings.parent.mkdir(parents=True)
         settings.write_text(json.dumps({'env': {'ANTHROPIC_DEFAULT_OPUS_MODEL': 'gpt-6-astra'}}))
-        result = subprocess.run(['zsh', '-c', 'source "$1"; _ccp_settings_model_alias gw opus',
-                                 'test', str(ROOT / 'lib/ccproteus.sh')],
-                                env={**os.environ, 'HOME': tmp, 'CCPROTEUS_STATE_DIR': str(state)}, capture_output=True,
+        result = subprocess.run(['zsh', '-c', 'source "$1"; _ccm_settings_model_alias gw opus',
+                                 'test', str(ROOT / 'lib/ccmorph.sh')],
+                                env={**os.environ, 'HOME': tmp, 'CCMORPH_STATE_DIR': str(state)}, capture_output=True,
                                 text=True, timeout=HANG_TIMEOUT)
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == 'gpt-6-astra'

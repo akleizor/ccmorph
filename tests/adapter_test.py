@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for ccproteus-adapter against a stub endpoint.
+"""Tests for ccmorph-adapter against a stub endpoint.
 
 No network and no real translator: a stdlib HTTP server stands in for the gateway
 and a shell script stands in for cliproxyapi, so the tests assert the adapter's own
@@ -26,7 +26,7 @@ from pathlib import Path
 from support import HANG_TIMEOUT
 
 REPO = Path(__file__).resolve().parent.parent
-ADAPTER = REPO / "libexec/ccproteus-adapter"
+ADAPTER = REPO / "libexec/ccmorph-adapter"
 
 # One model per dialect the adapter must distinguish, one stably dead, and one
 # whose failure looks transient (an indeterminate verdict that must not be cached).
@@ -187,12 +187,12 @@ class AdapterTest(unittest.TestCase):
         UPSTREAM.clear()
         Gateway.extra_models = []
         self.home = Path(tempfile.mkdtemp())
-        # A fake ccproteus whose _env reports the stub endpoint, so the adapter's
+        # A fake ccmorph whose _env reports the stub endpoint, so the adapter's
         # "credential comes from the profile" path is exercised for real.
-        cc = self.home / ".config/ccproteus"
+        cc = self.home / ".config/ccmorph"
         (cc / "lib").mkdir(parents=True)
-        (cc / "lib/ccproteus.sh").write_text(
-            "ccproteus() {\n"
+        (cc / "lib/ccmorph.sh").write_text(
+            "ccmorph() {\n"
             '  [[ "$1" == _env ]] || return 1\n'
             f'  print "ANTHROPIC_BASE_URL={self.base}"\n'
             '  print "ANTHROPIC_API_KEY=stub-key"\n'
@@ -215,15 +215,15 @@ class AdapterTest(unittest.TestCase):
     def cache_file(self):
         """The shared endpoint-keyed classification cache the adapter writes —
         keyed by base_url hash, not per-profile, so profiles on one gateway share
-        one classification. Mirrors the keying in ccproteus-adapter main()."""
+        one classification. Mirrors the keying in ccmorph-adapter main()."""
         import hashlib
         key = hashlib.sha256(self.base.encode()).hexdigest()[:16]
         return self.profiles / ".adapter-cache" / f"{key}.json"
 
-    def write_ccproteus(self, key: str) -> None:
-        """Repoint the stub ccproteus at a different credential."""
-        (self.home / ".config/ccproteus/lib/ccproteus.sh").write_text(
-            "ccproteus() {\n"
+    def write_ccmorph(self, key: str) -> None:
+        """Repoint the stub ccmorph at a different credential."""
+        (self.home / ".config/ccmorph/lib/ccmorph.sh").write_text(
+            "ccmorph() {\n"
             '  [[ "$1" == _env ]] || return 1\n'
             f'  print "ANTHROPIC_BASE_URL={self.base}"\n'
             f"  print 'ANTHROPIC_API_KEY={key}'\n"
@@ -231,13 +231,13 @@ class AdapterTest(unittest.TestCase):
 
     def _launch_env(self, **extra) -> dict:
         """The launch context every adapter invocation in these tests shares:
-        a fake HOME, the stub ccproteus, the test state root, and the PATH
+        a fake HOME, the stub ccmorph, the test state root, and the PATH
         holding any stub translator. Extras win over the shared keys, so a
         caller can still override any of them."""
         env = dict(os.environ, **self.adapter_env)
         env.update(HOME=str(self.home),
-                   CCPROTEUS_LIB_DIR=str(self.home / ".config/ccproteus/lib"),
-                   CCPROTEUS_STATE_DIR=str(self.home))
+                   CCMORPH_LIB_DIR=str(self.home / ".config/ccmorph/lib"),
+                   CCMORPH_STATE_DIR=str(self.home))
         env.update(extra)
         return env
 
@@ -248,7 +248,7 @@ class AdapterTest(unittest.TestCase):
         if constants or shim:
             fixture = self.home / "adapter-fixture"
             fixture.mkdir(exist_ok=True)
-            adapter = fixture / "ccproteus-adapter"
+            adapter = fixture / "ccmorph-adapter"
             shutil.copy2(ADAPTER, adapter)
             shutil.copy2(shim or ADAPTER.with_name("gateway-shim"), fixture / "gateway-shim")
             text = adapter.read_text()
@@ -372,7 +372,7 @@ class AdapterTest(unittest.TestCase):
         # The key reaches the config as a YAML scalar, so one containing a quote or
         # backslash is on disk in escaped form. --print-config must redact that
         # spelling too, or the credential prints in full.
-        self.write_ccproteus('sk-a"b\\c-live')
+        self.write_ccmorph('sk-a"b\\c-live')
         out = self.run_adapter("--print-config")
         self.assertEqual(out.returncode, 0, out.stderr)
         for spelling in ('sk-a"b\\c-live', 'sk-a\\"b\\\\c-live'):
@@ -382,9 +382,9 @@ class AdapterTest(unittest.TestCase):
 
     def test_print_config_redacts_upstream_proxy_credentials(self):
         proxy = "http://user:s3cretpw@127.0.0.1:8118/p?token=qq"
-        stub = self.home / ".config/ccproteus/lib/ccproteus.sh"
+        stub = self.home / ".config/ccmorph/lib/ccmorph.sh"
         stub.write_text(stub.read_text().rstrip().rstrip("}")
-                        + f"  print 'CCPROTEUS_UPSTREAM_PROXY={proxy}'\n}}\n")
+                        + f"  print 'CCMORPH_UPSTREAM_PROXY={proxy}'\n}}\n")
         out = self.run_adapter("--print-config")
         self.assertEqual(out.returncode, 0, out.stderr)
         for leak in ("s3cretpw", "user:", "token=qq"):
@@ -738,7 +738,7 @@ class AdapterTest(unittest.TestCase):
         self.assertIn("m-dead", out.stderr)
 
     def test_model_flag_strips_only_the_1m_suffix(self):
-        # ccproteus's own [1m] context-window marker is a shell-layer annotation,
+        # ccmorph's own [1m] context-window marker is a shell-layer annotation,
         # not a real id on the gateway -- classify() must see the bare id.
         out = self.run_adapter("--print-config", "--model", "m-anthropic[1m]")
         self.assertEqual(out.returncode, 0, out.stderr)
@@ -792,8 +792,8 @@ class AdapterTest(unittest.TestCase):
             [sys.executable, str(ADAPTER), "p", "--parent-pid", str(parent.pid)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             env=dict(os.environ, HOME=str(self.home),
-                     CCPROTEUS_LIB_DIR=str(self.home / ".config/ccproteus/lib"),
-                     CCPROTEUS_STATE_DIR=str(self.home),
+                     CCMORPH_LIB_DIR=str(self.home / ".config/ccmorph/lib"),
+                     CCMORPH_STATE_DIR=str(self.home),
                      PATH=f"{self.path_bin}:{os.environ.get('PATH', '')}"))
         parent.wait(timeout=HANG_TIMEOUT)
         try:
@@ -817,8 +817,8 @@ class AdapterTest(unittest.TestCase):
             [sys.executable, str(ADAPTER), "p"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             env=dict(os.environ, HOME=str(self.home), TMPDIR=str(tmp),
-                     CCPROTEUS_LIB_DIR=str(self.home / ".config/ccproteus/lib"),
-                     CCPROTEUS_STATE_DIR=str(self.home),
+                     CCMORPH_LIB_DIR=str(self.home / ".config/ccmorph/lib"),
+                     CCMORPH_STATE_DIR=str(self.home),
                      PATH=f"{self.path_bin}:{os.environ.get('PATH', '')}"))
         deadline = time.monotonic() + HANG_TIMEOUT
         while not (marker.exists() and marker.read_text().strip()):
@@ -838,9 +838,9 @@ class AdapterTest(unittest.TestCase):
             os.kill(pid, signal.SIGKILL)
             self.fail("translator outlived its SIGKILLed adapter")
         deadline = time.monotonic() + HANG_TIMEOUT
-        while list(tmp.glob("ccproteus-adapter-*")) and time.monotonic() < deadline:
+        while list(tmp.glob("ccmorph-adapter-*")) and time.monotonic() < deadline:
             time.sleep(0.2)
-        self.assertEqual(list(tmp.glob("ccproteus-adapter-*")), [],
+        self.assertEqual(list(tmp.glob("ccmorph-adapter-*")), [],
                          "state directory holding the credential was left behind")
 
     def test_credential_is_never_forwarded_across_a_redirect(self):
@@ -953,7 +953,7 @@ class AdapterTest(unittest.TestCase):
                 s.shutdown()
 
     def test_ready_timeout_exits_non_zero(self):
-        # The contract with ccproteus: anything short of "printed PORT and served"
+        # The contract with ccmorph: anything short of "printed PORT and served"
         # exits non-zero, so the caller aborts the launch. A translator that starts
         # but never serves used to exit 0, which read as success and left Claude
         # Code pointed at a port nothing listened on.
@@ -1051,7 +1051,7 @@ class AdapterTest(unittest.TestCase):
                         "import json, os, sys\n"
                         f"open({str(argv_file)!r}, 'w').write(' '.join(sys.argv[1:]))\n"
                         f"open({str(env_file)!r}, 'w').write(json.dumps("
-                        "{k: v for k, v in os.environ.items() if k.startswith('CCPROTEUS_')}))\n"
+                        "{k: v for k, v in os.environ.items() if k.startswith('CCMORPH_')}))\n"
                         "sys.exit(1)\n")
         shim.chmod(0o755)
         hooks = self.home / "hooks.py"
@@ -1078,12 +1078,12 @@ class AdapterTest(unittest.TestCase):
         cache.write_text(json.dumps({"endpoint": self.base, "rows": [
             {"model": "m-anthropic", "dialect": "anthropic", "note": "", "cap": 0,
              "nothink": False, "id_recycle": True, "status": 200}]}))
-        script = self.home / ".config/ccproteus/lib/ccproteus.sh"
+        script = self.home / ".config/ccmorph/lib/ccmorph.sh"
         base = script.read_text()
-        for extra in ("", '  print "CCPROTEUS_RANDOM_DEVICE_ID=1"\n'
-                           '  print "CCPROTEUS_REPAIR_TOOL_REFERENCES=1"\n'
-                           '  print "CCPROTEUS_AFFINITY_HEADER=X-Session-Affinity"\n'
-                           f'  print "CCPROTEUS_SHIM_HOOKS={hooks}"\n'):
+        for extra in ("", '  print "CCMORPH_RANDOM_DEVICE_ID=1"\n'
+                           '  print "CCMORPH_REPAIR_TOOL_REFERENCES=1"\n'
+                           '  print "CCMORPH_AFFINITY_HEADER=X-Session-Affinity"\n'
+                           f'  print "CCMORPH_SHIM_HOOKS={hooks}"\n'):
             script.write_text(base.replace("}\n", extra + "}\n") if extra else base)
             argv_file.unlink(missing_ok=True)
             env_file.unlink(missing_ok=True)
@@ -1094,10 +1094,10 @@ class AdapterTest(unittest.TestCase):
             self.assertNotIn("--affinity-header", seen)
             self.assertNotIn("--repair-tool-references", seen)
             ferried = json.loads(env_file.read_text())
-            for k, v in (("CCPROTEUS_RANDOM_DEVICE_ID", "1"),
-                         ("CCPROTEUS_REPAIR_TOOL_REFERENCES", "1"),
-                         ("CCPROTEUS_AFFINITY_HEADER", "X-Session-Affinity"),
-                         ("CCPROTEUS_SHIM_HOOKS", str(hooks))):
+            for k, v in (("CCMORPH_RANDOM_DEVICE_ID", "1"),
+                         ("CCMORPH_REPAIR_TOOL_REFERENCES", "1"),
+                         ("CCMORPH_AFFINITY_HEADER", "X-Session-Affinity"),
+                         ("CCMORPH_SHIM_HOOKS", str(hooks))):
                 if extra:
                     self.assertEqual(ferried.get(k), v, ferried)
                 else:
@@ -1106,15 +1106,15 @@ class AdapterTest(unittest.TestCase):
     def test_a_profile_pointing_at_missing_hooks_refuses_to_start(self):
         # The hooks path is validated before anything is spawned, so a stale
         # profile fails loudly at launch instead of through the shim later.
-        script = self.home / ".config/ccproteus/lib/ccproteus.sh"
+        script = self.home / ".config/ccmorph/lib/ccmorph.sh"
         base = script.read_text()
         script.write_text(base.replace(
-            "}\n", '  print "CCPROTEUS_SHIM_HOOKS=/nonexistent/hooks.py"\n}\n'))
+            "}\n", '  print "CCMORPH_SHIM_HOOKS=/nonexistent/hooks.py"\n}\n'))
         out = self.run_adapter()
         self.assertNotEqual(out.returncode, 0, out.stdout + out.stderr)
-        self.assertIn("CCPROTEUS_SHIM_HOOKS", out.stdout + out.stderr)
+        self.assertIn("CCMORPH_SHIM_HOOKS", out.stdout + out.stderr)
 
-    def test_profile_env_sources_the_packaged_ccproteus_script(self):
+    def test_profile_env_sources_the_packaged_ccmorph_script(self):
         import importlib.machinery
         import importlib.util
         loader = importlib.machinery.SourceFileLoader("adapter_path", str(ADAPTER))
@@ -1135,11 +1135,11 @@ class AdapterTest(unittest.TestCase):
                              {"ANTHROPIC_API_KEY": "k"})
         finally:
             ad.subprocess.run = saved
-        self.assertEqual(ad.CCPROTEUS, Path(os.environ.get("CCPROTEUS_LIB_DIR") or ADAPTER.parent.parent / "lib") / "ccproteus.sh")
+        self.assertEqual(ad.CCMORPH, Path(os.environ.get("CCMORPH_LIB_DIR") or ADAPTER.parent.parent / "lib") / "ccmorph.sh")
         self.assertEqual(calls[0][-3:],
-                         ["ccproteus-adapter", str(ad.CCPROTEUS), "p; nope"])
+                         ["ccmorph-adapter", str(ad.CCMORPH), "p; nope"])
         self.assertIn('source "$1"', calls[0][2])
-        self.assertIn('ccproteus _env "$2"', calls[0][2])
+        self.assertIn('ccmorph _env "$2"', calls[0][2])
 
     def test_profile_name_is_not_executed_as_shell(self):
         # The profile name arrives on a command line and is handed to `zsh -c`.
@@ -1148,15 +1148,15 @@ class AdapterTest(unittest.TestCase):
         canary = self.home / "canary"
         env = dict(os.environ,
                    HOME=str(self.home),
-                   CCPROTEUS_LIB_DIR=str(self.home / ".config/ccproteus/lib"),
-                   CCPROTEUS_STATE_DIR=str(self.home))
+                   CCMORPH_LIB_DIR=str(self.home / ".config/ccmorph/lib"),
+                   CCMORPH_STATE_DIR=str(self.home))
         out = subprocess.run(
             [sys.executable, str(ADAPTER),
              f'p; touch "{canary}"', "--print-config"],
             capture_output=True, text=True, env=env, timeout=HANG_TIMEOUT)
         self.assertFalse(canary.exists(),
                          "the profile name was executed by the shell")
-        # The stub ccproteus answers any _env call, so the launch itself may well
+        # The stub ccmorph answers any _env call, so the launch itself may well
         # succeed; what matters is that the injected command never ran.
         self.assertNotIn("Traceback", out.stderr)
 
@@ -1231,9 +1231,9 @@ class AdapterTest(unittest.TestCase):
         fixture = json.loads(
             (REPO / "tests/fixtures/hermes_messages_request.json").read_text())
         self.seeded_cache(id_recycle=False)
-        script = self.home / ".config/ccproteus/lib/ccproteus.sh"
+        script = self.home / ".config/ccmorph/lib/ccmorph.sh"
         script.write_text(script.read_text().replace(
-            "}\n", '  print "CCPROTEUS_RANDOM_DEVICE_ID=1"\n}\n'))
+            "}\n", '  print "CCMORPH_RANDOM_DEVICE_ID=1"\n}\n'))
         p = free_port()
         token = "h" * 40
         f = self.token_file(token)
@@ -1252,7 +1252,7 @@ class AdapterTest(unittest.TestCase):
         _, headers, raw = [e for e in UPSTREAM
                            if e[0].split("?")[0] == "/v1/messages"][-1]
         self.assertEqual(headers["user-agent"], "Anthropic/Python 0.69.0")
-        self.assertNotIn("x-ccproteus-task", headers)
+        self.assertNotIn("x-ccmorph-task", headers)
         self.assertEqual(headers["x-api-key"], "stub-key")
         self.assertTrue(all(token not in v for v in headers.values()))
         ids = json.loads(json.loads(raw)["metadata"]["user_id"])
@@ -1563,7 +1563,7 @@ class InventoryLoopbackNoProxyTest(unittest.TestCase):
             "l.exec_module(m)\n"
             "up, key = 'http://gateway.invalid', 'k'\n"
             "m.profile_env = lambda p: {'ANTHROPIC_API_KEY': key, 'ANTHROPIC_BASE_URL': up, "
-            "'CCPROTEUS_MODEL_MAP': '{\"m1\":\"do-not-remap-prepared-target\"}'}\n"
+            "'CCMORPH_MODEL_MAP': '{\"m1\":\"do-not-remap-prepared-target\"}'}\n"
             "real = m.inventory\n"
             "m.inventory = lambda b, k, o=None: ['m1'] if b == up else real(b, k, o)\n"
             "m.classify = lambda *a, **kw: []\n"

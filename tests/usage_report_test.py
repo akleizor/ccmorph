@@ -27,13 +27,13 @@ class ReportTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.state = Path(tmp.name)
-        (self.state / "ccproteus" / "usage").mkdir(parents=True)
+        (self.state / "ccmorph" / "usage").mkdir(parents=True)
         self.n = 0
 
     def row(self, task, model, cost, hours=1, attempt=1, **extra):
         self.n += 1
         usage = {"input_tokens": 5} if cost is None else {"input_tokens": 5, "cost": cost}
-        path = self.state / "ccproteus" / "usage" / f"{self.n}.json"
+        path = self.state / "ccmorph" / "usage" / f"{self.n}.json"
         path.write_text(json.dumps({
             "task": task, "attempt": attempt, "served_model": model,
             "response_model": model, "requested_model": model, "timestamp": stamp(hours),
@@ -41,7 +41,7 @@ class ReportTest(unittest.TestCase):
         return path
 
     def outcomes(self, *pairs):
-        with open(self.state / "ccproteus" / "outcomes.jsonl", "w") as fh:
+        with open(self.state / "ccmorph" / "outcomes.jsonl", "w") as fh:
             for task, outcome in pairs:
                 fh.write(json.dumps({"task": task, "outcome": outcome, "timestamp": stamp(0)}) + "\n")
 
@@ -135,7 +135,7 @@ class ReportTest(unittest.TestCase):
                 records.append(record)
         self.assertEqual(records[0]["timestamp"], records[1]["timestamp"])
         rows = [json.loads(path.read_text())
-                for path in (self.state / "ccproteus" / "usage").glob("*.json")]
+                for path in (self.state / "ccmorph" / "usage").glob("*.json")]
         self.assertEqual(len(rows), 2)
         self.assertEqual(sum(row["usage"]["output_tokens"] for row in rows), 31)
         self.assertIn("total spend $3.00", self.report())
@@ -157,7 +157,7 @@ class ReportTest(unittest.TestCase):
 
     def test_malformed_outcome_does_not_create_empty_history(self):
         self.row("broken", "sonnet-x", 1)
-        (self.state / "ccproteus" / "outcomes.jsonl").write_text(
+        (self.state / "ccmorph" / "outcomes.jsonl").write_text(
             json.dumps({"task": "broken", "timestamp": stamp(0)}) + "\n")
         self.assertNotIn("  accepted", self.report())
 
@@ -172,7 +172,7 @@ class ReportTest(unittest.TestCase):
         self.row("new-acceptance", "sonnet-x", 10, hours=72)
         self.row("old-acceptance", "opus-x", 1)
         self.outcomes(("new-acceptance", "accepted"))
-        with open(self.state / "ccproteus" / "outcomes.jsonl", "a") as fh:
+        with open(self.state / "ccmorph" / "outcomes.jsonl", "a") as fh:
             fh.write(json.dumps({"task": "old-acceptance", "outcome": "accepted",
                                  "timestamp": stamp(72)}) + "\n")
         out = self.report()
@@ -272,7 +272,7 @@ class ReportTest(unittest.TestCase):
         self.row("valid-before", "sonnet-x", 1)
         self.row("valid-after", "sonnet-x", 2)
         self.outcomes(("valid-before", "accepted"))
-        with open(self.state / "ccproteus" / "outcomes.jsonl", "ab") as fh:
+        with open(self.state / "ccmorph" / "outcomes.jsonl", "ab") as fh:
             fh.write(b"\xff\n")
             fh.write(json.dumps({"task": "valid-after", "outcome": "accepted",
                                  "timestamp": stamp(0)}).encode() + b"\n")
@@ -281,7 +281,7 @@ class ReportTest(unittest.TestCase):
     def test_last_valid_outcome_wins_and_invalid_rows_are_ignored(self):
         self.row("verdict", "sonnet-x", 1)
         self.outcomes(("verdict", "accepted"), ("verdict", "rejected"))
-        with open(self.state / "ccproteus" / "outcomes.jsonl", "a") as fh:
+        with open(self.state / "ccmorph" / "outcomes.jsonl", "a") as fh:
             for row in ([], {"task": "verdict", "outcome": "invented", "timestamp": stamp(0)},
                         {"task": "verdict", "outcome": "accepted", "timestamp": "broken"}):
                 fh.write(json.dumps(row) + "\n")
