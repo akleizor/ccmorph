@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+"""Export metadata-only ccproteus receipts for ccusage, one project per profile.
+
+Usage: usage-export --output ROOT [--since YYYYMMDD]
+Then: CLAUDE_CONFIG_DIR=ROOT ccusage claude daily --instances --config ROOT/ccusage.json
+A turn the gateway billed carries that cost; ccusage prices every other turn at its
+list price (a model ccusage has no price for shows as missingPricing there). Days are
+local-time days.
+Omit --since for a complete historical export: each run is a snapshot of its range, so an
+owned daily file no receipt supports any more is removed, while earlier days and other
+files stay; the receipts themselves are never touched. No transcript or credential is read.
+"""
+import argparse
+import datetime as dt
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import re
+import tempfile
+
+BUCKETS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
+# A profile name becomes a folder name; anything else in it is replaced.
+UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
+DAY_FILE = re.compile(r"\d{4}-\d{2}-\d{2}\.jsonl")
+# The largest dollar amount a float still holds to the cent, gateway-shim's own
+# COST_LIMIT: its bucket filter keeps a receipt's cost only below it, so this reader
+# refuses the same range instead of billing a number the writer would never store.
+COST_LIMIT = 2 ** 53 / 100
+
+
+def finite(value):
+    # math.isfinite raises OverflowError for an int too large for a float; such a
+    # number is no billable number (the shim's bucket filter drops it, #313), so a
+    # stored one is damage, never a crash.
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def convert(row):
+    if not row.get("complete"):
+        return None
+    if row.get("schema") != 1 or not isinstance(row.get("response_id"), str) or not row["response_id"]:
+        raise ValueError("invalid complete receipt")
+    stamp = dt.datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00"))
+    if stamp.tzinfo is None:
+        raise ValueError("receipt timestamp needs a timezone")
+    requested, served, answered = (row.get("requested_model"), row.get("served_model"),
+                                   row.get("response_model"))
+    # A mapped profile answers with the picker's alias while the recorded served id is
+    # what actually ran: only when those differ past one trailing [1m] either side does
+    # the served model carry the cost and the grouping. Every other row keeps the
+    # response/requested identity it has always exported with.
+    requested_bare = requested[:-4] if isinstance(requested, str) and requested.endswith("[1m]") else requested
+    served_bare = served[:-4] if isinstance(served, str) and served.endswith("[1m]") else served
+    if (isinstance(served_bare, str) and served_bare and isinstance(requested_bare, str) and requested_bare
+            and served_bare != requested_bare):
+        model = served_bare
+    else:
+        model = answered or requested
+    if not isinstance(model, str) or not model:
+        raise ValueError("receipt model is missing")
+    if row.get("profile") is not None and not isinstance(row.get("profile"), str):
+        raise ValueError("receipt profile is not a name")
+    usage = row.get("usage") or {}
+    tokens = {k: usage.get(k) or 0 for k in BUCKETS}
+    if any(type(v) not in (int, float) or not finite(v) or v < 0 for v in tokens.values()):
+        raise ValueError("invalid token count")
+    cost = usage.get("cost")
+    source = "gateway"
+    if cost is None:
+        # The gateway billed nothing for this turn: ccusage prices it from its
+        # own list prices, which is what a key at the provider would be charged.
+        source = "list"
+    elif type(cost) is int and not finite(cost):
+        # An int too large for a float is no billable number: no writer stores one
+        # (the shim's bucket filter drops it, #313), so this receipt was damaged
+        # after the fact. Report the row unpriced — never bill a corrupt value,
+        # never lose the export to it.
+        return stamp, None
+    if cost is not None and (type(cost) not in (int, float) or not finite(cost) or cost < 0):
+        raise ValueError("invalid billed cost")
+    if cost is not None and cost >= COST_LIMIT:
+        # A finite cost no turn could ever be billed: the shim's bucket filter keeps
+        # a receipt's cost only below COST_LIMIT, so a stored one at or above it was
+        # damaged after the fact (a reference price this high takes a token count no
+        # turn produced). The same unpriced outcome as the int too large for a float
+        # — never bill a corrupt value, never lose the export to it — and a bound on
+        # every exported cost is what keeps the total inside the float range, however
+        # many such rows arrive.
+        return stamp, None
+    # A turn token distinguishes recycled ids even when timestamps collide.
+    # Keep the historical identity unchanged for receipts without a token.
+    identity = row["response_id"] + "\0" + row["timestamp"]
+    if isinstance(row.get("turn_id"), str) and row["turn_id"]:
+        identity += "\0" + row["turn_id"]
+    key = hashlib.sha256(identity.encode()).hexdigest()
+    record = {
+        # ccusage reads only a UTC `Z` stamp; an offset spelling drops the row unread.
+        "timestamp": stamp.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.")
+                     + f"{stamp.microsecond // 1000:03d}Z",
+        "sessionId": row.get("task") or "unknown",
+        "requestId": key, "type": "assistant",
+        "message": {"role": "assistant", "id": key, "model": model, "usage": tokens},
+        # The recorded identities are copied verbatim, so a mapped row keeps the
+        # picker's id next to what actually answered.
+        "ccproteus": {"profile": row.get("profile"), "task": row.get("task"),
+                     "attempt": row.get("attempt"), "costSource": source,
+                     "requestedModel": requested if isinstance(requested, str) else None,
+                     "servedModel": served if isinstance(served, str) else None,
+                     "responseModel": answered if isinstance(answered, str) else None},
+    }
+    if cost is not None:
+        record["costUSD"] = cost
+    return stamp, record
+
+
+def atomic_write(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=".usage-")
+    try:
+        with os.fdopen(fd, "w") as out:
+            out.write(text)
+        os.replace(name, path)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def owned_days(projects):
+    """The day files this exporter owns, each with the stamp it had: a regular file named
+    YYYY-MM-DD.jsonl for a real calendar date, directly in a `ccproteus-<profile>` folder.
+    A symlink, another name or another folder is never ours, however much it looks
+    like an export."""
+    days = {}
+    for folder in projects.glob("ccproteus-*"):
+        if folder.is_symlink() or not folder.is_dir():
+            continue
+        for entry in os.scandir(folder):
+            if not DAY_FILE.fullmatch(entry.name) or not entry.is_file(follow_symlinks=False):
+                continue
+            try:
+                dt.date.fromisoformat(entry.name[:10])
+                stamp = entry.stat().st_mtime_ns
+            except (ValueError, OSError):
+                continue  # not a calendar date, or gone before it could be stamped
+            days[(folder.name, entry.name[:10])] = stamp
+    return days
+
+
+def export(root, output, since=None):
+    days, seen = {}, set()
+    unpriced = 0
+    # The days this rerun reconciles are the ones already exported when it started, each with
+    # the stamp it had then: a day another run writes while this one reads receipts belongs to
+    # that run's snapshot, so it is not this run's to remove.
+    projects = output / "projects"
+    marked = owned_days(projects)
+    for entry in os.scandir(root):
+        if not entry.name.endswith(".json"):  # every receipt is parsed: its own stamp decides the range
+            continue
+        try:
+            row = json.loads(Path(entry.path).read_text())
+            converted = convert(row)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ValueError(f"{entry.name}: {exc}") from exc
+        if converted is None:
+            continue
+        stamp, record = converted
+        # The requested day range is a property of the receipt, so it is applied to
+        # every outcome before any statistic counts it.
+        if since and stamp < since:
+            continue
+        if record is None:
+            # A damaged cost: no record to export, only a count.
+            unpriced += 1
+            continue
+        key = record["requestId"]
+        if key in seen:
+            continue
+        seen.add(key)
+        folder = "ccproteus-" + UNSAFE.sub("_", record["ccproteus"]["profile"] or "unknown")
+        days.setdefault((folder, stamp.astimezone().strftime("%Y-%m-%d")), []).append(record)
+    # Validate the whole input before replacing any prior export.
+    for (folder, day), records in days.items():
+        atomic_write(projects / folder / f"{day}.jsonl",
+                     "".join(json.dumps(r, separators=(",", ":")) + "\n" for r in sorted(records, key=lambda r: r["timestamp"])))
+    # A snapshot of this run's range: an owned day no usable receipt supports any more goes,
+    # so the summary and what the consumer reads agree. Earlier days, days another run has
+    # written since, and every file this exporter does not own are left alone.
+    first = since.strftime("%Y-%m-%d") if since else ""
+    for (folder, day), stamp in marked.items():
+        if (folder, day) in days or day < first:
+            continue
+        path = projects / folder / f"{day}.jsonl"
+        try:
+            if path.stat().st_mtime_ns == stamp:
+                path.unlink()
+        except FileNotFoundError:
+            pass  # another run removed it first: the wanted state is already there
+    # ccusage refuses a config dir without projects/, even for an empty range.
+    projects.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # mode auto: a billed cost is used as is, every other turn is priced by ccusage.
+    config = {"defaults": {"mode": "auto", "breakdown": True}}
+    atomic_write(output / "ccusage.json", json.dumps(config, indent=2) + "\n")
+    rows = [r for records in days.values() for r in records]
+    return {"rows": len(seen), "days": len({d for _, d in days}), "unpriced": unpriced,
+            "usd": sum(r.get("costUSD", 0) for r in rows),
+            "gateway_rows": sum(r["ccproteus"]["costSource"] == "gateway" for r in rows)}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--source", type=Path, default=Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "ccproteus/usage")
+    parser.add_argument("--since", help="First local date to export, YYYYMMDD; default all history")
+    args = parser.parse_args()
+    try:
+        since = dt.datetime.strptime(args.since, "%Y%m%d").astimezone() if args.since else None
+        print(json.dumps(export(args.source, args.output, since)))
+    except (OSError, ValueError) as exc:
+        parser.exit(1, f"usage-export: {exc}\n")
+
+
+if __name__ == "__main__":
+    main()

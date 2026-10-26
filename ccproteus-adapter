@@ -1,0 +1,1672 @@
+#!/usr/bin/env python3
+"""Put a dialect translator in front of one ccproteus profile's endpoint.
+
+Why
+---
+Claude Code speaks exactly one request dialect: Anthropic `/v1/messages`. A
+gateway fronting several vendors often does not. Models may answer `/v1/messages`,
+or only the OpenAI `/responses` dialect, or only `/v1/chat/completions`, and some
+reject parameters Claude Code always sends. Without a translator most of such a
+gateway is simply unreachable, and no profile setting can change that.
+
+cliproxyapi is the translator. It cannot be configured statically here, for two
+reasons: its config has no environment-variable interpolation and no file
+reference for credentials, so a static file would need a second on-disk copy of
+the profile's key; and its inbound `api-keys` list is instance-wide with providers
+not bound to it, so a shared instance lets any profile pointing at it spend any
+other profile's credential. Both are why this runs one instance per profile, with
+its config rendered at launch and removed on exit.
+
+Modular per profile, which is ccproteus's core design:
+  - the endpoint and credential come from the profile, and nowhere else
+  - only the reusable probe cache persists; credential-bearing runtime is temporary
+  - the instance binds loopback on an ephemeral port (a fixed one with --port)
+    and dies with the session
+  - no cross-profile alias namespace, so every model keeps its real id
+
+Nothing about the model inventory is written down. Which dialect a model serves is
+probed, because a gateway's inventory changes without notice and `/v1/models`
+reveals neither dialect nor limits -- its fields are id/object/created/owned_by/
+capabilities, and owned_by does not predict dialect. Probe verdicts are cached per
+endpoint and only unseen model ids are probed on later starts, so a new model costs
+one probe rather than a full re-sweep. It sits beside the profile directories, under
+ccproteus's own state root, so CCPROTEUS_STATE_DIR and XDG_CONFIG_HOME relocate it
+together with everything else ccproteus stores.
+
+Gateway behaviors that require workarounds — unbidden reasoning, deterministic
+tool_use ids, ignored budget_tokens — are each handled at the point of the
+workaround and explained in the comment there. The probe cache is per-endpoint,
+shared by every profile pointed at it, at
+~/.config/ccproteus/profiles/.adapter-cache/<sha256(base_url)[:16]>.json; delete that
+file to force re-probing after a gateway changes.
+
+Contract with ccproteus
+----------------------
+    ccproteus-adapter <profile>
+
+Prints exactly one line to stdout when ready:
+
+    PORT=<n>
+
+...after its own health check passes, then stays in the foreground supervising the
+translator. Anything else goes to stderr. Exits non-zero without printing PORT if
+it cannot serve, so the caller can abort a launch rather than run against a dead
+port. Terminates the translator and removes the rendered config when signalled or
+when --parent-pid disappears.
+
+A long-lived endpoint for a non-Claude client (Hermes) fixes both instead:
+
+    ccproteus-adapter <profile> --auto --model <id> --port <n> --inbound-token-file <path>
+
+The port is served exactly as given, and the token file must be a regular 0600
+file owned by the user holding at least 32 characters; its token is accepted
+inbound and never printed.
+"""
+
+from __future__ import annotations
+
+import argparse
+import atexit
+import concurrent.futures as cf
+import contextlib
+import fcntl
+import hashlib
+import importlib.util
+import json
+import os
+import re
+import secrets
+import shutil
+import signal
+import socket
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+# The translator binary is discovered from PATH first because a hardcoded path
+# is only correct on one machine shape: /opt/homebrew is Apple-Silicon Homebrew,
+# while Intel Macs and Linux use other locations.
+def _find_translator() -> str:
+    found = shutil.which("cliproxyapi")
+    if found:
+        return found
+    # expanduser("~"), not Path.home(): the latter falls back to the OS password
+    # database, so it ignores a $HOME the caller set and would look in the wrong
+    # place for a per-user install.
+    home = Path(os.path.expanduser("~"))
+    for cand in ("/opt/homebrew/opt/cliproxyapi/bin/cliproxyapi",
+                 "/usr/local/opt/cliproxyapi/bin/cliproxyapi",
+                 "/usr/local/bin/cliproxyapi",
+                 "/usr/bin/cliproxyapi",
+                 str(home / ".local/bin/cliproxyapi")):
+        if os.access(cand, os.X_OK):
+            return cand
+    # Nothing found: return the conventional path so the existing not-executable
+    # check produces one clear, actionable error rather than a None crash.
+    return "/opt/homebrew/opt/cliproxyapi/bin/cliproxyapi"
+
+
+TRANSLATOR = _find_translator()
+LIB_DIR = Path(os.environ.get("CCPROTEUS_LIB_DIR") or Path(__file__).resolve().parent)
+CCPROTEUS = LIB_DIR / "ccproteus.sh"
+# The id-uniquifier sits between Claude Code and the translator: some gateways
+# mint deterministic tool_use ids (Bash_0 on every response), and
+# Claude Code's transcript repair treats repeats as corrupt duplicates and
+# plants "[Tool use interrupted]" into the model's context — the seed of the
+# 2026-08-16 kimi session deaths. The shim rewrites each id unique at the
+# wire so the placeholder never enters the model's context.
+GATEWAY_SHIM = str(Path(__file__).with_name("gateway-shim"))
+PROFILE_DIRS = Path(os.environ.get("CCPROTEUS_STATE_DIR") or
+                    Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ccproteus") / "profiles"
+PROBE_TIMEOUT = 60   # a dialect silent for a minute is not going to answer
+READY_TIMEOUT = 90
+PARENT_POLL = 2  # seconds between parent-liveness checks
+JOBS = 8
+# How long to wait for another process's classification before falling back to the
+# cache. Must stay under _ccs_adapter_start's readiness budget (3000 x 0.2s = 600s)
+# or a launch fails on "adapter did not become ready" while the holder is healthy.
+LOCK_WAIT = 120
+# Overall budget for classifying a single --model launch (inventory skipped,
+# lock wait, and probes together). Global, not per-request: a request-level cap
+# (JOBS threads x PROBE_TIMEOUT each) bounds one probe, not the
+# chain of them a cold selected-model launch runs serially through the lock.
+SELECT_DEADLINE = 30
+
+# What Claude Code sends. Probed against 2.1.220 on 2026-08-01; both drift on a
+# Claude Code upgrade, which is why they are named and dated in one place.
+CC_MAX_TOKENS = 32000
+
+# Responses takes a flat function tool; Chat Completions nests it under "function".
+# Using one shape for both makes every chat-only model report
+# "Missing required parameter: 'tools[0].function'" and look unusable.
+TOOL_ANTHROPIC = [{"name": "probe", "description": "probe",
+                   "input_schema": {"type": "object", "properties": {}}}]
+TOOL_RESPONSES = [{"type": "function", "name": "probe", "description": "probe",
+                   "parameters": {"type": "object", "properties": {}}}]
+TOOL_CHAT = [{"type": "function",
+              "function": {"name": "probe", "description": "probe",
+                           "parameters": {"type": "object", "properties": {}}}}]
+
+OUT_CAP = re.compile(r"supports at most (\d+) completion tokens", re.I)
+
+# Every id rendered into the config is a YAML scalar and a cliproxyapi model name.
+# Gateways have published ids with quotes and newlines in them; one such id would
+# break the whole config, so ids outside this set are skipped, not escaped-and-hoped.
+SAFE_MODEL_ID = re.compile(r"^[A-Za-z0-9._:\[\]()@/-]+$")
+
+# Every key a cached row must carry. A row from an older schema (or a truncated
+# write) is dropped at load rather than read with .get() at render time: a missing
+# field there is a KeyError mid-launch, and dropping re-probes exactly that model.
+ROW_KEYS = frozenset(
+    {"model", "dialect", "note", "cap", "nothink", "id_recycle", "status"})
+THINKING_PROBE_VERSION = 2
+
+
+def log(msg: str) -> None:
+    print(f"ccproteus-adapter: {msg}", file=sys.stderr, flush=True)
+
+
+def die(msg: str) -> None:
+    log(msg)
+    raise SystemExit(1)
+
+
+@contextlib.contextmanager
+def _deadline(seconds: float, message: str):
+    """Bound selected-model classification; it runs serially so cleanup can unwind."""
+    def _abort(_sig, _frame):
+        log(message)
+        raise SystemExit(1)
+    previous = signal.signal(signal.SIGALRM, _abort)
+    signal.alarm(int(seconds) or 1)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def indeterminate(status: int) -> bool:
+    """True when a probe's status says nothing about the model.
+
+    A transport error (0) or a 5xx is the gateway failing to answer, not the model
+    refusing. Caching that as a verdict would hide a working model until the
+    inventory changed, which may be never. Judged on the numeric status only: the
+    note is a vendor error body and never reliably carries the status.
+
+    401/403/429 are indeterminate for the same reason, and the cache being shared
+    across profiles on one endpoint makes it worse than a stale row: those three
+    are properties of the CREDENTIAL, not the endpoint. A restricted key's 403, or
+    a 429 from the concurrent add-time sweep, would otherwise settle as
+    dialect=unusable for every profile on that gateway — permanently, since a
+    cached id is never re-probed — and if enough models land there the endpoint
+    dies outright on "no usable models". A key that genuinely cannot use a model
+    still sees it excluded, because inventory() is fetched per launch with the
+    live key; it just is not written down for everyone else.
+    """
+    return status in (401, 403, 429) or status == 0 or 500 <= status < 600
+
+
+def _origin(url: str) -> tuple[str, str]:
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme.lower(), parts.netloc.lower()
+
+
+class SameOriginRedirect(urllib.request.HTTPRedirectHandler):
+    """Never carry the profile's credential to another origin.
+
+    urllib copies a request's headers onto the redirect target, so an endpoint
+    answering 302 to a third-party host would be handed x-api-key/Authorization.
+    Same-origin redirects still follow; a cross-origin one fails the request as a
+    transport error, which reads as indeterminate and so is never cached as a
+    verdict about the model.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if _origin(newurl) != _origin(req.full_url):
+            raise urllib.error.URLError(
+                f"cross-origin redirect refused: {req.full_url} -> {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _build_opener() -> urllib.request.OpenerDirector:
+    handlers: list[urllib.request.BaseHandler] = [SameOriginRedirect()]
+    return urllib.request.build_opener(*handlers)
+
+
+OPENER = _build_opener()
+
+
+def profile_env(profile: str) -> dict[str, str]:
+    """Endpoint and credential, from the profile and nowhere else."""
+    out = subprocess.run(
+        # The profile name is a positional argument, never interpolated into the
+        # script: it reaches this process from a caller's command line and `zsh -c`
+        # would otherwise execute anything it contains.
+        ["zsh", "-c", 'source "$1" && ccproteus _env "$2"',
+         "ccproteus-adapter", str(CCPROTEUS), profile],
+        capture_output=True, text=True, timeout=90)
+    if out.returncode != 0:
+        die(f"ccproteus _env {profile} failed: {out.stderr.strip()}")
+    env = {}
+    for line in out.stdout.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            env[k] = v
+    return env
+
+
+def post(url: str, body: dict, headers: dict) -> tuple[int, str]:
+    req = urllib.request.Request(
+        url, data=json.dumps(body).encode(),
+        headers={"content-type": "application/json", **headers}, method="POST")
+    try:
+        with OPENER.open(req, timeout=PROBE_TIMEOUT) as r:
+            r.read()
+        return 200, ""
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")
+        try:
+            parsed = json.loads(detail)
+            detail = parsed.get("detailMsg") or parsed.get("error_message") or detail
+        except json.JSONDecodeError:
+            pass
+        # Keep enough text for the cap regex to match; callers shorten to display.
+        return e.code, detail[:600].replace("\n", " ")
+    except Exception as exc:  # noqa: BLE001
+        return 0, repr(exc)
+
+
+def post_json(url: str, body: dict, headers: dict) -> dict | None:
+    """POST and return the parsed response body, or None on any failure.
+    The probes that inspect the response (reasoning content, tool_use ids)
+    share this; post() above is for probes that only need the status."""
+    req = urllib.request.Request(
+        url, data=json.dumps(body).encode(),
+        headers={"content-type": "application/json", **headers}, method="POST")
+    try:
+        with OPENER.open(req, timeout=PROBE_TIMEOUT) as r:
+            return json.loads(r.read())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def api_url(base: str, path: str) -> str:
+    """Match the serving client's URL: only OpenAI bases include the version."""
+    parts = urllib.parse.urlsplit(base.rstrip("/"))
+    prefix = parts.path.rstrip("/")
+    # Claude Code and cliproxyapi's Anthropic client append /v1/messages verbatim.
+    if path != "/v1/messages" and re.search(r"/v[0-9]+$", prefix, re.I):
+        path = path[3:] if path.startswith("/v1") else path
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, prefix + path, "", ""))
+
+
+def inventory(base: str, key: str, opener=None) -> list[str]:
+    # No anthropic-version header: proxies rewrite non-claude ids into
+    # claude-<junk>-<reversed-id> when they see it.
+    req = urllib.request.Request(
+        api_url(base, "/v1/models"),
+        headers={"x-api-key": key, "Authorization": f"Bearer {key}"})
+    # OPENER refuses a cross-origin redirect rather than forwarding the credential.
+    with (opener or OPENER).open(req, timeout=60) as r:
+        data = json.load(r).get("data", [])
+    out, unsafe = [], []
+    for m in data:
+        caps = m.get("capabilities")
+        # Exclude only an explicit denial; most endpoints publish no capabilities.
+        if isinstance(caps, dict) and not caps.get("chat_completion"):
+            continue
+        mid = m.get("id")
+        if not mid or not isinstance(mid, str):
+            continue
+        # An id carrying YAML metacharacters cannot be rendered safely and would
+        # break the config for every other model, so it is dropped here.
+        if not SAFE_MODEL_ID.match(mid):
+            unsafe.append(mid)
+            continue
+        out.append(mid)
+    if unsafe:
+        log(f"skipping {len(unsafe)} model id(s) with unsafe characters: "
+            + ", ".join(repr(u[:60]) for u in sorted(unsafe)))
+    return sorted(out)
+
+
+def dialect_auto(base: str, key: str, model: str) -> tuple[str, str, int]:
+    """Use an explicit per-model endpoint declaration, never schema error guesses."""
+    request = urllib.request.Request(
+        api_url(base, "/v1/models"),
+        headers={"x-api-key": key, "Authorization": f"Bearer {key}"})
+    try:
+        with OPENER.open(request, timeout=PROBE_TIMEOUT) as response:
+            data = json.load(response)
+        for row in data.get("data", []):
+            if not isinstance(row, dict) or row.get("id") != model:
+                continue
+            endpoints = row.get("supported_endpoints")
+            if not isinstance(endpoints, list):
+                break
+            for path, dialect in (("/v1/messages", "anthropic"),
+                                  ("/v1/responses", "responses"),
+                                  ("/v1/chat/completions", "chat")):
+                if path in endpoints:
+                    return dialect, "declared supported_endpoints", 200
+    except (OSError, ValueError, TypeError) as exc:
+        return "unusable", f"cannot determine protocol without inference: {exc}", 0
+    return "unusable", "cannot determine protocol without inference: no per-model endpoint declaration or proven cache", 0
+
+
+def dialect_of(base: str, key: str, model: str, *, bounded: bool = False) -> tuple[str, str, int]:
+    """Which dialect the model serves, preferring the one needing no translation.
+
+    Returns (dialect, note, status). The status characterizes an "unusable"
+    verdict so the caller can tell a model that refused (4xx) from a gateway that
+    failed to answer (5xx or a transport error) without parsing vendor prose; it is
+    the first indeterminate status seen if any probe was indeterminate, otherwise
+    the last definite one. 200 when a dialect answered.
+
+    No thinking field on the Anthropic probe. Dialect support and thinking support
+    are separate axes and Claude Code adapts thinking per model for ids in its own
+    catalogue; forcing it made claude-opus-4-5, claude-sonnet-4-5 and
+    claude-haiku-4-5 report "adaptive thinking is not supported" and look unusable
+    when all three work.
+    """
+    seen: list[int] = []
+
+    status, first = post(
+        api_url(base, "/v1/messages"),
+        {"model": model, "max_tokens": 8, "tools": TOOL_ANTHROPIC,
+         "messages": [{"role": "user", "content": "hi"}]},
+        {"x-api-key": key, "anthropic-version": "2023-06-01"})
+    seen.append(status)
+    if status == 200:
+        return "anthropic", "", 200
+
+    status, _ = post(
+        api_url(base, "/v1/responses"),
+        {"model": model, "reasoning": {"effort": "low"}, "tools": TOOL_RESPONSES,
+         **({"max_output_tokens": 16} if bounded else {}),
+         "input": [{"role": "user", "content": "hi"}]},
+        {"Authorization": f"Bearer {key}"})
+    seen.append(status)
+    if status == 200:
+        return "responses", "", 200
+
+    status, note = post(
+        api_url(base, "/v1/chat/completions"),
+        {"model": model, "max_tokens": 8, "tools": TOOL_CHAT,
+         "reasoning_effort": "low",
+         "messages": [{"role": "user", "content": "hi"}]},
+        {"Authorization": f"Bearer {key}"})
+    seen.append(status)
+    if status == 200:
+        return "chat", "", 200
+
+    # Rejecting reasoning_effort is not a reason to drop a model: it works, it
+    # just cannot take that parameter, and the translator can strip it.
+    status, note_nr = post(
+        api_url(base, "/v1/chat/completions"),
+        {"model": model, "max_tokens": 8, "tools": TOOL_CHAT,
+         "messages": [{"role": "user", "content": "hi"}]},
+        {"Authorization": f"Bearer {key}"})
+    seen.append(status)
+    if status == 200:
+        return "chat-noreason", "", 200
+
+    verdict = next((s for s in seen if indeterminate(s)), seen[-1])
+    return "unusable", (note or note_nr or first)[:150], verdict
+
+
+def output_cap(base: str, key: str, model: str, dialect: str) -> int | None:
+    """Largest max_tokens accepted, when the model states one in its own error.
+
+    Claude Code sends max_tokens=32000 and some models cap lower, rejecting the
+    request outright rather than clamping. Without this those models fail entirely,
+    so the cap is read and clamped rather than the model being dropped.
+    """
+    if dialect in ("responses", "unusable"):
+        return None  # /responses uses max_output_tokens, which gateways reject
+    path, hdr = (("/v1/messages",
+                  {"x-api-key": key, "anthropic-version": "2023-06-01"})
+                 if dialect == "anthropic" else
+                 ("/v1/chat/completions", {"Authorization": f"Bearer {key}"}))
+    # max_tokens MUST stay CC_MAX_TOKENS: the question is "does this model reject
+    # the value Claude Code will really send", and a smaller probe is accepted by
+    # everything, records no cap, and lets the model fail later in a real session.
+    # So bound the ACCEPTANCE instead. A model that validates the request will
+    # generate, and on a metered gateway those tokens are the user's money — a
+    # stop sequence halts it at the first paragraph break rather than letting a
+    # reasoning-happy model free-run to 32k for a probe whose answer we already
+    # have the moment the status code arrives. Rejection is unaffected: it happens
+    # at validation, before any of this is read.
+    body = {"model": model, "max_tokens": CC_MAX_TOKENS,
+            "messages": [{"role": "user", "content": "hi"}]}
+    body["stop_sequences" if dialect == "anthropic" else "stop"] = ["\n\n"]
+    status, note = post(api_url(base, path), body, hdr)
+    if status == 200:
+        return None
+    m = OUT_CAP.search(note)
+    return int(m.group(1)) if m else None
+
+
+def reasons_by_default(base: str, key: str, model: str) -> bool:
+    """True only when unrequested thinking can also be disabled safely.
+
+    kimi-k3 pathology (2026-08-16): the gateway reasons by default, so
+    Claude Code's thinking knob cannot bound it — 36-minute thinking
+    streams, thinking-only turns that render as nothing, and give-up loops
+    gestated in the reasoning channel. For such models the adapter forces
+    "thinking": {"type": "disabled"} via payload override, but only after
+    proving the model accepts that control. Always-thinking models reject it
+    and must retain their native behavior. Any probe failure answers False.
+    """
+    headers = {"x-api-key": key, "anthropic-version": "2023-06-01"}
+    request = {"model": model, "max_tokens": 512,
+               "messages": [{"role": "user", "content": "hi"}]}
+    body = post_json(api_url(base, "/v1/messages"), request, headers)
+    if body is None:
+        return False
+    content = body.get("content")
+    reasons = (isinstance(content, list)
+               and any(b.get("type") == "thinking" for b in content
+                       if isinstance(b, dict)))
+    if not reasons:
+        return False
+    request["thinking"] = {"type": "disabled"}
+    return post_json(api_url(base, "/v1/messages"), request, headers) is not None
+
+
+TOOL_PROBE = [{"name": "probe_tool", "description": "probe",
+               "input_schema": {"type": "object",
+                                "properties": {"x": {"type": "string"}},
+                                "required": ["x"]}}]
+
+
+def recycles_tool_ids(base: str, key: str, model: str) -> bool:
+    """True when the upstream mints deterministic tool_use ids.
+
+    kimi session deaths (2026-08-16): the gateway's Anthropic translation
+    hands every tool call the same id (Bash_0 on every response). Claude
+    Code's transcript repair treats repeats as corrupt duplicates and
+    plants "[Tool use interrupted]" into the model's context — the death
+    seed. Well-behaved Anthropic endpoints mint unique ids per call, so
+    two identical ids across two independent responses is the recycling
+    signature. The gateway-shim add-on is only interposed for upstreams that
+    fail this probe — gateways with distinct behaviors are probed, not
+    assumed. Any probe failure answers False (no shim) — the add-on never
+    penalizes a shaky reading.
+    """
+    seen = []
+    for _ in range(2):
+        body = post_json(
+            api_url(base, "/v1/messages"),
+            {"model": model, "max_tokens": 64, "tools": TOOL_PROBE,
+             "messages": [{"role": "user",
+                           "content": "Call probe_tool with x=1. No prose."}]},
+            {"x-api-key": key, "anthropic-version": "2023-06-01"})
+        if body is None:
+            return False
+        ids = [b.get("id") for b in body.get("content", [])
+               if isinstance(b, dict) and b.get("type") == "tool_use"]
+        if not ids:
+            return False
+        seen.append(ids[0])
+    return seen[0] == seen[1]
+
+
+def usable_row(row: object) -> bool:
+    """True when a cached row carries every field the launch path reads.
+
+    Rows written by an older schema, or by a truncated write, are dropped here
+    rather than papered over with .get() at sort/render time — a missing key there
+    is a KeyError in the middle of a launch, and dropping the row re-probes exactly
+    that model on this same run.
+    """
+    return (isinstance(row, dict)
+            and ROW_KEYS <= row.keys()
+            and isinstance(row.get("model"), str)
+            and isinstance(row.get("dialect"), str))
+
+
+def classify(base: str, key: str, cache: Path,
+             required_model: str | None = None, auto: bool = False) -> list[dict]:
+    # required_model is set by a launch that already knows exactly which model
+    # Claude Code will use (--model). Cached-and-usable is the fast path: return
+    # every cached row at once, before touching inventory() or the lock at all --
+    # otherwise a launch waits out a full-gateway sweep of models it will never
+    # select just because one OTHER model on the endpoint was never seen before
+    # (live: 50s classifying 10 unrelated models while the selected one was
+    # already cached). A cached-but-unusable requested model is a precise, named
+    # failure here rather than a silent fall-through to "no usable models".
+    if required_model is not None:
+        rows = _cached_selection(base, cache, _cached_rows(base, cache), required_model)
+        if rows is not None:
+            return rows
+    # Serialize the whole load->probe->write on a per-cache lock. The dialect
+    # sweep probes every model not yet cached, once per model — minutes on a
+    # large gateway's first contact. Without the lock, the add-time background
+    # warmup (--print-config) and a launch seconds later BOTH run a full sweep
+    # concurrently, neither reusing the other's work, so the launch waits out an
+    # entire second sweep. With it, the launch blocks on the warmup's in-flight
+    # sweep and then re-reads the now-warm cache: fresh=[] and it returns at once.
+    # A sidecar .lock file so it survives the cache's own rewrite.
+    #
+    # Bounded, and it says so while waiting. A blocking LOCK_EX here could outlast
+    # the caller: _ccs_adapter_start gives readiness 3000 x 0.2s = 600s, while the
+    # holder's sweep is N models x up to 4 dialect probes x PROBE_TIMEOUT and can
+    # run far longer on a slow gateway — so the launch used to sit silent in flock()
+    # and then fail with "adapter did not become ready" while the warmup was
+    # perfectly healthy. Poll instead: announce the wait once, give up before the
+    # caller does, and fall back to whatever is already cached rather than failing.
+    #
+    # The lock is an OPTIMISATION, never a precondition. Opening it is a write, and
+    # a write can be refused for reasons that have nothing to do with contention: a
+    # sandboxed launch context (observed: "[Errno 1] Operation not permitted" on a
+    # path an ordinary shell in the same session can write), a read-only state
+    # volume, a full disk. This used to raise straight out of classify() and
+    # kill the adapter one second into a launch — "adapter for 'gateway' did not
+    # become ready" — with the traceback only in the log. The whole point of the
+    # cache is that a launch can proceed from it; refusing to launch because the
+    # lock beside it could not be opened inverted that.
+    #
+    # So: try to lock, and if the lock itself is unavailable, do the work unlocked.
+    # Losing serialisation costs a redundant sweep at worst. Losing the launch costs
+    # the session.
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log(f"cache directory unavailable ({exc}); classifying without a lock")
+        return _classify_locked(base, key, cache, required_model, auto)
+    lock_path = cache.with_name(cache.name + ".lock")
+    try:
+        lock_handle = open(lock_path, "w")
+    except OSError as exc:
+        log(f"lock unavailable ({exc}); classifying without one — a concurrent "
+            f"run may duplicate this sweep, which is slow but correct")
+        return _classify_locked(base, key, cache, required_model, auto)
+    with lock_handle as lock:
+        deadline = time.monotonic() + LOCK_WAIT
+        announced = False
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    cached = _cached_rows(base, cache)
+                    # A selected model waits for ITS OWN row, not merely for any
+                    # cache to exist. Returning early on unrelated cached rows
+                    # would launch against a config lacking the model the caller
+                    # is about to request.
+                    if required_model is not None:
+                        row = next((r for r in cached
+                                    if r["model"] == required_model), None)
+                        if row is None:
+                            die(f"another classification of {base} has held the "
+                                f"lock for {LOCK_WAIT}s and {required_model!r} is "
+                                "still not cached; retry after the active check finishes")
+                    if cached:
+                        log(f"another classification of {base} still running after "
+                            f"{LOCK_WAIT}s; using {len(cached)} cached row(s)")
+                        return sorted(cached,
+                                      key=lambda r: (r["dialect"], r["model"]))
+                    die(f"another classification of {base} has held the lock for "
+                        f"{LOCK_WAIT}s and nothing is cached yet; retry after the active check finishes")
+                if not announced:
+                    log(f"waiting for an in-flight classification of {base} "
+                        f"(up to {LOCK_WAIT}s)")
+                    announced = True
+                time.sleep(0.25)
+        return _classify_locked(base, key, cache, required_model, auto)
+
+
+def _cached_rows(base: str, cache: Path) -> list[dict]:
+    """Every well-formed cached row for this endpoint, or [] .
+
+    The stored `endpoint` is re-checked on every read, so a moved base_url or a
+    sha256[:16] collision falls through to a fresh probe instead of being served
+    another endpoint's dialects. Read by both the load path and the write path —
+    the write needs it to preserve rows outside this key's inventory.
+    """
+    if not cache.exists():
+        return []
+    try:
+        blob = json.loads(cache.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(blob, dict) or blob.get("endpoint") != base:
+        return []
+    rows_in = blob.get("rows", [])
+    if not isinstance(rows_in, list):
+        return []
+    # Rows written before the anthropic_path marker probed /messages instead of
+    # the client's URL, so every verdict from that era is unreliable — anthropic,
+    # unusable, and chat alike. The anthropic_path field was introduced alongside
+    # the corrected probe URL; its absence means the cache predates the fix.
+    pre_fix = blob.get("anthropic_path") != "/v1/messages"
+    rows = [] if pre_fix else [r for r in rows_in if usable_row(r)]
+    if blob.get("thinking_probe") != THINKING_PROBE_VERSION:
+        rows = [r for r in rows if not r.get("nothink")]
+    return rows
+
+
+def _cached_selection(base: str, cache: Path, cached: list[dict],
+                      required_model: str) -> list[dict] | None:
+    row = next((r for r in cached if r["model"] == required_model), None)
+    if row is None:
+        return None
+    if row["dialect"] == "unusable":
+        die(f"model {required_model!r} is cached as unusable on {base} "
+            f"({row.get('note') or 'no usable dialect answered'}); "
+            f"choose another model. Cache: {cache}")
+    return sorted(cached, key=lambda r: (r["dialect"], r["model"]))
+
+
+def _classify_locked(base: str, key: str, cache: Path,
+                      required_model: str | None = None,
+                      auto: bool = False) -> list[dict]:
+    # Load the cache FIRST so an inventory() failure can fall back to it.
+    cached = _cached_rows(base, cache)
+    known = {r["model"]: r for r in cached}
+
+    # The launch we waited on may have just cached the selected model; without this
+    # re-check it falls into the inventory path, probes only the selected model and
+    # dies with KeyError on the first unprobed inventory id.
+    if required_model is not None:
+        rows = _cached_selection(base, cache, cached, required_model)
+        if rows is not None:
+            return rows
+
+    # A selected model absent from the cache is classified ALONE: the caller
+    # already named the exact id, so a full /v1/models sweep (and probing every
+    # other id it returns) buys nothing this launch needs and only delays it
+    # behind models the session will never touch (live: ~50s classifying 10
+    # unrelated models for a launch that wanted one already-cached model). Every
+    # existing cached row is still kept -- `models` below is the union, not a
+    # replacement -- so every previously known model stays selectable.
+    if required_model is not None and required_model not in known:
+        log(f"classifying only the requested model {required_model!r} on {base} "
+            f"({len(known)} cached row(s) kept, no inventory scan)")
+        models = sorted(known) + [required_model]
+    else:
+        # Inventory only discovers models NEW since the last launch. If the
+        # gateway's /v1/models is down or rejected (2026-08-18: WAF 405), fall
+        # back to the cache rather than dying — fresh=[] below then skips all
+        # probing, and the cache refreshes on its own once the endpoint recovers.
+        try:
+            models = inventory(base, key)
+        except Exception as exc:  # noqa: BLE001
+            if not known:
+                raise  # no cache to fall back on — nothing we can launch with
+            log(f"inventory failed ({type(exc).__name__}: {exc}); "
+                f"falling back to {len(known)} cached model(s) for {base}")
+            models = sorted(known)
+
+    # Probe only ids never seen for this endpoint. A whole-inventory hash would
+    # re-sweep every model each time the gateway adds one. Rows lacking a full key
+    # set were already dropped above, so absence from `known` is the only test.
+    fresh = [m for m in models if m not in known]
+    if fresh:
+        log(f"probing {len(fresh)} new model(s) of {len(models)} on {base}")
+        # Say what that costs, in the same breath as the count. Dialect detection
+        # is free wherever a model refuses the shape, but the behaviour probes
+        # (output cap, reasons-by-default, tool-id recycling) are real turns on a
+        # gateway that bills them, and this fires once per model the endpoint
+        # serves -- including models this session will never select. Cached
+        # afterwards, so it is a first-contact cost, not a per-launch one.
+        if auto:
+            log("automatic compatibility checks prefer endpoint metadata; "
+                "only the selected model may need bounded inference")
+        else:
+            log("Compatibility checks send inference requests and may incur charges; "
+                "usage depends on the model and gateway.")
+        log(f"Cache: {cache}")
+
+        def one(model: str) -> dict:
+            if auto:
+                dialect, note, status = dialect_auto(base, key, model)
+                if dialect == "unusable" and model == required_model:
+                    log(f"Checking compatibility for {model!r}: up to four small inference "
+                        "requests (8/16 output tokens each); charges may apply.")
+                    dialect, note, status = dialect_of(base, key, model, bounded=True)
+                return {"model": model, "dialect": dialect, "note": note,
+                        "status": status, "cap": None, "nothink": False,
+                        "id_recycle": False}
+            dialect, note, status = dialect_of(base, key, model)
+            return {"model": model, "dialect": dialect, "note": note,
+                    "status": status,
+                    "cap": output_cap(base, key, model, dialect),
+                    "nothink": (reasons_by_default(base, key, model)
+                                if dialect == "anthropic" else False),
+                    "id_recycle": (recycles_tool_ids(base, key, model)
+                                   if dialect == "anthropic" else False)}
+
+        if required_model is not None:
+            row = one(required_model)
+            known[row["model"]] = row
+        else:
+            with cf.ThreadPoolExecutor(max_workers=JOBS) as ex:
+                for row in ex.map(one, fresh):
+                    known[row["model"]] = row
+    else:
+        log(f"{len(models)} model(s) known for {base}")
+
+    rows = sorted((known[m] for m in models),
+                  key=lambda r: (r["dialect"], r["model"]))
+
+    # An indeterminate verdict (a 5xx or a transport error) says nothing about the
+    # model, so it must not be cached -- but it must not suppress the verdicts of the
+    # models that answered cleanly either. Cache the settled rows and leave the shaky
+    # ones out: because `fresh` above is "every id not in the cache", omitting a shaky
+    # model re-probes exactly it next launch, while the settled models come from cache.
+    # The old code cached all-or-nothing, so one dead model (a gateway's Ornith on a
+    # 503) forced a full inventory re-sweep on every launch. Shakiness is judged on
+    # the probe's numeric status, not on the vendor's error prose: an earlier regex
+    # looked for "^5\d\d" in the note, which never matches a real 5xx body, so every
+    # transiently-down model was cached as permanently unusable.
+    shaky = {r["model"] for r in rows
+             if r["dialect"] == "unusable" and (
+                 indeterminate(r["status"])
+                 or (auto and r.get("note", "").startswith(
+                     "cannot determine protocol without inference")))}
+    settled = [r for r in rows if r["model"] not in shaky]
+    if shaky:
+        log("not caching indeterminate verdict(s) for " + ", ".join(sorted(shaky))
+            + f"; caching {len(settled)} settled")
+    # Write the union, not this key's slice. `rows` (and so `settled`) is scoped to
+    # `models` — the inventory THIS key can see — but the cache is shared by every
+    # profile on the endpoint. Writing `settled` alone therefore let a key with a
+    # narrower entitlement truncate a wider key's rows: on a 41-model gateway, a
+    # profile whose key sees 5 left 5 behind, and the next launch of the other
+    # profile re-probed 36 (~60s) — the exact cost this shared cache was introduced
+    # to remove, and it recurred on every alternating launch. Keep every settled row
+    # already on disk unless this run re-probed it.
+    #
+    # `known` IS that union — seeded from the cache at the top of this function and
+    # added to as each fresh probe lands — and the flock has been held throughout,
+    # so nothing can have changed the file since. Re-reading it here would be a
+    # second parse of a file we already hold in memory, and a second derivation of
+    # the same set that could drift from the first.
+    #
+    # The pop is not dead: `shaky` is computed over `rows`, which includes rows
+    # served from the cache, so a row an OLDER version wrote as a settled
+    # `unusable` 403 now reclassifies as indeterminate and this is what evicts it.
+    keep = {m: r for m, r in known.items() if m not in shaky}
+    if keep:
+        try:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            # Atomic, like the registry's commit(): a truncate-in-place write that
+            # dies midway leaves JSON the next load cannot parse, which silently
+            # discards every classification on the endpoint.
+            fd, tmp = tempfile.mkstemp(dir=str(cache.parent), prefix=".cls.")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump({"endpoint": base,
+                               "anthropic_path": "/v1/messages",
+                               "thinking_probe": THINKING_PROBE_VERSION,
+                               "rows": sorted(keep.values(),
+                                              key=lambda r: (r["dialect"], r["model"]))},
+                              fh, indent=2)
+                os.chmod(tmp, 0o600)
+                os.replace(tmp, cache)
+            except Exception:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+        except OSError as exc:
+            log(f"cache not written ({exc})")
+
+    # A requested model that just probed unusable is a named failure, not a
+    # silent fall-through to whatever else is cached: launching against the
+    # wrong endpoint entirely (or a model this key cannot see) must not look
+    # like success just because other models on the same gateway are fine.
+    if required_model is not None:
+        req_row = next((r for r in rows if r["model"] == required_model), None)
+        if req_row is not None and req_row["dialect"] == "unusable":
+            die(f"model {required_model!r} is unusable on {base} "
+                f"({req_row.get('note') or 'no usable dialect answered'})")
+    return rows
+
+
+def q(value: str) -> str:
+    """A value as a YAML double-quoted scalar.
+
+    JSON string syntax is a subset of YAML's double-quoted scalar, so json.dumps
+    gives correct escaping for free. Every interpolated value goes through this:
+    the config is assembled as text and an unescaped quote or newline in a model
+    id, a path, or a credential would otherwise reshape the document.
+    """
+    return json.dumps(str(value))
+
+
+def load_hooks(path: str):
+    """Load a profile's request-hooks module (same contract as the shim's
+    CCPROTEUS_SHIM_HOOKS): a standalone file, never importing the shim."""
+    spec = importlib.util.spec_from_file_location("ccproteus_hooks", path)
+    if spec is None or spec.loader is None:
+        raise OSError(f"cannot load request hooks: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def hooks_user_agent(hooks_path: str) -> str:
+    """The passthrough User-Agent a profile's request hooks declare, or "".
+
+    One gateway rejects newer models for old claude-cli versions, so a profile
+    on it installs hooks that state the installed version; that quirk is the
+    addon's, so the adapter only relays what the hooks say. Failing soft here
+    is deliberate: the shim dies loudly at spawn when the module is broken, so
+    a silent empty UA would only mask a launch that is already failing.
+    """
+    if not hooks_path:
+        return ""
+    try:
+        module = load_hooks(hooks_path)
+        ua = getattr(module, "translator_user_agent", lambda: "")()
+    except Exception:
+        return ""
+    return ua if isinstance(ua, str) else ""
+
+
+def render(rows, key, port, upstream, authdir, proxy="", hooks_path="") -> str:
+    # Belt to inventory()'s braces: a row cached before ids were validated could
+    # still carry YAML metacharacters, and one such id breaks the whole config.
+    safe = []
+    for r in rows:
+        if SAFE_MODEL_ID.match(r["model"]):
+            safe.append(r)
+        else:
+            log(f"omitting model id with unsafe characters: {r['model'][:60]!r}")
+    rows = safe
+
+    def ids(*dialects):
+        return [r["model"] for r in rows if r["dialect"] in dialects]
+
+    def block(names):
+        return "".join(f'      - name: {q(n)}\n        alias: {q(n)}\n'
+                       for n in names)
+
+    passthrough, responses = ids("anthropic"), ids("responses")
+    ua = hooks_user_agent(hooks_path) if passthrough else ""
+    claude_lines = f'      User-Agent: {q(ua)}\n' if ua else ""
+    claude_hdr = f'    headers:\n{claude_lines}' if claude_lines else ""
+    chat, noreason = ids("chat", "chat-noreason"), ids("chat-noreason")
+    openai_base = api_url(upstream, "/v1")
+    caps = {r["model"]: r["cap"] for r in rows if r["cap"]}
+    # The thinking override is an Anthropic-dialect field. A row of any other
+    # dialect carrying nothink (a hand-edited cache, a future probe change) must not
+    # produce one: cliproxyapi would translate it into a parameter the upstream
+    # rejects and the model would look broken rather than merely unbounded.
+    nothink = {r["model"] for r in rows
+               if r.get("nothink") and r["dialect"] == "anthropic"}
+
+    # env.CCPROTEUS_UPSTREAM_PROXY sends the translator's upstream calls through an
+    # HTTP CONNECT proxy. macOS denies a LAN gateway to a translator started under a
+    # launchd-owned tmux server ("connect: no route to host"); a loopback proxy
+    # holding a Local Network grant dials it instead.
+    proxy_line = f"proxy-url: {q(proxy)}\n" if proxy else ""
+    out = [f'''host: "127.0.0.1"
+port: {port}
+auth-dir: {q(authdir)}
+{proxy_line}
+# Re-send a request the upstream dropped transiently (unexpected EOF, 408, or
+# 5xx) before Claude Code ever sees the error. Only pre-stream failures can be
+# retried -- once the SSE stream has emitted bytes a mid-stream drop is already
+# downstream -- so this trims visible error noise, not every failure. 429 is not
+# in cliproxyapi's retry set and still falls through to Claude Code's own retry.
+request-retry: 3
+
+# The Responses provider injects an image_generation tool by default, which some
+# upstreams reject ("imagegen deployment must be provided through header
+# x-ms-oai-image-generation-deployment"). "chat" stops the injection.
+disable-image-generation: "chat"
+
+# Inbound key is the profile's own key: this instance serves exactly one profile,
+# so nothing new is minted and no second credential exists.
+api-keys:
+  - {q(key)}
+''']
+
+    if passthrough:
+        out.append(f'''
+# Passthrough for models that already speak Anthropic.
+#
+# The models list is an ALLOWLIST for this entry, so it must be complete: any id
+# omitted becomes "unknown provider". Never add a second entry of the same type to
+# hold extras either -- entries are pooled and round-robined, which makes model
+# resolution depend on which entry a request happens to land on.
+#
+# disable-cooling: a single credential has nothing to fail over to, so cooling
+# would take the route offline as "auth_unavailable" after one transient error.
+# rebuild-mid-system-message: Claude Code sends mid-conversation system content as
+# a messages entry with role "system", which vLLM-backed upstreams reject with a
+# literal_error on the role.
+# cloak never: the client already is Claude Code; cloaking rewrites its billing
+# header to cliproxyapi's frozen cc_version, which Anthropic rejects for newer
+# models, and injects its own system reminder and session ids.
+claude-api-key:
+  - api-key: {q(key)}
+    base-url: {q(upstream)}
+    disable-cooling: true
+    rebuild-mid-system-message: true
+    cloak:
+      mode: "never"
+{claude_hdr}    models:
+{block(passthrough)}''')
+
+    if responses:
+        out.append(f'''
+# Reasoning models need the Responses dialect: gateways reject function tools
+# combined with reasoning_effort on chat/completions and say so explicitly.
+codex-api-key:
+  - api-key: {q(key)}
+    base-url: {q(openai_base)}
+    disable-cooling: true
+    models:
+{block(responses)}''')
+
+    if chat:
+        out.append(f'''
+# Non-reasoning models, which /responses rejects because the translation carries
+# encrypted reasoning content they do not accept.
+openai-compatibility:
+  - name: "chat"
+    base-url: {q(openai_base)}
+    disable-cooling: true
+    api-key-entries:
+      - api-key: {q(key)}
+    models:
+{block(chat)}''')
+
+    if noreason or caps or nothink or passthrough:
+        out.append("\npayload:\n")
+    if noreason or passthrough:
+        out.append("  filter:\n")
+    if passthrough:
+        out.append('''  # cliproxyapi adds thinking.block_binding when a Claude 5.5 history replays signed
+  # thinking; Bedrock-backed gateways 400 it ("Extra inputs are not permitted").
+  # Filter rules run after that injection, so the field never leaves.
+    - models:
+        - name: "*"
+          protocol: "claude"
+      params:
+        - "thinking.block_binding"
+''')
+    if noreason:
+        names = "".join(f'        - name: {q(n)}\n' for n in noreason)
+        out.append(f'''  # Claude Code always sends thinking for ids outside its catalogue, which becomes
+  # reasoning_effort. These models reject that parameter but work without it, so it
+  # is stripped rather than the models being dropped.
+    - models:
+{names}      params:
+        - "reasoning_effort"
+''')
+    if caps or nothink:
+        entries = ""
+        for name in sorted(set(caps) | nothink):
+            params = ""
+            if name in caps:
+                params += f'        "max_tokens": {caps[name]}\n'
+            if name in nothink:
+                # The gateway reasons by default for these models and ignores
+                # budget_tokens, so thinking cannot be BOUNDED by parameter — it
+                # can only be turned off, which is what this does. Every turn is
+                # then visible work (text or tool calls) instead of an unbounded
+                # monologue.
+                #
+                # Nothing else belongs in this override. An earlier version also
+                # set "system": "Think briefly ..." here: cliproxyapi REPLACES the
+                # system field rather than appending to it, so that silently threw
+                # away Claude Code's entire system prompt — tools, environment,
+                # policy, the lot — for exactly the models most likely to need it.
+                # Bound reasoning through the thinking field only.
+                params += '        "thinking": {"type": "disabled"}\n'
+            entries += (f'    - models:\n        - name: {q(name)}\n'
+                        f'      params:\n{params}')
+        out.append(f'''  # Claude Code sends max_tokens={CC_MAX_TOKENS}; some models cap lower and reject the
+  # request outright, so the cap each model states in its own error is clamped in.
+  # Models probed to reason even when thinking was never requested get thinking
+  # disabled outright: unbounded thinking-only turns are where the give-up loops
+  # and empty turns gestate, and the gateway ignores budget_tokens so there is no
+  # way to bound them. Never add "system" here -- the translator replaces the
+  # system field, which would delete Claude Code's own system prompt.
+  override:
+{entries}''')
+    return "".join(out)
+
+
+def free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _loopback_listener_exists(port: int) -> bool:
+    """True when something would answer a connection to this endpoint.
+
+    A bind-table probe cannot ask that question. On macOS a specific
+    127.0.0.1 bind with SO_REUSEADDR succeeds right over a wildcard listener
+    on 0.0.0.0:port — which would receive our traffic; on Linux a wildcard
+    probe is refused by a listener on any other interface of the machine —
+    which would not. Connecting asks directly: refused means nothing listens
+    there, established means the port belongs to whoever answered."""
+    probe = socket.socket()
+    probe.settimeout(1)
+    try:
+        probe.connect(("127.0.0.1", port))
+        return True
+    except ConnectionRefusedError:
+        return False
+    except OSError:
+        # A timeout cannot really happen on loopback; if one does, count the
+        # port as taken — fail safe for a credential endpoint.
+        return True
+    finally:
+        probe.close()
+
+
+def reserve_port(port: int) -> socket.socket:
+    """Hold a fixed port from validation until the shim takes it over.
+
+    The whole startup — profile lookup, classification, translator readiness —
+    runs between validating --port and the shim's bind. Released after a mere
+    check, the port sits free for all of that, and whoever grabs it collects
+    the readiness probe's credential and can answer 200 for a PORT= pointing
+    at itself; held, the worst case is the sub-second gap between this close
+    and the shim's bind. SO_REUSEADDR so a restart right after a stop is not
+    refused over the previous run's TIME_WAIT — and it still blocks every
+    other binder while held: an active bind refuses even another SO_REUSEADDR
+    socket (stealing an active listener needs SO_REUSEPORT), on macOS and
+    Linux alike."""
+    if _loopback_listener_exists(port):
+        raise OSError(f"something is already serving on 127.0.0.1:{port}")
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("127.0.0.1", port))
+    return s
+
+
+def release_port_reservation(args) -> None:
+    """Hand the reserved port over; the shim's bind follows immediately, so
+    the only gap in which another process could take it is the shim's own
+    startup."""
+    if args.reserved is not None:
+        args.reserved.close()
+        args.reserved = None
+
+
+def read_inbound_token(path: str) -> str:
+    """The inbound credential of a long-lived endpoint, read from a 0600 file.
+
+    Everything is judged through the one O_NOFOLLOW fd, so there is no window
+    between the check and the read for the file to be swapped. The token is a
+    credential: it travels to the shim as a sha256 in CCPROTEUS_INBOUND and
+    nowhere else — every message below names the path, never the content."""
+
+    def refuse(why: str):
+        die(f"inbound token file {path}: {why}")
+
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as e:
+        # A symlink dies here with ELOOP, before any content is read.
+        # O_NONBLOCK so a FIFO cannot hold the open forever; a regular file
+        # (all that passes the checks below) always reads to EOF regardless.
+        refuse(f"cannot be read ({e.strerror})")
+    try:
+        # Not fdopen: the io layer raises IsADirectoryError on a directory fd
+        # before the regular-file check below can name it plainly.
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            refuse("is not a regular file")
+        if st.st_mode & 0o777 != 0o600:
+            refuse(f"must have mode 0600 (has {st.st_mode & 0o777:04o})")
+        if st.st_uid != os.getuid():
+            refuse("is not owned by you")
+        # Bounded: no real credential is pages long, and an unbounded read
+        # makes any large 0600 file one.
+        data = b""
+        while chunk := os.read(fd, 4096):
+            data += chunk
+            if len(data) > 4096:
+                refuse("holds more than 4096 characters")
+    finally:
+        os.close(fd)
+    try:
+        token = data.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        refuse("is not valid utf-8")
+    if len(token) < 32:
+        refuse("holds fewer than 32 characters")
+    # The token travels as an HTTP header value; a control character in it
+    # cannot be sent, so it would surface much later as a readiness timeout
+    # that names the shim instead of the file.
+    if re.search(r"[\x00-\x1f\x7f]", token):
+        refuse("holds control characters")
+    return token
+
+
+# Loopback probe: no proxy, whatever http_proxy says (same reason as --noproxy '*'
+# in ccproteus.sh -- a proxy cannot reach this machine's 127.0.0.1).
+LOOPBACK = urllib.request.build_opener(urllib.request.ProxyHandler({}), SameOriginRedirect())
+
+
+def serving(port: int, key: str) -> bool:
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/models",
+                                headers={"x-api-key": key})
+    try:
+        with LOOPBACK.open(req, timeout=5) as r:
+            return r.status == 200
+    except Exception:  # noqa: BLE001
+        return False
+
+
+# The adapter's own handlers and atexit cannot run when it is SIGKILLed (OOM, a
+# force-quit terminal, `kill -9` of a wedged launch), and macOS has no
+# parent-death signal, so its children were reparented to launchd and served an
+# empty port forever -- 40 translator+shim pairs and their rendered credentials
+# found leaked on 2026-10-02. The tether is a separate tiny process per child:
+# once the adapter is gone it stops the child with the same TERM-then-KILL grace
+# as stop_processes and removes the state directory holding the credential.
+TETHER = r"""
+import os, shutil, signal, sys, time
+adapter, child, state = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+def alive():
+    try:
+        os.kill(child, 0)
+        return True
+    except OSError:
+        return False
+while os.getppid() == adapter and alive():
+    time.sleep(2)
+if alive():
+    os.kill(child, signal.SIGTERM)
+    deadline = time.monotonic() + 10
+    while alive() and time.monotonic() < deadline:
+        time.sleep(0.2)
+    if alive():
+        os.kill(child, signal.SIGKILL)
+if state and os.getppid() != adapter:
+    shutil.rmtree(state, ignore_errors=True)
+"""
+
+
+def tether(proc: subprocess.Popen, state: Path | None = None) -> None:
+    # Its own session, so the hangup that ends a tmux session cannot take the
+    # tether down before the adapter's SIGHUP handler has stopped the child.
+    subprocess.Popen([sys.executable, "-c", TETHER, str(os.getpid()), str(proc.pid),
+                      str(state or "")],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def stop_processes(*procs: subprocess.Popen | None) -> None:
+    live = [proc for proc in procs if proc is not None and proc.poll() is None]
+    for proc in live:
+        proc.terminate()
+
+    # Each process gets its OWN grace budget. A shared deadline let an early
+    # process that ignores SIGTERM consume the whole window, so a later one (the
+    # cliproxyapi child) was SIGKILLed with zero grace mid-token-refresh, which
+    # can truncate a credential file. Per-process waits give each its full grace;
+    # they overlap in wall-clock because every process was already terminated above.
+    survivors = []
+    for proc in live:
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            survivors.append(proc)
+    for proc in survivors:
+        proc.kill()
+    for proc in survivors:
+        proc.wait()
+
+
+def front_directly(args, upstream: str, key: str, route_identity: str,
+                   usable: list[dict], shim_extras: dict,
+                   privacy_args: list[str] = (), model_map: dict | None = None) -> int:
+    """Serve an Anthropic-native gateway through the gateway-shim alone.
+
+    No translator and no rendered credential: the shim relays the client's own
+    key, so there is nothing on disk to clean up. Same contract as the translator
+    path: PORT=<n> only after the health check, non-zero on any failure.
+    """
+    port = args.port or free_port()
+    # No translator here, so the shim owns transport retries; behind cliproxyapi
+    # its request-retry does, and a second layer would multiply attempts.
+    shim_args = [sys.executable, GATEWAY_SHIM, str(port), upstream,
+                 "--preserve-tool-ids", "--retry-transport"]
+    shim_args += privacy_args
+    shim_env = dict(os.environ, CCPROTEUS_MODEL_ROUTE=json.dumps({
+        "profile": args.profile, "identity": route_identity, "upstream": upstream,
+        "models_url": api_url(upstream, "/v1/models"),
+        "models": [r["model"] for r in usable],
+        "model_map": model_map or {}, "timeout": SELECT_DEADLINE,
+        "key_sha256": hashlib.sha256(key.encode()).hexdigest()}))
+    # Profile request quirks ride as env for the shim's hooks module, never as
+    # new shim flags.
+    shim_env.update(shim_extras)
+    token = args.token
+    if token:
+        shim_env["CCPROTEUS_INBOUND"] = json.dumps(
+            {"sha256": hashlib.sha256(token.encode()).hexdigest(), "key": key})
+    release_port_reservation(args)
+    shim = subprocess.Popen(shim_args, env=shim_env, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL, stderr=sys.stderr)
+    tether(shim)
+
+    def shutdown(*_, status: int = 0):
+        stop_processes(shim)
+        raise SystemExit(status)
+
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, shutdown)
+
+    def check_parent() -> None:
+        if args.parent_pid:
+            try:
+                os.kill(args.parent_pid, 0)
+            except OSError:
+                log("parent gone, shutting down")
+                shutdown()
+
+    deadline = time.monotonic() + READY_TIMEOUT
+    while True:
+        check_parent()
+        # The child is checked before the probe, never after: the probe
+        # carries the inbound credential, and it must not be sent to a
+        # listener that may not be our own shim.
+        if shim.poll() is not None or time.monotonic() >= deadline:
+            log(f"gateway-shim did not serve on :{port}")
+            shutdown(status=1)
+        if serving(port, token or key):
+            break
+        time.sleep(0.4)
+    log("gateway-shim interposed (Anthropic model ids; readable gateway errors"
+        f"{'; profile request hooks' if shim_extras.get('CCPROTEUS_SHIM_HOOKS') else ''})")
+    # Only a minted --inbound-token is printed; a file token is a long-lived
+    # credential whose stdout may be redirected to a file.
+    if args.inbound_token:
+        print(f"TOKEN={token}", flush=True)
+    print(f"PORT={port}", flush=True)
+    log(f"serving profile {args.profile} on :{port} -> {upstream} (no translator)")
+    while True:
+        if shim.poll() is not None:
+            log(f"gateway-shim exited {shim.returncode}")
+            shutdown(status=1)
+        check_parent()
+        time.sleep(PARENT_POLL)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("profile")
+    ap.add_argument("--parent-pid", type=int, default=0)
+    ap.add_argument("--print-config", action="store_true",
+                    help="render to stdout with the credential redacted, then exit")
+    ap.add_argument("--auto", action="store_true",
+                    help="use cached rows or declared per-model endpoint metadata")
+    ap.add_argument("--model", default=None,
+                    help="classify only this model if uncached, instead of the "
+                         "full endpoint sweep (the shell passes Claude Code's "
+                         "selected model here)")
+    inbound = ap.add_mutually_exclusive_group()
+    inbound.add_argument("--inbound-token", action="store_true",
+                         help="clients authenticate with a fresh per-launch token "
+                              "(printed as TOKEN= before PORT=), never the gateway key")
+    inbound.add_argument("--inbound-token-file", default=None,
+                         help="clients authenticate with the token in this 0600 "
+                              "file; it is never printed")
+    ap.add_argument("--ensure-config", help=argparse.SUPPRESS)
+    ap.add_argument("--ensure-port", type=int, help=argparse.SUPPRESS)
+    ap.add_argument("--ensure-identity", help=argparse.SUPPRESS)
+    # default None, not 0: a supplied --port 0 is a caller's mistake to refuse,
+    # not a synonym for "pick a free one".
+    ap.add_argument("--port", type=int, default=None,
+                    help="serve on this loopback port instead of a free one")
+    args = ap.parse_args()
+
+    # The long-lived endpoint form (--port with --inbound-token-file, for a
+    # non-Claude client such as Hermes) validates everything up front, before
+    # the stdin detach, the profile lookup or any serving: a launch caller
+    # aborts on a dead port, and a service caller must never start
+    # half-configured with its credential half-checked. A launch with none of
+    # these flags runs nothing here, so every existing path is unchanged.
+    # Nothing supplied is None throughout, so an explicit empty --port 0 or
+    # --inbound-token-file "" is judged, never silently treated as omitted.
+    # The credential is judged before the port: its checks are purely local,
+    # while the port is probed against the network stack, so a refused
+    # credential never depends on stack state.
+    args.token = None
+    args.reserved = None
+    if args.inbound_token_file is not None:
+        args.token = read_inbound_token(args.inbound_token_file)
+    elif args.inbound_token:
+        args.token = secrets.token_urlsafe(32)
+    if args.port is not None:
+        if not 1024 <= args.port <= 65535:
+            die(f"--port {args.port}: must be 1024-65535")
+        try:
+            args.reserved = reserve_port(args.port)
+        except OSError:
+            die(f"--port {args.port}: is in use")
+
+    # ccproteus's own [1m] marker (a context-window variant, not a distinct
+    # model id on the gateway) is the shell layer's concern; strip only that
+    # exact suffix so the id classify() and the gateway both recognize is the
+    # real one, without guessing at any other vendor dialect's naming.
+    required_model = args.model.strip() if args.model else None
+    if required_model and required_model.endswith("[1m]"):
+        required_model = required_model[: -len("[1m]")]
+    required_model = required_model or None
+
+    # Detach stdin from whatever the launcher handed us. ccproteus starts this
+    # adapter in the foreground of Claude Code's controlling terminal, redirecting
+    # only stdout/stderr -- so fd 0 is inherited straight from the tty. This process
+    # never reads stdin, but a foreground process that merely holds the tty open
+    # races Claude Code's raw-mode reader for every keystroke: the wedge where keys
+    # reach the pane but the TUI stops seeing them (observed 2026-08-06 in a live
+    # session). Pointing fd 0 at /dev/null removes this process -- and,
+    # by inheritance, the translator child -- from the tty entirely. Harmless on the
+    # --print-config path, which only writes stdout.
+    try:
+        _devnull = os.open(os.devnull, os.O_RDONLY)
+        os.dup2(_devnull, 0)
+        if _devnull > 0:
+            os.close(_devnull)
+    except OSError:
+        pass  # a missing /dev/null is not worth aborting a launch over
+
+    env = profile_env(args.profile)
+    model_map = json.loads(env.get("CCPROTEUS_MODEL_MAP", "{}"))
+    # Preparation keys the map by the wire model id, like the shim's request-side
+    # lookup: never by the spelling the caller used. ccproteus.sh refuses a [1m] key
+    # when it reads the profile, which profile_env() runs first.
+    if args.model and not args.ensure_config:
+        required_model = model_map.get(required_model, required_model)
+        if required_model and required_model.endswith("[1m]"):
+            required_model = required_model[:-4]
+    key = env.get("ANTHROPIC_API_KEY") or die(f"profile {args.profile} has no key")
+    upstream = (env.get("ANTHROPIC_BASE_URL") or "").rstrip("/")
+    if not upstream:
+        die(f"profile {args.profile} has no base_url to front")
+    upstream_proxy = env.get("CCPROTEUS_UPSTREAM_PROXY", "").strip()
+    # Profile request quirks ride as CCPROTEUS_* env to the shim's hooks module,
+    # not as shim flags: whatever the profile declared is ferried through
+    # untouched. The hooks path is validated here, before anything is spawned,
+    # so a stale profile fails loudly at launch instead of inside the shim.
+    shim_extras = {k: v for k, v in env.items() if k.startswith("CCPROTEUS_")}
+    hooks_path = shim_extras.get("CCPROTEUS_SHIM_HOOKS", "").strip()
+    if hooks_path and not os.path.isfile(hooks_path):
+        die(f"profile {args.profile} points CCPROTEUS_SHIM_HOOKS at a missing file: "
+            f"{hooks_path}")
+
+    # Dialect classification is a property of the ENDPOINT, not the profile: the
+    # same gateway serves the same models with the same dialects no matter which
+    # profile (or key) fronts it. Keying the cache by base_url — in a shared dir,
+    # not per-profile — means a second profile on a gateway another already
+    # classified starts instantly instead of re-probing all N models (probed:
+    # 60s for 41 models on first contact). The stored `endpoint` field is still
+    # checked on load, so a hash collision or a moved URL can never be mis-served.
+    route_identity = hashlib.sha256(json.dumps([upstream, key]).encode()).hexdigest()
+    cache_key = hashlib.sha256(upstream.encode()).hexdigest()[:16]
+    cache_state = PROFILE_DIRS / ".adapter-cache"
+    if args.ensure_config:
+        if args.ensure_identity != route_identity:
+            die("profile endpoint or credentials changed; resume the session to use the new route")
+        conf = Path(args.ensure_config)
+        if not required_model or not args.ensure_port or not conf.is_file() or conf.is_symlink():
+            die("invalid live model routing request")
+        with _deadline(SELECT_DEADLINE, "selected model routing timed out"):
+            if required_model not in inventory(upstream, key):
+                die(f"model {required_model!r} is not advertised by this gateway")
+            rows = classify(upstream, key, cache_state / f"{cache_key}.json", required_model, True)
+            previous = conf.read_bytes()
+            rendered = render(rows, key, args.ensure_port, upstream, str(conf.parent / "auth"),
+                              upstream_proxy, hooks_path)
+            def replace_config(data):
+                fd, tmp = tempfile.mkstemp(dir=conf.parent, prefix=".route-")
+                try:
+                    with os.fdopen(fd, "wb") as output:
+                        output.write(data)
+                    os.replace(tmp, conf)
+                finally:
+                    if os.path.exists(tmp):
+                        os.unlink(tmp)
+            replace_config(rendered.encode())
+            try:
+                deadline = time.monotonic() + 10
+                while required_model not in inventory(f"http://127.0.0.1:{args.ensure_port}", key, LOOPBACK):
+                    if time.monotonic() >= deadline:
+                        die("translator has not activated the selected model")
+                    time.sleep(0.2)
+                    os.utime(conf, None)  # Watcher startup can lag HTTP readiness.
+            except BaseException:
+                replace_config(previous)
+                raise
+        return 0
+
+    if required_model or args.auto:
+        # Bounded end to end: a selected launch must fail fast rather than sit
+        # through a lock wait plus probes on top of Claude Code's own launch
+        # timeout. No --model given keeps the old, unbounded diagnostic sweep --
+        # that path is explicit warmup/inventory, not a per-launch cost.
+        with _deadline(SELECT_DEADLINE,
+                        f"classifying {required_model!r} on {upstream} exceeded "
+                        f"{SELECT_DEADLINE}s"):
+            rows = classify(upstream, key, cache_state / f"{cache_key}.json",
+                             required_model, args.auto)
+    else:
+        rows = classify(upstream, key, cache_state / f"{cache_key}.json",
+                        auto=args.auto)
+    usable = [r for r in rows if r["dialect"] != "unusable"]
+    if not usable:
+        if args.auto and not required_model:
+            print("EXIT=no declared or cached model protocol; set a model with "
+                  f"ccproteus set {args.profile} model <model-id> and retry "
+                  "(the compatibility check may incur a small charge)", flush=True)
+            return 1
+        die("no usable models on this endpoint; refusing to start")
+
+    # Native is a hard fast path: do not require cliproxyapi, create temp state,
+    # or probe workaround behavior when every usable row is plain Anthropic.
+    native = all(r["dialect"] == "anthropic" and not r.get("cap")
+                 and not r.get("nothink") and not r.get("id_recycle")
+                 for r in usable)
+    # Identifier handling is a per-profile opt-in; without these keys the shim
+    # forwards the client's metadata and headers as sent. Request rewrites that
+    # exist only for one gateway are not flags: they ride in shim_extras for the
+    # profile's hooks module to read.
+    privacy_args = ["--random-device-id"] if env.get("CCPROTEUS_RANDOM_DEVICE_ID") == "1" else []
+    stall = env.get("CCPROTEUS_STALL_TIMEOUT", "").strip()
+    if stall:
+        os.environ["CCPROTEUS_STALL_TIMEOUT"] = stall
+    # Every route the adapter serves goes through the gateway edge (gateway-shim):
+    # Anthropic model ids in and out, a moving catalogue, readable errors, stall
+    # deadlines. A gateway that already speaks Anthropic needs no translator, so the
+    # shim fronts it alone.
+    if args.auto and native and not args.print_config:
+        return front_directly(args, upstream, key, route_identity, usable, shim_extras,
+                              privacy_args, model_map)
+
+    state = Path(tempfile.mkdtemp(
+        prefix=f"ccproteus-adapter-{os.getuid()}-",
+        dir=os.environ.get("TMPDIR") or "/tmp"))
+    state.chmod(0o700)
+    atexit.register(shutil.rmtree, state, ignore_errors=True)
+
+    port = free_port()
+    conf = state / "config.yaml"
+    authdir = state / "auth"
+    authdir.mkdir(mode=0o700)
+
+    # Reap a config left by a run that died without cleaning up, so a leaked
+    # credential cannot outlive the session that made it even if a signal was
+    # missed entirely.
+    conf.unlink(missing_ok=True)
+
+    os.umask(0o077)
+    conf.write_text(render(rows, key, port, upstream, str(authdir), upstream_proxy,
+                           hooks_path),
+                    encoding="utf-8")
+    conf.chmod(0o600)
+
+    if args.print_config:
+        text = conf.read_text(encoding="utf-8")
+        # Redact both spellings: the key appears in the config as a YAML scalar, so
+        # a key containing a quote or backslash is on disk in its escaped form and
+        # the raw-string replace alone would walk straight past it.
+        for spelling in (json.dumps(key)[1:-1], key):
+            text = text.replace(spelling, "<redacted>")
+        if upstream_proxy:
+            # Same shape as ccproteus.sh _ccs_redact_url: no userinfo, no query.
+            u = urllib.parse.urlsplit(upstream_proxy)
+            host = (u.hostname or "") + (f":{u.port}" if u.port else "")
+            safe = urllib.parse.urlunsplit((u.scheme, host, u.path, "", ""))
+            text = text.replace(q(upstream_proxy), q(safe))
+        conf.unlink(missing_ok=True)
+        print(text)
+        return 0
+
+    if not os.access(TRANSLATOR, os.X_OK):
+        conf.unlink(missing_ok=True)
+        # Name the command, not just the concept: this fires on a first run
+        # against a copied profile, where the reader has never heard of the
+        # translator and reasonably reads a missing path as "ccproteus is broken".
+        die(f"translator not found or not executable: {TRANSLATOR}\n"
+            "This endpoint needs cliproxyapi for automatic protocol compatibility.\n"
+            "  brew install cliproxyapi\n"
+            "Put cliproxyapi on PATH and try again.")
+
+    logfile = open(state / "translator.log", "wb")  # noqa: SIM115 - child lifetime
+    # The log outlives this scope because two children write to it, so it cannot be
+    # a `with`. atexit closes it on every exit path -- normal return, die(), and the
+    # SystemExit shutdown() raises from a signal handler -- and runs before the
+    # rmtree registered above it, atexit being LIFO.
+    atexit.register(logfile.close)
+    # stdin=DEVNULL is deliberate, not incidental: the translator is an HTTP server
+    # that never reads stdin, and it must not inherit (and thus hold open) the
+    # controlling terminal, which would steal keystrokes from Claude Code's TUI. The
+    # parent already redirected its own fd 0 to /dev/null above; this keeps the child
+    # correct even if that ever changes.
+    child = subprocess.Popen([TRANSLATOR, "-config", str(conf)],
+                             stdin=subprocess.DEVNULL,
+                             stdout=logfile, stderr=subprocess.STDOUT)
+    tether(child, state)
+
+    shim = None
+
+    def shutdown(*_, status: int = 0):
+        """Stop the children, remove the credential, exit with `status`.
+
+        Signal handlers call this with no arguments and exit 0 -- an orderly stop we
+        were told to make. Failure paths pass status=1: the contract with ccproteus
+        is that anything short of "printed PORT and served" exits non-zero, so the
+        caller can abort the launch instead of pointing Claude Code at a dead port.
+        """
+        stop_processes(shim, child)
+        conf.unlink(missing_ok=True)
+        raise SystemExit(status)
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+    # SIGHUP matters as much as TERM: closing a terminal or killing a tmux session
+    # hangs up the process group, and without this the rendered credential is left
+    # on disk. Observed 2026-08-01 after `tmux kill-session`.
+    signal.signal(signal.SIGHUP, shutdown)
+
+    def check_parent() -> None:
+        if args.parent_pid:
+            try:
+                os.kill(args.parent_pid, 0)
+            except OSError:
+                log("parent gone, shutting down")
+                shutdown()
+
+    def wait_ready(proc: subprocess.Popen, p: int, what: str, auth: str | None = None) -> None:
+        """Block until the child serves on `p` or die trying."""
+        deadline = time.monotonic() + READY_TIMEOUT
+        while time.monotonic() < deadline:
+            check_parent()
+            if proc.poll() is not None:
+                log(f"{what} exited {proc.returncode}; "
+                    f"see {state/'translator.log'}")
+                shutdown(status=1)
+            if serving(p, auth or key):
+                return
+            time.sleep(0.4)
+        # Never served within READY_TIMEOUT: a failure, so exit non-zero. Exiting 0
+        # here made a timed-out launch look successful to ccproteus, which then ran
+        # Claude Code against a port nothing was listening on.
+        log(f"{what} did not serve on :{p} within {READY_TIMEOUT}s; "
+            f"see {state/'translator.log'}")
+        shutdown(status=1)
+
+    wait_ready(child, port, "translator")
+
+    # The stable request shim prepares newly selected models before forwarding;
+    # response-id recycling and the profile's request hooks are gated in the
+    # shim's own env, not in flags.
+    recycles_ids = any(r.get("id_recycle") for r in usable)
+    shim_port = args.port or free_port()
+    shim_args = [sys.executable, GATEWAY_SHIM, str(shim_port),
+                 f"http://127.0.0.1:{port}"]
+    shim_args += privacy_args
+    if not recycles_ids:
+        shim_args.append("--preserve-tool-ids")
+    shim_env = dict(os.environ, CCPROTEUS_MODEL_ROUTE=json.dumps({
+        "adapter": str(Path(__file__).resolve()), "profile": args.profile,
+        "config": str(conf), "port": port, "identity": route_identity, "upstream": upstream,
+        "models": [r["model"] for r in usable],
+        "model_map": model_map or {}, "timeout": SELECT_DEADLINE,
+        "key_sha256": hashlib.sha256(key.encode()).hexdigest()}))
+    shim_env.update(shim_extras)
+    token = args.token
+    if token:
+        shim_env["CCPROTEUS_INBOUND"] = json.dumps(
+            {"sha256": hashlib.sha256(token.encode()).hexdigest(), "key": key})
+    release_port_reservation(args)
+    shim = subprocess.Popen(
+        shim_args, env=shim_env,
+        stdin=subprocess.DEVNULL, stdout=logfile, stderr=subprocess.STDOUT)
+    tether(shim)
+    wait_ready(shim, shim_port, "gateway-shim", token)
+    _why = ["prepare models selected mid-session"]
+    if any(r.get("id_recycle") for r in usable):
+        _why.append("upstream recycles tool_use ids")
+    if shim_extras.get("CCPROTEUS_SHIM_HOOKS"):
+        _why.append("profile request hooks")
+    log(f"gateway-shim interposed ({'; '.join(_why)})")
+
+    # The one contract line, only after the health check passed. Only a minted
+    # --inbound-token is printed; a file token is a long-lived credential whose
+    # stdout may be redirected to a file.
+    if args.inbound_token:
+        print(f"TOKEN={token}", flush=True)
+    print(f"PORT={shim_port}", flush=True)
+    log(f"serving {len(usable)} model(s) for profile {args.profile} "
+        f"on :{shim_port} (translator :{port})")
+
+    # Supervise rather than exec, so an orphan can notice its parent is gone --
+    # no trap fires when the wrapper is SIGKILLed.
+    while True:
+        if child.poll() is not None:
+            log(f"translator exited {child.returncode}")
+            shutdown(status=1)
+        if shim is not None and shim.poll() is not None:
+            log(f"gateway-shim exited {shim.returncode}")
+            shutdown(status=1)
+        check_parent()
+        time.sleep(PARENT_POLL)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

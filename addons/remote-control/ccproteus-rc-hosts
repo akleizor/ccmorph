@@ -1,0 +1,1227 @@
+#!/usr/bin/env python3
+"""Keep one Remote Control host alive per folder listed in a config file.
+
+    ccproteus-rc-hosts [--config PATH]      (run by the com.ccproteus.rc-hosts LaunchAgent)
+
+Config (default $CCPROTEUS_STATE_DIR/rc-hosts, i.e. ~/.config/ccproteus/rc-hosts):
+
+    route=profile                    # ccproteus profile serving inference for every folder
+    ~/project                     # one folder per line
+    ~/code/secondary-project route=ds    # a folder may name its own route
+    ~/x -- --session-id session_01…   # args after -- go to remote-control (one
+                                      # conversation pinned by id)
+
+Each folder gets `ccproteus-rc <route>` (under a pty: remote-control is a terminal
+program). A host that exits is relaunched with backoff, and ccproteus-rc resumes the
+folder's previous host, so a network drop or 403 costs a restart, not the sessions.
+A live edge from a previous run is reused only when it pins the configured tiers;
+otherwise it is stopped and replaced -- and only ever by the pid its own record
+names, once that process's command line says it is this route's edge.
+The config is re-read when it changes: a new folder starts, a removed one stops,
+and a changed route restarts that folder's host on the new provider. A changed
+`permission=` or a `tier.<alias>=` naming an alias a session actually reads
+restarts every host it reaches too -- both are fixed when a host's process
+starts, so a restart is the only way they take effect (the shared edge pins the
+tier mapping; only folders carry a permission).
+
+A worktree session (`.claude/worktrees/...`) is never pinned: it shares its repo
+host's environment, and pinning it takes over that host's row in the app.
+
+A pinned conversation archived in the app stops for good: its bridge exits, the
+supervisor finds the archive in the bridge's debug log, adds `archived=<folder>`
+and never restarts it (a restart would un-archive it). After idle_days (default
+1) without transcript activity its line is commented out and its host is deleted
+from the app. Unarchived conversations are never retired: idle only means "not
+used lately".
+
+Every active phone session keeps a process, so a message never waits. A session's
+process can end while it stays active (archive then unarchive, an idle exit, a
+crash), and neither Claude Code nor the server reliably restarts it, so the app
+would show it working forever. Every RECOVER_EVERY seconds the supervisor lists
+the account's active sessions; one on a repo host's environment that has no
+process is handed back to its host -- once that host is up, so the call is not
+dropped by a bridge that has not started polling yet -- at most once per
+REWAKE_AFTER (bridge/reconnect, the call Claude Code itself uses to re-queue a
+session), which spawns it again in a fresh or the kept worktree. The same call
+brings back a session whose turn a host restart cut off (recover_interrupted).
+
+An archived session is retired in two steps. After idle_days (default 1) its kept
+worktree is removed, with its branch; unarchiving still resumes it, in a fresh
+worktree. After purge_days (default 7) the session is deleted from the server and
+can no longer be unarchived; its transcript stays on disk. git decides what is
+safe: uncommitted changes or unmerged commits keep the worktree, the branch and
+the session, and the log says so.
+"""
+from __future__ import annotations
+
+import argparse
+import functools
+import getpass
+import hashlib
+import http.client
+import importlib.machinery
+import json
+import os
+import re
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from contextlib import suppress
+from datetime import datetime
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+STATE_ROOT = Path(os.environ.get("CCPROTEUS_STATE_DIR") or
+                  Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ccproteus")
+LOGS = STATE_ROOT / "profiles" / ".rc-bridge" / "logs"
+EDGES = STATE_ROOT / "profiles" / ".rc-bridge" / "edges"
+
+
+def edge_ready(route: str) -> dict | None:
+    """The route's shared edge (ccproteus-rc --edge) is up: alive and its proxy answers.
+
+    Its record is the only account of what an edge started before this run serves,
+    so the caller gets that record, not just a verdict.
+    """
+    try:
+        edge = json.loads((EDGES / f"{route}.json").read_text())
+        os.kill(int(edge["pid"]), 0)
+        with socket.create_connection(("127.0.0.1", int(edge["port"])), timeout=1):
+            return edge
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def is_our_edge(pid: int, route: str) -> bool:
+    """Whether `pid` really is `route`'s shared edge, per its own command line.
+
+    A record outlives the edge that wrote it and a pid can be recycled, so a live
+    pid in one is no proof of ownership. The argv `ps` prints for an edge is
+    `python3 <...>/ccproteus-rc <route> --edge`; anything else -- another route's
+    edge included -- is left alone, and so is a command line that cannot be read.
+    """
+    try:
+        ps = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
+                            capture_output=True, text=True, errors="replace", timeout=10).stdout
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+    argv = ps.split()
+    return "--edge" in argv and route in argv and any(a.endswith("/ccproteus-rc") for a in argv)
+
+
+TICK = 1               # a dead host is relaunched within seconds, not minutes
+BACKOFF_MIN, BACKOFF_MAX, HEALTHY_AFTER = 2, 60, 300
+GRACE_INTERRUPT = 12   # seconds for a host to deregister and exit on SIGINT
+GRACE_TERM = 5         # seconds more before SIGKILL, if the interrupt was ignored
+IDLE_CHECK = 600
+LOG_CAP = 5_000_000   # a log past this is rotated to .log.1 (at start, and while running)
+# Terminal from the app side: archived (409) or the session itself is gone (404).
+# A network outage says "Could not reach the server" and must not match.
+ARCHIVED_SIGNAL = re.compile(
+    r"session_not_active|Session not active|not found\. It may have been archived")
+RECOVER_EVERY = 20     # seconds between unarchive checks: one list call
+REWAKE_AFTER = 600     # seconds before the same processless session is handed back again
+TAIL = 64_000          # bytes of a log worth reading: what a bridge printed last
+
+
+def log(msg: str) -> None:
+    print(time.strftime("%F %T"), msg, flush=True)
+
+
+def resolve(path: str) -> str | None:
+    """A config path as the one absolute form every comparison uses, or None
+    when the path cannot be canonicalised at all (a symlink loop, an embedded
+    NUL byte). Every reader of a config line skips such a line: the raise took
+    the supervisor down at every config reload and idle check, and launchd
+    restarted it into the same crash (#414)."""
+    try:
+        return str(Path(os.path.expanduser(path)).resolve())
+    except (OSError, RuntimeError, ValueError) as e:
+        log(f"config: cannot resolve {path!r} ({e})")
+        return None
+
+
+def project_dirs(folder: str) -> list[Path]:
+    """Claude Code's per-folder state dirs (transcripts, bridge pointer). History is
+    per profile, and a host runs as whichever account its line names, so the
+    folder's state is looked up in native history and in every profile's."""
+    slug = re.sub(r"[^A-Za-z0-9]", "-", folder)
+    roots = [Path.home() / ".claude" / "projects", *sorted((STATE_ROOT / "profiles").glob("*/projects"))]
+    return [r / slug for r in roots]
+
+
+def tail(path: Path) -> str:
+    try:
+        with open(path, "rb") as f:
+            f.seek(max(0, f.seek(0, 2) - TAIL))
+            return f.read().decode(errors="replace")
+    except OSError:
+        return ""
+
+
+PERMISSION_MODES = ("default", "acceptEdits", "auto", "bypassPermissions", "dontAsk", "plan")
+TIER_PREFIX = "tier."
+
+
+def permission_mode(text: str) -> str | None:
+    """`permission=<mode>` -- the permission mode every spawned session starts in.
+
+    Remote Control defaults to prompting, which on a phone means approving each
+    step from the device. bypassPermissions runs them without asking; that is a
+    deliberate choice about sessions reachable from any signed-in device, so it
+    belongs in the config where it is visible and reversible, not in a default.
+    """
+    m = re.search(r"^\s*permission=(\S+)", text, re.M)
+    return m.group(1) if m and m.group(1) in PERMISSION_MODES else None
+
+
+def tier_map(text: str) -> dict[str, str]:
+    """{alias: model} from `tier.<alias>=<model>` lines.
+
+    Phone sessions otherwise send Claude Code's own aliases (fable/opus/sonnet/
+    haiku) to the route 1:1. A gateway serving no model for an alias -- gateway has
+    no claude-fable-* -- needs that one alias pointed at what it does serve, and
+    that belongs to the config rather than to every session's environment.
+    """
+    out = {}
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if line.startswith(TIER_PREFIX) and "=" in line:
+            alias, _, model = line[len(TIER_PREFIX):].partition("=")
+            if alias.strip() and model.strip():
+                out[alias.strip()] = model.strip()
+    return out
+
+
+def pin_refusal(folder: str, argv: list[str]) -> str | None:
+    """Why this line's pin cannot be hosted, or None when it can. A worktree
+    session belongs to the multi-session host of the repo above it and shares
+    that host's environment: pinning it re-registers the repo's row in the app
+    as this worktree. And the bridge treats any --session-id as a pinned
+    conversation, so a --session-id naming no id asks for a pin that cannot
+    run unpinned either (launching it would give it worktree mode and git-init
+    the folder; the crash on it is what #342 fixed). The one refusal rule both
+    readers of a pin line apply: parse() skips a line on it and
+    session_entries() skips the same line, so idle cleanup never retires a
+    line no host ran (#416). Only this rule is shared: parse() also skips an
+    archived pin so its bridge is never reattached, and session_entries()
+    still lists that one, as an archived, idle pin is what idle cleanup
+    retires. Written separately, the copies disagreed on the same line three
+    times: #342, #388, #416."""
+    if "--session-id" not in argv:
+        return None
+    if "/.claude/worktrees/" in folder + "/":
+        return "a worktree session cannot be pinned (it would take over its repo's host)"
+    if argv.index("--session-id") + 1 == len(argv):
+        return "--session-id names no conversation to pin"
+    return None
+
+
+def parse(text: str) -> dict[str, tuple[str, tuple[str, ...]]]:
+    """{absolute folder: (route, remote-control args)}, excluding archived bridges."""
+    route, folders = None, {}
+    archived = archived_set(text)
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line.startswith("route="):
+            route = line[6:].strip()
+            continue
+        if line.startswith(("idle_days=", "purge_days=", "permission=", "retire=", "archived=")) or line.startswith(TIER_PREFIX):
+            continue                         # settings, not folders
+        head, _, args = line.partition(" -- ")
+        path, _, rest = head.partition(" ")
+        folder = resolve(path)
+        if folder is None:
+            continue                     # unresolvable: resolve() logged the refusal
+        if folder in archived:
+            continue                         # archived in the app: never reattach it
+        argv = args.split()
+        refused = pin_refusal(folder, argv)
+        if refused:
+            log(f"{folder}: refused, {refused}")
+            continue
+        own = re.search(r"route=(\S+)", rest)
+        folders[folder] = (own.group(1) if own else None, tuple(argv))
+    return {f: (r or route, a) for f, (r, a) in folders.items() if (r or route)}
+
+
+ALIAS_ENV = {"fable": "ANTHROPIC_DEFAULT_FABLE_MODEL",
+             "opus": "ANTHROPIC_DEFAULT_OPUS_MODEL",
+             "sonnet": "ANTHROPIC_DEFAULT_SONNET_MODEL",
+             "haiku": "ANTHROPIC_DEFAULT_HAIKU_MODEL"}
+
+
+class Host:
+    def __init__(self, folder: str, route: str, args: tuple[str, ...] = (),
+                 tiers: dict[str, str] | None = None, permission: str | None = None):
+        self.folder, self.route, self.args = folder, route, args
+        self.tiers = tiers or {}
+        self.permission = permission
+        self.proc: subprocess.Popen | None = None
+        self.started = 0.0
+        self.exited: int | None = None      # rc of the last exit, consumed by main()
+        self.session_id = args[args.index("--session-id") + 1] if "--session-id" in args else None
+        self.edge = False                   # the route's shared adapter+proxy
+        self.backoff = BACKOFF_MIN
+        self.next_try = 0.0
+        name = re.sub(r"[^A-Za-z0-9]+", "-", folder.replace(str(Path.home()), "~")).strip("-")
+        self.logfile = LOGS / f"{name}.log"
+        self.debugfile = LOGS / f"{name}.debug.log"
+
+    def debug_logs(self) -> list[Path]:
+        """The bridge's debug log and its session child's (<name>.debug-<id>.log)."""
+        return [self.debugfile, *LOGS.glob(f"{self.debugfile.stem}-*.log")]
+
+    def archived(self) -> bool:
+        """Whether this conversation is gone from the app side: archived (409) or
+        deleted/expired (404). Both end the bridge like any other failure; only the
+        logs name the cause, and retrying is pointless or actively wrong -- a
+        restart of an archived session un-archives it.
+        """
+        logs = [self.logfile, *self.debug_logs()]   # the verdict may land in either
+        return any(ARCHIVED_SIGNAL.search(tail(f)) for f in logs)
+
+    def ensure_repo(self) -> None:
+        """Give the folder what worktree spawn mode needs: a git repo with a HEAD.
+
+        A listed folder that is not a repo (a scratch dir) must not fall back to
+        single-session mode: capacity 1 means one boot session blocks every new
+        one from the phone. An empty base commit is enough; existing files stay
+        untracked and untouched.
+        """
+        git = ["git", "-C", self.folder, "-c", "user.email=rc@local", "-c", "user.name=ccproteus-rc"]
+        if subprocess.run(git + ["rev-parse", "--verify", "-q", "HEAD"], capture_output=True).returncode:
+            r = subprocess.run(git + ["init", "-q"], capture_output=True, text=True)
+            if r.returncode:
+                log(f"{self.folder}: git init failed: {r.stderr.strip()[:120]}")
+                return
+            subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "Remote Control host base"],
+                           capture_output=True)
+            log(f"{self.folder}: initialized a git repo (worktree spawn mode needs one)")
+
+    def live_pointer_pid(self) -> int | None:
+        """Pid of a still-running host that owns this folder, per its bridge pointer.
+
+        Starting a second host for a folder that already has one makes Claude Code
+        register a SECOND environment ("pointer writer pid ... still running;
+        registering fresh env") and the first is orphaned: the folder then shows
+        twice in the Claude app, one row permanently unreachable. Nothing else
+        removes those rows, so every duplicate is a permanent entry.
+        """
+        for d in project_dirs(self.folder):
+            try:
+                data = json.loads((d / "bridge-pointer.json").read_text())
+            except (OSError, ValueError):
+                continue
+            pid = data.get("pid")
+            if not isinstance(pid, int) or pid == os.getpid():
+                continue
+            try:
+                os.kill(pid, 0)             # signal 0 = liveness probe only
+            except ProcessLookupError:
+                continue                    # stale pointer: the host is gone
+            except PermissionError:
+                return pid                  # alive, owned by another user
+            return pid
+        return None
+
+    def child_env(self) -> dict:
+        """What a host of this folder starts with: ours, plus the tier pins the
+        config asks for."""
+        return {**os.environ, **{ALIAS_ENV[a]: m for a, m in self.tiers.items() if a in ALIAS_ENV}}
+
+    def start(self) -> None:
+        if self.edge:
+            # The edge's folder is the bridge dir the supervisor owns; a fresh state
+            # dir has none of it, and waiting for one is waiting for ourselves. The
+            # LOGS mkdir further down sits past the early return below, so without
+            # this the edge backed off forever and every folder host, gated on edge
+            # readiness, waited with it (#419).
+            Path(self.folder).mkdir(parents=True, exist_ok=True)
+        if not Path(self.folder).is_dir():
+            log(f"{self.folder}: folder missing; waiting")
+            self.next_try = time.time() + BACKOFF_MAX
+            return
+        if self.edge and (live := edge_ready(self.route)):
+            want = rc_module().pinned_tiers(self.child_env())
+            pid = int(live["pid"])
+            if live.get("tiers") != want:
+                # An edge from before a restart pins the tiers it was started with and
+                # its proxy keeps pinning them for as long as it lives, so adopting it
+                # serves the old map to every host under it. Stop it by the exact pid
+                # its own record names; a later tick starts ours. That pid is only
+                # signalled once its own command line says it is this route's edge.
+                if is_our_edge(pid, self.route):
+                    log(f"{self.folder}: edge for {self.route} pins {live.get('tiers')}, "
+                        f"config wants {want}; restarting it")
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                    except OSError:
+                        pass
+                else:
+                    log(f"{self.folder}: {self.route} pins {live.get('tiers')}, config wants "
+                        f"{want}, but pid {pid} is not that route's edge; leaving it alone")
+            # A supervisor restart leaves the previous edge running and serving every
+            # bridge; a second one would only fight it for the fixed port.
+            self.next_try = time.time() + BACKOFF_MIN
+            return
+        held = self.live_pointer_pid()
+        if held is not None and not self.edge:
+            log(f"{self.folder}: already served by live pid {held}; waiting instead of duplicating")
+            self.next_try = time.time() + BACKOFF_MIN
+            return
+        LOGS.mkdir(parents=True, exist_ok=True)
+        for f in (self.logfile, *(() if self.session_id else (self.debugfile,))):  # --debug-file appends; a pinned host unlinks its own below
+            if f.exists() and f.stat().st_size > LOG_CAP:
+                f.replace(f.with_suffix(".log.1"))
+        out = open(self.logfile, "ab")
+        env = self.child_env()
+        # Everything after `--` belongs to `claude remote-control`; bare arguments
+        # belong to `ccproteus-rc` and it rejects flags it does not know (rc=2, retried
+        # forever). So the permission flag goes after the separator, and a config line
+        # with no args still needs the separator to exist.
+        # A repo host names its spawn mode: left to the profile, a first run stops at
+        # an interactive "Choose [1/2]" that nobody is there to answer.
+        extra = (f"--permission-mode={self.permission}",) if self.permission else ()
+        if self.session_id:              # a pinned host: one conversation's log, no stale
+            for old in (*self.debug_logs(), LOGS / f"bridge-transcript-{self.session_id}.jsonl"):
+                old.unlink(missing_ok=True)  # siblings. A repo host keeps its sessions' logs.
+        # Every host keeps one, the worktree host too. A turn that goes wrong can
+        # leave no trace anywhere else -- the only record was the log of a
+        # conversation host that happened to exist, which is nothing to debug a
+        # fresh phone session with.
+        extra += (f"--debug-file={self.debugfile}",)
+        # The edge is no session host: `extra` is dropped whole for it below, no
+        # worktree is ever spawned, and its folder is the shared bridge state dir --
+        # a repo there would serve nothing (#418).
+        if not self.session_id and not self.edge:   # worktree spawn mode is the only mode: a
+            self.ensure_repo()                     # capacity-1 session host reads as dead
+            extra += ("--spawn=worktree",)
+        claude_args = ("--edge",) if self.edge else ("--", *self.args, *extra)
+        self.proc = subprocess.Popen(
+            ["/usr/bin/script", "-q", "/dev/null", str(HERE / "ccproteus-rc"), self.route,
+             *claude_args],
+            # stdin is a pipe held open, never /dev/null: script(1) turns EOF into a ^D
+            # on the pty, which a terminal program reads as "quit".
+            cwd=self.folder, env=env, stdin=subprocess.PIPE, stdout=out, stderr=out,
+            start_new_session=True)
+        out.close()
+        self.started = time.time()
+        log(f"{self.folder}: started via {self.route} (pid {self.proc.pid})")
+
+    def deregistered(self, since: float) -> bool:
+        """Whether the host reported deregistering its environment after `since`.
+
+        Only the host can remove its own environment (it holds the credential), so
+        the supervisor's job is to give it the chance and then check the log rather
+        than assume. A host that merely marked itself offline keeps its row in the
+        Claude app -- that is the resume handle, not a leak.
+        """
+        text = tail(self.logfile)
+        return "Environment deregistered" in text or "Environment marked offline" in text
+
+    def stop(self) -> None:
+        """Stop the host, giving it a moment to deregister before killing it.
+
+        SIGTERM alone kills the process, and the environment it registered outlives
+        it -- the folder then stays listed in the Claude app with no host behind it,
+        and nothing can delete that row later. So: ask once (SIGINT, the same
+        interrupt a terminal sends), wait for the log to confirm the environment
+        was released, and only force it if the host ignores the request.
+        """
+        if self.proc and self.proc.poll() is None:
+            mark = self.logfile.stat().st_size if self.logfile.exists() else 0
+            os.killpg(self.proc.pid, signal.SIGINT)
+            try:
+                self.proc.wait(GRACE_INTERRUPT)
+            except subprocess.TimeoutExpired:
+                os.killpg(self.proc.pid, signal.SIGTERM)
+                try:
+                    self.proc.wait(GRACE_TERM)
+                except subprocess.TimeoutExpired:
+                    os.killpg(self.proc.pid, signal.SIGKILL)
+                    self.proc.wait()
+            log(f"{self.folder}: stopped ({'environment released' if self.deregistered(mark) else 'no release reported'})")
+        self.proc = None
+
+    def bound_logs(self) -> None:
+        """Cap the debug logs of a running repo host: claude appends to them for the
+        life of the process. Copy then truncate in place; the writer's O_APPEND
+        position follows the new end."""
+        for f in self.debug_logs():
+            try:
+                if f.stat().st_size > LOG_CAP:
+                    shutil.copyfile(f, f.with_suffix(".log.1"))
+                    os.truncate(f, 0)
+            except OSError:
+                pass
+
+    def tend(self, now: float, may_start: bool = True) -> bool:
+        """Returns True if it launched a host (the caller starts at most one per tick)."""
+        if self.proc is None:
+            if now >= self.next_try and may_start:
+                self.start()
+                return self.proc is not None
+            return False
+        rc = self.proc.poll()
+        if rc is None:
+            return False
+        ran = now - self.started
+        self.backoff = BACKOFF_MIN if ran >= HEALTHY_AFTER else min(self.backoff * 2, BACKOFF_MAX)
+        self.next_try = now + self.backoff
+        self.proc = None
+        self.exited = rc
+        log(f"{self.folder}: exited rc={rc} after {int(ran)}s; retry in {self.backoff}s (log: {self.logfile})")
+        return False
+
+
+def days_setting(text: str, name: str, default: float) -> float:
+    """A `<name>=<days>` config line, or its documented default when absent or
+    not a number: `[0-9.]+` matches `.` and `1..0`, which float() rejects, and
+    the idle check must not take the supervisor down for one bad line."""
+    m = re.search(rf"^\s*{name}=([0-9.]+)", text, re.M)
+    if not m:
+        return default
+    try:
+        return float(m.group(1))
+    except ValueError:
+        log(f"config: {name}={m.group(1)} is not a number; using the default {default:g}")
+        return default
+
+
+def idle_days(text: str) -> float:
+    return days_setting(text, "idle_days", 1.0)
+
+
+def purge_days(text: str) -> float:
+    return days_setting(text, "purge_days", 7.0)
+
+
+ARCHIVED_RE = re.compile(r"^\s*archived=(\S+)", re.M)
+
+
+def archived_set(text: str) -> set[str]:
+    """Folders archived in the app, kept until idle cleanup comments their line
+    out. An unresolvable marker is dropped: it can match no folder."""
+    return {f for f in map(resolve, ARCHIVED_RE.findall(text)) if f}
+
+
+def session_entries(text: str):
+    """(folder, session id) of every line that pins a conversation and is not
+    refused by the pin rule parse() hosts on (a worktree session, a
+    `--session-id` naming no conversation): a refused pin is never hosted, so
+    idle cleanup may not retire it either (#416: an archived, idle worktree
+    pin had a host row deleted and its line retired, though no host ran it).
+    An archived pin is still listed, unlike in parse(): skipping it there
+    keeps its bridge from being reattached, while this list is what retires
+    it once idle."""
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        head, _, args = line.partition(" -- ")
+        argv = args.split()
+        if "--session-id" not in argv:        # no separator, or no pin asked for
+            continue
+        folder = resolve(head.split(" ", 1)[0])
+        if folder is None:
+            continue                 # unresolvable: skip the line, not the supervisor
+        if pin_refusal(folder, argv):         # parse() would refuse to host it
+            continue
+        yield folder, argv[argv.index("--session-id") + 1]
+
+
+def last_activity(folder: str, since: float = 0.0) -> float | None:
+    """Newest transcript write for the conversation pinned to this folder (its
+    project dir holds only that conversation), else `since`. None when a
+    transcript cannot be read (Claude Code rotates and deletes them while this
+    runs): its activity is unknown, so retiring it waits for the next check."""
+    try:
+        return max((f.stat().st_mtime for d in project_dirs(folder) for f in d.glob("*.jsonl")), default=since)
+    except OSError as e:
+        log(f"{folder}: transcript activity unreadable, not retiring this check: {e}")
+        return None
+
+
+API = "https://api.anthropic.com"
+DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # never via an edge
+TRANSIENT = (OSError, ValueError, http.client.HTTPException)   # a cut-off reply is no OSError
+LOGIN_ERRORS = (*TRANSIENT, KeyError, SystemExit, subprocess.SubprocessError)
+
+
+@functools.lru_cache(maxsize=None)
+def rc_module():
+    """The launcher module (ccproteus-rc), loaded once: its pinned_tiers() is the one
+    description of the tier map this supervisor shares with a live edge."""
+    loader = importlib.machinery.SourceFileLoader("ccproteus_rc", str(HERE / "ccproteus-rc"))
+    return loader.load_module()
+
+
+@functools.lru_cache(maxsize=None)
+def keychain_service() -> str:
+    """Claude Code's keychain entry for the account profile (fixed for this run)."""
+    rc = rc_module()
+    account_dir = rc.profile_env(rc.default_account())["CLAUDE_CONFIG_DIR"]
+    return "Claude Code-credentials-" + hashlib.sha256(account_dir.encode()).hexdigest()[:8]
+
+
+def account_token() -> str:
+    """The claude.ai account's access token, read fresh: Claude Code rotates it.
+
+    The entry name is shared with an MCP-only item under another account name,
+    so the lookup names the user's account.
+    """
+    login = subprocess.run(["security", "find-generic-password", "-a", getpass.getuser(),
+                            "-s", keychain_service(), "-w"],
+                           capture_output=True, text=True, timeout=10).stdout
+    return json.loads(login)["claudeAiOauth"]["accessToken"]
+
+
+def api(method: str, path: str, token: str, body: dict | None = None) -> dict:
+    req = urllib.request.Request(
+        API + path, method=method, data=None if body is None else json.dumps(body).encode(),
+        headers={"Authorization": f"Bearer {token}", "anthropic-version": "2023-06-01",
+                 "anthropic-beta": "environments-2025-11-01", "content-type": "application/json"})
+    with DIRECT.open(req, timeout=10) as r:   # the loop also relaunches dead hosts
+        data = r.read()
+    return json.loads(data) if data else {}
+
+
+def host_envs(folders: list[str]) -> dict[str, str]:
+    """{environment id: repo folder} from each folder's `.claude/rc-host.json`."""
+    out = {}
+    for folder in folders:
+        try:
+            out[json.loads(Path(folder, ".claude", "rc-host.json").read_text())["environmentId"]] = folder
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return out
+
+
+def sessions(token: str, status: str) -> list[dict]:
+    """Every session of the account with this status (the list pages by cursor)."""
+    out, cursor = [], None
+    while True:
+        page = api("GET", f"/v1/code/sessions?limit=100&statuses={status}"
+                   + (f"&cursor={cursor}" if cursor else ""), token)
+        out += page.get("data") or []
+        cursor = page.get("next_cursor")
+        if not cursor or not page.get("data"):
+            return out
+
+
+def same_session(record_id: str | None, pin_id: str | None) -> bool:
+    """Whether a session record is a pin's own conversation.
+
+    One conversation id reaches this supervisor in two renderings: the config
+    pins it as session_…, the code API lists the same session as cse_…, so
+    what is compared is the id body each side carries after its prefix.
+    """
+    left = (record_id or "").split("_", 1)[-1]
+    right = (pin_id or "").split("_", 1)[-1]
+    return bool(left) and left == right
+
+
+def host_sessions(folders: list[str], status: str) -> tuple[str, list[tuple[str, dict]]]:
+    """(token, [(repo folder, session)]) for the repo hosts' sessions with `status`.
+
+    Nothing is fetched, not even the login, when no repo host has registered.
+    """
+    envs = host_envs(folders)
+    if not envs:
+        return "", []
+    try:
+        token = account_token()
+        found = sessions(token, status)
+    except LOGIN_ERRORS as e:
+        log(f"{status} session check failed: {e}")
+        return "", []
+    return token, [(envs[s["environment_id"]], s) for s in found
+                   if s.get("environment_id") in envs]
+
+
+def recover_processless(folders: list[str], done: dict[tuple[str, int], float],
+                        up: set[str],
+                        failed: "set[tuple[str, int]] | None" = None) -> dict[str, bool]:
+    """Hand every active, processless session of a repo host back to it.
+
+    A phone session must answer whenever it is opened. Its process can end while
+    the session stays active (an archive and unarchive, an idle exit, a crash), and
+    the server does not reliably wake it on the next message: on 2026-10-12 six
+    sessions sat disconnected and a message in one waited hours on "Cooking". So
+    every active session that reads disconnected is handed back, not only an
+    unarchived one. The server is asked, not the disk: archiving a session with
+    nothing to keep removes its worktree, so no folder is left to find.
+
+    One hand-back per session per REWAKE_AFTER (`done`), and at once again after a
+    new unarchive: a session that keeps failing to start is retried slowly, never
+    in a loop. A connected one already has its process.
+
+    Only a folder in `up` is asked about (`Host.proc` set, started at least
+    RECOVER_EVERY ago), as in recover_interrupted: work queued for a host still
+    starting is lost, and this call is what hands back a session whose host went
+    away, so on a cold start it reached every session before its host was polling.
+    The dropped POST was then recorded in `done` and suppressed the hand-back for
+    REWAKE_AFTER -- the window in which it was needed.
+
+    Returns every disconnected session it is responsible for this cycle: True
+    when its hand-back POST succeeded now, False when the POST failed now or its
+    last one failed within REWAKE_AFTER (`failed`, which the caller keeps across
+    cycles beside `done`). recover_interrupted sends none of these a second POST
+    (a failed one waits for this function's own retry: REWAKE_AFTER after an HTTP
+    answer, the next check after none) and records only a True one requeued. One
+    held back after a successful hand-back is not returned: recover_interrupted
+    may re-queue it once if a new turn is cut off.
+    """
+    if failed is None:
+        failed = set()
+    sent: dict[str, bool] = {}
+    folders = [f for f in folders if f in up]
+    if not folders:                       # nothing hosts these sessions yet
+        return sent
+    token, found = host_sessions(folders, "active")
+    now = time.time()
+    for folder, s in found:
+        if s.get("connection_status") == "connected":
+            continue
+        key = (s.get("id", ""), (s.get("external_metadata") or {}).get("unarchived_epoch") or 0)
+        if now - done.get(key, float("-inf")) < REWAKE_AFTER:
+            if key in failed:
+                sent[key[0]] = False
+            continue
+        sent[key[0]] = False
+        try:
+            api("POST", f"/v1/environments/{s['environment_id']}/bridge/reconnect", token,
+                {"session_id": key[0]})
+            sent[key[0]] = True
+            done[key] = now
+            failed.discard(key)
+            log(f"{folder}: {key[0]} had no process; handed back to its host")
+        except urllib.error.HTTPError as e:
+            # The server answered: any status waits REWAKE_AFTER, 400/404 for good.
+            done[key] = float("inf") if e.code in (400, 404) else now
+            failed.add(key)
+            log(f"{folder}: {key[0]} recovery failed: HTTP {e.code}")
+        except TRANSIENT as e:                    # transient: the next check retries
+            log(f"{folder}: {key[0]} recovery failed: {e}")
+    return sent
+
+
+BUSY = STATE_ROOT / "profiles" / ".rc-bridge" / "busy.json"
+
+
+def recover_interrupted(folders: list[str], up: set[str],
+                        handed_back: "dict[str, bool] | None" = None) -> None:
+    """Hand back every session whose turn a host restart cut off.
+
+    A host that exits takes its sessions' processes with it, and the restarted
+    host adopts none of them: each sits disconnected until someone opens it on the
+    phone. So the sessions seen mid-turn are remembered on disk (a supervisor
+    restart is what stops every host at once), and one found disconnected while
+    remembered busy is re-queued once (bridge/reconnect, as for an unarchive),
+    after its host is back (`up`): work queued for a host still starting is lost.
+    It must read disconnected on two checks running: a network drop the host
+    rides out also reads disconnected for a few seconds, with its process alive.
+    It is forgotten when seen idle or gone; a session that crashes again after
+    its re-queue is left to the phone rather than retried in a loop. A session in
+    `handed_back` is recover_processless's this cycle and gets no second POST:
+    one handed back now (True) counts as re-queued, whatever it was remembered
+    as; one whose hand-back failed now or last failed within REWAKE_AFTER (False)
+    keeps its state, `busy` becoming `lost`, and waits for recover_processless to
+    retry it.
+    """
+    handed_back = handed_back or {}
+    try:
+        state = json.loads(BUSY.read_text())
+    except (OSError, ValueError):
+        state = {}
+    token, found = host_sessions(folders, "active")
+    if not token:
+        return
+    new = {}
+    for folder, s in found:
+        sid, connected = s.get("id", ""), s.get("connection_status") == "connected"
+        if connected and s.get("worker_status") == "running":
+            new[sid] = "requeued" if state.get(sid) == "requeued" else "busy"
+        elif connected or sid not in state:
+            continue
+        elif handed_back.get(sid):            # whatever it was: it has its one hand-back
+            new[sid] = "requeued"
+        elif (state[sid] == "busy" or state[sid] == "requeued" or folder not in up
+              or sid in handed_back):         # failed or held back: recover_processless retries
+            new[sid] = "lost" if state[sid] == "busy" else state[sid]
+        else:
+            try:
+                api("POST", f"/v1/environments/{s['environment_id']}/bridge/reconnect", token,
+                    {"session_id": sid})
+                new[sid] = "requeued"
+                log(f"{folder}: {sid} was cut off mid-turn; handed back to its host")
+            except urllib.error.HTTPError as e:
+                if e.code not in (400, 404):      # 400/404: not resumable, stop asking
+                    new[sid] = "lost"
+                log(f"{folder}: {sid} recovery failed: HTTP {e.code}")
+            except TRANSIENT as e:                # transient: the next check retries
+                new[sid] = "lost"
+                log(f"{folder}: {sid} recovery failed: {e}")
+    if new != state:
+        try:
+            BUSY.parent.mkdir(parents=True, exist_ok=True)
+            BUSY.write_text(json.dumps(new))
+        except OSError as e:      # the check must never take the supervisor down
+            log(f"busy state not written: {e}")
+
+
+def stamp(iso: object) -> float | None:
+    """Seconds since the epoch of the server's `2026-10-10T04:05:01.081565Z`.
+
+    Total by design: a missing, null or unparsable `updated_at` yields None, never
+    an exception. This is called from the idle check, which main() runs bare: one
+    bad record on the account would crash the supervisor, and launchd would restart
+    it into the same crash every idle check, stopping and restarting every host and
+    interrupting phone sessions.
+    """
+    if not isinstance(iso, str):
+        return None
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def clean_archived(folders: list[str], now: float, limit: float, purge: float,
+                   pinned: tuple[str, ...] = ()) -> None:
+    """Retire each archived session in two steps, by the time since it was archived.
+
+    After `limit` s its kept worktree (and branch) is removed: unarchiving still
+    resumes the conversation, in a fresh worktree. After `purge` s the session is
+    deleted from the server, so it can no longer be unarchived; its transcript
+    stays on disk. The archive's own time is the session's last update.
+
+    git decides what is safe: a worktree with uncommitted changes, or a branch with
+    commits nowhere else, is left in place and named in the log, and its session
+    is then kept too, so the work can still be resumed.
+    """
+    token, found = host_sessions(folders, "archived")
+    for folder, s in found:
+        sid = s.get("id", "")
+        when = stamp(s.get("updated_at"))
+        if when is None:      # cannot be aged: keep its worktree rather than guess
+            log(f"{folder}: {sid} archived with no usable timestamp; left alone")
+            continue
+        age = now - when
+        wt = Path(folder, ".claude", "worktrees", f"bridge-{sid}")
+        if wt.is_dir() and age >= limit:
+            git = ["git", "-C", folder]
+            # A clean worktree can still be the only copy of the work: `worktree
+            # remove` refuses only a dirty or locked one, and `branch -d` says
+            # "not merged" long after the files are gone. Ask git first.
+            # Work = commits of the worktree's own HEAD or its branch that no other
+            # branch, remote-tracking ref or tag holds. Not "ahead of the host's HEAD":
+            # bridge worktrees start from origin/<default>, which the host may lag.
+            branch = f"refs/heads/worktree-bridge-{sid}"
+            if subprocess.run(git + ["show-ref", "--verify", "--quiet", branch]).returncode:
+                log(f"{folder}: {sid} archived; worktree kept: its branch is missing")
+                continue
+            r = subprocess.run(["git", "-C", str(wt), "rev-list", "--count", "HEAD", branch,
+                                "--not", f"--exclude=worktree-bridge-{sid}", "--branches", "--remotes", "--tags", "--"],
+                               capture_output=True, text=True)
+            ahead = r.stdout.strip()
+            if r.returncode or not ahead.isdigit():
+                log(f"{folder}: {sid} archived; worktree kept: "
+                    f"git could not tell if it holds work: {r.stderr.strip()[:200]}")
+                continue
+            if ahead != "0":
+                log(f"{folder}: {sid} archived; worktree kept: "
+                    f"{ahead} commit(s) not reachable from any other branch, remote or tag")
+                continue
+            subprocess.run(git + ["worktree", "unlock", str(wt)], capture_output=True)
+            rm = subprocess.run(git + ["worktree", "remove", str(wt)], capture_output=True, text=True)
+            if rm.returncode:
+                subprocess.run(git + ["worktree", "lock", str(wt)], capture_output=True)
+                log(f"{folder}: {sid} archived; worktree kept: {rm.stderr.strip()[:200]}")
+                continue
+            # The guard above counted 0 unique commits; `-d` would still refuse on a
+            # lagging host HEAD or a branch with no upstream.
+            br = subprocess.run(git + ["branch", "-D", f"worktree-bridge-{sid}"],
+                                capture_output=True, text=True)
+            log(f"{folder}: {sid} archived > {limit / 86400:g} days; worktree removed"
+                + ("" if br.returncode == 0 else f", branch kept: {br.stderr.strip()[:200]}"))
+    purge_archived(folders, now, purge, pinned)
+
+
+def purge_archived(folders: list[str], now: float, purge: float,
+                   pinned: tuple[str, ...] = ()) -> None:
+    """Delete every Remote Control session archived longer than `purge` s.
+
+    Every bridge session of the account counts, not only the current hosts': a
+    host that re-registered leaves its old sessions on an environment nothing
+    lists any more, and those must age out too. A session whose worktree is still
+    kept here (it holds work) stays, so it can be resumed -- and so does one
+    whose conversation is still pinned: its retirement reads that record to
+    find the host row to delete (#450), so it waits for the pin line to go and
+    then ages out like any other.
+    """
+    envs = host_envs(folders)
+    try:
+        token = account_token()
+        found = sessions(token, "archived")
+    except LOGIN_ERRORS as e:
+        log(f"archived session purge failed: {e}")
+        return
+    for s in found:
+        sid = s.get("id", "")
+        if s.get("environment_kind") != "bridge":
+            continue
+        if any(same_session(sid, p) for p in pinned):
+            continue      # a pinned conversation's retirement reads this record
+        when = stamp(s.get("updated_at"))
+        if when is None:      # never delete a session that cannot be shown to be old
+            log(f"{sid} archived with no usable timestamp; not deleted")
+            continue
+        if now - when < purge:
+            continue
+        folder = envs.get(s.get("environment_id")) or next(
+            (f for f in folders
+             if Path(f, ".claude", "worktrees", f"bridge-{sid}").is_dir()), None)
+        if folder and Path(folder, ".claude", "worktrees", f"bridge-{sid}").is_dir():
+            continue
+        try:
+            api("DELETE", f"/v1/code/sessions/{sid}", token)
+            log(f"{folder or s.get('environment_id')}: {sid} archived > {purge / 86400:g} days; session deleted")
+            for old in (*LOGS.glob(f"*.debug-{sid}.log*"), LOGS / f"bridge-transcript-{sid}.jsonl"):
+                old.unlink(missing_ok=True)
+        except LOGIN_ERRORS as e:                 # transient: the next check retries
+            log(f"{sid} delete failed: {e}")
+
+
+def delete_host(h: "Host") -> bool:
+    """Remove a retired conversation's host from the app.
+
+    A pinned bridge preserves its environment on exit (that is what lets it
+    resume), so archiving the conversation leaves its row behind for good. Only
+    the account can delete it: the call is made with the account's own login,
+    read from where Claude Code keeps it, and never leaves this machine.
+
+    The id is the server's own record of the pinned conversation, not the
+    folder's logs: those collect every pin's ids (each pinned start clears the
+    folder's debug log, and the session children hold none), so the last id on
+    disk can be a sibling's, whose row must stay while its pin does (#450).
+    The record is looked up among the account's archived sessions, matched by
+    id body (the app and the API render one session id as session_… and
+    cse_…), and only its own environment is deleted. A pin not listed as
+    archived -- it never ran, its conversation is still active, or its row is
+    already gone -- has no row to delete.
+
+    Returns whether the pin is settled: its row deleted, or the server's own
+    list holding none for it. A transient failure -- of this lookup or of the
+    delete itself -- returns False, so the caller keeps the pin for its next
+    check: retiring it anyway would leave a row behind that no pin will ever
+    name again.
+    """
+    try:
+        token = account_token()
+        found = sessions(token, "archived")
+    except LOGIN_ERRORS as e:
+        log(f"{h.folder}: host not deleted: {e}")
+        return False
+    env_id = next((s.get("environment_id") for s in found
+                   if same_session(s.get("id"), h.session_id)), None)
+    if not env_id:
+        return True
+    try:
+        api("DELETE", f"/v1/environments/bridge/{env_id}", token)
+        log(f"{h.folder}: host {env_id} deleted")
+    except LOGIN_ERRORS as e:
+        log(f"{h.folder}: host {env_id} not deleted: {e}")
+        return False
+    return True
+
+
+def mtime_of(path: Path) -> float | None:
+    """The path's mtime, or None when it cannot be stat'd (gone, or mid-replace),
+    so no stat inside main()'s loop crashes it (#340). The reload reads None as
+    the empty config (a gone config stops hosting, as it always has); the retire
+    sites read it as nothing to commit, retry next tick."""
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def read_config(config: Path) -> str | None:
+    """The config text, or None when it cannot be read: the failure is logged
+    here and the caller keeps what it last loaded running.
+
+    A config that turned unreadable between stat and read -- permissions
+    pulled on a file that had just changed -- raised out of main(), and
+    launchd restarted the supervisor into the same crash, stopping and
+    restarting every host (#340). Undecodable bytes are the same failed read
+    (a write cut mid-byte), not content anyone chose, so ValueError rides
+    this guard too, as it does TRANSIENT's. Returning None also leaves the
+    observed mtime uncommitted, so a file restored readable is retried on
+    the next tick even though restoring permissions moves no mtime."""
+    try:
+        return config.read_text()
+    except (OSError, ValueError) as e:
+        log(f"config not read, keeping the loaded folders: {e}")
+        return None
+
+
+def edit_config(config: Path, folder: str, sid: str | None = None, *,
+                loaded: str) -> "tuple[str, float | None] | None":
+    """Without `sid`: record `folder` as archived. With it: comment that pinned
+    line out, dated so it can be re-enabled, and drop its archived marker.
+
+    Returns (text, mtime): the text as the file now holds it, and the mtime to
+    commit for it, for the caller to commit so its own edit is never read as an
+    operator's change -- the acknowledgement comes from the write itself, not
+    from reading the file back, so a config that turns unreadable right after
+    our write cannot make recovery reload it (review round on the merge-gate
+    head). But it is an acknowledgement of `loaded` -- the configuration the
+    hosts are running -- so the mtime is returned only when what was read
+    matches it: a file that changed underneath (an operator edit that landed
+    during an unreadable window, with its reload still pending) is edited
+    anyway -- the retire stands -- yet returns a None stamp, leaving the
+    observed mtime uncommitted for the next tick to reload and reconcile the
+    operator's change too (review round 3). A None stamp, not a None return, is
+    also what an already-recorded marker gives (nothing was written; the marker
+    asked for is in the file) and what a write that cannot be stat'd afterwards
+    gives (written, but nothing to commit).
+
+    The caller may carry that text on -- as the config its next edit reads, and
+    as `seen` -- only when an mtime came with it. Carrying an unacknowledged
+    edit anyway makes the next edit of the same tick read the file the first one
+    wrote, find it equal to what the caller carries, and acknowledge it: `seen`
+    then advances over content the hosts never loaded, swallowing the operator's
+    pending reload, and the folder they added never starts (the #355 landing
+    review). A None stamp means the caller keeps the config it loaded; the text
+    beside it is what the file now holds, not what a caller may adopt.
+
+    None -- rather than the text -- means the edit did not land: a config that
+    cannot be read or rewritten (unreadable, undecodable, or unwritable) is
+    logged, the retire stands, and the line keeps its place in the file (#340).
+    The archived retire's caller reads that as "the marker is not in the file
+    yet", which is what stops a later reload from restarting -- un-archiving --
+    the conversation it retired (#355)."""
+    try:
+        text = config.read_text()
+        ack = text == loaded                     # a delta on what the hosts run?
+        if sid is None:
+            if folder in archived_set(text):
+                return text, None              # already recorded: nothing to write
+            text = text.rstrip() + f"\narchived={folder}\n"
+        else:
+            out = []
+            for raw in text.splitlines():
+                line = raw.split("#", 1)[0].strip()
+                if line.startswith("archived=") and resolve(line[9:]) == folder:
+                    continue
+                # The line to retire is the one whose pin names this sid, read from the
+                # args after ` -- `: one folder's pin ids share prefixes, and a substring
+                # over the raw line retired a sibling pin too (#415).
+                head, _, args = line.partition(" -- ")
+                argv = args.split()
+                if "--session-id" in argv[:-1] and argv[argv.index("--session-id") + 1] == sid \
+                        and resolve(head.split(" ", 1)[0]) == folder:
+                    raw = f"# idle-retired {time.strftime('%F')}: {raw}"
+                out.append(raw)
+            text = "\n".join(out) + "\n"
+        # The rewrite lands in one replace (#412): write_text truncates the file
+        # on open, and a write that failed after the truncate -- disk full, an
+        # I/O error -- left the config empty or cut short, for the next reload
+        # to stop every host on. The temp is written beside the *resolved*
+        # config, so a symlinked config keeps its link and the replace stays
+        # within one filesystem, and it takes the config's mode before it
+        # steps in; a failure anywhere in between leaves the config as it was
+        # and takes the temp with it.
+        target = config.resolve()
+        fd, name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
+        tmp = Path(name)
+        try:
+            os.close(fd)
+            tmp.write_text(text)
+            shutil.copymode(target, tmp)
+            os.replace(tmp, target)
+        except BaseException:
+            with suppress(OSError):
+                tmp.unlink()
+            raise
+        stamp = mtime_of(config)
+        if stamp is None:                      # written but not observable: no ack to commit
+            log("config edited but not stat'd afterwards: a later tick may reload it")
+            return text, None
+        if not ack:                            # edited, but on content never loaded
+            log("config edited but changed since the loaded one: a later tick reloads it")
+            return text, None
+        return text, stamp
+    except (OSError, ValueError) as e:
+        log(f"config not edited: {e}")
+
+
+class Clock:
+    """What main() carries between cycles for the recovery and log-cap steps."""
+
+    def __init__(self) -> None:
+        self.last_idle_check = time.time()   # first check after IDLE_CHECK: let bridges settle
+        self.last_recover = self.last_idle_check  # ditto: hosts start one per tick, so nothing is up yet
+        self.recovered: dict = {}
+        self.hand_back_failed: set = set()   # keys in `recovered` whose last hand-back failed
+
+
+def cycle(hosts: "dict[str, Host]", repos: list[str], now: float, clock: Clock) -> bool:
+    """The recovery and log-cap part of one main-loop tick. True when the idle
+    check is due: main() then runs the archived-session cleanup."""
+    if now - clock.last_recover >= RECOVER_EVERY:     # a session with no process: bring it back
+        clock.last_recover = now
+        up = {h.folder for h in hosts.values() if h.proc and now - h.started >= RECOVER_EVERY}
+        handed_back = recover_processless(repos, clock.recovered, up, clock.hand_back_failed)
+        recover_interrupted(repos, up, handed_back)
+    if now - clock.last_idle_check < IDLE_CHECK:
+        return False
+    for h in hosts.values():
+        if h.proc and not h.edge and not h.session_id:
+            h.bound_logs()     # archived and unused: drop its line
+    clock.last_idle_check = now
+    return True
+
+
+def config_path(value: str) -> str:
+    if not value:
+        raise argparse.ArgumentTypeError("requires a path")
+    if value.startswith("-"):
+        raise argparse.ArgumentTypeError(f"{value} is a flag, not a path")
+    return value
+
+
+def main(argv: list[str]) -> int:
+    # --config PATH and --config=PATH are one flag, as in every other ccproteus
+    # CLI; a missing or flag-like value is a usage error (issue #417: the old
+    # exact-string match silently watched the default file instead). -OO strips
+    # __doc__, so the help text must not require it.
+    ap = argparse.ArgumentParser(prog="ccproteus-rc-hosts",
+                                 description=(__doc__ or "").split("\n\n")[0])
+    ap.add_argument("--config", metavar="PATH", type=config_path,
+                    help="folder list to watch (default: $CCPROTEUS_STATE_DIR/rc-hosts)")
+    args = ap.parse_args(argv)
+    config = Path(args.config) if args.config else STATE_ROOT / "rc-hosts"
+    os.environ["PATH"] = os.pathsep.join([str(Path.home() / ".local/bin"), "/opt/homebrew/bin",
+                                          "/usr/local/bin", os.environ.get("PATH", "/usr/bin:/bin")])
+    hosts: dict[str, Host] = {}
+    unrecorded: set[str] = set()   # retired here, marker not in the file yet (#355)
+    seen = None
+    text = ""
+    clock = Clock()
+    stopping = []
+    signal.signal(signal.SIGTERM, lambda *_: stopping.append(1))
+    signal.signal(signal.SIGINT, lambda *_: stopping.append(1))
+    log(f"watching {config}")
+    while not stopping:
+        stamp = mtime_of(config)
+        if stamp != seen:
+            fresh = read_config(config) if stamp else ""
+            if fresh is not None:      # unreadable: keep the loaded folders, retry next tick
+                seen = stamp           # only a load that succeeded commits the mtime
+                text = fresh
+                # A folder retired here whose marker never reached the file is
+                # not yet archived as far as the file is concerned: hosting it
+                # again would restart -- un-archive -- the conversation it was
+                # retired for, so it stays out until the marker lands (#355).
+                want = {f: v for f, v in parse(text).items() if f not in unrecorded}
+                # Only the aliases Host.start exports reach a session, so an unknown
+                # `tier.<alias>=` line changes what no host runs and must restart nothing.
+                tiers = {a: m for a, m in tier_map(text).items() if a in ALIAS_ENV}
+                perm = permission_mode(text)
+                routes = {r for r, _ in want.values()}
+                # --permission-mode and the ANTHROPIC_DEFAULT_*_MODEL pins are fixed when
+                # a host's process starts, so a host whose permission or tiers changed has
+                # to be restarted to carry them. The shared edge pins the tiers too; only
+                # folders carry a permission.
+                for folder in list(hosts):
+                    h = hosts[folder]
+                    if h.edge and h.route in routes and h.tiers == tiers:
+                        continue
+                    if (h.edge or want.get(folder) != (h.route, h.args) or h.tiers != tiers
+                            or h.permission != perm):
+                        hosts.pop(folder).stop()
+                for route in sorted(routes):   # edges first: bridges start only once theirs is up
+                    if f"edge:{route}" not in hosts:
+                        e = Host(str(EDGES.parent), route, tiers=tiers)
+                        e.edge, e.logfile = True, LOGS / f"edge-{route}.log"
+                        hosts = {f"edge:{route}": e, **hosts}
+                for folder, (route, args) in want.items():
+                    hosts.setdefault(folder, Host(folder, route, args, tiers, perm))
+                log(f"config: {len(want)} folder(s): " + ", ".join(
+                    f"{f} via {r}{' ' + ' '.join(a) if a else ''}" for f, (r, a) in want.items()))
+        # A retire whose edit did not land left the pinned line active-looking:
+        # write its marker now, on every tick, until one lands -- an unreadable
+        # or read-only config is retried rather than abandoned (the state is
+        # in-memory: a supervisor restarted before it lands starts that one
+        # conversation again, #355).
+        for folder in sorted(unrecorded):
+            after = edit_config(config, folder, loaded=text)
+            if after is None:                  # unreadable or read-only still: retry next tick
+                continue
+            unrecorded.discard(folder)         # the marker is in the file now
+            if after[1] is not None:           # acknowledged: our own edit, no reload churn
+                text, seen = after             # (unacknowledged: `text` stays the loaded config)
+            log(f"{folder}: archived marker recorded")
+        # One launch per tick: every host starts its own adapter, which probes the
+        # gateway; a dozen probes at once exceed its 30s budget and all fail together.
+        now, launched, ready = time.time(), False, {}
+        for folder, h in list(hosts.items()):
+            if not (launched or h.edge or h.route in ready):
+                ready[h.route] = edge_ready(h.route)   # once per route per tick (#381)
+            may_start = not launched and (h.edge or ready[h.route])
+            launched |= h.tend(now, may_start)
+            if h.exited is not None and h.session_id and h.archived():
+                hosts.pop(folder)
+                after = edit_config(config, folder, loaded=text)
+                if after is None:                  # the marker is not in the file yet
+                    unrecorded.add(folder)         # hold it out of reloads; retry above
+                elif after[1] is not None:         # acknowledged: our own edit, no reload churn
+                    text, seen = after             # (unacknowledged: `text` stays the loaded config)
+                log(f"{folder}: {h.session_id} archived or expired; bridge retired")
+            h.exited = None
+        repos = [h.folder for h in hosts.values() if not h.edge and not h.session_id]
+        idle_due = cycle(hosts, repos, now, clock)
+        # The destructive pass must not run under a config the file no longer
+        # holds: a reload that failed, or a retire edit that landed on changed
+        # content, leaves `seen` behind the file, and purging then deletes under
+        # retention settings the operator has already replaced -- a delete
+        # cannot be undone. The pass waits for a reload to commit the file's
+        # mtime (indefinitely, while the file stays unreadable: fail closed)
+        # and retries on its next interval once one does.
+        if idle_due and mtime_of(config) == seen:
+            limit = idle_days(text) * 86400
+            clean_archived(repos, now, limit, purge_days(text) * 86400,
+                           tuple(sid for _, sid in session_entries(text)))
+            for folder, sid in list(session_entries(text)):
+                # The archived gate reads the text the last retire left, not a set
+                # taken before the loop: a retire drops the folder's archived marker,
+                # and judging the folder's next pin by the old set retired it under
+                # a marker the file no longer held (#449).
+                if folder not in archived_set(text):
+                    continue
+                active = last_activity(folder)   # None: a transcript went unread, so wait a check
+                if active is None or now - active < limit:
+                    continue
+                if not delete_host(Host(folder, "", ("--session-id", sid))):
+                    continue     # the row is not settled: this pin waits for its next check
+                after = edit_config(config, folder, sid, loaded=text)
+                if after is not None and after[1] is not None:  # acknowledged: our own edit
+                    text, seen = after             # (unacknowledged: `text` stays the loaded config)
+                log(f"{folder}: {sid} archived and idle > {limit / 86400:g} days; line retired")
+        time.sleep(TICK)
+    for h in hosts.values():
+        h.stop()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

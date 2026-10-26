@@ -1,0 +1,509 @@
+#!/usr/bin/env python3
+"""Remote Control on a claude.ai account, inference on a ccproteus route profile.
+
+    ccproteus-rc <route-profile> [--as <account-profile>] [--route-models] [--debug] [--probe]
+                [-- <remote-control args>]
+
+Claude Code only offers Remote Control to a claude.ai-authenticated session that
+talks to api.anthropic.com. This add-on keeps that true for the process, and moves
+only `/v1/messages` to the route profile through a scoped TLS proxy:
+
+  claude remote-control ──HTTPS_PROXY──▶ mitmdump (loopback, this launch only)
+      api.anthropic.com/v1/messages ──▶ route profile (its ccproteus-adapter if needed)
+      every other host/path            ──▶ unchanged
+
+Add-on, not core. It uses only public ccproteus seams: `ccproteus _route_env` /
+`_route_stop` for the route profile (endpoint and credential, plus a bridge for a
+provider profile), `ccproteus _env` for the account, `ccproteus _backend_env` for the names a launch
+never inherits, and `ccproteus-adapter <profile>
+--auto --parent-pid`. Nothing in ccproteus knows it exists; delete this directory and
+ccproteus is unchanged.
+
+Scope guarantees:
+  - the proxy CA lives in its own 0700 directory under ccproteus's state root and is
+    trusted by this process tree only (NODE_EXTRA_CA_CERTS); no system trust change
+  - only api.anthropic.com is intercepted; every other host is a raw CONNECT tunnel,
+    so tools run inside the session keep normal TLS
+  - the route key reaches the proxy through a 0600 file it deletes on read, never argv
+    or the Claude process environment
+  - fail closed: a dead proxy or route is an error in the session, never a silent
+    fallback to the account's own quota
+  - this process execs into Claude; the proxy and adapter watch its pid and exit with it
+"""
+from __future__ import annotations
+
+import argparse
+import functools
+import json
+import os
+import re
+import resource
+import shutil
+import socket
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.parse
+import zlib
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+LIB_DIR = Path(os.environ.get("CCPROTEUS_LIB_DIR") or HERE.parent.parent)
+CCPROTEUS = LIB_DIR / "ccproteus.sh"
+ADAPTER = LIB_DIR / "ccproteus-adapter"
+# Same state-root resolution as ccproteus-adapter; profile .conf files live here.
+STATE_ROOT = Path(os.environ.get("CCPROTEUS_STATE_DIR") or
+                  Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ccproteus")
+STATE = STATE_ROOT / "profiles" / ".rc-bridge"
+# One shared edge (adapter + proxy) per route, run by `ccproteus-rc <route> --edge`
+# (optional). Bridges of that route reuse it instead of
+# starting their own. Its port is fixed per route so a restarted edge keeps every
+# bridge's HTTPS_PROXY valid; while it is down, bridges fail closed (refused).
+EDGES = STATE / "edges"
+
+
+def edge_port(route: str) -> int:
+    return 47100 + zlib.crc32(route.encode()) % 800
+
+
+def live_edge(route: str) -> dict | None:
+    """The route's shared edge if its process is alive and its proxy answers."""
+    try:
+        edge = json.loads((EDGES / f"{route}.json").read_text())
+        os.kill(int(edge["pid"]), 0)
+        with socket.create_connection(("127.0.0.1", int(edge["port"])), timeout=1):
+            pass
+        return edge if Path(edge["ca"]).exists() else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+# By default phone sessions keep Claude Code's own aliases (fable, opus, sonnet,
+# haiku -> the real Claude ids, 1:1), which the route serves by name. --route-models carries the
+# route profile's alias map instead. None of these touch Remote Control eligibility.
+MODEL_ENV = ("ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL",
+             "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+             "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL")
+# Behavioural flags the route profile carries, forwarded to the session as-is. They
+# describe the endpoint, not a model choice, so they apply whoever answers. Add a
+# name here when a route sets it and the session must honour it. The capability mask
+# belongs here for the same reason: a route that declares its own mask is describing
+# the endpoint, and the adapter default below is only the gap-filler for a route that
+# declares none (2026-10-14: a conf-declared mask reached every launcher but the phone).
+ROUTE_ENV = ("CLAUDE_CODE_DISABLE_ADVISOR_TOOL", "CLAUDE_CODE_MODEL_CAPABILITIES")
+# Same value ccproteus.sh sets on an adapter launch; see session_env.
+ADAPTER_MODEL_CAPABILITIES = "-mid_conv_system,-mid_conv_tool_change,-per_turn_effort"
+# Anything that would take the session off the account's own claude.ai login: the
+# backend, account and credential keys ccproteus itself never lets a launch inherit
+# (one list, `ccproteus _backend_env`), plus the proxy half below. CLAUDE_CODE_OAUTH_TOKEN
+# matters most here: it outranks the keychain login and is inference-only, so Remote
+# Control refuses it ("requires a full-scope login token").
+# The proxy half of strip_env(), which only the SESSION may lose: its one proxy is
+# the mitmdump below, so an inherited one would take `/v1/messages` somewhere else.
+# The adapter is the opposite case — it dials the route's real endpoint, which on a
+# private network is reachable only through the proxy the caller exported.
+PROXY_ENV = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
+
+
+@functools.lru_cache(maxsize=None)
+def strip_env() -> tuple:
+    """ccproteus's backend/credential list plus PROXY_ENV, read once from the seam."""
+    # Source with local.sh skipped (the existing read-only gate) so host opt-ins
+    # neither run nor print into the list; the name filter is a second guard.
+    env = {**os.environ, "CCPROTEUS_DOCTOR_READONLY": "1"}
+    out = ccproteus("_backend_env", "", 90, env)
+    names = tuple(n for n in out.stdout.split() if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", n))
+    if out.returncode or not names:
+        die(f"ccproteus _backend_env failed: {out.stderr.strip()}")
+    return names + PROXY_ENV
+
+
+def die(msg: str) -> "None":
+    print(f"ccproteus-rc: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def ccproteus(cmd: str, arg: str, timeout: float, env: dict | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(["zsh", "-c", f'source "$1" && ccproteus {cmd} "$2"',
+                           "ccproteus-rc", str(CCPROTEUS), arg],
+                          capture_output=True, text=True, timeout=timeout, env=env)
+
+
+def profile_env(profile: str, cmd: str = "_env") -> dict[str, str]:
+    # 180s for _route_env: a provider profile starts its bridge process first.
+    out = ccproteus(cmd, profile, 180 if cmd == "_route_env" else 90)
+    if out.returncode:
+        die(f"ccproteus {cmd} {profile} failed: {out.stderr.strip()}")
+    return dict(line.split("=", 1) for line in out.stdout.splitlines() if "=" in line)
+
+
+def resolve_route(profile: str) -> dict[str, str]:
+    """The route profile's endpoint and credential, ready to dial.
+
+    `_route_env`, not `_env`: a provider profile has no endpoint until ccproteus
+    starts its bridge, and only `_route_env` starts one (and hands back a handle).
+    """
+    return profile_env(profile, "_route_env")
+
+
+def retire_route_with(pid: int, handle: str) -> None:
+    """Stop the route once `pid` (Claude, after exec) is gone. This process execs
+    away, so a detached watcher owns the `_route_stop` a launch's EXIT trap would do."""
+    if not handle:
+        return
+    watcher = ('while kill -0 "$3" 2>/dev/null; do sleep 2; done; '
+               'source "$1" && ccproteus _route_stop "$2"')
+    subprocess.Popen(["zsh", "-c", watcher, "ccproteus-rc", str(CCPROTEUS), handle, str(pid)],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def adapter_env() -> dict[str, str]:
+    """No inherited credential, but the caller's proxy intact — exactly what
+    `_ccs_adapter_start` gives it, which is the launcher's own environment."""
+    return {k: v for k, v in os.environ.items()
+            if k not in strip_env() or k in PROXY_ENV}
+
+
+def session_env(base, route_env: dict, route_models: bool) -> dict:
+    """The session's env: no inherited credentials, model aliases left to Claude Code
+    (1:1 real Claude ids) unless --route-models asks for the route's map, and the
+    route's behavioural flags either way — a flag the route sets describes the
+    endpoint being dialed, so it must not hinge on how aliases are chosen."""
+    # Model aliases are Claude Code's own (1:1 real Claude ids) unless --route-models
+    # asks for the route's map. The one thing carried in from the caller is a tier the
+    # config pinned (`tier.<alias>=<model>` in rc-hosts): forwarding an alias the route
+    # cannot serve is the caller's call, and it names the alias explicitly.
+    env = {k: v for k, v in base.items() if k not in strip_env()}
+    env.update({k: route_env[k] for k in ROUTE_ENV if k in route_env})
+    # Message threads: on a first-party login Claude Code may send only the newest
+    # turn plus `thread: continue`, trusting Anthropic's server to hold the rest. A
+    # route has no such state, so every turn after the first reaches it with no
+    # system prompt, tools or history (2026-10-06: every phone session lost its
+    # context mid-conversation). The full conversation must be sent every time.
+    env["CLAUDE_CODE_TETHER_LIVE"] = "0"
+    # Every route here is served through ccproteus-adapter, whose cliproxyapi config
+    # hoists mid-conversation system turns into the top-level system field. That
+    # rewrites the prompt prefix each turn and defeats prompt caching, so the session
+    # gets the same default a ccproteus adapter launch gets: no model id sends
+    # those turns. A value the caller set wins.
+    env.setdefault("CLAUDE_CODE_MODEL_CAPABILITIES", ADAPTER_MODEL_CAPABILITIES)
+    # Likewise the advisor: a server-side tool the adapter's routes do not serve.
+    env.setdefault("CLAUDE_CODE_DISABLE_ADVISOR_TOOL", "1")
+    pinned = {k: v for k, v in base.items() if k in MODEL_ENV}
+    env.update(pinned)
+    if route_models:
+        env.update({k: route_env[k] for k in MODEL_ENV if k in route_env})
+    # The seam to a launch nested in this session: it inherits our loopback proxy, so
+    # it must get the flags this session was given. The EFFECTIVE values, defaults
+    # included -- an edge record holds only what the route's conf declares.
+    # ccproteus.sh re-applies exactly these lines (_ccs_nested_edge_env).
+    env["CCPROTEUS_EDGE_ROUTE_ENV"] = "\n".join(f"{k}={env[k]}" for k in ROUTE_ENV if k in env)
+    return env
+
+def pinned_tiers(base) -> dict[str, str]:
+    """{alias: model} for the tiers the caller pinned, so the proxy can pin the full
+    ids (claude-fable-5-1) the phone's picker sends, not only the bare alias."""
+    return {k.split("_")[2].lower(): (v[:-4] if v.endswith("[1m]") else v) for k, v in base.items()
+            if k in MODEL_ENV and k.startswith("ANTHROPIC_DEFAULT_") and v}
+
+
+def profile_field(profile: str, field: str) -> str:
+    conf = STATE_ROOT / f"{profile}.conf"
+    for line in conf.read_text().splitlines() if conf.exists() else ():
+        if line.startswith(field + "="):
+            return line.split("=", 1)[1].strip()
+    return ""
+
+
+def profile_type(profile: str) -> str:
+    return profile_field(profile, "type")
+
+
+def default_account() -> str:
+    subs = sorted(p.stem for p in STATE_ROOT.glob("*.conf") if profile_type(p.stem) == "sub")
+    if len(subs) != 1:
+        die(f"pass --as <profile>; claude.ai subscription profiles found: {subs or 'none'}")
+    return subs[0]
+
+
+def free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def wait_listening(port: int, proc: subprocess.Popen, what: str, limit: float = 20) -> None:
+    deadline = time.monotonic() + limit
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            die(f"{what} exited during startup (rc={proc.returncode})")
+        with socket.socket() as s:
+            if s.connect_ex(("127.0.0.1", port)) == 0:
+                return
+        time.sleep(0.1)
+    die(f"{what} did not start listening within {limit:.0f}s")
+
+
+def seed_trust(account_dir: str, folder: str) -> None:
+    """Record the folder as trusted in the account's config.
+
+    An unattended Remote Control start in an untrusted folder waits on a trust
+    prompt nobody can answer; the folder then never registers. Whoever launched
+    ccproteus-rc here chose the folder, so trusting it is their intent.
+    """
+    cfg = Path(account_dir) / ".claude.json"
+    try:
+        data = json.loads(cfg.read_text()) if cfg.exists() else {}
+        if not isinstance(data, dict):
+            return
+    except (OSError, ValueError):
+        return
+    entry = data.setdefault("projects", {}).setdefault(str(Path(folder).resolve()), {})
+    if entry.get("hasTrustDialogAccepted"):
+        return
+    entry["hasTrustDialogAccepted"] = True
+    tmp = cfg.with_name(cfg.name + ".tmp")
+    # The file holds the account's identity: 0600 from creation, never the umask's mode.
+    try:
+        mode = stat.S_IMODE(cfg.stat().st_mode) & 0o600
+    except OSError:
+        mode = 0o600
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode or 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(json.dumps(data, indent=2))
+    os.chmod(tmp, mode or 0o600)
+    tmp.replace(cfg)
+
+
+POINTER_TTL = 3 * 3600   # Claude drops its bridge pointer after 4h
+
+
+def keep_host(account_dir: str, folder: str) -> None:
+    """One folder, one host: `.claude/rc-host.json` in the folder names its environment.
+
+    Claude reattaches a restarted host (same row in the app, its session adopted,
+    none created) only from its own bridge pointer, which it drops after 4h or a
+    fatal error. A fresh pointer is copied into the folder's file; a missing or
+    stale one is put back from it. The file travels with the folder.
+    """
+    pointer = (Path(account_dir) / "projects" /
+               re.sub(r"[^A-Za-z0-9]", "-", str(Path(folder).resolve())) / "bridge-pointer.json")
+    kept = Path(folder) / ".claude" / "rc-host.json"
+    fresh = pointer.exists() and time.time() - pointer.stat().st_mtime < POINTER_TTL
+    src, dst = (pointer, kept) if fresh else (kept, pointer)
+    try:
+        data = json.loads(src.read_text())
+    except (OSError, ValueError):
+        return
+    for key in ("pid", "procStart"):
+        data.pop(key, None)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(json.dumps(data))
+
+
+def start_adapter(route: str, parent: int, env: dict[str, str]) -> str:
+    """Return the loopback URL of the route's gateway edge (see gateway-shim)."""
+    ready = tempfile.NamedTemporaryFile(prefix="ccproteus-rc-ready.", delete=False)
+    # --model, as a normal ccproteus launch passes it: the adapter then verifies one
+    # (cached) model. Without it every launch re-probes the whole gateway inventory,
+    # which overruns the adapter's 30s budget as soon as a few bridges start at once.
+    model = profile_field(route, "model")
+    proc = subprocess.Popen([str(ADAPTER), route, "--auto", "--parent-pid", str(parent),
+                             *(["--model", model] if model else [])],
+                            env=env, stdin=subprocess.DEVNULL, stdout=ready,
+                            start_new_session=True)
+    deadline = time.monotonic() + 120
+    try:
+        while time.monotonic() < deadline:
+            line = Path(ready.name).read_text().splitlines()[:1]
+            if line and line[0].startswith("PORT="):
+                return f"http://127.0.0.1:{int(line[0][5:])}"
+            if line and line[0].startswith("EXIT="):
+                die(f"adapter declined: {line[0][5:]}")
+            if proc.poll() is not None:
+                die(f"adapter exited without a port (rc={proc.returncode})")
+            time.sleep(0.1)
+        proc.terminate()
+        die("adapter did not become ready within 120s")
+    finally:
+        os.unlink(ready.name)
+
+
+# The addon is the only thing standing between Claude and api.anthropic.com. Two
+# ways it can go missing while the proxy keeps running, each observed live:
+#  - mitmproxy hot-reloads a -s script when its file changes, and a failed reload
+#    leaves the proxy running with NO addon (an upgrade of this directory did it);
+#  - any other load error after startup.
+# Either way the proxy would forward inference to Anthropic on the account's own
+# credential. So the proxy runs a private copy that nothing else writes, and a
+# built-in block_list answers 502 to any /v1/messages still addressed to
+# api.anthropic.com. A rerouted request carries the route's host, so it never
+# matches; only a request the addon did not handle does.
+FAIL_CLOSED = r"|~d ^api\.anthropic\.com$ & ~u /v1/messages|502"
+
+
+def private_addon(parent: Path) -> Path:
+    """Copy the addon and its module into a fresh 0700 directory; return the script."""
+    run = Path(tempfile.mkdtemp(prefix="addon.", dir=parent))
+    for name in ("rc_addon.py", "rc_route.py"):
+        # copy, not copy2: mitmproxy loads a -s script only if its mtime beats its
+        # last load (0), so a source delivered with epoch timestamps never loads.
+        shutil.copy(HERE / name, run / name)
+    return run / "rc_addon.py"
+
+
+def proxy_command(mitmdump: str, port: int, confdir: Path, script: Path) -> list[str]:
+    return [mitmdump, "-q", "--listen-host", "127.0.0.1", "--listen-port", str(port),
+            "--set", f"confdir={confdir}", "--set", f"block_list={FAIL_CLOSED}",
+            "--allow-hosts", r"^api\.anthropic\.com(:443)?$", "-s", str(script)]
+
+
+def own_edge(route: str, me: int, args, fixed_port: int | None):
+    """Route + adapter + proxy for one bridge (or, with fixed_port, the shared edge)."""
+    route_env = resolve_route(route)
+    # From here the route is up; tie its teardown to this pid before anything can die.
+    retire_route_with(me, route_env.get("CCPROTEUS_ROUTE_HANDLE", ""))
+    key = route_env.get("ANTHROPIC_API_KEY") or die(f"route profile '{route}' has no key")
+    route_env.get("ANTHROPIC_BASE_URL") or die(f"route profile '{route}' has no base_url")
+
+    upstream = start_adapter(route, me, adapter_env())
+
+    STATE.mkdir(parents=True, exist_ok=True)
+    STATE.chmod(0o700)
+    confdir = STATE / "mitm"
+    confdir.mkdir(exist_ok=True)
+    confdir.chmod(0o700)
+    fd, key_file = tempfile.mkstemp(prefix="route-key.", dir=STATE)
+    os.write(fd, key.encode())
+    os.close(fd)
+
+    port = fixed_port or free_port()
+    mitmdump = shutil.which("mitmdump") or die("mitmdump not found: brew install mitmproxy")
+    proxy_env = {k: v for k, v in os.environ.items() if k not in strip_env()}
+    proxy_env.update(RC_UPSTREAM=upstream, RC_KEY_FILE=key_file, RC_PARENT_PID=str(me),
+                     RC_TIERS=json.dumps(pinned_tiers(os.environ)))
+    if args.debug:
+        proxy_env["RC_LOG"] = str(STATE / "debug.log")
+    proxy = subprocess.Popen(
+        proxy_command(mitmdump, port, confdir, private_addon(STATE)),
+        env=proxy_env, stdin=subprocess.DEVNULL, start_new_session=True)
+    wait_listening(port, proxy, "proxy")
+    ca = confdir / "mitmproxy-ca-cert.pem"
+    if not ca.exists():
+        die(f"proxy CA not generated at {ca}")
+    if os.path.exists(key_file):
+        die("proxy did not consume the route key; refusing to continue")
+    return port, ca, upstream, route_env
+
+
+def edge_down(port: int, upstream: str) -> str | None:
+    """Why the shared edge can no longer serve, or None while it can.
+
+    The proxy answering is not enough: with its adapter gone (translator exited) it
+    answers every /v1/messages with 502 while looking healthy (2026-10-19).
+    """
+    up = urllib.parse.urlsplit(upstream)
+    for what, addr in (("proxy", ("127.0.0.1", port)), ("upstream", (up.hostname, up.port))):
+        try:
+            with socket.create_connection(addr, timeout=5):
+                pass
+        except OSError:
+            return f"shared edge {what} on {addr[0]}:{addr[1]} stopped answering"
+    return None
+
+
+NOFILE = 65536          # launchd's default soft limit is 256; one shared edge proxy
+                       # carries every bridge's connections and hit it (EMFILE)
+
+
+def raise_nofile() -> None:
+    """Lift the open-file soft limit; the proxy and adapter inherit it."""
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    want = NOFILE if hard == resource.RLIM_INFINITY else min(NOFILE, hard)
+    if soft != resource.RLIM_INFINITY and soft < want:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+
+
+def edge_record(me: int, port: int, ca, upstream: str, route_env: dict, env) -> dict:
+    """What a live edge publishes about itself under <route>.json.
+
+    `tiers` is what its proxy really pins: a supervisor that finds this edge still
+    serving after a restart reads it to decide whether to adopt it or replace it,
+    so it must be the same function the proxy's own env was built from.
+    """
+    return {"pid": me, "port": port, "ca": str(ca), "upstream": upstream,
+            "tiers": pinned_tiers(env),
+            "route_env": {k: route_env[k]
+                          for k in (*MODEL_ENV, *ROUTE_ENV) if k in route_env}}
+
+
+def main(argv: list[str]) -> None:
+    raise_nofile()
+    rc_args: list[str] = []
+    if "--" in argv:
+        i = argv.index("--")
+        argv, rc_args = argv[:i], argv[i + 1:]
+    ap = argparse.ArgumentParser(prog="ccproteus-rc", description=__doc__.split("\n\n")[0])
+    ap.add_argument("route", help="ccproteus profile that serves inference")
+    ap.add_argument("--as", dest="account", help="claude.ai subscription profile (default: the only one)")
+    ap.add_argument("--debug", action="store_true", help="log method+path per request to the state dir")
+    ap.add_argument("--route-models", action="store_true",
+                    help="use the route profile's model aliases instead of real Claude ids")
+    ap.add_argument("--edge", action="store_true",
+                    help="run the route's shared adapter+proxy for other bridges to use, and stay up")
+    ap.add_argument("--probe", action="store_true",
+                    help="send one prompt through the same wiring (claude -p) instead of Remote Control")
+    args = ap.parse_args(argv)
+
+    claude = shutil.which("claude") or die("claude not found on PATH")
+    account = args.account or default_account()
+    if profile_type(account) != "sub":
+        die(f"'{account}' is not a claude.ai subscription profile")
+    if (route_type := profile_type(route := args.route)) == "sub":
+        die(f"'{route}' is a subscription profile; the route must be an endpoint profile")
+    if route_type == "provider":
+        die(f"'{route}' is a provider profile; ccproteus-rc routes only to endpoint profiles")
+
+    account_dir = profile_env(account).get("CLAUDE_CONFIG_DIR") or die(f"no config dir for '{account}'")
+    me = os.getpid()                       # becomes Claude's pid after exec
+    edge = None if (args.edge or args.debug) else live_edge(route)
+    if edge:
+        port, ca, upstream = int(edge["port"]), Path(edge["ca"]), edge["upstream"]
+        route_env = edge.get("route_env", {})
+    else:
+        port, ca, upstream, route_env = own_edge(route, me, args, edge_port(route) if args.edge else None)
+    if args.edge:
+        EDGES.mkdir(parents=True, exist_ok=True)
+        record = edge_record(me, port, ca, upstream, route_env, os.environ)
+        tmp = EDGES / f".{route}.json.tmp"
+        tmp.write_text(json.dumps(record))
+        tmp.replace(EDGES / f"{route}.json")
+        print(f"ccproteus-rc: shared edge for '{route}' on 127.0.0.1:{port} ({upstream})", file=sys.stderr)
+        while True:                        # adapter and proxy follow this pid; stay up
+            time.sleep(15)
+            if why := edge_down(port, upstream):
+                die(f"{why}; exiting so it is restarted")
+    env = session_env(os.environ, route_env, args.route_models)
+    env.update(CLAUDE_CONFIG_DIR=account_dir,
+               HTTPS_PROXY=f"http://127.0.0.1:{port}",
+               NO_PROXY="localhost,127.0.0.1,::1",
+               NODE_EXTRA_CA_CERTS=str(ca))
+    seed_trust(account_dir, os.getcwd())
+    print(f"ccproteus-rc: Remote Control as '{account}', inference via '{route}' ({upstream})",
+          file=sys.stderr)
+    if args.probe:
+        cmd = [claude, "-p", "--model", "sonnet", "Reply with exactly: rc-bridge-ok"]
+    else:
+        # Pass-through: exactly what was typed after `--`. A pinned conversation is
+        # reattached by --session-id; --continue would restore only a host's first
+        # session, as a single-session host.
+        if "--session-id" not in rc_args:
+            keep_host(account_dir, os.getcwd())
+        cmd = [claude, "remote-control", *rc_args]
+    os.execve(claude, cmd, env)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

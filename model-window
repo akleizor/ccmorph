@@ -1,0 +1,690 @@
+#!/usr/bin/env python3
+"""Resolve and store model context in <profile>.conf.
+
+Manual context_window.<model> entries beat context_discovered metadata bound to
+this profile's route. Legacy registry/cache files are read only by --migrate.
+No resolver or setter sends network requests.
+"""
+from __future__ import annotations
+
+import contextlib
+import fcntl
+import fnmatch
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import stat
+import sys
+
+CC_DEFAULT_WINDOW = 200_000
+# Compaction budget for a routed model nothing could size. Claude Code's 200,000
+# sits above real walls (131,072 and 128,000 were both measured on one route), and
+# a session past its wall dies without compacting; compacting early on a big model
+# is recoverable.
+UNKNOWN_BUDGET = 128_000
+ONE_M = 1_000_000
+DECLARED_FIELDS = ("max_input_tokens", "max_context_length", "context_length", "context_window")
+ROUTE_FIELDS = ("type", "base_url", "provider", "adapter", "api_key", "token")
+
+
+def _state_dir() -> Path:
+    return Path(os.environ.get("CCPROTEUS_STATE_DIR") or
+                Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ccproteus")
+
+
+def profile_path(profile: str) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9_]+", profile):
+        raise ValueError("invalid profile name")
+    return Path(os.environ.get("MODEL_WINDOW_PROFILE_CONF") or _state_dir() / f"{profile}.conf")
+
+
+def read_conf(path: Path) -> tuple[str, dict[str, str]]:
+    if path.is_symlink():
+        raise OSError("profile configuration must not be a symlink")
+    text = path.read_text(encoding="utf-8")
+    fields = {}
+    for line in text.split("\n"):
+        key, sep, value = line.strip(" \t\r").partition("=")
+        if sep and not key.startswith("#"):
+            fields[key] = value
+    return text, fields
+
+
+# Env keys that choose which model answers, not where requests go. Editing a tier
+# mapping must not discard the windows the route has already published.
+MODEL_CHOICE_ENV = re.compile(r"env\.ANTHROPIC_(?:DEFAULT_[A-Z]+_MODEL(?:_NAME|_DESCRIPTION)?|SMALL_FAST_MODEL|MODEL)")
+
+
+def route_fingerprint(fields: dict) -> str:
+    route = {key: fields.get(key, "") for key in ROUTE_FIELDS}
+    route.update({key: value for key, value in fields.items()
+                  if key.startswith("env.ANTHROPIC_") and not MODEL_CHOICE_ENV.fullmatch(key)})
+    return hashlib.sha256(json.dumps(route, sort_keys=True).encode()).hexdigest()
+
+
+def profile_identity(profile: str):
+    path = profile_path(profile)
+    try:
+        if path.is_symlink():
+            return None
+        with path.open("rb") as source:
+            info = os.fstat(source.fileno())
+            return (info.st_dev, info.st_ino, info.st_mtime_ns,
+                    hashlib.sha256(source.read()).hexdigest())
+    except OSError:
+        return None
+
+
+def positive(value) -> int | None:
+    if type(value) is int:
+        return value if value > 0 else None
+    if isinstance(value, str) and value.isascii() and value.isdigit() and len(value) <= 10:
+        return int(value) if int(value) > 0 else None
+    return None
+
+
+def real_id(model_id: str) -> str:
+    """Undo the translator disguise: claude-<cover>-dd-<reversed id> -> the true id."""
+    head, sep, tail = model_id.partition("-dd-")
+    return tail[::-1] if sep and head.startswith("claude-") and tail else model_id
+
+
+def is_excluded(fields: dict, model_id) -> bool:
+    """excluded_models names this model, directly or through the tier alias it maps."""
+    if not isinstance(model_id, str):
+        return False
+    excluded = set(fields.get("excluded_models", "").split(",")) - {""}
+    bare = re.sub(r"\[1m\]$", "", real_id(model_id), flags=re.I)
+    mapped = fields.get("env.ANTHROPIC_DEFAULT_" + bare.upper() + "_MODEL", bare)
+    return bare in excluded or re.sub(r"\[1m\]$", "", mapped, flags=re.I) in excluded
+
+
+def valid_model(model: str) -> bool:
+    return isinstance(model, str) and bool(model) and not any(c.isspace() or c == "=" for c in model)
+
+
+def _discovered_doc(fields: dict) -> dict:
+    try:
+        data = json.loads(fields.get("context_discovered", "{}"))
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict) or data.get("route") != route_fingerprint(fields):
+        return {}
+    return data
+
+
+def discovered_values(fields: dict) -> dict[str, int]:
+    models = _discovered_doc(fields).get("models")
+    if not isinstance(models, dict):
+        return {}
+    return {model: value for model, value in models.items()
+            if valid_model(model) and type(value) is int and value > 0}
+
+
+def discovered_sources(fields: dict) -> dict[str, dict]:
+    """Provenance for models filled by something other than a live probe/declared listing.
+
+    A `sources` entry never overrides `models` -- it is metadata describing an entry
+    already present there. Its absence for a model means "probe or gateway-declared",
+    which needs no record because that has always been the only source.
+    """
+    sources = _discovered_doc(fields).get("sources")
+    if not isinstance(sources, dict):
+        return {}
+    return {model: entry for model, entry in sources.items()
+            if valid_model(model) and isinstance(entry, dict) and isinstance(entry.get("source"), str)}
+
+
+def discovered_misses(fields: dict) -> dict[str, str]:
+    """Models the metadata lookup found no size for, with the date it last tried."""
+    misses = _discovered_doc(fields).get("misses")
+    if not isinstance(misses, dict):
+        return {}
+    return {model: day for model, day in misses.items() if valid_model(model) and isinstance(day, str)}
+
+
+def manual_values(fields: dict) -> dict[str, int]:
+    prefix = "context_window."
+    return {key[len(prefix):]: positive(value) for key, value in fields.items()
+            if key.startswith(prefix) and valid_model(key[len(prefix):]) and positive(value)}
+
+
+def mapped_target(fields: dict, bare: str) -> str:
+    """The id the shim serves for `bare`, or `bare` itself when nothing rewrites it.
+
+    The gateway's rewrite is final: it replaces the request's model with the map's
+    target before the request leaves, so the window that bounds the session is the
+    target's. Sizing the requested id instead hands a large-window alias mapped to a
+    small model the source's budget behind the target's wall -- the session then runs
+    past the wall with nothing left to compact into. The rules are the shim's own
+    (`gateway-shim` mapping_target/_resolve): ONE lookup on the wire id with any
+    `[1m]` marker stripped, and the target's own marker stripped before it is served.
+    A native route launches without a shim and drops the map, so there it decides
+    nothing -- the same gate the shell applies when it reads `model_map`.
+    """
+    base = (fields.get("base_url") or "").rstrip("/")
+    if base in ("", "https://api.anthropic.com"):
+        return bare
+    try:
+        mapping = json.loads(fields.get("model_map") or "{}")
+    except ValueError:
+        return bare
+    target = mapping.get(bare) if isinstance(mapping, dict) else None
+    if not isinstance(target, str) or not target:
+        return bare
+    return target[:-4] if target.endswith("[1m]") else target
+
+
+def profile_windows(profile: str) -> dict[str, int]:
+    try:
+        _, fields = read_conf(profile_path(profile))
+    except OSError:
+        return {}
+    return {**discovered_values(fields), **manual_values(fields)}
+
+
+@contextlib.contextmanager
+def profile_lock(profile: str):
+    path = profile_path(profile)
+    if str(path) in os.environ.get("CCPROTEUS_PROFILE_LOCK_HELD", "").split(":"):
+        yield
+        return
+    # The lock has no configuration data. Keep its inode stable across remove/recreate.
+    with path.with_name(path.name + ".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+# Canonical layout of a <profile>.conf. Every writer emits this order, so two
+# profiles of one type read the same way: connection, model choice, behaviour,
+# context, then machine-written state. A comment block travels with the key line
+# below it. What is valid is the shell reader's call (`_ccs_read`), not this one's;
+# an unrecognised line keeps its place after the known ones.
+CONF_SECTIONS = (
+    ("type", "provider", "email", "token", "base_url", "api_key", "adapter", "tag"),
+    ("model", "model_map", "effort", "effort.*",
+     "env.ANTHROPIC_DEFAULT_FABLE_MODEL", "env.ANTHROPIC_DEFAULT_OPUS_MODEL*",
+     "env.ANTHROPIC_DEFAULT_SONNET_MODEL", "env.ANTHROPIC_DEFAULT_HAIKU_MODEL",
+     "env.ANTHROPIC_SMALL_FAST_MODEL", "env.CLAUDE_CODE_SUBAGENT_MODEL", "excluded_models"),
+    ("private", "env.*"),
+    ("window_sources", "context_window.*"),
+    ("model_defaults", "context_discovered"),
+)
+
+
+def _conf_rank(key: str) -> tuple:
+    for section, patterns in enumerate(CONF_SECTIONS):
+        for position, pattern in enumerate(patterns):
+            if fnmatch.fnmatchcase(key, pattern):
+                return section, position, key if "*" in pattern else ""
+    return len(CONF_SECTIONS), 0, ""
+
+
+def canonical_conf(text: str) -> str:
+    entries, pending = [], []
+    for line in text.split("\n"):
+        bare = line.strip(" \t\r")
+        if not bare:
+            continue
+        if bare.startswith("#"):
+            pending.append(line)
+            continue
+        entries.append((_conf_rank(bare.partition("=")[0]), pending + [line]))
+        pending = []
+    entries.sort(key=lambda entry: entry[0])
+    out, last = [], None
+    for rank, lines in entries:
+        if last is not None and rank[0] != last:
+            out.append("")
+        out.extend(lines)
+        last = rank[0]
+    if pending:
+        out.extend([""] * bool(out) + pending)
+    return "\n".join(out) + "\n" if out else ""
+
+
+def replace_fields(path: Path, fields: dict[str, str | None], expected=None) -> bool:
+    text, _ = read_conf(path)
+    mode = stat.S_IMODE(path.stat().st_mode)
+    rows = [line for line in text.split("\n")
+            if line.strip(" \t\r").partition("=")[0] not in fields]
+    updated = "\n".join(rows)
+    for key, value in fields.items():
+        if value is not None:
+            if updated and not updated.endswith("\n"):
+                updated += "\n"
+            updated += f"{key}={value}\n"
+    updated = canonical_conf(updated)
+    if updated == text:
+        return True
+    import tempfile  # writes only; lookups skip its ~0.5s import under endpoint scanning
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".context-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as target:
+            os.fchmod(target.fileno(), mode)
+            target.write(updated)
+        if expected is not None:
+            # Also protects against non-locking editors before the atomic replace.
+            with path.open("rb") as current:
+                info = os.fstat(current.fileno())
+                now = (info.st_dev, info.st_ino, info.st_mtime_ns,
+                       hashlib.sha256(current.read()).hexdigest())
+            if now != expected:
+                return False
+        os.replace(temporary, path)
+        return True
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def save_discovered(profile: str, values: dict[str, int], expected, *, overwrite=True,
+                    sources: dict[str, dict] | None = None,
+                    misses: dict[str, str] | None = None) -> bool:
+    """`sources` tags entries in `values` as coming from something other than a live
+    probe/declared listing (currently only the offline models.dev catalogue fallback).
+    A model written here WITHOUT a matching `sources` entry is a probe/declared value
+    and clears any stale catalogue tag that model previously carried -- a verified
+    value always retires the catalogue guess it replaced, never coexists with it.
+    """
+    if expected is None:
+        return False
+    with profile_lock(profile):
+        if profile_identity(profile) != expected:
+            return False
+        path = profile_path(profile)
+        _, fields = read_conf(path)
+        merged = discovered_values(fields)
+        merged_sources = discovered_sources(fields)
+        valid = {model: value for model, value in values.items()
+                 if valid_model(model) and type(value) is int and value > 0}
+        tags = {model: entry for model, entry in (sources or {}).items() if model in valid}
+        merged = {**merged, **valid} if overwrite else {**valid, **merged}
+        if overwrite:
+            merged_sources = {**merged_sources, **tags}
+            for model in valid:
+                if model not in tags:
+                    merged_sources.pop(model, None)  # a fresh unsourced write is a real value
+        else:
+            merged_sources = {**tags, **merged_sources}
+        merged_sources = {model: entry for model, entry in merged_sources.items() if model in merged}
+        # A miss only stops the same lookup repeating; any value for the model retires it.
+        merged_misses = {model: day for model, day in {**discovered_misses(fields), **(misses or {})}.items()
+                         if model not in merged}
+        record = json.dumps({"route": route_fingerprint(fields), "models": merged,
+                             **({"sources": merged_sources} if merged_sources else {}),
+                             **({"misses": merged_misses} if merged_misses else {})},
+                            separators=(",", ":"))
+        return replace_fields(path, {"context_discovered": record}, expected)
+
+
+def context_value(profile: str, model: str) -> str:
+    if not valid_model(model):
+        raise ValueError("context model id is invalid")
+    _, fields = read_conf(profile_path(profile))
+    value = manual_values(fields).get(model)
+    return str(value) if value else "auto"
+
+
+def set_context(profile: str, model: str, value: str) -> None:
+    if not valid_model(model):
+        raise ValueError("context model id is invalid")
+    parsed = positive(value)
+    if value != "auto" and not parsed:
+        raise ValueError("context tokens must be a positive integer (at most 10 digits) or auto")
+    with profile_lock(profile):
+        expected = profile_identity(profile)
+        path = profile_path(profile)
+        _, fields = read_conf(path)
+        if fields.get("type") not in ("apikey", "proxy", "provider"):
+            raise ValueError("context overrides apply to routed profiles")
+        if not replace_fields(path, {f"context_window.{model}": str(parsed) if parsed else None}, expected):
+            raise OSError("profile changed while setting context; retry")
+
+
+def _stated(row):
+    for field in DECLARED_FIELDS:
+        value = row.get(field)
+        if type(value) is int and value > 0:
+            return value
+    return None
+
+
+def endpoint_window(model: str) -> int | None:
+    try:
+        rows = json.loads(os.environ.get("MODEL_WINDOW_ENDPOINT_JSON", "[]"))
+    except ValueError:
+        return None
+    if isinstance(rows, list):
+        for row in rows:
+            if isinstance(row, dict) and row.get("id") == model:
+                return _stated(row)
+    return None
+
+
+def _limit_window(limit) -> dict | None:
+    """{"value", "input", "context"} derived from a models.dev `limit` object, or None."""
+    if not isinstance(limit, dict):
+        return None
+    context = limit.get("context")
+    context = context if type(context) is int and context > 0 else None
+    input_limit = limit.get("input")
+    input_limit = input_limit if type(input_limit) is int and input_limit > 0 else None
+    # The operational budget is the tighter of the two: an input sub-limit below the
+    # combined context (e.g. a model whose combined window includes output tokens
+    # the input side excludes) means sending up to `context` tokens can still be
+    # refused. Recording only `context` would silently promise headroom that isn't
+    # there; recording only `input` would understate a model where they're equal.
+    if input_limit and context:
+        value = min(input_limit, context)
+    else:
+        value = input_limit or context
+    if not value:
+        return None
+    return {"value": value, "input": input_limit, "context": context}
+
+
+def canonical_catalogue_window(catalogue: dict, model_id: str, owned_by: str | None) -> dict | None:
+    """An exact canonical-leaf match in the flat models.dev models.json catalogue.
+
+    Tries "owned_by/model_id" as the canonical key first (the shape every entry in
+    this catalogue actually uses); if owned_by is absent/wrong, falls back to a bare
+    "*/model_id" search that is only trusted when exactly one canonical entry ends
+    with that leaf -- same ambiguity discipline as catalogue_window, just against a
+    provider-independent key space instead of api.json's per-provider nesting.
+    """
+    entry = None
+    if owned_by:
+        candidate = catalogue.get(f"{owned_by}/{model_id}")
+        if isinstance(candidate, dict):
+            entry = candidate
+    if entry is None:
+        suffix = f"/{model_id}"
+        matches = [value for key, value in catalogue.items()
+                   if key.endswith(suffix) and isinstance(value, dict)]
+        if len(matches) > 1:
+            return None  # An alias must not override conflicting exact identities.
+        if matches:
+            entry = matches[0]
+    if entry is not None:
+        window = _limit_window(entry.get("limit"))
+        if window:
+            return {**window, "source": "catalogue"}
+        # An exact match with no usable window (e.g. {"context": 0}) falls
+        # through to the family tier, same as a missing entry.
+        entry = None
+    if entry is None:
+        family_matches = [value for key, value in catalogue.items()
+                          if isinstance(value, dict) and value.get("family") == model_id
+                          and (not owned_by or key.startswith(owned_by + "/"))]
+        windows = [_limit_window(value.get("limit")) for value in family_matches]
+        values = {window["value"] for window in windows if window}
+        if len(values) == 1:
+            entry = next(value for value, window in zip(family_matches, windows) if window)
+        else:
+            return None
+    window = _limit_window(entry.get("limit"))
+    return {**window, "source": "catalogue"} if window else None
+
+
+def bundled_window(model):
+    try:
+        catalogue = json.loads(Path(__file__).with_name("model-catalogue.json").read_text()).get("models", {})
+    except (OSError, ValueError):
+        return None
+    found = canonical_catalogue_window(catalogue, model, None)
+    return found["value"] if found else None
+
+
+def resolve(profile: str, model: str) -> dict:
+    pin = positive(os.environ.get("CLAUDE_CODE_MAX_CONTEXT_TOKENS"))
+    if pin:
+        return {"window": pin, "send_id": model, "source": "conf"}
+    bare = model[:-4] if model.endswith("[1m]") else model
+    try:
+        _, fields = read_conf(profile_path(profile))
+    except OSError:
+        fields = {}
+    # The served id sizes the session; the requested id stays what the client sees.
+    # An unmapped model (or a native route) makes these the same string, so every
+    # lookup below is unchanged for it.
+    target = mapped_target(fields, bare)
+    manual = manual_values(fields)
+    # An explicit user pin wins, on the requested id first (a pin is a statement
+    # about what the user asked for) and then on the served id.
+    window = manual.get(bare)
+    if window is None:
+        window = manual.get(target)
+    source = "conf-manual"
+    if window is None:
+        discovered = discovered_values(fields)
+        matched = target if target in discovered else next(
+            (pattern for pattern in discovered if fnmatch.fnmatchcase(target, pattern)), None)
+        window = discovered.get(matched) if matched else None
+        tagged = discovered_sources(fields).get(matched) if matched else None
+        source = f"conf-discovered-{tagged['source']}" if tagged else "conf-discovered"
+    if window is None:
+        window, source = endpoint_window(target), "endpoint"
+    if window is None and fields.get("type") in ("apikey", "proxy", "provider"):
+        window, source = bundled_window(target), "catalogue-bundled"
+    record = {"window": window or CC_DEFAULT_WINDOW, "send_id": bare, "source": source if window else "default"}
+    if window is None:
+        record["unprobed"] = True
+        record["budget"] = UNKNOWN_BUDGET
+    if bare.startswith("claude-") and record["window"] >= ONE_M:
+        record["send_id"] = bare + "[1m]"
+    return record
+
+
+def record_fields(record: dict) -> list:
+    # Shell-friendly: "<window>\t<source>\t<budget>\t<send_id>" in one process,
+    # so a launch needs no second interpreter just to parse this JSON. The
+    # window is blanked for an unprobed model -- the fallback budget, not a
+    # number the caller would mistake for a real wall, is the fact that matters.
+    known = "" if record.get("unprobed") else record["window"]
+    return [str(known), str(record.get("source", "")), str(record.get("budget", "")),
+            str(record.get("send_id", ""))]
+
+
+def _archive(path: Path) -> None:
+    backup = path.with_name(path.name + ".migrated")
+    number = 1
+    while backup.exists():
+        backup = path.with_name(path.name + f".migrated.{number}")
+        number += 1
+    path.rename(backup)
+
+
+def _cache_entries(lines):
+    for line in lines:
+        model, sep, value = line.partition("\t")
+        if sep and valid_model(model) and positive(value):
+            yield (model[:-4] if model.endswith("[1m]") else model), int(value)
+
+
+def migration_preview() -> dict:
+    state = _state_dir()
+    legacy = state / "model-registry"
+    if not legacy.exists() and (state / "model-registry.conf").exists():
+        legacy = state / "model-registry.conf"
+    profiles = {path.stem: {"scoped": 0, "cached": 0} for path in state.glob("*.conf")
+                if not path.is_symlink() and re.fullmatch(r"[A-Za-z0-9_]+", path.stem)}
+    attributed = set()
+    cache_root = _state_dir() / "profiles"
+    if not cache_root.exists():
+        cache_root = Path.home() / ".claude-profiles"  # pre-migration cache recovery
+    for profile in profiles:
+        cache = cache_root / profile / "cache/context-window"
+        if cache.is_file() and not cache.is_symlink():
+            for model, _ in _cache_entries(cache.read_text().splitlines()):
+                profiles[profile]["cached"] += 1
+                attributed.add(model)
+    unresolved = 0
+    if legacy.exists():
+        if legacy.is_symlink():
+            raise OSError("legacy registry is a symlink; migration refused")
+        for line in legacy.read_text().splitlines():
+            key, sep, value = line.strip().partition("=")
+            if not sep or key.startswith("#") or not positive(value):
+                continue
+            scope, _, _ = key.partition(":")
+            if scope in profiles and key.startswith(scope + ":"):
+                profiles[scope]["scoped"] += 1
+            elif key not in attributed:
+                unresolved += 1
+    return {"source": str(legacy), "profiles": profiles, "unattributed_entries": unresolved}
+
+
+def migrate() -> int:
+    state = _state_dir()
+    if not state.is_dir():
+        return 0
+    with (state / ".context-migration.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return _migrate_locked()
+
+
+def _migrate_locked() -> int:
+    state = _state_dir()
+    legacy = state / "model-registry"
+    if not legacy.exists() and (state / "model-registry.conf").exists():
+        legacy = state / "model-registry.conf"
+    cache_root = _state_dir() / "profiles"
+    if not cache_root.exists():
+        cache_root = Path.home() / ".claude-profiles"  # pre-migration cache recovery
+    caches = list(cache_root.glob("*/cache/context-window"))
+    if not legacy.exists() and not caches:
+        return 0
+    entries = []
+    if legacy.exists():
+        if legacy.is_symlink():
+            raise OSError("legacy registry is a symlink; migration refused")
+        for line in legacy.read_text().splitlines():
+            key, sep, value = line.strip().partition("=")
+            if sep and not key.startswith("#") and positive(value):
+                entries.append((key, int(value)))
+    profiles = {}
+    for conf in state.glob("*.conf"):
+        if conf.name == "model-registry.conf" or conf.is_symlink() or not re.fullmatch(r"[A-Za-z0-9_]+", conf.stem):
+            continue
+        _, fields = read_conf(conf)
+        if fields.get("type") in ("apikey", "proxy", "provider", "token", "sub"):
+            profiles[conf.stem] = conf
+    handled_caches = []
+    attributed = set()
+    for cache in caches:
+        if cache.is_symlink():
+            raise OSError(f"legacy context cache is a symlink; migration refused: {cache}")
+    for profile in profiles:
+        expected = profile_identity(profile)
+        cache = cache_root / profile / "cache/context-window"
+        values = {}
+        if cache.is_file() and not cache.is_symlink():
+            values = dict(_cache_entries(cache.read_text().splitlines()))
+            attributed.update(values)
+            handled_caches.append(cache)
+        # A legacy bare row has no route provenance. Only the profile's own cache
+        # can attribute it; scoped rows supersede that profile-local fallback.
+        for key, value in entries:
+            if key.startswith(profile + ":"):
+                values[key[len(profile) + 1:]] = value
+                attributed.add(key)
+        if values and not save_discovered(profile, values, expected, overwrite=False):
+            print(f"Migration paused: profile '{profile}' changed. Legacy files retained; retry migration.", file=sys.stderr)
+            return 1
+    unresolved = [key for key, _ in entries if key not in attributed]
+    if unresolved:
+        print(f"{len(unresolved)} legacy context entries have no profile attribution; retained in backup, not applied.", file=sys.stderr)
+    for cache in handled_caches:
+        _archive(cache)
+    if legacy.exists():
+        _archive(legacy)
+    print(f"Context migration complete: {len(profiles)} profile(s) checked. Originals retained as .migrated backups.", file=sys.stderr)
+    return 0
+
+
+def recover_cache_backups() -> int:
+    """Explicit recovery only; old backups never become an automatic live source."""
+    cache_root = _state_dir() / "profiles"
+    if not cache_root.exists():
+        cache_root = Path.home() / ".claude-profiles"  # pre-migration cache recovery
+    for conf in _state_dir().glob("*.conf"):
+        if conf.is_symlink() or not re.fullmatch(r"[A-Za-z0-9_]+", conf.stem):
+            continue
+        cache = cache_root / conf.stem / "cache/context-window.migrated"
+        if not cache.is_file() or cache.is_symlink():
+            continue
+        values = dict(_cache_entries(cache.read_text().split("\n")))
+        if values and not save_discovered(conf.stem, values, profile_identity(conf.stem), overwrite=False):
+            return 1
+        print(f"{conf.stem}: processed {len(values)} backup entries; existing limits and backup retained.", file=sys.stderr)
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    try:
+        if argv[1:] == ["--recover-cache-backups"]:
+            return recover_cache_backups()
+        if argv[1:] == ["--migrate", "--check"]:
+            print(json.dumps(migration_preview(), sort_keys=True))
+            return 0
+        if argv[1:] == ["--migrate"]:
+            def expired(signum, frame):
+                raise TimeoutError("context migration exceeded 30 seconds; retry to finish from retained backups")
+            previous = signal.signal(signal.SIGALRM, expired)
+            signal.setitimer(signal.ITIMER_REAL, 30)
+            try:
+                return migrate()
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                signal.signal(signal.SIGALRM, previous)
+        if len(argv) >= 4 and argv[1] == "--locked":
+            profiles = sorted(set(argv[2].split(",")))
+            with contextlib.ExitStack() as locks:
+                for profile in profiles:
+                    locks.enter_context(profile_lock(profile))
+                env = {**os.environ, "CCPROTEUS_PROFILE_LOCK_HELD": ":".join(str(profile_path(profile)) for profile in profiles)}
+                import subprocess
+                return subprocess.run(argv[3:], env=env).returncode
+        if len(argv) in (4, 5) and argv[1] == "--context":
+            profile, model = argv[2:4]
+            if len(argv) == 4:
+                print(context_value(profile, model))
+            else:
+                set_context(profile, model, argv[4])
+                print(f"{profile}: {model} context {'set to automatic' if argv[4] == 'auto' else 'set to ' + argv[4] + ' tokens'} (new sessions)")
+                value = positive(argv[4])
+                if value and not 100000 <= value <= ONE_M:
+                    print("Limit saved. Claude Code's autoCompactWindow setting supports 100,000–1,000,000 tokens; this value is outside that range.", file=sys.stderr)
+            return 0
+        if len(argv) == 3 and argv[1] == "--ceiling":
+            values = [value for model, value in profile_windows(argv[2]).items() if not model.startswith("claude-")]
+            if values:
+                print(max(values))
+            return 0
+        if len(argv) == 4 and argv[1] == "--fields":
+            # record_fields keeps the shape in one place: the launch's one-run
+            # window facts import this module and read the same four fields.
+            record = resolve(argv[2], argv[3])
+            print("\t".join(record_fields(record)))
+            return 0
+        if len(argv) != 3:
+            print("usage: model-window <profile> <model> | --context <profile> <model> [tokens|auto] | --migrate", file=sys.stderr)
+            return 2
+        record = resolve(argv[1], argv[2])
+        if record.get("unprobed"):
+            print(f"model-window: no known context limit for {argv[2]} on {argv[1]}; using {CC_DEFAULT_WINDOW:,}-token fallback. Run: ccproteus probe {argv[1]}", file=sys.stderr)
+        print(json.dumps(record))
+        return 0
+    except KeyboardInterrupt:
+        print("Cancelled.", file=sys.stderr)
+        return 130
+    except (OSError, ValueError) as exc:
+        print(f"model-window: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

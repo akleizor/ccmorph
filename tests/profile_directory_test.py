@@ -1,0 +1,238 @@
+"""Profile-home migration moves inodes, preserves legacy access, refuses collisions."""
+import json
+import os
+from pathlib import Path
+import subprocess
+
+from support import HANG_TIMEOUT
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def run(home, state, script='_ccs_secure_dirs', extra=None):
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(('CCPROTEUS_', '_CCPROTEUS_', 'CLAUDE_', 'ANTHROPIC_'))}
+    env.update(HOME=str(home), ZDOTDIR=str(home), CCPROTEUS_STATE_DIR=str(state),
+               CCPROTEUS_LIB_DIR=str(ROOT))
+    env.update(extra or {})
+    return subprocess.run(['zsh', '-fc', 'source "$1"; ' + script, '_',
+                           str(ROOT / 'ccproteus.sh')], env=env, text=True,
+                          capture_output=True, timeout=HANG_TIMEOUT)
+
+
+def test_migration_preserves_inodes_symlinks_and_old_session_access(tmp_path):
+    home = tmp_path
+    state = home / '.config/ccproteus'
+    old = home / '.claude-profiles'
+    profile = old / 'demo'
+    profile.mkdir(parents=True, mode=0o700)
+    fixture = profile / 'config.json'
+    fixture.write_text('{"fixture":"synthetic-auth-state"}')
+    fixture.chmod(0o600)
+    inode = fixture.stat().st_ino
+    shared = home / '.claude/projects'
+    shared.mkdir(parents=True)
+    (profile / 'projects').symlink_to(shared, target_is_directory=True)
+    result = run(home, state)
+    assert result.returncode == 0, result.stderr
+    target = state / 'profiles'
+    assert old.is_symlink() and old.resolve() == target
+    assert (target / 'demo/config.json').stat().st_ino == inode
+    assert (target / 'demo/config.json').stat().st_mode & 0o777 == 0o600
+    assert (target / 'demo/projects').readlink() == shared
+    # Simulate an already-running session retaining the old absolute pathname.
+    (old / 'demo/session-state').write_text('live')
+    assert (target / 'demo/session-state').read_text() == 'live'
+    before = target.stat().st_mtime_ns
+    assert run(home, state).returncode == 0
+    assert target.stat().st_mtime_ns == before
+
+
+def plugin_indexes(home, state):
+    plugins = home / '.claude/plugins'
+    market = plugins / 'marketplaces/example'
+    cache = plugins / 'cache/example/tool/1.2.3'
+    market.mkdir(parents=True)
+    cache.mkdir(parents=True)
+    known = {
+        'example': {
+            'source': {'source': 'git', 'url': 'git@example.invalid:owner/repo.git'},
+            'installLocation': str(home / '.claude-profiles/demo/plugins/marketplaces/example'),
+            'unknown': {'keep': True},
+        },
+        'external': {
+            'source': {'source': 'directory', 'path': '/opt/external'},
+            'installLocation': '/opt/external',
+        },
+        'missing': {
+            'source': {'source': 'github', 'repo': 'owner/missing'},
+            'installLocation': str(state / 'profiles/demo/plugins/marketplaces/missing'),
+        },
+    }
+    installed = {
+        'version': 2,
+        'plugins': {
+            'tool@example': [{
+                'scope': 'project',
+                'projectPath': '/work/project',
+                'installPath': str(state / 'profiles/demo/plugins/cache/example/tool/1.2.3'),
+                'version': '1.2.3',
+                'unknown': 'keep',
+            }],
+            'missing@example': [{
+                'scope': 'user',
+                'installPath': str(home / '.claude-profiles/demo/plugins/cache/example/missing/9'),
+                'version': '9',
+            }],
+        },
+    }
+    (plugins / 'known_marketplaces.json').write_text(json.dumps(known, indent=2))
+    (plugins / 'installed_plugins.json').write_text(json.dumps(installed, indent=2))
+    return plugins, known, installed
+
+
+def test_plugin_index_paths_follow_shared_plugin_topology(tmp_path):
+    state = tmp_path / '.config/ccproteus'
+    plugins, known_before, installed_before = plugin_indexes(tmp_path, state)
+
+    result = run(tmp_path, state)
+    assert result.returncode == 0, result.stderr
+
+    known = json.loads((plugins / 'known_marketplaces.json').read_text())
+    installed = json.loads((plugins / 'installed_plugins.json').read_text())
+    assert known['example']['installLocation'] == str(plugins / 'marketplaces/example')
+    assert installed['plugins']['tool@example'][0]['installPath'] == str(
+        plugins / 'cache/example/tool/1.2.3')
+    assert known['example']['source'] == known_before['example']['source']
+    assert known['example']['unknown'] == {'keep': True}
+    assert known['external'] == known_before['external']
+    assert known['missing'] == known_before['missing']
+    assert installed['plugins']['tool@example'][0]['scope'] == 'project'
+    assert installed['plugins']['tool@example'][0]['projectPath'] == '/work/project'
+    assert installed['plugins']['tool@example'][0]['unknown'] == 'keep'
+    assert installed['plugins']['missing@example'] == installed_before['plugins']['missing@example']
+
+    paths = [plugins / 'known_marketplaces.json', plugins / 'installed_plugins.json']
+    snapshot = [(p.read_bytes(), p.stat().st_mtime_ns) for p in paths]
+    assert run(tmp_path, state).returncode == 0
+    assert [(p.read_bytes(), p.stat().st_mtime_ns) for p in paths] == snapshot
+
+
+def test_malformed_plugin_index_does_not_block_profile_setup(tmp_path):
+    state = tmp_path / '.config/ccproteus'
+    plugins = tmp_path / '.claude/plugins'
+    plugins.mkdir(parents=True)
+    malformed = plugins / 'known_marketplaces.json'
+    malformed.write_text('{not json')
+
+    result = run(tmp_path, state)
+    assert result.returncode == 0, result.stderr
+    assert malformed.read_text() == '{not json'
+    assert (state / 'profiles').is_dir()
+
+
+def test_doctor_does_not_normalize_plugin_indexes(tmp_path):
+    state = tmp_path / '.config/ccproteus'
+    state.mkdir(parents=True)
+    (state / 'demo.conf').write_text('type=token\ntoken=synthetic\n')
+    plugins, _, _ = plugin_indexes(tmp_path, state)
+    before = (plugins / 'known_marketplaces.json').read_bytes()
+
+    run(tmp_path, state, 'ccproteus doctor demo')
+    assert (plugins / 'known_marketplaces.json').read_bytes() == before
+
+
+def test_fresh_install_uses_state_profiles_without_legacy_alias(tmp_path):
+    state = tmp_path / 'custom-state'
+    result = run(tmp_path, state, '_ccs_secure_dirs; print -r -- "$_CCPROTEUS_PROFILE_DIRS"')
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == str(state / 'profiles')
+    assert (state / 'profiles').is_dir()
+    assert not (tmp_path / '.claude-profiles').exists()
+
+
+def test_doctor_observes_legacy_home_without_migrating(tmp_path):
+    state = tmp_path / '.config/ccproteus'
+    state.mkdir(parents=True)
+    (state / 'demo.conf').write_text('type=token\ntoken=synthetic\n')
+    old = tmp_path / '.claude-profiles'
+    profile = old / 'demo'
+    profile.mkdir(parents=True)
+    (profile / 'settings.json').write_text('{}')
+    result = run(tmp_path, state, 'ccproteus doctor demo')
+    assert str(profile) in result.stdout
+    assert old.is_dir() and not old.is_symlink()
+    assert not (state / 'profiles').exists()
+    assert not (state / '.profile-home-migration.lock').exists()
+
+
+def test_collision_refuses_without_merging_or_overwriting(tmp_path):
+    state = tmp_path / '.config/ccproteus'
+    old = tmp_path / '.claude-profiles'
+    target = state / 'profiles'
+    old.mkdir()
+    target.mkdir(parents=True)
+    (old / 'old').write_text('old')
+    (target / 'new').write_text('new')
+    result = run(tmp_path, state)
+    assert result.returncode != 0
+    assert 'nothing moved' in result.stderr
+    assert not old.is_symlink()
+    assert (old / 'old').read_text() == 'old'
+    assert (target / 'new').read_text() == 'new'
+
+
+def test_concurrent_migration_converges_on_one_directory(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    state = tmp_path / '.config/ccproteus'
+    old = tmp_path / '.claude-profiles'
+    old.mkdir()
+    (old / 'fixture').write_text('one')
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        results = list(pool.map(lambda _: run(tmp_path, state), range(3)))
+    assert all(r.returncode == 0 for r in results), [r.stderr for r in results]
+    assert old.is_symlink() and (state / 'profiles/fixture').read_text() == 'one'
+
+
+def test_unrelated_legacy_symlink_refused(tmp_path):
+    state = tmp_path / '.config/ccproteus'
+    other = tmp_path / 'unrelated'
+    other.mkdir()
+    old = tmp_path / '.claude-profiles'
+    old.symlink_to(other, target_is_directory=True)
+    result = run(tmp_path, state)
+    assert result.returncode != 0
+    assert old.readlink() == other
+    assert not (state / 'profiles').exists()
+
+
+def test_cross_device_move_refused_without_copy(tmp_path):
+    state = tmp_path / '.config/ccproteus'
+    old = tmp_path / '.claude-profiles'
+    old.mkdir()
+    fixture = old / 'fixture'
+    fixture.write_text('untouched')
+    inode = fixture.stat().st_ino
+    hooks = tmp_path / 'python-hooks'
+    hooks.mkdir()
+    (hooks / 'sitecustomize.py').write_text(
+        'import os, errno\ndef fail(*a, **k): raise OSError(errno.EXDEV, "cross-device")\nos.rename=fail\n')
+    result = run(tmp_path, state, extra={'PYTHONPATH': str(hooks)})
+    assert result.returncode != 0
+    assert fixture.stat().st_ino == inode and fixture.read_text() == 'untouched'
+    assert not (state / 'profiles').exists()
+
+
+def test_failed_alias_creation_restores_original_directory(tmp_path):
+    state = tmp_path / '.config/ccproteus'
+    old = tmp_path / '.claude-profiles'
+    old.mkdir()
+    (old / 'fixture').write_text('untouched')
+    hooks = tmp_path / 'python-hooks'
+    hooks.mkdir()
+    (hooks / 'sitecustomize.py').write_text(
+        'import os\ndef fail(*a, **k): raise OSError("simulated alias failure")\nos.symlink=fail\n')
+    result = run(tmp_path, state, extra={'PYTHONPATH': str(hooks)})
+    assert result.returncode != 0
+    assert not old.is_symlink() and (old / 'fixture').read_text() == 'untouched'
+    assert not (state / 'profiles').exists()

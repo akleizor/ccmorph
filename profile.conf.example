@@ -1,0 +1,61 @@
+# ccproteus profile template: ~/.config/ccproteus/<name>.conf
+#
+# Prefer `ccproteus add <name>` and `ccproteus config <name>`; they write this file.
+# Edit by hand only for the advanced keys below, then run `ccproteus inspect <name>`.
+#
+# Rules (enforced when the profile is read, by _ccs_read in ccproteus-store.zsh):
+#   - one key=value per line; `#` starts a comment line; no blank or `null` values
+#   - each key appears once; an unknown key, or a key not valid for the profile's
+#     type, refuses the profile
+#   - set only what you need; an absent key means the default
+#
+# Layout: ccproteus rewrites the file into the five sections below, in this order,
+# whenever it saves (config, set, launch, probe). A comment block stays attached
+# to the key line under it.
+
+# ── 1. Connection — which account and endpoint ───────────────────────────────
+# type        sub | token | apikey | provider        (required; `proxy` = old apikey)
+# provider    provider:  provider name, e.g. codex
+# email       sub:       account email (the profile's identity)
+# token       token:     long-lived OAuth token
+# base_url    apikey:    endpoint; omit for the native Anthropic API
+# api_key     apikey:    key presented to that endpoint
+# adapter     apikey:    true | false — force or forbid the translator
+# tag         apikey:    label for this route in the model picker
+type=apikey
+base_url=https://gateway.example/
+api_key=REPLACE_ME
+
+# ── 2. Model choice — what answers ───────────────────────────────────────────
+# model                    saved default model
+# model_map                apikey: JSON object of wire model IDs to gateway IDs
+#                          e.g. {"claude-sonnet-5-5":"gpt-6.1-sol"}
+#                          applied by this profile's adapter only; absent = unchanged
+#                          keys are wire model IDs, matched after the context suffix is
+#                          stripped; a [1m] key is refused at launch as unmatchable
+# effort                   low | medium | high | xhigh | max
+# effort.<model>           one model's effort override
+# env.ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL
+#                          model a tier alias resolves to on this route
+# env.ANTHROPIC_SMALL_FAST_MODEL, env.CLAUDE_CODE_SUBAGENT_MODEL
+#                          helper and subagent models
+# excluded_models          comma-separated exact ids hidden from the picker
+#                          (apikey, provider)
+model=claude-opus-5-5
+effort=medium
+
+# ── 3. Behaviour — other launch environment ──────────────────────────────────
+# monthly_budget_usd=<n>  positive number; Stark's spend cap, ccproteus keeps it unused
+# private=1    run from a throwaway view: config and settings are linked in,
+#              transcripts, prompt history and session state are deleted on exit
+# env.<NAME>   only names in _CCPROTEUS_PROFILE_ENV (ccproteus-base.zsh); sub and token
+#              profiles accept the section 2 model keys only
+
+# ── 4. Context ──────────────────────────────────────────────────────────────
+# window_sources           shipped catalogues to size this route by
+#                          (window-sources.json); apikey, provider
+# context_window.<model>   pinned token limit; beats discovery
+
+# ── 5. Machine-written — never edit ─────────────────────────────────────────
+# model_defaults=1         this profile owns its model defaults (written once)
+# context_discovered={...} limits `ccproteus probe` found for this route

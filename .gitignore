@@ -1,0 +1,105 @@
+# What stays on this machine, and what ships.
+#
+# This directory is both the source checkout and the runtime install, so the two
+# kinds of file sit side by side: everything tracked is the product, everything
+# below is yours. The distinction is load-bearing in three ways — a credential
+# must never reach history, `make release` builds only from tracked files, and a
+# worktree-sweeping tool reads an unignored stray as an edit to move aside.
+#
+# That last one is not hypothetical. v1.4.0 renamed `model-registry.conf` to
+# `model-registry`; the `*.conf` rule had been the only thing keeping it out of
+# git, so the new name was ignored by nothing, a reconcile read it as a stray,
+# and 52 probed context windows went to a quarantine branch. The rule landed
+# nine minutes after the loss.
+#
+# So: a state file's name and its ignore rule are one fact.
+# `test_every_state_file_is_gitignored` asserts they agree, in both directions —
+# state must be ignored, shipped components must not be. Add a rule here and add
+# the path there, or the test is the thing that fails instead of your data.
+
+# ── Credentials ──────────────────────────────────────────────────────────────
+# One profile per file, holding an API key, an OAuth token, or an account email.
+# Mode 0600, created by `ccproteus add`, never tracked in this repository's
+# history — verified by `git log --all --diff-filter=A`.
+*.conf
+# Per-profile system prompts: profile-local, and prompts can quote private work.
+*.system.md
+
+# ── Machine-local state ──────────────────────────────────────────────────────
+# Probed context ceilings, written by `ccproteus probe`. Machine-local because
+# a ceiling is a property of the ROUTE this host takes to a gateway; another
+# host's registry is wrong here, sometimes dangerously (too high means a session
+# dies mid-conversation instead of compacting).
+model-registry
+# Sidecar lock serializing concurrent registry writes (refresh-model-registry).
+model-registry.lock
+# Single-profile context writes and migration coordination contain no configuration.
+*.conf.lock
+.context-migration.lock
+.profile-home-migration.lock
+# Recoverable legacy context sources, never active configuration.
+model-registry*.migrated*
+# Which profile a bare `claude` uses.
+active
+# Mid-session relay handoff: written by `ccrelay`, consumed by the next launch.
+.reswitch.*
+# Host opt-ins, sourced by ccproteus.sh at load. Trusted executable zsh, and the
+# one seam where a machine's own tooling turns on behaviour the product knows
+# nothing about — so by construction it is never shippable.
+local.sh
+
+# ── Runtime output ───────────────────────────────────────────────────────────
+# Rotated in place by _ccs_log. Diagnostics, not state: safe to delete.
+ccproteus.log
+# Snapshots taken before a risky edit, and profile dirs left behind by a deleted
+# conf. Both hold credential-shaped content, so they are ignored rather than
+# tidied away by hand.
+backups/
+orphaned-profiles/
+# Provider OAuth credentials (cliproxyapi auth dirs, one per provider profile).
+# Never committable — this is the whole reason auth/ has its own 0700 root.
+auth/
+# Claude-compatible per-profile runtime homes, including private authentication.
+profiles/
+# Hand-made copies of the runtime, from before a risky change. Two exist on the
+# author's machine and one is mode 0600; a narrower `ccproteus.sh.bak-*` rule left
+# every other spelling exposed, so match the suffix wherever it lands. Verified by
+# swapping this file in and watching both reappear as untracked.
+*.bak
+*.bak-*
+*.orig
+*.rej
+*.sync-bak
+
+# ── Build and test artifacts ─────────────────────────────────────────────────
+# Release tarballs from `make release`. Built by `git archive` at a tag, so they
+# are reproducible from history and never worth keeping.
+dist/
+# Python bytecode and pytest state.
+__pycache__/
+.pytest_cache/
+
+# ── Agent and editor scratch ─────────────────────────────────────────────────
+# The project skill under .claude/skills ships; a global `.claude/` ignore must
+# not hide it. Only the machine-local entries below stay out.
+!.claude/
+# Claude Code session worktrees: lanes live here and are reaped after promotion.
+.claude/worktrees/
+# Scheduled-task lockfile, per-machine.
+.claude/scheduled_tasks.lock
+# Background task receipts and logs are local verification evidence, not product.
+.pi/tasks/
+# .git-worktree-policy is committed integration intent, not machine-local state.
+# Editor and OS droppings, ignored so they cannot become an accidental commit in
+# a directory where `git add -A` is one keystroke from a credential.
+.officecli/
+.DS_Store
+*.swp
+*~
+.impeccable/hook.cache.json
+
+# ccproteus-rc-hosts folder list: machine-local (paths, route choice)
+rc-hosts
+
+# ccproteus-rc: the folder's kept Remote Control host
+.claude/rc-host.json

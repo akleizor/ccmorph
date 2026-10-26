@@ -1,0 +1,14 @@
+{
+  "contract": "Each source is a provider's own published model catalogue. It applies only to profiles that name it in window_sources=, and only to listed models whose owned_by is in owned_by. rows is the key holding the model list, id the field naming each model, window the size to use. When default is set and the gateway declares exactly that value, the gateway is echoing the provider's default and a larger window replaces it; a gateway declaring anything else keeps its own value, and a model the gateway declares nothing for is left to the catalogue estimate. Manual overrides always win. An unreachable or malformed source changes nothing.",
+  "sources": [
+    {
+      "name": "codex",
+      "owned_by": ["openai"],
+      "url": "https://models.router-for.me/codex_client_models.json",
+      "rows": "models",
+      "id": "slug",
+      "default": "context_window",
+      "window": "max_context_window"
+    }
+  ]
+}

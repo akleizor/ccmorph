@@ -1,0 +1,23 @@
+#!/bin/sh
+# Scripted stand-in for the claude CLI, used only by the README recording.
+# No network: it keeps a tiny transcript in $HOME so a hopped session "resumes".
+t=$HOME/.demo-transcript
+p=$(basename "$CLAUDE_CONFIG_DIR")
+case $p in work) c=36 ;; *) c=35 ;; esac
+tag() { printf '\033[2m  answered on \033[0m\033[%sm%s\033[0m\n' "$c" "$p"; }
+printf '\033[2J\033[H\n  \033[1mClaude Code\033[0m   profile: \033[1;%sm%s\033[0m\n\n' "$c" "$p"
+[ -f "$t" ] && cat "$t"
+n=$(grep -c '^> ' "$t" 2>/dev/null || echo 0)
+while printf '> ' && read -r line; do
+  case $line in
+    '#'*|'') ;;
+    '! '*) sh -c "${line#! }" ;;
+    /exit) exit 0 ;;
+    *)
+      n=$((n+1))
+      if [ "$n" = 1 ]; then r="Done. I added a --verbose flag and updated the help text."
+      else r="Added a test for --verbose. All tests pass."; fi
+      printf '\n  %s\n' "$r"; tag; echo
+      { printf '> %s\n\n  %s\n' "$line" "$r"; tag; echo; } >> "$t" ;;
+  esac
+done

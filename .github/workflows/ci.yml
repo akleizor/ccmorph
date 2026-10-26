@@ -1,0 +1,148 @@
+# CI for ccproteus.
+#
+# There was none, so every green suite was green only because someone ran it by
+# hand on one macOS machine. The tool claims macOS and Linux, and the two places
+# it has actually broken on Linux (a /bin/zsh shebang, a BSD-only `ln` flag) were
+# both invisible to a suite that only ever ran here.
+#
+# `shellcheck` is deliberately absent: it parses POSIX/bash and misreads zsh's
+# own syntax — glob qualifiers like (N), ${(f)} splitting, ${...:A} — so it would
+# report noise, not defects. `zsh -n` is the real syntax gate for zsh; the suite
+# is the only thing that catches semantic mistakes.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y zsh
+      - name: parse every zsh file
+        run: |
+          for f in ccproteus ccproteus.sh ccproteus-*.zsh install.sh \
+                   tests/ccproteus_test.zsh tests/install_test.zsh; do
+            zsh -n "$f" && echo "ok  $f"
+          done
+      - name: byte-compile every python helper
+        run: |
+          python3 -m py_compile ccproteus-adapter gateway-shim model-window \
+                                refresh-model-registry tests/*.py
+      - name: shebangs must find their interpreter via env
+        # #!/bin/zsh does not exist where zsh lives in /usr/bin, and both of these
+        # run DIRECTLY as executables — install.sh puts `ccproteus` on PATH — so
+        # their shebangs are load-bearing on any machine that is not macOS.
+        run: |
+          for f in ccproteus install.sh; do
+            head -1 "$f" | grep -qx '#!/usr/bin/env zsh' \
+              || { echo "$f: shebang must be '#!/usr/bin/env zsh'"; exit 1; }
+          done
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both libcs (glibc/musl differences are real for zsh globbing and
+        # coreutils flags) and macOS, which is where BSD tools live.
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: install zsh
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y zsh
+          fi
+          zsh --version
+      - name: zsh suite
+        run: zsh tests/ccproteus_test.zsh
+      - name: installer suite
+        run: zsh tests/install_test.zsh
+      - name: python suite
+        run: python3 -m pytest tests/ -q
+
+  python-floor:
+    # The floor is 3.8, set by a walrus in gateway-shim. Prove the helpers still
+    # import there — the failure this guards against surfaced days after install,
+    # inside a child process, as a bare SyntaxError.
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.8", "3.12", "3.13"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: |
+          python -m pip install "backports.zoneinfo; python_version < '3.9'"
+          python -m py_compile ccproteus-adapter gateway-shim model-window \
+                               refresh-model-registry
+          python -m pytest tests/ -q
+
+  install-check:
+    # The real installer, run as a real user against a throwaway $HOME — not the
+    # suite's harness. Catches anything that only shows up on a first install.
+    # Each runner is a fresh VM, so on macOS this is the clean-machine check:
+    # nothing from the author's Mac (Homebrew extras, ~/.agents, old state).
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh python3 curl
+      - name: stub the claude CLI (the installer requires it, npm is not the point here)
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          printf '#!/bin/sh\necho "claude 0.0.0-stub"\n' > "$HOME/.local/bin/claude"
+          chmod +x "$HOME/.local/bin/claude"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: install non-interactively, then verify what it placed
+        run: |
+          touch "$HOME/.zshrc"
+          ./install.sh </dev/null
+          # No shell wiring: the startup file must be untouched.
+          grep -qF 'ccproteus' "$HOME/.zshrc" && exit 1
+          test -r "$HOME/.config/ccproteus/ccproteus.sh"
+          test -x "$HOME/.local/bin/ccproteus"
+      - name: the command runs in a shell that sourced nothing
+        run: sh -c 'ccproteus --version'
+      - name: bash and sh must not crash on the installer
+        # It is zsh, but people type `bash install.sh`; it must re-exec, not die
+        # with a message about a variable that does not exist.
+        run: |
+          bash ./install.sh
+          sh ./install.sh
+      - name: uninstall leaves profiles alone
+        run: |
+          ./install.sh --uninstall
+          test -e "$HOME/.local/bin/ccproteus" && exit 1
+          test -d "$HOME/.config/ccproteus"
+
+  release-artifact:
+    # A release tarball must come from `git archive` at a tag, never a working
+    # tree: this project's working directory doubles as its author's live install,
+    # so a tree-built tarball would ship real credentials. Prove the artifact is
+    # clean on every run, not only at release time.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - run: sudo apt-get update && sudo apt-get install -y zsh
+      - name: build from HEAD the way make release builds from a tag
+        run: |
+          git archive --format=tar.gz --prefix=ccproteus/ -o /tmp/probe.tar.gz HEAD
+          if tar tzf /tmp/probe.tar.gz \
+             | grep -E '\.conf$|/(active|local\.sh|model-registry)$'; then
+            echo "release artifact carries live state"; exit 1
+          fi
+          echo "artifact clean"
