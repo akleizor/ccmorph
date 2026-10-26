@@ -778,7 +778,7 @@ ccproteus() {
     add)
       if [[ -z "${2:-}" && -t 0 ]]; then
         local _new_name
-        ccs_ui_input 'New profile name: ' || return 1
+        ccp_ui_input 'New profile name: ' || return 1
         _new_name="$REPLY"
         set -- add "$_new_name"
       fi
@@ -809,10 +809,10 @@ ccproteus() {
         _type_rows+=$'\n'"$_prov"$'\t'"$REPLY"$'\t'"Sign in with your browser"
       done
       if [[ -t 0 ]]; then
-        choice=$(ccs_ui_select native "Sign-in method — $2" "$_type_rows") || return 1
+        choice=$(ccp_ui_select native "Sign-in method — $2" "$_type_rows") || return 1
       else
-        ccs_ui_list "Sign-in method — $2" "$_type_rows"
-        ccs_ui_input '> ' || return 1
+        ccp_ui_list "Sign-in method — $2" "$_type_rows"
+        ccp_ui_input '> ' || return 1
         choice="$REPLY"
       fi
 
@@ -912,7 +912,7 @@ ccproteus() {
         2|token|oauth_token|oauth-token)
           local token
 
-          ccs_ui_input "Paste token for $2 (hidden): " secret || return 1
+          ccp_ui_input "Paste token for $2 (hidden): " secret || return 1
           token="$REPLY"; REPLY=''
 
           [[ -n "$token" ]] || {
@@ -947,7 +947,7 @@ ccproteus() {
         3|apikey|api_key|api-key)
           local _ak_key _ak_url _ak_conf
 
-          ccs_ui_input "API key for $2 (hidden): " secret || return 1
+          ccp_ui_input "API key for $2 (hidden): " secret || return 1
           _ak_key="$REPLY"; REPLY=''
 
           [[ -n "$_ak_key" ]] || {
@@ -959,7 +959,7 @@ ccproteus() {
           # deliberately NOT prompted for apikey profiles: Claude Code keeps
           # owning model selection (choose in-session with /model). A gateway
           # that renames models made a pinned default a footgun.
-          ccs_ui_input 'Base URL (blank = api.anthropic.com): ' || return 1
+          ccp_ui_input 'Base URL (blank = api.anthropic.com): ' || return 1
           _ak_url="$REPLY"
 
           _ccp_clean_value "$_ak_key" &&
@@ -1083,7 +1083,7 @@ ccproteus() {
         print -u2 -- "  $_CCPROTEUS_PROFILE_DIRS/$2"
         print -u2 -- "  $dir/auth/$2"
         print -u2 -- "Shared conversation history will be kept."
-        ccs_ui_confirm 'Remove these leftovers?' || { _ccp_err "cancelled; nothing removed"; return 1; }
+        ccp_ui_confirm 'Remove these leftovers?' || { _ccp_err "cancelled; nothing removed"; return 1; }
       fi
 
       _ccp_remove_profile_dir "$2" || {
@@ -1490,7 +1490,7 @@ print(d.get("window") or "", 1 if d.get("unprobed") else 0, label)
         set -- set "$_cfg_profile" "$_cfg_key" "$_cfg_picked"
       fi
       if [[ "$_cfg_verb" == (get|set) && "$_cfg_key" == (''|-i|--interactive) ]] && (( $# <= 3 )); then
-        _cfg_key=$(ccs_ui_select native "Setting — $_cfg_profile" \
+        _cfg_key=$(ccp_ui_select native "Setting — $_cfg_profile" \
           $'model\tModel\tDefault model for new sessions\neffort\tReasoning\tDefault reasoning level') || return 1
         if [[ "$_cfg_verb" == set ]]; then
           local _cfg_value
@@ -1550,11 +1550,11 @@ print(d.get("window") or "", 1 if d.get("unprobed") else 0, label)
           else
             _cfg_rows+=$'\nconnection\tSign-in token\tReplace the stored token'
           fi
-          _cfg_section=$(ccs_ui_select native "Settings — $_cfg_profile" "$_cfg_rows") || { unset _ccp; return 1; }
+          _cfg_section=$(ccp_ui_select native "Settings — $_cfg_profile" "$_cfg_rows") || { unset _ccp; return 1; }
         fi
       fi
       if [[ "$_cfg_section" != defaults && "$_CCP_CONFIG_TYPE" == apikey ]]; then
-        ccs_ui_input "Endpoint [${_CCP_CONFIG_ENDPOINT:-https://api.anthropic.com}]: " || { unset _ccp; return 1; }
+        ccp_ui_input "Endpoint [${_CCP_CONFIG_ENDPOINT:-https://api.anthropic.com}]: " || { unset _ccp; return 1; }
         answer="$REPLY"
         [[ -z "$answer" ]] || _CCP_CONFIG_ENDPOINT="$answer"
         _ccp[base_url]="$_CCP_CONFIG_ENDPOINT"
@@ -1563,8 +1563,8 @@ print(d.get("window") or "", 1 if d.get("unprobed") else 0, label)
         fi
       fi
       if [[ "$_cfg_section" != defaults && "$_CCP_CONFIG_TYPE" == (apikey|token) ]]; then
-        if [[ "$_cfg_section" == connection ]] || ccs_ui_confirm 'Replace stored credential?'; then
-          ccs_ui_input 'Credential (hidden; Enter keeps current): ' secret || { unset _ccp; return 1; }
+        if [[ "$_cfg_section" == connection ]] || ccp_ui_confirm 'Replace stored credential?'; then
+          ccp_ui_input 'Credential (hidden; Enter keeps current): ' secret || { unset _ccp; return 1; }
           answer="$REPLY"; REPLY=''
           [[ -z "$answer" ]] || _CCP_CONFIG_CREDENTIAL="$answer"
         else

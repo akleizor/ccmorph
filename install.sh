@@ -151,8 +151,8 @@ _offer() {   # $1 = human reason block (already printed), $2.. = command
     c_dim "  non-interactive — skipped. Run yourself: $*"
     return 1
   fi
-  if (( $+functions[ccs_ui_confirm] )); then
-    ccs_ui_confirm "Install now? $*" || { c_dim "  skipped. Run yourself when ready: $*"; return 1 }
+  if (( $+functions[ccp_ui_confirm] )); then
+    ccp_ui_confirm "Install now? $*" || { c_dim "  skipped. Run yourself when ready: $*"; return 1 }
   else
     # The UI module was not beside install.sh — fall back to a plain read.
     local answer

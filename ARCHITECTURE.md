@@ -321,9 +321,9 @@ opens its picker. `set` and `get` also offer their setting names when omitted.
 `rm` and `mv` remain explicit-target operations, never inferred from a menu.
 
 All ccproteus-owned prompts use the standalone `ccproteus-ui.zsh` module.
-`ccs_ui_select native|search` accepts tab-separated ID/label/description rows;
-`ccs_ui_input` owns text and hidden credential entry; `ccs_ui_confirm` uses the
-native selector with No selected by default. `ccs_ui_list` renders instructions
+`ccp_ui_select native|search` accepts tab-separated ID/label/description rows;
+`ccp_ui_input` owns text and hidden credential entry; `ccp_ui_confirm` uses the
+native selector with No selected by default. `ccp_ui_list` renders instructions
 for existing piped-input flows. The module has no profile or persistence logic.
 
 Native selection uses one Claude Code-style layout for sign-in, settings,

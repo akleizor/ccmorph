@@ -726,7 +726,7 @@ test_set_effort_interactively_offers_the_engine_levels() {
   write_apikey_conf gw 'api_key=k' 'base_url=https://gateway.invalid'
   source "$CCPROTEUS_SOURCE"
   # Unit-test dispatch/persistence here; the PTY suite drives the real keys.
-  ccs_ui_select() {
+  ccp_ui_select() {
     [[ "$1" == native ]] || return 1
     print -r -- "$3" > "$HOME/fixed.input"
     print -r -- "${${3%%$'\n'*}%%$'\t'*}"

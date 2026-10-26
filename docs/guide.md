@@ -143,14 +143,14 @@ is needed for native menus. Commands supply content and select `native` or
 ```zsh
 source ./lib/ccproteus-ui.zsh
 rows=$'defaults\tModel and reasoning\tDefaults for new sessions\nconnection\tConnection\tEndpoint or API key'
-choice=$(ccs_ui_select native 'Settings — demo' "$rows") || return
+choice=$(ccp_ui_select native 'Settings — demo' "$rows") || return
 # Use `search` for a model/profile catalogue; selected IDs alone go to stdout.
-ccs_ui_input 'Profile name: ' || return  # result in REPLY
-ccs_ui_input 'API key: ' secret || return  # echo disabled before the prompt
-ccs_ui_confirm 'Continue?' || return  # native No/Yes; piped input uses y/N
+ccp_ui_input 'Profile name: ' || return  # result in REPLY
+ccp_ui_input 'API key: ' secret || return  # echo disabled before the prompt
+ccp_ui_confirm 'Continue?' || return  # native No/Yes; piped input uses y/N
 ```
 
-`ccs_ui_list` renders the same rows for scripted instructions. `NO_COLOR` disables
+`ccp_ui_list` renders the same rows for scripted instructions. `NO_COLOR` disables
 styling; `TERM=dumb` and missing `fzf` use numbered choices. The installer ships
 this module. Claude Code's own in-session menus are
 owned by Claude Code, not rendered or replaced by ccproteus.

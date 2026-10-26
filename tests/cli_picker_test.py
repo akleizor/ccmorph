@@ -337,7 +337,7 @@ class PickerTTYTest(unittest.TestCase):
 
     def test_confirmation_uses_native_menu_with_safe_default(self):
         env = self.env()
-        rc, out, missed = run_pty('source "$1"\nccs_ui_confirm "Proceed?"', env, [
+        rc, out, missed = run_pty('source "$1"\nccp_ui_confirm "Proceed?"', env, [
             (b'Esc Cancel', b'\x1b[B\r'),
         ])
         self.assertIsNone(missed, out)
@@ -347,7 +347,7 @@ class PickerTTYTest(unittest.TestCase):
     def test_numbered_fallback_reprompts_until_the_choice_is_valid(self):
         env = self.env()
         env['ROWS'] = 'alpha\tfirst choice\nbeta\tsecond choice'
-        rc, out, missed = run_pty('source "$1"\nccs_ui_select search "pick one" "$ROWS" all', env, [
+        rc, out, missed = run_pty('source "$1"\nccp_ui_select search "pick one" "$ROWS" all', env, [
             (b'Select [1-2]', b'abc\n'),                                # not a number
             (b'Please choose one of the numbered options.', b'9\n'),  # out of range
             (b'Please choose one of the numbered options.', b'2\n'),
@@ -576,7 +576,7 @@ class PickerTTYTest(unittest.TestCase):
         (self.tmp / 'bin/fzf').unlink()
         env['PATH'] = str(Path(real_fzf).parent) + os.pathsep + env['PATH']
         env['ROWS'] = 'alpha\tFirst option\tFirst explanation\nbeta\tSecond option\tSecond explanation'
-        command = 'picked=$(ccs_ui_select search "Keyboard check" "$ROWS") || exit $?; print -r -- "RESULT=$picked"'
+        command = 'picked=$(ccp_ui_select search "Keyboard check" "$ROWS") || exit $?; print -r -- "RESULT=$picked"'
         rc, out, missed = run_pty(command, env, [(b'Second option', b'\x1b[B\r')])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
@@ -612,7 +612,7 @@ class PickerTTYTest(unittest.TestCase):
     def test_native_fixed_keys_restore_terminal_and_never_spawn_fzf(self):
         env = self.env(fzf=True)
         env['ROWS'] = 'alpha\tFirst\tDescription\nbeta\tSecond\tDescription'
-        command = 'picked=$(ccs_ui_select native "Native choices" "$ROWS"); rc=$?; print -r -- "RESULT=$picked"; exit $rc'
+        command = 'picked=$(ccp_ui_select native "Native choices" "$ROWS"); rc=$?; print -r -- "RESULT=$picked"; exit $rc'
         cases = [(b'\r', 0, 'alpha'), (b'\x1b[A\r', 0, 'alpha'),
                  (b'\x1b[B\r', 0, 'beta'), (b'\x1bOB\r', 0, 'beta'),
                  (b'\x1b[B\x1b[A\r', 0, 'alpha'), (b'\x1b', 1, ''),
@@ -631,7 +631,7 @@ class PickerTTYTest(unittest.TestCase):
         env = self.env(fzf=True)
         env['ROWS'] = '\n'.join(f'{i}\tOption {i}\t' + 'long description ' * 8 for i in range(10))
         rc, out, missed = run_pty(
-            'picked=$(ccs_ui_select native "Native choices" "$ROWS") || exit $?; print -r -- "RESULT=$picked"',
+            'picked=$(ccp_ui_select native "Native choices" "$ROWS") || exit $?; print -r -- "RESULT=$picked"',
             env, [(b'Esc Cancel', b'\x1b[B' * 9 + b'\r')], size=(8, 35))
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
@@ -642,7 +642,7 @@ class PickerTTYTest(unittest.TestCase):
     def test_native_fixed_menu_preserves_no_color_and_aligns_descriptions(self):
         env = {**self.env(fzf=True), 'NO_COLOR': '1',
                'ROWS': 'a\tShort\tFirst description\nb\tLonger label\tSecond description'}
-        rc, out, missed = run_pty('ccs_ui_select native Choose "$ROWS"', env, [(b'Esc Cancel', b'\r')])
+        rc, out, missed = run_pty('ccp_ui_select native Choose "$ROWS"', env, [(b'Esc Cancel', b'\r')])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
         self.assertNotRegex(out, r'\x1b\[[0-9;]*m')
@@ -677,7 +677,7 @@ class PickerTTYTest(unittest.TestCase):
                'ROWS': 'first\t中文\tFirst description\nsecond\tA\tSecond description'}
         self.spec('Standalone=second')
         # Only the module is sourced: it must not require ccproteus state/helpers.
-        rc, out, missed = run_pty('ccs_ui_select native Standalone "$ROWS"', env,
+        rc, out, missed = run_pty('ccp_ui_select native Standalone "$ROWS"', env,
                                   [(b'Esc Cancel', b'\x1b[B\r')],
                                   library=ROOT / 'lib/ccproteus-ui.zsh')
         self.assertIsNone(missed, out)
@@ -695,7 +695,7 @@ class PickerTTYTest(unittest.TestCase):
         self.assertTrue(out.rstrip().endswith('second'), out)
         self.assertNotRegex(out, r'\x1b\[[0-9;]*m')
         self.assertFalse((self.tmp / 'fzf.log').exists())
-        rc, out, missed = run_pty('ccs_ui_select search Standalone "$ROWS"', env,
+        rc, out, missed = run_pty('ccp_ui_select search Standalone "$ROWS"', env,
                                   library=ROOT / 'lib/ccproteus-ui.zsh')
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
@@ -708,7 +708,7 @@ class PickerTTYTest(unittest.TestCase):
     def test_native_menu_fits_every_line_to_a_narrow_terminal(self):
         env = {**self.env(fzf=True), 'NO_COLOR': '1',
                'ROWS': 'a\tA fairly long option label\t' + 'wordy description ' * 6}
-        rc, out, missed = run_pty('ccs_ui_select native "A heading far wider than this pane" "$ROWS"',
+        rc, out, missed = run_pty('ccp_ui_select native "A heading far wider than this pane" "$ROWS"',
                                   env, [(b'Esc', b'\r')], size=(12, 30))
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
@@ -721,10 +721,10 @@ class PickerTTYTest(unittest.TestCase):
 LC_ALL=C
 _ccp_ui_fit "Sign-in method — demo" 18; print -r -- "FIT=$REPLY"
 interrupted=143
-print hello | ccs_ui_input "Name: " 2>/dev/null; print "INPUT=$? $REPLY"
+print hello | ccp_ui_input "Name: " 2>/dev/null; print "INPUT=$? $REPLY"
 setopt sh_glob
-print yes | ccs_ui_confirm 'Go?' 2>/dev/null; print "CONFIRM=$?"
-ccs_ui_list Pick $'a\tAlpha' 2>&1 >/dev/null | od -c | grep -q 033 && print LISTANSI=1 || print LISTANSI=0
+print yes | ccp_ui_confirm 'Go?' 2>/dev/null; print "CONFIRM=$?"
+ccp_ui_list Pick $'a\tAlpha' 2>&1 >/dev/null | od -c | grep -q 033 && print LISTANSI=1 || print LISTANSI=0
 """
         rc, out, _ = run_pty(script, self.env(), library=ROOT / 'lib/ccproteus-ui.zsh')
         self.assertEqual(rc, 0, out)
@@ -816,7 +816,7 @@ print -r -- THEMESETS=OK
     def test_claude_palette_is_shared_by_native_and_search(self):
         env = {**self.env(fzf=True), 'ROWS': 'first\tFirst\tDescription\nsecond\tSecond\tDetails'}
         self.spec('Theme=first')
-        rc, out, missed = run_pty('ccs_ui_select native Theme "$ROWS"', env,
+        rc, out, missed = run_pty('ccp_ui_select native Theme "$ROWS"', env,
                                   [(b'Esc Cancel', b'\x1b')],
                                   library=ROOT / 'lib/ccproteus-ui.zsh')
         self.assertIsNone(missed, out)
@@ -826,7 +826,7 @@ print -r -- THEMESETS=OK
         self.assertIn('\x1b[38;2;153;153;153mDescription', out)
         for retired in ('◆', '◇', '●', '○', '│', '└', '\x1b[36m'):
             self.assertNotIn(retired, out)
-        rc, out, missed = run_pty('ccs_ui_select search Theme "$ROWS"', env,
+        rc, out, missed = run_pty('ccp_ui_select search Theme "$ROWS"', env,
                                   library=ROOT / 'lib/ccproteus-ui.zsh')
         self.assertEqual(rc, 0, out)
         log = (self.tmp / 'fzf.log').read_text()
@@ -840,7 +840,7 @@ print -r -- THEMESETS=OK
                 with self.subTest(mode=mode, settings=settings):
                     env = {**self.env(), **settings}
                     rc, out, missed = run_pty(
-                        'ccs_ui_input "Value: " ' + mode + '; result=$?; '
+                        'ccp_ui_input "Value: " ' + mode + '; result=$?; '
                         'print -r -- "VALUE=<$REPLY>"; exit $result', env,
                         [(b'Value:', b'partial-value\x1b'), (b'VALUE=', b'')],
                         library=ROOT / 'lib/ccproteus-ui.zsh')
@@ -861,7 +861,7 @@ print -r -- THEMESETS=OK
                                (b'\r', '')):
             with self.subTest(keys=keys):
                 rc, out, missed = run_pty(
-                    'ccs_ui_input "Value: " || exit $?; print -r -- "VALUE=<$REPLY>"',
+                    'ccp_ui_input "Value: " || exit $?; print -r -- "VALUE=<$REPLY>"',
                     self.env(), [(b'Value:', keys)],
                     library=ROOT / 'lib/ccproteus-ui.zsh')
                 self.assertIsNone(missed, out)
@@ -869,17 +869,17 @@ print -r -- THEMESETS=OK
                 self.assertIn('VALUE=<' + expected + '>', out)
 
     def test_shared_input_fits_its_heading_under_a_callers_ksh_arrays(self):
-        # ccs_ui_input reads the terminal through _ccp_ui_size, which indexes the
+        # ccp_ui_input reads the terminal through _ccp_ui_size, which indexes the
         # `stty size` pair from 1 like the rest of the library. A caller that had
         # `setopt ksharrays` (index 0 is the first element) made that read one
         # field over and the heading was fitted to the 80-column fallback on a
         # 100-column terminal. It is the only path into _ccp_ui_size without an
-        # `emulate -L zsh` above it -- ccs_ui_list and _ccp_ui_native set it, and
+        # `emulate -L zsh` above it -- ccp_ui_list and _ccp_ui_native set it, and
         # _ccp_ui_search, whose _ccp_ui_receipt calls it too, is reached only from
-        # ccs_ui_select, which sets it -- so the guard belongs on this function.
+        # ccp_ui_select, which sets it -- so the guard belongs on this function.
         prompt = 'P' * 90 + ': '
         rc, out, missed = run_pty(
-            'setopt ksharrays; ccs_ui_input "' + prompt + '" || exit $?; '
+            'setopt ksharrays; ccp_ui_input "' + prompt + '" || exit $?; '
             'print -r -- "VALUE=<$REPLY>"; [[ -o ksharrays ]] && print KSH_KEPT',
             self.env(), [(b'Esc Cancel', b'abc\r')], size=(24, 100),
             library=ROOT / 'lib/ccproteus-ui.zsh')
@@ -924,7 +924,7 @@ print -r -- THEMESETS=OK
     def test_standalone_confirmation_defaults_to_no_and_cancels(self):
         for keys, status in ((b'\r', 1), (b'\x1b', 2), (b'\x03', 2)):
             with self.subTest(keys=keys):
-                rc, out, missed = run_pty('ccs_ui_confirm "Remove?"', self.env(fzf=True),
+                rc, out, missed = run_pty('ccp_ui_confirm "Remove?"', self.env(fzf=True),
                                           [(b'Esc Cancel', keys)],
                                           library=ROOT / 'lib/ccproteus-ui.zsh')
                 self.assertIsNone(missed, out)
@@ -935,7 +935,7 @@ print -r -- THEMESETS=OK
 
     def test_ui_rejects_control_characters_in_ids(self):
         env = {**self.env(), 'ROWS': 'bad\x1b[2J\tLabel'}
-        rc, out, missed = run_pty('ccs_ui_select native Choose "$ROWS"', env,
+        rc, out, missed = run_pty('ccp_ui_select native Choose "$ROWS"', env,
                                   library=ROOT / 'lib/ccproteus-ui.zsh')
         self.assertEqual(rc, 2, out)
         self.assertNotIn('\x1b[2J', out)
@@ -961,7 +961,7 @@ print -r -- THEMESETS=OK
             return drain(master, out, deadline, process)
 
         for command, status, expected in (
-                ('ccs_ui_select native Choose "$ROWS"', 2, 'invalid choice ID'),
+                ('ccp_ui_select native Choose "$ROWS"', 2, 'invalid choice ID'),
                 ('print -r -- stdout-marker; print -ru2 -- stderr-marker', 0,
                  'stderr-marker')):
             with self.subTest(command=command), \

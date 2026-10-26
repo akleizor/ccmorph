@@ -1,8 +1,8 @@
 # Standalone zsh UI: no profiles, persistence, authentication or app dependencies.
-# ccs_ui_select native|search TITLE ROWS [labels|all] -> selected ID on stdout.
+# ccp_ui_select native|search TITLE ROWS [labels|all] -> selected ID on stdout.
 # ROWS: ID<TAB>label[<TAB>description]; `all`: ID doubles as the visible label.
-# ccs_ui_input PROMPT [secret] -> REPLY (never print a credential).
-# ccs_ui_confirm PROMPT -> 0 yes, 1 no, 2 cancelled; defaults to No.
+# ccp_ui_input PROMPT [secret] -> REPLY (never print a credential).
+# ccp_ui_confirm PROMPT -> 0 yes, 1 no, 2 cancelled; defaults to No.
 
 # Claude Code 2.1.278 dark-theme roles: brand, suggestion, inactive and status.
 # Keep native ANSI and fzf colors derived from this one palette. Body text and
@@ -46,7 +46,7 @@ typeset -gi _ccp_ui_gap=4
 _ccp_ui_error() { print -ru2 -- "${_ccp_red}ccproteus:${_ccp_reset} $*"; }
 
 # Application call sites choose an interaction, never a renderer or theme.
-ccs_ui_select() {
+ccp_ui_select() {
   emulate -L zsh
   local mode="$1" title="$2" rows="$3" display="${4:-labels}"
   local "${_ccp_ui_vars[@]}"
@@ -159,7 +159,7 @@ _ccp_ui_label() {
 
 # Non-interactive instructions share the label renderer; callers keep their
 # existing scripted input vocabulary and validate it at the application boundary.
-ccs_ui_list() {
+ccp_ui_list() {
   emulate -L zsh
   local prompt="$1" rows="$2" display="${3:-labels}" row
   local "${_ccp_ui_vars[@]}"
@@ -188,9 +188,9 @@ _ccp_ui_numbered() {
   local prompt="$1" rows="$2" display="${3:-all}" choice="" row
   local -a options=("${(@f)rows}")
   [[ -n "$rows" ]] || { _ccp_ui_error "no available choices"; return 1; }
-  ccs_ui_list "$prompt" "$rows" "$display"
+  ccp_ui_list "$prompt" "$rows" "$display"
   while true; do
-    ccs_ui_input "Select [1-${#options}] (q to cancel): " || return 1
+    ccp_ui_input "Select [1-${#options}] (q to cancel): " || return 1
     choice="$REPLY"
     [[ "$choice" == (q|Q) ]] && return 1
     if [[ -z "$choice" ]]; then
@@ -390,7 +390,7 @@ _ccp_ui_readline() {
 
 # Text entry owns echo behavior and the same heading/chevron as selections.
 # REPLY is deliberate: command substitution must never print a secret.
-ccs_ui_input() {
+ccp_ui_input() {
   # _ccp_ui_size and _ccp_ui_readline index 1-based arrays like the rest of the
   # library, and the heading path from here is the only one without an
   # `emulate -L zsh` above it. Under a caller's KSH_ARRAYS the size read shifts,
@@ -444,13 +444,13 @@ ccs_ui_input() {
   return "$result"
 }
 
-ccs_ui_confirm() {
+ccp_ui_confirm() {
   emulate -L zsh
   local answer
   if [[ -t 0 && -t 2 && "${TERM:-}" != dumb ]]; then
-    answer=$(ccs_ui_select native "$1" $'n\tNo\ny\tYes') || return 2
+    answer=$(ccp_ui_select native "$1" $'n\tNo\ny\tYes') || return 2
   else
-    ccs_ui_input "$1 [y/N] " || return 2
+    ccp_ui_input "$1 [y/N] " || return 2
     answer="$REPLY"
   fi
   [[ "${answer:l}" == (y|yes) ]]

@@ -87,7 +87,7 @@ _ccp_menu_profile() {
     return 1
   }
 
-  ccs_ui_select search Profile "$rows" all
+  ccp_ui_select search Profile "$rows" all
 }
 
 # Every value a user cannot be expected to have memorised, chosen from a list.
@@ -156,11 +156,11 @@ _ccp_choose_value() {
       labeled+="$row"
     done
     rows="$labeled"; display=labels
-    ccs_ui_select native "$prompt" "$rows" "$display"
+    ccp_ui_select native "$prompt" "$rows" "$display"
   elif [[ "$display" == all ]]; then
-    ccs_ui_select search "$prompt" "$rows" all
+    ccp_ui_select search "$prompt" "$rows" all
   else
-    ccs_ui_select search "$prompt" "$rows"
+    ccp_ui_select search "$prompt" "$rows"
   fi
 }
 
@@ -182,7 +182,7 @@ _ccp_pick_value() {
 _ccp_prompt_default() {
   local slot="$1" profile="$2" current="$3" rows="" choice="" answer=""
   if [[ ! -t 0 ]]; then
-    ccs_ui_input "Default $slot [${current:-Claude default}]: " || return 1
+    ccp_ui_input "Default $slot [${current:-Claude default}]: " || return 1
     answer="$REPLY"
     print -r -- "${answer:-$current}"
     return 0
@@ -211,7 +211,7 @@ _ccp_prompt_default() {
   case "$choice" in
     @keep) print -r -- "$current" ;;
     @custom)
-      ccs_ui_input 'Custom model ID (Enter keeps current): ' || return 1
+      ccp_ui_input 'Custom model ID (Enter keeps current): ' || return 1
       answer="$REPLY"
       print -r -- "${answer:-$current}"
       ;;
