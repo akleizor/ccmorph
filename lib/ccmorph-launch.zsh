@@ -1572,7 +1572,9 @@ _ccm_launch() {
 
       # CCMORPH_LIB_DIR is passed to the child so `! ccmorph hop <profile>` typed
       # INSIDE this session resolves the same library that launched it.
-      [[ -t 2 ]] && print -u2 -- "ccmorph: Gateway ready; starting Claude Code…"
+      # Only a route behind an adapter has a gateway that was waited on.
+      (( needs_adapter || _is_provider )) && [[ -t 2 ]] &&
+        print -u2 -- "ccmorph: Gateway ready; starting Claude Code…"
       # The same keys in the same order, taken from the answers the one
       # interpreter already produced: a tuning key the layers really set.
       local -a _ccm_set_layers=("${(@)_CCMORPH_TUNING_ENV:*_ccm_chosen}")

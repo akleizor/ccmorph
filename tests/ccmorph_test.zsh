@@ -5327,6 +5327,8 @@ test_adapter_redirect_under_a_terminal_never_reaches_the_operators_picker() {
   # regression passing on an empty run.
   assert_contains "$(<"$out")" 'All 1 tests passed' \
     'the adapter-redirect test must complete under a terminal' || rc=1
+  assert_contains "$(<"$out")" 'Gateway ready' \
+    'a launch behind the adapter announces its gateway on a terminal' || rc=1
   rm -rf "$test_home"
   return $rc
 }
@@ -13022,9 +13024,50 @@ run_test test_native_resume_carries_into_native_history_even_inside_a_profile
 run_test test_hop_carries_the_one_session_into_the_target_history
 run_test test_resume_by_id_reaches_another_profiles_session
 
+# Launched only from the terminal test below: a native subscription profile.
+test_a_sub_profile_launch_for_the_terminal_check() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  fake_claude_help
+  printf '%s\n' 'type=sub' 'email=test@example.invalid' 'model=sub-model' \
+    > "$HOME/.config/ccmorph/subwith.conf"
+  source "$CCMORPH_SOURCE"
+  _ccm_setup_dir() { return 0; }
+  _ccm_repair_projects_link() { return 0; }
+  local rc=0
+  _ccm_launch -a subwith -p x || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
+# A subscription profile has no gateway, so a terminal launch must not claim one
+# is ready (it did for every profile).
+test_a_sub_profile_never_announces_a_gateway_on_a_terminal() {
+  local test_home rc=0
+  test_home=$(mktemp -d)
+  local out="$test_home/terminal.log"
+  python3 -c 'import os, pty; m, s = pty.openpty(); os.close(m); os.close(s)' 2>/dev/null || {
+    print -u2 -- 'note: no pty here; skipping the terminal-only check'
+    rm -rf "$test_home"; return 0
+  }
+  run_under_a_terminal "$out" env \
+    CCMORPH_TEST_FILTER=test_a_sub_profile_launch_for_the_terminal_check \
+    CCMORPH_TEST_SHARD=0/1 CCMORPH_TEST_JOBS=1 zsh "$SCRIPT_DIR/ccmorph_test.zsh" || rc=1
+  assert_contains "$(<"$out")" 'All 1 tests passed' \
+    'the sub-profile launch must complete under a terminal' || rc=1
+  assert_not_contains "$(<"$out")" 'Gateway ready' \
+    'a subscription profile must not announce a gateway' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+run_test test_a_sub_profile_launch_for_the_terminal_check
+run_test test_a_sub_profile_never_announces_a_gateway_on_a_terminal
+
 if (( tests_failed > 0 )); then
   print -u2 -- "$tests_failed of $tests_run tests failed"
   exit 1
 fi
 
 (( tests_run == 0 )) || print -- "All $tests_run tests passed"
+
