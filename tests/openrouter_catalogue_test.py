@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = (ROOT / 'tests' / 'fixtures' / 'openrouter-models.json').read_bytes()
-spec = importlib.util.spec_from_loader('openrouter_probe', importlib.machinery.SourceFileLoader('openrouter_probe', str(ROOT/'refresh-model-registry')))
+spec = importlib.util.spec_from_loader('openrouter_probe', importlib.machinery.SourceFileLoader('openrouter_probe', str(ROOT/'libexec/refresh-model-registry')))
 assert spec and spec.loader
 probe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(probe)

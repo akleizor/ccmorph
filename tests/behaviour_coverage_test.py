@@ -40,7 +40,7 @@ class Box:
                     if k != 'CLAUDECODE'
                     and not k.startswith(('CCPROTEUS', '_CCPROTEUS', 'CLAUDE_', 'ANTHROPIC_'))}
         self.env.update(HOME=str(home), ZDOTDIR=str(home), XDG_CONFIG_HOME=str(home / '.config'),
-                        CCPROTEUS_STATE_DIR=str(self.state), CCPROTEUS_LIB_DIR=str(ROOT),
+                        CCPROTEUS_STATE_DIR=str(self.state), CCPROTEUS_LIB_DIR=str(ROOT / "lib"),
                         PATH=f'{home}/bin:{os.environ["PATH"]}', LANG='C.UTF-8', LC_ALL='C.UTF-8',
                         NO_COLOR='1')
 
@@ -48,7 +48,7 @@ class Box:
         (self.state / f'{name}.conf').write_text(text)
 
     def run(self, *args, answer=None):
-        return subprocess.run([str(ROOT / 'ccproteus'), *args], env=self.env, input=answer or '',
+        return subprocess.run([str(ROOT / "bin/ccproteus"), *args], env=self.env, input=answer or '',
                               capture_output=True, text=True, timeout=HANG_TIMEOUT)
 
     @property

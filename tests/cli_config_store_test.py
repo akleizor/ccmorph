@@ -76,18 +76,18 @@ class ConfigurationSaveTest(unittest.TestCase):
         self.settings.parent.mkdir(parents=True)
         self.settings.write_text(json.dumps({'env': {'ANTHROPIC_MODEL': 'old'}, 'other': True}))
         self.env = {**os.environ, 'HOME': str(self.home), 'ZDOTDIR': str(self.home),
-                    'CCPROTEUS_STATE_DIR': str(self.state), 'CCPROTEUS_LIB_DIR': str(ROOT)}
+                    'CCPROTEUS_STATE_DIR': str(self.state), 'CCPROTEUS_LIB_DIR': str(ROOT / "lib")}
         self.env.pop('CCPROTEUS_CONTEXT_LOCKED', None)
 
     def run_cli(self, *args, input='', env=None):
-        return subprocess.run(['zsh', str(ROOT / 'ccproteus'), *args], input=input,
+        return subprocess.run(['zsh', str(ROOT / "bin/ccproteus"), *args], input=input,
                               text=True, capture_output=True, env=env or self.env,
                               timeout=HANG_TIMEOUT)
 
     def store(self, *args, env=None):
-        """Call _ccs_config_store directly, for the operations no verb exposes."""
-        script = 'source "$1"; shift; _ccs_config_store "$@"'
-        return subprocess.run(['zsh', '-fc', script, '_', str(ROOT / 'ccproteus.sh'), *args],
+        """Call _ccp_config_store directly, for the operations no verb exposes."""
+        script = 'source "$1"; shift; _ccp_config_store "$@"'
+        return subprocess.run(['zsh', '-fc', script, '_', str(ROOT / 'lib/ccproteus.sh'), *args],
                               env=env or self.env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
 
     def conf_fields(self):
@@ -275,8 +275,8 @@ class ConfigurationSaveTest(unittest.TestCase):
                          {'env': {}, 'modelSettings': {}})
         # And the alias reader reports "nothing mapped" rather than the native value.
         alias = subprocess.run(
-            ['zsh', '-fc', 'source "$1"; _ccs_settings_model_alias demo opus',
-             '_', str(ROOT / 'ccproteus.sh')],
+            ['zsh', '-fc', 'source "$1"; _ccp_settings_model_alias demo opus',
+             '_', str(ROOT / 'lib/ccproteus.sh')],
             env=self.env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
         self.assertNotEqual(alias.returncode, 0)
         self.assertEqual(alias.stdout.strip(), '')
@@ -287,8 +287,8 @@ class ConfigurationSaveTest(unittest.TestCase):
         self.settings.write_text(json.dumps({
             'env': {'ANTHROPIC_DEFAULT_OPUS_MODEL': 'stale-opus'}}))
         result = subprocess.run(
-            ['zsh', '-fc', 'source "$1"; _ccs_settings_model_alias demo opus',
-             '_', str(ROOT / 'ccproteus.sh')],
+            ['zsh', '-fc', 'source "$1"; _ccp_settings_model_alias demo opus',
+             '_', str(ROOT / 'lib/ccproteus.sh')],
             env=self.env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), 'profile-opus')
@@ -312,8 +312,8 @@ class ConfigurationSaveTest(unittest.TestCase):
                     'ANTHROPIC_DEFAULT_OPUS_MODEL': 'stale'},
             'enabledPlugins': {'test@example': True},
             'permissions': {'deny': ['Bash(rm *)']}}))
-        result = subprocess.run(['zsh', '-fc', 'source "$1"; _ccs_project_settings demo "$(_ccs_config_store model-settings demo)" --acw none',
-                                 '_', str(ROOT / 'ccproteus.sh')],
+        result = subprocess.run(['zsh', '-fc', 'source "$1"; _ccp_project_settings demo "$(_ccp_config_store model-settings demo)" --acw none',
+                                 '_', str(ROOT / 'lib/ccproteus.sh')],
                                 env=self.env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
         self.assertEqual(result.returncode, 0, result.stderr)
         saved = json.loads(self.settings.read_text())
@@ -449,8 +449,8 @@ class ConfigurationSaveTest(unittest.TestCase):
         self.assertEqual((conf_fields(self.conf), real.read_bytes()), before)
         # GH-327: a seed failure remains fatal even when launch captures stdout.
         result = subprocess.run(
-            ['zsh', '-fc', 'source "$1"; _ccs_launch -a demo --model',
-             '_', str(ROOT / 'ccproteus.sh')],
+            ['zsh', '-fc', 'source "$1"; _ccp_launch -a demo --model',
+             '_', str(ROOT / 'lib/ccproteus.sh')],
             env=self.env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
         self.assertEqual(result.returncode, 1)
         self.assertEqual(result.stdout, '')
@@ -474,8 +474,8 @@ class ConfigurationSaveTest(unittest.TestCase):
         # Stop at argument validation, immediately after the native default seam.
         # The shell's dynamic scope exposes the actual default consumed by launch.
         result = subprocess.run(
-            ['zsh', '-fc', 'source "$1"; _ccs_err() { print -r -- "$default_model"; }; '
-             '_ccs_launch -a demo --model', '_', str(ROOT / 'ccproteus.sh')],
+            ['zsh', '-fc', 'source "$1"; _ccp_err() { print -r -- "$default_model"; }; '
+             '_ccp_launch -a demo --model', '_', str(ROOT / 'lib/ccproteus.sh')],
             env=env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertEqual(result.stdout, 'native-default\n')
@@ -516,8 +516,8 @@ class ConfigurationSaveTest(unittest.TestCase):
         before = (conf_fields(self.conf), self.settings.read_bytes())
         env = self.fail_replace_env(self.settings)
         result = subprocess.run(
-            ['zsh', '-fc', 'source "$1"; _ccs_config_store prepare-launch demo',
-             '_', str(ROOT / 'ccproteus.sh')], env=env, text=True,
+            ['zsh', '-fc', 'source "$1"; _ccp_config_store prepare-launch demo',
+             '_', str(ROOT / 'lib/ccproteus.sh')], env=env, text=True,
             capture_output=True, timeout=HANG_TIMEOUT)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('simulated replace failure', result.stderr)
@@ -526,11 +526,11 @@ class ConfigurationSaveTest(unittest.TestCase):
         self.assertEqual(list(self.settings.parent.glob('.configure.*')), [])
 
     def test_external_change_after_snapshot_is_preserved(self):
-        command = ('source "$1"; export _CCS_CONFIG_SNAPSHOT=$(_ccs_config_store snapshot demo); '
+        command = ('source "$1"; export _CCP_CONFIG_SNAPSHOT=$(_ccp_config_store snapshot demo); '
                    'printf "%s\\n" "# external change" >> "$CCPROTEUS_STATE_DIR/demo.conf"; '
-                   'export _CCS_CONFIG_MODEL=new; _ccs_config_store set demo')
+                   'export _CCP_CONFIG_MODEL=new; _ccp_config_store set demo')
         before_settings = self.settings.read_bytes()
-        result = subprocess.run(['zsh', '-fc', command, '_', str(ROOT / 'ccproteus.sh')],
+        result = subprocess.run(['zsh', '-fc', command, '_', str(ROOT / 'lib/ccproteus.sh')],
                                 env=self.env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('changed while configuring', result.stderr)
@@ -550,7 +550,7 @@ class ConfigurationSaveTest(unittest.TestCase):
     # ---- the launch's settings projection, folded into one run (GH-433) --
     #
     # A launch spent two interpreters on the same inputs back to back:
-    # `_ccs_config_store prepare-launch`, then `settings-compose materialize`. GH-433
+    # `_ccp_config_store prepare-launch`, then `settings-compose materialize`. GH-433
     # folds them into one run, so what has to hold is that the launch writes exactly
     # what the two runs wrote -- same files, same bytes, same status, nothing on
     # stdout -- and that every failure still lands on the status the launch handles.
@@ -612,11 +612,11 @@ class ConfigurationSaveTest(unittest.TestCase):
                   'while (( $# )) && [[ "$1" != -- ]]; do o+=("$1"); shift; done; '
                   '(( $# )) && shift; '
                   'if [[ "$style" == pair ]]; then '
-                  'saved=$(_ccs_config_store prepare-launch demo) || exit 10; '
-                  '_ccs_project_settings demo "$saved" "${o[@]}" -- "$@"; '
-                  'else _ccs_prepare_and_project demo "${o[@]}" -- "$@"; fi')
+                  'saved=$(_ccp_config_store prepare-launch demo) || exit 10; '
+                  '_ccp_project_settings demo "$saved" "${o[@]}" -- "$@"; '
+                  'else _ccp_prepare_and_project demo "${o[@]}" -- "$@"; fi')
         return subprocess.run(
-            ['zsh', '-fc', script, '_', str(ROOT / 'ccproteus.sh'), style,
+            ['zsh', '-fc', script, '_', str(ROOT / 'lib/ccproteus.sh'), style,
              *opts, '--', *penv],
             env=env or self.env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
 
@@ -701,12 +701,12 @@ class ConfigurationSaveTest(unittest.TestCase):
                    'authorization: Bearer x')
         newline, calls = self.projection_env('gh433-newline', name='ho\nme',
                                              count_python=True)
-        # `_CCS_MATERIALIZE` in the launch's own environment is how a parent shell
+        # `_CCP_MATERIALIZE` in the launch's own environment is how a parent shell
         # leaks it: the store turns it into materialize mode, which prints nothing to
         # read the saved defaults from, and the fallback's own store run must not
         # inherit it. Before the guard this aborted the launch with the store's
         # status.
-        newline['_CCS_MATERIALIZE'] = '1'
+        newline['_CCP_MATERIALIZE'] = '1'
         result = self.project('one', penv=(headers,), env=newline)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(calls.read_text().splitlines()), 2)
@@ -749,15 +749,15 @@ class ConfigurationSaveTest(unittest.TestCase):
                 store = subprocess.run(
                     ['zsh', '-fc',
                      'source "$1"; '
-                     '_ccs_projection_args --; '
-                     '_ccs_settings_argv materialize demo '
-                     '"${_ccs_sc_opts[@]}" "${_ccs_sc_strip[@]}"; '
-                     'sc_argv=("${_ccs_sc_argv[@]}"); '
-                     '_CCS_MATERIALIZE="${(pj:\n:)sc_argv}" _CCS_LIB="$_CCPROTEUS_LIB_DIR" '
-                     '_CCS_SC_PY="$(_ccs_settings_compose_py)" '
-                     '_ccs_config_store prepare-launch demo >/dev/null; '
+                     '_ccp_projection_args --; '
+                     '_ccp_settings_argv materialize demo '
+                     '"${_ccp_sc_opts[@]}" "${_ccp_sc_strip[@]}"; '
+                     'sc_argv=("${_ccp_sc_argv[@]}"); '
+                     '_CCP_MATERIALIZE="${(pj:\n:)sc_argv}" _CCP_LIB="$_CCPROTEUS_LIBEXEC_DIR" '
+                     '_CCP_SC_PY="$(_ccp_settings_compose_py)" '
+                     '_ccp_config_store prepare-launch demo >/dev/null; '
                      'print -- $?',
-                     '_', str(ROOT / 'ccproteus.sh')],
+                     '_', str(ROOT / 'lib/ccproteus.sh')],
                     env=self.env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
                 self.assertEqual(store.returncode, 0, store.stderr)
                 self.assertEqual(store.stdout.strip(), '13')
@@ -799,11 +799,11 @@ class ConfigurationSaveTest(unittest.TestCase):
                                 'echo 200; exit 0;; esac; done\nexit 1\n')
                 curl.chmod(0o755)
                 run = subprocess.run(
-                    [str(ROOT / 'ccproteus'), 'run', 'demo'],
+                    [str(ROOT / "bin/ccproteus"), 'run', 'demo'],
                     env={'HOME': str(home), 'PATH': f'{home}/bin:/usr/bin:/bin',
                          'LANG': 'C.UTF-8', 'XDG_CONFIG_HOME': str(home / '.config'),
                          'CCPROTEUS_STATE_DIR': launch['CCPROTEUS_STATE_DIR'],
-                         'CCPROTEUS_LIB_DIR': str(ROOT),
+                         'CCPROTEUS_LIB_DIR': str(ROOT / "lib"),
                          'PYTHONDONTWRITEBYTECODE': '1'},
                     stdin=subprocess.DEVNULL, text=True, capture_output=True,
                     timeout=HANG_TIMEOUT)

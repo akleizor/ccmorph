@@ -8,7 +8,7 @@ import tempfile
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_loader('launch_probe', importlib.machinery.SourceFileLoader('launch_probe', str(ROOT/'refresh-model-registry')))
+spec = importlib.util.spec_from_loader('launch_probe', importlib.machinery.SourceFileLoader('launch_probe', str(ROOT/'libexec/refresh-model-registry')))
 assert spec and spec.loader
 probe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(probe)
@@ -110,7 +110,7 @@ def test_provider_source_contract():
         (Path(tmp) / "window-sources.json").write_text(json.dumps({"sources": [source]}))
 
         def windows(fetch, rows, fields):
-            with patch.object(probe, 'LIB_DIR', Path(tmp)), patch.object(probe, '_fetch_json_dict', **fetch):
+            with patch.object(probe, 'SHARE_DIR', Path(tmp)), patch.object(probe, '_fetch_json_dict', **fetch):
                 return probe.provider_windows(declared, rows, fields, 1, {})
 
         assert windows({"return_value": catalogue}, rows, opted) == ({
@@ -128,7 +128,7 @@ def test_provider_source_contract():
 
 
 def test_shipped_sources_follow_the_contract():
-    sources = json.loads((ROOT / "window-sources.json").read_text())["sources"]
+    sources = json.loads((ROOT / "share/window-sources.json").read_text())["sources"]
     assert sources
     for source in sources:
         assert {"name", "owned_by", "url", "rows", "id", "window"} <= set(source), source

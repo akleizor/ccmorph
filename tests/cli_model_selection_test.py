@@ -27,8 +27,9 @@ import fake_adapter
 from support import HANG_TIMEOUT
 
 ROOT = Path(__file__).resolve().parents[1]
-LIB_FILES = ('model-window', 'settings-compose', 'ccproteus.sh', *sorted(p.name for p in ROOT.glob('ccproteus-*.zsh')),
-             'window-sources.json', 'model-catalogue.json')
+LIB_FILES = ('libexec/model-window', 'libexec/settings-compose', 'lib/ccproteus.sh',
+             *sorted(f'lib/{p.name}' for p in (ROOT / 'lib').glob('ccproteus-*.zsh')),
+             'share/window-sources.json', 'share/model-catalogue.json')
 
 CLAUDE = '''#!/bin/sh
 case "$1" in --help) exit 0 ;; esac
@@ -64,17 +65,18 @@ class ModelSelection(unittest.TestCase):
             (self.home / 'bin' / name).write_text(body)
             (self.home / 'bin' / name).chmod(0o755)
         for name in LIB_FILES:
+            (self.state / name).parent.mkdir(exist_ok=True)
             shutil.copy(ROOT / name, self.state / name)
-        (self.state / 'ccproteus-adapter').write_text(ADAPTER)
-        (self.state / 'ccproteus-adapter').chmod(0o755)
+        (self.state / 'libexec/ccproteus-adapter').write_text(ADAPTER)
+        (self.state / 'libexec/ccproteus-adapter').chmod(0o755)
         # A launch leaves the stub detached, and `--parent-pid` only reaches it
         # while the launcher's number stays dead (#347). Registered after
         # tmp.cleanup, so this LIFO cleanup kills the stub's recorded pid first.
-        self.addCleanup(fake_adapter.reap, self.state / 'ccproteus-adapter')
+        self.addCleanup(fake_adapter.reap, self.state / 'libexec/ccproteus-adapter')
         path = f'{self.home}/bin:/usr/bin:/bin:{Path(shutil.which("zsh")).parent}'
         self.env = {'HOME': str(self.home), 'PATH': path, 'LANG': 'C.UTF-8',
                     'XDG_CONFIG_HOME': str(self.home / '.config'),
-                    'CCPROTEUS_STATE_DIR': str(self.state), 'CCPROTEUS_LIB_DIR': str(self.state)}
+                    'CCPROTEUS_STATE_DIR': str(self.state), 'CCPROTEUS_LIB_DIR': str(self.state / 'lib')}
         # Native token profile (no routing) and a routed gateway with pinned windows.
         (self.state / 'tp.conf').write_text('type=token\ntoken=t\nmodel=sonnet\n')
         (self.state / 'gw.conf').write_text(
@@ -82,7 +84,7 @@ class ModelSelection(unittest.TestCase):
             'context_window.claude-opus-5=1000000\ncontext_window.claude-haiku-4-5=200000\n'
             'context_window.pinned-x=424242\n')
 
-    def cli(self, *args, tool='ccproteus', stdin=subprocess.DEVNULL):
+    def cli(self, *args, tool='bin/ccproteus', stdin=subprocess.DEVNULL):
         return subprocess.run([str(ROOT / tool), *args], env=self.env, stdin=stdin,
                               capture_output=True, text=True, timeout=HANG_TIMEOUT)
 
@@ -97,7 +99,7 @@ class ModelSelection(unittest.TestCase):
         return rows[0]
 
     def window(self, profile, model):
-        result = self.cli(profile, model, tool='model-window')
+        result = self.cli(profile, model, tool='libexec/model-window')
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
@@ -164,7 +166,7 @@ class ModelSelection(unittest.TestCase):
         cache.parent.mkdir(parents=True)
         cache.write_text('disc-model\t333000\n')
         # Migration turns the legacy cache into discovered windows stored in the conf.
-        self.assertEqual(self.cli('--migrate', tool='model-window').returncode, 0)
+        self.assertEqual(self.cli('--migrate', tool='libexec/model-window').returncode, 0)
         got = self.window('gw', 'claude-opus-5')
         self.assertEqual((got['window'], got['send_id']), (1000000, 'claude-opus-5[1m]'))
         got = self.window('gw', 'claude-opus-5[1m]')
@@ -177,7 +179,7 @@ class ModelSelection(unittest.TestCase):
         got = self.window('gw', 'disc-model')
         self.assertEqual((got['window'], got['source']), (333000, 'conf-discovered'))
         # A manual pin outranks a discovered value for the same id.
-        self.assertEqual(self.cli('--context', 'gw', 'disc-model', '111111', tool='model-window').returncode, 0)
+        self.assertEqual(self.cli('--context', 'gw', 'disc-model', '111111', tool='libexec/model-window').returncode, 0)
         self.assertEqual(self.window('gw', 'disc-model')['window'], 111111)
 
     def test_launch_writes_the_window_and_default_for_the_session_to_switch_within(self):

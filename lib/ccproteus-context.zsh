@@ -3,7 +3,7 @@
 
 # The percentage the ENGINE will honour, and the threshold it computes from it, as
 # Python source that every embedded program includes verbatim. Two copies of this
-# rule is exactly how it drifted: _ccs_invariant_warn carried a hand-fitted 0.15
+# rule is exactly how it drifted: _ccp_invariant_warn carried a hand-fitted 0.15
 # buffer matching no engine function, and named safe models fatal across a
 # 49,000-token band.
 #
@@ -17,14 +17,14 @@
 # implementation that produced five defects in this change alone.
 #
 # Takes three variable NAMES and assigns them: pct raw (its consumer mirrors
-# parseFloat, which takes a numeric prefix), maxout already through _ccs_engine_int
+# parseFloat, which takes a numeric prefix), maxout already through _ccp_engine_int
 # (a positive integer or nothing), and the 1M kill switch normalised to 1 or empty.
-_ccs_trigger_env() {
+_ccp_trigger_env() {
   local _pct="" _out="" _1m="" _e=""
   for _e in "${penv[@]}"; do
     case "$_e" in
       CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=*) _pct="${_e#*=}" ;;
-      CLAUDE_CODE_MAX_OUTPUT_TOKENS=*)   _out=$(_ccs_engine_int "${_e#*=}") ;;
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS=*)   _out=$(_ccp_engine_int "${_e#*=}") ;;
       CLAUDE_CODE_DISABLE_1M_CONTEXT=*)  _1m="${_e#*=}" ;;
     esac
   done
@@ -86,7 +86,7 @@ _ccs_trigger_env() {
   : ${(P)3::=$_1m}
 }
 
-_ccs_pct_parser() {
+_ccp_pct_parser() {
   command cat <<'PYPCT'
 _JS_WS = "\t\v\f \u00a0\ufeff\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\n\r"
 
@@ -174,7 +174,7 @@ def engine_trigger(usable, pct):
 PYPCT
 }
 
-_ccs_policy_pct_py() {
+_ccp_policy_pct_py() {
   # The fleet context policy's autoCompactAtPercent, or None when the file is
   # missing, malformed, or outside the schema this version understands. Shared
   # by the reader that prints it and by the one interpreter that answers every
@@ -193,21 +193,21 @@ def policy_pct(path):
 PYPOL
 }
 
-_ccs_context_parser() {
+_ccp_context_parser() {
   # Compatibility shape for the safety calculations, backed only by this profile.
   command cat <<'PYREG'
 def parse_context(path):
     import importlib.machinery, importlib.util
-    resolver = os.environ["_CCS_CONTEXT_RESOLVER"]
+    resolver = os.environ["_CCP_CONTEXT_RESOLVER"]
     spec = importlib.util.spec_from_loader("profile_context", importlib.machinery.SourceFileLoader("profile_context", resolver))
     store = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(store)
     os.environ["MODEL_WINDOW_PROFILE_CONF"] = path
-    return store.profile_windows(os.environ["_CCS_PROFILE"])
+    return store.profile_windows(os.environ["_CCP_PROFILE"])
 PYREG
 }
 
-_ccs_launch_diagnostics() {
+_ccp_launch_diagnostics() {
   # Answer every read-only question a launch asks of the merged settings layers
   # and the profile's own files, in ONE interpreter. Five interpreter starts in
   # series answered them before (#332), and those starts are most of a launch's
@@ -217,40 +217,40 @@ _ccs_launch_diagnostics() {
   # any byte but NUL -- and the framing is NUL only: a payload's own shape is its
   # kind's business, and `unsafe` is deliberately newline-joined:
   #   pct-set | policy\t<value> | chosen\t<key> | userset\t<value> | disguised\t<id> | unsafe\t<block> | hazard\t<message>
-  # `_ccs_invariant_report` prints the two warning kinds; `_ccs_launch` reads the
+  # `_ccp_invariant_report` prints the two warning kinds; `_ccp_launch` reads the
   # rest into variables. A kind neither consumer names is ignored, so a new one
   # needs its own fixture. No caller tests the status and stderr is dropped, so a
   # diagnostic can never fail a launch.
   #
   # `hazard` is the exception to "read-only answer": it is asked for by name
-  # (`_CCS_DIAG_HAZARD=1`, from the launch) and swallows every failure.
+  # (`_CCP_DIAG_HAZARD=1`, from the launch) and swallows every failure.
   local profile="$1" pct_in_env="$2" pct="$3" maxout="$4" no1m="$5" budget="$6" policy_pct="$7" hdr_key="$8"
   shift 8
   # The invariant half runs only on the two files it reads: an absent or
   # symlinked settings.json, or a missing context conf, is nothing to check.
   local settings="$_CCPROTEUS_PROFILE_DIRS/$profile/settings.json"
   [[ -f "$settings" && ! -L "$settings" && -f "$_CCPROTEUS_DIR/$profile.conf" ]] || settings=""
-  local -a sources=("${(@f)$(_ccs_settings_sources "$profile")}")
+  local -a sources=("${(@f)$(_ccp_settings_sources "$profile")}")
   # Composing the hazard snippets is a `cat` fork and ~9 KB of python source on
   # every call, and only the launch reads the record they serve.
   local hazard_snips=""
-  [[ -n "${_CCS_DIAG_HAZARD:-}" ]] &&
-    hazard_snips="$(_ccs_hazard_py)"$'\n'"$(_ccs_hazard_msg_py)"
-  _CCS_LIB="$_CCPROTEUS_LIB_DIR" \
-  _CCS_SC_PY="$(_ccs_settings_compose_py)" \
-  _CCS_SETTINGS="$settings" \
-  _CCS_PROFILE_CONF="$_CCPROTEUS_DIR/$profile.conf" \
-  _CCS_CONTEXT_RESOLVER="$_CCPROTEUS_LIB_DIR/model-window" \
-  _CCS_PCT_IN_ENV="$pct_in_env" _CCS_ENV_PCT="$pct" _CCS_MAXOUT="$maxout" \
-  _CCS_NO1M="$no1m" _CCS_BUDGET="$budget" _CCS_POLICY="$_CCPROTEUS_CONTEXT_POLICY" \
-  _CCS_POLICY_PCT="$policy_pct" _CCS_PROFILE="$profile" _CCS_HDR_KEY="$hdr_key" \
-  _CCS_HAZARD="${_CCS_DIAG_HAZARD:-}" _CCS_CEILING="${_CCS_DIAG_CEILING:-}" \
-  _CCS_WITHHELD="${CCPROTEUS_WITHHOLD_FATAL:-0}" \
+  [[ -n "${_CCP_DIAG_HAZARD:-}" ]] &&
+    hazard_snips="$(_ccp_hazard_py)"$'\n'"$(_ccp_hazard_msg_py)"
+  _CCP_LIB="$_CCPROTEUS_LIBEXEC_DIR" \
+  _CCP_SC_PY="$(_ccp_settings_compose_py)" \
+  _CCP_SETTINGS="$settings" \
+  _CCP_PROFILE_CONF="$_CCPROTEUS_DIR/$profile.conf" \
+  _CCP_CONTEXT_RESOLVER="$_CCPROTEUS_LIBEXEC_DIR/model-window" \
+  _CCP_PCT_IN_ENV="$pct_in_env" _CCP_ENV_PCT="$pct" _CCP_MAXOUT="$maxout" \
+  _CCP_NO1M="$no1m" _CCP_BUDGET="$budget" _CCP_POLICY="$_CCPROTEUS_CONTEXT_POLICY" \
+  _CCP_POLICY_PCT="$policy_pct" _CCP_PROFILE="$profile" _CCP_HDR_KEY="$hdr_key" \
+  _CCP_HAZARD="${_CCP_DIAG_HAZARD:-}" _CCP_CEILING="${_CCP_DIAG_CEILING:-}" \
+  _CCP_WITHHELD="${CCPROTEUS_WITHHOLD_FATAL:-0}" \
     command python3 -c '
 import json, os, re, sys
-'"$(_ccs_pct_parser)"'
-'"$(_ccs_context_parser)"'
-'"$(_ccs_policy_pct_py)"'
+'"$(_ccp_pct_parser)"'
+'"$(_ccp_context_parser)"'
+'"$(_ccp_policy_pct_py)"'
 '"$hazard_snips"'
 
 
@@ -262,7 +262,7 @@ def invariant_records():
     and the other way round.
     """
     records = []
-    settings = os.environ.get("_CCS_SETTINGS", "")
+    settings = os.environ.get("_CCP_SETTINGS", "")
 
     # The disguised check, moved verbatim: an id a -dd- suffix hides behind a
     # claude- prefix caps the window at 200,000 however the profile is
@@ -290,26 +290,26 @@ def invariant_records():
     except (OSError, json.JSONDecodeError, AttributeError):
         return records
     try:
-        ceilings = parse_context(os.environ["_CCS_PROFILE_CONF"])
+        ceilings = parse_context(os.environ["_CCP_PROFILE_CONF"])
 
 
-        # Already parsed by _ccs_engine_int at the call site, which prints a positive integer
+        # Already parsed by _ccp_engine_int at the call site, which prints a positive integer
         # or nothing -- so an empty value means the engine falls back to the MODEL default, which
         # engine_reserve() knows per id.
-        _raw_out = os.environ.get("_CCS_MAXOUT", "").strip()
+        _raw_out = os.environ.get("_CCP_MAXOUT", "").strip()
         _PINNED_OUT = int(_raw_out) if _raw_out.isdigit() else 0
 
 
         import runpy
-        real_id = runpy.run_path(os.environ["_CCS_CONTEXT_RESOLVER"])["real_id"]
+        real_id = runpy.run_path(os.environ["_CCP_CONTEXT_RESOLVER"])["real_id"]
 
 
-        _NO_1M = bool(os.environ.get("_CCS_NO1M", ""))
+        _NO_1M = bool(os.environ.get("_CCP_NO1M", ""))
         # The session budget, which CL() mins into the window of EVERY model. Absent means no
         # in force, so each family ceiling stands on its own.
-        _raw_budget = os.environ.get("_CCS_BUDGET", "").strip()
+        _raw_budget = os.environ.get("_CCP_BUDGET", "").strip()
         _BUDGET = int(_raw_budget) if _raw_budget.isdigit() else 0
-        _PROFILE = os.environ.get("_CCS_PROFILE", "")
+        _PROFILE = os.environ.get("_CCP_PROFILE", "")
 
 
         def window(model_id):
@@ -341,7 +341,7 @@ def invariant_records():
             # with no percentage override the engine triggers at 179,000 where a flat reserve
             # computes 167,000, so a model walled at 170,000 is fatal and went unnamed. The
             # hazard set was fixed for this in an earlier round; this copy was not, and
-            # _ccs_hazard_set cannot cover the gap because it exits when no window is known
+            # _ccp_hazard_set cannot cover the gap because it exits when no window is known
             # (a first launch with the endpoint down is exactly that case).
             usable = w - min(w, engine_reserve(entry, _PINNED_OUT))
             # xWe(), the same threshold the hazard set computes, from the percentage this
@@ -350,7 +350,7 @@ def invariant_records():
             # where the engine compacts at 784,000, so every model holding between those two
             # was named as dying mid-session when the engine handles it fine -- a 49,000-token
             # band of false alarms, and 9,000 on a 200,000 window.
-            trigger = engine_trigger(usable, engine_pct(os.environ.get("_CCS_PCT", "")))
+            trigger = engine_trigger(usable, engine_pct(os.environ.get("_CCP_PCT", "")))
             # The same lookup the sibling function does: strip the [1m] window marker (the
             # registry is keyed on ids, and the writer emits only bare ones), and try the
             # profile-scoped key first. Without either, this ceiling lookup missed every
@@ -389,7 +389,7 @@ def emit(*fields):
 # read answers none of the env questions -- and today that killed only the two env
 # readers, never the invariant warnings, which read settings.json themselves.
 try:
-    exec(os.environ["_CCS_SC_PY"], globals())
+    exec(os.environ["_CCP_SC_PY"], globals())
     env = _sc.merged_view(paths).get("env")
 except Exception:
     env = None
@@ -413,17 +413,17 @@ if pct_set:
 # `usable - 13000` instead, naming every model between the two as fatal (#428).
 # A policy that does not parse stops the launch before any warning, so it stops
 # the warnings here too.
-pct = os.environ.get("_CCS_ENV_PCT", "")
-run_invariant = bool(os.environ.get("_CCS_SETTINGS", ""))
-if os.environ.get("_CCS_PCT_IN_ENV") != "1":
+pct = os.environ.get("_CCP_ENV_PCT", "")
+run_invariant = bool(os.environ.get("_CCP_SETTINGS", ""))
+if os.environ.get("_CCP_PCT_IN_ENV") != "1":
     if pct_set:
         pct = env[_PCT_KEY]
     else:
-        _policy = os.environ.get("_CCS_POLICY_PCT", "")
+        _policy = os.environ.get("_CCP_POLICY_PCT", "")
         if _policy:
             pct = _policy
         else:
-            value = policy_pct(os.environ.get("_CCS_POLICY", ""))
+            value = policy_pct(os.environ.get("_CCP_POLICY", ""))
             if value is None:
                 run_invariant = False
             else:
@@ -441,8 +441,8 @@ for key in keys:
 # Lines the user set for the header key this launch replaces in the process
 # env: the projection strips that key from the generated env block, so the
 # launcher merges this value in front of its tag lines instead of replacing it.
-# An empty _CCS_HDR_KEY asks nothing (the launch carried no tags).
-hdr_key = os.environ.get("_CCS_HDR_KEY", "")
+# An empty _CCP_HDR_KEY asks nothing (the launch carried no tags).
+hdr_key = os.environ.get("_CCP_HDR_KEY", "")
 if hdr_key:
     value = env.get(hdr_key)
     if isinstance(value, str):
@@ -452,7 +452,7 @@ if hdr_key:
 
 
 if run_invariant:
-    os.environ["_CCS_PCT"] = pct
+    os.environ["_CCP_PCT"] = pct
     for kind, text in invariant_records():
         emit(kind, text)
 
@@ -465,9 +465,9 @@ if run_invariant:
 # emits nothing and leaves the caller its fallback. The record is emitted even
 # when the message is empty: "no model is unsafe" IS the answer, and paying two
 # interpreters to hear `return 0` is the cost this exists to remove.
-if os.environ.get("_CCS_HAZARD") == "1" and "_sc" in globals():
+if os.environ.get("_CCP_HAZARD") == "1" and "_sc" in globals():
     try:
-        _haz_conf = os.environ["_CCS_PROFILE_CONF"]
+        _haz_conf = os.environ["_CCP_PROFILE_CONF"]
         _haz_srcs = [p for p in paths if p.strip()]
         if any(os.path.isfile(p) for p in _haz_srcs) and os.path.isfile(_haz_conf):
             # hazard_rows sizes from the percentage the ENGINE will use, so it may
@@ -477,30 +477,30 @@ if os.environ.get("_CCS_HAZARD") == "1" and "_sc" in globals():
             # presence is not validity). `pct` above then already holds the value
             # the engine gets instead, so this is the same answer the
             # two-interpreter fallback computes, which runs after the injection.
-            _pct_from_env = os.environ.get("_CCS_PCT_IN_ENV") == "1" or (not pct_set and pct != "")
-            _haz_rows = hazard_rows(_sc, os.environ.get("_CCS_PROFILE", ""), os.environ.get("_CCS_BUDGET", ""), os.environ.get("_CCS_CEILING", ""), _haz_srcs, pct, os.environ.get("_CCS_MAXOUT", "").strip(), bool(os.environ.get("_CCS_NO1M", "")), _haz_conf, _pct_from_env)
-            emit("hazard", hazard_message(_haz_rows, os.environ.get("_CCS_WITHHELD") == "1"))
+            _pct_from_env = os.environ.get("_CCP_PCT_IN_ENV") == "1" or (not pct_set and pct != "")
+            _haz_rows = hazard_rows(_sc, os.environ.get("_CCP_PROFILE", ""), os.environ.get("_CCP_BUDGET", ""), os.environ.get("_CCP_CEILING", ""), _haz_srcs, pct, os.environ.get("_CCP_MAXOUT", "").strip(), bool(os.environ.get("_CCP_NO1M", "")), _haz_conf, _pct_from_env)
+            emit("hazard", hazard_message(_haz_rows, os.environ.get("_CCP_WITHHELD") == "1"))
     except Exception:
         pass
 ' "$@" -- "${sources[@]}" 2>/dev/null
 }
 
-_ccs_invariant_report() {
-  # Print the warnings one `_ccs_launch_diagnostics` run produced, in the order it
-  # produced them. Every other record kind is an answer `_ccs_launch` reads into a
+_ccp_invariant_report() {
+  # Print the warnings one `_ccp_launch_diagnostics` run produced, in the order it
+  # produced them. Every other record kind is an answer `_ccp_launch` reads into a
   # variable, and a record this loop does not name is ignored.
   local profile="$1" record
   shift
   for record in "$@"; do
     case "$record" in
       disguised$'\t'*)
-        _ccs_err \
+        _ccp_err \
           "warning: '$profile' is on a disguised model id, which caps the window at 200,000 — select ${record#*$'\t'} for the full window"
         ;;
       unsafe$'\t'*)
         local line
         while IFS= read -r line; do
-          [[ -n "$line" ]] && _ccs_err \
+          [[ -n "$line" ]] && _ccp_err \
             "warning: '$profile' offers a model that will refuse before it compacts — $line"
         done <<< "${record#*$'\t'}"
         ;;
@@ -509,7 +509,7 @@ _ccs_invariant_report() {
   return 0
 }
 
-_ccs_invariant_warn() {
+_ccp_invariant_warn() {
   # Name any model the profile offers that will refuse before it compacts.
   #
   # Claude Code compacts at roughly 0.85 of (window - 20k) and cannot see a routed
@@ -531,21 +531,21 @@ _ccs_invariant_warn() {
   # passes a value models an env carrying the key, and 0 models the layer-only
   # launch, where the env injects nothing by design and the check must read the
   # percentage out of the settings layers the way the engine does (#428).
-  _ccs_invariant_report "$1" "${(@0)$(_ccs_launch_diagnostics "$1" "${6:-1}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "" "")}"
+  _ccp_invariant_report "$1" "${(@0)$(_ccp_launch_diagnostics "$1" "${6:-1}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "" "")}"
   return 0
 }
 
-_ccs_settings_compose_py() {
+_ccp_settings_compose_py() {
   # Python prelude binding `_sc` to settings-compose, whose merged_view() is the one
-  # reading of the layers (merge plus tombstones). Needs _CCS_LIB in the environment.
+  # reading of the layers (merge plus tombstones). Needs _CCP_LIB in the environment.
   print -r -- '
 import importlib.machinery, importlib.util, os
-_sp = importlib.util.spec_from_loader("settings_compose", importlib.machinery.SourceFileLoader("settings_compose", os.path.join(os.environ["_CCS_LIB"], "settings-compose")))
+_sp = importlib.util.spec_from_loader("settings_compose", importlib.machinery.SourceFileLoader("settings_compose", os.path.join(os.environ["_CCP_LIB"], "settings-compose")))
 _sc = importlib.util.module_from_spec(_sp)
 _sp.loader.exec_module(_sc)'
 }
 
-_ccs_settings_sources() {
+_ccp_settings_sources() {
   # The user's own settings layers -- canon first, profile on top, last writer
   # wins -- in the order settings-compose merges them. NOT the generated file:
   # that also carries ccproteus's saved defaults and derived budget, which readers
@@ -554,13 +554,13 @@ _ccs_settings_sources() {
   # each place that still read the profile alone reported a different wrong answer
   # (an unresolved tier alias and therefore no budget at all; a route ceiling that
   # clamped the largest model; a hazard set that disagreed with the withhold).
-  _ccs_canonical_settings
+  _ccp_canonical_settings
   [[ -e "$_CCPROTEUS_PROFILE_DIRS/$1/settings.policy.json" ]] &&
     print -r -- "$_CCPROTEUS_PROFILE_DIRS/$1/settings.policy.json"
-  _ccs_profile_layer "$1"
+  _ccp_profile_layer "$1"
 }
 
-_ccs_canonical_settings() {
+_ccp_canonical_settings() {
   print -r -- "$HOME/.claude/settings.json"
 }
 
@@ -568,7 +568,7 @@ _ccs_canonical_settings() {
 # settings-compose generates it from canonical settings plus this layer. Until
 # the first projection runs, the old settings.json still IS the layer, so readers
 # and writers use it and the projection adopts it with their changes intact.
-_ccs_profile_layer() {
+_ccp_profile_layer() {
   local dir="$_CCPROTEUS_PROFILE_DIRS/$1"
   if [[ -e "$dir/settings.profile.json" || -L "$dir/settings.profile.json" ||
         -e "$dir/cache/settings.base.json" ]]; then
@@ -578,7 +578,7 @@ _ccs_profile_layer() {
   fi
 }
 
-_ccs_effective_acw() {
+_ccp_effective_acw() {
   # The auto-compact budget the ENGINE will use, in its own precedence order:
   #
   #   1. env CLAUDE_CODE_AUTO_COMPACT_WINDOW -- read before the settings layer, and
@@ -600,9 +600,9 @@ _ccs_effective_acw() {
       # value the engine calls invalid (<= 0, or no leading digits) yields empty and
       # falls through, exactly as its own bounded parse does.
       local _env=""
-      _env=$(_ccs_engine_int "${_e#*=}") || _env=""
+      _env=$(_ccp_engine_int "${_e#*=}") || _env=""
       if [[ "$_env" == <1-> ]]; then
-        _ccs_clamp_acw _env
+        _ccp_clamp_acw _env
         print -r -- "$_env"
         return 0
       fi
@@ -619,7 +619,7 @@ _ccs_effective_acw() {
     _saved="$3"
   else
     local -a _lw=()
-    _lw=("${(@ps:\t:)$(_ccs_launch_window "$profile" "")}")
+    _lw=("${(@ps:\t:)$(_ccp_launch_window "$profile" "")}")
     _saved="${_lw[6]:-}"
   fi
   if [[ "$_saved" == <-> ]]; then
@@ -631,7 +631,7 @@ _ccs_effective_acw() {
   return 0
 }
 
-_ccs_engine_int() {
+_ccp_engine_int() {
   # The integer the ENGINE will read out of an env var, or empty when it rejects the
   # value. Mirrors Jd/yN in 2.1.247:
   #
@@ -693,7 +693,7 @@ if n is not None and n > 0:
 PY
 }
 
-_ccs_clamp_acw() {
+_ccp_clamp_acw() {
   # Clamp an auto-compact budget into the range the engine will actually honour,
   # in place, by name. Both the settings key and the env var are bounded there --
   # the key by its schema (`.int().min(1e5).max(1e6)`, out-of-range values dropped
@@ -715,13 +715,13 @@ _ccs_clamp_acw() {
   : ${(P)_name::=$_v}
 }
 
-# _ccs_hazard_set's arithmetic as a named snippet, composed into its run like
+# _ccp_hazard_set's arithmetic as a named snippet, composed into its run like
 # the settings-compose, pct and context parsers beside it -- a separate run
-# from _ccs_launch_window, because the hazard cap is injected only after
+# from _ccp_launch_window, because the hazard cap is injected only after
 # diagnostics. hazard_rows() is the whole calculation: it takes what the env
 # vars used to hold and returns the rows to print, or an empty list when
 # there is nothing to say.
-_ccs_hazard_py() {
+_ccp_hazard_py() {
   command cat <<'PYHAZ'
 def num(v):
     return int(v) if v.isdigit() else 0
@@ -782,7 +782,7 @@ def hazard_rows(sc, profile, budget, ceiling, sources, pct_raw, raw_out, no_1m, 
     reserve = 20_000
     # Already parsed the way the engine parses it; empty means the engine rejects
     # the value and keeps its own default.
-    # _ccs_engine_int is the only writer, and it prints a positive integer or nothing --
+    # _ccp_engine_int is the only writer, and it prints a positive integer or nothing --
     # so re-validating here would be guarding a condition the producer guarantees.
     if raw_out:
         reserve = min(int(raw_out), 20_000)
@@ -891,10 +891,10 @@ PYHAZ
 }
 
 # The advisory text for those rows, in ONE place. The launch renders it from the
-# same interpreter that computed the set, and `_ccs_switch_hazard_warn` renders
-# it from `_ccs_hazard_set`'s output, so the wording, the three-name cap and the
+# same interpreter that computed the set, and `_ccp_switch_hazard_warn` renders
+# it from `_ccp_hazard_set`'s output, so the wording, the three-name cap and the
 # withhold branch cannot drift between the two paths.
-_ccs_hazard_msg_py() {
+_ccp_hazard_msg_py() {
   command cat <<'PYHMSG'
 def hazard_message(rows, withheld):
     # `rows` is hazard_rows()' own output: the trigger, then `<wall>\t<name>`
@@ -926,7 +926,7 @@ def hazard_message(rows, withheld):
 PYHMSG
 }
 
-_ccs_hazard_set() {
+_ccp_hazard_set() {
   # Positional array indexing and "${(f)...}" splitting below assume zsh's
   # native 1-based arrays; KSH_ARRAYS in a caller would silently shift every
   # index. localoptions keeps the change inside this function.
@@ -958,7 +958,7 @@ _ccs_hazard_set() {
   if [[ -n "${4:-}" ]]; then
     sources=("$4")                       # generated settings: already merged
   else
-    sources=("${(f)$(_ccs_settings_sources "$profile")}")
+    sources=("${(f)$(_ccp_settings_sources "$profile")}")
   fi
   local _s _any=0
   for _s in "${sources[@]}"; do
@@ -969,31 +969,31 @@ _ccs_hazard_set() {
   [[ -f "$context_conf" ]] || return 0
 
   local pct="" _maxout="" _no1m=""
-  _ccs_trigger_env pct _maxout _no1m
+  _ccp_trigger_env pct _maxout _no1m
   # Whether the launch env carries the percentage at all -- the same presence test the
   # launch used to decide the injection (#428). Empty means "not carried", the shape
-  # _ccs_trigger_env's own outputs have: a literal 0 would reach the python below as a
+  # _ccp_trigger_env's own outputs have: a literal 0 would reach the python below as a
   # truthy STRING and silence the fallback it is there to allow. The python reads the
   # layers when this is empty, because that is then the engine's own value.
   local pct_in_env=""
   (( ${penv[(I)CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=*]} )) && pct_in_env=1
 
-  _CCS_LIB="$_CCPROTEUS_LIB_DIR" _CCS_SOURCES="${(pj:\n:)sources}" _CCS_PROFILE_CONF="$context_conf" _CCS_CONTEXT_RESOLVER="$_CCPROTEUS_LIB_DIR/model-window" _CCS_BUDGET="$budget" \
-  _CCS_CEILING="$ceiling" _CCS_PCT="$pct" _CCS_PROFILE="$profile" \
-  _CCS_MAXOUT="$_maxout" _CCS_NO1M="$_no1m" _CCS_PCT_IN_ENV="$pct_in_env" \
+  _CCP_LIB="$_CCPROTEUS_LIBEXEC_DIR" _CCP_SOURCES="${(pj:\n:)sources}" _CCP_PROFILE_CONF="$context_conf" _CCP_CONTEXT_RESOLVER="$_CCPROTEUS_LIBEXEC_DIR/model-window" _CCP_BUDGET="$budget" \
+  _CCP_CEILING="$ceiling" _CCP_PCT="$pct" _CCP_PROFILE="$profile" \
+  _CCP_MAXOUT="$_maxout" _CCP_NO1M="$_no1m" _CCP_PCT_IN_ENV="$pct_in_env" \
     command python3 -c '
 import json, os, re
-'"$(_ccs_settings_compose_py)"'
-'"$(_ccs_pct_parser)"'
-'"$(_ccs_context_parser)"'
+'"$(_ccp_settings_compose_py)"'
+'"$(_ccp_pct_parser)"'
+'"$(_ccp_context_parser)"'
 
-'"$(_ccs_hazard_py)"'
-rows = hazard_rows(_sc, os.environ.get("_CCS_PROFILE", ""), os.environ.get("_CCS_BUDGET", ""), os.environ.get("_CCS_CEILING", ""), [p for p in os.environ.get("_CCS_SOURCES", "").split("\n") if p.strip()], os.environ.get("_CCS_PCT", ""), os.environ.get("_CCS_MAXOUT", "").strip(), bool(os.environ.get("_CCS_NO1M", "")), os.environ["_CCS_PROFILE_CONF"], bool(os.environ.get("_CCS_PCT_IN_ENV", "")))
+'"$(_ccp_hazard_py)"'
+rows = hazard_rows(_sc, os.environ.get("_CCP_PROFILE", ""), os.environ.get("_CCP_BUDGET", ""), os.environ.get("_CCP_CEILING", ""), [p for p in os.environ.get("_CCP_SOURCES", "").split("\n") if p.strip()], os.environ.get("_CCP_PCT", ""), os.environ.get("_CCP_MAXOUT", "").strip(), bool(os.environ.get("_CCP_NO1M", "")), os.environ["_CCP_PROFILE_CONF"], bool(os.environ.get("_CCP_PCT_IN_ENV", "")))
 if rows: print("\n".join(rows))
 '
 }
 
-_ccs_switch_hazard_warn() {
+_ccp_switch_hazard_warn() {
   # Report the models a mid-session /model switch cannot compact safely.
   #
   # The compaction trigger is fixed at launch. A switch DOWN to a model whose real
@@ -1013,38 +1013,38 @@ _ccs_switch_hazard_warn() {
   # CCPROTEUS_WITHHOLD_FATAL=1 removes them instead.
   local profile="$1" budget="${2:-}" ceiling="${3:-}" settings="${4:-}"
   local hazards
-  hazards=$(_ccs_hazard_set "$profile" "$budget" "$ceiling" "$settings") || return 0
+  hazards=$(_ccp_hazard_set "$profile" "$budget" "$ceiling" "$settings") || return 0
   [[ -n "$hazards" ]] || return 0
 
-  # The wording lives with the row arithmetic, in `_ccs_hazard_msg_py`: a launch
+  # The wording lives with the row arithmetic, in `_ccp_hazard_msg_py`: a launch
   # that reached the advisory through its own diagnostics interpreter renders the
   # same text there, and a second copy here is how the two would drift. `hazards`
   # is already the shape `hazard_message` takes -- trigger first, one row per line
   # -- and it is never only a trigger, so no split-and-rejoin is owed here.
   local msg
-  msg=$(_CCS_ROWS="$hazards" _CCS_WITHHELD="${CCPROTEUS_WITHHOLD_FATAL:-0}" \
+  msg=$(_CCP_ROWS="$hazards" _CCP_WITHHELD="${CCPROTEUS_WITHHOLD_FATAL:-0}" \
         command python3 -c '
 import os
-'"$(_ccs_hazard_msg_py)"'
-rows = [line for line in os.environ.get("_CCS_ROWS", "").split("\n") if line.strip()]
-msg = hazard_message(rows, os.environ.get("_CCS_WITHHELD") == "1")
+'"$(_ccp_hazard_msg_py)"'
+rows = [line for line in os.environ.get("_CCP_ROWS", "").split("\n") if line.strip()]
+msg = hazard_message(rows, os.environ.get("_CCP_WITHHELD") == "1")
 if msg:
     print(msg)
 ' 2>/dev/null) || return 0
 
   [[ -n "$msg" ]] || return 0
-  _ccs_advise "$msg"
+  _ccp_advise "$msg"
   return 0
 }
 
-_ccs_withhold_fatal_switches() {
+_ccp_withhold_fatal_switches() {
   # Positional array indexing and "${(f)...}" splitting below assume zsh's
   # native 1-based arrays; KSH_ARRAYS in a caller would silently shift every
   # index. localoptions keeps the change inside this function.
   setopt localoptions noksharrays
   # Remove from the picker the models this session could not compact.
   #
-  # The opt-in companion to `_ccs_switch_hazard_warn` (CCPROTEUS_WITHHOLD_FATAL=1):
+  # The opt-in companion to `_ccp_switch_hazard_warn` (CCPROTEUS_WITHHOLD_FATAL=1):
   # that names them, this makes the choice unavailable. Opt-in because hiding a
   # model the user selected on purpose costs them a reviewer they wanted, and the
   # alternative -- one budget small enough for the smallest model -- taxes every
@@ -1058,18 +1058,18 @@ _ccs_withhold_fatal_switches() {
   [[ -f "$settings" ]] || return 0
 
   local hazards
-  hazards=$(_ccs_hazard_set "$profile" "$budget" "$ceiling" "$settings") || return 0
+  hazards=$(_ccp_hazard_set "$profile" "$budget" "$ceiling" "$settings") || return 0
   [[ -n "$hazards" ]] || return 0
 
   local -a rows=("${(f)hazards}")
   shift rows                       # drop the trigger line; only the names matter
   (( ${#rows} )) || return 0
 
-  _CCS_SETTINGS="$settings" _CCS_ROWS="${(pj:\n:)rows}" _CCS_LAUNCHED="${_pmodel:-}" \
+  _CCP_SETTINGS="$settings" _CCP_ROWS="${(pj:\n:)rows}" _CCP_LAUNCHED="${_pmodel:-}" \
     command python3 -c '
 import json, os, tempfile
 
-path = os.environ["_CCS_SETTINGS"]
+path = os.environ["_CCP_SETTINGS"]
 try:
     with open(path, encoding="utf-8") as fh:
         doc = json.load(fh)
@@ -1082,7 +1082,7 @@ if not isinstance(offered, list) or not offered:
     raise SystemExit(0)
 
 fatal = set()
-for line in os.environ.get("_CCS_ROWS", "").split("\n"):
+for line in os.environ.get("_CCP_ROWS", "").split("\n"):
     if not line.strip():
         continue
     _, _, name = line.partition("\t")
@@ -1090,7 +1090,7 @@ for line in os.environ.get("_CCS_ROWS", "").split("\n"):
 if not fatal:
     raise SystemExit(0)
 
-launched = os.environ.get("_CCS_LAUNCHED", "").split("[", 1)[0]
+launched = os.environ.get("_CCP_LAUNCHED", "").split("[", 1)[0]
 kept = [m for m in offered
         if not isinstance(m, str)
         or m.split("[", 1)[0] == launched          # never hide what is running
@@ -1114,7 +1114,7 @@ except BaseException:
   return 0
 }
 
-_ccs_advise() {
+_ccp_advise() {
   # Queue one launch advisory for the user to actually READ.
   #
   # Anything printed before exec is painted over: Claude Code takes several
@@ -1127,34 +1127,34 @@ _ccs_advise() {
   #
   # Queued rather than emitted, because advisories are computed at different
   # points of the launch and one hook carries them all.
-  _ccs_advisories+=("$1")
+  _ccp_advisories+=("$1")
 }
 
-_ccs_context_compaction_percent() {
+_ccp_context_compaction_percent() {
   [[ -e "$_CCPROTEUS_CONTEXT_POLICY" ]] || {
     print 75
     return 0
   }
   command python3 -c '
 import json, sys
-'"$(_ccs_policy_pct_py)"'
+'"$(_ccp_policy_pct_py)"'
 value = policy_pct(sys.argv[1])
 if value is None:
     raise SystemExit(1)
 print(value)
 ' "$_CCPROTEUS_CONTEXT_POLICY" 2>/dev/null || {
-    _ccs_err "invalid fleet context policy: $_CCPROTEUS_CONTEXT_POLICY"
+    _ccp_err "invalid fleet context policy: $_CCPROTEUS_CONTEXT_POLICY"
     return 1
   }
 }
 
-_ccs_effective_compaction_percent() {
+_ccp_effective_compaction_percent() {
   local profile="$1" conf_value="${2:-}" saved=""
-  saved=$(_CCS_LIB="$_CCPROTEUS_LIB_DIR" _CCS_CONF_PCT="$conf_value" command python3 -c '
+  saved=$(_CCP_LIB="$_CCPROTEUS_LIBEXEC_DIR" _CCP_CONF_PCT="$conf_value" command python3 -c '
 import json, os, re, sys
-'"$(_ccs_settings_compose_py)"'
-'"$(_ccs_pct_parser)"'
-conf = os.environ.get("_CCS_CONF_PCT", "")
+'"$(_ccp_settings_compose_py)"'
+'"$(_ccp_pct_parser)"'
+conf = os.environ.get("_CCP_CONF_PCT", "")
 if conf:
     value = engine_pct(conf)
     if value is not None:
@@ -1168,39 +1168,39 @@ value = engine_pct(raw) if isinstance(raw, str) else None
 if value is None:
     raise SystemExit(1)
 print(f"{value:g}")
-' "${(f)$(_ccs_settings_sources "$profile")}" 2>/dev/null) || saved=""
+' "${(f)$(_ccp_settings_sources "$profile")}" 2>/dev/null) || saved=""
   if [[ -n "$saved" ]]; then
     print -r -- "$saved"
   else
-    _ccs_context_compaction_percent
+    _ccp_context_compaction_percent
   fi
 }
 
-# Fill `_ccs_sc_opts` and `_ccs_sc_strip` from a launch's option list:
+# Fill `_ccp_sc_opts` and `_ccp_sc_strip` from a launch's option list:
 # settings-compose options up to `--`, then the launch environment, whose
 # `KEY=value` entries each ask for a --strip so that key stays out of the
 # generated env block. Named for this launcher's use of them, not `reply`: a
 # helper that writes a bare `reply` overwrites its caller's local under zsh's
 # dynamic scope, and that name is this repo's own two-value return.
-_ccs_projection_args() {
-  _ccs_sc_opts=() _ccs_sc_strip=()
-  while (( $# )) && [[ "$1" != -- ]]; do _ccs_sc_opts+=("$1"); shift; done
+_ccp_projection_args() {
+  _ccp_sc_opts=() _ccp_sc_strip=()
+  while (( $# )) && [[ "$1" != -- ]]; do _ccp_sc_opts+=("$1"); shift; done
   (( $# )) && shift
   local item
   for item in "$@"; do
-    [[ "$item" == *=* ]] && _ccs_sc_strip+=(--strip "${item%%=*}")
+    [[ "$item" == *=* ]] && _ccp_sc_strip+=(--strip "${item%%=*}")
   done
 }
 
-# Fill `_ccs_sc_argv` with one settings-compose invocation's argv -- verb and
+# Fill `_ccp_sc_argv` with one settings-compose invocation's argv -- verb and
 # profile first, then the shared options. The executable path is left off: the
 # store hands this array to settings-compose's own main() as its argv, with
 # sys.argv[0] set apart, so a path in here would arrive as a second verb.
-_ccs_settings_argv() {
+_ccp_settings_argv() {
   local verb="$1" profile="$2"
   shift 2
-  _ccs_sc_argv=("$verb" "$_CCPROTEUS_PROFILE_DIRS/$profile" \
-         --canonical "$(_ccs_canonical_settings)" \
+  _ccp_sc_argv=("$verb" "$_CCPROTEUS_PROFILE_DIRS/$profile" \
+         --canonical "$(_ccp_canonical_settings)" \
          "${(@)${_CCPROTEUS_MODEL_MAPPING_ENV[@]}/#/--mapping=}" "$@")
 }
 
@@ -1209,11 +1209,11 @@ _ccs_settings_argv() {
 # the same configuration from CLAUDE_CONFIG_DIR. Every key this launch passes in
 # the environment is left out of the file's env block, because Claude Code lets
 # that block override the process environment. See settings-compose.
-_ccs_settings_projection() {
+_ccp_settings_projection() {
   local verb="$1" profile="$2"
   shift 2
-  _ccs_settings_argv "$verb" "$profile" "$@"
-  "$_CCPROTEUS_LIB_DIR/settings-compose" "${_ccs_sc_argv[@]}"
+  _ccp_settings_argv "$verb" "$profile" "$@"
+  "$_CCPROTEUS_LIBEXEC_DIR/settings-compose" "${_ccp_sc_argv[@]}"
 }
 
 # Carry edits Claude Code made to the generated settings.json into the layer. The
@@ -1221,43 +1221,43 @@ _ccs_settings_projection() {
 # BASE), so an unedited file is recognised by content -- no process, and no
 # timestamp a restore or copy can fake. Anything else, including a missing saved
 # copy, runs the fold.
-_ccs_fold_settings() {
+_ccp_fold_settings() {
   local dir="$_CCPROTEUS_PROFILE_DIRS/$1"
   [[ -f "$dir/settings.json" ]] || return 0
   [[ -f "$dir/cache/settings.base.json" &&
      "$(<"$dir/settings.json")" == "$(<"$dir/cache/settings.base.json")" ]] && return 0
-  _ccs_settings_projection fold "$1" 2>/dev/null
+  _ccp_settings_projection fold "$1" 2>/dev/null
 }
 
 # $1 profile, $2 saved model defaults (JSON), then materialize options, `--`, and
 # the launch environment, whose keys stay out of the generated env block.
-_ccs_project_settings() {
+_ccp_project_settings() {
   local profile="$1" saved="$2"
   shift 2
-  _ccs_projection_args "$@"
+  _ccp_projection_args "$@"
   local rc
-  _ccs_settings_projection materialize "$profile" --saved "$saved" \
-    "${_ccs_sc_opts[@]}" "${_ccs_sc_strip[@]}" || {
+  _ccp_settings_projection materialize "$profile" --saved "$saved" \
+    "${_ccp_sc_opts[@]}" "${_ccp_sc_strip[@]}" || {
     rc=$?
-    _ccs_err "could not generate settings for '$profile'"
+    _ccp_err "could not generate settings for '$profile'"
     return $rc
   }
 }
 
 # $1 profile, then materialize options, `--`, and the launch environment -- the same
-# arguments _ccs_project_settings takes, minus the saved defaults it would have to be
+# arguments _ccp_project_settings takes, minus the saved defaults it would have to be
 # handed. Reading the conf and generating the settings are two halves of one job on
 # one profile, so a launch pays for one Python start instead of two: the store reads
 # the conf and then runs settings-compose inside its own interpreter.
-_ccs_prepare_and_project() {
+_ccp_prepare_and_project() {
   local profile="$1"
   shift
   # The two helpers below shift their own positional parameters, never this
   # function's, so `$@` still holds this launch's options, `--`, and its
   # environment for the fallback run.
-  _ccs_projection_args "$@"
-  _ccs_settings_argv materialize "$profile" "${_ccs_sc_opts[@]}" "${_ccs_sc_strip[@]}"
-  local -a sc_argv=("${_ccs_sc_argv[@]}")
+  _ccp_projection_args "$@"
+  _ccp_settings_argv materialize "$profile" "${_ccp_sc_opts[@]}" "${_ccp_sc_strip[@]}"
+  local -a sc_argv=("${_ccp_sc_argv[@]}")
   # The argv travels in the environment one element per line, so an element that
   # carries a newline cannot be expressed -- a profile path or an option could hold
   # one. Then the two runs, which take their arguments as arguments.
@@ -1267,22 +1267,22 @@ _ccs_prepare_and_project() {
       local saved
       # Emptied, not just unset: these two are what put the store in materialize
       # mode and would otherwise follow this fallback into its own store run.
-      saved=$(_CCS_MATERIALIZE= _CCS_SC_PY= \
-              _ccs_config_store prepare-launch "$profile") || return 10
-      _ccs_project_settings "$profile" "$saved" "$@"
+      saved=$(_CCP_MATERIALIZE= _CCP_SC_PY= \
+              _ccp_config_store prepare-launch "$profile") || return 10
+      _ccp_project_settings "$profile" "$saved" "$@"
       return $?
     fi
   done
   local rc
-  _CCS_MATERIALIZE="${(pj:\n:)sc_argv}" _CCS_LIB="$_CCPROTEUS_LIB_DIR" \
-    _CCS_SC_PY="$(_ccs_settings_compose_py)" \
-    _ccs_config_store prepare-launch "$profile" >/dev/null
+  _CCP_MATERIALIZE="${(pj:\n:)sc_argv}" _CCP_LIB="$_CCPROTEUS_LIBEXEC_DIR" \
+    _CCP_SC_PY="$(_ccp_settings_compose_py)" \
+    _ccp_config_store prepare-launch "$profile" >/dev/null
   rc=$?
   # settings-compose's own statuses, shifted past the store's: the launch handles
   # each of them as it does when they come from its own process.
   case $rc in
     0) return 0 ;;
-    11 | 12 | 13) _ccs_err "could not generate settings for '$profile'"; return $(( rc - 10 )) ;;
+    11 | 12 | 13) _ccp_err "could not generate settings for '$profile'"; return $(( rc - 10 )) ;;
     *) return 10 ;;
   esac
 }

@@ -12,7 +12,7 @@ zmodload -F zsh/stat b:zstat 2>/dev/null
 
 # zstat arrays are indexed 1-based below; a caller's KSH_ARRAYS would shift them.
 # Size in bytes; 0 when unknowable, which both callers already treat as "skip".
-_ccs_size() {
+_ccp_size() {
   setopt localoptions noksharrays
   local -a s
   if zstat -A s +size "$1" 2>/dev/null; then
@@ -24,7 +24,7 @@ _ccs_size() {
 
 # Mtime as a unix timestamp; nonzero exit when unknowable, so a caller can
 # `|| continue` rather than treat a missing file as epoch 0 (infinitely stale).
-_ccs_mtime() {
+_ccp_mtime() {
   setopt localoptions noksharrays
   local -a s
   zstat -A s +mtime "$1" 2>/dev/null || return 1
@@ -36,7 +36,7 @@ _ccs_mtime() {
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 
-_ccs_log_init() {
+_ccp_log_init() {
   setopt localoptions noksharrays
   # Create the log 0600 before any writer appends at the caller's umask.
   if [[ ! -e "$_CCPROTEUS_LOG" ]]; then
@@ -44,31 +44,31 @@ _ccs_log_init() {
   elif [[ -f "$_CCPROTEUS_LOG" && ! -L "$_CCPROTEUS_LOG" && -O "$_CCPROTEUS_LOG" ]]; then
     # An older/looser log keeps its mode otherwise. Own regular file only: never
     # chmod through a planted symlink. zstat first, so no fork when already private.
-    local -a _ccs_st
-    zstat -A _ccs_st +mode "$_CCPROTEUS_LOG" 2>/dev/null &&
-      (( _ccs_st[1] & 8#077 )) && command chmod go-rwx "$_CCPROTEUS_LOG" 2>/dev/null || :
+    local -a _ccp_st
+    zstat -A _ccp_st +mode "$_CCPROTEUS_LOG" 2>/dev/null &&
+      (( _ccp_st[1] & 8#077 )) && command chmod go-rwx "$_CCPROTEUS_LOG" 2>/dev/null || :
   fi
 }
 
-_ccs_log() {
+_ccp_log() {
   # Append a timestamped line to the log. Best-effort — never fatal.
   local ts
-  _ccs_log_init
+  _ccp_log_init
   ts=$(command date '+%Y-%m-%d %H:%M:%S' 2>/dev/null) || ts="?"
   print -r -- "$ts [$$] $1" >> "$_CCPROTEUS_LOG" 2>/dev/null || :
 
   # Auto-rotate: if the log exceeds the cap, keep the last half.
-  # _ccs_size, not `stat -f %z`: that spelling is BSD-only, so on Linux it failed,
+  # _ccp_size, not `stat -f %z`: that spelling is BSD-only, so on Linux it failed,
   # the `|| echo 0` reported an empty log, and rotation NEVER ran — a silent
   # unbounded log on exactly the platform nobody here would notice it on.
   if [[ -f "$_CCPROTEUS_LOG" ]] &&
-     (( $(_ccs_size "$_CCPROTEUS_LOG") > _CCPROTEUS_LOG_MAX )); then
+     (( $(_ccp_size "$_CCPROTEUS_LOG") > _CCPROTEUS_LOG_MAX )); then
     # mktemp, not a fixed .tmp name: under the /tmp fallback the name is
     # guessable, and a planted symlink there would be installed AS the log.
-    local _ccs_rot
-    _ccs_rot=$(command mktemp "$_CCPROTEUS_LOG.XXXXXX" 2>/dev/null) &&
-      command tail -n 500 "$_CCPROTEUS_LOG" > "$_ccs_rot" 2>/dev/null &&
-      command mv -f "$_ccs_rot" "$_CCPROTEUS_LOG" 2>/dev/null || :
+    local _ccp_rot
+    _ccp_rot=$(command mktemp "$_CCPROTEUS_LOG.XXXXXX" 2>/dev/null) &&
+      command tail -n 500 "$_CCPROTEUS_LOG" > "$_ccp_rot" 2>/dev/null &&
+      command mv -f "$_ccp_rot" "$_CCPROTEUS_LOG" 2>/dev/null || :
   fi
 }
 
@@ -77,14 +77,14 @@ _ccs_log() {
 # name resolves through PATH the way invoking it would, and the result is
 # canonicalized ONCE (:A). `[[ -x ]]` on a bare name tests $PWD, not PATH, and a
 # relative path would resolve against wherever the launch ran.
-_ccs_resolve_exe() {  # $1 = env var name (for messages), $2 = configured value
+_ccp_resolve_exe() {  # $1 = env var name (for messages), $2 = configured value
   local var="$1" val="$2"
   if [[ "$val" != */* ]]; then
     val="${commands[$val]:-}"
-    [[ -n "$val" ]] || { _ccs_err "$var is not on PATH: $2"; return 1 }
+    [[ -n "$val" ]] || { _ccp_err "$var is not on PATH: $2"; return 1 }
   fi
   val="${val:A}"
-  [[ -x "$val" ]] || { _ccs_err "$var is not executable: $val"; return 1 }
+  [[ -x "$val" ]] || { _ccp_err "$var is not executable: $val"; return 1 }
   print -r -- "$val"
 }
 
@@ -286,7 +286,7 @@ typeset -g _CCPROTEUS_CLAUDE_VERBS=""
 typeset -g _CCPROTEUS_CLAUDE_HELP=""
 typeset -g _CCPROTEUS_CLAUDE_HELP_PROBED=0
 
-_ccs_claude_help() {
+_ccp_claude_help() {
   (( _CCPROTEUS_CLAUDE_HELP_PROBED )) && return 0
   _CCPROTEUS_CLAUDE_HELP_PROBED=1
   # Whatever the binary prints is the answer, its exit status is not: a
@@ -295,13 +295,13 @@ _ccs_claude_help() {
   return 0
 }
 
-_ccs_claude_verbs() {
+_ccp_claude_verbs() {
   [[ -n "$_CCPROTEUS_CLAUDE_VERBS" ]] && { print -r -- "$_CCPROTEUS_CLAUDE_VERBS"; return 0 }
 
   # `Commands:` section only, two-space-indented leading word per row. Anything the
   # binary does not list is not a subcommand, by definition.
   local out
-  _ccs_claude_help
+  _ccp_claude_help
   out="$(print -r -- "$_CCPROTEUS_CLAUDE_HELP" |
         command sed -n '/^Commands:/,$p' |
         command grep -oE '^  [a-z][a-z0-9|-]*' |
@@ -312,7 +312,7 @@ _ccs_claude_verbs() {
   print -r -- "$out"
 }
 
-_ccs_is_claude_subcommand() {
+_ccp_is_claude_subcommand() {
   local word="${1:-}"
   [[ -n "$word" ]] || return 1
 
@@ -324,12 +324,12 @@ _ccs_is_claude_subcommand() {
     list|inspect|show|add|config|login|default|use|rm|mv|get|set|context|cred|secret|creds|probe|hop|help|version|run|start) return 1 ;;
     # The retired window verb, spelled without writing it: it must still be reserved
     # (never read as an profile name, never forwarded to Claude Code) while the word
-    # itself is gone from this source. `$_ccs_retired_verb` is set beside the version.
-    ("$_ccs_retired_verb") return 1 ;;
+    # itself is gone from this source. `$_ccp_retired_verb` is set beside the version.
+    ("$_ccp_retired_verb") return 1 ;;
   esac
 
   local verb
-  for verb in ${(f)"$(_ccs_claude_verbs)"}; do
+  for verb in ${(f)"$(_ccp_claude_verbs)"}; do
     [[ "$word" == "$verb" ]] && return 0
   done
   return 1
@@ -337,7 +337,7 @@ _ccs_is_claude_subcommand() {
 
 # Which native options take a value, and how the value is given: the Options
 # section of the installed binary's own `claude --help`, the same source of
-# truth _ccs_claude_verbs reads for Commands. A value is marked <required> or
+# truth _ccp_claude_verbs reads for Commands. A value is marked <required> or
 # [optional] after the (comma-separated) spellings:
 #   --system-prompt <prompt>   -r, --resume [value]   --verbose
 # The launch scans need this because an option VALUE can look exactly like a
@@ -353,7 +353,7 @@ _ccs_is_claude_subcommand() {
 typeset -gA _CCPROTEUS_CLAUDE_OPT_ARITY=()
 typeset -g _CCPROTEUS_CLAUDE_OPT_ARITY_PROBED=0
 
-_ccs_claude_opt_arities() {
+_ccp_claude_opt_arities() {
   (( _CCPROTEUS_CLAUDE_OPT_ARITY_PROBED )) && return 0
   _CCPROTEUS_CLAUDE_OPT_ARITY_PROBED=1
 
@@ -362,7 +362,7 @@ _ccs_claude_opt_arities() {
   # row up to the column alignment: the spellings, then the placeholder when
   # there is one.
   local out spec arity spelling
-  _ccs_claude_help
+  _ccp_claude_help
   out="$(print -r -- "$_CCPROTEUS_CLAUDE_HELP" |
         command sed -n '/^Options:/,/^Commands:/p' |
         command grep -E '^  -' |
@@ -391,14 +391,14 @@ _ccs_claude_opt_arities() {
 #   1  the spelling alone.
 #   0  the installed binary does not list the spelling: it will reject the
 #      launch, so ccproteus reads nothing on its behalf.
-_ccs_claude_option_step() {
+_ccp_claude_option_step() {
   REPLY=0
   local opt="$1"
 
   # --spelling=value carries its value inside the token: one token, always.
   [[ "$opt" == --*\=* ]] && opt="${opt%%=*}"
 
-  _ccs_claude_opt_arities
+  _ccp_claude_opt_arities
   local arity="${_CCPROTEUS_CLAUDE_OPT_ARITY[$opt]:-}"
   [[ -n "$arity" ]] || return 0
 
@@ -415,7 +415,7 @@ _ccs_claude_option_step() {
   return 0
 }
 
-_ccs_launch_has_claude_subcommand() {
+_ccp_launch_has_claude_subcommand() {
   local arg
   while (( $# > 0 )); do
     arg="$1"
@@ -434,25 +434,25 @@ _ccs_launch_has_claude_subcommand() {
       # The slice hands the walker the option and the token after it when one
       # exists, so an empty value token is still passed as a value.
       -?*)
-        _ccs_claude_option_step "${@:1:2}"
+        _ccp_claude_option_step "${@:1:2}"
         (( REPLY > 0 )) || return 1
         shift "$REPLY"
         continue
         ;;
     esac
-    _ccs_is_claude_subcommand "$arg"
+    _ccp_is_claude_subcommand "$arg"
     return $?
   done
   return 1
 }
 
-# Whether the launch's argv holds, after $1, a token _ccs_launch's first scan
+# Whether the launch's argv holds, after $1, a token _ccp_launch's first scan
 # would claim for itself: one of that scan's own flag spellings. That scan
 # stops at its `--` separator -- nothing after it is claimed -- so this
 # look-ahead stops there too, which also keeps the separator itself from ever
 # being stepped as an option's value. The spellings mirror the cases of that
 # scan.
-_ccs_launch_has_flag_ahead() {
+_ccp_launch_has_flag_ahead() {
   shift  # $1 is the option being stepped; the claimable tokens come after it.
   local arg
   for arg in "$@"; do
@@ -473,7 +473,7 @@ _ccs_launch_has_flag_ahead() {
 # Scope and ownership), so the MCP delimiter in `mcp add demo -- npx -y server`
 # and the literal prompt value in `-p --` must both arrive intact. Deleting the
 # first exact `--` wherever it appeared removed those too, one argument short.
-_ccs_run_separator_index() {
+_ccp_run_separator_index() {
   local i=0
   REPLY=0
   while (( $# > 0 )); do
@@ -507,7 +507,7 @@ _ccs_run_separator_index() {
   return 0
 }
 
-_ccs_valid() {
+_ccp_valid() {
   # Case-blind on the reserved names: 'Active' must not name a profile either.
   [[ -n "$1" &&
      "$1" != *[^A-Za-z0-9_]* &&
@@ -515,21 +515,21 @@ _ccs_valid() {
      "${(L)1}" != ccproteus ]]
 }
 
-_ccs_exists() {
+_ccp_exists() {
   [[ -f "$_CCPROTEUS_DIR/$1.conf" &&
      ! -L "$_CCPROTEUS_DIR/$1.conf" ]]
 }
 
-_ccs_err() {
-  print -u2 "${_ccs_red}ccproteus:${_ccs_reset} $1"
-  _ccs_log "ERROR $1"
+_ccp_err() {
+  print -u2 "${_ccp_red}ccproteus:${_ccp_reset} $1"
+  _ccp_log "ERROR $1"
   return 1
 }
 
-_ccs_clean_value() {
+_ccp_clean_value() {
   [[ "$1" != *$'\n'* && "$1" != *$'\r'* ]]
 }
 
-_ccs_relay_valid() {
+_ccp_relay_valid() {
   [[ -n "$1" && "$1" != *[^A-Za-z0-9_.-]* ]]
 }

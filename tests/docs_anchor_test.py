@@ -45,7 +45,7 @@ def test_architecture_cites_code_the_reader_can_land_on_issue_396():
     citations = CITATION.findall(DOC.read_text())
     assert citations, "ARCHITECTURE.md cites no ccproteus module code"
     for token, name in citations:
-        source = ROOT / name
+        source = ROOT / "lib" / name
         assert source.is_file(), (
             f"ARCHITECTURE.md cites {token!r} in {name}, which is not a file")
         # Split on `\n`, never `splitlines()`: the cited module may carry literal

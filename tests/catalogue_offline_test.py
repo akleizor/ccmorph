@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_loader('offline_probe', importlib.machinery.SourceFileLoader('offline_probe', str(ROOT/'refresh-model-registry')))
+spec = importlib.util.spec_from_loader('offline_probe', importlib.machinery.SourceFileLoader('offline_probe', str(ROOT/'libexec/refresh-model-registry')))
 assert spec and spec.loader
 probe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(probe)
@@ -46,7 +46,7 @@ def test_first_launch_resolves_bundled_model_locally_without_writing():
 
 def test_snapshot_has_source_date_license_limits_and_families_only():
     import json
-    data = json.loads((ROOT/'model-catalogue.json').read_text())
+    data = json.loads((ROOT/'share/model-catalogue.json').read_text())
     assert data['source'] == 'https://models.dev/models.json'
     assert data['retrieved']
     assert 'Copyright (c) 2025 models.dev' in data['license']

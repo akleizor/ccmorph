@@ -15,7 +15,7 @@ from unittest.mock import patch
 from support import HANG_TIMEOUT
 
 ROOT = Path(__file__).resolve().parents[1]
-CCPROTEUS = ROOT / 'ccproteus.sh'
+CCPROTEUS = ROOT / 'lib/ccproteus.sh'
 MODELS = json.dumps({'data': [{'id': m, 'owned_by': 'fake'} for m in
                               ('picker-alpha', 'picker-beta')]})
 
@@ -204,7 +204,7 @@ class PickerTTYTest(unittest.TestCase):
                 entries.append(entry)
         (self.tmp / 'curl.log').touch()
         return {'HOME': str(self.tmp / 'home'), 'CCPROTEUS_STATE_DIR': str(self.state),
-                'CCPROTEUS_LIB_DIR': str(ROOT), 'PATH': os.pathsep.join(entries),
+                'CCPROTEUS_LIB_DIR': str(ROOT / "lib"), 'PATH': os.pathsep.join(entries),
                 'TMPDIR': str(self.tmp / 'tmpdir'), 'TERM': 'xterm', 'LANG': 'C.UTF-8',
                 'CURL_LOG': str(self.tmp / 'curl.log'), 'CURL_MODE': curl, 'MODELS': MODELS,
                 'FZF_LOG': str(self.tmp / 'fzf.log'), 'FZF_SPEC': str(self.tmp / 'fzf.spec')}
@@ -233,7 +233,7 @@ class PickerTTYTest(unittest.TestCase):
         self.profile()
         (self.state / 'profiles/demo/settings.json').write_text('{}')
         # Stop at the real launcher's adapter boundary: no client or inference.
-        command = '_ccs_adapter_start() { print -r -- "SELECTED=$2"; return 1; }\nccproteus run demo'
+        command = '_ccp_adapter_start() { print -r -- "SELECTED=$2"; return 1; }\nccproteus run demo'
         self.spec('=picker-beta')
         rc, out, missed = run_pty(command, env)
         self.assertIsNone(missed, out)
@@ -250,7 +250,7 @@ class PickerTTYTest(unittest.TestCase):
         env = self.env(fzf=True)
         self.profile()
         (self.state / 'profiles/demo/settings.json').write_text('{}')
-        command = '_ccs_adapter_start() { print -r -- "SELECTED=<$2>"; return 1; }\nccproteus run demo'
+        command = '_ccp_adapter_start() { print -r -- "SELECTED=<$2>"; return 1; }\nccproteus run demo'
         self.spec('=CANCEL')  # any unexpected picker would abort before SELECTED
         for args, expected in (('--model picker-alpha', 'picker-alpha'),
                                ('--print hello', ''), ('--continue', ''),
@@ -414,7 +414,7 @@ class PickerTTYTest(unittest.TestCase):
         env = self.env(fzf=True)
         self.spec('=CANCEL')  # fzf must not be reached at all
         rc, out, missed = run_pty(
-            '_ccs_provider_list() { REPLY=(claude mockprov); return 0 }\nccproteus add demo',
+            '_ccp_provider_list() { REPLY=(claude mockprov); return 0 }\nccproteus add demo',
             env, [(b'Esc Cancel', b'\x1b')])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 1, out)
@@ -429,7 +429,7 @@ class PickerTTYTest(unittest.TestCase):
         env = self.env(fzf=True)
         self.spec('Sign-in method=CANCEL')
         env.pop('CCPROTEUS_LIB_DIR', None)
-        env['CLI_TARGET'] = os.environ.get('CCPROTEUS_TEST_CLI', str(ROOT / 'ccproteus'))
+        env['CLI_TARGET'] = os.environ.get('CCPROTEUS_TEST_CLI', str(ROOT / "bin/ccproteus"))
         if 'CCPROTEUS_TEST_CLI' in os.environ:
             env['XDG_CONFIG_HOME'] = str(ROOT.parent)
         rc, out, missed = run_pty('exec "$CLI_TARGET" add demo', env, [(b'Esc Cancel', b'\x1b')])
@@ -442,7 +442,7 @@ class PickerTTYTest(unittest.TestCase):
 
     def test_labeled_menu_and_help_remain_plain_when_color_is_disabled(self):
         env = {**self.env(), 'NO_COLOR': '1', 'ROWS': 'internal\tAction\tDescription'}
-        rc, out, missed = run_pty('_ccs_ui_numbered Choose "$ROWS" labels; ccproteus --help', env, [
+        rc, out, missed = run_pty('_ccp_ui_numbered Choose "$ROWS" labels; ccproteus --help', env, [
             (b'(q to cancel):', b'1\n'),
         ])
         self.assertIsNone(missed, out)
@@ -455,7 +455,7 @@ class PickerTTYTest(unittest.TestCase):
         env = self.env(fzf=True)
         self.spec('Sign-in method=token')
         rc, out, missed = run_pty(
-            '_ccs_provider_list() { REPLY=(claude); return 0 }\nccproteus add demo', env, [
+            '_ccp_provider_list() { REPLY=(claude); return 0 }\nccproteus add demo', env, [
             (b'Sign-in method', b'\x1b[B\r'),
             (b'Paste token for', b'test-token\n'),
         ])
@@ -527,7 +527,7 @@ class PickerTTYTest(unittest.TestCase):
         env = self.env(fzf=True)
         self.profile()
         self.spec('Default effort=@keep')
-        rc, out, missed = run_pty('_ccs_prompt_default effort demo low', env, [(b'Default effort', b'\r')])
+        rc, out, missed = run_pty('_ccp_prompt_default effort demo low', env, [(b'Default effort', b'\r')])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
         log = re.sub(r'\x1b\[[0-9;]*m', '', out)
@@ -538,7 +538,7 @@ class PickerTTYTest(unittest.TestCase):
     def test_plain_terminal_output_and_explicit_cancel(self):
         for settings in ({'NO_COLOR': '1'}, {'TERM': 'dumb'}):
             env = {**self.env(), **settings, 'ROWS': 'a\tFirst\nb\tSecond'}
-            rc, out, missed = run_pty('_ccs_ui_numbered choose "$ROWS"', env, [
+            rc, out, missed = run_pty('_ccp_ui_numbered choose "$ROWS"', env, [
                 (b'(q to cancel):', b'q\n'),
             ])
             self.assertIsNone(missed, out)
@@ -553,7 +553,7 @@ class PickerTTYTest(unittest.TestCase):
         # Delivery can name the installed command; otherwise exercise the source
         # executable. Let it resolve its own library, never a test override.
         env.pop('CCPROTEUS_LIB_DIR', None)
-        env['CLI_TARGET'] = os.environ.get('CCPROTEUS_TEST_CLI', str(ROOT / 'ccproteus'))
+        env['CLI_TARGET'] = os.environ.get('CCPROTEUS_TEST_CLI', str(ROOT / "bin/ccproteus"))
         if 'CCPROTEUS_TEST_CLI' in os.environ:
             # The source installer locates code under XDG_CONFIG_HOME. Keep that
             # real layout while explicit STATE_DIR and HOME isolate all user data.
@@ -591,7 +591,7 @@ class PickerTTYTest(unittest.TestCase):
         env = self.env(fzf=True)
         self.spec('=CANCEL')
         env.pop('CCPROTEUS_LIB_DIR', None)
-        env['CLI_TARGET'] = os.environ.get('CCPROTEUS_TEST_CLI', str(ROOT / 'ccproteus'))
+        env['CLI_TARGET'] = os.environ.get('CCPROTEUS_TEST_CLI', str(ROOT / "bin/ccproteus"))
         if 'CCPROTEUS_TEST_CLI' in os.environ:
             env['XDG_CONFIG_HOME'] = str(ROOT.parent)
         rc, out, missed = run_pty('exec "$CLI_TARGET" add demo', env, [
@@ -654,8 +654,8 @@ class PickerTTYTest(unittest.TestCase):
     def test_provider_labels_are_cased_without_changing_selected_ids(self):
         env = self.env(fzf=True)
         command = (
-            '_ccs_provider_list() { REPLY=(claude antigravity codex devin kimi meta xai); return 0 }\n'
-            '_ccs_provider_login() { print -r -- "PROVIDER_ID=$2"; return 1 }\n'
+            '_ccp_provider_list() { REPLY=(claude antigravity codex devin kimi meta xai); return 0 }\n'
+            '_ccp_provider_login() { print -r -- "PROVIDER_ID=$2"; return 1 }\n'
             'ccproteus add my_profile'
         )
         rc, out, missed = run_pty(command, env, [
@@ -679,7 +679,7 @@ class PickerTTYTest(unittest.TestCase):
         # Only the module is sourced: it must not require ccproteus state/helpers.
         rc, out, missed = run_pty('ccs_ui_select native Standalone "$ROWS"', env,
                                   [(b'Esc Cancel', b'\x1b[B\r')],
-                                  library=ROOT / 'ccproteus-ui.zsh')
+                                  library=ROOT / 'lib/ccproteus-ui.zsh')
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
         plain = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', out)
@@ -696,7 +696,7 @@ class PickerTTYTest(unittest.TestCase):
         self.assertNotRegex(out, r'\x1b\[[0-9;]*m')
         self.assertFalse((self.tmp / 'fzf.log').exists())
         rc, out, missed = run_pty('ccs_ui_select search Standalone "$ROWS"', env,
-                                  library=ROOT / 'ccproteus-ui.zsh')
+                                  library=ROOT / 'lib/ccproteus-ui.zsh')
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
         self.assertTrue(out.rstrip().endswith('second'), out)
@@ -719,14 +719,14 @@ class PickerTTYTest(unittest.TestCase):
     def test_standalone_helpers_survive_caller_state(self):
         script = r"""
 LC_ALL=C
-_ccs_ui_fit "Sign-in method — demo" 18; print -r -- "FIT=$REPLY"
+_ccp_ui_fit "Sign-in method — demo" 18; print -r -- "FIT=$REPLY"
 interrupted=143
 print hello | ccs_ui_input "Name: " 2>/dev/null; print "INPUT=$? $REPLY"
 setopt sh_glob
 print yes | ccs_ui_confirm 'Go?' 2>/dev/null; print "CONFIRM=$?"
 ccs_ui_list Pick $'a\tAlpha' 2>&1 >/dev/null | od -c | grep -q 033 && print LISTANSI=1 || print LISTANSI=0
 """
-        rc, out, _ = run_pty(script, self.env(), library=ROOT / 'ccproteus-ui.zsh')
+        rc, out, _ = run_pty(script, self.env(), library=ROOT / 'lib/ccproteus-ui.zsh')
         self.assertEqual(rc, 0, out)
         self.assertIn('FIT=Sign-in method — …', out)   # whole characters, valid UTF-8
         self.assertIn('INPUT=0 hello', out)             # caller's name is not the signal flag
@@ -749,7 +749,7 @@ fi
 """)
         claude.chmod(0o755)
         env.pop('CCPROTEUS_LIB_DIR', None)
-        env['CLI_TARGET'] = os.environ.get('CCPROTEUS_TEST_CLI', str(ROOT / 'ccproteus'))
+        env['CLI_TARGET'] = os.environ.get('CCPROTEUS_TEST_CLI', str(ROOT / "bin/ccproteus"))
         if 'CCPROTEUS_TEST_CLI' in os.environ:
             env['XDG_CONFIG_HOME'] = str(ROOT.parent)
         rc, out, missed = run_pty('exec "$CLI_TARGET" run demo', env)
@@ -764,8 +764,8 @@ fi
         # A running shell can still be executing the old driver's function body.
         # Sourcing the updated theme must replace, not retain, its green value.
         rc, out, missed = run_pty(
-            '_ccs_green=$\'\\e[32m\'; source "$CCPROTEUS_LIB_DIR/ccproteus-ui.zsh"; '
-            'print -r -- "${_ccs_green}ccproteus:${_ccs_reset}"', self.env())
+            '_ccp_green=$\'\\e[32m\'; source "$CCPROTEUS_LIB_DIR/ccproteus-ui.zsh"; '
+            'print -r -- "${_ccp_green}ccproteus:${_ccp_reset}"', self.env())
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
         self.assertIn('\x1b[38;2;215;119;87mccproteus:', out)
@@ -774,19 +774,19 @@ fi
     def test_theme_source_under_ksh_arrays_matches_default_issue_408(self):
         # Sourcing initialises the theme with the caller's own options. Under
         # KSH_ARRAYS the palette walk builds the roles from values, not keys:
-        # six _ccs_* colours never exist and a stray _ccs_999999 does (#408).
+        # six _ccp_* colours never exist and a stray _ccp_999999 does (#408).
         # Both branches walk the same palette, so both sets must match.
         script = r"""
 theme_names() {
   # Name collection itself needs native arrays: "${(@k)parameters}" is the
   # exact expansion a caller's KSH_ARRAYS breaks.
   setopt localoptions noksharrays
-  REPLY=${(j.,.)${(o)${(M)${(k)parameters}:#_ccs_*}}}
+  REPLY=${(j.,.)${(o)${(M)${(k)parameters}:#_ccp_*}}}
 }
 lib=$1
 theme_names; styled=$REPLY
-[[ "$styled" == *_ccs_accent* ]] || { print -r -- "MISSINGACCENT<$styled>"; exit 3; }
-unset ${(M)${(k)parameters}:#_ccs_*}
+[[ "$styled" == *_ccp_accent* ]] || { print -r -- "MISSINGACCENT<$styled>"; exit 3; }
+unset ${(M)${(k)parameters}:#_ccp_*}
 (
   setopt ksharrays
   source "$lib"
@@ -797,8 +797,8 @@ unset ${(M)${(k)parameters}:#_ccs_*}
 NO_COLOR=1
 source "$lib"
 theme_names; plain=$REPLY
-[[ "$plain" == *_ccs_accent* ]] || { print -r -- "MISSINGACCENT<$plain>"; exit 3; }
-unset ${(M)${(k)parameters}:#_ccs_*}
+[[ "$plain" == *_ccp_accent* ]] || { print -r -- "MISSINGACCENT<$plain>"; exit 3; }
+unset ${(M)${(k)parameters}:#_ccp_*}
 (
   setopt ksharrays
   source "$lib"
@@ -808,7 +808,7 @@ unset ${(M)${(k)parameters}:#_ccs_*}
 ) || exit 3
 print -r -- THEMESETS=OK
 """
-        rc, out, missed = run_pty(script, self.env(), library=ROOT / 'ccproteus-ui.zsh')
+        rc, out, missed = run_pty(script, self.env(), library=ROOT / 'lib/ccproteus-ui.zsh')
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
         self.assertIn('THEMESETS=OK', out)
@@ -818,7 +818,7 @@ print -r -- THEMESETS=OK
         self.spec('Theme=first')
         rc, out, missed = run_pty('ccs_ui_select native Theme "$ROWS"', env,
                                   [(b'Esc Cancel', b'\x1b')],
-                                  library=ROOT / 'ccproteus-ui.zsh')
+                                  library=ROOT / 'lib/ccproteus-ui.zsh')
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 1, out)
         self.assertIn('\x1b[38;2;215;119;87m\x1b[1mTheme', out)
@@ -827,7 +827,7 @@ print -r -- THEMESETS=OK
         for retired in ('◆', '◇', '●', '○', '│', '└', '\x1b[36m'):
             self.assertNotIn(retired, out)
         rc, out, missed = run_pty('ccs_ui_select search Theme "$ROWS"', env,
-                                  library=ROOT / 'ccproteus-ui.zsh')
+                                  library=ROOT / 'lib/ccproteus-ui.zsh')
         self.assertEqual(rc, 0, out)
         log = (self.tmp / 'fzf.log').read_text()
         self.assertIn('prompt:#d77757', log)
@@ -843,7 +843,7 @@ print -r -- THEMESETS=OK
                         'ccs_ui_input "Value: " ' + mode + '; result=$?; '
                         'print -r -- "VALUE=<$REPLY>"; exit $result', env,
                         [(b'Value:', b'partial-value\x1b'), (b'VALUE=', b'')],
-                        library=ROOT / 'ccproteus-ui.zsh')
+                        library=ROOT / 'lib/ccproteus-ui.zsh')
                     self.assertIsNone(missed, out)
                     self.assertNotEqual(rc, 0, out)
                     self.assertIn('Esc Cancel', out)
@@ -863,26 +863,26 @@ print -r -- THEMESETS=OK
                 rc, out, missed = run_pty(
                     'ccs_ui_input "Value: " || exit $?; print -r -- "VALUE=<$REPLY>"',
                     self.env(), [(b'Value:', keys)],
-                    library=ROOT / 'ccproteus-ui.zsh')
+                    library=ROOT / 'lib/ccproteus-ui.zsh')
                 self.assertIsNone(missed, out)
                 self.assertEqual(rc, 0, out)
                 self.assertIn('VALUE=<' + expected + '>', out)
 
     def test_shared_input_fits_its_heading_under_a_callers_ksh_arrays(self):
-        # ccs_ui_input reads the terminal through _ccs_ui_size, which indexes the
+        # ccs_ui_input reads the terminal through _ccp_ui_size, which indexes the
         # `stty size` pair from 1 like the rest of the library. A caller that had
         # `setopt ksharrays` (index 0 is the first element) made that read one
         # field over and the heading was fitted to the 80-column fallback on a
-        # 100-column terminal. It is the only path into _ccs_ui_size without an
-        # `emulate -L zsh` above it -- ccs_ui_list and _ccs_ui_native set it, and
-        # _ccs_ui_search, whose _ccs_ui_receipt calls it too, is reached only from
+        # 100-column terminal. It is the only path into _ccp_ui_size without an
+        # `emulate -L zsh` above it -- ccs_ui_list and _ccp_ui_native set it, and
+        # _ccp_ui_search, whose _ccp_ui_receipt calls it too, is reached only from
         # ccs_ui_select, which sets it -- so the guard belongs on this function.
         prompt = 'P' * 90 + ': '
         rc, out, missed = run_pty(
             'setopt ksharrays; ccs_ui_input "' + prompt + '" || exit $?; '
             'print -r -- "VALUE=<$REPLY>"; [[ -o ksharrays ]] && print KSH_KEPT',
             self.env(), [(b'Esc Cancel', b'abc\r')], size=(24, 100),
-            library=ROOT / 'ccproteus-ui.zsh')
+            library=ROOT / 'lib/ccproteus-ui.zsh')
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
         self.assertIn('P' * 90, out)
@@ -894,7 +894,7 @@ print -r -- THEMESETS=OK
         env = self.env(fzf=True)
         self.profile()
         env.pop('CCPROTEUS_LIB_DIR', None)
-        env['CLI_TARGET'] = os.environ.get('CCPROTEUS_TEST_CLI', str(ROOT / 'ccproteus'))
+        env['CLI_TARGET'] = os.environ.get('CCPROTEUS_TEST_CLI', str(ROOT / "bin/ccproteus"))
         if 'CCPROTEUS_TEST_CLI' in os.environ:
             env['XDG_CONFIG_HOME'] = str(ROOT.parent)
         before = (self.state / 'demo.conf').read_bytes(), self.native()
@@ -926,7 +926,7 @@ print -r -- THEMESETS=OK
             with self.subTest(keys=keys):
                 rc, out, missed = run_pty('ccs_ui_confirm "Remove?"', self.env(fzf=True),
                                           [(b'Esc Cancel', keys)],
-                                          library=ROOT / 'ccproteus-ui.zsh')
+                                          library=ROOT / 'lib/ccproteus-ui.zsh')
                 self.assertIsNone(missed, out)
                 self.assertEqual(rc, status, out)
                 self.assertIn('❯', out)
@@ -936,7 +936,7 @@ print -r -- THEMESETS=OK
     def test_ui_rejects_control_characters_in_ids(self):
         env = {**self.env(), 'ROWS': 'bad\x1b[2J\tLabel'}
         rc, out, missed = run_pty('ccs_ui_select native Choose "$ROWS"', env,
-                                  library=ROOT / 'ccproteus-ui.zsh')
+                                  library=ROOT / 'lib/ccproteus-ui.zsh')
         self.assertEqual(rc, 2, out)
         self.assertNotIn('\x1b[2J', out)
         self.assertIn('invalid choice ID', out)
@@ -966,7 +966,7 @@ print -r -- THEMESETS=OK
                  'stderr-marker')):
             with self.subTest(command=command), \
                     patch(__name__ + '._drain', side_effect=read_after_child):
-                rc, out, missed = run_pty(command, env, library=ROOT / 'ccproteus-ui.zsh')
+                rc, out, missed = run_pty(command, env, library=ROOT / 'lib/ccproteus-ui.zsh')
                 self.assertIsNone(missed, out)
                 self.assertEqual(rc, status, out)
                 self.assertIn(expected, out)
@@ -1045,7 +1045,7 @@ print -r -- THEMESETS=OK
         # Global preferences cannot inject extra output lines or switch to multi.
         env['FZF_DEFAULT_OPTS'] = '--multi --print-query --expect=enter'
         env.pop('CCPROTEUS_LIB_DIR', None)
-        env['CLI_TARGET'] = os.environ.get('CCPROTEUS_TEST_CLI', str(ROOT / 'ccproteus'))
+        env['CLI_TARGET'] = os.environ.get('CCPROTEUS_TEST_CLI', str(ROOT / "bin/ccproteus"))
         if 'CCPROTEUS_TEST_CLI' in os.environ:
             env['XDG_CONFIG_HOME'] = str(ROOT.parent)
         self.profile()
@@ -1066,7 +1066,7 @@ print -r -- THEMESETS=OK
         env = self.env(fzf=True)
         (self.state / 'subscription.conf').write_text('type=sub\nemail=demo@example.com\n')
         self.spec('Model — subscription=sonnet')
-        rc, out, missed = run_pty('_ccs_pick_value model subscription', env)
+        rc, out, missed = run_pty('_ccp_pick_value model subscription', env)
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
         self.assertTrue(out.rstrip().endswith('sonnet'), out)
@@ -1080,11 +1080,11 @@ print -r -- THEMESETS=OK
         (self.state / 'profiles/provdemo/.claude.json').write_text(
             json.dumps({'additionalModelOptionsCache': [{'value': 'saved-provider-model'}]}))
         env = self.env()
-        rc, out, _ = run_pty('_ccs_value_rows model subdemo', env)
+        rc, out, _ = run_pty('_ccp_value_rows model subdemo', env)
         self.assertEqual(rc, 0, out)
         for alias in ('fable', 'opus', 'sonnet', 'haiku'):
             self.assertIn(alias, out)
-        rc, out, _ = run_pty('_ccs_value_rows model provdemo', env)
+        rc, out, _ = run_pty('_ccp_value_rows model provdemo', env)
         self.assertEqual(rc, 0, out)
         self.assertIn('saved-provider-model', out)
 

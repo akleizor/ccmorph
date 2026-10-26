@@ -31,7 +31,7 @@ introduce is a new issue, not a finding.
 
 ## Where the rules live
 
-Scope, high-risk classes, the `_ccs_launch -a` contract, test homes and the
+Scope, high-risk classes, the `_ccp_launch -a` contract, test homes and the
 Verification suites are in [AGENTS.md](AGENTS.md) and
 [ARCHITECTURE.md#scope-and-ownership](ARCHITECTURE.md#scope-and-ownership); check
 the diff against them, do not restate them.

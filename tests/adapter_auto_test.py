@@ -16,7 +16,7 @@ from unittest.mock import Mock, patch
 
 from support import HANG_TIMEOUT
 
-ADAPTER = Path(__file__).resolve().parents[1] / 'ccproteus-adapter'
+ADAPTER = Path(__file__).resolve().parents[1] / 'libexec/ccproteus-adapter'
 loader = importlib.machinery.SourceFileLoader('adapter_auto', str(ADAPTER))
 spec = importlib.util.spec_from_loader('adapter_auto', loader)
 assert spec is not None

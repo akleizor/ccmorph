@@ -8,10 +8,11 @@ readonly TMP="${TMPDIR:-/tmp}/ccproteus-cli-configure.$$"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/state/profiles/demo" "$TMP/home/.agents/runtime/policies"
 print -r -- '{"schemaVersion":1,"autoCompactAtPercent":80}' > "$TMP/home/.agents/runtime/policies/context.json"
-cp "$ROOT/model-window" "$TMP/model-window"
-cp "$ROOT/ccproteus.sh" "$TMP/ccproteus.sh"
-cp "$ROOT"/ccproteus-*.zsh "$TMP/"
-export HOME="$TMP/home" CCPROTEUS_STATE_DIR="$TMP/state" CCPROTEUS_LIB_DIR="$TMP"
+mkdir -p "$TMP/lib" "$TMP/libexec"
+cp "$ROOT/libexec/model-window" "$TMP/libexec/model-window"
+cp "$ROOT/lib/ccproteus.sh" "$TMP/lib/ccproteus.sh"
+cp "$ROOT"/lib/ccproteus-*.zsh "$TMP/lib/"
+export HOME="$TMP/home" CCPROTEUS_STATE_DIR="$TMP/state" CCPROTEUS_LIB_DIR="$TMP/lib"
 readonly CONF="$TMP/state/demo.conf"
 readonly SETTINGS="$TMP/state/profiles/demo/settings.json"
 print -r -- 'type=apikey
@@ -20,7 +21,7 @@ base_url=https://old.example
 adapter=true
 tag=keep-me' > "$CONF"
 print -r -- '{"model":"old-model","effortLevel":"low","modelSettings":{"custom":{"effortLevel":"high"}},"other":{"keep":true}}' > "$SETTINGS"
-source "$ROOT/ccproteus.sh"
+source "$ROOT/lib/ccproteus.sh"
 
 fail() { print -u2 -- "FAIL: $1"; exit 1; }
 assert_eq() { [[ "$1" == "$2" ]] || fail "$3 (got ${(qqq)1}, expected ${(qqq)2})"; }

@@ -9,7 +9,7 @@ These are enduring promises to the user, not a feature list, roadmap, or impleme
 
 1. Every session launches on the backend and profile the user selected, or stops with a clear error instead of routing somewhere else.
 
-   **Check:** Run `zsh tests/ccproteus_test.zsh`, `zsh tests/cli_configure_test.zsh`, and the Python launch/profile tests with `CCPROTEUS_LIB_DIR` pointed at the checkout; require zero failures for explicit-profile launch, model precedence, adapter endpoints, and the existing `_ccs_launch -a <profile> <args>` caller contract. A fake backend must see exactly the selected endpoint and identity. These isolated cases establish routing behavior, not a live provider availability SLA.
+   **Check:** Run `zsh tests/ccproteus_test.zsh`, `zsh tests/cli_configure_test.zsh`, and the Python launch/profile tests (they find the checkout's lib/ themselves); require zero failures for explicit-profile launch, model precedence, adapter endpoints, and the existing `_ccp_launch -a <profile> <args>` caller contract. A fake backend must see exactly the selected endpoint and identity. These isolated cases establish routing behavior, not a live provider availability SLA.
 
 2. Credentials stay private and are never leaked in ordinary diagnostics, logs, command arguments, or another profile's session.
 

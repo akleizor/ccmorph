@@ -40,7 +40,7 @@ from unittest import mock
 from support import HANG_TIMEOUT
 
 REPO = Path(__file__).resolve().parent.parent
-SHIM = REPO / "gateway-shim"
+SHIM = REPO / "libexec/gateway-shim"
 
 SSE_BODY = (
     'event:content_block_start\n'

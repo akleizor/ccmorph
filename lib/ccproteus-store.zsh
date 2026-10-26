@@ -1,7 +1,7 @@
 # ccproteus-store.zsh — Profile state files: stale-file cleanup, state and profile-home migration, directory security, atomic writes, profile reads and validation.
 # Sourced by ccproteus.sh after ccproteus-ui.zsh (see its Modules block); never run directly.
 
-_ccs_cleanup_stale_relays() {
+_ccp_cleanup_stale_relays() {
   local f relay_id owner modified
   local now
 
@@ -17,14 +17,14 @@ _ccs_cleanup_stale_relays() {
     [[ "$owner" == <-> ]] || continue
     kill -0 "$owner" 2>/dev/null && continue
 
-    modified=$(_ccs_mtime "$f") || continue
+    modified=$(_ccp_mtime "$f") || continue
     (( now - modified >= 60 )) || continue
 
     command rm -f "$f" 2>/dev/null || continue
   done
 }
 
-_ccs_cleanup_stale_overlays() {
+_ccp_cleanup_stale_overlays() {
   # Launches before settings-compose wrote a credential-bearing
   # launch-settings overlay and handed it over with --settings. Reap any a
   # killed session left behind: only when old (12h) AND no live process still
@@ -44,7 +44,7 @@ _ccs_cleanup_stale_overlays() {
   done
   for f in "${candidates[@]}"; do
     [[ -f "$f" && ! -L "$f" ]] || continue
-    modified=$(_ccs_mtime "$f") || continue
+    modified=$(_ccp_mtime "$f") || continue
     (( now - modified >= 43200 )) || continue
     if (( ! scanned )); then
       live=$(command ps -axo command 2>/dev/null) || live=""
@@ -55,14 +55,14 @@ _ccs_cleanup_stale_overlays() {
   done
 
   # Provider bridge config dirs (ccproteus-bridge-$UID-*/config.yaml) carry the
-  # proxy's inbound key. _ccs_provider_stop reaps them on a clean teardown, but a
+  # proxy's inbound key. _ccp_provider_stop reaps them on a clean teardown, but a
   # SIGKILL/OOM of the launcher leaves both the dir and (worse) an orphaned
   # cliproxyapi still serving OAuth creds. Same rule as above: reap only when old
   # (12h) AND no live process names the config, so a running bridge is spared.
   local d
   for d in "${bridges[@]}"; do
     [[ -d "$d" && ! -L "$d" ]] || continue
-    modified=$(_ccs_mtime "$d") || continue
+    modified=$(_ccp_mtime "$d") || continue
     (( now - modified >= 43200 )) || continue
     if (( ! scanned )); then
       live=$(command ps -axo command 2>/dev/null) || live=""
@@ -82,7 +82,7 @@ _ccs_cleanup_stale_overlays() {
 # one does not, so a host that already migrated, or that authored a fresh file, is
 # untouched. A failed move is not fatal — the caller falls back to the default
 # window, exactly as it would for a machine that never probed.
-_ccs_migrate_state() {
+_ccp_migrate_state() {
   [[ -n "${CCPROTEUS_CONTEXT_LOCKED:-}" ]] && return 0
   local -a legacy=("$_CCPROTEUS_DIR/model-registry" "$_CCPROTEUS_DIR/model-registry.conf"
     "$_CCPROTEUS_PROFILE_DIRS"/*/cache/context-window(N))
@@ -90,8 +90,8 @@ _ccs_migrate_state() {
   for legacy_file in "${legacy[@]}"; do
     if [[ -e "$legacy_file" || -L "$legacy_file" ]]; then
       command env CCPROTEUS_STATE_DIR="$_CCPROTEUS_DIR" \
-        "$_CCPROTEUS_LIB_DIR/model-window" --migrate || {
-        _ccs_err "context migration incomplete; original data kept for retry"
+        "$_CCPROTEUS_LIBEXEC_DIR/model-window" --migrate || {
+        _ccp_err "context migration incomplete; original data kept for retry"
         return 1
       }
       return 0
@@ -99,7 +99,7 @@ _ccs_migrate_state() {
   done
 }
 
-_ccs_migrate_profile_home() {
+_ccp_migrate_profile_home() {
   # Fresh installs and completed migrations need no interpreter or lock.
   if [[ ! -e "$HOME/.claude-profiles" && ! -L "$HOME/.claude-profiles" ]]; then
     return 0
@@ -151,7 +151,7 @@ except (OSError, ValueError) as exc:
 PY
 }
 
-_ccs_normalize_plugin_index_paths() {
+_ccp_normalize_plugin_index_paths() {
   # Claude records the absolute profile spelling used during installation. Profiles
   # now share ~/.claude/plugins, so repair only paths made stale by that topology.
   # Keep the settled launch path fork-free; malformed indexes remain best-effort.
@@ -259,19 +259,19 @@ if isinstance(records, dict):
 PY
 }
 
-_ccs_secure_dirs() {
+_ccp_secure_dirs() {
   local f root
 
   for root in "$_CCPROTEUS_DIR" "$_CCPROTEUS_PROFILE_DIRS"; do
     if [[ -L "$root" ]]; then
-      _ccs_err "refusing symlinked state root '$root'"
+      _ccp_err "refusing symlinked state root '$root'"
       return 1
     fi
   done
 
-  _ccs_migrate_profile_home || return 1
+  _ccp_migrate_profile_home || return 1
   command mkdir -p "$_CCPROTEUS_DIR" "$_CCPROTEUS_PROFILE_DIRS" || return 1
-  _ccs_normalize_plugin_index_paths
+  _ccp_normalize_plugin_index_paths
   # Permission hardening is best-effort: never fail on a filesystem that
   # refuses chmod. The symlink guards above are the real safety invariant.
   command chmod 700 "$_CCPROTEUS_DIR" "$_CCPROTEUS_PROFILE_DIRS" 2>/dev/null || :
@@ -287,10 +287,10 @@ _ccs_secure_dirs() {
   done
 
   # Last: the state root exists and is sane, so renames within it are safe.
-  _ccs_migrate_state
+  _ccp_migrate_state
 }
 
-_ccs_atomic_write_unlocked() {
+_ccp_atomic_write_unlocked() {
   local f="$1"
   local value="$2"
   local parent="${1:h}"
@@ -322,36 +322,36 @@ _ccs_atomic_write_unlocked() {
 }
 
 # Config writes are crash-atomic (mktemp + rename); no lock needed.
-_ccs_write() {
-  _ccs_atomic_write_unlocked "$1" "$2"
+_ccp_write() {
+  _ccp_atomic_write_unlocked "$1" "$2"
 }
 
-_ccs_remove_file() {
+_ccp_remove_file() {
   [[ -e "$1" || -L "$1" ]] || return 0
   command rm -f "$1"
 }
 
-_ccs_read_active() {
+_ccp_read_active() {
   local f="$_CCPROTEUS_DIR/active"
 
   REPLY=""
   [[ -e "$f" || -L "$f" ]] || return 1
   [[ -f "$f" && ! -L "$f" ]] || {
-    _ccs_err "invalid active-profile file"
+    _ccp_err "invalid active-profile file"
     return 1
   }
 
   command chmod 600 "$f" || return 1
   REPLY=$(<"$f") || return 1
 
-  _ccs_valid "$REPLY" || {
-    _ccs_err "invalid active profile '$REPLY'"
+  _ccp_valid "$REPLY" || {
+    _ccp_err "invalid active profile '$REPLY'"
     REPLY=""
     return 1
   }
 }
 
-_ccs_read() {
+_ccp_read() {
   typeset -gA _ccp=()
 
   local name="$1" readonly="${2:-0}"
@@ -359,19 +359,19 @@ _ccs_read() {
   local line k v
   local -A seen=()
 
-  _ccs_valid "$name" || {
-    _ccs_err "invalid profile name"
+  _ccp_valid "$name" || {
+    _ccp_err "invalid profile name"
     return 1
   }
 
   [[ -f "$file" && ! -L "$file" ]] || {
-    _ccs_err "invalid profile file for '$name'"
+    _ccp_err "invalid profile file for '$name'"
     return 1
   }
 
   if (( ! readonly )); then
     command chmod 600 "$file" || {
-      _ccs_err "cannot secure profile '$name'"
+      _ccp_err "cannot secure profile '$name'"
       return 1
     }
   fi
@@ -380,7 +380,7 @@ _ccs_read() {
     [[ -z "$line" || "$line" == \#* ]] && continue
 
     if [[ "$line" == *$'\r'* || "$line" != *=* ]]; then
-      _ccs_err "malformed config for '$name'"
+      _ccp_err "malformed config for '$name'"
       unset _ccp
       return 1
     fi
@@ -389,13 +389,13 @@ _ccs_read() {
     v="${line#*=}"
 
     if [[ -z "$k" || "$k" == *[[:space:]]* ]]; then
-      _ccs_err "invalid key in '$name'"
+      _ccp_err "invalid key in '$name'"
       unset _ccp
       return 1
     fi
 
     if [[ -n "${seen[$k]:-}" ]]; then
-      _ccs_err "duplicate key '$k' in '$name'"
+      _ccp_err "duplicate key '$k' in '$name'"
       unset _ccp
       return 1
     fi
@@ -427,7 +427,7 @@ _ccs_read() {
         ;;
       excluded_models)
         [[ -n "$v" && "$v" != *[[:space:]]* && "$v" != ,* && "$v" != *, && "$v" != *,,* ]] || {
-          _ccs_err "excluded_models must be comma-separated exact model IDs"; unset _ccp; return 1
+          _ccp_err "excluded_models must be comma-separated exact model IDs"; unset _ccp; return 1
         }
         ;;
       model_map)
@@ -449,30 +449,30 @@ except (ValueError, TypeError):
     valid = False
 sys.exit(0 if valid else 1)
 PY
-          _ccs_err "model_map must be a JSON object of unique model IDs to model IDs, and no key may carry the [1m] suffix"
+          _ccp_err "model_map must be a JSON object of unique model IDs to model IDs, and no key may carry the [1m] suffix"
           unset _ccp; return 1
         }
         ;;
       # Stark's spend cap lives in the shared conf; ccproteus only keeps it so a rewrite does not drop it.
       monthly_budget_usd)
         [[ "$v" =~ '^([0-9]+\.?[0-9]*|\.[0-9]+)$' && "$v" == *[1-9]* ]] || {
-          _ccs_err "monthly_budget_usd must be a positive number"; unset _ccp; return 1
+          _ccp_err "monthly_budget_usd must be a positive number"; unset _ccp; return 1
         }
         ;;
       model_defaults)
-        [[ "$v" == 1 ]] || { _ccs_err "invalid model defaults marker"; unset _ccp; return 1; }
+        [[ "$v" == 1 ]] || { _ccp_err "invalid model defaults marker"; unset _ccp; return 1; }
         ;;
       private)
-        [[ "$v" == 1 ]] || { _ccs_err "private must be 1"; unset _ccp; return 1; }
+        [[ "$v" == 1 ]] || { _ccp_err "private must be 1"; unset _ccp; return 1; }
         ;;
       effort|effort.*)
         [[ "$v" == (low|medium|high|xhigh|max) && "$k" != effort. ]] || {
-          _ccs_err "invalid effort setting '$k'"; unset _ccp; return 1
+          _ccp_err "invalid effort setting '$k'"; unset _ccp; return 1
         }
         ;;
       env.*)
         if (( ! ${_CCPROTEUS_PROFILE_ENV[(Ie)${k#env.}]} )); then
-          _ccs_err "disallowed environment key '$k' in '$name'"
+          _ccp_err "disallowed environment key '$k' in '$name'"
           unset _ccp
           return 1
         fi
@@ -480,13 +480,13 @@ PY
       context_window.*)
         local _ctx_model="${k#context_window.}"
         [[ -n "$_ctx_model" && "$_ctx_model" != *[=$'\r\n']* && "$v" == <-> && "$v" -gt 0 ]] || {
-          _ccs_err "invalid context pin '$k' in '$name'"
+          _ccp_err "invalid context pin '$k' in '$name'"
           unset _ccp
           return 1
         }
         ;;
       *)
-        _ccs_err "unknown key '$k' in '$name'"
+        _ccp_err "unknown key '$k' in '$name'"
         unset _ccp
         return 1
         ;;
@@ -500,14 +500,14 @@ PY
   # it at the boundary so every runtime path has one profile type to maintain.
   if [[ "${_ccp[type]:-}" == proxy ]]; then
     [[ -n "${_ccp[base_url]:-}" ]] || {
-      _ccs_err "proxy '$name' has no base_url"
+      _ccp_err "proxy '$name' has no base_url"
       unset _ccp
       return 1
     }
     _ccp[type]=apikey
   fi
 
-  local _ccs_type_keys=""
+  local _ccp_type_keys=""
   case "${_ccp[type]:-}" in
     sub)
       # The email IS the profile identity for this type, so a blank one is not a
@@ -515,38 +515,38 @@ PY
       # The token case has always required its own credential; this is the same
       # rule, applied to the type that was missing it.
       [[ -n "${_ccp[email]:-}" ]] || {
-        _ccs_err "sub profile '$name' has no email — re-create it: ccproteus rm $name && ccproteus add $name"
+        _ccp_err "sub profile '$name' has no email — re-create it: ccproteus rm $name && ccproteus add $name"
         unset _ccp
         return 1
       }
 
-      _ccs_type_keys="email"
+      _ccp_type_keys="email"
       ;;
 
     token)
       [[ -n "${_ccp[token]:-}" ]] || {
-        _ccs_err "token profile '$name' has no token"
+        _ccp_err "token profile '$name' has no token"
         unset _ccp
         return 1
       }
-      _ccs_type_keys="token"
+      _ccp_type_keys="token"
       ;;
 
     apikey)
-      _ccs_type_keys="api_key|base_url|excluded_models|adapter|tag|env.*|context_window.*|window_sources|model_map"
+      _ccp_type_keys="api_key|base_url|excluded_models|adapter|tag|env.*|context_window.*|window_sources|model_map"
       ;;
 
     provider)
       [[ -n "${_ccp[provider]:-}" ]] || {
-        _ccs_err "provider profile '$name' has no provider"
+        _ccp_err "provider profile '$name' has no provider"
         unset _ccp
         return 1
       }
-      _ccs_type_keys="provider|excluded_models|tag|env.*|context_window.*|window_sources"
+      _ccp_type_keys="provider|excluded_models|tag|env.*|context_window.*|window_sources"
       ;;
 
     *)
-      _ccs_err "invalid or missing type in '$name'"
+      _ccp_err "invalid or missing type in '$name'"
       unset _ccp
       return 1
       ;;
@@ -554,27 +554,27 @@ PY
 
   # Keys every type accepts, plus the type's own. A sub or token profile carries
   # only model-mapping env keys; routed types accept any allowlisted env key.
-  local _ccs_allowed="type|model|model_defaults|private|monthly_budget_usd|effort|effort.*|context_discovered|$_ccs_type_keys"
+  local _ccp_allowed="type|model|model_defaults|private|monthly_budget_usd|effort|effort.*|context_discovered|$_ccp_type_keys"
   for k in "${(@k)_ccp}"; do
-    [[ "$k" == (${~_ccs_allowed}) ]] && continue
+    [[ "$k" == (${~_ccp_allowed}) ]] && continue
     [[ "$k" == env.* ]] && (( ${_CCPROTEUS_MODEL_MAPPING_ENV[(Ie)${k#env.}]} )) && continue
-    _ccs_err "key '$k' is invalid for ${_ccp[type]} profile '$name'"
+    _ccp_err "key '$k' is invalid for ${_ccp[type]} profile '$name'"
     unset _ccp
     return 1
   done
 }
 
-_ccs_validate_base_url() {
+_ccp_validate_base_url() {
   local label="$1"
 
   [[ "${_ccp[base_url]}" == http://* ||
      "${_ccp[base_url]}" == https://* ]] || {
-    _ccs_err "$label base_url must use http:// or https://"
+    _ccp_err "$label base_url must use http:// or https://"
     return 1
   }
 
   [[ "${_ccp[base_url]}" != *[[:space:]]* ]] || {
-    _ccs_err "$label base_url contains whitespace"
+    _ccp_err "$label base_url contains whitespace"
     return 1
   }
 }
@@ -583,21 +583,21 @@ _ccs_validate_base_url() {
 # subscription. base_url and model are optional on purpose: omit both for a
 # native Anthropic API key (Claude Code owns the model list), set both for a
 # gateway that speaks the Anthropic API under its own model names.
-_ccs_validate_apikey() {
+_ccp_validate_apikey() {
   local name="$1"
 
   [[ -n "${_ccp[api_key]:-}" ]] || {
-    _ccs_err "apikey '$name' has no api_key"
+    _ccp_err "apikey '$name' has no api_key"
     return 1
   }
 
   [[ "${_ccp[api_key]}" != *[[:space:]]* ]] || {
-    _ccs_err "apikey '$name' api_key contains whitespace"
+    _ccp_err "apikey '$name' api_key contains whitespace"
     return 1
   }
 
   if [[ -n "${_ccp[base_url]:-}" ]]; then
-    _ccs_validate_base_url "apikey '$name'" || return 1
+    _ccp_validate_base_url "apikey '$name'" || return 1
   fi
 
   # adapter=true means "this endpoint speaks dialects Claude Code does not, put a
@@ -607,14 +607,14 @@ _ccs_validate_apikey() {
   # redirected, which keeps `ccproteus _env` truthful for every other consumer.
   if [[ -n "${_ccp[adapter]:-}" ]]; then
     [[ "${_ccp[adapter]}" == (true|false) ]] || {
-      _ccs_err "apikey '$name' adapter must be 'true', 'false', or absent"
+      _ccp_err "apikey '$name' adapter must be 'true', 'false', or absent"
       return 1
     }
 
     if [[ "${_ccp[adapter]}" == true ]]; then
       # A native Anthropic key has no foreign dialect to translate.
       [[ -n "${_ccp[base_url]:-}" ]] || {
-        _ccs_err "apikey '$name' has adapter=true but no base_url to front"
+        _ccp_err "apikey '$name' has adapter=true but no base_url to front"
         return 1
       }
     fi
@@ -622,7 +622,7 @@ _ccs_validate_apikey() {
 }
 
 # Dispatch validation for the currently loaded profile (_ccp). sub and token
-# profiles carry nothing ccproteus has to check beyond _ccs_read.
-_ccs_validate_loaded() {
-  [[ "${_ccp[type]:-}" != apikey ]] || _ccs_validate_apikey "$1"
+# profiles carry nothing ccproteus has to check beyond _ccp_read.
+_ccp_validate_loaded() {
+  [[ "${_ccp[type]:-}" != apikey ]] || _ccp_validate_apikey "$1"
 }

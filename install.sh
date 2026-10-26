@@ -50,14 +50,16 @@ SRC="${0:A:h}"                       # dir this script lives in (the repo root)
 # listed, so a new module ships with no edit here (only ccproteus.sh's own loader
 # block has to name it). (N) keeps a standalone install.sh — which has no module
 # beside it — working.
-MODULES=("$SRC"/ccproteus-*.zsh(N:t))
+MODULES=("$SRC"/lib/ccproteus-*.zsh(N:t))
 
 # Every tracked runtime component the launcher depends on — one list; data
 # files (no exec bit) are subtracted to derive EXECUTABLES, so a new component
 # is added exactly once. Modules are data: they are sourced, never run.
-COMPONENTS=(ccproteus.sh $MODULES ccproteus-adapter gateway-shim model-window settings-compose refresh-model-registry model-catalogue.json window-sources.json)
-DATA_FILES=(model-catalogue.json window-sources.json $MODULES)
-EXECUTABLES=(${COMPONENTS:|DATA_FILES})
+# Paths are relative to the repo root and installed with the same structure.
+LIBS=(lib/ccproteus.sh ${MODULES/#/lib/})
+EXECUTABLES=(bin/ccproteus libexec/ccproteus-adapter libexec/gateway-shim libexec/model-window libexec/settings-compose libexec/refresh-model-registry)
+DATA_FILES=(share/model-catalogue.json share/window-sources.json)
+COMPONENTS=($LIBS $EXECUTABLES $DATA_FILES)
 
 # ---- uninstall ------------------------------------------------------------
 # Must run before the UI module is sourced: a standalone install.sh (no sibling
@@ -69,12 +71,12 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   exit 0
 fi
 
-source "$SRC/ccproteus-ui.zsh" 2>/dev/null || true
+source "$SRC/lib/ccproteus-ui.zsh" 2>/dev/null || true
 
-c_ok() { print -r -- "${_ccs_accent:-}$*${_ccs_reset:-}"; }
-c_y()  { print -r -- "${_ccs_yellow:-}$*${_ccs_reset:-}"; }
-c_r()  { print -r -- "${_ccs_red:-}$*${_ccs_reset:-}"; }
-c_dim(){ print -r -- "${_ccs_gray:-}$*${_ccs_reset:-}"; }
+c_ok() { print -r -- "${_ccp_accent:-}$*${_ccp_reset:-}"; }
+c_y()  { print -r -- "${_ccp_yellow:-}$*${_ccp_reset:-}"; }
+c_r()  { print -r -- "${_ccp_red:-}$*${_ccp_reset:-}"; }
+c_dim(){ print -r -- "${_ccp_gray:-}$*${_ccp_reset:-}"; }
 
 # ---- prior state, read BEFORE anything is written -------------------------
 # An update must be able to SAY it is an update. Every fact below describes the
@@ -82,13 +84,13 @@ c_dim(){ print -r -- "${_ccs_gray:-}$*${_ccs_reset:-}"; }
 # preserved — a re-run that prints "fresh install" over someone's eight live
 # profiles reads as data loss and teaches them never to update again.
 PRIOR_VERSION=""
-if [[ -r "$CONFIG_DIR/ccproteus.sh" ]]; then
+if [[ -r "$CONFIG_DIR/lib/ccproteus.sh" ]]; then
   # Grep the assignment rather than sourcing: the installed copy may be older
   # or newer than this one, and sourcing it here would run its whole init.
-  PRIOR_VERSION="$(grep -m1 '^_CCPROTEUS_VERSION=' "$CONFIG_DIR/ccproteus.sh" 2>/dev/null)"
+  PRIOR_VERSION="$(grep -m1 '^_CCPROTEUS_VERSION=' "$CONFIG_DIR/lib/ccproteus.sh" 2>/dev/null)"
   PRIOR_VERSION="${${PRIOR_VERSION#*=}//\"/}"
 fi
-NEW_VERSION="$(grep -m1 '^_CCPROTEUS_VERSION=' "$SRC/ccproteus.sh" 2>/dev/null)"
+NEW_VERSION="$(grep -m1 '^_CCPROTEUS_VERSION=' "$SRC/lib/ccproteus.sh" 2>/dev/null)"
 NEW_VERSION="${${NEW_VERSION#*=}//\"/}"
 
 # Profiles are the thing a user fears losing, so they are counted, not guessed.
@@ -200,9 +202,10 @@ CONFIG_REAL="${CONFIG_DIR:A}"
 
 # If running from inside the target dir, files are already home; otherwise copy.
 if [[ "$SRC" != "$CONFIG_REAL" ]]; then
-  cp "${COMPONENTS[@]/#/$SRC/}" "$CONFIG_DIR/"
+  mkdir -p "$CONFIG_DIR"/{bin,lib,libexec,share}
+  for _f in "${COMPONENTS[@]}"; do cp "$SRC/$_f" "$CONFIG_DIR/$_f"; done
 fi
-cp "$SRC/ccproteus" "$BIN_DIR/ccproteus"
+cp "$SRC/bin/ccproteus" "$BIN_DIR/ccproteus"
 # The opt-in reference, so a host can see every seam without reading the source.
 # Copied, never activated: local.sh itself stays absent until someone writes it.
 # Same directory guard as above: in-place, this is a copy onto itself.
@@ -213,10 +216,10 @@ fi
 chmod +x "${EXECUTABLES[@]/#/$CONFIG_DIR/}"
 chmod +x "$BIN_DIR/ccproteus"
 # Move profile homes through the same guarded owner used by normal launches.
-CCPROTEUS_STATE_DIR="$CONFIG_DIR" CCPROTEUS_LIB_DIR="$CONFIG_DIR" zsh -fc \
-  'source "$CCPROTEUS_LIB_DIR/ccproteus.sh"; _ccs_secure_dirs' || exit 1
+CCPROTEUS_STATE_DIR="$CONFIG_DIR" CCPROTEUS_LIB_DIR="$CONFIG_DIR/lib" zsh -fc \
+  'source "$CCPROTEUS_LIB_DIR/ccproteus.sh"; _ccp_secure_dirs' || exit 1
 # Consolidate legacy context state only after the owning tool is installed.
-CCPROTEUS_STATE_DIR="$CONFIG_DIR" "$CONFIG_DIR/model-window" --migrate
+CCPROTEUS_STATE_DIR="$CONFIG_DIR" "$CONFIG_DIR/libexec/model-window" --migrate
 # The retired wrapper: `ccrelay` is now `ccproteus hop`. Removed rather than left
 # behind, because the old script sources a library that no longer defines it and
 # would answer with a load failure instead of saying what replaced it.

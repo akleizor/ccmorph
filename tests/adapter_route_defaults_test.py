@@ -1,16 +1,16 @@
 """The adapter-route defaults vs a settings layer that sets the key to "".
 
-`_ccs_launch_diagnostics` decides whether the settings layers already make a
+`_ccp_launch_diagnostics` decides whether the settings layers already make a
 choice for one of the three adapter-route defaults. Its own rule is that only a
 NON-EMPTY string is a real choice: Claude Code reads an empty value as unset, so
 counting `""` as a choice both skips the default and leaves the engine with
 nothing -- the mid-conversation-system turn, the advisor tool and the per-turn
 effort all come back, which is the thrash the default exists to prevent. Its
-answer reaches `_ccs_launch` as a `chosen` record from the one interpreter run
+answer reaches `_ccp_launch` as a `chosen` record from the one interpreter run
 per launch, #332.
 
 A real launch is the only place this is observable: the predicate is one step
-inside `_ccs_launch`, and the generated settings.json carries the layer. Each
+inside `_ccp_launch`, and the generated settings.json carries the layer. Each
 case copies the shipped library into an isolated state dir, stubs `claude`,
 `curl` and the adapter, and launches a routed profile offline.
 """
@@ -29,8 +29,9 @@ import pytest
 from support import HANG_TIMEOUT
 
 ROOT = Path(__file__).resolve().parents[1]
-LIB_FILES = ('model-window', 'settings-compose', 'ccproteus.sh', *sorted(p.name for p in ROOT.glob('ccproteus-*.zsh')),
-             'window-sources.json', 'model-catalogue.json')
+LIB_FILES = ('libexec/model-window', 'libexec/settings-compose', 'lib/ccproteus.sh',
+             *sorted(f'lib/{p.name}' for p in (ROOT / 'lib').glob('ccproteus-*.zsh')),
+             'share/window-sources.json', 'share/model-catalogue.json')
 
 # The exact default the launch path installs for every adapter route.
 ROUTE_DEFAULT = '-mid_conv_system,-mid_conv_tool_change,-per_turn_effort'
@@ -107,7 +108,7 @@ for a do case "$a" in *http_code*) echo 200; exit 0 ;; esac; done
 exit 1
 '''
 # The launcher relies on the adapter's own --parent-pid poll to stop it
-# (ccproteus.sh _ccs_adapter_start): a stub that ignores the flag outlives a
+# (ccproteus.sh _ccp_adapter_start): a stub that ignores the flag outlives a
 # hard-killed launch forever (issues #385/#386, GH-330).
 ADAPTER = fake_adapter.script('echo PORT=45999')
 
@@ -144,9 +145,10 @@ class Launch:
             (home / 'bin' / name).write_text(body)
             (home / 'bin' / name).chmod(0o755)
         for name in LIB_FILES:
+            (self.state / name).parent.mkdir(exist_ok=True)
             shutil.copy(ROOT / name, self.state / name)
-        (self.state / 'ccproteus-adapter').write_text(ADAPTER)
-        (self.state / 'ccproteus-adapter').chmod(0o755)
+        (self.state / 'libexec/ccproteus-adapter').write_text(ADAPTER)
+        (self.state / 'libexec/ccproteus-adapter').chmod(0o755)
         (self.state / 'gw.conf').write_text(GW_CONF)
         # PATH carries no directory of this host's: the environment a launch is
         # handed is compared byte for byte against a golden (GH-433), and
@@ -155,7 +157,7 @@ class Launch:
         # /usr/bin on every host this repo runs its suites on, and both are here.
         self.env = {'HOME': str(home), 'PATH': f'{home}/bin:/usr/bin:/bin',
                     'LANG': 'C.UTF-8', 'XDG_CONFIG_HOME': str(home / '.config'),
-                    'CCPROTEUS_STATE_DIR': str(self.state), 'CCPROTEUS_LIB_DIR': str(self.state)}
+                    'CCPROTEUS_STATE_DIR': str(self.state), 'CCPROTEUS_LIB_DIR': str(self.state / 'lib')}
         assert shutil.which('zsh', path=self.env['PATH']), f'no zsh on {self.env["PATH"]}'
         self.last = None
 
@@ -170,7 +172,7 @@ class Launch:
         layer.write_text(json.dumps({'env': env_block}))
 
     def run(self) -> dict:
-        result = subprocess.run([str(ROOT / 'ccproteus'), 'run', 'gw'], env=self.env,
+        result = subprocess.run([str(ROOT / "bin/ccproteus"), 'run', 'gw'], env=self.env,
                                 stdin=subprocess.DEVNULL, capture_output=True, text=True,
                                 timeout=HANG_TIMEOUT)
         self.last = result
@@ -189,7 +191,7 @@ def launch(tmp_path):
     # The launch leaves its adapter stub detached, and `--parent-pid` only
     # reaches it while the launcher's number stays dead (#347). The stub records
     # what it started as; this kills that exact pid.
-    fake_adapter.reap(made.state / 'ccproteus-adapter')
+    fake_adapter.reap(made.state / 'libexec/ccproteus-adapter')
 
 
 def test_empty_caps_in_the_canon_layer_still_gets_the_route_default(launch):
@@ -431,12 +433,12 @@ def test_a_killed_launch_leaves_no_adapter_stub_behind(launch):
     # Hold the launch open so the stub is up when the launcher is killed.
     (launch.home / 'bin' / 'claude').write_text('#!/bin/sh\nsleep 5\n')
     (launch.home / 'bin' / 'claude').chmod(0o755)
-    proc = subprocess.Popen([str(ROOT / 'ccproteus'), 'run', 'gw'], env=launch.env,
+    proc = subprocess.Popen([str(ROOT / "bin/ccproteus"), 'run', 'gw'], env=launch.env,
                             stdin=subprocess.DEVNULL,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     stub_pid = 0
     try:
-        stub = launch.state / 'ccproteus-adapter'
+        stub = launch.state / 'libexec/ccproteus-adapter'
         deadline = time.monotonic() + HANG_TIMEOUT
         pids = []
         while time.monotonic() < deadline:

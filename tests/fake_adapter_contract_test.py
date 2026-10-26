@@ -29,7 +29,7 @@ import pytest
 from support import HANG_TIMEOUT
 
 ROOT = Path(__file__).resolve().parent
-# The argv `_ccs_adapter_start` builds for a selected launch, minus the parent pid.
+# The argv `_ccp_adapter_start` builds for a selected launch, minus the parent pid.
 LAUNCH_ARGV = ['gw', '--auto', '--model', 'claude-sonnet-4-5']
 SUPPORT = ('fake_adapter.py', 'fake_adapter_serve.sh', Path(__file__).name)
 

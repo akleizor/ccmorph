@@ -14,9 +14,9 @@
 # The adapter is handed only the profile name -- it reads the endpoint and
 # credential from the profile itself, so no key passes through argv.
 
-_ccs_adapter_stop() {
-  if [[ -n "${_ccs_adapter_pid:-}" ]]; then
-    local pid="$_ccs_adapter_pid"
+_ccp_adapter_stop() {
+  if [[ -n "${_ccp_adapter_pid:-}" ]]; then
+    local pid="$_ccp_adapter_pid"
     kill "$pid" 2>/dev/null
     wait "$pid" 2>/dev/null
 
@@ -38,24 +38,24 @@ _ccs_adapter_stop() {
       done
     fi
   fi
-  unset _ccs_adapter_pid _ccs_adapter_profile _ccs_adapter_port
+  unset _ccp_adapter_pid _ccp_adapter_profile _ccp_adapter_port
 }
 
 # ── Provider proxy (cliproxyapi) ─────────────────────────────────────────────
 
-_ccs_provider_bin() {
+_ccp_provider_bin() {
   local bin
   bin=$(whence -p cliproxyapi 2>/dev/null) || bin=""
   [[ -n "$bin" && -x "$bin" ]] || {
-    _ccs_err "cliproxyapi not found — install it: brew install cliproxyapi"
+    _ccp_err "cliproxyapi not found — install it: brew install cliproxyapi"
     return 1
   }
   REPLY="$bin"
 }
 
-_ccs_provider_list() {
+_ccp_provider_list() {
   local bin
-  _ccs_provider_bin || return 1
+  _ccp_provider_bin || return 1
   bin="$REPLY"
   REPLY=()
   local line
@@ -74,15 +74,15 @@ _ccs_provider_list() {
 # OAuth credentials outside the 0700 state root — the same hazard every other
 # state path guards against — so every caller (login, start, remove) funnels
 # through this one check rather than each guarding its own copy.
-_ccs_provider_auth_dir() {
+_ccp_provider_auth_dir() {
   local root="$_CCPROTEUS_DIR/auth"
   [[ ! -L "$root" ]] || {
-    _ccs_err "auth directory root is a symlink, refusing: $root"
+    _ccp_err "auth directory root is a symlink, refusing: $root"
     return 1
   }
   local dir="$root/$1"
   [[ ! -L "$dir" ]] || {
-    _ccs_err "auth directory for '$1' is a symlink, refusing: $dir"
+    _ccp_err "auth directory for '$1' is a symlink, refusing: $dir"
     return 1
   }
   REPLY="$dir"
@@ -90,29 +90,29 @@ _ccs_provider_auth_dir() {
 
 # Ensure the auth/ root exists and is 0700 (the per-profile dir is made 0700 by
 # its own caller). Kept separate from resolution so read-only callers pay nothing.
-_ccs_provider_auth_root_ok() {
+_ccp_provider_auth_root_ok() {
   local root="$_CCPROTEUS_DIR/auth"
   [[ ! -L "$root" ]] || {
-    _ccs_err "auth directory root is a symlink, refusing: $root"
+    _ccp_err "auth directory root is a symlink, refusing: $root"
     return 1
   }
   [[ -d "$root" ]] || command mkdir -p "$root" || return 1
   command chmod 0700 "$root" 2>/dev/null || :
 }
 
-_ccs_provider_login() {
+_ccp_provider_login() {
   local profile="$1" provider="$2"
   local bin auth_dir tmpdir conf yaml
-  _ccs_provider_bin || return 1
+  _ccp_provider_bin || return 1
   bin="$REPLY"
-  _ccs_provider_auth_dir "$profile" || return 1
+  _ccp_provider_auth_dir "$profile" || return 1
   auth_dir="$REPLY"
-  _ccs_provider_auth_root_ok || return 1
+  _ccp_provider_auth_root_ok || return 1
   command mkdir -p "$auth_dir" && command chmod 0700 "$auth_dir" || {
-    _ccs_err "could not create auth directory"
+    _ccp_err "could not create auth directory"
     return 1
   }
-  print "${_ccs_dim}Opening your browser to sign in to ${_ccs_bold}${provider}${_ccs_reset}${_ccs_dim} — Ctrl-C to cancel.${_ccs_reset}"
+  print "${_ccp_dim}Opening your browser to sign in to ${_ccp_bold}${provider}${_ccp_reset}${_ccp_dim} — Ctrl-C to cancel.${_ccp_reset}"
   tmpdir=$(command mktemp -d "${TMPDIR:-/tmp}/ccproteus-login-$UID-XXXXXX") || return 1
   local _cred_file=""
   {
@@ -122,20 +122,20 @@ port: 0
 auth-dir: \"$auth_dir\"
 api-keys:
   - \"unused\""
-    _ccs_write "$conf" "$yaml" || return 1
+    _ccp_write "$conf" "$yaml" || return 1
     "$bin" -"$provider"-login -config "$conf" || {
-      _ccs_err "$provider login failed"
+      _ccp_err "$provider login failed"
       return 1
     }
     _cred_file=$(command find -H "$auth_dir" -maxdepth 2 -name '*.json' -type f 2>/dev/null | command head -1)
     [[ -n "$_cred_file" ]] || {
-      _ccs_err "no credential appeared after login — check your browser"
+      _ccp_err "no credential appeared after login — check your browser"
       return 1
     }
   } always {
     command rm -rf "$tmpdir"
     # A cancelled/failed login must not leave an empty auth/<name> behind: it is
-    # invisible to _ccs_exists (which tests the conf) and a later `add` of the
+    # invisible to _ccp_exists (which tests the conf) and a later `add` of the
     # same name would rm -rf or silently adopt it. rmdir removes it ONLY if
     # empty, so a real credential is never touched.
     [[ -n "$_cred_file" ]] || command rmdir "$auth_dir" 2>/dev/null || :
@@ -143,15 +143,15 @@ api-keys:
   command chmod 0600 "$auth_dir"/**/*.json 2>/dev/null || :
 }
 
-_ccs_provider_start() {
+_ccp_provider_start() {
   local profile="$1"
   local bin auth_dir port key tmpdir conf yaml
-  _ccs_provider_bin || return 1
+  _ccp_provider_bin || return 1
   bin="$REPLY"
-  _ccs_provider_auth_dir "$profile" || return 1
+  _ccp_provider_auth_dir "$profile" || return 1
   auth_dir="$REPLY"
   [[ -d "$auth_dir" ]] || {
-    _ccs_err "no auth directory for '$profile' — run: ccproteus login $profile"
+    _ccp_err "no auth directory for '$profile' — run: ccproteus login $profile"
     return 1
   }
   key=$(command openssl rand -hex 16) || return 1
@@ -174,19 +174,19 @@ logging-to-file: false
 switch-project: false
 switch-preview-model: false
 antigravity-credits: false"
-  _ccs_write "$conf" "$yaml" || {
+  _ccp_write "$conf" "$yaml" || {
     command rm -rf "$tmpdir"
     return 1
   }
 
   setopt localoptions no_monitor
-  _ccs_log_init
+  _ccp_log_init
   "$bin" -config "$conf" </dev/null >>"${_CCPROTEUS_LOG:-/dev/null}" 2>&1 &
-  _ccs_provider_pid=$!
-  disown %+ 2>/dev/null || disown "$_ccs_provider_pid" 2>/dev/null
-  _ccs_provider_tmpdir="$tmpdir"
-  _ccs_provider_key="$key"
-  _ccs_provider_auth="$auth_dir"
+  _ccp_provider_pid=$!
+  disown %+ 2>/dev/null || disown "$_ccp_provider_pid" 2>/dev/null
+  _ccp_provider_tmpdir="$tmpdir"
+  _ccp_provider_key="$key"
+  _ccp_provider_auth="$auth_dir"
 
   # One 30s budget, two phases: first wait for cliproxyapi to bind its ephemeral
   # port (poll lsof), then wait for it to actually serve — a bound port is not a
@@ -196,15 +196,15 @@ antigravity-credits: false"
   local waited=0 ready=0
   port=""
   while (( waited < 150 )); do
-    if ! kill -0 "$_ccs_provider_pid" 2>/dev/null; then
-      _ccs_provider_stop
-      _ccs_err "bridge for '$profile' exited before becoming ready"
+    if ! kill -0 "$_ccp_provider_pid" 2>/dev/null; then
+      _ccp_provider_stop
+      _ccp_err "bridge for '$profile' exited before becoming ready"
       return 1
     fi
     if [[ -z "$port" ]]; then
       # Parse ONLY the local LISTEN address (the NAME field before "(LISTEN)"),
       # never a "local->remote" token, whose remote port awk would otherwise grab.
-      port=$(command lsof -nP -iTCP -sTCP:LISTEN -a -p "$_ccs_provider_pid" 2>/dev/null \
+      port=$(command lsof -nP -iTCP -sTCP:LISTEN -a -p "$_ccp_provider_pid" 2>/dev/null \
         | command awk 'NR>1{n=$9; sub(/->.*/,"",n); sub(/.*:/,"",n); print n; exit}') || port=""
       [[ "$port" == <-> ]] || port=""
     else
@@ -216,7 +216,7 @@ antigravity-credits: false"
       # arrives and a healthy bridge is torn down after 30s. Without --max-time the
       # "one 30s budget" is not wall-clock at all: a single hung connect can sit
       # past it, because the loop counts iterations, not seconds.
-      _code=$(_ccs_curl_keyed bearer "$key" -s -o /dev/null -w '%{http_code}' \
+      _code=$(_ccp_curl_keyed bearer "$key" -s -o /dev/null -w '%{http_code}' \
         --noproxy '*' --connect-timeout 2 --max-time 5 \
         "http://127.0.0.1:$port/v1/models" 2>/dev/null) || _code=""
       [[ "$_code" == 200 ]] && { ready=1; break }
@@ -226,24 +226,24 @@ antigravity-credits: false"
   done
 
   [[ -n "$port" ]] || {
-    _ccs_provider_stop
-    _ccs_err "bridge for '$profile' did not bind a port within 30s"
+    _ccp_provider_stop
+    _ccp_err "bridge for '$profile' did not bind a port within 30s"
     return 1
   }
   (( ready )) || {
-    _ccs_provider_stop
-    _ccs_err "bridge for '$profile' bound $port but /v1/models never returned 200 within 30s"
+    _ccp_provider_stop
+    _ccp_err "bridge for '$profile' bound $port but /v1/models never returned 200 within 30s"
     return 1
   }
 
-  _ccs_provider_port="$port"
-  _ccs_provider_active="$profile"
+  _ccp_provider_port="$port"
+  _ccp_provider_active="$profile"
   REPLY="$port"
 }
 
-_ccs_provider_stop() {
-  if [[ -n "${_ccs_provider_pid:-}" ]]; then
-    local pid="$_ccs_provider_pid"
+_ccp_provider_stop() {
+  if [[ -n "${_ccp_provider_pid:-}" ]]; then
+    local pid="$_ccp_provider_pid"
     kill "$pid" 2>/dev/null
     local waited=0
     while kill -0 "$pid" 2>/dev/null && (( waited < 100 )); do
@@ -262,26 +262,26 @@ _ccs_provider_stop() {
   # cliproxyapi refreshes OAuth tokens mid-session and rewrites the credential
   # files at its own umask (observed 0644), so re-tighten them to the 0600
   # SECURITY.md guarantees now that the process that was rewriting them is gone.
-  [[ -z "${_ccs_provider_auth:-}" ]] || command chmod 0600 "$_ccs_provider_auth"/**/*.json(N) 2>/dev/null || :
-  [[ -z "${_ccs_provider_tmpdir:-}" ]] || command rm -rf "$_ccs_provider_tmpdir"
-  unset _ccs_provider_pid _ccs_provider_active _ccs_provider_port _ccs_provider_key _ccs_provider_tmpdir _ccs_provider_auth
+  [[ -z "${_ccp_provider_auth:-}" ]] || command chmod 0600 "$_ccp_provider_auth"/**/*.json(N) 2>/dev/null || :
+  [[ -z "${_ccp_provider_tmpdir:-}" ]] || command rm -rf "$_ccp_provider_tmpdir"
+  unset _ccp_provider_pid _ccp_provider_active _ccp_provider_port _ccp_provider_key _ccp_provider_tmpdir _ccp_provider_auth
 }
 
 # Start the adapter for a profile and set REPLY to the port it serves. Waits for
 # the adapter's own readiness line so Claude Code is never pointed at a dead port.
-_ccs_adapter_start() {
+_ccp_adapter_start() {
   local profile="$1" selected="${2:-}"
   local -a scope=(--auto)
   [[ -n "$selected" ]] && scope+=(--model "${selected%%\[*}")
-  local bin="$_CCPROTEUS_LIB_DIR/ccproteus-adapter"
+  local bin="$_CCPROTEUS_LIBEXEC_DIR/ccproteus-adapter"
 
   [[ -x "$bin" ]] || {
-    _ccs_err "profile '$profile' needs an adapter but $bin is not executable"
+    _ccp_err "profile '$profile' needs an adapter but $bin is not executable"
     return 1
   }
 
   local ready adapter_log="$_CCPROTEUS_LOG"
-  _ccs_log_init
+  _ccp_log_init
   ready=$(command mktemp "${TMPDIR:-/tmp}/ccproteus-adapter-ready.XXXXXX") || return 1
 
   # Redirections are prepared by this shell before the adapter starts. If an
@@ -310,13 +310,13 @@ _ccs_adapter_start() {
   # redirect today as an emergent property of job control; make it explicit so
   # a future setopt change cannot silently reintroduce the wedge.
   "$bin" "$profile" "${scope[@]}" --parent-pid $$ </dev/null >"$ready" 2>>"$adapter_log" &
-  _ccs_adapter_pid=$!
+  _ccp_adapter_pid=$!
   # `disown` takes a JOB spec, not a PID: a bare number is read as a job
   # number and fails (rc=127), leaving the job in the table so zsh prints
   # the "[N] + done" notice at the next prompt. `%+` (the most-recent job,
   # i.e. the `&` just backgrounded) is the correct spec; keep the PID form
   # only as a fallback for the rare shell where `%+` is unavailable.
-  disown %+ 2>/dev/null || disown "$_ccs_adapter_pid" 2>/dev/null
+  disown %+ 2>/dev/null || disown "$_ccp_adapter_pid" 2>/dev/null
 
   # A selected launch has a bounded compatibility check, never a fleet sweep.
   # Keep the legacy diagnostic budget only when no model was supplied.
@@ -336,9 +336,9 @@ _ccs_adapter_start() {
     fi
     if [[ "$event" == NATIVE=1 ]]; then
       command rm -f "$ready"
-      _ccs_adapter_stop
-      _ccs_adapter_profile="$profile"
-      _ccs_adapter_port=""
+      _ccp_adapter_stop
+      _ccp_adapter_profile="$profile"
+      _ccp_adapter_port=""
       REPLY=""
       return 0
     elif [[ "$event" == PORT=* ]]; then
@@ -347,8 +347,8 @@ _ccs_adapter_start() {
     elif [[ "$event" == EXIT=* ]]; then
       outcome="declined"
       break
-    elif [[ -n "${_ccs_adapter_pid:-}" ]] &&
-         ! kill -0 "$_ccs_adapter_pid" 2>/dev/null; then
+    elif [[ -n "${_ccp_adapter_pid:-}" ]] &&
+         ! kill -0 "$_ccp_adapter_pid" 2>/dev/null; then
       outcome="died"
       break
     fi
@@ -363,18 +363,18 @@ _ccs_adapter_start() {
   command rm -f "$ready"
 
   [[ -n "$line" ]] || {
-    _ccs_adapter_stop
+    _ccp_adapter_stop
     # Say what the adapter IS before saying it failed. "did not become ready" is a
     # sentence about an internal handshake — a reader who has never opened this file
     # cannot tell whether something crashed, timed out, or was never installed, and
     # nothing in it suggests an action. Name the job, the outcome, and the next step.
     case "$outcome" in
       declined)
-        _ccs_err "${event#EXIT=}" ;;
+        _ccp_err "${event#EXIT=}" ;;
       died)
-        _ccs_err "'$profile': adapter exited before readiness; session not started." ;;
+        _ccp_err "'$profile': adapter exited before readiness; session not started." ;;
       *)
-        _ccs_err "'$profile': adapter timed out after $(( wait_limit / 5 ))s; session not started." ;;
+        _ccp_err "'$profile': adapter timed out after $(( wait_limit / 5 ))s; session not started." ;;
     esac
     print -u2 -- "  Check configuration: ccproteus inspect $profile"
     if [[ "$adapter_log" != /dev/null && -r "$adapter_log" ]]; then
@@ -383,7 +383,7 @@ _ccs_adapter_start() {
     return 1
   }
 
-  _ccs_adapter_profile="$profile"
-  _ccs_adapter_port="${line#PORT=}"
-  REPLY="$_ccs_adapter_port"
+  _ccp_adapter_profile="$profile"
+  _ccp_adapter_port="${line#PORT=}"
+  REPLY="$_ccp_adapter_port"
 }

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from support import HANG_TIMEOUT
 
-ROOT = Path(os.environ.get("CCPROTEUS_LIB_DIR") or Path(__file__).resolve().parents[1])
+ROOT = Path(__file__).resolve().parents[1]
 
 
 
@@ -21,7 +21,7 @@ def home_env(tmp, **extra):
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("CCPROTEUS", "_CCPROTEUS", "CLAUDE_", "ANTHROPIC_", "AWS_"))}
     env.update(HOME=tmp, XDG_CONFIG_HOME=str(home / ".config"), TMPDIR=tmp,
-               CCPROTEUS_STATE_DIR=str(state), CCPROTEUS_LIB_DIR=str(ROOT),
+               CCPROTEUS_STATE_DIR=str(state), CCPROTEUS_LIB_DIR=str(ROOT / "lib"),
                LANG="C.UTF-8", LC_ALL="C.UTF-8", **extra)
     return env, state
 
@@ -31,15 +31,15 @@ class LogMode(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             os.chmod(tmp, 0o755)
             env, _ = home_env(tmp)
-            subprocess.run(["zsh", "-c", "umask 022; source \"$1\"; _ccs_log hello",
-                            "t", str(ROOT / "ccproteus.sh")], env=env, check=True, timeout=HANG_TIMEOUT)
+            subprocess.run(["zsh", "-c", "umask 022; source \"$1\"; _ccp_log hello",
+                            "t", str(ROOT / "lib/ccproteus.sh")], env=env, check=True, timeout=HANG_TIMEOUT)
             log = Path(tmp, f"ccproteus-{os.getuid()}.log")
             self.assertEqual(stat.S_IMODE(log.stat().st_mode) & 0o077, 0,
                              "ccproteus log is group/world readable")
 
     def _run_log(self, env):
-        subprocess.run(["zsh", "-c", "umask 022; source \"$1\"; _ccs_log hello",
-                        "t", str(ROOT / "ccproteus.sh")], env=env, check=True, timeout=HANG_TIMEOUT)
+        subprocess.run(["zsh", "-c", "umask 022; source \"$1\"; _ccp_log hello",
+                        "t", str(ROOT / "lib/ccproteus.sh")], env=env, check=True, timeout=HANG_TIMEOUT)
 
     def test_existing_loose_log_is_tightened(self):
         with tempfile.TemporaryDirectory() as tmp:

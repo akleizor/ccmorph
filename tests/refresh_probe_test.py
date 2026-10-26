@@ -33,7 +33,7 @@ from pathlib import Path
 
 from support import HANG_TIMEOUT
 
-SCRIPT = Path(__file__).resolve().parent.parent / "refresh-model-registry"
+SCRIPT = Path(__file__).resolve().parent.parent / "libexec/refresh-model-registry"
 spec = importlib.util.spec_from_loader(
     "refresh_model_registry",
     importlib.machinery.SourceFileLoader("refresh_model_registry", str(SCRIPT)))

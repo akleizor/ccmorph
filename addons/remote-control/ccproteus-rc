@@ -50,9 +50,9 @@ import zlib
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-LIB_DIR = Path(os.environ.get("CCPROTEUS_LIB_DIR") or HERE.parent.parent)
+LIB_DIR = Path(os.environ.get("CCPROTEUS_LIB_DIR") or HERE.parent.parent / "lib")
 CCPROTEUS = LIB_DIR / "ccproteus.sh"
-ADAPTER = LIB_DIR / "ccproteus-adapter"
+ADAPTER = LIB_DIR.parent / "libexec" / "ccproteus-adapter"
 # Same state-root resolution as ccproteus-adapter; profile .conf files live here.
 STATE_ROOT = Path(os.environ.get("CCPROTEUS_STATE_DIR") or
                   Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ccproteus")
@@ -161,7 +161,7 @@ def retire_route_with(pid: int, handle: str) -> None:
 
 def adapter_env() -> dict[str, str]:
     """No inherited credential, but the caller's proxy intact — exactly what
-    `_ccs_adapter_start` gives it, which is the launcher's own environment."""
+    `_ccp_adapter_start` gives it, which is the launcher's own environment."""
     return {k: v for k, v in os.environ.items()
             if k not in strip_env() or k in PROXY_ENV}
 
@@ -198,7 +198,7 @@ def session_env(base, route_env: dict, route_models: bool) -> dict:
     # The seam to a launch nested in this session: it inherits our loopback proxy, so
     # it must get the flags this session was given. The EFFECTIVE values, defaults
     # included -- an edge record holds only what the route's conf declares.
-    # ccproteus.sh re-applies exactly these lines (_ccs_nested_edge_env).
+    # ccproteus.sh re-applies exactly these lines (_ccp_nested_edge_env).
     env["CCPROTEUS_EDGE_ROUTE_ENV"] = "\n".join(f"{k}={env[k]}" for k in ROUTE_ENV if k in env)
     return env
 

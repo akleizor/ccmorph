@@ -53,15 +53,22 @@ Installer preservation tests and the public command manifest enforce the boundar
 
 ## Code layout
 
-`ccproteus.sh` is the runtime's only entry point: the `ccproteus` command, the helpers
-and agent dispatch (`source ccproteus.sh && _ccs_launch -a …`) load the library through
+`lib/ccproteus.sh` is the runtime's only entry point: the `ccproteus` command, the helpers
+and agent dispatch (`source lib/ccproteus.sh && _ccp_launch -a …`) load the library through
 it and nothing else. (Two callers fall outside the runtime and are the only exception:
-`install.sh` sources `ccproteus-ui.zsh` directly for its colour helpers, and the picker
+`install.sh` sources `lib/ccproteus-ui.zsh` directly for its colour helpers, and the picker
 tests source that module as a library in its own right.) It resolves the state and code
 paths, sets the globals `local.sh` may read, sources `local.sh` and `ccproteus-ui.zsh`,
 then sources each module below, in this order. Every file named here must sit beside
-`ccproteus.sh` in one directory; a module that fails to load fails the whole source.
+`ccproteus.sh` in `lib/`; a module that fails to load fails the whole source.
 Each module has one purpose; a function lives in exactly one.
+
+The repository and the installed copy under `~/.config/ccproteus` share one layout:
+`bin/ccproteus` (the command), `lib/` (`ccproteus.sh` and the modules), `libexec/`
+(internal executables: `ccproteus-adapter`, `gateway-shim`, `model-window`,
+`refresh-model-registry`, `settings-compose`) and `share/` (data:
+`model-catalogue.json`, `window-sources.json`). `lib/` finds `libexec/` and `share/`
+beside itself. `CCPROTEUS_LIB_DIR` names the `lib/` directory.
 
 | Module | Purpose |
 |---|---|
@@ -72,7 +79,7 @@ Each module has one purpose; a function lives in exactly one.
 | `ccproteus-profiles.zsh` | Profile homes and choices: the shared harness layer linked into each profile home, profile and value pickers, sign-in state, and committing a new profile. |
 | `ccproteus-cli.zsh` | The `ccproteus` command: the config store, doctor, help, usage and the verb dispatcher. |
 | `ccproteus-providers.zsh` | The dialect adapter and the provider proxy (cliproxyapi): start, stop, login and listing. |
-| `ccproteus-launch.zsh` | Launching Claude Code: the project picker, the forked claude child, _ccs_launch and the relay driver. |
+| `ccproteus-launch.zsh` | Launching Claude Code: the project picker, the forked claude child, _ccp_launch and the relay driver. |
 
 ## 1. Profile model
 
@@ -87,14 +94,14 @@ conversation history survives profile removal. All `*.conf` are gitignored: they
 carry credentials and never enter history.
 
 **The key set is a contract, and the layout is one too.** Which keys a profile may
-carry is decided in `_ccs_read` (ccproteus-store.zsh) by type — one shared list, one list
+carry is decided in `_ccp_read` (ccproteus-store.zsh) by type — one shared list, one list
 per type, the `env.` allowlist, and the removed keys that report themselves and are
 ignored. Unknown keys and wrong-type keys refuse the profile. `profile.conf.example`
 is the same contract in human form: what it names must load, and every accepted key
 must appear in it, both pinned by `test_the_profile_template_is_a_valid_conf_naming_every_key`.
 Ordering is separate and has one owner: `CONF_SECTIONS` with `canonical_conf()` in
 model-window. Every writer goes through it — `replace_fields` for `context_discovered`
-and `context_window.<model>`, and `_ccs_config_store` for model, effort, mappings and
+and `context_window.<model>`, and `_ccp_config_store` for model, effort, mappings and
 a first configure — so a file rewritten by any of them comes out in the same five
 sections (connection, model choice, behaviour, context, machine-written state),
 regardless of how it was hand-edited. Comments travel with the key line below them,
@@ -103,7 +110,7 @@ and a line the layout does not know keeps its place after the known ones.
 **Migration off the legacy shared registry runs automatically.** `model-window
 --migrate` looks for a legacy `model-registry` file and per-profile
 `cache/context-window` files; `install.sh` invokes it on every install/upgrade,
-and `ccproteus-store.zsh`'s `_ccs_migrate_state` invokes it again from the CLI path the
+and `ccproteus-store.zsh`'s `_ccp_migrate_state` invokes it again from the CLI path the
 first time it sees leftover legacy state (so a host that skips reinstalling still
 gets migrated on next use). A row scoped to a profile (`<profile>:<model>`)
 migrates straight into that profile's `context_discovered`. An unscoped legacy
@@ -127,7 +134,7 @@ prevent: a host that set `XDG_CONFIG_HOME` got its confs in one place and its
 profile homes in another, and the two disagreed about which machine they were on.
 
 **The rename runs itself, once, and is conservative in every direction.**
-`_ccs_migrate_profile_home` runs inside `_ccs_secure_dirs`, so it is on both the
+`_ccp_migrate_profile_home` runs inside `_ccp_secure_dirs`, so it is on both the
 install path and the ordinary CLI path — a host that never reinstalls migrates on
 next use. It holds an exclusive `flock` on a lock file in the state root, so two
 concurrent launches cannot both move the same directory. Its rules:
@@ -230,11 +237,11 @@ MCP credentials (through capsules), settings, history, and tooling are **global 
 | Profile configuration and model credential injection | per profile | `~/.config/ccproteus/<name>.conf` + `~/.config/ccproteus/profiles/<name>/` |
 | claude.ai sign-in and native secure storage | per profile | no launch sets `CLAUDE_SECURESTORAGE_CONFIG_DIR` except a private launch, which sets it to the real profile dir so the key is unchanged; otherwise Claude Code keys the keychain entry by the profile's `CLAUDE_CONFIG_DIR`; an interactive login stays in its profile and no other profile can see it. |
 | MCP credentials | global | owned by MCP capsules (`~/.agents/mcp/<name>/state/`); every profile reaches the same local service, so one grant serves every profile and every agent. A remote OAuth MCP joins as a capsule, never through Claude Code's per-profile store. |
-| Session history | per profile | each profile keeps its own `projects/`, as a plain `CLAUDE_CONFIG_DIR` does. A hop, or `--resume <id>` naming a session from another profile or from native `~/.claude/projects/`, links that one transcript and its sidecar dir into the target (`_ccs_carry_session`); Claude Code appends through the link, so the history stays one file. A profile from the shared-history layout has its `projects` link removed (never the target) at the next launch. |
+| Session history | per profile | each profile keeps its own `projects/`, as a plain `CLAUDE_CONFIG_DIR` does. A hop, or `--resume <id>` naming a session from another profile or from native `~/.claude/projects/`, links that one transcript and its sidecar dir into the target (`_ccp_carry_session`); Claude Code appends through the link, so the history stays one file. A profile from the shared-history layout has its `projects` link removed (never the target) at the next launch. |
 | Adapter probe cache | **per endpoint**, shared across profiles | `.adapter-cache/<sha256(base_url)[:16]>.json`, beside the profile dirs — keyed by endpoint so a second profile on an already-classified gateway starts instantly; the stored `endpoint` is re-checked on read, so a moved URL or hash collision re-probes instead of mis-serving |
 | Adapter runtime config, auth, and log | per launch | mode-0700 directory under `${TMPDIR:-/tmp}`; removed on exit |
 | `settings.json` | **generated** per profile | canonical `~/.claude/settings.json` + the profile's `settings.profile.json` layer + saved model defaults, written by `settings-compose` at launch; edits made to it are folded back into the layer — see [Launch contract](#launch-contract-arguments-pass-through) |
-| Shared harness layer — `skills`, `plugins`, `commands`, `hooks`, `output-styles`, `agents`, `session-env`, `file-history`, `CLAUDE.md`, `keybindings.json`, `settings.local.json` | global | one manifest (`_CCPROTEUS_SHARED_DIRS`/`_FILES`), symlinked into `~/.claude`. Dirs are created-and-linked even while empty, so content installed later reaches every profile; a file appearing in `~/.claude` after a profile existed is linked by the next launch's setup pass. A profile-local REAL dir is merged into the shared store and linked only for the mergeable stores — `agents`, `session-env`, `file-history` — never overwriting an existing entry. Links move as links, not followed (a symlinked dir is one link): an absolute link as is, a relative one rewritten to an absolute path — into the shared store when its target is inside the migrated tree, else to the target's physical path — and its backup entry is removed only once the new link exists; any other one is refused and moved nowhere, to be reconciled through its owning tool instead. A profile-local real file is a deliberate override, respected. Claude may persist the profile spelling used during installation in its plugin indexes; `_ccs_normalize_plugin_index_paths` maps only those stale `installLocation`/`installPath` prefixes back to an existing canonical `~/.claude/plugins` target. It never changes source URLs, package metadata, or missing targets. |
+| Shared harness layer — `skills`, `plugins`, `commands`, `hooks`, `output-styles`, `agents`, `session-env`, `file-history`, `CLAUDE.md`, `keybindings.json`, `settings.local.json` | global | one manifest (`_CCPROTEUS_SHARED_DIRS`/`_FILES`), symlinked into `~/.claude`. Dirs are created-and-linked even while empty, so content installed later reaches every profile; a file appearing in `~/.claude` after a profile existed is linked by the next launch's setup pass. A profile-local REAL dir is merged into the shared store and linked only for the mergeable stores — `agents`, `session-env`, `file-history` — never overwriting an existing entry. Links move as links, not followed (a symlinked dir is one link): an absolute link as is, a relative one rewritten to an absolute path — into the shared store when its target is inside the migrated tree, else to the target's physical path — and its backup entry is removed only once the new link exists; any other one is refused and moved nowhere, to be reconciled through its owning tool instead. A profile-local real file is a deliberate override, respected. Claude may persist the profile spelling used during installation in its plugin indexes; `_ccp_normalize_plugin_index_paths` maps only those stale `installLocation`/`installPath` prefixes back to an existing canonical `~/.claude/plugins` target. It never changes source URLs, package metadata, or missing targets. |
 | Translator instance | per credential domain | one adapter per credential domain when translation is required; native endpoints use none |
 | MCP servers | per profile | each profile keeps the `mcpServers` it was seeded with at provision (or added via `claude mcp add`); nothing projects an external set onto it at launch. |
 
@@ -332,7 +339,7 @@ dark-theme roles; native ANSI and fzf colors derive from the same values. Profil
 single `fzf` adapter, including Claude aliases and unavailable-list keep/custom
 choices. Both adapters share label rendering, column widths, and theme tokens.
 Only the module handles key reads, terminal modes, cursor movement, and fzf argv.
-The source installer ships it beside `ccproteus.sh`.
+The source installer ships it beside `lib/ccproteus.sh`.
 
 `TERM=dumb` and search without fzf use the module's numbered renderer. `NO_COLOR`
 removes styling. Esc/EOF cancels selection; confirmations never default to Yes.
@@ -342,7 +349,7 @@ arguments and the existing piped configuration sequence retain their behavior.
 
 `add` offers profile types and discovered providers, then only the corresponding
 sign-in fields. `config` separates model/reasoning from connection editing.
-Model rows come from `_ccs_value_rows`: API-key endpoints advertise their own
+Model rows come from `_ccp_value_rows`: API-key endpoints advertise their own
 models; subscription/token profiles use Claude aliases; provider profiles reuse
 saved rows. Model discovery failure still permits keeping the current default or
 entering a custom ID. No versioned model catalogue is embedded in the UI.
@@ -441,7 +448,7 @@ profile and nothing else. No change to `codex` or `gateway`, no new service.
 2. No adapter setting is needed. ollama answers `/v1/messages` itself **[wire]**;
    automatic launch classification keeps the native path. A future local server
    speaking OpenAI only is handled by the same automatic adapter path.
-3. Nothing. `_ccs_launch_window` reads `num_ctx` from the endpoint's own
+3. Nothing. `_ccp_launch_window` reads `num_ctx` from the endpoint's own
    `/api/show` at launch, so an authored copy could only drift from it.
 4. Nothing else required — an unprobed tag is clamped to Claude Code's 200,000
    default. Optionally, the internal model-window resolver records
@@ -473,14 +480,14 @@ would never arrive.
 **Why the seam is gone.** Until 2026-10 a profile could declare `transport=<token>`
 and ccproteus called out to a host runner to open the crossing. Every consumer then
 had to be handed the resulting proxy explicitly — and each of those sites spelled
-the hand-off as `HTTPS_PROXY="${_ccs_route_https_proxy:-}"`, which **blanks** an
+the hand-off as `HTTPS_PROXY="${_ccp_route_https_proxy:-}"`, which **blanks** an
 ambient proxy when no runner ran. A user who had already bridged correctly got
 their proxy deleted by the tool that was supposed to use it. Removing the seam
 removes the override: there is one value, the caller's, and it is never rewritten.
 `test_shipped_surface_never_names_the_transport_product` pins the boundary from
 this side: ccproteus ships no transport file, path, or even name.
 
-A conf still carrying `transport=` keeps launching: `_ccs_read` prints one line
+A conf still carrying `transport=` keeps launching: `_ccp_read` prints one line
 naming the replacement and ignores the key.
 
 ## 3. The adapter
@@ -722,7 +729,7 @@ post; only the model work is skipped.
 The map applies to any matching request on that profile, including subagents; it
 does not install a default map. Existing RC `tier.*` pins
 run earlier in the proxy, so a map sees the pinned ID when a host has one.
-Outcomes are appended with `python3 gateway-shim outcome <task>
+Outcomes are appended with `python3 libexec/gateway-shim outcome <task>
 accepted|rejected|escalated|parked` to `<state>/ccproteus/outcomes.jsonl`
 (`{task, outcome, timestamp}`), joined to rows by task.
 
@@ -906,7 +913,7 @@ Two separate things, often confused:
 So on one profile a `claude-*` model and a routed model get different windows from
 the same config, and both are correct.
 
-For a routed id, the launcher reads only local data. `_ccs_launch_window`
+For a routed id, the launcher reads only local data. `_ccp_launch_window`
 uses the canonical `model-window` resolver: an explicit `CLAUDE_CODE_MAX_CONTEXT_TOKENS`
 pin wins outright; otherwise the profile's exact manual override
 (`context_window.<model>`) wins over its `context_discovered` metadata, which is
@@ -987,7 +994,7 @@ Two consequences:
   350,000 was already honest — the window was never the bug.
 - **The window is the only lever on the trigger.** `aY` takes
   `min(context window, CLAUDE_CODE_AUTO_COMPACT_WINDOW)`, so raising one without the
-  other changes nothing. `_ccs_launch` sets both together or neither.
+  other changes nothing. `_ccp_launch` sets both together or neither.
 
 ### The invariant: compaction must fire before the endpoint refuses
 
@@ -1048,8 +1055,8 @@ would have cut the window fivefold, so a `[1m]` profile keeps what Claude Code k
 **[test]**. A conf that pins a ceiling also still wins — an author may want a smaller
 budget on purpose, so derivation fills a gap rather than overruling one **[test]**.
 
-`_ccs_invariant_warn` is that check (a launch reaches the same two halves through the
-one interpreter it runs, `_ccs_launch_diagnostics`) and it names any offender, rather than
+`_ccp_invariant_warn` is that check (a launch reaches the same two halves through the
+one interpreter it runs, `_ccp_launch_diagnostics`) and it names any offender, rather than
 leaving it to arithmetic in this document that stops being done. It reads each
 profile's `availableModels`, undoes the translator disguise, and compares the ceiling
 in that profile's `context_discovered` data against the trigger the id will actually
@@ -1108,7 +1115,7 @@ Hence the rule that makes the invariant maintainable rather than a coincidence:
 > **The route ceiling is the max; the budget is per model; a model the budget
 > cannot protect is named, not hidden.**
 > `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is fixed at process start, so ccproteus sets it
-> to the LARGEST probed window the route serves (`_ccs_launch_window`) — a
+> to the LARGEST probed window the route serves (`_ccp_launch_window`) — a
 > mid-session `/model` switch can then never run clamped below its real window.
 > The launched model's own limit rides the native `autoCompactWindow` setting
 > instead, written into the generated settings, so the compaction trigger is
@@ -1151,7 +1158,7 @@ Hence the rule that makes the invariant maintainable rather than a coincidence:
 > that dies at 700k and not the 258k one nobody would take into a long session.
 > Below the trigger every model is safe; the person holding the session is the one
 > who knows whether it will grow past that. `CCPROTEUS_WITHHOLD_FATAL=1` switches to
-> removal (`_ccs_withhold_fatal_switches`, generated settings only — the layer always
+> removal (`_ccp_withhold_fatal_switches`, generated settings only — the layer always
 > keeps every model, and a session launched on a smaller one offers the whole route
 > again).
 >
@@ -1168,7 +1175,7 @@ never a floor, so the 90 it carried could only ever compact *sooner*.
 ccproteus ships **no display machinery** for any of this. A v1.7.x statusline
 (display-only — it repainted a number the engine never used) was removed; a
 leftover `statusLine` entry it wired into a profile is cleaned up by
-`_ccs_unwire_statusline` at provisioning, and a statusLine the user set
+`_ccp_unwire_statusline` at provisioning, and a statusLine the user set
 themselves is never touched. What the engine budgets, its own surfaces
 (`/context`, `/autocompact`, the built-in indicator, any statusLine the user
 runs) display natively.
@@ -1264,13 +1271,13 @@ Claude Code builds a row three ways and only one lets a description through **[s
 
 The third reads `{value, label, description}` back verbatim from the profile's own
 `.claude.json`, and was already in use there — the stray `Fable` row came through it.
-So `_ccs_project_picker` writes the rows at every launch and discovery stays **off** for
+So `_ccp_project_picker` writes the rows at every launch and discovery stays **off** for
 such a profile: discovery is added first, and its hardcoded string would win the dedupe.
 Keeping discovery off also keeps it out of the launch/add critical path; the background
 helper may refresh the cached model inventory for the next launch.
 
 A row's description names the route it came from. A profile declares `tag=<name>` in its
-conf (for example, `Primary` or `Alternate`); the launcher passes it to `_ccs_project_picker`,
+conf (for example, `Primary` or `Alternate`); the launcher passes it to `_ccp_project_picker`,
 which stamps it on every projected row. A profile that declares none falls back to the
 concise built-in `Gateway`, so an untagged route still reads honestly **[test]**. This is
 a bootstrap display value, not a capability claim — it says where the model comes from and
@@ -1291,7 +1298,7 @@ route. Existence is the endpoint's fact, capacity is `model-window`'s, and fusin
 questions into one `if` answered neither. A model whose window is genuinely too small to
 compact remains selectable and is handled downstream, where the real budget is known: the
 live launch advisory names it, and `CCPROTEUS_WITHHOLD_FATAL=1` removes it from that session
-only. Note the split precisely — both of those read a **probed** wall (`_ccs_hazard_set`
+only. Note the split precisely — both of those read a **probed** wall (`_ccp_hazard_set`
 skips any model without one), so they speak about known-and-small models; an *unprobed*
 model is covered instead by the unprobed advisory and conservative compaction fallback below. Projection is a full replacement, like the MCP projection,
 so a withdrawn model stops being offered instead of lingering — and an unreachable
@@ -1326,7 +1333,7 @@ allowlist. A listed model may still fail inference if the gateway's capability c
 is wrong or its protocol has not been classified. Classification remains separate;
 listing does not probe every model or promise every model accepts `/v1/messages`.
 
-A ceiling comes from local data at **launch**: `_ccs_launch_window` reads
+A ceiling comes from local data at **launch**: `_ccp_launch_window` reads
 the profile's manual override first, then its `context_discovered` entry for
 that exact model, then a glob match within the same blob.
 This rule once also governed which rows the picker offered; it no longer does,
@@ -1535,7 +1542,7 @@ and fixed in v1.15.3:
   present invalid manifest stops an unoverridden launch. The general trap: proving "the user
   did not set this" has to happen *before* the write, because merge order will not do it
   for you.
-- **Ownership is proven by exact path, never by a suffix.** `_ccs_unwire_statusline`
+- **Ownership is proven by exact path, never by a suffix.** `_ccp_unwire_statusline`
   matched `command.endswith("/ccproteus/statusline")` — a strictly broader class than
   ccproteus ever wrote, so a personal bar at `~/bin/ccproteus/statusline` was deleted
   while the function's own comment promised the opposite. The v1.7 wire function it
@@ -1546,7 +1553,7 @@ and fixed in v1.15.3:
 One finding was deliberately **not** fixed, recorded so it is not rediscovered as new:
 `set_allowed` replaces `availableModels` wholesale, and for routed profiles that is
 declared — the table above gives gateway's list as tier aliases plus the projected
-served ids, withdrawal semantics are stated at `_ccs_project_picker`, and
+served ids, withdrawal semantics are stated at `_ccp_project_picker`, and
 `test_projection_never_drops_the_profiles_own_model` pins what survives — and the
 launch's own `--model` survives with it when the shim serves it, because a hop
 relaunches on a `model_map` alias the endpoint never lists and dropping it silently
@@ -1795,7 +1802,7 @@ compatibility.
 | No launch preflight for a plain proxy | An adapter profile fails loudly (`adapter for 'gateway' did not become ready`). A plain `proxy` profile never checks its endpoint, so a down backend first appears as a mid-session API error. Low severity: the brew `:<translator-port>` plist carries `KeepAlive: true`, so launchd restarts it — the gap is the error message, not availability. |
 | Mid-session `408` | `stream disconnected before completion` appears intermittently on the gpt route. A fault-injection proxy exists; Claude Code's recovery behaviour is uncharacterised. |
 | Forced summarisation compact | Never observed. Context would not grow past 47k against the windows in use. |
-| The invariant check is only as current as the last probe | `_ccs_invariant_warn` — reached from a launch through `_ccs_launch_diagnostics` — compares each offered model against the profile's own `context_discovered` data at launch, so a widened allowlist is caught. What it cannot catch is a ceiling that changed since it was last discovered, or a model that was never discovered at all — an unknown id is passed over rather than flagged, on the grounds that a check which cries wolf gets ignored. Refresh metadata with `ccproteus probe <account>`; use `--allow-inference` only as an explicit paid last resort. |
+| The invariant check is only as current as the last probe | `_ccp_invariant_warn` — reached from a launch through `_ccp_launch_diagnostics` — compares each offered model against the profile's own `context_discovered` data at launch, so a widened allowlist is caught. What it cannot catch is a ceiling that changed since it was last discovered, or a model that was never discovered at all — an unknown id is passed over rather than flagged, on the grounds that a check which cries wolf gets ignored. Refresh metadata with `ccproteus probe <account>`; use `--allow-inference` only as an explicit paid last resort. |
 
 ## 8. Re-verifying any claim here
 

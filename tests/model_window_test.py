@@ -11,7 +11,7 @@ import unittest
 
 from support import HANG_TIMEOUT
 
-SCRIPT = Path(__file__).resolve().parents[1] / "model-window"
+SCRIPT = Path(__file__).resolve().parents[1] / "libexec/model-window"
 spec = importlib.util.spec_from_loader("window_test_store", importlib.machinery.SourceFileLoader("window_test_store", str(SCRIPT)))
 assert spec and spec.loader
 store = importlib.util.module_from_spec(spec)
@@ -208,7 +208,7 @@ class MappedTarget(unittest.TestCase):
         self.assertNotEqual(result["window"], 1000000)
 
     def test_a_native_route_ignores_the_map(self):
-        # The shell drops model_map on a native route (ccproteus-models `_ccs_models_…`
+        # The shell drops model_map on a native route (ccproteus-models `_ccp_models_…`
         # gate): no shim runs there, so the map decides nothing and must not be
         # consulted here either.
         _, result, _ = run("gw", "claude-opus-5", {"claude-opus-5": 1000000, "small-target": 128000},
@@ -234,7 +234,7 @@ def test_every_shell_mapping_key_is_excluded_from_the_route():
     # ccproteus.sh owns the mapping list; the fingerprint must ignore all of it.
     import re
     root = Path(__file__).resolve().parents[1]
-    shell = "".join(p.read_text() for p in [root / "ccproteus.sh", *sorted(root.glob("ccproteus-*.zsh"))])
+    shell = "".join(p.read_text() for p in [root / "lib/ccproteus.sh", *sorted((root / "lib").glob("ccproteus-*.zsh"))])
     block = re.search(r"_CCPROTEUS_MODEL_MAPPING_ENV=\(\n(.*?)\n\)", shell, re.S).group(1)
     keys = [k.strip() for k in block.splitlines() if k.strip().startswith("ANTHROPIC_")]
     assert keys

@@ -44,7 +44,7 @@ git clone https://github.com/akleizor/ccproteus && cd ccproteus && ./install.sh
 ccproteus --version
 ```
 
-The installer copies the runtime into `~/.config/ccproteus` and the `ccproteus`
+The installer copies the runtime (`lib/`, `libexec/`, `share/`) into `~/.config/ccproteus` and the `ccproteus`
 command into `~/.local/bin`. It never edits shell startup files; if
 `~/.local/bin` is not on your `PATH`, it prints the line to add.
 

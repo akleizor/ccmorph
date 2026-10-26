@@ -11,7 +11,7 @@ import pytest
 
 from support import HANG_TIMEOUT
 
-HELPER = Path(os.environ.get("CCPROTEUS_LIB_DIR", Path(__file__).resolve().parent.parent)) / "settings-compose"
+HELPER = Path(__file__).resolve().parent.parent / "libexec/settings-compose"
 ADVISE = '[ -n "$CCPROTEUS_ADVISE" ] && printf "%s" "$CCPROTEUS_ADVISE" || true'
 # Nested too deep for any settings file to be held: it fails while the policy is
 # decoded, or, on an interpreter that decodes it anyway, while it is copied in.

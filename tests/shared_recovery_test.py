@@ -22,10 +22,10 @@ def migrate(tmp_path, name):
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("CCPROTEUS_", "_CCPROTEUS_", "CLAUDE_", "ANTHROPIC_"))}
     env.update(HOME=str(tmp_path), ZDOTDIR=str(tmp_path),
-               CCPROTEUS_STATE_DIR=str(tmp_path / "state"), CCPROTEUS_LIB_DIR=str(ROOT))
+               CCPROTEUS_STATE_DIR=str(tmp_path / "state"), CCPROTEUS_LIB_DIR=str(ROOT / "lib"))
     result = subprocess.run(
-        ["zsh", "-fc", 'source "$1"; _ccs_migrate_projects "$2" "$3"', "_",
-         str(ROOT / "ccproteus.sh"), str(original), str(shared)],
+        ["zsh", "-fc", 'source "$1"; _ccp_migrate_projects "$2" "$3"', "_",
+         str(ROOT / "lib/ccproteus.sh"), str(original), str(shared)],
         env=env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
     return result, original, shared
 
@@ -85,11 +85,11 @@ def test_a_profile_with_its_own_agents_directory_launches(tmp_path):
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("CCPROTEUS_", "_CCPROTEUS_", "CLAUDE_", "ANTHROPIC_"))}
     env.update(HOME=str(home), ZDOTDIR=str(home), XDG_CONFIG_HOME=str(home / ".config"),
-               CCPROTEUS_STATE_DIR=str(home / ".config/ccproteus"), CCPROTEUS_LIB_DIR=str(ROOT))
+               CCPROTEUS_STATE_DIR=str(home / ".config/ccproteus"), CCPROTEUS_LIB_DIR=str(ROOT / "lib"))
     result = subprocess.run(
         ["zsh", "-fc",
-         'source "$1"; typeset -gA _ccp=(type sub); _ccs_setup_dir_unlocked gw', "_",
-         str(ROOT / "ccproteus.sh")],
+         'source "$1"; typeset -gA _ccp=(type sub); _ccp_setup_dir_unlocked gw', "_",
+         str(ROOT / "lib/ccproteus.sh")],
         env=env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
 
     assert result.returncode == 0, result.stderr
@@ -121,9 +121,9 @@ def provision_agents(tmp_path, build, *, state_link=False, script=None):
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("CCPROTEUS_", "_CCPROTEUS_", "CLAUDE_", "ANTHROPIC_"))}
     env.update(HOME=str(home), ZDOTDIR=str(home), XDG_CONFIG_HOME=str(home / ".config"),
-               CCPROTEUS_STATE_DIR=str(state), CCPROTEUS_LIB_DIR=str(ROOT))
-    script = script or 'source "$1"; typeset -gA _ccp=(type sub); _ccs_setup_dir_unlocked gw'
-    result = subprocess.run(["zsh", "-fc", script, "_", str(ROOT / "ccproteus.sh")],
+               CCPROTEUS_STATE_DIR=str(state), CCPROTEUS_LIB_DIR=str(ROOT / "lib"))
+    script = script or 'source "$1"; typeset -gA _ccp=(type sub); _ccp_setup_dir_unlocked gw'
+    result = subprocess.run(["zsh", "-fc", script, "_", str(ROOT / "lib/ccproteus.sh")],
                             env=env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
     return result, home, profile
 

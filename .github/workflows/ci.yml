@@ -25,20 +25,20 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y zsh
       - name: parse every zsh file
         run: |
-          for f in ccproteus ccproteus.sh ccproteus-*.zsh install.sh \
+          for f in bin/ccproteus lib/ccproteus.sh lib/ccproteus-*.zsh install.sh \
                    tests/ccproteus_test.zsh tests/install_test.zsh; do
             zsh -n "$f" && echo "ok  $f"
           done
       - name: byte-compile every python helper
         run: |
-          python3 -m py_compile ccproteus-adapter gateway-shim model-window \
-                                refresh-model-registry tests/*.py
+          python3 -m py_compile libexec/ccproteus-adapter libexec/gateway-shim libexec/model-window \
+                                libexec/refresh-model-registry tests/*.py
       - name: shebangs must find their interpreter via env
         # #!/bin/zsh does not exist where zsh lives in /usr/bin, and both of these
         # run DIRECTLY as executables — install.sh puts `ccproteus` on PATH — so
         # their shebangs are load-bearing on any machine that is not macOS.
         run: |
-          for f in ccproteus install.sh; do
+          for f in bin/ccproteus install.sh; do
             head -1 "$f" | grep -qx '#!/usr/bin/env zsh' \
               || { echo "$f: shebang must be '#!/usr/bin/env zsh'"; exit 1; }
           done
@@ -82,8 +82,8 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: |
           python -m pip install "backports.zoneinfo; python_version < '3.9'"
-          python -m py_compile ccproteus-adapter gateway-shim model-window \
-                               refresh-model-registry
+          python -m py_compile libexec/ccproteus-adapter libexec/gateway-shim libexec/model-window \
+                               libexec/refresh-model-registry
           python -m pytest tests/ -q
 
   install-check:
@@ -112,7 +112,7 @@ jobs:
           ./install.sh </dev/null
           # No shell wiring: the startup file must be untouched.
           grep -qF 'ccproteus' "$HOME/.zshrc" && exit 1
-          test -r "$HOME/.config/ccproteus/ccproteus.sh"
+          test -r "$HOME/.config/ccproteus/lib/ccproteus.sh"
           test -x "$HOME/.local/bin/ccproteus"
       - name: the command runs in a shell that sourced nothing
         run: sh -c 'ccproteus --version'

@@ -201,7 +201,7 @@ def profile_lock(profile: str):
 # Canonical layout of a <profile>.conf. Every writer emits this order, so two
 # profiles of one type read the same way: connection, model choice, behaviour,
 # context, then machine-written state. A comment block travels with the key line
-# below it. What is valid is the shell reader's call (`_ccs_read`), not this one's;
+# below it. What is valid is the shell reader's call (`_ccp_read`), not this one's;
 # an unrecognised line keeps its place after the known ones.
 CONF_SECTIONS = (
     ("type", "provider", "email", "token", "base_url", "api_key", "adapter", "tag"),
@@ -431,7 +431,7 @@ def canonical_catalogue_window(catalogue: dict, model_id: str, owned_by: str | N
 
 def bundled_window(model):
     try:
-        catalogue = json.loads(Path(__file__).with_name("model-catalogue.json").read_text()).get("models", {})
+        catalogue = json.loads(Path(__file__).resolve().parent.parent.joinpath("share", "model-catalogue.json").read_text()).get("models", {})
     except (OSError, ValueError):
         return None
     found = canonical_catalogue_window(catalogue, model, None)
