@@ -25,8 +25,8 @@ def env(tmp_path):
     return {
         'HOME': str(tmp_path),
         'XDG_CONFIG_HOME': str(tmp_path / '.config'),
-        'CCPROTEUS_STATE_DIR': str(state), 'CCPROTEUS_LIB_DIR': str(ROOT),
-        'PATH': f'{ROOT}{os.pathsep}{os.environ["PATH"]}',
+        'CCPROTEUS_STATE_DIR': str(state), 'CCPROTEUS_LIB_DIR': str(ROOT / "lib"),
+        'PATH': f'{ROOT / "bin"}{os.pathsep}{os.environ["PATH"]}',
         'CLAUDE_CODE_SESSION_ID': 'snapshot-test', 'CCPROTEUS_RELAY_ID': '123.456.789',
     }
 
@@ -80,7 +80,7 @@ alias python3='false'
 alias sed='false'
 alias tr='false'
 source "$CCPROTEUS_LIB_DIR/ccproteus.sh"
-_ccs_claude_verbs
+_ccp_claude_verbs
 ccproteus rm demo
 ''', env)
     assert result.returncode == 0, result.stderr

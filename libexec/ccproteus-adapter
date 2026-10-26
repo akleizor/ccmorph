@@ -113,7 +113,7 @@ def _find_translator() -> str:
 
 
 TRANSLATOR = _find_translator()
-LIB_DIR = Path(os.environ.get("CCPROTEUS_LIB_DIR") or Path(__file__).resolve().parent)
+LIB_DIR = Path(os.environ.get("CCPROTEUS_LIB_DIR") or Path(__file__).resolve().parent.parent / "lib")
 CCPROTEUS = LIB_DIR / "ccproteus.sh"
 # The id-uniquifier sits between Claude Code and the translator: some gateways
 # mint deterministic tool_use ids (Bash_0 on every response), and
@@ -129,7 +129,7 @@ READY_TIMEOUT = 90
 PARENT_POLL = 2  # seconds between parent-liveness checks
 JOBS = 8
 # How long to wait for another process's classification before falling back to the
-# cache. Must stay under _ccs_adapter_start's readiness budget (3000 x 0.2s = 600s)
+# cache. Must stay under _ccp_adapter_start's readiness budget (3000 x 0.2s = 600s)
 # or a launch fails on "adapter did not become ready" while the holder is healthy.
 LOCK_WAIT = 120
 # Overall budget for classifying a single --model launch (inventory skipped,
@@ -557,7 +557,7 @@ def classify(base: str, key: str, cache: Path,
     # A sidecar .lock file so it survives the cache's own rewrite.
     #
     # Bounded, and it says so while waiting. A blocking LOCK_EX here could outlast
-    # the caller: _ccs_adapter_start gives readiness 3000 x 0.2s = 600s, while the
+    # the caller: _ccp_adapter_start gives readiness 3000 x 0.2s = 600s, while the
     # holder's sweep is N models x up to 4 dialect probes x PROBE_TIMEOUT and can
     # run far longer on a slow gateway — so the launch used to sit silent in flock()
     # and then fail with "adapter did not become ready" while the warmup was
@@ -1527,7 +1527,7 @@ def main() -> int:
         for spelling in (json.dumps(key)[1:-1], key):
             text = text.replace(spelling, "<redacted>")
         if upstream_proxy:
-            # Same shape as ccproteus.sh _ccs_redact_url: no userinfo, no query.
+            # Same shape as ccproteus.sh _ccp_redact_url: no userinfo, no query.
             u = urllib.parse.urlsplit(upstream_proxy)
             host = (u.hostname or "") + (f":{u.port}" if u.port else "")
             safe = urllib.parse.urlunsplit((u.scheme, host, u.path, "", ""))

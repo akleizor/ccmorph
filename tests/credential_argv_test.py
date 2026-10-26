@@ -15,7 +15,7 @@ from pathlib import Path
 
 from support import HANG_TIMEOUT
 
-ROOT = Path(os.environ.get("CCPROTEUS_LIB_DIR") or Path(__file__).resolve().parents[1])
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def load(path, name):
@@ -53,7 +53,7 @@ def home_env(tmp, **extra):
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("CCPROTEUS", "_CCPROTEUS", "CLAUDE_", "ANTHROPIC_", "AWS_"))}
     env.update(HOME=tmp, XDG_CONFIG_HOME=str(home / ".config"), TMPDIR=tmp,
-               CCPROTEUS_STATE_DIR=str(state), CCPROTEUS_LIB_DIR=str(ROOT),
+               CCPROTEUS_STATE_DIR=str(state), CCPROTEUS_LIB_DIR=str(ROOT / "lib"),
                LANG="C.UTF-8", LC_ALL="C.UTF-8", **extra)
     return env, state
 
@@ -68,7 +68,7 @@ class CredentialArgv(unittest.TestCase):
             (state / "gw.conf").write_text(
                 f"type=apikey\napi_key={key}\nbase_url=http://127.0.0.1:{server.server_address[1]}\n")
             for verb in (["models", "gw"], ["doctor", "gw"]):
-                proc = subprocess.Popen([str(ROOT / "ccproteus"), *verb], env=env,
+                proc = subprocess.Popen([str(ROOT / "bin/ccproteus"), *verb], env=env,
                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 seen = False
                 deadline = time.monotonic() + HANG_TIMEOUT

@@ -78,7 +78,7 @@ Know these before trusting the tool with a key.
   for piping into another command. Redirect them deliberately; a shell that logs
   command output will capture the value.
 - **`local.sh` is trusted executable zsh**, sourced into ccproteus's process on
-  launch. Anyone who can write it can already write `ccproteus.sh` beside it, so it
+  launch. Anyone who can write it can already write `lib/ccproteus.sh` beside it, so it
   grants no new privilege — but it is code, not configuration. Read anything you
   copy into it.
 - **`--uninstall` deliberately leaves your profiles in place**, credentials and

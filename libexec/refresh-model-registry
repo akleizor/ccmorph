@@ -32,8 +32,9 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-LIB_DIR = Path(os.environ.get("CCPROTEUS_LIB_DIR") or Path(__file__).resolve().parent)
+LIB_DIR = Path(os.environ.get("CCPROTEUS_LIB_DIR") or Path(__file__).resolve().parent.parent / "lib")
 CCPROTEUS = LIB_DIR / "ccproteus.sh"
+SHARE_DIR = LIB_DIR.parent / "share"
 
 
 def _state_dir() -> Path:
@@ -311,7 +312,7 @@ def provider_windows(declared: dict[str, int], rows: list, fields: dict, timeout
         return declared, set()
     if "sources" not in cache:
         try:
-            cache["sources"] = json.loads((LIB_DIR / "window-sources.json").read_text()).get("sources", [])
+            cache["sources"] = json.loads((SHARE_DIR / "window-sources.json").read_text()).get("sources", [])
         except (OSError, ValueError, AttributeError):
             cache["sources"] = []
     out, pending = dict(declared), set()
@@ -450,7 +451,7 @@ def fetch_canonical_catalogue(timeout: float = CATALOGUE_TIMEOUT) -> dict:
     if live:
         return live
     try:
-        snapshot = json.loads((LIB_DIR / "model-catalogue.json").read_text())
+        snapshot = json.loads((SHARE_DIR / "model-catalogue.json").read_text())
         models = snapshot.get("models", {})
         if isinstance(models, dict):
             print(f"Catalogue unavailable; using bundled snapshot "

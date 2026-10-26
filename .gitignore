@@ -49,7 +49,7 @@ active
 local.sh
 
 # ── Runtime output ───────────────────────────────────────────────────────────
-# Rotated in place by _ccs_log. Diagnostics, not state: safe to delete.
+# Rotated in place by _ccp_log. Diagnostics, not state: safe to delete.
 ccproteus.log
 # Snapshots taken before a risky edit, and profile dirs left behind by a deleted
 # conf. Both hold credential-shaped content, so they are ignored rather than

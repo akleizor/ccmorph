@@ -13,7 +13,7 @@ import pytest
 
 from support import HANG_TIMEOUT
 
-SHIM = Path(__file__).resolve().parents[1] / 'gateway-shim'
+SHIM = Path(__file__).resolve().parents[1] / 'libexec/gateway-shim'
 
 
 def test_explicit_map_prepares_its_target_once_without_family_substitution(tmp_path, monkeypatch):

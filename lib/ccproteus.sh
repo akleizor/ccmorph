@@ -6,7 +6,7 @@ _CCPROTEUS_VERSION="2.5.1"
 # The pre-2.4.0 name for `probe`, still accepted so a script that already says it keeps
 # working. Assembled rather than written so the retired word appears nowhere in this
 # source; a test pins that the alias still dispatches.
-_ccs_retired_verb="mea""sure"
+_ccp_retired_verb="mea""sure"
 
 # TWO directories, deliberately. They were one, which worked only because a
 # git clone was also the install: the same path held ccproteus.sh and the helper
@@ -24,6 +24,8 @@ _CCPROTEUS_DIR="${CCPROTEUS_STATE_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/ccprote
 # different version. %x is the file being sourced; :A resolves symlinks, which
 # matters when a package manager links the library into place.
 _CCPROTEUS_LIB_DIR="${CCPROTEUS_LIB_DIR:-${${(%):-%x}:A:h}}"
+# Internal executables and data files sit beside lib/ (bin/, lib/, libexec/, share/).
+_CCPROTEUS_LIBEXEC_DIR="${_CCPROTEUS_LIB_DIR:h}/libexec"
 _CCPROTEUS_PROFILE_DIRS="$_CCPROTEUS_DIR/profiles"
 _CCPROTEUS_CONTEXT_POLICY="${CCPROTEUS_CONTEXT_POLICY:-$HOME/.agents/runtime/policies/context.json}"
 # The SHARED HARNESS LAYER: what makes Claude Code yours (skills, plugins,
@@ -58,7 +60,7 @@ _CCPROTEUS_ACW_MAX=1000000
 zmodload -i zsh/datetime 2>/dev/null
 
 # Per-shell memo for `/v1/models` listings, keyed by endpoint+credential. Declared
-# here so it exists before any function reads it; see _ccs_models_listing.
+# here so it exists before any function reads it; see _ccp_models_listing.
 #
 # RESET on every source, not merely declared. `typeset -gA` alone keeps whatever a
 # previous source left behind, and the memo would then outlive the endpoint state it
@@ -67,7 +69,7 @@ zmodload -i zsh/datetime 2>/dev/null
 # test's catalogue instead of their own. A real shell re-sources on every new
 # terminal, where the same reasoning applies: a listing memoised in a shell started
 # yesterday should not decide today's launch.
-typeset -gA _ccs_models_memo=()
+typeset -gA _ccp_models_memo=()
 
 # Machine-local overrides — a gitignored file that never ships. This is the
 # single seam where a host's own tooling opts into optional behavior without the

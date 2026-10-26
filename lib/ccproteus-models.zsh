@@ -1,14 +1,14 @@
 # ccproteus-models.zsh — Models: the session's model and state on resume, gateway /v1/models listings, published windows, route ceilings and model lookup.
 # Sourced by ccproteus.sh after ccproteus-ui.zsh (see its Modules block); never run directly.
 
-_ccs_resume_model() {
+_ccp_resume_model() {
   local session_id="$1"
   local transcript model
 
   REPLY=""
-  [[ -n "$session_id" ]] && _ccs_clean_value "$session_id" || return 1
+  [[ -n "$session_id" ]] && _ccp_clean_value "$session_id" || return 1
 
-  _ccs_session_file "$session_id" || return 1
+  _ccp_session_file "$session_id" || return 1
   transcript="$REPLY" REPLY=""
 
   model=$(command python3 - "$transcript" <<'PY'
@@ -67,21 +67,21 @@ sys.stdout.write(command_model if saw_model_command else assistant_model)
 PY
   ) || return 1
 
-  [[ -n "$model" ]] && _ccs_clean_value "$model" || return 1
+  [[ -n "$model" ]] && _ccp_clean_value "$model" || return 1
   case "$model" in
     -*|@*|\?|*[[:space:]]*) return 1 ;;
   esac
   REPLY="$model"
 }
 
-_ccs_session_state() {
+_ccp_session_state() {
   local session_id="$1"
   local transcript state model effort
 
   reply=()
-  [[ -n "$session_id" ]] && _ccs_clean_value "$session_id" || return 1
+  [[ -n "$session_id" ]] && _ccp_clean_value "$session_id" || return 1
 
-  _ccs_session_file "$session_id" || return 1
+  _ccp_session_file "$session_id" || return 1
   transcript="$REPLY"
 
   state=$(command python3 - "$transcript" <<'PY'
@@ -125,13 +125,13 @@ PY
   reply=("$model" "$effort")
 }
 
-_ccs_api_url() {  # $1 = API root or versioned SDK base, $2 = /v1/... path
+_ccp_api_url() {  # $1 = API root or versioned SDK base, $2 = /v1/... path
   local base="${1%/}" path="$2"
   [[ "${base:l}" == */v<-> ]] && path="${path#/v1}"
   REPLY="$base$path"
 }
 
-_ccs_undisguise_ids() {  # REPLY = $1 with every claude-<cover>-dd-<reversed> id restored
+_ccp_undisguise_ids() {  # REPLY = $1 with every claude-<cover>-dd-<reversed> id restored
   # Translators disguise non-Claude ids so gateway discovery will list them. Every
   # consumer here wants the true id, so each listing is undisguised once, on entry.
   local body="$1" q='"' id
@@ -142,9 +142,9 @@ _ccs_undisguise_ids() {  # REPLY = $1 with every claude-<cover>-dd-<reversed> id
 }
 
 # curl with the credential headers fed through its stdin config (-K -), so the
-# key never appears on a command line (ps). Usage: _ccs_curl_keyed <both|bearer>
+# key never appears on a command line (ps). Usage: _ccp_curl_keyed <both|bearer>
 # <key> <curl args...>. Callers must not send a body on stdin.
-_ccs_curl_keyed() {
+_ccp_curl_keyed() {
   local kind="$1" key="$2"; shift 2
   local esc="${key//\\/\\\\}"; esc="${esc//\"/\\\"}"
   {
@@ -153,7 +153,7 @@ _ccs_curl_keyed() {
   } | command curl -K - "$@"
 }
 
-_ccs_models_listing() {  # $1 = base url, $2 = key, $3 = max-time seconds
+_ccp_models_listing() {  # $1 = base url, $2 = key, $3 = max-time seconds
   # One `/v1/models` listing per launch, shared.
   #
   # The window probe and the picker projection both need this listing, and both
@@ -165,9 +165,9 @@ _ccs_models_listing() {  # $1 = base url, $2 = key, $3 = max-time seconds
   # Memoised per (base, key) for the life of the shell, which is the right scope
   # for its two callers: they run within a single launch, and the answer cannot
   # change between them. Deliberately NOT a durable cache — a gateway's catalogue
-  # does change, and `_ccs_project_picker` is documented as a probe rather
+  # does change, and `_ccp_project_picker` is documented as a probe rather
   # than a memory, so a later launch must ask again.
-  # Answers in $REPLY, never on stdout. A caller writing `body=$(_ccs_models_listing
+  # Answers in $REPLY, never on stdout. A caller writing `body=$(_ccp_models_listing
   # ...)` would run this whole function in a subshell, and the memo write would then
   # land in a copy of the array that dies with it — every call a cache miss, the
   # duplicate fetch intact, and nothing visibly wrong. Returning through REPLY keeps
@@ -179,28 +179,28 @@ _ccs_models_listing() {  # $1 = base url, $2 = key, $3 = max-time seconds
   # The credential is part of the identity: two profiles may share a base URL with
   # different keys and be shown different catalogues.
   local memo_key="${base}"$'\x1f'"${key}"
-  if [[ -n "${_ccs_models_memo[$memo_key]:-}" ]]; then
-    REPLY="${_ccs_models_memo[$memo_key]}"
+  if [[ -n "${_ccp_models_memo[$memo_key]:-}" ]]; then
+    REPLY="${_ccp_models_memo[$memo_key]}"
     return 0
   fi
 
   local body url
-  _ccs_api_url "$base" "/v1/models?limit=1000"
+  _ccp_api_url "$base" "/v1/models?limit=1000"
   url="$REPLY"
-  body=$(_ccs_curl_keyed both "$key" -sS -f --connect-timeout 2 --max-time "$maxtime" \
+  body=$(_ccp_curl_keyed both "$key" -sS -f --connect-timeout 2 --max-time "$maxtime" \
            "$url" \
            -H 'anthropic-version: 2023-06-01' 2>/dev/null) || return 1
   [[ -n "$body" ]] || return 1
 
-  _ccs_undisguise_ids "$body"
-  _ccs_models_memo[$memo_key]="$REPLY"
+  _ccp_undisguise_ids "$body"
+  _ccp_models_memo[$memo_key]="$REPLY"
 }
 
 # "<known window or empty>\t<source>\t<unknown budget or empty>\t<send_id>",
 # one process.
-_ccs_model_window_fields() {
-  _ccs_migrate_state || return 1
-  local resolver="$_CCPROTEUS_LIB_DIR/model-window"
+_ccp_model_window_fields() {
+  _ccp_migrate_state || return 1
+  local resolver="$_CCPROTEUS_LIBEXEC_DIR/model-window"
   [[ -x "$resolver" ]] || return 1
   command env -u CLAUDE_CODE_MAX_CONTEXT_TOKENS \
     CCPROTEUS_STATE_DIR="$_CCPROTEUS_DIR" MODEL_WINDOW_PROFILE_CONF="$_CCPROTEUS_DIR/$1.conf" \
@@ -208,9 +208,9 @@ _ccs_model_window_fields() {
 }
 
 # One local resolver reads manual and discovered limits from the profile itself.
-_ccs_model_window() {
-  _ccs_migrate_state || return 1
-  local resolver="$_CCPROTEUS_LIB_DIR/model-window"
+_ccp_model_window() {
+  _ccp_migrate_state || return 1
+  local resolver="$_CCPROTEUS_LIBEXEC_DIR/model-window"
   [[ -x "$resolver" ]] || return 1
   command env -u CLAUDE_CODE_MAX_CONTEXT_TOKENS \
     CCPROTEUS_STATE_DIR="$_CCPROTEUS_DIR" MODEL_WINDOW_PROFILE_CONF="$_CCPROTEUS_DIR/$1.conf" \
@@ -237,14 +237,14 @@ _ccs_model_window() {
 # told the work "continues in the background" and nothing ever contradicts it,
 # however it ended. Every one of these jobs is silent on its happy path, so the log
 # stays quiet until something goes wrong.
-_ccs_spawn_bg_logged() {
+_ccp_spawn_bg_logged() {
   setopt localoptions no_monitor
   # The redirection is prepared by THIS shell before the child starts, so an
   # unwritable log aborts the spawn before the executable ever runs — the job
   # silently never happens while the caller reports it started. Same boundary,
   # same fallback as the adapter's own log handling.
   local _log="${_CCPROTEUS_LOG:-/dev/null}"
-  _ccs_log_init
+  _ccp_log_init
   if ! { : >> "$_log" } 2>/dev/null; then
     _log=/dev/null
   fi
@@ -256,7 +256,7 @@ _ccs_spawn_bg_logged() {
 # A plain-text pre-check, so the usual launch (nothing new) starts no interpreter:
 # every model id already appears in the conf's context JSON or a manual override.
 # A false positive only costs one sizer run; the sizer itself decides.
-_ccs_listing_has_unsized() {  # $1 = profile, $2 = /v1/models JSON
+_ccp_listing_has_unsized() {  # $1 = profile, $2 = /v1/models JSON
   local conf="$_CCPROTEUS_DIR/$1.conf" id
   [[ -r "$conf" ]] || return 0
   local known="$(<"$conf")" line
@@ -278,9 +278,9 @@ _ccs_listing_has_unsized() {  # $1 = profile, $2 = /v1/models JSON
 
 # Free metadata only, off add/launch's critical path. Inference requires the
 # operator's explicit `ccproteus probe --allow-inference --profile ... --model ...`.
-_ccs_probe_nudge() {  # $1 = profile name
-  [[ -x "$_CCPROTEUS_LIB_DIR/refresh-model-registry" ]] || return 0
-  _ccs_spawn_bg_logged "$_CCPROTEUS_LIB_DIR/refresh-model-registry" \
+_ccp_probe_nudge() {  # $1 = profile name
+  [[ -x "$_CCPROTEUS_LIBEXEC_DIR/refresh-model-registry" ]] || return 0
+  _ccp_spawn_bg_logged "$_CCPROTEUS_LIBEXEC_DIR/refresh-model-registry" \
     --declared-only --profile "$1" --deadline 30
 }
 
@@ -295,10 +295,10 @@ _ccs_probe_nudge() {  # $1 = profile name
 # field 5 -- the caller applies its seed when it reads the ceiling, so the field
 # stays the route's own answer. The run happens even with no model: a routed
 # launch still needs its ceiling and its saved budget.
-_ccs_launch_window() {
-  local profile="$1" model="${2:-}" resolver="$_CCPROTEUS_LIB_DIR/model-window"
+_ccp_launch_window() {
+  local profile="$1" model="${2:-}" resolver="$_CCPROTEUS_LIBEXEC_DIR/model-window"
   if [[ -n "$model" ]]; then
-    _ccs_migrate_state || model=""
+    _ccp_migrate_state || model=""
   fi
   [[ -x "$resolver" ]] || model=""
   { command cat <<'PY'
@@ -318,7 +318,7 @@ fields = ["", "", "", "", "", ""]
 # a settings-compose that cannot be read costs only the facts that read settings --
 # on the separate runs this fold replaced, it never touched the resolver's record.
 try:
-    exec(os.environ["_CCS_SC_PY"], globals())
+    exec(os.environ["_CCP_SC_PY"], globals())
 except Exception:
     _sc = None
 
@@ -384,9 +384,9 @@ print(*fields, sep="\t")
 PY
   } | command env -u CLAUDE_CODE_MAX_CONTEXT_TOKENS \
     CCPROTEUS_STATE_DIR="$_CCPROTEUS_DIR" MODEL_WINDOW_PROFILE_CONF="$_CCPROTEUS_DIR/$profile.conf" \
-    _CCS_LIB="$_CCPROTEUS_LIB_DIR" _CCS_SC_PY="$(_ccs_settings_compose_py)" \
+    _CCP_LIB="$_CCPROTEUS_LIBEXEC_DIR" _CCP_SC_PY="$(_ccp_settings_compose_py)" \
     python3 - "$resolver" "$profile" "$model" \
-    "${(f)$(_ccs_settings_sources "$profile")}" 2>/dev/null
+    "${(f)$(_ccp_settings_sources "$profile")}" 2>/dev/null
 }
 
 # Ask a profile's own endpoint what models it serves.
@@ -398,7 +398,7 @@ PY
 # capability judgement belongs here.
 # scheme://host[:port]/path only: drops userinfo, query and fragment so a URL
 # can appear in a message or log without leaking a credential.
-_ccs_redact_url() {
+_ccp_redact_url() {
   command python3 - "$1" <<'PY' 2>/dev/null || print -r -- '[unparseable endpoint]'
 import sys, urllib.parse
 u=urllib.parse.urlsplit(sys.argv[1]); host=u.hostname or ''
@@ -407,13 +407,13 @@ print(urllib.parse.urlunsplit((u.scheme, host, u.path.rstrip('/'), '', '')))
 PY
 }
 
-_ccs_gw_models_json() {
+_ccp_gw_models_json() {
   local name="$1"
   local base key body
   REPLY=""
 
-  _ccs_read "$name" || return 1
-  _ccs_validate_loaded "$name" || {
+  _ccp_read "$name" || return 1
+  _ccp_validate_loaded "$name" || {
     unset _ccp
     return 1
   }
@@ -426,7 +426,7 @@ _ccs_gw_models_json() {
   unset _ccp
 
   [[ -n "$key" ]] || {
-    _ccs_err "'$name' has no api_key — model discovery needs one"
+    _ccp_err "'$name' has no api_key — model discovery needs one"
     return 1
   }
 
@@ -436,21 +436,21 @@ _ccs_gw_models_json() {
   # return clean ids without it, and the native Anthropic endpoint authenticates
   # before validating the version, so nothing is lost.
   local url
-  _ccs_api_url "$base" "/v1/models?limit=1000"
+  _ccp_api_url "$base" "/v1/models?limit=1000"
   url="$REPLY"
   # No proxy override: curl reads whatever HTTPS_PROXY the caller's environment
   # carries, which is the one channel a bridge uses to make a private endpoint
   # reachable. Overriding it here blanked an ambient proxy and the request died.
-  body=$(_ccs_curl_keyed both "$key" -sS -f --max-time 20 "$url") || {
-    _ccs_err "could not reach '$(_ccs_redact_url "$base")' — if it is an internal endpoint, connect your private network and try again"
+  body=$(_ccp_curl_keyed both "$key" -sS -f --max-time 20 "$url") || {
+    _ccp_err "could not reach '$(_ccp_redact_url "$base")' — if it is an internal endpoint, connect your private network and try again"
     return 1
   }
-  _ccs_undisguise_ids "$body"
+  _ccp_undisguise_ids "$body"
 }
 
-_ccs_gw_models() {
+_ccp_gw_models() {
   local name="$1"
-  _ccs_gw_models_json "$name" "${@:3}" || return 1
+  _ccp_gw_models_json "$name" "${@:3}" || return 1
 
   print -r -- "$REPLY" | command python3 -c '
 import json
@@ -497,8 +497,8 @@ if not rows:
 
 for model_id, owner in sorted(rows):
     print(f"{model_id}\t{owner}")
-' "$_CCPROTEUS_DIR/$name.conf" "${2:-catalogue}" "$_CCPROTEUS_LIB_DIR/model-window" || {
-    _ccs_err "'$name' endpoint returned no usable model list"
+' "$_CCPROTEUS_DIR/$name.conf" "${2:-catalogue}" "$_CCPROTEUS_LIBEXEC_DIR/model-window" || {
+    _ccp_err "'$name' endpoint returned no usable model list"
     return 1
   }
 }
@@ -518,7 +518,7 @@ for model_id, owner in sorted(rows):
 #     catalogue. Membership there is the claude- prefix: the same test the launcher
 #     already applies when deciding whether an id needs
 #     CLAUDE_CODE_MAX_CONTEXT_TOKENS, for the same reason. Free, offline, certain.
-#   * A base_url -- the endpoint's own /v1/models, through `_ccs_gw_models`, so the
+#   * A base_url -- the endpoint's own /v1/models, through `_ccp_gw_models`, so the
 #     answer routes exactly as `ccproteus models` does and no per-model table is born
 #     here either.
 #
@@ -529,15 +529,15 @@ for model_id, owner in sorted(rows):
 # absence, and answers 2 so the carried model survives. Dropping a model because a
 # gateway blinked is the worse of the two failures: the model is the user's choice,
 # and the fallback is only ever a guess at it.
-_ccs_settings_model_alias() {
+_ccp_settings_model_alias() {
   local tier="${(U)2}" value
   [[ "$tier" == (OPUS|SONNET|HAIKU|FABLE) ]] || return 1
-  value=$(_ccs_config_store get "$1" "env.ANTHROPIC_DEFAULT_${tier}_MODEL") || return 1
+  value=$(_ccp_config_store get "$1" "env.ANTHROPIC_DEFAULT_${tier}_MODEL") || return 1
   [[ -n "$value" ]] || return 1
   print -r -- "$value"
 }
 
-_ccs_model_known() {
+_ccp_model_known() {
   local name="$1"
   local want="$2"
   # Claude Code recognizes the suffix case-insensitively; strip only that terminal
@@ -547,7 +547,7 @@ _ccs_model_known() {
   [[ -n "$name" && -n "$want" ]] || return 2
   [[ "$want" == (opus|sonnet|haiku|fable) ]] && return 0
 
-  _ccs_read "$name" >/dev/null 2>&1 || return 2
+  _ccp_read "$name" >/dev/null 2>&1 || return 2
   local base="${_ccp[base_url]:-}"
   local _mk_type="${_ccp[type]:-}"
   local model_map="${_ccp[model_map]:-}"
@@ -574,14 +574,14 @@ _ccs_model_known() {
     return $?
   fi
 
-  _ccs_gw_models_json "$name" 2>/dev/null || return 2
+  _ccp_gw_models_json "$name" 2>/dev/null || return 2
   local body="$REPLY"
   [[ -n "$body" ]] || return 2
 
-  _CCS_MODELS_JSON="$body" command python3 -c '
+  _CCP_MODELS_JSON="$body" command python3 -c '
 import json, os, sys
 try:
-    payload = json.loads(os.environ["_CCS_MODELS_JSON"])
+    payload = json.loads(os.environ["_CCP_MODELS_JSON"])
 except Exception:
     raise SystemExit(2)
 # One lookup on the wire id, like the shim (#285); a mapped target is final.

@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory(prefix='picker-live-', dir=root) as temp:
     def terminal():
         os.setsid()
         fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-    proc = subprocess.Popen([str(root / 'ccproteus'), 'set', 'demo', 'effort'],
+    proc = subprocess.Popen([str(root / 'bin/ccproteus'), 'set', 'demo', 'effort'],
                             env=env, cwd=temp, stdin=slave, stdout=slave, stderr=slave,
                             preexec_fn=terminal)
     os.close(slave)

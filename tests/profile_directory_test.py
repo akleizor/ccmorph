@@ -9,14 +9,14 @@ from support import HANG_TIMEOUT
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run(home, state, script='_ccs_secure_dirs', extra=None):
+def run(home, state, script='_ccp_secure_dirs', extra=None):
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(('CCPROTEUS_', '_CCPROTEUS_', 'CLAUDE_', 'ANTHROPIC_'))}
     env.update(HOME=str(home), ZDOTDIR=str(home), CCPROTEUS_STATE_DIR=str(state),
-               CCPROTEUS_LIB_DIR=str(ROOT))
+               CCPROTEUS_LIB_DIR=str(ROOT / "lib"))
     env.update(extra or {})
     return subprocess.run(['zsh', '-fc', 'source "$1"; ' + script, '_',
-                           str(ROOT / 'ccproteus.sh')], env=env, text=True,
+                           str(ROOT / 'lib/ccproteus.sh')], env=env, text=True,
                           capture_output=True, timeout=HANG_TIMEOUT)
 
 
@@ -144,7 +144,7 @@ def test_doctor_does_not_normalize_plugin_indexes(tmp_path):
 
 def test_fresh_install_uses_state_profiles_without_legacy_alias(tmp_path):
     state = tmp_path / 'custom-state'
-    result = run(tmp_path, state, '_ccs_secure_dirs; print -r -- "$_CCPROTEUS_PROFILE_DIRS"')
+    result = run(tmp_path, state, '_ccp_secure_dirs; print -r -- "$_CCPROTEUS_PROFILE_DIRS"')
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == str(state / 'profiles')
     assert (state / 'profiles').is_dir()

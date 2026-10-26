@@ -9,7 +9,7 @@ REPO="${0:A:h:h}"
 # Derived, never hand-listed: install.sh enumerates this same glob, so a module
 # added beside ccproteus.sh is covered here with no edit — and a module dropped
 # from the repo cannot leave a stale name behind in the manifest below.
-module_files=("$REPO"/ccproteus-*.zsh(N:t))   # not `modules`: a readonly zsh special
+module_files=("$REPO"/lib/ccproteus-*.zsh(N:t))   # not `modules`: a readonly zsh special
 TMP=$(mktemp -d /tmp/ccproteus-install-test.XXXXXX)
 trap 'rm -rf "$TMP"' EXIT
 
@@ -52,8 +52,8 @@ run_installer "$d"; rc=$?
 # along (this is what keeps any other product from shipping inside ccproteus),
 # and nothing missing either, which subsumes a per-component presence loop.
 (( ${#module_files} )) || fail "no ccproteus-*.zsh module found beside ccproteus.sh — the manifest below would be silently short"
-want=(ccproteus.sh $module_files ccproteus-adapter gateway-shim model-window settings-compose refresh-model-registry model-catalogue.json window-sources.json local.sh.example profile.conf.example profiles)
-got=("$d/home/.config/ccproteus/"*(N:t))
+want=(bin/ccproteus lib/ccproteus.sh ${module_files/#/lib/} libexec/ccproteus-adapter libexec/gateway-shim libexec/model-window libexec/settings-compose libexec/refresh-model-registry share/model-catalogue.json share/window-sources.json local.sh.example profile.conf.example profiles)
+got=(${(f)"$(cd "$d/home/.config/ccproteus" && print -l *(N) {bin,lib,libexec,share}/*(N.) | grep -vxE 'bin|lib|libexec|share')"})
 extra=(${got:|want}); missing=(${want:|got})
 (( ${#extra} == 0 && ${#missing} == 0 )) \
   && ok "install places exactly its own manifest" \
@@ -79,7 +79,7 @@ grep -qF '# >>> ccproteus >>>' "$d/home/.zshrc" \
 # --- 2. legacy startup wiring is reported but never edited --------------------
 print 'export BEFORE=1' > "$d/home/.zshrc"
 print '# >>> ccproteus >>>' >> "$d/home/.zshrc"
-print 'source "/old/path/ccproteus.sh"' >> "$d/home/.zshrc"
+print 'source "/old/path/lib/ccproteus.sh"' >> "$d/home/.zshrc"
 print '# missing end marker' >> "$d/home/.zshrc"
 print 'export AFTER=1' >> "$d/home/.zshrc"
 original=$(<"$d/home/.zshrc")
@@ -97,10 +97,10 @@ grep -qiF 'legacy ccproteus block' "$d/out" && ok "legacy rc ownership is report
 d=$(fresh_env inplace)
 target="$d/home/.config/ccproteus"
 mkdir -p "$target"
-for f in ccproteus.sh $module_files ccproteus-adapter gateway-shim model-window settings-compose refresh-model-registry model-catalogue.json window-sources.json local.sh.example profile.conf.example install.sh; do
+mkdir -p "$target"/{bin,lib,libexec,share}
+for f in bin/ccproteus lib/ccproteus.sh ${module_files/#/lib/} libexec/ccproteus-adapter libexec/gateway-shim libexec/model-window libexec/settings-compose libexec/refresh-model-registry share/model-catalogue.json share/window-sources.json local.sh.example profile.conf.example install.sh; do
   cp "$REPO/$f" "$target/$f"
 done
-cp "$REPO/ccproteus" "$target/ccproteus"
 env -i HOME="$d/home" ZDOTDIR="$d/home" \
   PATH="$d/bin:/usr/bin:/bin:/opt/homebrew/bin" \
   zsh "$target/install.sh" >"$d/out2" 2>&1
@@ -156,17 +156,18 @@ run_installer "$d"; rc=$?
 # loader names its modules explicitly, so nothing sources this one.
 d=$(fresh_env probe)
 mkdir -p "$d/src"
-cp "$REPO"/*(.) "$d/src/"
-print -r -- '# a module that exists only in this test' > "$d/src/ccproteus-zz-probe.zsh"
+mkdir -p "$d/src"
+(cd "$REPO" && cp -R bin lib libexec share *(.) "$d/src/")
+print -r -- '# a module that exists only in this test' > "$d/src/lib/ccproteus-zz-probe.zsh"
 env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin:/opt/homebrew/bin" \
   zsh "$d/src/install.sh" >"$d/out" 2>&1 </dev/null
 rc=$?
 (( rc == 0 )) && ok "install from a tree with an extra module exits 0" \
   || { fail "probe install rc=$rc"; cat "$d/out"; }
-[[ -f "$d/home/.config/ccproteus/ccproteus-zz-probe.zsh" ]] \
+[[ -f "$d/home/.config/ccproteus/lib/ccproteus-zz-probe.zsh" ]] \
   && ok "a module added beside ccproteus.sh ships with no installer edit" \
   || fail "an extra ccproteus-*.zsh was not installed — the module list is hand-copied again"
-[[ ! -x "$d/home/.config/ccproteus/ccproteus-zz-probe.zsh" ]] \
+[[ ! -x "$d/home/.config/ccproteus/lib/ccproteus-zz-probe.zsh" ]] \
   && ok "an installed module is data, not an executable" \
   || fail "an installed module carries the exec bit"
 

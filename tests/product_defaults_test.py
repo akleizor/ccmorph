@@ -20,7 +20,7 @@ def test_fixed_defaults_are_not_environment_overrides():
     for filename, values in expected.items():
         assignments = {
             target.id: node.value
-            for node in ast.parse((ROOT / filename).read_text()).body
+            for node in ast.parse((ROOT / 'libexec' / filename).read_text()).body
             if isinstance(node, ast.Assign)
             for target in node.targets if isinstance(target, ast.Name)
         }
@@ -36,14 +36,14 @@ def test_provider_uses_path_not_private_override(tmp_path):
         **os.environ,
         'HOME': str(tmp_path),
         'CCPROTEUS_STATE_DIR': str(tmp_path / 'state'),
-        'CCPROTEUS_LIB_DIR': str(ROOT),
+        'CCPROTEUS_LIB_DIR': str(ROOT / "lib"),
         'CCPROTEUS_PROVIDER_BIN': '/nonexistent/ignored-override',
         'PATH': f'{tmp_path}:/usr/bin:/bin',
     }
     result = subprocess.run(
         ['/bin/zsh', '-f', '-c',
-         'source "$1"; _ccs_provider_bin || exit; print -r -- "$REPLY"',
-         'test', str(ROOT / 'ccproteus.sh')],
+         'source "$1"; _ccp_provider_bin || exit; print -r -- "$REPLY"',
+         'test', str(ROOT / 'lib/ccproteus.sh')],
         env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT,
     )
     assert result.returncode == 0, result.stderr

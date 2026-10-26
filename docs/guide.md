@@ -21,7 +21,7 @@ what each one unlocks, and installs on confirm — never silently):
 | `cliproxyapi` | non-native custom endpoints — automatic dialect translation | only the endpoint's Claude-family models are reachable |
 | `fzf` | searchable profile and model pickers | numbered choices in a terminal; explicit arguments in scripts |
 
-The installer copies the runtime into `~/.config/ccproteus` and the `ccproteus`
+The installer copies the runtime (`lib/`, `libexec/`, `share/`) into `~/.config/ccproteus` and the `ccproteus`
 command into `~/.local/bin`. It does not edit your shell config; if
 `~/.local/bin` is not already on your `PATH` it says so and prints the one line
 to add.
@@ -135,22 +135,22 @@ The existing piped-input configuration sequence is unchanged for scripts.
 
 ### Reusable CLI UI
 
-[`ccproteus-ui.zsh`](../ccproteus-ui.zsh) owns every interactive renderer and theme.
+[`lib/ccproteus-ui.zsh`](../lib/ccproteus-ui.zsh) owns every interactive renderer and theme.
 It can be sourced on its own: no profile store, launcher, or external dependency
 is needed for native menus. Commands supply content and select `native` or
 `search`; they do not implement key handling, cursor movement, or styling.
 
 ```zsh
-source ./ccproteus-ui.zsh
+source ./lib/ccproteus-ui.zsh
 rows=$'defaults\tModel and reasoning\tDefaults for new sessions\nconnection\tConnection\tEndpoint or API key'
-choice=$(ccs_ui_select native 'Settings — demo' "$rows") || return
+choice=$(ccp_ui_select native 'Settings — demo' "$rows") || return
 # Use `search` for a model/profile catalogue; selected IDs alone go to stdout.
-ccs_ui_input 'Profile name: ' || return  # result in REPLY
-ccs_ui_input 'API key: ' secret || return  # echo disabled before the prompt
-ccs_ui_confirm 'Continue?' || return  # native No/Yes; piped input uses y/N
+ccp_ui_input 'Profile name: ' || return  # result in REPLY
+ccp_ui_input 'API key: ' secret || return  # echo disabled before the prompt
+ccp_ui_confirm 'Continue?' || return  # native No/Yes; piped input uses y/N
 ```
 
-`ccs_ui_list` renders the same rows for scripted instructions. `NO_COLOR` disables
+`ccp_ui_list` renders the same rows for scripted instructions. `NO_COLOR` disables
 styling; `TERM=dumb` and missing `fzf` use numbered choices. The installer ships
 this module. Claude Code's own in-session menus are
 owned by Claude Code, not rendered or replaced by ccproteus.
@@ -501,7 +501,7 @@ and combined-context limits when both exist. These values are labelled
 and replaced by gateway-declared values when those become available. They are
 not proof of a custom gateway's enforced limit. Ambiguous aliases remain unknown;
 manual overrides and verified gateway values are never replaced by estimates.
-A dated, MIT-licensed snapshot ships as `model-catalogue.json`: a recognised model
+A dated, MIT-licensed snapshot ships as `share/model-catalogue.json`: a recognised model
 can use it on its first launch without any network lookup. Background discovery
 still tries current metadata; if public access is blocked, it reports that it is
 using the bundled snapshot. A model newer than both sources remains unresolved. An
@@ -510,7 +510,7 @@ agrees; variants without a published window are ignored, while conflicting value
 remain unknown rather than guessed.
 
 Some providers publish their own model catalogue, and a gateway in front of them
-may only echo the provider's default window. `window-sources.json` ships those
+may only echo the provider's default window. `share/window-sources.json` ships those
 catalogues: which listing owners each one speaks for, where it lives, and which
 fields name the model, its default and its usable window. A profile opts in with
 `window_sources=<name>[,<name>]` in its `.conf`; no other profile is re-sized, and

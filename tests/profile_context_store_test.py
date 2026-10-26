@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-SCRIPT = Path(__file__).resolve().parents[1] / "model-window"
+SCRIPT = Path(__file__).resolve().parents[1] / "libexec/model-window"
 spec = importlib.util.spec_from_loader("context_store", importlib.machinery.SourceFileLoader("context_store", str(SCRIPT)))
 assert spec and spec.loader
 store = importlib.util.module_from_spec(spec)

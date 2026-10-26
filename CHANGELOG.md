@@ -16,6 +16,11 @@
 
 ### Changed
 
+- **BREAKING: repo and install layout.** `bin/ccproteus` (command), `lib/` (`ccproteus.sh` and
+  the modules), `libexec/` (internal executables) and `share/` (data), in the repo and under
+  `~/.config/ccproteus` alike. `CCPROTEUS_LIB_DIR` now names `lib/`. The internal shell prefix
+  is now `_ccp_`, so dispatch runs `source lib/ccproteus.sh && _ccp_launch -a`. Re-run
+  `./install.sh`; no old path is read.
 - **Spend per profile through ccusage.** `scripts/usage-export` writes one
   ccusage project per profile, keeps the gateway's billed cost on every turn
   that has one, and leaves the rest for ccusage to price at list price, so a
@@ -42,9 +47,9 @@
   model 5 instead of 7, a token launch 4 instead of 6, and a launch whose route
   trips the warning 7 instead of 10. What the warning says is unchanged, byte for
   byte, in both the plain and the withholding wording, and a route with no hazard
-  pays nothing for a record it does not get. `_ccs_switch_hazard_warn` still
+  pays nothing for a record it does not get. `_ccp_switch_hazard_warn` still
   speaks for a launch that gets no record.
-- **The launch's window facts come from one interpreter run.** `_ccs_launch_window`
+- **The launch's window facts come from one interpreter run.** `_ccp_launch_window`
   returns the launched model's published window (with its unprobed fallback), the
   send-id, the route ceiling and the saved `autoCompactWindow` budget in a single
   python3 start, replacing the helper runs that each computed one of them. The
@@ -237,7 +242,7 @@
   `HTTPS_PROXY`, `https_proxy` and `NO_PROXY` through unchanged to the Claude child,
   the adapter, model listing, metadata discovery and forward_ip probing; only its own
   loopback health checks still bypass a proxy. This fixes a real bug — every consumer
-  used to be handed `HTTPS_PROXY="${_ccs_route_https_proxy:-}"`, which BLANKED the
+  used to be handed `HTTPS_PROXY="${_ccp_route_https_proxy:-}"`, which BLANKED the
   proxy a user had correctly exported whenever no transport ran.
   Removed with it: the `transport=` profile key, `CCPROTEUS_TRANSPORT_RUNNER` /
   `CCPROTEUS_TRANSPORT_PROXY`, the direct-reachability probe and its cache, the
@@ -262,7 +267,7 @@
   add `--dangerously-skip-permissions` to every launch from `local.sh`; an
   explicit `--dangerously-skip-permissions` flag on the command line still
   passes through untouched, but there is no more ambient opt-in.
-  `CCPROTEUS_MANAGED_MCP` and `_ccs_project_mcp` used to project one externally
+  `CCPROTEUS_MANAGED_MCP` and `_ccp_project_mcp` used to project one externally
   rendered `mcpServers` map onto every profile at launch; a profile now always
   keeps whatever MCP set it was seeded with or added itself.
 - **`.gitlab-ci.yml` and `packaging/web/` are gone.** GitHub Actions remains the
@@ -477,7 +482,7 @@
 
 - **`ccproteus probe` works on an account that needs a tunnel.** It read a
   profile's endpoint and credential from `ccproteus _env` and then dialled with plain
-  urllib, while a LAUNCH of the same profile first asked `_ccs_route` for a
+  urllib, while a LAUNCH of the same profile first asked `_ccp_route` for a
   transport. So on any account carrying `transport=`, probing from outside the private
   network could only ever time out — and the timeout was reported as
   `probed nothing; refusing to overwrite the registry`, naming a file the reader
@@ -818,7 +823,7 @@ touched, and a guard for a mistake that broke this file three times in one sitti
   882,000, naming a safe 900,000 model fatal. Now matches, including whitespace, a
   sign, and exponent forms, with the engine's own `(0,100]` guard.
 
-- **Changed: one budget resolver.** `_ccs_effective_acw` resolves env → saved →
+- **Changed: one budget resolver.** `_ccp_effective_acw` resolves env → saved →
   derived once; two open-coded copies are gone. That duplication is exactly why one
   copy received the schema clamp and the other did not. Flagged independently by two
   reviewers, and the fourth defect this review traced to a drifted copy.
@@ -854,15 +859,15 @@ a verification that had already closed the file.
 - **Fixed: a sub-100k `CLAUDE_CODE_AUTO_COMPACT_WINDOW` pin was used raw.** The
   engine floors it (`Math.max(1e5, effective)`), so a 50,000 pin still yields a
   100,000 window there — while ccproteus computed a 17,000 trigger and called a
-  40,000-wall model safe. `_ccs_clamp_acw` now applies the same bounds to both env
+  40,000-wall model safe. `_ccp_clamp_acw` now applies the same bounds to both env
   scans.
 
 - **Changed: one definition of the settings the engine will see.** "Canon first,
   profile on top, last writer wins" was open-coded four times, and every copy that
   had not been updated produced a different wrong answer — an unresolved tier alias
   (no budget at all), a route ceiling that clamped the largest model, a hazard set
-  that disagreed with the withhold. `_ccs_settings_sources` now defines it once and
-  five readers consume it. The dead 4th parameter of `_ccs_switch_hazard_warn` is
+  that disagreed with the withhold. `_ccp_settings_sources` now defines it once and
+  five readers consume it. The dead 4th parameter of `_ccp_switch_hazard_warn` is
   gone with it.
 
 - Tests: 175 → 176.
@@ -1028,9 +1033,9 @@ qwen3.8-max) audited v1.15.0. Six defects, all reproduced before being fixed.
 
 - **Changed: one hazard computation instead of two.** All four reporting reviewers
   independently flagged the near-duplicate embedded Python in
-  `_ccs_switch_hazard_warn` and `_ccs_withhold_fatal_switches`; the two copies had
+  `_ccp_switch_hazard_warn` and `_ccp_withhold_fatal_switches`; the two copies had
   already drifted, which is what produced the arithmetic and `fable` defects. Both
-  now consume `_ccs_hazard_set`, which computes the set once using the engine's own
+  now consume `_ccp_hazard_set`, which computes the set once using the engine's own
   formula and returns it largest-wall-first.
 
 - Tests: 172 → 173.
@@ -1041,7 +1046,7 @@ qwen3.8-max) audited v1.15.0. Six defects, all reproduced before being fixed.
   taught the launcher to read the account's default from `settings.json` instead of the
   conf's bootstrap `model=`, but the listing kept reading the conf — so `ccproteus list`
   said `gpt-5.6-sol` while `ccproteus model <account>` said `kimi-k3`, and the listing
-  disagreed with the session it described. One reader, `_ccs_account_model`, now answers
+  disagreed with the session it described. One reader, `_ccp_account_model`, now answers
   for the listing, the picker label and the launcher, so they cannot diverge again.
 
   The conf's `model=` stays reachable as the fallback: a routed account whose model
@@ -1080,7 +1085,7 @@ enforced in code — `qwen` sits inside the destructive path, protected today on
 coincidence. Latent, not live: no profile loses data. See ARCHITECTURE.md § 5b for the
 trigger that would warrant the fix and its shape.
 
-Also: `_ccs_project_mcp`'s wholesale `mcpServers` replacement was audited and **cleared**
+Also: `_ccp_project_mcp`'s wholesale `mcpServers` replacement was audited and **cleared**
 — `CCPROTEUS_MANAGED_MCP` declares the managed file canonical, so erasing local drift is
 centralised management working, not a violation.
 
@@ -1201,7 +1206,7 @@ sessions, and the one case it left open killed a real session.
   than merely inexact. v1.13.0 only warned about this.
 
   Those models are now **withheld** from the session's `/model` picker
-  (`_ccs_withhold_fatal_switches`), written into the launch overlay only — the
+  (`_ccp_withhold_fatal_switches`), written into the launch overlay only — the
   profile keeps every model, and a session launched on a smaller one offers the
   whole route again. One advisory names what was held back and why. The launched
   model keeps its own budget; it is never dragged down to the route's floor.
@@ -1331,7 +1336,7 @@ only moment they can be set, from the model registry:
 
 - **Added: the session's context ceiling covers the whole route.**
   `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is now the LARGEST probed window among the
-  models the route serves (`_ccs_route_ceiling`), not the launched model's — a
+  models the route serves (`_ccp_route_ceiling`), not the launched model's — a
   mid-session `/model` switch can no longer run a 1M model clamped at the
   launched model's window, and a profile whose default is a `claude-*` id no
   longer leaves every routed model at Claude Code's 200k
@@ -1366,7 +1371,7 @@ someone who is not the author installs this on a machine that is not this one.
   only validation there was, and a `type=sub` profile with no account was written
   and marked active, silently. The credential environment is now scrubbed before
   every auth call, `authMethod` must not be key-shaped, and a blank email rolls the
-  profile back. `_ccs_read` gained the matching rule, so an already-written blank
+  profile back. `_ccp_read` gained the matching rule, so an already-written blank
   profile is caught on read with the command that fixes it
 - **Fixed: `ccrelay` could not run on many Linux distributions.** It shipped
   `#!/bin/zsh`, a path that does not exist where zsh lives in `/usr/bin`. The

@@ -11,7 +11,7 @@
 # Anyone who wants `claude` to mean "launch through ccproteus" can write that
 # alias themselves; it is a personal convention, not this product.
 #
-# The library is found relative to this script, so it works from
+# The library is found relative to this script (../lib), so it works from
 # ~/.config/ccproteus (install.sh) and from a source checkout, with no wiring.
 emulate -L zsh
 set -eu
@@ -51,20 +51,20 @@ if [[ -n "${CCPROTEUS_LIB_DIR:-}" ]]; then
   }
 else
   lib=""
-  # In order: a source checkout or one-directory install (library beside this script); and
+  # In order: a source checkout or one-directory install (lib/ beside bin/); and
   # install.sh's layout, which puts the command on PATH and the library in the
   # config directory. XDG_CONFIG_HOME is honoured exactly as the library honours
   # it, or the two would disagree about where they live on the same machine.
   for candidate in \
-    "$here/ccproteus.sh" \
-    "${XDG_CONFIG_HOME:-$HOME/.config}/ccproteus/ccproteus.sh"
+    "$here/../lib/ccproteus.sh" \
+    "${XDG_CONFIG_HOME:-$HOME/.config}/ccproteus/lib/ccproteus.sh"
   do
-    [[ -r "$candidate" ]] && { lib="$candidate"; break }
+    [[ -r "$candidate" ]] && { lib="${candidate:A}"; break }
   done
   [[ -n "$lib" ]] || {
     print -u2 -- "ccproteus: cannot find ccproteus.sh near $here"
-    print -u2 -- "  looked in: $here and"
-    print -u2 -- "             ${XDG_CONFIG_HOME:-$HOME/.config}/ccproteus"
+    print -u2 -- "  looked in: $here/../lib and"
+    print -u2 -- "             ${XDG_CONFIG_HOME:-$HOME/.config}/ccproteus/lib"
     print -u2 -- "  Set CCPROTEUS_LIB_DIR to the directory holding ccproteus.sh."
     exit 1
   }

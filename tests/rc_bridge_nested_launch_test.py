@@ -58,7 +58,7 @@ class Box:
                     if not k.startswith(('CCPROTEUS', '_CCPROTEUS', 'CLAUDE_', 'ANTHROPIC_'))
                     and k not in ('HTTPS_PROXY', 'https_proxy', 'NO_PROXY')}
         self.env.update(HOME=str(home), ZDOTDIR=str(home), XDG_CONFIG_HOME=str(home / '.config'),
-                        CCPROTEUS_STATE_DIR=str(self.state), CCPROTEUS_LIB_DIR=str(ROOT),
+                        CCPROTEUS_STATE_DIR=str(self.state), CCPROTEUS_LIB_DIR=str(ROOT / "lib"),
                         PATH=f'{home}/bin:{os.environ["PATH"]}', LANG='C.UTF-8', LC_ALL='C.UTF-8',
                         NO_COLOR='1')
         (self.state / 'alex.conf').write_text('type=sub\nemail=me@example.invalid\n')
@@ -78,7 +78,7 @@ class Box:
         return env
 
     def run(self, env, *args):
-        return subprocess.run([str(ROOT / 'ccproteus'), *args], env=env, input='',
+        return subprocess.run([str(ROOT / "bin/ccproteus"), *args], env=env, input='',
                               capture_output=True, text=True, timeout=HANG_TIMEOUT)
 
     def log(self):
@@ -141,10 +141,12 @@ def test_a_profile_with_its_own_endpoint_is_left_alone(box, tmp_path):
     # the real one: the profile is launched through ANTHROPIC_BASE_URL=<loopback>.
     lib = tmp_path / 'lib'
     lib.mkdir()
-    for entry in ROOT.iterdir():
-        if entry.name not in ('ccproteus-adapter', '.git', '.claude'):
-            (lib / entry.name).symlink_to(entry)
-    stub = lib / 'ccproteus-adapter'
+    (tmp_path / 'libexec').mkdir()
+    for sub_dir, target in (('lib', lib), ('libexec', tmp_path / 'libexec')):
+        for entry in (ROOT / sub_dir).iterdir():
+            if entry.name != 'ccproteus-adapter':
+                (target / entry.name).symlink_to(entry)
+    stub = lib.parent / 'libexec/ccproteus-adapter'
     stub.write_text('#!/bin/sh\necho PORT=1\nsleep 30\n')
     stub.chmod(0o755)
     (box.state / 'gw2.conf').write_text(
@@ -173,7 +175,7 @@ def test_a_profileless_nested_launch_keeps_the_route_flags(box):
     env.pop('CLAUDE_CODE_DISABLE_ADVISOR_TOOL', None)
     env['CCPROTEUS_EDGE_ROUTE_ENV'] = 'CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1'
     out = subprocess.run(
-        ['zsh', '-c', 'source "$CCPROTEUS_LIB_DIR/ccproteus.sh" && _ccs_launch -p ok'],
+        ['zsh', '-c', 'source "$CCPROTEUS_LIB_DIR/ccproteus.sh" && _ccp_launch -p ok'],
         env=env, input='', capture_output=True, text=True, timeout=HANG_TIMEOUT)
     assert out.returncode == 0, out.stderr
     assert 'DISABLE_ADVISOR=1' in box.log(), (box.log(), out.stderr)
@@ -184,10 +186,12 @@ def _stub_adapter_lib(tmp_path):
     starts no real translator; everything else is the real library."""
     lib = tmp_path / 'lib'
     lib.mkdir()
-    for entry in ROOT.iterdir():
-        if entry.name not in ('ccproteus-adapter', '.git', '.claude'):
-            (lib / entry.name).symlink_to(entry)
-    stub = lib / 'ccproteus-adapter'
+    (tmp_path / 'libexec').mkdir()
+    for sub_dir, target in (('lib', lib), ('libexec', tmp_path / 'libexec')):
+        for entry in (ROOT / sub_dir).iterdir():
+            if entry.name != 'ccproteus-adapter':
+                (target / entry.name).symlink_to(entry)
+    stub = lib.parent / 'libexec/ccproteus-adapter'
     stub.write_text('#!/bin/sh\necho PORT=1\nsleep 30\n')
     stub.chmod(0o755)
     return lib

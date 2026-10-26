@@ -3,7 +3,7 @@
 # Prefer `ccproteus add <name>` and `ccproteus config <name>`; they write this file.
 # Edit by hand only for the advanced keys below, then run `ccproteus inspect <name>`.
 #
-# Rules (enforced when the profile is read, by _ccs_read in ccproteus-store.zsh):
+# Rules (enforced when the profile is read, by _ccp_read in lib/ccproteus-store.zsh):
 #   - one key=value per line; `#` starts a comment line; no blank or `null` values
 #   - each key appears once; an unknown key, or a key not valid for the profile's
 #     type, refuses the profile
@@ -48,12 +48,12 @@ effort=medium
 # monthly_budget_usd=<n>  positive number; Stark's spend cap, ccproteus keeps it unused
 # private=1    run from a throwaway view: config and settings are linked in,
 #              transcripts, prompt history and session state are deleted on exit
-# env.<NAME>   only names in _CCPROTEUS_PROFILE_ENV (ccproteus-base.zsh); sub and token
+# env.<NAME>   only names in _CCPROTEUS_PROFILE_ENV (lib/ccproteus-base.zsh); sub and token
 #              profiles accept the section 2 model keys only
 
 # ── 4. Context ──────────────────────────────────────────────────────────────
 # window_sources           shipped catalogues to size this route by
-#                          (window-sources.json); apikey, provider
+#                          (share/window-sources.json); apikey, provider
 # context_window.<model>   pinned token limit; beats discovery
 
 # ── 5. Machine-written — never edit ─────────────────────────────────────────

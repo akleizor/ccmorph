@@ -26,7 +26,7 @@ from pathlib import Path
 from support import HANG_TIMEOUT
 
 REPO = Path(__file__).resolve().parent.parent
-ADAPTER = REPO / "ccproteus-adapter"
+ADAPTER = REPO / "libexec/ccproteus-adapter"
 
 # One model per dialect the adapter must distinguish, one stably dead, and one
 # whose failure looks transient (an indeterminate verdict that must not be cached).
@@ -190,8 +190,8 @@ class AdapterTest(unittest.TestCase):
         # A fake ccproteus whose _env reports the stub endpoint, so the adapter's
         # "credential comes from the profile" path is exercised for real.
         cc = self.home / ".config/ccproteus"
-        cc.mkdir(parents=True)
-        (cc / "ccproteus.sh").write_text(
+        (cc / "lib").mkdir(parents=True)
+        (cc / "lib/ccproteus.sh").write_text(
             "ccproteus() {\n"
             '  [[ "$1" == _env ]] || return 1\n'
             f'  print "ANTHROPIC_BASE_URL={self.base}"\n'
@@ -222,7 +222,7 @@ class AdapterTest(unittest.TestCase):
 
     def write_ccproteus(self, key: str) -> None:
         """Repoint the stub ccproteus at a different credential."""
-        (self.home / ".config/ccproteus/ccproteus.sh").write_text(
+        (self.home / ".config/ccproteus/lib/ccproteus.sh").write_text(
             "ccproteus() {\n"
             '  [[ "$1" == _env ]] || return 1\n'
             f'  print "ANTHROPIC_BASE_URL={self.base}"\n'
@@ -236,7 +236,7 @@ class AdapterTest(unittest.TestCase):
         caller can still override any of them."""
         env = dict(os.environ, **self.adapter_env)
         env.update(HOME=str(self.home),
-                   CCPROTEUS_LIB_DIR=str(self.home / ".config/ccproteus"),
+                   CCPROTEUS_LIB_DIR=str(self.home / ".config/ccproteus/lib"),
                    CCPROTEUS_STATE_DIR=str(self.home))
         env.update(extra)
         return env
@@ -382,7 +382,7 @@ class AdapterTest(unittest.TestCase):
 
     def test_print_config_redacts_upstream_proxy_credentials(self):
         proxy = "http://user:s3cretpw@127.0.0.1:8118/p?token=qq"
-        stub = self.home / ".config/ccproteus/ccproteus.sh"
+        stub = self.home / ".config/ccproteus/lib/ccproteus.sh"
         stub.write_text(stub.read_text().rstrip().rstrip("}")
                         + f"  print 'CCPROTEUS_UPSTREAM_PROXY={proxy}'\n}}\n")
         out = self.run_adapter("--print-config")
@@ -792,7 +792,7 @@ class AdapterTest(unittest.TestCase):
             [sys.executable, str(ADAPTER), "p", "--parent-pid", str(parent.pid)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             env=dict(os.environ, HOME=str(self.home),
-                     CCPROTEUS_LIB_DIR=str(self.home / ".config/ccproteus"),
+                     CCPROTEUS_LIB_DIR=str(self.home / ".config/ccproteus/lib"),
                      CCPROTEUS_STATE_DIR=str(self.home),
                      PATH=f"{self.path_bin}:{os.environ.get('PATH', '')}"))
         parent.wait(timeout=HANG_TIMEOUT)
@@ -817,7 +817,7 @@ class AdapterTest(unittest.TestCase):
             [sys.executable, str(ADAPTER), "p"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             env=dict(os.environ, HOME=str(self.home), TMPDIR=str(tmp),
-                     CCPROTEUS_LIB_DIR=str(self.home / ".config/ccproteus"),
+                     CCPROTEUS_LIB_DIR=str(self.home / ".config/ccproteus/lib"),
                      CCPROTEUS_STATE_DIR=str(self.home),
                      PATH=f"{self.path_bin}:{os.environ.get('PATH', '')}"))
         deadline = time.monotonic() + HANG_TIMEOUT
@@ -1078,7 +1078,7 @@ class AdapterTest(unittest.TestCase):
         cache.write_text(json.dumps({"endpoint": self.base, "rows": [
             {"model": "m-anthropic", "dialect": "anthropic", "note": "", "cap": 0,
              "nothink": False, "id_recycle": True, "status": 200}]}))
-        script = self.home / ".config/ccproteus/ccproteus.sh"
+        script = self.home / ".config/ccproteus/lib/ccproteus.sh"
         base = script.read_text()
         for extra in ("", '  print "CCPROTEUS_RANDOM_DEVICE_ID=1"\n'
                            '  print "CCPROTEUS_REPAIR_TOOL_REFERENCES=1"\n'
@@ -1106,7 +1106,7 @@ class AdapterTest(unittest.TestCase):
     def test_a_profile_pointing_at_missing_hooks_refuses_to_start(self):
         # The hooks path is validated before anything is spawned, so a stale
         # profile fails loudly at launch instead of through the shim later.
-        script = self.home / ".config/ccproteus/ccproteus.sh"
+        script = self.home / ".config/ccproteus/lib/ccproteus.sh"
         base = script.read_text()
         script.write_text(base.replace(
             "}\n", '  print "CCPROTEUS_SHIM_HOOKS=/nonexistent/hooks.py"\n}\n'))
@@ -1135,7 +1135,7 @@ class AdapterTest(unittest.TestCase):
                              {"ANTHROPIC_API_KEY": "k"})
         finally:
             ad.subprocess.run = saved
-        self.assertEqual(ad.CCPROTEUS, Path(os.environ.get("CCPROTEUS_LIB_DIR") or ADAPTER.parent) / "ccproteus.sh")
+        self.assertEqual(ad.CCPROTEUS, Path(os.environ.get("CCPROTEUS_LIB_DIR") or ADAPTER.parent.parent / "lib") / "ccproteus.sh")
         self.assertEqual(calls[0][-3:],
                          ["ccproteus-adapter", str(ad.CCPROTEUS), "p; nope"])
         self.assertIn('source "$1"', calls[0][2])
@@ -1148,7 +1148,7 @@ class AdapterTest(unittest.TestCase):
         canary = self.home / "canary"
         env = dict(os.environ,
                    HOME=str(self.home),
-                   CCPROTEUS_LIB_DIR=str(self.home / ".config/ccproteus"),
+                   CCPROTEUS_LIB_DIR=str(self.home / ".config/ccproteus/lib"),
                    CCPROTEUS_STATE_DIR=str(self.home))
         out = subprocess.run(
             [sys.executable, str(ADAPTER),
@@ -1231,7 +1231,7 @@ class AdapterTest(unittest.TestCase):
         fixture = json.loads(
             (REPO / "tests/fixtures/hermes_messages_request.json").read_text())
         self.seeded_cache(id_recycle=False)
-        script = self.home / ".config/ccproteus/ccproteus.sh"
+        script = self.home / ".config/ccproteus/lib/ccproteus.sh"
         script.write_text(script.read_text().replace(
             "}\n", '  print "CCPROTEUS_RANDOM_DEVICE_ID=1"\n}\n'))
         p = free_port()

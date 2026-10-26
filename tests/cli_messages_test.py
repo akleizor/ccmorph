@@ -12,8 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_probe_help_has_no_progress_banner_and_remains_actionable():
     with tempfile.TemporaryDirectory() as tmp:
         env = {**os.environ, 'HOME': tmp, 'XDG_CONFIG_HOME': str(Path(tmp) / '.config'),
-               'CCPROTEUS_LIB_DIR': str(ROOT), 'CCPROTEUS_STATE_DIR': str(Path(tmp) / 'state')}
-        result = subprocess.run([str(ROOT / 'ccproteus'), 'probe', '--help'], env=env,
+               'CCPROTEUS_LIB_DIR': str(ROOT / "lib"), 'CCPROTEUS_STATE_DIR': str(Path(tmp) / 'state')}
+        result = subprocess.run([str(ROOT / "bin/ccproteus"), 'probe', '--help'], env=env,
                                 capture_output=True, text=True, timeout=HANG_TIMEOUT)
         assert result.returncode == 0, result.stderr
         assert 'Refreshing' not in result.stdout
@@ -25,15 +25,16 @@ def test_adapter_decline_surfaces_actionable_reason():
     with tempfile.TemporaryDirectory() as tmp:
         lib = Path(tmp) / 'lib'
         lib.mkdir()
-        for f in ROOT.glob('ccproteus-*.zsh'):
+        (lib.parent / 'libexec').mkdir()
+        for f in (ROOT / 'lib').glob('ccproteus-*.zsh'):
             (lib / f.name).write_bytes(f.read_bytes())
-        fake = lib / 'ccproteus-adapter'
+        fake = lib.parent / 'libexec/ccproteus-adapter'
         fake.write_text('#!/bin/sh\nprintf "EXIT=set a model and retry\\n"\n')
         fake.chmod(0o755)
         env = {**os.environ, 'HOME': tmp, 'TMPDIR': tmp,
                'CCPROTEUS_LIB_DIR': str(lib)}
-        result = subprocess.run(['zsh', '-c', 'source "$1"; _ccs_adapter_start demo',
-                                 'test', str(ROOT / 'ccproteus.sh')], env=env,
+        result = subprocess.run(['zsh', '-c', 'source "$1"; _ccp_adapter_start demo',
+                                 'test', str(ROOT / 'lib/ccproteus.sh')], env=env,
                                 capture_output=True, text=True, timeout=HANG_TIMEOUT)
         assert result.returncode != 0
         assert 'set a model and retry' in result.stderr
@@ -43,14 +44,15 @@ def test_adapter_failure_reports_observation_not_guessed_cause():
     with tempfile.TemporaryDirectory() as tmp:
         lib = Path(tmp) / 'lib'
         lib.mkdir()
-        for f in ROOT.glob('ccproteus-*.zsh'):
+        (lib.parent / 'libexec').mkdir()
+        for f in (ROOT / 'lib').glob('ccproteus-*.zsh'):
             (lib / f.name).write_bytes(f.read_bytes())
-        fake = lib / 'ccproteus-adapter'
+        fake = lib.parent / 'libexec/ccproteus-adapter'
         fake.write_text('#!/bin/sh\nexit 1\n')
         fake.chmod(0o755)
         env = {**os.environ, 'HOME': tmp, 'CCPROTEUS_LIB_DIR': str(lib)}
-        result = subprocess.run(['zsh', '-c', 'source "$1"; _ccs_adapter_start demo known',
-                                 'test', str(ROOT / 'ccproteus.sh')], env=env,
+        result = subprocess.run(['zsh', '-c', 'source "$1"; _ccp_adapter_start demo known',
+                                 'test', str(ROOT / 'lib/ccproteus.sh')], env=env,
                                 capture_output=True, text=True, timeout=HANG_TIMEOUT)
         assert result.returncode != 0
         assert 'adapter exited before readiness' in result.stderr
@@ -65,8 +67,8 @@ def test_help_is_concise_truthful_and_read_only(tmp_path):
     marker = tmp_path / 'host-hook-ran'
     (state / 'local.sh').write_text(f'print ran > "{marker}"\n')
     env = {**os.environ, 'HOME': str(tmp_path / 'home'),
-           'CCPROTEUS_LIB_DIR': str(ROOT), 'CCPROTEUS_STATE_DIR': str(state)}
-    cli = str(ROOT / 'ccproteus')
+           'CCPROTEUS_LIB_DIR': str(ROOT / "lib"), 'CCPROTEUS_STATE_DIR': str(state)}
+    cli = str(ROOT / "bin/ccproteus")
     for args in ([], ['--help'], ['help', 'config'], ['add', '--help'],
                  ['doctor', '--help'], ['--version']):
         result = subprocess.run([cli, *args], env=env, capture_output=True,

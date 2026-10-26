@@ -118,7 +118,7 @@ def discovery(cli, home, env, expected_model: str | None = 'sonnet',
 
 def main():
     native = Path(sys.argv[1]).resolve()
-    cli = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else ROOT / 'ccproteus'
+    cli = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else ROOT / "bin/ccproteus"
     with tempfile.TemporaryDirectory(prefix='ccproteus-session-defaults-') as td:
         home = Path(td).resolve()
         config = home / '.config/ccproteus'
@@ -146,7 +146,7 @@ def main():
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(('CLAUDE', 'ANTHROPIC', 'CCPROTEUS', '_CCPROTEUS'))}
         env.update(HOME=str(home), ZDOTDIR=str(home), XDG_CONFIG_HOME=str(home / '.config'),
-                   CCPROTEUS_STATE_DIR=str(config), CCPROTEUS_LIB_DIR=str(ROOT),
+                   CCPROTEUS_STATE_DIR=str(config), CCPROTEUS_LIB_DIR=str(ROOT / "lib"),
                    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1', TERM='xterm-256color',
                    PATH=f'{bindir}:' + env['PATH'])
         discovery(cli, home, env)

@@ -34,10 +34,10 @@ def run_doctor(tmp_path, conf, curl=None):
         c.write_text(curl)
         c.chmod(0o755)
     env = {**os.environ, "HOME": str(home), "PATH": f"{bindir}:{os.environ['PATH']}",
-           "CCPROTEUS_STATE_DIR": str(state), "CCPROTEUS_LIB_DIR": str(ROOT),
+           "CCPROTEUS_STATE_DIR": str(state), "CCPROTEUS_LIB_DIR": str(ROOT / "lib"),
            "CURL_ARGS": str(bindir / "curl.args"), "CURL_CALLED": str(bindir / "called"),
            "DOCTOR_MARKER": str(bindir / "doctor.marker")}
-    result = subprocess.run([str(ROOT / "ccproteus"), "doctor", "demo"], env=env,
+    result = subprocess.run([str(ROOT / "bin/ccproteus"), "doctor", "demo"], env=env,
                             capture_output=True, text=True, timeout=HANG_TIMEOUT)
     return result, state / "demo.conf", bindir
 
@@ -266,10 +266,10 @@ def test_run_doctor_remains_native_passthrough(tmp_path):
         "HTTPServer(('127.0.0.1', 0), H).serve_forever()\n")
     (bindir / "cliproxyapi").chmod(0o755)
     env = {**os.environ, "HOME": str(home), "PATH": f"{bindir}:{os.environ['PATH']}",
-           "CCPROTEUS_STATE_DIR": str(state), "CCPROTEUS_LIB_DIR": str(ROOT),
+           "CCPROTEUS_STATE_DIR": str(state), "CCPROTEUS_LIB_DIR": str(ROOT / "lib"),
            "NATIVE_OUT": str(tmp_path / "native")}
     # Provider readiness alone has a 30-second budget; this is not a launch-speed test.
-    process = subprocess.Popen([str(ROOT / "ccproteus"), "run", "doctor"], env=env,
+    process = subprocess.Popen([str(ROOT / "bin/ccproteus"), "run", "doctor"], env=env,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                text=True, start_new_session=True)
     try:
@@ -291,7 +291,7 @@ def test_doctor_terminal_statuses(tmp_path):
     _, conf, bindir = run_doctor(tmp_path, "type=sub\nemail=test@example.test\n")
     env = {**os.environ, "HOME": str(tmp_path / "home"),
            "PATH": f"{bindir}:{os.environ['PATH']}",
-           "CCPROTEUS_STATE_DIR": str(conf.parent), "CCPROTEUS_LIB_DIR": str(ROOT),
+           "CCPROTEUS_STATE_DIR": str(conf.parent), "CCPROTEUS_LIB_DIR": str(ROOT / "lib"),
            "TERM": "xterm-256color"}
     env.pop("NO_COLOR", None)
     for overrides, profile, expected, code in [
@@ -303,7 +303,7 @@ def test_doctor_terminal_statuses(tmp_path):
         master, slave = pty.openpty()
         result = None
         try:
-            result = subprocess.Popen([str(ROOT / "ccproteus"), "doctor", profile],
+            result = subprocess.Popen([str(ROOT / "bin/ccproteus"), "doctor", profile],
                                       env={**env, **overrides}, stdin=subprocess.DEVNULL,
                                       stdout=slave, stderr=slave)
             os.close(slave)

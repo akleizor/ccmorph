@@ -15,7 +15,7 @@ from pathlib import Path
 
 from support import HANG_TIMEOUT
 
-ROOT = Path(os.environ.get("CCPROTEUS_LIB_DIR") or Path(__file__).resolve().parents[1])
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def load(path, name):
@@ -96,7 +96,7 @@ class CredentialRedirect(unittest.TestCase):
         # The module builds its opener at import, so clear proxies first.
         saved = {k: os.environ.pop(k) for k in PROXY_VARS if k in os.environ}
         self.addCleanup(os.environ.update, saved)
-        registry = load(ROOT / "refresh-model-registry", "rmr_redirect")
+        registry = load(ROOT / "libexec/refresh-model-registry", "rmr_redirect")
         try:
             registry.list_models(base, "sk-REDIRECT-CANARY")
         except Exception:
@@ -108,7 +108,7 @@ class CredentialRedirect(unittest.TestCase):
     def test_shim_refuses_cross_origin_redirect_with_key(self):
         seen, base = self._redirect_fixture()
         with socket_port() as port:
-            shim = subprocess.Popen([sys.executable, str(ROOT / "gateway-shim"), str(port), base],
+            shim = subprocess.Popen([sys.executable, str(ROOT / "libexec/gateway-shim"), str(port), base],
                                     stdout=subprocess.DEVNULL, env=clean_env())
             try:
                 wait_port(port)

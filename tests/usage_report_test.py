@@ -14,7 +14,7 @@ from pathlib import Path
 
 from support import HANG_TIMEOUT
 
-SHIM = Path(__file__).resolve().parent.parent / "gateway-shim"
+SHIM = Path(__file__).resolve().parent.parent / "libexec/gateway-shim"
 NOW = datetime.datetime.now(datetime.timezone.utc)
 
 

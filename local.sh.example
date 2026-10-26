@@ -6,7 +6,7 @@
 # below defaults off, and no tracked source names any host's layout.
 #
 # Trust: this file is executable zsh, sourced by ccproteus in its own process.
-# It grants no privilege beyond writing ccproteus.sh beside it. A bug here is a
+# It grants no privilege beyond writing lib/ccproteus.sh beside it. A bug here is a
 # host configuration error; ccproteus does not manage the user's shell startup.
 
 # ── Context windows ───────────────────────────────────────────────────────

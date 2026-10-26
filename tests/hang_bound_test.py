@@ -385,7 +385,7 @@ def test_the_zsh_scanner_reads_the_language_it_polices():
         for sig in TERM HUP; do sleep 0.1; done
         for ((;;)); do [[ -s ready ]] && break; sleep 0.1; done
         select opt in a b; do sleep 1; done
-        while (( ++pass <= 3 && ( $#_ccs_test_leaked || $#_ccs_test_kids ) )); do
+        while (( ++pass <= 3 && ( $#_ccp_test_leaked || $#_ccp_test_kids ) )); do
           command sleep 0.2
         done
         for (( i = 0; i < CCPROTEUS_TEST_HANG_TIMEOUT * 10; i++ )); do

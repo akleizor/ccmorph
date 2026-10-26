@@ -1,7 +1,7 @@
 # ccproteus-profiles.zsh — Profile homes and choices: the shared harness layer linked into each profile home, profile and value pickers, sign-in state, and committing a new profile.
 # Sourced by ccproteus.sh after ccproteus-ui.zsh (see its Modules block); never run directly.
 
-_ccs_accounts_hint() {
+_ccp_accounts_hint() {
   # Name the profiles that exist, on stderr, beside an error about one that does not.
   # A user who mistyped or transposed an argument needs the valid set in front of
   # them, not a second command to run to find it.
@@ -11,36 +11,36 @@ _ccs_accounts_hint() {
     names+=("${f:t:r}")
   done
   (( ${#names} )) || return 0
-  _ccs_err "profiles: ${names[*]}"
+  _ccp_err "profiles: ${names[*]}"
 }
 
-_ccs_account_model() {
+_ccp_account_model() {
   # One authority for launch, listing, picker and context resolution. Before the
   # first launch this reads the seed without writing it; afterwards native inline
   # changes cannot become profile defaults.
   local profile="$1" value
-  value=$(_ccs_config_store get "$profile" model 2>/dev/null) || return 1
-  _ccs_clean_value "$value" || return 1
+  value=$(_ccp_config_store get "$profile" model 2>/dev/null) || return 1
+  _ccp_clean_value "$value" || return 1
   [[ -n "$value" ]] || return 1
   print -r -- "$value"
 }
 
 # Provider IDs stay unchanged; only human-facing product labels are cased.
-_ccs_provider_label() {
+_ccp_provider_label() {
   case "$1" in
     xai) REPLY=xAI ;;
     *) REPLY="${(C)1}" ;;
   esac
 }
 
-_ccs_profile_rows() {
+_ccp_profile_rows() {
   local active="${1:-}"
   local -a types=("${@:2}")
   local f name type detail marker model
 
   for f in "$_CCPROTEUS_DIR"/*.conf(N); do
     name="${f:t:r}"
-    if ! _ccs_read "$name" 1; then
+    if ! _ccp_read "$name" 1; then
       print -u2 "ccproteus: skipping invalid profile '$name'"
       continue
     fi
@@ -56,14 +56,14 @@ _ccs_profile_rows() {
         ;;
       token) type="Claude token" ;;
       provider)
-        _ccs_provider_label "${_ccp[provider]}"
+        _ccp_provider_label "${_ccp[provider]}"
         type="$REPLY"
-        model=$(_ccs_account_model "$name") || model=""
+        model=$(_ccp_account_model "$name") || model=""
         detail="${model:-Browser login}"
         ;;
       apikey)
         type="API key"
-        model=$(_ccs_account_model "$name") || model=""
+        model=$(_ccp_account_model "$name") || model=""
         detail="${_ccp[base_url]:-api.anthropic.com}${model:+ → ${model}}"
         ;;
     esac
@@ -74,20 +74,20 @@ _ccs_profile_rows() {
   unset _ccp
 }
 
-_ccs_menu_profile() {
+_ccp_menu_profile() {
   local active="" rows
   [[ -f "$_CCPROTEUS_DIR/active" && ! -L "$_CCPROTEUS_DIR/active" ]] && active=$(<"$_CCPROTEUS_DIR/active")
-  rows=$(_ccs_profile_rows "$active" "$@") || return 1
+  rows=$(_ccp_profile_rows "$active" "$@") || return 1
   [[ -n "$rows" ]] || {
     if (( $# )); then
-      _ccs_err "no compatible profiles for this command. Run: ccproteus add <profile>"
+      _ccp_err "no compatible profiles for this command. Run: ccproteus add <profile>"
     else
-      _ccs_err "no saved profiles. Run: ccproteus add <profile>"
+      _ccp_err "no saved profiles. Run: ccproteus add <profile>"
     fi
     return 1
   }
 
-  ccs_ui_select search Profile "$rows" all
+  ccp_ui_select search Profile "$rows" all
 }
 
 # Every value a user cannot be expected to have memorised, chosen from a list.
@@ -99,15 +99,15 @@ _ccs_menu_profile() {
 # refusing the only reliable way to name a model correctly.
 #
 # $1 = what to choose (model|effort), $2 = profile. Rows feed every menu.
-_ccs_value_rows() {
+_ccp_value_rows() {
   local slot="$1" profile="$2" kind
   case "$slot" in
     model)
-      _ccs_read "$profile" || return 1
+      _ccp_read "$profile" || return 1
       kind="${_ccp[type]}"
       unset _ccp
       case "$kind" in
-        apikey) _ccs_gw_models "$profile" picker "${@:3}" ;;
+        apikey) _ccp_gw_models "$profile" picker "${@:3}" ;;
         sub|token)
           # Native role aliases, not copied versioned model IDs or capabilities.
           print -r -- $'fable\tClaude Code Fable alias\nopus\tClaude Code Opus alias\nsonnet\tClaude Code Sonnet alias\nhaiku\tClaude Code Haiku alias'
@@ -134,12 +134,12 @@ PY
     effort)
       print -r -- $'low\tFastest, least thorough\nmedium\tBalanced\nhigh\tMore reasoning\nxhigh\tMost reasoning, slowest'
       ;;
-    *) _ccs_err "no picker for '$slot'"; return 1 ;;
+    *) _ccp_err "no picker for '$slot'"; return 1 ;;
   esac
 }
 
 # Effort stays a compact fixed menu; model lists remain searchable.
-_ccs_choose_value() {
+_ccp_choose_value() {
   local slot="$1" profile="$2" prompt="$3" rows="$4" display="${5:-labels}"
   if [[ "$slot" == effort ]]; then
     local row value label detail labeled=""
@@ -156,22 +156,22 @@ _ccs_choose_value() {
       labeled+="$row"
     done
     rows="$labeled"; display=labels
-    ccs_ui_select native "$prompt" "$rows" "$display"
+    ccp_ui_select native "$prompt" "$rows" "$display"
   elif [[ "$display" == all ]]; then
-    ccs_ui_select search "$prompt" "$rows" all
+    ccp_ui_select search "$prompt" "$rows" all
   else
-    ccs_ui_select search "$prompt" "$rows"
+    ccp_ui_select search "$prompt" "$rows"
   fi
 }
 
-_ccs_pick_value() {
+_ccp_pick_value() {
   local slot="$1" profile="$2" rows=""
-  rows=$(_ccs_value_rows "$slot" "$profile") || return 1
+  rows=$(_ccp_value_rows "$slot" "$profile") || return 1
   [[ -n "$rows" ]] || {
-    _ccs_err "No saved model list. Use: ccproteus config $profile to enter a custom ID."
+    _ccp_err "No saved model list. Use: ccproteus config $profile to enter a custom ID."
     return 1
   }
-  _ccs_choose_value "$slot" "$profile" "${(C)slot} — $profile" "$rows" all || {
+  _ccp_choose_value "$slot" "$profile" "${(C)slot} — $profile" "$rows" all || {
     print -ru2 -- "Use: ccproteus set $profile $slot <$slot>"
     return 1
   }
@@ -179,17 +179,17 @@ _ccs_pick_value() {
 
 # Configure preserves a current value by default and allows custom IDs without
 # pretending an unavailable catalogue means the profile cannot be configured.
-_ccs_prompt_default() {
+_ccp_prompt_default() {
   local slot="$1" profile="$2" current="$3" rows="" choice="" answer=""
   if [[ ! -t 0 ]]; then
-    ccs_ui_input "Default $slot [${current:-Claude default}]: " || return 1
+    ccp_ui_input "Default $slot [${current:-Claude default}]: " || return 1
     answer="$REPLY"
     print -r -- "${answer:-$current}"
     return 0
   fi
-  [[ "$slot" == model && "${_CCS_CONFIG_TYPE:-}" == apikey ]] &&
+  [[ "$slot" == model && "${_CCP_CONFIG_TYPE:-}" == apikey ]] &&
     print -ru2 -- 'Loading models from the selected endpoint…'
-  rows=$(_ccs_value_rows "$slot" "$profile" "${_CCS_CONFIG_ENDPOINT:-}" "${_CCS_CONFIG_CREDENTIAL:-}") || rows=""
+  rows=$(_ccp_value_rows "$slot" "$profile" "${_CCP_CONFIG_ENDPOINT:-}" "${_CCP_CONFIG_CREDENTIAL:-}") || rows=""
   if [[ "$slot" == model && -z "$rows" ]]; then
     print -ru2 -- 'Model list unavailable. Keep the current default or enter a custom model ID.'
   fi
@@ -207,11 +207,11 @@ _ccs_prompt_default() {
   [[ -z "$rows" ]] || rows=$'\n'"$rows"
   rows=$'@keep\t'"Keep ${current:-Claude default}$rows"
   [[ "$slot" == model ]] && rows+=$'\n@custom\tEnter a custom model ID…'
-  choice=$(_ccs_choose_value "$slot" "$profile" "Default $slot — $profile" "$rows") || return 1
+  choice=$(_ccp_choose_value "$slot" "$profile" "Default $slot — $profile" "$rows") || return 1
   case "$choice" in
     @keep) print -r -- "$current" ;;
     @custom)
-      ccs_ui_input 'Custom model ID (Enter keeps current): ' || return 1
+      ccp_ui_input 'Custom model ID (Enter keeps current): ' || return 1
       answer="$REPLY"
       print -r -- "${answer:-$current}"
       ;;
@@ -221,8 +221,8 @@ _ccs_prompt_default() {
 
 # Run `claude auth <verb...>` against one config dir with the ambient backend
 # and private-session credential env scrubbed (subshell: caller env untouched).
-_ccs_claude_auth() {
-  local dir="${1:?_ccs_claude_auth requires a config dir}"
+_ccp_claude_auth() {
+  local dir="${1:?_ccp_claude_auth requires a config dir}"
   shift
   (
     unset "${_CCPROTEUS_BACKEND_ENV[@]}" CLAUDE_SECURESTORAGE_CONFIG_DIR
@@ -230,12 +230,12 @@ _ccs_claude_auth() {
   )
 }
 
-_ccs_logged_email() {
+_ccp_logged_email() {
   # $1 = the CLAUDE_CONFIG_DIR to read auth status from, required. A profile's
   # profile state lives in its own dir, so reading it is always dir-scoped —
   # an unscoped read would report whatever the base install happens to hold,
   # which is never the answer a caller wants about a specific profile.
-  local dir="${1:?_ccs_logged_email requires a config dir}"
+  local dir="${1:?_ccp_logged_email requires a config dir}"
   local out
 
   # Scrub the ambient credential env before asking. `auth status` answers about
@@ -246,8 +246,8 @@ _ccs_logged_email() {
   # `add sub` would then commit a subscription profile on the strength of an API
   # key that has nothing to do with it. Scrubbed in a subshell so the caller's
   # environment is untouched.
-  out=$(_ccs_claude_auth "$dir" status 2>&1) || {
-    _ccs_err "could not read authentication status"
+  out=$(_ccp_claude_auth "$dir" status 2>&1) || {
+    _ccp_err "could not read authentication status"
     return 1
   }
 
@@ -256,17 +256,17 @@ _ccs_logged_email() {
   # not the thing `add sub` is verifying, and treating it as one is how a blank
   # profile got written. Absent authMethod means an older CLI shape: fall back to
   # loggedIn so this degrades to the previous behaviour rather than refusing.
-  _ccs_loggedin=false
+  _ccp_loggedin=false
   if print -r -- "$out" | command grep -q '"loggedIn": true'; then
     if print -r -- "$out" | command grep -q '"authMethod"'; then
       print -r -- "$out" | command grep -qE '"authMethod": "(api_key|bedrock|vertex)"' ||
-        _ccs_loggedin=true
+        _ccp_loggedin=true
     else
-      _ccs_loggedin=true
+      _ccp_loggedin=true
     fi
   fi
 
-  _ccs_email=$(
+  _ccp_email=$(
     print -r -- "$out" |
       command grep -o '"email": "[^"]*"' |
       command head -1 |
@@ -274,7 +274,7 @@ _ccs_logged_email() {
   )
 }
 
-_ccs_physical_dir() {
+_ccp_physical_dir() {
   # Physical path of directory $1, following every link as the kernel does
   # (chasedots makes `link/..` leave the link target, not the link's parent).
   # -q: this runs inside $(...) in the user's interactive shell, where a printing
@@ -284,14 +284,14 @@ _ccs_physical_dir() {
   (setopt chasedots chaselinks; builtin cd -q -- "$1" 2>/dev/null && print -rn -- "$PWD/")
 }
 
-_ccs_physical_prefix() {
+_ccp_physical_prefix() {
   # Physical path of $1's longest prefix that resolves, with the rest kept as
   # spelled. A missing dir or a dangling link mid-path — and everything after
   # it, `..` included, since the kernel cannot resolve through it — stays
   # textual, so a link recreated through it still dangles where it pointed
   # rather than `:a` collapsing `out/..` onto another file (#376).
   local head="$1" rest="" dir
-  until dir="$(_ccs_physical_dir "$head")"; do
+  until dir="$(_ccp_physical_dir "$head")"; do
     # Nothing left to strip: `${head:h}` of `/` is `/`, and of an empty string
     # it stays empty, so without this the walk never ends.
     [[ "$head" == "${head:h}" ]] && return 1
@@ -301,14 +301,14 @@ _ccs_physical_prefix() {
   # `pwd -P` is `/` only at the root, where the sentinel doubles it, and a
   # walk that ends there is the root itself.
   [[ "$dir" == // ]] && dir=""
-  # The trailing `/` is the sentinel _ccs_physical_dir writes, for the same
+  # The trailing `/` is the sentinel _ccp_physical_dir writes, for the same
   # reason: this runs inside the caller's $(...), which would otherwise eat a
   # newline ending the last component's name and recreate the link on the
   # shorter name (#267).
   print -r -- "${dir%/}${rest:-/}/"
 }
 
-_ccs_migrate_projects() {
+_ccp_migrate_projects() {
   # Only session/history stores and agent definitions may be merged: those are
   # content the profile itself owns, so moving them into the shared store loses
   # nothing and leaves every profile working. Package and hook collisions belong
@@ -323,7 +323,7 @@ _ccs_migrate_projects() {
   case "${to:t}" in
     agents|projects|session-env|file-history) ;;
     *)
-      _ccs_err "shared '${to:t}' collision at '$from'; nothing moved — reconcile through its owning tool"
+      _ccp_err "shared '${to:t}' collision at '$from'; nothing moved — reconcile through its owning tool"
       return 1
       ;;
   esac
@@ -348,7 +348,7 @@ _ccs_migrate_projects() {
     tgt=""
     # -n: readlink prints no trailing newline of its own, so the `/` sentinel is
     # the only thing keeping $(...) from stripping one that ends the target's
-    # own name — the class #267 fixed in _ccs_physical_dir. Without it a
+    # own name — the class #267 fixed in _ccp_physical_dir. Without it a
     # relative target ending in a newline was rewritten to the shortened name
     # and the original link then deleted (#399). The consumer drops the
     # sentinel: one `/` is all it adds, so `%/` takes back the sentinel and
@@ -381,9 +381,9 @@ _ccs_migrate_projects() {
       # as spelled, so the link dangles at its true location instead of
       # collapsing onto another file (#376). Never `:a` the whole parent: it
       # drops `x/..` textually whether or not x resolves.
-      pdir="$(_ccs_physical_dir "$phys")" ||
-        pdir="$(_ccs_physical_dir "$to/${phys#$bakp/}")" ||
-        pdir="$(_ccs_physical_prefix "$phys")" || continue
+      pdir="$(_ccp_physical_dir "$phys")" ||
+        pdir="$(_ccp_physical_dir "$to/${phys#$bakp/}")" ||
+        pdir="$(_ccp_physical_prefix "$phys")" || continue
       phys="${pdir%/}$leaf"
       case "$phys" in
         "$bakp"/*) phys="$to/${phys#$bakp/}" ;;
@@ -397,7 +397,7 @@ _ccs_migrate_projects() {
   return 0
 }
 
-_ccs_session_file() {
+_ccp_session_file() {
   # REPLY = the physical transcript of session $1, from native Claude Code's
   # history or any profile's. History is per profile (each CLAUDE_CONFIG_DIR keeps
   # its own projects/), so a session is looked up across all of them.
@@ -414,7 +414,7 @@ _ccs_session_file() {
   return 1
 }
 
-_ccs_carry_session() {
+_ccp_carry_session() {
   # Claude Code resumes only sessions under its own projects/. A hop or a
   # `--resume <id>` into another profile links that one session in: its
   # transcript (Claude Code appends through the link, so the history stays one
@@ -426,7 +426,7 @@ _ccs_carry_session() {
   # -. follows links: a link left dangling by a removed profile is replaced.
   here=("$dst"/*/"$id".jsonl(N-.))
   (( ${#here} )) && return 0
-  _ccs_session_file "$id" || return 1
+  _ccp_session_file "$id" || return 1
   f="$REPLY" slug="${REPLY:h:t}"
   command mkdir -p "$dst/$slug" &&
     command ln -sfn "$f" "$dst/$slug/$id.jsonl" || return 1
@@ -436,7 +436,7 @@ _ccs_carry_session() {
   return 0
 }
 
-_ccs_dir_ok() {
+_ccp_dir_ok() {
   # Lock-free predicate: is this profile already correctly provisioned?
   # Verifies only the load-bearing invariants — shared session history and
   # auth present — so the common launch path needs neither the lock nor any
@@ -444,7 +444,7 @@ _ccs_dir_ok() {
   local name="$1"
   local dir="${_CCPROTEUS_PROFILE_DIRS}/$name"
 
-  _ccs_valid "$name" || return 1
+  _ccp_valid "$name" || return 1
   [[ -d "$dir" && ! -L "$dir" ]] || return 1
   [[ -f "$dir/config.json" && -f "$dir/.claude.json" ]] || return 1
   # History is the profile's own; a link left by the shared-history layout heals.
@@ -468,7 +468,7 @@ _ccs_dir_ok() {
   return 0
 }
 
-_ccs_prelaunch() {
+_ccp_prelaunch() {
   # Run the host's CCPROTEUS_PRELAUNCH executable, when configured, as
   # `<exe> prelaunch <cwd>` with CLAUDE_CONFIG_DIR set to the launching profile.
   # It runs before Claude reads its config, for state that must be in place
@@ -476,39 +476,39 @@ _ccs_prelaunch() {
   # launch. Absent on a vanilla install.
   local exe="${CCPROTEUS_PRELAUNCH:-}"
   [[ -n "$exe" ]] || return 0
-  exe=$(_ccs_resolve_exe CCPROTEUS_PRELAUNCH "$exe" 2>/dev/null) || return 0
+  exe=$(_ccp_resolve_exe CCPROTEUS_PRELAUNCH "$exe" 2>/dev/null) || return 0
   CLAUDE_CONFIG_DIR="${_CCPROTEUS_PROFILE_DIRS}/$1" \
     command perl -e 'alarm 10; exec @ARGV' "$exe" prelaunch "$PWD" </dev/null >/dev/null 2>&1 || :
 }
 
-_ccs_setup_dir() {
+_ccp_setup_dir() {
   # Fast path: an already-provisioned profile needs no work. Otherwise provision
   # directly — it is idempotent and its writes are atomic, so concurrent
   # first-time provisioning converges without a lock.
-  _ccs_dir_ok "$1" && return 0
-  _ccs_setup_dir_unlocked "$1"
+  _ccp_dir_ok "$1" && return 0
+  _ccp_setup_dir_unlocked "$1"
 }
 
-_ccs_setup_dir_unlocked() {
+_ccp_setup_dir_unlocked() {
   local name="$1"
   local dir="${_CCPROTEUS_PROFILE_DIRS}/$1"
   local canonical="$HOME/.claude"
   local item src link legacy_nested
   local -a legacy_entries
 
-  _ccs_valid "$name" || return 1
+  _ccp_valid "$name" || return 1
 
   if [[ -L "$dir" || -L "$canonical" ]]; then
-    _ccs_err "refusing symlinked profile state for '$name'"
+    _ccp_err "refusing symlinked profile state for '$name'"
     return 1
   fi
 
   command mkdir -p "$dir" "${_CCPROTEUS_SHARED_DIRS[@]/#/$canonical/}" || {
-    _ccs_err "cannot create profile '$name'"
+    _ccp_err "cannot create profile '$name'"
     return 1
   }
 
-  # Best-effort hardening (see _ccs_secure_dirs): mkdir already created these
+  # Best-effort hardening (see _ccp_secure_dirs): mkdir already created these
   # with the right mode, so a filesystem that refuses chmod must not brick
   # provisioning.
   command chmod 700 "$dir" "$canonical" 2>/dev/null || :
@@ -658,7 +658,7 @@ else:
 PY
 
   [[ $? -eq 0 ]] || {
-    _ccs_err "profile setup failed for '$name'"
+    _ccp_err "profile setup failed for '$name'"
     return 1
   }
 
@@ -676,7 +676,7 @@ PY
     if [[ -e "$src" || -L "$src" ]]; then
       if [[ -L "$link" ]]; then
         if [[ "${link:A}" != "${src:A}" ]]; then
-          _ccs_err "'$item' for '$name' points outside the shared store"
+          _ccp_err "'$item' for '$name' points outside the shared store"
           return 1
         fi
       elif [[ -e "$link" ]]; then
@@ -694,14 +694,14 @@ PY
               "${legacy_nested:A}" == "${src:A}" &&
               ${#legacy_entries} -eq 1 ]]; then
           command rm -f "$legacy_nested" || {
-            _ccs_err "could not remove legacy nested '$item' link for '$name'"
+            _ccp_err "could not remove legacy nested '$item' link for '$name'"
             return 1
           }
         fi
 
         if [[ -d "$link" ]] && command rmdir "$link" 2>/dev/null; then
           command ln -sn "$src" "$link" || {
-            _ccs_err "could not link '$item' for '$name'"
+            _ccp_err "could not link '$item' for '$name'"
             return 1
           }
         elif [[ -d "$link" ]]; then
@@ -711,18 +711,18 @@ PY
           # content into the shared store (rename keeps files held open by
           # live sessions valid; never overwrite an existing file) and link —
           # self-heal rather than brick the launch.
-          _ccs_migrate_projects "$link" "$src" && command ln -sn "$src" "$link" || {
-            _ccs_err "could not migrate profile-local '$item' for '$name'"
+          _ccp_migrate_projects "$link" "$src" && command ln -sn "$src" "$link" || {
+            _ccp_err "could not migrate profile-local '$item' for '$name'"
             return 1
           }
         else
           # A real profile-local FILE is a deliberate override (a per-profile
           # CLAUDE.md, say): respected, never replaced. The shared copy stays
           # available in ~/.claude and the launch proceeds.
-          _ccs_log "OVERRIDE profile-local '$item' kept for profile=$name"
+          _ccp_log "OVERRIDE profile-local '$item' kept for profile=$name"
         fi
       elif ! ln -sn "$src" "$link"; then
-        _ccs_err "could not link '$item' for '$name'"
+        _ccp_err "could not link '$item' for '$name'"
         return 1
       fi
     fi
@@ -731,30 +731,30 @@ PY
   # Session history is the profile's own, as in a plain CLAUDE_CONFIG_DIR. The
   # shared-history layout linked it to ~/.claude/projects: drop only the link,
   # never its target, so that history stays native and any profile still reaches
-  # a session in it by id (_ccs_carry_session).
+  # a session in it by id (_ccp_carry_session).
   if [[ -L "$dir/projects" ]]; then
     command rm -f "$dir/projects" || {
-      _ccs_err "could not unlink shared history for '$name'"
+      _ccp_err "could not unlink shared history for '$name'"
       return 1
     }
   fi
   command mkdir -p "$dir/projects" || {
-    _ccs_err "could not create history for '$name'"
+    _ccp_err "could not create history for '$name'"
     return 1
   }
   command chmod 700 "$dir/projects" 2>/dev/null
 
   if [[ -L "$dir/settings.json" ]]; then
     command rm -f "$dir/settings.json" || {
-      _ccs_err "could not remove legacy settings link for '$name'"
+      _ccp_err "could not remove legacy settings link for '$name'"
       return 1
     }
   fi
 
-  _ccs_unwire_statusline "$dir"
+  _ccp_unwire_statusline "$dir"
 }
 
-_ccs_unwire_statusline() {
+_ccp_unwire_statusline() {
   # v1.7.x auto-wired a ccproteus statusline into every profile's settings.json.
   # The per-model window is now delivered engine-side (route-ceiling env +
   # native autoCompactWindow), the script no longer ships, and a leftover entry
@@ -776,15 +776,15 @@ _ccs_unwire_statusline() {
   # checked because this repo splits state-dir from lib-dir and a pre-1.8 profile
   # may hold either spelling.
   local file
-  file=$(_ccs_profile_layer "${1:t}")
+  file=$(_ccp_profile_layer "${1:t}")
   [[ -f "$file" && ! -L "$file" ]] || return 0
 
-  _CCS_SL_OWNED="$_CCPROTEUS_DIR/statusline"$'\n'"$_CCPROTEUS_LIB_DIR/statusline" \
+  _CCP_SL_OWNED="$_CCPROTEUS_DIR/statusline"$'\n'"$_CCPROTEUS_LIB_DIR/statusline" \
   command python3 -c '
 import json, os, sys, tempfile
 
 path = sys.argv[1]
-owned = {p for p in os.environ.get("_CCS_SL_OWNED", "").split("\n") if p}
+owned = {p for p in os.environ.get("_CCP_SL_OWNED", "").split("\n") if p}
 
 try:
     with open(path, encoding="utf-8") as fh:
@@ -820,7 +820,7 @@ except Exception:
   return 0
 }
 
-_ccs_keep_history() {
+_ccp_keep_history() {
   # Move a profile's own transcripts into native history. Its links are carries
   # whose real file lives elsewhere, so only regular files move; a native link to
   # the file being moved (or a dangling one) gives way to it. 1 while any file
@@ -846,17 +846,17 @@ _ccs_keep_history() {
   [[ -z "$(command find "$from" -type f -print -quit 2>/dev/null)" ]]
 }
 
-_ccs_remove_profile_dir() {
+_ccp_remove_profile_dir() {
   local name="$1"
   local profile_path="$_CCPROTEUS_PROFILE_DIRS/$1"
 
-  _ccs_valid "$name" || return 1
+  _ccp_valid "$name" || return 1
 
   # The profile's own session history outlives it: it moves into native
   # ~/.claude/projects, where any profile still resumes it by id.
   if [[ -d "$profile_path/projects" && ! -L "$profile_path/projects" && ! -L "$profile_path" ]]; then
-    _ccs_keep_history "$profile_path/projects" || {
-      _ccs_err "kept '$name': a session in its history collides with native history"
+    _ccp_keep_history "$profile_path/projects" || {
+      _ccp_err "kept '$name': a session in its history collides with native history"
       return 1
     }
   fi
@@ -869,7 +869,7 @@ _ccs_remove_profile_dir() {
   # through the guarded accessor so a symlinked auth path is refused, never
   # followed by rm -rf (which would delete only the link and orphan the creds).
   local _auth_dir
-  if _ccs_provider_auth_dir "$name"; then
+  if _ccp_provider_auth_dir "$name"; then
     _auth_dir="$REPLY"
     [[ -d "$_auth_dir" ]] && command rm -rf "$_auth_dir"
   fi
@@ -884,20 +884,20 @@ _ccs_remove_profile_dir() {
 # secret var (a `local` in the caller — dynamic scope lets us see and scrub it)
 # is unset on every path so a plaintext key never lingers. Returns non-zero on
 # any failure with the caller-facing error already printed.
-_ccs_commit_profile() {
+_ccp_commit_profile() {
   local _cp_name="$1" _cp_conf="$2" _cp_secret="$3"
   local dir="$_CCPROTEUS_DIR"
-  if ! _ccs_write "$dir/$_cp_name.conf" "$_cp_conf"; then
-    _ccs_err "could not save profile '$_cp_name'"
+  if ! _ccp_write "$dir/$_cp_name.conf" "$_cp_conf"; then
+    _ccp_err "could not save profile '$_cp_name'"
     unset "$_cp_secret"
     return 1
   fi
-  if ! _ccs_read "$_cp_name" ||
-     ! _ccs_validate_loaded "$_cp_name" ||
-     ! _ccs_setup_dir "$_cp_name"; then
+  if ! _ccp_read "$_cp_name" ||
+     ! _ccp_validate_loaded "$_cp_name" ||
+     ! _ccp_setup_dir "$_cp_name"; then
     unset _ccp "$_cp_secret"
-    _ccs_remove_profile_dir "$_cp_name"
-    _ccs_remove_file "$dir/$_cp_name.conf"
+    _ccp_remove_profile_dir "$_cp_name"
+    _ccp_remove_file "$dir/$_cp_name.conf"
     return 1
   fi
   unset _ccp "$_cp_secret"

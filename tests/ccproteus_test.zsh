@@ -24,11 +24,11 @@ ccproteus_test_scrub_runner_env
 
 readonly SCRIPT_DIR="${0:A:h}"
 readonly REPO_ROOT="${SCRIPT_DIR:h}"
-readonly CCPROTEUS_SOURCE="$REPO_ROOT/ccproteus.sh"
+readonly CCPROTEUS_SOURCE="$REPO_ROOT/lib/ccproteus.sh"
 # The library text: the loader plus every module split out of it. Not the UI
 # module, which was never part of it. Text checks read all of it.
-typeset -a _ccproteus_library=("$CCPROTEUS_SOURCE" "$REPO_ROOT"/ccproteus-*.zsh(N))
-readonly -a CCPROTEUS_LIBRARY=(${_ccproteus_library:#*/ccproteus-ui.zsh})
+typeset -a _ccproteus_library=("$CCPROTEUS_SOURCE" "$REPO_ROOT"/lib/ccproteus-*.zsh(N))
+readonly -a CCPROTEUS_LIBRARY=(${_ccproteus_library:#*/lib/ccproteus-ui.zsh})
 readonly ORIGINAL_PATH="$PATH"
 # Captured before any test redirects $HOME to a scratch dir. Only for locating
 # things that genuinely live on this machine (see the differential parser test).
@@ -49,14 +49,14 @@ readonly CCPROTEUS_TEST_HANG_TIMEOUT="${CCPROTEUS_TEST_HANG_TIMEOUT:-120}"
 # Every test builds its own scratch home, so the suite runs as N shards at once;
 # CCPROTEUS_TEST_JOBS=1 runs it serially. Default on Apple silicon: performance
 # cores plus a third of the efficiency cores (10 on the mini beat 18: 37 s vs 45 s).
-_ccs_test_jobs() {
+_ccp_test_jobs() {
   local fast slow
   fast=$(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null) && slow=$(sysctl -n hw.perflevel1.physicalcpu 2>/dev/null) &&
     { print -- $(( fast + slow / 3 )); return; }
   sysctl -n hw.ncpu 2>/dev/null || nproc
 }
-if [[ -z "${CCPROTEUS_TEST_SHARD:-}" ]] && (( ${CCPROTEUS_TEST_JOBS:-$(_ccs_test_jobs)} > 1 )); then
-  typeset -i jobs=${CCPROTEUS_TEST_JOBS:-$(_ccs_test_jobs)} shard rc=0
+if [[ -z "${CCPROTEUS_TEST_SHARD:-}" ]] && (( ${CCPROTEUS_TEST_JOBS:-$(_ccp_test_jobs)} > 1 )); then
+  typeset -i jobs=${CCPROTEUS_TEST_JOBS:-$(_ccp_test_jobs)} shard rc=0
   typeset -a pids
   for (( shard = 0; shard < jobs; shard++ )); do
     CCPROTEUS_TEST_SHARD="$shard/$jobs" zsh "$0" "$@" & pids+=($!)
@@ -77,13 +77,13 @@ fi
 # carries no home in its argv, so the sweep also takes this shell's direct
 # children, and when it reaps one it takes that child's whole pid tree: the
 # launcher's own children can hide their argv from pgrep entirely.
-typeset -ga _ccs_test_homes=()
-typeset -gi _ccs_test_homes_mark=0
-typeset -gi _ccs_test_homes_exiting=0
-typeset -ga _ccs_test_leaked=()
-typeset -ga _ccs_test_kids=()
+typeset -ga _ccp_test_homes=()
+typeset -gi _ccp_test_homes_mark=0
+typeset -gi _ccp_test_homes_exiting=0
+typeset -ga _ccp_test_leaked=()
+typeset -ga _ccp_test_kids=()
 
-_ccs_test_descendants_of() {
+_ccp_test_descendants_of() {
   local p c depth
   local -a frontier=("$@") found next
   for (( depth = 0; depth < 8 && $#frontier; depth++ )); do
@@ -100,16 +100,16 @@ _ccs_test_descendants_of() {
   (( $#found )) && print -r -- $found
 }
 
-# Set _ccs_test_leaked (processes carrying one of the homes from $1 on in
-# their argv) and _ccs_test_kids (this shell's live direct children).
-_ccs_test_collect_leaks() {
+# Set _ccp_test_leaked (processes carrying one of the homes from $1 on in
+# their argv) and _ccp_test_kids (this shell's live direct children).
+_ccp_test_collect_leaks() {
   local from=$1 i home pid
   local -a raw
-  _ccs_test_leaked=()
-  _ccs_test_kids=()
-  for (( i = from; i <= $#_ccs_test_homes; i++ )); do
-    home=${_ccs_test_homes[i]}
-    _ccs_test_leaked+=(${(f)"$(pgrep -f -- "${home//./\\.}" 2>/dev/null)"})
+  _ccp_test_leaked=()
+  _ccp_test_kids=()
+  for (( i = from; i <= $#_ccp_test_homes; i++ )); do
+    home=${_ccp_test_homes[i]}
+    _ccp_test_leaked+=(${(f)"$(pgrep -f -- "${home//./\\.}" 2>/dev/null)"})
   done
   raw=(${(f)"$(pgrep -P $$ 2>/dev/null)"})
   for pid in $raw; do
@@ -118,14 +118,14 @@ _ccs_test_collect_leaks() {
     # to wait for holds nothing open either. Neither is a leak.
     kill -0 $pid 2>/dev/null || continue
     [[ $(ps -o stat= -p $pid 2>/dev/null) != Z* ]] || continue
-    _ccs_test_kids+=($pid)
+    _ccp_test_kids+=($pid)
   done
 }
 
-_ccs_test_sweep_homes() {
+_ccp_test_sweep_homes() {
   local from=$1 pid pass rc=0
   local -a tree volley_tree
-  _ccs_test_collect_leaks $from
+  _ccp_test_collect_leaks $from
   # A child can be a few tenths from its own exit when the test returns --
   # the fake adapter polls its parent every 0.2 s -- so give the set that
   # long to leave on its own before calling anything a leak. command sleep:
@@ -134,32 +134,32 @@ _ccs_test_sweep_homes() {
   # next to the event it caps, the shape the hang-bound guard reads as a
   # wait (#457).
   pass=0
-  while (( ++pass <= 3 && ( $#_ccs_test_leaked || $#_ccs_test_kids ) )); do
+  while (( ++pass <= 3 && ( $#_ccp_test_leaked || $#_ccp_test_kids ) )); do
     command sleep 0.2
-    _ccs_test_collect_leaks $from
+    _ccp_test_collect_leaks $from
   done
-  (( $#_ccs_test_leaked || $#_ccs_test_kids )) || return 0
+  (( $#_ccp_test_leaked || $#_ccp_test_kids )) || return 0
   rc=1
-  for pid in $_ccs_test_leaked $_ccs_test_kids; do
+  for pid in $_ccp_test_leaked $_ccp_test_kids; do
     print -u2 -- "pid $pid outlived its test: $(ps -o command= -p $pid 2>/dev/null)"
     kill -TERM $pid 2>/dev/null
   done
   # A reaped child's own children can outlive it -- the launcher's are the
   # point -- and their argv can be unreadable, so walk the pid trees.
-  volley_tree=(${(f)"$(_ccs_test_descendants_of $_ccs_test_leaked $_ccs_test_kids)"})
+  volley_tree=(${(f)"$(_ccp_test_descendants_of $_ccp_test_leaked $_ccp_test_kids)"})
   for pid in $volley_tree; do
     kill -TERM $pid 2>/dev/null
   done
   pass=0
-  while (( ++pass <= 20 && ( $#_ccs_test_leaked || $#_ccs_test_kids ) )); do
+  while (( ++pass <= 20 && ( $#_ccp_test_leaked || $#_ccp_test_kids ) )); do
     command sleep 0.2
-    _ccs_test_collect_leaks $from
+    _ccp_test_collect_leaks $from
   done
-  for pid in $_ccs_test_leaked $_ccs_test_kids; do
+  for pid in $_ccp_test_leaked $_ccp_test_kids; do
     print -u2 -- "pid $pid ignored TERM; killing it"
     kill -KILL $pid 2>/dev/null
   done
-  tree=(${(f)"$(_ccs_test_descendants_of $_ccs_test_leaked $_ccs_test_kids)"})
+  tree=(${(f)"$(_ccp_test_descendants_of $_ccp_test_leaked $_ccp_test_kids)"})
   for pid in $volley_tree $tree; do
     kill -KILL $pid 2>/dev/null
   done
@@ -174,7 +174,7 @@ _ccs_test_sweep_homes() {
 # the launcher's death brings no EOF), so each backstop waits in one-second
 # slices: a killed suite leaves its zselect within a second of the signal
 # instead of after the whole backstop.
-_ccs_test_wait_readable() {
+_ccp_test_wait_readable() {
   local fd=$1
   local -i left=$2
   while (( left > 0 )); do
@@ -188,10 +188,10 @@ _ccs_test_wait_readable() {
 # killed mid-test leaves that test's children behind, exactly how the stranded
 # copies were left. It never changes the exit status, and it never runs twice:
 # the signal path may have swept already.
-_ccs_test_sweep_on_exit() {
+_ccp_test_sweep_on_exit() {
   local rc=$?
-  (( _ccs_test_homes_exiting )) && return $rc
-  _ccs_test_sweep_homes $(( _ccs_test_homes_mark + 1 ))
+  (( _ccp_test_homes_exiting )) && return $rc
+  _ccp_test_sweep_homes $(( _ccp_test_homes_mark + 1 ))
   return $rc
 }
 
@@ -199,16 +199,16 @@ _ccs_test_sweep_on_exit() {
 # batch's kill left the stranded copies behind, and this sweep is what keeps a
 # killed run from leaking the same way. A second signal during the sweep must
 # not cut it short, so only the first one owns the exit.
-_ccs_test_sweep_on_signal() {
-  (( _ccs_test_homes_exiting )) && return 0
-  typeset -gi _ccs_test_homes_exiting=1
-  _ccs_test_sweep_homes $(( _ccs_test_homes_mark + 1 ))
+_ccp_test_sweep_on_signal() {
+  (( _ccp_test_homes_exiting )) && return 0
+  typeset -gi _ccp_test_homes_exiting=1
+  _ccp_test_sweep_homes $(( _ccp_test_homes_mark + 1 ))
   exit $(( 128 + $1 ))
 }
-trap _ccs_test_sweep_on_exit EXIT
-trap '_ccs_test_sweep_on_signal 1' HUP
-trap '_ccs_test_sweep_on_signal 2' INT
-trap '_ccs_test_sweep_on_signal 15' TERM
+trap _ccp_test_sweep_on_exit EXIT
+trap '_ccp_test_sweep_on_signal 1' HUP
+trap '_ccp_test_sweep_on_signal 2' INT
+trap '_ccp_test_sweep_on_signal 15' TERM
 
 assert_contains() {
   local actual="$1"
@@ -237,7 +237,7 @@ assert_not_contains() {
 # Installs a fake ccproteus-adapter: the given lines, then the shared serve loop,
 # which exits once the launch that passed --parent-pid is gone (#373).
 write_fake_adapter() {
-  local adapter="$HOME/.config/ccproteus/ccproteus-adapter"
+  local adapter="$HOME/.config/ccproteus/libexec/ccproteus-adapter"
   printf '%s\n' '#!/bin/sh' "$@" > "$adapter"
   print -r -- "$(<"$SCRIPT_DIR/fake_adapter_serve.sh")" >> "$adapter"
   chmod +x "$adapter"
@@ -246,7 +246,7 @@ write_fake_adapter() {
 setup_home() {
   # GH-434: remembered so the sweep after each test can fail a test whose
   # child outlives it.
-  _ccs_test_homes+=("$1")
+  _ccp_test_homes+=("$1")
   export HOME="$1"
   # The runner may export tuning keys (or be a Claude Code session itself);
   # the launcher passes them through, so scrub them for a hermetic fixture.
@@ -259,12 +259,13 @@ setup_home() {
   # $HOME. Point the library seam at the scratch dir so a stub is found where the
   # tests put it. This is the seam a package manager uses for the same reason: the
   # library does not have to live beside the state.
-  export CCPROTEUS_LIB_DIR="$HOME/.config/ccproteus"
+  export CCPROTEUS_LIB_DIR="$HOME/.config/ccproteus/lib"
 
   mkdir -p \
     "$HOME/bin" \
     "$HOME/.config/ccproteus" \
     "$HOME/.config/ccproteus/profiles" \
+    "$HOME/.config/ccproteus/lib" "$HOME/.config/ccproteus/libexec" "$HOME/.config/ccproteus/share" \
     "$HOME/.claude/projects" \
     "$HOME/.agents/runtime/policies"
   print -r -- '{"schemaVersion":1,"autoCompactAtPercent":80}' \
@@ -406,17 +407,17 @@ test_models_does_not_send_anthropic_version() {
 test_versioned_base_url_is_not_given_a_second_v1() {
   source "$CCPROTEUS_SOURCE"
   local rc=0
-  _ccs_api_url 'https://provider.invalid/api/v4' '/v1/models'
+  _ccp_api_url 'https://provider.invalid/api/v4' '/v1/models'
   [[ "$REPLY" == 'https://provider.invalid/api/v4/models' ]] || {
     print -u2 -- 'a versioned provider base URL must not receive a second API version'
     rc=1
   }
-  _ccs_api_url 'https://provider.invalid/api/V4' '/v1/models'
+  _ccp_api_url 'https://provider.invalid/api/V4' '/v1/models'
   [[ "$REPLY" == 'https://provider.invalid/api/V4/models' ]] || {
     print -u2 -- 'API version matching must be case-insensitive'
     rc=1
   }
-  _ccs_api_url 'https://provider.invalid' '/v1/models'
+  _ccp_api_url 'https://provider.invalid' '/v1/models'
   [[ "$REPLY" == 'https://provider.invalid/v1/models' ]] || {
     print -u2 -- 'an unversioned provider base URL must receive the standard API version'
     rc=1
@@ -483,7 +484,7 @@ fake_gateway_records_proxy() {
 }
 
 # Regression: every launch path used to hand its network consumers
-# `HTTPS_PROXY="${_ccs_route_https_proxy:-}"`, which BLANKED an ambient proxy
+# `HTTPS_PROXY="${_ccp_route_https_proxy:-}"`, which BLANKED an ambient proxy
 # whenever no transport ran — the operator's own bridge was deleted by the tool
 # that should have used it. Discovery must see the caller's value unchanged.
 test_models_discovery_uses_the_ambient_proxy() {
@@ -725,7 +726,7 @@ test_set_effort_interactively_offers_the_engine_levels() {
   write_apikey_conf gw 'api_key=k' 'base_url=https://gateway.invalid'
   source "$CCPROTEUS_SOURCE"
   # Unit-test dispatch/persistence here; the PTY suite drives the real keys.
-  ccs_ui_select() {
+  ccp_ui_select() {
     [[ "$1" == native ]] || return 1
     print -r -- "$3" > "$HOME/fixed.input"
     print -r -- "${${3%%$'\n'*}%%$'\t'*}"
@@ -804,7 +805,7 @@ test_saved_default_model_beats_the_confs_bootstrap_model_at_launch() {
     > "$HOME/.config/ccproteus/profiles/proxy/settings.json"
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_launch -a proxy prompt || {
+  _ccp_launch -a proxy prompt || {
     rm -rf "$test_home"
     return 1
   }
@@ -833,7 +834,7 @@ test_explicit_model_flag_beats_the_saved_default() {
     > "$HOME/.config/ccproteus/profiles/proxy/settings.json"
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_launch -a proxy --model flag-model prompt || {
+  _ccp_launch -a proxy --model flag-model prompt || {
     rm -rf "$test_home"
     return 1
   }
@@ -1225,22 +1226,22 @@ test_claude_subcommands_are_asked_for_never_hardcoded() {
   # encoding, not extended regex. Parsing must use the executable's contract.
   discovered=$(
     grep() { print -u2 -- 'unexpected shell grep override'; return 2; }
-    _ccs_claude_verbs
+    _ccp_claude_verbs
   ) 2> "$test_home/discovery.err"
   [[ "$discovered" == $'invented-verb\nmcp\nstop\nkill' && ! -s "$test_home/discovery.err" ]] || rc=1
-  _ccs_is_claude_subcommand kill || {
+  _ccp_is_claude_subcommand kill || {
     print -u2 -- 'FAIL: an alias the installed binary lists must be recognised'
     rc=1
   }
 
-  _ccs_is_claude_subcommand invented-verb || {
+  _ccp_is_claude_subcommand invented-verb || {
     print -u2 -- 'FAIL: a verb the installed binary lists must be recognised'
     rc=1
   }
   # `doctor` is real in Claude Code but absent from THIS stub's help, so a hardcoded
   # list would still claim it.
   _CCPROTEUS_CLAUDE_VERBS=""
-  if _ccs_is_claude_subcommand doctor; then
+  if _ccp_is_claude_subcommand doctor; then
     print -u2 -- 'FAIL: a verb the installed binary does not list must not be assumed'
     rc=1
   fi
@@ -1257,7 +1258,7 @@ test_claude_subcommands_are_asked_for_never_hardcoded() {
     '--invented-optional|-p|1' \
     '--no-such-option|x|0'; do
     IFS='|' read -r opt next want_step <<< "$step"
-    _ccs_claude_option_step "$opt" "$next"
+    _ccp_claude_option_step "$opt" "$next"
     [[ "$REPLY" == "$want_step" ]] || {
       print -u2 -- "FAIL: '$opt' with '$next' after it must own $want_step token(s), got $REPLY"
       rc=1
@@ -1278,7 +1279,7 @@ test_claude_subcommands_are_asked_for_never_hardcoded() {
   _CCPROTEUS_CLAUDE_VERBS=""
   local verb
   for verb in list rm; do
-    if _ccs_is_claude_subcommand "$verb"; then
+    if _ccp_is_claude_subcommand "$verb"; then
       print -u2 -- "FAIL: ccproteus's own '$verb' must win over Claude Code's"
       rc=1
     fi
@@ -1298,7 +1299,7 @@ test_claude_subcommands_are_asked_for_never_hardcoded() {
     CCPROTEUS_SOURCE=${(q)CCPROTEUS_SOURCE}
     source \"\$CCPROTEUS_SOURCE\" >/dev/null 2>&1
     command -v claude >/dev/null 2>&1 && print 'claude-present' && exit
-    _ccs_is_claude_subcommand mcp && print yes || print no
+    _ccp_is_claude_subcommand mcp && print yes || print no
   " 2>/dev/null)
   rm -rf "$probe_dir"
   [[ "$degraded" == no ]] || {
@@ -1423,7 +1424,7 @@ test_claude_subcommands_reach_claude_through_the_launch_pipeline() {
   # The dispatcher marks a subcommand launch for the launcher, which is what suppresses
   # --model/--settings downstream, so record both argv and the mark.
   local calls="" flagged="" rc=0
-  _ccs_launch_driver() {
+  _ccp_launch_driver() {
     calls+="[${_CCPROTEUS_LAUNCH_PROFILE:-}:${(j: :)${(q)@}}]"
     flagged+="${CCPROTEUS_SUBCOMMAND_LAUNCH:-0}"
   }
@@ -1451,7 +1452,7 @@ test_claude_subcommands_reach_claude_through_the_launch_pipeline() {
   # profile is what it has always meant. Guard the precedence, because a
   # pass-through list that swallowed `rm` would silently stop removing profiles.
   local err
-  # A VALID but absent name: _ccs_valid rejects hyphens, so a hyphenated name would
+  # A VALID but absent name: _ccp_valid rejects hyphens, so a hyphenated name would
   # fail the shape check before reaching the existence check this asserts on.
   err=$(ccproteus rm no_such_account 2>&1)
   assert_contains "$err" "no profile 'no_such_account'" \
@@ -1674,15 +1675,15 @@ test_only_the_current_vocabulary_is_taught() {
     print -u2 -- '-i/--interactive must be accepted wherever a choice is taken'
     rc=1
   fi
-  # And help must teach the set verb. The help is rendered through `_ccs_help` rows,
+  # And help must teach the set verb. The help is rendered through `_ccp_help` rows,
   # not literal `print "  ccproteus …"` lines, so the check matches the call shape.
-  if ! grep -qE '_ccs_help "ccproteus set <profile> <model\|effort>' "${CCPROTEUS_LIBRARY[@]}"; then
+  if ! grep -qE '_ccp_help "ccproteus set <profile> <model\|effort>' "${CCPROTEUS_LIBRARY[@]}"; then
     print -u2 -- 'help must teach the set verb'
     rc=1
   fi
   # Launching must be taught as a VERB. A bare `ccproteus` prints usage, so if help did
   # not name `run`, the tool would have no discoverable way to launch at all.
-  if ! grep -qE '_ccs_help "ccproteus run"' "${CCPROTEUS_LIBRARY[@]}"; then
+  if ! grep -qE '_ccp_help "ccproteus run"' "${CCPROTEUS_LIBRARY[@]}"; then
     print -u2 -- 'help must teach ccproteus run as the way to launch'
     rc=1
   fi
@@ -1731,7 +1732,7 @@ test_launch_interactive_resolves_the_account() {
 
   # No --model, so -i asks for the profile AND then the model. The fake picker
   # answers both from the same stub.
-  _ccs_launch -i prompt || {
+  _ccp_launch -i prompt || {
     rm -rf "$test_home"
     return 1
   }
@@ -1760,11 +1761,11 @@ test_launch_interactive_with_an_account_asks_only_the_model() {
     source "$CCPROTEUS_SOURCE"
 
     case "$form" in
-      '-a alpha')        _ccs_launch -a alpha -i prompt || rc=1 ;;
-      '--profile alpha') _ccs_launch --profile alpha -i prompt || rc=1 ;;
+      '-a alpha')        _ccp_launch -a alpha -i prompt || rc=1 ;;
+      '--profile alpha') _ccp_launch --profile alpha -i prompt || rc=1 ;;
       'run alpha')       ccproteus run alpha -i prompt || rc=1 ;;
       'run -i alpha')    ccproteus run -i alpha prompt || rc=1 ;;
-      *)                 _ccs_launch --profile=alpha -i prompt || rc=1 ;;
+      *)                 _ccp_launch --profile=alpha -i prompt || rc=1 ;;
     esac
     actual="$(<"$CCPROTEUS_TEST_LOG")"
     assert_contains "$actual" 'API_KEY=sk-test-alpha' \
@@ -1829,7 +1830,7 @@ test_interactive_asks_no_model_where_ccproteus_owns_no_list() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  _ccs_launch -i prompt || {
+  _ccp_launch -i prompt || {
     print -u2 -- '-i on a native profile must launch, not fail reaching an endpoint'
     rm -rf "$test_home"; return 1
   }
@@ -1851,7 +1852,7 @@ test_cancelled_profile_picker_launches_nothing() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  if _ccs_launch -i prompt 2>/dev/null; then
+  if _ccp_launch -i prompt 2>/dev/null; then
     print -u2 -- 'a cancelled profile picker must abort the launch'
     rc=1
   fi
@@ -1874,7 +1875,7 @@ test_profile_picker_does_not_change_default() {
   printf '%s' zeta > "$HOME/.config/ccproteus/active"
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_launch -i prompt >/dev/null || {
+  _ccp_launch -i prompt >/dev/null || {
     rm -rf "$test_home"
     return 1
   }
@@ -1898,7 +1899,7 @@ test_profile_pick_precedes_model_pick() {
     'api_key=sk-test-alpha' 'base_url=https://gateway.invalid'
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_launch -i prompt || {
+  _ccp_launch -i prompt || {
     rm -rf "$test_home"
     return 1
   }
@@ -1921,7 +1922,7 @@ test_launch_interactive_resolves_a_real_model() {
   write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://gateway.invalid'
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_launch -a gw -i prompt || {
+  _ccp_launch -a gw -i prompt || {
     rm -rf "$test_home"
     return 1
   }
@@ -1951,7 +1952,7 @@ test_launch_aborts_when_pick_is_cancelled() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  if _ccs_launch -a gw -i prompt 2>/dev/null; then
+  if _ccp_launch -a gw -i prompt 2>/dev/null; then
     print -u2 -- 'a cancelled picker must abort the launch, not start a session'
     rc=1
   fi
@@ -1969,7 +1970,7 @@ test_proxy_model_is_bootstrap_fallback() {
   setup_home "$test_home"
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_launch -a proxy prompt || {
+  _ccp_launch -a proxy prompt || {
     rm -rf "$test_home"
     return 1
   }
@@ -2004,7 +2005,7 @@ test_proxy_context_limit_reaches_claude() {
     >> "$HOME/.config/ccproteus/proxy.conf"
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_launch -a proxy prompt || {
+  _ccp_launch -a proxy prompt || {
     rm -rf "$test_home"
     return 1
   }
@@ -2139,7 +2140,7 @@ test_add_never_asks_how_to_reach_the_endpoint() {
     print -u2 -- 'FAIL: add must not prompt for how to reach the endpoint'
     rc=1
   fi
-  print -r -- "$add_block" | grep -q '_ccs_probe_nudge ' || rc=1
+  print -r -- "$add_block" | grep -q '_ccp_probe_nudge ' || rc=1
   if print -r -- "$add_block" | grep -q -- '-X POST'; then
     print -u2 -- 'add must not send inference probes'
     rc=1
@@ -2315,7 +2316,7 @@ test_direct_resume_recovers_last_main_thread_model_command() {
     '{"type":"user","isSidechain":true,"message":{"role":"user","content":"<command-message>model</command-message>\\n<command-name>/model</command-name>\\n<command-args>sidechain-model</command-args>"}}' \
     > "$transcript"
 
-  _ccs_launch -a proxy --resume "$session_id" || {
+  _ccp_launch -a proxy --resume "$session_id" || {
     rm -rf "$test_home"
     return 1
   }
@@ -2356,7 +2357,7 @@ test_direct_resume_derives_the_carried_claude_send_id() {
     '{"type":"user","isSidechain":false,"message":{"role":"user","content":"<command-name>/model</command-name>\\n<command-args>claude-opus-5</command-args>"}}' \
     > "$transcript"
 
-  _ccs_launch -a resume1m --resume "$session_id" || {
+  _ccp_launch -a resume1m --resume "$session_id" || {
     rm -rf "$test_home"
     return 1
   }
@@ -2383,7 +2384,7 @@ test_direct_resume_carries_a_model_without_a_profile_default() {
     '{"type":"user","isSidechain":false,"message":{"role":"user","content":"<command-name>/model</command-name>\\n<command-args>alpha-chat</command-args>"}}' \
     > "$transcript"
 
-  _ccs_launch -a nodefault --resume "$session_id" || {
+  _ccp_launch -a nodefault --resume "$session_id" || {
     rm -rf "$test_home"
     return 1
   }
@@ -2411,7 +2412,7 @@ test_direct_resume_recovers_the_last_assistant_model_without_a_model_command() {
     '{"type":"assistant","isSidechain":true,"effort":"high","message":{"role":"assistant","model":"sidechain-model","content":[]}}' \
     > "$transcript"
 
-  _ccs_launch -a nodefault --resume "$session_id" || {
+  _ccp_launch -a nodefault --resume "$session_id" || {
     rm -rf "$test_home"
     return 1
   }
@@ -2450,12 +2451,12 @@ test_an_option_value_that_looks_like_a_flag_is_not_that_flag() {
   printf '%s\n' 'type=sub' 'email=test@example.invalid' 'model=sub-model' \
     > "$HOME/.config/ccproteus/subwith.conf"
   source "$CCPROTEUS_SOURCE"
-  _ccs_setup_dir() { return 0; }
-  _ccs_repair_projects_link() { return 0; }
+  _ccp_setup_dir() { return 0; }
+  _ccp_repair_projects_link() { return 0; }
 
   local rc=0 actual
   : > "$CCPROTEUS_TEST_LOG"
-  _ccs_launch -a gw --system-prompt --resume=phantom-sid -p x || rc=1
+  _ccp_launch -a gw --system-prompt --resume=phantom-sid -p x || rc=1
   actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" 'MODEL_ENV=gw-model' \
     'a --resume= inside an option value must not carry a transcript model' || rc=1
@@ -2463,7 +2464,7 @@ test_an_option_value_that_looks_like_a_flag_is_not_that_flag() {
     'a --resume= inside an option value must not carry a transcript model' || rc=1
 
   : > "$CCPROTEUS_TEST_LOG"
-  _ccs_launch -a subwith --system-prompt --continue -p x || rc=1
+  _ccp_launch -a subwith --system-prompt --continue -p x || rc=1
   actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" 'MODEL_ENV=sub-model' \
     'a --continue inside an option value must not suppress the profile model' || rc=1
@@ -2473,7 +2474,7 @@ test_an_option_value_that_looks_like_a_flag_is_not_that_flag() {
 }
 
 test_a_direct_launch_forwards_a_native_value_that_looks_like_a_launcher_flag() {
-  # The launcher's own argv scan -- the one a direct `_ccs_launch -a <profile>
+  # The launcher's own argv scan -- the one a direct `_ccp_launch -a <profile>
   # <args>` call runs, the agent-dispatch entry point -- matched one token at a
   # time, so the VALUE of a native option was claimed as a launcher flag
   # whenever it looked like one. `--system-prompt --profile other` hands Claude
@@ -2489,8 +2490,8 @@ test_a_direct_launch_forwards_a_native_value_that_looks_like_a_launcher_flag() {
   fake_claude_help
   write_apikey_conf gw 'api_key=k' 'base_url=https://gateway.invalid' 'model=gw-model'
   source "$CCPROTEUS_SOURCE"
-  _ccs_setup_dir() { return 0; }
-  _ccs_repair_projects_link() { return 0; }
+  _ccp_setup_dir() { return 0; }
+  _ccp_repair_projects_link() { return 0; }
 
   # The three spellings the issue reports: a --profile and an -a value are read
   # as this launcher's own profile flag, an -i value as its interactive flag.
@@ -2498,7 +2499,7 @@ test_a_direct_launch_forwards_a_native_value_that_looks_like_a_launcher_flag() {
   local tab=$'\t'
   for argv in '--profile other' '-a other' '-i'; do
     : > "$CCPROTEUS_TEST_LOG"
-    _ccs_launch -a gw --system-prompt ${=argv} -p x || rc=1
+    _ccp_launch -a gw --system-prompt ${=argv} -p x || rc=1
     actual="$(<"$CCPROTEUS_TEST_LOG")"
     assert_contains "$actual" "ARG${tab}--system-prompt${tab}${argv// /$tab}${tab}-p${tab}x"$'\nSUBAGENT' \
       "'$argv' is the system prompt's value and must reach claude as prompt text, not as a launcher flag" || rc=1
@@ -2508,19 +2509,19 @@ test_a_direct_launch_forwards_a_native_value_that_looks_like_a_launcher_flag() {
   # scan and forward the tokens after it verbatim, not be stepped over into
   # the very flags it separates (#405).
   : > "$CCPROTEUS_TEST_LOG"
-  _ccs_launch -a gw --system-prompt -- --profile other -p x || rc=1
+  _ccp_launch -a gw --system-prompt -- --profile other -p x || rc=1
   actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" "ARG${tab}--system-prompt${tab}--${tab}--profile${tab}other${tab}-p${tab}x"$'\nSUBAGENT' \
     'a separator and the tokens after it must forward verbatim' || rc=1
 
-  # The same launch under a caller's KSH_ARRAYS: _ccs_launch turns that option
+  # The same launch under a caller's KSH_ARRAYS: _ccp_launch turns that option
   # off for its own scan -- the walker's token pair is a positional slice,
   # which KSH_ARRAYS would misread, and a misread pair claims the value again
   # -- so a flag-shaped value stays a value there too. The arity table is
   # cached from the launches above, so the subshell steps the same way.
   : > "$CCPROTEUS_TEST_LOG"
   ( setopt ksharrays
-    _ccs_launch -a gw --system-prompt --profile other -p x >/dev/null 2>&1 ) || {
+    _ccp_launch -a gw --system-prompt --profile other -p x >/dev/null 2>&1 ) || {
     print -u2 -- "the launch must start under a caller's KSH_ARRAYS"
     rc=1
   }
@@ -2545,7 +2546,7 @@ test_direct_resume_reports_a_rejected_carried_model() {
     '{"type":"user","isSidechain":false,"message":{"role":"user","content":"<command-name>/model</command-name>\\n<command-args>absent-chat</command-args>"}}' \
     > "$transcript"
 
-  out=$(_ccs_launch -a proxy --resume "$session_id" 2>&1) || {
+  out=$(_ccp_launch -a proxy --resume "$session_id" 2>&1) || {
     rm -rf "$test_home"
     return 1
   }
@@ -2580,7 +2581,7 @@ print -r -- '\''{"has_more":false,"data":[{"id":"gpt-6.1-sol"},{"id":"other-defa
       "{\"type\":\"assistant\",\"isSidechain\":false,\"effort\":\"high\",\"message\":{\"role\":\"assistant\",\"model\":\"$requested\",\"content\":[]}}" \
       > "$transcript"
     : > "$CCPROTEUS_TEST_LOG"
-    out=$(_ccs_launch -a mapped --resume "$session_id" 2>&1) || rc=1
+    out=$(_ccp_launch -a mapped --resume "$session_id" 2>&1) || rc=1
     actual="$(<"$CCPROTEUS_TEST_LOG")"
     case "$requested" in
       claude-sonnet-5-5|'plain-alias[1m]')
@@ -2612,7 +2613,7 @@ print -r -- '\''{"has_more":false,"data":[{"id":"gpt-6.1-sol"},{"id":"other-defa
   done
 
   : > "$CCPROTEUS_TEST_LOG"
-  out=$(_ccs_launch -a mapped --resume "$session_id" --model claude-sonnet-5-5 --effort low 2>&1) || rc=1
+  out=$(_ccp_launch -a mapped --resume "$session_id" --model claude-sonnet-5-5 --effort low 2>&1) || rc=1
   actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" $'ARG\t--resume\tmapped-resume\t--model\tclaude-sonnet-5-5\t--effort\tlow' \
     'explicit model and effort flags must remain untouched during mapped resume' || rc=1
@@ -2638,7 +2639,7 @@ test_mapped_model_known_matches_shim_scope_and_suffix() {
       else
         case "$requested" in literal-id|'literal-id[1M]'|listed-alias) expected=0 ;; *) expected=1 ;; esac
       fi
-      _ccs_model_known mapped "$requested"
+      _ccp_model_known mapped "$requested"
       known=$?
       (( known == expected )) || {
         print -u2 -- "predicate must match active shim mapping for $base $requested: expected $expected, got $known"
@@ -2664,7 +2665,7 @@ test_mapped_model_known_preserves_catalogue_uncertainty() {
     '{"data":[{"id":[]},{"id":"other-model"}]}'; do
     print -r -- "$payload" > "$HOME/catalogue.json"
     for requested in mapped-alias unmapped-alias; do
-      _ccs_model_known mapped "$requested"
+      _ccp_model_known mapped "$requested"
       known=$?
       (( known == 2 )) || {
         print -u2 -- "an uncertain catalogue must preserve $requested, got status $known for $payload"
@@ -2673,7 +2674,7 @@ test_mapped_model_known_preserves_catalogue_uncertainty() {
     done
   done
   write_curl_mock 'exit 22'
-  _ccs_model_known mapped mapped-alias
+  _ccp_model_known mapped mapped-alias
   known=$?
   (( known == 2 )) || { print -u2 -- "a failed endpoint must preserve a mapped model, got $known"; rc=1; }
   rm -rf "$test_home"
@@ -2695,15 +2696,15 @@ test_model_known_strips_only_the_terminal_window_suffix() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  _ccs_model_known brackets 'vendor[beta]' || {
+  _ccp_model_known brackets 'vendor[beta]' || {
     print -u2 -- 'a bracketed endpoint model id must be compared intact'
     rc=1
   }
-  _ccs_model_known brackets 'vendor[beta][1m]' || {
+  _ccp_model_known brackets 'vendor[beta][1m]' || {
     print -u2 -- 'only a terminal [1m] window suffix may be removed before comparison'
     rc=1
   }
-  _ccs_model_known brackets 'vendor[beta][1M]' || {
+  _ccp_model_known brackets 'vendor[beta][1M]' || {
     print -u2 -- 'the terminal window suffix must be matched case-insensitively'
     rc=1
   }
@@ -2728,7 +2729,7 @@ test_hop_relays_model_and_effort() {
 
   local hop_output
   local NO_COLOR=1
-  source "$REPO_ROOT/ccproteus-ui.zsh"
+  source "$REPO_ROOT/lib/ccproteus-ui.zsh"
   hop_output=$(ccproteus hop proxy) || {
     rm -rf "$test_home"
     return 1
@@ -2850,7 +2851,7 @@ test_gateway_catalogue_uses_route_limit_and_pagination_uncertainty() {
   source "$CCPROTEUS_SOURCE"
 
   local listing rc=0 known
-  listing=$(HTTPS_PROXY='http://127.0.0.1:47999' _ccs_gw_models proxy) || {
+  listing=$(HTTPS_PROXY='http://127.0.0.1:47999' _ccp_gw_models proxy) || {
     rm -rf "$test_home"
     return 1
   }
@@ -2864,7 +2865,7 @@ test_gateway_catalogue_uses_route_limit_and_pagination_uncertainty() {
   assert_contains "$request" 'ARG=Authorization: Bearer test-key' \
     'catalogue requests must authenticate like adapter and launch probes' || rc=1
 
-  _ccs_model_known proxy absent-chat
+  _ccp_model_known proxy absent-chat
   known=$?
   (( known == 2 )) || {
     print -u2 -- "an absent model on a partial catalogue is unknown, got status $known"
@@ -2893,7 +2894,7 @@ test_gateway_http_error_is_uncertainty_not_model_absence() {
   chmod +x "$HOME/bin/curl"
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_model_known proxy alpha-chat
+  _ccp_model_known proxy alpha-chat
   local known=$? rc=0
   (( known == 2 )) || {
     print -u2 -- "an HTTP catalogue error must be unknown, got status $known"
@@ -2916,13 +2917,13 @@ test_gateway_explicit_non_chat_model_is_not_carryable() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0 known
-  _ccs_model_known proxy image-only
+  _ccp_model_known proxy image-only
   known=$?
   (( known == 1 )) || {
     print -u2 -- "an explicit chat denial must be definite absence, got status $known"
     rc=1
   }
-  _ccs_model_known proxy undeclared-chat
+  _ccp_model_known proxy undeclared-chat
   known=$?
   (( known == 0 )) || {
     print -u2 -- "undeclared chat capability must remain carryable, got status $known"
@@ -3000,8 +3001,8 @@ test_relay_resume_preserves_dangerous_permission_mode() {
     > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
   source "$CCPROTEUS_SOURCE"
-  cp "$CCPROTEUS_SOURCE" "$HOME/.config/ccproteus/ccproteus.sh"
-  cp "$REPO_ROOT"/ccproteus-*.zsh "$HOME/.config/ccproteus/"
+  cp "$CCPROTEUS_SOURCE" "$HOME/.config/ccproteus/lib/ccproteus.sh"
+  cp "$REPO_ROOT"/lib/ccproteus-*.zsh "$HOME/.config/ccproteus/lib/"
   printf '%s\n' ': > "$HOME/ccproteus-reloaded"' > "$HOME/.config/ccproteus/local.sh"
   printf '%s\n' ': > "$HOME/startup-sourced"' 'exit 99' > "$HOME/.zshrc"
   cp "$HOME/.zshrc" "$HOME/startup-before"
@@ -3048,7 +3049,7 @@ check_relay_cache_notice_absent() {
   setup_home "$test_home"
   # Seeding atomically replaces the conf: finish it before creating the alias.
   source "$CCPROTEUS_SOURCE"
-  _ccs_config_store seed-model-defaults proxy || { rm -rf "$test_home"; return 1; }
+  _ccp_config_store seed-model-defaults proxy || { rm -rf "$test_home"; return 1; }
   # Use a regular same-file alias when the filesystem distinguishes case.
   if [[ "$target" == PROXY && ! -e "$HOME/.config/ccproteus/PROXY.conf" ]]; then
     ln "$HOME/.config/ccproteus/proxy.conf" "$HOME/.config/ccproteus/PROXY.conf"
@@ -3144,7 +3145,7 @@ printf "%s %s %s\n" "$1" "$2" "$CLAUDE_CONFIG_DIR" > "$HOME/ran"; echo noise' > 
   export CCPROTEUS_PRELAUNCH="$HOME/bin/step"
 
   local out
-  out=$(cd "$HOME/work" && _ccs_prelaunch alex)
+  out=$(cd "$HOME/work" && _ccp_prelaunch alex)
   [[ -z "$out" ]] || {
     print -u2 "prelaunch must stay stdout-silent inside _env, got: $out"
     unset CCPROTEUS_PRELAUNCH; rm -rf "$test_home"; return 1
@@ -3154,7 +3155,7 @@ printf "%s %s %s\n" "$1" "$2" "$CLAUDE_CONFIG_DIR" > "$HOME/ran"; echo noise' > 
     unset CCPROTEUS_PRELAUNCH; rm -rf "$test_home"; return 1
   }
   export CCPROTEUS_PRELAUNCH="$HOME/bin/missing"
-  _ccs_prelaunch alex
+  _ccp_prelaunch alex
   local rc=$?
   (( rc == 0 )) || print -u2 'a missing prelaunch executable must never block a launch'
   unset CCPROTEUS_PRELAUNCH
@@ -3195,7 +3196,7 @@ test_absent_local_sh_is_a_clean_noop() {
   # not a stale definition left by an earlier test in this shell.
   rm -f "$HOME/.config/ccproteus/local.sh"
   unset CCPROTEUS_PRELAUNCH
-  unfunction _ccs_launch_driver 2>/dev/null
+  unfunction _ccp_launch_driver 2>/dev/null
   source "$CCPROTEUS_SOURCE" || {
     print -u2 -- 'sourcing must succeed with no local.sh present'
     rm -rf "$test_home"; return 1
@@ -3208,7 +3209,7 @@ test_absent_local_sh_is_a_clean_noop() {
   # typeset -f, not whence -w: the noglob alias shadows the name in whence's precedence
   # order while the function is still defined and still what runs.
   assert_contains \
-    "$(typeset -f _ccs_launch_driver >/dev/null && print function || print missing)" \
+    "$(typeset -f _ccp_launch_driver >/dev/null && print function || print missing)" \
     "function" \
     'a vanilla source must run to completion, defining the final launcher'
   local rc=$?
@@ -3237,10 +3238,10 @@ test_broken_local_sh_does_not_abort_the_source() {
   # can define the driver.
   result=$(zsh -fc "
     CCPROTEUS_SOURCE=${(q)CCPROTEUS_SOURCE}
-    unfunction _ccs_launch_driver 2>/dev/null
+    unfunction _ccp_launch_driver 2>/dev/null
     source \"\$CCPROTEUS_SOURCE\" 2>/dev/null
     print -r -- \"src_rc=\$?\"
-    print -r -- \"launcher=\$(typeset -f _ccs_launch_driver >/dev/null && print function || print missing)\"
+    print -r -- \"launcher=\$(typeset -f _ccp_launch_driver >/dev/null && print function || print missing)\"
   ")
 
   assert_contains "$result" "src_rc=0" \
@@ -3444,8 +3445,8 @@ test_a_failed_migration_is_loud() {
   setup_home "$test_home"
   source "$CCPROTEUS_SOURCE"
   print 'legacy=100000' > "$HOME/.config/ccproteus/model-registry"
-  printf '%s\n' '#!/bin/sh' 'exit 1' > "$HOME/.config/ccproteus/model-window"
-  err=$(_ccs_migrate_state 2>&1) && rc=1
+  printf '%s\n' '#!/bin/sh' 'exit 1' > "$HOME/.config/ccproteus/libexec/model-window"
+  err=$(_ccp_migrate_state 2>&1) && rc=1
   assert_contains "$err" 'migration incomplete' 'failed migration must preserve legacy context' || rc=1
   [[ -f "$HOME/.config/ccproteus/model-registry" ]] || rc=1
   rm -rf "$test_home"
@@ -3460,7 +3461,7 @@ test_installers_are_portable_and_leak_nothing() {
   # The `ccproteus` launcher is installed executable and run DIRECTLY (install.sh copies it to $BIN_DIR and chmod +x's it), so its shebang is
   # load-bearing the same way the installer's is.
   local rc=0 f
-  for f in "$REPO_ROOT/install.sh" "$REPO_ROOT/ccproteus"; do
+  for f in "$REPO_ROOT/install.sh" "$REPO_ROOT/bin/ccproteus"; do
     [[ -r "$f" ]] || continue
     local shebang
     shebang=$(head -1 "$f")
@@ -3474,7 +3475,7 @@ test_installers_are_portable_and_leak_nothing() {
   # install.sh puts the launcher on PATH, and a non-executable file there is an
   # install that finished with no working command, which is the exact failure this
   # whole design exists to prevent.
-  for f in "$REPO_ROOT/ccproteus"; do
+  for f in "$REPO_ROOT/bin/ccproteus"; do
     [[ -r "$f" ]] || continue
     zsh -n "$f" 2>/dev/null || {
       print -u2 -- "FAIL: ${f:t} is not valid zsh"
@@ -3520,7 +3521,7 @@ test_a_renamed_state_file_migrates_itself() {
   ccproteus list >/dev/null 2>&1 || rc=1
   [[ ! -e "$HOME/.config/ccproteus/model-registry.conf" ]] || rc=1
   [[ -f "$HOME/.config/ccproteus/model-registry.conf.migrated" ]] || rc=1
-  local out=$(_ccs_model_window proxy bootstrap-model)
+  local out=$(_ccp_model_window proxy bootstrap-model)
   assert_contains "$out" '321000' 'legacy scoped context must move into its profile' || rc=1
   ccproteus list >/dev/null 2>&1 || rc=1
   rm -rf "$test_home"
@@ -3530,7 +3531,7 @@ test_a_renamed_state_file_migrates_itself() {
 
 test_chpwd_hooks_cannot_corrupt_migrated_links() {
   # ccproteus.sh is sourced into interactive shells, where chpwd hooks (ls-on-cd,
-  # direnv, prompt integrations) are ordinary. _ccs_physical_dir runs `builtin
+  # direnv, prompt integrations) are ordinary. _ccp_physical_dir runs `builtin
   # cd` inside $(...), so a printing hook's output joined the captured path:
   # ln -s then wrote a dangling link, rm -f deleted the original, and the agent
   # definition disappeared from the live profile (#164). cd -q skips the chpwd
@@ -3546,7 +3547,7 @@ test_chpwd_hooks_cannot_corrupt_migrated_links() {
   command mkdir -p "$from/defs" "$from/links"
   print 'agent' > "$from/defs/agent.md"
   command ln -s ../defs/agent.md "$from/links/agent.md"
-  _ccs_migrate_projects "$from" "$to" || rc=1
+  _ccp_migrate_projects "$from" "$to" || rc=1
   target=$(command readlink "$to/links/agent.md")
   [[ "$target" != *$'\n'* ]] || {
     print -u2 -- "FAIL: chpwd output joined the migrated link target: ${(qqq)target}"
@@ -3563,7 +3564,7 @@ test_chpwd_hooks_cannot_corrupt_migrated_links() {
 
 
 test_a_link_target_ending_in_a_newline_survives_the_migration() {
-  # _ccs_migrate_projects captured the link's target with
+  # _ccp_migrate_projects captured the link's target with
   # `tgt="$(command readlink "$f")"`, and command substitution strips every
   # trailing newline: a relative target whose own name ends in one was rewritten
   # to the shortened name, ln -s wrote that target and `rm -f` deleted the
@@ -3580,7 +3581,7 @@ test_a_link_target_ending_in_a_newline_survives_the_migration() {
   command mkdir -p "$from"
   print 'agent' > "$from/"$'notes.md\n'
   command ln -s $'notes.md\n' "$from/alias.md"
-  _ccs_migrate_projects "$from" "$to" || rc=1
+  _ccp_migrate_projects "$from" "$to" || rc=1
   # Read through the same sentinel: a bare $(command readlink ...) on this side
   # would eat the very newline the link has to keep.
   target=$(command readlink -n "$to/alias.md" && print -rn -- /)
@@ -3597,7 +3598,7 @@ test_a_link_target_ending_in_a_newline_survives_the_migration() {
 
 test_missing_parent_links_still_migrate() {
   # Since 09eb145 (#151) a relative link whose target's parent does not exist
-  # failed both _ccs_physical_dir attempts and the chain ended in `|| continue`:
+  # failed both _ccp_physical_dir attempts and the chain ended in `|| continue`:
   # the link survived only in .premigration, then agents/ was replaced by the
   # shared link and the agent vanished from the profile, with no message (#167).
   # The fallback recreates it dangling, as it did before 09eb145. A parent that
@@ -3635,7 +3636,7 @@ test_missing_parent_links_still_migrate() {
   command ln -s "$test_home/gone" "$from/out"
   command ln -s out/../real.md "$from/x.md"
   command ln -s out/../a.md "$from/a.md"
-  # The new fallback is captured by $(...) exactly as _ccs_physical_dir's own
+  # The new fallback is captured by $(...) exactly as _ccp_physical_dir's own
   # output is, so it needs the same trailing `/` sentinel. Without it the capture
   # eats a newline that ends a component's name, and the link lands on whatever
   # the shortened name is — here `nodir`, which the shared store already has
@@ -3655,7 +3656,7 @@ test_missing_parent_links_still_migrate() {
   print 'DECOY' > "$to/real/agent.md"
   command ln -s "real$nl" "$from/ext"
   print 'we-ird' > "$from/we${nl}ird.md"
-  _ccs_migrate_projects "$from" "$to" || rc=1
+  _ccp_migrate_projects "$from" "$to" || rc=1
 
   [[ -L "$to/f.md" ]] || {
     print -u2 -- 'FAIL: a link whose target parent is missing must still migrate (#167)'
@@ -3729,7 +3730,7 @@ test_missing_parent_links_still_migrate() {
   # after the last component the kernel can resolve keeps going: `nodir3/..`
   # stays in the target, exactly as it did before the migration — the link
   # dangles instead of resolving to `/`. What #267 guards is unchanged:
-  # _ccs_physical_dir ends its own output with a `/` sentinel its caller strips,
+  # _ccp_physical_dir ends its own output with a `/` sentinel its caller strips,
   # and a fallback that lost it would write an empty target (a link macOS
   # creates and nothing can resolve, a failed `ln` on Linux that leaves the
   # original in the backup), or no link at all.
@@ -3790,7 +3791,7 @@ test_newline_names_migrate_whole_and_stay_inside_the_tree() {
   print 'ordinary agent' > "$from/plain.md"
   command ln -s ../plain.md "$from/sub/l"$'\n'"k.md"
   print 'unrelated' > "$cwd/b.md"
-  ( builtin cd "$cwd" && _ccs_migrate_projects "$from" "$to" ) || rc=1
+  ( builtin cd "$cwd" && _ccp_migrate_projects "$from" "$to" ) || rc=1
   [[ "$(command cat "$to/sub/a"$'\n'"b.md")" == 'newline agent' ]] || {
     print -u2 -- 'FAIL: a name containing a newline must migrate as one entry (#400)'
     rc=1
@@ -3867,7 +3868,7 @@ test_every_state_file_is_gitignored() {
   # change could silently stop shipping it. The modules are derived from the same
   # glob install.sh enumerates — a name listed here by hand is a name a later
   # module can be forgotten from, which is the drift this whole split is about.
-  local -a shipped=(ccproteus claude ccproteus.sh install.sh model-window refresh-model-registry .git-worktree-policy "$REPO_ROOT"/ccproteus-*.zsh(N:t))
+  local -a shipped=(ccproteus claude ccproteus.sh install.sh model-window refresh-model-registry .git-worktree-policy "$REPO_ROOT"/lib/ccproteus-*.zsh(N:t))
   for f in "${shipped[@]}"; do
     if git -C "$REPO_ROOT" check-ignore -q --no-index "$f"; then
       print -u2 -- "FAIL: shipped component '$f' is gitignored"
@@ -3892,7 +3893,7 @@ test_every_module_is_sourced_once_and_defines_its_own_functions() {
   # The library as the harness already defines it: the loader plus every module
   # split out of it.
   local -a files=("${_ccproteus_library[@]}")
-  local -a modules=("$REPO_ROOT"/ccproteus-*.zsh(N:t))
+  local -a modules=("$REPO_ROOT"/lib/ccproteus-*.zsh(N:t))
   if (( ! ${#modules} )); then
     print -u2 -- 'FAIL: no ccproteus-*.zsh module beside ccproteus.sh — every check here would be vacuous'
     return 1
@@ -3922,7 +3923,7 @@ test_every_module_is_sourced_once_and_defines_its_own_functions() {
   # Everything the loader sources is really beside it. A stale name here is a
   # launch that dies mid-library, in the user's own home.
   for f in "${sourced[@]}"; do
-    [[ -e "$REPO_ROOT/$f" ]] || {
+    [[ -e "$REPO_ROOT/lib/$f" ]] || {
       print -u2 -- "FAIL: ccproteus.sh sources _CCPROTEUS_LIB_DIR/$f, which does not exist beside it"
       rc=1
     }
@@ -4006,7 +4007,7 @@ test_one_models_listing_per_launch_is_shared() {
   # Two things must hold, and the first attempt at this memo satisfied neither:
   # the second ask must not reach the network, and a different credential against
   # the same base URL must, because two profiles can be shown different catalogues.
-  # (A `body=$(_ccs_models_listing ...)` caller runs the whole function in a
+  # (A `body=$(_ccp_models_listing ...)` caller runs the whole function in a
   # subshell and throws the memo away with it, which is why the answer is in REPLY.)
   local test_home tally rc=0
   test_home=$(mktemp -d)
@@ -4022,9 +4023,9 @@ test_one_models_listing_per_launch_is_shared() {
 
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_models_listing http://gw.invalid sk_a 5
+  _ccp_models_listing http://gw.invalid sk_a 5
   local first="$REPLY"
-  _ccs_models_listing http://gw.invalid sk_a 8
+  _ccp_models_listing http://gw.invalid sk_a 8
   local second="$REPLY"
 
   [[ -n "$first" && "$first" == "$second" ]] || {
@@ -4038,7 +4039,7 @@ test_one_models_listing_per_launch_is_shared() {
     rc=1
   }
 
-  _ccs_models_listing http://gw.invalid sk_different 8
+  _ccp_models_listing http://gw.invalid sk_different 8
   n=$(wc -c < "$tally" | tr -d ' ')
   [[ "$n" == 2 ]] || {
     print -u2 -- "FAIL: a different credential must re-fetch, total requests: $n"
@@ -4062,25 +4063,25 @@ test_code_and_state_are_separate_directories() {
   # 1. The library path is DERIVED from where ccproteus.sh actually is, so a copy
   #    of the runtime uses its own helpers rather than reaching back to a path
   #    that may hold a different version.
-  mkdir -p "$test_home/prefix" "$test_home/state"
-  cp "$CCPROTEUS_SOURCE" "$test_home/prefix/ccproteus.sh"
-  cp "$REPO_ROOT"/ccproteus-*.zsh "$test_home/prefix/"
-  print -r -- 'print "helper-from-prefix"' > "$test_home/prefix/model-window"
-  chmod +x "$test_home/prefix/model-window"
+  mkdir -p "$test_home/prefix/lib" "$test_home/prefix/libexec" "$test_home/state"
+  cp "$CCPROTEUS_SOURCE" "$test_home/prefix/lib/ccproteus.sh"
+  cp "$REPO_ROOT"/lib/ccproteus-*.zsh "$test_home/prefix/lib/"
+  print -r -- 'print "helper-from-prefix"' > "$test_home/prefix/libexec/model-window"
+  chmod +x "$test_home/prefix/libexec/model-window"
 
   local got
   got=$(HOME="$test_home" CCPROTEUS_STATE_DIR="$test_home/state" CCPROTEUS_LIB_DIR= \
         zsh -c "unset CCPROTEUS_LIB_DIR
-                source '$test_home/prefix/ccproteus.sh' >/dev/null 2>&1
+                source '$test_home/prefix/lib/ccproteus.sh' >/dev/null 2>&1
                 print -r -- \"\$_CCPROTEUS_LIB_DIR\"")
-  [[ "$got" == "$test_home/prefix" ]] || {
+  [[ "$got" == "$test_home/prefix/lib" ]] || {
     print -u2 -- "FAIL: lib dir must derive from the sourced file, got '$got'"
     rc=1
   }
 
   # 2. State does NOT follow the library — it stays where the state seam says.
   got=$(HOME="$test_home" CCPROTEUS_STATE_DIR="$test_home/state" \
-        zsh -c "source '$test_home/prefix/ccproteus.sh' >/dev/null 2>&1
+        zsh -c "source '$test_home/prefix/lib/ccproteus.sh' >/dev/null 2>&1
                 print -r -- \"\$_CCPROTEUS_DIR\"")
   [[ "$got" == "$test_home/state" ]] || {
     print -u2 -- "FAIL: state dir must be independent of the library, got '$got'"
@@ -4090,7 +4091,7 @@ test_code_and_state_are_separate_directories() {
   # 3. XDG_CONFIG_HOME is honoured. The old hardcoded path ignored it, so a
   #    machine that sets it had profiles written somewhere its owner never chose.
   got=$(HOME="$test_home" XDG_CONFIG_HOME="$test_home/xdg" \
-        zsh -c "source '$test_home/prefix/ccproteus.sh' >/dev/null 2>&1
+        zsh -c "source '$test_home/prefix/lib/ccproteus.sh' >/dev/null 2>&1
                 print -r -- \"\$_CCPROTEUS_DIR\"")
   [[ "$got" == "$test_home/xdg/ccproteus" ]] || {
     print -u2 -- "FAIL: XDG_CONFIG_HOME must place state, got '$got'"
@@ -4100,13 +4101,13 @@ test_code_and_state_are_separate_directories() {
   # 4. The Python helpers resolve the registry from state, not from beside
   #    themselves — the bug that only worked while both were one directory.
   printf 'type=apikey\ncontext_window.pinned=424242\n' > "$test_home/state/someprofile.conf"
-  # Scrubbed exactly as _ccs_model_window scrubs it: rung 1 of the resolver's
+  # Scrubbed exactly as _ccp_model_window scrubs it: rung 1 of the resolver's
   # precedence is an author's env/conf pin, and every ccproteus-launched shell
   # exports one (the route ceiling), so an unscrubbed call here answers from the
   # ambient session instead of the registry under test.
   got=$(command env -u CLAUDE_CODE_MAX_CONTEXT_TOKENS \
         CCPROTEUS_STATE_DIR="$test_home/state" \
-        python3 "$REPO_ROOT/model-window" someprofile pinned 2>/dev/null)
+        python3 "$REPO_ROOT/libexec/model-window" someprofile pinned 2>/dev/null)
   [[ "$got" == *424242* ]] || {
     print -u2 -- "FAIL: model-window must read the registry from state, got '$got'"
     rc=1
@@ -4166,7 +4167,7 @@ test_native_effort_does_not_rewrite_explicit_model() {
   setup_home "$test_home"
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_launch -a proxy --model 'legacy-model-xhigh' --effort low || {
+  _ccp_launch -a proxy --model 'legacy-model-xhigh' --effort low || {
     rm -rf "$test_home"
     return 1
   }
@@ -4187,7 +4188,7 @@ test_native_effort_validation_belongs_to_claude() {
   setup_home "$test_home"
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_launch -a proxy --effort || {
+  _ccp_launch -a proxy --effort || {
     rm -rf "$test_home"
     return 1
   }
@@ -4210,10 +4211,10 @@ test_subscription_profile_does_not_inject_model() {
   printf '%s\n' 'type=sub' 'email=test@example.invalid' \
     > "$HOME/.config/ccproteus/subscription.conf"
   source "$CCPROTEUS_SOURCE"
-  _ccs_setup_dir() { return 0; }
-  _ccs_repair_projects_link() { return 0; }
+  _ccp_setup_dir() { return 0; }
+  _ccp_repair_projects_link() { return 0; }
 
-  _ccs_launch -a subscription prompt || {
+  _ccp_launch -a subscription prompt || {
     rm -rf "$test_home"
     return 1
   }
@@ -4249,7 +4250,7 @@ test_invalid_resume_model_falls_back_to_profile_model() {
     '{"type":"user","isSidechain":false,"message":{"role":"user","content":"<command-name>/model</command-name>\n<command-args>unsafe\nmodel</command-args>"}}' \
     > "$transcript"
 
-  _ccs_launch -a proxy --resume "$session_id" || {
+  _ccp_launch -a proxy --resume "$session_id" || {
     rm -rf "$test_home"
     return 1
   }
@@ -4278,7 +4279,7 @@ test_resume_rejects_flag_picker_and_multitoken_model_values() {
       "{\"type\":\"user\",\"isSidechain\":false,\"message\":{\"role\":\"user\",\"content\":\"<command-name>/model</command-name>\\n<command-args>$bad</command-args>\"}}" \
       > "$transcript"
     : > "$CCPROTEUS_TEST_LOG"
-    _ccs_launch -a proxy --resume "$session_id" || {
+    _ccp_launch -a proxy --resume "$session_id" || {
       rm -rf "$test_home"
       return 1
     }
@@ -4337,7 +4338,7 @@ import importlib.machinery, importlib.util, json, os, sys
 spec = importlib.util.spec_from_loader(
     "context_store",
     importlib.machinery.SourceFileLoader(
-        "context_store", os.path.join(os.environ["HOME"], ".config/ccproteus/model-window")))
+        "context_store", os.path.join(os.environ["HOME"], ".config/ccproteus/libexec/model-window")))
 store = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(store)
 name, models_json = sys.argv[1], sys.argv[2]
@@ -4355,13 +4356,13 @@ test_provider_profile_accepts_picker_exclusions() {
   printf '%s\n' 'type=provider' 'provider=codex' 'excluded_models=gpt-5.5,gpt-image-2' > "$HOME/.config/ccproteus/cx.conf"
   source "$CCPROTEUS_SOURCE"
   local rc=0
-  _ccs_read cx || { print -u2 -- "a provider profile must accept excluded_models"; rc=1; }
+  _ccp_read cx || { print -u2 -- "a provider profile must accept excluded_models"; rc=1; }
   rm -rf "$test_home"
   return $rc
 }
 test_listings_are_undisguised_on_entry() {
   source "$CCPROTEUS_SOURCE"
-  _ccs_undisguise_ids '{"data":[{"id":"claude-fable-5-dd-los-6-tpg","display_name":"x"},{"id":"claude-opus-5"}]}'
+  _ccp_undisguise_ids '{"data":[{"id":"claude-fable-5-dd-los-6-tpg","display_name":"x"},{"id":"claude-opus-5"}]}'
   assert_contains "$REPLY" '"id":"gpt-6-sol"' "a disguised id must arrive as its true id" || return 1
   assert_contains "$REPLY" '"id":"claude-opus-5"' "a genuine claude id must be left alone" || return 1
   assert_not_contains "$REPLY" "-dd-" "no disguise may survive the listing" || return 1
@@ -4593,7 +4594,7 @@ test_apikey_profile_without_model_defers_to_claude_code() {
   write_apikey_conf native 'api_key=sk-test-native'
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_launch -a native prompt || {
+  _ccp_launch -a native prompt || {
     rm -rf "$test_home"
     return 1
   }
@@ -4618,7 +4619,7 @@ test_apikey_profile_with_model_injects_it() {
     'model=gateway-claude'
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_launch -a gw prompt || {
+  _ccp_launch -a gw prompt || {
     rm -rf "$test_home"
     return 1
   }
@@ -4643,7 +4644,7 @@ test_apikey_explicit_model_overrides_profile_model() {
     'model=profile-default'
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_launch -a gw --model other-backend-model prompt || {
+  _ccp_launch -a gw --model other-backend-model prompt || {
     rm -rf "$test_home"
     return 1
   }
@@ -4669,9 +4670,9 @@ test_apikey_without_model_passes_explicit_model_through() {
   write_apikey_conf native 'api_key=sk-test-native'
   write_profile_discovered native claude-opus-5=1000000
   source "$CCPROTEUS_SOURCE"
-  _ccs_probe_nudge() { print -r -- "$1" > "$HOME/probe-nudge"; }
+  _ccp_probe_nudge() { print -r -- "$1" > "$HOME/probe-nudge"; }
 
-  _ccs_launch -a native --model some-model prompt || {
+  _ccp_launch -a native --model some-model prompt || {
     rm -rf "$test_home"
     return 1
   }
@@ -4684,7 +4685,7 @@ test_apikey_without_model_passes_explicit_model_through() {
     'a modelless apikey profile must still forward an explicit --model' || rc=1
 
   : > "$CCPROTEUS_TEST_LOG"
-  _ccs_launch -a native --model claude-opus-5 prompt || rc=1
+  _ccp_launch -a native --model claude-opus-5 prompt || rc=1
   actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" $'--model\tclaude-opus-5' \
     'a native Claude model must reach Claude Code' || rc=1
@@ -4701,7 +4702,7 @@ test_apikey_without_model_passes_explicit_model_through() {
 
   print -r -- 'context_window.claude-opus-5=300000' >> "$HOME/.config/ccproteus/native.conf"
   : > "$CCPROTEUS_TEST_LOG"
-  _ccs_launch -a native --model claude-opus-5 prompt || rc=1
+  _ccp_launch -a native --model claude-opus-5 prompt || rc=1
   # An explicit --model is per-session: parallel sessions share one settings.json,
   # so its budget rides the environment rather than the file.
   assert_contains "$(<"$CCPROTEUS_TEST_LOG")" 'AUTO_COMPACT=300000' \
@@ -4761,7 +4762,7 @@ test_adapter_accepted_on_apikey_with_base_url() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  _ccs_read gw || {
+  _ccp_read gw || {
     print -u2 -- 'adapter=true must be a valid key on an apikey profile'
     rc=1
   }
@@ -4784,7 +4785,7 @@ test_adapter_requires_a_base_url_to_front() {
   local rc=0
   # A native Anthropic key has no foreign dialect to translate, so an adapter
   # would have nothing to front.
-  if _ccs_read native && _ccs_validate_loaded native; then
+  if _ccp_read native && _ccp_validate_loaded native; then
     print -u2 -- 'adapter=true without base_url must be rejected'
     rc=1
   fi
@@ -4801,7 +4802,7 @@ test_adapter_rejects_non_true_values() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  if _ccs_read gw && _ccs_validate_loaded gw; then
+  if _ccp_read gw && _ccp_validate_loaded gw; then
     print -u2 -- 'only adapter=true may be accepted, not an arbitrary value'
     rc=1
   fi
@@ -4820,7 +4821,7 @@ test_the_profile_template_is_a_valid_conf_naming_every_key() {
   setup_home "$test_home"
   command cp "$REPO_ROOT/profile.conf.example" "$HOME/.config/ccproteus/tpl.conf"
   source "$CCPROTEUS_SOURCE"
-  _ccs_read tpl 2>/dev/null && _ccs_validate_loaded tpl 2>/dev/null || {
+  _ccp_read tpl 2>/dev/null && _ccp_validate_loaded tpl 2>/dev/null || {
     print -u2 -- 'the profile template must load and validate unchanged'
     rc=1
   }
@@ -4831,11 +4832,11 @@ test_the_profile_template_is_a_valid_conf_naming_every_key() {
   # it — including any added later — goes unchecked. An arm is a line of exactly
   # six spaces followed by `key|key)`. Arms that report a removed key are not
   # accepted keys and are skipped by the marker their `case` body prints, so this
-  # reads `_ccs_read` structurally rather than retyping its six-arm layout.
+  # reads `_ccp_read` structurally rather than retyping its six-arm layout.
   integer in_case=0 removed=0
   local -a accepted=()
   while IFS= read -r line; do
-    [[ "$line" == '_ccs_read() {' ]] && { in_case=1; continue }
+    [[ "$line" == '_ccp_read() {' ]] && { in_case=1; continue }
     (( in_case )) || continue
     [[ "$line" == '}' ]] && break
     if [[ "$line" == '      '*')' ]]; then
@@ -4894,8 +4895,8 @@ test_monthly_budget_usd_loads_and_a_non_number_is_refused() {
   write_apikey_conf gw 'api_key=sk-test' 'base_url=https://g.invalid' 'monthly_budget_usd=500'
   write_apikey_conf bad 'api_key=sk-test' 'base_url=https://g.invalid' 'monthly_budget_usd=lots'
   source "$CCPROTEUS_SOURCE"
-  _ccs_read gw >/dev/null 2>&1 || { print -u2 -- 'monthly_budget_usd=500 must load'; rc=1; }
-  _ccs_read bad >/dev/null 2>&1 && { print -u2 -- 'a non-number budget must be refused'; rc=1; }
+  _ccp_read gw >/dev/null 2>&1 || { print -u2 -- 'monthly_budget_usd=500 must load'; rc=1; }
+  _ccp_read bad >/dev/null 2>&1 && { print -u2 -- 'a non-number budget must be refused'; rc=1; }
   rm -rf "$test_home"
   return $rc
 }
@@ -4916,7 +4917,7 @@ test_a_legacy_transport_key_is_reported_and_ignored() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0 err
-  err=$(_ccs_read gw 2>&1 >/dev/null) || {
+  err=$(_ccp_read gw 2>&1 >/dev/null) || {
     print -u2 -- 'a conf still declaring legacy keys must still load'
     rc=1
   }
@@ -4932,7 +4933,7 @@ test_a_legacy_transport_key_is_reported_and_ignored() {
     'the lean removal must name itself on stderr' || rc=1
   assert_contains "$err" 'role= was removed' \
     'the role removal must name itself on stderr (GH-425)' || rc=1
-  _ccs_read gw 2>/dev/null
+  _ccp_read gw 2>/dev/null
   local _legacy_k
   for _legacy_k in transport forward_ip subagent_model lean role; do
     [[ -z "${_ccp[$_legacy_k]:-}" ]] || {
@@ -4940,7 +4941,7 @@ test_a_legacy_transport_key_is_reported_and_ignored() {
       rc=1
     }
   done
-  _ccs_validate_loaded gw || {
+  _ccp_validate_loaded gw || {
     print -u2 -- 'a profile carrying legacy keys must still validate'
     rc=1
   }
@@ -4950,7 +4951,7 @@ test_a_legacy_transport_key_is_reported_and_ignored() {
   # writing `via=` is rejected as invalid rather than silently ignored.
   write_apikey_conf old 'api_key=sk-test' 'base_url=https://g.invalid' \
     'via=runner-token@east'
-  if _ccs_read old 2>/dev/null && _ccs_validate_loaded old; then
+  if _ccp_read old 2>/dev/null && _ccp_validate_loaded old; then
     print -u2 -- 'the old `via=` key must no longer be recognised'
     rc=1
   fi
@@ -4977,7 +4978,7 @@ test_key_prints_the_api_key_for_an_apikey_account() {
 }
 
 test_key_does_not_provision_claude_profile_state() {
-  # `_env` reaches a key only by calling _ccs_setup_dir, which creates the
+  # `_env` reaches a key only by calling _ccp_setup_dir, which creates the
   # profile dir, 11 shared symlinks and .claude.json. A non-Claude consumer
   # (Pi reads gateway keys through this) must not trigger any of that.
   local test_home
@@ -5060,7 +5061,7 @@ test_legacy_route_key_is_rejected_as_unknown() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  if _ccs_read gw && _ccs_validate_loaded gw; then
+  if _ccp_read gw && _ccp_validate_loaded gw; then
     print -u2 -- 'the legacy route key must be rejected as unknown'
     rc=1
   fi
@@ -5078,7 +5079,7 @@ test_adapter_is_invalid_on_other_profile_types() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  if _ccs_read tok; then
+  if _ccp_read tok; then
     print -u2 -- 'adapter is meaningless on a token profile and must be rejected'
     rc=1
   fi
@@ -5102,7 +5103,7 @@ test_an_unreachable_endpoint_names_the_network_not_an_exception() {
     'model=m' > "$HOME/.config/ccproteus/dead.conf"
 
   local err fail=0
-  err=$(_ccs_gw_models_json dead 2>&1 >/dev/null) && {
+  err=$(_ccp_gw_models_json dead 2>&1 >/dev/null) && {
     print -u2 -- 'an unreachable endpoint must fail model discovery'
     fail=1
   }
@@ -5127,7 +5128,7 @@ test_proxy_profile_may_declare_adapter() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  if ! _ccs_read loc; then
+  if ! _ccp_read loc; then
     print -u2 -- 'a proxy profile must be allowed to declare adapter=true'
     rc=1
   elif [[ "${_ccp[adapter]:-}" != true ]]; then
@@ -5177,8 +5178,8 @@ fake_adapter() {
 # An adapter that fails before announcing a port: the launch must abort.
 fake_adapter_broken() {
   printf '%s\n' '#!/bin/sh' 'echo "boom" >&2' 'exit 1' \
-    > "$HOME/.config/ccproteus/ccproteus-adapter"
-  chmod +x "$HOME/.config/ccproteus/ccproteus-adapter"
+    > "$HOME/.config/ccproteus/libexec/ccproteus-adapter"
+  chmod +x "$HOME/.config/ccproteus/libexec/ccproteus-adapter"
 }
 
 # The port the picker test's launch reads, named like its siblings so
@@ -5226,7 +5227,7 @@ test_adapter_redirects_claude_to_the_local_port() {
     'api_key=sk_prod_test' 'base_url=https://gateway.invalid' 'adapter=true'
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_launch -a gw prompt || {
+  _ccp_launch -a gw prompt || {
     rm -rf "$test_home"
     return 1
   }
@@ -5351,7 +5352,7 @@ test_task_env_becomes_request_headers_on_an_adapter_launch() {
   task_stub_claude
   write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://gateway.invalid' 'adapter=true'
   source "$CCPROTEUS_SOURCE"
-  CCPROTEUS_TASK=issue-42 CCPROTEUS_ATTEMPT=2 _ccs_launch -a gw prompt || rc=1
+  CCPROTEUS_TASK=issue-42 CCPROTEUS_ATTEMPT=2 _ccp_launch -a gw prompt || rc=1
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" 'x-ccproteus-task: issue-42' 'the task header' || rc=1
   assert_contains "$actual" 'x-ccproteus-attempt: 2>' 'the attempt header' || rc=1
@@ -5377,7 +5378,7 @@ test_task_tags_merge_with_the_users_own_custom_headers_issue_208() {
   print -r -- '{"env":{"ANTHROPIC_CUSTOM_HEADERS":"x-tenant: acme"}}' \
     > "$HOME/.config/ccproteus/profiles/gw/settings.profile.json"
   source "$CCPROTEUS_SOURCE"
-  CCPROTEUS_TASK=issue-208 _ccs_launch -a gw prompt || rc=1
+  CCPROTEUS_TASK=issue-208 _ccp_launch -a gw prompt || rc=1
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" $'x-tenant: acme\nx-ccproteus-task: issue-208' \
     'the user header must be kept in front of the task tag' || rc=1
@@ -5402,7 +5403,7 @@ test_a_nul_in_the_users_header_cannot_inject_a_record_issue_208() {
   print -r -- '{"env":{"ANTHROPIC_CUSTOM_HEADERS":"x-tenant: acme\u0000policy\t20"}}' \
     > "$HOME/.config/ccproteus/profiles/gw/settings.profile.json"
   source "$CCPROTEUS_SOURCE"
-  CCPROTEUS_TASK=issue-208 _ccs_launch -a gw prompt || rc=1
+  CCPROTEUS_TASK=issue-208 _ccp_launch -a gw prompt || rc=1
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" 'PCT=<80>' \
     'the fixture policy must set the trigger' || rc=1
@@ -5424,8 +5425,8 @@ test_no_task_means_no_headers_and_bad_shapes_are_dropped() {
   task_stub_claude
   write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://gateway.invalid' 'adapter=true'
   source "$CCPROTEUS_SOURCE"
-  _ccs_launch -a gw prompt || rc=1
-  CCPROTEUS_TASK=/etc/passwd CCPROTEUS_ATTEMPT=x _ccs_launch -a gw prompt || rc=1
+  _ccp_launch -a gw prompt || rc=1
+  CCPROTEUS_TASK=/etc/passwd CCPROTEUS_ATTEMPT=x _ccp_launch -a gw prompt || rc=1
   [[ "$(grep -c '^HDRS=<unset>$' "$CCPROTEUS_TEST_LOG")" == 2 ]] || {
     print -u2 -- 'no task, or only malformed values, must leave the headers unset'; rc=1; }
   rm -rf "$test_home"
@@ -5440,7 +5441,7 @@ test_a_launch_without_the_adapter_never_carries_task_headers() {
   task_stub_claude
   write_apikey_conf direct 'api_key=sk_prod_test' 'base_url=https://api.anthropic.com'
   source "$CCPROTEUS_SOURCE"
-  CCPROTEUS_TASK=issue-42 _ccs_launch -a direct prompt || rc=1
+  CCPROTEUS_TASK=issue-42 _ccp_launch -a direct prompt || rc=1
   assert_contains "$(<"$CCPROTEUS_TEST_LOG")" 'HDRS=<unset>' 'a direct launch has no shim to read them' || rc=1
   rm -rf "$test_home"
   return $rc
@@ -5456,7 +5457,7 @@ test_adapter_is_stopped_when_the_session_ends() {
     'api_key=sk_prod_test' 'base_url=https://gateway.invalid' 'adapter=true'
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_launch -a gw prompt >/dev/null 2>&1
+  _ccp_launch -a gw prompt >/dev/null 2>&1
   local rc=0
   [[ -s "$HOME/adapter.stopped" ]] || {
     print -u2 -- 'adapter must be stopped when the launch returns'
@@ -5469,10 +5470,10 @@ test_adapter_is_stopped_when_the_session_ends() {
 # Launch whatever double is installed as the adapter and say whether it keeps
 # the real adapter's lifetime contract against a launcher that dies without
 # running any trap: it must announce "$2" as its first stdout line (the line
-# the launcher's handshake reads, _ccs_adapter_start), still be alive once it
+# the launcher's handshake reads, _ccp_adapter_start), still be alive once it
 # has, and be gone within seconds of the launcher it was handed with
 # --parent-pid. "$1" picks the flag's spelling: "separate" is what
-# _ccs_adapter_start passes, "equals" is what the real adapter's argparse
+# _ccp_adapter_start passes, "equals" is what the real adapter's argparse
 # accepts just as well.
 _double_dies_with_a_killed_launcher() {
   local spelling="$1" announce="$2" out="$HOME/double.out"
@@ -5488,7 +5489,7 @@ _double_dies_with_a_killed_launcher() {
   else
     parent=(--parent-pid "$launcher")
   fi
-  "$HOME/.config/ccproteus/ccproteus-adapter" gw "${parent[@]}" >"$out" 2>&1 &
+  "$HOME/.config/ccproteus/libexec/ccproteus-adapter" gw "${parent[@]}" >"$out" 2>&1 &
   double=$!
   for (( i = 0; i < CCPROTEUS_TEST_HANG_TIMEOUT * 10; i++ )); do [[ -s "$out" ]] && break; sleep 0.1; done
   first=$(head -n 1 "$out" 2>/dev/null)
@@ -5566,7 +5567,7 @@ test_adapter_launch_survives_an_unwritable_optional_log() {
   chmod 0444 "$HOME/blocked.log"
   _CCPROTEUS_LOG="$HOME/blocked.log"
   local rc=0
-  _ccs_launch -a gw prompt >/dev/null 2>&1 || {
+  _ccp_launch -a gw prompt >/dev/null 2>&1 || {
     print -u2 -- 'adapter launch must survive an unwritable optional log'
     rc=1
   }
@@ -5593,7 +5594,7 @@ test_adapter_launch_uses_current_process_tree() {
   local rc=0
   mkdir -p "$HOME/not-shared-tmp"
   TMPDIR="$HOME/not-shared-tmp" \
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || {
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || {
     print -u2 -- 'the adapter must launch locally in every process tree'
     rc=1
   }
@@ -5629,7 +5630,7 @@ test_no_ambient_proxy_means_the_adapter_gets_none() {
     'api_key=sk_prod_test' 'base_url=https://gateway.invalid' 'adapter=true'
   source "$CCPROTEUS_SOURCE"
 
-  ( unset HTTPS_PROXY https_proxy; _ccs_launch -a gw prompt ) >/dev/null 2>&1
+  ( unset HTTPS_PROXY https_proxy; _ccp_launch -a gw prompt ) >/dev/null 2>&1
   local rc=0
   # ccproteus invents no proxy: with none in the environment the adapter gets none.
   assert_contains "$(<"$HOME/adapter.env")" 'HTTPS_PROXY=<unset>' \
@@ -5640,7 +5641,7 @@ test_no_ambient_proxy_means_the_adapter_gets_none() {
 
 test_an_ambient_proxy_reaches_the_child_and_the_adapter() {
   # THE regression. Every network consumer used to be handed
-  # `HTTPS_PROXY="${_ccs_route_https_proxy:-}"`, which with no transport running
+  # `HTTPS_PROXY="${_ccp_route_https_proxy:-}"`, which with no transport running
   # expanded to the empty string — so a user who had already bridged correctly had
   # their proxy BLANKED by the tool that was supposed to use it. ccproteus now owns
   # no transport and must pass the caller's value through untouched.
@@ -5663,7 +5664,7 @@ test_an_ambient_proxy_reaches_the_child_and_the_adapter() {
   local rc=0
   HTTPS_PROXY='http://127.0.0.1:48080' https_proxy='http://127.0.0.1:48080' \
     NO_PROXY='127.0.0.1,localhost' \
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || {
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || {
     print -u2 -- 'a launch under an ambient proxy must still start Claude'
     rc=1
   }
@@ -5700,7 +5701,7 @@ test_adapter_launch_withholds_mid_conversation_system_for_claude_models() {
     'api_key=sk_prod_test' 'base_url=https://gateway.invalid' 'adapter=true'
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_launch -a gw prompt >/dev/null 2>&1
+  _ccp_launch -a gw prompt >/dev/null 2>&1
   local rc=0
   assert_contains "$(<"$CCPROTEUS_TEST_LOG")" \
     'MODEL_CAPS=-mid_conv_system,-mid_conv_tool_change,-per_turn_effort' \
@@ -5727,7 +5728,7 @@ test_declared_model_capabilities_is_never_overruled() {
     'env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL=0'
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_launch -a gw prompt >/dev/null 2>&1
+  _ccp_launch -a gw prompt >/dev/null 2>&1
   local rc=0
   local log="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$log" \
@@ -5751,7 +5752,7 @@ test_native_endpoint_keeps_mid_conversation_system() {
     'base_url=https://api.anthropic.com'
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_launch -a plain prompt >/dev/null 2>&1
+  _ccp_launch -a plain prompt >/dev/null 2>&1
   local rc=0
   assert_contains "$(<"$CCPROTEUS_TEST_LOG")" 'MODEL_CAPS=<unset>' \
     'an endpoint that speaks Anthropic natively must keep the native turn' || rc=1
@@ -5770,7 +5771,7 @@ test_plain_profile_never_starts_an_adapter() {
   write_apikey_conf plain 'api_key=sk_prod_test' 'base_url=https://gateway.invalid'
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_launch -a plain prompt >/dev/null 2>&1
+  _ccp_launch -a plain prompt >/dev/null 2>&1
   local rc=0
   [[ ! -e "$HOME/adapter.argv" ]] || {
     print -u2 -- 'a profile without adapter=true must not invoke the adapter'
@@ -5793,7 +5794,7 @@ test_launch_aborts_when_the_adapter_cannot_serve() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  if _ccs_launch -a gw prompt >/dev/null 2>&1; then
+  if _ccp_launch -a gw prompt >/dev/null 2>&1; then
     print -u2 -- 'a failed adapter must abort the launch'
     rc=1
   fi
@@ -5822,7 +5823,7 @@ test_shell_env_does_not_leak_into_a_profile() {
   CLAUDE_CODE_AUTO_COMPACT_WINDOW=888888 \
   CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=77 \
   ANTHROPIC_CUSTOM_MODEL_OPTION=claude-leaked-from-the-shell \
-    _ccs_launch -a plain prompt >/dev/null 2>&1 || rc=1
+    _ccp_launch -a plain prompt >/dev/null 2>&1 || rc=1
 
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" 'MAX_CONTEXT=<unset>' \
@@ -5877,7 +5878,7 @@ test_a_route_scoped_probe_beats_the_endpoint_declaration() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  _ccs_launch -a derived prompt || { rm -rf "$test_home"; return 1; }
+  _ccp_launch -a derived prompt || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
 
   # The endpoint disguises non-Claude ids as claude-fable-5-dd-<reversed>, so the
@@ -5892,7 +5893,7 @@ test_a_route_scoped_probe_beats_the_endpoint_declaration() {
     'a declaration must not overrule the stored window' || rc=1
 
   : > "$CCPROTEUS_TEST_LOG"
-  _ccs_launch -a unscoped prompt || { rm -rf "$test_home"; return 1; }
+  _ccp_launch -a unscoped prompt || { rm -rf "$test_home"; return 1; }
   actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" 'MAX_CONTEXT=888888' \
     'each profile must use its own stored window' || rc=1
@@ -5917,7 +5918,7 @@ test_conf_window_beats_the_published_one() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  _ccs_launch -a pinned prompt || { rm -rf "$test_home"; return 1; }
+  _ccp_launch -a pinned prompt || { rm -rf "$test_home"; return 1; }
 
   # An author who pins a ceiling has a reason the endpoint cannot know -- a smaller
   # budget on purpose, or an endpoint that over-declares. Derivation fills a gap; it
@@ -5942,7 +5943,7 @@ test_endpoint_publishing_no_window_changes_nothing() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  _ccs_launch -a silent prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+  _ccp_launch -a silent prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
 
   # A gateway may publish no window for any model it serves, so this is the
   # common case, not an edge one. It must leave the launch exactly as it found it.
@@ -5974,7 +5975,7 @@ test_registry_supplies_window_when_endpoint_probe_has_none() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  _ccs_launch -a routed prompt >/dev/null 2>&1 || {
+  _ccp_launch -a routed prompt >/dev/null 2>&1 || {
     rm -rf "$test_home"
     return 1
   }
@@ -5998,7 +5999,7 @@ test_registry_supplies_window_when_endpoint_probe_has_none() {
     'model=context-model' \
     > "$HOME/.config/ccproteus/other.conf"
   : > "$CCPROTEUS_TEST_LOG"
-  _ccs_launch -a other prompt >/dev/null 2>&1 || rc=1
+  _ccp_launch -a other prompt >/dev/null 2>&1 || rc=1
   assert_not_contains "$(<"$CCPROTEUS_TEST_LOG")" 'MAX_CONTEXT=1048576' \
     'a profile with no stored data must never inherit another profile''s window' || rc=1
   rm -rf "$test_home"
@@ -6006,7 +6007,7 @@ test_registry_supplies_window_when_endpoint_probe_has_none() {
 }
 
 # KSH_ARRAYS indexes arrays from 0, so `a[1]` is the SECOND element while the
-# library's every subscript assumes zsh's own 1-based arrays. _ccs_launch's body
+# library's every subscript assumes zsh's own 1-based arrays. _ccp_launch's body
 # walks args, penv, the window record and the route defaults that way, so a
 # caller's KSH_ARRAYS used to skip the first argument and lose the published
 # window. The option is a property of the sourcing shell, invisible to a default
@@ -6033,7 +6034,7 @@ test_launch_reads_its_arrays_under_a_callers_ksh_arrays() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  _ccs_launch -a routed --model context-model prompt >/dev/null 2>&1 || {
+  _ccp_launch -a routed --model context-model prompt >/dev/null 2>&1 || {
     rm -rf "$test_home"
     return 1
   }
@@ -6044,7 +6045,7 @@ test_launch_reads_its_arrays_under_a_callers_ksh_arrays() {
   : > "$CCPROTEUS_TEST_LOG"
   local ksh_rc=0
   ( setopt ksharrays
-    _ccs_launch -a routed --model context-model prompt >/dev/null 2>&1 || exit 1
+    _ccp_launch -a routed --model context-model prompt >/dev/null 2>&1 || exit 1
     [[ -o ksharrays ]] || exit 13 ) || ksh_rc=$?
   (( ksh_rc == 0 )) || {
     print -u2 -- "the launch must not fail under a caller's KSH_ARRAYS (exit $ksh_rc)"
@@ -6085,7 +6086,7 @@ test_the_window_env_covers_every_model_the_route_serves() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+  _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" 'MAX_CONTEXT=900000' \
     'the env ceiling must cover the largest model the route serves, not just the launched one' || rc=1
@@ -6114,7 +6115,7 @@ test_the_launched_model_budgets_through_the_native_setting() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+  _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" '"autoCompactWindow":300000' \
     'the launched model must budget through the native autoCompactWindow setting' || rc=1
@@ -6148,7 +6149,7 @@ test_a_mapped_alias_budgets_against_its_target() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+  _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" '"autoCompactWindow":128000' \
     'a mapped session must budget against the model the shim serves, not the id it asked for' || rc=1
@@ -6169,7 +6170,7 @@ test_a_mapped_alias_budgets_against_its_target() {
 # The stub prints the overlay's CONTENT as `SETTINGS={...}` because the temp file
 # is unlinked when the launcher returns -- so the log is the only surviving copy
 # of what this session would have read.
-_ccs_offered_models() {
+_ccp_offered_models() {
   print -r -- "$1" | command python3 -c '
 import json, sys
 
@@ -6226,7 +6227,7 @@ test_a_session_never_offers_a_model_it_cannot_compact() {
 
   local rc=0
   CCPROTEUS_WITHHOLD_FATAL=1 \
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
 
   # The launched model keeps its OWN budget -- the whole point of per-model
@@ -6241,7 +6242,7 @@ test_a_session_never_offers_a_model_it_cannot_compact() {
   # the overlay's CONTENT as SETTINGS=..., which is what this session will read;
   # the temp file itself is gone by the time the launcher returns.
   local offered
-  offered=$(_ccs_offered_models "$actual")
+  offered=$(_ccp_offered_models "$actual")
 
   assert_contains "$offered" 'huge' \
     'the running model must stay in the picker' || rc=1
@@ -6273,13 +6274,13 @@ test_a_small_launch_still_offers_the_whole_route() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" '"autoCompactWindow":200000' \
     'the small launch budgets from its own wall' || rc=1
 
   local offered
-  offered=$(_ccs_offered_models "$actual")
+  offered=$(_ccp_offered_models "$actual")
   local _m
   for _m in tiny small huge; do
     assert_contains "$offered" "$_m" \
@@ -6309,7 +6310,7 @@ test_withholding_never_edits_the_profile() {
 
   local rc=0
   CCPROTEUS_WITHHOLD_FATAL=1 \
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local profile_models
   profile_models=$(command python3 -c '
 import json, sys
@@ -6345,11 +6346,11 @@ test_by_default_every_model_stays_selectable_and_is_named() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
 
   local offered
-  offered=$(_ccs_offered_models "$actual")
+  offered=$(_ccp_offered_models "$actual")
   local _m
   for _m in tiny small huge; do
     assert_contains "$offered" "$_m" \
@@ -6384,7 +6385,7 @@ test_a_users_saved_autocompact_choice_survives_derivation() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" '"autoCompactWindow":123456' \
     'a /autocompact choice saved in the profile settings must beat the derived value' || rc=1
@@ -6419,7 +6420,7 @@ test_a_policy_tombstone_does_not_hide_a_canonical_budget() {
   local rc=0
   # --model roomy is the shape that carries a per-session budget: it is injected
   # into the environment, which the engine reads BEFORE the settings layer.
-  _ccs_launch -a gw --model roomy prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+  _ccp_launch -a gw --model roomy prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "${actual//\"autoCompactWindow\": /\"autoCompactWindow\":}" \
     '"autoCompactWindow":400000' \
@@ -6453,7 +6454,7 @@ test_a_claude_default_still_sizes_the_route_for_switches() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" 'MAX_CONTEXT=500000' \
     'a claude default must still size the route for mid-session switches' || rc=1
@@ -6492,7 +6493,7 @@ test_a_tier_alias_budgets_from_the_model_behind_it() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" '"autoCompactWindow":700000' \
     'an alias launch must budget from the model the alias resolves to' || rc=1
@@ -6522,7 +6523,7 @@ test_the_budget_never_exceeds_the_launched_models_wall() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
   # The ceiling covers the route (so a switch up is not clamped)...
   assert_contains "$actual" 'MAX_CONTEXT=1000000' \
@@ -6551,7 +6552,7 @@ test_the_window_follows_the_saved_default_model() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" 'MAX_CONTEXT=500000' \
     'the saved /model default must drive the window when the conf names no model' || rc=1
@@ -6588,7 +6589,7 @@ test_launch_model_flag_drives_the_window_not_the_conf_default() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_launch -a gw --model routed-xl prompt >/dev/null 2>&1 || {
+    _ccp_launch -a gw --model routed-xl prompt >/dev/null 2>&1 || {
     rm -rf "$test_home"
     return 1
   }
@@ -6613,7 +6614,7 @@ test_a_flat_endpoint_declaration_yields_to_probe_at_launch() {
   # capped and compacted at 200000. When a value repeats across every served model
   # it is a default, not a probe, so the endpoint probe must return nothing
   # and let the registry answer per model. Mirror of the picker's flat-default
-  # handling, which lived only in _ccs_project_picker until this path grew it too.
+  # handling, which lived only in _ccp_project_picker until this path grew it too.
   printf '%s\n' \
     '#!/bin/sh' 'cat <<JSON' \
     '{"data":[' \
@@ -6633,7 +6634,7 @@ test_a_flat_endpoint_declaration_yields_to_probe_at_launch() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_launch -a flatgw prompt >/dev/null 2>&1 || {
+    _ccp_launch -a flatgw prompt >/dev/null 2>&1 || {
     rm -rf "$test_home"
     return 1
   }
@@ -6673,7 +6674,7 @@ test_a_genuine_shared_window_is_not_mistaken_for_flat() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_launch -a realgw prompt >/dev/null 2>&1 || {
+    _ccp_launch -a realgw prompt >/dev/null 2>&1 || {
     rm -rf "$test_home"
     return 1
   }
@@ -6708,7 +6709,7 @@ test_a_claude_id_keeps_claude_codes_own_window() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  _ccs_launch -a gwclaude prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+  _ccp_launch -a gwclaude prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
 
   assert_contains "$(<"$CCPROTEUS_TEST_LOG")" 'MAX_CONTEXT=<unset>' \
     'a claude- id must keep Claude Code own window, not an endpoint declaration' || rc=1
@@ -6734,7 +6735,7 @@ test_a_derived_window_survives_an_endpoint_blip() {
   # own conf. The launch must remember it locally, so even an unreachable
   # endpoint later cannot shrink it.
   write_profile_discovered blip gpt-5.6-sol=372000
-  _ccs_launch -a blip prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+  _ccp_launch -a blip prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   assert_contains "$(<"$CCPROTEUS_TEST_LOG")" 'MAX_CONTEXT=372000' \
     'the first launch must use the recorded discovered window' || rc=1
 
@@ -6746,7 +6747,7 @@ test_a_derived_window_survives_an_endpoint_blip() {
   printf '%s\n' '#!/bin/sh' 'exit 7' > "$HOME/bin/curl"
   chmod +x "$HOME/bin/curl"
   : > "$CCPROTEUS_TEST_LOG"
-  _ccs_launch -a blip prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+  _ccp_launch -a blip prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
 
   assert_contains "$(<"$CCPROTEUS_TEST_LOG")" 'MAX_CONTEXT=372000' \
     'an unreachable endpoint must reuse the last known window, not shrink it' || rc=1
@@ -6783,7 +6784,7 @@ test_launch_warns_when_a_model_refuses_before_compacting() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0 err
-  err=$(        _ccs_launch -a mixed prompt 2>&1 >/dev/null) || {
+  err=$(        _ccp_launch -a mixed prompt 2>&1 >/dev/null) || {
     rm -rf "$test_home"
     return 1
   }
@@ -6822,7 +6823,7 @@ test_launch_names_switch_targets_the_trigger_would_overrun() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_launch -a spread prompt >/dev/null 2>&1 || {
+    _ccp_launch -a spread prompt >/dev/null 2>&1 || {
     rm -rf "$test_home"
     return 1
   }
@@ -6933,7 +6934,7 @@ test_the_percentage_divides_before_it_multiplies() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
 
   assert_not_contains "$actual" 'exactly limit' \
@@ -6960,7 +6961,7 @@ test_the_trigger_follows_a_non_default_percentage() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
 
   assert_contains "$actual" 'compacts at 882k' \
@@ -7009,7 +7010,7 @@ test_the_trigger_follows_a_non_default_percentage() {
 # An env value the engine treats as invalid must come back EMPTY and SUCCESSFUL, never
 # as a failure. `1e999` matches the exponent form, float() gives inf, and int(inf)
 # raises -- which made the helper exit non-zero. Every reader spells the call
-# `$(_ccs_engine_int ...) || fallback`, so a non-zero exit was swallowed and each fell
+# `$(_ccp_engine_int ...) || fallback`, so a non-zero exit was swallowed and each fell
 # through to a different budget; on a profile pinning the ceiling in its conf that meant
 # no hazard analysis at all.
 #
@@ -7071,7 +7072,7 @@ test_the_percentage_parser_skips_a_zero_width_no_break_space() {
     > "$HOME/.config/ccproteus/gw.conf"
   write_profile_context gw small=200000 onefifty=150000
   : > "$CCPROTEUS_TEST_LOG"
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_not_contains "$actual" 'onefifty limit' \
     'a FEFF-prefixed percentage is engine whitespace and must govern' || rc=1
@@ -7113,7 +7114,7 @@ test_the_percentage_parser_uses_engine_whitespace() {
     > "$HOME/.config/ccproteus/gw.conf"
   write_profile_context gw small=200000 onefifty=150000
   : > "$CCPROTEUS_TEST_LOG"
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" 'onefifty limit 150k' \
     'a NEL-prefixed percentage must be rejected, leaving the 167k cap in force' || rc=1
@@ -7125,7 +7126,7 @@ test_the_percentage_parser_uses_engine_whitespace() {
     > "$HOME/.config/ccproteus/gw.conf"
   write_profile_context gw small=200000 onefifty=150000
   : > "$CCPROTEUS_TEST_LOG"
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_not_contains "$actual" 'onefifty limit' \
     'an NBSP-prefixed percentage is engine whitespace and must govern' || rc=1
@@ -7145,7 +7146,7 @@ test_whitespace_handling_matches_the_engine() {
   nbsp=$'\xc2\xa0'
 
   # Rejected: the engine keeps NEL, so parseInt sees a non-digit first.
-  out=$(_ccs_engine_int "${nel}100000")
+  out=$(_ccp_engine_int "${nel}100000")
   [[ -z "$out" ]] || {
     print -u2 -- "FAIL: a leading NEL must make the value invalid, got '$out'"
     rc=1
@@ -7158,7 +7159,7 @@ test_whitespace_handling_matches_the_engine() {
   local -a ws_names=(space tab nbsp)
   local i
   for i in {1..3}; do
-    out=$(_ccs_engine_int "${ws_chars[$i]}100000")
+    out=$(_ccp_engine_int "${ws_chars[$i]}100000")
     [[ "$out" == 100000 ]] || {
       print -u2 -- "FAIL: leading ${ws_names[$i]} is engine whitespace and must be skipped, got '$out'"
       rc=1
@@ -7186,7 +7187,7 @@ test_the_clamp_bounds_by_length_before_arithmetic() {
   local errfile
   errfile=$(mktemp)
   v=99999999999999999999
-  _ccs_clamp_acw v 2>"$errfile"
+  _ccp_clamp_acw v 2>"$errfile"
   if [[ -s "$errfile" ]]; then
     print -u2 -- "FAIL: clamping an oversized value leaked: $(<"$errfile")"
     rc=1
@@ -7198,15 +7199,15 @@ test_the_clamp_bounds_by_length_before_arithmetic() {
   }
 
   # And the ordinary cases still behave.
-  v=50000;   _ccs_clamp_acw v
+  v=50000;   _ccp_clamp_acw v
   [[ "$v" == "$_CCPROTEUS_ACW_MIN" ]] || {
     print -u2 -- "FAIL: a sub-floor value must clamp up, got $v"; rc=1
   }
-  v=2000000; _ccs_clamp_acw v
+  v=2000000; _ccp_clamp_acw v
   [[ "$v" == "$_CCPROTEUS_ACW_MAX" ]] || {
     print -u2 -- "FAIL: an above-ceiling value must clamp down, got $v"; rc=1
   }
-  v=700000;  _ccs_clamp_acw v
+  v=700000;  _ccp_clamp_acw v
   [[ "$v" == 700000 ]] || {
     print -u2 -- "FAIL: an in-range value must be left alone, got $v"; rc=1
   }
@@ -7219,9 +7220,9 @@ test_an_overflowing_env_value_is_invalid_not_an_error() {
 
   local v
   for v in 1e999 -1e999 1e309; do
-    out=$(_ccs_engine_int "$v")
+    out=$(_ccp_engine_int "$v")
     if (( $? != 0 )); then
-      print -u2 -- "FAIL: _ccs_engine_int exited non-zero for $v; readers swallow that and fall through"
+      print -u2 -- "FAIL: _ccp_engine_int exited non-zero for $v; readers swallow that and fall through"
       rc=1
     fi
     if [[ -n "$out" ]]; then
@@ -7234,12 +7235,12 @@ test_an_overflowing_env_value_is_invalid_not_an_error() {
   # 10^18 cap -- 1e21 yields the same value with or without it, because zsh only
   # truncates past 19 digits and the cap lands at exactly 19. It guards the weaker
   # property that the inf/nan check above did not start rejecting finite values.
-  out=$(_ccs_engine_int 1e21)
+  out=$(_ccp_engine_int 1e21)
   [[ "$out" == <-> ]] && (( ${#out} <= 19 )) || {
     print -u2 -- "FAIL: 1e21 must yield a representable integer, got '$out'"
     rc=1
   }
-  out=$(_ccs_engine_int 700000)
+  out=$(_ccp_engine_int 700000)
   [[ "$out" == 700000 ]] || {
     print -u2 -- "FAIL: a plain integer must survive, got '$out'"
     rc=1
@@ -7273,7 +7274,7 @@ test_neither_env_parser_accepts_non_ascii_digits() {
       > "$HOME/.config/ccproteus/gw.conf"
   write_profile_context gw small=200000 onetwenty=120000
     : > "$CCPROTEUS_TEST_LOG"
-      _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+      _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
     actual="$(<"$CCPROTEUS_TEST_LOG")"
     assert_contains "$actual" 'onetwenty limit 120k' \
       "a non-ASCII $key must be rejected, leaving the sibling fatal" || rc=1
@@ -7300,7 +7301,7 @@ test_an_env_budget_is_parsed_the_way_the_engine_parses_it() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
 
   assert_not_contains "$actual" 'mid limit' \
@@ -7327,7 +7328,7 @@ test_the_output_reserve_override_reaches_the_hazard_path() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
 
   # It has to reach the launched process at all...
@@ -7366,7 +7367,7 @@ test_an_out_of_schema_saved_budget_does_not_block_derivation() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
 
   assert_contains "${actual//\"autoCompactWindow\": /\"autoCompactWindow\":}" \
@@ -7421,7 +7422,7 @@ test_a_non_finite_saved_budget_does_not_abort_the_launch() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || {
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || {
       print -u2 -- "FAIL: a non-finite saved budget must not abort the launch"
       rm -rf "$test_home"
       return 1
@@ -7463,7 +7464,7 @@ test_the_overlay_and_the_advisory_agree_on_the_schema() {
     want="${spec##*|}"
     printf '%s\n' "{\"autoCompactWindow\":$saved}" > "$HOME/.claude/settings.json"
     : > "$CCPROTEUS_TEST_LOG"
-      _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+      _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
     actual="$(<"$CCPROTEUS_TEST_LOG")"
     if [[ "$want" == yes ]]; then
       assert_contains "${actual//\"autoCompactWindow\": /\"autoCompactWindow\":}" \
@@ -7504,7 +7505,7 @@ test_a_valid_saved_budget_still_beats_the_derivation() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "${actual//\"autoCompactWindow\": /\"autoCompactWindow\":}" \
     '"autoCompactWindow":300000' \
@@ -7532,7 +7533,7 @@ test_a_conf_pinned_ceiling_still_gets_hazard_analysis() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
 
   assert_contains "$actual" 'small limit 400k' \
@@ -7612,7 +7613,7 @@ test_a_legacy_id_uses_its_own_output_default() {
   write_profile_context gw claude-3-opus=150000
   print -r -- '{"availableModels":["claude-3-opus"]}' \
     > "$HOME/.config/ccproteus/profiles/gw/settings.json"
-  err=$(_ccs_invariant_warn gw 80 "" "" "" 2>&1)
+  err=$(_ccp_invariant_warn gw 80 "" "" "" 2>&1)
   assert_contains "$err" 'compaction starts at 156723' \
     'a 4096-default id reserves less, so its trigger is 156,723 and the wall is fatal' || rc=1
 
@@ -7621,7 +7622,7 @@ test_a_legacy_id_uses_its_own_output_default() {
   write_profile_context gw claude-plain=150000
   print -r -- '{"availableModels":["claude-plain"]}' \
     > "$HOME/.config/ccproteus/profiles/gw/settings.json"
-  err=$(_ccs_invariant_warn gw 80 "" "" "" 2>&1)
+  err=$(_ccp_invariant_warn gw 80 "" "" "" 2>&1)
   assert_not_contains "$err" 'claude-plain holds' \
     'an ordinary id keeps the 20,000 reserve and is safe at the same wall' || rc=1
 
@@ -7632,12 +7633,12 @@ test_a_legacy_id_uses_its_own_output_default() {
   write_profile_context gw claude-3-opus=150000
   print -r -- '{"availableModels":["claude-3-opus"]}' \
     > "$HOME/.config/ccproteus/profiles/gw/settings.json"
-  err=$(_ccs_invariant_warn gw 80 20000 "" "" 2>&1)
+  err=$(_ccp_invariant_warn gw 80 20000 "" "" 2>&1)
   assert_contains "$err" 'compaction starts at 156723' \
     'a pin above the model upperLimit is capped down to it, so the wall stays fatal' || rc=1
 
   # A pin BELOW the limit is honoured, which is the half that is genuinely a pin.
-  err=$(_ccs_invariant_warn gw 80 2000 "" "" 2>&1)
+  err=$(_ccp_invariant_warn gw 80 2000 "" "" 2>&1)
   assert_contains "$err" 'compaction starts at 158400' \
     'a pin under the model upperLimit is used as given' || rc=1
 
@@ -7647,14 +7648,14 @@ test_a_legacy_id_uses_its_own_output_default() {
   write_profile_context gw claude-3-5-haiku=150000
   print -r -- '{"availableModels":["claude-3-5-haiku"]}' \
     > "$HOME/.config/ccproteus/profiles/gw/settings.json"
-  err=$(_ccs_invariant_warn gw 80 "" "" "" 2>&1)
+  err=$(_ccp_invariant_warn gw 80 "" "" "" 2>&1)
   assert_contains "$err" 'compaction starts at 153446' \
     'a catalogue id with an 8192 default reserves 8192, not 20,000' || rc=1
 
   write_profile_context gw claude-3-5-haiku-20241022=150000
   print -r -- '{"availableModels":["claude-3-5-haiku-20241022"]}' \
     > "$HOME/.config/ccproteus/profiles/gw/settings.json"
-  err=$(_ccs_invariant_warn gw 80 "" "" "" 2>&1)
+  err=$(_ccp_invariant_warn gw 80 "" "" "" 2>&1)
   assert_contains "$err" 'compaction starts at 153446' \
     'a dated id folds to its base, as the engine normalizer does' || rc=1
 
@@ -7675,7 +7676,7 @@ test_hazard_set_honours_a_profile_tombstone_of_availablemodels() {
 
   local rc=0 out
   local -a penv
-  out=$(_ccs_hazard_set p 700000 900000 '' 2>/dev/null)
+  out=$(_ccp_hazard_set p 700000 900000 '' 2>/dev/null)
   assert_not_contains "$out" 'm-small' \
     'a profile that deleted availableModels offers no models, so none is a hazard' || rc=1
 
@@ -7698,22 +7699,22 @@ test_the_session_budget_caps_every_sibling_ceiling() {
   penv=(CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80)
 
   # With the budget in force the sibling is safe and must not be named.
-  out=$(        _ccs_hazard_set gw 300000 922000 \
+  out=$(        _ccp_hazard_set gw 300000 922000 \
           "$HOME/.config/ccproteus/profiles/gw/settings.json" 2>/dev/null)
   assert_not_contains "$out" 'claude-foo' \
     'the budget caps the sibling ceiling, so a 500,000 wall clears a 224,000 trigger' || rc=1
 
   # Without a budget the family ceiling stands and the same model IS fatal.
-  out=$(        _ccs_hazard_set gw "" 1000000 \
+  out=$(        _ccp_hazard_set gw "" 1000000 \
           "$HOME/.config/ccproteus/profiles/gw/settings.json" 2>/dev/null)
   assert_contains "$out" 'claude-foo' \
     'with no budget the 1,000,000 ceiling gives a 784,000 trigger, which is fatal' || rc=1
 
   # The same rule in the other mirror, which computes its own window.
-  err=$(_ccs_invariant_warn gw 80 "" "" 300000 2>&1)
+  err=$(_ccp_invariant_warn gw 80 "" "" 300000 2>&1)
   assert_not_contains "$err" 'claude-foo holds' \
     'the unsafe warning must cap by the budget too' || rc=1
-  err=$(_ccs_invariant_warn gw 80 "" "" "" 2>&1)
+  err=$(_ccp_invariant_warn gw 80 "" "" "" 2>&1)
   assert_contains "$err" 'claude-foo holds 500000' \
     'and must still name it when no budget narrows the ceiling' || rc=1
 
@@ -7736,7 +7737,7 @@ test_a_bare_and_1m_pair_are_two_different_siblings() {
   # Bare listed FIRST: the ordering that used to hide the [1m] fatality.
   printf '%s\n' '{"availableModels":["roomy","claude-foo","claude-foo[1m]"]}' \
     > "$HOME/.config/ccproteus/profiles/gw/settings.json"
-  out=$(        _ccs_hazard_set gw 1000000 1000000 \
+  out=$(        _ccp_hazard_set gw 1000000 1000000 \
           "$HOME/.config/ccproteus/profiles/gw/settings.json" 2>/dev/null)
   assert_contains "$out" 'claude-foo' \
     'a [1m] variant listed after its bare form must still be named' || rc=1
@@ -7744,7 +7745,7 @@ test_a_bare_and_1m_pair_are_two_different_siblings() {
   # And listed the other way round it is named exactly once, not twice.
   printf '%s\n' '{"availableModels":["roomy","claude-foo[1m]","claude-foo"]}' \
     > "$HOME/.config/ccproteus/profiles/gw/settings.json"
-  out=$(        _ccs_hazard_set gw 1000000 1000000 \
+  out=$(        _ccp_hazard_set gw 1000000 1000000 \
           "$HOME/.config/ccproteus/profiles/gw/settings.json" 2>/dev/null)
   local hits
   hits=$(print -r -- "$out" | grep -c 'claude-foo')
@@ -7765,7 +7766,7 @@ test_a_bare_and_1m_pair_are_two_different_siblings() {
   write_profile_context gw roomy=400000 plain=250000
   printf '%s\n' '{"availableModels":["roomy","plain","plain[1m]"]}' \
     > "$HOME/.config/ccproteus/profiles/gw/settings.json"
-  out=$(        _ccs_hazard_set gw "" 400000 \
+  out=$(        _ccp_hazard_set gw "" 400000 \
           "$HOME/.config/ccproteus/profiles/gw/settings.json" 2>/dev/null)
   hits=$(print -r -- "$out" | grep -c 'plain')
   [[ "$hits" == 1 ]] || {
@@ -7790,7 +7791,7 @@ test_a_claude_named_routed_model_is_sized_by_its_own_id() {
   local rc=0 out
   local -a penv
   penv=(CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80)
-  out=$(        _ccs_hazard_set gw 1000000 1000000 \
+  out=$(        _ccp_hazard_set gw 1000000 1000000 \
           "$HOME/.config/ccproteus/profiles/gw/settings.json" 2>/dev/null)
   assert_contains "$out" 'claude-mini' \
     'a claude-named model walled under its own 200,000-family trigger is fatal' || rc=1
@@ -7800,7 +7801,7 @@ test_a_claude_named_routed_model_is_sized_by_its_own_id() {
   write_profile_context gw roomy=1000000 claude-ample=200000
   printf '%s\n' '{"availableModels":["roomy","claude-ample"]}' \
     > "$HOME/.config/ccproteus/profiles/gw/settings.json"
-  out=$(        _ccs_hazard_set gw 1000000 1000000 \
+  out=$(        _ccp_hazard_set gw 1000000 1000000 \
           "$HOME/.config/ccproteus/profiles/gw/settings.json" 2>/dev/null)
   assert_not_contains "$out" 'claude-ample' \
     'a claude-named model above its own trigger is safe and must not be named' || rc=1
@@ -7829,13 +7830,13 @@ test_the_advisory_and_the_withhold_share_one_budget() {
 
   local rc=0
   CCPROTEUS_WITHHOLD_FATAL=1 \
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
 
   # Nothing is fatal at a ~224k trigger, so the model must survive in the picker
   # AND no advisory may name it. Either one alone would be the bug.
   local offered
-  offered=$(_ccs_offered_models "$actual")
+  offered=$(_ccp_offered_models "$actual")
   assert_contains "$offered" 'narrow' \
     'a model above the effective trigger must not be withheld' || rc=1
   assert_not_contains "$actual" 'narrow limit' \
@@ -7850,7 +7851,7 @@ test_the_advisory_and_the_withhold_share_one_budget() {
 # instead. The hazard set read the launch env alone, so it computed the
 # no-percentage trigger `usable - 13000` -- a larger number than the engine's own --
 # and named every model between the two. The set feeds the advisory AND
-# _ccs_withhold_fatal_switches, so under CCPROTEUS_WITHHOLD_FATAL=1 a model the
+# _ccp_withhold_fatal_switches, so under CCPROTEUS_WITHHOLD_FATAL=1 a model the
 # session can in fact switch to was silently dropped from the picker.
 test_a_layer_percentage_sizes_the_hazard_set() {
   local test_home
@@ -7878,7 +7879,7 @@ test_a_layer_percentage_sizes_the_hazard_set() {
   # 800000 wall of a model the engine in fact compacts long before reaching.
   local -a penv
   local hazards
-  hazards=$(_ccs_hazard_set gw "" 1000000 '' 2>/dev/null)
+  hazards=$(_ccp_hazard_set gw "" 1000000 '' 2>/dev/null)
   assert_contains "$hazards" '686000' \
     'the trigger must come from the percentage the layers set, not from the launch env alone' || rc=1
   assert_not_contains "$hazards" 'big-model' \
@@ -7890,7 +7891,7 @@ test_a_layer_percentage_sizes_the_hazard_set() {
   # the layer trigger survives the overlay's availableModels, and the one below it
   # still goes.
   CCPROTEUS_WITHHOLD_FATAL=1 \
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
   # The premise, at the launch: the layers set the percentage, so nothing is injected
   # into the engine's environment and the layer value is all the engine has.
@@ -7899,7 +7900,7 @@ test_a_layer_percentage_sizes_the_hazard_set() {
   assert_contains "$actual" 'compacts at 686k' \
     'the launch must warn with the layer trigger too' || rc=1
   local offered
-  offered=$(_ccs_offered_models "$actual")
+  offered=$(_ccp_offered_models "$actual")
   assert_contains "$offered" 'big-model' \
     'a model above the layer trigger must not be withheld from the picker' || rc=1
   assert_not_contains "$offered" 'small-model' \
@@ -7925,7 +7926,7 @@ test_the_reported_trigger_is_the_engines_own_arithmetic() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
 
   assert_not_contains "$actual" 'midsize limit' \
@@ -7961,11 +7962,11 @@ test_no_launch_advisory_relies_on_pre_exec_stderr() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0 err
-  err=$(        _ccs_launch -a spread prompt 2>&1 >/dev/null)
+  err=$(        _ccp_launch -a spread prompt 2>&1 >/dev/null)
   assert_not_contains "$err" 'compacts at' \
     'the switch warning must not go where the TUI paints over it' || rc=1
 
-  err=$(        _ccs_launch -a blank prompt 2>&1 >/dev/null)
+  err=$(        _ccp_launch -a blank prompt 2>&1 >/dev/null)
   assert_not_contains "$err" 'Context limit unknown' \
     'the unprobed-model line must not go where the TUI paints over it' || rc=1
   rm -rf "$test_home"
@@ -7989,7 +7990,7 @@ test_the_unprobed_model_advisory_persists_in_the_tui() {
 
   local _CCPROTEUS_LOG="$HOME/ccproteus.log"
   local rc=0
-    _ccs_launch -a blank prompt >/dev/null 2>&1 || {
+    _ccp_launch -a blank prompt >/dev/null 2>&1 || {
     rm -rf "$test_home"; return 1
   }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
@@ -8024,7 +8025,7 @@ test_the_switch_warning_caps_the_names_it_lists() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_launch -a wide prompt >/dev/null 2>&1 || {
+    _ccp_launch -a wide prompt >/dev/null 2>&1 || {
     rm -rf "$test_home"
     return 1
   }
@@ -8048,7 +8049,7 @@ test_the_switch_warning_caps_the_names_it_lists() {
 
 # One advisory, two paths. The launch reads the hazard warning out of the
 # diagnostics interpreter as a `hazard` record beside the answers it already
-# brings back (#433); `_ccs_switch_hazard_warn` is still there for a launch that
+# brings back (#433); `_ccp_switch_hazard_warn` is still there for a launch that
 # gets no record, computing the same rows the way it always did. Neither path may
 # change what the person sees, so this launches the same profile three times: the
 # record it computed, the same launch with the record dropped out of the answers
@@ -8074,7 +8075,7 @@ test_the_launch_hazard_advisory_matches_switch_hazard_warn() {
   local advise_from_record advise_withheld advise_from_fallback
 
   rm -f "$CCPROTEUS_TEST_LOG"
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1 }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1 }
   advise_from_record=$(grep -m1 '^ADVISE=' "$CCPROTEUS_TEST_LOG" || true)
   advise_from_record=${advise_from_record#ADVISE=}
   assert_contains "$advise_from_record" 'lower model limits: kimi-k3 limit 40k' \
@@ -8082,20 +8083,20 @@ test_the_launch_hazard_advisory_matches_switch_hazard_warn() {
 
   rm -f "$CCPROTEUS_TEST_LOG"
   CCPROTEUS_WITHHOLD_FATAL=1 \
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1 }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1 }
   advise_withheld=$(grep -m1 '^ADVISE=' "$CCPROTEUS_TEST_LOG" || true)
   advise_withheld=${advise_withheld#ADVISE=}
   assert_contains "$advise_withheld" 'hidden from /model: kimi-k3 limit 40k' \
     'withheld choices must be reported in their own wording' || rc=1
 
   # The fallback, forced: the record the diagnostics just computed is dropped
-  # before the launch reads it, so `_ccs_launch` takes its `else` branch and
-  # `_ccs_switch_hazard_warn` renders the warning instead. Every other answer the
+  # before the launch reads it, so `_ccp_launch` takes its `else` branch and
+  # `_ccp_switch_hazard_warn` renders the warning instead. Every other answer the
   # diagnostics gives passes through untouched, so which path speaks is the only
   # difference between this launch and the one above.
-  functions[_ccs_diag_without_hazard]="${functions[_ccs_launch_diagnostics]}"
-  _ccs_launch_diagnostics() {
-    local -a records=("${(@0)$(_ccs_diag_without_hazard "$@")}")
+  functions[_ccp_diag_without_hazard]="${functions[_ccp_launch_diagnostics]}"
+  _ccp_launch_diagnostics() {
+    local -a records=("${(@0)$(_ccp_diag_without_hazard "$@")}")
     local record
     for record in "${records[@]}"; do
       [[ -n "$record" ]] || continue
@@ -8107,7 +8108,7 @@ test_the_launch_hazard_advisory_matches_switch_hazard_warn() {
     done
   }
   rm -f "$CCPROTEUS_TEST_LOG" "$HOME/hazard-record-dropped"
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1 }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1 }
   advise_from_fallback=$(grep -m1 '^ADVISE=' "$CCPROTEUS_TEST_LOG" || true)
   advise_from_fallback=${advise_from_fallback#ADVISE=}
   # Without this the third launch proves nothing: a stub that never saw a hazard
@@ -8158,7 +8159,7 @@ test_a_malformed_layer_percentage_leaves_the_injected_one_in_charge() {
   # trigger is 784000. Reading the layer alone yields 967000 instead -- above the
   # 800000 wall of a model the engine in fact compacts long before reaching.
   CCPROTEUS_WITHHOLD_FATAL=1 \
-    _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
   # The premise, at the launch: the layer value does not parse, so the engine gets
   # the injected fleet percentage and nothing else.
@@ -8167,7 +8168,7 @@ test_a_malformed_layer_percentage_leaves_the_injected_one_in_charge() {
   assert_contains "$actual" 'compacts at 784k' \
     'the launch must warn with the injected trigger, not the malformed layer it replaced' || rc=1
   local offered
-  offered=$(_ccs_offered_models "$actual")
+  offered=$(_ccp_offered_models "$actual")
   assert_contains "$offered" 'big-model' \
     'a model wall above the injected trigger must not be withheld from the picker' || rc=1
   assert_not_contains "$offered" 'small-model' \
@@ -8197,7 +8198,7 @@ test_no_switch_warning_when_the_whole_route_clears_the_trigger() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0 err
-  err=$(        _ccs_launch -a safe prompt 2>&1 >/dev/null) || {
+  err=$(        _ccp_launch -a safe prompt 2>&1 >/dev/null) || {
     rm -rf "$test_home"
     return 1
   }
@@ -8223,7 +8224,7 @@ test_launch_is_silent_when_every_model_has_headroom() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0 err
-  err=$(        _ccs_launch -a roomy prompt 2>&1 >/dev/null) || { rm -rf "$test_home"; return 1; }
+  err=$(        _ccp_launch -a roomy prompt 2>&1 >/dev/null) || { rm -rf "$test_home"; return 1; }
 
   # A check that cries wolf gets ignored, which is worse than no check at all.
   assert_not_contains "$err" 'refuse' \
@@ -8260,7 +8261,7 @@ test_launch_projects_picker_rows_with_our_own_tag() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  _ccs_project_picker gw http://gw.invalid sk_t
+  _ccp_project_picker gw http://gw.invalid sk_t
 
   local state="$(<"$HOME/.config/ccproteus/profiles/gw/.claude.json")"
   # Claude Code reads value/label/description from this cache verbatim, which is the
@@ -8318,7 +8319,7 @@ test_projected_row_carries_the_profiles_own_tag() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_project_picker gw http://gw.invalid sk_t "" "Alt Gateway"
+    _ccp_project_picker gw http://gw.invalid sk_t "" "Alt Gateway"
 
   local state="$(<"$HOME/.config/ccproteus/profiles/gw/.claude.json")"
   assert_contains "$state" '"description": "Alt Gateway"' \
@@ -8328,7 +8329,7 @@ test_projected_row_carries_the_profiles_own_tag() {
 
   # An absent tag falls back to the concise built-in, so old callers keep working.
   print -r -- '{}' > "$HOME/.config/ccproteus/profiles/gw/.claude.json"
-    _ccs_project_picker gw http://gw.invalid sk_t
+    _ccp_project_picker gw http://gw.invalid sk_t
   assert_contains "$(<"$HOME/.config/ccproteus/profiles/gw/.claude.json")" '"description": "Gateway"' \
     'an omitted tag must fall back to the built-in default' || rc=1
 
@@ -8352,7 +8353,7 @@ test_projection_leaves_everything_alone_when_the_endpoint_is_down() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  _ccs_project_picker gw http://gw.invalid sk_t
+  _ccp_project_picker gw http://gw.invalid sk_t
 
   # An unreachable endpoint must not empty the picker. Yesterday's rows are still
   # true -- a model list changes far less often than a network does.
@@ -8394,7 +8395,7 @@ test_projection_undisguises_ids_and_labels_every_row_with_the_id() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_project_picker gw http://gw.invalid sk_t
+    _ccp_project_picker gw http://gw.invalid sk_t
   local state="$(<"$HOME/.config/ccproteus/profiles/gw/.claude.json")"
 
   # The label is the bare name -- the statusline shows the live window -- so no ceiling
@@ -8443,7 +8444,7 @@ test_projection_never_drops_the_profiles_own_model() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_project_picker gw http://gw.invalid sk_t gpt-5.6-sol
+    _ccp_project_picker gw http://gw.invalid sk_t gpt-5.6-sol
   local settings="$(<"$HOME/.config/ccproteus/profiles/gw/settings.json")"
 
   assert_contains "$settings" '"gpt-5.6-sol"' \
@@ -8457,7 +8458,7 @@ test_projection_never_drops_the_profiles_own_model() {
 }
 
 # A cross-profile hop does not relaunch on the target's default: the relay hands
-# the next launch `--model <id>` (ccproteus.sh `_ccs_relay_next_args`). When that id
+# the next launch `--model <id>` (ccproteus.sh `_ccp_relay_next_args`). When that id
 # is a `model_map` alias the endpoint never lists it -- the shim is what turns the
 # alias into a model -- so no projected row carries it. An allowlist written from
 # the projected rows alone therefore drops the model the relaunch is about to ask
@@ -8488,7 +8489,7 @@ test_relay_relaunch_keeps_a_mapped_alias_allowed() {
   # a model the hop never chose. The rule lives in the projection, so this pins it
   # there, on the layer the projection reads.
   local rc=0
-  _ccs_project_picker gw http://gw.invalid sk_t '' '' claude-sonnet-5-5 || rc=1
+  _ccp_project_picker gw http://gw.invalid sk_t '' '' claude-sonnet-5-5 || rc=1
   local seeded="$(<"$HOME/.config/ccproteus/profiles/gw/settings.json")"
   assert_contains "$seeded" '"sonnet"' \
     'a pinned family alias keeps its row beside the mapped alias' || rc=1
@@ -8519,9 +8520,9 @@ test_relay_relaunch_keeps_a_mapped_alias_allowed() {
     print -r -- '{}' > "$HOME/.config/ccproteus/profiles/gw/settings.json"
     : > "$CCPROTEUS_TEST_LOG"
 
-    # Exactly the arguments `_ccs_relay_next_args` builds for a hop, and the shape
+    # Exactly the arguments `_ccp_relay_next_args` builds for a hop, and the shape
     # a `--model <id> --resume <session>` launch carries.
-    _ccs_launch -a gw --model "$model" --resume relay-session >/dev/null 2>&1 || {
+    _ccp_launch -a gw --model "$model" --resume relay-session >/dev/null 2>&1 || {
       print -u2 -- "the relaunch on '$model' must start Claude Code"
       rc=1
       continue
@@ -8539,7 +8540,7 @@ test_relay_relaunch_keeps_a_mapped_alias_allowed() {
       continue
     }
     launched="${argv[_mi + 1]}"
-    allowed="$(_ccs_offered_models "$actual")"
+    allowed="$(_ccp_offered_models "$actual")"
     [[ -n "$launched" && -n "$allowed" ]] || {
       print -u2 -- "the relaunch on '$model' must reach Claude Code with a generated model list"
       rc=1
@@ -8575,12 +8576,12 @@ test_relay_relaunch_keeps_a_mapped_alias_allowed() {
   source "$CCPROTEUS_SOURCE"
   : > "$CCPROTEUS_TEST_LOG"
 
-  _ccs_launch -a gw --model sol-alias --resume relay-session >/dev/null 2>&1 || {
+  _ccp_launch -a gw --model sol-alias --resume relay-session >/dev/null 2>&1 || {
     print -u2 -- 'the offline relaunch on a mapped alias must still start Claude Code'
     rc=1
   }
   local offline_allowed
-  offline_allowed="$(_ccs_offered_models "$(<"$CCPROTEUS_TEST_LOG")")"
+  offline_allowed="$(_ccp_offered_models "$(<"$CCPROTEUS_TEST_LOG")")"
   [[ "$offline_allowed" == "sonnet,plain-model,sol-alias" ]] || {
     print -u2 -- "the offline rewrite must keep yesterday's list in order, still apply the exclusion, and add the relaunch's alias: got '$offline_allowed'"
     rc=1
@@ -8619,7 +8620,7 @@ test_projected_rows_use_the_real_model_id() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_project_picker gw http://gw.invalid sk_t gpt-5.6-sol
+    _ccp_project_picker gw http://gw.invalid sk_t gpt-5.6-sol
   local state="$(<"$HOME/.config/ccproteus/profiles/gw/.claude.json")"
   local settings="$(<"$HOME/.config/ccproteus/profiles/gw/settings.json")"
 
@@ -8658,7 +8659,7 @@ test_projection_undisguises_a_stored_model() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_project_picker gw http://gw.invalid sk_t gpt-5.6-sol
+    _ccp_project_picker gw http://gw.invalid sk_t gpt-5.6-sol
   local settings="$(<"$HOME/.config/ccproteus/profiles/gw/settings.json")"
 
   assert_contains "$settings" '"model": "gpt-5.6-sol-xhigh"' \
@@ -8676,7 +8677,7 @@ test_the_picker_offers_a_model_whatever_its_siblings_declare() {
   # the same window plus one declaring nothing is not "flat", so the two survived and
   # the third was dropped for want of a probe. The picker no longer decides a
   # row's existence from a window at all, so the flat question moved entirely to
-  # _ccs_endpoint_window -- where it still matters (a flat default must not become a
+  # _ccp_endpoint_window -- where it still matters (a flat default must not become a
   # session's real budget) and where it stays covered by
   # test_a_flat_endpoint_declaration_yields_to_probe_at_launch and
   # test_a_genuine_shared_window_is_not_mistaken_for_flat.
@@ -8698,7 +8699,7 @@ test_the_picker_offers_a_model_whatever_its_siblings_declare() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0 state
-    _ccs_project_picker gw http://gw.invalid sk_t
+    _ccp_project_picker gw http://gw.invalid sk_t
   state="$(<"$HOME/.config/ccproteus/profiles/gw/.claude.json")"
   assert_contains "$state" '"value": "a"' \
     'a declared model must be offered' || rc=1
@@ -8733,7 +8734,7 @@ test_picker_follows_gateway_chat_capabilities() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0 state
-    _ccs_project_picker gw http://gw.invalid sk_t
+    _ccp_project_picker gw http://gw.invalid sk_t
   state="$(<"$HOME/.config/ccproteus/profiles/gw/.claude.json")"
   assert_contains "$state" '"value": "gpt-5.6-sol"' \
     'a real chat model with this exact capability block must still be offered' || rc=1
@@ -8768,7 +8769,7 @@ test_picker_skips_a_malformed_non_string_model_id() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_project_picker gw http://gw.invalid sk_t
+    _ccp_project_picker gw http://gw.invalid sk_t
   assert_contains "$(<"$HOME/.config/ccproteus/profiles/gw/.claude.json")" '"value": "valid"' \
     'one malformed id must not abort every valid picker row' || rc=1
   rm -rf "$test_home"
@@ -8790,7 +8791,7 @@ test_picker_uses_a_route_scoped_registry_probe() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_project_picker gw http://gw.invalid sk_t
+    _ccp_project_picker gw http://gw.invalid sk_t
   assert_contains "$(<"$HOME/.config/ccproteus/profiles/gw/.claude.json")" '"value": "route-only"' \
     'the picker must use the canonical route-scoped registry probe' || rc=1
   rm -rf "$test_home"
@@ -8812,7 +8813,7 @@ test_picker_uses_a_route_scoped_registry_probe() {
 # on this function exercises only the disguised-model warning.
 # The unsafe warning must use the engine reserve, min(maxOutputTokens, 20000), not a
 # flat 20,000. A pin below the cap makes the engine reserve LESS and trigger HIGHER,
-# which is the direction that hides a fatality -- and _ccs_hazard_set cannot cover the
+# which is the direction that hides a fatality -- and _ccp_hazard_set cannot cover the
 # gap, because it exits when no window is known, which is exactly a first launch with
 # the endpoint down.
 #
@@ -8852,7 +8853,7 @@ test_the_trigger_env_survives_a_delimiter_in_a_value() {
   local p="" o="" n=""
 
   penv=("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=8${tab}0" CLAUDE_CODE_MAX_OUTPUT_TOKENS=9000)
-  _ccs_trigger_env p o n
+  _ccp_trigger_env p o n
   [[ "$o" == 9000 ]] || {
     print -u2 -- "FAIL: the output reserve must not absorb a neighbouring field, got '$o'"
     rc=1
@@ -8866,7 +8867,7 @@ test_the_trigger_env_survives_a_delimiter_in_a_value() {
   penv=(CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80 CLAUDE_CODE_MAX_OUTPUT_TOKENS=8000
         CLAUDE_CODE_DISABLE_1M_CONTEXT=1)
   p="" o="" n=""
-  _ccs_trigger_env p o n
+  _ccp_trigger_env p o n
   [[ "$p" == 80 && "$o" == 8000 && "$n" == 1 ]] || {
     print -u2 -- "FAIL: all three knobs must arrive, got '$p' '$o' '$n'"
     rc=1
@@ -8875,7 +8876,7 @@ test_the_trigger_env_survives_a_delimiter_in_a_value() {
   # A falsy kill switch reads as unset, so the [1m] tag keeps its meaning.
   penv=(CLAUDE_CODE_DISABLE_1M_CONTEXT=0)
   p="" o="" n=""
-  _ccs_trigger_env p o n
+  _ccp_trigger_env p o n
   [[ -z "$n" ]] || {
     print -u2 -- "FAIL: CLAUDE_CODE_DISABLE_1M_CONTEXT=0 must read as unset, got '$n'"
     rc=1
@@ -8897,7 +8898,7 @@ test_the_unsafe_warning_looks_up_a_ceiling_like_its_sibling() {
   print -r -- '{"availableModels":["claude-foo[1m]"]}' \
     > "$HOME/.config/ccproteus/profiles/gw/settings.json"
   write_profile_context gw claude-foo=300000
-  err=$(_ccs_invariant_warn gw "" "" "" 2>&1)
+  err=$(_ccp_invariant_warn gw "" "" "" 2>&1)
   assert_contains "$err" 'claude-foo holds 300000' \
     'a [1m] entry must find its bare registry key' || rc=1
 
@@ -8905,13 +8906,13 @@ test_the_unsafe_warning_looks_up_a_ceiling_like_its_sibling() {
   print -r -- '{"availableModels":["claude-x"]}' \
     > "$HOME/.config/ccproteus/profiles/gw/settings.json"
   write_profile_context gw claude-x=160000
-  err=$(_ccs_invariant_warn gw "" "" "" 2>&1)
+  err=$(_ccp_invariant_warn gw "" "" "" 2>&1)
   assert_contains "$err" 'claude-x holds 160000' \
     'a profile-scoped ceiling must be honoured here as it is elsewhere' || rc=1
 
   # A model above its trigger is still silent, so this cannot pass by naming all.
   write_profile_context gw claude-x=200000
-  err=$(_ccs_invariant_warn gw "" "" "" 2>&1)
+  err=$(_ccp_invariant_warn gw "" "" "" 2>&1)
   assert_not_contains "$err" 'claude-x holds' \
     'a model above the trigger must not be named' || rc=1
 
@@ -8919,7 +8920,7 @@ test_the_unsafe_warning_looks_up_a_ceiling_like_its_sibling() {
   return $rc
 }
 
-# The allowlist above is also the sweep: `_ccs_run_claude` unsets every key on it except the tuning keys (_CCPROTEUS_TUNING_ENV: the shell value passes through unless the profile declares one), so a
+# The allowlist above is also the sweep: `_ccp_run_claude` unsets every key on it except the tuning keys (_CCPROTEUS_TUNING_ENV: the shell value passes through unless the profile declares one), so a
 # profile that omits one gets Claude Code's default rather than whatever this shell
 # happens to export. That is the invariant an earlier permitted-but-never-cleared split
 # broke, so pin it BEHAVIOURALLY -- an earlier version asserted on the source text and
@@ -8962,7 +8963,7 @@ test_the_launch_sweep_clears_every_allowlisted_env_key() {
     for k in "${_CCPROTEUS_PROFILE_ENV[@]}"; do
       export "$k=ambient-leak"
     done
-    _ccs_run_claude --
+    _ccp_run_claude --
   )
 
   for k in "${_CCPROTEUS_PROFILE_ENV[@]}"; do
@@ -9026,7 +9027,7 @@ test_the_kill_switch_is_settable_and_reads_like_the_engine() {
   for v in 1 true yes on TRUE YES 'On' ' on ' 'yes '; do
     p="" o="" n=""
     penv=("CLAUDE_CODE_DISABLE_1M_CONTEXT=$v")
-    _ccs_trigger_env p o n
+    _ccp_trigger_env p o n
     [[ "$n" == 1 ]] || {
       print -u2 -- "FAIL: '$v' must read as set, got '$n'"
       rc=1
@@ -9041,7 +9042,7 @@ test_the_kill_switch_is_settable_and_reads_like_the_engine() {
   for v in "${feff}on" "${feff}yes" "${feff}1"; do
     p="" o="" n=""
     penv=("CLAUDE_CODE_DISABLE_1M_CONTEXT=$v")
-    _ccs_trigger_env p o n
+    _ccp_trigger_env p o n
     [[ "$n" == 1 ]] || {
       print -u2 -- "FAIL: a FEFF-padded true value must read as set, got '$n'"
       rc=1
@@ -9064,7 +9065,7 @@ test_the_kill_switch_is_settable_and_reads_like_the_engine() {
     # LC_ALL=C deliberately: a bracket class matches BYTES under a C charmap, so the
     # U+3080 case only distinguishes whole-character trimming from a class HERE. Run in
     # the ambient locale it passes either way, which is how this nearly shipped unfixed.
-    LC_ALL=C _ccs_trigger_env p o n
+    LC_ALL=C _ccp_trigger_env p o n
     [[ -z "$n" ]] || {
       print -u2 -- "FAIL: '$v' must read as unset, got '$n'"
       rc=1
@@ -9092,7 +9093,7 @@ test_the_one_million_tag_counts_anywhere_in_the_id() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0 err
-  err=$(_ccs_invariant_warn gw "" "" "" 2>&1)
+  err=$(_ccp_invariant_warn gw "" "" "" 2>&1)
   assert_contains "$err" 'claude-x holds 300000' \
     'a [1m] tag anywhere in the id means 1,000,000, as the engine regex is unanchored' || rc=1
 
@@ -9105,7 +9106,7 @@ test_the_one_million_tag_counts_anywhere_in_the_id() {
   write_profile_context gw claude-x=300000 claude-x-eu=300000
   print -r -- '{"availableModels":["claude-x-eu"]}' \
     > "$HOME/.config/ccproteus/profiles/gw/settings.json"
-  err=$(_ccs_invariant_warn gw "" "" "" 2>&1)
+  err=$(_ccp_invariant_warn gw "" "" "" 2>&1)
   assert_not_contains "$err" 'holds 300000' \
     'an untagged id keeps its 200,000 family ceiling and stays safe' || rc=1
 
@@ -9125,12 +9126,12 @@ test_the_one_million_kill_switch_lowers_the_ceiling() {
 
   local rc=0 err
   # Unset: the tag means 1,000,000 and the model is fatal.
-  err=$(_ccs_invariant_warn gw 80 "" "" 2>&1)
+  err=$(_ccp_invariant_warn gw 80 "" "" 2>&1)
   assert_contains "$err" 'claude-foo holds 300000' \
     'without the kill switch a [1m] id is sized at 1,000,000' || rc=1
 
   # Set: the tag means nothing, so the model is safe and must not be named.
-  err=$(_ccs_invariant_warn gw 80 "" 1 2>&1)
+  err=$(_ccp_invariant_warn gw 80 "" 1 2>&1)
   assert_not_contains "$err" 'claude-foo holds' \
     'with the kill switch set a [1m] id falls back to its family default' || rc=1
 
@@ -9149,12 +9150,12 @@ test_the_unsafe_warning_uses_the_engine_output_reserve() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0 err
-  err=$(_ccs_invariant_warn gw "" 8000 2>&1)
+  err=$(_ccp_invariant_warn gw "" 8000 2>&1)
   assert_contains "$err" 'claude-x holds 170000' \
     'a small output pin raises the trigger, and the model above it is fatal' || rc=1
 
   # Without the pin the same model is safe, so this cannot pass by naming everything.
-  err=$(_ccs_invariant_warn gw "" "" 2>&1)
+  err=$(_ccp_invariant_warn gw "" "" 2>&1)
   assert_not_contains "$err" 'claude-x holds' \
     'at the default reserve the same model is safe and must not be named' || rc=1
 
@@ -9174,14 +9175,14 @@ test_the_unsafe_warning_uses_the_engine_trigger() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0 err
-  err=$(_ccs_invariant_warn gw 80 2>&1)
+  err=$(_ccp_invariant_warn gw 80 2>&1)
   assert_not_contains "$err" 'claude-small holds' \
     'a model above the engine trigger is safe and must not be named' || rc=1
 
   # And a model genuinely BELOW the engine trigger is still named, so this test
   # cannot pass by the warning simply having gone silent.
   write_profile_context gw claude-small=100000
-  err=$(_ccs_invariant_warn gw 80 2>&1)
+  err=$(_ccp_invariant_warn gw 80 2>&1)
   assert_contains "$err" 'claude-small holds 100000' \
     'a model below the engine trigger must still be named' || rc=1
 
@@ -9218,14 +9219,14 @@ test_the_unsafe_warning_uses_a_layer_only_percentage() {
   local rc=0 err
   # The launch's shape when the layers hold the value: the env injects nothing, so
   # the percentage reading is empty and the key is absent from the launch env.
-  err=$(_ccs_invariant_warn gw "" "" "" "" 0 2>&1)
+  err=$(_ccp_invariant_warn gw "" "" "" "" 0 2>&1)
   assert_not_contains "$err" 'claude-small holds' \
     'a model above the layer trigger is safe and must not be named' || rc=1
 
   # A model genuinely BELOW the layer trigger is still named, so this test cannot
   # pass by the warning having gone silent.
   write_profile_context gw claude-small=100000
-  err=$(_ccs_invariant_warn gw "" "" "" "" 0 2>&1)
+  err=$(_ccp_invariant_warn gw "" "" "" "" 0 2>&1)
   assert_contains "$err" 'claude-small holds 100000' \
     'a model below the layer trigger must still be named' || rc=1
 
@@ -9248,7 +9249,7 @@ test_launch_warns_about_a_hand_set_disguised_model() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0 err
-  err=$(_ccs_invariant_warn gw 2>&1)
+  err=$(_ccp_invariant_warn gw 2>&1)
   assert_contains "$err" '200,000' \
     'a disguised session model must be reported with what it costs' || rc=1
   assert_contains "$err" 'gpt-5.6-sol' \
@@ -9281,7 +9282,7 @@ test_projection_omits_models_that_cannot_serve_a_session() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_project_picker gw http://gw.invalid sk_t gpt-5.6-sol
+    _ccp_project_picker gw http://gw.invalid sk_t gpt-5.6-sol
   local state="$(<"$HOME/.config/ccproteus/profiles/gw/.claude.json")"
 
   assert_not_contains "$state" 'Image' \
@@ -9293,7 +9294,7 @@ test_projection_omits_models_that_cannot_serve_a_session() {
 }
 
 test_setup_dir_shares_output_styles_with_canonical() {
-  # Regression guard: every read-only content dir in `_ccs_setup_dir`'s shared[]
+  # Regression guard: every read-only content dir in `_ccp_setup_dir`'s shared[]
   # set must become a symlink into ~/.claude so behaviour does not fork per
   # profile. output-styles was omitted from that set, so the output style never
   # went global across profiles — this asserts it (and its siblings) are shared.
@@ -9311,7 +9312,7 @@ test_setup_dir_shares_output_styles_with_canonical() {
 
   source "$CCPROTEUS_SOURCE"
   typeset -gA _ccp=(type sub)
-  _ccs_setup_dir_unlocked gw || {
+  _ccp_setup_dir_unlocked gw || {
     unset _ccp
     print -u2 -- 'setup_dir must provision the profile'
     rm -rf "$test_home"; return 1
@@ -9350,7 +9351,7 @@ test_setup_dir_removes_a_stale_ccproteus_statusline() {
 
   source "$CCPROTEUS_SOURCE"
   typeset -gA _ccp=(type sub)
-  _ccs_setup_dir_unlocked gw || {
+  _ccp_setup_dir_unlocked gw || {
     unset _ccp
     print -u2 -- 'setup_dir must provision the profile'
     rm -rf "$test_home"; return 1
@@ -9399,7 +9400,7 @@ test_cleanup_keeps_a_user_bar_whose_path_merely_collides() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  _ccs_unwire_statusline "$HOME/.config/ccproteus/profiles/gw"
+  _ccp_unwire_statusline "$HOME/.config/ccproteus/profiles/gw"
 
   local got
   got=$(python3 -c '
@@ -9431,7 +9432,7 @@ test_cleanup_removes_the_statusline_ccproteus_itself_wired() {
     mkdir -p "$HOME/.config/ccproteus/profiles/gw"
     print -r -- "{\"statusLine\":{\"type\":\"command\",\"command\":\"$dir/statusline\"},\"model\":\"kept\"}" \
       > "$HOME/.config/ccproteus/profiles/gw/settings.json"
-    _ccs_unwire_statusline "$HOME/.config/ccproteus/profiles/gw"
+    _ccp_unwire_statusline "$HOME/.config/ccproteus/profiles/gw"
     local got
     got=$(python3 -c '
 import json, sys
@@ -9463,7 +9464,7 @@ test_setup_dir_never_touches_a_users_own_statusline() {
 
   source "$CCPROTEUS_SOURCE"
   typeset -gA _ccp=(type sub)
-  _ccs_setup_dir_unlocked gw || {
+  _ccp_setup_dir_unlocked gw || {
     unset _ccp
     print -u2 -- 'setup_dir must provision the profile'
     rm -rf "$test_home"; return 1
@@ -9500,7 +9501,7 @@ test_no_statusline_machinery_ships() {
     print -u2 -- 'ccproteus must expose no `statusline` subcommand'
     rc=1
   fi
-  if grep -q '_ccs_wire_statusline' "${CCPROTEUS_LIBRARY[@]}"; then
+  if grep -q '_ccp_wire_statusline' "${CCPROTEUS_LIBRARY[@]}"; then
     print -u2 -- 'provisioning must not wire a statusline'
     rc=1
   fi
@@ -9523,10 +9524,10 @@ test_setup_dir_is_idempotent_on_settings() {
 
   source "$CCPROTEUS_SOURCE"
   typeset -gA _ccp=(type sub)
-  _ccs_setup_dir_unlocked gw >/dev/null 2>&1
+  _ccp_setup_dir_unlocked gw >/dev/null 2>&1
   local first
   first=$(cat "$HOME/.config/ccproteus/profiles/gw/settings.json" 2>/dev/null)
-  _ccs_setup_dir_unlocked gw >/dev/null 2>&1
+  _ccp_setup_dir_unlocked gw >/dev/null 2>&1
   local second
   second=$(cat "$HOME/.config/ccproteus/profiles/gw/settings.json" 2>/dev/null)
   unset _ccp
@@ -9552,7 +9553,7 @@ test_setup_dir_links_the_harness_even_before_content_exists() {
     > "$HOME/.config/ccproteus/gw.conf"
   source "$CCPROTEUS_SOURCE"
   typeset -gA _ccp=(type sub)
-  _ccs_setup_dir_unlocked gw || {
+  _ccp_setup_dir_unlocked gw || {
     unset _ccp; print -u2 -- 'setup_dir must provision the profile'
     rm -rf "$test_home"; return 1
   }
@@ -9586,7 +9587,7 @@ test_late_harness_files_heal_on_next_setup() {
     > "$HOME/.config/ccproteus/gw.conf"
   source "$CCPROTEUS_SOURCE"
   typeset -gA _ccp=(type apikey)
-  _ccs_setup_dir_unlocked gw || { unset _ccp; rm -rf "$test_home"; return 1 }
+  _ccp_setup_dir_unlocked gw || { unset _ccp; rm -rf "$test_home"; return 1 }
   unset _ccp
 
   local rc=0
@@ -9596,7 +9597,7 @@ test_late_harness_files_heal_on_next_setup() {
   }
   print 'shared memory' > "$HOME/.claude/CLAUDE.md"
   typeset -gA _ccp=(type apikey)
-  _ccs_setup_dir gw || { unset _ccp; rm -rf "$test_home"; return 1 }
+  _ccp_setup_dir gw || { unset _ccp; rm -rf "$test_home"; return 1 }
   unset _ccp
   [[ -L "$HOME/.config/ccproteus/profiles/gw/CLAUDE.md" && \
      "$(<"$HOME/.config/ccproteus/profiles/gw/CLAUDE.md")" == 'shared memory' ]] \
@@ -9623,7 +9624,7 @@ test_profile_local_harness_content_survives_an_upgrade() {
   source "$CCPROTEUS_SOURCE"
   typeset -gA _ccp=(type sub)
   local rc=0 err
-  err=$(_ccs_setup_dir_unlocked gw 2>&1) \
+  err=$(_ccp_setup_dir_unlocked gw 2>&1) \
     && { print -u2 -- 'a skills collision must refuse, not merge'; rc=1 }
   unset _ccp
   [[ $err == *'nothing moved'* ]] \
@@ -9643,10 +9644,10 @@ test_profile_local_harness_content_survives_an_upgrade() {
 fake_context_refresh() {
   printf '%s\n' '#!/bin/sh' \
     'printf "%s\\n" "$*" >> "$HOME/refresh.direct"' \
-    'exit 1' > "$CCPROTEUS_LIB_DIR/refresh-model-registry"
-  chmod +x "$CCPROTEUS_LIB_DIR/refresh-model-registry"
-  _ccs_spawn_bg_logged() { print -r -- "$*" >> "$HOME/background.args"; }
-  _ccs_endpoint_window() { print called >> "$HOME/context.endpoint"; return 1; }
+    'exit 1' > "$CCPROTEUS_LIB_DIR/../libexec/refresh-model-registry"
+  chmod +x "$CCPROTEUS_LIB_DIR/../libexec/refresh-model-registry"
+  _ccp_spawn_bg_logged() { print -r -- "$*" >> "$HOME/background.args"; }
+  _ccp_endpoint_window() { print called >> "$HOME/context.endpoint"; return 1; }
 }
 
 test_add_context_refresh_is_background_and_declared_only() {
@@ -9677,7 +9678,7 @@ test_launch_resolves_scoped_registry_globs() {
   source "$CCPROTEUS_SOURCE"
   fake_context_refresh
   local rc=0
-  _ccs_launch -a gw prompt >/dev/null 2>&1 || rc=1
+  _ccp_launch -a gw prompt >/dev/null 2>&1 || rc=1
   assert_contains "$(<"$CCPROTEUS_TEST_LOG")" 'MAX_CONTEXT=333333' \
     'launch must use canonical scoped wildcard registry matching' || rc=1
   assert_not_contains "$(<"$HOME/background.args")" 'refresh-model-registry' \
@@ -9695,11 +9696,11 @@ test_context_refresh_does_not_wait_for_metadata() {
   # network traffic. Its completion belongs to the log, never to the caller.
   printf '%s\n' '#!/usr/bin/env python3' 'import time' \
     'time.sleep(2)' 'print("metadata complete", flush=True)' \
-    > "$CCPROTEUS_LIB_DIR/refresh-model-registry"
-  chmod +x "$CCPROTEUS_LIB_DIR/refresh-model-registry"
+    > "$CCPROTEUS_LIB_DIR/../libexec/refresh-model-registry"
+  chmod +x "$CCPROTEUS_LIB_DIR/../libexec/refresh-model-registry"
   local _CCPROTEUS_LOG="$HOME/refresh.log"
   local rc=0
-  _ccs_probe_nudge gw
+  _ccp_probe_nudge gw
   # The helper sleeps 2 s before it says anything, so a completion line in the
   # log at this instant would mean the caller waited for it. Read the event, not
   # the clock: how long the return took is the scheduler's business, and a
@@ -9732,7 +9733,7 @@ test_launch_context_lookup_is_local_before_background_refresh() {
   source "$CCPROTEUS_SOURCE"
   fake_context_refresh
   local rc=0 actual scheduled
-  _ccs_launch -a gw prompt >/dev/null 2>&1 || rc=1
+  _ccp_launch -a gw prompt >/dev/null 2>&1 || rc=1
   actual="$(<"$CCPROTEUS_TEST_LOG")"
   scheduled="$(<"$HOME/background.args")"
   assert_not_contains "$actual" 'Context limit unknown for opaque-model' \
@@ -9749,7 +9750,7 @@ test_launch_context_lookup_is_local_before_background_refresh() {
     > "$HOME/.config/ccproteus/profiles/gw/cache/context-window"
   : > "$HOME/background.args"
   : > "$CCPROTEUS_TEST_LOG"
-  _ccs_launch -a gw prompt >/dev/null 2>&1 || rc=1
+  _ccp_launch -a gw prompt >/dev/null 2>&1 || rc=1
   actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" 'MAX_CONTEXT=372000' 'a cached model keeps its known ceiling' || rc=1
   assert_contains "$actual" '"autoCompactWindow":372000' 'the cache supplies the native budget' || rc=1
@@ -9760,7 +9761,7 @@ test_launch_context_lookup_is_local_before_background_refresh() {
   write_profile_context gw opaque-model=512000
   : > "$HOME/background.args"
   : > "$CCPROTEUS_TEST_LOG"
-  _ccs_launch -a gw prompt >/dev/null 2>&1 || rc=1
+  _ccp_launch -a gw prompt >/dev/null 2>&1 || rc=1
   assert_contains "$(<"$CCPROTEUS_TEST_LOG")" 'MAX_CONTEXT=512000' \
     'registry state must precede the remembered launch cache' || rc=1
   assert_not_contains "$(<"$HOME/background.args")" 'refresh-model-registry' \
@@ -9776,8 +9777,8 @@ test_probe_dispatch_preserves_explicit_inference_arguments() {
   setup_home "$test_home"
   source "$CCPROTEUS_SOURCE"
   printf '%s\n' '#!/bin/sh' 'printf "%s\\n" "$@" > "$HOME/probe.args"' \
-    > "$CCPROTEUS_LIB_DIR/refresh-model-registry"
-  chmod +x "$CCPROTEUS_LIB_DIR/refresh-model-registry"
+    > "$CCPROTEUS_LIB_DIR/../libexec/refresh-model-registry"
+  chmod +x "$CCPROTEUS_LIB_DIR/../libexec/refresh-model-registry"
   local out rc=0
   out=$(ccproteus probe --profile gw --model opaque-model --allow-inference --deadline 30)
   [[ "$(<"$HOME/probe.args")" == $'--profile\ngw\n--model\nopaque-model\n--allow-inference\n--deadline\n30' ]] || {
@@ -9860,11 +9861,11 @@ test_an_unprobed_launch_is_not_given_a_siblings_ceiling() {
 
   local rc=0
   # The suite's own shell may export CLAUDE_CODE_MAX_CONTEXT_TOKENS, which is rung 1 of
-  # model-window's precedence and would answer "probed" for every model. _ccs_launch
+  # model-window's precedence and would answer "probed" for every model. _ccp_launch
   # already keeps the ambient value out of the CHILD's env, but the clamp consults the
   # resolver in THIS shell, so it is unset here too.
     command env -u CLAUDE_CODE_MAX_CONTEXT_TOKENS zsh -c \
-      "source '$CCPROTEUS_SOURCE' >/dev/null 2>&1; _ccs_launch -a mix prompt" \
+      "source '$CCPROTEUS_SOURCE' >/dev/null 2>&1; _ccp_launch -a mix prompt" \
       >/dev/null 2>&1 || rc=1
   # The fake claude records the env it was handed as MAX_CONTEXT=<value>.
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
@@ -9901,21 +9902,21 @@ test_the_launch_window_reports_every_window_fact() {
   local -a f
   # A probed model: its own window and source, no fallback budget, the sibling
   # maximum as the ceiling, nothing saved.
-  f=("${(@ps:\t:)$(_ccs_launch_window mix manual-model)}")
+  f=("${(@ps:\t:)$(_ccp_launch_window mix manual-model)}")
   [[ ${#f} == 6 && "${(j:|:)f}" == '400000|conf-manual||manual-model|1048576|' ]] ||
     { print -u2 "probed model: ${(j:|:)f}"; rc=1 }
   # The caller's own ceiling export must not come back as the model's window:
   # resolve() pins to CLAUDE_CODE_MAX_CONTEXT_TOKENS, so the run strips it.
-  f=("${(@ps:\t:)$(CLAUDE_CODE_MAX_CONTEXT_TOKENS=999999 _ccs_launch_window mix manual-model)}")
+  f=("${(@ps:\t:)$(CLAUDE_CODE_MAX_CONTEXT_TOKENS=999999 _ccp_launch_window mix manual-model)}")
   [[ ${#f} == 6 && "${(j:|:)f}" == '400000|conf-manual||manual-model|1048576|' ]] ||
     { print -u2 "env-pinned: ${(j:|:)f}"; rc=1 }
   # An unprobed model: no window of its own, the resolver's conservative budget.
-  f=("${(@ps:\t:)$(_ccs_launch_window mix unprobed-model)}")
+  f=("${(@ps:\t:)$(_ccp_launch_window mix unprobed-model)}")
   [[ ${#f} == 6 && "${(j:|:)f}" == '|default|128000|unprobed-model|1048576|' ]] ||
     { print -u2 "unprobed model: ${(j:|:)f}"; rc=1 }
   # No model at all -- a routed launch still needs its ceiling, so the run
   # happens anyway and only the record is empty.
-  f=("${(@ps:\t:)$(_ccs_launch_window mix "")}")
+  f=("${(@ps:\t:)$(_ccp_launch_window mix "")}")
   [[ ${#f} == 6 && "${(j:|:)f}" == '||||1048576|' ]] ||
     { print -u2 "no model: ${(j:|:)f}"; rc=1 }
   # The profile layer narrows the route: its own availableModels is the last
@@ -9923,7 +9924,7 @@ test_the_launch_window_reports_every_window_fact() {
   # from the removed sibling to the next model the route serves.
   print -r -- '{"availableModels":["manual-model","unprobed-model"]}' \
     > "$HOME/.config/ccproteus/profiles/mix/settings.json"
-  f=("${(@ps:\t:)$(_ccs_launch_window mix manual-model)}")
+  f=("${(@ps:\t:)$(_ccp_launch_window mix manual-model)}")
   [[ ${#f} == 6 && "${(j:|:)f}" == '400000|conf-manual||manual-model|400000|' ]] ||
     { print -u2 "narrowed route: ${(j:|:)f}"; rc=1 }
   # The saved budget: only a value the engine's schema keeps counts -- an
@@ -9935,13 +9936,13 @@ test_the_launch_window_reports_every_window_fact() {
     esac
     print -r -- "{\"autoCompactWindow\":$v}" \
       > "$HOME/.config/ccproteus/profiles/mix/settings.json"
-    f=("${(@ps:\t:)$(_ccs_launch_window mix manual-model)}")
+    f=("${(@ps:\t:)$(_ccp_launch_window mix manual-model)}")
     [[ ${#f} == 6 && "${f[6]}" == "$want" ]] ||
       { print -u2 "saved $v: budget '${f[6]:-}', expected '${want:-}'"; rc=1 }
   done
   # Nothing saved: the sixth field is empty and every other fact survives.
   rm -f "$HOME/.config/ccproteus/profiles/mix/settings.json"
-  f=("${(@ps:\t:)$(_ccs_launch_window mix manual-model)}")
+  f=("${(@ps:\t:)$(_ccp_launch_window mix manual-model)}")
   [[ ${#f} == 6 && "${(j:|:)f}" == '400000|conf-manual||manual-model|1048576|' ]] ||
     { print -u2 "no saved budget: ${(j:|:)f}"; rc=1 }
 
@@ -9967,20 +9968,20 @@ test_a_broken_settings_compose_does_not_take_the_window_facts_with_it() {
   print -r -- '{"availableModels":["manual-model","big-sibling","unprobed-model"]}' \
     > "$HOME/.claude/settings.json"
   printf '%s\n' '#!/bin/sh' 'echo "settings-compose: gone" >&2' 'exit 1' \
-    > "$HOME/.config/ccproteus/settings-compose"
-  chmod +x "$HOME/.config/ccproteus/settings-compose"
+    > "$HOME/.config/ccproteus/libexec/settings-compose"
+  chmod +x "$HOME/.config/ccproteus/libexec/settings-compose"
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
   local -a f
   # The resolver's record survives -- window, source, send id -- while the two
   # facts that read settings pay for the broken loader with empty strings.
-  f=("${(@ps:\t:)$(_ccs_launch_window mix manual-model)}")
+  f=("${(@ps:\t:)$(_ccp_launch_window mix manual-model)}")
   [[ ${#f} == 6 && "${(j:|:)f}" == '400000|conf-manual||manual-model||' ]] ||
     { print -u2 "probed model: ${(j:|:)f}"; rc=1 }
   # The unprobed fallback budget rides the same resolver record and must
   # survive the same failure.
-  f=("${(@ps:\t:)$(_ccs_launch_window mix unprobed-model)}")
+  f=("${(@ps:\t:)$(_ccp_launch_window mix unprobed-model)}")
   [[ ${#f} == 6 && "${(j:|:)f}" == '|default|128000|unprobed-model||' ]] ||
     { print -u2 "unprobed model: ${(j:|:)f}"; rc=1 }
 
@@ -10008,7 +10009,7 @@ test_a_settings_model_still_sizes_the_budget() {
 
   local _CCPROTEUS_LOG="$HOME/ccproteus.log"
   local rc=0
-  _ccs_launch -a seeded prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1 }
+  _ccp_launch -a seeded prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1 }
   assert_contains "$(<"$_CCPROTEUS_LOG")" 'window derived profile=seeded model=plain-model' \
     'the settings.json model must still size the budget' || rc=1
   rm -rf "$test_home"
@@ -10038,14 +10039,14 @@ test_launch_hints_when_a_routed_window_is_unprobed() {
   # Claude Code paints its alternate screen over anything written before exec,
   # so a hint printed there is visible for a fraction of a second.
   local rc=0
-  _ccs_launch -a opq prompt >/dev/null 2>&1 || rc=1
+  _ccp_launch -a opq prompt >/dev/null 2>&1 || rc=1
   [[ "$(<"$CCPROTEUS_TEST_LOG")" == *"ccproteus probe"* ]] \
     && { print -u2 -- 'an unsized routed launch must not hand the person a command'; rc=1 }
 
   # Probed: the light goes off.
   write_profile_context opq opaque-model=500000
   : > "$CCPROTEUS_TEST_LOG"
-  _ccs_launch -a opq prompt >/dev/null 2>&1 || rc=1
+  _ccp_launch -a opq prompt >/dev/null 2>&1 || rc=1
   [[ "$(<"$CCPROTEUS_TEST_LOG")" == *"ccproteus probe"* ]] \
     && { print -u2 -- 'a probed launch must not nag'; rc=1 }
   rm -rf "$test_home"
@@ -10057,7 +10058,7 @@ test_an_unwritable_window_cache_is_silent_and_nonfatal() {
   # can be read-only while the registry and the launched Claude remain usable.
   # A trailing `|| :` kept the launch alive, but zsh reports a redirection failure
   # BEFORE the command's own `2>/dev/null` is installed, so every launch still
-  # printed `_ccs_launch:… operation not permitted: …/cache/context-window`.
+  # printed `_ccp_launch:… operation not permitted: …/cache/context-window`.
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
@@ -10071,7 +10072,7 @@ test_an_unwritable_window_cache_is_silent_and_nonfatal() {
   source "$CCPROTEUS_SOURCE"
 
   local err rc=0
-  err=$(    _ccs_launch -a readonly prompt 2>&1 >/dev/null) || rc=1
+  err=$(    _ccp_launch -a readonly prompt 2>&1 >/dev/null) || rc=1
   assert_not_contains "$err" 'operation not permitted' \
     'a refused best-effort cache write must not leak a shell error into launch UX' || rc=1
   assert_not_contains "$err" 'permission denied' \
@@ -10091,21 +10092,21 @@ test_flag_errors_name_the_spelling_the_user_typed() {
   source "$CCPROTEUS_SOURCE"
   local rc=0 err
 
-  err=$(_ccs_launch --profile 2>&1); assert_contains "$err" '--profile requires' \
+  err=$(_ccp_launch --profile 2>&1); assert_contains "$err" '--profile requires' \
     'a bare --profile must name --profile' || rc=1
-  err=$(_ccs_launch -a 2>&1); assert_contains "$err" '-a requires' \
+  err=$(_ccp_launch -a 2>&1); assert_contains "$err" '-a requires' \
     'a bare -a must name -a' || rc=1
   assert_not_contains "$err" '--profile requires' \
     '-a must not be reported as --profile' || rc=1
-  err=$(_ccs_launch --profile= x 2>&1); assert_contains "$err" '--profile= requires' \
+  err=$(_ccp_launch --profile= x 2>&1); assert_contains "$err" '--profile= requires' \
     'an empty --profile= must name that form' || rc=1
-  err=$(_ccs_launch --profile a --profile b 2>&1)
+  err=$(_ccp_launch --profile a --profile b 2>&1)
   assert_contains "$err" '--profile may be specified only once' \
     'a repeated --profile must name --profile' || rc=1
-  err=$(_ccs_launch -a a -a b 2>&1)
+  err=$(_ccp_launch -a a -a b 2>&1)
   assert_contains "$err" '-a may be specified only once' \
     'a repeated -a must name -a' || rc=1
-  err=$(_ccs_launch -a a --profile=b 2>&1)
+  err=$(_ccp_launch -a a --profile=b 2>&1)
   assert_contains "$err" '--profile= may be specified only once' \
     'the duplicate report must name the second, offending form' || rc=1
   rm -rf "$test_home"
@@ -10140,7 +10141,7 @@ test_subscription_profile_settings_override_global_launch_settings() {
   ln -s "$HOME/.claude/projects" "$HOME/.config/ccproteus/profiles/sub/projects"
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_launch -a sub prompt || {
+  _ccp_launch -a sub prompt || {
     rm -rf "$test_home"
     return 1
   }
@@ -10178,7 +10179,7 @@ test_profile_settings_override_global_launch_settings() {
     > "$HOME/.config/ccproteus/profiles/proxy/settings.json"
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_launch -a proxy prompt || {
+  _ccp_launch -a proxy prompt || {
     rm -rf "$test_home"
     return 1
   }
@@ -10213,7 +10214,7 @@ test_proxy_gateway_credentials_reach_claude_only_through_the_environment() {
     > "$HOME/.claude/settings.json"
   source "$CCPROTEUS_SOURCE"
 
-  _ccs_launch -a proxy prompt || {
+  _ccp_launch -a proxy prompt || {
     rm -rf "$test_home"
     return 1
   }
@@ -10248,13 +10249,13 @@ test_the_installer_wires_no_shell_and_installs_managed_commands() {
   local installer="$(<"$REPO_ROOT/install.sh")"
   local rc=0
 
-  assert_contains "$installer" 'cp "$SRC/ccproteus" "$BIN_DIR/ccproteus"' \
+  assert_contains "$installer" 'cp "$SRC/bin/ccproteus" "$BIN_DIR/ccproteus"' \
     'installer must place ccproteus on PATH' || rc=1
   assert_not_contains "$installer" 'cp "$SRC/claude" "$BIN_DIR/claude"' \
     'installer must not install a claude wrapper' || rc=1
-  assert_not_contains "$installer" 'source \"$CONFIG_DIR/ccproteus.sh\"' \
+  assert_not_contains "$installer" 'source \"$CONFIG_DIR/lib/ccproteus.sh\"' \
     'installer must not wire a shell startup file' || rc=1
-  assert_not_contains "$installer" 'claude() { _ccs_launch' \
+  assert_not_contains "$installer" 'claude() { _ccp_launch' \
     'installer must not define a shell function for claude' || rc=1
   assert_not_contains "$installer" 'claudex' \
     'installer must not resurrect the retired per-operator launcher' || rc=1
@@ -10279,7 +10280,7 @@ test_the_command_resolves_its_library_and_forwards_every_argument() {
     > "$test_home/lib/ccproteus.sh"
 
   HOME="$test_home" CCPROTEUS_LIB_DIR="$test_home/lib" \
-    zsh "$REPO_ROOT/ccproteus" hop latest || {
+    zsh "$REPO_ROOT/bin/ccproteus" hop latest || {
       print -u2 -- 'the command must load the library and run it'
       rm -rf "$test_home"
       return 1
@@ -10299,7 +10300,7 @@ test_the_command_resolves_its_library_and_forwards_every_argument() {
     'ccproteus() { printf "%s\\n" "$CCPROTEUS_LIB_DIR" > "$HOME/libdir.log" }' \
     > "$test_home/lib/ccproteus.sh"
   HOME="$test_home" CCPROTEUS_LIB_DIR="$test_home/lib" \
-    zsh "$REPO_ROOT/ccproteus" list >/dev/null
+    zsh "$REPO_ROOT/bin/ccproteus" list >/dev/null
   [[ "$(<"$test_home/libdir.log")" == "$test_home/lib" ]] || {
     print -u2 -- 'the launcher must export the library directory it resolved'
     rc=1
@@ -10320,7 +10321,7 @@ test_the_command_reports_a_library_it_cannot_load() {
   # A library that exists but fails to load: one actionable line, not zsh's noise.
   printf '%s\n' 'return 1' > "$test_home/lib/ccproteus.sh"
   output=$(HOME="$test_home" CCPROTEUS_LIB_DIR="$test_home/lib" \
-    zsh "$REPO_ROOT/ccproteus" list 2>&1)
+    zsh "$REPO_ROOT/bin/ccproteus" list 2>&1)
   exit_status=$?
   [[ $exit_status -ne 0 ]] || {
     print -u2 -- 'the command must fail when its library cannot be loaded'
@@ -10334,7 +10335,7 @@ test_the_command_reports_a_library_it_cannot_load() {
   # the caller named, which is how a debugging session ends up reasoning about the
   # wrong file.
   output=$(HOME="$test_home" CCPROTEUS_LIB_DIR="$test_home/nowhere" \
-    zsh "$REPO_ROOT/ccproteus" list 2>&1)
+    zsh "$REPO_ROOT/bin/ccproteus" list 2>&1)
   exit_status=$?
   [[ $exit_status -ne 0 ]] || {
     print -u2 -- 'an explicit but wrong CCPROTEUS_LIB_DIR must not fall back silently'
@@ -10368,7 +10369,7 @@ test_a_bare_invocation_prints_usage_and_launches_nothing() {
   }
 
   local calls="" rc=0
-  _ccs_launch_driver() { calls+="[${_CCPROTEUS_LAUNCH_PROFILE:-}:${(j: :)${(q)@}}]" }
+  _ccp_launch_driver() { calls+="[${_CCPROTEUS_LAUNCH_PROFILE:-}:${(j: :)${(q)@}}]" }
 
   # Bare, WITH a default profile configured: the dangerous case, because this is
   # exactly when a bare launch would have had something to launch.
@@ -10381,7 +10382,7 @@ test_a_bare_invocation_prints_usage_and_launches_nothing() {
     rc=1
   }
 
-  # `run` is the explicit launch spelling; without a profile, _ccs_launch resolves
+  # `run` is the explicit launch spelling; without a profile, _ccp_launch resolves
   # the saved default itself.
   calls=""; ccproteus run
   assert_contains "$calls" '[:]' \
@@ -10453,7 +10454,7 @@ test_the_launcher_adds_nothing_unrequested() {
   source "$CCPROTEUS_SOURCE"
 
   local calls=""
-  _ccs_launch() { calls+="${_CCPROTEUS_LAUNCH_PROFILE:-}:${(j: :)${(q)@}}\n" }
+  _ccp_launch() { calls+="${_CCPROTEUS_LAUNCH_PROFILE:-}:${(j: :)${(q)@}}\n" }
 
   local rc=0
   calls=""; ccproteus run gw plain-prompt
@@ -10468,7 +10469,7 @@ test_the_launcher_adds_nothing_unrequested() {
   # arg must each arrive as ONE argument, unsplit and unexpanded. Counted rather
   # than string-matched -- the count is what proves nothing was split or dropped.
   local seen=0
-  _ccs_launch() { seen=$# }
+  _ccp_launch() { seen=$# }
   ccproteus run gw -p 'two words' '' '*.md'
   (( seen == 4 )) || {
     print -u2 -- "FAIL: caller args must arrive as 4, got $seen"
@@ -10542,14 +10543,14 @@ test_source_names_no_operator_profile() {
 }
 
 # The REAL shipped resolver, placed where the product looks for it
-# ($_CCPROTEUS_DIR/model-window under the scratch $HOME) — these tests pin the
+# ($_CCPROTEUS_DIR/libexec/model-window under the scratch $HOME) — these tests pin the
 # true integration, not a stand-in's reading of the contract.
 install_model_window() {
-  cp "$REPO_ROOT/model-window" "$HOME/.config/ccproteus/model-window"
-  cp "$REPO_ROOT/settings-compose" "$HOME/.config/ccproteus/settings-compose"
-  cp "$REPO_ROOT/ccproteus.sh" "$HOME/.config/ccproteus/ccproteus.sh"
-  cp "$REPO_ROOT"/ccproteus-*.zsh "$HOME/.config/ccproteus/"
-  chmod +x "$HOME/.config/ccproteus/model-window" "$HOME/.config/ccproteus/settings-compose"
+  cp "$REPO_ROOT/libexec/model-window" "$HOME/.config/ccproteus/libexec/model-window"
+  cp "$REPO_ROOT/libexec/settings-compose" "$HOME/.config/ccproteus/libexec/settings-compose"
+  cp "$REPO_ROOT/lib/ccproteus.sh" "$HOME/.config/ccproteus/lib/ccproteus.sh"
+  cp "$REPO_ROOT"/lib/ccproteus-*.zsh "$HOME/.config/ccproteus/lib/"
+  chmod +x "$HOME/.config/ccproteus/libexec/model-window" "$HOME/.config/ccproteus/libexec/settings-compose"
 }
 
 test_picker_without_a_registry_offers_rows_and_spawns_nothing() {
@@ -10574,8 +10575,8 @@ test_picker_without_a_registry_offers_rows_and_spawns_nothing() {
   # Count every invocation, then behave as the real resolver would with no registry.
   printf '%s\n' '#!/bin/sh' 'echo x >> "$HOME/mw-calls"' \
     'echo "{\"window\":200000,\"send_id\":\"$2\",\"source\":\"default\",\"unprobed\":true}"' \
-    > "$HOME/.config/ccproteus/model-window"
-  chmod +x "$HOME/.config/ccproteus/model-window"
+    > "$HOME/.config/ccproteus/libexec/model-window"
+  chmod +x "$HOME/.config/ccproteus/libexec/model-window"
   mkdir -p "$HOME/.config/ccproteus/profiles/gw"
   print -r -- '{}' > "$HOME/.config/ccproteus/profiles/gw/.claude.json"
   print -r -- '{"availableModels":[]}' > "$HOME/.config/ccproteus/profiles/gw/settings.json"
@@ -10585,7 +10586,7 @@ test_picker_without_a_registry_offers_rows_and_spawns_nothing() {
 
   local rc=0
   # No registry file exists under this isolated state root.
-  _ccs_project_picker gw http://gw.invalid sk_t
+  _ccp_project_picker gw http://gw.invalid sk_t
   local state="$(<"$HOME/.config/ccproteus/profiles/gw/.claude.json")"
 
   assert_contains "$state" '"value": "glm-5.3"' \
@@ -10624,7 +10625,7 @@ test_picker_projects_a_derived_1m_row_for_a_probed_claude() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_project_picker gw http://gw.invalid sk_t
+    _ccp_project_picker gw http://gw.invalid sk_t
   local state="$(<"$HOME/.config/ccproteus/profiles/gw/.claude.json")"
 
   assert_contains "$state" '"value": "claude-opus-5[1m]"' \
@@ -10639,8 +10640,8 @@ test_picker_projects_a_derived_1m_row_for_a_probed_claude() {
   # Without the resolver, catalogue rows retain their exact IDs; only the
   # derived context suffix is unavailable.
   print -r -- '{}' > "$HOME/.config/ccproteus/profiles/gw/.claude.json"
-  rm -f "$HOME/.config/ccproteus/model-window"
-    _ccs_project_picker gw http://gw.invalid sk_t
+  rm -f "$HOME/.config/ccproteus/libexec/model-window"
+    _ccp_project_picker gw http://gw.invalid sk_t
   state="$(<"$HOME/.config/ccproteus/profiles/gw/.claude.json")"
   assert_contains "$state" 'claude-opus-5' \
     'no resolver must preserve catalogue visibility without adding a derived suffix' || rc=1
@@ -10664,7 +10665,7 @@ test_launch_substitutes_the_derived_send_id_for_a_claude_model() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-    _ccs_launch -a sendid prompt || { rm -rf "$test_home"; return 1; }
+    _ccp_launch -a sendid prompt || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" 'MODEL_ENV=claude-opus-5[1m]' \
     'a conf default probed at 1M must launch with the [1m] id' || rc=1
@@ -10727,7 +10728,7 @@ test_launch_compacts_at_fleet_percent_unless_the_conf_overrules() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  _ccs_launch -a proxy prompt || { rm -rf "$test_home"; return 1; }
+  _ccp_launch -a proxy prompt || { rm -rf "$test_home"; return 1; }
   assert_contains "$(<"$CCPROTEUS_TEST_LOG")" 'AUTOCOMPACT_PCT=73' \
     'every profile reads the fleet compaction policy instead of a local constant' || rc=1
 
@@ -10739,20 +10740,20 @@ test_launch_compacts_at_fleet_percent_unless_the_conf_overrules() {
     'env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=90' \
     > "$HOME/.config/ccproteus/pct90.conf"
   : > "$CCPROTEUS_TEST_LOG"
-  _ccs_launch -a pct90 prompt || { rm -rf "$test_home"; return 1; }
+  _ccp_launch -a pct90 prompt || { rm -rf "$test_home"; return 1; }
   assert_contains "$(<"$CCPROTEUS_TEST_LOG")" 'AUTOCOMPACT_PCT=90' \
     'a conf declaring its own trigger must overrule the default' || rc=1
 
   rm -f "$HOME/.config/ccproteus/pct90.conf" "$HOME/.agents/runtime/policies/context.json"
   : > "$CCPROTEUS_TEST_LOG"
-  _ccs_launch -a proxy prompt || { rm -rf "$test_home"; return 1; }
+  _ccp_launch -a proxy prompt || { rm -rf "$test_home"; return 1; }
   assert_contains "$(<"$CCPROTEUS_TEST_LOG")" 'AUTOCOMPACT_PCT=75' \
     'an absent fleet policy must fall back to the built-in 75 percent default' || rc=1
 
   print -r -- '{"schemaVersion":1,"autoCompactAtPercent":"broken"}' \
     > "$HOME/.agents/runtime/policies/context.json"
   local err
-  err=$(_ccs_launch -a proxy prompt 2>&1) && {
+  err=$(_ccp_launch -a proxy prompt 2>&1) && {
     print -u2 -- 'a present malformed fleet policy must stop the launch'
     rc=1
   }
@@ -10783,7 +10784,7 @@ test_a_settings_file_compaction_trigger_is_not_overruled() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0
-  _ccs_launch -a proxy prompt || { rm -rf "$test_home"; return 1; }
+  _ccp_launch -a proxy prompt || { rm -rf "$test_home"; return 1; }
   # The launch overlay is what Claude Code actually reads for a settings-file value
   # (it reaches the process through --settings, not through the environment), so the
   # overlay's env block is the signal. The stub records it as SETTINGS=.
@@ -10798,7 +10799,7 @@ test_a_settings_file_compaction_trigger_is_not_overruled() {
     > "$HOME/.claude/settings.json"
   rm -f "$HOME/.config/ccproteus/profiles/proxy/settings.profile.json"
   : > "$CCPROTEUS_TEST_LOG"
-  _ccs_launch -a proxy prompt || { rm -rf "$test_home"; return 1; }
+  _ccp_launch -a proxy prompt || { rm -rf "$test_home"; return 1; }
   actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" '"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"65"' \
     'a trigger set in canonical settings.json must survive the launch' || rc=1
@@ -10810,7 +10811,7 @@ test_a_settings_file_compaction_trigger_is_not_overruled() {
   print -r -- '{"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"broken"}}' \
     > "$HOME/.claude/settings.json"
   : > "$CCPROTEUS_TEST_LOG"
-  _ccs_launch -a proxy prompt || { rm -rf "$test_home"; return 1; }
+  _ccp_launch -a proxy prompt || { rm -rf "$test_home"; return 1; }
   actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" 'AUTOCOMPACT_PCT=80' \
     'an engine-invalid saved trigger must leave a gap for fleet/default injection' || rc=1
@@ -10818,7 +10819,7 @@ test_a_settings_file_compaction_trigger_is_not_overruled() {
   print -r -- '{"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"90junk"}}' \
     > "$HOME/.claude/settings.json"
   : > "$CCPROTEUS_TEST_LOG"
-  _ccs_launch -a proxy prompt || { rm -rf "$test_home"; return 1; }
+  _ccp_launch -a proxy prompt || { rm -rf "$test_home"; return 1; }
   actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" '"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"90junk"' \
     'settings validation must use the engine parseFloat prefix semantics' || rc=1
@@ -10834,7 +10835,7 @@ test_a_settings_file_compaction_trigger_is_not_overruled() {
   print -r -- '{"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"broken"}}' \
     > "$HOME/.config/ccproteus/profiles/proxy/settings.json"
   : > "$CCPROTEUS_TEST_LOG"
-  _ccs_launch -a proxy prompt || { rm -rf "$test_home"; return 1; }
+  _ccp_launch -a proxy prompt || { rm -rf "$test_home"; return 1; }
   actual="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$actual" 'AUTOCOMPACT_PCT=80' \
     'an invalid profile override must leave a gap for fleet/default injection' || rc=1
@@ -10859,9 +10860,9 @@ test_launch_skips_the_sizer_when_nothing_is_new() {
 
   local rc=0 listing
   listing='{"data":[{"id": "known-model"},{"id": "claude-fable-5-dd-los-6.5-tpg"},{"id": "hidden-model"},{"id": "bge-m3", "capabilities": {"chat_completion": false}}]}'
-  _ccs_listing_has_unsized gw "$listing" &&
+  _ccp_listing_has_unsized gw "$listing" &&
     { print -u2 -- 'an all-known listing must skip the sizer'; rc=1; }
-  _ccs_listing_has_unsized gw '{"data":[{"id": "known-model"},{"id": "brand-new"}]}' ||
+  _ccp_listing_has_unsized gw '{"data":[{"id": "known-model"},{"id": "brand-new"}]}' ||
     { print -u2 -- 'a new model must reach the sizer'; rc=1; }
   rm -rf "$test_home"
   return $rc
@@ -10898,7 +10899,7 @@ test_add_sub_completes_the_browser_login() {
 }
 
 test_logged_email_reads_the_given_config_dir() {
-  # _ccs_logged_email <dir> must run `claude auth status` with CLAUDE_CONFIG_DIR
+  # _ccp_logged_email <dir> must run `claude auth status` with CLAUDE_CONFIG_DIR
   # pointed at <dir>, so `add sub` reads the email from the isolated profile it
   # just logged into — not the global file. Stub claude to echo the dir it saw.
   local test_home
@@ -10917,14 +10918,14 @@ test_logged_email_reads_the_given_config_dir() {
   chmod +x "$HOME/bin/claude"
 
   local rc=0
-  _ccs_logged_email "$HOME/.config/ccproteus/profiles/second" || rc=1
-  assert_contains "$_ccs_email" "ccproteus/profiles/second" \
+  _ccp_logged_email "$HOME/.config/ccproteus/profiles/second" || rc=1
+  assert_contains "$_ccp_email" "ccproteus/profiles/second" \
     'a config-dir argument must reach auth status as CLAUDE_CONFIG_DIR' || rc=1
 
   # The dir is required: an unscoped read would report the base install's
   # profile, never the profile's. Run in a subshell so the :? abort cannot
   # take the test runner down with it.
-  ( _ccs_logged_email ) 2>/dev/null &&
+  ( _ccp_logged_email ) 2>/dev/null &&
     { print -u2 -- 'a missing config dir must abort, not read the global config'; rc=1 }
 
   rm -rf "$test_home"
@@ -10981,7 +10982,7 @@ test_logged_email_scrubs_every_backend_env_key() {
 
   local k rc=0
   ( for k in "${_CCPROTEUS_BACKEND_ENV[@]}"; do export "$k=leak"; done
-    _ccs_logged_email "$HOME/.config/ccproteus/profiles/second" ) || rc=1
+    _ccp_logged_email "$HOME/.config/ccproteus/profiles/second" ) || rc=1
   for k in "${_CCPROTEUS_BACKEND_ENV[@]}"; do
     if grep -q "^$k=" "$HOME/seen_env"; then
       print -u2 -- "auth status inherited $k"; rc=1
@@ -11040,15 +11041,15 @@ test_one_interactive_flag_is_the_only_way_to_ask() {
   # never advertise a bare `?` as an argument.
   # Taught on the LAUNCH line, whatever that line's verb is: `-i` has to be
   # discoverable where a reader is looking for how to launch.
-  grep -qE '_ccs_help "ccproteus run -i"' "${CCPROTEUS_LIBRARY[@]}" || {
+  grep -qE '_ccp_help "ccproteus run -i"' "${CCPROTEUS_LIBRARY[@]}" || {
     print -u2 -- 'FAIL: help must teach -i on the launch line'
     rc=1
   }
-  grep -qF '_ccs_help "ccproteus config [profile]"' "${CCPROTEUS_LIBRARY[@]}" || {
+  grep -qF '_ccp_help "ccproteus config [profile]"' "${CCPROTEUS_LIBRARY[@]}" || {
     print -u2 -- 'FAIL: help must teach configure for interactive editing'
     rc=1
   }
-  grep -qE '_ccs_help "[^"]*\|\?\]' "${CCPROTEUS_LIBRARY[@]}" && {
+  grep -qE '_ccp_help "[^"]*\|\?\]' "${CCPROTEUS_LIBRARY[@]}" && {
     print -u2 -- 'FAIL: help advertises a bare ? the caller shell would glob; teach -i'
     rc=1
   }
@@ -11103,8 +11104,8 @@ run_test() {
   "$name" || rc=1
   # GH-434: fail a test whose child outlives it -- the leak that stranded the
   # landing batch -- and reap the child so nothing escapes the suite.
-  _ccs_test_sweep_homes $(( _ccs_test_homes_mark + 1 )) || rc=1
-  _ccs_test_homes_mark=$#_ccs_test_homes
+  _ccp_test_sweep_homes $(( _ccp_test_homes_mark + 1 )) || rc=1
+  _ccp_test_homes_mark=$#_ccp_test_homes
   if (( rc == 0 )); then
     print -- "PASS: $name"
   else
@@ -11125,12 +11126,12 @@ test_a_launch_survives_a_settings_projection_it_cannot_write() {
   test_home=$(mktemp -d)
   setup_home "$test_home"
   printf '%s\n' '#!/bin/sh' 'echo "settings-compose: Operation not permitted" >&2' 'exit 1' \
-    > "$HOME/.config/ccproteus/settings-compose"
-  chmod +x "$HOME/.config/ccproteus/settings-compose"
+    > "$HOME/.config/ccproteus/libexec/settings-compose"
+  chmod +x "$HOME/.config/ccproteus/libexec/settings-compose"
   source "$CCPROTEUS_SOURCE"
 
   local err rc=0
-  err=$(_ccs_launch -a proxy prompt 2>&1 >/dev/null) || {
+  err=$(_ccp_launch -a proxy prompt 2>&1 >/dev/null) || {
     print -u2 -- 'launch must succeed when the settings cannot be generated'
     rm -rf "$test_home"; return 1
   }
@@ -11159,7 +11160,7 @@ test_a_launch_refuses_when_its_settings_policy_cannot_be_read() {
   [[ "$kind" == deep ]] && python3 -c 'print("{\"sandbox\":" + "[" * 2000 + "0" + "]" * 2000 + "}")' \
     > "$HOME/policy.json"
 
-  err=$(_ccs_launch -a proxy -p verify 2>&1 >/dev/null) && {
+  err=$(_ccp_launch -a proxy -p verify 2>&1 >/dev/null) && {
     print -u2 -- "launch must refuse an unreadable settings policy ($kind, issue 308)"
     rc=1
   }
@@ -11204,7 +11205,7 @@ test_a_launch_with_stale_settings_and_a_new_policy() {
   # An invalid canonical stops a profile ccproteus has not configured even earlier,
   # in the config store that derives its defaults from it. Seeding them first is
   # the profile in daily use, and the one whose launch reaches the projection.
-  [[ "$kind" == canonical ]] && _ccs_config_store seed-model-defaults proxy >/dev/null
+  [[ "$kind" == canonical ]] && _ccp_config_store seed-model-defaults proxy >/dev/null
   print -r -- '{}' > "$dir/settings.json"
   print -r -- '{"sandbox":{"enabled":true,"filesystem":{"denyRead":["~/Documents"]}}}' \
     > "$HOME/policy.json"
@@ -11214,12 +11215,12 @@ test_a_launch_with_stale_settings_and_a_new_policy() {
   else
     # `carried` generates its settings with the policy in place first: the one
     # fallback that is still safe.
-    [[ "$kind" == carried ]] && _ccs_settings_projection materialize proxy 2>/dev/null
+    [[ "$kind" == carried ]] && _ccp_settings_projection materialize proxy 2>/dev/null
     rm -f "$dir/cache/.settings.lock"
     mkdir -p "$dir/cache/.settings.lock"
   fi
 
-  err=$(_ccs_launch -a proxy -p verify 2>&1 >/dev/null) || launch_rc=$?
+  err=$(_ccp_launch -a proxy -p verify 2>&1 >/dev/null) || launch_rc=$?
   if [[ "$kind" == carried ]]; then
     (( launch_rc == 0 )) || {
       print -u2 -- 'a launch may keep stale settings that carry the policy (issue 319)'
@@ -11276,23 +11277,23 @@ test_the_fold_runs_exactly_when_settings_json_changed() {
   source "$CCPROTEUS_SOURCE"
   local dir="$_CCPROTEUS_PROFILE_DIRS/gw" rc=0
   mkdir -p "$dir/cache"
-  printf '%s\n' '#!/bin/sh' 'echo "$1" >> "$HOME/fold.log"' > "$CCPROTEUS_LIB_DIR/settings-compose"
-  chmod +x "$CCPROTEUS_LIB_DIR/settings-compose"
+  printf '%s\n' '#!/bin/sh' 'echo "$1" >> "$HOME/fold.log"' > "$CCPROTEUS_LIB_DIR/../libexec/settings-compose"
+  chmod +x "$CCPROTEUS_LIB_DIR/../libexec/settings-compose"
 
   print -r -- '{"a": 1}' > "$dir/settings.json"
   cp "$dir/settings.json" "$dir/cache/settings.base.json"
-  _ccs_fold_settings gw
+  _ccp_fold_settings gw
   [[ ! -e "$HOME/fold.log" ]] || { print -u2 -- 'FAIL: an unedited settings.json must not spawn a fold'; rc=1; }
 
   print -r -- '{"a": 2}' > "$dir/settings.json"
   touch -t 200001010000 "$dir/settings.json"
-  _ccs_fold_settings gw
+  _ccp_fold_settings gw
   assert_contains "$(<"$HOME/fold.log" 2>/dev/null)" fold \
     'an edit with an old timestamp must still be folded' || rc=1
 
   : > "$HOME/fold.log"
   rm -f "$dir/cache/settings.base.json"
-  _ccs_fold_settings gw
+  _ccp_fold_settings gw
   assert_contains "$(<"$HOME/fold.log")" fold \
     'a missing saved copy must run the fold, never skip it' || rc=1
 
@@ -11309,7 +11310,7 @@ test_a_nested_launch_never_inherits_an_outer_advisory() {
   setup_home "$test_home"
   source "$CCPROTEUS_SOURCE"
   local rc=0
-  CCPROTEUS_ADVISE='{"systemMessage": "ccproteus: stale outer advisory"}' _ccs_launch -a proxy prompt ||
+  CCPROTEUS_ADVISE='{"systemMessage": "ccproteus: stale outer advisory"}' _ccp_launch -a proxy prompt ||
     { rm -rf "$test_home"; return 1; }
   assert_contains "$(<"$CCPROTEUS_TEST_LOG")" 'ADVISE=<unset>' \
     'an inherited advisory must not reach the nested session' || rc=1
@@ -11334,7 +11335,7 @@ test_the_advisory_is_valid_json() {
   source "$CCPROTEUS_SOURCE"
 
   local rc=0 advise
-  _ccs_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+  _ccp_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   advise=$(grep '^ADVISE=' "$CCPROTEUS_TEST_LOG")
   advise=${advise#ADVISE=}
   [[ "$advise" != '<unset>' ]] || { print -u2 -- 'FAIL: the fixture must produce an advisory'; rc=1; }
@@ -11451,7 +11452,7 @@ _check_stale_overlay_cleanup() {
     fi
   fi
 
-  _ccs_cleanup_stale_overlays
+  _ccp_cleanup_stale_overlays
 
   local scans=( ${(f)"$(<"$HOME/ps-scans")"} )
   (( ${#scans} == expected_scans )) || {
@@ -11502,21 +11503,21 @@ test_file_metadata_reads_portably() {
   source "$CCPROTEUS_SOURCE"
 
   print -n 'hello' > "$HOME/five"
-  [[ "$(_ccs_size "$HOME/five")" == 5 ]] || {
-    print -u2 -- 'FAIL: _ccs_size must report a real byte count'; rc=1
+  [[ "$(_ccp_size "$HOME/five")" == 5 ]] || {
+    print -u2 -- 'FAIL: _ccp_size must report a real byte count'; rc=1
   }
   # 0 for an absent file: both callers treat 0 as "nothing to do", which is the
   # safe reading — never "rotate/collect this".
-  [[ "$(_ccs_size "$HOME/nope")" == 0 ]] || {
-    print -u2 -- 'FAIL: _ccs_size must report 0 for an absent file'; rc=1
+  [[ "$(_ccp_size "$HOME/nope")" == 0 ]] || {
+    print -u2 -- 'FAIL: _ccp_size must report 0 for an absent file'; rc=1
   }
-  _ccs_mtime "$HOME/five" >/dev/null || {
-    print -u2 -- 'FAIL: _ccs_mtime must succeed for a present file'; rc=1
+  _ccp_mtime "$HOME/five" >/dev/null || {
+    print -u2 -- 'FAIL: _ccp_mtime must succeed for a present file'; rc=1
   }
   # Nonzero exit, NOT 0: a caller doing `|| continue` must skip. Returning 0
   # would read as epoch 0 — infinitely stale — and delete files it never saw.
-  if _ccs_mtime "$HOME/nope" >/dev/null 2>&1; then
-    print -u2 -- 'FAIL: _ccs_mtime must fail for an absent file'; rc=1
+  if _ccp_mtime "$HOME/nope" >/dev/null 2>&1; then
+    print -u2 -- 'FAIL: _ccp_mtime must fail for an absent file'; rc=1
   fi
 
   # The rotation path must actually fire on an oversized log.
@@ -11525,9 +11526,9 @@ test_file_metadata_reads_portably() {
   local i
   for i in {1..4000}; do print -r -- "filler line $i"; done > "$_CCPROTEUS_LOG"
   local before after
-  before=$(_ccs_size "$_CCPROTEUS_LOG")
-  _ccs_log "trigger"
-  after=$(_ccs_size "$_CCPROTEUS_LOG")
+  before=$(_ccp_size "$_CCPROTEUS_LOG")
+  _ccp_log "trigger"
+  after=$(_ccp_size "$_CCPROTEUS_LOG")
   (( after < before )) || {
     print -u2 -- "FAIL: log rotation did not fire (before=$before after=$after)"
     rc=1
@@ -11556,11 +11557,11 @@ test_file_metadata_reads_portably() {
   local -i ksh_rc=0
   ( setopt ksharrays
     TMPDIR="$tmpd"
-    [[ "$(_ccs_size "$HOME/five")" == 5 ]] || exit 11
-    [[ "$(_ccs_mtime "$HOME/five")" == <-> ]] || exit 12
-    _ccs_cleanup_stale_overlays
+    [[ "$(_ccp_size "$HOME/five")" == 5 ]] || exit 11
+    [[ "$(_ccp_mtime "$HOME/five")" == <-> ]] || exit 12
+    _ccp_cleanup_stale_overlays
     _CCPROTEUS_LOG="$HOME/loose.log"
-    _ccs_log_init
+    _ccp_log_init
     [[ -o ksharrays ]] || exit 13   # the helpers fix it locally, never for their caller
   ) || ksh_rc=$?
   (( ksh_rc == 0 )) || {
@@ -11820,7 +11821,7 @@ test_picker_projection_is_complete_before_claude_entry() {
   printf '%s\n' '#!/bin/sh' 'python3 -c '\''import json,os,sys; d=json.load(open(os.environ["CLAUDE_CONFIG_DIR"]+"/.claude.json")); assert all(r["label"] == r["value"] for r in d["additionalModelOptionsCache"])'\'' ' > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
   source "$CCPROTEUS_SOURCE"
-  _ccs_launch -a gw prompt
+  _ccp_launch -a gw prompt
   local rc=$?
   rm -rf "$test_home"
   return $rc
@@ -11832,11 +11833,11 @@ test_claude_inherits_callers_tmux_environment() {
   printf '%s\n' '#!/bin/sh' 'printf "%s\n" "${TMUX-<unset>}"' > "$HOME/bin/claude"
   source "$CCPROTEUS_SOURCE"
   local rc=0 actual
-  actual=$(TMUX='/tmp/test-tmux/default,123,0' _ccs_run_claude --)
+  actual=$(TMUX='/tmp/test-tmux/default,123,0' _ccp_run_claude --)
   [[ "$actual" == '/tmp/test-tmux/default,123,0' ]] || rc=1
-  actual=$(TMUX= _ccs_run_claude --)
+  actual=$(TMUX= _ccp_run_claude --)
   [[ "$actual" == '' ]] || rc=1
-  actual=$(unset TMUX; _ccs_run_claude --)
+  actual=$(unset TMUX; _ccp_run_claude --)
   [[ "$actual" == '<unset>' ]] || rc=1
   rm -rf "$test_home"
   return $rc
@@ -11890,7 +11891,7 @@ test_picker_uses_gateway_before_adapter_and_settings_overlay() {
     'case "$*" in *127.0.0.1*) printf '\''{"data":[{"id":"first"}]}'\'' ;; *http_code*) printf 200 ;; *) printf '\''{"data":[{"id":"first"},{"id":"new-chat","capabilities":{"chat_completion":true}},{"id":"claude-new-9","capabilities":{"chat_completion":true}},{"id":"embedding","capabilities":{"chat_completion":false}}]}'\'' ;; esac' > "$HOME/bin/curl"
   fake_adapter_picker_port
   source "$CCPROTEUS_SOURCE"
-  _ccs_launch -a gw prompt >/dev/null 2>&1
+  _ccp_launch -a gw prompt >/dev/null 2>&1
   local rc=$? state="$(<"$HOME/.config/ccproteus/profiles/gw/.claude.json")" logged="$(<"$CCPROTEUS_TEST_LOG")"
   assert_contains "$state" 'new-chat' 'picker must use upstream not one-model adapter' || rc=1
   assert_contains "$state" 'claude-new-9' 'unknown Claude models stay visible' || rc=1
@@ -11920,7 +11921,7 @@ test_model_mappings_work_for_every_credential_type() {
     assert_contains "$output" 'ANTHROPIC_SMALL_FAST_MODEL=custom-fast' "$kind exports its helper mapping" || rc=1
     if [[ "$kind" == sub || "$kind" == token ]]; then
       print -r -- 'env.CLAUDE_CODE_MAX_CONTEXT_TOKENS=999999' >> "$_CCPROTEUS_DIR/$name.conf"
-      _ccs_read "$name" 1 >/dev/null 2>&1 && rc=1
+      _ccp_read "$name" 1 >/dev/null 2>&1 && rc=1
     fi
   done
   rm -rf "$test_home"
@@ -11942,7 +11943,7 @@ test_launch_refuses_a_model_map_key_no_request_can_carry() {
     (( ++i ))
     write_apikey_conf "mapsuffixed$i" 'api_key=sk_prod_test' 'base_url=https://gateway.invalid' \
       "model_map={\"$key\":\"gpt-6.1-sol\"}"
-    _ccs_launch -a "mapsuffixed$i" prompt >/dev/null 2>"$test_home/launch.err" && {
+    _ccp_launch -a "mapsuffixed$i" prompt >/dev/null 2>"$test_home/launch.err" && {
       print -u2 -- "a map key carrying the window marker must be refused at launch, not run as an inert map: $key"
       rc=1
     }
@@ -11958,7 +11959,7 @@ test_launch_refuses_a_model_map_key_no_request_can_carry() {
   # rejects an unreachable key, not the map itself.
   write_apikey_conf mapbare 'api_key=sk_prod_test' 'base_url=https://gateway.invalid' \
     'model_map={"claude-sonnet-5-5":"gpt-6.1-sol"}'
-  _ccs_launch -a mapbare prompt >/dev/null 2>&1 || {
+  _ccp_launch -a mapbare prompt >/dev/null 2>&1 || {
     print -u2 -- 'a map keyed by the wire model id must still launch'
     rc=1
   }
@@ -11972,7 +11973,7 @@ test_adapter_controls_do_not_reach_claude_or_overlay() {
   source "$CCPROTEUS_SOURCE"
   printf '%s\n' '#!/bin/sh' 'printf "%s|%s|%s|%s|%s|%s" "${CCPROTEUS_REPAIR_TOOL_REFERENCES-unset}" "${CCPROTEUS_STALL_TIMEOUT-unset}" "${CCPROTEUS_UPSTREAM_PROXY-unset}" "${CCPROTEUS_RANDOM_DEVICE_ID-unset}" "${CCPROTEUS_AFFINITY_HEADER-unset}" "${CCPROTEUS_SHIM_HOOKS-unset}"' > "$HOME/bin/claude"
   local actual rc=0
-  actual=$(CCPROTEUS_REPAIR_TOOL_REFERENCES=1 CCPROTEUS_STALL_TIMEOUT=1 CCPROTEUS_UPSTREAM_PROXY=http://127.0.0.1:1 CCPROTEUS_RANDOM_DEVICE_ID=1 CCPROTEUS_AFFINITY_HEADER=X-A CCPROTEUS_SHIM_HOOKS=/tmp/hooks.py _ccs_run_claude CCPROTEUS_REPAIR_TOOL_REFERENCES=1 CCPROTEUS_STALL_TIMEOUT=1 CCPROTEUS_UPSTREAM_PROXY=http://127.0.0.1:1 CCPROTEUS_RANDOM_DEVICE_ID=1 CCPROTEUS_AFFINITY_HEADER=X-A CCPROTEUS_SHIM_HOOKS=/tmp/hooks.py --)
+  actual=$(CCPROTEUS_REPAIR_TOOL_REFERENCES=1 CCPROTEUS_STALL_TIMEOUT=1 CCPROTEUS_UPSTREAM_PROXY=http://127.0.0.1:1 CCPROTEUS_RANDOM_DEVICE_ID=1 CCPROTEUS_AFFINITY_HEADER=X-A CCPROTEUS_SHIM_HOOKS=/tmp/hooks.py _ccp_run_claude CCPROTEUS_REPAIR_TOOL_REFERENCES=1 CCPROTEUS_STALL_TIMEOUT=1 CCPROTEUS_UPSTREAM_PROXY=http://127.0.0.1:1 CCPROTEUS_RANDOM_DEVICE_ID=1 CCPROTEUS_AFFINITY_HEADER=X-A CCPROTEUS_SHIM_HOOKS=/tmp/hooks.py --)
   [[ "$actual" == 'unset|unset|unset|unset|unset|unset' ]] || rc=1
   rm -rf "$test_home"
   return $rc
@@ -11987,11 +11988,11 @@ test_private_session_leaves_no_transcript_behind() {
   # The fake claude writes a transcript and reports where its config dir was.
   printf '%s\n' '#!/bin/sh' 'mkdir -p "$CLAUDE_CONFIG_DIR/projects/p" && echo t > "$CLAUDE_CONFIG_DIR/projects/p/s.jsonl"; test -L "$CLAUDE_CONFIG_DIR/.claude.json" && echo "$CLAUDE_CONFIG_DIR"' > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
-  seen=$(_ccs_run_claude "CLAUDE_CONFIG_DIR=$prof" CCPROTEUS_PRIVATE=1 --)
+  seen=$(_ccp_run_claude "CLAUDE_CONFIG_DIR=$prof" CCPROTEUS_PRIVATE=1 --)
   [[ -n "$seen" && "$seen" != "$prof" && "${seen:t}" == "${prof:t}" ]] || rc=1
   [[ ! -e "${seen:h}" ]] || rc=1
   [[ ! -e "$prof/projects/p" ]] || rc=1
-  seen=$(_ccs_run_claude "CLAUDE_CONFIG_DIR=$prof" --)
+  seen=$(_ccp_run_claude "CLAUDE_CONFIG_DIR=$prof" --)
   [[ -e "$prof/projects/p/s.jsonl" ]] || rc=1
   rm -rf "$test_home"
   return $rc
@@ -12005,9 +12006,9 @@ test_private_session_key_stays_the_profiles_own() {
   mkdir -p "$prof" && print '{}' > "$prof/.claude.json"
   printf '%s\n' '#!/bin/sh' 'echo "${CLAUDE_SECURESTORAGE_CONFIG_DIR-unset}|$CLAUDE_CONFIG_DIR"' > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
-  seen=$(_ccs_run_claude "CLAUDE_CONFIG_DIR=$prof" CCPROTEUS_PRIVATE=1 --)
+  seen=$(_ccp_run_claude "CLAUDE_CONFIG_DIR=$prof" CCPROTEUS_PRIVATE=1 --)
   [[ "${seen%%|*}" == "$prof" && "${seen#*|}" != "$prof" ]] || { print -u2 -- "private: $seen"; rc=1; }
-  seen=$(_ccs_run_claude "CLAUDE_CONFIG_DIR=$prof" --)
+  seen=$(_ccp_run_claude "CLAUDE_CONFIG_DIR=$prof" --)
   [[ "$seen" == "unset|$prof" ]] || { print -u2 -- "normal: $seen"; rc=1; }
   rm -rf "$test_home"
   return $rc
@@ -12034,11 +12035,11 @@ test_private_session_is_removed_when_terminated() {
     # stub that inherited fd 3.
     exec {crutch}<>"$fifo"
     exec {fd}<"$fifo"
-    zsh -c 'source "$1"; _ccs_run_claude "CLAUDE_CONFIG_DIR=$2" CCPROTEUS_PRIVATE=1 --' _ "$CCPROTEUS_SOURCE" "$prof" 3>"$fifo" &
+    zsh -c 'source "$1"; _ccp_run_claude "CLAUDE_CONFIG_DIR=$2" CCPROTEUS_PRIVATE=1 --' _ "$CCPROTEUS_SOURCE" "$prof" 3>"$fifo" &
     pid=$!
     # No budget, a backstop: claude's report, or a launcher that never produced
     # one - dead or wedged, killed and reported either way.
-    if ! _ccs_test_wait_readable $fd $hang; then
+    if ! _ccp_test_wait_readable $fd $hang; then
       if kill -0 $pid 2>/dev/null; then
         print -u2 -- "$sig: no report and no exit within ${CCPROTEUS_TEST_HANG_TIMEOUT}s"
         kill -KILL $pid 2>/dev/null
@@ -12058,7 +12059,7 @@ test_private_session_is_removed_when_terminated() {
     # Only the launcher was signalled: it must stop claude itself. EOF arrives when
     # every holder of the write end is gone (zsh -c, its claude subshell, the stub);
     # the shared bound ends a run whose forwarding is broken.
-    if ! _ccs_test_wait_readable $fd $hang; then
+    if ! _ccp_test_wait_readable $fd $hang; then
       print -u2 -- "$sig: neither the launcher nor claude exited in ${CCPROTEUS_TEST_HANG_TIMEOUT}s"; rc=1
       kill -KILL $pid ${info%% *} $cpid 2>/dev/null   # exact pids: zsh -c, its subshell, the stub
     fi
@@ -12086,7 +12087,7 @@ test_private_session_is_removed_when_hop_notice_hits_closed_stdout() {
   mkfifo "$test_home/out"
   exec {r}<>"$test_home/out" {w}>"$test_home/out"
   exec {r}<&-
-  TMPDIR="$TMPDIR" zsh -c 'source "$1"; _ccs_pending_cache_notice=notice; _ccs_run_claude "CLAUDE_CONFIG_DIR=$2" CCPROTEUS_PRIVATE=1 --' \
+  TMPDIR="$TMPDIR" zsh -c 'source "$1"; _ccp_pending_cache_notice=notice; _ccp_run_claude "CLAUDE_CONFIG_DIR=$2" CCPROTEUS_PRIVATE=1 --' \
     _ "$CCPROTEUS_SOURCE" "$prof" >&$w || st=$?
   exec {w}>&-
   local -a left=("$TMPDIR"/ccproteus-private.*(DN))
@@ -12117,11 +12118,11 @@ test_private_session_is_removed_on_group_quit() {
   # every holder of the write end is gone.
   exec {crutch}<>"$fifo"
   exec {fd}<"$fifo"
-  perl -e 'setpgrp(0,0); exec @ARGV' zsh -c 'source "$1"; _ccs_run_claude "CLAUDE_CONFIG_DIR=$2" CCPROTEUS_PRIVATE=1 --' _ "$CCPROTEUS_SOURCE" "$prof" 3>"$fifo" &
+  perl -e 'setpgrp(0,0); exec @ARGV' zsh -c 'source "$1"; _ccp_run_claude "CLAUDE_CONFIG_DIR=$2" CCPROTEUS_PRIVATE=1 --' _ "$CCPROTEUS_SOURCE" "$prof" 3>"$fifo" &
   pid=$!
   # No budget, a backstop: claude's report, or a launcher that never produced
   # one - dead or wedged, killed and reported either way.
-  if ! _ccs_test_wait_readable $fd $hang; then
+  if ! _ccp_test_wait_readable $fd $hang; then
     if kill -0 $pid 2>/dev/null; then
       print -u2 -- "QUIT: no report and no exit within ${CCPROTEUS_TEST_HANG_TIMEOUT}s"
       kill -KILL -- -$pid 2>/dev/null
@@ -12140,7 +12141,7 @@ test_private_session_is_removed_on_group_quit() {
   # EOF means every holder of the write end is gone; the launcher's EXIT trap
   # (which removes the private dir) runs before it can exit. The shared bound
   # ends a run whose teardown hangs.
-  if ! _ccs_test_wait_readable $fd $hang; then
+  if ! _ccp_test_wait_readable $fd $hang; then
     print -u2 -- "QUIT: the launcher still running ${CCPROTEUS_TEST_HANG_TIMEOUT}s after the group quit"; rc=1
     kill -KILL -- -$pid 2>/dev/null
   fi
@@ -12174,11 +12175,11 @@ test_private_session_forwards_term_and_keeps_claudes_status() {
     # the stub that inherited fd 3.
     exec {crutch}<>"$fifo"
     exec {fd}<"$fifo"
-    zsh -c 'source "$1"; _ccs_run_claude "CLAUDE_CONFIG_DIR=$2" CCPROTEUS_PRIVATE=1 --' _ "$CCPROTEUS_SOURCE" "$prof" 3>"$fifo" &
+    zsh -c 'source "$1"; _ccp_run_claude "CLAUDE_CONFIG_DIR=$2" CCPROTEUS_PRIVATE=1 --' _ "$CCPROTEUS_SOURCE" "$prof" 3>"$fifo" &
     pid=$!
     # No budget, a backstop: claude's report, or a launcher that never produced
     # one - dead or wedged, killed and reported either way.
-    if ! _ccs_test_wait_readable $fd $hang; then
+    if ! _ccp_test_wait_readable $fd $hang; then
       if kill -0 $pid 2>/dev/null; then
         print -u2 -- "$sig: no report and no exit within ${CCPROTEUS_TEST_HANG_TIMEOUT}s"
         kill -KILL $pid 2>/dev/null
@@ -12197,7 +12198,7 @@ test_private_session_forwards_term_and_keeps_claudes_status() {
     exec {crutch}>&-
     # EOF arrives when every holder of the write end is gone (zsh -c, its claude
     # subshell, the stub); the shared bound ends a run whose forwarding is broken.
-    if ! _ccs_test_wait_readable $fd $hang; then
+    if ! _ccp_test_wait_readable $fd $hang; then
       print -u2 -- "$sig: neither the launcher nor claude exited in ${CCPROTEUS_TEST_HANG_TIMEOUT}s"; rc=1
       kill -KILL $pid ${info%% *} $cpid 2>/dev/null   # exact pids: zsh -c, its subshell, the stub
     fi
@@ -12229,11 +12230,11 @@ test_private_session_keeps_exit_status_after_stop_and_continue() {
   # never a premature EOF.
   exec {crutch}<>"$fifo"
   exec {fd}<"$fifo"
-  zsh -c 'source "$1"; _ccs_run_claude "CLAUDE_CONFIG_DIR=$2" CCPROTEUS_PRIVATE=1 --' _ "$CCPROTEUS_SOURCE" "$prof" 3>"$fifo" &
+  zsh -c 'source "$1"; _ccp_run_claude "CLAUDE_CONFIG_DIR=$2" CCPROTEUS_PRIVATE=1 --' _ "$CCPROTEUS_SOURCE" "$prof" 3>"$fifo" &
   pid=$!
   # No budget, a backstop: claude's report, or a launcher that never produced
   # one - dead or wedged, killed and reported either way.
-  if ! _ccs_test_wait_readable $fd $hang; then
+  if ! _ccp_test_wait_readable $fd $hang; then
     if kill -0 $pid 2>/dev/null; then
       print -u2 -- "STOP/CONT: no report and no exit within ${CCPROTEUS_TEST_HANG_TIMEOUT}s"
       kill -KILL $pid 2>/dev/null
@@ -12282,11 +12283,11 @@ test_private_session_launcher_ends_with_claude() {
     # the stub that inherited fd 3.
     exec {crutch}<>"$fifo"
     exec {fd}<"$fifo"
-    zsh -c '[[ $3 == noclobber ]] && setopt noclobber; source "$1"; _ccs_run_claude "CLAUDE_CONFIG_DIR=$2" CCPROTEUS_PRIVATE=1 --' _ "$CCPROTEUS_SOURCE" "$prof" "$mode" 3>"$fifo" &
+    zsh -c '[[ $3 == noclobber ]] && setopt noclobber; source "$1"; _ccp_run_claude "CLAUDE_CONFIG_DIR=$2" CCPROTEUS_PRIVATE=1 --' _ "$CCPROTEUS_SOURCE" "$prof" "$mode" 3>"$fifo" &
     pid=$!
     # No budget, a backstop: claude's report, or a launcher that never produced
     # one - dead or wedged, killed and reported either way.
-    if ! _ccs_test_wait_readable $fd $hang; then
+    if ! _ccp_test_wait_readable $fd $hang; then
       if kill -0 $pid 2>/dev/null; then
         print -u2 -- "$mode: no report and no exit within ${CCPROTEUS_TEST_HANG_TIMEOUT}s"
         kill -KILL $pid 2>/dev/null
@@ -12306,7 +12307,7 @@ test_private_session_launcher_ends_with_claude() {
     exec {crutch}>&-
     # EOF arrives when every holder of the write end is gone - the launcher must
     # end with claude; the shared bound ends a run whose teardown hangs.
-    if ! _ccs_test_wait_readable $fd $hang; then
+    if ! _ccp_test_wait_readable $fd $hang; then
       print -u2 -- "$mode: the launcher did not end with claude within ${CCPROTEUS_TEST_HANG_TIMEOUT}s"; rc=1
       kill -KILL $pid ${info%% *} $cpid 2>/dev/null   # exact pids: zsh -c, its subshell, the stub
     fi
@@ -12331,12 +12332,12 @@ test_private_session_keeps_the_terminal_as_stdin() {
   # kill apply (#421).
   for mode in private normal; do
     export OUT="$test_home/out.$mode"
-    run_under_a_terminal "$test_home/pty.$mode" zsh -c 'source "$1"; _ccs_run_claude "CLAUDE_CONFIG_DIR=$2" ${3:+CCPROTEUS_PRIVATE=1} --' _ "$CCPROTEUS_SOURCE" "$prof" "${mode:#normal}"
+    run_under_a_terminal "$test_home/pty.$mode" zsh -c 'source "$1"; _ccp_run_claude "CLAUDE_CONFIG_DIR=$2" ${3:+CCPROTEUS_PRIVATE=1} --' _ "$CCPROTEUS_SOURCE" "$prof" "${mode:#normal}"
     [[ -s "$OUT" && "$(<"$OUT")" == tty ]] || { print -u2 -- "$mode: claude's stdin is not the terminal"; rc=1; }
   done
   # A launch with stdin closed still starts claude.
   export OUT="$test_home/out.closed"
-  zsh -c 'source "$1"; _ccs_run_claude "CLAUDE_CONFIG_DIR=$2" CCPROTEUS_PRIVATE=1 --' _ "$CCPROTEUS_SOURCE" "$prof" <&- 2>/dev/null
+  zsh -c 'source "$1"; _ccp_run_claude "CLAUDE_CONFIG_DIR=$2" CCPROTEUS_PRIVATE=1 --' _ "$CCPROTEUS_SOURCE" "$prof" <&- 2>/dev/null
   [[ -s "$OUT" ]] || { print -u2 -- "closed stdin: claude did not start"; rc=1; }
   rm -rf "$test_home"
   return $rc
@@ -12352,7 +12353,7 @@ test_private_session_claude_does_not_inherit_ignored_int_quit() {
   printf '%s\n' '#!/bin/sh' 'sed -n "s/^SigIgn:[[:space:]]*//p" /proc/self/status' > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
   if [[ -r /proc/self/status ]]; then
-    mask=$(_ccs_run_claude "CLAUDE_CONFIG_DIR=$prof" CCPROTEUS_PRIVATE=1 --)
+    mask=$(_ccp_run_claude "CLAUDE_CONFIG_DIR=$prof" CCPROTEUS_PRIVATE=1 --)
     (( (16#${mask:-0} & 6) == 0 )) || { print -u2 -- "SigIgn=$mask: INT/QUIT ignored"; rc=1; }
   fi
   rm -rf "$test_home"
@@ -12365,9 +12366,9 @@ test_private_session_forwarding_traps_precede_the_fork() {
   # while claude runs, so the forwarding traps must be installed before the fork.
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   source "$CCPROTEUS_SOURCE"
-  local -a body; body=("${(@f)$(functions _ccs_fork_forward)}")
+  local -a body; body=("${(@f)$(functions _ccp_fork_forward)}")
   rm -rf "$test_home"
-  local p_fwd='*trap*kill -TERM $_ccs_pid*' p_fork='*} *&'
+  local p_fwd='*trap*kill -TERM $_ccp_pid*' p_fork='*} *&'
   local fwd=${body[(i)$~p_fwd]} fork=${body[(i)$~p_fork]}
   (( fork <= $#body )) || { print -u2 -- "no background fork of claude"; return 1; }
   (( fwd < fork )) || { print -u2 -- "TERM forwarding trap at line $fwd, after the fork at $fork"; return 1; }
@@ -12391,11 +12392,11 @@ test_private_session_keeps_exit_status_after_interrupt() {
   # never a premature EOF.
   exec {crutch}<>"$fifo"
   exec {fd}<"$fifo"
-  zsh -c 'source "$1"; _ccs_run_claude "CLAUDE_CONFIG_DIR=$2" CCPROTEUS_PRIVATE=1 --' _ "$CCPROTEUS_SOURCE" "$prof" 3>"$fifo" &
+  zsh -c 'source "$1"; _ccp_run_claude "CLAUDE_CONFIG_DIR=$2" CCPROTEUS_PRIVATE=1 --' _ "$CCPROTEUS_SOURCE" "$prof" 3>"$fifo" &
   pid=$!
   # No budget, a backstop: claude's report, or a launcher that never produced
   # one - dead or wedged, killed and reported either way.
-  if ! _ccs_test_wait_readable $fd $hang; then
+  if ! _ccp_test_wait_readable $fd $hang; then
     if kill -0 $pid 2>/dev/null; then
       print -u2 -- "INT: no report and no exit within ${CCPROTEUS_TEST_HANG_TIMEOUT}s"
       kill -KILL $pid 2>/dev/null
@@ -12462,11 +12463,11 @@ test_launcher_forwards_term_and_hup_to_claude() {
     # the auto-started adapter that inherited fd 3.
     exec {crutch}<>"$fifo"
     exec {fd}<"$fifo"
-    zsh -c 'source "$1"; _ccs_launch -a proxy prompt' _ "$CCPROTEUS_SOURCE" 3>"$fifo" &
+    zsh -c 'source "$1"; _ccp_launch -a proxy prompt' _ "$CCPROTEUS_SOURCE" 3>"$fifo" &
     pid=$!
     # No budget, a backstop: claude's pid line, or a launcher that never
     # produced one - dead or wedged, killed and reported either way.
-    if ! _ccs_test_wait_readable $fd $hang; then
+    if ! _ccp_test_wait_readable $fd $hang; then
       if kill -0 $pid 2>/dev/null; then
         print -u2 -- "$sig: no pid line and no exit within ${CCPROTEUS_TEST_HANG_TIMEOUT}s"
         kill -KILL $pid 2>/dev/null
@@ -12482,7 +12483,7 @@ test_launcher_forwards_term_and_hup_to_claude() {
     read -r cpid <&$fd
     kill -$sig $pid
     exec {crutch}>&-
-    if ! _ccs_test_wait_readable $fd $hang; then
+    if ! _ccp_test_wait_readable $fd $hang; then
       print -u2 -- "$sig: neither the launcher nor claude exited in ${CCPROTEUS_TEST_HANG_TIMEOUT}s"; rc=1
       kill -KILL $pid 2>/dev/null
       kill -KILL $cpid 2>/dev/null
@@ -12506,7 +12507,7 @@ test_launcher_keeps_stdin_and_exit_status() {
   printf '%s\n' '#!/bin/sh' 'read -r line; echo "$line" > "$OUT"; exit 5' > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
   export OUT="$test_home/out"
-  print hello | zsh -c 'source "$1"; _ccs_launch -a proxy prompt' _ "$CCPROTEUS_SOURCE"; st=$?
+  print hello | zsh -c 'source "$1"; _ccp_launch -a proxy prompt' _ "$CCPROTEUS_SOURCE"; st=$?
   [[ -s "$OUT" && "$(<"$OUT")" == hello ]] || { print -u2 -- "claude did not get the caller's stdin"; rc=1; }
   (( st == 5 )) || { print -u2 -- "status $st, want claude's 5"; rc=1; }
   rm -rf "$test_home"
@@ -12521,7 +12522,7 @@ test_launch_runs_claude_when_tmpdir_is_unwritable() {
   printf '%s\n' '#!/bin/sh' 'echo ran > "$OUT"' 'exit 5' > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
   export OUT="$test_home/out"
-  TMPDIR="$test_home/ro" zsh -c 'source "$1"; _ccs_run_claude --' _ "$CCPROTEUS_SOURCE" 2>/dev/null; st=$?
+  TMPDIR="$test_home/ro" zsh -c 'source "$1"; _ccp_run_claude --' _ "$CCPROTEUS_SOURCE" 2>/dev/null; st=$?
   [[ -s "$OUT" ]] || { print -u2 -- "claude did not start with an unwritable TMPDIR"; rc=1; }
   (( st == 5 )) || { print -u2 -- "status $st, want claude's 5"; rc=1; }
   chmod 755 "$test_home/ro"; rm -rf "$test_home"
@@ -12535,7 +12536,7 @@ test_launch_keeps_claudes_niceness() {
   printf '%s\n' '#!/bin/sh' 'ps -o ni= -p $$ | tr -d " " > "$OUT"' > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
   export OUT="$test_home/out"
-  zsh -c 'source "$1"; ps -o ni= -p $$ | tr -d " " > "$OUT.me"; _ccs_launch -a proxy prompt' _ "$CCPROTEUS_SOURCE"
+  zsh -c 'source "$1"; ps -o ni= -p $$ | tr -d " " > "$OUT.me"; _ccp_launch -a proxy prompt' _ "$CCPROTEUS_SOURCE"
   mine=$(<"$OUT.me")
   [[ -s "$OUT" && "$(<"$OUT")" == "$mine" ]] || { print -u2 -- "claude nice $(<"$OUT"), launcher $mine"; rc=1; }
   rm -rf "$test_home"
@@ -12570,11 +12571,11 @@ test_signal_with_a_queued_hop_ends_the_launch() {
   # EOF still means everyone holding the write end is gone.
   exec {crutch}<>"$test_home/started"
   exec {started}< "$test_home/started"
-  zsh -c 'source "$1"; _ccs_launch -a proxy prompt' _ "$CCPROTEUS_SOURCE" 3>"$test_home/started" 2>/dev/null &
+  zsh -c 'source "$1"; _ccp_launch -a proxy prompt' _ "$CCPROTEUS_SOURCE" 3>"$test_home/started" 2>/dev/null &
   pid=$!
   # The hang bound as a backstop (GH-434), not a readiness deadline: the pid
   # line, or a launcher that never produced one, killed either way.
-  if ! _ccs_test_wait_readable $started $hang; then
+  if ! _ccp_test_wait_readable $started $hang; then
     print -u2 -- "claude's pid line never arrived within ${CCPROTEUS_TEST_HANG_TIMEOUT}s"
     kill -KILL $pid 2>/dev/null
     wait $pid 2>/dev/null
@@ -12588,7 +12589,7 @@ test_signal_with_a_queued_hop_ends_the_launch() {
   exec {crutch}>&-
   # Keep the original five-second termination backstop, not a readiness deadline.
   # EOF wakes immediately when launcher and child close their inherited writers.
-  if ! _ccs_test_wait_readable $started 500; then
+  if ! _ccp_test_wait_readable $started 500; then
     kill -0 $pid 2>/dev/null && { print -u2 -- "launcher still running"; rc=1; kill -KILL $pid 2>/dev/null; }
     [[ -n $cpid ]] && kill -KILL $cpid 2>/dev/null
   fi
@@ -12611,7 +12612,7 @@ test_private_session_runs_the_binary_not_a_shell_function() {
   printf '%s\n' '#!/bin/sh' 'echo BINARY-RAN > "$OUT"' > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
   export OUT="$test_home/out"
-  zsh -c 'claude() { print FUNCTION-RAN > "$OUT"; }; source "$1"; _ccs_run_claude "CLAUDE_CONFIG_DIR=$2" CCPROTEUS_PRIVATE=1 --' _ "$CCPROTEUS_SOURCE" "$prof"
+  zsh -c 'claude() { print FUNCTION-RAN > "$OUT"; }; source "$1"; _ccp_run_claude "CLAUDE_CONFIG_DIR=$2" CCPROTEUS_PRIVATE=1 --' _ "$CCPROTEUS_SOURCE" "$prof"
   [[ -s "$OUT" && "$(<"$OUT")" == BINARY-RAN ]] || { print -u2 -- "ran: $(<"$OUT")"; rc=1; }
   rm -rf "$test_home"
   return $rc
@@ -12651,19 +12652,19 @@ test_fork_forward_leaves_the_callers_stderr_intact() {
   scratch=$(mktemp -d)
   # The child gets the real library and a clean HOME: inheriting this shell's
   # CCPROTEUS_LIB_DIR (a deleted scratch home of an earlier test) once made the
-  # source fail, so _ccs_fork_forward never ran and the checks below passed
+  # source fail, so _ccp_fork_forward never ran and the checks below passed
   # vacuously (#207). The whence line proves the function really loaded.
   out=$(zsh -c '
     export HOME="$2" CCPROTEUS_LIB_DIR="${1:A:h}" CCPROTEUS_STATE_DIR="$2/.config/ccproteus"
     source "$1" || exit $?
-    whence -w _ccs_fork_forward
-    _ccs_fork_forward true
+    whence -w _ccp_fork_forward
+    _ccp_fork_forward true
     print -u2 -- STDERR_SURVIVES
   ' _ "$CCPROTEUS_SOURCE" "$scratch" 2>&1)
   rm -rf "$scratch"
-  assert_contains "$out" '_ccs_fork_forward: function' \
+  assert_contains "$out" '_ccp_fork_forward: function' \
     'the library must load, or the stderr check below is vacuous' || return 1
-  assert_contains "$out" 'STDERR_SURVIVES' 'stderr must survive a launch through _ccs_fork_forward'
+  assert_contains "$out" 'STDERR_SURVIVES' 'stderr must survive a launch through _ccp_fork_forward'
 }
 run_test test_fork_forward_leaves_the_callers_stderr_intact
 
@@ -12757,7 +12758,7 @@ run_test test_the_serve_tail_leaves_when_its_own_launcher_is_gone
 # the shard sat at zero CPU in the landing batch. Every test that opens the
 # launcher's fifo must open it through an RDWR handle (so the open cannot
 # block on a launcher that never starts) and put a bounded wait -- a zselect
-# or the _ccs_test_wait_readable slices -- before the read (so waiting for
+# or the _ccp_test_wait_readable slices -- before the read (so waiting for
 # the pid line is hang-bounded, not eventless).
 test_the_launcher_fifo_reads_are_bounded() {
   local self="$REPO_ROOT/tests/ccproteus_test.zsh" rc=0
@@ -12789,7 +12790,7 @@ test_the_launcher_fifo_reads_are_bounded() {
       rc=1
     }
     first_read=$(grep -nE -- 'read -r (cpid|relay cpid|info) <&' <<<"$body" | head -1 | cut -d: -f1)
-    first_guard=$(grep -nE -- '(zselect -r|_ccs_test_wait_readable)' <<<"$body" | head -1 | cut -d: -f1)
+    first_guard=$(grep -nE -- '(zselect -r|_ccp_test_wait_readable)' <<<"$body" | head -1 | cut -d: -f1)
     [[ -n "$first_read" && -n "$first_guard" && "$first_guard" -lt "$first_read" ]] || {
       print -u2 -- "FAIL: $site reads the launcher fifo before any zselect bound"
       rc=1
@@ -12894,12 +12895,12 @@ test_profile_history_is_its_own_and_a_shared_link_heals() {
   mkdir -p "$HOME/.claude/projects/p" "$dir"
   print -r -- old > "$HOME/.claude/projects/p/native.jsonl"
   ln -sn "$HOME/.claude/projects" "$dir/projects"
-  _ccs_read proxy && _ccs_setup_dir proxy || rc=1
+  _ccp_read proxy && _ccp_setup_dir proxy || rc=1
   unset _ccp
   # The shared-history link goes; the native history it pointed at stays whole.
   [[ -d "$dir/projects" && ! -L "$dir/projects" ]] || { print -u2 'profile history must be a real dir'; rc=1; }
   [[ "$(<"$HOME/.claude/projects/p/native.jsonl")" == old ]] || { print -u2 'native history must survive'; rc=1; }
-  _ccs_dir_ok proxy || { print -u2 'a healed profile must pass the fast path'; rc=1; }
+  _ccp_dir_ok proxy || { print -u2 'a healed profile must pass the fast path'; rc=1; }
   rm -rf "$test_home"
   return $rc
 }
@@ -12911,7 +12912,7 @@ test_removing_a_profile_keeps_its_history_resumable() {
   mkdir -p "$dir/projects/p/s-1/subagents"
   print -r -- kept > "$dir/projects/p/s-1.jsonl"
   print -r -- sub > "$dir/projects/p/s-1/subagents/a.jsonl"
-  _ccs_remove_profile_dir gone || rc=1
+  _ccp_remove_profile_dir gone || rc=1
   [[ ! -e "$dir" ]] || { print -u2 'the profile dir must be removed'; rc=1; }
   [[ "$(<"$HOME/.claude/projects/p/s-1.jsonl")" == kept && -f "$HOME/.claude/projects/p/s-1/subagents/a.jsonl" ]] ||
     { print -u2 'its history must move to native history, not be deleted'; rc=1; }
@@ -12926,9 +12927,9 @@ test_removing_profiles_never_loses_a_carried_transcript() {
   local rc=0 P="$HOME/.config/ccproteus/profiles"
   mkdir -p "$P/a/projects/p" "$P/b/projects"
   print -r -- story > "$P/a/projects/p/S.jsonl"
-  _ccs_carry_session S "$P/b/projects" || rc=1
-  _ccs_remove_profile_dir b || rc=1
-  _ccs_remove_profile_dir a || rc=1
+  _ccp_carry_session S "$P/b/projects" || rc=1
+  _ccp_remove_profile_dir b || rc=1
+  _ccp_remove_profile_dir a || rc=1
   [[ -f "$HOME/.claude/projects/p/S.jsonl" && ! -L "$HOME/.claude/projects/p/S.jsonl" &&
      "$(<"$HOME/.claude/projects/p/S.jsonl")" == story ]] ||
     { print -u2 'the transcript must end up as a real file in native history'; rc=1; }
@@ -12938,8 +12939,8 @@ test_removing_profiles_never_loses_a_carried_transcript() {
   mkdir -p "$P/d/projects/p/T/subagents"
   print -r -- tail > "$P/d/projects/p/T.jsonl"
   print -r -- sub > "$P/d/projects/p/T/subagents/x.jsonl"
-  _ccs_carry_session T "$HOME/.claude/projects" || rc=1
-  _ccs_remove_profile_dir d || rc=1
+  _ccp_carry_session T "$HOME/.claude/projects" || rc=1
+  _ccp_remove_profile_dir d || rc=1
   [[ -f "$HOME/.claude/projects/p/T.jsonl" && ! -L "$HOME/.claude/projects/p/T.jsonl" &&
      "$(<"$HOME/.claude/projects/p/T.jsonl")" == tail &&
      -f "$HOME/.claude/projects/p/T/subagents/x.jsonl" && ! -L "$HOME/.claude/projects/p/T" &&
@@ -12947,7 +12948,7 @@ test_removing_profiles_never_loses_a_carried_transcript() {
     { print -u2 'a session carried into native history must not block rm or lose its sidecar'; rc=1; }
   # A real collision keeps the profile instead of deleting its copy.
   mkdir -p "$P/c/projects/p" && print -r -- other > "$P/c/projects/p/S.jsonl"
-  _ccs_remove_profile_dir c 2>/dev/null && { print -u2 'a colliding history must keep the profile'; rc=1; }
+  _ccp_remove_profile_dir c 2>/dev/null && { print -u2 'a colliding history must keep the profile'; rc=1; }
   [[ "$(<"$P/c/projects/p/S.jsonl")" == other ]] || rc=1
   rm -rf "$test_home"
   return $rc
@@ -12963,7 +12964,7 @@ test_native_resume_carries_into_native_history_even_inside_a_profile() {
   print -r -- t > "$P/c/projects/p/T.jsonl"
   printf '%s\n' '#!/bin/sh' 'test -f "$HOME/.claude/projects/p/T.jsonl" && echo FOUND >> "$CCPROTEUS_TEST_LOG"' > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
-  CLAUDE_CONFIG_DIR="$P/c" _ccs_launch --resume T >/dev/null 2>&1
+  CLAUDE_CONFIG_DIR="$P/c" _ccp_launch --resume T >/dev/null 2>&1
   [[ -f "$CCPROTEUS_TEST_LOG" && "$(<"$CCPROTEUS_TEST_LOG")" == *FOUND* ]] ||
     { print -u2 'a native resume must find the session in native history'; rc=1; }
   rm -rf "$test_home"
@@ -13006,11 +13007,11 @@ test_resume_by_id_reaches_another_profiles_session() {
   local rc=0 other="$HOME/.config/ccproteus/profiles/other/projects/p"
   mkdir -p "$other"
   printf '%s\n' '{"type":"assistant","isSidechain":false,"message":{"role":"assistant","model":"m1","content":[]}}' > "$other/sid-1.jsonl"
-  _ccs_resume_model sid-1 && [[ "$REPLY" == m1 ]] || { print -u2 'a session in any profile history must be found'; rc=1; }
-  _ccs_carry_session sid-1 "$HOME/.claude/projects" || rc=1
+  _ccp_resume_model sid-1 && [[ "$REPLY" == m1 ]] || { print -u2 'a session in any profile history must be found'; rc=1; }
+  _ccp_carry_session sid-1 "$HOME/.claude/projects" || rc=1
   [[ "$HOME/.claude/projects/p/sid-1.jsonl" -ef "$other/sid-1.jsonl" ]] || { print -u2 'resume must link the session in'; rc=1; }
-  _ccs_carry_session '../x' "$HOME/.claude/projects" && { print -u2 'a non-id must be refused'; rc=1; }
-  _ccs_carry_session nowhere "$HOME/.claude/projects" && rc=1
+  _ccp_carry_session '../x' "$HOME/.claude/projects" && { print -u2 'a non-id must be refused'; rc=1; }
+  _ccp_carry_session nowhere "$HOME/.claude/projects" && rc=1
   rm -rf "$test_home"
   return $rc
 }

@@ -32,9 +32,9 @@ ROOT = Path(__file__).resolve().parents[1]
 FULL = "claude-sonnet-5-5[1m]"
 BARE = "claude-sonnet-5-5"
 LIB_FILES = (
-    "ccproteus", "ccproteus.sh", *sorted(p.name for p in ROOT.glob("ccproteus-*.zsh")),
-    "ccproteus-adapter", "gateway-shim", "model-window", "settings-compose",
-    "window-sources.json", "model-catalogue.json",
+    "bin/ccproteus", "lib/ccproteus.sh", *sorted(f"lib/{p.name}" for p in (ROOT / "lib").glob("ccproteus-*.zsh")),
+    "libexec/ccproteus-adapter", "libexec/gateway-shim", "libexec/model-window", "libexec/settings-compose",
+    "share/window-sources.json", "share/model-catalogue.json",
 )
 
 CLAUDE = r'''import json, os, pathlib, sys, urllib.error, urllib.request
@@ -138,6 +138,7 @@ def launch(tmp_path):
     temp_dir = tmp_path / "tmp"
     temp_dir.mkdir()
     for name in LIB_FILES:
+        (state / name).parent.mkdir(exist_ok=True)
         shutil.copy2(ROOT / name, state / name)
     # Use the pytest interpreter for shipped Python helpers as well as the stub;
     # never inherit the operator's PATH, credentials, proxy, or harness settings.
@@ -154,7 +155,7 @@ def launch(tmp_path):
         "HOME": str(tmp_path), "PATH": f"{bin_dir}:/usr/bin:/bin",
         "LANG": "C.UTF-8", "XDG_CONFIG_HOME": str(tmp_path / ".config"),
         "TMPDIR": str(temp_dir), "CCPROTEUS_STATE_DIR": str(state),
-        "CCPROTEUS_LIB_DIR": str(state),
+        "CCPROTEUS_LIB_DIR": str(state / "lib"),
         # One knob for every bound in the suite, the stub's own read included
         # (support.py's override).
         "CCPROTEUS_TEST_HANG_TIMEOUT": str(HANG_TIMEOUT),
@@ -168,7 +169,7 @@ def launch(tmp_path):
             f"type=apikey\nbase_url={base}\napi_key=offline-key\nadapter=true\n"
             f"model_map={json.dumps(model_map)}\n")
         process = subprocess.Popen(
-            [str(state / "ccproteus"), "run", "gw", "--model", requested],
+            [str(state / "bin/ccproteus"), "run", "gw", "--model", requested],
             cwd=tmp_path, env=env, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             start_new_session=True,

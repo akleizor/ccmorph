@@ -7,7 +7,7 @@
 # mistake unrepresentable rather than merely discouraged.
 
 SHELL := /bin/sh
-VERSION := $(shell grep -m1 '^_CCPROTEUS_VERSION=' ccproteus.sh | cut -d'"' -f2)
+VERSION := $(shell grep -m1 '^_CCPROTEUS_VERSION=' lib/ccproteus.sh | cut -d'"' -f2)
 TAG := v$(VERSION)
 DIST := dist
 TARBALL := $(DIST)/ccproteus-$(TAG).tar.gz
@@ -34,7 +34,7 @@ test-py:
 # manager resolves. A release that disagrees with itself is how v1.5.1 came to
 # have a changelog entry and no tag, invisible to anything resolving by tag.
 check-version:
-	@test -n "$(VERSION)" || { echo "no _CCPROTEUS_VERSION in ccproteus.sh"; exit 1; }
+	@test -n "$(VERSION)" || { echo "no _CCPROTEUS_VERSION in lib/ccproteus.sh"; exit 1; }
 	@grep -q '^## $(TAG) ' CHANGELOG.md || { \
 	  echo "CHANGELOG.md has no '## $(TAG)' section"; exit 1; }
 	@head -20 CHANGELOG.md | grep -q '^## $(TAG) ' || { \

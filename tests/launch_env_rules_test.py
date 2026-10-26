@@ -102,7 +102,7 @@ def test_a_nested_launch_does_not_inherit_the_outer_sessions_tuning(box):
     # launches `ccproteus run plain` from inside that environment.
     (box.home / 'bin/claude').write_text(
         '#!/bin/sh\n[ "$1" = --help ] && exit 0\n'
-        'if [ -z "$NESTED" ]; then NESTED=1 "' + str(ROOT / 'ccproteus') + '" run plain; exit; fi\n'
+        'if [ -z "$NESTED" ]; then NESTED=1 "' + str(ROOT / "bin/ccproteus") + '" run plain; exit; fi\n'
         'echo "MTT=${MAX_THINKING_TOKENS-<unset>} SET=${CCPROTEUS_SET_ENV-<unset>}" >> "$HOME/env.log"\n'
         'echo "--" >> "$HOME/env.log"\n')
     assert box.run('run', 'tuned').returncode == 0
@@ -114,7 +114,7 @@ def _simple_stub(box, profile='plain'):
     # launches `ccproteus run plain`; the nested stub records what it inherited.
     (box.home / 'bin/claude').write_text(
         '#!/bin/sh\n[ "$1" = --help ] && exit 0\n'
-        'if [ -z "$NESTED" ]; then NESTED=1 CLAUDE_CODE_CHILD_SESSION=1 CLAUDE_CODE_SIMPLE=1 "' + str(ROOT / 'ccproteus') + '" run ' + profile + '; exit; fi\n'
+        'if [ -z "$NESTED" ]; then NESTED=1 CLAUDE_CODE_CHILD_SESSION=1 CLAUDE_CODE_SIMPLE=1 "' + str(ROOT / "bin/ccproteus") + '" run ' + profile + '; exit; fi\n'
         'echo "SIMPLE=${CLAUDE_CODE_SIMPLE-<unset>}" >> "$HOME/env.log"\n'
         'echo "--" >> "$HOME/env.log"\n')
 
@@ -169,7 +169,7 @@ def test_the_addon_strips_exactly_the_launchers_backend_list_plus_proxies(tmp_pa
     monkeypatch.setenv('HOME', str(tmp_path))
     monkeypatch.delenv('CCPROTEUS_STATE_DIR', raising=False)
     rc = _rc()
-    listed = subprocess.run(['zsh', '-c', 'source "$1" && ccproteus _backend_env', 'x', str(ROOT / 'ccproteus.sh')],
+    listed = subprocess.run(['zsh', '-c', 'source "$1" && ccproteus _backend_env', 'x', str(ROOT / 'lib/ccproteus.sh')],
                             capture_output=True, text=True, check=True, timeout=HANG_TIMEOUT).stdout.split()
     assert listed and set(listed) >= set(BACKEND)
     assert set(rc.strip_env()) == set(listed) | set(rc.PROXY_ENV)
@@ -197,7 +197,7 @@ def _nested_stub(box, apply_settings):
            "try: os.environ.update(json.load(open(cfg + '/settings.json')).get('env', {}))\n"
            'except Exception: pass\n' if apply_settings else '')
         + "if not os.environ.get('NESTED'):\n    os.environ['NESTED'] = '1'\n"
-        f"    os.execv('{ROOT}/ccproteus', ['ccproteus', 'run', 'plain'])\n"
+        f"    os.execv('{ROOT}/bin/ccproteus', ['ccproteus', 'run', 'plain'])\n"
         "open(os.environ['HOME'] + '/env.log', 'a').write('MTT=' + os.environ.get('MAX_THINKING_TOKENS', '<unset>') + '\\n--\\n')\n")
 
 

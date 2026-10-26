@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from support import HANG_TIMEOUT
 
-SCRIPT = Path(__file__).resolve().parents[1] / "refresh-model-registry"
+SCRIPT = Path(__file__).resolve().parents[1] / "libexec/refresh-model-registry"
 spec = importlib.util.spec_from_loader("lifecycle_registry", importlib.machinery.SourceFileLoader("lifecycle_registry", str(SCRIPT)))
 assert spec and spec.loader
 rmr = importlib.util.module_from_spec(spec)
@@ -35,9 +35,9 @@ class ProfileCommands(unittest.TestCase):
             (state / 'other.conf').write_text('type=apikey\napi_key=other\n')
             env = {k: v for k, v in os.environ.items() if not k.startswith(('CCPROTEUS', '_CCPROTEUS', 'CLAUDE_', 'MODEL_WINDOW'))}
             env.update(HOME=tmp, XDG_CONFIG_HOME=str(home / '.config'),
-                       CCPROTEUS_STATE_DIR=str(state), CCPROTEUS_LIB_DIR=str(SCRIPT.parent))
+                       CCPROTEUS_STATE_DIR=str(state), CCPROTEUS_LIB_DIR=str(SCRIPT.parent.parent / "lib"))
             def run(*args, answer=None):
-                return subprocess.run([str(SCRIPT.parent / 'ccproteus'), *args], env=env,
+                return subprocess.run([str(SCRIPT.parent.parent / 'bin/ccproteus'), *args], env=env,
                                       input=answer, capture_output=True, text=True, timeout=HANG_TIMEOUT)
             renamed = run('mv', 'gw', 'renamed')
             self.assertEqual(renamed.returncode, 0, renamed.stderr)
