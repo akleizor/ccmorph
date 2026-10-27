@@ -5,7 +5,9 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
-## Unreleased
+## v0.1.0 — 2026-10-27
+
+First public release as ccmorph. It is beta: commands and settings may still change before 1.0.
 
 ### Added
 
@@ -321,6 +323,10 @@
 - **`.gitlab-ci.yml` and `packaging/web/` are gone.** GitHub Actions remains the
   only CI; the internal install page is retired along with the
   `.impeccable/config.json` entry that existed only for it.
+
+## Before ccmorph
+
+The entries below are the private predecessor's releases, kept for their history. Their version numbers are not comparable with 0.x.
 
 ## v2.5.1 — 2026-09-18
 
