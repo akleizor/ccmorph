@@ -11,8 +11,11 @@ import time
 import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-from gateway_shim_test import load_shim_module  # noqa: E402
 from rc_hosts_test import is_python_helper  # noqa: E402
+
+# The shim's own bound (costLimit in shim/sidecar.go, 2**53/100); shim/sidecar_test.go
+# asserts the Go constant equals this literal, and the test below that the exporter's matches.
+SHIM_COST_LIMIT = 2 ** 53 / 100
 
 SPEC = importlib.util.spec_from_loader("usage_export", importlib.machinery.SourceFileLoader(
     "usage_export", str(pathlib.Path(__file__).parent.parent / "scripts/usage-export")))
@@ -124,19 +127,18 @@ def test_the_exporter_refuses_exactly_the_costs_the_shim_refuses(tmp_path):
     shim keeps still bills as a gateway cost, the limit itself (the first value it
     refuses) exports unpriced — and the two literals are one number, so neither
     script's bound can drift from the other's."""
-    shim = load_shim_module()
     rows, output = tmp_path / "rows", tmp_path / "out"
     rows.mkdir()
     write(rows, "kept.json", receipt("a", "claude-opus-5-5", "2026-10-16T01:00:00+00:00", cost=1e13))
     write(rows, "refused.json", receipt("b", "claude-opus-5-5", "2026-10-16T02:00:00+00:00",
-                                        cost=shim.COST_LIMIT))
+                                        cost=SHIM_COST_LIMIT))
 
     stats = ue.export(rows, output)
 
     day = read_day(output, "2026-10-16")
     assert [r["costUSD"] for r in day] == [1e13] and stats["usd"] == 1e13
     assert stats["unpriced"] == 1 and stats["gateway_rows"] == 1
-    assert ue.COST_LIMIT == shim.COST_LIMIT
+    assert ue.COST_LIMIT == SHIM_COST_LIMIT
 
 
 def test_unpriced_model_with_a_gateway_cost_still_exports(tmp_path):

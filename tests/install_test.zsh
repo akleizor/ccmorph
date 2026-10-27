@@ -17,6 +17,11 @@ passed=0; failed=0
 ok()   { print -r -- "ok: $1"; (( ++passed )) }
 fail() { print -r -- "FAIL: $1"; (( ++failed )) }
 
+# gateway-shim is compiled, so a checkout has none until `make shim` builds it;
+# the installer copies that binary and refuses to run without one.
+[[ -x "$REPO/libexec/gateway-shim" ]] || make -C "$REPO" shim >/dev/null 2>&1
+[[ -x "$REPO/libexec/gateway-shim" ]] || { print -r -- "FAIL: no libexec/gateway-shim and 'make shim' did not build one (needs Go)"; exit 1 }
+
 fresh_env() {  # $1 = case dir; prints nothing, sets HOME/ZDOTDIR/PATH stubs
   local d="$TMP/$1"
   mkdir -p "$d/home" "$d/bin"
@@ -75,6 +80,20 @@ bin_got=("$d/home/.local/bin/"*(N:t))
 grep -qF '# >>> ccmorph >>>' "$d/home/.zshrc" \
   && fail "installer wired the rc — ccmorph needs no shell integration" \
   || ok "rc left untouched"
+
+# --- 1b. no gateway-shim binary for this platform: install fails, says why -----
+# The binary is the one component a checkout does not track. An installer that
+# carried on without it would leave a launch that dies at its first request.
+d=$(fresh_env nobinary)
+mkdir -p "$d/src"
+(cd "$REPO" && tar --exclude=./.git --exclude=./.claude --exclude=./dist --exclude='./libexec/gateway-shim*' -cf - .) | tar -xf - -C "$d/src"
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin:/opt/homebrew/bin" \
+  zsh "$d/src/install.sh" >"$d/out" 2>&1 </dev/null; rc=$?
+(( rc != 0 )) && ok "install without a gateway-shim binary exits non-zero" || fail "install without a binary exited 0"
+grep -qF 'No gateway-shim binary for' "$d/out" && grep -qF "make shim" "$d/out" \
+  && ok "the missing binary is named, with the fix" || { fail "no clear message for a missing binary"; cat "$d/out" }
+[[ ! -e "$d/home/.config/ccmorph/libexec/gateway-shim" ]] \
+  && ok "nothing half-installed as the shim" || fail "a shim was placed despite no binary"
 
 # --- 2. legacy startup wiring is reported but never edited --------------------
 print 'export BEFORE=1' > "$d/home/.zshrc"

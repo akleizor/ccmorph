@@ -1,5 +1,8 @@
 """The suite's shared hang-detection bound; imported by the tests that wait on a real process."""
 import os
+from pathlib import Path
+
+import pytest
 
 # A hang detector, not a performance bound: the longest any test waits on a
 # spawned process, sized so only a real hang reaches it. It sits above pytest.ini's
@@ -17,9 +20,6 @@ HANG_TIMEOUT = float(os.environ.get("CCMORPH_TEST_HANG_TIMEOUT", "120"))
 FAKE_SERVER_NO_DNS = "import socket\nsocket.getfqdn = lambda name='': name\n"
 
 
-def shim_cmd(path):
-    """The argv prefix that starts gateway-shim: the Go binary named by CCMORPH_SHIM_BIN
-    when set, else the Python script at `path`. Lets the black-box shim tests run both ways."""
-    import sys
-    binary = os.environ.get("CCMORPH_SHIM_BIN")
-    return [binary] if binary else [sys.executable, str(path)]
+SHIM = Path(__file__).resolve().parent.parent / "libexec/gateway-shim"
+# Module-level `pytestmark = needs_shim` skips a file that spawns the compiled shim.
+needs_shim = pytest.mark.skipif(not SHIM.exists(), reason=f"{SHIM} is not built: run `make shim` first")
