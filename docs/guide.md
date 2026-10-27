@@ -6,29 +6,60 @@ reasoning behind each behavior, see [ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ## Install details
 
+```sh
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/akleizor/ccmorph/main/install.sh)"
+```
+
+Or from a clone: `git clone https://github.com/akleizor/ccmorph && cd ccmorph && ./install.sh`.
+
+Run outside a source tree, `install.sh` downloads the tarball for `CCMORPH_REF`
+(a branch or tag; default `main`), unpacks it in a temporary directory and runs
+the installer from there, which then takes the same path as a clone.
+`CCMORPH_INSTALL_URL` replaces the whole tarball URL, for a mirror or a local
+file. It needs `curl` or `wget`, and `tar`. The `sh -c "$(curl ...)"` form keeps
+the terminal attached, so the optional installs below can ask. Piping
+(`curl -fsSL ... | sh`) works too, but there is no terminal to ask on: the
+installer skips those offers and prints the commands to run yourself.
+
 That is the whole install. ccmorph installs only its own command and runtime.
 It never edits shell startup files, including obsolete integration blocks:
 it reports those for the user to remove.
 
-**Required:** `zsh`, `python3`, and the `claude` CLI — the installer refuses
-without them.
+**Platforms:** macOS and Linux. Windows shells (Git Bash, MSYS, Cygwin) are
+refused with a pointer to WSL; install inside a WSL distribution instead.
 
-**Optional, and offered during install** (it detects what is missing, explains
-what each one unlocks, and installs on confirm — never silently):
+**Required:** `zsh`, `python3` 3.8 or newer, and the `claude` CLI — the installer
+refuses without them. It never installs them: they need root or belong to another
+vendor. It names the command for the package manager it finds (the first of
+`brew`, `apt-get`, `dnf`, `apk`, `pacman`, `zypper`) and stops. Claude Code gets
+a link to its setup page instead of a command.
 
-| | Needed for | Without it |
-|---|---|---|
-| `cliproxyapi` | non-native custom endpoints — automatic dialect translation | only the endpoint's Claude-family models are reachable |
-| `fzf` | searchable profile and model pickers | numbered choices in a terminal; explicit arguments in scripts |
+**Optional** (the installer explains what each one unlocks and installs on
+confirm — never silently, and never without a terminal):
+
+| | Needed for | Without it | Installer |
+|---|---|---|---|
+| `fzf` | searchable profile and model pickers | numbered choices in a terminal; explicit arguments in scripts | offered through the detected package manager |
+| `cliproxyapi` | non-native custom endpoints — automatic dialect translation | only the endpoint's Claude-family models are reachable | offered through `brew` only; elsewhere it points to the project page |
 
 The installer copies the runtime (`lib/`, `libexec/`, `share/`) into `~/.config/ccmorph` and the `ccmorph`
 command into `~/.local/bin`. It does not edit your shell config; if
 `~/.local/bin` is not already on your `PATH` it says so and prints the one line
-to add.
+to add, for your login shell:
+
+| Shell | File | Line |
+|---|---|---|
+| zsh | `~/.zshrc` | `export PATH="$HOME/.local/bin:$PATH"` |
+| bash | `~/.bashrc` (Linux), `~/.bash_profile` (macOS) | `export PATH="$HOME/.local/bin:$PATH"` |
+| fish | `~/.config/fish/config.fish` | `fish_add_path $HOME/.local/bin` |
+
+Every install ends with `Check:  ccmorph doctor` (spelled with the full path
+while `~/.local/bin` is off your `PATH`). A fresh install adds
+`Next:   ccmorph add <name>`.
 
 ## Updating
 
-Re-run `./install.sh` from a fresh clone. **It is an
+Run the one-line install again, or `./install.sh` from a fresh clone. **It is an
 update, not a reinstall** — it replaces the runtime scripts and never touches
 your profiles' settings or credentials, or `local.sh`.
 It reports the version it moved you from and names what it preserved, so you can
@@ -48,17 +79,26 @@ once, by itself, on the next install or command — see *Where state lives* belo
 Confirm it:
 
 ```sh
-ccmorph --version
+ccmorph doctor
 ```
+
+With no profiles yet, `doctor` reports the machine instead of a profile:
+the version, `zsh`, `python3`, `claude`, `fzf`, `cliproxyapi`, and whether
+`ccmorph` is on your `PATH`. It changes nothing, and fails only when a required
+tool is missing or too old. After you add a profile, `ccmorph doctor <profile>`
+checks that profile.
 
 Then set up your first profile:
 
 ```sh
 ccmorph add work         # one-time login or credential paste
-ccmorph list             # see profiles
-ccmorph use work         # choose what `ccmorph run` launches
-ccmorph run work         # launch on it explicitly
+ccmorph run              # launch on it
 ```
+
+The first profile you add becomes the default, so `ccmorph run` needs no
+argument. Adding another never changes the default; `ccmorph list` marks it and
+`ccmorph use <profile>` moves it. With no profiles, `ccmorph run` tells you to
+run `ccmorph add`.
 
 `ccmorph add` asks which kind of profile (see *Profile types* below) and prompts
 only for what that kind needs: a subscription opens the normal browser login, an
