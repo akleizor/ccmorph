@@ -30,15 +30,13 @@ esac
 # tree (the copies, the manifest) would fail on a path that does not exist. Fetch
 # the tree and hand over to ITS installer instead: the downloaded copy has
 # lib/ccmorph.sh beside it, takes the local path below, and never comes back here.
-# `--remote` forces this from inside a tree, for a later `ccmorph update`.
 # POSIX-only syntax in this block, and it runs first: no zsh yet, no `set -eu`.
 _ccm_local=0
 case "$0" in
   */install.sh|install.sh)
     [ -r "$0" ] && [ -r "$(dirname "$0")/lib/ccmorph.sh" ] && _ccm_local=1 ;;
 esac
-if [ "$_ccm_local" = 0 ] || [ "${1:-}" = "--remote" ]; then
-  [ "${1:-}" = "--remote" ] && shift
+if [ "$_ccm_local" = 0 ]; then
   _ccm_ref="${CCMORPH_REF:-main}"
   _ccm_url="${CCMORPH_INSTALL_URL:-https://github.com/akleizor/ccmorph/archive/${_ccm_ref}.tar.gz}"
   _ccm_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ccmorph-install.XXXXXX")" || exit 1
