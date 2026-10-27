@@ -13,9 +13,32 @@
   `CCMORPH_TASK` (plus optional `CCMORPH_ATTEMPT`) tags every usage row;
   the shim never changes the requested model. `gateway-shim outcome <task> <result>`
   records how a task ended. See "The usage sidecar" in ARCHITECTURE.md.
+- **One-line install.** `sh -c "$(curl -fsSL https://raw.githubusercontent.com/akleizor/ccmorph/main/install.sh)"`
+  downloads the source and runs its installer; no clone is needed. `CCMORPH_REF`
+  picks a branch or tag (default `main`) and `CCMORPH_INSTALL_URL` replaces the
+  whole tarball URL. `curl ... | sh` works too but has no terminal, so it
+  declines the optional installs. The clone form still works.
+- **`ccmorph doctor` reports the environment before any profile exists.** With no
+  profile it shows the version, `zsh`, `python3`, `claude`, `fzf`, `cliproxyapi`
+  and whether `ccmorph` is on `PATH`, read-only, and fails only for a missing or
+  too-old required tool.
 
 ### Changed
 
+- **The installer names what is missing for any package manager.** `zsh` and
+  `python3` get the exact command for the first of `brew`, `apt-get`, `dnf`, `apk`,
+  `pacman` or `zypper` found, and `claude` gets its setup page; none of the three
+  is installed for you. `fzf` is offered through the same manager and still asks
+  first. Windows shells (Git Bash, MSYS, Cygwin) are refused with a pointer to WSL.
+- **The PATH hint and the closing report fit your shell and the run.** When
+  `~/.local/bin` is off `PATH` the installer names the file and line for your
+  login shell (`~/.zshrc`, `~/.bashrc` or `~/.bash_profile`, or fish's
+  `config.fish` with `fish_add_path`) and still edits nothing. Every run ends with
+  `Check:  ccmorph doctor`, and a fresh install adds `Next:   ccmorph add <name>`.
+- **The first profile you add becomes the default.** Before, only a subscription
+  profile did, so `ccmorph run` failed after adding any other kind until you
+  learned `ccmorph use`. An existing default is never changed, and `ccmorph run`
+  with no profiles now says to run `ccmorph add <name>`.
 - **BREAKING: the project is named ccmorph.** The command, the modules, the
   environment variables (`CCMORPH_*`), the install path (`~/.config/ccmorph`),
   the LaunchAgent labels and the repository moved with it. No old name is read

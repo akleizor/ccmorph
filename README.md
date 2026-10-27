@@ -33,39 +33,55 @@ ccmorph run  ------+--> personal   API key             -->  Anthropic API
 
 ## Requirements
 
-- `zsh`, `python3`, and the `claude` CLI (the installer refuses without them)
+- `zsh`, `python3` 3.8 or newer, and the `claude` CLI. The installer names the
+  command to install a missing one for your package manager, and stops.
 - Optional: `cliproxyapi` for non-Anthropic endpoints, `fzf` for searchable
   pickers. The installer offers both and installs only on confirm.
+- macOS or Linux. On Windows, use WSL.
 
 ## Install
 
 ```sh
-git clone https://github.com/akleizor/ccmorph && cd ccmorph && ./install.sh
-ccmorph --version
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/akleizor/ccmorph/main/install.sh)"
+ccmorph doctor
 ```
+
+Or from a clone:
+
+```sh
+git clone https://github.com/akleizor/ccmorph && cd ccmorph && ./install.sh
+```
+
+The one-liner downloads the source for the ref in `CCMORPH_REF` (default
+`main`; a branch or tag) and runs its installer. `curl -fsSL ... | sh` also
+works, but it has no terminal to ask on, so it declines the optional
+installs and prints the commands instead.
 
 The installer copies the runtime (`lib/`, `libexec/`, `share/`) into `~/.config/ccmorph` and the `ccmorph`
 command into `~/.local/bin`. It never edits shell startup files; if
-`~/.local/bin` is not on your `PATH`, it prints the line to add.
+`~/.local/bin` is not on your `PATH`, it prints the line to add, for your shell.
 
-To update, re-run `./install.sh` from a fresh clone; profiles, credentials, and `local.sh` are preserved.
-`./install.sh --uninstall` removes the command and leaves your profiles alone.
+To update, run the same install again; profiles, credentials, and `local.sh` are preserved.
+`./install.sh --uninstall` (from a clone) removes the command and leaves your profiles alone.
 
 ## Quick start
 
 A fresh install has no profiles.
 
 ```sh
+ccmorph doctor           # check zsh, python3, claude and PATH
 ccmorph add work         # create a profile: login or credential paste
-ccmorph list             # see profiles; the default is marked
-ccmorph use work         # make it the default for `ccmorph run`
-ccmorph run              # launch Claude Code on the default profile
+ccmorph run              # launch Claude Code on it
 ```
+
+The first profile you add becomes the default. `ccmorph list` shows the
+profiles with the default marked, and `ccmorph use <profile>` changes it.
 
 ## Usage
 
 ```sh
 ccmorph run <profile>              # launch on a profile for this session
+ccmorph use <profile>              # make a profile the default for `ccmorph run`
 ccmorph run -i                     # choose the profile, then the model
 ccmorph run <profile> --model <id> # profile plus explicit model
 ccmorph run work mcp list          # native Claude Code arguments pass through
