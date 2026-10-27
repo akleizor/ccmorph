@@ -261,7 +261,7 @@ _ccm_provider_stop() {
   fi
   # cliproxyapi refreshes OAuth tokens mid-session and rewrites the credential
   # files at its own umask (observed 0644), so re-tighten them to the 0600
-  # SECURITY.md guarantees now that the process that was rewriting them is gone.
+  # .github/SECURITY.md guarantees now that the process that was rewriting them is gone.
   [[ -z "${_ccm_provider_auth:-}" ]] || command chmod 0600 "$_ccm_provider_auth"/**/*.json(N) 2>/dev/null || :
   [[ -z "${_ccm_provider_tmpdir:-}" ]] || command rm -rf "$_ccm_provider_tmpdir"
   unset _ccm_provider_pid _ccm_provider_active _ccm_provider_port _ccm_provider_key _ccm_provider_tmpdir _ccm_provider_auth

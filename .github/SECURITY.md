@@ -110,4 +110,4 @@ probes — never inference, except where it says so:
 `--check` skips persistence; inference remains a separate explicit opt-in.
 
 Command, installation, and host-integration boundaries are defined in
-[Scope and ownership](ARCHITECTURE.md#scope-and-ownership).
+[Scope and ownership](../docs/ARCHITECTURE.md#scope-and-ownership).

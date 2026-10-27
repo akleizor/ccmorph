@@ -13,7 +13,7 @@ These are enduring promises to the user, not a feature list, roadmap, or impleme
 
 2. Credentials stay private and are never leaked in ordinary diagnostics, logs, command arguments, or another profile's session.
 
-   **Check:** Run `tests/launch_env_rules_test.py` and `zsh tests/ccmorph_test.zsh`; require zero failures, zero other-backend credentials in captured launch environments, and zero fixture secret values in ordinary diagnostics/logs/process arguments. In the isolated test home, require credential/config files mode `0600` and private profile directories `0700`, as documented in `SECURITY.md`; do not open the real credential store. Explicit secret-export commands are intentional exports, not ordinary diagnostics. Permissions do not protect against processes running as the same user.
+   **Check:** Run `tests/launch_env_rules_test.py` and `zsh tests/ccmorph_test.zsh`; require zero failures, zero other-backend credentials in captured launch environments, and zero fixture secret values in ordinary diagnostics/logs/process arguments. In the isolated test home, require credential/config files mode `0600` and private profile directories `0700`, as documented in `.github/SECURITY.md`; do not open the real credential store. Explicit secret-export commands are intentional exports, not ordinary diagnostics. Permissions do not protect against processes running as the same user.
 
 3. Each profile keeps its own identity, backend configuration, and declared privacy behavior without changing another profile's state.
 
@@ -37,6 +37,6 @@ These are enduring promises to the user, not a feature list, roadmap, or impleme
 
 ## Sources and limits
 
-Read from `/Users/alex/code/ccmorph`: `AGENTS.md` (Verification, Hive focus and external caller contract), `README.md`, `CLAUDE.md` (routes to AGENTS), `SECURITY.md`, and the cited measurement/test sources. Source revision: `9314b8d` on 2026-10-16. No `/Users/alex/.claude/memory/ccmorph/MEMORY.md` exists.
+Read from `/Users/alex/code/ccmorph`: `AGENTS.md` (Verification, Hive focus and external caller contract), `README.md`, `CLAUDE.md` (routes to AGENTS; now `.claude/CLAUDE.md`), `SECURITY.md` (now `.github/SECURITY.md`), and the cited measurement/test sources. Source revision: `9314b8d` on 2026-10-16. No `/Users/alex/.claude/memory/ccmorph/MEMORY.md` exists.
 
 Identity, backend settings and session history are private per profile; shared tools are an existing user contract, not a defect to “fix” while drafting. No request bodies, credentials, live configuration, or real session logs are included in these drafts or their preview.

@@ -202,7 +202,7 @@ for m in served:
     # No ceiling gate here, deliberately: every served model is offered, and the window
     # is model-window's separate question. A model too small to compact is handled at
     # launch, where the real budget is known, by the advisory and CCMORPH_WITHHOLD_FATAL.
-    # Full rationale and the probe in ARCHITECTURE.md, "Everything else in a row
+    # Full rationale and the probe in docs/ARCHITECTURE.md, "Everything else in a row
     # is derived".
 
     # The id IS the label. A row whose model is a family-alias target is rendered by
@@ -523,7 +523,7 @@ _ccm_claude_session() {
 # not the profile being launched, so clearing them (as every launch does) sends a
 # request the route rejects. The session publishes the flags it was given in one
 # variable, CCMORPH_EDGE_ROUTE_ENV (KEY=VALUE per line; the seam, documented in
-# ARCHITECTURE.md). Print those lines for the keys given, only while the caller's
+# docs/ARCHITECTURE.md). Print those lines for the keys given, only while the caller's
 # proxy is a loopback one, which is what ties them to this session's edge.
 _ccm_nested_edge_env() {
   local proxy="${HTTPS_PROXY:-${https_proxy:-}}" line
@@ -1369,7 +1369,7 @@ _ccm_launch() {
       # Two more facts hold for every route behind the adapter, so they are
       # defaults here instead of lines each profile has to rediscover:
       # the advisor is an Anthropic server-side tool no gateway tested serves
-      # (the request fails before inference, ARCHITECTURE.md section 7), and
+      # (the request fails before inference, docs/ARCHITECTURE.md section 7), and
       # /effort is hidden for ids Claude Code does not know although the
       # level does reach the provider (section 6).
       #

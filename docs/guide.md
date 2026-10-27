@@ -2,7 +2,7 @@
 
 The full reference behind the [README](../README.md): installation details, profile
 settings, model and context-window handling, switching, and state layout. For the
-reasoning behind each behavior, see [ARCHITECTURE.md](../ARCHITECTURE.md).
+reasoning behind each behavior, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Install details
 

@@ -22,7 +22,7 @@
 - **Cost per profile.** Every gateway turn leaves a receipt with the billed cost;
   [ccusage](https://github.com/ccusage/ccusage) turns them into daily reports.
 - **Leaves `claude` alone.** No wrapper, no patch: native arguments pass through.
-  See [Scope and ownership](ARCHITECTURE.md#scope-and-ownership).
+  See [Scope and ownership](docs/ARCHITECTURE.md#scope-and-ownership).
 
 ```
                    +--> work       subscription login  -->  Anthropic
@@ -141,8 +141,8 @@ windows and probing, switching, and state migration.
 | Doc | Covers |
 |---|---|
 | [docs/guide.md](docs/guide.md) | Full usage and configuration reference |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | How sessions reach a backend, and why |
-| [SECURITY.md](SECURITY.md) | Where credentials live and what protects them |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How sessions reach a backend, and why |
+| [.github/SECURITY.md](.github/SECURITY.md) | Where credentials live and what protects them |
 | [CHANGELOG.md](CHANGELOG.md) | What changed in each version |
 | [addons/remote-control/README.md](addons/remote-control/README.md) | Remote Control bridge add-on |
 

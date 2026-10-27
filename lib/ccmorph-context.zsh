@@ -515,7 +515,7 @@ _ccm_invariant_warn() {
   # Claude Code compacts at roughly 0.85 of (window - 20k) and cannot see a routed
   # model's real ceiling, so a model holding less than that trigger dies mid-session
   # on "input exceeds the context window" with no warning and nothing to be done. The
-  # rule has been checked by hand arithmetic in ARCHITECTURE.md section 5 until now,
+  # rule has been checked by hand arithmetic in docs/ARCHITECTURE.md section 5 until now,
   # which is exactly the kind of check that stops happening: widening one allowlist
   # silently reintroduces the hazard.
   #

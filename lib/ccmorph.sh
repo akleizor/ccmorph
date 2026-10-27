@@ -87,7 +87,7 @@ source "$_CCMORPH_LIB_DIR/ccmorph-ui.zsh" || return 1
 # Load order is the contract: the paths and globals above, then local.sh, then
 # the UI module, then these modules in this order. A module only defines
 # functions unless its header says otherwise; one that fails to load fails the
-# whole source, as the UI module always has. Map: ARCHITECTURE.md, Code layout.
+# whole source, as the UI module always has. Map: docs/ARCHITECTURE.md, Code layout.
 source "$_CCMORPH_LIB_DIR/ccmorph-base.zsh" || return 1
 source "$_CCMORPH_LIB_DIR/ccmorph-models.zsh" || return 1
 source "$_CCMORPH_LIB_DIR/ccmorph-context.zsh" || return 1

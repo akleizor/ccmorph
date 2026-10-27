@@ -1,25 +1,15 @@
 # ccmorph
 
 Before changing launch, installation, packaging, migration, or recovery behavior,
-read [Scope and ownership](ARCHITECTURE.md#scope-and-ownership). That section is
+read [Scope and ownership](docs/ARCHITECTURE.md#scope-and-ownership). That section is
 the project-wide authority for integration boundaries.
 
-Verification: while iterating, run only the tests for what you touched
-(`CCMORPH_TEST_FILTER=<name> zsh tests/ccmorph_test.zsh`,
-`CCMORPH_LIB_DIR="$PWD/lib" python3 -m pytest tests/<file>.py -q`). Run the full set
-once, before you commit or open the PR, never again for the same diff:
-`zsh tests/ccmorph_test.zsh` (shards across the cores that help; about 40 s),
-`zsh tests/install_test.zsh`, `zsh tests/cli_configure_test.zsh`, and
-`CCMORPH_LIB_DIR="$PWD/lib" uv run --with pytest --with pytest-xdist --with pytest-timeout python -m pytest tests/ -q`
-(parallel whenever xdist is present; about 50 s). These are light and run bare, not under `rig run build`.
-Use isolated test homes; do not run the installer against the operator's home as
-a smoke test.
-
-Review: reviewers read [REVIEW.md](REVIEW.md) first (what a real bug looks like here).
+Verification (the four suites and the per-file commands), isolated test homes,
+commit style and how a review is read: [.github/CONTRIBUTING.md](.github/CONTRIBUTING.md).
 
 ## Hive
 
-Intent: [INTENT.md](INTENT.md) is the Alex-approved v0 starting point; changes require a PR he approves.
+Intent: [INTENT.md](docs/INTENT.md) is the Alex-approved v0 starting point; changes require a PR he approves.
 
 Repo-specific part of `~/.agents/AGENTS.md` Task Queue.
 
@@ -27,7 +17,8 @@ Repo-specific part of `~/.agents/AGENTS.md` Task Queue.
 every Claude Code session on this Mac.
 
 **Merge rule (Alex, 2026-10-17): the Hive SOP's risk classes.** Every PR gets
-a fresh reviewer and the four Verification suites above in isolated test
+a fresh reviewer and the four Verification suites (see
+[.github/CONTRIBUTING.md](.github/CONTRIBUTING.md)) in isolated test
 homes on its exact head; only failures the PR introduced count (a failing test
 is checked on `origin/main` and rerun alone). Behaviour changes merge after a
 clean review like any other. High risk waits for Alex's ✅ on the exact head:
@@ -36,7 +27,7 @@ the `_ccm_launch -a` entry point, and changes to this rule.
 
 **ccmorph focus:** maintenance and patching, not new features. Every patch
 ships with regression tests in `tests/` that fail before the fix, and merges
-only when the four Verification suites above show no failure it introduced;
+only when the four Verification suites show no failure it introduced;
 an untested change does not merge. A bug fix that restores intended behaviour
 is maintenance. A new behaviour at launch, in the model picker, or in which
 backend a profile reaches is a product decision (`proposed`). The live install is `~/.config/ccmorph`: never run, edit or

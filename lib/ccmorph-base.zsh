@@ -101,7 +101,7 @@ _ccm_resolve_exe() {  # $1 = env var name (for messages), $2 = configured value
 # the provider. Two traps, both of which produced a wrong answer here once --
 # BOTH thinking and output_config.effort must be present (the translator reads the
 # effort only for adaptive thinking), and effort cannot be verified by comparing
-# output_tokens (variance swamps it). ARCHITECTURE.md section 6 has the evidence
+# output_tokens (variance swamps it). docs/ARCHITECTURE.md section 6 has the evidence
 # and the method that does work.
 # Gateway role mappings belong to the profile, independent of credential type.
 _CCMORPH_MODEL_MAPPING_ENV=(
@@ -469,7 +469,7 @@ _ccm_launch_has_flag_ahead() {
 # position only (usage: run [profile] [-i] [-- args]), so it
 # counts only while nothing but this launcher's own leading options precede it.
 # The first argument Claude Code owns ends that prefix, and every `--` from
-# there on is Claude Code's: its command grammar is its own (ARCHITECTURE.md,
+# there on is Claude Code's: its command grammar is its own (docs/ARCHITECTURE.md,
 # Scope and ownership), so the MCP delimiter in `mcp add demo -- npx -y server`
 # and the literal prompt value in `-p --` must both arrive intact. Deleting the
 # first exact `--` wherever it appeared removed those too, one argument short.

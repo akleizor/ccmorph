@@ -60,7 +60,7 @@ def home_env(tmp, **extra):
 
 class CredentialArgv(unittest.TestCase):
     def test_key_never_on_a_command_line(self):
-        """SECURITY.md: 'No credential on a command line ... not in ps output.'"""
+        """.github/SECURITY.md: 'No credential on a command line ... not in ps output.'"""
         server = serve(Slow)
         key = "sk-ARGV-CANARY-123456"
         with tempfile.TemporaryDirectory() as tmp:

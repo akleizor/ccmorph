@@ -89,7 +89,6 @@ __pycache__/
 .claude/scheduled_tasks.lock
 # Background task receipts and logs are local verification evidence, not product.
 .pi/tasks/
-# .git-worktree-policy is committed integration intent, not machine-local state.
 # Editor and OS droppings, ignored so they cannot become an accidental commit in
 # a directory where `git add -A` is one keystroke from a credential.
 .officecli/
