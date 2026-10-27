@@ -12,15 +12,24 @@ TAG := v$(VERSION)
 DIST := dist
 TARBALL := $(DIST)/ccmorph-$(TAG).tar.gz
 
-.PHONY: help test test-zsh test-py check-version dist release clean
+.PHONY: help shim test test-zsh test-py test-go check-version dist release clean
 
 help:
 	@echo "ccmorph $(VERSION)"
+	@echo "  make shim           build libexec/gateway-shim (needs Go)"
 	@echo "  make test           run every suite"
 	@echo "  make check-version  version, changelog and tag must agree"
 	@echo "  make release        verify, then build $(TARBALL) + the stable ccmorph.tar.gz"
 
-test: test-zsh test-py
+# The one compiled helper. Tests and a checkout's install.sh use this binary.
+shim:
+	go build -trimpath -o libexec/gateway-shim ./cmd/gateway-shim
+
+test: shim test-go test-zsh test-py
+
+test-go:
+	go vet ./...
+	go test ./...
 
 test-zsh:
 	zsh tests/ccmorph_test.zsh
@@ -52,9 +61,21 @@ check-version:
 # install.sh to the release too, since the one-liner fetches it from there.
 # Split out of `release` because its own `test` prerequisite would recurse into
 # the suite that tests this step.
+# The tarball also carries one gateway-shim per platform, built from the same
+# tag export (never the working tree), so a user's install needs no Go.
+PLATFORMS := darwin/arm64 darwin/amd64 linux/arm64 linux/amd64
+STAGE := $(DIST)/stage/ccmorph-$(TAG)
+
 dist:
-	@mkdir -p $(DIST)
-	git archive --format=tar.gz --prefix=ccmorph-$(TAG)/ -o $(TARBALL) $(TAG)
+	@rm -rf $(DIST)/stage && mkdir -p $(STAGE)
+	git archive --format=tar $(TAG) | tar -x -C $(STAGE)
+	@for p in $(PLATFORMS); do \
+	  os=$${p%/*}; arch=$${p#*/}; \
+	  (cd $(STAGE) && CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch \
+	    go build -trimpath -o libexec/gateway-shim-$$os-$$arch ./cmd/gateway-shim) || exit 1; \
+	done
+	tar -czf $(TARBALL) -C $(DIST)/stage ccmorph-$(TAG)
+	@rm -rf $(DIST)/stage
 	cp $(TARBALL) $(DIST)/ccmorph.tar.gz
 	@cd $(DIST) && shasum -a 256 ccmorph-$(TAG).tar.gz > ccmorph-$(TAG).tar.gz.sha256
 	@echo

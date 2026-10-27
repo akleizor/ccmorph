@@ -40,7 +40,7 @@ jobs:
           done
       - name: byte-compile every python helper
         run: |
-          python3 -m py_compile libexec/ccmorph-adapter libexec/gateway-shim libexec/model-window \
+          python3 -m py_compile libexec/ccmorph-adapter libexec/model-window \
                                 libexec/refresh-model-registry tests/*.py
       - name: shebangs must find their interpreter via env
         # #!/bin/zsh does not exist where zsh lives in /usr/bin, and both of these
@@ -71,6 +71,11 @@ jobs:
             sudo apt-get update && sudo apt-get install -y zsh
           fi
           zsh --version
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: go vet, build and test; build libexec/gateway-shim for the suites below
+        run: go vet ./... && go build ./... && go test ./... && make shim
       - name: zsh suite
         run: zsh tests/ccmorph_test.zsh
       - name: installer suite
@@ -89,9 +94,9 @@ jobs:
           python -m pytest tests/ -v --durations=25
 
   python-floor:
-    # The floor is 3.8, set by a walrus in gateway-shim. Prove the helpers still
-    # import there — the failure this guards against surfaced days after install,
-    # inside a child process, as a bare SyntaxError.
+    # The floor is 3.8. Prove the Python helpers still import there — the failure
+    # this guards against surfaced days after install, inside a child process, as
+    # a bare SyntaxError.
     strategy:
       fail-fast: false
       matrix:
@@ -104,9 +109,13 @@ jobs:
           python-version: ${{ matrix.python }}
       # Most Python tests drive the zsh library; the Ubuntu image ships no zsh.
       - run: sudo apt-get update && sudo apt-get install -y zsh
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make shim
       - run: |
           python -m pip install pytest pytest-timeout "backports.zoneinfo; python_version < '3.9'"
-          python -m py_compile libexec/ccmorph-adapter libexec/gateway-shim libexec/model-window \
+          python -m py_compile libexec/ccmorph-adapter libexec/model-window \
                                libexec/refresh-model-registry
           python -m pytest tests/ -q
 
@@ -130,6 +139,11 @@ jobs:
           printf '#!/bin/sh\necho "claude 0.0.0-stub"\n' > "$HOME/.local/bin/claude"
           chmod +x "$HOME/.local/bin/claude"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: build the gateway-shim binary a checkout installs
+        run: make shim
       - name: install non-interactively, then verify what it placed
         run: |
           touch "$HOME/.zshrc"
@@ -138,6 +152,13 @@ jobs:
           grep -qF 'ccmorph' "$HOME/.zshrc" && exit 1
           test -r "$HOME/.config/ccmorph/lib/ccmorph.sh"
           test -x "$HOME/.local/bin/ccmorph"
+      - name: the installed gateway-shim starts
+        # It prints its listening banner first; it exits on its own once the
+        # --parent-pid process is gone.
+        run: |
+          sleep 5 & parent=$!
+          "$HOME/.config/ccmorph/libexec/gateway-shim" 0 http://127.0.0.1:9 --parent-pid=$parent \
+            | head -1 | tee /dev/stderr | grep -q '^gateway-shim :[0-9]'
       - name: the command runs in a shell that sourced nothing
         run: sh -c 'ccmorph --version'
       - name: one-line install from a local tarball (remote mode, real curl and tar)
@@ -149,11 +170,19 @@ jobs:
           ./install.sh --uninstall
           rm -rf "$HOME/.config/ccmorph"
           mkdir -p "$RUNNER_TEMP/stage"
-          git archive --format=tar --prefix=ccmorph-main/ HEAD | gzip > "$RUNNER_TEMP/stage/src.tar.gz"
+          # A release tarball carries prebuilt binaries (make dist); stage this
+          # runner's one under the per-platform name the installer looks for.
+          mkdir -p "$RUNNER_TEMP/stage/ccmorph-main"
+          git archive --format=tar HEAD | tar -x -C "$RUNNER_TEMP/stage/ccmorph-main"
+          os=$(uname -s | tr '[:upper:]' '[:lower:]'); arch=$(uname -m)
+          case "$arch" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac
+          cp libexec/gateway-shim "$RUNNER_TEMP/stage/ccmorph-main/libexec/gateway-shim-$os-$arch"
+          tar -czf "$RUNNER_TEMP/stage/src.tar.gz" -C "$RUNNER_TEMP/stage" ccmorph-main
           CCMORPH_INSTALL_URL="file://$RUNNER_TEMP/stage/src.tar.gz" sh -c "$(cat install.sh)" </dev/null
           test -r "$HOME/.config/ccmorph/lib/ccmorph.sh"
           test -x "$HOME/.local/bin/ccmorph"
           sh -c 'ccmorph --version'
+          test -x "$HOME/.config/ccmorph/libexec/gateway-shim"
       - name: bash and sh must not crash on the installer
         # It is zsh, but people type `bash install.sh`; it must re-exec, not die
         # with a message about a variable that does not exist.

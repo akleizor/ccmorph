@@ -2,7 +2,9 @@
 
 ## Verification
 
-While iterating, run only the tests for what you touched
+`gateway-shim` is Go: build it once with `make shim` (Go from `go.mod`) before
+any suite, and run `go vet ./... && go test ./...` when you touch `shim/` or
+`cmd/`. While iterating, run only the tests for what you touched
 (`CCMORPH_TEST_FILTER=<name> zsh tests/ccmorph_test.zsh`,
 `CCMORPH_LIB_DIR="$PWD/lib" python3 -m pytest tests/<file>.py -q`). Run the full set
 once, before you commit or open the PR, never again for the same diff:
