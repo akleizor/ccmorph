@@ -37,7 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, shim_cmd
 
 REPO = Path(__file__).resolve().parent.parent
 SHIM = REPO / "libexec/gateway-shim"
@@ -94,7 +94,7 @@ def start_shim(case, target, env=None, flags=()):
     # --parent-pid: a run killed outright (SIGKILL skips every cleanup) must
     # not leave the shim listening forever.
     proc = subprocess.Popen(
-        [sys.executable, str(SHIM), "0", target, *flags, f"--parent-pid={os.getpid()}"],
+        [*shim_cmd(SHIM), "0", target, *flags, f"--parent-pid={os.getpid()}"],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         env=(dict(os.environ, **env) if env else None))
     case.addCleanup(reap_shim, proc)
@@ -130,7 +130,7 @@ class ShimParentDeathTest(unittest.TestCase):
         parent = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.5)"])
         self.addCleanup(parent.wait)
         proc = subprocess.Popen(
-            [sys.executable, str(SHIM), "0", f"http://127.0.0.1:{dead_port()}",
+            [*shim_cmd(SHIM), "0", f"http://127.0.0.1:{dead_port()}",
              f"--parent-pid={parent.pid}"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         self.addCleanup(reap_shim, proc)
@@ -158,7 +158,7 @@ class ShimStartupTest(unittest.TestCase):
             "socket.getfqdn = _refuse\n"
             "socket.gethostbyaddr = _refuse\n")
         proc = subprocess.Popen(
-            [sys.executable, str(SHIM), "0", f"http://127.0.0.1:{dead_port()}",
+            [*shim_cmd(SHIM), "0", f"http://127.0.0.1:{dead_port()}",
              f"--parent-pid={os.getpid()}"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             env=dict(os.environ, PYTHONPATH=str(site)))
@@ -249,7 +249,7 @@ class ShimTest(unittest.TestCase):
         cls.upstream = serve(Upstream)
         cls.uport = cls.upstream.server_address[1]
         cls.proc = subprocess.Popen(
-            [sys.executable, str(SHIM), "0", f"http://127.0.0.1:{cls.uport}",
+            [*shim_cmd(SHIM), "0", f"http://127.0.0.1:{cls.uport}",
              f"--parent-pid={os.getpid()}"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         cls.banner = cls.proc.stdout.readline().strip()
@@ -1179,7 +1179,7 @@ class ShimFlagTest(unittest.TestCase):
         # silently losing the rewrite.
         for flag in ("--repair-tool-references", "--affinity-header=X-Header"):
             with self.subTest(flag=flag):
-                out = subprocess.run([sys.executable, str(SHIM), "0", "http://x",
+                out = subprocess.run([*shim_cmd(SHIM), "0", "http://x",
                                       flag], capture_output=True, text=True,
                                      timeout=HANG_TIMEOUT)
                 self.assertNotEqual(out.returncode, 0)
@@ -1197,7 +1197,7 @@ class ShimFlagTest(unittest.TestCase):
             self.assertEqual(r.read(), JSON_BODY)
 
     def test_unknown_flag_is_rejected(self):
-        proc = subprocess.run([sys.executable, str(SHIM), "0", "http://x",
+        proc = subprocess.run([*shim_cmd(SHIM), "0", "http://x",
                                "--nope"], capture_output=True, text=True, timeout=HANG_TIMEOUT)
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("usage", proc.stdout + proc.stderr)
@@ -1226,6 +1226,8 @@ def outbound_headers(headers, session):
 '''
 
 
+@unittest.skipIf(os.environ.get("CCMORPH_SHIM_BIN"),
+                 "the Go shim takes hooks compiled in (shim/hooks_test.go), not a Python module")
 class ShimHooksTest(unittest.TestCase):
     """The CCMORPH_SHIM_HOOKS seam (issue 438): a profile points the shim at
     a module whose functions rewrite its outbound requests — the User-Agent,
@@ -1296,7 +1298,7 @@ class ShimHooksTest(unittest.TestCase):
     def test_a_missing_hooks_module_refuses_to_start(self):
         # A profile pointing at a module that is not there must fail loud at
         # startup, never serve with its rewrites silently missing.
-        out = subprocess.run([sys.executable, str(SHIM), "0", "http://127.0.0.1:1"],
+        out = subprocess.run([*shim_cmd(SHIM), "0", "http://127.0.0.1:1"],
                              capture_output=True, text=True, timeout=HANG_TIMEOUT,
                              env=dict(os.environ, CCMORPH_SHIM_HOOKS="/nonexistent/hooks.py"))
         self.assertNotEqual(out.returncode, 0)
@@ -2341,14 +2343,14 @@ class UsageSidecarTest(unittest.TestCase):
     def test_outcome_appends_a_row_keyed_by_task(self):
         env = dict(os.environ, XDG_STATE_HOME=str(self.state))
         for result in ("accepted", "parked"):
-            subprocess.run([sys.executable, str(SHIM), "outcome", "issue-42", result], env=env, check=True, timeout=HANG_TIMEOUT)
-        bad = subprocess.run([sys.executable, str(SHIM), "outcome", "/etc/x", "accepted"], env=env,
+            subprocess.run([*shim_cmd(SHIM), "outcome", "issue-42", result], env=env, check=True, timeout=HANG_TIMEOUT)
+        bad = subprocess.run([*shim_cmd(SHIM), "outcome", "/etc/x", "accepted"], env=env,
                              capture_output=True, timeout=HANG_TIMEOUT)
         self.assertNotEqual(bad.returncode, 0)
-        bad = subprocess.run([sys.executable, str(SHIM), "outcome", "t", "great"], env=env, capture_output=True, timeout=HANG_TIMEOUT)
+        bad = subprocess.run([*shim_cmd(SHIM), "outcome", "t", "great"], env=env, capture_output=True, timeout=HANG_TIMEOUT)
         self.assertNotEqual(bad.returncode, 0)
         # #210: "$" also matches before a trailing newline, so this used to append a row.
-        bad = subprocess.run([sys.executable, str(SHIM), "outcome", "x\n", "accepted"], env=env,
+        bad = subprocess.run([*shim_cmd(SHIM), "outcome", "x\n", "accepted"], env=env,
                              capture_output=True, timeout=HANG_TIMEOUT)
         self.assertNotEqual(bad.returncode, 0)
         self.assertIn(b"usage:", bad.stderr)
@@ -3014,7 +3016,7 @@ class LoopbackNoProxyTest(unittest.TestCase):
         upstream = serve(Upstream)
         self.addCleanup(upstream.shutdown)
         proc = subprocess.Popen(
-            [sys.executable, str(SHIM), "0", f"http://127.0.0.1:{upstream.server_address[1]}",
+            [*shim_cmd(SHIM), "0", f"http://127.0.0.1:{upstream.server_address[1]}",
              f"--parent-pid={os.getpid()}"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=self.proxy.env())
         self.addCleanup(reap_shim, proc)
