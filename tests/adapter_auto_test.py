@@ -4,6 +4,7 @@ import importlib.machinery
 import importlib.util
 import io
 import json
+import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import subprocess
@@ -67,21 +68,26 @@ class AutoDetectionTest(unittest.TestCase):
         self.assertIn('protocol: "claude"\n      params:\n        - "thinking.block_binding"\n', payload)
         self.assertNotIn('payload:', ad.render([row('chat')], 'k', 1234, 'https://gw', '/unused'))
 
-    def test_passthrough_user_agent_comes_from_the_profile_hooks(self):
-        # The claude-cli User-Agent rewrite is a gateway quirk, not adapter
-        # behaviour: the passthrough UA is whatever the profile's request
-        # hooks build prints for `translator-user-agent`, and nothing is
-        # rendered without one.
+    def test_passthrough_user_agent_comes_from_the_shim_the_adapter_runs(self):
+        # The claude-cli User-Agent restatement is the shim's, from the profile's
+        # CCMORPH_USER_AGENT: the adapter asks the shim it will run (stock or a
+        # profile's build) and renders what it prints; nothing without one.
         with tempfile.TemporaryDirectory() as tmp:
-            hooks = Path(tmp) / 'gateway-shim'
-            hooks.write_text('#!/bin/sh\n[ "$1" = translator-user-agent ] || exit 2\n'
-                             'echo "hook-ua/9.9.9 (external, cli)"\n')
-            hooks.chmod(0o755)
+            shim = Path(tmp) / 'gateway-shim'
+            shim.write_text('#!/bin/sh\n[ "$1" = translator-user-agent ] || exit 2\n'
+                            '[ -n "$CCMORPH_USER_AGENT" ] && echo "$CCMORPH_USER_AGENT 9.9.9"\n'
+                            'exit 0\n')
+            shim.chmod(0o755)
+            env = dict(os.environ, CCMORPH_USER_AGENT='hook-ua/')
             config = ad.render([row('anthropic')], 'k', 1234, 'https://gw', '/unused',
-                               hooks_path=str(hooks))
-        claude_entry = config.split('claude-api-key:')[1]
-        self.assertIn('User-Agent: "hook-ua/9.9.9 (external, cli)"', claude_entry)
-        self.assertIn('cloak:\n      mode: "never"\n', claude_entry)
+                               shim_path=str(shim), shim_env=env)
+            claude_entry = config.split('claude-api-key:')[1]
+            self.assertIn('User-Agent: "hook-ua/ 9.9.9"', claude_entry)
+            self.assertIn('cloak:\n      mode: "never"\n', claude_entry)
+            unset = {k: v for k, v in env.items() if k != 'CCMORPH_USER_AGENT'}
+            config = ad.render([row('anthropic')], 'k', 1234, 'https://gw', '/unused',
+                               shim_path=str(shim), shim_env=unset)
+        self.assertNotIn('headers:', config)
         config = ad.render([row('anthropic')], 'k', 1234, 'https://gw', '/unused')
         self.assertNotIn('headers:', config)
 
@@ -411,13 +417,13 @@ class AutoDetectionTest(unittest.TestCase):
                                reserved=None, inbound_token=False,
                                parent_pid=None)
         extras = {'CCMORPH_SHIM_HOOKS': '/stable/hooks.py',
-                  'CCMORPH_REPAIR_TOOL_REFERENCES': '1'}
+                  'CCMORPH_USER_AGENT': 'ua/{version}'}
         with patch.object(ad.subprocess, 'Popen', side_effect=spawn):
             with self.assertRaises(Spawned):
                 ad.front_directly(args, 'https://gateway', 'k', 'id', [row()], extras)
         command, env = seen[0]
         self.assertEqual(env.get('CCMORPH_SHIM_HOOKS'), '/stable/hooks.py')
-        self.assertEqual(env.get('CCMORPH_REPAIR_TOOL_REFERENCES'), '1')
+        self.assertEqual(env.get('CCMORPH_USER_AGENT'), 'ua/{version}')
         self.assertNotIn('--repair-tool-references', command)
         self.assertNotIn('--affinity-header', command)
 

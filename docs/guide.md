@@ -335,16 +335,29 @@ This is picker configuration, not gateway access control. It does not delete mod
 metadata or silently change the saved default. Remove the `.conf` field to stop
 excluding models, then relaunch with the gateway reachable to refresh the list.
 
-### Historical tool references
+### Gateway compatibility
 
-For a gateway session failing with `Tool reference '…' not found in available tools`,
-the fix is a request hook: `env.CCMORPH_SHIM_HOOKS=<binary>` names a shim built
-with your own hooks (a small Go `main` that calls `shim.Main(shim.Hooks{...})`;
-the contract is `shim.Hooks` in `shim/server.go`) whose repair hook converts only
-unresolved historical `tool_reference` blocks into text containing the tool name. References declared in the current request
-remain unchanged; no permissions or tool definitions are added, and saved
-transcripts are not changed. Relaunch/resume the same session to activate it.
-Default: off.
+Two repairs are automatic, with nothing to configure. A `tool_reference` left in an
+old tool result whose tool is no longer declared in the request (the gateway's
+`Tool reference '…' not found in available tools`) is sent as text naming the tool;
+declared references and saved transcripts are untouched. A `400` on a message
+request that carries `thinking` blocks is retried once without them (one line on the
+shim's stderr each time); whatever the second answer is, you get it.
+
+Two optional profile keys, relaunch to apply:
+
+- `env.CCMORPH_AFFINITY_HEADER=<name>` sends the Claude Code session id in that
+  header, for gateways that pin a conversation to one backend. The name is letters,
+  digits and `-`; anything else stops the launch.
+- `env.CCMORPH_USER_AGENT=<template>` sets the outbound `User-Agent`, with
+  `{version}` replaced by the version in Claude Code's own (`claude-cli/X.Y.Z`), for
+  example `claude-cli/{version} (external, cli)`. A client without a version keeps
+  its own `User-Agent`.
+
+Anything else a gateway needs is a custom build: a small Go `main` that calls
+`compat.FromEnv()`, wraps the hooks it returns (the contract is `shim.Hooks`) and
+passes them to `shim.Main`; `env.CCMORPH_SHIM_HOOKS=<binary>` runs it in place of the
+stock shim.
 
 ### Identifier handling
 

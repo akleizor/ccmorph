@@ -254,13 +254,13 @@ def test_real_id_and_exclusion_share_one_rule():
 
 class ConfLayout(unittest.TestCase):
     def test_canonical_conf_groups_keys_keeps_comments_and_values(self):
-        messy = ("context_discovered={}\n# why the shim flag\nenv.CCMORPH_REPAIR_TOOL_REFERENCES=1\n"
+        messy = ("context_discovered={}\n# why the shim flag\nenv.CCMORPH_RANDOM_DEVICE_ID=1\n"
                  "model=m\napi_key=k\nmodel_defaults=1\nenv.ANTHROPIC_DEFAULT_OPUS_MODEL=o\n"
                  "type=apikey\ncontext_window.m=1000\neffort=high\n\nbase_url=https://g.invalid\n")
         tidy = store.canonical_conf(messy)
         self.assertEqual(tidy, "type=apikey\nbase_url=https://g.invalid\napi_key=k\n\n"
                                "model=m\neffort=high\nenv.ANTHROPIC_DEFAULT_OPUS_MODEL=o\n\n"
-                               "# why the shim flag\nenv.CCMORPH_REPAIR_TOOL_REFERENCES=1\n\n"
+                               "# why the shim flag\nenv.CCMORPH_RANDOM_DEVICE_ID=1\n\n"
                                "context_window.m=1000\n\nmodel_defaults=1\ncontext_discovered={}\n")
         self.assertEqual(store.canonical_conf(tidy), tidy)
 
