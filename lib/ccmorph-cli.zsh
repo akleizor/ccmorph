@@ -280,7 +280,11 @@ _ccm_doctor_environment() {
   _ccm_doctor_status 'OK' "ccmorph: $_CCMORPH_VERSION ($_CCMORPH_LIB_DIR)"
   _ccm_doctor_status 'OK' "zsh: $ZSH_VERSION"
   # One call: it prints the version and exits non-zero below the 3.8 floor.
-  if py_version=$(python3 -c 'import sys; print("%d.%d.%d" % sys.version_info[:3]); sys.exit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null); then
+  if py_version=$(command python3 -c '
+import sys
+print("%d.%d.%d" % sys.version_info[:3])
+sys.exit(0 if sys.version_info >= (3, 8) else 1)
+' 2>/dev/null); then
     _ccm_doctor_status 'OK' "python3: $py_version"
   elif [[ -n "$py_version" ]]; then
     _ccm_doctor_status 'FAIL' "python3: $py_version (need 3.8 or newer)"
