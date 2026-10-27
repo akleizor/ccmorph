@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from support import HANG_TIMEOUT
+from support import FAKE_SERVER_NO_DNS, HANG_TIMEOUT
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -261,7 +261,7 @@ def test_run_doctor_remains_native_passthrough(tmp_path):
     # /v1/models with 200; stub it so the test does not depend on the host's install.
     (bindir / "cliproxyapi").write_text(
         "#!/usr/bin/env python3\n"
-        "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+        "from http.server import BaseHTTPRequestHandler, HTTPServer\n" + FAKE_SERVER_NO_DNS +
         "class H(BaseHTTPRequestHandler):\n"
         "    def do_GET(self):\n"
         "        self.send_response(200); self.send_header('Content-Length', '2')\n"
