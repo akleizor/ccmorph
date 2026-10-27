@@ -256,11 +256,13 @@ grep -qF 'STUB BREW CALLED' "$d/out" && fail "declined offer still ran brew" || 
 # --- 8. remote mode: run outside a source tree, install from a download -------
 # `sh -c "$(curl -fsSL .../install.sh)"` and `curl ... | sh` start this script with
 # $0 = sh and no repo beside it. The installer must fetch the tree and run ITS
-# installer. No network here: a stub curl copies a locally built tarball (shaped
-# like GitHub's archive: one top dir) to the path after -o and records its argv.
-mkdir -p "$TMP/stage/ccmorph-main"
-(cd "$REPO" && cp -R bin lib libexec share install.sh "$TMP/stage/ccmorph-main/")
-tar -czf "$TMP/src.tar.gz" -C "$TMP/stage" ccmorph-main
+# installer. No network here: a stub curl copies a locally built tarball to the
+# path after -o and records its argv. Shaped like the release asset the default
+# URL serves: one top dir, `ccmorph-<tag>/`, exactly what `git archive --prefix`
+# writes — the remote block must accept it whatever the tag names.
+mkdir -p "$TMP/stage/ccmorph-v1.2.3"
+(cd "$REPO" && cp -R bin lib libexec share install.sh "$TMP/stage/ccmorph-v1.2.3/")
+tar -czf "$TMP/src.tar.gz" -C "$TMP/stage" ccmorph-v1.2.3
 # Not a ccmorph tree: one top dir with no lib/ccmorph.sh in it.
 mkdir -p "$TMP/stage-empty/not-ccmorph"; print x > "$TMP/stage-empty/not-ccmorph/README"
 tar -czf "$TMP/empty.tar.gz" -C "$TMP/stage-empty" not-ccmorph
@@ -285,7 +287,7 @@ remote_run() {  # $1 = case dir, $2 = cmd|pipe, rest = extra env assignments
   fi
 }
 
-url_main='https://github.com/akleizor/ccmorph/archive/main.tar.gz'
+url_release='https://github.com/akleizor/ccmorph/releases/latest/download/ccmorph.tar.gz'
 
 # 8.1 sh -c "$(cat install.sh)": the documented one-liner shape.
 d=$(remote_env remote_c "$TMP/src.tar.gz")
@@ -295,8 +297,8 @@ remote_run "$d" cmd; rc=$?
   && ok "remote: sh -c installs the library" || fail "remote sh -c did not install lib/ccmorph.sh"
 [[ -x "$d/home/.local/bin/ccmorph" ]] \
   && ok "remote: sh -c installs the command" || fail "remote sh -c did not install ~/.local/bin/ccmorph"
-grep -qxF "$url_main" "$d/curl.argv" 2>/dev/null \
-  && ok "remote: default URL is the GitHub main archive" || { fail "remote: curl did not get $url_main"; cat "$d/curl.argv" 2>&1 }
+grep -qxF "$url_release" "$d/curl.argv" 2>/dev/null \
+  && ok "remote: default URL is the latest release, not main" || { fail "remote: curl did not get $url_release"; cat "$d/curl.argv" 2>&1 }
 [[ -z "$(print -rl -- "$d"/tmp/ccmorph-install.*(N))" ]] \
   && ok "remote: the temp dir is removed after a successful install" || fail "remote: temp dir left behind"
 
@@ -311,7 +313,7 @@ remote_run "$d" pipe; rc=$?
 d=$(remote_env remote_zsh "$TMP/src.tar.gz")
 (cd "$d" && cat "$REPO/install.sh" | env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" \
   zsh >"$d/out" 2>"$d/err"); rc=$?
-(( rc == 0 )) && [[ -f "$d/home/.config/ccmorph/lib/ccmorph.sh" ]] && grep -qxF "$url_main" "$d/curl.argv" 2>/dev/null \
+(( rc == 0 )) && [[ -f "$d/home/.config/ccmorph/lib/ccmorph.sh" ]] && grep -qxF "$url_release" "$d/curl.argv" 2>/dev/null \
   && ok "remote: cat install.sh | zsh downloads and installs" || { fail "remote zsh pipe rc=$rc"; cat "$d/out" "$d/err" }
 
 # 8.3 CCMORPH_REF picks the archive.
@@ -320,13 +322,19 @@ remote_run "$d" cmd CCMORPH_REF=v9.9.9; rc=$?
 grep -qxF 'https://github.com/akleizor/ccmorph/archive/v9.9.9.tar.gz' "$d/curl.argv" 2>/dev/null \
   && ok "remote: CCMORPH_REF selects the archive" || { fail "remote: CCMORPH_REF=v9.9.9 not in curl argv (rc=$rc)"; cat "$d/curl.argv" 2>&1 }
 
-# 8.4 CCMORPH_INSTALL_URL overrides the whole URL, verbatim.
+# 8.4 CCMORPH_INSTALL_URL overrides the whole URL, verbatim — over the release
+# default and over a CCMORPH_REF archive alike.
 d=$(remote_env remote_url "$TMP/src.tar.gz")
 remote_run "$d" cmd CCMORPH_INSTALL_URL=file:///x/y.tgz; rc=$?
 grep -qxF 'file:///x/y.tgz' "$d/curl.argv" 2>/dev/null \
   && ok "remote: CCMORPH_INSTALL_URL reaches curl exactly" || { fail "remote: CCMORPH_INSTALL_URL not in curl argv (rc=$rc)"; cat "$d/curl.argv" 2>&1 }
-grep -qF 'archive/main' "$d/curl.argv" 2>/dev/null \
-  && fail "remote: the default URL was used alongside the override" || ok "remote: override replaces the default URL"
+grep -qF 'releases/latest' "$d/curl.argv" 2>/dev/null \
+  && fail "remote: the default URL was used alongside the override" || ok "remote: override replaces the release URL"
+d=$(remote_env remote_url_ref "$TMP/src.tar.gz")
+remote_run "$d" cmd CCMORPH_REF=v9.9.9 CCMORPH_INSTALL_URL=file:///x/y.tgz; rc=$?
+grep -qxF 'file:///x/y.tgz' "$d/curl.argv" 2>/dev/null && ! grep -qF 'archive/v9.9.9' "$d/curl.argv" 2>/dev/null \
+  && ok "remote: the override also replaces a CCMORPH_REF archive URL" \
+  || { fail "remote: the CCMORPH_REF archive was used beside the override (rc=$rc)"; cat "$d/curl.argv" 2>&1 }
 
 # 8.5 neither curl nor wget: say so, fail, leave nothing behind. PATH holds only
 # symlinks to the tools the bootstrap needs, so the real curl/wget cannot be found.
@@ -366,6 +374,28 @@ env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/t
   sh "$REPO/install.sh" >"$d/out" 2>&1 </dev/null; rc=$?
 (( rc == 0 )) && [[ ! -e "$d/curl.argv" ]] \
   && ok "remote: a local sh install exits 0 and never calls curl" || { fail "local sh install rc=$rc or it called curl"; cat "$d/out" }
+
+# 8.8 the default URL names a release asset, so make must build one: dist/
+# ccmorph.tar.gz, a stable-name copy of the tag tarball. A release that attaches
+# only dist/ccmorph-<tag>.tar.gz leaves the one-liner's default download a 404.
+# Built on a throwaway tag in a scratch CLONE — tags are repo-global and shared
+# with every other worktree, so the shared namespace is never touched — with the
+# working tree's Makefile copied in: the recipe under test is the one beside this
+# suite, while the archive content still comes from the tagged commit alone.
+# `make release` itself would recurse into this suite (its `test` prerequisite),
+# so this exercises the `dist` step release runs after verifying.
+git clone -q "$REPO" "$TMP/relrepo"
+cp "$REPO/Makefile" "$TMP/relrepo/Makefile"
+reltag=v0.0.0-install-test
+git -C "$TMP/relrepo" tag "$reltag"
+make -C "$TMP/relrepo" dist TAG="$reltag" DIST="$TMP/reldist" >"$TMP/relmake.out" 2>&1; rc=$?
+(( rc == 0 )) && ok "release: make dist exits 0 on a throwaway tag" \
+  || { fail "release: make dist rc=$rc"; cat "$TMP/relmake.out" }
+[[ -s "$TMP/reldist/ccmorph-$reltag.tar.gz" ]] \
+  && ok "release: the tag-named tarball is built" || fail "release: dist/ccmorph-$reltag.tar.gz was not built"
+cmp -s "$TMP/reldist/ccmorph-$reltag.tar.gz" "$TMP/reldist/ccmorph.tar.gz" \
+  && ok "release: dist/ccmorph.tar.gz is byte-identical to the tag-named tarball" \
+  || fail "release: dist/ccmorph.tar.gz is missing or differs from dist/ccmorph-$reltag.tar.gz"
 
 # --- 9. Windows shells are named and sent to WSL before anything else ----------
 # Git Bash / MSYS / Cygwin have no zsh, and the failure they got was about zsh,

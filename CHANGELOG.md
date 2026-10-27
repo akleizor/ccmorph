@@ -13,11 +13,13 @@
   `CCMORPH_TASK` (plus optional `CCMORPH_ATTEMPT`) tags every usage row;
   the shim never changes the requested model. `gateway-shim outcome <task> <result>`
   records how a task ended. See "The usage sidecar" in docs/ARCHITECTURE.md.
-- **One-line install.** `sh -c "$(curl -fsSL https://raw.githubusercontent.com/akleizor/ccmorph/main/install.sh)"`
-  downloads the source and runs its installer; no clone is needed. `CCMORPH_REF`
-  picks a branch or tag (default `main`) and `CCMORPH_INSTALL_URL` replaces the
-  whole tarball URL. `curl ... | sh` works too but has no terminal, so it
-  declines the optional installs. The clone form still works.
+- **One-line install.** `sh -c "$(curl -fsSL https://github.com/akleizor/ccmorph/releases/latest/download/install.sh)"`
+  downloads the latest release and runs its installer; no clone is needed.
+  `CCMORPH_REF` opts into the GitHub archive of a branch or tag (`CCMORPH_REF=main`
+  for unreleased code) and `CCMORPH_INSTALL_URL` replaces the whole tarball URL.
+  `curl ... | sh` works too but has no terminal, so it declines the optional
+  installs. The clone form still works. `make release` writes the stable-name
+  `dist/ccmorph.tar.gz` the default URL downloads, to attach to the release.
 - **`ccmorph doctor` reports the environment before any profile exists.** With no
   profile it shows the version, `zsh`, `python3`, `claude`, `fzf`, `cliproxyapi`
   and whether `ccmorph` is on `PATH`, read-only, and fails only for a missing or

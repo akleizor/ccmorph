@@ -37,8 +37,17 @@ case "$0" in
     [ -r "$0" ] && [ -r "$(dirname "$0")/lib/ccmorph.sh" ] && _ccm_local=1 ;;
 esac
 if [ "$_ccm_local" = 0 ]; then
-  _ccm_ref="${CCMORPH_REF:-main}"
-  _ccm_url="${CCMORPH_INSTALL_URL:-https://github.com/akleizor/ccmorph/archive/${_ccm_ref}.tar.gz}"
+  # The default is the latest RELEASE tarball, not main: main moves with every
+  # merge, and a one-liner pointed at it hands a brand-new user code no release
+  # has vetted. GitHub resolves releases/latest itself, so nothing here has to
+  # track a version. CCMORPH_REF opts into the GitHub archive of a branch or tag
+  # instead (CCMORPH_REF=main for unreleased code), and CCMORPH_INSTALL_URL
+  # replaces the whole URL either way.
+  if [ -n "${CCMORPH_REF:-}" ]; then
+    _ccm_url="${CCMORPH_INSTALL_URL:-https://github.com/akleizor/ccmorph/archive/${CCMORPH_REF}.tar.gz}"
+  else
+    _ccm_url="${CCMORPH_INSTALL_URL:-https://github.com/akleizor/ccmorph/releases/latest/download/ccmorph.tar.gz}"
+  fi
   _ccm_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ccmorph-install.XXXXXX")" || exit 1
   _ccm_fail() { echo "ccmorph: $1" >&2; rm -rf "$_ccm_tmp"; exit 1; }
   if command -v curl >/dev/null 2>&1; then

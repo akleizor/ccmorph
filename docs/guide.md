@@ -8,18 +8,20 @@ reasoning behind each behavior, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 From a clone: `git clone https://github.com/akleizor/ccmorph && cd ccmorph && ./install.sh`.
 
-Or the one-liner, which works once the repository is public — it is private
-today, so the download returns 404:
+Or the one-liner, which works once the repository is public and has a release —
+it is private today, so the download returns 404:
 
 ```sh
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/akleizor/ccmorph/main/install.sh)"
+sh -c "$(curl -fsSL https://github.com/akleizor/ccmorph/releases/latest/download/install.sh)"
 ```
 
-Run outside a source tree, `install.sh` downloads the tarball for `CCMORPH_REF`
-(a branch or tag; default `main`), unpacks it in a temporary directory and runs
-the installer from there, which then takes the same path as a clone.
-`CCMORPH_INSTALL_URL` replaces the whole tarball URL, for a mirror or a local
-file. It needs `curl` or `wget`, and `tar`. The `sh -c "$(curl ...)"` form keeps
+Run outside a source tree, `install.sh` downloads the latest release's tarball
+(`releases/latest/download/ccmorph.tar.gz`), unpacks it in a temporary directory
+and runs the installer from there, which then takes the same path as a clone.
+`CCMORPH_REF` (a branch or tag) downloads the GitHub archive of that ref instead
+— `CCMORPH_REF=main` for unreleased code — and `CCMORPH_INSTALL_URL` replaces
+the whole tarball URL, for a mirror or a local file. It needs `curl` or `wget`,
+and `tar`. The `sh -c "$(curl ...)"` form keeps
 the terminal attached, so the optional installs below can ask. Piping
 (`curl -fsSL ... | sh`) works too, but there is no terminal to ask on: the
 installer skips those offers and prints the commands to run yourself.

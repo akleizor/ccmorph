@@ -12,13 +12,13 @@ TAG := v$(VERSION)
 DIST := dist
 TARBALL := $(DIST)/ccmorph-$(TAG).tar.gz
 
-.PHONY: help test test-zsh test-py check-version release clean
+.PHONY: help test test-zsh test-py check-version dist release clean
 
 help:
 	@echo "ccmorph $(VERSION)"
 	@echo "  make test           run every suite"
 	@echo "  make check-version  version, changelog and tag must agree"
-	@echo "  make release        verify, then build $(TARBALL) + .sha256"
+	@echo "  make release        verify, then build $(TARBALL) + the stable ccmorph.tar.gz"
 
 test: test-zsh test-py
 
@@ -45,16 +45,27 @@ check-version:
 	@echo "version $(VERSION): source, changelog and tag agree"
 
 # Built from the TAG, never from the working tree — see the note at the top.
-release: check-version test
+# TWO tarballs, one archive: the tag-named file, and a byte-identical copy under
+# the stable name ccmorph.tar.gz. The one-liner installs
+# releases/latest/download/ccmorph.tar.gz by default, so a release that attaches
+# only the tag-named file leaves the default install downloading a 404; attach
+# install.sh to the release too, since the one-liner fetches it from there.
+# Split out of `release` because its own `test` prerequisite would recurse into
+# the suite that tests this step.
+dist:
 	@mkdir -p $(DIST)
 	git archive --format=tar.gz --prefix=ccmorph-$(TAG)/ -o $(TARBALL) $(TAG)
+	cp $(TARBALL) $(DIST)/ccmorph.tar.gz
 	@cd $(DIST) && shasum -a 256 ccmorph-$(TAG).tar.gz > ccmorph-$(TAG).tar.gz.sha256
 	@echo
 	@echo "$(TARBALL)"
+	@echo "$(DIST)/ccmorph.tar.gz  <- the one-liner's default download"
 	@cat $(TARBALL).sha256
 	@echo
 	@echo "Verify the archive carries no untracked state:"
 	@echo "  tar tzf $(TARBALL) | grep -E '\\.conf$$|^.*/(active|local\\.sh|model-registry)$$' && echo LEAK || echo clean"
+
+release: check-version test dist
 
 clean:
 	rm -rf $(DIST)
