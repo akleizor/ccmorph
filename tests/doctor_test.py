@@ -1,12 +1,15 @@
 import hashlib
 import os
+import signal
 import subprocess
+import sys
 import errno
 import pty
 import select
 import shutil
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -279,12 +282,57 @@ def test_run_doctor_remains_native_passthrough(tmp_path):
         assert (tmp_path / "native").read_text().splitlines()[-1] == "doctor"
     finally:
         # A timed-out launcher must not orphan its disowned provider fixture.
-        import signal
         try:
             os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        except (ProcessLookupError, PermissionError):
+            # The group is gone, which macOS spells two ways: EPERM while its
+            # only member is the exited, unreaped launcher — the window between
+            # the bound above and this kill (GH-5) — and ESRCH once nothing is
+            # left. The launcher itself is still signalable, and this kill reaps
+            # it, so the run's own verdict, not a cleanup error, is what the
+            # caller hears.
+            process.kill()
         process.wait(timeout=HANG_TIMEOUT)
+
+
+@pytest.mark.skipif(sys.platform != "darwin",
+                    reason="only macOS refuses to signal a group whose only member has exited")
+def test_run_doctor_cleanup_reports_the_bound_not_a_refused_killpg_issue_5(tmp_path):
+    """GH-5: a launcher that exits in the window between the bound and the
+    cleanup killpg leaves its group led by an unreaped zombie, which macOS
+    refuses to signal; the cleanup must tolerate that, so the blown bound —
+    the report a genuinely hung run owes — is what the caller hears, not a
+    cleanup PermissionError."""
+    communicate, spent = subprocess.Popen.communicate, []
+
+    def communicate_spending_the_bound_on_the_exiting_launcher(process, timeout=HANG_TIMEOUT):
+        # Same forced window as the launch test: spend the bound waiting for
+        # the exit nothing reaps — the group answers EPERM exactly then, and
+        # nothing runs between that answer and the cleanup's killpg — then
+        # report it blown. A healthy run reaches that answer in seconds; the
+        # stop holds a platform that never refuses at half of pytest.ini's
+        # per-test cap.
+        if not spent:
+            spent.append(True)
+            stop = time.monotonic() + min(timeout, 30)
+            while time.monotonic() < stop:
+                try:
+                    os.killpg(process.pid, 0)
+                    time.sleep(0.02)
+                except PermissionError:
+                    break
+            raise subprocess.TimeoutExpired(process.args, timeout)
+        return communicate(process, timeout=timeout)
+
+    with patch.object(subprocess.Popen, "communicate",
+                      communicate_spending_the_bound_on_the_exiting_launcher), \
+            pytest.raises(subprocess.TimeoutExpired):
+        # The passthrough test is the act itself: its finally holds the
+        # cleanup under guard, met exactly as a genuinely hung run meets it.
+        test_run_doctor_remains_native_passthrough(tmp_path)
+    # The launcher really finished before the bound was reported blown — the
+    # refusal the cleanup met was the exited leader, not a live run.
+    assert (tmp_path / "native").read_text().splitlines()[-1] == "doctor"
 
 
 def test_doctor_terminal_statuses(tmp_path):

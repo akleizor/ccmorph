@@ -50,6 +50,12 @@ with tempfile.TemporaryDirectory(prefix='picker-live-', dir=root) as temp:
         print('PASS installed fzf TTY: selected high with arrow keys and Enter; isolated profile saved high')
     finally:
         if proc.poll() is None:
-            os.killpg(proc.pid, signal.SIGKILL)
+            # macOS answers EPERM while the group's only member is the exited,
+            # unreaped leader this poll just missed (GH-5); the leader itself
+            # is still signalable, and the wait below reaps it either way.
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                proc.kill()
             proc.wait()
         os.close(master)
