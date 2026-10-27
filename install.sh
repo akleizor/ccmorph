@@ -63,8 +63,24 @@ if [ "$_ccm_local" = 0 ] || [ "${1:-}" = "--remote" ]; then
   exit $_ccm_rc
 fi
 
-# Re-exec under zsh when started by another shell — `bash install.sh`, `sh
-# install.sh`, or a curl-pipe. Everything below this point is zsh: the next few
+# The install command for package $1 on the first package manager found (brew,
+# apt-get, dnf, apk, pacman, zypper, in that order; `command -v` only, never a
+# guess from the OS), or nothing. It only PRINTS: zsh, python3 and claude are named,
+# never installed. POSIX sh, because the zsh-missing message below needs it before
+# any zsh exists; the zsh half of this file calls it too, so there is one table.
+_ccm_pkg_hint() {
+  if command -v brew >/dev/null 2>&1; then echo "brew install $1"
+  elif command -v apt-get >/dev/null 2>&1; then echo "sudo apt-get install -y $1"
+  elif command -v dnf >/dev/null 2>&1; then echo "sudo dnf install -y $1"
+  elif command -v apk >/dev/null 2>&1; then echo "sudo apk add $1"
+  elif command -v pacman >/dev/null 2>&1; then echo "sudo pacman -S $1"
+  elif command -v zypper >/dev/null 2>&1; then echo "sudo zypper install -y $1"
+  fi
+}
+
+# Re-exec under zsh when started by another shell — `bash install.sh` or `sh
+# install.sh`; a curl-pipe never gets here, remote mode handed it to a downloaded
+# copy above. Everything below this point is zsh: the next few
 # lines alone use ${0:A:h} and glob qualifiers, and bash reads ${0:A:h} as a
 # substring expansion whose offset it evaluates arithmetically, dying with
 # "A: unbound variable" — a message about a variable that does not exist, printed
@@ -75,8 +91,14 @@ if [ -z "${ZSH_VERSION:-}" ]; then
     exec zsh "$0" "$@"
   fi
   echo "ccmorph requires zsh, and no zsh was found on PATH." >&2
-  echo "  macOS: zsh ships with the system (/bin/zsh)." >&2
-  echo "  Linux: install it first — apt install zsh, dnf install zsh, apk add zsh." >&2
+  _ccm_hint="$(_ccm_pkg_hint zsh)"
+  if [ -n "$_ccm_hint" ]; then
+    echo "  Install it first, then re-run:" >&2
+    echo "  $_ccm_hint" >&2
+  else
+    echo "  macOS: zsh ships with the system (/bin/zsh)." >&2
+    echo "  Linux: install it first — apt install zsh, dnf install zsh, apk add zsh." >&2
+  fi
   exit 1
 fi
 
@@ -160,9 +182,19 @@ missing=()
 command -v zsh     >/dev/null 2>&1 || missing+=("zsh")
 command -v python3 >/dev/null 2>&1 || missing+=("python3 (3.8 or newer)")
 command -v claude  >/dev/null 2>&1 || missing+=("claude (Claude Code CLI)")
+# The install command for tool $1 on the detected package manager, split into
+# words in $reply (empty when no manager is known), so it can be printed or handed
+# to _offer, which runs "$@". The table itself lives in _ccm_pkg_hint at the top.
+_pkg_cmd() { reply=(${=$(_ccm_pkg_hint "$1")}) }
+
 if (( ${#missing} )); then
   c_r "Missing required dependencies:"
   for m in "${missing[@]}"; do print "  - $m"; done
+  # Required tools are named, never installed: they need root or belong to another
+  # vendor. Claude Code gets its setup page and no command at all.
+  _pkg_cmd zsh;     (( ${missing[(I)zsh]} ))     && (( ${#reply} )) && print "  zsh:     ${reply[*]}"
+  _pkg_cmd python3; (( ${missing[(I)python3*]} )) && (( ${#reply} )) && print "  python3: ${reply[*]}"
+  (( ${missing[(I)claude*]} )) && print "Install Claude Code first: https://docs.anthropic.com/en/docs/claude-code/setup"
   print "Install those first, then re-run."
   exit 1
 fi
@@ -178,6 +210,8 @@ if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' 2
   c_r "python3 is too old: found ${_pyver}, need 3.8 or newer."
   c_dim "  ccmorph's helpers are stdlib-only but use 3.8 syntax (gateway-shim)."
   c_dim "  macOS: brew install python3.  Linux: your distro's python3.8+ package."
+  _pkg_cmd python3
+  (( ${#reply} )) && c_dim "  With your package manager: ${reply[*]}"
   exit 1
 fi
 
@@ -233,7 +267,9 @@ fi
 if ! command -v fzf >/dev/null 2>&1; then
   c_y "note: fzf not found — interactive pickers will use numbered menus."
   c_dim "  Install fzf for searchable lists; explicit command-line values also work."
-  command -v brew >/dev/null 2>&1 && { _offer brew install fzf || true }
+  # Offered through whichever package manager is there, not only brew.
+  _pkg_cmd fzf
+  if (( ${#reply} )); then _offer "${reply[@]}" || true; fi
 fi
 
 # ---- copy infrastructure --------------------------------------------------
