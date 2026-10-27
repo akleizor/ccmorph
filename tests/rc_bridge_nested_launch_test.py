@@ -61,7 +61,7 @@ class Box:
                         CCMORPH_STATE_DIR=str(self.state), CCMORPH_LIB_DIR=str(ROOT / "lib"),
                         PATH=f'{home}/bin:{os.environ["PATH"]}', LANG='C.UTF-8', LC_ALL='C.UTF-8',
                         NO_COLOR='1')
-        (self.state / 'alex.conf').write_text('type=sub\nemail=me@example.invalid\n')
+        (self.state / 'demo.conf').write_text('type=sub\nemail=me@example.invalid\n')
         # The route: a conforming gateway profile, no env.* lines at all.
         (self.state / 'gateway.conf').write_text(
             'type=apikey\nbase_url=https://gw.example.invalid/\napi_key=route-key\nadapter=true\n')
@@ -100,9 +100,9 @@ def test_the_route_conf_declares_no_flag_itself(box):
 
 
 def test_a_nested_launch_keeps_the_session_route_flags(box):
-    """The reproduced failure: `ccmorph run alex -- -p …` inside a session on a
+    """The reproduced failure: `ccmorph run demo -- -p …` inside a session on a
     route must not reach the route without the session's advisor opt-out."""
-    out = box.run(box.session(), 'run', 'alex', '--', '-p', 'Reply ok')
+    out = box.run(box.session(), 'run', 'demo', '--', '-p', 'Reply ok')
     assert out.returncode == 0, out.stderr
     log = box.log()
     assert 'DISABLE_ADVISOR=1' in log, log
@@ -112,7 +112,7 @@ def test_a_nested_launch_keeps_the_session_route_flags(box):
 
 def test_a_nested_launch_honours_a_route_that_serves_the_advisor(box):
     env = box.session({'CLAUDE_CODE_DISABLE_ADVISOR_TOOL': '0'})
-    out = box.run(env, 'run', 'alex', '--', '-p', 'ok')
+    out = box.run(env, 'run', 'demo', '--', '-p', 'ok')
     assert out.returncode == 0, out.stderr
     assert 'DISABLE_ADVISOR=0' in box.log()
 
@@ -121,7 +121,7 @@ def test_a_plain_launch_still_clears_an_inherited_flag(box):
     # No loopback proxy: an ambient flag is some outer session's stale value.
     env = box.session()
     del env['HTTPS_PROXY']
-    out = box.run(env, 'run', 'alex', '--', '-p', 'ok')
+    out = box.run(env, 'run', 'demo', '--', '-p', 'ok')
     assert out.returncode == 0, out.stderr
     log = box.log()
     assert 'DISABLE_ADVISOR=<unset>' in log and 'MODEL_CAPS=<unset>' in log
@@ -130,7 +130,7 @@ def test_a_plain_launch_still_clears_an_inherited_flag(box):
 def test_a_remote_proxy_is_not_a_local_bridge(box):
     env = box.session()
     env['HTTPS_PROXY'] = 'http://proxy.example.invalid:3128'
-    out = box.run(env, 'run', 'alex', '--', '-p', 'ok')
+    out = box.run(env, 'run', 'demo', '--', '-p', 'ok')
     assert out.returncode == 0, out.stderr
     assert 'DISABLE_ADVISOR=<unset>' in box.log()
 

@@ -9,9 +9,18 @@ once, before you commit or open the PR, never again for the same diff:
 `zsh tests/ccmorph_test.zsh` (shards across the cores that help; about 40 s),
 `zsh tests/install_test.zsh`, `zsh tests/cli_configure_test.zsh`, and
 `CCMORPH_LIB_DIR="$PWD/lib" uv run --with pytest --with pytest-xdist --with pytest-timeout python -m pytest tests/ -q`
-(parallel whenever xdist is present; about 50 s). These are light and run bare, not under `rig run build`.
+(parallel whenever xdist is present; about 50 s). These are light and run bare.
 Use isolated test homes; do not run the installer against the operator's home as
 a smoke test.
+
+## Rules
+
+- Every patch ships with a regression test in `tests/` that fails before the
+  fix; an untested change does not merge.
+- Never run `install.sh` against a real home; tests use isolated homes.
+- `source lib/ccmorph.sh && _ccm_launch -a <profile> <args>` is a stable entry
+  point that other tools call. The `_ccm_launch -a` cases in
+  `tests/ccmorph_test.zsh` guard it and must keep passing unchanged.
 
 ## Review
 
@@ -19,5 +28,6 @@ Reviewers read [REVIEW.md](REVIEW.md) first (what a real bug looks like here).
 
 ## Commits
 
-One logical change per commit, conventional style: `feat(scope): …`,
+One pull request lands as one squashed commit on `main`, so a rollback is one
+revert. Conventional style: `feat(scope): …`,
 `fix(scope): …`, `docs: …`, `test(scope): …`.

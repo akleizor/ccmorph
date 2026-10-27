@@ -1,7 +1,5 @@
-Status: v0 starting point (2026-10-16), approved by Alex; changes only via a PR he approves.
+Status: approved (2026-10-16). Changes go through a reviewed PR; agents may report a failed Check but may not weaken a promise or its Check.
 # INTENT.md — ccmorph
-
-**Draft for Alex's review. Not adopted. Only Alex may change the adopted INTENT.md; agents may report a failed Check but may not weaken a promise or its Check.**
 
 These are enduring promises to the user, not a feature list, roadmap, or implementation plan. Checks use existing evidence unless explicitly marked **Measurement gap**; their existence was verified, but they were not run for this drafting task. All fixtures use isolated homes; the live installation at `~/.config/ccmorph` is not a test target.
 
@@ -17,11 +15,11 @@ These are enduring promises to the user, not a feature list, roadmap, or impleme
 
 3. Each profile keeps its own identity, backend configuration, and declared privacy behavior without changing another profile's state.
 
-   **Check:** Run `tests/profile_directory_test.py`, `tests/launch_env_rules_test.py`, and `tests/gateway_shim_test.py`; require zero failures for private profile state, nested credential isolation, and configured identifier behavior. The shim's opt-in random-device-id tests must show stability within a session and distinct IDs across sessions; flags-off tests must preserve the declared pass-through behavior. **Measurement gap:** no verified whole-launch, two-profile egress audit covers all routes and metadata, including direct routes. This is isolation of declared settings, not automatic anonymisation; skills are deliberately shared; session history is per profile, as in a plain Claude Code config dir, and a hop or a resume by id links in only the one session it continues (Alex, 2026-10-22).
+   **Check:** Run `tests/profile_directory_test.py`, `tests/launch_env_rules_test.py`, and `tests/gateway_shim_test.py`; require zero failures for private profile state, nested credential isolation, and configured identifier behavior. The shim's opt-in random-device-id tests must show stability within a session and distinct IDs across sessions; flags-off tests must preserve the declared pass-through behavior. **Measurement gap:** no verified whole-launch, two-profile egress audit covers all routes and metadata, including direct routes. This is isolation of declared settings, not automatic anonymisation; skills are deliberately shared; session history is per profile, as in a plain Claude Code config dir, and a hop or a resume by id links in only the one session it continues (2026-10-22).
 
 4. The selected model and effort are never silently changed during launch, resume, or a profile switch.
 
-   **Check:** In isolated launch/resume/hop cases, compare the requested model and effort with captured launch arguments and the fake upstream request; require exact agreement, or an explicit visible rejection/change notice before any replacement is used. Existing model-precedence and carried-model cases are in `tests/ccmorph_test.zsh`; `tests/cli_config_store_test.py` covers saved defaults. **Measurement gap:** no verified comprehensive notice-before-substitution check covers every launch/resume/hop path. **Current conflict:** `test_hop_falls_back_when_the_target_cannot_serve_the_model` explicitly drops an unsupported carried model, and `test_invalid_resume_model_falls_back_to_profile_model` expects fallback; their existence does not prove Alex's no-silent-change promise is met. Do not weaken this promise to match those tests.
+   **Check:** In isolated launch/resume/hop cases, compare the requested model and effort with captured launch arguments and the fake upstream request; require exact agreement, or an explicit visible rejection/change notice before any replacement is used. Existing model-precedence and carried-model cases are in `tests/ccmorph_test.zsh`; `tests/cli_config_store_test.py` covers saved defaults. **Measurement gap:** no verified comprehensive notice-before-substitution check covers every launch/resume/hop path. **Current conflict:** `test_hop_falls_back_when_the_target_cannot_serve_the_model` explicitly drops an unsupported carried model, and `test_invalid_resume_model_falls_back_to_profile_model` expects fallback; their existence does not prove the no-silent-change promise is met. Do not weaken this promise to match those tests.
 
 5. Switching or resuming a session preserves its conversation and chosen operating settings instead of losing the user's work.
 
@@ -29,7 +27,7 @@ These are enduring promises to the user, not a feature list, roadmap, or impleme
 
 6. Installing, updating, or removing ccmorph never overwrites the user's profiles, credentials, customisations, or the native Claude command.
 
-   **Check:** Run `zsh tests/install_test.zsh` in isolated homes and `tests/profile_directory_test.py`; require zero failures, preserved fixture profile/credential/local-override contents, usable old history after migration, and no replacement of native `claude` or edits to shell startup files. Uninstall must leave profiles intact. Never run the installer against Alex's real home for this Check.
+   **Check:** Run `zsh tests/install_test.zsh` in isolated homes and `tests/profile_directory_test.py`; require zero failures, preserved fixture profile/credential/local-override contents, usable old history after migration, and no replacement of native `claude` or edits to shell startup files. Uninstall must leave profiles intact. Never run the installer against the owner's real home for this Check.
 
 7. When a route cannot work, the user receives a truthful diagnosis without hidden paid probing or pretending a session is healthy.
 
@@ -37,6 +35,6 @@ These are enduring promises to the user, not a feature list, roadmap, or impleme
 
 ## Sources and limits
 
-Read from `/Users/alex/code/ccmorph`: `AGENTS.md` (Verification, Hive focus and external caller contract), `README.md`, `CLAUDE.md` (routes to AGENTS; now `.claude/CLAUDE.md`), `SECURITY.md` (now `.github/SECURITY.md`), and the cited measurement/test sources. Source revision: `9314b8d` on 2026-10-16. No `/Users/alex/.claude/memory/ccmorph/MEMORY.md` exists.
+Read from this repository: `AGENTS.md` (Verification and the external caller contract), `README.md`, `CLAUDE.md` (routes to AGENTS; now `.claude/CLAUDE.md`), `SECURITY.md` (now `.github/SECURITY.md`), and the cited measurement/test sources. Source revision: `9314b8d` on 2026-10-16.
 
 Identity, backend settings and session history are private per profile; shared tools are an existing user contract, not a defect to “fix” while drafting. No request bodies, credentials, live configuration, or real session logs are included in these drafts or their preview.
