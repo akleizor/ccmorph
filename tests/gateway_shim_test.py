@@ -367,6 +367,7 @@ class FixtureUpstream(BaseHTTPRequestHandler):
 
     protocol_version = "HTTP/1.1"
     bodies = {}
+    ctype = "application/json"
 
     def log_message(self, *args):
         pass
@@ -374,7 +375,7 @@ class FixtureUpstream(BaseHTTPRequestHandler):
     def do_POST(self):
         body = self.bodies[self.path]
         self.send_response(200)
-        self.send_header("content-type", "application/json")
+        self.send_header("content-type", self.ctype)
         self.send_header("content-length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -410,8 +411,63 @@ class ThinkingSanitationTest(unittest.TestCase):
                            "role": "assistant", "content": content,
                            "stop_reason": "tool_use"}).encode()
 
-    def post(self, bodies, flags=()):
-        srv = serve(type("Fixture", (FixtureUpstream,), {"bodies": bodies}))
+    @staticmethod
+    def sse(events):
+        return "".join(
+            f"event:{e['type']}\ndata:{json.dumps(e, separators=(',', ':'))}\n\n"
+            for e in events).encode()
+
+    @classmethod
+    def reply(cls, thinking):
+        """A streamed reply: the thinking fixture at index 0 (or no thinking
+        block at all) and then a Read tool_use, like a real turn."""
+        events = [{"type": "message_start",
+                   "message": {"id": "msg_1", "type": "message",
+                               "role": "assistant", "model": "unknown-test",
+                               "content": [], "stop_reason": None,
+                               "stop_sequence": None,
+                               "usage": {"input_tokens": 500,
+                                         "output_tokens": 0}}}]
+        if thinking is not None:
+            events.append({"type": "content_block_start", "index": 0,
+                           "content_block": {"type": "thinking",
+                                             "thinking": ""}})
+            events.extend(thinking)
+            events.append({"type": "content_block_stop", "index": 0})
+        index = 1 if thinking is not None else 0
+        events += [
+            {"type": "content_block_start", "index": index,
+             "content_block": {"type": "tool_use", "id": "toolu_1",
+                               "name": "Read", "input": {}}},
+            {"type": "content_block_delta", "index": index,
+             "delta": {"type": "input_json_delta", "partial_json": "{}"}},
+            {"type": "content_block_stop", "index": index},
+            {"type": "message_delta",
+             "delta": {"stop_reason": "tool_use", "stop_sequence": None},
+             "usage": {"input_tokens": 500, "output_tokens": 20}},
+            {"type": "message_stop"},
+        ]
+        return cls.sse(events)
+
+    @staticmethod
+    def frames(raw):
+        """Every SSE frame, checked to be one event: line plus its data."""
+        out = []
+        for frame in raw.decode().split("\n\n"):
+            if not frame:
+                continue
+            lines = frame.splitlines()
+            assert len(lines) == 2, frame
+            assert lines[0].startswith("event:"), frame
+            assert lines[1].startswith("data:"), frame
+            data = json.loads(lines[1][5:].lstrip())
+            assert lines[0][6:] == data["type"], frame
+            out.append(data)
+        return out
+
+    def post(self, bodies, flags=(), ctype="application/json"):
+        srv = serve(type("Fixture", (FixtureUpstream,),
+                         {"bodies": bodies, "ctype": ctype}))
         # shutdown() stops the serving loop but leaves the listening socket
         # open, so close that too; addCleanup is LIFO, hence this order.
         self.addCleanup(srv.server_close)
@@ -477,6 +533,57 @@ class ThinkingSanitationTest(unittest.TestCase):
                 self.assertEqual(len(content), 2)
                 self.assertEqual(content[0], self.SIGNED)
                 self.assertEqual(content[1]["input"], self.TOOL_INPUT)
+
+    def test_unsigned_empty_streamed_thinking_is_dropped_and_later_blocks_reindexed(self):
+        """#12 — Claude Code replays a streamed unsigned empty thinking block
+        exactly as it does a JSON one, so the SSE path must drop it and shift
+        later blocks down: the client addresses content by index."""
+        for flags in ((), ("--preserve-tool-ids",)):
+            with self.subTest(flags=flags):
+                out = self.post({"/fixture": self.reply([])}, flags=flags,
+                                ctype="text/event-stream")
+                frames = self.frames(out)
+                self.assertFalse(
+                    [f for f in frames
+                     if f.get("content_block", {}).get("type") == "thinking"])
+                self.assertEqual({f["index"] for f in frames if "index" in f}, {0})
+                self.assertEqual(
+                    [f["type"] for f in frames],
+                    ["message_start", "content_block_start",
+                     "content_block_delta", "content_block_stop",
+                     "message_delta", "message_stop"])
+                if flags:
+                    self.assertEqual(out, self.reply(None))
+
+    def test_streamed_thinking_controls_pass_through_byte_identical(self):
+        """#12 — signed omitted-display, healthy initially empty, an already
+        signed start and a no-thinking stream are all relayed unchanged."""
+        signature = {"type": "content_block_delta", "index": 0,
+                     "delta": {"type": "signature_delta",
+                               "signature": "sig-fixture-omitted-display"}}
+        healthy = [{"type": "content_block_delta", "index": 0,
+                    "delta": {"type": "thinking_delta", "thinking": "plan"}},
+                   signature]
+        pre_signed = self.sse([
+            {"type": "message_start",
+             "message": {"id": "msg_1", "type": "message", "role": "assistant",
+                         "model": "unknown-test", "content": [],
+                         "stop_reason": None, "stop_sequence": None,
+                         "usage": {"input_tokens": 500, "output_tokens": 0}}},
+            {"type": "content_block_start", "index": 0,
+             "content_block": self.SIGNED},
+            {"type": "content_block_stop", "index": 0},
+            {"type": "message_stop"},
+        ])
+        cases = {"signed": self.reply([signature]),
+                 "healthy": self.reply(healthy),
+                 "pre-signed": pre_signed,
+                 "no-thinking": self.reply(None)}
+        for name, raw in cases.items():
+            with self.subTest(case=name):
+                self.assertEqual(
+                    self.post({"/fixture": raw}, flags=["--preserve-tool-ids"],
+                              ctype="text/event-stream"), raw)
 
 
 class ProcessRestartTest(unittest.TestCase):

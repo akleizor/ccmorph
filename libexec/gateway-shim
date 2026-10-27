@@ -56,6 +56,7 @@ request bytes unchanged. Gateway-specific rewrites live in such a module — an
 addon, outside this file — never here.
 """
 
+import collections
 import copy
 import datetime
 import errno
@@ -775,6 +776,106 @@ class UsageSidecar:
             pass
 
 
+class EmptyThinkingStream:
+    """An SSE response minus malformed empty thinking: the streamed form of
+    IdShim._drop_empty_thinking. A thinking block that starts with no text
+    and no signature waits for its next data event. A delta releases it
+    untouched (a healthy block that starts empty). Its own
+    content_block_stop drops both events, and later blocks' indexes shift
+    down so the client still sees 0..n-1. Anything else releases it as is.
+    event:/id:/comment lines wait for their data line, so a dropped event
+    leaves no orphan header. Nothing is read past a data line except
+    while one block is held."""
+
+    def __init__(self, resp):
+        self._resp = resp
+        self._out = collections.deque()  # lines ready for the relay loop
+        self._pending = []               # non-data lines awaiting their data line
+        self._held = None                # the held start: head, line, obj, tail, index
+        self._dropped = []               # upstream indexes of dropped blocks
+        self._swallow_blank = False      # the blank line closing a dropped stop
+
+    def readline(self):
+        while not self._out:
+            line = self._resp.readline()
+            if not line:
+                self._release()
+                self._out.extend(self._pending)
+                self._pending = []
+                if not self._out:
+                    return b""
+                break
+            self._feed(line)
+        return self._out.popleft()
+
+    def _feed(self, line):
+        stripped = line.rstrip(b"\r\n")
+        if not stripped:
+            if self._swallow_blank:
+                self._swallow_blank = False
+                self._pending = []
+            elif self._held is not None:
+                self._held["tail"] += self._pending + [line]
+                self._pending = []
+            else:
+                self._out.extend(self._pending)
+                self._out.append(line)
+                self._pending = []
+            return
+        if not stripped.startswith(b"data:"):
+            self._pending.append(line)
+            return
+        payload = stripped[5:].lstrip()
+        obj = None
+        if (self._held is not None or (self._dropped and b'"index"' in payload)
+                or (b'"content_block_start"' in payload and b'"thinking"' in payload)):
+            try:
+                obj = json.loads(payload)
+            except (ValueError, RecursionError):
+                obj = None
+        if self._held is not None:
+            if (isinstance(obj, dict) and obj.get("type") == "content_block_stop"
+                    and obj.get("index") == self._held["index"]):
+                self._dropped.append(self._held["index"])
+                self._held = None
+                self._pending = []
+                self._swallow_blank = True
+                return
+            self._release()
+        if (isinstance(obj, dict) and obj.get("type") == "content_block_start"
+                and isinstance(obj.get("index"), int)
+                and IdShim._malformed_empty_thinking(obj.get("content_block"))):
+            self._held = {"head": self._pending, "line": line, "obj": obj,
+                          "tail": [], "index": obj["index"]}
+            self._pending = []
+            return
+        self._out.extend(self._pending)
+        self._pending = []
+        self._out.append(self._reindex(line, obj))
+
+    def _release(self):
+        if self._held is None:
+            return
+        held, self._held = self._held, None
+        self._out.extend(held["head"])
+        self._out.append(self._reindex(held["line"], held["obj"]))
+        self._out.extend(held["tail"])
+
+    def _reindex(self, line, obj):
+        if (not self._dropped or not isinstance(obj, dict)
+                or not isinstance(obj.get("index"), int)):
+            return line
+        shift = sum(1 for i in self._dropped if i < obj["index"])
+        if not shift:
+            return line
+        obj["index"] -= shift
+        stripped = line.rstrip(b"\r\n")
+        eol = line[len(stripped):] or b"\n"
+        payload = stripped[5:].lstrip()
+        prefix = stripped[:len(stripped) - len(payload)]
+        return prefix + json.dumps(obj, separators=COMPACT).encode() + eol
+
+
 class IdShim(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     target = "http://127.0.0.1:0"
@@ -1115,7 +1216,8 @@ class IdShim(BaseHTTPRequestHandler):
         a 400. A signed empty block is a valid omitted-display block the
         client must replay, so it is kept whole. `tool_use.input` is opaque,
         tool-owned JSON — a thinking-shaped record inside it is application
-        data, not API content — so the walk stops at that boundary."""
+        data, not API content — so the walk stops at that boundary. Streamed
+        replies get the same treatment in EmptyThinkingStream."""
         changed = False
         if isinstance(obj, dict):
             content = obj.get("content")
@@ -1240,7 +1342,7 @@ class IdShim(BaseHTTPRequestHandler):
         # close the client connection, or a keep-alive client waits forever.
         self.close_connection = True
         try:
-            self._stream_loop(resp, sidecar, requested, answer_as)
+            self._stream_loop(EmptyThinkingStream(resp), sidecar, requested, answer_as)
         except (BrokenPipeError, ConnectionResetError):
             # The client hung up mid-stream (cancelled turn, /clear, quit).
             # Routine, not an error — a traceback here just spams the shared
