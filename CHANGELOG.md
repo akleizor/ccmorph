@@ -169,6 +169,11 @@
 
 ### Fixed
 
+- **The gateway shim starts without a reverse DNS lookup.** Python's HTTP server
+  resolves its own bind address with `getfqdn`, and on macOS that lookup of
+  127.0.0.1 can stall for tens of seconds before the shim reports ready, which
+  delays every adapter launch behind it. The shim binds loopback only and now
+  skips the lookup.
 - **`--config=PATH` names a config, and a missing or flag-like value is refused.**
   The supervisor matched only the exact string `--config`, so the equals spelling
   used across ccmorph's other CLIs named nothing and the default

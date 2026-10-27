@@ -142,6 +142,31 @@ class ShimParentDeathTest(unittest.TestCase):
             self.fail("the shim outlived the process that launched it")
 
 
+class ShimStartupTest(unittest.TestCase):
+    def test_startup_does_no_reverse_dns_lookup(self):
+        """http.server's server_bind resolves its own address with getfqdn, a
+        reverse lookup of 127.0.0.1 that can stall for tens of seconds on macOS
+        (17 shim and adapter tests timed out on the CI runner waiting for this
+        banner). The shim binds loopback only and needs no name for it, so make
+        that lookup an error and require the banner anyway."""
+        site = Path(tempfile.mkdtemp(prefix="ccmorph-nodns-"))
+        self.addCleanup(shutil.rmtree, site, ignore_errors=True)
+        (site / "sitecustomize.py").write_text(
+            "import socket\n"
+            "def _refuse(*args, **kwargs):\n"
+            "    raise RuntimeError('reverse DNS lookup at shim startup')\n"
+            "socket.getfqdn = _refuse\n"
+            "socket.gethostbyaddr = _refuse\n")
+        proc = subprocess.Popen(
+            [sys.executable, str(SHIM), "0", f"http://127.0.0.1:{dead_port()}",
+             f"--parent-pid={os.getpid()}"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            env=dict(os.environ, PYTHONPATH=str(site)))
+        self.addCleanup(reap_shim, proc)
+        banner = proc.stdout.readline().strip()
+        self.assertTrue(banner.startswith("gateway-shim :"), banner)
+
+
 class Upstream(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     seen_accept_encoding = []
