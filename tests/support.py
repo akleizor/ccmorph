@@ -2,7 +2,6 @@
 import os
 from pathlib import Path
 
-import pytest
 
 # A hang detector, not a performance bound: the longest any test waits on a
 # spawned process, sized so only a real hang reaches it. It sits above pytest.ini's
@@ -22,4 +21,10 @@ FAKE_SERVER_NO_DNS = "import socket\nsocket.getfqdn = lambda name='': name\n"
 
 SHIM = Path(__file__).resolve().parent.parent / "libexec/gateway-shim"
 # Module-level `pytestmark = needs_shim` skips a file that spawns the compiled shim.
-needs_shim = pytest.mark.skipif(not SHIM.exists(), reason=f"{SHIM} is not built: run `make shim` first")
+# pytest is imported here, not at the top: the zsh suite imports this module
+# for HANG_TIMEOUT under a python3 that has no pytest.
+def __getattr__(name):
+    if name == "needs_shim":
+        import pytest
+        return pytest.mark.skipif(not SHIM.exists(), reason=f"{SHIM} is not built: run `make shim` first")
+    raise AttributeError(name)
