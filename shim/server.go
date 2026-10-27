@@ -46,6 +46,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -98,6 +99,9 @@ var hopByHop = map[string]bool{
 // ccmorph's own tags (any x-ccmorph-* header) end at the shim: the launcher writes
 // them into ANTHROPIC_CUSTOM_HEADERS, and a session started before a tag was
 // retired still carries it.
+// bigBody is the request size past which the shim returns freed memory to the OS.
+const bigBody = 1 << 20
+
 const internalPrefix = "x-ccmorph-"
 
 var (
@@ -431,6 +435,11 @@ func (s *Server) relay(rq *request) {
 	body, ok := readBody(rq)
 	if !ok {
 		return
+	}
+	if len(body) >= bigBody {
+		// Multi-MB bodies leave the heap several times their size after the GC
+		// runs; a session-long shim must hand that back, not sit on it.
+		defer debug.FreeOSMemory()
 	}
 	var answerAs string
 	var requested *string
