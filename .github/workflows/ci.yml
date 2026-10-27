@@ -88,6 +88,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      # Most Python tests drive the zsh library; the Ubuntu image ships no zsh.
+      - run: sudo apt-get update && sudo apt-get install -y zsh
       - run: |
           python -m pip install pytest pytest-timeout "backports.zoneinfo; python_version < '3.9'"
           python -m py_compile libexec/ccmorph-adapter libexec/gateway-shim libexec/model-window \
