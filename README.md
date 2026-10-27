@@ -42,15 +42,18 @@ ccmorph run  ------+--> personal   API key             -->  Anthropic API
 
 ## Install
 
-```sh
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/akleizor/ccmorph/main/install.sh)"
-ccmorph doctor
-```
-
-Or from a clone:
+From a clone:
 
 ```sh
 git clone https://github.com/akleizor/ccmorph && cd ccmorph && ./install.sh
+```
+
+Or the one-liner, which works once the repository is public — it is private
+today, so the download returns 404:
+
+```sh
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/akleizor/ccmorph/main/install.sh)"
+ccmorph doctor
 ```
 
 The one-liner downloads the source for the ref in `CCMORPH_REF` (default

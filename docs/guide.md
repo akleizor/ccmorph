@@ -6,11 +6,14 @@ reasoning behind each behavior, see [ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ## Install details
 
+From a clone: `git clone https://github.com/akleizor/ccmorph && cd ccmorph && ./install.sh`.
+
+Or the one-liner, which works once the repository is public — it is private
+today, so the download returns 404:
+
 ```sh
 sh -c "$(curl -fsSL https://raw.githubusercontent.com/akleizor/ccmorph/main/install.sh)"
 ```
-
-Or from a clone: `git clone https://github.com/akleizor/ccmorph && cd ccmorph && ./install.sh`.
 
 Run outside a source tree, `install.sh` downloads the tarball for `CCMORPH_REF`
 (a branch or tag; default `main`), unpacks it in a temporary directory and runs
