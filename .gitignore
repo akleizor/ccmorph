@@ -75,6 +75,7 @@ profiles/
 # Release tarballs from `make release`. Built by `git archive` at a tag, so they
 # are reproducible from history and never worth keeping.
 dist/
+build/
 # Python bytecode and pytest state.
 __pycache__/
 .pytest_cache/

@@ -12,7 +12,7 @@ TAG := v$(VERSION)
 DIST := dist
 TARBALL := $(DIST)/ccmorph-$(TAG).tar.gz
 
-.PHONY: help test test-zsh test-py check-version dist release clean
+.PHONY: help test test-zsh test-py check-version dist release clean shim
 
 help:
 	@echo "ccmorph $(VERSION)"
@@ -69,3 +69,7 @@ release: check-version test dist
 
 clean:
 	rm -rf $(DIST)
+
+# The Go gateway-shim, built from this checkout.
+shim:
+	go build -o build/gateway-shim ./cmd/gateway-shim
