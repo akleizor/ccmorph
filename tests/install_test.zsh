@@ -577,6 +577,44 @@ for sh_val in "" /usr/bin/tcsh; do
     && ok "path: SHELL='${sh_val:-unset}' falls back to the zsh advice" || { fail "path: SHELL='${sh_val:-unset}' got no zsh advice"; cat "$d/out"; }
 done
 
+# --- 13. every run ends with the check and the next step ----------------------
+# "Did it work, what now" has one answer at the end of every run: `ccmorph doctor`.
+# A fresh install adds `ccmorph add <name>`; an update never does (it has profiles).
+# When the bin dir is not on PATH the check is spelled with the absolute path, so
+# it works before the shell is fixed. The old four-line "Start here" block is gone.
+end_run() {  # $1 = case dir, $2 = "onpath" | "offpath"
+  local extra=""; [[ "$2" == onpath ]] && extra="$1/home/.local/bin:"
+  env -i HOME="$1/home" ZDOTDIR="$1/home" PATH="$extra$1/bin:/usr/bin:/bin" \
+    zsh "$REPO/install.sh" >"$1/out" 2>&1 </dev/null
+}
+
+d=$(fresh_env end_fresh_on); end_run "$d" onpath; rc=$?
+(( rc == 0 )) && ok "end: fresh install on PATH exits 0" || { fail "end: fresh on-PATH rc=$rc"; cat "$d/out"; }
+grep -qxF 'Check:  ccmorph doctor' "$d/out" && ok "end: fresh install ends with 'Check:  ccmorph doctor'" || { fail "end: fresh install has no check line"; cat "$d/out"; }
+grep -qxF 'Next:   ccmorph add <name>' "$d/out" && ok "end: fresh install says 'Next:   ccmorph add <name>'" || fail "end: fresh install has no next-step line"
+grep -qE 'ccmorph (use|list)|Start here' "$d/out" && fail "end: the old Start here block is still printed" || ok "end: the old use/list block is gone"
+grep -qF 'not on your PATH' "$d/out" && fail "end: on-PATH run still warns about PATH" || ok "end: no PATH warning when the bin dir is on PATH"
+
+d=$(fresh_env end_fresh_off); end_run "$d" offpath
+grep -qxF "Check:  $d/home/.local/bin/ccmorph doctor" "$d/out" \
+  && ok "end: off PATH the check uses the absolute path" || { fail "end: off-PATH check is not absolute"; cat "$d/out"; }
+grep -qxF 'Next:   ccmorph add <name>' "$d/out" && ok "end: off PATH a fresh install still names the next step" || fail "end: off-PATH next-step line missing"
+grep -qxF 'Check:  ccmorph doctor' "$d/out" && fail "end: off PATH the bare check was printed too" || ok "end: off PATH only the absolute check is printed"
+
+d=$(fresh_env end_update_on); end_run "$d" onpath; end_run "$d" onpath; rc=$?
+(( rc == 0 )) && ok "end: update on PATH exits 0" || fail "end: update rc=$rc"
+grep -qxF 'Check:  ccmorph doctor' "$d/out" && ok "end: an update ends with the check" || { fail "end: update has no check line"; cat "$d/out"; }
+grep -qF 'ccmorph add' "$d/out" && fail "end: an update suggests adding a profile" || ok "end: an update does not say 'ccmorph add'"
+grep -qE '^Next:' "$d/out" && fail "end: an update prints a Next line" || ok "end: an update prints no Next line"
+grep -qE 'ccmorph (use|list)|Start here' "$d/out" && fail "end: an update prints the old block" || ok "end: an update prints no use/list block"
+
+d=$(fresh_env end_update_off); end_run "$d" offpath; end_run "$d" offpath
+grep -qxF "Check:  $d/home/.local/bin/ccmorph doctor" "$d/out" && ! grep -qF 'ccmorph add' "$d/out" \
+  && ok "end: an update off PATH uses the absolute check and no 'add'" || { fail "end: update off-PATH footer wrong"; cat "$d/out"; }
+# Last thing printed: the check or the next step, not a stray trailing line.
+last=$(grep -v '^$' "$d/out" | tail -1)
+[[ "$last" == "Check:  "* ]] && ok "end: the check is the last line of an update" || fail "end: last line of an update is '$last'"
+
 print ""
 print "install tests: $passed passed, $failed failed"
 (( failed == 0 ))
