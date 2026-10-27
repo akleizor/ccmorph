@@ -62,8 +62,10 @@ The installer copies the runtime (`lib/`, `libexec/`, `share/`) into `~/.config/
 command into `~/.local/bin`. It never edits shell startup files; if
 `~/.local/bin` is not on your `PATH`, it prints the line to add, for your shell.
 
-To update, run the same install again; profiles, credentials, and `local.sh` are preserved.
-`./install.sh --uninstall` (from a clone) removes the command and leaves your profiles alone.
+To update, run `ccmorph update` (or `ccmorph update <branch-or-tag>`), or run the same
+install again; profiles, credentials, and `local.sh` are preserved. A git clone is
+updated with git instead. `ccmorph uninstall` removes the command and leaves your
+profiles alone.
 
 ## Quick start
 

@@ -59,7 +59,9 @@ while `~/.local/bin` is off your `PATH`). A fresh install adds
 
 ## Updating
 
-Run the one-line install again, or `./install.sh` from a fresh clone. **It is an
+Run `ccmorph update` (add a branch or tag to install that instead), run the
+one-line install again, or run `./install.sh` from a fresh clone. A git checkout is
+updated with git; `ccmorph update` refuses it. **It is an
 update, not a reinstall** — it replaces the runtime scripts and never touches
 your profiles' settings or credentials, or `local.sh`.
 It reports the version it moved you from and names what it preserved, so you can
@@ -68,7 +70,7 @@ shared-registry or per-profile cache state is present, install folds it into the
 owning profile's `.conf` as `context_discovered` and leaves the original behind
 as a `.migrated` backup — your profile gains its own context data, nothing in it
 is removed. There is no shell to re-source: the
-new code is live on the next run. `./install.sh --uninstall` removes the command
+new code is live on the next run. `ccmorph uninstall` removes the command
 and leaves your profiles alone.
 
 Profile runtime state moved from `~/.claude-profiles` to

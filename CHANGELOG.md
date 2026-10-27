@@ -22,6 +22,11 @@
   profile it shows the version, `zsh`, `python3`, `claude`, `fzf`, `cliproxyapi`
   and whether `ccmorph` is on `PATH`, read-only, and fails only for a missing or
   too-old required tool.
+- **`ccmorph update` and `ccmorph uninstall`.** The installer now ships beside the
+  library, so an install updates itself with `ccmorph update [ref]` (the latest
+  `main`, or a branch or tag) and removes its command with `ccmorph uninstall`;
+  profiles, credentials and `local.sh` are kept. A git checkout is refused by
+  `update` and updated with git.
 
 ### Changed
 
