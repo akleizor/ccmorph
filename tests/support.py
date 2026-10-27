@@ -15,3 +15,11 @@ HANG_TIMEOUT = float(os.environ.get("CCMORPH_TEST_HANG_TIMEOUT", "120"))
 # macOS; conftest.py patches that away for in-process servers, and a subprocess
 # needs the same line itself. No fake here uses the name it would find.
 FAKE_SERVER_NO_DNS = "import socket\nsocket.getfqdn = lambda name='': name\n"
+
+
+def shim_cmd(path):
+    """The argv prefix that starts gateway-shim: the Go binary named by CCMORPH_SHIM_BIN
+    when set, else the Python script at `path`. Lets the black-box shim tests run both ways."""
+    import sys
+    binary = os.environ.get("CCMORPH_SHIM_BIN")
+    return [binary] if binary else [sys.executable, str(path)]

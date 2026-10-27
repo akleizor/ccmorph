@@ -108,6 +108,9 @@ func report(days float64) {
 		}
 		d := parseDoc(data)
 		if d == nil {
+			d = parseDoc(nonFiniteToNull(data))
+		}
+		if d == nil {
 			continue
 		}
 		ts, ok := d.str("timestamp")
@@ -265,3 +268,32 @@ func report(days float64) {
 func fmtG(f float64) string { return strconv.FormatFloat(f, 'g', 6, 64) }
 
 var _ = regexp.MustCompile
+
+// nonFiniteToNull rewrites the NaN/Infinity/-Infinity tokens Python's json.dump
+// wrote for a bad cost into null, which stays out of every bucket: such a row is
+// "unknown spend", not a row to skip.
+func nonFiniteToNull(b []byte) []byte {
+	out := make([]byte, 0, len(b))
+	for i := 0; i < len(b); {
+		if b[i] == '"' {
+			e := scanString(b, i)
+			out = append(out, b[i:e]...)
+			i = e
+			continue
+		}
+		matched := false
+		for _, tok := range []string{"-Infinity", "Infinity", "NaN"} {
+			if strings.HasPrefix(string(b[i:min(len(b), i+len(tok))]), tok) {
+				out = append(out, "null"...)
+				i += len(tok)
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			out = append(out, b[i])
+			i++
+		}
+	}
+	return out
+}

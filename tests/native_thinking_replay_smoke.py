@@ -27,6 +27,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 from native_compaction_smoke import make_sse, resolve_claude_bin, serve
+from support import shim_cmd
 
 REPO = Path(__file__).resolve().parent.parent
 SHIM = REPO / "libexec/gateway-shim"
@@ -170,7 +171,7 @@ def run_case(claude_bin, name, via_shim, timeout):
 
         if via_shim:
             shim = subprocess.Popen(
-                [sys.executable, str(SHIM), "0", base, "--preserve-tool-ids",
+                [*shim_cmd(SHIM), "0", base, "--preserve-tool-ids",
                  f"--parent-pid={os.getpid()}"],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             banner = shim.stdout.readline().strip()

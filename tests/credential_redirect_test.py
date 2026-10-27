@@ -13,7 +13,7 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, shim_cmd
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -108,7 +108,7 @@ class CredentialRedirect(unittest.TestCase):
     def test_shim_refuses_cross_origin_redirect_with_key(self):
         seen, base = self._redirect_fixture()
         with socket_port() as port:
-            shim = subprocess.Popen([sys.executable, str(ROOT / "libexec/gateway-shim"), str(port), base],
+            shim = subprocess.Popen([*shim_cmd(ROOT / "libexec/gateway-shim"), str(port), base],
                                     stdout=subprocess.DEVNULL, env=clean_env())
             try:
                 wait_port(port)

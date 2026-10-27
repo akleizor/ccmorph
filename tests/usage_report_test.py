@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, shim_cmd
 
 SHIM = Path(__file__).resolve().parent.parent / "libexec/gateway-shim"
 NOW = datetime.datetime.now(datetime.timezone.utc)
@@ -48,7 +48,7 @@ class ReportTest(unittest.TestCase):
     def report(self, *args):
         env = {"PATH": os.environ["PATH"],
                "XDG_STATE_HOME": str(self.state)}
-        done = subprocess.run([sys.executable, str(SHIM), "report", *args], env=env,
+        done = subprocess.run([*shim_cmd(SHIM), "report", *args], env=env,
                               capture_output=True, text=True, timeout=HANG_TIMEOUT)
         self.assertEqual(done.returncode, 0, done.stderr)
         return done.stdout
@@ -261,7 +261,7 @@ class ReportTest(unittest.TestCase):
         env = {"PATH": os.environ["PATH"], "XDG_STATE_HOME": str(self.state)}
         for days in ("inf", "1000000000", "999999999", "1000000", "nan", "-1", "0"):
             with self.subTest(days=days):
-                done = subprocess.run([sys.executable, str(SHIM), "report", "--days", days],
+                done = subprocess.run([*shim_cmd(SHIM), "report", "--days", days],
                                       env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
                 self.assertNotEqual(done.returncode, 0)
                 self.assertNotIn("Traceback", done.stderr)
