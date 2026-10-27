@@ -253,6 +253,120 @@ grep -qF 'fzf'         "$d/out" && ok "absent fzf is named"        || fail "abse
 grep -qiF 'non-interactive' "$d/out" && ok "non-interactive offer declines loudly" || { fail "offer did not declare itself skipped"; cat "$d/out" }
 grep -qF 'STUB BREW CALLED' "$d/out" && fail "declined offer still ran brew" || ok "declined offer never ran brew"
 
+# --- 8. remote mode: run outside a source tree, install from a download -------
+# `sh -c "$(curl -fsSL .../install.sh)"` and `curl ... | sh` start this script with
+# $0 = sh and no repo beside it. The installer must fetch the tree and run ITS
+# installer. No network here: a stub curl copies a locally built tarball (shaped
+# like GitHub's archive: one top dir) to the path after -o and records its argv.
+mkdir -p "$TMP/stage/ccmorph-main"
+(cd "$REPO" && cp -R bin lib libexec share install.sh local.sh.example profile.conf.example "$TMP/stage/ccmorph-main/")
+tar -czf "$TMP/src.tar.gz" -C "$TMP/stage" ccmorph-main
+# Not a ccmorph tree: one top dir with no lib/ccmorph.sh in it.
+mkdir -p "$TMP/stage-empty/not-ccmorph"; print x > "$TMP/stage-empty/not-ccmorph/README"
+tar -czf "$TMP/empty.tar.gz" -C "$TMP/stage-empty" not-ccmorph
+
+remote_env() {  # $1 = case name, $2 = tarball; stub curl bakes in its log and tarball
+  local d; d=$(fresh_env "$1")
+  mkdir -p "$d/tmp"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$@" >> "%s/curl.argv"\nwhile [ $# -gt 0 ]; do\n  if [ "$1" = -o ]; then cp "%s" "$2"; exit 0; fi\n  shift\ndone\nexit 1\n' "$d" "$2" > "$d/bin/curl"
+  chmod +x "$d/bin/curl"
+  print -r -- "$d"
+}
+
+remote_run() {  # $1 = case dir, $2 = cmd|pipe, rest = extra env assignments
+  local d="$1" mode="$2"; shift 2
+  rm -f "$d/curl.argv"
+  if [[ "$mode" == pipe ]]; then
+    cat "$REPO/install.sh" | env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" "$@" \
+      sh >"$d/out" 2>"$d/err"
+  else
+    env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" "$@" \
+      sh -c "$(cat "$REPO/install.sh")" >"$d/out" 2>"$d/err" </dev/null
+  fi
+}
+
+url_main='https://github.com/akleizor/ccmorph/archive/main.tar.gz'
+
+# 8.1 sh -c "$(cat install.sh)": the documented one-liner shape.
+d=$(remote_env remote_c "$TMP/src.tar.gz")
+remote_run "$d" cmd; rc=$?
+(( rc == 0 )) && ok "remote: sh -c \"\$(cat install.sh)\" exits 0" || { fail "remote sh -c rc=$rc"; cat "$d/out" "$d/err" }
+[[ -f "$d/home/.config/ccmorph/lib/ccmorph.sh" ]] \
+  && ok "remote: sh -c installs the library" || fail "remote sh -c did not install lib/ccmorph.sh"
+[[ -x "$d/home/.local/bin/ccmorph" ]] \
+  && ok "remote: sh -c installs the command" || fail "remote sh -c did not install ~/.local/bin/ccmorph"
+grep -qxF "$url_main" "$d/curl.argv" 2>/dev/null \
+  && ok "remote: default URL is the GitHub main archive" || { fail "remote: curl did not get $url_main"; cat "$d/curl.argv" 2>&1 }
+[[ -z "$(print -rl -- "$d"/tmp/ccmorph-install.*(N))" ]] \
+  && ok "remote: the temp dir is removed after a successful install" || fail "remote: temp dir left behind"
+
+# 8.2 the same through a pipe (stdin is the script).
+d=$(remote_env remote_pipe "$TMP/src.tar.gz")
+remote_run "$d" pipe; rc=$?
+(( rc == 0 )) && ok "remote: cat install.sh | sh exits 0" || { fail "remote pipe rc=$rc"; cat "$d/out" "$d/err" }
+[[ -f "$d/home/.config/ccmorph/lib/ccmorph.sh" && -x "$d/home/.local/bin/ccmorph" ]] \
+  && ok "remote: pipe installs library and command" || fail "remote pipe did not install"
+# ...and into zsh, which the re-exec block alone would not have covered. Run from
+# the case dir: with $0 = zsh the old code took the CWD for the source tree.
+d=$(remote_env remote_zsh "$TMP/src.tar.gz")
+(cd "$d" && cat "$REPO/install.sh" | env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" \
+  zsh >"$d/out" 2>"$d/err"); rc=$?
+(( rc == 0 )) && [[ -f "$d/home/.config/ccmorph/lib/ccmorph.sh" ]] && grep -qxF "$url_main" "$d/curl.argv" 2>/dev/null \
+  && ok "remote: cat install.sh | zsh downloads and installs" || { fail "remote zsh pipe rc=$rc"; cat "$d/out" "$d/err" }
+
+# 8.3 CCMORPH_REF picks the archive.
+d=$(remote_env remote_ref "$TMP/src.tar.gz")
+remote_run "$d" cmd CCMORPH_REF=v9.9.9; rc=$?
+grep -qxF 'https://github.com/akleizor/ccmorph/archive/v9.9.9.tar.gz' "$d/curl.argv" 2>/dev/null \
+  && ok "remote: CCMORPH_REF selects the archive" || { fail "remote: CCMORPH_REF=v9.9.9 not in curl argv (rc=$rc)"; cat "$d/curl.argv" 2>&1 }
+
+# 8.4 CCMORPH_INSTALL_URL overrides the whole URL, verbatim.
+d=$(remote_env remote_url "$TMP/src.tar.gz")
+remote_run "$d" cmd CCMORPH_INSTALL_URL=file:///x/y.tgz; rc=$?
+grep -qxF 'file:///x/y.tgz' "$d/curl.argv" 2>/dev/null \
+  && ok "remote: CCMORPH_INSTALL_URL reaches curl exactly" || { fail "remote: CCMORPH_INSTALL_URL not in curl argv (rc=$rc)"; cat "$d/curl.argv" 2>&1 }
+grep -qF 'archive/main' "$d/curl.argv" 2>/dev/null \
+  && fail "remote: the default URL was used alongside the override" || ok "remote: override replaces the default URL"
+
+# 8.5 neither curl nor wget: say so, fail, leave nothing behind. PATH holds only
+# symlinks to the tools the bootstrap needs, so the real curl/wget cannot be found.
+d=$(fresh_env remote_nodl)
+mkdir -p "$d/pbin" "$d/tmp"
+for t in sh tar mktemp dirname rm mkdir cat uname; do ln -s "$(command -v $t)" "$d/pbin/$t"; done
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/pbin" TMPDIR="$d/tmp" \
+  sh -c "$(cat "$REPO/install.sh")" >"$d/out" 2>"$d/err" </dev/null; rc=$?
+(( rc == 1 )) && ok "remote: no curl and no wget exits 1" || { fail "remote nodl rc=$rc (want 1)"; cat "$d/out" "$d/err" }
+grep -qF 'curl' "$d/err" && grep -qF 'wget' "$d/err" \
+  && ok "remote: the error names both curl and wget" || { fail "remote nodl error does not name curl and wget"; cat "$d/err" }
+[[ -z "$(print -rl -- "$d"/tmp/ccmorph-install.*(N))" ]] \
+  && ok "remote: no temp dir left after a missing downloader" || fail "remote nodl left a temp dir"
+[[ -z "$(print -rl -- "$d"/home/*(N) "$d"/home/.[a-z]*(N))" ]] \
+  && ok "remote: nothing written under HOME when the download cannot start" || fail "remote nodl wrote under HOME"
+
+# 8.6 a download that is not a ccmorph tree is refused, and cleaned up.
+d=$(remote_env remote_bad "$TMP/empty.tar.gz")
+remote_run "$d" cmd; rc=$?
+(( rc == 1 )) && ok "remote: a non-ccmorph tarball exits 1" || { fail "remote bad tarball rc=$rc (want 1)"; cat "$d/out" "$d/err" }
+grep -qiF 'not a ccmorph source tree' "$d/err" \
+  && ok "remote: the error says it is not a ccmorph tree" || { fail "remote: wrong-tree error missing"; cat "$d/err" }
+[[ -z "$(print -rl -- "$d"/tmp/ccmorph-install.*(N))" ]] \
+  && ok "remote: no temp dir left after a refused tarball" || fail "remote bad tarball left a temp dir"
+[[ ! -e "$d/home/.config/ccmorph" ]] \
+  && ok "remote: a refused tarball installs nothing" || fail "remote bad tarball wrote ~/.config/ccmorph"
+
+# 8.7 local mode is untouched: an install from a source tree never downloads.
+d=$(remote_env remote_local "$TMP/src.tar.gz")
+rm -f "$d/curl.argv"
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" \
+  zsh "$REPO/install.sh" >"$d/out" 2>&1 </dev/null; rc=$?
+(( rc == 0 )) && ok "remote: a local zsh install still exits 0" || { fail "local install rc=$rc"; cat "$d/out" }
+[[ ! -e "$d/curl.argv" ]] && ok "remote: a local install never calls curl" || fail "local install called curl"
+rm -f "$d/curl.argv"
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" \
+  sh "$REPO/install.sh" >"$d/out" 2>&1 </dev/null; rc=$?
+(( rc == 0 )) && [[ ! -e "$d/curl.argv" ]] \
+  && ok "remote: a local sh install exits 0 and never calls curl" || { fail "local sh install rc=$rc or it called curl"; cat "$d/out" }
+
 print ""
 print "install tests: $passed passed, $failed failed"
 (( failed == 0 ))

@@ -15,6 +15,45 @@
 # reports rather than arranging behind your back. It does REMOVE a managed block
 # left by an older version, because that block sourced a library that no longer
 # defines any command and would fail silently in every new shell.
+
+# Remote mode. `sh -c "$(curl -fsSL .../install.sh)"` and `curl ... | sh` run this
+# script with $0 = sh and no repo beside it, so everything below that reads the
+# tree (the copies, the manifest) would fail on a path that does not exist. Fetch
+# the tree and hand over to ITS installer instead: the downloaded copy has
+# lib/ccmorph.sh beside it, takes the local path below, and never comes back here.
+# `--remote` forces this from inside a tree, for a later `ccmorph update`.
+# POSIX-only syntax in this block, and it runs first: no zsh yet, no `set -eu`.
+_ccm_local=0
+case "$0" in
+  */install.sh|install.sh)
+    [ -r "$0" ] && [ -r "$(dirname "$0")/lib/ccmorph.sh" ] && _ccm_local=1 ;;
+esac
+if [ "$_ccm_local" = 0 ] || [ "${1:-}" = "--remote" ]; then
+  [ "${1:-}" = "--remote" ] && shift
+  _ccm_ref="${CCMORPH_REF:-main}"
+  _ccm_url="${CCMORPH_INSTALL_URL:-https://github.com/akleizor/ccmorph/archive/${_ccm_ref}.tar.gz}"
+  _ccm_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ccmorph-install.XXXXXX")" || exit 1
+  _ccm_fail() { echo "ccmorph: $1" >&2; rm -rf "$_ccm_tmp"; exit 1; }
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$_ccm_url" -o "$_ccm_tmp/src.tar.gz" || _ccm_fail "download failed: $_ccm_url"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$_ccm_tmp/src.tar.gz" "$_ccm_url" || _ccm_fail "download failed: $_ccm_url"
+  else
+    _ccm_fail "neither curl nor wget is on PATH; install one, or clone the repo and run ./install.sh"
+  fi
+  tar -xzf "$_ccm_tmp/src.tar.gz" -C "$_ccm_tmp" || _ccm_fail "could not unpack $_ccm_url"
+  _ccm_src=""
+  for _ccm_d in "$_ccm_tmp"/*/; do
+    [ -r "${_ccm_d}lib/ccmorph.sh" ] && [ -r "${_ccm_d}install.sh" ] && _ccm_src="$_ccm_d"
+  done
+  [ -n "$_ccm_src" ] || _ccm_fail "the download is not a ccmorph source tree: $_ccm_url"
+  echo "ccmorph: installing from $_ccm_url"
+  sh "${_ccm_src}install.sh" "$@"
+  _ccm_rc=$?
+  rm -rf "$_ccm_tmp"
+  exit $_ccm_rc
+fi
+
 # Re-exec under zsh when started by another shell — `bash install.sh`, `sh
 # install.sh`, or a curl-pipe. Everything below this point is zsh: the next few
 # lines alone use ${0:A:h} and glob qualifiers, and bash reads ${0:A:h} as a
