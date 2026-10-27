@@ -24,7 +24,7 @@ from pathlib import Path
 from mitmproxy import http
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rc_route import is_event_upload, is_inference, normalize_body, reroute, slim_events  # noqa: E402
+from rc_route import encode_json, is_event_upload, is_inference, normalize_body, reroute, slim_events  # noqa: E402
 
 UPSTREAM = os.environ["RC_UPSTREAM"]
 _key_file = os.environ.pop("RC_KEY_FILE")
@@ -112,7 +112,7 @@ def request(flow: http.HTTPFlow) -> None:
         return
     if normalize_body(payload, TIERS) if routed else slim_events(payload, _shrink):
         before = len(flow.request.content)
-        flow.request.content = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
+        flow.request.content = encode_json(payload)
         if events:
             _log(f"events    {before} -> {len(flow.request.content)} bytes")
 

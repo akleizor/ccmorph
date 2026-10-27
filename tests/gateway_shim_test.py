@@ -1071,6 +1071,19 @@ def load_shim_module():
     return module
 
 
+
+class EncodeJsonTest(unittest.TestCase):
+    """encode_json replaces json.dumps on request bodies only to allocate the
+    result once; the bytes sent upstream must not change by one byte."""
+
+    def test_matches_compact_json_dumps(self):
+        shim = load_shim_module()
+        payload = {"model": "m", "text": "粵語 é \u2028", "n": [1, 2.5, None, True], "e": {}}
+        for ascii_only in (True, False):
+            self.assertEqual(
+                shim.encode_json(payload, ensure_ascii=ascii_only),
+                json.dumps(payload, separators=(",", ":"), ensure_ascii=ascii_only).encode())
+
 class DeadSocket:
     """A wfile whose writes fail the way a hung-up client's does — every one at
     survive=0 (the default), or after `survive` of them have been let through.

@@ -190,6 +190,14 @@ def _slim(payload: dict, shrink) -> None:
             payload["tool_use_result"] = _cut(result)
 
 
+def encode_json(obj: object, ensure_ascii: bool = False) -> bytes:
+    """Compact UTF-8 JSON for a whole body. json.dumps grows one buffer by realloc;
+    on macOS each multi-MB body leaves the freed steps cached in the long-lived
+    proxy. Joining the encoder's chunks allocates the result once."""
+    encoder = json.JSONEncoder(separators=(",", ":"), ensure_ascii=ensure_ascii)
+    return "".join(encoder.iterencode(obj)).encode()
+
+
 def slim_events(body: object, shrink) -> bool:
     """Lighten a worker/events upload in place; True if anything changed.
 
@@ -198,11 +206,11 @@ def slim_events(body: object, shrink) -> bool:
     events = body.get("events") if isinstance(body, dict) else None
     if not isinstance(events, list):
         return False
-    before = json.dumps(events, sort_keys=True)
+    before = encode_json(events, ensure_ascii=True)
     for event in events:
         if isinstance(event, dict) and isinstance(event.get("payload"), dict):
             _slim(event["payload"], shrink)
-    return json.dumps(events, sort_keys=True) != before
+    return encode_json(events, ensure_ascii=True) != before
 
 
 def reroute(headers: dict[str, str], upstream: str, key: str) -> tuple[dict[str, str], tuple[str, str, int]]:

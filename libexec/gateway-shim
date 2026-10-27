@@ -510,11 +510,20 @@ class Catalogue:
             return self.ids
 
 
+def encode_json(obj, ensure_ascii=True):
+    """Compact UTF-8 JSON for a whole request body. json.dumps grows one buffer
+    by realloc; on macOS each multi-MB body leaves the freed steps cached, and a
+    session-long shim settled near 500 MB. Joining the encoder's chunks allocates
+    the result once."""
+    encoder = json.JSONEncoder(separators=COMPACT, ensure_ascii=ensure_ascii)
+    return "".join(encoder.iterencode(obj)).encode()
+
+
 def with_model(body, model):
     """`body` re-serialized with its model replaced."""
     payload = json.loads(body)
     payload["model"] = model
-    return json.dumps(payload, separators=COMPACT).encode()
+    return encode_json(payload)
 
 
 # --- gateway error envelope (response side) ------------------------------------
@@ -1319,11 +1328,11 @@ class IdShim(BaseHTTPRequestHandler):
             if not changed:
                 return body
             try:
-                return json.dumps(payload, separators=COMPACT, ensure_ascii=False).encode()
+                return encode_json(payload, ensure_ascii=False)
             except UnicodeEncodeError:
                 # A lone \udXXX escape parses but cannot UTF-8 encode; escape it
                 # rather than let the except below send the un-swapped body upstream.
-                return json.dumps(payload, separators=COMPACT, ensure_ascii=True).encode()
+                return encode_json(payload)
         except (ValueError, RecursionError):
             return body
 
