@@ -47,6 +47,20 @@ class Box:
     def conf(self, name, text):
         (self.state / f'{name}.conf').write_text(text)
 
+    def stub_oauth_claude(self, email):
+        # What `add` of a subscription profile needs from `claude`: auth
+        # login/logout succeed, and auth status reports an oauth session for
+        # `email` — the readback that names the new profile.
+        claude = self.home / 'bin/claude'
+        claude.write_text(
+            '#!/bin/sh\n'
+            '[ "$1" = --help ] && exit 0\n'
+            'if [ "$1 $2" = "auth status" ]; then\n'
+            f'  printf \'{{"loggedIn": true, "authMethod": "claude.ai", "email": "{email}"}}\\n\'\n'
+            'fi\n'
+            'exit 0\n')
+        claude.chmod(claude.stat().st_mode | stat.S_IXUSR)
+
     def run(self, *args, answer=None):
         return subprocess.run([str(ROOT / "bin/ccmorph"), *args], env=self.env, input=answer or '',
                               capture_output=True, text=True, timeout=HANG_TIMEOUT)
@@ -208,6 +222,23 @@ def test_the_first_added_profile_becomes_the_default(box):
     second = box.run('add', 't2', answer='token\nsk-ant-oat-canary2\n')
     assert second.returncode == 0, second.stderr
     assert box.active == 't1'
+
+
+@pytest.mark.parametrize('with_a_default', [
+    pytest.param(True, id='an-existing-default-is-kept-gh-17'),
+    pytest.param(False, id='a-first-subscription-profile-becomes-the-default'),
+])
+def test_adding_a_subscription_profile_and_the_default(box, with_a_default):
+    # GH-17: the sub branch of `add` wrote `active` itself, ahead of the shared
+    # first-profile guard, so a subscription add replaced whichever profile
+    # held the default.
+    box.stub_oauth_claude('sub@example.invalid')
+    if with_a_default:
+        seed(box)
+        box.run('use', 'work')
+    done = box.run('add', 'personal', answer='1\n')
+    assert done.returncode == 0, done.stderr
+    assert box.active == ('work' if with_a_default else 'personal')
 
 
 def test_run_names_an_unknown_profile_instead_of_launching_the_default(box):
