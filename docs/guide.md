@@ -338,10 +338,10 @@ excluding models, then relaunch with the gateway reachable to refresh the list.
 ### Historical tool references
 
 For a gateway session failing with `Tool reference '…' not found in available tools`,
-the fix is a request-hooks module: `env.CCMORPH_SHIM_HOOKS=<file>` points the
-shim at a module whose repair hook converts only unresolved historical
-`tool_reference` blocks into text containing the tool name (the hook contract is
-documented in the shim's header). References declared in the current request
+the fix is a request hook: `env.CCMORPH_SHIM_HOOKS=<binary>` names a shim built
+with your own hooks (a small Go `main` that calls `shim.Main(shim.Hooks{...})`;
+the contract is `shim.Hooks` in `shim/server.go`) whose repair hook converts only
+unresolved historical `tool_reference` blocks into text containing the tool name. References declared in the current request
 remain unchanged; no permissions or tool definitions are added, and saved
 transcripts are not changed. Relaunch/resume the same session to activate it.
 Default: off.

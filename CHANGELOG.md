@@ -5,6 +5,19 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
+## Unreleased
+
+### Changed
+
+- **`gateway-shim` is a Go binary.** Same flags, wire bytes, usage rows and
+  `report`/`outcome` subcommands. Under a long session's multi-MB requests it
+  holds about 32 MB instead of about 134 MB. Releases ship it prebuilt for macOS
+  and Linux (arm64, amd64); a clone builds it with `make shim` (needs Go).
+- **Breaking: request hooks are a shim build, not a Python module.**
+  `CCMORPH_SHIM_HOOKS` now names an executable built from a Go `main` around the
+  `shim` package, and the adapter runs it in place of the stock shim. A Python
+  hooks file no longer loads; the launch stops and names it.
+
 ## v0.1.0 — 2026-10-27
 
 First public release as ccmorph. It is beta: commands and settings may still change before 1.0.
