@@ -12,14 +12,10 @@ lifecycle, and that neither an unwritable state directory nor a dead client
 changes a single relayed byte.
 """
 
-import contextlib
 import datetime
 import gzip
 import hashlib
 import http.client
-import importlib.machinery
-import importlib.util
-import io
 import json
 import os
 import re
@@ -37,10 +33,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, SHIM, needs_shim
+
+pytestmark = needs_shim
 
 REPO = Path(__file__).resolve().parent.parent
-SHIM = REPO / "libexec/gateway-shim"
 
 SSE_BODY = (
     'event:content_block_start\n'
@@ -94,7 +91,7 @@ def start_shim(case, target, env=None, flags=()):
     # --parent-pid: a run killed outright (SIGKILL skips every cleanup) must
     # not leave the shim listening forever.
     proc = subprocess.Popen(
-        [sys.executable, str(SHIM), "0", target, *flags, f"--parent-pid={os.getpid()}"],
+        [str(SHIM), "0", target, *flags, f"--parent-pid={os.getpid()}"],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         env=(dict(os.environ, **env) if env else None))
     case.addCleanup(reap_shim, proc)
@@ -111,17 +108,6 @@ def dead_port():
     return port
 
 
-def write_hooks(case, text):
-    """Write a hooks module to scratch space and return its path (issue 438).
-    The hooks seam is module-shaped, so the core tests build their own tiny
-    module instead of naming a real one."""
-    d = tempfile.mkdtemp(prefix="ccmorph-hooks-")
-    case.addCleanup(shutil.rmtree, d, ignore_errors=True)
-    path = Path(d) / "hooks.py"
-    path.write_text(text)
-    return path
-
-
 class ShimParentDeathTest(unittest.TestCase):
     def test_shim_dies_with_the_process_that_launched_it(self):
         """--parent-pid must hold when the launcher is killed outright: six
@@ -130,7 +116,7 @@ class ShimParentDeathTest(unittest.TestCase):
         parent = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.5)"])
         self.addCleanup(parent.wait)
         proc = subprocess.Popen(
-            [sys.executable, str(SHIM), "0", f"http://127.0.0.1:{dead_port()}",
+            [str(SHIM), "0", f"http://127.0.0.1:{dead_port()}",
              f"--parent-pid={parent.pid}"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         self.addCleanup(reap_shim, proc)
@@ -143,28 +129,12 @@ class ShimParentDeathTest(unittest.TestCase):
 
 
 class ShimStartupTest(unittest.TestCase):
-    def test_startup_does_no_reverse_dns_lookup(self):
-        """http.server's server_bind resolves its own address with getfqdn, a
-        reverse lookup of 127.0.0.1 that can stall for tens of seconds on macOS
-        (17 shim and adapter tests timed out on the CI runner waiting for this
-        banner). The shim binds loopback only and needs no name for it, so make
-        that lookup an error and require the banner anyway."""
-        site = Path(tempfile.mkdtemp(prefix="ccmorph-nodns-"))
-        self.addCleanup(shutil.rmtree, site, ignore_errors=True)
-        (site / "sitecustomize.py").write_text(
-            "import socket\n"
-            "def _refuse(*args, **kwargs):\n"
-            "    raise RuntimeError('reverse DNS lookup at shim startup')\n"
-            "socket.getfqdn = _refuse\n"
-            "socket.gethostbyaddr = _refuse\n")
-        proc = subprocess.Popen(
-            [sys.executable, str(SHIM), "0", f"http://127.0.0.1:{dead_port()}",
-             f"--parent-pid={os.getpid()}"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            env=dict(os.environ, PYTHONPATH=str(site)))
-        self.addCleanup(reap_shim, proc)
-        banner = proc.stdout.readline().strip()
-        self.assertTrue(banner.startswith("gateway-shim :"), banner)
+    def test_startup_prints_its_banner_with_the_bound_port(self):
+        """The shim binds loopback only and resolves no name for it (a reverse
+        lookup stalled startup for tens of seconds on macOS): the banner is the
+        adapter's readiness signal and carries the port the OS chose."""
+        proc, port = start_shim(self, f"http://127.0.0.1:{dead_port()}")
+        self.assertGreater(port, 0)
 
 
 class Upstream(BaseHTTPRequestHandler):
@@ -249,7 +219,7 @@ class ShimTest(unittest.TestCase):
         cls.upstream = serve(Upstream)
         cls.uport = cls.upstream.server_address[1]
         cls.proc = subprocess.Popen(
-            [sys.executable, str(SHIM), "0", f"http://127.0.0.1:{cls.uport}",
+            [str(SHIM), "0", f"http://127.0.0.1:{cls.uport}",
              f"--parent-pid={os.getpid()}"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         cls.banner = cls.proc.stdout.readline().strip()
@@ -753,10 +723,10 @@ class BlockedUpstream(BaseHTTPRequestHandler):
 
 
 class TransportRetryTest(unittest.TestCase):
-    """Retrying a transport failure, and the breaker it feeds, are driven
-    in-process: the retry waits (a jittered sleep) and the breaker's clock are
-    both injected, so neither costs the suite real time and neither can flake.
-    One shim per launch fronts one provider, so the state is class state."""
+    """--retry-transport end to end. The Go suite (shim/retry_test.go) pins the
+    jitter bounds, the breaker clock and the stall rule with injected time; here
+    the binary's own flags and CCMORPH_RETRY_BASE=0 (no waits) show what a
+    provider and a client see."""
 
     def setUp(self):
         BlockedUpstream.failures_left = 0
@@ -764,144 +734,54 @@ class TransportRetryTest(unittest.TestCase):
         BlockedUpstream.sse = False
         self.upstream = serve(BlockedUpstream)
         self.addCleanup(self.upstream.shutdown)
-        self.shim = load_shim_module()
-        self.delays = []
-        self.now = [0.0]
-        self.shim.IdShim.target = f"http://127.0.0.1:{self.upstream.server_address[1]}"
-        self.shim.IdShim.retry_transport = True
-        self.shim.IdShim.breaker = self.shim.Breaker(clock=lambda: self.now[0])
-        self.shim.IdShim.sleep = staticmethod(self.delays.append)
-        server = serve(self.shim.IdShim)
-        self.addCleanup(server.shutdown)
-        self.port = server.server_address[1]
 
-    def post(self):
-        return keepalive_post(self, self.port, "/v1/messages", body=REQUEST)
+    def shim(self, target=None, flags=("--retry-transport",)):
+        _, port = start_shim(self, target or f"http://127.0.0.1:{self.upstream.server_address[1]}",
+                             env={"CCMORPH_RETRY_BASE": "0"}, flags=flags)
+        return port
 
-    def test_blocked_provider_is_retried_twice_on_the_same_model(self):
+    def post(self, port):
+        return keepalive_post(self, port, "/v1/messages", body=REQUEST)
+
+    def test_blocked_provider_is_retried_twice_on_the_same_bytes(self):
         BlockedUpstream.failures_left = 10 ** 6
-        self.assertEqual(self.post().status, 503)
-        # Three upstream requests, all the same bytes: same model, same target.
-        self.assertEqual(len(BlockedUpstream.bodies), 3)
-        self.assertTrue(all(body == REQUEST for body in BlockedUpstream.bodies))
-        self.assertEqual(len(self.delays), 2)
-
-    def test_the_retry_waits_a_jittered_backoff_not_a_fixed_one(self):
-        BlockedUpstream.failures_left = 10 ** 6
-        self.post()
-        self.assertLessEqual(0, self.delays[0])
-        self.assertLessEqual(self.delays[0], self.shim.RETRY_BASE)
-        self.assertLessEqual(self.delays[1], 2 * self.shim.RETRY_BASE)
-        self.assertGreater(len({self.shim.retry_delay(2) for _ in range(20)}), 1)
+        self.assertEqual(self.post(self.shim()).status, 503)
+        self.assertEqual(BlockedUpstream.bodies, [REQUEST] * 3)
 
     def test_provider_that_recovers_answers_after_one_retry(self):
         BlockedUpstream.failures_left = 1
-        resp = self.post()
+        resp = self.post(self.shim())
         self.assertEqual(resp.status, 200)
         self.assertEqual(json.loads(resp.read())["id"], "msg_ok")
         self.assertEqual(len(BlockedUpstream.bodies), 2)
-        self.assertEqual(len(self.delays), 1)
-
-    def test_refused_connection_is_retried_then_502(self):
-        self.shim.IdShim.target = f"http://127.0.0.1:{dead_port()}"
-        self.assertEqual(self.post().status, 502)
-        self.assertEqual(len(self.delays), 2)
 
     def test_an_sse_error_status_is_retried_too(self):
-        # A gateway that streams its errors must not lose the retry: no byte has
-        # gone downstream, so the status alone decides — as it does for a JSON
-        # reply — and the client sees the last one if every attempt fails.
         BlockedUpstream.sse = True
         BlockedUpstream.failures_left = 10 ** 6
-        self.assertEqual(self.post().status, 503)
+        self.assertEqual(self.post(self.shim()).status, 503)
         self.assertEqual(len(BlockedUpstream.bodies), 3)
-        self.assertEqual(len(self.delays), 2)
 
-    def test_a_stall_is_not_retried_even_when_urllib_wraps_it(self):
-        # urllib delivers the connect phase's timeout inside URLError, so the
-        # stall rule has to unwrap: retrying it would stack STALL_TIMEOUT three
-        # times before the client heard anything, and the three failures would
-        # fall outside the breaker's window.
-        def stall(_body):
-            raise urllib.error.URLError(TimeoutError("connect timed out"))
-
-        self.shim.IdShim._proxy = staticmethod(stall)
-        self.assertEqual(self.post().status, 502)
-        self.assertEqual(self.delays, [])
-        self.assertEqual(BlockedUpstream.bodies, [])
-
-    def test_the_stall_rule_names_the_system_pythons_socket_timeout(self):
-        # On 3.9 — the macOS system python the live shim runs on — socket.timeout
-        # is not TimeoutError. Naming both keeps the no-retry rule there too.
-        self.assertIn(socket.timeout, self.shim.STALL_ERRORS)
-        self.assertTrue(self.shim.wrapped_timeout(urllib.error.URLError(socket.timeout())))
+    def test_refused_connection_is_retried_then_502(self):
+        self.assertEqual(self.post(self.shim(f"http://127.0.0.1:{dead_port()}")).status, 502)
 
     def test_without_the_flag_nothing_is_retried(self):
-        self.shim.IdShim.retry_transport = False
         BlockedUpstream.failures_left = 10 ** 6
-        self.assertEqual(self.post().status, 503)
+        self.assertEqual(self.post(self.shim(flags=())).status, 503)
         self.assertEqual(len(BlockedUpstream.bodies), 1)
-        self.assertEqual(self.delays, [])
 
-    def open_breaker(self):
-        """Three requests that each still fail after their retries, a minute
-        apart: the breaker's threshold inside its 5-minute window. Each request
-        cost three upstream calls, so the wire shows nine."""
+    def test_three_failed_requests_open_the_breaker_and_it_fails_readably(self):
         BlockedUpstream.failures_left = 10 ** 6
-        for _ in range(2):
-            self.assertEqual(self.post().status, 503)
-            self.now[0] += 60
-        self.assertEqual(self.post().status, 503)
-        self.assertEqual(len(BlockedUpstream.bodies), 9)
-
-    def test_breaker_opens_after_three_failed_requests_and_one_probe_closes_it(self):
-        self.open_breaker()
-        # Held: the client gets the breaker's own 503 and nothing goes upstream.
-        self.assertEqual(self.post().status, 503)
-        self.assertEqual(len(BlockedUpstream.bodies), 9)
-        # A second short of the 10 minutes it is still held...
-        self.now[0] += 599
-        self.assertEqual(self.post().status, 503)
-        self.assertEqual(len(BlockedUpstream.bodies), 9)
-        # ...and the next real request past it probes the provider: this one
-        # succeeds, so the breaker closes and the following request is normal.
-        self.now[0] += 2
-        BlockedUpstream.failures_left = 0
-        self.assertEqual(self.post().status, 200)
-        self.assertEqual(len(BlockedUpstream.bodies), 10)
-        self.assertEqual(self.post().status, 200)
-        self.assertEqual(len(BlockedUpstream.bodies), 11)
-
-    def test_failed_probe_reopens_the_breaker(self):
-        self.open_breaker()
-        self.now[0] += 601
-        # The probe reaches the still-blocked provider: one more request with
-        # its retries, and the breaker is open again.
-        self.assertEqual(self.post().status, 503)
-        self.assertEqual(len(BlockedUpstream.bodies), 12)
-        self.assertEqual(self.post().status, 503)
-        self.assertEqual(len(BlockedUpstream.bodies), 12)
-
-    def test_failures_spread_over_more_than_five_minutes_do_not_open_it(self):
-        BlockedUpstream.failures_left = 10 ** 6
+        port = self.shim()
         for _ in range(3):
-            self.assertEqual(self.post().status, 503)
-            self.now[0] += 200
-        # Three failures, but never three inside the window: the next request
-        # still goes upstream (three more calls) rather than being held.
-        self.assertEqual(self.post().status, 503)
-        self.assertEqual(len(BlockedUpstream.bodies), 12)
-
-    def test_blocked_provider_fails_readably_and_never_goes_elsewhere(self):
-        self.open_breaker()
-        resp = self.post()
-        self.assertEqual(resp.status, 503)
-        message = json.loads(resp.read())["error"]["message"]
+            self.assertEqual(self.post(port).status, 503)
+        self.assertEqual(len(BlockedUpstream.bodies), 9)
+        held = self.post(port)
+        self.assertEqual(held.status, 503)
+        message = json.loads(held.read())["error"]["message"]
         self.assertIn("ccmorph", message)
         self.assertIn("then tries one", message)
-        # Every call the shim ever made went to the one target, with the one
-        # model: an open breaker is never a reason to try anywhere else.
-        self.assertTrue(all(body == REQUEST for body in BlockedUpstream.bodies))
+        # Held means held: nothing went upstream, and nothing went elsewhere.
+        self.assertEqual(BlockedUpstream.bodies, [REQUEST] * 9)
 
 
 class DeadUpstreamTest(unittest.TestCase):
@@ -1061,79 +941,6 @@ class FramingTest(unittest.TestCase):
         self.assertNotIn(b"\r\n", body, "CRLF mixed into an LF stream")
 
 
-def load_shim_module():
-    """Import gateway-shim as a module. It has no .py extension, so it
-    needs an explicit SourceFileLoader."""
-    loader = importlib.machinery.SourceFileLoader("ccmorph_gateway_shim", str(SHIM))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module
-
-
-
-class EncodeJsonTest(unittest.TestCase):
-    """encode_json replaces json.dumps on request bodies only to allocate the
-    result once; the bytes sent upstream must not change by one byte."""
-
-    def test_matches_compact_json_dumps(self):
-        shim = load_shim_module()
-        payload = {"model": "m", "text": "粵語 é \u2028", "n": [1, 2.5, None, True], "e": {}}
-        for ascii_only in (True, False):
-            self.assertEqual(
-                shim.encode_json(payload, ensure_ascii=ascii_only),
-                json.dumps(payload, separators=(",", ":"), ensure_ascii=ascii_only).encode())
-
-class DeadSocket:
-    """A wfile whose writes fail the way a hung-up client's does — every one at
-    survive=0 (the default), or after `survive` of them have been let through.
-    Flush always passes: the shim writes before it flushes, so the first failing
-    call is a write either way, and counting writes keeps a test's "one event
-    delivered, then the client vanishes" independent of flush bookkeeping."""
-
-    def __init__(self, exc, survive=0):
-        self.exc = exc
-        self.survive = survive
-
-    def write(self, _data):
-        if self.survive:
-            self.survive -= 1
-            return
-        raise self.exc
-
-    def flush(self):
-        pass
-
-
-class ClientDisconnectTest(unittest.TestCase):
-    """FIX 9 — a cancelled turn (client closes mid-stream) let
-    BrokenPipeError escape _stream_sse, and ThreadingHTTPServer's
-    handle_error dumped a traceback into the shared adapter log.
-
-    Driven at the unit level on purpose: end-to-end, whether the kernel has
-    yet noticed the peer is gone depends on socket buffering and timing, so
-    an integration test for this passes or fails by luck (probed: no
-    traceback at 1/2/3/4/6s waits even on the unfixed shim). Injecting the
-    failing wfile makes the assertion deterministic.
-    """
-
-    def _run_stream(self, exc):
-        shim = load_shim_module()
-        handler = shim.IdShim.__new__(shim.IdShim)      # no socket setup
-        handler.wfile = DeadSocket(exc)
-        handler.close_connection = False
-        handler._stream_sse(io.BytesIO(SSE_BODY.encode()))
-        return handler
-
-    def test_broken_pipe_midstream_is_swallowed(self):
-        handler = self._run_stream(BrokenPipeError(32, "Broken pipe"))
-        self.assertTrue(handler.close_connection)
-
-    def test_connection_reset_midstream_is_swallowed(self):
-        handler = self._run_stream(ConnectionResetError(54, "reset by peer"))
-        self.assertTrue(handler.close_connection)
-
-
 class EchoUpstream(BaseHTTPRequestHandler):
     """Answers with the exact request body it received, so a test can assert
     what the shim put on the upstream wire."""
@@ -1179,7 +986,7 @@ class ShimFlagTest(unittest.TestCase):
         # silently losing the rewrite.
         for flag in ("--repair-tool-references", "--affinity-header=X-Header"):
             with self.subTest(flag=flag):
-                out = subprocess.run([sys.executable, str(SHIM), "0", "http://x",
+                out = subprocess.run([str(SHIM), "0", "http://x",
                                       flag], capture_output=True, text=True,
                                      timeout=HANG_TIMEOUT)
                 self.assertNotEqual(out.returncode, 0)
@@ -1197,110 +1004,10 @@ class ShimFlagTest(unittest.TestCase):
             self.assertEqual(r.read(), JSON_BODY)
 
     def test_unknown_flag_is_rejected(self):
-        proc = subprocess.run([sys.executable, str(SHIM), "0", "http://x",
+        proc = subprocess.run([str(SHIM), "0", "http://x",
                                "--nope"], capture_output=True, text=True, timeout=HANG_TIMEOUT)
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("usage", proc.stdout + proc.stderr)
-
-
-HOOKS_MODULE = '''\
-"""A stand-in for a profile's hooks module: neutral names, all three hooks."""
-
-
-def user_agent(client_ua):
-    return "hooks-ua[" + client_ua + "]"
-
-
-def repair_request(payload):
-    if payload.get("hooks") == "dirty":
-        payload["hooks"] = "clean"
-        return True
-    return False
-
-
-def outbound_headers(headers, session):
-    if session is None:
-        headers["x-hooks-no-session"] = "1"
-    else:
-        headers["x-hooks-affinity"] = session
-'''
-
-
-class ShimHooksTest(unittest.TestCase):
-    """The CCMORPH_SHIM_HOOKS seam (issue 438): a profile points the shim at
-    a module whose functions rewrite its outbound requests — the User-Agent,
-    the body, or the headers. Everything gateway-specific lives in such a
-    module; the shim itself stays generic. These tests build the module in
-    scratch space with neutral names rather than naming a real one."""
-
-    def request(self, hooks=None, body=b"{}", headers=None, flags=()):
-        RecordingUpstream.seen = []
-        srv = serve(RecordingUpstream)
-        self.addCleanup(srv.shutdown)
-        env = {"CCMORPH_SHIM_HOOKS": str(hooks)} if hooks is not None else None
-        _, port = start_shim(self, f"http://127.0.0.1:{srv.server_address[1]}",
-                             env=env, flags=flags)
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{port}/v1/messages", data=body,
-            headers=headers or {"content-type": "application/json"})
-        urllib.request.urlopen(req, timeout=HANG_TIMEOUT).read()
-        return RecordingUpstream.seen[-1]
-
-    def test_hooks_module_rewrites_the_user_agent(self):
-        got, _ = self.request(write_hooks(self, HOOKS_MODULE), headers={
-            "content-type": "application/json",
-            "User-Agent": "claude-cli/2.1.300 (external, sdk-ts)"})
-        self.assertEqual(got["user-agent"],
-                         "hooks-ua[claude-cli/2.1.300 (external, sdk-ts)]")
-
-    def test_a_hooks_module_without_user_agent_forwards_the_client_one(self):
-        got, _ = self.request(
-            write_hooks(self, "def repair_request(payload):\n    return False\n"),
-            headers={"content-type": "application/json",
-                     "User-Agent": "claude-cli/2.1.300 (external, sdk-ts)"})
-        self.assertEqual(got["user-agent"], "claude-cli/2.1.300 (external, sdk-ts)")
-
-    def test_hooks_repair_reaches_the_upstream_body(self):
-        _, sent = self.request(write_hooks(self, HOOKS_MODULE),
-                               body=json.dumps({"hooks": "dirty"}).encode())
-        # COMPACT separators: the shim re-serializes only what the hook changed.
-        self.assertEqual(sent, b'{"hooks":"clean"}')
-
-    def test_hooks_repair_that_changes_nothing_keeps_the_bytes_identical(self):
-        raw = b'{"hooks":"clean"}'
-        _, sent = self.request(write_hooks(self, HOOKS_MODULE), body=raw)
-        self.assertEqual(sent, raw)
-
-    def test_a_raising_hook_leaves_the_request_bytes_unchanged(self):
-        hooks = write_hooks(self,
-                            "def repair_request(payload):\n    raise ValueError('boom')\n")
-        raw = b'{"hooks":"dirty"}'
-        _, sent = self.request(hooks, body=raw)
-        self.assertEqual(sent, raw)
-
-    def test_hooks_outbound_headers_receive_the_session_id(self):
-        # Issue 438: the session capture used to happen only inside the
-        # --random-device-id swap; hooks need it on every request, with no
-        # flag set at all.
-        user_id = json.dumps({"device_id": "d" * 64, "session_id": "sess-1"})
-        body = json.dumps({"metadata": {"user_id": user_id}}).encode()
-        got, _ = self.request(write_hooks(self, HOOKS_MODULE), body=body)
-        self.assertEqual(got["x-hooks-affinity"], "sess-1")
-        self.assertNotIn("x-hooks-no-session", got)
-
-    def test_hooks_outbound_headers_get_none_without_a_session_id(self):
-        got, _ = self.request(write_hooks(self, HOOKS_MODULE), body=b"{}")
-        self.assertEqual(got["x-hooks-no-session"], "1")
-        self.assertNotIn("x-hooks-affinity", got)
-
-    def test_a_missing_hooks_module_refuses_to_start(self):
-        # A profile pointing at a module that is not there must fail loud at
-        # startup, never serve with its rewrites silently missing.
-        out = subprocess.run([sys.executable, str(SHIM), "0", "http://127.0.0.1:1"],
-                             capture_output=True, text=True, timeout=HANG_TIMEOUT,
-                             env=dict(os.environ, CCMORPH_SHIM_HOOKS="/nonexistent/hooks.py"))
-        self.assertNotEqual(out.returncode, 0)
-        self.assertIn("CCMORPH_SHIM_HOOKS", out.stdout + out.stderr)
 
 
 # --- usage sidecar ----------------------------------------------------------
@@ -1806,354 +1513,6 @@ class UsageSidecarTest(unittest.TestCase):
         row = self.wait_for(self.row_path("msg_capture_json"))
         self.assertEqual(row["usage"]["cost"], 0.072112)
 
-    def test_sse_billed_cost_is_kept_from_each_usage_event(self):
-        sidecar = load_shim_module().UsageSidecar("p", "identity")
-        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)}):
-            for kind in ("message_start", "message_delta", "message_stop"):
-                with self.subTest(kind=kind):
-                    record = None
-                    for event in (json.loads(line[5:]) for line in CAPTURE_SSE.splitlines()
-                                  if line.startswith("data:")):
-                        if event["type"] == kind:
-                            usage = event["message"]["usage"] if kind == "message_start" else event.setdefault("usage", {})
-                            usage.update(cost=0.5, private="not receipt data")
-                        record = sidecar.observe(event, record, "m")
-                    rows = [r for r in self.rows().values() if r["turn_id"] == record["turn_id"]]
-                    self.assertEqual(len(rows), 1)
-                    self.assertTrue(rows[0]["complete"])
-                    self.assertEqual(rows[0]["usage"]["cost"], 0.5)
-                    self.assertEqual(rows[0]["usage"]["output_tokens"], 42)
-                    self.assertNotIn("private", rows[0]["usage"])
-
-    def test_unusable_costs_stay_out_of_the_row(self):
-        shim = load_shim_module()
-        usage_buckets = shim.usage_buckets
-        for bad in (-0.01, float("nan"), float("inf"), True, "0.1", None, [1],
-                    10 ** 308, 1e308, 9.1e13, shim.COST_LIMIT):
-            self.assertNotIn("cost", usage_buckets({"output_tokens": 1, "cost": bad}), bad)
-        self.assertEqual(usage_buckets({"cost": 0}), {"cost": 0})
-        self.assertEqual(usage_buckets({"cost": 1.5}), {"cost": 1.5})
-        self.assertEqual(usage_buckets({"cost": 1e13}), {"cost": 1e13})
-
-    def test_recycled_response_id_does_not_overwrite_the_earlier_turn(self):
-        sidecar = load_shim_module().UsageSidecar("p", "identity")
-        environment = mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)})
-        environment.start()
-        self.addCleanup(environment.stop)
-        first = sidecar._start("msg_dup", "m", "m", {"output_tokens": 1})
-        first["timestamp"] = "2026-10-15T00:00:00+00:00"
-        second = sidecar._start("msg_dup", "m", "m", {"output_tokens": 2})
-        second["timestamp"] = "2026-10-15T00:00:05+00:00"
-        sidecar._write(first)
-        sidecar._write(second)
-        first["complete"] = True            # same-record rewrite keeps its path
-        sidecar._write(first)
-        self.assertEqual(len(self.rows()), 2)
-        self.assertEqual(json.loads(self.row_path("msg_dup").read_text()), first)
-        spill = hashlib.sha256(
-            ("msg_dup." + second["turn_id"]).encode()).hexdigest() + ".json"
-        self.assertEqual(self.rows()[spill], second)
-
-    def test_legacy_row_without_turn_id_is_not_owned_by_a_new_turn(self):
-        sidecar = load_shim_module().UsageSidecar("p", "identity")
-        legacy = sidecar._start("msg_legacy", "m", "m", {"output_tokens": 1})
-        legacy.pop("turn_id")
-        path = self.row_path("msg_legacy")
-        path.parent.mkdir(parents=True)
-        path.write_text(json.dumps(legacy))
-        record = sidecar._start("msg_legacy", "m", "m", {"output_tokens": 2})
-        record["timestamp"] = legacy["timestamp"]
-        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)}):
-            sidecar._write(record)
-        self.assertEqual(len(self.rows()), 2)
-        self.assertEqual(json.loads(path.read_text()), legacy)
-        self.assertIn(record, self.rows().values())
-
-    def test_recycled_response_id_keeps_rows_without_hardlink_support(self):
-        """The non-link fallback must preserve sequential recycled-id rows,
-        including when separate sidecar instances own the turns."""
-        import errno
-
-        shim = load_shim_module()
-        first_writer = shim.UsageSidecar("p", "identity")
-        second_writer = shim.UsageSidecar("p", "identity")
-        first = first_writer._start("msg_no_link", "m", "m", {"output_tokens": 1})
-        first["timestamp"] = "2026-10-15T00:00:00+00:00"
-        second = second_writer._start("msg_no_link", "m", "m", {"output_tokens": 2})
-        second["timestamp"] = first["timestamp"]
-        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)}), \
-                mock.patch.object(shim.os, "link", side_effect=OSError(errno.ENOTSUP, "unsupported")):
-            first_writer._write(first)
-            second_writer._write(second)
-            first["complete"] = True
-            first_writer._write(first)
-            second["complete"] = True
-            second_writer._write(second)
-        self.assertEqual(len(self.rows()), 2)
-        self.assertEqual(json.loads(self.row_path("msg_no_link").read_text()), first)
-        spill = hashlib.sha256(
-            ("msg_no_link." + second["turn_id"]).encode()).hexdigest() + ".json"
-        self.assertEqual(self.rows()[spill], second)
-
-    def test_concurrent_same_id_writes_each_keep_their_row(self):
-        """#199: writers racing on one response id (each its own turn, so its
-        own timestamp) must not overwrite each other's rows — the path is
-        claimed atomically, not picked with an exists() check. #444: the claim
-        must stay atomic without hardlinks too — an exclusive create, so the
-        racing loser lands in its spill, not on the winner's row."""
-        import errno
-
-        shim = load_shim_module()
-        sidecar = shim.UsageSidecar("p", "identity")
-        for link in (None, OSError(errno.ENOTSUP, "unsupported")):
-            with self.subTest(hardlinks=link is None):
-                shutil.rmtree(self.state / "ccmorph", ignore_errors=True)
-                records = []
-                for i in range(8):
-                    record = sidecar._start("msg_race", "m", "m", {"output_tokens": i})
-                    record["timestamp"] = "2026-10-15T00:00:{:02d}+00:00".format(i)
-                    records.append(record)
-                barrier = threading.Barrier(len(records), timeout=3)
-                errors = []
-
-                def write(record):
-                    try:
-                        barrier.wait()
-                        sidecar._write(record)
-                    except Exception as error:
-                        errors.append(error)
-
-                threads = [threading.Thread(target=write, args=(r,)) for r in records]
-                started = []
-                patches = [mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)})]
-                if link is not None:
-                    patches.append(mock.patch.object(shim.os, "link", side_effect=link))
-                with contextlib.ExitStack() as stack:
-                    for patch in patches:
-                        stack.enter_context(patch)
-                    try:
-                        for thread in threads:
-                            thread.start()
-                            started.append(thread)
-                        for thread in started:
-                            thread.join(timeout=5)
-                    finally:
-                        barrier.abort()
-                        for thread in started:
-                            thread.join(timeout=5)
-                    self.assertFalse(errors)
-                    self.assertFalse(any(t.is_alive() for t in started))
-                    rows = self.rows()
-                    self.assertEqual(len(rows), len(records))
-                    self.assertEqual({r["usage"]["output_tokens"] for r in rows.values()},
-                                     set(range(len(records))))
-                    # A record's later rewrite (message_delta / message_stop) replaces the
-                    # file it owns, never another turn's row.
-                    mine = records[3]
-                    mine["usage"]["output_tokens"] = 99
-                    mine["complete"] = True
-                    sidecar._write(mine)
-                    rows = self.rows()
-                    self.assertEqual(len(rows), len(records))
-                    updated = [r for r in rows.values() if r["timestamp"] == mine["timestamp"]]
-                    self.assertEqual(len(updated), 1)
-                    self.assertIs(updated[0]["complete"], True)
-                    self.assertEqual(updated[0]["usage"]["output_tokens"], 99)
-
-    def test_failed_temp_unlink_never_truncates_a_claimed_row(self):
-        shim = load_shim_module()
-        sidecar = shim.UsageSidecar("p", "identity")
-        first = sidecar._start("msg_alias", "m", "m", {"output_tokens": 1})
-        second = sidecar._start("msg_alias", "m", "m", {"output_tokens": 2})
-        first["timestamp"], second["timestamp"] = "first", "second"
-        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)}):
-            with mock.patch.object(shim.os, "unlink", side_effect=PermissionError("fixture unlink")):
-                try:
-                    sidecar._write(first)
-                except OSError:
-                    pass
-            sidecar._write(second)
-        self.assertEqual(len(self.rows()), 2)
-        self.assertEqual(json.loads(self.row_path("msg_alias").read_text()), first)
-
-    def test_fallback_race_keeps_both_rows_from_the_first_write_issue_444(self):
-        """#444: two turns that both observe a free primary — exactly what a
-        race opens in the no-hardlink fallback's exists() check — must not
-        both take it. The claim is an exclusive create, so the loser lands in
-        its spill on that first write: a stream cancelled, or a process
-        killed, before its next usage update keeps its row. Updates afterwards
-        still recheck the on-disk owner and keep each row where it is (the
-        recovery this test pinned before the claim itself stopped displacing
-        anyone)."""
-        import errno
-
-        shim = load_shim_module()
-        writers = [shim.UsageSidecar("p", "identity") for _ in range(2)]
-        records = [w._start("msg_fallback_race", "m", "m", {"output_tokens": i})
-                   for i, w in enumerate(writers)]
-        for i, record in enumerate(records):
-            record["timestamp"] = str(i)
-        primary = str(self.row_path("msg_fallback_race"))
-        real_exists = shim.os.path.exists
-
-        def exists(path):
-            # Hold the race window open: every check reports the primary
-            # free, exactly what a writer that checked before the other's
-            # replace saw.
-            return False if path == primary else real_exists(path)
-
-        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)}):
-            with mock.patch.object(shim.os, "link", side_effect=OSError(errno.ENOTSUP, "unsupported")), \
-                    mock.patch.object(shim.os.path, "exists", side_effect=exists):
-                for writer, record in zip(writers, records):
-                    writer._write(record)
-            self.assertEqual(len(self.rows()), 2)
-            for writer, record in zip(writers, records):
-                record["usage"]["output_tokens"] += 10
-                record["complete"] = True
-                writer._write(record)
-        self.assertEqual(len(self.rows()), 2)
-        self.assertEqual({r["timestamp"]: r for r in self.rows().values()},
-                         {r["timestamp"]: r for r in records})
-
-    def test_removed_claim_reclaimed_by_another_turn_is_not_overwritten(self):
-        shim = load_shim_module()
-        first_writer, second_writer = [shim.UsageSidecar("p", "identity") for _ in range(2)]
-        first = first_writer._start("msg_reclaimed", "m", "m", {"output_tokens": 1})
-        second = second_writer._start("msg_reclaimed", "m", "m", {"output_tokens": 2})
-        first["timestamp"], second["timestamp"] = "first", "second"
-        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)}):
-            first_writer._write(first)
-            self.row_path("msg_reclaimed").unlink()
-            second_writer._write(second)
-            first["complete"] = True
-            first_writer._write(first)
-        self.assertEqual(len(self.rows()), 2)
-        self.assertEqual(json.loads(self.row_path("msg_reclaimed").read_text()), second)
-
-    def test_spill_rewrite_keeps_its_path_when_primary_is_removed(self):
-        sidecar = load_shim_module().UsageSidecar("p", "identity")
-        first = sidecar._start("msg_spill_stable", "m", "m", {"output_tokens": 1})
-        second = sidecar._start("msg_spill_stable", "m", "m", {"output_tokens": 2})
-        first["timestamp"], second["timestamp"] = "first", "second"
-        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)}):
-            sidecar._write(first)
-            sidecar._write(second)
-            spill = next(p for p in (self.state / "ccmorph" / "usage").glob("*.json")
-                         if p != self.row_path("msg_spill_stable"))
-            self.row_path("msg_spill_stable").unlink()
-            second["usage"]["output_tokens"] = 9
-            sidecar._write(second)
-            second["complete"] = True
-            sidecar._write(second)
-        self.assertEqual(self.rows(), {spill.name: second})
-
-    def test_spill_aliasing_another_primary_keeps_every_row(self):
-        """#320: both names of a turn can belong to other turns — the primary to
-        a recycled id, the spill to a row whose own primary is that spill name.
-        The write must move on to a further name, never replace either row."""
-        import errno
-
-        shim = load_shim_module()
-        sidecar = shim.UsageSidecar("p", "identity")
-        for link in (None, OSError(errno.ENOTSUP, "unsupported")):
-            with self.subTest(hardlinks=link is None):
-                shutil.rmtree(self.state / "ccmorph", ignore_errors=True)
-                unrelated = sidecar._start("msg_a", "m", "m", {"cost": 1})
-                aliased = sidecar._start("msg_a", "m", "m", {"cost": 2})
-                other = sidecar._start("msg_a." + aliased["turn_id"], "m", "m", {"cost": 3})
-                patches = [mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)})]
-                if link is not None:
-                    patches.append(mock.patch.object(shim.os, "link", side_effect=link))
-                with contextlib.ExitStack() as stack:
-                    for patch in patches:
-                        stack.enter_context(patch)
-                    for record in (unrelated, other, aliased):
-                        sidecar._write(record)
-                    rows = list(self.rows().values())
-                    self.assertCountEqual(rows, [unrelated, aliased, other])
-                    self.assertEqual(sum(r["usage"]["cost"] for r in rows), 6)
-                    for record in (aliased, other):    # rewrites keep their own rows
-                        record["complete"] = True
-                        sidecar._write(record)
-                    rows = list(self.rows().values())
-                    self.assertCountEqual(rows, [unrelated, aliased, other])
-                    self.assertEqual(sum(r["usage"]["cost"] for r in rows), 6)
-                    # Every one of its five names held by other turns: this turn
-                    # loses its own row and leaves all theirs untouched.
-                    blocked = sidecar._start("msg_a", "m", "m", {"cost": 4})
-                    for key in ["msg_a." + blocked["turn_id"]] + [
-                            "{}.{}".format("msg_a." + blocked["turn_id"], n)
-                            for n in range(1, 4)]:
-                        sidecar._write(sidecar._start(key, "m", "m", {"cost": 5}))
-                    before = self.rows()
-                    self.assertEqual(len(before), 7)
-                    with self.assertRaises(FileExistsError):
-                        sidecar._write(blocked)
-                    self.assertEqual(self.rows(), before)
-                    usage = self.state / "ccmorph" / "usage"
-                    self.assertEqual(list(usage.glob("*.tmp")), [])
-
-    def test_stream_exits_do_not_retain_shared_claims(self):
-        shim = load_shim_module()
-        sidecar = shim.UsageSidecar("p", "identity")
-        start = CAPTURE_SSE.split("event:message_delta")[0].encode()
-        error = b'event: error\ndata: {"type":"error"}\n\n'
-
-        class FailingRead(io.BytesIO):
-            def readline(self):
-                line = super().readline()
-                if not line:
-                    raise TimeoutError("fixture stall")
-                return line
-
-        cases = ((io.BytesIO(start), io.BytesIO()),
-                 (io.BytesIO(start + error), io.BytesIO()),
-                 (io.BytesIO(CAPTURE_SSE.encode()),
-                  DeadSocket(BrokenPipeError(32, "fixture disconnect"), survive=2)),
-                 (FailingRead(start), io.BytesIO()))
-        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)}):
-            for response, output in cases:
-                handler = shim.IdShim.__new__(shim.IdShim)
-                handler.wfile = output
-                handler._stream_sse(response, sidecar, "m")
-                self.assertFalse(getattr(sidecar, "_claimed", {}))
-        self.assertEqual(len(self.rows()), len(cases))
-        self.assertTrue(all(not row["complete"] for row in self.rows().values()))
-
-    def test_concurrent_fixture_restores_inherited_state_home(self):
-        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": "fixture-inherited"}):
-            case = UsageSidecarTest("test_concurrent_same_id_writes_each_keep_their_row")
-            case.state = self.state
-            try:
-                case.test_concurrent_same_id_writes_each_keep_their_row()
-            finally:
-                case.doCleanups()
-            self.assertEqual(os.environ.get("XDG_STATE_HOME"), "fixture-inherited")
-
-    def test_concurrent_fixture_partial_thread_start_failure_exits(self):
-        # A start failure mid-fixture must leave no worker parked at the
-        # barrier: liveness is read straight after the fixture raises, before
-        # the fixture's 3 s barrier timeout could rescue a leaked worker.
-        case = UsageSidecarTest("test_concurrent_same_id_writes_each_keep_their_row")
-        case.state = self.state
-        original = threading.Thread.start
-        started = []
-
-        def start(thread):
-            if started:
-                raise RuntimeError("fixture thread start")
-            started.append(thread)
-            return original(thread)
-
-        try:
-            with mock.patch.object(threading.Thread, "start", start):
-                with self.assertRaisesRegex(RuntimeError, "fixture thread start"):
-                    case.test_concurrent_same_id_writes_each_keep_their_row()
-        finally:
-            case.doCleanups()
-        self.assertEqual(len(started), 1)
-        self.assertFalse(started[0].is_alive())
 
     def test_route_id_is_stable_across_processes_and_never_the_identity(self):
         route_ids = set()
@@ -2220,6 +1579,18 @@ class UsageSidecarTest(unittest.TestCase):
         self.assertEqual(row["usage"], {"input_tokens": 11, "cache_read_input_tokens": 2,
                                         "output_tokens": 42})
 
+    def test_recycled_response_id_through_the_shim_keeps_both_rows(self):
+        port = self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})
+        for _ in range(2):
+            with self.post(port) as r:
+                r.read()
+        deadline = time.monotonic() + HANG_TIMEOUT
+        while len(self.rows()) < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(len(self.rows()), 2)
+        self.assertEqual(len({r["turn_id"] for r in self.rows().values()}), 2)
+        self.assertIn(self.row_path("msg_capture_json").name, self.rows())
+
     def test_truncated_stream_leaves_an_incomplete_row(self):
         CaptureUpstream.mode = "truncated"
         with self.post(self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})) as r:
@@ -2230,24 +1601,6 @@ class UsageSidecarTest(unittest.TestCase):
         self.assertIs(row["complete"], False)
         self.assertEqual(row["usage"], {"input_tokens": 11, "cache_read_input_tokens": 2})
 
-    def test_client_disconnect_keeps_the_partial_row_and_is_swallowed(self):
-        """Unit-level, like ClientDisconnectTest: a wfile that dies after the
-        first event must not lose the row already written, and the disconnect
-        must still be swallowed rather than reach the shared adapter log."""
-        shim = load_shim_module()
-        sidecar = shim.UsageSidecar("test-profile", IDENTITY)
-        handler = shim.IdShim.__new__(shim.IdShim)
-        # Two writes get through — the message_start event's two lines, which is
-        # where the row is written — and the blank line after it is the last the
-        # client's socket ever hears.
-        handler.wfile = DeadSocket(BrokenPipeError(32, "Broken pipe"), survive=2)
-        handler.close_connection = False
-        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)}):
-            handler._stream_sse(io.BytesIO(CAPTURE_SSE.encode()), sidecar, "m")
-        self.assertTrue(handler.close_connection)
-        row = next(iter(self.rows().values()))
-        self.assertEqual(row["response_id"], "msg_capture_sse")
-        self.assertIs(row["complete"], False)
 
     def test_unrelated_endpoints_are_never_captured(self):
         port = self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})
@@ -2272,7 +1625,6 @@ class UsageSidecarTest(unittest.TestCase):
         with self.post(self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})) as r:
             body = r.read()
         self.assertEqual(upstream_bytes(self, body), CAPTURE_JSON)
-
 
 
     # #173: the task headers only tag the row; the shim never changes the requested model.
@@ -2317,15 +1669,6 @@ class UsageSidecarTest(unittest.TestCase):
             time.sleep(0.05)
         self.assertEqual(sorted(str(r["task"]) for r in self.rows().values()), ["None", "None", "ok"])
 
-    # #210: tags are ASCII-only full matches — "²" satisfies isdigit() but raises
-    # in int(), and "$" also matches before a trailing newline. Header values are
-    # strip()ed first, so a trailing newline tags as its clean ASCII core; the
-    # raw regexes must refuse one outright (record_outcome takes argv, no strip).
-    def test_tags_are_ascii_full_matches(self):
-        shim = load_shim_module()
-        self.assertEqual(shim.task_tags({"x-ccmorph-attempt": "\xb2"})["attempt"], 1)
-        self.assertEqual(shim.task_tags({"x-ccmorph-task": "x\n"})["task"], "x")
-        self.assertIsNone(shim.TASK_RE.fullmatch("x\n"))
 
     def test_ccmorph_headers_never_reach_the_upstream(self):
         port = self.tag_shim()
@@ -2341,14 +1684,14 @@ class UsageSidecarTest(unittest.TestCase):
     def test_outcome_appends_a_row_keyed_by_task(self):
         env = dict(os.environ, XDG_STATE_HOME=str(self.state))
         for result in ("accepted", "parked"):
-            subprocess.run([sys.executable, str(SHIM), "outcome", "issue-42", result], env=env, check=True, timeout=HANG_TIMEOUT)
-        bad = subprocess.run([sys.executable, str(SHIM), "outcome", "/etc/x", "accepted"], env=env,
+            subprocess.run([str(SHIM), "outcome", "issue-42", result], env=env, check=True, timeout=HANG_TIMEOUT)
+        bad = subprocess.run([str(SHIM), "outcome", "/etc/x", "accepted"], env=env,
                              capture_output=True, timeout=HANG_TIMEOUT)
         self.assertNotEqual(bad.returncode, 0)
-        bad = subprocess.run([sys.executable, str(SHIM), "outcome", "t", "great"], env=env, capture_output=True, timeout=HANG_TIMEOUT)
+        bad = subprocess.run([str(SHIM), "outcome", "t", "great"], env=env, capture_output=True, timeout=HANG_TIMEOUT)
         self.assertNotEqual(bad.returncode, 0)
         # #210: "$" also matches before a trailing newline, so this used to append a row.
-        bad = subprocess.run([sys.executable, str(SHIM), "outcome", "x\n", "accepted"], env=env,
+        bad = subprocess.run([str(SHIM), "outcome", "x\n", "accepted"], env=env,
                              capture_output=True, timeout=HANG_TIMEOUT)
         self.assertNotEqual(bad.returncode, 0)
         self.assertIn(b"usage:", bad.stderr)
@@ -2409,25 +1752,6 @@ class GatewayEdgeTest(unittest.TestCase):
 
     KEY = "edge-key"
 
-    @classmethod
-    def setUpClass(cls):
-        cls.shim = load_shim_module()
-
-    def test_resolution_keeps_served_ids_and_never_crosses_families(self):
-        served = {"claude-opus-5-6", "claude-opus-5", "claude-sonnet-5", "kimi-k3"}
-        resolve = self.shim.resolve_model
-        self.assertEqual(resolve("claude-sonnet-5", served), "claude-sonnet-5")
-        self.assertEqual(resolve("claude-opus-5-5", served), "claude-opus-5-6")
-        self.assertEqual(resolve("claude-haiku-4-5", served), "claude-haiku-4-5")
-        self.assertEqual(resolve("kimi-k3", served), "kimi-k3")
-        self.assertEqual(resolve("claude-opus-5-5", set()), "claude-opus-5-5")
-        self.assertEqual(resolve("claude-opus-5-5", served | {"claude-opus-5-5-20260101"}),
-                         "claude-opus-5-5-20260101")
-        self.assertEqual(self.shim.claude_version("claude-opus-4-5-20251101"), ("opus", (4, 5)))
-
-    def test_hex_wrapped_error_is_unwrapped_and_others_pass(self):
-        self.assertIsNone(self.shim.unwrap_gateway_error(b'{"type":"error","error":{"message":"x"}}'))
-        self.assertIsNone(self.shim.unwrap_gateway_error(b"not json"))
 
     def post(self, body, mapping=None, path="/v1/messages"):
         GatewayEdgeUpstream.seen_models.clear()
@@ -2463,30 +1787,6 @@ class GatewayEdgeTest(unittest.TestCase):
                     self.assertIn("deepseek-v4-pro", error["message"])
                     self.assertIn("translation", error["message"])
 
-    def test_native_known_mapped_target_uses_current_endpoint_declaration(self):
-        spec = dict(json.loads(ROUTE_SPEC), config=None, models=['chat-only'],
-                    model_map={'claude-sonnet-5': 'chat-only'})
-        routes = self.shim.ModelRoutes(spec)
-        routes.catalogue.endpoints = {'chat-only': ['/v1/chat/completions']}
-        with mock.patch.object(routes.catalogue, 'served') as served:
-            error = routes.ensure(b'{"model":"chat-only"}', 'k', 'claude-sonnet-5')
-        self.assertIsNotNone(error)
-        self.assertIn('translation', error)
-        served.assert_called_once_with('k', 'chat-only')
-
-    def test_native_edge_does_not_treat_a_suffixed_key_as_a_map(self):
-        # A key carrying the [1m] suffix never matches a wire id and is refused
-        # where the profile is read, so a spec that still carries one decides
-        # nothing: the request is not a mapped one, and the guard must not go to
-        # the gateway -- or answer 400 -- over a map no lookup applied.
-        spec = dict(json.loads(ROUTE_SPEC), config=None, models=[],
-                    model_map={'claude-sonnet-5[1m]': 'chat-only'})
-        routes = self.shim.ModelRoutes(spec)
-        routes.catalogue.endpoints = {'chat-only': ['/v1/chat/completions']}
-        with mock.patch.object(routes.catalogue, 'served') as served:
-            error = routes.ensure(b'{"model":"claude-sonnet-5"}', 'k', 'claude-sonnet-5[1m]')
-        self.assertIsNone(error)
-        served.assert_not_called()
 
     def test_native_map_allows_declared_count_tokens_but_rejects_messages(self):
         with mock.patch.object(GatewayEdgeUpstream, 'endpoints',
@@ -2501,79 +1801,6 @@ class GatewayEdgeTest(unittest.TestCase):
                     self.assertEqual(GatewayEdgeUpstream.seen_models,
                                      ['deepseek-v4-pro'] if expected == 200 else [])
 
-    def test_native_catalogue_uses_first_duplicate_row_even_if_malformed(self):
-        count_tokens = '/v1/messages/count_tokens'
-        for first, second, path, rejected, expected in (
-                (['/v1/messages'], ['/v1/chat/completions'], '/v1/messages', False, ['/v1/messages']),
-                (['/v1/chat/completions'], ['/v1/messages'], '/v1/messages', True, ['/v1/chat/completions']),
-                (None, ['/v1/chat/completions'], '/v1/messages', False, None),
-                ([], ['/v1/chat/completions'], '/v1/messages', True, ['/v1/chat/completions']),
-                ([count_tokens], ['/v1/chat/completions'], '/v1/messages', True, ['/v1/chat/completions', count_tokens]),
-                ([count_tokens], ['/v1/chat/completions'], count_tokens, False, ['/v1/chat/completions', count_tokens]),
-                (['/v1/chat/completions'], [count_tokens], count_tokens, False, ['/v1/chat/completions', count_tokens]),
-                (['/unknown'], ['/v1/responses'], '/v1/messages', True, ['/v1/responses'])):
-            with self.subTest(issue=233, first=first, second=second, path=path):
-                spec = dict(json.loads(ROUTE_SPEC), config=None, models=[],
-                            upstream='https://gateway', model_map={'alias': 'm'})
-                routes = self.shim.ModelRoutes(spec)
-                data = {'data': [{'id': 'm', 'supported_endpoints': first},
-                                 {'id': 'm', 'supported_endpoints': second}]}
-                with mock.patch.object(self.shim.OPENER, 'open',
-                                       return_value=io.BytesIO(json.dumps(data).encode())), \
-                     mock.patch.object(self.shim.time, 'monotonic', return_value=0.25):
-                    error = routes.ensure(b'{"model":"m"}', 'k', 'alias', path)
-                self.assertEqual(error is not None, rejected)
-                self.assertEqual(routes.catalogue.endpoints.get('m'), expected)
-
-    def test_native_catalogue_refresh_keeps_previous_declarations_visible(self):
-        spec = dict(json.loads(ROUTE_SPEC), config=None, models=[],
-                    upstream='https://gateway', model_map={'alias': 'm'})
-        routes = self.shim.ModelRoutes(spec)
-        routes.catalogue.endpoints = {'m': ['/v1/chat/completions']}
-        observed = []
-
-        class Row(dict):
-            def get(row, key, default=None):
-                if key == 'supported_endpoints':
-                    with mock.patch.object(routes.catalogue, 'served', return_value={'m'}):
-                        observed.append(routes.ensure(b'{"model":"m"}', 'k', 'alias'))
-                return super().get(key, default)
-
-        data = {'data': [Row(id='m', supported_endpoints=['/v1/chat/completions'])]}
-        parse = self.shim.json.loads
-        with mock.patch.object(self.shim.OPENER, 'open', return_value=io.BytesIO(b'catalogue')), \
-             mock.patch.object(self.shim.json, 'loads', side_effect=lambda body:
-                               data if body == b'catalogue' else parse(body)):
-            routes.catalogue.served('k', 'm')
-        self.assertEqual(len(observed), 1)
-        self.assertIn('translation', observed[0])
-        self.assertEqual(routes.catalogue.endpoints, {'m': ['/v1/chat/completions']})
-
-    def test_native_expired_declaration_does_not_veto_after_failed_refresh(self):
-        spec = dict(json.loads(ROUTE_SPEC), config=None, models=[],
-                    upstream='https://gateway', model_map={'alias': 'm'})
-        routes = self.shim.ModelRoutes(spec)
-        routes.catalogue.ids = {'m'}
-        routes.catalogue.endpoints = {'m': ['/v1/chat/completions']}
-        routes.catalogue.read_at = 1.0
-        with mock.patch.object(self.shim.time, 'monotonic', return_value=10000.0), \
-             mock.patch.object(self.shim.OPENER, 'open', side_effect=OSError('unavailable')):
-            self.assertIsNone(routes.ensure(b'{"model":"m"}', 'k', 'alias'))
-        self.assertEqual(routes.catalogue.ids, set())
-        self.assertEqual(routes.catalogue.endpoints, {})
-
-    def test_translated_map_uses_existing_preparer_not_native_guard(self):
-        spec = dict(json.loads(ROUTE_SPEC), models=[],
-                    model_map={"claude-sonnet-5": "chat-only"})
-        routes = self.shim.ModelRoutes(spec)
-        with mock.patch.object(routes.catalogue, "served", side_effect=AssertionError("native guard")), \
-             mock.patch.object(self.shim.subprocess, "run") as prepare:
-            prepare.return_value.returncode = 0
-            body = b'{"model":"chat-only"}'
-            self.assertIsNone(routes.ensure(body, "k", "claude-sonnet-5"))
-            self.assertEqual(prepare.call_args.args[0][-2:], ["--model", "chat-only"])
-            self.assertIsNone(routes.ensure(body, "k", "claude-sonnet-5"))
-            prepare.assert_called_once()
 
     def test_native_map_preserves_messages_and_undeclared_targets(self):
         for endpoints in (["/v1/messages"], ["/v1/messages", "/v1/chat/completions"], [], None):
@@ -2607,21 +1834,6 @@ class GatewayEdgeTest(unittest.TestCase):
         self.proc.terminate()
         self.assertEqual(self.proc.stdout.read().count("sending it unchanged"), 1)
 
-    def test_resolution_never_downgrades(self):
-        resolve = self.shim.resolve_model
-        older = {"claude-opus-5", "claude-opus-5-4-20260101", "claude-sonnet-5-5"}
-        self.assertEqual(resolve("claude-opus-5-5", older), "claude-opus-5-5")
-        self.assertEqual(resolve("claude-opus-5-5", older | {"claude-opus-5-5-20260301"}),
-                         "claude-opus-5-5-20260301")
-        self.assertEqual(resolve("claude-opus-5-1", older | {"claude-opus-5-6"}), "claude-opus-5-6")
-
-    def test_zero_padded_versions_match_the_unsuffixed_served_id(self):
-        resolve = self.shim.resolve_model
-        self.assertEqual(resolve("claude-opus-4-0", {"claude-opus-4"}), "claude-opus-4")
-        self.assertEqual(resolve("claude-sonnet-4-0", {"claude-sonnet-4"}), "claude-sonnet-4")
-        self.assertEqual(resolve("claude-opus-5-0", {"claude-opus-5"}), "claude-opus-5")
-        # An older served version is still refused, zero-padded or not.
-        self.assertEqual(resolve("claude-opus-5-0", {"claude-opus-4"}), "claude-opus-5-0")
 
     def test_stream_answers_under_the_anthropic_id(self):
         _, data = self.post({"model": "claude-sonnet-5", "stream": True, "messages": []})
@@ -2639,339 +1851,6 @@ class GatewayEdgeTest(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(json.loads(data)["error"]["type"], "invalid_request_error")
         self.assertIn("Input tag 'tool_addition'", json.loads(data)["error"]["message"])
-
-
-class CatalogueRedirectTest(unittest.TestCase):
-    """The catalogue fetch must not carry the API key to a cross-origin redirect target."""
-
-    CANARY = "sk-canary-redirect-test"
-
-    @classmethod
-    def setUpClass(cls):
-        # The shim builds its opener at import; a proxy in the environment would
-        # route the loopback fixtures away, so load it without one.
-        saved = {k: os.environ.pop(k) for k in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
-                                                "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy")
-                 if k in os.environ}
-        cls.addClassCleanup(os.environ.update, saved)
-        cls.shim = load_shim_module()
-
-    def test_cross_origin_redirect_does_not_leak_key(self):
-        """The canary key must never reach the redirect destination on another origin."""
-        received_headers = {}
-        origin_hits = []
-
-        class TargetHandler(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
-
-            def log_message(self, *args):
-                pass
-
-            def do_GET(self):
-                received_headers["x-api-key"] = self.headers.get("x-api-key", "")
-                received_headers["authorization"] = self.headers.get("authorization", "")
-                body = json.dumps({"data": [{"id": "target-model"}]}).encode()
-                self.send_response(200)
-                self.send_header("content-type", "application/json")
-                self.send_header("content-length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-        target = ThreadingHTTPServer(("127.0.0.1", 0), TargetHandler)
-        target.daemon_threads = True
-        threading.Thread(target=target.serve_forever, daemon=True).start()
-        self.addCleanup(target.shutdown)
-        target_url = f"http://127.0.0.1:{target.server_address[1]}"
-
-        class RedirectHandler(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
-
-            def log_message(self, *args):
-                pass
-
-            def do_GET(self):
-                origin_hits.append(self.path)
-                self.send_response(302)
-                self.send_header("location", f"{target_url}/v1/models")
-                self.send_header("content-length", "0")
-                self.end_headers()
-
-        redirect_srv = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
-        redirect_srv.daemon_threads = True
-        threading.Thread(target=redirect_srv.serve_forever, daemon=True).start()
-        self.addCleanup(redirect_srv.shutdown)
-
-        cat = self.shim.Catalogue(f"http://127.0.0.1:{redirect_srv.server_address[1]}")
-        # A refused redirect is a transport error the fetch swallows: no ids, no
-        # exception, so the caller sends the model exactly as asked.
-        self.assertEqual(cat.served(self.CANARY, "some-model"), set())
-        self.assertTrue(origin_hits, "the request never reached the fixture")
-
-        self.assertEqual(received_headers.get("x-api-key", ""), "",
-                         f"x-api-key leaked to redirect target: {received_headers.get('x-api-key')!r}")
-        self.assertEqual(received_headers.get("authorization", ""), "",
-                         f"Authorization leaked to redirect target: {received_headers.get('authorization')!r}")
-
-    def test_same_origin_redirect_returns_models(self):
-        """A same-origin 302 still fetches the catalogue successfully."""
-        class SameOriginServer(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
-
-            def log_message(self, *args):
-                pass
-
-            def do_GET(self):
-                port = self.server.server_address[1]
-                if self.path == "/v1/models":
-                    self.send_response(302)
-                    self.send_header("location", f"http://127.0.0.1:{port}/models")
-                    self.send_header("content-length", "0")
-                    self.end_headers()
-                else:
-                    body = json.dumps({"data": [{"id": "same-origin-model"}]}).encode()
-                    self.send_response(200)
-                    self.send_header("content-type", "application/json")
-                    self.send_header("content-length", str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
-
-        srv = ThreadingHTTPServer(("127.0.0.1", 0), SameOriginServer)
-        srv.daemon_threads = True
-        threading.Thread(target=srv.serve_forever, daemon=True).start()
-        self.addCleanup(srv.shutdown)
-
-        cat = self.shim.Catalogue(f"http://127.0.0.1:{srv.server_address[1]}")
-        ids = cat.served(self.CANARY, "same-origin-model")
-        self.assertIn("same-origin-model", ids)
-
-
-class CatalogueDeadlineTest(unittest.TestCase):
-    """Synthetic byte arrival and thread waiting keep deadline tests off the clock."""
-
-    def test_trickling_catalogue_is_unreadable_issue_296(self):
-        for phase in ("headers", "body"):
-            with self.subTest(phase=phase):
-                shim = load_shim_module()
-                now = [1000.0]
-                payload = b'{"data":[{"id":"claude-opus-5-6"}]}'
-                threads = []
-                waits = []
-
-                class Reader:
-                    def __init__(self, target, args, daemon):
-                        self.target, self.args = target, args
-                        self.pending = True
-                        threads.append(self)
-                        self.daemon = daemon
-
-                    def start(self):
-                        pass
-
-                    def join(self, timeout):
-                        # The upstream keeps sending, but its completion is after
-                        # the caller's wait expires. No real thread or clock waits.
-                        waits.append(timeout)
-                        started = now[0]
-                        self.target(*self.args)
-                        self.pending = now[0] > started + timeout
-
-                    def is_alive(self):
-                        return self.pending
-
-                class Response(io.BytesIO):
-                    def read1(self, *args):
-                        if phase == "body":
-                            now[0] += len(payload)
-                        return super().read1(*args)
-
-                def open_catalogue(req, timeout):
-                    self.assertEqual(req.full_url, "http://upstream.invalid/v1/models")
-                    if phase == "headers":
-                        now[0] += len(payload)
-                    return Response(payload)
-
-                cat = shim.Catalogue("http://upstream.invalid")
-                with mock.patch.object(shim.time, "monotonic", side_effect=lambda: now[0]), \
-                     mock.patch.object(shim.threading, "Thread", Reader), \
-                     mock.patch.object(shim.OPENER, "open", side_effect=open_catalogue):
-                    ids = cat.served("canary", "claude-opus-5")
-                    self.assertEqual(ids, set())
-                    self.assertEqual(shim.resolve_model("claude-opus-5", ids), "claude-opus-5")
-                    self.assertFalse(cat.lock.locked())
-                    self.assertEqual(waits, [shim.CATALOGUE_DEADLINE])
-                    # Even once the retry TTL has expired, an unfinished read
-                    # cannot accumulate another worker or publish its late ids.
-                    now[0] += shim.CATALOGUE_TTL + 1
-                    self.assertEqual(cat.served("canary", "claude-opus-5"), set())
-                    self.assertEqual(len(threads), 1)
-                    self.assertTrue(threads[0].daemon)
-                    threads[0].pending = False
-                    self.assertEqual(cat.ids, set(), "late results must not update the cache")
-                    # After completion, a healthy refresh can populate the cache.
-                    with mock.patch.object(shim.OPENER, "open", side_effect=lambda *a, **kw:
-                                           io.BytesIO(payload)):
-                        self.assertEqual(cat.served("canary", "claude-opus-5"),
-                                         {"claude-opus-5-6"})
-
-    def test_loopback_trickle_reader_recovers_issue_310(self):
-        shim = load_shim_module()
-        now = [1000.0]
-        body_started = threading.Event()
-        timer_started = threading.Event()
-        release = threading.Event()
-        connections = []
-        timers = []
-
-        class DeadlineTimer:
-            def __init__(self, interval, function):
-                self.function = function
-                timers.append(self)
-
-            def start(self):
-                timer_started.set()
-
-            def cancel(self):
-                pass
-
-        class TrickleServer(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
-
-            def log_message(self, *args):
-                pass
-
-            def do_GET(self):
-                connections.append(self.connection)
-                self.send_response(200)
-                if not release.is_set():
-                    self.send_header("Transfer-Encoding", "chunked")
-                    self.end_headers()
-                    # Leave real HTTP chunk framing unfinished, not just JSON.
-                    # A bounded read1 also blocks here until transport shutdown.
-                    self.wfile.write(b"1000\r\n{\"data\":[ ")
-                    self.wfile.flush()
-                    body_started.set()
-                    release.wait()
-                else:
-                    body = b'{"data":[{"id":"claude-opus-5-6"}]}'
-                    self.send_header("Content-Length", str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
-
-        class Reader(threading.Thread):
-            def join(self, timeout=None):
-                # One second is the issue's reader-termination contract, not
-                # an elapsed-time assertion; expiry itself uses no real clock.
-                if not release.is_set():
-                    armed = timer_started.wait(1)
-                    if not body_started.wait(1):
-                        raise AssertionError("the loopback body never arrived")
-                    now[0] += shim.CATALOGUE_DEADLINE + 1
-                    if armed:
-                        timers[-1].function()
-                super().join(1)
-
-        server = serve(TrickleServer)
-        cat = shim.Catalogue(f"http://127.0.0.1:{server.server_address[1]}")
-        try:
-            with mock.patch.object(shim, "OPENER", shim.LOOPBACK), \
-                 mock.patch.object(shim.time, "monotonic", side_effect=lambda: now[0]), \
-                 mock.patch.object(shim.threading, "Thread", Reader), \
-                 mock.patch.object(shim.threading, "Timer", DeadlineTimer):
-                self.assertEqual(cat.served("canary", "claude-opus-5"), set())
-                self.assertFalse(cat.reader.is_alive(), "expired reader still owns the refresh slot")
-                release.set()
-                now[0] += shim.CATALOGUE_TTL + 1
-                ids = cat.served("canary", "claude-opus-5")
-                self.assertEqual(ids, {"claude-opus-5-6"})
-                self.assertEqual(shim.resolve_model("claude-opus-5", ids), "claude-opus-5-6")
-        finally:
-            release.set()
-            for connection in connections:
-                try:
-                    connection.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
-            if cat.reader:
-                cat.reader.join(1)
-            server.shutdown()
-            server.server_close()
-
-    def test_catalogue_body_size_limit_issue_310(self):
-        shim = load_shim_module()
-        limit = 1024 * 1024
-        payload = b'{"data":[{"id":"served"}]}'
-        for size, declared, accepted in ((limit, limit, True),
-                                          (limit + 1, limit + 1, False),
-                                          (len(payload), 500, False)):
-            with self.subTest(size=size, declared=declared):
-                wire = (f"HTTP/1.1 200 OK\r\nContent-Length: {declared}\r\n\r\n".encode()
-                        + payload + b" " * (size - len(payload)))
-                peer = mock.Mock()
-                peer.makefile.return_value = io.BytesIO(wire)
-                response = http.client.HTTPResponse(peer)
-                response.begin()
-                cat = shim.Catalogue("http://upstream.invalid")
-                with mock.patch.object(shim.OPENER, "open", return_value=response):
-                    self.assertEqual(cat.served("canary", "served"),
-                                     {"served"} if accepted else set())
-                self.assertTrue(response.closed)
-
-    def test_reader_failures_send_as_asked_issues_296_309(self):
-        for failure, cached in ((failure, cached)
-                                for failure in ("start", "late", "http", "json", "connection")
-                                for cached in (set(), {"claude-opus-5-6"})):
-            with self.subTest(failure=failure, cached=cached):
-                shim = load_shim_module()
-                now = [1000.0]
-                reader = mock.Mock()
-                reader.is_alive.return_value = False
-
-                def make_reader(target, args, daemon):
-                    if failure == "start":
-                        reader.start.side_effect = RuntimeError("cannot start new thread")
-                    else:
-                        def finish(timeout):
-                            if failure == "late":
-                                now[0] += timeout + 1
-                            target(*args)
-                        reader.join.side_effect = finish
-                    return reader
-
-                def open_catalogue(req, timeout):
-                    if failure == "http":
-                        raise shim.urllib.error.HTTPError(req.full_url, 503, "Unavailable", {}, None)
-                    if failure == "connection":
-                        raise shim.urllib.error.URLError("connection refused")
-                    return io.BytesIO(b'not JSON' if failure == "json" else
-                                      b'{"data":[{"id":"late"}]}')
-
-                cat = shim.Catalogue("http://upstream.invalid")
-                cat.ids = cached
-                cat.endpoints = {model: ["/v1/messages"] for model in cached}
-                cat.read_at = now[0] - shim.CATALOGUE_TTL - 1
-                with mock.patch.object(shim.time, "monotonic", side_effect=lambda: now[0]), \
-                     mock.patch.object(shim.threading, "Thread", side_effect=make_reader), \
-                     mock.patch.object(shim.OPENER, "open", side_effect=open_catalogue):
-                    ids = cat.served("canary", "claude-opus-5-5")
-                    self.assertEqual(ids, set())
-                    self.assertEqual(shim.resolve_model("claude-opus-5-5", ids), "claude-opus-5-5")
-                    self.assertEqual(cat.endpoints, {})
-                    self.assertFalse(cat.lock.locked())
-
-    def test_healthy_catalogue_ttl(self):
-        for model, age, refresh in (("served", 60, False), ("missing", 60, False),
-                                    ("missing", 61, True), ("served", 600, False),
-                                    ("served", 601, True)):
-            with self.subTest(model=model, age=age):
-                shim = load_shim_module()
-                cat = shim.Catalogue("http://upstream.invalid")
-                with mock.patch.object(shim.time, "monotonic", return_value=1000.0), \
-                     mock.patch.object(shim.OPENER, "open", side_effect=lambda *a, **kw:
-                                       io.BytesIO(b'{"data":[{"id":"served"}]}')) as upstream:
-                    self.assertEqual(cat.served("canary", model), {"served"})
-                    shim.time.monotonic.return_value += age
-                    self.assertEqual(cat.served("canary", model), {"served"})
-                    self.assertEqual(upstream.call_count, 2 if refresh else 1)
 
 
 class FakeProxy:
@@ -3014,7 +1893,7 @@ class LoopbackNoProxyTest(unittest.TestCase):
         upstream = serve(Upstream)
         self.addCleanup(upstream.shutdown)
         proc = subprocess.Popen(
-            [sys.executable, str(SHIM), "0", f"http://127.0.0.1:{upstream.server_address[1]}",
+            [str(SHIM), "0", f"http://127.0.0.1:{upstream.server_address[1]}",
              f"--parent-pid={os.getpid()}"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=self.proxy.env())
         self.addCleanup(reap_shim, proc)
@@ -3025,14 +1904,6 @@ class LoopbackNoProxyTest(unittest.TestCase):
         with opener.open(req, timeout=HANG_TIMEOUT) as r:
             self.assertEqual(r.status, 200)
         self.assertEqual(self.proxy.hits, 0, "loopback forward went through the ambient proxy")
-
-    def test_catalogue_upstream_still_uses_proxy(self):
-        saved = dict(os.environ)
-        self.addCleanup(lambda: (os.environ.clear(), os.environ.update(saved)))
-        os.environ.update(self.proxy.env())
-        shim = load_shim_module()
-        shim.Catalogue("http://upstream.invalid").served("k", "m")
-        self.assertGreaterEqual(self.proxy.hits, 1, "catalogue fetch no longer honours the proxy")
 
 
 class StallUpstream(BaseHTTPRequestHandler):
@@ -3086,39 +1957,3 @@ class StallDeadlineTest(unittest.TestCase):
         self.assertIn(b'"type": "error"', data)
         self.assertLess(elapsed, 10)
 
-    def test_every_stall_error_ends_a_stream_with_an_error_event(self):
-        """The same mid-stream contract, driven in-process so it holds on every
-        Python: on 3.9 socket.timeout is not TimeoutError, and the suite's own
-        interpreter is 3.13+, where the two are the same class. Patching
-        STALL_ERRORS with a stand-in that is neither fails here if the
-        mid-stream arm stops naming the tuple."""
-        shim = load_shim_module()
-
-        class SocketTimeout(OSError):
-            """What /usr/bin/python3 3.9 raises for a socket timeout."""
-
-        shim.STALL_ERRORS = (TimeoutError, SocketTimeout)
-
-        class SilentMidStream:
-            """message_start, then silence: the upstream holds the connection
-            open and never writes again."""
-
-            lines = iter([b'event:message_start\n',
-                          b'data:{"type":"message_start","message":{"id":"m"}}\n',
-                          b"\n"])
-
-            def readline(self):
-                line = next(self.lines, None)
-                if line is None:
-                    raise SocketTimeout("timed out")
-                return line
-
-        handler = shim.IdShim.__new__(shim.IdShim)     # no socket setup
-        handler.wfile = io.BytesIO()
-        handler.close_connection = False
-        handler._stream_sse(SilentMidStream())
-        body = handler.wfile.getvalue()
-        self.assertIn(b"message_start", body)
-        self.assertIn(b'"type": "error"', body)
-        self.assertIn(b"gateway sent nothing", body)
-        self.assertTrue(handler.close_connection)

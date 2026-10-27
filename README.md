@@ -35,6 +35,8 @@ ccmorph run  ------+--> personal   API key             -->  Anthropic API
 
 - `zsh`, `python3` 3.8 or newer, and the `claude` CLI. The installer names the
   command to install a missing one for your package manager, and stops.
+- A release ships `gateway-shim` prebuilt for macOS and Linux (arm64, amd64).
+  Installing from a clone needs Go to build it (`make shim`).
 - Optional: `cliproxyapi` for non-Anthropic endpoints, `fzf` for searchable
   pickers. The installer offers fzf through your package manager and
   cliproxyapi through Homebrew, and installs only on confirm.
@@ -45,7 +47,7 @@ ccmorph run  ------+--> personal   API key             -->  Anthropic API
 From a clone:
 
 ```sh
-git clone https://github.com/akleizor/ccmorph && cd ccmorph && ./install.sh
+git clone https://github.com/akleizor/ccmorph && cd ccmorph && make shim && ./install.sh
 ```
 
 Or the one-liner, which works once the repository is public and has a release —

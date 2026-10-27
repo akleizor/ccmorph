@@ -6,14 +6,13 @@ import importlib.util
 import os
 import socket
 import subprocess
-import sys
 import threading
 import time
 import unittest
 import urllib.request
 from pathlib import Path
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, SHIM, needs_shim
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -105,10 +104,11 @@ class CredentialRedirect(unittest.TestCase):
         self.assertEqual([h for h in seen if "sk-REDIRECT-CANARY" in str(h)], [],
                          "refresh-model-registry forwarded the key to another origin")
 
+    @needs_shim
     def test_shim_refuses_cross_origin_redirect_with_key(self):
         seen, base = self._redirect_fixture()
         with socket_port() as port:
-            shim = subprocess.Popen([sys.executable, str(ROOT / "libexec/gateway-shim"), str(port), base],
+            shim = subprocess.Popen([str(SHIM), str(port), base],
                                     stdout=subprocess.DEVNULL, env=clean_env())
             try:
                 wait_port(port)

@@ -4,17 +4,14 @@
 import datetime
 import json
 import os
-import runpy
 import subprocess
-from unittest import mock
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, SHIM, needs_shim
 
-SHIM = Path(__file__).resolve().parent.parent / "libexec/gateway-shim"
+pytestmark = needs_shim
 NOW = datetime.datetime.now(datetime.timezone.utc)
 
 
@@ -48,7 +45,7 @@ class ReportTest(unittest.TestCase):
     def report(self, *args):
         env = {"PATH": os.environ["PATH"],
                "XDG_STATE_HOME": str(self.state)}
-        done = subprocess.run([sys.executable, str(SHIM), "report", *args], env=env,
+        done = subprocess.run([str(SHIM), "report", *args], env=env,
                               capture_output=True, text=True, timeout=HANG_TIMEOUT)
         self.assertEqual(done.returncode, 0, done.stderr)
         return done.stdout
@@ -101,43 +98,24 @@ class ReportTest(unittest.TestCase):
         self.assertIn("total spend $0.00", self.report())
 
     def test_atomic_writer_temporary_is_not_a_second_response(self):
-        shim = runpy.run_path(str(SHIM))
-        sidecar = shim["UsageSidecar"]("fixture", "identity").tagged(
-            {"task": "atomic-task", "attempt": 1})
-        sidecar.served_model = "sonnet-x"
-        record = sidecar._start("response", "sonnet-x", "sonnet-x", {"cost": 5})
-        record["complete"] = True
+        # The writer links its tmp file to the row's final name, so for a moment
+        # the same bytes sit under both; the report must count the .json only.
+        row = self.row("atomic-task", "sonnet-x", 5)
+        row.with_name("tmpabc123.tmp").write_bytes(row.read_bytes())
         self.outcomes(("atomic-task", "accepted"))
-        replace = os.replace
-        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)}):
-            sidecar._write(record)
-            def paused_replace(source, destination):
-                out = self.report()
-                self.assertIn("total spend $5.00", out)
-                self.assertIn("  accepted 1  $5.00/task", out)
-                replace(source, destination)
-            with mock.patch("os.replace", side_effect=paused_replace):
-                sidecar._write(record)
+        out = self.report()
+        self.assertIn("total spend $5.00", out)
+        self.assertIn("  accepted 1  $5.00/task", out)
 
     def test_same_timestamp_turns_keep_summed_usage_issue_311(self):
-        shim = runpy.run_path(str(SHIM))
-        clock = mock.Mock(wraps=datetime.datetime)
-        clock.now.return_value = NOW
-        records = []
-        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)}), \
-                mock.patch.object(shim["datetime"], "datetime", clock):
-            for profile, tokens, cost in (("first", 15, 1), ("second", 16, 2)):
-                sidecar = shim["UsageSidecar"](profile, profile + "-route")
-                record = sidecar.observe({"type": "message_start", "message": {
-                    "id": "recycled", "model": "sonnet-x",
-                    "usage": {"output_tokens": tokens, "cost": cost}}}, None, "sonnet-x")
-                sidecar.observe({"type": "message_stop"}, record, "sonnet-x")
-                records.append(record)
-        self.assertEqual(records[0]["timestamp"], records[1]["timestamp"])
-        rows = [json.loads(path.read_text())
-                for path in (self.state / "ccmorph" / "usage").glob("*.json")]
-        self.assertEqual(len(rows), 2)
-        self.assertEqual(sum(row["usage"]["output_tokens"] for row in rows), 31)
+        # Two turns that recycled a response id and share a timestamp live in
+        # the primary row and a spill row (the writer's job; shim/ tests it).
+        stamped = stamp(1)
+        for name, tokens, cost in (("primary", 15, 1), ("spill", 16, 2)):
+            (self.state / "ccmorph" / "usage" / f"{name}.json").write_text(json.dumps({
+                "response_id": "recycled", "turn_id": name, "timestamp": stamped,
+                "served_model": "sonnet-x", "usage": {"output_tokens": tokens, "cost": cost},
+                "complete": True}))
         self.assertIn("total spend $3.00", self.report())
 
     def test_unknown_accepted_cost_is_not_zero_or_a_known_subtotal(self):
@@ -241,17 +219,8 @@ class ReportTest(unittest.TestCase):
         self.assertIn("  accepted 1  n/a/task  first-pass 0.0%", self.report())
 
     def test_incomplete_producer_receipt_keeps_spend_but_not_complete_task_cost(self):
-        shim = runpy.run_path(str(SHIM))
-        sidecar = shim["UsageSidecar"]("fixture", "identity").tagged(
-            {"task": "retry-partial", "attempt": 1})
-        sidecar.served_model = "sonnet-x"
-        with mock.patch.dict(os.environ, {"XDG_STATE_HOME": str(self.state)}):
-            sidecar.observe({"type": "message_start", "message": {
-                "id": "partial", "model": "sonnet-x", "usage": {"cost": 1}}}, None, "sonnet-x")
-            retry = sidecar.tagged({"task": "retry-partial", "attempt": 2})
-            record = retry.observe({"type": "message_start", "message": {
-                "id": "success", "model": "sonnet-x", "usage": {"cost": 2}}}, None, "sonnet-x")
-            retry.observe({"type": "message_stop"}, record, "sonnet-x")
+        self.row("retry-partial", "sonnet-x", 1, complete=False)
+        self.row("retry-partial", "sonnet-x", 2, attempt=2)
         self.outcomes(("retry-partial", "accepted"))
         out = self.report()
         self.assertIn("total spend $3.00", out)
@@ -261,7 +230,7 @@ class ReportTest(unittest.TestCase):
         env = {"PATH": os.environ["PATH"], "XDG_STATE_HOME": str(self.state)}
         for days in ("inf", "1000000000", "999999999", "1000000", "nan", "-1", "0"):
             with self.subTest(days=days):
-                done = subprocess.run([sys.executable, str(SHIM), "report", "--days", days],
+                done = subprocess.run([str(SHIM), "report", "--days", days],
                                       env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
                 self.assertNotEqual(done.returncode, 0)
                 self.assertNotIn("Traceback", done.stderr)

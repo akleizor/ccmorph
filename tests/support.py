@@ -1,5 +1,7 @@
 """The suite's shared hang-detection bound; imported by the tests that wait on a real process."""
 import os
+from pathlib import Path
+
 
 # A hang detector, not a performance bound: the longest any test waits on a
 # spawned process, sized so only a real hang reaches it. It sits above pytest.ini's
@@ -15,3 +17,14 @@ HANG_TIMEOUT = float(os.environ.get("CCMORPH_TEST_HANG_TIMEOUT", "120"))
 # macOS; conftest.py patches that away for in-process servers, and a subprocess
 # needs the same line itself. No fake here uses the name it would find.
 FAKE_SERVER_NO_DNS = "import socket\nsocket.getfqdn = lambda name='': name\n"
+
+
+SHIM = Path(__file__).resolve().parent.parent / "libexec/gateway-shim"
+# Module-level `pytestmark = needs_shim` skips a file that spawns the compiled shim.
+# pytest is imported here, not at the top: the zsh suite imports this module
+# for HANG_TIMEOUT under a python3 that has no pytest.
+def __getattr__(name):
+    if name == "needs_shim":
+        import pytest
+        return pytest.mark.skipif(not SHIM.exists(), reason=f"{SHIM} is not built: run `make shim` first")
+    raise AttributeError(name)

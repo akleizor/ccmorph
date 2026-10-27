@@ -138,7 +138,7 @@ MODULES=("$SRC"/lib/ccmorph-*.zsh(N:t))
 LIBS=(lib/ccmorph.sh ${MODULES/#/lib/})
 # install.sh ships too (an executable at the install root), so `ccmorph update` and
 # `ccmorph uninstall` have the installer to run without a clone or a URL.
-EXECUTABLES=(bin/ccmorph install.sh libexec/ccmorph-adapter libexec/gateway-shim libexec/model-window libexec/settings-compose libexec/refresh-model-registry)
+EXECUTABLES=(bin/ccmorph install.sh libexec/ccmorph-adapter libexec/model-window libexec/settings-compose libexec/refresh-model-registry)
 DATA_FILES=(share/model-catalogue.json share/window-sources.json)
 COMPONENTS=($LIBS $EXECUTABLES $DATA_FILES)
 
@@ -309,6 +309,27 @@ if [[ "$SRC" != "$CONFIG_REAL" ]]; then
   cp "$SRC/share/profile.conf.example" "$CONFIG_DIR/profile.conf.example"
 fi
 chmod +x "${EXECUTABLES[@]/#/$CONFIG_DIR/}"
+# gateway-shim is compiled Go, so it is the one component that is not a tracked
+# file. A release tarball carries one prebuilt binary per platform
+# (gateway-shim-<os>-<arch>, from `make dist`); a checkout carries the one
+# `make shim` built. Nothing is compiled here: an installer that needs a Go
+# toolchain on a user's machine is a second dependency for one helper.
+_shim_os="${$(uname -s):l}"
+_shim_arch="$(uname -m)"
+case "$_shim_arch" in x86_64) _shim_arch=amd64 ;; aarch64) _shim_arch=arm64 ;; esac
+_shim=""
+for _f in "$SRC/libexec/gateway-shim-$_shim_os-$_shim_arch" "$SRC/libexec/gateway-shim"; do
+  [[ -f "$_f" && -x "$_f" ]] && { _shim="$_f"; break }
+done
+if [[ -z "$_shim" ]]; then
+  c_r "No gateway-shim binary for $_shim_os-$_shim_arch beside this installer."
+  c_dim "  From a checkout: run 'make shim' (needs Go), then re-run ./install.sh."
+  c_dim "  Otherwise install a release: it ships the binary for your platform."
+  exit 1
+fi
+[[ "${_shim:A}" == "${CONFIG_REAL}/libexec/gateway-shim" ]] \
+  || cp "$_shim" "$CONFIG_DIR/libexec/gateway-shim"
+chmod +x "$CONFIG_DIR/libexec/gateway-shim"
 chmod +x "$BIN_DIR/ccmorph"
 # Move profile homes through the same guarded owner used by normal launches.
 CCMORPH_STATE_DIR="$CONFIG_DIR" CCMORPH_LIB_DIR="$CONFIG_DIR/lib" zsh -fc \

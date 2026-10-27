@@ -17,8 +17,9 @@ do not carry these citations forward unchecked.
 
 The repo suite: `tests/ccmorph_test.zsh` (112 zsh tests),
 `tests/install_test.zsh` (installer against a throwaway `$HOME`),
-`tests/adapter_test.py` and `tests/gateway_shim_test.py`. Run them all with
-`zsh tests/ccmorph_test.zsh && zsh tests/install_test.zsh && python3 -m pytest tests/`.
+`tests/adapter_test.py`, `tests/gateway_shim_test.py` (black-box, against the
+built binary) and the Go unit tests in `shim/`. Run them all with
+`make shim && go test ./... && zsh tests/ccmorph_test.zsh && zsh tests/install_test.zsh && python3 -m pytest tests/`.
 
 ## Scope and ownership
 
@@ -66,7 +67,8 @@ Each module has one purpose; a function lives in exactly one.
 The repository and the installed copy under `~/.config/ccmorph` share one layout:
 `bin/ccmorph` (the command), `lib/` (`ccmorph.sh` and the modules), `libexec/`
 (internal executables: `ccmorph-adapter`, `gateway-shim`, `model-window`,
-`refresh-model-registry`, `settings-compose`) and `share/` (data:
+`refresh-model-registry`, `settings-compose`; `gateway-shim` is Go, built from
+`shim/` and `cmd/gateway-shim/` by `make shim`, the rest are Python) and `share/` (data:
 `model-catalogue.json`, `window-sources.json`). `lib/` finds `libexec/` and `share/`
 beside itself. `CCMORPH_LIB_DIR` names the `lib/` directory.
 
@@ -729,7 +731,7 @@ post; only the model work is skipped.
 The map applies to any matching request on that profile, including subagents; it
 does not install a default map. Existing RC `tier.*` pins
 run earlier in the proxy, so a map sees the pinned ID when a host has one.
-Outcomes are appended with `python3 libexec/gateway-shim outcome <task>
+Outcomes are appended with `libexec/gateway-shim outcome <task>
 accepted|rejected|escalated|parked` to `<state>/ccmorph/outcomes.jsonl`
 (`{task, outcome, timestamp}`), joined to rows by task.
 

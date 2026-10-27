@@ -1,46 +1,124 @@
-"""On-selection preparation is bounded and never replays an inference request."""
+"""On-selection preparation is bounded and never replays an inference request.
+
+Black-box: the compiled gateway-shim runs against a fake gateway, with a fake
+adapter script standing in for `ccmorph-adapter --model`, so the argv the shim
+hands the adapter and the bytes the gateway receives are the whole observation.
+"""
 import hashlib
 import json
-import runpy
-from pathlib import Path
+import os
 import subprocess
 import threading
-import urllib.request
 import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, SHIM, needs_shim
 
-SHIM = Path(__file__).resolve().parents[1] / 'libexec/gateway-shim'
+pytestmark = needs_shim
+
+# The shim runs `<adapter> <profile> --ensure-config ... --model <id>`; this one
+# logs <id> and succeeds only for the model named in $FAKE_ADAPTER_OK.
+ADAPTER = '#!/bin/sh\nfor last; do :; done\necho "$last" >> "$FAKE_ADAPTER_LOG"\n[ "$last" = "$FAKE_ADAPTER_OK" ]\n'
 
 
-def test_explicit_map_prepares_its_target_once_without_family_substitution(tmp_path, monkeypatch):
-    module = runpy.run_path(str(SHIM))
-    calls = []
-    def prepare(argv, **kwargs):
-        calls.append(argv[-1])
-        return subprocess.CompletedProcess(argv, 0)
-    monkeypatch.setattr(subprocess, 'run', prepare)
-    router = module['ModelRoutes']({'adapter': 'adapter', 'profile': 'p',
-        'config': str(tmp_path / 'config'), 'port': 1, 'models': [], 'timeout': 1,
-        'identity': 'test-route', 'key_sha256': hashlib.sha256(b'key').hexdigest(),
-        'model_map': {'claude-opus-5-5': 'claude-opus-5'}})
-    monkeypatch.setattr(router.catalogue, 'served', lambda *args: {'claude-opus-5-6'})
-    handler = module['IdShim'].__new__(module['IdShim'])
-    handler.model_routes = router
-    body, answer_as = handler._resolve(b'{"model":"claude-opus-5-5"}', 'key')
-    assert json.loads(body)['model'] == 'claude-opus-5'
-    assert answer_as == 'claude-opus-5-5'
-    assert router.ensure(body) is None
-    assert router.ensure(body) is None
-    assert calls == ['claude-opus-5']
+class Gateway(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        self.server.catalogue_reads += 1
+        body = json.dumps({"data": [{"id": "claude-opus-5-6"}, {"id": "claude-opus-5"}]}).encode()
+        self.send_response(200)
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        self.server.received.append((self.path, self.headers["x-api-key"],
+                                     self.rfile.read(int(self.headers["content-length"]))))
+        self.send_response(200)
+        self.send_header("content-length", "2")
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+
+class Rig:
+    """One shim in front of one fake gateway, with a fake adapter."""
+
+    def __init__(self, tmp, models=(), model_map=None, ok_model=None):
+        self.state = Path(tmp) / "state"
+        self.log = Path(tmp) / "adapter.log"
+        adapter = Path(tmp) / "adapter"
+        adapter.write_text(ADAPTER)
+        adapter.chmod(0o755)
+        self.gateway = ThreadingHTTPServer(("127.0.0.1", 0), Gateway)
+        self.gateway.received, self.gateway.catalogue_reads = [], 0
+        threading.Thread(target=self.gateway.serve_forever, daemon=True).start()
+        upstream = f"http://127.0.0.1:{self.gateway.server_port}"
+        spec = {"adapter": str(adapter), "profile": "p", "config": str(Path(tmp) / "config"), "port": 1,
+                "models": list(models), "timeout": 5, "identity": "test-route",
+                "key_sha256": hashlib.sha256(b"key").hexdigest(), "upstream": upstream,
+                "model_map": model_map or {}}
+        env = dict(os.environ, CCMORPH_MODEL_ROUTE=json.dumps(spec), XDG_STATE_HOME=str(self.state),
+                   FAKE_ADAPTER_LOG=str(self.log), FAKE_ADAPTER_OK=ok_model or "")
+        self.proc = subprocess.Popen([str(SHIM), "0", upstream, "--preserve-tool-ids",
+                                      f"--parent-pid={os.getpid()}"],
+                                     stdout=subprocess.PIPE, text=True, env=env)
+        self.port = int(self.proc.stdout.readline().split(":")[1].split(" ")[0])
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def close(self):
+        self.proc.terminate()
+        self.proc.wait(HANG_TIMEOUT)
+        self.proc.stdout.close()
+        self.gateway.shutdown()
+        self.gateway.server_close()
+
+    def post(self, path, body, key="key"):
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}{path}", data=body,
+                                     headers={"x-api-key": key})
+        try:
+            response = self.opener.open(req, timeout=HANG_TIMEOUT)
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            response.read()
+            return response.status
+
+    @property
+    def prepared(self):
+        return self.log.read_text().split() if self.log.exists() else []
+
+
+@pytest.fixture
+def rig(tmp_path):
+    made = []
+
+    def make(**kwargs):
+        made.append(Rig(tmp_path, **kwargs))
+        return made[-1]
+    yield make
+    for r in made:
+        r.close()
+
+
+def test_explicit_map_prepares_its_target_once_without_family_substitution(rig):
+    r = rig(model_map={"claude-opus-5-5": "claude-opus-5"}, ok_model="claude-opus-5")
+    body = b'{"model":"claude-opus-5-5"}'
+    # The gateway serves a newer Opus, but an explicit map is final.
+    assert r.post("/v1/messages", body) == 200
+    assert r.post("/v1/messages", body) == 200
+    assert [json.loads(b)["model"] for _, _, b in r.gateway.received] == ["claude-opus-5"] * 2
+    assert r.prepared == ["claude-opus-5"]
     # A doubled window marker is not the map's key (issue #250): the marker
-    # is stripped once, as ensure strips it, so the request keeps its model.
-    body, answer_as = handler._resolve(b'{"model":"claude-opus-5-5[1m][1m]"}', 'key')
-    assert json.loads(body)['model'] == 'claude-opus-5-5[1m][1m]'
-    assert answer_as is None
+    # is stripped once, so the request is no map hit and keeps its own model:
+    # the shim tries to prepare that model, not the target.
+    assert r.post("/v1/messages", b'{"model":"claude-opus-5-5[1m][1m]"}') == 400
+    assert r.prepared[-1] == "claude-opus-5-5[1m]" and len(r.gateway.received) == 2
 
 
 @pytest.mark.parametrize('body,key,status,target', [
@@ -58,127 +136,36 @@ def test_explicit_map_prepares_its_target_once_without_family_substitution(tmp_p
     (b'{"model":"bare-only[1m]"}', 'key', 200, 'bare-target'),
     (b'{"model":"claude-sonnet-5-5"}', 'wrong', 401, None),
 ])
-def test_count_tokens_only_prepares_explicit_map_hits(tmp_path, monkeypatch,
-                                                     body, key, status, target):
-    module = runpy.run_path(str(SHIM))
-    prepared, discovered, received = [], [], []
-    def prepare(argv, **kwargs):
-        prepared.append(argv[-1])
-        return subprocess.CompletedProcess(argv, 0 if argv[-1] == target else 1)
-    monkeypatch.setattr(subprocess, 'run', prepare)
-    router = module['ModelRoutes']({'adapter': 'adapter', 'profile': 'p',
-        'config': str(tmp_path / 'config'), 'port': 1, 'models': [], 'timeout': 1,
-        'identity': 'test-route', 'key_sha256': hashlib.sha256(b'key').hexdigest(),
-        'model_map': {'claude-sonnet-5-5': 'gpt-6.1-sol',
-                      'bare-only': 'bare-target[1m]', 'null-map': None,
-                      'gpt-6.1-sol': 'do-not-chain'}})
-    if b'no-map' in body:
-        router.model_map = {}
-        def unexpected_parse(*args):
-            pytest.fail('an empty map must not parse the count request')
-        monkeypatch.setitem(module['IdShim']._relay.__globals__,
-                            'requested_model', unexpected_parse)
-    def served(*args):
-        discovered.append(args)
-        return {'claude-opus-5-5'}
-    monkeypatch.setattr(router.catalogue, 'served', served)
-    usage = []
-    monkeypatch.setattr(router.usage, 'tagged', lambda *args: usage.append(args))
-    class Upstream(BaseHTTPRequestHandler):
-        def log_message(self, *args): pass
-        def do_POST(self):
-            received.append((self.path, self.headers['x-api-key'],
-                             self.rfile.read(int(self.headers['content-length']))))
-            self.send_response(200)
-            self.send_header('content-length', '2')
-            self.end_headers()
-            self.wfile.write(b'OK')
-    upstream = ThreadingHTTPServer(('127.0.0.1', 0), Upstream)
-    handler = type('Handler', (module['IdShim'],), {
-        'model_routes': router, 'preserve_ids': True,
-        'target': f'http://127.0.0.1:{upstream.server_port}'})
-    server = ThreadingHTTPServer(('127.0.0.1', 0), handler)
-    for s in (upstream, server):
-        threading.Thread(target=s.serve_forever, daemon=True).start()
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    try:
-        req = urllib.request.Request(
-            f'http://127.0.0.1:{server.server_port}/v1/messages/count_tokens?beta=true',
-            data=body, headers={'x-api-key': key})
-        try:
-            response = opener.open(req, timeout=HANG_TIMEOUT)
-        except urllib.error.HTTPError as error:
-            response = error
-        with response:
-            assert response.status == status
-            response.read()
-        assert discovered == []
-        assert usage == []
-        assert prepared == ([target] if target else [])
-        if status == 401:
-            assert received == []
+def test_count_tokens_only_prepares_explicit_map_hits(rig, body, key, status, target):
+    r = rig(model_map={'claude-sonnet-5-5': 'gpt-6.1-sol', 'bare-only': 'bare-target[1m]',
+                       'null-map': None, 'gpt-6.1-sol': 'do-not-chain'},
+            ok_model=target)
+    assert r.post('/v1/messages/count_tokens?beta=true', body, key) == status
+    assert r.gateway.catalogue_reads == 0
+    assert not (r.state / 'ccmorph' / 'usage').exists()      # count_tokens is never a usage row
+    assert r.prepared == ([target] if target else [])
+    if status == 401:
+        assert r.gateway.received == []
+    else:
+        path, forwarded_key, forwarded_body = r.gateway.received[0]
+        assert (path, forwarded_key) == ('/v1/messages/count_tokens?beta=true', key)
+        if target:
+            assert json.loads(forwarded_body)['model'] == target
         else:
-            path, forwarded_key, forwarded_body = received[0]
-            assert path == '/v1/messages/count_tokens?beta=true'
-            assert forwarded_key == key
-            if target:
-                assert json.loads(forwarded_body)['model'] == target
-            else:
-                assert forwarded_body == body
-    finally:
-        for s in (server, upstream):
-            s.shutdown()
-            s.server_close()
+            assert forwarded_body == body
 
 
-def test_unknown_model_prepared_once_before_forwarding(tmp_path, monkeypatch):
-    module = runpy.run_path(str(SHIM))
-    calls = []
-    def prepare(argv, **kwargs):
-        calls.append(argv[-1])
-        return subprocess.CompletedProcess(argv, 1 if argv[-1] == 'bad' else 0)
-    monkeypatch.setattr(subprocess, 'run', prepare)
-    router = module['ModelRoutes']({'adapter': 'adapter', 'profile': 'p',
-        'config': str(tmp_path/'config'), 'port': 1, 'models': ['known'],
-        'timeout': 1, 'identity': 'test-route', 'key_sha256': hashlib.sha256(b'key').hexdigest()})
-    received = []
-    class Upstream(BaseHTTPRequestHandler):
-        def log_message(self, *args): pass
-        def do_POST(self):
-            received.append(self.rfile.read(int(self.headers['content-length'])))
-            self.send_response(200)
-            self.send_header('content-length', '2')
-            self.end_headers()
-            self.wfile.write(b'OK')
-    upstream = ThreadingHTTPServer(('127.0.0.1', 0), Upstream)
-    handler = type('Handler', (module['IdShim'],), {
-        'model_routes': router, 'preserve_ids': True,
-        'target': f'http://127.0.0.1:{upstream.server_port}'})
-    server = ThreadingHTTPServer(('127.0.0.1', 0), handler)
-    for s in (upstream, server):
-        threading.Thread(target=s.serve_forever, daemon=True).start()
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+def test_unknown_model_prepared_once_before_forwarding(rig):
+    r = rig(models=['known'], ok_model='new')
     def request(model, key='key'):
         body = json.dumps({'model': model, 'messages': []}).encode()
-        req = urllib.request.Request(f'http://127.0.0.1:{server.server_port}/v1/messages',
-                                     data=body, headers={'x-api-key': key})
-        try:
-            response = opener.open(req, timeout=HANG_TIMEOUT)
-        except urllib.error.HTTPError as error:
-            response = error
-        with response:
-            return response.status, body
-    try:
-        for model in ('known', 'new', 'new'):
-            code, body = request(model)
-            assert code == 200 and received[-1] == body
-        assert calls == ['new'] and len(received) == 3
-        assert request('unauthorized', 'wrong')[0] == 401
-        assert calls == ['new']
-        assert request('bad')[0] == 400
-        assert request('bad')[0] == 400  # failures can recover on a later request
-        assert calls == ['new', 'bad', 'bad'] and len(received) == 3
-    finally:
-        for s in (server, upstream):
-            s.shutdown()
-            s.server_close()
+        return r.post('/v1/messages', body, key), body
+    for model in ('known', 'new', 'new'):
+        code, body = request(model)
+        assert code == 200 and r.gateway.received[-1][2] == body
+    assert r.prepared == ['new'] and len(r.gateway.received) == 3
+    assert request('unauthorized', 'wrong')[0] == 401
+    assert r.prepared == ['new']
+    assert request('bad')[0] == 400
+    assert request('bad')[0] == 400  # failures can recover on a later request
+    assert r.prepared == ['new', 'bad', 'bad'] and len(r.gateway.received) == 3

@@ -6,6 +6,7 @@ import io
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -69,11 +70,13 @@ class AutoDetectionTest(unittest.TestCase):
     def test_passthrough_user_agent_comes_from_the_profile_hooks(self):
         # The claude-cli User-Agent rewrite is a gateway quirk, not adapter
         # behaviour: the passthrough UA is whatever the profile's request
-        # hooks module declares, and nothing is rendered without one.
+        # hooks build prints for `translator-user-agent`, and nothing is
+        # rendered without one.
         with tempfile.TemporaryDirectory() as tmp:
-            hooks = Path(tmp) / 'hooks.py'
-            hooks.write_text('def translator_user_agent():\n'
-                             '    return "hook-ua/9.9.9 (external, cli)"\n')
+            hooks = Path(tmp) / 'gateway-shim'
+            hooks.write_text('#!/bin/sh\n[ "$1" = translator-user-agent ] || exit 2\n'
+                             'echo "hook-ua/9.9.9 (external, cli)"\n')
+            hooks.chmod(0o755)
             config = ad.render([row('anthropic')], 'k', 1234, 'https://gw', '/unused',
                                hooks_path=str(hooks))
         claude_entry = config.split('claude-api-key:')[1]
@@ -238,10 +241,7 @@ class AutoDetectionTest(unittest.TestCase):
         self.native_launch_rejects_mapped_chat('/api/v4')
 
     def native_launch_rejects_mapped_chat(self, prefix):
-        loader = importlib.machinery.SourceFileLoader('adapter_auto_shim', str(ADAPTER.parent / 'gateway-shim'))
-        shim_spec = importlib.util.spec_from_loader('adapter_auto_shim', loader)
-        shim = importlib.util.module_from_spec(shim_spec)
-        loader.exec_module(shim)
+        real_popen = subprocess.Popen
         seen = []
 
         class Gateway(BaseHTTPRequestHandler):
@@ -274,7 +274,7 @@ class AutoDetectionTest(unittest.TestCase):
         gateway = ThreadingHTTPServer(('127.0.0.1', 0), Gateway)
         upstream = f'http://127.0.0.1:{gateway.server_address[1]}{prefix}'
         mapping = {'claude-sonnet-5-5': 'chat-only[1m]'}
-        edge = None
+        edge = None  # the real shim's port, read from its banner
 
         def start_edge(command, *, env, **kwargs):
             nonlocal edge
@@ -284,11 +284,13 @@ class AutoDetectionTest(unittest.TestCase):
             self.assertEqual(route['model_map'], mapping)
             self.assertNotIn('config', route)
             self.assertIn('--preserve-tool-ids', command)
-            shim.IdShim.target = upstream
-            shim.IdShim.model_routes = shim.ModelRoutes(route)
-            shim.IdShim.preserve_ids = True
-            edge = ThreadingHTTPServer(('127.0.0.1', 0), shim.IdShim)
-            threading.Thread(target=edge.serve_forever, daemon=True).start()
+            # The real shim binary, exactly as the adapter built its argv and env.
+            proc = real_popen(command, env=env, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            self.addCleanup(proc.wait)
+            self.addCleanup(proc.kill)
+            self.addCleanup(proc.stdout.close)
+            edge = int(proc.stdout.readline().split(':')[1].split(' ')[0])
             return Mock(poll=Mock(return_value=None))
 
         class RequestsComplete(Exception):
@@ -300,7 +302,7 @@ class AutoDetectionTest(unittest.TestCase):
                 payload = {'model': model, 'max_tokens': 1,
                            'messages': [{'role': 'user', 'content': 'hello'}]}
                 return urllib.request.Request(
-                    f'http://127.0.0.1:{edge.server_address[1]}{path}',
+                    f'http://127.0.0.1:{edge}{path}',
                     data=json.dumps(payload).encode(),
                     headers={'content-type': 'application/json', 'x-api-key': 'k'})
 
@@ -334,8 +336,6 @@ class AutoDetectionTest(unittest.TestCase):
              patch.object(ad, 'free_port', return_value=0), \
              patch.object(ad.subprocess, 'Popen', side_effect=start_edge) as launch, \
              patch.object(ad, 'tether'), patch.object(ad, 'serving', return_value=True), \
-             patch.object(shim, 'OPENER', shim.LOOPBACK), \
-             patch.object(shim, 'UsageSidecar', return_value=None), \
              patch.object(ad.signal, 'signal'), patch.object(ad.os, 'dup2'), \
              patch.object(ad.time, 'sleep', side_effect=exercise_requests), \
              patch.object(ad.sys, 'argv', ['ccmorph-adapter', 'demo', '--auto', '--model', 'm']), \
@@ -345,9 +345,6 @@ class AutoDetectionTest(unittest.TestCase):
                 with self.assertRaises(RequestsComplete):
                     ad.main()
             finally:
-                if edge is not None:
-                    edge.shutdown()
-                    edge.server_close()
                 gateway.shutdown()
                 gateway.server_close()
         self.assertEqual(classify.call_args.args[3], 'm')
