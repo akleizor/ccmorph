@@ -1054,8 +1054,9 @@ class AdapterTest(unittest.TestCase):
                         "{k: v for k, v in os.environ.items() if k.startswith('CCMORPH_')}))\n"
                         "sys.exit(1)\n")
         shim.chmod(0o755)
-        hooks = self.home / "hooks.py"
-        hooks.write_text("def translator_user_agent():\n    return 'stub'\n")
+        # A hooks build is a whole shim: with CCMORPH_SHIM_HOOKS set the adapter
+        # runs that binary in place of the stock one, so the recorder stands in.
+        hooks = shim
         translator = self.home / "stub-translator"
         translator.write_text(
             "#!/usr/bin/env python3\n"
@@ -1108,11 +1109,14 @@ class AdapterTest(unittest.TestCase):
         # profile fails loudly at launch instead of through the shim later.
         script = self.home / ".config/ccmorph/lib/ccmorph.sh"
         base = script.read_text()
-        script.write_text(base.replace(
-            "}\n", '  print "CCMORPH_SHIM_HOOKS=/nonexistent/hooks.py"\n}\n'))
-        out = self.run_adapter()
-        self.assertNotEqual(out.returncode, 0, out.stdout + out.stderr)
-        self.assertIn("CCMORPH_SHIM_HOOKS", out.stdout + out.stderr)
+        not_executable = self.home / "hooks-shim"
+        not_executable.write_text("#!/bin/sh\n")
+        for path in ("/nonexistent/gateway-shim", str(not_executable)):
+            script.write_text(base.replace(
+                "}\n", f'  print "CCMORPH_SHIM_HOOKS={path}"\n}}\n'))
+            out = self.run_adapter()
+            self.assertNotEqual(out.returncode, 0, out.stdout + out.stderr)
+            self.assertIn("CCMORPH_SHIM_HOOKS", out.stdout + out.stderr)
 
     def test_profile_env_sources_the_packaged_ccmorph_script(self):
         import importlib.machinery

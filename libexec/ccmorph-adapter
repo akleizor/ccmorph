@@ -71,7 +71,6 @@ import concurrent.futures as cf
 import contextlib
 import fcntl
 import hashlib
-import importlib.util
 import json
 import os
 import re
@@ -846,17 +845,6 @@ def q(value: str) -> str:
     return json.dumps(str(value))
 
 
-def load_hooks(path: str):
-    """Load a profile's request-hooks module (same contract as the shim's
-    CCMORPH_SHIM_HOOKS): a standalone file, never importing the shim."""
-    spec = importlib.util.spec_from_file_location("ccmorph_hooks", path)
-    if spec is None or spec.loader is None:
-        raise OSError(f"cannot load request hooks: {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def hooks_user_agent(hooks_path: str) -> str:
     """The passthrough User-Agent a profile's request hooks declare, or "".
 
@@ -869,11 +857,11 @@ def hooks_user_agent(hooks_path: str) -> str:
     if not hooks_path:
         return ""
     try:
-        module = load_hooks(hooks_path)
-        ua = getattr(module, "translator_user_agent", lambda: "")()
-    except Exception:
+        done = subprocess.run([hooks_path, "translator-user-agent"], capture_output=True,
+                              text=True, timeout=10, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
         return ""
-    return ua if isinstance(ua, str) else ""
+    return done.stdout.strip() if done.returncode == 0 else ""
 
 
 def render(rows, key, port, upstream, authdir, proxy="", hooks_path="") -> str:
@@ -1242,7 +1230,7 @@ def front_directly(args, upstream: str, key: str, route_identity: str,
     port = args.port or free_port()
     # No translator here, so the shim owns transport retries; behind cliproxyapi
     # its request-retry does, and a second layer would multiply attempts.
-    shim_args = [sys.executable, GATEWAY_SHIM, str(port), upstream,
+    shim_args = [shim_extras.get("CCMORPH_SHIM_HOOKS", "").strip() or GATEWAY_SHIM, str(port), upstream,
                  "--preserve-tool-ids", "--retry-transport"]
     shim_args += privacy_args
     shim_env = dict(os.environ, CCMORPH_MODEL_ROUTE=json.dumps({
@@ -1399,15 +1387,17 @@ def main() -> int:
     if not upstream:
         die(f"profile {args.profile} has no base_url to front")
     upstream_proxy = env.get("CCMORPH_UPSTREAM_PROXY", "").strip()
-    # Profile request quirks ride as CCMORPH_* env to the shim's hooks module,
-    # not as shim flags: whatever the profile declared is ferried through
-    # untouched. The hooks path is validated here, before anything is spawned,
-    # so a stale profile fails loudly at launch instead of inside the shim.
+    # Profile request quirks ride as CCMORPH_* env to the shim, not as shim
+    # flags: whatever the profile declared is ferried through untouched.
+    # CCMORPH_SHIM_HOOKS names a shim binary built with the profile's own hooks
+    # (a private main around the shim package), run in place of the stock one.
+    # Validated here, before anything is spawned, so a stale profile fails loudly
+    # at launch instead of inside the shim.
     shim_extras = {k: v for k, v in env.items() if k.startswith("CCMORPH_")}
     hooks_path = shim_extras.get("CCMORPH_SHIM_HOOKS", "").strip()
-    if hooks_path and not os.path.isfile(hooks_path):
-        die(f"profile {args.profile} points CCMORPH_SHIM_HOOKS at a missing file: "
-            f"{hooks_path}")
+    if hooks_path and not (os.path.isfile(hooks_path) and os.access(hooks_path, os.X_OK)):
+        die(f"profile {args.profile} points CCMORPH_SHIM_HOOKS at a missing or "
+            f"non-executable file: {hooks_path}")
 
     # Dialect classification is a property of the ENDPOINT, not the profile: the
     # same gateway serves the same models with the same dialects no matter which
@@ -1617,7 +1607,7 @@ def main() -> int:
     # shim's own env, not in flags.
     recycles_ids = any(r.get("id_recycle") for r in usable)
     shim_port = args.port or free_port()
-    shim_args = [sys.executable, GATEWAY_SHIM, str(shim_port),
+    shim_args = [shim_extras.get("CCMORPH_SHIM_HOOKS", "").strip() or GATEWAY_SHIM, str(shim_port),
                  f"http://127.0.0.1:{port}"]
     shim_args += privacy_args
     if not recycles_ids:
