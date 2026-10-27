@@ -127,7 +127,9 @@ MODULES=("$SRC"/lib/ccmorph-*.zsh(N:t))
 # is added exactly once. Modules are data: they are sourced, never run.
 # Paths are relative to the repo root and installed with the same structure.
 LIBS=(lib/ccmorph.sh ${MODULES/#/lib/})
-EXECUTABLES=(bin/ccmorph libexec/ccmorph-adapter libexec/gateway-shim libexec/model-window libexec/settings-compose libexec/refresh-model-registry)
+# install.sh ships too (an executable at the install root), so `ccmorph update` and
+# `ccmorph uninstall` have the installer to run without a clone or a URL.
+EXECUTABLES=(bin/ccmorph install.sh libexec/ccmorph-adapter libexec/gateway-shim libexec/model-window libexec/settings-compose libexec/refresh-model-registry)
 DATA_FILES=(share/model-catalogue.json share/window-sources.json)
 COMPONENTS=($LIBS $EXECUTABLES $DATA_FILES)
 

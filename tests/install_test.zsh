@@ -52,7 +52,7 @@ run_installer "$d"; rc=$?
 # along (this is what keeps any other product from shipping inside ccmorph),
 # and nothing missing either, which subsumes a per-component presence loop.
 (( ${#module_files} )) || fail "no ccmorph-*.zsh module found beside ccmorph.sh — the manifest below would be silently short"
-want=(bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/ccmorph-adapter libexec/gateway-shim libexec/model-window libexec/settings-compose libexec/refresh-model-registry share/model-catalogue.json share/window-sources.json local.sh.example profile.conf.example profiles)
+want=(bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/ccmorph-adapter libexec/gateway-shim libexec/model-window libexec/settings-compose libexec/refresh-model-registry share/model-catalogue.json share/window-sources.json local.sh.example profile.conf.example install.sh profiles)
 got=(${(f)"$(cd "$d/home/.config/ccmorph" && print -l *(N) {bin,lib,libexec,share}/*(N.) | grep -vxE 'bin|lib|libexec|share')"})
 extra=(${got:|want}); missing=(${want:|got})
 (( ${#extra} == 0 && ${#missing} == 0 )) \
@@ -614,6 +614,130 @@ grep -qxF "Check:  $d/home/.local/bin/ccmorph doctor" "$d/out" && ! grep -qF 'cc
 # Last thing printed: the check or the next step, not a stray trailing line.
 last=$(grep -v '^$' "$d/out" | tail -1)
 [[ "$last" == "Check:  "* ]] && ok "end: the check is the last line of an update" || fail "end: last line of an update is '$last'"
+
+# --- 14. `ccmorph update` and `ccmorph uninstall` run the INSTALLED installer ------
+# The installer ships as a component, so the command can update itself with no clone
+# and no URL to remember: `update` hands the installed install.sh to remote mode
+# (--remote), which downloads, unpacks and runs the downloaded installer. The same
+# stub-curl harness as section 8; the tarball carries a different version, so the
+# command's own --version proves the new code is the code that runs.
+d=$(fresh_env shipped); run_installer "$d" >/dev/null
+[[ -x "$d/home/.config/ccmorph/install.sh" ]] \
+  && ok "update: a fresh install ships an executable install.sh" || fail "update: install.sh is not an executable component"
+
+mkdir -p "$TMP/stage99"
+cp -R "$TMP/stage/ccmorph-main" "$TMP/stage99/ccmorph-main"
+sed 's/^_CCMORPH_VERSION=.*/_CCMORPH_VERSION="9.9.9"/' "$REPO/lib/ccmorph.sh" > "$TMP/stage99/ccmorph-main/lib/ccmorph.sh"
+grep -qxF '_CCMORPH_VERSION="9.9.9"' "$TMP/stage99/ccmorph-main/lib/ccmorph.sh" || fail "update: could not stage the 9.9.9 tree"
+tar -czf "$TMP/src99.tar.gz" -C "$TMP/stage99" ccmorph-main
+
+upd_env() {  # $1 = case; an installed tree, a stub curl serving 9.9.9, and user state
+  local d; d=$(remote_env "$1" "$TMP/src99.tar.gz")
+  run_installer "$d" >/dev/null
+  print 'type=token\ntoken=canary' > "$d/home/.config/ccmorph/work.conf"
+  print 'export CCMORPH_TEST_LOCAL=1' > "$d/home/.config/ccmorph/local.sh"
+  cp "$d/home/.config/ccmorph/work.conf" "$d/work.conf.before"
+  cp "$d/home/.config/ccmorph/local.sh" "$d/local.sh.before"
+  print -r -- "$d"
+}
+cmd_run() {  # $1 = case dir, rest = ccmorph arguments; the installed command, hermetic
+  local d="$1"; shift
+  rm -f "$d/curl.argv"
+  env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" \
+    "$d/home/.local/bin/ccmorph" "$@" >"$d/out" 2>"$d/err" </dev/null
+}
+
+# 14.1 update: default ref, new code live, user state byte-identical.
+d=$(upd_env upd_main); cmd_run "$d" update; rc=$?
+(( rc == 0 )) && ok "update: exits 0" || { fail "update rc=$rc"; cat "$d/out" "$d/err" }
+grep -qxF 'https://github.com/akleizor/ccmorph/archive/main.tar.gz' "$d/curl.argv" 2>/dev/null \
+  && ok "update: the default ref downloads archive/main.tar.gz" || { fail "update: curl argv lacks archive/main.tar.gz"; cat "$d/curl.argv" 2>&1 }
+cmd_run "$d" --version
+[[ "$(<"$d/out")" == 'ccmorph 9.9.9' ]] \
+  && ok "update: the command now reports the downloaded version" || { fail "update: --version prints '$(<"$d/out")'"; }
+cmp -s "$d/work.conf.before" "$d/home/.config/ccmorph/work.conf" \
+  && ok "update: a profile conf is byte-identical" || fail "update: work.conf changed"
+cmp -s "$d/local.sh.before" "$d/home/.config/ccmorph/local.sh" \
+  && ok "update: local.sh is byte-identical" || fail "update: local.sh changed"
+[[ -x "$d/home/.config/ccmorph/install.sh" ]] \
+  && ok "update: the installer is still installed afterwards" || fail "update: install.sh gone after an update"
+[[ -z "$(print -rl -- "$d"/tmp/ccmorph-install.*(N))" ]] \
+  && ok "update: no temp dir left behind" || fail "update: temp dir left behind"
+# The report comes from the installer: it names the move and what survived.
+cmd_run "$d" update
+grep -qF 'Preserved:' "$d/out" && ok "update: says what it preserved" || { fail "update: no 'Preserved:' line"; cat "$d/out" "$d/err" }
+
+# 14.2 update <ref>: a tag or a branch picks the archive.
+d=$(upd_env upd_tag); cmd_run "$d" update v1.2.3; rc=$?
+(( rc == 0 )) && ok "update v1.2.3: exits 0" || { fail "update v1.2.3 rc=$rc"; cat "$d/out" "$d/err" }
+grep -qxF 'https://github.com/akleizor/ccmorph/archive/v1.2.3.tar.gz' "$d/curl.argv" 2>/dev/null \
+  && ok "update v1.2.3: curl argv has archive/v1.2.3.tar.gz" || { fail "update v1.2.3: wrong archive"; cat "$d/curl.argv" 2>&1 }
+cmd_run "$d" update feature/x-1.y_z
+grep -qxF 'https://github.com/akleizor/ccmorph/archive/feature/x-1.y_z.tar.gz' "$d/curl.argv" 2>/dev/null \
+  && ok "update: a branch name with a slash is accepted" || { fail "update: branch with slash refused"; cat "$d/out" "$d/err" }
+
+# 14.3 a ref that is not a plain name is refused before anything is downloaded.
+d=$(upd_env upd_badref)
+for bad in 'x;rm' '../evil' 'a..b' '-rf' '/abs' 'a b' '$(id)' ''; do
+  cmd_run "$d" update "$bad"; rc=$?
+  (( rc != 0 )) && [[ ! -e "$d/curl.argv" ]] \
+    && ok "update '$bad': refused, curl never called" || { fail "update '$bad': rc=$rc or curl ran"; cat "$d/curl.argv" 2>&1 }
+done
+grep -qi 'ref' "$d/err" && ok "update: a refused ref says what is wrong" || { fail "update: refusal does not mention the ref"; cat "$d/err" }
+cmd_run "$d" update main extra; rc=$?
+(( rc != 0 )) && [[ ! -e "$d/curl.argv" ]] \
+  && ok "update: a second argument is refused, curl never called" || fail "update: accepted two arguments (rc=$rc)"
+cmd_run "$d" uninstall now; rc=$?
+(( rc != 0 )) && [[ -x "$d/home/.local/bin/ccmorph" ]] \
+  && ok "uninstall: an argument is refused and nothing is removed" || fail "uninstall: accepted an argument (rc=$rc)"
+
+# 14.4 a git checkout is updated with git: a download copied over it would dirty it.
+d=$(upd_env upd_git); mkdir -p "$d/home/.config/ccmorph/.git"
+cmd_run "$d" update; rc=$?
+(( rc != 0 )) && [[ ! -e "$d/curl.argv" ]] \
+  && ok "update: a git checkout is refused, curl never called" || { fail "update: ran on a git checkout (rc=$rc)"; cat "$d/curl.argv" 2>&1 }
+grep -qi 'git' "$d/err" && ok "update: the refusal says to use git" || { fail "update: refusal does not mention git"; cat "$d/err" }
+cmd_run "$d" --version
+[[ "$(<"$d/out")" != 'ccmorph 9.9.9' ]] && ok "update: a refused update left the code alone" || fail "update: replaced a git checkout"
+
+# 14.5 no installer beside the library (a packaged or older install): name the one-liner.
+d=$(upd_env upd_noinst); rm -f "$d/home/.config/ccmorph/install.sh"
+for verb in update uninstall; do
+  cmd_run "$d" $verb; rc=$?
+  (( rc == 1 )) && [[ ! -e "$d/curl.argv" ]] \
+    && ok "$verb: no installer exits 1 and downloads nothing" || { fail "$verb: no-installer rc=$rc"; cat "$d/curl.argv" 2>&1 }
+  grep -qF 'sh -c "$(curl -fsSL https://raw.githubusercontent.com/akleizor/ccmorph/main/install.sh)"' "$d/err" \
+    && ok "$verb: no installer names the one-line install" || { fail "$verb: the one-line install is not named"; cat "$d/err" }
+done
+[[ -x "$d/home/.local/bin/ccmorph" ]] && ok "uninstall: a missing installer removes nothing" || fail "uninstall: removed the command without an installer"
+
+# 14.6 uninstall: the command goes, the profiles stay, and it says so.
+d=$(upd_env upd_rm); cmd_run "$d" uninstall; rc=$?
+(( rc == 0 )) && ok "uninstall: exits 0" || { fail "uninstall rc=$rc"; cat "$d/out" "$d/err" }
+[[ ! -e "$d/home/.local/bin/ccmorph" ]] && ok "uninstall: the command is gone from ~/.local/bin" || fail "uninstall: the command is still on PATH"
+cmp -s "$d/work.conf.before" "$d/home/.config/ccmorph/work.conf" \
+  && ok "uninstall: the profile is still there, byte-identical" || fail "uninstall: work.conf lost or changed"
+grep -qF 'profiles' "$d/out" && ok "uninstall: says the profiles were kept" || { fail "uninstall: no word about profiles"; cat "$d/out" }
+[[ ! -e "$d/curl.argv" ]] && ok "uninstall: never downloads" || fail "uninstall: called curl"
+
+# 14.7 help: both verbs have their own entry, in the long list only.
+d=$(upd_env upd_help)
+cmd_run "$d" help all
+grep -qE '^  ccmorph update \[ref\] +Update to the latest version, or to a branch or tag$' "$d/out" \
+  && grep -qE '^  ccmorph uninstall +Remove the command; profiles stay$' "$d/out" \
+  && ok "help all: lists update and uninstall under More commands" || { fail "help all: update/uninstall rows missing"; cat "$d/out" }
+cmd_run "$d"
+grep -qE 'ccmorph (update|uninstall)' "$d/out" \
+  && fail "help: the short overview mentions update or uninstall" || ok "help: the short overview stays short"
+for verb in update uninstall; do
+  cmd_run "$d" help $verb; rc=$?
+  (( rc == 0 )) && [[ "$(head -1 "$d/out")" == "Usage: ccmorph $verb"* ]] \
+    && ok "help $verb: has its own usage" || { fail "help $verb: rc=$rc"; cat "$d/out" "$d/err" }
+  cmd_run "$d" $verb --help; rc=$?
+  (( rc == 0 )) && [[ "$(head -1 "$d/out")" == "Usage: ccmorph $verb"* ]] && [[ ! -e "$d/curl.argv" ]] \
+    && ok "$verb --help: shows its help and runs nothing" || { fail "$verb --help: rc=$rc"; cat "$d/out" "$d/err" }
+done
+[[ -x "$d/home/.local/bin/ccmorph" ]] && ok "help: asking for help removed nothing" || fail "help: uninstall --help removed the command"
 
 print ""
 print "install tests: $passed passed, $failed failed"

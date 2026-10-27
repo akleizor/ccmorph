@@ -566,6 +566,8 @@ _ccm_usage() {
       _ccm_help "ccmorph rm <profile>" "Delete a profile and its private sign-in state"
       _ccm_help "ccmorph hop <profile>" "Switch a running session; use inside Claude"
       _ccm_help "ccmorph cred <profile>" "Print a stored secret (sensitive)"
+      _ccm_help "ccmorph update [ref]" "Update to the latest version, or to a branch or tag"
+      _ccm_help "ccmorph uninstall" "Remove the command; profiles stay"
       print "\n${_ccm_bold}Advanced troubleshooting (normally automatic):${_ccm_reset}"
       _ccm_help "ccmorph probe [profile]" "Refresh context-limit metadata; no inference"
       _ccm_help "ccmorph context <profile> <model> [tokens|auto]" "Override or reset one model context limit"
@@ -626,6 +628,15 @@ Then exit Claude to complete the switch. Keeps model and effort when supported.
 This command does not work from an unrelated terminal.' ;;
     cred) usage='ccmorph cred [profile]'; detail='Print the stored API key or token to stdout. This reveals a secret.
 Only profiles with a stored key or token are offered. Name one in scripts.' ;;
+    update) usage='ccmorph update [ref]'; detail='Download the latest version and run its installer, which updates this install
+in place. Give a branch or tag to install that instead: ccmorph update v2.6.0.
+Profiles, credentials and local.sh are kept, and the installer names what it kept.
+A git checkout is refused: update it with git.
+Needs the install.sh that sits beside the library; without it, run the one-line
+install from the README once.' ;;
+    uninstall) usage='ccmorph uninstall'; detail='Remove the ccmorph command from ~/.local/bin. Your profiles and credentials stay
+in ~/.config/ccmorph; delete that directory by hand if you want them gone.
+Needs the install.sh that sits beside the library.' ;;
     probe) usage='ccmorph probe [profile] [options]'; detail='Refresh published context metadata; no inference requests by default.
 Paid inference requires --allow-inference, --profile and --model explicitly.
 Full probe options: ccmorph probe --help' ;;
@@ -638,6 +649,43 @@ Normally unnecessary: compatibility and context limits are automatic.' ;;
   print -r -- "$detail"
   print '\nFixed choices: ↑/↓ move, Enter selects one, Esc cancels. No search box.'
   print 'Profile/model catalogues: type to search with fzf; numbers without it.'
+}
+
+# `ccmorph update [ref]` and `ccmorph uninstall` hand over to the install.sh that
+# the installer placed beside lib/. Everything that matters (what is downloaded,
+# what is kept, what is removed) is the installer's own, so the profiles,
+# credentials and local.sh guarantees live in one place. $1 = update|uninstall,
+# $2 = the ref, for update only (a required argument here, so an empty one is
+# refused rather than read as the default).
+_ccm_run_installer() {
+  emulate -L zsh
+  local verb="$1" ref="${2-main}"
+  local root="${_CCMORPH_LIB_DIR:h}" installer="${_CCMORPH_LIB_DIR:h}/install.sh"
+  if [[ "$verb" == update ]]; then
+    # A ref becomes part of a download URL and an env value, so it is a plain name:
+    # a branch or tag, slashes allowed, no `..`, no leading dash, nothing a shell
+    # or a URL would read as syntax.
+    if [[ ! "$ref" =~ '^[A-Za-z0-9][A-Za-z0-9._/-]*$' || "$ref" == *..* ]]; then
+      _ccm_err "invalid ref '$ref' — use a branch or tag name such as main or v2.6.0"
+      return 2
+    fi
+    # A checkout is the user's working tree. Copying a download over it would dirty
+    # it and fight their branch, so it is updated with the tool that owns it.
+    if [[ -e "$root/.git" ]]; then
+      _ccm_err "$root is a git checkout; update it with git (git -C ${(q)root} pull), not with ccmorph update"
+      return 1
+    fi
+  fi
+  if [[ ! -f "$installer" ]]; then
+    _ccm_err "no installer at $installer, so ccmorph cannot $verb itself. Run the one-line install once:"
+    print -u2 -r -- '  sh -c "$(curl -fsSL https://raw.githubusercontent.com/akleizor/ccmorph/main/install.sh)"'
+    return 1
+  fi
+  if [[ "$verb" == update ]]; then
+    CCMORPH_REF="$ref" command sh "$installer" --remote
+  else
+    command sh "$installer" --uninstall
+  fi
 }
 
 ccmorph() {
@@ -667,6 +715,20 @@ ccmorph() {
     _ccm_usage "$1"
     return $?
   fi
+
+  # Before the state is touched: these act on the installed code, not on profiles.
+  case "$1" in
+    update)
+      (( $# <= 2 )) || { _ccm_err 'usage: ccmorph update [ref]'; return 2; }
+      _ccm_run_installer update "${@:2}"
+      return $?
+      ;;
+    uninstall)
+      (( $# == 1 )) || { _ccm_err 'usage: ccmorph uninstall'; return 2; }
+      _ccm_run_installer uninstall
+      return $?
+      ;;
+  esac
 
   local dir="$_CCMORPH_DIR"
   local active=""
