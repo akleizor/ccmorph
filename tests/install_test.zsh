@@ -394,6 +394,135 @@ env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
 (( rc == 0 )) && [[ -x "$d/home/.local/bin/ccmorph" ]] \
   && ok "windows: a Linux/macOS uname still installs" || { fail "non-windows install rc=$rc"; cat "$d/out" }
 
+# --- 10. one install command for the package manager that is there -----------
+# The zsh-missing message sits in the POSIX preamble, before any zsh exists, so its
+# table is POSIX sh and is tested the same way: the function is cut out of
+# install.sh (no process substitution: that is not POSIX and dash rejects it) and
+# sourced by a bare sh. PATH holds ONLY the stubs, so the answer cannot depend on
+# which package manager the machine running the suite happens to have.
+d="$TMP/hint"; mkdir -p "$d"
+sed -n '/^_ccm_pkg_hint()/,/^}/p' "$REPO/install.sh" > "$d/hint.sh"
+[[ -s "$d/hint.sh" ]] && ok "hint: _ccm_pkg_hint is defined at column 0 in install.sh" || fail "hint: _ccm_pkg_hint not found in install.sh"
+hint_for() {  # $1 = package, rest = package managers present (as stubs); prints the hint
+  local pkg="$1"; shift
+  rm -rf "$d/pbin"; mkdir -p "$d/pbin"
+  for m in "$@"; do printf '#!/bin/sh\necho "STUB %s CALLED" >&2\nexit 1\n' "$m" > "$d/pbin/$m"; chmod +x "$d/pbin/$m"; done
+  env -i PATH="$d/pbin" "$(command -v sh)" -c ". '$d/hint.sh'; _ccm_pkg_hint $pkg" 2>&1
+}
+[[ "$(hint_for zsh apt-get)" == 'sudo apt-get install -y zsh' ]] && ok "hint: apt-get -> sudo apt-get install -y zsh" || fail "hint: apt-get gave '$(hint_for zsh apt-get)'"
+[[ "$(hint_for zsh dnf)"     == 'sudo dnf install -y zsh' ]]     && ok "hint: dnf -> sudo dnf install -y zsh"         || fail "hint: dnf gave '$(hint_for zsh dnf)'"
+[[ "$(hint_for zsh apk)"     == 'sudo apk add zsh' ]]            && ok "hint: apk -> sudo apk add zsh"                || fail "hint: apk gave '$(hint_for zsh apk)'"
+[[ "$(hint_for zsh pacman)"  == 'sudo pacman -S zsh' ]]          && ok "hint: pacman -> sudo pacman -S zsh"           || fail "hint: pacman gave '$(hint_for zsh pacman)'"
+[[ "$(hint_for zsh zypper)"  == 'sudo zypper install -y zsh' ]]  && ok "hint: zypper -> sudo zypper install -y zsh"   || fail "hint: zypper gave '$(hint_for zsh zypper)'"
+[[ "$(hint_for zsh brew)"    == 'brew install zsh' ]]            && ok "hint: brew -> brew install zsh (no sudo)"     || fail "hint: brew gave '$(hint_for zsh brew)'"
+[[ "$(hint_for fzf apt-get)" == 'sudo apt-get install -y fzf' ]] && ok "hint: the package name is the argument"       || fail "hint: fzf gave '$(hint_for fzf apt-get)'"
+[[ -z "$(hint_for zsh)" ]] && ok "hint: no package manager -> prints nothing" || fail "hint: invented a command with no manager: '$(hint_for zsh)'"
+# First found wins, in the order brew, apt-get, dnf, apk, pacman, zypper.
+[[ "$(hint_for zsh zypper pacman apk dnf apt-get brew)" == 'brew install zsh' ]] \
+  && ok "hint: brew outranks every other manager" || fail "hint: order wrong with everything present"
+[[ "$(hint_for zsh zypper pacman apk dnf apt-get)" == 'sudo apt-get install -y zsh' ]] \
+  && ok "hint: apt-get outranks dnf, apk, pacman, zypper" || fail "hint: apt-get did not win"
+[[ "$(hint_for zsh zypper pacman apk dnf)" == 'sudo dnf install -y zsh' ]] \
+  && ok "hint: dnf outranks apk, pacman, zypper" || fail "hint: dnf did not win"
+[[ "$(hint_for zsh zypper pacman)" == 'sudo pacman -S zsh' ]] \
+  && ok "hint: pacman outranks zypper" || fail "hint: pacman did not win"
+[[ "$(hint_for zsh apt-get)" != *'STUB'* ]] && ok "hint: a stub manager is only detected, never run" || fail "hint: ran a package manager"
+
+# The same table, end to end: a PATH with a shell and no zsh. The installer must
+# print ONE command, run nothing, and write nothing.
+nozsh_run() {  # $1 = case dir, rest = package managers present
+  local d="$1"; shift
+  rm -rf "$d/pbin"; mkdir -p "$d/pbin" "$d/home"
+  for t in sh dirname uname; do ln -s "$(command -v $t)" "$d/pbin/$t"; done
+  for m in "$@"; do printf '#!/bin/sh\necho "STUB %s CALLED" >&2\nexit 1\n' "$m" > "$d/pbin/$m"; chmod +x "$d/pbin/$m"; done
+  env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/pbin" "$(command -v sh)" "$REPO/install.sh" >"$d/out" 2>"$d/err" </dev/null
+}
+d="$TMP/nozsh_dnf"; nozsh_run "$d" dnf; rc=$?
+(( rc == 1 )) && ok "no zsh: exits 1" || fail "no zsh: rc=$rc (want 1)"
+grep -qxF '  sudo dnf install -y zsh' "$d/err" \
+  && ok "no zsh: names the one command for the manager found" || { fail "no zsh: dnf command missing"; cat "$d/err"; }
+grep -qF 'apt install zsh' "$d/err" && fail "no zsh: still prints the three-distro list beside a known manager" || ok "no zsh: a known manager gets one command, not three"
+grep -qF 'STUB' "$d/err" "$d/out" && fail "no zsh: ran the package manager" || ok "no zsh: the command is printed, never run"
+[[ -z "$(print -rl -- "$d"/home/*(N) "$d"/home/.[a-z]*(N))" ]] && ok "no zsh: nothing written under HOME" || fail "no zsh: wrote under HOME"
+d="$TMP/nozsh_none"; nozsh_run "$d"; rc=$?
+(( rc == 1 )) && grep -qF 'apt install zsh' "$d/err" && grep -qF 'dnf install zsh' "$d/err" && grep -qF 'apk add zsh' "$d/err" \
+  && ok "no zsh: with no package manager the three-distro list is the fallback" || { fail "no zsh: fallback list missing (rc=$rc)"; cat "$d/err"; }
+
+# --- 11. optional deps are offered through any package manager; required ones named
+# These runs need a PATH WITHOUT the host's own package managers (a Linux box has
+# apt-get in /usr/bin, which would outrank a dnf stub). $TMP/sys links every tool
+# in /usr/bin and /bin except the ones a case must control, so the installer still
+# finds cp, grep, chmod and the rest, and the result does not depend on the host.
+mkdir -p "$TMP/sys"
+zmodload -F zsh/files b:ln 2>/dev/null
+sys_excluded=(brew apt-get dnf apk pacman zypper fzf cliproxyapi claude python3 curl wget)
+for f in /usr/bin/*(N) /bin/*(N); do
+  t=${f:t}
+  (( ${sys_excluded[(Ie)$t]} )) && continue
+  [[ -e "$TMP/sys/$t" || -L "$TMP/sys/$t" ]] || ln -s "$f" "$TMP/sys/$t"
+done
+pm_env() {  # $1 = case, rest = package managers to stub; fzf, cliproxyapi absent
+  local d; d=$(fresh_env "$1"); shift
+  rm -f "$d/bin/fzf"
+  for m in "$@"; do printf '#!/bin/sh\necho "STUB %s CALLED" >&2\nexit 1\n' "$m" > "$d/bin/$m"; chmod +x "$d/bin/$m"; done
+  print -r -- "$d"
+}
+pm_run() {  # $1 = case dir
+  env -i HOME="$1/home" ZDOTDIR="$1/home" PATH="$1/bin:$TMP/sys" \
+    zsh "$REPO/install.sh" >"$1/out" 2>&1 </dev/null
+}
+
+for pm_case in "apt-get|sudo apt-get install -y fzf" "dnf|sudo dnf install -y fzf" "apk|sudo apk add fzf" \
+               "pacman|sudo pacman -S fzf" "zypper|sudo zypper install -y fzf" "brew|brew install fzf"; do
+  pm=${pm_case%%|*}; want_cmd=${pm_case#*|}
+  d=$(pm_env "pm_$pm" $pm); pm_run "$d"; rc=$?
+  (( rc == 0 )) && ok "$pm: a missing fzf does not fail the install" || { fail "$pm: install rc=$rc"; cat "$d/out"; }
+  grep -qF "Run yourself: $want_cmd" "$d/out" \
+    && ok "$pm: fzf is offered as '$want_cmd'" || { fail "$pm: no offer for '$want_cmd'"; cat "$d/out"; }
+  grep -qF "STUB $pm CALLED" "$d/out" && fail "$pm: a declined offer still ran $pm" || ok "$pm: a declined offer never ran $pm"
+done
+d=$TMP/pm_apt-get
+grep -qF 'install -y cliproxyapi' "$d/out" \
+  && fail "apt-get: cliproxyapi offered through a manager that does not ship it" || ok "apt-get: cliproxyapi is not offered through apt-get"
+grep -qF 'github.com/router-for-me/CLIProxyAPI' "$d/out" \
+  && ok "apt-get: cliproxyapi still points at upstream" || fail "apt-get: the upstream link for cliproxyapi is gone"
+d=$TMP/pm_brew
+grep -qF 'Run yourself: brew install cliproxyapi' "$d/out" \
+  && ok "brew: cliproxyapi is still offered through brew" || fail "brew: cliproxyapi offer lost"
+grep -qF 'sudo' "$d/out" && fail "brew: a sudo appeared in a brew offer" || ok "brew: no sudo in a brew offer"
+
+# No package manager at all: both notes appear, nothing is offered, install succeeds.
+d=$(pm_env pm_none); pm_run "$d"; rc=$?
+(( rc == 0 )) && grep -qF 'fzf not found' "$d/out" && ! grep -qF 'Run yourself' "$d/out" \
+  && ok "no manager: fzf is named and no command is invented" || { fail "no manager: wrong output (rc=$rc)"; cat "$d/out"; }
+
+# A missing claude is named with where to get it, never with a command; exit 1;
+# nothing installed.
+d=$(pm_env pm_noclaude apt-get); rm -f "$d/bin/claude"; pm_run "$d"; rc=$?
+(( rc == 1 )) && ok "no claude: exits 1" || { fail "no claude: rc=$rc (want 1)"; cat "$d/out"; }
+grep -qF 'Install Claude Code first: https://docs.anthropic.com/en/docs/claude-code/setup' "$d/out" \
+  && ok "no claude: points at the Claude Code setup page" || { fail "no claude: setup link missing"; cat "$d/out"; }
+grep -qiE 'npm|curl|apt-get install -y claude|brew install claude' "$d/out" \
+  && fail "no claude: embeds an install command for another vendor's product" || ok "no claude: no install command for it"
+[[ ! -e "$d/home/.config/ccmorph" ]] && ok "no claude: nothing installed" || fail "no claude: wrote ~/.config/ccmorph"
+grep -qF 'STUB' "$d/out" && fail "no claude: ran a package manager" || ok "no claude: nothing ran"
+
+# python3 absent: named with the manager's command, and the run stops before writing.
+d=$(pm_env pm_nopy dnf); rm -f "$d/bin/python3"; pm_run "$d"; rc=$?
+(( rc == 1 )) && grep -qF 'sudo dnf install -y python3' "$d/out" && ! grep -qF 'STUB' "$d/out" && [[ ! -e "$d/home/.config/ccmorph" ]] \
+  && ok "no python3: exits 1 and names 'sudo dnf install -y python3'" || { fail "no python3: wrong result (rc=$rc)"; cat "$d/out"; }
+
+# python3 present but too old: the version stays in the message and the package
+# manager's command joins it.
+d=$(pm_env pm_oldpy apt-get)
+printf '#!/bin/sh\ncase "$*" in *print*) echo 3.6.9; exit 0;; esac\nexit 1\n' > "$d/bin/python3"
+pm_run "$d"; rc=$?
+(( rc == 1 )) && ok "old python3: exits 1" || { fail "old python3: rc=$rc (want 1)"; cat "$d/out"; }
+grep -qF 'found 3.6.9' "$d/out" && ok "old python3: names the version found" || fail "old python3: version missing"
+grep -qF 'sudo apt-get install -y python3' "$d/out" \
+  && ok "old python3: names the package manager's command" || { fail "old python3: no install command"; cat "$d/out"; }
+grep -qF 'STUB' "$d/out" && fail "old python3: ran a package manager" || ok "old python3: the command is printed, never run"
+
 print ""
 print "install tests: $passed passed, $failed failed"
 (( failed == 0 ))
