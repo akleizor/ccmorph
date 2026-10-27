@@ -687,6 +687,12 @@ ccmorph() {
       fi
 
       if [[ -z "$_run_account" && -z "$active" ]] && (( ! _run_has_interactive )); then
+        # A first run has nothing to pick a default from; point at add, not use.
+        local -a _run_confs=("$dir"/*.conf(N))
+        if (( ! ${#_run_confs} )); then
+          _ccm_err "no profiles yet — run: ccmorph add <name>"
+          return 1
+        fi
         _ccm_err "no default profile set — run: ccmorph use <profile> or ccmorph run -i"
         _ccm_accounts_hint
         return 1

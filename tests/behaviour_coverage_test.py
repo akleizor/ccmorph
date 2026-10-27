@@ -194,6 +194,13 @@ def test_run_with_no_default_and_no_profile_launches_nothing(box):
     assert box.log() == ''
 
 
+def test_run_with_no_profiles_points_at_add(box):
+    out = box.run('run')
+    assert out.returncode != 0
+    assert 'ccmorph add' in out.stderr and 'ccmorph use' not in out.stderr
+    assert box.log() == ''
+
+
 def test_run_names_an_unknown_profile_instead_of_launching_the_default(box):
     seed(box)
     box.run('use', 'work')
