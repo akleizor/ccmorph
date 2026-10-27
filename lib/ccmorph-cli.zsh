@@ -1037,6 +1037,12 @@ ccmorph() {
           fi
           ;;
       esac
+      # The first profile is the default so `ccmorph run` works straight away; an
+      # existing default is never changed, and failing to record one is not an
+      # add failure (the profile is saved).
+      if [[ ! -e "$dir/active" && ! -L "$dir/active" ]]; then
+        _ccm_write "$dir/active" "$2" && print "${_ccm_dim}Default profile: $2 (first profile)${_ccm_reset}"
+      fi
       print -r -- "Next: ccmorph run $2"
       ;;
 

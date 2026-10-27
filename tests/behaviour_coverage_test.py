@@ -201,6 +201,15 @@ def test_run_with_no_profiles_points_at_add(box):
     assert box.log() == ''
 
 
+def test_the_first_added_profile_becomes_the_default(box):
+    first = box.run('add', 't1', answer='token\nsk-ant-oat-canary\n')
+    assert first.returncode == 0, first.stderr
+    assert box.active == 't1'
+    second = box.run('add', 't2', answer='token\nsk-ant-oat-canary2\n')
+    assert second.returncode == 0, second.stderr
+    assert box.active == 't1'
+
+
 def test_run_names_an_unknown_profile_instead_of_launching_the_default(box):
     seed(box)
     box.run('use', 'work')
