@@ -21,6 +21,13 @@ var (
 	creationNames = []string{"ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens"}
 )
 
+// link and remove are the filesystem calls a test makes fail: a filesystem
+// without hardlinks, a temp file that will not unlink.
+var (
+	link   = os.Link
+	remove = os.Remove
+)
+
 // costLimit is the largest dollar amount a float still holds to the cent; a
 // larger "cost" is no billed turn and would overflow a float total.
 const costLimit = (1 << 53) / 100.0
@@ -228,10 +235,10 @@ func owns(path, turn string) bool {
 // already holds this record's own earlier row. False only when the name belongs
 // to another turn.
 func claim(tmp, candidate, turn string) (bool, error) {
-	err := os.Link(tmp, candidate)
+	err := link(tmp, candidate)
 	switch {
 	case err == nil:
-		os.Remove(tmp)
+		remove(tmp)
 		return true, nil
 	case errors.Is(err, fs.ErrExist):
 		if !owns(candidate, turn) {
@@ -281,7 +288,7 @@ func (u *UsageSidecar) write(r *record) error {
 	if cerr := f.Close(); werr == nil {
 		werr = cerr
 	}
-	fail := func(err error) error { os.Remove(tmp); return err }
+	fail := func(err error) error { remove(tmp); return err }
 	if werr != nil {
 		return fail(werr)
 	}

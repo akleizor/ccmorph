@@ -29,9 +29,12 @@ import (
 const (
 	catalogueTTL      = 600 * time.Second // a moving catalogue is re-read at most this often...
 	catalogueMissTTL  = 60 * time.Second  // ...or this often while an asked id is missing
-	catalogueDeadline = 20 * time.Second  // total wait for connect, headers and body together
 	catalogueMaxBytes = 1024 * 1024
 )
+
+// catalogueDeadline is the total wait for connect, headers and body together; a
+// var so a test can shrink it instead of sleeping 20 s.
+var catalogueDeadline = 20 * time.Second
 
 var claudeID = regexp.MustCompile(`^claude-([a-z]+)-([0-9]+(?:-[0-9]{1,2})?)(?:-[0-9]{8})?$`)
 
@@ -246,17 +249,17 @@ func (c *Catalogue) declared(model string) []string {
 
 // routeSpec is CCMORPH_MODEL_ROUTE, handed over by the adapter.
 type routeSpec struct {
-	Adapter   string            `json:"adapter"`
-	Profile   string            `json:"profile"`
-	Config    string            `json:"config"`
-	Port      any               `json:"port"`
-	Identity  string            `json:"identity"`
-	Models    []string          `json:"models"`
-	ModelMap  map[string]string `json:"model_map"`
-	Upstream  string            `json:"upstream"`
-	ModelsURL string            `json:"models_url"`
-	Key       string            `json:"key_sha256"`
-	Timeout   any               `json:"timeout"`
+	Adapter   string             `json:"adapter"`
+	Profile   string             `json:"profile"`
+	Config    string             `json:"config"`
+	Port      any                `json:"port"`
+	Identity  string             `json:"identity"`
+	Models    []string           `json:"models"`
+	ModelMap  map[string]*string `json:"model_map"`
+	Upstream  string             `json:"upstream"`
+	ModelsURL string             `json:"models_url"`
+	Key       string             `json:"key_sha256"`
+	Timeout   any                `json:"timeout"`
 }
 
 // ModelRoutes prepares a selected model before sending its first request, never
@@ -266,7 +269,7 @@ type routeSpec struct {
 type ModelRoutes struct {
 	command   []string
 	known     map[string]bool
-	modelMap  map[string]string
+	modelMap  map[string]*string
 	catalogue *Catalogue
 	keySHA256 string
 	timeout   time.Duration
@@ -336,8 +339,11 @@ func adapterCommand(adapter string) []string {
 
 // mappingTarget is the explicit map target for a request's wire id.
 func (r *ModelRoutes) mappingTarget(model string) (string, bool) {
-	t, ok := r.modelMap[strings.TrimSuffix(model, "[1m]")]
-	return t, ok
+	t := r.modelMap[strings.TrimSuffix(model, "[1m]")]
+	if t == nil { // a null target maps nothing, though its key still marks a mapped request
+		return "", false
+	}
+	return *t, true
 }
 
 // ensure prepares model; a non-empty result is the refusal message.

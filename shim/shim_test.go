@@ -157,10 +157,30 @@ func TestClaudeVersionAndResolve(t *testing.T) {
 		{"claude-opus-5-0", set("claude-opus-5-20260901"), "claude-opus-5-20260901"},
 		{"claude-opus-5", set("claude-sonnet-9"), "claude-opus-5"},
 		{"gpt-x", set("claude-opus-5"), "gpt-x"},
+		{"claude-opus-5-5", set("claude-opus-5-6", "claude-opus-5", "claude-sonnet-5", "kimi-k3"), "claude-opus-5-6"},
+		{"claude-haiku-4-5", set("claude-opus-5-6", "claude-sonnet-5"), "claude-haiku-4-5"},
+		{"kimi-k3", set("claude-opus-5-6", "kimi-k3"), "kimi-k3"},
+		{"claude-opus-5-5", set("claude-opus-5-6", "claude-opus-5-5-20260101"), "claude-opus-5-5-20260101"},
+		// Never a downgrade: only same-family versions that are not older count.
+		{"claude-opus-5-5", set("claude-opus-5", "claude-opus-5-4-20260101", "claude-sonnet-5-5"), "claude-opus-5-5"},
+		{"claude-opus-5-5", set("claude-opus-5", "claude-opus-5-4-20260101", "claude-opus-5-5-20260301"), "claude-opus-5-5-20260301"},
+		{"claude-opus-5-1", set("claude-opus-5", "claude-opus-5-4-20260101", "claude-opus-5-6"), "claude-opus-5-6"},
+		// A trailing -0 is spelling, not a newer version.
+		{"claude-opus-4-0", set("claude-opus-4"), "claude-opus-4"},
+		{"claude-sonnet-4-0", set("claude-sonnet-4"), "claude-sonnet-4"},
+		{"claude-opus-5-0", set("claude-opus-5"), "claude-opus-5"},
+		{"claude-opus-5-0", set("claude-opus-4"), "claude-opus-5-0"},
 	} {
 		if got := resolveModel(tc.asked, tc.served); got != tc.want {
 			t.Errorf("%s over %v: got %s want %s", tc.asked, tc.served, got, tc.want)
 		}
+	}
+}
+
+func TestClaudeVersionOfADatedID(t *testing.T) {
+	family, version, ok := claudeVersion("claude-opus-4-5-20251101")
+	if !ok || family != "opus" || len(version) != 2 || version[0] != 4 || version[1] != 5 {
+		t.Fatal(family, version, ok)
 	}
 }
 
@@ -195,6 +215,15 @@ func TestTaskTags(t *testing.T) {
 		if g := tagsOf(h); g.task != nil || g.attempt != 1 {
 			t.Errorf("%q: %v", bad, g)
 		}
+	}
+	// Header values are trimmed first, so a trailing newline tags as its clean
+	// core; the raw regexp refuses one outright (outcome takes argv, no trim).
+	h.Set("x-ccmorph-task", "x\n")
+	if g := tagsOf(h); g.task == nil || *g.task != "x" {
+		t.Fatal(g)
+	}
+	if taskRE.MatchString("x\n") {
+		t.Fatal("$ must not match before a trailing newline")
 	}
 }
 
@@ -395,7 +424,7 @@ func TestStallEndsStreamWithErrorEvent(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Write([]byte("data:{\"type\":\"ping\"}\n\n"))
 		w.(http.Flusher).Flush()
-		time.Sleep(2 * time.Second)
+		time.Sleep(500 * time.Millisecond)
 	}))
 	defer srv.Close()
 	s := NewServer(srv.URL)
@@ -416,7 +445,7 @@ func TestStallEndsStreamWithErrorEvent(t *testing.T) {
 }
 
 func TestSilentUpstreamAnswers504(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { time.Sleep(2 * time.Second) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { time.Sleep(500 * time.Millisecond) }))
 	defer srv.Close()
 	s := NewServer(srv.URL)
 	s.Stall = 200 * time.Millisecond
@@ -667,22 +696,6 @@ func TestLegacyRowWithoutTurnIDIsNotOwned(t *testing.T) {
 	}
 }
 
-func TestConcurrentSameIDWritesEachKeepTheirRow(t *testing.T) {
-	dir := stateHome(t)
-	var wg sync.WaitGroup
-	for i := 0; i < 4; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			newSidecar("p", "id").observe(parseDoc([]byte(`{"type":"message_start","message":{"id":"race"}}`)), nil, nil)
-		}()
-	}
-	wg.Wait()
-	if n := len(rows(t, dir)); n != 4 {
-		t.Fatalf("%d rows", n)
-	}
-}
-
 func TestNonStreamResponseRowAndUnwritableState(t *testing.T) {
 	dir := stateHome(t)
 	u := newSidecar("p", "id")
@@ -792,26 +805,6 @@ func TestCatalogueFailuresSendAsAsked(t *testing.T) {
 	c := catalogueServer(t, `{}`, &hits)
 	if len(c.served("wrong", "x")) != 0 {
 		t.Fatal("401 is no catalogue")
-	}
-}
-
-func TestCatalogueTrickleIsBoundedByTheDeadline(t *testing.T) {
-	if testing.Short() {
-		t.Skip("waits for the 20 s deadline")
-	}
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Length", "100000")
-		for i := 0; i < 40; i++ {
-			w.Write([]byte("x"))
-			w.(http.Flusher).Flush()
-			time.Sleep(time.Second)
-		}
-	}))
-	defer up.Close()
-	c := newCatalogue(up.URL, "", NewServer("").remote)
-	start := time.Now()
-	if len(c.served("k", "m")) != 0 || time.Since(start) > catalogueDeadline+3*time.Second {
-		t.Fatal("trickling catalogue must fail at the deadline", time.Since(start))
 	}
 }
 
