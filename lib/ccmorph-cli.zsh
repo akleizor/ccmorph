@@ -628,7 +628,7 @@ Then exit Claude to complete the switch. Keeps model and effort when supported.
 This command does not work from an unrelated terminal.' ;;
     cred) usage='ccmorph cred [profile]'; detail='Print the stored API key or token to stdout. This reveals a secret.
 Only profiles with a stored key or token are offered. Name one in scripts.' ;;
-    update) usage='ccmorph update [ref]'; detail='Download the latest version and run its installer, which updates this install
+    update) usage='ccmorph update [ref]'; detail='Download the latest release and run its installer, which updates this install
 in place. Give a branch or tag to install that instead: ccmorph update v2.6.0.
 Profiles, credentials and local.sh are kept, and the installer names what it kept.
 A git checkout is refused: update it with git.
@@ -659,13 +659,13 @@ Normally unnecessary: compatibility and context limits are automatic.' ;;
 # refused rather than read as the default).
 _ccm_run_installer() {
   emulate -L zsh
-  local verb="$1" ref="${2-main}"
+  local verb="$1" ref="${2-}" has_ref=$(( $# >= 2 ))
   local root="${_CCMORPH_LIB_DIR:h}" installer="${_CCMORPH_LIB_DIR:h}/install.sh"
   if [[ "$verb" == update ]]; then
     # A ref becomes part of a download URL and an env value, so it is a plain name:
     # a branch or tag, slashes allowed, no `..`, no leading dash, nothing a shell
-    # or a URL would read as syntax.
-    if [[ ! "$ref" =~ '^[A-Za-z0-9][A-Za-z0-9._/-]*$' || "$ref" == *..* ]]; then
+    # or a URL would read as syntax. No ref at all means the latest release.
+    if (( has_ref )) && [[ ! "$ref" =~ '^[A-Za-z0-9][A-Za-z0-9._/-]*$' || "$ref" == *..* ]]; then
       _ccm_err "invalid ref '$ref' — use a branch or tag name such as main or v2.6.0"
       return 2
     fi
@@ -678,11 +678,15 @@ _ccm_run_installer() {
   fi
   if [[ ! -f "$installer" ]]; then
     _ccm_err "no installer at $installer, so ccmorph cannot $verb itself. Run the one-line install once:"
-    print -u2 -r -- '  sh -c "$(curl -fsSL https://raw.githubusercontent.com/akleizor/ccmorph/main/install.sh)"'
+    print -u2 -r -- '  sh -c "$(curl -fsSL https://github.com/akleizor/ccmorph/releases/latest/download/install.sh)"'
     return 1
   fi
-  if [[ "$verb" == update ]]; then
+  if [[ "$verb" == update ]] && (( has_ref )); then
     CCMORPH_REF="$ref" command sh "$installer" --remote
+  elif [[ "$verb" == update ]]; then
+    # The installer's own default, the latest release. An exported CCMORPH_REF is
+    # dropped so the bare command means the same thing in every shell.
+    ( unset CCMORPH_REF; command sh "$installer" --remote )
   else
     command sh "$installer" --uninstall
   fi

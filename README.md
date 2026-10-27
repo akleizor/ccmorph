@@ -48,27 +48,28 @@ From a clone:
 git clone https://github.com/akleizor/ccmorph && cd ccmorph && ./install.sh
 ```
 
-Or the one-liner, which works once the repository is public — it is private
-today, so the download returns 404:
+Or the one-liner, which works once the repository is public and has a release —
+it is private today, so the download returns 404:
 
 ```sh
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/akleizor/ccmorph/main/install.sh)"
+sh -c "$(curl -fsSL https://github.com/akleizor/ccmorph/releases/latest/download/install.sh)"
 ccmorph doctor
 ```
 
-The one-liner downloads the source for the ref in `CCMORPH_REF` (default
-`main`; a branch or tag) and runs its installer. `curl -fsSL ... | sh` also
-works, but it has no terminal to ask on, so it declines the optional
-installs and prints the commands instead.
+The one-liner installs the latest release: it downloads that release's
+`ccmorph.tar.gz` and runs its installer. `CCMORPH_REF` (a branch or tag)
+installs unreleased code from the GitHub archive of that ref — `CCMORPH_REF=main`
+for the bleeding edge — and `CCMORPH_INSTALL_URL` replaces the whole tarball URL.
+`curl -fsSL ... | sh` also works, but it has no terminal to ask on, so it declines
+the optional installs and prints the commands instead.
 
 The installer copies the runtime (`lib/`, `libexec/`, `share/`) into `~/.config/ccmorph` and the `ccmorph`
 command into `~/.local/bin`. It never edits shell startup files; if
 `~/.local/bin` is not on your `PATH`, it prints the line to add, for your shell.
 
-To update, run `ccmorph update` (or `ccmorph update <branch-or-tag>`), or run the same
-install again; profiles, credentials, and `local.sh` are preserved. `ccmorph update`
-downloads like the one-liner, so it too works once the repository is public. A git
-clone is updated with git instead. `ccmorph uninstall` removes the command and
+To update, run `ccmorph update` (the latest release; `ccmorph update <branch-or-tag>`
+for another), or run the same install again; profiles, credentials, and `local.sh`
+are preserved. A git clone is updated with git instead. `ccmorph uninstall` removes the command and
 leaves your profiles alone.
 
 ## Quick start

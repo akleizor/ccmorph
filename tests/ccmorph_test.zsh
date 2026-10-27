@@ -3150,17 +3150,17 @@ printf "%s %s %s\n" "$1" "$2" "$CLAUDE_CONFIG_DIR" > "$HOME/ran"; echo noise' > 
   export CCMORPH_PRELAUNCH="$HOME/bin/step"
 
   local out
-  out=$(cd "$HOME/work" && _ccm_prelaunch alex)
+  out=$(cd "$HOME/work" && _ccm_prelaunch demo)
   [[ -z "$out" ]] || {
     print -u2 "prelaunch must stay stdout-silent inside _env, got: $out"
     unset CCMORPH_PRELAUNCH; rm -rf "$test_home"; return 1
   }
-  assert_contains "$(<"$HOME/ran")" "prelaunch $HOME/work ${_CCMORPH_PROFILE_DIRS}/alex" \
+  assert_contains "$(<"$HOME/ran")" "prelaunch $HOME/work ${_CCMORPH_PROFILE_DIRS}/demo" \
     'prelaunch must receive the launch cwd and the profile config dir' || {
     unset CCMORPH_PRELAUNCH; rm -rf "$test_home"; return 1
   }
   export CCMORPH_PRELAUNCH="$HOME/bin/missing"
-  _ccm_prelaunch alex
+  _ccm_prelaunch demo
   local rc=$?
   (( rc == 0 )) || print -u2 'a missing prelaunch executable must never block a launch'
   unset CCMORPH_PRELAUNCH
@@ -10895,11 +10895,11 @@ test_add_sub_completes_the_browser_login() {
   source "$CCMORPH_SOURCE"
 
   local rc=0 out
-  out=$(print 1 | ccmorph add alex 2>&1) || { print -u2 -- "$out"; rc=1; }
+  out=$(print 1 | ccmorph add demo 2>&1) || { print -u2 -- "$out"; rc=1; }
   assert_not_contains "$out" 'has no email' \
     'the placeholder must not be validated as a finished profile' || rc=1
   [[ -f "$HOME/login.ran" ]] || { print -u2 -- 'the browser login never ran'; rc=1; }
-  command grep -qx 'email=a@example.com' "$HOME/.config/ccmorph/alex.conf" ||
+  command grep -qx 'email=a@example.com' "$HOME/.config/ccmorph/demo.conf" ||
     { print -u2 -- 'the profile must be saved with the signed-in email'; rc=1; }
   rm -rf "$test_home"
   return $rc
@@ -10959,7 +10959,7 @@ test_add_sub_auth_calls_scrub_securestorage_dir() {
   local rc=0 out
   # The runner calls tests in-process: the export must not outlive the subshell.
   out=$( export CLAUDE_SECURESTORAGE_CONFIG_DIR=/leak
-    print 1 | ccmorph add alex 2>&1 ) || { print -u2 -- "$out"; rc=1; }
+    print 1 | ccmorph add demo 2>&1 ) || { print -u2 -- "$out"; rc=1; }
   local n
   for n in status logout login; do
     command grep -qx "auth $n \[unset\]" "$HOME/auth_calls" ||
