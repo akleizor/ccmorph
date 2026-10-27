@@ -36,7 +36,8 @@ ccmorph run  ------+--> personal   API key             -->  Anthropic API
 - `zsh`, `python3` 3.8 or newer, and the `claude` CLI. The installer names the
   command to install a missing one for your package manager, and stops.
 - Optional: `cliproxyapi` for non-Anthropic endpoints, `fzf` for searchable
-  pickers. The installer offers both and installs only on confirm.
+  pickers. The installer offers fzf through your package manager and
+  cliproxyapi through Homebrew, and installs only on confirm.
 - macOS or Linux. On Windows, use WSL.
 
 ## Install
