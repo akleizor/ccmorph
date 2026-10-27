@@ -523,6 +523,60 @@ grep -qF 'sudo apt-get install -y python3' "$d/out" \
   && ok "old python3: names the package manager's command" || { fail "old python3: no install command"; cat "$d/out"; }
 grep -qF 'STUB' "$d/out" && fail "old python3: ran a package manager" || ok "old python3: the command is printed, never run"
 
+# --- 12. the PATH hint names the file and the syntax for the user's shell -----
+# ~/.local/bin is not on PATH in these runs (the fake PATH never carries it), so
+# the hint fires. It must name the file and print a line the shell can use, and it
+# must still never write to a startup file: three rc files are asserted absent.
+path_run() {  # $1 = case, $2 = SHELL value ("" = unset), $3 = uname output ("" = real uname), $4 = ZDOTDIR override ("" = home)
+  local d; d=$(fresh_env "$1")
+  if [[ -n "$3" ]]; then printf '#!/bin/sh\necho %s\n' "$3" > "$d/bin/uname"; chmod +x "$d/bin/uname"; fi
+  local -a sh_env; [[ -n "$2" ]] && sh_env=(SHELL="$2")
+  env -i HOME="$d/home" ZDOTDIR="${4:-$d/home}" PATH="$d/bin:/usr/bin:/bin" "${sh_env[@]}" \
+    zsh "$REPO/install.sh" >"$d/out" 2>&1 </dev/null
+  print -r -- "$d"
+}
+no_rc_written() {  # $1 = case dir
+  [[ ! -e "$1/home/.zshrc" && ! -e "$1/home/.bashrc" && ! -e "$1/home/.bash_profile" && ! -e "$1/home/.config/fish/config.fish" && ! -e "$1/zd/.zshrc" ]]
+}
+
+d=$(path_run path_fish /usr/bin/fish Linux)
+grep -qF "fish_add_path $d/home/.local/bin" "$d/out" \
+  && ok "path: fish gets fish_add_path <bin dir>" || { fail "path: fish hint missing"; cat "$d/out"; }
+grep -qF "$d/home/.config/fish/config.fish" "$d/out" \
+  && ok "path: fish names ~/.config/fish/config.fish" || fail "path: fish config file not named"
+grep -qF 'export PATH=' "$d/out" && fail "path: fish was handed a bash-style export" || ok "path: fish is not handed an export line"
+no_rc_written "$d" && ok "path: fish run edits no startup file" || fail "path: fish run wrote a startup file"
+
+d=$(path_run path_bash_linux /bin/bash Linux)
+grep -qF "$d/home/.bashrc" "$d/out" \
+  && ok "path: bash on Linux names ~/.bashrc" || { fail "path: bash/Linux does not name .bashrc"; cat "$d/out"; }
+grep -qF "export PATH=\"$d/home/.local/bin:\$PATH\"" "$d/out" \
+  && ok "path: bash gets the export line" || fail "path: bash export line missing"
+no_rc_written "$d" && ok "path: bash run edits no startup file" || fail "path: bash run wrote a startup file"
+
+d=$(path_run path_bash_mac /bin/bash Darwin)
+grep -qF "$d/home/.bash_profile" "$d/out" && ! grep -qF '.bashrc' "$d/out" \
+  && ok "path: bash on macOS names ~/.bash_profile" || { fail "path: bash/Darwin does not name .bash_profile"; cat "$d/out"; }
+no_rc_written "$d" && ok "path: macOS bash run edits no startup file" || fail "path: macOS bash run wrote a startup file"
+
+d=$(path_run path_zsh /bin/zsh Linux)
+grep -qF "$d/home/.zshrc" "$d/out" \
+  && ok "path: zsh names ~/.zshrc" || { fail "path: zsh does not name .zshrc"; cat "$d/out"; }
+grep -qF "export PATH=\"$d/home/.local/bin:\$PATH\"" "$d/out" \
+  && ok "path: zsh gets the export line" || fail "path: zsh export line missing"
+no_rc_written "$d" && ok "path: zsh run edits no startup file" || fail "path: zsh run wrote a startup file"
+
+# ZDOTDIR moves the zsh file; an unknown or unset SHELL gets the zsh advice, which
+# is what a bare `env -i` run (every test above this section) always printed.
+d=$(path_run path_zdot /bin/zsh Linux "$TMP/path_zdot_zd")
+grep -qF "$TMP/path_zdot_zd/.zshrc" "$d/out" \
+  && ok "path: zsh honours ZDOTDIR in the file it names" || { fail "path: ZDOTDIR ignored"; cat "$d/out"; }
+for sh_val in "" /usr/bin/tcsh; do
+  key=${sh_val:t}; d=$(path_run "path_other_${key:-unset}" "$sh_val" Linux)
+  grep -qF "$d/home/.zshrc" "$d/out" && grep -qF 'export PATH=' "$d/out" \
+    && ok "path: SHELL='${sh_val:-unset}' falls back to the zsh advice" || { fail "path: SHELL='${sh_val:-unset}' got no zsh advice"; cat "$d/out"; }
+done
+
 print ""
 print "install tests: $passed passed, $failed failed"
 (( failed == 0 ))
