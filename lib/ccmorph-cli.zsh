@@ -1009,14 +1009,6 @@ ccmorph() {
             return 1
           }
 
-          _ccm_write "$dir/active" "$2" || {
-            unset _ccm
-            _ccm_remove_profile_dir "$2"
-            _ccm_remove_file "$dir/$2.conf"
-            _ccm_err "could not set default profile"
-            return 1
-          }
-
           unset CLAUDE_CODE_OAUTH_TOKEN
           unset _ccm
 

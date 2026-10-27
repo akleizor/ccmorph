@@ -281,7 +281,7 @@ def test_failed_link_creation_keeps_the_backup_entry(tmp_path):
 
 def test_architecture_lists_agents_as_merged_and_links_moving_as_links():
     # Constraint 5: the documented contract matches the merge loop.
-    row, = [l for l in (ROOT / "ARCHITECTURE.md").read_text().splitlines()
+    row, = [l for l in (ROOT / "docs/ARCHITECTURE.md").read_text().splitlines()
             if "mergeable stores" in l]
     assert "`agents`, `session-env`, `file-history`" in row
     assert "Links move as links" in row

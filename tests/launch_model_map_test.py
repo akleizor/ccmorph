@@ -23,6 +23,8 @@ import signal
 import subprocess
 import sys
 import threading
+import time
+from unittest.mock import patch
 
 import pytest
 
@@ -189,8 +191,14 @@ def launch(tmp_path):
             # timeout, or unexpected crash, reap only this fixture's process group.
             try:
                 os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            except (ProcessLookupError, PermissionError):
+                # The group is gone, which macOS spells two ways: EPERM while
+                # its only member is the exited, unreaped launcher — the window
+                # between the bound above and this kill (GH-5) — and ESRCH once
+                # nothing is left. The launcher itself is still signalable, and
+                # this kill reaps it, so the launch's own verdict, not a cleanup
+                # error, is what the assertions below report.
+                process.kill()
             try:
                 process.communicate(timeout=HANG_TIMEOUT)
             except subprocess.TimeoutExpired:
@@ -246,3 +254,39 @@ def launch(tmp_path):
 def test_launch_prepares_the_same_model_map_target_as_inference(launch, model_map,
                                                                 requested, expected):
     launch(model_map, requested, expected)
+
+
+@pytest.mark.skipif(sys.platform != "darwin",
+                    reason="only macOS refuses to signal a group whose only member has exited")
+def test_launch_cleanup_tolerates_a_leader_that_exited_between_bound_and_killpg_issue_5(launch):
+    """GH-5: a launcher that exits in the window between the bound and the
+    cleanup killpg leaves its group led by an unreaped zombie, which macOS
+    refuses to signal; the cleanup must tolerate that, so the launch's own
+    assertions below stay the verdict, not a cleanup PermissionError."""
+    communicate, spent = subprocess.Popen.communicate, []
+
+    def communicate_spending_the_bound_on_the_exiting_launcher(process, timeout=HANG_TIMEOUT):
+        # The bound fires while the launcher is exiting: spend it waiting for
+        # the exit nothing reaps — the group answers EPERM exactly then, and
+        # nothing runs between that answer and the cleanup's killpg, so the
+        # group that kill meets is this one — then report the bound blown. A
+        # healthy launch reaches that answer in seconds; the stop holds a
+        # platform that never refuses at half of pytest.ini's per-test cap, so
+        # the failure would be the launch's own report, not a capped-out test.
+        if not spent:
+            spent.append(True)
+            stop = time.monotonic() + min(timeout, 30)
+            while time.monotonic() < stop:
+                try:
+                    os.killpg(process.pid, 0)
+                    time.sleep(0.02)
+                except PermissionError:
+                    break
+            raise subprocess.TimeoutExpired(process.args, timeout)
+        return communicate(process, timeout=timeout)
+
+    with patch.object(subprocess.Popen, "communicate",
+                      communicate_spending_the_bound_on_the_exiting_launcher):
+        # The unmapped control's own scenario, judged end to end: the window
+        # forced above must change nothing the test can observe.
+        launch({}, FULL, BARE)

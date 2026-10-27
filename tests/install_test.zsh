@@ -98,7 +98,7 @@ d=$(fresh_env inplace)
 target="$d/home/.config/ccmorph"
 mkdir -p "$target"
 mkdir -p "$target"/{bin,lib,libexec,share}
-for f in bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/ccmorph-adapter libexec/gateway-shim libexec/model-window libexec/settings-compose libexec/refresh-model-registry share/model-catalogue.json share/window-sources.json local.sh.example profile.conf.example install.sh; do
+for f in bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/ccmorph-adapter libexec/gateway-shim libexec/model-window libexec/settings-compose libexec/refresh-model-registry share/model-catalogue.json share/window-sources.json share/local.sh.example share/profile.conf.example install.sh; do
   cp "$REPO/$f" "$target/$f"
 done
 env -i HOME="$d/home" ZDOTDIR="$d/home" \
@@ -259,7 +259,7 @@ grep -qF 'STUB BREW CALLED' "$d/out" && fail "declined offer still ran brew" || 
 # installer. No network here: a stub curl copies a locally built tarball (shaped
 # like GitHub's archive: one top dir) to the path after -o and records its argv.
 mkdir -p "$TMP/stage/ccmorph-main"
-(cd "$REPO" && cp -R bin lib libexec share install.sh local.sh.example profile.conf.example "$TMP/stage/ccmorph-main/")
+(cd "$REPO" && cp -R bin lib libexec share install.sh "$TMP/stage/ccmorph-main/")
 tar -czf "$TMP/src.tar.gz" -C "$TMP/stage" ccmorph-main
 # Not a ccmorph tree: one top dir with no lib/ccmorph.sh in it.
 mkdir -p "$TMP/stage-empty/not-ccmorph"; print x > "$TMP/stage-empty/not-ccmorph/README"

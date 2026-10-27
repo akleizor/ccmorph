@@ -31,7 +31,8 @@ introduce is a new issue, not a finding.
 
 ## Where the rules live
 
-Scope, high-risk classes, the `_ccm_launch -a` contract, test homes and the
-Verification suites are in [AGENTS.md](AGENTS.md) and
-[ARCHITECTURE.md#scope-and-ownership](ARCHITECTURE.md#scope-and-ownership); check
-the diff against them, do not restate them.
+Scope, high-risk classes and the `_ccm_launch -a` contract are in
+[AGENTS.md](../AGENTS.md); test homes and the Verification suites are in
+[CONTRIBUTING.md](CONTRIBUTING.md); the integration boundaries are in
+[ARCHITECTURE.md](../docs/ARCHITECTURE.md#scope-and-ownership). Check the diff
+against them, do not restate them.

@@ -315,7 +315,7 @@ _ccm_migrate_projects() {
   # to their owning tools; preserve profile content in place. `agents` belongs in
   # the first group — it joined the shared manifest without joining this case
   # list, so a profile that already had a real agents/ failed provisioning (and
-  # therefore every launch) instead of being healed, while ARCHITECTURE.md
+  # therefore every launch) instead of being healed, while docs/ARCHITECTURE.md
   # documented the merge.
   # Every local is declared here, once: zsh prints `name=value` when `local`
   # re-declares a set variable, and inside the loop that lands in `_env` output.

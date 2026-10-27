@@ -22,7 +22,7 @@
 - **Cost per profile.** Every gateway turn leaves a receipt with the billed cost;
   [ccusage](https://github.com/ccusage/ccusage) turns them into daily reports.
 - **Leaves `claude` alone.** No wrapper, no patch: native arguments pass through.
-  See [Scope and ownership](ARCHITECTURE.md#scope-and-ownership).
+  See [Scope and ownership](docs/ARCHITECTURE.md#scope-and-ownership).
 
 ```
                    +--> work       subscription login  -->  Anthropic
@@ -42,15 +42,18 @@ ccmorph run  ------+--> personal   API key             -->  Anthropic API
 
 ## Install
 
-```sh
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/akleizor/ccmorph/main/install.sh)"
-ccmorph doctor
-```
-
-Or from a clone:
+From a clone:
 
 ```sh
 git clone https://github.com/akleizor/ccmorph && cd ccmorph && ./install.sh
+```
+
+Or the one-liner, which works once the repository is public — it is private
+today, so the download returns 404:
+
+```sh
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/akleizor/ccmorph/main/install.sh)"
+ccmorph doctor
 ```
 
 The one-liner downloads the source for the ref in `CCMORPH_REF` (default
@@ -63,9 +66,10 @@ command into `~/.local/bin`. It never edits shell startup files; if
 `~/.local/bin` is not on your `PATH`, it prints the line to add, for your shell.
 
 To update, run `ccmorph update` (or `ccmorph update <branch-or-tag>`), or run the same
-install again; profiles, credentials, and `local.sh` are preserved. A git clone is
-updated with git instead. `ccmorph uninstall` removes the command and leaves your
-profiles alone.
+install again; profiles, credentials, and `local.sh` are preserved. `ccmorph update`
+downloads like the one-liner, so it too works once the repository is public. A git
+clone is updated with git instead. `ccmorph uninstall` removes the command and
+leaves your profiles alone.
 
 ## Quick start
 
@@ -140,8 +144,8 @@ windows and probing, switching, and state migration.
 | Doc | Covers |
 |---|---|
 | [docs/guide.md](docs/guide.md) | Full usage and configuration reference |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | How sessions reach a backend, and why |
-| [SECURITY.md](SECURITY.md) | Where credentials live and what protects them |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How sessions reach a backend, and why |
+| [.github/SECURITY.md](.github/SECURITY.md) | Where credentials live and what protects them |
 | [CHANGELOG.md](CHANGELOG.md) | What changed in each version |
 | [addons/remote-control/README.md](addons/remote-control/README.md) | Remote Control bridge add-on |
 

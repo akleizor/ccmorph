@@ -13,10 +13,13 @@ one the prose points at, so a citation follows the code across the move instead
 of silently outliving it.
 """
 import re
+import subprocess
 from pathlib import Path
 
+from support import HANG_TIMEOUT
+
 ROOT = Path(__file__).resolve().parents[1]
-DOC = ROOT / "ARCHITECTURE.md"
+DOC = ROOT / "docs/ARCHITECTURE.md"
 
 # A citation and the code it names, as (`GATE` in `ccmorph.sh`), allowing the one
 # word the prose puts between them ("the gate `GATE` in `ccmorph.sh`", "the
@@ -58,3 +61,37 @@ def test_architecture_cites_code_the_reader_can_land_on_issue_396():
         assert len(hits) == 1, (
             f"ARCHITECTURE.md cites {token!r} in {name}, which holds it on "
             f"{len(hits)} lines {hits} -- cite code that names the one place meant")
+
+
+def _tracked_markdown():
+    """Every markdown file the repo ships, from the index: a machine-local
+    tree (.claude/worktrees, dist) may sit beside the checkout holding other
+    lanes' half-done docs, and their links are not this repo's to guard."""
+    out = subprocess.run(["git", "ls-files", "--", "*.md"], cwd=ROOT,
+                         capture_output=True, text=True, check=True,
+                         timeout=HANG_TIMEOUT)
+    docs = [ROOT / line for line in out.stdout.splitlines()]
+    assert docs, "no tracked markdown found to check"
+    return docs
+
+
+def test_repo_markdown_links_resolve_issue_21():
+    """#21 moved half the docs off the root; a link left pointing at the old
+    path is one a reader hits on GitHub. Every relative link in tracked
+    markdown must land on a file that exists and, when it names an anchor, on
+    a heading that exists there. CHANGELOG.md is history: its released entries
+    keep the paths that were true when they shipped, so it is not scanned."""
+    link = re.compile(r"\]\(([^)#\s]+)(?:#([^)\s]+))?\)")
+    for doc in _tracked_markdown():
+        for target, anchor in link.findall(doc.read_text()):
+            if "://" in target or target.startswith("mailto:"):
+                continue
+            path = doc.parent / target
+            assert path.is_file(), (
+                f"{doc.relative_to(ROOT)} links to {target!r}, which does not exist")
+            if anchor:
+                slugs = {_slug(m.group(1)) for m in re.finditer(
+                    r"^#{1,6}\s+(.+)$", path.read_text(), re.M)}
+                assert anchor in slugs, (
+                    f"{doc.relative_to(ROOT)} links to #{anchor} in {target}, "
+                    f"which has no such heading")

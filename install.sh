@@ -296,8 +296,8 @@ cp "$SRC/bin/ccmorph" "$BIN_DIR/ccmorph"
 # Copied, never activated: local.sh itself stays absent until someone writes it.
 # Same directory guard as above: in-place, this is a copy onto itself.
 if [[ "$SRC" != "$CONFIG_REAL" ]]; then
-  cp "$SRC/local.sh.example" "$CONFIG_DIR/local.sh.example"
-  cp "$SRC/profile.conf.example" "$CONFIG_DIR/profile.conf.example"
+  cp "$SRC/share/local.sh.example" "$CONFIG_DIR/local.sh.example"
+  cp "$SRC/share/profile.conf.example" "$CONFIG_DIR/profile.conf.example"
 fi
 chmod +x "${EXECUTABLES[@]/#/$CONFIG_DIR/}"
 chmod +x "$BIN_DIR/ccmorph"

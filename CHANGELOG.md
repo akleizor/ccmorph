@@ -12,7 +12,7 @@
 - **Usage rows carry task and attempt.** A launch through the adapter with
   `CCMORPH_TASK` (plus optional `CCMORPH_ATTEMPT`) tags every usage row;
   the shim never changes the requested model. `gateway-shim outcome <task> <result>`
-  records how a task ended. See "The usage sidecar" in ARCHITECTURE.md.
+  records how a task ended. See "The usage sidecar" in docs/ARCHITECTURE.md.
 - **One-line install.** `sh -c "$(curl -fsSL https://raw.githubusercontent.com/akleizor/ccmorph/main/install.sh)"`
   downloads the source and runs its installer; no clone is needed. `CCMORPH_REF`
   picks a branch or tag (default `main`) and `CCMORPH_INSTALL_URL` replaces the
@@ -30,6 +30,14 @@
 
 ### Changed
 
+- **The repository root is the launch surface.** `ARCHITECTURE.md` and
+  `INTENT.md` moved to `docs/`, `SECURITY.md` and `REVIEW.md` to `.github/`
+  (GitHub serves both from there), `CLAUDE.md` to `.claude/` and the `.example`
+  templates to `share/`, where the installer reads them; installed paths are
+  unchanged, and every link follows the move. `AGENTS.md` keeps the Hive
+  contract and points to the new `.github/CONTRIBUTING.md` for verification
+  and commit style, and `.git-worktree-policy` (lane tooling, read by nothing
+  here) is gone.
 - **The installer names what is missing for any package manager.** `zsh` and
   `python3` get the exact command for the first of `brew`, `apt-get`, `dnf`, `apk`,
   `pacman` or `zypper` found, and `claude` gets its setup page; none of the three
@@ -90,7 +98,7 @@
   seed already froze that choice into the launch's model default. A launch with a
   model starts 8 python3 interpreters instead of 11, one without a model 7
   instead of 9.
-- **ccmorph.sh loads its code from modules beside it** (`ccmorph-*.zsh`, map in ARCHITECTURE.md "Code layout"). The installer ships them; behaviour is unchanged.
+- **ccmorph.sh loads its code from modules beside it** (`ccmorph-*.zsh`, map in docs/ARCHITECTURE.md "Code layout"). The installer ships them; behaviour is unchanged.
 - **Identifier handling is a per-profile opt-in; the shim is schema-neutral by
   default.** It no longer removes `metadata` or the session and `X-Stainless-*` headers
   from every request. `env.CCMORPH_RANDOM_DEVICE_ID=1` swaps the `device_id` in
@@ -191,7 +199,7 @@
 - **A turn no longer overwrites another turn's usage row.** When a turn's primary
   and spill names both hold other turns' rows, it moves to a further spill name
   instead of replacing one, and drops its own row only when all of them are
-  taken. See "The usage sidecar" in ARCHITECTURE.md.
+  taken. See "The usage sidecar" in docs/ARCHITECTURE.md.
 - **The no-hardlink claim no longer drops a racing turn's usage row.** Where a
   filesystem has no hardlinks, claiming a row's name fell back to a
   check-then-replace, so two writers racing on one response id could both see
@@ -199,7 +207,7 @@
   the displaced turn only recovered at its next usage update, which a cancelled
   stream or a killed process never writes. The claim is now an exclusive create,
   atomic like the hardlink, so the loser lands in its spill on that first write
-  (issue #444). See "The usage sidecar" in ARCHITECTURE.md.
+  (issue #444). See "The usage sidecar" in docs/ARCHITECTURE.md.
 - **Task tags no longer drop the user's own request headers.** A tagged launch
   sets `ANTHROPIC_CUSTOM_HEADERS` for its `x-ccmorph-task`/`-attempt` lines, and
   the generated settings strip that key (the process environment must win), which

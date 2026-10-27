@@ -1628,7 +1628,7 @@ test_only_the_current_vocabulary_is_taught() {
   # changed, which a verb-name check cannot see. `claude -a <profile>` is retired for
   # the same reason the `claude` shadow is: ccmorph no longer defines that command.
   local doc
-  for doc in README.md docs/guide.md ARCHITECTURE.md; do
+  for doc in README.md docs/guide.md docs/ARCHITECTURE.md; do
     if grep -qE 'ccmorph (menu|pick|model|effort|key|token|rename|init) |@pick' \
          "$REPO_ROOT/$doc"; then
       print -u2 -- "$doc must not teach a retired verb or sentinel"
@@ -1665,7 +1665,7 @@ test_only_the_current_vocabulary_is_taught() {
   # before ccmorph runs. Both are gone from code and docs, not merely undocumented,
   # because a half-rename leaves two vocabularies and a user guessing which this
   # version wants.
-  for doc in README.md docs/guide.md ARCHITECTURE.md; do
+  for doc in README.md docs/guide.md docs/ARCHITECTURE.md; do
     if grep -qE '(ccmorph [a-z@<-]* |--model |model |effort )\?( |$)' "$REPO_ROOT/$doc"; then
       print -u2 -- "$doc must teach -i, not a bare ? the caller's shell would glob"
       rc=1
@@ -3873,7 +3873,7 @@ test_every_state_file_is_gitignored() {
   # change could silently stop shipping it. The modules are derived from the same
   # glob install.sh enumerates — a name listed here by hand is a name a later
   # module can be forgotten from, which is the drift this whole split is about.
-  local -a shipped=(ccmorph claude ccmorph.sh install.sh model-window refresh-model-registry .git-worktree-policy "$REPO_ROOT"/lib/ccmorph-*.zsh(N:t))
+  local -a shipped=(ccmorph claude ccmorph.sh install.sh model-window refresh-model-registry "$REPO_ROOT"/lib/ccmorph-*.zsh(N:t))
   for f in "${shipped[@]}"; do
     if git -C "$REPO_ROOT" check-ignore -q --no-index "$f"; then
       print -u2 -- "FAIL: shipped component '$f' is gitignored"
@@ -3894,7 +3894,7 @@ test_every_module_is_sourced_once_and_defines_its_own_functions() {
   # read is not the code that runs). Pin all three here, where the source tree is
   # in front of us.
   local rc=0 f m n
-  local loader="$CCMORPH_SOURCE" arch="$REPO_ROOT/ARCHITECTURE.md"
+  local loader="$CCMORPH_SOURCE" arch="$REPO_ROOT/docs/ARCHITECTURE.md"
   # The library as the harness already defines it: the loader plus every module
   # split out of it.
   local -a files=("${_ccmorph_library[@]}")
@@ -4824,7 +4824,7 @@ test_the_profile_template_is_a_valid_conf_naming_every_key() {
   local test_home rc=0 k line arm rest documented
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  command cp "$REPO_ROOT/profile.conf.example" "$HOME/.config/ccmorph/tpl.conf"
+  command cp "$REPO_ROOT/share/profile.conf.example" "$HOME/.config/ccmorph/tpl.conf"
   source "$CCMORPH_SOURCE"
   _ccm_read tpl 2>/dev/null && _ccm_validate_loaded tpl 2>/dev/null || {
     print -u2 -- 'the profile template must load and validate unchanged'
@@ -4869,7 +4869,7 @@ test_the_profile_template_is_a_valid_conf_naming_every_key() {
   }
 
   local doc
-  doc=$(<"$REPO_ROOT/profile.conf.example")
+  doc=$(<"$REPO_ROOT/share/profile.conf.example")
   for k in $accepted; do
     # A key is documented by its literal line, by a comment naming it, or by the
     # `# pattern.<arg>` comment a pattern key uses (`effort.<model>`). The
@@ -5521,7 +5521,7 @@ _double_dies_with_a_killed_launcher() {
 
 test_adapter_doubles_die_with_a_killed_launcher() {
   # The real adapter polls the pid the launcher hands it with --parent-pid and
-  # exits once that pid is gone (ARCHITECTURE.md): the launcher's EXIT trap is
+  # exits once that pid is gone (docs/ARCHITECTURE.md): the launcher's EXIT trap is
   # the only other stop path, and a launcher killed outright runs no trap --
   # the stranding #386 counted. Every double this suite installs must carry the
   # same watchdog, one case per construction point (#373, #395): the hermetic
@@ -10493,7 +10493,7 @@ test_run_keeps_native_command_delimiters() {
   # anywhere in the array removed ones Claude Code owns as well: the MCP command
   # delimiter and a literal separator prompt, so `mcp add demo -- npx -y server`
   # reached Claude Code one argument short (#229). Claude Code's command grammar
-  # is its own (ARCHITECTURE.md, Scope and ownership), so the outer separator is
+  # is its own (docs/ARCHITECTURE.md, Scope and ownership), so the outer separator is
   # recognisable only as the first argument that follows nothing but ccmorph's
   # own leading options; the first native argument ends that prefix.
   local test_home
