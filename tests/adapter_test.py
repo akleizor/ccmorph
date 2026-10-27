@@ -1082,7 +1082,7 @@ class AdapterTest(unittest.TestCase):
         script = self.home / ".config/ccmorph/lib/ccmorph.sh"
         base = script.read_text()
         for extra in ("", '  print "CCMORPH_RANDOM_DEVICE_ID=1"\n'
-                           '  print "CCMORPH_REPAIR_TOOL_REFERENCES=1"\n'
+                           '  print "CCMORPH_USER_AGENT=ua/{version}"\n'
                            '  print "CCMORPH_AFFINITY_HEADER=X-Session-Affinity"\n'
                            f'  print "CCMORPH_SHIM_HOOKS={hooks}"\n'):
             script.write_text(base.replace("}\n", extra + "}\n") if extra else base)
@@ -1096,7 +1096,7 @@ class AdapterTest(unittest.TestCase):
             self.assertNotIn("--repair-tool-references", seen)
             ferried = json.loads(env_file.read_text())
             for k, v in (("CCMORPH_RANDOM_DEVICE_ID", "1"),
-                         ("CCMORPH_REPAIR_TOOL_REFERENCES", "1"),
+                         ("CCMORPH_USER_AGENT", "ua/{version}"),
                          ("CCMORPH_AFFINITY_HEADER", "X-Session-Affinity"),
                          ("CCMORPH_SHIM_HOOKS", str(hooks))):
                 if extra:

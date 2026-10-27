@@ -13,10 +13,17 @@
   `report`/`outcome` subcommands. Under a long session's multi-MB requests it
   holds about 32 MB instead of about 134 MB. Releases ship it prebuilt for macOS
   and Linux (arm64, amd64); a clone builds it with `make shim` (needs Go).
-- **Breaking: request hooks are a shim build, not a Python module.**
-  `CCMORPH_SHIM_HOOKS` now names an executable built from a Go `main` around the
-  `shim` package, and the adapter runs it in place of the stock shim. A Python
-  hooks file no longer loads; the launch stops and names it.
+- **Gateway compatibility is built into the shim (`compat/`).** A dangling
+  `tool_reference` becomes text automatically (the
+  `CCMORPH_REPAIR_TOOL_REFERENCES` switch is gone), a `400` on a message request
+  with `thinking` blocks is resent once without them, and two new profile keys
+  exist: `CCMORPH_AFFINITY_HEADER` (session id in a header) and
+  `CCMORPH_USER_AGENT` (a template with `{version}`).
+- **Breaking: request hooks are a Go build, not a Python module.**
+  `CCMORPH_SHIM_HOOKS` now names an executable built from a Go `main` around
+  `compat.FromEnv()` and `shim.Main`, and the adapter runs it in place of the
+  stock shim; it is only for behaviour the built-in compatibility does not cover.
+  A Python hooks file no longer loads; the launch stops and names it.
 
 ## v0.1.0 — 2026-10-27
 

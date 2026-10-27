@@ -196,9 +196,9 @@ _CCMORPH_PROFILE_ENV=(
   # Stops the per-turn session-state classifier call, which costs a slow local
   # model a cold ~4.5k-token prefill (~15 s) after every turn, even in minimal mode.
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
-  CCMORPH_REPAIR_TOOL_REFERENCES
   CCMORPH_RANDOM_DEVICE_ID
   CCMORPH_AFFINITY_HEADER
+  CCMORPH_USER_AGENT
   CCMORPH_STALL_TIMEOUT
   CCMORPH_UPSTREAM_PROXY
   # Path to the profile's request-hooks module, loaded by the gateway shim.

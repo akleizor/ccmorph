@@ -68,7 +68,7 @@ The repository and the installed copy under `~/.config/ccmorph` share one layout
 `bin/ccmorph` (the command), `lib/` (`ccmorph.sh` and the modules), `libexec/`
 (internal executables: `ccmorph-adapter`, `gateway-shim`, `model-window`,
 `refresh-model-registry`, `settings-compose`; `gateway-shim` is Go, built from
-`shim/` and `cmd/gateway-shim/` by `make shim`, the rest are Python) and `share/` (data:
+`shim/`, `compat/` and `cmd/gateway-shim/` by `make shim`, the rest are Python) and `share/` (data:
 `model-catalogue.json`, `window-sources.json`). `lib/` finds `libexec/` and `share/`
 beside itself. `CCMORPH_LIB_DIR` names the `lib/` directory.
 
@@ -606,16 +606,21 @@ is identifier randomisation **[test]**:
 |---|---|---|
 | `env.CCMORPH_RANDOM_DEVICE_ID=1` | `--random-device-id` | On `POST /v1/messages` and `/count_tokens`, `device_id` inside `metadata.user_id` (a JSON string) becomes a random 64-hex value minted once per session and stable within it (keyed by the session id, held in memory only). `session_id`, `account_uuid`, every other key and every header are untouched, so prompt caching and gateway affinity do not move. A body it cannot parse, or whose `user_id` is not that JSON shape, goes upstream byte-identical. |
 
-A rewrite that exists only because one gateway misbehaves is not core. A profile
-opts into a request-hooks module with `env.CCMORPH_SHIM_HOOKS=<file>`; the
-adapter ferries the profile's `CCMORPH_*` env keys into the shim's environment
-and the shim loads the module at startup, dying at spawn if the file is missing
-or the module exits **[test]**. The module's `user_agent`, `repair_request` and
-`outbound_headers` hooks then restate the `User-Agent`, rewrite the body and add
-headers; the adapter's passthrough entries take their `User-Agent` from its
-`translator_user_agent` **[test]**. The contract is generic — any module a user
-writes works — and ccmorph's own quirks module ships as a private add-on,
-outside the public snapshot, so no core release names the gateway it serves.
+Generic gateway compatibility lives in `compat/`, which imports `shim` (never the
+reverse); the stock `cmd/gateway-shim` passes `compat.FromEnv()` to `shim.Main`. Each
+rule is decided by the request's structure or the HTTP status, never by a gateway's
+error text. Always on: a `tool_reference` inside a `tool_result` whose `tool_name` the
+request does not declare in `tools` becomes a text block (declared references and every
+other byte stay), and a 400 on `POST /v1/messages` with nothing yet sent downstream is
+resent once with `thinking` and `redacted_thinking` blocks removed from assistant turns
+(`Hooks.ResendBody`; not a transport retry, not counted by the breaker, the second answer
+is final) **[test]**. Profile keys, ferried as `CCMORPH_*` env: `env.CCMORPH_AFFINITY_HEADER=<name>`
+sends the session id in that header, `env.CCMORPH_USER_AGENT=<template>` sets the outbound
+`User-Agent` from the client's `claude-cli` version, and the adapter's passthrough entries
+take theirs from the shim's `translator-user-agent` subcommand **[test]**. Anything beyond
+that is a custom build: `env.CCMORPH_SHIM_HOOKS=<binary>` names a Go `main` that wraps
+`compat.FromEnv()` and calls `shim.Main`; the adapter runs it in place of the stock shim,
+and a missing or non-executable file fails the launch.
 
 ### Transport retry and the provider breaker (direct route only)
 

@@ -85,8 +85,12 @@ type Hooks struct {
 	// TranslatorUserAgent is printed by the translator-user-agent subcommand: the
 	// adapter's passthrough entries use it instead of the client's frozen UA.
 	TranslatorUserAgent func() string
-	// ResendBody is the bytes to send once more after a 400, or nil. The shim
-	// does not call it yet; the Python hook contract carried it for the adapter.
+	// ResendBody is the bytes to send once more after a 400 on POST /v1/messages,
+	// or nil. request is the body that was sent; response is the 400's body (nil
+	// for a stream content type, which is never read). It runs only while nothing
+	// has gone downstream, at most once per request, and the resend does not count
+	// as a transport retry or toward the breaker. The second answer is final. A
+	// panic means no resend.
 	ResendBody func(request, response []byte) []byte
 }
 
@@ -494,6 +498,7 @@ func (s *Server) relay(rq *request) {
 		limit = transportRetries
 	}
 	retries := 0
+	resent := false
 	var breaker *Breaker
 	if retrying {
 		breaker = s.Breaker
@@ -545,6 +550,13 @@ func (s *Server) relay(rq *request) {
 				}
 				return
 			}
+			if !resent && isMessagePost && up.resp.StatusCode == 400 {
+				if nb := s.callResend(body, data); nb != nil {
+					up.close()
+					body, resent = nb, true
+					continue
+				}
+			}
 			var failed bool
 			if retrying {
 				failed = retryStatus(up.resp.StatusCode)
@@ -563,6 +575,13 @@ func (s *Server) relay(rq *request) {
 			break
 		}
 		data = nil
+		if !resent && isMessagePost && up.resp.StatusCode == 400 {
+			if nb := s.callResend(body, nil); nb != nil {
+				up.close()
+				body, resent = nb, true
+				continue
+			}
+		}
 		if retrying && retryStatus(up.resp.StatusCode) && retries < limit {
 			// A failing status that declares itself a stream, with nothing sent
 			// downstream yet: only a delivered stream's bytes are unreplayable.
@@ -613,6 +632,19 @@ func (s *Server) relay(rq *request) {
 	if sidecar != nil {
 		sidecar.response(data, requested)
 	}
+}
+
+// callResend shields the request from a panicking hook: no resend.
+func (s *Server) callResend(request, response []byte) (out []byte) {
+	if s.Hooks.ResendBody == nil {
+		return nil
+	}
+	defer func() {
+		if recover() != nil {
+			out = nil
+		}
+	}()
+	return s.Hooks.ResendBody(request, response)
 }
 
 // streamSSE relays the stream. Every exit closes the client connection (the

@@ -425,7 +425,7 @@ _ccm_claude_session() {
   unset CLAUDE_CONFIG_DIR
   unset CLAUDE_SECURESTORAGE_CONFIG_DIR
   unset CLAUDE_CODE_SUBAGENT_MODEL
-  unset CCMORPH_REPAIR_TOOL_REFERENCES CCMORPH_RANDOM_DEVICE_ID CCMORPH_AFFINITY_HEADER CCMORPH_STALL_TIMEOUT CCMORPH_UPSTREAM_PROXY CCMORPH_SHIM_HOOKS
+  unset CCMORPH_RANDOM_DEVICE_ID CCMORPH_AFFINITY_HEADER CCMORPH_USER_AGENT CCMORPH_STALL_TIMEOUT CCMORPH_UPSTREAM_PROXY CCMORPH_SHIM_HOOKS
   local _private=0
 
   # Clear every key a profile could declare or a launch sets, so one that is
@@ -450,7 +450,7 @@ _ccm_claude_session() {
 
   while [[ $# -gt 0 && "$1" != -- ]]; do
     case "$1" in
-      CCMORPH_REPAIR_TOOL_REFERENCES=*|CCMORPH_RANDOM_DEVICE_ID=*|CCMORPH_AFFINITY_HEADER=*|CCMORPH_STALL_TIMEOUT=*|CCMORPH_UPSTREAM_PROXY=*|CCMORPH_SHIM_HOOKS=*) ;;
+      CCMORPH_RANDOM_DEVICE_ID=*|CCMORPH_AFFINITY_HEADER=*|CCMORPH_USER_AGENT=*|CCMORPH_STALL_TIMEOUT=*|CCMORPH_UPSTREAM_PROXY=*|CCMORPH_SHIM_HOOKS=*) ;;
       CCMORPH_PRIVATE=1) _private=1 ;;
       # Tuning keys the profile's settings layers set (the caller computes them):
       # Claude Code exports those to its children, so record them like env. lines.

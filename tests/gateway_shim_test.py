@@ -959,17 +959,16 @@ class EchoUpstream(BaseHTTPRequestHandler):
 
 
 class ShimFlagTest(unittest.TestCase):
-    """The request-side flags, end to end. Without a profile's hooks module
-    the shipped shim rewrites nothing in a request: the body and every
-    identifier go upstream as the client sent them (issue 438: the
-    gateway-specific rewrites moved out of the core shim)."""
+    """The request-side flags, end to end. The shipped shim rewrites only a
+    tool_reference its request does not declare; every other body and every
+    identifier go upstream as the client sent them."""
 
-    def test_request_body_is_byte_identical_without_hooks(self):
+    def echoed(self, tool_name):
         body = json.dumps({
             "model": "m", "tools": [{"name": "Bash"}],
             "messages": [{"role": "user", "content": [
                 {"type": "tool_result", "tool_use_id": "t1", "content": [
-                    {"type": "tool_reference", "tool_name": "Monitor"}]}]}],
+                    {"type": "tool_reference", "tool_name": tool_name}]}]}],
         }).encode()
         srv = serve(EchoUpstream)
         self.addCleanup(srv.shutdown)
@@ -978,7 +977,16 @@ class ShimFlagTest(unittest.TestCase):
             f"http://127.0.0.1:{port}/v1/messages", data=body,
             headers={"content-type": "application/json"}, method="POST")
         with urllib.request.urlopen(req, timeout=HANG_TIMEOUT) as r:
-            self.assertEqual(r.read(), body)
+            return body, r.read()
+
+    def test_request_body_is_byte_identical_when_nothing_dangles(self):
+        body, got = self.echoed("Bash")
+        self.assertEqual(got, body)
+
+    def test_a_dangling_tool_reference_goes_upstream_as_text(self):
+        _, got = self.echoed("Monitor")
+        inner = json.loads(got)["messages"][0]["content"][0]["content"]
+        self.assertEqual(inner, [{"type": "text", "text": "[tool_reference: Monitor]"}])
 
     def test_removed_repair_and_affinity_flags_are_rejected(self):
         # Issue 438: those rewrites left the core shim, so their flags are now
@@ -1957,3 +1965,46 @@ class StallDeadlineTest(unittest.TestCase):
         self.assertIn(b'"type": "error"', data)
         self.assertLess(elapsed, 10)
 
+
+
+class ThinkingResendTest(unittest.TestCase):
+    """The stock shim resends once without thinking blocks after a 400."""
+
+    BODY = {"model": "m", "messages": [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": [{"type": "thinking", "thinking": "t", "signature": "s"},
+                                          {"type": "text", "text": "a"}]},
+        {"role": "user", "content": "more"}]}
+
+    def test_a_400_is_resent_once_without_thinking(self):
+        bodies = []
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                bodies.append(self.rfile.read(int(self.headers["content-length"])))
+                status = 400 if len(bodies) == 1 else 200
+                out = b'{"type":"message","content":[]}'
+                self.send_response(status)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        _, port = start_shim(self, f"http://127.0.0.1:{server.server_address[1]}")
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/v1/messages", data=json.dumps(self.BODY).encode(),
+            headers={"content-type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=HANG_TIMEOUT) as r:
+            self.assertEqual(r.status, 200)
+        self.assertEqual(len(bodies), 2)
+        self.assertIn(b'"thinking"', bodies[0])
+        self.assertNotIn(b"thinking", bodies[1])
+        self.assertEqual(json.loads(bodies[1])["messages"][1]["content"],
+                         [{"type": "text", "text": "a"}])

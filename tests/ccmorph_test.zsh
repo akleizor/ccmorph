@@ -12076,9 +12076,9 @@ run_test test_launch_refuses_a_model_map_key_no_request_can_carry
 test_adapter_controls_do_not_reach_claude_or_overlay() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   source "$CCMORPH_SOURCE"
-  printf '%s\n' '#!/bin/sh' 'printf "%s|%s|%s|%s|%s|%s" "${CCMORPH_REPAIR_TOOL_REFERENCES-unset}" "${CCMORPH_STALL_TIMEOUT-unset}" "${CCMORPH_UPSTREAM_PROXY-unset}" "${CCMORPH_RANDOM_DEVICE_ID-unset}" "${CCMORPH_AFFINITY_HEADER-unset}" "${CCMORPH_SHIM_HOOKS-unset}"' > "$HOME/bin/claude"
+  printf '%s\n' '#!/bin/sh' 'printf "%s|%s|%s|%s|%s|%s" "${CCMORPH_USER_AGENT-unset}" "${CCMORPH_STALL_TIMEOUT-unset}" "${CCMORPH_UPSTREAM_PROXY-unset}" "${CCMORPH_RANDOM_DEVICE_ID-unset}" "${CCMORPH_AFFINITY_HEADER-unset}" "${CCMORPH_SHIM_HOOKS-unset}"' > "$HOME/bin/claude"
   local actual rc=0
-  actual=$(CCMORPH_REPAIR_TOOL_REFERENCES=1 CCMORPH_STALL_TIMEOUT=1 CCMORPH_UPSTREAM_PROXY=http://127.0.0.1:1 CCMORPH_RANDOM_DEVICE_ID=1 CCMORPH_AFFINITY_HEADER=X-A CCMORPH_SHIM_HOOKS=/tmp/hooks.py _ccm_run_claude CCMORPH_REPAIR_TOOL_REFERENCES=1 CCMORPH_STALL_TIMEOUT=1 CCMORPH_UPSTREAM_PROXY=http://127.0.0.1:1 CCMORPH_RANDOM_DEVICE_ID=1 CCMORPH_AFFINITY_HEADER=X-A CCMORPH_SHIM_HOOKS=/tmp/hooks.py --)
+  actual=$(CCMORPH_USER_AGENT=ua/{version} CCMORPH_STALL_TIMEOUT=1 CCMORPH_UPSTREAM_PROXY=http://127.0.0.1:1 CCMORPH_RANDOM_DEVICE_ID=1 CCMORPH_AFFINITY_HEADER=X-A CCMORPH_SHIM_HOOKS=/tmp/hooks.py _ccm_run_claude CCMORPH_USER_AGENT=ua/{version} CCMORPH_STALL_TIMEOUT=1 CCMORPH_UPSTREAM_PROXY=http://127.0.0.1:1 CCMORPH_RANDOM_DEVICE_ID=1 CCMORPH_AFFINITY_HEADER=X-A CCMORPH_SHIM_HOOKS=/tmp/hooks.py --)
   [[ "$actual" == 'unset|unset|unset|unset|unset|unset' ]] || rc=1
   rm -rf "$test_home"
   return $rc
