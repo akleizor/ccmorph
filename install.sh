@@ -320,11 +320,21 @@ fi
 # Checked and reported, never arranged: putting a directory on someone's PATH is
 # an edit to their shell config, and this tool does not make those. ~/.local/bin is
 # already on PATH on most machines, so for most people there is nothing to do.
+# The hint names the file and the syntax for the shell this was started from
+# ($SHELL is the login shell, which is the one whose startup file matters). Bash
+# reads ~/.bash_profile for a login shell on macOS and ~/.bashrc elsewhere.
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
+  _login_shell="${SHELL:-}"   # unset under cron or `env -i`; set -u must not kill the hint
+  case "${_login_shell:t}" in
+    fish) _rc_file="$HOME/.config/fish/config.fish"; _rc_line="fish_add_path $BIN_DIR" ;;
+    bash) if [[ "$(uname -s 2>/dev/null)" == Darwin ]]; then _rc_file="$HOME/.bash_profile"; else _rc_file="$HOME/.bashrc"; fi
+          _rc_line="export PATH=\"$BIN_DIR:\$PATH\"" ;;
+    *)    _rc_file="${ZDOTDIR:-$HOME}/.zshrc"; _rc_line="export PATH=\"$BIN_DIR:\$PATH\"" ;;
+  esac
   print ""
   c_y "$BIN_DIR is not on your PATH, so 'ccmorph' will not be found yet."
-  c_dim "  Add this line to your shell configuration yourself, then open a new terminal:"
-  print "  export PATH=\"$BIN_DIR:\$PATH\""
+  c_dim "  Add this line to $_rc_file yourself, then open a new terminal:"
+  print "  $_rc_line"
 fi
 
 print ""
