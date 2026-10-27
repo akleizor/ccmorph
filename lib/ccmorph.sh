@@ -2,7 +2,7 @@
 # Loaded by the `ccmorph` executable itself; not meant to be sourced
 # directly into an interactive shell.
 
-_CCMORPH_VERSION="2.5.1"
+_CCMORPH_VERSION="0.1.0"
 # The pre-2.4.0 name for `probe`, still accepted so a script that already says it keeps
 # working. Assembled rather than written so the retired word appears nowhere in this
 # source; a test pins that the alias still dispatches.

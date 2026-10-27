@@ -24,8 +24,9 @@ def _flatten(text):
 
 def _unreleased():
     text = CHANGELOG.read_text(encoding="utf-8")
-    match = re.search(r"^## Unreleased\n(.*?)(?=^## )", text, re.M | re.S)
-    assert match, "CHANGELOG.md has no `## Unreleased` section"
+    # The newest section: Unreleased while work is in flight, the release it became after.
+    match = re.search(r"^## (?:Unreleased|v\d[^\n]*)\n(.*?)(?=^## )", text, re.M | re.S)
+    assert match, "CHANGELOG.md has no `## Unreleased` or `## v...` section"
     return match.group(1)
 
 

@@ -629,7 +629,7 @@ This command does not work from an unrelated terminal.' ;;
     cred) usage='ccmorph cred [profile]'; detail='Print the stored API key or token to stdout. This reveals a secret.
 Only profiles with a stored key or token are offered. Name one in scripts.' ;;
     update) usage='ccmorph update [ref]'; detail='Download the latest release and run its installer, which updates this install
-in place. Give a branch or tag to install that instead: ccmorph update v2.6.0.
+in place. Give a branch or tag to install that instead: ccmorph update v0.1.0.
 Profiles, credentials and local.sh are kept, and the installer names what it kept.
 A git checkout is refused: update it with git.
 Needs the install.sh that sits beside the library; without it, run the one-line
@@ -666,7 +666,7 @@ _ccm_run_installer() {
     # a branch or tag, slashes allowed, no `..`, no leading dash, nothing a shell
     # or a URL would read as syntax. No ref at all means the latest release.
     if (( has_ref )) && [[ ! "$ref" =~ '^[A-Za-z0-9][A-Za-z0-9._/-]*$' || "$ref" == *..* ]]; then
-      _ccm_err "invalid ref '$ref' — use a branch or tag name such as main or v2.6.0"
+      _ccm_err "invalid ref '$ref' — use a branch or tag name such as main or v0.1.0"
       return 2
     fi
     # A checkout is the user's working tree. Copying a download over it would dirty
