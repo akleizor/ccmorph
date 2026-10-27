@@ -116,6 +116,20 @@ jobs:
           test -x "$HOME/.local/bin/ccmorph"
       - name: the command runs in a shell that sourced nothing
         run: sh -c 'ccmorph --version'
+      - name: one-line install from a local tarball (remote mode, real curl and tar)
+        # The documented one-liner runs install.sh with no source tree beside it.
+        # Feed it the same way (`sh -c "$(...)"`, no terminal) and point the download
+        # at a tarball of HEAD, so the real fetch, unpack and hand-over run on both
+        # runners without touching GitHub. It ends installed, as the steps below expect.
+        run: |
+          ./install.sh --uninstall
+          rm -rf "$HOME/.config/ccmorph"
+          mkdir -p "$RUNNER_TEMP/stage"
+          git archive --format=tar --prefix=ccmorph-main/ HEAD | gzip > "$RUNNER_TEMP/stage/src.tar.gz"
+          CCMORPH_INSTALL_URL="file://$RUNNER_TEMP/stage/src.tar.gz" sh -c "$(cat install.sh)" </dev/null
+          test -r "$HOME/.config/ccmorph/lib/ccmorph.sh"
+          test -x "$HOME/.local/bin/ccmorph"
+          sh -c 'ccmorph --version'
       - name: bash and sh must not crash on the installer
         # It is zsh, but people type `bash install.sh`; it must re-exec, not die
         # with a message about a variable that does not exist.
