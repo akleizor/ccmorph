@@ -17,6 +17,15 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Read-only token: CI only reads the code, so a PR from anyone cannot use it to write to the repo.
+permissions:
+  contents: read
+
+# A new push to the same PR cancels the run it replaces; main keeps every run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   syntax:
     runs-on: ubuntu-latest
