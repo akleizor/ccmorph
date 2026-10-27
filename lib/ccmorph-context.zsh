@@ -715,12 +715,13 @@ _ccm_clamp_acw() {
   : ${(P)_name::=$_v}
 }
 
-# _ccm_hazard_set's arithmetic as a named snippet, composed into its run like
-# the settings-compose, pct and context parsers beside it -- a separate run
-# from _ccm_launch_window, because the hazard cap is injected only after
-# diagnostics. hazard_rows() is the whole calculation: it takes what the env
-# vars used to hold and returns the rows to print, or an empty list when
-# there is nothing to say.
+# _ccm_hazard_set's arithmetic as a named snippet, composed like the
+# settings-compose, pct and context parsers beside it. Two runs hold it: the
+# diagnostics interpreter, whose `hazard` record a launch asks for and which is
+# given the percentage the launch is about to inject, and _ccm_hazard_set, the
+# fallback that runs after the injection. hazard_rows() is the whole
+# calculation: it takes what the env vars used to hold and returns the rows to
+# print, or an empty list when there is nothing to say.
 _ccm_hazard_py() {
   command cat <<'PYHAZ'
 def num(v):

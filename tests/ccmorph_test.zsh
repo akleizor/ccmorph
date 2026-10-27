@@ -8127,6 +8127,103 @@ test_the_launch_hazard_advisory_matches_switch_hazard_warn() {
   return $rc
 }
 
+# The order the fold rests on. The folded `hazard` record is computed BEFORE the
+# launch injects CLAUDE_AUTOCOMPACT_PCT_OVERRIDE, and `_ccm_switch_hazard_warn`
+# runs AFTER it. The parity test above pins their wording for one percentage; this
+# pins the order for every source a launch can take one from: the fleet policy, the
+# built-in default when no policy exists, a conf line, and the user's own layer --
+# valid, and malformed so the launch injects the fleet policy over it. In each case
+# the environment must carry the percentage the launch settled on, the folded record
+# must name the trigger THAT percentage produces, and the fallback -- which sizes
+# after the injection -- must say exactly the same thing.
+test_the_hazard_record_sizes_from_the_percentage_the_launch_injects() {
+  local case rc=0 test_home actual advise_from_record advise_from_fallback value
+  local -a conf
+  # usable = 1,000,000 - 20,000 = 980,000, so the trigger is the smaller of
+  # 980,000*pct/100 and 980,000 - 13,000. A layer value the engine cannot parse
+  # leaves the injected fleet policy of 80 in charge.
+  local -A want_pct want_trigger
+  want_pct=(policy73 73 absent 75 conf60 60 layer70 '<unset>' malformed 80)
+  want_trigger=(policy73 715k absent 735k conf60 588k layer70 686k malformed 784k)
+
+  for case in policy73 absent conf60 layer70 malformed; do
+    test_home=$(mktemp -d)
+    setup_home "$test_home"
+    printf '%s\n' '#!/bin/sh' 'cat <<JSON' '{"data":[]}' 'JSON' > "$HOME/bin/curl"
+    chmod +x "$HOME/bin/curl"
+    make_fake_curl_probe_aware
+    mkdir -p "$HOME/.config/ccmorph/profiles/gw"
+    print -r -- '{"availableModels":["roomy","kimi-k3"]}' \
+      > "$HOME/.config/ccmorph/profiles/gw/settings.json"
+    conf=('type=proxy' 'base_url=http://gw.invalid' 'api_key=test-key' 'model=roomy')
+    case "$case" in
+      policy73)
+        print -r -- '{"schemaVersion":1,"autoCompactAtPercent":73}' \
+          > "$HOME/.agents/runtime/policies/context.json"
+        ;;
+      absent)
+        rm -f "$HOME/.agents/runtime/policies/context.json"
+        ;;
+      conf60)
+        conf+=('env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=60')
+        ;;
+      layer70|malformed)
+        value=70
+        [[ "$case" == malformed ]] && value=broken
+        mkdir -p "$HOME/.claude"
+        printf '{"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"%s"}}\n' "$value" \
+          > "$HOME/.claude/settings.json"
+        ;;
+    esac
+    printf '%s\n' "${conf[@]}" > "$HOME/.config/ccmorph/gw.conf"
+    write_profile_context gw roomy=1000000 kimi-k3=40000
+    source "$CCMORPH_SOURCE"
+
+    rm -f "$CCMORPH_TEST_LOG"
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    actual=$(<"$CCMORPH_TEST_LOG")
+    assert_contains "$actual" "AUTOCOMPACT_PCT=${want_pct[$case]}" \
+      "the $case percentage must be the one the engine gets" || rc=1
+    advise_from_record=$(grep -m1 '^ADVISE=' "$CCMORPH_TEST_LOG" || true)
+    advise_from_record=${advise_from_record#ADVISE=}
+    assert_contains "$advise_from_record" "compacts at ${want_trigger[$case]}" \
+      "the folded record must size the $case trigger the launch injects" || rc=1
+    assert_contains "$advise_from_record" 'kimi-k3 limit 40k' \
+      "the $case advisory must name the model under the trigger" || rc=1
+
+    # The fallback, forced the same way the parity test forces it: the record the
+    # diagnostics computed is dropped, so `_ccm_launch` takes its `else` branch and
+    # `_ccm_switch_hazard_warn` computes from the launch env after the injection.
+    functions[_ccm_diag_without_hazard]="${functions[_ccm_launch_diagnostics]}"
+    _ccm_launch_diagnostics() {
+      local -a records=("${(@0)$(_ccm_diag_without_hazard "$@")}")
+      local record
+      for record in "${records[@]}"; do
+        [[ -n "$record" ]] || continue
+        if [[ "$record" == hazard$'\t'* ]]; then
+          : > "$HOME/hazard-record-dropped"
+          continue
+        fi
+        printf '%s\0' "$record"
+      done
+    }
+    rm -f "$CCMORPH_TEST_LOG" "$HOME/hazard-record-dropped"
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+    advise_from_fallback=$(grep -m1 '^ADVISE=' "$CCMORPH_TEST_LOG" || true)
+    advise_from_fallback=${advise_from_fallback#ADVISE=}
+    [[ -e "$HOME/hazard-record-dropped" ]] || {
+      print -u2 -- "the $case launch never asked for a hazard record to drop"
+      rc=1
+    }
+    if [[ "$advise_from_fallback" != "$advise_from_record" ]]; then
+      print -u2 -- "the $case fallback's advisory differs\n  from the record: ${(qqq)advise_from_record}\n  from the fallback: ${(qqq)advise_from_fallback}"
+      rc=1
+    fi
+    rm -rf "$test_home"
+  done
+  return $rc
+}
+
 # The malformed mirror of the layer test above: the engine drops a percentage it
 # cannot parse, so the launch injects the fleet percentage over the gap. The folded
 # hazard record is computed BEFORE that injection, and hazard_rows re-reads the
@@ -11765,6 +11862,7 @@ run_test test_no_launch_advisory_relies_on_pre_exec_stderr
 run_test test_the_unprobed_model_advisory_persists_in_the_tui
 run_test test_the_switch_warning_caps_the_names_it_lists
 run_test test_the_launch_hazard_advisory_matches_switch_hazard_warn
+run_test test_the_hazard_record_sizes_from_the_percentage_the_launch_injects
 run_test test_a_malformed_layer_percentage_leaves_the_injected_one_in_charge
 run_test test_no_switch_warning_when_the_whole_route_clears_the_trigger
 run_test test_launch_is_silent_when_every_model_has_headroom
