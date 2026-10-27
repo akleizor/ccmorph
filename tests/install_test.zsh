@@ -367,6 +367,33 @@ env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/t
 (( rc == 0 )) && [[ ! -e "$d/curl.argv" ]] \
   && ok "remote: a local sh install exits 0 and never calls curl" || { fail "local sh install rc=$rc or it called curl"; cat "$d/out" }
 
+# --- 9. Windows shells are named and sent to WSL before anything else ----------
+# Git Bash / MSYS / Cygwin have no zsh, and the failure they got was about zsh,
+# not about Windows. A stub uname stands in for the platform; the message must
+# come before remote mode (so no download happens) and before any write to HOME.
+for plat in MINGW64_NT-10.0 MSYS_NT-10.0 CYGWIN_NT-10.0; do
+  d=$(remote_env "windows_${plat%%_*}" "$TMP/src.tar.gz")
+  printf '#!/bin/sh\necho %s\n' "$plat" > "$d/bin/uname"; chmod +x "$d/bin/uname"
+  env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" \
+    sh "$REPO/install.sh" >"$d/out" 2>"$d/err" </dev/null; rc=$?
+  (( rc == 1 )) && ok "windows: $plat exits 1" || { fail "windows $plat rc=$rc (want 1)"; cat "$d/out" "$d/err" }
+  grep -qF 'WSL' "$d/err" && ok "windows: $plat is pointed at WSL on stderr" || { fail "windows $plat: stderr does not mention WSL"; cat "$d/err" }
+  [[ -z "$(print -rl -- "$d"/home/*(N) "$d"/home/.[a-z]*(N))" ]] \
+    && ok "windows: $plat writes nothing under HOME" || fail "windows $plat wrote under HOME"
+done
+# Before remote mode: a piped/-c run on Windows must not reach for the network.
+rm -f "$d/curl.argv"
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" \
+  sh -c "$(cat "$REPO/install.sh")" >"$d/out" 2>"$d/err" </dev/null; rc=$?
+(( rc == 1 )) && grep -qF 'WSL' "$d/err" && [[ ! -e "$d/curl.argv" ]] \
+  && ok "windows: the check runs before remote mode (no download)" || { fail "windows: remote mode ran first (rc=$rc)"; cat "$d/err" "$d/curl.argv" 2>&1 }
+# Without the stub the same invocation still installs.
+d=$(fresh_env windows_not)
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
+  sh "$REPO/install.sh" >"$d/out" 2>&1 </dev/null; rc=$?
+(( rc == 0 )) && [[ -x "$d/home/.local/bin/ccmorph" ]] \
+  && ok "windows: a Linux/macOS uname still installs" || { fail "non-windows install rc=$rc"; cat "$d/out" }
+
 print ""
 print "install tests: $passed passed, $failed failed"
 (( failed == 0 ))

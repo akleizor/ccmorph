@@ -16,6 +16,15 @@
 # left by an older version, because that block sourced a library that no longer
 # defines any command and would fail silently in every new shell.
 
+# Windows shells (Git Bash, MSYS, Cygwin) have no zsh to re-exec into, and what
+# they used to hit was an error about zsh, not about Windows. Name the platform
+# and the way forward first, before the download and before anything is written.
+case "$(uname -s 2>/dev/null)" in
+  MINGW*|MSYS*|CYGWIN*)
+    echo "ccmorph runs on macOS and Linux, including WSL. On Windows, open a WSL shell and run this again there." >&2
+    exit 1 ;;
+esac
+
 # Remote mode. `sh -c "$(curl -fsSL .../install.sh)"` and `curl ... | sh` run this
 # script with $0 = sh and no repo beside it, so everything below that reads the
 # tree (the copies, the manifest) would fail on a path that does not exist. Fetch
