@@ -19,6 +19,11 @@ ccmorph_test_scrub_runner_env() {
     [[ "${parameters[$v]}" == *export* ]] || continue
     unset "$v"
   done
+  # The state root honours XDG_CONFIG_HOME before $HOME/.config, and every fixture
+  # builds its state under the scratch $HOME. A runner that exports it (GitHub's
+  # Ubuntu image sets /home/runner/.config) sent the library to read profiles from
+  # there, so 119 of 166 tests found no profile at all.
+  unset XDG_CONFIG_HOME
 }
 ccmorph_test_scrub_runner_env
 

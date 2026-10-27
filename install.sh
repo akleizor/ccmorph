@@ -30,13 +30,15 @@ esac
 # tree (the copies, the manifest) would fail on a path that does not exist. Fetch
 # the tree and hand over to ITS installer instead: the downloaded copy has
 # lib/ccmorph.sh beside it, takes the local path below, and never comes back here.
+# `--remote` forces this from inside a tree; `ccmorph update` runs the installed copy with it.
 # POSIX-only syntax in this block, and it runs first: no zsh yet, no `set -eu`.
 _ccm_local=0
 case "$0" in
   */install.sh|install.sh)
     [ -r "$0" ] && [ -r "$(dirname "$0")/lib/ccmorph.sh" ] && _ccm_local=1 ;;
 esac
-if [ "$_ccm_local" = 0 ]; then
+if [ "$_ccm_local" = 0 ] || [ "${1:-}" = "--remote" ]; then
+  [ "${1:-}" = "--remote" ] && shift
   # The default is the latest RELEASE tarball, not main: main moves with every
   # merge, and a one-liner pointed at it hands a brand-new user code no release
   # has vetted. GitHub resolves releases/latest itself, so nothing here has to
@@ -134,7 +136,9 @@ MODULES=("$SRC"/lib/ccmorph-*.zsh(N:t))
 # is added exactly once. Modules are data: they are sourced, never run.
 # Paths are relative to the repo root and installed with the same structure.
 LIBS=(lib/ccmorph.sh ${MODULES/#/lib/})
-EXECUTABLES=(bin/ccmorph libexec/ccmorph-adapter libexec/gateway-shim libexec/model-window libexec/settings-compose libexec/refresh-model-registry)
+# install.sh ships too (an executable at the install root), so `ccmorph update` and
+# `ccmorph uninstall` have the installer to run without a clone or a URL.
+EXECUTABLES=(bin/ccmorph install.sh libexec/ccmorph-adapter libexec/gateway-shim libexec/model-window libexec/settings-compose libexec/refresh-model-registry)
 DATA_FILES=(share/model-catalogue.json share/window-sources.json)
 COMPONENTS=($LIBS $EXECUTABLES $DATA_FILES)
 

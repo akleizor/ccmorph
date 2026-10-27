@@ -39,7 +39,7 @@ def test_migration_preserves_inodes_symlinks_and_old_session_access(tmp_path):
     assert old.is_symlink() and old.resolve() == target
     assert (target / 'demo/config.json').stat().st_ino == inode
     assert (target / 'demo/config.json').stat().st_mode & 0o777 == 0o600
-    assert (target / 'demo/projects').readlink() == shared
+    assert Path(os.readlink(target / 'demo/projects')) == shared
     # Simulate an already-running session retaining the old absolute pathname.
     (old / 'demo/session-state').write_text('live')
     assert (target / 'demo/session-state').read_text() == 'live'
@@ -202,7 +202,7 @@ def test_unrelated_legacy_symlink_refused(tmp_path):
     old.symlink_to(other, target_is_directory=True)
     result = run(tmp_path, state)
     assert result.returncode != 0
-    assert old.readlink() == other
+    assert Path(os.readlink(old)) == other
     assert not (state / 'profiles').exists()
 
 

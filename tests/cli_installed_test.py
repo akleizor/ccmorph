@@ -55,7 +55,7 @@ class InstalledCliTest(unittest.TestCase):
         cls.addClassCleanup(td.cleanup)
         cls.home = home = Path(td.name)
         cls.native = _fake_native(home)
-        cls.native_before = cls.native.readlink()
+        cls.native_before = Path(os.readlink(cls.native))
         cls.native_bytes = cls.native_before.read_bytes()
         cls.env = _isolated_env(home)
         cls.cli = str(home / '.local/bin/ccmorph')
@@ -102,13 +102,13 @@ class InstalledCliTest(unittest.TestCase):
         # The workflow must leave the operator's own Claude Code alone; every
         # launch re-checks what the original asserted once at the end: the
         # symlink it resolves and the file it points to, unchanged.
-        self.assertEqual(self.native.readlink(), self.native_before)
+        self.assertEqual(Path(os.readlink(self.native)), self.native_before)
         self.assertEqual(self.native_before.read_bytes(), self.native_bytes)
         return markers[0].read_text().strip(), markers[1].read_text().splitlines()
 
     def test_install_and_help_preserve_native_claude(self):
         self.assertTrue(self.native.exists())
-        self.assertEqual(self.native.readlink(), self.native_before)
+        self.assertEqual(Path(os.readlink(self.native)), self.native_before)
         self.assertFalse((self.home / '.local/bin/claude').exists())
         self.assertIn('ccmorph config [profile]', self.help_stdout)
 
@@ -147,15 +147,15 @@ class InstalledCliTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             home = Path(td)
             native = _fake_native(home)
-            native_before = native.readlink()
+            native_before = Path(os.readlink(native))
             native_bytes = native_before.read_bytes()
             env = _isolated_env(home)
             installed = _run(['zsh', str(ROOT / 'install.sh')], env)
             self.assertEqual(installed.returncode, 0, installed.stdout + installed.stderr)
-            self.assertEqual(native.readlink(), native_before)
+            self.assertEqual(Path(os.readlink(native)), native_before)
             removed = _run(['zsh', str(ROOT / 'install.sh'), '--uninstall'], env)
             self.assertEqual(removed.returncode, 0, removed.stderr)
-            self.assertEqual(native.readlink(), native_before)
+            self.assertEqual(Path(os.readlink(native)), native_before)
             self.assertEqual(native_before.read_bytes(), native_bytes)
             self.assertFalse((home / '.local/bin/claude').exists())
 

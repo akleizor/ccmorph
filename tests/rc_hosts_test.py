@@ -890,7 +890,8 @@ def test_a_started_host_logs_nowhere_under_the_users_config(tmp_path, monkeypatc
     monkeypatch.setattr(m.subprocess, "Popen", lambda cmd, **kw: FakeProc())
     (tmp_path / "repo").mkdir()
     m.Host(str(tmp_path / "repo"), "gw").start()
-    assert m.LOGS.is_relative_to(tmp_path) and m.EDGES.is_relative_to(tmp_path)
+    # parents, not Path.is_relative_to: that is 3.9+, and CI runs this suite on 3.8.
+    assert tmp_path in m.LOGS.parents and tmp_path in m.EDGES.parents
     assert not (home / ".config").exists()               # nothing reached the user's config
 
 

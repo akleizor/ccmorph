@@ -70,7 +70,8 @@ def test_help_is_concise_truthful_and_read_only(tmp_path):
            'CCMORPH_LIB_DIR': str(ROOT / "lib"), 'CCMORPH_STATE_DIR': str(state)}
     cli = str(ROOT / "bin/ccmorph")
     for args in ([], ['--help'], ['help', 'config'], ['add', '--help'],
-                 ['doctor', '--help'], ['--version']):
+                 ['doctor', '--help'], ['update', '--help'], ['uninstall', '--help'],
+                 ['help', 'update'], ['--version']):
         result = subprocess.run([cli, *args], env=env, capture_output=True,
                                 text=True, timeout=HANG_TIMEOUT)
         assert result.returncode == 0, result.stderr
@@ -82,12 +83,14 @@ def test_help_is_concise_truthful_and_read_only(tmp_path):
     assert len(result.stdout.splitlines()) <= 28
     assert 'ccmorph run -i' in result.stdout
     assert 'ccmorph help <command>' in result.stdout
-    for advanced in ('--filtered-json', '--allow-inference', 'oauth_token', 'ccmorph cred', 'ccmorph context'):
+    for advanced in ('--filtered-json', '--allow-inference', 'oauth_token', 'ccmorph cred', 'ccmorph context',
+                     'ccmorph update', 'ccmorph uninstall'):
         assert advanced not in result.stdout
     result = subprocess.run([cli, 'help', 'all'], env=env, capture_output=True,
                             text=True, timeout=HANG_TIMEOUT)
     for verb in ('run', 'add', 'list', 'use', 'config', 'inspect', 'doctor', 'models',
-                 'get', 'set', 'login', 'mv', 'rm', 'hop', 'cred', 'probe', 'context'):
+                 'get', 'set', 'login', 'mv', 'rm', 'hop', 'cred', 'probe', 'context',
+                 'update', 'uninstall'):
         assert 'ccmorph ' + verb in result.stdout
         detail = subprocess.run([cli, 'help', verb], env=env, capture_output=True,
                                 text=True, timeout=HANG_TIMEOUT)

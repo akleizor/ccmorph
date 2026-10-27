@@ -23,7 +23,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from support import HANG_TIMEOUT
+from support import FAKE_SERVER_NO_DNS, HANG_TIMEOUT
 
 REPO = Path(__file__).resolve().parent.parent
 ADAPTER = REPO / "libexec/ccmorph-adapter"
@@ -298,7 +298,7 @@ class AdapterTest(unittest.TestCase):
         stub.write_text(
             "#!/usr/bin/env python3\n"
             "import sys, json, re\n"
-            "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+            "from http.server import BaseHTTPRequestHandler, HTTPServer\n" + FAKE_SERVER_NO_DNS +
             "conf = open(sys.argv[2]).read()\n"
             "port = int(re.search(r'^port: (\\d+)', conf, re.M).group(1))\n"
             "class H(BaseHTTPRequestHandler):\n"
@@ -1007,7 +1007,7 @@ class AdapterTest(unittest.TestCase):
         translator.write_text(
             "#!/usr/bin/env python3\n"
             "import json, os, sys\n"
-            "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+            "from http.server import BaseHTTPRequestHandler, HTTPServer\n" + FAKE_SERVER_NO_DNS +
             f"open({str(marker)!r}, 'w').write(str(os.getpid()))\n"
             "class H(BaseHTTPRequestHandler):\n"
             "    def log_message(self, *a): pass\n"
@@ -1060,7 +1060,7 @@ class AdapterTest(unittest.TestCase):
         translator.write_text(
             "#!/usr/bin/env python3\n"
             "import json, re, sys\n"
-            "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+            "from http.server import BaseHTTPRequestHandler, HTTPServer\n" + FAKE_SERVER_NO_DNS +
             "class H(BaseHTTPRequestHandler):\n"
             "    def log_message(self, *a): pass\n"
             "    def do_GET(self):\n"

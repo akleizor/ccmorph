@@ -102,7 +102,9 @@ def _command_of(pid: int) -> str:
     which leaks at worst and never signals a process the sandbox does not own.
     """
     try:
-        out = subprocess.run(['/bin/ps', '-o', 'command=', '-p', str(pid)],
+        # -ww: procps cuts the command at 80 columns when stdout is not a terminal,
+        # which drops the `<adapter> ` this reap matches on a long scratch path.
+        out = subprocess.run(['/bin/ps', '-ww', '-o', 'command=', '-p', str(pid)],
                              capture_output=True, text=True, errors='replace')
     except OSError:
         return ''

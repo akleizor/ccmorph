@@ -24,6 +24,11 @@
   profile it shows the version, `zsh`, `python3`, `claude`, `fzf`, `cliproxyapi`
   and whether `ccmorph` is on `PATH`, read-only, and fails only for a missing or
   too-old required tool.
+- **`ccmorph update` and `ccmorph uninstall`.** The installer now ships beside the
+  library, so an install updates itself with `ccmorph update [ref]` (the latest
+  release, or a branch or tag) and removes its command with `ccmorph uninstall`;
+  profiles, credentials and `local.sh` are kept. A git checkout is refused by
+  `update` and updated with git.
 
 ### Changed
 
@@ -174,6 +179,11 @@
 
 ### Fixed
 
+- **The gateway shim starts without a reverse DNS lookup.** Python's HTTP server
+  resolves its own bind address with `getfqdn`, and on macOS that lookup of
+  127.0.0.1 can stall for tens of seconds before the shim reports ready, which
+  delays every adapter launch behind it. The shim binds loopback only and now
+  skips the lookup.
 - **`--config=PATH` names a config, and a missing or flag-like value is refused.**
   The supervisor matched only the exact string `--config`, so the equals spelling
   used across ccmorph's other CLIs named nothing and the default

@@ -51,6 +51,9 @@ jobs:
         # coreutils flags) and macOS, which is where BSD tools live.
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    # A healthy run takes under 10 minutes. Without a cap, one hung test holds the
+    # runner for GitHub's 6-hour default and its log stays unreadable until then.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: install zsh
@@ -63,8 +66,18 @@ jobs:
         run: zsh tests/ccmorph_test.zsh
       - name: installer suite
         run: zsh tests/install_test.zsh
+      # pytest was never installed here, so this step had never run a test. The
+      # runner's own python3 is externally managed on macOS (PEP 668), so use a
+      # setup-python interpreter that pip may install into.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
       - name: python suite
-        run: python3 -m pytest tests/ -q
+        run: |
+          python -m pip install pytest pytest-timeout
+          # -v names each test as it runs, so a log cut off by the cap above still
+          # shows where it stopped; --durations names the slow ones on a full run.
+          python -m pytest tests/ -v --durations=25
 
   python-floor:
     # The floor is 3.8, set by a walrus in gateway-shim. Prove the helpers still
@@ -80,8 +93,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      # Most Python tests drive the zsh library; the Ubuntu image ships no zsh.
+      - run: sudo apt-get update && sudo apt-get install -y zsh
       - run: |
-          python -m pip install "backports.zoneinfo; python_version < '3.9'"
+          python -m pip install pytest pytest-timeout "backports.zoneinfo; python_version < '3.9'"
           python -m py_compile libexec/ccmorph-adapter libexec/gateway-shim libexec/model-window \
                                libexec/refresh-model-registry
           python -m pytest tests/ -q
