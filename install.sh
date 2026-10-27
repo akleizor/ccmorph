@@ -323,7 +323,9 @@ fi
 # The hint names the file and the syntax for the shell this was started from
 # ($SHELL is the login shell, which is the one whose startup file matters). Bash
 # reads ~/.bash_profile for a login shell on macOS and ~/.bashrc elsewhere.
+CCMORPH_CMD=ccmorph   # how the closing report spells the command: bare once it is on PATH
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
+  CCMORPH_CMD="$BIN_DIR/ccmorph"   # absolute, so the check works before the shell is fixed
   _login_shell="${SHELL:-}"   # unset under cron or `env -i`; set -u must not kill the hint
   case "${_login_shell:t}" in
     fish) _rc_file="$HOME/.config/fish/config.fish"; _rc_line="fish_add_path $BIN_DIR" ;;
@@ -357,12 +359,12 @@ if (( IS_UPDATE )); then
   c_dim "The new code is live immediately — ccmorph reads it on each run."
 else
   c_ok "Done. ccmorph is installed (no profiles — fresh install)."
-  c_dim "Start here:"
-  print "  ccmorph add <name>     # create your first account"
-  print "  ccmorph use <name>     # choose the default profile"
-  print "  ccmorph run            # launch Claude Code on the default profile"
-  print "  ccmorph list           # see profiles"
 fi
+
+# One closing block for every run, so the end of the output answers "did it work,
+# what now". Only a fresh install has no profile to add yet; an update has its own.
+print "Check:  $CCMORPH_CMD doctor"
+(( IS_UPDATE )) || print "Next:   ccmorph add <name>"
 
 # Context discovery is metadata-only and automatic on add/unknown launch.
 # Installing must never start an inference sweep.
