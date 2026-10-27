@@ -4,6 +4,7 @@ import subprocess
 import errno
 import pty
 import select
+import shutil
 import time
 from pathlib import Path
 
@@ -337,3 +338,65 @@ def test_doctor_terminal_statuses(tmp_path):
             if slave is not None:
                 os.close(slave)
             os.close(master)
+
+
+def run_bare_doctor(tmp_path, confs=(), claude=True, python=None):
+    """`ccmorph doctor` with no profile argument, on a PATH holding only what it names."""
+    state = tmp_path / "state"
+    bindir = tmp_path / "bin"
+    state.mkdir()
+    bindir.mkdir()
+    (tmp_path / "tmp").mkdir()
+    for tool in ("zsh", "python3", "env"):
+        found = shutil.which(tool)
+        assert found, tool
+        (bindir / tool).symlink_to(found)
+    if python is not None:
+        (bindir / "python3").unlink()
+        (bindir / "python3").write_text(python)
+        (bindir / "python3").chmod(0o755)
+    if claude:
+        stub = bindir / "claude"
+        stub.write_text("#!/bin/sh\nexit 0\n")
+        stub.chmod(0o755)
+    for name in confs:
+        (state / f"{name}.conf").write_text("type=token\ntoken=sk-ant-oat-canary\n")
+    env = {"HOME": str(tmp_path / "home"), "PATH": str(bindir), "TMPDIR": str(tmp_path / "tmp"),
+           "CCMORPH_STATE_DIR": str(state), "CCMORPH_LIB_DIR": str(ROOT / "lib"),
+           "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "NO_COLOR": "1"}
+    result = subprocess.run([str(ROOT / "bin/ccmorph"), "doctor"], env=env,
+                            capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    return result, state
+
+
+def test_doctor_on_a_fresh_install_reports_the_environment(tmp_path):
+    result, state = run_bare_doctor(tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+    for row in ("no profiles yet", "ccmorph add <name>", "python3:", "claude executable:", "zsh:"):
+        assert row in result.stdout, result.stdout
+    assert "FAIL" not in result.stdout
+    # Read-only: a report must not create the state it reports on.
+    assert not (state / "profiles").exists()
+    assert sorted(p.name for p in state.iterdir()) == []
+
+
+def test_doctor_on_a_fresh_install_fails_without_claude(tmp_path):
+    result, _ = run_bare_doctor(tmp_path, claude=False)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "FAIL claude executable: not found" in result.stdout
+    assert "no profiles yet" in result.stdout
+
+
+def test_doctor_with_profiles_but_no_default_names_them(tmp_path):
+    result, _ = run_bare_doctor(tmp_path, confs=("alpha", "beta"))
+    assert result.returncode == 1
+    out = result.stdout + result.stderr
+    assert "no profile selected" in out
+    assert "alpha" in out and "beta" in out
+    assert "no profiles yet" not in out
+
+
+def test_doctor_on_a_fresh_install_fails_on_python_below_3_8(tmp_path):
+    result, _ = run_bare_doctor(tmp_path, python="#!/bin/sh\necho 3.7.9\nexit 1\n")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "FAIL python3: 3.7.9 (need 3.8 or newer)" in result.stdout

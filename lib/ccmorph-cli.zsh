@@ -253,6 +253,56 @@ _ccm_doctor_status() {
   elif [[ -t 1 ]]; then print -r -- "$symbol $*"; else print -r -- "$kind $*"; fi
 }
 
+_ccm_doctor_claude() {
+  # The claude row shared by the profile check and the fresh-install report;
+  # returns 1 only when it printed a FAIL.
+  emulate -L zsh
+  local claude_bin
+  if whence -p claude >/dev/null 2>&1; then
+    claude_bin=$(whence -p claude 2>/dev/null) || claude_bin=''
+    if [[ -n "$claude_bin" ]]; then
+      _ccm_doctor_status "OK" "claude executable: $claude_bin"
+    else
+      _ccm_doctor_status 'INFO' 'claude command: provided by shell function/alias (path not inspectable)'
+    fi
+    return 0
+  fi
+  _ccm_doctor_status 'FAIL' 'claude executable: not found on PATH'
+  return 1
+}
+
+_ccm_doctor_environment() {
+  # What a fresh install can say before any profile exists. Read-only: it looks
+  # at the machine and the state directory and creates nothing.
+  emulate -L zsh
+  local py_version tool_path
+  local failed=0
+  _ccm_doctor_status 'OK' "ccmorph: $_CCMORPH_VERSION ($_CCMORPH_LIB_DIR)"
+  _ccm_doctor_status 'OK' "zsh: $ZSH_VERSION"
+  # One call: it prints the version and exits non-zero below the 3.8 floor.
+  if py_version=$(python3 -c 'import sys; print("%d.%d.%d" % sys.version_info[:3]); sys.exit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null); then
+    _ccm_doctor_status 'OK' "python3: $py_version"
+  elif [[ -n "$py_version" ]]; then
+    _ccm_doctor_status 'FAIL' "python3: $py_version (need 3.8 or newer)"
+    failed=1
+  else
+    _ccm_doctor_status 'FAIL' 'python3: not found (need 3.8 or newer)'
+    failed=1
+  fi
+  _ccm_doctor_claude || failed=1
+  tool_path=$(whence -p fzf 2>/dev/null) || tool_path=''
+  if [[ -n "$tool_path" ]]; then _ccm_doctor_status 'INFO' "fzf: $tool_path"
+  else _ccm_doctor_status 'INFO' 'fzf: not found (numbered menus)'; fi
+  tool_path=$(whence -p cliproxyapi 2>/dev/null) || tool_path=''
+  if [[ -n "$tool_path" ]]; then _ccm_doctor_status 'INFO' "cliproxyapi: $tool_path"
+  else _ccm_doctor_status 'INFO' 'cliproxyapi: not found (Claude-family models only on gateways)'; fi
+  tool_path=$(whence -p ccmorph 2>/dev/null) || tool_path=''
+  if [[ -n "$tool_path" ]]; then _ccm_doctor_status 'OK' "PATH: ccmorph is on PATH (${tool_path:h})"
+  else _ccm_doctor_status 'INFO' 'PATH: ccmorph is not on PATH (add the directory it was installed to)'; fi
+  _ccm_doctor_status 'INFO' "state: $_CCMORPH_DIR (no profiles yet) — next: ccmorph add <name>"
+  return $failed
+}
+
 _ccm_doctor() {
   emulate -L zsh
   local name="${1:-}" conf base key key_value type model adapter settings profile_dir
@@ -261,7 +311,10 @@ _ccm_doctor() {
     [[ -f "$_CCMORPH_DIR/active" && ! -L "$_CCMORPH_DIR/active" ]] && name=$(<"$_CCMORPH_DIR/active")
   fi
   if [[ -z "$name" ]]; then
+    local -a _doctor_confs=("$_CCMORPH_DIR"/*.conf(N))
+    (( ${#_doctor_confs} )) || { _ccm_doctor_environment; return $?; }
     _ccm_doctor_status 'FAIL' 'profile: no profile selected (use: ccmorph doctor <profile>)'
+    _ccm_accounts_hint
     return 1
   fi
   _ccm_valid "$name" || { _ccm_doctor_status 'FAIL' 'profile: invalid profile name'; return 1; }
@@ -295,18 +348,7 @@ _ccm_doctor() {
   fi
   _ccm_doctor_status "OK" "profile: $name ($type)"
   _ccm_doctor_status "OK" "ccmorph executable: ${_CCMORPH_LIB_DIR}/ccmorph.sh"
-  if whence -p claude >/dev/null 2>&1; then
-    local claude_bin
-    claude_bin=$(whence -p claude 2>/dev/null) || claude_bin=''
-    if [[ -n "$claude_bin" ]]; then
-      _ccm_doctor_status "OK" "claude executable: $claude_bin"
-    else
-      _ccm_doctor_status 'INFO' 'claude command: provided by shell function/alias (path not inspectable)'
-    fi
-  else
-    _ccm_doctor_status 'FAIL' 'claude executable: not found on PATH'
-    doctor_failed=1
-  fi
+  _ccm_doctor_claude || doctor_failed=1
   profile_dir="$_CCMORPH_PROFILE_DIRS/$name"
   if [[ -d "$profile_dir" ]]; then
     _ccm_doctor_status "OK" "profile home: $profile_dir"
