@@ -31,6 +31,10 @@ _ccm_mtime() {
   print -r -- "$s[1]"
 }
 
+# The compiled core's helper verbs (`ccmorph-core util <verb>`): JSON, context-window
+# and process readers. The core ships with the library, so nothing here needs an interpreter.
+_ccm_util() { "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" util "$@"; }
+
 # External utility calls use `command` so sourced user functions and aliases cannot
 # alter ccmorph behavior; this is isolation from shell overrides, not from PATH.
 
@@ -199,6 +203,7 @@ _CCMORPH_PROFILE_ENV=(
   CCMORPH_RANDOM_DEVICE_ID
   CCMORPH_AFFINITY_HEADER
   CCMORPH_USER_AGENT
+  CCMORPH_COMPAT
   CCMORPH_STALL_TIMEOUT
   CCMORPH_UPSTREAM_PROXY
   # Path to the profile's request-hooks module, loaded by the gateway shim.

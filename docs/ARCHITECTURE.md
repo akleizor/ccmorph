@@ -621,7 +621,7 @@ resent once with `thinking` and `redacted_thinking` blocks removed from assistan
 is final) **[test]**. Profile keys, ferried as `CCMORPH_*` env: `env.CCMORPH_AFFINITY_HEADER=<name>`
 sends the session id in that header, `env.CCMORPH_USER_AGENT=<template>` sets the outbound
 `User-Agent` from the client's `claude-cli` version, and the adapter's passthrough entries
-take theirs from the shim's `translator-user-agent` subcommand **[test]**. Anything beyond
+take theirs from the shim's `translator-user-agent` subcommand **[test]**. `env.CCMORPH_COMPAT=off` gives the shim no hooks at all (no repair, no resend, no affinity header, no User-Agent rewrite) **[test]**. Anything beyond
 that is a custom build: `env.CCMORPH_SHIM_HOOKS=<binary>` names a Go `main` that wraps
 `compat.FromEnv()` and calls `shim.Main`; the adapter runs it in place of the stock shim,
 and a missing or non-executable file fails the launch.

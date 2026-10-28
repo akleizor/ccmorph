@@ -74,7 +74,7 @@ fi
 
 # The install command for package $1 on the first package manager found (brew,
 # apt-get, dnf, apk, pacman, zypper, in that order; `command -v` only, never a
-# guess from the OS), or nothing. It only PRINTS: zsh, python3 and claude are named,
+# guess from the OS), or nothing. It only PRINTS: zsh and claude are named,
 # never installed. POSIX sh, because the zsh-missing message below needs it before
 # any zsh exists; the zsh half of this file calls it too, so there is one table.
 _ccm_pkg_hint() {
@@ -191,7 +191,6 @@ fi
 # ---- dependency checks ----------------------------------------------------
 missing=()
 command -v zsh     >/dev/null 2>&1 || missing+=("zsh")
-command -v python3 >/dev/null 2>&1 || missing+=("python3 (3.8 or newer)")
 command -v claude  >/dev/null 2>&1 || missing+=("claude (Claude Code CLI)")
 # The install command for tool $1 on the detected package manager, split into
 # words in $reply (empty when no manager is known), so it can be printed or handed
@@ -204,25 +203,8 @@ if (( ${#missing} )); then
   # Required tools are named, never installed: they need root or belong to another
   # vendor. Claude Code gets its setup page and no command at all.
   _pkg_cmd zsh;     (( ${missing[(I)zsh]} ))     && (( ${#reply} )) && print "  zsh:     ${reply[*]}"
-  _pkg_cmd python3; (( ${missing[(I)python3*]} )) && (( ${#reply} )) && print "  python3: ${reply[*]}"
   (( ${missing[(I)claude*]} )) && print "Install Claude Code first: https://docs.anthropic.com/en/docs/claude-code/setup"
   print "Install those first, then re-run."
-  exit 1
-fi
-
-# A python3 that EXISTS is not necessarily one that can run the helpers. The
-# floor is 3.8, set by the walrus in gateway-shim. Checking it here matters more
-# than it looks: gateway-shim is spawned only for upstreams that recycle tool-use
-# ids, so a too-old interpreter leaves an install that appears to work — for days
-# — and then dies inside a child process with a bare SyntaxError in a log, miles
-# from the cause. Fail here, naming the version, while the user is still looking.
-if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null; then
-  _pyver="$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))' 2>/dev/null || print unknown)"
-  c_r "python3 is too old: found ${_pyver}, need 3.8 or newer."
-  c_dim "  ccmorph's helpers are stdlib-only but use 3.8 syntax (gateway-shim)."
-  c_dim "  macOS: brew install python3.  Linux: your distro's python3.8+ package."
-  _pkg_cmd python3
-  (( ${#reply} )) && c_dim "  With your package manager: ${reply[*]}"
   exit 1
 fi
 

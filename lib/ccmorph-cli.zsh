@@ -19,224 +19,7 @@
 # shells that had sourced the library -- absent on exactly the fresh machines reading the
 # docs that advertised it.
 _ccm_config_store() {
-  command python3 - "$1" "$_CCMORPH_DIR/$2.conf" "$(_ccm_profile_layer "$2")" "${3:-}" "$HOME/.claude/settings.json" "$_CCMORPH_LIBEXEC_DIR/model-window" "${_CCMORPH_MODEL_MAPPING_ENV[@]}" <<'PY'
-import hashlib, importlib.machinery, importlib.util, json, os, sys, tempfile, traceback
-from pathlib import Path
-
-operation, conf_name, settings_name, key, shared_name, layout_name, *mapping_keys = sys.argv[1:]
-
-# A launch that needs the generated settings hands this interpreter the argv of the
-# run that generates them (one element per line), so the profile's settings are
-# written by the same start that read the conf instead of a second one. Absent --
-# every other caller, and any launch whose values cannot survive the newline join --
-# this store behaves exactly as it always has. Both halves or neither: the caller
-# that sends an argv sends the settings-compose to run it in, so a lone export --
-# one that leaked into a launch from somewhere else -- cannot turn this read into a
-# projection that prints nothing. The caller takes that stdout for the model
-# defaults, so a silent projection is a launch started on last time's settings.
-_materialize = (os.environ.get('_CCM_MATERIALIZE')
-                if os.environ.get('_CCM_SC_PY') else None)
-conf, settings = Path(conf_name), Path(settings_name)
-
-def content(path):
-    try:
-        return path.read_bytes()
-    except FileNotFoundError:
-        return None
-
-def fingerprint(parts):
-    return hashlib.sha256(repr(parts).encode()).hexdigest()
-
-def staged(path, data):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(dir=path.parent, prefix='.configure.')
-    try:
-        with os.fdopen(fd, 'wb') as stream:
-            stream.write(data)
-        return name
-    except BaseException:
-        os.unlink(name)
-        raise
-
-try:
-    originals = [content(conf), content(settings)]
-    if originals[0] is None:
-        raise ValueError('profile no longer exists')
-    if operation == 'snapshot':
-        print(fingerprint(originals))
-        sys.exit(0)
-    doc = json.loads(originals[1]) if originals[1] is not None else {}
-    if not isinstance(doc, dict) or not isinstance(doc.get('env', {}), dict):
-        raise ValueError('settings.json and its env must be objects')
-    lines = originals[0].decode().split('\n')
-    if lines and lines[-1] == '':
-        lines.pop()
-    fields = dict(line.split('=', 1) for line in lines if '=' in line and not line.startswith('#'))
-    defaults = {name: value for name, value in fields.items()
-                if name in ('model', 'effort') or name.startswith('effort.')
-                or name in {'env.' + item for item in mapping_keys}}
-    if fields.get('model_defaults') != '1':
-        shared_bytes = content(Path(shared_name))
-        shared = json.loads(shared_bytes) if shared_bytes else {}
-        def merge(base, override):
-            result = dict(base)
-            for name, value in override.items():
-                result[name] = merge(result[name], value) if isinstance(result.get(name), dict) and isinstance(value, dict) else value
-            return result
-        if not isinstance(shared, dict) or not isinstance(shared.get('env', {}), dict):
-            raise ValueError('shared settings and its env must be objects')
-        native = merge(shared, doc)
-        if not isinstance(native.get('modelSettings', {}), dict):
-            raise ValueError('modelSettings must be an object')
-        env = native.get('env', {})
-        chosen = env.get('ANTHROPIC_MODEL') or native.get('model')
-        if chosen:
-            defaults.setdefault('model', chosen)
-        if env.get('CLAUDE_CODE_EFFORT_LEVEL') or native.get('effortLevel'):
-            defaults.setdefault('effort', env.get('CLAUDE_CODE_EFFORT_LEVEL') or native['effortLevel'])
-        for model, settings_row in native.get('modelSettings', {}).items():
-            if isinstance(settings_row, dict) and settings_row.get('effortLevel'):
-                defaults.setdefault('effort.' + model, settings_row['effortLevel'])
-        for name in mapping_keys:
-            if env.get(name):
-                defaults.setdefault('env.' + name, env[name])
-    model_settings = {}
-    for name, value in defaults.items():
-        if not isinstance(value, str) or '=' in name or any(c in name + value for c in '\r\n') or any(c.isspace() for c in name):
-            raise ValueError('model defaults must be single-line strings with valid keys')
-        if name == 'effort' or name.startswith('effort.'):
-            if value not in ('low', 'medium', 'high', 'xhigh', 'max') or name == 'effort.':
-                raise ValueError('invalid saved effort default')
-        if name.startswith('effort.'):
-            model_settings[name[7:]] = {'effortLevel': value}
-    projected = {'env': {name[4:]: value for name, value in defaults.items() if name.startswith('env.')},
-                 'modelSettings': model_settings}
-    for field, native_key in (('model', 'model'), ('effort', 'effortLevel')):
-        if defaults.get(field):
-            projected[native_key] = defaults[field]
-    if operation == 'get':
-        print(defaults.get(key, ''))
-        sys.exit(0)
-    if operation == 'model-settings':
-        print(json.dumps(projected))
-        sys.exit(0)
-    expected = os.environ.get('_CCM_CONFIG_SNAPSHOT')
-    if expected and expected != fingerprint(originals):
-        raise ValueError('profile changed while configuring; nothing saved')
-    updates = {}
-    for name in ('model', 'effort'):
-        value = os.environ.get('_CCM_CONFIG_' + name.upper(), '')
-        if not value:
-            continue
-        if name == 'model' and (value.startswith(('-', '@')) or value == '?' or any(c.isspace() for c in value)):
-            raise ValueError('model must be a nonempty model id, not a flag or picker token')
-        if name == 'effort' and value not in ('low', 'medium', 'high', 'xhigh'):
-            raise ValueError('effort must be low, medium, high or xhigh')
-        updates[name] = value
-    defaults.update(updates)
-    if operation not in ('set', 'configure', 'seed-model-defaults', 'prepare-launch', 'migrate-native'):
-        raise ValueError('unsupported configuration operation')
-    if conf.is_symlink() or settings.is_symlink():
-        raise ValueError('model defaults require profile-local files')
-    changes = dict(defaults, model_defaults='1')
-    if operation == 'configure':
-        kind = os.environ['_CCM_CONFIG_TYPE']
-        if kind == 'apikey':
-            changes['base_url'] = os.environ['_CCM_CONFIG_ENDPOINT']
-            changes['api_key'] = os.environ['_CCM_CONFIG_CREDENTIAL']
-        elif kind == 'token':
-            changes['token'] = os.environ['_CCM_CONFIG_CREDENTIAL']
-    if any('\r' in str(v) or '\n' in str(v) for v in changes.values()):
-        raise ValueError('configuration values cannot contain CR/LF')
-    kept = [line for line in lines if line.partition('=')[0] not in changes]
-    kept.extend(f'{name}={value}' for name, value in changes.items() if value)
-    # One layout for every writer: model-window owns it (CONF_SECTIONS).
-    spec = importlib.util.spec_from_loader("conf_layout", importlib.machinery.SourceFileLoader("conf_layout", layout_name))
-    layout = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(layout)
-    proposed = layout.canonical_conf('\n'.join(kept)).encode()
-    targets = [(conf, originals[0], proposed)] if proposed != originals[0] else []
-    if operation == 'prepare-launch':
-        # The conf owns defaults (including deliberate absence) after seeding.
-        # Keep native discovery without reviving preferences from prior sessions.
-        for name in ('model', 'effortLevel'):
-            doc.pop(name, None)
-        rows = doc.get('modelSettings', {})
-        if not isinstance(rows, dict):
-            raise ValueError('modelSettings must be an object')
-        for row in rows.values():
-            if isinstance(row, dict):
-                row.pop('effortLevel', None)
-        for name in ('ANTHROPIC_MODEL', 'CLAUDE_CODE_EFFORT_LEVEL', *mapping_keys):
-            doc.get('env', {}).pop(name, None)
-        if originals[1] is not None and doc != json.loads(originals[1]):
-            targets.append((settings, originals[1], (json.dumps(doc, indent=2, ensure_ascii=False) + '\n').encode()))
-    pending, applied = [], []
-    try:
-        for path, before, after in targets:
-            pending.append((path, before, after, staged(path, after)))
-        if [content(conf), content(settings)] != originals:
-            raise ValueError('profile changed while configuring; nothing saved')
-        for path, before, after, temp in pending:
-            if content(path) != before:
-                raise ValueError(f'{path.name} changed while saving')
-            os.replace(temp, path)
-            applied.append((path, before, after))
-    except BaseException:
-        for path, before, after in reversed(applied):
-            if content(path) != after:
-                print(f'ccmorph: {path.name} changed externally; left untouched during rollback', file=sys.stderr)
-                continue
-            if before is None:
-                path.unlink()
-            else:
-                temp = staged(path, before)
-                try:
-                    os.replace(temp, path)
-                finally:
-                    if os.path.exists(temp): os.unlink(temp)
-        raise
-    finally:
-        for _, _, _, temp in pending:
-            if os.path.exists(temp): os.unlink(temp)
-    if operation == 'prepare-launch':
-        if not _materialize:
-            print(json.dumps(projected))
-    elif operation == 'seed-model-defaults' and key == 'model':
-        print(defaults.get('model', ''))
-except (OSError, ValueError) as exc:
-    print(f'ccmorph: could not save/read configuration: {exc}', file=sys.stderr)
-    sys.exit(1)
-
-# Outside the handler above on purpose: settings-compose's own failures are the
-# launch's to act on, and its statuses are shifted past the store's -- 10 + rc, so
-# exit 1 still means "the store failed, do not start". Nothing here may end in a
-# silent success: a status no launcher knows is a refused projection, not a launch.
-if _materialize and operation == 'prepare-launch':
-    rc = 1
-    try:
-        _globals = {}
-        # Loading settings-compose is inside the handler because it is one of its
-        # failures: a file that cannot be read or run at all -- a restricted tree
-        # can leave one behind -- costs the launch its settings, never its start,
-        # exactly as it did when this ran as a process of its own.
-        exec(os.environ['_CCM_SC_PY'], _globals)
-        argv = _materialize.split('\n') + ['--saved', json.dumps(projected)]
-        sys.argv[0] = os.path.join(os.environ['_CCM_LIB'], 'settings-compose')
-        rc = _globals['_sc'].main(argv)
-    except SystemExit as exc:
-        # The status the process would have exited with: an int is that status,
-        # None -- a bare sys.exit() -- is success, anything else a failed run.
-        rc = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
-    except BaseException:
-        traceback.print_exc()
-        rc = 1
-    # The same rule for main()'s return value, so either way of leaving
-    # settings-compose reaches this exit as a status the launcher knows.
-    if not isinstance(rc, int):
-        rc = 0 if rc is None else 1
-    sys.exit(0 if rc == 0 else 10 + rc)
-PY
+  _ccm_util config-store "$1" "$_CCMORPH_DIR/$2.conf" "$(_ccm_profile_layer "$2")" "${3:-}" "$HOME/.claude/settings.json" "${_CCMORPH_MODEL_MAPPING_ENV[@]}"
 }
 
 _ccm_doctor_status() {
@@ -275,23 +58,22 @@ _ccm_doctor_environment() {
   # What a fresh install can say before any profile exists. Read-only: it looks
   # at the machine and the state directory and creates nothing.
   emulate -L zsh
-  local py_version tool_path
+  local rc_version tool_path
   local failed=0
   _ccm_doctor_status 'OK' "ccmorph: $_CCMORPH_VERSION ($_CCMORPH_LIB_DIR)"
   _ccm_doctor_status 'OK' "zsh: $ZSH_VERSION"
-  # One call: it prints the version and exits non-zero below the 3.8 floor.
-  if py_version=$(command python3 -c '
-import sys
-print("%d.%d.%d" % sys.version_info[:3])
-sys.exit(0 if sys.version_info >= (3, 8) else 1)
-' 2>/dev/null); then
-    _ccm_doctor_status 'OK' "python3: $py_version"
-  elif [[ -n "$py_version" ]]; then
-    _ccm_doctor_status 'FAIL' "python3: $py_version (need 3.8 or newer)"
-    failed=1
-  else
-    _ccm_doctor_status 'FAIL' 'python3: not found (need 3.8 or newer)'
-    failed=1
+  # Only the Remote Control add-on still runs on an interpreter, so only a machine
+  # that uses it is held to one (3.8 or newer).
+  if [[ -e "$_CCMORPH_DIR/rc-hosts" ]]; then
+    if rc_version=$(_ccm_util rc-interpreter 2>/dev/null); then
+      _ccm_doctor_status 'OK' "remote control interpreter: $rc_version"
+    elif [[ -n "$rc_version" ]]; then
+      _ccm_doctor_status 'FAIL' "remote control interpreter: $rc_version (need 3.8 or newer)"
+      failed=1
+    else
+      _ccm_doctor_status 'FAIL' 'remote control interpreter: not found (need 3.8 or newer)'
+      failed=1
+    fi
   fi
   _ccm_doctor_claude || failed=1
   tool_path=$(whence -p fzf 2>/dev/null) || tool_path=''
@@ -362,14 +144,7 @@ _ccm_doctor() {
   fi
   settings=$(_ccm_profile_layer "$name")
   if [[ -f "$settings" ]]; then
-    if command python3 - "$HOME/.claude/settings.json" "$settings" <<'PY' >/dev/null 2>&1
-import json, sys
-for path in sys.argv[1:]:
-    try:
-        with open(path, encoding='utf-8') as fh: doc=json.load(fh)
-    except FileNotFoundError: continue
-    if not isinstance(doc, dict): raise SystemExit(1)
-PY
+    if _ccm_util settings-valid "$HOME/.claude/settings.json" "$settings" >/dev/null 2>&1
     then
       _ccm_doctor_status "OK" "profile settings: valid layered JSON ($settings overrides canonical settings)"
       local effective_model
@@ -413,7 +188,7 @@ PY
         "$_doctor_url" 2>/dev/null) || payload="__CCMORPH_STATUS__000"
       http_code="${payload##*__CCMORPH_STATUS__}"; payload="${payload%%__CCMORPH_STATUS__*}"; payload="${payload%$'\\n'}"
       if [[ "$http_code" == 2?? ]]; then
-        models_count=$(print -r -- "$payload" | command python3 -c "import json,sys; d=json.load(sys.stdin); assert isinstance(d,dict) and isinstance(d.get(\"data\"),list); print(len(d[\"data\"]))" 2>/dev/null) || models_count=''
+        models_count=$(print -r -- "$payload" | _ccm_util models-count 2>/dev/null) || models_count=''
         if [[ -n "$models_count" ]]; then
           _ccm_doctor_status "OK" "gateway: reachable (HTTP $http_code); models: $models_count"
         else
@@ -441,49 +216,7 @@ PY
   fi
   if [[ -n "$base" && -x "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" ]]; then
     local running_adapter
-    running_adapter=$(command python3 - "$name" <<'PY' 2>/dev/null
-import os, re, shlex, subprocess, sys
-profile = sys.argv[1]
-try:
-    rows = subprocess.run(['ps', '-axo', 'pid=,ppid=,command='], text=True,
-                          capture_output=True, timeout=1, check=True).stdout.splitlines()
-except Exception:
-    print('__UNKNOWN__'); raise SystemExit(0)
-items = {}
-for row in rows:
-    fields = row.strip().split(None, 2)
-    if len(fields) != 3: continue
-    try: pid, ppid = int(fields[0]), int(fields[1]); args = shlex.split(fields[2])
-    except (ValueError, OSError): continue
-    items[pid] = (ppid, args)
-def executable_index(args):
-    if not args:
-        return -1
-    if re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", os.path.basename(args[0]), re.I):
-        return 1 if len(args) > 1 else -1
-    return 0
-
-# ccmorph-core serves the shim inside the adapter: its argv is
-# `ccmorph-core adapter <profile>` (the Python ccmorph-adapter: `ccmorph-adapter <profile>`).
-def adapter_profile(args):
-    i = executable_index(args)
-    if i < 0 or i + 1 >= len(args): return None
-    if os.path.basename(args[i]) == 'ccmorph-core' and args[i + 1] == 'adapter':
-        return args[i + 2] if i + 2 < len(args) else None
-    return args[i + 1] if os.path.basename(args[i]) == 'ccmorph-adapter' else None
-
-for pid, (ppid, args) in items.items():
-    if adapter_profile(args) == profile:
-        children = []
-        for child, (child_ppid, child_args) in items.items():
-            if child_ppid != pid or not child_args: continue
-            child_index = executable_index(child_args)
-            if child_index >= 0 and os.path.basename(child_args[child_index]) in ('cliproxyapi', 'gateway-shim'):
-                base = os.path.basename(child_args[child_index])
-                children.append(f'{child}:{base}')
-        print(str(pid) + '\t' + ','.join(children)); raise SystemExit(0)
-PY
-) || running_adapter=''
+    running_adapter=$(_ccm_util running-adapter "$name" 2>/dev/null) || running_adapter=''
     if [[ "$running_adapter" == __UNKNOWN__ ]]; then
       _ccm_doctor_status 'SKIP' 'adapter: status unknown (process inspection unavailable; not started by doctor)'
     elif [[ -n "$running_adapter" ]]; then
@@ -494,17 +227,7 @@ PY
         local child_spec child_pid child_name listener
         for child_spec in ${(s:,:)adapter_children}; do
           child_pid="${child_spec%%:*}"; child_name="${child_spec#*:}"
-          listener=$(command python3 - "$child_pid" <<'PY' 2>/dev/null
-import subprocess, sys
-try:
-    out = subprocess.run(['lsof', '-nP', '-a', '-p', sys.argv[1], '-iTCP', '-sTCP:LISTEN'], text=True, capture_output=True, timeout=1, check=True).stdout.splitlines()
-except Exception:
-    print('__UNKNOWN__'); raise SystemExit(0)
-for row in out[1:]:
-    fields = row.split()
-    if fields: print(fields[-2]); break
-PY
-) || listener='__UNKNOWN__'
+          listener=$(_ccm_util listener-of "$child_pid" 2>/dev/null) || listener='__UNKNOWN__'
           if [[ "$listener" == __UNKNOWN__ ]]; then
             _ccm_doctor_status "SKIP" "adapter: $child_name child listener status unknown (pid $child_pid)"
           elif [[ -n "$listener" ]]; then
@@ -1360,45 +1083,7 @@ ccmorph() {
       elif [[ "${3:-}" == "--filtered-json" ]]; then
         _ccm_gw_models_json "$2" || return 1
         local _models_json="$REPLY"
-        local _models_rows
-        _models_rows=$(print -r -- "$_models_json" | command python3 -c '
-import json
-import re
-import sys
-
-fields = {}
-with open(sys.argv[1], encoding="utf-8") as source:
-    fields = dict(line.rstrip("\n").split("=", 1) for line in source
-                  if "=" in line and not line.startswith("#"))
-excluded = set(fields.get("excluded_models", "").split(",")) - {""}
-
-import runpy
-_is_excluded = runpy.run_path(sys.argv[-1])["is_excluded"]
-
-
-def is_excluded(model):
-    return _is_excluded(fields, model)
-
-payload = json.load(sys.stdin)
-for m in payload.get("data", []):
-    if not isinstance(m, dict):
-        continue
-    caps = m.get("capabilities")
-    if isinstance(caps, dict) and caps.get("chat_completion") is False:
-        continue
-    model_id = m.get("id")
-    if not isinstance(model_id, str) or not model_id or is_excluded(model_id):
-        continue
-    print(model_id)
-' "$_CCMORPH_DIR/$2.conf" "$_CCMORPH_LIBEXEC_DIR/model-window") || return 1
-        print -r -- "$_models_json" | command python3 -c '
-import json, sys
-allowed = {line for line in sys.argv[1].splitlines() if line}
-payload = json.load(sys.stdin)
-payload["data"] = [row for row in payload.get("data", [])
-                   if isinstance(row, dict) and row.get("id") in allowed]
-print(json.dumps(payload))
-' "$_models_rows"
+        print -r -- "$_models_json" | _ccm_util models-filtered-json "$_CCMORPH_DIR/$2.conf" || return 1
       else
         _ccm_gw_models "$2"
       fi
@@ -1471,11 +1156,7 @@ print(json.dumps(payload))
         _ccm_grid 10 effort "${_ccm_dim}— Claude Code's own default${_ccm_reset}"
       fi
 
-      _ccm_config_store model-settings "$_sh_name" | command python3 -c '
-import json, sys
-for model, settings in sorted(json.load(sys.stdin).get("modelSettings", {}).items()):
-    print("  effort:" + model + " " + settings["effortLevel"] + "  (profile override)")
-'
+      _ccm_config_store model-settings "$_sh_name" | _ccm_util effort-rows
 
       # Window, and ONLY when it is a probed fact about a routed model.
       #
@@ -1489,13 +1170,7 @@ for model, settings in sorted(json.load(sys.stdin).get("modelSettings", {}).item
         local _sh_win _sh_tok="" _sh_unprobed=1 _sh_source="probed"
         _sh_win=$(_ccm_model_window "$_sh_name" "$_sh_model" 2>/dev/null) || _sh_win=""
         if [[ -n "$_sh_win" ]]; then
-          _sh_tok=$(command python3 -c '
-import json, sys
-d = json.loads(sys.stdin.read())
-source = d.get("source", "")
-label = "catalogue-estimate" if source in ("conf-discovered-catalogue", "catalogue-bundled") else "manual" if source == "conf-manual" else "probed"
-print(d.get("window") or "", 1 if d.get("unprobed") else 0, label)
-' <<< "$_sh_win" 2>/dev/null) || _sh_tok=""
+          _sh_tok=$(_ccm_util window-label <<< "$_sh_win" 2>/dev/null) || _sh_tok=""
           _sh_source="${_sh_tok##* }"
           _sh_tok="${_sh_tok% *}"
           _sh_unprobed="${_sh_tok##* }"
@@ -1812,7 +1487,7 @@ print(d.get("window") or "", 1 if d.get("unprobed") else 0, label)
         local _adapter_cmd
         _adapter_cmd=$(ps -o pid,ppid,command | grep -E "ccmorph-(adapter|core adapter)" | grep -E "^[[:space:]]*[0-9]+[[:space:]]+${_parent_pid}[[:space:]]" | head -1)
         if [[ -n "$_adapter_cmd" ]]; then
-          # Parse profile from adapter command line: "ccmorph-core adapter <profile> ..." (or the Python ccmorph-adapter)
+          # Parse profile from adapter command line: "ccmorph-core adapter <profile> ..."
           _hop_profile=$(echo "$_adapter_cmd" | sed -E 's/.*ccmorph-(core )?adapter[[:space:]]+([^[:space:]]+).*/\2/')
           _hop_current=1
         fi

@@ -33,7 +33,7 @@ it reports those for the user to remove.
 **Platforms:** macOS and Linux. Windows shells (Git Bash, MSYS, Cygwin) are
 refused with a pointer to WSL; install inside a WSL distribution instead.
 
-**Required:** `zsh`, `python3` 3.8 or newer, and the `claude` CLI — the installer
+**Required:** `zsh` and the `claude` CLI (`python3` only for the remote-control add-on) — the installer
 refuses without them. It never installs them: they need root or belong to another
 vendor. It names the command for the package manager it finds (the first of
 `brew`, `apt-get`, `dnf`, `apk`, `pacman`, `zypper`) and stops. Claude Code gets
@@ -90,7 +90,7 @@ ccmorph doctor
 ```
 
 With no profiles yet, `doctor` reports the machine instead of a profile:
-the version, `zsh`, `python3`, `claude`, `fzf`, `cliproxyapi`, and whether
+the version, `zsh`, `claude`, `fzf`, `cliproxyapi`, and whether
 `ccmorph` is on your `PATH`. It changes nothing, and fails only when a required
 tool is missing or too old. After you add a profile, `ccmorph doctor <profile>`
 checks that profile.
@@ -344,7 +344,7 @@ declared references and saved transcripts are untouched. A `400` on a message
 request that carries `thinking` blocks is retried once without them (one line on the
 shim's stderr each time); whatever the second answer is, you get it.
 
-Two optional profile keys, relaunch to apply:
+Three optional profile keys, relaunch to apply:
 
 - `env.CCMORPH_AFFINITY_HEADER=<name>` sends the Claude Code session id in that
   header, for gateways that pin a conversation to one backend. The name is letters,
@@ -353,6 +353,8 @@ Two optional profile keys, relaunch to apply:
   `{version}` replaced by the version in Claude Code's own (`claude-cli/X.Y.Z`), for
   example `claude-cli/{version} (external, cli)`. A client without a version keeps
   its own `User-Agent`.
+- `env.CCMORPH_COMPAT=off` turns the two automatic repairs and both keys above off:
+  the shim passes requests through untouched.
 
 Anything else a gateway needs is a custom build: a small Go `main` that calls
 `compat.FromEnv()`, wraps the hooks it returns (the contract is `shim.Hooks`) and

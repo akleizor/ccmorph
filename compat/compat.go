@@ -8,8 +8,9 @@
 //
 //	CCMORPH_AFFINITY_HEADER=<name>   header that carries the Claude Code session id
 //	CCMORPH_USER_AGENT=<template>    outbound User-Agent; {version} is the client's claude-cli version
+//	CCMORPH_COMPAT=off               no hooks at all: the shim passes requests through untouched
 //
-// Always on: dangling tool_reference repair, and one resend without thinking
+// On by default: dangling tool_reference repair, and one resend without thinking
 // blocks after a 400 on POST /v1/messages.
 package compat
 
@@ -39,6 +40,9 @@ func FromEnv() (shim.Hooks, error) { return FromGetenv(os.Getenv) }
 
 // FromGetenv is FromEnv over any lookup, for the adapter that runs the shim in its own process.
 func FromGetenv(getenv func(string) string) (shim.Hooks, error) {
+	if strings.TrimSpace(getenv("CCMORPH_COMPAT")) == "off" {
+		return shim.Hooks{}, nil
+	}
 	return build(getenv("CCMORPH_AFFINITY_HEADER"), getenv("CCMORPH_USER_AGENT"))
 }
 

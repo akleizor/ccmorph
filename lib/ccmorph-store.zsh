@@ -109,46 +109,7 @@ _ccm_migrate_profile_home() {
         "${${:-$HOME/.claude-profiles}:A}" == "${_CCMORPH_PROFILE_DIRS:A}" ]]; then
     return 0
   fi
-  command python3 - "$HOME/.claude-profiles" "$_CCMORPH_PROFILE_DIRS" <<'PY'
-import fcntl, os, sys, time
-from pathlib import Path
-
-legacy, target = map(Path, sys.argv[1:])
-try:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.parent.is_symlink():
-        raise ValueError('refusing symlinked state root')
-    fd = os.open(target.parent / '.profile-home-migration.lock',
-                 os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, 'w') as lock:
-        deadline = time.monotonic() + 10
-        while True:
-            try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise ValueError('another profile migration is still running; retry shortly')
-                time.sleep(0.05)
-        if legacy.is_symlink():
-            if legacy.resolve() != target.resolve() or not target.is_dir() or target.is_symlink():
-                raise ValueError('legacy profile link points elsewhere; nothing moved')
-        elif legacy.exists():
-            if not legacy.is_dir() or target.exists() or target.is_symlink():
-                raise ValueError('both profile locations exist or are not directories; nothing moved')
-            # Rename on the same filesystem: never copy credentials or merge homes.
-            os.rename(legacy, target)
-            try:
-                os.symlink(str(target), legacy, target_is_directory=True)
-            except OSError:
-                if not legacy.exists() and not legacy.is_symlink():
-                    os.rename(target, legacy)
-                raise
-            print(f'ccmorph: profile storage moved to {target}; legacy path retained as a compatibility link', file=sys.stderr)
-except (OSError, ValueError) as exc:
-    print(f'ccmorph: profile directory migration incomplete: {exc}', file=sys.stderr)
-    sys.exit(1)
-PY
+  _ccm_util migrate-profile-home "$HOME/.claude-profiles" "$_CCMORPH_PROFILE_DIRS"
 }
 
 _ccm_normalize_plugin_index_paths() {
@@ -168,95 +129,7 @@ _ccm_normalize_plugin_index_paths() {
   done
   (( needs_repair )) || return 0
 
-  command python3 - "$HOME" "$_CCMORPH_PROFILE_DIRS" <<'PY' 2>/dev/null || return 0
-import json, os, sys, tempfile
-from pathlib import Path
-
-home, profile_root = map(Path, sys.argv[1:])
-plugins = home / ".claude" / "plugins"
-legacy_root = home / ".claude-profiles"
-indexes = (
-    (plugins / "known_marketplaces.json", "marketplaces"),
-    (plugins / "installed_plugins.json", "cache"),
-)
-
-
-def canonical_path(value, kind):
-    if not isinstance(value, str) or not os.path.isabs(value):
-        return None
-    path = Path(value)
-    for root in (legacy_root, profile_root):
-        try:
-            relative = path.relative_to(root)
-        except ValueError:
-            continue
-        parts = relative.parts
-        if len(parts) < 3 or parts[1] != "plugins" or parts[2] != kind:
-            return None
-        target = plugins.joinpath(*parts[2:])
-        return target if target.exists() else None
-    return None
-
-
-def load(path):
-    try:
-        with path.open() as stream:
-            return json.load(stream)
-    except Exception:
-        return None
-
-
-def write(path, data):
-    mode = path.stat().st_mode & 0o777
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-    try:
-        with os.fdopen(fd, "w") as stream:
-            json.dump(data, stream, indent=2)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(tmp, mode)
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-
-
-known_path, _ = indexes[0]
-known = load(known_path)
-if isinstance(known, dict):
-    changed = False
-    for record in known.values():
-        if not isinstance(record, dict):
-            continue
-        target = canonical_path(record.get("installLocation"), "marketplaces")
-        if target is not None and record["installLocation"] != str(target):
-            record["installLocation"] = str(target)
-            changed = True
-    if changed:
-        write(known_path, known)
-
-installed_path, _ = indexes[1]
-installed = load(installed_path)
-records = installed.get("plugins") if isinstance(installed, dict) else None
-if isinstance(records, dict):
-    changed = False
-    for versions in records.values():
-        if not isinstance(versions, list):
-            continue
-        for record in versions:
-            if not isinstance(record, dict):
-                continue
-            target = canonical_path(record.get("installPath"), "cache")
-            if target is not None and record["installPath"] != str(target):
-                record["installPath"] = str(target)
-                changed = True
-    if changed:
-        write(installed_path, installed)
-PY
+  _ccm_util normalize-plugin-index "$HOME" "$_CCMORPH_PROFILE_DIRS" 2>/dev/null || return 0
 }
 
 _ccm_secure_dirs() {
@@ -431,24 +304,7 @@ _ccm_read() {
         }
         ;;
       model_map)
-        command python3 - "$v" <<'PY' 2>/dev/null || {
-import json, re, sys
-try:
-    pairs = json.loads(sys.argv[1], object_pairs_hook=list)
-    valid = isinstance(pairs, list) and sys.argv[1].lstrip().startswith('{')
-    ids = re.compile(r'[A-Za-z0-9._:\[\]()@/-]+')
-    valid = valid and all(isinstance(k, str) and isinstance(v, str)
-                          and ids.fullmatch(k) and ids.fullmatch(v) for k, v in pairs)
-    valid = valid and len({k for k, v in pairs}) == len(pairs)
-    # A key is the model id as the gateway sees it. The [1m] window marker is
-    # ccmorph's own tag, stripped from the lookup key before any model is named,
-    # and the picker reads that marker case-insensitively -- so a key carrying it,
-    # in either spelling, names no model.
-    valid = valid and not any(k.lower().endswith("[1m]") for k, _ in pairs)
-except (ValueError, TypeError):
-    valid = False
-sys.exit(0 if valid else 1)
-PY
+        _ccm_util valid-model-map "$v" 2>/dev/null || {
           _ccm_err "model_map must be a JSON object of unique model IDs to model IDs, and no key may carry the [1m] suffix"
           unset _ccm; return 1
         }

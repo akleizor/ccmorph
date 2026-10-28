@@ -26,19 +26,12 @@ fail() { print -r -- "FAIL: $1"; (( ++failed )) }
 fresh_env() {  # $1 = case dir; prints nothing, sets HOME/ZDOTDIR/PATH stubs
   local d="$TMP/$1"
   mkdir -p "$d/home" "$d/bin"
-  for t in zsh python3 claude fzf; do
+  for t in zsh claude fzf; do
     printf '#!/bin/sh\nexit 0\n' > "$d/bin/$t"; chmod +x "$d/bin/$t"
   done
   # zsh stub would break the installer's own shebang usage — the installer is
   # invoked via `zsh $REPO/install.sh`, so PATH stubs only shadow checks.
   rm -f "$d/bin/zsh"
-  # A no-op python3 satisfies the installer's `command -v python3` presence
-  # check, but install.sh also SHELLS OUT to model-window (a real python3
-  # script, via its own #!/usr/bin/env python3 shebang) to migrate legacy
-  # context data — a no-op stub would silently no-op that migration too.
-  # Delegate to the real interpreter so migration tests exercise real behaviour.
-  printf '#!/bin/sh\nexec "%s" "$@"\n' "$(command -v python3)" > "$d/bin/python3"
-  chmod +x "$d/bin/python3"
   print -r -- "$d"
 }
 
@@ -275,7 +268,6 @@ rm -f "$d/bin/fzf"
 # exits non-zero to prove a declined offer never runs it.
 printf '#!/bin/sh\necho "STUB BREW CALLED" >&2\nexit 1\n' > "$d/bin/brew"
 chmod +x "$d/bin/brew"
-printf '#!/bin/sh\nexit 0\n' > "$d/bin/python3"; chmod +x "$d/bin/python3"
 env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
   zsh "$REPO/install.sh" >"$d/out" 2>&1 </dev/null
 rc=$?
@@ -517,7 +509,7 @@ d="$TMP/nozsh_none"; nozsh_run "$d"; rc=$?
 # finds cp, grep, chmod and the rest, and the result does not depend on the host.
 mkdir -p "$TMP/sys"
 zmodload -F zsh/files b:ln 2>/dev/null
-sys_excluded=(brew apt-get dnf apk pacman zypper fzf cliproxyapi claude python3 curl wget)
+sys_excluded=(brew apt-get dnf apk pacman zypper fzf cliproxyapi claude curl wget)
 for f in /usr/bin/*(N) /bin/*(N); do
   t=${f:t}
   (( ${sys_excluded[(Ie)$t]} )) && continue
@@ -569,21 +561,10 @@ grep -qiE 'npm|curl|apt-get install -y claude|brew install claude' "$d/out" \
 [[ ! -e "$d/home/.config/ccmorph" ]] && ok "no claude: nothing installed" || fail "no claude: wrote ~/.config/ccmorph"
 grep -qF 'STUB' "$d/out" && fail "no claude: ran a package manager" || ok "no claude: nothing ran"
 
-# python3 absent: named with the manager's command, and the run stops before writing.
-d=$(pm_env pm_nopy dnf); rm -f "$d/bin/python3"; pm_run "$d"; rc=$?
-(( rc == 1 )) && grep -qF 'sudo dnf install -y python3' "$d/out" && ! grep -qF 'STUB' "$d/out" && [[ ! -e "$d/home/.config/ccmorph" ]] \
-  && ok "no python3: exits 1 and names 'sudo dnf install -y python3'" || { fail "no python3: wrong result (rc=$rc)"; cat "$d/out"; }
-
-# python3 present but too old: the version stays in the message and the package
-# manager's command joins it.
-d=$(pm_env pm_oldpy apt-get)
-printf '#!/bin/sh\ncase "$*" in *print*) echo 3.6.9; exit 0;; esac\nexit 1\n' > "$d/bin/python3"
-pm_run "$d"; rc=$?
-(( rc == 1 )) && ok "old python3: exits 1" || { fail "old python3: rc=$rc (want 1)"; cat "$d/out"; }
-grep -qF 'found 3.6.9' "$d/out" && ok "old python3: names the version found" || fail "old python3: version missing"
-grep -qF 'sudo apt-get install -y python3' "$d/out" \
-  && ok "old python3: names the package manager's command" || { fail "old python3: no install command"; cat "$d/out"; }
-grep -qF 'STUB' "$d/out" && fail "old python3: ran a package manager" || ok "old python3: the command is printed, never run"
+# python3 is not a dependency: a PATH without one installs, and the installer never names it.
+d=$(pm_env pm_nopy dnf); pm_run "$d"; rc=$?
+(( rc == 0 )) && ! grep -qiF 'python' "$d/out" && ! grep -qF 'STUB' "$d/out" \
+  && ok "no python3: installs, and python3 is never named" || { fail "no python3: wrong result (rc=$rc)"; cat "$d/out"; }
 
 # --- 12. the PATH hint names the file and the syntax for the user's shell -----
 # ~/.local/bin is not on PATH in these runs (the fake PATH never carries it), so

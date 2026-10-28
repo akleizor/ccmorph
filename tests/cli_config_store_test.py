@@ -460,23 +460,16 @@ class ConfigurationSaveTest(unittest.TestCase):
     def test_native_launch_reuses_seeded_model_without_a_second_reader_gh327(self):
         self.conf.write_text('type=token\ntoken=test-token\nmodel=native-default\n')
         native = self.settings.read_bytes()
-        bin_dir = self.home / 'bin'
-        bin_dir.mkdir()
-        calls = self.home / 'python-calls'
-        wrapper = bin_dir / 'python3'
-        wrapper.write_text('#!/bin/zsh\n'
-                           'printf "%s\\n" "$2" >> "$TEST_PYTHON_CALLS"\n'
-                           'exec "$TEST_REAL_PYTHON" "$@"\n')
-        wrapper.chmod(0o755)
-        env = {**self.env, 'PATH': str(bin_dir) + os.pathsep + os.environ['PATH'],
-               'TEST_PYTHON_CALLS': str(calls),
-               'TEST_REAL_PYTHON': shutil.which('python3')}
+        calls = self.home / 'store-calls'
         # Stop at argument validation, immediately after the native default seam.
         # The shell's dynamic scope exposes the actual default consumed by launch.
         result = subprocess.run(
-            ['zsh', '-fc', 'source "$1"; _ccm_err() { print -r -- "$default_model"; }; '
+            ['zsh', '-fc', 'source "$1"; functions -c _ccm_config_store _store; '
+             '_ccm_config_store() { print -r -- "$1" >> "$TEST_STORE_CALLS"; _store "$@"; }; '
+             '_ccm_err() { print -r -- "$default_model"; }; '
              '_ccm_launch -a demo --model', '_', str(ROOT / 'lib/ccmorph.sh')],
-            env=env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
+            env={**self.env, 'TEST_STORE_CALLS': str(calls)}, text=True,
+            capture_output=True, timeout=HANG_TIMEOUT)
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertEqual(result.stdout, 'native-default\n')
         self.assertEqual([op for op in calls.read_text().splitlines()
@@ -487,30 +480,18 @@ class ConfigurationSaveTest(unittest.TestCase):
     # ---- atomicity -------------------------------------------------------
 
     def fail_replace_env(self, target):
-        hooks = self.home / 'python-hooks'
-        hooks.mkdir()
-        (hooks / 'sitecustomize.py').write_text(
-            'import os\n'
-            '_replace = os.replace\n'
-            'def fail_replace(src, dst):\n'
-            '    if str(dst) == os.environ.get("TEST_TARGET"):\n'
-            '        raise OSError("simulated replace failure")\n'
-            '    return _replace(src, dst)\n'
-            'os.replace = fail_replace\n')
-        return {**self.env, 'PYTHONPATH': str(hooks), 'TEST_TARGET': str(target)}
+        """Make writing beside `target` fail: its directory loses write permission, so
+        the store cannot stage the replacement. Nothing it already holds may change."""
+        directory = Path(target).parent
+        directory.chmod(0o500)
+        self.addCleanup(directory.chmod, 0o700)
+        if os.access(directory, os.W_OK):
+            self.skipTest('directory permissions are not enforced for this user')
+        return self.env
 
-    def test_failed_conf_replacement_preserves_both_files(self):
-        # Configure writes only the conf: a failed replacement must leave both
-        # files untouched and no staging file in either directory.
-        before = (conf_fields(self.conf), self.settings.read_bytes())
-        env = self.fail_replace_env(self.conf)
-        result = self.run_cli('config', 'demo',
-                              input='https://new.invalid\nn\nnew\nhigh\ny\n', env=env)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('simulated replace failure', result.stderr)
-        self.assertEqual((conf_fields(self.conf), self.settings.read_bytes()), before)
-        self.assertEqual(list(self.state.glob('.configure.*')), [])
-        self.assertEqual(list(self.settings.parent.glob('.configure.*')), [])
+    # A conf replacement that fails after staging (both files untouched, no staging
+    # file left, and a settings failure rolls the conf back) needs an injected rename:
+    # util/store_test.go's TestConfigStore*.
 
     def test_failed_launch_preparation_restores_seed_and_keeps_native_settings(self):
         before = (conf_fields(self.conf), self.settings.read_bytes())
@@ -520,7 +501,7 @@ class ConfigurationSaveTest(unittest.TestCase):
              '_', str(ROOT / 'lib/ccmorph.sh')], env=env, text=True,
             capture_output=True, timeout=HANG_TIMEOUT)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('simulated replace failure', result.stderr)
+        self.assertIn('Permission denied', result.stderr)
         self.assertEqual((conf_fields(self.conf), self.settings.read_bytes()), before)
         self.assertEqual(list(self.state.glob('.configure.*')), [])
         self.assertEqual(list(self.settings.parent.glob('.configure.*')), [])
@@ -714,7 +695,7 @@ class ConfigurationSaveTest(unittest.TestCase):
         result = self.project('one', penv=(headers,), env=newline)
         self.assertEqual(result.returncode, 0, result.stderr)
         # settings-compose is ccmorph-core (Go) now, so only the store's own interpreter counts.
-        self.assertEqual(len(calls.read_text().splitlines()), 1)
+        self.assertFalse(calls.exists(), 'the projection must start no interpreter')
         # Falling back is a return to the two runs, not a second implementation of
         # them: the same inputs must write the same bytes as the paired path.
         pair, _ = self.projection_env('gh433-newline-pair', name='ho\nme')
@@ -724,7 +705,7 @@ class ConfigurationSaveTest(unittest.TestCase):
         env, calls = self.projection_env('gh433-plain', count_python=True)
         result = self.project('one', penv=(headers,), env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(calls.read_text().splitlines()), 1)
+        self.assertFalse(calls.exists(), 'the projection must start no interpreter')
 
     def test_a_projection_crash_with_a_linked_policy_refuses_through_the_folded_path(self):
         # 19780fc made a settings-compose crash -- a canonical nested past the
@@ -759,7 +740,6 @@ class ConfigurationSaveTest(unittest.TestCase):
                      '"${_ccm_sc_opts[@]}" "${_ccm_sc_strip[@]}"; '
                      'sc_argv=("${_ccm_sc_argv[@]}"); '
                      '_CCM_MATERIALIZE="${(pj:\n:)sc_argv}" _CCM_LIB="$_CCMORPH_LIBEXEC_DIR" '
-                     '_CCM_SC_PY="$(_ccm_settings_compose_py)" '
                      '_ccm_config_store prepare-launch demo >/dev/null; '
                      'print -- $?',
                      '_', str(ROOT / 'lib/ccmorph.sh')],

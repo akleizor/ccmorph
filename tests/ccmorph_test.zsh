@@ -7145,6 +7145,8 @@ test_the_percentage_parser_uses_engine_whitespace() {
 test_whitespace_handling_matches_the_engine() {
   local -x LC_ALL="$(_utf8_locale_name)"
   local rc=0 out=""
+  # No scratch home here: the library must find the built core beside the repo.
+  local -x CCMORPH_LIB_DIR="$REPO_ROOT/lib"
   source "$CCMORPH_SOURCE"
 
   local nel tab nbsp
@@ -7186,6 +7188,8 @@ test_whitespace_handling_matches_the_engine() {
 # and every caller inherits it.
 test_the_clamp_bounds_by_length_before_arithmetic() {
   local rc=0 v out
+  # No scratch home here: the library must find the built core beside the repo.
+  local -x CCMORPH_LIB_DIR="$REPO_ROOT/lib"
   source "$CCMORPH_SOURCE"
 
   # Twenty digits: beyond what zsh can represent, so only a length bound can handle it.
@@ -7223,6 +7227,8 @@ test_the_clamp_bounds_by_length_before_arithmetic() {
 
 test_an_overflowing_env_value_is_invalid_not_an_error() {
   local rc=0 out=""
+  # No scratch home here: the library must find the built core beside the repo.
+  local -x CCMORPH_LIB_DIR="$REPO_ROOT/lib"
   source "$CCMORPH_SOURCE"
 
   local v
@@ -8949,6 +8955,7 @@ test_picker_uses_a_route_scoped_registry_probe() {
 # The tab must stay inside the percentage (parseFloat takes the numeric prefix, so the
 # engine reads 8 either way) and must never leak into the reserve.
 test_the_trigger_env_survives_a_delimiter_in_a_value() {
+  local -x CCMORPH_LIB_DIR="$REPO_ROOT/lib"
   source "$CCMORPH_SOURCE"
   local rc=0 tab
   tab=$(printf '\t')
@@ -10071,9 +10078,8 @@ test_a_broken_settings_compose_does_not_take_the_window_facts_with_it() {
   mkdir -p "$HOME/.config/ccmorph/profiles/mix" "$HOME/.claude"
   print -r -- '{"availableModels":["manual-model","big-sibling","unprobed-model"]}' \
     > "$HOME/.claude/settings.json"
-  printf '%s\n' '#!/bin/sh' 'echo "settings-compose: gone" >&2' 'exit 1' \
-    > "$HOME/.config/ccmorph/libexec/settings-compose"
-  chmod +x "$HOME/.config/ccmorph/libexec/settings-compose"
+  # The settings layers cannot be read at all: the record keeps its own facts.
+  print -r -- '{"availableModels"' > "$HOME/.claude/settings.json"
   source "$CCMORPH_SOURCE"
 
   local rc=0
@@ -10752,14 +10758,14 @@ test_picker_projects_a_derived_1m_row_for_a_probed_claude() {
   assert_contains "$state" 'claude-new-9' \
     'an unprobed Claude model stays visible under its exact ID' || rc=1
 
-  # Without the resolver, catalogue rows retain their exact IDs; only the
+  # With no recorded window, catalogue rows retain their exact IDs; only the
   # derived context suffix is unavailable.
   print -r -- '{}' > "$HOME/.config/ccmorph/profiles/gw/.claude.json"
-  rm -f "$HOME/.config/ccmorph/libexec/ccmorph-core"
-    _ccm_project_picker gw http://gw.invalid sk_t
+  printf '%s\n' 'type=apikey' 'base_url=http://gw.invalid' 'api_key=sk_t' > "$HOME/.config/ccmorph/gw.conf"
+  _ccm_project_picker gw http://gw.invalid sk_t
   state="$(<"$HOME/.config/ccmorph/profiles/gw/.claude.json")"
   assert_contains "$state" 'claude-opus-5' \
-    'no resolver must preserve catalogue visibility without adding a derived suffix' || rc=1
+    'no recorded window must preserve catalogue visibility without adding a derived suffix' || rc=1
   rm -rf "$test_home"
   return $rc
 }
@@ -11240,9 +11246,9 @@ test_a_launch_survives_a_settings_projection_it_cannot_write() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  printf '%s\n' '#!/bin/sh' 'echo "settings-compose: Operation not permitted" >&2' 'exit 1' \
-    > "$HOME/.config/ccmorph/libexec/settings-compose"
-  chmod +x "$HOME/.config/ccmorph/libexec/settings-compose"
+  # A real write failure: the projection's lock directory is a plain file.
+  mkdir -p "$HOME/.config/ccmorph/profiles/proxy"
+  print -r -- x > "$HOME/.config/ccmorph/profiles/proxy/cache"
   source "$CCMORPH_SOURCE"
 
   local err rc=0

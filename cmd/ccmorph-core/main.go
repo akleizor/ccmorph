@@ -11,6 +11,7 @@ import (
 	"github.com/akleizor/ccmorph/modelwindow"
 	"github.com/akleizor/ccmorph/registry"
 	"github.com/akleizor/ccmorph/settingscompose"
+	"github.com/akleizor/ccmorph/util"
 )
 
 func main() {
@@ -27,6 +28,8 @@ func main() {
 		os.Exit(settingscompose.Main(os.Args[2:], os.Stderr))
 	case "model-window":
 		os.Exit(modelwindow.Main(os.Args[2:], os.Stdout, os.Stderr))
+	case "util":
+		os.Exit(util.Main(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	case "refresh-model-registry":
 		os.Exit(registry.Main(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	default:
