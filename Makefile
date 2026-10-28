@@ -70,13 +70,18 @@ STAGE := $(DIST)/stage/ccmorph-$(TAG)
 dist:
 	@rm -rf $(DIST)/stage && mkdir -p $(STAGE)
 	git archive --format=tar $(TAG) | tar -x -C $(STAGE)
-	@for p in $(PLATFORMS); do \
+	@pids=""; fail=0; for p in $(PLATFORMS); do \
 	  os=$${p%/*}; arch=$${p#*/}; \
 	  (cd $(STAGE) && CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch \
 	    go build -trimpath -o libexec/gateway-shim-$$os-$$arch ./cmd/gateway-shim && \
 	    CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch \
-	    go build -trimpath -o libexec/ccmorph-core-$$os-$$arch ./cmd/ccmorph-core) || exit 1; \
-	done
+	    go build -trimpath -o libexec/ccmorph-core-$$os-$$arch ./cmd/ccmorph-core) \
+	    > $(DIST)/build-$$os-$$arch.log 2>&1 & \
+	  pids="$$pids $$!"; \
+	done; \
+	for pid in $$pids; do wait $$pid || fail=1; done; \
+	if [ $$fail -ne 0 ]; then cat $(DIST)/build-*.log; exit 1; fi; \
+	rm -f $(DIST)/build-*.log
 	tar -czf $(TARBALL) -C $(DIST)/stage ccmorph-$(TAG)
 	@rm -rf $(DIST)/stage
 	cp $(TARBALL) $(DIST)/ccmorph.tar.gz
