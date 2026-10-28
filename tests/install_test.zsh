@@ -229,7 +229,12 @@ print 'type=sub'                                   > "$cfg/personal.conf"
 print 'export CCMORPH_TEST_LOCAL=1'               > "$cfg/local.sh"
 print 'active-marker'                              > "$cfg/active"
 
+# An update puts the shim on a NEW inode: overwriting a signed Mach-O in place leaves
+# a stale code-signature cache and macOS kills the binary on launch (exit 137).
+shim_inode() { ls -i "$cfg/libexec/gateway-shim" | awk '{print $1}' }
+before=$(shim_inode)
 run_installer "$d"; rc=$?
+[[ "$(shim_inode)" != "$before" ]] && ok "re-run installs gateway-shim on a new inode" || fail "re-run overwrote gateway-shim in place"
 [[ $rc -eq 0 ]] && ok "re-run exits 0" || { fail "re-run rc=$rc"; cat "$d/out" }
 
 # Every piece of user state survives byte-for-byte.
