@@ -40,13 +40,15 @@ def local(year, month, day, hour=0):
 
 
 def receipt(rid, model, stamp, cost=None, complete=True,
-            requested=ABSENT, served=ABSENT, input_tokens=1_000_000):
+            requested=ABSENT, served=ABSENT, input_tokens=1_000_000, estimate=None):
     """One schema-1 receipt. `model` is the identity the client is answered with;
     `requested` and `served` are the shim's recorded ids, absent by default — the
     row shape a receipt had before served_model existed. Pass None for a null id."""
     usage = {"input_tokens": input_tokens}
     if cost is not None:
         usage["cost"] = cost
+    if estimate is not None:
+        usage["estimated_cost"] = estimate
     row = {"schema": 1, "response_id": rid, "response_model": model, "timestamp": stamp,
            "task": None, "attempt": 1, "profile": "ledger", "complete": complete, "usage": usage}
     if requested is not ABSENT:
@@ -139,6 +141,28 @@ def test_the_exporter_refuses_exactly_the_costs_the_shim_refuses(tmp_path):
     assert [r["costUSD"] for r in day] == [1e13] and stats["usd"] == 1e13
     assert stats["unpriced"] == 1 and stats["gateway_rows"] == 1
     assert ue.COST_LIMIT == SHIM_COST_LIMIT
+
+
+def test_a_billed_and_an_estimated_cost_are_told_apart(tmp_path):
+    """One gateway-billed row and one row the shim priced itself: the export names
+    each kind, and the billed total never absorbs the list-price estimate. This is
+    the seam that read both as `gateway` before #51."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    rows.mkdir()
+    write(rows, "billed.json", receipt("a", "claude-opus-5-5", "2026-10-16T01:00:00+00:00", cost=2))
+    write(rows, "estimated.json", receipt("b", "deepseek-flash", "2026-10-16T02:00:00+00:00",
+                                          estimate=0.75))
+
+    stats = ue.export(rows, output)
+
+    day = read_day(output, "2026-10-16")
+    sources = {r["message"]["model"]: r["ccmorph"]["costSource"] for r in day}
+    assert sources == {"claude-opus-5-5": "gateway", "deepseek-flash": "estimate"}
+    assert {r["message"]["model"]: r["costUSD"] for r in day} == {"claude-opus-5-5": 2, "deepseek-flash": 0.75}
+    assert stats["usd"] == 2
+    assert stats["estimated_usd"] == 0.75
+    assert stats["gateway_rows"] == 1 and stats["estimated_rows"] == 1
+    assert stats["unpriced"] == 0 and stats["rows"] == 2
 
 
 def test_unpriced_model_with_a_gateway_cost_still_exports(tmp_path):

@@ -72,7 +72,12 @@ func TestRowGetsAComputedCostOnlyWhenNoneWasBilled(t *testing.T) {
 	post("b", "deepseek-flash", `{"input_tokens":1000000,"cost":3}`)
 	post("c", "unlisted", `{"input_tokens":1000000}`)
 	got := strings.Join(rows(t, dir), "\n")
-	if !strings.Contains(got, `"cost":0.75`) || !strings.Contains(got, `"cost":3}`) || strings.Count(got, `"cost"`) != 2 {
+	// A computed amount is its own key: `cost` stays what the gateway billed, so a
+	// reader that sums billed spend can never add a list price it did not ask for.
+	if !strings.Contains(got, `"estimated_cost":0.75`) || !strings.Contains(got, `"cost":3}`) {
+		t.Fatal(got)
+	}
+	if strings.Count(got, `"cost"`) != 1 || strings.Count(got, `"estimated_cost"`) != 1 {
 		t.Fatal(got)
 	}
 }

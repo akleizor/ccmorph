@@ -23,6 +23,7 @@ credential, or losing the user's choice.
 - **A redaction helper whose error path returns the secret it was meant to hide** — a parse failure that falls back to the raw value, so a proxy password holding a `^`, a bare `%` or a space is printed — `example: #47 fix(adapter): --print-config redacts a proxy URL Go cannot parse`.
 - **A deadline only some documented paths arm** — a bound armed for `--model` but not `--auto`, though the launcher always passes `--auto` and adds `--model` only for a picked model — `example: #47 fix(adapter): --auto without --model is bounded by the select deadline`.
 - **A test that cannot fail** — inherits the suite's env, scratch home gone, asserts nothing ran — `example: 438e66f test(launch): make the fork_forward stderr test able to fail`.
+- **A new writer reusing a field whose contract says otherwise** — the writer's own section is updated, but the field's other contract (the section its readers obey) is not, so the two disagree and readers mislabel the new values — `example: e84e42d feat(shim): price receipts for upstreams that bill outside the response (#34)`.
 - **A path check that forgets a link can sit on a parent directory** — `-e`/`-ef` are true through a carried sidecar dir while the path itself is not a link, so a removal mistakes its own files for native collisions — `example: 93f3db8 fix(profiles): a carried sidecar dir no longer blocks rm`.
 
 ## Never blocks

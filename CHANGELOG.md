@@ -5,6 +5,17 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
+## Unreleased
+
+### Changed
+
+- **A computed cost is no longer billed spend** (#51). The shim writes the
+  models.dev list price it computes for a provider that bills outside the
+  response as `usage.estimated_cost`, never as `usage.cost`, and
+  `scripts/usage-export` marks it `costSource: estimate` with its own
+  `estimated_usd`/`estimated_rows` totals; `gateway-shim report` prints it on
+  its own "estimated spend" line. Gateway-billed totals stay billed only.
+
 ## v0.3.0 — 2026-10-28
 
 The core is Go. `ccmorph-core` replaces the four Python helpers, and `python3` is

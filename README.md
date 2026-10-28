@@ -129,8 +129,8 @@ To switch a running session, use a leading `!` in the Claude Code prompt:
 Each turn a gateway profile serves writes one receipt under
 `~/.local/state/ccmorph/usage/`: tokens, the model that answered, and the
 cost the gateway billed when it reports one (for a provider reached directly,
-the cost at its models.dev price). No prompt, header or credential is
-stored. Export the receipts and read them with ccusage:
+an estimated cost at its models.dev list price, marked as an estimate in the
+receipt and the export). No prompt, header or credential is stored. Export the receipts and read them with ccusage:
 
 ```sh
 scripts/usage-export --output ~/.cache/ccmorph-usage
@@ -138,8 +138,9 @@ CLAUDE_CONFIG_DIR=~/.cache/ccmorph-usage ccusage claude daily --instances \
   --config ~/.cache/ccmorph-usage/ccusage.json
 ```
 
-Each profile is one ccusage project. A billed cost is used as is; a turn the
-gateway did not price is priced by ccusage at the provider's list price.
+Each profile is one ccusage project. A billed cost is used as is and a
+shim-computed one is marked `costSource: estimate`; a turn with neither is
+priced by ccusage at the provider's list price.
 Subscription profiles talk to Anthropic directly and write no receipts.
 
 ## Configuration

@@ -27,9 +27,11 @@ class ReportTest(unittest.TestCase):
         (self.state / "ccmorph" / "usage").mkdir(parents=True)
         self.n = 0
 
-    def row(self, task, model, cost, hours=1, attempt=1, **extra):
+    def row(self, task, model, cost, hours=1, attempt=1, estimate=None, **extra):
         self.n += 1
         usage = {"input_tokens": 5} if cost is None else {"input_tokens": 5, "cost": cost}
+        if estimate is not None:
+            usage["estimated_cost"] = estimate
         path = self.state / "ccmorph" / "usage" / f"{self.n}.json"
         path.write_text(json.dumps({
             "task": task, "attempt": attempt, "served_model": model,
@@ -180,6 +182,20 @@ class ReportTest(unittest.TestCase):
         self.assertNotIn("\nFORGED", out)
         self.assertNotIn("\x1b", out)
         self.assertIn("total spend $1.00", out)
+
+    def test_estimated_cost_is_named_apart_from_billed_spend(self):
+        # A gateway-billed row and a row the shim priced itself are one summary
+        # line apart: the billed one is spend, the estimate is its own line and
+        # never a by-model dollar figure.
+        self.row("billed", "sonnet-x", 2.0)
+        self.row("estimated", "ds-x", None, estimate=0.75)
+        self.outcomes(("billed", "accepted"), ("estimated", "accepted"))
+        out = self.report()
+        self.assertIn("total spend $2.00", out)
+        self.assertIn("unknown spend 0 rows", out)
+        self.assertIn("estimated spend $0.75 over 1 rows (models.dev list price, not billed)", out)
+        self.assertNotIn("ds-x  $", out)
+        self.assertIn("  accepted 2  n/a/task", out)
 
     def test_invalid_billed_costs_are_unknown_not_spend(self):
         for value in (-1, float("inf"), float("nan"), True, "2"):
