@@ -50,7 +50,7 @@ exit 1
 '''
 # Honours the launcher's --parent-pid like the real adapter (issue #386): a
 # stub that spins forever outlives a hard-killed launch.
-ADAPTER = fake_adapter.script('echo NATIVE=1')
+ADAPTER = fake_adapter.script('echo NATIVE=1', core=True)
 
 
 class ModelSelection(unittest.TestCase):

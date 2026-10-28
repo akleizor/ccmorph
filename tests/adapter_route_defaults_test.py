@@ -26,7 +26,7 @@ import time
 import fake_adapter
 import pytest
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, HELPERS_IMPL
 
 ROOT = Path(__file__).resolve().parents[1]
 LIB_FILES = ('libexec/model-window', 'libexec/settings-compose', 'lib/ccmorph.sh',
@@ -60,10 +60,13 @@ ROUTE_DEFAULT = '-mid_conv_system,-mid_conv_tool_change,-per_turn_effort'
 # advisory into CCMORPH_ADVISE is an interpreter of its own, and #433 leaves
 # that encoder alone. Pinning each keeps a fix to one shape from paying for
 # another with a new interpreter.
-PYTHON_STARTS_PER_LAUNCH = 6
+# settings-compose runs in ccmorph-core by default: one interpreter start fewer on the
+# routes that fold it (CCMORPH_TEST_HELPERS=python restores the original counts).
+_GO = 1 if HELPERS_IMPL == 'go' else 0
+PYTHON_STARTS_PER_LAUNCH = 6 - _GO
 PYTHON_STARTS_NO_MODEL = 5
 PYTHON_STARTS_TOKEN = 4
-PYTHON_STARTS_HAZARD = 7
+PYTHON_STARTS_HAZARD = 7 - _GO
 
 # GH-433 cuts interpreter starts out of the launch path, which is only safe if the
 # launch still writes what it wrote. One golden holds the whole observable output

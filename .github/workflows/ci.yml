@@ -165,8 +165,7 @@ jobs:
             | head -1 | tee /dev/stderr | grep -q '^gateway-shim :[0-9]'
       - name: the installed ccmorph-core starts
         run: |
-          "$HOME/.config/ccmorph/libexec/ccmorph-core" model-window --help >/dev/null
-          "$HOME/.config/ccmorph/libexec/ccmorph-core" adapter --help 2>&1 | grep -q '^usage: ccmorph-adapter'
+          "$HOME/.config/ccmorph/libexec/ccmorph-core" adapter --help | grep -q '^usage: ccmorph-adapter'
       - name: the command runs in a shell that sourced nothing
         run: sh -c 'ccmorph --version'
       - name: one-line install from a local tarball (remote mode, real curl and tar)

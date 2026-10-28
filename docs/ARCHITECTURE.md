@@ -66,10 +66,12 @@ Each module has one purpose; a function lives in exactly one.
 
 The repository and the installed copy under `~/.config/ccmorph` share one layout:
 `bin/ccmorph` (the command), `lib/` (`ccmorph.sh` and the modules), `libexec/`
-(internal executables: `ccmorph-adapter`, `gateway-shim`, `model-window`,
-`refresh-model-registry`, `settings-compose`; `gateway-shim` is Go, built from
-`shim/`, `compat/` and `cmd/gateway-shim/` by `make shim`, the rest are Python; `make shim` also builds
-`ccmorph-core`, the Go port of `ccmorph-adapter` from `adapter/`, which the launch path does not call yet) and `share/` (data:
+(internal executables: `ccmorph-core` and `gateway-shim`, both Go and built by
+`make shim`; `ccmorph-core <adapter|settings-compose|model-window|refresh-model-registry>`
+is the one binary every launch, install and zsh caller runs, from `cmd/ccmorph-core/`;
+`gateway-shim` is the standalone stock shim, `cmd/gateway-shim/`, for a profile that runs it directly.
+The Python `ccmorph-adapter`, `model-window`, `refresh-model-registry` and `settings-compose` stay in `libexec/` until
+the Go ports replace the last in-tree importers) and `share/` (data:
 `model-catalogue.json`, `window-sources.json`). `lib/` finds `libexec/` and `share/`
 beside itself. `CCMORPH_LIB_DIR` names the `lib/` directory.
 
@@ -521,7 +523,7 @@ A launch is per session. A non-Claude client that outlives sessions — Hermes
 — needs a fixed address and a fixed credential instead, on the same adapter:
 
 ```
-ccmorph-adapter <profile> --auto --model <id> --port <n> --inbound-token-file <path>
+ccmorph-core adapter <profile> --auto --model <id> --port <n> --inbound-token-file <path>
 ```
 
 Loopback only, like every route the adapter serves. The port is served exactly
@@ -770,7 +772,7 @@ whose id never reaches the client cannot be attributed: the shim's own
 unexpected-EOF retry consumes an upstream 500 whose body carries no id, so that
 call produces no row at all. Capture is off unless the adapter passed the route
 spec, so a hand-launched shim writes nothing. Every session that runs through
-`ccmorph-adapter` carries the shim — it is the stable request shim, interposed
+`ccmorph-core adapter` carries the shim — it is the stable request shim, served inside the adapter's own process (one helper per gateway session; only a translator route adds the `cliproxyapi` child and its tether, and a profile's `CCMORPH_SHIM_HOOKS` build is still spawned as its own executable), interposed
 with `--preserve-tool-ids` where the upstream does not recycle ids — but a
 profile that never starts the adapter has no shim and therefore no rows:
 native, direct endpoints and any route still served by the shared brew

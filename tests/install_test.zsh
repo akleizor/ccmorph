@@ -65,7 +65,7 @@ extra=(${got:|want}); missing=(${want:|got})
   && ok "install places exactly its own manifest" \
   || fail "manifest drift — extra: ${extra[*]:-none}, missing: ${missing[*]:-none}"
 # The placed binary runs: it must start, not just exist.
-"$d/home/.config/ccmorph/libexec/ccmorph-core" model-window --help >/dev/null 2>&1 \
+"$d/home/.config/ccmorph/libexec/ccmorph-core" adapter --help >/dev/null 2>&1 \
   && ok "the installed ccmorph-core starts" || fail "the installed ccmorph-core does not start"
 bin_got=("$d/home/.local/bin/"*(N:t))
 [[ "${(j:,:)bin_got}" == "ccmorph" ]] \
