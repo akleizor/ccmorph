@@ -21,6 +21,11 @@ no longer needed unless you use the Remote Control add-on.
   A script that ran the old paths must call `ccmorph-core <verb>`. `install.sh`
   removes the old copies on upgrade.
 
+### Removed
+
+- **The model-router add-on** (#35) moved to its own repository, with the root
+  plugin marketplace. Uninstall the plugin from Claude Code if you added it.
+
 ### Added
 
 - **`CCMORPH_COMPAT=off`** (#43) turns off every built-in gateway compatibility
@@ -53,10 +58,13 @@ no longer needed unless you use the Remote Control add-on.
 
 ### Added
 
-- **Homebrew.** `brew install akleizor/tap/ccmorph` installs a prebuilt bottle
-  (no Go needed). `ccmorph update` and `ccmorph uninstall` on a brew install
+- **Homebrew.** `brew install akleizor/tap/ccmorph` installs a prebuilt bottle on
+  Apple silicon (newest macOS) and Linux x86_64, and builds from source with Go
+  elsewhere. `ccmorph update` and `ccmorph uninstall` on a brew install
   name the `brew upgrade` / `brew uninstall` command instead of running the
   installer. Profiles stay in `~/.config/ccmorph` either way.
+- **model-router add-on** (#32): `addons/router`, installable as a Claude Code
+  plugin from this repository's marketplace. Removed again in v0.3.0.
 
 ### Changed
 

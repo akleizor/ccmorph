@@ -45,7 +45,7 @@ ccmorph run  ------+--> personal   API key             -->  Anthropic API
 
 ## Install
 
-With Homebrew (macOS arm64 and Linux x86_64 get a prebuilt bottle, so no Go):
+With Homebrew:
 
 ```sh
 brew install akleizor/tap/ccmorph
@@ -53,7 +53,11 @@ ccmorph doctor
 ```
 
 Type the full `akleizor/tap/ccmorph` name: Homebrew trusts a third-party tap's
-formula only when it is named that way. Upgrade with `brew upgrade ccmorph`.
+formula only when it is named that way. Prebuilt bottles cover Apple silicon on
+the newest macOS and Linux x86_64; anywhere else Homebrew builds from source and
+installs Go for the build. Update with `brew upgrade ccmorph` and remove with
+`brew uninstall ccmorph`: `ccmorph update` and `ccmorph uninstall` refuse a
+Homebrew install and print those commands.
 
 From a clone:
 
@@ -61,8 +65,7 @@ From a clone:
 git clone https://github.com/akleizor/ccmorph && cd ccmorph && make shim && ./install.sh
 ```
 
-Or the one-liner, which works once the repository is public and has a release —
-it is private today, so the download returns 404:
+Or the one-liner:
 
 ```sh
 sh -c "$(curl -fsSL https://github.com/akleizor/ccmorph/releases/latest/download/install.sh)"
@@ -76,11 +79,11 @@ for the bleeding edge — and `CCMORPH_INSTALL_URL` replaces the whole tarball U
 `curl -fsSL ... | sh` also works, but it has no terminal to ask on, so it declines
 the optional installs and prints the commands instead.
 
-The installer copies the runtime (`lib/`, `libexec/`, `share/`) into `~/.config/ccmorph` and the `ccmorph`
+The installer (clone or one-liner) copies the runtime (`lib/`, `libexec/`, `share/`) into `~/.config/ccmorph` and the `ccmorph`
 command into `~/.local/bin`. It never edits shell startup files; if
 `~/.local/bin` is not on your `PATH`, it prints the line to add, for your shell.
 
-To update, run `ccmorph update` (the latest release; `ccmorph update <branch-or-tag>`
+For a clone or one-liner install, update with `ccmorph update` (the latest release; `ccmorph update <branch-or-tag>`
 for another), or run the same install again; profiles, credentials, and `local.sh`
 are preserved. A git clone is updated with git instead. `ccmorph uninstall` removes the command and
 leaves your profiles alone.
