@@ -324,6 +324,7 @@ func newModelRoutes(raw string, client *http.Client) (*ModelRoutes, error) {
 	// attribute a row to, so the sidecar stays off and the shim writes nothing.
 	if spec.Profile != "" {
 		r.usage = newSidecar(spec.Profile, spec.Identity)
+		r.usage.prices = newPriceBook(spec.Upstream)
 	}
 	return r, nil
 }

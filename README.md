@@ -124,7 +124,8 @@ To switch a running session, use a leading `!` in the Claude Code prompt:
 
 Each turn a gateway profile serves writes one receipt under
 `~/.local/state/ccmorph/usage/`: tokens, the model that answered, and the
-cost the gateway billed when it reports one. No prompt, header or credential is
+cost the gateway billed when it reports one (for a provider reached directly,
+the cost at its models.dev price). No prompt, header or credential is
 stored. Export the receipts and read them with ccusage:
 
 ```sh

@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -143,6 +144,7 @@ type UsageSidecar struct {
 	tags             taskTags
 	served           *string
 	retries          int
+	prices           *priceBook // nil: no upstream host to price against
 }
 
 func newSidecar(profile, identity string) *UsageSidecar {
@@ -199,11 +201,37 @@ func (u *UsageSidecar) row(r *record) []byte {
 	out = append(out, `,"attempt":`+strconv.Itoa(r.attempt)+`,"response_model":`...)
 	out = append(out, optStr(r.responseModel)...)
 	out = append(out, `,"timestamp":"`+r.timestamp+`","usage":`...)
-	out = append(out, r.usage.json()...)
+	out = append(out, u.withCost(r).json()...)
 	if r.complete {
 		return append(out, `,"complete":true}`...)
 	}
 	return append(out, `,"complete":false}`...)
+}
+
+// withCost is the row's usage with a cost computed from the provider's price when
+// the upstream billed none. The gateway's own billed cost is never replaced.
+func (u *UsageSidecar) withCost(r *record) usageRow {
+	if u.prices == nil || slices.ContainsFunc(r.usage, func(n kv) bool { return n.key == "cost" }) {
+		return r.usage
+	}
+	model := ""
+	if r.servedModel != nil {
+		model = *r.servedModel
+	} else if r.responseModel != nil {
+		model = *r.responseModel
+	}
+	if model == "" {
+		return r.usage
+	}
+	p, ok := u.prices.lookup(model)
+	if !ok {
+		return r.usage
+	}
+	c, ok := p.estimate(r.usage)
+	if !ok {
+		return r.usage
+	}
+	return append(slices.Clone(r.usage), kv{"cost", []byte(strconv.FormatFloat(c, 'f', -1, 64))})
 }
 
 func stateDir() string {

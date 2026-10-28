@@ -689,7 +689,14 @@ unexpected-EOF replay, so `0` when it re-sent nothing **[test]**.
 `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, the nested
 `cache_creation` split, and the gateway's own billed `cost` when it reports one as a
 number `>= 0` below the shim's `COST_LIMIT` (the largest amount a float still holds to
-the cent, `2 ** 53 / 100`). A string (`service_tier`), an unknown key or
+the cent, `2 ** 53 / 100`). When the upstream bills outside the response (a provider reached directly, such as
+DeepSeek's own API) the shim computes `cost` instead, in the same US dollars: the four token
+classes times the per-million price models.dev lists for the served model under the provider
+whose `api` host is the route's upstream host (a class with no listed price is charged at the
+input price; context tiers are not applied). An upstream models.dev does not know gets no cost.
+The host's slice of `api.json` is cached in `prices-<host>.json` beside the receipts and
+refreshed after a day. A billed cost is never replaced, and rows written before this existed
+are not recomputed. A string (`service_tier`), an unknown key or
 a bool never enters the file, and neither does a prompt, a header, a session
 identifier or a credential **[test]**. `route_id` is a domain-separated digest
 of the profile and the adapter's route identity; that identity is itself a
