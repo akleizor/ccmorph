@@ -273,7 +273,7 @@ _ccm_adapter_start() {
   local profile="$1" selected="${2:-}"
   local -a scope=(--auto)
   [[ -n "$selected" ]] && scope+=(--model "${selected%%\[*}")
-  local bin="$_CCMORPH_LIBEXEC_DIR/ccmorph-adapter"
+  local bin="$_CCMORPH_LIBEXEC_DIR/ccmorph-core"
 
   [[ -x "$bin" ]] || {
     _ccm_err "profile '$profile' needs an adapter but $bin is not executable"
@@ -309,7 +309,7 @@ _ccm_adapter_start() {
   # 610137d wedge — the adapter holding fd0 froze the TUI). no_monitor buys the
   # redirect today as an emergent property of job control; make it explicit so
   # a future setopt change cannot silently reintroduce the wedge.
-  "$bin" "$profile" "${scope[@]}" --parent-pid $$ </dev/null >"$ready" 2>>"$adapter_log" &
+  "$bin" adapter "$profile" "${scope[@]}" --parent-pid $$ </dev/null >"$ready" 2>>"$adapter_log" &
   _ccm_adapter_pid=$!
   # `disown` takes a JOB spec, not a PID: a bare number is read as a job
   # number and fails (rc=127), leaving the job in the table so zsh prints

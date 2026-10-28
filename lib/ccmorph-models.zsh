@@ -200,21 +200,21 @@ _ccm_models_listing() {  # $1 = base url, $2 = key, $3 = max-time seconds
 # one process.
 _ccm_model_window_fields() {
   _ccm_migrate_state || return 1
-  local resolver="$_CCMORPH_LIBEXEC_DIR/model-window"
+  local resolver="$_CCMORPH_LIBEXEC_DIR/ccmorph-core"
   [[ -x "$resolver" ]] || return 1
   command env -u CLAUDE_CODE_MAX_CONTEXT_TOKENS \
     CCMORPH_STATE_DIR="$_CCMORPH_DIR" MODEL_WINDOW_PROFILE_CONF="$_CCMORPH_DIR/$1.conf" \
-    "$resolver" --fields "$1" "$2" 2>/dev/null
+    "$resolver" model-window --fields "$1" "$2" 2>/dev/null
 }
 
 # One local resolver reads manual and discovered limits from the profile itself.
 _ccm_model_window() {
   _ccm_migrate_state || return 1
-  local resolver="$_CCMORPH_LIBEXEC_DIR/model-window"
+  local resolver="$_CCMORPH_LIBEXEC_DIR/ccmorph-core"
   [[ -x "$resolver" ]] || return 1
   command env -u CLAUDE_CODE_MAX_CONTEXT_TOKENS \
     CCMORPH_STATE_DIR="$_CCMORPH_DIR" MODEL_WINDOW_PROFILE_CONF="$_CCMORPH_DIR/$1.conf" \
-    "$resolver" "$1" "$2" 2>/dev/null
+    "$resolver" model-window "$1" "$2" 2>/dev/null
 }
 
 # Run a command detached: no job-table entry, no SIGHUP when this shell exits.
@@ -279,8 +279,8 @@ _ccm_listing_has_unsized() {  # $1 = profile, $2 = /v1/models JSON
 # Free metadata only, off add/launch's critical path. Inference requires the
 # operator's explicit `ccmorph probe --allow-inference --profile ... --model ...`.
 _ccm_probe_nudge() {  # $1 = profile name
-  [[ -x "$_CCMORPH_LIBEXEC_DIR/refresh-model-registry" ]] || return 0
-  _ccm_spawn_bg_logged "$_CCMORPH_LIBEXEC_DIR/refresh-model-registry" \
+  [[ -x "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" ]] || return 0
+  _ccm_spawn_bg_logged "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" refresh-model-registry \
     --declared-only --profile "$1" --deadline 30
 }
 

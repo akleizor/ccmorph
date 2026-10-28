@@ -309,35 +309,37 @@ if [[ "$SRC" != "$CONFIG_REAL" ]]; then
   cp "$SRC/share/profile.conf.example" "$CONFIG_DIR/profile.conf.example"
 fi
 chmod +x "${EXECUTABLES[@]/#/$CONFIG_DIR/}"
-# gateway-shim is compiled Go, so it is the one component that is not a tracked
-# file. A release tarball carries one prebuilt binary per platform
-# (gateway-shim-<os>-<arch>, from `make dist`); a checkout carries the one
+# gateway-shim and ccmorph-core are compiled Go, so they are the components that
+# are not tracked files. A release tarball carries one prebuilt binary of each per
+# platform (<name>-<os>-<arch>, from `make dist`); a checkout carries the ones
 # `make shim` built. Nothing is compiled here: an installer that needs a Go
 # toolchain on a user's machine is a second dependency for one helper.
 _shim_os="${$(uname -s):l}"
 _shim_arch="$(uname -m)"
 case "$_shim_arch" in x86_64) _shim_arch=amd64 ;; aarch64) _shim_arch=arm64 ;; esac
-_shim=""
-for _f in "$SRC/libexec/gateway-shim-$_shim_os-$_shim_arch" "$SRC/libexec/gateway-shim"; do
-  [[ -f "$_f" && -x "$_f" ]] && { _shim="$_f"; break }
+for _name in gateway-shim ccmorph-core; do
+  _shim=""
+  for _f in "$SRC/libexec/$_name-$_shim_os-$_shim_arch" "$SRC/libexec/$_name"; do
+    [[ -f "$_f" && -x "$_f" ]] && { _shim="$_f"; break }
+  done
+  if [[ -z "$_shim" ]]; then
+    c_r "No $_name binary for $_shim_os-$_shim_arch beside this installer."
+    c_dim "  From a checkout: run 'make shim' (needs Go), then re-run ./install.sh."
+    c_dim "  Otherwise install a release: it ships the binary for your platform."
+    exit 1
+  fi
+  # Remove first: copying over a running-signed Mach-O in place keeps the kernel's stale
+  # code-signature cache for the old bytes, and macOS then kills the new binary (exit 137).
+  [[ "${_shim:A}" == "${CONFIG_REAL}/libexec/$_name" ]] \
+    || { rm -f "$CONFIG_DIR/libexec/$_name" && cp "$_shim" "$CONFIG_DIR/libexec/$_name"; }
+  chmod +x "$CONFIG_DIR/libexec/$_name"
 done
-if [[ -z "$_shim" ]]; then
-  c_r "No gateway-shim binary for $_shim_os-$_shim_arch beside this installer."
-  c_dim "  From a checkout: run 'make shim' (needs Go), then re-run ./install.sh."
-  c_dim "  Otherwise install a release: it ships the binary for your platform."
-  exit 1
-fi
-# Remove first: copying over a running-signed Mach-O in place keeps the kernel's stale
-# code-signature cache for the old bytes, and macOS then kills the new binary (exit 137).
-[[ "${_shim:A}" == "${CONFIG_REAL}/libexec/gateway-shim" ]] \
-  || { rm -f "$CONFIG_DIR/libexec/gateway-shim" && cp "$_shim" "$CONFIG_DIR/libexec/gateway-shim"; }
-chmod +x "$CONFIG_DIR/libexec/gateway-shim"
 chmod +x "$BIN_DIR/ccmorph"
 # Move profile homes through the same guarded owner used by normal launches.
 CCMORPH_STATE_DIR="$CONFIG_DIR" CCMORPH_LIB_DIR="$CONFIG_DIR/lib" zsh -fc \
   'source "$CCMORPH_LIB_DIR/ccmorph.sh"; _ccm_secure_dirs' || exit 1
 # Consolidate legacy context state only after the owning tool is installed.
-CCMORPH_STATE_DIR="$CONFIG_DIR" "$CONFIG_DIR/libexec/model-window" --migrate
+CCMORPH_STATE_DIR="$CONFIG_DIR" "$CONFIG_DIR/libexec/ccmorph-core" model-window --migrate
 # The retired wrapper: `ccrelay` is now `ccmorph hop`. Removed rather than left
 # behind, because the old script sources a library that no longer defines it and
 # would answer with a load failure instead of saying what replaced it.

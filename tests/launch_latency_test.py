@@ -20,7 +20,7 @@ def _adapter_start_run(home, selected, delay):
     for f in (ROOT / 'lib').glob('ccmorph-*.zsh'):
         (lib / f.name).write_bytes(f.read_bytes())
     log = Path(home) / 'args'
-    adapter = lib.parent / 'libexec/ccmorph-adapter'
+    adapter = lib.parent / 'libexec/ccmorph-core'
     adapter.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$ARG_LOG"\n'
                        f'sleep {delay}\nprintf "PORT=12345\\n"\n')
     adapter.chmod(0o755)

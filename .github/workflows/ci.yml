@@ -146,7 +146,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - name: build the gateway-shim binary a checkout installs
+      - name: build the gateway-shim and ccmorph-core binaries a checkout installs
         run: make shim
       - name: install non-interactively, then verify what it placed
         run: |
@@ -163,6 +163,9 @@ jobs:
           sleep 5 & parent=$!
           "$HOME/.config/ccmorph/libexec/gateway-shim" 0 http://127.0.0.1:9 --parent-pid=$parent \
             | head -1 | tee /dev/stderr | grep -q '^gateway-shim :[0-9]'
+      - name: the installed ccmorph-core starts
+        run: |
+          "$HOME/.config/ccmorph/libexec/ccmorph-core" adapter --help | grep -q '^usage: ccmorph-adapter'
       - name: the command runs in a shell that sourced nothing
         run: sh -c 'ccmorph --version'
       - name: one-line install from a local tarball (remote mode, real curl and tar)
@@ -181,12 +184,14 @@ jobs:
           os=$(uname -s | tr '[:upper:]' '[:lower:]'); arch=$(uname -m)
           case "$arch" in x86_64) arch=amd64 ;; aarch64) arch=arm64 ;; esac
           cp libexec/gateway-shim "$RUNNER_TEMP/stage/ccmorph-main/libexec/gateway-shim-$os-$arch"
+          cp libexec/ccmorph-core "$RUNNER_TEMP/stage/ccmorph-main/libexec/ccmorph-core-$os-$arch"
           tar -czf "$RUNNER_TEMP/stage/src.tar.gz" -C "$RUNNER_TEMP/stage" ccmorph-main
           CCMORPH_INSTALL_URL="file://$RUNNER_TEMP/stage/src.tar.gz" sh -c "$(cat install.sh)" </dev/null
           test -r "$HOME/.config/ccmorph/lib/ccmorph.sh"
           test -x "$HOME/.local/bin/ccmorph"
           sh -c 'ccmorph --version'
           test -x "$HOME/.config/ccmorph/libexec/gateway-shim"
+          test -x "$HOME/.config/ccmorph/libexec/ccmorph-core"
       - name: bash and sh must not crash on the installer
         # It is zsh, but people type `bash install.sh`; it must re-exec, not die
         # with a message about a variable that does not exist.

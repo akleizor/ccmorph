@@ -17,16 +17,61 @@ func die(msg string) {
 	os.Exit(1)
 }
 
-func envSeconds(name string, def float64) time.Duration {
-	v := os.Getenv(name)
+func envSeconds(getenv func(string) string, name string, def float64) (time.Duration, error) {
+	v := getenv(name)
 	if v == "" {
-		return time.Duration(def * float64(time.Second))
+		return time.Duration(def * float64(time.Second)), nil
 	}
 	f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
 	if err != nil || f < 0 {
-		die(fmt.Sprintf("gateway-shim: %s must be a number of seconds, got %q", name, v))
+		return 0, fmt.Errorf("gateway-shim: %s must be a number of seconds, got %q", name, v)
 	}
-	return time.Duration(f * float64(time.Second))
+	return time.Duration(f * float64(time.Second)), nil
+}
+
+// Options is one shim's command line.
+type Options struct {
+	Port                                        int
+	Target                                      string
+	PreserveIDs, RandomDeviceID, RetryTransport bool
+}
+
+// Listen builds the server for o, reading its settings through getenv, and binds
+// its loopback port. The caller serves it: the stock binary in its own process,
+// the adapter inside its own.
+func Listen(h Hooks, o Options, getenv func(string) string) (*http.Server, net.Listener, error) {
+	var err error
+	s := NewServer(o.Target)
+	s.Hooks = h
+	if s.Stall, err = envSeconds(getenv, "CCMORPH_STALL_TIMEOUT", 300); err != nil {
+		return nil, nil, err
+	}
+	if s.RetryBase, err = envSeconds(getenv, "CCMORPH_RETRY_BASE", 0.5); err != nil {
+		return nil, nil, err
+	}
+	s.setClients()
+	if spec := getenv("CCMORPH_MODEL_ROUTE"); spec != "" {
+		if s.Routes, err = newModelRoutes(spec, s.remote); err != nil {
+			return nil, nil, fmt.Errorf("gateway-shim: %w", err)
+		}
+	}
+	if raw := getenv("CCMORPH_INBOUND"); raw != "" {
+		in, err := parseInbound(raw)
+		if err != nil {
+			return nil, nil, fmt.Errorf("gateway-shim: CCMORPH_INBOUND: %w", err)
+		}
+		s.Inbound = in
+	}
+	s.PreserveIDs, s.RandomDeviceID, s.RetryTransport = o.PreserveIDs, o.RandomDeviceID, o.RetryTransport
+	if s.RetryTransport {
+		s.Breaker = NewBreaker()
+	}
+	// Loopback only; no reverse lookup of the name (it can stall startup on macOS).
+	ln, err := net.Listen("tcp4", "127.0.0.1:"+strconv.Itoa(o.Port))
+	if err != nil {
+		return nil, nil, fmt.Errorf("gateway-shim: %w", err)
+	}
+	return &http.Server{Handler: s, ErrorLog: nil}, ln, nil
 }
 
 var pidRE = regexp.MustCompile(`^[0-9]+$`)
@@ -97,33 +142,10 @@ func Main(h Hooks) {
 	if err != nil {
 		die(fmt.Sprintf("gateway-shim: invalid port %q", args[0]))
 	}
-	s := NewServer(args[1])
-	s.Hooks = h
-	s.Stall = envSeconds("CCMORPH_STALL_TIMEOUT", 300)
-	s.RetryBase = envSeconds("CCMORPH_RETRY_BASE", 0.5)
-	s.setClients()
-	if spec := os.Getenv("CCMORPH_MODEL_ROUTE"); spec != "" {
-		if s.Routes, err = newModelRoutes(spec, s.remote); err != nil {
-			die("gateway-shim: " + err.Error())
-		}
-	}
-	if raw := os.Getenv("CCMORPH_INBOUND"); raw != "" {
-		in, err := parseInbound(raw)
-		if err != nil {
-			die("gateway-shim: CCMORPH_INBOUND: " + err.Error())
-		}
-		s.Inbound = in
-	}
-	s.PreserveIDs = flags["--preserve-tool-ids"]
-	s.RandomDeviceID = flags["--random-device-id"]
-	s.RetryTransport = flags["--retry-transport"]
-	if s.RetryTransport {
-		s.Breaker = NewBreaker()
-	}
-	// Loopback only; no reverse lookup of the name (it can stall startup on macOS).
-	ln, err := net.Listen("tcp4", "127.0.0.1:"+strconv.Itoa(port))
+	srv, ln, err := Listen(h, Options{Port: port, Target: args[1], PreserveIDs: flags["--preserve-tool-ids"],
+		RandomDeviceID: flags["--random-device-id"], RetryTransport: flags["--retry-transport"]}, os.Getenv)
 	if err != nil {
-		die("gateway-shim: " + err.Error())
+		die(err.Error())
 	}
 	if len(parentPID) == 1 {
 		// ccmorph-adapter's contract: die with the launcher even under SIGKILL,
@@ -139,6 +161,5 @@ func Main(h Hooks) {
 		}()
 	}
 	fmt.Printf("gateway-shim :%d -> %s\n", ln.Addr().(*net.TCPAddr).Port, args[1])
-	srv := &http.Server{Handler: s, ErrorLog: nil}
 	die(srv.Serve(ln).Error())
 }

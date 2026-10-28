@@ -20,10 +20,16 @@ def copied_lib(tmp_path):
 
 
 def stub_sizer(lib, args_file):
-    """Replace the networked sizer in a copied lib; it records its arguments instead."""
-    stub = lib.parent / 'libexec/refresh-model-registry'
-    stub.write_text(f'#!/bin/sh\necho "$@" > "{args_file}"\n')
-    stub.chmod(0o755)
+    """Replace the networked sizer in a copied lib; it records its arguments instead.
+
+    The sizer is `ccmorph-core refresh-model-registry`: the copied core becomes
+    ccmorph-core.real and a wrapper answers that one subcommand."""
+    core = lib.parent / 'libexec/ccmorph-core'
+    real = core.with_name('ccmorph-core.real')
+    core.rename(real)
+    core.write_text(f'#!/bin/sh\nif [ "$1" = refresh-model-registry ]; then shift; echo "$@" > "{args_file}"; exit 0; fi\n'
+                    f'exec "{real}" "$@"\n')
+    core.chmod(0o755)
 
 
 def setup(tmp_path, excluded):

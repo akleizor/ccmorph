@@ -5496,7 +5496,7 @@ _double_dies_with_a_killed_launcher() {
   else
     parent=(--parent-pid "$launcher")
   fi
-  "$HOME/.config/ccmorph/libexec/ccmorph-adapter" gw "${parent[@]}" >"$out" 2>&1 &
+  "$HOME/.config/ccmorph/libexec/ccmorph-core" adapter gw "${parent[@]}" >"$out" 2>&1 &
   double=$!
   for (( i = 0; i < CCMORPH_TEST_HANG_TIMEOUT * 10; i++ )); do [[ -s "$out" ]] && break; sleep 0.1; done
   first=$(head -n 1 "$out" 2>/dev/null)
@@ -10650,11 +10650,22 @@ test_source_names_no_operator_profile() {
 # ($_CCMORPH_DIR/libexec/model-window under the scratch $HOME) — these tests pin the
 # true integration, not a stand-in's reading of the contract.
 install_model_window() {
-  cp "$REPO_ROOT/libexec/model-window" "$HOME/.config/ccmorph/libexec/model-window"
-  cp "$REPO_ROOT/libexec/settings-compose" "$HOME/.config/ccmorph/libexec/settings-compose"
+  # ccmorph-core is a dispatcher here: a stub placed beside it under the helper's
+  # old name (libexec/model-window, libexec/ccmorph-adapter ...) overrides that
+  # subcommand; anything unstubbed runs in the real compiled core.
+  printf '%s\n' '#!/bin/sh' \
+    'sub=$1; shift; here=$(dirname "$0"); stub=$sub' \
+    '[ "$sub" = adapter ] && stub=ccmorph-adapter' \
+    '[ -x "$here/$stub" ] && exec "$here/$stub" "$@"' \
+    "exec '$REPO_ROOT/libexec/ccmorph-core' \"\$sub\" \"\$@\"" \
+    > "$HOME/.config/ccmorph/libexec/ccmorph-core"
+  # The launcher's embedded Python still imports the two scripts by path (step 5
+  # of #36 replaces that), so they ship beside the core. A test stub named
+  # libexec/model-window shadows the dispatch, so tests that stub it do so after.
+  cp "$REPO_ROOT/libexec/model-window" "$REPO_ROOT/libexec/settings-compose" "$HOME/.config/ccmorph/libexec/"
   cp "$REPO_ROOT/lib/ccmorph.sh" "$HOME/.config/ccmorph/lib/ccmorph.sh"
   cp "$REPO_ROOT"/lib/ccmorph-*.zsh "$HOME/.config/ccmorph/lib/"
-  chmod +x "$HOME/.config/ccmorph/libexec/model-window" "$HOME/.config/ccmorph/libexec/settings-compose"
+  chmod +x "$HOME/.config/ccmorph/libexec/ccmorph-core" "$HOME/.config/ccmorph/libexec/model-window" "$HOME/.config/ccmorph/libexec/settings-compose"
 }
 
 test_picker_without_a_registry_offers_rows_and_spawns_nothing() {
@@ -10744,7 +10755,7 @@ test_picker_projects_a_derived_1m_row_for_a_probed_claude() {
   # Without the resolver, catalogue rows retain their exact IDs; only the
   # derived context suffix is unavailable.
   print -r -- '{}' > "$HOME/.config/ccmorph/profiles/gw/.claude.json"
-  rm -f "$HOME/.config/ccmorph/libexec/model-window"
+  rm -f "$HOME/.config/ccmorph/libexec/ccmorph-core"
     _ccm_project_picker gw http://gw.invalid sk_t
   state="$(<"$HOME/.config/ccmorph/profiles/gw/.claude.json")"
   assert_contains "$state" 'claude-opus-5' \

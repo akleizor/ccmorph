@@ -60,10 +60,12 @@ ROUTE_DEFAULT = '-mid_conv_system,-mid_conv_tool_change,-per_turn_effort'
 # advisory into CCMORPH_ADVISE is an interpreter of its own, and #433 leaves
 # that encoder alone. Pinning each keeps a fix to one shape from paying for
 # another with a new interpreter.
-PYTHON_STARTS_PER_LAUNCH = 6
+# The launcher runs settings-compose through ccmorph-core: one interpreter start
+# fewer on the routes that used to run the script.
+PYTHON_STARTS_PER_LAUNCH = 5
 PYTHON_STARTS_NO_MODEL = 5
 PYTHON_STARTS_TOKEN = 4
-PYTHON_STARTS_HAZARD = 7
+PYTHON_STARTS_HAZARD = 6
 
 # GH-433 cuts interpreter starts out of the launch path, which is only safe if the
 # launch still writes what it wrote. One golden holds the whole observable output
@@ -110,7 +112,7 @@ exit 1
 # The launcher relies on the adapter's own --parent-pid poll to stop it
 # (ccmorph.sh _ccm_adapter_start): a stub that ignores the flag outlives a
 # hard-killed launch forever (issues #385/#386, GH-330).
-ADAPTER = fake_adapter.script('echo PORT=45999')
+ADAPTER = fake_adapter.script('echo PORT=45999', core=True)
 
 # The adapter route every one of these launches must reach.
 GW_CONF = 'type=apikey\nbase_url=https://gw.invalid\napi_key=k\nadapter=true\nmodel=claude-sonnet-4-5\n'
@@ -147,8 +149,8 @@ class Launch:
         for name in LIB_FILES:
             (self.state / name).parent.mkdir(exist_ok=True)
             shutil.copy(ROOT / name, self.state / name)
-        (self.state / 'libexec/ccmorph-adapter').write_text(ADAPTER)
-        (self.state / 'libexec/ccmorph-adapter').chmod(0o755)
+        (self.state / 'libexec/ccmorph-core').write_text(ADAPTER)
+        (self.state / 'libexec/ccmorph-core').chmod(0o755)
         (self.state / 'gw.conf').write_text(GW_CONF)
         # PATH carries no directory of this host's: the environment a launch is
         # handed is compared byte for byte against a golden (GH-433), and
@@ -191,7 +193,7 @@ def launch(tmp_path):
     # The launch leaves its adapter stub detached, and `--parent-pid` only
     # reaches it while the launcher's number stays dead (#347). The stub records
     # what it started as; this kills that exact pid.
-    fake_adapter.reap(made.state / 'libexec/ccmorph-adapter')
+    fake_adapter.reap(made.state / 'libexec/ccmorph-core')
 
 
 def test_empty_caps_in_the_canon_layer_still_gets_the_route_default(launch):
@@ -438,11 +440,11 @@ def test_a_killed_launch_leaves_no_adapter_stub_behind(launch):
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     stub_pid = 0
     try:
-        stub = launch.state / 'libexec/ccmorph-adapter'
+        stub = launch.state / 'libexec/ccmorph-core'
         deadline = time.monotonic() + HANG_TIMEOUT
         pids = []
         while time.monotonic() < deadline:
-            pids = subprocess.run(['pgrep', '-f', f'{stub} gw '],
+            pids = subprocess.run(['pgrep', '-f', f'{stub} adapter gw '],
                                   capture_output=True, text=True, timeout=HANG_TIMEOUT).stdout.split()
             if pids:
                 break

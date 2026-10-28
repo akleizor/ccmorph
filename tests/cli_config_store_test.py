@@ -687,8 +687,12 @@ class ConfigurationSaveTest(unittest.TestCase):
                 # The refusal names the profile's directory, and the two runs sit in
                 # different copies of the home: compare the message with the copy it
                 # names taken out.
-                self.assertEqual(folded.stderr.replace(one['HOME'], '<home>'),
-                                 pair.stderr.replace(two['HOME'], '<home>'))
+                # The paired run is ccmorph-core (Go), the folded store still imports the
+                # Python script until step 4 of #36: the two word a too-deep document's
+                # RecursionError differently, so that one line is left out of the comparison.
+                def words(r, h):
+                    return [l for l in r.stderr.replace(h, '<home>').splitlines() if 'RecursionError' not in l]
+                self.assertEqual(words(folded, one['HOME']), words(pair, two['HOME']))
                 self.assertIn("could not generate settings for 'demo'", pair.stderr)
                 self.assertEqual(tree(one['HOME']), tree(two['HOME']))
 
@@ -709,7 +713,8 @@ class ConfigurationSaveTest(unittest.TestCase):
         newline['_CCM_MATERIALIZE'] = '1'
         result = self.project('one', penv=(headers,), env=newline)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(calls.read_text().splitlines()), 2)
+        # settings-compose is ccmorph-core (Go) now, so only the store's own interpreter counts.
+        self.assertEqual(len(calls.read_text().splitlines()), 1)
         # Falling back is a return to the two runs, not a second implementation of
         # them: the same inputs must write the same bytes as the paired path.
         pair, _ = self.projection_env('gh433-newline-pair', name='ho\nme')
@@ -770,8 +775,12 @@ class ConfigurationSaveTest(unittest.TestCase):
                 folded = self.project('one', env=one)
                 self.assertEqual(pair.returncode, 3, pair.stderr)
                 self.assertEqual((folded.returncode, folded.stdout), (3, ''))
-                self.assertEqual(folded.stderr.replace(one['HOME'], '<home>'),
-                                 pair.stderr.replace(two['HOME'], '<home>'))
+                # The paired run is ccmorph-core (Go), the folded store still imports the
+                # Python script until step 4 of #36: the two word a too-deep document's
+                # RecursionError differently, so that one line is left out of the comparison.
+                def words(r, h):
+                    return [l for l in r.stderr.replace(h, '<home>').splitlines() if 'RecursionError' not in l]
+                self.assertEqual(words(folded, one['HOME']), words(pair, two['HOME']))
                 self.assertIn("could not generate settings for 'demo'", folded.stderr)
                 self.assertIn(crash_class, folded.stderr)
                 # A real launch refuses: rc 1, the refusal message, claude never
