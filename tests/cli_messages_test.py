@@ -102,3 +102,18 @@ def test_help_is_concise_truthful_and_read_only(tmp_path):
     assert result.returncode == 2
     assert 'ccmorph help all' in result.stderr
     assert not marker.exists()
+
+
+def test_update_and_uninstall_under_homebrew_name_the_brew_command(tmp_path):
+    # A brew install keeps the library under the Cellar with no installer beside it.
+    root = tmp_path / 'Cellar/ccmorph/0.2.0/libexec'
+    (root / 'lib').mkdir(parents=True)
+    for f in (ROOT / 'lib').iterdir():
+        (root / 'lib' / f.name).write_bytes(f.read_bytes())
+    env = {**os.environ, 'HOME': str(tmp_path / 'home'),
+           'CCMORPH_LIB_DIR': str(root / 'lib'), 'CCMORPH_STATE_DIR': str(tmp_path / 'state')}
+    for verb, brew in (('update', 'brew upgrade ccmorph'), ('uninstall', 'brew uninstall ccmorph')):
+        result = subprocess.run([str(ROOT / 'bin/ccmorph'), verb], env=env, stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=HANG_TIMEOUT)
+        assert result.returncode != 0
+        assert brew in result.stderr, result.stderr

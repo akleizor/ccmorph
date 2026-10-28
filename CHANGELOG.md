@@ -7,6 +7,13 @@
 
 ## Unreleased
 
+### Added
+
+- **Homebrew.** `brew install akleizor/tap/ccmorph` installs a prebuilt bottle
+  (no Go needed). `ccmorph update` and `ccmorph uninstall` on a brew install
+  name the `brew upgrade` / `brew uninstall` command instead of running the
+  installer. Profiles stay in `~/.config/ccmorph` either way.
+
 ### Changed
 
 - **`gateway-shim` is a Go binary.** Same flags, wire bytes, usage rows and

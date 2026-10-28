@@ -676,6 +676,12 @@ _ccm_run_installer() {
       return 1
     fi
   fi
+  # A Homebrew install lives under the Cellar and has no installer beside it:
+  # the package manager that placed it updates and removes it.
+  if [[ "${root:A}" == */Cellar/ccmorph/* ]]; then
+    _ccm_err "ccmorph was installed with Homebrew; run: brew ${${verb:/update/upgrade}} ccmorph"
+    return 1
+  fi
   if [[ ! -f "$installer" ]]; then
     _ccm_err "no installer at $installer, so ccmorph cannot $verb itself. Run the one-line install once:"
     print -u2 -r -- '  sh -c "$(curl -fsSL https://github.com/akleizor/ccmorph/releases/latest/download/install.sh)"'
