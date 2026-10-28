@@ -155,8 +155,8 @@ auth-dir: %s
 # Re-send a request the upstream dropped transiently (unexpected EOF, 408, or
 # 5xx) before Claude Code ever sees the error. Only pre-stream failures can be
 # retried -- once the SSE stream has emitted bytes a mid-stream drop is already
-# downstream -- so this trims visible error noise, not every failure. 429 is not
-# in cliproxyapi's retry set and still falls through to Claude Code's own retry.
+# downstream -- so this trims visible error noise, not every failure. 403 and 429
+# are in cliproxyapi's retry set too (8.0.45), resent at once without backoff.
 request-retry: 3
 
 # The Responses provider injects an image_generation tool by default, which some
