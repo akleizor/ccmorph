@@ -81,6 +81,8 @@ dist/
 # Python bytecode and pytest state.
 __pycache__/
 .pytest_cache/
+# The router add-on's decider bench output (python bench/decider.py).
+addons/router/bench/decider-results.json
 
 # ── Agent and editor scratch ─────────────────────────────────────────────────
 # The project skill under .claude/skills ships; a global `.claude/` ignore must
