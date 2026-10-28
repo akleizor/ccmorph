@@ -3451,6 +3451,7 @@ test_a_failed_migration_is_loud() {
   source "$CCMORPH_SOURCE"
   print 'legacy=100000' > "$HOME/.config/ccmorph/model-registry"
   printf '%s\n' '#!/bin/sh' 'exit 1' > "$HOME/.config/ccmorph/libexec/model-window"
+  chmod +x "$HOME/.config/ccmorph/libexec/model-window"
   err=$(_ccm_migrate_state 2>&1) && rc=1
   assert_contains "$err" 'migration incomplete' 'failed migration must preserve legacy context' || rc=1
   [[ -f "$HOME/.config/ccmorph/model-registry" ]] || rc=1
