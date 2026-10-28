@@ -30,6 +30,8 @@ credential, or losing the user's choice.
 - **Timer semantics swapped in a port** — urllib's timeout bounded each socket operation, and a single `context.WithTimeout` now bounds the whole exchange, so a slow but flowing transfer fails — `example: e2b3c4d feat(core): Go ports of settings-compose, model-window, refresh-model-registry (#36 step 2)`.
 - **A path check that forgets a link can sit on a parent directory** — `-e`/`-ef` are true through a carried sidecar dir while the path itself is not a link, so a removal mistakes its own files for native collisions — `example: 93f3db8 fix(profiles): a carried sidecar dir no longer blocks rm`.
 - **An upgrade deleting a file a running process still references** — a retired helper removed while a live session's route spec still names it, so the next `/model` reads as a gateway failure — `example: #52, b619556 removed libexec/ccmorph-adapter on upgrade under live sessions`.
+- **A reader that turns unparseable input into a confident verdict** — a model listing whose `data` is not a list read as "not served" so the carried model is replaced, an unparsed endpoint echoed whole with its userinfo — `example: 7487a99 fix(util): model-known answers cannot-tell for a listing whose data is not a list`; also `a59f601 fix(util): redact-url never echoes an endpoint's userinfo`.
+- **A diagnostics path that can die instead of degrade** — a raise outside `pycompat.Catch` takes every launch warning with it, since `util.Main` has no recover and the zsh caller drops stderr — `example: 824a001 fix(util): launch diagnostics keep the warnings when the merge raises`.
 
 ## Never blocks
 

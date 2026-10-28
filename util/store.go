@@ -147,7 +147,7 @@ func configStoreRun(op, confName, settingsName, key, sharedName string, mappingK
 	}
 	doc := pycompat.NewObj()
 	if originals[1] != nil {
-		v, err := pycompat.Parse(originals[1])
+		v, err := pycompat.Parse(pycompat.StripBOM(originals[1]))
 		if err != nil {
 			pycompat.RaiseValue("%s", err.Error())
 		}
@@ -188,7 +188,7 @@ func configStoreRun(op, confName, settingsName, key, sharedName string, mappingK
 	if md, _ := fields.Get("model_defaults"); md != "1" {
 		shared := pycompat.NewObj()
 		if sb := content(sharedName); len(sb) > 0 {
-			v, err := pycompat.Parse(sb)
+			v, err := pycompat.Parse(pycompat.StripBOM(sb))
 			if err != nil {
 				pycompat.RaiseValue("%s", err.Error())
 			}
@@ -364,7 +364,7 @@ func configStoreRun(op, confName, settingsName, key, sharedName string, mappingK
 			}
 		}
 		if originals[1] != nil {
-			orig, _ := pycompat.Parse(originals[1])
+			orig, _ := pycompat.Parse(pycompat.StripBOM(originals[1]))
 			if !pycompat.Equal(doc, orig) {
 				targets = append(targets, target{settings, originals[1], []byte(pycompat.Marshal(doc, pycompat.Format{Indent: 2}) + "\n")})
 			}

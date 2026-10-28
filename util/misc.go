@@ -783,7 +783,9 @@ func redactURL(args []string, _ io.Reader, out, _ io.Writer) int {
 	if len(args) != 1 {
 		return 1
 	}
-	u := args[0]
+	// urlsplit's own cleanup: leading C0 controls and spaces, and every tab or newline.
+	u := strings.TrimLeftFunc(args[0], func(r rune) bool { return r <= ' ' })
+	u = strings.NewReplacer("\t", "", "\r", "", "\n", "").Replace(u)
 	scheme := ""
 	if m := schemeHead.FindStringSubmatch(u); m != nil {
 		scheme = strings.ToLower(m[1])
@@ -799,6 +801,10 @@ func redactURL(args []string, _ io.Reader, out, _ io.Writer) int {
 	}
 	if i := strings.IndexAny(u, "?#"); i >= 0 {
 		u = u[:i]
+	}
+	// No host was found, so an @ is userinfo that would print whole.
+	if netloc == "" && strings.Contains(u, "@") {
+		return 1
 	}
 	host := netloc
 	if i := strings.LastIndex(host, "@"); i >= 0 {
@@ -920,7 +926,12 @@ func modelKnown(args []string, _ io.Reader, _, _ io.Writer) int {
 		want = strings.TrimSuffix(s, "[1m]")
 	}
 	uncertain := false
-	entries, _ := getKey(asObj(payload), "data").([]any)
+	// A listing that does not list cannot prove a model absent: keep the carried one.
+	data, hasData := asObj(payload).Get("data")
+	entries, isList := data.([]any)
+	if hasData && !isList {
+		return 2
+	}
 	for _, m := range entries {
 		row := asObj(m)
 		if row == nil {

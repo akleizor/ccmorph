@@ -6,6 +6,7 @@
 package pycompat
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"sort"
@@ -183,6 +184,9 @@ func (DepthError) Error() string {
 type SyntaxError struct{ Msg string }
 
 func (e *SyntaxError) Error() string { return e.Msg }
+
+// StripBOM drops a leading UTF-8 BOM, as json.loads does for bytes (never for str).
+func StripBOM(data []byte) []byte { return bytes.TrimPrefix(data, []byte("\xef\xbb\xbf")) }
 
 // Parse decodes data like json.loads: invalid UTF-8 and bad syntax are
 // *SyntaxError, nesting past MaxDepth is DepthError.

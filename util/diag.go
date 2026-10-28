@@ -136,7 +136,14 @@ func launchDiagnostics(args []string, _ io.Reader, out, _ io.Writer) int {
 		io.WriteString(out, strings.Join(fields, "\t")+"\x00")
 	}
 
-	merged := asObj(getKey(settingscompose.MergedView(paths), "env"))
+	// A layer the merge cannot apply answers none of the env questions; the warnings
+	// below read settings.json themselves and still run.
+	var view *pycompat.Obj
+	pycompat.Catch(func() { view = settingscompose.MergedView(paths) })
+	var merged *pycompat.Obj
+	if view != nil {
+		merged = asObj(getKey(view, "env"))
+	}
 	if merged == nil {
 		merged = pycompat.NewObj()
 	}

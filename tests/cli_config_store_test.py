@@ -345,6 +345,19 @@ class ConfigurationSaveTest(unittest.TestCase):
         self.assertEqual(self.store('prepare-launch', 'demo').returncode, 0)
         self.assertEqual(self.settings.read_bytes(), before)
 
+    def test_a_bom_prefixed_settings_json_still_prepares_a_launch(self):
+        # Python read settings.json with json.loads(bytes), which drops a UTF-8 BOM.
+        # The first reaches settings-compose as written; the second is rewritten by the
+        # store first, since the model is a preference it owns.
+        for doc in ({'permissions': {'deny': ['Bash(rm *)']}},
+                    {'model': 'native', 'permissions': {'deny': ['Bash(rm *)']}}):
+            with self.subTest(doc=doc):
+                self.settings.write_bytes(b'\xef\xbb\xbf' + json.dumps(doc).encode())
+                result = self.project('one')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(self.settings.read_text())['permissions'],
+                                 {'deny': ['Bash(rm *)']})
+
     def test_prepare_launch_keeps_intentionally_absent_defaults_absent(self):
         self.conf.write_text('type=apikey\napi_key=k\nmodel_defaults=1\n')
         self.settings.write_text(json.dumps({
