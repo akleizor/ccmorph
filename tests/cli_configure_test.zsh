@@ -9,7 +9,7 @@ trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/state/profiles/demo" "$TMP/home/.agents/runtime/policies"
 print -r -- '{"schemaVersion":1,"autoCompactAtPercent":80}' > "$TMP/home/.agents/runtime/policies/context.json"
 mkdir -p "$TMP/lib" "$TMP/libexec"
-cp "$ROOT/libexec/ccmorph-core" "$ROOT/libexec/model-window" "$ROOT/libexec/settings-compose" "$TMP/libexec/"
+cp "$ROOT/libexec/ccmorph-core" "$TMP/libexec/"
 cp "$ROOT/lib/ccmorph.sh" "$TMP/lib/ccmorph.sh"
 cp "$ROOT"/lib/ccmorph-*.zsh "$TMP/lib/"
 export HOME="$TMP/home" CCMORPH_STATE_DIR="$TMP/state" CCMORPH_LIB_DIR="$TMP/lib"

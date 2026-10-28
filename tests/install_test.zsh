@@ -51,7 +51,7 @@ run_installer "$d"; rc=$?
 # along (this is what keeps any other product from shipping inside ccmorph),
 # and nothing missing either, which subsumes a per-component presence loop.
 (( ${#module_files} )) || fail "no ccmorph-*.zsh module found beside ccmorph.sh — the manifest below would be silently short"
-want=(bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/ccmorph-adapter libexec/gateway-shim libexec/ccmorph-core libexec/model-window libexec/settings-compose libexec/refresh-model-registry share/model-catalogue.json share/window-sources.json local.sh.example profile.conf.example install.sh profiles)
+want=(bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/gateway-shim libexec/ccmorph-core share/model-catalogue.json share/window-sources.json local.sh.example profile.conf.example install.sh profiles)
 got=(${(f)"$(cd "$d/home/.config/ccmorph" && print -l *(N) {bin,lib,libexec,share}/*(N.) | grep -vxE 'bin|lib|libexec|share')"})
 extra=(${got:|want}); missing=(${want:|got})
 (( ${#extra} == 0 && ${#missing} == 0 )) \
@@ -114,7 +114,7 @@ d=$(fresh_env inplace)
 target="$d/home/.config/ccmorph"
 mkdir -p "$target"
 mkdir -p "$target"/{bin,lib,libexec,share}
-for f in bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/ccmorph-adapter libexec/gateway-shim libexec/ccmorph-core libexec/model-window libexec/settings-compose libexec/refresh-model-registry share/model-catalogue.json share/window-sources.json share/local.sh.example share/profile.conf.example install.sh; do
+for f in bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/gateway-shim libexec/ccmorph-core share/model-catalogue.json share/window-sources.json share/local.sh.example share/profile.conf.example install.sh; do
   cp "$REPO/$f" "$target/$f"
 done
 env -i HOME="$d/home" ZDOTDIR="$d/home" \
@@ -131,7 +131,7 @@ grep -qF '# >>> ccmorph >>>' "$d/home/.zshrc" \
 # --- 2c. upgrading migrates legacy registry data INTO the owning profile's conf --
 # An upgrade must never hand the user a chore. Installing over a pre-consolidation
 # layout has to carry the probed/scoped registry data across on its own, before the
-# first command runs — install.sh calls `model-window --migrate`, which attributes
+# first command runs — install.sh calls `ccmorph-core model-window --migrate`, which attributes
 # each `<profile>:<model>=<value>` row to that profile's OWN conf (as
 # context_discovered) and archives the legacy file with a .migrated suffix. There
 # is no cross-profile fallback and no rename-in-place: a bare (unscoped) row with no

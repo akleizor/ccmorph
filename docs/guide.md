@@ -633,7 +633,8 @@ changing behavior — most of its sections exist because something was once a bu
 make test                        # everything below
 zsh tests/ccmorph_test.zsh      # profiles, launch, routing, model choosers
 zsh tests/install_test.zsh       # the installer against a throwaway $HOME
-python3 -m pytest tests/         # adapter + gateway shim
+go test ./...                   # Go units: adapter, shim, helpers
+python3 -m pytest tests/         # black-box suite against the built binaries
 ```
 
 TDD is the convention here: a behavior worth keeping gets a test that fails

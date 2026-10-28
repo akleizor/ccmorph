@@ -19,7 +19,7 @@ do not carry these citations forward unchecked.
 The repo suite: `tests/ccmorph_test.zsh` (112 zsh tests),
 `tests/install_test.zsh` (installer against a throwaway `$HOME`),
 `tests/adapter_test.py`, `tests/gateway_shim_test.py` (black-box, against the
-built binary) and the Go unit tests in `shim/`. Run them all with
+built binaries) and the Go unit tests in each package. Run them all with
 `make shim && go test ./... && zsh tests/ccmorph_test.zsh && zsh tests/install_test.zsh && python3 -m pytest tests/`.
 
 ## Scope and ownership
@@ -71,8 +71,7 @@ The repository and the installed copy under `~/.config/ccmorph` share one layout
 `make shim`; `ccmorph-core <adapter|settings-compose|model-window|refresh-model-registry>`
 is the one binary every launch, install and zsh caller runs, from `cmd/ccmorph-core/`;
 `gateway-shim` is the standalone stock shim, `cmd/gateway-shim/`, for a profile that runs it directly.
-The Python `ccmorph-adapter`, `model-window`, `refresh-model-registry` and `settings-compose` stay in `libexec/` until
-the Go ports replace the last in-tree importers) and `share/` (data:
+No Python runs in the core: `python3` is needed only by the Remote Control add-on in `addons/remote-control/`) and `share/` (data:
 `model-catalogue.json`, `window-sources.json`). `lib/` finds `libexec/` and `share/`
 beside itself. `CCMORPH_LIB_DIR` names the `lib/` directory.
 
@@ -473,7 +472,7 @@ dial is a separate product: it starts a local CONNECT proxy, and the caller runs
 
 ccmorph's whole duty is to pass that ambient value through **unchanged** —
 `HTTPS_PROXY`, `https_proxy` and `NO_PROXY` reach the Claude child, the adapter,
-`ccmorph-adapter`'s cliproxyapi, model listing, and `refresh-model-registry`
+`ccmorph-core adapter`'s cliproxyapi, model listing, and `ccmorph-core refresh-model-registry`
 exactly as exported. `HTTPS_PROXY` is deliberately absent from
 `_CCMORPH_PROFILE_ENV`, so [the launch sweep](#the-env-lists-and-the-sweep)
 never clears it, and no launch path sets or blanks it.
@@ -500,7 +499,7 @@ naming the replacement and ignores the key.
 
 Claude Code speaks exactly one dialect: Anthropic `/v1/messages`. A gateway that
 also serves OpenAI-shaped models needs translation. Automatic launch classification
-selects native pass-through or `ccmorph-adapter`; nothing about it is specific to
+selects native pass-through or `ccmorph-core adapter`; nothing about it is specific to
 a vendor or model list.
 
 Lifecycle, per session:
@@ -1048,7 +1047,7 @@ nothing in Claude Code knows the real ceiling. `window ≤ ceiling` is sufficien
 
 Launch uses a manual profile/model override when configured, then the profile's
 own `context_discovered` metadata. Before the picker projection, launch hands the
-`/v1/models` listing it already fetched to `refresh-model-registry --listing-stdin`,
+`/v1/models` listing it already fetched to `ccmorph-core refresh-model-registry --listing-stdin`,
 which sizes only listed models the profile has no limit for, in this order:
 
 1. the gateway's declared size in the listing;
@@ -1061,7 +1060,7 @@ which sizes only listed models the profile has no limit for, in this order:
 
 With nothing new it is a local comparison. Everything goes to the log; nothing asks
 the person launching to act. A model still unknown after all four is budgeted at
-128,000 (`UNKNOWN_BUDGET` in `model-window`) rather than Claude Code's 200,000, because
+128,000 (`UnknownBudget` in `modelwindow/`) rather than Claude Code's 200,000, because
 measured walls on one route sat at 131,072 and 128,000: early compaction on a big
 model is recoverable, a session past its wall is not. Two traps, both found by probe:
 

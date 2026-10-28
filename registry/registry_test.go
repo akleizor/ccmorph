@@ -1243,3 +1243,184 @@ func TestPayloadAndFormatting(t *testing.T) {
 }
 
 var _ = io.Discard
+
+// Ported from tests/profile_context_lifecycle_test.py (ProfileDiscoveryLifecycle).
+func TestManualOverrideSkipsPaidProbeWithoutBecomingDiscoveredData(t *testing.T) {
+	dir := state(t)
+	put(t, filepath.Join(dir, "gw.conf"), "type=apikey\napi_key=canary\ncontext_window.manual=333333\n")
+	stubs(t, okEnv, func(string) ([]string, map[string]int64, []*pycompat.Obj, error) {
+		return []string{"manual"}, map[string]int64{}, nil, nil
+	})
+	oldProbe := probeFn
+	t.Cleanup(func() { probeFn = oldProbe })
+	probeFn = func(context.Context, string, string, string, string, time.Duration, Opener, int) ProbeResult {
+		t.Fatal("a manual window must not be probed")
+		return ProbeResult{}
+	}
+	captureStderr(t)
+	o := DefaultOptions()
+	o.Mode, o.Only, o.OnlySet = "auto", map[string]bool{"manual": true}, true
+	r := ProbeAll(context.Background(), []string{"gw"}, o)
+	if _, ok := vals(r)["gw:manual"]; ok {
+		t.Fatal("manual model became discovered data")
+	}
+	if !hasNote(r, "manual") {
+		t.Fatal(r.Notes)
+	}
+}
+
+// Ported from tests/catalogue_offline_test.py (snapshot shape) and
+// tests/launch_new_models_test.py (shipped sources): the shipped data files.
+func TestShippedDataFilesFollowTheirContracts(t *testing.T) {
+	read := func(name string) *pycompat.Obj {
+		b, err := os.ReadFile(filepath.Join("..", "share", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return parse(t, string(b))
+	}
+	cat := read("model-catalogue.json")
+	if s, _ := cat.Get("source"); s != "https://models.dev/models.json" {
+		t.Fatal(s)
+	}
+	if s, _ := cat.Get("retrieved"); s == nil || s == "" {
+		t.Fatal("no retrieved date")
+	}
+	if l, _ := cat.Get("license"); !strings.Contains(fmt.Sprint(l), "Copyright (c) 2025 models.dev") {
+		t.Fatal(l)
+	}
+	models, _ := cat.Get("models")
+	rows, ok := models.(*pycompat.Obj)
+	if !ok || rows.Len() == 0 {
+		t.Fatal("no models")
+	}
+	for _, id := range rows.Keys() {
+		v, _ := rows.Get(id)
+		for _, k := range v.(*pycompat.Obj).Keys() {
+			if k != "id" && k != "family" && k != "limit" {
+				t.Fatalf("%s carries %q", id, k)
+			}
+		}
+	}
+	srcs, _ := read("window-sources.json").Get("sources")
+	list, ok := srcs.([]any)
+	if !ok || len(list) == 0 {
+		t.Fatal("no sources")
+	}
+	for _, s := range list {
+		o := s.(*pycompat.Obj)
+		for _, k := range []string{"name", "owned_by", "url", "rows", "id", "window"} {
+			if !o.Has(k) {
+				t.Fatalf("source lacks %q", k)
+			}
+		}
+		if u, _ := o.Get("url"); !strings.HasPrefix(fmt.Sprint(u), "https://") {
+			t.Fatal(u)
+		}
+	}
+}
+
+// Ported from tests/openrouter_catalogue_test.py::test_listing_publishes_windows_and_drops_non_chat_models.
+func TestOpenRouterListingPublishesWindowsAndDropsNonChatModels(t *testing.T) {
+	state(t)
+	fixture, err := os.ReadFile(filepath.Join("..", "tests", "fixtures", "openrouter-models.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fake{reply: func(Request) ([]byte, error) { return fixture, nil }}
+	ids, sizes, _, err := ListModels(context.Background(), "http://local", "k", time.Second, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int64{"anthropic/claude-sonnet-4": 1000000, "openai/gpt-5": 400000, "meta-llama/llama-4-maverick": 900000}
+	if len(ids) != len(want) || sizes.Len() != len(want) {
+		t.Fatal(ids)
+	}
+	for _, id := range ids {
+		if g, _ := sizes.Get(id); g != want[id] {
+			t.Errorf("%s: %d want %d", id, g, want[id])
+		}
+	}
+}
+
+// shippedSources installs the real share/window-sources.json, as the Python tests read it.
+func shippedSources(t *testing.T) {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "share", "window-sources.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	put(t, filepath.Join(ShareDir(), "window-sources.json"), string(b))
+}
+
+func codexListing() string {
+	return `{"data":[{"id":"gpt-6-sol","owned_by":"openai","context_length":272000}]}`
+}
+
+// Ported from launch_new_models_test.py: test_unreachable_source_leaves_the_model_for_the_next_launch.
+func TestUnreachableSourceLeavesTheModelForTheNextLaunch(t *testing.T) {
+	dir := state(t)
+	shippedSources(t)
+	put(t, filepath.Join(dir, "codex.conf"), "type=provider\nprovider=codex\nwindow_sources=codex\n")
+	if c := SizeListing(context.Background(), "codex", codexListing(), "http://127.0.0.1:1", "k", nil); c != 0 {
+		t.Fatal(c)
+	}
+	_, fields := modelwindow.ReadConf(filepath.Join(dir, "codex.conf"))
+	if len(modelwindow.ProfileWindows("codex")) != 0 || modelwindow.DiscoveredMisses(fields).Len() != 0 {
+		t.Fatal("a bare declaration was stored while the source was down")
+	}
+}
+
+// Ported from launch_new_models_test.py: test_unreachable_source_is_fetched_once_per_retry_window.
+func TestUnreachableSourceIsFetchedOncePerRetryWindow(t *testing.T) {
+	dir := state(t)
+	shippedSources(t)
+	put(t, filepath.Join(dir, "codex.conf"), "type=provider\nprovider=codex\nwindow_sources=codex\n")
+	var urls []string
+	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) *pycompat.Obj {
+		urls = append(urls, url)
+		return pycompat.NewObj()
+	}
+	oldV := validationWindowFn
+	t.Cleanup(func() { validationWindowFn = oldV })
+	validationWindowFn = func(context.Context, string, string, string, Opener, time.Duration) int64 {
+		t.Fatal("quota spent")
+		return 0
+	}
+	SizeListing(context.Background(), "codex", codexListing(), "http://127.0.0.1:1", "k", nil)
+	SizeListing(context.Background(), "codex", codexListing(), "http://127.0.0.1:1", "k", nil)
+	n := 0
+	for _, u := range urls {
+		if strings.Contains(u, "codex_client_models") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("source fetched %d times: %v", n, urls)
+	}
+	if len(modelwindow.ProfileWindows("codex")) != 0 {
+		t.Fatal("window stored")
+	}
+}
+
+// Ported from launch_new_models_test.py: test_provider_bridge_is_never_validated_with_a_request.
+func TestProviderBridgeIsNeverValidatedWithARequest(t *testing.T) {
+	dir := state(t)
+	put(t, filepath.Join(dir, "codex.conf"), "type=provider\nprovider=codex\n")
+	oldV := validationWindowFn
+	t.Cleanup(func() { validationWindowFn = oldV })
+	validationWindowFn = func(context.Context, string, string, string, Opener, time.Duration) int64 {
+		t.Fatal("quota spent")
+		return 0
+	}
+	if c := SizeListing(context.Background(), "codex", `{"data":[{"id":"gpt-unknown","owned_by":"openai"}]}`, "http://127.0.0.1:1", "k", nil); c != 0 {
+		t.Fatal(c)
+	}
+}
+
+// Ported from tests/product_defaults_test.py: the catalogue URLs are fixed.
+func TestCatalogueURLsAreFixed(t *testing.T) {
+	if catalogueURL != "https://models.dev/api.json" || canonicalCatalogueURL != "https://models.dev/models.json" {
+		t.Fatal(catalogueURL, canonicalCatalogueURL)
+	}
+}

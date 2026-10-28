@@ -1,7 +1,5 @@
 """Issue #9: the API key must never appear on a process command line."""
 import http.server
-import importlib.machinery
-import importlib.util
 import os
 import re
 import stat
@@ -16,14 +14,6 @@ from pathlib import Path
 from support import HANG_TIMEOUT
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def load(path, name):
-    loader = importlib.machinery.SourceFileLoader(name, str(path))
-    spec = importlib.util.spec_from_loader(name, loader)
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module
 
 
 def serve(handler):

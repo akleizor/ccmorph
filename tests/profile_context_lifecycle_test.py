@@ -1,19 +1,12 @@
 """Profile removal/rename must not leak or resurrect context state."""
-import importlib.machinery
-import importlib.util
 import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
 
 from support import HANG_TIMEOUT
 
-SCRIPT = Path(__file__).resolve().parents[1] / "libexec/refresh-model-registry"
-spec = importlib.util.spec_from_loader("lifecycle_registry", importlib.machinery.SourceFileLoader("lifecycle_registry", str(SCRIPT)))
-assert spec and spec.loader
-rmr = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(rmr)
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class ProfileCommands(unittest.TestCase):
@@ -35,9 +28,9 @@ class ProfileCommands(unittest.TestCase):
             (state / 'other.conf').write_text('type=apikey\napi_key=other\n')
             env = {k: v for k, v in os.environ.items() if not k.startswith(('CCMORPH', '_CCMORPH', 'CLAUDE_', 'MODEL_WINDOW'))}
             env.update(HOME=tmp, XDG_CONFIG_HOME=str(home / '.config'),
-                       CCMORPH_STATE_DIR=str(state), CCMORPH_LIB_DIR=str(SCRIPT.parent.parent / "lib"))
+                       CCMORPH_STATE_DIR=str(state), CCMORPH_LIB_DIR=str(ROOT / "lib"))
             def run(*args, answer=None):
-                return subprocess.run([str(SCRIPT.parent.parent / 'bin/ccmorph'), *args], env=env,
+                return subprocess.run([str(ROOT / 'bin/ccmorph'), *args], env=env,
                                       input=answer, capture_output=True, text=True, timeout=HANG_TIMEOUT)
             renamed = run('mv', 'gw', 'renamed')
             self.assertEqual(renamed.returncode, 0, renamed.stderr)
@@ -62,17 +55,3 @@ class ProfileCommands(unittest.TestCase):
             self.assertEqual(cleaned.returncode, 0, cleaned.stderr)
             self.assertFalse((profiles / 'orphan').exists())
             self.assertEqual((shared / 'history').read_text(), 'keep')
-
-
-class ProfileDiscoveryLifecycle(unittest.TestCase):
-    def test_manual_override_skips_paid_probe_without_becoming_discovered_data(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"CCMORPH_STATE_DIR": tmp}):
-            conf = Path(tmp, "gw.conf")
-            conf.write_text('type=apikey\napi_key=canary\ncontext_window.manual=333333\n')
-            with patch.object(rmr, 'ccmorph_env', return_value={'ANTHROPIC_API_KEY': 'k'}), \
-                    patch.object(rmr, 'list_models', return_value=(['manual'], {}, [])), \
-                    patch.object(rmr, 'probe') as paid:
-                values, notes, _ = rmr.probe_all(['gw'], 1, mode='auto', only_models={'manual'})
-            paid.assert_not_called()
-            self.assertNotIn('gw:manual', values)
-            self.assertTrue(any('manual' in reason for reason, _ in notes))

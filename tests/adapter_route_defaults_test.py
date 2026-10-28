@@ -29,7 +29,7 @@ import pytest
 from support import HANG_TIMEOUT
 
 ROOT = Path(__file__).resolve().parents[1]
-LIB_FILES = ('libexec/model-window', 'libexec/settings-compose', 'lib/ccmorph.sh',
+LIB_FILES = ('lib/ccmorph.sh',
              *sorted(f'lib/{p.name}' for p in (ROOT / 'lib').glob('ccmorph-*.zsh')),
              'share/window-sources.json', 'share/model-catalogue.json')
 
@@ -121,6 +121,7 @@ class Launch:
         for name in LIB_FILES:
             (self.state / name).parent.mkdir(exist_ok=True)
             shutil.copy(ROOT / name, self.state / name)
+        (self.state / 'libexec').mkdir(exist_ok=True)
         (self.state / 'libexec/ccmorph-core').write_text(ADAPTER)
         (self.state / 'libexec/ccmorph-core').chmod(0o755)
         (self.state / 'gw.conf').write_text(GW_CONF)

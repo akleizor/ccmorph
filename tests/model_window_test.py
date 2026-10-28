@@ -1,6 +1,5 @@
 """The profile-owned resolver's public subprocess contract."""
-import importlib.machinery
-import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,11 +10,14 @@ import unittest
 
 from support import HANG_TIMEOUT, helper_cmd
 
-SCRIPT = Path(__file__).resolve().parents[1] / "libexec/model-window"
-spec = importlib.util.spec_from_loader("window_test_store", importlib.machinery.SourceFileLoader("window_test_store", str(SCRIPT)))
-assert spec and spec.loader
-store = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(store)
+UNKNOWN_BUDGET = 128_000
+DECLARED_FIELDS = ("max_input_tokens", "max_context_length", "context_length", "context_window")
+ROUTE_FIELDS = ("type", "base_url", "provider", "adapter", "api_key", "token")
+
+
+def route_fingerprint(fields):
+    """The route hash the conf writer stamps on a discovery record (modelwindow.RouteFingerprint)."""
+    return hashlib.sha256(json.dumps({key: fields.get(key, "") for key in ROUTE_FIELDS}, sort_keys=True).encode()).hexdigest()
 
 
 def run(profile, model, windows=None, manual=None, env=None, fields=False, model_map=None, base_url=None):
@@ -31,7 +33,7 @@ def run(profile, model, windows=None, manual=None, env=None, fields=False, model
         fields_doc.update({f"context_window.{key}": str(value) for key, value in (manual or {}).items()})
         if model_map is not None:
             fields_doc["model_map"] = json.dumps(model_map)
-        fields_doc["context_discovered"] = json.dumps({"route": store.route_fingerprint(fields_doc), "models": windows or {}})
+        fields_doc["context_discovered"] = json.dumps({"route": route_fingerprint(fields_doc), "models": windows or {}})
         Path(tmp, f"{profile}.conf").write_text("".join(f"{key}={value}\n" for key, value in fields_doc.items()))
         e = {key: value for key, value in os.environ.items()
              if key not in ("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "MODEL_WINDOW_REGISTRY", "MODEL_WINDOW_PROFILE_CONF", "MODEL_WINDOW_ENDPOINT_JSON")}
@@ -98,7 +100,7 @@ class Resolver(unittest.TestCase):
         self.assertEqual(result["window"], 200000)
 
     def test_declared_field_spellings_and_invalid_values(self):
-        for field in store.DECLARED_FIELDS:
+        for field in DECLARED_FIELDS:
             with self.subTest(field=field):
                 _, result, _ = run("gw", "m", env={"MODEL_WINDOW_ENDPOINT_JSON": json.dumps([{"id": "m", field: 321000}])})
                 self.assertEqual(result["window"], 321000)
@@ -203,7 +205,7 @@ class MappedTarget(unittest.TestCase):
         # knows for the target is the target's unknown, not the source's known.
         _, result, _ = run("gw", "claude-opus-5", {"claude-opus-5": 1000000}, model_map=self.MAP)
         self.assertTrue(result["unprobed"])
-        self.assertEqual(result["budget"], store.UNKNOWN_BUDGET)
+        self.assertEqual(result["budget"], UNKNOWN_BUDGET)
         self.assertEqual(result["source"], "default")
         self.assertNotEqual(result["window"], 1000000)
 
@@ -219,60 +221,3 @@ class MappedTarget(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-def test_model_choice_does_not_change_the_route():
-    base = {"type": "apikey", "base_url": "https://gw.invalid", "api_key": "k"}
-    mapped = {**base, "env.ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-5[1m]",
-              "env.ANTHROPIC_SMALL_FAST_MODEL": "gpt-6-luna", "env.ANTHROPIC_MODEL": "x"}
-    assert store.route_fingerprint(mapped) == store.route_fingerprint(base)
-    headers = {**base, "env.ANTHROPIC_CUSTOM_HEADERS": "x-route: eu"}
-    assert store.route_fingerprint(headers) != store.route_fingerprint(base)
-
-
-def test_every_shell_mapping_key_is_excluded_from_the_route():
-    # ccmorph.sh owns the mapping list; the fingerprint must ignore all of it.
-    import re
-    root = Path(__file__).resolve().parents[1]
-    shell = "".join(p.read_text() for p in [root / "lib/ccmorph.sh", *sorted((root / "lib").glob("ccmorph-*.zsh"))])
-    block = re.search(r"_CCMORPH_MODEL_MAPPING_ENV=\(\n(.*?)\n\)", shell, re.S).group(1)
-    keys = [k.strip() for k in block.splitlines() if k.strip().startswith("ANTHROPIC_")]
-    assert keys
-    for key in keys:
-        assert store.MODEL_CHOICE_ENV.fullmatch("env." + key), key
-
-
-def test_real_id_and_exclusion_share_one_rule():
-    assert store.real_id("claude-fable-5-dd-los-6-tpg") == "gpt-6-sol"
-    assert store.real_id("claude-opus-5") == "claude-opus-5"
-    fields = {"excluded_models": "gpt-6-sol,claude-opus-5", "env.ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-5[1m]"}
-    assert store.is_excluded(fields, "claude-fable-5-dd-los-6-tpg")   # disguised id
-    assert store.is_excluded(fields, "opus[1m]")                      # through its tier alias
-    assert not store.is_excluded(fields, "gpt-6-luna")
-    assert not store.is_excluded(fields, None)
-
-
-class ConfLayout(unittest.TestCase):
-    def test_canonical_conf_groups_keys_keeps_comments_and_values(self):
-        messy = ("context_discovered={}\n# why the shim flag\nenv.CCMORPH_RANDOM_DEVICE_ID=1\n"
-                 "model=m\napi_key=k\nmodel_defaults=1\nenv.ANTHROPIC_DEFAULT_OPUS_MODEL=o\n"
-                 "type=apikey\ncontext_window.m=1000\neffort=high\n\nbase_url=https://g.invalid\n")
-        tidy = store.canonical_conf(messy)
-        self.assertEqual(tidy, "type=apikey\nbase_url=https://g.invalid\napi_key=k\n\n"
-                               "model=m\neffort=high\nenv.ANTHROPIC_DEFAULT_OPUS_MODEL=o\n\n"
-                               "# why the shim flag\nenv.CCMORPH_RANDOM_DEVICE_ID=1\n\n"
-                               "context_window.m=1000\n\nmodel_defaults=1\ncontext_discovered={}\n")
-        self.assertEqual(store.canonical_conf(tidy), tidy)
-
-    def test_a_removed_role_key_is_not_laid_out_with_the_model_keys(self):
-        """#375: the role key is gone, so it ranks after every known section."""
-        stale = "ro" "le"
-        tidy = store.canonical_conf(f"model=m\n{stale}=r\neffort=high\n")
-        self.assertEqual(tidy, f"model=m\neffort=high\n\n{stale}=r\n")
-
-    def test_a_context_write_lands_the_file_in_canonical_layout(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            conf = Path(tmp, "p.conf")
-            conf.write_text("model=m\ntype=apikey\napi_key=k\n")
-            self.assertTrue(store.replace_fields(conf, {"context_window.m": "5000"}))
-            self.assertEqual(conf.read_text(), "type=apikey\napi_key=k\n\nmodel=m\n\ncontext_window.m=5000\n")

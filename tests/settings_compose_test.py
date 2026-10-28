@@ -1,6 +1,4 @@
 """settings-compose: a profile's settings.json = canonical + its layer + saved defaults."""
-import importlib.machinery
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -9,14 +7,8 @@ import sys
 
 import pytest
 
-from support import HANG_TIMEOUT, HELPERS_IMPL, helper_cmd
+from support import HANG_TIMEOUT, helper_cmd
 
-# Tests that patch the Python module's internals have Go unit-test equivalents in
-# settingscompose/compose_test.go; under the Go switch they are skipped here.
-python_only = pytest.mark.skipif(HELPERS_IMPL == "go", reason="patches Python internals; see settingscompose/compose_test.go")
-
-
-HELPER = Path(__file__).resolve().parent.parent / "libexec/settings-compose"
 ADVISE = '[ -n "$CCMORPH_ADVISE" ] && printf "%s" "$CCMORPH_ADVISE" || true'
 # Nested too deep for any settings file to be held: it fails while the policy is
 # decoded, or, on an interpreter that decodes it anyway, while it is copied in.
@@ -378,41 +370,6 @@ def test_an_unreadable_policy_fails_instead_of_dropping_the_policy(home, tmp_pat
     assert not (profile / "settings.json").exists()
 
 
-@python_only
-@pytest.mark.parametrize("error,replacement", [
-    pytest.param(FileNotFoundError, False, id="disappearing-target-issue-308"),
-    pytest.param(PermissionError, False, id="unreadable-target-issue-308"),
-    pytest.param(FileNotFoundError, True, id="replaced-policy-issue-308"),
-    pytest.param(RecursionError, False, id="too-deep-target-issue-318"),
-])
-def test_a_policy_read_failure_preserves_the_generated_sandbox(home, tmp_path, monkeypatch, capsys, error, replacement):
-    canonical, profile = home
-    put(canonical, {})
-    shared = tmp_path / "policy.json"
-    sandbox = {"sandbox": {"enabled": True, "filesystem": {"denyRead": ["~/Documents"]}}}
-    put(shared, sandbox)
-    policy = profile / "settings.policy.json"
-    policy.symlink_to(shared)
-    run(canonical, profile)
-    before = (profile / "settings.json").read_bytes()
-    loader = importlib.machinery.SourceFileLoader("settings_compose", str(HELPER))
-    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
-    loader.exec_module(module)
-    read_text = Path.read_text
-
-    def failed_read(path, *args, **kwargs):
-        if path == policy:
-            if replacement:
-                shared.replace(policy)
-            raise error("policy target unavailable")
-        return read_text(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "read_text", failed_read)
-    assert module.main(["materialize", str(profile), "--canonical", str(canonical)]) == 3
-    assert "settings.policy.json" in capsys.readouterr().err
-    assert (profile / "settings.json").read_bytes() == before
-    assert get(profile / "settings.json")["sandbox"] == sandbox["sandbox"]
-
 
 def test_a_tombstone_in_the_shared_policy_never_reaches_settings(home, tmp_path):
     canonical, profile = home
@@ -443,13 +400,7 @@ class GoCompose:
 
 @pytest.fixture
 def compose():
-    """settings-compose loaded in-process: a failure path costs no interpreter."""
-    if HELPERS_IMPL == "go":
-        return GoCompose
-    loader = importlib.machinery.SourceFileLoader("settings_compose", str(HELPER))
-    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
-    loader.exec_module(module)
-    return module
+    return GoCompose
 
 
 def materialize(compose, canonical, profile) -> int:
@@ -598,37 +549,3 @@ def test_a_profile_cannot_drop_a_canonical_deny_rule(home):
     assert run(canonical, profile)["permissions"]["deny"] == ["Bash(shutdown*)", "WebSearch"]
 
 
-@python_only
-def test_a_policy_sharing_canonicals_deny_list_still_counts_as_carried(home, tmp_path):
-    import importlib.machinery, importlib.util
-    canonical, profile = home
-    put(canonical, {"permissions": {"deny": ["Bash(shutdown*)"]}})
-    shared = tmp_path / "agents" / "policy.json"
-    put(shared, {"permissions": {"deny": ["Read(~/.ssh/**)"]}})
-    (profile / "settings.policy.json").symlink_to(shared)
-    run(canonical, profile)
-    spec = importlib.util.spec_from_loader("sc", importlib.machinery.SourceFileLoader("sc", str(HELPER)))
-    sc = importlib.util.module_from_spec(spec); spec.loader.exec_module(sc)
-    assert sc.carries_policy(profile, get(shared))
-
-
-@python_only
-def test_a_crash_while_deciding_the_fallback_refuses_issue_420(home, tmp_path, compose, monkeypatch, capsys):
-    """The refusal decision reads the policy again to compare it with what was
-    generated; a failure that read does not wrap must not escape the decision
-    -- a traceback there is exit 1, the unguarded fallback one level down. Not
-    carried on a guess: settings that would carry the policy still refuse."""
-    canonical, profile = home
-    put(canonical, {})
-    link_policy(profile, tmp_path, SANDBOX)
-    assert materialize(compose, canonical, profile) == 0
-    before = (profile / "settings.json").read_bytes()
-    break_the_lock(profile)
-
-    def unreadable_policy(profile_dir):
-        raise MemoryError("cannot hold the policy")
-
-    monkeypatch.setattr(compose, "read_policy", unreadable_policy)
-    assert materialize(compose, canonical, profile) == 3
-    assert "settings.policy.json" in capsys.readouterr().err
-    assert (profile / "settings.json").read_bytes() == before

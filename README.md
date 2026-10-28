@@ -33,8 +33,9 @@ ccmorph run  ------+--> personal   API key             -->  Anthropic API
 
 ## Requirements
 
-- `zsh`, `python3` 3.8 or newer, and the `claude` CLI. The installer names the
-  command to install a missing one for your package manager, and stops.
+- `zsh` and the `claude` CLI. The installer names the command to install a missing
+  one for your package manager, and stops. `python3` 3.8 or newer is needed only
+  for the optional Remote Control add-on.
 - A release ships `gateway-shim` and `ccmorph-core` prebuilt for macOS and Linux (arm64, amd64).
   Installing from a clone needs Go to build it (`make shim`).
 - Optional: `cliproxyapi` for non-Anthropic endpoints, `fzf` for searchable
@@ -89,7 +90,7 @@ leaves your profiles alone.
 A fresh install has no profiles.
 
 ```sh
-ccmorph doctor           # check zsh, python3, claude and PATH
+ccmorph doctor           # check zsh, claude and PATH
 ccmorph add work         # create a profile: login or credential paste
 ccmorph run              # launch Claude Code on it
 ```

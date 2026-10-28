@@ -894,3 +894,10 @@ func TestRouteIdentityMatchesPython(t *testing.T) {
 		t.Errorf("identity %s != %s", got, want)
 	}
 }
+
+// Ported from tests/product_defaults_test.py: the fixed defaults are constants, not tuning knobs.
+func TestFixedDefaults(t *testing.T) {
+	if lockWait != 120*time.Second || jobs != 8 {
+		t.Fatalf("lockWait %v jobs %d", lockWait, jobs)
+	}
+}

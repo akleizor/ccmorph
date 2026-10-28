@@ -23,10 +23,9 @@ import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from support import ADAPTER_IMPL, CORE, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, adapter_cmd
+from support import CORE, SHIM, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, adapter_cmd
 
 REPO = Path(__file__).resolve().parent.parent
-ADAPTER = REPO / "libexec/ccmorph-adapter"
 
 # One model per dialect the adapter must distinguish, one stably dead, and one
 # whose failure looks transient (an indeterminate verdict that must not be cached).
@@ -249,22 +248,12 @@ class AdapterTest(unittest.TestCase):
         if constants or shim:
             fixture = self.home / "adapter-fixture"
             fixture.mkdir(exist_ok=True)
-            shutil.copy2(shim or ADAPTER.with_name("gateway-shim"), fixture / "gateway-shim")
-            if ADAPTER_IMPL == "go":
-                # The Go adapter takes its two timings from the environment.
-                binary = fixture / "ccmorph-core"
-                binary.unlink(missing_ok=True)  # a new inode: macOS kills a signed binary rewritten in place
-                shutil.copy2(CORE, binary)
-                env.update({f"CCMORPH_ADAPTER_{name}": str(value) for name, value in constants.items()})
-            else:
-                binary = fixture / "ccmorph-adapter"
-                shutil.copy2(ADAPTER, binary)
-                text = binary.read_text()
-                for name, value in constants.items():
-                    text = text.replace(f"{name} = 90", f"{name} = {value}")
-                    text = text.replace(f"{name} = 30", f"{name} = {value}")
-                binary.write_text(text)
-                binary.chmod(0o755)
+            shutil.copy2(shim or SHIM, fixture / "gateway-shim")
+            # The adapter takes its two timings from the environment.
+            binary = fixture / "ccmorph-core"
+            binary.unlink(missing_ok=True)  # a new inode: macOS kills a signed binary rewritten in place
+            shutil.copy2(CORE, binary)
+            env.update({f"CCMORPH_ADAPTER_{name}": str(value) for name, value in constants.items()})
             cmd = adapter_cmd(binary)
         env.update(kw.pop("env", {}))
         return subprocess.run([*cmd, "p", *args],
@@ -851,115 +840,6 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(list(tmp.glob("ccmorph-adapter-*")), [],
                          "state directory holding the credential was left behind")
 
-    def test_credential_is_never_forwarded_across_a_redirect(self):
-        # urllib copies a request's headers onto a redirect target, so an endpoint
-        # answering 302 to a third-party host would be handed the profile's
-        # x-api-key/Authorization. Cross-origin redirects are refused outright;
-        # same-origin ones still work, so this is a boundary, not a broken feature.
-        import importlib.machinery
-        import importlib.util
-        loader = importlib.machinery.SourceFileLoader("ad", str(ADAPTER))
-        ad = importlib.util.module_from_spec(
-            importlib.util.spec_from_loader("ad", loader))
-        loader.exec_module(ad)
-
-        seen: list[dict] = []
-
-        class Sink(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
-
-            def log_message(self, *a):
-                pass
-
-            def _hit(self):
-                seen.append(dict(self.headers))
-                d = json.dumps({"data": []}).encode()
-                self.send_response(200)
-                self.send_header("content-type", "application/json")
-                self.send_header("content-length", str(len(d)))
-                self.end_headers()
-                self.wfile.write(d)
-
-            do_GET = do_POST = _hit
-
-        class Redirect(BaseHTTPRequestHandler):
-            protocol_version = "HTTP/1.1"
-            target = ""
-
-            def log_message(self, *a):
-                pass
-
-            def _bounce(self):
-                try:
-                    self.rfile.read(int(self.headers.get("content-length") or 0))
-                except Exception:  # noqa: BLE001
-                    pass
-                self.send_response(307)  # 307 preserves method and body
-                self.send_header("location", Redirect.target)
-                self.send_header("content-length", "0")
-                self.end_headers()
-
-            do_GET = do_POST = _bounce
-
-        servers = []
-        try:
-            sink = HTTPServer(("127.0.0.1", 0), Sink)
-            servers.append(sink)
-            threading.Thread(target=sink.serve_forever, daemon=True).start()
-            # A different port is a different origin; "localhost" also makes it a
-            # different host string, which is what urllib keys header-copying on.
-            Redirect.target = (
-                f"http://localhost:{sink.server_address[1]}/v1/models")
-
-            bounce = HTTPServer(("127.0.0.1", 0), Redirect)
-            servers.append(bounce)
-            threading.Thread(target=bounce.serve_forever, daemon=True).start()
-            base = f"http://127.0.0.1:{bounce.server_address[1]}"
-
-            with self.assertRaises(Exception):
-                ad.inventory(base, "SECRET-KEY")
-            # A refused redirect reads as a transport error, so the verdict is
-            # indeterminate and is never cached as a fact about the model.
-            status, _ = ad.post(f"{base}/v1/messages", {},
-                                {"x-api-key": "SECRET-KEY"})
-            self.assertEqual(status, 0)
-            self.assertTrue(ad.indeterminate(status))
-            self.assertIsNone(ad.post_json(f"{base}/v1/messages", {},
-                                           {"x-api-key": "SECRET-KEY"}))
-            self.assertEqual(seen, [],
-                             "a credential-bearing request reached another origin")
-
-            # A same-origin redirect is still followed.
-            class Same(BaseHTTPRequestHandler):
-                protocol_version = "HTTP/1.1"
-
-                def log_message(self, *a):
-                    pass
-
-                def do_GET(self):
-                    if self.path == "/v1/models":
-                        self.send_response(302)
-                        self.send_header("location", "/moved")
-                        self.send_header("content-length", "0")
-                        self.end_headers()
-                        return
-                    d = json.dumps({"data": [{"id": "same-origin-ok"}]}).encode()
-                    self.send_response(200)
-                    self.send_header("content-type", "application/json")
-                    self.send_header("content-length", str(len(d)))
-                    self.end_headers()
-                    self.wfile.write(d)
-
-            same = HTTPServer(("127.0.0.1", 0), Same)
-            servers.append(same)
-            threading.Thread(target=same.serve_forever, daemon=True).start()
-            self.assertEqual(
-                ad.inventory(f"http://127.0.0.1:{same.server_address[1]}", "k"),
-                ["same-origin-ok"])
-        finally:
-            for s in servers:
-                s.shutdown()
-
     def test_ready_timeout_exits_non_zero(self):
         # The contract with ccmorph: anything short of "printed PORT and served"
         # exits non-zero, so the caller aborts the launch. A translator that starts
@@ -973,41 +853,6 @@ class AdapterTest(unittest.TestCase):
         self.assertNotEqual(out.returncode, 0,
                             "a ready-timeout must not look like success")
         self.assertNotIn("PORT=", out.stdout)
-
-    def test_shutdown_waits_then_kills_a_stubborn_child(self):
-        import importlib.machinery
-        import importlib.util
-        loader = importlib.machinery.SourceFileLoader("adapter_stop", str(ADAPTER))
-        ad = importlib.util.module_from_spec(
-            importlib.util.spec_from_loader("adapter_stop", loader))
-        loader.exec_module(ad)
-
-        class Stubborn:
-            def __init__(self):
-                self.calls = []
-
-            def poll(self):
-                return None
-
-            def terminate(self):
-                self.calls.append("terminate")
-
-            def wait(self, timeout=None):
-                self.calls.append(("wait", timeout))
-                if timeout is not None:
-                    raise subprocess.TimeoutExpired("shim", timeout)
-                return 0
-
-            def kill(self):
-                self.calls.append("kill")
-
-        proc = Stubborn()
-        ad.stop_processes(proc)
-        self.assertEqual(proc.calls[0], "terminate")
-        self.assertEqual(proc.calls[1][0], "wait")
-        self.assertGreater(proc.calls[1][1], 9)
-        self.assertLessEqual(proc.calls[1][1], 10)
-        self.assertEqual(proc.calls[2:], ["kill", ("wait", None)])
 
     def test_shim_readiness_failure_stops_the_translator(self):
         marker = self.home / "translator.pid"
@@ -1100,7 +945,7 @@ class AdapterTest(unittest.TestCase):
             script.write_text(base.replace("}\n", extra + "}\n") if extra else base)
             argv_file.unlink(missing_ok=True)
             env_file.unlink(missing_ok=True)
-            if ADAPTER_IMPL == "go" and not extra:
+            if not extra:
                 continue  # the stock shim runs inside the adapter: no process to record
             self.run_adapter(env={"PATH": f"{self.path_bin}:{os.environ.get('PATH', '')}"},
                              _shim=shim)
@@ -1131,33 +976,6 @@ class AdapterTest(unittest.TestCase):
             out = self.run_adapter()
             self.assertNotEqual(out.returncode, 0, out.stdout + out.stderr)
             self.assertIn("CCMORPH_SHIM_HOOKS", out.stdout + out.stderr)
-
-    def test_profile_env_sources_the_packaged_ccmorph_script(self):
-        import importlib.machinery
-        import importlib.util
-        loader = importlib.machinery.SourceFileLoader("adapter_path", str(ADAPTER))
-        ad = importlib.util.module_from_spec(
-            importlib.util.spec_from_loader("adapter_path", loader))
-        loader.exec_module(ad)
-        saved = ad.subprocess.run
-        calls = []
-
-        def fake_run(argv, **kwargs):
-            calls.append(argv)
-            return subprocess.CompletedProcess(
-                argv, 0, stdout="ANTHROPIC_API_KEY=k\n", stderr="")
-
-        ad.subprocess.run = fake_run
-        try:
-            self.assertEqual(ad.profile_env("p; nope"),
-                             {"ANTHROPIC_API_KEY": "k"})
-        finally:
-            ad.subprocess.run = saved
-        self.assertEqual(ad.CCMORPH, Path(os.environ.get("CCMORPH_LIB_DIR") or ADAPTER.parent.parent / "lib") / "ccmorph.sh")
-        self.assertEqual(calls[0][-3:],
-                         ["ccmorph-adapter", str(ad.CCMORPH), "p; nope"])
-        self.assertIn('source "$1"', calls[0][2])
-        self.assertIn('ccmorph _env "$2"', calls[0][2])
 
     def test_profile_name_is_not_executed_as_shell(self):
         # The profile name arrives on a command line and is handed to `zsh -c`.
@@ -1430,281 +1248,6 @@ class AdapterTest(unittest.TestCase):
                     self.assertNotIn(secret, out.stdout)
                     self.assertNotIn(secret, out.stderr)
                 self.assertIn(phrase, out.stderr)
-
-
-class ServingNoProxyTest(unittest.TestCase):
-    """serving() probes loopback directly even with an ambient http_proxy (issue #83)."""
-
-    def test_serving_bypasses_ambient_proxy(self):
-        import socket
-        proxy = socket.socket()
-        proxy.bind(("127.0.0.1", 0))
-        proxy.listen(8)
-        hits = []
-
-        def accept():
-            while True:
-                try:
-                    c, _ = proxy.accept()
-                except OSError:
-                    return
-                hits.append(1)
-                c.sendall(b"HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\n\r\n")
-                c.close()
-        threading.Thread(target=accept, daemon=True).start()
-
-        class Fixture(BaseHTTPRequestHandler):
-            def log_message(self, *a):
-                pass
-
-            def do_GET(self):
-                self.send_response(200 if self.headers.get("x-api-key") == "k" else 401)
-                self.send_header("content-length", "0")
-                self.end_headers()
-        fixture = HTTPServer(("127.0.0.1", 0), Fixture)
-        threading.Thread(target=fixture.serve_forever, daemon=True).start()
-        self.addCleanup(fixture.shutdown)
-        self.addCleanup(proxy.close)
-        url = f"http://127.0.0.1:{proxy.getsockname()[1]}"
-        env = {k: v for k, v in os.environ.items()
-               if k.lower() not in ("http_proxy", "https_proxy", "all_proxy", "no_proxy")}
-        env.update(http_proxy=url, HTTP_PROXY=url)
-        prog = (
-            "import importlib.machinery, importlib.util, sys\n"
-            f"l = importlib.machinery.SourceFileLoader('ad', {str(ADAPTER)!r})\n"
-            "m = importlib.util.module_from_spec(importlib.util.spec_from_loader('ad', l))\n"
-            "l.exec_module(m)\n"
-            f"print(m.serving({fixture.server_address[1]}, 'k'))\n")
-        out = subprocess.run([sys.executable, "-c", prog], capture_output=True, text=True, env=env, timeout=HANG_TIMEOUT)
-        self.assertEqual(out.stdout.strip(), "True", out.stderr)
-        self.assertEqual(hits, [], "serving() went through the ambient proxy")
-
-
-class InventoryLoopbackNoProxyTest(unittest.TestCase):
-    """the --ensure-config loopback inventory poll bypasses an ambient http_proxy (issue #101)."""
-
-    def test_loopback_inventory_bypasses_ambient_proxy(self):
-        import socket
-        proxy = socket.socket()
-        proxy.bind(("127.0.0.1", 0))
-        proxy.listen(8)
-        hits = []
-
-        def accept():
-            while True:
-                try:
-                    c, _ = proxy.accept()
-                except OSError:
-                    return
-                hits.append(1)
-                c.sendall(b"HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\n\r\n")
-                c.close()
-        threading.Thread(target=accept, daemon=True).start()
-
-        class Fixture(BaseHTTPRequestHandler):
-            def log_message(self, *a):
-                pass
-
-            def do_GET(self):
-                body = b'{"data": [{"id": "m1"}]}'
-                self.send_response(200 if self.headers.get("x-api-key") == "k" else 401)
-                self.send_header("content-length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-        fixture = HTTPServer(("127.0.0.1", 0), Fixture)
-        threading.Thread(target=fixture.serve_forever, daemon=True).start()
-        self.addCleanup(fixture.shutdown)
-        self.addCleanup(proxy.close)
-        url = f"http://127.0.0.1:{proxy.getsockname()[1]}"
-        env = {k: v for k, v in os.environ.items()
-               if k.lower() not in ("http_proxy", "https_proxy", "all_proxy", "no_proxy")}
-        env.update(http_proxy=url, HTTP_PROXY=url)
-        prog = (
-            "import importlib.machinery, importlib.util, sys\n"
-            f"l = importlib.machinery.SourceFileLoader('ad', {str(ADAPTER)!r})\n"
-            "m = importlib.util.module_from_spec(importlib.util.spec_from_loader('ad', l))\n"
-            "l.exec_module(m)\n"
-            f"print(m.inventory('http://127.0.0.1:{fixture.server_address[1]}', 'k', m.LOOPBACK))\n")
-        out = subprocess.run([sys.executable, "-c", prog], capture_output=True, text=True, env=env, timeout=HANG_TIMEOUT)
-        self.assertEqual(out.stdout.strip(), "['m1']", out.stderr)
-        self.assertEqual(hits, [], "inventory() went through the ambient proxy")
-
-    def test_ensure_config_poll_bypasses_ambient_proxy(self):
-        """main()'s --ensure-config path polls the translator through LOOPBACK (#139).
-
-        Runs the real main() with the gateway, classify and render faked; only the
-        loopback poll of the translator port is real, with a decoy as http_proxy."""
-        import socket
-        proxy = socket.socket()
-        proxy.bind(("127.0.0.1", 0))
-        proxy.listen(8)
-        hits = []
-
-        def accept():
-            while True:
-                try:
-                    c, _ = proxy.accept()
-                except OSError:
-                    return
-                hits.append(1)
-                c.sendall(b"HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\n\r\n")
-                c.close()
-        threading.Thread(target=accept, daemon=True).start()
-
-        class Translator(BaseHTTPRequestHandler):
-            def log_message(self, *a):
-                pass
-
-            def do_GET(self):
-                body = b'{"data": [{"id": "m1"}]}'
-                self.send_response(200)
-                self.send_header("content-length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-        translator = HTTPServer(("127.0.0.1", 0), Translator)
-        threading.Thread(target=translator.serve_forever, daemon=True).start()
-        self.addCleanup(translator.shutdown)
-        self.addCleanup(proxy.close)
-        tmp = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, tmp, True)
-        conf = tmp / "config.yaml"
-        conf.write_text("old")
-        url = f"http://127.0.0.1:{proxy.getsockname()[1]}"
-        env = {k: v for k, v in os.environ.items()
-               if k.lower() not in ("http_proxy", "https_proxy", "all_proxy", "no_proxy")}
-        env.update(http_proxy=url, HTTP_PROXY=url)
-        port = translator.server_address[1]
-        prog = (
-            "import hashlib, importlib.machinery, importlib.util, json, sys\n"
-            f"l = importlib.machinery.SourceFileLoader('ad', {str(ADAPTER)!r})\n"
-            "m = importlib.util.module_from_spec(importlib.util.spec_from_loader('ad', l))\n"
-            "l.exec_module(m)\n"
-            "up, key = 'http://gateway.invalid', 'k'\n"
-            "m.profile_env = lambda p: {'ANTHROPIC_API_KEY': key, 'ANTHROPIC_BASE_URL': up, "
-            "'CCMORPH_MODEL_MAP': '{\"m1\":\"do-not-remap-prepared-target\"}'}\n"
-            "real = m.inventory\n"
-            "m.inventory = lambda b, k, o=None: ['m1'] if b == up else real(b, k, o)\n"
-            "m.classify = lambda *a, **kw: []\n"
-            "m.render = lambda *a, **kw: 'new'\n"
-            "ident = hashlib.sha256(json.dumps([up, key]).encode()).hexdigest()\n"
-            f"sys.argv = ['ad', 'p', '--model', 'm1', '--ensure-config', {str(conf)!r},"
-            f" '--ensure-port', '{port}', '--ensure-identity', ident]\n"
-            "sys.exit(m.main())\n")
-        out = subprocess.run([sys.executable, "-c", prog], capture_output=True, text=True,
-                             env=env, timeout=HANG_TIMEOUT)
-        self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertEqual(conf.read_text(), "new")
-        self.assertEqual(hits, [], "the --ensure-config poll went through the ambient proxy")
-
-    def test_loopback_inventory_refuses_cross_origin_redirect(self):
-        hits = []
-
-        class Other(BaseHTTPRequestHandler):
-            def log_message(self, *a):
-                pass
-
-            def do_GET(self):
-                hits.append(self.headers.get("x-api-key"))
-                self.send_response(200)
-                self.send_header("content-length", "2")
-                self.end_headers()
-                self.wfile.write(b"{}")
-        other = HTTPServer(("127.0.0.1", 0), Other)
-        threading.Thread(target=other.serve_forever, daemon=True).start()
-        self.addCleanup(other.shutdown)
-        target = f"http://127.0.0.1:{other.server_address[1]}/v1/models"
-
-        class Redir(BaseHTTPRequestHandler):
-            def log_message(self, *a):
-                pass
-
-            def do_GET(self):
-                self.send_response(302)
-                self.send_header("location", target)
-                self.send_header("content-length", "0")
-                self.end_headers()
-        redir = HTTPServer(("127.0.0.1", 0), Redir)
-        threading.Thread(target=redir.serve_forever, daemon=True).start()
-        self.addCleanup(redir.shutdown)
-        prog = (
-            "import importlib.machinery, importlib.util, sys\n"
-            f"l = importlib.machinery.SourceFileLoader('ad', {str(ADAPTER)!r})\n"
-            "m = importlib.util.module_from_spec(importlib.util.spec_from_loader('ad', l))\n"
-            "l.exec_module(m)\n"
-            f"print(m.inventory('http://127.0.0.1:{redir.server_address[1]}', 'k', m.LOOPBACK))\n")
-        out = subprocess.run([sys.executable, "-c", prog], capture_output=True, text=True, timeout=HANG_TIMEOUT)
-        self.assertNotEqual(out.returncode, 0, out.stdout)
-        self.assertEqual(hits, [], "LOOPBACK followed a cross-origin redirect with the key")
-
-
-class TranslatorDiscoveryTest(unittest.TestCase):
-    """The translator must be found on any machine shape, not one.
-
-    The path was hardcoded to /opt/homebrew — Apple-Silicon Homebrew. An Intel
-    Mac (/usr/local) or a Linux host would report "not executable" for a
-    translator it had installed, so a `proxy` profile was unusable there with a
-    misleading error.
-    """
-
-    def _discover(self, env: dict[str, str], path_dir: str = "") -> str:
-        # Exercise the shipped resolver itself: import the module's own
-        # definition rather than restating the candidate list here, or the test
-        # would pass while the shipped copy stayed wrong.
-        src = ADAPTER.read_text()
-        start = src.index("def _find_translator")
-        end = src.index("TRANSLATOR = _find_translator()")
-        prog = (
-            "import os, shutil\n"
-            "from pathlib import Path\n"
-            f"os.environ.clear(); os.environ.update({env!r})\n"
-            + src[start:end]
-            + "\nprint(_find_translator())\n"
-        )
-        return subprocess.run(
-            [sys.executable, "-c", prog], capture_output=True, text=True,
-            check=True, timeout=HANG_TIMEOUT,
-        ).stdout.strip()
-
-    def test_a_translator_on_path_is_found(self):
-        with tempfile.TemporaryDirectory() as td:
-            binary = Path(td) / "cliproxyapi"
-            binary.write_text("#!/bin/sh\n")
-            binary.chmod(0o755)
-            got = self._discover({"PATH": td})
-        self.assertEqual(got, str(binary))
-
-    def test_a_non_homebrew_install_location_is_found(self):
-        # A per-user install under ~/.local/bin must be found.
-        with tempfile.TemporaryDirectory() as td:
-            local = Path(td) / ".local" / "bin"
-            local.mkdir(parents=True)
-            binary = local / "cliproxyapi"
-            binary.write_text("#!/bin/sh\n")
-            binary.chmod(0o755)
-            got = self._discover({"PATH": "/nonexistent", "HOME": td})
-            self.assertTrue(os.access(got, os.X_OK), f"not executable: {got}")
-            # On a host without the Homebrew copy, the scratch install is the
-            # only candidate that exists — pin that it is reachable at all.
-            self.assertIn(got, (str(binary),
-                                "/opt/homebrew/opt/cliproxyapi/bin/cliproxyapi",
-                                "/usr/local/opt/cliproxyapi/bin/cliproxyapi",
-                                "/usr/local/bin/cliproxyapi",
-                                "/usr/bin/cliproxyapi"))
-
-    def test_a_per_user_install_is_a_candidate_at_all(self):
-        # The specific regression: ~/.local/bin was not in the search set, so a
-        # per-user install was invisible. Prove it is reachable by removing every
-        # system candidate from consideration — a fake HOME plus a PATH miss
-        # leaves it as the only executable the resolver can return.
-        src = ADAPTER.read_text()
-        self.assertIn('".local/bin/cliproxyapi"', src)
-        self.assertIn('os.path.expanduser("~")', src,
-                      "must honor $HOME, not the password database")
-
-    def test_nothing_found_yields_an_actionable_path_not_a_crash(self):
-        got = self._discover({"PATH": "/nonexistent", "HOME": "/nonexistent"})
-        # A real string the not-executable check can name in its error.
-        self.assertTrue(got.endswith("cliproxyapi"), got)
 
 
 if __name__ == "__main__":

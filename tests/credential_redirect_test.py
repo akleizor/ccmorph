@@ -1,8 +1,6 @@
 """Cross-origin redirects must not carry the API key (issue #10)."""
 import contextlib
 import http.server
-import importlib.machinery
-import importlib.util
 import os
 import socket
 import subprocess
@@ -15,14 +13,6 @@ from pathlib import Path
 from support import HANG_TIMEOUT, SHIM, needs_shim
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def load(path, name):
-    loader = importlib.machinery.SourceFileLoader(name, str(path))
-    spec = importlib.util.spec_from_loader(name, loader)
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module
 
 
 PROXY_VARS = ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
@@ -89,20 +79,6 @@ class CredentialRedirect(unittest.TestCase):
 
         origin = serve(Redirect)
         return seen, f"http://127.0.0.1:{origin.server_address[1]}"
-
-    def test_registry_refuses_cross_origin_redirect_with_key(self):
-        seen, base = self._redirect_fixture()
-        # The module builds its opener at import, so clear proxies first.
-        saved = {k: os.environ.pop(k) for k in PROXY_VARS if k in os.environ}
-        self.addCleanup(os.environ.update, saved)
-        registry = load(ROOT / "libexec/refresh-model-registry", "rmr_redirect")
-        try:
-            registry.list_models(base, "sk-REDIRECT-CANARY")
-        except Exception:
-            pass
-        self.assertTrue(self.origin_hits, "the request never reached the fixture")
-        self.assertEqual([h for h in seen if "sk-REDIRECT-CANARY" in str(h)], [],
-                         "refresh-model-registry forwarded the key to another origin")
 
     @needs_shim
     def test_shim_refuses_cross_origin_redirect_with_key(self):
