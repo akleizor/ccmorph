@@ -493,8 +493,10 @@ func TestNativeLaunchRejectsMappedChatBeforeUpstreamPost(t *testing.T) { // test
 				defer close(done)
 				Main([]string{"demo", "--auto", "--model", "m", "--parent-pid", strconv.Itoa(parent.Process.Pid)})
 			}()
+			// A cold macOS runner can take well over 10 s to start the shim; the
+			// adapter itself allows readyTimeout (90 s).
 			ready := false
-			for i := 0; i < 200 && !ready; i++ {
+			for end := time.Now().Add(60 * time.Second); !ready && time.Now().Before(end); {
 				ready = serving(edge, "k")
 				time.Sleep(50 * time.Millisecond)
 			}
