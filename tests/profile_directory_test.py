@@ -206,33 +206,5 @@ def test_unrelated_legacy_symlink_refused(tmp_path):
     assert not (state / 'profiles').exists()
 
 
-def test_cross_device_move_refused_without_copy(tmp_path):
-    state = tmp_path / '.config/ccmorph'
-    old = tmp_path / '.claude-profiles'
-    old.mkdir()
-    fixture = old / 'fixture'
-    fixture.write_text('untouched')
-    inode = fixture.stat().st_ino
-    hooks = tmp_path / 'python-hooks'
-    hooks.mkdir()
-    (hooks / 'sitecustomize.py').write_text(
-        'import os, errno\ndef fail(*a, **k): raise OSError(errno.EXDEV, "cross-device")\nos.rename=fail\n')
-    result = run(tmp_path, state, extra={'PYTHONPATH': str(hooks)})
-    assert result.returncode != 0
-    assert fixture.stat().st_ino == inode and fixture.read_text() == 'untouched'
-    assert not (state / 'profiles').exists()
-
-
-def test_failed_alias_creation_restores_original_directory(tmp_path):
-    state = tmp_path / '.config/ccmorph'
-    old = tmp_path / '.claude-profiles'
-    old.mkdir()
-    (old / 'fixture').write_text('untouched')
-    hooks = tmp_path / 'python-hooks'
-    hooks.mkdir()
-    (hooks / 'sitecustomize.py').write_text(
-        'import os\ndef fail(*a, **k): raise OSError("simulated alias failure")\nos.symlink=fail\n')
-    result = run(tmp_path, state, extra={'PYTHONPATH': str(hooks)})
-    assert result.returncode != 0
-    assert not old.is_symlink() and (old / 'fixture').read_text() == 'untouched'
-    assert not (state / 'profiles').exists()
+# The two failures that need an injected syscall (a cross-device rename, a refused
+# alias) are util/util_test.go's TestMigrate*.

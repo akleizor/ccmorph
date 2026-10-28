@@ -36,37 +36,9 @@ LIB_FILES = ('libexec/model-window', 'libexec/settings-compose', 'lib/ccmorph.sh
 # The exact default the launch path installs for every adapter route.
 ROUTE_DEFAULT = '-mid_conv_system,-mid_conv_tool_change,-per_turn_effort'
 
-# How many python3 interpreters one routed launch may start, counted through a
-# PATH wrapper: 15 before the read-only diagnostics were folded into one (#332),
-# 11 after; 10 and 9 once the send id moved onto the fields line; 8 and 7 once
-# the window facts join one run and the seeded default stops costing a read
-# (#333); 7 and 6 once the hazard warning is asked for as one more record from
-# that same run instead of a run of its own (#433, and a hazard-free launch pays
-# nothing for it); 6 and 5 once the store that reads the conf generates the
-# settings in the same start, instead of the launch paying a second one for the
-# projection (#433). The interpreter start is what a launch spends nearly all of
-# its wall time on (#321), so the number is pinned rather than timed: a clock
-# reading moves with host load, a start count does not. A new interpreter in the
-# launch path updates this number; it is the count of every start, not of a
-# subset.
-#
-# Four shapes, four numbers. A launch that names a model also resolves a send_id,
-# the one interpreter start that shape adds; one that names none still reads the
-# window facts -- a routed launch needs its ceiling -- but resolves no send_id. A
-# gateway profile pays one more than a token one whatever it names: reaching the
-# gateway's model list is its own interpreter, and this issue leaves that lookup
-# alone (it is the start the no-model shape pays for its saved default too). A
-# launch whose route trips the hazard warning pays one more again: rendering the
-# advisory into CCMORPH_ADVISE is an interpreter of its own, and #433 leaves
-# that encoder alone. Pinning each keeps a fix to one shape from paying for
-# another with a new interpreter.
-# The launcher runs settings-compose through ccmorph-core: one interpreter start
-# fewer on the routes that used to run the script.
-PYTHON_STARTS_PER_LAUNCH = 5
-PYTHON_STARTS_NO_MODEL = 5
-PYTHON_STARTS_TOKEN = 4
-PYTHON_STARTS_HAZARD = 6
-
+# The core runs on no interpreter: a routed launch starts python3 zero times. The
+# count goes through a PATH wrapper, so any `python3` the launch path ever gains
+# shows up as a line.
 # GH-433 cuts interpreter starts out of the launch path, which is only safe if the
 # launch still writes what it wrote. One golden holds the whole observable output
 # of five profile shapes, generated once on the pre-fix tree with GH433_REGEN=1
@@ -301,12 +273,9 @@ def test_a_nonempty_caps_in_canon_survives_an_empty_profile_value(launch):
         'a key the launch sets itself must not remain in the generated env block'
 
 
-@pytest.mark.parametrize('case, expected', [('gateway', PYTHON_STARTS_PER_LAUNCH),
-                                            ('gateway-no-model', PYTHON_STARTS_NO_MODEL),
-                                            ('token', PYTHON_STARTS_TOKEN),
-                                            ('hazard', PYTHON_STARTS_HAZARD)])
-def test_a_routed_launch_starts_python_a_fixed_number_of_times(launch, case, expected):
-    """Count python3 starts, not seconds: the launch's cost is interpreter starts.
+@pytest.mark.parametrize('case', ['gateway', 'gateway-no-model', 'token', 'hazard'])
+def test_a_routed_launch_starts_no_python(launch, case):
+    """A launch needs no interpreter, whatever the route's shape.
 
     The wrapper goes in front of PATH, which `command python3` obeys, so every
     interpreter the launch starts is one line. The first launch provisions the
@@ -325,11 +294,11 @@ def test_a_routed_launch_starts_python_a_fixed_number_of_times(launch, case, exp
     launch.run()                                   # first launch provisions
     started = launch.home / 'python3.starts'
     (launch.home / 'launches.jsonl').unlink()
-    started.unlink()
+    started.unlink(missing_ok=True)
     launch.run()
 
-    count = len(started.read_text().splitlines())
-    assert count == expected, f'{count} python3 starts'
+    count = len(started.read_text().splitlines()) if started.exists() else 0
+    assert count == 0, f'{count} python3 starts'
 
 
 def _gh433_arrange(launch, case):

@@ -10757,14 +10757,14 @@ test_picker_projects_a_derived_1m_row_for_a_probed_claude() {
   assert_contains "$state" 'claude-new-9' \
     'an unprobed Claude model stays visible under its exact ID' || rc=1
 
-  # Without the resolver, catalogue rows retain their exact IDs; only the
+  # With no recorded window, catalogue rows retain their exact IDs; only the
   # derived context suffix is unavailable.
   print -r -- '{}' > "$HOME/.config/ccmorph/profiles/gw/.claude.json"
-  rm -f "$HOME/.config/ccmorph/libexec/ccmorph-core"
-    _ccm_project_picker gw http://gw.invalid sk_t
+  printf '%s\n' 'type=apikey' 'base_url=http://gw.invalid' 'api_key=sk_t' > "$HOME/.config/ccmorph/gw.conf"
+  _ccm_project_picker gw http://gw.invalid sk_t
   state="$(<"$HOME/.config/ccmorph/profiles/gw/.claude.json")"
   assert_contains "$state" 'claude-opus-5' \
-    'no resolver must preserve catalogue visibility without adding a derived suffix' || rc=1
+    'no recorded window must preserve catalogue visibility without adding a derived suffix' || rc=1
   rm -rf "$test_home"
   return $rc
 }

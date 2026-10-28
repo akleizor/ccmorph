@@ -18,6 +18,12 @@ import (
 	"github.com/akleizor/ccmorph/pycompat"
 )
 
+// Test seams: the two calls whose failures the migration tests must provoke.
+var (
+	rename  = os.Rename
+	symlink = os.Symlink
+)
+
 // resolveLink is Path.resolve(): symlinks followed, a missing tail kept.
 func resolveLink(p string) string {
 	if r, err := filepath.EvalSymlinks(p); err == nil {
@@ -76,12 +82,12 @@ func migrateProfileHome(args []string, _ io.Reader, _, errw io.Writer) int {
 				pycompat.RaiseValue("both profile locations exist or are not directories; nothing moved")
 			}
 			// Rename on the same filesystem: never copy credentials or merge homes.
-			if err := os.Rename(legacy, target); err != nil {
+			if err := rename(legacy, target); err != nil {
 				pycompat.RaiseOS(err)
 			}
-			if err := os.Symlink(target, legacy); err != nil {
+			if err := symlink(target, legacy); err != nil {
 				if !exists(legacy) && !isSymlink(legacy) {
-					os.Rename(target, legacy)
+					rename(target, legacy)
 				}
 				pycompat.RaiseOS(err)
 			}
