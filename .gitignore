@@ -79,6 +79,7 @@ dist/
 /libexec/gateway-shim
 /libexec/gateway-shim-*
 /libexec/ccmorph-core
+/libexec/ccmorph-core-*
 # Python bytecode and pytest state.
 __pycache__/
 .pytest_cache/

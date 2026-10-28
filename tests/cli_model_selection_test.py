@@ -67,12 +67,12 @@ class ModelSelection(unittest.TestCase):
         for name in LIB_FILES:
             (self.state / name).parent.mkdir(exist_ok=True)
             shutil.copy(ROOT / name, self.state / name)
-        (self.state / 'libexec/ccmorph-adapter').write_text(ADAPTER)
-        (self.state / 'libexec/ccmorph-adapter').chmod(0o755)
+        (self.state / 'libexec/ccmorph-core').write_text(ADAPTER)
+        (self.state / 'libexec/ccmorph-core').chmod(0o755)
         # A launch leaves the stub detached, and `--parent-pid` only reaches it
         # while the launcher's number stays dead (#347). Registered after
         # tmp.cleanup, so this LIFO cleanup kills the stub's recorded pid first.
-        self.addCleanup(fake_adapter.reap, self.state / 'libexec/ccmorph-adapter')
+        self.addCleanup(fake_adapter.reap, self.state / 'libexec/ccmorph-core')
         path = f'{self.home}/bin:/usr/bin:/bin:{Path(shutil.which("zsh")).parent}'
         self.env = {'HOME': str(self.home), 'PATH': path, 'LANG': 'C.UTF-8',
                     'XDG_CONFIG_HOME': str(self.home / '.config'),

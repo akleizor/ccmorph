@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/akleizor/ccmorph/compat"
 	"github.com/akleizor/ccmorph/shim"
 )
 
@@ -54,8 +55,19 @@ func q(v string) string {
 // prints it for `translator-user-agent`, from the profile's CCMORPH_* env.
 // Failing soft is deliberate: the shim dies loudly at spawn when it is broken.
 func shimUserAgent(shimPath string, shimEnv []string) string {
-	if shimPath == "" {
-		return ""
+	if shimPath == "" { // the stock shim runs in this process: ask its hooks
+		h, err := compat.FromGetenv(func(k string) string {
+			for i := len(shimEnv) - 1; i >= 0; i-- {
+				if v, ok := strings.CutPrefix(shimEnv[i], k+"="); ok {
+					return v
+				}
+			}
+			return ""
+		})
+		if err != nil || h.TranslatorUserAgent == nil {
+			return ""
+		}
+		return strings.TrimSpace(h.TranslatorUserAgent())
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

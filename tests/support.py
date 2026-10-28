@@ -24,7 +24,7 @@ SHIM = Path(__file__).resolve().parent.parent / "libexec/gateway-shim"
 # `CCMORPH_TEST_ADAPTER=go` (needs `make shim`). The same black-box tests run
 # against both; ADAPTER_CMD is the argv prefix, followed by the profile.
 CORE = Path(__file__).resolve().parent.parent / "libexec/ccmorph-core"
-ADAPTER_IMPL = os.environ.get("CCMORPH_TEST_ADAPTER", "python")
+ADAPTER_IMPL = os.environ.get("CCMORPH_TEST_ADAPTER", "go")
 ADAPTER_PY = Path(__file__).resolve().parent.parent / "libexec/ccmorph-adapter"
 # Module-level `pytestmark = needs_shim` skips a file that spawns the compiled shim.
 # pytest is imported here, not at the top: the zsh suite imports this module
@@ -40,7 +40,7 @@ def adapter_cmd(binary=None):
 # The Go ports of the other Python helpers (settings-compose, model-window,
 # refresh-model-registry): `CCMORPH_TEST_HELPERS=go` runs the black-box tests that
 # invoke them against `ccmorph-core <name>` instead of the script.
-HELPERS_IMPL = os.environ.get("CCMORPH_TEST_HELPERS", "python")
+HELPERS_IMPL = os.environ.get("CCMORPH_TEST_HELPERS", "go")
 
 
 def helper_cmd(name, binary=None):

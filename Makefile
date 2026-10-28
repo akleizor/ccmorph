@@ -21,7 +21,7 @@ help:
 	@echo "  make check-version  version, changelog and tag must agree"
 	@echo "  make release        verify, then build $(TARBALL) + the stable ccmorph.tar.gz"
 
-# The one compiled helper. Tests and a checkout's install.sh use this binary.
+# The compiled helpers. Tests and a checkout's install.sh use these binaries.
 shim:
 	go build -trimpath -o libexec/gateway-shim ./cmd/gateway-shim
 	go build -trimpath -o libexec/ccmorph-core ./cmd/ccmorph-core
@@ -62,7 +62,7 @@ check-version:
 # install.sh to the release too, since the one-liner fetches it from there.
 # Split out of `release` because its own `test` prerequisite would recurse into
 # the suite that tests this step.
-# The tarball also carries one gateway-shim per platform, built from the same
+# The tarball also carries one gateway-shim and ccmorph-core per platform, built from the same
 # tag export (never the working tree), so a user's install needs no Go.
 PLATFORMS := darwin/arm64 darwin/amd64 linux/arm64 linux/amd64
 STAGE := $(DIST)/stage/ccmorph-$(TAG)
@@ -73,7 +73,9 @@ dist:
 	@for p in $(PLATFORMS); do \
 	  os=$${p%/*}; arch=$${p#*/}; \
 	  (cd $(STAGE) && CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch \
-	    go build -trimpath -o libexec/gateway-shim-$$os-$$arch ./cmd/gateway-shim) || exit 1; \
+	    go build -trimpath -o libexec/gateway-shim-$$os-$$arch ./cmd/gateway-shim && \
+	    CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch \
+	    go build -trimpath -o libexec/ccmorph-core-$$os-$$arch ./cmd/ccmorph-core) || exit 1; \
 	done
 	tar -czf $(TARBALL) -C $(DIST)/stage ccmorph-$(TAG)
 	@rm -rf $(DIST)/stage

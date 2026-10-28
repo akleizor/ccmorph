@@ -439,7 +439,7 @@ PY
   else
     _ccm_doctor_status 'SKIP' 'adapter: native profile path (not started by doctor)'
   fi
-  if [[ -n "$base" && -x "$_CCMORPH_LIBEXEC_DIR/ccmorph-adapter" ]]; then
+  if [[ -n "$base" && -x "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" ]]; then
     local running_adapter
     running_adapter=$(command python3 - "$name" <<'PY' 2>/dev/null
 import os, re, shlex, subprocess, sys
@@ -463,9 +463,17 @@ def executable_index(args):
         return 1 if len(args) > 1 else -1
     return 0
 
+# ccmorph-core serves the shim inside the adapter: its argv is
+# `ccmorph-core adapter <profile>` (the Python ccmorph-adapter: `ccmorph-adapter <profile>`).
+def adapter_profile(args):
+    i = executable_index(args)
+    if i < 0 or i + 1 >= len(args): return None
+    if os.path.basename(args[i]) == 'ccmorph-core' and args[i + 1] == 'adapter':
+        return args[i + 2] if i + 2 < len(args) else None
+    return args[i + 1] if os.path.basename(args[i]) == 'ccmorph-adapter' else None
+
 for pid, (ppid, args) in items.items():
-    adapter_index = executable_index(args)
-    if adapter_index >= 0 and os.path.basename(args[adapter_index]) == 'ccmorph-adapter' and adapter_index + 1 < len(args) and args[adapter_index + 1] == profile:
+    if adapter_profile(args) == profile:
         children = []
         for child, (child_ppid, child_args) in items.items():
             if child_ppid != pid or not child_args: continue
@@ -1191,7 +1199,7 @@ ccmorph() {
       }
       if [[ "${CCMORPH_CONTEXT_LOCKED:-}" != "$2" ]]; then
         command env CCMORPH_STATE_DIR="$dir" CCMORPH_CONTEXT_LOCKED="$2" \
-          "$_CCMORPH_LIBEXEC_DIR/model-window" --locked "$2" zsh -c \
+          "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" model-window --locked "$2" zsh -c \
           'source "$1"; shift; ccmorph "$@"' ccmorph "$_CCMORPH_LIB_DIR/ccmorph.sh" "$@"
         return $?
       fi
@@ -1321,7 +1329,7 @@ ccmorph() {
       if (( ${_m_args[(I)--allow-inference]} )); then
         print -u2 -- "ccmorph: Checking context limits; inference requests may incur charges."
       fi
-      "$_CCMORPH_LIBEXEC_DIR/refresh-model-registry" "${_m_args[@]}"
+      "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" refresh-model-registry "${_m_args[@]}"
       ;;
 
 
@@ -1577,7 +1585,7 @@ print(d.get("window") or "", 1 if d.get("unprobed") else 0, label)
         # A picked model means the tokens argument (if any) shifted along with it.
         set -- context "$_ctx_profile" "$_ctx_model" "${@:4}"
       fi
-      command env CCMORPH_STATE_DIR="$dir" "$_CCMORPH_LIBEXEC_DIR/model-window" \
+      command env CCMORPH_STATE_DIR="$dir" "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" model-window \
         --context "$_ctx_profile" "$_ctx_model" "${@:4}"
       ;;
 
@@ -1633,7 +1641,7 @@ print(d.get("window") or "", 1 if d.get("unprobed") else 0, label)
       fi
       if [[ "${CCMORPH_CONTEXT_LOCKED:-}" != "$_cfg_profile" ]]; then
         command env CCMORPH_STATE_DIR="$dir" CCMORPH_CONTEXT_LOCKED="$_cfg_profile" \
-          "$_CCMORPH_LIBEXEC_DIR/model-window" --locked "$_cfg_profile" zsh -c \
+          "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" model-window --locked "$_cfg_profile" zsh -c \
           'source "$1"; shift; ccmorph "$@"' ccmorph "$_CCMORPH_LIB_DIR/ccmorph.sh" "$@"
         return $?
       fi
@@ -1718,7 +1726,7 @@ print(d.get("window") or "", 1 if d.get("unprobed") else 0, label)
       }
       if [[ "${CCMORPH_CONTEXT_LOCKED:-}" != "$2,$3" ]]; then
         command env CCMORPH_STATE_DIR="$dir" CCMORPH_CONTEXT_LOCKED="$2,$3" \
-          "$_CCMORPH_LIBEXEC_DIR/model-window" --locked "$2,$3" zsh -c \
+          "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" model-window --locked "$2,$3" zsh -c \
           'source "$1"; shift; ccmorph "$@"' ccmorph "$_CCMORPH_LIB_DIR/ccmorph.sh" "$@"
         return $?
       fi
@@ -1802,10 +1810,10 @@ print(d.get("window") or "", 1 if d.get("unprobed") else 0, label)
         # Extract parent PID from relay ID and find the adapter process serving this session
         local _parent_pid="${CCMORPH_RELAY_ID%%.*}"
         local _adapter_cmd
-        _adapter_cmd=$(ps -o pid,ppid,command | grep "ccmorph-adapter" | grep -E "^[[:space:]]*[0-9]+[[:space:]]+${_parent_pid}[[:space:]]" | head -1)
+        _adapter_cmd=$(ps -o pid,ppid,command | grep -E "ccmorph-(adapter|core adapter)" | grep -E "^[[:space:]]*[0-9]+[[:space:]]+${_parent_pid}[[:space:]]" | head -1)
         if [[ -n "$_adapter_cmd" ]]; then
-          # Parse profile from adapter command line: "ccmorph-adapter <profile> ..."
-          _hop_profile=$(echo "$_adapter_cmd" | sed -E 's/.*ccmorph-adapter[[:space:]]+([^[:space:]]+).*/\1/')
+          # Parse profile from adapter command line: "ccmorph-core adapter <profile> ..." (or the Python ccmorph-adapter)
+          _hop_profile=$(echo "$_adapter_cmd" | sed -E 's/.*ccmorph-(core )?adapter[[:space:]]+([^[:space:]]+).*/\2/')
           _hop_current=1
         fi
       fi

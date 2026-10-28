@@ -13,6 +13,9 @@ import (
 	"syscall"
 	"time"
 	"unicode/utf8"
+
+	"github.com/akleizor/ccmorph/compat"
+	"github.com/akleizor/ccmorph/shim"
 )
 
 // logf writes the adapter's one stderr line format.
@@ -171,10 +174,12 @@ func readInboundToken(path string) string {
 	return token
 }
 
-// proc is a child process with its exit observable from several goroutines.
+// proc is a child process, or (cmd nil) the shim served inside this process, with
+// its exit observable from several goroutines.
 type proc struct {
 	cmd  *exec.Cmd
 	done chan struct{}
+	stop func() // in-process only: ends the server
 }
 
 func start(cmd *exec.Cmd) (*proc, error) {
@@ -195,7 +200,28 @@ func (p *proc) exited() bool {
 	}
 }
 
-func (p *proc) code() int { return p.cmd.ProcessState.ExitCode() }
+func (p *proc) code() int {
+	if p.cmd == nil {
+		return 1 // a server that stopped serving on its own is a failure
+	}
+	return p.cmd.ProcessState.ExitCode()
+}
+
+func (p *proc) terminate() {
+	if p.cmd == nil {
+		p.stop()
+		return
+	}
+	p.cmd.Process.Signal(syscall.SIGTERM)
+}
+
+func (p *proc) kill() {
+	if p.cmd == nil {
+		p.stop()
+		return
+	}
+	p.cmd.Process.Kill()
+}
 
 // stopGrace is each process's own SIGTERM-to-SIGKILL budget.
 var stopGrace = 10 * time.Second
@@ -209,7 +235,7 @@ func stopProcesses(procs ...*proc) {
 	for _, p := range procs {
 		if p != nil && !p.exited() {
 			live = append(live, p)
-			p.cmd.Process.Signal(syscall.SIGTERM)
+			p.terminate()
 		}
 	}
 	var survivors []*proc
@@ -221,7 +247,7 @@ func stopProcesses(procs ...*proc) {
 		}
 	}
 	for _, p := range survivors {
-		p.cmd.Process.Kill()
+		p.kill()
 	}
 	for _, p := range survivors {
 		<-p.done
@@ -244,6 +270,57 @@ func tetherImpl(exe string, child *proc, state string) {
 	if cmd.Start() == nil {
 		go cmd.Wait()
 	}
+}
+
+// shimArgv is the command line of a shim run as its own executable.
+func shimArgv(o shim.Options) []string {
+	args := []string{strconv.Itoa(o.Port), o.Target}
+	for flag, on := range map[string]bool{"--preserve-tool-ids": o.PreserveIDs, "--random-device-id": o.RandomDeviceID,
+		"--retry-transport": o.RetryTransport} {
+		if on {
+			args = append(args, flag)
+		}
+	}
+	return args
+}
+
+// startShim runs the gateway shim. By default it is served inside this process:
+// one helper per session, no child to leak. A profile that names its own hooks
+// build (CCMORPH_SHIM_HOOKS) still gets that executable, spawned. env holds the
+// shim's settings; stdout and stderr are the spawned shim's streams (nil: none).
+func startShim(hooksBin string, o shim.Options, env map[string]string, stdout, stderr *os.File) (*proc, error) {
+	if hooksBin != "" {
+		cmd := exec.Command(hooksBin, shimArgv(o)...)
+		cmd.Env = environWith(env)
+		if stdout != nil {
+			cmd.Stdout = stdout
+		}
+		if stderr != nil {
+			cmd.Stderr = stderr
+		}
+		p, err := spawnShim(cmd)
+		if err == nil {
+			tether(selfPath(), p, "")
+		}
+		return p, err
+	}
+	getenv := func(k string) string {
+		if v, ok := env[k]; ok {
+			return v
+		}
+		return os.Getenv(k)
+	}
+	h, err := compat.FromGetenv(getenv)
+	if err != nil {
+		return nil, err
+	}
+	srv, ln, err := shim.Listen(h, o, getenv)
+	if err != nil {
+		return nil, err
+	}
+	p := &proc{done: make(chan struct{}), stop: func() { srv.Close() }}
+	go func() { srv.Serve(ln); close(p.done) }()
+	return p, nil
 }
 
 // Exit runs the registered cleanups, then exits with code.

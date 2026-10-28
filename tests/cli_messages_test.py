@@ -28,7 +28,7 @@ def test_adapter_decline_surfaces_actionable_reason():
         (lib.parent / 'libexec').mkdir()
         for f in (ROOT / 'lib').glob('ccmorph-*.zsh'):
             (lib / f.name).write_bytes(f.read_bytes())
-        fake = lib.parent / 'libexec/ccmorph-adapter'
+        fake = lib.parent / 'libexec/ccmorph-core'
         fake.write_text('#!/bin/sh\nprintf "EXIT=set a model and retry\\n"\n')
         fake.chmod(0o755)
         env = {**os.environ, 'HOME': tmp, 'TMPDIR': tmp,
@@ -47,7 +47,7 @@ def test_adapter_failure_reports_observation_not_guessed_cause():
         (lib.parent / 'libexec').mkdir()
         for f in (ROOT / 'lib').glob('ccmorph-*.zsh'):
             (lib / f.name).write_bytes(f.read_bytes())
-        fake = lib.parent / 'libexec/ccmorph-adapter'
+        fake = lib.parent / 'libexec/ccmorph-core'
         fake.write_text('#!/bin/sh\nexit 1\n')
         fake.chmod(0o755)
         env = {**os.environ, 'HOME': tmp, 'CCMORPH_LIB_DIR': str(lib)}

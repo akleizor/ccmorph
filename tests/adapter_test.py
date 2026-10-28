@@ -1042,9 +1042,13 @@ class AdapterTest(unittest.TestCase):
         dead_shim.chmod(0o755)
         self._install_fake_translator(translator)
 
+        # The stock shim runs inside the adapter; a profile's hooks build is the
+        # spawned one, and this one dies before it serves.
+        script = self.home / ".config/ccmorph/lib/ccmorph.sh"
+        script.write_text(script.read_text().replace(
+            "}\n", f'  print "CCMORPH_SHIM_HOOKS={dead_shim}"\n}}\n'))
         out = self.run_adapter(env={
-            "PATH": f"{self.path_bin}:{os.environ.get('PATH', '')}"},
-            _shim=dead_shim)
+            "PATH": f"{self.path_bin}:{os.environ.get('PATH', '')}"})
         self.assertNotEqual(out.returncode, 0)
         self.assertTrue(marker.exists())
         pid = int(marker.read_text())
@@ -1096,6 +1100,8 @@ class AdapterTest(unittest.TestCase):
             script.write_text(base.replace("}\n", extra + "}\n") if extra else base)
             argv_file.unlink(missing_ok=True)
             env_file.unlink(missing_ok=True)
+            if ADAPTER_IMPL == "go" and not extra:
+                continue  # the stock shim runs inside the adapter: no process to record
             self.run_adapter(env={"PATH": f"{self.path_bin}:{os.environ.get('PATH', '')}"},
                              _shim=shim)
             seen = argv_file.read_text()

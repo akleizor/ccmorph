@@ -72,7 +72,7 @@ always signs in with the account profile's own claude.ai login.
 Remote Control is offered only to a claude.ai-authenticated process talking to
 api.anthropic.com, so that stays true. A loopback mitmproxy, trusted by this process
 tree only, moves `api.anthropic.com/v1/messages` to the route profile (through its
-`ccmorph-adapter` when the endpoint needs one). Bridge, OAuth and telemetry traffic
+`ccmorph-core adapter` when the endpoint needs one). Bridge, OAuth and telemetry traffic
 reach Anthropic untouched; other hosts are not intercepted at all.
 
 One exception, for open speed: the phone opens a session by downloading every event
@@ -99,7 +99,7 @@ the Mac is never touched.
 Uses only `ccmorph _route_env`/`_route_stop` (the route profile, plus a running
 bridge when it is a provider), `ccmorph _env` (the account), `ccmorph _backend_env` (the names a launch never
 inherits) and
-`ccmorph-adapter <profile> --auto --parent-pid`.
+`ccmorph-core adapter <profile> --auto --parent-pid`.
 ccmorph core names no file or path of this directory; deleting it removes the feature.
 The one seam is an environment variable, not a file: the session carries
 `CCMORPH_EDGE_ROUTE_ENV` (`KEY=VALUE` per line, the effective values of

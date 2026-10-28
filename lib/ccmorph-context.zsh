@@ -1214,7 +1214,7 @@ _ccm_settings_projection() {
   local verb="$1" profile="$2"
   shift 2
   _ccm_settings_argv "$verb" "$profile" "$@"
-  "$_CCMORPH_LIBEXEC_DIR/settings-compose" "${_ccm_sc_argv[@]}"
+  "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" settings-compose "${_ccm_sc_argv[@]}"
 }
 
 # Carry edits Claude Code made to the generated settings.json into the layer. The

@@ -115,29 +115,6 @@ func decoy(t *testing.T) (url string, hits func() int) {
 	return "http://" + l.Addr().String(), func() int { mu.Lock(); defer mu.Unlock(); return n }
 }
 
-var buildOnce sync.Once
-var builtShim string
-
-// shimBinary builds the stock gateway-shim once for the tests that need a real one.
-func shimBinary(t *testing.T) string {
-	t.Helper()
-	buildOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "adapter-shim-")
-		if err != nil {
-			return
-		}
-		out := filepath.Join(dir, "gateway-shim")
-		cmd := exec.Command("go", "build", "-o", out, "../cmd/gateway-shim")
-		if cmd.Run() == nil {
-			builtShim = out
-		}
-	})
-	if builtShim == "" {
-		t.Fatal("cannot build gateway-shim")
-	}
-	return builtShim
-}
-
 // --- ports of tests/adapter_auto_test.py ----------------------------------------
 
 func TestAPIURLVersionedBaseGetsNoSecondV1(t *testing.T) { // test_versioned_base_url_is_not_given_a_second_v1
@@ -479,7 +456,6 @@ func TestNativeLaunchRejectsMappedChatBeforeUpstreamPost(t *testing.T) { // test
 			swap(t, &profileDirs, dir)
 			var required string
 			swap(t, &classifyFn, func(_, _, _, req string, _ bool) ([]Row, error) { required = req; return []Row{row("anthropic")}, nil })
-			swap(t, &gatewayShim, func() string { return shimBinary(t) })
 			edge, _ := freePort()
 			swap(t, &freePortFn, func() (int, error) { return edge, nil })
 			swap(t, &exitFn, func(int) { runtime.Goexit() })
@@ -574,7 +550,8 @@ func TestCachedNativeMainNeedsNoTranslator(t *testing.T) { // test_cached_native
 }
 
 func TestOnlyTheDirectRouteRetriesInTheShim(t *testing.T) { // test_only_the_direct_route_retries_in_the_shim
-	cmd := spawnedDirect(t, map[string]string{})
+	// The in-process shim takes the same Options; the spawned hooks build shows the argv.
+	cmd := spawnedDirect(t, map[string]string{"CCMORPH_SHIM_HOOKS": "/stable/hooks.py"})
 	if !contains(cmd.Args, "--retry-transport") {
 		t.Fatalf("argv %v", cmd.Args)
 	}

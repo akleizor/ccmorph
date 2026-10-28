@@ -17,10 +17,11 @@ passed=0; failed=0
 ok()   { print -r -- "ok: $1"; (( ++passed )) }
 fail() { print -r -- "FAIL: $1"; (( ++failed )) }
 
-# gateway-shim is compiled, so a checkout has none until `make shim` builds it;
-# the installer copies that binary and refuses to run without one.
-[[ -x "$REPO/libexec/gateway-shim" ]] || make -C "$REPO" shim >/dev/null 2>&1
-[[ -x "$REPO/libexec/gateway-shim" ]] || { print -r -- "FAIL: no libexec/gateway-shim and 'make shim' did not build one (needs Go)"; exit 1 }
+# gateway-shim and ccmorph-core are compiled, so a checkout has none until
+# `make shim` builds them; the installer copies those binaries and refuses to run
+# without them.
+[[ -x "$REPO/libexec/gateway-shim" && -x "$REPO/libexec/ccmorph-core" ]] || make -C "$REPO" shim >/dev/null 2>&1
+[[ -x "$REPO/libexec/gateway-shim" && -x "$REPO/libexec/ccmorph-core" ]] || { print -r -- "FAIL: no libexec/gateway-shim or libexec/ccmorph-core and 'make shim' did not build them (needs Go)"; exit 1 }
 
 fresh_env() {  # $1 = case dir; prints nothing, sets HOME/ZDOTDIR/PATH stubs
   local d="$TMP/$1"
@@ -57,12 +58,15 @@ run_installer "$d"; rc=$?
 # along (this is what keeps any other product from shipping inside ccmorph),
 # and nothing missing either, which subsumes a per-component presence loop.
 (( ${#module_files} )) || fail "no ccmorph-*.zsh module found beside ccmorph.sh — the manifest below would be silently short"
-want=(bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/ccmorph-adapter libexec/gateway-shim libexec/model-window libexec/settings-compose libexec/refresh-model-registry share/model-catalogue.json share/window-sources.json local.sh.example profile.conf.example install.sh profiles)
+want=(bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/ccmorph-adapter libexec/gateway-shim libexec/ccmorph-core libexec/model-window libexec/settings-compose libexec/refresh-model-registry share/model-catalogue.json share/window-sources.json local.sh.example profile.conf.example install.sh profiles)
 got=(${(f)"$(cd "$d/home/.config/ccmorph" && print -l *(N) {bin,lib,libexec,share}/*(N.) | grep -vxE 'bin|lib|libexec|share')"})
 extra=(${got:|want}); missing=(${want:|got})
 (( ${#extra} == 0 && ${#missing} == 0 )) \
   && ok "install places exactly its own manifest" \
   || fail "manifest drift — extra: ${extra[*]:-none}, missing: ${missing[*]:-none}"
+# The placed binary runs: it must start, not just exist.
+"$d/home/.config/ccmorph/libexec/ccmorph-core" model-window --help >/dev/null 2>&1 \
+  && ok "the installed ccmorph-core starts" || fail "the installed ccmorph-core does not start"
 bin_got=("$d/home/.local/bin/"*(N:t))
 [[ "${(j:,:)bin_got}" == "ccmorph" ]] \
   && ok "bin dir holds exactly the ccmorph command" || fail "bin dir: ${bin_got[*]}"
@@ -117,7 +121,7 @@ d=$(fresh_env inplace)
 target="$d/home/.config/ccmorph"
 mkdir -p "$target"
 mkdir -p "$target"/{bin,lib,libexec,share}
-for f in bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/ccmorph-adapter libexec/gateway-shim libexec/model-window libexec/settings-compose libexec/refresh-model-registry share/model-catalogue.json share/window-sources.json share/local.sh.example share/profile.conf.example install.sh; do
+for f in bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/ccmorph-adapter libexec/gateway-shim libexec/ccmorph-core libexec/model-window libexec/settings-compose libexec/refresh-model-registry share/model-catalogue.json share/window-sources.json share/local.sh.example share/profile.conf.example install.sh; do
   cp "$REPO/$f" "$target/$f"
 done
 env -i HOME="$d/home" ZDOTDIR="$d/home" \

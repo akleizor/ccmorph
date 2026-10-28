@@ -90,7 +90,7 @@ _ccm_migrate_state() {
   for legacy_file in "${legacy[@]}"; do
     if [[ -e "$legacy_file" || -L "$legacy_file" ]]; then
       command env CCMORPH_STATE_DIR="$_CCMORPH_DIR" \
-        "$_CCMORPH_LIBEXEC_DIR/model-window" --migrate || {
+        "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" model-window --migrate || {
         _ccm_err "context migration incomplete; original data kept for retry"
         return 1
       }

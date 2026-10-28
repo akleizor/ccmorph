@@ -70,7 +70,6 @@ var (
 	detachStdin      = true
 	profileDirs      = defaultProfileDirs()
 	libDir           = defaultLibDir()
-	gatewayShim      = func() string { return filepath.Join(filepath.Dir(selfPath()), "gateway-shim") }
 	translatorBinary = findTranslator
 	spawnShim        = start
 )
@@ -343,11 +342,9 @@ func frontDirectly(a *cliArgs, upstream, key, routeIdentity string, usable []Row
 	}
 	// No translator here, so the shim owns transport retries; behind cliproxyapi
 	// its request-retry does, and a second layer would multiply attempts.
-	shimBin := strings.TrimSpace(extras["CCMORPH_SHIM_HOOKS"])
-	if shimBin == "" {
-		shimBin = gatewayShim()
-	}
-	shimArgs := append([]string{strconv.Itoa(port), upstream, "--preserve-tool-ids", "--retry-transport"}, privacyArgs...)
+	hooksBin := strings.TrimSpace(extras["CCMORPH_SHIM_HOOKS"])
+	o := shim.Options{Port: port, Target: upstream, PreserveIDs: true, RetryTransport: true,
+		RandomDeviceID: contains(privacyArgs, "--random-device-id")}
 	models := make([]string, len(usable))
 	for i, r := range usable {
 		models[i] = r.Model
@@ -355,25 +352,24 @@ func frontDirectly(a *cliArgs, upstream, key, routeIdentity string, usable []Row
 	if modelMap == nil {
 		modelMap = map[string]any{}
 	}
-	env := environWith(map[string]string{"CCMORPH_MODEL_ROUTE": mustJSON(map[string]any{
+	env := map[string]string{"CCMORPH_MODEL_ROUTE": mustJSON(map[string]any{
 		"profile": a.profile, "identity": routeIdentity, "upstream": upstream,
 		"models_url": apiURL(upstream, "/v1/models"), "models": models,
 		"model_map": modelMap, "timeout": int(selectTimeout.Seconds()),
-		"key_sha256": hashHex(key)})})
+		"key_sha256": hashHex(key)})}
 	// Profile request quirks ride as env for the shim's hooks module, never as
 	// new shim flags.
-	env = append(env, kvs(extras)...)
+	for k, v := range extras {
+		env[k] = v
+	}
 	if a.token != "" {
-		env = append(env, "CCMORPH_INBOUND="+mustJSON(map[string]any{"sha256": hashHex(a.token), "key": key}))
+		env["CCMORPH_INBOUND"] = mustJSON(map[string]any{"sha256": hashHex(a.token), "key": key})
 	}
 	a.releasePort()
-	cmd := exec.Command(shimBin, shimArgs...)
-	cmd.Env, cmd.Stderr = env, os.Stderr
-	shimProc, err := spawnShim(cmd)
+	shimProc, err := startShim(hooksBin, o, env, nil, os.Stderr)
 	if err != nil {
-		die("cannot start %s: %v", shimBin, err)
+		die("cannot start the gateway shim: %v", err)
 	}
-	tether(selfPath(), shimProc, "")
 
 	shutdown := func(status int) {
 		stopProcesses(shimProc)
@@ -512,10 +508,7 @@ func Main(argv []string) int {
 			die("profile %s points CCMORPH_SHIM_HOOKS at a missing or non-executable file: %s", a.profile, hooksPath)
 		}
 	}
-	shimBinary := hooksPath
-	if shimBinary == "" {
-		shimBinary = gatewayShim()
-	}
+	shimBinary := hooksPath // "": the stock shim, served inside this process
 
 	// Dialect classification is a property of the ENDPOINT, not the profile, so
 	// the cache is keyed by base_url in a shared dir: a second profile on a gateway
@@ -782,33 +775,29 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 	} else if shimPort, err = freePortFn(); err != nil {
 		die("no free port: %v", err)
 	}
-	shimArgs := append([]string{strconv.Itoa(shimPort), "http://127.0.0.1:" + strconv.Itoa(port)}, privacyArgs...)
-	if !recyclesIDs {
-		shimArgs = append(shimArgs, "--preserve-tool-ids")
-	}
 	models := make([]string, len(usable))
 	for i, r := range usable {
 		models[i] = r.Model
 	}
-	shimEnv := environWith(map[string]string{"CCMORPH_MODEL_ROUTE": mustJSON(map[string]any{
+	shimEnv := map[string]string{"CCMORPH_MODEL_ROUTE": mustJSON(map[string]any{
 		"adapter": selfPath(), "adapter_args": []string{"adapter"},
 		"profile": a.profile, "config": conf, "port": port, "identity": routeIdentity, "upstream": upstream,
 		"models": models, "model_map": modelMap, "timeout": int(selectTimeout.Seconds()),
-		"key_sha256": hashHex(key)})})
-	shimEnv = append(shimEnv, kvs(extras)...)
+		"key_sha256": hashHex(key)})}
+	for k, v := range extras {
+		shimEnv[k] = v
+	}
 	if a.token != "" {
-		shimEnv = append(shimEnv, "CCMORPH_INBOUND="+mustJSON(map[string]any{"sha256": hashHex(a.token), "key": key}))
+		shimEnv["CCMORPH_INBOUND"] = mustJSON(map[string]any{"sha256": hashHex(a.token), "key": key})
 	}
 	a.releasePort()
-	scmd := exec.Command(shimBinary, shimArgs...)
-	scmd.Env, scmd.Stdout, scmd.Stderr = shimEnv, logfile, logfile
-	sp, err := spawnShim(scmd)
+	sp, err := startShim(shimBinary, shim.Options{Port: shimPort, Target: "http://127.0.0.1:" + strconv.Itoa(port),
+		PreserveIDs: !recyclesIDs, RandomDeviceID: contains(privacyArgs, "--random-device-id")}, shimEnv, logfile, logfile)
 	if err != nil {
-		logf("cannot start %s: %v", shimBinary, err)
+		logf("cannot start the gateway shim: %v", err)
 		shutdown(1)
 	}
 	shimProc.Store(sp)
-	tether(selfPath(), sp, "")
 	waitReady(sp, shimPort, "gateway-shim", a.token)
 	why := []string{"prepare models selected mid-session"}
 	if recyclesIDs {

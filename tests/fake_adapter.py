@@ -41,7 +41,12 @@ SERVE = Path(__file__).with_name('fake_adapter_serve.sh').read_text()
 LOOP = 'while :; do'
 
 
-def script(ready_line: str) -> str:
+# When the fake stands in for ccmorph-core, every subcommand but `adapter` is the
+# real one: the launcher also runs model-window and settings-compose through it.
+CORE_DISPATCH = ('case "$1" in adapter) shift ;; *) exec "' + str(Path(__file__).resolve().parents[1] / 'libexec/ccmorph-core') + '" "$@" ;; esac\n')
+
+
+def script(ready_line: str, core: bool = False) -> str:
     """The body: trap, record itself, announce readiness, then the shared tail.
 
     Readiness comes last, as it does in the real adapter, where the signals are
@@ -51,7 +56,7 @@ def script(ready_line: str) -> str:
     goes down before it, so a reader that saw the ready line can trust the
     record, and one that never did is not told a pid it cannot act on.
     """
-    return ('#!/bin/sh\ntrap "exit 0" TERM INT\n'
+    return ('#!/bin/sh\n' + (CORE_DISPATCH if core else '') + 'trap "exit 0" TERM INT\n'
             'echo $$ > "$0.pid"\n'
             + ready_line + '\n' + SERVE)
 

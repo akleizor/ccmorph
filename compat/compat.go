@@ -35,8 +35,11 @@ var (
 
 // FromEnv builds the hooks from the profile env. A bad setting is an error the
 // caller must surface at startup, never mid-flight.
-func FromEnv() (shim.Hooks, error) {
-	return build(os.Getenv("CCMORPH_AFFINITY_HEADER"), os.Getenv("CCMORPH_USER_AGENT"))
+func FromEnv() (shim.Hooks, error) { return FromGetenv(os.Getenv) }
+
+// FromGetenv is FromEnv over any lookup, for the adapter that runs the shim in its own process.
+func FromGetenv(getenv func(string) string) (shim.Hooks, error) {
+	return build(getenv("CCMORPH_AFFINITY_HEADER"), getenv("CCMORPH_USER_AGENT"))
 }
 
 func build(affinity, uaTemplate string) (shim.Hooks, error) {

@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+import fake_adapter
 from support import HANG_TIMEOUT
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -144,10 +145,10 @@ def test_a_profile_with_its_own_endpoint_is_left_alone(box, tmp_path):
     (tmp_path / 'libexec').mkdir()
     for sub_dir, target in (('lib', lib), ('libexec', tmp_path / 'libexec')):
         for entry in (ROOT / sub_dir).iterdir():
-            if entry.name != 'ccmorph-adapter':
+            if entry.name != 'ccmorph-core':
                 (target / entry.name).symlink_to(entry)
-    stub = lib.parent / 'libexec/ccmorph-adapter'
-    stub.write_text('#!/bin/sh\necho PORT=1\nsleep 30\n')
+    stub = lib.parent / 'libexec/ccmorph-core'
+    stub.write_text('#!/bin/sh\n' + fake_adapter.CORE_DISPATCH + 'echo PORT=1\nsleep 30\n')
     stub.chmod(0o755)
     (box.state / 'gw2.conf').write_text(
         'type=apikey\nbase_url=https://other.example.invalid\napi_key=k\n')
@@ -182,16 +183,16 @@ def test_a_profileless_nested_launch_keeps_the_route_flags(box):
 
 
 def _stub_adapter_lib(tmp_path):
-    """A lib view whose `ccmorph-adapter` is a stub, so a nested ADAPTER launch
+    """A lib view whose `ccmorph-core` is a stub, so a nested ADAPTER launch
     starts no real translator; everything else is the real library."""
     lib = tmp_path / 'lib'
     lib.mkdir()
     (tmp_path / 'libexec').mkdir()
     for sub_dir, target in (('lib', lib), ('libexec', tmp_path / 'libexec')):
         for entry in (ROOT / sub_dir).iterdir():
-            if entry.name != 'ccmorph-adapter':
+            if entry.name != 'ccmorph-core':
                 (target / entry.name).symlink_to(entry)
-    stub = lib.parent / 'libexec/ccmorph-adapter'
-    stub.write_text('#!/bin/sh\necho PORT=1\nsleep 30\n')
+    stub = lib.parent / 'libexec/ccmorph-core'
+    stub.write_text('#!/bin/sh\n' + fake_adapter.CORE_DISPATCH + 'echo PORT=1\nsleep 30\n')
     stub.chmod(0o755)
     return lib

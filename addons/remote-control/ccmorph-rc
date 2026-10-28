@@ -9,13 +9,13 @@ talks to api.anthropic.com. This add-on keeps that true for the process, and mov
 only `/v1/messages` to the route profile through a scoped TLS proxy:
 
   claude remote-control ──HTTPS_PROXY──▶ mitmdump (loopback, this launch only)
-      api.anthropic.com/v1/messages ──▶ route profile (its ccmorph-adapter if needed)
+      api.anthropic.com/v1/messages ──▶ route profile (its ccmorph-core adapter if needed)
       every other host/path            ──▶ unchanged
 
 Add-on, not core. It uses only public ccmorph seams: `ccmorph _route_env` /
 `_route_stop` for the route profile (endpoint and credential, plus a bridge for a
 provider profile), `ccmorph _env` for the account, `ccmorph _backend_env` for the names a launch
-never inherits, and `ccmorph-adapter <profile>
+never inherits, and `ccmorph-core adapter <profile>
 --auto --parent-pid`. Nothing in ccmorph knows it exists; delete this directory and
 ccmorph is unchanged.
 
@@ -52,7 +52,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 LIB_DIR = Path(os.environ.get("CCMORPH_LIB_DIR") or HERE.parent.parent / "lib")
 CCMORPH = LIB_DIR / "ccmorph.sh"
-ADAPTER = LIB_DIR.parent / "libexec" / "ccmorph-adapter"
+ADAPTER = LIB_DIR.parent / "libexec" / "ccmorph-core"
 # Same state-root resolution as ccmorph-adapter; profile .conf files live here.
 STATE_ROOT = Path(os.environ.get("CCMORPH_STATE_DIR") or
                   Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ccmorph")
@@ -310,7 +310,7 @@ def start_adapter(route: str, parent: int, env: dict[str, str]) -> str:
     # (cached) model. Without it every launch re-probes the whole gateway inventory,
     # which overruns the adapter's 30s budget as soon as a few bridges start at once.
     model = profile_field(route, "model")
-    proc = subprocess.Popen([str(ADAPTER), route, "--auto", "--parent-pid", str(parent),
+    proc = subprocess.Popen([str(ADAPTER), "adapter", route, "--auto", "--parent-pid", str(parent),
                              *(["--model", model] if model else [])],
                             env=env, stdin=subprocess.DEVNULL, stdout=ready,
                             start_new_session=True)
