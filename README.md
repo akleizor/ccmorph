@@ -151,6 +151,7 @@ windows and probing, switching, and state migration.
 | [.github/SECURITY.md](.github/SECURITY.md) | Where credentials live and what protects them |
 | [CHANGELOG.md](CHANGELOG.md) | What changed in each version |
 | [addons/remote-control/README.md](addons/remote-control/README.md) | Remote Control bridge add-on |
+| [addons/router/README.md](addons/router/README.md) | model-router add-on: picks the profile, model and effort for each subagent |
 
 ## Tests
 

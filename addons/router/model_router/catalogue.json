@@ -1,0 +1,499 @@
+{
+  "_doc": "Capability table. Each model lists the effort values its route accepts and, per effort, [Artificial Analysis Intelligence Index v4.3.2, AA cost per index task in US$ at list price], read 2026-10-28 from artificialanalysis.ai/leaderboards/models; values marked in `estimated` were interpolated from the same model's other rungs. `adjust` shifts ability for one kind of work, from the vendor and leaderboard evidence in docs/ALGORITHM.md. Input types come from models.dev at run time, with `inputs` (a models.dev snapshot of 2026-10-28) as the offline fallback; context comes from models.dev only. Models dominated on both price and score (claude-haiku-4-5, kimi-k3, deepseek-v4-pro, gpt-6-sol) are left out on purpose: a route serving them shows them as unrated. `default_adjust` applies to every model without its own value for that kind: only Grok has native X search, listed in its `tools`; a task that needs X posts goes only to a model with `x_search` when one is reachable. `decider_scale` maps the local decider's difficulty score onto the 0-4 levels (offset, scale), fitted by bench/decider.py on its 30 labelled tasks for pplx-decider-flash-v1.2; refit it there for another decider.",
+  "kinds": {
+    "code_edit": {
+      "label": "Change, fix or write code in a repository",
+      "reasoning": 1.0,
+      "size": 1.0
+    },
+    "code_review": {
+      "label": "Read code or a diff and judge it",
+      "reasoning": 1.0,
+      "size": 0.7
+    },
+    "web_research": {
+      "label": "Search the web and read pages to answer or summarise",
+      "reasoning": 0.6,
+      "size": 1.2
+    },
+    "social_search": {
+      "label": "Search X/Twitter, Reddit or other social posts",
+      "reasoning": 0.4,
+      "size": 1.0
+    },
+    "vision": {
+      "label": "Look at images, screenshots, PDFs or video",
+      "reasoning": 0.6,
+      "size": 0.8
+    },
+    "writing": {
+      "label": "Draft or edit prose: docs, emails, reports",
+      "reasoning": 0.5,
+      "size": 0.6
+    },
+    "analysis": {
+      "label": "Reason, plan, debug or do maths without heavy tool use",
+      "reasoning": 1.2,
+      "size": 0.8
+    },
+    "mechanical": {
+      "label": "Bulk, repetitive or follow-the-plan edits, file and log reading",
+      "reasoning": 0.3,
+      "size": 1.0
+    }
+  },
+  "difficulty": {
+    "levels": [
+      "trivial",
+      "easy",
+      "moderate",
+      "hard",
+      "very hard"
+    ],
+    "logit": [
+      -1.5,
+      -0.5,
+      0.5,
+      1.5,
+      2.5
+    ],
+    "size": [
+      0.1,
+      0.3,
+      1.0,
+      2.5,
+      6.0
+    ]
+  },
+  "ability": {
+    "index_at_zero": 19,
+    "index_per_logit": 11.2
+  },
+  "discrimination": 1.4,
+  "models": {
+    "claude-opus-5-5": {
+      "inputs": ["text", "image", "pdf"],
+      "aa": {
+        "low": [
+          42,
+          0.55
+        ],
+        "medium": [
+          51,
+          1.34
+        ],
+        "high": [
+          54,
+          1.82
+        ],
+        "xhigh": [
+          56,
+          3.46
+        ],
+        "max": [
+          58,
+          5.98
+        ]
+      },
+      "adjust": {
+        "code_edit": 0.15,
+        "writing": 0.1
+      }
+    },
+    "claude-sonnet-5-5": {
+      "inputs": ["text", "image", "pdf"],
+      "aa": {
+        "low": [
+          36,
+          0.27
+        ],
+        "medium": [
+          43,
+          0.65
+        ],
+        "high": [
+          47,
+          0.88
+        ],
+        "xhigh": [
+          52,
+          1.67
+        ],
+        "max": [
+          56,
+          2.9
+        ]
+      },
+      "estimated": [
+        "low cost",
+        "medium",
+        "xhigh",
+        "max cost"
+      ],
+      "adjust": {
+        "code_edit": 0.15,
+        "writing": 0.1
+      }
+    },
+    "claude-haiku-5-5": {
+      "inputs": ["text", "image", "pdf"],
+      "aa": {
+        "low": [
+          29,
+          0.03
+        ],
+        "medium": [
+          34,
+          0.05
+        ],
+        "high": [
+          38,
+          0.08
+        ],
+        "xhigh": [
+          41,
+          0.12
+        ],
+        "max": [
+          43,
+          0.21
+        ]
+      },
+      "estimated": [
+        "low",
+        "high"
+      ],
+      "adjust": {
+        "mechanical": 0.2,
+        "vision": 0.1,
+        "code_edit": 0.1
+      }
+    },
+    "claude-fable-5-1": {
+      "inputs": ["text", "image", "pdf"],
+      "aa": {
+        "low": [
+          47,
+          0.7
+        ],
+        "medium": [
+          49,
+          1.71
+        ],
+        "high": [
+          51,
+          2.32
+        ],
+        "xhigh": [
+          52,
+          4.41
+        ],
+        "max": [
+          53,
+          7.63
+        ]
+      },
+      "estimated": [
+        "medium",
+        "high",
+        "xhigh",
+        "costs below max"
+      ],
+      "adjust": {
+        "analysis": 0.2
+      }
+    },
+    "gpt-6-astra": {
+      "inputs": ["text", "image", "pdf"],
+      "aa": {
+        "low": [
+          46,
+          0.65
+        ],
+        "medium": [
+          49,
+          0.95
+        ],
+        "high": [
+          51,
+          1.45
+        ],
+        "xhigh": [
+          52,
+          2.3
+        ],
+        "max": [
+          53,
+          3.26
+        ]
+      },
+      "estimated": [
+        "medium",
+        "high",
+        "xhigh",
+        "costs below max"
+      ],
+      "adjust": {
+        "analysis": 0.2,
+        "code_review": 0.1
+      }
+    },
+    "gpt-6.1-sol": {
+      "inputs": ["text", "image", "pdf"],
+      "aa": {
+        "low": [
+          45,
+          0.14
+        ],
+        "medium": [
+          48,
+          0.21
+        ],
+        "high": [
+          50,
+          0.32
+        ],
+        "xhigh": [
+          51,
+          0.5
+        ],
+        "max": [
+          52,
+          0.72
+        ]
+      },
+      "estimated": [
+        "low",
+        "xhigh"
+      ],
+      "adjust": {
+        "web_research": 0.15,
+        "vision": 0.1,
+        "code_review": 0.1
+      }
+    },
+    "gpt-6.1-terra": {
+      "inputs": ["text", "image", "pdf"],
+      "aa": {
+        "low": [
+          37,
+          0.07
+        ],
+        "medium": [
+          41,
+          0.1
+        ],
+        "high": [
+          44,
+          0.15
+        ],
+        "xhigh": [
+          46,
+          0.25
+        ],
+        "max": [
+          48,
+          0.35
+        ]
+      },
+      "estimated": [
+        "low",
+        "high",
+        "xhigh",
+        "max cost"
+      ],
+      "adjust": {
+        "vision": 0.2,
+        "writing": 0.2,
+        "code_edit": -0.1
+      }
+    },
+    "gpt-6-luna": {
+      "inputs": ["text", "image", "pdf"],
+      "aa": {
+        "low": [
+          22,
+          0.012
+        ],
+        "medium": [
+          29,
+          0.02
+        ],
+        "high": [
+          33,
+          0.035
+        ],
+        "xhigh": [
+          36,
+          0.05
+        ],
+        "max": [
+          38,
+          0.07
+        ]
+      },
+      "estimated": [
+        "medium",
+        "high",
+        "xhigh",
+        "costs below max"
+      ],
+      "adjust": {
+        "mechanical": 0.2,
+        "code_edit": -0.4,
+        "code_review": -0.2
+      }
+    },
+    "gemini-4-argon": {
+      "inputs": ["text", "image", "video", "audio", "pdf"],
+      "aa": {
+        "low": [
+          46,
+          0.6
+        ],
+        "medium": [
+          50,
+          1.0
+        ],
+        "high": [
+          53,
+          1.62
+        ]
+      },
+      "estimated": [
+        "low",
+        "medium"
+      ],
+      "adjust": {
+        "vision": 0.4,
+        "web_research": 0.1,
+        "writing": 0.1
+      }
+    },
+    "grok-4.7": {
+      "inputs": ["text", "image", "pdf"],
+      "tools": ["x_search"],
+      "aa": {
+        "low": [
+          42,
+          1.5
+        ],
+        "medium": [
+          44,
+          1.9
+        ],
+        "high": [
+          46,
+          2.36
+        ],
+        "xhigh": [
+          46,
+          3.24
+        ]
+      },
+      "estimated": [
+        "medium",
+        "low cost",
+        "medium cost"
+      ],
+      "adjust": {
+        "social_search": 1.2,
+        "web_research": 0.1
+      }
+    },
+    "deepseek-v4-flash": {
+      "inputs": ["text", "image"],
+      "aliases": [
+        "deepseek-flash",
+        "deepseek-v4.1-flash",
+        "deepseek-v4-flash-0731"
+      ],
+      "aa": {
+        "low": [
+          36,
+          0.08
+        ],
+        "high": [
+          42,
+          0.15
+        ],
+        "max": [
+          45,
+          0.26
+        ]
+      },
+      "estimated": [
+        "low",
+        "high"
+      ],
+      "adjust": {
+        "code_edit": 0.1,
+        "mechanical": 0.1
+      }
+    },
+    "kimi-k3.1-pro": {
+      "inputs": ["text", "image", "video"],
+      "aa": {
+        "low": [
+          47,
+          0.6
+        ],
+        "high": [
+          52,
+          1.2
+        ],
+        "max": [
+          55,
+          2.11
+        ]
+      },
+      "estimated": [
+        "low",
+        "high"
+      ],
+      "adjust": {
+        "code_edit": 0.2,
+        "web_research": 0.1
+      }
+    },
+    "glm-5.3": {
+      "inputs": ["text"],
+      "aa": {
+        "low": [
+          34,
+          0.85
+        ],
+        "high": [
+          41,
+          1.4
+        ],
+        "max": [
+          45,
+          2.01
+        ]
+      },
+      "estimated": [
+        "high"
+      ],
+      "adjust": {
+        "code_edit": 0.1
+      }
+    },
+    "glm-5.3-flash": {
+      "inputs": ["text", "image", "video", "pdf"],
+      "aa": {
+        "high": [
+          42,
+          0.28
+        ]
+      },
+      "adjust": {
+        "mechanical": 0.1
+      }
+    }
+  },
+  "decider_scale": [-1.27, 1.72],
+  "default_adjust": {
+    "social_search": -0.2
+  }
+}

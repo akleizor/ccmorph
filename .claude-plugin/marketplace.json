@@ -1,0 +1,12 @@
+{
+  "name": "ccmorph",
+  "owner": {"name": "akleizor"},
+  "description": "ccmorph add-ons for Claude Code.",
+  "plugins": [
+    {
+      "name": "model-router",
+      "source": "./addons/router",
+      "description": "Routes each subagent task to the best profile, model and effort: subscription quota before paid API, cheapest model that can do the task."
+    }
+  ]
+}
