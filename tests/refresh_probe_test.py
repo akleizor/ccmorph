@@ -31,7 +31,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, HELPERS_IMPL, helper_cmd
 
 SCRIPT = Path(__file__).resolve().parent.parent / "libexec/refresh-model-registry"
 spec = importlib.util.spec_from_loader(
@@ -42,7 +42,13 @@ rmr = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rmr)
 rmr._fetch_json_dict = lambda url, timeout: {}  # offline: no live catalogues in tests
 
+# Tests that import the Python module and patch its internals have Go unit-test
+# equivalents in registry/*_test.go; under CCMORPH_TEST_HELPERS=go only the
+# subprocess tests run, against `ccmorph-core refresh-model-registry`.
+whitebox = unittest.skipIf(HELPERS_IMPL == "go", "white-box; see registry/*_test.go")
 
+
+@whitebox
 class DiagnosticWording(unittest.TestCase):
     def test_access_denial_does_not_diagnose_an_expired_credential(self):
         error = urllib.error.HTTPError("https://gw/v1/models", 403, "Forbidden", {}, None)
@@ -68,6 +74,7 @@ class DiagnosticWording(unittest.TestCase):
         self.assertIn("gateway timed out", output.getvalue())
 
 
+@whitebox
 class SafeDiscovery(unittest.TestCase):
     def test_default_cli_is_metadata_only_and_bounded(self):
         with unittest.mock.patch.object(sys, "argv", ["probe", "--profile", "gw"]), \
@@ -102,6 +109,7 @@ class SafeDiscovery(unittest.TestCase):
         self.assertTrue(any(subject == "b" for _, subject in notes))
 
 
+@whitebox
 class PartialDiscoveryStatus(unittest.TestCase):
     def test_known_value_does_not_hide_missing_gateway_metadata(self):
         import contextlib
@@ -149,6 +157,7 @@ class PartialDiscoveryStatus(unittest.TestCase):
         self.assertIn("200,000", message)
 
 
+@whitebox
 class DiscoveryDeadline(unittest.TestCase):
     def test_route_setup_listing_cleanup_and_paid_requests_share_one_deadline(self):
         import time
@@ -210,6 +219,7 @@ class DiscoveryDeadline(unittest.TestCase):
                 probe.assert_not_called()
 
 
+@whitebox
 class RouteScopedMetadata(unittest.TestCase):
     def test_other_routes_legacy_limit_does_not_become_a_scoped_fact(self):
         with unittest.mock.patch.object(rmr, "prior_values", return_value={"a": 1000000}), \
@@ -229,6 +239,7 @@ class RouteScopedMetadata(unittest.TestCase):
 
 
 class MetadataCompatibility(unittest.TestCase):
+    @whitebox
     def test_ollama_reads_served_num_ctx_without_inference(self):
         calls = []
         class Gateway:
@@ -248,6 +259,7 @@ class MetadataCompatibility(unittest.TestCase):
         self.assertTrue(calls[1].full_url.endswith("/api/show"))
         self.assertEqual(json.loads(calls[1].data), {"model": "qwen3-coder:64k"})
 
+    @whitebox
     def test_listing_stores_limits_under_undisguised_ids(self):
         class Gateway:
             def open(self, req, **kwargs):
@@ -269,7 +281,7 @@ class MetadataCompatibility(unittest.TestCase):
             # interrupt the blocking route, not benchmark the host's scheduler.
             env = {**os.environ, "CCMORPH_LIB_DIR": tmp,
                    "CCMORPH_STATE_DIR": tmp}
-            result = subprocess.run([sys.executable, str(SCRIPT), "--profile", "gw",
+            result = subprocess.run([*helper_cmd("refresh-model-registry"), "--profile", "gw",
                                      "--deadline", "0.2"], env=env,
                                     capture_output=True, text=True, timeout=HANG_TIMEOUT)
             self.assertIn("deadline reached", result.stderr)
@@ -326,7 +338,7 @@ class DiscoveryHTTP(unittest.TestCase):
         self.conf.write_text("type=apikey\napi_key=canary\n")
         self.env = {**os.environ, "CCMORPH_LIB_DIR": tmp.name,
                     "CCMORPH_STATE_DIR": tmp.name}
-        self.command = [sys.executable, str(SCRIPT), "--profile", "gw"]
+        self.command = [*helper_cmd("refresh-model-registry"), "--profile", "gw"]
 
     def test_real_cli_gets_metadata_without_post_and_persists_it(self):
         import subprocess
@@ -340,6 +352,7 @@ class DiscoveryHTTP(unittest.TestCase):
         self.assertFalse((self.root / "registry").exists())
         self.assertEqual(self.requests, [("GET", "/v1/models", "2023-06-01")])
 
+    @whitebox
     def test_cli_reports_unresolved_metadata_offline_without_post(self):
         import contextlib
         # Unlike the subprocess case, this unknown chat model intentionally needs
@@ -347,7 +360,7 @@ class DiscoveryHTTP(unittest.TestCase):
         self.rows[-1]["capabilities"].pop("chat_completion")
         with unittest.mock.patch.dict(os.environ, self.env), \
                 unittest.mock.patch.object(rmr, "CCMORPH", self.script), \
-                unittest.mock.patch.object(sys, "argv", self.command[1:]), \
+                unittest.mock.patch.object(sys, "argv", [str(SCRIPT), "--profile", "gw"]), \
                 unittest.mock.patch.object(rmr, "fetch_catalogue", return_value={}) as fetch, \
                 unittest.mock.patch.object(rmr, "fetch_canonical_catalogue", return_value={}) as canonical, \
                 contextlib.redirect_stdout(io.StringIO()), \
@@ -376,6 +389,7 @@ class DiscoveryHTTP(unittest.TestCase):
         self.assertFalse((self.root / "registry").exists())
         self.assertEqual(self.requests, [])
 
+    @whitebox
     def test_issue_259_acquired_headers_do_not_leave_a_body_unbounded(self):
         self.block_body = True
         stored = self.conf.read_text()
@@ -407,6 +421,7 @@ class DiscoveryHTTP(unittest.TestCase):
         self.assertEqual(self.requests, [("GET", "/v1/models", "2023-06-01")])
 
 
+@whitebox
 class CCMorphEnv(unittest.TestCase):
     def test_profile_and_packaged_script_are_positional_arguments(self):
         import subprocess
@@ -480,6 +495,7 @@ class CCMorphEnv(unittest.TestCase):
         self.assertIsNone(value)
 
 
+@whitebox
 class ClaudeModelsAreProbed(unittest.TestCase):
     """The generator must not skip claude-*.
 
@@ -544,6 +560,7 @@ class ClaudeModelsAreProbed(unittest.TestCase):
         self.assertEqual(values, {"gw:a": 128_000, "gw:b": 1_000_000})
 
 
+@whitebox
 class OverLimitErrorParsing(unittest.TestCase):
     """The ceiling must be read out of the body the gateway actually sends.
 
@@ -592,6 +609,7 @@ class OverLimitErrorParsing(unittest.TestCase):
         self.assertEqual(value, 131_072)
 
 
+@whitebox
 class ProbeOutputStaysOnPoint(unittest.TestCase):
     def _run(self, models, only=None, conf=""):
         import contextlib
@@ -621,6 +639,7 @@ if __name__ == "__main__":
     unittest.main(verbosity=2)
 
 
+@whitebox
 class ArgumentValidation(unittest.TestCase):
     def test_non_positive_jobs_is_an_argparse_error(self):
         import contextlib
@@ -641,6 +660,7 @@ class ArgumentValidation(unittest.TestCase):
             rmr.sys.argv = saved_argv
 
 
+@whitebox
 class DeclaredSizes(unittest.TestCase):
     """A gateway that STATES sizes in its listing is never probed for them.
 
@@ -681,6 +701,7 @@ class DeclaredSizes(unittest.TestCase):
                          {"a": 200000, "b": 200000})
 
 
+@whitebox
 class ModelScope(unittest.TestCase):
     """--model scopes a run to one model — what a launch needs — instead of the
     whole catalogue. This is the difference between a single probe on first launch
@@ -730,6 +751,7 @@ if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(unittest.main())
 
 
+@whitebox
 class ProfileCommitOrdering(unittest.TestCase):
     def test_stale_same_profile_result_is_rejected_and_other_profile_survives(self):
         with tempfile.TemporaryDirectory() as tmp, unittest.mock.patch.dict(os.environ, {"CCMORPH_STATE_DIR": tmp}):
@@ -750,6 +772,7 @@ class ProfileCommitOrdering(unittest.TestCase):
             self.assertEqual(rmr.store.context_value("a", "manual"), "100000")
 
 
+@whitebox
 class AmbientProxyIsUsed(unittest.TestCase):
     """A private endpoint is reached through the caller's own proxy.
 
@@ -814,6 +837,7 @@ class AmbientProxyIsUsed(unittest.TestCase):
                       "otherwise this test proves nothing")
 
 
+@whitebox
 class FailureIsExplained(unittest.TestCase):
     """Every failure must name the cause and the next action.
 
@@ -881,6 +905,7 @@ class FailureIsExplained(unittest.TestCase):
         self.assertNotIn("refusing to overwrite the registry", out)
 
 
+@whitebox
 class HexWrappedBodies(unittest.TestCase):
     """A ceiling served as hex is still a ceiling.
 
@@ -915,6 +940,7 @@ class HexWrappedBodies(unittest.TestCase):
             self.assertIsInstance(rmr.decode_hex_bodies(junk), str)
 
 
+@whitebox
 class ProbeFailuresAreExplained(unittest.TestCase):
     """A probe's own failures get the same treatment as the listing's.
 
@@ -965,6 +991,7 @@ class ProbeFailuresAreExplained(unittest.TestCase):
         self.assertEqual(val, 204_800)
 
 
+@whitebox
 class BisectFindsAnUnstatedCeiling(unittest.TestCase):
     """When the gateway refuses but names no number, find the edge by behaviour.
 
@@ -1043,6 +1070,7 @@ class BisectFindsAnUnstatedCeiling(unittest.TestCase):
         self.assertGreaterEqual(spent, 1)
 
 
+@whitebox
 class BisectSpendsAlmostNothing(unittest.TestCase):
     """The cost property, pinned separately from correctness.
 
@@ -1109,6 +1137,7 @@ class BisectSpendsAlmostNothing(unittest.TestCase):
         self.assertIn("understates", note)
 
 
+@whitebox
 class InferenceDisclosesItsCost(unittest.TestCase):
     def test_warning_precedes_first_paid_request(self):
         import contextlib
@@ -1126,6 +1155,7 @@ class InferenceDisclosesItsCost(unittest.TestCase):
         self.assertEqual(values, {"gw:m": 200000})
 
 
+@whitebox
 class ATimeoutIsNeverACeiling(unittest.TestCase):
     """A number read off the clock is worse than no number.
 
@@ -1166,6 +1196,7 @@ class ATimeoutIsNeverACeiling(unittest.TestCase):
                       "an unconfirmed range must be disclosed, not implied")
 
 
+@whitebox
 class ProbeErrorBoundaries(unittest.TestCase):
     def test_non_context_errors_and_timeouts_never_start_bisection(self):
         for error in (401, 403, 429, 500, 400, "timeout"):
@@ -1183,6 +1214,7 @@ class ProbeErrorBoundaries(unittest.TestCase):
                 self.assertIsNone(value)
 
 
+@whitebox
 class OneSenderOnePolicy(unittest.TestCase):
     """The timeout policy must have a producer, not just a consumer.
 
@@ -1241,6 +1273,7 @@ class OneSenderOnePolicy(unittest.TestCase):
         self.assertEqual(doc["usage"]["input_tokens"], 7)
 
 
+@whitebox
 class CatalogueFallback(unittest.TestCase):
     """The offline models.dev catalogue fills a gap ONLY the gateway itself left.
 
@@ -1380,6 +1413,7 @@ class CatalogueFallback(unittest.TestCase):
             self.assertEqual(rmr.store.discovered_sources(fields)["acme/solo"]["source"], "catalogue")
 
 
+@whitebox
 class CanonicalCatalogueFallback(unittest.TestCase):
     """The flat, provider-independent models.json catalogue resolves what the
     per-provider api.json catalogue can't: a model resold under many gateway

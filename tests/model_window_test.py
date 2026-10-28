@@ -9,7 +9,7 @@ import signal
 import tempfile
 import unittest
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, helper_cmd
 
 SCRIPT = Path(__file__).resolve().parents[1] / "libexec/model-window"
 spec = importlib.util.spec_from_loader("window_test_store", importlib.machinery.SourceFileLoader("window_test_store", str(SCRIPT)))
@@ -37,7 +37,7 @@ def run(profile, model, windows=None, manual=None, env=None, fields=False, model
              if key not in ("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "MODEL_WINDOW_REGISTRY", "MODEL_WINDOW_PROFILE_CONF", "MODEL_WINDOW_ENDPOINT_JSON")}
         e.update(CCMORPH_STATE_DIR=tmp)
         e.update(env or {})
-        argv = ["python3", str(SCRIPT)] + (["--fields"] if fields else []) + [profile, model]
+        argv = helper_cmd("model-window") + (["--fields"] if fields else []) + [profile, model]
         result = subprocess.run(argv, env=e, capture_output=True, text=True, timeout=HANG_TIMEOUT)
         if fields:
             return result.returncode, result.stdout.rstrip("\n").split("\t"), result.stderr
@@ -50,7 +50,7 @@ class Resolver(unittest.TestCase):
             env = {**os.environ, 'CCMORPH_STATE_DIR': tmp}
             # Only signal the parent lock runner created by this test.
             result = subprocess.run([
-                'python3', str(SCRIPT), '--locked', 'demo', 'python3', '-c',
+                *helper_cmd('model-window'), '--locked', 'demo', 'python3', '-c',
                 'import os, signal; os.kill(os.getppid(), signal.SIGINT)',
             ], env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT,
                 # A backgrounded runner ignores SIGINT; start the child with the default.
@@ -59,7 +59,7 @@ class Resolver(unittest.TestCase):
             self.assertIn('Cancelled', result.stderr)
             self.assertNotIn('Traceback', result.stderr)
             result = subprocess.run([
-                'python3', str(SCRIPT), '--locked', 'demo', 'python3', '-c', 'pass',
+                *helper_cmd('model-window'), '--locked', 'demo', 'python3', '-c', 'pass',
             ], env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
             self.assertEqual(result.returncode, 0, result.stderr)
 

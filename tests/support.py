@@ -37,6 +37,20 @@ def adapter_cmd(binary=None):
     return [sys.executable, str(binary or ADAPTER_PY)]
 
 
+# The Go ports of the other Python helpers (settings-compose, model-window,
+# refresh-model-registry): `CCMORPH_TEST_HELPERS=go` runs the black-box tests that
+# invoke them against `ccmorph-core <name>` instead of the script.
+HELPERS_IMPL = os.environ.get("CCMORPH_TEST_HELPERS", "python")
+
+
+def helper_cmd(name, binary=None):
+    """argv prefix that runs the helper `name` under test, optionally from a copied `binary`."""
+    import sys
+    if HELPERS_IMPL == "go":
+        return [str(binary or CORE), name]
+    return [sys.executable, str(binary or CORE.with_name(name))]
+
+
 def __getattr__(name):
     if name == "needs_shim":
         import pytest

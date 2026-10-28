@@ -94,6 +94,8 @@ jobs:
           python -m pytest tests/ -v --durations=25
       - name: adapter tests against the Go port (ccmorph-core adapter)
         run: CCMORPH_TEST_ADAPTER=go python -m pytest tests/adapter_test.py tests/adapter_auto_test.py -q
+      - name: helper tests against the Go ports (ccmorph-core settings-compose, model-window, refresh-model-registry)
+        run: CCMORPH_TEST_HELPERS=go python -m pytest tests/settings_compose_test.py tests/model_window_test.py tests/context_override_test.py tests/cli_model_selection_test.py tests/refresh_probe_test.py tests/registry_cli_test.py -q
 
   python-floor:
     # The floor is 3.8. Prove the Python helpers still import there — the failure

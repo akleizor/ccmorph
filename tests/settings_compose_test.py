@@ -9,7 +9,12 @@ import sys
 
 import pytest
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, HELPERS_IMPL, helper_cmd
+
+# Tests that patch the Python module's internals have Go unit-test equivalents in
+# settingscompose/compose_test.go; under the Go switch they are skipped here.
+python_only = pytest.mark.skipif(HELPERS_IMPL == "go", reason="patches Python internals; see settingscompose/compose_test.go")
+
 
 HELPER = Path(__file__).resolve().parent.parent / "libexec/settings-compose"
 ADVISE = '[ -n "$CCMORPH_ADVISE" ] && printf "%s" "$CCMORPH_ADVISE" || true'
@@ -42,7 +47,7 @@ def get(path: Path) -> dict:
 
 def run(canonical, profile, *extra, saved=None, raw=False):
     """Project, and return settings.json without the advisory hook every projection adds."""
-    cmd = [sys.executable, str(HELPER), "materialize", str(profile), "--canonical", str(canonical),
+    cmd = [*helper_cmd("settings-compose"), "materialize", str(profile), "--canonical", str(canonical),
            "--saved", json.dumps(saved or {}), *extra]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=HANG_TIMEOUT)
     assert result.returncode == 0, result.stderr
@@ -61,7 +66,7 @@ def run(canonical, profile, *extra, saved=None, raw=False):
 
 
 def fold(canonical, profile):
-    subprocess.run([sys.executable, str(HELPER), "fold", str(profile), "--canonical", str(canonical)],
+    subprocess.run([*helper_cmd("settings-compose"), "fold", str(profile), "--canonical", str(canonical)],
                    check=True, timeout=HANG_TIMEOUT)
 
 
@@ -199,7 +204,7 @@ def test_symlinked_settings_are_refused(home, tmp_path):
     canonical, profile = home
     put(canonical, {})
     (profile / "settings.json").symlink_to(canonical)
-    cmd = [sys.executable, str(HELPER), "materialize", str(profile), "--canonical", str(canonical)]
+    cmd = [*helper_cmd("settings-compose"), "materialize", str(profile), "--canonical", str(canonical)]
     assert subprocess.run(cmd, capture_output=True, timeout=HANG_TIMEOUT).returncode == 1
 
 
@@ -366,13 +371,14 @@ def test_an_unreadable_policy_fails_instead_of_dropping_the_policy(home, tmp_pat
     if content is not None:
         shared.write_bytes(content if isinstance(content, bytes) else content.encode())
     (profile / "settings.policy.json").symlink_to(shared)
-    cmd = [sys.executable, str(HELPER), "materialize", str(profile), "--canonical", str(canonical)]
+    cmd = [*helper_cmd("settings-compose"), "materialize", str(profile), "--canonical", str(canonical)]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=HANG_TIMEOUT)
     assert result.returncode == 3, result.stderr
     assert "settings.policy.json" in result.stderr and diagnosis in result.stderr
     assert not (profile / "settings.json").exists()
 
 
+@python_only
 @pytest.mark.parametrize("error,replacement", [
     pytest.param(FileNotFoundError, False, id="disappearing-target-issue-308"),
     pytest.param(PermissionError, False, id="unreadable-target-issue-308"),
@@ -423,9 +429,23 @@ GUARD = {"matcher": "Bash", "hooks": [{"type": "command", "command": "guard"}]}
 SANDBOX_AND_HOOK = {**SANDBOX, "hooks": {"PreToolUse": [GUARD]}}
 
 
+class GoCompose:
+    """The Go port behind the same `main(argv)` the in-process tests call: a
+    subprocess whose stderr is replayed so capsys sees it."""
+
+    @staticmethod
+    def main(argv):
+        result = subprocess.run([*helper_cmd("settings-compose"), *argv], capture_output=True, text=True,
+                                timeout=HANG_TIMEOUT)
+        sys.stderr.write(result.stderr)
+        return result.returncode
+
+
 @pytest.fixture
 def compose():
     """settings-compose loaded in-process: a failure path costs no interpreter."""
+    if HELPERS_IMPL == "go":
+        return GoCompose
     loader = importlib.machinery.SourceFileLoader("settings_compose", str(HELPER))
     module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
     loader.exec_module(module)
@@ -578,6 +598,7 @@ def test_a_profile_cannot_drop_a_canonical_deny_rule(home):
     assert run(canonical, profile)["permissions"]["deny"] == ["Bash(shutdown*)", "WebSearch"]
 
 
+@python_only
 def test_a_policy_sharing_canonicals_deny_list_still_counts_as_carried(home, tmp_path):
     import importlib.machinery, importlib.util
     canonical, profile = home
@@ -591,6 +612,7 @@ def test_a_policy_sharing_canonicals_deny_list_still_counts_as_carried(home, tmp
     assert sc.carries_policy(profile, get(shared))
 
 
+@python_only
 def test_a_crash_while_deciding_the_fallback_refuses_issue_420(home, tmp_path, compose, monkeypatch, capsys):
     """The refusal decision reads the policy again to compare it with what was
     generated; a failure that read does not wrap must not escape the decision
