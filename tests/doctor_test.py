@@ -140,50 +140,87 @@ def test_doctor_rejects_invalid_profile_settings_json(tmp_path):
     assert "invalid JSON" in result.stdout
 
 
-ADAPTER_PS_ROWS = ("'4000 1 /bin/echo ccmorph-adapter demo' "
-                   "'4321 1 /usr/bin/python3 /usr/local/bin/ccmorph-adapter demo --auto' "
-                   "'4322 4321 /usr/local/bin/cliproxyapi -config /tmp/config.yaml' "
-                   "'4323 4321 /usr/bin/Python /usr/local/bin/gateway-shim --port 4568'")
+# The process shapes of a live session on today's architecture: the shim is
+# served inside the adapter process (GH-49, PR #40), so the supervisor has no
+# shim child. A translator route adds a cliproxyapi child, and only a profile's
+# own CCMORPH_SHIM_HOOKS build still gets a spawned gateway-shim. The /bin/echo
+# row is the decoy a substring match would mistake for the adapter.
+ADAPTER_PS_ROWS = {
+    "translator-route": (
+        "'4000 1 /bin/echo ccmorph-core adapter demo' "
+        "'4321 1 /usr/local/libexec/ccmorph-core adapter demo --auto --parent-pid 400' "
+        "'4322 4321 /usr/local/bin/cliproxyapi -config /tmp/config.yaml'"),
+    "native-route": (
+        "'4000 1 /bin/echo ccmorph-core adapter demo' "
+        "'4321 1 /usr/local/libexec/ccmorph-core adapter demo --auto --parent-pid 400'"),
+    "hooks-build": (
+        "'4000 1 /bin/echo ccmorph-core adapter demo' "
+        "'4321 1 /usr/local/libexec/ccmorph-core adapter demo --auto --parent-pid 400' "
+        "'4322 4321 /usr/local/bin/cliproxyapi -config /tmp/config.yaml' "
+        "'4323 4321 /usr/local/bin/gateway-shim 4568 http://127.0.0.1:4567'"),
+}
+
+# What doctor owes for each shape: every listener holder running-adapter names —
+# a spawned child, or the adapter process itself when the shim is in-process —
+# gets its port checked, exactly as a child's was.
+ADAPTER_LISTENERS = {
+    "translator-route": (("cliproxyapi child", "4322"), ("in-process shim", "4321")),
+    "native-route": (("in-process shim", "4321"),),
+    "hooks-build": (("cliproxyapi child", "4322"), ("gateway-shim child", "4323")),
+}
+
+# lsof's answer per pid: the shim (in-process or spawned) serves the session on
+# 4568, the translator on 4567.
+ADAPTER_LSOF_ROWS = (
+    ("4321", "ccmorph-core 4321 u 3u IPv4 0x 0t0 TCP 127.0.0.1:4568 (LISTEN)"),
+    ("4322", "cliproxyapi 4322 u 3u IPv4 0x 0t0 TCP 127.0.0.1:4567 (LISTEN)"),
+    ("4323", "gateway-shim 4323 u 3u IPv4 0x 0t0 TCP 127.0.0.1:4568 (LISTEN)"),
+)
 
 
-def _adapter_stubs(bindir, slow):
+def _adapter_stubs(bindir, slow, rows):
     """Install the ps/lsof doubles doctor's read-only inspection consults.
 
     `slow` names the inspection whose double outlives doctor's one-second bound
     (GH-467): the deadline kills it, and doctor's designed answer is SKIP."""
     bindir.mkdir(parents=True, exist_ok=True)
-    ps = "#!/bin/sh\n" + ("sleep 2\n" if slow == "ps" else "") + f"printf '%s\\n' {ADAPTER_PS_ROWS}\n"
+    ps = "#!/bin/sh\n" + ("sleep 2\n" if slow == "ps" else "") + f"printf '%s\\n' {rows}\n"
     (bindir / "ps").write_text(ps)
     (bindir / "ps").chmod(0o755)
+    # lsof answers per pid, like the real one: a matching row and exit 0, or
+    # nothing and exit 1.
     lsof = ("#!/bin/sh\n" + ("sleep 2\n" if slow == "lsof" else "")
             + "printf '%s\\n' 'COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME'\n"
-              "printf '%s\\n' 'cliproxyapi 4322 u 3u IPv4 0x 0t0 TCP 127.0.0.1:4567 (LISTEN)'\n")
-    (bindir / "lsof").write_text(lsof)
+            + "case \"$4\" in\n")
+    for pid, row in ADAPTER_LSOF_ROWS:
+        lsof += f"  {pid}) printf '%s\\n' '{row}'; exit 0;;\n"
+    (bindir / "lsof").write_text(lsof + "esac\nexit 1\n")
     (bindir / "lsof").chmod(0o755)
 
 
-def assert_adapter_report(out):
+def assert_adapter_report(out, shape):
     """Accept every answer doctor promises for the running-adapter report, and
-    only those: each read-only inspection (ps, then lsof per child) is bounded
-    at one second, and a bound blown under load is answered SKIP (GH-467). A
-    dropped report, a WARN, or the decoy pid stays red in every outcome."""
+    only those: each read-only inspection (ps, then lsof per listener holder) is
+    bounded at one second, and a bound blown under load is answered SKIP (GH-467).
+    A dropped report, a WARN, or the decoy pid stays red in every outcome."""
     assert "pid 4000" not in out  # the /bin/echo decoy row is never an adapter
     if "process inspection unavailable" in out:
         # ps blew its bound: one SKIP line is the whole answer — nothing
         # half-reported, nothing started.
         assert "listener" not in out, out
         return
-    for name, pid in (("cliproxyapi", "4322"), ("gateway-shim", "4323")):
-        reported = (f"adapter: {name} listener" in out
+    for subject, pid in ADAPTER_LISTENERS[shape]:
+        reported = (f"adapter: {subject} listener" in out
                     and f"(pid {pid}; read-only check)" in out)
-        unknown = f"adapter: {name} child listener status unknown (pid {pid})" in out
+        unknown = f"adapter: {subject} listener status unknown (pid {pid})" in out
         assert reported or unknown, out
 
 
 @pytest.mark.parametrize("slow", ["", "ps", "lsof"],
                          ids=["prompt", "ps-over-deadline-issue-467",
                               "lsof-over-deadline-issue-467"])
-def test_doctor_reports_existing_adapter_without_starting_it(tmp_path, slow):
+@pytest.mark.parametrize("shape", ["translator-route", "native-route", "hooks-build"])
+def test_doctor_reports_existing_adapter_without_starting_it(tmp_path, shape, slow):
     curl = """#!/bin/sh
 printf '%s\n' '{"data":[]}'
 printf '%s\n' '__CCMORPH_STATUS__200'
@@ -191,10 +228,10 @@ printf '%s\n' '__CCMORPH_STATUS__200'
     conf = "type=apikey\nbase_url=https://example.test\napi_key=k\nadapter=true\n"
     # Stubs first: run_doctor only fills in what is missing, so doctor's single
     # run already consults them (no separate unstubbed setup run).
-    _adapter_stubs(tmp_path / "bin", slow)
+    _adapter_stubs(tmp_path / "bin", slow, ADAPTER_PS_ROWS[shape])
     result, _, bindir = run_doctor(tmp_path, conf, curl)
     assert result.returncode == 0, result.stderr
-    assert_adapter_report(result.stdout)
+    assert_adapter_report(result.stdout, shape)
     # Read-only: the profile's own hook never ran, so nothing was started.
     assert not (bindir / "doctor.marker").exists()
 

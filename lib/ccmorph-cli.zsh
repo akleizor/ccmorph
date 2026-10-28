@@ -221,22 +221,26 @@ _ccm_doctor() {
       _ccm_doctor_status 'SKIP' 'adapter: status unknown (process inspection unavailable; not started by doctor)'
     elif [[ -n "$running_adapter" ]]; then
       local adapter_pid="${running_adapter%%$'\t'*}" adapter_children="${running_adapter#*$'\t'}"
-      if [[ -z "$adapter_children" ]]; then
-        _ccm_doctor_status 'SKIP' "adapter: supervisor found (pid $adapter_pid) but no known listener child in process snapshot"
-      else
-        local child_spec child_pid child_name listener
-        for child_spec in ${(s:,:)adapter_children}; do
-          child_pid="${child_spec%%:*}"; child_name="${child_spec#*:}"
-          listener=$(_ccm_util listener-of "$child_pid" 2>/dev/null) || listener='__UNKNOWN__'
-          if [[ "$listener" == __UNKNOWN__ ]]; then
-            _ccm_doctor_status "SKIP" "adapter: $child_name child listener status unknown (pid $child_pid)"
-          elif [[ -n "$listener" ]]; then
-            _ccm_doctor_status "OK" "adapter: $child_name listener $listener (pid $child_pid; read-only check)"
-          else
-            _ccm_doctor_status "WARN" "adapter: $child_name child running without TCP listener (pid $child_pid)"
-          fi
-        done
-      fi
+      local child_spec child_pid child_name listener what
+      # running-adapter names every listener holder: spawned children
+      # (cliproxyapi, a CCMORPH_SHIM_HOOKS gateway-shim build), and the adapter
+      # process itself when the shim is served in-process — the stock design,
+      # and the port a live session's base_url points at.
+      for child_spec in ${(s:,:)adapter_children}; do
+        child_pid="${child_spec%%:*}"; child_name="${child_spec#*:}"
+        listener=$(_ccm_util listener-of "$child_pid" 2>/dev/null) || listener='__UNKNOWN__'
+        what="$child_name child"
+        if [[ "$child_pid" == "$adapter_pid" ]]; then
+          what="in-process shim"
+        fi
+        if [[ "$listener" == __UNKNOWN__ ]]; then
+          _ccm_doctor_status "SKIP" "adapter: $what listener status unknown (pid $child_pid)"
+        elif [[ -n "$listener" ]]; then
+          _ccm_doctor_status "OK" "adapter: $what listener $listener (pid $child_pid; read-only check)"
+        else
+          _ccm_doctor_status "WARN" "adapter: $what running without TCP listener (pid $child_pid)"
+        fi
+      done
     else
       _ccm_doctor_status 'INFO' 'adapter: not running (not started by read-only doctor)'
     fi
