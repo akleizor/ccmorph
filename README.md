@@ -44,6 +44,16 @@ ccmorph run  ------+--> personal   API key             -->  Anthropic API
 
 ## Install
 
+With Homebrew (macOS arm64 and Linux x86_64 get a prebuilt bottle, so no Go):
+
+```sh
+brew install akleizor/tap/ccmorph
+ccmorph doctor
+```
+
+Type the full `akleizor/tap/ccmorph` name: Homebrew trusts a third-party tap's
+formula only when it is named that way. Upgrade with `brew upgrade ccmorph`.
+
 From a clone:
 
 ```sh
