@@ -227,6 +227,8 @@ func (s *Server) setClients() {
 // copies request headers (x-api-key/Authorization) onto a redirect target.
 // Same-origin redirects follow where urllib followed; a cross-origin one fails
 // as a transport error; every other 3xx is the response.
+func CheckRedirect(req *http.Request, via []*http.Request) error { return checkRedirect(req, via) }
+
 func checkRedirect(req *http.Request, via []*http.Request) error {
 	prev := via[len(via)-1]
 	if !strings.EqualFold(req.URL.Scheme, prev.URL.Scheme) || !strings.EqualFold(req.URL.Host, prev.URL.Host) {

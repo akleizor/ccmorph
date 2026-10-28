@@ -249,17 +249,20 @@ func (c *Catalogue) declared(model string) []string {
 
 // routeSpec is CCMORPH_MODEL_ROUTE, handed over by the adapter.
 type routeSpec struct {
-	Adapter   string             `json:"adapter"`
-	Profile   string             `json:"profile"`
-	Config    string             `json:"config"`
-	Port      any                `json:"port"`
-	Identity  string             `json:"identity"`
-	Models    []string           `json:"models"`
-	ModelMap  map[string]*string `json:"model_map"`
-	Upstream  string             `json:"upstream"`
-	ModelsURL string             `json:"models_url"`
-	Key       string             `json:"key_sha256"`
-	Timeout   any                `json:"timeout"`
+	Adapter string `json:"adapter"`
+	// AdapterArgs lead the --ensure-config arguments: the Go adapter is a
+	// subcommand of ccmorph-core, so its command is "<exe> adapter ...".
+	AdapterArgs []string           `json:"adapter_args"`
+	Profile     string             `json:"profile"`
+	Config      string             `json:"config"`
+	Port        any                `json:"port"`
+	Identity    string             `json:"identity"`
+	Models      []string           `json:"models"`
+	ModelMap    map[string]*string `json:"model_map"`
+	Upstream    string             `json:"upstream"`
+	ModelsURL   string             `json:"models_url"`
+	Key         string             `json:"key_sha256"`
+	Timeout     any                `json:"timeout"`
 }
 
 // ModelRoutes prepares a selected model before sending its first request, never
@@ -316,7 +319,7 @@ func newModelRoutes(raw string, client *http.Client) (*ModelRoutes, error) {
 		case string:
 			port = p
 		}
-		r.command = adapterCommand(spec.Adapter)
+		r.command = append(adapterCommand(spec.Adapter), spec.AdapterArgs...)
 		r.command = append(r.command, spec.Profile, "--ensure-config", spec.Config,
 			"--ensure-port", port, "--ensure-identity", spec.Identity)
 	}
@@ -414,6 +417,9 @@ func isExit(err error) bool {
 	_, ok := err.(*exec.ExitError)
 	return ok
 }
+
+// PyRepr is pyRepr for the adapter's messages, which quote ids the same way.
+func PyRepr(s string) string { return pyRepr(s) }
 
 // pyRepr is repr() of a str: single quotes unless it holds one and no double.
 func pyRepr(s string) string {
