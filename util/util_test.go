@@ -8,6 +8,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/akleizor/ccmorph/pycompat"
 )
 
 func TestEngineInt(t *testing.T) {
@@ -102,6 +104,25 @@ func migrateFixture(t *testing.T) (legacy, target string) {
 	}
 	os.WriteFile(filepath.Join(legacy, "fixture"), []byte("untouched"), 0o600)
 	return
+}
+
+// .claude.json is the user's file: a value Python round-tripped unchanged
+// must come back byte-for-byte. An unpaired \ud83d escape used to be decoded
+// to a surrogate and written out as U+FFFD, silently mutating the file.
+func TestPickerRewriteKeepsALoneSurrogateByteForByte(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".claude.json")
+	want := "{\n  \"history\": [\n    \"a b\\ud83d c\"\n  ]\n}"
+	if err := os.WriteFile(path, []byte(want), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rewriteJSON(path, func(*pycompat.Obj) bool { return true })
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Fatalf("the rewrite changed the file:\n got %q\nwant %q", got, want)
+	}
 }
 
 func TestMigrateRefusesACrossDeviceMoveWithoutCopying(t *testing.T) {

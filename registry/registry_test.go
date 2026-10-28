@@ -8,10 +8,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -58,7 +60,10 @@ func state(t *testing.T) string {
 	dir := t.TempDir()
 	t.Setenv("CCMORPH_STATE_DIR", dir)
 	t.Setenv("CCMORPH_LIB_DIR", filepath.Join(dir, "lib"))
-	for _, k := range []string{"MODEL_WINDOW_PROFILE_CONF", "CCMORPH_PROFILE_LOCK_HELD"} {
+	// The runner's own context pin must not reach Resolve: an inherited
+	// CLAUDE_CODE_MAX_CONTEXT_TOKENS made every window in a profile read back
+	// as that number.
+	for _, k := range []string{"CLAUDE_CODE_MAX_CONTEXT_TOKENS", "MODEL_WINDOW_PROFILE_CONF", "CCMORPH_PROFILE_LOCK_HELD"} {
 		t.Setenv(k, "")
 	}
 	old := fetchJSONDict
@@ -306,6 +311,46 @@ func TestDeadlineDuringCleanupKeepsValuesAndTriesCleanup(t *testing.T) {
 }
 
 // Python: ProbeOutputStaysOnPoint + ModelScope + catalogue-on-listing-failure.
+// A profile lock held by `ccmorph config` used to sit in a blocking Flock the
+// deadline never saw: measured 20.0s against --deadline 4. The save now waits
+// on the run's context, so the run ends at its deadline and writes nothing.
+func TestHeldProfileLockCannotOutliveTheDeadline(t *testing.T) {
+	dir := state(t)
+	put(t, filepath.Join(dir, "gw.conf"), "type=apikey\napi_key=k\n")
+	stubs(t, okEnv, func(string) ([]string, map[string]int64, []*pycompat.Obj, error) {
+		return []string{"known"}, map[string]int64{"known": 922000}, nil, nil
+	})
+	priorValues = func([]string) map[string]int64 { return map[string]int64{} }
+	priorCatalogueTags = func([]string) map[string]*pycompat.Obj { return nil }
+	lock, err := os.OpenFile(filepath.Join(dir, "gw.conf.lock"), os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	done := make(chan int, 1)
+	go func() {
+		done <- Main([]string{"--profile", "gw", "--deadline", "0.5"}, strings.NewReader(""), &out, &errb)
+	}()
+	var code int
+	select {
+	case code = <-done:
+	case <-time.After(10 * time.Second):
+		syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		<-done
+		t.Fatal("the registry run outlived its 0.5s deadline behind a held lock")
+	}
+	if code != 1 || !strings.Contains(errb.String(), "Save deadline reached") {
+		t.Fatalf("code %d stderr %q", code, errb.String())
+	}
+	if _, fields := modelwindow.ReadConf(filepath.Join(dir, "gw.conf")); fields["context_discovered"] != "" {
+		t.Fatal("a value was written past the deadline")
+	}
+}
+
 func TestScopeExclusionsAndNearMisses(t *testing.T) {
 	dir := state(t)
 	put(t, filepath.Join(dir, "gw.conf"), "excluded_models=hidden\n")
@@ -650,13 +695,19 @@ func TestProbeReadsTheCeilingOutOfTheRefusal(t *testing.T) {
 	}{
 		{"escaped", `{"error":{"message":"prompt is too long: 1552710 tokens > 1000000 maximum"}}`, 1_000_000},
 		{"text-prefixed", `tencent 400 client error {"error":{"message":"prompt is too long: 2277794 tokens > 1000000 maximum"}}`, 1_000_000},
+		{"text-prefixed-escaped", `tencent 400 client error {"error":{"message":"prompt is too long: 2277794 tokens \u003e 1000000 maximum"}}`, 1_000_000},
 		{"nested", `{"error":{"message":"maximum context length is 131072 tokens"}}`, 131072},
 		{"wrapped", `cloudsway 400 client error {"error":{"message":"Anthropic Claude bad request: [1261][prompt is too long: 2277794 tokens > 204800 maximum]"}}`, 204800},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := Probe(ctx, "http://x", "k", "claude-opus-4-6", "blob", time.Second, overflowOpener(400, tc.body), 0)
+			op := overflowOpener(400, tc.body).(*fake)
+			r := Probe(ctx, "http://x", "k", "claude-opus-4-6", "blob", time.Second, op, 1)
 			if r.Kind != "anthropic:declared" || r.Value != tc.want {
 				t.Fatalf("%+v", r)
+			}
+			// A stated ceiling costs one request: no truncation reread, no bisect.
+			if len(op.seen) != 1 {
+				t.Fatalf("a declared ceiling needs one request; sent %d", len(op.seen))
 			}
 		})
 	}
@@ -942,6 +993,53 @@ func TestOpenerUsesTheAmbientProxyAndRefusesCrossOriginRedirects(t *testing.T) {
 	}
 }
 
+// A slow link must not cost the launch catalogue. models.dev/api.json is
+// 5.9 MB, fetched under launchCatalogueTimeout (3s) when a launch meets an
+// unsized model; one budget over the whole exchange fails any transfer below
+// about 2 MB/s even though bytes keep arriving. urllib bounded each socket
+// operation, and so does this: a flowing transfer finishes however long it
+// takes, a stalled one still times out.
+func TestTimeoutBoundsEachWaitNotTheWholeTransfer(t *testing.T) {
+	t.Run("flowing", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("content-type", "application/json")
+			w.WriteHeader(200)
+			w.(http.Flusher).Flush()
+			// Each gap is a tenth of the budget; the whole body takes 1.5x it.
+			for i := 0; i < 15; i++ {
+				w.Write([]byte(" "))
+				w.(http.Flusher).Flush()
+				time.Sleep(50 * time.Millisecond)
+			}
+			w.Write([]byte("{}"))
+		}))
+		defer srv.Close()
+		body, err := BuildOpener().Open(context.Background(), Request{Method: "GET", URL: srv.URL}, 500*time.Millisecond)
+		if err != nil {
+			t.Fatalf("a flowing transfer outlived a 500ms whole-exchange budget: %v", err)
+		}
+		if string(body) != strings.Repeat(" ", 15)+"{}" {
+			t.Fatalf("body %q", body)
+		}
+	})
+	t.Run("stalled", func(t *testing.T) {
+		release := make(chan struct{})
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(200)
+			w.(http.Flusher).Flush()
+			select {
+			case <-r.Context().Done():
+			case <-release:
+			}
+		}))
+		defer func() { close(release); srv.Close() }()
+		_, err := BuildOpener().Open(context.Background(), Request{Method: "GET", URL: srv.URL}, 200*time.Millisecond)
+		if !IsTimeout(err) {
+			t.Fatalf("a stalled read must time out: %v", err)
+		}
+	})
+}
+
 // Python: provider_windows contract.
 func TestProviderSourceContract(t *testing.T) {
 	dir := state(t)
@@ -1076,6 +1174,14 @@ func TestLaunchSizesOnlyNewModelsAndRemembersMisses(t *testing.T) {
 	_, fields = modelwindow.ReadConf(conf)
 	if modelwindow.DiscoveredMisses(fields).Len() != 0 {
 		t.Fatal("miss survived")
+	}
+}
+
+// Python: size_listing replaces the six-byte escape before matching; the
+// decoded ">" this port used to write matched itself and normalized nothing.
+func TestValidationNormalizesTheEscapedGT(t *testing.T) {
+	if got := unicodeGT.Replace(`maximum context length is \u003e 42`); got != "maximum context length is > 42" {
+		t.Fatalf("the escape was not normalized: %q", got)
 	}
 }
 

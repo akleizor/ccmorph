@@ -595,7 +595,9 @@ also set. `--bisect` additionally enables hidden-ceiling search and requires
 refusal; the refusal need not contain a number. Generic errors and timeouts stop
 the search without recording a new limit. A retry is a separate, potentially paid
 operator decision; the tool does not automatically retry with a larger budget.
-`--probe-timeout` defaults to 10 seconds per request. Rejections and timeouts are not guaranteed to be free, and the first
+`--probe-timeout` defaults to 10 seconds per wait on the gateway — connect, first
+byte, each read — so a slow but flowing response is not cut off; the run's
+`--deadline` bounds the whole command. Rejections and timeouts are not guaranteed to be free, and the first
 accepted prompt — up to 6,000,000 characters — can be billed; character estimates
 are not known token counts.
 

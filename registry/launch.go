@@ -69,7 +69,7 @@ func parseCount(s string) (int64, bool) {
 	return n, err == nil && n > 0
 }
 
-var unicodeGT = strings.NewReplacer(`>`, ">")
+var unicodeGT = strings.NewReplacer(`\u003e`, ">")
 
 // RecentlyMissed reports whether a dated miss is still inside the retry window.
 func RecentlyMissed(day, today string) bool {
@@ -238,7 +238,10 @@ func Commit(ctx context.Context, values *pycompat.OMap[int64], baseline map[stri
 		}
 		models := grouped[profile]
 		expected := identities[profile]
-		if expected == nil || !modelwindow.SaveDiscovered(profile, models, expected, true, groupedSources[profile], nil) {
+		if expected == nil || !modelwindow.SaveDiscoveredCtx(ctx, profile, models, expected, true, groupedSources[profile], nil) {
+			if ctx.Err() != nil {
+				return 1, true
+			}
 			fmt.Fprintf(stderr, "profile '%s' changed during discovery; its configuration was left unchanged\n", profile)
 			failed = true
 			continue
