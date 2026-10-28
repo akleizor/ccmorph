@@ -229,7 +229,16 @@ print 'type=sub'                                   > "$cfg/personal.conf"
 print 'export CCMORPH_TEST_LOCAL=1'               > "$cfg/local.sh"
 print 'active-marker'                              > "$cfg/active"
 
+# An update must not write into the installed shim's file: overwriting a signed Mach-O
+# in place leaves a stale code-signature cache and macOS kills it on launch (exit 137).
+# A hardlink keeps the old file reachable: it still holds the marker only if the
+# installer replaced the shim instead of rewriting it (inode numbers can be reused).
+print -n MARK >> "$cfg/libexec/gateway-shim"
+ln "$cfg/libexec/gateway-shim" "$cfg/old-shim"
 run_installer "$d"; rc=$?
+[[ "$(tail -c 4 "$cfg/old-shim")" == MARK && "$(tail -c 4 "$cfg/libexec/gateway-shim")" != MARK ]] \
+  && ok "re-run replaces gateway-shim instead of overwriting it" || fail "re-run overwrote gateway-shim in place"
+rm -f "$cfg/old-shim"
 [[ $rc -eq 0 ]] && ok "re-run exits 0" || { fail "re-run rc=$rc"; cat "$d/out" }
 
 # Every piece of user state survives byte-for-byte.

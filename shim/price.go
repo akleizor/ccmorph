@@ -29,6 +29,7 @@ import (
 const (
 	pricesURL    = "https://models.dev/api.json"
 	pricesMaxAge = 24 * time.Hour
+	pricesWait   = 3 * time.Second
 )
 
 // price is US dollars per million tokens, as models.dev states it.
@@ -75,13 +76,15 @@ func (p price) estimate(u usageRow) (float64, bool) {
 // the first row that needs it and never blocks the relay: until it has loaded, a
 // lookup finds nothing, and the row is rewritten with every usage update.
 type priceBook struct {
-	host  string
-	path  string
-	fetch func() ([]byte, error)
-	now   func() time.Time
-	once  sync.Once
-	mu    sync.RWMutex
-	table map[string]price // models.dev id of this host's provider models
+	host   string
+	path   string
+	fetch  func() ([]byte, error)
+	now    func() time.Time
+	once   sync.Once
+	done   chan struct{} // closed when the first load ends
+	waited sync.Once     // only the first lookup waits for it
+	mu     sync.RWMutex
+	table  map[string]price // models.dev id of this host's provider models
 }
 
 func newPriceBook(upstream string) *priceBook {
@@ -89,7 +92,7 @@ func newPriceBook(upstream string) *priceBook {
 	if err != nil || u.Hostname() == "" {
 		return nil
 	}
-	return &priceBook{host: strings.ToLower(u.Hostname()), path: filepath.Join(stateDir(), "prices-"+strings.ToLower(u.Hostname())+".json"), fetch: fetchPrices, now: time.Now}
+	return &priceBook{done: make(chan struct{}), host: strings.ToLower(u.Hostname()), path: filepath.Join(stateDir(), "prices-"+strings.ToLower(u.Hostname())+".json"), fetch: fetchPrices, now: time.Now}
 }
 
 func fetchPrices() ([]byte, error) {
@@ -180,7 +183,15 @@ func (b *priceBook) set(m map[string]price) {
 
 // lookup is the price of model, starting the load on first use.
 func (b *priceBook) lookup(model string) (price, bool) {
-	b.once.Do(func() { go b.load() })
+	b.once.Do(func() { go func() { defer close(b.done); b.load() }() })
+	// The session's first turn waits briefly for the cached table (a disk read) so it is
+	// priced; a cold fetch that outlasts the wait leaves that row unpriced.
+	b.waited.Do(func() {
+		select {
+		case <-b.done:
+		case <-time.After(pricesWait):
+		}
+	})
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	p, ok := b.table[strings.TrimSuffix(model, "[1m]")]

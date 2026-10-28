@@ -104,3 +104,12 @@ func TestPriceCacheServesWithoutFetchingUntilStale(t *testing.T) {
 		t.Fatal(err, info)
 	}
 }
+
+func TestFirstLookupWaitsForTheLoad(t *testing.T) {
+	stateHome(t)
+	b := newPriceBook("https://api.deepseek.com")
+	b.fetch = func() ([]byte, error) { time.Sleep(200 * time.Millisecond); return []byte(apiDoc), nil }
+	if _, ok := b.lookup("deepseek-flash"); !ok {
+		t.Fatal("the first lookup must see the table the load produced")
+	}
+}

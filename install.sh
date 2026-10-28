@@ -327,8 +327,10 @@ if [[ -z "$_shim" ]]; then
   c_dim "  Otherwise install a release: it ships the binary for your platform."
   exit 1
 fi
+# Remove first: copying over a running-signed Mach-O in place keeps the kernel's stale
+# code-signature cache for the old bytes, and macOS then kills the new binary (exit 137).
 [[ "${_shim:A}" == "${CONFIG_REAL}/libexec/gateway-shim" ]] \
-  || cp "$_shim" "$CONFIG_DIR/libexec/gateway-shim"
+  || { rm -f "$CONFIG_DIR/libexec/gateway-shim" && cp "$_shim" "$CONFIG_DIR/libexec/gateway-shim"; }
 chmod +x "$CONFIG_DIR/libexec/gateway-shim"
 chmod +x "$BIN_DIR/ccmorph"
 # Move profile homes through the same guarded owner used by normal launches.
