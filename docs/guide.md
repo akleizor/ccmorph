@@ -344,7 +344,7 @@ declared references and saved transcripts are untouched. A `400` on a message
 request that carries `thinking` blocks is retried once without them (one line on the
 shim's stderr each time); whatever the second answer is, you get it.
 
-Two optional profile keys, relaunch to apply:
+Three optional profile keys, relaunch to apply:
 
 - `env.CCMORPH_AFFINITY_HEADER=<name>` sends the Claude Code session id in that
   header, for gateways that pin a conversation to one backend. The name is letters,
@@ -353,6 +353,8 @@ Two optional profile keys, relaunch to apply:
   `{version}` replaced by the version in Claude Code's own (`claude-cli/X.Y.Z`), for
   example `claude-cli/{version} (external, cli)`. A client without a version keeps
   its own `User-Agent`.
+- `env.CCMORPH_COMPAT=off` turns the two automatic repairs and both keys above off:
+  the shim passes requests through untouched.
 
 Anything else a gateway needs is a custom build: a small Go `main` that calls
 `compat.FromEnv()`, wraps the hooks it returns (the contract is `shim.Hooks`) and

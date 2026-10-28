@@ -182,3 +182,13 @@ func TestFromEnvReadsTheProfileEnv(t *testing.T) {
 		t.Fatal(h, err)
 	}
 }
+
+func TestCompatOffGivesNoHooks(t *testing.T) {
+	t.Setenv("CCMORPH_AFFINITY_HEADER", "X-A")
+	t.Setenv("CCMORPH_USER_AGENT", "ua/{version}")
+	t.Setenv("CCMORPH_COMPAT", "off")
+	h, err := FromEnv()
+	if err != nil || h.OutboundHeaders != nil || h.UserAgent != nil || h.TranslatorUserAgent != nil || h.RepairRequest != nil || h.ResendBody != nil {
+		t.Fatal(h, err)
+	}
+}
