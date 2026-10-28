@@ -31,6 +31,10 @@ _ccm_mtime() {
   print -r -- "$s[1]"
 }
 
+# The compiled core's helper verbs (`ccmorph-core util <verb>`): JSON, context-window
+# and process readers. The core ships with the library, so nothing here needs an interpreter.
+_ccm_util() { "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" util "$@"; }
+
 # External utility calls use `command` so sourced user functions and aliases cannot
 # alter ccmorph behavior; this is isolation from shell overrides, not from PATH.
 

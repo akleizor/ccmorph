@@ -11,60 +11,7 @@ _ccm_resume_model() {
   _ccm_session_file "$session_id" || return 1
   transcript="$REPLY" REPLY=""
 
-  model=$(command python3 - "$transcript" <<'PY'
-import json
-import re
-import sys
-
-command_model = assistant_model = ""
-saw_model_command = False
-pattern = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
-
-try:
-    transcript = open(sys.argv[1], encoding="utf-8")
-except OSError:
-    raise SystemExit(1)
-
-with transcript:
-    for line in transcript:
-        try:
-            record = json.loads(line)
-        except (json.JSONDecodeError, TypeError):
-            continue
-
-        message = record.get("message")
-        if (
-            record.get("type") == "assistant"
-            and record.get("isSidechain") is not True
-            and isinstance(message, dict)
-            and message.get("role") == "assistant"
-            and isinstance(message.get("model"), str)
-            and message["model"] not in ("", "<synthetic>")
-        ):
-            assistant_model = message["model"]
-
-        if (
-            record.get("type") != "user"
-            or record.get("isSidechain") is True
-            or not isinstance(message, dict)
-            or message.get("role") != "user"
-        ):
-            continue
-
-        content = message.get("content")
-        if (
-            not isinstance(content, str)
-            or "<command-name>/model</command-name>" not in content
-        ):
-            continue
-
-        saw_model_command = True
-        match = pattern.search(content)
-        value = match.group(1) if match else ""
-        command_model = value if value and "\n" not in value and "\r" not in value else ""
-
-sys.stdout.write(command_model if saw_model_command else assistant_model)
-PY
+  model=$(_ccm_util resume-model "$transcript"
   ) || return 1
 
   [[ -n "$model" ]] && _ccm_clean_value "$model" || return 1
@@ -84,38 +31,7 @@ _ccm_session_state() {
   _ccm_session_file "$session_id" || return 1
   transcript="$REPLY"
 
-  state=$(command python3 - "$transcript" <<'PY'
-import json
-import sys
-
-model = effort = ""
-try:
-    transcript = open(sys.argv[1], encoding="utf-8")
-except OSError:
-    raise SystemExit(1)
-
-with transcript:
-    for line in transcript:
-        try:
-            record = json.loads(line)
-        except (json.JSONDecodeError, TypeError):
-            continue
-        message = record.get("message")
-        if (
-            record.get("type") == "assistant"
-            and record.get("isSidechain") is not True
-            and isinstance(message, dict)
-            and message.get("role") == "assistant"
-            and message.get("model") not in (None, "", "<synthetic>")
-            and record.get("effort") not in (None, "")
-        ):
-            model = str(message["model"])
-            effort = str(record["effort"])
-
-if not model or not effort or any(c in model + effort for c in "\t\r\n"):
-    raise SystemExit(1)
-sys.stdout.write(f"{model}\t{effort}")
-PY
+  state=$(_ccm_util session-state "$transcript"
   ) || return 1
 
   [[ "$state" == *$'\t'* ]] || return 1
@@ -296,96 +212,14 @@ _ccm_probe_nudge() {  # $1 = profile name
 # stays the route's own answer. The run happens even with no model: a routed
 # launch still needs its ceiling and its saved budget.
 _ccm_launch_window() {
-  local profile="$1" model="${2:-}" resolver="$_CCMORPH_LIBEXEC_DIR/model-window"
+  local profile="$1" model="${2:-}"
   if [[ -n "$model" ]]; then
     _ccm_migrate_state || model=""
   fi
-  [[ -x "$resolver" ]] || model=""
-  { command cat <<'PY'
-import importlib.machinery, importlib.util, os, sys
-
-resolver, profile, model = sys.argv[1:4]
-sources = sys.argv[4:]
-try:
-    spec = importlib.util.spec_from_loader("profile_context", importlib.machinery.SourceFileLoader("profile_context", resolver))
-    store = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(store)
-except Exception:
-    store = None
-fields = ["", "", "", "", "", ""]
-
-# The settings loader is loaded in ITS own try, the diagnostics run's rule (#332):
-# a settings-compose that cannot be read costs only the facts that read settings --
-# on the separate runs this fold replaced, it never touched the resolver's record.
-try:
-    exec(os.environ["_CCM_SC_PY"], globals())
-except Exception:
-    _sc = None
-
-# The merged settings view, read once and shared by the route ceiling and the
-# saved budget: last writer wins, tombstones included, exactly as the projection
-# merge reads it. merged_view always returns a dict; None means the composition
-# itself failed and each fact below falls through on its own.
-doc = None
-try:
-    doc = _sc.merged_view(sources)
-except Exception:
-    pass
-
-# The launched model's own record, the --fields contract.
-try:
-    if model:
-        fields[0:4] = store.record_fields(store.resolve(profile, model))
-except Exception:
-    pass
-
-# The largest probed window among the models this route serves. claude-* ids are
-# skipped: Claude Code ignores the env var for that family and sizes them from
-# the id itself. Per-model narrowing is autoCompactWindow's job, not the
-# ceiling's.
-try:
-    values = store.profile_windows(profile)
-    best = 0
-    models = doc.get("availableModels") if doc is not None else None
-    if not isinstance(models, list):
-        models = []
-    for m in models:
-        if not isinstance(m, str):
-            continue
-        m = m.split("[", 1)[0]
-        # All FOUR tier aliases, not three: a bare `fable` reaching the registry would
-        # be treated as a model id, and a profile that happens to have an entry under
-        # that name would inflate the ceiling every routed model is then clamped to.
-        if m.startswith("claude-") or m in {"opus", "sonnet", "haiku", "fable"}:
-            continue
-        w = values.get(m)
-        if w:
-            best = max(best, w)
-    if best > 0:
-        fields[4] = str(best)
-except Exception:
-    pass
-
-# The saved auto-compact budget. Only a value the engine's schema keeps counts:
-# out of range, wrong type, or absent all mean the engine never sees it. The
-# schema check is acw_valid -- the one the projection merge itself uses -- so a
-# saved budget written with a trailing .0 (an integer-valued float) is legitimate.
-try:
-    found = ""
-    if doc is not None and "autoCompactWindow" in doc:
-        v = doc["autoCompactWindow"]
-        if _sc.acw_valid(v):
-            found = str(int(v))
-    fields[5] = found
-except Exception:
-    pass
-
-print(*fields, sep="\t")
-PY
-  } | command env -u CLAUDE_CODE_MAX_CONTEXT_TOKENS \
+  [[ -x "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" ]] || model=""
+  command env -u CLAUDE_CODE_MAX_CONTEXT_TOKENS \
     CCMORPH_STATE_DIR="$_CCMORPH_DIR" MODEL_WINDOW_PROFILE_CONF="$_CCMORPH_DIR/$profile.conf" \
-    _CCM_LIB="$_CCMORPH_LIBEXEC_DIR" _CCM_SC_PY="$(_ccm_settings_compose_py)" \
-    python3 - "$resolver" "$profile" "$model" \
+    _ccm_util launch-window "$profile" "$model" \
     "${(f)$(_ccm_settings_sources "$profile")}" 2>/dev/null
 }
 
@@ -399,12 +233,7 @@ PY
 # scheme://host[:port]/path only: drops userinfo, query and fragment so a URL
 # can appear in a message or log without leaking a credential.
 _ccm_redact_url() {
-  command python3 - "$1" <<'PY' 2>/dev/null || print -r -- '[unparseable endpoint]'
-import sys, urllib.parse
-u=urllib.parse.urlsplit(sys.argv[1]); host=u.hostname or ''
-if u.port: host += ':' + str(u.port)
-print(urllib.parse.urlunsplit((u.scheme, host, u.path.rstrip('/'), '', '')))
-PY
+  _ccm_util redact-url "$1" 2>/dev/null || print -r -- '[unparseable endpoint]'
 }
 
 _ccm_gw_models_json() {
@@ -452,52 +281,7 @@ _ccm_gw_models() {
   local name="$1"
   _ccm_gw_models_json "$name" "${@:3}" || return 1
 
-  print -r -- "$REPLY" | command python3 -c '
-import json
-import re
-import sys
-
-fields = {}
-if sys.argv[2] == "picker":
-    with open(sys.argv[1], encoding="utf-8") as source:
-        fields = dict(line.rstrip("\n").split("=", 1) for line in source
-                      if "=" in line and not line.startswith("#"))
-excluded = set(fields.get("excluded_models", "").split(",")) - {""}
-
-import runpy
-_is_excluded = runpy.run_path(sys.argv[-1])["is_excluded"]
-
-
-def is_excluded(model):
-    return _is_excluded(fields, model)
-
-try:
-    payload = json.load(sys.stdin)
-except (json.JSONDecodeError, TypeError):
-    raise SystemExit(1)
-
-rows = []
-for m in payload.get("data", []):
-    if not isinstance(m, dict):
-        continue
-    # Exclude a model only when the endpoint explicitly denies chat use. Most
-    # endpoints (the native Anthropic list, Anthropic-shaped local translators)
-    # publish no capabilities at all, and an undeclared capability is not a
-    # denial -- filtering on its absence would hide every model they serve.
-    caps = m.get("capabilities")
-    if isinstance(caps, dict) and caps.get("chat_completion") is False:
-        continue
-    model_id = m.get("id")
-    if not isinstance(model_id, str) or not model_id or is_excluded(model_id):
-        continue
-    rows.append((model_id, m.get("owned_by") or "?"))
-
-if not rows:
-    raise SystemExit(2)
-
-for model_id, owner in sorted(rows):
-    print(f"{model_id}\t{owner}")
-' "$_CCMORPH_DIR/$name.conf" "${2:-catalogue}" "$_CCMORPH_LIBEXEC_DIR/model-window" || {
+  print -r -- "$REPLY" | _ccm_util gw-models "$_CCMORPH_DIR/$name.conf" "${2:-catalogue}" || {
     _ccm_err "'$name' endpoint returned no usable model list"
     return 1
   }
@@ -578,31 +362,5 @@ _ccm_model_known() {
   local body="$REPLY"
   [[ -n "$body" ]] || return 2
 
-  _CCM_MODELS_JSON="$body" command python3 -c '
-import json, os, sys
-try:
-    payload = json.loads(os.environ["_CCM_MODELS_JSON"])
-except Exception:
-    raise SystemExit(2)
-# One lookup on the wire id, like the shim (#285); a mapped target is final.
-model_map = json.loads(sys.argv[2] or "{}")
-mapped = model_map.get(sys.argv[1])
-want = sys.argv[1] if mapped is None else mapped
-if mapped is not None and want.endswith("[1m]"):
-    want = want[:-4]
-uncertain = False
-for m in payload.get("data", []):
-    if not isinstance(m, dict):
-        uncertain = True
-        continue
-    model_id = m.get("id")
-    if not isinstance(model_id, str) or not model_id:
-        uncertain = True
-        continue
-    if model_id != want:
-        continue
-    caps = m.get("capabilities")
-    raise SystemExit(1 if isinstance(caps, dict) and caps.get("chat_completion") is False else 0)
-raise SystemExit(2 if uncertain or payload.get("has_more") is True else 1)
-' "$want" "$model_map"
+  _CCM_MODELS_JSON="$body" _ccm_util model-known "$want" "$model_map"
 }

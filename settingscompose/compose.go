@@ -1250,3 +1250,31 @@ func isDigits(s string) bool {
 	}
 	return true
 }
+
+// MergedView is what settings.json would hold for these layers, canon first: the
+// merge plus every layer's tombstones, except a shared policy's. An unreadable or
+// non-object layer is skipped. It is the one reading of the layers other readers share.
+func MergedView(paths []string) *pycompat.Obj {
+	data := pycompat.NewObj()
+	for _, path := range paths {
+		var layer *obj
+		if pycompat.Catch(func() {
+			b, err := readFile(path)
+			if err != nil {
+				osFail(err)
+			}
+			layer, _ = parse(b).(*obj)
+		}) != nil || layer == nil {
+			continue
+		}
+		data = merge(data, withoutTombstones(layer), nil)
+		if filepath.Base(path) == policyFile {
+			continue
+		}
+		applyTombstones(data, layer)
+	}
+	return data
+}
+
+// ACWValid reports whether v is an autoCompactWindow the engine's schema keeps.
+func ACWValid(v pycompat.Value) bool { return acwValid(v) }

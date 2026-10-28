@@ -115,19 +115,7 @@ _ccm_value_rows() {
         provider)
           # Provider login is owned by the bridge. Its saved native picker rows
           # are useful offline; do not start a credentialed proxy just for a menu.
-          command python3 - "$_CCMORPH_PROFILE_DIRS/$profile/.claude.json" <<'PY'
-import json, sys
-from pathlib import Path
-try:
-    rows = json.loads(Path(sys.argv[1]).read_text()).get('additionalModelOptionsCache', [])
-except (OSError, ValueError):
-    rows = []
-for row in rows if isinstance(rows, list) else []:
-    if isinstance(row, dict) and isinstance(row.get('value'), str):
-        value = row['value']
-        if value and not any(c.isspace() for c in value):
-            print(value + '\tSaved provider model')
-PY
+          _ccm_util saved-provider-models "$_CCMORPH_PROFILE_DIRS/$profile/.claude.json"
           ;;
       esac
       ;;
@@ -513,149 +501,7 @@ _ccm_setup_dir_unlocked() {
   # provisioning.
   command chmod 700 "$dir" "$canonical" 2>/dev/null || :
 
-  command python3 -q - "$dir" "${_ccm[type]}" <<'PY'
-import json
-import os
-import sys
-import tempfile
-from pathlib import Path
-
-pdir = Path(sys.argv[1])
-acct_type = sys.argv[2]
-
-home = Path.home()
-app_cfg = home / "Library/Application Support/Claude/config.json"
-claude_json_src = home / ".claude.json"
-claude_json_fallback = home / ".claude" / ".claude.json"
-
-os.chmod(pdir, 0o700)
-
-
-def load(path, default=None):
-    if not path.exists():
-        return default
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            value = json.load(handle)
-        if not isinstance(value, dict):
-            raise SystemExit(f"{path}: root is not a JSON object")
-        return value
-    except PermissionError:
-        raise SystemExit(f"{path}: permission denied")
-    except (json.JSONDecodeError, ValueError) as exc:
-        raise SystemExit(f"{path}: malformed JSON: {exc}")
-
-
-def atomic_json(path, data):
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=".ccmorph.",
-        dir=str(path.parent),
-    )
-
-    try:
-        os.fchmod(fd, 0o600)
-
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, separators=(",", ":"))
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-
-        os.replace(tmp_name, path)
-        os.chmod(path, 0o600)
-    except BaseException:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-
-        raise
-
-
-cfg = pdir / "config.json"
-if cfg.is_symlink():
-    raise SystemExit(f"{cfg}: symbolic links are not allowed")
-
-existing_cfg = load(cfg)
-
-if acct_type == "sub":
-    has_token = bool(
-        existing_cfg
-        and (
-            existing_cfg.get("oauth:tokenCache")
-            or existing_cfg.get("oauth:tokenCacheV2")
-        )
-    )
-
-    # Best effort, and no longer load-bearing. This copies the desktop app's
-    # oauth:tokenCache into the profile, but Claude Code 2.1.221 keeps a
-    # subscription credential in secure storage and references neither that key nor
-    # the desktop app's config path -- so the copy authenticates nothing, and a
-    # profile carrying one still starts logged out. Requiring it also made a sub
-    # profile unprovisionable on a machine without the desktop app. The credential
-    # a sub profile actually uses comes from its own `/login`, so seed when the
-    # file happens to be there and carry on when it is not.
-    if not has_token:
-        seed = load(app_cfg)
-        if seed is not None:
-            atomic_json(cfg, seed)
-    else:
-        os.chmod(cfg, 0o600)
-else:
-    data = existing_cfg
-    if data is None:
-        data = load(app_cfg, {})
-
-    dirty = existing_cfg is None
-    for key in ("oauth:tokenCache", "oauth:tokenCacheV2"):
-        if key in data:
-            data.pop(key)
-            dirty = True
-
-    if dirty:
-        atomic_json(cfg, data)
-    else:
-        os.chmod(cfg, 0o600)
-
-
-claude_json = pdir / ".claude.json"
-if claude_json.is_symlink():
-    raise SystemExit(f"{claude_json}: symbolic links are not allowed")
-
-data = load(claude_json)
-fresh_claude_json = data is None
-
-if fresh_claude_json:
-    data = load(claude_json_src)
-    if data is None:
-        data = load(claude_json_fallback, {})
-
-dirty = fresh_claude_json
-if fresh_claude_json or acct_type != "sub":
-    for key in (
-        "oauthAccount",
-        "hasAvailableSubscription",
-        "cachedExtraUsageDisabledReason",
-    ):
-        if key in data:
-            data.pop(key)
-            dirty = True
-
-# MCP servers are not touched here — provisioning only establishes auth-scoped
-# fields. A vanilla profile keeps whatever mcpServers it was seeded with (or
-# the user added), untouched by launch.
-
-if dirty:
-    atomic_json(claude_json, data)
-else:
-    os.chmod(claude_json, 0o600)
-
-PY
+  _ccm_util provision-profile "$dir" "${_ccm[type]}"
 
   [[ $? -eq 0 ]] || {
     _ccm_err "profile setup failed for '$name'"
@@ -780,41 +626,7 @@ _ccm_unwire_statusline() {
   [[ -f "$file" && ! -L "$file" ]] || return 0
 
   _CCM_SL_OWNED="$_CCMORPH_DIR/statusline"$'\n'"$_CCMORPH_LIB_DIR/statusline" \
-  command python3 -c '
-import json, os, sys, tempfile
-
-path = sys.argv[1]
-owned = {p for p in os.environ.get("_CCM_SL_OWNED", "").split("\n") if p}
-
-try:
-    with open(path, encoding="utf-8") as fh:
-        doc = json.load(fh)
-except (OSError, json.JSONDecodeError):
-    raise SystemExit(0)
-if not isinstance(doc, dict):
-    raise SystemExit(0)
-
-current = doc.get("statusLine")
-command = current.get("command") if isinstance(current, dict) else None
-if not (isinstance(command, str) and command in owned):
-    raise SystemExit(0)
-
-del doc["statusLine"]
-
-d = os.path.dirname(path) or "."
-fd, tmp = tempfile.mkstemp(dir=d, prefix=".sl.")
-try:
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump(doc, fh, indent=2)
-        fh.write("\n")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
-except Exception:
-    try:
-        os.unlink(tmp)
-    except OSError:
-        pass
-' "$file" 2>/dev/null
+    _ccm_util unwire-statusline "$file" 2>/dev/null
 
   # Never fatal: cleanup is best-effort and must not block a launch.
   return 0
