@@ -208,8 +208,9 @@ func (u *UsageSidecar) row(r *record) []byte {
 	return append(out, `,"complete":false}`...)
 }
 
-// withCost is the row's usage with a cost computed from the provider's price when
-// the upstream billed none. The gateway's own billed cost is never replaced.
+// withCost is the row's usage with estimated_cost computed from the provider's
+// list price when the upstream billed none. `cost` stays what the gateway billed
+// and nothing else, so a reader summing billed spend never adds a list price.
 func (u *UsageSidecar) withCost(r *record) usageRow {
 	if u.prices == nil || slices.ContainsFunc(r.usage, func(n kv) bool { return n.key == "cost" }) {
 		return r.usage
@@ -231,7 +232,7 @@ func (u *UsageSidecar) withCost(r *record) usageRow {
 	if !ok {
 		return r.usage
 	}
-	return append(slices.Clone(r.usage), kv{"cost", []byte(strconv.FormatFloat(c, 'f', -1, 64))})
+	return append(slices.Clone(r.usage), kv{"estimated_cost", []byte(strconv.FormatFloat(c, 'f', -1, 64))})
 }
 
 func stateDir() string {

@@ -3,9 +3,10 @@
 
 Usage: usage-export --output ROOT [--since YYYYMMDD]
 Then: CLAUDE_CONFIG_DIR=ROOT ccusage claude daily --instances --config ROOT/ccusage.json
-A turn the gateway billed carries that cost; ccusage prices every other turn at its
-list price (a model ccusage has no price for shows as missingPricing there). Days are
-local-time days.
+A turn the gateway billed carries that cost; a turn the shim priced itself carries
+usage.estimated_cost, a models.dev list price without context tiers, and is marked
+costSource "estimate"; ccusage prices every other turn at its list price (a model
+ccusage has no price for shows as missingPricing there). Days are local-time days.
 Omit --since for a complete historical export: each run is a snapshot of its range, so an
 owned daily file no receipt supports any more is removed, while earlier days and other
 files stay; the receipts themselves are never touched. No transcript or credential is read.
@@ -72,9 +73,12 @@ def convert(row):
     cost = usage.get("cost")
     source = "gateway"
     if cost is None:
-        # The gateway billed nothing for this turn: ccusage prices it from its
-        # own list prices, which is what a key at the provider would be charged.
-        source = "list"
+        # The shim priced this turn itself, at the provider's models.dev list
+        # price (no context tiers): its own key, named as an estimate, never billed.
+        cost = usage.get("estimated_cost")
+        # Neither kind of price: ccusage prices it from its own list prices,
+        # which is what a key at the provider would be charged.
+        source = "estimate" if cost is not None else "list"
     elif type(cost) is int and not finite(cost):
         # An int too large for a float is no billable number: no writer stores one
         # (the shim's bucket filter drops it, #313), so this receipt was damaged
@@ -203,13 +207,17 @@ def export(root, output, since=None):
             pass  # another run removed it first: the wanted state is already there
     # ccusage refuses a config dir without projects/, even for an empty range.
     projects.mkdir(parents=True, exist_ok=True, mode=0o700)
-    # mode auto: a billed cost is used as is, every other turn is priced by ccusage.
+    # mode auto: a billed or estimated cost is used as is, every other turn is priced
+    # by ccusage.
     config = {"defaults": {"mode": "auto", "breakdown": True}}
     atomic_write(output / "ccusage.json", json.dumps(config, indent=2) + "\n")
     rows = [r for records in days.values() for r in records]
     return {"rows": len(seen), "days": len({d for _, d in days}), "unpriced": unpriced,
-            "usd": sum(r.get("costUSD", 0) for r in rows),
-            "gateway_rows": sum(r["ccmorph"]["costSource"] == "gateway" for r in rows)}
+            # usd is what a gateway itself billed; an estimate is its own total.
+            "usd": sum(r.get("costUSD", 0) for r in rows if r["ccmorph"]["costSource"] == "gateway"),
+            "estimated_usd": sum(r.get("costUSD", 0) for r in rows if r["ccmorph"]["costSource"] == "estimate"),
+            "gateway_rows": sum(r["ccmorph"]["costSource"] == "gateway" for r in rows),
+            "estimated_rows": sum(r["ccmorph"]["costSource"] == "estimate" for r in rows)}
 
 
 def main():

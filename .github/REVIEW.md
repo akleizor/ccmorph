@@ -21,6 +21,7 @@ credential, or losing the user's choice.
 - **A loopback hop or catalogue read with no bound** — ambient proxy, cross-origin redirect, no deadline, unbounded body — `example: bcd9d26 fix(adapter,shim): loopback hops bypass ambient http_proxy`; also `b1dc252 fix(shim): end catalogue reads at their deadline`.
 - **A runtime floor or upstream CLI contract assumed** — a Python 3.9+ API on the 3.8 floor, a flag Claude Code does not accept — `example: e14eecb fix: drop 3.9-only str.removeprefix/removesuffix from shipped helpers`; also `d50fe3c revert(rc): remote-control rejects --effort, so effort= took every bridge down`.
 - **A test that cannot fail** — inherits the suite's env, scratch home gone, asserts nothing ran — `example: 438e66f test(launch): make the fork_forward stderr test able to fail`.
+- **A new writer reusing a field whose contract says otherwise** — the writer's own section is updated, but the field's other contract (the section its readers obey) is not, so the two disagree and readers mislabel the new values — `example: e84e42d feat(shim): price receipts for upstreams that bill outside the response (#34)`.
 - **A path check that forgets a link can sit on a parent directory** — `-e`/`-ef` are true through a carried sidecar dir while the path itself is not a link, so a removal mistakes its own files for native collisions — `example: 93f3db8 fix(profiles): a carried sidecar dir no longer blocks rm`.
 
 ## Never blocks

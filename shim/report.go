@@ -83,6 +83,7 @@ func report(days float64) {
 	}
 	since := now.Add(-time.Duration(days * 24 * float64(time.Hour)))
 	total, unknown := 0.0, 0
+	estimatedTotal, estimatedRows := 0.0, 0
 	byModel := map[string]float64{}
 	type order struct {
 		attempt int
@@ -137,6 +138,18 @@ func report(days float64) {
 				cost = &f
 			}
 		}
+		// The shim's own models.dev list price, when the upstream billed none: a
+		// separate number under a separate key, never billed spend.
+		var estimate *float64
+		if cost == nil {
+			if ms, _ := Object(d.b, us.Start); ms != nil {
+				if sp, ok := lastMember(ms, "estimated_cost"); ok {
+					if f, fin := finiteNumber(d.b[sp.Start:sp.End]); fin && f >= 0 && f < costLimit {
+						estimate = &f
+					}
+				}
+			}
+		}
 		if t, ok := d.str("task"); ok && taskRE.MatchString(t) {
 			// Whole-task accounting is independent of the spend window. Equal
 			// attempts are ordered by response time, never response-hash filenames.
@@ -154,6 +167,11 @@ func report(days float64) {
 			continue
 		}
 		if cost == nil {
+			if estimate != nil {
+				estimatedTotal += *estimate
+				estimatedRows++
+				continue
+			}
 			unknown++
 			continue
 		}
@@ -205,6 +223,7 @@ func report(days float64) {
 	fmt.Printf("ccmorph routing report, last %s day(s)\n", fmtG(days))
 	fmt.Printf("total spend $%.2f\n", total)
 	fmt.Printf("unknown spend %d rows (no cost reported, not estimated)\n", unknown)
+	fmt.Printf("estimated spend $%.2f over %d rows (models.dev list price, not billed)\n", estimatedTotal, estimatedRows)
 	fmt.Println("spend by served model")
 	models := make([]string, 0, len(byModel))
 	for m := range byModel {

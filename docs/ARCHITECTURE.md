@@ -693,14 +693,20 @@ unexpected-EOF replay, so `0` when it re-sent nothing **[test]**.
 `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, the nested
 `cache_creation` split, and the gateway's own billed `cost` when it reports one as a
 number `>= 0` below the shim's `COST_LIMIT` (the largest amount a float still holds to
-the cent, `2 ** 53 / 100`). When the upstream bills outside the response (a provider reached directly, such as
-DeepSeek's own API) the shim computes `cost` instead, in the same US dollars: the four token
+the cent, `2 ** 53 / 100`). `cost` is that billed amount and nothing else: no conversion
+and no list price ever enters it. When the upstream bills outside the response (a provider reached directly, such as
+DeepSeek's own API) the shim writes its computed amount as `estimated_cost` instead, in the
+same US dollars: the four token
 classes times the per-million price models.dev lists for the served model under the provider
 whose `api` host is the route's upstream host (a class with no listed price is charged at the
-input price; context tiers are not applied). An upstream models.dev does not know gets no cost.
+input price; context tiers are not applied, so `estimated_cost` is a list price and an
+under-estimate on a prompt past a tier). An upstream models.dev does not know gets no
+`estimated_cost`. The shim never writes `estimated_cost` from an upstream's response and
+never writes `cost` itself, so a reader that sums billed spend never adds an estimate.
 The host's slice of `api.json` is cached in `prices-<host>.json` beside the receipts and
 refreshed after a day. A billed cost is never replaced, and rows written before this existed
-are not recomputed. A string (`service_tier`), an unknown key or
+are not recomputed; rows written by builds that carried #34 before `estimated_cost` existed
+hold that computed amount in `cost`, and nothing marks them as estimates. A string (`service_tier`), an unknown key or
 a bool never enters the file, and neither does a prompt, a header, a session
 identifier or a credential **[test]**. `route_id` is a domain-separated digest
 of the profile and the adapter's route identity; that identity is itself a
@@ -810,7 +816,10 @@ Both hold the same fields: the four token buckets, `rows` (complete rows), `pric
 `unpriced`, `incomplete` and `cost`; a group adds `profile` and `model`.
 
 `cost` sums the gateway's own billed amounts and nothing else: US dollars, the unit the
-shim stores, never a conversion or a list price. A complete row whose
+shim stores, never a conversion or a list price. A receipt's `usage.estimated_cost` is the
+shim's own models.dev list price and never enters `cost`: a row carrying only an estimate
+counts `unpriced` here, and reading the estimate is a separate question for a separate
+reader. A complete row whose
 `usage.cost` is missing, null, non-finite, negative or at or above the shim's `COST_LIMIT`
 is counted `unpriced` and adds no cost at all — never a zero and never a list price
 **[test]** — and a group or day with no priced row has `"cost": null`, so a monitor shows
