@@ -864,7 +864,25 @@ def shim_user_agent(shim_path: str, shim_env) -> str:
     return done.stdout.strip() if done.returncode == 0 else ""
 
 
-def render(rows, key, port, upstream, authdir, proxy="", shim_path="", shim_env=None) -> str:
+def cloak_never_for_banner(out: str) -> bool:
+    """True for a translator older than 8.0.34, which cloaks by default.
+
+    An unparseable version counts as new: omitting the block is the safe shape."""
+    m = re.search(r"CLIProxyAPI Version: v?(\d+)\.(\d+)\.(\d+)", out)
+    return bool(m) and tuple(map(int, m.groups())) < (8, 0, 34)
+
+
+def cloak_never_for(path: str) -> bool:
+    # -h prints the version banner and exits 0 on 7.2.x and 8.0.x alike.
+    try:
+        done = subprocess.run([path, "-h"], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return cloak_never_for_banner(done.stdout + done.stderr)
+
+
+def render(rows, key, port, upstream, authdir, proxy="", shim_path="", shim_env=None,
+           cloak_never=False) -> str:
     # Belt to inventory()'s braces: a row cached before ids were validated could
     # still carry YAML metacharacters, and one such id breaks the whole config.
     safe = []
@@ -886,6 +904,7 @@ def render(rows, key, port, upstream, authdir, proxy="", shim_path="", shim_env=
     ua = shim_user_agent(shim_path, shim_env) if passthrough else ""
     claude_lines = f'      User-Agent: {q(ua)}\n' if ua else ""
     claude_hdr = f'    headers:\n{claude_lines}' if claude_lines else ""
+    cloak_line = '    cloak:\n      mode: "never"\n' if cloak_never else ""
     chat, noreason = ids("chat", "chat-noreason"), ids("chat-noreason")
     openai_base = api_url(upstream, "/v1")
     caps = {r["model"]: r["cap"] for r in rows if r["cap"]}
@@ -908,8 +927,8 @@ auth-dir: {q(authdir)}
 # Re-send a request the upstream dropped transiently (unexpected EOF, 408, or
 # 5xx) before Claude Code ever sees the error. Only pre-stream failures can be
 # retried -- once the SSE stream has emitted bytes a mid-stream drop is already
-# downstream -- so this trims visible error noise, not every failure. 429 is not
-# in cliproxyapi's retry set and still falls through to Claude Code's own retry.
+# downstream -- so this trims visible error noise, not every failure. 403 and 429
+# are in cliproxyapi's retry set too (8.0.45), resent at once without backoff.
 request-retry: 3
 
 # The Responses provider injects an image_generation tool by default, which some
@@ -937,17 +956,18 @@ api-keys:
 # rebuild-mid-system-message: Claude Code sends mid-conversation system content as
 # a messages entry with role "system", which vLLM-backed upstreams reject with a
 # literal_error on the role.
-# cloak never: the client already is Claude Code; cloaking rewrites its billing
-# header to cliproxyapi's frozen cc_version, which Anthropic rejects for newer
-# models, and injects its own system reminder and session ids.
+# Cloaking: before 8.0.34 a client whose User-Agent is not claude-cli is cloaked by
+# default (billing header rewritten to a frozen cc_version, extra system reminder,
+# fake session ids), so "never" is written there. From 8.0.34 "never" instead
+# strips Claude Code's billing header, identity block and metadata.user_id and
+# rewrites the User-Agent, while no block forwards the caller verbatim, so it is
+# omitted.
 claude-api-key:
   - api-key: {q(key)}
     base-url: {q(upstream)}
     disable-cooling: true
     rebuild-mid-system-message: true
-    cloak:
-      mode: "never"
-{claude_hdr}    models:
+{cloak_line}{claude_hdr}    models:
 {block(passthrough)}''')
 
     if responses:
@@ -1422,7 +1442,8 @@ def main() -> int:
             rows = classify(upstream, key, cache_state / f"{cache_key}.json", required_model, True)
             previous = conf.read_bytes()
             rendered = render(rows, key, args.ensure_port, upstream, str(conf.parent / "auth"),
-                              upstream_proxy, shim_binary, dict(os.environ, **shim_extras))
+                              upstream_proxy, shim_binary, dict(os.environ, **shim_extras),
+                              cloak_never_for(TRANSLATOR))
             def replace_config(data):
                 fd, tmp = tempfile.mkstemp(dir=conf.parent, prefix=".route-")
                 try:
@@ -1506,7 +1527,8 @@ def main() -> int:
 
     os.umask(0o077)
     conf.write_text(render(rows, key, port, upstream, str(authdir), upstream_proxy,
-                           shim_binary, dict(os.environ, **shim_extras)),
+                           shim_binary, dict(os.environ, **shim_extras),
+                           cloak_never_for(TRANSLATOR)),
                     encoding="utf-8")
     conf.chmod(0o600)
 

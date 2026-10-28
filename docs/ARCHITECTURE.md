@@ -7,8 +7,9 @@ Evidence tags used below: **[wire]** observed in a captured request or response,
 **[src]** read from vendor source, **[test]** pinned by this repo's suite.
 Anything unmarked is a design statement, not a probe.
 
-`[src]` citations are against **cliproxyapi 7.2.110**, the installed version
-(upgraded from 7.2.70 on 2026-08-02).
+Most `[src]` citations are against **cliproxyapi 7.2.110** (upgraded from 7.2.70 on
+2026-08-02). The installed version is now **8.0.45**; the translator-config workarounds
+were re-verified on it (table in section 4), the rest were not.
 7.2.113 differs inside the same effort pipeline — `internal/thinking/validate.go`
 adds clamping of the generated fallback level and `apply.go` adds cross-format
 `xhigh`/`max` remapping — so an upgrade can change effort behaviour even though
@@ -629,7 +630,8 @@ and a missing or non-executable file fails the launch.
 
 The adapter passes `--retry-transport` to the shim it starts in `front_directly` and never
 to the translator path's shim: with no translator underneath, nobody else retries, while
-behind cliproxyapi a shim retry would multiply its own `request-retry`. On a 429, 5xx or
+behind cliproxyapi a shim retry would multiply its own `request-retry` (which on 8.0.45
+also retries 403 and 429). On a 429, 5xx or
 refused connection — and only before the client has any byte — the shim resends the same
 body to the same target twice, waiting a random interval each time (full jitter, up to
 0.5 s then 1 s; `CCMORPH_RETRY_BASE` sets the base and the tests set it to 0). A stall is
@@ -914,6 +916,22 @@ absorb the difference instead:
 injects an image_generation tool and the upstream rejects the call with
 `imagegen deployment must be provided through header
 x-ms-oai-image-generation-deployment` **[wire]**.
+
+### Translator config workarounds, verified on cliproxyapi 8.0.45
+
+Each workaround `adapter/render.go` writes was re-checked against 8.0.45 source and
+a black-box run (real binary, loopback fake upstream) **[src][wire]**:
+
+| Setting | 8.0.45 source | Verdict |
+|---|---|---|
+| `request-retry: 3` | `sdk/cliproxy/auth/conductor_selection.go` `isCredentialRetryRoundStatus`: 403, 408, 429, 500, 502, 503, 504 plus transport EOF | keep. **429 and 403 are now retried too**, immediately and without backoff; one 502, 429 or EOF then 200 reached the upstream twice, `request-retry: 0` did not retry |
+| `disable-image-generation: "chat"` | `internal/config/disable_image_generation_mode.go` | keep. Without it a Responses call carries `tools:[{"type":"image_generation"}]` upstream |
+| `disable-cooling: true` | `internal/watcher/synthesizer/config.go` (`disable_cooling` metadata) | keep. Without it the call after one 500 returns 503 `auth_unavailable` with no upstream hit |
+| `rebuild-mid-system-message: true` | `internal/runtime/executor/claude_signing.go` `rebuildMidSystemMessageEnabled` | keep. Off: a `role:"system"` message reaches the upstream; on: it is folded into `system` |
+| `cloak: mode never` | `internal/runtime/executor/claude_executor_cloaking.go` `resolveClaudeWirePolicy` (`Uncloak`); 7.2.110 `helps/cloak_utils.go:41` `ShouldCloak` | **version-gated**. On 7.2.110 no block means `auto`, which cloaks any client whose User-Agent is not `claude-cli` (frozen cc_version billing header), so `never` is written for translators < 8.0.34. Since 8.0.34 `never` strips Claude Code's billing header, identity system block, `metadata.user_id` and `diagnostics` and rewrites the User-Agent, while no block forwards the caller verbatim, so it is omitted. The version comes from `cliproxyapi -h` (banner, exit 0); an unparseable version counts as new |
+| `thinking.block_binding` filter | `claude_executor_request.go` `applyClaudePreservedThinkingBinding` runs before `ApplyPayloadConfigWithTrackedPaths` (`claude_executor_execute.go:246-249`) | keep. Sonnet 5.5 with a signed thinking replay: field and `thinking-binding-controls-2026-08-01` beta header present without the filter, absent with it |
+| never put `system` in `payload.override` | payload override | keep. `override: system` replaces the whole field |
+| `display-name` on `oauth-model-alias` | `internal/config/config_types.go` `OAuthModelAlias.DisplayName` | keep. Not written by the adapter; only the root-owned `:<translator-port>` config uses it |
 
 ## 5. Context window
 

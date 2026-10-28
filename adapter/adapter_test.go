@@ -26,6 +26,7 @@ import (
 // never spawn it from a test.
 func TestMain(m *testing.M) {
 	tether = func(string, *proc, string) {}
+	cloakNeverFn = func() bool { return false } // never run the machine's real translator
 	os.Exit(m.Run())
 }
 
@@ -145,30 +146,68 @@ func TestDetectionUsesAnthropicClientsPath(t *testing.T) { // test_detection_use
 	if dialect != "chat" || calls[0] != base+"/v1/messages" {
 		t.Fatalf("dialect %q, first call %q", dialect, calls[0])
 	}
-	cfg := render([]Row{row("anthropic")}, "test-key", 1234, base, "/unused", "", "", nil)
+	cfg := render([]Row{row("anthropic")}, "test-key", 1234, base, "/unused", "", "", nil, false)
 	if !strings.Contains(cfg, `base-url: "`+base+`"`) {
 		t.Fatal("passthrough base-url is not the bare upstream")
 	}
 }
 
 func TestRenderUpstreamProxyOnlyWhenSet(t *testing.T) { // test_upstream_proxy_is_rendered_only_when_set
-	cfg := render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "http://127.0.0.1:18480", "", nil)
+	cfg := render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "http://127.0.0.1:18480", "", nil, false)
 	if !strings.Contains(cfg, "\nproxy-url: \"http://127.0.0.1:18480\"\n") {
 		t.Fatal("proxy-url missing")
 	}
-	if strings.Contains(render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "", "", nil), "proxy-url") {
+	if strings.Contains(render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "", "", nil, false), "proxy-url") {
 		t.Fatal("proxy-url rendered without a proxy")
 	}
 }
 
 func TestRenderFiltersBlockBinding(t *testing.T) { // test_passthrough_filters_translator_block_binding
-	payload := strings.SplitN(render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "", "", nil), "\npayload:\n", 2)[1]
+	payload := strings.SplitN(render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "", "", nil, false), "\npayload:\n", 2)[1]
 	if !strings.Contains(payload, "  filter:\n") ||
 		!strings.Contains(payload, "protocol: \"claude\"\n      params:\n        - \"thinking.block_binding\"\n") {
 		t.Fatalf("filter missing:\n%s", payload)
 	}
-	if strings.Contains(render([]Row{row("chat")}, "k", 1234, "https://gw", "/unused", "", "", nil), "payload:") {
+	if strings.Contains(render([]Row{row("chat")}, "k", 1234, "https://gw", "/unused", "", "", nil, false), "payload:") {
 		t.Fatal("chat-only config carries a payload block")
+	}
+}
+
+func TestRenderCloakNeverOnlyForOldTranslators(t *testing.T) {
+	const never = "    cloak:\n      mode: \"never\"\n"
+	if !strings.Contains(render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "", "", nil, true), never) {
+		t.Fatal("old translator: cloak never missing")
+	}
+	if strings.Contains(render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "", "", nil, false), "cloak:") {
+		t.Fatal("new translator: cloak rendered")
+	}
+}
+
+func TestCloakNeverForBanner(t *testing.T) {
+	for banner, want := range map[string]bool{
+		"CLIProxyAPI Version: 7.2.110, Commit: x, BuiltAt: y\n": true,
+		"CLIProxyAPI Version: 8.0.33, Commit: x, BuiltAt: y\n":  true,
+		"CLIProxyAPI Version: 8.0.34, Commit: x, BuiltAt: y\n":  false,
+		"CLIProxyAPI Version: 8.0.45, Commit: Homebrew\nUsage":  false,
+		"CLIProxyAPI Version: v8.1.0, Commit: x\n":              false,
+		"CLIProxyAPI Version: 9.0.0, Commit: x\n":               false,
+		"CLIProxyAPI Version: dev, Commit: x\n":                 false,
+		"":                                                      false,
+	} {
+		if got := cloakNeverForBanner(banner); got != want {
+			t.Errorf("%q: got %v want %v", banner, got, want)
+		}
+	}
+}
+
+func TestCloakNeverForRunsTheBinary(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "cliproxyapi")
+	writeFile(t, bin, "#!/bin/sh\n[ \"$1\" = -h ] || exit 2\necho 'CLIProxyAPI Version: 7.2.110, Commit: x'\n", 0o755)
+	if !cloakNeverFor(bin) {
+		t.Fatal("7.2.110 binary not detected as old")
+	}
+	if cloakNeverFor(filepath.Join(t.TempDir(), "missing")) {
+		t.Fatal("missing binary must count as new")
 	}
 }
 
@@ -177,9 +216,9 @@ func TestRenderUserAgentFromTheShimItRuns(t *testing.T) { // test_passthrough_us
 	writeFile(t, shimPath, "#!/bin/sh\n[ \"$1\" = translator-user-agent ] || exit 2\n"+
 		"[ -n \"$CCMORPH_USER_AGENT\" ] && echo \"$CCMORPH_USER_AGENT 9.9.9\"\nexit 0\n", 0o755)
 	env := append(os.Environ(), "CCMORPH_USER_AGENT=hook-ua/")
-	cfg := render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "", shimPath, env)
+	cfg := render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "", shimPath, env, false)
 	entry := strings.SplitN(cfg, "claude-api-key:", 2)[1]
-	if !strings.Contains(entry, `User-Agent: "hook-ua/ 9.9.9"`) || !strings.Contains(entry, "cloak:\n      mode: \"never\"\n") {
+	if !strings.Contains(entry, `User-Agent: "hook-ua/ 9.9.9"`) || strings.Contains(entry, "cloak:") { // cloak "never" strips Claude Code's identity on 8.0.34+
 		t.Fatalf("entry:\n%s", entry)
 	}
 	var unset []string
@@ -188,10 +227,10 @@ func TestRenderUserAgentFromTheShimItRuns(t *testing.T) { // test_passthrough_us
 			unset = append(unset, e)
 		}
 	}
-	if strings.Contains(render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "", shimPath, unset), "headers:") {
+	if strings.Contains(render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "", shimPath, unset, false), "headers:") {
 		t.Fatal("headers rendered without a profile User-Agent")
 	}
-	if strings.Contains(render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "", "", nil), "headers:") {
+	if strings.Contains(render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "", "", nil, false), "headers:") {
 		t.Fatal("headers rendered without a shim")
 	}
 }

@@ -816,7 +816,7 @@ class AdapterTest(unittest.TestCase):
         # translator+shim pairs were found reparented to launchd on 2026-10-02.
         marker = self.home / "translator.pid"
         stub = self.home / "stub-translator"
-        stub.write_text(f"#!/bin/sh\necho $$ > {marker}\nexec sleep 300\n")
+        stub.write_text(f"#!/bin/sh\n[ \"$1\" = -h ] && exit 0\necho $$ > {marker}\nexec sleep 300\n")
         stub.chmod(0o755)
         self._install_fake_translator(stub)
         tmp = self.home / "tmp"

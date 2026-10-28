@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -88,7 +89,7 @@ func block(names []string) string {
 	return b.String()
 }
 
-func render(rows []Row, key string, port int, upstream, authdir, proxy, shimPath string, shimEnv []string) string {
+func render(rows []Row, key string, port int, upstream, authdir, proxy, shimPath string, shimEnv []string, cloakNever bool) string {
 	// Belt to inventory's braces: a row cached before ids were validated could
 	// still carry YAML metacharacters, and one such id breaks the whole config.
 	var safe []Row
@@ -116,6 +117,10 @@ func render(rows []Row, key string, port int, upstream, authdir, proxy, shimPath
 	ua := ""
 	if len(passthrough) > 0 {
 		ua = shimUserAgent(shimPath, shimEnv)
+	}
+	cloakLine := ""
+	if cloakNever {
+		cloakLine = "    cloak:\n      mode: \"never\"\n"
 	}
 	claudeHdr := ""
 	if ua != "" {
@@ -155,8 +160,8 @@ auth-dir: %s
 # Re-send a request the upstream dropped transiently (unexpected EOF, 408, or
 # 5xx) before Claude Code ever sees the error. Only pre-stream failures can be
 # retried -- once the SSE stream has emitted bytes a mid-stream drop is already
-# downstream -- so this trims visible error noise, not every failure. 429 is not
-# in cliproxyapi's retry set and still falls through to Claude Code's own retry.
+# downstream -- so this trims visible error noise, not every failure. 403 and 429
+# are in cliproxyapi's retry set too (8.0.45), resent at once without backoff.
 request-retry: 3
 
 # The Responses provider injects an image_generation tool by default, which some
@@ -184,18 +189,19 @@ api-keys:
 # rebuild-mid-system-message: Claude Code sends mid-conversation system content as
 # a messages entry with role "system", which vLLM-backed upstreams reject with a
 # literal_error on the role.
-# cloak never: the client already is Claude Code; cloaking rewrites its billing
-# header to cliproxyapi's frozen cc_version, which Anthropic rejects for newer
-# models, and injects its own system reminder and session ids.
+# Cloaking: before 8.0.34 a client whose User-Agent is not claude-cli is cloaked by
+# default (billing header rewritten to a frozen cc_version, extra system reminder,
+# fake session ids), so "never" is written there. From 8.0.34 "never" instead
+# strips Claude Code's billing header, identity block and metadata.user_id and
+# rewrites the User-Agent, while no block forwards the caller verbatim, so it is
+# omitted.
 claude-api-key:
   - api-key: %s
     base-url: %s
     disable-cooling: true
     rebuild-mid-system-message: true
-    cloak:
-      mode: "never"
-%s    models:
-%s`, q(key), q(upstream), claudeHdr, block(passthrough))
+%s%s    models:
+%s`, q(key), q(upstream), cloakLine, claudeHdr, block(passthrough))
 	}
 
 	if len(responses) > 0 {
@@ -293,4 +299,28 @@ openai-compatibility:
 %s`, ccMaxTokens, entries.String())
 	}
 	return out.String()
+}
+
+// cloakNeverFor reports whether the translator at path is older than 8.0.34 and
+// so needs `cloak: never`. -h prints the version banner and exits 0 on 7.2.x and
+// 8.0.x alike. A missing or unparseable version counts as new: omitting the block
+// is the safe shape there.
+func cloakNeverFor(path string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, path, "-h").CombinedOutput()
+	return cloakNeverForBanner(string(out))
+}
+
+var bannerVersion = regexp.MustCompile(`CLIProxyAPI Version: v?(\d+)\.(\d+)\.(\d+)`)
+
+func cloakNeverForBanner(out string) bool {
+	m := bannerVersion.FindStringSubmatch(out)
+	if m == nil {
+		return false
+	}
+	maj, _ := strconv.Atoi(m[1])
+	min, _ := strconv.Atoi(m[2])
+	pat, _ := strconv.Atoi(m[3])
+	return maj < 8 || (maj == 8 && (min == 0 && pat < 34))
 }
