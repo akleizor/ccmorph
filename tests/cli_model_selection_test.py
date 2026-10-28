@@ -24,7 +24,7 @@ import tempfile
 import unittest
 
 import fake_adapter
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, HELPERS_IMPL, helper_cmd
 
 ROOT = Path(__file__).resolve().parents[1]
 LIB_FILES = ('libexec/model-window', 'libexec/settings-compose', 'lib/ccmorph.sh',
@@ -85,7 +85,8 @@ class ModelSelection(unittest.TestCase):
             'context_window.pinned-x=424242\n')
 
     def cli(self, *args, tool='bin/ccmorph', stdin=subprocess.DEVNULL):
-        return subprocess.run([str(ROOT / tool), *args], env=self.env, stdin=stdin,
+        cmd = helper_cmd('model-window') if tool == 'libexec/model-window' else [str(ROOT / tool)]
+        return subprocess.run([*cmd, *args], env=self.env, stdin=stdin,
                               capture_output=True, text=True, timeout=HANG_TIMEOUT)
 
     def launch(self, *args):

@@ -421,7 +421,9 @@ func pathEq(a, b []string) bool {
 	return true
 }
 
-func hasPrefix(p, prefix []string) bool { return len(p) >= len(prefix) && pathEq(p[:len(prefix)], prefix) }
+func hasPrefix(p, prefix []string) bool {
+	return len(p) >= len(prefix) && pathEq(p[:len(prefix)], prefix)
+}
 
 // merge is a deep merge with special handling for hook and permission lists:
 // lists under .hooks.* append, permissions.deny combines without duplicates,

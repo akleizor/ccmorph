@@ -225,7 +225,7 @@ func (p *parser) fail(msg string, at int) error {
 	line := strings.Count(p.s[:at], "\n") + 1
 	col := runes + 1
 	if nl := strings.LastIndex(p.s[:at], "\n"); nl >= 0 {
-		col = utf8.RuneCountInString(p.s[nl+1 : at]) + 1
+		col = utf8.RuneCountInString(p.s[nl+1:at]) + 1
 	}
 	p.err = &SyntaxError{fmt.Sprintf("%s: line %d column %d (char %d)", msg, line, col, runes)}
 	return p.err

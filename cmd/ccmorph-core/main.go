@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/akleizor/ccmorph/adapter"
+	"github.com/akleizor/ccmorph/modelwindow"
 	"github.com/akleizor/ccmorph/settingscompose"
 )
 
@@ -23,6 +24,8 @@ func main() {
 		adapter.Tether(os.Args[2:])
 	case "settings-compose":
 		os.Exit(settingscompose.Main(os.Args[2:], os.Stderr))
+	case "model-window":
+		os.Exit(modelwindow.Main(os.Args[2:], os.Stdout, os.Stderr))
 	default:
 		fmt.Fprintf(os.Stderr, "ccmorph-core: unknown command %q\n", os.Args[1])
 		os.Exit(2)

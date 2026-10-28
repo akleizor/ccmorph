@@ -46,12 +46,12 @@ func TestSortedDefaultSeparatorsMatchJsonDumps(t *testing.T) {
 
 func TestParseErrorsUsePythonWording(t *testing.T) {
 	cases := map[string]string{
-		``:           "Expecting value: line 1 column 1 (char 0)",
-		`{`:          "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)",
-		`{"a" 1}`:    "Expecting ':' delimiter: line 1 column 6 (char 5)",
-		`[1 2]`:      "Expecting ',' delimiter: line 1 column 4 (char 3)",
-		"{}\n x":     "Extra data: line 2 column 2 (char 4)",
-		`"abc`:       "Unterminated string starting at: line 1 column 1 (char 0)",
+		``:          "Expecting value: line 1 column 1 (char 0)",
+		`{`:         "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)",
+		`{"a" 1}`:   "Expecting ':' delimiter: line 1 column 6 (char 5)",
+		`[1 2]`:     "Expecting ',' delimiter: line 1 column 4 (char 3)",
+		"{}\n x":    "Extra data: line 2 column 2 (char 4)",
+		`"abc`:      "Unterminated string starting at: line 1 column 1 (char 0)",
 		"\"a\x01\"": "Invalid control character at: line 1 column 3 (char 2)",
 	}
 	for in, want := range cases {
