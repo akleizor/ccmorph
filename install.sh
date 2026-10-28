@@ -299,11 +299,13 @@ chmod +x "${EXECUTABLES[@]/#/$CONFIG_DIR/}"
 _shim_os="${$(uname -s):l}"
 _shim_arch="$(uname -m)"
 case "$_shim_arch" in x86_64) _shim_arch=amd64 ;; aarch64) _shim_arch=arm64 ;; esac
+_core_src=""   # the resolved ccmorph-core the copy below came from
 for _name in gateway-shim ccmorph-core; do
   _shim=""
   for _f in "$SRC/libexec/$_name-$_shim_os-$_shim_arch" "$SRC/libexec/$_name"; do
     [[ -f "$_f" && -x "$_f" ]] && { _shim="$_f"; break }
   done
+  [[ "$_name" == ccmorph-core ]] && _core_src="$_shim"
   if [[ -z "$_shim" ]]; then
     c_r "No $_name binary for $_shim_os-$_shim_arch beside this installer."
     c_dim "  From a checkout: run 'make shim' (needs Go), then re-run ./install.sh."
@@ -321,7 +323,10 @@ chmod +x "$BIN_DIR/ccmorph"
 CCMORPH_STATE_DIR="$CONFIG_DIR" CCMORPH_LIB_DIR="$CONFIG_DIR/lib" zsh -fc \
   'source "$CCMORPH_LIB_DIR/ccmorph.sh"; _ccm_secure_dirs' || exit 1
 # Consolidate legacy context state only after the owning tool is installed.
-CCMORPH_STATE_DIR="$CONFIG_DIR" "$CONFIG_DIR/libexec/ccmorph-core" model-window --migrate
+# The migration runs the SOURCE binary, not the copy just placed — same bytes,
+# but macOS validates a freshly copied binary's signature on its first exec
+# (a sub-second stall per file), so the install defers that to the first launch.
+CCMORPH_STATE_DIR="$CONFIG_DIR" "$_core_src" model-window --migrate
 # The retired wrapper: `ccrelay` is now `ccmorph hop`. Removed rather than left
 # behind, because the old script sources a library that no longer defines it and
 # would answer with a load failure instead of saying what replaced it.
