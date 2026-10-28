@@ -33,7 +33,7 @@ it reports those for the user to remove.
 **Platforms:** macOS and Linux. Windows shells (Git Bash, MSYS, Cygwin) are
 refused with a pointer to WSL; install inside a WSL distribution instead.
 
-**Required:** `zsh`, `python3` 3.8 or newer, and the `claude` CLI — the installer
+**Required:** `zsh` and the `claude` CLI (`python3` only for the remote-control add-on) — the installer
 refuses without them. It never installs them: they need root or belong to another
 vendor. It names the command for the package manager it finds (the first of
 `brew`, `apt-get`, `dnf`, `apk`, `pacman`, `zypper`) and stops. Claude Code gets
@@ -90,7 +90,7 @@ ccmorph doctor
 ```
 
 With no profiles yet, `doctor` reports the machine instead of a profile:
-the version, `zsh`, `python3`, `claude`, `fzf`, `cliproxyapi`, and whether
+the version, `zsh`, `claude`, `fzf`, `cliproxyapi`, and whether
 `ccmorph` is on your `PATH`. It changes nothing, and fails only when a required
 tool is missing or too old. After you add a profile, `ccmorph doctor <profile>`
 checks that profile.
