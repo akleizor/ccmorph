@@ -98,6 +98,9 @@ func hasSpace(s string) bool {
 	return false
 }
 
+// replaceFile is the commit step of a save; a test seam for a failing replacement.
+var replaceFile = os.Rename
+
 func configStore(args []string, _ io.Reader, out, errw io.Writer) int {
 	if len(args) < 5 {
 		fmt.Fprintln(errw, "usage: util config-store <op> <conf> <settings> <key> <shared> [mapping keys...]")
@@ -433,7 +436,7 @@ func configStoreRun(op, confName, settingsName, key, sharedName string, mappingK
 			if !sameBytes(content(p.path), p.before) {
 				pycompat.RaiseValue("%s changed while saving", filepath.Base(p.path))
 			}
-			if err := os.Rename(p.temp, p.path); err != nil {
+			if err := replaceFile(p.temp, p.path); err != nil {
 				pycompat.RaiseOS(err)
 			}
 			applied = append(applied, p.target)

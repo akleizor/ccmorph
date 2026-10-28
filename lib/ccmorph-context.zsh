@@ -339,8 +339,8 @@ _ccm_hazard_set() {
   _ccm_trigger_env pct _maxout _no1m
   # Whether the launch env carries the percentage at all -- the same presence test the
   # launch used to decide the injection (#428). Empty means "not carried", the shape
-  # _ccm_trigger_env's own outputs have: a literal 0 would reach the python below as a
-  # truthy STRING and silence the fallback it is there to allow. The python reads the
+  # _ccm_trigger_env's own outputs have: a literal 0 would reach the core below as a
+  # truthy STRING and silence the fallback it is there to allow. The core reads the
   # layers when this is empty, because that is then the engine's own value.
   local pct_in_env=""
   (( ${penv[(I)CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=*]} )) && pct_in_env=1
@@ -529,8 +529,8 @@ _ccm_project_settings() {
 # $1 profile, then materialize options, `--`, and the launch environment -- the same
 # arguments _ccm_project_settings takes, minus the saved defaults it would have to be
 # handed. Reading the conf and generating the settings are two halves of one job on
-# one profile, so a launch pays for one Python start instead of two: the store reads
-# the conf and then runs settings-compose inside its own interpreter.
+# one profile, so a launch pays for one process instead of two: the store reads
+# the conf and then runs settings-compose in the same process.
 _ccm_prepare_and_project() {
   local profile="$1"
   shift

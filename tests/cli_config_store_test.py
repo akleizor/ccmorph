@@ -489,18 +489,9 @@ class ConfigurationSaveTest(unittest.TestCase):
             self.skipTest('directory permissions are not enforced for this user')
         return self.env
 
-    def test_failed_conf_replacement_preserves_both_files(self):
-        # Configure writes only the conf: a failed replacement must leave both
-        # files untouched and no staging file in either directory.
-        before = (conf_fields(self.conf), self.settings.read_bytes())
-        env = self.fail_replace_env(self.conf)
-        result = self.run_cli('config', 'demo',
-                              input='https://new.invalid\nn\nnew\nhigh\ny\n', env=env)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('Permission denied', result.stderr)
-        self.assertEqual((conf_fields(self.conf), self.settings.read_bytes()), before)
-        self.assertEqual(list(self.state.glob('.configure.*')), [])
-        self.assertEqual(list(self.settings.parent.glob('.configure.*')), [])
+    # A conf replacement that fails after staging (both files untouched, no staging
+    # file left, and a settings failure rolls the conf back) needs an injected rename:
+    # util/store_test.go's TestConfigStore*.
 
     def test_failed_launch_preparation_restores_seed_and_keeps_native_settings(self):
         before = (conf_fields(self.conf), self.settings.read_bytes())

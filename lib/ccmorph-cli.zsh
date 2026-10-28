@@ -1487,7 +1487,7 @@ ccmorph() {
         local _adapter_cmd
         _adapter_cmd=$(ps -o pid,ppid,command | grep -E "ccmorph-(adapter|core adapter)" | grep -E "^[[:space:]]*[0-9]+[[:space:]]+${_parent_pid}[[:space:]]" | head -1)
         if [[ -n "$_adapter_cmd" ]]; then
-          # Parse profile from adapter command line: "ccmorph-core adapter <profile> ..." (or the Python ccmorph-adapter)
+          # Parse profile from adapter command line: "ccmorph-core adapter <profile> ..."
           _hop_profile=$(echo "$_adapter_cmd" | sed -E 's/.*ccmorph-(core )?adapter[[:space:]]+([^[:space:]]+).*/\2/')
           _hop_current=1
         fi

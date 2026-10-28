@@ -140,3 +140,70 @@ func TestMigrateRestoresTheOriginalWhenTheAliasFails(t *testing.T) {
 		t.Fatal("the moved copy must be gone")
 	}
 }
+
+func storeFixture(t *testing.T) (conf, settings string) {
+	dir := t.TempDir()
+	conf = filepath.Join(dir, "demo.conf")
+	settings = filepath.Join(dir, "profiles", "demo", "settings.json")
+	os.MkdirAll(filepath.Dir(settings), 0o700)
+	os.WriteFile(conf, []byte("type=apikey\napi_key=k\nbase_url=https://old.invalid\n"), 0o600)
+	os.WriteFile(settings, []byte(`{"env":{"ANTHROPIC_MODEL":"old"},"other":true}`), 0o600)
+	return
+}
+
+func leftovers(t *testing.T, dirs ...string) {
+	for _, d := range dirs {
+		if m, _ := filepath.Glob(filepath.Join(d, ".configure.*")); len(m) > 0 {
+			t.Fatalf("staging files left in %s: %v", d, m)
+		}
+	}
+}
+
+func TestConfigStoreFailedConfReplacementLeavesBothFilesAlone(t *testing.T) {
+	conf, settings := storeFixture(t)
+	beforeConf, _ := os.ReadFile(conf)
+	beforeSettings, _ := os.ReadFile(settings)
+	old := replaceFile
+	replaceFile = func(string, string) error { return errors.New("simulated replace failure") }
+	defer func() { replaceFile = old }()
+	t.Setenv("_CCM_CONFIG_MODEL", "new")
+	var errw bytes.Buffer
+	if rc := configStore([]string{"set", conf, settings, "", filepath.Join(filepath.Dir(conf), "shared.json")}, nil, &bytes.Buffer{}, &errw); rc != 1 {
+		t.Fatalf("rc=%d", rc)
+	}
+	if !strings.Contains(errw.String(), "simulated replace failure") {
+		t.Fatal(errw.String())
+	}
+	if a, _ := os.ReadFile(conf); string(a) != string(beforeConf) {
+		t.Fatalf("conf changed: %q", a)
+	}
+	if a, _ := os.ReadFile(settings); string(a) != string(beforeSettings) {
+		t.Fatalf("settings changed: %q", a)
+	}
+	leftovers(t, filepath.Dir(conf), filepath.Dir(settings))
+}
+
+func TestConfigStoreRollsTheConfBackWhenTheSettingsReplacementFails(t *testing.T) {
+	conf, settings := storeFixture(t)
+	beforeConf, _ := os.ReadFile(conf)
+	beforeSettings, _ := os.ReadFile(settings)
+	old := replaceFile
+	replaceFile = func(from, to string) error {
+		if to == settings {
+			return errors.New("simulated replace failure")
+		}
+		return os.Rename(from, to)
+	}
+	defer func() { replaceFile = old }()
+	var errw bytes.Buffer
+	if rc := configStore([]string{"prepare-launch", conf, settings, "", filepath.Join(filepath.Dir(conf), "shared.json")}, nil, &bytes.Buffer{}, &errw); rc != 1 {
+		t.Fatalf("rc=%d %s", rc, errw.String())
+	}
+	if a, _ := os.ReadFile(conf); string(a) != string(beforeConf) {
+		t.Fatalf("the seed must be rolled back: %q", a)
+	}
+	if a, _ := os.ReadFile(settings); string(a) != string(beforeSettings) {
+		t.Fatalf("native settings changed: %q", a)
+	}
+	leftovers(t, filepath.Dir(conf), filepath.Dir(settings))
+}
