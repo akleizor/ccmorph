@@ -226,6 +226,16 @@ print 'type=sub'                                   > "$cfg/personal.conf"
 print 'export CCMORPH_TEST_LOCAL=1'               > "$cfg/local.sh"
 print 'active-marker'                              > "$cfg/active"
 
+# The pre-Go-port layout: v0.2's installer placed the four Python helpers in
+# libexec/ beside the shim. A session it launched keeps naming
+# libexec/ccmorph-adapter in its route spec for a mid-session /model (the shim
+# execs it for --ensure-config), so an upgrade that deletes that file breaks
+# the switch under the live session (#52).
+for h in ccmorph-adapter model-window settings-compose refresh-model-registry; do
+  print -r -- "#!/usr/bin/env python3\n# v2-marker-$h" > "$cfg/libexec/$h"
+  chmod +x "$cfg/libexec/$h"
+done
+
 # An update must not write into the installed shim's file: overwriting a signed Mach-O
 # in place leaves a stale code-signature cache and macOS kills it on launch (exit 137).
 # A hardlink keeps the old file reachable: it still holds the marker only if the
@@ -237,6 +247,22 @@ run_installer "$d"; rc=$?
   && ok "re-run replaces gateway-shim instead of overwriting it" || fail "re-run overwrote gateway-shim in place"
 rm -f "$cfg/old-shim"
 [[ $rc -eq 0 ]] && ok "re-run exits 0" || { fail "re-run rc=$rc"; cat "$d/out" }
+
+# The adapter a running session names survives the upgrade, still executable
+# and still the old copy (the new code never writes it): deleting it is what
+# turned a live session's /model into a refusal about gateway availability.
+[[ -x "$cfg/libexec/ccmorph-adapter" ]] && grep -qF 'v2-marker-ccmorph-adapter' "$cfg/libexec/ccmorph-adapter" \
+  && ok "upgrade keeps libexec/ccmorph-adapter for sessions that still run it" \
+  || fail "upgrade deleted or replaced libexec/ccmorph-adapter under a live session (#52)"
+# The other three retired helpers are dead weight no running process names:
+# they are not in any route spec and nothing execs them mid-session.
+retired_left=()
+for h in model-window settings-compose refresh-model-registry; do
+  [[ -e "$cfg/libexec/$h" ]] && retired_left+=("$h")
+done
+(( ${#retired_left} == 0 )) \
+  && ok "upgrade still clears the three helpers nothing running names" \
+  || fail "upgrade left retired helpers behind: ${retired_left[*]}"
 
 # Every piece of user state survives byte-for-byte.
 for f in work.conf personal.conf local.sh active; do
