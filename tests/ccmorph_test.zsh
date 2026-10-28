@@ -2909,6 +2909,29 @@ test_gateway_http_error_is_uncertainty_not_model_absence() {
   return $rc
 }
 
+test_gateway_listing_without_a_data_list_is_uncertainty() {
+  local test_home body known rc=0
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  source "$CCMORPH_SOURCE"
+  for body in '{"data":{"alpha-chat":{}}}' '{"data":"alpha-chat"}'; do
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'for a do case "$a" in *http_code*) printf 200; exit 0 ;; esac; done' \
+      "printf '%s\\n' '$body'" \
+      > "$HOME/bin/curl"
+    chmod +x "$HOME/bin/curl"
+    _ccm_model_known proxy alpha-chat
+    known=$?
+    (( known == 2 )) || {
+      print -u2 -- "a listing whose data is not a list must be unknown ($body), got status $known"
+      rc=1
+    }
+  done
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_gateway_explicit_non_chat_model_is_not_carryable() {
   local test_home
   test_home=$(mktemp -d)
@@ -11795,6 +11818,7 @@ run_test test_hop_falls_back_when_the_target_cannot_serve_the_model
 run_test test_hop_asks_the_gateway_which_models_it_serves
 run_test test_gateway_catalogue_uses_route_limit_and_pagination_uncertainty
 run_test test_gateway_http_error_is_uncertainty_not_model_absence
+run_test test_gateway_listing_without_a_data_list_is_uncertainty
 run_test test_gateway_explicit_non_chat_model_is_not_carryable
 run_test test_relay_resume_preserves_dangerous_permission_mode
 run_test test_relay_same_profile_omits_cache_notice_issue_226

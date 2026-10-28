@@ -228,3 +228,26 @@ func TestConfigStoreRollsTheConfBackWhenTheSettingsReplacementFails(t *testing.T
 	}
 	leftovers(t, filepath.Dir(conf), filepath.Dir(settings))
 }
+
+func TestLaunchDiagnosticsKeepsTheWarningsWhenALayerCannotBeMerged(t *testing.T) {
+	// A null $ccmorphUnset makes the merge raise TypeError; Python dropped only the
+	// env answers and still printed the warnings that read settings.json.
+	dir := t.TempDir()
+	settings := filepath.Join(dir, "settings.json")
+	layer := filepath.Join(dir, "settings.profile.json")
+	if err := os.WriteFile(settings, []byte(`{"model":"claude-x-dd-ved"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(layer, []byte(`{"$ccmorphUnset": null}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("_CCM_SETTINGS", settings)
+	t.Setenv("_CCM_PCT_IN_ENV", "1")
+	var out bytes.Buffer
+	if rc := launchDiagnostics([]string{"--", layer}, nil, &out, &bytes.Buffer{}); rc != 0 {
+		t.Fatalf("rc=%d", rc)
+	}
+	if got := out.String(); got != "disguised\tdev\x00" {
+		t.Fatalf("records = %q", got)
+	}
+}

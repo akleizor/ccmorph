@@ -912,7 +912,7 @@ func readCurrent(target string) ([]byte, *obj) {
 	if raw == nil {
 		return nil, nil
 	}
-	doc, ok := parse(raw).(*obj)
+	doc, ok := parse(pycompat.StripBOM(raw)).(*obj)
 	if !ok {
 		valueFail("%s: root is not a JSON object", target)
 	}
