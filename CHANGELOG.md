@@ -5,7 +5,7 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
-## Unreleased
+## v0.2.0 — 2026-10-28
 
 ### Added
 
