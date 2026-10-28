@@ -9,6 +9,7 @@ import (
 
 	"github.com/akleizor/ccmorph/adapter"
 	"github.com/akleizor/ccmorph/modelwindow"
+	"github.com/akleizor/ccmorph/registry"
 	"github.com/akleizor/ccmorph/settingscompose"
 )
 
@@ -26,6 +27,8 @@ func main() {
 		os.Exit(settingscompose.Main(os.Args[2:], os.Stderr))
 	case "model-window":
 		os.Exit(modelwindow.Main(os.Args[2:], os.Stdout, os.Stderr))
+	case "refresh-model-registry":
+		os.Exit(registry.Main(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	default:
 		fmt.Fprintf(os.Stderr, "ccmorph-core: unknown command %q\n", os.Args[1])
 		os.Exit(2)
