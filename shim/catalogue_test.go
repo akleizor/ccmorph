@@ -374,3 +374,14 @@ func TestNativeRefreshNeverShowsAnEmptyDeclarationSet(t *testing.T) {
 		}
 	}
 }
+
+func TestAdapterArgsLeadTheEnsureConfigCommand(t *testing.T) {
+	raw := `{"adapter":"/bin/sh","adapter_args":["adapter"],"profile":"p","config":"/c","port":1,"identity":"i","key_sha256":"k","timeout":1}`
+	r, err := newModelRoutes(raw, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(r.command[:3], " "); got != "/bin/sh adapter p" {
+		t.Fatalf("command %v", r.command)
+	}
+}

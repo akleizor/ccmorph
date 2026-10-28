@@ -234,7 +234,9 @@ func stopProcesses(procs ...*proc) {
 // (40 translator+shim pairs found leaked on 2026-10-02). Once the adapter is
 // gone the tether stops the child with the same TERM-then-KILL grace and removes
 // the state directory holding the credential.
-func tether(exe string, child *proc, state string) {
+var tether = tetherImpl
+
+func tetherImpl(exe string, child *proc, state string) {
 	cmd := exec.Command(exe, "tether", strconv.Itoa(os.Getpid()), strconv.Itoa(child.cmd.Process.Pid), state)
 	// Its own session, so the hangup that ends a tmux session cannot take the
 	// tether down before the adapter's SIGHUP handler has stopped the child.
