@@ -92,6 +92,8 @@ jobs:
           # -v names each test as it runs, so a log cut off by the cap above still
           # shows where it stopped; --durations names the slow ones on a full run.
           python -m pytest tests/ -v --durations=25
+      - name: adapter tests against the Go port (ccmorph-core adapter)
+        run: CCMORPH_TEST_ADAPTER=go python -m pytest tests/adapter_test.py tests/adapter_auto_test.py -q
 
   python-floor:
     # The floor is 3.8. Prove the Python helpers still import there — the failure

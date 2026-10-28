@@ -20,9 +20,23 @@ FAKE_SERVER_NO_DNS = "import socket\nsocket.getfqdn = lambda name='': name\n"
 
 
 SHIM = Path(__file__).resolve().parent.parent / "libexec/gateway-shim"
+# The adapter under test: the Python script (default) or the Go port,
+# `CCMORPH_TEST_ADAPTER=go` (needs `make shim`). The same black-box tests run
+# against both; ADAPTER_CMD is the argv prefix, followed by the profile.
+CORE = Path(__file__).resolve().parent.parent / "libexec/ccmorph-core"
+ADAPTER_IMPL = os.environ.get("CCMORPH_TEST_ADAPTER", "python")
+ADAPTER_PY = Path(__file__).resolve().parent.parent / "libexec/ccmorph-adapter"
 # Module-level `pytestmark = needs_shim` skips a file that spawns the compiled shim.
 # pytest is imported here, not at the top: the zsh suite imports this module
 # for HANG_TIMEOUT under a python3 that has no pytest.
+def adapter_cmd(binary=None):
+    """argv prefix that runs the adapter under test, optionally from a copied `binary`."""
+    import sys
+    if ADAPTER_IMPL == "go":
+        return [str(binary or CORE), "adapter"]
+    return [sys.executable, str(binary or ADAPTER_PY)]
+
+
 def __getattr__(name):
     if name == "needs_shim":
         import pytest

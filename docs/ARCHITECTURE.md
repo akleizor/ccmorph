@@ -68,7 +68,8 @@ The repository and the installed copy under `~/.config/ccmorph` share one layout
 `bin/ccmorph` (the command), `lib/` (`ccmorph.sh` and the modules), `libexec/`
 (internal executables: `ccmorph-adapter`, `gateway-shim`, `model-window`,
 `refresh-model-registry`, `settings-compose`; `gateway-shim` is Go, built from
-`shim/`, `compat/` and `cmd/gateway-shim/` by `make shim`, the rest are Python) and `share/` (data:
+`shim/`, `compat/` and `cmd/gateway-shim/` by `make shim`, the rest are Python; `make shim` also builds
+`ccmorph-core`, the Go port of `ccmorph-adapter` from `adapter/`, which the launch path does not call yet) and `share/` (data:
 `model-catalogue.json`, `window-sources.json`). `lib/` finds `libexec/` and `share/`
 beside itself. `CCMORPH_LIB_DIR` names the `lib/` directory.
 

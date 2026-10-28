@@ -16,7 +16,7 @@ TARBALL := $(DIST)/ccmorph-$(TAG).tar.gz
 
 help:
 	@echo "ccmorph $(VERSION)"
-	@echo "  make shim           build libexec/gateway-shim (needs Go)"
+	@echo "  make shim           build libexec/gateway-shim and libexec/ccmorph-core (needs Go)"
 	@echo "  make test           run every suite"
 	@echo "  make check-version  version, changelog and tag must agree"
 	@echo "  make release        verify, then build $(TARBALL) + the stable ccmorph.tar.gz"
@@ -24,6 +24,7 @@ help:
 # The one compiled helper. Tests and a checkout's install.sh use this binary.
 shim:
 	go build -trimpath -o libexec/gateway-shim ./cmd/gateway-shim
+	go build -trimpath -o libexec/ccmorph-core ./cmd/ccmorph-core
 
 test: shim test-go test-zsh test-py
 

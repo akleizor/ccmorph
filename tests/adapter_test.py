@@ -23,7 +23,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from support import FAKE_SERVER_NO_DNS, HANG_TIMEOUT
+from support import ADAPTER_IMPL, CORE, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, adapter_cmd
 
 REPO = Path(__file__).resolve().parent.parent
 ADAPTER = REPO / "libexec/ccmorph-adapter"
@@ -244,22 +244,30 @@ class AdapterTest(unittest.TestCase):
     def run_adapter(self, *args, **kw):
         constants = kw.pop("_constants", {})
         shim = kw.pop("_shim", None)
-        adapter = ADAPTER
+        cmd = adapter_cmd()
+        env = self._launch_env()
         if constants or shim:
             fixture = self.home / "adapter-fixture"
             fixture.mkdir(exist_ok=True)
-            adapter = fixture / "ccmorph-adapter"
-            shutil.copy2(ADAPTER, adapter)
             shutil.copy2(shim or ADAPTER.with_name("gateway-shim"), fixture / "gateway-shim")
-            text = adapter.read_text()
-            for name, value in constants.items():
-                text = text.replace(f"{name} = 90", f"{name} = {value}")
-                text = text.replace(f"{name} = 30", f"{name} = {value}")
-            adapter.write_text(text)
-            adapter.chmod(0o755)
-        env = self._launch_env()
+            if ADAPTER_IMPL == "go":
+                # The Go adapter takes its two timings from the environment.
+                binary = fixture / "ccmorph-core"
+                binary.unlink(missing_ok=True)  # a new inode: macOS kills a signed binary rewritten in place
+                shutil.copy2(CORE, binary)
+                env.update({f"CCMORPH_ADAPTER_{name}": str(value) for name, value in constants.items()})
+            else:
+                binary = fixture / "ccmorph-adapter"
+                shutil.copy2(ADAPTER, binary)
+                text = binary.read_text()
+                for name, value in constants.items():
+                    text = text.replace(f"{name} = 90", f"{name} = {value}")
+                    text = text.replace(f"{name} = 30", f"{name} = {value}")
+                binary.write_text(text)
+                binary.chmod(0o755)
+            cmd = adapter_cmd(binary)
         env.update(kw.pop("env", {}))
-        return subprocess.run([sys.executable, str(adapter), "p", *args],
+        return subprocess.run([*cmd, "p", *args],
                               capture_output=True, text=True, env=env,
                               timeout=HANG_TIMEOUT, **kw)
 
@@ -321,7 +329,7 @@ class AdapterTest(unittest.TestCase):
         pipes — communicate(), never a bare wait(), so a full pipe cannot hang
         the test. XDG_STATE_HOME keeps shim usage rows inside the test home."""
         proc = subprocess.Popen(
-            [sys.executable, str(ADAPTER), "p", *args],
+            [*adapter_cmd(), "p", *args],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             env=self._launch_env(XDG_STATE_HOME=str(self.home / ".local/state")))
 
@@ -789,7 +797,7 @@ class AdapterTest(unittest.TestCase):
         # A parent that exits immediately: the adapter must notice and clean up.
         parent = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.5)"])
         proc = subprocess.Popen(
-            [sys.executable, str(ADAPTER), "p", "--parent-pid", str(parent.pid)],
+            [*adapter_cmd(), "p", "--parent-pid", str(parent.pid)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             env=dict(os.environ, HOME=str(self.home),
                      CCMORPH_LIB_DIR=str(self.home / ".config/ccmorph/lib"),
@@ -814,7 +822,7 @@ class AdapterTest(unittest.TestCase):
         tmp = self.home / "tmp"
         tmp.mkdir()
         proc = subprocess.Popen(
-            [sys.executable, str(ADAPTER), "p"],
+            [*adapter_cmd(), "p"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             env=dict(os.environ, HOME=str(self.home), TMPDIR=str(tmp),
                      CCMORPH_LIB_DIR=str(self.home / ".config/ccmorph/lib"),
@@ -1155,7 +1163,7 @@ class AdapterTest(unittest.TestCase):
                    CCMORPH_LIB_DIR=str(self.home / ".config/ccmorph/lib"),
                    CCMORPH_STATE_DIR=str(self.home))
         out = subprocess.run(
-            [sys.executable, str(ADAPTER),
+            [*adapter_cmd(),
              f'p; touch "{canary}"', "--print-config"],
             capture_output=True, text=True, env=env, timeout=HANG_TIMEOUT)
         self.assertFalse(canary.exists(),
@@ -1277,7 +1285,7 @@ class AdapterTest(unittest.TestCase):
         p = free_port()
         f = self.token_file()
         proc = subprocess.Popen(
-            [sys.executable, str(ADAPTER), "p", "--port", str(p),
+            [*adapter_cmd(), "p", "--port", str(p),
              "--inbound-token-file", str(f)],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             env=self._launch_env(XDG_STATE_HOME=str(self.home / ".local/state")))

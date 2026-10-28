@@ -78,6 +78,7 @@ dist/
 # The compiled gateway-shim (`make shim`), and the per-platform builds `make dist` packs.
 /libexec/gateway-shim
 /libexec/gateway-shim-*
+/libexec/ccmorph-core
 # Python bytecode and pytest state.
 __pycache__/
 .pytest_cache/
