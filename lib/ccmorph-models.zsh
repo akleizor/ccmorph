@@ -219,7 +219,7 @@ _ccm_launch_window() {
   [[ -x "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" ]] || model=""
   command env -u CLAUDE_CODE_MAX_CONTEXT_TOKENS \
     CCMORPH_STATE_DIR="$_CCMORPH_DIR" MODEL_WINDOW_PROFILE_CONF="$_CCMORPH_DIR/$profile.conf" \
-    _ccm_util launch-window "$profile" "$model" \
+    "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" util launch-window "$profile" "$model" \
     "${(f)$(_ccm_settings_sources "$profile")}" 2>/dev/null
 }
 
