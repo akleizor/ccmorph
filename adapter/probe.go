@@ -425,9 +425,11 @@ func reasonsByDefault(base, key, model string) bool {
 }
 
 // recyclesToolIDs is true when the upstream mints deterministic tool_use ids
-// (the same id on two independent responses). Any probe failure answers false.
+// (the same id on two independent responses). Any probe failure answers false,
+// and an id that is not a string is a shaky reading too: comparing two decoded
+// JSON objects with == panics.
 func recyclesToolIDs(base, key, model string) bool {
-	var seen [2]any
+	var seen [2]string
 	for i := range seen {
 		body := postJSON(apiURL(base, "/v1/messages"),
 			map[string]any{"model": model, "max_tokens": 64, "tools": toolProbe,
@@ -440,7 +442,11 @@ func recyclesToolIDs(base, key, model string) bool {
 		found := false
 		for _, b := range content {
 			if m, ok := b.(map[string]any); ok && m["type"] == "tool_use" {
-				seen[i], found = m["id"], true
+				id, ok := m["id"].(string)
+				if !ok {
+					return false
+				}
+				seen[i], found = id, true
 				break
 			}
 		}
