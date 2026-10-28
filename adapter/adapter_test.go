@@ -179,7 +179,7 @@ func TestRenderUserAgentFromTheShimItRuns(t *testing.T) { // test_passthrough_us
 	env := append(os.Environ(), "CCMORPH_USER_AGENT=hook-ua/")
 	cfg := render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "", shimPath, env)
 	entry := strings.SplitN(cfg, "claude-api-key:", 2)[1]
-	if !strings.Contains(entry, `User-Agent: "hook-ua/ 9.9.9"`) || !strings.Contains(entry, "cloak:\n      mode: \"never\"\n") {
+	if !strings.Contains(entry, `User-Agent: "hook-ua/ 9.9.9"`) || strings.Contains(entry, "cloak") { // cloak "never" strips Claude Code's identity on 8.0.34+
 		t.Fatalf("entry:\n%s", entry)
 	}
 	var unset []string

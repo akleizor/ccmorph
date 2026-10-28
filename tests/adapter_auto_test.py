@@ -83,7 +83,7 @@ class AutoDetectionTest(unittest.TestCase):
                                shim_path=str(shim), shim_env=env)
             claude_entry = config.split('claude-api-key:')[1]
             self.assertIn('User-Agent: "hook-ua/ 9.9.9"', claude_entry)
-            self.assertIn('cloak:\n      mode: "never"\n', claude_entry)
+            self.assertNotIn('cloak', claude_entry)  # "never" strips Claude Code's identity on 8.0.34+
             unset = {k: v for k, v in env.items() if k != 'CCMORPH_USER_AGENT'}
             config = ad.render([row('anthropic')], 'k', 1234, 'https://gw', '/unused',
                                shim_path=str(shim), shim_env=unset)

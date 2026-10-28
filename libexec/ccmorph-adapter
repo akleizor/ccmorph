@@ -937,16 +937,15 @@ api-keys:
 # rebuild-mid-system-message: Claude Code sends mid-conversation system content as
 # a messages entry with role "system", which vLLM-backed upstreams reject with a
 # literal_error on the role.
-# cloak never: the client already is Claude Code; cloaking rewrites its billing
-# header to cliproxyapi's frozen cc_version, which Anthropic rejects for newer
-# models, and injects its own system reminder and session ids.
+# No cloak block: with none, an API-key entry keeps the caller's shape, so Claude
+# Code's own billing header, identity prompt and metadata.user_id reach the
+# upstream untouched. cloak "never" must NOT be set: since 8.0.34 it also strips
+# exactly those fields and rewrites the User-Agent.
 claude-api-key:
   - api-key: {q(key)}
     base-url: {q(upstream)}
     disable-cooling: true
     rebuild-mid-system-message: true
-    cloak:
-      mode: "never"
 {claude_hdr}    models:
 {block(passthrough)}''')
 
