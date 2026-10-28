@@ -37,6 +37,14 @@ from support import HANG_TIMEOUT, helper_cmd
 
 
 
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
 class MetadataCompatibility(unittest.TestCase):
 
     def test_real_route_subprocess_is_killed_on_deadline(self):
@@ -61,6 +69,7 @@ class DiscoveryHTTP(unittest.TestCase):
         import threading
         self.requests = []
         self.release = threading.Event()
+        self.got = threading.Event()
         self.block_body = False
         # Fully declared chat models need no external catalogue. The vision-only
         # row is deliberately excluded by the listing contract.
@@ -77,6 +86,7 @@ class DiscoveryHTTP(unittest.TestCase):
             def do_GET(self):
                 fixture.requests.append((self.command, self.path,
                                          self.headers.get("anthropic-version")))
+                fixture.got.set()
                 self.send_response(200)
                 self.end_headers()
                 if fixture.block_body:
@@ -118,6 +128,62 @@ class DiscoveryHTTP(unittest.TestCase):
         self.assertNotIn('"unknown":', stored)
         self.assertFalse((self.root / "registry").exists())
         self.assertEqual(self.requests, [("GET", "/v1/models", "2023-06-01")])
+
+    def test_ctrl_c_mid_run_retires_the_provider_bridge(self):
+        # Python ran stop_route() in a finally: block, so Ctrl-C left neither a
+        # bridge process nor its key-bearing /tmp config. The Go port had no
+        # handler at all: SIGINT killed the registry and the bridge kept the
+        # profile's OAuth login alive on a loopback port.
+        import signal
+        import stat
+        import subprocess
+        root = self.root
+        bridge, auth = root / "bridge", root / "auth"
+        auth.mkdir()
+        (auth / "token.json").write_text("{}\n")
+        (auth / "token.json").chmod(0o644)
+        repo = Path(__file__).resolve().parent.parent
+        # _route_env starts a bridge and hands back its handle; _route_stop is
+        # the real one, so the assertions see the product's own cleanup.
+        self.script.write_text(f"""ccmorph() {{
+  case "$1" in
+    _route_env)
+      command sleep 300 </dev/null >/dev/null 2>&1 &
+      local pid=$!
+      print -r -- "$pid" > "{root}/bridge.pid"
+      print "ANTHROPIC_API_KEY=canary"
+      print "ANTHROPIC_BASE_URL={self.base}"
+      print "CCMORPH_ROUTE_HANDLE=provider|$pid|{bridge}|{auth}"
+      ;;
+    _route_stop)
+      unfunction ccmorph
+      export CCMORPH_LIB_DIR="{repo}/lib"
+      source "{repo}/lib/ccmorph.sh" && ccmorph _route_stop "$2"
+      ;;
+  esac
+}}
+""")
+        self.block_body = True
+        env = {**self.env, "HOME": str(root)}
+        proc = subprocess.Popen(self.command, env=env, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True)
+        pid = None
+        try:
+            self.assertTrue(self.got.wait(HANG_TIMEOUT), "the listing request never started")
+            proc.send_signal(signal.SIGINT)
+            _, err = proc.communicate(timeout=HANG_TIMEOUT)
+            pid = int((root / "bridge.pid").read_text())
+            self.assertEqual(proc.returncode, 130, err)
+            self.assertIn("interrupted", err)
+            self.assertFalse(_alive(pid), "the provider bridge outlived Ctrl-C")
+            self.assertFalse(bridge.exists(), "the bridge's /tmp config outlived Ctrl-C")
+            self.assertEqual(stat.S_IMODE((auth / "token.json").stat().st_mode), 0o600)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.communicate()
+            if pid and _alive(pid):
+                os.kill(pid, signal.SIGKILL)
 
     def test_issue_259_route_deadline_can_expire_before_any_get(self):
         import subprocess

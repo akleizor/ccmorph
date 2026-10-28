@@ -17,6 +17,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -99,9 +100,33 @@ func BuildOpener() Opener {
 	}}
 }
 
+// progress resets the idle timer whenever bytes move, so the timeout bounds
+// each wait on the socket (connect, first byte, every read) the way urllib's
+// timeout did, not the whole exchange. The run's own deadline still arrives
+// through ctx and bounds the total.
+type progress struct {
+	io.ReadCloser
+	timer *time.Timer
+	idle  time.Duration
+}
+
+func (p *progress) Read(b []byte) (int, error) {
+	n, err := p.ReadCloser.Read(b)
+	if n > 0 {
+		p.timer.Reset(p.idle)
+	}
+	return n, err
+}
+
 func (c *sameOriginClient) Open(ctx context.Context, r Request, timeout time.Duration) ([]byte, error) {
-	rctx, cancel := context.WithTimeout(ctx, timeout)
+	rctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	var idle atomic.Bool
+	timer := time.AfterFunc(timeout, func() {
+		idle.Store(true)
+		cancel()
+	})
+	defer timer.Stop()
 	var body io.Reader
 	if r.Body != nil {
 		body = bytes.NewReader(r.Body)
@@ -109,6 +134,11 @@ func (c *sameOriginClient) Open(ctx context.Context, r Request, timeout time.Dur
 	req, err := http.NewRequestWithContext(rctx, r.Method, r.URL, body)
 	if err != nil {
 		return nil, &URLError{err}
+	}
+	if r.Body != nil {
+		// A slow upload is a slow socket operation too. The wrapper keeps
+		// ContentLength set, so the request is never sent chunked.
+		req.Body = &progress{io.NopCloser(bytes.NewReader(r.Body)), timer, timeout}
 	}
 	for _, h := range r.Header {
 		req.Header.Set(h[0], h[1])
@@ -119,11 +149,17 @@ func (c *sameOriginClient) Open(ctx context.Context, r Request, timeout time.Dur
 		if errors.As(err, &ue) {
 			err = ue.Err
 		}
+		if idle.Load() {
+			err = context.DeadlineExceeded
+		}
 		return nil, &URLError{err}
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(&progress{resp.Body, timer, timeout})
 	if err != nil {
+		if idle.Load() {
+			err = context.DeadlineExceeded
+		}
 		return nil, &URLError{err}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

@@ -6,9 +6,11 @@ import (
 	"io"
 	"math"
 	"os"
+	"os/signal"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/akleizor/ccmorph/modelwindow"
@@ -210,10 +212,19 @@ func run(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
 	if a.bisect {
 		opts.Bisect = a.bisectAccepts
 	}
+	// Ctrl-C ends the run as an interruption, not a crash: ProbeAll's cleanup
+	// retires the provider bridge (its process and key-bearing /tmp config),
+	// and nothing is written. A launch's --listing-stdin above keeps its own
+	// background context: an interrupted launch must not record misses.
+	sigctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer stop()
 	baseline := priorValues(profiles)
 	started := time.Now()
 	opts.Identities = map[string]*modelwindow.Identity{}
-	result := ProbeAll(context.Background(), profiles, opts)
+	result := ProbeAll(sigctx, profiles, opts)
+	if sigctx.Err() != nil {
+		return 130
+	}
 	notes := result.Notes
 
 	var unknown []string
@@ -312,9 +323,13 @@ func run(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
 		fmt.Fprintln(errw, "deadline reached before profile write; existing values left unchanged")
 		return 1
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(remaining*float64(time.Second)))
+	ctx, cancel := context.WithTimeout(sigctx, time.Duration(remaining*float64(time.Second)))
 	defer cancel()
 	committed, cut := Commit(ctx, result.Values, baseline, opts.Identities, result.Sources)
+	if sigctx.Err() != nil {
+		fmt.Fprintln(errw, "interrupted; completed profile updates were kept")
+		return 130
+	}
 	if cut {
 		fmt.Fprintln(errw, "Save deadline reached; completed profile updates were kept, and no partial files were written.")
 		return 1

@@ -481,7 +481,11 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 		}
 	})
 	if expired {
-		notes = append(notes, Note{fmt.Sprintf("%s discovery deadline reached; existing values are preserved", gFormat(o.Deadline)), "discovery"})
+		reason := fmt.Sprintf("%s discovery deadline reached; existing values are preserved", gFormat(o.Deadline))
+		if parent.Err() != nil {
+			reason = "interrupted; existing values are preserved"
+		}
+		notes = append(notes, Note{reason, "discovery"})
 		fmt.Fprintln(stderr, notes[len(notes)-1].Reason)
 	}
 	if handle != "" {

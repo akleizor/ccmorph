@@ -374,7 +374,14 @@ func (p *parser) str() string {
 						p.i = save
 					}
 				}
-				b.WriteRune(r) // a lone surrogate becomes U+FFFD: Go strings cannot hold it
+				if r >= 0xD800 && r < 0xE000 {
+					// Python keeps a lone surrogate as a code point. Go strings
+					// cannot, so keep its WTF-8 bytes: Marshal writes the same
+					// \uXXXX escape back and the user's file stays unchanged.
+					b.Write([]byte{byte(0xE0 | r>>12), byte(0x80 | (r>>6)&0x3F), byte(0x80 | r&0x3F)})
+				} else {
+					b.WriteRune(r)
+				}
 			default:
 				p.fail("Invalid \\escape", p.i-2)
 				return ""
@@ -606,7 +613,18 @@ func (f Format) write(b *strings.Builder, v Value, level int) {
 
 func (f Format) str(b *strings.Builder, s string) {
 	b.WriteByte('"')
-	for _, r := range s {
+	for i := 0; i < len(s); {
+		// A lone surrogate Parse kept as WTF-8 (ED A0..BF 80..BF): Python holds
+		// it as a code point and dumps the same \uXXXX escape, in both ASCII
+		// and non-ASCII mode, because UTF-8 cannot spell it at all.
+		if c := s[i]; c == 0xED && i+2 < len(s) && s[i+1] >= 0xA0 && s[i+1] <= 0xBF && s[i+2] >= 0x80 && s[i+2] <= 0xBF {
+			r := rune(c&0x0F)<<12 | rune(s[i+1]&0x3F)<<6 | rune(s[i+2]&0x3F)
+			fmt.Fprintf(b, `\u%04x`, r)
+			i += 3
+			continue
+		}
+		r, n := utf8.DecodeRuneInString(s[i:])
+		i += n
 		switch {
 		case r == '"':
 			b.WriteString(`\"`)

@@ -6,6 +6,7 @@
 package modelwindow
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/akleizor/ccmorph/pycompat"
 )
@@ -366,12 +368,17 @@ func ProfileWindows(profile string) map[string]int64 {
 
 // ProfileLock runs fn holding the profile's lock; a caller that already holds
 // it (CCMORPH_PROFILE_LOCK_HELD) passes straight through.
-func ProfileLock(profile string, fn func()) {
+func ProfileLock(profile string, fn func()) { ProfileLockCtx(context.Background(), profile, fn) }
+
+// ProfileLockCtx is ProfileLock for a caller with a deadline: it stops waiting
+// at ctx.Done and reports whether fn ran. A lock held by another ccmorph must
+// not make a run outlive the deadline that asked it to write.
+func ProfileLockCtx(ctx context.Context, profile string, fn func()) bool {
 	path := ProfilePath(profile)
 	for _, held := range strings.Split(os.Getenv("CCMORPH_PROFILE_LOCK_HELD"), ":") {
 		if held == path {
 			fn()
-			return
+			return true
 		}
 	}
 	// The lock holds no configuration data; its inode stays stable across remove/recreate.
@@ -380,10 +387,38 @@ func ProfileLock(profile string, fn func()) {
 		pycompat.RaiseOS(err)
 	}
 	defer f.Close()
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := flockCtx(ctx, f); err != nil {
+		if ctx.Err() != nil {
+			return false
+		}
 		pycompat.RaiseOS(err)
 	}
 	fn()
+	return true
+}
+
+// flockCtx takes an exclusive flock, polling only when the caller has a
+// deadline to honour: without one it blocks exactly as before.
+func flockCtx(ctx context.Context, f *os.File) error {
+	if ctx.Done() == nil {
+		return syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+	}
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return nil
+		}
+		if err != syscall.EWOULDBLOCK {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 // Canonical layout of a <profile>.conf: connection, model choice, behaviour,
@@ -561,11 +596,19 @@ func ReplaceFields(path string, fields []Field, expected *Identity) bool {
 // without a tag retires any catalogue tag the model carried. It returns false
 // when the conf changed since expected was read.
 func SaveDiscovered(profile string, values *pycompat.OMap[int64], expected *Identity, overwrite bool,
+	sources *pycompat.OMap[*pycompat.Obj], misses *pycompat.OMap[string]) bool {
+	return SaveDiscoveredCtx(context.Background(), profile, values, expected, overwrite, sources, misses)
+}
+
+// SaveDiscoveredCtx is SaveDiscovered under a caller's deadline: when the
+// profile lock is still held elsewhere at ctx.Done it writes nothing and
+// returns false.
+func SaveDiscoveredCtx(ctx context.Context, profile string, values *pycompat.OMap[int64], expected *Identity, overwrite bool,
 	sources *pycompat.OMap[*pycompat.Obj], misses *pycompat.OMap[string]) (saved bool) {
 	if expected == nil {
 		return false
 	}
-	ProfileLock(profile, func() {
+	if !ProfileLockCtx(ctx, profile, func() {
 		if got := ProfileIdentity(profile); got == nil || *got != *expected {
 			return
 		}
@@ -643,7 +686,9 @@ func SaveDiscovered(profile string, values *pycompat.OMap[int64], expected *Iden
 			record.Set("misses", o)
 		}
 		saved = ReplaceFields(path, []Field{{"context_discovered", str(pycompat.Marshal(record, pycompat.Format{Compact: true, ASCII: true}))}}, expected)
-	})
+	}) {
+		return false
+	}
 	return saved
 }
 

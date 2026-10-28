@@ -245,7 +245,10 @@ type ProbeResult struct {
 	Note  string
 }
 
-var unicodeEscapes = strings.NewReplacer(`>`, ">", `<`, "<", `&`, "&")
+// The six-byte JSON escapes a gateway wraps an upstream body with: a gateway
+// escapes ">" so the comparison never sees a literal one (Python replaced
+// "\u003e" and friends before matching).
+var unicodeEscapes = strings.NewReplacer(`\u003e`, ">", `\u003c`, "<", `\u0026`, "&")
 
 // Probe sends one oversized prompt on each API shape until one answers. A value
 // read on either shape may be recorded: an adapter=true profile puts a

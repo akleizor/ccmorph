@@ -13,6 +13,12 @@ func TestRoundTripMatchesPython(t *testing.T) {
 		{`{"b":1,"a":[1.0,2.50,1e22,1e-7,-0,123456789012345678901234567890],"é":"日本😀\n\u0001"}`,
 			"{\n  \"b\": 1,\n  \"a\": [\n    1.0,\n    2.5,\n    1e+22,\n    1e-07,\n    0,\n    123456789012345678901234567890\n  ],\n  \"é\": \"日本😀\\n\\u0001\"\n}",
 			`{"b":1,"a":[1.0,2.5,1e+22,1e-07,0,123456789012345678901234567890],"\u00e9":"\u65e5\u672c\ud83d\ude00\n\u0001"}`},
+		// A lone surrogate stays an escape: Python round-trips it unchanged,
+		// and UTF-8 cannot spell it, so even the non-ASCII (pretty) form must
+		// not rewrite it to U+FFFD.
+		{`{"h":["a b\ud83d c","\udc00"]}`,
+			"{\n  \"h\": [\n    \"a b\\ud83d c\",\n    \"\\udc00\"\n  ]\n}",
+			`{"h":["a b\ud83d c","\udc00"]}`},
 		{`{}`, `{}`, `{}`},
 		{`[[],{}]`, "[\n  [],\n  {}\n]", `[[],{}]`},
 		{`[NaN, Infinity, -Infinity, 1E5, 0.1, 100000000000000000.0, 12345.678]`,

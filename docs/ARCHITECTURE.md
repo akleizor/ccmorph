@@ -1270,8 +1270,9 @@ can never masquerade as proof for the new one.
 
 Inference probing is a paid last resort: `ccmorph probe <account> --model <id>
 --allow-inference` requires a single profile/model pair, skips already known
-windows unless `--probe-all` is also set, and uses a 10s per-request
-`--probe-timeout` by default. `--bisect` additionally enables hidden-ceiling
+windows unless `--probe-all` is also set, and uses a 10s per-wait
+`--probe-timeout` by default (each socket wait, not the whole exchange; the run's
+`--deadline` bounds the total). `--bisect` additionally enables hidden-ceiling
 search and requires `--allow-inference`; only an actual context overflow counts
 as the ceiling, not generic errors or timeouts. Rejections and timeouts are not
 guaranteed free, and the first accepted prompt itself can be billed; the request
