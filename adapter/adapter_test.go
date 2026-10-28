@@ -901,3 +901,111 @@ func TestFixedDefaults(t *testing.T) {
 		t.Fatalf("lockWait %v jobs %d", lockWait, jobs)
 	}
 }
+
+// --- GH-47: the Go port's lost deadline, redaction and tool-id panic -----------
+
+// captureStdio points os.Stdout and os.Stderr at one temp file; the returned
+// func reads what either wrote so far.
+func captureStdio(t *testing.T) func() string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "stdio-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldOut, oldErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = f, f
+	t.Cleanup(func() {
+		os.Stdout, os.Stderr = oldOut, oldErr
+		f.Close()
+	})
+	return func() string {
+		raw, err := os.ReadFile(f.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+}
+
+func TestAutoLaunchWithoutModelIsBoundedBySelectDeadline(t *testing.T) {
+	// The launcher always passes --auto and adds --model only for a picked model,
+	// so both forms must fail fast like the Python's `required_model or args.auto`.
+	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gateway"})
+	swap(t, &profileDirs, t.TempDir())
+	swap(t, &selectTimeout, 50*time.Millisecond)
+	stalled := make(chan struct{}) // never closed: the gateway that never answers
+	swap(t, &classifyFn, func(_, _, _, _ string, _ bool) ([]Row, error) {
+		<-stalled
+		return nil, nil
+	})
+	output := captureStdio(t)
+	code := make(chan int, 1)
+	swap(t, &exitFn, func(c int) { code <- c; runtime.Goexit() })
+	t.Cleanup(func() { exiting.Store(false) })
+	exiting.Store(false)
+
+	go Main([]string{"demo", "--auto"})
+	select {
+	case got := <-code:
+		if got != 1 {
+			t.Fatalf("exit %d, want 1", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("--auto without --model armed no select deadline")
+	}
+	if text := output(); !strings.Contains(text, "classifying") || !strings.Contains(text, "exceeded") {
+		t.Fatalf("no deadline message on stderr: %q", text)
+	}
+}
+
+func TestPrintConfigNeverPrintsTheProxyPassword(t *testing.T) {
+	// Go's url.Parse refuses these passwords where Python's urlsplit took them;
+	// the fallback must still cut the userinfo rather than echo the raw URL.
+	for name, secret := range map[string]string{"caret": "p^ss", "percent": "50%off", "space": "p ss"} {
+		t.Run(name, func(t *testing.T) {
+			stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gateway",
+				"CCMORPH_UPSTREAM_PROXY": "http://alice:" + secret + "@proxy:3128"})
+			swap(t, &profileDirs, t.TempDir())
+			// Neutral state dir: t.TempDir() puts the subtest name in the path,
+			// and a secret spelled "p^ss" must not be excused for that.
+			state, err := os.MkdirTemp("", "ccmorph-print-config-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.RemoveAll(state) })
+			t.Setenv("TMPDIR", state)
+			swap(t, &classifyFn, func(_, _, _, _ string, _ bool) ([]Row, error) { return []Row{row("anthropic")}, nil })
+			swap(t, &freePortFn, func() (int, error) { return 1234, nil })
+			output := captureStdio(t)
+			if got := Main([]string{"demo", "--auto", "--print-config"}); got != 0 {
+				t.Fatalf("Main = %d", got)
+			}
+			text := output()
+			if strings.Contains(text, secret) || strings.Contains(text, "alice") {
+				t.Fatalf("--print-config printed the proxy credentials: %q", text)
+			}
+			if !strings.Contains(text, `proxy-url: "http://proxy:3128"`) {
+				t.Fatalf("proxy-url not redacted to its host: %q", text)
+			}
+		})
+	}
+}
+
+func TestRecyclesToolIDsNonStringIDsAnswerFalse(t *testing.T) {
+	// A tool_use id decoded as a JSON object or array is uncomparable with ==
+	// and used to panic the classify goroutine; the probe's contract is that a
+	// shaky reading answers false.
+	for _, id := range []any{map[string]any{"k": "v"}, []any{1.0}} {
+		t.Run(fmt.Sprintf("%T", id), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				jsonReply(w, map[string]any{"content": []any{
+					map[string]any{"type": "tool_use", "id": id, "name": "probe_tool", "input": map[string]any{}},
+				}})
+			}))
+			t.Cleanup(srv.Close)
+			if recyclesToolIDs(srv.URL, "k", "m") {
+				t.Fatal("a non-string tool id must answer false")
+			}
+		})
+	}
+}

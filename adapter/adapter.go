@@ -522,11 +522,12 @@ func Main(argv []string) int {
 		return ensureConfig(a, required, upstream, key, routeIdentity, cacheFile, upstreamProxy, shimBinary, extras)
 	}
 
-	// A selected launch is bounded end to end: it must fail fast rather than sit
-	// through a lock wait plus probes on top of Claude Code's own launch timeout.
-	// No --model keeps the old, unbounded diagnostic sweep.
+	// A launch is bounded end to end: it must fail fast rather than sit through a
+	// lock wait plus probes on top of Claude Code's own launch timeout. The
+	// launcher always passes --auto and adds --model only for a picked model, so
+	// both forms arm it; neither flag keeps the old, unbounded diagnostic sweep.
 	stop := func() {}
-	if required != "" {
+	if required != "" || a.auto {
 		stop = abortAfter(selectTimeout, fmt.Sprintf("classifying %s on %s exceeded %ds",
 			shim.PyRepr(required), upstream, int(selectTimeout.Seconds())))
 	}
@@ -836,7 +837,17 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 func redactURL(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return raw
+		// Go refuses passwords urlsplit takes (a ^, a bare %, a space), and its
+		// error path must never hand back the secret it was meant to hide: cut
+		// the userinfo by hand, and say nothing when there is no host left.
+		scheme, netloc, path := splitURL(raw)
+		if at := strings.LastIndex(netloc, "@"); at >= 0 {
+			netloc = netloc[at+1:]
+		}
+		if netloc == "" {
+			return "<redacted>"
+		}
+		return scheme + "://" + strings.ToLower(netloc) + path
 	}
 	host := strings.ToLower(u.Hostname())
 	if p := u.Port(); p != "" {
