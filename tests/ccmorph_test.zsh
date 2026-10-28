@@ -8955,6 +8955,7 @@ test_picker_uses_a_route_scoped_registry_probe() {
 # The tab must stay inside the percentage (parseFloat takes the numeric prefix, so the
 # engine reads 8 either way) and must never leak into the reserve.
 test_the_trigger_env_survives_a_delimiter_in_a_value() {
+  local -x CCMORPH_LIB_DIR="$REPO_ROOT/lib"
   source "$CCMORPH_SOURCE"
   local rc=0 tab
   tab=$(printf '\t')
