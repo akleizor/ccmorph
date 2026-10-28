@@ -5,6 +5,50 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
+## v0.3.0 — 2026-10-28
+
+The core is Go. `ccmorph-core` replaces the four Python helpers, and `python3` is
+no longer needed unless you use the Remote Control add-on.
+
+### Breaking
+
+- **`python3` is no longer a requirement.** Launch, install, `doctor` and the zsh
+  library run on zsh and the two Go binaries only. Remote Control
+  (`addons/remote-control`) is still Python and still needs `python3` 3.8+.
+- **The Python helpers are gone.** `libexec/ccmorph-adapter`, `model-window`,
+  `settings-compose` and `refresh-model-registry` are now
+  `ccmorph-core adapter|model-window|settings-compose|refresh-model-registry`.
+  A script that ran the old paths must call `ccmorph-core <verb>`. `install.sh`
+  removes the old copies on upgrade.
+
+### Added
+
+- **`CCMORPH_COMPAT=off`** (#43) turns off every built-in gateway compatibility
+  repair in the shim.
+
+### Changed
+
+- **One helper process per native gateway session.** The shim runs inside the
+  adapter (#40) instead of beside it, so a native launch holds one process where
+  it held two (idle adapter 33 MB to 13.5 MB).
+- **Go ports of all four helpers** (#37 adapter, #38 settings-compose,
+  model-window, refresh-model-registry) with the same flags, output and exit
+  codes. Known differences: OS error wording, unknown classification-cache keys
+  are dropped, an empty `CCMORPH_MODEL_MAP=` is `{}` (the Python crashed).
+- **The test suite runs against the Go binaries only.** The
+  `CCMORPH_TEST_ADAPTER` and `CCMORPH_TEST_HELPERS` switches are removed; Python
+  white-box tests that imported the helpers are replaced by Go unit tests.
+
+### Fixed
+
+- **cliproxyapi 8.0.34 and newer is no longer given `cloak: never`** (#42). From
+  8.0.34 it strips Claude Code's billing header, identity prompt and
+  `metadata.user_id` and rewrites the User-Agent; the adapter now writes it only
+  when `cliproxyapi -h` reports an older version. The other translator
+  workarounds were re-verified on 8.0.45.
+- **The first turn of a session waits for the price table** (#39) instead of
+  racing it.
+
 ## v0.2.0 — 2026-10-28
 
 ### Added

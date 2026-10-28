@@ -138,7 +138,7 @@ MODULES=("$SRC"/lib/ccmorph-*.zsh(N:t))
 LIBS=(lib/ccmorph.sh ${MODULES/#/lib/})
 # install.sh ships too (an executable at the install root), so `ccmorph update` and
 # `ccmorph uninstall` have the installer to run without a clone or a URL.
-EXECUTABLES=(bin/ccmorph install.sh libexec/ccmorph-adapter libexec/model-window libexec/settings-compose libexec/refresh-model-registry)
+EXECUTABLES=(bin/ccmorph install.sh)
 DATA_FILES=(share/model-catalogue.json share/window-sources.json)
 COMPONENTS=($LIBS $EXECUTABLES $DATA_FILES)
 
@@ -326,6 +326,9 @@ CCMORPH_STATE_DIR="$CONFIG_DIR" "$CONFIG_DIR/libexec/ccmorph-core" model-window 
 # behind, because the old script sources a library that no longer defines it and
 # would answer with a load failure instead of saying what replaced it.
 rm -f "$BIN_DIR/ccrelay"
+# The four Python helpers (v0.3.0) are now `ccmorph-core` subcommands; the old copies
+# are dead weight an upgrade would otherwise leave beside the binary.
+rm -f "$CONFIG_DIR"/libexec/{ccmorph-adapter,model-window,settings-compose,refresh-model-registry}
 c_ok "Installed infrastructure to $CONFIG_DIR and the ccmorph command to $BIN_DIR"
 
 # Startup files are user-owned. Older releases may have left a managed block;

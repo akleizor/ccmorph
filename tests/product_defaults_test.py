@@ -9,25 +9,6 @@ from support import HANG_TIMEOUT
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_fixed_defaults_are_not_environment_overrides():
-    expected = {
-        'ccmorph-adapter': {'LOCK_WAIT': 120, 'JOBS': 8},
-        'refresh-model-registry': {
-            'CATALOGUE_URL': 'https://models.dev/api.json',
-            'CANONICAL_CATALOGUE_URL': 'https://models.dev/models.json',
-        },
-    }
-    for filename, values in expected.items():
-        assignments = {
-            target.id: node.value
-            for node in ast.parse((ROOT / 'libexec' / filename).read_text()).body
-            if isinstance(node, ast.Assign)
-            for target in node.targets if isinstance(target, ast.Name)
-        }
-        for name, value in values.items():
-            assert ast.literal_eval(assignments[name]) == value
-
-
 def test_provider_uses_path_not_private_override(tmp_path):
     binary = tmp_path / 'cliproxyapi'
     binary.write_text('#!/bin/sh\nexit 0\n')

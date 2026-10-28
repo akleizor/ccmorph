@@ -3873,7 +3873,7 @@ test_every_state_file_is_gitignored() {
   # change could silently stop shipping it. The modules are derived from the same
   # glob install.sh enumerates — a name listed here by hand is a name a later
   # module can be forgotten from, which is the drift this whole split is about.
-  local -a shipped=(ccmorph claude ccmorph.sh install.sh model-window refresh-model-registry "$REPO_ROOT"/lib/ccmorph-*.zsh(N:t))
+  local -a shipped=(ccmorph claude ccmorph.sh install.sh "$REPO_ROOT"/lib/ccmorph-*.zsh(N:t))
   for f in "${shipped[@]}"; do
     if git -C "$REPO_ROOT" check-ignore -q --no-index "$f"; then
       print -u2 -- "FAIL: shipped component '$f' is gitignored"
@@ -4103,7 +4103,7 @@ test_code_and_state_are_separate_directories() {
     rc=1
   }
 
-  # 4. The Python helpers resolve the registry from state, not from beside
+  # 4. The resolver reads the registry from state, not from beside
   #    themselves — the bug that only worked while both were one directory.
   printf 'type=apikey\ncontext_window.pinned=424242\n' > "$test_home/state/someprofile.conf"
   # Scrubbed exactly as _ccm_model_window scrubs it: rung 1 of the resolver's
@@ -4112,7 +4112,7 @@ test_code_and_state_are_separate_directories() {
   # ambient session instead of the registry under test.
   got=$(command env -u CLAUDE_CODE_MAX_CONTEXT_TOKENS \
         CCMORPH_STATE_DIR="$test_home/state" \
-        python3 "$REPO_ROOT/libexec/model-window" someprofile pinned 2>/dev/null)
+        "$REPO_ROOT/libexec/ccmorph-core" model-window someprofile pinned 2>/dev/null)
   [[ "$got" == *424242* ]] || {
     print -u2 -- "FAIL: model-window must read the registry from state, got '$got'"
     rc=1
@@ -4324,8 +4324,8 @@ PYCTX
 # Writes a context_discovered=<json> blob whose route fingerprint matches the
 # profile's CURRENT conf contents, so resolve()'s discovery lookup (which
 # includes glob-pattern matching, unlike manual context_window.* keys) accepts
-# it. Delegates fingerprinting to the real model-window module so the route
-# hash always matches production's algorithm.
+# it. The route hash restates modelwindow.RouteFingerprint; a drift fails the
+# tests that read the record back.
 write_profile_discovered() {
   local name="$1"
   shift
@@ -4339,18 +4339,17 @@ write_profile_discovered() {
   done
   models_json+="}"
   CCMORPH_STATE_DIR="$HOME/.config/ccmorph" python3 - "$name" "$models_json" <<'PY'
-import importlib.machinery, importlib.util, json, os, sys
-spec = importlib.util.spec_from_loader(
-    "context_store",
-    importlib.machinery.SourceFileLoader(
-        "context_store", os.path.join(os.environ["HOME"], ".config/ccmorph/libexec/model-window")))
-store = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(store)
-name, models_json = sys.argv[1], sys.argv[2]
-models = json.loads(models_json)
-identity = store.profile_identity(name)
-if not store.save_discovered(name, models, identity):
-    sys.exit("write_profile_discovered: save failed for " + name)
+import hashlib, json, os, re, sys
+name, models = sys.argv[1], json.loads(sys.argv[2])
+path = os.path.join(os.environ["CCMORPH_STATE_DIR"], name + ".conf")
+lines = [l for l in open(path).read().split("\n") if l and not l.startswith("context_discovered=")]
+fields = dict(l.split("=", 1) for l in lines if "=" in l and not l.startswith("#"))
+route = {k: fields.get(k, "") for k in ("type", "base_url", "provider", "adapter", "api_key", "token")}
+choice = re.compile(r"env\.ANTHROPIC_(?:DEFAULT_[A-Z]+_MODEL(?:_NAME|_DESCRIPTION)?|SMALL_FAST_MODEL|MODEL)")
+route.update({k: v for k, v in fields.items() if k.startswith("env.ANTHROPIC_") and not choice.fullmatch(k)})
+fingerprint = hashlib.sha256(json.dumps(route, sort_keys=True).encode()).hexdigest()
+lines.append("context_discovered=" + json.dumps({"route": fingerprint, "models": models}, separators=(",", ":")))
+open(path, "w").write("\n".join(lines) + "\n")
 PY
 }
 
@@ -10665,13 +10664,10 @@ install_model_window() {
     '[ -x "$here/$stub" ] && exec "$here/$stub" "$@"' \
     "exec '$REPO_ROOT/libexec/ccmorph-core' \"\$sub\" \"\$@\"" \
     > "$HOME/.config/ccmorph/libexec/ccmorph-core"
-  # The launcher's embedded Python still imports the two scripts by path (step 5
-  # of #36 replaces that), so they ship beside the core. A test stub named
-  # libexec/model-window shadows the dispatch, so tests that stub it do so after.
-  cp "$REPO_ROOT/libexec/model-window" "$REPO_ROOT/libexec/settings-compose" "$HOME/.config/ccmorph/libexec/"
+  # A test stub named libexec/model-window shadows the dispatch, so tests that stub it do so after.
   cp "$REPO_ROOT/lib/ccmorph.sh" "$HOME/.config/ccmorph/lib/ccmorph.sh"
   cp "$REPO_ROOT"/lib/ccmorph-*.zsh "$HOME/.config/ccmorph/lib/"
-  chmod +x "$HOME/.config/ccmorph/libexec/ccmorph-core" "$HOME/.config/ccmorph/libexec/model-window" "$HOME/.config/ccmorph/libexec/settings-compose"
+  chmod +x "$HOME/.config/ccmorph/libexec/ccmorph-core"
 }
 
 test_picker_without_a_registry_offers_rows_and_spawns_nothing() {

@@ -38,10 +38,9 @@ jobs:
                    tests/ccmorph_test.zsh tests/install_test.zsh; do
             zsh -n "$f" && echo "ok  $f"
           done
-      - name: byte-compile every python helper
+      - name: byte-compile every python file
         run: |
-          python3 -m py_compile libexec/ccmorph-adapter libexec/model-window \
-                                libexec/refresh-model-registry tests/*.py
+          python3 -m py_compile tests/*.py addons/remote-control/ccmorph-rc addons/remote-control/ccmorph-rc-hosts addons/remote-control/*.py
       - name: shebangs must find their interpreter via env
         # #!/bin/zsh does not exist where zsh lives in /usr/bin, and both of these
         # run DIRECTLY as executables — install.sh puts `ccmorph` on PATH — so
@@ -92,15 +91,12 @@ jobs:
           # -v names each test as it runs, so a log cut off by the cap above still
           # shows where it stopped; --durations names the slow ones on a full run.
           python -m pytest tests/ -v --durations=25
-      - name: adapter tests against the Go port (ccmorph-core adapter)
-        run: CCMORPH_TEST_ADAPTER=go python -m pytest tests/adapter_test.py tests/adapter_auto_test.py -q
-      - name: helper tests against the Go ports (ccmorph-core settings-compose, model-window, refresh-model-registry)
-        run: CCMORPH_TEST_HELPERS=go python -m pytest tests/settings_compose_test.py tests/model_window_test.py tests/context_override_test.py tests/cli_model_selection_test.py tests/refresh_probe_test.py tests/registry_cli_test.py -q
 
   python-floor:
-    # The floor is 3.8. Prove the Python helpers still import there — the failure
-    # this guards against surfaced days after install, inside a child process, as
-    # a bare SyntaxError.
+    # The floor is 3.8, and only the Remote Control add-on (a mitmproxy add-on) and
+    # the pytest suite still run on Python. Prove both on 3.8, 3.12 and 3.13 — the
+    # failure this guards against surfaced days after install, inside a child
+    # process, as a bare SyntaxError.
     strategy:
       fail-fast: false
       matrix:
@@ -119,8 +115,7 @@ jobs:
       - run: make shim
       - run: |
           python -m pip install pytest pytest-timeout "backports.zoneinfo; python_version < '3.9'"
-          python -m py_compile libexec/ccmorph-adapter libexec/model-window \
-                               libexec/refresh-model-registry
+          python -m py_compile addons/remote-control/ccmorph-rc addons/remote-control/ccmorph-rc-hosts addons/remote-control/*.py
           python -m pytest tests/ -q
 
   install-check:
