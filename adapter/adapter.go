@@ -72,6 +72,7 @@ var (
 	libDir           = defaultLibDir()
 	translatorBinary = findTranslator
 	spawnShim        = start
+	cloakNeverFn     = func() bool { return cloakNeverFor(translatorBinary()) }
 )
 
 func selfPath() string {
@@ -565,7 +566,7 @@ func ensureConfig(a *cliArgs, required, upstream, key, routeIdentity, cacheFile,
 		die("%v", err)
 	}
 	rendered := render(rows, key, a.ensurePort, upstream, filepath.Join(filepath.Dir(conf), "auth"),
-		upstreamProxy, shimBinary, environWith(extras))
+		upstreamProxy, shimBinary, environWith(extras), cloakNeverFn())
 	replace := func(data []byte) error {
 		tmp, err := os.CreateTemp(filepath.Dir(conf), ".route-")
 		if err != nil {
@@ -683,7 +684,7 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 	os.Remove(conf)
 
 	syscall.Umask(0o077)
-	text := render(rows, key, port, upstream, authdir, upstreamProxy, shimBinary, environWith(extras))
+	text := render(rows, key, port, upstream, authdir, upstreamProxy, shimBinary, environWith(extras), cloakNeverFn())
 	if err := os.WriteFile(conf, []byte(text), 0o600); err != nil {
 		die("%v", err)
 	}
