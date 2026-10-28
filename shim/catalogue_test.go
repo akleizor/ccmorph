@@ -385,3 +385,24 @@ func TestAdapterArgsLeadTheEnsureConfigCommand(t *testing.T) {
 		t.Fatalf("command %v", r.command)
 	}
 }
+
+// #52: a ccmorph update once deleted the adapter a running session's route
+// still named, and every later /model was refused with a message about gateway
+// availability that named neither the update nor the restart. A missing
+// adapter must say what happened and what to do instead.
+func TestMissingAdapterNamesTheUpdateAndTheRestart(t *testing.T) {
+	raw := `{"adapter":"/nonexistent/ccmorph-adapter","profile":"p","config":"/c","port":1,"identity":"i","key_sha256":"k","timeout":1}`
+	r, err := newModelRoutes(raw, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := r.ensure([]byte(`{"model":"m"}`), "k", nil, pathMessages)
+	for _, want := range []string{"update", "restart"} {
+		if !strings.Contains(strings.ToLower(msg), want) {
+			t.Fatalf("refusal %q does not name the %s", msg, want)
+		}
+	}
+	if strings.Contains(msg, "gateway availability") {
+		t.Fatalf("refusal %q still blames gateway availability", msg)
+	}
+}

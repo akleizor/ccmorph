@@ -19,7 +19,8 @@ no longer needed unless you use the Remote Control add-on.
   `settings-compose` and `refresh-model-registry` are now
   `ccmorph-core adapter|model-window|settings-compose|refresh-model-registry`.
   A script that ran the old paths must call `ccmorph-core <verb>`. `install.sh`
-  removes the old copies on upgrade.
+  removes the old copies of the last three on upgrade and keeps
+  `ccmorph-adapter` for sessions that still run it (see Fixed).
 
 ### Removed
 
@@ -46,6 +47,13 @@ no longer needed unless you use the Remote Control add-on.
 
 ### Fixed
 
+- **An upgrade no longer deletes `libexec/ccmorph-adapter` under sessions that
+  still run it** (#52). A session launched before the Go port names that path in
+  its route spec for a mid-session `/model`; deleting it broke the switch with a
+  message about gateway availability that named neither the update nor the
+  restart. The old copy now stays beside the binary (nothing calls it; it costs
+  only disk), and when a session's adapter is missing from disk the refusal
+  names the update and the restart.
 - **cliproxyapi 8.0.34 and newer is no longer given `cloak: never`** (#42). From
   8.0.34 it strips Claude Code's billing header, identity prompt and
   `metadata.user_id` and rewrites the User-Agent; the adapter now writes it only

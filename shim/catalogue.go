@@ -271,6 +271,7 @@ type routeSpec struct {
 // incompatible forwarding.
 type ModelRoutes struct {
 	command   []string
+	adapter   string
 	known     map[string]bool
 	modelMap  map[string]*string
 	catalogue *Catalogue
@@ -322,6 +323,7 @@ func newModelRoutes(raw string, client *http.Client) (*ModelRoutes, error) {
 		r.command = append(adapterCommand(spec.Adapter), spec.AdapterArgs...)
 		r.command = append(r.command, spec.Profile, "--ensure-config", spec.Config,
 			"--ensure-port", port, "--ensure-identity", spec.Identity)
+		r.adapter = spec.Adapter
 	}
 	// The adapter always names the profile; without one there is no route to
 	// attribute a row to, so the sidecar stays off and the shim writes nothing.
@@ -400,6 +402,17 @@ func (r *ModelRoutes) ensure(body []byte, key string, requested *string, path st
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), r.timeout)
 	defer cancel()
+	// The adapter path is named by this session's route spec, so a ccmorph
+	// update that deletes it (the v0.3.0 upgrade removed the pre-Go-port
+	// Python adapter that way, #52) turns every later /model into the refusal
+	// below about gateway availability — naming neither the update that caused
+	// it nor the restart that fixes it. Say what actually happened instead.
+	if _, err := os.Stat(r.adapter); err != nil {
+		return fmt.Sprintf("Model %s could not be prepared: the adapter this session "+
+			"started with (%s) is gone from disk — a ccmorph update replaced the "+
+			"install underneath this session. Restart the session to switch models.",
+			pyRepr(model), r.adapter)
+	}
 	args := append(slices.Clone(r.command[1:]), "--model", model)
 	err := exec.CommandContext(ctx, r.command[0], args...).Run()
 	if ctx.Err() != nil || (err != nil && !isExit(err)) {

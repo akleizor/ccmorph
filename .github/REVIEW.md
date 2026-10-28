@@ -22,6 +22,7 @@ credential, or losing the user's choice.
 - **A runtime floor or upstream CLI contract assumed** — a Python 3.9+ API on the 3.8 floor, a flag Claude Code does not accept — `example: e14eecb fix: drop 3.9-only str.removeprefix/removesuffix from shipped helpers`; also `d50fe3c revert(rc): remote-control rejects --effort, so effort= took every bridge down`.
 - **A test that cannot fail** — inherits the suite's env, scratch home gone, asserts nothing ran — `example: 438e66f test(launch): make the fork_forward stderr test able to fail`.
 - **A path check that forgets a link can sit on a parent directory** — `-e`/`-ef` are true through a carried sidecar dir while the path itself is not a link, so a removal mistakes its own files for native collisions — `example: 93f3db8 fix(profiles): a carried sidecar dir no longer blocks rm`.
+- **An upgrade deleting a file a running process still references** — a retired helper removed while a live session's route spec still names it, so the next `/model` reads as a gateway failure — `example: #52, b619556 removed libexec/ccmorph-adapter on upgrade under live sessions`.
 
 ## Never blocks
 

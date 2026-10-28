@@ -326,9 +326,15 @@ CCMORPH_STATE_DIR="$CONFIG_DIR" "$CONFIG_DIR/libexec/ccmorph-core" model-window 
 # behind, because the old script sources a library that no longer defines it and
 # would answer with a load failure instead of saying what replaced it.
 rm -f "$BIN_DIR/ccrelay"
-# The four Python helpers (v0.3.0) are now `ccmorph-core` subcommands; the old copies
-# are dead weight an upgrade would otherwise leave beside the binary.
-rm -f "$CONFIG_DIR"/libexec/{ccmorph-adapter,model-window,settings-compose,refresh-model-registry}
+# Three of the four Python helpers (v0.3.0) are now `ccmorph-core` subcommands
+# and nothing running names them, so an upgrade clears that dead weight.
+# ccmorph-adapter is the exception: a session launched before the Go port keeps
+# naming it in its route spec for a mid-session /model (the shim execs it for
+# --ensure-config), and deleting the file under that session breaks the switch
+# with a message about gateway availability that names neither the update nor
+# the restart (#52). The old copy costs only disk now that lib/ no longer calls
+# it, and no installer ever writes the path again, so it can simply stay.
+rm -f "$CONFIG_DIR"/libexec/{model-window,settings-compose,refresh-model-registry}
 c_ok "Installed infrastructure to $CONFIG_DIR and the ccmorph command to $BIN_DIR"
 
 # Startup files are user-owned. Older releases may have left a managed block;
