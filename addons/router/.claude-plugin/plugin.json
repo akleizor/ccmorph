@@ -1,8 +1,0 @@
-{
-  "name": "model-router",
-  "version": "0.1.0",
-  "description": "Routes each subagent task to the best profile, model and effort: subscription quota before paid API, cheapest model that can do the task.",
-  "author": {"name": "Alex Lee"},
-  "license": "MIT",
-  "skills": ["./skills/model-router"]
-}
