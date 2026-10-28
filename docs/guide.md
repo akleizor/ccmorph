@@ -6,10 +6,15 @@ reasoning behind each behavior, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Install details
 
+With Homebrew: `brew install akleizor/tap/ccmorph` (the full name, so Homebrew
+trusts the third-party tap). Homebrew owns the command and runtime under its
+prefix; profiles still live in `~/.config/ccmorph`. Prebuilt bottles cover Apple
+silicon on the newest macOS and Linux x86_64; elsewhere Homebrew builds from
+source with Go. The rest of this section is about the clone and one-liner.
+
 From a clone: `git clone https://github.com/akleizor/ccmorph && cd ccmorph && ./install.sh`.
 
-Or the one-liner, which works once the repository is public and has a release —
-it is private today, so the download returns 404:
+Or the one-liner:
 
 ```sh
 sh -c "$(curl -fsSL https://github.com/akleizor/ccmorph/releases/latest/download/install.sh)"
@@ -64,7 +69,9 @@ while `~/.local/bin` is off your `PATH`). A fresh install adds
 
 ## Updating
 
-Run `ccmorph update` (the latest release; add a branch or tag to install that instead), run the
+A Homebrew install updates with `brew upgrade ccmorph` and is removed with
+`brew uninstall ccmorph`; `ccmorph update` and `ccmorph uninstall` refuse it and
+print those commands. For a clone or one-liner install, run `ccmorph update` (the latest release; add a branch or tag to install that instead), run the
 one-line install again, or run `./install.sh` from a fresh clone. A git checkout is
 updated with git; `ccmorph update` refuses it. **It is an
 update, not a reinstall** — it replaces the runtime scripts and never touches
