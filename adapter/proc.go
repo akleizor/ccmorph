@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -20,10 +21,14 @@ func logf(format string, a ...any) {
 }
 
 // Exit paths all go through exit so the cleanups (rendered state, restored
-// config) run on every one of them, like the Python atexit handlers.
+// config) run on every one of them, like the Python atexit handlers. Only the
+// first caller exits; a concurrent one (a signal racing the supervisor) waits
+// for the process to end.
 var (
 	exitMu   sync.Mutex
 	cleanups []func()
+	exiting  atomic.Bool
+	exitFn   = os.Exit // swapped by unit tests
 )
 
 func atExit(fn func()) {
@@ -33,13 +38,17 @@ func atExit(fn func()) {
 }
 
 func exit(code int) {
+	if !exiting.CompareAndSwap(false, true) {
+		select {}
+	}
 	exitMu.Lock()
 	fns := cleanups
 	cleanups = nil
+	exitMu.Unlock()
 	for i := len(fns) - 1; i >= 0; i-- {
 		fns[i]()
 	}
-	os.Exit(code)
+	exitFn(code)
 }
 
 func die(format string, a ...any) {
