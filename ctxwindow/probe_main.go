@@ -1,4 +1,4 @@
-package contextprobe
+package ctxwindow
 
 import (
 	"context"
@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/akleizor/ccmorph/modelwindow"
 	"github.com/akleizor/ccmorph/pycompat"
 )
 
@@ -147,8 +146,8 @@ func parseArgs(argv []string) (*args, error) {
 
 func isNumber(s string) bool { _, err := strconv.ParseFloat(s, 64); return err == nil }
 
-// Main runs the helper (argv excludes the program name) and returns its exit code.
-func Main(argv []string, stdin io.Reader, stdout, errw io.Writer) (code int) {
+// ProbeMain runs the helper (argv excludes the program name) and returns its exit code.
+func ProbeMain(argv []string, stdin io.Reader, stdout, errw io.Writer) (code int) {
 	stderr = errw
 	defer func() { stderr = os.Stderr }()
 	if e := pycompat.Catch(func() { code = run(argv, stdin, stdout, errw) }); e != nil {
@@ -220,7 +219,7 @@ func run(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
 	defer stop()
 	baseline := priorValues(profiles)
 	started := time.Now()
-	opts.Identities = map[string]*modelwindow.Identity{}
+	opts.Identities = map[string]*Identity{}
 	result := ProbeAll(sigctx, profiles, opts)
 	if sigctx.Err() != nil {
 		return 130

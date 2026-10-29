@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for gateway-shim against a stub upstream.
+"""Tests for shim against a stub upstream.
 
 The upstream stub reproduces the observed gateway misbehavior —
 deterministic tool_use ids (Bash_0 on every response, SSE and plain JSON)
@@ -91,7 +91,7 @@ def start_shim(case, target, env=None, flags=()):
     # --parent-pid: a run killed outright (SIGKILL skips every cleanup) must
     # not leave the shim listening forever.
     proc = subprocess.Popen(
-        [str(SHIM), "0", target, *flags, f"--parent-pid={os.getpid()}"],
+        [*SHIM, "0", target, *flags, f"--parent-pid={os.getpid()}"],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         env=(dict(os.environ, **env) if env else None))
     case.addCleanup(reap_shim, proc)
@@ -116,11 +116,11 @@ class ShimParentDeathTest(unittest.TestCase):
         parent = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.5)"])
         self.addCleanup(parent.wait)
         proc = subprocess.Popen(
-            [str(SHIM), "0", f"http://127.0.0.1:{dead_port()}",
+            [*SHIM, "0", f"http://127.0.0.1:{dead_port()}",
              f"--parent-pid={parent.pid}"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         self.addCleanup(reap_shim, proc)
-        self.assertTrue(proc.stdout.readline().startswith("gateway-shim"))
+        self.assertTrue(proc.stdout.readline().startswith("shim"))
         parent.wait(timeout=HANG_TIMEOUT)
         try:
             proc.wait(timeout=HANG_TIMEOUT)
@@ -219,7 +219,7 @@ class ShimTest(unittest.TestCase):
         cls.upstream = serve(Upstream)
         cls.uport = cls.upstream.server_address[1]
         cls.proc = subprocess.Popen(
-            [str(SHIM), "0", f"http://127.0.0.1:{cls.uport}",
+            [*SHIM, "0", f"http://127.0.0.1:{cls.uport}",
              f"--parent-pid={os.getpid()}"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         cls.banner = cls.proc.stdout.readline().strip()
@@ -994,7 +994,7 @@ class ShimFlagTest(unittest.TestCase):
         # silently losing the rewrite.
         for flag in ("--repair-tool-references", "--affinity-header=X-Header"):
             with self.subTest(flag=flag):
-                out = subprocess.run([str(SHIM), "0", "http://x",
+                out = subprocess.run([*SHIM, "0", "http://x",
                                       flag], capture_output=True, text=True,
                                      timeout=HANG_TIMEOUT)
                 self.assertNotEqual(out.returncode, 0)
@@ -1012,7 +1012,7 @@ class ShimFlagTest(unittest.TestCase):
             self.assertEqual(r.read(), JSON_BODY)
 
     def test_unknown_flag_is_rejected(self):
-        proc = subprocess.run([str(SHIM), "0", "http://x",
+        proc = subprocess.run([*SHIM, "0", "http://x",
                                "--nope"], capture_output=True, text=True, timeout=HANG_TIMEOUT)
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("usage", proc.stdout + proc.stderr)
@@ -1692,14 +1692,14 @@ class UsageSidecarTest(unittest.TestCase):
     def test_outcome_appends_a_row_keyed_by_task(self):
         env = dict(os.environ, XDG_STATE_HOME=str(self.state))
         for result in ("accepted", "parked"):
-            subprocess.run([str(SHIM), "outcome", "issue-42", result], env=env, check=True, timeout=HANG_TIMEOUT)
-        bad = subprocess.run([str(SHIM), "outcome", "/etc/x", "accepted"], env=env,
+            subprocess.run([*SHIM, "outcome", "issue-42", result], env=env, check=True, timeout=HANG_TIMEOUT)
+        bad = subprocess.run([*SHIM, "outcome", "/etc/x", "accepted"], env=env,
                              capture_output=True, timeout=HANG_TIMEOUT)
         self.assertNotEqual(bad.returncode, 0)
-        bad = subprocess.run([str(SHIM), "outcome", "t", "great"], env=env, capture_output=True, timeout=HANG_TIMEOUT)
+        bad = subprocess.run([*SHIM, "outcome", "t", "great"], env=env, capture_output=True, timeout=HANG_TIMEOUT)
         self.assertNotEqual(bad.returncode, 0)
         # #210: "$" also matches before a trailing newline, so this used to append a row.
-        bad = subprocess.run([str(SHIM), "outcome", "x\n", "accepted"], env=env,
+        bad = subprocess.run([*SHIM, "outcome", "x\n", "accepted"], env=env,
                              capture_output=True, timeout=HANG_TIMEOUT)
         self.assertNotEqual(bad.returncode, 0)
         self.assertIn(b"usage:", bad.stderr)
@@ -1901,7 +1901,7 @@ class LoopbackNoProxyTest(unittest.TestCase):
         upstream = serve(Upstream)
         self.addCleanup(upstream.shutdown)
         proc = subprocess.Popen(
-            [str(SHIM), "0", f"http://127.0.0.1:{upstream.server_address[1]}",
+            [*SHIM, "0", f"http://127.0.0.1:{upstream.server_address[1]}",
              f"--parent-pid={os.getpid()}"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=self.proxy.env())
         self.addCleanup(reap_shim, proc)

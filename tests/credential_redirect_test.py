@@ -84,7 +84,7 @@ class CredentialRedirect(unittest.TestCase):
     def test_shim_refuses_cross_origin_redirect_with_key(self):
         seen, base = self._redirect_fixture()
         with socket_port() as port:
-            shim = subprocess.Popen([str(SHIM), str(port), base],
+            shim = subprocess.Popen([*SHIM, str(port), base],
                                     stdout=subprocess.DEVNULL, env=clean_env())
             try:
                 wait_port(port)
@@ -99,7 +99,7 @@ class CredentialRedirect(unittest.TestCase):
                 shim.kill()
         self.assertTrue(self.origin_hits, "the request never reached the fixture")
         self.assertEqual([h for h in seen if "sk-REDIRECT-CANARY" in str(h)], [],
-                         "gateway-shim forwarded the key to another origin")
+                         "shim forwarded the key to another origin")
 
 
 if __name__ == "__main__":

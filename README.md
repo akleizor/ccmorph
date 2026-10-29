@@ -36,7 +36,7 @@ ccmorph run  ------+--> personal   API key             -->  Anthropic API
 - `zsh` and the `claude` CLI. The installer names the command to install a missing
   one for your package manager, and stops. `python3` 3.8 or newer is needed only
   for the optional Remote Control add-on.
-- A release ships `gateway-shim` and `ccmorph-core` prebuilt for macOS and Linux (arm64, amd64).
+- A release ships `ccmorph-core` prebuilt for macOS and Linux (arm64, amd64).
   Installing from a clone needs Go to build it (`make shim`).
 - Optional: `cliproxyapi` for non-Anthropic endpoints, `fzf` for searchable
   pickers. The installer offers fzf through your package manager and

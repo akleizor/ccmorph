@@ -2,7 +2,7 @@
 """Native empty-thinking replay canary — not auto-run by pytest.
 
 Launches the real Claude Code binary against a fake loopback /v1/messages
-(no network, no spend), directly and through `libexec/gateway-shim
+(no network, no spend), directly and through `ccmorph-core shim
 --preserve-tool-ids`, and reads the SECOND main request's assistant content.
 That is the client's own assembly of the first reply, not a handmade SSE
 reader, so it shows whether the client retains and replays a streamed
@@ -170,7 +170,7 @@ def run_case(claude_bin, name, via_shim, timeout):
 
         if via_shim:
             shim = subprocess.Popen(
-                [str(SHIM), "0", base, "--preserve-tool-ids",
+                [*SHIM, "0", base, "--preserve-tool-ids",
                  f"--parent-pid={os.getpid()}"],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             banner = shim.stdout.readline().strip()

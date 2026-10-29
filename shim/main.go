@@ -24,7 +24,7 @@ func envSeconds(getenv func(string) string, name string, def float64) (time.Dura
 	}
 	f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
 	if err != nil || f < 0 {
-		return 0, fmt.Errorf("gateway-shim: %s must be a number of seconds, got %q", name, v)
+		return 0, fmt.Errorf("shim: %s must be a number of seconds, got %q", name, v)
 	}
 	return time.Duration(f * float64(time.Second)), nil
 }
@@ -52,13 +52,13 @@ func Listen(h Hooks, o Options, getenv func(string) string) (*http.Server, net.L
 	s.setClients()
 	if spec := getenv("CCMORPH_MODEL_ROUTE"); spec != "" {
 		if s.Routes, err = newModelRoutes(spec, s.remote); err != nil {
-			return nil, nil, fmt.Errorf("gateway-shim: %w", err)
+			return nil, nil, fmt.Errorf("shim: %w", err)
 		}
 	}
 	if raw := getenv("CCMORPH_INBOUND"); raw != "" {
 		in, err := parseInbound(raw)
 		if err != nil {
-			return nil, nil, fmt.Errorf("gateway-shim: CCMORPH_INBOUND: %w", err)
+			return nil, nil, fmt.Errorf("shim: CCMORPH_INBOUND: %w", err)
 		}
 		s.Inbound = in
 	}
@@ -69,7 +69,7 @@ func Listen(h Hooks, o Options, getenv func(string) string) (*http.Server, net.L
 	// Loopback only; no reverse lookup of the name (it can stall startup on macOS).
 	ln, err := net.Listen("tcp4", "127.0.0.1:"+strconv.Itoa(o.Port))
 	if err != nil {
-		return nil, nil, fmt.Errorf("gateway-shim: %w", err)
+		return nil, nil, fmt.Errorf("shim: %w", err)
 	}
 	return &http.Server{Handler: s, ErrorLog: nil}, ln, nil
 }
@@ -140,7 +140,7 @@ func Main(h Hooks) {
 	}
 	port, err := strconv.Atoi(strings.TrimSpace(args[0]))
 	if err != nil {
-		die(fmt.Sprintf("gateway-shim: invalid port %q", args[0]))
+		die(fmt.Sprintf("shim: invalid port %q", args[0]))
 	}
 	srv, ln, err := Listen(h, Options{Port: port, Target: args[1], PreserveIDs: flags["--preserve-tool-ids"],
 		RandomDeviceID: flags["--random-device-id"], RetryTransport: flags["--retry-transport"]}, os.Getenv)
@@ -160,6 +160,6 @@ func Main(h Hooks) {
 			}
 		}()
 	}
-	fmt.Printf("gateway-shim :%d -> %s\n", ln.Addr().(*net.TCPAddr).Port, args[1])
+	fmt.Printf("shim :%d -> %s\n", ln.Addr().(*net.TCPAddr).Port, args[1])
 	die(srv.Serve(ln).Error())
 }

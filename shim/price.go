@@ -98,7 +98,7 @@ func newPriceBook(upstream string) *priceBook {
 func fetchPrices() ([]byte, error) {
 	client := &http.Client{Timeout: 20 * time.Second}
 	req, _ := http.NewRequest("GET", pricesURL, nil)
-	req.Header.Set("User-Agent", "ccmorph-gateway-shim") // models.dev answers 403 to Go's default
+	req.Header.Set("User-Agent", "ccmorph-shim") // models.dev answers 403 to Go's default
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

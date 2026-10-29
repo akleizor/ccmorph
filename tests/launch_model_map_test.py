@@ -35,7 +35,7 @@ FULL = "claude-sonnet-5-5[1m]"
 BARE = "claude-sonnet-5-5"
 LIB_FILES = (
     "bin/ccmorph", "lib/ccmorph.sh", *sorted(f"lib/{p.name}" for p in (ROOT / "lib").glob("ccmorph-*.zsh")),
-    "libexec/ccmorph-core", "libexec/gateway-shim",
+    "libexec/ccmorph-core",
     "share/window-sources.json", "share/model-catalogue.json",
 )
 

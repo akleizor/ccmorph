@@ -792,11 +792,11 @@ func (s *Server) resolve(body []byte, key string) ([]byte, string) {
 	chosen := resolveModel(base, served)
 	if chosen == base {
 		if len(served) > 0 && !served[base] {
-			fmt.Fprintf(os.Stderr, "gateway-shim: %s is not served and no same-family model of "+
+			fmt.Fprintf(os.Stderr, "shim: %s is not served and no same-family model of "+
 				"that version or newer is; sending it unchanged\n", base)
 		}
 		return body, base
 	}
-	fmt.Fprintf(os.Stderr, "gateway-shim: %s is not served; sending newest same-family %s\n", base, chosen)
+	fmt.Fprintf(os.Stderr, "shim: %s is not served; sending newest same-family %s\n", base, chosen)
 	return withModel(d, chosen+asked[len(base):]), chosen
 }

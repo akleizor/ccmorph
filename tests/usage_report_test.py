@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""gateway-shim report: numbers from fixture usage rows and outcomes, and no identifiers."""
+"""shim report: numbers from fixture usage rows and outcomes, and no identifiers."""
 
 import datetime
 import json
@@ -47,7 +47,7 @@ class ReportTest(unittest.TestCase):
     def report(self, *args):
         env = {"PATH": os.environ["PATH"],
                "XDG_STATE_HOME": str(self.state)}
-        done = subprocess.run([str(SHIM), "report", *args], env=env,
+        done = subprocess.run([*SHIM, "report", *args], env=env,
                               capture_output=True, text=True, timeout=HANG_TIMEOUT)
         self.assertEqual(done.returncode, 0, done.stderr)
         return done.stdout
@@ -246,7 +246,7 @@ class ReportTest(unittest.TestCase):
         env = {"PATH": os.environ["PATH"], "XDG_STATE_HOME": str(self.state)}
         for days in ("inf", "1000000000", "999999999", "1000000", "nan", "-1", "0"):
             with self.subTest(days=days):
-                done = subprocess.run([str(SHIM), "report", "--days", days],
+                done = subprocess.run([*SHIM, "report", "--days", days],
                                       env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
                 self.assertNotEqual(done.returncode, 0)
                 self.assertNotIn("Traceback", done.stderr)

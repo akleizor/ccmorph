@@ -1,9 +1,12 @@
-// Package modelwindow is the Go port of libexec/model-window: it resolves and
-// stores model context windows in <profile>.conf. Manual context_window.<model>
-// entries beat context_discovered metadata bound to the profile's route, and no
-// resolver or setter sends a network request. The registry package builds on its
-// conf reader and writer.
-package modelwindow
+// Package ctxwindow is a model's context window: finding it and storing it. It
+// backs `ccmorph-core model-window` (WindowMain), which resolves and stores
+// windows in <profile>.conf, and `ccmorph-core context-probe` (ProbeMain), which
+// discovers them. Manual context_window.<model> entries beat context_discovered
+// metadata bound to the profile's route. Resolvers and setters send no network
+// request; discovery reads gateway-declared limits from /v1/models, falls back
+// to the models.dev catalogue, and runs paid probes only when the operator passes
+// --allow-inference for one profile and model.
+package ctxwindow
 
 import (
 	"context"

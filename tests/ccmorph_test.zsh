@@ -4348,7 +4348,7 @@ PYCTX
 # Writes a context_discovered=<json> blob whose route fingerprint matches the
 # profile's CURRENT conf contents, so resolve()'s discovery lookup (which
 # includes glob-pattern matching, unlike manual context_window.* keys) accepts
-# it. The route hash restates modelwindow.RouteFingerprint; a drift fails the
+# it. The route hash restates ctxwindow.RouteFingerprint; a drift fails the
 # tests that read the record back.
 write_profile_discovered() {
   local name="$1"

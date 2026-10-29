@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/akleizor/ccmorph/modelwindow"
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/pycompat"
 	"github.com/akleizor/ccmorph/settingscompose"
 )
@@ -203,7 +203,7 @@ func walls(profile, conf string) map[string]int64 {
 			os.Unsetenv("MODEL_WINDOW_PROFILE_CONF")
 		}
 	}()
-	return modelwindow.ProfileWindows(profile)
+	return ctxwindow.ProfileWindows(profile)
 }
 
 var oneMTag = regexp.MustCompile(`(?i)\[1m\]`)

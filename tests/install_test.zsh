@@ -17,11 +17,11 @@ passed=0; failed=0
 ok()   { print -r -- "ok: $1"; (( ++passed )) }
 fail() { print -r -- "FAIL: $1"; (( ++failed )) }
 
-# gateway-shim and ccmorph-core are compiled, so a checkout has none until
+# ccmorph-core is compiled, so a checkout has none until
 # `make shim` builds them; the installer copies those binaries and refuses to run
 # without them.
-[[ -x "$REPO/libexec/gateway-shim" && -x "$REPO/libexec/ccmorph-core" ]] || make -C "$REPO" shim >/dev/null 2>&1
-[[ -x "$REPO/libexec/gateway-shim" && -x "$REPO/libexec/ccmorph-core" ]] || { print -r -- "FAIL: no libexec/gateway-shim or libexec/ccmorph-core and 'make shim' did not build them (needs Go)"; exit 1 }
+[[ -x "$REPO/libexec/ccmorph-core" ]] || make -C "$REPO" shim >/dev/null 2>&1
+[[ -x "$REPO/libexec/ccmorph-core" ]] || { print -r -- "FAIL: no libexec/ccmorph-core and 'make shim' did not build it (needs Go)"; exit 1 }
 
 fresh_env() {  # $1 = case dir; prints nothing, sets HOME/ZDOTDIR/PATH stubs
   local d="$TMP/$1"
@@ -51,7 +51,7 @@ run_installer "$d"; rc=$?
 # along (this is what keeps any other product from shipping inside ccmorph),
 # and nothing missing either, which subsumes a per-component presence loop.
 (( ${#module_files} )) || fail "no ccmorph-*.zsh module found beside ccmorph.sh — the manifest below would be silently short"
-want=(bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/gateway-shim libexec/ccmorph-core share/model-catalogue.json share/window-sources.json local.sh.example profile.conf.example install.sh profiles)
+want=(bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/ccmorph-core share/model-catalogue.json share/window-sources.json local.sh.example profile.conf.example install.sh profiles)
 got=(${(f)"$(cd "$d/home/.config/ccmorph" && print -l *(N) {bin,lib,libexec,share}/*(N.) | grep -vxE 'bin|lib|libexec|share')"})
 extra=(${got:|want}); missing=(${want:|got})
 (( ${#extra} == 0 && ${#missing} == 0 )) \
@@ -78,18 +78,18 @@ grep -qF '# >>> ccmorph >>>' "$d/home/.zshrc" \
   && fail "installer wired the rc — ccmorph needs no shell integration" \
   || ok "rc left untouched"
 
-# --- 1b. no gateway-shim binary for this platform: install fails, says why -----
+# --- 1b. no ccmorph-core binary for this platform: install fails, says why -----
 # The binary is the one component a checkout does not track. An installer that
 # carried on without it would leave a launch that dies at its first request.
 d=$(fresh_env nobinary)
 mkdir -p "$d/src"
-(cd "$REPO" && tar --exclude=./.git --exclude=./.claude --exclude=./dist --exclude='./libexec/gateway-shim*' -cf - .) | tar -xf - -C "$d/src"
+(cd "$REPO" && tar --exclude=./.git --exclude=./.claude --exclude=./dist --exclude='./libexec/ccmorph-core*' -cf - .) | tar -xf - -C "$d/src"
 env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin:/opt/homebrew/bin" \
   zsh "$d/src/install.sh" >"$d/out" 2>&1 </dev/null; rc=$?
-(( rc != 0 )) && ok "install without a gateway-shim binary exits non-zero" || fail "install without a binary exited 0"
-grep -qF 'No gateway-shim binary for' "$d/out" && grep -qF "make shim" "$d/out" \
+(( rc != 0 )) && ok "install without a ccmorph-core binary exits non-zero" || fail "install without a binary exited 0"
+grep -qF 'No ccmorph-core binary for' "$d/out" && grep -qF "make shim" "$d/out" \
   && ok "the missing binary is named, with the fix" || { fail "no clear message for a missing binary"; cat "$d/out" }
-[[ ! -e "$d/home/.config/ccmorph/libexec/gateway-shim" ]] \
+[[ ! -e "$d/home/.config/ccmorph/libexec/ccmorph-core" ]] \
   && ok "nothing half-installed as the shim" || fail "a shim was placed despite no binary"
 
 # --- 2. legacy startup wiring is reported but never edited --------------------
@@ -114,7 +114,7 @@ d=$(fresh_env inplace)
 target="$d/home/.config/ccmorph"
 mkdir -p "$target"
 mkdir -p "$target"/{bin,lib,libexec,share}
-for f in bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/gateway-shim libexec/ccmorph-core share/model-catalogue.json share/window-sources.json share/local.sh.example share/profile.conf.example install.sh; do
+for f in bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/ccmorph-core share/model-catalogue.json share/window-sources.json share/local.sh.example share/profile.conf.example install.sh; do
   cp "$REPO/$f" "$target/$f"
 done
 env -i HOME="$d/home" ZDOTDIR="$d/home" \
@@ -231,7 +231,7 @@ print 'active-marker'                              > "$cfg/active"
 # libexec/ccmorph-adapter in its route spec for a mid-session /model (the shim
 # execs it for --ensure-config), so an upgrade that deletes that file breaks
 # the switch under the live session (#52).
-for h in ccmorph-adapter model-window settings-compose refresh-model-registry; do
+for h in ccmorph-adapter model-window settings-compose refresh-model-registry gateway-shim; do
   print -r -- "#!/usr/bin/env python3\n# v2-marker-$h" > "$cfg/libexec/$h"
   chmod +x "$cfg/libexec/$h"
 done
@@ -240,11 +240,11 @@ done
 # in place leaves a stale code-signature cache and macOS kills it on launch (exit 137).
 # A hardlink keeps the old file reachable: it still holds the marker only if the
 # installer replaced the shim instead of rewriting it (inode numbers can be reused).
-print -n MARK >> "$cfg/libexec/gateway-shim"
-ln "$cfg/libexec/gateway-shim" "$cfg/old-shim"
+print -n MARK >> "$cfg/libexec/ccmorph-core"
+ln "$cfg/libexec/ccmorph-core" "$cfg/old-shim"
 run_installer "$d"; rc=$?
-[[ "$(tail -c 4 "$cfg/old-shim")" == MARK && "$(tail -c 4 "$cfg/libexec/gateway-shim")" != MARK ]] \
-  && ok "re-run replaces gateway-shim instead of overwriting it" || fail "re-run overwrote gateway-shim in place"
+[[ "$(tail -c 4 "$cfg/old-shim")" == MARK && "$(tail -c 4 "$cfg/libexec/ccmorph-core")" != MARK ]] \
+  && ok "re-run replaces ccmorph-core instead of overwriting it" || fail "re-run overwrote ccmorph-core in place"
 rm -f "$cfg/old-shim"
 [[ $rc -eq 0 ]] && ok "re-run exits 0" || { fail "re-run rc=$rc"; cat "$d/out" }
 
@@ -257,11 +257,11 @@ rm -f "$cfg/old-shim"
 # The other three retired helpers are dead weight no running process names:
 # they are not in any route spec and nothing execs them mid-session.
 retired_left=()
-for h in model-window settings-compose refresh-model-registry; do
+for h in model-window settings-compose refresh-model-registry gateway-shim; do
   [[ -e "$cfg/libexec/$h" ]] && retired_left+=("$h")
 done
 (( ${#retired_left} == 0 )) \
-  && ok "upgrade still clears the three helpers nothing running names" \
+  && ok "upgrade still clears the helpers nothing running names" \
   || fail "upgrade left retired helpers behind: ${retired_left[*]}"
 
 # Every piece of user state survives byte-for-byte.

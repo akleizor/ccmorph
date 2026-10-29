@@ -291,15 +291,15 @@ if [[ "$SRC" != "$CONFIG_REAL" ]]; then
   cp "$SRC/share/profile.conf.example" "$CONFIG_DIR/profile.conf.example"
 fi
 chmod +x "${EXECUTABLES[@]/#/$CONFIG_DIR/}"
-# gateway-shim and ccmorph-core are compiled Go, so they are the components that
-# are not tracked files. A release tarball carries one prebuilt binary of each per
+# ccmorph-core is compiled Go, so it is the component that is not a tracked
+# file. A release tarball carries one prebuilt binary per
 # platform (<name>-<os>-<arch>, from `make dist`); a checkout carries the ones
 # `make shim` built. Nothing is compiled here: an installer that needs a Go
 # toolchain on a user's machine is a second dependency for one helper.
 _shim_os="${$(uname -s):l}"
 _shim_arch="$(uname -m)"
 case "$_shim_arch" in x86_64) _shim_arch=amd64 ;; aarch64) _shim_arch=arm64 ;; esac
-for _name in gateway-shim ccmorph-core; do
+for _name in ccmorph-core; do
   _shim=""
   for _f in "$SRC/libexec/$_name-$_shim_os-$_shim_arch" "$SRC/libexec/$_name"; do
     [[ -f "$_f" && -x "$_f" ]] && { _shim="$_f"; break }
@@ -334,7 +334,7 @@ rm -f "$BIN_DIR/ccrelay"
 # with a message about gateway availability that names neither the update nor
 # the restart (#52). The old copy costs only disk now that lib/ no longer calls
 # it, and no installer ever writes the path again, so it can simply stay.
-rm -f "$CONFIG_DIR"/libexec/{model-window,settings-compose,refresh-model-registry}
+rm -f "$CONFIG_DIR"/libexec/{model-window,settings-compose,refresh-model-registry,gateway-shim}
 c_ok "Installed infrastructure to $CONFIG_DIR and the ccmorph command to $BIN_DIR"
 
 # Startup files are user-owned. Older releases may have left a managed block;

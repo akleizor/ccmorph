@@ -1,4 +1,4 @@
-package contextprobe
+package ctxwindow
 
 import (
 	"bytes"
@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/akleizor/ccmorph/modelwindow"
 	"github.com/akleizor/ccmorph/pycompat"
 )
 
@@ -69,8 +68,8 @@ func state(t *testing.T) string {
 	old := fetchJSONDict
 	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) *pycompat.Obj { return pycompat.NewObj() }
 	t.Cleanup(func() { fetchJSONDict = old })
-	ShareDir = func() string { return filepath.Join(dir, "share") }
-	t.Cleanup(func() { ShareDir = func() string { return pycompat.Join(libDir(), "..", "share") } })
+	probeShareDir = func() string { return filepath.Join(dir, "share") }
+	t.Cleanup(func() { probeShareDir = func() string { return pycompat.Join(libDir(), "..", "share") } })
 	return dir
 }
 
@@ -333,7 +332,7 @@ func TestHeldProfileLockCannotOutliveTheDeadline(t *testing.T) {
 	var out, errb bytes.Buffer
 	done := make(chan int, 1)
 	go func() {
-		done <- Main([]string{"--profile", "gw", "--deadline", "0.5"}, strings.NewReader(""), &out, &errb)
+		done <- ProbeMain([]string{"--profile", "gw", "--deadline", "0.5"}, strings.NewReader(""), &out, &errb)
 	}()
 	var code int
 	select {
@@ -346,7 +345,7 @@ func TestHeldProfileLockCannotOutliveTheDeadline(t *testing.T) {
 	if code != 1 || !strings.Contains(errb.String(), "Save deadline reached") {
 		t.Fatalf("code %d stderr %q", code, errb.String())
 	}
-	if _, fields := modelwindow.ReadConf(filepath.Join(dir, "gw.conf")); fields["context_discovered"] != "" {
+	if _, fields := ReadConf(filepath.Join(dir, "gw.conf")); fields["context_discovered"] != "" {
 		t.Fatal("a value was written past the deadline")
 	}
 }
@@ -383,8 +382,8 @@ func TestScopeExclusionsAndNearMisses(t *testing.T) {
 	listModelsFn = func(ctx context.Context, base, key string, timeout time.Duration, op Opener) ([]string, *pycompat.OMap[int64], []*pycompat.Obj, error) {
 		return nil, nil, nil, &URLError{context.DeadlineExceeded}
 	}
-	os.WriteFile(filepath.Join(ShareDir(), "x"), nil, 0) // no-op: share dir may not exist
-	put(t, filepath.Join(ShareDir(), "model-catalogue.json"), `{"retrieved":"2026-01-01","models":{"openai/gpt-5":{"limit":{"context":400000,"input":272000}}}}`)
+	os.WriteFile(filepath.Join(probeShareDir(), "x"), nil, 0) // no-op: share dir may not exist
+	put(t, filepath.Join(probeShareDir(), "model-catalogue.json"), `{"retrieved":"2026-01-01","models":{"openai/gpt-5":{"limit":{"context":400000,"input":272000}}}}`)
 	o.Only = map[string]bool{"gpt-5": true}
 	out := captureStderr(t)
 	r = ProbeAll(context.Background(), []string{"sample"}, o)
@@ -422,12 +421,12 @@ func TestCatalogueTagLifecycle(t *testing.T) {
 	}
 
 	// Commit stores the value and its tag.
-	identities := map[string]*modelwindow.Identity{"gw": modelwindow.ProfileIdentity("gw")}
+	identities := map[string]*Identity{"gw": ProfileIdentity("gw")}
 	if code, _ := Commit(context.Background(), r.Values, nil, identities, r.Sources); code != 0 {
 		t.Fatal("commit failed")
 	}
-	_, fields := modelwindow.ReadConf(filepath.Join(dir, "gw.conf"))
-	if s, ok := modelwindow.DiscoveredSources(fields).Get("acme/solo"); !ok || getv(s, "source") != "catalogue" {
+	_, fields := ReadConf(filepath.Join(dir, "gw.conf"))
+	if s, ok := DiscoveredSources(fields).Get("acme/solo"); !ok || getv(s, "source") != "catalogue" {
 		t.Fatal("tag not stored")
 	}
 
@@ -504,7 +503,7 @@ func TestCatalogueWindow(t *testing.T) {
 	}
 }
 
-// Python: CanonicalCatalogueFallback (the function lives in modelwindow, shared with the resolver).
+// Python: CanonicalCatalogueFallback (the function lives in the conf store, shared with the resolver).
 func TestCanonicalCatalogueWindow(t *testing.T) {
 	c := parse(t, `{"swiss-ai/apertus-8b":{"limit":{"context":65536}},"acme/solo":{"limit":{"context":128000,"input":100000}},
  "acme/shared-name":{"limit":{"context":1}},"other/shared-name":{"limit":{"context":2}},
@@ -520,7 +519,7 @@ func TestCanonicalCatalogueWindow(t *testing.T) {
 		{"shared-name", "", 0}, {"shared-name", "wrong-co", 0}, {"shared-name", "acme", 1},
 		{"widget", "acme", 300000}, {"conflict", "acme", 0}, {"partial", "acme", 300000}, {"nope", "acme", 0},
 	} {
-		got := modelwindow.CanonicalCatalogueWindow(c, tc.model, tc.owner)
+		got := CanonicalCatalogueWindow(c, tc.model, tc.owner)
 		if (got == nil) != (tc.want == 0) || (got != nil && got.Value != tc.want) {
 			t.Errorf("%s/%s: got %v want %d", tc.owner, tc.model, got, tc.want)
 		}
@@ -530,11 +529,11 @@ func TestCanonicalCatalogueWindow(t *testing.T) {
 // Python: catalogue_offline_test.
 func TestBlockedCatalogueUsesTheBundledSnapshot(t *testing.T) {
 	state(t)
-	put(t, filepath.Join(ShareDir(), "model-catalogue.json"),
+	put(t, filepath.Join(probeShareDir(), "model-catalogue.json"),
 		`{"retrieved":"2026-09-01","models":{"openai/gpt-5":{"limit":{"context":400000,"input":272000}}}}`)
 	out := captureStderr(t)
 	cat := FetchCanonicalCatalogue(context.Background(), time.Second)
-	got := modelwindow.CanonicalCatalogueWindow(cat, "gpt-5", "")
+	got := CanonicalCatalogueWindow(cat, "gpt-5", "")
 	if got == nil || got.Value != 272000 || *got.Input != 272000 || *got.Context != 400000 {
 		t.Fatal(got)
 	}
@@ -901,7 +900,7 @@ func TestStaleResultIsRejectedAndOtherProfileSurvives(t *testing.T) {
 	for _, n := range []string{"a", "b"} {
 		put(t, filepath.Join(dir, n+".conf"), "type=apikey\napi_key=canary\n")
 	}
-	ids := map[string]*modelwindow.Identity{"a": modelwindow.ProfileIdentity("a"), "b": modelwindow.ProfileIdentity("b")}
+	ids := map[string]*Identity{"a": ProfileIdentity("a"), "b": ProfileIdentity("b")}
 	captureStderr(t)
 	v := pycompat.NewOMap[int64]()
 	v.Set("a:m", 500000)
@@ -930,13 +929,13 @@ func TestNewModelWritePreservesExistingValuesAndManualPin(t *testing.T) {
 	}{{"one", 200000}, {"two", 300000}} {
 		v := pycompat.NewOMap[int64]()
 		v.Set("a:"+c.m, c.v)
-		ids := map[string]*modelwindow.Identity{"a": modelwindow.ProfileIdentity("a")}
+		ids := map[string]*Identity{"a": ProfileIdentity("a")}
 		if code, _ := Commit(context.Background(), v, nil, ids, nil); code != 0 {
 			t.Fatal(code)
 		}
 	}
 	prior := priorValues(nil)
-	if len(prior) != 2 || prior["a:one"] != 200000 || prior["a:two"] != 300000 || modelwindow.ContextValue("a", "manual") != "100000" {
+	if len(prior) != 2 || prior["a:one"] != 200000 || prior["a:two"] != 300000 || ContextValue("a", "manual") != "100000" {
 		t.Fatal(prior)
 	}
 }
@@ -1043,7 +1042,7 @@ func TestTimeoutBoundsEachWaitNotTheWholeTransfer(t *testing.T) {
 // Python: provider_windows contract.
 func TestProviderSourceContract(t *testing.T) {
 	dir := state(t)
-	put(t, filepath.Join(ShareDir(), "window-sources.json"), `{"sources":[{"name":"t","owned_by":["openai"],"url":"https://t.invalid/m.json",
+	put(t, filepath.Join(probeShareDir(), "window-sources.json"), `{"sources":[{"name":"t","owned_by":["openai"],"url":"https://t.invalid/m.json",
 	 "rows":"models","id":"slug","default":"context_window","window":"max_context_window"}]}`)
 	_ = dir
 	catalogue := `{"models":[{"slug":"gpt-6-sol","context_window":272000,"max_context_window":872000},
@@ -1116,8 +1115,8 @@ func TestLaunchSizesOnlyNewModelsAndRemembersMisses(t *testing.T) {
 	dir := state(t)
 	conf := filepath.Join(dir, "gw.conf")
 	put(t, conf, "type=apikey\nbase_url=https://gw.invalid\napi_key=canary\nexcluded_models=hidden-new\n")
-	_, fields := modelwindow.ReadConf(conf)
-	route := modelwindow.RouteFingerprint(fields)
+	_, fields := ReadConf(conf)
+	route := RouteFingerprint(fields)
 	f, _ := os.OpenFile(conf, os.O_APPEND|os.O_WRONLY, 0)
 	fmt.Fprintf(f, `context_discovered={"route":%q,"models":{"known-model":123456}}`+"\n", route)
 	f.Close()
@@ -1136,18 +1135,18 @@ func TestLaunchSizesOnlyNewModelsAndRemembersMisses(t *testing.T) {
 	if c := SizeListing(context.Background(), "gw", listing, "https://gw.invalid", "canary", nil); c != 0 {
 		t.Fatal(c)
 	}
-	w := modelwindow.ProfileWindows("gw")
+	w := ProfileWindows("gw")
 	if len(w) != 3 || w["known-model"] != 123456 || w["declared-new"] != 500000 || w["gpt-5"] != 272000 {
 		t.Fatal(w)
 	}
-	_, fields = modelwindow.ReadConf(conf)
+	_, fields = ReadConf(conf)
 	today := time.Now().UTC().Format("2006-01-02")
-	if m := modelwindow.DiscoveredMisses(fields); m.Len() != 1 {
+	if m := DiscoveredMisses(fields); m.Len() != 1 {
 		t.Fatal(m.Keys())
 	} else if d, _ := m.Get("mystery-new"); d != today {
 		t.Fatal(d)
 	}
-	if s, _ := modelwindow.DiscoveredSources(fields).Get("gpt-5"); getv(s, "source") != "catalogue" || fetches == 0 {
+	if s, _ := DiscoveredSources(fields).Get("gpt-5"); getv(s, "source") != "catalogue" || fetches == 0 {
 		t.Fatal("catalogue estimate not tagged")
 	}
 	for _, line := range []string{"sized gw:declared-new 500000\n", "sized gw:gpt-5 272000 (catalogue estimate)\n", "no size for gw:mystery-new; launch fallback applies\n"} {
@@ -1170,9 +1169,9 @@ func TestLaunchSizesOnlyNewModelsAndRemembersMisses(t *testing.T) {
 	// A later value retires the miss.
 	v := pycompat.NewOMap[int64]()
 	v.Set("mystery-new", 64000)
-	modelwindow.SaveDiscovered("gw", v, modelwindow.ProfileIdentity("gw"), true, nil, nil)
-	_, fields = modelwindow.ReadConf(conf)
-	if modelwindow.DiscoveredMisses(fields).Len() != 0 {
+	SaveDiscovered("gw", v, ProfileIdentity("gw"), true, nil, nil)
+	_, fields = ReadConf(conf)
+	if DiscoveredMisses(fields).Len() != 0 {
 		t.Fatal("miss survived")
 	}
 }
@@ -1220,7 +1219,7 @@ func TestProviderProfileKeepsWindowsSizedThroughItsBridge(t *testing.T) {
 	if c := SizeListing(context.Background(), "codex", body, "http://127.0.0.1:54321", "ephemeral", nil); c != 0 {
 		t.Fatal(c)
 	}
-	if w := modelwindow.ProfileWindows("codex"); len(w) != 1 || w["gpt-6-sol"] != 272000 {
+	if w := ProfileWindows("codex"); len(w) != 1 || w["gpt-6-sol"] != 272000 {
 		t.Fatal(w)
 	}
 }
@@ -1235,18 +1234,18 @@ func TestOpenRouterShapedListingNeedsNoManualNumber(t *testing.T) {
 	if c := SizeListing(context.Background(), "or", string(fixture), "https://openrouter.ai/api", "canary", nil); c != 0 {
 		t.Fatal(c)
 	}
-	_, fields := modelwindow.ReadConf(filepath.Join(dir, "or.conf"))
+	_, fields := ReadConf(filepath.Join(dir, "or.conf"))
 	for k := range fields {
 		if strings.HasPrefix(k, "context_window.") {
 			t.Fatal("a number was hand-entered")
 		}
 	}
 	for model, want := range map[string]int64{"anthropic/claude-sonnet-4": 1000000, "openai/gpt-5": 400000, "meta-llama/llama-4-maverick": 900000} {
-		if r := modelwindow.Resolve("or", model); r.Window != want || r.Unprobed {
+		if r := Resolve("or", model); r.Window != want || r.Unprobed {
 			t.Errorf("%s: %+v", model, r)
 		}
 	}
-	if _, ok := modelwindow.ProfileWindows("or")["openai/text-embedding-3-large"]; ok {
+	if _, ok := ProfileWindows("or")["openai/text-embedding-3-large"]; ok {
 		t.Fatal("a non-chat model was sized")
 	}
 }
@@ -1284,7 +1283,7 @@ func TestMainArgumentsAndReporting(t *testing.T) {
 		{"--listing-stdin"}, {"--nope"}, {"--deadline", "inf"}, {"--deadline", "0"},
 	} {
 		var out, errb bytes.Buffer
-		if code := Main(args, strings.NewReader(""), &out, &errb); code != 2 || !strings.Contains(errb.String(), "error:") || strings.Contains(errb.String(), "Traceback") {
+		if code := ProbeMain(args, strings.NewReader(""), &out, &errb); code != 2 || !strings.Contains(errb.String(), "error:") || strings.Contains(errb.String(), "Traceback") {
 			t.Errorf("%v: %d %q", args, code, errb.String())
 		}
 	}
@@ -1292,13 +1291,13 @@ func TestMainArgumentsAndReporting(t *testing.T) {
 		t.Fatal("a refused invocation reached a route")
 	}
 	var out, errb bytes.Buffer
-	code := Main([]string{"--profile", "gw"}, strings.NewReader(""), &out, &errb)
+	code := ProbeMain([]string{"--profile", "gw"}, strings.NewReader(""), &out, &errb)
 	if code != 1 || !strings.Contains(errb.String(), "1 unresolved") || !strings.Contains(errb.String(), "ccmorph context gw gpt-5.6-sol <tokens>") || strings.Contains(out.String(), "matches discovery") {
 		t.Fatal(code, errb.String())
 	}
 	out.Reset()
 	errb.Reset()
-	code = Main([]string{"--profile", "gw", "--check"}, strings.NewReader(""), &out, &errb)
+	code = ProbeMain([]string{"--profile", "gw", "--check"}, strings.NewReader(""), &out, &errb)
 	if code != 2 || out.String() != "DRIFT gw:known: None -> 922000\n" { // drift wins over the unresolved exit
 		t.Fatal(code, out.String())
 	}
@@ -1456,7 +1455,7 @@ func shippedSources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	put(t, filepath.Join(ShareDir(), "window-sources.json"), string(b))
+	put(t, filepath.Join(probeShareDir(), "window-sources.json"), string(b))
 }
 
 func codexListing() string {
@@ -1471,8 +1470,8 @@ func TestUnreachableSourceLeavesTheModelForTheNextLaunch(t *testing.T) {
 	if c := SizeListing(context.Background(), "codex", codexListing(), "http://127.0.0.1:1", "k", nil); c != 0 {
 		t.Fatal(c)
 	}
-	_, fields := modelwindow.ReadConf(filepath.Join(dir, "codex.conf"))
-	if len(modelwindow.ProfileWindows("codex")) != 0 || modelwindow.DiscoveredMisses(fields).Len() != 0 {
+	_, fields := ReadConf(filepath.Join(dir, "codex.conf"))
+	if len(ProfileWindows("codex")) != 0 || DiscoveredMisses(fields).Len() != 0 {
 		t.Fatal("a bare declaration was stored while the source was down")
 	}
 }
@@ -1504,7 +1503,7 @@ func TestUnreachableSourceIsFetchedOncePerRetryWindow(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("source fetched %d times: %v", n, urls)
 	}
-	if len(modelwindow.ProfileWindows("codex")) != 0 {
+	if len(ProfileWindows("codex")) != 0 {
 		t.Fatal("window stored")
 	}
 }

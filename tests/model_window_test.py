@@ -16,7 +16,7 @@ ROUTE_FIELDS = ("type", "base_url", "provider", "adapter", "api_key", "token")
 
 
 def route_fingerprint(fields):
-    """The route hash the conf writer stamps on a discovery record (modelwindow.RouteFingerprint)."""
+    """The route hash the conf writer stamps on a discovery record (ctxwindow.RouteFingerprint)."""
     return hashlib.sha256(json.dumps({key: fields.get(key, "") for key in ROUTE_FIELDS}, sort_keys=True).encode()).hexdigest()
 
 
@@ -136,7 +136,7 @@ class MappedTarget(unittest.TestCase):
     """A profile whose `model_map` rewrites the wire id is sized for the model the
     shim actually serves, not for the id the session asked for.
 
-    The gateway rewrite is final (`gateway-shim` `_resolve`): it replaces the body's
+    The gateway rewrite is final (`shim` `_resolve`): it replaces the body's
     model with the map's target before the request leaves, so the window that matters
     is the target's. Sizing the source instead hands a 1M-labelled alias a 1,000,000
     compaction budget behind a 128,000 wall, and the session dies past the wall

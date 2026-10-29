@@ -1,4 +1,4 @@
-package modelwindow
+package ctxwindow
 
 import (
 	"fmt"
@@ -14,11 +14,11 @@ import (
 	"github.com/akleizor/ccmorph/pycompat"
 )
 
-const usageText = "usage: model-window <profile> <model> | --context <profile> <model> [tokens|auto] | --migrate"
+const windowUsage = "usage: model-window <profile> <model> | --context <profile> <model> [tokens|auto] | --migrate"
 
-// Main runs `model-window <args>` (args exclude the program name) and returns its exit code.
-func Main(args []string, stdout, stderr io.Writer) (code int) {
-	if e := pycompat.Catch(func() { code = run(args, stdout, stderr) }); e != nil {
+// WindowMain runs `model-window <args>` (args exclude the program name) and returns its exit code.
+func WindowMain(args []string, stdout, stderr io.Writer) (code int) {
+	if e := pycompat.Catch(func() { code = windowRun(args, stdout, stderr) }); e != nil {
 		if e.Kind == pycompat.Other {
 			fmt.Fprintf(stderr, "model-window: %s: %s\n", e.Class, e.Msg)
 		} else {
@@ -29,7 +29,7 @@ func Main(args []string, stdout, stderr io.Writer) (code int) {
 	return code
 }
 
-func run(args []string, stdout, stderr io.Writer) int {
+func windowRun(args []string, stdout, stderr io.Writer) int {
 	switch {
 	case len(args) == 1 && args[0] == "--recover-cache-backups":
 		return RecoverCacheBackups(stderr)
@@ -91,7 +91,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if len(args) != 2 {
-		fmt.Fprintln(stderr, usageText)
+		fmt.Fprintln(stderr, windowUsage)
 		return 2
 	}
 	rec := Resolve(args[0], args[1])
@@ -101,14 +101,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stdout, rec.JSON())
 	return 0
-}
-
-func commas(n int64) string {
-	s := itoa(n)
-	for i := len(s) - 3; i > 0; i -= 3 {
-		s = s[:i] + "," + s[i:]
-	}
-	return s
 }
 
 // runLocked holds every named profile's lock while it runs a command, which

@@ -304,7 +304,7 @@ def keep_host(account_dir: str, folder: str) -> None:
 
 
 def start_adapter(route: str, parent: int, env: dict[str, str]) -> str:
-    """Return the loopback URL of the route's gateway edge (see gateway-shim)."""
+    """Return the loopback URL of the route's gateway edge (see shim)."""
     ready = tempfile.NamedTemporaryFile(prefix="ccmorph-rc-ready.", delete=False)
     # --model, as a normal ccmorph launch passes it: the adapter then verifies one
     # (cached) model. Without it every launch re-probes the whole gateway inventory,
