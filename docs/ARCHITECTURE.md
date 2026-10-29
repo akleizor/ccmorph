@@ -67,10 +67,10 @@ Each module has one purpose; a function lives in exactly one.
 
 The repository and the installed copy under `~/.config/ccmorph` share one layout:
 `bin/ccmorph` (the command), `lib/` (`ccmorph.sh` and the modules), `libexec/`
-(internal executables: `ccmorph-core` and `gateway-shim`, both Go and built by
-`make shim`; `ccmorph-core <adapter|settings-compose|model-window|context-probe>`
+(internal executable: `ccmorph-core`, Go, built by `make shim`;
+`ccmorph-core <adapter|shim|settings-compose|model-window|context-probe>`
 is the one binary every launch, install and zsh caller runs, from `cmd/ccmorph-core/`;
-`gateway-shim` is the standalone stock shim, `cmd/gateway-shim/`, for a profile that runs it directly.
+`ccmorph-core shim` is the standalone stock shim, for a script that runs it directly.
 No Python runs in the core: `python3` is needed only by the Remote Control add-on in `addons/remote-control/`) and `share/` (data:
 `model-catalogue.json`, `window-sources.json`). `lib/` finds `libexec/` and `share/`
 beside itself. `CCMORPH_LIB_DIR` names the `lib/` directory.
@@ -610,7 +610,7 @@ is identifier randomisation **[test]**:
 | `env.CCMORPH_RANDOM_DEVICE_ID=1` | `--random-device-id` | On `POST /v1/messages` and `/count_tokens`, `device_id` inside `metadata.user_id` (a JSON string) becomes a random 64-hex value minted once per session and stable within it (keyed by the session id, held in memory only). `session_id`, `account_uuid`, every other key and every header are untouched, so prompt caching and gateway affinity do not move. A body it cannot parse, or whose `user_id` is not that JSON shape, goes upstream byte-identical. |
 
 Generic gateway compatibility lives in `compat/`, which imports `shim` (never the
-reverse); the stock `cmd/gateway-shim` passes `compat.FromEnv()` to `shim.Main`. Each
+reverse); `ccmorph-core shim` passes `compat.FromEnv()` to `shim.Main`. Each
 rule is decided by the request's structure or the HTTP status, never by a gateway's
 error text. Always on: a `tool_reference` inside a `tool_result` whose `tool_name` the
 request does not declare in `tools` becomes a text block (declared references and every
@@ -652,7 +652,7 @@ keeps a blip from taking a single-provider route offline.
 
 ### The usage sidecar: one metadata row per response id
 
-The adapter hands the selected route to `gateway-shim` in
+The adapter hands the selected route to the shim in
 `CCMORPH_MODEL_ROUTE` (it needs the spec anyway to prepare a newly picked
 model). A shim holding that spec writes one metadata-only row for every
 `/v1/messages` response it relays, at
@@ -753,7 +753,7 @@ post; only the model work is skipped.
 The map applies to any matching request on that profile, including subagents; it
 does not install a default map. Existing RC `tier.*` pins
 run earlier in the proxy, so a map sees the pinned ID when a host has one.
-Outcomes are appended with `libexec/gateway-shim outcome <task>
+Outcomes are appended with `ccmorph-core shim outcome <task>
 accepted|rejected|escalated|parked` to `<state>/ccmorph/outcomes.jsonl`
 (`{task, outcome, timestamp}`), joined to rows by task.
 

@@ -24,6 +24,11 @@
   It finds each model's context window; the shared model registry it was named
   after was folded into each profile's `.conf` long ago. Users type
   `ccmorph probe`, which is unchanged.
+- **Breaking: `libexec/gateway-shim` is removed; the shim is `ccmorph-core shim`.**
+  One binary now ships per platform. A script that ran `libexec/gateway-shim ...`
+  (including `report`, `outcome` and `translator-user-agent`) must run
+  `libexec/ccmorph-core shim ...` with the same arguments. An upgrade deletes the
+  old file. `CCMORPH_SHIM_HOOKS` is unchanged: it still names your own build.
 
 ## v0.3.0 — 2026-10-28
 

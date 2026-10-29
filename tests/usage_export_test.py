@@ -59,7 +59,7 @@ def receipt(rid, model, stamp, cost=None, complete=True,
 
 
 def mapped_receipt(rid, stamp, cost=None):
-    """The exact row gateway-shim writes for a profile model map: the picker alias was
+    """The exact row shim writes for a profile model map: the picker alias was
     asked for with its [1m] marker, the gateway target answered, and the alias is the
     identity the client is told (asserted in gateway_shim_test.py)."""
     return receipt(rid, "claude-sonnet-5-5", stamp, cost=cost,
@@ -123,7 +123,7 @@ def test_two_over_limit_costs_total_a_finite_number_not_infinity(tmp_path):
 
 
 def test_the_exporter_refuses_exactly_the_costs_the_shim_refuses(tmp_path):
-    """The exporter's bound is the writer's own: gateway-shim's bucket filter keeps
+    """The exporter's bound is the writer's own: shim's bucket filter keeps
     a receipt's cost only below its COST_LIMIT, and this reader must never bill a
     value the writer would drop. The boundary is pinned from both sides — a cost the
     shim keeps still bills as a gateway cost, the limit itself (the first value it

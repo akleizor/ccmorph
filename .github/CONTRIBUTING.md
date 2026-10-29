@@ -2,7 +2,7 @@
 
 ## Verification
 
-`gateway-shim` and `ccmorph-core` are Go: build them once with `make shim` (Go from `go.mod`) before
+`ccmorph-core` is Go: build it once with `make shim` (Go from `go.mod`) before
 any suite, and run `go vet ./... && go test ./...` when you touch `shim/` or
 `cmd/`. While iterating, run only the tests for what you touched
 (`CCMORPH_TEST_FILTER=<name> zsh tests/ccmorph_test.zsh`,

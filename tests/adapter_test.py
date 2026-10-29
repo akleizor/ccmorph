@@ -23,7 +23,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from support import CORE, SHIM, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, adapter_cmd
+from support import CORE, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, adapter_cmd
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -248,7 +248,6 @@ class AdapterTest(unittest.TestCase):
         if constants or shim:
             fixture = self.home / "adapter-fixture"
             fixture.mkdir(exist_ok=True)
-            shutil.copy2(shim or SHIM, fixture / "gateway-shim")
             # The adapter takes its two timings from the environment.
             binary = fixture / "ccmorph-core"
             binary.unlink(missing_ok=True)  # a new inode: macOS kills a signed binary rewritten in place
@@ -290,7 +289,7 @@ class AdapterTest(unittest.TestCase):
 
     def install_serving_stub_translator(self):
         """A stub translator that really serves /v1/models, so both health
-        checks pass and the adapter reaches the gateway-shim."""
+        checks pass and the adapter reaches the shim."""
         stub = self.home / "stub-translator"
         stub.write_text(
             "#!/usr/bin/env python3\n"
@@ -595,7 +594,7 @@ class AdapterTest(unittest.TestCase):
 
     def test_id_recycling_upstream_is_classified_for_the_shim_addon(self):
         # Two probes, same deterministic id both times = recycling upstream;
-        # the gateway-shim add-on is interposed only for those (m-reasoner answers
+        # the shim add-on is interposed only for those (m-reasoner answers
         # without a tool call at all, so it is not flagged).
         self.run_adapter("--print-config")
         rows = json.loads(
@@ -970,7 +969,7 @@ class AdapterTest(unittest.TestCase):
         base = script.read_text()
         not_executable = self.home / "hooks-shim"
         not_executable.write_text("#!/bin/sh\n")
-        for path in ("/nonexistent/gateway-shim", str(not_executable)):
+        for path in ("/nonexistent/hooks-shim", str(not_executable)):
             script.write_text(base.replace(
                 "}\n", f'  print "CCMORPH_SHIM_HOOKS={path}"\n}}\n'))
             out = self.run_adapter()
@@ -998,7 +997,7 @@ class AdapterTest(unittest.TestCase):
 
     def test_claude_code_faces_the_gateway_shim_not_the_translator(self):
         # A stub translator that actually serves /v1/models, so both health
-        # checks pass and the adapter starts the gateway-shim. Claude Code must be
+        # checks pass and the adapter starts the shim. Claude Code must be
         # handed the shim's port, and that port must proxy to the translator.
         import urllib.request
         self.install_serving_stub_translator()

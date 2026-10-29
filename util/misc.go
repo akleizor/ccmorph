@@ -369,7 +369,7 @@ func execIndex(args []string) int {
 // runningAdapter prints "<pid>\t<holder>:<name>,..." for the profile's running adapter,
 // nothing when there is none, and __UNKNOWN__ when the process table cannot be read.
 // The holders are the spawned children worth checking (cliproxyapi; a
-// CCMORPH_SHIM_HOOKS gateway-shim build) and, when no gateway-shim child exists,
+// CCMORPH_SHIM_HOOKS build, any child but ccmorph-core) and, when no hooks child exists,
 // the adapter process itself as "shim": the stock shim is served in-process, so
 // its listener is the adapter's own.
 func runningAdapter(args []string, _ io.Reader, out, _ io.Writer) int {
@@ -435,14 +435,14 @@ func runningAdapter(args []string, _ io.Reader, out, _ io.Writer) int {
 				continue
 			}
 			if ci := execIndex(c.args); ci >= 0 {
-				if base := filepath.Base(c.args[ci]); base == "cliproxyapi" || base == "gateway-shim" {
+				if base := filepath.Base(c.args[ci]); base != "ccmorph-core" {
 					children = append(children, fmt.Sprintf("%d:%s", c.pid, base))
-					shimChild = shimChild || base == "gateway-shim"
+					shimChild = shimChild || base != "cliproxyapi"
 				}
 			}
 		}
 		// The stock shim is served inside the adapter process, not spawned (only
-		// a CCMORPH_SHIM_HOOKS build runs as a gateway-shim child): with no such
+		// a CCMORPH_SHIM_HOOKS build runs as a child): with no such
 		// child, the adapter's own pid is the listener doctor must be told to
 		// check — the port a live session's base_url points at.
 		if !shimChild {

@@ -1,4 +1,4 @@
-// Package compat is the stock gateway-shim's generic gateway compatibility: the
+// Package compat is the stock shim's generic gateway compatibility: the
 // request repairs and header rules that any Anthropic-compatible gateway may need.
 // Each rule is decided by the request's structure or the HTTP status code, never
 // by a gateway's error text. A custom build calls FromEnv and wraps the hooks it
@@ -273,6 +273,6 @@ func resendWithoutThinking(request, _ []byte) []byte {
 	if len(edits) == 0 {
 		return nil
 	}
-	fmt.Fprintln(os.Stderr, "gateway-shim: upstream answered 400; resending once without thinking blocks")
+	fmt.Fprintln(os.Stderr, "shim: upstream answered 400; resending once without thinking blocks")
 	return shim.Apply(request, edits)
 }

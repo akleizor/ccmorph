@@ -25,7 +25,7 @@ BUCKETS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_toke
 # A profile name becomes a folder name; anything else in it is replaced.
 UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 DAY_FILE = re.compile(r"\d{4}-\d{2}-\d{2}\.jsonl")
-# The largest dollar amount a float still holds to the cent, gateway-shim's own
+# The largest dollar amount a float still holds to the cent, shim's own
 # COST_LIMIT: its bucket filter keeps a receipt's cost only below it, so this reader
 # refuses the same range instead of billing a number the writer would never store.
 COST_LIMIT = 2 ** 53 / 100

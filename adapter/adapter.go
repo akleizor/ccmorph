@@ -327,7 +327,7 @@ func watchSignals(shutdown func(int)) {
 	go func() { <-ch; shutdown(0) }()
 }
 
-// frontDirectly serves an Anthropic-native gateway through the gateway-shim
+// frontDirectly serves an Anthropic-native gateway through the shim
 // alone: no translator and no rendered credential, since the shim relays the
 // client's own key. Same contract as the translator path.
 func frontDirectly(a *cliArgs, upstream, key, routeIdentity string, usable []Row,
@@ -389,7 +389,7 @@ func frontDirectly(a *cliArgs, upstream, key, routeIdentity string, usable []Row
 		// the inbound credential, and it must not be sent to a listener that may
 		// not be our own shim.
 		if shimProc.exited() || !time.Now().Before(deadline) {
-			logf("gateway-shim did not serve on :%d", port)
+			logf("shim did not serve on :%d", port)
 			shutdown(1)
 		}
 		if servingFn(port, cred) {
@@ -401,7 +401,7 @@ func frontDirectly(a *cliArgs, upstream, key, routeIdentity string, usable []Row
 	if extras["CCMORPH_SHIM_HOOKS"] != "" {
 		hooks = "; profile request hooks"
 	}
-	logf("gateway-shim interposed (Anthropic model ids; readable gateway errors%s)", hooks)
+	logf("shim interposed (Anthropic model ids; readable gateway errors%s)", hooks)
 	// Only a minted --inbound-token is printed; a file token is a long-lived
 	// credential whose stdout may be redirected to a file.
 	if a.inboundToken {
@@ -411,7 +411,7 @@ func frontDirectly(a *cliArgs, upstream, key, routeIdentity string, usable []Row
 	logf("serving profile %s on :%d -> %s (no translator)", a.profile, port, upstream)
 	for {
 		if shimProc.exited() {
-			logf("gateway-shim exited %d", shimProc.code())
+			logf("shim exited %d", shimProc.code())
 			shutdown(1)
 		}
 		a.checkParent(shutdown)
@@ -655,7 +655,7 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 	if stall := strings.TrimSpace(env["CCMORPH_STALL_TIMEOUT"]); stall != "" {
 		os.Setenv("CCMORPH_STALL_TIMEOUT", stall)
 	}
-	// Every route goes through the gateway edge (gateway-shim): Anthropic model
+	// Every route goes through the gateway edge (shim): Anthropic model
 	// ids in and out, a moving catalogue, readable errors, stall deadlines. A
 	// gateway that already speaks Anthropic needs no translator.
 	if a.auto && native && !a.printConfig {
@@ -800,7 +800,7 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 		shutdown(1)
 	}
 	shimProc.Store(sp)
-	waitReady(sp, shimPort, "gateway-shim", a.token)
+	waitReady(sp, shimPort, "shim", a.token)
 	why := []string{"prepare models selected mid-session"}
 	if recyclesIDs {
 		why = append(why, "upstream recycles tool_use ids")
@@ -808,7 +808,7 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 	if extras["CCMORPH_SHIM_HOOKS"] != "" {
 		why = append(why, "profile request hooks")
 	}
-	logf("gateway-shim interposed (%s)", strings.Join(why, "; "))
+	logf("shim interposed (%s)", strings.Join(why, "; "))
 
 	// The one contract line, only after the health check passed.
 	if a.inboundToken {
@@ -825,7 +825,7 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 			shutdown(1)
 		}
 		if sp.exited() {
-			logf("gateway-shim exited %d", sp.code())
+			logf("shim exited %d", sp.code())
 			shutdown(1)
 		}
 		a.checkParent(shutdown)

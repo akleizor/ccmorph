@@ -1,4 +1,4 @@
-// Command ccmorph-core is ccmorph's compiled core: `adapter`, `settings-compose`,
+// Command ccmorph-core is ccmorph's compiled core: `adapter`, `shim`, `settings-compose`,
 // `model-window`, `context-probe` and the `util` verbs the zsh library calls.
 package main
 
@@ -7,15 +7,17 @@ import (
 	"os"
 
 	"github.com/akleizor/ccmorph/adapter"
+	"github.com/akleizor/ccmorph/compat"
 	"github.com/akleizor/ccmorph/contextprobe"
 	"github.com/akleizor/ccmorph/modelwindow"
 	"github.com/akleizor/ccmorph/settingscompose"
+	"github.com/akleizor/ccmorph/shim"
 	"github.com/akleizor/ccmorph/util"
 )
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: ccmorph-core adapter|settings-compose|model-window|context-probe ...")
+		fmt.Fprintln(os.Stderr, "usage: ccmorph-core adapter|shim|settings-compose|model-window|context-probe ...")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -29,6 +31,14 @@ func main() {
 		os.Exit(modelwindow.Main(os.Args[2:], os.Stdout, os.Stderr))
 	case "util":
 		os.Exit(util.Main(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	case "shim": // the stock shim; argv shifts so shim.Main sees `<port> <target>` or report|outcome
+		os.Args = append([]string{os.Args[0] + " shim"}, os.Args[2:]...)
+		h, err := compat.FromEnv()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "shim:", err)
+			os.Exit(1)
+		}
+		shim.Main(h)
 	case "context-probe":
 		os.Exit(contextprobe.Main(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	default:

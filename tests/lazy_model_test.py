@@ -1,6 +1,6 @@
 """On-selection preparation is bounded and never replays an inference request.
 
-Black-box: the compiled gateway-shim runs against a fake gateway, with a fake
+Black-box: the compiled shim runs against a fake gateway, with a fake
 adapter script standing in for `ccmorph-adapter --model`, so the argv the shim
 hands the adapter and the bytes the gateway receives are the whole observation.
 """
@@ -65,7 +65,7 @@ class Rig:
                 "model_map": model_map or {}}
         env = dict(os.environ, CCMORPH_MODEL_ROUTE=json.dumps(spec), XDG_STATE_HOME=str(self.state),
                    FAKE_ADAPTER_LOG=str(self.log), FAKE_ADAPTER_OK=ok_model or "")
-        self.proc = subprocess.Popen([str(SHIM), "0", upstream, "--preserve-tool-ids",
+        self.proc = subprocess.Popen([*SHIM, "0", upstream, "--preserve-tool-ids",
                                       f"--parent-pid={os.getpid()}"],
                                      stdout=subprocess.PIPE, text=True, env=env)
         self.port = int(self.proc.stdout.readline().split(":")[1].split(" ")[0])

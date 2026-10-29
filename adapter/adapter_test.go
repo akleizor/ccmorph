@@ -212,7 +212,7 @@ func TestCloakNeverForRunsTheBinary(t *testing.T) {
 }
 
 func TestRenderUserAgentFromTheShimItRuns(t *testing.T) { // test_passthrough_user_agent_comes_from_the_shim_the_adapter_runs
-	shimPath := filepath.Join(t.TempDir(), "gateway-shim")
+	shimPath := filepath.Join(t.TempDir(), "shim")
 	writeFile(t, shimPath, "#!/bin/sh\n[ \"$1\" = translator-user-agent ] || exit 2\n"+
 		"[ -n \"$CCMORPH_USER_AGENT\" ] && echo \"$CCMORPH_USER_AGENT 9.9.9\"\nexit 0\n", 0o755)
 	env := append(os.Environ(), "CCMORPH_USER_AGENT=hook-ua/")

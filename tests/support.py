@@ -19,9 +19,10 @@ HANG_TIMEOUT = float(os.environ.get("CCMORPH_TEST_HANG_TIMEOUT", "120"))
 FAKE_SERVER_NO_DNS = "import socket\nsocket.getfqdn = lambda name='': name\n"
 
 
-SHIM = Path(__file__).resolve().parent.parent / "libexec/gateway-shim"
-# The compiled core (`make shim`): adapter and helper verbs are its subcommands.
+# The compiled core (`make shim`): adapter, shim and helper verbs are its subcommands.
 CORE = Path(__file__).resolve().parent.parent / "libexec/ccmorph-core"
+# argv prefix of the stock shim.
+SHIM = [str(CORE), "shim"]
 # Module-level `pytestmark = needs_shim` skips a file that spawns the compiled shim.
 # pytest is imported here, not at the top: the zsh suite imports this module
 # for HANG_TIMEOUT under a python3 that has no pytest.
@@ -38,5 +39,5 @@ def helper_cmd(name, binary=None):
 def __getattr__(name):
     if name == "needs_shim":
         import pytest
-        return pytest.mark.skipif(not SHIM.exists(), reason=f"{SHIM} is not built: run `make shim` first")
+        return pytest.mark.skipif(not CORE.exists(), reason=f"{CORE} is not built: run `make shim` first")
     raise AttributeError(name)

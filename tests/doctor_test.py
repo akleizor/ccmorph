@@ -153,7 +153,7 @@ def test_doctor_rejects_invalid_profile_settings_json(tmp_path):
 # The process shapes of a live session on today's architecture: the shim is
 # served inside the adapter process (GH-49, PR #40), so the supervisor has no
 # shim child. A translator route adds a cliproxyapi child, and only a profile's
-# own CCMORPH_SHIM_HOOKS build still gets a spawned gateway-shim. The /bin/echo
+# own CCMORPH_SHIM_HOOKS build still gets a spawned hooks build. The /bin/echo
 # row is the decoy a substring match would mistake for the adapter.
 ADAPTER_PS_ROWS = {
     "translator-route": (
@@ -167,7 +167,7 @@ ADAPTER_PS_ROWS = {
         "'4000 1 /bin/echo ccmorph-core adapter demo' "
         "'4321 1 /usr/local/libexec/ccmorph-core adapter demo --auto --parent-pid 400' "
         "'4322 4321 /usr/local/bin/cliproxyapi -config /tmp/config.yaml' "
-        "'4323 4321 /usr/local/bin/gateway-shim 4568 http://127.0.0.1:4567'"),
+        "'4323 4321 /usr/local/bin/hooks-shim 4568 http://127.0.0.1:4567'"),
 }
 
 # What doctor owes for each shape: every listener holder running-adapter names —
@@ -176,7 +176,7 @@ ADAPTER_PS_ROWS = {
 ADAPTER_LISTENERS = {
     "translator-route": (("cliproxyapi child", "4322"), ("in-process shim", "4321")),
     "native-route": (("in-process shim", "4321"),),
-    "hooks-build": (("cliproxyapi child", "4322"), ("gateway-shim child", "4323")),
+    "hooks-build": (("cliproxyapi child", "4322"), ("hooks-shim child", "4323")),
 }
 
 # lsof's answer per pid: the shim (in-process or spawned) serves the session on
@@ -184,7 +184,7 @@ ADAPTER_LISTENERS = {
 ADAPTER_LSOF_ROWS = (
     ("4321", "ccmorph-core 4321 u 3u IPv4 0x 0t0 TCP 127.0.0.1:4568 (LISTEN)"),
     ("4322", "cliproxyapi 4322 u 3u IPv4 0x 0t0 TCP 127.0.0.1:4567 (LISTEN)"),
-    ("4323", "gateway-shim 4323 u 3u IPv4 0x 0t0 TCP 127.0.0.1:4568 (LISTEN)"),
+    ("4323", "hooks-shim 4323 u 3u IPv4 0x 0t0 TCP 127.0.0.1:4568 (LISTEN)"),
 )
 
 

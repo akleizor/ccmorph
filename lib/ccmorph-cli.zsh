@@ -223,7 +223,7 @@ _ccm_doctor() {
       local adapter_pid="${running_adapter%%$'\t'*}" adapter_children="${running_adapter#*$'\t'}"
       local child_spec child_pid child_name listener what
       # running-adapter names every listener holder: spawned children
-      # (cliproxyapi, a CCMORPH_SHIM_HOOKS gateway-shim build), and the adapter
+      # (cliproxyapi, a CCMORPH_SHIM_HOOKS build), and the adapter
       # process itself when the shim is served in-process — the stock design,
       # and the port a live session's base_url points at.
       for child_spec in ${(s:,:)adapter_children}; do
