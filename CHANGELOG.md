@@ -5,6 +5,16 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
+## v0.4.1 — 2026-10-30
+
+### Changed
+
+- **v0.4.0 shipped a stray `libexec/gateway-shim`.** An 11 MB arm64 build left
+  in the working tree was committed (#61) after #60 dropped its ignore line, so
+  the tag, the source tarball and every brew install carried a dead binary.
+  `libexec/` now ignores everything but `.gitkeep`, and a layout test fails if
+  it tracks anything else.
+
 ## v0.4.0 — 2026-10-29
 
 ### Added
