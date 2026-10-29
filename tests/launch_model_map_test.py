@@ -10,7 +10,7 @@ expected target, so a launch that prepared or requested anything else is
 refused here rather than silently reaching a different model; every
 launch-path fetch (catalogue, sizing, inference) lands on this loopback
 gateway, and the one tool that would reach beyond it
-(refresh-model-registry) is not copied. Preparation names the model it
+(context-probe) is not copied. Preparation names the model it
 resolved in the adapter's own log, and the answer must come back in the
 client's requested identity, never the served target's.
 """
@@ -109,7 +109,7 @@ def launch(tmp_path):
             # nothing — the adapter's window probe still falls back unprobed),
             # so the real guard is that every launch-path fetch goes to this
             # loopback base_url and the one tool that would fetch a live
-            # catalogue (refresh-model-registry) is absent from LIB_FILES.
+            # catalogue (context-probe) is absent from LIB_FILES.
             self.reply(200, {"data": [
                 {"id": target, "object": "model", "context_window": 200000,
                  "supported_endpoints": ["/v1/messages"]}

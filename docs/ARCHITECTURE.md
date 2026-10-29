@@ -68,7 +68,7 @@ Each module has one purpose; a function lives in exactly one.
 The repository and the installed copy under `~/.config/ccmorph` share one layout:
 `bin/ccmorph` (the command), `lib/` (`ccmorph.sh` and the modules), `libexec/`
 (internal executables: `ccmorph-core` and `gateway-shim`, both Go and built by
-`make shim`; `ccmorph-core <adapter|settings-compose|model-window|refresh-model-registry>`
+`make shim`; `ccmorph-core <adapter|settings-compose|model-window|context-probe>`
 is the one binary every launch, install and zsh caller runs, from `cmd/ccmorph-core/`;
 `gateway-shim` is the standalone stock shim, `cmd/gateway-shim/`, for a profile that runs it directly.
 No Python runs in the core: `python3` is needed only by the Remote Control add-on in `addons/remote-control/`) and `share/` (data:
@@ -472,7 +472,7 @@ dial is a separate product: it starts a local CONNECT proxy, and the caller runs
 
 ccmorph's whole duty is to pass that ambient value through **unchanged** —
 `HTTPS_PROXY`, `https_proxy` and `NO_PROXY` reach the Claude child, the adapter,
-`ccmorph-core adapter`'s cliproxyapi, model listing, and `ccmorph-core refresh-model-registry`
+`ccmorph-core adapter`'s cliproxyapi, model listing, and `ccmorph-core context-probe`
 exactly as exported. `HTTPS_PROXY` is deliberately absent from
 `_CCMORPH_PROFILE_ENV`, so [the launch sweep](#the-env-lists-and-the-sweep)
 never clears it, and no launch path sets or blanks it.
@@ -1056,7 +1056,7 @@ nothing in Claude Code knows the real ceiling. `window ≤ ceiling` is sufficien
 
 Launch uses a manual profile/model override when configured, then the profile's
 own `context_discovered` metadata. Before the picker projection, launch hands the
-`/v1/models` listing it already fetched to `ccmorph-core refresh-model-registry --listing-stdin`,
+`/v1/models` listing it already fetched to `ccmorph-core context-probe --listing-stdin`,
 which sizes only listed models the profile has no limit for, in this order:
 
 1. the gateway's declared size in the listing;

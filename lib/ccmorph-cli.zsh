@@ -1056,7 +1056,7 @@ ccmorph() {
       if (( ${_m_args[(I)--allow-inference]} )); then
         print -u2 -- "ccmorph: Checking context limits; inference requests may incur charges."
       fi
-      "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" refresh-model-registry "${_m_args[@]}"
+      "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" context-probe "${_m_args[@]}"
       ;;
 
 

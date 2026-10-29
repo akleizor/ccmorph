@@ -1,7 +1,7 @@
 // Package pycompat holds the pieces of Python's behaviour that ccmorph's file
 // formats depend on: an order-preserving JSON model that decodes like json.loads
 // and encodes like json.dumps, and Python-style OSError wording. The Go ports of
-// the Python helpers (settings-compose, model-window, refresh-model-registry) share it
+// the Python helpers (settings-compose, model-window, context-probe) share it
 // so their files stay byte-identical with what the Python helpers wrote.
 package pycompat
 

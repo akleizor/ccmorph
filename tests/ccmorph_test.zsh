@@ -3869,7 +3869,7 @@ test_every_state_file_is_gitignored() {
   # Machine-local state ccmorph creates in $_CCMORPH_DIR. A new one added here
   # without an ignore rule fails this test rather than the user's data.
   local -a state=(
-    model-registry            # probed windows (refresh-model-registry)
+    model-registry            # probed windows (context-probe)
     active                    # the default-profile pointer
     local.sh                  # host opt-ins
     ccmorph.log              # runtime log
@@ -9778,8 +9778,8 @@ test_profile_local_harness_content_survives_an_upgrade() {
 fake_context_refresh() {
   printf '%s\n' '#!/bin/sh' \
     'printf "%s\\n" "$*" >> "$HOME/refresh.direct"' \
-    'exit 1' > "$CCMORPH_LIB_DIR/../libexec/refresh-model-registry"
-  chmod +x "$CCMORPH_LIB_DIR/../libexec/refresh-model-registry"
+    'exit 1' > "$CCMORPH_LIB_DIR/../libexec/context-probe"
+  chmod +x "$CCMORPH_LIB_DIR/../libexec/context-probe"
   _ccm_spawn_bg_logged() { print -r -- "$*" >> "$HOME/background.args"; }
   _ccm_endpoint_window() { print called >> "$HOME/context.endpoint"; return 1; }
 }
@@ -9795,7 +9795,7 @@ test_add_context_refresh_is_background_and_declared_only() {
   assert_contains "$out" 'Added' 'adding a gateway must still succeed' || rc=1
   local scheduled=""
   [[ -f "$HOME/background.args" ]] && scheduled="$(<"$HOME/background.args")"
-  assert_contains "$scheduled" 'refresh-model-registry --declared-only --profile gw --deadline 30' \
+  assert_contains "$scheduled" 'context-probe --declared-only --profile gw --deadline 30' \
     'add must schedule only a bounded, free metadata refresh' || rc=1
   [[ ! -f "$HOME/refresh.direct" ]] || { print -u2 'add synchronously ran the refresh'; rc=1; }
   rm -rf "$test_home"
@@ -9815,7 +9815,7 @@ test_launch_resolves_scoped_registry_globs() {
   _ccm_launch -a gw prompt >/dev/null 2>&1 || rc=1
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'MAX_CONTEXT=333333' \
     'launch must use canonical scoped wildcard registry matching' || rc=1
-  assert_not_contains "$(<"$HOME/background.args")" 'refresh-model-registry' \
+  assert_not_contains "$(<"$HOME/background.args")" 'context-probe' \
     'a wildcard-known window needs no refresh' || rc=1
   rm -rf "$test_home"
   return $rc
@@ -9830,8 +9830,8 @@ test_context_refresh_does_not_wait_for_metadata() {
   # network traffic. Its completion belongs to the log, never to the caller.
   printf '%s\n' '#!/usr/bin/env python3' 'import time' \
     'time.sleep(2)' 'print("metadata complete", flush=True)' \
-    > "$CCMORPH_LIB_DIR/../libexec/refresh-model-registry"
-  chmod +x "$CCMORPH_LIB_DIR/../libexec/refresh-model-registry"
+    > "$CCMORPH_LIB_DIR/../libexec/context-probe"
+  chmod +x "$CCMORPH_LIB_DIR/../libexec/context-probe"
   local _CCMORPH_LOG="$HOME/refresh.log"
   local rc=0
   _ccm_probe_nudge gw
@@ -9872,7 +9872,7 @@ test_launch_context_lookup_is_local_before_background_refresh() {
   scheduled="$(<"$HOME/background.args")"
   assert_not_contains "$actual" 'Context limit unknown for opaque-model' \
     'unknown context is a silent safe default, not a warning' || rc=1
-  assert_contains "$scheduled" 'refresh-model-registry --declared-only --profile gw --deadline 30' \
+  assert_contains "$scheduled" 'context-probe --declared-only --profile gw --deadline 30' \
     'an unknown launch must schedule free metadata work off its critical path' || rc=1
   [[ ! -f "$HOME/context.endpoint" ]] || { print -u2 'launch fetched context synchronously'; rc=1; }
   [[ ! -f "$HOME/refresh.direct" ]] || { print -u2 'launch ran the refresh synchronously'; rc=1; }
@@ -9888,7 +9888,7 @@ test_launch_context_lookup_is_local_before_background_refresh() {
   actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "$actual" 'MAX_CONTEXT=372000' 'a cached model keeps its known ceiling' || rc=1
   assert_contains "$actual" '"autoCompactWindow":372000' 'the cache supplies the native budget' || rc=1
-  assert_not_contains "$(<"$HOME/background.args")" 'refresh-model-registry' \
+  assert_not_contains "$(<"$HOME/background.args")" 'context-probe' \
     'a known cached window must not schedule redundant work' || rc=1
 
   # A route-specific registry update outranks the older per-model cache.
@@ -9898,7 +9898,7 @@ test_launch_context_lookup_is_local_before_background_refresh() {
   _ccm_launch -a gw prompt >/dev/null 2>&1 || rc=1
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'MAX_CONTEXT=512000' \
     'registry state must precede the remembered launch cache' || rc=1
-  assert_not_contains "$(<"$HOME/background.args")" 'refresh-model-registry' \
+  assert_not_contains "$(<"$HOME/background.args")" 'context-probe' \
     'a known registry window must not schedule redundant work' || rc=1
   [[ ! -f "$HOME/context.endpoint" && ! -f "$HOME/refresh.direct" ]] || rc=1
   rm -rf "$test_home"
@@ -9911,8 +9911,8 @@ test_probe_dispatch_preserves_explicit_inference_arguments() {
   setup_home "$test_home"
   source "$CCMORPH_SOURCE"
   printf '%s\n' '#!/bin/sh' 'printf "%s\\n" "$@" > "$HOME/probe.args"' \
-    > "$CCMORPH_LIB_DIR/../libexec/refresh-model-registry"
-  chmod +x "$CCMORPH_LIB_DIR/../libexec/refresh-model-registry"
+    > "$CCMORPH_LIB_DIR/../libexec/context-probe"
+  chmod +x "$CCMORPH_LIB_DIR/../libexec/context-probe"
   local out rc=0
   out=$(ccmorph probe --profile gw --model opaque-model --allow-inference --deadline 30)
   [[ "$(<"$HOME/probe.args")" == $'--profile\ngw\n--model\nopaque-model\n--allow-inference\n--deadline\n30' ]] || {

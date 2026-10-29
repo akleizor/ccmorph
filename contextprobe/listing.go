@@ -1,4 +1,4 @@
-package registry
+package contextprobe
 
 import (
 	"context"

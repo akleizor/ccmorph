@@ -1,9 +1,9 @@
-// Package registry is the Go port of libexec/refresh-model-registry: it discovers
+// Package contextprobe is ccmorph-core context-probe: it discovers
 // context windows without inference by default. It reads gateway-declared limits
 // from /v1/models, falls back to the models.dev catalogue, and merges what it
 // finds into each profile's conf (through the modelwindow store). Paid probes
 // only run when the operator passes --allow-inference for one profile and model.
-package registry
+package contextprobe
 
 import (
 	"bytes"
@@ -30,7 +30,7 @@ const (
 	OvershootChars = 6_000_000
 	probeTimeout   = 10
 	listTimeout    = 5
-	userAgent      = "ccmorph-refresh-model-registry"
+	userAgent      = "ccmorph-context-probe"
 	runTimeout     = 30
 )
 
