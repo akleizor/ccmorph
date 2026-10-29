@@ -7,7 +7,7 @@
 
 ## v0.4.1 — 2026-10-30
 
-### Fixed
+### Changed
 
 - **v0.4.0 shipped a stray `libexec/gateway-shim`.** An 11 MB arm64 build left
   in the working tree was committed (#61) after #60 dropped its ignore line, so
