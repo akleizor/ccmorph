@@ -1,4 +1,4 @@
-package registry
+package contextprobe
 
 import (
 	"context"
@@ -17,9 +17,9 @@ import (
 	"github.com/akleizor/ccmorph/pycompat"
 )
 
-const prog = "refresh-model-registry"
+const prog = "context-probe"
 
-const usageText = `usage: refresh-model-registry [-h] [--profile PROFILES] [--model MODELS]
+const usageText = `usage: context-probe [-h] [--profile PROFILES] [--model MODELS]
                               [--check] [--jobs JOBS] [--deadline SECONDS]
                               [--probe-timeout SECONDS] [--allow-inference]
                               [--bisect] [--bisect-accepts N] [--listing-stdin]

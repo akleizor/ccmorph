@@ -31,7 +31,7 @@
 # host's registry is wrong here, sometimes dangerously (too high means a session
 # dies mid-conversation instead of compacting).
 model-registry
-# Sidecar lock serializing concurrent registry writes (refresh-model-registry).
+# Sidecar lock serializing concurrent registry writes (context-probe).
 model-registry.lock
 # Single-profile context writes and migration coordination contain no configuration.
 *.conf.lock

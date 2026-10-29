@@ -1,7 +1,7 @@
-"""refresh-model-registry as a black box: argv, env, stdin, files, stdout, stderr, exit code.
+"""context-probe as a black box: argv, env, stdin, files, stdout, stderr, exit code.
 
 Runs against whichever implementation CCMORPH_TEST_HELPERS selects (the Python
-script, or `ccmorph-core refresh-model-registry`), so the two are held to the
+script, or `ccmorph-core context-probe`), so the two are held to the
 same contract. Every gateway here is a local fake; no test reaches models.dev
 (an unreachable proxy makes the catalogue fetches fail at once).
 """
@@ -70,7 +70,7 @@ class Fixture:
                         HTTPS_PROXY="http://127.0.0.1:9")  # models.dev is unreachable, quickly
 
     def run(self, *args, stdin=None, env=None):
-        return subprocess.run([*helper_cmd("refresh-model-registry"), *args], input=stdin,
+        return subprocess.run([*helper_cmd("context-probe"), *args], input=stdin,
                               env={**self.env, **(env or {})}, capture_output=True, text=True,
                               timeout=HANG_TIMEOUT)
 

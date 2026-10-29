@@ -1,4 +1,4 @@
-package registry
+package contextprobe
 
 import (
 	"context"
@@ -52,7 +52,7 @@ func runWithDeadline(parent context.Context, seconds float64, fn func(ctx contex
 // runZsh runs a zsh snippet that sources lib/ccmorph.sh; the whole process
 // group dies with the context, so a route that hangs cannot outlive its deadline.
 func runZsh(ctx context.Context, script string, args ...string) (stdout, stderr string, code int, err error) {
-	cmd := exec.CommandContext(ctx, "zsh", append([]string{"-c", script, "refresh-model-registry"}, args...)...)
+	cmd := exec.CommandContext(ctx, "zsh", append([]string{"-c", script, "context-probe"}, args...)...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = time.Second

@@ -196,7 +196,7 @@ _ccm_listing_has_unsized() {  # $1 = profile, $2 = /v1/models JSON
 # operator's explicit `ccmorph probe --allow-inference --profile ... --model ...`.
 _ccm_probe_nudge() {  # $1 = profile name
   [[ -x "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" ]] || return 0
-  _ccm_spawn_bg_logged "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" refresh-model-registry \
+  _ccm_spawn_bg_logged "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" context-probe \
     --declared-only --profile "$1" --deadline 30
 }
 

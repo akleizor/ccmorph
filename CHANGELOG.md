@@ -16,6 +16,15 @@
   `estimated_usd`/`estimated_rows` totals; `gateway-shim report` prints it on
   its own "estimated spend" line. Gateway-billed totals stay billed only.
 
+## Unreleased
+
+### Changed
+
+- **`ccmorph-core refresh-model-registry` is now `ccmorph-core context-probe`.**
+  It finds each model's context window; the shared model registry it was named
+  after was folded into each profile's `.conf` long ago. Users type
+  `ccmorph probe`, which is unchanged.
+
 ## v0.3.0 — 2026-10-28
 
 The core is Go. `ccmorph-core` replaces the four Python helpers, and `python3` is

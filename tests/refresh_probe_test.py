@@ -56,7 +56,7 @@ class MetadataCompatibility(unittest.TestCase):
             # interrupt the blocking route, not benchmark the host's scheduler.
             env = {**os.environ, "CCMORPH_LIB_DIR": tmp,
                    "CCMORPH_STATE_DIR": tmp}
-            result = subprocess.run([*helper_cmd("refresh-model-registry"), "--profile", "gw",
+            result = subprocess.run([*helper_cmd("context-probe"), "--profile", "gw",
                                      "--deadline", "0.2"], env=env,
                                     capture_output=True, text=True, timeout=HANG_TIMEOUT)
             self.assertIn("deadline reached", result.stderr)
@@ -115,7 +115,7 @@ class DiscoveryHTTP(unittest.TestCase):
         self.conf.write_text("type=apikey\napi_key=canary\n")
         self.env = {**os.environ, "CCMORPH_LIB_DIR": tmp.name,
                     "CCMORPH_STATE_DIR": tmp.name}
-        self.command = [*helper_cmd("refresh-model-registry"), "--profile", "gw"]
+        self.command = [*helper_cmd("context-probe"), "--profile", "gw"]
 
     def test_real_cli_gets_metadata_without_post_and_persists_it(self):
         import subprocess

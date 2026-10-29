@@ -726,7 +726,7 @@ _ccm_launch() {
         _ccm_log_init
         print -r -- "$REPLY" | CCMORPH_STATE_DIR="$_CCMORPH_DIR" \
           ANTHROPIC_BASE_URL="$_pjb" ANTHROPIC_API_KEY="$_pjk" \
-          "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" refresh-model-registry --listing-stdin --profile "$profile" \
+          "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" context-probe --listing-stdin --profile "$profile" \
           2>>"${_CCMORPH_LOG:-/dev/null}" || :
       fi
       # Complete projection before budgets and the generated settings read its output.
