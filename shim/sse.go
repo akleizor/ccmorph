@@ -203,7 +203,7 @@ func (t *thinkingStream) reindex(line []byte, obj *doc) []byte {
 // latency is unchanged. It returns when the stream ends (clean EOF or a
 // terminal event), with the upstream read error that cut it short, or the
 // client write error.
-func (s *Server) relayStream(rq *request, t *thinkingStream, sidecar *UsageSidecar, requested *string, answerAs string) (readErr, writeErr error) {
+func (s *Server) relayStream(rq *request, t lineSource, sidecar *UsageSidecar, requested *string, answerAs string) (readErr, writeErr error) {
 	var rec *record
 	needles := parseNeedles
 	if sidecar != nil || answerAs != "" {

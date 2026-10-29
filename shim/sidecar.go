@@ -117,6 +117,7 @@ type record struct {
 	requested          *string
 	servedModel        *string
 	retries            int
+	masked             map[string]int
 	task               *string
 	attempt            int
 	responseModel      *string
@@ -144,7 +145,8 @@ type UsageSidecar struct {
 	tags             taskTags
 	served           *string
 	retries          int
-	prices           *priceBook // nil: no upstream host to price against
+	masked           map[string]int // distinct values masked in the request, by kind
+	prices           *priceBook     // nil: no upstream host to price against
 }
 
 func newSidecar(profile, identity string) *UsageSidecar {
@@ -167,7 +169,7 @@ func (u *UsageSidecar) start(id string, requested *string, model *string, usage 
 	}
 	return &record{
 		responseID: id, turnID: randHex(16), requested: requested, servedModel: u.served,
-		retries: u.retries, task: u.tags.task, attempt: u.tags.attempt, responseModel: model,
+		retries: u.retries, masked: u.masked, task: u.tags.task, attempt: u.tags.attempt, responseModel: model,
 		timestamp: ts + "+00:00", usage: usage,
 	}
 }
@@ -196,7 +198,11 @@ func (u *UsageSidecar) row(r *record) []byte {
 	out = append(out, optStr(r.requested)...)
 	out = append(out, `,"served_model":`...)
 	out = append(out, optStr(r.servedModel)...)
-	out = append(out, `,"retries":`+strconv.Itoa(r.retries)+`,"task":`...)
+	out = append(out, `,"retries":`+strconv.Itoa(r.retries)...)
+	if len(r.masked) > 0 {
+		out = append(out, `,"masked":`+maskedJSON(r.masked)...)
+	}
+	out = append(out, `,"task":`...)
 	out = append(out, optStr(r.task)...)
 	out = append(out, `,"attempt":`+strconv.Itoa(r.attempt)+`,"response_model":`...)
 	out = append(out, optStr(r.responseModel)...)

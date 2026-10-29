@@ -113,6 +113,7 @@ ccmorph config <profile>           # change model, reasoning, or connection
 ccmorph set <profile> model -i     # save a default model, chosen from the endpoint
 ccmorph inspect [<profile>]        # effective settings and where each came from
 ccmorph doctor [<profile>]         # check why a profile is not working
+ccmorph quota [<profile>]          # plan usage left on each subscription, and when it resets
 ```
 
 To switch a running session, use a leading `!` in the Claude Code prompt:

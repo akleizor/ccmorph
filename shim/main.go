@@ -62,6 +62,19 @@ func Listen(h Hooks, o Options, getenv func(string) string) (*http.Server, net.L
 		}
 		s.Inbound = in
 	}
+	switch v := strings.TrimSpace(getenv("CCMORPH_MASK")); v {
+	case "", "0", "off":
+	case "1", "on":
+		key, err := maskKey()
+		if err != nil {
+			return nil, nil, fmt.Errorf("gateway-shim: masking key: %w", err)
+		}
+		if s.mask, err = newMasker(key, getenv("CCMORPH_MASK_COMMANDS")); err != nil {
+			return nil, nil, fmt.Errorf("gateway-shim: %w", err)
+		}
+	default:
+		return nil, nil, fmt.Errorf("gateway-shim: CCMORPH_MASK must be 1 or 0, got %q", v)
+	}
 	s.PreserveIDs, s.RandomDeviceID, s.RetryTransport = o.PreserveIDs, o.RandomDeviceID, o.RetryTransport
 	if s.RetryTransport {
 		s.Breaker = NewBreaker()

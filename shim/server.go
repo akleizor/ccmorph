@@ -189,6 +189,7 @@ type Server struct {
 	Stall          time.Duration
 	RetryBase      time.Duration
 	Sleep          func(time.Duration) // injected in tests: the retry waits must not cost real time
+	mask           *masker             // CCMORPH_MASK: secrets go upstream as placeholders
 
 	loopback, remote *http.Client
 	devicesMu        sync.Mutex
@@ -494,6 +495,19 @@ func (s *Server) relay(rq *request) {
 	if len(body) > 0 && (swap || s.Hooks.RepairRequest != nil || s.Hooks.OutboundHeaders != nil) {
 		body = s.cleanRequest(body, swap, &rq.session)
 	}
+	// Last, so hooks and routing read what the session wrote; the 400 resend
+	// starts from these bytes too.
+	if s.mask != nil && len(body) > 0 && isPost && (rq.path == pathMessages || rq.path == pathCount) {
+		out, masked, ok := s.mask.maskRequest(body)
+		if !ok {
+			rq.errorBody(503, apiError("api_error", "ccmorph masking could not read this request, so it was not sent"))
+			return
+		}
+		body = out
+		if sidecar != nil {
+			sidecar.masked = masked
+		}
+	}
 	retrying := s.RetryTransport && isMessagePost
 	limit := eofRetries
 	if retrying {
@@ -623,6 +637,9 @@ func (s *Server) relay(rq *request) {
 		}
 		if out == nil {
 			out, _ = s.rewrite(data, answerAs, true)
+			if s.mask != nil {
+				out = s.mask.restoreBody(out, true)
+			}
 		}
 		data = out
 	}
@@ -652,7 +669,11 @@ func (s *Server) callResend(request, response []byte) (out []byte) {
 // streamSSE relays the stream. Every exit closes the client connection (the
 // header said so): an SSE response carries no content-length.
 func (s *Server) streamSSE(rq *request, up *upstream, sidecar *UsageSidecar, requested *string, answerAs string) {
-	readErr, _ := s.relayStream(rq, &thinkingStream{r: bufio.NewReaderSize(up, 64<<10)}, sidecar, requested, answerAs)
+	var src lineSource = &thinkingStream{r: bufio.NewReaderSize(up, 64<<10)}
+	if s.mask != nil {
+		src = &unmaskStream{src: src, m: s.mask}
+	}
+	readErr, _ := s.relayStream(rq, src, sidecar, requested, answerAs)
 	// A client that hung up mid-stream (cancelled turn, /clear, quit) is routine.
 	if errors.Is(readErr, errStall) {
 		// The upstream went quiet mid-reply. Say so as a stream error event, the

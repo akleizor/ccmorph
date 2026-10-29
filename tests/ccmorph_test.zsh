@@ -4395,6 +4395,27 @@ test_listings_are_undisguised_on_entry() {
   assert_contains "$REPLY" '"id":"claude-opus-5"' "a genuine claude id must be left alone" || return 1
   assert_not_contains "$REPLY" "-dd-" "no disguise may survive the listing" || return 1
 }
+test_quota_reads_only_subscription_profiles_with_the_token_on_stdin() {
+  local test_home rc=0 out
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  write_apikey_conf apikey 'api_key=sk-test-apikey'
+  printf '%s\n' 'type=sub' 'email=a@b.c' > "$HOME/.config/ccmorph/sub.conf"
+  printf '%s\n' 'type=token' 'token=token-test' > "$HOME/.config/ccmorph/token.conf"
+  source "$CCMORPH_SOURCE"
+  # ccmorph-core quota echoes its argv and stdin: the token must arrive on stdin only.
+  mkdir -p "$test_home/libexec"
+  printf '%s\n' '#!/bin/sh' 'echo "argv:$*"' 'cat' > "$test_home/libexec/ccmorph-core"
+  chmod +x "$test_home/libexec/ccmorph-core"
+  _CCMORPH_LIBEXEC_DIR="$test_home/libexec"
+  out=$(ccmorph quota)
+  [[ "$out" == "argv:quota"$'\n'"sub"$'\t'"sub"$'\t'"${_CCMORPH_PROFILE_DIRS}/sub"$'\n'"token"$'\t'"token"$'\t'"${_CCMORPH_PROFILE_DIRS}/token"$'\t'"token-test" ]] || {
+    print -u2 -- "unexpected quota input: $out"; rc=1
+  }
+  ccmorph quota apikey >/dev/null 2>&1 && { print -u2 -- 'an apikey profile has no plan to read'; rc=1 }
+  rm -rf "$test_home"
+  return $rc
+}
 test_every_profile_keeps_its_own_secure_storage() {
   local test_home
   test_home=$(mktemp -d)
@@ -11521,6 +11542,7 @@ run_test test_source_names_no_machine_local_files
 run_test test_provider_profile_accepts_picker_exclusions
 run_test test_listings_are_undisguised_on_entry
 run_test test_every_profile_keeps_its_own_secure_storage
+run_test test_quota_reads_only_subscription_profiles_with_the_token_on_stdin
 run_test test_native_effort_does_not_rewrite_explicit_model
 run_test test_native_effort_validation_belongs_to_claude
 run_test test_proxy_model_is_bootstrap_fallback
@@ -12114,10 +12136,10 @@ run_test test_launch_refuses_a_model_map_key_no_request_can_carry
 test_adapter_controls_do_not_reach_claude_or_overlay() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   source "$CCMORPH_SOURCE"
-  printf '%s\n' '#!/bin/sh' 'printf "%s|%s|%s|%s|%s|%s" "${CCMORPH_USER_AGENT-unset}" "${CCMORPH_STALL_TIMEOUT-unset}" "${CCMORPH_UPSTREAM_PROXY-unset}" "${CCMORPH_RANDOM_DEVICE_ID-unset}" "${CCMORPH_AFFINITY_HEADER-unset}" "${CCMORPH_SHIM_HOOKS-unset}"' > "$HOME/bin/claude"
+  printf '%s\n' '#!/bin/sh' 'printf "%s|%s|%s|%s|%s|%s|%s|%s" "${CCMORPH_USER_AGENT-unset}" "${CCMORPH_STALL_TIMEOUT-unset}" "${CCMORPH_UPSTREAM_PROXY-unset}" "${CCMORPH_RANDOM_DEVICE_ID-unset}" "${CCMORPH_AFFINITY_HEADER-unset}" "${CCMORPH_SHIM_HOOKS-unset}" "${CCMORPH_MASK-unset}" "${CCMORPH_MASK_COMMANDS-unset}"' > "$HOME/bin/claude"
   local actual rc=0
-  actual=$(CCMORPH_USER_AGENT=ua/{version} CCMORPH_STALL_TIMEOUT=1 CCMORPH_UPSTREAM_PROXY=http://127.0.0.1:1 CCMORPH_RANDOM_DEVICE_ID=1 CCMORPH_AFFINITY_HEADER=X-A CCMORPH_SHIM_HOOKS=/tmp/hooks.py _ccm_run_claude CCMORPH_USER_AGENT=ua/{version} CCMORPH_STALL_TIMEOUT=1 CCMORPH_UPSTREAM_PROXY=http://127.0.0.1:1 CCMORPH_RANDOM_DEVICE_ID=1 CCMORPH_AFFINITY_HEADER=X-A CCMORPH_SHIM_HOOKS=/tmp/hooks.py --)
-  [[ "$actual" == 'unset|unset|unset|unset|unset|unset' ]] || rc=1
+  actual=$(CCMORPH_USER_AGENT=ua/{version} CCMORPH_STALL_TIMEOUT=1 CCMORPH_UPSTREAM_PROXY=http://127.0.0.1:1 CCMORPH_RANDOM_DEVICE_ID=1 CCMORPH_AFFINITY_HEADER=X-A CCMORPH_SHIM_HOOKS=/tmp/hooks.py CCMORPH_MASK=1 CCMORPH_MASK_COMMANDS=x _ccm_run_claude CCMORPH_USER_AGENT=ua/{version} CCMORPH_STALL_TIMEOUT=1 CCMORPH_UPSTREAM_PROXY=http://127.0.0.1:1 CCMORPH_RANDOM_DEVICE_ID=1 CCMORPH_AFFINITY_HEADER=X-A CCMORPH_SHIM_HOOKS=/tmp/hooks.py CCMORPH_MASK=1 CCMORPH_MASK_COMMANDS=x --)
+  [[ "$actual" == 'unset|unset|unset|unset|unset|unset|unset|unset' ]] || rc=1
   rm -rf "$test_home"
   return $rc
 }
