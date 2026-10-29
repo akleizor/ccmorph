@@ -8,7 +8,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/akleizor/ccmorph/modelwindow"
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/pycompat"
 )
 
@@ -154,7 +154,7 @@ func projectPicker(args []string, _ io.Reader, _, errw io.Writer) int {
 		fresh = false
 	}
 
-	isExcl := func(id string) bool { return modelwindow.IsExcluded(fields, id) }
+	isExcl := func(id string) bool { return ctxwindow.IsExcluded(fields, id) }
 	mappedAlias := func(id string) bool {
 		if id == "" {
 			return false
@@ -187,8 +187,8 @@ func projectPicker(args []string, _ io.Reader, _, errw io.Writer) int {
 		if had {
 			defer os.Setenv("CLAUDE_CODE_MAX_CONTEXT_TOKENS", saved)
 		}
-		var rec modelwindow.Record
-		if pycompat.Catch(func() { rec = modelwindow.Resolve(profile, id) }) != nil || rec.Unprobed {
+		var rec ctxwindow.Record
+		if pycompat.Catch(func() { rec = ctxwindow.Resolve(profile, id) }) != nil || rec.Unprobed {
 			return ""
 		}
 		if rec.SendID != id {
@@ -213,7 +213,7 @@ func projectPicker(args []string, _ io.Reader, _, errw io.Writer) int {
 				continue
 			}
 		}
-		real := modelwindow.RealID(mid)
+		real := ctxwindow.RealID(mid)
 		if real == mid && strings.HasPrefix(mid, "claude-") {
 			if send := derivedSendID(mid); send != "" {
 				real = send
@@ -252,7 +252,7 @@ func projectPicker(args []string, _ io.Reader, _, errw io.Writer) int {
 		}
 		stored, _ := doc.Get("model")
 		if s, ok := stored.(string); ok && cloaked.MatchString(s) {
-			undisguised := modelwindow.RealID(s)
+			undisguised := ctxwindow.RealID(s)
 			for _, v := range values {
 				if v == undisguised {
 					stored = undisguised
@@ -371,11 +371,11 @@ func launchWindow(args []string, _ io.Reader, out, _ io.Writer) int {
 
 	if model != "" {
 		pycompat.Catch(func() {
-			copy(fields[0:4], modelwindow.Resolve(profile, model).Fields())
+			copy(fields[0:4], ctxwindow.Resolve(profile, model).Fields())
 		})
 	}
 	pycompat.Catch(func() {
-		values := modelwindow.ProfileWindows(profile)
+		values := ctxwindow.ProfileWindows(profile)
 		var best int64
 		models, _ := getKey(doc, "availableModels").([]any)
 		for _, mv := range models {

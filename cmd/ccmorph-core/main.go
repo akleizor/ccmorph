@@ -8,8 +8,7 @@ import (
 
 	"github.com/akleizor/ccmorph/adapter"
 	"github.com/akleizor/ccmorph/compat"
-	"github.com/akleizor/ccmorph/contextprobe"
-	"github.com/akleizor/ccmorph/modelwindow"
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/settingscompose"
 	"github.com/akleizor/ccmorph/shim"
 	"github.com/akleizor/ccmorph/util"
@@ -28,7 +27,7 @@ func main() {
 	case "settings-compose":
 		os.Exit(settingscompose.Main(os.Args[2:], os.Stderr))
 	case "model-window":
-		os.Exit(modelwindow.Main(os.Args[2:], os.Stdout, os.Stderr))
+		os.Exit(ctxwindow.WindowMain(os.Args[2:], os.Stdout, os.Stderr))
 	case "util":
 		os.Exit(util.Main(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	case "shim": // the stock shim; argv shifts so shim.Main sees `<port> <target>` or report|outcome
@@ -40,7 +39,7 @@ func main() {
 		}
 		shim.Main(h)
 	case "context-probe":
-		os.Exit(contextprobe.Main(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+		os.Exit(ctxwindow.ProbeMain(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	default:
 		fmt.Fprintf(os.Stderr, "ccmorph-core: unknown command %q\n", os.Args[1])
 		os.Exit(2)

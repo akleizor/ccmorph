@@ -1,4 +1,4 @@
-package contextprobe
+package ctxwindow
 
 import (
 	"context"
@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/akleizor/ccmorph/modelwindow"
 	"github.com/akleizor/ccmorph/pycompat"
 )
 
@@ -38,19 +37,19 @@ func libDir() string {
 	if v := os.Getenv("CCMORPH_LIB_DIR"); v != "" {
 		return pycompat.Path(v)
 	}
-	return pycompat.Join(modelwindow.ExecDir(), "..", "lib")
+	return pycompat.Join(ExecDir(), "..", "lib")
 }
 
 func ccmorphScript() string { return pycompat.Join(libDir(), "ccmorph.sh") }
 
-// ShareDir is a var so tests can point it at a fixture.
-var ShareDir = func() string { return pycompat.Join(libDir(), "..", "share") }
+// probeShareDir is a var so tests can point it at a fixture. It follows CCMORPH_LIB_DIR; the resolver's ShareDir follows the executable (shortcut: two roots kept to preserve both commands' behaviour, unify when one is chosen).
+var probeShareDir = func() string { return pycompat.Join(libDir(), "..", "share") }
 
 func asObj(v val) *obj { o, _ := v.(*obj); return o }
 
-func str(v val) (string, bool) { s, ok := v.(string); return s, ok }
+func asStr(v val) (string, bool) { s, ok := v.(string); return s, ok }
 
-func posInt(v val) (int64, bool) {
+func asPosInt(v val) (int64, bool) {
 	n, ok := v.(pycompat.Num)
 	if !ok {
 		return 0, false
@@ -86,7 +85,7 @@ func ListingRows(data val) []*obj {
 		if row == nil {
 			continue
 		}
-		id, ok := str(getv(row, "id"))
+		id, ok := asStr(getv(row, "id"))
 		if !ok || id == "" {
 			continue
 		}
@@ -96,7 +95,7 @@ func ListingRows(data val) []*obj {
 			}
 		}
 		c := pycompat.Clone(row).(*obj)
-		c.Set("id", modelwindow.RealID(id))
+		c.Set("id", RealID(id))
 		rows = append(rows, c)
 	}
 	return rows
@@ -108,12 +107,12 @@ func getv(o *obj, k string) val { v, _ := o.Get(k); return v }
 func DeclaredSizes(rows []*obj) *pycompat.OMap[int64] {
 	out := pycompat.NewOMap[int64]()
 	for _, row := range rows {
-		id, ok := str(getv(row, "id"))
+		id, ok := asStr(getv(row, "id"))
 		if !ok || id == "" {
 			continue
 		}
-		for _, f := range modelwindow.DeclaredFields {
-			if n, ok := posInt(getv(row, f)); ok {
+		for _, f := range DeclaredFields {
+			if n, ok := asPosInt(getv(row, f)); ok {
 				out.Set(id, n)
 				break
 			}
@@ -143,11 +142,11 @@ func ListModels(ctx context.Context, base, key string, timeout time.Duration, op
 	rows := ListingRows(getv(top, "data"))
 	ids := make([]string, len(rows))
 	for i, r := range rows {
-		ids[i], _ = str(getv(r, "id"))
+		ids[i], _ = asStr(getv(r, "id"))
 	}
 	sizes := DeclaredSizes(rows)
 	for _, row := range rows {
-		model, _ := str(getv(row, "id"))
+		model, _ := asStr(getv(row, "id"))
 		if sizes.Has(model) || getv(row, "owned_by") != "ollama" {
 			continue
 		}
@@ -166,7 +165,7 @@ func ListModels(ctx context.Context, base, key string, timeout time.Duration, op
 		if show == nil {
 			continue
 		}
-		params, ok := str(getv(show, "parameters"))
+		params, ok := asStr(getv(show, "parameters"))
 		if !ok {
 			if _, present := show.Get("parameters"); present {
 				continue
@@ -174,7 +173,7 @@ func ListModels(ctx context.Context, base, key string, timeout time.Duration, op
 			params = ""
 		}
 		if m := numCtx.FindStringSubmatch(params); m != nil {
-			if n, ok := modelwindow.Positive(m[1]); ok {
+			if n, ok := Positive(m[1]); ok {
 				sizes.Set(model, n)
 			}
 		}
@@ -227,7 +226,7 @@ var FetchCanonicalCatalogue = func(ctx context.Context, timeout time.Duration) *
 	if live := fetchJSONDict(ctx, canonicalCatalogueURL, timeout); live.Len() > 0 {
 		return live
 	}
-	b, err := os.ReadFile(filepath.Join(ShareDir(), "model-catalogue.json"))
+	b, err := os.ReadFile(filepath.Join(probeShareDir(), "model-catalogue.json"))
 	if err != nil {
 		return pycompat.NewObj()
 	}
@@ -251,7 +250,7 @@ var FetchCanonicalCatalogue = func(ctx context.Context, timeout time.Duration) *
 	return models
 }
 
-// pyStr is str(v) for a JSON value.
+// pyStr is asStr(v) for a JSON value.
 func pyStr(v val) string {
 	switch t := v.(type) {
 	case nil:
@@ -276,7 +275,7 @@ var stderr io.Writer = os.Stderr
 // match. There is no family, alias or fuzzy matching: a gateway's owned_by is not
 // guaranteed to be the catalogue's provider slug, so a bare id is only trusted
 // when it is unique across the whole catalogue.
-func CatalogueWindow(catalogue *obj, modelID, ownedBy string) *modelwindow.Limit {
+func CatalogueWindow(catalogue *obj, modelID, ownedBy string) *Limit {
 	var entries []*obj
 	if ownedBy != "" {
 		if prov := asObj(getv(catalogue, ownedBy)); prov != nil {
@@ -303,11 +302,11 @@ func CatalogueWindow(catalogue *obj, modelID, ownedBy string) *modelwindow.Limit
 			return nil // absent, or present under 2+ providers: no confident pick
 		}
 	}
-	return modelwindow.LimitWindow(getv(entries[0], "limit"))
+	return LimitWindow(getv(entries[0], "limit"))
 }
 
 // CatalogueTag is the provenance record stored beside a catalogue-derived window.
-func CatalogueTag(found *modelwindow.Limit) *obj {
+func CatalogueTag(found *Limit) *obj {
 	o := pycompat.NewObj()
 	o.Set("source", "catalogue")
 	o.Set("value", pycompat.Int(found.Value))
@@ -326,7 +325,7 @@ func numOrNil(p *int64) val {
 
 // CatalogueLookup is the models.dev window for one id; cache memoizes each
 // catalogue for the caller's run.
-func CatalogueLookup(ctx context.Context, model, ownedBy string, cache *Cache, timeout time.Duration) *modelwindow.Limit {
+func CatalogueLookup(ctx context.Context, model, ownedBy string, cache *Cache, timeout time.Duration) *Limit {
 	if cache.api == nil {
 		cache.api = FetchCatalogue(ctx, timeout)
 		cache.apiFetches++
@@ -339,7 +338,7 @@ func CatalogueLookup(ctx context.Context, model, ownedBy string, cache *Cache, t
 			cache.flat = FetchCanonicalCatalogue(ctx, timeout)
 			cache.flatFetches++
 		}
-		found = modelwindow.CanonicalCatalogueWindow(cache.flat, model, ownedBy)
+		found = CanonicalCatalogueWindow(cache.flat, model, ownedBy)
 	}
 	return found
 }
@@ -361,17 +360,17 @@ func NewCache(launch bool) *Cache {
 }
 
 func (c *Cache) sourceTable(ctx context.Context, source *obj, timeout time.Duration) map[string][2]int64 {
-	u, _ := str(getv(source, "url"))
-	rowsKey, _ := str(getv(source, "rows"))
-	idKey, _ := str(getv(source, "id"))
-	windowKey, _ := str(getv(source, "window"))
-	defaultKey, _ := str(getv(source, "default"))
+	u, _ := asStr(getv(source, "url"))
+	rowsKey, _ := asStr(getv(source, "rows"))
+	idKey, _ := asStr(getv(source, "id"))
+	windowKey, _ := asStr(getv(source, "window"))
+	defaultKey, _ := asStr(getv(source, "default"))
 	name := "unnamed"
 	if n, ok := source.Get("name"); ok {
 		name = pyStr(n)
 	}
 	slot := "source:" + u
-	down := pycompat.Join(modelwindow.StateDir(), "cache", "window-source-"+name+".unreachable")
+	down := pycompat.Join(StateDir(), "cache", "window-source-"+name+".unreachable")
 	if _, ok := c.tables[slot]; !ok && c.launch {
 		if fi, err := os.Stat(down); err == nil && time.Since(fi.ModTime()).Seconds() < sourceRetrySeconds {
 			c.tables[slot] = map[string][2]int64{}
@@ -379,7 +378,7 @@ func (c *Cache) sourceTable(ctx context.Context, source *obj, timeout time.Durat
 	}
 	if _, ok := c.tables[slot]; !ok {
 		table := map[string][2]int64{}
-		if _, isStr := str(getv(source, "url")); isStr {
+		if _, isStr := asStr(getv(source, "url")); isStr {
 			rows, _ := fetchJSONDict(ctx, u, timeout).Get(rowsKey)
 			list, _ := rows.([]any)
 			for _, r := range list {
@@ -387,11 +386,11 @@ func (c *Cache) sourceTable(ctx context.Context, source *obj, timeout time.Durat
 				if row == nil {
 					continue
 				}
-				model, ok := str(getv(row, idKey))
+				model, ok := asStr(getv(row, idKey))
 				if !ok {
 					continue
 				}
-				if window, ok := posInt(getv(row, windowKey)); ok {
+				if window, ok := asPosInt(getv(row, windowKey)); ok {
 					def := int64(-1)
 					if defaultKey != "" {
 						if d, ok := anyInt(getv(row, defaultKey)); ok {
@@ -435,7 +434,7 @@ func ProviderWindows(ctx context.Context, declared *pycompat.OMap[int64], rows [
 	}
 	if !cache.sourcesLoaded {
 		cache.sourcesLoaded = true
-		if b, err := os.ReadFile(filepath.Join(ShareDir(), "window-sources.json")); err == nil {
+		if b, err := os.ReadFile(filepath.Join(probeShareDir(), "window-sources.json")); err == nil {
 			if doc := parseDict(b); doc != nil {
 				cache.sources, _ = getv(doc, "sources").([]any)
 			}
@@ -447,7 +446,7 @@ func ProviderWindows(ctx context.Context, declared *pycompat.OMap[int64], rows [
 		if source == nil {
 			continue
 		}
-		name, _ := str(getv(source, "name"))
+		name, _ := asStr(getv(source, "name"))
 		ownedBy, isList := getv(source, "owned_by").([]any)
 		if !wanted[name] || !isList {
 			continue
@@ -457,7 +456,7 @@ func ProviderWindows(ctx context.Context, declared *pycompat.OMap[int64], rows [
 			owner := getv(row, "owned_by")
 			for _, o := range ownedBy {
 				if pycompat.Equal(owner, o) {
-					if id, _ := str(getv(row, "id")); out.Has(id) {
+					if id, _ := asStr(getv(row, "id")); out.Has(id) {
 						models[id] = true
 					}
 					break

@@ -29,6 +29,8 @@
   (including `report`, `outcome` and `translator-user-agent`) must run
   `libexec/ccmorph-core shim ...` with the same arguments. An upgrade deletes the
   old file. `CCMORPH_SHIM_HOOKS` is unchanged: it still names your own build.
+- `model-window` and `context-probe` now share one Go package, `ctxwindow/`. Both
+  subcommands behave exactly as before.
 
 ## v0.3.0 — 2026-10-28
 

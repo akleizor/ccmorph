@@ -1,4 +1,4 @@
-package contextprobe
+package ctxwindow
 
 import (
 	"context"
@@ -11,7 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/akleizor/ccmorph/modelwindow"
 	"github.com/akleizor/ccmorph/pycompat"
 )
 
@@ -118,7 +117,7 @@ var (
 )
 
 func confFields(path string) (fields map[string]string, ok bool) {
-	e := pycompat.Catch(func() { _, fields = modelwindow.ReadConf(path) })
+	e := pycompat.Catch(func() { _, fields = ReadConf(path) })
 	return fields, e == nil
 }
 
@@ -126,11 +125,11 @@ func confPaths(profiles []string) []string {
 	var paths []string
 	if profiles != nil {
 		for _, p := range profiles {
-			paths = append(paths, modelwindow.ProfilePath(p))
+			paths = append(paths, ProfilePath(p))
 		}
 		return paths
 	}
-	dir := modelwindow.StateDir()
+	dir := StateDir()
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".conf") {
@@ -149,14 +148,14 @@ var priorValues = func(profiles []string) map[string]int64 {
 	values := map[string]int64{}
 	for _, path := range confPaths(profiles) {
 		stem := stemOf(path)
-		if !modelwindow.ValidProfileName(stem) {
+		if !ValidProfileName(stem) {
 			continue
 		}
 		fields, ok := confFields(path)
 		if !ok {
 			continue
 		}
-		d := modelwindow.DiscoveredValues(fields)
+		d := DiscoveredValues(fields)
 		for _, m := range d.Keys() {
 			values[stem+":"+m], _ = d.Get(m)
 		}
@@ -172,14 +171,14 @@ var priorCatalogueTags = func(profiles []string) map[string]*obj {
 	tags := map[string]*obj{}
 	for _, path := range confPaths(profiles) {
 		stem := stemOf(path)
-		if !modelwindow.ValidProfileName(stem) {
+		if !ValidProfileName(stem) {
 			continue
 		}
 		fields, ok := confFields(path)
 		if !ok {
 			continue
 		}
-		s := modelwindow.DiscoveredSources(fields)
+		s := DiscoveredSources(fields)
 		for _, m := range s.Keys() {
 			tags[stem+":"+m], _ = s.Get(m)
 		}
@@ -190,7 +189,7 @@ var priorCatalogueTags = func(profiles []string) map[string]*obj {
 // routedProfiles are the profiles with a routed endpoint: every one has a listing to size.
 func routedProfiles() []string {
 	var names []string
-	dir := modelwindow.StateDir()
+	dir := StateDir()
 	entries, _ := os.ReadDir(dir)
 	var confs []string
 	for _, e := range entries {
@@ -227,7 +226,7 @@ type Options struct {
 	ProbeTimeout float64
 	Deadline     float64
 	Bisect       int
-	Identities   map[string]*modelwindow.Identity
+	Identities   map[string]*Identity
 }
 
 // DefaultOptions are the CLI defaults.
@@ -280,7 +279,7 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 		}
 		for _, profile := range profiles {
 			if o.Identities != nil {
-				o.Identities[profile] = modelwindow.ProfileIdentity(profile)
+				o.Identities[profile] = ProfileIdentity(profile)
 				baseline = priorValues([]string{profile})
 				catalogueTags = priorCatalogueTags([]string{profile})
 			}
@@ -326,7 +325,7 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 					continue
 				}
 			}
-			fields, ok := confFields(modelwindow.ProfilePath(profile))
+			fields, ok := confFields(ProfilePath(profile))
 			if !ok {
 				fields = map[string]string{}
 			}
@@ -400,8 +399,8 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 			declared = pycompat.Merge(declared, raised)
 			ownedBy := map[string]string{}
 			for _, row := range listingRows {
-				if ob, ok := str(getv(row, "owned_by")); ok {
-					id, _ := str(getv(row, "id"))
+				if ob, ok := asStr(getv(row, "owned_by")); ok {
+					id, _ := asStr(getv(row, "id"))
 					ownedBy[id] = ob
 				}
 			}

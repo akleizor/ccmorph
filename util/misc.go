@@ -14,7 +14,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/akleizor/ccmorph/modelwindow"
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/pycompat"
 )
 
@@ -510,7 +510,7 @@ func chatModel(m pycompat.Value) (string, bool) {
 	return id, ok && id != ""
 }
 
-func isExcluded(fields map[string]string, id string) bool { return modelwindow.IsExcluded(fields, id) }
+func isExcluded(fields map[string]string, id string) bool { return ctxwindow.IsExcluded(fields, id) }
 
 // modelsFilteredJSON: models-filtered-json <conf>: the listing on stdin with only the
 // chat-capable, non-excluded rows left.

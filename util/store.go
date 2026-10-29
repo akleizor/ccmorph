@@ -10,7 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/akleizor/ccmorph/modelwindow"
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/pycompat"
 	"github.com/akleizor/ccmorph/settingscompose"
 )
@@ -338,7 +338,7 @@ func configStoreRun(op, confName, settingsName, key, sharedName string, mappingK
 			kept = append(kept, fmt.Sprintf("%s=%v", name, v))
 		}
 	}
-	proposed := []byte(modelwindow.CanonicalConf(strings.Join(kept, "\n")))
+	proposed := []byte(ctxwindow.CanonicalConf(strings.Join(kept, "\n")))
 
 	type target struct {
 		path          string

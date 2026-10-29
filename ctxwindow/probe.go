@@ -1,4 +1,4 @@
-package contextprobe
+package ctxwindow
 
 import (
 	"context"
@@ -96,7 +96,7 @@ func tokens(doc *obj) int64 {
 	return n
 }
 
-func stopReason(doc *obj) string { s, _ := str(getv(doc, "stop_reason")); return s }
+func stopReason(doc *obj) string { s, _ := asStr(getv(doc, "stop_reason")); return s }
 
 // reading is (reported_input_tokens, stop_reason) from one accepted request.
 type reading struct {
@@ -342,12 +342,12 @@ func truncRunes(s string, n int) string {
 // firstText is `detailMsg or error_message or error.message`, the first truthy string.
 func firstText(parsed *obj) string {
 	for _, k := range []string{"detailMsg", "error_message"} {
-		if s, ok := str(getv(parsed, k)); ok && s != "" {
+		if s, ok := asStr(getv(parsed, k)); ok && s != "" {
 			return s
 		}
 	}
 	if e := asObj(getv(parsed, "error")); e != nil {
-		if s, ok := str(getv(e, "message")); ok && s != "" {
+		if s, ok := asStr(getv(e, "message")); ok && s != "" {
 			return s
 		}
 	}

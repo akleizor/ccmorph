@@ -16,7 +16,7 @@ ROUTE_FIELDS = ("type", "base_url", "provider", "adapter", "api_key", "token")
 
 
 def route_fingerprint(fields):
-    """The route hash the conf writer stamps on a discovery record (modelwindow.RouteFingerprint)."""
+    """The route hash the conf writer stamps on a discovery record (ctxwindow.RouteFingerprint)."""
     return hashlib.sha256(json.dumps({key: fields.get(key, "") for key in ROUTE_FIELDS}, sort_keys=True).encode()).hexdigest()
 
 

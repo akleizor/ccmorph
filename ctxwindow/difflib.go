@@ -1,4 +1,4 @@
-package contextprobe
+package ctxwindow
 
 import "strconv"
 

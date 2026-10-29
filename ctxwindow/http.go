@@ -1,9 +1,4 @@
-// Package contextprobe is ccmorph-core context-probe: it discovers
-// context windows without inference by default. It reads gateway-declared limits
-// from /v1/models, falls back to the models.dev catalogue, and merges what it
-// finds into each profile's conf (through the modelwindow store). Paid probes
-// only run when the operator passes --allow-inference for one profile and model.
-package contextprobe
+package ctxwindow
 
 import (
 	"bytes"
@@ -64,7 +59,7 @@ func reasonText(err error) string {
 }
 
 // crossOriginError is a refused redirect; urllib raises it as a URLError whose
-// reason is text, which str() shows inside <urlopen error ...>.
+// reason is text, which asStr() shows inside <urlopen error ...>.
 type crossOriginError struct{ msg string }
 
 func (e *crossOriginError) Error() string { return e.msg }

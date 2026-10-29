@@ -70,6 +70,7 @@ The repository and the installed copy under `~/.config/ccmorph` share one layout
 (internal executable: `ccmorph-core`, Go, built by `make shim`;
 `ccmorph-core <adapter|shim|settings-compose|model-window|context-probe>`
 is the one binary every launch, install and zsh caller runs, from `cmd/ccmorph-core/`;
+`model-window` and `context-probe` are one Go package, `ctxwindow/`;
 `ccmorph-core shim` is the standalone stock shim, for a script that runs it directly.
 No Python runs in the core: `python3` is needed only by the Remote Control add-on in `addons/remote-control/`) and `share/` (data:
 `model-catalogue.json`, `window-sources.json`). `lib/` finds `libexec/` and `share/`
@@ -1069,7 +1070,7 @@ which sizes only listed models the profile has no limit for, in this order:
 
 With nothing new it is a local comparison. Everything goes to the log; nothing asks
 the person launching to act. A model still unknown after all four is budgeted at
-128,000 (`UnknownBudget` in `modelwindow/`) rather than Claude Code's 200,000, because
+128,000 (`UnknownBudget` in `ctxwindow/`) rather than Claude Code's 200,000, because
 measured walls on one route sat at 131,072 and 128,000: early compaction on a big
 model is recoverable, a session past its wall is not. Two traps, both found by probe:
 

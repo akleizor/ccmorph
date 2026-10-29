@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/akleizor/ccmorph/modelwindow"
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/pycompat"
 	"github.com/akleizor/ccmorph/settingscompose"
 )
@@ -92,7 +92,7 @@ func invariantRecords(settings, conf, profile, maxOut, budgetRaw string, no1m bo
 			}
 			usable := w - min(w, engineReserve(entry, pinned))
 			trigger := engineTrigger(usable, pctP)
-			bare := strings.SplitN(modelwindow.RealID(entry), "[", 2)[0]
+			bare := strings.SplitN(ctxwindow.RealID(entry), "[", 2)[0]
 			ceiling := ceilings[profile+":"+bare]
 			if ceiling == 0 {
 				ceiling = ceilings[bare]

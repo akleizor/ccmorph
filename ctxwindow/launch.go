@@ -1,4 +1,4 @@
-package contextprobe
+package ctxwindow
 
 import (
 	"context"
@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/akleizor/ccmorph/modelwindow"
 	"github.com/akleizor/ccmorph/pycompat"
 )
 
@@ -105,14 +104,14 @@ func SizeListing(ctx context.Context, profile, body, base, key string, op Opener
 			pycompat.Crash("AttributeError", "listing is not an object")
 		}
 		rows = ListingRows(getv(top, "data"))
-		_, fields = modelwindow.ReadConf(modelwindow.ProfilePath(profile))
+		_, fields = ReadConf(ProfilePath(profile))
 	})
 	if e != nil {
 		return 0
 	}
-	expected := modelwindow.ProfileIdentity(profile)
-	known := modelwindow.DiscoveredValues(fields)
-	for m := range modelwindow.ManualValues(fields) {
+	expected := ProfileIdentity(profile)
+	known := DiscoveredValues(fields)
+	for m := range ManualValues(fields) {
 		known.Set(m, 0)
 	}
 	excluded := map[string]bool{}
@@ -120,11 +119,11 @@ func SizeListing(ctx context.Context, profile, body, base, key string, op Opener
 		excluded[m] = true
 	}
 	today := time.Now().UTC().Format("2006-01-02")
-	misses := modelwindow.DiscoveredMisses(fields)
+	misses := DiscoveredMisses(fields)
 	var todo []*obj
 	for _, row := range rows {
-		id, _ := str(getv(row, "id"))
-		if !modelwindow.ValidModel(id) || excluded[id] {
+		id, _ := asStr(getv(row, "id"))
+		if !ValidModel(id) || excluded[id] {
 			continue
 		}
 		if day, ok := misses.Get(id); ok && RecentlyMissed(day, today) {
@@ -152,17 +151,17 @@ func SizeListing(ctx context.Context, profile, body, base, key string, op Opener
 	declared, pending := ProviderWindows(ctx, DeclaredSizes(todo), todo, fields, to, cache)
 	var rest []*obj
 	for _, row := range todo {
-		if id, _ := str(getv(row, "id")); !pending[id] { // retried next launch
+		if id, _ := asStr(getv(row, "id")); !pending[id] { // retried next launch
 			rest = append(rest, row)
 		}
 	}
 	for _, row := range rest {
-		model, _ := str(getv(row, "id"))
+		model, _ := asStr(getv(row, "id"))
 		if v, ok := declared.Get(model); ok {
 			values.Set(model, v)
 			continue
 		}
-		ownedBy, _ := str(getv(row, "owned_by"))
+		ownedBy, _ := asStr(getv(row, "owned_by"))
 		if found := CatalogueLookup(ctx, model, ownedBy, cache, to); found != nil {
 			values.Set(model, found.Value)
 			sources.Set(model, CatalogueTag(found))
@@ -181,7 +180,7 @@ func SizeListing(ctx context.Context, profile, body, base, key string, op Opener
 			missed.Set(model, today)
 		}
 	}
-	if !modelwindow.SaveDiscovered(profile, values, expected, false, sources, missed) {
+	if !SaveDiscovered(profile, values, expected, false, sources, missed) {
 		return 1
 	}
 	keys := values.Keys()
@@ -205,7 +204,7 @@ func SizeListing(ctx context.Context, profile, body, base, key string, op Opener
 var validationWindowFn = ValidationWindow
 
 // Commit gives each profile its own write: no shared registry or cross-profile fallback.
-func Commit(ctx context.Context, values *pycompat.OMap[int64], baseline map[string]int64, identities map[string]*modelwindow.Identity, sources map[string]*obj) (code int, cut bool) {
+func Commit(ctx context.Context, values *pycompat.OMap[int64], baseline map[string]int64, identities map[string]*Identity, sources map[string]*obj) (code int, cut bool) {
 	grouped := map[string]*pycompat.OMap[int64]{}
 	groupedSources := map[string]*pycompat.OMap[*obj]{}
 	changes := map[string]map[string]int64{}
@@ -238,7 +237,7 @@ func Commit(ctx context.Context, values *pycompat.OMap[int64], baseline map[stri
 		}
 		models := grouped[profile]
 		expected := identities[profile]
-		if expected == nil || !modelwindow.SaveDiscoveredCtx(ctx, profile, models, expected, true, groupedSources[profile], nil) {
+		if expected == nil || !SaveDiscoveredCtx(ctx, profile, models, expected, true, groupedSources[profile], nil) {
 			if ctx.Err() != nil {
 				return 1, true
 			}
@@ -285,7 +284,7 @@ func ReportUnresolved(w io.Writer, models []string, profiles []string) {
 	if len(models) == 1 {
 		model = models[0]
 	}
-	fmt.Fprintf(w, "\n%d unresolved, running at Claude Code's %s-token default:\n", len(models), commas(modelwindow.CCDefaultWindow))
+	fmt.Fprintf(w, "\n%d unresolved, running at Claude Code's %s-token default:\n", len(models), commas(CCDefaultWindow))
 	fmt.Fprintln(w, "  "+strings.Join(models, ", "))
 	fmt.Fprintf(w, "Set it:      ccmorph context %s %s <tokens>\n", account, model)
 	fmt.Fprintf(w, "Measure it:  ccmorph probe %s --model %s --allow-inference   (one large prompt, may be billed)\n", account, model)
