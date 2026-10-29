@@ -51,3 +51,12 @@ def test_claude_project_memory_include_resolves_issue_21():
     assert memory.startswith("@"), "the project memory must be one @-include"
     target = (ROOT / ".claude" / memory[1:]).resolve()
     assert target.is_file(), f"@-include {memory[1:]!r} does not resolve"
+
+
+def test_libexec_tracks_no_build_output():
+    # libexec/ is filled by `make shim` and `make dist`; a committed binary
+    # once shipped inside the v0.4.0 tag and every brew install.
+    tracked = subprocess.run(
+        ["git", "ls-files", "--", "libexec"], cwd=ROOT,
+        capture_output=True, text=True, timeout=HANG_TIMEOUT).stdout.split()
+    assert tracked == ["libexec/.gitkeep"], f"libexec/ tracks build output: {tracked}"
