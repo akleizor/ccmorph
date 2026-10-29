@@ -279,6 +279,7 @@ _ccm_usage() {
       print "\n${_ccm_bold}Profiles:${_ccm_reset}"
       _ccm_help "ccmorph add <profile>" "Add an account or API key"
       _ccm_help "ccmorph list" "See profiles and the default"
+      _ccm_help "ccmorph quota [profile]" "Plan usage left on subscription profiles"
       _ccm_help "ccmorph use <profile>" "Set the default; do not launch"
       _ccm_help "ccmorph config [profile]" "Change model, reasoning, or connection"
       print "\n${_ccm_bold}Troubleshooting:${_ccm_reset}"
@@ -339,6 +340,9 @@ Changes affect new sessions.
 
 For a single setting: ccmorph set <profile> model|effort [value]' ;;
     list) usage='ccmorph list'; detail='List saved profiles. * marks the default used by ccmorph run.' ;;
+    quota) usage='ccmorph quota [profile]'; detail='Show how much of each subscription plan window (5 hours, week) is used and
+when it resets, read from claude.ai with the profile'"'"'s own sign-in. No inference,
+nothing billed. Omit the profile to list every subscription and token profile.' ;;
     use) usage='ccmorph use [profile|-i]'; detail='Set the default without launching. No argument shows the current default.' ;;
     inspect) usage='ccmorph inspect [profile|-i]'; detail='Show effective settings and their sources, never the stored credential.
 Omit the profile to inspect the default; -i opens the profile picker.' ;;
@@ -1687,6 +1691,33 @@ ccmorph() {
         [[ "$_k" == env.* ]] && print "${_k#env.}=${_ccm[$_k]}"
       done
       unset _ccm
+      ;;
+
+    quota)
+      # Plan windows of every subscription/token profile, or of the one named.
+      # The token goes to ccmorph-core on stdin, never in argv.
+      local -a _q_names=()
+      if [[ -n "${2:-}" ]]; then
+        _ccm_exists "$2" || {
+          _ccm_err "no profile '$2'. Run: ccmorph list"
+          return 1
+        }
+        _q_names=("$2")
+      else
+        local _q_f
+        for _q_f in "$dir"/*.conf(N); do _q_names+=("${_q_f:t:r}"); done
+      fi
+      local _q_n _q_in=""
+      for _q_n in "${_q_names[@]}"; do
+        _ccm_read "$_q_n" 2>/dev/null || continue
+        case "${_ccm[type]}" in
+          sub)   _q_in+="${_q_n}"$'\t'"sub"$'\t'"${_CCMORPH_PROFILE_DIRS}/${_q_n}"$'\n' ;;
+          token) _q_in+="${_q_n}"$'\t'"token"$'\t'"${_CCMORPH_PROFILE_DIRS}/${_q_n}"$'\t'"${_ccm[token]:-}"$'\n' ;;
+          *) [[ -n "${2:-}" ]] && { unset _ccm; _ccm_err "'$_q_n' is not a subscription or token profile"; return 1 } ;;
+        esac
+      done
+      unset _ccm
+      print -rn -- "$_q_in" | "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" quota
       ;;
 
     use)

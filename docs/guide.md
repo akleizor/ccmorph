@@ -375,6 +375,24 @@ them. A profile opts in with `env.CCMORPH_RANDOM_DEVICE_ID=1` to send a random
 per-session `device_id` in `metadata.user_id` instead of the real one (the session
 id passes through, so caching is unaffected). Relaunch to apply.
 
+### Secret masking
+
+`env.CCMORPH_MASK=1` keeps secrets out of what the gateway sees. API keys, tokens,
+private keys and passwords (in URLs, connection strings and `password=`-style
+assignments) go upstream as placeholders such as `{{API_KEY_k3v9x2mqa7bc}}`, and the
+shim puts the real value back in the reply, so Claude Code, its files and the commands
+it runs keep the real value. The output of a password-manager command run on its own
+(`op read`, `op item get --reveal`, `security find-generic-password -w`, `bw get
+password`, `pass show`) is masked whole: an agent can fetch a password and use it
+without the provider ever seeing it. `env.CCMORPH_MASK_COMMANDS=<regexp>` adds your
+own command, for example `^secrets get\b`. Relaunch to apply.
+
+The cost: the model sees the placeholder, not the value, so it cannot work on the value
+itself (why is this token rejected?). Values shorter than six characters and passwords
+with no label around them are not found. Each usage receipt counts what was masked in
+its `masked` field. Masking covers every route the shim fronts; a subscription or
+`api.anthropic.com` profile talks to Anthropic directly and is not masked.
+
 ### Gateway edge
 
 Every route the adapter serves goes through its request shim. A gateway may answer
@@ -479,6 +497,22 @@ In a plain terminal it exits with `not inside a Claude Code session`, and a
 session started by plain `claude` (bypassing the launcher) reports `this session
 was not launched by the ccmorph relay` — start it with `ccmorph` and hop from
 there.
+
+
+### Plan usage before a hop
+
+`ccmorph quota` shows, for every subscription profile, how much of its 5-hour and weekly
+windows is used and when each resets, so you can pick the profile to hop to:
+
+```
+alex         5h 12% (19:10)  week 40% (Tue 09:00)
+alextk       not available: this token cannot read plan usage
+```
+
+It reads claude.ai's usage endpoint (the one `/usage` shows) with the profile's own
+sign-in: no inference, nothing billed. An expired sign-in is reported, not refreshed;
+the next session on that profile refreshes it. A `token` profile's long-lived token is
+not allowed to read plan usage.
 
 ## What is isolated, and what is shared
 

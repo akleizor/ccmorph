@@ -206,6 +206,9 @@ _CCMORPH_PROFILE_ENV=(
   CCMORPH_COMPAT
   CCMORPH_STALL_TIMEOUT
   CCMORPH_UPSTREAM_PROXY
+  # Secret masking in the gateway shim, and the profile's own password commands.
+  CCMORPH_MASK
+  CCMORPH_MASK_COMMANDS
   # Path to the profile's request-hooks module, loaded by the gateway shim.
   CCMORPH_SHIM_HOOKS
   CLAUDE_CODE_MAX_CONTEXT_TOKENS

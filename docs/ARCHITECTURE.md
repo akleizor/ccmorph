@@ -609,6 +609,7 @@ is identifier randomisation **[test]**:
 | Profile key | Shim flag | Effect |
 |---|---|---|
 | `env.CCMORPH_RANDOM_DEVICE_ID=1` | `--random-device-id` | On `POST /v1/messages` and `/count_tokens`, `device_id` inside `metadata.user_id` (a JSON string) becomes a random 64-hex value minted once per session and stable within it (keyed by the session id, held in memory only). `session_id`, `account_uuid`, every other key and every header are untouched, so prompt caching and gateway affinity do not move. A body it cannot parse, or whose `user_id` is not that JSON shape, goes upstream byte-identical. |
+| `env.CCMORPH_MASK=1` | — (`CCMORPH_MASK` in the shim's environment) | On `POST /v1/messages` and `/count_tokens`, secrets and passwords in system text, message text, tool input and tool results become `{{KIND_<12 base32>}}`, an HMAC of the value under the install key `$XDG_STATE_HOME/ccmorph/mask.key` (0600), so the same value is the same placeholder in every turn and across relaunches. Every value found is masked wherever it appears in the request. Replies have each placeholder put back in text and tool input, streamed (a delta ending in a possible placeholder start is joined to the next delta of its block) or not. Thinking is neither masked nor restored, so signatures stay valid. Values live in memory only. A body masking cannot read is refused with a 503 and nothing is sent. `env.CCMORPH_MASK_COMMANDS=<regexp>` adds password commands whose one-line output is masked whole, beside the built-in `op read`, `op item get --fields/--reveal`, `security find-*-password -w`, `bw get password` and `pass show`. Shim code: `shim/mask.go` **[test]**. |
 
 Generic gateway compatibility lives in `compat/`, which imports `shim` (never the
 reverse); `ccmorph-core shim` passes `compat.FromEnv()` to `shim.Main`. Each
@@ -682,8 +683,13 @@ and a timestamp was therefore not a usable ownership key. Rows written before
 
 ```
 {schema: 1, response_id, turn_id, route_id, profile, requested_model, task, attempt,
- served_model, retries, response_model, timestamp, usage, complete}
+ served_model, retries, masked?, response_model, timestamp, usage, complete}
 ```
+
+`masked` is present only when secret masking replaced something: the number of distinct
+values masked in that request, by kind (`{"API_KEY":1,"PASSWORD":2}`). Each request
+carries the whole history, so it counts what that request kept back, not new finds
+**[test]**.
 
 `task` and `attempt` are the task tags below (`null`, `1` when a launch set none).
 `retries` is how many times the shim re-sent the request before the response this row

@@ -7,6 +7,17 @@
 
 ## Unreleased
 
+### Added
+
+- **Secret masking** (`env.CCMORPH_MASK=1`). The gateway shim sends API keys,
+  tokens, private keys and passwords upstream as stable placeholders and puts the
+  real values back in replies, streamed or not; a password-manager command's
+  output (`op read`, `security … -w`, …) is masked whole, and
+  `env.CCMORPH_MASK_COMMANDS` adds your own. Usage receipts count what each
+  request masked.
+- **`ccmorph quota [profile]`** shows each subscription's 5-hour and weekly usage
+  and reset time from claude.ai's usage endpoint: no inference, nothing billed.
+
 ### Changed
 
 - **A computed cost is no longer billed spend** (#51). The shim writes the

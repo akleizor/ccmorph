@@ -9,6 +9,7 @@ import (
 	"github.com/akleizor/ccmorph/adapter"
 	"github.com/akleizor/ccmorph/compat"
 	"github.com/akleizor/ccmorph/ctxwindow"
+	"github.com/akleizor/ccmorph/quota"
 	"github.com/akleizor/ccmorph/settingscompose"
 	"github.com/akleizor/ccmorph/shim"
 	"github.com/akleizor/ccmorph/util"
@@ -16,7 +17,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: ccmorph-core adapter|shim|settings-compose|model-window|context-probe ...")
+		fmt.Fprintln(os.Stderr, "usage: ccmorph-core adapter|shim|settings-compose|model-window|context-probe|quota ...")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -40,6 +41,8 @@ func main() {
 		shim.Main(h)
 	case "context-probe":
 		os.Exit(ctxwindow.ProbeMain(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	case "quota":
+		os.Exit(quota.Main(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	default:
 		fmt.Fprintf(os.Stderr, "ccmorph-core: unknown command %q\n", os.Args[1])
 		os.Exit(2)
