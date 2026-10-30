@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
+	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/pycompat"
 )
 
@@ -191,70 +192,12 @@ func normalizePluginIndex(args []string, _ io.Reader, _, _ io.Writer) int {
 	return 0
 }
 
-var modelID = regexp.MustCompile(`^[A-Za-z0-9._:\[\]()@/-]+$`)
-
 // validModelMap: a JSON object of unique model ids to model ids, no key carrying [1m].
 func validModelMap(args []string, _ io.Reader, _, _ io.Writer) int {
-	if len(args) != 1 || !strings.HasPrefix(strings.TrimLeftFunc(args[0], pycompat.IsSpace), "{") {
+	if len(args) != 1 || !profile.ValidModelMap(args[0]) {
 		return 1
-	}
-	v, err := pycompat.Parse([]byte(args[0]))
-	if err != nil {
-		return 1
-	}
-	obj := asObj(v)
-	if obj == nil {
-		return 1
-	}
-	// A duplicate key collapses in the parsed object, so count the raw keys apart.
-	if rawKeyCount(args[0]) != obj.Len() {
-		return 1
-	}
-	for _, k := range obj.Keys() {
-		val, _ := obj.Get(k)
-		s, ok := val.(string)
-		if !ok || !modelID.MatchString(k) || !modelID.MatchString(s) || strings.HasSuffix(strings.ToLower(k), "[1m]") {
-			return 1
-		}
 	}
 	return 0
-}
-
-// rawKeyCount counts the members of the top-level object in already-validated JSON.
-func rawKeyCount(s string) int {
-	depth, n := 0, 0
-	inStr, esc, sawValue := false, false, false
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if inStr {
-			switch {
-			case esc:
-				esc = false
-			case c == '\\':
-				esc = true
-			case c == '"':
-				inStr = false
-			}
-			continue
-		}
-		switch c {
-		case '"':
-			inStr = true
-			if depth == 1 && !sawValue {
-				n++
-				sawValue = true
-			}
-		case '{', '[':
-			depth++
-		case '}', ']':
-			depth--
-		case ',':
-			if depth == 1 {
-				sawValue = false
-			}
-		}
-	}
-	return n
 }
 
 // settingsValid exits 1 unless every existing file named is a JSON object.

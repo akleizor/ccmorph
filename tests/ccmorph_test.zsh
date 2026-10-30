@@ -4459,7 +4459,8 @@ test_quota_hands_every_profile_to_the_core_with_no_key_in_argv() {
   # ccmorph-core quota echoes its argv and stdin: credentials must arrive on stdin
   # only, and an api_key must never be handed over at all.
   mkdir -p "$test_home/libexec"
-  printf '%s\n' '#!/bin/sh' 'echo "argv:$*"' 'cat' > "$test_home/libexec/ccmorph-core"
+  # Everything but quota reaches the real core (profile-read parses each conf).
+  printf '%s\n' '#!/bin/sh' '[ "$1" = quota ] || exec "'"$_CCMORPH_LIBEXEC_DIR"'/ccmorph-core" "$@"' 'echo "argv:$*"' 'cat' > "$test_home/libexec/ccmorph-core"
   chmod +x "$test_home/libexec/ccmorph-core"
   _CCMORPH_LIBEXEC_DIR="$test_home/libexec"
   out=$(ccmorph quota)
@@ -4948,39 +4949,18 @@ test_the_profile_template_is_a_valid_conf_naming_every_key() {
   }
   unset _ccm
 
-  # Read EVERY case arm of the reader, not the first: the accepted keys are split
-  # across arms, so `head -1` sees only the type/identity list and every key below
-  # it — including any added later — goes unchecked. An arm is a line of exactly
-  # six spaces followed by `key|key)`. Arms that report a removed key are not
-  # accepted keys and are skipped by the marker their `case` body prints, so this
-  # reads `_ccm_read` structurally rather than retyping its six-arm layout.
-  integer in_case=0 removed=0
+  # The reader is profile/profile.go: its accepted keys are the checkKey case
+  # labels, the per-type lists and the removed-key table. Read them all, so a
+  # key added later is checked too; removed keys are not accepted keys.
   local -a accepted=()
-  while IFS= read -r line; do
-    [[ "$line" == '_ccm_read() {' ]] && { in_case=1; continue }
-    (( in_case )) || continue
-    [[ "$line" == '}' ]] && break
-    if [[ "$line" == '      '*')' ]]; then
-      rest="${line#'      '}"
-      if [[ "$rest" == *[[:space:]]* ]]; then
-        continue
-      elif [[ -n "$arm" ]]; then
-        (( removed )) || accepted+=("${(s:|:)${arm%\)}}")
-      fi
-      arm="$rest"
-      removed=0
-    elif [[ "$line" == *'was removed'* ]]; then
-      removed=1
-    fi
-  done < <(cat -- "${CCMORPH_LIBRARY[@]}")
-  if [[ -n "$arm" ]] && (( ! removed )); then
-    accepted+=("${(s:|:)${arm%\)}}")
-  fi
-  (( ${#accepted} )) || { print -u2 -- 'could not find the reader key list'; rc=1; }
-  # The last arm is the catch-all pattern. A read that stopped at the first arm
-  # never sees it, so finding it proves the whole `case` was read.
-  [[ " ${(j: :)accepted} " == *' * '* ]] || {
-    print -u2 -- 'the reader key list must come from every case arm, not the first'
+  local go="$REPO_ROOT/profile/profile.go"
+  accepted=(${(f)"$(command sed -n '/^func checkKey/,/^}/p' "$go" |
+    command grep -oE '(k == |HasPrefix\(k, )"[a-z_.]+"' | command sed -E 's/.*"([a-z_.]+)"/\1/; s/\.$/.*/')"}
+    ${(f)"$(command sed -n '/perType  = map/,/^	}/p' "$go" | command grep -oE '"[a-z_.*]+"' | command tr -d '"' |
+      command grep -vxE 'sub|token|apikey|provider')"})
+  (( ${#accepted} > 20 )) || { print -u2 -- 'could not find the reader key list'; rc=1; }
+  [[ " ${accepted[*]} " == *' model_map '* && " ${accepted[*]} " == *' env.* '* ]] || {
+    print -u2 -- 'the reader key list must come from every case, not the first'
     rc=1
   }
 
@@ -4991,7 +4971,7 @@ test_the_profile_template_is_a_valid_conf_naming_every_key() {
     # `# pattern.<arg>` comment a pattern key uses (`effort.<model>`). The
     # trailing class stops `# model` from being satisfied by `# model_defaults`.
     documented=0
-    if [[ "$k" == '*' ]]; then
+    if [[ "$k" == 'env.*' ]]; then
       [[ "$doc" == *'#'[[:space:]]'env.'* ]] && documented=1
     else
       local bare="${k%\*}"

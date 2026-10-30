@@ -10,29 +10,15 @@ import (
 	"strings"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
+	"github.com/akleizor/ccmorph/profile"
 )
 
 // A credential held in the login keychain is written in the conf as
 // "keychain:<name>.<key>": the generic password whose service is ccmorph and
 // whose account is that reference. Nothing else in the conf changes.
-const keychainService = "ccmorph"
+const keychainService = profile.KeychainService
 
 func keychainRef(profile, key string) string { return "keychain:" + profile + "." + key }
-
-// keychainGet: keychain-get <ref> prints the secret behind ref, unchanged.
-func keychainGet(args []string, _ io.Reader, out, errw io.Writer) int {
-	if len(args) != 1 || !strings.HasPrefix(args[0], "keychain:") {
-		return 2
-	}
-	b, err := exec.Command("security", "find-generic-password", "-s", keychainService,
-		"-a", strings.TrimPrefix(args[0], "keychain:"), "-w").Output()
-	if err != nil {
-		fmt.Fprintf(errw, "%s is not in the login keychain\n", args[0])
-		return 1
-	}
-	io.WriteString(out, strings.TrimSuffix(string(b), "\n"))
-	return 0
-}
 
 // keychainPut stores secret under ref. The secret goes through security's
 // stdin script, never argv, so ps never shows it.
@@ -99,9 +85,9 @@ func keychainMigrate(args []string, _ io.Reader, _, errw io.Writer) int {
 }
 
 // keychainMove rewrites conf's api_key and token as keychain references for
-// profile. A plain value is stored first; a reference from (a rename) is
+// profile name. A plain value is stored first; a reference from (a rename) is
 // copied. The conf is rewritten only after every item is stored.
-func keychainMove(conf, profile string, from func(string) string, errw io.Writer) int {
+func keychainMove(conf, name string, from func(string) string, errw io.Writer) int {
 	data, err := os.ReadFile(conf)
 	if err != nil {
 		return 0
@@ -113,23 +99,21 @@ func keychainMove(conf, profile string, from func(string) string, errw io.Writer
 		if !ok || (key != "api_key" && key != "token") || value == "" {
 			continue
 		}
-		ref := keychainRef(profile, key)
+		ref := keychainRef(name, key)
 		secret := value
 		if strings.HasPrefix(value, "keychain:") {
 			if from == nil || value != from(key) {
 				continue
 			}
-			var b strings.Builder
-			if keychainGet([]string{value}, nil, &b, io.Discard) != 0 {
-				fmt.Fprintf(errw, "ccmorph: %s: %s is missing from the keychain\n", profile, value)
+			if secret, err = profile.KeychainGet(value); err != nil {
+				fmt.Fprintf(errw, "ccmorph: %s: %s is missing from the keychain\n", name, value)
 				return 1
 			}
-			secret = b.String()
 		} else if from != nil {
 			continue
 		}
 		if err := keychainPut(ref, secret); err != nil {
-			fmt.Fprintf(errw, "ccmorph: %s keeps its plain %s: %v\n", profile, key, err)
+			fmt.Fprintf(errw, "ccmorph: %s keeps its plain %s: %v\n", name, key, err)
 			return 1
 		}
 		lines[i] = key + "=" + ref
@@ -158,5 +142,34 @@ func keychainMove(conf, profile string, from func(string) string, errw io.Writer
 	if from != nil {
 		keychainDelete([]string{strings.TrimSuffix(strings.TrimPrefix(from("api_key"), "keychain:"), ".api_key")}, nil, nil, nil)
 	}
+	return 0
+}
+
+// profileRead: profile-read <state> <name> <secure 0|1> <profile-env,...> <mapping-env,...>
+// prints the profile's fields as NUL-separated key/value pairs for _ccm_read,
+// or the refusal on stdout with exit 1. Removed-key notices go to stderr.
+func profileRead(args []string, _ io.Reader, out, errw io.Writer) int {
+	if len(args) != 5 {
+		return 2
+	}
+	set := func(csv string) map[string]bool {
+		m := map[string]bool{}
+		for _, k := range strings.Split(csv, ",") {
+			m[k] = true
+		}
+		return m
+	}
+	fields, err := profile.Read(args[0], args[1], args[2] == "1",
+		profile.Lists{ProfileEnv: set(args[3]), MappingEnv: set(args[4])},
+		func(line string) { fmt.Fprintln(errw, line) })
+	if err != nil {
+		io.WriteString(out, err.Error())
+		return 1
+	}
+	var b strings.Builder
+	for k, v := range fields {
+		b.WriteString(k + "\x00" + v + "\x00")
+	}
+	io.WriteString(out, b.String()+".") // $(…) strips trailing NULs; the dot keeps the last empty value
 	return 0
 }
