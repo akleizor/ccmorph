@@ -1,11 +1,13 @@
 package adapter
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -258,18 +260,43 @@ func stopProcesses(procs ...*proc) {
 // adapter's own handlers cannot run then, and macOS has no parent-death signal,
 // so its children were reparented to launchd and served an empty port forever
 // (40 translator+shim pairs found leaked on 2026-10-02). Once the adapter is
-// gone the tether stops the child with the same TERM-then-KILL grace and removes
-// the state directory holding the credential.
+// gone the tether stops every child with the same TERM-then-KILL grace and
+// removes the state directory holding the credential.
+// One tether watches every child of its adapter (#29): the first call starts it
+// with the state dir, and every call hands it one more child pid on its stdin,
+// so a translator plus a profile's hooks shim still cost one process, not two.
 var tether = tetherImpl
 
+var (
+	tetherMu sync.Mutex
+	tetherIn *os.File // the running tether's stdin, nil until the first child
+)
+
 func tetherImpl(exe string, child *proc, state string) {
-	cmd := exec.Command(exe, "tether", strconv.Itoa(os.Getpid()), strconv.Itoa(child.cmd.Process.Pid), state)
-	// Its own session, so the hangup that ends a tmux session cannot take the
-	// tether down before the adapter's SIGHUP handler has stopped the child.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if cmd.Start() == nil {
+	tetherMu.Lock()
+	defer tetherMu.Unlock()
+	if tetherIn == nil {
+		r, w, err := os.Pipe()
+		if err != nil {
+			return
+		}
+		cmd := exec.Command(exe, "tether", strconv.Itoa(os.Getpid()), state)
+		cmd.Stdin = r
+		// Its own session, so the hangup that ends a tmux session cannot take the
+		// tether down before the adapter's SIGHUP handler has stopped the child.
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		err = cmd.Start()
+		r.Close()
+		if err != nil {
+			w.Close()
+			return
+		}
 		go cmd.Wait()
+		tetherIn = w
 	}
+	// The pipe is close-on-exec, so no child inherits it: it reaches EOF only
+	// when the adapter itself goes.
+	fmt.Fprintf(tetherIn, "%d\n", child.cmd.Process.Pid)
 }
 
 // shimArgv is the command line of a shim run as its own executable.
@@ -326,29 +353,68 @@ func startShim(hooksBin string, o shim.Options, env map[string]string, stdout, s
 // Exit runs the registered cleanups, then exits with code.
 func Exit(code int) { exit(code) }
 
-// Tether is the `ccmorph-core tether <adapter-pid> <child-pid> <state-dir>` body.
+// Tether is the `ccmorph-core tether <adapter-pid> <state-dir>` body. Its stdin
+// carries the pid of every child to watch, one per line, as the adapter starts
+// them.
 func Tether(args []string) {
-	if len(args) != 3 {
+	if len(args) != 2 {
 		os.Exit(2)
 	}
 	adapter, _ := strconv.Atoi(args[0])
-	child, _ := strconv.Atoi(args[1])
-	state := args[2]
-	alive := func() bool { return syscall.Kill(child, 0) == nil }
-	for os.Getppid() == adapter && alive() {
+	state := args[1]
+	var (
+		mu       sync.Mutex
+		children []int
+	)
+	// Pids arrive while the adapter runs; a pid it wrote just before dying is
+	// still in the pipe when the poll below notices it is gone.
+	read := make(chan struct{})
+	go func() {
+		s := bufio.NewScanner(os.Stdin)
+		for s.Scan() {
+			pid, err := strconv.Atoi(strings.TrimSpace(s.Text()))
+			if err == nil && pid > 0 {
+				mu.Lock()
+				children = append(children, pid)
+				mu.Unlock()
+			}
+		}
+		close(read)
+	}()
+	alive := func(pid int) bool { return syscall.Kill(pid, 0) == nil }
+	for os.Getppid() == adapter {
 		time.Sleep(2 * time.Second)
+		// A child that exited on its own is never signalled later, when its pid
+		// (and some other process's) could have come around again.
+		mu.Lock()
+		children = slices.DeleteFunc(children, func(pid int) bool { return !alive(pid) })
+		mu.Unlock()
 	}
-	if alive() {
-		syscall.Kill(child, syscall.SIGTERM)
-		deadline := time.Now().Add(10 * time.Second)
-		for alive() && time.Now().Before(deadline) {
-			time.Sleep(200 * time.Millisecond)
-		}
-		if alive() {
-			syscall.Kill(child, syscall.SIGKILL)
+	select {
+	case <-read:
+	case <-time.After(2 * time.Second):
+	}
+	mu.Lock()
+	var live []int
+	for _, pid := range children {
+		if alive(pid) {
+			syscall.Kill(pid, syscall.SIGTERM)
+			live = append(live, pid)
 		}
 	}
-	if state != "" && os.Getppid() != adapter {
+	mu.Unlock()
+	// Every child was asked to stop at the same moment, so one deadline still
+	// gives each its own full grace.
+	deadline := time.Now().Add(stopGrace)
+	for time.Now().Before(deadline) && slices.ContainsFunc(live, alive) {
+		time.Sleep(200 * time.Millisecond)
+	}
+	for _, pid := range live {
+		if alive(pid) {
+			syscall.Kill(pid, syscall.SIGKILL)
+		}
+	}
+	if state != "" {
 		os.RemoveAll(state)
 	}
 }

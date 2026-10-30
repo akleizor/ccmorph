@@ -709,6 +709,75 @@ func TestStopProcessesWaitsThenKillsAStubbornChild(t *testing.T) { // test_shutd
 	}
 }
 
+func TestTetherWatchesEveryChildOfOneAdapter(t *testing.T) { // test_sigkilled_adapter_does_not_leak_its_children
+	// One tether per adapter (#29): the first child starts it with the state
+	// dir, and every later child arrives as one more pid on the same stdin.
+	// Two starts here would mean two processes watching one adapter, the
+	// per-child cost this test exists to keep down.
+	dir := t.TempDir()
+	script := filepath.Join(dir, "fake-tether")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n"+
+		"printf '%s\\n' \"$*\" >> \"$TETHER_OUT.argv\"\n"+
+		"cat >> \"$TETHER_OUT.stdin\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TETHER_OUT", filepath.Join(dir, "out"))
+	tetherMu.Lock()
+	prev := tetherIn
+	tetherIn = nil
+	tetherMu.Unlock()
+	t.Cleanup(func() {
+		tetherMu.Lock()
+		if tetherIn != nil {
+			tetherIn.Close()
+		}
+		tetherIn = prev
+		tetherMu.Unlock()
+	})
+
+	var kids []*proc
+	startSleep := func() *proc {
+		p, err := start(exec.Command("sleep", "30"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		kids = append(kids, p)
+		return p
+	}
+	first, second := startSleep(), startSleep()
+	t.Cleanup(func() {
+		for _, p := range kids {
+			if !p.exited() {
+				p.kill()
+			}
+		}
+	})
+	state := filepath.Join(dir, "state")
+	if err := os.Mkdir(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	tetherImpl(script, first, state)
+	tetherImpl(script, second, "")
+
+	read := func(name string) string {
+		b, _ := os.ReadFile(filepath.Join(dir, "out."+name))
+		return string(b)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) && strings.Count(read("stdin"), "\n") < 2 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := strings.Split(strings.TrimSpace(read("argv")), "\n"); len(got) != 1 {
+		t.Fatalf("one tether per adapter: started %d: %q", len(got), read("argv"))
+	} else if want := fmt.Sprintf("tether %d %s", os.Getpid(), state); got[0] != want {
+		t.Fatalf("tether argv %q, want %q", got[0], want)
+	}
+	want := []string{strconv.Itoa(first.cmd.Process.Pid), strconv.Itoa(second.cmd.Process.Pid)}
+	if got := strings.Fields(read("stdin")); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the tether was handed %v, want every child %v in order", got, want)
+	}
+}
+
 func TestProfileEnvSourcesThePackagedScript(t *testing.T) { // test_profile_env_sources_the_packaged_ccmorph_script
 	var argv []string
 	swap(t, &runCommand, func(_ time.Duration, name string, args ...string) (string, string, int) {

@@ -799,45 +799,131 @@ class AdapterTest(unittest.TestCase):
             self.fail("adapter did not exit after its parent died")
         self.assertFalse((self.profiles / "p/adapter/config.yaml").exists(),
                          "rendered config holding the credential was left behind")
-    def test_sigkilled_adapter_does_not_leak_its_translator(self):
+
+    @staticmethod
+    def _pid_alive(pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    def _tethers(self, adapter_pid):
+        """The `ccmorph-core tether <adapter_pid> ...` processes running now."""
+        out = subprocess.run(["ps", "-A", "-o", "pid=,command="],
+                             capture_output=True, text=True, check=True,
+                             timeout=HANG_TIMEOUT).stdout
+        pattern = re.compile(rf"\stether {adapter_pid}(\s|$)")
+        return {int(line.split(None, 1)[0]) for line in out.splitlines()
+                if pattern.search(line)}
+
+    def test_sigkilled_adapter_does_not_leak_its_children(self):
         # SIGKILL skips every handler and atexit in the adapter, which is how 40
         # translator+shim pairs were found reparented to launchd on 2026-10-02.
-        marker = self.home / "translator.pid"
-        stub = self.home / "stub-translator"
-        stub.write_text(f"#!/bin/sh\n[ \"$1\" = -h ] && exit 0\necho $$ > {marker}\nexec sleep 300\n")
-        stub.chmod(0o755)
-        self._install_fake_translator(stub)
-        tmp = self.home / "tmp"
-        tmp.mkdir()
-        proc = subprocess.Popen(
-            [*adapter_cmd(), "p"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            env=dict(os.environ, HOME=str(self.home), TMPDIR=str(tmp),
-                     CCMORPH_LIB_DIR=str(self.home / ".config/ccmorph/lib"),
-                     CCMORPH_STATE_DIR=str(self.home),
-                     PATH=f"{self.path_bin}:{os.environ.get('PATH', '')}"))
-        deadline = time.monotonic() + HANG_TIMEOUT
-        while not (marker.exists() and marker.read_text().strip()):
-            self.assertLess(time.monotonic(), deadline, "translator never started")
-            time.sleep(0.1)
-        pid = int(marker.read_text())
-        proc.kill()
-        proc.wait(timeout=HANG_TIMEOUT)
-        deadline = time.monotonic() + HANG_TIMEOUT
-        while time.monotonic() < deadline:
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                break
-            time.sleep(0.2)
-        else:
-            os.kill(pid, signal.SIGKILL)
-            self.fail("translator outlived its SIGKILLed adapter")
-        deadline = time.monotonic() + HANG_TIMEOUT
-        while list(tmp.glob("ccmorph-adapter-*")) and time.monotonic() < deadline:
-            time.sleep(0.2)
-        self.assertEqual(list(tmp.glob("ccmorph-adapter-*")), [],
-                         "state directory holding the credential was left behind")
+        # One tether per adapter now watches every child it starts (#29), so a
+        # profile's own hooks build is covered by the same guarantee and the
+        # whole session costs one tether process, not one per child.
+        cache = self.cache_file()
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps({
+            "endpoint": self.base,
+            "rows": [{"model": "m-anthropic", "dialect": "anthropic",
+                      "note": "", "cap": 0, "nothink": False,
+                      "id_recycle": True, "status": 200}]}))
+        script = self.home / ".config/ccmorph/lib/ccmorph.sh"
+        base_script = script.read_text()
+
+        def stub(path, marker, port_line):
+            """A translator/shim stand-in: serves /v1/models, records its pid."""
+            path.write_text(
+                f"#!{sys.executable}\n"
+                "import json, os, re, sys\n"
+                "if len(sys.argv) > 1 and sys.argv[1] == '-h':\n"
+                "    sys.exit(0)\n"
+                "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+                + FAKE_SERVER_NO_DNS +
+                f"open({str(marker)!r}, 'w').write(str(os.getpid()))\n"
+                "class H(BaseHTTPRequestHandler):\n"
+                "    def log_message(self, *a): pass\n"
+                "    def do_GET(self):\n"
+                "        body = json.dumps({'data': [{'id': 'm-anthropic'}]}).encode()\n"
+                "        self.send_response(200)\n"
+                "        self.send_header('content-length', str(len(body)))\n"
+                "        self.end_headers()\n"
+                "        self.wfile.write(body)\n"
+                + port_line +
+                "HTTPServer(('127.0.0.1', port), H).serve_forever()\n")
+            path.chmod(0o755)
+
+        translator_port = ("port = int(re.search(r'^port: (\\d+)', "
+                           "open(sys.argv[2]).read(), re.M).group(1))\n")
+        for hooks in (False, True):
+            with self.subTest(hooks=hooks):
+                tmp = self.home / f"tmp-hooks-{hooks}"
+                tmp.mkdir()
+                tpid = self.home / f"translator-{hooks}.pid"
+                spid = self.home / f"shim-{hooks}.pid"
+                stub(self.home / f"stub-translator-{hooks}", tpid, translator_port)
+                self._install_fake_translator(self.home / f"stub-translator-{hooks}")
+                if hooks:
+                    hooks_shim = self.home / f"hooks-shim-{hooks}"
+                    stub(hooks_shim, spid, "port = int(sys.argv[1])\n")
+                    script.write_text(base_script.replace(
+                        "}\n", f'  print "CCMORPH_SHIM_HOOKS={hooks_shim}"\n}}\n'))
+                else:
+                    script.write_text(base_script)
+                out = tmp / "adapter.out"
+                with open(out, "w") as log:
+                    proc = subprocess.Popen(
+                        [*adapter_cmd(), "p"], stdout=log, stderr=subprocess.DEVNULL,
+                        env=dict(os.environ, HOME=str(self.home), TMPDIR=str(tmp),
+                                 CCMORPH_LIB_DIR=str(self.home / ".config/ccmorph/lib"),
+                                 CCMORPH_STATE_DIR=str(self.home),
+                                 PATH=f"{self.path_bin}:{os.environ.get('PATH', '')}"))
+                child_pids, seen = [], set()
+                try:
+                    deadline = time.monotonic() + HANG_TIMEOUT
+                    while True:
+                        # PORT= follows both children's readiness, so every pid
+                        # has reached the tether by then.
+                        seen |= self._tethers(proc.pid)
+                        ready = (tpid.exists() and (not hooks or spid.exists())
+                                 and "PORT=" in out.read_text())
+                        if ready and seen:
+                            break
+                        if proc.poll() is not None:
+                            self.fail(f"hooks={hooks}: adapter exited "
+                                      f"{proc.returncode}: {out.read_text()}")
+                        self.assertLess(time.monotonic(), deadline,
+                                        f"hooks={hooks}: adapter never served: "
+                                        f"{out.read_text()}")
+                        time.sleep(0.1)
+                    child_pids = [int(tpid.read_text())]
+                    if hooks:
+                        child_pids.append(int(spid.read_text()))
+                    self.assertEqual(len(seen), 1,
+                                     f"one tether per adapter, saw {sorted(seen)}")
+                    proc.kill()
+                    proc.wait(timeout=HANG_TIMEOUT)
+                    deadline = time.monotonic() + HANG_TIMEOUT
+                    while True:
+                        seen |= self._tethers(proc.pid)
+                        survivors = [p for p in child_pids if self._pid_alive(p)]
+                        tethers = [p for p in seen if self._pid_alive(p)]
+                        state = list(tmp.glob("ccmorph-adapter-*"))
+                        if not survivors and not tethers and not state:
+                            break
+                        self.assertLess(time.monotonic(), deadline,
+                                        f"hooks={hooks}: children alive {survivors}, "
+                                        f"tethers alive {tethers}, state left {state}")
+                        time.sleep(0.2)
+                finally:
+                    if proc.poll() is None:
+                        proc.kill()
+                        proc.wait(timeout=HANG_TIMEOUT)
+                    for pid in child_pids + sorted(seen):
+                        if self._pid_alive(pid):
+                            os.kill(pid, signal.SIGKILL)
 
     def test_ready_timeout_exits_non_zero(self):
         # The contract with ccmorph: anything short of "printed PORT and served"

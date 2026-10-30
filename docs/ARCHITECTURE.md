@@ -786,7 +786,7 @@ whose id never reaches the client cannot be attributed: the shim's own
 unexpected-EOF retry consumes an upstream 500 whose body carries no id, so that
 call produces no row at all. Capture is off unless the adapter passed the route
 spec, so a hand-launched shim writes nothing. Every session that runs through
-`ccmorph-core adapter` carries the shim — it is the stable request shim, served inside the adapter's own process (one helper per gateway session; only a translator route adds the `cliproxyapi` child and its tether, and a profile's `CCMORPH_SHIM_HOOKS` build is still spawned as its own executable), interposed
+`ccmorph-core adapter` carries the shim — it is the stable request shim, served inside the adapter's own process (one helper per gateway session; only a translator route adds the `cliproxyapi` child, a profile's `CCMORPH_SHIM_HOOKS` build is still spawned as its own executable, and one tether per adapter watches every child it spawns), interposed
 with `--preserve-tool-ids` where the upstream does not recycle ids — but a
 profile that never starts the adapter has no shim and therefore no rows:
 native, direct endpoints and any route still served by the shared brew
