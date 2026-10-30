@@ -835,21 +835,31 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 
 // redactURL has the shape of ccmorph.sh's _ccm_redact_url: no userinfo, no query.
 func redactURL(raw string) string {
+	// A password can hold /, ? or #, or open on digits Go reads as a port, so
+	// neither parser reliably finds the @ that closes the userinfo. Cut through
+	// the last @ of the whole input before either one looks: nothing that
+	// parses afterwards can hold userinfo. An @ in a path costs a wrong host,
+	// never a leaked secret.
+	if at := strings.LastIndex(raw, "@"); at >= 0 {
+		i, tail := strings.Index(raw, "://"), raw[at+1:]
+		if i < 0 || i > at || tail == "" || strings.ContainsAny(tail[:1], "/?#") {
+			return "<redacted>"
+		}
+		raw = raw[:i+3] + tail
+	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		// Go refuses passwords urlsplit takes (a ^, a bare %, a space), and its
-		// error path must never hand back the secret it was meant to hide: cut
-		// the userinfo by hand, and say nothing when there is no host left.
+		// Go refuses hosts urlsplit takes: say nothing when no host is left.
 		scheme, netloc, path := splitURL(raw)
-		if at := strings.LastIndex(netloc, "@"); at >= 0 {
-			netloc = netloc[at+1:]
-		}
 		if netloc == "" {
 			return "<redacted>"
 		}
 		return scheme + "://" + strings.ToLower(netloc) + path
 	}
 	host := strings.ToLower(u.Hostname())
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
 	if p := u.Port(); p != "" {
 		host += ":" + p
 	}
