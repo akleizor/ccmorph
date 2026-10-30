@@ -27,6 +27,8 @@ func init() {
 		"bridge-stop":            bridgeStop,
 		"hop-target":             hopTarget,
 		"gc-stale":               gcStale,
+		"claude-verbs":           claudeVerbs,
+		"claude-opt-arities":     claudeOptArities,
 		"session-adapter":        sessionAdapter,
 		"profile-read":           profileRead,
 		"profile-validate":       profileValidate,

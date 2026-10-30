@@ -310,11 +310,7 @@ _ccm_claude_verbs() {
   # binary does not list is not a subcommand, by definition.
   local out
   _ccm_claude_help
-  out="$(print -r -- "$_CCMORPH_CLAUDE_HELP" |
-        command sed -n '/^Commands:/,$p' |
-        command grep -oE '^  [a-z][a-z0-9|-]*' |
-        command tr -d ' ' |
-        command tr '|' '\n')"
+  out="$(print -r -- "$_CCMORPH_CLAUDE_HELP" | _ccm_util claude-verbs)"
 
   _CCMORPH_CLAUDE_VERBS="$out"
   print -r -- "$out"
@@ -365,27 +361,11 @@ _ccm_claude_opt_arities() {
   (( _CCMORPH_CLAUDE_OPT_ARITY_PROBED )) && return 0
   _CCMORPH_CLAUDE_OPT_ARITY_PROBED=1
 
-  # Option rows only: two-space indent, dash-leading. A wrapped description
-  # continues at the description column, so it never matches. The spec is the
-  # row up to the column alignment: the spellings, then the placeholder when
-  # there is one.
-  local out spec arity spelling
+  # `<spelling> <flag|value|optional>` per row of claude --help's Options section.
+  local line
   _ccm_claude_help
-  out="$(print -r -- "$_CCMORPH_CLAUDE_HELP" |
-        command sed -n '/^Options:/,/^Commands:/p' |
-        command grep -E '^  -' |
-        command sed -e 's/^  //' -e 's/  .*$//')"
-
-  for spec in ${(f)out}; do
-    # The placeholder, when present, is the spec's last word.
-    case "${spec##* }" in
-      \<*) arity=value;    spec="${spec% *}" ;;
-      \[*) arity=optional; spec="${spec% *}" ;;
-      *)   arity=flag ;;
-    esac
-    for spelling in ${(s:, :)spec}; do
-      _CCMORPH_CLAUDE_OPT_ARITY[$spelling]="$arity"
-    done
+  for line in ${(f)"$(print -r -- "$_CCMORPH_CLAUDE_HELP" | _ccm_util claude-opt-arities)"}; do
+    _CCMORPH_CLAUDE_OPT_ARITY[${line% *}]="${line##* }"
   done
 
   return 0
