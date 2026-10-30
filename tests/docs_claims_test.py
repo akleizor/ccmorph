@@ -9,6 +9,9 @@ those are what these guards pin.
 Issue #375: Unreleased/Added still documented the role launch #348 removed.
 Issue #389: Unreleased still mentioned that role launch outside `### Removed`,
 under a feature that never appeared in any release.
+Issue #69: ARCHITECTURE.md described `scripts/usage-summary` — its flags, its
+two output files, its run report and day schema — but that script was never
+committed to the repo, so every `scripts/` path the document names must exist.
 """
 import re
 from pathlib import Path
@@ -16,6 +19,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CHANGELOG = ROOT / "CHANGELOG.md"
 GUIDE = ROOT / "docs/guide.md"
+ARCHITECTURE = ROOT / "docs/ARCHITECTURE.md"
+
+# A `scripts/<name>` the architecture document names, backticked or bare, at a
+# path boundary: `scripts/usage-export` matches in a code span and in prose.
+# `lib/scripts/x` or `foo-scripts/x` is another directory's path and a name
+# boundary keeps it out; a trailing sentence dot is not part of a name.
+NAMED_SCRIPT = re.compile(r"(?<![\w/.-])scripts/([\w-]+(?:\.[\w-]+)*)")
 
 
 def _flatten(text):
@@ -86,3 +96,14 @@ def test_guide_states_the_never_older_model_fallback():
         "docs/guide.md no longer states that an older model is never substituted")
     assert "through unchanged when none exists" in flat, (
         "docs/guide.md no longer states that an id with no such model goes through unchanged")
+
+
+def test_architecture_names_only_scripts_that_exist_issue_69():
+    """#69: the architecture document described `scripts/usage-summary` in detail,
+    but that script was never committed, so a reader following the document found
+    nothing to run. Every `scripts/` path the document names must be a file the
+    repo ships, whatever the sentence around it claims about the command."""
+    named = set(NAMED_SCRIPT.findall(ARCHITECTURE.read_text(encoding="utf-8")))
+    missing = sorted(name for name in named if not (ROOT / "scripts" / name).is_file())
+    assert not missing, (
+        f"ARCHITECTURE.md names scripts/ paths the repo does not ship: {missing}")

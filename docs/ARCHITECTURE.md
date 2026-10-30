@@ -792,115 +792,59 @@ profile that never starts the adapter has no shim and therefore no rows:
 native, direct endpoints and any route still served by the shared brew
 translator (§3). Coverage is per launched session, not per profile.
 
-### The daily usage summary: what the gateway billed, per Hong Kong day
+### What the gateway billed: the export and the report
 
 A monitor reading transcripts cannot price gateway-routed traffic itself: the gateway serves
 a model the client did not ask for and bills its own price, so the model a transcript names
-is not the model that answered and a list price is not what was paid. `scripts/usage-summary`
-reads the sidecar receipts and writes only what the gateway itself recorded, at
+is not the model that answered and a list price is not what was paid. The receipts above are
+the record of what each turn cost, and two readers in this repo answer from them: the export
+and the report. A third reader this section described from the first release — a private
+usage-summary over a sqlite index — never shipped; #69 took the description out, and the
+suite now fails if the document names a `scripts/` path the repo does not ship.
 
-```
-${XDG_STATE_HOME:-~/.local/state}/ccmorph/usage-summary.json
-```
+**The export.** `scripts/usage-export` turns the receipts into a ccusage config dir, so the
+ledger is ccusage and not a report tool of our own. Run it as
+`scripts/usage-export --output ROOT [--since YYYYMMDD]`; `--source` defaults to the state
+root's `usage/`, every `*.json` in it is parsed, and it writes one `ccmorph-<profile>`
+project per profile — an unsafe character in a profile name is replaced, and a row with no
+profile lands in `ccmorph-unknown` **[test]** — one `YYYY-MM-DD.jsonl` per local-time day,
+and a `ccusage.json` that prices a billed or estimated cost as is and leaves every other
+turn to ccusage's own list prices. It is private (`scripts/`), stdlib only, starts no
+service, and reads no transcript and no credential. Each receipt's own `timestamp` decides
+its day and its range, never the file's mtime **[test]**, and the exported stamp is UTC
+milliseconds with a `Z`, the one spelling ccusage reads **[test]**. A turn the gateway
+billed exports that billed `cost` (`costSource: gateway`); a turn the shim priced itself
+exports its `estimated_cost` (`costSource: estimate`); a turn with neither exports unpriced
+(`costSource: list`) and ccusage prices it **[test]**. A mapped row — the served id
+differing from the requested one past one trailing `[1m]` either side — groups under the
+served model, and every recorded identity stays in the row's `ccmorph` metadata **[test]**.
+A damaged price — in `cost` or `estimated_cost` — a number no writer could have stored
+(too large for a float, at or above the shim's own `COST_LIMIT`, negative, or not a
+number at all), counts `unpriced` and exports nothing — never a corrupt number, never
+fatal **[test]** — while a malformed receipt (another schema, an impossible
+token count, a profile that is not a name) fails the whole export before it replaces
+anything, naming the receipt **[test]**. Each run is a snapshot of its range: a day no
+usable receipt supports any more is removed, earlier days and every file the exporter does
+not own stay, two overlapping runs never undo each other's days, and the receipts
+themselves are never touched **[test]**. The run report is one JSON line — `rows`, `days`,
+`unpriced`, `usd` (gateway-billed only), `estimated_usd`, `gateway_rows`, `estimated_rows`
+— the same billed-versus-estimate split **[test]**.
 
-beside the index that makes a repeat run cheap,
-`${XDG_STATE_HOME:-~/.local/state}/ccmorph/usage-summary.sqlite`. The command takes
-`--source` (the receipts) and `--state` (both output files), each defaulting to the state
-root as above **[test]**, and prints its run report — `read`, `statted`, `removed`,
-`written`, `days` — as JSON. It is private (`scripts/`), stdlib only, and starts no service:
-whatever wants a fresh summary runs it.
-
-```
-{"schema":1,"timezone":"Asia/Hong_Kong","files":N,"invalid":N,
- "days":{"YYYY-MM-DD":{"total":{...},"groups":[{...}]}}}
-```
-
-A **day** is a Hong Kong day — `Asia/Hong_Kong`, UTC+8, no DST: a row's `timestamp` is
-converted to it and the key is `%Y-%m-%d`, so a turn at 15:59:59 UTC belongs to that day and
-the turn one second later, at 16:00:00 UTC, belongs to the next **[test]**. Each day holds a
-`total` and one **group** per `(profile, served model)`, sorted by profile and then model.
-Both hold the same fields: the four token buckets, `rows` (complete rows), `priced`,
-`unpriced`, `incomplete` and `cost`; a group adds `profile` and `model`.
-
-`cost` sums the gateway's own billed amounts and nothing else: US dollars, the unit the
-shim stores, never a conversion or a list price. A receipt's `usage.estimated_cost` is the
-shim's own models.dev list price and never enters `cost`: a row carrying only an estimate
-counts `unpriced` here, and reading the estimate is a separate question for a separate
-reader. A complete row whose
-`usage.cost` is missing, null, non-finite, negative or at or above the shim's `COST_LIMIT`
-is counted `unpriced` and adds no cost at all — never a zero and never a list price
-**[test]** — and a group or day with no priced row has `"cost": null`, so a monitor shows
-"unpriced" rather than claiming the traffic was free. The sum is a `math.fsum` of the priced
-rows, so it is exact and independent of the order the receipts were read in **[test]**. A
-row whose `complete` is not exactly `true` — the reading the shim's own consumer of these rows
-applies — is counted `incomplete` and nothing else: its tokens and its
-partial cost stay out of the totals, because a crashed turn's usage is not what was billed
-**[test]**. The model is `served_model`, else `response_model`, with one trailing `[1m]`
-window marker stripped, the rule the shim's own model resolution applies; `requested_model`
-is never used as the served identity, and a row carrying neither lands in the `model: null`
-group **[test]**. A profile or a model name the index cannot store — a lone surrogate, which
-JSON carries through as an escape and the shim can pass straight through from upstream — is
-filed as no name, never dropping the turn with it: the gateway billed for that row whatever
-its name prints. `files` is how many receipts are indexed and `invalid` how many of them
-could not be read: bad JSON or bytes that are not text, another `schema`, a `response_id` or
-`usage` object the writer always stores and this reader will not take — a response id has to be
-a string, which is the whole of what the shim tests it with, so an empty one is a receipt it did
-write while a missing or non-string one is damage — a naive or missing `timestamp`, a
-stamp with no Hong Kong day left in it, or a bucket present as anything but a finite number —
-which is the whole of what the writer's own filter drops. A number that filter keeps but no
-gateway billed — a negative count, or one at or past the index's own 64-bit integer bound —
-counts as no count and is no damage at all: the row keeps its day, its `rows` and the cost the
-gateway charged for it, because the shim bounds a cost and never a count **[test]**. An absent
-bucket is not damage either: that filter omits the ones it never billed, so an absent bucket is
-the zero it never had to store. Damage is a status, never an exception, and the
-shim's own `tmp*` names are not receipts at all and are never read **[test]**, nor is a name
-that is not a regular file — the writer lands a receipt by renaming one into place — so a
-directory or a FIFO under a receipt's name is skipped rather than read, and a run never waits
-on one for bytes that have no end **[test]**.
-
-**Incremental.** A run lists the names, reads the ones the index has not seen, and after
-that re-stats only the names it holds as incomplete or invalid — re-reading one whose stamp,
-size and inode changed — drops the names no longer on disk, and recomputes only the days
-those rows touched, carrying the rest over from the text the index itself committed, never
-from the summary file beside it, which is this tool's output and no input of it **[test]**.
-The writer is what makes that sound: a receipt is rewritten only while it is incomplete
-(atomic tmp + rename) and a complete row is never written twice. On the real directory,
-about half a million receipts, that is the difference between about two seconds of listing
-and twenty-three of statting every one of them, which is what makes a poll affordable. One
-boundary comes with it: a receipt deleted outside the tool whose name a later turn lands on
-again — the writer names a receipt by its response id's hash — is a row on disk no run here
-reads, so that day stands as the index last had it until the index is deleted, which rebuilds
-every day from the receipts that are there **[test]**. A run is one `BEGIN IMMEDIATE`
-transaction, so two overlapping runs serialise instead of each undoing the other's work
-**[test]** — a run that cannot take the lock inside the index's 30 s busy timeout exits 1
-having written nothing, which is the honest failure for a poll that arrived mid-run — and the
-summary's own text is committed in that transaction, the output file published only once it
-has committed, so a run that fails or dies before the `COMMIT` rolls that text back with the
-rows and the next run counts from what the index does hold, while a run that dies after it
-leaves at worst a stale file, which the next run republishes **[test]**. The publish takes the
-lock again and writes the text the index holds rather than the text that run counted, so two
-runs meeting at the file — one's days committed, the other's a receipt further on — cannot end
-with the older run's days landing last, which would be a summary going backwards until a later
-receipt lands on that day again **[test]**. The output file is
-replaced only when its bytes differ and carries no generated-at stamp, so a poll can tell a
-change by its mtime **[test]**. A
-`--source` that is not a directory fails the same plain way — one line naming it on stderr,
-exit 1, no summary published — because a monitor reads a summary rather than the exit code,
-and must never find one saying a day was empty that the run could not count **[test]**. The
-tool's own index and summary are never treated as receipts even when `--state` puts them in
-`--source`, which is a directory layout that is otherwise perfectly ordinary **[test]**.
-
-**Derived state.** Both files are derived: delete the index and the next run reads every
-receipt again and counts every day from the receipts, so the summary is rebuilt with it. That
-is the repair both for a receipt edited by hand outside the shim (a complete row already
-indexed is not re-read) and for a day whose receipts are gone, which no longer stands on a
-total nothing on disk supports **[test]**. It is also why the summary file is never read back:
-a day edited into it by hand is not a day any receipt supports, and the next run replaces the
-file with what the index committed **[test]**. Nothing prunes receipts today, so the one
-`listdir` per run grows with retention; the index itself is only a cache of what they said.
-The tool never writes to `usage/`, and neither file holds prompt text — only profile and
-served-model names and counts — though both files are `0600`, like the receipts, and any
-directory the tool creates is `0700`: one already there keeps the mode it has **[test]**.
+**The report.** `ccmorph-core shim report [--days N]` is the read-only spend window over
+the same receipts plus the outcome log, one day by default and wider with `--days`
+**[test]**. It prints the total spend (the gateway's billed costs only), unknown spend rows
+(no cost, not estimated), estimated spend (a models.dev list price, never billed), and
+spend by served model, where the model is `served_model` else `response_model` with one
+trailing `[1m]` stripped and a row carrying neither is `(unknown)` **[test]**. Under
+`tasks with outcomes` it prints the accepted count, the cost per accepted task —
+whole-task, so usage before the window counts, and `n/a` the moment any accepted task's
+spend is unknown — and the first-pass and escalated shares **[test]**. A billed cost that
+is not a finite non-negative number under the shim's bound is unknown spend, never a total
+and never fatal **[test]**, and only `*.json` names are read, so the writer's own in-flight
+`tmp*` name is never a second copy of a row **[test]**. The report prints aggregates only —
+no task name, no path, no state directory **[test]** — a model label carrying a newline or
+an escape cannot forge a line of it **[test]**, and the daily publish runs exactly
+`report --days 1` and sends its stdout on **[test]**.
 
 ## 4. Dialects
 
