@@ -28,6 +28,13 @@
   describes the two readers that ship, `scripts/usage-export` and
   `ccmorph-core shim report`, and a docs-claims test fails when the document
   names a `scripts/` path the repo does not ship.
+- **One tether per adapter instead of one per child** (#29). A gateway session
+  re-executed `ccmorph-core tether` once for the `cliproxyapi` child and again
+  for a profile's own `CCMORPH_SHIM_HOOKS` build, about 12 MB resident each.
+  The adapter's first child now starts one tether and later children join it by
+  pid, so a translator plus hooks launch costs one tether process; a SIGKILLed
+  adapter still has every child stopped with the same TERM-then-KILL grace, and
+  its state directory holding the credential is removed.
 
 ## v0.4.1 — 2026-10-30
 
