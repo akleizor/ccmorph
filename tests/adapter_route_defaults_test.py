@@ -421,7 +421,7 @@ def test_a_killed_launch_leaves_no_adapter_stub_behind(launch):
             time.sleep(0.1)
         assert pids, 'the launch never started the adapter stub'
         stub_pid = int(pids[0])
-        argv = subprocess.run(['ps', '-o', 'args=', '-p', str(stub_pid)],
+        argv = subprocess.run(['ps', '-ww', '-o', 'args=', '-p', str(stub_pid)],
                               capture_output=True, text=True, timeout=HANG_TIMEOUT).stdout
         # The core starts the adapter, so its OS parent is the starter; what reaps
         # it is --parent-pid, which must name the launch itself.
