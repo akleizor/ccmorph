@@ -116,11 +116,13 @@ ccmorph doctor [<profile>]         # check why a profile is not working
 ccmorph quota [<profile>]          # plan usage left on each subscription, and when it resets
 ```
 
-To switch a running session, use a leading `!` in the Claude Code prompt:
+To switch a running session, type in the Claude Code prompt:
 
 ```
-! ccmorph hop personal
+/ccmorph:hop personal
 ```
+
+`! ccmorph hop personal` does the same.
 
 `ccmorph --help` shows everyday commands, `ccmorph help all` the full list, and
 `ccmorph help <command>` the details of one.

@@ -9,6 +9,9 @@
 
 ### Changed
 
+- **Hop is one command.** `ccmorph hop <profile>` now ends the session it runs
+  in, so the relay resumes on the new profile without a manual exit. Every
+  launch also loads a `/ccmorph:hop <profile>` slash command that does the same.
 - **`compat` is now `quirks`.** The package `compat/` is `quirks/` and the
   profile key `env.CCMORPH_COMPAT=off` is `env.CCMORPH_QUIRKS=off`; "quirks" is
   the usual name for per-peer workarounds. There is no alias: a profile still
