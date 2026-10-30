@@ -10,7 +10,6 @@ import (
 
 func TestGCReapsOnlyDeadOldRelays(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("TMPDIR", dir)
 	past := time.Now().Add(-2 * time.Minute)
 	dead := filepath.Join(dir, ".reswitch.999999.1.2")
 	mine := filepath.Join(dir, ".reswitch."+strconv.Itoa(os.Getpid())+".1.2")
@@ -20,7 +19,7 @@ func TestGCReapsOnlyDeadOldRelays(t *testing.T) {
 	}
 	os.Chtimes(dead, past, past)
 	os.Chtimes(mine, past, past)
-	gcStale([]string{dir, filepath.Join(dir, "profiles")}, nil, nil, nil)
+	gcStale([]string{dir, filepath.Join(dir, "profiles"), dir}, nil, nil, nil)
 	if _, err := os.Stat(dead); err == nil {
 		t.Fatal("an old relay of a dead launcher must go")
 	}

@@ -5,7 +5,7 @@
 # launchers, and credential-bearing launch-settings overlays and provider bridge
 # dirs no live process names after 12h. Never fatal to a launch.
 _ccm_cleanup_stale() {
-  _ccm_util gc-stale "$_CCMORPH_DIR" "$_CCMORPH_PROFILE_DIRS" 2>/dev/null || :
+  _ccm_util gc-stale "$_CCMORPH_DIR" "$_CCMORPH_PROFILE_DIRS" "${TMPDIR:-/tmp}" 2>/dev/null || :
 }
 
 # Move state a release renamed, so upgrading is never a chore the user performs.
