@@ -279,7 +279,7 @@ _ccm_usage() {
       print "\n${_ccm_bold}Profiles:${_ccm_reset}"
       _ccm_help "ccmorph add <profile>" "Add an account or API key"
       _ccm_help "ccmorph list" "See profiles and the default"
-      _ccm_help "ccmorph quota [profile]" "Plan usage left on subscription profiles"
+      _ccm_help "ccmorph quota [profile]" "Plan usage and spend of every profile"
       _ccm_help "ccmorph use <profile>" "Set the default; do not launch"
       _ccm_help "ccmorph config [profile]" "Change model, reasoning, or connection"
       print "\n${_ccm_bold}Troubleshooting:${_ccm_reset}"
@@ -340,9 +340,13 @@ Changes affect new sessions.
 
 For a single setting: ccmorph set <profile> model|effort [value]' ;;
     list) usage='ccmorph list'; detail='List saved profiles. * marks the default used by ccmorph run.' ;;
-    quota) usage='ccmorph quota [profile]'; detail='Show how much of each subscription plan window (5 hours, week) is used and
-when it resets, read from claude.ai with the profile'"'"'s own sign-in. No inference,
-nothing billed. Omit the profile to list every subscription and token profile.' ;;
+    quota) usage='ccmorph quota [profile] [--json]'; detail='Every profile in one view, grouped by kind: Claude subscriptions, Codex
+subscriptions, budget accounts, and API or gateway profiles. Each plan window is a
+bar with the percent used and when it resets; a plan tier comes from the provider'"'"'s
+own account data. A rate-limited or unreachable read shows the last good reading
+and its age. Gateways and API keys show today'"'"'s and this month'"'"'s billed spend from
+their receipts. --json prints the same data for tools. No inference, nothing billed.
+Omit the profile to list every profile.' ;;
     use) usage='ccmorph use [profile|-i]'; detail='Set the default without launching. No argument shows the current default.' ;;
     inspect) usage='ccmorph inspect [profile|-i]'; detail='Show effective settings and their sources, never the stored credential.
 Omit the profile to inspect the default; -i opens the profile picker.' ;;
@@ -1723,30 +1727,60 @@ ccmorph() {
       ;;
 
     quota)
-      # Plan windows of every subscription/token profile, or of the one named.
-      # The token goes to ccmorph-core on stdin, never in argv.
+      # Plan windows and spend of every profile, or of the one named. A token or
+      # an API key goes to ccmorph-core on stdin, never in argv; an api_key is
+      # never sent at all (a gateway row needs no credential).
+      local _q_json=0 _q_only="" _q_arg
+      for _q_arg in "${@[2,-1]}"; do
+        case "$_q_arg" in
+          --json) _q_json=1 ;;
+          -*) _ccm_err "usage: ccmorph quota [profile] [--json]"; return 2 ;;
+          *)
+            if [[ -n "$_q_only" ]]; then
+              _ccm_err "usage: ccmorph quota [profile] [--json]"
+              return 2
+            fi
+            _q_only="$_q_arg"
+            ;;
+        esac
+      done
       local -a _q_names=()
-      if [[ -n "${2:-}" ]]; then
-        _ccm_exists "$2" || {
-          _ccm_err "no profile '$2'. Run: ccmorph list"
+      if [[ -n "$_q_only" ]]; then
+        _ccm_exists "$_q_only" || {
+          _ccm_err "no profile '$_q_only'. Run: ccmorph list"
           return 1
         }
-        _q_names=("$2")
+        _q_names=("$_q_only")
       else
         local _q_f
         for _q_f in "$dir"/*.conf(N); do _q_names+=("${_q_f:t:r}"); done
       fi
-      local _q_n _q_in=""
+      local _q_n _q_in="" _q_dir
       for _q_n in "${_q_names[@]}"; do
         _ccm_read "$_q_n" 2>/dev/null || continue
         case "${_ccm[type]}" in
-          sub)   _q_in+="${_q_n}"$'\t'"sub"$'\t'"${_CCMORPH_PROFILE_DIRS}/${_q_n}"$'\n' ;;
+          sub)   _q_in+="${_q_n}"$'\t'"sub"$'\t'"${_CCMORPH_PROFILE_DIRS}/${_q_n}"$'\t'$'\n' ;;
           token) _q_in+="${_q_n}"$'\t'"token"$'\t'"${_CCMORPH_PROFILE_DIRS}/${_q_n}"$'\t'"${_ccm[token]:-}"$'\n' ;;
-          *) [[ -n "${2:-}" ]] && { unset _ccm; _ccm_err "'$_q_n' is not a subscription or token profile"; return 1 } ;;
+          provider)
+            if [[ "${_ccm[provider]:-}" == codex ]] && _ccm_provider_auth_dir "$_q_n" 2>/dev/null; then
+              _q_dir="$REPLY"
+              _q_in+="${_q_n}"$'\t'"codex"$'\t'"$_q_dir"$'\t'$'\n'
+            else
+              _q_in+="${_q_n}"$'\t'"gateway"$'\t'$'\t'"${_ccm[monthly_budget_usd]:-}"$'\n'
+            fi
+            ;;
+          *)
+            _q_in+="${_q_n}"$'\t'"gateway"$'\t'$'\t'"${_ccm[monthly_budget_usd]:-}"$'\n'
+            ;;
         esac
       done
       unset _ccm
-      print -rn -- "$_q_in" | "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" quota
+      local -a _q_flags=()
+      (( _q_json )) && _q_flags+=(--json)
+      if (( ! _q_json )) && [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != dumb ]]; then
+        _q_flags+=(--color)
+      fi
+      print -rn -- "$_q_in" | "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" quota "${_q_flags[@]}"
       ;;
 
     use)
