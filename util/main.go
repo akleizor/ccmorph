@@ -47,6 +47,8 @@ func init() {
 		"launch-diagnostics":     launchDiagnostics,
 		"engine-int":             engineIntVerb,
 		"engine-bool":            engineBoolVerb,
+		"effective-acw":          effectiveACWVerb,
+		"clamp-acw":              clampACWVerb,
 		"hazard-set":             hazardSetVerb,
 		"hazard-msg":             hazardMsgVerb,
 		"withhold-fatal":         withholdFatal,
