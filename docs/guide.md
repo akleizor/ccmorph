@@ -495,9 +495,6 @@ or run it with a leading `!`:
 ! ccmorph hop personal
 ```
 
-If hop cannot find the Claude Code process it runs under, it leaves the switch
-queued and asks you to exit.
-
 In a plain terminal it exits with `not inside a Claude Code session`, and a
 session started by plain `claude` (bypassing the launcher) reports `this session
 was not launched by the ccmorph relay` — start it with `ccmorph` and hop from
