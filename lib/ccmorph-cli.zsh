@@ -1667,73 +1667,26 @@ ccmorph() {
         return 1
       }
 
-      _ccm_read "$2" || return 1
-
-      _ccm_validate_loaded "$2" || {
-        unset _ccm
+      # Read, validate and the type's credential env are one core call; the first
+      # line names the type provisioning needs.
+      local _env_out
+      _env_out=$(_ccm_util profile-env "$_CCMORPH_DIR" "$_CCMORPH_PROFILE_DIRS" "$2" \
+        "${(j:,:)_CCMORPH_PROFILE_ENV}" "${(j:,:)_CCMORPH_MODEL_MAPPING_ENV}") || {
+        _ccm_err "${_env_out:-could not read profile '$2'}"
         return 1
       }
-
+      typeset -gA _ccm=([type]="${${_env_out%%$'\n'*}#type=}")
       _ccm_setup_dir "$2" || {
         unset _ccm
         return 1
       }
+      unset _ccm
 
       _ccm_prelaunch "$2" 2>/dev/null || :
 
       # Secure storage follows CLAUDE_CONFIG_DIR, so each profile's sign-in stays in
-      # its own keychain entry. MCP credentials are shared by capsules, not here.
-      print "CLAUDE_CONFIG_DIR=${_CCMORPH_PROFILE_DIRS}/$2"
-      [[ "${_ccm[private]:-}" == 1 ]] && print "CCMORPH_PRIVATE=1"
-
-      case "${_ccm[type]}" in
-        apikey)
-          # An apikey profile may have no base_url: that is the native
-          # api.anthropic.com case, where Claude Code's own default endpoint is
-          # correct and overriding it would break the profile.
-          if [[ -n "${_ccm[base_url]:-}" ]]; then
-            print "ANTHROPIC_BASE_URL=${_ccm[base_url]}"
-          fi
-
-          print "ANTHROPIC_API_KEY=${_ccm[api_key]}"
-          ;;
-
-        token)
-          print "CLAUDE_CODE_OAUTH_TOKEN=${_ccm[token]}"
-          ;;
-
-        provider)
-          # Provider profiles have no static credential; the launcher injects
-          # ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY from the per-session
-          # provider proxy at launch time. Emit env.* overrides only.
-          ;;
-
-        sub)
-          # Deliberately no credential env. A sub profile authenticates from
-          # the profile state in its own CLAUDE_CONFIG_DIR (written by
-          # `ccmorph add sub`), so injecting anything here would override the
-          # login it is supposed to use. Listed explicitly so the silence is a
-          # decision, not a fall-through.
-          ;;
-
-        *)
-          # Every credential type must say how it authenticates. Falling
-          # through silently ships a session with no credential, which
-          # surfaces as Claude Code's interactive login picker with nothing
-          # explaining why — the failure mode is indistinguishable from a
-          # revoked profile.
-          _ccm_err "profile '$2' has unsupported type '${_ccm[type]}'"
-          unset _ccm
-          return 1
-          ;;
-      esac
-
-      [[ -n "${_ccm[model_map]:-}" ]] && print "CCMORPH_MODEL_MAP=${_ccm[model_map]}"
-      local _k
-      for _k in "${(@k)_ccm}"; do
-        [[ "$_k" == env.* ]] && print "${_k#env.}=${_ccm[$_k]}"
-      done
-      unset _ccm
+      # its own keychain entry.
+      print -r -- "${_env_out#*$'\n'}"
       ;;
 
     quota)
