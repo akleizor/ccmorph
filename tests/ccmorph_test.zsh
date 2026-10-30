@@ -2768,8 +2768,8 @@ test_hop_ends_the_session_it_was_run_from() {
   out=$(python3 -c '
 import signal, subprocess, sys
 signal.signal(signal.SIGTERM, lambda *_: open(sys.argv[1], "w").write("ended"))
-subprocess.call(["zsh", "-c", "source \"$CCMORPH_SOURCE\"; NO_COLOR=1 ccmorph hop proxy"])
-' "$status_file" 2>&1)
+subprocess.call(["zsh", "-c", "source \"$1\"; NO_COLOR=1 ccmorph hop proxy", "zsh", sys.argv[2]])
+' "$status_file" "$CCMORPH_SOURCE" 2>&1)
   [[ "$(<"$status_file" 2>/dev/null)" == ended ]] || { print -u2 -- "hop must end the Claude process it runs under: ${(qqq)out}"; rc=1 }
   [[ "$out" == *'Switching → proxy'* ]] || { print -u2 -- "hop must say it is switching: ${(qqq)out}"; rc=1 }
   [[ -f "$HOME/.config/ccmorph/.reswitch.$CCMORPH_RELAY_ID" ]] || { print -u2 -- 'the switch must stay queued for the relay'; rc=1 }
