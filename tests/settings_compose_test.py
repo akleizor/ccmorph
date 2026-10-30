@@ -335,6 +335,50 @@ def test_the_saved_copy_is_byte_identical_to_settings_json(home):
     assert base.read_bytes() == (profile / "settings.json").read_bytes()
 
 
+BOM = b"\xef\xbb\xbf"
+
+
+def project(canonical, profile) -> int:
+    """Materialize and return only its exit status: the file it leaves behind may
+    still carry the BOM an editor put there, which run()'s reader refuses."""
+    cmd = [*helper_cmd("settings-compose"), "materialize", str(profile), "--canonical", str(canonical),
+           "--saved", "{}"]
+    return subprocess.run(cmd, capture_output=True, timeout=HANG_TIMEOUT).returncode
+
+
+def test_a_bom_in_settings_json_never_poisons_the_saved_copy_issue_67(home):
+    """The BOM an editor prepends is dropped where settings.json is read (#50), but
+    the raw bytes were saved into the copy every later launch re-reads, so the next
+    launch failed on a cache file the user never edited, and removing the BOM from
+    settings.json could not repair it."""
+    canonical, profile = home
+    put(canonical, {"theme": "dark"})
+    settings, base = profile / "settings.json", profile / "cache" / "settings.base.json"
+    assert run(canonical, profile) == {"theme": "dark"}
+    # The editor adds the BOM Windows editors add; the projection still succeeds,
+    # and the copy every later launch re-reads never receives it.
+    settings.write_bytes(BOM + settings.read_bytes())
+    assert project(canonical, profile) == 0
+    assert not base.read_bytes().startswith(BOM), "the saved copy carries the BOM"
+    # Nothing else changed: every later launch still projects, BOM or no BOM.
+    assert project(canonical, profile) == 0
+    settings.write_bytes(settings.read_bytes()[len(BOM):])
+    assert run(canonical, profile) == {"theme": "dark"}
+
+
+def test_a_saved_copy_poisoned_by_an_older_build_is_repaired_issue_67(home):
+    """A copy that already starts with the BOM (written by a build before this fix)
+    is read through it and put back clean, instead of failing every launch until
+    the cache file is deleted by hand."""
+    canonical, profile = home
+    put(canonical, {"theme": "dark"})
+    base = profile / "cache" / "settings.base.json"
+    assert run(canonical, profile) == {"theme": "dark"}
+    base.write_bytes(BOM + base.read_bytes())
+    assert run(canonical, profile) == {"theme": "dark"}, "the poisoned copy is fatal"
+    assert not base.read_bytes().startswith(BOM), "the projection left the BOM in place"
+
+
 def test_a_linked_shared_policy_reaches_settings_but_never_the_layer(home, tmp_path):
     canonical, profile = home
     put(canonical, {"theme": "dark"})
@@ -347,6 +391,21 @@ def test_a_linked_shared_policy_reaches_settings_but_never_the_layer(home, tmp_p
     assert "sandbox" not in get(profile / "settings.profile.json")
     put(shared, {"sandbox": {"enabled": True, "filesystem": {"denyRead": ["~/Documents", "/Volumes"]}}})
     assert run(canonical, profile)["sandbox"]["filesystem"]["denyRead"] == ["~/Documents", "/Volumes"]
+
+
+@pytest.mark.parametrize("bommed", ["canonical", "policy"])
+def test_a_bom_in_the_composed_files_is_read_like_settings_json_issue_67(home, tmp_path, bommed):
+    # settings.json's BOM is dropped by its reader (#50); the files composed into
+    # it deserve the same reading, so an editor's BOM in either keeps the launch
+    # working instead of failing the projection.
+    canonical, profile = home
+    put(canonical, {"theme": "dark"})
+    shared = tmp_path / "policy.json"
+    put(shared, {"verbose": True})
+    (profile / "settings.policy.json").symlink_to(shared)
+    target = {"canonical": canonical, "policy": shared}[bommed]
+    target.write_bytes(BOM + target.read_bytes())
+    assert run(canonical, profile) == {"theme": "dark", "verbose": True}
 
 
 @pytest.mark.parametrize("content,diagnosis", [

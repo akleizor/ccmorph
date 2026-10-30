@@ -2914,7 +2914,7 @@ test_gateway_listing_without_a_data_list_is_uncertainty() {
   test_home=$(mktemp -d)
   setup_home "$test_home"
   source "$CCMORPH_SOURCE"
-  for body in '{"data":{"alpha-chat":{}}}' '{"data":"alpha-chat"}'; do
+  for body in '{"data":{"alpha-chat":{}}}' '{"data":"alpha-chat"}' '[{"id":"alpha-chat"}]'; do
     printf '%s\n' \
       '#!/bin/sh' \
       'for a do case "$a" in *http_code*) printf 200; exit 0 ;; esac; done' \
@@ -2924,7 +2924,7 @@ test_gateway_listing_without_a_data_list_is_uncertainty() {
     _ccm_model_known proxy alpha-chat
     known=$?
     (( known == 2 )) || {
-      print -u2 -- "a listing whose data is not a list must be unknown ($body), got status $known"
+      print -u2 -- "a listing that does not read as a data list must be unknown ($body), got status $known"
       rc=1
     }
   done
