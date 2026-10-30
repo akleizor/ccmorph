@@ -7,6 +7,18 @@
 
 ## Unreleased
 
+### Added
+
+- **Opt-in turn router** (#76). `env.CCMORPH_TURN_ROUTER=<absolute path> [args]`
+  names a command the gateway shim asks once at the start of each user turn which
+  model should answer it: a JSON object arrives on stdin, `{"model": "<id>"}`
+  switches this turn and `{}` keeps the asked model. The decision holds for the
+  turn's tool loop and the next human turn asks again; a timeout, a crash, a
+  non-JSON answer or a model the profile cannot reach keeps the requested model
+  and is logged, never a failed request. The switch is announced in the turn's
+  first reply before the answer it applies to, and only models the same profile's
+  route serves may be chosen. Off unless a profile sets it.
+
 ### Changed
 
 - **A damaged estimated cost no longer kills the export** (#68). A receipt whose

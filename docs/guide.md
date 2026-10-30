@@ -393,6 +393,38 @@ with no label around them are not found. Each usage receipt counts what was mask
 its `masked` field. Masking covers every route the shim fronts; a subscription or
 `api.anthropic.com` profile talks to Anthropic directly and is not masked.
 
+### Turn router
+
+`env.CCMORPH_TURN_ROUTER=<absolute path> [args]` lets a command of yours pick the
+model for each user turn. ccmorph ships no router; point the key at your own
+program. At the start of a turn the shim runs it once and writes a JSON object on
+its stdin:
+
+```json
+{"session": "…", "current_model": "claude-opus-5-5", "prompt": "the new user text",
+ "context_tokens": 12345, "models": ["claude-opus-5-5", "claude-sonnet-5-5"]}
+```
+
+Answer `{"model": "<id>"}` to answer this turn with another model, or `{}` to keep
+the one Claude Code asked for. The command gets three seconds; it runs with only
+`PATH`, `HOME`, `TMPDIR`, `LANG` and `LC_ALL` in its environment, so your
+credentials are not in reach. Anything else — a timeout, a crash, an answer that
+is not JSON, or a model this profile cannot reach — keeps the requested model and
+is logged, never a failed request. The only models it may pick are the ones your
+profile serves: its declared models and whatever its gateway lists.
+
+The choice holds for the turn's whole tool loop, so the cache stays warm and the
+model never changes mid-answer; the next human message asks again. Task
+notifications and compaction summaries are not new turns. The shim announces a
+switch before you read the answer: the turn's first reply opens with
+`[ccmorph] Turn router: this turn is answered by <id> (you asked for <id>).`, the
+launch log records it, and `ccmorph-core shim report` shows the routed model. The
+router sees the prompt before masking, so do not point it at a remote service when
+`env.CCMORPH_MASK=1` is what you rely on. The key needs a route the gateway shim
+fronts — an adapter profile; a subscription or `api.anthropic.com` profile goes
+straight to Anthropic and is not routed. Arguments are split on spaces; quoting is
+not interpreted. Relaunch to apply.
+
 ### Gateway edge
 
 Every route the adapter serves goes through its request shim. A gateway may answer
