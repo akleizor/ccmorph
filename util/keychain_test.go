@@ -1,13 +1,14 @@
 package util
 
 import (
-	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/akleizor/ccmorph/profile"
 )
 
 // Runs against the real login keychain, so only where one exists.
@@ -28,8 +29,7 @@ func TestKeychainMigrateMovesThePlainKeyAndReadsItBack(t *testing.T) {
 	if !strings.Contains(string(data), "api_key=keychain:"+name+".api_key") || strings.Contains(string(data), "sk-") {
 		t.Fatal(string(data))
 	}
-	var out bytes.Buffer
-	if keychainGet([]string{"keychain:" + name + ".api_key"}, nil, &out, os.Stderr) != 0 || out.String() != secret {
-		t.Fatalf("got %q", out.String())
+	if got, err := profile.KeychainGet("keychain:" + name + ".api_key"); err != nil || got != secret {
+		t.Fatalf("got %q %v", got, err)
 	}
 }

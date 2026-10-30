@@ -20,7 +20,7 @@ var verbs map[string]verb
 func init() {
 	verbs = map[string]verb{
 		"migrate-profile-home":   migrateProfileHome,
-		"keychain-get":           keychainGet,
+		"profile-read":           profileRead,
 		"keychain-migrate":       keychainMigrate,
 		"keychain-rename":        keychainRename,
 		"keychain-delete":        keychainDelete,
