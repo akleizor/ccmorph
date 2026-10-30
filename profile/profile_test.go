@@ -83,3 +83,28 @@ func TestReadRefusesBadNamesAndSymlinks(t *testing.T) {
 		}
 	}
 }
+
+func TestValidate(t *testing.T) {
+	for _, c := range []struct {
+		f    map[string]string
+		want string
+	}{
+		{map[string]string{"type": "sub"}, ""},
+		{map[string]string{"type": "apikey", "api_key": "k"}, ""},
+		{map[string]string{"type": "apikey"}, "apikey 'p' has no api_key"},
+		{map[string]string{"type": "apikey", "api_key": "a b"}, "apikey 'p' api_key contains whitespace"},
+		{map[string]string{"type": "apikey", "api_key": "k", "base_url": "ftp://x"}, "apikey 'p' base_url must use http:// or https://"},
+		{map[string]string{"type": "apikey", "api_key": "k", "base_url": "https://x y"}, "apikey 'p' base_url contains whitespace"},
+		{map[string]string{"type": "apikey", "api_key": "k", "adapter": "yes"}, "apikey 'p' adapter must be 'true', 'false', or absent"},
+		{map[string]string{"type": "apikey", "api_key": "k", "adapter": "true"}, "apikey 'p' has adapter=true but no base_url to front"},
+		{map[string]string{"type": "apikey", "api_key": "k", "adapter": "true", "base_url": "https://g"}, ""},
+	} {
+		got := ""
+		if err := Validate("p", c.f); err != nil {
+			got = err.Error()
+		}
+		if got != c.want {
+			t.Errorf("%v: got %q want %q", c.f, got, c.want)
+		}
+	}
+}

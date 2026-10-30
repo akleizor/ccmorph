@@ -248,65 +248,16 @@ _ccm_read() {
   [[ -z "$out" ]] || _ccm=("${(@0)${out%$'\0'}}")
 }
 
-_ccm_validate_base_url() {
-  local label="$1"
-
-  [[ "${_ccm[base_url]}" == http://* ||
-     "${_ccm[base_url]}" == https://* ]] || {
-    _ccm_err "$label base_url must use http:// or https://"
-    return 1
-  }
-
-  [[ "${_ccm[base_url]}" != *[[:space:]]* ]] || {
-    _ccm_err "$label base_url contains whitespace"
-    return 1
-  }
-}
-
-# An apikey profile authenticates with ANTHROPIC_API_KEY instead of an OAuth
-# subscription. base_url and model are optional on purpose: omit both for a
-# native Anthropic API key (Claude Code owns the model list), set both for a
-# gateway that speaks the Anthropic API under its own model names.
-_ccm_validate_apikey() {
-  local name="$1"
-
-  [[ -n "${_ccm[api_key]:-}" ]] || {
-    _ccm_err "apikey '$name' has no api_key"
-    return 1
-  }
-
-  [[ "${_ccm[api_key]}" != *[[:space:]]* ]] || {
-    _ccm_err "apikey '$name' api_key contains whitespace"
-    return 1
-  }
-
-  if [[ -n "${_ccm[base_url]:-}" ]]; then
-    _ccm_validate_base_url "apikey '$name'" || return 1
-  fi
-
-  # adapter=true means "this endpoint speaks dialects Claude Code does not, put a
-  # translator in front of it at launch". It is a declaration of intent; the
-  # mechanism belongs to the framework, so no adapter is ever named here. The
-  # profile keeps its real base_url and only the launched environment is
-  # redirected, which keeps `ccmorph _env` truthful for every other consumer.
-  if [[ -n "${_ccm[adapter]:-}" ]]; then
-    [[ "${_ccm[adapter]}" == (true|false) ]] || {
-      _ccm_err "apikey '$name' adapter must be 'true', 'false', or absent"
-      return 1
-    }
-
-    if [[ "${_ccm[adapter]}" == true ]]; then
-      # A native Anthropic key has no foreign dialect to translate.
-      [[ -n "${_ccm[base_url]:-}" ]] || {
-        _ccm_err "apikey '$name' has adapter=true but no base_url to front"
-        return 1
-      }
-    fi
-  fi
-}
-
-# Dispatch validation for the currently loaded profile (_ccm). sub and token
-# profiles carry nothing ccmorph has to check beyond _ccm_read.
+# Validation of the loaded profile (_ccm) lives in ccmorph-core (package profile).
+# The fields go over stdin, since `config` edits them in memory before saving.
 _ccm_validate_loaded() {
-  [[ "${_ccm[type]:-}" != apikey ]] || _ccm_validate_apikey "$1"
+  [[ "${_ccm[type]:-}" == apikey ]] || return 0
+  local out k
+  out=$(for k in type api_key base_url adapter; do print -rn -- "$k"$'\0'"${_ccm[$k]:-}"$'\0'; done |
+    _ccm_util profile-validate "$1") || { _ccm_err "$out"; return 1; }
+}
+
+_ccm_validate_base_url() {
+  local out
+  out=$(_ccm_util profile-validate-url "$1" "${_ccm[base_url]}") || { _ccm_err "$out"; return 1; }
 }
