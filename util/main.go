@@ -25,6 +25,8 @@ func init() {
 		"setup-profile":          setupProfile,
 		"bridge-start":           bridgeStart,
 		"bridge-stop":            bridgeStop,
+		"hop-target":             hopTarget,
+		"session-adapter":        sessionAdapter,
 		"profile-read":           profileRead,
 		"listing-has-unsized":    listingHasUnsized,
 		"keychain-migrate":       keychainMigrate,

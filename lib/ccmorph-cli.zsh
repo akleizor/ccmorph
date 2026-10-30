@@ -1527,15 +1527,8 @@ ccmorph() {
         _hop_profile=$(_ccm_menu_profile) || return 1
       fi
       if [[ -z "$_hop_profile" && -n "${CCMORPH_RELAY_ID:-}" ]]; then
-        # Extract parent PID from relay ID and find the adapter process serving this session
-        local _parent_pid="${CCMORPH_RELAY_ID%%.*}"
-        local _adapter_cmd
-        _adapter_cmd=$(ps -o pid,ppid,command | grep -E "ccmorph-(adapter|core adapter)" | grep -E "^[[:space:]]*[0-9]+[[:space:]]+${_parent_pid}[[:space:]]" | head -1)
-        if [[ -n "$_adapter_cmd" ]]; then
-          # Parse profile from adapter command line: "ccmorph-core adapter <profile> ..."
-          _hop_profile=$(echo "$_adapter_cmd" | sed -E 's/.*ccmorph-(core )?adapter[[:space:]]+([^[:space:]]+).*/\2/')
-          _hop_current=1
-        fi
+        # The adapter this session's launcher started names the profile in its argv.
+        _hop_profile=$(_ccm_util session-adapter "${CCMORPH_RELAY_ID%%.*}") && _hop_current=1 || _hop_profile=""
       fi
       # No adapter serves sub and token sessions; their config dir is the only witness.
       if [[ -z "$_hop_profile" && -n "${CCMORPH_RELAY_ID:-}" && -n "${CLAUDE_CONFIG_DIR:-}" &&
@@ -1573,26 +1566,10 @@ ccmorph() {
       }
 
       # Hop ends the session itself: Claude Code is the first non-shell process
-      # below the relay in this process's ancestry (shells: the relay's forwarding
-      # and private-view subshells, and the one Claude Code runs this command in).
-      # The relay sees an exit it did not signal, finds the queued switch and resumes.
-      # Inline, not a helper: Claude's shell snapshot replays only this function.
-      local _hop_relay="${CCMORPH_RELAY_ID%%.*}" _hop_pid=$$ _hop_up _hop_p _hop_claude="" _hop_n=0
-      local -a _hop_chain=()
-      while [[ "$_hop_relay" == <-> ]] && (( _hop_pid > 1 && _hop_n++ < 32 )); do
-        _hop_up=$(command ps -o ppid= -p "$_hop_pid" 2>/dev/null) || break
-        _hop_up="${_hop_up//[[:space:]]/}"
-        if [[ "$_hop_up" == "$_hop_relay" ]]; then
-          for _hop_p in "$_hop_pid" "${(@Oa)_hop_chain}"; do
-            [[ "${$(command ps -o comm= -p "$_hop_p" 2>/dev/null):t}" == (-|)(zsh|bash|sh|dash) ]] && continue
-            _hop_claude="$_hop_p"
-            break
-          done
-          break
-        fi
-        _hop_chain+=("$_hop_pid")
-        _hop_pid="$_hop_up"
-      done
+      # below the relay in this process's ancestry. The relay sees an exit it did
+      # not signal, finds the queued switch and resumes.
+      local _hop_claude
+      _hop_claude=$(_ccm_util hop-target "${CCMORPH_RELAY_ID%%.*}" $$) || _hop_claude=""
       [[ -n "$_hop_claude" ]] || {
         _ccm_err "cannot find the Claude Code process to end. Run hop from the Claude Code prompt (/ccmorph:hop or ! ccmorph hop)"
         return 1
