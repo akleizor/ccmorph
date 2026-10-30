@@ -144,8 +144,9 @@ api-keys:
 }
 
 _ccm_provider_start() {
-  local profile="$1"
-  local bin auth_dir port key tmpdir conf yaml
+  # cliproxyapi on a loopback port with a fresh inbound key, handed back only once
+  # /v1/models answers 200 (a bound port is not yet a ready router).
+  local profile="$1" bin auth_dir out line
   _ccm_provider_bin || return 1
   bin="$REPLY"
   _ccm_provider_auth_dir "$profile" || return 1
@@ -154,117 +155,27 @@ _ccm_provider_start() {
     _ccm_err "no auth directory for '$profile' — run: ccmorph login $profile"
     return 1
   }
-  key=$(command openssl rand -hex 16) || return 1
-  tmpdir=$(command mktemp -d "${TMPDIR:-/tmp}/ccmorph-bridge-$UID-XXXXXX") || return 1
-  command chmod 0700 "$tmpdir"
-  conf="$tmpdir/config.yaml"
-  yaml="host: \"127.0.0.1\"
-port: 0
-auth-dir: \"$auth_dir\"
-api-keys:
-  - \"$key\"
-debug: false
-disable-cooling: true
-commercial-mode: true
-logging-to-file: false
-# The profile is pinned to one model; a silent quota-time substitution would
-# make every window/ceiling number ccmorph computed describe a model that is
-# no longer answering, and antigravity-credits would spend paid credits. Keep
-# the pinned model pinned — fail loud instead of switching under the user.
-switch-project: false
-switch-preview-model: false
-antigravity-credits: false"
-  _ccm_write "$conf" "$yaml" || {
-    command rm -rf "$tmpdir"
-    return 1
-  }
-
-  setopt localoptions no_monitor
   _ccm_log_init
-  "$bin" -config "$conf" </dev/null >>"${_CCMORPH_LOG:-/dev/null}" 2>&1 &
-  _ccm_provider_pid=$!
-  disown %+ 2>/dev/null || disown "$_ccm_provider_pid" 2>/dev/null
-  _ccm_provider_tmpdir="$tmpdir"
-  _ccm_provider_key="$key"
-  _ccm_provider_auth="$auth_dir"
-
-  # One 30s budget, two phases: first wait for cliproxyapi to bind its ephemeral
-  # port (poll lsof), then wait for it to actually serve — a bound port is not a
-  # ready router (it listens before its model catalogue loads, so the first
-  # message would 400 against a live socket). Require a real 200 from /v1/models,
-  # the same contract the client uses, before handing the port to Claude Code.
-  local waited=0 ready=0
-  port=""
-  while (( waited < 150 )); do
-    if ! kill -0 "$_ccm_provider_pid" 2>/dev/null; then
-      _ccm_provider_stop
-      _ccm_err "bridge for '$profile' exited before becoming ready"
-      return 1
-    fi
-    if [[ -z "$port" ]]; then
-      # Parse ONLY the local LISTEN address (the NAME field before "(LISTEN)"),
-      # never a "local->remote" token, whose remote port awk would otherwise grab.
-      port=$(command lsof -nP -iTCP -sTCP:LISTEN -a -p "$_ccm_provider_pid" 2>/dev/null \
-        | command awk 'NR>1{n=$9; sub(/->.*/,"",n); sub(/.*:/,"",n); print n; exit}') || port=""
-      [[ "$port" == <-> ]] || port=""
-    else
-      local _code
-      # --noproxy '*' and --max-time, for the same reasons the sibling probes at
-      # 2417 and 4415 carry them. An ambient http_proxy/ALL_PROXY otherwise routes
-      # even a 127.0.0.1 request through the proxy, which answers 000 while the
-      # bridge is serving perfectly — so behind a VPN readiness never
-      # arrives and a healthy bridge is torn down after 30s. Without --max-time the
-      # "one 30s budget" is not wall-clock at all: a single hung connect can sit
-      # past it, because the loop counts iterations, not seconds.
-      _code=$(_ccm_curl_keyed bearer "$key" -s -o /dev/null -w '%{http_code}' \
-        --noproxy '*' --connect-timeout 2 --max-time 5 \
-        "http://127.0.0.1:$port/v1/models" 2>/dev/null) || _code=""
-      [[ "$_code" == 200 ]] && { ready=1; break }
-    fi
-    command sleep 0.2
-    (( ++waited ))
+  out=$(_ccm_util bridge-start "$profile" "$bin" "$auth_dir" "${_CCMORPH_LOG:-/dev/null}" </dev/null) || return 1
+  for line in "${(@f)out}"; do
+    case "$line" in
+      PID=*) _ccm_provider_pid="${line#PID=}" ;;
+      PORT=*) _ccm_provider_port="${line#PORT=}" ;;
+      KEY=*) _ccm_provider_key="${line#KEY=}" ;;
+      TMPDIR=*) _ccm_provider_tmpdir="${line#TMPDIR=}" ;;
+    esac
   done
-
-  [[ -n "$port" ]] || {
-    _ccm_provider_stop
-    _ccm_err "bridge for '$profile' did not bind a port within 30s"
-    return 1
-  }
-  (( ready )) || {
-    _ccm_provider_stop
-    _ccm_err "bridge for '$profile' bound $port but /v1/models never returned 200 within 30s"
-    return 1
-  }
-
-  _ccm_provider_port="$port"
+  _ccm_provider_auth="$auth_dir"
   _ccm_provider_active="$profile"
-  REPLY="$port"
+  REPLY="$_ccm_provider_port"
 }
 
 _ccm_provider_stop() {
-  if [[ -n "${_ccm_provider_pid:-}" ]]; then
-    local pid="$_ccm_provider_pid"
-    kill "$pid" 2>/dev/null
-    local waited=0
-    while kill -0 "$pid" 2>/dev/null && (( waited < 100 )); do
-      command sleep 0.05
-      (( ++waited ))
-    done
-    if kill -0 "$pid" 2>/dev/null; then
-      kill -KILL "$pid" 2>/dev/null
-      waited=0
-      while kill -0 "$pid" 2>/dev/null && (( waited < 40 )); do
-        command sleep 0.05
-        (( ++waited ))
-      done
-    fi
-  fi
-  # cliproxyapi refreshes OAuth tokens mid-session and rewrites the credential
-  # files at its own umask (observed 0644), so re-tighten them to the 0600
-  # .github/SECURITY.md guarantees now that the process that was rewriting them is gone.
-  [[ -z "${_ccm_provider_auth:-}" ]] || command chmod 0600 "$_ccm_provider_auth"/**/*.json(N) 2>/dev/null || :
-  [[ -z "${_ccm_provider_tmpdir:-}" ]] || command rm -rf "$_ccm_provider_tmpdir"
+  # Also re-tightens the OAuth files cliproxyapi rewrote mid-session to 0600.
+  [[ -n "${_ccm_provider_pid:-}${_ccm_provider_tmpdir:-}${_ccm_provider_auth:-}" ]] &&
+    _ccm_util bridge-stop "${_ccm_provider_pid:-0}" "${_ccm_provider_tmpdir:-}" "${_ccm_provider_auth:-}"
   unset _ccm_provider_pid _ccm_provider_active _ccm_provider_port _ccm_provider_key _ccm_provider_tmpdir _ccm_provider_auth
+  return 0
 }
 
 # Start the adapter for a profile and set REPLY to the port it serves. Waits for
