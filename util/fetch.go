@@ -96,3 +96,47 @@ func undisguise(body string) string {
 		return `"` + ctxwindow.RealID(q[1:len(q)-1]) + `"`
 	})
 }
+
+// modelServed is `util model-served <want> <type> <base_url> <model_map json>`, the
+// credential on stdin: 0 the route serves want, 1 it does not, 2 cannot tell.
+// Tier aliases always resolve; a native route needs a claude-* id; a provider's
+// catalogue lives in its bridge, so only a claude-* id is a definite no there.
+func modelServed(args []string, in io.Reader, _, _ io.Writer) int {
+	if len(args) != 4 {
+		return 2
+	}
+	want, typ, base, modelMap := args[0], args[1], args[2], args[3]
+	if strings.HasSuffix(strings.ToLower(want), "[1m]") {
+		want = want[:len(want)-4]
+	}
+	switch {
+	case want == "":
+		return 2
+	case want == "opus" || want == "sonnet" || want == "haiku" || want == "fable":
+		return 0
+	case typ == "provider":
+		if strings.HasPrefix(want, "claude-") {
+			return 1
+		}
+		return 2
+	case base == "":
+		if strings.HasPrefix(want, "claude-") {
+			return 0
+		}
+		return 1
+	}
+	// Native routes launch without an adapter, so their maps are unused.
+	if strings.TrimSuffix(base, "/") == "https://api.anthropic.com" {
+		modelMap = ""
+	}
+	key, _ := bufio.NewReader(in).ReadString('\n')
+	if strings.TrimSpace(key) == "" {
+		return 2
+	}
+	var listing strings.Builder
+	if fetchListing([]string{base, "models"}, strings.NewReader(key), &listing, io.Discard) != 0 || listing.Len() == 0 {
+		return 2
+	}
+	os.Setenv("_CCM_MODELS_JSON", listing.String())
+	return modelKnown([]string{want, modelMap}, nil, nil, nil)
+}

@@ -262,46 +262,12 @@ _ccm_settings_model_alias() {
   print -r -- "$value"
 }
 
-_ccm_model_known() {
-  local name="$1"
-  local want="$2"
-  # Claude Code recognizes the suffix case-insensitively; strip only that terminal
-  # marker, never brackets that belong to the model id itself.
-  [[ "${(L)want}" == *'[1m]' ]] && want="${want[1,-5]}"
-
+_ccm_model_known() {  # 0 served, 1 not served, 2 cannot tell
+  local name="$1" want="$2" typ base map key
   [[ -n "$name" && -n "$want" ]] || return 2
-  [[ "$want" == (opus|sonnet|haiku|fable) ]] && return 0
-
   _ccm_read "$name" >/dev/null 2>&1 || return 2
-  local base="${_ccm[base_url]:-}"
-  local _mk_type="${_ccm[type]:-}"
-  local model_map="${_ccm[model_map]:-}"
+  _ccm_validate_loaded "$name" >/dev/null 2>&1 || { unset _ccm; return 2; }
+  typ="${_ccm[type]:-}" base="${_ccm[base_url]:-}" map="${_ccm[model_map]:-}" key="${_ccm[api_key]:-}"
   unset _ccm
-  # These native routes launch without an adapter/shim, so their maps are unused.
-  case "$base" in
-    ""|https://api.anthropic.com|https://api.anthropic.com/) model_map="" ;;
-  esac
-
-  # Provider profiles have no base_url but are not native Anthropic — the
-  # provider proxy serves its own model catalogue at runtime, which is not
-  # queryable outside a live session. Two sub-cases:
-  #   * a claude-* id is a DEFINITE no (1): a provider proxy serves its own
-  #     non-Anthropic catalogue and 400s on Anthropic ids, so carrying one in is
-  #     a guaranteed failure — say no and let the caller fall back to the default.
-  #   * anything else is unknowable offline (2), so the carried model survives.
-  if [[ "$_mk_type" == provider ]]; then
-    [[ "$want" == claude-* ]] && return 1
-    return 2
-  fi
-
-  if [[ -z "$base" ]]; then
-    [[ "$want" == claude-* ]]
-    return $?
-  fi
-
-  _ccm_gw_models_json "$name" 2>/dev/null || return 2
-  local body="$REPLY"
-  [[ -n "$body" ]] || return 2
-
-  _CCM_MODELS_JSON="$body" _ccm_util model-known "$want" "$model_map"
+  print -r -- "$key" | _ccm_util model-served "$want" "$typ" "$base" "$map" 2>/dev/null
 }
