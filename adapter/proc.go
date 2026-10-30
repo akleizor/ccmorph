@@ -14,7 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/akleizor/ccmorph/compat"
+	"github.com/akleizor/ccmorph/quirks"
 	"github.com/akleizor/ccmorph/shim"
 )
 
@@ -310,7 +310,7 @@ func startShim(hooksBin string, o shim.Options, env map[string]string, stdout, s
 		}
 		return os.Getenv(k)
 	}
-	h, err := compat.FromGetenv(getenv)
+	h, err := quirks.FromGetenv(getenv)
 	if err != nil {
 		return nil, err
 	}
