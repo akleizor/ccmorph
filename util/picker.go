@@ -171,7 +171,7 @@ func projectPicker(args []string, _ io.Reader, _, errw io.Writer) int {
 		if pycompat.Catch(func() { text = pycompat.ReadText(contextConf) }) != nil {
 			return ""
 		}
-		known := false
+		known := exists(ctxwindow.DiscoveredPath(contextConf))
 		for _, line := range strings.Split(text, "\n") {
 			if strings.HasPrefix(line, "context_window.") || strings.HasPrefix(line, "context_discovered=") {
 				known = true

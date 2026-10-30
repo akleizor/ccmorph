@@ -75,10 +75,8 @@ class Fixture:
                               timeout=HANG_TIMEOUT)
 
     def stored(self):
-        for line in self.conf.read_text().splitlines():
-            if line.startswith("context_discovered="):
-                return json.loads(line.partition("=")[2])
-        return None
+        models = self.conf.parent / "profiles" / self.conf.stem / "models.json"
+        return json.loads(models.read_text()) if models.exists() else None
 
     def close(self):
         self.server.shutdown()

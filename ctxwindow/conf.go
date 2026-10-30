@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -89,7 +90,30 @@ func ReadConf(path string) (string, map[string]string) {
 			fields[key] = value
 		}
 	}
+	// Machine-written windows live beside the profile; a conf that still carries
+	// the old inline record wins until the next save moves it out.
+	if _, inline := fields["context_discovered"]; !inline {
+		if data, err := os.ReadFile(DiscoveredPath(path)); err == nil {
+			fields["context_discovered"] = string(data)
+		}
+	}
 	return text, fields
+}
+
+// DiscoveredPath is where a conf's discovered windows are kept:
+// profiles/<name>/models.json beside it, so rm and mv carry it with the profile.
+func DiscoveredPath(conf string) string {
+	dir, name := filepath.Split(conf)
+	return filepath.Join(dir, "profiles", strings.TrimSuffix(name, ".conf"), "models.json")
+}
+
+// lockPath is the conf's lock file, kept out of the state root's listing.
+func lockPath(conf string) string {
+	dir, name := filepath.Split(conf)
+	if err := os.MkdirAll(filepath.Join(dir, ".locks"), 0o700); err != nil {
+		pycompat.RaiseOS(err)
+	}
+	return filepath.Join(dir, ".locks", strings.TrimSuffix(name, ".conf")+".lock")
 }
 
 // RouteFingerprint hashes the fields that decide where requests go.
@@ -110,9 +134,9 @@ func RouteFingerprint(fields map[string]string) string {
 // Identity pins a conf file's inode, mtime and content so a writer can tell
 // the file changed under it.
 type Identity struct {
-	dev, ino uint64
-	mtimeNs  int64
-	sum      [32]byte
+	dev, ino    uint64
+	mtimeNs     int64
+	sum, models [32]byte
 }
 
 func identityOf(f *os.File) (*Identity, error) {
@@ -131,7 +155,8 @@ func identityOf(f *os.File) (*Identity, error) {
 	return id, nil
 }
 
-// ProfileIdentity is nil for a symlink or an unreadable conf.
+// ProfileIdentity is nil for a symlink or an unreadable conf. It also pins the
+// profile's models.json, so a writer sees a discovery saved since it read.
 func ProfileIdentity(profile string) *Identity {
 	path := ProfilePath(profile)
 	if isSymlink(path) {
@@ -145,6 +170,9 @@ func ProfileIdentity(profile string) *Identity {
 	id, err := identityOf(f)
 	if err != nil {
 		return nil
+	}
+	if data, err := os.ReadFile(DiscoveredPath(path)); err == nil {
+		id.models = sha256.Sum256(data)
 	}
 	return id
 }
@@ -385,7 +413,7 @@ func ProfileLockCtx(ctx context.Context, profile string, fn func()) bool {
 		}
 	}
 	// The lock holds no configuration data; its inode stays stable across remove/recreate.
-	f, err := os.OpenFile(path+".lock", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o666)
+	f, err := os.OpenFile(lockPath(path), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		pycompat.RaiseOS(err)
 	}
@@ -583,6 +611,7 @@ func ReplaceFields(path string, fields []Field, expected *Identity) bool {
 		if err != nil {
 			pycompat.RaiseOS(err)
 		}
+		now.models = expected.models // ReplaceFields guards the conf only
 		if *now != *expected {
 			return false
 		}
@@ -688,11 +717,67 @@ func SaveDiscoveredCtx(ctx context.Context, profile string, values *pycompat.OMa
 			}
 			record.Set("misses", o)
 		}
-		saved = ReplaceFields(path, []Field{{"context_discovered", str(pycompat.Marshal(record, pycompat.Format{Compact: true, ASCII: true}))}}, expected)
+		saved = writeDiscovered(path, record, expected)
 	}) {
 		return false
 	}
 	return saved
+}
+
+// writeDiscovered stores record as indented JSON in DiscoveredPath and drops any
+// inline context_discovered line the conf still carries. The caller holds the
+// profile lock and has checked expected.
+func writeDiscovered(conf string, record *pycompat.Obj, expected *Identity) bool {
+	text, _ := ReadConf(conf)
+	inline := false
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimLeft(line, " \t"), "context_discovered=") {
+			inline = true
+		}
+	}
+	target := DiscoveredPath(conf)
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		pycompat.RaiseOS(err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(target), ".models-")
+	if err != nil {
+		pycompat.RaiseOS(err)
+	}
+	defer os.Remove(tmp.Name())
+	_, err = tmp.WriteString(pycompat.Marshal(record, pycompat.Format{Indent: 2, ASCII: true}) + "\n")
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		pycompat.RaiseOS(err)
+	}
+	if err := os.Rename(tmp.Name(), target); err != nil {
+		pycompat.RaiseOS(err)
+	}
+	return !inline || ReplaceFields(conf, []Field{{Key: "context_discovered"}}, expected)
+}
+
+// Restamp rebinds conf's models.json from route old to route new, for a conf
+// rewrite that changed only how the route is spelled.
+func Restamp(conf, old, new string) {
+	path := DiscoveredPath(conf)
+	data, err := os.ReadFile(path)
+	if err != nil || old == new {
+		return
+	}
+	v, err := pycompat.Parse(data)
+	doc, ok := v.(*pycompat.Obj)
+	if err != nil || !ok {
+		return
+	}
+	if route, _ := doc.Get("route"); route != old {
+		return
+	}
+	doc.Set("route", new)
+	tmp := path + ".tmp"
+	if os.WriteFile(tmp, []byte(pycompat.Marshal(doc, pycompat.Format{Indent: 2, ASCII: true})+"\n"), 0o600) == nil {
+		os.Rename(tmp, path)
+	}
 }
 
 // ContextValue is the manual window for model, or "auto".

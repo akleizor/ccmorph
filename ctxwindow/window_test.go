@@ -351,13 +351,10 @@ func TestCacheEntryRulesMatchPreviewMigrationAndRecovery(t *testing.T) {
 func TestDiscoveredJSONDoesNotContainCredentials(t *testing.T) {
 	e := setup(t)
 	save("a", one("m", 123000))
-	var line string
-	for _, l := range strings.Split(read(t, e.a), "\n") {
-		if strings.HasPrefix(l, "context_discovered=") {
-			line = l
-		}
+	if strings.Contains(read(t, e.a), "context_discovered") {
+		t.Fatal("discovered windows written into the conf")
 	}
-	v, err := pycompat.Parse([]byte(strings.TrimPrefix(line, "context_discovered=")))
+	v, err := pycompat.Parse([]byte(read(t, DiscoveredPath(e.a))))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +362,7 @@ func TestDiscoveredJSONDoesNotContainCredentials(t *testing.T) {
 	if got := pycompat.Marshal(models, pycompat.Format{Compact: true}); got != `{"m":123000}` {
 		t.Fatal(got)
 	}
-	if strings.Contains(line, "canary-a") || strings.Contains(line, "https://a.invalid") {
+	if line := read(t, DiscoveredPath(e.a)); strings.Contains(line, "canary-a") || strings.Contains(line, "https://a.invalid") {
 		t.Fatal("route leaked into the record")
 	}
 }
@@ -491,5 +488,25 @@ func TestBundledCatalogueSizesAnUnknownRoutedModelByFamily(t *testing.T) {
 		`{"models":{"x/fam-1":{"family":"fam","limit":{"context":300000}},"y/fam-2":{"family":"fam","limit":{"context":300000}}}}`)
 	if got := Resolve("a", "fam"); got.Window != 300000 || got.Source != "catalogue-bundled" {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+// An inline context_discovered line from before models.json moves out on
+// migration, keeps its windows, and the conf loses the line.
+func TestMigrationMovesInlineDiscoveredToModelsJSON(t *testing.T) {
+	e := setup(t)
+	_, fields := ReadConf(e.a)
+	inline := `context_discovered={"route":"` + RouteFingerprint(fields) + `","models":{"m":321000}}`
+	write(t, e.a, read(t, e.a)+inline+"\n")
+	write(t, e.a+".lock", "")
+	Migrate(discard())
+	if strings.Contains(read(t, e.a), "context_discovered") || !strings.Contains(read(t, e.a), "# keep") {
+		t.Fatal(read(t, e.a))
+	}
+	if ProfileWindows("a")["m"] != 321000 {
+		t.Fatal(read(t, DiscoveredPath(e.a)))
+	}
+	if _, err := os.Stat(e.a + ".lock"); err == nil {
+		t.Fatal("retired lock file left in the state root")
 	}
 }

@@ -46,9 +46,12 @@ func legacyPath(state string) string {
 
 func cacheRoot() string {
 	root := pycompat.Join(StateDir(), "profiles")
-	if !exists(root) {
-		home, _ := os.UserHomeDir()
-		root = pycompat.Join(home, ".claude-profiles") // pre-migration cache recovery
+	home, _ := os.UserHomeDir()
+	// Pre-migration cache recovery: an unmoved legacy home (a real directory,
+	// not the link the move leaves) still holds the caches, even once a
+	// models.json has created the new root.
+	if legacy := pycompat.Join(home, ".claude-profiles"); !exists(root) || (isDir(legacy) && !isSymlink(legacy)) {
+		root = legacy
 	}
 	return root
 }
@@ -177,7 +180,11 @@ func migrateLocked(state string, stderr io.Writer) int {
 			}
 		}
 	}
+	moved := moveInlineDiscovered(state)
 	if !exists(legacy) && len(caches) == 0 {
+		if moved > 0 {
+			fmt.Fprintf(stderr, "Moved discovered context limits of %d profile(s) to profiles/<name>/models.json.\n", moved)
+		}
 		return 0
 	}
 	var entries []cacheEntry
@@ -267,4 +274,42 @@ func RecoverCacheBackups(stderr io.Writer) int {
 		fmt.Fprintf(stderr, "%s: processed %d backup entries; existing limits and backup retained.\n", s, values.Len())
 	}
 	return 0
+}
+
+func isDir(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.IsDir()
+}
+
+// moveInlineDiscovered moves each conf's inline context_discovered line to its
+// models.json and removes the retired <name>.conf.lock files. It returns how
+// many profiles moved.
+func moveInlineDiscovered(state string) int {
+	moved := 0
+	for _, conf := range globConf(state) {
+		s := stem(conf)
+		if isSymlink(conf) || !ValidProfileName(s) {
+			continue
+		}
+		os.Remove(conf + ".lock")
+		text, fields := ReadConf(conf)
+		if !strings.Contains(text, "context_discovered=") {
+			continue
+		}
+		ProfileLock(s, func() {
+			expected := ProfileIdentity(s)
+			if expected == nil {
+				return
+			}
+			if doc := discoveredDoc(fields); doc != nil {
+				if writeDiscovered(conf, doc, expected) {
+					moved++
+				}
+				return
+			}
+			// Bound to a route this profile no longer has: every read already ignores it.
+			ReplaceFields(conf, []Field{{Key: "context_discovered"}}, expected)
+		})
+	}
+	return moved
 }

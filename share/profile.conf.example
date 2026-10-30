@@ -19,7 +19,8 @@
 # email       sub:       account email (the profile's identity)
 # token       token:     long-lived OAuth token
 # base_url    apikey:    endpoint; omit for the native Anthropic API
-# api_key     apikey:    key presented to that endpoint
+# api_key     apikey:    key presented to that endpoint; on macOS ccmorph moves it
+#                        to the login keychain and writes keychain:<name>.api_key
 # adapter     apikey:    true | false — force or forbid the translator
 # tag         apikey:    label for this route in the model picker
 type=apikey
@@ -58,4 +59,5 @@ effort=medium
 
 # ── 5. Machine-written — never edit ─────────────────────────────────────────
 # model_defaults=1         this profile owns its model defaults (written once)
-# context_discovered={...} limits `ccmorph probe` found for this route
+# context_discovered={...} legacy inline limits; moved to profiles/<name>/models.json
+#                          on next use, never written here again

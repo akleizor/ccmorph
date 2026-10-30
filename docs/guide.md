@@ -286,7 +286,7 @@ or read it in full. In brief:
 | `window_sources=<name>` | Shipped catalogue to size this route by |
 | `context_window.<model>` | Pinned token limit; beats discovery |
 | `model_defaults=1` | This profile owns its model defaults (written once; keep it) |
-| `context_discovered={...}` | Limits `probe` found for this route (machine-written) |
+| `api_key=keychain:<name>.api_key` | On macOS the key lives in the login keychain; ccmorph moves a plain key there on first use |
 
 The model-mapping keys in the table are the `env.ANTHROPIC_*` names listed in the
 template's second section. Add only overrides you need; leave unused fields absent rather than blank or

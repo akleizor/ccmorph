@@ -125,7 +125,7 @@ func runLocked(args []string, stderr io.Writer) int {
 	for _, profile := range profiles {
 		path := ProfilePath(profile)
 		if !contains(strings.Split(os.Getenv("CCMORPH_PROFILE_LOCK_HELD"), ":"), path) {
-			f, err := os.OpenFile(path+".lock", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o666)
+			f, err := os.OpenFile(lockPath(path), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 			if err != nil {
 				pycompat.RaiseOS(err)
 			}

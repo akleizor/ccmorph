@@ -45,7 +45,7 @@ class ContextOverride(unittest.TestCase):
             self.assertEqual(json.loads(resolved.stdout)['send_id'], 'claude-opus-5[1m]')
             self.assertFalse(cache.exists())
             self.assertIn('other\t300000', cache.with_name('context-window.migrated').read_text())
-            self.assertIn('"other":300000', conf.read_text())
+            self.assertEqual(json.loads((conf.parent / 'profiles' / conf.stem / 'models.json').read_text())['models']['other'], 300000)
             self.assertEqual(subprocess.run([*helper_cmd('model-window'), '--context', 'gw', 'a.b', 'auto'], env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT).returncode, 0)
             self.assertEqual(subprocess.run([*helper_cmd('model-window'), '--context', 'gw', 'a.b'], env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT).stdout.strip(), 'auto')
             resolved = subprocess.run([*helper_cmd('model-window'), 'gw', 'a.b'], env=env,

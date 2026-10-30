@@ -989,6 +989,8 @@ ccmorph() {
         _ccm_err "could not remove profile '$2'"
         return 1
       }
+      "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" util keychain-delete "$2"
+      command rm -f "$_CCMORPH_PROFILE_DIRS/../.locks/$2.lock"
 
       if [[ "$active" == "$2" ]]; then
         unset CLAUDE_CODE_OAUTH_TOKEN
@@ -1510,6 +1512,8 @@ ccmorph() {
         return 1
       fi
 
+      "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" util keychain-rename "$dir" "$2" "$3" ||
+        _ccm_err "renamed, but '$3' still reads its credential from the keychain item of '$2'"
       print "${_ccm_accent}Renamed${_ccm_reset} ${_ccm_bold}$2${_ccm_reset} → ${_ccm_bold}$3${_ccm_reset}"
       ;;
 

@@ -90,11 +90,17 @@ beside itself. `CCMORPH_LIB_DIR` names the `lib/` directory.
 ## 1. Profile model
 
 A profile's editable configuration is `<name>.conf`, holding `key=value` lines.
-It includes manual `context_window.<model>` overrides and, in the same file, a
-`context_discovered` JSON blob (`{route: <fingerprint>, models: {<id>: <tokens>}}`)
-holding limits `ccmorph probe` discovered for the profile's current route.
-There is no separate shared registry file: `rm` and `mv` move or delete the whole
-`.conf`, discovered data included, with no registry-prefix bookkeeping. `add`
+It includes manual `context_window.<model>` overrides. What ccmorph writes for itself
+lives beside the profile, not in it: `profiles/<name>/models.json` (indented JSON,
+`{route: <fingerprint>, models: {<id>: <tokens>}}`) holds the limits `ccmorph probe`
+discovered for the profile's current route, and `.locks/<name>.lock` is its writer
+lock. A conf from before this split still carrying an inline `context_discovered=`
+line is read as before and moved out by the next migration. On macOS `api_key` and
+`token` move to the login keychain (service `ccmorph`) on first use; the conf keeps
+`keychain:<name>.<key>` and `_ccm_read` resolves it, so no caller sees the reference.
+There is no separate shared registry file: `rm` and `mv` move or delete the
+`.conf` and the profile directory together, discovered data and keychain items
+included, with no registry-prefix bookkeeping. `add`
 refuses orphaned private state left by a manually deleted configuration. Shared
 conversation history survives profile removal. All `*.conf` are gitignored: they
 carry credentials and never enter history.
@@ -902,7 +908,7 @@ Two separate things, often confused:
 | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | ids whose name does **not** start with `claude-` | functional — drives compaction |
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | any id | a ceiling on the compaction trigger, capped by the window above |
 | `context_window.<model>` | one profile/model pair | manual context limit stored in the profile configuration; wins over discovered values. Set with `ccmorph context <profile> <model> <tokens>`, cleared with `auto` |
-| `context_discovered` | one profile, route-bound | JSON blob in the same `.conf`; limits `ccmorph probe` discovered for the profile's current route, invalidated when the route changes |
+| `context_discovered` | one profile, route-bound | `profiles/<name>/models.json`; limits `ccmorph probe` discovered for the profile's current route, invalidated when the route changes |
 
 So on one profile a `claude-*` model and a routed model get different windows from
 the same config, and both are correct.
