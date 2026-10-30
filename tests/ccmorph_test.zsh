@@ -4462,7 +4462,7 @@ test_quota_hands_every_profile_to_the_core_with_no_key_in_argv() {
   # Everything but quota reaches the real core (profile-read parses each conf).
   printf '%s\n' '#!/bin/sh' '[ "$1" = quota ] || exec "'"$_CCMORPH_LIBEXEC_DIR"'/ccmorph-core" "$@"' 'echo "argv:$*"' 'cat' > "$test_home/libexec/ccmorph-core"
   chmod +x "$test_home/libexec/ccmorph-core"
-  _CCMORPH_LIBEXEC_DIR="$test_home/libexec"
+  local _CCMORPH_LIBEXEC_DIR="$test_home/libexec"
   out=$(ccmorph quota)
   local want="argv:quota"$'\n'
   # An API-key row carries its base URL and key (fifth field) for the balance
@@ -9219,8 +9219,12 @@ test_the_launch_sweep_clears_every_allowlisted_env_key() {
 # under-warn direction: ccmorph sizes a [1m] id at 200,000 where the engine gives it
 # 1,000,000, and the wedge goes unnamed.
 test_the_kill_switch_is_settable_and_reads_like_the_engine() {
+  # Its own home: the switch is read by the core, and an inherited CCMORPH_LIB_DIR
+  # can point at an earlier test's deleted home.
+  local test_home rc=0
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
   source "$CCMORPH_SOURCE"
-  local rc=0
 
   # It must be declarable in a conf at all.
   (( ${_CCMORPH_PROFILE_ENV[(Ie)CLAUDE_CODE_DISABLE_1M_CONTEXT]} )) || {
@@ -9279,6 +9283,7 @@ test_the_kill_switch_is_settable_and_reads_like_the_engine() {
     }
   done
 
+  rm -rf "$test_home"
   return $rc
 }
 
