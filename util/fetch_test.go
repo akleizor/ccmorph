@@ -28,3 +28,21 @@ func TestListingsAreUndisguisedOnEntry(t *testing.T) {
 		t.Errorf("a disguise survived: %s", got)
 	}
 }
+
+func TestModelServedRulesBeforeAnyRequest(t *testing.T) {
+	for _, c := range []struct {
+		want, typ, base string
+		rc              int
+	}{
+		{"opus", "apikey", "https://gw.invalid", 0},
+		{"claude-x[1M]", "sub", "", 0},
+		{"gpt-6", "sub", "", 1},
+		{"claude-x", "provider", "", 1},
+		{"gpt-6", "provider", "", 2},
+		{"gpt-6", "apikey", "https://gw.invalid", 2}, // no key: cannot tell
+	} {
+		if rc := modelServed([]string{c.want, c.typ, c.base, ""}, strings.NewReader("\n"), nil, nil); rc != c.rc {
+			t.Errorf("%+v: rc %d", c, rc)
+		}
+	}
+}

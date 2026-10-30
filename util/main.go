@@ -26,6 +26,7 @@ func init() {
 		"bridge-start":           bridgeStart,
 		"bridge-stop":            bridgeStop,
 		"fetch-listing":          fetchListing,
+		"model-served":           modelServed,
 		"hop-target":             hopTarget,
 		"gc-stale":               gcStale,
 		"claude-verbs":           claudeVerbs,
