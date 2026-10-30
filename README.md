@@ -2,183 +2,186 @@
 
 # ccmorph
 
-**Every Claude Code account, API key and gateway behind one command.**
+### Claude Code, on every account and every model you have.
 
-[Install](#install) · [Quick start](#quick-start) · [Usage](#usage) · [Docs](docs/guide.md)
+**Your Claude subscription, your company gateway, DeepSeek, Kimi, GLM: one command each,<br>
+side by side in separate terminals. Out of quota mid-task? Move the conversation<br>
+to another one without losing a word.**
 
-<img src="assets/demo.gif" alt="Terminal demo: a conversation started on the work profile continues on the personal profile after ccmorph hop" width="780">
+[![Release](https://img.shields.io/github/v/release/akleizor/ccmorph?color=111111)](https://github.com/akleizor/ccmorph/releases/latest) [![CI](https://img.shields.io/github/actions/workflow/status/akleizor/ccmorph/ci.yml?branch=main&label=CI&color=111111)](https://github.com/akleizor/ccmorph/actions/workflows/ci.yml) [![License](https://img.shields.io/badge/license-MIT-111111)](LICENSE) ![macOS](https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white) ![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black)
+
+[Install](#install) · [Why ccmorph](#why-ccmorph) · [Features](#features) · [Docs](docs/guide.md)
+
+<br>
+
+<img src="assets/demo.gif" alt="A Claude Code session on a Claude subscription hits its 5-hour limit; /ccmorph:hop deepseek moves the same conversation to DeepSeek, which picks up the next task" width="860">
+
+<sub>The subscription hits its limit. One command, and DeepSeek finishes the job in the same conversation.</sub>
 
 </div>
 
-## Highlights
+<br>
 
-- **One profile per backend.** Each subscription, API key or gateway gets its own
-  login, settings and session history. Skills, plugins, hooks and `CLAUDE.md`
-  stay shared.
-- **Hop mid-session.** `ccmorph hop <profile>` moves a running conversation to
-  another profile, keeping its model and effort.
-- **Any endpoint.** Gateways that do not speak Anthropic's API are translated
-  automatically through a per-launch adapter.
-- **Cost per profile.** Every gateway turn leaves a receipt with the billed cost;
-  [ccusage](https://github.com/ccusage/ccusage) turns them into daily reports.
-- **Leaves `claude` alone.** No wrapper, no patch: native arguments pass through.
-  See [Scope and ownership](docs/ARCHITECTURE.md#scope-and-ownership).
+## Why ccmorph
 
-```
-                   +--> work       subscription login  -->  Anthropic
-ccmorph run  ------+--> personal   API key             -->  Anthropic API
-                   +--> gateway    API key             -->  any other model API
-                                                            (translated for you)
+You use Claude Code all day, and you have more than one way to pay for it: a
+Claude subscription, a company gateway, a cheap DeepSeek or Kimi key for the
+long refactor. Claude Code knows about exactly one of them at a time. Switching
+means editing env vars, logging out and back in, and losing the conversation
+you were in.
+
+ccmorph gives each of them a **profile**, and each profile its own Claude Code:
+
+```sh
+ccmorph run work        # your Claude subscription, terminal 1
+ccmorph run company     # the company gateway, terminal 2, at the same time
+ccmorph run deepseek    # DeepSeek, terminal 3
 ```
 
-## Requirements
+Your skills, plugins, hooks, `CLAUDE.md` and memory are shared by all of them.
+Only the login, the settings and the history are separate, so work and personal
+never mix.
 
-- `zsh` and the `claude` CLI. The installer names the command to install a missing
-  one for your package manager, and stops. `python3` 3.8 or newer is needed only
-  for the optional Remote Control add-on.
-- A release ships `ccmorph-core` prebuilt for macOS and Linux (arm64, amd64).
-  Installing from a clone needs Go to build it (`make shim`).
-- Optional: `cliproxyapi` for non-Anthropic endpoints, `fzf` for searchable
-  pickers. The installer offers fzf through your package manager and
-  cliproxyapi through Homebrew, and installs only on confirm.
-- macOS or Linux. On Windows, use WSL.
+## Features
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### Hop mid-conversation
+
+`/ccmorph:hop deepseek` inside Claude Code moves the conversation you are in to
+another profile, with its model and reasoning effort. No exit, no copy-paste,
+no lost context.
+
+</td>
+<td width="50%" valign="top">
+
+### Any model, natively
+
+DeepSeek, Kimi, GLM, MiniMax, Qwen, MiMo, StepFun, OpenRouter and SiliconFlow
+are one pick in `ccmorph add`: paste a key, and the endpoint and tier models are
+filled in. Endpoints that do not speak Anthropic's API are translated for you.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### Gateway fixes built in
+
+A per-session shim repairs what breaks Claude Code on third-party models: tool
+ids, thinking blocks, model names and the real context window, so compaction
+happens at the model's limit, not at a guessed 200K.
+
+</td>
+<td valign="top">
+
+### Secrets stay home
+
+Turn on `CCMORPH_MASK=1` for a profile, and API keys, tokens and passwords in a
+prompt are replaced with placeholders before the request leaves your machine,
+then put back in the reply. The agent still works; the provider never sees them.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+### Every quota and bill, one screen
+
+`ccmorph quota` shows each subscription's 5-hour and weekly use, each
+gateway's spend today and this month, and the balance left on your DeepSeek,
+Kimi or OpenRouter account. Pick the profile to hop to at a glance.
+
+</td>
+<td valign="top">
+
+### Leaves Claude Code alone
+
+No fork, no patch: `claude` runs unchanged, and every native flag passes
+straight through. Remove ccmorph and Claude Code is exactly as it was.
+
+</td>
+</tr>
+</table>
+
+```
+$ ccmorph quota
+Claude subscriptions
+work  Max 20x
+  5h       ██░░░░░░░░░░░░░░  12%  in 4h 10m
+  7d       ██████░░░░░░░░░░  40%  Tue 09:00
+
+API and gateway profiles
+company
+  today $18.20 · month $412.75
+deepseek
+  today $0.40 · month $6.39
+  balance ¥40.75
+```
+
+## How it compares
+
+| | ccmorph | Desktop switchers (cc-switch, Magpie) | Local routers (claude-code-router) |
+|---|---|---|---|
+| Profiles running side by side | **Yes, one per terminal** | One active setup per machine | One gateway, routed per request |
+| Move a live conversation | **Yes, `/ccmorph:hop`** | No | No |
+| Separate login and history per profile | **Yes** | No | No |
+| Rewrites Claude Code's own config | **No** | Yes | Yes |
+| GUI, many agents | No: Claude Code only, in the terminal | Yes | Yes |
+
+ccmorph does one thing: Claude Code, on any backend, done properly. If you want
+one app for a dozen different agents, those tools are good at that.
 
 ## Install
 
-With Homebrew:
-
 ```sh
 brew install akleizor/tap/ccmorph
-ccmorph doctor
 ```
 
-Type the full `akleizor/tap/ccmorph` name: Homebrew trusts a third-party tap's
-formula only when it is named that way. Prebuilt bottles cover Apple silicon on
-the newest macOS and Linux x86_64; anywhere else Homebrew builds from source and
-installs Go for the build. Update with `brew upgrade ccmorph` and remove with
-`brew uninstall ccmorph`: `ccmorph update` and `ccmorph uninstall` refuse a
-Homebrew install and print those commands.
-
-From a clone:
-
-```sh
-git clone https://github.com/akleizor/ccmorph && cd ccmorph && make shim && ./install.sh
-```
-
-Or the one-liner:
-
-```sh
-sh -c "$(curl -fsSL https://github.com/akleizor/ccmorph/releases/latest/download/install.sh)"
-ccmorph doctor
-```
-
-The one-liner installs the latest release: it downloads that release's
-`ccmorph.tar.gz` and runs its installer. `CCMORPH_REF` (a branch or tag)
-installs unreleased code from the GitHub archive of that ref — `CCMORPH_REF=main`
-for the bleeding edge — and `CCMORPH_INSTALL_URL` replaces the whole tarball URL.
-`curl -fsSL ... | sh` also works, but it has no terminal to ask on, so it declines
-the optional installs and prints the commands instead.
-
-The installer (clone or one-liner) copies the runtime (`lib/`, `libexec/`, `share/`) into `~/.config/ccmorph` and the `ccmorph`
-command into `~/.local/bin`. It never edits shell startup files; if
-`~/.local/bin` is not on your `PATH`, it prints the line to add, for your shell.
-
-For a clone or one-liner install, update with `ccmorph update` (the latest release; `ccmorph update <branch-or-tag>`
-for another), or run the same install again; profiles, credentials, and `local.sh`
-are preserved. A git clone is updated with git instead. `ccmorph uninstall` removes the command and
-leaves your profiles alone.
+<sub>Or without Homebrew: `sh -c "$(curl -fsSL https://github.com/akleizor/ccmorph/releases/latest/download/install.sh)"`. Needs `zsh` and the `claude` CLI, on macOS or Linux (on Windows, use WSL). The [guide](docs/guide.md#install-details) covers every install path, updating and removal.</sub>
 
 ## Quick start
 
-A fresh install has no profiles.
-
 ```sh
-ccmorph doctor           # check zsh, claude and PATH
-ccmorph add work         # create a profile: login or credential paste
-ccmorph run              # launch Claude Code on it
+ccmorph add work        # sign in to a Claude subscription in the browser
+ccmorph add deepseek    # pick DeepSeek, paste the key
+ccmorph run work        # start Claude Code on it
 ```
 
-The first profile you add becomes the default. `ccmorph list` shows the
-profiles with the default marked, and `ccmorph use <profile>` changes it.
+Inside the session, `/ccmorph:hop deepseek` moves you across. `ccmorph doctor`
+checks the setup, and `ccmorph --help` lists every command.
 
-## Usage
-
-```sh
-ccmorph run <profile>              # launch on a profile for this session
-ccmorph use <profile>              # make a profile the default for `ccmorph run`
-ccmorph run -i                     # choose the profile, then the model
-ccmorph run <profile> --model <id> # profile plus explicit model
-ccmorph run work mcp list          # native Claude Code arguments pass through
-ccmorph config <profile>           # change model, reasoning, or connection
-ccmorph set <profile> model -i     # save a default model, chosen from the endpoint
-ccmorph inspect [<profile>]        # effective settings and where each came from
-ccmorph doctor [<profile>]         # check why a profile is not working
-ccmorph quota [<profile>] [--json] # every profile's plan usage, spend and API balance
-```
-
-To switch a running session, type in the Claude Code prompt:
+## How it works
 
 ```
-/ccmorph:hop personal
+                    ┌─ work      Claude subscription ───────────────▶ Anthropic
+ccmorph run <name> ─┼─ company   API key ─▶ shim (fixes, masking) ──▶ your gateway
+                    └─ deepseek  API key ─▶ shim ─▶ translator if needed ─▶ DeepSeek, Kimi, …
 ```
 
-`! ccmorph hop personal` does the same.
-
-`ccmorph --help` shows everyday commands, `ccmorph help all` the full list, and
-`ccmorph help <command>` the details of one.
-
-## Usage and cost
-
-Each turn a gateway profile serves writes one receipt under
-`~/.local/state/ccmorph/usage/`: tokens, the model that answered, and the
-cost the gateway billed when it reports one (for a provider reached directly,
-an estimated cost at its models.dev list price, marked as an estimate in the
-receipt and the export). No prompt, header or credential is stored. Export the receipts and read them with ccusage:
-
-```sh
-scripts/usage-export --output ~/.cache/ccmorph-usage
-CLAUDE_CONFIG_DIR=~/.cache/ccmorph-usage ccusage claude daily --instances \
-  --config ~/.cache/ccmorph-usage/ccusage.json
-```
-
-Each profile is one ccusage project. A billed cost is used as is and a
-shim-computed one is marked `costSource: estimate`; a turn with neither is
-priced by ccusage at the provider's list price.
-Subscription profiles talk to Anthropic directly and write no receipts.
-
-## Configuration
-
-A profile is one file, `~/.config/ccmorph/<name>.conf`, of `key=value` lines;
-`profile.conf.example` is the template and lists every allowed key. Runtime state
-lives under `~/.config/ccmorph/profiles/<name>`. The state root is
-`$CCMORPH_STATE_DIR`, else `$XDG_CONFIG_HOME/ccmorph`, else `~/.config/ccmorph`.
-Use `ccmorph rm` and `ccmorph mv` rather than editing files by hand.
-
-Common keys: `type`, `base_url`, `api_key`, `model`, `effort`,
-`excluded_models`, and `context_window.<model>`. To reach a private endpoint,
-export `HTTPS_PROXY` for the command; ccmorph passes it through unchanged.
-
-The [user guide](docs/guide.md) covers every setting, gateway behavior, context
-windows and probing, switching, and state migration.
+Each profile is one small file in `~/.config/ccmorph/` and its own
+`CLAUDE_CONFIG_DIR`. A subscription talks to Anthropic directly. An API-key
+profile goes through a local shim, started for that session and gone when it
+ends, which applies the gateway fixes and masking and writes a cost receipt per
+turn. Nothing runs in the background.
 
 ## Documentation
 
-| Doc | Covers |
+| | |
 |---|---|
-| [docs/guide.md](docs/guide.md) | Full usage and configuration reference |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How sessions reach a backend, and why |
-| [.github/SECURITY.md](.github/SECURITY.md) | Where credentials live and what protects them |
-| [CHANGELOG.md](CHANGELOG.md) | What changed in each version |
-| [addons/remote-control/README.md](addons/remote-control/README.md) | Remote Control bridge add-on |
+| [User guide](docs/guide.md) | Every command, setting, gateway and context-window detail |
+| [Architecture](docs/ARCHITECTURE.md) | How a session reaches its backend, and why |
+| [Security](.github/SECURITY.md) | Where credentials live and what protects them |
+| [Remote Control add-on](addons/remote-control/README.md) | Run ccmorph sessions as Remote Control hosts |
+| [Changelog](CHANGELOG.md) | What changed in each version |
 
-## Tests
+## Contributing
 
-```sh
-make test
-```
-
-CI runs the same suites on Linux and macOS (`.github/workflows/ci.yml`).
+`make test` runs the suites CI runs on Linux and macOS. See
+[CONTRIBUTING](.github/CONTRIBUTING.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
