@@ -28,20 +28,6 @@ _CCMORPH_LIB_DIR="${CCMORPH_LIB_DIR:-${${(%):-%x}:A:h}}"
 _CCMORPH_LIBEXEC_DIR="${_CCMORPH_LIB_DIR:h}/libexec"
 _CCMORPH_PROFILE_DIRS="$_CCMORPH_DIR/profiles"
 _CCMORPH_CONTEXT_POLICY="${CCMORPH_CONTEXT_POLICY:-$HOME/.agents/runtime/policies/context.json}"
-# The SHARED HARNESS LAYER: what makes Claude Code yours (skills, plugins,
-# commands, hooks, output styles, memory, keybindings, history) belongs to the
-# MACHINE, not to an profile — every profile links these into ~/.claude so
-# behaviour cannot fork per profile. Profile state (config.json, .claude.json,
-# settings.json) stays per-profile. Dirs are created-and-linked even while
-# empty, so content added later reaches every profile; files are linked when
-# present in ~/.claude and healed at the next launch's setup pass otherwise —
-# a REAL profile-local file is respected as a deliberate override, never
-# replaced. One manifest, consumed by provisioning and the fast-path check.
-_CCMORPH_SHARED_DIRS=(
-  skills hooks plugins commands output-styles agents
-  session-env file-history
-)
-_CCMORPH_SHARED_FILES=(settings.local.json keybindings.json CLAUDE.md .i-have-adhd-always)
 _CCMORPH_LOG="${TMPDIR:-/tmp}/ccmorph-${UID}.log"
 _CCMORPH_LOG_MAX=102400  # rotate at 100KB
 
