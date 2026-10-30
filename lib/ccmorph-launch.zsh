@@ -1311,14 +1311,8 @@ _ccm_launch() {
     fi
 
     if [[ ! -f "$relay_file" || -L "$relay_file" ]]; then
-      if [[ -n "${_ccm_relay_expected:-}" ]]; then
-        _ccm_log "RELAY LOST expected=${_ccm_relay_expected} relay_file=$relay_file"
-        print -u2 "${_ccm_yellow}ccmorph:${_ccm_reset} relay file missing after exit (expected switch to ${_ccm_bold}${_ccm_relay_expected}${_ccm_reset})"
-      else
-        _ccm_log "normal exit (no relay)"
-      fi
+      _ccm_log "normal exit (no relay)"
       command rm -f "$relay_file"
-      unset _ccm_relay_expected
       return $_ccm_rc
     fi
 
@@ -1394,7 +1388,6 @@ _ccm_launch() {
     if [[ -z "$profile" || ! "$_CCMORPH_DIR/$profile.conf" -ef "$_CCMORPH_DIR/$rs_profile.conf" ]]; then
       _ccm_relay_next_crossed=1
     fi
-    unset _ccm_relay_expected
     return 0
   done
 }

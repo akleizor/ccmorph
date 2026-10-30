@@ -9,6 +9,10 @@
 
 ### Changed
 
+- **Hop has no manual-exit path left.** `ccmorph hop` refuses with a reason
+  when it cannot find the Claude Code process to end, instead of queueing the
+  switch and asking you to exit; the relay's "relay file missing" warning, only
+  reachable through that path, is gone.
 - **Hop is one command.** `ccmorph hop <profile>` now ends the session it runs
   in, so the relay resumes on the new profile without a manual exit. Every
   launch also loads a `/ccmorph:hop <profile>` slash command that does the same.

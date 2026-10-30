@@ -11,8 +11,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def shell(script, env):
+    # A python process stands in for Claude Code between the relay (this test) and
+    # the shell it runs a command in; hop ends it with SIGTERM.
+    stand_in = 'import signal, subprocess, sys; signal.signal(signal.SIGTERM, lambda *_: None); ' \
+        'sys.exit(subprocess.call(["zsh", "-f", "-c", sys.argv[1]]))'
     return subprocess.run(
-        ['zsh', '-f', '-c', script], env=env,
+        ['python3', '-c', stand_in, script], env=env,
         capture_output=True, text=True, timeout=HANG_TIMEOUT,
     )
 
@@ -27,7 +31,7 @@ def env(tmp_path):
         'XDG_CONFIG_HOME': str(tmp_path / '.config'),
         'CCMORPH_STATE_DIR': str(state), 'CCMORPH_LIB_DIR': str(ROOT / "lib"),
         'PATH': f'{ROOT / "bin"}{os.pathsep}{os.environ["PATH"]}',
-        'CLAUDE_CODE_SESSION_ID': 'snapshot-test', 'CCMORPH_RELAY_ID': '123.456.789',
+        'CLAUDE_CODE_SESSION_ID': 'snapshot-test', 'CCMORPH_RELAY_ID': f'{os.getpid()}.456.789',
     }
 
 
@@ -45,8 +49,8 @@ def test_public_function_survives_without_private_helpers(env, args):
         assert 'Claude Code profile switcher' in result.stdout
     elif args == 'hop demo':
         assert result.returncode == 0, result.stderr
-        assert 'Switch queued' in result.stdout
-        relay = Path(env['CCMORPH_STATE_DIR']) / '.reswitch.123.456.789'
+        assert 'Switching' in result.stdout
+        relay = Path(env['CCMORPH_STATE_DIR']) / f'.reswitch.{os.getpid()}.456.789'
         assert relay.read_text() == 'profile=demo\nsession=snapshot-test\n'
     else:
         assert result.returncode == 1

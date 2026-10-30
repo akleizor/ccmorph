@@ -2566,7 +2566,7 @@ test_direct_resume_reports_a_rejected_carried_model() {
 }
 
 test_mapped_model_resume_and_hop_keep_servable_identity() {
-  local test_home session_id='mapped-resume' relay_id='1234.mapped' transcript
+  local test_home session_id='mapped-resume' relay_id="$$.mapped" transcript
   test_home=$(mktemp -d)
   setup_home "$test_home"
   printf '%s\n' 'type=apikey' 'base_url=http://mapped.invalid' 'api_key=test-key' \
@@ -2604,7 +2604,7 @@ print -r -- '\''{"has_more":false,"data":[{"id":"gpt-6.1-sol"},{"id":"other-defa
         expected=$'profile=mapped\nsession=mapped-resume\neffort=high'
         ;;
     esac
-    out=$(ccmorph hop mapped 2>&1) || rc=1
+    out=$(hop_as_claude mapped 2>&1) || rc=1
     actual="$(<"$HOME/.config/ccmorph/.reswitch.$relay_id")"
     if [[ "$actual" != "$expected" ]]; then
       print -u2 -- "hop must validate the target but preserve requested identity $requested; actual: ${(qqq)actual}"
@@ -2717,9 +2717,20 @@ test_model_known_strips_only_the_terminal_window_suffix() {
   return $rc
 }
 
+# Runs `ccmorph hop ...` the way Claude Code does: a python process stands in for
+# Claude Code (a child of this shell, the relay) and runs hop in a shell of its
+# own. Prints hop's output; leaves "ended" in $HOME/claude-ended when hop ended it.
+hop_as_claude() {
+  python3 -c '
+import signal, subprocess, sys
+signal.signal(signal.SIGTERM, lambda *_: open(sys.argv[1], "w").write("ended"))
+sys.exit(subprocess.call(["zsh", "-c", "source \"$1\"; shift; NO_COLOR=1 ccmorph hop \"$@\"", "zsh", *sys.argv[2:]]))
+' "$HOME/claude-ended" "$CCMORPH_SOURCE" "$@"
+}
+
 test_hop_relays_model_and_effort() {
   local test_home
-  local relay_id='1234.test'
+  local relay_id="$$.test"
   local relay_file
   test_home=$(mktemp -d)
   setup_home "$test_home"
@@ -2735,7 +2746,7 @@ test_hop_relays_model_and_effort() {
   local hop_output
   local NO_COLOR=1
   source "$REPO_ROOT/lib/ccmorph-ui.zsh"
-  hop_output=$(ccmorph hop proxy) || {
+  hop_output=$(hop_as_claude proxy) || {
     rm -rf "$test_home"
     return 1
   }
@@ -2744,8 +2755,8 @@ test_hop_relays_model_and_effort() {
   local actual="$(<"$relay_file")"
   local expected=$'profile=proxy\nsession=relay-session\nmodel=source-model-xhigh\neffort=high'
   local rc=0
-  [[ "$hop_output" == $'Switch queued → proxy\nExit now (Ctrl-C or /exit) to complete the switch.' ]] || {
-    print -u2 -- "hop must keep its queue and exit instructions unchanged: ${(qqq)hop_output}"
+  [[ "$hop_output" == 'Switching → proxy' && "$(<"$HOME/claude-ended")" == ended ]] || {
+    print -u2 -- "hop must end the session it runs in: ${(qqq)hop_output}"
     rc=1
   }
   if [[ "$actual" != "$expected" ]]; then
@@ -2757,22 +2768,16 @@ test_hop_relays_model_and_effort() {
   return $rc
 }
 
-test_hop_ends_the_session_it_was_run_from() {
-  local test_home rc=0 out status_file
+test_hop_refuses_when_no_claude_process_runs_it() {
+  # Outside a Claude Code process there is nothing to end; hop says so and queues nothing.
+  local test_home rc=0 out
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  # The relay is this shell; a python process stands in for Claude Code and runs
-  # hop in a shell of its own, as Claude Code runs a `!` command or /hop.
-  export CLAUDE_CODE_SESSION_ID='relay-session' CCMORPH_RELAY_ID="$$.test"
-  status_file="$test_home/claude-status"
-  out=$(python3 -c '
-import signal, subprocess, sys
-signal.signal(signal.SIGTERM, lambda *_: open(sys.argv[1], "w").write("ended"))
-subprocess.call(["zsh", "-c", "source \"$1\"; NO_COLOR=1 ccmorph hop proxy", "zsh", sys.argv[2]])
-' "$status_file" "$CCMORPH_SOURCE" 2>&1)
-  [[ "$(<"$status_file" 2>/dev/null)" == ended ]] || { print -u2 -- "hop must end the Claude process it runs under: ${(qqq)out}"; rc=1 }
-  [[ "$out" == *'Switching → proxy'* ]] || { print -u2 -- "hop must say it is switching: ${(qqq)out}"; rc=1 }
-  [[ -f "$HOME/.config/ccmorph/.reswitch.$CCMORPH_RELAY_ID" ]] || { print -u2 -- 'the switch must stay queued for the relay'; rc=1 }
+  source "$CCMORPH_SOURCE"
+  export CLAUDE_CODE_SESSION_ID='relay-session' CCMORPH_RELAY_ID="$$.none"
+  out=$(NO_COLOR=1 ccmorph hop proxy 2>&1) && { print -u2 -- 'hop must fail with no Claude process'; rc=1 }
+  [[ "$out" == *'cannot find the Claude Code process'* ]] || { print -u2 -- "hop must say why: ${(qqq)out}"; rc=1 }
+  [[ ! -e "$HOME/.config/ccmorph/.reswitch.$CCMORPH_RELAY_ID" ]] || { print -u2 -- 'hop must queue nothing'; rc=1 }
   unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID
   rm -rf "$test_home"
   return $rc
@@ -2783,7 +2788,7 @@ test_hop_falls_back_when_the_target_cannot_serve_the_model() {
   # heard of. The field is dropped so the target launches on its own default; the
   # claude- id in the second half proves the guard is a test, not a blanket.
   local test_home
-  local relay_id='1234.unserved'
+  local relay_id="$$.unserved"
   test_home=$(mktemp -d)
   setup_home "$test_home"
   source "$CCMORPH_SOURCE"
@@ -2798,7 +2803,7 @@ test_hop_falls_back_when_the_target_cannot_serve_the_model() {
   printf '%s\n' \
     '{"type":"assistant","isSidechain":false,"effort":"high","message":{"role":"assistant","model":"gpt-5.6-sol","content":[]}}' \
     > "$HOME/.claude/projects/project/unserved-session.jsonl"
-  ccmorph hop subacct >/dev/null || rc=1
+  hop_as_claude subacct >/dev/null || rc=1
   actual="$(<"$HOME/.config/ccmorph/.reswitch.$relay_id")"
   if [[ "$actual" != $'profile=subacct\nsession=unserved-session\neffort=high' ]]; then
     print -u2 -- \
@@ -2809,7 +2814,7 @@ test_hop_falls_back_when_the_target_cannot_serve_the_model() {
   printf '%s\n' \
     '{"type":"assistant","isSidechain":false,"effort":"high","message":{"role":"assistant","model":"claude-opus-5","content":[]}}' \
     > "$HOME/.claude/projects/project/unserved-session.jsonl"
-  ccmorph hop subacct >/dev/null || rc=1
+  hop_as_claude subacct >/dev/null || rc=1
   actual="$(<"$HOME/.config/ccmorph/.reswitch.$relay_id")"
   if [[ "$actual" != $'profile=subacct\nsession=unserved-session\nmodel=claude-opus-5\neffort=high' ]]; then
     print -u2 -- \
@@ -2825,7 +2830,7 @@ test_hop_asks_the_gateway_which_models_it_serves() {
   # The endpoint is the only authority for a routed profile: a model in its listing
   # is carried, one absent from it is not, and nothing here knows a model by name.
   local test_home
-  local relay_id='1234.gateway'
+  local relay_id="$$.gateway"
   test_home=$(mktemp -d)
   setup_home "$test_home"
   source "$CCMORPH_SOURCE"
@@ -2839,7 +2844,7 @@ test_hop_asks_the_gateway_which_models_it_serves() {
   printf '%s\n' \
     '{"type":"assistant","isSidechain":false,"effort":"high","message":{"role":"assistant","model":"alpha-chat","content":[]}}' \
     > "$HOME/.claude/projects/project/gateway-session.jsonl"
-  ccmorph hop proxy >/dev/null || rc=1
+  hop_as_claude proxy >/dev/null || rc=1
   actual="$(<"$HOME/.config/ccmorph/.reswitch.$relay_id")"
   if [[ "$actual" != $'profile=proxy\nsession=gateway-session\nmodel=alpha-chat\neffort=high' ]]; then
     print -u2 -- \
@@ -2850,7 +2855,7 @@ test_hop_asks_the_gateway_which_models_it_serves() {
   printf '%s\n' \
     '{"type":"assistant","isSidechain":false,"effort":"high","message":{"role":"assistant","model":"absent-chat","content":[]}}' \
     > "$HOME/.claude/projects/project/gateway-session.jsonl"
-  ccmorph hop proxy >/dev/null || rc=1
+  hop_as_claude proxy >/dev/null || rc=1
   actual="$(<"$HOME/.config/ccmorph/.reswitch.$relay_id")"
   if [[ "$actual" != $'profile=proxy\nsession=gateway-session\neffort=high' ]]; then
     print -u2 -- \
@@ -2984,7 +2989,7 @@ test_gateway_explicit_non_chat_model_is_not_carryable() {
 
 test_hop_without_profile_uses_current_profile() {
   local test_home
-  local relay_id='1234.same-profile'
+  local relay_id="$$.same-profile"
   test_home=$(mktemp -d)
   setup_home "$test_home"
   # The current running model is a stronger fact than a fresh catalogue answer.
@@ -2999,7 +3004,7 @@ test_hop_without_profile_uses_current_profile() {
     '{"type":"assistant","isSidechain":false,"effort":"max","message":{"role":"assistant","model":"current-model","content":[]}}' \
     > "$HOME/.claude/projects/project/same-profile-session.jsonl"
 
-  CLAUDE_CONFIG_DIR="$HOME/.config/ccmorph/profiles/proxy" ccmorph hop >/dev/null || {
+  CLAUDE_CONFIG_DIR="$HOME/.config/ccmorph/profiles/proxy" hop_as_claude >/dev/null || {
     rm -rf "$test_home"
     return 1
   }
@@ -11856,7 +11861,7 @@ run_test test_model_known_strips_only_the_terminal_window_suffix
 run_test test_invalid_resume_model_falls_back_to_profile_model
 run_test test_resume_rejects_flag_picker_and_multitoken_model_values
 run_test test_hop_relays_model_and_effort
-run_test test_hop_ends_the_session_it_was_run_from
+run_test test_hop_refuses_when_no_claude_process_runs_it
 run_test test_hop_without_profile_uses_current_profile
 run_test test_hop_falls_back_when_the_target_cannot_serve_the_model
 run_test test_hop_asks_the_gateway_which_models_it_serves
