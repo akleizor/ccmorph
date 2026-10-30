@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -961,7 +962,13 @@ func TestAutoLaunchWithoutModelIsBoundedBySelectDeadline(t *testing.T) {
 func TestPrintConfigNeverPrintsTheProxyPassword(t *testing.T) {
 	// Go's url.Parse refuses these passwords where Python's urlsplit took them;
 	// the fallback must still cut the userinfo rather than echo the raw URL.
-	for name, secret := range map[string]string{"caret": "p^ss", "percent": "50%off", "space": "p ss"} {
+	// A /, ? or # inside the password ends the authority mid-password (GH-65),
+	// so the @ that closes the userinfo sits past the split's netloc and the
+	// password's head would print as the host.
+	// A digit or empty head before the first /?# reads as a port, so url.Parse
+	// accepts the URL and the success path must not print the secret either.
+	for name, secret := range map[string]string{"caret": "p^ss", "percent": "50%off", "space": "p ss", "slash": "pa/ss", "question": "pa?ss", "hash": "pa#ss",
+		"digit-slash": "12/ss", "digit-question": "12?ss", "empty-head-slash": "/ss"} {
 		t.Run(name, func(t *testing.T) {
 			stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gateway",
 				"CCMORPH_UPSTREAM_PROXY": "http://alice:" + secret + "@proxy:3128"})
@@ -986,6 +993,54 @@ func TestPrintConfigNeverPrintsTheProxyPassword(t *testing.T) {
 			}
 			if !strings.Contains(text, `proxy-url: "http://proxy:3128"`) {
 				t.Fatalf("proxy-url not redacted to its host: %q", text)
+			}
+		})
+	}
+}
+
+// GH-65: a password holding /, ? or # ends the authority inside the password,
+// or leaves a digit or empty head that Go reads as a port. Whether url.Parse
+// refuses the URL or accepts it, the output must carry no part of the userinfo:
+// the host behind the last @, or <redacted> when nothing host-shaped survives.
+func TestRedactURLNeverPrintsTheUserinfo(t *testing.T) {
+	cases := []struct {
+		name   string
+		raw    string
+		want   string
+		parses bool // url.Parse accepts raw, so the success path is the one under test
+	}{
+		{"caret password", "http://alice:p^ss@proxy:3128", "http://proxy:3128", false},
+		{"slash password", "http://alice:pa/ss@proxy:3128", "http://proxy:3128", false},
+		{"question password", "http://alice:pa?ss@proxy:3128", "http://proxy:3128", false},
+		{"hash password", "http://alice:pa#ss@proxy:3128", "http://proxy:3128", false},
+		{"password with an @ after its slash", "http://alice:p/@ss@proxy:3128", "http://proxy:3128", false},
+		{"password with an @ before its slash", "http://alice:p@s:s/x@proxy:3128", "http://proxy:3128", false},
+		{"password with every terminator", "http://alice:p/?#s@proxy:3128", "http://proxy:3128", false},
+		{"slash password before an IPv6 host", "http://alice:pa/ss@[::1]:3128", "http://[::1]:3128", false},
+		{"slash password with a path behind the host", "http://alice:pa/ss@proxy:3128/api", "http://proxy:3128/api", false},
+		{"hash password whose host never comes", "http://alice:pa?ss@", "<redacted>", false},
+		{"slash password whose tail is only a path", "http://alice:pa/ss@/api", "<redacted>", false},
+		{"empty scheme before the authority", "://alice:pa/ss@proxy:3128", "://proxy:3128", false},
+		// An @ past a refused authority cannot be told from a password's tail,
+		// so it is read as the separator: a wrong host, never a leaked one.
+		{"at in the path of a refused host", "http://proxy:notaport/p@th", "http://th", false},
+		{"refused host with no @ anywhere", "http://proxy:notaport/", "http://proxy:notaport/", false},
+		// A digit or empty password head reads as a port, so Go accepts these.
+		{"digit-headed password before a slash", "http://alice:2024/ss@proxy:3128", "http://proxy:3128", true},
+		{"empty password before a slash", "http://alice:/secret@proxy:3128", "http://proxy:3128", true},
+		{"digit-headed password before a question", "http://alice:12?ss@proxy:3128", "http://proxy:3128", true},
+		{"digit-headed password before a hash", "http://alice:12#ss@proxy:3128", "http://proxy:3128", true},
+		{"userinfo with no scheme", "alice:pa/ss@proxy:3128", "<redacted>", true},
+		{"plain proxy", "http://Proxy:3128", "http://proxy:3128", true},
+		{"IPv6 proxy", "http://[::1]:3128", "http://[::1]:3128", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := url.Parse(c.raw); (err == nil) != c.parses {
+				t.Fatalf("url.Parse(%q) error = %v, but the case says parses=%v", c.raw, err, c.parses)
+			}
+			if got := redactURL(c.raw); got != c.want {
+				t.Fatalf("redactURL(%q) = %q, want %q", c.raw, got, c.want)
 			}
 		})
 	}
