@@ -345,7 +345,8 @@ subscriptions, budget accounts, and API or gateway profiles. Each plan window is
 bar with the percent used and when it resets; a plan tier comes from the provider'"'"'s
 own account data. A rate-limited or unreachable read shows the last good reading
 and its age. Gateways and API keys show today'"'"'s and this month'"'"'s billed spend from
-their receipts. --json prints the same data for tools. No inference, nothing billed.
+their receipts, and the account balance where the provider publishes one (DeepSeek,
+Kimi, GLM, OpenRouter, SiliconFlow, StepFun). --json prints the same data for tools. No inference, nothing billed.
 Omit the profile to list every profile.' ;;
     use) usage='ccmorph use [profile|-i]'; detail='Set the default without launching. No argument shows the current default.' ;;
     inspect) usage='ccmorph inspect [profile|-i]'; detail='Show effective settings and their sources, never the stored credential.
@@ -804,9 +805,30 @@ ccmorph() {
           ;;
 
         3|apikey|api_key|api-key)
-          local _ak_key _ak_url _ak_conf
+          local _ak_key _ak_url _ak_conf _ak_preset="" _ak_label=""
+          local -a _ak_tiers=()
 
-          ccm_ui_input "API key for $2 (hidden): " secret || return 1
+          # A known provider fills its endpoint and the models its Claude Code
+          # tiers map to; "custom" asks for the URL, blank = api.anthropic.com.
+          _ccm_provider_presets
+          local _ak_rows="${REPLY:+$REPLY$'\n'}"$'custom\tCustom endpoint\tAnthropic or any gateway URL'
+          if [[ -t 0 ]]; then
+            _ak_preset=$(ccm_ui_select search "Provider — $2" "$_ak_rows") || return 1
+          else
+            ccm_ui_list "Provider — $2" "$_ak_rows"
+            ccm_ui_input '> ' || return 1
+            _ak_preset="$REPLY"
+            [[ "$_ak_preset" == <-> ]] && _ak_preset="${${(@f)_ak_rows}[$_ak_preset]%%$'\t'*}"
+          fi
+          if [[ "$_ak_preset" != custom ]]; then
+            _ccm_provider_preset "$_ak_preset" || {
+              _ccm_err "unknown provider '$_ak_preset'"
+              return 1
+            }
+            _ak_label="${reply[1]}" _ak_url="${reply[2]}" _ak_tiers=("${reply[@]:2}")
+          fi
+
+          ccm_ui_input "API key for $2${_ak_label:+ ($_ak_label)} (hidden): " secret || return 1
           _ak_key="$REPLY"; REPLY=''
 
           [[ -n "$_ak_key" ]] || {
@@ -818,8 +840,10 @@ ccmorph() {
           # deliberately NOT prompted for apikey profiles: Claude Code keeps
           # owning model selection (choose in-session with /model). A gateway
           # that renames models made a pinned default a footgun.
-          ccm_ui_input 'Base URL (blank = api.anthropic.com): ' || return 1
-          _ak_url="$REPLY"
+          if [[ -z "$_ak_label" ]]; then
+            ccm_ui_input 'Base URL (blank = api.anthropic.com): ' || return 1
+            _ak_url="$REPLY"
+          fi
 
           _ccm_clean_value "$_ak_key" &&
             _ccm_clean_value "$_ak_url" || {
@@ -834,10 +858,15 @@ ccmorph() {
             _ak_conf+=$'\n'"base_url=$_ak_url"
 
           fi
+          if (( ${#_ak_tiers} )); then
+            _ak_conf+=$'\n'"env.ANTHROPIC_DEFAULT_OPUS_MODEL=${_ak_tiers[1]}"
+            _ak_conf+=$'\n'"env.ANTHROPIC_DEFAULT_SONNET_MODEL=${_ak_tiers[2]}"
+            _ak_conf+=$'\n'"env.ANTHROPIC_DEFAULT_HAIKU_MODEL=${_ak_tiers[3]}"
+          fi
 
           _ccm_commit_profile "$2" "$_ak_conf" _ak_key || return 1
 
-          print "${_ccm_accent}Added${_ccm_reset} $2 (apikey → ${_ak_url:-api.anthropic.com})"
+          print "${_ccm_accent}Added${_ccm_reset} $2 (${_ak_label:-apikey} → ${_ak_url:-api.anthropic.com})"
           if [[ -n "$_ak_url" ]]; then
             _ccm_probe_nudge "$2"
 
@@ -1728,8 +1757,10 @@ ccmorph() {
 
     quota)
       # Plan windows and spend of every profile, or of the one named. A token or
-      # an API key goes to ccmorph-core on stdin, never in argv; an api_key is
-      # never sent at all (a gateway row needs no credential).
+      # an API key goes to ccmorph-core on stdin, never in argv. An API key rides
+      # with its base URL so a provider with a balance API (quota/balance.go) can
+      # be asked what is left; ccmorph-core sends it to that provider's own host
+      # only, and drops it for every other endpoint.
       local _q_json=0 _q_only="" _q_arg
       for _q_arg in "${@[2,-1]}"; do
         case "$_q_arg" in
@@ -1768,6 +1799,9 @@ ccmorph() {
             else
               _q_in+="${_q_n}"$'\t'"gateway"$'\t'$'\t'"${_ccm[monthly_budget_usd]:-}"$'\n'
             fi
+            ;;
+          apikey)
+            _q_in+="${_q_n}"$'\t'"gateway"$'\t'"${_ccm[base_url]:-}"$'\t'"${_ccm[monthly_budget_usd]:-}"$'\t'"${_ccm[api_key]:-}"$'\n'
             ;;
           *)
             _q_in+="${_q_n}"$'\t'"gateway"$'\t'$'\t'"${_ccm[monthly_budget_usd]:-}"$'\n'

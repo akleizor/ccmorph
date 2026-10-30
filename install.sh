@@ -139,7 +139,7 @@ LIBS=(lib/ccmorph.sh ${MODULES/#/lib/})
 # install.sh ships too (an executable at the install root), so `ccmorph update` and
 # `ccmorph uninstall` have the installer to run without a clone or a URL.
 EXECUTABLES=(bin/ccmorph install.sh)
-DATA_FILES=(share/model-catalogue.json share/window-sources.json
+DATA_FILES=(share/model-catalogue.json share/window-sources.json share/provider-presets.tsv
   share/claude-plugin/.claude-plugin/plugin.json share/claude-plugin/commands/hop.md)
 COMPONENTS=($LIBS $EXECUTABLES $DATA_FILES)
 

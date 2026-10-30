@@ -39,4 +39,7 @@ type Entry struct {
 	Stale      bool     `json:"stale"`
 	Error      string   `json:"error,omitempty"`
 	Spend      *Spend   `json:"spend,omitempty"`
+	// Balance is what is left on the account behind an API key, "¥40.75", where
+	// the provider publishes it (balance.go); empty otherwise.
+	Balance string `json:"balance,omitempty"`
 }

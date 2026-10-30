@@ -51,7 +51,7 @@ run_installer "$d"; rc=$?
 # along (this is what keeps any other product from shipping inside ccmorph),
 # and nothing missing either, which subsumes a per-component presence loop.
 (( ${#module_files} )) || fail "no ccmorph-*.zsh module found beside ccmorph.sh — the manifest below would be silently short"
-want=(bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/ccmorph-core share/model-catalogue.json share/window-sources.json local.sh.example profile.conf.example install.sh profiles)
+want=(bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/ccmorph-core share/model-catalogue.json share/window-sources.json share/provider-presets.tsv local.sh.example profile.conf.example install.sh profiles)
 got=(${(f)"$(cd "$d/home/.config/ccmorph" && print -l *(N) {bin,lib,libexec,share}/*(N.) | grep -vxE 'bin|lib|libexec|share')"})
 extra=(${got:|want}); missing=(${want:|got})
 (( ${#extra} == 0 && ${#missing} == 0 )) \

@@ -116,7 +116,11 @@ run `ccmorph add`.
 
 `ccmorph add` asks which kind of profile (see *Profile types* below) and prompts
 only for what that kind needs: a subscription opens the normal browser login, an
-API key or gateway asks for the key and base URL. Nothing is written outside
+API key asks which provider and then only for the key. A preset provider (DeepSeek,
+Kimi, GLM, MiniMax, Qwen, Xiaomi MiMo, StepFun, OpenRouter, SiliconFlow; the list is
+`share/provider-presets.tsv`) fills its official Anthropic-compatible endpoint and
+maps Claude Code's opus, sonnet and haiku tiers to its models; *Custom endpoint*
+asks for the base URL (blank = api.anthropic.com). Nothing is written outside
 `~/.config/ccmorph` and the profile directory.
 
 A fresh install has **no profiles** — like a newly installed app. Nothing is
@@ -501,7 +505,7 @@ was not launched by the ccmorph relay` — start it with `ccmorph` and hop from
 there.
 
 
-### Plan usage before a hop
+### Plan usage and balance before a hop
 
 `ccmorph quota` shows every profile in one view, grouped by kind, so you can pick the
 profile to hop to or see what a gateway is costing. Each plan window is a bar with the
@@ -522,6 +526,9 @@ cx  Plus
 API and gateway profiles
 work
   today $1.70 · month $5.00 (est.)
+ds
+  today $0.20 · month $3.10
+  balance ¥40.75
 ```
 
 A plan tier (Pro, Max 5x, Max 20x, Team, Plus, Pro for Codex) is read from the
@@ -536,10 +543,14 @@ dimmed, with its age ("12 min old"); only a profile never read shows the error. 
 and API keys show today's and this month's billed spend from the receipts at
 `~/.local/state/ccmorph/usage/`, marked `(est.)` when a row carried only a list-price
 estimate, and a profile with `monthly_budget_usd` adds a bar against that budget.
+An API-key profile on DeepSeek, Kimi, GLM, OpenRouter, SiliconFlow or StepFun also
+shows its account balance, read with the profile's own key from that provider's billing
+endpoint (a free GET); the provider is recognised by the base URL's host, and a key is
+never sent to any other host.
 
 `ccmorph quota --json` prints the same data for tools (profile, kind, plan, windows with
 `used` as a fraction and `resets_at` as a Unix second, `read_at`, `age_seconds`, `stale`,
-`error`, and `spend`).
+`error`, `spend`, and `balance`).
 
 ## What is isolated, and what is shared
 

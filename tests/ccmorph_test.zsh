@@ -2046,7 +2046,7 @@ test_add_folds_proxy_into_apikey() {
   chmod +x "$HOME/bin/curl"
 
   local out
-  out=$(ccmorph add gateway <<< $'3\ngateway-key\nhttp://gateway.invalid\n') || {
+  out=$(ccmorph add gateway <<< $'3\ncustom\ngateway-key\nhttp://gateway.invalid\n') || {
     rm -rf "$test_home"
     return 1
   }
@@ -2153,6 +2153,31 @@ test_add_never_asks_how_to_reach_the_endpoint() {
   return $rc
 }
 
+test_add_apikey_preset_fills_endpoint_and_tiers() {
+  # A preset is picked by id (or number) and fills the endpoint and the tier
+  # models; only the key is asked. Every preset row names six fields.
+  local test_home rc=0 out actual line
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  source "$CCMORPH_SOURCE"
+  command cp "$REPO_ROOT/share/provider-presets.tsv" "$HOME/.config/ccmorph/share/"
+  out=$(ccmorph add dsk <<< $'3\ndeepseek\nsk-ds\n') || rc=1
+  actual="$(<"$HOME/.config/ccmorph/dsk.conf")"
+  assert_contains "$actual" 'base_url=https://api.deepseek.com/anthropic' 'a preset must fill its endpoint' || rc=1
+  assert_contains "$actual" 'env.ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-v4-pro' 'a preset must map the opus tier' || rc=1
+  assert_contains "$actual" 'env.ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-flash' 'a preset must map the haiku tier' || rc=1
+  assert_contains "$out" 'Added dsk (DeepSeek → https://api.deepseek.com/anthropic)' 'add must name the provider' || rc=1
+  ccmorph add bogus <<< $'3\nnope\nk\n' >/dev/null 2>&1 && { print -u2 -- 'an unknown preset must be refused'; rc=1 }
+  [[ ! -e "$HOME/.config/ccmorph/bogus.conf" ]] || { print -u2 -- 'a refused preset must save nothing'; rc=1 }
+  while IFS= read -r line; do
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    (( ${#${(@ps:\t:)line}} == 6 )) || { print -u2 -- "preset row needs 6 fields: $line"; rc=1 }
+    [[ "${${(@ps:\t:)line}[3]}" == https://* ]] || { print -u2 -- "preset URL must be https: $line"; rc=1 }
+  done < "$REPO_ROOT/share/provider-presets.tsv"
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_add_apikey_native_endpoint_skips_adapter() {
   local test_home
   test_home=$(mktemp -d)
@@ -2162,7 +2187,7 @@ test_add_apikey_native_endpoint_skips_adapter() {
   # Default curl stub returns 200 for -w probes — the endpoint speaks
   # /v1/messages natively, so no adapter should be set.
   local out
-  out=$(ccmorph add nativegw <<< $'3\nnative-key\nhttp://native.invalid\n') || {
+  out=$(ccmorph add nativegw <<< $'3\ncustom\nnative-key\nhttp://native.invalid\n') || {
     rm -rf "$test_home"
     return 1
   }
@@ -2210,7 +2235,7 @@ test_add_apikey_model_level_404_is_native() {
   _stub_probe_response 404 '{"type":"error","error":{"type":"not_found_error","message":"model: probe"}}'
 
   local out rc=0
-  out=$(ccmorph add nativemodel404 <<< $'3\nk\nhttp://native404.invalid\n') || {
+  out=$(ccmorph add nativemodel404 <<< $'3\ncustom\nk\nhttp://native404.invalid\n') || {
     rm -rf "$test_home"
     return 1
   }
@@ -2232,7 +2257,7 @@ test_add_apikey_route_level_404_enables_adapter() {
   _stub_probe_response 404 '<html><head><title>404 Not Found</title></head></html>'
 
   local out rc=0
-  out=$(ccmorph add route404 <<< $'3\nk\nhttp://route404.invalid\n') || {
+  out=$(ccmorph add route404 <<< $'3\ncustom\nk\nhttp://route404.invalid\n') || {
     rm -rf "$test_home"
     return 1
   }
@@ -2264,7 +2289,7 @@ test_add_apikey_inconclusive_probe_enables_the_adapter() {
   # 000: any network failure (VPN down, DNS). Nothing to retry through, so the
   # verdict stands on the asymmetry alone.
   _stub_probe_response 000 ''
-  out=$(ccmorph add vpndown <<< $'3\nk\nhttp://unreachable.invalid\n') || {
+  out=$(ccmorph add vpndown <<< $'3\ncustom\nk\nhttp://unreachable.invalid\n') || {
     rm -rf "$test_home"
     return 1
   }
@@ -2276,7 +2301,7 @@ test_add_apikey_inconclusive_probe_enables_the_adapter() {
 
   # 401/403: refused before routing, so it proves nothing about the dialect either.
   _stub_probe_response 401 '{"error":{"message":"invalid x-api-key"}}'
-  out=$(ccmorph add authrefused <<< $'3\nk\nhttp://authrefused.invalid\n') || {
+  out=$(ccmorph add authrefused <<< $'3\ncustom\nk\nhttp://authrefused.invalid\n') || {
     rm -rf "$test_home"
     return 1
   }
@@ -4439,20 +4464,22 @@ test_quota_hands_every_profile_to_the_core_with_no_key_in_argv() {
   _CCMORPH_LIBEXEC_DIR="$test_home/libexec"
   out=$(ccmorph quota)
   local want="argv:quota"$'\n'
-  want+="apikey"$'\t'"gateway"$'\t'$'\t'$'\n'
+  # An API-key row carries its base URL and key (fifth field) for the balance
+  # read; like a token, the key travels on stdin only, never in argv.
+  want+="apikey"$'\t'"gateway"$'\t'$'\t'$'\t'"sk-test-apikey"$'\n'
   want+="cx"$'\t'"codex"$'\t'"${_CCMORPH_DIR}/auth/cx"$'\t'$'\n'
-  want+="gw"$'\t'"gateway"$'\t'$'\t'"500"$'\n'
-  want+="proxy"$'\t'"gateway"$'\t'$'\t'$'\n'
+  want+="gw"$'\t'"gateway"$'\t'"https://g.invalid"$'\t'"500"$'\t'"sk-test-gw"$'\n'
+  want+="proxy"$'\t'"gateway"$'\t'"http://proxy.invalid"$'\t'$'\t'"test-key"$'\n'
   want+="sub"$'\t'"sub"$'\t'"${_CCMORPH_PROFILE_DIRS}/sub"$'\t'$'\n'
   want+="token"$'\t'"token"$'\t'"${_CCMORPH_PROFILE_DIRS}/token"$'\t'"token-test"
   [[ "$out" == "$want" ]] || { print -u2 -- "unexpected quota input: $out"; rc=1; }
-  [[ "$out" != *sk-test* ]] || { print -u2 -- 'a quota line carried an API key'; rc=1; }
+  [[ "${${(f)out}[1]}" != *sk-test* ]] || { print -u2 -- 'an API key reached argv'; rc=1; }
   out=$(ccmorph quota --json apikey)
-  [[ "$out" == "argv:quota --json"$'\n'"apikey"$'\t'"gateway"$'\t'$'\t' ]] || {
+  [[ "$out" == "argv:quota --json"$'\n'"apikey"$'\t'"gateway"$'\t'$'\t'$'\t'"sk-test-apikey" ]] || {
     print -u2 -- "unexpected --json quota input: $out"; rc=1
   }
   out=$(ccmorph quota apikey --json)
-  [[ "$out" == "argv:quota --json"$'\n'"apikey"$'\t'"gateway"$'\t'$'\t' ]] || {
+  [[ "$out" == "argv:quota --json"$'\n'"apikey"$'\t'"gateway"$'\t'$'\t'$'\t'"sk-test-apikey" ]] || {
     print -u2 -- "a flag after the profile must work too: $out"; rc=1
   }
   ccmorph quota --bogus >/dev/null 2>&1 && { print -u2 -- 'an unknown flag must be refused'; rc=1 }
@@ -4464,7 +4491,8 @@ test_every_profile_keeps_its_own_secure_storage() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  write_apikey_conf apikey 'api_key=sk-test-apikey'
+  write_apikey_conf apikey 'api_key=sk-test-apikey' 'base_url=https://api.deepseek.com'
+  write_apikey_conf native 'api_key=sk-test-native'
   printf '%s\n' 'type=sub' 'email=a@b.c' > "$HOME/.config/ccmorph/sub.conf"
   printf '%s\n' 'type=token' 'token=token-test' > "$HOME/.config/ccmorph/token.conf"
   source "$CCMORPH_SOURCE"
@@ -9856,7 +9884,7 @@ test_add_context_refresh_is_background_and_declared_only() {
   source "$CCMORPH_SOURCE"
   fake_context_refresh
   local out rc=0
-  out=$(print -l apikey sk-test-not-real 'http://gw.invalid' '' | ccmorph add gw 2>&1)
+  out=$(print -l apikey custom sk-test-not-real 'http://gw.invalid' '' | ccmorph add gw 2>&1)
   assert_contains "$out" 'Added' 'adding a gateway must still succeed' || rc=1
   local scheduled=""
   [[ -f "$HOME/background.args" ]] && scheduled="$(<"$HOME/background.args")"
@@ -10002,7 +10030,7 @@ test_add_gateway_profile_offers_probe() {
   export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
   source "$CCMORPH_SOURCE"
   local out rc=0
-  out=$(print -l apikey sk-test-not-real 'http://gw.invalid' '' | ccmorph add gw 2>&1)
+  out=$(print -l apikey custom sk-test-not-real 'http://gw.invalid' '' | ccmorph add gw 2>&1)
   # The nudge runs against an unreachable fake gateway, so it may produce no
   # window-related output — that is correct: a down endpoint is not an error.
   # Verify the profile was created and the nudge did not abort the add.
@@ -10020,7 +10048,7 @@ test_add_native_profile_stays_quiet_about_probe() {
   export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
   source "$CCMORPH_SOURCE"
   local out rc=0
-  out=$(print -l apikey sk-test-not-real '' '' | ccmorph add nat 2>&1)
+  out=$(print -l apikey custom sk-test-not-real '' '' | ccmorph add nat 2>&1)
   [[ "$out" == *"ccmorph probe"* ]] \
     && { print -u2 -- 'a native profile must not be nudged to probe'; rc=1 }
   rm -rf "$test_home"
@@ -11593,6 +11621,7 @@ run_test test_proxy_model_is_bootstrap_fallback
 run_test test_proxy_context_limit_reaches_claude
 # Adapter choice is automatic at launch; add only persists profile credentials.
 run_test test_add_never_asks_how_to_reach_the_endpoint
+run_test test_add_apikey_preset_fills_endpoint_and_tiers
 run_test test_add_apikey_native_endpoint_skips_adapter
 run_test test_add_apikey_model_level_404_is_native
 # add does not persist adapter decisions; launch performs automatic compatibility handling.
