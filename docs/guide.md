@@ -342,7 +342,7 @@ This is picker configuration, not gateway access control. It does not delete mod
 metadata or silently change the saved default. Remove the `.conf` field to stop
 excluding models, then relaunch with the gateway reachable to refresh the list.
 
-### Gateway compatibility
+### Gateway quirks
 
 Two repairs are automatic, with nothing to configure. A `tool_reference` left in an
 old tool result whose tool is no longer declared in the request (the gateway's
@@ -360,11 +360,11 @@ Three optional profile keys, relaunch to apply:
   `{version}` replaced by the version in Claude Code's own (`claude-cli/X.Y.Z`), for
   example `claude-cli/{version} (external, cli)`. A client without a version keeps
   its own `User-Agent`.
-- `env.CCMORPH_COMPAT=off` turns the two automatic repairs and both keys above off:
+- `env.CCMORPH_QUIRKS=off` turns the two automatic repairs and both keys above off:
   the shim passes requests through untouched.
 
 Anything else a gateway needs is a custom build: a small Go `main` that calls
-`compat.FromEnv()`, wraps the hooks it returns (the contract is `shim.Hooks`) and
+`quirks.FromEnv()`, wraps the hooks it returns (the contract is `shim.Hooks`) and
 passes them to `shim.Main`; `env.CCMORPH_SHIM_HOOKS=<binary>` runs it in place of the
 stock shim.
 

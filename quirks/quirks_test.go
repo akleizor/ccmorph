@@ -1,4 +1,4 @@
-package compat
+package quirks
 
 import (
 	"net/http"
@@ -186,7 +186,7 @@ func TestFromEnvReadsTheProfileEnv(t *testing.T) {
 func TestCompatOffGivesNoHooks(t *testing.T) {
 	t.Setenv("CCMORPH_AFFINITY_HEADER", "X-A")
 	t.Setenv("CCMORPH_USER_AGENT", "ua/{version}")
-	t.Setenv("CCMORPH_COMPAT", "off")
+	t.Setenv("CCMORPH_QUIRKS", "off")
 	h, err := FromEnv()
 	if err != nil || h.OutboundHeaders != nil || h.UserAgent != nil || h.TranslatorUserAgent != nil || h.RepairRequest != nil || h.ResendBody != nil {
 		t.Fatal(h, err)

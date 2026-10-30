@@ -611,8 +611,8 @@ is identifier randomisation **[test]**:
 | `env.CCMORPH_RANDOM_DEVICE_ID=1` | `--random-device-id` | On `POST /v1/messages` and `/count_tokens`, `device_id` inside `metadata.user_id` (a JSON string) becomes a random 64-hex value minted once per session and stable within it (keyed by the session id, held in memory only). `session_id`, `account_uuid`, every other key and every header are untouched, so prompt caching and gateway affinity do not move. A body it cannot parse, or whose `user_id` is not that JSON shape, goes upstream byte-identical. |
 | `env.CCMORPH_MASK=1` | — (`CCMORPH_MASK` in the shim's environment) | On `POST /v1/messages` and `/count_tokens`, secrets and passwords in system text, message text, tool input and tool results become `{{KIND_<12 base32>}}`, an HMAC of the value under the install key `$XDG_STATE_HOME/ccmorph/mask.key` (0600), so the same value is the same placeholder in every turn and across relaunches. Every value found is masked wherever it appears in the request. Replies have each placeholder put back in text and tool input, streamed (a delta ending in a possible placeholder start is joined to the next delta of its block) or not. Thinking is neither masked nor restored, so signatures stay valid. Values live in memory only. A body masking cannot read is refused with a 503 and nothing is sent. `env.CCMORPH_MASK_COMMANDS=<regexp>` adds password commands whose one-line output is masked whole, beside the built-in `op read`, `op item get --fields/--reveal`, `security find-*-password -w`, `bw get password` and `pass show`. Shim code: `shim/mask.go` **[test]**. |
 
-Generic gateway compatibility lives in `compat/`, which imports `shim` (never the
-reverse); `ccmorph-core shim` passes `compat.FromEnv()` to `shim.Main`. Each
+Gateway quirks live in `quirks/`, which imports `shim` (never the
+reverse); `ccmorph-core shim` passes `quirks.FromEnv()` to `shim.Main`. Each
 rule is decided by the request's structure or the HTTP status, never by a gateway's
 error text. Always on: a `tool_reference` inside a `tool_result` whose `tool_name` the
 request does not declare in `tools` becomes a text block (declared references and every
@@ -622,9 +622,9 @@ resent once with `thinking` and `redacted_thinking` blocks removed from assistan
 is final) **[test]**. Profile keys, ferried as `CCMORPH_*` env: `env.CCMORPH_AFFINITY_HEADER=<name>`
 sends the session id in that header, `env.CCMORPH_USER_AGENT=<template>` sets the outbound
 `User-Agent` from the client's `claude-cli` version, and the adapter's passthrough entries
-take theirs from the shim's `translator-user-agent` subcommand **[test]**. `env.CCMORPH_COMPAT=off` gives the shim no hooks at all (no repair, no resend, no affinity header, no User-Agent rewrite) **[test]**. Anything beyond
+take theirs from the shim's `translator-user-agent` subcommand **[test]**. `env.CCMORPH_QUIRKS=off` gives the shim no hooks at all (no repair, no resend, no affinity header, no User-Agent rewrite) **[test]**. Anything beyond
 that is a custom build: `env.CCMORPH_SHIM_HOOKS=<binary>` names a Go `main` that wraps
-`compat.FromEnv()` and calls `shim.Main`; the adapter runs it in place of the stock shim,
+`quirks.FromEnv()` and calls `shim.Main`; the adapter runs it in place of the stock shim,
 and a missing or non-executable file fails the launch.
 
 ### Transport retry and the provider breaker (direct route only)

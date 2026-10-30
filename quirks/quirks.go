@@ -1,4 +1,4 @@
-// Package compat is the stock shim's generic gateway compatibility: the
+// Package quirks is the stock shim's gateway quirks: the
 // request repairs and header rules that any Anthropic-compatible gateway may need.
 // Each rule is decided by the request's structure or the HTTP status code, never
 // by a gateway's error text. A custom build calls FromEnv and wraps the hooks it
@@ -8,11 +8,11 @@
 //
 //	CCMORPH_AFFINITY_HEADER=<name>   header that carries the Claude Code session id
 //	CCMORPH_USER_AGENT=<template>    outbound User-Agent; {version} is the client's claude-cli version
-//	CCMORPH_COMPAT=off               no hooks at all: the shim passes requests through untouched
+//	CCMORPH_QUIRKS=off               no hooks at all: the shim passes requests through untouched
 //
 // On by default: dangling tool_reference repair, and one resend without thinking
 // blocks after a 400 on POST /v1/messages.
-package compat
+package quirks
 
 import (
 	"bytes"
@@ -40,7 +40,7 @@ func FromEnv() (shim.Hooks, error) { return FromGetenv(os.Getenv) }
 
 // FromGetenv is FromEnv over any lookup, for the adapter that runs the shim in its own process.
 func FromGetenv(getenv func(string) string) (shim.Hooks, error) {
-	if strings.TrimSpace(getenv("CCMORPH_COMPAT")) == "off" {
+	if strings.TrimSpace(getenv("CCMORPH_QUIRKS")) == "off" {
 		return shim.Hooks{}, nil
 	}
 	return build(getenv("CCMORPH_AFFINITY_HEADER"), getenv("CCMORPH_USER_AGENT"))

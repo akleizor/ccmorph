@@ -9,6 +9,11 @@
 
 ### Changed
 
+- **`compat` is now `quirks`.** The package `compat/` is `quirks/` and the
+  profile key `env.CCMORPH_COMPAT=off` is `env.CCMORPH_QUIRKS=off`; "quirks" is
+  the usual name for per-peer workarounds. There is no alias: a profile still
+  setting `CCMORPH_COMPAT` keeps the quirks on, and a custom hooks build imports
+  `github.com/akleizor/ccmorph/quirks`.
 - **A damaged estimated cost no longer kills the export** (#68). A receipt whose
   `usage.estimated_cost` was damaged after the fact — a number too large for a
   float, a non-numeric value, a negative one — aborted `scripts/usage-export`

@@ -7,8 +7,8 @@ import (
 	"os"
 
 	"github.com/akleizor/ccmorph/adapter"
-	"github.com/akleizor/ccmorph/compat"
 	"github.com/akleizor/ccmorph/ctxwindow"
+	"github.com/akleizor/ccmorph/quirks"
 	"github.com/akleizor/ccmorph/quota"
 	"github.com/akleizor/ccmorph/settingscompose"
 	"github.com/akleizor/ccmorph/shim"
@@ -33,7 +33,7 @@ func main() {
 		os.Exit(util.Main(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	case "shim": // the stock shim; argv shifts so shim.Main sees `<port> <target>` or report|outcome
 		os.Args = append([]string{os.Args[0] + " shim"}, os.Args[2:]...)
-		h, err := compat.FromEnv()
+		h, err := quirks.FromEnv()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "shim:", err)
 			os.Exit(1)
