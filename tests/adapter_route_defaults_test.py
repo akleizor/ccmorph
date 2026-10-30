@@ -421,11 +421,11 @@ def test_a_killed_launch_leaves_no_adapter_stub_behind(launch):
             time.sleep(0.1)
         assert pids, 'the launch never started the adapter stub'
         stub_pid = int(pids[0])
-        parent = int(subprocess.run(['ps', '-o', 'ppid=', '-p', str(stub_pid)],
-                                    capture_output=True, text=True, timeout=HANG_TIMEOUT).stdout)
-        # `ccmorph` sources its library and launches in its own process, so
-        # the stub's parent is the launch itself.
-        assert parent == proc.pid, 'the stub must watch the launch process'
+        argv = subprocess.run(['ps', '-ww', '-o', 'args=', '-p', str(stub_pid)],
+                              capture_output=True, text=True, timeout=HANG_TIMEOUT).stdout
+        # The core starts the adapter, so its OS parent is the starter; what reaps
+        # it is --parent-pid, which must name the launch itself.
+        assert f'--parent-pid {proc.pid}' in argv, 'the stub must watch the launch process'
         proc.kill()  # SIGKILL skips the EXIT trap that normally stops the stub
         proc.wait(timeout=HANG_TIMEOUT)
         deadline = time.monotonic() + HANG_TIMEOUT

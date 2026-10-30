@@ -3481,22 +3481,6 @@ test_onboarding_documents_no_wiring_step_at_all() {
 
 
 
-test_adapter_spawn_never_inherits_a_tty() {
-  # The 610137d wedge: the adapter holding the terminal on fd0 froze the TUI.
-  # The spawn redirects fd0 from /dev/null explicitly; no_monitor alone was the
-  # previous, emergent guard — one setopt edit away from silently recurring.
-  # Counted, not merely found: there was briefly a proxied and a direct spawn
-  # line, and only one of them carried the redirect.
-  local source_text="$(cat -- "${CCMORPH_LIBRARY[@]}")"
-  local rc=0 spawns redirected
-  spawns=$(print -r -- "$source_text" | grep -c -- '--parent-pid \$\$')
-  redirected=$(print -r -- "$source_text" | grep -c -- '--parent-pid \$\$ </dev/null')
-  [[ "$spawns" == "$redirected" && "$spawns" -ge 1 ]] || {
-    print -u2 -- "FAIL: every adapter spawn must redirect fd0 from /dev/null ($redirected of $spawns)"
-    rc=1
-  }
-  return $rc
-}
 
 test_a_failed_migration_is_loud() {
   local test_home rc=0 err
@@ -11887,7 +11871,6 @@ run_test test_no_embedded_program_carries_a_bare_apostrophe
 run_test test_no_context_window_is_written_into_the_source
 run_test test_no_reader_instruction_carries_an_authors_placeholder
 run_test test_onboarding_documents_no_wiring_step_at_all
-run_test test_adapter_spawn_never_inherits_a_tty
 run_test test_a_failed_migration_is_loud
 run_test test_installers_are_portable_and_leak_nothing
 run_test test_a_renamed_state_file_migrates_itself

@@ -8,6 +8,7 @@ import time
 import pytest
 
 from support import HANG_TIMEOUT
+from fake_adapter import CORE_DISPATCH
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -21,7 +22,7 @@ def _adapter_start_run(home, selected, delay):
         (lib / f.name).write_bytes(f.read_bytes())
     log = Path(home) / 'args'
     adapter = lib.parent / 'libexec/ccmorph-core'
-    adapter.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$ARG_LOG"\n'
+    adapter.write_text('#!/bin/sh\n' + CORE_DISPATCH + 'printf "%s\\n" "$@" > "$ARG_LOG"\n'
                        f'sleep {delay}\nprintf "PORT=12345\\n"\n')
     adapter.chmod(0o755)
     env = {**os.environ, 'HOME': home, 'CCMORPH_LIB_DIR': str(lib), 'ARG_LOG': str(log)}
