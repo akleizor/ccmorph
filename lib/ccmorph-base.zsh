@@ -211,6 +211,8 @@ _CCMORPH_PROFILE_ENV=(
   CCMORPH_MASK_COMMANDS
   # Path to the profile's request-hooks module, loaded by the gateway shim.
   CCMORPH_SHIM_HOOKS
+  # Command the gateway shim asks which model answers each user turn (opt-in).
+  CCMORPH_TURN_ROUTER
   CLAUDE_CODE_MAX_CONTEXT_TOKENS
   CLAUDE_CODE_AUTO_COMPACT_WINDOW
   CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
