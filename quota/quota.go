@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -28,8 +29,8 @@ import (
 // usageURL and readKeychain are swapped by tests.
 var (
 	usageURL     = "https://api.anthropic.com/api/oauth/usage"
-	readKeychain = func(service string) ([]byte, error) {
-		return exec.Command("/usr/bin/security", "find-generic-password", "-s", service, "-w").Output()
+	readKeychain = func(service, account string) ([]byte, error) {
+		return exec.Command("/usr/bin/security", "find-generic-password", "-a", account, "-s", service, "-w").Output()
 	}
 	now = time.Now
 )
@@ -159,6 +160,21 @@ func label(kind string) string {
 	return kind
 }
 
+// keychainAccount is the account name of the user's keychain item. The service
+// name is shared with an MCP-only item under another account, so the lookup
+// names the user's account, as addons/remote-control/ccmorph-rc-hosts does.
+func keychainAccount() string {
+	for _, k := range []string{"LOGNAME", "USER", "LNAME", "USERNAME"} {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+	}
+	if u, err := user.Current(); err == nil {
+		return u.Username
+	}
+	return ""
+}
+
 // subscriptionToken is the profile's claude.ai access token, from the keychain
 // item Claude Code keeps for that config dir (macOS) or its .credentials.json.
 func subscriptionToken(dir string) (string, error) {
@@ -166,7 +182,7 @@ func subscriptionToken(dir string) (string, error) {
 	var err error
 	if runtime.GOOS == "darwin" {
 		sum := sha256.Sum256([]byte(dir))
-		raw, err = readKeychain("Claude Code-credentials-" + hex.EncodeToString(sum[:])[:8])
+		raw, err = readKeychain("Claude Code-credentials-"+hex.EncodeToString(sum[:])[:8], keychainAccount())
 	} else {
 		raw, err = os.ReadFile(filepath.Join(dir, ".credentials.json"))
 	}
