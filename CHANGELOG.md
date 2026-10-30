@@ -16,6 +16,13 @@
   row unpriced and the export completed. Every price no writer would store, in
   either field, now counts its row unpriced: never bill a corrupt value, never
   lose the export to it.
+- **ARCHITECTURE.md no longer describes `scripts/usage-summary` (#69).** That
+  section detailed a private summary command — its flags, its two output files,
+  its run report and day schema — but the script was never committed to the
+  repo, so a reader following the document found nothing to run. The section now
+  describes the two readers that ship, `scripts/usage-export` and
+  `ccmorph-core shim report`, and a docs-claims test fails when the document
+  names a `scripts/` path the repo does not ship.
 
 ## v0.4.1 — 2026-10-30
 
