@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -317,3 +318,42 @@ func ValidateBaseURL(label, u string) error {
 
 // hasSpace is zsh [[:space:]] in a UTF-8 locale.
 func hasSpace(s string) bool { return strings.IndexFunc(s, unicode.IsSpace) >= 0 }
+
+// Env is the launch environment a profile's fields produce, in the order `ccmorph
+// _env` prints it: the profile's own CLAUDE_CONFIG_DIR, the credential its type
+// carries, the model map, then every env.* override. A sub profile authenticates
+// from its own config dir and a provider gets its endpoint from the bridge at
+// launch, so neither carries a credential here.
+func Env(name, profileDirs string, f map[string]string) ([]string, error) {
+	out := []string{"CLAUDE_CONFIG_DIR=" + profileDirs + "/" + name}
+	if f["private"] == "1" {
+		out = append(out, "CCMORPH_PRIVATE=1")
+	}
+	switch f["type"] {
+	case "apikey":
+		// No base_url is the native api.anthropic.com case: Claude Code's own default.
+		if f["base_url"] != "" {
+			out = append(out, "ANTHROPIC_BASE_URL="+f["base_url"])
+		}
+		out = append(out, "ANTHROPIC_API_KEY="+f["api_key"])
+	case "token":
+		out = append(out, "CLAUDE_CODE_OAUTH_TOKEN="+f["token"])
+	case "provider", "sub":
+	default:
+		return nil, fail("profile '%s' has unsupported type '%s'", name, f["type"])
+	}
+	if f["model_map"] != "" {
+		out = append(out, "CCMORPH_MODEL_MAP="+f["model_map"])
+	}
+	var keys []string
+	for k := range f {
+		if strings.HasPrefix(k, "env.") {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		out = append(out, strings.TrimPrefix(k, "env.")+"="+f[k])
+	}
+	return out, nil
+}

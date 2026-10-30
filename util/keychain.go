@@ -202,3 +202,40 @@ func profileValidateURL(args []string, _ io.Reader, out, _ io.Writer) int {
 	}
 	return 0
 }
+
+// profileEnv is `util profile-env <state dir> <profiles dir> <name> <profile env
+// csv> <mapping env csv>`: read, validate and print the profile's launch
+// environment, one VAR=value per line, after a first `type=<type>` line. A refusal
+// goes to stdout with exit 1.
+func profileEnv(args []string, _ io.Reader, out, errw io.Writer) int {
+	if len(args) != 5 {
+		return 2
+	}
+	set := func(csv string) map[string]bool {
+		m := map[string]bool{}
+		for _, k := range strings.Split(csv, ",") {
+			m[k] = true
+		}
+		return m
+	}
+	name := args[2]
+	f, err := profile.Read(args[0], name, true,
+		profile.Lists{ProfileEnv: set(args[3]), MappingEnv: set(args[4])},
+		func(line string) { fmt.Fprintln(errw, line) })
+	if err == nil {
+		err = profile.Validate(name, f)
+	}
+	var env []string
+	if err == nil {
+		env, err = profile.Env(name, args[1], f)
+	}
+	if err != nil {
+		io.WriteString(out, err.Error())
+		return 1
+	}
+	fmt.Fprintln(out, "type="+f["type"])
+	for _, l := range env {
+		fmt.Fprintln(out, l)
+	}
+	return 0
+}

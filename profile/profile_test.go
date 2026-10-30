@@ -108,3 +108,25 @@ func TestValidate(t *testing.T) {
 		}
 	}
 }
+
+func TestEnv(t *testing.T) {
+	for _, c := range []struct {
+		f    map[string]string
+		want string
+	}{
+		{map[string]string{"type": "sub"}, "CLAUDE_CONFIG_DIR=/p/n"},
+		{map[string]string{"type": "apikey", "api_key": "k"}, "CLAUDE_CONFIG_DIR=/p/n ANTHROPIC_API_KEY=k"},
+		{map[string]string{"type": "apikey", "api_key": "k", "base_url": "https://g", "private": "1", "env.B": "2", "env.A": "1", "model_map": "x=y"},
+			"CLAUDE_CONFIG_DIR=/p/n CCMORPH_PRIVATE=1 ANTHROPIC_BASE_URL=https://g ANTHROPIC_API_KEY=k CCMORPH_MODEL_MAP=x=y A=1 B=2"},
+		{map[string]string{"type": "token", "token": "t"}, "CLAUDE_CONFIG_DIR=/p/n CLAUDE_CODE_OAUTH_TOKEN=t"},
+		{map[string]string{"type": "provider", "env.X": "1"}, "CLAUDE_CONFIG_DIR=/p/n X=1"},
+	} {
+		env, err := Env("n", "/p", c.f)
+		if got := strings.Join(env, " "); err != nil || got != c.want {
+			t.Errorf("%v: got %q err %v", c.f, got, err)
+		}
+	}
+	if _, err := Env("n", "/p", map[string]string{"type": "quantum"}); err == nil || err.Error() != "profile 'n' has unsupported type 'quantum'" {
+		t.Fatalf("unsupported type: %v", err)
+	}
+}

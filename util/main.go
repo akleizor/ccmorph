@@ -32,6 +32,7 @@ func init() {
 		"launch-flags":           launchFlags,
 		"session-adapter":        sessionAdapter,
 		"profile-read":           profileRead,
+		"profile-env":            profileEnv,
 		"profile-validate":       profileValidate,
 		"profile-validate-url":   profileValidateURL,
 		"listing-has-unsized":    listingHasUnsized,
