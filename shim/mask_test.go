@@ -1,13 +1,17 @@
 package shim
 
 import (
+	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -53,6 +57,11 @@ func TestMaskRules(t *testing.T) {
 		`DB_PASSWORD="hunter2hunter"`:                   "hunter2hunter",
 		"export OPENAI_API_KEY=abc123def456ghi":         "abc123def456ghi",
 		"Authorization: Bearer abcdefghij0123456789xyz": "abcdefghij0123456789xyz",
+		// A labeled password of letters (or letters and dashes) is a value,
+		// not a code identifier.
+		"DB_PASSWORD=changeme":                   "changeme",
+		"PASSWORD=correcthorsebatterystaple":     "correcthorsebatterystaple",
+		"password: correct-horse-battery-staple": "correct-horse-battery-staple",
 	} {
 		if got := maskOne(t, m, in); strings.Contains(got, gone) {
 			t.Errorf("%q kept %q: %q", in, gone, got)
@@ -62,6 +71,7 @@ func TestMaskRules(t *testing.T) {
 		"password = self.password", "token: ${GITHUB_TOKEN}", "max_tokens: 4096",
 		"api_key = os.environ.get_key", "password: <your password>", "pwd=abc",
 		"secret_key_base = Rails.application.secret", "the word password alone",
+		"password: string", "password = Password",
 	} {
 		if got := maskOne(t, m, plain); got != plain {
 			t.Errorf("masked a non-secret: %q -> %q", plain, got)
@@ -162,10 +172,14 @@ func TestMaskedJSONReply(t *testing.T) {
 	m.learn("hunter2pass", "PASSWORD")
 	ph := m.known["hunter2pass"]
 	in := `{"content":[{"type":"thinking","thinking":"` + ph + `"},{"type":"text","text":"a ` + ph + ` b"},` +
-		`{"type":"tool_use","id":"t","input":{"cmd":["login","` + ph + `"]}},{"type":"text","text":"{{PASSWORD_aaaaaaaaaaaa}}"}]}`
+		`{"type":"tool_use","id":"t","input":{"cmd":["login","` + ph + `"]}},` +
+		`{"type":"tool_use","id":"u","input":{"steps":[{"type":"thinking","text":"use ` + ph + ` here"}]}},` +
+		`{"type":"text","text":"{{PASSWORD_aaaaaaaaaaaa}}"}]}`
 	got := string(m.restoreBody([]byte(in), false))
 	want := `{"content":[{"type":"thinking","thinking":"` + ph + `"},{"type":"text","text":"a hunter2pass b"},` +
-		`{"type":"tool_use","id":"t","input":{"cmd":["login","hunter2pass"]}},{"type":"text","text":"{{PASSWORD_aaaaaaaaaaaa}}"}]}`
+		`{"type":"tool_use","id":"t","input":{"cmd":["login","hunter2pass"]}},` +
+		`{"type":"tool_use","id":"u","input":{"steps":[{"type":"thinking","text":"use hunter2pass here"}]}},` +
+		`{"type":"text","text":"{{PASSWORD_aaaaaaaaaaaa}}"}]}`
 	if got != want {
 		t.Fatalf("\n got %s\nwant %s", got, want)
 	}
@@ -200,3 +214,229 @@ func TestMaskSetting(t *testing.T) {
 		t.Fatalf("key not kept: %d %v", len(k1), st.Mode())
 	}
 }
+
+// The floor is characters, as the guide says ("shorter than six characters"):
+// 密码 is two characters, six UTF-8 bytes, and is not a value.
+func TestMaskFloorCountsCharacters(t *testing.T) {
+	for _, tc := range []struct {
+		value  string
+		masked bool
+	}{
+		{"密码", false},
+		{"密码密码密码", true},
+		{"12345", false},
+		{"abcdef", true},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			m := testMasker(t, "")
+			in := strings.ReplaceAll(history("x"), "hunter2pass", tc.value)
+			if _, _, ok := m.maskRequest([]byte(in)); !ok {
+				t.Fatal("unreadable")
+			}
+			prose := "我把" + tc.value + "记在纸上"
+			if got := maskOne(t, m, prose); (got != prose) != tc.masked {
+				t.Fatalf("masked=%v, want %v: %q", got != prose, tc.masked, got)
+			}
+		})
+	}
+}
+
+// unmask is a whole SSE reply with its placeholders put back.
+func unmask(t *testing.T, m *masker, sse string) string {
+	t.Helper()
+	u := &unmaskStream{src: &thinkingStream{r: bufio.NewReader(strings.NewReader(sse))}, m: m}
+	var out []byte
+	for {
+		line, err := u.readline()
+		if err != nil {
+			break
+		}
+		out = append(out, line...)
+	}
+	return string(out)
+}
+
+// deltaEvent is one content_block_delta event, closing blank line included.
+func deltaEvent(index int, delta string) string {
+	return "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":" +
+		string(rune('0'+index)) + ",\"delta\":" + delta + "}\n\n"
+}
+
+func TestStreamRestoreEdges(t *testing.T) {
+	m := testMasker(t, "")
+	m.learn("hunter2pass", "PASSWORD")
+	ph := m.known["hunter2pass"]
+
+	t.Run("cut after a data line", func(t *testing.T) {
+		// No closing blank line: the stream ends right after the data line.
+		sse := "event: content_block_delta\ndata: " +
+			`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"the password is ` + ph + `"}}` + "\n"
+		out := unmask(t, m, sse)
+		if !strings.Contains(out, `"text":"the password is hunter2pass"`) || strings.Contains(out, ph) {
+			t.Fatalf("unrestored: %q", out)
+		}
+	})
+
+	// joinedThrough puts a placeholder's two halves in two deltas with between
+	// them, which must not end the join.
+	joinedThrough := func(t *testing.T, between string) string {
+		t.Helper()
+		half := len(ph) / 2
+		sse := deltaEvent(0, `{"type":"text_delta","text":"pw: `+ph[:half]+`"}`) + between +
+			deltaEvent(0, `{"type":"text_delta","text":"`+ph[half:]+` done"}`) +
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+		out := unmask(t, m, sse)
+		if !strings.Contains(out, `"text":"pw: hunter2pass done"`) || strings.Contains(out, ph) {
+			t.Fatalf("join broken by %q: %q", between, out)
+		}
+		return out
+	}
+
+	t.Run("ping between halves", func(t *testing.T) {
+		out := joinedThrough(t, "event: ping\ndata: {\"type\": \"ping\"}\n\n")
+		if !strings.Contains(out, "event: ping") {
+			t.Fatalf("ping dropped: %q", out)
+		}
+	})
+	t.Run("comment between halves", func(t *testing.T) {
+		joinedThrough(t, ": keep-alive\n\n")
+	})
+	t.Run("unknown event between halves", func(t *testing.T) {
+		joinedThrough(t, "event: x\ndata: {\"type\":\"x\"}\n\n")
+	})
+}
+
+// A key file holds the whole key or nothing: an empty file is replaced, and
+// two launches starting together both get the same key.
+func TestMaskKeyIsWholeOrAbsent(t *testing.T) {
+	keyDir := func(t *testing.T) string {
+		root := t.TempDir()
+		t.Setenv("XDG_STATE_HOME", root)
+		dir := filepath.Join(root, "ccmorph")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+
+	t.Run("empty file is replaced", func(t *testing.T) {
+		dir := keyDir(t)
+		path := filepath.Join(dir, "mask.key")
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		k1, err := maskKey()
+		if err != nil || len(k1) != 32 {
+			t.Fatalf("empty key file refused: %d %v", len(k1), err)
+		}
+		if k2, _ := maskKey(); !bytes.Equal(k1, k2) {
+			t.Fatal("a second call rotated the key")
+		}
+	})
+
+	t.Run("wrong size is still refused", func(t *testing.T) {
+		dir := keyDir(t)
+		if err := os.WriteFile(filepath.Join(dir, "mask.key"), []byte("short"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if k, err := maskKey(); err == nil {
+			t.Fatalf("kept a %d-byte key", len(k))
+		}
+	})
+
+	t.Run("concurrent first launches agree", func(t *testing.T) {
+		dir := keyDir(t)
+		const n = 8
+		var wg sync.WaitGroup
+		keys := make([][]byte, n)
+		errs := make([]error, n)
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				keys[i], errs[i] = maskKey()
+			}(i)
+		}
+		wg.Wait()
+		for i := 1; i < n; i++ {
+			if errs[i] != nil || errs[0] != nil || len(keys[i]) != 32 || !bytes.Equal(keys[i], keys[0]) {
+				t.Fatalf("launch %d: %d %v", i, len(keys[i]), errs[i])
+			}
+		}
+		if left, _ := filepath.Glob(filepath.Join(dir, "mask.key.*")); len(left) != 0 {
+			t.Fatalf("temp file left: %v", left)
+		}
+	})
+
+	t.Run("without hard links", func(t *testing.T) {
+		withoutHardlinks(t)
+		dir := keyDir(t)
+		k, err := maskKey()
+		if err != nil || len(k) != 32 {
+			t.Fatalf("%d %v", len(k), err)
+		}
+		if left, _ := filepath.Glob(filepath.Join(dir, "mask.key.*")); len(left) != 0 {
+			t.Fatalf("temp file left: %v", left)
+		}
+	})
+}
+
+// The usage receipt's `masked` member (docs/ARCHITECTURE.md, [test]): a
+// request that masked something carries the counts, one that masked nothing
+// carries no member at all.
+func TestMaskedCountReachesTheReceipt(t *testing.T) {
+	dir := stateHome(t)
+	s := NewServer("http://up.invalid")
+	// No listener: the upstream answers in-process, and the client request
+	// goes through the handler directly.
+	s.remote = &http.Client{Transport: roundTrip(func(*http.Request) *http.Response {
+		const body = `{"id":"msg_mask","model":"m","usage":{"input_tokens":1}}`
+		return &http.Response{StatusCode: 200, Status: "200 OK",
+			Header:        http.Header{"Content-Type": []string{"application/json"}},
+			Body:          io.NopCloser(strings.NewReader(body)),
+			ContentLength: int64(len(body))}
+	})}
+	sum := sha256.Sum256([]byte("k"))
+	spec := `{"profile":"p","identity":"i","upstream":"http://up.invalid","timeout":1,"key_sha256":"` + hex.EncodeToString(sum[:]) + `"}`
+	routes, err := newModelRoutes(spec, s.remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes.usage.prices = nil // no price book: this test writes rows only
+	s.Routes = routes
+	s.mask = testMasker(t, "")
+
+	ask := func(content string) {
+		req := httptest.NewRequest("POST", "/v1/messages",
+			strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"`+content+`"}]}`))
+		req.Header.Set("x-api-key", "k")
+		rec := httptest.NewRecorder()
+		s.ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("%s: %d %s", content, rec.Code, rec.Body.String())
+		}
+	}
+	ask("DB_PASSWORD=changeme")
+	ask("hello")
+	got := rows(t, dir)
+	if len(got) != 2 {
+		t.Fatalf("%d rows: %v", len(got), got)
+	}
+	masked := 0
+	for _, row := range got {
+		if strings.Contains(row, `"masked":`) {
+			masked++
+			if !strings.Contains(row, `"masked":{"PASSWORD":1}`) {
+				t.Fatalf("wrong counts: %s", row)
+			}
+		}
+	}
+	if masked != 1 {
+		t.Fatalf("%d rows carry masked: %v", masked, got)
+	}
+}
+
+// roundTrip is a transport that answers without a socket.
+type roundTrip func(*http.Request) *http.Response
+
+func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r), nil }

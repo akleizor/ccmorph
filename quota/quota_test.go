@@ -46,7 +46,11 @@ func TestQuota(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(c), 0o600)
 	}
 	if runtime.GOOS == "darwin" {
-		readKeychain = func(service string) ([]byte, error) {
+		t.Setenv("LOGNAME", "quota-user")
+		readKeychain = func(service, account string) ([]byte, error) {
+			if account != "quota-user" {
+				return nil, os.ErrNotExist
+			}
 			for name, c := range creds {
 				if service == "Claude Code-credentials-"+hashOf(filepath.Join(home, name)) {
 					return []byte(c), nil
@@ -81,4 +85,32 @@ func TestQuota(t *testing.T) {
 func hashOf(dir string) string {
 	sum := sha256.Sum256([]byte(dir))
 	return hex.EncodeToString(sum[:])[:8]
+}
+
+// The service name is shared with an MCP-only keychain item under another
+// account, so the lookup must name the user's account (as
+// addons/remote-control/ccmorph-rc-hosts does).
+func TestSubscriptionTokenNamesTheKeychainAccount(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the keychain is macOS")
+	}
+	t.Setenv("LOGNAME", "quota-user")
+	orig := readKeychain
+	t.Cleanup(func() { readKeychain = orig })
+	var gotService, gotAccount string
+	readKeychain = func(service, account string) ([]byte, error) {
+		gotService, gotAccount = service, account
+		return []byte(`{"claudeAiOauth":{"accessToken":"live","expiresAt":1893456000000}}`), nil
+	}
+	dir := filepath.Join(t.TempDir(), "live")
+	tok, err := subscriptionToken(dir)
+	if err != nil || tok != "live" {
+		t.Fatalf("%q %v", tok, err)
+	}
+	if gotAccount != "quota-user" {
+		t.Fatalf("account %q", gotAccount)
+	}
+	if want := "Claude Code-credentials-" + hashOf(dir); gotService != want {
+		t.Fatalf("service %q, want %q", gotService, want)
+	}
 }

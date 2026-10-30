@@ -28,10 +28,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
-// minMasked is the shortest value masked. shortcut: a shorter secret (a 4-digit
-// PIN) goes as written; masking it would also hit every number that contains it.
+// minMasked is the shortest value masked, in characters. shortcut: a shorter
+// secret (a 4-digit PIN) goes as written; masking it would also hit every
+// number that contains it.
 const minMasked = 6
 
 type maskRule struct {
@@ -41,18 +43,48 @@ type maskRule struct {
 }
 
 var (
-	// identifierRE is a code reference, not a value: token = self.token,
+	// referenceRE is a code reference, not a value: token = self.token,
 	// password: config.password, api_key = os.environ.
-	identifierRE = regexp.MustCompile(`^[A-Za-z_.\-\[\]]+$`)
-	digitsRE     = regexp.MustCompile(`^[0-9.]+$`)
+	referenceRE = regexp.MustCompile(`^[A-Za-z_.\-\[\]]*[_.\[\]][A-Za-z_.\-\[\]]*$`)
+	digitsRE    = regexp.MustCompile(`^[0-9.]+$`)
+	// wordsRE is a value of letters and dashes only. It is a real value (an
+	// all-letter password) unless it reads as code: a name of the concept, or
+	// a bare type such as password: string.
+	wordsRE = regexp.MustCompile(`^[A-Za-z-]+$`)
 )
+
+// codeWord is an all-letter value that names the concept rather than holding
+// the secret: secretKey, password: Password, token: apiToken.
+func codeWord(lower string) bool {
+	for _, w := range []string{"password", "passwd", "pwd", "secret", "token", "key"} {
+		if strings.Contains(lower, w) {
+			return true
+		}
+	}
+	_, ok := notValues[lower]
+	return ok
+}
+
+// notValues are bare types and placeholders an all-letter value can also be.
+var notValues = map[string]bool{
+	"string": true, "number": true, "boolean": true, "object": true, "unknown": true,
+	"undefined": true, "integer": true, "buffer": true, "bytes": true, "optional": true,
+	"required": true, "nullable": true, "redacted": true, "hidden": true, "masked": true,
+	"omitted": true,
+}
 
 // assigned is a value worth masking after "<name>=" or "<name>:".
 func assigned(v string) bool {
 	if strings.ContainsAny(v[:1], "$%{<*([@#&|") || strings.Contains(v, "{{") || strings.Contains(v, "(") {
 		return false
 	}
-	return !identifierRE.MatchString(v) && !digitsRE.MatchString(v)
+	if digitsRE.MatchString(v) || referenceRE.MatchString(v) {
+		return false
+	}
+	if wordsRE.MatchString(v) && codeWord(strings.ToLower(v)) {
+		return false
+	}
+	return true
 }
 
 func notTemplate(v string) bool {
@@ -110,28 +142,24 @@ func newMasker(key []byte, commands string) (*masker, error) {
 
 // maskKey is the install's placeholder key, made on first use: placeholders
 // stay the same across relaunches, so a resumed session's cache still holds.
+// The key file is never seen half-written: it is written whole to a temp file
+// and linked into place, so two launches starting together both come up.
 func maskKey() ([]byte, error) {
 	dir := stateDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	path := filepath.Join(dir, "mask.key")
-	if f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600); err == nil {
-		key := make([]byte, 32)
-		randRead(key)
-		_, werr := f.Write(key)
-		if cerr := f.Close(); werr == nil {
-			werr = cerr
-		}
-		if werr != nil {
-			os.Remove(path)
-			return nil, werr
-		}
-		return key, nil
-	} else if !errors.Is(err, os.ErrExist) {
-		return nil, err
-	}
 	key, err := os.ReadFile(path)
+	if err == nil && len(key) == 0 {
+		// An empty file holds no key: a crash or a racing first launch left
+		// it. Replace it rather than refuse every launch after it.
+		os.Remove(path)
+		err = os.ErrNotExist
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		key, err = newMaskKey(dir, path)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -141,8 +169,41 @@ func maskKey() ([]byte, error) {
 	return key, nil
 }
 
+// newMaskKey writes a fresh key to a temp file, then links it into place: the
+// name only ever appears with the whole key in it.
+func newMaskKey(dir, path string) ([]byte, error) {
+	f, err := os.CreateTemp(dir, "mask.key.*")
+	if err != nil {
+		return nil, err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	key := make([]byte, 32)
+	randRead(key)
+	_, werr := f.Write(key)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		return nil, werr
+	}
+	switch err := link(tmp, path); {
+	case err == nil:
+		return key, nil
+	case errors.Is(err, os.ErrExist):
+		// Another launch won the race: its key is the install's.
+		return os.ReadFile(path)
+	default:
+		// A filesystem without hard links: rename is atomic too.
+		if rerr := os.Rename(tmp, path); rerr != nil {
+			return nil, rerr
+		}
+		return key, nil
+	}
+}
+
 func (m *masker) learn(value, kind string) {
-	if len(value) < minMasked {
+	if utf8.RuneCountInString(value) < minMasked {
 		return
 	}
 	m.mu.Lock()
@@ -421,8 +482,8 @@ func (m *masker) restoreBody(b []byte, spaced bool) []byte {
 		return b
 	}
 	var edits []Edit
-	var walk func(i, depth int)
-	walk = func(i, depth int) {
+	var walk func(i, depth int, input bool)
+	walk = func(i, depth int, input bool) {
 		if depth > maxDepth {
 			return
 		}
@@ -436,22 +497,28 @@ func (m *masker) restoreBody(b []byte, spaced bool) []byte {
 			}
 		case '{':
 			ms, _ := Object(b, i)
+			typ := ""
 			if v, ok := lastMember(ms, "type"); ok {
-				if typ, _ := str(b, v); typ == "thinking" || typ == "redacted_thinking" {
-					return
-				}
+				typ, _ = str(b, v)
 			}
+			// Outside tool input a thinking block keeps its placeholders, so
+			// a replayed block still matches its signature. Inside tool input
+			// the masking side reaches every leaf, so the restorer does too.
+			if !input && (typ == "thinking" || typ == "redacted_thinking") {
+				return
+			}
+			tool := typ == "tool_use" || typ == "server_tool_use"
 			for _, mb := range ms {
-				walk(mb.Value.Start, depth+1)
+				walk(mb.Value.Start, depth+1, input || (tool && mb.Key == "input"))
 			}
 		case '[':
 			es, _ := Array(b, i)
 			for _, e := range es {
-				walk(e.Start, depth+1)
+				walk(e.Start, depth+1, input)
 			}
 		}
 	}
-	walk(skipWS(b, 0), 0)
+	walk(skipWS(b, 0), 0, false)
 	if len(edits) == 0 {
 		return b
 	}
@@ -490,7 +557,9 @@ type lineSource interface {
 // unmaskStream is an SSE reply with its placeholders put back in text and tool
 // input deltas. It works an event at a time; a delta whose text ends in what may
 // be the start of a placeholder is held and joined to the next delta of its
-// block, so a placeholder split across two events is put back whole. Nothing is
+// block, so a placeholder split across two events is put back whole (a ping,
+// a comment or an unknown event between the halves does not end the join).
+// Nothing is
 // added or dropped: the text the client assembles is the reply's, restored.
 type unmaskStream struct {
 	src   lineSource
@@ -511,9 +580,13 @@ type heldDelta struct {
 func (u *unmaskStream) readline() ([]byte, error) {
 	for len(u.out) == 0 {
 		if u.err != nil {
+			// A final event with no closing blank line is the reply's too:
+			// it goes through the same restore as any other.
+			if ev := u.event; len(ev) > 0 {
+				u.event = nil
+				u.process(ev)
+			}
 			u.flush()
-			u.out = append(u.out, u.event...)
-			u.event = nil
 			if len(u.out) == 0 {
 				return nil, u.err
 			}
@@ -571,6 +644,13 @@ func deltaOf(ev [][]byte) (line int, d *doc, index int, field, text string, ok b
 func (u *unmaskStream) process(ev [][]byte) {
 	at, d, index, field, text, ok := deltaOf(ev)
 	if !ok {
+		// Only an event that can end the block flushes a held half-delta. A
+		// ping, an SSE comment and an event type this shim does not know say
+		// nothing about the block, so the other half may still come.
+		if u.held != nil && !blockEnd(ev) {
+			u.out = append(u.out, ev...)
+			return
+		}
 		u.flush()
 		u.out = append(u.out, ev...)
 		return
@@ -589,6 +669,27 @@ func (u *unmaskStream) process(ev [][]byte) {
 		return
 	}
 	u.emit(ev, text, field, quoted, at, d)
+}
+
+// blockEnd reports an event after which a held half-delta cannot be completed:
+// the block started or ended, the message moved on, or an error arrived. A
+// ping, a comment-only event and an unknown event type leave it waiting.
+func blockEnd(ev [][]byte) bool {
+	for _, l := range ev {
+		_, payload, _, isData := dataPayload(l)
+		if !isData {
+			continue
+		}
+		d := parseDoc(payload)
+		if d == nil {
+			return true
+		}
+		switch typ, _ := d.str("type"); typ {
+		case "content_block_start", "content_block_stop", "message_delta", "message_stop", "error":
+			return true
+		}
+	}
+	return false
 }
 
 func (u *unmaskStream) flush() {
