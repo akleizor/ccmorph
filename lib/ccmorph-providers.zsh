@@ -180,121 +180,31 @@ _ccm_provider_stop() {
 
 # Start the adapter for a profile and set REPLY to the port it serves. Waits for
 # the adapter's own readiness line so Claude Code is never pointed at a dead port.
-_ccm_adapter_start() {
-  local profile="$1" selected="${2:-}"
-  local -a scope=(--auto)
-  [[ -n "$selected" ]] && scope+=(--model "${selected%%\[*}")
+_ccm_adapter_start() {  # REPLY = the adapter's port, empty for a native route
+  local profile="$1" selected="${2:-}" out line
   local bin="$_CCMORPH_LIBEXEC_DIR/ccmorph-core"
-
   [[ -x "$bin" ]] || {
     _ccm_err "profile '$profile' needs an adapter but $bin is not executable"
     return 1
   }
-
-  local ready adapter_log="$_CCMORPH_LOG"
   _ccm_log_init
-  ready=$(command mktemp "${TMPDIR:-/tmp}/ccmorph-adapter-ready.XXXXXX") || return 1
-
-  # Redirections are prepared by this shell before the adapter starts. If an
-  # optional log is unwritable, redirecting to it would abort the child before
-  # its executable runs, so fall back to /dev/null at that boundary.
-  if ! { : >> "$adapter_log" } 2>/dev/null; then
-    adapter_log=/dev/null
-  fi
-
-  # Two independent notices to suppress for this internal adapter job:
-  #   • the START line "[7] 68382" — printed synchronously by `&` when `monitor`
-  #     is on, so `monitor` must be OFF at that instant. localoptions keeps it
-  #     off across the `&` and restores after.
-  #   • the DONE line "[7] + done …" — printed at the NEXT prompt, long after
-  #     this function (and localoptions) returns, so an option can't reach it;
-  #     `disown` removes the job from the table entirely so there's nothing to
-  #     report.
-  # $! stays valid for kill; readiness is tracked via the $ready file, not
-  # `wait`, so disowning costs nothing.
-  setopt localoptions no_monitor
-  # The adapter always runs in the launcher's tree, so it inherits the launcher's
-  # environment — including any ambient HTTPS_PROXY that makes a private endpoint
-  # reachable. Nothing here overrides it.
-  # </dev/null is load-bearing, not cosmetic: fd0 must never be the tty (the
-  # 610137d wedge — the adapter holding fd0 froze the TUI). no_monitor buys the
-  # redirect today as an emergent property of job control; make it explicit so
-  # a future setopt change cannot silently reintroduce the wedge.
-  "$bin" adapter "$profile" "${scope[@]}" --parent-pid $$ </dev/null >"$ready" 2>>"$adapter_log" &
-  _ccm_adapter_pid=$!
-  # `disown` takes a JOB spec, not a PID: a bare number is read as a job
-  # number and fails (rc=127), leaving the job in the table so zsh prints
-  # the "[N] + done" notice at the next prompt. `%+` (the most-recent job,
-  # i.e. the `&` just backgrounded) is the correct spec; keep the PID form
-  # only as a fallback for the rare shell where `%+` is unavailable.
-  disown %+ 2>/dev/null || disown "$_ccm_adapter_pid" 2>/dev/null
-
-  # A selected launch has a bounded compatibility check, never a fleet sweep.
-  # Keep the legacy diagnostic budget only when no model was supplied.
-  local waited=0 wait_limit=3000
-  [[ -n "$selected" ]] && wait_limit=225
-  local event="" line=""
-  # Which of the three ways this can fail, so the message can say. The loop already
-  # distinguished them to decide when to stop waiting and then threw the distinction
-  # away, leaving one sentence ("did not become ready") for an adapter that refused
-  # to start, one that crashed, and one that is still grinding.
-  local outcome="timeout"
-  while (( waited < wait_limit )); do
-    if [[ -r "$ready" ]]; then
-      IFS= read -r event < "$ready" || event=""
-    else
-      event=""
-    fi
-    if [[ "$event" == NATIVE=1 ]]; then
-      command rm -f "$ready"
-      _ccm_adapter_stop
-      _ccm_adapter_profile="$profile"
-      _ccm_adapter_port=""
-      REPLY=""
-      return 0
-    elif [[ "$event" == PORT=* ]]; then
-      line="$event"
-      break
-    elif [[ "$event" == EXIT=* ]]; then
-      outcome="declined"
-      break
-    elif [[ -n "${_ccm_adapter_pid:-}" ]] &&
-         ! kill -0 "$_ccm_adapter_pid" 2>/dev/null; then
-      outcome="died"
-      break
-    fi
-    if (( waited == 5 )); then
-      print -u2 -- "ccmorph: Starting adapter for '$profile'${selected:+ ($selected)}…"
-    elif (( waited > 5 && waited % 25 == 0 )); then
-      print -u2 -- "ccmorph: Waiting for '$profile' adapter ($(( waited / 5 ))s); Ctrl-C to cancel."
-    fi
-    command sleep 0.2
-    (( ++waited ))
-  done
-  command rm -f "$ready"
-
-  [[ -n "$line" ]] || {
-    _ccm_adapter_stop
-    # Say what the adapter IS before saying it failed. "did not become ready" is a
-    # sentence about an internal handshake — a reader who has never opened this file
-    # cannot tell whether something crashed, timed out, or was never installed, and
-    # nothing in it suggests an action. Name the job, the outcome, and the next step.
-    case "$outcome" in
-      declined)
-        _ccm_err "${event#EXIT=}" ;;
-      died)
-        _ccm_err "'$profile': adapter exited before readiness; session not started." ;;
-      *)
-        _ccm_err "'$profile': adapter timed out after $(( wait_limit / 5 ))s; session not started." ;;
-    esac
+  # The adapter is started by the core and watches this shell ($$) for exit.
+  out=$(_ccm_util adapter-start "$bin" "$profile" "$selected" $$ "${_CCMORPH_LOG:-/dev/null}") || {
     print -u2 -- "  Check configuration: ccmorph inspect $profile"
-    if [[ "$adapter_log" != /dev/null && -r "$adapter_log" ]]; then
-      print -u2 -- "  Log: $adapter_log"
-    fi
+    [[ -n "${_CCMORPH_LOG:-}" && -r "$_CCMORPH_LOG" ]] && print -u2 -- "  Log: $_CCMORPH_LOG"
     return 1
   }
-
+  for line in "${(@f)out}"; do
+    case "$line" in
+      PID=*) _ccm_adapter_pid="${line#PID=}" ;;
+      PORT=*) _ccm_adapter_port="${line#PORT=}" ;;
+      NATIVE=1)
+        _ccm_adapter_stop
+        _ccm_adapter_profile="$profile" _ccm_adapter_port=""
+        REPLY=""
+        return 0 ;;
+    esac
+  done
   _ccm_adapter_profile="$profile"
-  _ccm_adapter_port="${line#PORT=}"
   REPLY="$_ccm_adapter_port"
 }

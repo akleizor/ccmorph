@@ -25,6 +25,7 @@ func init() {
 		"setup-profile":          setupProfile,
 		"bridge-start":           bridgeStart,
 		"bridge-stop":            bridgeStop,
+		"adapter-start":          adapterStart,
 		"fetch-listing":          fetchListing,
 		"model-served":           modelServed,
 		"hop-target":             hopTarget,
