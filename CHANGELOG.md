@@ -5,6 +5,18 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
+## Unreleased
+
+### Changed
+
+- **A damaged estimated cost no longer kills the export** (#68). A receipt whose
+  `usage.estimated_cost` was damaged after the fact — a number too large for a
+  float, a non-numeric value, a negative one — aborted `scripts/usage-export`
+  with `invalid billed cost`, where the same damage in `usage.cost` counted the
+  row unpriced and the export completed. Every price no writer would store, in
+  either field, now counts its row unpriced: never bill a corrupt value, never
+  lose the export to it.
+
 ## v0.4.1 — 2026-10-30
 
 ### Changed

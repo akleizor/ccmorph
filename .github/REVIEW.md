@@ -32,6 +32,7 @@ credential, or losing the user's choice.
 - **An upgrade deleting a file a running process still references** — a retired helper removed while a live session's route spec still names it, so the next `/model` reads as a gateway failure — `example: #52, b619556 removed libexec/ccmorph-adapter on upgrade under live sessions`.
 - **A reader that turns unparseable input into a confident verdict** — a model listing whose `data` is not a list read as "not served" so the carried model is replaced, an unparsed endpoint echoed whole with its userinfo — `example: 7487a99 fix(util): model-known answers cannot-tell for a listing whose data is not a list`; also `a59f601 fix(util): redact-url never echoes an endpoint's userinfo`.
 - **A diagnostics path that can die instead of degrade** — a raise outside `pycompat.Catch` takes every launch warning with it, since `util.Main` has no recover and the zsh caller drops stderr — `example: 824a001 fix(util): launch diagnostics keep the warnings when the merge raises`.
+- **A damage guard not extended to the sibling field the same change added** — the guard counting a damaged cost unpriced sat on `usage.cost` alone, so the same damage in `usage.estimated_cost`, the field that change introduced, took the whole export down where `cost` was survived — `example: #68 fix(export): a damaged estimate is unpriced, never fatal`.
 
 ## Never blocks
 
