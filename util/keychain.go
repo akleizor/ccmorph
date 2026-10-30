@@ -173,3 +173,32 @@ func profileRead(args []string, _ io.Reader, out, errw io.Writer) int {
 	io.WriteString(out, b.String()+".") // $(…) strips trailing NULs; the dot keeps the last empty value
 	return 0
 }
+
+// profileValidate is `util profile-validate <name>` over NUL-separated key/value
+// pairs on stdin; the refusal goes to stdout with exit 1.
+func profileValidate(args []string, in io.Reader, out, _ io.Writer) int {
+	if len(args) != 1 {
+		return 2
+	}
+	parts := strings.Split(string(readAll(in)), "\x00")
+	f := map[string]string{}
+	for i := 0; i+1 < len(parts); i += 2 {
+		f[parts[i]] = parts[i+1]
+	}
+	if err := profile.Validate(args[0], f); err != nil {
+		io.WriteString(out, err.Error())
+		return 1
+	}
+	return 0
+}
+
+func profileValidateURL(args []string, _ io.Reader, out, _ io.Writer) int {
+	if len(args) != 2 {
+		return 2
+	}
+	if err := profile.ValidateBaseURL(args[0], args[1]); err != nil {
+		io.WriteString(out, err.Error())
+		return 1
+	}
+	return 0
+}

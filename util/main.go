@@ -28,6 +28,8 @@ func init() {
 		"hop-target":             hopTarget,
 		"session-adapter":        sessionAdapter,
 		"profile-read":           profileRead,
+		"profile-validate":       profileValidate,
+		"profile-validate-url":   profileValidateURL,
 		"listing-has-unsized":    listingHasUnsized,
 		"keychain-migrate":       keychainMigrate,
 		"keychain-rename":        keychainRename,

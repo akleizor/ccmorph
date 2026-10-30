@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/akleizor/ccmorph/pycompat"
 )
@@ -270,3 +271,49 @@ func rawKeyCount(s string) int {
 	}
 	return n
 }
+
+// Validate checks a loaded profile beyond what Read enforces: an apikey profile
+// must carry a clean key, and a base_url, when set, an http(s) scheme. sub, token
+// and provider profiles need nothing further.
+func Validate(name string, f map[string]string) error {
+	if f["type"] != "apikey" {
+		return nil
+	}
+	label := "apikey '" + name + "'"
+	switch key := f["api_key"]; {
+	case key == "":
+		return fail("%s has no api_key", label)
+	case hasSpace(key):
+		return fail("%s api_key contains whitespace", label)
+	}
+	if f["base_url"] != "" {
+		if err := ValidateBaseURL(label, f["base_url"]); err != nil {
+			return err
+		}
+	}
+	// adapter=true declares a foreign-dialect endpoint; a native key has nothing to translate.
+	switch f["adapter"] {
+	case "", "false":
+	case "true":
+		if f["base_url"] == "" {
+			return fail("%s has adapter=true but no base_url to front", label)
+		}
+	default:
+		return fail("%s adapter must be 'true', 'false', or absent", label)
+	}
+	return nil
+}
+
+// ValidateBaseURL refuses a base_url without an http(s) scheme or with whitespace.
+func ValidateBaseURL(label, u string) error {
+	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+		return fail("%s base_url must use http:// or https://", label)
+	}
+	if hasSpace(u) {
+		return fail("%s base_url contains whitespace", label)
+	}
+	return nil
+}
+
+// hasSpace is zsh [[:space:]] in a UTF-8 locale.
+func hasSpace(s string) bool { return strings.IndexFunc(s, unicode.IsSpace) >= 0 }

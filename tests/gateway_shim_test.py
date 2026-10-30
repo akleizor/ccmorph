@@ -99,13 +99,17 @@ def start_shim(case, target, env=None, flags=()):
     return proc, int(banner.split(":")[1].split(" ")[0])
 
 
+_held_dead_ports = []
+
+
 def dead_port():
-    """A port with nothing listening on it."""
+    """A port with nothing listening on it. The socket stays bound but never
+    listens, so a connect is refused and no parallel test's server can take the
+    port over (a released port was re-bound by a 503 fixture under xdist)."""
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
+    _held_dead_ports.append(s)
+    return s.getsockname()[1]
 
 
 class ShimParentDeathTest(unittest.TestCase):
