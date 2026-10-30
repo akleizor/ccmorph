@@ -18,54 +18,11 @@ _ccm_trigger_env() {
       CLAUDE_CODE_DISABLE_1M_CONTEXT=*)  _1m="${_e#*=}" ;;
     esac
   done
-  # xe() is `if (Wn()) return false; return /\[1m\]/i.test(e)`, so with the kill switch
-  # set a [1m] id resolves at 200,000, not 1,000,000. Computing the trigger from 1e6
-  # anyway names a safe model fatal -- and withholds it outright under
-  # CCMORPH_WITHHOLD_FATAL=1, costing the user a model that works.
-  # The engine's own env boolean, read out of 2.1.247:
-  #
-  #   function p(e){ if(!e) return false; if (typeof e === "boolean") return e;
-  #                  let n = String(e).toLowerCase().trim();
-  #                  return ["1","true","yes","on"].includes(n) }
-  #
-  # So `off`, `no`, `false` and `2` are all FALSE. Treating anything non-empty and
-  # non-zero as true called them true, which sizes a [1m] id at 200,000 where the engine
-  # gives it 1,000,000 -- the direction that leaves a wedge unnamed.
-  # extendedglob for the ## quantifier: without it the trim patterns match nothing and
-  # a padded value silently reads as false.
-  setopt localoptions extendedglob
-  # The ECMAScript WhiteSpace set, NOT [[:space:]]: the spec table includes U+FEFF
-  # (ZWNBSP), which zsh does not count as space -- so the engine trims `<FEFF>on` to
-  # `on` and calls it true where ccmorph read it as false, sizing a [1m] id at
-  # 1,000,000 against the engine 200,000 and naming a safe model fatal. Python
-  # str.strip() leaves U+FEFF too, which is what made checking against Python say the
-  # two agreed: the same wrong oracle as the percentage-parser gap.
-  # The ECMAScript WhiteSpace + LineTerminator production, one array element per
-  # CHARACTER -- deliberately not a bracket class. Under a C charmap a bracket class
-  # matches BYTES, so a multibyte character whose UTF-8 bytes all appear in the class is
-  # eaten byte by byte: `<U+3080>on` (e3 82 80) trimmed to `on` and read as true where
-  # the engine reads false. Comparing whole characters is exact in every locale, which a
-  # class cannot be, and MULTIBYTE cannot override a C charmap to rescue it.
-  #
-  # The non-ASCII members are written as literal UTF-8, not $'\uXXXX': under a C charmap
-  # zsh rejects those escapes outright ("character not in range"), so the array would fail
-  # to build in exactly the locale this is here to handle.
-  local -a _ws
-  _ws=($'\t' $'\n' $'\v' $'\f' $'\r' ' ' ' ' '﻿' ' ' ' ' ' ' ' ' ' ' ' ' ' ' ' ' ' ' ' '
-      ' ' ' ' ' ' ' ' ' ' ' ' '　')
-  _1m="${(L)_1m}"
-  local _w _cut=1
-  while (( _cut )); do
-    _cut=0
-    for _w in "${_ws[@]}"; do
-      [[ "$_1m" == "$_w"* ]] && { _1m="${_1m#$_w}"; _cut=1 }
-      [[ "$_1m" == *"$_w" ]] && { _1m="${_1m%$_w}"; _cut=1 }
-    done
-  done
-  case "$_1m" in
-    1|true|yes|on) _1m=1 ;;
-    *)             _1m=""  ;;
-  esac
+  # xe() is `if (Wn()) return false; return /\[1m\]/i.test(e)`, so with the kill
+  # switch set a [1m] id resolves at 200,000, not 1,000,000. The switch is read with
+  # the engine's own env boolean (ECMAScript trim, then 1/true/yes/on), which lives in
+  # the core: `off`, `no`, `false` and `2` are all false.
+  [[ -n "$_1m" ]] && _ccm_util engine-bool "$_1m" && _1m=1 || _1m=""
   # Assigned BY NAME into the caller's variables, not printed as delimited fields: an
   # env value may legitimately contain any byte, and a conf `env.` line carrying a tab
   # survives parsing intact -- which split a tab-separated return into the wrong
