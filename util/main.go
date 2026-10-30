@@ -25,6 +25,7 @@ func init() {
 		"setup-profile":          setupProfile,
 		"bridge-start":           bridgeStart,
 		"bridge-stop":            bridgeStop,
+		"fetch-listing":          fetchListing,
 		"hop-target":             hopTarget,
 		"gc-stale":               gcStale,
 		"claude-verbs":           claudeVerbs,
