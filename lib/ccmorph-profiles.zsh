@@ -285,40 +285,6 @@ _ccm_logged_email() {
   )
 }
 
-_ccm_physical_dir() {
-  # Physical path of directory $1, following every link as the kernel does
-  # (chasedots makes `link/..` leave the link target, not the link's parent).
-  # -q: this runs inside $(...) in the user's interactive shell, where a printing
-  # chpwd hook would join the capture and corrupt the link written from it.
-  # The trailing `/` is a sentinel: it stops the caller's $(...) from stripping
-  # newlines that end the directory's own name; callers remove it (#267).
-  (setopt chasedots chaselinks; builtin cd -q -- "$1" 2>/dev/null && print -rn -- "$PWD/")
-}
-
-_ccm_physical_prefix() {
-  # Physical path of $1's longest prefix that resolves, with the rest kept as
-  # spelled. A missing dir or a dangling link mid-path — and everything after
-  # it, `..` included, since the kernel cannot resolve through it — stays
-  # textual, so a link recreated through it still dangles where it pointed
-  # rather than `:a` collapsing `out/..` onto another file (#376).
-  local head="$1" rest="" dir
-  until dir="$(_ccm_physical_dir "$head")"; do
-    # Nothing left to strip: `${head:h}` of `/` is `/`, and of an empty string
-    # it stays empty, so without this the walk never ends.
-    [[ "$head" == "${head:h}" ]] && return 1
-    rest="/${head:t}$rest"
-    head="${head:h}"
-  done
-  # `pwd -P` is `/` only at the root, where the sentinel doubles it, and a
-  # walk that ends there is the root itself.
-  [[ "$dir" == // ]] && dir=""
-  # The trailing `/` is the sentinel _ccm_physical_dir writes, for the same
-  # reason: this runs inside the caller's $(...), which would otherwise eat a
-  # newline ending the last component's name and recreate the link on the
-  # shorter name (#267).
-  print -r -- "${dir%/}${rest:-/}/"
-}
-
 _ccm_migrate_projects() {
   # Only session/history stores and agent definitions may be merged: those are
   # content the profile itself owns, so moving them into the shared store loses
@@ -328,9 +294,7 @@ _ccm_migrate_projects() {
   # list, so a profile that already had a real agents/ failed provisioning (and
   # therefore every launch) instead of being healed, while docs/ARCHITECTURE.md
   # documented the merge.
-  # Every local is declared here, once: zsh prints `name=value` when `local`
-  # re-declares a set variable, and inside the loop that lands in `_env` output.
-  local from="$1" to="$2" bak bakp f rel dest tgt phys leaf pdir
+  local from="$1" to="$2"
   case "${to:t}" in
     agents|projects|session-env|file-history) ;;
     *)
@@ -338,74 +302,9 @@ _ccm_migrate_projects() {
       return 1
       ;;
   esac
-  bak="${from}.premigration.${$}.${RANDOM}"
-
-  command mv "$from" "$bak" 2>/dev/null || return 1
-  bakp="${bak:A}"
-
-  # Files and links (find does not follow links, so a symlinked dir is one
-  # entry). Links move as links; a name already in the shared store wins.
-  # -print0 with read -d '': a name may itself contain a newline, and a
-  # newline-separated walk split it — the real entry never left the backup and
-  # the remainder reached mv as a path relative to the caller's cwd (#400).
-  command find "$bak" \( -type f -o -type l \) -print0 2>/dev/null | while IFS= read -r -d '' f; do
-    case "${f:t}" in
-      .DS_Store|.localized) continue ;;
-    esac
-    rel="${f#$bak/}"
-    dest="$to/$rel"
-    [[ -e "$dest" || -L "$dest" ]] && continue
-    command mkdir -p "${dest:h}" 2>/dev/null || continue
-    tgt=""
-    # -n: readlink prints no trailing newline of its own, so the `/` sentinel is
-    # the only thing keeping $(...) from stripping one that ends the target's
-    # own name — the class #267 fixed in _ccm_physical_dir. Without it a
-    # relative target ending in a newline was rewritten to the shortened name
-    # and the original link then deleted (#399). The consumer drops the
-    # sentinel: one `/` is all it adds, so `%/` takes back the sentinel and
-    # never a `/` that ends the target itself, and every test below then reads
-    # the literal target.
-    [[ -L "$f" ]] && tgt="$(command readlink -n "$f" && print -rn -- /)"
-    tgt="${tgt%/}"
-    if [[ -n "$tgt" && "$tgt" != /* ]]; then
-      # A relative link resolves from its directory, which is about to change.
-      # Resolve it from that directory's physical path (the rename kept the
-      # parent, and find never descends a link, so it is $bakp/<rel dir>), the
-      # way the kernel does. A target inside the migrated tree moves to the
-      # shared store too, so point at its new place there; any other target
-      # becomes an absolute link to its physical (:A) path.
-      # zsh `:a`/`:A` drop `x/..` textually, wrong when x is a link, so the
-      # parent is resolved by the shell's physical cd; the last component stays
-      # unresolved, so a link to a sibling link follows that sibling. A target
-      # ending in . or .. has no link leaf: resolve the whole path.
-      phys="$bakp/${rel:h}/$tgt"
-      case "$tgt" in
-        .|..|*/.|*/..) leaf="" ;;
-        *) leaf="/${phys:t}"; phys="${phys:h}" ;;
-      esac
-      # A link dir earlier in this loop already moved to the shared store
-      # (same physical target), so retry the parent there before giving up.
-      # When the parent does not resolve anywhere the link is still recreated,
-      # dangling: dropping it took the agent definition out of the profile with
-      # no message (#167). Only the longest existing prefix of the parent is
-      # resolved physically, and the components the kernel cannot resolve stay
-      # as spelled, so the link dangles at its true location instead of
-      # collapsing onto another file (#376). Never `:a` the whole parent: it
-      # drops `x/..` textually whether or not x resolves.
-      pdir="$(_ccm_physical_dir "$phys")" ||
-        pdir="$(_ccm_physical_dir "$to/${phys#$bakp/}")" ||
-        pdir="$(_ccm_physical_prefix "$phys")" || continue
-      phys="${pdir%/}$leaf"
-      case "$phys" in
-        "$bakp"/*) phys="$to/${phys#$bakp/}" ;;
-      esac
-      command ln -s "$phys" "$dest" 2>/dev/null && command rm -f "$f"
-    else
-      command mv "$f" "$dest" 2>/dev/null
-    fi
-  done
-
-  return 0
+  # Links are re-resolved from their old place the way the kernel would (#164,
+  # #167, #376, #399, #400); a name already in the shared store wins.
+  _ccm_util migrate-projects "$from" "$to"
 }
 
 _ccm_session_file() {
@@ -448,35 +347,10 @@ _ccm_carry_session() {
 }
 
 _ccm_dir_ok() {
-  # Lock-free predicate: is this profile already correctly provisioned?
-  # Verifies only the load-bearing invariants — shared session history and
-  # auth present — so the common launch path needs neither the lock nor any
-  # mutation, and therefore cannot wedge on a lock/chmod/write failure.
-  local name="$1"
-  local dir="${_CCMORPH_PROFILE_DIRS}/$name"
-
-  _ccm_valid "$name" || return 1
-  [[ -d "$dir" && ! -L "$dir" ]] || return 1
-  [[ -f "$dir/config.json" && -f "$dir/.claude.json" ]] || return 1
-  # History is the profile's own; a link left by the shared-history layout heals.
-  [[ -d "$dir/projects" && ! -L "$dir/projects" ]] || return 1
-  # The shared harness layer must be fully wired: a manifest entry present in
-  # ~/.claude but unlinked here (content installed after this profile was
-  # created, or a pre-manifest profile) routes through full provisioning to
-  # heal. A real profile-local FILE is a deliberate override — healthy as-is.
-  local item link src canonical="$HOME/.claude"
-  for item in "${_CCMORPH_SHARED_DIRS[@]}"; do
-    link="$dir/$item" src="$canonical/$item"
-    [[ -d "$src" ]] || return 1
-    [[ -L "$link" && "${link:A}" == "${src:A}" ]] || return 1
-  done
-  for item in "${_CCMORPH_SHARED_FILES[@]}"; do
-    link="$dir/$item" src="$canonical/$item"
-    [[ -e "$src" ]] || continue
-    [[ -e "$link" || -L "$link" ]] || return 1
-    [[ -L "$link" && "${link:A}" != "${src:A}" ]] && return 1
-  done
-  return 0
+  # Lock-free predicate: is this profile already correctly provisioned (auth
+  # files, its own history, the shared harness layer linked)? The common launch
+  # path then needs neither a lock nor any write.
+  _ccm_util profile-ok "$_CCMORPH_PROFILE_DIRS" "$1"
 }
 
 _ccm_prelaunch() {
@@ -501,126 +375,19 @@ _ccm_setup_dir() {
 }
 
 _ccm_setup_dir_unlocked() {
-  local name="$1"
-  local dir="${_CCMORPH_PROFILE_DIRS}/$1"
-  local canonical="$HOME/.claude"
-  local item src link legacy_nested
-  local -a legacy_entries
-
-  _ccm_valid "$name" || return 1
-
-  if [[ -L "$dir" || -L "$canonical" ]]; then
-    _ccm_err "refusing symlinked profile state for '$name'"
-    return 1
-  fi
-
-  command mkdir -p "$dir" "${_CCMORPH_SHARED_DIRS[@]/#/$canonical/}" || {
-    _ccm_err "cannot create profile '$name'"
-    return 1
-  }
-
-  # Best-effort hardening (see _ccm_secure_dirs): mkdir already created these
-  # with the right mode, so a filesystem that refuses chmod must not brick
-  # provisioning.
-  command chmod 700 "$dir" "$canonical" 2>/dev/null || :
-
-  _ccm_util provision-profile "$dir" "${_ccm[type]}"
-
-  [[ $? -eq 0 ]] || {
-    _ccm_err "profile setup failed for '$name'"
-    return 1
-  }
-
-  # settings.json may be profile-local. At launch, ccmorph layers it over the
-  # canonical ~/.claude/settings.json before injecting the launch environment, so
-  # profile choices such as model and effort override global defaults while absent
-  # settings still inherit globally. A legacy settings symlink is removed below;
-  # the shared harness layer (see _CCMORPH_SHARED_DIRS/_FILES) stays symlinked.
-  local shared=("${_CCMORPH_SHARED_DIRS[@]}" "${_CCMORPH_SHARED_FILES[@]}")
-
-  for item in "${shared[@]}"; do
-    src="$canonical/$item"
-    link="$dir/$item"
-
-    if [[ -e "$src" || -L "$src" ]]; then
-      if [[ -L "$link" ]]; then
-        if [[ "${link:A}" != "${src:A}" ]]; then
-          _ccm_err "'$item' for '$name' points outside the shared store"
-          return 1
-        fi
-      elif [[ -e "$link" ]]; then
-        # Purge ignorable OS/editor metadata so a stray .DS_Store (Finder drops
-        # one the instant the folder is opened) can't defeat the empty-dir heal.
-        if [[ -d "$link" ]]; then
-          command rm -f -- "$link"/.DS_Store(N) "$link"/.localized(N) 2>/dev/null
-        fi
-
-        legacy_nested="$link/$item"
-        legacy_entries=("$link"/*(DN))
-
-        if [[ -d "$link" &&
-              -L "$legacy_nested" &&
-              "${legacy_nested:A}" == "${src:A}" &&
-              ${#legacy_entries} -eq 1 ]]; then
-          command rm -f "$legacy_nested" || {
-            _ccm_err "could not remove legacy nested '$item' link for '$name'"
-            return 1
-          }
-        fi
-
-        if [[ -d "$link" ]] && command rmdir "$link" 2>/dev/null; then
-          command ln -sn "$src" "$link" || {
-            _ccm_err "could not link '$item' for '$name'"
-            return 1
-          }
-        elif [[ -d "$link" ]]; then
-          # A non-empty real dir where a shared link belongs — a stale shell
-          # replaced the projects link mid-session, or an older profile grew
-          # local skills/plugins before the canonical dir existed. Migrate the
-          # content into the shared store (rename keeps files held open by
-          # live sessions valid; never overwrite an existing file) and link —
-          # self-heal rather than brick the launch.
-          _ccm_migrate_projects "$link" "$src" && command ln -sn "$src" "$link" || {
-            _ccm_err "could not migrate profile-local '$item' for '$name'"
-            return 1
-          }
-        else
-          # A real profile-local FILE is a deliberate override (a per-profile
-          # CLAUDE.md, say): respected, never replaced. The shared copy stays
-          # available in ~/.claude and the launch proceeds.
-          _ccm_log "OVERRIDE profile-local '$item' kept for profile=$name"
-        fi
-      elif ! ln -sn "$src" "$link"; then
-        _ccm_err "could not link '$item' for '$name'"
-        return 1
-      fi
-    fi
+  # Provisions the profile: auth-scoped config, its own history, and the shared
+  # harness layer linked to ~/.claude. A profile-local real dir merges into the
+  # store; a real profile-local file is a deliberate override, kept.
+  local out line rc=0
+  out=$(_ccm_util setup-profile "$_CCMORPH_PROFILE_DIRS" "$1" "${_ccm[type]}") || rc=1
+  for line in "${(@f)out}"; do
+    case "$line" in
+      err\ *) _ccm_err "${line#err }" ;;
+      log\ *) _ccm_log "${line#log }" ;;
+    esac
   done
-
-  # Session history is the profile's own, as in a plain CLAUDE_CONFIG_DIR. The
-  # shared-history layout linked it to ~/.claude/projects: drop only the link,
-  # never its target, so that history stays native and any profile still reaches
-  # a session in it by id (_ccm_carry_session).
-  if [[ -L "$dir/projects" ]]; then
-    command rm -f "$dir/projects" || {
-      _ccm_err "could not unlink shared history for '$name'"
-      return 1
-    }
-  fi
-  command mkdir -p "$dir/projects" || {
-    _ccm_err "could not create history for '$name'"
-    return 1
-  }
-  command chmod 700 "$dir/projects" 2>/dev/null
-
-  if [[ -L "$dir/settings.json" ]]; then
-    command rm -f "$dir/settings.json" || {
-      _ccm_err "could not remove legacy settings link for '$name'"
-      return 1
-    }
-  fi
-
-  _ccm_unwire_statusline "$dir"
+  (( rc == 0 )) || return 1
+  _ccm_unwire_statusline "${_CCMORPH_PROFILE_DIRS}/$1"
 }
 
 _ccm_unwire_statusline() {
