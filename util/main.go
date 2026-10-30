@@ -21,6 +21,7 @@ func init() {
 	verbs = map[string]verb{
 		"migrate-profile-home":   migrateProfileHome,
 		"profile-read":           profileRead,
+		"listing-has-unsized":    listingHasUnsized,
 		"keychain-migrate":       keychainMigrate,
 		"keychain-rename":        keychainRename,
 		"keychain-delete":        keychainDelete,

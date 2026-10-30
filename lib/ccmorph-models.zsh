@@ -168,28 +168,10 @@ _ccm_spawn_bg_logged() {
   disown %+ 2>/dev/null || disown $! 2>/dev/null
 }
 
-# True when the listing names a model the profile has no size or recent miss for.
-# A plain-text pre-check, so the usual launch (nothing new) starts no interpreter:
-# every model id already appears in the conf's context JSON or a manual override.
-# A false positive only costs one sizer run; the sizer itself decides.
+# True when the listing names a model the profile has no size, pin or recent miss
+# for, so the sizer is worth a start. A false positive only costs one sizer run.
 _ccm_listing_has_unsized() {  # $1 = profile, $2 = /v1/models JSON
-  local conf="$_CCMORPH_DIR/$1.conf" id
-  [[ -r "$conf" ]] || return 0
-  local known="$(<"$conf")" line
-  local -a excluded=()
-  for line in ${(f)known}; do
-    [[ "$line" == excluded_models=* ]] && excluded=(${(s:,:)line#excluded_models=})
-  done
-  # One row per model; a row the endpoint marks non-chat is never sized, so it
-  # must not count as new either (bge-m3 would rerun the sizer every launch).
-  local rows="${2//\},\{/$'\n'}"
-  for id in ${(f)"$(print -r -- "$rows" | command grep -v '"chat_completion": *false' |
-                      command grep -o '"id": *"[^"]*"' |
-                      command sed 's/.*"\([^"]*\)"$/\1/')"}; do
-    (( ${excluded[(Ie)$id]} )) && continue
-    [[ "$known" == *"\"$id\""* || "$known" == *"context_window.$id="* ]] || return 0
-  done
-  return 1
+  print -r -- "$2" | CCMORPH_STATE_DIR="$_CCMORPH_DIR" _ccm_util listing-has-unsized "$1"
 }
 
 # Free metadata only, off add/launch's critical path. Inference requires the
