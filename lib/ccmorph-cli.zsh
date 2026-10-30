@@ -180,13 +180,9 @@ _ccm_doctor() {
       # Probe the same metadata route a launch uses, through the same ambient
       # HTTPS_PROXY a launch would inherit — doctor must answer for the route the
       # user actually has, not for a direct one they may not.
-      local _doctor_url
-      _ccm_api_url "$base" "/v1/models?limit=1000"
-      _doctor_url="$REPLY"
-      payload=$(_ccm_curl_keyed both "$key_value" -sS --connect-timeout 2 --max-time 5 \
-        -w $'\\n__CCMORPH_STATUS__%{http_code}' \
-        "$_doctor_url" 2>/dev/null) || payload="__CCMORPH_STATUS__000"
-      http_code="${payload##*__CCMORPH_STATUS__}"; payload="${payload%%__CCMORPH_STATUS__*}"; payload="${payload%$'\\n'}"
+      payload=$(print -r -- "$key_value" | _ccm_util fetch-listing "$base" doctor 2>/dev/null)
+      http_code="${payload##*$'\n'}"; payload="${payload%$'\n'*}"
+      [[ "$http_code" == <-> ]] || http_code=000
       if [[ "$http_code" == 2?? ]]; then
         models_count=$(print -r -- "$payload" | _ccm_util models-count 2>/dev/null) || models_count=''
         if [[ -n "$models_count" ]]; then

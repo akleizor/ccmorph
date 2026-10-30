@@ -409,26 +409,6 @@ test_models_does_not_send_anthropic_version() {
   return $rc
 }
 
-test_versioned_base_url_is_not_given_a_second_v1() {
-  source "$CCMORPH_SOURCE"
-  local rc=0
-  _ccm_api_url 'https://provider.invalid/api/v4' '/v1/models'
-  [[ "$REPLY" == 'https://provider.invalid/api/v4/models' ]] || {
-    print -u2 -- 'a versioned provider base URL must not receive a second API version'
-    rc=1
-  }
-  _ccm_api_url 'https://provider.invalid/api/V4' '/v1/models'
-  [[ "$REPLY" == 'https://provider.invalid/api/V4/models' ]] || {
-    print -u2 -- 'API version matching must be case-insensitive'
-    rc=1
-  }
-  _ccm_api_url 'https://provider.invalid' '/v1/models'
-  [[ "$REPLY" == 'https://provider.invalid/v1/models' ]] || {
-    print -u2 -- 'an unversioned provider base URL must receive the standard API version'
-    rc=1
-  }
-  return $rc
-}
 
 test_models_lists_only_chat_capable_from_the_gateway() {
   local test_home
@@ -4094,12 +4074,11 @@ test_one_models_listing_per_launch_is_shared() {
   tally="$test_home/curl-calls"
   : > "$tally"
 
-  local HOME="$test_home"
+  setup_home "$test_home"
   mkdir -p "$HOME/bin"
   printf '%s\n' '#!/bin/sh' "printf x >> '$tally'" \
     'echo "{\"data\":[{\"id\":\"m1\",\"context_length\":123456}]}"' > "$HOME/bin/curl"
   chmod +x "$HOME/bin/curl"
-  local PATH="$HOME/bin:$PATH"
 
   source "$CCMORPH_SOURCE"
 
@@ -4438,13 +4417,6 @@ test_provider_profile_accepts_picker_exclusions() {
   _ccm_read cx || { print -u2 -- "a provider profile must accept excluded_models"; rc=1; }
   rm -rf "$test_home"
   return $rc
-}
-test_listings_are_undisguised_on_entry() {
-  source "$CCMORPH_SOURCE"
-  _ccm_undisguise_ids '{"data":[{"id":"claude-fable-5-dd-los-6-tpg","display_name":"x"},{"id":"claude-opus-5"}]}'
-  assert_contains "$REPLY" '"id":"gpt-6-sol"' "a disguised id must arrive as its true id" || return 1
-  assert_contains "$REPLY" '"id":"claude-opus-5"' "a genuine claude id must be left alone" || return 1
-  assert_not_contains "$REPLY" "-dd-" "no disguise may survive the listing" || return 1
 }
 test_quota_hands_every_profile_to_the_core_with_no_key_in_argv() {
   local test_home rc=0 out
@@ -11597,7 +11569,6 @@ run_test test_an_unwritable_window_cache_is_silent_and_nonfatal
 run_test test_flag_errors_name_the_spelling_the_user_typed
 run_test test_source_names_no_machine_local_files
 run_test test_provider_profile_accepts_picker_exclusions
-run_test test_listings_are_undisguised_on_entry
 run_test test_every_profile_keeps_its_own_secure_storage
 run_test test_quota_hands_every_profile_to_the_core_with_no_key_in_argv
 run_test test_native_effort_does_not_rewrite_explicit_model
@@ -11832,7 +11803,6 @@ run_test test_legacy_route_key_is_rejected_as_unknown
 run_test test_adapter_is_invalid_on_other_profile_types
 run_test test_env_reports_the_real_endpoint_not_the_adapter
 run_test test_models_does_not_send_anthropic_version
-run_test test_versioned_base_url_is_not_given_a_second_v1
 run_test test_models_lists_only_chat_capable_from_the_gateway
 run_test test_models_discovery_uses_the_ambient_proxy
 run_test test_models_keeps_entries_that_declare_no_capabilities

@@ -41,34 +41,6 @@ _ccm_session_state() {
   reply=("$model" "$effort")
 }
 
-_ccm_api_url() {  # $1 = API root or versioned SDK base, $2 = /v1/... path
-  local base="${1%/}" path="$2"
-  [[ "${base:l}" == */v<-> ]] && path="${path#/v1}"
-  REPLY="$base$path"
-}
-
-_ccm_undisguise_ids() {  # REPLY = $1 with every claude-<cover>-dd-<reversed> id restored
-  # Translators disguise non-Claude ids so gateway discovery will list them. Every
-  # consumer here wants the true id, so each listing is undisguised once, on entry.
-  local body="$1" q='"' id
-  for id in ${(u)${(M)${(ps:$q:)body}:#claude-*-dd-?*}}; do
-    body=${body//$q$id$q/$q${(j::)${(Oas::)id#*-dd-}}$q}
-  done
-  REPLY="$body"
-}
-
-# curl with the credential headers fed through its stdin config (-K -), so the
-# key never appears on a command line (ps). Usage: _ccm_curl_keyed <both|bearer>
-# <key> <curl args...>. Callers must not send a body on stdin.
-_ccm_curl_keyed() {
-  local kind="$1" key="$2"; shift 2
-  local esc="${key//\\/\\\\}"; esc="${esc//\"/\\\"}"
-  {
-    [[ "$kind" == both ]] && print -r -- "header = \"x-api-key: $esc\""
-    print -r -- "header = \"Authorization: Bearer $esc\""
-  } | command curl -K - "$@"
-}
-
 _ccm_models_listing() {  # $1 = base url, $2 = key, $3 = max-time seconds
   # One `/v1/models` listing per launch, shared.
   #
@@ -100,15 +72,7 @@ _ccm_models_listing() {  # $1 = base url, $2 = key, $3 = max-time seconds
     return 0
   fi
 
-  local body url
-  _ccm_api_url "$base" "/v1/models?limit=1000"
-  url="$REPLY"
-  body=$(_ccm_curl_keyed both "$key" -sS -f --connect-timeout 2 --max-time "$maxtime" \
-           "$url" \
-           -H 'anthropic-version: 2023-06-01' 2>/dev/null) || return 1
-  [[ -n "$body" ]] || return 1
-
-  _ccm_undisguise_ids "$body"
+  REPLY=$(print -r -- "$key" | _ccm_util fetch-listing "$base" launch "$maxtime" 2>/dev/null) || return 1
   _ccm_models_memo[$memo_key]="$REPLY"
 }
 
@@ -220,7 +184,7 @@ _ccm_redact_url() {
 
 _ccm_gw_models_json() {
   local name="$1"
-  local base key body
+  local base key
   REPLY=""
 
   _ccm_read "$name" || return 1
@@ -246,17 +210,12 @@ _ccm_gw_models_json() {
   # the listing unreadable and non-claude models look absent. The same endpoints
   # return clean ids without it, and the native Anthropic endpoint authenticates
   # before validating the version, so nothing is lost.
-  local url
-  _ccm_api_url "$base" "/v1/models?limit=1000"
-  url="$REPLY"
-  # No proxy override: curl reads whatever HTTPS_PROXY the caller's environment
-  # carries, which is the one channel a bridge uses to make a private endpoint
-  # reachable. Overriding it here blanked an ambient proxy and the request died.
-  body=$(_ccm_curl_keyed both "$key" -sS -f --max-time 20 "$url") || {
+  # The core honours the ambient HTTPS_PROXY: a bridge uses it to make a
+  # private endpoint reachable.
+  REPLY=$(print -r -- "$key" | _ccm_util fetch-listing "$base" models) || {
     _ccm_err "could not reach '$(_ccm_redact_url "$base")' — if it is an internal endpoint, connect your private network and try again"
     return 1
   }
-  _ccm_undisguise_ids "$body"
 }
 
 _ccm_gw_models() {
