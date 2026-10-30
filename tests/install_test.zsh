@@ -150,10 +150,10 @@ run_installer "$d"; rc=$?
 [[ -f "$d/home/.config/ccmorph/model-registry.conf.migrated" ]] \
   && ok "the legacy registry is kept as a .migrated backup" \
   || fail "migration destroyed the legacy registry instead of archiving it"
-grep -qF 'context_discovered=' "$d/home/.config/ccmorph/work.conf" \
-  && ok "migration writes the probed window into the owning profile's own conf" \
-  || fail "migration did not carry the scoped row into work.conf"
-grep -qF '1000000' "$d/home/.config/ccmorph/work.conf" \
+grep -qF '"models"' "$d/home/.config/ccmorph/profiles/work/models.json" \
+  && ok "migration writes the probed window into the owning profile's models.json" \
+  || fail "migration did not carry the scoped row into work's models.json"
+grep -qF '1000000' "$d/home/.config/ccmorph/profiles/work/models.json" \
   && ok "migration preserves the probed value" \
   || fail "migration lost the probed window's value"
 

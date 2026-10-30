@@ -85,7 +85,15 @@ _ccm_cleanup_stale_overlays() {
 _ccm_migrate_state() {
   [[ -n "${CCMORPH_CONTEXT_LOCKED:-}" ]] && return 0
   local -a legacy=("$_CCMORPH_DIR/model-registry" "$_CCMORPH_DIR/model-registry.conf"
-    "$_CCMORPH_PROFILE_DIRS"/*/cache/context-window(N))
+    "$_CCMORPH_PROFILE_DIRS"/*/cache/context-window(N) "$_CCMORPH_DIR"/*.conf.lock(N))
+  # A conf still carrying its discovered limits inline moves them to models.json.
+  command grep -qs '^context_discovered=' "$_CCMORPH_DIR"/*.conf(N) /dev/null &&
+    legacy+=("$_CCMORPH_DIR")
+  # Plain credentials move into the login keychain (macOS); elsewhere they stay 0600.
+  [[ "$OSTYPE" == darwin* ]] &&
+    command grep -hsE '^(api_key|token)=.' "$_CCMORPH_DIR"/*.conf(N) /dev/null | command grep -qv '=keychain:' &&
+    command security default-keychain >/dev/null 2>&1 &&
+    "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" util keychain-migrate "$_CCMORPH_DIR"
   local legacy_file
   for legacy_file in "${legacy[@]}"; do
     if [[ -e "$legacy_file" || -L "$legacy_file" ]]; then
@@ -351,6 +359,16 @@ _ccm_read() {
     seen[$k]=1
     _ccm[$k]="$v"
   done < "$file"
+
+  # A credential kept in the login keychain is read here, so every caller sees the value.
+  for k in api_key token; do
+    [[ "${_ccm[$k]:-}" == keychain:* ]] || continue
+    _ccm[$k]=$("$_CCMORPH_LIBEXEC_DIR/ccmorph-core" util keychain-get "${_ccm[$k]}") || {
+      _ccm_err "'$name': ${_ccm[$k]} is not in the login keychain; set it again with: ccmorph config $name"
+      unset _ccm
+      return 1
+    }
+  done
 
   # `proxy` was the old spelling for a key-authenticated routed endpoint. Fold
   # it at the boundary so every runtime path has one profile type to maintain.

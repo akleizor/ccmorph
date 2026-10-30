@@ -350,7 +350,7 @@ func TestHeldProfileLockCannotOutliveTheDeadline(t *testing.T) {
 	})
 	priorValues = func([]string) map[string]int64 { return map[string]int64{} }
 	priorCatalogueTags = func([]string) map[string]*pycompat.Obj { return nil }
-	lock, err := os.OpenFile(filepath.Join(dir, "gw.conf.lock"), os.O_CREATE|os.O_WRONLY, 0o600)
+	lock, err := os.OpenFile(lockPath(filepath.Join(dir, "gw.conf")), os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}

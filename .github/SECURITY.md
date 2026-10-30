@@ -23,14 +23,16 @@ tags; update rather than patch in place.
 
 | Path | Holds | Mode |
 |---|---|---|
-| `~/.config/ccmorph/<name>.conf` | one profile: API key, OAuth token, or an email for a subscription login | `600` |
+| `~/.config/ccmorph/<name>.conf` | one profile: API key, OAuth token, or an email for a subscription login. On macOS the key and token move to the login keychain on first use and the conf keeps only `keychain:<name>.<key>` | `600` |
+| login keychain, service `ccmorph` | that profile's API key or OAuth token (macOS) | keychain ACL |
+| `~/.config/ccmorph/profiles/<name>/models.json` | context limits `ccmorph probe` discovered for the profile's route; no credential | `600` |
 | `~/.config/ccmorph/` | the state root (honours `CCMORPH_STATE_DIR`, then `XDG_CONFIG_HOME`) | `700` |
 | `~/.config/ccmorph/profiles/<name>/` | that profile's Claude Code config, including its own auth state | `700` |
 | `${TMPDIR}/ccmorph-<uid>.log` | launch and adapter diagnostics | ephemeral; created `600`, and an existing log of ours is tightened to `600` |
 | `<profile>/adapter/` | a rendered translator config, created per session | `700`, removed on exit |
 
 Every `*.conf` is gitignored, including the manual `context_window.<model>`
-overrides and the discovered `context_discovered` metadata it holds. No
+overrides it holds. No
 credential has ever been tracked in this repository.
 
 ## What protects them
@@ -87,7 +89,7 @@ Know these before trusting the tool with a key.
 - **A gateway you point a profile at receives your prompts.** ccmorph does not
   inspect, filter, or retain them, and adds no telemetry of its own — but pointing
   a profile at an endpoint is a decision to send your conversations there.
-- **Discovered context limits (`context_discovered` in a profile's `.conf`) are
+- **Discovered context limits (`profiles/<name>/models.json`) are
   machine-local and route-bound.** Never copy another host's `.conf` wholesale:
   its ceilings were probed against that host's route, and a wrong ceiling means
   a session that dies mid-conversation instead of compacting. A route change

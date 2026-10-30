@@ -122,7 +122,7 @@ class DiscoveryHTTP(unittest.TestCase):
         first = subprocess.run(self.command, env=self.env, capture_output=True,
                                text=True, timeout=HANG_TIMEOUT)
         self.assertEqual(first.returncode, 0, first.stderr)
-        stored = self.conf.read_text()
+        stored = (self.conf.parent / "profiles" / self.conf.stem / "models.json").read_text().replace(" ", "").replace("\n", "")
         self.assertIn('"a":128000', stored)
         self.assertIn('"b":128000', stored)
         self.assertNotIn('"unknown":', stored)

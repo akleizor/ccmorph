@@ -20,6 +20,15 @@
   spend (and as `balance` in `--json`), read with a free GET to the provider's
   billing endpoint. The key reaches ccmorph-core on stdin, as a token does, and
   is sent only to that provider's own host.
+- **A profile's `.conf` holds only what you write.** The limits `ccmorph probe`
+  discovers move out of the one-line `context_discovered=` JSON into an indented
+  `profiles/<name>/models.json`, and each `<name>.conf.lock` moves to
+  `.locks/<name>.lock`. Existing confs migrate on next use.
+- **API keys and tokens live in the macOS login keychain.** On first use each
+  profile's `api_key` and `token` are stored under service `ccmorph` and the conf
+  keeps `keychain:<name>.<key>`. `rm` deletes the items and `mv` moves them. With
+  no login keychain (Linux, CI) the conf stays plain at mode 600, as before.
+
 - **Hop has no manual-exit path left.** `ccmorph hop` refuses with a reason
   when it cannot find the Claude Code process to end, instead of queueing the
   switch and asking you to exit; the relay's "relay file missing" warning, only
