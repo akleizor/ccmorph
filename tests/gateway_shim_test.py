@@ -2008,3 +2008,126 @@ class ThinkingResendTest(unittest.TestCase):
         self.assertNotIn(b"thinking", bodies[1])
         self.assertEqual(json.loads(bodies[1])["messages"][1]["content"],
                          [{"type": "text", "text": "a"}])
+
+
+class TurnRouterTest(unittest.TestCase):
+    """env.CCMORPH_TURN_ROUTER (#76): the shim asks a local command which model
+    answers each user turn and keeps that answer for the turn's tool loop. The
+    switch is announced before the answer it applies to; a router failure of any
+    kind leaves the request as the client sent it."""
+
+    TURN_SSE = (
+        'event:message_start\n'
+        'data:{"type":"message_start","message":{"id":"msg_turn","model":"m-served",'
+        '"usage":{"input_tokens":3}}}\n\n'
+        'event:content_block_start\n'
+        'data:{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'
+        'event:content_block_delta\n'
+        'data:{"type":"content_block_delta","index":0,'
+        '"delta":{"type":"text_delta","text":"answer"}}\n\n'
+        'event:content_block_stop\n'
+        'data:{"type":"content_block_stop","index":0}\n\n'
+        'event:message_delta\n'
+        'data:{"type":"message_delta","delta":{"stop_reason":"end_turn"},'
+        '"usage":{"output_tokens":2}}\n\n'
+        'event:message_stop\n'
+        'data:{"type":"message_stop"}\n\n'
+    )
+
+    def setUp(self):
+        CaptureUpstream.mode = "sse"
+        CaptureUpstream.sse_body = self.TURN_SSE
+        CaptureUpstream.on_body = None
+        CaptureUpstream.on_headers = None
+        self.upstream = serve(CaptureUpstream)
+        self.addCleanup(self.upstream.shutdown)
+        self.target = f"http://127.0.0.1:{self.upstream.server_address[1]}"
+        self.seen = []
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, str(self.dir), True)
+        self.asks = self.dir / "asks.jsonl"
+        self.spec = json.dumps({"upstream": self.target, "models": ["m1", "m2"], "timeout": 1,
+                                "key_sha256": hashlib.sha256(b"k").hexdigest()})
+
+    def router(self, answer='{"model":"m2"}'):
+        """A router script that appends its stdin to $1 and answers with `answer`."""
+        path = self.dir / "router"
+        path.write_text('#!/bin/sh\ncat >> "$1"\nprintf \'\\n\' >> "$1"\n'
+                        f"printf '%s' '{answer}'\n")
+        path.chmod(0o700)
+        return path
+
+    def shim(self, answer='{"model":"m2"}'):
+        router = self.router(answer)
+        _, port = start_shim(self, self.target, env={
+            "CCMORPH_MODEL_ROUTE": self.spec,
+            "CCMORPH_TURN_ROUTER": f"{router} {self.asks}",
+        })
+        return port
+
+    def body(self, prompt, first="first"):
+        return json.dumps({
+            "model": "m1",
+            "tools": [{"name": "Bash", "input_schema": {"type": "object"}}],
+            "messages": [{"role": "user", "content": first},
+                         {"role": "user", "content": prompt}],
+        }).encode()
+
+    def follow_up(self, prompt, first="first"):
+        return json.dumps({
+            "model": "m1",
+            "tools": [{"name": "Bash", "input_schema": {"type": "object"}}],
+            "messages": [
+                {"role": "user", "content": first},
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": [{"type": "tool_use", "id": "t", "name": "Bash",
+                                                   "input": {}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t",
+                                              "content": "ok"}]},
+            ],
+        }).encode()
+
+    def post(self, port, body):
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/v1/messages", data=body, method="POST",
+            headers={"content-type": "application/json", "x-api-key": "k",
+                     "x-claude-code-session-id": "sess"})
+        with urllib.request.urlopen(request, timeout=HANG_TIMEOUT) as r:
+            return r.read().decode()
+
+    def sent_models(self):
+        return [json.loads(b)["model"] for b in self.seen]
+
+    def test_a_routed_turn_sticks_through_its_tool_loop_and_is_announced(self):
+        CaptureUpstream.on_body = self.seen.append
+        port = self.shim()
+        out = self.post(port, self.body("second"))
+        self.assertEqual(self.sent_models()[-1], "m2")
+        # The notice names both models and comes before the answer it applies to.
+        self.assertIn("answered by m2", out)
+        self.assertIn("you asked for m1", out)
+        self.assertLess(out.index("answered by m2"), out.index('"text":"answer"'))
+
+        out = self.post(port, self.follow_up("second"))
+        self.assertEqual(self.sent_models()[-1], "m2")
+        self.assertNotIn("Turn router", out)
+
+        # A request with no tools is a side call: never routed.
+        self.post(port, json.dumps({"model": "m1", "messages": [
+            {"role": "user", "content": "name this chat"}]}).encode())
+        self.assertEqual(self.sent_models()[-1], "m1")
+
+        # The next human turn asks again.
+        self.post(port, self.body("third"))
+        self.assertEqual(self.sent_models()[-1], "m2")
+        lines = self.asks.read_text().splitlines()
+        self.assertEqual(len(lines), 2, lines)
+        self.assertEqual(json.loads(lines[0])["prompt"], "second")
+        self.assertEqual(json.loads(lines[1])["prompt"], "third")
+
+    def test_a_failing_router_leaves_the_request_as_sent(self):
+        CaptureUpstream.on_body = self.seen.append
+        port = self.shim(answer="not json")
+        out = self.post(port, self.body("second"))
+        self.assertEqual(self.sent_models()[-1], "m1")
+        self.assertNotIn("Turn router", out)
