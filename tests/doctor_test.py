@@ -314,7 +314,9 @@ def test_run_doctor_remains_native_passthrough(tmp_path):
         "        self.send_response(200); self.send_header('Content-Length', '2')\n"
         "        self.end_headers(); self.wfile.write(b'{}')\n"
         "    def log_message(self, *a): pass\n"
-        "HTTPServer(('127.0.0.1', 0), H).serve_forever()\n")
+        "import re, sys\n"
+        "port = int(re.search(r'port: (\\d+)', open(sys.argv[2]).read()).group(1))\n"
+        "HTTPServer(('127.0.0.1', port), H).serve_forever()\n")
     (bindir / "cliproxyapi").chmod(0o755)
     env = {**os.environ, "HOME": str(home), "PATH": f"{bindir}:{os.environ['PATH']}",
            "CCMORPH_STATE_DIR": str(state), "CCMORPH_LIB_DIR": str(ROOT / "lib"),

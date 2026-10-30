@@ -23,6 +23,8 @@ func init() {
 		"migrate-projects":       migrateProjects,
 		"profile-ok":             profileOK,
 		"setup-profile":          setupProfile,
+		"bridge-start":           bridgeStart,
+		"bridge-stop":            bridgeStop,
 		"profile-read":           profileRead,
 		"listing-has-unsized":    listingHasUnsized,
 		"keychain-migrate":       keychainMigrate,
