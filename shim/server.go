@@ -186,6 +186,7 @@ type Server struct {
 	RetryTransport bool
 	Hooks          Hooks
 	Breaker        *Breaker
+	TurnRouter     *TurnRouter // CCMORPH_TURN_ROUTER: nil keeps every request as sent
 	Stall          time.Duration
 	RetryBase      time.Duration
 	Sleep          func(time.Duration) // injected in tests: the retry waits must not cost real time
@@ -450,6 +451,7 @@ func (s *Server) relay(rq *request) {
 	}
 	var answerAs string
 	var requested *string
+	var notice, thread string
 	rq.session = rq.header.Get("x-claude-code-session-id")
 	isPost := rq.r.Method == "POST"
 	isMessagePost := isPost && rq.path == pathMessages
@@ -477,6 +479,9 @@ func (s *Server) relay(rq *request) {
 		}
 		if sidecar != nil {
 			sidecar = sidecar.tagged(tagsOf(rq.header))
+		}
+		if s.TurnRouter != nil && isMessagePost {
+			body, notice, thread = s.routeTurn(body, key, rq.session)
 		}
 		body, answerAs = s.resolve(body, key)
 		if sidecar != nil {
@@ -611,6 +616,11 @@ func (s *Server) relay(rq *request) {
 	if breaker != nil {
 		breaker.record(!retryStatus(up.resp.StatusCode))
 	}
+	n := ""
+	if notice != "" && up.resp.StatusCode >= 200 && up.resp.StatusCode <= 299 {
+		n = notice
+		s.TurnRouter.noticed(thread)
+	}
 	if sidecar != nil {
 		sidecar.retries = retries
 	}
@@ -627,7 +637,7 @@ func (s *Server) relay(rq *request) {
 		h.Set("Connection", "close") // EOF is the client's only completion signal
 		rq.w.WriteHeader(up.resp.StatusCode)
 		rq.flush()
-		s.streamSSE(rq, up, sidecar, requested, answerAs)
+		s.streamSSE(rq, up, sidecar, requested, answerAs, n)
 		return
 	}
 	if strings.Contains(up.resp.Header.Get("Content-Type"), "json") {
@@ -639,6 +649,11 @@ func (s *Server) relay(rq *request) {
 			out, _ = s.rewrite(data, answerAs, true)
 			if s.mask != nil {
 				out = s.mask.restoreBody(out, true)
+			}
+		}
+		if n != "" {
+			if withNotice, ok := insertNotice(out, n); ok {
+				out = withNotice
 			}
 		}
 		data = out
@@ -668,10 +683,13 @@ func (s *Server) callResend(request, response []byte) (out []byte) {
 
 // streamSSE relays the stream. Every exit closes the client connection (the
 // header said so): an SSE response carries no content-length.
-func (s *Server) streamSSE(rq *request, up *upstream, sidecar *UsageSidecar, requested *string, answerAs string) {
+func (s *Server) streamSSE(rq *request, up *upstream, sidecar *UsageSidecar, requested *string, answerAs, notice string) {
 	var src lineSource = &thinkingStream{r: bufio.NewReaderSize(up, 64<<10)}
 	if s.mask != nil {
 		src = &unmaskStream{src: src, m: s.mask}
+	}
+	if notice != "" {
+		src = &noticeStream{src: src, text: notice, at: -1}
 	}
 	readErr, _ := s.relayStream(rq, src, sidecar, requested, answerAs)
 	// A client that hung up mid-stream (cancelled turn, /clear, quit) is routine.

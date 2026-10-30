@@ -343,6 +343,25 @@ func adapterCommand(adapter string) []string {
 	return []string{"python3", adapter}
 }
 
+// servedModels is every id this route can send: the profile's declared models
+// and whatever its gateway currently serves, never another profile's or
+// another backend's (promises 1 and 3).
+func (r *ModelRoutes) servedModels(key, current string) []string {
+	r.knownMu.Lock()
+	out := make([]string, 0, len(r.known))
+	for m := range r.known {
+		out = append(out, m)
+	}
+	r.knownMu.Unlock()
+	for m := range r.catalogue.served(key, current) {
+		if !slices.Contains(out, m) {
+			out = append(out, m)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
 // mappingTarget is the explicit map target for a request's wire id.
 func (r *ModelRoutes) mappingTarget(model string) (string, bool) {
 	t := r.modelMap[strings.TrimSuffix(model, "[1m]")]

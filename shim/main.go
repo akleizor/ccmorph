@@ -55,6 +55,12 @@ func Listen(h Hooks, o Options, getenv func(string) string) (*http.Server, net.L
 			return nil, nil, fmt.Errorf("shim: %w", err)
 		}
 	}
+	if s.TurnRouter, err = NewTurnRouter(getenv("CCMORPH_TURN_ROUTER")); err != nil {
+		return nil, nil, fmt.Errorf("shim: %w", err)
+	}
+	if s.TurnRouter != nil && s.Routes == nil {
+		return nil, nil, fmt.Errorf("shim: CCMORPH_TURN_ROUTER needs the adapter's model route")
+	}
 	if raw := getenv("CCMORPH_INBOUND"); raw != "" {
 		in, err := parseInbound(raw)
 		if err != nil {
