@@ -15,6 +15,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/akleizor/ccmorph/pycompat"
@@ -306,6 +307,34 @@ func TestDeadlineDuringCleanupKeepsValuesAndTriesCleanup(t *testing.T) {
 	ProbeAll(context.Background(), []string{"gw"}, o)
 	if len(stops) != 1 || stops[0] != "H" && stops[0] != "handle" {
 		t.Fatal(stops)
+	}
+}
+
+// A Ctrl-C landing inside the route stop used to abort it: the zsh ran on
+// the cancelled context and never started, and the last-chance cleanup saw
+// the handle already cleared, so the bridge and its key-bearing /tmp config
+// outlived the command (#66). The real routeStop runs here, against a
+// ccmorph stub that records what it was asked to do.
+func TestCancelInsideRouteStopStillRetiresTheRoute(t *testing.T) {
+	dir := state(t)
+	stops := filepath.Join(dir, "stops")
+	put(t, filepath.Join(dir, "lib", "ccmorph.sh"), `ccmorph() { print -r -- "$*" >> '`+stops+`'; }`+"\n")
+	realStop := routeStop
+	stubs(t, func(string) (map[string]string, error) {
+		return map[string]string{"ANTHROPIC_API_KEY": "k", "CCMORPH_ROUTE_HANDLE": "handle"}, nil
+	}, func(string) ([]string, map[string]int64, []*pycompat.Obj, error) {
+		return []string{"a"}, map[string]int64{"a": 123000}, nil, nil
+	})
+	priorValues = func([]string) map[string]int64 { return nil }
+	priorCatalogueTags = func([]string) map[string]*pycompat.Obj { return nil }
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	routeStop = func(ctx context.Context, h string) { cancel(); realStop(ctx, h) }
+	captureStderr(t)
+	r := ProbeAll(parent, []string{"gw"}, DefaultOptions())
+	got, _ := os.ReadFile(stops)
+	if string(got) != "_route_stop handle\n" || !hasNote(r, "interrupted") {
+		t.Fatalf("stops %q notes %v", got, r.Notes)
 	}
 }
 
@@ -992,6 +1021,40 @@ func TestOpenerUsesTheAmbientProxyAndRefusesCrossOriginRedirects(t *testing.T) {
 	}
 }
 
+// waitsTransport answers after `headers`; its body's first byte comes at `first`.
+// Both waits honour the request context, the way a real socket does.
+type waitsTransport struct{ headers, first time.Duration }
+
+type waitsBody struct {
+	ctx  context.Context
+	wait time.Duration
+	r    io.Reader
+}
+
+func (b *waitsBody) Read(p []byte) (int, error) {
+	if b.wait > 0 {
+		select {
+		case <-time.After(b.wait):
+		case <-b.ctx.Done():
+			return 0, b.ctx.Err()
+		}
+		b.wait = 0
+	}
+	return b.r.Read(p)
+}
+
+func (b *waitsBody) Close() error { return nil }
+
+func (f waitsTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	select {
+	case <-time.After(f.headers):
+	case <-r.Context().Done():
+		return nil, r.Context().Err()
+	}
+	return &http.Response{StatusCode: 200, Header: http.Header{}, Request: r,
+		Body: &waitsBody{r.Context(), f.first - f.headers, strings.NewReader("{}")}}, nil
+}
+
 // A slow link must not cost the launch catalogue. models.dev/api.json is
 // 5.9 MB, fetched under launchCatalogueTimeout (3s) when a launch meets an
 // unsized model; one budget over the whole exchange fails any transfer below
@@ -1035,6 +1098,37 @@ func TestTimeoutBoundsEachWaitNotTheWholeTransfer(t *testing.T) {
 		_, err := BuildOpener().Open(context.Background(), Request{Method: "GET", URL: srv.URL}, 200*time.Millisecond)
 		if !IsTimeout(err) {
 			t.Fatalf("a stalled read must time out: %v", err)
+		}
+	})
+	// The headers and the first body byte are two waits. 0.9s then 0.4s under a
+	// 1.2s timeout never stalled; one budget over both failed a slow gateway and
+	// cost the launch its catalogue (#66).
+	t.Run("headers then first byte", func(t *testing.T) {
+		for _, c := range []struct {
+			name    string
+			headers time.Duration
+			first   time.Duration
+			ok      bool
+		}{
+			{"each wait under the budget", 900 * time.Millisecond, 1300 * time.Millisecond, true},
+			{"stalled before the first byte", 900 * time.Millisecond, 9 * time.Second, false},
+			{"stalled before the headers", 9 * time.Second, 10 * time.Second, false},
+		} {
+			t.Run(c.name, func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					cl := &sameOriginClient{&http.Client{Transport: waitsTransport{c.headers, c.first}}}
+					body, err := cl.Open(context.Background(), Request{Method: "GET", URL: "http://gw.invalid/v1/models"}, 1200*time.Millisecond)
+					if c.ok {
+						if err != nil || string(body) != "{}" {
+							t.Fatalf("each wait is under the budget: body %q err %v", body, err)
+						}
+						return
+					}
+					if !IsTimeout(err) {
+						t.Fatalf("a stalled fetch must time out: %v", err)
+					}
+				})
+			})
 		}
 	})
 }

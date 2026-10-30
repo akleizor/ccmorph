@@ -99,12 +99,16 @@ var ccmorphEnv = func(ctx context.Context, profile string) (map[string]string, e
 
 // routeStop retires a route opened by ccmorphEnv. Best effort: a route left up
 // is reused by the next caller, so failing to close one must never fail a run
-// that already got its numbers.
+// that already got its numbers. It keeps its own 30-second budget and ignores
+// the caller's cancellation, because a Ctrl-C or a deadline arriving mid-stop
+// must not abort the one step that retires the bridge process and its
+// key-bearing /tmp config — and ProbeAll clears its handle before calling here,
+// so nothing retries a stop that was skipped.
 var routeStop = func(ctx context.Context, handle string) {
 	if handle == "" {
 		return
 	}
-	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	runZsh(cctx, `source "$1" && ccmorph _route_stop "$2"`, ccmorphScript(), handle)
 	check(ctx)

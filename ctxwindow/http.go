@@ -96,8 +96,8 @@ func BuildOpener() Opener {
 }
 
 // progress resets the idle timer whenever bytes move, so the timeout bounds
-// each wait on the socket (connect, first byte, every read) the way urllib's
-// timeout did, not the whole exchange. The run's own deadline still arrives
+// each wait on the socket (connect, the headers, the first body byte, every
+// read) the way urllib's timeout did, not the whole exchange. The run's own deadline still arrives
 // through ctx and bounds the total.
 type progress struct {
 	io.ReadCloser
@@ -149,6 +149,9 @@ func (c *sameOriginClient) Open(ctx context.Context, r Request, timeout time.Dur
 		}
 		return nil, &URLError{err}
 	}
+	// The headers are in: that wait is over, and the first body byte gets
+	// a wait of its own, as the shim's upstream timer does.
+	timer.Reset(timeout)
 	defer resp.Body.Close()
 	data, err := io.ReadAll(&progress{resp.Body, timer, timeout})
 	if err != nil {
