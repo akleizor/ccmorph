@@ -29,6 +29,7 @@ func init() {
 		"gc-stale":               gcStale,
 		"claude-verbs":           claudeVerbs,
 		"claude-opt-arities":     claudeOptArities,
+		"launch-flags":           launchFlags,
 		"session-adapter":        sessionAdapter,
 		"profile-read":           profileRead,
 		"profile-validate":       profileValidate,

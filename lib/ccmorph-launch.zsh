@@ -448,100 +448,33 @@ _ccm_launch() {
   # The model this launch hands Claude Code, through ANTHROPIC_MODEL. The caller's
   # own --model is never rewritten: Claude Code lets the flag beat the variable.
   local launch_model=""
-  local i=1
-
-  while (( i <= ${#args} )); do
-    arg="${args[$i]}"
-
-    case "$arg" in
-      --)
-        ask_missing_model=0
-        break
-        ;;
-
-      --model)
-        (( i < ${#args} )) &&
-          [[ -n "${args[$(( i + 1 ))]}" &&
-             "${args[$(( i + 1 ))]}" != -- ]] || {
-          _ccm_err "--model requires a value"
-          return 2
-        }
-        if [[ "${args[$(( i + 1 ))]}" == (-i|--interactive) ]]; then
-          interactive=1
-          args[$i,$(( i + 1 ))]=()
-          continue
-        fi
-
-        explicit_model="${args[$(( i + 1 ))]}"
-        user_model=1
-        skip_model=1
-        (( i += 2 ))
-        continue
-        ;;
-
-      --model=*)
-        explicit_model="${arg#--model=}"
-
-        [[ -n "$explicit_model" ]] || {
-          _ccm_err "--model requires a value"
-          return 2
-        }
-
-        user_model=1
-        skip_model=1
-        ;;
-
-      --dangerously-skip-permissions)
-        # Unlike model and effort, permission bypass is process launch state and
-        # Claude Code does not restore it from the resumed session transcript.
-        relay_launch_args+=("$arg")
-        ;;
-
-      -r|--resume)
-        ask_missing_model=0
-        if (( i < ${#args} )) &&
-           [[ -n "${args[$(( i + 1 ))]}" &&
-              "${args[$(( i + 1 ))]}" != -* ]]; then
-          resume_session="${args[$(( i + 1 ))]}"
-        fi
-
-        # A resumed session normally keeps its own recorded model, so ccmorph
-        # stays out of the way. But Claude Code cannot restore a proxy/custom
-        # model: it validates the recorded name against its built-in list and,
-        # failing that, silently falls back to a default Anthropic model. So for
-        # proxy profiles ccmorph must keep injecting --model to re-force the
-        # backend on resume.
-        (( _is_routed )) || skip_model=1
-        ;;
-
-      --resume=*)
-        ask_missing_model=0
-        resume_session="${arg#--resume=}"
-        (( _is_routed )) || skip_model=1
-        ;;
-
-      -c|--continue|--from-pr)
-        ask_missing_model=0
-        (( _is_routed )) || skip_model=1
-        ;;
-
-      -p|--print|--print=*|-h|--help|-v|--version|--bg|--background|--from-pr=*)
-        ask_missing_model=0
-        ;;
-
-      # Every other native option steps over the value it owns, if any, the
-      # way the binary itself parses. An option VALUE can look exactly like
-      # one of the flags above — `--system-prompt --continue` is a prompt, not
-      # a resume — and reading the value as the flag made a fresh launch
-      # behave as a resumed one (#334). The slice hands the walker this token
-      # and the one after it when one exists.
-      -?*)
-        _ccm_claude_option_step "${args[@]:$(( i - 1 )):2}"
-        (( REPLY == 2 )) && (( ++i ))
-        ;;
+  # Model, resume and print flags are read from Claude Code's own argv in the core,
+  # which steps over every option's value the way the binary parses (#334). The
+  # `claude --help` arity table is only consulted when another option is present.
+  local _lf_line _lf_arity="" _lf_a _lf_k
+  for _lf_a in "${args[@]}"; do
+    [[ "$_lf_a" == -- ]] && break
+    [[ "$_lf_a" == -?* && "$_lf_a" != (--model|--model=*|--dangerously-skip-permissions|-r|--resume|--resume=*|-c|--continue|--from-pr|--from-pr=*|-p|--print|--print=*|-h|--help|-v|--version|--bg|--background) ]] || continue
+    _ccm_claude_opt_arities
+    for _lf_k in ${(k)_CCMORPH_CLAUDE_OPT_ARITY}; do _lf_arity+="$_lf_k ${_CCMORPH_CLAUDE_OPT_ARITY[$_lf_k]}"$'\n'; done
+    break
+  done
+  local _lf_out
+  _lf_out=$(print -rn -- "$_lf_arity" | _ccm_util launch-flags "$_is_routed" "${args[@]}" 2>&1) || {
+    _ccm_err "$_lf_out"
+    return 2
+  }
+  for _lf_line in "${(@f)_lf_out}"; do
+    case "$_lf_line" in
+      model=*) explicit_model="${_lf_line#model=}" ;;
+      user_model=*) user_model="${_lf_line#*=}" ;;
+      skip_model=*) skip_model="${_lf_line#*=}" ;;
+      ask_missing_model=*) ask_missing_model="${_lf_line#*=}" ;;
+      resume=*) resume_session="${_lf_line#resume=}" ;;
+      interactive=1) interactive=1 ;;
+      relay=*) relay_launch_args+=("${_lf_line#relay=}") ;;
+      drop=*) args[${_lf_line#drop=},$(( ${_lf_line#drop=} + 1 ))]=() ;;
     esac
-
-    (( ++i ))
   done
 
   # `-i` with no `--model` asks for the model too — but ONLY where ccmorph owns a
