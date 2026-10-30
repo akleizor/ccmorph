@@ -1282,6 +1282,7 @@ _ccm_launch() {
         "CCMORPH_SET_ENV=${_ccm_set_layers[*]}" \
         "CCMORPH_RELAY_ID=$relay_id" \
         "CCMORPH_LIB_DIR=$_CCMORPH_LIB_DIR" \
+        "CLAUDE_CODE_PLUGIN_DIRS=${CLAUDE_CODE_PLUGIN_DIRS:+$CLAUDE_CODE_PLUGIN_DIRS:}${_CCMORPH_LIB_DIR:h}/share/claude-plugin" \
         -- \
         "${args[@]}"
       _ccm_rc=$?
@@ -1300,6 +1301,7 @@ _ccm_launch() {
         "${_ccm_edge_env[@]}" \
         "CCMORPH_RELAY_ID=$relay_id" \
         "CCMORPH_LIB_DIR=$_CCMORPH_LIB_DIR" \
+        "CLAUDE_CODE_PLUGIN_DIRS=${CLAUDE_CODE_PLUGIN_DIRS:+$CLAUDE_CODE_PLUGIN_DIRS:}${_CCMORPH_LIB_DIR:h}/share/claude-plugin" \
         -- \
         "${args[@]}"
       _ccm_rc=$?

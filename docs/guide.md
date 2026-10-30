@@ -483,15 +483,20 @@ At launch it chooses the profile first, then the model when ccmorph can list
 models. With a named profile you can use Claude Code's native `--model <id>`
 instead, or `ccmorph set <profile> model -i` to pick from the endpoint's listing.
 
-`ccmorph hop` queues the switch and asks you to exit; the relay then resumes the
-session on the new profile with its current model and effort intact. It only
-works **from inside a running Claude Code session** — it reads that session's
-id, model, and effort to hand them to the next one. In the Claude Code prompt,
-run it with a leading `!`:
+`ccmorph hop` ends the current Claude Code session and the relay resumes it on
+the new profile with its current model and effort intact — one command, no
+exit. It only works **from inside a running Claude Code session** — it reads
+that session's id, model, and effort to hand them to the next one. In the
+Claude Code prompt, use the `/ccmorph:hop` command every ccmorph launch loads,
+or run it with a leading `!`:
 
 ```
+/ccmorph:hop personal
 ! ccmorph hop personal
 ```
+
+If hop cannot find the Claude Code process it runs under, it leaves the switch
+queued and asks you to exit.
 
 In a plain terminal it exits with `not inside a Claude Code session`, and a
 session started by plain `claude` (bypassing the launcher) reports `this session

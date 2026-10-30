@@ -2757,6 +2757,27 @@ test_hop_relays_model_and_effort() {
   return $rc
 }
 
+test_hop_ends_the_session_it_was_run_from() {
+  local test_home rc=0 out status_file
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  # The relay is this shell; a python process stands in for Claude Code and runs
+  # hop in a shell of its own, as Claude Code runs a `!` command or /hop.
+  export CLAUDE_CODE_SESSION_ID='relay-session' CCMORPH_RELAY_ID="$$.test"
+  status_file="$test_home/claude-status"
+  out=$(python3 -c '
+import signal, subprocess, sys
+signal.signal(signal.SIGTERM, lambda *_: open(sys.argv[1], "w").write("ended"))
+subprocess.call(["zsh", "-c", "source \"$1\"; NO_COLOR=1 ccmorph hop proxy", "zsh", sys.argv[2]])
+' "$status_file" "$CCMORPH_SOURCE" 2>&1)
+  [[ "$(<"$status_file" 2>/dev/null)" == ended ]] || { print -u2 -- "hop must end the Claude process it runs under: ${(qqq)out}"; rc=1 }
+  [[ "$out" == *'Switching → proxy'* ]] || { print -u2 -- "hop must say it is switching: ${(qqq)out}"; rc=1 }
+  [[ -f "$HOME/.config/ccmorph/.reswitch.$CCMORPH_RELAY_ID" ]] || { print -u2 -- 'the switch must stay queued for the relay'; rc=1 }
+  unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_hop_falls_back_when_the_target_cannot_serve_the_model() {
   # A gateway model hopped into a Claude profile is a name Anthropic has never
   # heard of. The field is dropped so the target launches on its own default; the
@@ -11835,6 +11856,7 @@ run_test test_model_known_strips_only_the_terminal_window_suffix
 run_test test_invalid_resume_model_falls_back_to_profile_model
 run_test test_resume_rejects_flag_picker_and_multitoken_model_values
 run_test test_hop_relays_model_and_effort
+run_test test_hop_ends_the_session_it_was_run_from
 run_test test_hop_without_profile_uses_current_profile
 run_test test_hop_falls_back_when_the_target_cannot_serve_the_model
 run_test test_hop_asks_the_gateway_which_models_it_serves

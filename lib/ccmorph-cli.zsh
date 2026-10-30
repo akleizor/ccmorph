@@ -1569,6 +1569,33 @@ ccmorph() {
       _ccm_log "hop queued target=$_hop_profile session=$CLAUDE_CODE_SESSION_ID relay_id=${CCMORPH_RELAY_ID}"
       export _ccm_relay_expected="$_hop_profile"
 
+      # End the session ourselves: Claude Code is the first non-shell process below
+      # the relay in this process's ancestry (shells: the relay's forwarding and
+      # private-view subshells, and the one Claude Code runs this command in). The
+      # relay sees an exit it did not signal, finds the queued switch and resumes.
+      # Inline, not a helper: Claude's shell snapshot replays only this function.
+      local _hop_relay="${CCMORPH_RELAY_ID%%.*}" _hop_pid=$$ _hop_up _hop_claude="" _hop_n=0
+      local -a _hop_chain=()
+      while [[ "$_hop_relay" == <-> ]] && (( _hop_pid > 1 && _hop_n++ < 32 )); do
+        _hop_up=$(command ps -o ppid= -p "$_hop_pid" 2>/dev/null) || break
+        _hop_up="${_hop_up//[[:space:]]/}"
+        [[ "$_hop_up" == "$_hop_relay" ]] && {
+          local _hop_p
+          for _hop_p in "$_hop_pid" "${(@Oa)_hop_chain}"; do
+            [[ "${$(command ps -o comm= -p "$_hop_p" 2>/dev/null):t}" == (-|)(zsh|bash|sh|dash) ]] && continue
+            _hop_claude="$_hop_p"
+            break
+          done
+          break
+        }
+        _hop_chain+=("$_hop_pid")
+        _hop_pid="$_hop_up"
+      done
+      if [[ -n "$_hop_claude" && "$_hop_claude" != "$$" ]]; then
+        print "${_ccm_accent}Switching${_ccm_reset} → ${_ccm_bold}$_hop_profile${_ccm_reset}"
+        _ccm_log "hop ends claude pid=$_hop_claude"
+        kill -TERM "$_hop_claude" 2>/dev/null && return 0
+      fi
       print "${_ccm_accent}Switch queued${_ccm_reset} → ${_ccm_bold}$_hop_profile${_ccm_reset}"
       print "Exit now (${_ccm_bold}Ctrl-C${_ccm_reset} or ${_ccm_bold}/exit${_ccm_reset}) to complete the switch."
       ;;

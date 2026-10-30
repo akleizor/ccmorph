@@ -1,0 +1,5 @@
+{
+  "name": "ccmorph",
+  "description": "ccmorph's in-session commands: /hop moves this conversation to another profile.",
+  "author": {"name": "ccmorph"}
+}
