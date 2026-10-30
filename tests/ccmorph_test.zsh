@@ -11661,7 +11661,7 @@ _check_stale_overlay_cleanup() {
     print -r -- '{}' > "${candidates[3]}/config.yaml"
     for f in "${candidates[@]}"; do
       if [[ "$state" == young ]]; then
-        TZ=UTC touch -t 200001011200 "$f"
+        touch "$f"
       else
         TZ=UTC touch -t 200001010000 "$f"
       fi
@@ -11673,7 +11673,7 @@ _check_stale_overlay_cleanup() {
     fi
   fi
 
-  _ccm_cleanup_stale_overlays
+  _ccm_cleanup_stale
 
   local scans=( ${(f)"$(<"$HOME/ps-scans")"} )
   (( ${#scans} == expected_scans )) || {
@@ -11780,7 +11780,7 @@ test_file_metadata_reads_portably() {
     TMPDIR="$tmpd"
     [[ "$(_ccm_size "$HOME/five")" == 5 ]] || exit 11
     [[ "$(_ccm_mtime "$HOME/five")" == <-> ]] || exit 12
-    _ccm_cleanup_stale_overlays
+    _ccm_cleanup_stale
     _CCMORPH_LOG="$HOME/loose.log"
     _ccm_log_init
     [[ -o ksharrays ]] || exit 13   # the helpers fix it locally, never for their caller

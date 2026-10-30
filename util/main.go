@@ -26,6 +26,7 @@ func init() {
 		"bridge-start":           bridgeStart,
 		"bridge-stop":            bridgeStop,
 		"hop-target":             hopTarget,
+		"gc-stale":               gcStale,
 		"session-adapter":        sessionAdapter,
 		"profile-read":           profileRead,
 		"profile-validate":       profileValidate,

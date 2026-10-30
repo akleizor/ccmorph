@@ -661,8 +661,7 @@ _ccm_launch() {
   }
 
   # Best-effort: stale-relay and legacy-overlay GC must never block a launch.
-  _ccm_cleanup_stale_relays 2>/dev/null || :
-  _ccm_cleanup_stale_overlays 2>/dev/null || :
+  _ccm_cleanup_stale
 
   command rm -f "$relay_file" || return 1
 

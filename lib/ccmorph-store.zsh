@@ -1,76 +1,11 @@
 # ccmorph-store.zsh — Profile state files: stale-file cleanup, state and profile-home migration, directory security, atomic writes, profile reads and validation.
 # Sourced by ccmorph.sh after ccmorph-ui.zsh (see its Modules block); never run directly.
 
-_ccm_cleanup_stale_relays() {
-  local f relay_id owner modified
-  local now
-
-  # Best-effort GC of abandoned relay signals: never fatal to a launch.
-  now=$(command date +%s 2>/dev/null) || return 0
-
-  for f in "$_CCMORPH_DIR"/.reswitch.*(N); do
-    [[ -f "$f" && ! -L "$f" ]] || continue
-
-    relay_id="${${f:t}#.reswitch.}"
-    owner="${relay_id%%.*}"
-
-    [[ "$owner" == <-> ]] || continue
-    kill -0 "$owner" 2>/dev/null && continue
-
-    modified=$(_ccm_mtime "$f") || continue
-    (( now - modified >= 60 )) || continue
-
-    command rm -f "$f" 2>/dev/null || continue
-  done
-}
-
-_ccm_cleanup_stale_overlays() {
-  # Launches before settings-compose wrote a credential-bearing
-  # launch-settings overlay and handed it over with --settings. Reap any a
-  # killed session left behind: only when old (12h) AND no live process still
-  # names it. Best-effort: never fatal to a launch.
-  local now f modified live
-  local -i scanned=0
-  now=$(command date +%s 2>/dev/null) || return 0
-  # One read of $TMPDIR, which can hold tens of thousands of entries, serves
-  # both the overlay files and the bridge dirs below.
-  local -a candidates bridges
-  candidates=( "$_CCMORPH_PROFILE_DIRS"/*/cache/launch-settings.*(N) )
-  for f in "${TMPDIR:-/tmp}"/ccmorph-*(N); do
-    case "${f:t}" in
-      ccmorph-launch-settings.*) candidates+=( "$f" ) ;;
-      ccmorph-bridge-$UID-*) bridges+=( "$f" ) ;;
-    esac
-  done
-  for f in "${candidates[@]}"; do
-    [[ -f "$f" && ! -L "$f" ]] || continue
-    modified=$(_ccm_mtime "$f") || continue
-    (( now - modified >= 43200 )) || continue
-    if (( ! scanned )); then
-      live=$(command ps -axo command 2>/dev/null) || live=""
-      scanned=1
-    fi
-    [[ -n "$live" && "$live" == *"$f"* ]] && continue
-    command rm -f "$f" 2>/dev/null || :
-  done
-
-  # Provider bridge config dirs (ccmorph-bridge-$UID-*/config.yaml) carry the
-  # proxy's inbound key. _ccm_provider_stop reaps them on a clean teardown, but a
-  # SIGKILL/OOM of the launcher leaves both the dir and (worse) an orphaned
-  # cliproxyapi still serving OAuth creds. Same rule as above: reap only when old
-  # (12h) AND no live process names the config, so a running bridge is spared.
-  local d
-  for d in "${bridges[@]}"; do
-    [[ -d "$d" && ! -L "$d" ]] || continue
-    modified=$(_ccm_mtime "$d") || continue
-    (( now - modified >= 43200 )) || continue
-    if (( ! scanned )); then
-      live=$(command ps -axo command 2>/dev/null) || live=""
-      scanned=1
-    fi
-    [[ -n "$live" && "$live" == *"$d/config.yaml"* ]] && continue
-    command rm -rf "$d" 2>/dev/null || :
-  done
+# Best-effort GC of what a killed launch left behind: relay signals of dead
+# launchers, and credential-bearing launch-settings overlays and provider bridge
+# dirs no live process names after 12h. Never fatal to a launch.
+_ccm_cleanup_stale() {
+  _ccm_util gc-stale "$_CCMORPH_DIR" "$_CCMORPH_PROFILE_DIRS" 2>/dev/null || :
 }
 
 # Move state a release renamed, so upgrading is never a chore the user performs.
