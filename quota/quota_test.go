@@ -595,3 +595,84 @@ func TestSubscriptionTokenNamesTheKeychainAccount(t *testing.T) {
 		t.Fatalf("service %q, want %q", gotService, want)
 	}
 }
+
+func TestQuotaBalance(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	replies := map[string]string{
+		"api.deepseek.com/user/balance":                                  `{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"0.00"},{"currency":"CNY","total_balance":"40.75"}]}`,
+		"openrouter.ai/api/v1/credits":                                   `{"data":{"total_credits":100,"total_usage":25.5}}`,
+		"api.moonshot.ai/v1/users/me/balance":                            `{"code":0,"data":{"available_balance":12.3}}`,
+		"api.siliconflow.cn/v1/user/info":                                `{"code":20000,"data":{"totalBalance":"8.5"}}`,
+		"api.stepfun.ai/v1/accounts":                                     `{"balance":3}`,
+		"api.z.ai/api/biz/account/query-customer-account-report":         `{"success":true,"data":{"availableBalance":7}}`,
+		"open.bigmodel.cn/api/biz/account/query-customer-account-report": `{"success":false,"msg":"token expired or incorrect"}`,
+	}
+	var sent []string
+	useTransport(t, func(r *http.Request) (*http.Response, error) {
+		sent = append(sent, r.URL.Host+" "+r.Header.Get("Authorization"))
+		if strings.HasSuffix(r.Header.Get("Authorization"), "bad") {
+			return reply(401, ""), nil
+		}
+		body, ok := replies[r.URL.Host+r.URL.Path]
+		if !ok {
+			t.Errorf("unexpected request %s", r.URL)
+			return reply(404, ""), nil
+		}
+		return reply(200, body), nil
+	})
+	in := strings.Join([]string{
+		"ds\tgateway\thttps://api.deepseek.com/anthropic\t\tsk-ds",
+		"or\tgateway\thttps://openrouter.ai/api\t\tsk-or",
+		"kimi\tgateway\thttps://api.moonshot.ai/anthropic\t\tsk-k",
+		"sf\tgateway\thttps://api.siliconflow.cn\t\tsk-sf",
+		"glm\tgateway\thttps://api.z.ai/api/anthropic\t\tzk",
+		"glmno\tgateway\thttps://open.bigmodel.cn/api/anthropic\t\trefused",
+		"step\tgateway\thttps://api.stepfun.ai/step_plan\t\tsk-st",
+		"badkey\tgateway\thttps://api.deepseek.com\t\tbad",
+		"gw\tgateway\thttps://gateway.example\t\tsk-gw",
+	}, "\n")
+	jout, _, code := run(t, []string{"--json"}, in)
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	var doc struct {
+		Profiles []Entry `json:"profiles"`
+	}
+	if err := json.Unmarshal([]byte(jout), &doc); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, e := range doc.Profiles {
+		got[e.Profile] = e.Balance + "|" + e.Error
+	}
+	want := map[string]string{
+		"ds": "¥40.75|", "or": "$74.50|", "kimi": "$12.30|", "sf": "¥8.50|",
+		"glm": "$7.00|", "glmno": "|balance: key refused: token expired or incorrect",
+		"step": "$3.00|", "badkey": "|balance: key refused by api.deepseek.com", "gw": "|",
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s: got %q want %q", k, got[k], v)
+		}
+	}
+	// Zhipu takes the bare key, the rest a Bearer token; an unknown host is never sent a key.
+	joined := strings.Join(sent, ",")
+	if strings.Contains(joined, "sk-gw") || !strings.Contains(joined, "api.z.ai zk") || !strings.Contains(joined, "Bearer sk-ds") {
+		t.Fatalf("sent %v", sent)
+	}
+	out, _, _ := run(t, nil, "ds\tgateway\thttps://api.deepseek.com/anthropic\t\tsk-ds\n")
+	if want := "API and gateway profiles\nds\n  today $0.00 · month $0.00\n  balance ¥40.75\n"; out != want {
+		t.Fatalf("\n got %q\nwant %q", out, want)
+	}
+}
+
+func TestDeepseekShowsEmptyWalletsOnlyWhenAllAreEmpty(t *testing.T) {
+	got, err := deepseekBalance([]byte(`{"balance_infos":[{"currency":"USD","total_balance":"0.00"},{"currency":"CNY","total_balance":0}]}`))
+	if err != nil || got != "$0.00 ¥0.00" {
+		t.Fatalf("%q %v", got, err)
+	}
+	if _, err := deepseekBalance([]byte(`{"balance_infos":[]}`)); err == nil {
+		t.Fatal("an empty wallet list is unreadable, not zero")
+	}
+}

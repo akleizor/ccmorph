@@ -71,6 +71,9 @@ func renderEntry(w io.Writer, e Entry, color bool) {
 	if e.Spend != nil {
 		emit(w, spendLine(e.Spend), color, style)
 	}
+	if e.Balance != "" {
+		emit(w, "  balance "+e.Balance, color, style)
+	}
 	if reason != "" {
 		emit(w, "  "+reason, color, style)
 	}

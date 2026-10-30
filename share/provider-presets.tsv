@@ -1,0 +1,21 @@
+# Provider presets for `ccmorph add`: the official Anthropic-compatible endpoint of
+# each vendor, and the models its Claude Code tiers map to. Every base URL answers
+# POST /v1/messages (checked 2026-10-30); model ids follow each vendor's Claude Code
+# guide. Adapted from cc-switch's presets (MIT, github.com/farion1231/cc-switch).
+# Columns: id, label, base URL, opus model, sonnet model, haiku model.
+deepseek	DeepSeek	https://api.deepseek.com/anthropic	deepseek-v4-pro	deepseek-flash	deepseek-flash
+kimi	Kimi (Moonshot, global)	https://api.moonshot.ai/anthropic	kimi-k2.7-code	kimi-k2.7-code	kimi-k2.7-code
+kimi-cn	Kimi (Moonshot, China)	https://api.moonshot.cn/anthropic	kimi-k2.7-code	kimi-k2.7-code	kimi-k2.7-code
+kimi-coding	Kimi For Coding (global)	https://api.kimi.ai/coding	kimi-for-coding	kimi-for-coding	kimi-for-coding
+kimi-coding-cn	Kimi For Coding (China)	https://api.kimi.com/coding	kimi-for-coding	kimi-for-coding	kimi-for-coding
+glm	GLM (Z.ai, global)	https://api.z.ai/api/anthropic	glm-5.3	glm-5.3	glm-5.3
+glm-cn	GLM (Zhipu, China)	https://open.bigmodel.cn/api/anthropic	glm-5.3	glm-5.3	glm-5.3
+minimax	MiniMax (global)	https://api.minimax.io/anthropic	MiniMax-M3	MiniMax-M3.1-Flash	MiniMax-M3.1-Flash
+minimax-cn	MiniMax (China)	https://api.minimax.cn/anthropic	MiniMax-M3	MiniMax-M3.1-Flash	MiniMax-M3.1-Flash
+qwen	Qwen (Alibaba Cloud, global)	https://dashscope-intl.aliyuncs.com/apps/anthropic	qwen3.8-max	qwen3.7-plus	qwen3.8-flash
+qwen-cn	Qwen (Alibaba Cloud, China)	https://dashscope.aliyuncs.com/apps/anthropic	qwen3.8-max	qwen3.7-plus	qwen3.8-flash
+mimo	Xiaomi MiMo	https://api.xiaomimimo.com/anthropic	mimo-v2.6-pro	mimo-v2.6-pro	mimo-v2.6-pro
+stepfun	StepFun (global)	https://api.stepfun.ai/step_plan	step-3.5-flash-2603	step-3.5-flash-2603	step-3.5-flash-2603
+openrouter	OpenRouter	https://openrouter.ai/api	anthropic/claude-opus-5.5	anthropic/claude-sonnet-5.5	anthropic/claude-haiku-5.5
+siliconflow	SiliconFlow (global)	https://api.siliconflow.com	MiniMaxAI/MiniMax-M3	MiniMaxAI/MiniMax-M3	MiniMaxAI/MiniMax-M3
+siliconflow-cn	SiliconFlow (China)	https://api.siliconflow.cn	deepseek-ai/DeepSeek-V4-Flash	deepseek-ai/DeepSeek-V4-Flash	deepseek-ai/DeepSeek-V4-Flash

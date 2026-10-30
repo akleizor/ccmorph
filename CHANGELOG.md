@@ -9,6 +9,17 @@
 
 ### Changed
 
+- **Provider presets in `ccmorph add`.** An API-key profile now starts by
+  choosing a provider: DeepSeek, Kimi, GLM, MiniMax, Qwen, Xiaomi MiMo, StepFun,
+  OpenRouter or SiliconFlow (global and China endpoints) fill the official
+  Anthropic-compatible base URL and map the opus/sonnet/haiku tiers to the
+  vendor's models, so only the key is asked. *Custom endpoint* keeps the old
+  base-URL prompt. Presets adapted from cc-switch (MIT).
+- **`ccmorph quota` shows API balances.** API-key profiles on DeepSeek, Kimi,
+  GLM, OpenRouter, SiliconFlow or StepFun show the account balance under their
+  spend (and as `balance` in `--json`), read with a free GET to the provider's
+  billing endpoint. The key reaches ccmorph-core on stdin, as a token does, and
+  is sent only to that provider's own host.
 - **Hop has no manual-exit path left.** `ccmorph hop` refuses with a reason
   when it cannot find the Claude Code process to end, instead of queueing the
   switch and asking you to exit; the relay's "relay file missing" warning, only

@@ -31,7 +31,8 @@ var (
 // Main reads one profile per stdin line,
 // "name<TAB>kind<TAB>arg<TAB>extra", and prints one entry each. kind is "sub"
 // (arg is the config dir), "token" (extra is the token), "codex" (arg is the
-// cliproxyapi auth dir) or "gateway" (extra is monthly_budget_usd, may be empty).
+// cliproxyapi auth dir) or "gateway" (arg is the base URL, extra is
+// monthly_budget_usd; either may be empty, and a fifth field carries an API key).
 func Main(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	jsonOut, color := false, false
 	for _, a := range argv {
@@ -54,10 +55,14 @@ func Main(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		if len(f) < 3 || f[0] == "" {
 			continue
 		}
-		for len(f) < 4 {
+		for len(f) < 5 {
 			f = append(f, "")
 		}
-		entries = append(entries, read(client, f[0], f[1], f[2], f[3]))
+		e := read(client, f[0], f[1], f[2], f[3])
+		if f[1] == "gateway" {
+			e.Balance, e.Error = balance(client, f[2], f[4], e.Error)
+		}
+		entries = append(entries, e)
 	}
 	if len(entries) == 0 {
 		if jsonOut {

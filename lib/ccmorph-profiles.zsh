@@ -25,6 +25,29 @@ _ccm_account_model() {
   print -r -- "$value"
 }
 
+# The presets `ccmorph add` offers, as picker rows "id<TAB>label<TAB>base URL" in $REPLY.
+_ccm_provider_presets() {
+  local line
+  REPLY=""
+  while IFS= read -r line; do
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    local -a f=("${(@ps:\t:)line}")
+    REPLY+="${REPLY:+$'\n'}${f[1]}"$'\t'"${f[2]}"$'\t'"${f[3]#https://}"
+  done < "${_CCMORPH_LIB_DIR:h}/share/provider-presets.tsv"
+}
+
+# One preset by id: reply=(label, base URL, opus, sonnet, haiku).
+_ccm_provider_preset() {
+  local line
+  reply=()
+  while IFS= read -r line; do
+    [[ "$line" == "$1"$'\t'* ]] || continue
+    reply=("${(@)${(@ps:\t:)line}[2,6]}")
+    return 0
+  done < "${_CCMORPH_LIB_DIR:h}/share/provider-presets.tsv"
+  return 1
+}
+
 # Provider IDs stay unchanged; only human-facing product labels are cased.
 _ccm_provider_label() {
   case "$1" in
