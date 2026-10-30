@@ -13,6 +13,13 @@
   when it cannot find the Claude Code process to end, instead of queueing the
   switch and asking you to exit; the relay's "relay file missing" warning, only
   reachable through that path, is gone.
+- **`ccmorph quota` is one finished view of every profile** (#80). It groups
+  Claude subscriptions, Codex subscriptions, budget accounts and API or gateway
+  profiles; each window is a bar with its percent used and local reset time; a
+  plan tier comes from the provider's own account data. A rate-limited or
+  unreachable read keeps the last good reading with its age instead of a bare
+  error, and gateways show today's and this month's billed spend from their
+  receipts. `--json` prints the same data for tools such as the model router.
 - **Hop is one command.** `ccmorph hop <profile>` now ends the session it runs
   in, so the relay resumes on the new profile without a manual exit. Every
   launch also loads a `/ccmorph:hop <profile>` slash command that does the same.

@@ -4421,24 +4421,42 @@ test_listings_are_undisguised_on_entry() {
   assert_contains "$REPLY" '"id":"claude-opus-5"' "a genuine claude id must be left alone" || return 1
   assert_not_contains "$REPLY" "-dd-" "no disguise may survive the listing" || return 1
 }
-test_quota_reads_only_subscription_profiles_with_the_token_on_stdin() {
+test_quota_hands_every_profile_to_the_core_with_no_key_in_argv() {
   local test_home rc=0 out
   test_home=$(mktemp -d)
   setup_home "$test_home"
   write_apikey_conf apikey 'api_key=sk-test-apikey'
+  write_apikey_conf gw 'api_key=sk-test-gw' 'base_url=https://g.invalid' 'monthly_budget_usd=500'
   printf '%s\n' 'type=sub' 'email=a@b.c' > "$HOME/.config/ccmorph/sub.conf"
   printf '%s\n' 'type=token' 'token=token-test' > "$HOME/.config/ccmorph/token.conf"
+  printf '%s\n' 'type=provider' 'provider=codex' > "$HOME/.config/ccmorph/cx.conf"
   source "$CCMORPH_SOURCE"
-  # ccmorph-core quota echoes its argv and stdin: the token must arrive on stdin only.
+  # ccmorph-core quota echoes its argv and stdin: credentials must arrive on stdin
+  # only, and an api_key must never be handed over at all.
   mkdir -p "$test_home/libexec"
   printf '%s\n' '#!/bin/sh' 'echo "argv:$*"' 'cat' > "$test_home/libexec/ccmorph-core"
   chmod +x "$test_home/libexec/ccmorph-core"
   _CCMORPH_LIBEXEC_DIR="$test_home/libexec"
   out=$(ccmorph quota)
-  [[ "$out" == "argv:quota"$'\n'"sub"$'\t'"sub"$'\t'"${_CCMORPH_PROFILE_DIRS}/sub"$'\n'"token"$'\t'"token"$'\t'"${_CCMORPH_PROFILE_DIRS}/token"$'\t'"token-test" ]] || {
-    print -u2 -- "unexpected quota input: $out"; rc=1
+  local want="argv:quota"$'\n'
+  want+="apikey"$'\t'"gateway"$'\t'$'\t'$'\n'
+  want+="cx"$'\t'"codex"$'\t'"${_CCMORPH_DIR}/auth/cx"$'\t'$'\n'
+  want+="gw"$'\t'"gateway"$'\t'$'\t'"500"$'\n'
+  want+="proxy"$'\t'"gateway"$'\t'$'\t'$'\n'
+  want+="sub"$'\t'"sub"$'\t'"${_CCMORPH_PROFILE_DIRS}/sub"$'\t'$'\n'
+  want+="token"$'\t'"token"$'\t'"${_CCMORPH_PROFILE_DIRS}/token"$'\t'"token-test"
+  [[ "$out" == "$want" ]] || { print -u2 -- "unexpected quota input: $out"; rc=1; }
+  [[ "$out" != *sk-test* ]] || { print -u2 -- 'a quota line carried an API key'; rc=1; }
+  out=$(ccmorph quota --json apikey)
+  [[ "$out" == "argv:quota --json"$'\n'"apikey"$'\t'"gateway"$'\t'$'\t' ]] || {
+    print -u2 -- "unexpected --json quota input: $out"; rc=1
   }
-  ccmorph quota apikey >/dev/null 2>&1 && { print -u2 -- 'an apikey profile has no plan to read'; rc=1 }
+  out=$(ccmorph quota apikey --json)
+  [[ "$out" == "argv:quota --json"$'\n'"apikey"$'\t'"gateway"$'\t'$'\t' ]] || {
+    print -u2 -- "a flag after the profile must work too: $out"; rc=1
+  }
+  ccmorph quota --bogus >/dev/null 2>&1 && { print -u2 -- 'an unknown flag must be refused'; rc=1 }
+  ccmorph quota a b >/dev/null 2>&1 && { print -u2 -- 'a second profile must be refused'; rc=1 }
   rm -rf "$test_home"
   return $rc
 }
@@ -11568,7 +11586,7 @@ run_test test_source_names_no_machine_local_files
 run_test test_provider_profile_accepts_picker_exclusions
 run_test test_listings_are_undisguised_on_entry
 run_test test_every_profile_keeps_its_own_secure_storage
-run_test test_quota_reads_only_subscription_profiles_with_the_token_on_stdin
+run_test test_quota_hands_every_profile_to_the_core_with_no_key_in_argv
 run_test test_native_effort_does_not_rewrite_explicit_model
 run_test test_native_effort_validation_belongs_to_claude
 run_test test_proxy_model_is_bootstrap_fallback

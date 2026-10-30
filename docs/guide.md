@@ -503,18 +503,43 @@ there.
 
 ### Plan usage before a hop
 
-`ccmorph quota` shows, for every subscription profile, how much of its 5-hour and weekly
-windows is used and when each resets, so you can pick the profile to hop to:
+`ccmorph quota` shows every profile in one view, grouped by kind, so you can pick the
+profile to hop to or see what a gateway is costing. Each plan window is a bar with the
+percent used and its reset time (local; "in 2h 14m" inside a day, else "Tue 09:00"):
 
 ```
-alex         5h 12% (19:10)  week 40% (Tue 09:00)
-alextk       not available: this token cannot read plan usage
+Claude subscriptions
+alex  Max 20x
+  5h       ██░░░░░░░░░░░░░░  12%  in 4h 10m
+  7d       ██████░░░░░░░░░░  40%  Tue 09:00
+kathy  Pro  12 min old, rate-limited
+  5h       ███░░░░░░░░░░░░░  20%  in 1h 0m
+
+Codex subscriptions
+cx  Plus
+  5h       ██████░░░░░░░░░░  35%  in 2h 14m
+
+API and gateway profiles
+work
+  today $1.70 · month $5.00 (est.)
 ```
 
-It reads claude.ai's usage endpoint (the one `/usage` shows) with the profile's own
-sign-in: no inference, nothing billed. An expired sign-in is reported, not refreshed;
-the next session on that profile refreshes it. A `token` profile's long-lived token is
-not allowed to read plan usage.
+A plan tier (Pro, Max 5x, Max 20x, Team, Plus, Pro for Codex) is read from the
+provider's own account data, never guessed. Claude subscriptions are read from
+claude.ai's usage endpoint (the one `/usage` shows) with the profile's own sign-in,
+Codex subscriptions from Codex's own usage endpoint; no inference, nothing billed. An
+expired sign-in is reported, not refreshed; the next session on that profile refreshes
+it, and a `token` profile's long-lived token is not allowed to read plan usage.
+
+When a read is rate-limited or unreachable, the last good reading stays on screen,
+dimmed, with its age ("12 min old"); only a profile never read shows the error. Gateways
+and API keys show today's and this month's billed spend from the receipts at
+`~/.local/state/ccmorph/usage/`, marked `(est.)` when a row carried only a list-price
+estimate, and a profile with `monthly_budget_usd` adds a bar against that budget.
+
+`ccmorph quota --json` prints the same data for tools (profile, kind, plan, windows with
+`used` as a fraction and `resets_at` as a Unix second, `read_at`, `age_seconds`, `stale`,
+`error`, and `spend`).
 
 ## What is isolated, and what is shared
 
