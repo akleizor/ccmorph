@@ -29,6 +29,7 @@ func init() {
 		"valid-model-map":        validModelMap,
 		"launch-diagnostics":     launchDiagnostics,
 		"engine-int":             engineIntVerb,
+		"engine-bool":            engineBoolVerb,
 		"hazard-set":             hazardSetVerb,
 		"hazard-msg":             hazardMsgVerb,
 		"withhold-fatal":         withholdFatal,

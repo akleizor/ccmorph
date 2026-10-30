@@ -110,6 +110,24 @@ func engineInt(raw string) (int64, bool) {
 	return n, n > 0
 }
 
+// engineBool is the engine's env boolean: "1", "true", "yes" or "on" after an
+// ECMAScript trim and lowercasing. Anything else (off, no, 0, 2) is false.
+func engineBool(raw string) bool {
+	switch strings.ToLower(trimJS(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// engineBoolVerb: engine-bool <value> exits 0 when the engine reads it as true.
+func engineBoolVerb(args []string, _ io.Reader, _, _ io.Writer) int {
+	if len(args) == 1 && engineBool(args[0]) {
+		return 0
+	}
+	return 1
+}
+
 func engineIntVerb(args []string, _ io.Reader, out, _ io.Writer) int {
 	raw := ""
 	if len(args) > 0 {
