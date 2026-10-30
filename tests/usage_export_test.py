@@ -88,11 +88,20 @@ def read_day(output, day):
 @pytest.mark.parametrize("damage", [
     pytest.param({"cost": 10 ** 400}, id="float-overflowing-cost-issue-368"),
     pytest.param({"cost": 1e14}, id="over-limit-gateway-cost-issue-413"),
+    pytest.param({"estimate": 10 ** 400}, id="float-overflowing-estimate-issue-68"),
+    pytest.param({"estimate": 1e14}, id="over-limit-estimate-issue-68"),
+    pytest.param({"cost": "12.50"}, id="non-numeric-cost-issue-68"),
+    pytest.param({"estimate": "12.50"}, id="non-numeric-estimate-issue-68"),
+    pytest.param({"cost": -0.01}, id="negative-cost-issue-68"),
+    pytest.param({"estimate": -0.01}, id="negative-estimate-issue-68"),
 ])
 def test_a_receipt_with_a_damaged_cost_is_counted_not_fatal(tmp_path, damage):
-    """A billed cost too large for a float, or past the shim's COST_LIMIT — a finite
-    number no turn could ever be billed, so a stored one is damage after the fact —
-    is counted unpriced next to a good row, never exported and never fatal."""
+    """A stored price no writer would store — too large for a float, past the shim's
+    COST_LIMIT, not a number at all, or negative — is damage after the fact, and the
+    same damage takes the same outcome in either field: counted unpriced next to a
+    good row, never exported and never fatal. #68: the guards used to sit on the
+    billed cost alone, so the same damage in estimated_cost, the field #51 added,
+    aborted the whole export."""
     rows, output = tmp_path / "rows", tmp_path / "out"
     rows.mkdir()
     write(rows, "a.json", receipt("a", "claude-opus-5-5", "2026-10-16T01:00:00+00:00"))

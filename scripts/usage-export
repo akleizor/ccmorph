@@ -79,21 +79,19 @@ def convert(row):
         # Neither kind of price: ccusage prices it from its own list prices,
         # which is what a key at the provider would be charged.
         source = "estimate" if cost is not None else "list"
-    elif type(cost) is int and not finite(cost):
-        # An int too large for a float is no billable number: no writer stores one
-        # (the shim's bucket filter drops it, #313), so this receipt was damaged
-        # after the fact. Report the row unpriced — never bill a corrupt value,
-        # never lose the export to it.
-        return stamp, None
-    if cost is not None and (type(cost) not in (int, float) or not finite(cost) or cost < 0):
-        raise ValueError("invalid billed cost")
-    if cost is not None and cost >= COST_LIMIT:
-        # A finite cost no turn could ever be billed: the shim's bucket filter keeps
-        # a receipt's cost only below COST_LIMIT, so a stored one at or above it was
-        # damaged after the fact (a reference price this high takes a token count no
-        # turn produced). The same unpriced outcome as the int too large for a float
-        # — never bill a corrupt value, never lose the export to it — and a bound on
-        # every exported cost is what keeps the total inside the float range, however
+    if cost is not None and (type(cost) not in (int, float) or not finite(cost) or cost < 0
+                             or cost >= COST_LIMIT):
+        # A price no writer would store, in either field. The shim's bucket filter
+        # keeps a receipt's cost only as a finite number below COST_LIMIT (#313), so
+        # anything else a receipt carries — an int too large for a float, a value at
+        # or past the limit (a reference price this high takes a token count no turn
+        # produced), not a number at all, or a negative one — was damaged after the
+        # fact. One guard for both fields, so a check added for one cannot miss its
+        # sibling: #68 had the too-large check on the billed cost alone, so the same
+        # damage in estimated_cost, the field #51 added, took the whole export down
+        # where cost was counted unpriced. Report the row unpriced — never bill
+        # a corrupt value, never lose the export to it — and a bound on every
+        # exported cost is what keeps the total inside the float range, however
         # many such rows arrive.
         return stamp, None
     # A turn token distinguishes recycled ids even when timestamps collide.
