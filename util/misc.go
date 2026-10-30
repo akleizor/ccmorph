@@ -905,8 +905,10 @@ func modelKnown(args []string, _ io.Reader, _, _ io.Writer) int {
 	if err != nil {
 		return 2
 	}
+	// A reply that is not the object a /v1/models listing is cannot be walked for
+	// the model either: ignorance, not absence, so the carried model survives.
 	if asObj(payload) == nil {
-		return 1
+		return 2
 	}
 	mapJSON := args[1]
 	if mapJSON == "" {

@@ -200,7 +200,9 @@ func load(path string) *obj {
 		}
 		osFail(err)
 	}
-	o, ok := parse(b).(*obj)
+	// Every settings file here is one a user's editor may have prefixed with a
+	// BOM: read them all the way settings.json itself is read.
+	o, ok := parse(pycompat.StripBOM(b)).(*obj)
 	if !ok {
 		valueFail("%s: root is not a JSON object", path)
 	}
@@ -223,7 +225,7 @@ func readPolicy(profileDir string) *obj {
 		}
 		policyFail("%s: %s", policy, pycompat.OSErrorText(err))
 	}
-	v, perr := pycompat.Parse(b)
+	v, perr := pycompat.Parse(pycompat.StripBOM(b))
 	if perr != nil {
 		policyFail("%s: %s", policy, perr.Error())
 	}
@@ -307,7 +309,10 @@ func settle(profileDir string) {
 	}
 }
 
+// saveBase writes the copy load() re-reads on every later launch, so it carries
+// settings.json's content, never the BOM an editor prefixed the file with.
 func saveBase(profileDir string, data []byte) {
+	data = pycompat.StripBOM(data)
 	if cur := readBytes(join(profileDir, baseFile)); cur == nil || !bytes.Equal(cur, data) {
 		writeBytes(join(profileDir, baseFile), data)
 	}
