@@ -59,6 +59,7 @@ func init() {
 		"models-count":           modelsCount,
 		"running-adapter":        runningAdapter,
 		"listener-of":            listenerOf,
+		"doctor-route":           doctorRoute,
 		"models-filtered-json":   modelsFilteredJSON,
 		"window-label":           windowLabel,
 		"effort-rows":            effortRows,

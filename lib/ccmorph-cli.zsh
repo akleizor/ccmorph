@@ -163,86 +163,14 @@ _ccm_doctor() {
   fi
   [[ -n "$key" ]] && _ccm_doctor_status 'OK' 'credentials: present (value hidden)' || _ccm_doctor_status 'SKIP' 'credentials: none stored'
 
-  if [[ -n "$base" ]]; then
-    local invalid_url=0
-    if [[ "$base" != (http|https)://* || "$base" == *'?'* || "$base" == *'#'* ]]; then
-      _ccm_doctor_status 'FAIL' 'config: base_url must be an http(s) URL without query or fragment'
-      doctor_failed=1; invalid_url=1
-    fi
-    local safe_url http_code payload models_count
-    safe_url=$(_ccm_redact_url "$base")
-    print -r -- "endpoint: $safe_url"
-    if (( invalid_url )); then
-      _ccm_doctor_status 'SKIP' 'gateway: invalid endpoint (no request sent)'
-    elif [[ -z "$key" ]]; then
-      _ccm_doctor_status 'SKIP' 'gateway: no API credential for metadata request'
-    else
-      # Probe the same metadata route a launch uses, through the same ambient
-      # HTTPS_PROXY a launch would inherit — doctor must answer for the route the
-      # user actually has, not for a direct one they may not.
-      payload=$(print -r -- "$key_value" | _ccm_util fetch-listing "$base" doctor 2>/dev/null)
-      http_code="${payload##*$'\n'}"; payload="${payload%$'\n'*}"
-      [[ "$http_code" == <-> ]] || http_code=000
-      if [[ "$http_code" == 2?? ]]; then
-        models_count=$(print -r -- "$payload" | _ccm_util models-count 2>/dev/null) || models_count=''
-        if [[ -n "$models_count" ]]; then
-          _ccm_doctor_status "OK" "gateway: reachable (HTTP $http_code); models: $models_count"
-        else
-          _ccm_doctor_status "FAIL" "gateway: malformed model listing (HTTP $http_code)"
-          doctor_failed=1
-        fi
-      else
-        if [[ "$http_code" == 000 ]]; then
-          _ccm_doctor_status 'SKIP' 'gateway: endpoint did not answer (no changes made)'
-        else
-          _ccm_doctor_status "FAIL" "gateway: unreachable or rejected (HTTP $http_code)"
-          doctor_failed=1
-        fi
-      fi
-    fi
-  else
-    _ccm_doctor_status 'SKIP' 'gateway: profile has no base_url (native endpoint)'
-  fi
-  if [[ "$adapter" == true ]]; then
-    _ccm_doctor_status 'INFO' 'adapter: configured=true (not started by read-only doctor)'
-  elif [[ -n "$base" ]]; then
-    _ccm_doctor_status 'INFO' 'adapter: automatic compatibility may apply at launch (not started by doctor)'
-  else
-    _ccm_doctor_status 'SKIP' 'adapter: native profile path (not started by doctor)'
-  fi
-  if [[ -n "$base" && -x "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" ]]; then
-    local running_adapter
-    running_adapter=$(_ccm_util running-adapter "$name" 2>/dev/null) || running_adapter=''
-    if [[ "$running_adapter" == __UNKNOWN__ ]]; then
-      _ccm_doctor_status 'SKIP' 'adapter: status unknown (process inspection unavailable; not started by doctor)'
-    elif [[ -n "$running_adapter" ]]; then
-      local adapter_pid="${running_adapter%%$'\t'*}" adapter_children="${running_adapter#*$'\t'}"
-      local child_spec child_pid child_name listener what
-      # running-adapter names every listener holder: spawned children
-      # (cliproxyapi, a CCMORPH_SHIM_HOOKS build), and the adapter
-      # process itself when the shim is served in-process — the stock design,
-      # and the port a live session's base_url points at.
-      for child_spec in ${(s:,:)adapter_children}; do
-        child_pid="${child_spec%%:*}"; child_name="${child_spec#*:}"
-        listener=$(_ccm_util listener-of "$child_pid" 2>/dev/null) || listener='__UNKNOWN__'
-        what="$child_name child"
-        if [[ "$child_pid" == "$adapter_pid" ]]; then
-          what="in-process shim"
-        fi
-        if [[ "$listener" == __UNKNOWN__ ]]; then
-          _ccm_doctor_status "SKIP" "adapter: $what listener status unknown (pid $child_pid)"
-        elif [[ -n "$listener" ]]; then
-          _ccm_doctor_status "OK" "adapter: $what listener $listener (pid $child_pid; read-only check)"
-        else
-          _ccm_doctor_status "WARN" "adapter: $what running without TCP listener (pid $child_pid)"
-        fi
-      done
-    else
-      _ccm_doctor_status 'INFO' 'adapter: not running (not started by read-only doctor)'
-    fi
-  fi
-  # Do not classify arbitrary cache names as stale: ownership is only established
-  # by ccmorph's provisioning manifest, and doctor never provisions or repairs.
+  local _dr_line _dr_out
+  _dr_out=$(print -r -- "$key_value" | _ccm_util doctor-route "$name" "$base" "$adapter") || doctor_failed=1
+  for _dr_line in "${(@f)_dr_out}"; do
+    case "$_dr_line" in
+      *$'\t'*) _ccm_doctor_status "${_dr_line%%$'\t'*}" "${_dr_line#*$'\t'}" ;;
+      ?*) print -r -- "$_dr_line" ;;
+    esac
+  done
   _ccm_doctor_status 'SKIP' 'generated state: ownership/conflict not established (no changes made)'
   return $doctor_failed
 }
