@@ -230,6 +230,17 @@ _ccm_nested_edge_env() {
   return 0
 }
 
+_ccm_penv_route() {  # rewrite penv in place: <bridge port> <bridge key> <adapter 0|1>
+  local _le_out
+  _le_out=$(print -rl -- "${penv[@]}" | _ccm_util launch-env "$1" "$2" "$3" "${_ccm_adapter_port:-}" \
+    "${CCMORPH_TASK:-}" "${CCMORPH_ATTEMPT:-}") || return 1
+  _le_out="${_le_out%.}"
+  penv=()
+  while [[ "$_le_out" == *$'\0'* ]]; do
+    penv+=("${_le_out%%$'\0'*}"); _le_out="${_le_out#*$'\0'}"
+  done
+}
+
 _ccm_launch() {
   local profile="${_CCMORPH_LAUNCH_PROFILE:-}"
   local args=()
@@ -553,16 +564,7 @@ _ccm_launch() {
           }
         fi
         # Inject the bridge endpoint and temporary key into the launch env
-        local _bi=1 _found_base=0 _found_key=0
-        while (( _bi <= ${#penv} )); do
-          case "${penv[$_bi]}" in
-            ANTHROPIC_BASE_URL=*) penv[$_bi]="ANTHROPIC_BASE_URL=http://127.0.0.1:${_ccm_provider_port}"; _found_base=1 ;;
-            ANTHROPIC_API_KEY=*)  penv[$_bi]="ANTHROPIC_API_KEY=${_ccm_provider_key}"; _found_key=1 ;;
-          esac
-          (( ++_bi ))
-        done
-        (( _found_base )) || penv+=("ANTHROPIC_BASE_URL=http://127.0.0.1:${_ccm_provider_port}")
-        (( _found_key ))  || penv+=("ANTHROPIC_API_KEY=${_ccm_provider_key}")
+        _ccm_penv_route "$_ccm_provider_port" "$_ccm_provider_key" 0 || { command rm -f "$relay_file"; return 1; }
       fi
 
       # Discovery belongs to the real gateway, not the adapter's partial protocol
@@ -621,23 +623,9 @@ _ccm_launch() {
           }
         fi
 
-        # Redirect only what Claude Code sees. The profile keeps its real base_url
-        # so `ccmorph _env` stays truthful for every other consumer.
-        local _pi=1
-        while (( _pi <= ${#penv} )); do
-          if [[ -n "$_ccm_adapter_port" && "${penv[$_pi]}" == ANTHROPIC_BASE_URL=* ]]; then
-            penv[$_pi]="ANTHROPIC_BASE_URL=http://127.0.0.1:${_ccm_adapter_port}"
-          fi
-          (( ++_pi ))
-        done
-        # Task tags: label every request of this session for the gateway shim, which
-        # records them on the usage row and never changes the model. Only valid shapes
-        # pass. The user's own header lines, when the settings layers carry any, are
-        # merged in front of these after the diagnostics read below.
-        local _ccm_hdrs=""
-        [[ "${CCMORPH_TASK:-}" =~ '^[A-Za-z0-9._-]{1,64}$' ]] && _ccm_hdrs+="x-ccmorph-task: $CCMORPH_TASK"$'\n'
-        [[ "${CCMORPH_ATTEMPT:-}" =~ '^[0-9]{1,3}$' ]] && _ccm_hdrs+="x-ccmorph-attempt: $CCMORPH_ATTEMPT"$'\n'
-        [[ -n "$_ccm_hdrs" ]] && penv+=("ANTHROPIC_CUSTOM_HEADERS=${_ccm_hdrs%$'\n'}")
+        # Point Claude Code at the adapter and tag its requests for the gateway shim
+        # (the profile keeps its real base_url for every other consumer).
+        _ccm_penv_route "" "" 1 || { command rm -f "$relay_file"; return 1; }
       else
         _ccm_adapter_stop
       fi
