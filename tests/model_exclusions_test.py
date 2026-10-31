@@ -26,7 +26,7 @@ def project(tmp_path, served, excluded='blocked', *, offline=False, cached=None,
            'CCMORPH_LIB_DIR': str(ROOT / "lib"), 'LISTING': json.dumps({'data': [{'id': m} for m in served]}),
            'OFFLINE': '1' if offline else '0'}
     script = '''source "$1"
-_ccm_models_listing() { [[ "$OFFLINE" == 1 ]] && return 1; REPLY="$LISTING"; }
+mkdir -p "$HOME/fakebin" && printf '%s\\n' '#!/bin/sh' '[ "$OFFLINE" = 1 ] && exit 22' 'printf "%s" "$LISTING"' > "$HOME/fakebin/curl" && chmod +x "$HOME/fakebin/curl" && export PATH="$HOME/fakebin:$PATH"
 _ccm_read demo || exit
 _ccm_project_picker demo https://example.invalid synthetic blocked Test
 '''

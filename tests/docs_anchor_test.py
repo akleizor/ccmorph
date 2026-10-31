@@ -27,8 +27,9 @@ DOC = ROOT / "docs/ARCHITECTURE.md"
 # would pass while it lies. The file is whichever module holds the code -- since
 # #352 the cited function may live in any of them -- and only ccmorph library
 # files match: the doc also writes "in `model-window`" and "in `anthropic-beta`",
-# which name a helper executable and an HTTP header, not a library.
-CITATION = re.compile(r"`([^`]+)`(?:\s+\w+)?\s+in\s+`(ccmorph(?:-[\w.-]+)?\.zsh|ccmorph\.sh)`")
+# which name a helper executable and an HTTP header, not a library. A Go file is
+# named by its path from the repo root (`launch/run.go`).
+CITATION = re.compile(r"`([^`]+)`(?:\s+\w+)?\s+in\s+`(ccmorph(?:-[\w.-]+)?\.zsh|ccmorph\.sh|\w+/[\w.-]+\.go)`")
 
 
 def _slug(h):
@@ -48,7 +49,7 @@ def test_architecture_cites_code_the_reader_can_land_on_issue_396():
     citations = CITATION.findall(DOC.read_text())
     assert citations, "ARCHITECTURE.md cites no ccmorph module code"
     for token, name in citations:
-        source = ROOT / "lib" / name
+        source = ROOT / name if name.endswith(".go") else ROOT / "lib" / name
         assert source.is_file(), (
             f"ARCHITECTURE.md cites {token!r} in {name}, which is not a file")
         # Split on `\n`, never `splitlines()`: the cited module may carry literal
