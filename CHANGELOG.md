@@ -5,9 +5,16 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
-## Unreleased
+## v0.4.2 — 2026-10-31
 
 ### Changed
+
+- **The launch runs in the Go core.** `ccmorph run` is now `ccmorph-core launch`:
+  profile and model resolution, the provider bridge and adapter, settings
+  projection, the Claude Code child (TERM and HUP forwarded) and the hop relay
+  loop. The zsh library keeps a thin wrapper; conf reading and validation,
+  profile setup, the `/v1/models` fetch, the auto-compact budget and doctor's
+  route checks moved to Go before it (#86–#106).
 
 - **Provider presets in `ccmorph add`.** An API-key profile now starts by
   choosing a provider: DeepSeek, Kimi, GLM, MiniMax, Qwen, Xiaomi MiMo, StepFun,
