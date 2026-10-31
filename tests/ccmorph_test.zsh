@@ -248,6 +248,20 @@ write_fake_adapter() {
   chmod +x "$adapter"
 }
 
+# A libexec whose core drops the diagnostics' hazard record (touching
+# $HOME/hazard-record-dropped), so a launch takes the hazard-set fallback.
+hazard_dropping_libexec() {
+  local dir="$HOME/libexec-drop"
+  mkdir -p "$dir"
+  printf '%s\n' '#!/bin/sh' \
+    "real='$_CCMORPH_LIBEXEC_DIR/ccmorph-core'" \
+    'if [ "$1 $2" = "util launch-diagnostics" ]; then' \
+    '  "$real" "$@" | perl -0 -ne '"'"'if (/^hazard\t/) { open F, ">", "$ENV{HOME}/hazard-record-dropped"; close F; next } print'"'"'' \
+    'else exec "$real" "$@"; fi' > "$dir/ccmorph-core"
+  chmod +x "$dir/ccmorph-core"
+  print -r -- "$dir"
+}
+
 setup_home() {
   # GH-434: remembered so the sweep after each test can fail a test whose
   # child outlives it.
@@ -8147,19 +8161,8 @@ test_the_launch_hazard_advisory_matches_switch_hazard_warn() {
   # `_ccm_switch_hazard_warn` renders the warning instead. Every other answer the
   # diagnostics gives passes through untouched, so which path speaks is the only
   # difference between this launch and the one above.
-  functions[_ccm_diag_without_hazard]="${functions[_ccm_launch_diagnostics]}"
-  _ccm_launch_diagnostics() {
-    local -a records=("${(@0)$(_ccm_diag_without_hazard "$@")}")
-    local record
-    for record in "${records[@]}"; do
-      [[ -n "$record" ]] || continue
-      if [[ "$record" == hazard$'\t'* ]]; then
-        : > "$HOME/hazard-record-dropped"
-        continue
-      fi
-      printf '%s\0' "$record"
-    done
-  }
+  local _CCMORPH_LIBEXEC_DIR="$_CCMORPH_LIBEXEC_DIR"
+  _CCMORPH_LIBEXEC_DIR=$(hazard_dropping_libexec)
   rm -f "$CCMORPH_TEST_LOG" "$HOME/hazard-record-dropped"
     _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1 }
   advise_from_fallback=$(grep -m1 '^ADVISE=' "$CCMORPH_TEST_LOG" || true)
@@ -8245,19 +8248,8 @@ test_the_hazard_record_sizes_from_the_percentage_the_launch_injects() {
     # The fallback, forced the same way the parity test forces it: the record the
     # diagnostics computed is dropped, so `_ccm_launch` takes its `else` branch and
     # `_ccm_switch_hazard_warn` computes from the launch env after the injection.
-    functions[_ccm_diag_without_hazard]="${functions[_ccm_launch_diagnostics]}"
-    _ccm_launch_diagnostics() {
-      local -a records=("${(@0)$(_ccm_diag_without_hazard "$@")}")
-      local record
-      for record in "${records[@]}"; do
-        [[ -n "$record" ]] || continue
-        if [[ "$record" == hazard$'\t'* ]]; then
-          : > "$HOME/hazard-record-dropped"
-          continue
-        fi
-        printf '%s\0' "$record"
-      done
-    }
+    local _CCMORPH_LIBEXEC_DIR="$_CCMORPH_LIBEXEC_DIR"
+    _CCMORPH_LIBEXEC_DIR=$(hazard_dropping_libexec)
     rm -f "$CCMORPH_TEST_LOG" "$HOME/hazard-record-dropped"
     _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
     advise_from_fallback=$(grep -m1 '^ADVISE=' "$CCMORPH_TEST_LOG" || true)
@@ -9802,8 +9794,13 @@ fake_context_refresh() {
     'printf "%s\\n" "$*" >> "$HOME/refresh.direct"' \
     'exit 1' > "$CCMORPH_LIB_DIR/../libexec/context-probe"
   chmod +x "$CCMORPH_LIB_DIR/../libexec/context-probe"
-  _ccm_spawn_bg_logged() { print -r -- "$*" >> "$HOME/background.args"; }
-  _ccm_endpoint_window() { print called >> "$HOME/context.endpoint"; return 1; }
+  # The launch spawns its background sizing through the core: this one records it.
+  mkdir -p "$HOME/core"
+  printf '%s\n' '#!/bin/sh' "real='$_CCMORPH_LIBEXEC_DIR/ccmorph-core'" \
+    'if [ "$1 $2" = "context-probe --declared-only" ]; then printf "%s\n" "$*" >> "$HOME/background.args"; exit 0; fi' \
+    'exec "$real" "$@"' > "$HOME/core/ccmorph-core"
+  chmod +x "$HOME/core/ccmorph-core"
+  _CCMORPH_LIBEXEC_DIR="$HOME/core"  # the caller's local
 }
 
 test_add_context_refresh_is_background_and_declared_only() {
@@ -9811,6 +9808,7 @@ test_add_context_refresh_is_background_and_declared_only() {
   test_home=$(mktemp -d)
   setup_home "$test_home"
   source "$CCMORPH_SOURCE"
+  local _CCMORPH_LIBEXEC_DIR="$_CCMORPH_LIBEXEC_DIR"
   fake_context_refresh
   local out rc=0
   out=$(print -l apikey custom sk-test-not-real 'http://gw.invalid' '' | ccmorph add gw 2>&1)
@@ -9832,6 +9830,7 @@ test_launch_resolves_scoped_registry_globs() {
   write_apikey_conf gw 'api_key=test-key' 'base_url=https://gateway.invalid' 'model=gpt-example'
   print -r -- 'gw:gpt-*=333333' > "$HOME/.config/ccmorph/model-registry"
   source "$CCMORPH_SOURCE"
+  local _CCMORPH_LIBEXEC_DIR="$_CCMORPH_LIBEXEC_DIR"
   fake_context_refresh
   local rc=0
   _ccm_launch -a gw prompt >/dev/null 2>&1 || rc=1
@@ -9887,6 +9886,7 @@ test_launch_context_lookup_is_local_before_background_refresh() {
   install_model_window
   write_apikey_conf gw 'api_key=test-key' 'base_url=https://gateway.invalid' 'model=opaque-model'
   source "$CCMORPH_SOURCE"
+  local _CCMORPH_LIBEXEC_DIR="$_CCMORPH_LIBEXEC_DIR"
   fake_context_refresh
   local rc=0 actual scheduled
   _ccm_launch -a gw prompt >/dev/null 2>&1 || rc=1

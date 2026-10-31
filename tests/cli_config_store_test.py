@@ -475,16 +475,17 @@ class ConfigurationSaveTest(unittest.TestCase):
         native = self.settings.read_bytes()
         calls = self.home / 'store-calls'
         # Stop at argument validation, immediately after the native default seam.
-        # The shell's dynamic scope exposes the actual default consumed by launch.
+        # A wrapper core records every config-store verb the launch asks for.
         result = subprocess.run(
-            ['zsh', '-fc', 'source "$1"; functions -c _ccm_config_store _store; '
-             '_ccm_config_store() { print -r -- "$1" >> "$TEST_STORE_CALLS"; _store "$@"; }; '
-             '_ccm_err() { print -r -- "$default_model"; }; '
-             '_ccm_launch -a demo --model', '_', str(ROOT / 'lib/ccmorph.sh')],
+            ['zsh', '-fc', 'source "$1"; mkdir -p "$HOME/core"; '
+             'printf "%s\\n" "#!/bin/sh" "real=\'$_CCMORPH_LIBEXEC_DIR/ccmorph-core\'" '
+             '\'[ "$1 $2" = "util config-store" ] && printf "%s\\n" "$3" >> "$TEST_STORE_CALLS"\' '
+             '\'exec "$real" "$@"\' > "$HOME/core/ccmorph-core"; chmod +x "$HOME/core/ccmorph-core"; '
+             '_CCMORPH_LIBEXEC_DIR="$HOME/core"; _ccm_launch -a demo --model', '_', str(ROOT / 'lib/ccmorph.sh')],
             env={**self.env, 'TEST_STORE_CALLS': str(calls)}, text=True,
             capture_output=True, timeout=HANG_TIMEOUT)
         self.assertEqual(result.returncode, 2, result.stderr)
-        self.assertEqual(result.stdout, 'native-default\n')
+        self.assertIn('--model requires a value', result.stderr)
         self.assertEqual([op for op in calls.read_text().splitlines()
                           if op in ('seed-model-defaults', 'get')], ['seed-model-defaults'])
         self.assertEqual(self.conf_fields()['model'], 'native-default')

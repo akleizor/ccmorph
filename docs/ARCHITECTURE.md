@@ -85,7 +85,7 @@ beside itself. `CCMORPH_LIB_DIR` names the `lib/` directory.
 | `ccmorph-profiles.zsh` | Profile homes and choices: the shared harness layer linked into each profile home, profile and value pickers, sign-in state, and committing a new profile. |
 | `ccmorph-cli.zsh` | The `ccmorph` command: the config store, doctor, help, usage and the verb dispatcher. |
 | `ccmorph-providers.zsh` | The dialect adapter and the provider proxy (cliproxyapi): start, stop, login and listing. |
-| `ccmorph-launch.zsh` | Launching Claude Code: the project picker, the forked claude child, _ccm_launch and the relay driver. |
+| `ccmorph-launch.zsh` | The wrapper that runs `ccmorph-core launch` (package `launch`: profile and model resolution, the bridge and adapter, settings projection, the claude child and the relay loop) as a child TERM and HUP reach. |
 
 ## 1. Profile model
 
@@ -253,7 +253,7 @@ MCP credentials (through capsules), settings, history, and tooling are **global 
 | Adapter probe cache | **per endpoint**, shared across profiles | `.adapter-cache/<sha256(base_url)[:16]>.json`, beside the profile dirs — keyed by endpoint so a second profile on an already-classified gateway starts instantly; the stored `endpoint` is re-checked on read, so a moved URL or hash collision re-probes instead of mis-serving |
 | Adapter runtime config, auth, and log | per launch | mode-0700 directory under `${TMPDIR:-/tmp}`; removed on exit |
 | `settings.json` | **generated** per profile | canonical `~/.claude/settings.json` + the profile's `settings.profile.json` layer + saved model defaults, written by `settings-compose` at launch; edits made to it are folded back into the layer — see [Launch contract](#launch-contract-arguments-pass-through) |
-| Shared harness layer — `skills`, `plugins`, `commands`, `hooks`, `output-styles`, `agents`, `session-env`, `file-history`, `CLAUDE.md`, `keybindings.json`, `settings.local.json` | global | one manifest (`sharedDirs`/`sharedFiles` in `util/setup.go`), symlinked into `~/.claude`. Dirs are created-and-linked even while empty, so content installed later reaches every profile; a file appearing in `~/.claude` after a profile existed is linked by the next launch's setup pass. A profile-local REAL dir is merged into the shared store and linked only for the mergeable stores — `agents`, `session-env`, `file-history` — never overwriting an existing entry. Links move as links, not followed (a symlinked dir is one link): an absolute link as is, a relative one rewritten to an absolute path — into the shared store when its target is inside the migrated tree, else to the target's physical path — and its backup entry is removed only once the new link exists; any other one is refused and moved nowhere, to be reconciled through its owning tool instead. A profile-local real file is a deliberate override, respected. Claude may persist the profile spelling used during installation in its plugin indexes; `_ccm_normalize_plugin_index_paths` maps only those stale `installLocation`/`installPath` prefixes back to an existing canonical `~/.claude/plugins` target. It never changes source URLs, package metadata, or missing targets. |
+| Shared harness layer — `skills`, `plugins`, `commands`, `hooks`, `output-styles`, `agents`, `session-env`, `file-history`, `CLAUDE.md`, `keybindings.json`, `settings.local.json` | global | one manifest (`sharedDirs` and `sharedFiles = []string` in `util/setup.go`), symlinked into `~/.claude`. Dirs are created-and-linked even while empty, so content installed later reaches every profile; a file appearing in `~/.claude` after a profile existed is linked by the next launch's setup pass. A profile-local REAL dir is merged into the shared store and linked only for the mergeable stores — `agents`, `session-env`, `file-history` — never overwriting an existing entry. Links move as links, not followed (a symlinked dir is one link): an absolute link as is, a relative one rewritten to an absolute path — into the shared store when its target is inside the migrated tree, else to the target's physical path — and its backup entry is removed only once the new link exists; any other one is refused and moved nowhere, to be reconciled through its owning tool instead. A profile-local real file is a deliberate override, respected. Claude may persist the profile spelling used during installation in its plugin indexes; `_ccm_normalize_plugin_index_paths` maps only those stale `installLocation`/`installPath` prefixes back to an existing canonical `~/.claude/plugins` target. It never changes source URLs, package metadata, or missing targets. |
 | Translator instance | per credential domain | one adapter per credential domain when translation is required; native endpoints use none |
 | MCP servers | per profile | each profile keeps the `mcpServers` it was seeded with at provision (or added via `claude mcp add`); nothing projects an external set onto it at launch. |
 
@@ -1454,9 +1454,9 @@ Two distinct reasons to set one:
 For a `claude-*` id the window is chosen by the id: `[1m]` reads 1M, a bare `claude-`
 prefix takes a hardcoded 200,000 and ignores the env ceiling. ccmorph derives the
 suffixed `send_id` only when the **launch target itself** starts with `claude-` — the gate
-`"$_send_target" == claude-*` in `ccmorph-launch.zsh`; a bare alias never does, and the mapped
-target is read separately, for budget sizing alone, where `_pmodel="${_palias[$_pbare]}"` in
-`ccmorph-launch.zsh` swaps the alias for the model behind it. So mapping `opus` → `claude-opus-5`
+`strings.HasPrefix(target, "claude-")` in `launch/run.go`; a bare alias never does, and the mapped
+target is read separately, for budget sizing alone, where `pmodel = alias[bare]` in
+`launch/context.go` swaps the alias for the model behind it. So mapping `opus` → `claude-opus-5`
 leaves a `--model opus` launch on the 200,000 family ceiling — the mapping changes which
 model answers, not which window it gets. Two further limits: the tag is inert under
 `CLAUDE_CODE_DISABLE_1M_CONTEXT` **[src]**, and an explicit `claude-opus-5[1m]` row is

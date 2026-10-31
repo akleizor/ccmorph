@@ -180,6 +180,16 @@ def run_pty(command, env, exchanges=(), size=(24, 100), library=CCMORPH):
     return process.returncode, out.decode('utf-8', 'replace'), missed
 
 
+# Stop a launch at the adapter boundary: a core whose `util adapter-start` reports
+# the model it was asked for (on stderr) and fails, all else the real core.
+ADAPTER_BOUNDARY = r'''mkdir -p "$HOME/core"
+printf '%s\n' '#!/bin/sh' "real='$_CCMORPH_LIBEXEC_DIR/ccmorph-core'" \
+  'if [ "$1 $2" = "util adapter-start" ]; then printf "SELECTED=<%s>\n" "$5" >&2; exit 1; fi' \
+  'exec "$real" "$@"' > "$HOME/core/ccmorph-core"
+chmod +x "$HOME/core/ccmorph-core"
+_CCMORPH_LIBEXEC_DIR="$HOME/core"
+'''
+
 class PickerTTYTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix='ccmorph-picker-'))
@@ -233,11 +243,11 @@ class PickerTTYTest(unittest.TestCase):
         self.profile()
         (self.state / 'profiles/demo/settings.json').write_text('{}')
         # Stop at the real launcher's adapter boundary: no client or inference.
-        command = '_ccm_adapter_start() { print -r -- "SELECTED=$2"; return 1; }\nccmorph run demo'
+        command = ADAPTER_BOUNDARY + 'ccmorph run demo'
         self.spec('=picker-beta')
         rc, out, missed = run_pty(command, env)
         self.assertIsNone(missed, out)
-        self.assertIn('SELECTED=picker-beta', out)
+        self.assertIn('SELECTED=<picker-beta>', out)
         self.assertIsNone(self.field('demo', 'model'))  # invocation-only choice
         self.assertNotIn('old-secret', out)
 
@@ -250,7 +260,7 @@ class PickerTTYTest(unittest.TestCase):
         env = self.env(fzf=True)
         self.profile()
         (self.state / 'profiles/demo/settings.json').write_text('{}')
-        command = '_ccm_adapter_start() { print -r -- "SELECTED=<$2>"; return 1; }\nccmorph run demo'
+        command = ADAPTER_BOUNDARY + 'ccmorph run demo'
         self.spec('=CANCEL')  # any unexpected picker would abort before SELECTED
         for args, expected in (('--model picker-alpha', 'picker-alpha'),
                                ('--print hello', ''), ('--continue', ''),
@@ -261,7 +271,7 @@ class PickerTTYTest(unittest.TestCase):
         result = subprocess.run(['zsh', '-fc', 'source "$1"\n' + command, 'test', str(CCMORPH)],
                                 env=env, stdin=subprocess.DEVNULL, capture_output=True,
                                 text=True, timeout=HANG_TIMEOUT)
-        self.assertIn('SELECTED=<>', result.stdout)
+        self.assertIn('SELECTED=<>', result.stderr)
         with (self.state / 'demo.conf').open('a') as conf:
             conf.write('model=picker-alpha\n')
         rc, out, _ = run_pty(command, env)

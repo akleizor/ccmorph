@@ -12,6 +12,13 @@ ROOT = Path(__file__).resolve().parents[1]
 FZF = '#!/usr/bin/env python3\nimport sys\nsys.stdout.write(sys.stdin.read())\n'
 
 
+# The launch fetches /v1/models through curl; this one serves $LISTING.
+FAKE_CURL = r'''mkdir -p "$HOME/fakebin"
+printf '%s\n' '#!/bin/sh' 'printf "%s" "$LISTING"' > "$HOME/fakebin/curl"
+chmod +x "$HOME/fakebin/curl"
+export PATH="$HOME/fakebin:$PATH"
+'''
+
 def copied_lib(tmp_path):
     """A throwaway install root, so a test can stub one libexec program in place."""
     inst = tmp_path / 'inst'
@@ -82,7 +89,7 @@ def test_set_model_interactive_offers_everything_not_excluded(tmp_path):
 
 def test_launch_stops_when_exclusions_leave_no_rows(tmp_path):
     state, env = setup(tmp_path, 'blocked,allowed,future-model')
-    r = zsh('_ccm_models_listing() { REPLY="$LISTING"; }\nccmorph run demo -p hi', env)
+    r = zsh(FAKE_CURL + 'ccmorph run demo -p hi', env)
     assert r.returncode != 0
     assert 'no cached or served picker models remain' in r.stderr
     assert '-p hi' not in claude_calls(tmp_path)
@@ -96,7 +103,7 @@ def test_launch_projects_filtered_rows_and_keeps_discovery_off(tmp_path):
     stub_sizer(lib, tmp_path / 'sizer.ran')
     state, env = setup(tmp_path, 'blocked')
     env['CCMORPH_LIB_DIR'] = str(lib)
-    r = zsh('_ccm_models_listing() { REPLY="$LISTING"; }\nccmorph run demo -p hi', env)
+    r = zsh(FAKE_CURL + 'ccmorph run demo -p hi', env)
     assert r.returncode == 0, r.stderr
     # The copied lib's sizer stub writes this; the real one would size the synthetic
     # ids against models.dev and the live endpoint on every launch. A missing marker
