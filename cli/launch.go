@@ -1,9 +1,10 @@
-// Package launch is `ccmorph-core launch`: the run loop that was zsh's
+// Package cli is the `ccmorph` command in the core. `ccmorph-core launch` is the
+// run loop that was zsh's
 // _ccm_launch_driver and _ccm_launch. It resolves the profile and model, starts
 // the provider bridge or adapter, projects settings, runs Claude Code as a child
 // with TERM/HUP forwarded, and relaunches on a hop's relay request. Each step it
 // owns calls the same core verbs the zsh did, so their behaviour is unchanged.
-package launch
+package cli
 
 import (
 	"bytes"
@@ -29,7 +30,7 @@ type launcher struct {
 	tuning, profileEnv, launchEnv, backend, mapping    []string
 	launcherPID                                        int
 
-	red, yellow, bold, dim, accent, reset string
+	red, yellow, bold, dim, accent, cyan, reset string
 
 	memo        map[string]string
 	arity       string
@@ -138,7 +139,7 @@ func (l *launcher) theme() {
 		return fmt.Sprintf("\033[38;2;%d;%d;%dm", v>>16, v>>8&0xff, v&0xff)
 	}
 	l.bold, l.dim, l.reset = "\033[1m", "\033[2m", "\033[0m"
-	l.accent, l.yellow, l.red = rgb("d77757"), rgb("ffc107"), rgb("ff6b80")
+	l.accent, l.yellow, l.red, l.cyan = rgb("d77757"), rgb("ffc107"), rgb("ff6b80"), rgb("b1b9f9")
 }
 
 // signals is _ccm_launch's traps and _ccm_fork_forward's: INT and QUIT belong to
@@ -306,9 +307,9 @@ func (l *launcher) readActive() (string, bool) {
 	return name, true
 }
 
-// read is _ccm_read + _ccm_validate_loaded: the profile's fields, or false after
-// the refusal has been reported.
-func (l *launcher) read(name string) (map[string]string, bool) {
+// readRaw is _ccm_read: the profile's fields, or false after the refusal has
+// been reported.
+func (l *launcher) readRaw(name string) (map[string]string, bool) {
 	out, errOut, rc := l.core(nil, "", "util", "profile-read", l.dir, name, "1",
 		strings.Join(l.profileEnv, ","), strings.Join(l.mapping, ","))
 	if errOut != "" {
@@ -325,6 +326,15 @@ func (l *launcher) read(name string) (map[string]string, bool) {
 	parts := strings.Split(strings.TrimSuffix(out, "."), "\x00")
 	for i := 0; i+1 < len(parts); i += 2 {
 		fields[parts[i]] = parts[i+1]
+	}
+	return fields, true
+}
+
+// read is _ccm_read + _ccm_validate_loaded.
+func (l *launcher) read(name string) (map[string]string, bool) {
+	fields, ok := l.readRaw(name)
+	if !ok {
+		return nil, false
 	}
 	if fields["type"] == "apikey" {
 		var in strings.Builder

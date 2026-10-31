@@ -519,52 +519,8 @@ ccmorph() {
       ;;
 
     list)
-      local n f
-      local found=0
-
-      for f in "$dir"/*.conf(N); do
-        n="${f:t:r}"
-
-        if ! _ccm_read "$n"; then
-          print -u2 "ccmorph: skipping invalid profile '$n'"
-          continue
-        fi
-
-        local marker=" "
-        local name_fmt="${n}"
-
-        if [[ "$n" == "$active" ]]; then
-          marker="${_ccm_accent}*${_ccm_reset}"
-          name_fmt="${_ccm_bold}${n}${_ccm_reset}"
-        fi
-
-        local label="${_ccm_dim}${_ccm[type]}${_ccm_reset}"
-        # Declared before the branches: `local x; x=$(...)` inside an if/elif chain
-        # emits the assignment to stdout in this context, which corrupts the listing.
-        local _lm=""
-
-        if [[ "${_ccm[type]}" == sub &&
-              -n "${_ccm[email]:-}" ]]; then
-          label="${_ccm_cyan}sub${_ccm_reset}${_ccm_dim}: ${_ccm[email]}${_ccm_reset}"
-        elif [[ "${_ccm[type]}" == token ]]; then
-          label="${_ccm_yellow}token${_ccm_reset}"
-        elif [[ "${_ccm[type]}" == apikey ]]; then
-          _lm=$(_ccm_account_model "$n") || _lm=""
-          label="${_ccm_cyan}apikey${_ccm_reset}${_ccm_dim}: ${_ccm[base_url]:-api.anthropic.com}${_lm:+ → ${_lm}}${_ccm_reset}"
-        elif [[ "${_ccm[type]}" == provider ]]; then
-          _lm=$(_ccm_account_model "$n") || _lm=""
-          _ccm_provider_label "${_ccm[provider]:-provider}"
-          label="${_ccm_accent}${REPLY}${_ccm_reset}${_lm:+${_ccm_dim} → ${_lm}${_ccm_reset}}"
-        fi
-
-        print " ${marker} ${name_fmt} (${label})"
-        found=1
-      done
-
-      (( found )) ||
-        print "${_ccm_dim}  No profiles. Run: ccmorph add <name>${_ccm_reset}"
-
-      unset _ccm
+      _ccm_core cli list "${@:2}"
+      return $?
       ;;
 
     add)
@@ -929,56 +885,8 @@ ccmorph() {
       ;;
 
     cred)
-      # One verb for "print this profile's secret". Replaces `key`, `token`, and
-      # `creds`,
-      # which were the same operation split by profile type or abbreviated
-      # into jargon. The conf already knows
-      # which secret it holds, so the tool answers rather than asking.
-      #
-      # Named or chosen, never guessed: a bare `cred` must not silently print the
-      # default profile's secret, but demanding a name it could have offered is the
-      # same refusal-to-help `-i` exists to end. Only when stdin is a terminal —
-      # piped into a script, a missing argument stays an error.
-      if [[ -z "${2:-}" || "${2:-}" == (-i|--interactive) ]] && [[ -t 0 ]]; then
-        local _cred_pick
-        _cred_pick=$(_ccm_menu_profile apikey token) || return 1
-        [[ -n "$_cred_pick" ]] || return 1
-        set -- cred "$_cred_pick"
-      fi
-      _ccm_valid "${2:-}" || {
-        _ccm_err "usage: ccmorph cred <profile>"
-        return 1
-      }
-
-      _ccm_exists "$2" || {
-        _ccm_err "no profile '$2'"
-        _ccm_accounts_hint
-        return 1
-      }
-
-      _ccm_read "$2" || return 1
-
-      # Deliberately NOT _env: that provisions the profile's Claude Code state
-      # (mkdir + 11 shared symlinks + .claude.json) as a side effect, so a
-      # non-Claude consumer reading a credential would silently create a Claude
-      # profile. This is a pure read.
-      local _cred="${_ccm[api_key]:-${_ccm[token]:-}}"
-      [[ -n "$_cred" ]] || {
-        _ccm_err "'$2' is a ${_ccm[type]} profile and stores no credential here"
-        _ccm_err "subscription profiles use browser login: ccmorph login $2"
-        unset _ccm
-        return 1
-      }
-
-      # Newline for a human, none for a pipe: `x=$(ccmorph cred gw)` must not
-      # capture a trailing newline into a header value.
-      if [[ -t 1 ]]; then
-        print -r -- "$_cred"
-      else
-        print -rn -- "$_cred"
-      fi
-
-      unset _ccm
+      _ccm_core cli cred "${@:2}"
+      return $?
       ;;
 
     # `probe` is kept as an alias, not removed. v2.3.0 is published (release
@@ -1676,54 +1584,8 @@ ccmorph() {
       ;;
 
     use)
-      if [[ -z "${2:-}" ]]; then
-        if [[ -n "$active" ]]; then
-          print "${_ccm_bold}${active}${_ccm_reset}"
-        else
-          print "${_ccm_dim}No default set. Run: ccmorph use <profile>${_ccm_reset}"
-        fi
-        return 0
-      fi
-
-      # A bare `use` reports the current default, which is a useful answer and stays
-      # as it is. `-i` is the explicit "let me choose a new one".
-      if [[ "$2" == (-i|--interactive) ]]; then
-        local _use_pick
-        _use_pick=$(_ccm_menu_profile) || return 1
-        [[ -n "$_use_pick" ]] || return 1
-        set -- use "$_use_pick"
-      fi
-
-      _ccm_valid "${2:-}" || {
-        _ccm_err "invalid name — use alphanumeric/underscore"
-        return 1
-      }
-
-      _ccm_exists "$2" || {
-        _ccm_err "no profile '$2'. Run: ccmorph list"
-        return 1
-      }
-
-      _ccm_read "$2" || return 1
-
-      _ccm_validate_loaded "$2" || {
-        unset _ccm
-        return 1
-      }
-
-      _ccm_setup_dir "$2" || {
-        unset _ccm
-        return 1
-      }
-
-      _ccm_write "$dir/active" "$2" || {
-        unset _ccm
-        _ccm_err "could not set default profile"
-        return 1
-      }
-
-      unset _ccm
-      print "${_ccm_accent}Default set${_ccm_reset} to ${_ccm_bold}$2${_ccm_reset}"
+      _ccm_core cli use "${@:2}"
+      return $?
       ;;
 
     *)
