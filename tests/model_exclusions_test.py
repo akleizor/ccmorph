@@ -82,6 +82,10 @@ def test_cli_pickers_filter_but_catalogue_stays_unfiltered(tmp_path):
     fzf = bindir / 'fzf'
     fzf.write_text('#!/usr/bin/env python3\nimport sys\nsys.stdout.write(sys.stdin.read())\n')
     fzf.chmod(0o755)
+    # `ccmorph models` fetches in the core, which runs curl: serve the listing there.
+    curl = bindir / 'curl'
+    curl.write_text('#!/bin/sh\ncat >/dev/null\nprintf \'%s\\n\' "$LISTING"\n')
+    curl.chmod(0o755)
     env = {**os.environ, 'HOME': str(tmp_path), 'CCMORPH_STATE_DIR': str(tmp_path / 'state'),
            'CCMORPH_LIB_DIR': str(ROOT / "lib"), 'PATH': str(bindir) + ':' + os.environ['PATH'],
            'LISTING': json.dumps({'data': [{'id': m, 'owned_by': 'test'} for m in ids]})}
