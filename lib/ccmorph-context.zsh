@@ -155,56 +155,20 @@ _ccm_profile_layer() {
 }
 
 _ccm_effective_acw() {
-  # The auto-compact budget the ENGINE will use, in its own precedence order:
-  #
-  #   1. env CLAUDE_CODE_AUTO_COMPACT_WINDOW -- read before the settings layer, and
-  #      CLAMPED there (`Math.max(1e5, effective)` over a bounded parse).
-  #   2. a saved autoCompactWindow -- subject to the setting's schema
-  #      (`.int().min(1e5).max(1e6)`), and an out-of-range value is DROPPED, not
-  #      clamped, so the session falls through to the ceiling.
-  #   3. the value ccmorph derived for the launched model.
-  #
-  # The env/saved asymmetry is the whole reason this is one function: two
-  # open-coded copies gave the clamp to one and not the other, and a saved 50,000
-  # then produced a 17,000 trigger where the engine used 784,000.
-  local profile="$1" derived="${2:-}" _e=""
+  # The auto-compact budget the ENGINE will use (`util effective-acw`): env
+  # CLAUDE_CODE_AUTO_COMPACT_WINDOW clamped, else a saved autoCompactWindow
+  # (schema-checked, $3 when the launch already read it), else the derived $2.
+  local profile="$1" derived="${2:-}" env="" saved="" _e
   for _e in "${penv[@]}"; do
-    if [[ "$_e" == CLAUDE_CODE_AUTO_COMPACT_WINDOW=* ]]; then
-      # Parsed the way the engine parses it, not as pure digits: `1e5`, `100_000`
-      # and `100000junk` are all valid budgets there, and rejecting them here meant
-      # falling through to a DIFFERENT budget and reporting the wrong trigger. A
-      # value the engine calls invalid (<= 0, or no leading digits) yields empty and
-      # falls through, exactly as its own bounded parse does.
-      local _env=""
-      _env=$(_ccm_engine_int "${_e#*=}") || _env=""
-      if [[ "$_env" == <1-> ]]; then
-        _ccm_clamp_acw _env
-        print -r -- "$_env"
-        return 0
-      fi
-    fi
+    [[ "$_e" == CLAUDE_CODE_AUTO_COMPACT_WINDOW=* ]] && env="${_e#*=}"
   done
-
-  # The saved autoCompactWindow, from the one-run window facts when the launch
-  # already computed them (passed as $3 -- field 6, already schema-checked and
-  # last-writer-wins-merged there), else from the same one run started here. A
-  # profile that pins its ceiling in conf skips the launch's run, so this path
-  # still pays its own start rather than losing the saved budget.
-  local _saved=""
   if (( $# >= 3 )); then
-    _saved="$3"
+    saved="$3"
   else
-    local -a _lw=()
-    _lw=("${(@ps:\t:)$(_ccm_launch_window "$profile" "")}")
-    _saved="${_lw[6]:-}"
+    local -a _lw=("${(@ps:\t:)$(_ccm_launch_window "$profile" "")}")
+    saved="${_lw[6]:-}"
   fi
-  if [[ "$_saved" == <-> ]]; then
-    print -r -- "$_saved"
-    return 0
-  fi
-
-  [[ -n "$derived" ]] && print -r -- "$derived"
-  return 0
+  _ccm_util effective-acw "$env" "$saved" "$derived"
 }
 
 _ccm_engine_int() {
@@ -226,26 +190,9 @@ _ccm_engine_int() {
   _ccm_util engine-int "${1:-}" 2>/dev/null
 }
 
-_ccm_clamp_acw() {
-  # Clamp an auto-compact budget into the range the engine will actually honour,
-  # in place, by name. Both the settings key and the env var are bounded there --
-  # the key by its schema (`.int().min(1e5).max(1e6)`, out-of-range values dropped
-  # entirely) and the env var by `Math.max(1e5, ...)` over a bounded parse. A value
-  # outside the range therefore never reaches the trigger as written, so computing
-  # from the raw number reports a window the session does not have.
-  local _name="$1" _v="${(P)1}"
-  [[ "$_v" == <-> ]] || return 0
-  # Bound by LENGTH before any arithmetic: zsh integers are 64-bit, so a very long
-  # decimal string overflows rather than comparing greater, and a wrapped value can
-  # slip past the ceiling test. The engine caps at the same maximum, so anything with
-  # more digits than the ceiling is simply the ceiling.
-  if (( ${#_v} > ${#_CCMORPH_ACW_MAX} )); then
-    _v=$_CCMORPH_ACW_MAX
-  else
-    (( _v < _CCMORPH_ACW_MIN )) && _v=$_CCMORPH_ACW_MIN
-    (( _v > _CCMORPH_ACW_MAX )) && _v=$_CCMORPH_ACW_MAX
-  fi
-  : ${(P)_name::=$_v}
+_ccm_clamp_acw() {  # clamp the named variable in place to the engine's [1e5, 1e6]
+  local _v
+  _v=$(_ccm_util clamp-acw "${(P)1}") && : ${(P)1::=$_v}
 }
 
 

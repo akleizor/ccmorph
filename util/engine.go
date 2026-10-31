@@ -476,3 +476,42 @@ func effectivePctVerb(args []string, _ io.Reader, out, _ io.Writer) int {
 
 // fmtG is Python's format(v, "g").
 func fmtG(v float64) string { return strconv.FormatFloat(v, 'g', 6, 64) }
+
+// clampACW bounds an auto-compact budget to what the engine honours, [1e5, 1e6].
+func clampACW(n int64) int64 { return min(max(n, 100000), 1000000) }
+
+// effectiveACWVerb is `util effective-acw <env value> <saved> <derived>`: the budget
+// the engine uses, in its order. The env value is parsed and CLAMPED; a saved
+// autoCompactWindow arrives already schema-checked (out of range was dropped); the
+// derived value fills the gap. Prints nothing when none applies.
+func effectiveACWVerb(args []string, _ io.Reader, out, _ io.Writer) int {
+	if len(args) != 3 {
+		return 2
+	}
+	if n, ok := engineInt(args[0]); ok && args[0] != "" {
+		fmt.Fprintln(out, clampACW(n))
+	} else if args[1] != "" && strings.Trim(args[1], "0123456789") == "" {
+		fmt.Fprintln(out, args[1])
+	} else if args[2] != "" {
+		fmt.Fprintln(out, args[2])
+	}
+	return 0
+}
+
+// clampACWVerb is `util clamp-acw <value>`: a decimal budget clamped, by length
+// first so a twenty-digit value is the ceiling rather than an overflow.
+func clampACWVerb(args []string, _ io.Reader, out, _ io.Writer) int {
+	if len(args) != 1 || args[0] == "" || strings.Trim(args[0], "0123456789") != "" {
+		if len(args) == 1 {
+			fmt.Fprintln(out, args[0])
+		}
+		return 0
+	}
+	if len(strings.TrimLeft(args[0], "0")) > 7 {
+		fmt.Fprintln(out, 1000000)
+		return 0
+	}
+	n, _ := strconv.ParseInt(args[0], 10, 64)
+	fmt.Fprintln(out, clampACW(n))
+	return 0
+}
