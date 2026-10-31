@@ -71,17 +71,40 @@ _ccm_fork_forward() {
   return $_ccm_st
 }
 
+# The core's own view of this shell: paths, env-key lists and the run's state.
+_ccm_core_env() {
+  reply=(
+    _CCMORPH_DIR="$_CCMORPH_DIR"
+    _CCMORPH_LIB_DIR="$_CCMORPH_LIB_DIR"
+    _CCMORPH_LIBEXEC_DIR="$_CCMORPH_LIBEXEC_DIR"
+    _CCMORPH_PROFILE_DIRS="$_CCMORPH_PROFILE_DIRS"
+    _CCMORPH_CONTEXT_POLICY="$_CCMORPH_CONTEXT_POLICY"
+    _CCMORPH_LOG="${_CCMORPH_LOG:-}"
+    _CCMORPH_TUNING_ENV="${_CCMORPH_TUNING_ENV[*]}"
+    _CCMORPH_PROFILE_ENV="${_CCMORPH_PROFILE_ENV[*]}"
+    _CCMORPH_LAUNCH_ENV="${_CCMORPH_LAUNCH_ENV[*]}"
+    _CCMORPH_BACKEND_ENV="${_CCMORPH_BACKEND_ENV[*]}"
+    _CCMORPH_MODEL_MAPPING_ENV="${_CCMORPH_MODEL_MAPPING_ENV[*]}"
+    _CCMORPH_LAUNCHER_PID=$$
+    _CCMORPH_NOTICE="${_ccm_pending_cache_notice:-}"
+    _CCMORPH_LAUNCH_PROFILE="${_CCMORPH_LAUNCH_PROFILE:-}"
+    _CCMORPH_INTERACTIVE="${_CCMORPH_INTERACTIVE:-0}"
+    _CCMORPH_NATIVE_ARGS="${_CCMORPH_NATIVE_ARGS:-}"
+    CCMORPH_SUBCOMMAND_LAUNCH="${CCMORPH_SUBCOMMAND_LAUNCH:-0}"
+  )
+}
+
+# Run ccmorph-core with that view.
+_ccm_core() {
+  local -a reply
+  _ccm_core_env
+  command env "${reply[@]}" "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" "$@"
+}
+
 _ccm_launch_core() {
-  exec env \
-    _CCMORPH_DIR="$_CCMORPH_DIR" _CCMORPH_LIB_DIR="$_CCMORPH_LIB_DIR" \
-    _CCMORPH_LIBEXEC_DIR="$_CCMORPH_LIBEXEC_DIR" _CCMORPH_PROFILE_DIRS="$_CCMORPH_PROFILE_DIRS" \
-    _CCMORPH_CONTEXT_POLICY="$_CCMORPH_CONTEXT_POLICY" _CCMORPH_LOG="${_CCMORPH_LOG:-}" \
-    _CCMORPH_TUNING_ENV="${_CCMORPH_TUNING_ENV[*]}" _CCMORPH_PROFILE_ENV="${_CCMORPH_PROFILE_ENV[*]}" \
-    _CCMORPH_LAUNCH_ENV="${_CCMORPH_LAUNCH_ENV[*]}" _CCMORPH_BACKEND_ENV="${_CCMORPH_BACKEND_ENV[*]}" \
-    _CCMORPH_MODEL_MAPPING_ENV="${_CCMORPH_MODEL_MAPPING_ENV[*]}" _CCMORPH_LAUNCHER_PID=$$ _CCMORPH_NOTICE="${_ccm_pending_cache_notice:-}" \
-    _CCMORPH_LAUNCH_PROFILE="${_CCMORPH_LAUNCH_PROFILE:-}" _CCMORPH_INTERACTIVE="${_CCMORPH_INTERACTIVE:-0}" \
-    _CCMORPH_NATIVE_ARGS="${_CCMORPH_NATIVE_ARGS:-}" CCMORPH_SUBCOMMAND_LAUNCH="${CCMORPH_SUBCOMMAND_LAUNCH:-0}" \
-    "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" launch "$@"
+  local -a reply
+  _ccm_core_env
+  exec env "${reply[@]}" "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" launch "$@"
 }
 
 _ccm_launch() { _ccm_fork_forward _ccm_launch_core "$@"; }

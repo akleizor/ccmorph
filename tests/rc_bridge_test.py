@@ -425,7 +425,7 @@ def test_session_keeps_claude_prompt_prefix_stable_behind_the_adapter():
     assert env["CLAUDE_CODE_MODEL_CAPABILITIES"] == rc.ADAPTER_MODEL_CAPABILITIES
     root = rc.Path(rc.__file__).resolve().parents[2]
     assert rc.ADAPTER_MODEL_CAPABILITIES in "".join(
-        p.read_text() for p in sorted((root / "launch").glob("*.go")))
+        p.read_text() for p in sorted((root / "cli").glob("*.go")))
     # A value the caller set is never overruled.
     own = rc.session_env({"CLAUDE_CODE_MODEL_CAPABILITIES": "x=-y"}, {}, route_models=False)
     assert own["CLAUDE_CODE_MODEL_CAPABILITIES"] == "x=-y"

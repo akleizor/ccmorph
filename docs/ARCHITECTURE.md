@@ -85,7 +85,7 @@ beside itself. `CCMORPH_LIB_DIR` names the `lib/` directory.
 | `ccmorph-profiles.zsh` | Profile homes and choices: the shared harness layer linked into each profile home, profile and value pickers, sign-in state, and committing a new profile. |
 | `ccmorph-cli.zsh` | The `ccmorph` command: the config store, doctor, help, usage and the verb dispatcher. |
 | `ccmorph-providers.zsh` | The dialect adapter and the provider proxy (cliproxyapi): start, stop, login and listing. |
-| `ccmorph-launch.zsh` | The wrapper that runs `ccmorph-core launch` (package `launch`: profile and model resolution, the bridge and adapter, settings projection, the claude child and the relay loop) as a child TERM and HUP reach. |
+| `ccmorph-launch.zsh` | The wrapper that runs `ccmorph-core launch` (package `cli`: profile and model resolution, the bridge and adapter, settings projection, the claude child and the relay loop) as a child TERM and HUP reach. |
 
 ## 1. Profile model
 
@@ -1454,9 +1454,9 @@ Two distinct reasons to set one:
 For a `claude-*` id the window is chosen by the id: `[1m]` reads 1M, a bare `claude-`
 prefix takes a hardcoded 200,000 and ignores the env ceiling. ccmorph derives the
 suffixed `send_id` only when the **launch target itself** starts with `claude-` — the gate
-`strings.HasPrefix(target, "claude-")` in `launch/run.go`; a bare alias never does, and the mapped
+`strings.HasPrefix(target, "claude-")` in `cli/run.go`; a bare alias never does, and the mapped
 target is read separately, for budget sizing alone, where `pmodel = alias[bare]` in
-`launch/context.go` swaps the alias for the model behind it. So mapping `opus` → `claude-opus-5`
+`cli/context.go` swaps the alias for the model behind it. So mapping `opus` → `claude-opus-5`
 leaves a `--model opus` launch on the 200,000 family ceiling — the mapping changes which
 model answers, not which window it gets. Two further limits: the tag is inert under
 `CLAUDE_CODE_DISABLE_1M_CONTEXT` **[src]**, and an explicit `claude-opus-5[1m]` row is

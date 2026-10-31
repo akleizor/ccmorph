@@ -8,7 +8,7 @@ import (
 
 	"github.com/akleizor/ccmorph/adapter"
 	"github.com/akleizor/ccmorph/ctxwindow"
-	"github.com/akleizor/ccmorph/launch"
+	"github.com/akleizor/ccmorph/cli"
 	"github.com/akleizor/ccmorph/quirks"
 	"github.com/akleizor/ccmorph/quota"
 	"github.com/akleizor/ccmorph/settingscompose"
@@ -31,7 +31,9 @@ func main() {
 	case "model-window":
 		os.Exit(ctxwindow.WindowMain(os.Args[2:], os.Stdout, os.Stderr))
 	case "launch": // `ccmorph run`: the launch and relaunch loop
-		os.Exit(launch.Main(os.Args[2:]))
+		os.Exit(cli.Main(os.Args[2:]))
+	case "cli": // the `ccmorph` verbs that run in the core
+		os.Exit(cli.Verb(os.Args[2:]))
 	case "util":
 		os.Exit(util.Main(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	case "shim": // the stock shim; argv shifts so shim.Main sees `<port> <target>` or report|outcome
