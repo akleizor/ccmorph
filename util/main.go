@@ -35,6 +35,7 @@ func init() {
 		"launch-flags":           launchFlags,
 		"launch-argv":            launchArgv,
 		"launch-env":             launchEnv,
+		"relay-read":             relayRead,
 		"session-adapter":        sessionAdapter,
 		"profile-read":           profileRead,
 		"profile-env":            profileEnv,

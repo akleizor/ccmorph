@@ -1157,55 +1157,24 @@ _ccm_launch() {
       _ccm_log "exit rc=$_ccm_rc profile=<none> relay_file_exists=$([[ -f $relay_file ]] && echo yes || echo no)"
     fi
 
-    if [[ ! -f "$relay_file" || -L "$relay_file" ]]; then
+    local _rr_out _rr_rc _rr_line
+    _rr_out=$(_ccm_util relay-read "$relay_file" 2>&1); _rr_rc=$?
+    if (( _rr_rc == 3 )); then
       _ccm_log "normal exit (no relay)"
-      command rm -f "$relay_file"
       return $_ccm_rc
+    elif (( _rr_rc )); then
+      _ccm_err "${_rr_out:-invalid relay signal}"
+      return 1
     fi
-
-    rs_profile=""
-    rs_session=""
-    rs_model=""
-    rs_effort=""
-
-    local -A relay_seen=()
-
-    while IFS='=' read -r rs_k rs_v || [[ -n "$rs_k" ]]; do
-      _ccm_clean_value "$rs_v" || {
-        command rm -f "$relay_file"
-        _ccm_err "invalid relay signal"
-        return 1
-      }
-
-      [[ -z "${relay_seen[$rs_k]:-}" ]] || {
-        command rm -f "$relay_file"
-        _ccm_err "duplicate relay field '$rs_k'"
-        return 1
-      }
-      relay_seen[$rs_k]=1
-
-      case "$rs_k" in
-        profile)
-          rs_profile="$rs_v"
-          ;;
-        session)
-          rs_session="$rs_v"
-          ;;
-        model)
-          rs_model="$rs_v"
-          ;;
-        effort)
-          rs_effort="$rs_v"
-          ;;
-        *)
-          command rm -f "$relay_file"
-          _ccm_err "invalid relay signal"
-          return 1
-          ;;
+    rs_profile="" rs_session="" rs_model="" rs_effort=""
+    for _rr_line in "${(@f)_rr_out}"; do
+      case "$_rr_line" in
+        profile=*) rs_profile="${_rr_line#*=}" ;;
+        session=*) rs_session="${_rr_line#*=}" ;;
+        model=*) rs_model="${_rr_line#*=}" ;;
+        effort=*) rs_effort="${_rr_line#*=}" ;;
       esac
-    done < "$relay_file"
-
-    command rm -f "$relay_file" || return 1
+    done
 
     _ccm_valid "$rs_profile" &&
       _ccm_exists "$rs_profile" &&
