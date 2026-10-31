@@ -33,6 +33,7 @@ func init() {
 		"claude-verbs":           claudeVerbs,
 		"claude-opt-arities":     claudeOptArities,
 		"launch-flags":           launchFlags,
+		"launch-argv":            launchArgv,
 		"session-adapter":        sessionAdapter,
 		"profile-read":           profileRead,
 		"profile-env":            profileEnv,
