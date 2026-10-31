@@ -117,99 +117,10 @@ _ccm_run_claude() {
 }
 
 _ccm_claude_session() {
-  unset CLAUDE_CODE_EFFORT_LEVEL
-  unset CLAUDE_CONFIG_DIR
-  unset CLAUDE_SECURESTORAGE_CONFIG_DIR
-  unset CLAUDE_CODE_SUBAGENT_MODEL
-  unset CCMORPH_RANDOM_DEVICE_ID CCMORPH_AFFINITY_HEADER CCMORPH_USER_AGENT CCMORPH_QUIRKS CCMORPH_STALL_TIMEOUT CCMORPH_UPSTREAM_PROXY CCMORPH_SHIM_HOOKS CCMORPH_MASK CCMORPH_MASK_COMMANDS
-  local _private=0
-
-  # Clear every key a profile could declare or a launch sets, so one that is
-  # absent this time gets Claude Code's default rather than whatever this shell
-  # -- possibly an outer ccmorph session -- happens to export.
-  # Tuning keys are the exception: the shell's value passes through unless the
-  # profile declares the key (below) -- except a name an outer ccmorph session
-  # recorded in CCMORPH_SET_ENV, which is that session's value, not the shell's.
-  local _e
-  # Only names on the tuning list are trusted from the inherited variable.
-  for _e in "${(@)${(@s: :)${CCMORPH_SET_ENV:-}}:*_CCMORPH_TUNING_ENV}" \
-            "${(@)_CCMORPH_PROFILE_ENV:|_CCMORPH_TUNING_ENV}" \
-            "${_CCMORPH_LAUNCH_ENV[@]}" "${_CCMORPH_BACKEND_ENV[@]}"; do
-    [[ -n "$_e" ]] && unset "$_e"
-  done
-  unset CCMORPH_SET_ENV
-  # `claude --bare` sets CLAUDE_CODE_SIMPLE=1 in its own env, which no launch
-  # records in CCMORPH_SET_ENV; inside a Claude Code child session (CLAUDE_CODE_CHILD_SESSION=1) it
-  # is that session's, not the shell's, so a nested launch must not inherit it.
-  [[ "${CLAUDE_CODE_CHILD_SESSION:-}" == 1 ]] && unset CLAUDE_CODE_SIMPLE
-  local -a _set_env=()
-
-  while [[ $# -gt 0 && "$1" != -- ]]; do
-    case "$1" in
-      CCMORPH_RANDOM_DEVICE_ID=*|CCMORPH_AFFINITY_HEADER=*|CCMORPH_USER_AGENT=*|CCMORPH_QUIRKS=*|CCMORPH_STALL_TIMEOUT=*|CCMORPH_UPSTREAM_PROXY=*|CCMORPH_SHIM_HOOKS=*|CCMORPH_MASK=*|CCMORPH_MASK_COMMANDS=*) ;;
-      CCMORPH_PRIVATE=1) _private=1 ;;
-      # Tuning keys the profile's settings layers set (the caller computes them):
-      # Claude Code exports those to its children, so record them like env. lines.
-      CCMORPH_SET_ENV=*) _set_env+=(${(s: :)${1#*=}}) ;;
-      *) export "$1" || exit 1
-         (( ${_CCMORPH_TUNING_ENV[(Ie)${1%%=*}]} )) && _set_env+=("${1%%=*}") ;;
-    esac
-    shift
-  done
-  (( ${#_set_env} )) && export CCMORPH_SET_ENV="${_set_env[*]}"
-
-  [[ "$1" == -- ]] || exit 1
-  shift
-
-  # private=1: the session runs from a throwaway view of the profile. Config and
-  # settings are linked in; transcripts, prompt history and session state land in
-  # the throwaway dir and are deleted when Claude Code exits.
-  # EXIT does not fire when zsh dies of a signal, so while the view is built TERM
-  # and HUP get their own trap: remove the dir, exit 128+signal. Once claude is
-  # started they are forwarded to it instead (_ccm_fork_forward) and the launcher exits with
-  # claude's status. INT and QUIT are no-op traps: Claude Code handles
-  # Ctrl-C itself and keeps running, and Ctrl-\ (group SIGQUIT) kills only claude,
-  # so the launcher must neither die of them (that skips EXIT and leaks the dir)
-  # nor exit 130/131 over claude's real status; EXIT
-  # cleans up when claude ends. Only SIGKILL still leaves the dir in $TMPDIR
-  # until reboot; sweep stale ccmorph-private.* dirs if that ever matters.
-  if (( _private )) && [[ -d "${CLAUDE_CONFIG_DIR:-}" ]]; then
-    # Global (this runs in its own process): exit unwinds to the caller before the
-    # EXIT trap runs, and a local would be gone by then.
-    local _f; typeset -g _ccm_priv
-    _ccm_priv=$(command mktemp -d "${TMPDIR:-/tmp}/ccmorph-private.XXXXXX") || exit 1
-    trap 'command rm -rf -- "$_ccm_priv"' EXIT
-    trap 'command rm -rf -- "$_ccm_priv"; exit 143' TERM
-    trap 'command rm -rf -- "$_ccm_priv"; exit 129' HUP
-    trap : INT QUIT
-    # Readers name the profile by the config dir's basename (statusline, window resolver).
-    local _ccm_view="$_ccm_priv/${CLAUDE_CONFIG_DIR:t}"
-    command mkdir "$_ccm_view" || exit 1
-    for _f in "$CLAUDE_CONFIG_DIR"/*(DN); do
-      case "${_f:t}" in
-        projects|sessions|session-env|file-history|history.jsonl|shell-snapshots|paste-cache|debug|todos|tasks|plans|backups) ;;
-        *) command ln -s "$_f" "$_ccm_view/${_f:t}" || exit 1 ;;
-      esac
-    done
-    # Claude Code keys the keychain item by this var, else by CLAUDE_CONFIG_DIR; pin it
-    # to the real profile dir so the private view reads the profile's own sign-in.
-    export CLAUDE_SECURESTORAGE_CONFIG_DIR="$CLAUDE_CONFIG_DIR"
-    export CLAUDE_CONFIG_DIR="$_ccm_view"
-
-    # A foreground child defers the TERM/HUP traps until it exits, so neither
-    # reached claude: start it through the same fork-and-forward helper as the
-    # launcher itself. The cleanup traps above cover the window before the fork;
-    # the helper's forwarding traps replace them while claude runs.
-    # A hop notice waits for private-view setup as well as profile preflight. It is
-    # written from a subshell so a stdout without a reader (SIGPIPE) kills only that
-    # write, not this shell before its cleanup.
-    [[ -n "${_ccm_pending_cache_notice:-}" ]] && ( print -r -- "$_ccm_pending_cache_notice" ) 2>/dev/null
-    _ccm_fork_forward --exec command claude "$@"
-    exit $?
-  fi
-
-  [[ -n "${_ccm_pending_cache_notice:-}" ]] && ( print -r -- "$_ccm_pending_cache_notice" ) 2>/dev/null
-  exec command claude "$@"
+  # Env hygiene, the private view and the exec of claude are the core's
+  # (`util claude-session`); the key lists are the ones declared in base.
+  CCMORPH_NOTICE="${_ccm_pending_cache_notice:-}" exec "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" util claude-session \
+    "${_CCMORPH_TUNING_ENV[*]}" "${_CCMORPH_PROFILE_ENV[*]}" "${_CCMORPH_LAUNCH_ENV[*]}" "${_CCMORPH_BACKEND_ENV[*]}" "$@"
 }
 
 # A launch started from inside a Remote Control bridge session still sends its
