@@ -25,6 +25,14 @@ func Verb(args []string) int {
 		return l.use(args[1:])
 	case "cred":
 		return l.cred(args[1:])
+	case "inspect":
+		return l.inspect(args[1:])
+	case "context":
+		return l.context(args[1:])
+	case "models", "_models":
+		return l.models(args[1:])
+	case "quota":
+		return l.quota(args[1:])
 	}
 	fmt.Fprintln(os.Stderr, "usage: ccmorph-core cli <verb>")
 	return 2

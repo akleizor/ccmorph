@@ -932,150 +932,13 @@ ccmorph() {
 
 
     models|_models)
-      (( $# <= 3 )) || { _ccm_err 'usage: ccmorph models [profile] [--filtered|--filtered-json]'; return 2; }
-      if (( $# == 1 )) || [[ "${2:-}" == (-i|--interactive) ]]; then
-        local _models_profile
-        _models_profile=$(_ccm_menu_profile apikey) || return 1
-        set -- "$1" "$_models_profile" "${@:3}"
-      fi
-      (( $# >= 2 )) || { _ccm_err "usage: ccmorph models <profile> [--filtered|--filtered-json]"; return 2; }
-      [[ "${3:-}" == "" || "${3:-}" == "--filtered" || "${3:-}" == "--filtered-json" ]] || {
-        _ccm_err "usage: ccmorph models <profile> [--filtered|--filtered-json]"
-        return 2
-      }
-      _ccm_valid "${2:-}" || {
-        _ccm_err "model listing requires an profile"
-        return 1
-      }
-
-      _ccm_exists "$2" || {
-        _ccm_err "no profile '$2'. Run: ccmorph list"
-        return 1
-      }
-
-      if [[ "${3:-}" == "--filtered" ]]; then
-        _ccm_gw_models "$2" picker
-      elif [[ "${3:-}" == "--filtered-json" ]]; then
-        _ccm_gw_models_json "$2" || return 1
-        local _models_json="$REPLY"
-        print -r -- "$_models_json" | _ccm_util models-filtered-json "$_CCMORPH_DIR/$2.conf" || return 1
-      else
-        _ccm_gw_models "$2"
-      fi
+      _ccm_core cli models "${@:2}"
+      return $?
       ;;
 
     inspect)
-      # The command that did not exist: what does this profile actually launch as?
-      #
-      # Answering it used to mean running `list`, `model`, `effort` and `models` and
-      # then knowing which layer wins -- and even then the listing could contradict
-      # the launch. Every line here names the source of its value, so "where does
-      # this come from" is a readable fact rather than a trace through the code.
-      local _sh_name="${2:-$active}"
-      # `-i` here, and a bare `inspect` with no default set: the profile list is
-      # exactly what a reader in that position needs, not an error telling them to
-      # supply what the tool could show them.
-      if [[ "${2:-}" == (-i|--interactive) || -z "$_sh_name" ]]; then
-        _sh_name=$(_ccm_menu_profile) || return 1
-        [[ -n "$_sh_name" ]] || return 1
-      fi
-      _ccm_valid "$_sh_name" || {
-        _ccm_err "usage: ccmorph inspect [<profile>]"
-        return 1
-      }
-      _ccm_exists "$_sh_name" || {
-        _ccm_err "no profile '$_sh_name'"
-        _ccm_accounts_hint
-        return 1
-      }
-
-      _ccm_read "$_sh_name" || return 1
-
-      local _sh_type="${_ccm[type]}"
-      local _sh_base="${_ccm[base_url]:-}"
-      local _sh_tag="${_ccm[tag]:-}"
-      local _sh_pct_conf="${_ccm[env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE]:-}"
-      unset _ccm
-
-      # Heading: name, type, route label, and whether this is the default.
-      local _sh_head="${_ccm_bold}${_sh_name}${_ccm_reset}  ${_ccm_dim}${_sh_type}"
-      [[ -n "$_sh_tag" ]] && _sh_head+=" · ${_sh_tag}"
-      [[ "$_sh_name" == "$active" ]] && _sh_head+=" · default profile"
-      print -r -- "${_sh_head}${_ccm_reset}"
-      print ""
-
-      [[ -n "$_sh_base" ]] &&
-        _ccm_grid 10 endpoint "${_sh_base#https://}"
-
-      # Model, and which of the two places answered.
-      local _sh_model _sh_from
-      _sh_model=$(_ccm_config_store get "$_sh_name" model) || return 1
-      if [[ -n "$_sh_model" ]]; then
-        _sh_from="profile default"
-      else
-        _sh_model=$(command sed -n 's/^model=//p' "$dir/$_sh_name.conf" 2>/dev/null | command head -1) ||
-          _sh_model=""
-        [[ -n "$_sh_model" ]] && _sh_from="conf bootstrap"
-      fi
-      if [[ -n "$_sh_model" ]]; then
-        _ccm_grid 10 model "$_sh_model  ${_ccm_dim}${_sh_from}${_ccm_reset}"
-      else
-        _ccm_grid 10 model "${_ccm_dim}— Claude Code chooses${_ccm_reset}"
-      fi
-
-      local _sh_effort _sh_ef_from="profile default"
-      _sh_effort=$(_ccm_config_store get "$_sh_name" effort) || return 1
-      if [[ -n "$_sh_effort" ]]; then
-        _ccm_grid 10 effort "$_sh_effort  ${_ccm_dim}${_sh_ef_from}${_ccm_reset}"
-      else
-        _ccm_grid 10 effort "${_ccm_dim}— Claude Code's own default${_ccm_reset}"
-      fi
-
-      _ccm_config_store model-settings "$_sh_name" | _ccm_util effort-rows
-
-      # Window, and ONLY when it is a probed fact about a routed model.
-      #
-      # Two traps, both of which produced a confidently wrong number here first: the
-      # resolver answers with `{"window": 200000, "unprobed": true}` when it has
-      # nothing recorded, so printing `.window` unconditionally reports a default as
-      # though it were probed; and for a native (sub/token) profile the window is
-      # Claude Code's own business, sized from the model id, so claiming a number is
-      # not ours to do. An unprobed routed model says so and names the fix.
-      if [[ -n "$_sh_model" && "$_sh_type" == apikey ]]; then
-        local _sh_win _sh_tok="" _sh_unprobed=1 _sh_source="probed"
-        _sh_win=$(_ccm_model_window "$_sh_name" "$_sh_model" 2>/dev/null) || _sh_win=""
-        if [[ -n "$_sh_win" ]]; then
-          _sh_tok=$(_ccm_util window-label <<< "$_sh_win" 2>/dev/null) || _sh_tok=""
-          _sh_source="${_sh_tok##* }"
-          _sh_tok="${_sh_tok% *}"
-          _sh_unprobed="${_sh_tok##* }"
-          _sh_tok="${_sh_tok%% *}"
-        fi
-        if [[ "$_sh_tok" == <-> ]] && (( _sh_tok > 0 )) && (( ! _sh_unprobed )); then
-          local _sh_pct
-          _sh_pct=$(_ccm_effective_compaction_percent "$_sh_name" "$_sh_pct_conf") || return 1
-          _ccm_grid 10 window \
-            "$(printf "%'d" "$_sh_tok")  ${_ccm_dim}${_sh_source} · compaction target ${_sh_pct}%${_ccm_reset}"
-        else
-          _ccm_grid 10 window \
-            "${_ccm_dim}unknown · compacts early to stay safe${_ccm_reset}"
-        fi
-      fi
-
-      case "$_sh_base" in
-        ""|https://api.anthropic.com|https://api.anthropic.com/)
-          _ccm_grid 10 protocol 'native Anthropic' ;;
-        *)
-          _ccm_grid 10 protocol 'automatic — cached compatibility or validation at launch' ;;
-      esac
-
-      # The whole point: what this becomes at launch.
-      print ""
-      if [[ -n "$_sh_model" && "$_sh_type" == apikey ]]; then
-        print -r -- "  ${_ccm_dim}launches as${_ccm_reset}  claude --model ${_sh_model}"
-      else
-        print -r -- "  ${_ccm_dim}launches as${_ccm_reset}  claude ${_ccm_dim}(Claude Code picks the model)${_ccm_reset}"
-      fi
+      _ccm_core cli inspect "${@:2}"
+      return $?
       ;;
 
     _menu)
@@ -1113,30 +976,8 @@ ccmorph() {
     # otherwise owns, and a step no output ever named. `probe` now prints this as
     # option 1, so the verb has to exist.
     context)
-      local _ctx_profile="${2:-}" _ctx_model="${3:-}"
-      if [[ -z "$_ctx_profile" || "$_ctx_profile" == (-i|--interactive) ]]; then
-        _ctx_profile=$(_ccm_menu_profile) || return 1
-        [[ -n "$_ctx_profile" ]] || return 1
-      fi
-      _ccm_valid "$_ctx_profile" || {
-        _ccm_err "usage: ccmorph context <profile> <model> [tokens|auto]"
-        return 2
-      }
-      _ccm_exists "$_ctx_profile" || {
-        _ccm_err "no profile '$_ctx_profile'. Run: ccmorph list"
-        return 1
-      }
-      # A model id is exactly as unguessable here as it is at `set`, and this verb
-      # is reached from a `probe` failure — the moment a reader is least sure of the
-      # spelling. So a missing or `-i` model opens the same picker.
-      if [[ -z "$_ctx_model" || "$_ctx_model" == (-i|--interactive) ]]; then
-        _ctx_model=$(_ccm_pick_value model "$_ctx_profile") || return 1
-        [[ -n "$_ctx_model" ]] || return 1
-        # A picked model means the tokens argument (if any) shifted along with it.
-        set -- context "$_ctx_profile" "$_ctx_model" "${@:4}"
-      fi
-      command env CCMORPH_STATE_DIR="$dir" "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" model-window \
-        --context "$_ctx_profile" "$_ctx_model" "${@:4}"
+      _ccm_core cli context "${@:2}"
+      return $?
       ;;
 
     get|set|config)
@@ -1522,65 +1363,8 @@ ccmorph() {
       ;;
 
     quota)
-      # Plan windows and spend of every profile, or of the one named. A token or
-      # an API key goes to ccmorph-core on stdin, never in argv. An API key rides
-      # with its base URL so a provider with a balance API (quota/balance.go) can
-      # be asked what is left; ccmorph-core sends it to that provider's own host
-      # only, and drops it for every other endpoint.
-      local _q_json=0 _q_only="" _q_arg
-      for _q_arg in "${@[2,-1]}"; do
-        case "$_q_arg" in
-          --json) _q_json=1 ;;
-          -*) _ccm_err "usage: ccmorph quota [profile] [--json]"; return 2 ;;
-          *)
-            if [[ -n "$_q_only" ]]; then
-              _ccm_err "usage: ccmorph quota [profile] [--json]"
-              return 2
-            fi
-            _q_only="$_q_arg"
-            ;;
-        esac
-      done
-      local -a _q_names=()
-      if [[ -n "$_q_only" ]]; then
-        _ccm_exists "$_q_only" || {
-          _ccm_err "no profile '$_q_only'. Run: ccmorph list"
-          return 1
-        }
-        _q_names=("$_q_only")
-      else
-        local _q_f
-        for _q_f in "$dir"/*.conf(N); do _q_names+=("${_q_f:t:r}"); done
-      fi
-      local _q_n _q_in="" _q_dir
-      for _q_n in "${_q_names[@]}"; do
-        _ccm_read "$_q_n" 2>/dev/null || continue
-        case "${_ccm[type]}" in
-          sub)   _q_in+="${_q_n}"$'\t'"sub"$'\t'"${_CCMORPH_PROFILE_DIRS}/${_q_n}"$'\t'$'\n' ;;
-          token) _q_in+="${_q_n}"$'\t'"token"$'\t'"${_CCMORPH_PROFILE_DIRS}/${_q_n}"$'\t'"${_ccm[token]:-}"$'\n' ;;
-          provider)
-            if [[ "${_ccm[provider]:-}" == codex ]] && _ccm_provider_auth_dir "$_q_n" 2>/dev/null; then
-              _q_dir="$REPLY"
-              _q_in+="${_q_n}"$'\t'"codex"$'\t'"$_q_dir"$'\t'$'\n'
-            else
-              _q_in+="${_q_n}"$'\t'"gateway"$'\t'$'\t'"${_ccm[monthly_budget_usd]:-}"$'\n'
-            fi
-            ;;
-          apikey)
-            _q_in+="${_q_n}"$'\t'"gateway"$'\t'"${_ccm[base_url]:-}"$'\t'"${_ccm[monthly_budget_usd]:-}"$'\t'"${_ccm[api_key]:-}"$'\n'
-            ;;
-          *)
-            _q_in+="${_q_n}"$'\t'"gateway"$'\t'$'\t'"${_ccm[monthly_budget_usd]:-}"$'\n'
-            ;;
-        esac
-      done
-      unset _ccm
-      local -a _q_flags=()
-      (( _q_json )) && _q_flags+=(--json)
-      if (( ! _q_json )) && [[ -t 1 && -z "${NO_COLOR:-}" && "${TERM:-}" != dumb ]]; then
-        _q_flags+=(--color)
-      fi
-      print -rn -- "$_q_in" | "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" quota "${_q_flags[@]}"
+      _ccm_core cli quota "${@:2}"
+      return $?
       ;;
 
     use)

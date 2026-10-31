@@ -322,12 +322,26 @@ func (l *launcher) readRaw(name string) (map[string]string, bool) {
 		l.err(out)
 		return nil, false
 	}
+	return confFields(out), true
+}
+
+// readQuiet is `_ccm_read 2>/dev/null`.
+func (l *launcher) readQuiet(name string) (map[string]string, bool) {
+	out, _, rc := l.core(nil, "", "util", "profile-read", l.dir, name, "1",
+		strings.Join(l.profileEnv, ","), strings.Join(l.mapping, ","))
+	if rc != 0 {
+		return nil, false
+	}
+	return confFields(out), true
+}
+
+func confFields(out string) map[string]string {
 	fields := map[string]string{}
 	parts := strings.Split(strings.TrimSuffix(out, "."), "\x00")
 	for i := 0; i+1 < len(parts); i += 2 {
 		fields[parts[i]] = parts[i+1]
 	}
-	return fields, true
+	return fields
 }
 
 // read is _ccm_read + _ccm_validate_loaded.
