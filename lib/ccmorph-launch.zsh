@@ -269,111 +269,38 @@ _ccm_launch() {
     set --
   fi
 
-  while [[ $# -gt 0 ]]; do
-    arg="$1"
-
-    case "$arg" in
-      --)
-        args+=(--)
-        shift
-        args+=("$@")
-        break
-        ;;
-
-      # -a, --profile and --profile=<name> are ONE flag (POSIX short option +
-      # its long alias; GNU getopt_long treats `--opt value` and `--opt=value`
-      # as equivalent). Diagnostics name the spelling the user actually typed —
-      # reporting "-a" to someone who wrote --profile sends them looking for an
-      # argument they never passed.
-      -a|--profile)
-        (( $# >= 2 )) &&
-          [[ -n "$2" && "$2" != -- ]] || {
-          _ccm_err "$arg requires an profile name"
-          return 2
-        }
-
-        (( profile_seen == 0 )) || {
-          _ccm_err "$arg may be specified only once"
-          return 2
-        }
-
-        profile="$2"
-        profile_seen=1
-        shift 2
-        continue
-        ;;
-
-      --profile=*)
-        (( profile_seen == 0 )) || {
-          _ccm_err "--profile= may be specified only once"
-          return 2
-        }
-
-        profile="${arg#--profile=}"
-
-        [[ -n "$profile" ]] || {
-          _ccm_err "--profile= requires an profile name"
-          return 2
-        }
-
-        profile_seen=1
-        shift
-        continue
-        ;;
-
-      # One flag means "ask me", and it means the same thing everywhere: fill in
-      # whatever this launch has not already been told. Position carries the rest
-      # -- `ccmorph run -i` has no profile yet so it asks for both;
-      # `ccmorph run <profile> -i` already has a profile, so asks only for its model.
-      #
-      # This replaces a `@menu` VALUE (and a `?` alias for it). A value-shaped
-      # sentinel had to be repeated once per slot, so the documented line read
-      # `ccmorph @menu --model @menu` -- the same token twice, meaning two
-      # different questions, with nothing on the line saying which was which. `?`
-      # was worse than ambiguous: it is a zsh glob, so the caller's shell ate it
-      # before ccmorph started, and in a directory holding any one-character file
-      # `set <acct> model ?` silently recorded that FILENAME as the default and
-      # reported success.
-      -i|--interactive)
-        interactive=1
-        shift
-        continue
-        ;;
-
-      # Every other native option steps over the value it owns, the way the
-      # binary parses its own argv. An option VALUE can look exactly like one of
-      # the flags above -- `--system-prompt --profile other` hands Claude Code
-      # the literal text `--profile` as the prompt -- and the per-token match
-      # claimed that value as this launcher's flag, refusing the launch or
-      # eating the token (#405). The walker consults `claude --help` for its
-      # arity table, and this scan runs before the profile's settings policy
-      # is verified: a launch that will refuse must not start the binary
-      # (#308, #319). Stepping only changes what the flag cases above claim,
-      # so the walker is asked only while such a token is still ahead of the
-      # option; with none ahead, the option and any value it owns forward
-      # verbatim either way and the probe is skipped.
-      -?*)
-        if _ccm_launch_has_flag_ahead "$@"; then
-          _ccm_claude_option_step "${@:1:2}"
-        else
-          REPLY=1
-        fi
-        if (( REPLY == 2 )); then
-          args+=("$1" "$2")
-          shift 2
-        else
-          args+=("$arg")
-          shift
-        fi
-        continue
-        ;;
-
-      *)
-        args+=("$arg")
-        shift
-        ;;
-    esac
-  done
+  # run's own flags are claimed in the core, which steps over a native option's
+  # value so one that looks like -a/--profile/-i stays Claude Code's (#405). The
+  # `claude --help` arity table is built only when such a flag is still ahead.
+  if (( $# )); then
+    local _la_arity="" _la_k _la_out _la_line _la_i _la_need=0
+    # Only a native option with one of run's flags still after it needs the table.
+    for (( _la_i = 1; _la_i <= $#; _la_i++ )); do
+      [[ "${@[_la_i]}" == -- ]] && break
+      [[ "${@[_la_i]}" == -?* && "${@[_la_i]}" != (-a|--profile|--profile=*|-i|--interactive) ]] || continue
+      _ccm_launch_has_flag_ahead "${@[_la_i,-1]}" && { _la_need=1; break; }
+    done
+    if (( _la_need )); then
+      _ccm_claude_opt_arities
+      for _la_k in ${(k)_CCMORPH_CLAUDE_OPT_ARITY}; do _la_arity+="$_la_k ${_CCMORPH_CLAUDE_OPT_ARITY[$_la_k]}"$'\n'; done
+    fi
+    _la_out=$(print -rn -- "$_la_arity" | _ccm_util launch-argv "$@" 2>&1) || {
+      _ccm_err "$_la_out"
+      return 2
+    }
+    for _la_line in "${(@f)${_la_out%%$'\0'*}}"; do
+      case "$_la_line" in
+        profile=*) profile="${_la_line#profile=}"; [[ -n "$profile" ]] && profile_seen=1 ;;
+        interactive=1) interactive=1 ;;
+      esac
+    done
+    # Forwarded args follow the two header lines, NUL-joined, closed by a dot.
+    _la_out="${_la_out#*$'\n'}"; _la_out="${_la_out#*$'\n'}"; _la_out="${_la_out%.}"
+    while [[ "$_la_out" == *$'\0'* ]]; do
+      args+=("${_la_out%%$'\0'*}"); _la_out="${_la_out#*$'\0'}"
+    done
+    set --
+  fi
 
   # Ask for what was not given, in dependency order: the profile owns the endpoint
   # and credential the model list comes from, so it must be resolved first.

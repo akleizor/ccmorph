@@ -2,6 +2,7 @@ package util
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"testing"
 )
@@ -31,5 +32,34 @@ func TestLaunchFlags(t *testing.T) {
 	var out, errw bytes.Buffer
 	if rc := launchFlags([]string{"0", "--model"}, strings.NewReader(""), &out, &errw); rc != 2 || errw.String() != "--model requires a value\n" {
 		t.Fatalf("missing value: rc=%d %q", rc, errw.String())
+	}
+}
+
+func TestLaunchArgvClaimsOnlyRunsOwnFlags(t *testing.T) {
+	for _, c := range []struct {
+		args                 []string
+		profile, interactive string
+		fwd                  []string
+	}{
+		{[]string{"-a", "gw", "-i", "-p", ""}, "gw", "1", []string{"-p", ""}},
+		{[]string{"--system-prompt", "--profile", "--profile=x"}, "x", "0", []string{"--system-prompt", "--profile"}},
+		{[]string{"--", "-a", "gw"}, "", "0", []string{"--", "-a", "gw"}},
+	} {
+		var b strings.Builder
+		if rc := launchArgv(c.args, strings.NewReader("--system-prompt value\n"), &b, io.Discard); rc != 0 {
+			t.Fatalf("%v: rc %d", c.args, rc)
+		}
+		head, body, _ := strings.Cut(b.String(), "\ninteractive=")
+		interactive, rest, _ := strings.Cut(body, "\n")
+		rest = strings.TrimSuffix(rest, ".")
+		fwd := strings.Split(rest, "\x00")
+		fwd = fwd[:len(fwd)-1]
+		if head != "profile="+c.profile || interactive != c.interactive || strings.Join(fwd, "|") != strings.Join(c.fwd, "|") || len(fwd) != len(c.fwd) {
+			t.Errorf("%v: got %q", c.args, b.String())
+		}
+	}
+	var e strings.Builder
+	if rc := launchArgv([]string{"-a", "x", "-a", "y"}, strings.NewReader(""), io.Discard, &e); rc != 2 || !strings.Contains(e.String(), "only once") {
+		t.Errorf("duplicate -a: rc %d %q", rc, e.String())
 	}
 }
