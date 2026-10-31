@@ -34,6 +34,7 @@ func init() {
 		"claude-opt-arities":     claudeOptArities,
 		"launch-flags":           launchFlags,
 		"launch-argv":            launchArgv,
+		"launch-env":             launchEnv,
 		"session-adapter":        sessionAdapter,
 		"profile-read":           profileRead,
 		"profile-env":            profileEnv,
