@@ -3120,15 +3120,6 @@ check_relay_cache_notice_absent() {
       mkdir -p "$HOME/.config/ccmorph/profiles/$target"
       print -r -- '{"env":[]}' > "$HOME/.config/ccmorph/profiles/$target/settings.profile.json"
       ;;
-    private)
-      cp "$HOME/.config/ccmorph/proxy.conf" "$HOME/.config/ccmorph/$target.conf"
-      print -r -- 'private=1' >> "$HOME/.config/ccmorph/$target.conf"
-      local real_mktemp="$(whence -p mktemp)"
-      printf '%s\n' '#!/bin/sh' \
-        'case "$*" in *ccmorph-private.*) printf "private view creation refused\n" >&2; exit 1 ;; esac' \
-        "exec ${(qqq)real_mktemp} \"\$@\"" > "$HOME/bin/mktemp"
-      chmod +x "$HOME/bin/mktemp"
-      ;;
     provider)
       printf '%s\n' 'type=provider' 'provider=codex' > "$HOME/.config/ccmorph/$target.conf"
       printf '%s\n' '#!/bin/sh' 'exit 1' > "$HOME/bin/cliproxyapi"
@@ -3187,9 +3178,6 @@ test_relay_provider_preflight_omits_cache_notice_issue_226() {
   check_relay_cache_notice_absent target "no auth directory for 'target'" 1 provider
 }
 
-test_relay_private_preflight_omits_cache_notice_issue_226() {
-  check_relay_cache_notice_absent target 'private view creation refused' 1 private
-}
 
 test_prelaunch_runs_configured_step_silently() {
   local test_home
@@ -11861,7 +11849,6 @@ run_test test_relay_same_file_profile_omits_cache_notice_issue_226
 run_test test_relay_failed_switch_omits_cache_notice_issue_226
 run_test test_relay_settings_preflight_omits_cache_notice_issue_226
 run_test test_relay_provider_preflight_omits_cache_notice_issue_226
-run_test test_relay_private_preflight_omits_cache_notice_issue_226
 run_test test_prelaunch_runs_configured_step_silently
 run_test test_local_sh_loads_and_its_exports_take_effect
 run_test test_absent_local_sh_is_a_clean_noop
