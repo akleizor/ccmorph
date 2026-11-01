@@ -51,7 +51,10 @@ func (l *launcher) inspect(args []string) int {
 		l.accountsHint()
 		return 1
 	}
-	f, ok := l.read(name)
+	// The zsh read the conf alone and validated nothing: inspect is the
+	// read-only view a broken profile is diagnosed from, so it must show the
+	// conf `list` shows. Validation stays at launch and hop.
+	f, ok := l.readRaw(name)
 	if !ok {
 		return 1
 	}
