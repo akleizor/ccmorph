@@ -18,9 +18,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class Box:
-    def __init__(self, home):
+    def __init__(self, home, state='.config/ccmorph'):
         self.home = home
-        self.state = home / '.config/ccmorph'
+        self.state = home / state
         (self.state / 'profiles').mkdir(parents=True)
         (home / 'bin').mkdir()
         (home / '.claude/projects').mkdir(parents=True)
@@ -124,6 +124,32 @@ def test_list_marks_the_default_and_labels_every_profile_type(box):
 def test_list_with_no_profiles_points_at_add(box):
     out = box.run('list')
     assert out.returncode == 0 and 'ccmorph add' in out.stdout
+
+
+@pytest.mark.parametrize('meta', [
+    pytest.param('[6]', id='brackets-gh-113'),
+    pytest.param('*', id='star-gh-113'),
+    pytest.param('?', id='question-gh-113'),
+])
+def test_list_tolerates_glob_metacharacters_in_the_state_dir_gh_113(tmp_path, meta):
+    # GH-113: discovery joined the state dir into the glob pattern, so a
+    # bracket in the path matched nothing and a * or ? reached into sibling
+    # directories. The zsh quoted the directory and globbed only the conf
+    # pattern, so the path stayed literal; list must show the same profiles
+    # either way.
+    plain = Box(tmp_path)
+    seed(plain)
+    odd = Box(tmp_path / 'odd', state=f'ccm{meta}')
+    seed(odd)
+    # A sibling the unquoted pattern also matches: ccm[6], ccm* and ccm? all
+    # match the name ccm6, so a pattern that is not literal lists its conf too.
+    decoy = odd.home / 'ccm6'
+    decoy.mkdir()
+    (decoy / 'tok.conf').write_text('type=token\ntoken=decoy\n')
+    out = odd.run('list')
+    baseline = plain.run('list')
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == baseline.stdout
 
 
 # --- mv / rm ------------------------------------------------------------------
@@ -260,8 +286,10 @@ def test_a_profile_with_a_missing_credential_is_refused_at_launch(box):
     box.conf('empty', 'type=token\n')
     box.conf('anon', 'type=sub\n')
     box.conf('odd', 'type=banana\n')
+    box.conf('keyless', 'type=apikey\n')
     for name, why in (('empty', 'has no token'), ('anon', 'has no email'),
-                      ('odd', 'invalid or missing type')):
+                      ('odd', 'invalid or missing type'),
+                      ('keyless', 'has no api_key')):
         out = box.run('run', name)
         assert out.returncode != 0 and why in out.stderr, (name, out.stderr)
     assert box.log() == ''
@@ -344,3 +372,15 @@ def test_inspect_never_prints_the_stored_credential(box):
         out = box.run('inspect', name)
         assert out.returncode == 0, out.stderr
         assert 'canary' not in out.stdout + out.stderr
+
+
+def test_inspect_shows_a_profile_whose_conf_fails_validation_gh_113(box):
+    # GH-113: inspect read the conf through the validating reader, so it
+    # refused exactly the profiles that need diagnosing — the conf `list`
+    # still shows. The zsh read the conf and validated nothing; validation
+    # belongs to launch and hop, not to the read-only view.
+    box.conf('broken', 'type=apikey\n')
+    out = box.run('inspect', 'broken')
+    assert out.returncode == 0, out.stderr
+    assert 'broken' in out.stdout and 'apikey' in out.stdout
+    assert 'has no api_key' not in out.stderr

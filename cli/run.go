@@ -451,9 +451,9 @@ func (l *launcher) sessionFile(id string) (string, bool) {
 		return "", false
 	}
 	stores := []string{filepath.Join(os.Getenv("HOME"), ".claude", "projects")}
-	more, _ := filepath.Glob(filepath.Join(l.profileDirs, "*", "projects"))
+	more, _ := filepath.Glob(filepath.Join(globQuote(l.profileDirs), "*", "projects"))
 	for _, store := range append(stores, more...) {
-		hits, _ := filepath.Glob(filepath.Join(store, "*", id+".jsonl"))
+		hits, _ := filepath.Glob(filepath.Join(globQuote(store), "*", id+".jsonl"))
 		for _, h := range hits {
 			if isFile(h) {
 				if real, err := filepath.EvalSymlinks(h); err == nil {
@@ -487,7 +487,7 @@ func (l *launcher) carrySession(id, dst string) {
 	if !sessionID.MatchString(id) {
 		return
 	}
-	hits, _ := filepath.Glob(filepath.Join(dst, "*", id+".jsonl"))
+	hits, _ := filepath.Glob(filepath.Join(globQuote(dst), "*", id+".jsonl"))
 	for _, h := range hits {
 		if isFile(h) {
 			return
@@ -520,10 +520,10 @@ func (l *launcher) migrateState() bool {
 		return true
 	}
 	legacy := []string{filepath.Join(l.dir, "model-registry"), filepath.Join(l.dir, "model-registry.conf")}
-	g1, _ := filepath.Glob(filepath.Join(l.profileDirs, "*", "cache", "context-window"))
-	g2, _ := filepath.Glob(filepath.Join(l.dir, "*.conf.lock"))
+	g1, _ := filepath.Glob(filepath.Join(globQuote(l.profileDirs), "*", "cache", "context-window"))
+	g2, _ := filepath.Glob(filepath.Join(globQuote(l.dir), "*.conf.lock"))
 	legacy = append(append(legacy, g1...), g2...)
-	confs, _ := filepath.Glob(filepath.Join(l.dir, "*.conf"))
+	confs, _ := filepath.Glob(filepath.Join(globQuote(l.dir), "*.conf"))
 	inline, plain := false, false
 	for _, c := range confs {
 		b, err := os.ReadFile(c)
