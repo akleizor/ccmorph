@@ -50,10 +50,16 @@ func processTable() map[int]psRow {
 
 var shellComm = regexp.MustCompile(`^-?(zsh|bash|sh|dash)$`)
 
+// launcherComm is the Go launcher. claude runs as its child (the core's
+// claude-session execs into it), so it stands between the relay and Claude Code
+// and must never be the hop's target: TERM to it is read as a signal this launch
+// forwarded, which discards the queued switch.
+const launcherComm = "ccmorph-core"
+
 // hopTarget is `util hop-target <relay pid> <pid>`: the Claude Code process to end
-// for a hop -- the first non-shell process below the relay in <pid>'s ancestry
-// (the shells between are the relay's forwarding subshells and the one Claude Code
-// runs the command in).
+// for a hop -- the first process below the relay in <pid>'s ancestry that is
+// neither a shell nor the core launcher (the shells between are the relay's
+// forwarding subshells and the one Claude Code runs the command in).
 func hopTarget(args []string, _ io.Reader, out, _ io.Writer) int {
 	if len(args) != 2 {
 		return 2
@@ -81,7 +87,8 @@ func findHopTarget(t map[int]psRow, relay, pid int) int {
 		if r.ppid == relay {
 			// Nearest the relay first.
 			for i := len(chain) - 1; i >= 0; i-- {
-				if !shellComm.MatchString(filepath.Base(t[chain[i]].comm)) {
+				base := filepath.Base(t[chain[i]].comm)
+				if !shellComm.MatchString(base) && base != launcherComm {
 					return chain[i]
 				}
 			}

@@ -2720,6 +2720,99 @@ sys.exit(subprocess.call(["zsh", "-c", "source \"$1\"; shift; NO_COLOR=1 ccmorph
 ' "$HOME/claude-ended" "$CCMORPH_SOURCE" "$@"
 }
 
+# A stand-in Claude Code for a session the Go core launches: it records its argv
+# and config dir, hops once (with $CCMORPH_TEST_HOP_ARGS) on its first run, and
+# then dies the way a session ended by hop does -- on the TERM hop sends it. It
+# must be python, not a shell: hop-target skips shells in the ancestry.
+install_hopping_claude() {
+  export CCMORPH_TEST_SOURCE="$CCMORPH_SOURCE"
+  export CCMORPH_TEST_HOP_ARGS="$*"
+  export CCMORPH_TEST_TESTS_DIR="$REPO_ROOT/tests"
+  printf '%s\n' \
+    '#!/usr/bin/env python3' \
+    'import os, signal, subprocess, sys' \
+    'sys.path.insert(0, os.environ["CCMORPH_TEST_TESTS_DIR"])' \
+    'from support import HANG_TIMEOUT' \
+    'argv = sys.argv[1:]' \
+    'with open(os.environ["CCMORPH_TEST_LOG"], "a") as log:' \
+    '    log.write("ARG\t" + "\t".join(argv) + "\n")' \
+    '    log.write("CFG=" + os.path.basename(os.environ.get("CLAUDE_CONFIG_DIR", "")) + "\n")' \
+    'if "--help" in argv:' \
+    '    sys.exit(0)' \
+    'signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})' \
+    'hopped = os.path.join(os.environ["HOME"], "hopped")' \
+    'if os.path.exists(hopped):' \
+    '    sys.exit(0)' \
+    'open(hopped, "w").close()' \
+    'next_catalogue = os.path.join(os.environ["HOME"], "catalogue.next")' \
+    'if os.path.exists(next_catalogue):' \
+    '    os.replace(next_catalogue, os.path.join(os.environ["HOME"], "catalogue.json"))' \
+    'env = dict(os.environ, CLAUDE_CODE_SESSION_ID="hop-session", NO_COLOR="1")' \
+    'ran = subprocess.run(["zsh", "-c", "source \"$1\"; shift; ccmorph hop \"$@\"", "zsh",' \
+    '                      os.environ["CCMORPH_TEST_SOURCE"],' \
+    '                      *os.environ["CCMORPH_TEST_HOP_ARGS"].split()], env=env, timeout=HANG_TIMEOUT)' \
+    'got = signal.sigtimedwait([signal.SIGTERM], HANG_TIMEOUT)' \
+    'with open(os.environ["CCMORPH_TEST_LOG"], "a") as log:' \
+    '    log.write("TERM\n" if got else "NO-TERM\n")' \
+    'sys.exit(143 if got else (ran.returncode or 0))' \
+    > "$HOME/bin/claude"
+  chmod +x "$HOME/bin/claude"
+}
+
+test_hop_inside_a_core_launch_resumes_on_the_target() {
+  # The whole path a user runs: `ccmorph run`, a hop from inside the session, and
+  # the relay resuming it on the target profile. It fails when hop-target picks the
+  # core launcher: TERM then reads as a forwarded signal, the queued switch is
+  # deleted and the session exits 143 without resuming.
+  local test_home out st rc=0
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  ps -axo pid= >/dev/null 2>&1 || {
+    # hop-target reads the process table; a sandbox that denies ps cannot run it.
+    print -- '  (skipped: ps is unavailable here)'
+    rm -rf "$test_home"
+    return 0
+  }
+  printf '%s\n' 'type=proxy' 'base_url=http://target.invalid' 'api_key=target-key' 'model=target-model' \
+    > "$HOME/.config/ccmorph/target.conf"
+  source "$CCMORPH_SOURCE"
+  install_hopping_claude target
+
+  out=$(_ccm_launch -a proxy 2>&1); st=$?
+
+  [[ "$st" == 0 ]] || { print -u2 -- "the launch must end on the target's own exit, got $st"; rc=1 }
+  [[ "$out" == *'resuming as target'* ]] || {
+    print -u2 -- "hop must resume the session on the target profile: ${(qqq)out}"
+    rc=1
+  }
+  local log="$(<"$CCMORPH_TEST_LOG")"
+  [[ "$(print -r -- "$log" | grep -c '^TERM$')" == 1 ]] || {
+    print -u2 -- "hop must end Claude Code, not the launcher: ${(qqq)log}"
+    rc=1
+  }
+  local -a lines=("${(@f)log}")
+  local resumes=0 line
+  for line in "${lines[@]}"; do
+    [[ "$line" == $'ARG\t--resume\thop-session' ]] && (( resumes += 1 ))
+  done
+  (( resumes == 1 )) || {
+    print -u2 -- "the session must resume once, by id: ${(qqq)log}"
+    rc=1
+  }
+  [[ "$(print -r -- "$log" | grep -c '^CFG=target$')" == 1 ]] || {
+    print -u2 -- "the resumed session must run on the target profile: ${(qqq)log}"
+    rc=1
+  }
+  local -a left=("$HOME"/.config/ccmorph/.reswitch.*(N))
+  (( ${#left} == 0 )) || {
+    print -u2 -- 'the switch request must be consumed, not left behind'
+    rc=1
+  }
+  unset CCMORPH_TEST_SOURCE CCMORPH_TEST_HOP_ARGS CCMORPH_TEST_TESTS_DIR
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_hop_relays_model_and_effort() {
   local test_home
   local relay_id="$$.test"
@@ -11653,6 +11746,7 @@ run_test test_model_known_strips_only_the_terminal_window_suffix
 run_test test_invalid_resume_model_falls_back_to_profile_model
 run_test test_resume_rejects_flag_picker_and_multitoken_model_values
 run_test test_hop_relays_model_and_effort
+run_test test_hop_inside_a_core_launch_resumes_on_the_target
 run_test test_hop_refuses_when_no_claude_process_runs_it
 run_test test_hop_without_profile_uses_current_profile
 run_test test_hop_falls_back_when_the_target_cannot_serve_the_model

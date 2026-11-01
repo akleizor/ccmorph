@@ -21,3 +21,28 @@ func TestHopTargetIsTheFirstNonShellBelowTheRelay(t *testing.T) {
 		t.Fatalf("nearest the relay wins, got %d", got)
 	}
 }
+
+func TestHopTargetSkipsTheCoreLauncher(t *testing.T) {
+	// The Go launcher runs claude as its child, so the process between the relay
+	// and Claude Code is the core itself: relay 200 -> core 201 -> claude 202 ->
+	// zsh 203 (command shell) -> zsh 204 ($$). Ending the core forwards TERM to
+	// claude as a signal the launch sent, which discards the queued switch.
+	tab := map[int]psRow{
+		201: {ppid: 200, comm: "/Users/u/.config/ccmorph/libexec/ccmorph-core"},
+		202: {ppid: 201, comm: "/opt/bin/claude"},
+		203: {ppid: 202, comm: "zsh"},
+		204: {ppid: 203, comm: "-zsh"},
+	}
+	if got := findHopTarget(tab, 200, 204); got != 202 {
+		t.Fatalf("the hop must end claude (202), not the core launcher, got %d", got)
+	}
+	tab[202] = psRow{ppid: 201, comm: "claude"}
+	if got := findHopTarget(tab, 200, 204); got != 201+1 {
+		t.Fatalf("a bare comm name must be found too, got %d", got)
+	}
+	// A core with nothing but shells below it has no Claude Code to end.
+	tab[202] = psRow{ppid: 201, comm: "sh"}
+	if got := findHopTarget(tab, 200, 204); got != 0 {
+		t.Fatalf("shells below the core are not a hop target, got %d", got)
+	}
+}
