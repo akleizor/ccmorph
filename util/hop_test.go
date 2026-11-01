@@ -37,7 +37,7 @@ func TestHopTargetSkipsTheCoreLauncher(t *testing.T) {
 		t.Fatalf("the hop must end claude (202), not the core launcher, got %d", got)
 	}
 	tab[202] = psRow{ppid: 201, comm: "claude"}
-	if got := findHopTarget(tab, 200, 204); got != 201+1 {
+	if got := findHopTarget(tab, 200, 204); got != 202 {
 		t.Fatalf("a bare comm name must be found too, got %d", got)
 	}
 	// A core with nothing but shells below it has no Claude Code to end.
