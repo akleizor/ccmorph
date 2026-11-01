@@ -2867,6 +2867,60 @@ test_hop_refuses_when_no_claude_process_runs_it() {
   return $rc
 }
 
+test_bare_hop_finds_the_adapter_after_adapter_start_exits() {
+  # adapter-start exits once its adapter is ready, so the running adapter is
+  # reparented to launchd and its --parent-pid argument is the only thing that
+  # names the launcher. A bare hop must still discover the profile it serves.
+  local test_home out adapter_pid hop_out rc=0 line
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  ps -axo pid= >/dev/null 2>&1 || {
+    # session-adapter reads the process table; a sandbox that denies ps cannot run it.
+    print -- '  (skipped: ps is unavailable here)'
+    rm -rf "$test_home"
+    return 0
+  }
+  # The shared double leaves when it is reparented; the shipped adapter watches
+  # its --parent-pid with kill -0 and keeps serving, so this one does too.
+  printf '%s\n' '#!/bin/sh' 'echo PORT=45999' 'trap "exit 0" TERM INT' \
+    'while :; do sleep 0.2; done' > "$HOME/.config/ccmorph/libexec/ccmorph-adapter"
+  chmod +x "$HOME/.config/ccmorph/libexec/ccmorph-adapter"
+  write_apikey_conf gw 'api_key=sk_test' 'base_url=https://gateway.invalid' 'adapter=true'
+  source "$CCMORPH_SOURCE"
+
+  out=$("$_CCMORPH_LIBEXEC_DIR/ccmorph-core" util adapter-start \
+    "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" gw "" $$ "$HOME/adapter.log" 2>"$HOME/adapter.err") || {
+    print -u2 -- "adapter-start must return only at readiness: ${(qqq)$(<"$HOME/adapter.err")}"
+    rm -rf "$test_home"
+    return 1
+  }
+  line=${${(f)out}[1]}
+  adapter_pid=${line#PID=}
+
+  export CLAUDE_CODE_SESSION_ID='bare-adapter-session'
+  export CCMORPH_RELAY_ID="$$.adapter"
+  hop_out=$(hop_as_claude) || rc=1
+  local relay_file="$HOME/.config/ccmorph/.reswitch.$$.adapter"
+  if [[ ! -f "$relay_file" ]]; then
+    print -u2 -- "a bare hop must find the adapter and queue gw, hop said: ${(qqq)hop_out}"
+    rc=1
+  elif [[ "${${(f)$(<"$relay_file")}[1]}" != 'profile=gw' ]]; then
+    print -u2 -- "a bare hop must hop to the profile the adapter serves: ${(qqq)$(<"$relay_file")}"
+    rc=1
+  fi
+
+  kill -TERM "$adapter_pid" 2>/dev/null
+  local -i i
+  for (( i = 0; i < CCMORPH_TEST_HANG_TIMEOUT * 10; i++ )); do
+    kill -0 "$adapter_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  kill -KILL "$adapter_pid" 2>/dev/null
+  unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_hop_falls_back_when_the_target_cannot_serve_the_model() {
   # A gateway model hopped into a Claude profile is a name Anthropic has never
   # heard of. The field is dropped so the target launches on its own default; the
@@ -11747,6 +11801,7 @@ run_test test_invalid_resume_model_falls_back_to_profile_model
 run_test test_resume_rejects_flag_picker_and_multitoken_model_values
 run_test test_hop_relays_model_and_effort
 run_test test_hop_inside_a_core_launch_resumes_on_the_target
+run_test test_bare_hop_finds_the_adapter_after_adapter_start_exits
 run_test test_hop_refuses_when_no_claude_process_runs_it
 run_test test_hop_without_profile_uses_current_profile
 run_test test_hop_falls_back_when_the_target_cannot_serve_the_model

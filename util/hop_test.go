@@ -46,3 +46,29 @@ func TestHopTargetSkipsTheCoreLauncher(t *testing.T) {
 		t.Fatalf("shells below the core are not a hop target, got %d", got)
 	}
 }
+
+func TestSessionAdapterFindsAReparentedAdapter(t *testing.T) {
+	// util adapter-start exits once the adapter is ready, so the running adapter
+	// is reparented to launchd: its --parent-pid argument is the only witness left.
+	tab := map[int]psRow{
+		50: {ppid: 1, args: "/x/libexec/ccmorph-core adapter gw --auto --model m --parent-pid 100"},
+		51: {ppid: 300, args: "/x/libexec/ccmorph-core adapter sub --auto"},
+		52: {ppid: 1, args: "/x/libexec/ccmorph-core adapter eq --auto --parent-pid=200"},
+		53: {ppid: 1, args: "/x/libexec/ccmorph-core adapter near --auto --parent-pid 1000"},
+		54: {ppid: 1, args: "/bin/other --parent-pid 100"},
+	}
+	for _, c := range []struct {
+		launcher int
+		want     string
+	}{
+		{100, "gw"},
+		{200, "eq"},
+		{300, "sub"},
+		{10, ""},
+		{400, ""},
+	} {
+		if got := findSessionAdapter(tab, c.launcher); got != c.want {
+			t.Fatalf("launcher %d: got %q, want %q", c.launcher, got, c.want)
+		}
+	}
+}
