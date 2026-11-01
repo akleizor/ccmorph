@@ -241,9 +241,11 @@ grep -qxF "  security delete-generic-password -s ccmorph -a work.api_key" "$d/ou
   && ok "uninstall: prints the keychain delete for each ref in the confs" || { fail "uninstall: keychain line missing"; cat "$d/out" }
 (( $(grep -c 'security delete-generic-password' "$d/out") == 1 )) && ok "uninstall: one keychain line per ref, none for a plain conf" || fail "uninstall: keychain line count"
 # No usage dir and a Linux uname: neither line appears, and the rm names one path.
+# The uname is stubbed, not assumed: on a macOS runner the real one says Darwin.
 d=$(fresh_env uninstall_bare)
 run_installer "$d" >/dev/null
 printf 'type=apikey\napi_key=keychain:work.api_key\n' > "$d/home/.config/ccmorph/work.conf"
+printf '#!/bin/sh\necho Linux\n' > "$d/bin/uname"; chmod +x "$d/bin/uname"
 env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
   zsh "$REPO/install.sh" --uninstall >"$d/out" 2>&1
 grep -qxF "  rm -rf $d/home/.config/ccmorph" "$d/out" && ! grep -q 'usage receipts\|keychain' "$d/out" \
