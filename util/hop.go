@@ -16,8 +16,12 @@ type psRow struct {
 	args string
 }
 
-// processTable is one `ps` read: pid -> parent, executable and argv.
+// processTable is one read of the process table: pid -> parent, executable and
+// argv; sysctl on darwin, ps elsewhere or when that read fails its self-check.
 func processTable() map[int]psRow {
+	if t, ok := sysctlProcessTable(); ok {
+		return t
+	}
 	raw, err := exec.Command("ps", "-axo", "pid=,ppid=,comm=").Output()
 	if err != nil {
 		return nil
