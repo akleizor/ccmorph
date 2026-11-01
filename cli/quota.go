@@ -34,8 +34,8 @@ func (l *launcher) context(args []string) int {
 		return 1
 	}
 	if model == "" || model == "-i" || model == "--interactive" {
-		picked, ok := l.zshUI(`_ccm_pick_value model "$1"`, name)
-		if !ok || picked == "" {
+		picked, ok := l.pickValue("model", name)
+		if !ok {
 			return 1
 		}
 		model = picked

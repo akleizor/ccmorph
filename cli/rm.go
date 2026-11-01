@@ -51,7 +51,7 @@ func (l *launcher) rm(args []string) int {
 			return 1
 		}
 		fmt.Fprintf(os.Stderr, "Profile '%s' has no .conf. Remove leftover private state?\n  %s\n  %s\nShared conversation history will be kept.\n", name, pdir, auth)
-		if _, ok := l.zshUI(`ccm_ui_confirm "$1"`, "Remove these leftovers?"); !ok {
+		if uiConfirm("Remove these leftovers?") != 0 {
 			l.err("cancelled; nothing removed")
 			return 1
 		}

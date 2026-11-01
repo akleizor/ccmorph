@@ -461,17 +461,6 @@ func splitNUL(s string) []string {
 	return out
 }
 
-// zshUI runs one of the still-zsh pickers with the terminal, its answer on stdout.
-// local.sh is not sourced again: its output would land in the captured answer and
-// its side effects would re-run.
-func (l *launcher) zshUI(script string, args ...string) (string, bool) {
-	cmd := exec.Command("zsh", append([]string{"-fc", `source "$CCMORPH_LIB_DIR/ccmorph.sh" || exit 1; ` + script, "zsh"}, args...)...)
-	cmd.Env = append(os.Environ(), "CCMORPH_LIB_DIR="+l.libDir, "_CCMORPH_LOCAL_SOURCED=1")
-	cmd.Stdin, cmd.Stderr = os.Stdin, os.Stderr
-	out, err := cmd.Output()
-	return strings.TrimRight(string(out), "\n"), err == nil
-}
-
 func isTTY(fd int) bool {
 	_, err := ioctlTermios(fd)
 	return err == nil
