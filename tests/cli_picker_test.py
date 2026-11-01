@@ -709,11 +709,14 @@ class PickerTTYTest(unittest.TestCase):
 
     def test_provider_labels_are_cased_without_changing_selected_ids(self):
         env = self.env(fzf=True)
-        command = (
-            '_ccm_provider_list() { REPLY=(claude antigravity codex devin kimi meta xai); return 0 }\n'
-            '_ccm_provider_login() { print -r -- "PROVIDER_ID=$2"; return 1 }\n'
-            'ccmorph add my_profile'
-        )
+        # A fake cliproxyapi: its --help lists the logins; a login names its id.
+        fake = self.tmp / 'bin' / 'cliproxyapi'
+        fake.write_text('#!/bin/sh\n'
+                        'if [ "$1" = --help ]; then for p in claude antigravity codex devin kimi meta xai; do'
+                        ' echo "  -$p-login"; done; exit 0; fi\n'
+                        'p=${1#-}; echo "PROVIDER_ID=${p%-login}"; exit 1\n')
+        fake.chmod(0o755)
+        command = 'ccmorph add my_profile'
         rc, out, missed = run_pty(command, env, [
             (b'Esc Cancel', b'\x1b[B' * 8 + b'\r'),
         ])
