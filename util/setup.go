@@ -106,9 +106,10 @@ func setupProfile(args []string, in io.Reader, out, errw io.Writer) int {
 			return fail("cannot create profile '" + name + "'")
 		}
 	}
-	// Best effort: mkdir already set the mode, and a filesystem refusing chmod must not brick provisioning.
+	// Best effort: mkdir already set the mode, and a filesystem refusing chmod must
+	// not brick provisioning. Only the profile's own dir: ~/.claude is Claude Code's,
+	// and its mode is the user's to set.
 	_ = os.Chmod(dir, 0o700)
-	_ = os.Chmod(canonical, 0o700)
 	if provisionProfile([]string{dir, kind}, in, out, errw) != 0 {
 		return fail("profile setup failed for '" + name + "'")
 	}

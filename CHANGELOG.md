@@ -5,6 +5,25 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
+## Unreleased
+
+### Changed
+
+- **Uninstall names what it leaves.** `ccmorph uninstall` (and
+  `install.sh --uninstall`) still removes only the command, and now lists the
+  state root with its profiles, credentials and session history, the usage
+  receipts under `~/.local/state/ccmorph`, and on macOS the login-keychain items
+  the confs point at, each with the command that removes it. Before removing the
+  command it repairs the plugin index paths a profile session left in
+  `~/.claude/plugins`, so a plugin installed from a profile keeps loading in
+  native `claude` once the state root is deleted by hand.
+- **Nothing else in `~/.local/bin` is touched.** The installer and uninstall no
+  longer delete a `ccrelay` there: that cleanup of the pre-`hop` wrapper was
+  unconditional, so a user's own file of that name went with it.
+- **`~/.claude` keeps its mode.** Provisioning a profile links the shared layer
+  into it and creates the shared directories, but no longer chmods the directory
+  itself to 700; its permissions are Claude Code's and the user's.
+
 ## v0.4.2 — 2026-10-31
 
 ### Changed

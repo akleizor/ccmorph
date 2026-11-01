@@ -12,9 +12,8 @@
 #
 # This installer does NOT edit your shell. ccmorph is one executable; the only
 # requirement is that its directory be on your PATH, which this script checks and
-# reports rather than arranging behind your back. It does REMOVE a managed block
-# left by an older version, because that block sourced a library that no longer
-# defines any command and would fail silently in every new shell.
+# reports rather than arranging behind your back. A managed block left by an
+# older version is reported, never removed: the file is the user's.
 
 # Windows shells (Git Bash, MSYS, Cygwin) have no zsh to re-exec into, and what
 # they used to hit was an error about zsh, not about Windows. Name the platform
@@ -146,9 +145,47 @@ COMPONENTS=($LIBS $EXECUTABLES $DATA_FILES)
 # ---- uninstall ------------------------------------------------------------
 # Must run before the UI module is sourced: a standalone install.sh (no sibling
 # ccmorph-ui.zsh) must still be able to remove the command.
+#
+# Only the command goes; nothing else in ~/.local/bin is ours to touch. Everything
+# else ccmorph wrote is the user's — the state root (profiles, credentials and
+# each profile's session history), the usage receipts, and on macOS the keychain
+# items the confs point at — so it is NAMED, with the command that removes it,
+# rather than deleted here or left for them to discover later.
 if [[ "${1:-}" == "--uninstall" ]]; then
-  rm -f "$BIN_DIR/ccmorph" "$BIN_DIR/ccrelay"
-  print -r -- "Left $CONFIG_DIR in place (it holds your profiles). Remove it by hand if you truly want them gone."
+  # Claude Code records a plugin installed from a profile session under that
+  # profile's spelling of the shared ~/.claude/plugins store. Every ccmorph run
+  # repairs that, but there is no run after this one: repair now, so the plugin
+  # still loads in native claude once the state root is gone. Best effort — a
+  # missing or older core (no such subcommand) must not stop the uninstall.
+  if [[ -x "$CONFIG_DIR/libexec/ccmorph-core" ]]; then
+    "$CONFIG_DIR/libexec/ccmorph-core" util normalize-plugin-index "$HOME" "$CONFIG_DIR/profiles" >/dev/null 2>&1 || :
+  fi
+  rm -f "$BIN_DIR/ccmorph"
+  print -r -- "Removed $BIN_DIR/ccmorph."
+  _un_state="${XDG_STATE_HOME:-$HOME/.local/state}/ccmorph"
+  _un_profiles=("$CONFIG_DIR"/*.conf(N))
+  _un_rm=("$CONFIG_DIR")
+  [[ -d "$_un_state" ]] && _un_rm+=("$_un_state")
+  # The keychain items are read off the confs, never by scanning the keychain
+  # (which prompts): a conf is the only thing that names them. `|| :` because a
+  # grep with no match exits 1, an assignment takes its substitution's status,
+  # and `set -e` would end the uninstall right there, mid-report.
+  _un_keychain=()
+  if [[ "$(uname -s 2>/dev/null)" == Darwin ]]; then
+    _un_keychain=(${(f)"$(command grep -hsE '^(api_key|token)=keychain:.' "$CONFIG_DIR"/*.conf(N) /dev/null || :)"})
+    _un_keychain=(${_un_keychain#*=keychain:})
+    _un_keychain=(${_un_keychain:#})
+  fi
+  print -r -- "Kept, because they are yours:"
+  print -r -- "  $CONFIG_DIR  (${#_un_profiles} profiles, their credentials and session history)"
+  [[ -d "$_un_state" ]] && print -r -- "  $_un_state  (usage receipts)"
+  (( ${#_un_keychain} )) && print -r -- "  login keychain  (${#_un_keychain} ccmorph item(s))"
+  print -r -- "To remove those too:"
+  print -r -- "  rm -rf" "${(q-)_un_rm[@]}"
+  for _un_ref in "${_un_keychain[@]}"; do
+    print -r -- "  security delete-generic-password -s ccmorph -a ${(q-)_un_ref}"
+  done
+  print -r -- "Plugins installed from a profile live in $HOME/.claude/plugins and keep working in claude."
   print -r -- "Open a new shell to finish."
   exit 0
 fi
@@ -323,10 +360,6 @@ CCMORPH_STATE_DIR="$CONFIG_DIR" CCMORPH_LIB_DIR="$CONFIG_DIR/lib" zsh -fc \
   'source "$CCMORPH_LIB_DIR/ccmorph.sh"; _ccm_secure_dirs' || exit 1
 # Consolidate legacy context state only after the owning tool is installed.
 CCMORPH_STATE_DIR="$CONFIG_DIR" "$CONFIG_DIR/libexec/ccmorph-core" model-window --migrate
-# The retired wrapper: `ccrelay` is now `ccmorph hop`. Removed rather than left
-# behind, because the old script sources a library that no longer defines it and
-# would answer with a load failure instead of saying what replaced it.
-rm -f "$BIN_DIR/ccrelay"
 # Three of the four Python helpers (v0.3.0) are now `ccmorph-core` subcommands
 # and nothing running names them, so an upgrade clears that dead weight.
 # ccmorph-adapter is the exception: a session launched before the Go port keeps
