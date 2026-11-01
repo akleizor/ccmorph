@@ -299,16 +299,16 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 	if os.Getenv("TERM") == "dumb" {
 		return t.numbered(prompt, rows, display)
 	}
-	restore, err := rawTTY(os.Stdin)
-	if err != nil {
-		return "", 1
-	}
 	sigs := make(chan os.Signal, 4)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	winch := make(chan os.Signal, 4)
 	signal.Notify(winch, syscall.SIGWINCH)
 	defer signal.Stop(sigs)
 	defer signal.Stop(winch)
+	restore, err := rawTTY(os.Stdin)
+	if err != nil {
+		return "", 1
+	}
 	k := readKeys()
 	width := labelWidth(rows, display)
 	selected, drawn, result, rc := 0, 0, 1, 0
@@ -475,19 +475,21 @@ func uiInput(prompt string, secret bool) (string, int) {
 		}
 		return line, 0
 	}
+	// Signals and raw mode before the prompt: a key typed the moment it shows
+	// must not reach a cooked terminal or kill the process unrestored.
+	sigs := make(chan os.Signal, 4)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigs)
+	restore, err := rawTTY(os.Stdin)
+	if err != nil {
+		return "", 1
+	}
 	if isTTY(2) && os.Getenv("TERM") != "dumb" {
 		_, columns := termSize()
 		fmt.Fprint(w, t.heading(prompt, columns)+"\n"+uiMargin+t.gray+"Enter Submit · Esc Cancel"+t.reset+"\n"+t.focus+"❯"+t.reset+" ")
 	} else {
 		fmt.Fprint(w, prompt+" (Enter Submit · Esc Cancel) ")
 	}
-	restore, err := rawTTY(os.Stdin)
-	if err != nil {
-		return "", 1
-	}
-	sigs := make(chan os.Signal, 4)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-	defer signal.Stop(sigs)
 	value, rc := readKeyLine(readKeys(), sigs, secret, w)
 	restore()
 	fmt.Fprintln(w)
