@@ -2780,7 +2780,7 @@ install_hopping_claude() {
   export CCMORPH_TEST_TESTS_DIR="$REPO_ROOT/tests"
   printf '%s\n' \
     '#!/usr/bin/env python3' \
-    'import os, signal, subprocess, sys' \
+    'import os, signal, subprocess, sys, time' \
     'sys.path.insert(0, os.environ["CCMORPH_TEST_TESTS_DIR"])' \
     'from support import HANG_TIMEOUT' \
     'argv = sys.argv[1:]' \
@@ -2801,10 +2801,16 @@ install_hopping_claude() {
     'ran = subprocess.run(["zsh", "-c", "source \"$1\"; shift; ccmorph hop \"$@\"", "zsh",' \
     '                      os.environ["CCMORPH_TEST_SOURCE"],' \
     '                      *os.environ["CCMORPH_TEST_HOP_ARGS"].split()], env=env, timeout=HANG_TIMEOUT)' \
-    'got = signal.sigtimedwait([signal.SIGTERM], HANG_TIMEOUT)' \
+    'def ended(*_):' \
+    '    with open(os.environ["CCMORPH_TEST_LOG"], "a") as log:' \
+    '        log.write("TERM\n")' \
+    '    os._exit(143)' \
+    'signal.signal(signal.SIGTERM, ended)' \
+    'signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM})' \
+    'time.sleep(HANG_TIMEOUT)' \
     'with open(os.environ["CCMORPH_TEST_LOG"], "a") as log:' \
-    '    log.write("TERM\n" if got else "NO-TERM\n")' \
-    'sys.exit(143 if got else (ran.returncode or 0))' \
+    '    log.write("NO-TERM\n")' \
+    'sys.exit(ran.returncode or 0)' \
     > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
 }
@@ -2817,12 +2823,6 @@ test_hop_inside_a_core_launch_resumes_on_the_target() {
   local test_home out st rc=0
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  ps -axo pid= >/dev/null 2>&1 || {
-    # hop-target reads the process table; a sandbox that denies ps cannot run it.
-    print -- '  (skipped: ps is unavailable here)'
-    rm -rf "$test_home"
-    return 0
-  }
   printf '%s\n' 'type=proxy' 'base_url=http://target.invalid' 'api_key=target-key' 'model=target-model' \
     > "$HOME/.config/ccmorph/target.conf"
   source "$CCMORPH_SOURCE"
@@ -2924,12 +2924,6 @@ test_bare_hop_finds_the_adapter_after_adapter_start_exits() {
   local test_home out adapter_pid hop_out rc=0 line
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  ps -axo pid= >/dev/null 2>&1 || {
-    # session-adapter reads the process table; a sandbox that denies ps cannot run it.
-    print -- '  (skipped: ps is unavailable here)'
-    rm -rf "$test_home"
-    return 0
-  }
   # The shared double leaves when it is reparented; the shipped adapter watches
   # its --parent-pid with kill -0 and keeps serving, so this one does too.
   printf '%s\n' '#!/bin/sh' 'echo PORT=45999' 'trap "exit 0" TERM INT' \
