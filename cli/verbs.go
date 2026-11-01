@@ -37,6 +37,10 @@ func Verb(args []string) int {
 		return l.mv(args[1:])
 	case "get", "set":
 		return l.getSet(args[0], args[1:])
+	case "_menu":
+		return l.modelMenu(args[1:])
+	case "config":
+		return l.config(args[1:])
 	case "quota":
 		return l.quota(args[1:])
 	}
@@ -153,11 +157,6 @@ func (l *launcher) list() int {
 	return 0
 }
 
-func (l *launcher) menuProfile(types ...string) (string, bool) {
-	picked, ok := l.zshUI(`_ccm_menu_profile "$@"`, types...)
-	return picked, ok && picked != ""
-}
-
 func (l *launcher) cred(args []string) int {
 	name := ""
 	if len(args) > 0 {
@@ -266,4 +265,34 @@ func atomicWrite(path, content string) error {
 		return cerr
 	}
 	return nil
+}
+
+// modelMenu is `ccmorph _menu [profile]`: the model picker, chained from the
+// profile chooser when no profile is named.
+func (l *launcher) modelMenu(args []string) int {
+	name := ""
+	if len(args) > 0 {
+		name = args[0]
+	}
+	if name == "" {
+		picked, ok := l.menuProfile()
+		if !ok {
+			return 1
+		}
+		name = picked
+	}
+	if !profile.ValidName(name) {
+		l.err("usage: the model picker needs an profile")
+		return 1
+	}
+	if !l.exists(name) {
+		l.err("no profile '" + name + "'. Run: ccmorph list")
+		return 1
+	}
+	v, ok := l.pickValue("model", name)
+	if !ok {
+		return 1
+	}
+	fmt.Println(v)
+	return 0
 }

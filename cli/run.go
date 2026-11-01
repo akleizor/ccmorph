@@ -67,7 +67,7 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 	}
 
 	if interactive && name == "" {
-		picked, ok := l.zshUI("_ccm_menu_profile")
+		picked, ok := l.menuProfile()
 		if !ok {
 			return nil, 1
 		}
@@ -179,7 +179,7 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 			l.err("-i needs an profile: name one, or set a default with ccmorph use <profile>")
 			return nil, 2
 		}
-		picked, ok := l.zshUI(`ccmorph _menu "$1"`, name)
+		picked, ok := l.pickValue("model", name)
 		if !ok {
 			return nil, 1
 		}

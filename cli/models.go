@@ -70,11 +70,18 @@ func printNonEmpty(s string) {
 	}
 }
 
-// modelsJSON is _ccm_gw_models_json for a saved profile.
-func (l *launcher) modelsJSON(name string) (string, bool) {
+// modelsJSON is _ccm_gw_models_json. preview is an unsaved base and key that
+// configure is trying: never the old endpoint with the new credential.
+func (l *launcher) modelsJSON(name string, preview ...string) (string, bool) {
 	f, ok := l.read(name)
 	if !ok {
 		return "", false
+	}
+	if len(preview) > 0 {
+		f["base_url"] = preview[0]
+	}
+	if len(preview) > 1 {
+		f["api_key"] = preview[1]
 	}
 	base := f["base_url"]
 	if base == "" {

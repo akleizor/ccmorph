@@ -901,39 +901,10 @@ ccmorph() {
       ;;
 
     _menu)
-      # `pick` is the pre-1.10 name, kept as an undocumented alias so a script
-      # or a habit from an earlier version keeps working. Both are internal: the
-      # spelling users read is `-i`, which routes here.
-      #
-      # No profile named: chain from the profile chooser, exactly as `ccmorph -i`
-      # does. Erroring here instead made one concept behave two ways depending on
-      # where it was typed, and the argument it asked for is the one the chooser
-      # exists to supply.
-      local _menu_account="${2:-}"
-      if [[ -z "$_menu_account" ]]; then
-        _menu_account=$(_ccm_menu_profile) || return 1
-        [[ -n "$_menu_account" ]] || return 1
-      fi
-
-      _ccm_valid "$_menu_account" || {
-        _ccm_err "usage: the model picker needs an profile"
-        return 1
-      }
-
-      _ccm_exists "$_menu_account" || {
-        _ccm_err "no profile '$_menu_account'. Run: ccmorph list"
-        return 1
-      }
-
-      _ccm_pick_value model "$_menu_account"
+      _ccm_core cli _menu "${@:2}"
+      return $?
       ;;
 
-    # The escape hatch `probe` sends people to. Discovery answers for almost every
-    # model, but a gateway that publishes no size for an id newer than every
-    # catalogue leaves exactly one free fix: type the number in. That was reachable
-    # only by hand-editing `context_window.<model>` into a .conf -- a file the CLI
-    # otherwise owns, and a step no output ever named. `probe` now prints this as
-    # option 1, so the verb has to exist.
     context)
       _ccm_core cli context "${@:2}"
       return $?
@@ -945,133 +916,8 @@ ccmorph() {
       ;;
 
     config)
-      local _cfg_verb="$1" _cfg_profile="${2:-}" _cfg_key="${3:-}"
-      case "$_cfg_verb" in
-        get) (( $# <= 3 )) || { _ccm_err 'usage: ccmorph get [profile] [model|effort]'; return 2; } ;;
-        set) (( $# <= 4 )) || { _ccm_err 'usage: ccmorph set [profile] [model|effort] [value]'; return 2; } ;;
-        config) (( $# <= 2 )) || { _ccm_err 'usage: ccmorph config [profile]'; return 2; } ;;
-      esac
-      # No profile named: chain from the profile chooser rather than erroring, the
-      # same way `run -i` does. The argument being demanded is the one the chooser
-      # exists to supply, and a user who cannot recall a model id often cannot
-      # recall a profile name either.
-      if [[ -z "$_cfg_profile" || "$_cfg_profile" == (-i|--interactive) ]]; then
-        _cfg_profile=$(_ccm_menu_profile) || return 1
-        [[ -n "$_cfg_profile" ]] || return 1
-        set -- "$1" "$_cfg_profile" "${@:3}"
-        _cfg_key="${3:-}"
-      fi
-      _ccm_valid "$_cfg_profile" || { _ccm_err "usage: ccmorph $_cfg_verb <profile>"; return 2; }
-      _ccm_exists "$_cfg_profile" || { _ccm_err "no profile '$_cfg_profile'"; return 1; }
-      # `set <profile> <slot>` with no value, and `set <profile> <slot> -i`, both
-      # mean "show me the choices": a missing value is the same request as an
-      # explicit ask, so it opens the picker instead of printing a usage line the
-      # reader cannot act on without knowing the value already.
-      if [[ "$_cfg_verb" == set && "$_cfg_key" == (model|effort) ]] &&
-         { (( $# == 3 )) || [[ "${4:-}" == (-i|--interactive) ]] }; then
-        local _cfg_picked
-        _cfg_picked=$(_ccm_pick_value "$_cfg_key" "$_cfg_profile") || return 1
-        [[ -n "$_cfg_picked" ]] || return 1
-        set -- set "$_cfg_profile" "$_cfg_key" "$_cfg_picked"
-      fi
-      if [[ "$_cfg_verb" == (get|set) && "$_cfg_key" == (''|-i|--interactive) ]] && (( $# <= 3 )); then
-        _cfg_key=$(ccm_ui_select native "Setting — $_cfg_profile" \
-          $'model\tModel\tDefault model for new sessions\neffort\tReasoning\tDefault reasoning level') || return 1
-        if [[ "$_cfg_verb" == set ]]; then
-          local _cfg_value
-          _cfg_value=$(_ccm_pick_value "$_cfg_key" "$_cfg_profile") || return 1
-          set -- set "$_cfg_profile" "$_cfg_key" "$_cfg_value"
-        else
-          set -- get "$_cfg_profile" "$_cfg_key"
-        fi
-      fi
-      case "$_cfg_verb" in
-        get) (( $# == 3 )) && [[ "$_cfg_key" == (model|effort) ]] || { _ccm_err "usage: ccmorph get <profile> <model|effort>"; return 2; } ;;
-        set) (( $# == 4 )) && [[ "$_cfg_key" == (model|effort) && -n "$4" ]] || { _ccm_err "usage: ccmorph set <profile> <model|effort> [value]  (omit the value, or pass -i, to choose from a list)"; return 2; } ;;
-        config) (( $# == 2 )) || { _ccm_err "usage: ccmorph config <profile>"; return 2; } ;;
-      esac
-      if [[ "$_cfg_verb" == get ]]; then
-        _ccm_config_store get "$_cfg_profile" "$_cfg_key"
-        return $?
-      fi
-      if [[ "${CCMORPH_CONTEXT_LOCKED:-}" != "$_cfg_profile" ]]; then
-        command env CCMORPH_STATE_DIR="$dir" CCMORPH_CONTEXT_LOCKED="$_cfg_profile" \
-          "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" model-window --locked "$_cfg_profile" zsh -c \
-          'source "$1"; shift; ccmorph "$@"' ccmorph "$_CCMORPH_LIB_DIR/ccmorph.sh" "$@"
-        return $?
-      fi
-      local _CCM_CONFIG_MODEL="" _CCM_CONFIG_EFFORT="" _CCM_CONFIG_SNAPSHOT=""
-      local _CCM_CONFIG_TYPE="" _CCM_CONFIG_ENDPOINT="" _CCM_CONFIG_CREDENTIAL=""
-      export _CCM_CONFIG_MODEL _CCM_CONFIG_EFFORT _CCM_CONFIG_SNAPSHOT
-      export _CCM_CONFIG_TYPE _CCM_CONFIG_ENDPOINT _CCM_CONFIG_CREDENTIAL
-      if [[ "$_cfg_verb" == set ]]; then
-        if [[ "$_cfg_key" == model ]]; then _CCM_CONFIG_MODEL="$4"; else _CCM_CONFIG_EFFORT="$4"; fi
-        _ccm_config_store set "$_cfg_profile" || return 1
-        # A bare value on stdout, so `m=$(ccmorph get gw model)` and any script
-        # already parsing this keep working. The sentence goes to stderr, where a
-        # picked value needs it most: the user never typed the id they chose, so
-        # without this the terminal shows a list closing and nothing else.
-        [[ -t 2 ]] && print -u2 -- \
-          "${_ccm_accent}Saved${_ccm_reset} $_cfg_profile $_cfg_key = ${_ccm_bold}$4${_ccm_reset} ${_ccm_dim}(new sessions)${_ccm_reset}"
-        print -r -- "$4"
-        return 0
-      fi
-      _CCM_CONFIG_SNAPSHOT=$(_ccm_config_store snapshot "$_cfg_profile") || return 1
-      _ccm_read "$_cfg_profile" || return 1
-      _CCM_CONFIG_TYPE="${_ccm[type]}"
-      _CCM_CONFIG_ENDPOINT="${_ccm[base_url]:-}"
-      _CCM_CONFIG_CREDENTIAL="${_ccm[api_key]:-${_ccm[token]:-}}"
-      _CCM_CONFIG_MODEL=$(_ccm_config_store get "$_cfg_profile" model) || return 1
-      _CCM_CONFIG_EFFORT=$(_ccm_config_store get "$_cfg_profile" effort) || return 1
-      # Terminal users choose a task, not a tour of every setting. Preserve the
-      # existing piped-input sequence for scripts.
-      local answer="" _cfg_section=all _cfg_rows=""
-      if [[ -t 0 ]]; then
-        _cfg_section=defaults
-        if [[ "$_CCM_CONFIG_TYPE" == (apikey|token) ]]; then
-          _cfg_rows=$'defaults\tModel and reasoning\tDefaults for new sessions'
-          if [[ "$_CCM_CONFIG_TYPE" == apikey ]]; then
-            _cfg_rows+=$'\nconnection\tConnection\tEndpoint or API key'
-          else
-            _cfg_rows+=$'\nconnection\tSign-in token\tReplace the stored token'
-          fi
-          _cfg_section=$(ccm_ui_select native "Settings — $_cfg_profile" "$_cfg_rows") || { unset _ccm; return 1; }
-        fi
-      fi
-      if [[ "$_cfg_section" != defaults && "$_CCM_CONFIG_TYPE" == apikey ]]; then
-        ccm_ui_input "Endpoint [${_CCM_CONFIG_ENDPOINT:-https://api.anthropic.com}]: " || { unset _ccm; return 1; }
-        answer="$REPLY"
-        [[ -z "$answer" ]] || _CCM_CONFIG_ENDPOINT="$answer"
-        _ccm[base_url]="$_CCM_CONFIG_ENDPOINT"
-        if [[ -n "$_CCM_CONFIG_ENDPOINT" ]]; then
-          _ccm_validate_base_url "profile '$_cfg_profile'" || { unset _ccm; return 1; }
-        fi
-      fi
-      if [[ "$_cfg_section" != defaults && "$_CCM_CONFIG_TYPE" == (apikey|token) ]]; then
-        if [[ "$_cfg_section" == connection ]] || ccm_ui_confirm 'Replace stored credential?'; then
-          ccm_ui_input 'Credential (hidden; Enter keeps current): ' secret || { unset _ccm; return 1; }
-          answer="$REPLY"; REPLY=''
-          [[ -z "$answer" ]] || _CCM_CONFIG_CREDENTIAL="$answer"
-        else
-          (( $? == 2 )) && { unset _ccm; return 1; }
-        fi
-        _ccm_clean_value "$_CCM_CONFIG_CREDENTIAL" || { unset _ccm; _ccm_err "credential contains CR/LF"; return 1; }
-        if [[ "$_CCM_CONFIG_TYPE" == apikey ]]; then _ccm[api_key]="$_CCM_CONFIG_CREDENTIAL"; else _ccm[token]="$_CCM_CONFIG_CREDENTIAL"; fi
-      fi
-      _ccm_validate_loaded "$_cfg_profile" || { unset _ccm; return 1; }
-      unset _ccm
-      if [[ "$_cfg_section" != connection ]]; then
-        _CCM_CONFIG_MODEL=$(_ccm_prompt_default model "$_cfg_profile" "$_CCM_CONFIG_MODEL") || return 1
-        _CCM_CONFIG_EFFORT=$(_ccm_prompt_default effort "$_cfg_profile" "$_CCM_CONFIG_EFFORT") || return 1
-      fi
-      print -ru2 -- "Profile: $_cfg_profile"
-      if [[ "$_cfg_section" != defaults ]]; then
-        [[ "$_CCM_CONFIG_TYPE" != apikey ]] || print -ru2 -- "Endpoint: ${_CCM_CONFIG_ENDPOINT:-https://api.anthropic.com}"
-        print -ru2 -- 'Credential: hidden'
-      fi
-      print -ru2 -- "Model: ${_CCM_CONFIG_MODEL:-Claude default} · Effort: ${_CCM_CONFIG_EFFORT:-Claude default}"
-      _ccm_config_store configure "$_cfg_profile" || return 1
-      print -r -- "Saved $_cfg_profile (new sessions)"
+      _ccm_core cli config "${@:2}"
+      return $?
       ;;
 
     mv)
