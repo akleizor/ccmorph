@@ -167,10 +167,12 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   _un_rm=("$CONFIG_DIR")
   [[ -d "$_un_state" ]] && _un_rm+=("$_un_state")
   # The keychain items are read off the confs, never by scanning the keychain
-  # (which prompts): a conf is the only thing that names them.
+  # (which prompts): a conf is the only thing that names them. `|| :` because a
+  # grep with no match exits 1, an assignment takes its substitution's status,
+  # and `set -e` would end the uninstall right there, mid-report.
   _un_keychain=()
   if [[ "$(uname -s 2>/dev/null)" == Darwin ]]; then
-    _un_keychain=(${(f)"$(command grep -hsE '^(api_key|token)=keychain:.' "$CONFIG_DIR"/*.conf(N) /dev/null)"})
+    _un_keychain=(${(f)"$(command grep -hsE '^(api_key|token)=keychain:.' "$CONFIG_DIR"/*.conf(N) /dev/null || :)"})
     _un_keychain=(${_un_keychain#*=keychain:})
     _un_keychain=(${_un_keychain:#})
   fi
