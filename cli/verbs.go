@@ -31,6 +31,10 @@ func Verb(args []string) int {
 		return l.context(args[1:])
 	case "models", "_models":
 		return l.models(args[1:])
+	case "rm":
+		return l.rm(args[1:])
+	case "mv":
+		return l.mv(args[1:])
 	case "quota":
 		return l.quota(args[1:])
 	}
