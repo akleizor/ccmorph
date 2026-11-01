@@ -56,6 +56,10 @@ func stubCore(t *testing.T, envVar string) (dir string, argv func() string, env 
 		body += "printf '%s' \"${" + envVar + "-}\" > '" + filepath.Join(dir, "env.log") + "'\n"
 		body += "printf 'A=1\\000.'\n" // launch-env's NUL-joined answer
 	}
+	// A session env file (the 7th operand) is copied, with its mode, while it exists.
+	// cp -p keeps the mode: the Go side then reads it back, so the check is the
+	// same on BSD and GNU userlands.
+	body += "if [ -n \"${7-}\" ]; then cp -p \"$7\" '" + filepath.Join(dir, "file.log") + "'; fi\n"
 	if err := os.WriteFile(filepath.Join(dir, "ccmorph-core"), []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -100,20 +104,25 @@ func TestRunClaudeKeepsTheLaunchEnvironmentOffTheCommandLine(t *testing.T) {
 		t.Fatalf("credential on the command line: %q", seen)
 	}
 	// `util claude-session <tuning> <profile> <launch> <backend> <env file> -- ...`
-	fields := strings.Fields(seen)
-	if len(fields) < 7 || fields[1] != "claude-session" || fields[6] != "--" {
+	fields := strings.Split(strings.TrimSuffix(seen, "\n"), "\n")
+	if len(fields) < 9 || fields[1] != "claude-session" || fields[7] != "--" {
 		t.Fatalf("argv %q", seen)
 	}
-	envFile := fields[5]
-	fi, err := os.Stat(envFile)
-	if err != nil || fi.Mode().Perm()&0o077 != 0 {
-		t.Fatalf("session env file %q: %v, mode %v", envFile, err, fi.Mode().Perm())
+	envFile := fields[6]
+	copied, err := os.Stat(filepath.Join(dir, "file.log"))
+	if err != nil {
+		t.Fatalf("the stub did not see the session env file: %v", err)
 	}
-	body, _ := os.ReadFile(envFile)
+	if copied.Mode().Perm() != 0o600 {
+		t.Fatalf("session env file mode %o", copied.Mode().Perm())
+	}
+	body, _ := os.ReadFile(filepath.Join(dir, "file.log"))
 	if !strings.Contains(string(body), "ANTHROPIC_API_KEY="+key) || !strings.Contains(string(body), "FOO=1") {
 		t.Fatalf("session env file holds %q", body)
 	}
-	os.Remove(envFile)
+	if _, err := os.Stat(envFile); !os.IsNotExist(err) {
+		t.Fatalf("session env file %q left behind: %v", envFile, err)
+	}
 }
 
 func TestNestedEdgeEnvOnlyBehindTheLoopbackEdge(t *testing.T) {
