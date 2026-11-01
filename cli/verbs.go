@@ -35,6 +35,8 @@ func Verb(args []string) int {
 		return l.rm(args[1:])
 	case "mv":
 		return l.mv(args[1:])
+	case "get", "set":
+		return l.getSet(args[0], args[1:])
 	case "quota":
 		return l.quota(args[1:])
 	}

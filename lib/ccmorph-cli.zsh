@@ -939,7 +939,12 @@ ccmorph() {
       return $?
       ;;
 
-    get|set|config)
+    get|set)
+      _ccm_core cli "$1" "${@:2}"
+      return $?
+      ;;
+
+    config)
       local _cfg_verb="$1" _cfg_profile="${2:-}" _cfg_key="${3:-}"
       case "$_cfg_verb" in
         get) (( $# <= 3 )) || { _ccm_err 'usage: ccmorph get [profile] [model|effort]'; return 2; } ;;
