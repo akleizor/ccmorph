@@ -48,6 +48,23 @@ def test_migration_preserves_inodes_symlinks_and_old_session_access(tmp_path):
     assert target.stat().st_mtime_ns == before
 
 
+def test_provisioning_leaves_native_claude_dir_mode_alone(tmp_path):
+    # ~/.claude is Claude Code's. Provisioning links the shared layer into the
+    # profile and creates the shared dirs, but the directory's own mode is not
+    # ccmorph's to change (it used to be forced to 700).
+    home = tmp_path
+    state = home / '.config/ccmorph'
+    native = home / '.claude'
+    native.mkdir()
+    os.chmod(native, 0o755)
+    result = run(home, state,
+                 script='typeset -gA _ccm=(type apikey); _ccm_secure_dirs && _ccm_setup_dir_unlocked demo')
+    assert result.returncode == 0, result.stderr
+    assert native.stat().st_mode & 0o777 == 0o755
+    assert (state / 'profiles/demo/skills').is_symlink()
+    assert (state / 'profiles/demo').stat().st_mode & 0o777 == 0o700
+
+
 def plugin_indexes(home, state):
     plugins = home / '.claude/plugins'
     market = plugins / 'marketplaces/example'
