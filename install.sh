@@ -144,8 +144,7 @@ DATA_FILES=(share/model-catalogue.json share/window-sources.json share/provider-
 COMPONENTS=($LIBS $EXECUTABLES $DATA_FILES)
 
 # ---- uninstall ------------------------------------------------------------
-# Must run before the UI module is sourced: a standalone install.sh (no sibling
-# ccmorph-ui.zsh) must still be able to remove the command.
+# A standalone install.sh (no library beside it) must still be able to remove the command.
 if [[ "${1:-}" == "--uninstall" ]]; then
   rm -f "$BIN_DIR/ccmorph" "$BIN_DIR/ccrelay"
   print -r -- "Left $CONFIG_DIR in place (it holds your profiles). Remove it by hand if you truly want them gone."
@@ -153,7 +152,6 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   exit 0
 fi
 
-source "$SRC/lib/ccmorph-ui.zsh" 2>/dev/null || true
 
 c_ok() { print -r -- "${_ccm_accent:-}$*${_ccm_reset:-}"; }
 c_y()  { print -r -- "${_ccm_yellow:-}$*${_ccm_reset:-}"; }
@@ -227,15 +225,10 @@ _offer() {   # $1 = human reason block (already printed), $2.. = command
     c_dim "  non-interactive — skipped. Run yourself: $*"
     return 1
   fi
-  if (( $+functions[ccm_ui_confirm] )); then
-    ccm_ui_confirm "Install now? $*" || { c_dim "  skipped. Run yourself when ready: $*"; return 1 }
-  else
-    # The UI module was not beside install.sh — fall back to a plain read.
-    local answer
-    print -n "Install now? $* [y/N] "
-    read -r answer
-    [[ "${answer:l}" == (y|yes) ]] || { c_dim "  skipped. Run yourself when ready: $*"; return 1 }
-  fi
+  local answer
+  print -n "Install now? $* [y/N] "
+  read -r answer
+  [[ "${answer:l}" == (y|yes) ]] || { c_dim "  skipped. Run yourself when ready: $*"; return 1 }
   "$@" || { c_r "  '$*' failed — install it by hand, then re-run this installer."; return 1 }
   return 0
 }
@@ -320,7 +313,7 @@ done
 chmod +x "$BIN_DIR/ccmorph"
 # Move profile homes through the same guarded owner used by normal launches.
 CCMORPH_STATE_DIR="$CONFIG_DIR" CCMORPH_LIB_DIR="$CONFIG_DIR/lib" zsh -fc \
-  'source "$CCMORPH_LIB_DIR/ccmorph.sh"; _ccm_secure_dirs' || exit 1
+  'source "$CCMORPH_LIB_DIR/ccmorph.sh"; ccmorph _secure' || exit 1
 # Consolidate legacy context state only after the owning tool is installed.
 CCMORPH_STATE_DIR="$CONFIG_DIR" "$CONFIG_DIR/libexec/ccmorph-core" model-window --migrate
 # The retired wrapper: `ccrelay` is now `ccmorph hop`. Removed rather than left

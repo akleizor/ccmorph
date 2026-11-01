@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -102,5 +103,19 @@ func TestSessionFileToleratesGlobMetacharactersInTheProfileDirs(t *testing.T) {
 	p, ok := l.sessionFile(id)
 	if !ok || filepath.Base(p) != id+".jsonl" {
 		t.Fatalf("got %q %v", p, ok)
+	}
+}
+
+// `claude auth status` must not see any backend key: a Bedrock/Vertex flag or a
+// socket redirects the check just like an API key.
+func TestClaudeAuthDropsEveryBackendKey(t *testing.T) {
+	l := &launcher{backend: []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_USE_BEDROCK"}}
+	t.Setenv("ANTHROPIC_API_KEY", "leak")
+	t.Setenv("CLAUDE_CODE_USE_BEDROCK", "leak")
+	t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "leak")
+	for _, e := range l.claudeAuth("/tmp/p", "status").Env {
+		if strings.HasSuffix(e, "=leak") {
+			t.Fatalf("auth status inherited %s", e)
+		}
 	}
 }

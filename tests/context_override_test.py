@@ -36,7 +36,7 @@ class ContextOverride(unittest.TestCase):
             resolved = subprocess.run([*helper_cmd('model-window'), 'gw', 'a.b'], env=env,
                                       capture_output=True, text=True, timeout=HANG_TIMEOUT)
             self.assertEqual(json.loads(resolved.stdout)['window'], 131072)
-            validated = subprocess.run(['zsh', '-c', 'source "$1"; _ccm_read gw', 'test', str(ROOT / 'lib/ccmorph.sh')],
+            validated = subprocess.run(['zsh', '-c', 'source "$1"; ccmorph _env gw >/dev/null', 'test', str(ROOT / 'lib/ccmorph.sh')],
                                        env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
             self.assertEqual(validated.returncode, 0, validated.stderr)
             self.assertEqual(subprocess.run([*helper_cmd('model-window'), '--context', 'gw', 'claude-opus-5', '1000000'], env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT).returncode, 0)

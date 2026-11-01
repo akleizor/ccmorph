@@ -26,9 +26,12 @@ def _adapter_start_run(home, selected, delay):
                        f'sleep {delay}\nprintf "PORT=12345\\n"\n')
     adapter.chmod(0o755)
     env = {**os.environ, 'HOME': home, 'CCMORPH_LIB_DIR': str(lib), 'ARG_LOG': str(log)}
-    script = 'source "$1"; _ccm_adapter_start gw "$2"'
+    # The real launcher, its adapter core the fake in this lib's libexec.
+    script = ('source "$1"; _ccm_core_env; '
+              'exec env "${reply[@]}" "$3" launch --adapter-start gw "$2"')
     start = time.monotonic()
-    result = subprocess.run(['zsh', '-c', script, 'test', str(ROOT / 'lib/ccmorph.sh'), selected],
+    result = subprocess.run(['zsh', '-c', script, 'test', str(ROOT / 'lib/ccmorph.sh'), selected,
+                             str(ROOT / 'libexec/ccmorph-core')],
                             env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
     # A launch that failed before the adapter ran leaves no argv log; reading it
     # unconditionally would mask the launcher's own message with FileNotFound,
@@ -69,7 +72,11 @@ def test_adapter_alias_uses_profile_settings_before_startup():
         settings = state / 'profiles/gw/settings.json'
         settings.parent.mkdir(parents=True)
         settings.write_text(json.dumps({'env': {'ANTHROPIC_DEFAULT_OPUS_MODEL': 'gpt-6-astra'}}))
-        result = subprocess.run(['zsh', '-c', 'source "$1"; _ccm_settings_model_alias gw opus',
+        # The adapter's tier alias is the conf/settings value config-store resolves.
+        result = subprocess.run(['zsh', '-c', 'source "$1"; "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" util config-store'
+                                 ' get "$_CCMORPH_DIR/gw.conf" "$_CCMORPH_PROFILE_DIRS/gw/settings.json"'
+                                 ' env.ANTHROPIC_DEFAULT_OPUS_MODEL "$HOME/.claude/settings.json"'
+                                 ' "${_CCMORPH_MODEL_MAPPING_ENV[@]}"',
                                  'test', str(ROOT / 'lib/ccmorph.sh')],
                                 env={**os.environ, 'HOME': tmp, 'CCMORPH_STATE_DIR': str(state)}, capture_output=True,
                                 text=True, timeout=HANG_TIMEOUT)

@@ -44,6 +44,8 @@ func (l *launcher) verb(args []string) int {
 		return l.mv(args[1:])
 	case "get", "set":
 		return l.getSet(args[0], args[1:])
+	case "_ui":
+		return l.uiVerb(args[1:])
 	case "_menu":
 		return l.modelMenu(args[1:])
 	case "config":

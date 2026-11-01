@@ -29,10 +29,10 @@ ccmorph_test_scrub_runner_env
 
 readonly SCRIPT_DIR="${0:A:h}"
 readonly REPO_ROOT="${SCRIPT_DIR:h}"
-readonly CCMORPH_SOURCE="$REPO_ROOT/lib/ccmorph.sh"
+readonly CCMORPH_SOURCE="$REPO_ROOT/tests/core_lib.zsh"
 # The library text: the loader plus every module split out of it. Not the UI
 # module, which was never part of it. Text checks read all of it.
-typeset -a _ccmorph_library=("$CCMORPH_SOURCE" "$REPO_ROOT"/lib/ccmorph-*.zsh(N))
+typeset -a _ccmorph_library=("$REPO_ROOT/lib/ccmorph.sh" "$REPO_ROOT"/lib/ccmorph-*.zsh(N))
 readonly -a CCMORPH_LIBRARY=(${_ccmorph_library:#*/lib/ccmorph-ui.zsh})
 readonly ORIGINAL_PATH="$PATH"
 # Captured before any test redirects $HOME to a scratch dir. Only for locating
@@ -724,26 +724,14 @@ test_set_effort_interactively_offers_the_engine_levels() {
   fake_fzf
   write_apikey_conf gw 'api_key=k' 'base_url=https://gateway.invalid'
   source "$CCMORPH_SOURCE"
-  # Unit-test dispatch/persistence here; the PTY suite drives the real keys.
-  ccm_ui_select() {
-    [[ "$1" == native ]] || return 1
-    print -r -- "$3" > "$HOME/fixed.input"
-    print -r -- "${${3%%$'\n'*}%%$'\t'*}"
-  }
+  # The core's picker offers these rows; the PTY suite drives the real keys.
   local rc=0 out offered
-
-  # `set -i` runs in the core, which calls this zsh picker in its own shell, so
-  # the stub drives the picker here and the core saves what it returns.
-  out=$(_ccm_pick_value effort gw 2>/dev/null) && out=$(ccmorph set gw effort "$out" 2>/dev/null) || {
-    print -u2 -- '-i must save a chosen effort level'
+  offered=$(ccmorph _ui rows effort gw 2>/dev/null) || {
+    print -u2 -- '-i must offer effort levels'
     rm -rf "$test_home"; return 1
   }
-  # Cheapest first, so the first row is `low`.
-  [[ "$out" == low ]] || { print -u2 -- "expected 'low' (got: $out)"; rc=1 }
-  [[ "$(ccmorph get gw effort 2>/dev/null)" == low ]] || {
-    print -u2 -- 'the chosen effort must be saved'; rc=1
-  }
-  offered="$(<"$HOME/fixed.input")"
+  out="${${offered%%$'\n'*}%%$'\t'*}"
+  ccmorph set gw effort "$out" >/dev/null 2>&1 || { print -u2 -- '-i must save a chosen effort level'; rc=1; }
   [[ ! -f "$HOME/fzf.input" ]] || { print -u2 -- "fixed effort choices must not invoke fzf"; rc=1; }
   local level
   for level in low medium high xhigh; do
@@ -3075,7 +3063,7 @@ test_relay_resume_preserves_dangerous_permission_mode() {
     > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
   source "$CCMORPH_SOURCE"
-  cp "$CCMORPH_SOURCE" "$HOME/.config/ccmorph/lib/ccmorph.sh"
+  cp "$REPO_ROOT/lib/ccmorph.sh" "$HOME/.config/ccmorph/lib/ccmorph.sh"
   cp "$REPO_ROOT"/lib/ccmorph-*.zsh "$HOME/.config/ccmorph/lib/"
   printf '%s\n' ': > "$HOME/ccmorph-reloaded"' > "$HOME/.config/ccmorph/local.sh"
   printf '%s\n' ': > "$HOME/startup-sourced"' 'exit 99' > "$HOME/.zshrc"
@@ -3936,7 +3924,7 @@ test_every_module_is_sourced_once_and_defines_its_own_functions() {
   # read is not the code that runs). Pin all three here, where the source tree is
   # in front of us.
   local rc=0 f m n
-  local loader="$CCMORPH_SOURCE" arch="$REPO_ROOT/docs/ARCHITECTURE.md"
+  local loader="$REPO_ROOT/lib/ccmorph.sh" arch="$REPO_ROOT/docs/ARCHITECTURE.md"
   # The library as the harness already defines it: the loader plus every module
   # split out of it.
   local -a files=("${_ccmorph_library[@]}")
@@ -4110,7 +4098,7 @@ test_code_and_state_are_separate_directories() {
   #    of the runtime uses its own helpers rather than reaching back to a path
   #    that may hold a different version.
   mkdir -p "$test_home/prefix/lib" "$test_home/prefix/libexec" "$test_home/state"
-  cp "$CCMORPH_SOURCE" "$test_home/prefix/lib/ccmorph.sh"
+  cp "$REPO_ROOT/lib/ccmorph.sh" "$test_home/prefix/lib/ccmorph.sh"
   cp "$REPO_ROOT"/lib/ccmorph-*.zsh "$test_home/prefix/lib/"
   print -r -- 'print "helper-from-prefix"' > "$test_home/prefix/libexec/model-window"
   chmod +x "$test_home/prefix/libexec/model-window"
@@ -11157,39 +11145,6 @@ test_add_sub_auth_calls_scrub_securestorage_dir() {
   return $rc
 }
 
-test_logged_email_scrubs_every_backend_env_key() {
-  # auth status must not see ANY key in _CCMORPH_BACKEND_ENV (a Bedrock/Vertex
-  # flag or an unix socket would redirect the check just like an API key).
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  source "$CCMORPH_SOURCE"
-
-  printf '%s\n' \
-    '#!/bin/sh' \
-    'env > "$HOME/seen_env"' \
-    'printf '"'"'{"loggedIn": true, "email": "a@b.c"}\n'"'"'' \
-    > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
-
-  local k rc=0
-  ( for k in "${_CCMORPH_BACKEND_ENV[@]}"; do export "$k=leak"; done
-    _ccm_logged_email "$HOME/.config/ccmorph/profiles/second" ) || rc=1
-  for k in "${_CCMORPH_BACKEND_ENV[@]}"; do
-    if grep -q "^$k=" "$HOME/seen_env"; then
-      print -u2 -- "auth status inherited $k"; rc=1
-    fi
-  done
-
-  # The runner calls tests in-process: the exports must not outlive the subshell.
-  for k in "${_CCMORPH_BACKEND_ENV[@]}"; do
-    [[ ${(P)k-} == leak ]] && { print -u2 -- "FAIL: $k leaked into the runner shell"; rc=1 }
-  done
-
-  rm -rf "$test_home"
-  return $rc
-}
-
 # One spelling of "ask me", everywhere, with the retired ones deleted rather than
 # left accepted-but-undocumented -- two vocabularies for one idea is how a user ends
 # up guessing which one this version wants.
@@ -11409,7 +11364,7 @@ test_a_launch_with_stale_settings_and_a_new_policy() {
   else
     # `carried` generates its settings with the policy in place first: the one
     # fallback that is still safe.
-    [[ "$kind" == carried ]] && _ccm_settings_projection materialize proxy 2>/dev/null
+    [[ "$kind" == carried ]] && ( _ccm_launch_core --project one proxy -- ) >/dev/null 2>&1
     rm -f "$dir/cache/.settings.lock"
     mkdir -p "$dir/cache/.settings.lock"
   fi
@@ -11471,23 +11426,21 @@ test_the_fold_runs_exactly_when_settings_json_changed() {
   source "$CCMORPH_SOURCE"
   local dir="$_CCMORPH_PROFILE_DIRS/gw" rc=0
   mkdir -p "$dir/cache"
-  printf '%s\n' '#!/bin/sh' 'echo "$1" >> "$HOME/fold.log"' > "$CCMORPH_LIB_DIR/../libexec/settings-compose"
-  chmod +x "$CCMORPH_LIB_DIR/../libexec/settings-compose"
 
   print -r -- '{"a": 1}' > "$dir/settings.json"
   cp "$dir/settings.json" "$dir/cache/settings.base.json"
-  _ccm_fold_settings gw
-  [[ ! -e "$HOME/fold.log" ]] || { print -u2 -- 'FAIL: an unedited settings.json must not spawn a fold'; rc=1; }
+  _ccm_fold_settings gw >> "$HOME/fold.log"
+  [[ ! -s "$HOME/fold.log" ]] || { print -u2 -- 'FAIL: an unedited settings.json must not spawn a fold'; rc=1; }
 
   print -r -- '{"a": 2}' > "$dir/settings.json"
   touch -t 200001010000 "$dir/settings.json"
-  _ccm_fold_settings gw
+  _ccm_fold_settings gw >> "$HOME/fold.log"
   assert_contains "$(<"$HOME/fold.log" 2>/dev/null)" fold \
     'an edit with an old timestamp must still be folded' || rc=1
 
   : > "$HOME/fold.log"
   rm -f "$dir/cache/settings.base.json"
-  _ccm_fold_settings gw
+  _ccm_fold_settings gw >> "$HOME/fold.log"
   assert_contains "$(<"$HOME/fold.log")" fold \
     'a missing saved copy must run the fold, never skip it' || rc=1
 
@@ -11676,113 +11629,6 @@ run_test test_stale_overlay_cleanup_young_issue_321
 run_test test_stale_overlay_cleanup_abandoned_issue_321
 run_test test_stale_overlay_cleanup_live_issue_321
 run_test test_stale_overlay_cleanup_failed_ps_issue_321
-
-test_file_metadata_reads_portably() {
-  # `stat -f %z/%m` is BSD-only. Both call sites swallowed the error GNU stat
-  # returns (|| echo 0, || continue), so on Linux the log grew without bound and
-  # stale launch-settings were never collected — silently, on the platform least
-  # likely to be noticed from here. Guard the class: no `stat -f` in shipped
-  # source, and the helpers behave correctly for present and absent files.
-  local source_text="$(cat -- "${CCMORPH_LIBRARY[@]}")"
-  local rc=0
-  local uses
-  uses=$(print -r -- "$source_text" | grep -c '^[^#]*stat -f')
-  (( uses == 0 )) || {
-    print -u2 -- "FAIL: $uses BSD-only 'stat -f' call(s) remain in shipped source"
-    rc=1
-  }
-
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  source "$CCMORPH_SOURCE"
-
-  print -n 'hello' > "$HOME/five"
-  [[ "$(_ccm_size "$HOME/five")" == 5 ]] || {
-    print -u2 -- 'FAIL: _ccm_size must report a real byte count'; rc=1
-  }
-  # 0 for an absent file: both callers treat 0 as "nothing to do", which is the
-  # safe reading — never "rotate/collect this".
-  [[ "$(_ccm_size "$HOME/nope")" == 0 ]] || {
-    print -u2 -- 'FAIL: _ccm_size must report 0 for an absent file'; rc=1
-  }
-  _ccm_mtime "$HOME/five" >/dev/null || {
-    print -u2 -- 'FAIL: _ccm_mtime must succeed for a present file'; rc=1
-  }
-  # Nonzero exit, NOT 0: a caller doing `|| continue` must skip. Returning 0
-  # would read as epoch 0 — infinitely stale — and delete files it never saw.
-  if _ccm_mtime "$HOME/nope" >/dev/null 2>&1; then
-    print -u2 -- 'FAIL: _ccm_mtime must fail for an absent file'; rc=1
-  fi
-
-  # The rotation path must actually fire on an oversized log.
-  _CCMORPH_LOG="$HOME/big.log"
-  _CCMORPH_LOG_MAX=2048
-  local i
-  for i in {1..4000}; do print -r -- "filler line $i"; done > "$_CCMORPH_LOG"
-  local before after
-  before=$(_ccm_size "$_CCMORPH_LOG")
-  _ccm_log "trigger"
-  after=$(_ccm_size "$_CCMORPH_LOG")
-  (( after < before )) || {
-    print -u2 -- "FAIL: log rotation did not fire (before=$before after=$after)"
-    rc=1
-  }
-
-  # Every one of these helpers indexes a 1-based zstat array. A caller with
-  # KSH_ARRAYS set — an option a user's interactive shell may carry — reads
-  # `$s[1]` as the whole value plus a literal `[1]` (`1790781633[1]`), and an
-  # arithmetic `s[1]` as the second element, so every caller got garbage: the
-  # stale-overlay sweep reaped nothing (it carries credentials, so leaving it is
-  # the dangerous direction) and a world-readable log stayed that way. Exercise
-  # the real call sites under that option; the subshell keeps it out of every
-  # later test.
-  local tmpd="$HOME/tmp"
-  mkdir -p "$tmpd" "$_CCMORPH_PROFILE_DIRS/p/cache"
-  print -r -- '{}' > "$_CCMORPH_PROFILE_DIRS/p/cache/launch-settings.stale"
-  print -r -- '{}' > "$_CCMORPH_PROFILE_DIRS/p/cache/launch-settings.fresh"
-  touch -t 202001010000 "$_CCMORPH_PROFILE_DIRS/p/cache/launch-settings.stale"
-  local bridge="$tmpd/ccmorph-bridge-$UID-stale"
-  mkdir -p "$bridge"
-  print -r -- 'key: x' > "$bridge/config.yaml"
-  touch -t 202001010000 "$bridge"
-  print -r -- 'x' > "$HOME/loose.log"
-  command chmod 644 "$HOME/loose.log"
-
-  local -i ksh_rc=0
-  ( setopt ksharrays
-    TMPDIR="$tmpd"
-    [[ "$(_ccm_size "$HOME/five")" == 5 ]] || exit 11
-    [[ "$(_ccm_mtime "$HOME/five")" == <-> ]] || exit 12
-    _ccm_cleanup_stale
-    _CCMORPH_LOG="$HOME/loose.log"
-    _ccm_log_init
-    [[ -o ksharrays ]] || exit 13   # the helpers fix it locally, never for their caller
-  ) || ksh_rc=$?
-  (( ksh_rc == 0 )) || {
-    print -u2 -- "FAIL: zstat helpers must ignore the caller's KSH_ARRAYS (exit $ksh_rc)"
-    rc=1
-  }
-  [[ ! -e "$_CCMORPH_PROFILE_DIRS/p/cache/launch-settings.stale" ]] || {
-    print -u2 -- 'FAIL: a stale launch-settings overlay must be reaped under KSH_ARRAYS'; rc=1
-  }
-  [[ -e "$_CCMORPH_PROFILE_DIRS/p/cache/launch-settings.fresh" ]] || {
-    print -u2 -- 'FAIL: a fresh launch-settings overlay must survive cleanup under KSH_ARRAYS'; rc=1
-  }
-  [[ ! -e "$bridge" ]] || {
-    print -u2 -- 'FAIL: a stale bridge dir must be reaped under KSH_ARRAYS'; rc=1
-  }
-  local -a loose_mode
-  # A failed zstat must not read as "no group or other bits left".
-  zstat -A loose_mode +mode "$HOME/loose.log" && (( (loose_mode[1] & 8#077) == 0 )) || {
-    print -u2 -- 'FAIL: a loose log must be locked down under KSH_ARRAYS'; rc=1
-  }
-
-  rm -rf "$test_home"
-  return $rc
-}
-
-run_test test_file_metadata_reads_portably
 
 run_test test_adapter_launch_uses_current_process_tree
 run_test test_no_ambient_proxy_means_the_adapter_gets_none
@@ -11994,7 +11840,6 @@ run_test test_add_sub_completes_the_browser_login
 run_test test_launch_skips_the_sizer_when_nothing_is_new
 run_test test_logged_email_reads_the_given_config_dir
 run_test test_add_sub_auth_calls_scrub_securestorage_dir
-run_test test_logged_email_scrubs_every_backend_env_key
 run_test test_one_interactive_flag_is_the_only_way_to_ask
 run_test test_every_credential_type_states_how_it_authenticates
 

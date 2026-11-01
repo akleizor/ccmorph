@@ -31,14 +31,14 @@ class LogMode(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             os.chmod(tmp, 0o755)
             env, _ = home_env(tmp)
-            subprocess.run(["zsh", "-c", "umask 022; source \"$1\"; _ccm_log hello",
+            subprocess.run(["zsh", "-c", "umask 022; source \"$1\"; _ccm_launch_core --log hello",
                             "t", str(ROOT / "lib/ccmorph.sh")], env=env, check=True, timeout=HANG_TIMEOUT)
             log = Path(tmp, f"ccmorph-{os.getuid()}.log")
             self.assertEqual(stat.S_IMODE(log.stat().st_mode) & 0o077, 0,
                              "ccmorph log is group/world readable")
 
     def _run_log(self, env):
-        subprocess.run(["zsh", "-c", "umask 022; source \"$1\"; _ccm_log hello",
+        subprocess.run(["zsh", "-c", "umask 022; source \"$1\"; _ccm_launch_core --log hello",
                         "t", str(ROOT / "lib/ccmorph.sh")], env=env, check=True, timeout=HANG_TIMEOUT)
 
     def test_existing_loose_log_is_tightened(self):

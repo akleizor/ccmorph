@@ -599,3 +599,45 @@ func uiConfirm(prompt string) int {
 	}
 	return 1
 }
+
+// uiVerb exposes the menus to the tests: select MODE TITLE ROWS [DISPLAY],
+// numbered|list TITLE ROWS [DISPLAY], input PROMPT [secret], confirm PROMPT,
+// rows|pick SLOT PROFILE, default SLOT PROFILE CURRENT. The answer goes to
+// stdout, so it is never wired to a real credential prompt.
+func (l *launcher) uiVerb(args []string) int {
+	a := append(args, "", "", "", "", "")
+	answer, rc := "", 0
+	switch a[0] {
+	case "select":
+		answer, rc = uiSelect(a[1], a[2], a[3], a[4])
+	case "numbered":
+		answer, rc = themeFor(2).numbered(a[1], splitRows(a[2]), a[3])
+	case "list":
+		themeFor(2).list(a[1], splitRows(a[2]), a[3])
+		return 0
+	case "input":
+		answer, rc = uiInput(a[1], a[2] == "secret")
+	case "confirm":
+		return uiConfirm(a[1])
+	case "rows", "pick", "default":
+		var ok bool
+		switch a[0] {
+		case "rows":
+			answer, ok = l.valueRows(a[1], a[2])
+		case "pick":
+			answer, ok = l.pickValue(a[1], a[2])
+		default:
+			f, _ := l.readRaw(a[2])
+			answer, ok = l.promptDefault(a[1], a[2], a[3], f["type"], nil)
+		}
+		if !ok {
+			rc = 1
+		}
+	default:
+		return 2
+	}
+	if rc == 0 {
+		fmt.Println(answer)
+	}
+	return rc
+}

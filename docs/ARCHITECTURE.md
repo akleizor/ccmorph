@@ -57,35 +57,28 @@ Installer preservation tests and the public command manifest enforce the boundar
 
 `lib/ccmorph.sh` is the runtime's only entry point: the `ccmorph` command, the helpers
 and agent dispatch (`source lib/ccmorph.sh && _ccm_launch -a …`) load the library through
-it and nothing else. (Two callers fall outside the runtime and are the only exception:
-`install.sh` sources `lib/ccmorph-ui.zsh` directly for its colour helpers, and the picker
-tests source that module as a library in its own right.) It resolves the state and code
-paths, sets the globals `local.sh` may read, sources `local.sh` and `ccmorph-ui.zsh`,
-then sources each module below, in this order. Every file named here must sit beside
-`ccmorph.sh` in `lib/`; a module that fails to load fails the whole source.
-Each module has one purpose; a function lives in exactly one.
+it and nothing else. It resolves the state and code paths, holds the environment-name
+lists, sources `local.sh`, then `ccmorph-launch.zsh`. That is the whole zsh layer: every
+verb, menu, check and the launch itself run in `ccmorph-core`.
 
 The repository and the installed copy under `~/.config/ccmorph` share one layout:
-`bin/ccmorph` (the command), `lib/` (`ccmorph.sh` and the modules), `libexec/`
-(internal executable: `ccmorph-core`, Go, built by `make shim`;
-`ccmorph-core <adapter|shim|settings-compose|model-window|context-probe>`
-is the one binary every launch, install and zsh caller runs, from `cmd/ccmorph-core/`;
+`bin/ccmorph` (the command), `lib/` (`ccmorph.sh` and `ccmorph-launch.zsh`), `libexec/`
+(internal executable: `ccmorph-core`, Go, built by `make shim`, from `cmd/ccmorph-core/`;
+`ccmorph-core <cli|launch|adapter|shim|settings-compose|model-window|context-probe|util>`
+is the one binary every launch, install and zsh caller runs;
 `model-window` and `context-probe` are one Go package, `ctxwindow/`;
 `ccmorph-core shim` is the standalone stock shim, for a script that runs it directly.
 No Python runs in the core: `python3` is needed only by the Remote Control add-on in `addons/remote-control/`) and `share/` (data:
 `model-catalogue.json`, `window-sources.json`). `lib/` finds `libexec/` and `share/`
 beside itself. `CCMORPH_LIB_DIR` names the `lib/` directory.
 
-| Module | Purpose |
+| Part | Purpose |
 |---|---|
-| `ccmorph-base.zsh` | Shared primitives: portable file metadata, logging, executable resolution, the environment-name lists, Claude Code's own CLI surface and value checks. |
-| `ccmorph-models.zsh` | Models: the session's model and state on resume, gateway /v1/models listings, published windows, route ceilings and model lookup. |
-| `ccmorph-context.zsh` | Context window and settings: auto-compact trigger maths, window hazards and advisories, settings layering and the projection into CLAUDE_CONFIG_DIR. |
-| `ccmorph-store.zsh` | Profile state files: stale-file cleanup, state and profile-home migration, directory security, atomic writes, profile reads and validation. |
-| `ccmorph-profiles.zsh` | Profile homes and choices: the shared harness layer linked into each profile home, profile and value pickers, sign-in state, and committing a new profile. |
-| `ccmorph-cli.zsh` | The `ccmorph` command: the config store, doctor, help, usage and the verb dispatcher. |
-| `ccmorph-providers.zsh` | The dialect adapter and the provider proxy (cliproxyapi): start, stop, login and listing. |
-| `ccmorph-launch.zsh` | The wrapper that runs `ccmorph-core launch` (package `cli`: profile and model resolution, the bridge and adapter, settings projection, the claude child and the relay loop) as a child TERM and HUP reach. |
+| `lib/ccmorph.sh` | Paths, the environment-name lists, `local.sh`. |
+| `lib/ccmorph-launch.zsh` | `ccmorph()` hands every verb to `ccmorph-core cli main`; `_ccm_launch` runs `ccmorph-core launch` as a child TERM and HUP reach (fork and forward). |
+| `cli/` | The command: dispatch, help, every verb, doctor, the menus (`ui.go`, `menus.go`) and the launch (profile and model resolution, bridge and adapter, settings projection, the claude child, the relay loop). |
+| `profile/` | Reading and validating a profile's conf. |
+| `util/` | The small verbs the CLI and launch share: config store, profile setup, migrations, listings, process readers. |
 
 ## 1. Profile model
 
@@ -97,7 +90,7 @@ discovered for the profile's current route, and `.locks/<name>.lock` is its writ
 lock. A conf from before this split still carrying an inline `context_discovered=`
 line is read as before and moved out by the next migration. On macOS `api_key` and
 `token` move to the login keychain (service `ccmorph`) on first use; the conf keeps
-`keychain:<name>.<key>` and `_ccm_read` resolves it, so no caller sees the reference.
+`keychain:<name>.<key>` and `profile.Read` resolves it, so no caller sees the reference.
 There is no separate shared registry file: `rm` and `mv` move or delete the
 `.conf` and the profile directory together, discovered data and keychain items
 included, with no registry-prefix bookkeeping. `add`
@@ -106,14 +99,14 @@ conversation history survives profile removal. All `*.conf` are gitignored: they
 carry credentials and never enter history.
 
 **The key set is a contract, and the layout is one too.** Which keys a profile may
-carry is decided in `_ccm_read` (ccmorph-store.zsh) by type — one shared list, one list
+carry is decided in `profile.Read` (`profile/profile.go`) by type — one shared list, one list
 per type, the `env.` allowlist, and the removed keys that report themselves and are
 ignored. Unknown keys and wrong-type keys refuse the profile. `profile.conf.example`
 is the same contract in human form: what it names must load, and every accepted key
 must appear in it, both pinned by `test_the_profile_template_is_a_valid_conf_naming_every_key`.
 Ordering is separate and has one owner: `CONF_SECTIONS` with `canonical_conf()` in
 model-window. Every writer goes through it — `replace_fields` for `context_discovered`
-and `context_window.<model>`, and `_ccm_config_store` for model, effort, mappings and
+and `context_window.<model>`, and `util config-store` for model, effort, mappings and
 a first configure — so a file rewritten by any of them comes out in the same five
 sections (connection, model choice, behaviour, context, machine-written state),
 regardless of how it was hand-edited. Comments travel with the key line below them,
@@ -122,7 +115,7 @@ and a line the layout does not know keeps its place after the known ones.
 **Migration off the legacy shared registry runs automatically.** `model-window
 --migrate` looks for a legacy `model-registry` file and per-profile
 `cache/context-window` files; `install.sh` invokes it on every install/upgrade,
-and `ccmorph-store.zsh`'s `_ccm_migrate_state` invokes it again from the CLI path the
+and the CLI's state migration (`cli/main.go`) invokes it again from the CLI path the
 first time it sees leftover legacy state (so a host that skips reinstalling still
 gets migrated on next use). A row scoped to a profile (`<profile>:<model>`)
 migrates straight into that profile's `context_discovered`. An unscoped legacy
@@ -205,7 +198,7 @@ so bulk subagent fan-out does not run on the session's own model.
 
 ### The env lists and the sweep
 
-Three lists in `ccmorph-base.zsh` decide what a launch clears from its environment:
+Three lists in `lib/ccmorph.sh` decide what a launch clears from its environment:
 
 - `_CCMORPH_PROFILE_ENV` is the set of keys a conf may declare as `env.<NAME>`.
 - `_CCMORPH_TUNING_ENV` (`CLAUDE_CODE_SIMPLE`, `MAX_THINKING_TOKENS`,
@@ -332,11 +325,9 @@ semantics stay unchanged when the flag is absent; an omitted model/effort value
 opens its picker. `set` and `get` also offer their setting names when omitted.
 `rm` and `mv` remain explicit-target operations, never inferred from a menu.
 
-All ccmorph-owned prompts use the standalone `ccmorph-ui.zsh` module.
-`ccm_ui_select native|search` accepts tab-separated ID/label/description rows;
-`ccm_ui_input` owns text and hidden credential entry; `ccm_ui_confirm` uses the
-native selector with No selected by default. `ccm_ui_list` renders instructions
-for existing piped-input flows. The module has no profile or persistence logic.
+All ccmorph-owned prompts use the Go UI in `cli/ui.go`: a native ↑/↓ menu or fzf search
+over tab-separated ID/label/description rows, line input with hidden credential entry,
+and a confirm whose default is No. It holds no profile or persistence logic.
 
 Native selection uses one Claude Code-style layout for sign-in, settings,
 reasoning, and confirmation: orange headings, lavender chevrons, gray descriptions,
@@ -499,7 +490,7 @@ removes the override: there is one value, the caller's, and it is never rewritte
 `test_shipped_surface_never_names_the_transport_product` pins the boundary from
 this side: ccmorph ships no transport file, path, or even name.
 
-A conf still carrying `transport=` keeps launching: `_ccm_read` prints one line
+A conf still carrying `transport=` keeps launching: `profile.Read` prints one line
 naming the replacement and ignores the key.
 
 ## 3. The adapter

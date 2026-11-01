@@ -243,20 +243,11 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 	if _, err := os.Stat(l.policy); err != nil {
 		policyPct = "75"
 	}
-	settings := filepath.Join(l.profileDirs, name, "settings.json")
-	if fi, err := os.Lstat(settings); err != nil || !fi.Mode().IsRegular() || !isFile(l.conf(name)) {
-		settings = ""
-	}
-	diagArgs := append(append(append([]string{"launch-diagnostics"}, routeKeys...), l.tuning...), "--")
-	diagArgs = append(diagArgs, l.settingsSources(name)...)
 	inEnv := "0"
 	if pctInEnv {
 		inEnv = "1"
 	}
-	diag, _ := l.utilQ([]string{"_CCM_SETTINGS=" + settings, "_CCM_PROFILE_CONF=" + l.conf(name),
-		"_CCM_PCT_IN_ENV=" + inEnv, "_CCM_ENV_PCT=" + pct, "_CCM_MAXOUT=" + maxout, "_CCM_NO1M=" + no1m,
-		"_CCM_BUDGET=" + pacw, "_CCM_POLICY=" + l.policy, "_CCM_POLICY_PCT=" + policyPct, "_CCM_PROFILE=" + name,
-		"_CCM_HDR_KEY=" + hdrKey, "_CCM_HAZARD=1", "_CCM_CEILING=" + pceil, "_CCM_WITHHELD=" + withheld()}, "", diagArgs...)
+	diag := l.diagnostics(name, inEnv, pct, maxout, no1m, pacw, policyPct, hdrKey, "1", pceil, routeKeys)
 	pctSet, hazardDone := false, false
 	hazardMsg, userHdrs := "", ""
 	l.chosen = map[string]bool{}
@@ -310,18 +301,7 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 			advisories = append(advisories, msg)
 		}
 	}
-	for _, rec := range invariant {
-		kind, text, _ := strings.Cut(rec, "\t")
-		if kind == "disguised" {
-			l.err("warning: '" + name + "' is on a disguised model id, which caps the window at 200,000 — select " + text + " for the full window")
-			continue
-		}
-		for _, line := range strings.Split(text, "\n") {
-			if line != "" {
-				l.err("warning: '" + name + "' offers a model that will refuse before it compacts — " + line)
-			}
-		}
-	}
+	l.reportInvariant(name, invariant)
 
 	launchEnv := [][2]string{}
 	if launchModel != "" {
@@ -462,4 +442,40 @@ func (l *launcher) probeNudge(name string) {
 		go cmd.Wait()
 	}
 	f.Close()
+}
+
+// diagnostics answers every read-only question a launch asks of the merged
+// settings layers and the profile's files in one core call: NUL-framed
+// `<kind>\t<text>` records. The invariant half reads only a regular
+// settings.json beside an existing conf.
+func (l *launcher) diagnostics(name, inEnv, pct, maxout, no1m, budget, policyPct, hdrKey, hazard, ceiling string, routeKeys []string) string {
+	settings := filepath.Join(l.profileDirs, name, "settings.json")
+	if fi, err := os.Lstat(settings); err != nil || !fi.Mode().IsRegular() || !isFile(l.conf(name)) {
+		settings = ""
+	}
+	args := append(append(append([]string{"launch-diagnostics"}, routeKeys...), l.tuning...), "--")
+	args = append(args, l.settingsSources(name)...)
+	diag, _ := l.utilQ([]string{"_CCM_SETTINGS=" + settings, "_CCM_PROFILE_CONF=" + l.conf(name),
+		"_CCM_PCT_IN_ENV=" + inEnv, "_CCM_ENV_PCT=" + pct, "_CCM_MAXOUT=" + maxout, "_CCM_NO1M=" + no1m,
+		"_CCM_BUDGET=" + budget, "_CCM_POLICY=" + l.policy, "_CCM_POLICY_PCT=" + policyPct, "_CCM_PROFILE=" + name,
+		"_CCM_HDR_KEY=" + hdrKey, "_CCM_HAZARD=" + hazard, "_CCM_CEILING=" + ceiling, "_CCM_WITHHELD=" + withheld()}, "", args...)
+	return diag
+}
+
+// reportInvariant prints the disguised-id and refuse-before-compaction warnings,
+// in the order the diagnostics produced them. A warning, never a refusal.
+func (l *launcher) reportInvariant(name string, records []string) {
+	for _, rec := range records {
+		kind, text, _ := strings.Cut(rec, "\t")
+		switch kind {
+		case "disguised":
+			l.err("warning: '" + name + "' is on a disguised model id, which caps the window at 200,000 — select " + text + " for the full window")
+		case "unsafe":
+			for _, line := range strings.Split(text, "\n") {
+				if line != "" {
+					l.err("warning: '" + name + "' offers a model that will refuse before it compacts — " + line)
+				}
+			}
+		}
+	}
 }

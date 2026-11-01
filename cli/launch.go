@@ -85,6 +85,106 @@ func (l *launcher) launchMain(args []string) int {
 				return 2
 			}
 			return l.runClaude(args[1:i], args[i+1:])
+		case "--project": // <one|pair|model-settings> <profile> [opts...] -- [penv...]
+			i := slices.Index(args, "--")
+			if i < 3 {
+				return 2
+			}
+			name, opts, penv := args[2], args[3:i], args[i+1:]
+			op := args[1]
+			switch op {
+			case "one":
+				return l.prepareAndProject(name, opts, penv)
+			case "pair":
+				op = "prepare-launch"
+			}
+			saved, rc := l.configStore(op, name, "")
+			if rc != 0 {
+				return 10
+			}
+			return l.projectSettings(name, saved, opts, penv)
+		case "--adapter-start": // <profile> [model]
+			if !l.adapterStart(args[1], append(args[2:], "")[0]) {
+				return 1
+			}
+			return 0
+		case "--invariant": // <profile> [pct] [max-output] [no-1m] [budget] [pct-in-env]
+			a := append(args[1:], "", "", "", "", "", "")
+			inEnv := a[5]
+			if inEnv == "" {
+				inEnv = "1"
+			}
+			l.reportInvariant(a[0], strings.Split(l.diagnostics(a[0], inEnv, a[1], a[2], a[3], a[4], "", "", "", "", nil), "\x00"))
+			return 0
+		case "--launch-window": // <profile> [model]
+			fmt.Println(strings.Join(l.launchWindow(args[1], append(args[2:], "")[0]), "\t"))
+			return 0
+		case "--fold": // <profile>: prints "fold" when one ran
+			if l.foldSettings(args[1]) {
+				fmt.Println("fold")
+			}
+			return 0
+		case "--hazard-set": // <profile> <budget> <ceiling> <settings> -- [penv...]
+			i := slices.Index(args, "--")
+			if i < 5 {
+				return 2
+			}
+			if rows := l.hazardSet(args[1], args[2], args[3], args[4], args[i+1:]); rows != "" {
+				fmt.Println(rows)
+			}
+			return 0
+		case "--migrate-state":
+			if !l.migrateState() {
+				return 1
+			}
+			return 0
+		case "--model-window": // <profile> <model>
+			if !l.migrateState() {
+				return 1
+			}
+			out := l.coreNoCeiling(l.windowEnv(args[1]), "model-window", args[1], append(args[2:], "")[0])
+			if out == "" {
+				return 1
+			}
+			fmt.Println(out)
+			return 0
+		case "--prelaunch": // <profile>
+			l.prelaunch(args[1])
+			return 0
+		case "--remove-profile": // <profile>
+			if !l.removeProfileDir(args[1]) {
+				return 1
+			}
+			return 0
+		case "--carry-session": // <id> <dst>: rc 1 when nothing was carried
+			if !l.carrySession(args[1], args[2]) {
+				return 1
+			}
+			return 0
+		case "--models-json": // <profile> [base] [key]: the /v1/models listing
+			out, ok := l.modelsJSON(args[1], args[2:]...)
+			if !ok {
+				return 1
+			}
+			fmt.Println(out)
+			return 0
+		case "--resume-model": // <session id>: the model it last ran
+			m, ok := l.resumeModel(args[1])
+			if !ok {
+				return 1
+			}
+			fmt.Println(m)
+			return 0
+		case "--trigger-env": // <KEY=VALUE>...: pct, output reserve, 1M switch, one per line
+			pct, maxout, no1m := l.triggerEnv(args[1:])
+			fmt.Printf("%s\n%s\n%s\n", pct, maxout, no1m)
+			return 0
+		case "--probe-nudge": // <profile>
+			l.probeNudge(args[1])
+			return 0
+		case "--log": // <message>
+			l.log(strings.Join(args[1:], " "))
+			return 0
 		case "--project-picker": // <profile> <base> <key> [own] [tag] [launch]
 			a := append(args[1:], "", "", "", "", "", "")
 			if !l.projectPicker(a[0], a[1], a[2], a[3], a[4], a[5]) {

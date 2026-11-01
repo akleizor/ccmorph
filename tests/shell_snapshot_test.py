@@ -84,7 +84,7 @@ alias python3='false'
 alias sed='false'
 alias tr='false'
 source "$CCMORPH_LIB_DIR/ccmorph.sh"
-_ccm_claude_verbs
+ccmorph help all
 ccmorph rm demo
 ''', env)
     assert result.returncode == 0, result.stderr
