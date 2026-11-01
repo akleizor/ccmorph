@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -102,5 +103,24 @@ func TestSessionFileToleratesGlobMetacharactersInTheProfileDirs(t *testing.T) {
 	p, ok := l.sessionFile(id)
 	if !ok || filepath.Base(p) != id+".jsonl" {
 		t.Fatalf("got %q %v", p, ok)
+	}
+}
+
+// `claude auth status` must not see any backend key: a Bedrock/Vertex flag or a
+// socket redirects the check just like an API key.
+func TestClaudeAuthDropsEveryBackendKey(t *testing.T) {
+	l := &launcher{backend: []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_USE_BEDROCK"}}
+	t.Setenv("ANTHROPIC_API_KEY", "leak")
+	t.Setenv("CLAUDE_CODE_USE_BEDROCK", "leak")
+	t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "leak")
+	env := l.claudeAuth("/tmp/p", "status").Env
+	for _, e := range env {
+		if strings.HasSuffix(e, "=leak") {
+			t.Fatalf("auth status inherited %s", e)
+		}
+	}
+	// add sub reads the email from the profile it just logged into, never the global file.
+	if v, _ := envGet(env, "CLAUDE_CONFIG_DIR"); v != "/tmp/p" {
+		t.Fatalf("auth status must run against the given profile dir")
 	}
 }

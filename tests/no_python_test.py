@@ -14,7 +14,9 @@ PYTHON_HELPERS = re.compile(r"LIBEXEC_DIR/(model-window|settings-compose|ccmorph
 
 
 def test_the_core_files_exist():
-    assert len(CORE_FILES) > 10
+    # The zsh layer is the entry and its launch hand-off; the rest is ccmorph-core.
+    assert {f.relative_to(ROOT).as_posix() for f in CORE_FILES} >= {
+        "bin/ccmorph", "lib/ccmorph.sh", "lib/ccmorph-launch.zsh", "install.sh"}
 
 
 def test_no_core_file_mentions_python3():

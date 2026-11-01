@@ -125,3 +125,28 @@ _ccm_launch_driver() { _ccm_launch "$@"; }
 # through the session setup with TERM/HUP forwarded, and the gateway picker projection.
 _ccm_run_claude() { _ccm_fork_forward _ccm_launch_core --run-claude "$@"; }
 _ccm_project_picker() { ( _ccm_launch_core --project-picker "$@" ); }
+
+# The `ccmorph` command, for callers that source this library.
+ccmorph() {
+  emulate -L zsh
+  # Shell snapshots can retain this public function without its private library.
+  # The executable already owns loading and path resolution; do not duplicate it.
+  if (( ! $+functions[_ccm_core] )) || [[ -z "${_CCMORPH_DIR:-}" ]]; then
+    command ccmorph "$@"
+    return $?
+  fi
+  # Every verb runs in the core. A launch runs through the fork-and-forward, so
+  # `kill <this shell>` still reaches the session.
+  if [[ "${1:-}" == run ]]; then
+    _ccm_fork_forward _ccm_main_exec "$@"
+    return $?
+  fi
+  local before="" rc
+  [[ "${1:-}" == rm && -f "$_CCMORPH_DIR/active" && ! -L "$_CCMORPH_DIR/active" ]] && before=$(<"$_CCMORPH_DIR/active")
+  _ccm_core cli main "$@"
+  rc=$?
+  # A new sign-in, or a removed default, must not keep this shell's old token.
+  (( rc == 0 )) && [[ "${1:-}" == add || ( "${1:-}" == rm && -n "$before" && "$before" == "${2:-}" ) ]] &&
+    unset CLAUDE_CODE_OAUTH_TOKEN
+  return $rc
+}

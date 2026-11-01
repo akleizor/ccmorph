@@ -9,7 +9,7 @@ from support import HANG_TIMEOUT
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run(home, state, script='_ccm_secure_dirs', extra=None):
+def run(home, state, script='ccmorph _secure', extra=None):
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(('CCMORPH_', '_CCMORPH_', 'CLAUDE_', 'ANTHROPIC_'))}
     env.update(HOME=str(home), ZDOTDIR=str(home), CCMORPH_STATE_DIR=str(state),
@@ -144,7 +144,7 @@ def test_doctor_does_not_normalize_plugin_indexes(tmp_path):
 
 def test_fresh_install_uses_state_profiles_without_legacy_alias(tmp_path):
     state = tmp_path / 'custom-state'
-    result = run(tmp_path, state, '_ccm_secure_dirs; print -r -- "$_CCMORPH_PROFILE_DIRS"')
+    result = run(tmp_path, state, 'ccmorph _secure; print -r -- "$_CCMORPH_PROFILE_DIRS"')
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == str(state / 'profiles')
     assert (state / 'profiles').is_dir()

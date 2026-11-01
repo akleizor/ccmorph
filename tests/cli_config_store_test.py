@@ -63,6 +63,16 @@ def file_count(root):
 TOO_DEEP_TO_DECODE = '{"sandbox":' + "[" * 2_000_000 + "0" + "]" * 2_000_000 + "}"
 
 
+# The core's config-store with the paths the CLI hands it, for operations no verb
+# exposes (the zsh wrapper it replaces was deleted with the CLI's move to Go).
+STORE_FN = (
+    '_ccm_config_store() { local d="$_CCMORPH_PROFILE_DIRS/$2" layer; layer="$d/settings.json"\n'
+    '[[ -e $d/settings.profile.json || -L $d/settings.profile.json || -e $d/cache/settings.base.json ]]'
+    ' && layer="$d/settings.profile.json"\n'
+    '"$_CCMORPH_LIBEXEC_DIR/ccmorph-core" util config-store "$1" "$_CCMORPH_DIR/$2.conf" "$layer"'
+    ' "${3:-}" "$HOME/.claude/settings.json" "${_CCMORPH_MODEL_MAPPING_ENV[@]}"; }\n')
+
+
 class ConfigurationSaveTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -85,8 +95,8 @@ class ConfigurationSaveTest(unittest.TestCase):
                               timeout=HANG_TIMEOUT)
 
     def store(self, *args, env=None):
-        """Call _ccm_config_store directly, for the operations no verb exposes."""
-        script = 'source "$1"; shift; _ccm_config_store "$@"'
+        """Call the core's config-store directly, for the operations no verb exposes."""
+        script = 'source "$1"; shift; ' + STORE_FN + '_ccm_config_store "$@"'
         return subprocess.run(['zsh', '-fc', script, '_', str(ROOT / 'lib/ccmorph.sh'), *args],
                               env=env or self.env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
 
@@ -274,11 +284,7 @@ class ConfigurationSaveTest(unittest.TestCase):
         self.assertEqual(json.loads(self.store('model-settings', 'demo').stdout),
                          {'env': {}, 'modelSettings': {}})
         # And the alias reader reports "nothing mapped" rather than the native value.
-        alias = subprocess.run(
-            ['zsh', '-fc', 'source "$1"; _ccm_settings_model_alias demo opus',
-             '_', str(ROOT / 'lib/ccmorph.sh')],
-            env=self.env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
-        self.assertNotEqual(alias.returncode, 0)
+        alias = self.store('get', 'demo', 'env.ANTHROPIC_DEFAULT_OPUS_MODEL')
         self.assertEqual(alias.stdout.strip(), '')
 
     def test_role_mapping_is_read_from_the_conf(self):
@@ -286,10 +292,7 @@ class ConfigurationSaveTest(unittest.TestCase):
                              'env.ANTHROPIC_DEFAULT_OPUS_MODEL=profile-opus\nmodel_defaults=1\n')
         self.settings.write_text(json.dumps({
             'env': {'ANTHROPIC_DEFAULT_OPUS_MODEL': 'stale-opus'}}))
-        result = subprocess.run(
-            ['zsh', '-fc', 'source "$1"; _ccm_settings_model_alias demo opus',
-             '_', str(ROOT / 'lib/ccmorph.sh')],
-            env=self.env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
+        result = self.store('get', 'demo', 'env.ANTHROPIC_DEFAULT_OPUS_MODEL')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), 'profile-opus')
 
@@ -312,7 +315,7 @@ class ConfigurationSaveTest(unittest.TestCase):
                     'ANTHROPIC_DEFAULT_OPUS_MODEL': 'stale'},
             'enabledPlugins': {'test@example': True},
             'permissions': {'deny': ['Bash(rm *)']}}))
-        result = subprocess.run(['zsh', '-fc', 'source "$1"; _ccm_project_settings demo "$(_ccm_config_store model-settings demo)" --acw none',
+        result = subprocess.run(['zsh', '-fc', 'source "$1"; _ccm_launch_core --project model-settings demo --acw none --',
                                  '_', str(ROOT / 'lib/ccmorph.sh')],
                                 env=self.env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -511,7 +514,7 @@ class ConfigurationSaveTest(unittest.TestCase):
         before = (conf_fields(self.conf), self.settings.read_bytes())
         env = self.fail_replace_env(self.settings)
         result = subprocess.run(
-            ['zsh', '-fc', 'source "$1"; _ccm_config_store prepare-launch demo',
+            ['zsh', '-fc', 'source "$1"; ' + STORE_FN + '_ccm_config_store prepare-launch demo',
              '_', str(ROOT / 'lib/ccmorph.sh')], env=env, text=True,
             capture_output=True, timeout=HANG_TIMEOUT)
         self.assertNotEqual(result.returncode, 0)
@@ -521,7 +524,7 @@ class ConfigurationSaveTest(unittest.TestCase):
         self.assertEqual(list(self.settings.parent.glob('.configure.*')), [])
 
     def test_external_change_after_snapshot_is_preserved(self):
-        command = ('source "$1"; export _CCM_CONFIG_SNAPSHOT=$(_ccm_config_store snapshot demo); '
+        command = ('source "$1"; ' + STORE_FN + 'export _CCM_CONFIG_SNAPSHOT=$(_ccm_config_store snapshot demo); '
                    'printf "%s\\n" "# external change" >> "$CCMORPH_STATE_DIR/demo.conf"; '
                    'export _CCM_CONFIG_MODEL=new; _ccm_config_store set demo')
         before_settings = self.settings.read_bytes()
@@ -603,13 +606,7 @@ class ConfigurationSaveTest(unittest.TestCase):
         """Run a launch's projection the way it ran before GH-433 -- prepare-launch,
         then materialize (`pair`) -- or through the helper that folds them (`one`),
         with the same options and launch environment."""
-        script = ('source "$1"; shift; style="$1"; shift; o=(); '
-                  'while (( $# )) && [[ "$1" != -- ]]; do o+=("$1"); shift; done; '
-                  '(( $# )) && shift; '
-                  'if [[ "$style" == pair ]]; then '
-                  'saved=$(_ccm_config_store prepare-launch demo) || exit 10; '
-                  '_ccm_project_settings demo "$saved" "${o[@]}" -- "$@"; '
-                  'else _ccm_prepare_and_project demo "${o[@]}" -- "$@"; fi')
+        script = 'source "$1"; shift; _ccm_launch_core --project "$1" demo "${@:2}"'
         return subprocess.run(
             ['zsh', '-fc', script, '_', str(ROOT / 'lib/ccmorph.sh'), style,
              *opts, '--', *penv],
@@ -744,24 +741,6 @@ class ConfigurationSaveTest(unittest.TestCase):
                 canon.write_text(good_canon)
                 (self.state / 'profiles/demo/settings.profile.json').unlink(missing_ok=True)
                 target.write_text(text)
-                # The store's own status: the folded tail has to keep the refusal
-                # on 13, the 10+rc shift the launch's helper maps back to 3.
-                store = subprocess.run(
-                    ['zsh', '-fc',
-                     'source "$1"; '
-                     '_ccm_projection_args --; '
-                     '_ccm_settings_argv materialize demo '
-                     '"${_ccm_sc_opts[@]}" "${_ccm_sc_strip[@]}"; '
-                     'sc_argv=("${_ccm_sc_argv[@]}"); '
-                     '_CCM_MATERIALIZE="${(pj:\n:)sc_argv}" _CCM_LIB="$_CCMORPH_LIBEXEC_DIR" '
-                     '_ccm_config_store prepare-launch demo >/dev/null; '
-                     'print -- $?',
-                     '_', str(ROOT / 'lib/ccmorph.sh')],
-                    env=self.env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
-                self.assertEqual(store.returncode, 0, store.stderr)
-                self.assertEqual(store.stdout.strip(), '13')
-                self.assertIn('settings.policy.json', store.stderr)
-                self.assertIn(crash_class, store.stderr)
                 # Both paths land on the helper's status 3 with the same words.
                 two, _ = self.projection_env('gh433-crash-pair')
                 one, _ = self.projection_env('gh433-crash-folded')
@@ -776,6 +755,7 @@ class ConfigurationSaveTest(unittest.TestCase):
                     return [l for l in r.stderr.replace(h, '<home>').splitlines() if 'RecursionError' not in l]
                 self.assertEqual(words(folded, one['HOME']), words(pair, two['HOME']))
                 self.assertIn("could not generate settings for 'demo'", folded.stderr)
+                self.assertIn('settings.policy.json', folded.stderr)
                 self.assertIn(crash_class, folded.stderr)
                 # A real launch refuses: rc 1, the refusal message, claude never
                 # started, and the old settings kept -- the store's stripped

@@ -12,22 +12,35 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def migrate(tmp_path, name):
-    original = tmp_path / "profile" / name
+    # A profile holding a real <name>/ where the shared link belongs, provisioned
+    # through the public path (`ccmorph _env`), which merges or refuses it.
+    state = tmp_path / "state"
+    original = state / "profiles" / "gw" / name
     shared = tmp_path / ".claude" / name
     original.mkdir(parents=True)
     shared.mkdir(parents=True)
+    (state / "gw.conf").write_text("type=sub\nemail=me@example.invalid\n")
     (original / "private").write_text("profile content")
     (shared / "private").write_text("shared content")
     (original / "new").write_text("new content")
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("CCMORPH_", "_CCMORPH_", "CLAUDE_", "ANTHROPIC_"))}
     env.update(HOME=str(tmp_path), ZDOTDIR=str(tmp_path),
-               CCMORPH_STATE_DIR=str(tmp_path / "state"), CCMORPH_LIB_DIR=str(ROOT / "lib"))
-    result = subprocess.run(
-        ["zsh", "-fc", 'source "$1"; _ccm_migrate_projects "$2" "$3"', "_",
-         str(ROOT / "lib/ccmorph.sh"), str(original), str(shared)],
-        env=env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
+               CCMORPH_STATE_DIR=str(state), CCMORPH_LIB_DIR=str(ROOT / "lib"))
+    if name == "projects":
+        # History is not a shared dir; `rm` merges it through this core verb.
+        argv = [str(ROOT / "libexec/ccmorph-core"), "util", "migrate-projects", str(original), str(shared)]
+    else:
+        argv = ["zsh", "-fc", 'source "$1"; ccmorph _env gw', "_", str(ROOT / "lib/ccmorph.sh")]
+    result = subprocess.run(argv, env=env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
     return result, original, shared
+
+
+def moved_out(original, shared, name):
+    # Shared stores end as a link; merged history leaves nothing behind.
+    if name == "projects":
+        return not original.exists()
+    return original.is_symlink() and original.resolve() == shared.resolve()
 
 
 @pytest.mark.parametrize("name", ["agents", "projects", "session-env", "file-history"])
@@ -37,7 +50,7 @@ def test_sharable_content_collision_is_merged_into_the_shared_store(tmp_path, na
     # than refused — refusing bricked every launch for such a profile.
     result, original, shared = migrate(tmp_path, name)
     assert result.returncode == 0, result.stderr
-    assert not original.exists()
+    assert moved_out(original, shared, name)
     assert (shared / "new").read_text() == "new content"
     # The shared copy of a colliding name wins; the profile copy is kept aside.
     assert (shared / "private").read_text() == "shared content"
@@ -61,7 +74,7 @@ def test_managed_content_collision_is_preserved(tmp_path, name):
 def test_history_migration_keeps_collisions_in_backup(tmp_path, name):
     result, original, shared = migrate(tmp_path, name)
     assert result.returncode == 0, result.stderr
-    assert not original.exists()
+    assert moved_out(original, shared, name)
     assert (shared / "new").read_text() == "new content"
     assert (shared / "private").read_text() == "shared content"
     backup, = original.parent.glob("*.premigration.*")
@@ -88,7 +101,7 @@ def test_a_profile_with_its_own_agents_directory_launches(tmp_path):
                CCMORPH_STATE_DIR=str(home / ".config/ccmorph"), CCMORPH_LIB_DIR=str(ROOT / "lib"))
     result = subprocess.run(
         ["zsh", "-fc",
-         'source "$1"; typeset -gA _ccm=(type sub); _ccm_setup_dir_unlocked gw', "_",
+         'source "$1"; ccmorph _env gw >/dev/null', "_",
          str(ROOT / "lib/ccmorph.sh")],
         env=env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
 
@@ -103,16 +116,16 @@ def test_a_profile_with_its_own_agents_directory_launches(tmp_path):
 def provision_agents(tmp_path, build, *, state_link=False, script=None):
     """Provision profile gw whose real agents/ is filled by build(agents_dir, home).
 
-    With state_link, ~/.config/ccmorph is a symlink to another directory, so the
-    profile's physical path differs from its spelled one.
+    With state_link, ~/.config is a symlink to <tmp>/ec, so the profile's physical
+    path differs from its spelled one (the state root itself may not be a link).
     """
     home = tmp_path / "home"
     state = home / ".config/ccmorph"
     if state_link:
-        real = tmp_path / "elsewhere" / "ccs"
+        real = tmp_path / "ec"
         real.mkdir(parents=True)
-        state.parent.mkdir(parents=True)
-        state.symlink_to(real)
+        home.mkdir(parents=True)
+        (home / ".config").symlink_to(real)
     profile = state / "profiles/gw"
     (profile / "agents").mkdir(parents=True)
     (home / ".claude/agents").mkdir(parents=True)
@@ -122,7 +135,7 @@ def provision_agents(tmp_path, build, *, state_link=False, script=None):
            if not k.startswith(("CCMORPH_", "_CCMORPH_", "CLAUDE_", "ANTHROPIC_"))}
     env.update(HOME=str(home), ZDOTDIR=str(home), XDG_CONFIG_HOME=str(home / ".config"),
                CCMORPH_STATE_DIR=str(state), CCMORPH_LIB_DIR=str(ROOT / "lib"))
-    script = script or 'source "$1"; typeset -gA _ccm=(type sub); _ccm_setup_dir_unlocked gw'
+    script = script or 'source "$1"; ccmorph _env gw >/dev/null'
     result = subprocess.run(["zsh", "-fc", script, "_", str(ROOT / "lib/ccmorph.sh")],
                             env=env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
     return result, home, profile
@@ -153,7 +166,7 @@ def test_env_output_stays_clean_while_relative_agent_links_migrate(tmp_path):
 def test_relative_agent_link_outside_the_tree_becomes_absolute_physical(tmp_path):
     # Constraint 2: the kernel resolves a relative link from its physical
     # directory; under a symlinked state dir a lexical rewrite points elsewhere.
-    # Physically: agents -> gw -> profiles -> ccs -> elsewhere -> tmp_path.
+    # Physically: agents -> gw -> profiles -> ccmorph -> ec -> tmp_path.
     def build(agents, home):
         (tmp_path / "dot").mkdir()
         (tmp_path / "dot" / "out.md").write_text("outside")

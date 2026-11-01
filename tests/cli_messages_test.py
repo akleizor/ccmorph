@@ -35,8 +35,9 @@ def test_adapter_decline_surfaces_actionable_reason():
         fake.chmod(0o755)
         env = {**os.environ, 'HOME': tmp, 'TMPDIR': tmp,
                'CCMORPH_LIB_DIR': str(lib)}
-        result = subprocess.run(['zsh', '-c', 'source "$1"; _ccm_adapter_start demo',
-                                 'test', str(ROOT / 'lib/ccmorph.sh')], env=env,
+        result = subprocess.run(['zsh', '-c', 'source "$1"; _ccm_core_env; '
+                                 'exec env "${reply[@]}" "$2" launch --adapter-start demo',
+                                 'test', str(ROOT / 'lib/ccmorph.sh'), str(ROOT / 'libexec/ccmorph-core')], env=env,
                                 capture_output=True, text=True, timeout=HANG_TIMEOUT)
         assert result.returncode != 0
         assert 'set a model and retry' in result.stderr
@@ -53,8 +54,9 @@ def test_adapter_failure_reports_observation_not_guessed_cause():
         fake.write_text('#!/bin/sh\n' + CORE_DISPATCH + 'exit 1\n')
         fake.chmod(0o755)
         env = {**os.environ, 'HOME': tmp, 'CCMORPH_LIB_DIR': str(lib)}
-        result = subprocess.run(['zsh', '-c', 'source "$1"; _ccm_adapter_start demo known',
-                                 'test', str(ROOT / 'lib/ccmorph.sh')], env=env,
+        result = subprocess.run(['zsh', '-c', 'source "$1"; _ccm_core_env; '
+                                 'exec env "${reply[@]}" "$2" launch --adapter-start demo known',
+                                 'test', str(ROOT / 'lib/ccmorph.sh'), str(ROOT / 'libexec/ccmorph-core')], env=env,
                                 capture_output=True, text=True, timeout=HANG_TIMEOUT)
         assert result.returncode != 0
         assert 'adapter exited before readiness' in result.stderr

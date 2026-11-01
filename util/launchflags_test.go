@@ -63,3 +63,24 @@ func TestLaunchArgvClaimsOnlyRunsOwnFlags(t *testing.T) {
 		t.Errorf("duplicate -a: rc %d %q", rc, e.String())
 	}
 }
+
+// A value an option owns is its value whatever it looks like (#334); arity comes
+// from the installed binary's --help, so invented options are proof of discovery.
+func TestOptionStep(t *testing.T) {
+	arity := map[string]string{"--invented-value": "value", "--invented-flag": "flag", "-z": "optional", "--invented-optional": "optional"}
+	for _, c := range []struct {
+		opt, next string
+		want      int
+	}{
+		{"--invented-value", "--continue", 2},
+		{"--invented-flag", "x", 1},
+		{"-z", "x", 2},
+		{"--invented-optional", "-p", 1},
+		{"--invented-value=v", "x", 1},
+		{"--no-such-option", "x", 0},
+	} {
+		if got := optionStep(arity, c.opt, c.next, true); got != c.want {
+			t.Errorf("optionStep(%q, %q) = %d, want %d", c.opt, c.next, got, c.want)
+		}
+	}
+}

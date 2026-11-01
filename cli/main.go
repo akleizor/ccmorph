@@ -73,6 +73,8 @@ func (l *launcher) dispatch(args []string) int {
 		return 1
 	}
 	switch first {
+	case "_secure": // install.sh: the state dirs secured and migrated, nothing else
+		return 0
 	case "run":
 		return l.runVerb(args[1:])
 	case "probe", retiredVerb:
@@ -92,7 +94,7 @@ func (l *launcher) dispatch(args []string) int {
 	case "_env":
 		return l.envVerb(args[1:])
 	case "list", "use", "cred", "inspect", "context", "models", "_models", "rm", "mv", "get", "set",
-		"_menu", "config", "add", "login", "hop", "quota":
+		"_menu", "_ui", "config", "add", "login", "hop", "quota":
 		return l.verb(args)
 	}
 	if strings.HasPrefix(first, "-") {

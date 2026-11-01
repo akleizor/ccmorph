@@ -16,6 +16,15 @@ from support import HANG_TIMEOUT
 
 ROOT = Path(__file__).resolve().parents[1]
 CCMORPH = ROOT / 'lib/ccmorph.sh'
+# The menu primitives under their old zsh names, now answered by the Go UI.
+UI_SHIM = ('ccm_ui_select() { ccmorph _ui select "$@"; }\n'
+           'ccm_ui_confirm() { ccmorph _ui confirm "$@"; }\n'
+           'ccm_ui_input() { local r; r=$(ccmorph _ui input "$@") || return $?; REPLY=$r; }\n'
+           'ccm_ui_list() { ccmorph _ui list "$@"; }\n'
+           '_ccm_ui_numbered() { ccmorph _ui numbered "$@"; }\n'
+           '_ccm_value_rows() { ccmorph _ui rows "$@"; }\n'
+           '_ccm_pick_value() { ccmorph _ui pick "$@"; }\n'
+           '_ccm_prompt_default() { ccmorph _ui default "$@"; }\n')
 MODELS = json.dumps({'data': [{'id': m, 'owned_by': 'fake'} for m in
                               ('picker-alpha', 'picker-beta')]})
 
@@ -136,7 +145,7 @@ def run_pty(command, env, exchanges=(), size=(24, 100), library=CCMORPH):
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', *size, 0, 0))
     input_flags = termios.tcgetattr(slave)[3] & (termios.ECHO | termios.ICANON | termios.ISIG)
     process = subprocess.Popen(
-        ['zsh', '-fc', 'source "$1"\n' + command, 'ccmorph-picker-test', str(library)],
+        ['zsh', '-fc', 'source "$1"\n' + UI_SHIM + command, 'ccmorph-picker-test', str(library)],
         stdin=slave, stdout=slave, stderr=slave, env=env, cwd=str(ROOT), close_fds=True,
         preexec_fn=_controlling_terminal)
     # Keep a slave reference until capture ends: macOS can discard unread output
@@ -737,8 +746,7 @@ class PickerTTYTest(unittest.TestCase):
         self.spec('Standalone=second')
         # Only the module is sourced: it must not require ccmorph state/helpers.
         rc, out, missed = run_pty('ccm_ui_select native Standalone "$ROWS"', env,
-                                  [(b'Esc Cancel', b'\x1b[B\r')],
-                                  library=ROOT / 'lib/ccmorph-ui.zsh')
+                                  [(b'Esc Cancel', b'\x1b[B\r')])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
         plain = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', out)
@@ -754,8 +762,7 @@ class PickerTTYTest(unittest.TestCase):
         self.assertTrue(out.rstrip().endswith('second'), out)
         self.assertNotRegex(out, r'\x1b\[[0-9;]*m')
         self.assertFalse((self.tmp / 'fzf.log').exists())
-        rc, out, missed = run_pty('ccm_ui_select search Standalone "$ROWS"', env,
-                                  library=ROOT / 'lib/ccmorph-ui.zsh')
+        rc, out, missed = run_pty('ccm_ui_select search Standalone "$ROWS"', env)
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
         self.assertTrue(out.rstrip().endswith('second'), out)
@@ -778,16 +785,14 @@ class PickerTTYTest(unittest.TestCase):
     def test_standalone_helpers_survive_caller_state(self):
         script = r"""
 LC_ALL=C
-_ccm_ui_fit "Sign-in method — demo" 18; print -r -- "FIT=$REPLY"
 interrupted=143
 print hello | ccm_ui_input "Name: " 2>/dev/null; print "INPUT=$? $REPLY"
 setopt sh_glob
 print yes | ccm_ui_confirm 'Go?' 2>/dev/null; print "CONFIRM=$?"
 ccm_ui_list Pick $'a\tAlpha' 2>&1 >/dev/null | od -c | grep -q 033 && print LISTANSI=1 || print LISTANSI=0
 """
-        rc, out, _ = run_pty(script, self.env(), library=ROOT / 'lib/ccmorph-ui.zsh')
+        rc, out, _ = run_pty(script, self.env())
         self.assertEqual(rc, 0, out)
-        self.assertIn('FIT=Sign-in method — …', out)   # whole characters, valid UTF-8
         self.assertIn('INPUT=0 hello', out)             # caller's name is not the signal flag
         self.assertIn('CONFIRM=0', out)                 # caller's glob options do not flip Yes
         self.assertIn('LISTANSI=0', out)                # redirected stderr stays plain
@@ -819,65 +824,11 @@ fi
         self.assertNotIn('\x1b[38;2;78;186;101m', out)
         self.assertNotIn('synthetic-token', out)
 
-    def test_theme_reload_recolors_older_running_driver(self):
-        # A running shell can still be executing the old driver's function body.
-        # Sourcing the updated theme must replace, not retain, its green value.
-        rc, out, missed = run_pty(
-            '_ccm_green=$\'\\e[32m\'; source "$CCMORPH_LIB_DIR/ccmorph-ui.zsh"; '
-            'print -r -- "${_ccm_green}ccmorph:${_ccm_reset}"', self.env())
-        self.assertIsNone(missed, out)
-        self.assertEqual(rc, 0, out)
-        self.assertIn('\x1b[38;2;215;119;87mccmorph:', out)
-        self.assertNotIn('\x1b[32m', out)
-
-    def test_theme_source_under_ksh_arrays_matches_default_issue_408(self):
-        # Sourcing initialises the theme with the caller's own options. Under
-        # KSH_ARRAYS the palette walk builds the roles from values, not keys:
-        # six _ccm_* colours never exist and a stray _ccm_999999 does (#408).
-        # Both branches walk the same palette, so both sets must match.
-        script = r"""
-theme_names() {
-  # Name collection itself needs native arrays: "${(@k)parameters}" is the
-  # exact expansion a caller's KSH_ARRAYS breaks.
-  setopt localoptions noksharrays
-  REPLY=${(j.,.)${(o)${(M)${(k)parameters}:#_ccm_*}}}
-}
-lib=$1
-theme_names; styled=$REPLY
-[[ "$styled" == *_ccm_accent* ]] || { print -r -- "MISSINGACCENT<$styled>"; exit 3; }
-unset ${(M)${(k)parameters}:#_ccm_*}
-(
-  setopt ksharrays
-  source "$lib"
-  setopt noksharrays
-  theme_names
-  [[ "$REPLY" == "$styled" ]] || { print -r -- "KSHSET<$REPLY>DEFAULT<$styled>"; exit 3; }
-) || exit 3
-NO_COLOR=1
-source "$lib"
-theme_names; plain=$REPLY
-[[ "$plain" == *_ccm_accent* ]] || { print -r -- "MISSINGACCENT<$plain>"; exit 3; }
-unset ${(M)${(k)parameters}:#_ccm_*}
-(
-  setopt ksharrays
-  source "$lib"
-  setopt noksharrays
-  theme_names
-  [[ "$REPLY" == "$plain" ]] || { print -r -- "PLAINKSHSET<$REPLY>DEFAULT<$plain>"; exit 3; }
-) || exit 3
-print -r -- THEMESETS=OK
-"""
-        rc, out, missed = run_pty(script, self.env(), library=ROOT / 'lib/ccmorph-ui.zsh')
-        self.assertIsNone(missed, out)
-        self.assertEqual(rc, 0, out)
-        self.assertIn('THEMESETS=OK', out)
-
     def test_claude_palette_is_shared_by_native_and_search(self):
         env = {**self.env(fzf=True), 'ROWS': 'first\tFirst\tDescription\nsecond\tSecond\tDetails'}
         self.spec('Theme=first')
         rc, out, missed = run_pty('ccm_ui_select native Theme "$ROWS"', env,
-                                  [(b'Esc Cancel', b'\x1b')],
-                                  library=ROOT / 'lib/ccmorph-ui.zsh')
+                                  [(b'Esc Cancel', b'\x1b')])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 1, out)
         self.assertIn('\x1b[38;2;215;119;87m\x1b[1mTheme', out)
@@ -885,8 +836,7 @@ print -r -- THEMESETS=OK
         self.assertIn('\x1b[38;2;153;153;153mDescription', out)
         for retired in ('◆', '◇', '●', '○', '│', '└', '\x1b[36m'):
             self.assertNotIn(retired, out)
-        rc, out, missed = run_pty('ccm_ui_select search Theme "$ROWS"', env,
-                                  library=ROOT / 'lib/ccmorph-ui.zsh')
+        rc, out, missed = run_pty('ccm_ui_select search Theme "$ROWS"', env)
         self.assertEqual(rc, 0, out)
         log = (self.tmp / 'fzf.log').read_text()
         self.assertIn('prompt:#d77757', log)
@@ -901,8 +851,7 @@ print -r -- THEMESETS=OK
                     rc, out, missed = run_pty(
                         'ccm_ui_input "Value: " ' + mode + '; result=$?; '
                         'print -r -- "VALUE=<$REPLY>"; exit $result', env,
-                        [(b'Value:', b'partial-value\x1b'), (b'VALUE=', b'')],
-                        library=ROOT / 'lib/ccmorph-ui.zsh')
+                        [(b'Value:', b'partial-value\x1b'), (b'VALUE=', b'')])
                     self.assertIsNone(missed, out)
                     self.assertNotEqual(rc, 0, out)
                     self.assertIn('Esc Cancel', out)
@@ -921,8 +870,7 @@ print -r -- THEMESETS=OK
             with self.subTest(keys=keys):
                 rc, out, missed = run_pty(
                     'ccm_ui_input "Value: " || exit $?; print -r -- "VALUE=<$REPLY>"',
-                    self.env(), [(b'Value:', keys)],
-                    library=ROOT / 'lib/ccmorph-ui.zsh')
+                    self.env(), [(b'Value:', keys)])
                 self.assertIsNone(missed, out)
                 self.assertEqual(rc, 0, out)
                 self.assertIn('VALUE=<' + expected + '>', out)
@@ -940,8 +888,7 @@ print -r -- THEMESETS=OK
         rc, out, missed = run_pty(
             'setopt ksharrays; ccm_ui_input "' + prompt + '" || exit $?; '
             'print -r -- "VALUE=<$REPLY>"; [[ -o ksharrays ]] && print KSH_KEPT',
-            self.env(), [(b'Esc Cancel', b'abc\r')], size=(24, 100),
-            library=ROOT / 'lib/ccmorph-ui.zsh')
+            self.env(), [(b'Esc Cancel', b'abc\r')], size=(24, 100))
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
         self.assertIn('P' * 90, out)
@@ -984,8 +931,7 @@ print -r -- THEMESETS=OK
         for keys, status in ((b'\r', 1), (b'\x1b', 2), (b'\x03', 2)):
             with self.subTest(keys=keys):
                 rc, out, missed = run_pty('ccm_ui_confirm "Remove?"', self.env(fzf=True),
-                                          [(b'Esc Cancel', keys)],
-                                          library=ROOT / 'lib/ccmorph-ui.zsh')
+                                          [(b'Esc Cancel', keys)])
                 self.assertIsNone(missed, out)
                 self.assertEqual(rc, status, out)
                 self.assertIn('❯', out)
@@ -994,8 +940,7 @@ print -r -- THEMESETS=OK
 
     def test_ui_rejects_control_characters_in_ids(self):
         env = {**self.env(), 'ROWS': 'bad\x1b[2J\tLabel'}
-        rc, out, missed = run_pty('ccm_ui_select native Choose "$ROWS"', env,
-                                  library=ROOT / 'lib/ccmorph-ui.zsh')
+        rc, out, missed = run_pty('ccm_ui_select native Choose "$ROWS"', env)
         self.assertEqual(rc, 2, out)
         self.assertNotIn('\x1b[2J', out)
         self.assertIn('invalid choice ID', out)
@@ -1025,7 +970,7 @@ print -r -- THEMESETS=OK
                  'stderr-marker')):
             with self.subTest(command=command), \
                     patch(__name__ + '._drain', side_effect=read_after_child):
-                rc, out, missed = run_pty(command, env, library=ROOT / 'lib/ccmorph-ui.zsh')
+                rc, out, missed = run_pty(command, env)
                 self.assertIsNone(missed, out)
                 self.assertEqual(rc, status, out)
                 self.assertIn(expected, out)

@@ -193,24 +193,10 @@ The existing piped-input configuration sequence is unchanged for scripts.
 
 ### Reusable CLI UI
 
-[`lib/ccmorph-ui.zsh`](../lib/ccmorph-ui.zsh) owns every interactive renderer and theme.
-It can be sourced on its own: no profile store, launcher, or external dependency
-is needed for native menus. Commands supply content and select `native` or
-`search`; they do not implement key handling, cursor movement, or styling.
-
-```zsh
-source ./lib/ccmorph-ui.zsh
-rows=$'defaults\tModel and reasoning\tDefaults for new sessions\nconnection\tConnection\tEndpoint or API key'
-choice=$(ccm_ui_select native 'Settings — demo' "$rows") || return
-# Use `search` for a model/profile catalogue; selected IDs alone go to stdout.
-ccm_ui_input 'Profile name: ' || return  # result in REPLY
-ccm_ui_input 'API key: ' secret || return  # echo disabled before the prompt
-ccm_ui_confirm 'Continue?' || return  # native No/Yes; piped input uses y/N
-```
-
-`ccm_ui_list` renders the same rows for scripted instructions. `NO_COLOR` disables
-styling; `TERM=dumb` and missing `fzf` use numbered choices. The installer ships
-this module. Claude Code's own in-session menus are
+[`cli/ui.go`](../cli/ui.go) owns every interactive renderer and theme. Commands supply
+rows and choose `native` (↑/↓ menu) or `search` (fzf); they do not implement key
+handling, cursor movement, or styling. `NO_COLOR` disables styling; `TERM=dumb` and
+missing `fzf` use numbered choices. Claude Code's own in-session menus are
 owned by Claude Code, not rendered or replaced by ccmorph.
 
 Profile pickers offer only usable profiles: `models` lists API-key profiles,

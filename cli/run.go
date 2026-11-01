@@ -482,29 +482,30 @@ func (l *launcher) resumeModel(id string) (string, bool) {
 	return m, true
 }
 
-// carrySession is _ccm_carry_session: link a session from another store into dst.
-func (l *launcher) carrySession(id, dst string) {
+// carrySession links session <id> into dst so Claude Code can resume it there;
+// false when the id is not a session id or no profile holds it.
+func (l *launcher) carrySession(id, dst string) bool {
 	if !sessionID.MatchString(id) {
-		return
+		return false
 	}
 	hits, _ := filepath.Glob(filepath.Join(globQuote(dst), "*", id+".jsonl"))
 	for _, h := range hits {
 		if isFile(h) {
-			return
+			return true
 		}
 	}
 	f, ok := l.sessionFile(id)
 	if !ok {
-		return
+		return false
 	}
 	slug := filepath.Base(filepath.Dir(f))
 	if os.MkdirAll(filepath.Join(dst, slug), 0o777) != nil {
-		return
+		return false
 	}
 	link := filepath.Join(dst, slug, id+".jsonl")
 	os.Remove(link)
 	if os.Symlink(f, link) != nil {
-		return
+		return false
 	}
 	side := strings.TrimSuffix(f, ".jsonl")
 	if os.MkdirAll(side, 0o777) == nil {
@@ -512,6 +513,7 @@ func (l *launcher) carrySession(id, dst string) {
 			os.Symlink(side, filepath.Join(dst, slug, id))
 		}
 	}
+	return true
 }
 
 // migrateState is _ccm_migrate_state: move legacy context state forward once.
@@ -717,17 +719,20 @@ func (l *launcher) prelaunch(name string) {
 
 // foldSettings is _ccm_fold_settings: fold Claude Code's own writes to the
 // generated settings back into the profile layer.
-func (l *launcher) foldSettings(name string) {
+// It reports whether a fold ran: only when settings.json differs from the bytes
+// the last projection saved (content, not timestamps; a missing copy folds).
+func (l *launcher) foldSettings(name string) bool {
 	dir := filepath.Join(l.profileDirs, name)
 	s, err := os.ReadFile(filepath.Join(dir, "settings.json"))
 	if err != nil {
-		return
+		return false
 	}
 	if base, err := os.ReadFile(filepath.Join(dir, "cache", "settings.base.json")); err == nil &&
 		strings.TrimRight(string(s), "\n") == strings.TrimRight(string(base), "\n") {
-		return
+		return false
 	}
 	l.core(nil, "", append([]string{"settings-compose"}, l.settingsArgv("fold", name)...)...)
+	return true
 }
 
 func (l *launcher) settingsArgv(verb, name string, rest ...string) []string {
