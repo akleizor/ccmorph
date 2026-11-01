@@ -208,6 +208,47 @@ env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
 [[ "$(<"$d/home/.zshrc")" == "$original" ]] && ok "uninstall leaves rc byte-identical" || fail "uninstall edited rc"
 [[ ! -e "$d/home/.local/bin/ccmorph" ]] && ok "uninstall removes the command" || fail "uninstall left the command on PATH"
 
+# --- 5. uninstall removes ONLY the command, repairs the plugin index, and names
+# what it leaves with the command that removes it. The uname stub is placed
+# after the install so only the uninstall sees "Darwin" (the keychain branch).
+d=$(fresh_env uninstall_residue)
+mkdir -p "$d/home/.local/bin"
+printf '#!/bin/sh\necho mine\n' > "$d/home/.local/bin/ccrelay"   # a neighbour, not ours
+run_installer "$d" >/dev/null
+cfg="$d/home/.config/ccmorph"
+[[ "$(<"$d/home/.local/bin/ccrelay")" == *mine* ]] && ok "install: a neighbour ccrelay in ~/.local/bin survives" || fail "install: deleted ~/.local/bin/ccrelay"
+printf 'type=apikey\napi_key=keychain:work.api_key\nbase_url=https://example.invalid\n' > "$cfg/work.conf"
+printf 'type=sub\n' > "$cfg/home.conf"
+mkdir -p "$d/home/.local/state/ccmorph/usage" "$d/home/.claude/plugins/marketplaces/example"
+# How Claude Code records a plugin installed from a profile session: the profile's
+# spelling of the shared store, which dangles once the state root is deleted.
+print -r -- '{"example": {"source": {"source": "github", "repo": "owner/repo"}, "installLocation": "'"$cfg"'/profiles/work/plugins/marketplaces/example"}}' \
+  > "$d/home/.claude/plugins/known_marketplaces.json"
+printf '#!/bin/sh\necho Darwin\n' > "$d/bin/uname"; chmod +x "$d/bin/uname"
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
+  zsh "$REPO/install.sh" --uninstall >"$d/out" 2>&1; rc=$?
+(( rc == 0 )) && ok "uninstall: exits 0 with residue to report" || { fail "uninstall rc=$rc"; cat "$d/out" }
+[[ ! -e "$d/home/.local/bin/ccmorph" && -e "$d/home/.local/bin/ccrelay" ]] \
+  && ok "uninstall: removes the command and nothing else in ~/.local/bin" || fail "uninstall: touched more than ccmorph in ~/.local/bin"
+grep -qF "\"$d/home/.claude/plugins/marketplaces/example\"" "$d/home/.claude/plugins/known_marketplaces.json" \
+  && ok "uninstall: the plugin index points at ~/.claude/plugins again" || { fail "uninstall: plugin index still spelled through the profile"; cat "$d/home/.claude/plugins/known_marketplaces.json" }
+[[ -f "$cfg/work.conf" && -f "$cfg/home.conf" && -d "$d/home/.local/state/ccmorph" ]] \
+  && ok "uninstall: state root and usage receipts are left in place" || fail "uninstall: deleted user state"
+grep -qF "$cfg  (2 profiles," "$d/out" && ok "uninstall: names the state root and counts its profiles" || { fail "uninstall: state root not named"; cat "$d/out" }
+grep -qF "$d/home/.local/state/ccmorph  (usage receipts)" "$d/out" && ok "uninstall: names the usage receipts" || { fail "uninstall: usage dir not named"; cat "$d/out" }
+grep -qxF "  rm -rf $cfg $d/home/.local/state/ccmorph" "$d/out" && ok "uninstall: prints the rm for both" || { fail "uninstall: rm line wrong"; cat "$d/out" }
+grep -qxF "  security delete-generic-password -s ccmorph -a work.api_key" "$d/out" \
+  && ok "uninstall: prints the keychain delete for each ref in the confs" || { fail "uninstall: keychain line missing"; cat "$d/out" }
+(( $(grep -c 'security delete-generic-password' "$d/out") == 1 )) && ok "uninstall: one keychain line per ref, none for a plain conf" || fail "uninstall: keychain line count"
+# No usage dir and a Linux uname: neither line appears, and the rm names one path.
+d=$(fresh_env uninstall_bare)
+run_installer "$d" >/dev/null
+printf 'type=apikey\napi_key=keychain:work.api_key\n' > "$d/home/.config/ccmorph/work.conf"
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
+  zsh "$REPO/install.sh" --uninstall >"$d/out" 2>&1
+grep -qxF "  rm -rf $d/home/.config/ccmorph" "$d/out" && ! grep -q 'usage receipts\|keychain' "$d/out" \
+  && ok "uninstall: lists only what exists (no usage dir, no keychain off macOS)" || { fail "uninstall: listed residue that is not there"; cat "$d/out" }
+
 # --- 6. a RE-RUN is an update: user state survives, and it says so ----------
 # The guarantee people actually care about. Profiles (which now carry their own
 # probed/manual context alongside credentials) and local.sh are never in

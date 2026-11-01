@@ -86,7 +86,7 @@ command into `~/.local/bin`. It never edits shell startup files; if
 For a clone or one-liner install, update with `ccmorph update` (the latest release; `ccmorph update <branch-or-tag>`
 for another), or run the same install again; profiles, credentials, and `local.sh`
 are preserved. A git clone is updated with git instead. `ccmorph uninstall` removes the command and
-leaves your profiles alone.
+leaves your profiles alone; it lists what it left and the commands that remove it.
 
 ## Quick start
 

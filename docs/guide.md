@@ -83,7 +83,11 @@ owning profile's `.conf` as `context_discovered` and leaves the original behind
 as a `.migrated` backup — your profile gains its own context data, nothing in it
 is removed. There is no shell to re-source: the
 new code is live on the next run. `ccmorph uninstall` removes the command
-and leaves your profiles alone.
+and leaves your profiles alone: it lists what stays (the state root with its
+profiles, credentials and session history, the usage receipts, and on macOS the
+keychain items) with the commands that remove them. It first repairs the plugin
+index paths a profile session left in `~/.claude/plugins`, so a plugin installed
+from a profile keeps loading in native `claude` after the state root is gone.
 
 Profile runtime state moved from `~/.claude-profiles` to
 `~/.config/ccmorph/profiles`, so everything ccmorph stores now sits under one
@@ -598,7 +602,7 @@ it. Each profile keeps its own secure storage, so a subscription login made in o
 profile is never visible to another; MCP credentials are shared through MCP
 capsules instead. `./install.sh --uninstall` still leaves your
 profile state and credentials in place — removing the state root remains a
-deliberate, manual step.
+deliberate, manual step, and the uninstall prints the command for it.
 
 ### Context windows behind a gateway
 
