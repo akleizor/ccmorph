@@ -5,6 +5,22 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
+## v0.4.3 — 2026-11-02
+
+### Changed
+
+- **ccmorph is a Go program.** Every verb, the menus and pickers, `doctor`,
+  `probe`, help and the whole command dispatch run in `ccmorph-core`; the zsh
+  library is now only the `ccmorph` entry point and the env-key lists it hands
+  the core (379 lines, from 6,750). Tools that source `lib/ccmorph.sh` keep
+  working unchanged (#108–#125).
+- **Menus are native Go.** The ↑/↓ menu, fzf search, numbered fallback and
+  hidden key input keep their keys and look; Esc and Ctrl-C cancel without
+  saving, and the terminal is restored even when a key arrives as the prompt
+  opens.
+- **`install.sh`** asks with a plain y/N prompt and secures its directories
+  through the core.
+
 ## v0.4.2 — 2026-10-31
 
 ### Changed
