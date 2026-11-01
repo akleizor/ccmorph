@@ -837,51 +837,10 @@ ccmorph() {
       ;;
 
     rm)
-      _ccm_valid "${2:-}" || {
-        _ccm_err "usage: ccmorph rm <name>"
-        return 1
-      }
-      if [[ "${CCMORPH_CONTEXT_LOCKED:-}" != "$2" ]]; then
-        command env CCMORPH_STATE_DIR="$dir" CCMORPH_CONTEXT_LOCKED="$2" \
-          "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" model-window --locked "$2" zsh -c \
-          'source "$1"; shift; ccmorph "$@"' ccmorph "$_CCMORPH_LIB_DIR/ccmorph.sh" "$@"
-        return $?
-      fi
-      if ! _ccm_exists "$2"; then
-        if [[ ! -e "$_CCMORPH_PROFILE_DIRS/$2" && ! -L "$_CCMORPH_PROFILE_DIRS/$2" &&
-              ! -e "$dir/auth/$2" && ! -L "$dir/auth/$2" ]]; then
-          _ccm_err "no profile '$2'"
-          return 1
-        fi
-        print -u2 -- "Profile '$2' has no .conf. Remove leftover private state?"
-        print -u2 -- "  $_CCMORPH_PROFILE_DIRS/$2"
-        print -u2 -- "  $dir/auth/$2"
-        print -u2 -- "Shared conversation history will be kept."
-        ccm_ui_confirm 'Remove these leftovers?' || { _ccm_err "cancelled; nothing removed"; return 1; }
-      fi
-
-      _ccm_remove_profile_dir "$2" || {
-        _ccm_err "could not remove credential directory for '$2'"
-        return 1
-      }
-
-      command rm -f "$dir/$2.conf" || {
-        _ccm_err "could not remove profile '$2'"
-        return 1
-      }
-      "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" util keychain-delete "$2"
-      command rm -f "$_CCMORPH_PROFILE_DIRS/../.locks/$2.lock"
-
-      if [[ "$active" == "$2" ]]; then
-        unset CLAUDE_CODE_OAUTH_TOKEN
-
-        command rm -f "$dir/active" || {
-          _ccm_err "could not clear default profile"
-          return 1
-        }
-      fi
-
-      print "${_ccm_accent}Removed${_ccm_reset} $2"
+      _ccm_core cli rm "${@:2}" || return $?
+      # The removed profile's token must not outlive it in this shell.
+      [[ "$active" == "${2:-}" ]] && unset CLAUDE_CODE_OAUTH_TOKEN
+      return 0
       ;;
 
     cred)
@@ -1111,83 +1070,8 @@ ccmorph() {
       ;;
 
     mv)
-      _ccm_valid "${2:-}" && _ccm_valid "${3:-}" || {
-        _ccm_err "usage: ccmorph mv <old> <new>"
-        return 1
-      }
-      if [[ "${CCMORPH_CONTEXT_LOCKED:-}" != "$2,$3" ]]; then
-        command env CCMORPH_STATE_DIR="$dir" CCMORPH_CONTEXT_LOCKED="$2,$3" \
-          "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" model-window --locked "$2,$3" zsh -c \
-          'source "$1"; shift; ccmorph "$@"' ccmorph "$_CCMORPH_LIB_DIR/ccmorph.sh" "$@"
-        return $?
-      fi
-
-      _ccm_exists "$2" || {
-        _ccm_err "no profile '$2'"
-        return 1
-      }
-
-      _ccm_exists "$3" && {
-        _ccm_err "'$3' already exists"
-        return 1
-      }
-
-
-      local old_profile="$_CCMORPH_PROFILE_DIRS/$2"
-      local new_profile="$_CCMORPH_PROFILE_DIRS/$3"
-      local moved_profile=0
-      local rc=0
-
-      # mv onto an EXISTING target nests the source inside it (new/old/…),
-      # which the rollback below cannot undo — refuse instead. A leftover
-      # directory from a deleted conf is exactly the case that hits this.
-      if [[ -e "$new_profile" || -L "$new_profile" ]]; then
-        _ccm_err "profile directory '$3' already exists — remove it first"
-        return 1
-      fi
-
-      if [[ -e "$old_profile" || -L "$old_profile" ]]; then
-        command mv "$old_profile" "$new_profile" || {
-          _ccm_err "could not rename profile directory"
-          return 1
-        }
-        moved_profile=1
-      fi
-
-      command mv "$dir/$2.conf" "$dir/$3.conf" || rc=$?
-
-      # Rename the provider auth directory if it exists.
-      local _old_auth="$_CCMORPH_DIR/auth/$2"
-      local _new_auth="$_CCMORPH_DIR/auth/$3"
-      local _moved_auth=0
-      if (( rc == 0 )) && [[ -d "$_old_auth" ]]; then
-        if [[ -e "$_new_auth" ]]; then
-          _ccm_err "auth directory for '$3' already exists: $_new_auth — remove it first"
-          rc=1
-        else
-          command mv "$_old_auth" "$_new_auth" || rc=$?
-          (( rc == 0 )) && _moved_auth=1
-        fi
-      fi
-
-      if (( rc == 0 )) && [[ "$active" == "$2" ]]; then
-        _ccm_atomic_write_unlocked "$dir/active" "$3" || rc=$?
-      fi
-
-      if (( rc != 0 )) && [[ -e "$dir/$3.conf" ]]; then
-        command mv "$dir/$3.conf" "$dir/$2.conf"
-      fi
-
-      if (( rc != 0 )); then
-        (( _moved_auth )) && command mv "$_new_auth" "$_old_auth"
-        (( moved_profile )) && command mv "$new_profile" "$old_profile"
-        _ccm_err "could not rename profile"
-        return 1
-      fi
-
-      "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" util keychain-rename "$dir" "$2" "$3" ||
-        _ccm_err "renamed, but '$3' still reads its credential from the keychain item of '$2'"
-      print "${_ccm_accent}Renamed${_ccm_reset} ${_ccm_bold}$2${_ccm_reset} → ${_ccm_bold}$3${_ccm_reset}"
+      _ccm_core cli mv "${@:2}"
+      return $?
       ;;
 
     hop)

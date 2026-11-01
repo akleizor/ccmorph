@@ -129,6 +129,17 @@ func fromEnv() *launcher {
 	return l
 }
 
+// handoff is the _CCMORPH_* env fromEnv consumed, for a core child that reads it again.
+func (l *launcher) handoff() []string {
+	j := func(v []string) string { return strings.Join(v, " ") }
+	return []string{"_CCMORPH_DIR=" + l.dir, "_CCMORPH_LIB_DIR=" + l.libDir,
+		"_CCMORPH_LIBEXEC_DIR=" + l.libexec, "_CCMORPH_PROFILE_DIRS=" + l.profileDirs,
+		"_CCMORPH_CONTEXT_POLICY=" + l.policy, "_CCMORPH_LOG=" + l.logPath,
+		"_CCMORPH_TUNING_ENV=" + j(l.tuning), "_CCMORPH_PROFILE_ENV=" + j(l.profileEnv),
+		"_CCMORPH_LAUNCH_ENV=" + j(l.launchEnv), "_CCMORPH_BACKEND_ENV=" + j(l.backend),
+		"_CCMORPH_MODEL_MAPPING_ENV=" + j(l.mapping)}
+}
+
 // theme is _ccm_ui_theme: truecolor roles when stdout is a terminal.
 func (l *launcher) theme() {
 	if !isTTY(1) || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
