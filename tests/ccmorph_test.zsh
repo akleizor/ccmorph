@@ -732,7 +732,9 @@ test_set_effort_interactively_offers_the_engine_levels() {
   }
   local rc=0 out offered
 
-  out=$(ccmorph set gw effort -i 2>/dev/null) || {
+  # `set -i` runs in the core, which calls this zsh picker in its own shell, so
+  # the stub drives the picker here and the core saves what it returns.
+  out=$(_ccm_pick_value effort gw 2>/dev/null) && out=$(ccmorph set gw effort "$out" 2>/dev/null) || {
     print -u2 -- '-i must save a chosen effort level'
     rm -rf "$test_home"; return 1
   }

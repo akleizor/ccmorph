@@ -74,7 +74,7 @@ def zsh(script, env):
 def set_model_i(tmp_path, excluded):
     state, env = setup(tmp_path, excluded)
     # fzf stub echoes every row; the picker returns the first (sorted) one it was offered.
-    r = zsh('_ccm_gw_models_json() { REPLY="$LISTING"; }\nccmorph set demo model -i', env)
+    r = zsh(FAKE_CURL + 'ccmorph set demo model -i', env)
     assert r.returncode == 0, r.stderr
     return (state / 'demo.conf').read_text()
 
