@@ -124,3 +124,45 @@ func TestClaudeAuthDropsEveryBackendKey(t *testing.T) {
 		t.Fatalf("auth status must run against the given profile dir")
 	}
 }
+
+func TestAPassOffAProviderStopsItsBridge(t *testing.T) {
+	// The zsh driver stopped every helper after each pass, so a hop off a
+	// provider began with its bridge gone. The Go launcher keeps one process
+	// across passes, so the pass itself must stop a bridge it will not use.
+	log := filepath.Join(t.TempDir(), "core.log")
+	t.Setenv("CCM_FAKE_LOG", log)
+	dir := t.TempDir()
+	core := filepath.Join(dir, "ccmorph-core")
+	if err := os.WriteFile(core, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CCM_FAKE_LOG\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fresh := func() *launcher {
+		return &launcher{libexec: dir, providerPID: "4242", providerTD: "/td", providerAuth: "/auth",
+			providerActive: "codex", providerPort: "1", providerKey: "k"}
+	}
+	logged := func() string {
+		b, _ := os.ReadFile(log)
+		return strings.TrimSpace(string(b))
+	}
+
+	l := fresh()
+	l.stopForeignBridge("codex", true)
+	if logged() != "" || l.providerActive != "codex" || l.providerPID != "4242" {
+		t.Fatalf("staying on the provider must keep its bridge: %q active=%q", logged(), l.providerActive)
+	}
+
+	l.stopForeignBridge("gw", false)
+	if got := logged(); got != "util bridge-stop 4242 /td /auth" {
+		t.Fatalf("a pass off the provider must stop its bridge, logged %q", got)
+	}
+	if l.providerPID+l.providerTD+l.providerAuth+l.providerActive+l.providerPort+l.providerKey != "" {
+		t.Fatalf("the stopped bridge's handle must be cleared: %+v", l)
+	}
+
+	l = fresh()
+	l.stopForeignBridge("other", true)
+	lines := strings.Split(logged(), "\n")
+	if lines[len(lines)-1] != "util bridge-stop 4242 /td /auth" {
+		t.Fatalf("switching providers must stop the old bridge first, logged %q", logged())
+	}
+}

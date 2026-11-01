@@ -247,9 +247,9 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 			return fail()
 		}
 		l.foldSettings(name)
+		l.stopForeignBridge(name, isProvider)
 		if isProvider {
 			if l.providerActive != name {
-				l.providerStop()
 				if !l.providerStart(name) {
 					return fail()
 				}
@@ -332,6 +332,7 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 		l.log(fmt.Sprintf("exit rc=%d profile=%s relay_file_exists=%s", rcClaude, name, yesNo(isFile(relayFile))))
 	} else {
 		edge := l.nestedEdgeEnv("CLAUDE_CODE_DISABLE_ADVISOR_TOOL", "CLAUDE_CODE_MODEL_CAPABILITIES")
+		l.stopForeignBridge("", false)
 		if resume != "" {
 			l.carrySession(resume, filepath.Join(os.Getenv("HOME"), ".claude", "projects"))
 		}
@@ -828,6 +829,15 @@ func (l *launcher) providerStart(name string) bool {
 	}
 	l.providerAuth, l.providerActive = auth, name
 	return true
+}
+
+// stopForeignBridge is the zsh driver's EXIT teardown, once per pass: a pass
+// keeps the bridge only for the provider it is about to run, so a hop from a
+// provider to any other profile starts its session with the bridge gone.
+func (l *launcher) stopForeignBridge(name string, isProvider bool) {
+	if !isProvider || l.providerActive != name {
+		l.providerStop()
+	}
 }
 
 func (l *launcher) providerStop() {
