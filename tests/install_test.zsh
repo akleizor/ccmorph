@@ -248,6 +248,16 @@ env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
   zsh "$REPO/install.sh" --uninstall >"$d/out" 2>&1
 grep -qxF "  rm -rf $d/home/.config/ccmorph" "$d/out" && ! grep -q 'usage receipts\|keychain' "$d/out" \
   && ok "uninstall: lists only what exists (no usage dir, no keychain off macOS)" || { fail "uninstall: listed residue that is not there"; cat "$d/out" }
+# macOS with no keychain reference in any conf: the grep finds nothing, and that
+# must not end the uninstall mid-report (it did, under set -e).
+d=$(fresh_env uninstall_darwin_plain)
+run_installer "$d" >/dev/null
+printf 'type=token\ntoken=canary\n' > "$d/home/.config/ccmorph/work.conf"
+printf '#!/bin/sh\necho Darwin\n' > "$d/bin/uname"; chmod +x "$d/bin/uname"
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
+  zsh "$REPO/install.sh" --uninstall >"$d/out" 2>&1; rc=$?
+(( rc == 0 )) && grep -qF 'profiles' "$d/out" && grep -qxF "  rm -rf $d/home/.config/ccmorph" "$d/out" && ! grep -q keychain "$d/out" \
+  && ok "uninstall: macOS with no keychain refs still reports in full and exits 0" || { fail "uninstall: macOS without keychain refs rc=$rc"; cat "$d/out" }
 
 # --- 6. a RE-RUN is an update: user state survives, and it says so ----------
 # The guarantee people actually care about. Profiles (which now carry their own
