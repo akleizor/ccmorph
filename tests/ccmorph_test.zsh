@@ -52,23 +52,118 @@ typeset -gi tests_seen=0
 readonly CCMORPH_TEST_HANG_TIMEOUT="${CCMORPH_TEST_HANG_TIMEOUT:-120}"
 
 # Every test builds its own scratch home, so the suite runs as N shards at once;
-# CCMORPH_TEST_JOBS=1 runs it serially. Default on Apple silicon: performance
-# cores plus a third of the efficiency cores (10 on the mini beat 18: 37 s vs 45 s).
+# CCMORPH_TEST_JOBS=1 runs it serially. Default on Apple silicon: every physical
+# core (18 on the mini). The suite is wait-bound -- its ~800 s of serial test
+# time burns only ~120 s of CPU -- so shards buy wall clock almost one-for-one,
+# and the old third-of-the-efficiency-cores cap (10 on the mini) measured 104 s
+# where 18 shards measured 66-70 s. Beyond 18 the interference eats the gain
+# (22 measured no better), so the rest of the budget comes from the balanced
+# split below, not from more shards.
 _ccm_test_jobs() {
   local fast slow
   fast=$(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null) && slow=$(sysctl -n hw.perflevel1.physicalcpu 2>/dev/null) &&
-    { print -- $(( fast + slow / 3 )); return; }
+    { print -- $(( fast + slow )); return; }
   sysctl -n hw.ncpu 2>/dev/null || nproc
 }
+
+# A shard's share is decided by the time each test took on its last full run,
+# not by count: the tests differ 5x in cost by topic, and the count split left
+# the slowest shard at 108 s of a 715 s suite while the fastest idled at 48 s.
+# The costs live outside any worktree -- a landing batch verifies in a fresh
+# one -- under the user's cache dir, so every checkout of the suite shares
+# them: a test the file has no cost for rides at the median, so new tests
+# shard well before their first measurement. No git, no $HOME read: mid-shard
+# $HOME is a previous test's deleted scratch, and anything that read it here
+# silently changed identity per test. Absent or unreadable (a fresh machine, a
+# broken cache), the split falls back to the count round-robin this replaced.
+typeset -gA _ccm_test_mine=()
+
+_ccm_test_durations_file() {
+  print -r -- "${XDG_CACHE_HOME:-$HOME/.cache}/ccmorph/test-durations"
+}
+
+# Load this shard's share of the balanced split. Every shard computes the same
+# assignment from the same cost file, so no plan has to be handed down. Returns
+# 1 when no usable costs exist; the caller then keeps the count split.
+_ccm_test_load_assignment() {
+  local shard=$1 jobs=$2 name cost line best median i file
+  local -a names vals loads
+  local -A cost_of=()
+  file=$(_ccm_test_durations_file)
+  [[ -r "$file" ]] || return 1
+  while IFS=' ' read -r name cost; do
+    [[ -n "$name" && -z "${name//[a-zA-Z0-9_]/}" ]] || continue
+    [[ "$cost" == <->.<-> || "$cost" == <-> ]] || continue
+    cost_of[$name]=$cost
+  done < "$file"
+  (( $#cost_of )) || return 1
+  names=(${(f)"$(sed -n 's/^run_test \([a-zA-Z0-9_][a-zA-Z0-9_]*\)$/\1/p' "$SCRIPT_DIR/ccmorph_test.zsh")"})
+  (( $#names )) || return 1
+  vals=($(print -l -- ${cost_of[@]} | command sort -n))
+  median=${vals[(($#vals / 2 + 1))]:-1}
+  loads=()
+  for (( i = 0; i < jobs; i++ )); do loads+=(0); done
+  # Longest-processing-time-first: deal the costliest test to the emptiest
+  # shard, ties by name, so every shard computes the identical assignment.
+  for line in ${(f)"$(for name in $names; do
+      print -r -- "${cost_of[$name]:-$median} $name"
+    done | command sort -t' ' -k1,1rn -k2,2)"}; do
+    cost=${line%% *}
+    name=${line#* }
+    best=0
+    for (( i = 1; i < jobs; i++ )); do (( loads[i+1] < loads[best+1] )) && best=$i; done
+    (( loads[best+1] += cost ))
+    (( best == shard )) && _ccm_test_mine[$name]=1
+  done
+  return 0
+}
+# overwritten, everything else keeps its last cost. One test runs in one
+# shard, so the measurements carry no duplicates to resolve.
+_ccm_test_save_durations() {
+  local out=$1 file name cost tmp
+  local -A costs=()
+  [[ -s "$out" ]] || return 0
+  file=$(_ccm_test_durations_file)
+  if [[ -r "$file" ]]; then
+    while IFS=' ' read -r name cost; do
+      [[ -n "$name" && -z "${name//[a-zA-Z0-9_]/}" ]] || continue
+      costs[$name]=$cost
+    done < "$file"
+  fi
+  while IFS=' ' read -r name cost; do
+    [[ -n "$name" && -z "${name//[a-zA-Z0-9_]/}" ]] || continue
+    costs[$name]=$cost
+  done < "$out"
+  # Costs for tests the suite no longer declares drop out, so the file cannot
+  # outgrow the suite through renames.
+  local -a live
+  live=(${(f)"$(sed -n 's/^run_test \([a-zA-Z0-9_][a-zA-Z0-9_]*\)$/\1/p' "$SCRIPT_DIR/ccmorph_test.zsh")"})
+  command mkdir -p -- "${file:h}" 2>/dev/null || return 0
+  tmp=$(mktemp "${file:h}/durations.XXXXXX") 2>/dev/null || return 0
+  for name cost in ${(kv)costs}; do
+    (( ${live[(Ie)$name]} )) || continue
+    print -r -- "$name $cost"
+  done > "$tmp"
+  command mv -f -- "$tmp" "$file"
+}
+
 if [[ -z "${CCMORPH_TEST_SHARD:-}" ]] && (( ${CCMORPH_TEST_JOBS:-$(_ccm_test_jobs)} > 1 )); then
   typeset -i jobs=${CCMORPH_TEST_JOBS:-$(_ccm_test_jobs)} shard rc=0
   typeset -a pids
+  _ccm_test_dur_out=""
+  _ccm_test_dur_out=$(mktemp "${TMPDIR:-/tmp}/ccmorph-test-durations.XXXXXX") || _ccm_test_dur_out=
   for (( shard = 0; shard < jobs; shard++ )); do
-    CCMORPH_TEST_SHARD="$shard/$jobs" zsh "$0" "$@" & pids+=($!)
+    CCMORPH_TEST_SHARD="$shard/$jobs" CCMORPH_TEST_DURATIONS_OUT="$_ccm_test_dur_out" \
+      zsh "$0" "$@" & pids+=($!)
   done
   for pid in $pids; do wait $pid || rc=1; done
+  [[ -z "$_ccm_test_dur_out" ]] || _ccm_test_save_durations "$_ccm_test_dur_out"
+  [[ -z "$_ccm_test_dur_out" ]] || command rm -f -- "$_ccm_test_dur_out"
   exit $rc
 fi
+
+[[ -z "${CCMORPH_TEST_SHARD:-}" ]] ||
+  _ccm_test_load_assignment "${CCMORPH_TEST_SHARD%/*}" "${CCMORPH_TEST_SHARD#*/}" || _ccm_test_mine=()
 
 # GH-434: a test's children must not outlive it. The landing batch found copies
 # of this suite stranded at zero CPU long after the batch that started them was
@@ -11261,14 +11356,21 @@ test_every_credential_type_states_how_it_authenticates() {
 run_test() {
   local name="$1" rc=0
   [[ -z "${CCMORPH_TEST_FILTER:-}" || "$name" == *"$CCMORPH_TEST_FILTER"* ]] || return 0
-  [[ -z "${CCMORPH_TEST_SHARD:-}" ]] ||
+  if (( $#_ccm_test_mine )); then
+    [[ -n "${_ccm_test_mine[$name]:-}" ]] || return 0
+  elif [[ -n "${CCMORPH_TEST_SHARD:-}" ]]; then
     (( tests_seen++ % ${CCMORPH_TEST_SHARD#*/} == ${CCMORPH_TEST_SHARD%/*} )) || return 0
+  fi
   (( ++tests_run ))
+  local _t0=$EPOCHREALTIME _t1
   "$name" || rc=1
   # GH-434: fail a test whose child outlives it -- the leak that stranded the
   # landing batch -- and reap the child so nothing escapes the suite.
   _ccm_test_sweep_homes $(( _ccm_test_homes_mark + 1 )) || rc=1
   _ccm_test_homes_mark=$#_ccm_test_homes
+  _t1=$(( EPOCHREALTIME - _t0 ))
+  # The next run's shard assignment (see _ccm_test_load_assignment).
+  [[ -z "${CCMORPH_TEST_DURATIONS_OUT:-}" ]] || printf '%s %.3f\n' "$name" "$_t1" >> "$CCMORPH_TEST_DURATIONS_OUT"
   if (( rc == 0 )); then
     print -- "PASS: $name"
   else
@@ -11809,6 +11911,7 @@ run_test test_set_adapter_is_rejected_as_automatic
 run_test test_effort_interactive_still_requires_a_real_profile
 run_test test_launch_interactive_resolves_the_account
 run_test test_launch_interactive_with_an_account_asks_only_the_model
+
 run_test test_public_model_picker_flag_asks_only_for_model
 run_test test_interactive_asks_no_model_where_ccmorph_owns_no_list
 run_test test_cancelled_profile_picker_launches_nothing
@@ -11913,6 +12016,7 @@ run_test test_whitespace_handling_matches_the_engine
 run_test test_the_clamp_bounds_by_length_before_arithmetic
 run_test test_an_overflowing_env_value_is_invalid_not_an_error
 run_test test_neither_env_parser_accepts_non_ascii_digits
+
 run_test test_an_env_budget_is_parsed_the_way_the_engine_parses_it
 run_test test_the_output_reserve_override_reaches_the_hazard_path
 run_test test_an_out_of_schema_saved_budget_does_not_block_derivation
@@ -13051,6 +13155,38 @@ test_a_test_that_leaks_a_child_is_failed_and_reaped() {
 }
 run_test test_leak_canary
 run_test test_a_test_that_leaks_a_child_is_failed_and_reaped
+
+# The shard split follows measured cost, not count: the count round-robin left
+# the slowest shard at 108 s of a 715 s suite while the fastest idled at 48 s.
+# Seeded costs must decide the dealing -- the one costly test, dealt first,
+# lands on shard 0 of two -- where the count split put it on shard 1 by its
+# filtered position (second of the statusline tests).
+test_shards_follow_measured_cost_not_count() {
+  local rc=0 out0 out1 cache_home cache
+  cache_home=$(mktemp -d)
+  export XDG_CACHE_HOME="$cache_home"
+  cache=$(_ccm_test_durations_file)
+  mkdir -p -- "${cache:h}"
+  printf '%s\n' \
+    'test_setup_dir_removes_a_stale_ccmorph_statusline 1.000' \
+    'test_cleanup_removes_the_statusline_ccmorph_itself_wired 30.000' \
+    'test_setup_dir_never_touches_a_users_own_statusline 1.000' \
+    'test_no_statusline_machinery_ships 1.000' > "$cache"
+  out0=$(CCMORPH_TEST_FILTER=statusline CCMORPH_TEST_SHARD=0/2 CCMORPH_TEST_JOBS=1 \
+    CCMORPH_TEST_DURATIONS_OUT= zsh "$REPO_ROOT/tests/ccmorph_test.zsh" 2>&1)
+  out1=$(CCMORPH_TEST_FILTER=statusline CCMORPH_TEST_SHARD=1/2 CCMORPH_TEST_JOBS=1 \
+    CCMORPH_TEST_DURATIONS_OUT= zsh "$REPO_ROOT/tests/ccmorph_test.zsh" 2>&1)
+  assert_contains "$out0" 'PASS: test_cleanup_removes_the_statusline_ccmorph_itself_wired' \
+    'the costliest test must be dealt to shard 0' || rc=1
+  [[ "$out1" != *'PASS: test_cleanup_removes_the_statusline_ccmorph_itself_wired'* ]] || {
+    print -u2 -- 'the costliest test must not run on shard 1: the split dealt by position, not cost'
+    rc=1
+  }
+  unset XDG_CACHE_HOME
+  rm -rf "$cache_home"
+  return $rc
+}
+run_test test_shards_follow_measured_cost_not_count
 
 test_profile_history_is_its_own_and_a_shared_link_heals() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"

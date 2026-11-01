@@ -8,7 +8,10 @@ any suite, and run `go vet ./... && go test ./...` when you touch `shim/` or
 (`CCMORPH_TEST_FILTER=<name> zsh tests/ccmorph_test.zsh`,
 `CCMORPH_LIB_DIR="$PWD/lib" python3 -m pytest tests/<file>.py -q`). Run the full set
 once, before you commit or open the PR, never again for the same diff:
-`zsh tests/ccmorph_test.zsh` (shards across the cores that help; about 40 s),
+`zsh tests/ccmorph_test.zsh` (shards across the cores, balanced by the
+durations the previous run measured; about a minute on an 18-core Apple
+silicon Mac, and the first run before any durations exist shards by count
+instead),
 `zsh tests/install_test.zsh`, `zsh tests/cli_configure_test.zsh`, and
 `CCMORPH_LIB_DIR="$PWD/lib" uv run --with pytest --with pytest-xdist --with pytest-timeout python -m pytest tests/ -q`
 (parallel whenever xdist is present; about 50 s). These are light and run bare.

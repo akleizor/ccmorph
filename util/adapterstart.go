@@ -61,8 +61,11 @@ func adapterStart(args []string, _ io.Reader, out, errw io.Writer) int {
 	if model != "" {
 		label += " (" + model + ")"
 	}
-	start, tick := time.Now(), time.NewTicker(200*time.Millisecond)
-	defer tick.Stop()
+	start := time.Now()
+	// The readiness poll starts fast and backs off to 200 ms: a warm or stubbed
+	// adapter is ready in milliseconds, and a fixed 200 ms first tick made every
+	// launch wait one out.
+	delay := 10 * time.Millisecond
 	fail := func(msg string) int {
 		_ = syscall.Kill(cmd.Process.Pid, syscall.SIGTERM)
 		fmt.Fprintln(errw, "ccmorph: "+msg)
@@ -88,7 +91,10 @@ func adapterStart(args []string, _ io.Reader, out, errw io.Writer) int {
 				return 0
 			}
 			return fail(fmt.Sprintf("'%s': adapter exited before readiness; session not started.", profile))
-		case <-tick.C:
+		case <-time.After(delay):
+			if delay < 200*time.Millisecond {
+				delay *= 2
+			}
 		}
 		waited := int(time.Since(start) / time.Second)
 		if time.Since(start) >= limit {
