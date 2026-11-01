@@ -113,9 +113,14 @@ func TestClaudeAuthDropsEveryBackendKey(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "leak")
 	t.Setenv("CLAUDE_CODE_USE_BEDROCK", "leak")
 	t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "leak")
-	for _, e := range l.claudeAuth("/tmp/p", "status").Env {
+	env := l.claudeAuth("/tmp/p", "status").Env
+	for _, e := range env {
 		if strings.HasSuffix(e, "=leak") {
 			t.Fatalf("auth status inherited %s", e)
 		}
+	}
+	// add sub reads the email from the profile it just logged into, never the global file.
+	if v, _ := envGet(env, "CLAUDE_CONFIG_DIR"); v != "/tmp/p" {
+		t.Fatalf("auth status must run against the given profile dir")
 	}
 }

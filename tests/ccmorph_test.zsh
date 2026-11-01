@@ -704,6 +704,7 @@ test_set_model_interactively_saves_the_chosen_id() {
     'the picker must not offer a model that cannot serve a session' || rc=1
 
   # A missing value is the same request as an explicit -i.
+  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
   print -r -- '{}' > "$HOME/.config/ccmorph/profiles/gw/settings.json"
   out=$(ccmorph set gw model 2>/dev/null) || {
     print -u2 -- 'an omitted value must open the picker, not error'; rc=1
@@ -1115,14 +1116,14 @@ test_help_names_an_account_argument_unambiguously() {
 
   # No help line may spell an profile argument as the bare, overloaded <name>.
   local offenders
-  offenders=$(grep -nE '^\s+print "  ccmorph [a-z]+ <name>' "${CCMORPH_LIBRARY[@]}" || true)
+  offenders=$(grep -nE 'help\("ccmorph [a-z]+ <name>' "$REPO_ROOT"/cli/*.go || true)
   if [[ -n "$offenders" ]]; then
     print -u2 -- "help must spell an profile argument <profile>, not <name>:"
     print -u2 -- "$offenders"
     rc=1
   fi
   # …and it must actually teach the word, so the rename is not just a deletion.
-  if ! grep -q '<profile>' "${CCMORPH_LIBRARY[@]}"; then
+  if ! grep -qE 'help\("ccmorph [a-z]+ <profile>' "$REPO_ROOT"/cli/*.go; then
     print -u2 -- 'help must use <profile> for profile arguments'
     rc=1
   fi
@@ -1235,24 +1236,7 @@ test_claude_subcommands_are_asked_for_never_hardcoded() {
     rc=1
   fi
 
-  # Option arity is discovered from the same surface, and a value the option
-  # owns is its value whatever it looks like: a flag-looking token behind a
-  # value option belongs to that option, not to the launch. (#334)
-  # Cases: option, the token after it, the tokens the option must own.
-  local step opt next want_step
-  for step in \
-    '--invented-value|--continue|2' \
-    '--invented-flag|x|1' \
-    '-z|x|2' \
-    '--invented-optional|-p|1' \
-    '--no-such-option|x|0'; do
-    IFS='|' read -r opt next want_step <<< "$step"
-    _ccm_claude_option_step "$opt" "$next"
-    [[ "$REPLY" == "$want_step" ]] || {
-      print -u2 -- "FAIL: '$opt' with '$next' after it must own $want_step token(s), got $REPLY"
-      rc=1
-    }
-  done
+  # Option arity (#334) is TestOptionStep in util/launchflags_test.go.
 
   # ccmorph's own verbs win over anything the binary also names, so a future Claude
   # Code `list` or `use` cannot steal a ccmorph command.
@@ -2753,7 +2737,6 @@ test_hop_relays_model_and_effort() {
 
   local hop_output
   local NO_COLOR=1
-  source "$REPO_ROOT/lib/ccmorph-ui.zsh"
   hop_output=$(hop_as_claude proxy) || {
     rm -rf "$test_home"
     return 1
@@ -4057,26 +4040,18 @@ test_one_models_listing_per_launch_is_shared() {
 
   source "$CCMORPH_SOURCE"
 
-  _ccm_models_listing http://gw.invalid sk_a 5
-  local first="$REPLY"
-  _ccm_models_listing http://gw.invalid sk_a 8
-  local second="$REPLY"
-
-  [[ -n "$first" && "$first" == "$second" ]] || {
+  # One launcher answers all three asks, so its memo is what is under test.
+  local -a bodies
+  bodies=("${(@f)$( ( _ccm_launch_core --listing http://gw.invalid sk_a http://gw.invalid sk_a \
+    http://gw.invalid sk_different ) )}")
+  [[ -n "${bodies[1]:-}" && "${bodies[1]}" == "${bodies[2]:-}" ]] || {
     print -u2 -- "FAIL: a memoised listing must return the same body"
     rc=1
   }
   local n
   n=$(wc -c < "$tally" | tr -d ' ')
-  [[ "$n" == 1 ]] || {
-    print -u2 -- "FAIL: two asks for one endpoint must fetch once, made $n request(s)"
-    rc=1
-  }
-
-  _ccm_models_listing http://gw.invalid sk_different 8
-  n=$(wc -c < "$tally" | tr -d ' ')
   [[ "$n" == 2 ]] || {
-    print -u2 -- "FAIL: a different credential must re-fetch, total requests: $n"
+    print -u2 -- "FAIL: two asks for one endpoint fetch once and a different credential re-fetches, made $n request(s)"
     rc=1
   }
 
@@ -11078,40 +11053,6 @@ test_add_sub_completes_the_browser_login() {
   return $rc
 }
 
-test_logged_email_reads_the_given_config_dir() {
-  # _ccm_logged_email <dir> must run `claude auth status` with CLAUDE_CONFIG_DIR
-  # pointed at <dir>, so `add sub` reads the email from the isolated profile it
-  # just logged into — not the global file. Stub claude to echo the dir it saw.
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  source "$CCMORPH_SOURCE"
-
-  printf '%s\n' \
-    '#!/bin/sh' \
-    'if [ "$1" = "auth" ] && [ "$2" = "status" ]; then' \
-    '  printf '"'"'{"loggedIn": true, "email": "%s"}\n'"'"' "${CLAUDE_CONFIG_DIR:-GLOBAL}"' \
-    '  exit 0' \
-    'fi' \
-    'exit 1' \
-    > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
-
-  local rc=0
-  _ccm_logged_email "$HOME/.config/ccmorph/profiles/second" || rc=1
-  assert_contains "$_ccm_email" "ccmorph/profiles/second" \
-    'a config-dir argument must reach auth status as CLAUDE_CONFIG_DIR' || rc=1
-
-  # The dir is required: an unscoped read would report the base install's
-  # profile, never the profile's. Run in a subshell so the :? abort cannot
-  # take the test runner down with it.
-  ( _ccm_logged_email ) 2>/dev/null &&
-    { print -u2 -- 'a missing config dir must abort, not read the global config'; rc=1 }
-
-  rm -rf "$test_home"
-  return $rc
-}
-
 test_add_sub_auth_calls_scrub_securestorage_dir() {
   # A private session exports CLAUDE_SECURESTORAGE_CONFIG_DIR; status, logout and
   # login must not inherit it (they would read/write the wrong credential store).
@@ -11838,7 +11779,6 @@ run_test test_launch_compacts_at_fleet_percent_unless_the_conf_overrules
 run_test test_a_settings_file_compaction_trigger_is_not_overruled
 run_test test_add_sub_completes_the_browser_login
 run_test test_launch_skips_the_sizer_when_nothing_is_new
-run_test test_logged_email_reads_the_given_config_dir
 run_test test_add_sub_auth_calls_scrub_securestorage_dir
 run_test test_one_interactive_flag_is_the_only_way_to_ask
 run_test test_every_credential_type_states_how_it_authenticates
@@ -12695,12 +12635,12 @@ test_fork_forward_leaves_the_callers_stderr_intact() {
   # source fail, so _ccm_fork_forward never ran and the checks below passed
   # vacuously (#207). The whence line proves the function really loaded.
   out=$(zsh -c '
-    export HOME="$2" CCMORPH_LIB_DIR="${1:A:h}" CCMORPH_STATE_DIR="$2/.config/ccmorph"
+    export HOME="$2" CCMORPH_LIB_DIR="$3" CCMORPH_STATE_DIR="$2/.config/ccmorph"
     source "$1" || exit $?
     whence -w _ccm_fork_forward
     _ccm_fork_forward true
     print -u2 -- STDERR_SURVIVES
-  ' _ "$CCMORPH_SOURCE" "$scratch" 2>&1)
+  ' _ "$CCMORPH_SOURCE" "$scratch" "$REPO_ROOT/lib" 2>&1)
   rm -rf "$scratch"
   assert_contains "$out" '_ccm_fork_forward: function' \
     'the library must load, or the stderr check below is vacuous' || return 1

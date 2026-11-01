@@ -168,6 +168,20 @@ func (l *launcher) launchMain(args []string) int {
 			}
 			fmt.Println(out)
 			return 0
+		case "--claude-subcommand": // <word>: rc 0 when the installed claude names it
+			if !l.isClaudeSubcommand(args[1]) {
+				return 1
+			}
+			return 0
+		case "--listing": // <base> <key> [<base> <key>...]: one body per pair, one launch's memo
+			for i := 1; i+1 < len(args); i += 2 {
+				body, ok := l.listing(args[i], args[i+1])
+				if !ok {
+					return 1
+				}
+				fmt.Println(body)
+			}
+			return 0
 		case "--resume-model": // <session id>: the model it last ran
 			m, ok := l.resumeModel(args[1])
 			if !ok {

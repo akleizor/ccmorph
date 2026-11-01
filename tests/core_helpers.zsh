@@ -92,6 +92,8 @@ _ccm_migrate_state() { ( _ccm_launch_core --migrate-state ); }
 _ccm_prelaunch() { ( _ccm_launch_core --prelaunch "$@" ); }
 _ccm_remove_profile_dir() { ( _ccm_launch_core --remove-profile "$@" ); }
 _ccm_carry_session() { ( _ccm_launch_core --carry-session "$@" ); }
+_ccm_claude_verbs() { command claude --help 2>/dev/null | _ccm_util claude-verbs; }
+_ccm_is_claude_subcommand() { ( _ccm_launch_core --claude-subcommand "$1" ) 2>/dev/null; }
 _ccm_resume_model() { REPLY=$( _ccm_launch_core --resume-model "$1" ) && [[ -n "$REPLY" ]]; }
 _ccm_trigger_env() {  # $1 $2 $3 = names for pct, output reserve, 1M switch, read from penv
   local -a _t
