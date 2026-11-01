@@ -2709,6 +2709,56 @@ test_model_known_strips_only_the_terminal_window_suffix() {
   return $rc
 }
 
+test_a_hop_reads_the_catalogue_afresh() {
+  # One /v1/models answer per pass. The zsh driver re-sourced ccmorph.sh between
+  # hops, which reset _ccm_models_memo; a launcher that keeps one memo across
+  # passes serves the first pass's catalogue to every later picker.
+  local test_home rc=0 projected
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  # gw and next share the endpoint and key, so one memo entry covers both.
+  printf '%s\n' 'type=proxy' 'base_url=http://gw.invalid' 'api_key=test-key' 'model=alpha-chat' \
+    > "$HOME/.config/ccmorph/gw.conf"
+  printf '%s\n' 'type=proxy' 'base_url=http://gw.invalid' 'api_key=test-key' 'model=alpha-chat' \
+    > "$HOME/.config/ccmorph/next.conf"
+  mkdir -p "$HOME/.config/ccmorph/profiles/gw" "$HOME/.config/ccmorph/profiles/next"
+  print -r -- '{}' > "$HOME/.config/ccmorph/profiles/gw/.claude.json"
+  print -r -- '{}' > "$HOME/.config/ccmorph/profiles/next/.claude.json"
+  # The picker asks the endpoint for what it serves; the catalogue changes between
+  # the two passes, as a gateway's can.
+  print -r -- '{"object":"list","data":[{"id":"alpha-chat","capabilities":{"chat_completion":true}}]}' \
+    > "$HOME/catalogue.json"
+  print -r -- '{"object":"list","data":[{"id":"beta-chat","capabilities":{"chat_completion":true}}]}' \
+    > "$HOME/catalogue.next"
+  printf '%s\n' '#!/bin/sh' \
+    'for a do case "$a" in *http_code*) printf 200; exit 0 ;; esac; done' \
+    'cat "$HOME/catalogue.json"' > "$HOME/bin/curl"
+  chmod +x "$HOME/bin/curl"
+  # Claude Code stands in as a script: it swaps the catalogue, queues the switch
+  # to next, and exits so the launcher resumes the session.
+  printf '%s\n' '#!/bin/sh' \
+    'if [ ! -f "$HOME/hopped" ]; then' \
+    '  : > "$HOME/hopped"' \
+    '  cp "$HOME/catalogue.next" "$HOME/catalogue.json"' \
+    '  printf "profile=next\nsession=catalogue-session\n" > "$HOME/.config/ccmorph/.reswitch.$CCMORPH_RELAY_ID"' \
+    'fi' > "$HOME/bin/claude"
+  chmod +x "$HOME/bin/claude"
+  source "$CCMORPH_SOURCE"
+
+  _ccm_launch -a gw >/dev/null 2>&1 || rc=1
+  projected="$(<"$HOME/.config/ccmorph/profiles/next/.claude.json")"
+  [[ "$projected" == *beta-chat* ]] || {
+    print -u2 -- "the second pass must read the catalogue afresh, projected: ${(qqq)projected}"
+    rc=1
+  }
+  [[ "$projected" != *alpha-chat* ]] || {
+    print -u2 -- "the first pass's catalogue must not reach the next hop: ${(qqq)projected}"
+    rc=1
+  }
+  rm -rf "$test_home"
+  return $rc
+}
+
 # Runs `ccmorph hop ...` the way Claude Code does: a python process stands in for
 # Claude Code (a child of this shell, the relay) and runs hop in a shell of its
 # own. Prints hop's output; leaves "ended" in $HOME/claude-ended when hop ended it.
@@ -11802,6 +11852,7 @@ run_test test_resume_rejects_flag_picker_and_multitoken_model_values
 run_test test_hop_relays_model_and_effort
 run_test test_hop_inside_a_core_launch_resumes_on_the_target
 run_test test_bare_hop_finds_the_adapter_after_adapter_start_exits
+run_test test_a_hop_reads_the_catalogue_afresh
 run_test test_hop_refuses_when_no_claude_process_runs_it
 run_test test_hop_without_profile_uses_current_profile
 run_test test_hop_falls_back_when_the_target_cannot_serve_the_model
