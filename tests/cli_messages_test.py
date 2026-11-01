@@ -1,5 +1,6 @@
 """Human output stays concise without changing machine-readable command output."""
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -111,6 +112,9 @@ def test_update_and_uninstall_under_homebrew_name_the_brew_command(tmp_path):
     (root / 'lib').mkdir(parents=True)
     for f in (ROOT / 'lib').iterdir():
         (root / 'lib' / f.name).write_bytes(f.read_bytes())
+    # A brew install ships the core beside the library, as every install does.
+    (root / 'libexec').mkdir()
+    shutil.copy2(ROOT / 'libexec/ccmorph-core', root / 'libexec/ccmorph-core')
     env = {**os.environ, 'HOME': str(tmp_path / 'home'),
            'CCMORPH_LIB_DIR': str(root / 'lib'), 'CCMORPH_STATE_DIR': str(tmp_path / 'state')}
     for verb, brew in (('update', 'brew upgrade ccmorph'), ('uninstall', 'brew uninstall ccmorph')):

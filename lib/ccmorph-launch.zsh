@@ -87,6 +87,8 @@ _ccm_core_env() {
     _CCMORPH_BACKEND_ENV="${_CCMORPH_BACKEND_ENV[*]}"
     _CCMORPH_MODEL_MAPPING_ENV="${_CCMORPH_MODEL_MAPPING_ENV[*]}"
     _CCMORPH_LAUNCHER_PID=$$
+    _CCMORPH_VERSION="$_CCMORPH_VERSION"
+    _CCMORPH_ZSH_VERSION="$ZSH_VERSION"
     _CCMORPH_NOTICE="${_ccm_pending_cache_notice:-}"
     _CCMORPH_LAUNCH_PROFILE="${_CCMORPH_LAUNCH_PROFILE:-}"
     _CCMORPH_INTERACTIVE="${_CCMORPH_INTERACTIVE:-0}"
@@ -110,6 +112,12 @@ _ccm_launch_core() {
 }
 
 _ccm_launch() { _ccm_fork_forward _ccm_launch_core "$@"; }
+
+_ccm_main_exec() {
+  local -a reply
+  _ccm_core_env
+  exec env "${reply[@]}" "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" cli main "$@"
+}
 
 _ccm_launch_driver() { _ccm_launch "$@"; }
 

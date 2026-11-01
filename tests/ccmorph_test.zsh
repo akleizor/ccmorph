@@ -1425,17 +1425,15 @@ test_claude_subcommands_reach_claude_through_the_launch_pipeline() {
   # The dispatcher marks a subcommand launch for the launcher, which is what suppresses
   # --model/--settings downstream, so record both argv and the mark.
   local calls="" flagged="" rc=0
-  _ccm_launch_driver() {
-    calls+="[${_CCMORPH_LAUNCH_PROFILE:-}:${(j: :)${(q)@}}]"
-    flagged+="${CCMORPH_SUBCOMMAND_LAUNCH:-0}"
-  }
+  local _CCMORPH_LIBEXEC_DIR="$_CCMORPH_LIBEXEC_DIR" flagged=""
+  fake_launch_recorder
 
   # A subcommand rides behind the explicit launch verb and every argument after it
   # survives untouched.
   local verb
   for verb in mcp auth doctor plugin agents update; do
     calls=""
-    ccmorph run "$verb" list
+    run_rec run "$verb" list
     assert_contains "$calls" "[:$verb list]" \
       "ccmorph run $verb must reach Claude Code" || rc=1
   done
@@ -1445,7 +1443,7 @@ test_claude_subcommands_reach_claude_through_the_launch_pipeline() {
   }
 
   # An explicit profile still wins, and the subcommand rides behind it.
-  calls=""; ccmorph run gw mcp list
+  calls=""; run_rec run gw mcp list
   assert_contains "$calls" '[gw:mcp list]' \
     'an explicit profile must still be honoured before a subcommand' || rc=1
 
@@ -1479,7 +1477,7 @@ test_claude_subcommands_reach_claude_through_the_launch_pipeline() {
     argv="${scan%:*}"
     want="${scan##*:}"
     calls=""; flagged=""
-    ccmorph run gw ${=argv}
+    run_rec run gw ${=argv}
     [[ "$flagged" == "$want" ]] || {
       print -u2 -- "FAIL: 'ccmorph run gw ${scan%:*}' must mark subcommand=$want, got: $flagged"
       rc=1
@@ -1613,8 +1611,7 @@ test_only_the_current_vocabulary_is_taught() {
   # No retired verb may appear in the help text a user reads. `list` is NOT retired:
   # it is the discoverable spelling of the bare form, kept deliberately because a word
   # that appears in help and tab completion is findable where a bare invocation is not.
-  if grep -qE '^\s+print "  ccmorph (menu|pick|models|model|effort|key|token|rename|use|creds|start) ' \
-       "${CCMORPH_LIBRARY[@]}"; then
+  if command env -i HOME="$HOME" PATH="$PATH" NO_COLOR=1 zsh "$REPO_ROOT/bin/ccmorph" help all 2>&1 | grep -qE '^  ccmorph (menu|pick|model|effort|key|token|rename|creds|start) '; then
     print -u2 -- 'help must not teach a retired verb'
     rc=1
   fi
@@ -1672,19 +1669,21 @@ test_only_the_current_vocabulary_is_taught() {
     fi
   done
   # And the flag must actually be recognised, not merely documented.
-  if ! grep -q -- '-i|--interactive)' "${CCMORPH_LIBRARY[@]}"; then
+  if ! grep -q -- 'a == "-i" || a == "--interactive"' "$REPO_ROOT/cli/config.go"; then
     print -u2 -- '-i/--interactive must be accepted wherever a choice is taken'
     rc=1
   fi
   # And help must teach the set verb. The help is rendered through `_ccm_help` rows,
   # not literal `print "  ccmorph …"` lines, so the check matches the call shape.
-  if ! grep -qE '_ccm_help "ccmorph set <profile> <model\|effort>' "${CCMORPH_LIBRARY[@]}"; then
+  local help_all
+  help_all=$(command env -i HOME="$HOME" PATH="$PATH" NO_COLOR=1 zsh "$REPO_ROOT/bin/ccmorph" help all 2>&1)
+  if [[ "$help_all" != *'ccmorph set <profile> <model|effort>'* ]]; then
     print -u2 -- 'help must teach the set verb'
     rc=1
   fi
   # Launching must be taught as a VERB. A bare `ccmorph` prints usage, so if help did
   # not name `run`, the tool would have no discoverable way to launch at all.
-  if ! grep -qE '_ccm_help "ccmorph run"' "${CCMORPH_LIBRARY[@]}"; then
+  if [[ "$help_all" != *'  ccmorph run '* ]]; then
     print -u2 -- 'help must teach ccmorph run as the way to launch'
     rc=1
   fi
@@ -10509,6 +10508,27 @@ test_the_command_reports_a_library_it_cannot_load() {
 }
 
 
+# The launch is `exec ccmorph-core launch`: this core records each launch's
+# profile, argv and subcommand mark in $HOME/launch.rec instead, and runs every
+# other verb for real. run_rec runs ccmorph and appends the record to $calls/$flagged.
+fake_launch_recorder() {
+  mkdir -p "$HOME/core"
+  printf '%s\n' '#!/bin/zsh' "real='$_CCMORPH_LIBEXEC_DIR/ccmorph-core'" \
+    'if [[ "$1" == launch ]]; then shift' \
+    '  print -rn -- "[${_CCMORPH_LAUNCH_PROFILE:-}:${(j: :)${(q)@}}]" >> "$HOME/launch.rec"' \
+    '  print -rn -- "${CCMORPH_SUBCOMMAND_LAUNCH:-0}" >> "$HOME/launch.flag"; exit 0; fi' \
+    'exec "$real" "$@"' > "$HOME/core/ccmorph-core"
+  chmod +x "$HOME/core/ccmorph-core"
+  _CCMORPH_LIBEXEC_DIR="$HOME/core"  # the caller's local
+}
+run_rec() {
+  rm -f "$HOME/launch.rec" "$HOME/launch.flag"
+  ccmorph "$@"
+  [[ -f "$HOME/launch.rec" ]] && calls+="$(<"$HOME/launch.rec")"
+  [[ -f "$HOME/launch.flag" ]] && flagged+="$(<"$HOME/launch.flag")"
+  return 0
+}
+
 test_a_bare_invocation_prints_usage_and_launches_nothing() {
   # A tool with a verb vocabulary prints usage when invoked bare -- git, docker, npm,
   # gh, kubectl and brew all do, and only single-purpose tools (fzf, vim, top) act.
@@ -10529,7 +10549,8 @@ test_a_bare_invocation_prints_usage_and_launches_nothing() {
   }
 
   local calls="" rc=0
-  _ccm_launch_driver() { calls+="[${_CCMORPH_LAUNCH_PROFILE:-}:${(j: :)${(q)@}}]" }
+  local _CCMORPH_LIBEXEC_DIR="$_CCMORPH_LIBEXEC_DIR" flagged=""
+  fake_launch_recorder
 
   # Bare, WITH a default profile configured: the dangerous case, because this is
   # exactly when a bare launch would have had something to launch.
@@ -10544,29 +10565,29 @@ test_a_bare_invocation_prints_usage_and_launches_nothing() {
 
   # `run` is the explicit launch spelling; without a profile, _ccm_launch resolves
   # the saved default itself.
-  calls=""; ccmorph run
+  calls=""; run_rec run
   assert_contains "$calls" '[:]' \
     'ccmorph run must launch, letting the launcher resolve the default' || rc=1
 
   # Flags after `run` are Claude Code's.
-  calls=""; ccmorph run -p hello
+  calls=""; run_rec run -p hello
   assert_contains "$calls" '[:-p hello]' \
     'arguments after run must pass through untouched' || rc=1
 
   # `--` is run's separator, consumed rather than forwarded: passed on, it made
   # Claude Code read `-p` and the prompt as prompt text.
-  calls=""; ccmorph run gw -- -p hello
+  calls=""; run_rec run gw -- -p hello
   assert_contains "$calls" '[gw:-p hello]' \
     'run must consume its own -- separator after a profile' || rc=1
-  calls=""; ccmorph run -- -p hello
+  calls=""; run_rec run -- -p hello
   assert_contains "$calls" '[:-p hello]' \
     'run must consume its own -- separator without a profile' || rc=1
-  calls=""; ccmorph run gw -- -- -p
+  calls=""; run_rec run gw -- -- -p
   assert_contains "$calls" '[gw:-- -p]' \
     'only the first -- is run'"'"'s; a second one is Claude Code'"'"'s' || rc=1
 
   # A named profile belongs after `run`.
-  calls=""; ccmorph run gw --resume plain-prompt
+  calls=""; run_rec run gw --resume plain-prompt
   assert_contains "$calls" '[gw:--resume plain-prompt]' \
     'ccmorph run <profile> must select that profile and pass the rest through' || rc=1
 
@@ -10613,24 +10634,27 @@ test_the_launcher_adds_nothing_unrequested() {
   write_apikey_conf gw 'api_key=k' 'base_url=https://gateway.invalid'
   source "$CCMORPH_SOURCE"
 
-  local calls=""
-  _ccm_launch() { calls+="${_CCMORPH_LAUNCH_PROFILE:-}:${(j: :)${(q)@}}\n" }
+  local calls="" flagged=""
+  local _CCMORPH_LIBEXEC_DIR="$_CCMORPH_LIBEXEC_DIR"
+  fake_launch_recorder
 
   local rc=0
-  calls=""; ccmorph run gw plain-prompt
+  calls=""; run_rec run gw plain-prompt
   assert_not_contains "$calls" 'skip-permissions' \
     'a vanilla install must not bypass permissions on the caller behalf' || rc=1
 
-  calls=""; ccmorph run gw --dangerously-skip-permissions explicit
-  assert_contains "$calls" 'gw:--dangerously-skip-permissions explicit' \
+  calls=""; run_rec run gw --dangerously-skip-permissions explicit
+  assert_contains "$calls" '[gw:--dangerously-skip-permissions explicit]' \
     'an explicit flag must always reach the launcher' || rc=1
 
   # Argument fidelity: an arg containing spaces, an empty arg, and a glob-looking
   # arg must each arrive as ONE argument, unsplit and unexpanded. Counted rather
   # than string-matched -- the count is what proves nothing was split or dropped.
   local seen=0
-  _ccm_launch() { seen=$# }
-  ccmorph run gw -p 'two words' '' '*.md'
+  # The recorder writes argv quoted: count it back by unquoting.
+  calls=""; run_rec run gw -p 'two words' '' '*.md'
+  calls="${${calls#\[gw:}%\]}"
+  seen=${#${(z)calls}}
   (( seen == 4 )) || {
     print -u2 -- "FAIL: caller args must arrive as 4, got $seen"
     rc=1
@@ -11186,7 +11210,7 @@ test_one_interactive_flag_is_the_only_way_to_ask() {
   local rc=0
 
   # The flag must be accepted at the launch parser.
-  grep -q -- '-i|--interactive)' "${CCMORPH_LIBRARY[@]}" || {
+  grep -q -- 'a == "-i" || a == "--interactive"' "$REPO_ROOT/cli/config.go" || {
     print -u2 -- 'FAIL: -i/--interactive is not accepted at launch'
     rc=1
   }
@@ -11209,15 +11233,17 @@ test_one_interactive_flag_is_the_only_way_to_ask() {
   # never advertise a bare `?` as an argument.
   # Taught on the LAUNCH line, whatever that line's verb is: `-i` has to be
   # discoverable where a reader is looking for how to launch.
-  grep -qE '_ccm_help "ccmorph run -i"' "${CCMORPH_LIBRARY[@]}" || {
+  local help_text
+  help_text=$(command env -i HOME="$HOME" PATH="$PATH" NO_COLOR=1 zsh "$REPO_ROOT/bin/ccmorph" help 2>&1)
+  [[ "$help_text" == *'  ccmorph run -i '* ]] || {
     print -u2 -- 'FAIL: help must teach -i on the launch line'
     rc=1
   }
-  grep -qF '_ccm_help "ccmorph config [profile]"' "${CCMORPH_LIBRARY[@]}" || {
+  [[ "$help_text" == *'  ccmorph config [profile] '* ]] || {
     print -u2 -- 'FAIL: help must teach configure for interactive editing'
     rc=1
   }
-  grep -qE '_ccm_help "[^"]*\|\?\]' "${CCMORPH_LIBRARY[@]}" && {
+  print -r -- "$help_text" | grep -qE '\|\?\]' && {
     print -u2 -- 'FAIL: help advertises a bare ? the caller shell would glob; teach -i'
     rc=1
   }

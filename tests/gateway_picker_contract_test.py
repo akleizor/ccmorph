@@ -123,6 +123,6 @@ def test_probe_model_interactive_honours_exclusions(tmp_path):
     stub_sizer(lib, tmp_path / 'probe.args')
     state, env = setup(tmp_path, 'allowed')
     env['CCMORPH_LIB_DIR'] = str(lib)
-    r = zsh('_ccm_gw_models_json() { REPLY="$LISTING"; }\nccmorph probe demo --model -i', env)
+    r = zsh(FAKE_CURL + 'ccmorph probe demo --model -i', env)
     assert r.returncode == 0, r.stderr
     assert '--model blocked' in (tmp_path / 'probe.args').read_text()
