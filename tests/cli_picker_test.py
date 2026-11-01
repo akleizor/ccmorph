@@ -282,6 +282,52 @@ class PickerTTYTest(unittest.TestCase):
         self.assertIn('SELECTED=<picker-beta>', out)
         self.assertEqual(self.field('demo', 'model'), 'picker-alpha')
 
+    def test_unexported_prelaunch_in_local_sh_runs_the_hook(self):
+        env = self.env(fzf=True)
+        self.profile()
+        mark = self.tmp / 'home' / 'mark'
+        mark.write_text('#!/bin/sh\nprintf "%s\\n" "$1" > "$HOME/prelaunch-ran"\n')
+        mark.chmod(0o755)
+        # local.sh may set the opt-in without `export` (docs/ARCHITECTURE.md).
+        (self.state / 'local.sh').write_text('CCMORPH_PRELAUNCH="$HOME/mark"\n')
+        command = ADAPTER_BOUNDARY + 'ccmorph run demo --model picker-alpha'
+        result = subprocess.run(['zsh', '-fc', 'source "$1"\n' + command, 'test', str(CCMORPH)],
+                                env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                                text=True, timeout=HANG_TIMEOUT)
+        # The boundary proves the launch got past profile setup, where the hook runs.
+        self.assertIn('SELECTED=<picker-alpha>', result.stderr)
+        ran = self.tmp / 'home' / 'prelaunch-ran'
+        self.assertTrue(ran.exists(), result.stdout + result.stderr)
+        self.assertEqual(ran.read_text().strip(), 'prelaunch')
+
+    def test_local_sh_output_and_side_effects_stay_out_of_pickers(self):
+        env = self.env(fzf=True)
+        self.profile()
+        self.spec('=picker-beta')
+        (self.state / 'local.sh').write_text(
+            'print local-sh-noise\nprint ran >> "$HOME/local-sh-runs"\n')
+        rc, out, missed = run_pty(ADAPTER_BOUNDARY + 'ccmorph run demo -i', env)
+        self.assertIsNone(missed, out)
+        # The picker's captured answer is the picked name, not local.sh's echo.
+        self.assertIn('SELECTED=<picker-beta>', out)
+        # The launching shell sourced local.sh once; the picker shell must not.
+        runs = self.tmp / 'home' / 'local-sh-runs'
+        self.assertEqual(len(runs.read_text().splitlines()), 1, out)
+
+    def test_headless_picker_answer_stays_clean_when_local_sh_prints(self):
+        env = self.env(fzf=True)
+        self.profile()
+        self.spec('=picker-beta')
+        (self.state / 'local.sh').write_text(
+            'print local-sh-noise\nprint ran >> "$HOME/local-sh-runs"\n')
+        result = subprocess.run(
+            ['zsh', '-fc', 'source "$1"\nccmorph context demo -i', 'test', str(CCMORPH)],
+            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=HANG_TIMEOUT)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn('model id is invalid', result.stderr)
+        runs = self.tmp / 'home' / 'local-sh-runs'
+        self.assertEqual(len(runs.read_text().splitlines()), 1, result.stdout + result.stderr)
+
     def test_configure_picker_offers_endpoint_models_and_saves_the_pick(self):
         env = self.env(fzf=True)
         self.profile()

@@ -63,7 +63,9 @@ typeset -gA _ccm_models_memo=()
 # executable to run before launch.
 # `doctor` is intentionally safe even when a host local.sh is executable zsh.
 # It must not run host opt-ins or let them mutate global state.
-[[ "${CCMORPH_DOCTOR_READONLY:-0}" != 1 && -r "$_CCMORPH_DIR/local.sh" ]] && source "$_CCMORPH_DIR/local.sh"
+# A picker zsh started by the core sets _CCMORPH_LOCAL_SOURCED: the launching
+# shell already ran local.sh, and its output would land in the picker's answer.
+[[ "${CCMORPH_DOCTOR_READONLY:-0}" != 1 && "${_CCMORPH_LOCAL_SOURCED:-0}" != 1 && -r "$_CCMORPH_DIR/local.sh" ]] && source "$_CCMORPH_DIR/local.sh"
 
 # ── Color (auto-off when piped) ──────────────────────────────────────────────
 
