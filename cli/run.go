@@ -743,8 +743,10 @@ func (l *launcher) route(penv []string, port, key string, adapter bool) ([]strin
 	if adapter {
 		a = "1"
 	}
-	out, rc := l.util(nil, strings.Join(penv, "\n")+"\n", "launch-env", port, key, a, l.adapterPort,
-		os.Getenv("CCMORPH_TASK"), os.Getenv("CCMORPH_ATTEMPT"))
+	// The bridge key goes in the environment: an operand would put it on the
+	// command line for the life of the helper (#112).
+	out, rc := l.util([]string{"_CCM_BRIDGE_KEY=" + key}, strings.Join(penv, "\n")+"\n",
+		"launch-env", port, a, l.adapterPort, os.Getenv("CCMORPH_TASK"), os.Getenv("CCMORPH_ATTEMPT"))
 	if rc != 0 {
 		return nil, false
 	}
