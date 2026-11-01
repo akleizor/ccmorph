@@ -32,9 +32,12 @@ type launcher struct {
 
 	red, yellow, bold, dim, accent, cyan, reset string
 
-	memo        map[string]string
-	arity       string
-	arityProbed bool
+	memo                map[string]string
+	arity               string
+	arityProbed         bool
+	verbsProbed         bool
+	version, zshVersion string
+	claudeVerbs         string
 
 	adapterPID              int
 	adapterProfile          string
@@ -64,6 +67,10 @@ type relayNext struct {
 func Main(args []string) int {
 	l := fromEnv()
 	l.theme()
+	return l.launchMain(args)
+}
+
+func (l *launcher) launchMain(args []string) int {
 	sigs := make(chan os.Signal, 4)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT)
 	go l.signals(sigs)
@@ -122,6 +129,8 @@ func fromEnv() *launcher {
 	l.backend = strings.Fields(get("_CCMORPH_BACKEND_ENV"))
 	l.mapping = strings.Fields(get("_CCMORPH_MODEL_MAPPING_ENV"))
 	l.notice = get("_CCMORPH_NOTICE")
+	l.version = get("_CCMORPH_VERSION")
+	l.zshVersion = get("_CCMORPH_ZSH_VERSION")
 	l.launcherPID, _ = strconv.Atoi(get("_CCMORPH_LAUNCHER_PID"))
 	if l.launcherPID <= 0 {
 		l.launcherPID = os.Getpid()
@@ -403,6 +412,8 @@ func (l *launcher) configStore(verb, name, key string, env ...string) (string, i
 }
 
 func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
+
+func isDir(p string) bool { fi, err := os.Stat(p); return err == nil && fi.IsDir() }
 
 func isFile(p string) bool { fi, err := os.Stat(p); return err == nil && fi.Mode().IsRegular() }
 
