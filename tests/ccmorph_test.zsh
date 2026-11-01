@@ -2136,12 +2136,12 @@ test_add_never_asks_how_to_reach_the_endpoint() {
   local rc=0
 
   local add_block
-  add_block=$(sed -n '/^    add)/,/^    login)/p' "${CCMORPH_LIBRARY[@]}")
+  add_block=$(<"$REPO_ROOT/cli/add.go")
   if print -r -- "$add_block" | grep -qiE 'read .*(tunnel|transport|proxy)|print.*"(transport|tunnel|proxy)\?'; then
     print -u2 -- 'FAIL: add must not prompt for how to reach the endpoint'
     rc=1
   fi
-  print -r -- "$add_block" | grep -q '_ccm_probe_nudge ' || rc=1
+  print -r -- "$add_block" | grep -q 'l.probeNudge(' || rc=1
   if print -r -- "$add_block" | grep -q -- '-X POST'; then
     print -u2 -- 'add must not send inference probes'
     rc=1
@@ -9816,6 +9816,9 @@ test_add_context_refresh_is_background_and_declared_only() {
   out=$(print -l apikey custom sk-test-not-real 'http://gw.invalid' '' | ccmorph add gw 2>&1)
   assert_contains "$out" 'Added' 'adding a gateway must still succeed' || rc=1
   local scheduled=""
+  local -i i
+  # The refresh is detached by design; wait on the shared bound for its record.
+  for (( i = 0; i < CCMORPH_TEST_HANG_TIMEOUT * 10; i++ )); do [[ -s "$HOME/background.args" ]] && break; sleep 0.1; done
   [[ -f "$HOME/background.args" ]] && scheduled="$(<"$HOME/background.args")"
   assert_contains "$scheduled" 'context-probe --declared-only --profile gw --deadline 30' \
     'add must schedule only a bounded, free metadata refresh' || rc=1

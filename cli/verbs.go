@@ -41,6 +41,12 @@ func Verb(args []string) int {
 		return l.modelMenu(args[1:])
 	case "config":
 		return l.config(args[1:])
+	case "add":
+		return l.add(args[1:])
+	case "login":
+		return l.login(args[1:])
+	case "hop":
+		return l.hop(args[1:])
 	case "quota":
 		return l.quota(args[1:])
 	}
