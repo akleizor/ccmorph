@@ -39,6 +39,16 @@ readonly ORIGINAL_PATH="$PATH"
 # things that genuinely live on this machine (see the differential parser test).
 readonly REAL_HOME="$HOME"
 
+# The launch and cli paths run in the compiled core, so a checkout has no
+# libexec/ccmorph-core until `make shim` builds it. Entered without it, every
+# launch test fails through its 120 s backstop instead: a healthy 40 s suite
+# becomes six minutes of failing waits. Refuse at the door, before the shard
+# fan-out multiplies the confusion, with the one command that fixes it.
+[[ -x "$REPO_ROOT/libexec/ccmorph-core" ]] || {
+  print -u2 -- "no libexec/ccmorph-core: a checkout has none until 'make shim' builds it (needs Go)"
+  exit 1
+}
+
 typeset -gi tests_run=0
 typeset -gi tests_failed=0
 typeset -gi tests_seen=0
@@ -13041,6 +13051,34 @@ test_a_sub_profile_never_announces_a_gateway_on_a_terminal() {
 }
 run_test test_a_sub_profile_launch_for_the_terminal_check
 run_test test_a_sub_profile_never_announces_a_gateway_on_a_terminal
+
+# libexec/ccmorph-core is build output, so a fresh worktree or checkout has
+# none, and the suite entered there used to fail through every launch test's
+# 120 s backstop: a healthy 40 s suite became six minutes of failing waits with
+# nothing naming the missing piece. The door check must refuse the run instead.
+# The fixture is a copy of the tree with the core removed -- a bare checkout --
+# so sibling shards keep theirs. The filter matches no test: with the door check
+# broken, the child would run zero tests and exit 0, failing this regression
+# rather than crawling through the six minutes it exists to prevent.
+test_the_suite_refuses_a_checkout_without_the_compiled_core() {
+  local rc=0 out st bare
+  bare="$(mktemp -d)/repo"
+  # A worktree's .git is a file, so this copies the sources only.
+  cp -R "$REPO_ROOT" "$bare"
+  rm -f "$bare/libexec/ccmorph-core"
+  out=$(CCMORPH_TEST_FILTER=no_such_test CCMORPH_TEST_SHARD=0/1 \
+    zsh "$bare/tests/ccmorph_test.zsh" 2>&1)
+  st=$?
+  rm -rf "$bare:h"
+  (( st != 0 )) || { print -u2 -- 'the bare-checkout run exited 0'; rc=1 }
+  assert_contains "$out" \
+    "no libexec/ccmorph-core: a checkout has none until 'make shim' builds it" \
+    'a checkout without the compiled core must be refused at the door' || rc=1
+  assert_not_contains "$out" 'PASS: ' \
+    'no test may run once the core is missing' || rc=1
+  return $rc
+}
+run_test test_the_suite_refuses_a_checkout_without_the_compiled_core
 
 if (( tests_failed > 0 )); then
   print -u2 -- "$tests_failed of $tests_run tests failed"
