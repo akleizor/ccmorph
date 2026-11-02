@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"github.com/akleizor/ccmorph/util"
 	"os"
 	"path/filepath"
 	"strings"
@@ -259,26 +260,7 @@ func atomicWrite(path, content string) error {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".ccmorph.tmp.")
-	if err != nil {
-		return err
-	}
-	_, werr := tmp.WriteString(content)
-	cerr := tmp.Close()
-	if werr == nil && cerr == nil {
-		werr = os.Chmod(tmp.Name(), 0o600)
-	}
-	if werr == nil && cerr == nil {
-		werr = os.Rename(tmp.Name(), path)
-	}
-	if werr != nil || cerr != nil {
-		os.Remove(tmp.Name())
-		if werr != nil {
-			return werr
-		}
-		return cerr
-	}
-	return nil
+	return util.AtomicWrite(path, ".ccmorph.tmp.", []byte(content), 0o600, false)
 }
 
 // modelMenu is `ccmorph _menu [profile]`: the model picker, chained from the

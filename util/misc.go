@@ -134,7 +134,7 @@ func normalizePluginIndex(args []string, _ io.Reader, _, _ io.Writer) int {
 		if err != nil {
 			return err
 		}
-		return atomicWrite(path, "."+filepath.Base(path)+".",
+		return AtomicWrite(path, "."+filepath.Base(path)+".",
 			[]byte(pycompat.Marshal(data, pycompat.Format{Indent: 2, ASCII: true})+"\n"), fi.Mode().Perm(), true)
 	}
 	known := filepath.Join(plugins, "known_marketplaces.json")
@@ -453,7 +453,7 @@ func modelsFilteredJSON(args []string, in io.Reader, out, _ io.Writer) int {
 		return 2
 	}
 	var fields map[string]string
-	if pycompat.Catch(func() { fields = confFields(args[0]) }) != nil {
+	if pycompat.Catch(func() { fields = readConf(args[0]) }) != nil {
 		return 1
 	}
 	payload, err := pycompat.Parse(readAll(in))
@@ -595,7 +595,7 @@ func unwireStatusline(args []string, _ io.Reader, _, _ io.Writer) int {
 		return 0
 	}
 	doc.Delete("statusLine")
-	if atomicWrite(args[0], ".sl.", []byte(pycompat.Marshal(doc, pycompat.Format{Indent: 2, ASCII: true})+"\n"), 0o600, false) != nil {
+	if AtomicWrite(args[0], ".sl.", []byte(pycompat.Marshal(doc, pycompat.Format{Indent: 2, ASCII: true})+"\n"), 0o600, false) != nil {
 		return 1
 	}
 	return 0
@@ -710,77 +710,6 @@ func adviseJSON(_ []string, _ io.Reader, out, errw io.Writer) int {
 	return 0
 }
 
-var schemeHead = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9+.-]*):`)
-
-// redactURL prints scheme://host[:port]/path, dropping userinfo, query and fragment.
-func redactURL(args []string, _ io.Reader, out, _ io.Writer) int {
-	if len(args) != 1 {
-		return 1
-	}
-	// urlsplit's own cleanup: leading C0 controls and spaces, and every tab or newline.
-	u := strings.TrimLeftFunc(args[0], func(r rune) bool { return r <= ' ' })
-	u = strings.NewReplacer("\t", "", "\r", "", "\n", "").Replace(u)
-	scheme := ""
-	if m := schemeHead.FindStringSubmatch(u); m != nil {
-		scheme = strings.ToLower(m[1])
-		u = u[len(m[0]):]
-	}
-	netloc := ""
-	if rest, ok := strings.CutPrefix(u, "//"); ok {
-		end := strings.IndexAny(rest, "/?#")
-		if end < 0 {
-			end = len(rest)
-		}
-		netloc, u = rest[:end], rest[end:]
-	}
-	if i := strings.IndexAny(u, "?#"); i >= 0 {
-		u = u[:i]
-	}
-	// No host was found, so an @ is userinfo that would print whole.
-	if netloc == "" && strings.Contains(u, "@") {
-		return 1
-	}
-	host := netloc
-	if i := strings.LastIndex(host, "@"); i >= 0 {
-		host = host[i+1:]
-	}
-	port := ""
-	hostOnly := host
-	if strings.HasPrefix(host, "[") {
-		if j := strings.Index(host, "]"); j >= 0 {
-			hostOnly, port = host[1:j], strings.TrimPrefix(host[j+1:], ":")
-		}
-	} else if i := strings.LastIndex(host, ":"); i >= 0 {
-		hostOnly, port = host[:i], host[i+1:]
-	}
-	if port != "" {
-		n, err := strconv.Atoi(port)
-		if err != nil || n < 0 || n > 65535 {
-			return 1
-		}
-		if n == 0 {
-			port = ""
-		}
-	}
-	hostOnly = strings.ToLower(hostOnly)
-	if strings.Contains(hostOnly, ":") {
-		hostOnly = "[" + hostOnly + "]"
-	}
-	if port != "" {
-		hostOnly += ":" + port
-	}
-	path := strings.TrimRight(u, "/")
-	res := path
-	if hostOnly != "" || (scheme != "" && netloc != "") {
-		res = "//" + hostOnly + path
-	}
-	if scheme != "" {
-		res = scheme + ":" + res
-	}
-	fmt.Fprintln(out, res)
-	return 0
-}
-
 // gwModels: gw-models <conf> <picker|catalogue>: "<id>\t<owner>" rows from the listing on stdin.
 // Exit 1 for an unreadable listing, 2 for one with no usable model.
 func gwModels(args []string, in io.Reader, out, _ io.Writer) int {
@@ -789,7 +718,7 @@ func gwModels(args []string, in io.Reader, out, _ io.Writer) int {
 	}
 	fields := map[string]string{}
 	if args[1] == "picker" {
-		if pycompat.Catch(func() { fields = confFields(args[0]) }) != nil {
+		if pycompat.Catch(func() { fields = readConf(args[0]) }) != nil {
 			return 1
 		}
 	}

@@ -6,6 +6,8 @@ import (
 	"io"
 	"regexp"
 	"strings"
+
+	"github.com/akleizor/ccmorph/profile"
 )
 
 var httpURL = regexp.MustCompile(`^https?://[^?#]*$`)
@@ -41,11 +43,7 @@ func doctorRoute(args []string, in io.Reader, out, _ io.Writer) int {
 		if !valid {
 			row("FAIL", "config: base_url must be an http(s) URL without query or fragment")
 		}
-		safe, rc := run(redactURL, nil, base)
-		if rc != 0 {
-			safe = "[unparseable endpoint]"
-		}
-		fmt.Fprintln(out, "endpoint: "+safe)
+		fmt.Fprintln(out, "endpoint: "+profile.RedactURL(base))
 		switch {
 		case !valid:
 			row("SKIP", "gateway: invalid endpoint (no request sent)")

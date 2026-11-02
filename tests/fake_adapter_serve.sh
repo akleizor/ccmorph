@@ -2,8 +2,9 @@
 # with, then serve until that pid is gone, the way check_parent in
 # ccmorph-adapter does. One copy, shared by the Python and the zsh launch tests
 # (#373, GH-330). GH-434: a recycled pid can keep the named parent "alive"
-# forever, so a serve that gave --parent-pid also leaves when its own launcher
-# is gone (ppid 1) -- a serve started without one keeps serving, by contract.
+# forever, so a serve that gave --parent-pid also leaves, after about 10s, when its
+# own launcher is gone (ppid 1). Not sooner: adapter-start always orphans the adapter,
+# and a launch's live adapter must still be there for its TERM -- a serve started without one keeps serving, by contract.
 parent=""
 prev=""
 for arg in "$@"; do
@@ -16,7 +17,7 @@ while :; do
   pass=$(( pass + 1 ))
   if [ -n "$parent" ]; then
     kill -0 "$parent" 2>/dev/null || exit 0
-    if [ $(( pass % 10 )) -eq 0 ]; then
+    if [ $(( pass % 50 )) -eq 0 ]; then
       set -- $(ps -o ppid= -p $$ 2>/dev/null)
       [ "${1:-}" = 1 ] && exit 0
     fi

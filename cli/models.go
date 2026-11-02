@@ -93,10 +93,7 @@ func (l *launcher) modelsJSON(name string, preview ...string) (string, bool) {
 	}
 	out, rc := l.util(nil, f["api_key"]+"\n", "fetch-listing", base, "models")
 	if rc != 0 {
-		red, rrc := l.utilQ(nil, "", "redact-url", base)
-		if rrc != 0 {
-			red = "[unparseable endpoint]"
-		}
+		red := profile.RedactURL(base)
 		l.err("could not reach '" + red + "' — if it is an internal endpoint, connect your private network and try again")
 		return "", false
 	}

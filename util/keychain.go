@@ -127,12 +127,7 @@ func keychainMove(conf, name string, from func(string) string, errw io.Writer) i
 	if err != nil {
 		return 1
 	}
-	tmp := conf + ".keychain-tmp"
-	if err := os.WriteFile(tmp, []byte(strings.Join(lines, "\n")), fi.Mode().Perm()); err != nil {
-		return 1
-	}
-	if err := os.Rename(tmp, conf); err != nil {
-		os.Remove(tmp)
+	if AtomicWrite(conf, ".keychain-tmp.", []byte(strings.Join(lines, "\n")), fi.Mode().Perm(), true) != nil {
 		return 1
 	}
 	// The key is part of the route fingerprint; the same key under a new

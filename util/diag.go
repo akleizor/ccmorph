@@ -309,6 +309,6 @@ func withholdFatal(_ []string, _ io.Reader, _, _ io.Writer) int {
 	}
 	doc.Set("availableModels", kept)
 	data := pycompat.Marshal(doc, pycompat.Format{Indent: 2, ASCII: true}) + "\n"
-	atomicWrite(path, ".ovl.", []byte(data), 0o600, false)
+	AtomicWrite(path, ".ovl.", []byte(data), 0o600, false)
 	return 0
 }

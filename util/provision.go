@@ -51,7 +51,7 @@ func loadObj(path string, def *pycompat.Obj) *pycompat.Obj {
 
 func atomicJSON(path string, data *pycompat.Obj) {
 	b := []byte(pycompat.Marshal(data, pycompat.Format{Compact: true, ASCII: true}) + "\n")
-	if err := atomicWrite(path, ".ccmorph.", b, 0o600, true); err != nil {
+	if err := AtomicWrite(path, ".ccmorph.", b, 0o600, true); err != nil {
 		pycompat.RaiseOS(err)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/shim"
 )
 
@@ -159,26 +160,9 @@ func postJSON(u string, body map[string]any, headers map[string]string) map[stri
 	return out
 }
 
-// splitURL is urlsplit's scheme, netloc and path for "scheme://netloc/path".
-func splitURL(raw string) (scheme, netloc, path string) {
-	rest := raw
-	if i := strings.Index(raw, "://"); i >= 0 {
-		scheme, rest = strings.ToLower(raw[:i]), raw[i+3:]
-		if j := strings.IndexAny(rest, "/?#"); j >= 0 {
-			netloc, rest = rest[:j], rest[j:]
-		} else {
-			netloc, rest = rest, ""
-		}
-	}
-	if j := strings.IndexAny(rest, "?#"); j >= 0 {
-		rest = rest[:j]
-	}
-	return scheme, netloc, rest
-}
-
 // apiURL matches the serving client's URL: only OpenAI bases include the version.
 func apiURL(base, path string) string {
-	scheme, netloc, p := splitURL(strings.TrimRight(base, "/"))
+	scheme, netloc, p := profile.SplitURL(strings.TrimRight(base, "/"))
 	prefix := strings.TrimRight(p, "/")
 	// Claude Code and cliproxyapi's Anthropic client append /v1/messages verbatim.
 	if path != "/v1/messages" && versionRE.MatchString(prefix) {
