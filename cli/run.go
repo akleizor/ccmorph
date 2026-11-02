@@ -753,8 +753,10 @@ func (l *launcher) route(penv []string, port, key string, adapter bool) ([]strin
 	if adapter {
 		a = "1"
 	}
-	out, rc := l.util(nil, strings.Join(penv, "\n")+"\n", "launch-env", port, key, a, l.adapterPort,
-		os.Getenv("CCMORPH_TASK"), os.Getenv("CCMORPH_ATTEMPT"))
+	// The bridge key goes in the environment: an operand would put it on the
+	// command line for the life of the helper (#112).
+	out, rc := l.util([]string{"_CCM_BRIDGE_KEY=" + key}, strings.Join(penv, "\n")+"\n",
+		"launch-env", port, a, l.adapterPort, os.Getenv("CCMORPH_TASK"), os.Getenv("CCMORPH_ATTEMPT"))
 	if rc != 0 {
 		return nil, false
 	}
@@ -909,9 +911,15 @@ func (l *launcher) adapterStop() {
 // runClaude is _ccm_run_claude: Claude Code as this launcher's child, through the
 // core's session setup, its status as a shell would report it.
 func (l *launcher) runClaude(env, args []string) int {
+	envFile, err := writeSessionEnv(env)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccmorph: "+err.Error())
+		return 1
+	}
+	defer os.Remove(envFile) // the helper removes it on read; this is the backstop
 	argv := append([]string{"util", "claude-session", strings.Join(l.tuning, " "), strings.Join(l.profileEnv, " "),
-		strings.Join(l.launchEnv, " "), strings.Join(l.backend, " ")}, env...)
-	argv = append(append(argv, "--"), args...)
+		strings.Join(l.launchEnv, " "), strings.Join(l.backend, " "), envFile}, "--")
+	argv = append(argv, args...)
 	cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), argv...)
 	cmd.Env = append(os.Environ(), "CCMORPH_NOTICE="+l.notice)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -924,7 +932,7 @@ func (l *launcher) runClaude(env, args []string) int {
 	}
 	l.child = cmd.Process
 	l.mu.Unlock()
-	err := cmd.Wait()
+	err = cmd.Wait()
 	l.mu.Lock()
 	l.child = nil
 	l.mu.Unlock()
@@ -938,6 +946,30 @@ func (l *launcher) runClaude(env, args []string) int {
 		return ee.ExitCode()
 	}
 	return 1
+}
+
+// writeSessionEnv writes the launch environment to a fresh 0600 file and returns
+// its path: runClaude hands the helper that path, never the entries themselves,
+// so no credential reaches an argument vector (#112). NUL-separated, because a
+// value can span lines (ANTHROPIC_CUSTOM_HEADERS).
+func writeSessionEnv(env []string) (string, error) {
+	f, err := os.CreateTemp("", "ccmorph-session-env.")
+	if err != nil {
+		return "", err
+	}
+	for _, e := range env {
+		if _, err = f.WriteString(e + "\x00"); err != nil {
+			break
+		}
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
 }
 
 func (l *launcher) forwardedSig() int {
