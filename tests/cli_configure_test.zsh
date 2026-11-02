@@ -4,6 +4,13 @@
 # never writes settings.json again.
 setopt nounset pipefail
 readonly ROOT="${0:A:h:h}"
+# The cli verbs run in the compiled core, so a checkout has no
+# libexec/ccmorph-core until `make shim` builds it; without it every case below
+# fails on the missing binary instead of the contract under test.
+[[ -x "$ROOT/libexec/ccmorph-core" ]] || {
+  print -u2 -- "no libexec/ccmorph-core: a checkout has none until 'make shim' builds it (needs Go)"
+  exit 1
+}
 readonly TMP="${TMPDIR:-/tmp}/ccmorph-cli-configure.$$"
 trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/state/profiles/demo" "$TMP/home/.agents/runtime/policies"
