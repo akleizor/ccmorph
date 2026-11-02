@@ -29,6 +29,7 @@ import (
 type launcher struct {
 	dir, libDir, libexec, profileDirs, policy, logPath string
 	tuning, profileEnv, launchEnv, backend, mapping    []string
+	logSet                                             bool
 	launcherPID                                        int
 
 	red, yellow, bold, dim, accent, cyan, reset string
@@ -234,15 +235,14 @@ func fromEnv() *launcher {
 	l.libexec = get("_CCMORPH_LIBEXEC_DIR")
 	l.profileDirs = get("_CCMORPH_PROFILE_DIRS")
 	l.policy = get("_CCMORPH_CONTEXT_POLICY")
-	l.logPath = get("_CCMORPH_LOG")
-	l.tuning = strings.Fields(get("_CCMORPH_TUNING_ENV"))
-	l.profileEnv = strings.Fields(get("_CCMORPH_PROFILE_ENV"))
-	l.launchEnv = strings.Fields(get("_CCMORPH_LAUNCH_ENV"))
-	l.backend = strings.Fields(get("_CCMORPH_BACKEND_ENV"))
-	l.mapping = strings.Fields(get("_CCMORPH_MODEL_MAPPING_ENV"))
+	l.logPath, l.logSet = os.LookupEnv("_CCMORPH_LOG")
+	os.Unsetenv("_CCMORPH_LOG")
+	l.tuning, l.profileEnv, l.launchEnv = profile.TuningEnv, profile.ProfileEnv, profile.LaunchEnv
+	l.backend, l.mapping = profile.BackendEnv, profile.MappingEnv
 	l.notice = get("_CCMORPH_NOTICE")
 	l.version = get("_CCMORPH_VERSION")
 	l.zshVersion = get("_CCMORPH_ZSH_VERSION")
+	l.defaultPaths()
 	l.launcherPID, _ = strconv.Atoi(get("_CCMORPH_LAUNCHER_PID"))
 	if l.launcherPID <= 0 {
 		l.launcherPID = os.Getpid()
@@ -252,13 +252,59 @@ func fromEnv() *launcher {
 
 // handoff is the _CCMORPH_* env fromEnv consumed, for a core child that reads it again.
 func (l *launcher) handoff() []string {
-	j := func(v []string) string { return strings.Join(v, " ") }
 	return []string{"_CCMORPH_DIR=" + l.dir, "_CCMORPH_LIB_DIR=" + l.libDir,
 		"_CCMORPH_LIBEXEC_DIR=" + l.libexec, "_CCMORPH_PROFILE_DIRS=" + l.profileDirs,
-		"_CCMORPH_CONTEXT_POLICY=" + l.policy, "_CCMORPH_LOG=" + l.logPath,
-		"_CCMORPH_TUNING_ENV=" + j(l.tuning), "_CCMORPH_PROFILE_ENV=" + j(l.profileEnv),
-		"_CCMORPH_LAUNCH_ENV=" + j(l.launchEnv), "_CCMORPH_BACKEND_ENV=" + j(l.backend),
-		"_CCMORPH_MODEL_MAPPING_ENV=" + j(l.mapping)}
+		"_CCMORPH_CONTEXT_POLICY=" + l.policy, "_CCMORPH_LOG=" + l.logPath}
+}
+
+// defaultPaths fills what no shell handed over, the way lib/ccmorph.sh derives it, so
+// the core also runs on its own: state from CCMORPH_STATE_DIR or XDG, code beside
+// this executable (libexec/ccmorph-core, with lib/ next to libexec/).
+func (l *launcher) defaultPaths() {
+	home, _ := os.UserHomeDir()
+	if l.dir == "" {
+		if l.dir = os.Getenv("CCMORPH_STATE_DIR"); l.dir == "" {
+			cfg := os.Getenv("XDG_CONFIG_HOME")
+			if cfg == "" {
+				cfg = filepath.Join(home, ".config")
+			}
+			l.dir = filepath.Join(cfg, "ccmorph")
+		}
+	}
+	if l.libexec == "" {
+		if exe, err := os.Executable(); err == nil {
+			if r, err := filepath.EvalSymlinks(exe); err == nil {
+				exe = r
+			}
+			l.libexec = filepath.Dir(exe)
+		}
+	}
+	if l.libDir == "" {
+		if l.libDir = os.Getenv("CCMORPH_LIB_DIR"); l.libDir == "" {
+			l.libDir = filepath.Join(filepath.Dir(l.libexec), "lib")
+		}
+	}
+	if l.profileDirs == "" {
+		l.profileDirs = filepath.Join(l.dir, "profiles")
+	}
+	if l.version == "" { // lib/ccmorph.sh is the one place the version is written
+		b, _ := os.ReadFile(filepath.Join(l.libDir, "ccmorph.sh"))
+		if _, v, ok := strings.Cut(string(b), "\n_CCMORPH_VERSION=\""); ok {
+			l.version, _, _ = strings.Cut(v, "\"")
+		}
+	}
+	if l.policy == "" {
+		if l.policy = os.Getenv("CCMORPH_CONTEXT_POLICY"); l.policy == "" {
+			l.policy = filepath.Join(home, ".agents/runtime/policies/context.json")
+		}
+	}
+	if !l.logSet {
+		tmp := os.Getenv("TMPDIR")
+		if tmp == "" {
+			tmp = "/tmp"
+		}
+		l.logPath = filepath.Join(tmp, fmt.Sprintf("ccmorph-%d.log", os.Getuid()))
+	}
 }
 
 // theme is _ccm_ui_theme: truecolor roles when stdout is a terminal.
@@ -475,14 +521,7 @@ func (l *launcher) readQuiet(name string) (map[string]string, bool) {
 }
 
 func (l *launcher) readProfile(name string, warn func(string)) (map[string]string, error) {
-	set := func(keys []string) map[string]bool {
-		m := map[string]bool{}
-		for _, k := range keys {
-			m[k] = true
-		}
-		return m
-	}
-	return profile.Read(l.dir, name, true, profile.Lists{ProfileEnv: set(l.profileEnv), MappingEnv: set(l.mapping)}, warn)
+	return profile.Read(l.dir, name, true, profile.Defaults(), warn)
 }
 
 // read is _ccm_read + _ccm_validate_loaded.

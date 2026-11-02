@@ -76,7 +76,7 @@ def test_adapter_alias_uses_profile_settings_before_startup():
         result = subprocess.run(['zsh', '-c', 'source "$1"; "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" util config-store'
                                  ' get "$_CCMORPH_DIR/gw.conf" "$_CCMORPH_PROFILE_DIRS/gw/settings.json"'
                                  ' env.ANTHROPIC_DEFAULT_OPUS_MODEL "$HOME/.claude/settings.json"'
-                                 ' "${_CCMORPH_MODEL_MAPPING_ENV[@]}"',
+                                 ' ${(f)"$(ccmorph _env_keys mapping)"}',
                                  'test', str(ROOT / 'lib/ccmorph.sh')],
                                 env={**os.environ, 'HOME': tmp, 'CCMORPH_STATE_DIR': str(state)}, capture_output=True,
                                 text=True, timeout=HANG_TIMEOUT)
