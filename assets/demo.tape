@@ -1,37 +1,30 @@
 # Re-record from the repo root: vhs assets/demo.tape
 Output assets/demo.gif
 Set Shell bash
-Set FontSize 17
-Set Width 960
-Set Height 500
-Set Padding 24
+Set FontSize 18
+Set Width 1000
+Set Height 560
+Set Padding 26
 Set Margin 20
-Set MarginFill "#312e81"
-Set BorderRadius 10
+Set MarginFill "#1e1b4b"
+Set BorderRadius 12
 Set WindowBar Colorful
 Set Theme "Catppuccin Mocha"
-Set TypingSpeed 40ms
-Set Framerate 12
+Set TypingSpeed 45ms
+Set Framerate 15
 
 Hide
 Type "source assets/demo/setup.sh" Enter
 Show
 
-Type "# Three profiles: a subscription, an API key, a gateway" Enter
-Type "ccmorph list" Enter
-Sleep 3s
-Type "# Start a session on work" Enter
+Sleep 500ms
 Type "ccmorph run work" Enter
-Sleep 1.5s
-Type "add a --verbose flag to the CLI" Enter
-Sleep 3s
-Type "# Out of quota? Move this conversation to the other profile" Enter
 Sleep 2s
-Type "! ccmorph hop personal" Enter
-Sleep 3s
-Type "/exit" Enter
+Type "add rate limiting to /login" Enter
+Sleep 2.5s
+Type "now add tests" Enter
+Sleep 2.5s
+Type "/ccmorph:hop deepseek" Sleep 800ms Enter
 Sleep 3.5s
-Type "# Same conversation, now on personal" Enter
-Sleep 2s
-Type "now add a test for it" Enter
-Sleep 4s
+Type "now add tests" Enter
+Sleep 5s

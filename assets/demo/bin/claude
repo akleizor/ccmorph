@@ -1,23 +1,67 @@
-#!/bin/sh
-# Scripted stand-in for the claude CLI, used only by the README recording.
-# No network: it keeps a tiny transcript in $HOME so a hopped session "resumes".
-t=$HOME/.demo-transcript
-p=$(basename "$CLAUDE_CONFIG_DIR")
-case $p in work) c=36 ;; *) c=35 ;; esac
-tag() { printf '\033[2m  answered on \033[0m\033[%sm%s\033[0m\n' "$c" "$p"; }
-printf '\033[2J\033[H\n  \033[1mClaude Code\033[0m   profile: \033[1;%sm%s\033[0m\n\n' "$c" "$p"
-[ -f "$t" ] && cat "$t"
-n=$(grep -c '^> ' "$t" 2>/dev/null || echo 0)
-while printf '> ' && read -r line; do
-  case $line in
-    '#'*|'') ;;
-    '! '*) sh -c "${line#! }" ;;
-    /exit) exit 0 ;;
-    *)
-      n=$((n+1))
-      if [ "$n" = 1 ]; then r="Done. I added a --verbose flag and updated the help text."
-      else r="Added a test for --verbose. All tests pass."; fi
-      printf '\n  %s\n' "$r"; tag; echo
-      { printf '> %s\n\n  %s\n' "$line" "$r"; tag; echo; } >> "$t" ;;
-  esac
-done
+#!/usr/bin/env python3
+# Scripted stand-in for the claude CLI, used only by the README recording. No
+# network: it keeps a tiny transcript in $HOME so a hopped session "resumes".
+# Python, not sh: `ccmorph hop` ends the first non-shell process above it, as it
+# ends the real Claude Code.
+import os, subprocess, sys
+
+home = os.environ["HOME"]
+log = os.path.join(home, ".demo-transcript")
+profile = os.path.basename(os.environ.get("CLAUDE_CONFIG_DIR", "claude"))
+model = {"work": "Opus 5.5 · Claude Max", "deepseek": "deepseek-v4-pro · DeepSeek"}.get(profile, profile)
+color = {"work": "38;5;209", "deepseek": "38;5;75"}.get(profile, "35")
+dim, bold, off = "\033[2m", "\033[1m", "\033[0m"
+
+first = "I'll add rate limiting to the /login route.\n  ✓ Edited src/routes/login.ts (+18 −2)\n  ✓ Added src/middleware/rateLimit.ts"
+limit = "\033[31m⚠ 5-hour limit reached · resets 19:00\033[0m"
+after = "Picking up where we left off: added tests for the limiter.\n  ✓ Added test/rateLimit.test.ts · 6 passing"
+
+def say(text, tag=True):
+    print(f"\n  {text}")
+    if tag:
+        print(f"  {dim}answered by{off} \033[{color}m{profile}{off}")
+    print()
+
+# Claude Code tells the commands it runs which session they are in; hop needs it.
+os.environ["CLAUDE_CODE_SESSION_ID"] = "demo-session"
+
+sys.stdout.write("\033[2J\033[H")
+print(f"\n  {bold}✻ Claude Code{off}   \033[{color}m{bold}{profile}{off}  {dim}{model}{off}\n")
+turns = 0
+if os.path.exists(log):
+    with open(log) as f:
+        past = f.read()
+    sys.stdout.write(past)
+    turns = past.count("\n> ")
+    if "--resume" in sys.argv:
+        print(f"  {dim}── resumed: same conversation, now on {profile} ──{off}\n")
+sys.stdout.flush()
+
+while True:
+    try:
+        # The prompt on stdout: input() writes it to stderr, which the demo hides.
+        sys.stdout.write("> ")
+        sys.stdout.flush()
+        line = input().strip()
+    except EOFError:
+        break
+    if not line or line.startswith("#"):
+        continue
+    if line == "/exit":
+        break
+    if line.startswith("/ccmorph:hop"):
+        subprocess.call(["ccmorph", "hop", *line.split()[1:]], stderr=subprocess.DEVNULL)
+        continue
+    # The subscription answers once, then hits its limit; any other profile
+    # carries on from the transcript.
+    if turns == 0:
+        reply = first
+    elif profile == "work":
+        say(limit, tag=False)
+        continue
+    else:
+        reply = after
+    say(reply)
+    turns += 1
+    with open(log, "a") as f:
+        f.write(f"\n> {line}\n\n  {reply}\n  {dim}answered by{off} \033[{color}m{profile}{off}\n\n")
