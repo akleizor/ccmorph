@@ -44,9 +44,16 @@ func (l *launcher) dispatch(args []string) int {
 		fmt.Println("ccmorph " + l.version)
 		return 0
 	case "_backend_env":
-		for _, k := range l.backend {
-			fmt.Println(k)
+		fmt.Println(strings.Join(l.backend, "\n"))
+		return 0
+	case "_env_keys": // tests: one of the Go env-key lists, a key per line
+		lists := map[string][]string{"tuning": l.tuning, "profile": l.profileEnv, "launch": l.launchEnv,
+			"backend": l.backend, "mapping": l.mapping}
+		v, ok := lists[strings.Join(args[1:], "")]
+		if !ok {
+			return 2
 		}
+		fmt.Println(strings.Join(v, "\n"))
 		return 0
 	}
 	if len(args) == 2 && (args[1] == "-h" || args[1] == "--help") && first != "run" && first != "probe" && first != retiredVerb {

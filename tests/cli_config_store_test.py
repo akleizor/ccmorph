@@ -70,7 +70,7 @@ STORE_FN = (
     '[[ -e $d/settings.profile.json || -L $d/settings.profile.json || -e $d/cache/settings.base.json ]]'
     ' && layer="$d/settings.profile.json"\n'
     '"$_CCMORPH_LIBEXEC_DIR/ccmorph-core" util config-store "$1" "$_CCMORPH_DIR/$2.conf" "$layer"'
-    ' "${3:-}" "$HOME/.claude/settings.json" "${_CCMORPH_MODEL_MAPPING_ENV[@]}"; }\n')
+    ' "${3:-}" "$HOME/.claude/settings.json" ${(f)"$(ccmorph _env_keys mapping)"}; }\n')
 
 
 class ConfigurationSaveTest(unittest.TestCase):

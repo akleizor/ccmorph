@@ -61,7 +61,7 @@ _ccm_fork_forward() {
   return $_ccm_st
 }
 
-# The core's own view of this shell: paths, env-key lists and the run's state,
+# The core's own view of this shell: its paths and the run's state,
 # plus the host's prelaunch opt-in, which local.sh may set without `export`.
 _ccm_core_env() {
   reply=(
@@ -71,11 +71,6 @@ _ccm_core_env() {
     _CCMORPH_PROFILE_DIRS="$_CCMORPH_PROFILE_DIRS"
     _CCMORPH_CONTEXT_POLICY="$_CCMORPH_CONTEXT_POLICY"
     _CCMORPH_LOG="${_CCMORPH_LOG:-}"
-    _CCMORPH_TUNING_ENV="${_CCMORPH_TUNING_ENV[*]}"
-    _CCMORPH_PROFILE_ENV="${_CCMORPH_PROFILE_ENV[*]}"
-    _CCMORPH_LAUNCH_ENV="${_CCMORPH_LAUNCH_ENV[*]}"
-    _CCMORPH_BACKEND_ENV="${_CCMORPH_BACKEND_ENV[*]}"
-    _CCMORPH_MODEL_MAPPING_ENV="${_CCMORPH_MODEL_MAPPING_ENV[*]}"
     _CCMORPH_LAUNCHER_PID=$$
     _CCMORPH_VERSION="$_CCMORPH_VERSION"
     _CCMORPH_ZSH_VERSION="$ZSH_VERSION"

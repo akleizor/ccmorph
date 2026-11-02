@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/pycompat"
 )
 
@@ -390,26 +391,10 @@ func TestModelChoiceDoesNotChangeTheRoute(t *testing.T) {
 }
 
 // Python: model_window_test.test_every_shell_mapping_key_is_excluded_from_the_route.
-func TestEveryShellMappingKeyIsExcludedFromTheRoute(t *testing.T) {
-	root := filepath.Join("..", "lib")
-	files, _ := filepath.Glob(filepath.Join(root, "ccmorph*.zsh"))
-	files = append(files, filepath.Join(root, "ccmorph.sh"))
-	var shell strings.Builder
-	for _, f := range files {
-		b, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		shell.Write(b)
-	}
-	_, rest, ok := strings.Cut(shell.String(), "_CCMORPH_MODEL_MAPPING_ENV=(\n")
-	if !ok {
-		t.Fatal("mapping list not found")
-	}
-	block, _, _ := strings.Cut(rest, "\n)")
+func TestEveryMappingKeyIsExcludedFromTheRoute(t *testing.T) {
 	n := 0
-	for _, l := range strings.Split(block, "\n") {
-		if key := strings.TrimSpace(l); strings.HasPrefix(key, "ANTHROPIC_") {
+	for _, key := range profile.MappingEnv {
+		if strings.HasPrefix(key, "ANTHROPIC_") {
 			n++
 			if !modelChoiceEnv.MatchString("env." + key) {
 				t.Errorf("%s is not excluded from the route", key)

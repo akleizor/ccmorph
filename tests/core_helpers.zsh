@@ -2,6 +2,15 @@
 # replaced it, so the zsh suite keeps driving the real core. Not shipped.
 
 _ccm_util() { "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" util "$@"; }
+
+# The env-key lists, as the Go core holds them (profile/envkeys.go).
+() {
+  local n v
+  for n v in TUNING tuning PROFILE profile LAUNCH launch BACKEND backend MODEL_MAPPING mapping; do
+    typeset -ga _CCMORPH_${n}_ENV
+    set -A _CCMORPH_${n}_ENV ${(f)"$(_ccm_core cli main _env_keys $v)"}
+  done
+}
 _ccm_err() { print -u2 -- "ccmorph: $1"; return 1; }
 
 _ccm_profile_layer() {
