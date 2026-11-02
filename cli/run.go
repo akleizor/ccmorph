@@ -748,8 +748,10 @@ func (l *launcher) route(penv []string, port, key string, adapter bool) ([]strin
 	if adapter {
 		a = "1"
 	}
-	out, rc := l.util(nil, strings.Join(penv, "\n")+"\n", "launch-env", port, key, a, l.adapterPort,
-		os.Getenv("CCMORPH_TASK"), os.Getenv("CCMORPH_ATTEMPT"))
+	// The bridge key goes in the environment: an operand would put it on the
+	// command line for the life of the helper (#112).
+	out, rc := l.util([]string{"_CCM_BRIDGE_KEY=" + key}, strings.Join(penv, "\n")+"\n",
+		"launch-env", port, a, l.adapterPort, os.Getenv("CCMORPH_TASK"), os.Getenv("CCMORPH_ATTEMPT"))
 	if rc != 0 {
 		return nil, false
 	}
@@ -927,9 +929,15 @@ func (l *launcher) adapterStop() {
 // runClaude is _ccm_run_claude: Claude Code as this launcher's child, through the
 // core's session setup, its status as a shell would report it.
 func (l *launcher) runClaude(env, args []string) int {
+	envFile, err := l.writeSessionEnv(env)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccmorph: "+err.Error())
+		return 1
+	}
+	defer os.Remove(envFile) // the helper removes it on read; this is the backstop
 	argv := append([]string{"util", "claude-session", strings.Join(l.tuning, " "), strings.Join(l.profileEnv, " "),
-		strings.Join(l.launchEnv, " "), strings.Join(l.backend, " ")}, env...)
-	argv = append(append(argv, "--"), args...)
+		strings.Join(l.launchEnv, " "), strings.Join(l.backend, " "), envFile}, "--")
+	argv = append(argv, args...)
 	cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), argv...)
 	cmd.Env = append(os.Environ(), "CCMORPH_NOTICE="+l.notice)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -942,7 +950,7 @@ func (l *launcher) runClaude(env, args []string) int {
 	}
 	l.child = cmd.Process
 	l.mu.Unlock()
-	err := cmd.Wait()
+	err = cmd.Wait()
 	l.mu.Lock()
 	l.child = nil
 	l.mu.Unlock()
@@ -956,6 +964,43 @@ func (l *launcher) runClaude(env, args []string) int {
 		return ee.ExitCode()
 	}
 	return 1
+}
+
+// writeEnvFile writes the NUL-joined launch env to a fresh 0600 file in dir
+// (dir "" is TMPDIR). A value can span lines (ANTHROPIC_CUSTOM_HEADERS).
+func writeEnvFile(dir string, env []string) (string, error) {
+	f, err := os.CreateTemp(dir, "ccmorph-session-env.")
+	if err != nil {
+		return "", err
+	}
+	for _, e := range env {
+		if _, err = f.WriteString(e + "\x00"); err != nil {
+			break
+		}
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
+}
+
+// writeSessionEnv writes the launch env to a 0600 file in TMPDIR, or under the
+// state dir's run/ (0700) when TMPDIR cannot be written: a launch must still
+// start, and the env must still stay off the argument vector (#112).
+func (l *launcher) writeSessionEnv(env []string) (string, error) {
+	path, err := writeEnvFile("", env)
+	if err == nil || l.dir == "" {
+		return path, err
+	}
+	run := filepath.Join(l.dir, "run")
+	if mkErr := os.MkdirAll(run, 0o700); mkErr != nil {
+		return "", err
+	}
+	return writeEnvFile(run, env)
 }
 
 func (l *launcher) forwardedSig() int {

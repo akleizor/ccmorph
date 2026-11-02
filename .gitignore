@@ -56,6 +56,8 @@ ccmorph.log
 # tidied away by hand.
 backups/
 orphaned-profiles/
+# Launch env handed to the session helper when TMPDIR is unwritable (0600, removed on read).
+run/
 # Provider OAuth credentials (cliproxyapi auth dirs, one per provider profile).
 # Never committable — this is the whole reason auth/ has its own 0700 root.
 auth/

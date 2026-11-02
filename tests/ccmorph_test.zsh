@@ -3867,6 +3867,7 @@ test_every_state_file_is_gitignored() {
     .profile-home-migration.lock  # guards the one-time move of the profile root
     backups/anything.conf     # pre-edit snapshots
     orphaned-profiles/x/y     # profile dir left by a deleted conf
+    run/ccmorph-session-env.abc   # launch env when TMPDIR is unwritable
     ccmorph.sh.bak-20260713  # hand-made copy of the runtime, mode 0600
     ccmorph.sh.orig          # a merge/patch leftover of the same
     dist/ccmorph-v1.0.0.tar.gz   # release artifact
