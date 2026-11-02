@@ -27,6 +27,10 @@ func runFlag(a string) bool {
 // launch is one pass of _ccm_launch: nil when the run is over (rc is its status),
 // or the relaunch a hop asked for.
 func (l *launcher) launch(name string, interactive, native bool, argv []string) (*relayNext, int) {
+	// One /v1/models answer per pass: the zsh driver re-sourced ccmorph.sh between
+	// hops, which reset _ccm_models_memo, so a catalogue that changed since the
+	// previous pass reaches the next pass's picker and model checks.
+	l.memo = map[string]string{}
 	var args []string
 	if native {
 		args = argv
@@ -247,9 +251,9 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 			return fail()
 		}
 		l.foldSettings(name)
+		l.stopForeignBridge(name, isProvider)
 		if isProvider {
 			if l.providerActive != name {
-				l.providerStop()
 				if !l.providerStart(name) {
 					return fail()
 				}
@@ -332,6 +336,7 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 		l.log(fmt.Sprintf("exit rc=%d profile=%s relay_file_exists=%s", rcClaude, name, yesNo(isFile(relayFile))))
 	} else {
 		edge := l.nestedEdgeEnv("CLAUDE_CODE_DISABLE_ADVISOR_TOOL", "CLAUDE_CODE_MODEL_CAPABILITIES")
+		l.stopForeignBridge("", false)
 		if resume != "" {
 			l.carrySession(resume, filepath.Join(os.Getenv("HOME"), ".claude", "projects"))
 		}
@@ -833,6 +838,15 @@ func (l *launcher) providerStart(name string) bool {
 	}
 	l.providerAuth, l.providerActive = auth, name
 	return true
+}
+
+// stopForeignBridge is the zsh driver's EXIT teardown, once per pass: a pass
+// keeps the bridge only for the provider it is about to run, so a hop from a
+// provider to any other profile starts its session with the bridge gone.
+func (l *launcher) stopForeignBridge(name string, isProvider bool) {
+	if !isProvider || l.providerActive != name {
+		l.providerStop()
+	}
 }
 
 func (l *launcher) providerStop() {
