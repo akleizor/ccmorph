@@ -3,6 +3,7 @@ package util
 import (
 	"bufio"
 	"io"
+	"os"
 	"regexp"
 	"strings"
 )
@@ -12,17 +13,21 @@ var (
 	attemptTag = regexp.MustCompile(`^[0-9]{1,3}$`)
 )
 
-// launchEnv is `util launch-env <bridge port> <bridge key> <adapter 0|1> <adapter port> <task> <attempt>`
+// launchEnv is `util launch-env <bridge port> <adapter 0|1> <adapter port> <task> <attempt>`
 // with the profile's launch env on stdin, one KEY=value per line. It points Claude
 // Code at the local bridge (base and key, added when missing) or at the adapter
 // (base only), and adds the task tags the gateway shim records when their shapes
 // are valid on an adapter launch. The env goes back out in order, NUL-joined
 // (a header value spans lines), closed by a dot.
+//
+// The bridge key arrives in _CCM_BRIDGE_KEY, never as an operand: a credential on
+// a command line is visible to anything running as this user (.github/SECURITY.md).
 func launchEnv(args []string, in io.Reader, out, _ io.Writer) int {
-	if len(args) != 6 {
+	if len(args) != 5 {
 		return 2
 	}
-	bridgePort, bridgeKey, adapter, adapterPort, task, attempt := args[0], args[1], args[2] == "1", args[3], args[4], args[5]
+	bridgePort, bridgeKey, adapter, adapterPort, task, attempt :=
+		args[0], os.Getenv("_CCM_BRIDGE_KEY"), args[1] == "1", args[2], args[3], args[4]
 	var env []string
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 1<<20), 1<<20)

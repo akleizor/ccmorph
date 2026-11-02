@@ -25,6 +25,29 @@ func TestPrivateViewFailureSkipsTheNotice(t *testing.T) {
 	}
 }
 
+// The launch env comes from a 0600 file that is removed on read, never from the
+// helper's argument vector (#112).
+func TestSessionEnvComesFromAPrivateFileAndIsRemoved(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "env")
+	if err := os.WriteFile(path, []byte("A=1\x00B=x\ny\x00"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readSessionEnv(path)
+	if err != nil || strings.Join(got, "|") != "A=1|B=x\ny" {
+		t.Fatalf("%q, %v", got, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("env file left behind: %v", err)
+	}
+	loose := filepath.Join(t.TempDir(), "env")
+	if err := os.WriteFile(loose, []byte("A=1\x00"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readSessionEnv(loose); err == nil {
+		t.Fatal("a world-readable env file was accepted")
+	}
+}
+
 func TestPrivateViewLinksConfigButNotSessionState(t *testing.T) {
 	real := filepath.Join(t.TempDir(), "demo")
 	for _, n := range []string{"settings.json", "projects", ".claude.json"} {

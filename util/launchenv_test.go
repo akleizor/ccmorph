@@ -14,17 +14,24 @@ func TestLaunchEnvRoutesThroughTheLocalHop(t *testing.T) {
 		got := strings.Split(strings.TrimSuffix(b.String(), "."), "\x00")
 		return got[:len(got)-1]
 	}
-	// Bridge: base and key replaced, or added when the profile had none.
-	if got := strings.Join(run("ANTHROPIC_BASE_URL=https://x\nFOO=1\n", "9", "k", "0", "", "t", ""), "|"); got != "ANTHROPIC_BASE_URL=http://127.0.0.1:9|FOO=1|ANTHROPIC_API_KEY=k" {
+	// Bridge: base and key replaced, or added when the profile had none. The key
+	// comes from the environment, never an operand.
+	t.Setenv("_CCM_BRIDGE_KEY", "k")
+	if got := strings.Join(run("ANTHROPIC_BASE_URL=https://x\nFOO=1\n", "9", "0", "", "t", ""), "|"); got != "ANTHROPIC_BASE_URL=http://127.0.0.1:9|FOO=1|ANTHROPIC_API_KEY=k" {
 		t.Errorf("bridge: %s", got)
 	}
 	// Adapter: base redirected, never added; valid tags become one header value.
-	got := run("ANTHROPIC_BASE_URL=https://x\n", "", "", "1", "7", "fix-1", "2")
+	got := run("ANTHROPIC_BASE_URL=https://x\n", "", "1", "7", "fix-1", "2")
 	if got[0] != "ANTHROPIC_BASE_URL=http://127.0.0.1:7" || got[1] != "ANTHROPIC_CUSTOM_HEADERS=x-ccmorph-task: fix-1\nx-ccmorph-attempt: 2" {
 		t.Errorf("adapter: %q", got)
 	}
 	// Bad shapes are dropped, and a native adapter answer (no port) keeps the base.
-	if got := run("ANTHROPIC_BASE_URL=https://x\n", "", "", "1", "", "bad tag", "1234"); len(got) != 1 || got[0] != "ANTHROPIC_BASE_URL=https://x" {
+	if got := run("ANTHROPIC_BASE_URL=https://x\n", "", "1", "", "bad tag", "1234"); len(got) != 1 || got[0] != "ANTHROPIC_BASE_URL=https://x" {
 		t.Errorf("drop: %q", got)
+	}
+	// The old 6-operand form, with the key in an operand, is refused.
+	var b strings.Builder
+	if rc := launchEnv([]string{"9", "k", "0", "", "t", ""}, strings.NewReader(""), &b, nil); rc != 2 {
+		t.Errorf("key operand accepted: rc %d", rc)
 	}
 }

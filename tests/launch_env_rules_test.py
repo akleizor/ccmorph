@@ -153,6 +153,41 @@ def test_launch_does_not_inherit_other_backends_credentials(box, name):
     assert name not in seen(box)[0], seen(box)[0]
 
 
+CANARY = 'sk-ARGV-CANARY-launch-112'
+
+
+def _ps_stub(box):
+    # Claude Code itself reads ps while the launch that spawned it is still on screen:
+    # in a private session the session helper stays claude's parent for the whole run (#112).
+    (box.home / 'bin/claude').write_text(
+        '#!/bin/sh\n[ "$1" = --help ] && exit 0\n'
+        # Both ask for every argument vector untruncated with no header: -A/-ww/-o
+        # is what procps takes, -axww is the BSD spelling. The second runs only when
+        # the first printed nothing, so a Linux CI and a macOS run ask the same question.
+        'for p in "ps -A -ww -o args=" "ps -axww -o args="; do\n'
+        '  $p > "$HOME/ps.log" 2> "$HOME/ps.err" && [ -s "$HOME/ps.log" ] && break\n'
+        'done\n'
+        'printf %s "${ANTHROPIC_API_KEY-}" > "$HOME/key.log"\n')
+    (box.home / 'bin/claude').chmod(0o755)
+
+
+@pytest.mark.parametrize('private', ['', 'private=1\n'])
+def test_no_launch_helper_carries_the_credential_on_its_command_line(box, private):
+    # .github/SECURITY.md: a credential reaches Claude Code through the environment or a
+    # 600 file, never as an argument (INTENT.md promise 2).
+    _ps_stub(box)
+    box.conf('keyed', f'type=apikey\napi_key={CANARY}\n{private}')
+    assert box.run('run', 'keyed').returncode == 0
+    assert (box.home / 'key.log').read_text() == CANARY
+    ps = (box.home / 'ps.log').read_text()
+    if not ps.strip():
+        why = (box.home / 'ps.err').read_text().strip()
+        pytest.skip(f'ps printed no process table: {why}')
+    assert CANARY not in ps, ps
+    if private:
+        assert 'claude-session' in ps, ps
+
+
 def test_the_launcher_lists_every_pinned_backend_name(tmp_path):
     listed = set(Box(tmp_path).run('_backend_env').stdout.split())
     assert set(BACKEND) <= listed, sorted(set(BACKEND) - listed)
