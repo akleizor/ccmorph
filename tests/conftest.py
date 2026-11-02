@@ -1,6 +1,5 @@
 import http.server
 import socketserver
-import subprocess
 
 import pytest
 
@@ -30,15 +29,3 @@ def pytest_cmdline_main(config):
             and config.option.numprocesses is None):
         config.option.numprocesses = "auto"
         config.option.dist = "worksteal"
-
-
-@pytest.hookimpl(optionalhook=True)
-def pytest_xdist_auto_num_workers(config):
-    # Apple silicon: performance cores plus a third of the efficiency cores
-    # (10 on the mini beat 18). Elsewhere xdist keeps its default.
-    try:
-        fast, slow = (int(subprocess.check_output(["sysctl", "-n", f"hw.perflevel{i}.physicalcpu"], text=True))
-                      for i in (0, 1))
-    except (OSError, ValueError, subprocess.CalledProcessError):
-        return None
-    return fast + slow // 3

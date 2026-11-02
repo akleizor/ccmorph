@@ -52,12 +52,10 @@ typeset -gi tests_seen=0
 readonly CCMORPH_TEST_HANG_TIMEOUT="${CCMORPH_TEST_HANG_TIMEOUT:-120}"
 
 # Every test builds its own scratch home, so the suite runs as N shards at once;
-# CCMORPH_TEST_JOBS=1 runs it serially. Default on Apple silicon: performance
-# cores plus a third of the efficiency cores (10 on the mini beat 18: 37 s vs 45 s).
+# CCMORPH_TEST_JOBS=1 runs it serially. Default: every core. The shards mostly wait
+# on macOS's first-exec scan of each fresh stub, and concurrent scans overlap: on the
+# mini 10 shards ran 85 s and 18 ran 53 s, green at load 43; 36 flaked (2026-11-02).
 _ccm_test_jobs() {
-  local fast slow
-  fast=$(sysctl -n hw.perflevel0.physicalcpu 2>/dev/null) && slow=$(sysctl -n hw.perflevel1.physicalcpu 2>/dev/null) &&
-    { print -- $(( fast + slow / 3 )); return; }
   sysctl -n hw.ncpu 2>/dev/null || nproc
 }
 if [[ -z "${CCMORPH_TEST_SHARD:-}" ]] && (( ${CCMORPH_TEST_JOBS:-$(_ccm_test_jobs)} > 1 )); then

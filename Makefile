@@ -12,7 +12,7 @@ TAG := v$(VERSION)
 DIST := dist
 TARBALL := $(DIST)/ccmorph-$(TAG).tar.gz
 
-.PHONY: help shim test test-zsh test-py test-go check-version dist release clean
+.PHONY: help shim test test-zsh test-py test-go gate gate-launch gate-install gate-configure gate-py check-version dist release clean
 
 help:
 	@echo "ccmorph $(VERSION)"
@@ -37,6 +37,23 @@ test-zsh:
 
 test-py:
 	python3 -m pytest tests/ -q
+
+# The Hive's gate on every landing. Each suite works in its own scratch homes and mostly
+# waits on process spawns, so they overlap: 185 s one after another, under a minute at once.
+gate: shim
+	@$(MAKE) -j4 gate-launch gate-install gate-configure gate-py
+
+gate-launch:
+	@zsh tests/ccmorph_test.zsh
+
+gate-install:
+	@zsh tests/install_test.zsh
+
+gate-configure:
+	@zsh tests/cli_configure_test.zsh
+
+gate-py:
+	@CCMORPH_LIB_DIR="$$PWD/lib" uv run --with pytest --with pytest-xdist --with pytest-timeout python -m pytest tests/ -q
 
 # Three places state the version and nothing checked they agree: the assignment
 # the installer greps, the changelog a reader trusts, and the tag a package
