@@ -5,6 +5,20 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
+## v0.4.4 — 2026-11-02
+
+### Changed
+
+- **The core runs on its own.** The env-key lists live in Go
+  (`profile/envkeys.go`), and `ccmorph-core` derives its paths and version
+  when no shell hands them over, so it no longer needs zsh (#130).
+- **Faster launch.** Most internal verbs run in-process instead of a new
+  process each, profiles are read and checked once, `claude --help` is read
+  once, and the adapter boots while the model listing is fetched (#128, #131).
+- **One copy each** of URL redaction (the userinfo-safe one), atomic file
+  writes and conf reads; the keychain migration writes through a unique temp
+  file (#131).
+
 ## v0.4.3 — 2026-11-02
 
 ### Changed
