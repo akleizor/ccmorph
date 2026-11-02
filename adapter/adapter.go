@@ -31,7 +31,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -42,6 +41,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/shim"
 )
 
@@ -700,7 +700,7 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 			text = strings.ReplaceAll(text, spelling, "<redacted>")
 		}
 		if upstreamProxy != "" {
-			text = strings.ReplaceAll(text, q(upstreamProxy), q(redactURL(upstreamProxy)))
+			text = strings.ReplaceAll(text, q(upstreamProxy), q(profile.RedactURL(upstreamProxy)))
 		}
 		os.Remove(conf)
 		fmt.Println(text)
@@ -831,40 +831,4 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 		a.checkParent(shutdown)
 		time.Sleep(parentPoll)
 	}
-}
-
-// redactURL has the shape of ccmorph.sh's _ccm_redact_url: no userinfo, no query.
-func redactURL(raw string) string {
-	// A password can hold /, ? or #, or open on digits Go reads as a port, so
-	// neither parser reliably finds the @ that closes the userinfo. Cut through
-	// the last @ of the whole input before either one looks: nothing that
-	// parses afterwards can hold userinfo. An @ in a path costs a wrong host,
-	// never a leaked secret.
-	if at := strings.LastIndex(raw, "@"); at >= 0 {
-		i, tail := strings.Index(raw, "://"), raw[at+1:]
-		if i < 0 || i > at || tail == "" || strings.ContainsAny(tail[:1], "/?#") {
-			return "<redacted>"
-		}
-		raw = raw[:i+3] + tail
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		// Go refuses hosts urlsplit takes: say nothing when no host is left.
-		scheme, netloc, path := splitURL(raw)
-		if netloc == "" {
-			return "<redacted>"
-		}
-		return scheme + "://" + strings.ToLower(netloc) + path
-	}
-	host := strings.ToLower(u.Hostname())
-	if strings.Contains(host, ":") {
-		host = "[" + host + "]"
-	}
-	if p := u.Port(); p != "" {
-		host += ":" + p
-	}
-	if host == "" {
-		return u.Scheme + ":" + u.Path
-	}
-	return u.Scheme + "://" + host + u.Path
 }

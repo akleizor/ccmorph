@@ -68,7 +68,6 @@ func init() {
 		"resume-model":           resumeModel,
 		"session-state":          sessionState,
 		"launch-window":          launchWindow,
-		"redact-url":             redactURL,
 		"gw-models":              gwModels,
 		"project-picker":         projectPicker,
 		"advise-json":            adviseJSON,
