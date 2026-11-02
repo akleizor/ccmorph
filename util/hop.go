@@ -16,8 +16,12 @@ type psRow struct {
 	args string
 }
 
-// processTable is one `ps` read: pid -> parent, executable and argv.
+// processTable is one read of the process table: pid -> parent, executable and
+// argv; sysctl on darwin, ps elsewhere or when that read fails its self-check.
 func processTable() map[int]psRow {
+	if t, ok := sysctlProcessTable(); ok {
+		return t
+	}
 	raw, err := exec.Command("ps", "-axo", "pid=,ppid=,comm=").Output()
 	if err != nil {
 		return nil
@@ -50,10 +54,16 @@ func processTable() map[int]psRow {
 
 var shellComm = regexp.MustCompile(`^-?(zsh|bash|sh|dash)$`)
 
+// launcherComm is the Go launcher. claude runs as its child (the core's
+// claude-session execs into it), so it stands between the relay and Claude Code
+// and must never be the hop's target: TERM to it is read as a signal this launch
+// forwarded, which discards the queued switch.
+const launcherComm = "ccmorph-core"
+
 // hopTarget is `util hop-target <relay pid> <pid>`: the Claude Code process to end
-// for a hop -- the first non-shell process below the relay in <pid>'s ancestry
-// (the shells between are the relay's forwarding subshells and the one Claude Code
-// runs the command in).
+// for a hop -- the first process below the relay in <pid>'s ancestry that is
+// neither a shell nor the core launcher (the shells between are the relay's
+// forwarding subshells and the one Claude Code runs the command in).
 func hopTarget(args []string, _ io.Reader, out, _ io.Writer) int {
 	if len(args) != 2 {
 		return 2
@@ -81,7 +91,8 @@ func findHopTarget(t map[int]psRow, relay, pid int) int {
 		if r.ppid == relay {
 			// Nearest the relay first.
 			for i := len(chain) - 1; i >= 0; i-- {
-				if !shellComm.MatchString(filepath.Base(t[chain[i]].comm)) {
+				base := filepath.Base(t[chain[i]].comm)
+				if !shellComm.MatchString(base) && base != launcherComm {
 					return chain[i]
 				}
 			}
@@ -94,6 +105,24 @@ func findHopTarget(t map[int]psRow, relay, pid int) int {
 
 var adapterArgv = regexp.MustCompile(`ccmorph-(?:core )?adapter\s+(\S+)`)
 
+// findSessionAdapter is the profile of the adapter <launcher> started. A session
+// keeps one adapter alive across passes, but `util adapter-start` exits once it is
+// ready, so the adapter is reparented and its --parent-pid argument names the
+// launcher where its ppid no longer can. The pid must match whole, so 10 is never
+// taken for 100.
+func findSessionAdapter(t map[int]psRow, launcher int) string {
+	parent := regexp.MustCompile(`(?:^|\s)--parent-pid[= ]` + strconv.Itoa(launcher) + `(?:\s|$)`)
+	for _, r := range t {
+		if r.ppid != launcher && !parent.MatchString(r.args) {
+			continue
+		}
+		if m := adapterArgv.FindStringSubmatch(r.args); m != nil {
+			return m[1]
+		}
+	}
+	return ""
+}
+
 // sessionAdapter is `util session-adapter <launcher pid>`: the profile of the
 // adapter that launcher started, read from its argv.
 func sessionAdapter(args []string, _ io.Reader, out, _ io.Writer) int {
@@ -104,14 +133,9 @@ func sessionAdapter(args []string, _ io.Reader, out, _ io.Writer) int {
 	if err != nil {
 		return 1
 	}
-	for _, r := range processTable() {
-		if r.ppid != parent {
-			continue
-		}
-		if m := adapterArgv.FindStringSubmatch(r.args); m != nil {
-			fmt.Fprintln(out, m[1])
-			return 0
-		}
+	if p := findSessionAdapter(processTable(), parent); p != "" {
+		fmt.Fprintln(out, p)
+		return 0
 	}
 	return 1
 }
