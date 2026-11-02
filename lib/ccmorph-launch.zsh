@@ -1,5 +1,5 @@
-# The launch and its relaunch loop live in ccmorph-core (package launch). This
-# shell hands it the paths and env-key lists it owns, and runs it as a child that
+# The launch and its relaunch loop live in ccmorph-core (package cli). This
+# shell hands it its paths and the run's state, and runs it as a child that
 # TERM and HUP reach: `kill <launcher pid>` names this shell, not the core.
 # Run <command...> as a child this shell waits on, and forward TERM and HUP to it.
 # A foreground child defers the caller's own traps until it exits, so a signal sent

@@ -17,6 +17,11 @@ func RedactURL(raw string) string {
 		if i < 0 || i > at || tail == "" || strings.ContainsAny(tail[:1], "/?#") {
 			return "<redacted>"
 		}
+		// A / on both sides: the @ may be in a path (gw/v1/@team/x) or end a
+		// password holding a /. Either host could be wrong, so name none.
+		if strings.Contains(raw[i+3:at], "/") && strings.Contains(tail, "/") {
+			return "<redacted>"
+		}
 		raw = raw[:i+3] + tail
 	}
 	u, err := url.Parse(raw)

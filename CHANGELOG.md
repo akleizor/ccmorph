@@ -5,19 +5,40 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
+## v0.4.5 — 2026-11-02
+
+### Changed
+
+- The adapter starts after the model picker again, so a failed picker fails at
+  once and Ctrl-C always stops a booting adapter.
+- `make gate` runs `go vet` and the Go tests again.
+
+### Fixed
+
+- A resume or hop onto a gateway profile no longer leaves that gateway's whole
+  model listing in the environment of Claude Code and its tools.
+- Resume and hop checks no longer print raw curl errors, and an internal crash
+  keeps the carried model instead of replacing it.
+- `ccmorph models` and `doctor` print `<redacted>` instead of a wrong host for a
+  gateway URL with an `@` in its path.
+- With `HOME` unset, state goes to the account's home directory, never the
+  current directory.
+
 ## v0.4.4 — 2026-11-02
 
 ### Changed
 
-- **The core runs on its own.** The env-key lists live in Go
-  (`profile/envkeys.go`), and `ccmorph-core` derives its paths and version
-  when no shell hands them over, so it no longer needs zsh (#130).
-- **Faster launch.** Most internal verbs run in-process instead of a new
-  process each, profiles are read and checked once, `claude --help` is read
-  once, and the adapter boots while the model listing is fetched (#128, #131).
-- **One copy each** of URL redaction (the userinfo-safe one), atomic file
-  writes and conf reads; the keychain migration writes through a unique temp
-  file (#131).
+- **The `ccmorph` verbs run without zsh.** The env-key lists live in Go
+  (`profile/envkeys.go`), and `ccmorph-core cli main` derives its paths and
+  version when no shell hands them over (#130). The adapter's profile read and
+  `probe`'s route still go through `lib/ccmorph.sh`, so a host's `local.sh`
+  opt-ins keep applying there.
+- **Fewer processes per launch.** Most internal verbs run inside the launcher
+  instead of a new process each, a profile's conf is parsed directly instead of
+  through a text round trip, and `claude --help` is read once per launch (#128).
+- **One copy each** of URL redaction (the userinfo-safe one) and of the util conf
+  reads; the config store and the keychain migration write through one atomic
+  writer, the keychain one now with a unique temp file (#131).
 
 ## v0.4.3 — 2026-11-02
 

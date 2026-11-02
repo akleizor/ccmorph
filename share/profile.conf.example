@@ -49,7 +49,7 @@ effort=medium
 # monthly_budget_usd=<n>  positive number; Stark's spend cap, ccmorph keeps it unused
 # private=1    run from a throwaway view: config and settings are linked in,
 #              transcripts, prompt history and session state are deleted on exit
-# env.<NAME>   only names in _CCMORPH_PROFILE_ENV (lib/ccmorph-base.zsh); sub and token
+# env.<NAME>   only names in ProfileEnv (profile/envkeys.go); sub and token
 #              profiles accept the section 2 model keys only
 
 # ── 4. Context ──────────────────────────────────────────────────────────────

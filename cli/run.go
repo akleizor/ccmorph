@@ -264,20 +264,6 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 		}
 		base, _ := envGet(penv, "ANTHROPIC_BASE_URL")
 		key := authKey(penv)
-		// The adapter needs only the model, so it boots while the listing is
-		// fetched and sized; it is awaited before the env is routed through it.
-		started := make(chan bool, 1)
-		if needsAdapter && l.adapterProfile != name {
-			l.adapterStop()
-			model, ok := l.adapterModel(name, penv, explicit, defaultModel)
-			if !ok {
-				return nil, 1
-			}
-			l.logInit() // before the goroutine: the sizing below inits the log too
-			go func() { started <- l.adapterStart(name, model) }()
-		} else {
-			started <- true
-		}
 		if listing, ok := l.listing(base, key); ok {
 			if _, rc := l.util([]string{"CCMORPH_STATE_DIR=" + l.dir}, listing, "listing-has-unsized", name); rc == 0 {
 				l.logInit()
@@ -285,14 +271,20 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 					listing+"\n", "context-probe", "--listing-stdin", "--profile", name)
 			}
 		}
-		pickerOK := l.projectPicker(name, base, key, defaultModel, tag, explicit)
-		if !<-started {
-			return fail()
-		}
-		if !pickerOK {
+		if !l.projectPicker(name, base, key, defaultModel, tag, explicit) {
 			return nil, 1
 		}
 		if needsAdapter {
+			if l.adapterProfile != name {
+				l.adapterStop()
+				model, ok := l.adapterModel(name, penv, explicit, defaultModel)
+				if !ok {
+					return nil, 1
+				}
+				if !l.adapterStart(name, model) {
+					return fail()
+				}
+			}
 			if penv, ok = l.route(penv, "", "", true); !ok {
 				return fail()
 			}
@@ -637,8 +629,7 @@ func (l *launcher) projectPicker(name, base, key, own, tag, launch string) bool 
 // profileEnvironment is `ccmorph _env`: the profile's launch env, after
 // provisioning its config dir and running the host's prelaunch step.
 func (l *launcher) profileEnvironment(name string) ([]string, bool) {
-	out, errOut, rc := l.core(nil, "", "util", "profile-env", l.dir, l.profileDirs, name,
-		strings.Join(l.profileEnv, ","), strings.Join(l.mapping, ","))
+	out, errOut, rc := l.core(nil, "", "util", "profile-env", l.dir, l.profileDirs, name)
 	if errOut != "" {
 		fmt.Fprintln(os.Stderr, errOut)
 	}

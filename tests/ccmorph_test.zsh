@@ -30,6 +30,14 @@ ccmorph_test_scrub_runner_env
 readonly SCRIPT_DIR="${0:A:h}"
 readonly REPO_ROOT="${SCRIPT_DIR:h}"
 readonly CCMORPH_SOURCE="$REPO_ROOT/tests/core_lib.zsh"
+# The core's env-key lists, read once for every test (tests/core_helpers.zsh).
+() {
+  local n v
+  for n v in TUNING tuning PROFILE profile LAUNCH launch BACKEND backend MODEL_MAPPING mapping; do
+    # One line, space-joined: a multi-line env value reads as extra variables to `env`.
+    export _CCM_TEST_KEYS_$n="${(j: :)${(f)"$(env -u _CCMORPH_DIR "$REPO_ROOT/libexec/ccmorph-core" cli main _env_keys $v)"}}"
+  done
+}
 # The library text: the loader plus every module split out of it. Not the UI
 # module, which was never part of it. Text checks read all of it.
 typeset -a _ccmorph_library=("$REPO_ROOT/lib/ccmorph.sh" "$REPO_ROOT"/lib/ccmorph-*.zsh(N))

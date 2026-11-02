@@ -7,8 +7,8 @@ import (
 	"os"
 
 	"github.com/akleizor/ccmorph/adapter"
-	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/cli"
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/quirks"
 	"github.com/akleizor/ccmorph/quota"
 	"github.com/akleizor/ccmorph/settingscompose"

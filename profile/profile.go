@@ -16,8 +16,8 @@ import (
 	"github.com/akleizor/ccmorph/pycompat"
 )
 
-// Lists are the env-key allowlists the zsh library owns (_CCMORPH_PROFILE_ENV,
-// _CCMORPH_MODEL_MAPPING_ENV); they arrive from the caller so there is one copy.
+// Lists are the env-key allowlists a conf is checked against; Defaults() builds
+// them from ProfileEnv and MappingEnv in envkeys.go.
 type Lists struct {
 	ProfileEnv, MappingEnv map[string]bool
 }

@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -23,7 +22,7 @@ import (
 //     nothing answered.
 //
 // The ambient HTTPS_PROXY is honoured: it is how a bridge reaches a private endpoint.
-func fetchListing(args []string, in io.Reader, out, _ io.Writer) int {
+func fetchListing(args []string, in io.Reader, out, errw io.Writer) int {
 	if len(args) < 2 {
 		return 2
 	}
@@ -45,7 +44,7 @@ func fetchListing(args []string, in io.Reader, out, _ io.Writer) int {
 	default:
 		return 2
 	}
-	body, err := curlKeyed(key, curlArgs)
+	body, err := curlKeyed(key, curlArgs, errw)
 	if mode == "doctor" {
 		code := "000"
 		if i := strings.LastIndex(body, "__CCMORPH_STATUS__"); err == nil && i >= 0 {
@@ -67,11 +66,11 @@ func fetchListing(args []string, in io.Reader, out, _ io.Writer) int {
 // (-K -), so the key never appears on a command line.
 // shortcut: curl is the transport so the gateway test stubs keep answering; move to
 // net/http when those fixtures become a loopback server.
-func curlKeyed(key string, args []string) (string, error) {
+func curlKeyed(key string, args []string, errw io.Writer) (string, error) {
 	esc := strings.ReplaceAll(strings.ReplaceAll(key, `\`, `\\`), `"`, `\"`)
 	cmd := exec.Command("curl", append([]string{"-K", "-"}, args...)...)
 	cmd.Stdin = strings.NewReader("header = \"x-api-key: " + esc + "\"\nheader = \"Authorization: Bearer " + esc + "\"\n")
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = errw
 	b, err := cmd.Output()
 	return string(b), err
 }
@@ -137,6 +136,5 @@ func modelServed(args []string, in io.Reader, _, _ io.Writer) int {
 	if fetchListing([]string{base, "models"}, strings.NewReader(key), &listing, io.Discard) != 0 || listing.Len() == 0 {
 		return 2
 	}
-	os.Setenv("_CCM_MODELS_JSON", listing.String())
-	return modelKnown([]string{want, modelMap}, nil, nil, nil)
+	return modelInListing(listing.String(), want, modelMap)
 }
