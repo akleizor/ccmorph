@@ -260,6 +260,20 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 		}
 		base, _ := envGet(penv, "ANTHROPIC_BASE_URL")
 		key := authKey(penv)
+		// The adapter needs only the model, so it boots while the listing is
+		// fetched and sized; it is awaited before the env is routed through it.
+		started := make(chan bool, 1)
+		if needsAdapter && l.adapterProfile != name {
+			l.adapterStop()
+			model, ok := l.adapterModel(name, penv, explicit, defaultModel)
+			if !ok {
+				return nil, 1
+			}
+			l.logInit() // before the goroutine: the sizing below inits the log too
+			go func() { started <- l.adapterStart(name, model) }()
+		} else {
+			started <- true
+		}
 		if listing, ok := l.listing(base, key); ok {
 			if _, rc := l.util([]string{"CCMORPH_STATE_DIR=" + l.dir}, listing, "listing-has-unsized", name); rc == 0 {
 				l.logInit()
@@ -267,33 +281,14 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 					listing+"\n", "context-probe", "--listing-stdin", "--profile", name)
 			}
 		}
-		if !l.projectPicker(name, base, key, defaultModel, tag, explicit) {
+		pickerOK := l.projectPicker(name, base, key, defaultModel, tag, explicit)
+		if !<-started {
+			return fail()
+		}
+		if !pickerOK {
 			return nil, 1
 		}
 		if needsAdapter {
-			if l.adapterProfile != name {
-				l.adapterStop()
-				model := explicit
-				if model == "" {
-					model = defaultModel
-				}
-				if bare := strings.SplitN(model, "[", 2)[0]; isTier(bare) {
-					if v, ok := envGet(penv, "ANTHROPIC_DEFAULT_"+strings.ToUpper(bare)+"_MODEL"); ok {
-						model = v
-					}
-					if strings.SplitN(model, "[", 2)[0] == bare {
-						v, ok := l.tierAlias(name, bare)
-						if !ok {
-							l.err("no gateway model is mapped to tier '" + bare + "'; choose an explicit --model id")
-							return nil, 1
-						}
-						model = v
-					}
-				}
-				if !l.adapterStart(name, model) {
-					return fail()
-				}
-			}
 			if penv, ok = l.route(penv, "", "", true); !ok {
 				return fail()
 			}
@@ -851,6 +846,29 @@ func (l *launcher) logOrNull() string {
 		return "/dev/null"
 	}
 	return l.logPath
+}
+
+// adapterModel is the gateway id the adapter serves: the explicit or default
+// model, a tier resolved through the profile's mapping or its saved alias.
+func (l *launcher) adapterModel(name string, penv []string, explicit, defaultModel string) (string, bool) {
+	model := explicit
+	if model == "" {
+		model = defaultModel
+	}
+	if bare := strings.SplitN(model, "[", 2)[0]; isTier(bare) {
+		if v, ok := envGet(penv, "ANTHROPIC_DEFAULT_"+strings.ToUpper(bare)+"_MODEL"); ok {
+			model = v
+		}
+		if strings.SplitN(model, "[", 2)[0] == bare {
+			v, ok := l.tierAlias(name, bare)
+			if !ok {
+				l.err("no gateway model is mapped to tier '" + bare + "'; choose an explicit --model id")
+				return "", false
+			}
+			model = v
+		}
+	}
+	return model, true
 }
 
 func (l *launcher) adapterStart(name, model string) bool {

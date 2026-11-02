@@ -69,7 +69,7 @@ func rewriteJSON(path string, mutate func(doc *pycompat.Obj) bool) {
 		if !mutate(doc) {
 			return
 		}
-		atomicWrite(path, ".proj.", []byte(pycompat.Marshal(doc, pycompat.Format{Indent: 2, ASCII: true})), 0o600, false)
+		AtomicWrite(path, ".proj.", []byte(pycompat.Marshal(doc, pycompat.Format{Indent: 2, ASCII: true})), 0o600, false)
 	})
 }
 
@@ -89,7 +89,7 @@ func projectPicker(args []string, _ io.Reader, _, errw io.Writer) int {
 	if e := pycompat.Catch(func() {
 		fields = map[string]string{}
 		if exists(contextConf) {
-			fields = confFields(contextConf)
+			fields = readConf(contextConf)
 		}
 	}); e != nil {
 		fmt.Fprintln(errw, e.Msg)

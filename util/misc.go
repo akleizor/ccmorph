@@ -134,7 +134,7 @@ func normalizePluginIndex(args []string, _ io.Reader, _, _ io.Writer) int {
 		if err != nil {
 			return err
 		}
-		return atomicWrite(path, "."+filepath.Base(path)+".",
+		return AtomicWrite(path, "."+filepath.Base(path)+".",
 			[]byte(pycompat.Marshal(data, pycompat.Format{Indent: 2, ASCII: true})+"\n"), fi.Mode().Perm(), true)
 	}
 	known := filepath.Join(plugins, "known_marketplaces.json")
@@ -453,7 +453,7 @@ func modelsFilteredJSON(args []string, in io.Reader, out, _ io.Writer) int {
 		return 2
 	}
 	var fields map[string]string
-	if pycompat.Catch(func() { fields = confFields(args[0]) }) != nil {
+	if pycompat.Catch(func() { fields = readConf(args[0]) }) != nil {
 		return 1
 	}
 	payload, err := pycompat.Parse(readAll(in))
@@ -595,7 +595,7 @@ func unwireStatusline(args []string, _ io.Reader, _, _ io.Writer) int {
 		return 0
 	}
 	doc.Delete("statusLine")
-	if atomicWrite(args[0], ".sl.", []byte(pycompat.Marshal(doc, pycompat.Format{Indent: 2, ASCII: true})+"\n"), 0o600, false) != nil {
+	if AtomicWrite(args[0], ".sl.", []byte(pycompat.Marshal(doc, pycompat.Format{Indent: 2, ASCII: true})+"\n"), 0o600, false) != nil {
 		return 1
 	}
 	return 0
@@ -718,7 +718,7 @@ func gwModels(args []string, in io.Reader, out, _ io.Writer) int {
 	}
 	fields := map[string]string{}
 	if args[1] == "picker" {
-		if pycompat.Catch(func() { fields = confFields(args[0]) }) != nil {
+		if pycompat.Catch(func() { fields = readConf(args[0]) }) != nil {
 			return 1
 		}
 	}

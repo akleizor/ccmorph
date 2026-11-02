@@ -5,10 +5,10 @@ package util
 
 import (
 	"fmt"
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/akleizor/ccmorph/pycompat"
 )
@@ -122,7 +122,8 @@ func truthy(v pycompat.Value) bool {
 }
 
 // atomicWrite is the mkstemp, write, chmod, replace sequence the helpers shared.
-func atomicWrite(path, prefix string, data []byte, mode os.FileMode, sync bool) error {
+// AtomicWrite replaces path through a same-dir temp file, renamed into place.
+func AtomicWrite(path, prefix string, data []byte, mode os.FileMode, sync bool) error {
 	f, err := os.CreateTemp(filepath.Dir(path), prefix+"*")
 	if err != nil {
 		return err
@@ -161,28 +162,8 @@ func loadJSON(path string) (pycompat.Value, error) {
 	return pycompat.Parse(b)
 }
 
-// confFields is the lenient key=value reader the shell helpers used: a line is
-// split once on "=", "#" lines are skipped, and nothing is trimmed.
-func confFields(path string) map[string]string {
-	fields := map[string]string{}
-	for _, line := range splitUniversal(pycompat.ReadText(path)) {
-		if k, v, ok := cut(line); ok {
-			fields[k] = v
-		}
-	}
+// readConf is a profile conf's fields, read the one way ctxwindow does.
+func readConf(path string) map[string]string {
+	_, fields := ctxwindow.ReadConf(path)
 	return fields
-}
-
-func splitUniversal(s string) []string { return strings.Split(s, "\n") }
-
-func cut(line string) (string, string, bool) {
-	if len(line) > 0 && line[0] == '#' {
-		return "", "", false
-	}
-	for i := 0; i < len(line); i++ {
-		if line[i] == '=' {
-			return line[:i], line[i+1:], true
-		}
-	}
-	return "", "", false
 }
