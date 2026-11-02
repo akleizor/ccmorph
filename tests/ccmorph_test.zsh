@@ -63,8 +63,11 @@ readonly CCMORPH_TEST_HANG_TIMEOUT="${CCMORPH_TEST_HANG_TIMEOUT:-120}"
 # CCMORPH_TEST_JOBS=1 runs it serially. Default: every core. The shards mostly wait
 # on macOS's first-exec scan of each fresh stub, and concurrent scans overlap: on the
 # mini 10 shards ran 85 s and 18 ran 53 s, green at load 43; 36 flaked (2026-11-02).
+# So the default stops at 18, the largest count measured green.
 _ccm_test_jobs() {
-  sysctl -n hw.ncpu 2>/dev/null || nproc
+  local n
+  n=$(sysctl -n hw.ncpu 2>/dev/null || nproc)
+  print -- $(( n > 18 ? 18 : n ))
 }
 if [[ -z "${CCMORPH_TEST_SHARD:-}" ]] && (( ${CCMORPH_TEST_JOBS:-$(_ccm_test_jobs)} > 1 )); then
   typeset -i jobs=${CCMORPH_TEST_JOBS:-$(_ccm_test_jobs)} shard rc=0
