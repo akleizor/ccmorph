@@ -189,7 +189,7 @@ credential type.
 Recognised keys: `type`, `email`, `token`, `base_url`, `api_key`, `model`,
 `effort`, `effort.<model>`, `model_defaults`, `model_map` (apikey only), `adapter`,
 `context_window.<model>`, and `env.<NAME>` for the model-behaviour variables listed in
-`_CCMORPH_PROFILE_ENV`.
+`ProfileEnv`.
 
 The live subagent-model knob is `CLAUDE_CODE_SUBAGENT_MODEL`, owned by the
 profile `.conf` as `env.` and passed in the launch environment (forces every
@@ -198,10 +198,10 @@ so bulk subagent fan-out does not run on the session's own model.
 
 ### The env lists and the sweep
 
-Three lists in `lib/ccmorph.sh` decide what a launch clears from its environment:
+The lists in `profile/envkeys.go` decide what a launch clears from its environment:
 
-- `_CCMORPH_PROFILE_ENV` is the set of keys a conf may declare as `env.<NAME>`.
-- `_CCMORPH_TUNING_ENV` (`CLAUDE_CODE_SIMPLE`, `MAX_THINKING_TOKENS`,
+- `ProfileEnv` is the set of keys a conf may declare as `env.<NAME>`.
+- `TuningEnv` (`CLAUDE_CODE_SIMPLE`, `MAX_THINKING_TOKENS`,
   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`) is a subset of it: client tuning that
   does not pick a backend or account. The shell's value **passes through** unless the
   profile declares the key. The launcher records the tuning keys it set in
@@ -209,18 +209,18 @@ Three lists in `lib/ccmorph.sh` decide what a launch clears from its environment
   outer session's values, not the shell's. `CLAUDE_CODE_SIMPLE` is also cleared inside
   a Claude Code child session (`CLAUDE_CODE_CHILD_SESSION=1`; `CLAUDECODE=1` alone is set in every shell Claude Code spawns and does not count), because `claude --bare` sets it itself and
   no launch records it.
-- `_CCMORPH_BACKEND_ENV` (provider switches, base URL, API keys, OAuth tokens) is
+- `BackendEnv` (provider switches, base URL, API keys, OAuth tokens) is
   **always cleared** and is not declarable by a profile; the launcher sets its own
   credential and endpoint. `ccmorph _backend_env` prints it, answered before any state
   work, so the Remote Control add-on builds its strip list from this one list.
 
-Every other key on `_CCMORPH_PROFILE_ENV`, plus `_CCMORPH_LAUNCH_ENV` (keys a launch
+Every other key on `ProfileEnv`, plus `LaunchEnv` (keys a launch
 sets for itself), is cleared unconditionally. The permit set and the clear set once
 diverged: `MAX_CONTEXT_TOKENS`, `AUTO_COMPACT_WINDOW` and `AUTOCOMPACT_PCT_OVERRIDE`
 were permitted but never cleared, so exporting one in a shell silently changed
 compaction for every profile that omitted it.
 
-Consequence: never remove a key from `_CCMORPH_PROFILE_ENV` to "clean up" an unused
+Consequence: never remove a key from `ProfileEnv` to "clean up" an unused
 setting. Removing it stops the value being cleared, which reintroduces the leak. A key
 joins the tuning list only if a shell value is harmless to every backend.
 
@@ -472,7 +472,7 @@ ccmorph's whole duty is to pass that ambient value through **unchanged** —
 `HTTPS_PROXY`, `https_proxy` and `NO_PROXY` reach the Claude child, the adapter,
 `ccmorph-core adapter`'s cliproxyapi, model listing, and `ccmorph-core context-probe`
 exactly as exported. `HTTPS_PROXY` is deliberately absent from
-`_CCMORPH_PROFILE_ENV`, so [the launch sweep](#the-env-lists-and-the-sweep)
+`ProfileEnv`, so [the launch sweep](#the-env-lists-and-the-sweep)
 never clears it, and no launch path sets or blanks it.
 
 The one exception is a probe of ccmorph's own loopback services — adapter and

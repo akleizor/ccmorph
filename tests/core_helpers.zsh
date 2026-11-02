@@ -3,12 +3,17 @@
 
 _ccm_util() { "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" util "$@"; }
 
-# The env-key lists, as the Go core holds them (profile/envkeys.go).
+# The env-key lists, as the Go core holds them (profile/envkeys.go). Read once per
+# suite run and passed down through the env; an empty list fails here, not later
+# as a loop that checks nothing.
 () {
-  local n v
+  local n v cache
   for n v in TUNING tuning PROFILE profile LAUNCH launch BACKEND backend MODEL_MAPPING mapping; do
+    cache=_CCM_TEST_KEYS_$n
+    [[ -n "${(P)cache:-}" ]] || export $cache="${(j: :)${(f)"$(_ccm_core cli main _env_keys $v)"}}"
+    [[ -n "${(P)cache:-}" ]] || { print -u2 -- "core_helpers: env-key list '$v' is empty"; return 1; }
     typeset -ga _CCMORPH_${n}_ENV
-    set -A _CCMORPH_${n}_ENV ${(f)"$(_ccm_core cli main _env_keys $v)"}
+    set -A _CCMORPH_${n}_ENV ${=${(P)cache}}
   done
 }
 _ccm_err() { print -u2 -- "ccmorph: $1"; return 1; }
@@ -54,8 +59,7 @@ _ccm_hazard_set() { ( _ccm_launch_core --hazard-set "$1" "$2" "$3" "${4:-}" -- "
 _ccm_read() {  # fills the global assoc _ccm from the core's profile reader
   typeset -gA _ccm=()
   local name="$1" readonly="${2:-0}" out
-  out=$(_ccm_util profile-read "$_CCMORPH_DIR" "$name" $(( ! readonly )) \
-    "${(j:,:)_CCMORPH_PROFILE_ENV}" "${(j:,:)_CCMORPH_MODEL_MAPPING_ENV}") || {
+  out=$(_ccm_util profile-read "$_CCMORPH_DIR" "$name" $(( ! readonly ))) || {
     _ccm_err "${out:-could not read profile '$name'}"
     unset _ccm
     return 1

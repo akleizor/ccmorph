@@ -764,7 +764,12 @@ func modelKnown(args []string, _ io.Reader, _, _ io.Writer) int {
 	if len(args) != 2 {
 		return 2
 	}
-	payload, err := pycompat.Parse([]byte(os.Getenv("_CCM_MODELS_JSON")))
+	return modelInListing(os.Getenv("_CCM_MODELS_JSON"), args[0], args[1])
+}
+
+// modelInListing is model-known over a listing body: 0 served, 1 not, 2 cannot tell.
+func modelInListing(listing, want, mapJSON string) int {
+	payload, err := pycompat.Parse([]byte(listing))
 	if err != nil {
 		return 2
 	}
@@ -773,7 +778,6 @@ func modelKnown(args []string, _ io.Reader, _, _ io.Writer) int {
 	if asObj(payload) == nil {
 		return 2
 	}
-	mapJSON := args[1]
 	if mapJSON == "" {
 		mapJSON = "{}"
 	}
@@ -782,7 +786,6 @@ func modelKnown(args []string, _ io.Reader, _, _ io.Writer) int {
 	if err != nil || modelMap == nil {
 		return 1
 	}
-	want := args[0]
 	if mapped, has := modelMap.Get(want); has && mapped != nil {
 		s, ok := mapped.(string)
 		if !ok {

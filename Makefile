@@ -41,7 +41,7 @@ test-py:
 # The Hive's gate on every landing. Each suite works in its own scratch homes and mostly
 # waits on process spawns, so they overlap: 185 s one after another, under a minute at once.
 gate: shim
-	@$(MAKE) -j4 gate-launch gate-install gate-configure gate-py
+	@$(MAKE) -j5 gate-launch gate-install gate-configure gate-py test-go
 
 gate-launch:
 	@zsh tests/ccmorph_test.zsh

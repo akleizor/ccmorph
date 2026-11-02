@@ -41,7 +41,6 @@ func init() {
 		"profile-read":           profileRead,
 		"profile-env":            profileEnv,
 		"profile-validate":       profileValidate,
-		"profile-validate-url":   profileValidateURL,
 		"listing-has-unsized":    listingHasUnsized,
 		"keychain-migrate":       keychainMigrate,
 		"keychain-rename":        keychainRename,
@@ -121,7 +120,6 @@ func truthy(v pycompat.Value) bool {
 	return true
 }
 
-// atomicWrite is the mkstemp, write, chmod, replace sequence the helpers shared.
 // AtomicWrite replaces path through a same-dir temp file, renamed into place.
 func AtomicWrite(path, prefix string, data []byte, mode os.FileMode, sync bool) error {
 	f, err := os.CreateTemp(filepath.Dir(path), prefix+"*")

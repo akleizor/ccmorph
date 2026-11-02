@@ -13,8 +13,10 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"os/user"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -136,7 +138,15 @@ func (l *launcher) handoff() []string {
 // the core also runs on its own: state from CCMORPH_STATE_DIR or XDG, code beside
 // this executable (libexec/ccmorph-core, with lib/ next to libexec/).
 func (l *launcher) defaultPaths() {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil { // no HOME: the account's own, never a path relative to the cwd
+		if u, uerr := user.Current(); uerr == nil && u.HomeDir != "" {
+			home = u.HomeDir
+		} else if l.dir == "" && os.Getenv("CCMORPH_STATE_DIR") == "" {
+			fmt.Fprintln(os.Stderr, "ccmorph: HOME is unset and no home directory is known; set HOME or CCMORPH_STATE_DIR")
+			os.Exit(1)
+		}
+	}
 	if l.dir == "" {
 		if l.dir = os.Getenv("CCMORPH_STATE_DIR"); l.dir == "" {
 			cfg := os.Getenv("XDG_CONFIG_HOME")
@@ -263,7 +273,8 @@ func inProcess(stdin string, args []string) (out, errOut string, rc int) {
 	var o, e bytes.Buffer
 	defer func() {
 		if r := recover(); r != nil {
-			out, errOut, rc = "", fmt.Sprint(r), 1
+			// A crashed child exits 2; callers read 1 as a verdict (model-served: not served).
+			out, errOut, rc = "", fmt.Sprintf("panic: %v\n%s", r, debug.Stack()), 2
 		}
 	}()
 	rc = util.Main(args, strings.NewReader(stdin), &o, &e)
@@ -476,8 +487,6 @@ func envDrop(env []string, key string) []string {
 	return slices.DeleteFunc(slices.Clone(env), func(e string) bool { return strings.HasPrefix(e, key+"=") })
 }
 
-// claudeArity is _ccm_claude_opt_arities as the `<option> <arity>` lines the
-// argv walkers read, probed once per launch from `claude --help`.
 // claudeHelp is the installed claude's --help, read once for the verb and arity tables.
 func (l *launcher) claudeHelp() string {
 	if v, ok := l.memo["claude --help"]; ok {
@@ -501,6 +510,7 @@ func (l *launcher) claudeTable(verb string) string {
 	return v
 }
 
+// claudeArity is the `<option> <arity>` lines the argv walkers read, from claudeHelp.
 func (l *launcher) claudeArity() string {
 	if a := l.claudeTable("claude-opt-arities"); a != "" {
 		return a + "\n"

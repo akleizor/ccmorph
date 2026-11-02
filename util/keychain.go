@@ -140,22 +140,15 @@ func keychainMove(conf, name string, from func(string) string, errw io.Writer) i
 	return 0
 }
 
-// profileRead: profile-read <state> <name> <secure 0|1> <profile-env,...> <mapping-env,...>
+// profileRead: profile-read <state> <name> <secure 0|1>
 // prints the profile's fields as NUL-separated key/value pairs for _ccm_read,
 // or the refusal on stdout with exit 1. Removed-key notices go to stderr.
 func profileRead(args []string, _ io.Reader, out, errw io.Writer) int {
-	if len(args) != 5 {
+	if len(args) != 3 {
 		return 2
 	}
-	set := func(csv string) map[string]bool {
-		m := map[string]bool{}
-		for _, k := range strings.Split(csv, ",") {
-			m[k] = true
-		}
-		return m
-	}
 	fields, err := profile.Read(args[0], args[1], args[2] == "1",
-		profile.Lists{ProfileEnv: set(args[3]), MappingEnv: set(args[4])},
+		profile.Defaults(),
 		func(line string) { fmt.Fprintln(errw, line) })
 	if err != nil {
 		io.WriteString(out, err.Error())
@@ -187,35 +180,16 @@ func profileValidate(args []string, in io.Reader, out, _ io.Writer) int {
 	return 0
 }
 
-func profileValidateURL(args []string, _ io.Reader, out, _ io.Writer) int {
-	if len(args) != 2 {
-		return 2
-	}
-	if err := profile.ValidateBaseURL(args[0], args[1]); err != nil {
-		io.WriteString(out, err.Error())
-		return 1
-	}
-	return 0
-}
-
-// profileEnv is `util profile-env <state dir> <profiles dir> <name> <profile env
-// csv> <mapping env csv>`: read, validate and print the profile's launch
+// profileEnv is `util profile-env <state dir> <profiles dir> <name>`: read, validate and print the profile's launch
 // environment, one VAR=value per line, after a first `type=<type>` line. A refusal
 // goes to stdout with exit 1.
 func profileEnv(args []string, _ io.Reader, out, errw io.Writer) int {
-	if len(args) != 5 {
+	if len(args) != 3 {
 		return 2
-	}
-	set := func(csv string) map[string]bool {
-		m := map[string]bool{}
-		for _, k := range strings.Split(csv, ",") {
-			m[k] = true
-		}
-		return m
 	}
 	name := args[2]
 	f, err := profile.Read(args[0], name, true,
-		profile.Lists{ProfileEnv: set(args[3]), MappingEnv: set(args[4])},
+		profile.Defaults(),
 		func(line string) { fmt.Fprintln(errw, line) })
 	if err == nil {
 		err = profile.Validate(name, f)
