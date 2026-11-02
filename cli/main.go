@@ -633,7 +633,8 @@ A git checkout is refused: update it with git.
 Needs the install.sh that sits beside the library; without it, run the one-line
 install from the README once.`},
 	"uninstall": {"ccmorph uninstall", `Remove the ccmorph command from ~/.local/bin. Your profiles and credentials stay
-in ~/.config/ccmorph; delete that directory by hand if you want them gone.
+in ~/.config/ccmorph; it lists what it left (state, usage receipts, keychain
+items) with the commands that remove them, if you want them gone.
 Needs the install.sh that sits beside the library.`},
 	"probe": {"ccmorph probe [profile] [options]", `Refresh published context metadata; no inference requests by default.
 Paid inference requires --allow-inference, --profile and --model explicitly.
