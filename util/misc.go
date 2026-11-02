@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
-	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/pycompat"
 )
 
@@ -188,14 +187,6 @@ func normalizePluginIndex(args []string, _ io.Reader, _, _ io.Writer) int {
 				}
 			}
 		}
-	}
-	return 0
-}
-
-// validModelMap: a JSON object of unique model ids to model ids, no key carrying [1m].
-func validModelMap(args []string, _ io.Reader, _, _ io.Writer) int {
-	if len(args) != 1 || !profile.ValidModelMap(args[0]) {
-		return 1
 	}
 	return 0
 }

@@ -99,8 +99,7 @@ func (l *launcher) accountModel(name string) string {
 }
 
 func (l *launcher) configStoreQ(verb, name, key string) (string, int) {
-	args := append([]string{"config-store", verb, l.conf(name), l.profileLayer(name), key, l.canonical()}, l.mapping...)
-	return l.utilQ(nil, "", args...)
+	return l.utilQ(nil, "", l.configStoreArgs(verb, name, key)...)
 }
 
 func providerLabel(p string) string {

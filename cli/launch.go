@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/profile"
+	"github.com/akleizor/ccmorph/util"
 )
 
 type launcher struct {
@@ -33,11 +34,8 @@ type launcher struct {
 	red, yellow, bold, dim, accent, cyan, reset string
 
 	memo                map[string]string
-	arity               string
-	arityProbed         bool
-	verbsProbed         bool
 	version, zshVersion string
-	claudeVerbs         string
+	migrated            bool
 
 	adapterPID              int
 	adapterProfile          string
@@ -268,10 +266,6 @@ func (l *launcher) theme() {
 	if !isTTY(1) || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
 		return
 	}
-	rgb := func(hex string) string {
-		v, _ := strconv.ParseUint(hex, 16, 32)
-		return fmt.Sprintf("\033[38;2;%d;%d;%dm", v>>16, v>>8&0xff, v&0xff)
-	}
 	l.bold, l.dim, l.reset = "\033[1m", "\033[2m", "\033[0m"
 	l.accent, l.yellow, l.red, l.cyan = rgb("d77757"), rgb("ffc107"), rgb("ff6b80"), rgb("b1b9f9")
 }
@@ -310,6 +304,9 @@ func (l *launcher) stopHelpers() {
 // core runs a ccmorph-core verb as the zsh did: stdout with trailing newlines
 // stripped like $(…), stderr kept for the callers that report it.
 func (l *launcher) core(env []string, stdin string, args ...string) (string, string, int) {
+	if len(args) > 1 && args[0] == "util" && len(env) == 0 && !ownsProcess[args[1]] {
+		return inProcess(stdin, args[1:])
+	}
 	cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), args...)
 	cmd.Env = append(os.Environ(), env...)
 	if stdin != "" {
@@ -331,6 +328,25 @@ func (l *launcher) core(env []string, stdin string, args ...string) (string, str
 		}
 	}
 	return strings.TrimRight(out.String(), "\n"), strings.TrimRight(errb.String(), "\n"), rc
+}
+
+// ownsProcess are the util verbs that start, stop or exec a process, or hand a
+// child this process's stderr; they keep their own process.
+var ownsProcess = map[string]bool{
+	"adapter-start": true, "bridge-start": true, "bridge-stop": true,
+	"claude-session": true, "fetch-listing": true,
+}
+
+// inProcess runs a util verb in this binary: the same verb, minus a fork and exec.
+func inProcess(stdin string, args []string) (out, errOut string, rc int) {
+	var o, e bytes.Buffer
+	defer func() {
+		if r := recover(); r != nil {
+			out, errOut, rc = "", fmt.Sprint(r), 1
+		}
+	}()
+	rc = util.Main(args, strings.NewReader(stdin), &o, &e)
+	return strings.TrimRight(o.String(), "\n"), strings.TrimRight(e.String(), "\n"), rc
 }
 
 // util is `_ccm_util`: its stderr reaches the terminal, as the zsh left it.
@@ -442,40 +458,31 @@ func (l *launcher) readActive() (string, bool) {
 }
 
 // readRaw is _ccm_read: the profile's fields, or false after the refusal has
-// been reported.
+// been printed.
 func (l *launcher) readRaw(name string) (map[string]string, bool) {
-	out, errOut, rc := l.core(nil, "", "util", "profile-read", l.dir, name, "1",
-		strings.Join(l.profileEnv, ","), strings.Join(l.mapping, ","))
-	if errOut != "" {
-		fmt.Fprintln(os.Stderr, errOut)
-	}
-	if rc != 0 {
-		if out == "" {
-			out = "could not read profile '" + name + "'"
-		}
-		l.err(out)
+	f, err := l.readProfile(name, func(line string) { fmt.Fprintln(os.Stderr, line) })
+	if err != nil {
+		l.err(err.Error())
 		return nil, false
 	}
-	return confFields(out), true
+	return f, true
 }
 
 // readQuiet is `_ccm_read 2>/dev/null`.
 func (l *launcher) readQuiet(name string) (map[string]string, bool) {
-	out, _, rc := l.core(nil, "", "util", "profile-read", l.dir, name, "1",
-		strings.Join(l.profileEnv, ","), strings.Join(l.mapping, ","))
-	if rc != 0 {
-		return nil, false
-	}
-	return confFields(out), true
+	f, err := l.readProfile(name, func(string) {})
+	return f, err == nil
 }
 
-func confFields(out string) map[string]string {
-	fields := map[string]string{}
-	parts := strings.Split(strings.TrimSuffix(out, "."), "\x00")
-	for i := 0; i+1 < len(parts); i += 2 {
-		fields[parts[i]] = parts[i+1]
+func (l *launcher) readProfile(name string, warn func(string)) (map[string]string, error) {
+	set := func(keys []string) map[string]bool {
+		m := map[string]bool{}
+		for _, k := range keys {
+			m[k] = true
+		}
+		return m
 	}
-	return fields
+	return profile.Read(l.dir, name, true, profile.Lists{ProfileEnv: set(l.profileEnv), MappingEnv: set(l.mapping)}, warn)
 }
 
 // read is _ccm_read + _ccm_validate_loaded.
@@ -484,15 +491,9 @@ func (l *launcher) read(name string) (map[string]string, bool) {
 	if !ok {
 		return nil, false
 	}
-	if fields["type"] == "apikey" {
-		var in strings.Builder
-		for _, k := range []string{"type", "api_key", "base_url", "adapter"} {
-			in.WriteString(k + "\x00" + fields[k] + "\x00")
-		}
-		if msg, rc := l.util(nil, in.String(), "profile-validate", name); rc != 0 {
-			l.err(msg)
-			return nil, false
-		}
+	if err := profile.Validate(name, fields); err != nil {
+		l.err(err.Error())
+		return nil, false
 	}
 	return fields, true
 }
@@ -521,8 +522,11 @@ func (l *launcher) settingsSources(name string) []string {
 }
 
 func (l *launcher) configStore(verb, name, key string, env ...string) (string, int) {
-	args := append([]string{"config-store", verb, l.conf(name), l.profileLayer(name), key, l.canonical()}, l.mapping...)
-	return l.util(env, "", args...)
+	return l.util(env, "", l.configStoreArgs(verb, name, key)...)
+}
+
+func (l *launcher) configStoreArgs(verb, name, key string) []string {
+	return append([]string{"config-store", verb, l.conf(name), l.profileLayer(name), key, l.canonical()}, l.mapping...)
 }
 
 func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
@@ -560,19 +564,34 @@ func envDrop(env []string, key string) []string {
 
 // claudeArity is _ccm_claude_opt_arities as the `<option> <arity>` lines the
 // argv walkers read, probed once per launch from `claude --help`.
-func (l *launcher) claudeArity() string {
-	if l.arityProbed {
-		return l.arity
+// claudeHelp is the installed claude's --help, read once for the verb and arity tables.
+func (l *launcher) claudeHelp() string {
+	if v, ok := l.memo["claude --help"]; ok {
+		return v
 	}
-	l.arityProbed = true
 	help, _ := exec.Command("claude", "--help").Output()
-	if len(help) > 0 {
-		l.arity, _ = l.util(nil, string(help), "claude-opt-arities")
-		if l.arity != "" {
-			l.arity += "\n"
-		}
+	l.memo["claude --help"] = string(help)
+	return string(help)
+}
+
+// claudeTable is a util parser's answer over claudeHelp, memoised per verb.
+func (l *launcher) claudeTable(verb string) string {
+	if v, ok := l.memo[verb]; ok {
+		return v
 	}
-	return l.arity
+	v := ""
+	if help := l.claudeHelp(); help != "" {
+		v, _ = l.util(nil, help, verb)
+	}
+	l.memo[verb] = v
+	return v
+}
+
+func (l *launcher) claudeArity() string {
+	if a := l.claudeTable("claude-opt-arities"); a != "" {
+		return a + "\n"
+	}
+	return ""
 }
 
 func splitNUL(s string) []string {

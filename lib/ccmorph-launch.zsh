@@ -1,8 +1,7 @@
 # The launch and its relaunch loop live in ccmorph-core (package launch). This
 # shell hands it the paths and env-key lists it owns, and runs it as a child that
 # TERM and HUP reach: `kill <launcher pid>` names this shell, not the core.
-# Run <command...> (or, after --exec, the external command, replacing the child
-# so its parent is this shell) as a child this shell waits on, and forward TERM and HUP to it.
+# Run <command...> as a child this shell waits on, and forward TERM and HUP to it.
 # A foreground child defers the caller's own traps until it exits, so a signal sent
 # to the launcher (agent-dispatch, a user's kill) never reached claude. Returns the
 # child's exit status.
@@ -28,12 +27,7 @@ _ccm_fork_forward() {
      ! { exec {_ccm_err}<>"$_ccm_errf" } 2>/dev/null; then   # a bare `exec ... 2>/dev/null` would silence this shell's stderr for good
     [[ -n $_ccm_errf ]] && command rm -f -- "$_ccm_errf"
     [[ -n $_ccm_in ]] && exec {_ccm_in}<&-
-    if [[ $1 == --exec ]]; then
-      shift
-      ( exec "$@" )
-    else
-      ( "$@" )
-    fi
+    ( "$@" )
     return $?
   fi
   command rm -f -- "$_ccm_errf"
@@ -42,10 +36,6 @@ _ccm_fork_forward() {
     (( _ccm_sig )) && exit $(( 128 + _ccm_sig ))
     [[ -n $_ccm_in ]] && exec <&$_ccm_in {_ccm_in}<&-
     exec {_ccm_err}<&-
-    if [[ $1 == --exec ]]; then
-      shift
-      exec "$@"
-    fi
     "$@"
     exit $?
   } &

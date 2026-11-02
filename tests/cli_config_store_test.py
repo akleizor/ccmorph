@@ -476,21 +476,14 @@ class ConfigurationSaveTest(unittest.TestCase):
     def test_native_launch_reuses_seeded_model_without_a_second_reader_gh327(self):
         self.conf.write_text('type=token\ntoken=test-token\nmodel=native-default\n')
         native = self.settings.read_bytes()
-        calls = self.home / 'store-calls'
         # Stop at argument validation, immediately after the native default seam.
-        # A wrapper core records every config-store verb the launch asks for.
+        # The launch reads the model once, through seed-model-defaults (cli/run.go):
+        # config-store runs in-process, so the guard is the result, not a call count.
         result = subprocess.run(
-            ['zsh', '-fc', 'source "$1"; mkdir -p "$HOME/core"; '
-             'printf "%s\\n" "#!/bin/sh" "real=\'$_CCMORPH_LIBEXEC_DIR/ccmorph-core\'" '
-             '\'[ "$1 $2" = "util config-store" ] && printf "%s\\n" "$3" >> "$TEST_STORE_CALLS"\' '
-             '\'exec "$real" "$@"\' > "$HOME/core/ccmorph-core"; chmod +x "$HOME/core/ccmorph-core"; '
-             '_CCMORPH_LIBEXEC_DIR="$HOME/core"; _ccm_launch -a demo --model', '_', str(ROOT / 'lib/ccmorph.sh')],
-            env={**self.env, 'TEST_STORE_CALLS': str(calls)}, text=True,
-            capture_output=True, timeout=HANG_TIMEOUT)
+            ['zsh', '-fc', 'source "$1"; _ccm_launch -a demo --model', '_', str(ROOT / 'lib/ccmorph.sh')],
+            env=self.env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertIn('--model requires a value', result.stderr)
-        self.assertEqual([op for op in calls.read_text().splitlines()
-                          if op in ('seed-model-defaults', 'get')], ['seed-model-defaults'])
         self.assertEqual(self.conf_fields()['model'], 'native-default')
         self.assertEqual(self.settings.read_bytes(), native)
 

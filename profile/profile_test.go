@@ -130,3 +130,14 @@ func TestEnv(t *testing.T) {
 		t.Fatalf("unsupported type: %v", err)
 	}
 }
+
+func TestValidModelMap(t *testing.T) {
+	for in, want := range map[string]bool{
+		`{"a":"b"}`: true, ` {"a":"b"}`: true, `{}`: true, `[]`: false, `{"a":"b","a":"c"}`: false, `{"a[1m]":"b"}`: false,
+		`{"a":"b c"}`: false, `{"a":1}`: false, `nope`: false, `{"a":{"b":"c"},"d":"e"}`: false, `{"A[1M]":"b"}`: false,
+	} {
+		if got := ValidModelMap(in); got != want {
+			t.Errorf("ValidModelMap(%s) = %v, want %v", in, got, want)
+		}
+	}
+}
