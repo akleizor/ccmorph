@@ -58,7 +58,7 @@ def test_provisioning_leaves_native_claude_dir_mode_alone(tmp_path):
     native.mkdir()
     os.chmod(native, 0o755)
     result = run(home, state,
-                 script='typeset -gA _ccm=(type apikey); _ccm_secure_dirs && _ccm_setup_dir_unlocked demo')
+                 script='ccmorph _secure && "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" util setup-profile "$_CCMORPH_PROFILE_DIRS" demo apikey')
     assert result.returncode == 0, result.stderr
     assert native.stat().st_mode & 0o777 == 0o755
     assert (state / 'profiles/demo/skills').is_symlink()
