@@ -281,6 +281,16 @@ setup_home() {
   unset CLAUDE_CODE_SIMPLE MAX_THINKING_TOKENS CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CCMORPH_SET_ENV CLAUDECODE CLAUDE_CODE_CHILD_SESSION
   export CCMORPH_TEST_LOG="$HOME/claude.log"
   export PATH="$HOME/bin:$ORIGINAL_PATH"
+  # A launch's sizing path reaches past the curl stubs: the models.dev catalogue
+  # fetch and the validation probes go through net/http, so a fresh home paid a
+  # 3 s catalogue timeout plus an endpoint DNS roundtrip per launch -- and the
+  # suite touched the real network. The opener honours the ambient proxy seam
+  # (ctxwindow/http.go reads HTTPS_PROXY), so point it at a port nothing owns:
+  # every such call refuses at once, the bundled catalogue snapshot answers,
+  # and the stubs on PATH never speak HTTP at all.
+  export HTTPS_PROXY="http://127.0.0.1:1" https_proxy="http://127.0.0.1:1"
+  export HTTP_PROXY="http://127.0.0.1:1" http_proxy="http://127.0.0.1:1"
+  unset NO_PROXY no_proxy
 
   # Tests source ccmorph.sh from the REPO, so its derived library path is the repo
   # — but they stub helpers (ccmorph-adapter, model-window) inside the scratch
@@ -1725,6 +1735,42 @@ test_launch_interactive_resolves_the_account() {
     'the interactive flag must never reach Claude Code' || rc=1
   assert_not_contains "$(<"$HOME/fzf.input")" 'sk-test-' \
     'profile picker rows must not expose credentials' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_launch_sizes_without_waiting_on_the_network() {
+  # The sizing half of a launch (the models.dev catalogue fetch, the validation
+  # probes) speaks net/http, past every curl stub, so a fixture without a proxy
+  # paid a 3 s catalogue timeout plus an endpoint DNS roundtrip per launch and
+  # touched the real network. setup_home points the opener's ambient proxy seam
+  # at a port nothing owns: those calls refuse at once and the bundled
+  # catalogue snapshot answers. This pins the export by what the launched
+  # Claude Code sees -- remove it and every launch test waits on the network
+  # again.
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  fake_gateway
+  fake_fzf
+  write_apikey_conf alpha 'api_key=sk-test-alpha' 'base_url=https://gateway.invalid'
+  printf '%s\n' \
+    '#!/bin/sh' \
+    '{' \
+    '  printf "PROXY=%s\\n" "${HTTPS_PROXY-<unset>}"' \
+    '} >> "$CCMORPH_TEST_LOG"' > "$HOME/bin/claude"
+  chmod +x "$HOME/bin/claude"
+  source "$CCMORPH_SOURCE"
+
+  _ccm_launch -a alpha prompt || {
+    rm -rf "$test_home"
+    return 1
+  }
+
+  local actual rc=0
+  actual="$(<"$CCMORPH_TEST_LOG")"
+  assert_contains "$actual" 'PROXY=http://127.0.0.1:1' \
+    'the refusing sizing proxy must reach the launched Claude Code' || rc=1
   rm -rf "$test_home"
   return $rc
 }
@@ -11778,6 +11824,7 @@ run_test test_effort_command_refuses_a_level_claude_code_would_drop
 run_test test_set_model_refuses_a_flag_shaped_value
 run_test test_set_adapter_is_rejected_as_automatic
 run_test test_effort_interactive_still_requires_a_real_profile
+run_test test_launch_sizes_without_waiting_on_the_network
 run_test test_launch_interactive_resolves_the_account
 run_test test_launch_interactive_with_an_account_asks_only_the_model
 run_test test_public_model_picker_flag_asks_only_for_model
