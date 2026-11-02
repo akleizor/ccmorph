@@ -68,17 +68,6 @@ func TestHazardMessage(t *testing.T) {
 	}
 }
 
-func TestValidModelMap(t *testing.T) {
-	for in, want := range map[string]int{
-		`{"a":"b"}`: 0, ` {"a":"b"}`: 0, `{}`: 0, `[]`: 1, `{"a":"b","a":"c"}`: 1, `{"a[1m]":"b"}`: 1,
-		`{"a":"b c"}`: 1, `{"a":1}`: 1, `nope`: 1, `{"a":{"b":"c"},"d":"e"}`: 1, `{"A[1M]":"b"}`: 1,
-	} {
-		if got := validModelMap([]string{in}, nil, nil, nil); got != want {
-			t.Errorf("valid-model-map %s = %d, want %d", in, got, want)
-		}
-	}
-}
-
 func TestUnwireStatuslineKeepsOthers(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "s.json")

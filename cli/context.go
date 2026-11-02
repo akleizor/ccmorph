@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 )
 
@@ -322,7 +323,7 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 		launchEnv = append(launchEnv, [2]string{"CCMORPH_ADVISE", adv})
 	}
 	for _, kv := range launchEnv {
-		if !contains(l.launchEnv, kv[0]) {
+		if !slices.Contains(l.launchEnv, kv[0]) {
 			l.err("undeclared launch key " + kv[0])
 			return nil, false
 		}
@@ -366,15 +367,6 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 		os.Stderr.WriteString("ccmorph: Gateway ready; starting Claude Code…\n")
 	}
 	return penv, true
-}
-
-func contains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }
 
 // projectionArgs is _ccm_projection_args: the launch's options, then a --strip

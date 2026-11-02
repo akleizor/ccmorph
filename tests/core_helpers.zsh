@@ -3,7 +3,6 @@
 
 _ccm_util() { "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" util "$@"; }
 _ccm_err() { print -u2 -- "ccmorph: $1"; return 1; }
-_ccm_log() { ( _ccm_launch_core --log "$@" ); }
 
 _ccm_profile_layer() {
   local dir="$_CCMORPH_PROFILE_DIRS/$1"

@@ -305,13 +305,7 @@ func (l *launcher) isClaudeSubcommand(word string) bool {
 	if word == "" || ownVerbs[word] {
 		return false
 	}
-	if !l.verbsProbed {
-		l.verbsProbed = true
-		if help, _ := exec.Command("claude", "--help").Output(); len(help) > 0 {
-			l.claudeVerbs, _ = l.utilQ(nil, string(help), "claude-verbs")
-		}
-	}
-	for _, v := range strings.Split(l.claudeVerbs, "\n") {
+	for _, v := range strings.Split(l.claudeTable("claude-verbs"), "\n") {
 		if v != "" && v == word {
 			return true
 		}
@@ -437,7 +431,7 @@ func (l *launcher) routeStop(args []string) int {
 	for len(parts) < 4 {
 		parts = append(parts, "")
 	}
-	if !regexp.MustCompile(`^[0-9]+$`).MatchString(parts[1]) {
+	if !digits.MatchString(parts[1]) {
 		return 1
 	}
 	l.providerPID, l.providerTD, l.providerAuth = parts[1], parts[2], parts[3]
@@ -452,7 +446,7 @@ func (l *launcher) runInstaller(verb string, rest []string) int {
 	if verb == "update" {
 		if len(rest) == 1 {
 			ref := rest[0]
-			if !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`).MatchString(ref) || strings.Contains(ref, "..") {
+			if !refName.MatchString(ref) || strings.Contains(ref, "..") {
 				l.err("invalid ref '" + ref + "' — use a branch or tag name such as main or v0.1.0")
 				return 2
 			}
@@ -486,8 +480,13 @@ func (l *launcher) runInstaller(verb string, rest []string) int {
 	return exitCode(cmd.Run())
 }
 
+var (
+	refName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
+	shSafe  = regexp.MustCompile(`^[A-Za-z0-9_./-]+$`)
+)
+
 func shQuote(s string) string {
-	if regexp.MustCompile(`^[A-Za-z0-9_./-]+$`).MatchString(s) {
+	if shSafe.MatchString(s) {
 		return s
 	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"

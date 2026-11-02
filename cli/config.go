@@ -196,8 +196,8 @@ func (l *launcher) config(args []string) int {
 		}
 		f["base_url"] = endpoint
 		if endpoint != "" {
-			if msg, rc := l.util(nil, "", "profile-validate-url", "profile '"+name+"'", endpoint); rc != 0 {
-				l.err(msg)
+			if err := profile.ValidateBaseURL("profile '"+name+"'", endpoint); err != nil {
+				l.err(err.Error())
 				return 1
 			}
 		}
@@ -231,15 +231,9 @@ func (l *launcher) config(args []string) int {
 			f["token"] = credential
 		}
 	}
-	if typ == "apikey" {
-		var in strings.Builder
-		for _, k := range []string{"type", "api_key", "base_url", "adapter"} {
-			in.WriteString(k + "\x00" + f[k] + "\x00")
-		}
-		if msg, rc := l.util(nil, in.String(), "profile-validate", name); rc != 0 {
-			l.err(msg)
-			return 1
-		}
+	if err := profile.Validate(name, f); err != nil {
+		l.err(err.Error())
+		return 1
 	}
 	if section != "connection" {
 		preview := []string{endpoint, credential}

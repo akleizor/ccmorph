@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -17,7 +18,7 @@ func (l *launcher) profileRows(active string, types []string) []string {
 			continue
 		}
 		typ := f["type"]
-		if len(types) > 0 && !contains(types, typ) {
+		if len(types) > 0 && !slices.Contains(types, typ) {
 			continue
 		}
 		kind, detail := typ, ""

@@ -518,9 +518,14 @@ func (l *launcher) carrySession(id, dst string) bool {
 
 // migrateState is _ccm_migrate_state: move legacy context state forward once.
 func (l *launcher) migrateState() bool {
-	if os.Getenv("CCMORPH_CONTEXT_LOCKED") != "" {
+	if l.migrated || os.Getenv("CCMORPH_CONTEXT_LOCKED") != "" {
 		return true
 	}
+	l.migrated = l.migrateOnce()
+	return l.migrated
+}
+
+func (l *launcher) migrateOnce() bool {
 	legacy := []string{filepath.Join(l.dir, "model-registry"), filepath.Join(l.dir, "model-registry.conf")}
 	g1, _ := filepath.Glob(filepath.Join(globQuote(l.profileDirs), "*", "cache", "context-window"))
 	g2, _ := filepath.Glob(filepath.Join(globQuote(l.dir), "*.conf.lock"))
@@ -545,7 +550,7 @@ func (l *launcher) migrateState() bool {
 	if inline {
 		legacy = append(legacy, l.dir)
 	}
-	if plain && isDarwin() && exec.Command("security", "default-keychain").Run() == nil {
+	if plain && isDarwin() {
 		l.util(nil, "", "keychain-migrate", l.dir)
 	}
 	for _, p := range legacy {
@@ -946,25 +951,10 @@ func (l *launcher) modelKnown(name, want string) int {
 	if name == "" || want == "" {
 		return 2
 	}
-	out, _, rc := l.core(nil, "", "util", "profile-read", l.dir, name, "1",
-		strings.Join(l.profileEnv, ","), strings.Join(l.mapping, ","))
-	if rc != 0 {
+	f, ok := l.readQuiet(name)
+	if !ok || profile.Validate(name, f) != nil {
 		return 2
 	}
-	f := map[string]string{}
-	parts := strings.Split(strings.TrimSuffix(out, "."), "\x00")
-	for i := 0; i+1 < len(parts); i += 2 {
-		f[parts[i]] = parts[i+1]
-	}
-	if f["type"] == "apikey" {
-		var in strings.Builder
-		for _, k := range []string{"type", "api_key", "base_url", "adapter"} {
-			in.WriteString(k + "\x00" + f[k] + "\x00")
-		}
-		if _, rc := l.utilQ(nil, in.String(), "profile-validate", name); rc != 0 {
-			return 2
-		}
-	}
-	_, rc = l.utilQ(nil, f["api_key"]+"\n", "model-served", want, f["type"], f["base_url"], f["model_map"])
+	_, rc := l.utilQ(nil, f["api_key"]+"\n", "model-served", want, f["type"], f["base_url"], f["model_map"])
 	return rc
 }
