@@ -7,14 +7,18 @@
 
 ## v0.4.5 — 2026-11-02
 
+### Changed
+
+- The adapter starts after the model picker again, so a failed picker fails at
+  once and Ctrl-C always stops a booting adapter.
+- `make gate` runs `go vet` and the Go tests again.
+
 ### Fixed
 
 - A resume or hop onto a gateway profile no longer leaves that gateway's whole
   model listing in the environment of Claude Code and its tools.
 - Resume and hop checks no longer print raw curl errors, and an internal crash
   keeps the carried model instead of replacing it.
-- The adapter starts after the model picker again, so a failed picker fails at
-  once and Ctrl-C always stops a booting adapter.
 - `ccmorph models` and `doctor` print `<redacted>` instead of a wrong host for a
   gateway URL with an `@` in its path.
 - With `HOME` unset, state goes to the account's home directory, never the
