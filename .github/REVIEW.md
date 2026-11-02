@@ -44,6 +44,8 @@ credential, or losing the user's choice.
 - **A keychain lookup by service alone where the service is shared across items** — `ccmorph quota` reads another account's item or reports "not signed in" for a signed-in profile — `example: #64 fix(quota): the keychain lookup names the account, not just the service`.
 - **A byte stripped by one reader and saved back by another writer of the same file** — the BOM dropped where settings.json is parsed, then saved raw into `cache/settings.base.json`, which every later launch re-reads, so one accepted launch failed all the ones after it until a cache file the user never edited was deleted by hand — `example: #67 fix(core): a BOM never reaches the saved copy every later launch re-reads`.
 - **A confident verdict kept for a shape the sibling fix already made uncertain** — a listing whose `data` is not a list was made cannot-tell, but a reply whose top level was not an object still answered not-served, so the same unfamiliar reply kept replacing the carried model — `example: #67 fix(util): model-known answers cannot-tell for a listing whose top level is not a JSON object`.
+- **A fallback home that only some path builders use** (2026-11-03) — with `HOME` unset the state dir and the context policy took the account's home from the passwd entry, while the canonical settings, the projects stores, doctor, rm and setup-profile still joined `os.Getenv("HOME")`, so a `.claude/settings.json` in the current directory set the launch's model — `example: #138 fix(launch): with HOME unset every reader uses the account's home`.
+  Seen 1x (2026-11-03).
 
 ## Never blocks
 
