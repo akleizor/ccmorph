@@ -24,6 +24,12 @@
   into it and creates the shared directories, but no longer chmods the directory
   itself to 700; its permissions are Claude Code's and the user's.
 
+### Fixed
+
+- With `HOME` unset, a launch reads its settings and session history from the
+  account's home directory, never a `.claude` in the current directory; with no
+  home known at all it stops and asks for `HOME`.
+
 ## v0.4.5 — 2026-11-02
 
 ### Changed

@@ -221,6 +221,57 @@ func TestSessionFileToleratesGlobMetacharactersInTheProfileDirs(t *testing.T) {
 	}
 }
 
+// GH-138: with HOME unset a launch reads the account's home (the passwd entry),
+// never a .claude in the cwd.
+func TestHomeUnsetReadsTheAccountHomeNotTheCwd(t *testing.T) {
+	root := t.TempDir()
+	acct := filepath.Join(root, "acct")
+	cwd := filepath.Join(root, "cwd")
+	state := filepath.Join(root, "state")
+	for _, d := range []string{
+		filepath.Join(acct, ".claude"),
+		filepath.Join(cwd, ".claude", "projects", "planted"),
+		filepath.Join(state, "profiles", "p1"),
+	} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(p, body string) {
+		t.Helper()
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(acct, ".claude", "settings.json"), `{"model":"from-account-home"}`)
+	write(filepath.Join(cwd, ".claude", "settings.json"), `{"model":"planted-from-cwd"}`)
+	write(filepath.Join(cwd, ".claude", "projects", "planted", "sess-138.jsonl"), "{}\n")
+	write(filepath.Join(state, "p1.conf"), "type=token\n")
+
+	t.Setenv("HOME", "")
+	os.Unsetenv("HOME")
+	t.Setenv("CCMORPH_STATE_DIR", state)
+	t.Setenv("CCMORPH_CONTEXT_POLICY", "")
+	t.Setenv("_CCMORPH_DIR", "")
+	t.Setenv("_CCMORPH_PROFILE_DIRS", "")
+	t.Setenv("_CCMORPH_CONTEXT_POLICY", "")
+	t.Chdir(cwd)
+	old := accountHome
+	accountHome = func() string { return acct }
+	t.Cleanup(func() { accountHome = old })
+
+	l := fromEnv()
+	if got := l.accountModel("p1"); got != "from-account-home" {
+		t.Fatalf("model = %q, want the account home's, not the cwd's", got)
+	}
+	if _, ok := l.sessionFile("sess-138"); ok {
+		t.Fatal("session found in the cwd's .claude/projects")
+	}
+	if want := filepath.Join(acct, ".agents", "runtime", "policies", "context.json"); l.policy != want {
+		t.Fatalf("policy = %q, want %q", l.policy, want)
+	}
+}
+
 // `claude auth status` must not see any backend key: a Bedrock/Vertex flag or a
 // socket redirects the check just like an API key.
 func TestClaudeAuthDropsEveryBackendKey(t *testing.T) {

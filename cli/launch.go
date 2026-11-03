@@ -134,18 +134,27 @@ func (l *launcher) handoff() []string {
 		"_CCMORPH_CONTEXT_POLICY=" + l.policy, "_CCMORPH_LOG=" + l.logPath}
 }
 
+// accountHome is the passwd entry's home, for a launch started with HOME unset.
+var accountHome = func() string {
+	if u, err := user.Current(); err == nil {
+		return u.HomeDir
+	}
+	return ""
+}
+
 // defaultPaths fills what no shell handed over, the way lib/ccmorph.sh derives it, so
 // the core also runs on its own: state from CCMORPH_STATE_DIR or XDG, code beside
 // this executable (libexec/ccmorph-core, with lib/ next to libexec/).
 func (l *launcher) defaultPaths() {
 	home, err := os.UserHomeDir()
 	if err != nil { // no HOME: the account's own, never a path relative to the cwd
-		if u, uerr := user.Current(); uerr == nil && u.HomeDir != "" {
-			home = u.HomeDir
-		} else if l.dir == "" && os.Getenv("CCMORPH_STATE_DIR") == "" {
-			fmt.Fprintln(os.Stderr, "ccmorph: HOME is unset and no home directory is known; set HOME or CCMORPH_STATE_DIR")
+		if home = accountHome(); home == "" {
+			fmt.Fprintln(os.Stderr, "ccmorph: HOME is unset and no home directory is known; set HOME")
 			os.Exit(1)
 		}
+		// Every reader (canonical settings, the projects stores, doctor, rm,
+		// setup-profile, settings-compose, Claude Code) reads HOME: give them this one.
+		os.Setenv("HOME", home)
 	}
 	if l.dir == "" {
 		if l.dir = os.Getenv("CCMORPH_STATE_DIR"); l.dir == "" {
