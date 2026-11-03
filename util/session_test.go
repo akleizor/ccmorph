@@ -17,7 +17,7 @@ func TestPrivateViewFailureSkipsTheNotice(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	said := false
 	var errw strings.Builder
-	if rc := privateSession("/bin/true", nil, func() { said = true }, &errw); rc != 1 || said {
+	if rc := privateSession("/bin/true", nil, "", func() { said = true }, &errw); rc != 1 || said {
 		t.Fatalf("rc %d, notice printed %v", rc, said)
 	}
 	if !strings.Contains(errw.String(), "private view") {
@@ -48,6 +48,50 @@ func TestSessionEnvComesFromAPrivateFileAndIsRemoved(t *testing.T) {
 	}
 }
 
+// A private session still starts when TMPDIR cannot be written: the view falls
+// back to the run/ root the launch env file already uses (#112), handed over by
+// the launcher or, from an older one, derived from the state dir, and is removed
+// when claude exits (#140).
+func TestPrivateViewStartsUnderTheStateRunDirWhenTmpdirCannotBeWritten(t *testing.T) {
+	for _, handed := range []bool{true, false} {
+		name := "key-from-launcher"
+		if !handed {
+			name = "older-launcher-no-key"
+		}
+		t.Run(name, func(t *testing.T) {
+			real := filepath.Join(t.TempDir(), "demo")
+			os.Mkdir(real, 0o700)
+			ro, state, scratch := t.TempDir(), t.TempDir(), t.TempDir()
+			os.Chmod(ro, 0o555)
+			t.Cleanup(func() { os.Chmod(ro, 0o755) })
+			t.Setenv("TMPDIR", ro)
+			t.Setenv("CLAUDE_CONFIG_DIR", real)
+			runDir := ""
+			if handed {
+				runDir = filepath.Join(state, "run")
+			} else {
+				t.Setenv("CCMORPH_STATE_DIR", state)
+			}
+			out := filepath.Join(scratch, "view")
+			script := filepath.Join(scratch, "claude")
+			os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s' \"$CLAUDE_CONFIG_DIR\" > '"+out+"'; exit 7\n"), 0o755)
+			if rc := privateSession(script, nil, runDir, func() {}, &strings.Builder{}); rc != 7 {
+				t.Fatalf("rc %d, want claude's own 7", rc)
+			}
+			b, err := os.ReadFile(out)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := string(b); !strings.HasPrefix(got, filepath.Join(state, "run", "ccmorph-private.")) {
+				t.Errorf("view %q, want under %s", got, filepath.Join(state, "run"))
+			}
+			if left, _ := filepath.Glob(filepath.Join(state, "run", "ccmorph-private.*")); len(left) != 0 {
+				t.Errorf("view left behind: %q", left)
+			}
+		})
+	}
+}
+
 func TestPrivateViewLinksConfigButNotSessionState(t *testing.T) {
 	real := filepath.Join(t.TempDir(), "demo")
 	for _, n := range []string{"settings.json", "projects", ".claude.json"} {
@@ -58,7 +102,7 @@ func TestPrivateViewLinksConfigButNotSessionState(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "seen")
 	script := filepath.Join(t.TempDir(), "claude")
 	os.WriteFile(script, []byte("#!/bin/sh\nls -A \"$CLAUDE_CONFIG_DIR\" > '"+out+"'; echo \"$CLAUDE_SECURESTORAGE_CONFIG_DIR\" >> '"+out+"'; exit 7\n"), 0o755)
-	if rc := privateSession(script, nil, func() {}, &strings.Builder{}); rc != 7 {
+	if rc := privateSession(script, nil, "", func() {}, &strings.Builder{}); rc != 7 {
 		t.Fatalf("rc %d, want claude's own 7", rc)
 	}
 	b, _ := os.ReadFile(out)

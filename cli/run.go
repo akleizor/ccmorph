@@ -944,7 +944,10 @@ func (l *launcher) runClaude(env, args []string) int {
 		strings.Join(l.launchEnv, " "), strings.Join(l.backend, " "), envFile}, "--")
 	argv = append(argv, args...)
 	cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), argv...)
-	cmd.Env = append(os.Environ(), "CCMORPH_NOTICE="+l.notice)
+	// The helper's own key names the run/ root the env file above already used; the
+	// private view falls back there when TMPDIR cannot be written (#140). The helper
+	// unsets it, so neither claude nor its children ever see it.
+	cmd.Env = append(os.Environ(), "CCMORPH_NOTICE="+l.notice, "_CCMORPH_RUN_DIR="+filepath.Join(l.dir, "run"))
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	l.mu.Lock()
 	l.forwarded = 0

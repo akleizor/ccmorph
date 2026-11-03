@@ -4078,6 +4078,7 @@ test_every_state_file_is_gitignored() {
     backups/anything.conf     # pre-edit snapshots
     orphaned-profiles/x/y     # profile dir left by a deleted conf
     run/ccmorph-session-env.abc   # launch env when TMPDIR is unwritable
+    run/ccmorph-private.abc       # the private session's view, same fallback root (#140)
     ccmorph.sh.bak-20260713  # hand-made copy of the runtime, mode 0600
     ccmorph.sh.orig          # a merge/patch leftover of the same
     dist/ccmorph-v1.0.0.tar.gz   # release artifact
@@ -12184,6 +12185,18 @@ test_private_session_leaves_no_transcript_behind() {
   [[ -n "$seen" && "$seen" != "$prof" && "${seen:t}" == "${prof:t}" ]] || rc=1
   [[ ! -e "${seen:h}" ]] || rc=1
   [[ ! -e "$prof/projects/p" ]] || rc=1
+  # The same private session starts when TMPDIR cannot be written: the view
+  # falls back to the state dir's run/, where the launch env file already lands
+  # (#140), and it is removed when claude exits.
+  local rotmp="$test_home/readonly-tmp"
+  mkdir -p "$rotmp" && chmod 500 "$rotmp"
+  seen=$(
+    export TMPDIR="$rotmp"
+    _ccm_run_claude "CLAUDE_CONFIG_DIR=$prof" CCMORPH_PRIVATE=1 --
+  )
+  [[ -n "$seen" && "${seen:h:h}" == "$_CCMORPH_DIR/run" ]] || rc=1
+  [[ ! -e "${seen:h}" ]] || rc=1
+  chmod 700 "$rotmp"
   seen=$(_ccm_run_claude "CLAUDE_CONFIG_DIR=$prof" --)
   [[ -e "$prof/projects/p/s.jsonl" ]] || rc=1
   rm -rf "$test_home"
@@ -12195,13 +12208,17 @@ test_private_session_key_stays_the_profiles_own() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   source "$CCMORPH_SOURCE"
   local prof="$test_home/prof" rc=0 seen
+  local -a f
   mkdir -p "$prof" && print '{}' > "$prof/.claude.json"
-  printf '%s\n' '#!/bin/sh' 'echo "${CLAUDE_SECURESTORAGE_CONFIG_DIR-unset}|$CLAUDE_CONFIG_DIR"' > "$HOME/bin/claude"
+  # Fields: storage key, config dir, state dir, the helper's run-dir key. The last
+  # two are the launcher's own: claude and its children must never inherit them (#140).
+  printf '%s\n' '#!/bin/sh' 'echo "${CLAUDE_SECURESTORAGE_CONFIG_DIR-unset}|$CLAUDE_CONFIG_DIR|${CCMORPH_STATE_DIR-unset}|${_CCMORPH_RUN_DIR-unset}"' > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
   seen=$(_ccm_run_claude "CLAUDE_CONFIG_DIR=$prof" CCMORPH_PRIVATE=1 --)
-  [[ "${seen%%|*}" == "$prof" && "${seen#*|}" != "$prof" ]] || { print -u2 -- "private: $seen"; rc=1; }
+  f=("${(@s:|:)seen}")
+  [[ "$f[1]" == "$prof" && "$f[2]" != "$prof" && "$f[3]" == unset && "$f[4]" == unset ]] || { print -u2 -- "private: $seen"; rc=1; }
   seen=$(_ccm_run_claude "CLAUDE_CONFIG_DIR=$prof" --)
-  [[ "$seen" == "unset|$prof" ]] || { print -u2 -- "normal: $seen"; rc=1; }
+  [[ "$seen" == "unset|$prof|unset|unset" ]] || { print -u2 -- "normal: $seen"; rc=1; }
   rm -rf "$test_home"
   return $rc
 }
