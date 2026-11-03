@@ -57,9 +57,10 @@ Installer preservation tests and the public command manifest enforce the boundar
 
 `lib/ccmorph.sh` is the runtime's only entry point: the `ccmorph` command, the helpers
 and agent dispatch (`source lib/ccmorph.sh && _ccm_launch -a …`) load the library through
-it and nothing else. It resolves the state and code paths, holds the environment-name
-lists, sources `local.sh`, then `ccmorph-launch.zsh`. That is the whole zsh layer: every
-verb, menu, check and the launch itself run in `ccmorph-core`.
+it and nothing else. It resolves the state and code paths, sources `local.sh`, then
+`ccmorph-launch.zsh`. That is the whole zsh layer: every verb, menu, check and the launch
+itself run in `ccmorph-core`, and the environment-name lists live there too, in
+`profile/envkeys.go`.
 
 The repository and the installed copy under `~/.config/ccmorph` share one layout:
 `bin/ccmorph` (the command), `lib/` (`ccmorph.sh` and `ccmorph-launch.zsh`), `libexec/`
@@ -74,10 +75,10 @@ beside itself. `CCMORPH_LIB_DIR` names the `lib/` directory.
 
 | Part | Purpose |
 |---|---|
-| `lib/ccmorph.sh` | Paths, the environment-name lists, `local.sh`. |
+| `lib/ccmorph.sh` | Paths, `local.sh`. |
 | `lib/ccmorph-launch.zsh` | `ccmorph()` hands every verb to `ccmorph-core cli main`; `_ccm_launch` runs `ccmorph-core launch` as a child TERM and HUP reach (fork and forward). |
 | `cli/` | The command: dispatch, help, every verb, doctor, the menus (`ui.go`, `menus.go`) and the launch (profile and model resolution, bridge and adapter, settings projection, the claude child, the relay loop). |
-| `profile/` | Reading and validating a profile's conf. |
+| `profile/` | Reading and validating a profile's conf, and the environment-name lists (`envkeys.go`). |
 | `util/` | The small verbs the CLI and launch share: config store, profile setup, migrations, listings, process readers. |
 
 ## 1. Profile model

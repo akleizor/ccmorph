@@ -30,12 +30,30 @@ ccmorph_test_scrub_runner_env
 readonly SCRIPT_DIR="${0:A:h}"
 readonly REPO_ROOT="${SCRIPT_DIR:h}"
 readonly CCMORPH_SOURCE="$REPO_ROOT/tests/core_lib.zsh"
+# The launch and cli paths run in the compiled core, so a checkout has no
+# libexec/ccmorph-core until `make shim` builds it. Entered without it, every
+# launch test fails through its 120 s backstop instead: a healthy 40 s suite
+# becomes six minutes of failing waits. Refuse at the door, before the shard
+# fan-out multiplies the confusion, with the one command that fixes it. It
+# stands before the env-key read below, which would otherwise misreport a
+# missing core as an empty list.
+[[ -x "$REPO_ROOT/libexec/ccmorph-core" ]] || {
+  print -u2 -- "no libexec/ccmorph-core: a checkout has none until 'make shim' builds it (needs Go)"
+  exit 1
+}
 # The core's env-key lists, read once for every test (tests/core_helpers.zsh).
+# An empty answer refuses the run here, at the door: every sweep test iterates
+# these lists, so an empty one would run green checking nothing (#141).
 () {
-  local n v
+  local n v cache
   for n v in TUNING tuning PROFILE profile LAUNCH launch BACKEND backend MODEL_MAPPING mapping; do
     # One line, space-joined: a multi-line env value reads as extra variables to `env`.
     export _CCM_TEST_KEYS_$n="${(j: :)${(f)"$(env -u _CCMORPH_DIR "$REPO_ROOT/libexec/ccmorph-core" cli main _env_keys $v)"}}"
+    cache=_CCM_TEST_KEYS_$n
+    [[ -n "${(P)cache:-}" ]] || {
+      print -u2 -- "env-key list '$v' is empty: the core answered nothing — every sweep test would iterate zero keys and pass"
+      exit 1
+    }
   done
 }
 # The library text: the loader plus every module split out of it. Not the UI
@@ -46,16 +64,6 @@ readonly ORIGINAL_PATH="$PATH"
 # Captured before any test redirects $HOME to a scratch dir. Only for locating
 # things that genuinely live on this machine (see the differential parser test).
 readonly REAL_HOME="$HOME"
-
-# The launch and cli paths run in the compiled core, so a checkout has no
-# libexec/ccmorph-core until `make shim` builds it. Entered without it, every
-# launch test fails through its 120 s backstop instead: a healthy 40 s suite
-# becomes six minutes of failing waits. Refuse at the door, before the shard
-# fan-out multiplies the confusion, with the one command that fixes it.
-[[ -x "$REPO_ROOT/libexec/ccmorph-core" ]] || {
-  print -u2 -- "no libexec/ccmorph-core: a checkout has none until 'make shim' builds it (needs Go)"
-  exit 1
-}
 
 typeset -gi tests_run=0
 typeset -gi tests_failed=0
@@ -13298,6 +13306,46 @@ test_the_suite_refuses_a_checkout_without_the_compiled_core() {
   return $rc
 }
 run_test test_the_suite_refuses_a_checkout_without_the_compiled_core
+
+# The env-key lists moved into the Go core with #130, and a guard was added so
+# an empty answer fails the suite before any test iterates zero keys. It ran
+# inside an anonymous function, so its `return 1` only left that function:
+# sourcing continued, the arrays stayed empty, and a core that answered nothing
+# left the suite green (#141). The run must refuse at the door. The fixture is a
+# copy of the tree whose core answers `_env_keys` with nothing -- the simulated
+# empty list -- so sibling shards keep the real core. The filter matches no
+# test: with the door broken, the child would run zero tests and exit 0, which
+# is the green this regression exists to catch.
+test_the_suite_refuses_an_empty_env_key_list() {
+  local rc=0 out st repo src_out src_st
+  repo="$(mktemp -d)/repo"
+  # A worktree's .git is a file, so this copies the sources only.
+  cp -R "$REPO_ROOT" "$repo"
+  printf '%s\n' '#!/bin/sh' 'exit 0' > "$repo/libexec/ccmorph-core"
+  chmod +x "$repo/libexec/ccmorph-core"
+  out=$(CCMORPH_TEST_FILTER=no_such_test CCMORPH_TEST_SHARD=0/1 \
+    zsh "$repo/tests/ccmorph_test.zsh" 2>&1)
+  st=$?
+  # The same refusal one layer in: a shell that sources the test vocabulary
+  # against that core (no cached keys -- the direct-sourcing case) fails the
+  # source, rather than defining an empty one and continuing.
+  src_out=$(env -u CCMORPH_LIB_DIR HOME="$repo" zsh -fc \
+    'unset -m "_CCM_TEST_KEYS_*"; source "$0/tests/core_lib.zsh" && print CONTINUED' "$repo" 2>&1)
+  src_st=$?
+  rm -rf "$repo:h"
+  (( st != 0 )) || { print -u2 -- 'the empty-list run exited 0'; rc=1 }
+  assert_contains "$out" "env-key list 'tuning' is empty" \
+    'an empty env-key list must be refused at the door' || rc=1
+  assert_not_contains "$out" 'PASS: ' \
+    'no test may run once the env-key list is empty' || rc=1
+  (( src_st != 0 )) || { print -u2 -- 'the vocabulary source continued on an empty list'; rc=1 }
+  assert_contains "$src_out" "env-key list 'tuning' is empty" \
+    'the guard must name the empty list it refuses' || rc=1
+  assert_not_contains "$src_out" 'CONTINUED' \
+    'the source must stop at the guard, not define an empty vocabulary' || rc=1
+  return $rc
+}
+run_test test_the_suite_refuses_an_empty_env_key_list
 
 if (( tests_failed > 0 )); then
   print -u2 -- "$tests_failed of $tests_run tests failed"
