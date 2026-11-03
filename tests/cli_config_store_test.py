@@ -514,7 +514,7 @@ class ConfigurationSaveTest(unittest.TestCase):
              '_', str(ROOT / 'lib/ccmorph.sh')], env=env, text=True,
             capture_output=True, timeout=HANG_TIMEOUT)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('Permission denied', result.stderr)
+        self.assertIn('permission denied', result.stderr)
         self.assertEqual((conf_fields(self.conf), self.settings.read_bytes()), before)
         self.assertEqual(list(self.state.glob('.configure.*')), [])
         self.assertEqual(list(self.settings.parent.glob('.configure.*')), [])

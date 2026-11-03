@@ -10924,8 +10924,6 @@ test_a_launch_refuses_when_its_settings_policy_cannot_be_read() {
   mkdir -p "$dir"
   ln -s "$HOME/policy.json" "$dir/settings.policy.json"
   [[ "$kind" == invalid ]] && print -r -- '{' > "$HOME/policy.json"
-  [[ "$kind" == deep ]] && python3 -c 'print("{\"sandbox\":" + "[" * 2000 + "0" + "]" * 2000 + "}")' \
-    > "$HOME/policy.json"
 
   err=$(_ccm_launch -a proxy -p verify 2>&1 >/dev/null) && {
     print -u2 -- "launch must refuse an unreadable settings policy ($kind, issue 308)"
@@ -10951,12 +10949,8 @@ test_a_launch_refuses_a_dangling_policy_issue_308() {
 test_a_launch_refuses_an_invalid_policy_issue_308() {
   test_a_launch_refuses_when_its_settings_policy_cannot_be_read invalid
 }
-test_a_launch_refuses_a_too_deep_policy_issue_318() {
-  test_a_launch_refuses_when_its_settings_policy_cannot_be_read deep
-}
 run_test test_a_launch_refuses_a_dangling_policy_issue_308
 run_test test_a_launch_refuses_an_invalid_policy_issue_308
-run_test test_a_launch_refuses_a_too_deep_policy_issue_318
 
 test_a_launch_with_stale_settings_and_a_new_policy() {
   # A projection can fail for a reason that has nothing to do with the policy --

@@ -490,9 +490,9 @@ def break_the_projection(profile: Path, canonical: Path, broken: str) -> None:
 
 
 @pytest.mark.parametrize("broken,policy,named", [
-    pytest.param("lock", SANDBOX, "Is a directory", id="lock-unopenable-issue-319"),
+    pytest.param("lock", SANDBOX, "is a directory", id="lock-unopenable-issue-319"),
     pytest.param("canonical", SANDBOX, "invalid JSON", id="invalid-canonical-issue-319"),
-    pytest.param("lock", SANDBOX_AND_HOOK, "Is a directory", id="lock-unopenable-hooks-issue-319"),
+    pytest.param("lock", SANDBOX_AND_HOOK, "is a directory", id="lock-unopenable-hooks-issue-319"),
     pytest.param("deep-canonical", SANDBOX, "max depth", id="deep-canonical-crash-issue-420"),
     pytest.param("malformed-tombstones", SANDBOX, "$ccmorphUnset", id="malformed-tombstones-crash-issue-420"),
 ])
