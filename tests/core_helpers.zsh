@@ -69,10 +69,5 @@ _ccm_remove_profile_dir() { ( _ccm_launch_core --remove-profile "$@" ); }
 _ccm_carry_session() { ( _ccm_launch_core --carry-session "$@" ); }
 _ccm_is_claude_subcommand() { ( _ccm_launch_core --claude-subcommand "$1" ) 2>/dev/null; }
 _ccm_resume_model() { REPLY=$( _ccm_launch_core --resume-model "$1" ) && [[ -n "$REPLY" ]]; }
-_ccm_trigger_env() {  # $1 $2 $3 = names for pct, output reserve, 1M switch, read from penv
-  local -a _t
-  _t=("${(@f)$( ( _ccm_launch_core --trigger-env "${penv[@]}" ); print x )}")
-  : ${(P)1::=${_t[1]}} ${(P)2::=${_t[2]}} ${(P)3::=${_t[3]}}
-}
 _ccm_probe_nudge() { ( _ccm_launch_core --probe-nudge "$@" ); }
 _ccm_pick_value() { ccmorph _ui pick "$@"; }
