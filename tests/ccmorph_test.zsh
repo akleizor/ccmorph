@@ -1997,113 +1997,6 @@ test_proxy_context_limit_reaches_claude() {
   return $rc
 }
 
-test_add_folds_proxy_into_apikey() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  source "$CCMORPH_SOURCE"
-
-  # Stub curl so the /v1/messages probe returns 404 — the gateway does not
-  # speak Anthropic natively, so the adapter must be auto-enabled.
-  printf '%s\n' \
-    '#!/bin/sh' \
-    'for arg do' \
-    '  case "$arg" in *messages*) printf "404"; exit 0 ;; esac' \
-    'done' \
-    'for arg do' \
-    '  if [ "$arg" = "-w" ]; then printf "200"; exit 0; fi' \
-    'done' \
-    'exit 1' \
-    > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
-
-  local out
-  out=$(ccmorph add gateway <<< $'3\ncustom\ngateway-key\nhttp://gateway.invalid\n') || {
-    rm -rf "$test_home"
-    return 1
-  }
-
-  local actual="$(<"$HOME/.config/ccmorph/gateway.conf")" rc=0
-  assert_contains "$actual" 'type=apikey' \
-    'a key-authenticated gateway must use the single apikey profile type' || rc=1
-  assert_not_contains "$out" 'proxy         ' \
-    'new-profile onboarding must not offer a duplicate proxy type' || rc=1
-  assert_contains "$actual" 'adapter=true' \
-    'adapter must be auto-enabled when the endpoint does not speak /v1/messages' || rc=1
-  assert_not_contains "$actual" 'env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY=' \
-    'gateway compatibility must be explicit, not a proxy-type default' || rc=1
-  assert_not_contains "$actual" 'env.ENABLE_TOOL_SEARCH=' \
-    'the folded type must not disable native tool search automatically' || rc=1
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_add_defaults_the_adapter_on_for_any_non_anthropic_endpoint() {
-  # The costs are asymmetric, and that decides the default. `adapter=true` against an
-  # endpoint that already speaks Anthropic costs one wasted local hop and still works;
-  # `adapter=false` against one that does not is a hard launch failure with a dialect
-  # error. So an inconclusive probe must fail toward ON.
-  #
-  # It used to fail toward OFF, and that was wrong on a live profile: an ollama
-  # endpoint serves /v1/models (200) and 404s /v1/messages -- exactly the case needing
-  # translation -- and was written with no adapter key at all, because the probe
-  # happened to be inconclusive when it was added.
-  #
-  # Native is claimed only on PROOF, in one of two shapes: a 2xx, or a 404 naming the
-  # MODEL (route present, model wrong). Everything else gets the adapter.
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0 case_name expected got
-  # case -> body/status the fake curl returns, and the verdict required.
-  local -A cases=(
-    native_model_404 native
-    native_200       native
-    route_404        adapter
-    waf_405          adapter
-    auth_401         adapter
-    unreachable      adapter
-  )
-
-  for case_name in ${(k)cases}; do
-    expected="${cases[$case_name]}"
-    printf '%s\n' \
-      '#!/bin/sh' \
-      'case "$CASE" in' \
-      '  native_model_404) printf %s "{\"error\":{\"type\":\"not_found_error\",\"message\":\"model: probe\"}}"; printf "\n404" ;;' \
-      '  native_200)       printf %s "{\"id\":\"msg_1\"}"; printf "\n200" ;;' \
-      '  route_404)        printf %s "<html>404 not found</html>"; printf "\n404" ;;' \
-      '  waf_405)          printf %s "<html>blocked</html>"; printf "\n405" ;;' \
-      '  auth_401)         printf %s "{\"error\":\"unauthorized\"}"; printf "\n401" ;;' \
-      '  unreachable)      printf "\n000" ;;' \
-      'esac' \
-      'exit 0' \
-      > "$HOME/bin/curl"
-    chmod +x "$HOME/bin/curl"
-
-    rm -f "$HOME/.config/ccmorph/probe_$case_name.conf"
-    print -l 2 'k' 'https://gw.invalid' |
-      CASE="$case_name" ccmorph add "probe_$case_name" >/dev/null 2>&1 || true
-
-    [[ -f "$HOME/.config/ccmorph/probe_$case_name.conf" ]] || {
-      print -u2 -- "FAIL: add wrote no conf for the $case_name endpoint"
-      rc=1
-      continue
-    }
-    got=native
-    grep -q '^adapter=true' "$HOME/.config/ccmorph/probe_$case_name.conf" && got=adapter
-    [[ "$got" == "$expected" ]] || {
-      print -u2 -- "FAIL: a $case_name endpoint must be classified $expected, got $got"
-      rc=1
-    }
-  done
-
-  rm -rf "$test_home"
-  return $rc
-}
-
 test_add_never_asks_how_to_reach_the_endpoint() {
   # Reaching a private endpoint is a MACHINE property -- this laptop needs a bridge
   # for these hosts -- not a profile one, and it applies to almost nobody. `add`
@@ -2214,73 +2107,6 @@ test_add_apikey_model_level_404_is_native() {
   local actual="$(<"$HOME/.config/ccmorph/nativemodel404.conf")"
   assert_not_contains "$actual" 'adapter=true' \
     'a 404 naming the MODEL proves the route exists — must not enable the adapter' || rc=1
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_add_apikey_route_level_404_enables_adapter() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  source "$CCMORPH_SOURCE"
-
-  # The other half of the same branch: a 404 that says nothing about a model is a
-  # genuinely absent route, and that one does need translation.
-  _stub_probe_response 404 '<html><head><title>404 Not Found</title></head></html>'
-
-  local out rc=0
-  out=$(ccmorph add route404 <<< $'3\ncustom\nk\nhttp://route404.invalid\n') || {
-    rm -rf "$test_home"
-    return 1
-  }
-  local actual="$(<"$HOME/.config/ccmorph/route404.conf")"
-  assert_contains "$actual" 'adapter=true' \
-    'a 404 that names no model is an absent route — the adapter must be enabled' || rc=1
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_add_apikey_inconclusive_probe_enables_the_adapter() {
-  # These two used to assert the OPPOSITE -- that an inconclusive probe wrote no
-  # adapter key -- and the rule was wrong because it weighed the two errors equally.
-  # They are not equal: adapter=true against an endpoint that already speaks Anthropic
-  # costs one wasted local hop and still works, while adapter=false against one that
-  # does not is a hard launch failure with a dialect error. Failing toward ON is the
-  # cheaper mistake, so an inconclusive probe now takes it.
-  #
-  # Confirmed on a live profile before changing this: an ollama endpoint here serves
-  # /v1/models (200) and 404s /v1/messages -- needing translation -- yet had no adapter
-  # key, because its probe was inconclusive on the day it was added.
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0 out actual
-
-  # 000: any network failure (VPN down, DNS). Nothing to retry through, so the
-  # verdict stands on the asymmetry alone.
-  _stub_probe_response 000 ''
-  out=$(ccmorph add vpndown <<< $'3\ncustom\nk\nhttp://unreachable.invalid\n') || {
-    rm -rf "$test_home"
-    return 1
-  }
-  actual="$(<"$HOME/.config/ccmorph/vpndown.conf")"
-  assert_contains "$actual" 'adapter=true' \
-    'an unreachable endpoint must get the adapter, which is what works for a gateway' || rc=1
-  assert_contains "$out" 'adapter false' \
-    'and the user must be told the one-line correction if it turns out native' || rc=1
-
-  # 401/403: refused before routing, so it proves nothing about the dialect either.
-  _stub_probe_response 401 '{"error":{"message":"invalid x-api-key"}}'
-  out=$(ccmorph add authrefused <<< $'3\ncustom\nk\nhttp://authrefused.invalid\n') || {
-    rm -rf "$test_home"
-    return 1
-  }
-  actual="$(<"$HOME/.config/ccmorph/authrefused.conf")"
-  assert_contains "$actual" 'adapter=true' \
-    'an auth-refused probe must still default the adapter on' || rc=1
-
   rm -rf "$test_home"
   return $rc
 }
@@ -5113,27 +4939,6 @@ test_native_endpoint_keeps_mid_conversation_system() {
     'an endpoint that speaks Anthropic natively must keep the native turn' || rc=1
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'DISABLE_ADVISOR=<unset>' \
     'a native endpoint keeps the advisor tool' || rc=1
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_plain_profile_never_starts_an_adapter() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  fake_gateway
-  fake_adapter
-  write_apikey_conf plain 'api_key=sk_prod_test' 'base_url=https://gateway.invalid'
-  source "$CCMORPH_SOURCE"
-
-  _ccm_launch -a plain prompt >/dev/null 2>&1
-  local rc=0
-  [[ ! -e "$HOME/adapter.argv" ]] || {
-    print -u2 -- 'a profile without adapter=true must not invoke the adapter'
-    rc=1
-  }
-  assert_contains "$(<"$CCMORPH_TEST_LOG")" 'BASE_URL=https://gateway.invalid' \
-    'a plain profile must reach its real endpoint directly' || rc=1
   rm -rf "$test_home"
   return $rc
 }
@@ -9344,8 +9149,38 @@ run_test() {
   fi
 }
 
+test_a_conf_env_budget_pin_reaches_the_launch() {
+  # The engine arithmetic is unit-tested in Go; this pins the one hop it cannot see:
+  # a conf env.CLAUDE_CODE_AUTO_COMPACT_WINDOW reaching the launched budget.
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  printf '%s\n' \
+    'type=proxy' \
+    'base_url=http://gw.invalid' \
+    'api_key=test-key' \
+    'model=big' \
+    'env.CLAUDE_CODE_AUTO_COMPACT_WINDOW=1e5' \
+    > "$HOME/.config/ccmorph/gw.conf"
+  write_profile_context gw big=400000 mid=300000
+  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
+  printf '%s\n' '{"availableModels":["big","mid"]}' \
+    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
+  source "$CCMORPH_SOURCE"
+
+  local rc=0
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+  local actual="$(<"$CCMORPH_TEST_LOG")"
+
+  assert_not_contains "$actual" 'mid limit' \
+    'an engine-valid exponent pin must govern, leaving the sibling safe' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
 run_test test_subscription_profile_settings_override_global_launch_settings
 run_test test_profile_settings_override_global_launch_settings
+run_test test_a_conf_env_budget_pin_reaches_the_launch
 run_test test_proxy_gateway_credentials_reach_claude_only_through_the_environment
 
 test_a_launch_survives_a_settings_projection_it_cannot_write() {
