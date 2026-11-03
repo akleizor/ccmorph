@@ -23,8 +23,6 @@ _ccm_err() { print -u2 -- "ccmorph: $1"; return 1; }
 
 _ccm_config_store() { ( _ccm_launch_core --config-store "$1" "$2" "${3:-}" ); }
 
-_ccm_cleanup_stale() { ( _ccm_launch_core --cleanup-stale ) 2>/dev/null || :; }
-
 # Provisioning runs through the public path, which reads and validates the conf.
 _ccm_setup_dir_unlocked() { ccmorph _env "$1" >/dev/null; }
 _ccm_setup_dir() { ccmorph _env "$1" >/dev/null; }
@@ -58,19 +56,8 @@ _ccm_validate_loaded() {  # the loaded apikey profile $1 passes the core's valid
   out=$(_ccm_util profile-env "$_CCMORPH_DIR" "$_CCMORPH_PROFILE_DIRS" "$1") || { _ccm_err "$out"; return 1; }
 }
 
-_ccm_model_known() { ( _ccm_launch_core --model-known "$1" "$2" ) 2>/dev/null; }  # 0 served, 1 not served, 2 cannot tell
-
 _ccm_gw_models_json() {  # REPLY = the profile's /v1/models listing
   REPLY=$( _ccm_launch_core --models-json "$@" )
-}
-
-_ccm_gw_models() {
-  local name="$1"
-  _ccm_gw_models_json "$name" "${@:3}" || return 1
-  print -r -- "$REPLY" | ( _ccm_launch_core --gw-models "$name" "${2:-catalogue}" ) || {
-    _ccm_err "'$name' endpoint returned no usable model list"
-    return 1
-  }
 }
 
 _ccm_model_window() { ( _ccm_launch_core --model-window "$@" ); }
@@ -80,10 +67,5 @@ _ccm_remove_profile_dir() { ( _ccm_launch_core --remove-profile "$@" ); }
 _ccm_carry_session() { ( _ccm_launch_core --carry-session "$@" ); }
 _ccm_is_claude_subcommand() { ( _ccm_launch_core --claude-subcommand "$1" ) 2>/dev/null; }
 _ccm_resume_model() { REPLY=$( _ccm_launch_core --resume-model "$1" ) && [[ -n "$REPLY" ]]; }
-_ccm_trigger_env() {  # $1 $2 $3 = names for pct, output reserve, 1M switch, read from penv
-  local -a _t
-  _t=("${(@f)$( ( _ccm_launch_core --trigger-env "${penv[@]}" ); print x )}")
-  : ${(P)1::=${_t[1]}} ${(P)2::=${_t[2]}} ${(P)3::=${_t[3]}}
-}
 _ccm_probe_nudge() { ( _ccm_launch_core --probe-nudge "$@" ); }
 _ccm_pick_value() { ccmorph _ui pick "$@"; }

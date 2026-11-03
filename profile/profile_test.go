@@ -43,25 +43,46 @@ func TestReadAcceptsEachTypeAndFoldsProxy(t *testing.T) {
 
 func TestReadRefusesWithTheMessageZshPrinted(t *testing.T) {
 	for conf, want := range map[string]string{
-		"type=sub\n":                                 "has no email",
-		"type=apikey\nnoequals\n":                    "malformed config",
-		"type=apikey\napi_key=a\r\n":                 "malformed config",
-		"type=apikey\nbad key=1\n":                   "invalid key",
-		"type=apikey\napi_key=a\napi_key=b\n":        "duplicate key 'api_key'",
-		"type=apikey\nwhat=1\n":                      "unknown key 'what'",
-		"type=apikey\nenv.PATH=x\n":                  "disallowed environment key 'env.PATH'",
-		"type=sub\nemail=a\nenv.CCMORPH_MASK=1\n":    "key 'env.CCMORPH_MASK' is invalid for sub",
-		"type=sub\nemail=a\napi_key=k\n":             "key 'api_key' is invalid for sub",
-		"type=apikey\neffort=huge\n":                 "invalid effort setting 'effort'",
-		"type=apikey\ncontext_window.m=0\n":          "invalid context pin",
-		"type=apikey\nexcluded_models=a,,b\n":        "excluded_models must be",
-		"type=apikey\nmodel_map={\"a[1m]\":\"b\"}\n": "model_map must be",
-		"type=apikey\nmonthly_budget_usd=0.0\n":      "monthly_budget_usd must be",
-		"type=odd\n":                                 "invalid or missing type",
-		"type=proxy\napi_key=k\n":                    "proxy 'p' has no base_url",
+		"type=sub\n":                                                "has no email",
+		"type=apikey\nnoequals\n":                                   "malformed config",
+		"type=apikey\napi_key=a\r\n":                                "malformed config",
+		"type=apikey\nbad key=1\n":                                  "invalid key",
+		"type=apikey\napi_key=a\napi_key=b\n":                       "duplicate key 'api_key'",
+		"type=apikey\nwhat=1\n":                                     "unknown key 'what'",
+		"type=apikey\nenv.PATH=x\n":                                 "disallowed environment key 'env.PATH'",
+		"type=sub\nemail=a\nenv.CCMORPH_MASK=1\n":                   "key 'env.CCMORPH_MASK' is invalid for sub",
+		"type=sub\nemail=a\napi_key=k\n":                            "key 'api_key' is invalid for sub",
+		"type=apikey\neffort=huge\n":                                "invalid effort setting 'effort'",
+		"type=apikey\ncontext_window.m=0\n":                         "invalid context pin",
+		"type=apikey\nexcluded_models=a,,b\n":                       "excluded_models must be",
+		"type=apikey\nmodel_map={\"a[1m]\":\"b\"}\n":                "model_map must be",
+		"type=apikey\nmonthly_budget_usd=0.0\n":                     "monthly_budget_usd must be",
+		"type=odd\n":                                                "invalid or missing type",
+		"type=apikey\napi_key=k\nmonthly_budget_usd=lots\n":         "monthly_budget_usd must be",
+		"type=apikey\napi_key=k\n" + "endpoint" + "_side=outside\n": "unknown key 'endpoint_side'",
+		"type=token\ntoken=t\nadapter=true\n":                       "key 'adapter' is invalid for token",
+		"type=proxy\napi_key=k\n":                                   "proxy 'p' has no base_url",
 	} {
 		if _, _, err := read(t, conf); err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("%q: got %v, want %q", conf, err, want)
+		}
+	}
+}
+
+// monthly_budget_usd belongs to a sibling tool's shared conf: a number loads, and
+// an apikey or proxy profile may declare adapter=true, which survives parsing.
+func TestReadLoadsTheBudgetAndKeepsTheAdapterDeclaration(t *testing.T) {
+	for _, conf := range []string{
+		"type=apikey\napi_key=k\nbase_url=https://g\nmonthly_budget_usd=500\n",
+		"type=apikey\napi_key=k\nbase_url=https://g\nadapter=true\n",
+		"type=proxy\nbase_url=http://127.0.0.1:11434\napi_key=none\nmodel=local-model\nadapter=true\n",
+	} {
+		f, _, err := read(t, conf)
+		if err != nil || f["type"] != "apikey" {
+			t.Fatalf("%q: %v %v", conf, f, err)
+		}
+		if strings.Contains(conf, "adapter=true") && f["adapter"] != "true" {
+			t.Fatalf("%q: adapter=true must survive parsing, got %q", conf, f["adapter"])
 		}
 	}
 }
@@ -93,6 +114,7 @@ func TestValidate(t *testing.T) {
 		{map[string]string{"type": "apikey", "api_key": "k"}, ""},
 		{map[string]string{"type": "apikey"}, "apikey 'p' has no api_key"},
 		{map[string]string{"type": "apikey", "api_key": "a b"}, "apikey 'p' api_key contains whitespace"},
+		{map[string]string{"type": "apikey", "api_key": "k", "base_url": "gateway.invalid"}, "apikey 'p' base_url must use http:// or https://"},
 		{map[string]string{"type": "apikey", "api_key": "k", "base_url": "ftp://x"}, "apikey 'p' base_url must use http:// or https://"},
 		{map[string]string{"type": "apikey", "api_key": "k", "base_url": "https://x y"}, "apikey 'p' base_url contains whitespace"},
 		{map[string]string{"type": "apikey", "api_key": "k", "adapter": "yes"}, "apikey 'p' adapter must be 'true', 'false', or absent"},

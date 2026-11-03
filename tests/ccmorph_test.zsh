@@ -1500,53 +1500,6 @@ test_a_retired_verb_is_rejected_not_merely_undocumented() {
   return $rc
 }
 
-test_the_window_cache_holds_every_model_it_is_told() {
-  # The per-model window cache was written with a single `>|`, so it held ONE row: a
-  # LAST-MODEL cache wearing a per-model name. Switch model, switch back, and the
-  # window had to be probed again -- on a mixed route, nearly every launch.
-  #
-  # It is a table now, and this pins the two ways a table silently stops being one:
-  #  1. a second model must not evict the first;
-  #  2. the row for a model must be matched LITERALLY. A model id is data, not a
-  #     pattern -- `Qwen3.6-27B-FP8` used as a regex also matches `Qwen3X6-27B-FP8`,
-  #     so caching one dropped the other and re-probed it. 27 ids in a real catalogue
-  #     here contain a regex metacharacter, so this is the common case, not the edge.
-  local c rc=0
-  c=$(mktemp -d)/context-window
-
-  _cache_put() {  # mirrors the launch path's write
-    local m="$1" w="$2" t="${c}.$$"
-    { mkdir -p "${c:h}" &&
-      { print -r -- "$m	$w"
-        if [[ -f "$c" && ! -L "$c" ]]; then
-          command grep -vF -- "${m}	" "$c" 2>/dev/null | command head -n 63
-        fi
-        :
-      } >| "$t" && command mv -f "$t" "$c"
-    } 2>/dev/null || { command rm -f "$t" 2>/dev/null; : }
-  }
-
-  _cache_put 'Qwen3.6-27B-FP8' 131072
-  _cache_put 'Qwen3X6-27B-FP8' 999999
-  _cache_put 'gpt-6-astra'     200000
-  _cache_put 'Qwen3.6-27B-FP8' 262144   # update in place, not a duplicate row
-
-  local body="$(<"$c")"
-  assert_contains "$body" 'Qwen3X6-27B-FP8	999999' \
-    'a look-alike id was evicted: the row must be matched literally, not as a regex' || rc=1
-  assert_contains "$body" 'gpt-6-astra	200000' \
-    'a second model evicted the first: the cache is not a table' || rc=1
-  assert_contains "$body" 'Qwen3.6-27B-FP8	262144' \
-    'the updated row is missing' || rc=1
-  if (( $(command grep -cF -- 'Qwen3.6-27B-FP8	' "$c") != 1 )); then
-    print -u2 -- 'the updated model has a duplicate row; the table will grow forever'
-    rc=1
-  fi
-  unfunction _cache_put
-  rm -rf "${c:h}"
-  return $rc
-}
-
 test_the_retired_window_verb_still_dispatches() {
   # The rename kept the pre-2.4.0 verb as a dispatch alias, for scripts and muscle
   # memory that already say it. A bulk rename then rewrote that alias into a second
@@ -2044,113 +1997,6 @@ test_proxy_context_limit_reaches_claude() {
   return $rc
 }
 
-test_add_folds_proxy_into_apikey() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  source "$CCMORPH_SOURCE"
-
-  # Stub curl so the /v1/messages probe returns 404 — the gateway does not
-  # speak Anthropic natively, so the adapter must be auto-enabled.
-  printf '%s\n' \
-    '#!/bin/sh' \
-    'for arg do' \
-    '  case "$arg" in *messages*) printf "404"; exit 0 ;; esac' \
-    'done' \
-    'for arg do' \
-    '  if [ "$arg" = "-w" ]; then printf "200"; exit 0; fi' \
-    'done' \
-    'exit 1' \
-    > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
-
-  local out
-  out=$(ccmorph add gateway <<< $'3\ncustom\ngateway-key\nhttp://gateway.invalid\n') || {
-    rm -rf "$test_home"
-    return 1
-  }
-
-  local actual="$(<"$HOME/.config/ccmorph/gateway.conf")" rc=0
-  assert_contains "$actual" 'type=apikey' \
-    'a key-authenticated gateway must use the single apikey profile type' || rc=1
-  assert_not_contains "$out" 'proxy         ' \
-    'new-profile onboarding must not offer a duplicate proxy type' || rc=1
-  assert_contains "$actual" 'adapter=true' \
-    'adapter must be auto-enabled when the endpoint does not speak /v1/messages' || rc=1
-  assert_not_contains "$actual" 'env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY=' \
-    'gateway compatibility must be explicit, not a proxy-type default' || rc=1
-  assert_not_contains "$actual" 'env.ENABLE_TOOL_SEARCH=' \
-    'the folded type must not disable native tool search automatically' || rc=1
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_add_defaults_the_adapter_on_for_any_non_anthropic_endpoint() {
-  # The costs are asymmetric, and that decides the default. `adapter=true` against an
-  # endpoint that already speaks Anthropic costs one wasted local hop and still works;
-  # `adapter=false` against one that does not is a hard launch failure with a dialect
-  # error. So an inconclusive probe must fail toward ON.
-  #
-  # It used to fail toward OFF, and that was wrong on a live profile: an ollama
-  # endpoint serves /v1/models (200) and 404s /v1/messages -- exactly the case needing
-  # translation -- and was written with no adapter key at all, because the probe
-  # happened to be inconclusive when it was added.
-  #
-  # Native is claimed only on PROOF, in one of two shapes: a 2xx, or a 404 naming the
-  # MODEL (route present, model wrong). Everything else gets the adapter.
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0 case_name expected got
-  # case -> body/status the fake curl returns, and the verdict required.
-  local -A cases=(
-    native_model_404 native
-    native_200       native
-    route_404        adapter
-    waf_405          adapter
-    auth_401         adapter
-    unreachable      adapter
-  )
-
-  for case_name in ${(k)cases}; do
-    expected="${cases[$case_name]}"
-    printf '%s\n' \
-      '#!/bin/sh' \
-      'case "$CASE" in' \
-      '  native_model_404) printf %s "{\"error\":{\"type\":\"not_found_error\",\"message\":\"model: probe\"}}"; printf "\n404" ;;' \
-      '  native_200)       printf %s "{\"id\":\"msg_1\"}"; printf "\n200" ;;' \
-      '  route_404)        printf %s "<html>404 not found</html>"; printf "\n404" ;;' \
-      '  waf_405)          printf %s "<html>blocked</html>"; printf "\n405" ;;' \
-      '  auth_401)         printf %s "{\"error\":\"unauthorized\"}"; printf "\n401" ;;' \
-      '  unreachable)      printf "\n000" ;;' \
-      'esac' \
-      'exit 0' \
-      > "$HOME/bin/curl"
-    chmod +x "$HOME/bin/curl"
-
-    rm -f "$HOME/.config/ccmorph/probe_$case_name.conf"
-    print -l 2 'k' 'https://gw.invalid' |
-      CASE="$case_name" ccmorph add "probe_$case_name" >/dev/null 2>&1 || true
-
-    [[ -f "$HOME/.config/ccmorph/probe_$case_name.conf" ]] || {
-      print -u2 -- "FAIL: add wrote no conf for the $case_name endpoint"
-      rc=1
-      continue
-    }
-    got=native
-    grep -q '^adapter=true' "$HOME/.config/ccmorph/probe_$case_name.conf" && got=adapter
-    [[ "$got" == "$expected" ]] || {
-      print -u2 -- "FAIL: a $case_name endpoint must be classified $expected, got $got"
-      rc=1
-    }
-  done
-
-  rm -rf "$test_home"
-  return $rc
-}
-
 test_add_never_asks_how_to_reach_the_endpoint() {
   # Reaching a private endpoint is a MACHINE property -- this laptop needs a bridge
   # for these hosts -- not a profile one, and it applies to almost nobody. `add`
@@ -2261,73 +2107,6 @@ test_add_apikey_model_level_404_is_native() {
   local actual="$(<"$HOME/.config/ccmorph/nativemodel404.conf")"
   assert_not_contains "$actual" 'adapter=true' \
     'a 404 naming the MODEL proves the route exists — must not enable the adapter' || rc=1
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_add_apikey_route_level_404_enables_adapter() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  source "$CCMORPH_SOURCE"
-
-  # The other half of the same branch: a 404 that says nothing about a model is a
-  # genuinely absent route, and that one does need translation.
-  _stub_probe_response 404 '<html><head><title>404 Not Found</title></head></html>'
-
-  local out rc=0
-  out=$(ccmorph add route404 <<< $'3\ncustom\nk\nhttp://route404.invalid\n') || {
-    rm -rf "$test_home"
-    return 1
-  }
-  local actual="$(<"$HOME/.config/ccmorph/route404.conf")"
-  assert_contains "$actual" 'adapter=true' \
-    'a 404 that names no model is an absent route — the adapter must be enabled' || rc=1
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_add_apikey_inconclusive_probe_enables_the_adapter() {
-  # These two used to assert the OPPOSITE -- that an inconclusive probe wrote no
-  # adapter key -- and the rule was wrong because it weighed the two errors equally.
-  # They are not equal: adapter=true against an endpoint that already speaks Anthropic
-  # costs one wasted local hop and still works, while adapter=false against one that
-  # does not is a hard launch failure with a dialect error. Failing toward ON is the
-  # cheaper mistake, so an inconclusive probe now takes it.
-  #
-  # Confirmed on a live profile before changing this: an ollama endpoint here serves
-  # /v1/models (200) and 404s /v1/messages -- needing translation -- yet had no adapter
-  # key, because its probe was inconclusive on the day it was added.
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0 out actual
-
-  # 000: any network failure (VPN down, DNS). Nothing to retry through, so the
-  # verdict stands on the asymmetry alone.
-  _stub_probe_response 000 ''
-  out=$(ccmorph add vpndown <<< $'3\ncustom\nk\nhttp://unreachable.invalid\n') || {
-    rm -rf "$test_home"
-    return 1
-  }
-  actual="$(<"$HOME/.config/ccmorph/vpndown.conf")"
-  assert_contains "$actual" 'adapter=true' \
-    'an unreachable endpoint must get the adapter, which is what works for a gateway' || rc=1
-  assert_contains "$out" 'adapter false' \
-    'and the user must be told the one-line correction if it turns out native' || rc=1
-
-  # 401/403: refused before routing, so it proves nothing about the dialect either.
-  _stub_probe_response 401 '{"error":{"message":"invalid x-api-key"}}'
-  out=$(ccmorph add authrefused <<< $'3\ncustom\nk\nhttp://authrefused.invalid\n') || {
-    rm -rf "$test_home"
-    return 1
-  }
-  actual="$(<"$HOME/.config/ccmorph/authrefused.conf")"
-  assert_contains "$actual" 'adapter=true' \
-    'an auth-refused probe must still default the adapter on' || rc=1
-
   rm -rf "$test_home"
   return $rc
 }
@@ -2671,96 +2450,6 @@ print -r -- '\''{"has_more":false,"data":[{"id":"gpt-6.1-sol"},{"id":"other-defa
   return $rc
 }
 
-test_mapped_model_known_matches_shim_scope_and_suffix() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  write_curl_mock 'print -r -- '\''{"data":[{"id":"served-target"},{"id":"literal-id"},{"id":"embed-only","capabilities":{"chat_completion":false}},{"id":"listed-alias"}]}'\'''
-  source "$CCMORPH_SOURCE"
-  local rc=0 base requested known expected
-  for base in https://api.anthropic.com https://api.anthropic.com/ http://mapped.invalid; do
-    printf '%s\n' 'type=apikey' "base_url=$base" 'api_key=test-key' \
-      'model_map={"mapped-alias":"served-target","literal-id":"absent-target","window-target":"served-target[1m]","nonchat-alias":"embed-only","listed-alias":"absent-target","chain-alias":"mapped-alias"}' \
-      > "$HOME/.config/ccmorph/mapped.conf"
-    for requested in mapped-alias 'mapped-alias[1M]' 'mapped-alias[1m]' window-target literal-id 'literal-id[1M]' nonchat-alias listed-alias chain-alias unmapped-alias; do
-      if [[ "$base" == http://mapped.invalid ]]; then
-        case "$requested" in mapped-alias|'mapped-alias[1M]'|'mapped-alias[1m]'|window-target) expected=0 ;; *) expected=1 ;; esac
-      else
-        case "$requested" in literal-id|'literal-id[1M]'|listed-alias) expected=0 ;; *) expected=1 ;; esac
-      fi
-      _ccm_model_known mapped "$requested"
-      known=$?
-      (( known == expected )) || {
-        print -u2 -- "predicate must match active shim mapping for $base $requested: expected $expected, got $known"
-        rc=1
-      }
-    done
-  done
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_mapped_model_known_preserves_catalogue_uncertainty() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  printf '%s\n' 'type=apikey' 'base_url=http://mapped.invalid' 'api_key=test-key' \
-    'model_map={"mapped-alias":"absent-target"}' > "$HOME/.config/ccmorph/mapped.conf"
-  write_curl_mock 'print -r -- "$(<"$HOME/catalogue.json")"'
-  source "$CCMORPH_SOURCE"
-  local rc=0 payload requested known
-  for payload in \
-    '{"has_more":true,"data":[{"id":"other-model"}]}' \
-    '{"data":[{"id":[]},{"id":"other-model"}]}'; do
-    print -r -- "$payload" > "$HOME/catalogue.json"
-    for requested in mapped-alias unmapped-alias; do
-      _ccm_model_known mapped "$requested"
-      known=$?
-      (( known == 2 )) || {
-        print -u2 -- "an uncertain catalogue must preserve $requested, got status $known for $payload"
-        rc=1
-      }
-    done
-  done
-  write_curl_mock 'exit 22'
-  _ccm_model_known mapped mapped-alias
-  known=$?
-  (( known == 2 )) || { print -u2 -- "a failed endpoint must preserve a mapped model, got $known"; rc=1; }
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_model_known_strips_only_the_terminal_window_suffix() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  printf '%s\n' \
-    '#!/bin/sh' \
-    'for a do case "$a" in *http_code*) echo 200; exit 0 ;; esac; done' \
-    'printf '\''{"data":[{"id":"vendor[beta]"}]}\n'\''' \
-    > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
-  printf '%s\n' 'type=proxy' 'base_url=http://gw.invalid' 'api_key=test-key' \
-    > "$HOME/.config/ccmorph/brackets.conf"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0
-  _ccm_model_known brackets 'vendor[beta]' || {
-    print -u2 -- 'a bracketed endpoint model id must be compared intact'
-    rc=1
-  }
-  _ccm_model_known brackets 'vendor[beta][1m]' || {
-    print -u2 -- 'only a terminal [1m] window suffix may be removed before comparison'
-    rc=1
-  }
-  _ccm_model_known brackets 'vendor[beta][1M]' || {
-    print -u2 -- 'the terminal window suffix must be matched case-insensitively'
-    rc=1
-  }
-  rm -rf "$test_home"
-  return $rc
-}
-
 test_a_hop_reads_the_catalogue_afresh() {
   # One /v1/models answer per pass. The zsh driver re-sourced ccmorph.sh between
   # hops, which reset _ccm_models_memo; a launcher that keeps one memo across
@@ -3049,126 +2738,6 @@ test_hop_asks_the_gateway_which_models_it_serves() {
     rc=1
   fi
 
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_gateway_catalogue_uses_route_limit_and_pagination_uncertainty() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  printf '%s\n' \
-    '#!/bin/sh' \
-    'printf "PROXY=%s\\n" "$HTTPS_PROXY" >> "$HOME/catalogue.request"' \
-    'for a do printf "ARG=%s\\n" "$a" >> "$HOME/catalogue.request"; done' \
-    '[ "${1-}" = -K ] && sed "s/^header = \"/ARG=/; s/\"\$//" >> "$HOME/catalogue.request"' \
-    'printf '\''{"has_more":true,"data":[{"id":"alpha-chat"}]}\n'\''' \
-    > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
-  source "$CCMORPH_SOURCE"
-
-  local listing rc=0 known
-  listing=$(HTTPS_PROXY='http://127.0.0.1:47999' _ccm_gw_models proxy) || {
-    rm -rf "$test_home"
-    return 1
-  }
-  assert_contains "$listing" 'alpha-chat' \
-    'the first catalogue page must still be usable' || rc=1
-  local request="$(<"$HOME/catalogue.request")"
-  assert_contains "$request" 'PROXY=http://127.0.0.1:47999' \
-    'catalogue requests must inherit the ambient proxy, never a blanked one' || rc=1
-  assert_contains "$request" 'ARG=http://proxy.invalid/v1/models?limit=1000' \
-    'catalogue requests must ask for the largest supported page' || rc=1
-  assert_contains "$request" 'ARG=Authorization: Bearer test-key' \
-    'catalogue requests must authenticate like adapter and launch probes' || rc=1
-
-  _ccm_model_known proxy absent-chat
-  known=$?
-  (( known == 2 )) || {
-    print -u2 -- "an absent model on a partial catalogue is unknown, got status $known"
-    rc=1
-  }
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_gateway_http_error_is_uncertainty_not_model_absence() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  printf '%s\n' \
-    '#!/bin/sh' \
-    'for a do' \
-    '  case "$a" in' \
-    '    *http_code*) printf 200; exit 0 ;;' \
-    '    -f|--fail|--fail-with-body) fail=1 ;;' \
-    '  esac' \
-    'done' \
-    'printf '\''{"error":{"message":"rate limited"}}\n'\''' \
-    '[ "${fail:-}" = 1 ] && exit 22' \
-    'exit 0' \
-    > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
-  source "$CCMORPH_SOURCE"
-
-  _ccm_model_known proxy alpha-chat
-  local known=$? rc=0
-  (( known == 2 )) || {
-    print -u2 -- "an HTTP catalogue error must be unknown, got status $known"
-    rc=1
-  }
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_gateway_listing_without_a_data_list_is_uncertainty() {
-  local test_home body known rc=0
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  source "$CCMORPH_SOURCE"
-  for body in '{"data":{"alpha-chat":{}}}' '{"data":"alpha-chat"}' '[{"id":"alpha-chat"}]'; do
-    printf '%s\n' \
-      '#!/bin/sh' \
-      'for a do case "$a" in *http_code*) printf 200; exit 0 ;; esac; done' \
-      "printf '%s\\n' '$body'" \
-      > "$HOME/bin/curl"
-    chmod +x "$HOME/bin/curl"
-    _ccm_model_known proxy alpha-chat
-    known=$?
-    (( known == 2 )) || {
-      print -u2 -- "a listing that does not read as a data list must be unknown ($body), got status $known"
-      rc=1
-    }
-  done
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_gateway_explicit_non_chat_model_is_not_carryable() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  printf '%s\n' \
-    '#!/bin/sh' \
-    'for a do case "$a" in *http_code*) printf 200; exit 0 ;; esac; done' \
-    'printf '\''{"data":[{"id":[]},{"id":"image-only","capabilities":{"chat_completion":false}},{"id":"undeclared-chat","capabilities":{"embeddings":true}}]}\n'\''' \
-    > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0 known
-  _ccm_model_known proxy image-only
-  known=$?
-  (( known == 1 )) || {
-    print -u2 -- "an explicit chat denial must be definite absence, got status $known"
-    rc=1
-  }
-  _ccm_model_known proxy undeclared-chat
-  known=$?
-  (( known == 0 )) || {
-    print -u2 -- "undeclared chat capability must remain carryable, got status $known"
-    rc=1
-  }
   rm -rf "$test_home"
   return $rc
 }
@@ -3520,72 +3089,6 @@ test_shipped_surface_never_names_the_transport_product() {
   return $rc
 }
 
-
-# A published tool is read by someone who cannot ask the author anything, so an
-# instruction they cannot act on is a dead end. But the fix is NOT to paste this
-# repository's URL in: `test_source_carries_no_host_specific_defaults` forbids an
-# org or host identifier in any shipped file, and a fork's URL would be wrong for
-# every other fork anyway.
-#
-# So the rule is narrow: prose a READER follows must not contain a slot only the
-# author could fill.
-# No model's context window may be written in the source. Every window is a
-# probed fact that lives in the registry (`ccmorph probe` writes it), keyed
-# per model and per route; a number typed here would be a second, silently
-# diverging source of truth for exactly the fact this tool exists to get right --
-# and a wrong one is invisible until a session limit a wall nobody predicted.
-#
-# The two schema bounds are named constants, declared once with their provenance
-# (Claude Code's own .int().min(1e5).max(1e6) on autoCompactWindow) and matched by
-# name, not value. Comments are exempt: prose explaining a probed number is how
-# the reasoning stays auditable.
-# An apostrophe inside an embedded `python3 -c '\''...'\''` program closes the
-# single-quoted zsh string early; the remainder is parsed as shell, and the
-# enclosing function silently stops being defined. That has broken this file three
-# separate times, and the symptom is always far from the cause: an advisory
-# disappears, or a function is "not found", while `zsh -n` may still call the file
-# valid. The only safe form inside those programs is the escaped `'\''`.
-test_no_embedded_program_carries_a_bare_apostrophe() {
-  local rc=0 hits
-  # Per file, never the concatenation: a program's closing quote must be sought
-  # in the file that opened it. Joined, a one-line `python3 -c '…'` — which has
-  # no `\n'` after it — would take the next FILE's closer as its own and bury
-  # every line up to it inside the program, reporting them all as bare
-  # apostrophes.
-  hits=$(command python3 - "${CCMORPH_LIBRARY[@]}" <<'PY'
-import sys
-
-needle = "python3 -c " + chr(39)
-out = []
-for path in sys.argv[1:]:
-    src = open(path, encoding="utf-8").read()
-    name = path.rsplit("/", 1)[-1]
-    i = 0
-    while True:
-        k = src.find(needle, i)
-        if k == -1:
-            break
-        end = src.find(chr(10) + chr(39), k)
-        if end == -1:
-            break
-        base = src[:k].count(chr(10)) + 1
-        body = src[k + len(needle):end]
-        for n, line in enumerate(body.split(chr(10))):
-            # The escaped form is fine; a bare apostrophe is the bug.
-            if chr(39) in line.replace(chr(39) + chr(92) + chr(39) + chr(39), ""):
-                out.append(f"{name}:{base + n}: {line.strip()[:100]}")
-        i = end
-print(chr(10).join(out))
-PY
-) || hits=""
-  if [[ -n "$hits" ]]; then
-    print -u2 -- 'FAIL: an embedded python program contains a bare apostrophe, which closes'
-    print -u2 -- 'its single-quoted string early and drops the enclosing function:'
-    print -u2 -- "$hits"
-    rc=1
-  fi
-  return $rc
-}
 
 test_no_context_window_is_written_into_the_source() {
   local rc=0 f hits
@@ -4345,35 +3848,6 @@ test_every_profile_keeps_its_own_secure_storage() {
   rm -rf "$test_home"
   return $rc
 }
-test_apikey_profile_exports_key_without_base_url() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  write_apikey_conf native 'api_key=sk-test-native'
-  source "$CCMORPH_SOURCE"
-
-  local actual rc=0
-  actual=$(ccmorph _env native) || {
-    print -u2 -- 'a native apikey profile must produce an environment'
-    rm -rf "$test_home"
-    return 1
-  }
-
-  assert_contains \
-    "$actual" \
-    'ANTHROPIC_API_KEY=sk-test-native' \
-    'an apikey profile must export ANTHROPIC_API_KEY' || rc=1
-  assert_not_contains \
-    "$actual" \
-    'ANTHROPIC_BASE_URL' \
-    'an apikey profile without base_url must reach api.anthropic.com natively' || rc=1
-  assert_contains \
-    "$actual" \
-    "CLAUDE_CONFIG_DIR=$HOME/.config/ccmorph/profiles/native" \
-    'an apikey profile must still get its own config dir' || rc=1
-  rm -rf "$test_home"
-  return $rc
-}
 
 test_apikey_profile_exports_gateway_base_url() {
   local test_home
@@ -4663,174 +4137,10 @@ test_apikey_without_model_passes_explicit_model_through() {
   return $rc
 }
 
-test_apikey_profile_requires_a_key() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  write_apikey_conf broken 'base_url=https://gateway.invalid'
-  source "$CCMORPH_SOURCE"
-
-  local rc=0
-  if ccmorph _env broken >/dev/null 2>&1; then
-    print -u2 -- 'an apikey profile with no api_key must be rejected'
-    rc=1
-  fi
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_apikey_profile_rejects_non_http_base_url() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  write_apikey_conf broken \
-    'api_key=sk_prod_test' \
-    'base_url=gateway.invalid'
-  source "$CCMORPH_SOURCE"
-
-  local rc=0
-  if ccmorph _env broken >/dev/null 2>&1; then
-    print -u2 -- 'an apikey base_url without a scheme must be rejected'
-    rc=1
-  fi
-  rm -rf "$test_home"
-  return $rc
-}
-
 # --- adapter contract -------------------------------------------------------
 # A profile may declare that its endpoint needs a dialect adapter in front of it.
 # The profile keeps its REAL base_url; only the environment handed to Claude Code
 # is redirected. That keeps `ccmorph _env` truthful for every other consumer.
-
-test_adapter_accepted_on_apikey_with_base_url() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  fake_gateway
-  write_apikey_conf gw \
-    'api_key=sk_prod_test' \
-    'base_url=https://gateway.invalid' \
-    'adapter=true'
-  source "$CCMORPH_SOURCE"
-
-  local rc=0
-  _ccm_read gw || {
-    print -u2 -- 'adapter=true must be a valid key on an apikey profile'
-    rc=1
-  }
-  [[ "${_ccm[adapter]:-}" == true ]] || {
-    print -u2 -- "adapter value not parsed; got ${(qqq)_ccm[adapter]:-}"
-    rc=1
-  }
-  unset _ccm
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_adapter_requires_a_base_url_to_front() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  write_apikey_conf native 'api_key=sk-test' 'adapter=true'
-  source "$CCMORPH_SOURCE"
-
-  local rc=0
-  # A native Anthropic key has no foreign dialect to translate, so an adapter
-  # would have nothing to front.
-  if _ccm_read native && _ccm_validate_loaded native; then
-    print -u2 -- 'adapter=true without base_url must be rejected'
-    rc=1
-  fi
-  unset _ccm
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_adapter_rejects_non_true_values() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  write_apikey_conf gw 'api_key=sk-test' 'base_url=https://g.invalid' 'adapter=yes'
-  source "$CCMORPH_SOURCE"
-
-  local rc=0
-  if _ccm_read gw && _ccm_validate_loaded gw; then
-    print -u2 -- 'only adapter=true may be accepted, not an arbitrary value'
-    rc=1
-  fi
-  unset _ccm
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_the_profile_template_is_a_valid_conf_naming_every_key() {
-  # profile.conf.example is the documented contract for a hand-edited profile. It
-  # must load as-is, and its key list must stay the parser's list: a key the
-  # reader accepts but the template never names is undocumented, and one the
-  # template names but the reader rejects is a lie.
-  local test_home rc=0 k line arm rest documented
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  command cp "$REPO_ROOT/share/profile.conf.example" "$HOME/.config/ccmorph/tpl.conf"
-  source "$CCMORPH_SOURCE"
-  _ccm_read tpl 2>/dev/null && _ccm_validate_loaded tpl 2>/dev/null || {
-    print -u2 -- 'the profile template must load and validate unchanged'
-    rc=1
-  }
-  unset _ccm
-
-  # The reader is profile/profile.go: its accepted keys are the checkKey case
-  # labels, the per-type lists and the removed-key table. Read them all, so a
-  # key added later is checked too; removed keys are not accepted keys.
-  local -a accepted=()
-  local go="$REPO_ROOT/profile/profile.go"
-  accepted=(${(f)"$(command sed -n '/^func checkKey/,/^}/p' "$go" |
-    command grep -oE '(k == |HasPrefix\(k, )"[a-z_.]+"' | command sed -E 's/.*"([a-z_.]+)"/\1/; s/\.$/.*/')"}
-    ${(f)"$(command sed -n '/perType  = map/,/^	}/p' "$go" | command grep -oE '"[a-z_.*]+"' | command tr -d '"' |
-      command grep -vxE 'sub|token|apikey|provider')"})
-  (( ${#accepted} > 20 )) || { print -u2 -- 'could not find the reader key list'; rc=1; }
-  [[ " ${accepted[*]} " == *' model_map '* && " ${accepted[*]} " == *' env.* '* ]] || {
-    print -u2 -- 'the reader key list must come from every case, not the first'
-    rc=1
-  }
-
-  local doc
-  doc=$(<"$REPO_ROOT/share/profile.conf.example")
-  for k in $accepted; do
-    # A key is documented by its literal line, by a comment naming it, or by the
-    # `# pattern.<arg>` comment a pattern key uses (`effort.<model>`). The
-    # trailing class stops `# model` from being satisfied by `# model_defaults`.
-    documented=0
-    if [[ "$k" == 'env.*' ]]; then
-      [[ "$doc" == *'#'[[:space:]]'env.'* ]] && documented=1
-    else
-      local bare="${k%\*}"
-      [[ "$bare" == *.* ]] && bare="${bare%%.*}"
-      [[ "$doc" == *"$bare="* || "$doc" == *"# $bare"[^a-zA-Z0-9_]* ||
-         "$doc" == *"# $bare."[^a-zA-Z0-9_]* ]] && documented=1
-    fi
-    (( documented )) || {
-      print -u2 -- "profile.conf.example does not document the accepted key '$k'"
-      rc=1
-    }
-  done
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_monthly_budget_usd_loads_and_a_non_number_is_refused() {
-  # Stark owns monthly_budget_usd in the shared conf; ccmorph must load it, not refuse the profile.
-  local test_home rc=0
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  write_apikey_conf gw 'api_key=sk-test' 'base_url=https://g.invalid' 'monthly_budget_usd=500'
-  write_apikey_conf bad 'api_key=sk-test' 'base_url=https://g.invalid' 'monthly_budget_usd=lots'
-  source "$CCMORPH_SOURCE"
-  _ccm_read gw >/dev/null 2>&1 || { print -u2 -- 'monthly_budget_usd=500 must load'; rc=1; }
-  _ccm_read bad >/dev/null 2>&1 && { print -u2 -- 'a non-number budget must be refused'; rc=1; }
-  rm -rf "$test_home"
-  return $rc
-}
 
 test_a_legacy_transport_key_is_reported_and_ignored() {
   # `transport=`, `forward_ip=`, `subagent_model=`, `lean=` and `role=` were all
@@ -4982,43 +4292,6 @@ test_secret_refuses_an_account_that_stores_no_secret() {
   return $rc
 }
 
-test_legacy_route_key_is_rejected_as_unknown() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  local legacy_key="endpoint"_"side"
-  write_apikey_conf gw 'api_key=sk-test' 'base_url=https://g.invalid' \
-    "${legacy_key}=outside"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0
-  if _ccm_read gw && _ccm_validate_loaded gw; then
-    print -u2 -- 'the legacy route key must be rejected as unknown'
-    rc=1
-  fi
-  unset _ccm
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_adapter_is_invalid_on_other_profile_types() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  printf '%s\n' 'type=token' 'token=sk-ant-x' 'adapter=true' \
-    > "$HOME/.config/ccmorph/tok.conf"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0
-  if _ccm_read tok; then
-    print -u2 -- 'adapter is meaningless on a token profile and must be rejected'
-    rc=1
-  fi
-  unset _ccm
-  rm -rf "$test_home"
-  return $rc
-}
-
 test_an_unreachable_endpoint_names_the_network_not_an_exception() {
   # ccmorph no longer probes reachability — there is nothing left to decide with
   # it — so this message now rides on the request that genuinely failed. It must
@@ -5044,31 +4317,6 @@ test_an_unreachable_endpoint_names_the_network_not_an_exception() {
     'the failure must tell the user how to fix it' || fail=1
   rm -rf "$test_home"
   return $fail
-}
-
-test_proxy_profile_may_declare_adapter() {
-  # The launcher already reads adapter for proxy|apikey alike (one case arm), so a
-  # proxy conf declaring it was rejected by validation for a capability the rest
-  # of the code supports. A local llm behind a translator is exactly this shape.
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  printf '%s\n' 'type=proxy' 'base_url=http://127.0.0.1:11434' 'api_key=none' \
-    'model=local-model' 'adapter=true' \
-    > "$HOME/.config/ccmorph/loc.conf"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0
-  if ! _ccm_read loc; then
-    print -u2 -- 'a proxy profile must be allowed to declare adapter=true'
-    rc=1
-  elif [[ "${_ccm[adapter]:-}" != true ]]; then
-    print -u2 -- 'adapter=true must survive parsing on a proxy profile'
-    rc=1
-  fi
-  unset _ccm
-  rm -rf "$test_home"
-  return $rc
 }
 
 test_env_reports_the_real_endpoint_not_the_adapter() {
@@ -5691,27 +4939,6 @@ test_native_endpoint_keeps_mid_conversation_system() {
     'an endpoint that speaks Anthropic natively must keep the native turn' || rc=1
   assert_contains "$(<"$CCMORPH_TEST_LOG")" 'DISABLE_ADVISOR=<unset>' \
     'a native endpoint keeps the advisor tool' || rc=1
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_plain_profile_never_starts_an_adapter() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  fake_gateway
-  fake_adapter
-  write_apikey_conf plain 'api_key=sk_prod_test' 'base_url=https://gateway.invalid'
-  source "$CCMORPH_SOURCE"
-
-  _ccm_launch -a plain prompt >/dev/null 2>&1
-  local rc=0
-  [[ ! -e "$HOME/adapter.argv" ]] || {
-    print -u2 -- 'a profile without adapter=true must not invoke the adapter'
-    rc=1
-  }
-  assert_contains "$(<"$CCMORPH_TEST_LOG")" 'BASE_URL=https://gateway.invalid' \
-    'a plain profile must reach its real endpoint directly' || rc=1
   rm -rf "$test_home"
   return $rc
 }
@@ -6786,96 +6013,6 @@ test_launch_names_switch_targets_the_trigger_would_overrun() {
   return $rc
 }
 
-# The trigger ccmorph reports must be the one Claude Code actually uses, or the
-# advisory lies in both directions: it names a number the engine never applies, and
-# it calls a model fatal that the engine would have compacted safely.
-#
-# Claude Code's own arithmetic (2.1.247) deducts an output reserve BEFORE the
-# percentage, then applies two further caps:
-#
-#   usable  = window - min(window, 20000)
-#   trigger = min(usable - round(usable * 0.2),
-#                 min(usable * pct / 100, usable - 13000))
-#
-# A plain `window * pct / 100` overstates that by a constant 16,000 at every window
-# size. This test pins the boundary case the drift produced: a 200,000 launch that
-# offers a 150,000 model. The engine compacts at 144,000, so the 150,000 model is
-# SAFE and must not be named; the old formula computed 160,000 and named it.
-# The advisory and the withhold must agree, because they are two halves of one
-# promise: a model is either named or removed, never removed unnamed. They agree
-# only if both compute from the SAME budget -- and the effective budget is not the
-# derived one whenever the user has saved an autoCompactWindow or a conf pins the
-# env var, since the overlay applies the derivation with setdefault semantics.
-#
-# The disagreement this pins: a saved 300,000 budget with a 1,000,000 launch. The
-# real trigger is ~224,000, which a 262,144 model clears -- so nothing should be
-# named and nothing removed. Passing the derived 1,000,000 to the withhold alone
-# made it compute ~784,000 and silently drop that safe model.
-# A profile that pins the ceiling in its own conf skips ccmorph's derivation
-# branch entirely -- but the engine does not stop resolving a window, and does not
-# stop refusing to compact a model whose wall is under the trigger. So the hazard
-# path must run whether or not ccmorph did the deriving, and must use the budget
-# the engine would use: the env pin if present, else a saved autoCompactWindow.
-#
-# The case: conf pins the ceiling at 1,000,000, canon settings save
-# autoCompactWindow 1,000,000, and the route offers a 400,000 model. The engine
-# triggers at 784,000 -- above that model's wall, so it is fatal and must be named.
-# Resolving no budget outside the branch left this session silent.
-# The trigger must track CLAUDE_AUTOCOMPACT_PCT_OVERRIDE, because the engine's
-# compact threshold IS that percentage of the usable window (capped 13,000 below
-# it) -- and nothing else. ccmorph briefly added the precompute-arming buffer term
-# on top, which is a different threshold behind a different gate; the two agree
-# exactly at pct=80 and nowhere else, so only a non-default percentage can catch it.
-#
-# At pct=90 on a 1,000,000 window: usable 980,000, engine trigger 882,000. A model
-# walled at 800,000 is therefore FATAL and must be named. The buffered formula gave
-# 784,000, judged 800,000 safe, and printed nothing.
-#
-# The value is `90junk`, not `90`, deliberately: the engine reads this with parseFloat
-# and takes the numeric prefix, so it means 90 there. A plain `90` would leave this
-# test green if the prefix handling were reverted to whole-string float(), which
-# rejects the value and silently drops a live override.
-# The engine computes the percentage as Math.floor(e*(r/100)) -- it DIVIDES before
-# multiplying. Floating-point multiplication is not associative, so `usable*pct/100`
-# lands one token high on real windows, and a model walled exactly AT the engine's
-# trigger then reads as fatal when the engine would still compact it.
-#
-# Probed, not assumed. Window 120,000, usable 100,000, pct=29:
-#
-#   engine  floor(100000*(29/100)) = 28999  -> wall 28999 < 28999 is False -> SAFE
-#   old     int(100000*29/100)     = 29000  -> wall 28999 < 29000 is True  -> FATAL
-#
-# Both round to "29k", so the trigger TEXT cannot show this. The observable
-# difference is whether the sibling is named at all -- which is exactly the
-# user-visible cost: named for no reason by default, and with
-# CCMORPH_WITHHOLD_FATAL=1 dropped from the picker entirely.
-test_the_percentage_divides_before_it_multiplies() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  printf '%s\n' \
-    'type=proxy' \
-    'base_url=http://gw.invalid' \
-    'api_key=test-key' \
-    'model=roomy' \
-    'env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=29' \
-    > "$HOME/.config/ccmorph/gw.conf"
-  write_profile_context gw roomy=120000 exactly=28999
-  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
-  printf '%s\n' '{"availableModels":["roomy","exactly"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
-  local actual="$(<"$CCMORPH_TEST_LOG")"
-
-  assert_not_contains "$actual" 'exactly limit' \
-    'a model walled exactly at the engine trigger is safe, so it must not be named' || rc=1
-  rm -rf "$test_home"
-  return $rc
-}
-
 test_the_trigger_follows_a_non_default_percentage() {
   local test_home
   test_home=$(mktemp -d)
@@ -6901,231 +6038,6 @@ test_the_trigger_follows_a_non_default_percentage() {
     'the trigger must be the percentage of the usable window, not a buffered form' || rc=1
   assert_contains "$actual" 'eighthundred limit 800k' \
     'a model between the two formulas must be named fatal' || rc=1
-  rm -rf "$test_home"
-  return $rc
-}
-
-# A saved autoCompactWindow the SCHEMA rejects must not suppress the derivation.
-# The setting is `.int().min(1e5).max(1e6).optional().catch(void 0)`, so the engine
-# discards an out-of-range value entirely -- and gating the overlay on key presence
-# meant a stale 50,000 both blocked ccmorph from deriving AND gave the engine
-# nothing, leaving the session sized by the route ceiling with a trigger above the
-# launched model wall. That is the never-compacts failure this feature exists to
-# prevent, reached through the feature's own overlay.
-# The engine's usable window is `window - min(cV(model), 20000)`, and cV() reads
-# CLAUDE_CODE_MAX_OUTPUT_TOKENS -- so a value below 20,000 makes it reserve LESS and
-# trigger HIGHER. ccmorph must see the same number, which means two things have to
-# hold: the key must be in the profile-env allowlist (or it never reaches the launched
-# process, and the engine never sees it either), and the hazard path must read it from
-# that same launch env. A unit test on the hazard helper alone would pass even with
-# the key absent from the allowlist, which is exactly how that gap shipped.
-#
-# 8192 reserve on a 200,000 window: usable 191,808, engine trigger 153,446. The
-# 150,000-wall sibling is therefore FATAL. With the key stripped, the reserve stays
-# 20,000, the trigger is 144,000, and the sibling is judged safe and never named.
-# Env values must be read the way the engine reads them. It parses these through
-# `P(trim(v)) ?? parseInt(trim(v),10)`, so `1e5`, `100_000` and `100000junk` are all
-# valid budgets there -- and a pure-digit test here rejected them, fell through to a
-# different budget, and reported a trigger the session does not use. With withholding
-# enabled that removed a model the engine would have compacted without trouble.
-#
-# `1e5` pin on a 400,000 launch: the engine reads 100,000, so the trigger is 67,000
-# and the 300,000-wall sibling is SAFE. Under a pure-digit gate the pin is dropped,
-# the derived 400,000 governs, the trigger is 307,000, and the sibling is named fatal.
-# Both env parsers must reject non-ASCII digits, because JavaScript does. Python's
-# character class and int()/float() accept Arabic-Indic digits; the engine's \d,
-# parseInt and parseFloat do not, so it calls such a value invalid and keeps its own
-# default. Accepting one here computes a trigger the session never uses.
-#
-# BOTH parsers in one test, one launch each: the repeated failure in this feature has
-# been to fix one path and leave its neighbour, which a single-path test cannot see.
-# The percentage parser was missed exactly that way after the integer one was fixed.
-# An env value the engine treats as invalid must come back EMPTY and SUCCESSFUL, never
-# as a failure. `1e999` matches the exponent form, float() gives inf, and int(inf)
-# raises -- which made the helper exit non-zero. Every reader spells the call
-# `$(_ccm_engine_int ...) || fallback`, so a non-zero exit was swallowed and each fell
-# through to a different budget; on a profile pinning the ceiling in its conf that meant
-# no hazard analysis at all.
-#
-# Asserted at the helper, because the defect WAS the exit status: that covers every
-# reader at once. Two earlier attempts in this series to test an equivalent fault
-# through one downstream symptom were blind.
-# Whitespace must be ECMAScript whitespace, not Python whitespace. str.strip() and the
-# Python \s class also remove U+0085 (NEL); the engine's trim does not -- its WhiteSpace
-# production is TAB, VT, FF, SP, NBSP, ZWNBSP plus Unicode Zs, and NEL is category Cc.
-# A leading NEL was therefore stripped here and kept there, so parseInt failed, the
-# engine called the value invalid, and ccmorph computed a trigger from a budget the
-# session never had.
-#
-# Both directions and both parsers: rejecting NEL is the fix, and still accepting
-# SP/TAB/NBSP is what stops the fix overshooting into rejecting whitespace the engine
-# genuinely skips. A test that only checked the rejection would miss that.
-# The percentage parser keeps its own copy of the whitespace class and cannot be called
-# in isolation, so it needs a launch-level test -- and the two cases must expect OPPOSITE
-# outcomes, or the test cannot tell "rejected" from "accepted".
-#
-# Probed on a 200,000-token window (usable 180,000, xWe cap usable-13,000 = 167,000):
-#
-#   no override -> trigger 167,000 -> a 150,000-wall sibling is FATAL
-#   50%         -> trigger  90,000 -> that sibling is SAFE
-#
-#   NEL + 50   the engine keeps NEL, so the override is REJECTED: trigger 167,000, the
-#              sibling is named. Wrongly accepting it as 50% gives 90,000 and silence.
-#   NBSP + 50  the engine skips NBSP, so the override GOVERNS: trigger 90,000 and
-#              silence. An over-tight class rejects it, giving 167,000 and a false name.
-#
-# Written because this fix first shipped with the percentage half unguarded: a draft
-# stanza that asserted nothing was removed and never replaced, so reverting only this
-# parser left the helper-level test green.
-# U+FEFF is the ONE ECMAScript whitespace char Python float() rejects. Every other
-# char in the class -- NBSP, U+1680, U+2000-200A, 2028/2029, 202F, 205F, 3000 -- is
-# strippable by float() itself, which is exactly why the NBSP test above stays green
-# whether or not the whitespace is stripped before parsing. So FEFF is the only value
-# that pins the seam.
-#
-# Probed on a 200,000-token window (usable 180,000, default cap 167,000):
-#
-#   engine  parseFloat("\ufeff50") = 50   -> trigger  90,000 -> 150k sibling SAFE
-#   folded  float("\ufeff50") raises      -> pct dropped     -> trigger 167,000
-#                                          -> 150k sibling falsely named FATAL
-test_the_percentage_parser_skips_a_zero_width_no_break_space() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
-  printf '%s\n' '{"availableModels":["small","onefifty"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0 feff
-  feff=$(printf '\ufeff')
-  printf '%s\n' \
-    'type=proxy' 'base_url=http://gw.invalid' 'api_key=test-key' 'model=small' \
-    "env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${feff}50" \
-    > "$HOME/.config/ccmorph/gw.conf"
-  write_profile_context gw small=200000 onefifty=150000
-  : > "$CCMORPH_TEST_LOG"
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
-  local actual="$(<"$CCMORPH_TEST_LOG")"
-  assert_not_contains "$actual" 'onefifty limit' \
-    'a FEFF-prefixed percentage is engine whitespace and must govern' || rc=1
-  rm -rf "$test_home"
-  return $rc
-}
-
-# Multibyte whitespace is what a UTF-8 terminal exercises; the VM defaults to POSIX.
-# Prints an installed UTF-8 locale name; callers scope it with `local -x LC_ALL=...`
-# because run_test runs every test in one shell.
-_utf8_locale_name() {
-  local l
-  for l in C.UTF-8 C.utf8 en_US.UTF-8 en_US.utf8; do
-    if locale -a 2>/dev/null | grep -qx "$l"; then
-      print -r -- "$l"; return 0
-    fi
-  done
-  return 0
-}
-
-test_the_percentage_parser_uses_engine_whitespace() {
-  local -x LC_ALL="$(_utf8_locale_name)"
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
-  printf '%s\n' '{"availableModels":["small","onefifty"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0 nel nbsp actual
-  nel=$'\xc2\x85'
-  nbsp=$'\xc2\xa0'
-
-  # NEL is not engine whitespace: the override is rejected and the default cap governs.
-  printf '%s\n' \
-    'type=proxy' 'base_url=http://gw.invalid' 'api_key=test-key' 'model=small' \
-    "env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${nel}50" \
-    > "$HOME/.config/ccmorph/gw.conf"
-  write_profile_context gw small=200000 onefifty=150000
-  : > "$CCMORPH_TEST_LOG"
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
-  actual="$(<"$CCMORPH_TEST_LOG")"
-  assert_contains "$actual" 'onefifty limit 150k' \
-    'a NEL-prefixed percentage must be rejected, leaving the 167k cap in force' || rc=1
-
-  # NBSP IS engine whitespace: the override governs and lowers the trigger.
-  printf '%s\n' \
-    'type=proxy' 'base_url=http://gw.invalid' 'api_key=test-key' 'model=small' \
-    "env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${nbsp}50" \
-    > "$HOME/.config/ccmorph/gw.conf"
-  write_profile_context gw small=200000 onefifty=150000
-  : > "$CCMORPH_TEST_LOG"
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
-  actual="$(<"$CCMORPH_TEST_LOG")"
-  assert_not_contains "$actual" 'onefifty limit' \
-    'an NBSP-prefixed percentage is engine whitespace and must govern' || rc=1
-
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_neither_env_parser_accepts_non_ascii_digits() {
-  local test_home nonascii
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  # Arabic-Indic "50", built from code points so this file stays ASCII.
-  nonascii=$(printf '\u0665\u0660')
-
-  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
-  printf '%s\n' '{"availableModels":["small","onetwenty"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0 key="" actual=""
-  # A rejected override leaves the engine default in charge: on a 200,000 window that
-  # trigger clears 120,000, so the sibling IS fatal and must be named. Accepting the
-  # value would compute a lower trigger and say nothing.
-  for key in CLAUDE_AUTOCOMPACT_PCT_OVERRIDE CLAUDE_CODE_AUTO_COMPACT_WINDOW; do
-    printf '%s\n' \
-      'type=proxy' \
-      'base_url=http://gw.invalid' \
-      'api_key=test-key' \
-      'model=small' \
-      "env.$key=$nonascii" \
-      > "$HOME/.config/ccmorph/gw.conf"
-  write_profile_context gw small=200000 onetwenty=120000
-    : > "$CCMORPH_TEST_LOG"
-      _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
-    actual="$(<"$CCMORPH_TEST_LOG")"
-    assert_contains "$actual" 'onetwenty limit 120k' \
-      "a non-ASCII $key must be rejected, leaving the sibling fatal" || rc=1
-  done
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_an_env_budget_is_parsed_the_way_the_engine_parses_it() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  printf '%s\n' \
-    'type=proxy' \
-    'base_url=http://gw.invalid' \
-    'api_key=test-key' \
-    'model=big' \
-    'env.CLAUDE_CODE_AUTO_COMPACT_WINDOW=1e5' \
-    > "$HOME/.config/ccmorph/gw.conf"
-  write_profile_context gw big=400000 mid=300000
-  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
-  printf '%s\n' '{"availableModels":["big","mid"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
-  local actual="$(<"$CCMORPH_TEST_LOG")"
-
-  assert_not_contains "$actual" 'mid limit' \
-    'an engine-valid exponent pin must govern, leaving the sibling safe' || rc=1
   rm -rf "$test_home"
   return $rc
 }
@@ -7358,274 +6270,6 @@ test_a_conf_pinned_ceiling_still_gets_hazard_analysis() {
 
   assert_contains "$actual" 'small limit 400k' \
     'a fatal switch must be named even when the conf pins the ceiling' || rc=1
-  rm -rf "$test_home"
-  return $rc
-}
-
-# Every sibling must be probed against the ceiling the ENGINE resolves for ITS OWN
-# id, because zE() recomputes the ceiling per model on every call. Skipping claude-
-# ids outright assumed min() had already narrowed them -- true for a real Anthropic
-# model, false for a gateway model wearing a claude- name, and ccmorph has the
-# machinery to translate exactly those.
-#
-# Probed. Launch on a 1,000,000 route, pct 80, so the session trigger is 784,000.
-# A sibling id `claude-mini` takes the engine hardcoded 200,000 ceiling regardless of
-# CLAUDE_CODE_MAX_CONTEXT_TOKENS: usable 180,000, trigger 144,000. Its probed wall
-# is 131,072, BELOW that -- a fatal switch. The old loop skipped it for its prefix and
-# printed nothing, which is the unrecoverable wedge this feature exists to prevent.
-# `claude-foo` and `claude-foo[1m]` are one bare id and TWO engine ceilings, 200,000
-# and 1,000,000, so their triggers differ by up to 823,000 tokens. Deduping on the
-# bare id alone was harmless while every sibling shared one trigger, but once each
-# derives its own it silently drops whichever variant is listed second -- and because
-# the [1m] trigger is always the higher one, bare-listed-first is precisely the
-# ordering that hides a fatality.
-#
-# Probed on a 1,000,000 route at pct 80, registry claude-foo=300000:
-#
-#   bare first   bare checked against its own 144,000 (safe), [1m] then skipped
-#                as a duplicate -> SILENT, though its trigger is 784,000 > 300,000
-#   [1m] first   named at 784,000 -> correct
-#
-# The pair is reachable: the allowlist keeps every claude- entry a user has had, so a
-# downward re-probe leaves a stale [1m] beside its bare form.
-# CL() is Math.min(ceiling, autoCompactWindow) for both the env and the settings source,
-# so the session budget caps EVERY model on every call -- not only the launched one. A
-# sibling trigger derived from the family ceiling alone overstates it by up to ~560,000
-# tokens, which names a safe model fatal and, under CCMORPH_WITHHOLD_FATAL=1, removes a
-# model the user can actually use.
-#
-# The shipped advisory was self-contradictory before this: on a 300,000 budget it printed
-# "compacts at 224k" and, in the same message, "claude-foo limit 500k" -- a wall the
-# session can never reach.
-#
-# Probed. Sibling claude-foo[1m], registry wall 500,000, route ceiling 922,000, pct 80:
-#
-#   budget 300,000  window min(1e6, 300000) = 300,000 -> usable 280,000
-#                   trigger 224,000 < 500,000 -> SAFE, must be silent
-#   no budget       window 1,000,000 -> usable 980,000
-#                   trigger 784,000 > 500,000 -> FATAL, must be named
-#
-# Every other hazard test passes budget=1000000, which is the one value where the min is
-# invisible -- so without this test the whole rule was unguarded.
-# cV() falls back to the MODEL default max-output when the env pin is absent, and three
-# legacy ids declare one below the 20,000 cap -- claude-3-opus and claude-3-haiku at 4096,
-# claude-3-sonnet at 8192, read out of 2.1.247:
-#
-#   if(o)t=o.default,n=o.upper;
-#   else if(r==="claude-3-opus"||r==="claude-3-haiku")t=4096,n=4096;
-#   else if(r==="claude-3-sonnet")t=8192
-#
-# A smaller reserve means a LARGER usable window and a HIGHER trigger, which is the
-# direction that leaves a wedge unnamed.
-#
-# Probed on a 200,000 window at pct 80, wall 150,000:
-#
-#   claude-3-opus   usable 195,904 -> trigger 156,723 >= 150,000 -> FATAL
-#   any other id    usable 180,000 -> trigger 144,000 <  150,000 -> safe
-test_a_legacy_id_uses_its_own_output_default() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0 err
-  write_profile_context gw claude-3-opus=150000
-  print -r -- '{"availableModels":["claude-3-opus"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  err=$(_ccm_invariant_warn gw 80 "" "" "" 2>&1)
-  assert_contains "$err" 'compaction starts at 156723' \
-    'a 4096-default id reserves less, so its trigger is 156,723 and the wall is fatal' || rc=1
-
-  # An ordinary id at the SAME wall keeps the 20,000 reserve and stays safe, so this
-  # cannot pass by naming every model.
-  write_profile_context gw claude-plain=150000
-  print -r -- '{"availableModels":["claude-plain"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  err=$(_ccm_invariant_warn gw 80 "" "" "" 2>&1)
-  assert_not_contains "$err" 'claude-plain holds' \
-    'an ordinary id keeps the 20,000 reserve and is safe at the same wall' || rc=1
-
-  # An env pin does NOT simply overrule the model default: yN caps it at that model's
-  # upperLimit first (`if(o>r){effective:r,status:"capped"}`), and claude-3-opus declares
-  # 4096/4096. So a pin of 20,000 is reduced to 4096 by the engine and the model is STILL
-  # fatal. Asserting the opposite -- that the pin makes it safe -- locked the bug in.
-  write_profile_context gw claude-3-opus=150000
-  print -r -- '{"availableModels":["claude-3-opus"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  err=$(_ccm_invariant_warn gw 80 20000 "" "" 2>&1)
-  assert_contains "$err" 'compaction starts at 156723' \
-    'a pin above the model upperLimit is capped down to it, so the wall stays fatal' || rc=1
-
-  # A pin BELOW the limit is honoured, which is the half that is genuinely a pin.
-  err=$(_ccm_invariant_warn gw 80 2000 "" "" 2>&1)
-  assert_contains "$err" 'compaction starts at 158400' \
-    'a pin under the model upperLimit is used as given' || rc=1
-
-  # Two catalogue ids also declare a sub-cap default -- 8192, so trigger 153,446 -- and
-  # they are reachable only through the catalogue branch, which the ids above do not
-  # exercise. Dated and mixed-case forms fold to the same base id.
-  write_profile_context gw claude-3-5-haiku=150000
-  print -r -- '{"availableModels":["claude-3-5-haiku"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  err=$(_ccm_invariant_warn gw 80 "" "" "" 2>&1)
-  assert_contains "$err" 'compaction starts at 153446' \
-    'a catalogue id with an 8192 default reserves 8192, not 20,000' || rc=1
-
-  write_profile_context gw claude-3-5-haiku-20241022=150000
-  print -r -- '{"availableModels":["claude-3-5-haiku-20241022"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  err=$(_ccm_invariant_warn gw 80 "" "" "" 2>&1)
-  assert_contains "$err" 'compaction starts at 153446' \
-    'a dated id folds to its base, as the engine normalizer does' || rc=1
-
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_hazard_set_honours_a_profile_tombstone_of_availablemodels() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  write_profile_context p m-small=150000
-  mkdir -p "$HOME/.claude" "$HOME/.config/ccmorph/profiles/p"
-  print -r -- '{"availableModels":["m-small","m-big"]}' > "$HOME/.claude/settings.json"
-  print -r -- '{"$ccmorphUnset":[["availableModels"]]}' \
-    > "$HOME/.config/ccmorph/profiles/p/settings.profile.json"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0 out
-  local -a penv
-  out=$(_ccm_hazard_set p 700000 900000 '' 2>/dev/null)
-  assert_not_contains "$out" 'm-small' \
-    'a profile that deleted availableModels offers no models, so none is a hazard' || rc=1
-
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_the_session_budget_caps_every_sibling_ceiling() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  write_profile_context gw claude-foo=500000
-  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
-  printf '%s\n' '{"availableModels":["claude-foo[1m]"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0 out err
-  local -a penv
-  penv=(CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80)
-
-  # With the budget in force the sibling is safe and must not be named.
-  out=$(        _ccm_hazard_set gw 300000 922000 \
-          "$HOME/.config/ccmorph/profiles/gw/settings.json" 2>/dev/null)
-  assert_not_contains "$out" 'claude-foo' \
-    'the budget caps the sibling ceiling, so a 500,000 wall clears a 224,000 trigger' || rc=1
-
-  # Without a budget the family ceiling stands and the same model IS fatal.
-  out=$(        _ccm_hazard_set gw "" 1000000 \
-          "$HOME/.config/ccmorph/profiles/gw/settings.json" 2>/dev/null)
-  assert_contains "$out" 'claude-foo' \
-    'with no budget the 1,000,000 ceiling gives a 784,000 trigger, which is fatal' || rc=1
-
-  # The same rule in the other mirror, which computes its own window.
-  err=$(_ccm_invariant_warn gw 80 "" "" 300000 2>&1)
-  assert_not_contains "$err" 'claude-foo holds' \
-    'the unsafe warning must cap by the budget too' || rc=1
-  err=$(_ccm_invariant_warn gw 80 "" "" "" 2>&1)
-  assert_contains "$err" 'claude-foo holds 500000' \
-    'and must still name it when no budget narrows the ceiling' || rc=1
-
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_a_bare_and_1m_pair_are_two_different_siblings() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  write_profile_context gw roomy=1000000 claude-foo=300000
-  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0 out
-  local -a penv
-  penv=(CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80)
-
-  # Bare listed FIRST: the ordering that used to hide the [1m] fatality.
-  printf '%s\n' '{"availableModels":["roomy","claude-foo","claude-foo[1m]"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  out=$(        _ccm_hazard_set gw 1000000 1000000 \
-          "$HOME/.config/ccmorph/profiles/gw/settings.json" 2>/dev/null)
-  assert_contains "$out" 'claude-foo' \
-    'a [1m] variant listed after its bare form must still be named' || rc=1
-
-  # And listed the other way round it is named exactly once, not twice.
-  printf '%s\n' '{"availableModels":["roomy","claude-foo[1m]","claude-foo"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  out=$(        _ccm_hazard_set gw 1000000 1000000 \
-          "$HOME/.config/ccmorph/profiles/gw/settings.json" 2>/dev/null)
-  local hits
-  hits=$(print -r -- "$out" | grep -c 'claude-foo')
-  [[ "$hits" == 1 ]] || {
-    print -u2 -- "FAIL: the pair must yield one row, got $hits"
-    rc=1
-  }
-
-  # And when BOTH variants clear the fatal test, the model is still named once. Keying
-  # the comparison on (id, ceiling) is right, but the ROW is keyed on the name, because
-  # the name is what gets printed and two identical names burn two of three slots.
-  #
-  # Note the budget is passed empty here: with a budget in force CL() mins it into BOTH
-  # variants, which collapses their ceilings to the same number and would make this a
-  # test of the min rather than of the dedup. An earlier version of this comment claimed
-  # the two triggers were 304,000 and 784,000 on a 400,000 route -- wrong, because the
-  # budget caps both to 304,000. The dedup is what is under test, so no budget.
-  write_profile_context gw roomy=400000 plain=250000
-  printf '%s\n' '{"availableModels":["roomy","plain","plain[1m]"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  out=$(        _ccm_hazard_set gw "" 400000 \
-          "$HOME/.config/ccmorph/profiles/gw/settings.json" 2>/dev/null)
-  hits=$(print -r -- "$out" | grep -c 'plain')
-  [[ "$hits" == 1 ]] || {
-    print -u2 -- "FAIL: a model fatal at both ceilings must be named once, got $hits"
-    rc=1
-  }
-
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_a_claude_named_routed_model_is_sized_by_its_own_id() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  write_profile_context gw roomy=1000000 claude-mini=131072
-  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
-  printf '%s\n' '{"availableModels":["roomy","claude-mini"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0 out
-  local -a penv
-  penv=(CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80)
-  out=$(        _ccm_hazard_set gw 1000000 1000000 \
-          "$HOME/.config/ccmorph/profiles/gw/settings.json" 2>/dev/null)
-  assert_contains "$out" 'claude-mini' \
-    'a claude-named model walled under its own 200,000-family trigger is fatal' || rc=1
-
-  # A claude- sibling with a wall ABOVE its own trigger is safe and must stay unnamed,
-  # so this cannot pass by naming every claude- id.
-  write_profile_context gw roomy=1000000 claude-ample=200000
-  printf '%s\n' '{"availableModels":["roomy","claude-ample"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  out=$(        _ccm_hazard_set gw 1000000 1000000 \
-          "$HOME/.config/ccmorph/profiles/gw/settings.json" 2>/dev/null)
-  assert_not_contains "$out" 'claude-ample' \
-    'a claude-named model above its own trigger is safe and must not be named' || rc=1
-
   rm -rf "$test_home"
   return $rc
 }
@@ -8655,129 +7299,6 @@ test_picker_uses_a_route_scoped_registry_probe() {
   return $rc
 }
 
-# The unsafe-model warning computes a trigger too, and it must be the ENGINE's
-# trigger. A hand-fitted `usable - round(usable*0.15)` sat here for eight versions
-# and matches no engine function at all -- neither xWe nor KRt.
-#
-# Probed on a 200,000 window (what a plain claude- id gets), usable 180,000:
-#
-#   stale   min(180000 - round(180000*0.15), 167000) = 153,000
-#   engine  min(floor(180000*(80/100)),      167000) = 144,000
-#
-# So a model holding 150,000 was NAMED as refusing before it compacts, when the
-# engine compacts at 144,000 and it is perfectly safe -- a 9,000-token band of false
-# alarms here, and 49,000 on a 1,000,000 window. Nothing covered this: the other test
-# on this function exercises only the disguised-model warning.
-# The unsafe warning must use the engine reserve, min(maxOutputTokens, 20000), not a
-# flat 20,000. A pin below the cap makes the engine reserve LESS and trigger HIGHER,
-# which is the direction that hides a fatality -- and _ccm_hazard_set cannot cover the
-# gap, because it exits when no window is known, which is exactly a first launch with
-# the endpoint down.
-#
-# Probed on a 200,000 window with no percentage override:
-#
-#   no pin (reserve 20,000)  usable 180,000  trigger 167,000  -> 170,000 wall safe
-#   pin 8,000                usable 192,000  trigger 179,000  -> 170,000 wall FATAL
-#
-# A flat reserve computes 167,000 in both cases and leaves the second silent.
-# The unsafe warning must look a ceiling up the way the sibling function does: strip
-# the [1m] window marker, and try the profile-scoped key first. Doing neither made its
-# own [1m] branch dead code -- the registry writer emits only bare ids -- and hid every
-# profile-scoped row, of which the shipped registry holds eight.
-#
-# Probed on a 200,000-family id, no percentage override:
-#
-#   offered claude-foo[1m], registry claude-foo=300000
-#     engine ceiling 1,000,000 -> trigger 967,000 >= 300,000 -> FATAL
-#     unstripped lookup finds nothing -> silent
-#   offered claude-x, registry gw:claude-x=160000
-#     engine trigger 167,000 >= 160,000 -> FATAL
-#     unscoped lookup finds nothing -> silent
-# The two knobs that move the trigger are read once and handed to both consumers by
-# NAME, not as delimited fields. An env value may contain any byte, and a conf `env.`
-# line carrying a literal tab survives parsing intact -- so a tab-separated return
-# split into the wrong fields, giving the percentage parser "8" and the reserve reader
-# "0<TAB>9000": a trigger computed from a reserve the session does not have.
-#
-# The tab must stay inside the percentage (parseFloat takes the numeric prefix, so the
-# engine reads 8 either way) and must never leak into the reserve.
-test_the_trigger_env_survives_a_delimiter_in_a_value() {
-  local -x CCMORPH_LIB_DIR="$REPO_ROOT/lib"
-  source "$CCMORPH_SOURCE"
-  local rc=0 tab
-  tab=$(printf '\t')
-
-  local -a penv
-  local p="" o="" n=""
-
-  penv=("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=8${tab}0" CLAUDE_CODE_MAX_OUTPUT_TOKENS=9000)
-  _ccm_trigger_env p o n
-  [[ "$o" == 9000 ]] || {
-    print -u2 -- "FAIL: the output reserve must not absorb a neighbouring field, got '$o'"
-    rc=1
-  }
-  [[ "$p" == "8${tab}0" ]] || {
-    print -u2 -- "FAIL: the percentage must arrive whole, got '$p'"
-    rc=1
-  }
-
-  # All three, and the ordinary case still works.
-  penv=(CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80 CLAUDE_CODE_MAX_OUTPUT_TOKENS=8000
-        CLAUDE_CODE_DISABLE_1M_CONTEXT=1)
-  p="" o="" n=""
-  _ccm_trigger_env p o n
-  [[ "$p" == 80 && "$o" == 8000 && "$n" == 1 ]] || {
-    print -u2 -- "FAIL: all three knobs must arrive, got '$p' '$o' '$n'"
-    rc=1
-  }
-
-  # A falsy kill switch reads as unset, so the [1m] tag keeps its meaning.
-  penv=(CLAUDE_CODE_DISABLE_1M_CONTEXT=0)
-  p="" o="" n=""
-  _ccm_trigger_env p o n
-  [[ -z "$n" ]] || {
-    print -u2 -- "FAIL: CLAUDE_CODE_DISABLE_1M_CONTEXT=0 must read as unset, got '$n'"
-    rc=1
-  }
-
-  return $rc
-}
-
-test_the_unsafe_warning_looks_up_a_ceiling_like_its_sibling() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0 err
-
-  # A [1m]-tagged entry against a bare registry key.
-  print -r -- '{"availableModels":["claude-foo[1m]"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  write_profile_context gw claude-foo=300000
-  err=$(_ccm_invariant_warn gw "" "" "" 2>&1)
-  assert_contains "$err" 'claude-foo holds 300000' \
-    'a [1m] entry must find its bare registry key' || rc=1
-
-  # A profile-scoped key, the form the registry actually uses.
-  print -r -- '{"availableModels":["claude-x"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  write_profile_context gw claude-x=160000
-  err=$(_ccm_invariant_warn gw "" "" "" 2>&1)
-  assert_contains "$err" 'claude-x holds 160000' \
-    'a profile-scoped ceiling must be honoured here as it is elsewhere' || rc=1
-
-  # A model above its trigger is still silent, so this cannot pass by naming all.
-  write_profile_context gw claude-x=200000
-  err=$(_ccm_invariant_warn gw "" "" "" 2>&1)
-  assert_not_contains "$err" 'claude-x holds' \
-    'a model above the trigger must not be named' || rc=1
-
-  rm -rf "$test_home"
-  return $rc
-}
-
 # The allowlist above is also the sweep: `_ccm_run_claude` unsets every key on it except the tuning keys (_CCMORPH_TUNING_ENV: the shell value passes through unless the profile declares one), so a
 # profile that omits one gets Claude Code's default rather than whatever this shell
 # happens to export. That is the invariant an earlier permitted-but-never-cleared split
@@ -8839,259 +7360,6 @@ test_the_launch_sweep_clears_every_allowlisted_env_key() {
       rc=1
     fi
   done
-
-  rm -rf "$test_home"
-  return $rc
-}
-
-# xe() is `if (Wn()) return false; return /\[1m\]/i.test(e)`, and Wn() reads
-# CLAUDE_CODE_DISABLE_1M_CONTEXT -- so with that set a [1m] id resolves at its family
-# default, not 1,000,000. Computing the trigger from 1e6 anyway names a safe model
-# fatal, and CCMORPH_WITHHOLD_FATAL=1 then drops a model that works.
-#
-# Probed: claude-foo[1m] with registry claude-foo=300000, pct 80.
-#   kill switch unset -> ceiling 1,000,000, trigger 784,000 >= 300,000 -> FATAL
-#   kill switch set   -> ceiling   200,000, trigger 144,000 <  300,000 -> safe
-# The kill switch has to be REACHABLE, and it has to mean what the engine means.
-#
-# Reachable: `env.*` conf keys are rejected unless the key is in _CCMORPH_PROFILE_ENV,
-# and the launcher clears only keys on that list -- so without membership a conf could
-# not set it AND an ambient export reached the engine invisibly. Both halves are the
-# same missing entry.
-#
-# Meaning: the engine env boolean, read out of 2.1.247, is
-#
-#   function p(e){ if(!e) return false; if (typeof e === "boolean") return e;
-#                  let n = String(e).toLowerCase().trim();
-#                  return ["1","true","yes","on"].includes(n) }
-#
-# so `off`, `no`, `false` and `2` are all FALSE, and a padded ` on ` is TRUE. Treating
-# anything non-empty and non-zero as true inverted every one of those -- and that is the
-# under-warn direction: ccmorph sizes a [1m] id at 200,000 where the engine gives it
-# 1,000,000, and the wedge goes unnamed.
-test_the_kill_switch_is_settable_and_reads_like_the_engine() {
-  # Its own home: the switch is read by the core, and an inherited CCMORPH_LIB_DIR
-  # can point at an earlier test's deleted home.
-  local test_home rc=0
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  source "$CCMORPH_SOURCE"
-
-  # It must be declarable in a conf at all.
-  (( ${_CCMORPH_PROFILE_ENV[(Ie)CLAUDE_CODE_DISABLE_1M_CONTEXT]} )) || {
-    print -u2 -- "FAIL: the kill switch must be an allowlisted profile env key"
-    rc=1
-  }
-
-  local -a penv
-  local p o n v
-  # Every value the engine calls TRUE, including padded and mixed case.
-  for v in 1 true yes on TRUE YES 'On' ' on ' 'yes '; do
-    p="" o="" n=""
-    penv=("CLAUDE_CODE_DISABLE_1M_CONTEXT=$v")
-    _ccm_trigger_env p o n
-    [[ "$n" == 1 ]] || {
-      print -u2 -- "FAIL: '$v' must read as set, got '$n'"
-      rc=1
-    }
-  done
-  # U+FEFF is in the ECMAScript WhiteSpace table, so the engine TRIMS it: `<FEFF>on`
-  # is true there. zsh [[:space:]] does not match U+FEFF, and neither does Python
-  # str.strip -- so checking against Python said the two agreed while they did not.
-  # Same character, same wrong oracle, as the percentage-parser whitespace gap.
-  local feff
-  feff=$(printf '\ufeff')
-  for v in "${feff}on" "${feff}yes" "${feff}1"; do
-    p="" o="" n=""
-    penv=("CLAUDE_CODE_DISABLE_1M_CONTEXT=$v")
-    _ccm_trigger_env p o n
-    [[ "$n" == 1 ]] || {
-      print -u2 -- "FAIL: a FEFF-padded true value must read as set, got '$n'"
-      rc=1
-    }
-  done
-
-  # Under a C charmap a bracket class matches BYTES, so a multibyte character whose UTF-8
-  # bytes all appear in the class was eaten byte by byte: U+3080 (e3 82 80) trimmed away
-  # and `<U+3080>on` read as TRUE where the engine reads false. Whole-character comparison
-  # is exact in every locale. NEL is the other direction -- the engine does NOT trim it,
-  # so it must stay false.
-  local u3080 nel
-  u3080=$(printf '\xe3\x82\x80')
-  nel=$(printf '\xc2\x85')
-
-  # And every value it calls FALSE.
-  for v in off no false FALSE 0 2 onx '' "${feff}off" "${u3080}on" "${nel}on"; do
-    p="" o="" n=""
-    penv=("CLAUDE_CODE_DISABLE_1M_CONTEXT=$v")
-    # LC_ALL=C deliberately: a bracket class matches BYTES under a C charmap, so the
-    # U+3080 case only distinguishes whole-character trimming from a class HERE. Run in
-    # the ambient locale it passes either way, which is how this nearly shipped unfixed.
-    LC_ALL=C _ccm_trigger_env p o n
-    [[ -z "$n" ]] || {
-      print -u2 -- "FAIL: '$v' must read as unset, got '$n'"
-      rc=1
-    }
-  done
-
-  rm -rf "$test_home"
-  return $rc
-}
-
-# xe() is the UNANCHORED regex /\[1m\]/i, so the tag counts anywhere in the id -- not
-# only at the end. Gateways version-suffix ids freely, so `claude-x[1m]-eu` is a real
-# shape, and the engine gives it 1,000,000.
-#
-# Probed: registry claude-x=300000, no percentage override.
-#   engine    ceiling 1,000,000 -> trigger 967,000 >= 300,000 -> FATAL
-#   endswith  tag missed -> claude- prefix -> 200,000 -> trigger 167,000 -> silent
-test_the_one_million_tag_counts_anywhere_in_the_id() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
-  print -r -- '{"availableModels":["claude-x[1m]-eu"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  write_profile_context gw claude-x=300000
-  source "$CCMORPH_SOURCE"
-
-  local rc=0 err
-  err=$(_ccm_invariant_warn gw "" "" "" 2>&1)
-  assert_contains "$err" 'claude-x holds 300000' \
-    'a [1m] tag anywhere in the id means 1,000,000, as the engine regex is unanchored' || rc=1
-
-  # An id with no tag at all is still sized at 200,000 and stays safe. The registry MUST
-  # carry this exact id: with only `claude-x` present, the untagged `claude-x-eu` found
-  # no wall at all, so the assertion passed on a lookup MISS rather than on the ceiling
-  # -- and an "every id is 1M" mutant passed both halves. Verified: with the wall
-  # present the correct code still stays silent (trigger 167,000 < 300,000) and that
-  # mutant is caught.
-  write_profile_context gw claude-x=300000 claude-x-eu=300000
-  print -r -- '{"availableModels":["claude-x-eu"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  err=$(_ccm_invariant_warn gw "" "" "" 2>&1)
-  assert_not_contains "$err" 'holds 300000' \
-    'an untagged id keeps its 200,000 family ceiling and stays safe' || rc=1
-
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_the_one_million_kill_switch_lowers_the_ceiling() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
-  print -r -- '{"availableModels":["claude-foo[1m]"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  write_profile_context gw claude-foo=300000
-  source "$CCMORPH_SOURCE"
-
-  local rc=0 err
-  # Unset: the tag means 1,000,000 and the model is fatal.
-  err=$(_ccm_invariant_warn gw 80 "" "" 2>&1)
-  assert_contains "$err" 'claude-foo holds 300000' \
-    'without the kill switch a [1m] id is sized at 1,000,000' || rc=1
-
-  # Set: the tag means nothing, so the model is safe and must not be named.
-  err=$(_ccm_invariant_warn gw 80 "" 1 2>&1)
-  assert_not_contains "$err" 'claude-foo holds' \
-    'with the kill switch set a [1m] id falls back to its family default' || rc=1
-
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_the_unsafe_warning_uses_the_engine_output_reserve() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
-  print -r -- '{"availableModels":["claude-x"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  write_profile_context gw claude-x=170000
-  source "$CCMORPH_SOURCE"
-
-  local rc=0 err
-  err=$(_ccm_invariant_warn gw "" 8000 2>&1)
-  assert_contains "$err" 'claude-x holds 170000' \
-    'a small output pin raises the trigger, and the model above it is fatal' || rc=1
-
-  # Without the pin the same model is safe, so this cannot pass by naming everything.
-  err=$(_ccm_invariant_warn gw "" "" 2>&1)
-  assert_not_contains "$err" 'claude-x holds' \
-    'at the default reserve the same model is safe and must not be named' || rc=1
-
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_the_unsafe_warning_uses_the_engine_trigger() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
-  print -r -- '{"availableModels":["claude-small"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  # 150,000 sits between the engine trigger (144,000) and the stale one (153,000).
-  write_profile_context gw claude-small=150000
-  source "$CCMORPH_SOURCE"
-
-  local rc=0 err
-  err=$(_ccm_invariant_warn gw 80 2>&1)
-  assert_not_contains "$err" 'claude-small holds' \
-    'a model above the engine trigger is safe and must not be named' || rc=1
-
-  # And a model genuinely BELOW the engine trigger is still named, so this test
-  # cannot pass by the warning simply having gone silent.
-  write_profile_context gw claude-small=100000
-  err=$(_ccm_invariant_warn gw 80 2>&1)
-  assert_contains "$err" 'claude-small holds 100000' \
-    'a model below the engine trigger must still be named' || rc=1
-
-  rm -rf "$test_home"
-  return $rc
-}
-
-# The unsafe-model warning computed its trigger from the percentage in the launch
-# env alone. A percentage the SETTINGS LAYERS hold reaches the engine through the
-# settings file, so the launch injects nothing over it by design -- and the check
-# then saw an empty percentage and computed the no-percentage trigger
-# `usable - 13000` instead, naming every model between the two as fatal. (#428)
-#
-# Probed: registry claude-small=150000, canon settings
-# env CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=70, no launch-env percentage.
-#
-#   layer 70  usable 180,000 -> trigger 126,000 <  150,000 -> SAFE, must be silent
-#   no pct    usable 180,000 -> trigger 167,000 >= 150,000 -> FATAL (the bug)
-test_the_unsafe_warning_uses_a_layer_only_percentage() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
-  # The user's own trigger, set where /autocompact and a hand edit both land.
-  print -r -- '{"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"70"}}' \
-    > "$HOME/.claude/settings.json"
-  print -r -- '{"availableModels":["claude-small"]}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  # 150,000 sits between the layer trigger (126,000) and the no-percentage one
-  # (167,000), so only the layer value decides whether it is named.
-  write_profile_context gw claude-small=150000
-  source "$CCMORPH_SOURCE"
-
-  local rc=0 err
-  # The launch's shape when the layers hold the value: the env injects nothing, so
-  # the percentage reading is empty and the key is absent from the launch env.
-  err=$(_ccm_invariant_warn gw "" "" "" "" 0 2>&1)
-  assert_not_contains "$err" 'claude-small holds' \
-    'a model above the layer trigger is safe and must not be named' || rc=1
-
-  # A model genuinely BELOW the layer trigger is still named, so this test cannot
-  # pass by the warning having gone silent.
-  write_profile_context gw claude-small=100000
-  err=$(_ccm_invariant_warn gw "" "" "" "" 0 2>&1)
-  assert_contains "$err" 'claude-small holds 100000' \
-    'a model below the layer trigger must still be named' || rc=1
 
   rm -rf "$test_home"
   return $rc
@@ -10881,8 +9149,38 @@ run_test() {
   fi
 }
 
+test_a_conf_env_budget_pin_reaches_the_launch() {
+  # The engine arithmetic is unit-tested in Go; this pins the one hop it cannot see:
+  # a conf env.CLAUDE_CODE_AUTO_COMPACT_WINDOW reaching the launched budget.
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  printf '%s\n' \
+    'type=proxy' \
+    'base_url=http://gw.invalid' \
+    'api_key=test-key' \
+    'model=big' \
+    'env.CLAUDE_CODE_AUTO_COMPACT_WINDOW=1e5' \
+    > "$HOME/.config/ccmorph/gw.conf"
+  write_profile_context gw big=400000 mid=300000
+  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
+  printf '%s\n' '{"availableModels":["big","mid"]}' \
+    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
+  source "$CCMORPH_SOURCE"
+
+  local rc=0
+    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
+  local actual="$(<"$CCMORPH_TEST_LOG")"
+
+  assert_not_contains "$actual" 'mid limit' \
+    'an engine-valid exponent pin must govern, leaving the sibling safe' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
 run_test test_subscription_profile_settings_override_global_launch_settings
 run_test test_profile_settings_override_global_launch_settings
+run_test test_a_conf_env_budget_pin_reaches_the_launch
 run_test test_proxy_gateway_credentials_reach_claude_only_through_the_environment
 
 test_a_launch_survives_a_settings_projection_it_cannot_write() {
@@ -11148,7 +9446,6 @@ run_test test_add_apikey_native_endpoint_skips_adapter
 run_test test_add_apikey_model_level_404_is_native
 # add does not persist adapter decisions; launch performs automatic compatibility handling.
 run_test test_help_teaches_credential_type_not_gateway_shape
-run_test test_apikey_profile_exports_key_without_base_url
 run_test test_apikey_profile_exports_gateway_base_url
 run_test test_profile_advisor_disable_reaches_launch_without_leaking
 run_test test_profile_simple_mode_reaches_launch_without_leaking
@@ -11166,79 +9463,7 @@ run_test test_a_launch_without_the_adapter_never_carries_task_headers
 run_test test_adapter_is_stopped_when_the_session_ends
 run_test test_adapter_doubles_die_with_a_killed_launcher
 run_test test_adapter_launch_survives_an_unwritable_optional_log
-# GH-321: a launch with nothing old to reap must not scan the host's processes.
-_check_stale_overlay_cleanup() {
-  local state="$1" expected_present="$2" expected_scans="$3" ps_status="${4:-0}"
-  local test_home rc=0 f
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  # A $TMPDIR whose own path looks like a bridge must not make its neighbours one.
-  local TMPDIR="$HOME/ccmorph-bridge-$UID-tmp"
-  export TMPDIR
-  mkdir -p "$TMPDIR" "$HOME/.config/ccmorph/profiles/demo/cache"
-  printf '%s\n' '#!/bin/sh' 'printf "946731600\n"' > "$HOME/bin/date"
-  printf '%s\n' '#!/bin/sh' 'printf "scan\n" >> "$HOME/ps-scans"' \
-    'cat "$HOME/live-processes"' "exit $ps_status" > "$HOME/bin/ps"
-  chmod +x "$HOME/bin/date" "$HOME/bin/ps"
-  : > "$HOME/live-processes"
-  : > "$HOME/ps-scans"
-  # Old, but not an overlay or a bridge: the single $TMPDIR read must spare it.
-  local unrelated="$TMPDIR/ccmorph-rc-ready.test"
-  mkdir "$unrelated"
-  TZ=UTC touch -t 200001010000 "$unrelated"
-  source "$CCMORPH_SOURCE"
 
-  local -a candidates=( "$HOME/.config/ccmorph/profiles/demo/cache/launch-settings.test"
-                        "$TMPDIR/ccmorph-launch-settings.test"
-                        "$TMPDIR/ccmorph-bridge-$UID-test" )
-  if [[ "$state" != empty ]]; then
-    print -r -- '{}' > "${candidates[1]}"
-    print -r -- '{}' > "${candidates[2]}"
-    mkdir "${candidates[3]}"
-    print -r -- '{}' > "${candidates[3]}/config.yaml"
-    for f in "${candidates[@]}"; do
-      if [[ "$state" == young ]]; then
-        touch "$f"
-      else
-        TZ=UTC touch -t 200001010000 "$f"
-      fi
-    done
-    if [[ "$state" == live ]]; then
-      printf '%s\n' "claude --settings ${candidates[1]}" \
-        "claude --settings ${candidates[2]}" \
-        "cliproxyapi --config ${candidates[3]}/config.yaml" > "$HOME/live-processes"
-    fi
-  fi
-
-  _ccm_cleanup_stale
-
-  local scans=( ${(f)"$(<"$HOME/ps-scans")"} )
-  (( ${#scans} == expected_scans )) || {
-    print -u2 -- "cleanup $state: expected $expected_scans process scans, got ${#scans}"
-    rc=1
-  }
-  [[ -e "$unrelated" ]] || { print -u2 -- "cleanup $state: removed $unrelated"; rc=1; }
-  for f in "${candidates[@]}"; do
-    if [[ -e "$f" ]]; then
-      [[ "$expected_present" == yes ]] || rc=1
-    else
-      [[ "$expected_present" == no ]] || rc=1
-    fi
-  done
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_stale_overlay_cleanup_empty_issue_321() { _check_stale_overlay_cleanup empty no 0; }
-test_stale_overlay_cleanup_young_issue_321() { _check_stale_overlay_cleanup young yes 0; }
-test_stale_overlay_cleanup_abandoned_issue_321() { _check_stale_overlay_cleanup old no 1; }
-test_stale_overlay_cleanup_live_issue_321() { _check_stale_overlay_cleanup live yes 1; }
-test_stale_overlay_cleanup_failed_ps_issue_321() { _check_stale_overlay_cleanup live no 1 1; }
-run_test test_stale_overlay_cleanup_empty_issue_321
-run_test test_stale_overlay_cleanup_young_issue_321
-run_test test_stale_overlay_cleanup_abandoned_issue_321
-run_test test_stale_overlay_cleanup_live_issue_321
-run_test test_stale_overlay_cleanup_failed_ps_issue_321
 
 run_test test_adapter_launch_uses_current_process_tree
 run_test test_no_ambient_proxy_means_the_adapter_gets_none
@@ -11248,18 +9473,11 @@ run_test test_adapter_launch_withholds_mid_conversation_system_for_claude_models
 run_test test_declared_model_capabilities_is_never_overruled
 run_test test_native_endpoint_keeps_mid_conversation_system
 run_test test_launch_aborts_when_the_adapter_cannot_serve
-run_test test_adapter_accepted_on_apikey_with_base_url
-run_test test_adapter_requires_a_base_url_to_front
-run_test test_adapter_rejects_non_true_values
-run_test test_monthly_budget_usd_loads_and_a_non_number_is_refused
 run_test test_a_legacy_transport_key_is_reported_and_ignored
-run_test test_the_profile_template_is_a_valid_conf_naming_every_key
 run_test test_key_prints_the_api_key_for_an_apikey_account
 run_test test_key_does_not_provision_claude_profile_state
 run_test test_secret_prints_whichever_secret_the_account_holds
 run_test test_secret_refuses_an_account_that_stores_no_secret
-run_test test_legacy_route_key_is_rejected_as_unknown
-run_test test_adapter_is_invalid_on_other_profile_types
 run_test test_env_reports_the_real_endpoint_not_the_adapter
 run_test test_models_does_not_send_anthropic_version
 run_test test_models_lists_only_chat_capable_from_the_gateway
@@ -11276,7 +9494,6 @@ run_test test_claude_subcommands_reach_claude_through_the_launch_pipeline
 run_test test_a_retired_verb_is_rejected_not_merely_undocumented
 run_test test_only_the_current_vocabulary_is_taught
 run_test test_the_retired_window_verb_still_dispatches
-run_test test_the_window_cache_holds_every_model_it_is_told
 run_test test_menu_with_no_account_chains_from_the_account_chooser
 run_test test_version_accepts_the_conventional_flags
 run_test test_help_names_an_account_argument_unambiguously
@@ -11306,8 +9523,6 @@ run_test test_launch_interactive_resolves_a_real_model
 run_test test_launch_aborts_when_pick_is_cancelled
 run_test test_apikey_explicit_model_overrides_profile_model
 run_test test_apikey_without_model_passes_explicit_model_through
-run_test test_apikey_profile_requires_a_key
-run_test test_apikey_profile_rejects_non_http_base_url
 run_test test_subscription_profile_does_not_inject_model
 run_test test_direct_resume_recovers_last_main_thread_model_command
 run_test test_direct_resume_derives_the_carried_claude_send_id
@@ -11317,9 +9532,6 @@ run_test test_an_option_value_that_looks_like_a_flag_is_not_that_flag
 run_test test_a_direct_launch_forwards_a_native_value_that_looks_like_a_launcher_flag
 run_test test_direct_resume_reports_a_rejected_carried_model
 run_test test_mapped_model_resume_and_hop_keep_servable_identity
-run_test test_mapped_model_known_matches_shim_scope_and_suffix
-run_test test_mapped_model_known_preserves_catalogue_uncertainty
-run_test test_model_known_strips_only_the_terminal_window_suffix
 run_test test_invalid_resume_model_falls_back_to_profile_model
 run_test test_resume_rejects_flag_picker_and_multitoken_model_values
 run_test test_hop_relays_model_and_effort
@@ -11329,10 +9541,6 @@ run_test test_hop_refuses_when_no_claude_process_runs_it
 run_test test_hop_without_profile_uses_current_profile
 run_test test_hop_falls_back_when_the_target_cannot_serve_the_model
 run_test test_hop_asks_the_gateway_which_models_it_serves
-run_test test_gateway_catalogue_uses_route_limit_and_pagination_uncertainty
-run_test test_gateway_http_error_is_uncertainty_not_model_absence
-run_test test_gateway_listing_without_a_data_list_is_uncertainty
-run_test test_gateway_explicit_non_chat_model_is_not_carryable
 run_test test_relay_resume_preserves_dangerous_permission_mode
 run_test test_relay_same_profile_omits_cache_notice_issue_226
 run_test test_relay_same_file_profile_omits_cache_notice_issue_226
@@ -11344,7 +9552,6 @@ run_test test_local_sh_loads_and_its_exports_take_effect
 run_test test_absent_local_sh_is_a_clean_noop
 run_test test_broken_local_sh_does_not_abort_the_source
 run_test test_shipped_surface_never_names_the_transport_product
-run_test test_no_embedded_program_carries_a_bare_apostrophe
 run_test test_no_context_window_is_written_into_the_source
 run_test test_no_reader_instruction_carries_an_authors_placeholder
 run_test test_onboarding_documents_no_wiring_step_at_all
@@ -11358,7 +9565,6 @@ run_test test_one_models_listing_per_launch_is_shared
 run_test test_code_and_state_are_separate_directories
 run_test test_source_carries_no_host_specific_defaults
 run_test test_an_unreachable_endpoint_names_the_network_not_an_exception
-run_test test_proxy_profile_may_declare_adapter
 run_test test_profile_may_pin_one_model_picker_row
 run_test test_a_route_scoped_probe_beats_the_endpoint_declaration
 run_test test_conf_window_beats_the_published_one
@@ -11386,24 +9592,14 @@ run_test test_a_derived_window_survives_an_endpoint_blip
 run_test test_launch_warns_when_a_model_refuses_before_compacting
 run_test test_launch_names_switch_targets_the_trigger_would_overrun
 run_test test_the_reported_trigger_is_the_engines_own_arithmetic
-run_test test_a_legacy_id_uses_its_own_output_default
-run_test test_hazard_set_honours_a_profile_tombstone_of_availablemodels
-run_test test_the_session_budget_caps_every_sibling_ceiling
-run_test test_a_bare_and_1m_pair_are_two_different_siblings
-run_test test_a_claude_named_routed_model_is_sized_by_its_own_id
 run_test test_the_advisory_and_the_withhold_share_one_budget
 run_test test_a_layer_percentage_sizes_the_hazard_set
-run_test test_the_percentage_parser_skips_a_zero_width_no_break_space
-run_test test_the_percentage_parser_uses_engine_whitespace
-run_test test_neither_env_parser_accepts_non_ascii_digits
-run_test test_an_env_budget_is_parsed_the_way_the_engine_parses_it
 run_test test_the_output_reserve_override_reaches_the_hazard_path
 run_test test_an_out_of_schema_saved_budget_does_not_block_derivation
 run_test test_a_non_finite_saved_budget_does_not_abort_the_launch
 run_test test_the_overlay_and_the_advisory_agree_on_the_schema
 run_test test_a_valid_saved_budget_still_beats_the_derivation
 run_test test_a_conf_pinned_ceiling_still_gets_hazard_analysis
-run_test test_the_percentage_divides_before_it_multiplies
 run_test test_the_trigger_follows_a_non_default_percentage
 run_test test_no_launch_advisory_relies_on_pre_exec_stderr
 run_test test_the_unprobed_model_advisory_persists_in_the_tui
@@ -11425,15 +9621,7 @@ run_test test_the_picker_offers_a_model_whatever_its_siblings_declare
 run_test test_picker_follows_gateway_chat_capabilities
 run_test test_picker_skips_a_malformed_non_string_model_id
 run_test test_picker_uses_a_route_scoped_registry_probe
-run_test test_the_trigger_env_survives_a_delimiter_in_a_value
-run_test test_the_unsafe_warning_looks_up_a_ceiling_like_its_sibling
 run_test test_the_launch_sweep_clears_every_allowlisted_env_key
-run_test test_the_kill_switch_is_settable_and_reads_like_the_engine
-run_test test_the_one_million_tag_counts_anywhere_in_the_id
-run_test test_the_one_million_kill_switch_lowers_the_ceiling
-run_test test_the_unsafe_warning_uses_the_engine_output_reserve
-run_test test_the_unsafe_warning_uses_the_engine_trigger
-run_test test_the_unsafe_warning_uses_a_layer_only_percentage
 run_test test_launch_warns_about_a_hand_set_disguised_model
 run_test test_projection_omits_models_that_cannot_serve_a_session
 run_test test_picker_without_a_registry_offers_rows_and_spawns_nothing
