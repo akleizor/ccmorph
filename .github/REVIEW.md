@@ -48,6 +48,8 @@ credential, or losing the user's choice.
 - **A confident verdict kept for a shape the sibling fix already made uncertain** — a listing whose `data` is not a list was made cannot-tell, but a reply whose top level was not an object still answered not-served, so the same unfamiliar reply kept replacing the carried model — `example: #67 fix(util): model-known answers cannot-tell for a listing whose top level is not a JSON object`.
 - **A fallback home that only some path builders use** (2026-11-03) — with `HOME` unset the state dir and the context policy took the account's home from the passwd entry, while the canonical settings, the projects stores, doctor, rm and setup-profile still joined `os.Getenv("HOME")`, so a `.claude/settings.json` in the current directory set the launch's model — `example: #138 fix(launch): with HOME unset every reader uses the account's home`.
   Seen 1x (2026-11-03).
+- **A fixture whose mode the runner's umask can mask away** — the 0644 file a refusal fixture writes lands 0600 under a private umask, so the refusal the test exists to pin never happens and the suite fails for the environment, not the code; the same change's 0600 session env file had only defers behind it, which the signal path's os.Exit skips, so a TERM between writing it and starting claude left the credentials with no sweep (2026-11-03) — `example: #142 fix(util): the refusal fixture pins its mode, and gc-stale sweeps ccmorph-session-env.*`.
+  Seen 1x (2026-11-03).
 
 ## Never blocks
 

@@ -43,6 +43,11 @@ func TestSessionEnvComesFromAPrivateFileAndIsRemoved(t *testing.T) {
 	if err := os.WriteFile(loose, []byte("A=1\x00"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The write is masked by the runner's umask (077 lands it 0600, and the
+	// refusal below never happens), so the fixture pins its mode itself (#142).
+	if err := os.Chmod(loose, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := readSessionEnv(loose); err == nil {
 		t.Fatal("a world-readable env file was accepted")
 	}
