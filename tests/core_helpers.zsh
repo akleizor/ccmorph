@@ -5,8 +5,10 @@ _ccm_util() { "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" util "$@"; }
 
 # The env-key lists, as the Go core holds them (profile/envkeys.go). Read once per
 # suite run and passed down through the env; an empty list fails here, not later
-# as a loop that checks nothing.
-() {
+# as a loop that checks nothing. The refusal returns from this file itself: inside
+# the anonymous function it first lived in, `return 1` only left that function,
+# sourcing continued, and the arrays stayed empty (#141).
+_ccm_env_keys_load() {
   local n v cache
   for n v in TUNING tuning PROFILE profile LAUNCH launch BACKEND backend MODEL_MAPPING mapping; do
     cache=_CCM_TEST_KEYS_$n
@@ -16,6 +18,7 @@ _ccm_util() { "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" util "$@"; }
     set -A _CCMORPH_${n}_ENV ${=${(P)cache}}
   done
 }
+_ccm_env_keys_load || return 1
 _ccm_err() { print -u2 -- "ccmorph: $1"; return 1; }
 
 _ccm_profile_layer() {
