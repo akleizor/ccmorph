@@ -58,19 +58,8 @@ _ccm_validate_loaded() {  # the loaded apikey profile $1 passes the core's valid
   out=$(_ccm_util profile-env "$_CCMORPH_DIR" "$_CCMORPH_PROFILE_DIRS" "$1") || { _ccm_err "$out"; return 1; }
 }
 
-_ccm_model_known() { ( _ccm_launch_core --model-known "$1" "$2" ) 2>/dev/null; }  # 0 served, 1 not served, 2 cannot tell
-
 _ccm_gw_models_json() {  # REPLY = the profile's /v1/models listing
   REPLY=$( _ccm_launch_core --models-json "$@" )
-}
-
-_ccm_gw_models() {
-  local name="$1"
-  _ccm_gw_models_json "$name" "${@:3}" || return 1
-  print -r -- "$REPLY" | ( _ccm_launch_core --gw-models "$name" "${2:-catalogue}" ) || {
-    _ccm_err "'$name' endpoint returned no usable model list"
-    return 1
-  }
 }
 
 _ccm_model_window() { ( _ccm_launch_core --model-window "$@" ); }

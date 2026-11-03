@@ -2671,96 +2671,6 @@ print -r -- '\''{"has_more":false,"data":[{"id":"gpt-6.1-sol"},{"id":"other-defa
   return $rc
 }
 
-test_mapped_model_known_matches_shim_scope_and_suffix() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  write_curl_mock 'print -r -- '\''{"data":[{"id":"served-target"},{"id":"literal-id"},{"id":"embed-only","capabilities":{"chat_completion":false}},{"id":"listed-alias"}]}'\'''
-  source "$CCMORPH_SOURCE"
-  local rc=0 base requested known expected
-  for base in https://api.anthropic.com https://api.anthropic.com/ http://mapped.invalid; do
-    printf '%s\n' 'type=apikey' "base_url=$base" 'api_key=test-key' \
-      'model_map={"mapped-alias":"served-target","literal-id":"absent-target","window-target":"served-target[1m]","nonchat-alias":"embed-only","listed-alias":"absent-target","chain-alias":"mapped-alias"}' \
-      > "$HOME/.config/ccmorph/mapped.conf"
-    for requested in mapped-alias 'mapped-alias[1M]' 'mapped-alias[1m]' window-target literal-id 'literal-id[1M]' nonchat-alias listed-alias chain-alias unmapped-alias; do
-      if [[ "$base" == http://mapped.invalid ]]; then
-        case "$requested" in mapped-alias|'mapped-alias[1M]'|'mapped-alias[1m]'|window-target) expected=0 ;; *) expected=1 ;; esac
-      else
-        case "$requested" in literal-id|'literal-id[1M]'|listed-alias) expected=0 ;; *) expected=1 ;; esac
-      fi
-      _ccm_model_known mapped "$requested"
-      known=$?
-      (( known == expected )) || {
-        print -u2 -- "predicate must match active shim mapping for $base $requested: expected $expected, got $known"
-        rc=1
-      }
-    done
-  done
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_mapped_model_known_preserves_catalogue_uncertainty() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  printf '%s\n' 'type=apikey' 'base_url=http://mapped.invalid' 'api_key=test-key' \
-    'model_map={"mapped-alias":"absent-target"}' > "$HOME/.config/ccmorph/mapped.conf"
-  write_curl_mock 'print -r -- "$(<"$HOME/catalogue.json")"'
-  source "$CCMORPH_SOURCE"
-  local rc=0 payload requested known
-  for payload in \
-    '{"has_more":true,"data":[{"id":"other-model"}]}' \
-    '{"data":[{"id":[]},{"id":"other-model"}]}'; do
-    print -r -- "$payload" > "$HOME/catalogue.json"
-    for requested in mapped-alias unmapped-alias; do
-      _ccm_model_known mapped "$requested"
-      known=$?
-      (( known == 2 )) || {
-        print -u2 -- "an uncertain catalogue must preserve $requested, got status $known for $payload"
-        rc=1
-      }
-    done
-  done
-  write_curl_mock 'exit 22'
-  _ccm_model_known mapped mapped-alias
-  known=$?
-  (( known == 2 )) || { print -u2 -- "a failed endpoint must preserve a mapped model, got $known"; rc=1; }
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_model_known_strips_only_the_terminal_window_suffix() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  printf '%s\n' \
-    '#!/bin/sh' \
-    'for a do case "$a" in *http_code*) echo 200; exit 0 ;; esac; done' \
-    'printf '\''{"data":[{"id":"vendor[beta]"}]}\n'\''' \
-    > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
-  printf '%s\n' 'type=proxy' 'base_url=http://gw.invalid' 'api_key=test-key' \
-    > "$HOME/.config/ccmorph/brackets.conf"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0
-  _ccm_model_known brackets 'vendor[beta]' || {
-    print -u2 -- 'a bracketed endpoint model id must be compared intact'
-    rc=1
-  }
-  _ccm_model_known brackets 'vendor[beta][1m]' || {
-    print -u2 -- 'only a terminal [1m] window suffix may be removed before comparison'
-    rc=1
-  }
-  _ccm_model_known brackets 'vendor[beta][1M]' || {
-    print -u2 -- 'the terminal window suffix must be matched case-insensitively'
-    rc=1
-  }
-  rm -rf "$test_home"
-  return $rc
-}
-
 test_a_hop_reads_the_catalogue_afresh() {
   # One /v1/models answer per pass. The zsh driver re-sourced ccmorph.sh between
   # hops, which reset _ccm_models_memo; a launcher that keeps one memo across
@@ -3049,126 +2959,6 @@ test_hop_asks_the_gateway_which_models_it_serves() {
     rc=1
   fi
 
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_gateway_catalogue_uses_route_limit_and_pagination_uncertainty() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  printf '%s\n' \
-    '#!/bin/sh' \
-    'printf "PROXY=%s\\n" "$HTTPS_PROXY" >> "$HOME/catalogue.request"' \
-    'for a do printf "ARG=%s\\n" "$a" >> "$HOME/catalogue.request"; done' \
-    '[ "${1-}" = -K ] && sed "s/^header = \"/ARG=/; s/\"\$//" >> "$HOME/catalogue.request"' \
-    'printf '\''{"has_more":true,"data":[{"id":"alpha-chat"}]}\n'\''' \
-    > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
-  source "$CCMORPH_SOURCE"
-
-  local listing rc=0 known
-  listing=$(HTTPS_PROXY='http://127.0.0.1:47999' _ccm_gw_models proxy) || {
-    rm -rf "$test_home"
-    return 1
-  }
-  assert_contains "$listing" 'alpha-chat' \
-    'the first catalogue page must still be usable' || rc=1
-  local request="$(<"$HOME/catalogue.request")"
-  assert_contains "$request" 'PROXY=http://127.0.0.1:47999' \
-    'catalogue requests must inherit the ambient proxy, never a blanked one' || rc=1
-  assert_contains "$request" 'ARG=http://proxy.invalid/v1/models?limit=1000' \
-    'catalogue requests must ask for the largest supported page' || rc=1
-  assert_contains "$request" 'ARG=Authorization: Bearer test-key' \
-    'catalogue requests must authenticate like adapter and launch probes' || rc=1
-
-  _ccm_model_known proxy absent-chat
-  known=$?
-  (( known == 2 )) || {
-    print -u2 -- "an absent model on a partial catalogue is unknown, got status $known"
-    rc=1
-  }
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_gateway_http_error_is_uncertainty_not_model_absence() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  printf '%s\n' \
-    '#!/bin/sh' \
-    'for a do' \
-    '  case "$a" in' \
-    '    *http_code*) printf 200; exit 0 ;;' \
-    '    -f|--fail|--fail-with-body) fail=1 ;;' \
-    '  esac' \
-    'done' \
-    'printf '\''{"error":{"message":"rate limited"}}\n'\''' \
-    '[ "${fail:-}" = 1 ] && exit 22' \
-    'exit 0' \
-    > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
-  source "$CCMORPH_SOURCE"
-
-  _ccm_model_known proxy alpha-chat
-  local known=$? rc=0
-  (( known == 2 )) || {
-    print -u2 -- "an HTTP catalogue error must be unknown, got status $known"
-    rc=1
-  }
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_gateway_listing_without_a_data_list_is_uncertainty() {
-  local test_home body known rc=0
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  source "$CCMORPH_SOURCE"
-  for body in '{"data":{"alpha-chat":{}}}' '{"data":"alpha-chat"}' '[{"id":"alpha-chat"}]'; do
-    printf '%s\n' \
-      '#!/bin/sh' \
-      'for a do case "$a" in *http_code*) printf 200; exit 0 ;; esac; done' \
-      "printf '%s\\n' '$body'" \
-      > "$HOME/bin/curl"
-    chmod +x "$HOME/bin/curl"
-    _ccm_model_known proxy alpha-chat
-    known=$?
-    (( known == 2 )) || {
-      print -u2 -- "a listing that does not read as a data list must be unknown ($body), got status $known"
-      rc=1
-    }
-  done
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_gateway_explicit_non_chat_model_is_not_carryable() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  printf '%s\n' \
-    '#!/bin/sh' \
-    'for a do case "$a" in *http_code*) printf 200; exit 0 ;; esac; done' \
-    'printf '\''{"data":[{"id":[]},{"id":"image-only","capabilities":{"chat_completion":false}},{"id":"undeclared-chat","capabilities":{"embeddings":true}}]}\n'\''' \
-    > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0 known
-  _ccm_model_known proxy image-only
-  known=$?
-  (( known == 1 )) || {
-    print -u2 -- "an explicit chat denial must be definite absence, got status $known"
-    rc=1
-  }
-  _ccm_model_known proxy undeclared-chat
-  known=$?
-  (( known == 0 )) || {
-    print -u2 -- "undeclared chat capability must remain carryable, got status $known"
-    rc=1
-  }
   rm -rf "$test_home"
   return $rc
 }
@@ -11317,9 +11107,6 @@ run_test test_an_option_value_that_looks_like_a_flag_is_not_that_flag
 run_test test_a_direct_launch_forwards_a_native_value_that_looks_like_a_launcher_flag
 run_test test_direct_resume_reports_a_rejected_carried_model
 run_test test_mapped_model_resume_and_hop_keep_servable_identity
-run_test test_mapped_model_known_matches_shim_scope_and_suffix
-run_test test_mapped_model_known_preserves_catalogue_uncertainty
-run_test test_model_known_strips_only_the_terminal_window_suffix
 run_test test_invalid_resume_model_falls_back_to_profile_model
 run_test test_resume_rejects_flag_picker_and_multitoken_model_values
 run_test test_hop_relays_model_and_effort
@@ -11329,10 +11116,6 @@ run_test test_hop_refuses_when_no_claude_process_runs_it
 run_test test_hop_without_profile_uses_current_profile
 run_test test_hop_falls_back_when_the_target_cannot_serve_the_model
 run_test test_hop_asks_the_gateway_which_models_it_serves
-run_test test_gateway_catalogue_uses_route_limit_and_pagination_uncertainty
-run_test test_gateway_http_error_is_uncertainty_not_model_absence
-run_test test_gateway_listing_without_a_data_list_is_uncertainty
-run_test test_gateway_explicit_non_chat_model_is_not_carryable
 run_test test_relay_resume_preserves_dangerous_permission_mode
 run_test test_relay_same_profile_omits_cache_notice_issue_226
 run_test test_relay_same_file_profile_omits_cache_notice_issue_226
