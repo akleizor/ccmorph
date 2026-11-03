@@ -10,8 +10,9 @@ func RedactURL(raw string) string {
 	// A password can hold /, ? or #, or open on digits Go reads as a port, so
 	// neither parser reliably finds the @ that closes the userinfo. Cut through
 	// the last @ of the whole input before either one looks: nothing that
-	// parses afterwards can hold userinfo. An @ in a path costs a wrong host,
-	// never a leaked secret.
+	// parses afterwards can hold userinfo. The cut is trusted only where that
+	// @ must close a userinfo; a path or query @ names no host, because a
+	// diagnostic never invents an endpoint.
 	if at := strings.LastIndex(raw, "@"); at >= 0 {
 		i, tail := strings.Index(raw, "://"), raw[at+1:]
 		if i < 0 || i > at || tail == "" || strings.ContainsAny(tail[:1], "/?#") {
@@ -20,6 +21,9 @@ func RedactURL(raw string) string {
 		// A / on both sides: the @ may be in a path (gw/v1/@team/x) or end a
 		// password holding a /. Either host could be wrong, so name none.
 		if strings.Contains(raw[i+3:at], "/") && strings.Contains(tail, "/") {
+			return "<redacted>"
+		}
+		if !closesUserinfo(raw, i, at) {
 			return "<redacted>"
 		}
 		raw = raw[:i+3] + tail
@@ -44,6 +48,36 @@ func RedactURL(raw string) string {
 		return u.Scheme + ":" + u.Path
 	}
 	return u.Scheme + "://" + host + u.Path
+}
+
+// closesUserinfo reports whether the @ at raw[at] must close a userinfo when
+// raw[:i] holds the scheme and its "://". Inside the authority an @ is
+// userinfo, its only RFC home. Past the authority it may instead belong to a
+// path or a query (gw/v1/@team, gw/api?x=me@corp.com), so the cut is kept
+// only where no other reading exists: when no host stands at the authority —
+// Go refuses alice:pa as a port, so an @ behind it cannot be a path's — or
+// when the userinfo would be one whose digit or empty head Go mistakes for a
+// port and whose host carries a port of its own, the shape the suite has
+// always answered. Behind any other standing authority the @ may be the
+// URL's own, so no host is named for it.
+func closesUserinfo(raw string, i, at int) bool {
+	rest := raw[i+3:]
+	end := strings.IndexAny(rest, "/?#")
+	if end < 0 {
+		end = len(rest)
+	}
+	if at-i < 3+end {
+		return true
+	}
+	auth := rest[:end]
+	if _, err := url.Parse("http://" + auth); err != nil {
+		return true
+	}
+	if !strings.Contains(auth, ":") {
+		return false
+	}
+	u, err := url.Parse("http://" + raw[at+1:])
+	return err == nil && u.Port() != ""
 }
 
 // SplitURL is urlsplit's scheme, netloc and path for "scheme://netloc/path".

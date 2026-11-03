@@ -35,6 +35,11 @@
 - A private session starts when `TMPDIR` cannot be written: its throwaway view
   falls back to the state dir's `run/`, the same root the launch env file uses,
   instead of failing with `private view: mkdir …: permission denied`.
+- **A gateway URL with an `@` in its path or query never invents an endpoint.**
+  The v0.4.5 `<redacted>` promise held only for an `@` with a slash behind it;
+  a path ending in `@team` and an `@` inside a query still printed the segment
+  as a host that does not exist (`https://team` for
+  `https://gw.example.com/v1/@team`). Both now print `<redacted>` (#139).
 
 ## v0.4.5 — 2026-11-02
 

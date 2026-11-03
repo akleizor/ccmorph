@@ -22,6 +22,11 @@ func TestRedactURLNeverPrintsTheUserinfo(t *testing.T) {
 		{"slash password before an IPv6 host", "http://alice:pa/ss@[::1]:3128", "http://[::1]:3128", false},
 		{"slash password with a path behind the host", "http://alice:pa/ss@proxy:3128/api", "<redacted>", false},
 		{"at in a gateway path", "https://gw.example.com/v1/@team/proxy", "<redacted>", true},
+		// A gateway URL with an @ in its path or query names no endpoint the
+		// URL does not have (#139): the answer is <redacted> or its own host.
+		{"gateway path ending in an @ segment (#139)", "https://gw.example.com/v1/@team", "<redacted>", true},
+		{"at inside a query (#139)", "https://gw.internal/api?x=me@corp.com", "<redacted>", true},
+		{"at path segment on a gateway with a port (#139)", "https://gw.example.com:8443/v1/@team", "<redacted>", true},
 		{"hash password whose host never comes", "http://alice:pa?ss@", "<redacted>", false},
 		{"slash password whose tail is only a path", "http://alice:pa/ss@/api", "<redacted>", false},
 		{"empty scheme before the authority", "://alice:pa/ss@proxy:3128", "://proxy:3128", false},
