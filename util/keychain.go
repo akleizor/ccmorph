@@ -140,11 +140,14 @@ func keychainMove(conf, name string, from func(string) string, errw io.Writer) i
 	return 0
 }
 
-// profileRead: profile-read <state> <name> <secure 0|1>
+// profileRead: profile-read <state> <name> <secure 0|1> [<profile env> <mapping env>]
 // prints the profile's fields as NUL-separated key/value pairs for _ccm_read,
 // or the refusal on stdout with exit 1. Removed-key notices go to stderr.
+// The two trailing operands are the env-key lists a v0.4.3 launcher still passes
+// when it outlives an update (#137); the lists live in Go now (#130), so they
+// are accepted and ignored.
 func profileRead(args []string, _ io.Reader, out, errw io.Writer) int {
-	if len(args) != 3 {
+	if len(args) != 3 && len(args) != 5 {
 		return 2
 	}
 	fields, err := profile.Read(args[0], args[1], args[2] == "1",
@@ -182,9 +185,10 @@ func profileValidate(args []string, in io.Reader, out, _ io.Writer) int {
 
 // profileEnv is `util profile-env <state dir> <profiles dir> <name>`: read, validate and print the profile's launch
 // environment, one VAR=value per line, after a first `type=<type>` line. A refusal
-// goes to stdout with exit 1.
+// goes to stdout with exit 1. As with profile-read, a v0.4.3 launcher's two trailing
+// env-key list operands are accepted and ignored (#137).
 func profileEnv(args []string, _ io.Reader, out, errw io.Writer) int {
-	if len(args) != 3 {
+	if len(args) != 3 && len(args) != 5 {
 		return 2
 	}
 	name := args[2]
