@@ -13,36 +13,15 @@ var (
 	attemptTag = regexp.MustCompile(`^[0-9]{1,3}$`)
 )
 
-// launchEnv is `util launch-env <bridge port> <adapter 0|1> <adapter port> <task> <attempt>`
-// with the profile's launch env on stdin, one KEY=value per line. It points Claude
-// Code at the local bridge (base and key, added when missing) or at the adapter
-// (base only), and adds the task tags the gateway shim records when their shapes
-// are valid on an adapter launch. The env goes back out in order, NUL-joined
-// (a header value spans lines), closed by a dot.
+// LaunchEnv is the profile's launch env pointed at the local bridge (base and key,
+// added when missing) or at the adapter (base only), plus the task tags the gateway
+// shim records when their shapes are valid on an adapter launch. Entries come back
+// in order. An empty bridgePort means no bridge.
 //
-// The bridge key arrives in _CCM_BRIDGE_KEY, never as an operand: a credential on
-// a command line is visible to anything running as this user (.github/SECURITY.md).
-// A v0.4.3 launcher still running after an update sends the key as the second
-// operand instead; that form is read, and the current launcher never sends it (#137).
-func launchEnv(args []string, in io.Reader, out, _ io.Writer) int {
-	bridgeKey := os.Getenv("_CCM_BRIDGE_KEY")
-	if len(args) == 6 {
-		// #137: a v0.4.3 launcher, still running after an update, has the key as an operand.
-		bridgeKey, args = args[1], append([]string{args[0]}, args[2:]...)
-	}
-	if len(args) != 5 {
-		return 2
-	}
-	bridgePort, adapter, adapterPort, task, attempt :=
-		args[0], args[1] == "1", args[2], args[3], args[4]
-	var env []string
-	sc := bufio.NewScanner(in)
-	sc.Buffer(make([]byte, 1<<20), 1<<20)
-	for sc.Scan() {
-		if sc.Text() != "" {
-			env = append(env, sc.Text())
-		}
-	}
+// The bridge key is never an operand of anything: a credential on a command line
+// is visible to anything running as this user (.github/SECURITY.md).
+func LaunchEnv(env []string, bridgePort, bridgeKey string, adapter bool, adapterPort, task, attempt string) []string {
+	env = append([]string{}, env...)
 	set := func(key, val string, add bool) {
 		for i, e := range env {
 			if strings.HasPrefix(e, key+"=") {
@@ -72,7 +51,32 @@ func launchEnv(args []string, in io.Reader, out, _ io.Writer) int {
 	if adapter && len(hdrs) > 0 {
 		env = append(env, "ANTHROPIC_CUSTOM_HEADERS="+strings.Join(hdrs, "\n"))
 	}
-	for _, e := range env {
+	return env
+}
+
+// launchEnv is `util launch-env <bridge port> <adapter 0|1> <adapter port> <task> <attempt>`
+// with the profile's launch env on stdin, one KEY=value per line: LaunchEnv as text,
+// NUL-joined (a header value spans lines), closed by a dot. The bridge key arrives
+// in _CCM_BRIDGE_KEY; a v0.4.3 launcher still running after an update sends it as
+// the second operand instead, and that form is read (#137,
+// tests/old_launcher_contract_test.py).
+func launchEnv(args []string, in io.Reader, out, _ io.Writer) int {
+	bridgeKey := os.Getenv("_CCM_BRIDGE_KEY")
+	if len(args) == 6 {
+		bridgeKey, args = args[1], append([]string{args[0]}, args[2:]...)
+	}
+	if len(args) != 5 {
+		return 2
+	}
+	var env []string
+	sc := bufio.NewScanner(in)
+	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	for sc.Scan() {
+		if sc.Text() != "" {
+			env = append(env, sc.Text())
+		}
+	}
+	for _, e := range LaunchEnv(env, args[0], bridgeKey, args[1] == "1", args[2], args[3], args[4]) {
 		io.WriteString(out, e+"\x00")
 	}
 	io.WriteString(out, ".")

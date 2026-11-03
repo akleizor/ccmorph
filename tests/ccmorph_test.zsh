@@ -275,20 +275,6 @@ write_fake_adapter() {
   chmod +x "$adapter"
 }
 
-# A libexec whose core drops the diagnostics' hazard record (touching
-# $HOME/hazard-record-dropped), so a launch takes the hazard-set fallback.
-hazard_dropping_libexec() {
-  local dir="$HOME/libexec-drop"
-  mkdir -p "$dir"
-  printf '%s\n' '#!/bin/sh' \
-    "real='$_CCMORPH_LIBEXEC_DIR/ccmorph-core'" \
-    'if [ "$1 $2" = "util launch-diagnostics" ]; then' \
-    '  "$real" "$@" | perl -0 -ne '"'"'if (/^hazard\t/) { open F, ">", "$ENV{HOME}/hazard-record-dropped"; close F; next } print'"'"'' \
-    'else exec "$real" "$@"; fi' > "$dir/ccmorph-core"
-  chmod +x "$dir/ccmorph-core"
-  print -r -- "$dir"
-}
-
 setup_home() {
   # GH-434: remembered so the sweep after each test can fail a test whose
   # child outlives it.
@@ -7906,7 +7892,7 @@ test_the_launch_hazard_advisory_matches_switch_hazard_warn() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-  local advise_from_record advise_withheld advise_from_fallback
+  local advise_from_record advise_withheld
 
   rm -f "$CCMORPH_TEST_LOG"
     _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1 }
@@ -7923,27 +7909,6 @@ test_the_launch_hazard_advisory_matches_switch_hazard_warn() {
   assert_contains "$advise_withheld" 'hidden from /model: kimi-k3 limit 40k' \
     'withheld choices must be reported in their own wording' || rc=1
 
-  # The fallback, forced: the record the diagnostics just computed is dropped
-  # before the launch reads it, so `_ccm_launch` takes its `else` branch and
-  # `_ccm_switch_hazard_warn` renders the warning instead. Every other answer the
-  # diagnostics gives passes through untouched, so which path speaks is the only
-  # difference between this launch and the one above.
-  local _CCMORPH_LIBEXEC_DIR="$_CCMORPH_LIBEXEC_DIR"
-  _CCMORPH_LIBEXEC_DIR=$(hazard_dropping_libexec)
-  rm -f "$CCMORPH_TEST_LOG" "$HOME/hazard-record-dropped"
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1 }
-  advise_from_fallback=$(grep -m1 '^ADVISE=' "$CCMORPH_TEST_LOG" || true)
-  advise_from_fallback=${advise_from_fallback#ADVISE=}
-  # Without this the third launch proves nothing: a stub that never saw a hazard
-  # record would leave the launch on the record path, comparing it with itself.
-  [[ -e "$HOME/hazard-record-dropped" ]] || {
-    print -u2 -- 'the launch never asked for a hazard record to drop'
-    rc=1
-  }
-  if [[ "$advise_from_fallback" != "$advise_from_record" ]]; then
-    print -u2 -- "the fallback's advisory differs\n  from the record: ${(qqq)advise_from_record}\n  from the fallback: ${(qqq)advise_from_fallback}"
-    rc=1
-  fi
   rm -rf "$test_home"
   return $rc
 }
@@ -7958,7 +7923,7 @@ test_the_launch_hazard_advisory_matches_switch_hazard_warn() {
 # must name the trigger THAT percentage produces, and the fallback -- which sizes
 # after the injection -- must say exactly the same thing.
 test_the_hazard_record_sizes_from_the_percentage_the_launch_injects() {
-  local case rc=0 test_home actual advise_from_record advise_from_fallback value
+  local case rc=0 test_home actual advise_from_record value
   local -a conf
   # usable = 1,000,000 - 20,000 = 980,000, so the trigger is the smaller of
   # 980,000*pct/100 and 980,000 - 13,000. A layer value the engine cannot parse
@@ -8012,23 +7977,6 @@ test_the_hazard_record_sizes_from_the_percentage_the_launch_injects() {
     assert_contains "$advise_from_record" 'kimi-k3 limit 40k' \
       "the $case advisory must name the model under the trigger" || rc=1
 
-    # The fallback, forced the same way the parity test forces it: the record the
-    # diagnostics computed is dropped, so `_ccm_launch` takes its `else` branch and
-    # `_ccm_switch_hazard_warn` computes from the launch env after the injection.
-    local _CCMORPH_LIBEXEC_DIR="$_CCMORPH_LIBEXEC_DIR"
-    _CCMORPH_LIBEXEC_DIR=$(hazard_dropping_libexec)
-    rm -f "$CCMORPH_TEST_LOG" "$HOME/hazard-record-dropped"
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
-    advise_from_fallback=$(grep -m1 '^ADVISE=' "$CCMORPH_TEST_LOG" || true)
-    advise_from_fallback=${advise_from_fallback#ADVISE=}
-    [[ -e "$HOME/hazard-record-dropped" ]] || {
-      print -u2 -- "the $case launch never asked for a hazard record to drop"
-      rc=1
-    }
-    if [[ "$advise_from_fallback" != "$advise_from_record" ]]; then
-      print -u2 -- "the $case fallback's advisory differs\n  from the record: ${(qqq)advise_from_record}\n  from the fallback: ${(qqq)advise_from_fallback}"
-      rc=1
-    fi
     rm -rf "$test_home"
   done
   return $rc

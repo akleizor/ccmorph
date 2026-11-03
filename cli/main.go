@@ -372,21 +372,21 @@ func (l *launcher) envVerb(args []string) int {
 		fmt.Fprintln(os.Stderr, "ccmorph: unknown profile '"+name+"'")
 		return 1
 	}
-	out, rc := l.utilQ(nil, "", "profile-env", l.dir, l.profileDirs, name)
-	if rc != 0 {
-		if out == "" {
-			out = "could not read profile '" + name + "'"
+	typ, env, err := util.ProfileEnv(l.dir, l.profileDirs, name, func(string) {})
+	if err != nil {
+		msg := err.Error()
+		if msg == "" {
+			msg = "could not read profile '" + name + "'"
 		}
-		l.err(out)
+		l.err(msg)
 		return 1
 	}
-	head, rest, _ := strings.Cut(out, "\n")
-	if !l.setupDir(name, strings.TrimPrefix(head, "type=")) {
+	if !l.setupDir(name, typ) {
 		return 1
 	}
 	l.prelaunch(name)
-	if rest != "" {
-		fmt.Println(rest)
+	if len(env) > 0 {
+		fmt.Println(strings.Join(env, "\n"))
 	}
 	return 0
 }

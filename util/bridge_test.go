@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -52,7 +53,8 @@ func TestBridgeStartsServesAndStops(t *testing.T) {
 	if fi, _ := os.Stat(filepath.Join(got["TMPDIR"], "config.yaml")); fi.Mode().Perm() != 0o600 {
 		t.Fatalf("rendered config must be 0600")
 	}
-	bridgeStop([]string{got["PID"], got["TMPDIR"], auth}, nil, &out, &errw)
+	pidN, _ := strconv.Atoi(got["PID"])
+	BridgeStop(pidN, got["TMPDIR"], auth)
 	var pid int
 	for _, c := range got["PID"] {
 		pid = pid*10 + int(c-'0')

@@ -373,14 +373,16 @@ func (l *launcher) prepareAndProject(name string, acwArg, penv []string) int {
 	argv := l.settingsArgv("materialize", name, projectionArgs(acwArg, penv)...)
 	for _, item := range argv {
 		if strings.Contains(item, "\n") {
-			saved, rc := l.configStore("prepare-launch", name, "", "_CCM_MATERIALIZE=")
+			saved, rc := l.configStore("prepare-launch", name, "")
 			if rc != 0 {
 				return 10
 			}
 			return l.projectSettings(name, saved, acwArg, penv)
 		}
 	}
-	_, rc := l.configStore("prepare-launch", name, "", "_CCM_MATERIALIZE="+strings.Join(argv, "\n"))
+	prepare := l.storeArgs("prepare-launch", name, "")
+	prepare.Materialize = strings.Join(argv, "\n")
+	_, rc := l.runStore(prepare, os.Stderr)
 	switch rc {
 	case 0:
 		return 0

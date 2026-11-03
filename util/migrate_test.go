@@ -174,3 +174,26 @@ func TestMigrateProjectsTreatsANewlineNameAsOneEntry(t *testing.T) {
 		t.Error("nothing from outside the tree may enter the shared store (#400)")
 	}
 }
+
+// A colliding name keeps the shared copy and leaves the profile copy in a backup.
+func TestMigrateProjectsKeepsCollisionsInBackup(t *testing.T) {
+	from, to := migrateRoots(t)
+	mustWrite(t, from+"/private", "profile content")
+	mustWrite(t, from+"/new", "new content")
+	mustWrite(t, to+"/private", "shared content")
+	if !migrateProjects(from, to) {
+		t.Fatal("migrate failed")
+	}
+	for p, want := range map[string]string{to + "/new": "new content", to + "/private": "shared content"} {
+		if b, _ := os.ReadFile(p); string(b) != want {
+			t.Errorf("%s = %q, want %q", p, b, want)
+		}
+	}
+	baks, _ := filepath.Glob(from + ".premigration.*")
+	if len(baks) != 1 {
+		t.Fatalf("want one backup, got %v", baks)
+	}
+	if b, _ := os.ReadFile(baks[0] + "/private"); string(b) != "profile content" {
+		t.Errorf("backup private = %q", b)
+	}
+}

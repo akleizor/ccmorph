@@ -1,30 +1,26 @@
 package util
 
 import (
-	"io"
-
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/pycompat"
 )
 
-// listingHasUnsized: listing-has-unsized <profile> exits 0 when the listing on
-// stdin names a chat model the profile has no size, pin or recent miss for, so
-// the sizer is worth starting; 1 when every model is already known.
-func listingHasUnsized(args []string, in io.Reader, _, _ io.Writer) int {
-	if len(args) != 1 {
-		return 2
-	}
+// ListingHasUnsized reports whether the /v1/models listing names a chat model the
+// profile (its conf file) has no size, pin or recent miss for, so the sizer is
+// worth starting. A conf or listing that cannot be read says yes: the sizer
+// decides.
+func ListingHasUnsized(conf, listing string) bool {
 	var fields map[string]string
-	if pycompat.Catch(func() { _, fields = ctxwindow.ReadConf(ctxwindow.ProfilePath(args[0])) }) != nil {
-		return 0
+	if pycompat.Catch(func() { _, fields = ctxwindow.ReadConf(conf) }) != nil {
+		return true
 	}
-	doc, err := pycompat.Parse(readAll(in))
+	doc, err := pycompat.Parse([]byte(listing))
 	if err != nil {
-		return 0
+		return true
 	}
 	top, _ := doc.(*pycompat.Obj)
 	if top == nil {
-		return 0
+		return true
 	}
 	data, _ := top.Get("data")
 	known := ctxwindow.DiscoveredValues(fields)
@@ -36,7 +32,7 @@ func listingHasUnsized(args []string, in io.Reader, _, _ io.Writer) int {
 		if _, pinned := pins[s]; ctxwindow.IsExcluded(fields, s) || known.Has(s) || misses.Has(s) || pinned {
 			continue
 		}
-		return 0
+		return true
 	}
-	return 1
+	return false
 }

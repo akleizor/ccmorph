@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -244,9 +245,6 @@ func (l *launcher) stopHelpers() {
 // core runs a ccmorph-core verb as the zsh did: stdout with trailing newlines
 // stripped like $(…), stderr kept for the callers that report it.
 func (l *launcher) core(env []string, stdin string, args ...string) (string, string, int) {
-	if len(args) > 1 && args[0] == "util" && len(env) == 0 && !ownsProcess[args[1]] {
-		return inProcess(stdin, args[1:])
-	}
 	cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), args...)
 	cmd.Env = append(os.Environ(), env...)
 	if stdin != "" {
@@ -270,39 +268,16 @@ func (l *launcher) core(env []string, stdin string, args ...string) (string, str
 	return strings.TrimRight(out.String(), "\n"), strings.TrimRight(errb.String(), "\n"), rc
 }
 
-// ownsProcess are the util verbs that start, stop or exec a process, or hand a
-// child this process's stderr; they keep their own process.
-var ownsProcess = map[string]bool{
-	"adapter-start": true, "bridge-start": true, "bridge-stop": true,
-	"claude-session": true, "fetch-listing": true,
-}
-
-// inProcess runs a util verb in this binary: the same verb, minus a fork and exec.
-func inProcess(stdin string, args []string) (out, errOut string, rc int) {
-	var o, e bytes.Buffer
+// try runs a util call whose failure must degrade a launch, never end it: a
+// panic is a failed call, logged, as a crashed helper process once was.
+func try[T any](l *launcher, what string, f func() T) (v T, ok bool) {
 	defer func() {
 		if r := recover(); r != nil {
-			// A crashed child exits 2; callers read 1 as a verdict (model-served: not served).
-			out, errOut, rc = "", fmt.Sprintf("panic: %v\n%s", r, debug.Stack()), 2
+			l.log(fmt.Sprintf("panic in %s: %v\n%s", what, r, debug.Stack()))
+			ok = false
 		}
 	}()
-	rc = util.Main(args, strings.NewReader(stdin), &o, &e)
-	return strings.TrimRight(o.String(), "\n"), strings.TrimRight(e.String(), "\n"), rc
-}
-
-// util is `_ccm_util`: its stderr reaches the terminal, as the zsh left it.
-func (l *launcher) util(env []string, stdin string, args ...string) (string, int) {
-	out, errOut, rc := l.core(env, stdin, append([]string{"util"}, args...)...)
-	if errOut != "" {
-		fmt.Fprintln(os.Stderr, errOut)
-	}
-	return out, rc
-}
-
-// utilQ is `_ccm_util ... 2>/dev/null`.
-func (l *launcher) utilQ(env []string, stdin string, args ...string) (string, int) {
-	out, _, rc := l.core(env, stdin, append([]string{"util"}, args...)...)
-	return out, rc
+	return f(), true
 }
 
 func (l *launcher) err(msg string) {
@@ -455,12 +430,66 @@ func (l *launcher) settingsSources(name string) []string {
 	return append(s, l.profileLayer(name))
 }
 
-func (l *launcher) configStore(verb, name, key string, env ...string) (string, int) {
-	return l.util(env, "", l.configStoreArgs(verb, name, key)...)
+// withEnv runs f with the KEY=VALUE entries of set in the process environment and
+// the names in drop unset, then puts the environment back. For the readers that
+// take their state from the environment (the window resolver).
+func withEnv(set, drop []string, f func()) {
+	type old struct {
+		v   string
+		had bool
+	}
+	saved := map[string]old{}
+	remember := func(k string) {
+		if _, done := saved[k]; !done {
+			v, had := os.LookupEnv(k)
+			saved[k] = old{v, had}
+		}
+	}
+	for _, k := range drop {
+		remember(k)
+		os.Unsetenv(k)
+	}
+	for _, kv := range set {
+		k, v, _ := strings.Cut(kv, "=")
+		remember(k)
+		os.Setenv(k, v)
+	}
+	defer func() {
+		for k, o := range saved {
+			if o.had {
+				os.Setenv(k, o.v)
+			} else {
+				os.Unsetenv(k)
+			}
+		}
+	}()
+	f()
 }
 
-func (l *launcher) configStoreArgs(verb, name, key string) []string {
-	return append([]string{"config-store", verb, l.conf(name), l.profileLayer(name), key, l.canonical()}, l.mapping...)
+func (l *launcher) storeArgs(verb, name, key string) util.StoreArgs {
+	return util.StoreArgs{Op: verb, Conf: l.conf(name), Settings: l.profileLayer(name), Key: key, Shared: l.canonical(), Mapping: l.mapping}
+}
+
+// runStore is a store operation: its text without trailing newlines and its status;
+// reasons go to errw. A crash is status 2, as a crashed helper process gave.
+func (l *launcher) runStore(a util.StoreArgs, errw io.Writer) (string, int) {
+	type res struct {
+		out string
+		rc  int
+	}
+	r, ok := try(l, "config-store "+a.Op, func() res { out, rc := util.ConfigStore(a, errw); return res{out, rc} })
+	if !ok {
+		return "", 2
+	}
+	return strings.TrimRight(r.out, "\n"), r.rc
+}
+
+func (l *launcher) configStore(verb, name, key string) (string, int) {
+	return l.runStore(l.storeArgs(verb, name, key), os.Stderr)
+}
+
+func (l *launcher) configStoreQ(verb, name, key string) (string, int) {
+	return l.runStore(l.storeArgs(verb, name, key), io.Discard)
 }
 
 func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }

@@ -21,20 +21,7 @@ _ccm_env_keys_load() {
 _ccm_env_keys_load || return 1
 _ccm_err() { print -u2 -- "ccmorph: $1"; return 1; }
 
-_ccm_profile_layer() {
-  local dir="$_CCMORPH_PROFILE_DIRS/$1"
-  if [[ -e "$dir/settings.profile.json" || -L "$dir/settings.profile.json" ||
-        -e "$dir/cache/settings.base.json" ]]; then
-    print -r -- "$dir/settings.profile.json"
-  else
-    print -r -- "$dir/settings.json"
-  fi
-}
-
-_ccm_config_store() {
-  _ccm_util config-store "$1" "$_CCMORPH_DIR/$2.conf" "$(_ccm_profile_layer "$2")" "${3:-}" \
-    "$HOME/.claude/settings.json" "${_CCMORPH_MODEL_MAPPING_ENV[@]}"
-}
+_ccm_config_store() { ( _ccm_launch_core --config-store "$1" "$2" "${3:-}" ); }
 
 _ccm_cleanup_stale() { ( _ccm_launch_core --cleanup-stale ) 2>/dev/null || :; }
 
@@ -44,9 +31,7 @@ _ccm_setup_dir() { ccmorph _env "$1" >/dev/null; }
 _ccm_dir_ok() { ( _ccm_launch_core --profile-ok "$1" ); }
 
 
-_ccm_listing_has_unsized() {  # $1 = profile, $2 = /v1/models JSON
-  print -r -- "$2" | CCMORPH_STATE_DIR="$_CCMORPH_DIR" _ccm_util listing-has-unsized "$1"
-}
+_ccm_listing_has_unsized() { ( _ccm_launch_core --listing-has-unsized "$1" "$2" ); }  # $1 = profile, $2 = /v1/models JSON
 
 # The launch's own seams, one stage of `ccmorph-core launch` each.
 _ccm_invariant_warn() { ( _ccm_launch_core --invariant "$@" ); }
@@ -82,7 +67,7 @@ _ccm_gw_models_json() {  # REPLY = the profile's /v1/models listing
 _ccm_gw_models() {
   local name="$1"
   _ccm_gw_models_json "$name" "${@:3}" || return 1
-  print -r -- "$REPLY" | _ccm_util gw-models "$_CCMORPH_DIR/$name.conf" "${2:-catalogue}" || {
+  print -r -- "$REPLY" | ( _ccm_launch_core --gw-models "$name" "${2:-catalogue}" ) || {
     _ccm_err "'$name' endpoint returned no usable model list"
     return 1
   }

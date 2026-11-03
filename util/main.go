@@ -20,22 +20,12 @@ var verbs map[string]verb
 func init() {
 	verbs = map[string]verb{
 		"bridge-start":           bridgeStart,
-		"bridge-stop":            bridgeStop,
 		"adapter-start":          adapterStart,
 		"launch-env":             launchEnv,
 		"claude-session":         claudeSession,
 		"profile-read":           profileRead,
 		"profile-env":            profileEnv,
-		"listing-has-unsized":    listingHasUnsized,
 		"normalize-plugin-index": normalizePluginIndexVerb,
-		"config-store":           configStore,
-		"models-filtered-json":   modelsFilteredJSON,
-		"window-label":           windowLabel,
-		"effort-rows":            effortRows,
-		"saved-provider-models":  savedProviderModels,
-		"launch-window":          launchWindow,
-		"gw-models":              gwModels,
-		"project-picker":         projectPicker,
 	}
 }
 

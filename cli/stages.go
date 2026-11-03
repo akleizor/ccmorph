@@ -3,6 +3,8 @@ package cli
 import (
 	"fmt"
 	"github.com/akleizor/ccmorph/util"
+	"io"
+	"os"
 	"slices"
 	"strings"
 )
@@ -113,9 +115,30 @@ var stages = map[string]func(l *launcher, args []string) int{
 		return rc(ok)
 	},
 	// <word>: rc 0 when the installed claude names it
-	"--model-known":       func(l *launcher, args []string) int { return l.modelKnown(args[1], args[2]) }, // <profile> <model>: 0 served, 1 not, 2 cannot tell
-	"--profile-ok":        func(l *launcher, args []string) int { return rc(util.ProfileOK(l.profileDirs, args[1])) },
-	"--cleanup-stale":     func(l *launcher, _ []string) int { util.GCStale(l.dir, l.profileDirs, tmpDir()); return 0 },
+	"--model-known":   func(l *launcher, args []string) int { return l.modelKnown(args[1], args[2]) }, // <profile> <model>: 0 served, 1 not, 2 cannot tell
+	"--profile-ok":    func(l *launcher, args []string) int { return rc(util.ProfileOK(l.profileDirs, args[1])) },
+	"--cleanup-stale": func(l *launcher, _ []string) int { util.GCStale(l.dir, l.profileDirs, tmpDir()); return 0 },
+	// <op> <profile> [key]: the store's text; the change and materialize argv come
+	// from _CCM_CONFIG_{MODEL,EFFORT,SNAPSHOT,TYPE,ENDPOINT,CREDENTIAL} and _CCM_MATERIALIZE
+	"--config-store": func(l *launcher, args []string) int {
+		a := l.storeArgs(args[1], args[2], pad(args[3:], 1)[0])
+		a.Materialize = os.Getenv("_CCM_MATERIALIZE")
+		a.Change = util.StoreChange{Model: os.Getenv("_CCM_CONFIG_MODEL"), Effort: os.Getenv("_CCM_CONFIG_EFFORT"),
+			Snapshot: os.Getenv("_CCM_CONFIG_SNAPSHOT"), Type: os.Getenv("_CCM_CONFIG_TYPE"),
+			Endpoint: os.Getenv("_CCM_CONFIG_ENDPOINT"), Credential: os.Getenv("_CCM_CONFIG_CREDENTIAL")}
+		out, rc := util.ConfigStore(a, os.Stderr)
+		fmt.Print(out)
+		return rc
+	},
+	"--listing-has-unsized": func(l *launcher, args []string) int { return rc(util.ListingHasUnsized(l.conf(args[1]), args[2])) }, // <profile> <listing json>
+	"--gw-models": func(l *launcher, args []string) int { // <profile> <picker|catalogue>, the listing on stdin: its chat models
+		body, _ := io.ReadAll(os.Stdin)
+		rows, ok := util.GwModels(l.conf(args[1]), args[2] == "picker", string(body))
+		if ok {
+			fmt.Println(modelRows(rows))
+		}
+		return rc(ok)
+	},
 	"--claude-subcommand": func(l *launcher, args []string) int { return rc(l.isClaudeSubcommand(args[1])) },
 	"--listing": func(l *launcher, args []string) int { // <base> <key> [<base> <key>...]: one launch's memo
 		for i := 1; i+1 < len(args); i += 2 {

@@ -417,6 +417,31 @@ func PolicyPct(path string) (int64, bool) {
 	return i, true
 }
 
+// EffectivePct is the compaction percentage in force: the profile conf's own
+// value, else the one in the merged settings layers; false when none is honoured.
+func EffectivePct(conf string, layers []string) (string, bool) {
+	if conf != "" {
+		if v, ok := enginePct(conf); ok {
+			return fmtG(v), true
+		}
+	}
+	var raw string
+	var isStr bool
+	if pycompat.Catch(func() {
+		env := asObj(getKey(settingscompose.MergedView(layers), "env"))
+		raw, isStr = getKey(env, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE").(string)
+	}) != nil || !isStr {
+		return "", false
+	}
+	if v, ok := enginePct(raw); ok {
+		return fmtG(v), true
+	}
+	return "", false
+}
+
+// fmtG is Python's format(v, "g").
+func fmtG(v float64) string { return strconv.FormatFloat(v, 'g', 6, 64) }
+
 // clampN bounds an auto-compact budget to what the engine honours, [1e5, 1e6].
 func clampN(n int64) int64 { return min(max(n, 100000), 1000000) }
 

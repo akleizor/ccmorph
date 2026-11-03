@@ -186,9 +186,9 @@ func TestConfigStoreFailedConfReplacementLeavesBothFilesAlone(t *testing.T) {
 	old := replaceFile
 	replaceFile = func(string, string) error { return errors.New("simulated replace failure") }
 	defer func() { replaceFile = old }()
-	t.Setenv("_CCM_CONFIG_MODEL", "new")
 	var errw bytes.Buffer
-	if rc := configStore([]string{"set", conf, settings, "", filepath.Join(filepath.Dir(conf), "shared.json")}, nil, &bytes.Buffer{}, &errw); rc != 1 {
+	if _, rc := ConfigStore(StoreArgs{Op: "set", Conf: conf, Settings: settings, Shared: filepath.Join(filepath.Dir(conf), "shared.json"),
+		Change: StoreChange{Model: "new"}}, &errw); rc != 1 {
 		t.Fatalf("rc=%d", rc)
 	}
 	if !strings.Contains(errw.String(), "simulated replace failure") {
@@ -216,7 +216,7 @@ func TestConfigStoreRollsTheConfBackWhenTheSettingsReplacementFails(t *testing.T
 	}
 	defer func() { replaceFile = old }()
 	var errw bytes.Buffer
-	if rc := configStore([]string{"prepare-launch", conf, settings, "", filepath.Join(filepath.Dir(conf), "shared.json")}, nil, &bytes.Buffer{}, &errw); rc != 1 {
+	if _, rc := ConfigStore(StoreArgs{Op: "prepare-launch", Conf: conf, Settings: settings, Shared: filepath.Join(filepath.Dir(conf), "shared.json")}, &errw); rc != 1 {
 		t.Fatalf("rc=%d %s", rc, errw.String())
 	}
 	if a, _ := os.ReadFile(conf); string(a) != string(beforeConf) {

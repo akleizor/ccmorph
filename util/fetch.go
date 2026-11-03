@@ -41,7 +41,7 @@ func ProbeListing(base, key string) (body, code string) {
 		apiURL(base, "/v1/models?limit=1000")}, io.Discard)
 	code = "000"
 	if i := strings.LastIndex(body, "__CCMORPH_STATUS__"); err == nil && i >= 0 {
-		body, code = strings.TrimSuffix(body[:i], "\n"), body[i+len("__CCMORPH_STATUS__"):]
+		body, code = strings.TrimSuffix(body[:i], "\n"), strings.TrimRight(body[i+len("__CCMORPH_STATUS__"):], "\n")
 	} else {
 		body = ""
 	}

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"github.com/akleizor/ccmorph/util"
 	"os"
 	"strconv"
 	"strings"
@@ -109,8 +110,8 @@ func (l *launcher) inspect(args []string) int {
 		grid(10, "effort", l.dim+"— Claude Code's own default"+l.reset)
 	}
 	if ms, rc := l.configStore("model-settings", name, ""); rc == 0 {
-		if rows, _ := l.util(nil, ms+"\n", "effort-rows"); rows != "" {
-			fmt.Println(rows)
+		for _, r := range util.EffortRows(ms) {
+			fmt.Printf("  effort:%s %s  (profile override)\n", r.Model, r.Effort)
 		}
 	}
 
@@ -120,9 +121,10 @@ func (l *launcher) inspect(args []string) int {
 		tok, unprobed, source := "", "1", "probed"
 		if l.migrateState() {
 			if win := l.coreNoCeiling(l.windowEnv(name), "model-window", name, model); win != "" {
-				if lbl, rc := l.utilQ(nil, win+"\n", "window-label"); rc == 0 {
-					if p := strings.Fields(lbl); len(p) == 3 {
-						tok, unprobed, source = p[0], p[1], p[2]
+				if w, un, lbl, ok := util.WindowLabel(win); ok && w != "" && !strings.ContainsAny(w+lbl, " \t\n") {
+					tok, unprobed, source = w, "0", lbl
+					if un {
+						unprobed = "1"
 					}
 				}
 			}
@@ -156,8 +158,7 @@ func (l *launcher) inspect(args []string) int {
 
 // effectivePct is _ccm_effective_compaction_percent.
 func (l *launcher) effectivePct(name, conf string) (string, bool) {
-	args := append([]string{"effective-pct", conf}, l.settingsSources(name)...)
-	if v, rc := l.utilQ(nil, "", args...); rc == 0 && v != "" {
+	if v, ok := util.EffectivePct(conf, l.settingsSources(name)); ok {
 		return v, true
 	}
 	return l.compactionPercent()

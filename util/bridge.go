@@ -74,7 +74,7 @@ antigravity-credits: false
 	logf.Close()
 	died := make(chan struct{})
 	go func() { _ = cmd.Wait(); close(died) }()
-	stop := func() { bridgeStop([]string{strconv.Itoa(cmd.Process.Pid), tmp, authDir}, nil, out, errw) }
+	stop := func() { BridgeStop(cmd.Process.Pid, tmp, authDir) }
 
 	// A bound port is not a ready router: it listens before its model catalogue
 	// loads. Only a 200 from /v1/models, the client's own contract, is ready. No
@@ -104,32 +104,28 @@ antigravity-credits: false
 	return fail(fmt.Sprintf("bridge for '%s' on port %d: /v1/models never returned 200 within 30s", profile, port))
 }
 
-// bridgeStop is `util bridge-stop <pid> <tmpdir> <auth dir>`: TERM, then KILL after
-// 5s, then re-tighten the OAuth files cliproxyapi rewrote at its own umask (observed
-// 0644) to the 0600 SECURITY.md promises, and remove the rendered config.
-func bridgeStop(args []string, _ io.Reader, _, _ io.Writer) int {
-	if len(args) != 3 {
-		return 2
-	}
-	if pid, err := strconv.Atoi(args[0]); err == nil && pid > 0 {
+// BridgeStop sends the bridge TERM, then KILL after 5s, then re-tightens the OAuth
+// files cliproxyapi rewrote at its own umask (observed 0644) in authDir to the 0600
+// SECURITY.md promises, and removes the rendered config dir tmpDir.
+func BridgeStop(pid int, tmpDir, authDir string) {
+	if pid > 0 {
 		_ = syscall.Kill(pid, syscall.SIGTERM)
 		if !waitGone(pid, 5*time.Second) {
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 			waitGone(pid, 2*time.Second)
 		}
 	}
-	if args[2] != "" {
-		_ = filepath.Walk(args[2], func(p string, fi os.FileInfo, err error) error {
+	if authDir != "" {
+		_ = filepath.Walk(authDir, func(p string, fi os.FileInfo, err error) error {
 			if err == nil && fi.Mode().IsRegular() && filepath.Ext(p) == ".json" {
 				_ = os.Chmod(p, 0o600)
 			}
 			return nil
 		})
 	}
-	if args[1] != "" {
-		_ = os.RemoveAll(args[1])
+	if tmpDir != "" {
+		_ = os.RemoveAll(tmpDir)
 	}
-	return 0
 }
 
 func waitGone(pid int, d time.Duration) bool {

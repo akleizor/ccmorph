@@ -114,7 +114,7 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 		case lexists(link):
 			if !isDir(link) {
 				// A real profile-local FILE (a per-profile CLAUDE.md) is a deliberate override.
-				log("OVERRIDE profile-local '"+item+"' kept for profile="+name)
+				log("OVERRIDE profile-local '" + item + "' kept for profile=" + name)
 				continue
 			}
 			// Finder drops these the instant a folder opens; they must not defeat the empty-dir heal.

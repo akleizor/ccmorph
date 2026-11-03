@@ -47,8 +47,8 @@ func (l *launcher) models(args []string) int {
 		return 1
 	}
 	if mode == "--filtered-json" {
-		out, rc := l.util(nil, listing+"\n", "models-filtered-json", l.conf(name))
-		if rc != 0 {
+		out, ok := util.ModelsFilteredJSON(l.conf(name), listing)
+		if !ok {
 			return 1
 		}
 		printNonEmpty(out)
@@ -58,12 +58,12 @@ func (l *launcher) models(args []string) int {
 	if mode == "--filtered" {
 		style = "picker"
 	}
-	out, rc := l.util(nil, listing+"\n", "gw-models", l.conf(name), style)
-	if rc != 0 {
+	rows, ok := util.GwModels(l.conf(name), style == "picker", listing)
+	if !ok {
 		l.err("'" + name + "' endpoint returned no usable model list")
 		return 1
 	}
-	printNonEmpty(out)
+	printNonEmpty(modelRows(rows))
 	return 0
 }
 

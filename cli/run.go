@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -232,7 +233,7 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 		base, _ := envGet(penv, "ANTHROPIC_BASE_URL")
 		key := authKey(penv)
 		if listing, ok := l.listing(base, key); ok {
-			if _, rc := l.util([]string{"CCMORPH_STATE_DIR=" + l.dir}, listing, "listing-has-unsized", name); rc == 0 {
+			if unsized, ok := try(l, "listing-has-unsized", func() bool { return util.ListingHasUnsized(l.conf(name), listing) }); !ok || unsized {
 				l.logInit()
 				l.core([]string{"CCMORPH_STATE_DIR=" + l.dir, "ANTHROPIC_BASE_URL=" + base, "ANTHROPIC_API_KEY=" + key},
 					listing+"\n", "context-probe", "--listing-stdin", "--profile", name)
@@ -540,8 +541,17 @@ func (l *launcher) launchWindow(name, model string) []string {
 	if model != "" && !l.migrateState() {
 		model = ""
 	}
-	args := append([]string{"util", "launch-window", name, model}, l.settingsSources(name)...)
-	return strings.Split(l.coreNoCeiling(l.windowEnv(name), args...), "\t")
+	fields, ok := try(l, "launch-window", func() []string {
+		var f []string
+		withEnv(l.windowEnv(name), []string{"CLAUDE_CODE_MAX_CONTEXT_TOKENS"}, func() {
+			f = util.LaunchWindow(name, model, l.settingsSources(name))
+		})
+		return f
+	})
+	if !ok {
+		return []string{""}
+	}
+	return fields
 }
 
 func (l *launcher) tierAlias(name, tier string) (string, bool) {
@@ -579,11 +589,11 @@ func (l *launcher) projectPicker(name, base, key, own, tag, launch string) bool 
 	if tag == "" {
 		tag = "Gateway"
 	}
-	cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), "util", "project-picker", home, l.conf(name),
-		own, tag, name, l.profileLayer(name), launch)
-	cmd.Env = append(os.Environ(), "_CCM_MODELS_JSON="+body)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	return cmd.Run() == nil
+	done, ok := try(l, "project-picker", func() bool {
+		return util.ProjectPicker(util.PickerIn{Home: home, Conf: l.conf(name), Own: own, Tag: tag, Profile: name,
+			Layer: l.profileLayer(name), Launch: launch, ModelsJSON: body}, os.Stderr)
+	})
+	return ok && done
 }
 
 // profileEnvironment is `ccmorph _env`: the profile's launch env, after
@@ -684,18 +694,7 @@ func (l *launcher) settingsArgv(verb, name string, rest ...string) []string {
 }
 
 func (l *launcher) route(penv []string, port, key string, adapter bool) ([]string, bool) {
-	a := "0"
-	if adapter {
-		a = "1"
-	}
-	// The bridge key goes in the environment: an operand would put it on the
-	// command line for the life of the helper (#112).
-	out, rc := l.util([]string{"_CCM_BRIDGE_KEY=" + key}, strings.Join(penv, "\n")+"\n",
-		"launch-env", port, a, l.adapterPort, os.Getenv("CCMORPH_TASK"), os.Getenv("CCMORPH_ATTEMPT"))
-	if rc != 0 {
-		return nil, false
-	}
-	return splitNUL(out), true
+	return util.LaunchEnv(penv, port, key, adapter, l.adapterPort, os.Getenv("CCMORPH_TASK"), os.Getenv("CCMORPH_ATTEMPT")), true
 }
 
 var loopbackProxy = regexp.MustCompile(`^http://127\.0\.0\.1:([0-9]+)/?$`)
@@ -783,11 +782,8 @@ func (l *launcher) stopForeignBridge(name string, isProvider bool) {
 
 func (l *launcher) providerStop() {
 	if l.providerPID+l.providerTD+l.providerAuth != "" {
-		pid := l.providerPID
-		if pid == "" {
-			pid = "0"
-		}
-		l.util(nil, "", "bridge-stop", pid, l.providerTD, l.providerAuth)
+		pid, _ := strconv.Atoi(l.providerPID)
+		util.BridgeStop(pid, l.providerTD, l.providerAuth)
 	}
 	l.providerPID, l.providerActive, l.providerPort, l.providerKey, l.providerTD, l.providerAuth = "", "", "", "", "", ""
 }

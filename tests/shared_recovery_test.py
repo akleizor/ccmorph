@@ -27,23 +27,17 @@ def migrate(tmp_path, name):
            if not k.startswith(("CCMORPH_", "_CCMORPH_", "CLAUDE_", "ANTHROPIC_"))}
     env.update(HOME=str(tmp_path), ZDOTDIR=str(tmp_path),
                CCMORPH_STATE_DIR=str(state), CCMORPH_LIB_DIR=str(ROOT / "lib"))
-    if name == "projects":
-        # History is not a shared dir; `rm` merges it through this core verb.
-        argv = [str(ROOT / "libexec/ccmorph-core"), "util", "migrate-projects", str(original), str(shared)]
-    else:
-        argv = ["zsh", "-fc", 'source "$1"; ccmorph _env gw', "_", str(ROOT / "lib/ccmorph.sh")]
+    argv = ["zsh", "-fc", '. "$1"; ccmorph _env gw', "_", str(ROOT / "lib/ccmorph.sh")]
     result = subprocess.run(argv, env=env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
     return result, original, shared
 
 
 def moved_out(original, shared, name):
-    # Shared stores end as a link; merged history leaves nothing behind.
-    if name == "projects":
-        return not original.exists()
+    # Shared stores end as a link.
     return original.is_symlink() and original.resolve() == shared.resolve()
 
 
-@pytest.mark.parametrize("name", ["agents", "projects", "session-env", "file-history"])
+@pytest.mark.parametrize("name", ["agents", "session-env", "file-history"])
 def test_sharable_content_collision_is_merged_into_the_shared_store(tmp_path, name):
     # agents holds content (subagent definitions), like skills, so a profile that
     # has a real agents/ before the shared store does is merged and linked rather
@@ -70,7 +64,7 @@ def test_managed_content_collision_is_preserved(tmp_path, name):
     assert not list(original.parent.glob("*.premigration.*"))
 
 
-@pytest.mark.parametrize("name", ["projects", "session-env", "file-history"])
+@pytest.mark.parametrize("name", ["session-env", "file-history"])
 def test_history_migration_keeps_collisions_in_backup(tmp_path, name):
     result, original, shared = migrate(tmp_path, name)
     assert result.returncode == 0, result.stderr

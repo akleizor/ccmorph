@@ -1,7 +1,6 @@
 package util
 
 import (
-	"slices"
 	"context"
 	"fmt"
 	"io"
@@ -9,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -440,23 +440,20 @@ func chatModel(m pycompat.Value) (string, bool) {
 
 func isExcluded(fields map[string]string, id string) bool { return ctxwindow.IsExcluded(fields, id) }
 
-// modelsFilteredJSON: models-filtered-json <conf>: the listing on stdin with only the
-// chat-capable, non-excluded rows left.
-func modelsFilteredJSON(args []string, in io.Reader, out, _ io.Writer) int {
-	if len(args) != 1 {
-		return 2
-	}
+// ModelsFilteredJSON is the listing with only the chat-capable, non-excluded rows
+// left, as JSON; false when the conf or listing cannot be read.
+func ModelsFilteredJSON(conf, body string) (string, bool) {
 	var fields map[string]string
-	if pycompat.Catch(func() { fields = readConf(args[0]) }) != nil {
-		return 1
+	if pycompat.Catch(func() { fields = readConf(conf) }) != nil {
+		return "", false
 	}
-	payload, err := pycompat.Parse(readAll(in))
+	payload, err := pycompat.Parse([]byte(body))
 	if err != nil {
-		return 1
+		return "", false
 	}
 	entries, ok := listing(payload)
 	if !ok {
-		return 1
+		return "", false
 	}
 	allowed := map[string]bool{}
 	for _, m := range entries {
@@ -472,7 +469,7 @@ func modelsFilteredJSON(args []string, in io.Reader, out, _ io.Writer) int {
 		}
 		switch id := getKey(o, "id").(type) {
 		case []any, *pycompat.Obj:
-			return 1 // unhashable: Python's `in` raises
+			return "", false // unhashable: Python's `in` raises
 		case string:
 			if allowed[id] {
 				kept = append(kept, row)
@@ -480,8 +477,7 @@ func modelsFilteredJSON(args []string, in io.Reader, out, _ io.Writer) int {
 		}
 	}
 	asObj(payload).Set("data", kept)
-	fmt.Fprintln(out, jsonOut(payload))
-	return 0
+	return jsonOut(payload), true
 }
 
 // pyStr is str() of a decoded scalar.
@@ -502,67 +498,64 @@ func pyStr(v pycompat.Value) string {
 	return jsonOut(v)
 }
 
-// windowLabel: "<window> <unprobed 0|1> <label>" from a resolver record on stdin.
-func windowLabel(_ []string, in io.Reader, out, _ io.Writer) int {
-	v, err := pycompat.Parse(readAll(in))
+// WindowLabel reads a model-window resolver record (JSON): the window, whether it
+// is unprobed, and how it was learned.
+func WindowLabel(record string) (window string, unprobed bool, label string, ok bool) {
+	v, err := pycompat.Parse([]byte(record))
 	d := asObj(v)
 	if err != nil || d == nil {
-		return 1
+		return "", false, "", false
 	}
-	window := ""
 	if w := getKey(d, "window"); truthy(w) {
 		window = pyStr(w)
 	}
-	unprobed := 0
-	if truthy(getKey(d, "unprobed")) {
-		unprobed = 1
-	}
-	label := "probed"
+	label = "probed"
 	switch src, _ := getKey(d, "source").(string); src {
 	case "conf-discovered-catalogue", "catalogue-bundled":
 		label = "catalogue-estimate"
 	case "conf-manual":
 		label = "manual"
 	}
-	fmt.Fprintf(out, "%s %d %s\n", window, unprobed, label)
-	return 0
+	return window, truthy(getKey(d, "unprobed")), label, true
 }
 
-// effortRows prints the per-model effort overrides of a projected model-settings document.
-func effortRows(_ []string, in io.Reader, out, _ io.Writer) int {
-	v, err := pycompat.Parse(readAll(in))
+// EffortRow is one model's effort override.
+type EffortRow struct{ Model, Effort string }
+
+// EffortRows are the per-model effort overrides of a projected model-settings
+// document (JSON), by model name.
+func EffortRows(doc string) []EffortRow {
+	v, err := pycompat.Parse([]byte(doc))
 	d := asObj(v)
 	if err != nil || d == nil {
-		return 1
+		return nil
 	}
 	rows := asObj(getKey(d, "modelSettings"))
 	if rows == nil {
-		return 0
+		return nil
 	}
 	keys := rows.Keys()
 	sort.Strings(keys)
+	var out []EffortRow
 	for _, k := range keys {
 		rv, _ := rows.Get(k)
-		fmt.Fprintf(out, "  effort:%s %s  (profile override)\n", k, pyStr(getKey(asObj(rv), "effortLevel")))
+		out = append(out, EffortRow{k, pyStr(getKey(asObj(rv), "effortLevel"))})
 	}
-	return 0
+	return out
 }
 
-// savedProviderModels prints "<value>\tSaved provider model" for the picker rows saved in a provider's .claude.json.
-func savedProviderModels(args []string, _ io.Reader, out, _ io.Writer) int {
-	if len(args) != 1 {
-		return 2
-	}
+// SavedProviderModels are the picker values saved in a provider's .claude.json.
+func SavedProviderModels(claudeJSON string) (values []string) {
 	var rows []any
-	if v, err := loadJSON(args[0]); err == nil {
+	if v, err := loadJSON(claudeJSON); err == nil {
 		rows, _ = getKey(asObj(v), "additionalModelOptionsCache").([]any)
 	}
 	for _, r := range rows {
 		if value, ok := getKey(asObj(r), "value").(string); ok && value != "" && !hasSpace(value) {
-			fmt.Fprintf(out, "%s\tSaved provider model\n", value)
+			values = append(values, value)
 		}
 	}
-	return 0
+	return values
 }
 
 // UnwireStatusline drops the statusLine of the settings file at path when its
@@ -678,28 +671,28 @@ func Advise(msg string) string {
 	return jsonOut(o)
 }
 
-// gwModels: gw-models <conf> <picker|catalogue>: "<id>\t<owner>" rows from the listing on stdin.
-// Exit 1 for an unreadable listing, 2 for one with no usable model.
-func gwModels(args []string, in io.Reader, out, _ io.Writer) int {
-	if len(args) != 2 {
-		return 2
-	}
+// ModelRow is one model of a gateway listing and its owner.
+type ModelRow struct{ ID, Owner string }
+
+// GwModels are the chat models of the listing, sorted; with picker the profile
+// conf's excluded models are left out. False for an unreadable listing or one with
+// no usable model.
+func GwModels(conf string, picker bool, body string) ([]ModelRow, bool) {
 	fields := map[string]string{}
-	if args[1] == "picker" {
-		if pycompat.Catch(func() { fields = readConf(args[0]) }) != nil {
-			return 1
+	if picker {
+		if pycompat.Catch(func() { fields = readConf(conf) }) != nil {
+			return nil, false
 		}
 	}
-	payload, err := pycompat.Parse(readAll(in))
+	payload, err := pycompat.Parse([]byte(body))
 	if err != nil {
-		return 1
+		return nil, false
 	}
 	entries, ok := listing(payload)
 	if !ok {
-		return 1
+		return nil, false
 	}
-	type row struct{ id, owner string }
-	var rows []row
+	var rows []ModelRow
 	for _, m := range entries {
 		id, ok := chatModel(m)
 		if !ok || isExcluded(fields, id) {
@@ -709,30 +702,18 @@ func gwModels(args []string, in io.Reader, out, _ io.Writer) int {
 		if ov := getKey(asObj(m), "owned_by"); truthy(ov) {
 			owner = pyStr(ov)
 		}
-		rows = append(rows, row{id, owner})
+		rows = append(rows, ModelRow{id, owner})
 	}
 	if len(rows) == 0 {
-		return 2
+		return nil, false
 	}
 	sort.Slice(rows, func(i, j int) bool {
-		if rows[i].id != rows[j].id {
-			return rows[i].id < rows[j].id
+		if rows[i].ID != rows[j].ID {
+			return rows[i].ID < rows[j].ID
 		}
-		return rows[i].owner < rows[j].owner
+		return rows[i].Owner < rows[j].Owner
 	})
-	for _, r := range rows {
-		fmt.Fprintf(out, "%s\t%s\n", r.id, r.owner)
-	}
-	return 0
-}
-
-// modelKnown: model-known <want> <model_map json>, listing in _CCM_MODELS_JSON.
-// 0 served, 1 not served, 2 cannot tell.
-func modelKnown(args []string, _ io.Reader, _, _ io.Writer) int {
-	if len(args) != 2 {
-		return 2
-	}
-	return modelInListing(os.Getenv("_CCM_MODELS_JSON"), args[0], args[1])
+	return rows, true
 }
 
 // modelInListing is model-known over a listing body: 0 served, 1 not, 2 cannot tell.

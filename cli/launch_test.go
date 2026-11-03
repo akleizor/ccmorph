@@ -70,23 +70,16 @@ func stubCore(t *testing.T, envVar string) (dir string, argv func() string, env 
 	return dir, read("argv.log"), envf
 }
 
-// route passes the bridge key to launch-env through the environment: a credential
-// on the argument vector is visible to anything running as this user (#112).
-func TestRouteKeepsTheBridgeKeyOffTheCommandLine(t *testing.T) {
-	dir, argv, env := stubCore(t, "_CCM_BRIDGE_KEY")
-	l := &launcher{libexec: dir}
-	got, ok := l.route([]string{"A=1"}, "9", "bridge-canary", false)
+// route points Claude Code at the local bridge with its key, in process: the key
+// is never on any argument vector (#112).
+func TestRoutePointsAtTheBridgeWithItsKey(t *testing.T) {
+	l := &launcher{}
+	got, ok := l.route([]string{"A=1"}, "9", "bridge-key", false)
 	if !ok {
 		t.Fatal("route failed")
 	}
-	if !slices.Equal(got, []string{"A=1"}) {
+	if !slices.Equal(got, []string{"A=1", "ANTHROPIC_BASE_URL=http://127.0.0.1:9", "ANTHROPIC_API_KEY=bridge-key"}) {
 		t.Fatalf("route returned %q", got)
-	}
-	if strings.Contains(argv(), "bridge-canary") {
-		t.Fatalf("bridge key on the command line: %q", argv())
-	}
-	if env() != "bridge-canary" {
-		t.Fatalf("launch-env saw _CCM_BRIDGE_KEY=%q", env())
 	}
 }
 
@@ -295,40 +288,30 @@ func TestAPassOffAProviderStopsItsBridge(t *testing.T) {
 	// The zsh driver stopped every helper after each pass, so a hop off a
 	// provider began with its bridge gone. The Go launcher keeps one process
 	// across passes, so the pass itself must stop a bridge it will not use.
-	log := filepath.Join(t.TempDir(), "core.log")
-	t.Setenv("CCM_FAKE_LOG", log)
-	dir := t.TempDir()
-	core := filepath.Join(dir, "ccmorph-core")
-	if err := os.WriteFile(core, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CCM_FAKE_LOG\"\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	fresh := func() *launcher {
-		return &launcher{libexec: dir, providerPID: "4242", providerTD: "/td", providerAuth: "/auth",
-			providerActive: "codex", providerPort: "1", providerKey: "k"}
-	}
-	logged := func() string {
-		b, _ := os.ReadFile(log)
-		return strings.TrimSpace(string(b))
+	// No pid: stopping removes the rendered config dir and signals nothing.
+	fresh := func() (*launcher, string) {
+		td := t.TempDir()
+		return &launcher{providerTD: td, providerActive: "codex", providerPort: "1", providerKey: "k"}, td
 	}
 
-	l := fresh()
+	l, td := fresh()
 	l.stopForeignBridge("codex", true)
-	if logged() != "" || l.providerActive != "codex" || l.providerPID != "4242" {
-		t.Fatalf("staying on the provider must keep its bridge: %q active=%q", logged(), l.providerActive)
+	if _, err := os.Stat(td); err != nil || l.providerActive != "codex" {
+		t.Fatalf("staying on the provider must keep its bridge: %v active=%q", err, l.providerActive)
 	}
 
+	l, td = fresh()
 	l.stopForeignBridge("gw", false)
-	if got := logged(); got != "util bridge-stop 4242 /td /auth" {
-		t.Fatalf("a pass off the provider must stop its bridge, logged %q", got)
+	if _, err := os.Stat(td); err == nil {
+		t.Fatal("a pass off the provider must stop its bridge")
 	}
 	if l.providerPID+l.providerTD+l.providerAuth+l.providerActive+l.providerPort+l.providerKey != "" {
 		t.Fatalf("the stopped bridge's handle must be cleared: %+v", l)
 	}
 
-	l = fresh()
+	l, td = fresh()
 	l.stopForeignBridge("other", true)
-	lines := strings.Split(logged(), "\n")
-	if lines[len(lines)-1] != "util bridge-stop 4242 /td /auth" {
-		t.Fatalf("switching providers must stop the old bridge first, logged %q", logged())
+	if _, err := os.Stat(td); err == nil {
+		t.Fatal("switching providers must stop the old bridge first")
 	}
 }
