@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"syscall"
+
+	"github.com/akleizor/ccmorph/ctxwindow"
 )
 
 // maskedKeys are ccmorph's own knobs: they configure the shim, never Claude Code.
@@ -33,7 +35,9 @@ var privateSkip = []string{"projects", "sessions", "session-env", "file-history"
 // unless an outer session recorded them in CCMORPH_SET_ENV), exports this launch's
 // env, and execs claude. With CCMORPH_PRIVATE=1 claude runs from a throwaway view
 // of the profile instead, removed when it exits. CCMORPH_NOTICE, when set, is
-// printed just before.
+// printed just before. _CCMORPH_RUN_DIR, when set, is the launch's run/ root for
+// that view's fallback when TMPDIR cannot be written (#140); it is unset before
+// claude starts, so neither claude nor its children inherit it.
 func claudeSession(args []string, _ io.Reader, out, errw io.Writer) int {
 	if len(args) < 5 {
 		return 2
@@ -78,6 +82,8 @@ func claudeSession(args []string, _ io.Reader, out, errw io.Writer) int {
 	}
 	notice := os.Getenv("CCMORPH_NOTICE")
 	os.Unsetenv("CCMORPH_NOTICE")
+	runDir := os.Getenv("_CCMORPH_RUN_DIR")
+	os.Unsetenv("_CCMORPH_RUN_DIR")
 
 	rest, private := args[sep+1:], false
 	var setEnv []string
@@ -118,7 +124,7 @@ func claudeSession(args []string, _ io.Reader, out, errw io.Writer) int {
 		say()
 		return execErr(syscall.Exec(bin, append([]string{"claude"}, rest...), os.Environ()), errw)
 	}
-	return privateSession(bin, rest, say, errw)
+	return privateSession(bin, rest, runDir, say, errw)
 }
 
 // envName is the shape of an environment variable name, the only key an inline
@@ -166,16 +172,31 @@ func execErr(err error, errw io.Writer) int {
 
 // privateSession runs claude from a throwaway view of the profile: config and
 // settings linked in, transcripts and history landing in the view and deleted
-// when claude exits. TERM and HUP are forwarded to claude; INT and QUIT are
-// claude's own (Ctrl-C keeps the session), so this process ignores them.
-func privateSession(bin string, args []string, say func(), errw io.Writer) int {
+// when claude exits. The view sits under TMPDIR, or under runDir (the launch's
+// state dir's run/, 0700) when TMPDIR cannot be written — the same fallback root
+// the launch env file uses (#140). A launcher that sends no runDir leaves the
+// state dir to be derived here. TERM and HUP are forwarded to claude; INT and QUIT
+// are claude's own (Ctrl-C keeps the session), so this process ignores them.
+func privateSession(bin string, args []string, runDir string, say func(), errw io.Writer) int {
 	sigs := make(chan os.Signal, 4)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT)
 	real := os.Getenv("CLAUDE_CONFIG_DIR")
 	tmp, err := os.MkdirTemp(os.Getenv("TMPDIR"), "ccmorph-private.")
 	if err != nil {
-		fmt.Fprintln(errw, "ccmorph: private view:", err)
-		return 1
+		// runDir is the root the launch env file already fell back to (#112);
+		// without it a private session cannot start (#140).
+		run := runDir
+		if run == "" {
+			run = filepath.Join(ctxwindow.StateDir(), "run")
+		}
+		if mkErr := os.MkdirAll(run, 0o700); mkErr != nil {
+			fmt.Fprintln(errw, "ccmorph: private view:", err)
+			return 1
+		}
+		if tmp, err = os.MkdirTemp(run, "ccmorph-private."); err != nil {
+			fmt.Fprintln(errw, "ccmorph: private view:", err)
+			return 1
+		}
 	}
 	defer os.RemoveAll(tmp)
 	view := filepath.Join(tmp, filepath.Base(real))

@@ -29,6 +29,9 @@
 - With `HOME` unset, a launch reads its settings and session history from the
   account's home directory, never a `.claude` in the current directory; with no
   home known at all it stops and asks for `HOME`.
+- A private session starts when `TMPDIR` cannot be written: its throwaway view
+  falls back to the state dir's `run/`, the same root the launch env file uses,
+  instead of failing with `private view: mkdir …: permission denied`.
 
 ## v0.4.5 — 2026-11-02
 
