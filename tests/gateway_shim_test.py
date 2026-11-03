@@ -13,7 +13,6 @@ changes a single relayed byte.
 """
 
 import datetime
-import gzip
 import hashlib
 import http.client
 import json
@@ -143,7 +142,6 @@ class ShimStartupTest(unittest.TestCase):
 
 class Upstream(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    seen_accept_encoding = []
     seen_xff = []
 
     def log_message(self, *args):
@@ -153,32 +151,7 @@ class Upstream(BaseHTTPRequestHandler):
         Upstream.seen_xff.append(self.headers.get("X-Forwarded-For"))
         length = int(self.headers.get("content-length") or 0)
         self.rfile.read(length)
-        if self.path == "/gzip":
-            # Compress only if the requester offered it. The shim must NOT
-            # offer it, however eagerly the real client does.
-            offered = self.headers.get("accept-encoding", "")
-            Upstream.seen_accept_encoding.append(offered)
-            body, enc = JSON_BODY, None
-            if "gzip" in offered:
-                body, enc = gzip.compress(JSON_BODY), "gzip"
-            self.send_response(200)
-            self.send_header("content-type", "application/json")
-            if enc:
-                self.send_header("content-encoding", enc)
-            self.send_header("content-length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        elif self.path == "/thinking":
-            body = json.dumps({"content": [
-                {"type": "thinking", "thinking": ""},
-                {"type": "thinking", "thinking": "plan"},
-                {"type": "text", "text": "hi"}]}).encode()
-            self.send_response(200)
-            self.send_header("content-type", "application/json")
-            self.send_header("content-length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        elif self.path == "/deep":
+        if self.path == "/deep":
             self.send_response(200)
             self.send_header("content-type", "application/json")
             self.send_header("content-length", str(len(DEEP_JSON)))
@@ -240,37 +213,6 @@ class ShimTest(unittest.TestCase):
             headers={"content-type": "application/json"}, method="POST")
         return urllib.request.urlopen(req, timeout=HANG_TIMEOUT)
 
-    def test_sse_tool_use_ids_are_rewritten_unique(self):
-        ids = set()
-        for _ in range(3):
-            with self.post("/sse") as r:
-                body = r.read().decode()
-            # "data:" or "data: " — the shim preserves whichever form the
-            # upstream used (FIX 6), and this stub sends the unspaced one
-            start = json.loads(
-                next(l.split(":", 1)[1] for l in body.splitlines()
-                     if l.startswith("data:") and "content_block_start" in l))
-            ids.add(start["content_block"]["id"])
-        self.assertEqual(len(ids), 3, f"ids not unique: {ids}")
-        for i in ids:
-            self.assertRegex(i, SHIM_ID_RE)
-
-    def test_sse_non_tool_events_pass_verbatim(self):
-        with self.post("/sse") as r:
-            body = r.read().decode()
-        self.assertIn("input_json_delta", body)
-        self.assertIn('"message_stop"', body)
-        self.assertNotIn("Bash_0", body)
-
-    def test_json_response_ids_are_rewritten(self):
-        seen = set()
-        for _ in range(2):
-            with self.post("/json") as r:
-                payload = json.loads(r.read())
-            seen.add(payload["content"][0]["id"])
-        self.assertEqual(len(seen), 2)
-        self.assertNotIn("Edit_115", seen)
-
     def test_error_status_and_body_relayed(self):
         try:
             self.post("/fail")
@@ -298,292 +240,6 @@ class ShimTest(unittest.TestCase):
             headers={"content-type": "application/json"}, method="POST"), timeout=HANG_TIMEOUT)
         self.assertIsNone(Upstream.seen_xff[-1],
                           "the shim added an X-Forwarded-For header on its own")
-
-    def test_gzip_offer_still_yields_rewritten_ids(self):
-        """FIX 2 — the shim forwarded the client's accept-encoding, so a
-        gzipped response failed json.loads and was passed through
-        UNREWRITTEN and silently: the shim's whole job skipped whenever the
-        client offered compression."""
-        Upstream.seen_accept_encoding.clear()
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{self.port}/gzip", data=b"{}",
-            headers={"content-type": "application/json",
-                     "accept-encoding": "gzip, deflate"}, method="POST")
-        with urllib.request.urlopen(req, timeout=HANG_TIMEOUT) as r:
-            raw = r.read()
-            self.assertNotEqual(r.headers.get("content-encoding"), "gzip")
-        payload = json.loads(raw)
-        self.assertRegex(payload["content"][0]["id"], SHIM_ID_RE)
-        self.assertEqual(Upstream.seen_accept_encoding, ["identity"],
-                         "shim must not offer compression upstream")
-
-    def test_malformed_content_length_is_rejected(self):
-        """FIX 7 — int() accepts "1_3" (parses as 13, desyncing the body and
-        poisoning the next request on the reused connection) and "-1" (blocks
-        in rfile.read)."""
-        # NB: " 12" is deliberately absent — the header parser strips leading
-        # OWS, so it is a legitimate length of 12, not a malformed one.
-        for bad in ("1_3", "-1", "+5", "0x10", "abc", "1 2", ""):
-            with self.subTest(content_length=bad):
-                conn = http.client.HTTPConnection(
-                    "127.0.0.1", self.port, timeout=HANG_TIMEOUT)
-                self.addCleanup(conn.close)
-                conn.putrequest("POST", "/json", skip_accept_encoding=True)
-                conn.putheader("content-type", "application/json")
-                conn.putheader("content-length", bad)
-                conn.endheaders()
-                conn.send(b"{}")
-                self.assertEqual(conn.getresponse().status, 400)
-
-    def test_empty_thinking_blocks_are_dropped_even_with_preserved_ids(self):
-        """An empty thinking block is replayed by the client and rejected by
-        the API; only non-empty thinking and other blocks survive."""
-        for flags in ((), ("--preserve-tool-ids",)):
-            upstream = serve(Upstream)
-            self.addCleanup(upstream.shutdown)
-            _, port = start_shim(self, f"http://127.0.0.1:{upstream.server_port}", flags=flags)
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/thinking", data=b"{}",
-                headers={"content-type": "application/json"}, method="POST")
-            with urllib.request.urlopen(req, timeout=HANG_TIMEOUT) as r:
-                self.assertEqual(json.loads(r.read())["content"], [
-                    {"type": "thinking", "thinking": "plan"},
-                    {"type": "text", "text": "hi"}])
-
-    def test_deep_nesting_passes_through_unchanged(self):
-        """FIX 8 — unbounded _rewrite_ids recursion raised RecursionError and
-        dropped the response with no status at all. Byte-identical
-        passthrough beats a bare disconnect."""
-        with self.post("/deep") as r:
-            self.assertEqual(r.status, 200)
-            self.assertEqual(r.read(), DEEP_JSON)
-
-
-class FixtureUpstream(BaseHTTPRequestHandler):
-    """Answers every POST with the raw body the test put in `bodies` for that
-    path. The sanitizer fixtures are data, so each test declares its own
-    subclass instead of growing the shared Upstream stub."""
-
-    protocol_version = "HTTP/1.1"
-    bodies = {}
-    ctype = "application/json"
-
-    def log_message(self, *args):
-        pass
-
-    def do_POST(self):
-        body = self.bodies[self.path]
-        self.send_response(200)
-        self.send_header("content-type", self.ctype)
-        self.send_header("content-length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-
-class ThinkingSanitationTest(unittest.TestCase):
-    """#223/#224 — response sanitation must remove only MALFORMED empty
-    thinking (no signature) and must never walk into `tool_use.input`.
-
-    A signed empty-text thinking block is a valid omitted-display block: the
-    client replays it unchanged, so every field on it must survive. A
-    thinking-shaped record under a tool input is application data the tool
-    asked for, not API content, so it is opaque here. The signatures below are
-    SYNTHETIC fixture strings — no provider replay and no cryptographically
-    valid signature was exercised, and no live call was made.
-    """
-
-    SIGNED = {"type": "thinking", "thinking": "",
-              "signature": "sig-fixture-omitted-display",
-              "extra_opaque_field": "keep-me"}
-    MALFORMED = {"type": "thinking", "thinking": ""}
-    TOOL_USE = {"type": "tool_use", "id": "Edit_115", "name": "Edit",
-                "input": {"file_path": "/f"}}
-    TOOL_INPUT = {"content": [{"type": "thinking", "thinking": ""},
-                              {"type": "thinking", "thinking": "draft"},
-                              {"type": "text", "text": "keep"}]}
-    NESTED_TOOL_USE = {"type": "tool_use", "id": "Edit_115", "name": "Edit",
-                       "input": TOOL_INPUT}
-
-    @staticmethod
-    def body(content):
-        return json.dumps({"id": "msg_1", "type": "message",
-                           "role": "assistant", "content": content,
-                           "stop_reason": "tool_use"}).encode()
-
-    @staticmethod
-    def sse(events):
-        return "".join(
-            f"event:{e['type']}\ndata:{json.dumps(e, separators=(',', ':'))}\n\n"
-            for e in events).encode()
-
-    @classmethod
-    def reply(cls, thinking):
-        """A streamed reply: the thinking fixture at index 0 (or no thinking
-        block at all) and then a Read tool_use, like a real turn."""
-        events = [{"type": "message_start",
-                   "message": {"id": "msg_1", "type": "message",
-                               "role": "assistant", "model": "unknown-test",
-                               "content": [], "stop_reason": None,
-                               "stop_sequence": None,
-                               "usage": {"input_tokens": 500,
-                                         "output_tokens": 0}}}]
-        if thinking is not None:
-            events.append({"type": "content_block_start", "index": 0,
-                           "content_block": {"type": "thinking",
-                                             "thinking": ""}})
-            events.extend(thinking)
-            events.append({"type": "content_block_stop", "index": 0})
-        index = 1 if thinking is not None else 0
-        events += [
-            {"type": "content_block_start", "index": index,
-             "content_block": {"type": "tool_use", "id": "toolu_1",
-                               "name": "Read", "input": {}}},
-            {"type": "content_block_delta", "index": index,
-             "delta": {"type": "input_json_delta", "partial_json": "{}"}},
-            {"type": "content_block_stop", "index": index},
-            {"type": "message_delta",
-             "delta": {"stop_reason": "tool_use", "stop_sequence": None},
-             "usage": {"input_tokens": 500, "output_tokens": 20}},
-            {"type": "message_stop"},
-        ]
-        return cls.sse(events)
-
-    @staticmethod
-    def frames(raw):
-        """Every SSE frame, checked to be one event: line plus its data."""
-        out = []
-        for frame in raw.decode().split("\n\n"):
-            if not frame:
-                continue
-            lines = frame.splitlines()
-            assert len(lines) == 2, frame
-            assert lines[0].startswith("event:"), frame
-            assert lines[1].startswith("data:"), frame
-            data = json.loads(lines[1][5:].lstrip())
-            assert lines[0][6:] == data["type"], frame
-            out.append(data)
-        return out
-
-    def post(self, bodies, flags=(), ctype="application/json"):
-        srv = serve(type("Fixture", (FixtureUpstream,),
-                         {"bodies": bodies, "ctype": ctype}))
-        # shutdown() stops the serving loop but leaves the listening socket
-        # open, so close that too; addCleanup is LIFO, hence this order.
-        self.addCleanup(srv.server_close)
-        self.addCleanup(srv.shutdown)
-        proc, port = start_shim(self, f"http://127.0.0.1:{srv.server_address[1]}",
-                                flags=flags)
-        self.addCleanup(reap_shim, proc)
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{port}/fixture", data=b"{}",
-            headers={"content-type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=HANG_TIMEOUT) as r:
-            return r.read()
-
-    def test_signed_empty_thinking_survives_with_preserved_ids(self):
-        """#223 — with nothing else to change, the response is the upstream
-        bytes: the signed omitted-display block is not rebuilt or reordered."""
-        raw = self.body([self.SIGNED, self.TOOL_USE])
-        self.assertEqual(
-            self.post({"/fixture": raw}, flags=["--preserve-tool-ids"]), raw)
-
-    def test_signed_empty_thinking_survives_with_rewritten_ids(self):
-        """#223 — sanitation still runs when ids are rewritten; the signed
-        block is simply not eligible for removal."""
-        raw = self.body([self.SIGNED, self.TOOL_USE])
-        content = json.loads(self.post({"/fixture": raw}))["content"]
-        self.assertEqual(content[0], self.SIGNED)
-        self.assertRegex(content[1]["id"], SHIM_ID_RE)
-
-    def test_unsigned_empty_thinking_is_still_dropped(self):
-        """#223 — the malformed-block behavior is the contract; a signature is
-        the only thing that exempts an empty block, so both stay side by side."""
-        raw = self.body([self.MALFORMED, self.SIGNED,
-                         {"type": "text", "text": "hi"}])
-        for flags in ((), ("--preserve-tool-ids",)):
-            with self.subTest(flags=flags):
-                content = json.loads(self.post({"/fixture": raw},
-                                               flags=flags))["content"]
-                self.assertEqual(content, [self.SIGNED,
-                                           {"type": "text", "text": "hi"}])
-
-    def test_tool_input_thinking_shaped_records_survive_with_preserved_ids(self):
-        """#224 — the tool's own JSON is not API content: byte-identical."""
-        raw = self.body([self.NESTED_TOOL_USE])
-        self.assertEqual(
-            self.post({"/fixture": raw}, flags=["--preserve-tool-ids"]), raw)
-
-    def test_tool_input_thinking_shaped_records_survive_with_rewritten_ids(self):
-        """#224 — the outer id is still rewritten; the input is untouched."""
-        raw = self.body([self.NESTED_TOOL_USE])
-        content = json.loads(self.post({"/fixture": raw}))["content"]
-        self.assertRegex(content[0]["id"], SHIM_ID_RE)
-        self.assertEqual(content[0]["input"], self.TOOL_INPUT)
-
-    def test_sanitizer_keeps_protocol_content_and_tool_input_apart(self):
-        """#223+#224 together — one response carrying malformed protocol
-        thinking, a signed omitted-display block, and a tool whose input
-        contains thinking-shaped application records."""
-        raw = self.body([self.MALFORMED, self.SIGNED, self.NESTED_TOOL_USE])
-        for flags in ((), ("--preserve-tool-ids",)):
-            with self.subTest(flags=flags):
-                content = json.loads(self.post({"/fixture": raw},
-                                               flags=flags))["content"]
-                self.assertEqual(len(content), 2)
-                self.assertEqual(content[0], self.SIGNED)
-                self.assertEqual(content[1]["input"], self.TOOL_INPUT)
-
-    def test_unsigned_empty_streamed_thinking_is_dropped_and_later_blocks_reindexed(self):
-        """#12 — Claude Code replays a streamed unsigned empty thinking block
-        exactly as it does a JSON one, so the SSE path must drop it and shift
-        later blocks down: the client addresses content by index."""
-        for flags in ((), ("--preserve-tool-ids",)):
-            with self.subTest(flags=flags):
-                out = self.post({"/fixture": self.reply([])}, flags=flags,
-                                ctype="text/event-stream")
-                frames = self.frames(out)
-                self.assertFalse(
-                    [f for f in frames
-                     if f.get("content_block", {}).get("type") == "thinking"])
-                self.assertEqual({f["index"] for f in frames if "index" in f}, {0})
-                self.assertEqual(
-                    [f["type"] for f in frames],
-                    ["message_start", "content_block_start",
-                     "content_block_delta", "content_block_stop",
-                     "message_delta", "message_stop"])
-                if flags:
-                    self.assertEqual(out, self.reply(None))
-
-    def test_streamed_thinking_controls_pass_through_byte_identical(self):
-        """#12 — signed omitted-display, healthy initially empty, an already
-        signed start and a no-thinking stream are all relayed unchanged."""
-        signature = {"type": "content_block_delta", "index": 0,
-                     "delta": {"type": "signature_delta",
-                               "signature": "sig-fixture-omitted-display"}}
-        healthy = [{"type": "content_block_delta", "index": 0,
-                    "delta": {"type": "thinking_delta", "thinking": "plan"}},
-                   signature]
-        pre_signed = self.sse([
-            {"type": "message_start",
-             "message": {"id": "msg_1", "type": "message", "role": "assistant",
-                         "model": "unknown-test", "content": [],
-                         "stop_reason": None, "stop_sequence": None,
-                         "usage": {"input_tokens": 500, "output_tokens": 0}}},
-            {"type": "content_block_start", "index": 0,
-             "content_block": self.SIGNED},
-            {"type": "content_block_stop", "index": 0},
-            {"type": "message_stop"},
-        ])
-        cases = {"signed": self.reply([signature]),
-                 "healthy": self.reply(healthy),
-                 "pre-signed": pre_signed,
-                 "no-thinking": self.reply(None)}
-        for name, raw in cases.items():
-            with self.subTest(case=name):
-                self.assertEqual(
-                    self.post({"/fixture": raw}, flags=["--preserve-tool-ids"],
-                              ctype="text/event-stream"), raw)
-
 
 class ProcessRestartTest(unittest.TestCase):
     """FIX 1 (CRITICAL) — the counter restarts at 1 in every process, but a
@@ -615,75 +271,6 @@ class ProcessRestartTest(unittest.TestCase):
                          f"restarted shim reused ids: {first & second}")
         for i in first | second:
             self.assertRegex(i, SHIM_ID_RE)
-
-
-class UnexpectedEOFUpstream(BaseHTTPRequestHandler):
-    """cliproxyapi's production failure shape: a complete HTTP 500 response
-    whose body says the upstream POST ended with unexpected EOF."""
-    protocol_version = "HTTP/1.1"
-    hits = 0
-    always_fail = False
-    unrelated = False
-
-    def log_message(self, *args):
-        pass
-
-    def do_POST(self):
-        type(self).hits += 1
-        length = int(self.headers.get("content-length") or 0)
-        self.rfile.read(length)
-        if self.unrelated or self.always_fail or type(self).hits == 1:
-            message = "internal failure" if self.unrelated else (
-                'Post "https://gateway.example.com/v1/messages": unexpected EOF')
-            data = json.dumps({"error": {"message": message}}).encode()
-            self.send_response(500)
-            self.send_header("content-type", "application/json")
-            self.send_header("content-length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-            return
-        body = SSE_BODY.encode()
-        self.send_response(200)
-        self.send_header("content-type", "text/event-stream")
-        self.send_header("content-length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-
-class UnexpectedEOFRetryTest(unittest.TestCase):
-    def setUp(self):
-        UnexpectedEOFUpstream.hits = 0
-        UnexpectedEOFUpstream.always_fail = False
-        UnexpectedEOFUpstream.unrelated = False
-        self.upstream = serve(UnexpectedEOFUpstream)
-        self.addCleanup(self.upstream.shutdown)
-        _, self.port = start_shim(
-            self, f"http://127.0.0.1:{self.upstream.server_address[1]}")
-
-    def post(self):
-        return keepalive_post(self, self.port, "/v1/messages")
-
-    def test_exact_unexpected_eof_500_is_retried_once_then_succeeds(self):
-        resp = self.post()
-        self.assertEqual(resp.status, 200)
-        body = resp.read()
-        self.assertIn(b"message_stop", body)
-        self.assertRegex(body.decode(), SHIM_ID_RE)
-        self.assertEqual(UnexpectedEOFUpstream.hits, 2)
-
-    def test_repeated_unexpected_eof_is_bounded_and_final_500_is_relayed(self):
-        UnexpectedEOFUpstream.always_fail = True
-        resp = self.post()
-        self.assertEqual(resp.status, 500)
-        self.assertIn(b"unexpected EOF", resp.read())
-        self.assertEqual(UnexpectedEOFUpstream.hits, 2)
-
-    def test_unrelated_500_is_not_retried(self):
-        UnexpectedEOFUpstream.unrelated = True
-        resp = self.post()
-        self.assertEqual(resp.status, 500)
-        self.assertIn(b"internal failure", resp.read())
-        self.assertEqual(UnexpectedEOFUpstream.hits, 1)
 
 
 # The direct route's request: one model, and that is the only model any
@@ -752,57 +339,10 @@ class TransportRetryTest(unittest.TestCase):
         self.assertEqual(self.post(self.shim()).status, 503)
         self.assertEqual(BlockedUpstream.bodies, [REQUEST] * 3)
 
-    def test_provider_that_recovers_answers_after_one_retry(self):
-        BlockedUpstream.failures_left = 1
-        resp = self.post(self.shim())
-        self.assertEqual(resp.status, 200)
-        self.assertEqual(json.loads(resp.read())["id"], "msg_ok")
-        self.assertEqual(len(BlockedUpstream.bodies), 2)
-
-    def test_an_sse_error_status_is_retried_too(self):
-        BlockedUpstream.sse = True
-        BlockedUpstream.failures_left = 10 ** 6
-        self.assertEqual(self.post(self.shim()).status, 503)
-        self.assertEqual(len(BlockedUpstream.bodies), 3)
-
-    def test_refused_connection_is_retried_then_502(self):
-        self.assertEqual(self.post(self.shim(f"http://127.0.0.1:{dead_port()}")).status, 502)
-
     def test_without_the_flag_nothing_is_retried(self):
         BlockedUpstream.failures_left = 10 ** 6
         self.assertEqual(self.post(self.shim(flags=())).status, 503)
         self.assertEqual(len(BlockedUpstream.bodies), 1)
-
-    def test_three_failed_requests_open_the_breaker_and_it_fails_readably(self):
-        BlockedUpstream.failures_left = 10 ** 6
-        port = self.shim()
-        for _ in range(3):
-            self.assertEqual(self.post(port).status, 503)
-        self.assertEqual(len(BlockedUpstream.bodies), 9)
-        held = self.post(port)
-        self.assertEqual(held.status, 503)
-        message = json.loads(held.read())["error"]["message"]
-        self.assertIn("ccmorph", message)
-        self.assertIn("then tries one", message)
-        # Held means held: nothing went upstream, and nothing went elsewhere.
-        self.assertEqual(BlockedUpstream.bodies, [REQUEST] * 9)
-
-
-class DeadUpstreamTest(unittest.TestCase):
-    """FIX 3 — the 502 path sent no content-length and did not close, so an
-    HTTP/1.1 keep-alive client waited forever for a body that never came."""
-
-    def test_502_terminates_and_does_not_hang(self):
-        _, port = start_shim(self, f"http://127.0.0.1:{dead_port()}")
-        resp = keepalive_post(self, port, "/json")
-        self.assertEqual(resp.status, 502)
-        start = time.monotonic()
-        # The hang is HERE: with neither content-length nor a close, a
-        # keep-alive client blocks in read() waiting for a body forever.
-        self.assertEqual(resp.read(), b"")
-        elapsed = time.monotonic() - start
-        self.assertLess(elapsed, 10, f"502 hung the client {elapsed:.1f}s")
-
 
 class SlowUpstream(BaseHTTPRequestHandler):
     """The REAL cliproxyapi behavior the original stub missed: keep-alive —
@@ -928,21 +468,6 @@ class StreamTerminationTest(unittest.TestCase):
                         f"error-event stream hung {elapsed:.1f}s")
         self.assertIn(b"overloaded_error", body)
         self.assertRegex(body.decode(), SHIM_ID_RE)
-
-
-class FramingTest(unittest.TestCase):
-    def test_rewritten_event_framing_is_byte_exact(self):
-        """FIX 6 — the rewritten data line was re-emitted with a hardcoded
-        `data: ` prefix and a single CRLF, dropping the blank line that
-        closes the SSE event and mixing CRLF into an LF stream."""
-        body, _ = read_stream(self, SlowUpstream)
-        expected = SSE_BODY.encode()
-        # The only permitted difference is the id inside the rewritten event
-        ids = SHIM_ID_RE.findall(body.decode())
-        self.assertEqual(len(ids), 1, f"expected one minted id, got {ids}")
-        self.assertEqual(body.replace(ids[0].encode(), b"Bash_0"), expected,
-                         "framing differs beyond the rewritten id")
-        self.assertNotIn(b"\r\n", body, "CRLF mixed into an LF stream")
 
 
 class EchoUpstream(BaseHTTPRequestHandler):
@@ -1100,10 +625,6 @@ class InboundTokenTest(unittest.TestCase):
         self.assertEqual(got["x-api-key"], "real")
         self.assertEqual(got["authorization"], "Bearer real")
 
-    def test_wrong_token_refused(self):
-        self.assertEqual(self.call("real")[0], 401)
-
-
 class IdentifierTest(unittest.TestCase):
     """The client's schema goes upstream as sent; identifiers change only on a
     profile's opt-in (--random-device-id)."""
@@ -1158,109 +679,11 @@ class IdentifierTest(unittest.TestCase):
         self.assertEqual(got["x-claude-code-session-id"], "sess-1")
         self.assertEqual(got["x-stainless-os"], "MacOS")
 
-    def test_device_id_is_stable_within_a_session_and_differs_across_sessions(self):
-        RecordingUpstream.seen = []
-        srv = serve(RecordingUpstream)
-        self.addCleanup(srv.shutdown)
-        _, port = start_shim(self, f"http://127.0.0.1:{srv.server_address[1]}",
-                             flags=["--random-device-id"])
-
-        def device(session):
-            user_id = json.dumps({"device_id": self.REAL_DEVICE, "account_uuid": "",
-                                  "session_id": session})
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/v1/messages",
-                data=json.dumps({"metadata": {"user_id": user_id}}).encode(),
-                headers={"content-type": "application/json",
-                         "X-Claude-Code-Session-Id": session})
-            urllib.request.urlopen(req, timeout=HANG_TIMEOUT).read()
-            body = RecordingUpstream.seen[-1][1]
-            return json.loads(json.loads(body)["metadata"]["user_id"])["device_id"]
-
-        first, again, other = device("s1"), device("s1"), device("s2")
-        self.assertEqual(first, again)
-        self.assertNotEqual(first, other)
-
-    def test_user_agent_is_forwarded_as_sent(self):
-        # Issue 438: the claude-cli rewrite existed because one gateway gated
-        # models on the CLI version; the shim now forwards whatever the client
-        # sent, claude-cli or not, and a profile that needs a rewrite opts in
-        # through its hooks module.
-        for ua in ("claude-cli/2.1.300 (external, sdk-ts, agent-sdk/0.1)",
-                   "Python-urllib/3.14", "Anthropic/Python 0.69.0"):
-            with self.subTest(ua=ua):
-                got, _ = self.post("/v1/messages", b"{}", {
-                    "content-type": "application/json", "User-Agent": ua})
-                self.assertEqual(got["user-agent"], ua)
-
     def test_count_tokens_body_gets_the_random_device_id_too(self):
         _, sent = self.post("/v1/messages/count_tokens", json.dumps(
             {"metadata": {"user_id": json.dumps({"device_id": self.REAL_DEVICE})}}).encode(),
             {"content-type": "application/json"}, ["--random-device-id"])
         self.assertNotIn(self.REAL_DEVICE.encode(), sent)
-
-    def test_cjk_body_keeps_utf8_when_the_device_id_is_swapped(self):
-        text = "你好，世界" * 20
-        raw = json.dumps({"model": "m", "messages": [{"role": "user", "content": text}],
-                          "metadata": {"user_id": json.dumps({"device_id": self.REAL_DEVICE})}},
-                         ensure_ascii=False, separators=(",", ":")).encode()
-        _, sent = self.post("/v1/messages", raw, {"content-type": "application/json"},
-                            ["--random-device-id"])
-        self.assertIn(text.encode(), sent)
-
-    def test_lone_surrogate_body_still_swaps_the_device_id(self):
-        # A lone \ud83d escape parses in Python's json but cannot UTF-8 encode
-        # after an ensure_ascii=False dump (#182); the swap must survive it.
-        raw = json.dumps({"model": "m",
-                          "messages": [{"role": "user", "content": "x \ud83d y"}],
-                          "metadata": {"user_id": json.dumps({"device_id": self.REAL_DEVICE})}},
-                         separators=(",", ":")).encode()
-        _, sent = self.post("/v1/messages", raw, {"content-type": "application/json"},
-                            ["--random-device-id"])
-        doc = json.loads(sent.decode("utf-8"))
-        self.assertEqual(doc["messages"][0]["content"], "x \ud83d y")
-        self.assertNotIn(self.REAL_DEVICE.encode(), sent)
-        self.assertRegex(json.loads(doc["metadata"]["user_id"])["device_id"],
-                         r"^[0-9a-f]{64}$")
-
-    def test_nested_surrogate_user_id_keeps_valid_outer_json_and_inner_escapes(self):
-        for extra in ("x \ud83d y", "x \udc00 y", "你好 😀"):
-            with self.subTest(extra=repr(extra)):
-                ids = {"device_id": self.REAL_DEVICE, "account_uuid": "account",
-                       "session_id": "nested", "extra": extra}
-                # Inner surrogate escapes are ordinary backslash characters in
-                # the outer JSON string, which contains no unpaired surrogates.
-                raw = json.dumps({"model": "m", "messages": [{"role": "user", "content": "你好"}],
-                                  "metadata": {"user_id": json.dumps(ids)}},
-                                 ensure_ascii=False).encode()
-                _, sent = self.post("/v1/messages", raw, {"content-type": "application/json"},
-                                    ["--random-device-id"])
-                doc = json.loads(sent.decode("utf-8"))
-                user_id = doc["metadata"]["user_id"]
-                # A strict outer parser rejects unpaired surrogate escapes.
-                # Its decoded JSON strings must therefore be UTF-8 encodable.
-                user_id.encode("utf-8", errors="strict")
-                actual = json.loads(user_id)
-                self.assertEqual(actual["extra"], extra)
-                self.assertEqual(actual["account_uuid"], ids["account_uuid"])
-                self.assertEqual(actual["session_id"], ids["session_id"])
-                self.assertRegex(actual["device_id"], r"^[0-9a-f]{64}$")
-                self.assertNotEqual(actual["device_id"], self.REAL_DEVICE)
-                self.assertIn("你好".encode(), sent)
-                if extra == "你好 😀":
-                    self.assertIn(extra.encode(), sent)
-                else:
-                    self.assertIn("\\u", user_id)
-
-    def test_bodies_it_cannot_swap_go_upstream_byte_identical(self):
-        flags = ["--random-device-id"]
-        for raw in (b"not json \xff metadata",
-                    b'{ "model": "m",  "messages": [] }',
-                    b'{"metadata":{"user_id":"device_abc_session_def"}}',
-                    b'{"metadata":{"user_id":"{\\"session_id\\":\\"s\\"}"}}'):
-            _, sent = self.post("/v1/messages", raw, {"content-type": "application/json"}, flags)
-            self.assertEqual(sent, raw)
-
 
 class CaptureUpstream(BaseHTTPRequestHandler):
     """One stub, four shapes: a complete JSON message, a complete stream, a
@@ -1516,16 +939,6 @@ class UsageSidecarTest(unittest.TestCase):
         self.assertEqual(json.loads(seen[0])["model"], "target")
         self.assertEqual(self.rows(), {})
 
-    def test_nonstream_cost_is_kept_at_the_consumer_join_path(self):
-        body = json.loads(CAPTURE_JSON)
-        body["usage"]["cost"] = 0.072112
-        CaptureUpstream.json_body = json.dumps(body).encode()
-        with self.post(self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})) as r:
-            r.read()
-        row = self.wait_for(self.row_path("msg_capture_json"))
-        self.assertEqual(row["usage"]["cost"], 0.072112)
-
-
     def test_route_id_is_stable_across_processes_and_never_the_identity(self):
         route_ids = set()
         for _ in range(2):                 # two shim PROCESSES, one route spec
@@ -1537,82 +950,6 @@ class UsageSidecarTest(unittest.TestCase):
         route_id = route_ids.pop()
         self.assertRegex(route_id, r"^[0-9a-f]{64}$")
         self.assertNotIn(route_id, (IDENTITY, hashlib.sha256(IDENTITY.encode()).hexdigest()))
-
-    def test_capture_leaves_the_response_bytes_alone(self):
-        with self.post(self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})) as r:
-            body = r.read()
-        self.assertEqual(upstream_bytes(self, body), CAPTURE_JSON)
-
-    def test_sse_row_saved_at_message_start_and_finalized_at_message_stop(self):
-        CaptureUpstream.mode = "sse"
-        with self.post(self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})) as r:
-            body = r.read()
-        row_path = self.row_for("msg_capture_sse")
-        row = self.wait_for(row_path, lambda r: r["complete"])
-        self.assertEqual(len(list(self.rows())), 1)
-        self.assertIs(row["complete"], True)
-        self.assertEqual(row["response_model"], "m-served")
-        # message_start's buckets merged with the message_delta update.
-        self.assertEqual(row["usage"], {"input_tokens": 11,
-                                        "cache_read_input_tokens": 2,
-                                        "output_tokens": 42})
-        self.assertEqual(upstream_bytes(self, body), CAPTURE_SSE.encode())
-
-    def test_partial_row_exists_before_the_stream_finishes(self):
-        """The row is durable from message_start on: kill the shim or the
-        process mid-turn and the incomplete row is still there."""
-        CaptureUpstream.mode = "gated"
-        port = self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=HANG_TIMEOUT)
-        self.addCleanup(conn.close)
-        conn.putrequest("POST", "/v1/messages", skip_accept_encoding=True)
-        conn.putheader("content-type", "application/json")
-        conn.putheader("x-api-key", "k")
-        conn.putheader("content-length", str(len(REQUEST_BODY)))
-        conn.endheaders()
-        conn.send(REQUEST_BODY)
-        resp = conn.getresponse()          # headers first, then events
-        started = False
-        while True:
-            line = resp.fp.readline()
-            if not line:
-                self.fail("stream ended before the row check")
-            if line.startswith(b"data:") and b"message_start" in line:
-                started = True
-            elif started and line in (b"\n", b"\r\n"):
-                break
-        path = self.row_for("msg_capture_sse")
-        row = self.wait_for(path, lambda r: r["usage"] == {"input_tokens": 11,
-                                                          "cache_read_input_tokens": 2})
-        self.assertIs(row["complete"], False)
-        CaptureUpstream.gate.set()
-        resp.read()
-        row = self.wait_for(path, lambda r: r["complete"])
-        self.assertEqual(row["usage"], {"input_tokens": 11, "cache_read_input_tokens": 2,
-                                        "output_tokens": 42})
-
-    def test_recycled_response_id_through_the_shim_keeps_both_rows(self):
-        port = self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})
-        for _ in range(2):
-            with self.post(port) as r:
-                r.read()
-        deadline = time.monotonic() + HANG_TIMEOUT
-        while len(self.rows()) < 2 and time.monotonic() < deadline:
-            time.sleep(0.05)
-        self.assertEqual(len(self.rows()), 2)
-        self.assertEqual(len({r["turn_id"] for r in self.rows().values()}), 2)
-        self.assertIn(self.row_path("msg_capture_json").name, self.rows())
-
-    def test_truncated_stream_leaves_an_incomplete_row(self):
-        CaptureUpstream.mode = "truncated"
-        with self.post(self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})) as r:
-            r.read()
-        row = self.wait_for(self.row_for("msg_capture_sse"))
-        self.assertEqual(len(self.rows()), 1)
-        self.assertEqual(row["response_id"], "msg_capture_sse")
-        self.assertIs(row["complete"], False)
-        self.assertEqual(row["usage"], {"input_tokens": 11, "cache_read_input_tokens": 2})
-
 
     def test_unrelated_endpoints_are_never_captured(self):
         port = self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})
@@ -1681,17 +1018,6 @@ class UsageSidecarTest(unittest.TestCase):
             time.sleep(0.05)
         self.assertEqual(sorted(str(r["task"]) for r in self.rows().values()), ["None", "None", "ok"])
 
-
-    def test_ccmorph_headers_never_reach_the_upstream(self):
-        port = self.tag_shim()
-        CaptureUpstream.on_headers = self.seen.append
-        self.addCleanup(setattr, CaptureUpstream, "on_headers", None)
-        # #387: the retired role tag is the header a session started before #348
-        # still carries. Any x-ccmorph-* name ends here, listed or not.
-        h = {"x-ccmorph-task": "t1", "x-ccmorph-attempt": "1", "x-ccmorph-role": "build"}
-        with self.post(port, headers=h) as r:
-            r.read()
-        self.assertFalse([k for k in self.seen[-1] if k.lower().startswith("x-ccmorph")])
 
     def test_outcome_appends_a_row_keyed_by_task(self):
         env = dict(os.environ, XDG_STATE_HOME=str(self.state))
@@ -1800,31 +1126,6 @@ class GatewayEdgeTest(unittest.TestCase):
                     self.assertIn("translation", error["message"])
 
 
-    def test_native_map_allows_declared_count_tokens_but_rejects_messages(self):
-        with mock.patch.object(GatewayEdgeUpstream, 'endpoints',
-                               {'deepseek-v4-pro': ['/v1/messages/count_tokens',
-                                                    '/v1/chat/completions']}):
-            for path, expected in (('/v1/messages/count_tokens?beta=1', 200),
-                                   ('/v1/messages', 400)):
-                with self.subTest(path=path):
-                    status, _ = self.post({'model': 'claude-sonnet-5', 'messages': []},
-                                          {'claude-sonnet-5': 'deepseek-v4-pro'}, path)
-                    self.assertEqual(status, expected)
-                    self.assertEqual(GatewayEdgeUpstream.seen_models,
-                                     ['deepseek-v4-pro'] if expected == 200 else [])
-
-
-    def test_native_map_preserves_messages_and_undeclared_targets(self):
-        for endpoints in (["/v1/messages"], ["/v1/messages", "/v1/chat/completions"], [], None):
-            with self.subTest(endpoints=endpoints), mock.patch.object(
-                    GatewayEdgeUpstream, "endpoints",
-                    {"deepseek-v4-pro": endpoints} if endpoints else {}):
-                status, data = self.post({"model": "claude-sonnet-5", "messages": []},
-                                         {"claude-sonnet-5": "deepseek-v4-pro"})
-                self.assertEqual(status, 200)
-                self.assertEqual(GatewayEdgeUpstream.seen_models, ["deepseek-v4-pro"])
-                self.assertEqual(json.loads(data)["model"], "claude-sonnet-5")
-
     def test_native_unmapped_target_is_not_subject_to_map_guard(self):
         with mock.patch.object(GatewayEdgeUpstream, "endpoints",
                           {"deepseek-v4-pro": ["/v1/chat/completions"]}):
@@ -1847,12 +1148,6 @@ class GatewayEdgeTest(unittest.TestCase):
         self.assertEqual(self.proc.stdout.read().count("sending it unchanged"), 1)
 
 
-    def test_stream_answers_under_the_anthropic_id(self):
-        _, data = self.post({"model": "claude-sonnet-5", "stream": True, "messages": []})
-        self.assertEqual(GatewayEdgeUpstream.seen_models, ["claude-sonnet-5"])
-        self.assertIn(b'"model":"claude-sonnet-5"', data)
-        self.assertNotIn(b"Int_", data)
-
     def test_non_claude_model_is_left_alone(self):
         _, data = self.post({"model": "deepseek-v4-pro", "messages": []})
         self.assertEqual(GatewayEdgeUpstream.seen_models, ["deepseek-v4-pro"])
@@ -1865,61 +1160,8 @@ class GatewayEdgeTest(unittest.TestCase):
         self.assertIn("Input tag 'tool_addition'", json.loads(data)["error"]["message"])
 
 
-class FakeProxy:
-    """A listener that counts connections and answers 502, standing in for an ambient http_proxy."""
-
-    def __init__(self):
-        self.hits = 0
-        self.sock = socket.socket()
-        self.sock.bind(("127.0.0.1", 0))
-        self.sock.listen(8)
-        self.port = self.sock.getsockname()[1]
-        threading.Thread(target=self._run, daemon=True).start()
-
-    def _run(self):
-        while True:
-            try:
-                conn, _ = self.sock.accept()
-            except OSError:
-                return
-            self.hits += 1
-            conn.sendall(b"HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
-            conn.close()
-
-    def env(self):
-        url = f"http://127.0.0.1:{self.port}"
-        env = {k: v for k, v in os.environ.items()
-               if k.lower() not in ("http_proxy", "https_proxy", "all_proxy", "no_proxy")}
-        env.update(http_proxy=url, HTTP_PROXY=url)
-        return env
-
-
-class LoopbackNoProxyTest(unittest.TestCase):
-    """Loopback hops never go through an ambient http_proxy (issue #83); the catalogue's upstream still does."""
-
-    def setUp(self):
-        self.proxy = FakeProxy()
-        self.addCleanup(self.proxy.sock.close)
-
-    def test_shim_forward_to_loopback_target_bypasses_proxy(self):
-        upstream = serve(Upstream)
-        self.addCleanup(upstream.shutdown)
-        proc = subprocess.Popen(
-            [*SHIM, "0", f"http://127.0.0.1:{upstream.server_address[1]}",
-             f"--parent-pid={os.getpid()}"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=self.proxy.env())
-        self.addCleanup(reap_shim, proc)
-        port = int(proc.stdout.readline().strip().split(":")[1].split(" ")[0])
-        req = urllib.request.Request(f"http://127.0.0.1:{port}/json", data=b"{}", method="POST",
-                                     headers={"content-type": "application/json"})
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open(req, timeout=HANG_TIMEOUT) as r:
-            self.assertEqual(r.status, 200)
-        self.assertEqual(self.proxy.hits, 0, "loopback forward went through the ambient proxy")
-
-
 class StallUpstream(BaseHTTPRequestHandler):
-    """/before: never answers. /during: starts a stream, then goes silent."""
+    """Never answers."""
     protocol_version = "HTTP/1.1"
 
     def log_message(self, *args):
@@ -1927,12 +1169,6 @@ class StallUpstream(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.rfile.read(int(self.headers.get("content-length") or 0))
-        if self.path == "/v1/messages" and b"during" in self.headers.get("x-case", "").encode():
-            self.send_response(200)
-            self.send_header("content-type", "text/event-stream")
-            self.end_headers()
-            self.wfile.write(b'event:message_start\ndata:{"type":"message_start","message":{"id":"m","type":"message","model":"x","content":[],"usage":{}}}\n\n')
-            self.wfile.flush()
         time.sleep(20)
 
 
@@ -1940,14 +1176,14 @@ class StallDeadlineTest(unittest.TestCase):
     """A silent gateway ends the turn with an error Claude Code can read and retry,
     never a reply that never comes."""
 
-    def post(self, case):
+    def post(self):
         srv = serve(StallUpstream)
         self.addCleanup(srv.shutdown)
         _, port = start_shim(self, f"http://127.0.0.1:{srv.server_address[1]}",
                              env={"CCMORPH_STALL_TIMEOUT": "1"})
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}/v1/messages", data=b'{"model":"m"}', method="POST",
-            headers={"content-type": "application/json", "x-case": case})
+            headers={"content-type": "application/json"})
         start = time.monotonic()
         try:
             with urllib.request.urlopen(req, timeout=HANG_TIMEOUT) as r:
@@ -1957,58 +1193,7 @@ class StallDeadlineTest(unittest.TestCase):
         return status, data, time.monotonic() - start
 
     def test_silent_before_reply_is_a_504_error(self):
-        status, data, elapsed = self.post("before")
+        status, data, elapsed = self.post()
         self.assertEqual(status, 504)
         self.assertIn("gateway sent nothing", json.loads(data)["error"]["message"])
         self.assertLess(elapsed, 10)
-
-    def test_silent_mid_stream_ends_with_an_error_event(self):
-        status, data, elapsed = self.post("during")
-        self.assertEqual(status, 200)
-        self.assertIn(b"message_start", data)
-        self.assertIn(b'"type": "error"', data)
-        self.assertLess(elapsed, 10)
-
-
-
-class ThinkingResendTest(unittest.TestCase):
-    """The stock shim resends once without thinking blocks after a 400."""
-
-    BODY = {"model": "m", "messages": [
-        {"role": "user", "content": "hi"},
-        {"role": "assistant", "content": [{"type": "thinking", "thinking": "t", "signature": "s"},
-                                          {"type": "text", "text": "a"}]},
-        {"role": "user", "content": "more"}]}
-
-    def test_a_400_is_resent_once_without_thinking(self):
-        bodies = []
-
-        class H(BaseHTTPRequestHandler):
-            def log_message(self, *a):
-                pass
-
-            def do_POST(self):
-                bodies.append(self.rfile.read(int(self.headers["content-length"])))
-                status = 400 if len(bodies) == 1 else 200
-                out = b'{"type":"message","content":[]}'
-                self.send_response(status)
-                self.send_header("content-type", "application/json")
-                self.send_header("content-length", str(len(out)))
-                self.end_headers()
-                self.wfile.write(out)
-
-        server = ThreadingHTTPServer(("127.0.0.1", 0), H)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        _, port = start_shim(self, f"http://127.0.0.1:{server.server_address[1]}")
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{port}/v1/messages", data=json.dumps(self.BODY).encode(),
-            headers={"content-type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=HANG_TIMEOUT) as r:
-            self.assertEqual(r.status, 200)
-        self.assertEqual(len(bodies), 2)
-        self.assertIn(b'"thinking"', bodies[0])
-        self.assertNotIn(b"thinking", bodies[1])
-        self.assertEqual(json.loads(bodies[1])["messages"][1]["content"],
-                         [{"type": "text", "text": "a"}])

@@ -81,13 +81,21 @@ func TestRewriteIDsUniqueAndNested(t *testing.T) {
 }
 
 func TestEmptyThinkingRemovedFromJSON(t *testing.T) {
+	for _, preserve := range []bool{false, true} {
+		emptyThinkingRemovedFromJSON(t, preserve)
+	}
+}
+
+func emptyThinkingRemovedFromJSON(t *testing.T, preserve bool) {
 	s := NewServer("http://x")
+	s.PreserveIDs = preserve
 	for name, tc := range map[string]struct{ in, want string }{
 		"empty dropped":        {`{"content":[{"type":"thinking","thinking":""},{"type":"text","text":"a"}]}`, `{"content":[{"type":"text","text":"a"}]}`},
 		"missing text":         {`{"content":[{"type":"thinking"},{"type":"text","text":"a"}]}`, `{"content":[{"type":"text","text":"a"}]}`},
 		"only block":           {`{"content":[{"type":"thinking","thinking":"","signature":""}]}`, `{"content":[]}`},
 		"signed empty kept":    {`{"content":[{"type":"thinking","thinking":"","signature":"s"}]}`, ""},
 		"text kept":            {`{"content":[{"type":"thinking","thinking":"hm"}]}`, ""},
+		"mixed: only the unsigned block goes": {`{"content":[{"type":"thinking","thinking":""},{"type":"thinking","thinking":"","signature":"s","extra":"keep"},{"type":"tool_use","name":"E","input":{"content":[{"type":"thinking","thinking":""}]}}]}`, `{"content":[{"type":"thinking","thinking":"","signature":"s","extra":"keep"},{"type":"tool_use","name":"E","input":{"content":[{"type":"thinking","thinking":""}]}}]}`},
 		"tool input untouched": {`{"content":[{"type":"tool_use","id":"","input":{"content":[{"type":"thinking"}]}}]}`, ""},
 	} {
 		out, changed := s.rewrite([]byte(tc.in), "", false)
@@ -298,7 +306,7 @@ func TestDeviceIDSwap(t *testing.T) {
 		t.Fatal("one device id per session")
 	}
 	// no user_id, not an object, wrong types: bytes untouched
-	for _, in := range []string{`{"model":"m"}`, `[1]`, `{"metadata":{"user_id":"x"}}`, `{"metadata":{"user_id":"{\"a\":1}"}}`, `nope`} {
+	for _, in := range []string{`{"model":"m"}`, "not json \xff metadata", `{ "model": "m",  "messages": [] }`, `{"metadata":{"user_id":"device_abc_session_def"}}`, `{"metadata":{"user_id":"{\"session_id\":\"s\"}"}}`, `[1]`, `{"metadata":{"user_id":"x"}}`, `{"metadata":{"user_id":"{\"a\":1}"}}`, `nope`} {
 		if got := s.cleanRequest([]byte(in), true, new(string)); string(got) != in {
 			t.Errorf("%s -> %s", in, got)
 		}
@@ -407,6 +415,15 @@ func TestEmptyThinkingStream(t *testing.T) {
 	if strings.ReplaceAll(strings.ReplaceAll(got, ` {"type"`, `{"type"`), `data:`, `data: `) != strings.ReplaceAll(strings.ReplaceAll(want, ` {"type"`, `{"type"`), `data:`, `data: `) {
 		t.Fatalf("got %q\nwant %q", got, want)
 	}
+	s.PreserveIDs = true
+	if got := streamThrough(t, s, up, nil, ""); strings.ReplaceAll(strings.ReplaceAll(got, ` {"type"`, `{"type"`), `data:`, `data: `) != strings.ReplaceAll(strings.ReplaceAll(want, ` {"type"`, `{"type"`), `data:`, `data: `) {
+		t.Fatalf("preserved ids: %q", got)
+	}
+	s.PreserveIDs = false
+	// no thinking at all: relayed unchanged
+	if plain := start(0, `{"type":"text","text":""}`) + stop(0); streamThrough(t, s, plain, nil, "") != plain {
+		t.Fatal("a stream without thinking changed")
+	}
 	// a delta releases the held block untouched
 	up = start(0, `{"type":"thinking","thinking":""}`) + delta + stop(0)
 	if got := streamThrough(t, s, up, nil, ""); got != up {
@@ -506,6 +523,22 @@ func TestUnexpectedEOFIsReplayedOnceOnMessagesOnly(t *testing.T) {
 	}
 }
 
+func TestRepeatedUnexpectedEOFIsBoundedAndTheFinalErrorIsRelayed(t *testing.T) {
+	calls := 0
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error":"unexpected EOF"}`))
+	}))
+	defer up.Close()
+	r := post(t, front(t, NewServer(up.URL)), "/v1/messages", "{}")
+	var b bytes.Buffer
+	b.ReadFrom(r.Body)
+	if r.StatusCode != 500 || !strings.Contains(b.String(), "unexpected EOF") || calls != 2 {
+		t.Fatal(r.StatusCode, b.String(), calls)
+	}
+}
+
 func TestTransportRetryAndBreaker(t *testing.T) {
 	calls := 0
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -557,7 +590,7 @@ func TestInvalidContentLengthRejected(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("up")) }))
 	defer up.Close()
 	url := strings.TrimPrefix(front(t, NewServer(up.URL)), "http://")
-	for _, cl := range []string{"1_3", "-1", "", "\xb2", "abc"} {
+	for _, cl := range []string{"1_3", "-1", "", "\xb2", "abc", "+5", "0x10", "1 2"} {
 		resp := rawRequest(t, url, "POST /v1/messages HTTP/1.1\r\nHost: x\r\nContent-Length: "+cl+"\r\n\r\n{}")
 		if !strings.HasPrefix(resp, "HTTP/1.1 400") {
 			t.Errorf("Content-Length %q: %q", cl, resp)
