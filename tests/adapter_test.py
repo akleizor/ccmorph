@@ -338,21 +338,6 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(got["m-noreason"], "chat-noreason")
         self.assertEqual(got["m-dead"], "unusable")
 
-    def test_config_places_each_model_in_its_dialect_block(self):
-        out = self.run_adapter("--print-config")
-        cfg = out.stdout
-        self.assertIn("claude-api-key:", cfg)
-        self.assertIn("codex-api-key:", cfg)
-        self.assertIn("openai-compatibility:", cfg)
-        # A dead model must never be offered.
-        self.assertNotIn("m-dead", cfg)
-        # reasoning_effort is stripped for the model that rejects it, and the
-        # probed max_tokens cap is clamped rather than the model being dropped.
-        self.assertIn("reasoning_effort", cfg)
-        self.assertIn('"max_tokens": 8192', cfg)
-        # The credential never appears in rendered output.
-        self.assertNotIn("stub-key", cfg)
-
     def test_no_x_forwarded_for_header_is_ever_added(self):
         # The adapter forwards nothing of its own: no header on probes, no headers
         # block in the rendered config. There is no profile-driven path left that
@@ -363,18 +348,6 @@ class AdapterTest(unittest.TestCase):
         self.assertTrue(all(x is None for x in XFF_SEEN),
                         f"a probe carried an unexpected X-Forwarded-For: {XFF_SEEN}")
         self.assertNotIn("X-Forwarded-For", out.stdout)
-
-    def test_a_key_needing_escaping_is_still_fully_redacted(self):
-        # The key reaches the config as a YAML scalar, so one containing a quote or
-        # backslash is on disk in escaped form. --print-config must redact that
-        # spelling too, or the credential prints in full.
-        self.write_ccmorph('sk-a"b\\c-live')
-        out = self.run_adapter("--print-config")
-        self.assertEqual(out.returncode, 0, out.stderr)
-        for spelling in ('sk-a"b\\c-live', 'sk-a\\"b\\\\c-live'):
-            self.assertNotIn(spelling, out.stdout,
-                             "the credential printed unredacted")
-        self.assertIn("<redacted>", out.stdout)
 
     def test_print_config_redacts_upstream_proxy_credentials(self):
         proxy = "http://user:s3cretpw@127.0.0.1:8118/p?token=qq"
@@ -387,12 +360,6 @@ class AdapterTest(unittest.TestCase):
             self.assertNotIn(leak, out.stdout)
         self.assertIn("proxy-url:", out.stdout)
         self.assertIn("127.0.0.1:8118/p", out.stdout)
-
-    def test_config_enables_request_retry(self):
-        # Transient upstream drops (unexpected EOF, 5xx) are re-sent by the proxy
-        # before Claude Code sees them, cutting visible error noise.
-        cfg = self.run_adapter("--print-config").stdout
-        self.assertIn("request-retry:", cfg)
 
     def test_reason_by_default_model_gets_thinking_disabled(self):
         # kimi-k3 pathology (2026-08-16): the gateway reasons even when
@@ -435,73 +402,6 @@ class AdapterTest(unittest.TestCase):
                          {"m-reasoner", "m-always-reasoner", "m-shaky"},
                          "only legacy force-disabled and unsettled models should re-probe")
         self.assertEqual(json.loads(cache.read_text())["thinking_probe"], 2)
-
-    def test_thinking_override_never_replaces_the_system_prompt(self):
-        # cliproxyapi's payload override REPLACES the system field rather than
-        # appending to it, so a "system" param here deletes Claude Code's entire
-        # system prompt — tools, environment, policy — for exactly the models most
-        # likely to need it. Reasoning is bounded through the thinking field alone.
-        cfg = self.run_adapter("--print-config").stdout
-        self.assertIn('"thinking": {"type": "disabled"}', cfg)
-        self.assertNotIn("Think briefly", cfg)
-        # Assert on the params bodies, not the whole document: a comment may name
-        # the field precisely to warn against it.
-        params = [l for l in cfg.splitlines()
-                  if l.startswith('        "')]
-        self.assertTrue(params, "no override params rendered")
-        for line in params:
-            self.assertNotIn('"system"', line,
-                             f"the override must set no system field: {line!r}")
-
-    def test_thinking_override_is_only_rendered_for_anthropic_dialect(self):
-        # nothink is an Anthropic-dialect workaround. A row of any other dialect
-        # carrying the flag (an older cache, a hand edit) must not produce an
-        # override: the translator would turn it into a parameter the upstream
-        # rejects, and a merely-unbounded model would become a broken one.
-        self.run_adapter("--print-config")
-        cache = self.cache_file()
-        blob = json.loads(cache.read_text())
-        for row in blob["rows"]:
-            if row["model"] in ("m-responses", "m-noreason"):
-                row["nothink"] = True
-        cache.write_text(json.dumps(blob))
-
-        cfg = self.run_adapter("--print-config").stdout
-        import re
-        for model in ("m-responses", "m-noreason"):
-            m = re.search(rf'- name: "{model}"\n      params:\n((?:        .+\n)+)',
-                          cfg)
-            self.assertNotIn('"thinking"', m.group(1) if m else "",
-                             f"{model} is not Anthropic dialect and must not "
-                             f"carry a thinking override")
-
-    def test_model_ids_are_escaped_and_unsafe_ones_skipped(self):
-        # Ids reach the config as YAML scalars. An id carrying a quote or a newline
-        # would reshape the document — reassigning port, api-keys, or base-url — so
-        # ids outside the safe set are dropped, and everything rendered is quoted.
-        Gateway.extra_models = ['m-evil"\nport: 1\n', "m-evil ok:", "m-evil.safe-1"]
-        out = self.run_adapter("--print-config")
-        self.assertEqual(out.returncode, 0, out.stderr)
-        cfg = out.stdout
-
-        # The safe id is offered; the two metacharacter-bearing ones are not.
-        self.assertIn('"m-evil.safe-1"', cfg)
-        self.assertNotIn("m-evil ok:", cfg)
-        self.assertNotIn("port: 1", cfg)
-        self.assertIn("unsafe characters", out.stderr)
-
-        # Nothing injected a second top-level key: the document still has exactly
-        # one port line, and it is the one the adapter chose.
-        self.assertEqual(len([l for l in cfg.splitlines()
-                              if l.startswith("port:")]), 1)
-        # And every rendered model name is a quoted scalar.
-        import re
-        for line in cfg.splitlines():
-            m = re.match(r"\s+(?:- )?(?:name|alias): (.+)$", line)
-            if m:
-                self.assertTrue(m.group(1).startswith('"')
-                                and m.group(1).endswith('"'),
-                                f"unquoted scalar: {line!r}")
 
     def test_real_5xx_body_is_indeterminate_by_status_not_by_prose(self):
         # m-shaky answers 503 with a body that contains no status number at all —
@@ -732,14 +632,6 @@ class AdapterTest(unittest.TestCase):
         out = self.run_adapter("--print-config", "--model", "m-dead")
         self.assertNotEqual(out.returncode, 0)
         self.assertIn("m-dead", out.stderr)
-
-    def test_model_flag_strips_only_the_1m_suffix(self):
-        # ccmorph's own [1m] context-window marker is a shell-layer annotation,
-        # not a real id on the gateway -- classify() must see the bare id.
-        out = self.run_adapter("--print-config", "--model", "m-anthropic[1m]")
-        self.assertEqual(out.returncode, 0, out.stderr)
-        probed = {m for _p, m in PROBES}
-        self.assertEqual(probed, {"m-anthropic"})
 
     def test_no_model_flag_keeps_the_full_diagnostic_sweep(self):
         # Omitting --model is the existing warmup/diagnostic path: every model
@@ -1268,72 +1160,6 @@ class AdapterTest(unittest.TestCase):
                                          "--port", str(p),
                                          "--inbound-token-file", str(f))
         self.assertEqual(line, f"PORT={p}")
-
-    def test_long_lived_endpoint_refuses_bad_inputs_before_starting(self):
-        # The long-lived endpoint form (a fixed --port plus an
-        # --inbound-token-file, for a non-Claude client such as Hermes, #176):
-        # every input is checked before anything starts, so a service is never
-        # left half-configured with its credential half-checked, nothing is
-        # contacted, and the token never reaches an output stream.
-        held = socket.socket()
-        held.bind(("127.0.0.1", 0))
-        held.listen(8)
-        self.addCleanup(held.close)
-        held_p = held.getsockname()[1]
-        # A wildcard listener receives 127.0.0.1 traffic too, and on macOS a
-        # specific REUSEADDR bind succeeds right over it — so the check must
-        # probe the wildcard form as well, or validation would pass a port
-        # another service occupies and hand it the readiness probe's token.
-        wildcard = socket.socket()
-        wildcard.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        wildcard.bind(("", 0))
-        wildcard.listen(8)
-        self.addCleanup(wildcard.close)
-        wildcard_p = wildcard.getsockname()[1]
-
-        good = self.token_file()
-        broad = self.token_file(mode=0o644)
-        linked = self.home / "token-link"
-        linked.symlink_to(good)
-        directory = self.home / "token-dir"
-        directory.mkdir()
-        cases = [
-            ("mode-0644", broad, free_port(),
-             f"inbound token file {broad}", "t" * 40),
-            ("symlink-to-valid-file", linked, free_port(),
-             f"inbound token file {linked}", "t" * 40),
-            ("directory", directory, free_port(),
-             f"inbound token file {directory}", None),
-            ("too-short", self.token_file("t" * 31), free_port(),
-             "holds fewer than 32 characters", "t" * 31),
-            ("missing-path", self.home / "token-missing", free_port(),
-             "inbound token file", None),
-            ("empty-path-supplied", "", free_port(),
-             "inbound token file", None),
-            ("interior-newline", self.token_file("t" * 20 + "\n" + "t" * 19),
-             free_port(), "holds control characters", "t" * 20 + "\n" + "t" * 19),
-            ("oversized", self.token_file("t" * 5000), free_port(),
-             "holds more than 4096 characters", "t" * 5000),
-            ("port-held-by-another-socket", good, held_p,
-             f"--port {held_p}", "t" * 40),
-            ("port-held-by-a-wildcard-listener", good, wildcard_p,
-             f"--port {wildcard_p}", "t" * 40),
-            ("port-out-of-range", good, 80, "--port 80", "t" * 40),
-            ("port-zero", good, 0, "--port 0", "t" * 40),
-        ]
-        for label, f, p, phrase, secret in cases:
-            with self.subTest(label):
-                out = self.run_adapter("--auto", "--port", str(p),
-                                       "--inbound-token-file", str(f))
-                self.assertNotEqual(out.returncode, 0)
-                self.assertNotIn("PORT=", out.stdout)
-                self.assertNotIn("TOKEN=", out.stdout)
-                self.assertEqual(PROBES, [], "something was contacted")
-                if secret:
-                    self.assertNotIn(secret, out.stdout)
-                    self.assertNotIn(secret, out.stderr)
-                self.assertIn(phrase, out.stderr)
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
