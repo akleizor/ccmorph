@@ -63,7 +63,7 @@ var stages = map[string]func(l *launcher, args []string) int{
 		if a[5] == "" {
 			a[5] = "1"
 		}
-		l.reportInvariant(a[0], strings.Split(l.diagnostics(a[0], a[5], a[1], a[2], a[3], a[4], "", "", "", "", nil), "\x00"))
+		l.reportInvariant(a[0], l.diagnostics(a[0], a[5] == "1", a[1], a[2], a[3], a[4], "", "", false, "", nil))
 		return 0
 	},
 	"--launch-window": func(l *launcher, args []string) int { // <profile> [model]
@@ -82,8 +82,8 @@ var stages = map[string]func(l *launcher, args []string) int{
 		if i < 5 {
 			return 2
 		}
-		if rows := l.hazardSet(args[1], args[2], args[3], args[4], args[i+1:]); rows != "" {
-			fmt.Println(rows)
+		if rows := l.hazardSet(args[1], args[2], args[3], args[4], args[i+1:]); len(rows) > 0 {
+			fmt.Println(strings.Join(rows, "\n"))
 		}
 		return 0
 	},

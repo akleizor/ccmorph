@@ -1,6 +1,10 @@
 package cli
 
 import (
+	"fmt"
+	"strconv"
+
+	"github.com/akleizor/ccmorph/util"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,16 +21,11 @@ var routeDefaults = []string{
 	"CLAUDE_CODE_ALWAYS_ENABLE_EFFORT=1",
 }
 
-func (l *launcher) engineInt(v string) string {
-	out, _ := l.utilQ(nil, "", "engine-int", v)
-	return out
-}
-
-func (l *launcher) clampACW(v string) string {
-	if out, rc := l.util(nil, "", "clamp-acw", v); rc == 0 {
-		return out
+func engineInt(v string) string {
+	if n, ok := util.EngineInt(v); ok {
+		return strconv.FormatInt(n, 10)
 	}
-	return v
+	return ""
 }
 
 // triggerEnv is _ccm_trigger_env: the env's compaction percentage, output
@@ -38,16 +37,16 @@ func (l *launcher) triggerEnv(penv []string) (pct, maxout, no1m string) {
 		case "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":
 			pct = v
 		case "CLAUDE_CODE_MAX_OUTPUT_TOKENS":
-			maxout = l.engineInt(v)
+			maxout = engineInt(v)
 		case "CLAUDE_CODE_DISABLE_1M_CONTEXT":
 			no1m = v
 		}
 	}
 	if no1m != "" {
-		if _, rc := l.util(nil, "", "engine-bool", no1m); rc == 0 {
+		raw := no1m
+		no1m = ""
+		if util.EngineBool(raw) {
 			no1m = "1"
-		} else {
-			no1m = ""
 		}
 	}
 	return
@@ -57,15 +56,15 @@ func (l *launcher) compactionPercent() (string, bool) {
 	if _, err := os.Stat(l.policy); err != nil {
 		return "75", true
 	}
-	out, rc := l.utilQ(nil, "", "policy-pct", l.policy)
-	if rc != 0 {
+	n, ok := util.PolicyPct(l.policy)
+	if !ok {
 		l.err("invalid fleet context policy: " + l.policy)
 		return "", false
 	}
-	return out, true
+	return strconv.FormatInt(n, 10), true
 }
 
-func (l *launcher) hazardSet(name, budget, ceiling, settings string, penv []string) string {
+func (l *launcher) hazardSet(name, budget, ceiling, settings string, penv []string) []string {
 	sources := []string{settings}
 	if settings == "" {
 		sources = l.settingsSources(name)
@@ -75,20 +74,17 @@ func (l *launcher) hazardSet(name, budget, ceiling, settings string, penv []stri
 		any = any || isFile(s)
 	}
 	if !any || !isFile(l.conf(name)) {
-		return ""
+		return nil
 	}
 	pct, maxout, no1m := l.triggerEnv(penv)
-	inEnv := ""
-	if envHas(penv, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE") {
-		inEnv = "1"
+	rows, err := util.HazardSet(util.HazardIn{Profile: name, Budget: budget, Ceiling: ceiling, Sources: sources,
+		PctRaw: pct, RawOut: strings.TrimSpace(maxout), No1m: no1m != "", Conf: l.conf(name),
+		PctInEnv: envHas(penv, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE")})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return nil
 	}
-	out, rc := l.util([]string{"_CCM_SOURCES=" + strings.Join(sources, "\n"), "_CCM_PROFILE_CONF=" + l.conf(name),
-		"_CCM_BUDGET=" + budget, "_CCM_CEILING=" + ceiling, "_CCM_PCT=" + pct, "_CCM_PROFILE=" + name,
-		"_CCM_MAXOUT=" + maxout, "_CCM_NO1M=" + no1m, "_CCM_PCT_IN_ENV=" + inEnv}, "", "hazard-set")
-	if rc != 0 {
-		return ""
-	}
-	return out
+	return rows
 }
 
 func withheld() string {
@@ -183,7 +179,7 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 		}
 		if _, ok := posInt(pwin); ok {
 			if !envHas(penv, "CLAUDE_CODE_AUTO_COMPACT_WINDOW") {
-				derived = l.clampACW(pwin)
+				derived = util.ClampACW(pwin)
 			}
 			l.log("window derived profile=" + name + " model=" + pmodel + " tokens=" + pwin)
 		} else if (needsAdapter || isProvider) && pmodel != "" {
@@ -195,7 +191,7 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 				pdef = field(plw, 3)
 			}
 			if pdef != "" && !envHas(penv, "CLAUDE_CODE_AUTO_COMPACT_WINDOW") {
-				derived = l.clampACW(pdef)
+				derived = util.ClampACW(pdef)
 				l.log("window fallback profile=" + name + " model=" + pmodel + " tokens=" + pdef + " (unprobed)")
 			}
 			fb := pdef
@@ -208,7 +204,7 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 	if pceil == "" {
 		for _, e := range penv {
 			if v, ok := strings.CutPrefix(e, "CLAUDE_CODE_MAX_CONTEXT_TOKENS="); ok {
-				pceil = l.engineInt(v)
+				pceil = engineInt(v)
 			}
 		}
 	}
@@ -219,7 +215,7 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 		saved = field(l.launchWindow(name, ""), 6)
 	}
 	envACW, _ := envGet(penv, "CLAUDE_CODE_AUTO_COMPACT_WINDOW")
-	userACW, _ := l.util(nil, "", "effective-acw", envACW, saved, "")
+	userACW := util.EffectiveACW(envACW, saved, "")
 	pacw := userACW
 	if pacw == "" {
 		pacw = derived
@@ -244,29 +240,24 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 	if _, err := os.Stat(l.policy); err != nil {
 		policyPct = "75"
 	}
-	inEnv := "0"
-	if pctInEnv {
-		inEnv = "1"
-	}
-	diag := l.diagnostics(name, inEnv, pct, maxout, no1m, pacw, policyPct, hdrKey, "1", pceil, routeKeys)
+	diag := l.diagnostics(name, pctInEnv, pct, maxout, no1m, pacw, policyPct, hdrKey, true, pceil, routeKeys)
 	pctSet, hazardDone := false, false
 	hazardMsg, userHdrs := "", ""
 	l.chosen = map[string]bool{}
-	var invariant []string
-	for _, rec := range strings.Split(diag, "\x00") {
-		kind, text, _ := strings.Cut(rec, "\t")
-		switch {
-		case rec == "pct-set":
+	var invariant []util.Record
+	for _, rec := range diag {
+		switch rec.Kind {
+		case "pct-set":
 			pctSet = true
-		case kind == "policy":
-			policyPct = text
-		case kind == "chosen":
-			l.chosen[text] = true
-		case kind == "userset":
-			userHdrs = text
-		case kind == "hazard":
-			hazardDone, hazardMsg = true, text
-		case kind == "disguised" || kind == "unsafe":
+		case "policy":
+			policyPct = rec.Text
+		case "chosen":
+			l.chosen[rec.Text] = true
+		case "userset":
+			userHdrs = rec.Text
+		case "hazard":
+			hazardDone, hazardMsg = true, rec.Text
+		case "disguised", "unsafe":
 			invariant = append(invariant, rec)
 		}
 	}
@@ -297,8 +288,8 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 		if hazardMsg != "" {
 			advisories = append(advisories, hazardMsg)
 		}
-	} else if rows := l.hazardSet(name, pacw, pceil, "", penv); rows != "" {
-		if msg, rc := l.utilQ([]string{"_CCM_ROWS=" + rows, "_CCM_WITHHELD=" + withheld()}, "", "hazard-msg"); rc == 0 && msg != "" {
+	} else if rows := l.hazardSet(name, pacw, pceil, "", penv); len(rows) > 0 {
+		if msg := util.HazardMessage(rows, withheld() == "1"); msg != "" {
 			advisories = append(advisories, msg)
 		}
 	}
@@ -319,8 +310,7 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 		}
 	}
 	if len(advisories) > 0 {
-		adv, _ := l.util([]string{"_CCM_ADVISE=ccmorph: " + strings.Join(advisories, "; ")}, "", "advise-json")
-		launchEnv = append(launchEnv, [2]string{"CCMORPH_ADVISE", adv})
+		launchEnv = append(launchEnv, [2]string{"CCMORPH_ADVISE", util.Advise("ccmorph: " + strings.Join(advisories, "; "))})
 	}
 	for _, kv := range launchEnv {
 		if !slices.Contains(l.launchEnv, kv[0]) {
@@ -353,10 +343,8 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 	if os.Getenv("CCMORPH_WITHHOLD_FATAL") == "1" {
 		gen := filepath.Join(l.profileDirs, name, "settings.json")
 		if isFile(gen) {
-			if rows := l.hazardSet(name, pacw, pceil, gen, penv); rows != "" {
-				if lines := strings.Split(rows, "\n")[1:]; len(lines) > 0 {
-					l.utilQ([]string{"_CCM_SETTINGS=" + gen, "_CCM_ROWS=" + strings.Join(lines, "\n"), "_CCM_LAUNCHED=" + pmodel}, "", "withhold-fatal")
-				}
+			if rows := l.hazardSet(name, pacw, pceil, gen, penv); len(rows) > 1 {
+				util.WithholdFatal(gen, rows[1:], pmodel)
 			}
 		}
 	}
@@ -440,25 +428,23 @@ func (l *launcher) probeNudge(name string) {
 // settings layers and the profile's files in one core call: NUL-framed
 // `<kind>\t<text>` records. The invariant half reads only a regular
 // settings.json beside an existing conf.
-func (l *launcher) diagnostics(name, inEnv, pct, maxout, no1m, budget, policyPct, hdrKey, hazard, ceiling string, routeKeys []string) string {
+func (l *launcher) diagnostics(name string, pctInEnv bool, pct, maxout, no1m, budget, policyPct, hdrKey string, hazard bool, ceiling string, routeKeys []string) []util.Record {
 	settings := filepath.Join(l.profileDirs, name, "settings.json")
 	if fi, err := os.Lstat(settings); err != nil || !fi.Mode().IsRegular() || !isFile(l.conf(name)) {
 		settings = ""
 	}
-	args := append(append(append([]string{"launch-diagnostics"}, routeKeys...), l.tuning...), "--")
-	args = append(args, l.settingsSources(name)...)
-	diag, _ := l.utilQ([]string{"_CCM_SETTINGS=" + settings, "_CCM_PROFILE_CONF=" + l.conf(name),
-		"_CCM_PCT_IN_ENV=" + inEnv, "_CCM_ENV_PCT=" + pct, "_CCM_MAXOUT=" + maxout, "_CCM_NO1M=" + no1m,
-		"_CCM_BUDGET=" + budget, "_CCM_POLICY=" + l.policy, "_CCM_POLICY_PCT=" + policyPct, "_CCM_PROFILE=" + name,
-		"_CCM_HDR_KEY=" + hdrKey, "_CCM_HAZARD=" + hazard, "_CCM_CEILING=" + ceiling, "_CCM_WITHHELD=" + withheld()}, "", args...)
-	return diag
+	return util.LaunchDiagnostics(util.DiagIn{
+		Keys: append(append([]string{}, routeKeys...), l.tuning...), Paths: l.settingsSources(name),
+		Settings: settings, ProfileConf: l.conf(name), Profile: name, EnvPct: pct, MaxOut: maxout, Budget: budget,
+		Policy: l.policy, PolicyPct: policyPct, HdrKey: hdrKey, Ceiling: ceiling,
+		PctInEnv: pctInEnv, No1m: no1m != "", Hazard: hazard, Withheld: withheld() == "1"})
 }
 
 // reportInvariant prints the disguised-id and refuse-before-compaction warnings,
 // in the order the diagnostics produced them. A warning, never a refusal.
-func (l *launcher) reportInvariant(name string, records []string) {
+func (l *launcher) reportInvariant(name string, records []util.Record) {
 	for _, rec := range records {
-		kind, text, _ := strings.Cut(rec, "\t")
+		kind, text := rec.Kind, rec.Text
 		switch kind {
 		case "disguised":
 			l.err("warning: '" + name + "' is on a disguised model id, which caps the window at 200,000 — select " + text + " for the full window")

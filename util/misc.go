@@ -697,17 +697,11 @@ func sessionState(args []string, _ io.Reader, out, _ io.Writer) int {
 	return 0
 }
 
-// adviseJSON wraps _CCM_ADVISE as the SessionStart hook's systemMessage.
-func adviseJSON(_ []string, _ io.Reader, out, errw io.Writer) int {
-	msg, ok := os.LookupEnv("_CCM_ADVISE")
-	if !ok {
-		fmt.Fprintln(errw, "KeyError: '_CCM_ADVISE'")
-		return 1
-	}
+// Advise wraps msg as the SessionStart hook's systemMessage.
+func Advise(msg string) string {
 	o := pycompat.NewObj()
 	o.Set("systemMessage", msg)
-	fmt.Fprintln(out, jsonOut(o))
-	return 0
+	return jsonOut(o)
 }
 
 // gwModels: gw-models <conf> <picker|catalogue>: "<id>\t<owner>" rows from the listing on stdin.

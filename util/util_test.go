@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -16,12 +17,14 @@ func TestEngineInt(t *testing.T) {
 	for in, want := range map[string]string{
 		"100000": "100000", "1e5": "100000", "2E4": "20000", "100_000": "100000", "100,000": "100000",
 		"100 000": "100000", "100000junk": "100000", "junk100000": "", "0": "", "-5": "", "1e999": "",
-		"-1e999": "", "1e309": "", "1e21": "1000000000000000000", "\u00a0100000": "100000",
+		"-1e999": "", "1e309": "", "1e21": "1000000000000000000", "\u00a0100000": "100000", " 100000": "100000", "\t100000": "100000",
 		"\u0085100000": "", "1.5e0": "", "100_00": "100", "100,000_000": "100",
 	} {
-		var out bytes.Buffer
-		engineIntVerb([]string{in}, nil, &out, nil)
-		if got := strings.TrimSpace(out.String()); got != want {
+		got := ""
+		if n, ok := EngineInt(in); ok {
+			got = strconv.FormatInt(n, 10)
+		}
+		if got != want {
 			t.Errorf("engine-int %q = %q, want %q", in, got, want)
 		}
 	}
@@ -53,17 +56,17 @@ func TestEngineTriggerDividesBeforeMultiplying(t *testing.T) {
 
 func TestHazardMessage(t *testing.T) {
 	rows := []string{"135000", "40000\tkimi-k3"}
-	if got := hazardMessage(rows, false); !strings.HasPrefix(got, "compacts at 135k; lower model limits: kimi-k3 limit 40k.") {
+	if got := HazardMessage(rows, false); !strings.HasPrefix(got, "compacts at 135k; lower model limits: kimi-k3 limit 40k.") {
 		t.Fatal(got)
 	}
-	if got := hazardMessage(rows, true); !strings.Contains(got, "hidden from /model: kimi-k3 limit 40k.") {
+	if got := HazardMessage(rows, true); !strings.Contains(got, "hidden from /model: kimi-k3 limit 40k.") {
 		t.Fatal(got)
 	}
 	many := append([]string{"100000"}, "5000\ta", "4000\tb", "3000\tc", "2000\td", "1000\te")
-	if got := hazardMessage(many, false); !strings.Contains(got, "a limit 5k, b limit 4k, c limit 3k +2 smaller.") {
+	if got := HazardMessage(many, false); !strings.Contains(got, "a limit 5k, b limit 4k, c limit 3k +2 smaller.") {
 		t.Fatal(got)
 	}
-	if hazardMessage([]string{"1"}, false) != "" {
+	if HazardMessage([]string{"1"}, false) != "" {
 		t.Fatal("a trigger alone says nothing")
 	}
 }
@@ -230,13 +233,8 @@ func TestLaunchDiagnosticsKeepsTheWarningsWhenALayerCannotBeMerged(t *testing.T)
 	if err := os.WriteFile(layer, []byte(`{"$ccmorphUnset": null}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("_CCM_SETTINGS", settings)
-	t.Setenv("_CCM_PCT_IN_ENV", "1")
-	var out bytes.Buffer
-	if rc := launchDiagnostics([]string{"--", layer}, nil, &out, &bytes.Buffer{}); rc != 0 {
-		t.Fatalf("rc=%d", rc)
-	}
-	if got := out.String(); got != "disguised\tdev\x00" {
+	got := LaunchDiagnostics(DiagIn{Paths: []string{layer}, Settings: settings, PctInEnv: true})
+	if len(got) != 1 || got[0] != (Record{"disguised", "dev"}) {
 		t.Fatalf("records = %q", got)
 	}
 }

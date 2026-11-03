@@ -7378,125 +7378,6 @@ test_the_percentage_parser_uses_engine_whitespace() {
   return $rc
 }
 
-test_whitespace_handling_matches_the_engine() {
-  local -x LC_ALL="$(_utf8_locale_name)"
-  local rc=0 out=""
-  # No scratch home here: the library must find the built core beside the repo.
-  local -x CCMORPH_LIB_DIR="$REPO_ROOT/lib"
-  source "$CCMORPH_SOURCE"
-
-  local nel tab nbsp
-  nel=$'\xc2\x85'
-  tab=$(printf '\t')
-  nbsp=$'\xc2\xa0'
-
-  # Rejected: the engine keeps NEL, so parseInt sees a non-digit first.
-  out=$(_ccm_engine_int "${nel}100000")
-  [[ -z "$out" ]] || {
-    print -u2 -- "FAIL: a leading NEL must make the value invalid, got '$out'"
-    rc=1
-  }
-
-  # Accepted: all three are ECMAScript whitespace.
-  # Parallel arrays, not a delimited string: a tab inside the string would split on
-  # itself and the fixture would test garbage.
-  local -a ws_chars=(" " "$tab" "$nbsp")
-  local -a ws_names=(space tab nbsp)
-  local i
-  for i in {1..3}; do
-    out=$(_ccm_engine_int "${ws_chars[$i]}100000")
-    [[ "$out" == 100000 ]] || {
-      print -u2 -- "FAIL: leading ${ws_names[$i]} is engine whitespace and must be skipped, got '$out'"
-      rc=1
-    }
-  done
-
-  return $rc
-}
-
-# The clamp must bound by digit LENGTH before doing arithmetic. zsh integers are 64-bit,
-# so a twenty-digit value truncates -- and the truncated form compares LESS than the
-# floor, so the value lands on 100,000 where the engine caps at 1,000,000, with a raw
-# "number truncated" warning leaking alongside it.
-#
-# Probed, not assumed: with the bound a 20-digit value yields 1,000,000; without it,
-# 100,000 plus the warning. Asserted at the helper because the arithmetic is the helper's
-# and every caller inherits it.
-test_the_clamp_bounds_by_length_before_arithmetic() {
-  local rc=0 v out
-  # No scratch home here: the library must find the built core beside the repo.
-  local -x CCMORPH_LIB_DIR="$REPO_ROOT/lib"
-  source "$CCMORPH_SOURCE"
-
-  # Twenty digits: beyond what zsh can represent, so only a length bound can handle it.
-  # NOT via $( ): the helper assigns by name, and a command substitution runs it in a
-  # subshell where that assignment is discarded. Capture stderr to a file instead.
-  local errfile
-  errfile=$(mktemp)
-  v=99999999999999999999
-  _ccm_clamp_acw v 2>"$errfile"
-  if [[ -s "$errfile" ]]; then
-    print -u2 -- "FAIL: clamping an oversized value leaked: $(<"$errfile")"
-    rc=1
-  fi
-  rm -f "$errfile"
-  [[ "$v" == "$_CCMORPH_ACW_MAX" ]] || {
-    print -u2 -- "FAIL: an oversized value must clamp to the ceiling $_CCMORPH_ACW_MAX, got $v"
-    rc=1
-  }
-
-  # And the ordinary cases still behave.
-  v=50000;   _ccm_clamp_acw v
-  [[ "$v" == "$_CCMORPH_ACW_MIN" ]] || {
-    print -u2 -- "FAIL: a sub-floor value must clamp up, got $v"; rc=1
-  }
-  v=2000000; _ccm_clamp_acw v
-  [[ "$v" == "$_CCMORPH_ACW_MAX" ]] || {
-    print -u2 -- "FAIL: an above-ceiling value must clamp down, got $v"; rc=1
-  }
-  v=700000;  _ccm_clamp_acw v
-  [[ "$v" == 700000 ]] || {
-    print -u2 -- "FAIL: an in-range value must be left alone, got $v"; rc=1
-  }
-  return $rc
-}
-
-test_an_overflowing_env_value_is_invalid_not_an_error() {
-  local rc=0 out=""
-  # No scratch home here: the library must find the built core beside the repo.
-  local -x CCMORPH_LIB_DIR="$REPO_ROOT/lib"
-  source "$CCMORPH_SOURCE"
-
-  local v
-  for v in 1e999 -1e999 1e309; do
-    out=$(_ccm_engine_int "$v")
-    if (( $? != 0 )); then
-      print -u2 -- "FAIL: _ccm_engine_int exited non-zero for $v; readers swallow that and fall through"
-      rc=1
-    fi
-    if [[ -n "$out" ]]; then
-      print -u2 -- "FAIL: $v must be invalid (empty), got $out"
-      rc=1
-    fi
-  done
-
-  # A large but finite exponent form must still parse. This does NOT exercise the
-  # 10^18 cap -- 1e21 yields the same value with or without it, because zsh only
-  # truncates past 19 digits and the cap lands at exactly 19. It guards the weaker
-  # property that the inf/nan check above did not start rejecting finite values.
-  out=$(_ccm_engine_int 1e21)
-  [[ "$out" == <-> ]] && (( ${#out} <= 19 )) || {
-    print -u2 -- "FAIL: 1e21 must yield a representable integer, got '$out'"
-    rc=1
-  }
-  out=$(_ccm_engine_int 700000)
-  [[ "$out" == 700000 ]] || {
-    print -u2 -- "FAIL: a plain integer must survive, got '$out'"
-    rc=1
-  }
-  return $rc
-}
-
 test_neither_env_parser_accepts_non_ascii_digits() {
   local test_home nonascii
   test_home=$(mktemp -d)
@@ -11948,9 +11829,6 @@ run_test test_the_advisory_and_the_withhold_share_one_budget
 run_test test_a_layer_percentage_sizes_the_hazard_set
 run_test test_the_percentage_parser_skips_a_zero_width_no_break_space
 run_test test_the_percentage_parser_uses_engine_whitespace
-run_test test_whitespace_handling_matches_the_engine
-run_test test_the_clamp_bounds_by_length_before_arithmetic
-run_test test_an_overflowing_env_value_is_invalid_not_an_error
 run_test test_neither_env_parser_accepts_non_ascii_digits
 run_test test_an_env_budget_is_parsed_the_way_the_engine_parses_it
 run_test test_the_output_reserve_override_reaches_the_hazard_path

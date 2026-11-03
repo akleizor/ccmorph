@@ -45,8 +45,6 @@ _ccm_setup_dir_unlocked() { ccmorph _env "$1" >/dev/null; }
 _ccm_setup_dir() { ccmorph _env "$1" >/dev/null; }
 _ccm_dir_ok() { _ccm_util profile-ok "$_CCMORPH_PROFILE_DIRS" "$1"; }
 
-_ccm_clamp_acw() { local _v; _v=$(_ccm_util clamp-acw "${(P)1}") && : ${(P)1::=$_v}; }
-_ccm_engine_int() { _ccm_util engine-int "${1:-}" 2>/dev/null; }
 
 _ccm_listing_has_unsized() {  # $1 = profile, $2 = /v1/models JSON
   print -r -- "$2" | CCMORPH_STATE_DIR="$_CCMORPH_DIR" _ccm_util listing-has-unsized "$1"
