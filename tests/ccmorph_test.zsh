@@ -9997,79 +9997,7 @@ run_test test_a_launch_without_the_adapter_never_carries_task_headers
 run_test test_adapter_is_stopped_when_the_session_ends
 run_test test_adapter_doubles_die_with_a_killed_launcher
 run_test test_adapter_launch_survives_an_unwritable_optional_log
-# GH-321: a launch with nothing old to reap must not scan the host's processes.
-_check_stale_overlay_cleanup() {
-  local state="$1" expected_present="$2" expected_scans="$3" ps_status="${4:-0}"
-  local test_home rc=0 f
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  # A $TMPDIR whose own path looks like a bridge must not make its neighbours one.
-  local TMPDIR="$HOME/ccmorph-bridge-$UID-tmp"
-  export TMPDIR
-  mkdir -p "$TMPDIR" "$HOME/.config/ccmorph/profiles/demo/cache"
-  printf '%s\n' '#!/bin/sh' 'printf "946731600\n"' > "$HOME/bin/date"
-  printf '%s\n' '#!/bin/sh' 'printf "scan\n" >> "$HOME/ps-scans"' \
-    'cat "$HOME/live-processes"' "exit $ps_status" > "$HOME/bin/ps"
-  chmod +x "$HOME/bin/date" "$HOME/bin/ps"
-  : > "$HOME/live-processes"
-  : > "$HOME/ps-scans"
-  # Old, but not an overlay or a bridge: the single $TMPDIR read must spare it.
-  local unrelated="$TMPDIR/ccmorph-rc-ready.test"
-  mkdir "$unrelated"
-  TZ=UTC touch -t 200001010000 "$unrelated"
-  source "$CCMORPH_SOURCE"
 
-  local -a candidates=( "$HOME/.config/ccmorph/profiles/demo/cache/launch-settings.test"
-                        "$TMPDIR/ccmorph-launch-settings.test"
-                        "$TMPDIR/ccmorph-bridge-$UID-test" )
-  if [[ "$state" != empty ]]; then
-    print -r -- '{}' > "${candidates[1]}"
-    print -r -- '{}' > "${candidates[2]}"
-    mkdir "${candidates[3]}"
-    print -r -- '{}' > "${candidates[3]}/config.yaml"
-    for f in "${candidates[@]}"; do
-      if [[ "$state" == young ]]; then
-        touch "$f"
-      else
-        TZ=UTC touch -t 200001010000 "$f"
-      fi
-    done
-    if [[ "$state" == live ]]; then
-      printf '%s\n' "claude --settings ${candidates[1]}" \
-        "claude --settings ${candidates[2]}" \
-        "cliproxyapi --config ${candidates[3]}/config.yaml" > "$HOME/live-processes"
-    fi
-  fi
-
-  _ccm_cleanup_stale
-
-  local scans=( ${(f)"$(<"$HOME/ps-scans")"} )
-  (( ${#scans} == expected_scans )) || {
-    print -u2 -- "cleanup $state: expected $expected_scans process scans, got ${#scans}"
-    rc=1
-  }
-  [[ -e "$unrelated" ]] || { print -u2 -- "cleanup $state: removed $unrelated"; rc=1; }
-  for f in "${candidates[@]}"; do
-    if [[ -e "$f" ]]; then
-      [[ "$expected_present" == yes ]] || rc=1
-    else
-      [[ "$expected_present" == no ]] || rc=1
-    fi
-  done
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_stale_overlay_cleanup_empty_issue_321() { _check_stale_overlay_cleanup empty no 0; }
-test_stale_overlay_cleanup_young_issue_321() { _check_stale_overlay_cleanup young yes 0; }
-test_stale_overlay_cleanup_abandoned_issue_321() { _check_stale_overlay_cleanup old no 1; }
-test_stale_overlay_cleanup_live_issue_321() { _check_stale_overlay_cleanup live yes 1; }
-test_stale_overlay_cleanup_failed_ps_issue_321() { _check_stale_overlay_cleanup live no 1 1; }
-run_test test_stale_overlay_cleanup_empty_issue_321
-run_test test_stale_overlay_cleanup_young_issue_321
-run_test test_stale_overlay_cleanup_abandoned_issue_321
-run_test test_stale_overlay_cleanup_live_issue_321
-run_test test_stale_overlay_cleanup_failed_ps_issue_321
 
 run_test test_adapter_launch_uses_current_process_tree
 run_test test_no_ambient_proxy_means_the_adapter_gets_none

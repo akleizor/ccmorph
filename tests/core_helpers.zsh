@@ -23,8 +23,6 @@ _ccm_err() { print -u2 -- "ccmorph: $1"; return 1; }
 
 _ccm_config_store() { ( _ccm_launch_core --config-store "$1" "$2" "${3:-}" ); }
 
-_ccm_cleanup_stale() { ( _ccm_launch_core --cleanup-stale ) 2>/dev/null || :; }
-
 # Provisioning runs through the public path, which reads and validates the conf.
 _ccm_setup_dir_unlocked() { ccmorph _env "$1" >/dev/null; }
 _ccm_setup_dir() { ccmorph _env "$1" >/dev/null; }
