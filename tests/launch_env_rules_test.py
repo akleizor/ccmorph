@@ -174,7 +174,7 @@ def _ps_stub(box):
 @pytest.mark.parametrize('private', ['', 'private=1\n'])
 def test_no_launch_helper_carries_the_credential_on_its_command_line(box, private):
     # .github/SECURITY.md: a credential reaches Claude Code through the environment or a
-    # 600 file, never as an argument (INTENT.md promise 2).
+    # 600 file, never as an argument (INTENT.md promise 5).
     _ps_stub(box)
     box.conf('keyed', f'type=apikey\napi_key={CANARY}\n{private}')
     assert box.run('run', 'keyed').returncode == 0
