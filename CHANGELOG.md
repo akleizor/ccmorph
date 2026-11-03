@@ -5,6 +5,18 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
+## v0.4.7 — 2026-11-04
+
+### Changed
+
+- **Smaller core.** The launcher calls its helpers as plain Go functions instead
+  of through a text command layer (#156), and the Python-compatibility JSON
+  layer is gone: files are read and written with Go's `encoding/json`, and a
+  small ordered reader keeps the key order of files you edit, such as
+  `settings.json` (#157). A number in your settings is kept as you wrote it.
+- **Faster tests.** Logic tests moved from the zsh and Python suites into Go;
+  the Python suite runs in about 34 s instead of 45 s (#158, #159).
+
 ## v0.4.6 — 2026-11-03
 
 ### Changed
