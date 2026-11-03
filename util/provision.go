@@ -1,81 +1,61 @@
 package util
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
-	"github.com/akleizor/ccmorph/pycompat"
+	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/settingscompose"
 )
 
-func mergedView(paths []string) *pycompat.Obj { return settingscompose.MergedView(paths) }
+func mergedView(paths []string) *ordjson.Obj { return settingscompose.MergedView(paths) }
 
-func acwValid(v pycompat.Value) bool { return settingscompose.ACWValid(v) }
+func acwValid(v any) bool { return settingscompose.ACWValid(v) }
 
-// acwString is str(int(v)) for a valid autoCompactWindow, which may be an integer-valued float.
-func acwString(v pycompat.Value) string {
-	n := v.(pycompat.Num)
-	if i, ok := n.Int64(); ok {
+// acwString is the integer text of a valid autoCompactWindow, which may be an integer-valued float.
+func acwString(v any) string {
+	n := v.(json.Number)
+	if i, err := n.Int64(); err == nil {
 		return fmt.Sprint(i)
 	}
-	return fmt.Sprint(int64(n.F64()))
+	f, _ := n.Float64()
+	return fmt.Sprint(int64(f))
 }
 
-type exitMsg string
-
 // loadObj is the provisioner's load(): a missing file is def, anything unreadable
-// or not a JSON object ends the run with a message.
-func loadObj(path string, def *pycompat.Obj) *pycompat.Obj {
+// or not a JSON object is an error.
+func loadObj(path string, def *ordjson.Obj) (*ordjson.Obj, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		if pycompat.IsNotExist(err) {
-			return def
+		if os.IsNotExist(err) {
+			return def, nil
 		}
 		if os.IsPermission(err) {
-			panic(exitMsg(path + ": permission denied"))
+			return nil, errors.New(path + ": permission denied")
 		}
-		pycompat.RaiseOS(err)
+		return nil, err
 	}
-	v, perr := pycompat.Parse(b)
+	v, perr := ordjson.Parse(b)
 	if perr != nil {
-		panic(exitMsg(fmt.Sprintf("%s: malformed JSON: %s", path, perr.Error())))
+		return nil, fmt.Errorf("%s: malformed JSON: %v", path, perr)
 	}
 	o := asObj(v)
 	if o == nil {
-		panic(exitMsg(path + ": root is not a JSON object"))
+		return nil, errors.New(path + ": root is not a JSON object")
 	}
-	return o
+	return o, nil
 }
 
-func atomicJSON(path string, data *pycompat.Obj) {
-	b := []byte(pycompat.Marshal(data, pycompat.Format{Compact: true, ASCII: true}) + "\n")
-	if err := AtomicWrite(path, ".ccmorph.", b, 0o600, true); err != nil {
-		pycompat.RaiseOS(err)
-	}
-}
-
-func chmod600(path string) {
-	if err := os.Chmod(path, 0o600); err != nil {
-		pycompat.RaiseOS(err)
-	}
+func atomicJSON(path string, data *ordjson.Obj) error {
+	return AtomicWrite(path, ".ccmorph.", append(ordjson.Marshal(data, false), '\n'), 0o600, true)
 }
 
 // provisionProfile establishes a profile's auth-scoped config.json and
 // .claude.json; nothing else is touched. The error carries the reason.
-func provisionProfile(pdir, kind string) (err error) {
-	defer func() {
-		switch r := recover().(type) {
-		case nil:
-		case exitMsg:
-			err = errors.New(string(r))
-		case *pycompat.Exc:
-			err = errors.New(r.Msg)
-		default:
-			panic(r)
-		}
-	}()
+func provisionProfile(pdir, kind string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = ""
@@ -84,28 +64,39 @@ func provisionProfile(pdir, kind string) (err error) {
 	srcJSON := filepath.Join(home, ".claude.json")
 	fallbackJSON := filepath.Join(home, ".claude", ".claude.json")
 	if err := os.Chmod(pdir, 0o700); err != nil {
-		pycompat.RaiseOS(err)
+		return err
 	}
 
 	cfg := filepath.Join(pdir, "config.json")
 	if isSymlink(cfg) {
-		panic(exitMsg(cfg + ": symbolic links are not allowed"))
+		return errors.New(cfg + ": symbolic links are not allowed")
 	}
-	existing := loadObj(cfg, nil)
+	existing, err := loadObj(cfg, nil)
+	if err != nil {
+		return err
+	}
 	if kind == "sub" {
 		hasToken := existing != nil && (truthy(getKey(existing, "oauth:tokenCache")) || truthy(getKey(existing, "oauth:tokenCacheV2")))
 		// Best effort, and no longer load-bearing: a subscription credential comes from the profile's own /login.
 		if !hasToken {
-			if seed := loadObj(appCfg, nil); seed != nil {
-				atomicJSON(cfg, seed)
+			seed, err := loadObj(appCfg, nil)
+			if err != nil {
+				return err
 			}
-		} else {
-			chmod600(cfg)
+			if seed != nil {
+				if err := atomicJSON(cfg, seed); err != nil {
+					return err
+				}
+			}
+		} else if err := os.Chmod(cfg, 0o600); err != nil {
+			return err
 		}
 	} else {
 		data := existing
 		if data == nil {
-			data = loadObj(appCfg, pycompat.NewObj())
+			if data, err = loadObj(appCfg, ordjson.New()); err != nil {
+				return err
+			}
 		}
 		dirty := existing == nil
 		for _, k := range []string{"oauth:tokenCache", "oauth:tokenCacheV2"} {
@@ -115,22 +106,32 @@ func provisionProfile(pdir, kind string) (err error) {
 			}
 		}
 		if dirty {
-			atomicJSON(cfg, data)
+			err = atomicJSON(cfg, data)
 		} else {
-			chmod600(cfg)
+			err = os.Chmod(cfg, 0o600)
+		}
+		if err != nil {
+			return err
 		}
 	}
 
 	claudeJSON := filepath.Join(pdir, ".claude.json")
 	if isSymlink(claudeJSON) {
-		panic(exitMsg(claudeJSON + ": symbolic links are not allowed"))
+		return errors.New(claudeJSON + ": symbolic links are not allowed")
 	}
-	data := loadObj(claudeJSON, nil)
+	data, err := loadObj(claudeJSON, nil)
+	if err != nil {
+		return err
+	}
 	fresh := data == nil
 	if fresh {
-		data = loadObj(srcJSON, nil)
+		if data, err = loadObj(srcJSON, nil); err != nil {
+			return err
+		}
 		if data == nil {
-			data = loadObj(fallbackJSON, pycompat.NewObj())
+			if data, err = loadObj(fallbackJSON, ordjson.New()); err != nil {
+				return err
+			}
 		}
 	}
 	dirty := fresh
@@ -143,9 +144,7 @@ func provisionProfile(pdir, kind string) (err error) {
 		}
 	}
 	if dirty {
-		atomicJSON(claudeJSON, data)
-	} else {
-		chmod600(claudeJSON)
+		return atomicJSON(claudeJSON, data)
 	}
-	return nil
+	return os.Chmod(claudeJSON, 0o600)
 }

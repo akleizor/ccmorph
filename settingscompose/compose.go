@@ -1224,22 +1224,26 @@ func isDigits(s string) bool {
 // non-object layer is skipped. It is the one reading of the layers other readers share.
 func MergedView(paths []string) *ordjson.Obj {
 	data := ordjson.New()
-	for _, path := range paths {
-		var layer *obj
-		if catch(func() {
-			b, err := readFile(path)
-			if err != nil {
-				osFail(err)
+	if catch(func() {
+		for _, path := range paths {
+			var layer *obj
+			if catch(func() {
+				b, err := readFile(path)
+				if err != nil {
+					osFail(err)
+				}
+				layer, _ = parse(b).(*obj)
+			}) != nil || layer == nil {
+				continue
 			}
-			layer, _ = parse(b).(*obj)
-		}) != nil || layer == nil {
-			continue
+			data = merge(data, withoutTombstones(layer), nil)
+			if filepath.Base(path) == policyFile {
+				continue
+			}
+			applyTombstones(data, layer)
 		}
-		data = merge(data, withoutTombstones(layer), nil)
-		if filepath.Base(path) == policyFile {
-			continue
-		}
-		applyTombstones(data, layer)
+	}) != nil {
+		return ordjson.New() // a layer too malformed to merge reads as no settings at all
 	}
 	return data
 }

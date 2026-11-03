@@ -4,13 +4,15 @@
 package util
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"io"
 	"os"
 	"path/filepath"
 
-	"github.com/akleizor/ccmorph/pycompat"
+	"github.com/akleizor/ccmorph/ordjson"
 )
 
 type verb func(args []string, in io.Reader, out, errw io.Writer) int
@@ -38,8 +40,11 @@ func Main(args []string, in io.Reader, out, errw io.Writer) int {
 	return verbs[args[0]](args[1:], in, out, errw)
 }
 
-// jsonOut is json.dumps with its default separators and ensure_ascii.
-func jsonOut(v pycompat.Value) string { return pycompat.Marshal(v, pycompat.Format{ASCII: true}) }
+// jsonOut is the compact JSON a shell caller parses.
+func jsonOut(v any) string { return string(ordjson.Marshal(v, false)) }
+
+// stripBOM drops the byte-order mark an editor may have put on a JSON file.
+func stripBOM(b []byte) []byte { return bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")) }
 
 func readAll(r io.Reader) []byte { b, _ := io.ReadAll(r); return b }
 
@@ -52,12 +57,12 @@ func isSymlink(p string) bool {
 	return err == nil && fi.Mode()&os.ModeSymlink != 0
 }
 
-func asObj(v pycompat.Value) *pycompat.Obj { o, _ := v.(*pycompat.Obj); return o }
+func asObj(v any) *ordjson.Obj { o, _ := v.(*ordjson.Obj); return o }
 
-func str(v pycompat.Value) (string, bool) { s, ok := v.(string); return s, ok }
+func str(v any) (string, bool) { s, ok := v.(string); return s, ok }
 
 // truthy is Python's bool() over a decoded JSON value.
-func truthy(v pycompat.Value) bool {
+func truthy(v any) bool {
 	switch t := v.(type) {
 	case nil:
 		return false
@@ -65,11 +70,12 @@ func truthy(v pycompat.Value) bool {
 		return t
 	case string:
 		return t != ""
-	case pycompat.Num:
-		return t.F64() != 0
+	case json.Number:
+		f, _ := t.Float64()
+		return f != 0
 	case []any:
 		return len(t) > 0
-	case *pycompat.Obj:
+	case *ordjson.Obj:
 		return t.Len() > 0
 	}
 	return true
@@ -107,16 +113,16 @@ func AtomicWrite(path, prefix string, data []byte, mode os.FileMode, sync bool) 
 }
 
 // loadJSON reads and decodes a file like json.load(open(path)).
-func loadJSON(path string) (pycompat.Value, error) {
+func loadJSON(path string) (any, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	return pycompat.Parse(b)
+	return ordjson.Parse(b)
 }
 
 // readConf is a profile conf's fields, read the one way ctxwindow does.
-func readConf(path string) map[string]string {
-	_, fields := ctxwindow.ReadConf(path)
-	return fields
+func readConf(path string) (map[string]string, error) {
+	_, fields, err := ctxwindow.ReadConf(path)
+	return fields, err
 }

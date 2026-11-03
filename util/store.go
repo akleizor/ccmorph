@@ -3,31 +3,30 @@ package util
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
-	"github.com/akleizor/ccmorph/pycompat"
+	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/settingscompose"
 )
 
-// stateFile is one file read as bytes; nil means it does not exist.
-func content(path string) []byte {
+// content is one file read as bytes; nil means it does not exist.
+func content(path string) ([]byte, error) {
 	b, err := os.ReadFile(path)
-	if err != nil {
-		if pycompat.IsNotExist(err) {
-			return nil
-		}
-		pycompat.RaiseOS(err)
+	if os.IsNotExist(err) {
+		return nil, nil
 	}
-	if b == nil {
+	if err == nil && b == nil {
 		b = []byte{}
 	}
-	return b
+	return b, err
 }
 
 func sameBytes(a, b []byte) bool {
@@ -48,17 +47,16 @@ func fingerprint(parts ...[]byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func decodeUTF8(b []byte) string {
+func decodeUTF8(b []byte) (string, error) {
 	if !utf8.Valid(b) {
-		_, err := pycompat.Parse(b)
-		pycompat.RaiseValue("%s", err.Error())
+		return "", errors.New("configuration is not valid UTF-8")
 	}
-	return string(b)
+	return string(b), nil
 }
 
 // dictMerge is the store's recursive dict merge: objects merge, anything else replaces.
-func dictMerge(base, override *pycompat.Obj) *pycompat.Obj {
-	result := pycompat.NewObj()
+func dictMerge(base, override *ordjson.Obj) *ordjson.Obj {
+	result := ordjson.New()
 	for _, k := range base.Keys() {
 		v, _ := base.Get(k)
 		result.Set(k, v)
@@ -66,8 +64,8 @@ func dictMerge(base, override *pycompat.Obj) *pycompat.Obj {
 	for _, k := range override.Keys() {
 		v, _ := override.Get(k)
 		cur, _ := result.Get(k)
-		co, cok := cur.(*pycompat.Obj)
-		vo, vok := v.(*pycompat.Obj)
+		co, cok := cur.(*ordjson.Obj)
+		vo, vok := v.(*ordjson.Obj)
 		if cok && vok {
 			result.Set(k, dictMerge(co, vo))
 		} else {
@@ -77,21 +75,21 @@ func dictMerge(base, override *pycompat.Obj) *pycompat.Obj {
 	return result
 }
 
-func objField(o *pycompat.Obj, key string, msg string) *pycompat.Obj {
+func objField(o *ordjson.Obj, key string, msg string) (*ordjson.Obj, error) {
 	v, has := o.Get(key)
 	if !has {
-		return pycompat.NewObj()
+		return ordjson.New(), nil
 	}
-	r, ok := v.(*pycompat.Obj)
+	r, ok := v.(*ordjson.Obj)
 	if !ok {
-		pycompat.RaiseValue("%s", msg)
+		return nil, errors.New(msg)
 	}
-	return r
+	return r, nil
 }
 
 func hasSpace(s string) bool {
 	for _, c := range s {
-		if pycompat.IsSpace(c) {
+		if unicode.IsSpace(c) {
 			return true
 		}
 	}
@@ -122,18 +120,9 @@ type StoreArgs struct {
 func ConfigStore(a StoreArgs, errw io.Writer) (string, int) {
 	op, materialize := a.Op, a.Materialize
 	var out strings.Builder
-	var projectedJSON string
-	exit := 0
-	e := pycompat.Catch(func() {
-		exit, projectedJSON = configStoreRun(a, &out, errw)
-	})
-	if e != nil {
-		switch e.Kind {
-		case pycompat.OSError, pycompat.ValueError:
-			fmt.Fprintf(errw, "ccmorph: could not save/read configuration: %s\n", e.Msg)
-		default:
-			fmt.Fprintf(errw, "%s: %s\n", e.Class, e.Msg)
-		}
+	exit, projectedJSON, err := configStoreRun(a, &out, errw)
+	if err != nil {
+		fmt.Fprintf(errw, "ccmorph: could not save/read configuration: %v\n", err)
 		return out.String(), 1
 	}
 	if exit != 0 || materialize == "" || op != "prepare-launch" {
@@ -148,36 +137,50 @@ func ConfigStore(a StoreArgs, errw io.Writer) (string, int) {
 	return out.String(), 0
 }
 
-func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string) {
+func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 	op, key, sharedName, mappingKeys, materialize := a.Op, a.Key, a.Shared, a.Mapping, a.Materialize
 	conf, settings := a.Conf, a.Settings
-	originals := [2][]byte{content(conf), content(settings)}
+	confBytes, err := content(conf)
+	if err != nil {
+		return 0, "", err
+	}
+	settingsBytes, err := content(settings)
+	if err != nil {
+		return 0, "", err
+	}
+	originals := [2][]byte{confBytes, settingsBytes}
 	if originals[0] == nil {
-		pycompat.RaiseValue("profile no longer exists")
+		return 0, "", fmt.Errorf("profile no longer exists")
 	}
 	if op == "snapshot" {
 		fmt.Fprintln(out, fingerprint(originals[0], originals[1]))
-		return 0, ""
+		return 0, "", nil
 	}
-	doc := pycompat.NewObj()
+	doc := ordjson.New()
 	if originals[1] != nil {
-		v, err := pycompat.Parse(pycompat.StripBOM(originals[1]))
+		v, err := ordjson.Parse(stripBOM(originals[1]))
 		if err != nil {
-			pycompat.RaiseValue("%s", err.Error())
+			return 0, "", err
 		}
-		d, ok := v.(*pycompat.Obj)
+		d, ok := v.(*ordjson.Obj)
 		if !ok {
-			pycompat.RaiseValue("settings.json and its env must be objects")
+			return 0, "", fmt.Errorf("settings.json and its env must be objects")
 		}
 		doc = d
 	}
-	objField(doc, "env", "settings.json and its env must be objects")
+	if _, err := objField(doc, "env", "settings.json and its env must be objects"); err != nil {
+		return 0, "", err
+	}
 
-	lines := strings.Split(decodeUTF8(originals[0]), "\n")
+	confText, err := decodeUTF8(originals[0])
+	if err != nil {
+		return 0, "", err
+	}
+	lines := strings.Split(confText, "\n")
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
 		lines = lines[:len(lines)-1]
 	}
-	fields := pycompat.NewOMap[string]()
+	fields := ordjson.New()
 	for _, line := range lines {
 		if k, v, ok := strings.Cut(line, "="); ok && !strings.HasPrefix(line, "#") {
 			fields.Set(k, v)
@@ -187,37 +190,46 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string) {
 	for _, k := range mappingKeys {
 		mapped["env."+k] = true
 	}
-	defaults := pycompat.NewOMap[pycompat.Value]()
+	defaults := ordjson.New()
 	for _, name := range fields.Keys() {
 		if name == "model" || name == "effort" || strings.HasPrefix(name, "effort.") || mapped[name] {
 			v, _ := fields.Get(name)
 			defaults.Set(name, v)
 		}
 	}
-	setDefault := func(name string, v pycompat.Value) {
+	setDefault := func(name string, v any) {
 		if !defaults.Has(name) {
 			defaults.Set(name, v)
 		}
 	}
 	if md, _ := fields.Get("model_defaults"); md != "1" {
-		shared := pycompat.NewObj()
-		if sb := content(sharedName); len(sb) > 0 {
-			v, err := pycompat.Parse(pycompat.StripBOM(sb))
+		shared := ordjson.New()
+		sb, err := content(sharedName)
+		if err != nil {
+			return 0, "", err
+		}
+		if len(sb) > 0 {
+			v, err := ordjson.Parse(stripBOM(sb))
 			if err != nil {
-				pycompat.RaiseValue("%s", err.Error())
+				return 0, "", err
 			}
-			s, ok := v.(*pycompat.Obj)
+			s, ok := v.(*ordjson.Obj)
 			if !ok {
-				pycompat.RaiseValue("shared settings and its env must be objects")
+				return 0, "", fmt.Errorf("shared settings and its env must be objects")
 			}
 			shared = s
 		}
-		objField(shared, "env", "shared settings and its env must be objects")
+		if _, err := objField(shared, "env", "shared settings and its env must be objects"); err != nil {
+			return 0, "", err
+		}
 		native := dictMerge(shared, doc)
-		rows := objField(native, "modelSettings", "modelSettings must be an object")
+		rows, err := objField(native, "modelSettings", "modelSettings must be an object")
+		if err != nil {
+			return 0, "", err
+		}
 		env := asObj(getKey(native, "env"))
 		if env == nil {
-			env = pycompat.NewObj()
+			env = ordjson.New()
 		}
 		chosen := getKey(env, "ANTHROPIC_MODEL")
 		if !truthy(chosen) {
@@ -243,37 +255,37 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string) {
 			}
 		}
 	}
-	modelSettings := pycompat.NewObj()
+	modelSettings := ordjson.New()
 	for _, name := range defaults.Keys() {
 		v, _ := defaults.Get(name)
 		value, isStr := v.(string)
 		if !isStr || strings.Contains(name, "=") || strings.ContainsAny(name+value, "\r\n") || hasSpace(name) {
-			pycompat.RaiseValue("model defaults must be single-line strings with valid keys")
+			return 0, "", fmt.Errorf("model defaults must be single-line strings with valid keys")
 		}
 		if name == "effort" || strings.HasPrefix(name, "effort.") {
 			switch value {
 			case "low", "medium", "high", "xhigh", "max":
 			default:
-				pycompat.RaiseValue("invalid saved effort default")
+				return 0, "", fmt.Errorf("invalid saved effort default")
 			}
 			if name == "effort." {
-				pycompat.RaiseValue("invalid saved effort default")
+				return 0, "", fmt.Errorf("invalid saved effort default")
 			}
 		}
 		if strings.HasPrefix(name, "effort.") {
-			row := pycompat.NewObj()
+			row := ordjson.New()
 			row.Set("effortLevel", value)
 			modelSettings.Set(name[7:], row)
 		}
 	}
-	projEnv := pycompat.NewObj()
+	projEnv := ordjson.New()
 	for _, name := range defaults.Keys() {
 		if strings.HasPrefix(name, "env.") {
 			v, _ := defaults.Get(name)
 			projEnv.Set(name[4:], v)
 		}
 	}
-	projected := pycompat.NewObj()
+	projected := ordjson.New()
 	projected.Set("env", projEnv)
 	projected.Set("modelSettings", modelSettings)
 	for _, f := range [][2]string{{"model", "model"}, {"effort", "effortLevel"}} {
@@ -287,14 +299,14 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string) {
 			v = ""
 		}
 		fmt.Fprintln(out, v)
-		return 0, ""
+		return 0, "", nil
 	}
 	if op == "model-settings" {
 		fmt.Fprintln(out, jsonOut(projected))
-		return 0, ""
+		return 0, "", nil
 	}
 	if expected := a.Change.Snapshot; expected != "" && expected != fingerprint(originals[0], originals[1]) {
-		pycompat.RaiseValue("profile changed while configuring; nothing saved")
+		return 0, "", fmt.Errorf("profile changed while configuring; nothing saved")
 	}
 	for _, name := range []string{"model", "effort"} {
 		value := map[string]string{"model": a.Change.Model, "effort": a.Change.Effort}[name]
@@ -302,22 +314,22 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string) {
 			continue
 		}
 		if name == "model" && (strings.HasPrefix(value, "-") || strings.HasPrefix(value, "@") || value == "?" || hasSpace(value)) {
-			pycompat.RaiseValue("model must be a nonempty model id, not a flag or picker token")
+			return 0, "", fmt.Errorf("model must be a nonempty model id, not a flag or picker token")
 		}
 		if name == "effort" && value != "low" && value != "medium" && value != "high" && value != "xhigh" {
-			pycompat.RaiseValue("effort must be low, medium, high or xhigh")
+			return 0, "", fmt.Errorf("effort must be low, medium, high or xhigh")
 		}
 		defaults.Set(name, value)
 	}
 	switch op {
 	case "set", "configure", "seed-model-defaults", "prepare-launch", "migrate-native":
 	default:
-		pycompat.RaiseValue("unsupported configuration operation")
+		return 0, "", fmt.Errorf("unsupported configuration operation")
 	}
 	if isSymlink(conf) || isSymlink(settings) {
-		pycompat.RaiseValue("model defaults require profile-local files")
+		return 0, "", fmt.Errorf("model defaults require profile-local files")
 	}
-	changes := defaults.Copy()
+	changes := ordjson.Clone(defaults).(*ordjson.Obj)
 	changes.Set("model_defaults", "1")
 	if op == "configure" {
 		switch a.Change.Type {
@@ -330,7 +342,7 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string) {
 	}
 	for _, name := range changes.Keys() {
 		if v, _ := changes.Get(name); strings.ContainsAny(fmt.Sprint(v), "\r\n") {
-			pycompat.RaiseValue("configuration values cannot contain CR/LF")
+			return 0, "", fmt.Errorf("configuration values cannot contain CR/LF")
 		}
 	}
 	var kept []string
@@ -358,7 +370,10 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string) {
 	if op == "prepare-launch" {
 		doc.Delete("model")
 		doc.Delete("effortLevel")
-		rows := objField(doc, "modelSettings", "modelSettings must be an object")
+		rows, err := objField(doc, "modelSettings", "modelSettings must be an object")
+		if err != nil {
+			return 0, "", err
+		}
 		for _, k := range rows.Keys() {
 			rv, _ := rows.Get(k)
 			if row := asObj(rv); row != nil {
@@ -371,9 +386,9 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string) {
 			}
 		}
 		if originals[1] != nil {
-			orig, _ := pycompat.Parse(pycompat.StripBOM(originals[1]))
-			if !pycompat.Equal(doc, orig) {
-				targets = append(targets, target{settings, originals[1], []byte(pycompat.Marshal(doc, pycompat.Format{Indent: 2}) + "\n")})
+			orig, _ := ordjson.Parse(stripBOM(originals[1]))
+			if !ordjson.Equal(doc, orig) {
+				targets = append(targets, target{settings, originals[1], []byte(string(ordjson.Marshal(doc, true)) + "\n")})
 			}
 		}
 	}
@@ -384,71 +399,77 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string) {
 	}
 	var pending []staged
 	var applied []target
-	stage := func(path string, data []byte) string {
+	stage := func(path string, data []byte) (string, error) {
 		if err := os.MkdirAll(filepath.Dir(path), 0o777); err != nil {
-			pycompat.RaiseOS(err)
+			return "", err
 		}
 		f, err := os.CreateTemp(filepath.Dir(path), ".configure.*")
 		if err != nil {
-			pycompat.RaiseOS(err)
+			return "", err
 		}
 		_, werr := f.Write(data)
 		f.Close()
 		if werr != nil {
 			os.Remove(f.Name())
-			pycompat.RaiseOS(werr)
+			return "", werr
 		}
-		return f.Name()
+		return f.Name(), nil
 	}
 	cleanup := func() {
 		for _, p := range pending {
 			os.Remove(p.temp)
 		}
 	}
-	func() {
-		defer func() {
-			r := recover()
-			if r == nil {
-				cleanup()
-				return
-			}
-			for i := len(applied) - 1; i >= 0; i-- {
-				a := applied[i]
-				if !sameBytes(content(a.path), a.after) {
-					fmt.Fprintf(errw, "ccmorph: %s changed externally; left untouched during rollback\n", filepath.Base(a.path))
-					continue
-				}
-				if a.before == nil {
-					os.Remove(a.path)
-				} else {
-					tmp := stage(a.path, a.before)
-					err := os.Rename(tmp, a.path)
-					os.Remove(tmp)
-					if err != nil {
-						cleanup()
-						pycompat.RaiseOS(err)
-					}
-				}
-			}
-			cleanup()
-			panic(r)
-		}()
+	commit := func() error {
 		for _, t := range targets {
-			pending = append(pending, staged{t, stage(t.path, t.after)})
+			temp, err := stage(t.path, t.after)
+			if err != nil {
+				return err
+			}
+			pending = append(pending, staged{t, temp})
 		}
-		if !sameBytes(content(conf), originals[0]) || !sameBytes(content(settings), originals[1]) {
-			pycompat.RaiseValue("profile changed while configuring; nothing saved")
+		if c, err := content(conf); err != nil || !sameBytes(c, originals[0]) {
+			return errors.Join(err, errors.New("profile changed while configuring; nothing saved"))
+		}
+		if c, err := content(settings); err != nil || !sameBytes(c, originals[1]) {
+			return errors.Join(err, errors.New("profile changed while configuring; nothing saved"))
 		}
 		for _, p := range pending {
-			if !sameBytes(content(p.path), p.before) {
-				pycompat.RaiseValue("%s changed while saving", filepath.Base(p.path))
+			if c, err := content(p.path); err != nil || !sameBytes(c, p.before) {
+				return errors.Join(err, fmt.Errorf("%s changed while saving", filepath.Base(p.path)))
 			}
 			if err := replaceFile(p.temp, p.path); err != nil {
-				pycompat.RaiseOS(err)
+				return err
 			}
 			applied = append(applied, p.target)
 		}
-	}()
+		return nil
+	}
+	if cerr := commit(); cerr != nil {
+		for i := len(applied) - 1; i >= 0; i-- {
+			a := applied[i]
+			if c, err := content(a.path); err != nil || !sameBytes(c, a.after) {
+				fmt.Fprintf(errw, "ccmorph: %s changed externally; left untouched during rollback\n", filepath.Base(a.path))
+				continue
+			}
+			if a.before == nil {
+				os.Remove(a.path)
+				continue
+			}
+			tmp, err := stage(a.path, a.before)
+			if err == nil {
+				err = os.Rename(tmp, a.path)
+				os.Remove(tmp)
+			}
+			if err != nil {
+				cleanup()
+				return 0, "", err
+			}
+		}
+		cleanup()
+		return 0, "", cerr
+	}
+	cleanup()
 	switch {
 	case op == "prepare-launch":
 		if materialize == "" {
@@ -461,5 +482,5 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string) {
 		}
 		fmt.Fprintln(out, v)
 	}
-	return 0, jsonOut(projected)
+	return 0, jsonOut(projected), nil
 }

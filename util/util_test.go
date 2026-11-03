@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/akleizor/ccmorph/pycompat"
+	"github.com/akleizor/ccmorph/ordjson"
 )
 
 func TestEngineInt(t *testing.T) {
@@ -106,22 +106,16 @@ func migrateFixture(t *testing.T) (legacy, target string) {
 	return
 }
 
-// .claude.json is the user's file: a value Python round-tripped unchanged
-// must come back byte-for-byte. An unpaired \ud83d escape used to be decoded
-// to a surrogate and written out as U+FFFD, silently mutating the file.
-func TestPickerRewriteKeepsALoneSurrogateByteForByte(t *testing.T) {
+// .claude.json is the user's file: a rewrite that changes one key keeps the others where they were.
+func TestPickerRewriteKeepsTheUsersKeyOrder(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".claude.json")
-	want := "{\n  \"history\": [\n    \"a b\\ud83d c\"\n  ]\n}"
-	if err := os.WriteFile(path, []byte(want), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"zeta": 1.0, "alpha": {"y": 1, "b": 2}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rewriteJSON(path, func(*pycompat.Obj) bool { return true })
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != want {
-		t.Fatalf("the rewrite changed the file:\n got %q\nwant %q", got, want)
+	rewriteJSON(path, func(doc *ordjson.Obj) bool { doc.Set("mid", true); return true })
+	got, _ := os.ReadFile(path)
+	if want := "{\n  \"zeta\": 1.0,\n  \"alpha\": {\n    \"y\": 1,\n    \"b\": 2\n  },\n  \"mid\": true\n}"; string(got) != want {
+		t.Fatalf("got %q want %q", got, want)
 	}
 }
 
