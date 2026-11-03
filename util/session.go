@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -22,23 +23,35 @@ var privateSkip = []string{"projects", "sessions", "session-env", "file-history"
 	"shell-snapshots", "paste-cache", "debug", "todos", "tasks", "plans", "backups"}
 
 // claudeSession is `util claude-session <tuning> <profile keys> <launch keys>
-// <backend keys> <env file> -- <claude args...>`, each key list space-separated.
-// The launch's own KEY=value entries come from <env file>, a 0600 file this
-// process removes before anything else: a private session keeps this process
-// as claude's parent, and its argument vector stays in ps for the whole run
-// (#112). It clears every key a profile could declare or a launch sets (tuning
-// keys pass through from the shell unless an outer session recorded them in
-// CCMORPH_SET_ENV), exports this launch's env, and execs claude. With
-// CCMORPH_PRIVATE=1 claude runs from a throwaway view of the profile instead,
-// removed when it exits. CCMORPH_NOTICE, when set, is printed just before.
+// <backend keys> <launch env> -- <claude args...>`, each key list space-separated.
+// The launch's own KEY=value entries come from <launch env>: a 0600 file this
+// process removes before anything else, or — from a launcher of v0.4.4 or earlier
+// still running after an update (#137) — inline, one per operand before `--`.
+// A private session keeps this process as claude's parent, and with the file form
+// its argument vector stays in ps for the whole run (#112). It clears every key a
+// profile could declare or a launch sets (tuning keys pass through from the shell
+// unless an outer session recorded them in CCMORPH_SET_ENV), exports this launch's
+// env, and execs claude. With CCMORPH_PRIVATE=1 claude runs from a throwaway view
+// of the profile instead, removed when it exits. CCMORPH_NOTICE, when set, is
+// printed just before.
 func claudeSession(args []string, _ io.Reader, out, errw io.Writer) int {
-	if len(args) < 6 || args[5] != "--" {
+	if len(args) < 5 {
 		return 2
 	}
-	entries, err := readSessionEnv(args[4])
-	if err != nil {
-		fmt.Fprintln(errw, "ccmorph: session env: "+err.Error())
-		return 1
+	sep := slices.Index(args[4:], "--")
+	if sep < 0 {
+		return 2
+	}
+	sep += 4
+	var entries []string
+	if sep == 5 && !envAssignment(args[4]) {
+		var err error
+		if entries, err = readSessionEnv(args[4]); err != nil {
+			fmt.Fprintln(errw, "ccmorph: session env: "+err.Error())
+			return 1
+		}
+	} else {
+		entries = args[4:sep] // #137: a v0.4.4-or-earlier launcher sends them inline
 	}
 	tuning, profileKeys := strings.Fields(args[0]), strings.Fields(args[1])
 	clear := append(append([]string{"CLAUDE_CODE_EFFORT_LEVEL", "CLAUDE_CONFIG_DIR",
@@ -66,7 +79,7 @@ func claudeSession(args []string, _ io.Reader, out, errw io.Writer) int {
 	notice := os.Getenv("CCMORPH_NOTICE")
 	os.Unsetenv("CCMORPH_NOTICE")
 
-	rest, private := args[6:], false
+	rest, private := args[sep+1:], false
 	var setEnv []string
 	for _, kv := range entries {
 		k, v, ok := strings.Cut(kv, "=")
@@ -106,6 +119,18 @@ func claudeSession(args []string, _ io.Reader, out, errw io.Writer) int {
 		return execErr(syscall.Exec(bin, append([]string{"claude"}, rest...), os.Environ()), errw)
 	}
 	return privateSession(bin, rest, say, errw)
+}
+
+// envName is the shape of an environment variable name, the only key an inline
+// KEY=value entry can have. A session env file's path never matches: it holds a
+// slash before any "=", so it is never mistaken for an entry (#137).
+var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// envAssignment reports whether s is an inline KEY=value entry rather than the
+// path of the launch environment file.
+func envAssignment(s string) bool {
+	k, _, ok := strings.Cut(s, "=")
+	return ok && envName.MatchString(k)
 }
 
 // readSessionEnv takes the launch environment from the 0600 file the launcher

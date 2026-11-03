@@ -22,12 +22,19 @@ var (
 //
 // The bridge key arrives in _CCM_BRIDGE_KEY, never as an operand: a credential on
 // a command line is visible to anything running as this user (.github/SECURITY.md).
+// A v0.4.3 launcher still running after an update sends the key as the second
+// operand instead; that form is read, and the current launcher never sends it (#137).
 func launchEnv(args []string, in io.Reader, out, _ io.Writer) int {
+	bridgeKey := os.Getenv("_CCM_BRIDGE_KEY")
+	if len(args) == 6 {
+		// #137: a v0.4.3 launcher, still running after an update, has the key as an operand.
+		bridgeKey, args = args[1], append([]string{args[0]}, args[2:]...)
+	}
 	if len(args) != 5 {
 		return 2
 	}
-	bridgePort, bridgeKey, adapter, adapterPort, task, attempt :=
-		args[0], os.Getenv("_CCM_BRIDGE_KEY"), args[1] == "1", args[2], args[3], args[4]
+	bridgePort, adapter, adapterPort, task, attempt :=
+		args[0], args[1] == "1", args[2], args[3], args[4]
 	var env []string
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 1<<20), 1<<20)

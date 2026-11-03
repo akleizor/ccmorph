@@ -29,9 +29,16 @@ func TestLaunchEnvRoutesThroughTheLocalHop(t *testing.T) {
 	if got := run("ANTHROPIC_BASE_URL=https://x\n", "", "1", "", "bad tag", "1234"); len(got) != 1 || got[0] != "ANTHROPIC_BASE_URL=https://x" {
 		t.Errorf("drop: %q", got)
 	}
-	// The old 6-operand form, with the key in an operand, is refused.
+	// A v0.4.3 launcher, still running after an update, sends the key as the second
+	// operand; that form is read (#137), and the operand is the key even when the
+	// environment carries none.
+	t.Setenv("_CCM_BRIDGE_KEY", "")
+	if got := strings.Join(run("", "9", "k-old", "0", "", "t", ""), "|"); got != "ANTHROPIC_BASE_URL=http://127.0.0.1:9|ANTHROPIC_API_KEY=k-old" {
+		t.Errorf("old form: %s", got)
+	}
+	// Any other arity is still refused.
 	var b strings.Builder
-	if rc := launchEnv([]string{"9", "k", "0", "", "t", ""}, strings.NewReader(""), &b, nil); rc != 2 {
-		t.Errorf("key operand accepted: rc %d", rc)
+	if rc := launchEnv([]string{"9", "0", "", "t"}, strings.NewReader(""), &b, nil); rc != 2 {
+		t.Errorf("4 operands accepted: rc %d", rc)
 	}
 }
