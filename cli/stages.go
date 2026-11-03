@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"github.com/akleizor/ccmorph/util"
 	"slices"
 	"strings"
 )
@@ -112,6 +113,9 @@ var stages = map[string]func(l *launcher, args []string) int{
 		return rc(ok)
 	},
 	// <word>: rc 0 when the installed claude names it
+	"--model-known":       func(l *launcher, args []string) int { return l.modelKnown(args[1], args[2]) }, // <profile> <model>: 0 served, 1 not, 2 cannot tell
+	"--profile-ok":        func(l *launcher, args []string) int { return rc(util.ProfileOK(l.profileDirs, args[1])) },
+	"--cleanup-stale":     func(l *launcher, _ []string) int { util.GCStale(l.dir, l.profileDirs, tmpDir()); return 0 },
 	"--claude-subcommand": func(l *launcher, args []string) int { return rc(l.isClaudeSubcommand(args[1])) },
 	"--listing": func(l *launcher, args []string) int { // <base> <key> [<base> <key>...]: one launch's memo
 		for i := 1; i+1 < len(args); i += 2 {

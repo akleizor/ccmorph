@@ -1,7 +1,6 @@
 package util
 
 import (
-	"io"
 	"io/fs"
 	"math/rand"
 	"os"
@@ -10,20 +9,16 @@ import (
 	"strings"
 )
 
-// migrateProjects is `util migrate-projects <from> <to>`: move a profile-local
+// migrateProjects moves a profile-local
 // sharable dir's files and links into the shared store. The profile dir is first
 // renamed aside to <from>.premigration.<pid>.<n>; a name already in the store wins
 // and its profile copy stays in that backup. A relative link is rewritten to an
 // absolute one, resolved the way the kernel resolves it from its old place (#164,
 // #167, #376, #399, #400). The caller vets the store name.
-func migrateProjects(args []string, _ io.Reader, _, _ io.Writer) int {
-	if len(args) != 2 {
-		return 2
-	}
-	from, to := args[0], args[1]
+func migrateProjects(from, to string) bool {
 	bak := from + ".premigration." + strconv.Itoa(os.Getpid()) + "." + strconv.Itoa(rand.Intn(32768))
 	if os.Rename(from, bak) != nil {
-		return 1
+		return false
 	}
 	bakp := bak
 	if a, err := filepath.Abs(bak); err == nil {
@@ -83,7 +78,7 @@ func migrateProjects(args []string, _ io.Reader, _, _ io.Writer) int {
 		}
 		return nil
 	})
-	return 0
+	return true
 }
 
 // physDir is a directory's physical path plus a trailing "/" (so the root is "//"),

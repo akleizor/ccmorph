@@ -1,7 +1,6 @@
 package util
 
 import (
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,7 +10,7 @@ import (
 	"time"
 )
 
-// gcStale is `util gc-stale <state dir> <profiles dir> <tmp dir>`: best-effort reaping of
+// GCStale is `util gc-stale <state dir> <profiles dir> <tmp dir>`: best-effort reaping of
 // state a killed launch left behind. Relay signals go once their owning launcher is
 // dead and they are a minute old. Session env files carry credentials and live
 // milliseconds (their reader removes them on sight), so a minute-old one in TMPDIR
@@ -19,11 +18,7 @@ import (
 // Launch-settings overlays and provider bridge dirs carry credentials, so they go
 // after 12h unless a live process still names them; the process table is read at
 // most once, and only when something is old.
-func gcStale(args []string, _ io.Reader, _, _ io.Writer) int {
-	if len(args) != 3 {
-		return 2
-	}
-	state, profiles, tmp := args[0], args[1], args[2]
+func GCStale(state, profiles, tmp string) {
 	now := time.Now()
 	old := func(p string, age time.Duration) bool {
 		fi, err := os.Lstat(p)
@@ -91,5 +86,4 @@ func gcStale(args []string, _ io.Reader, _, _ io.Writer) int {
 			_ = os.RemoveAll(d)
 		}
 	}
-	return 0
 }

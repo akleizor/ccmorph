@@ -31,7 +31,7 @@ func TestGCReapsWhatAKilledLaunchLeaves(t *testing.T) {
 	for _, f := range []string{dead, mine, staleTmp, staleRun} {
 		os.Chtimes(f, past, past)
 	}
-	gcStale([]string{state, filepath.Join(root, "profiles"), tmp}, nil, nil, nil)
+	GCStale(state, filepath.Join(root, "profiles"), tmp)
 	for _, f := range []string{dead, staleTmp, staleRun} {
 		if _, err := os.Stat(f); err == nil {
 			t.Fatalf("%s must go: a killed launch left it behind", f)

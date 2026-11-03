@@ -1,65 +1,51 @@
 package util
 
 import (
-	"bufio"
-	"fmt"
 	"io"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
 )
 
-// fetchListing is `util fetch-listing <base> <launch|models|doctor> [max seconds]`
-// with the credential as stdin's first line: GET <base>/v1/models?limit=1000 with
-// x-api-key and Bearer headers, the body undisguised on stdout.
-//
-//   - launch: the per-launch listing; sends anthropic-version, fails on non-2xx.
-//   - models: `ccmorph models` and model-known; no anthropic-version (proxies
-//     disguise non-Claude ids when they see it), fails on non-2xx.
-//   - doctor: never fails; the body is followed by "\n<http status>", 000 when
-//     nothing answered.
-//
-// The ambient HTTPS_PROXY is honoured: it is how a bridge reaches a private endpoint.
-func fetchListing(args []string, in io.Reader, out, errw io.Writer) int {
-	if len(args) < 2 {
-		return 2
-	}
-	base, mode, maxTime := args[0], args[1], "20"
-	if len(args) > 2 {
-		maxTime = args[2]
-	}
-	key, _ := bufio.NewReader(in).ReadString('\n')
-	key = strings.TrimRight(key, "\r\n")
-	u := apiURL(base, "/v1/models?limit=1000")
-	var curlArgs []string
-	switch mode {
-	case "launch":
-		curlArgs = []string{"-sS", "-f", "--connect-timeout", "2", "--max-time", maxTime, u, "-H", "anthropic-version: 2023-06-01"}
-	case "models":
-		curlArgs = []string{"-sS", "-f", "--max-time", maxTime, u}
-	case "doctor":
-		curlArgs = []string{"-sS", "--connect-timeout", "2", "--max-time", "5", "-w", `\n__CCMORPH_STATUS__%{http_code}`, u}
-	default:
-		return 2
-	}
+// LaunchListing is the per-launch /v1/models listing: GET <base>/v1/models?limit=1000
+// with x-api-key and Bearer headers, sending anthropic-version, the body
+// undisguised. ok is false on a non-2xx answer or nothing. The ambient HTTPS_PROXY
+// is honoured: it is how a bridge reaches a private endpoint.
+func LaunchListing(base, key string, maxSeconds int) (body string, ok bool) {
+	return fetchModels(key, io.Discard, "-sS", "-f", "--connect-timeout", "2", "--max-time", strconv.Itoa(maxSeconds),
+		apiURL(base, "/v1/models?limit=1000"), "-H", "anthropic-version: 2023-06-01")
+}
+
+// ModelsListing is the listing `ccmorph models` and model-known read: no
+// anthropic-version (proxies disguise non-Claude ids when they see it). curl's
+// complaint goes to errw.
+func ModelsListing(base, key string, errw io.Writer) (body string, ok bool) {
+	return fetchModels(key, errw, "-sS", "-f", "--max-time", "20", apiURL(base, "/v1/models?limit=1000"))
+}
+
+func fetchModels(key string, errw io.Writer, curlArgs ...string) (string, bool) {
 	body, err := curlKeyed(key, curlArgs, errw)
-	if mode == "doctor" {
-		code := "000"
-		if i := strings.LastIndex(body, "__CCMORPH_STATUS__"); err == nil && i >= 0 {
-			body, code = strings.TrimSuffix(body[:i], "\n"), body[i+len("__CCMORPH_STATUS__"):]
-		} else {
-			body = ""
-		}
-		fmt.Fprintf(out, "%s\n%s", undisguise(body), code)
-		return 0
-	}
 	if err != nil || body == "" {
-		return 1
+		return "", false
 	}
-	io.WriteString(out, undisguise(body))
-	return 0
+	return undisguise(body), true
+}
+
+// ProbeListing is doctor's never-failing probe: the body and the HTTP status, 000
+// when nothing answered.
+func ProbeListing(base, key string) (body, code string) {
+	body, err := curlKeyed(key, []string{"-sS", "--connect-timeout", "2", "--max-time", "5", "-w", `\n__CCMORPH_STATUS__%{http_code}`,
+		apiURL(base, "/v1/models?limit=1000")}, io.Discard)
+	code = "000"
+	if i := strings.LastIndex(body, "__CCMORPH_STATUS__"); err == nil && i >= 0 {
+		body, code = strings.TrimSuffix(body[:i], "\n"), body[i+len("__CCMORPH_STATUS__"):]
+	} else {
+		body = ""
+	}
+	return undisguise(body), code
 }
 
 // curlKeyed runs curl with the credential headers fed through its stdin config
@@ -96,45 +82,48 @@ func undisguise(body string) string {
 	})
 }
 
-// modelServed is `util model-served <want> <type> <base_url> <model_map json>`, the
-// credential on stdin: 0 the route serves want, 1 it does not, 2 cannot tell.
-// Tier aliases always resolve; a native route needs a claude-* id; a provider's
-// catalogue lives in its bridge, so only a claude-* id is a definite no there.
-func modelServed(args []string, in io.Reader, _, _ io.Writer) int {
-	if len(args) != 4 {
-		return 2
-	}
-	want, typ, base, modelMap := args[0], args[1], args[2], args[3]
+// Served is whether a route serves a model.
+type Served int
+
+const (
+	ServedYes Served = iota
+	ServedNo
+	ServedUnknown // cannot tell
+)
+
+// ModelServed reports whether the route serves want. Tier aliases always resolve; a
+// native route needs a claude-* id; a provider's catalogue lives in its bridge, so
+// only a claude-* id is a definite no there.
+func ModelServed(want, typ, base, modelMap, key string) Served {
 	if strings.HasSuffix(strings.ToLower(want), "[1m]") {
 		want = want[:len(want)-4]
 	}
 	switch {
 	case want == "":
-		return 2
+		return ServedUnknown
 	case want == "opus" || want == "sonnet" || want == "haiku" || want == "fable":
-		return 0
+		return ServedYes
 	case typ == "provider":
 		if strings.HasPrefix(want, "claude-") {
-			return 1
+			return ServedNo
 		}
-		return 2
+		return ServedUnknown
 	case base == "":
 		if strings.HasPrefix(want, "claude-") {
-			return 0
+			return ServedYes
 		}
-		return 1
+		return ServedNo
 	}
 	// Native routes launch without an adapter, so their maps are unused.
 	if strings.TrimSuffix(base, "/") == "https://api.anthropic.com" {
 		modelMap = ""
 	}
-	key, _ := bufio.NewReader(in).ReadString('\n')
 	if strings.TrimSpace(key) == "" {
-		return 2
+		return ServedUnknown
 	}
-	var listing strings.Builder
-	if fetchListing([]string{base, "models"}, strings.NewReader(key), &listing, io.Discard) != 0 || listing.Len() == 0 {
-		return 2
+	listing, ok := ModelsListing(base, key, io.Discard)
+	if !ok {
+		return ServedUnknown
 	}
-	return modelInListing(listing.String(), want, modelMap)
+	return Served(modelInListing(listing, want, modelMap))
 }

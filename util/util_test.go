@@ -74,16 +74,24 @@ func TestHazardMessage(t *testing.T) {
 func TestUnwireStatuslineKeepsOthers(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "s.json")
-	os.WriteFile(path, []byte(`{"statusLine":{"command":"/mine/statusline"},"x":1}`), 0o600)
-	t.Setenv("_CCM_SL_OWNED", "/mine/statusline")
-	unwireStatusline([]string{path}, nil, nil, nil)
-	if b, _ := os.ReadFile(path); string(b) != "{\n  \"x\": 1\n}\n" {
-		t.Fatalf("%q", b)
+	write := func(command string) {
+		os.WriteFile(path, []byte(`{"statusLine":{"command":"`+command+`"},"x":1}`), 0o600)
 	}
-	os.WriteFile(path, []byte(`{"statusLine":{"command":"/theirs"}}`), 0o600)
-	unwireStatusline([]string{path}, nil, nil, nil)
-	if b, _ := os.ReadFile(path); !strings.Contains(string(b), "/theirs") {
-		t.Fatal("someone else's statusline must stay")
+	// Either directory ccmorph ever wired from is cleaned up, the other keys kept.
+	for _, owned := range []string{"/state/statusline", "/lib/statusline"} {
+		write(owned)
+		UnwireStatusline(path, "/state/statusline", "/lib/statusline")
+		if b, _ := os.ReadFile(path); string(b) != "{\n  \"x\": 1\n}\n" {
+			t.Fatalf("%s: %q", owned, b)
+		}
+	}
+	// A user's own bar stays, even one whose path merely collides with ccmorph's.
+	for _, theirs := range []string{"/theirs", "/Users/me/bin/ccmorph/statusline"} {
+		write(theirs)
+		UnwireStatusline(path, "/state/statusline", "/lib/statusline")
+		if b, _ := os.ReadFile(path); !strings.Contains(string(b), theirs) {
+			t.Fatalf("%s must stay: %q", theirs, b)
+		}
 	}
 }
 
@@ -122,9 +130,8 @@ func TestMigrateRefusesACrossDeviceMoveWithoutCopying(t *testing.T) {
 	old := rename
 	rename = func(string, string) error { return &os.LinkError{Op: "rename", Err: syscall.EXDEV} }
 	defer func() { rename = old }()
-	var errw bytes.Buffer
-	if rc := migrateProfileHome([]string{legacy, target}, nil, nil, &errw); rc != 1 {
-		t.Fatalf("rc=%d %s", rc, errw.String())
+	if _, err := MigrateProfileHome(legacy, target); err == nil {
+		t.Fatal("a cross-device move must fail")
 	}
 	if b, _ := os.ReadFile(filepath.Join(legacy, "fixture")); string(b) != "untouched" {
 		t.Fatal("legacy home must stay")
@@ -139,8 +146,8 @@ func TestMigrateRestoresTheOriginalWhenTheAliasFails(t *testing.T) {
 	old := symlink
 	symlink = func(string, string) error { return errors.New("simulated alias failure") }
 	defer func() { symlink = old }()
-	if rc := migrateProfileHome([]string{legacy, target}, nil, nil, &bytes.Buffer{}); rc != 1 {
-		t.Fatalf("rc=%d", rc)
+	if _, err := MigrateProfileHome(legacy, target); err == nil {
+		t.Fatal("a failed alias must fail the migration")
 	}
 	fi, err := os.Lstat(legacy)
 	if err != nil || fi.Mode()&os.ModeSymlink != 0 {

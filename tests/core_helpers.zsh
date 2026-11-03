@@ -36,14 +36,12 @@ _ccm_config_store() {
     "$HOME/.claude/settings.json" "${_CCMORPH_MODEL_MAPPING_ENV[@]}"
 }
 
-_ccm_cleanup_stale() {
-  _ccm_util gc-stale "$_CCMORPH_DIR" "$_CCMORPH_PROFILE_DIRS" "${TMPDIR:-/tmp}" 2>/dev/null || :
-}
+_ccm_cleanup_stale() { ( _ccm_launch_core --cleanup-stale ) 2>/dev/null || :; }
 
 # Provisioning runs through the public path, which reads and validates the conf.
 _ccm_setup_dir_unlocked() { ccmorph _env "$1" >/dev/null; }
 _ccm_setup_dir() { ccmorph _env "$1" >/dev/null; }
-_ccm_dir_ok() { _ccm_util profile-ok "$_CCMORPH_PROFILE_DIRS" "$1"; }
+_ccm_dir_ok() { ( _ccm_launch_core --profile-ok "$1" ); }
 
 
 _ccm_listing_has_unsized() {  # $1 = profile, $2 = /v1/models JSON
@@ -69,22 +67,13 @@ _ccm_read() {  # fills the global assoc _ccm from the core's profile reader
   [[ -z "$out" ]] || _ccm=("${(@0)${out%$'\0'}}")
 }
 
-_ccm_validate_loaded() {
+_ccm_validate_loaded() {  # the loaded apikey profile $1 passes the core's validation
   [[ "${_ccm[type]:-}" == apikey ]] || return 0
-  local out k
-  out=$(for k in type api_key base_url adapter; do print -rn -- "$k"$'\0'"${_ccm[$k]:-}"$'\0'; done |
-    _ccm_util profile-validate "$1") || { _ccm_err "$out"; return 1; }
+  local out
+  out=$(_ccm_util profile-env "$_CCMORPH_DIR" "$_CCMORPH_PROFILE_DIRS" "$1") || { _ccm_err "$out"; return 1; }
 }
 
-_ccm_model_known() {  # 0 served, 1 not served, 2 cannot tell
-  local name="$1" want="$2" typ base map key
-  [[ -n "$name" && -n "$want" ]] || return 2
-  _ccm_read "$name" >/dev/null 2>&1 || return 2
-  _ccm_validate_loaded "$name" >/dev/null 2>&1 || { unset _ccm; return 2; }
-  typ="${_ccm[type]:-}" base="${_ccm[base_url]:-}" map="${_ccm[model_map]:-}" key="${_ccm[api_key]:-}"
-  unset _ccm
-  print -r -- "$key" | _ccm_util model-served "$want" "$typ" "$base" "$map" 2>/dev/null
-}
+_ccm_model_known() { ( _ccm_launch_core --model-known "$1" "$2" ) 2>/dev/null; }  # 0 served, 1 not served, 2 cannot tell
 
 _ccm_gw_models_json() {  # REPLY = the profile's /v1/models listing
   REPLY=$( _ccm_launch_core --models-json "$@" )
@@ -99,7 +88,6 @@ _ccm_gw_models() {
   }
 }
 
-_ccm_migrate_projects() { _ccm_util migrate-projects "$1" "$2"; }
 _ccm_model_window() { ( _ccm_launch_core --model-window "$@" ); }
 _ccm_migrate_state() { ( _ccm_launch_core --migrate-state ); }
 _ccm_prelaunch() { ( _ccm_launch_core --prelaunch "$@" ); }
@@ -114,9 +102,3 @@ _ccm_trigger_env() {  # $1 $2 $3 = names for pct, output reserve, 1M switch, rea
 }
 _ccm_probe_nudge() { ( _ccm_launch_core --probe-nudge "$@" ); }
 _ccm_pick_value() { ccmorph _ui pick "$@"; }
-_ccm_unwire_statusline() {  # $1 = a profile dir; only a ccmorph-installed statusline goes
-  local file="$1/settings.json"
-  [[ -f "$file" && ! -L "$file" ]] || return 0
-  _CCM_SL_OWNED="$_CCMORPH_DIR/statusline"$'\n'"$_CCMORPH_LIB_DIR/statusline" \
-    _ccm_util unwire-statusline "$file" 2>/dev/null || :
-}

@@ -1,9 +1,7 @@
 package util
 
 import (
-	"bufio"
 	"fmt"
-	"io"
 	"regexp"
 	"strings"
 
@@ -12,28 +10,19 @@ import (
 
 var httpURL = regexp.MustCompile(`^https?://[^?#]*$`)
 
-// doctorRoute is `util doctor-route <profile> <base_url> <adapter flag>`, the
-// credential on stdin: doctor's read-only gateway and adapter checks, as
-// `<OK|FAIL|WARN|INFO|SKIP>\t<message>` rows plus one bare `endpoint: <redacted>`
-// line. Exit 1 when a row is FAIL. Nothing is started and nothing is written.
-func doctorRoute(args []string, in io.Reader, out, _ io.Writer) int {
-	if len(args) != 3 {
-		return 2
-	}
-	name, base, adapter := args[0], args[1], args[2]
-	key, _ := bufio.NewReader(in).ReadString('\n')
-	key = strings.TrimRight(key, "\r\n")
-	failed := 0
+// DoctorRow is one line of doctor's route report: a status (OK, FAIL, WARN,
+// INFO, SKIP) and its message; an empty Kind is a bare line.
+type DoctorRow struct{ Kind, Msg string }
+
+// DoctorRoute is doctor's read-only gateway and adapter checks for a profile with
+// the given base_url, adapter flag and credential; failed is true when a row is
+// FAIL. Nothing is started and nothing is written.
+func DoctorRoute(name, base string, adapter bool, key string) (rows []DoctorRow, failed bool) {
 	row := func(kind, msg string) {
 		if kind == "FAIL" {
-			failed = 1
+			failed = true
 		}
-		fmt.Fprintf(out, "%s\t%s\n", kind, msg)
-	}
-	run := func(f verb, in io.Reader, args ...string) (string, int) {
-		var b strings.Builder
-		rc := f(args, in, &b, io.Discard)
-		return strings.TrimRight(b.String(), "\n"), rc
+		rows = append(rows, DoctorRow{kind, msg})
 	}
 
 	if base == "" {
@@ -43,22 +32,18 @@ func doctorRoute(args []string, in io.Reader, out, _ io.Writer) int {
 		if !valid {
 			row("FAIL", "config: base_url must be an http(s) URL without query or fragment")
 		}
-		fmt.Fprintln(out, "endpoint: "+profile.RedactURL(base))
+		row("", "endpoint: "+profile.RedactURL(base))
 		switch {
 		case !valid:
 			row("SKIP", "gateway: invalid endpoint (no request sent)")
 		case key == "":
 			row("SKIP", "gateway: no API credential for metadata request")
 		default:
-			payload, _ := run(fetchListing, strings.NewReader(key+"\n"), base, "doctor")
-			body, code := "", payload
-			if i := strings.LastIndex(payload, "\n"); i >= 0 {
-				body, code = payload[:i], payload[i+1:]
-			}
+			body, code := ProbeListing(base, key)
 			switch {
 			case strings.HasPrefix(code, "2") && len(code) == 3:
-				if n, rc := run(modelsCount, strings.NewReader(body)); rc == 0 {
-					row("OK", fmt.Sprintf("gateway: reachable (HTTP %s); models: %s", code, n))
+				if n, ok := modelsCount(body); ok {
+					row("OK", fmt.Sprintf("gateway: reachable (HTTP %s); models: %d", code, n))
 				} else {
 					row("FAIL", fmt.Sprintf("gateway: malformed model listing (HTTP %s)", code))
 				}
@@ -71,7 +56,7 @@ func doctorRoute(args []string, in io.Reader, out, _ io.Writer) int {
 	}
 
 	switch {
-	case adapter == "true":
+	case adapter:
 		row("INFO", "adapter: configured=true (not started by read-only doctor)")
 	case base != "":
 		row("INFO", "adapter: automatic compatibility may apply at launch (not started by doctor)")
@@ -79,7 +64,7 @@ func doctorRoute(args []string, in io.Reader, out, _ io.Writer) int {
 		row("SKIP", "adapter: native profile path (not started by doctor)")
 	}
 	if base != "" {
-		running, _ := run(runningAdapter, nil, name)
+		running := runningAdapter(name)
 		switch {
 		case running == "__UNKNOWN__":
 			row("SKIP", "adapter: status unknown (process inspection unavailable; not started by doctor)")
@@ -93,7 +78,7 @@ func doctorRoute(args []string, in io.Reader, out, _ io.Writer) int {
 				if cpid == pid {
 					what = "in-process shim"
 				}
-				listener, _ := run(listenerOf, nil, cpid)
+				listener := listenerOf(cpid)
 				switch {
 				case listener == "__UNKNOWN__":
 					row("SKIP", fmt.Sprintf("adapter: %s listener status unknown (pid %s)", what, cpid))
@@ -105,5 +90,5 @@ func doctorRoute(args []string, in io.Reader, out, _ io.Writer) int {
 			}
 		}
 	}
-	return failed
+	return rows, failed
 }

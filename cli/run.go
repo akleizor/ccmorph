@@ -195,7 +195,7 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 	now := time.Now()
 	relayID := fmt.Sprintf("%d.%d_%06d.%d", l.launcherPID, now.Unix(), now.Nanosecond()/1000, rand.IntN(32768))
 	relayFile := filepath.Join(l.dir, ".reswitch."+relayID)
-	l.utilQ(nil, "", "gc-stale", l.dir, l.profileDirs, tmpDir())
+	util.GCStale(l.dir, l.profileDirs, tmpDir())
 	if err := os.Remove(relayFile); err != nil && !os.IsNotExist(err) {
 		return nil, 1
 	}
@@ -500,7 +500,9 @@ func (l *launcher) migrateOnce() bool {
 		legacy = append(legacy, l.dir)
 	}
 	if plain && isDarwin() {
-		l.util(nil, "", "keychain-migrate", l.dir)
+		if err := util.KeychainMigrate(l.dir); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
 	}
 	for _, p := range legacy {
 		if _, err := os.Lstat(p); err == nil {
@@ -556,8 +558,9 @@ func (l *launcher) listing(base, key string) (string, bool) {
 	if v, ok := l.memo[mk]; ok && v != "" {
 		return v, true
 	}
-	v, rc := l.utilQ(nil, key+"\n", "fetch-listing", base, "launch", "8")
-	if rc != 0 {
+	v, ok := util.LaunchListing(base, key, 8)
+	v = strings.TrimRight(v, "\n")
+	if !ok {
 		return "", false
 	}
 	l.memo[mk] = v
@@ -586,49 +589,33 @@ func (l *launcher) projectPicker(name, base, key, own, tag, launch string) bool 
 // profileEnvironment is `ccmorph _env`: the profile's launch env, after
 // provisioning its config dir and running the host's prelaunch step.
 func (l *launcher) profileEnvironment(name string) ([]string, bool) {
-	out, errOut, rc := l.core(nil, "", "util", "profile-env", l.dir, l.profileDirs, name)
-	if errOut != "" {
-		fmt.Fprintln(os.Stderr, errOut)
-	}
-	if rc != 0 {
-		if out == "" {
-			out = "could not read profile '" + name + "'"
+	typ, env, err := util.ProfileEnv(l.dir, l.profileDirs, name, func(line string) { fmt.Fprintln(os.Stderr, line) })
+	if err != nil {
+		msg := err.Error()
+		if msg == "" {
+			msg = "could not read profile '" + name + "'"
 		}
-		l.err(out)
+		l.err(msg)
 		return nil, false
 	}
-	first, rest, _ := strings.Cut(out, "\n")
-	if !l.setupDir(name, strings.TrimPrefix(first, "type=")) {
+	if !l.setupDir(name, typ) {
 		return nil, false
 	}
 	l.prelaunch(name)
-	if rest == "" {
-		return nil, true
-	}
-	return strings.Split(rest, "\n"), true
+	return env, true
 }
 
 // setupDir is _ccm_setup_dir: provision the profile's config dir unless it is.
 func (l *launcher) setupDir(name, typ string) bool {
-	if _, rc := l.util(nil, "", "profile-ok", l.profileDirs, name); rc == 0 {
+	if util.ProfileOK(l.profileDirs, name) {
 		return true
 	}
-	out, rc := l.util(nil, "", "setup-profile", l.profileDirs, name, typ)
-	for _, line := range strings.Split(out, "\n") {
-		switch {
-		case strings.HasPrefix(line, "err "):
-			l.err(line[4:])
-		case strings.HasPrefix(line, "log "):
-			l.log(line[4:])
-		}
-	}
-	if rc != 0 {
+	if !util.SetupProfile(l.profileDirs, name, typ, l.log, l.err) {
 		return false
 	}
 	if file := l.profileLayer(name); isFile(file) {
 		if fi, err := os.Lstat(file); err == nil && fi.Mode().IsRegular() {
-			l.utilQ([]string{"_CCM_SL_OWNED=" + filepath.Join(l.dir, "statusline") + "\n" + filepath.Join(l.libDir, "statusline")},
-				"", "unwire-statusline", file)
+			util.UnwireStatusline(file, filepath.Join(l.dir, "statusline"), filepath.Join(l.libDir, "statusline"))
 		}
 	}
 	return true
@@ -983,6 +970,5 @@ func (l *launcher) modelKnown(name, want string) int {
 	if !ok || profile.Validate(name, f) != nil {
 		return 2
 	}
-	_, rc := l.utilQ(nil, f["api_key"]+"\n", "model-served", want, f["type"], f["base_url"], f["model_map"])
-	return rc
+	return int(util.ModelServed(want, f["type"], f["base_url"], f["model_map"], f["api_key"]))
 }

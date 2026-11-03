@@ -2,6 +2,9 @@ package cli
 
 import (
 	"fmt"
+	"github.com/akleizor/ccmorph/util"
+	"os"
+	"strings"
 
 	"github.com/akleizor/ccmorph/profile"
 )
@@ -91,8 +94,9 @@ func (l *launcher) modelsJSON(name string, preview ...string) (string, bool) {
 		l.err("'" + name + "' has no api_key — model discovery needs one")
 		return "", false
 	}
-	out, rc := l.util(nil, f["api_key"]+"\n", "fetch-listing", base, "models")
-	if rc != 0 {
+	out, ok := util.ModelsListing(base, f["api_key"], os.Stderr)
+	out = strings.TrimRight(out, "\n")
+	if !ok {
 		red := profile.RedactURL(base)
 		l.err("could not reach '" + red + "' — if it is an internal endpoint, connect your private network and try again")
 		return "", false

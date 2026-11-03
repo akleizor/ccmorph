@@ -1,6 +1,7 @@
 package util
 
 import (
+	"slices"
 	"context"
 	"fmt"
 	"io"
@@ -38,12 +39,10 @@ func resolveLink(p string) string {
 
 func isDir(p string) bool { fi, err := os.Stat(p); return err == nil && fi.IsDir() }
 
-// migrateProfileHome moves a legacy ~/.claude-profiles into the state root under a lock.
-func migrateProfileHome(args []string, _ io.Reader, _, errw io.Writer) int {
-	if len(args) != 2 {
-		return 2
-	}
-	legacy, target := args[0], args[1]
+// MigrateProfileHome moves a legacy ~/.claude-profiles into the state root under a
+// lock. moved reports a move, which the caller announces; the error is the
+// message to show.
+func MigrateProfileHome(legacy, target string) (moved bool, err error) {
 	e := pycompat.Catch(func() {
 		parent := filepath.Dir(target)
 		if err := os.MkdirAll(parent, 0o777); err != nil {
@@ -91,22 +90,19 @@ func migrateProfileHome(args []string, _ io.Reader, _, errw io.Writer) int {
 				}
 				pycompat.RaiseOS(err)
 			}
-			fmt.Fprintf(errw, "ccmorph: profile storage moved to %s; legacy path retained as a compatibility link\n", target)
+			moved = true
 		}
 	})
 	if e != nil {
-		fmt.Fprintf(errw, "ccmorph: profile directory migration incomplete: %s\n", e.Msg)
-		return 1
+		return false, fmt.Errorf("ccmorph: profile directory migration incomplete: %s", e.Msg)
 	}
-	return 0
+	return moved, nil
 }
 
-// normalizePluginIndex repairs plugin index paths made stale by the shared-plugins topology.
-func normalizePluginIndex(args []string, _ io.Reader, _, _ io.Writer) int {
-	if len(args) != 2 {
-		return 2
-	}
-	home, profileRoot := pycompat.Path(args[0]), pycompat.Path(args[1])
+// NormalizePluginIndex repairs plugin index paths made stale by the shared-plugins
+// topology; false when a rewrite failed.
+func NormalizePluginIndex(homeDir, profileDir string) bool {
+	home, profileRoot := pycompat.Path(homeDir), pycompat.Path(profileDir)
 	plugins := filepath.Join(home, ".claude", "plugins")
 	legacyRoot := filepath.Join(home, ".claude-profiles")
 	canonical := func(v pycompat.Value, kind string) (string, bool) {
@@ -155,7 +151,7 @@ func normalizePluginIndex(args []string, _ io.Reader, _, _ io.Writer) int {
 			}
 			if changed {
 				if err := write(known, o); err != nil {
-					return 1
+					return false
 				}
 			}
 		}
@@ -182,44 +178,52 @@ func normalizePluginIndex(args []string, _ io.Reader, _, _ io.Writer) int {
 				}
 				if changed {
 					if err := write(installed, root); err != nil {
-						return 1
+						return false
 					}
 				}
 			}
 		}
 	}
+	return true
+}
+
+// normalizePluginIndexVerb is `util normalize-plugin-index <home> <profiles dir>`,
+// the one verb install.sh runs.
+func normalizePluginIndexVerb(args []string, _ io.Reader, _, _ io.Writer) int {
+	if len(args) != 2 {
+		return 2
+	}
+	if !NormalizePluginIndex(args[0], args[1]) {
+		return 1
+	}
 	return 0
 }
 
-// settingsValid exits 1 unless every existing file named is a JSON object.
-func settingsValid(args []string, _ io.Reader, _, _ io.Writer) int {
-	for _, p := range args {
+// SettingsValid reports whether every existing file named is a JSON object.
+func SettingsValid(paths ...string) bool {
+	for _, p := range paths {
 		v, err := loadJSON(p)
 		if err != nil {
 			if pycompat.IsNotExist(err) {
 				continue
 			}
-			return 1
+			return false
 		}
 		if asObj(v) == nil {
-			return 1
+			return false
 		}
 	}
-	return 0
+	return true
 }
 
-// modelsCount prints the length of data in a model listing on stdin, or exits 1.
-func modelsCount(_ []string, in io.Reader, out, _ io.Writer) int {
-	v, err := pycompat.Parse(readAll(in))
+// modelsCount is the length of data in a model listing; false when it has none.
+func modelsCount(body string) (int, bool) {
+	v, err := pycompat.Parse([]byte(body))
 	if err != nil {
-		return 1
+		return 0, false
 	}
 	list, ok := getKey(asObj(v), "data").([]any)
-	if !ok {
-		return 1
-	}
-	fmt.Fprintln(out, len(list))
-	return 0
+	return len(list), ok
 }
 
 // shellSplit is shlex.split for a ps command column.
@@ -300,22 +304,18 @@ func execIndex(args []string) int {
 	return 0
 }
 
-// runningAdapter prints "<pid>\t<holder>:<name>,..." for the profile's running adapter,
-// nothing when there is none, and __UNKNOWN__ when the process table cannot be read.
+// runningAdapter is "<pid>\t<holder>:<name>,..." for the profile's running adapter,
+// "" when there is none, and __UNKNOWN__ when the process table cannot be read.
 // The holders are the spawned children worth checking (cliproxyapi; a
 // CCMORPH_SHIM_HOOKS build, any child but ccmorph-core) and, when no hooks child exists,
 // the adapter process itself as "shim": the stock shim is served in-process, so
 // its listener is the adapter's own.
-func runningAdapter(args []string, _ io.Reader, out, _ io.Writer) int {
-	if len(args) != 1 {
-		return 2
-	}
+func runningAdapter(profile string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	raw, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,ppid=,command=").Output()
 	if err != nil {
-		fmt.Fprintln(out, "__UNKNOWN__")
-		return 0
+		return "__UNKNOWN__"
 	}
 	type proc struct {
 		pid, ppid int
@@ -359,7 +359,7 @@ func runningAdapter(args []string, _ io.Reader, out, _ io.Writer) int {
 		return "", false
 	}
 	for _, p := range procs {
-		if name, ok := adapterProfile(p.args); !ok || name != args[0] {
+		if name, ok := adapterProfile(p.args); !ok || name != profile {
 			continue
 		}
 		var children []string
@@ -382,32 +382,26 @@ func runningAdapter(args []string, _ io.Reader, out, _ io.Writer) int {
 		if !shimChild {
 			children = append(children, fmt.Sprintf("%d:shim", p.pid))
 		}
-		fmt.Fprintf(out, "%d\t%s\n", p.pid, strings.Join(children, ","))
-		return 0
+		return fmt.Sprintf("%d\t%s", p.pid, strings.Join(children, ","))
 	}
-	return 0
+	return ""
 }
 
-// listenerOf prints the first TCP listen address of a pid, __UNKNOWN__ when lsof cannot say.
-func listenerOf(args []string, _ io.Reader, out, _ io.Writer) int {
-	if len(args) != 1 {
-		return 2
-	}
+// listenerOf is the first TCP listen address of a pid, __UNKNOWN__ when lsof cannot say.
+func listenerOf(pid string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	raw, err := exec.CommandContext(ctx, "lsof", "-nP", "-a", "-p", args[0], "-iTCP", "-sTCP:LISTEN").Output()
+	raw, err := exec.CommandContext(ctx, "lsof", "-nP", "-a", "-p", pid, "-iTCP", "-sTCP:LISTEN").Output()
 	if err != nil {
-		fmt.Fprintln(out, "__UNKNOWN__")
-		return 0
+		return "__UNKNOWN__"
 	}
 	rows := strings.Split(string(raw), "\n")
 	for _, row := range rows[min(1, len(rows)):] {
 		if f := strings.Fields(row); len(f) > 0 {
-			fmt.Fprintln(out, f[max(len(f)-2, 0)])
-			break
+			return f[max(len(f)-2, 0)]
 		}
 	}
-	return 0
+	return ""
 }
 
 // listing returns the entries of payload["data"], ok=false when the payload cannot be read like Python would.
@@ -571,34 +565,23 @@ func savedProviderModels(args []string, _ io.Reader, out, _ io.Writer) int {
 	return 0
 }
 
-// unwireStatusline drops a statusLine command ccmorph itself once wired (_CCM_SL_OWNED).
-func unwireStatusline(args []string, _ io.Reader, _, _ io.Writer) int {
-	if len(args) != 1 {
-		return 2
-	}
-	owned := map[string]bool{}
-	for _, p := range strings.Split(os.Getenv("_CCM_SL_OWNED"), "\n") {
-		if p != "" {
-			owned[p] = true
-		}
-	}
-	v, err := loadJSON(args[0])
+// UnwireStatusline drops the statusLine of the settings file at path when its
+// command is one ccmorph itself once wired (one of owned).
+func UnwireStatusline(path string, owned ...string) error {
+	v, err := loadJSON(path)
 	if err != nil {
-		return 0
+		return nil
 	}
 	doc := asObj(v)
 	if doc == nil {
-		return 0
+		return nil
 	}
 	cmd, _ := getKey(asObj(getKey(doc, "statusLine")), "command").(string)
-	if !owned[cmd] || cmd == "" {
-		return 0
+	if cmd == "" || !slices.Contains(owned, cmd) {
+		return nil
 	}
 	doc.Delete("statusLine")
-	if AtomicWrite(args[0], ".sl.", []byte(pycompat.Marshal(doc, pycompat.Format{Indent: 2, ASCII: true})+"\n"), 0o600, false) != nil {
-		return 1
-	}
-	return 0
+	return AtomicWrite(path, ".sl.", []byte(pycompat.Marshal(doc, pycompat.Format{Indent: 2, ASCII: true})+"\n"), 0o600, false)
 }
 
 var commandArgs = regexp.MustCompile(`(?s)<command-args>(.*?)</command-args>`)

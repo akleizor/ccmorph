@@ -1,6 +1,7 @@
 package util
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -36,61 +37,59 @@ func keychainPut(ref, secret string) error {
 	return nil
 }
 
-// keychainDelete: keychain-delete <profile> removes the profile's keychain items.
-func keychainDelete(args []string, _ io.Reader, _, _ io.Writer) int {
-	if len(args) != 1 || !ctxwindow.ValidProfileName(args[0]) || runtime.GOOS != "darwin" {
-		return 0
+// KeychainDelete removes the profile's keychain items (macOS only, best effort).
+func KeychainDelete(name string) {
+	if !ctxwindow.ValidProfileName(name) || runtime.GOOS != "darwin" {
+		return
 	}
 	for _, key := range []string{"api_key", "token"} {
 		exec.Command("security", "delete-generic-password", "-s", keychainService,
-			"-a", strings.TrimPrefix(keychainRef(args[0], key), "keychain:")).Run()
+			"-a", strings.TrimPrefix(keychainRef(name, key), "keychain:")).Run()
 	}
-	return 0
 }
 
-// keychainRename: keychain-rename <old> <new> moves a renamed profile's items
-// and rewrites its conf references. The conf is already at <new>.conf.
-func keychainRename(args []string, _ io.Reader, _, errw io.Writer) int {
-	if len(args) != 3 || runtime.GOOS != "darwin" {
-		return 0
+// KeychainRename moves a renamed profile's items and rewrites its conf references.
+// The conf is already at <renamed>.conf.
+func KeychainRename(state, old, renamed string) error {
+	if runtime.GOOS != "darwin" {
+		return nil
 	}
-	state, old, renamed := args[0], args[1], args[2]
 	return keychainMove(filepath.Join(state, renamed+".conf"), renamed, func(key string) string {
 		return keychainRef(old, key)
-	}, errw)
+	})
 }
 
-// keychainMigrate: keychain-migrate <state-dir> moves every plain api_key and
-// token into the login keychain, macOS only. A profile whose secret cannot be
-// stored keeps its plain value: nothing is lost.
-func keychainMigrate(args []string, _ io.Reader, _, errw io.Writer) int {
-	if len(args) != 1 || runtime.GOOS != "darwin" {
-		return 0
+// KeychainMigrate moves every plain api_key and token under state into the login
+// keychain, macOS only. A profile whose secret cannot be stored keeps its plain
+// value: nothing is lost.
+func KeychainMigrate(state string) error {
+	if runtime.GOOS != "darwin" {
+		return nil
 	}
 	if exec.Command("security", "default-keychain").Run() != nil {
-		return 0 // no login keychain (a CI or scratch $HOME): the conf stays 0600
+		return nil // no login keychain (a CI or scratch $HOME): the conf stays 0600
 	}
-	confs, _ := filepath.Glob(filepath.Join(args[0], "*.conf"))
-	rc := 0
+	confs, _ := filepath.Glob(filepath.Join(state, "*.conf"))
+	var errs []error
 	for _, conf := range confs {
 		name := strings.TrimSuffix(filepath.Base(conf), ".conf")
 		if !ctxwindow.ValidProfileName(name) || isSymlink(conf) {
 			continue
 		}
-		if keychainMove(conf, name, nil, errw) != 0 {
-			rc = 1
+		if err := keychainMove(conf, name, nil); err != nil {
+			errs = append(errs, err)
 		}
 	}
-	return rc
+	return errors.Join(errs...)
 }
 
 // keychainMove rewrites conf's api_key and token as keychain references for
 // profile name. A plain value is stored first; a reference from (a rename) is
 // copied. The conf is rewritten only after every item is stored.
-func keychainMove(conf, name string, from func(string) string, errw io.Writer) int {
+func keychainMove(conf, name string, from func(string) string) error {
 	data, err := os.ReadFile(conf)
 	if err != nil {
-		return 0
+		return nil
 	}
 	lines := strings.Split(string(data), "\n")
 	changed := false
@@ -106,38 +105,36 @@ func keychainMove(conf, name string, from func(string) string, errw io.Writer) i
 				continue
 			}
 			if secret, err = profile.KeychainGet(value); err != nil {
-				fmt.Fprintf(errw, "ccmorph: %s: %s is missing from the keychain\n", name, value)
-				return 1
+				return fmt.Errorf("ccmorph: %s: %s is missing from the keychain", name, value)
 			}
 		} else if from != nil {
 			continue
 		}
 		if err := keychainPut(ref, secret); err != nil {
-			fmt.Fprintf(errw, "ccmorph: %s keeps its plain %s: %v\n", name, key, err)
-			return 1
+			return fmt.Errorf("ccmorph: %s keeps its plain %s: %v", name, key, err)
 		}
 		lines[i] = key + "=" + ref
 		changed = true
 	}
 	if !changed {
-		return 0
+		return nil
 	}
 	_, before := ctxwindow.ReadConf(conf)
 	fi, err := os.Stat(conf)
 	if err != nil {
-		return 1
+		return fmt.Errorf("ccmorph: %s: %v", name, err)
 	}
-	if AtomicWrite(conf, ".keychain-tmp.", []byte(strings.Join(lines, "\n")), fi.Mode().Perm(), true) != nil {
-		return 1
+	if err := AtomicWrite(conf, ".keychain-tmp.", []byte(strings.Join(lines, "\n")), fi.Mode().Perm(), true); err != nil {
+		return fmt.Errorf("ccmorph: %s: %v", name, err)
 	}
 	// The key is part of the route fingerprint; the same key under a new
 	// spelling must not orphan the profile's discovered windows.
 	_, after := ctxwindow.ReadConf(conf)
 	ctxwindow.Restamp(conf, ctxwindow.RouteFingerprint(before), ctxwindow.RouteFingerprint(after))
 	if from != nil {
-		keychainDelete([]string{strings.TrimSuffix(strings.TrimPrefix(from("api_key"), "keychain:"), ".api_key")}, nil, nil, nil)
+		KeychainDelete(strings.TrimSuffix(strings.TrimPrefix(from("api_key"), "keychain:"), ".api_key"))
 	}
-	return 0
+	return nil
 }
 
 // profileRead: profile-read <state> <name> <secure 0|1> [<profile env> <mapping env>]
@@ -165,48 +162,37 @@ func profileRead(args []string, _ io.Reader, out, errw io.Writer) int {
 	return 0
 }
 
-// profileValidate is `util profile-validate <name>` over NUL-separated key/value
-// pairs on stdin; the refusal goes to stdout with exit 1.
-func profileValidate(args []string, in io.Reader, out, _ io.Writer) int {
-	if len(args) != 1 {
-		return 2
+// ProfileEnv reads, validates and builds the profile's launch environment, one
+// VAR=value per entry, with its type. A refusal is the error; removed-key notices
+// go to notice.
+func ProfileEnv(state, profiles, name string, notice func(string)) (typ string, env []string, err error) {
+	f, err := profile.Read(state, name, true, profile.Defaults(), notice)
+	if err == nil {
+		err = profile.Validate(name, f)
 	}
-	parts := strings.Split(string(readAll(in)), "\x00")
-	f := map[string]string{}
-	for i := 0; i+1 < len(parts); i += 2 {
-		f[parts[i]] = parts[i+1]
+	if err == nil {
+		env, err = profile.Env(name, profiles, f)
 	}
-	if err := profile.Validate(args[0], f); err != nil {
-		io.WriteString(out, err.Error())
-		return 1
+	if err != nil {
+		return "", nil, err
 	}
-	return 0
+	return f["type"], env, nil
 }
 
-// profileEnv is `util profile-env <state dir> <profiles dir> <name>`: read, validate and print the profile's launch
-// environment, one VAR=value per line, after a first `type=<type>` line. A refusal
-// goes to stdout with exit 1. As with profile-read, a v0.4.3 launcher's two trailing
-// env-key list operands are accepted and ignored (#137).
+// profileEnv is `util profile-env <state dir> <profiles dir> <name>`: ProfileEnv as
+// text, one VAR=value per line after a first `type=<type>` line. A refusal goes to
+// stdout with exit 1. A v0.4.3 launcher's two trailing env-key list operands are
+// accepted and ignored (#137, tests/old_launcher_contract_test.py).
 func profileEnv(args []string, _ io.Reader, out, errw io.Writer) int {
 	if len(args) != 3 && len(args) != 5 {
 		return 2
 	}
-	name := args[2]
-	f, err := profile.Read(args[0], name, true,
-		profile.Defaults(),
-		func(line string) { fmt.Fprintln(errw, line) })
-	if err == nil {
-		err = profile.Validate(name, f)
-	}
-	var env []string
-	if err == nil {
-		env, err = profile.Env(name, args[1], f)
-	}
+	typ, env, err := ProfileEnv(args[0], args[1], args[2], func(line string) { fmt.Fprintln(errw, line) })
 	if err != nil {
 		io.WriteString(out, err.Error())
 		return 1
 	}
-	fmt.Fprintln(out, "type="+f["type"])
+	fmt.Fprintln(out, "type="+typ)
 	for _, l := range env {
 		fmt.Fprintln(out, l)
 	}

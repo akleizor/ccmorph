@@ -1,8 +1,8 @@
 package util
 
 import (
+	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 
@@ -62,26 +62,20 @@ func chmod600(path string) {
 	}
 }
 
-// provisionProfile: provision-profile <profile dir> <type>. Establishes a profile's
-// auth-scoped config.json and .claude.json; nothing else is touched.
-func provisionProfile(args []string, _ io.Reader, _, errw io.Writer) (rc int) {
-	if len(args) != 2 {
-		return 2
-	}
+// provisionProfile establishes a profile's auth-scoped config.json and
+// .claude.json; nothing else is touched. The error carries the reason.
+func provisionProfile(pdir, kind string) (err error) {
 	defer func() {
 		switch r := recover().(type) {
 		case nil:
 		case exitMsg:
-			fmt.Fprintln(errw, string(r))
-			rc = 1
+			err = errors.New(string(r))
 		case *pycompat.Exc:
-			fmt.Fprintln(errw, r.Msg)
-			rc = 1
+			err = errors.New(r.Msg)
 		default:
 			panic(r)
 		}
 	}()
-	pdir, kind := args[0], args[1]
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = ""
@@ -153,5 +147,5 @@ func provisionProfile(args []string, _ io.Reader, _, errw io.Writer) (rc int) {
 	} else {
 		chmod600(claudeJSON)
 	}
-	return 0
+	return nil
 }

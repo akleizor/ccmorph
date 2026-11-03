@@ -142,7 +142,12 @@ func (l *launcher) secureDirs() bool {
 		same := isLink(legacyHome) && isDir(l.profileDirs) && !isLink(l.profileDirs) &&
 			resolvePath(legacyHome) == resolvePath(l.profileDirs)
 		if !same {
-			if _, rc := l.util(nil, "", "migrate-profile-home", legacyHome, l.profileDirs); rc != 0 {
+			moved, err := util.MigrateProfileHome(legacyHome, l.profileDirs)
+			if moved {
+				fmt.Fprintf(os.Stderr, "ccmorph: profile storage moved to %s; legacy path retained as a compatibility link\n", l.profileDirs)
+			}
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
 				return false
 			}
 		}
@@ -179,7 +184,7 @@ func (l *launcher) normalizePluginIndex() {
 		}
 		s := string(b)
 		if strings.Contains(s, filepath.Join(home, ".claude-profiles")+"/") || strings.Contains(s, l.profileDirs+"/") {
-			l.utilQ(nil, "", "normalize-plugin-index", home, l.profileDirs)
+			util.NormalizePluginIndex(home, l.profileDirs)
 			return
 		}
 	}

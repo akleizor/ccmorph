@@ -18,12 +18,12 @@ func TestKeychainMigrateMovesThePlainKeyAndReadsItBack(t *testing.T) {
 	}
 	dir := t.TempDir()
 	name := "ccmtest" + strings.ReplaceAll(filepath.Base(dir), "-", "")
-	t.Cleanup(func() { keychainDelete([]string{name}, nil, nil, nil) })
+	t.Cleanup(func() { KeychainDelete(name) })
 	conf := filepath.Join(dir, name+".conf")
 	secret := `sk-"quoted"\back`
 	os.WriteFile(conf, []byte("type=apikey\napi_key="+secret+"\n"), 0o600)
-	if keychainMigrate([]string{dir}, nil, nil, os.Stderr) != 0 {
-		t.Fatal("migrate failed")
+	if err := KeychainMigrate(dir); err != nil {
+		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(conf)
 	if !strings.Contains(string(data), "api_key=keychain:"+name+".api_key") || strings.Contains(string(data), "sk-") {
