@@ -1,11 +1,12 @@
 package ctxwindow
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
-
-	"github.com/akleizor/ccmorph/pycompat"
 )
 
 // Limit is a context window derived from a models.dev `limit` object.
@@ -14,7 +15,7 @@ type Limit struct {
 	Input, Context *int64
 }
 
-func posIntPtr(v pycompat.Value) *int64 {
+func posIntPtr(v any) *int64 {
 	if n, ok := posInt(v); ok {
 		return &n
 	}
@@ -24,13 +25,13 @@ func posIntPtr(v pycompat.Value) *int64 {
 // LimitWindow derives {value, input, context} from a models.dev `limit` object.
 // The operational budget is the tighter of input and context: an input
 // sub-limit below the combined context still refuses a larger send.
-func LimitWindow(limit pycompat.Value) *Limit {
-	o, ok := limit.(*pycompat.Obj)
+func LimitWindow(limit any) *Limit {
+	o, ok := limit.(map[string]any)
 	if !ok {
 		return nil
 	}
-	cv, _ := o.Get("context")
-	iv, _ := o.Get("input")
+	cv := o["context"]
+	iv := o["input"]
 	context, input := posIntPtr(cv), posIntPtr(iv)
 	var value int64
 	switch {
@@ -49,26 +50,26 @@ func LimitWindow(limit pycompat.Value) *Limit {
 	return &Limit{value, input, context}
 }
 
-func objOf(v pycompat.Value) *pycompat.Obj { o, _ := v.(*pycompat.Obj); return o }
+func objOf(v any) obj { o, _ := v.(map[string]any); return o }
 
-func windowOf(entry *pycompat.Obj) *Limit {
-	v, _ := entry.Get("limit")
+func windowOf(entry obj) *Limit {
+	v := entry["limit"]
 	return LimitWindow(v)
 }
 
 // CanonicalCatalogueWindow is an exact canonical-leaf match in the flat
 // models.dev models.json catalogue, with an unambiguous family fallback.
-func CanonicalCatalogueWindow(catalogue *pycompat.Obj, modelID, ownedBy string) *Limit {
-	var entry *pycompat.Obj
+func CanonicalCatalogueWindow(catalogue obj, modelID, ownedBy string) *Limit {
+	var entry obj
 	if ownedBy != "" {
-		v, _ := catalogue.Get(ownedBy + "/" + modelID)
+		v := catalogue[ownedBy+"/"+modelID]
 		entry = objOf(v)
 	}
 	if entry == nil {
 		suffix := "/" + modelID
-		var matches []*pycompat.Obj
-		for _, k := range catalogue.Keys() {
-			v, _ := catalogue.Get(k)
+		var matches []obj
+		for _, k := range slices.Sorted(maps.Keys(catalogue)) {
+			v := catalogue[k]
 			if o := objOf(v); o != nil && strings.HasSuffix(k, suffix) {
 				matches = append(matches, o)
 			}
@@ -87,14 +88,14 @@ func CanonicalCatalogueWindow(catalogue *pycompat.Obj, modelID, ownedBy string) 
 		// An exact match with no usable window falls through to the family tier.
 		entry = nil
 	}
-	var family []*pycompat.Obj
-	for _, k := range catalogue.Keys() {
-		v, _ := catalogue.Get(k)
+	var family []obj
+	for _, k := range slices.Sorted(maps.Keys(catalogue)) {
+		v := catalogue[k]
 		o := objOf(v)
 		if o == nil {
 			continue
 		}
-		if fam, _ := o.Get("family"); fam == modelID && (ownedBy == "" || strings.HasPrefix(k, ownedBy+"/")) {
+		if fam := o["family"]; fam == modelID && (ownedBy == "" || strings.HasPrefix(k, ownedBy+"/")) {
 			family = append(family, o)
 		}
 	}
@@ -136,24 +137,14 @@ func bundledWindow(model string) (int64, bool) {
 	if err != nil {
 		return 0, false
 	}
-	v, err := pycompat.Parse(b)
-	if err != nil {
-		if _, ok := err.(*pycompat.SyntaxError); ok {
-			return 0, false
-		}
-		panic(err)
-	}
+	v, err := parseJSON(b)
 	top := objOf(v)
-	if top == nil {
-		pycompat.Crash("AttributeError", "catalogue is not an object")
+	if err != nil || top == nil {
+		return 0, false
 	}
-	m, ok := top.Get("models")
-	if !ok {
-		m = pycompat.NewObj()
-	}
-	models := objOf(m)
+	models := objOf(top["models"])
 	if models == nil {
-		pycompat.Crash("AttributeError", "catalogue models is not an object")
+		return 0, false
 	}
 	if found := CanonicalCatalogueWindow(models, model, ""); found != nil {
 		return found.Value, true
@@ -161,9 +152,9 @@ func bundledWindow(model string) (int64, bool) {
 	return 0, false
 }
 
-func stated(row *pycompat.Obj) (int64, bool) {
+func stated(row obj) (int64, bool) {
 	for _, f := range DeclaredFields {
-		v, _ := row.Get(f)
+		v := row[f]
 		if n, ok := posInt(v); ok {
 			return n, true
 		}
@@ -176,17 +167,14 @@ func endpointWindow(model string) (int64, bool) {
 	if !ok {
 		text = "[]"
 	}
-	v, err := pycompat.Parse([]byte(text))
+	v, err := parseJSON([]byte(text))
 	if err != nil {
-		if _, ok := err.(*pycompat.SyntaxError); ok {
-			return 0, false
-		}
-		panic(err)
+		return 0, false
 	}
 	rows, _ := v.([]any)
 	for _, r := range rows {
 		if row := objOf(r); row != nil {
-			if id, _ := row.Get("id"); id == model {
+			if id := row["id"]; id == model {
 				return stated(row)
 			}
 		}
@@ -205,23 +193,21 @@ type Record struct {
 
 // JSON is the record as json.dumps prints it.
 func (r Record) JSON() string {
-	o := pycompat.NewObj()
-	o.Set("window", pycompat.Int(r.Window))
-	o.Set("send_id", r.SendID)
-	o.Set("source", r.Source)
-	if r.Unprobed {
-		o.Set("unprobed", true)
-		o.Set("budget", pycompat.Int(r.Budget))
-	}
-	return pycompat.Marshal(o, pycompat.Format{ASCII: true})
+	return jsonString(struct {
+		Window   int64  `json:"window"`
+		SendID   string `json:"send_id"`
+		Source   string `json:"source"`
+		Unprobed bool   `json:"unprobed,omitempty"`
+		Budget   int64  `json:"budget,omitempty"`
+	}{r.Window, r.SendID, r.Source, r.Unprobed, r.Budget})
 }
 
 // Fields is the record as "<window>\t<source>\t<budget>\t<send_id>" for the shell.
 // The window is blank for an unprobed model: the fallback budget is the fact.
 func (r Record) Fields() []string {
-	window, budget := itoa(r.Window), ""
+	window, budget := strconv.FormatInt(r.Window, 10), ""
 	if r.Unprobed {
-		window, budget = "", itoa(r.Budget)
+		window, budget = "", strconv.FormatInt(r.Budget, 10)
 	}
 	return []string{window, r.Source, budget, r.SendID}
 }
@@ -241,12 +227,11 @@ func Resolve(profile, model string) Record {
 		return Record{Window: pin, SendID: model, Source: "conf"}
 	}
 	bare := strings.TrimSuffix(model, "[1m]")
-	var fields map[string]string
-	if e := pycompat.Catch(func() { _, fields = ReadConf(ProfilePath(profile)) }); e != nil {
-		if e.Kind != pycompat.OSError {
-			panic(e)
+	fields := map[string]string{}
+	if path, err := ProfilePath(profile); err == nil {
+		if _, f, err := ReadConf(path); err == nil {
+			fields = f
 		}
-		fields = map[string]string{}
 	}
 	// The served id sizes the session; the requested id stays what the client sees.
 	target := MappedTarget(fields, bare)
@@ -260,21 +245,21 @@ func Resolve(profile, model string) Record {
 	if !have {
 		discovered := DiscoveredValues(fields)
 		matched, found := "", false
-		if discovered.Has(target) {
+		if _, ok := discovered[target]; ok {
 			matched, found = target, true
 		} else {
-			for _, p := range discovered.Keys() {
-				if pycompat.Fnmatch(target, p) {
+			for _, p := range slices.Sorted(maps.Keys(discovered)) {
+				if glob(target, p) {
 					matched, found = p, true
 					break
 				}
 			}
 		}
 		if found {
-			window, have = discovered.Get(matched)
+			window, have = discovered[matched]
 			have = true
-			if tagged, ok := DiscoveredSources(fields).Get(matched); ok {
-				s, _ := tagged.Get("source")
+			if tagged, ok := DiscoveredSources(fields)[matched]; ok {
+				s := tagged["source"]
 				source = "conf-discovered-" + s.(string)
 			} else {
 				source = "conf-discovered"

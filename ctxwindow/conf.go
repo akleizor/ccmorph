@@ -12,16 +12,23 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/akleizor/ccmorph/pycompat"
+	"unicode"
+	"unicode/utf16"
+	"unicode/utf8"
 )
 
 const (
@@ -51,25 +58,25 @@ func ValidProfileName(s string) bool { return profileName.MatchString(s) }
 // StateDir is where ccmorph keeps profiles and the registry.
 func StateDir() string {
 	if v := os.Getenv("CCMORPH_STATE_DIR"); v != "" {
-		return pycompat.Path(v)
+		return filepath.Clean(v)
 	}
 	base := os.Getenv("XDG_CONFIG_HOME")
 	if base == "" {
 		home, _ := os.UserHomeDir()
 		base = home + "/.config"
 	}
-	return pycompat.Join(pycompat.Path(base), "ccmorph")
+	return filepath.Join(base, "ccmorph")
 }
 
 // ProfilePath is the conf file for a profile (MODEL_WINDOW_PROFILE_CONF overrides).
-func ProfilePath(profile string) string {
+func ProfilePath(profile string) (string, error) {
 	if !ValidProfileName(profile) {
-		pycompat.RaiseValue("invalid profile name")
+		return "", errors.New("invalid profile name")
 	}
 	if v := os.Getenv("MODEL_WINDOW_PROFILE_CONF"); v != "" {
-		return pycompat.Path(v)
+		return filepath.Clean(v), nil
 	}
-	return pycompat.Join(StateDir(), profile+".conf")
+	return filepath.Join(StateDir(), profile+".conf"), nil
 }
 
 func isSymlink(path string) bool {
@@ -78,11 +85,14 @@ func isSymlink(path string) bool {
 }
 
 // ReadConf returns the conf text and its key=value fields.
-func ReadConf(path string) (string, map[string]string) {
+func ReadConf(path string) (string, map[string]string, error) {
 	if isSymlink(path) {
-		pycompat.RaiseOSMsg("profile configuration must not be a symlink")
+		return "", nil, errors.New("profile configuration must not be a symlink")
 	}
-	text := pycompat.ReadText(path)
+	text, err := readText(path)
+	if err != nil {
+		return "", nil, err
+	}
 	fields := map[string]string{}
 	for _, line := range strings.Split(text, "\n") {
 		key, value, ok := strings.Cut(strings.Trim(line, " \t\r"), "=")
@@ -97,7 +107,23 @@ func ReadConf(path string) (string, map[string]string) {
 			fields["context_discovered"] = string(data)
 		}
 	}
-	return text, fields
+	return text, fields, nil
+}
+
+// readText is a file's text with "\r\n" and "\r" read as "\n".
+func readText(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	if !utf8.Valid(b) {
+		return "", fmt.Errorf("%s is not valid UTF-8", path)
+	}
+	text := string(b)
+	if strings.Contains(text, "\r") {
+		text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
+	}
+	return text, nil
 }
 
 // DiscoveredPath is where a conf's discovered windows are kept:
@@ -108,27 +134,78 @@ func DiscoveredPath(conf string) string {
 }
 
 // lockPath is the conf's lock file, kept out of the state root's listing.
-func lockPath(conf string) string {
+func lockPath(conf string) (string, error) {
 	dir, name := filepath.Split(conf)
 	if err := os.MkdirAll(filepath.Join(dir, ".locks"), 0o700); err != nil {
-		pycompat.RaiseOS(err)
+		return "", err
 	}
-	return filepath.Join(dir, ".locks", strings.TrimSuffix(name, ".conf")+".lock")
+	return filepath.Join(dir, ".locks", strings.TrimSuffix(name, ".conf")+".lock"), nil
 }
 
 // RouteFingerprint hashes the fields that decide where requests go.
 func RouteFingerprint(fields map[string]string) string {
-	route := pycompat.NewObj()
+	route := map[string]string{}
 	for _, k := range routeFields {
-		route.Set(k, fields[k])
+		route[k] = fields[k]
 	}
 	for k, v := range fields {
 		if strings.HasPrefix(k, "env.ANTHROPIC_") && !modelChoiceEnv.MatchString(k) {
-			route.Set(k, v)
+			route[k] = v
 		}
 	}
-	sum := sha256.Sum256([]byte(pycompat.Marshal(route, pycompat.Format{SortKeys: true, ASCII: true})))
+	// The digest is stored beside every discovered window; these exact bytes keep
+	// already-stored routes (and the probes that paid for them) valid.
+	var doc strings.Builder
+	doc.WriteByte('{')
+	for i, k := range slices.Sorted(maps.Keys(route)) {
+		if i > 0 {
+			doc.WriteString(", ")
+		}
+		doc.WriteString(asciiJSON(k) + ": " + asciiJSON(route[k]))
+	}
+	doc.WriteByte('}')
+	sum := sha256.Sum256([]byte(doc.String()))
 	return hex.EncodeToString(sum[:])
+}
+
+// asciiJSON is a JSON string with every non-ASCII character escaped.
+func asciiJSON(s string) string {
+	var b strings.Builder
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	enc.Encode(s)
+	var out strings.Builder
+	for _, r := range strings.TrimSuffix(b.String(), "\n") {
+		if r < 0x80 {
+			out.WriteRune(r)
+			continue
+		}
+		for _, u := range utf16.Encode([]rune{r}) {
+			fmt.Fprintf(&out, "\\u%04x", u)
+		}
+	}
+	return out.String()
+}
+
+// glob is fnmatch's `*` and `?`: a model id may hold "/" and "[1m]", which are plain characters here.
+func glob(name, pattern string) bool {
+	if !strings.ContainsAny(pattern, "*?") {
+		return name == pattern
+	}
+	var re strings.Builder
+	re.WriteString("(?s)^")
+	for _, r := range pattern {
+		switch r {
+		case '*':
+			re.WriteString(".*")
+		case '?':
+			re.WriteString(".")
+		default:
+			re.WriteString(regexp.QuoteMeta(string(r)))
+		}
+	}
+	re.WriteString("$")
+	return regexp.MustCompile(re.String()).MatchString(name)
 }
 
 // Identity pins a conf file's inode, mtime and content so a writer can tell
@@ -158,8 +235,8 @@ func identityOf(f *os.File) (*Identity, error) {
 // ProfileIdentity is nil for a symlink or an unreadable conf. It also pins the
 // profile's models.json, so a writer sees a discovery saved since it read.
 func ProfileIdentity(profile string) *Identity {
-	path := ProfilePath(profile)
-	if isSymlink(path) {
+	path, err := ProfilePath(profile)
+	if err != nil || isSymlink(path) {
 		return nil
 	}
 	f, err := os.Open(path)
@@ -230,64 +307,57 @@ func ValidModel(model string) bool {
 		return false
 	}
 	for _, c := range model {
-		if pycompat.IsSpace(c) || c == '=' {
+		if unicode.IsSpace(c) || (c >= 0x1c && c <= 0x1f) || c == '=' {
 			return false
 		}
 	}
 	return true
 }
 
-func discoveredDoc(fields map[string]string) *pycompat.Obj {
+func discoveredDoc(fields map[string]string) obj {
 	text, ok := fields["context_discovered"]
 	if !ok {
 		text = "{}"
 	}
-	v, err := pycompat.Parse([]byte(text))
+	v, err := parseJSON([]byte(text))
 	if err != nil {
-		if _, isSyntax := err.(*pycompat.SyntaxError); isSyntax {
-			return nil
-		}
-		panic(err)
+		return nil
 	}
-	doc, ok := v.(*pycompat.Obj)
+	doc, ok := v.(obj)
 	if !ok {
 		return nil
 	}
-	if route, _ := doc.Get("route"); route != RouteFingerprint(fields) {
+	if route := doc["route"]; route != RouteFingerprint(fields) {
 		return nil
 	}
 	return doc
 }
 
-func posInt(v pycompat.Value) (int64, bool) {
-	n, ok := v.(pycompat.Num)
-	if !ok {
-		return 0, false
-	}
-	i, ok := n.Int64()
+func posInt(v any) (int64, bool) {
+	i, ok := anyInt(v)
 	return i, ok && i > 0 // shortcut: a window past int64 is dropped, none is real
 }
 
-func subObj(doc *pycompat.Obj, key string) *pycompat.Obj {
+func subObj(doc obj, key string) obj {
 	if doc == nil {
 		return nil
 	}
-	v, _ := doc.Get(key)
-	o, _ := v.(*pycompat.Obj)
+	v := doc[key]
+	o, _ := v.(obj)
 	return o
 }
 
 // DiscoveredValues is the route-bound window table, in stored order.
-func DiscoveredValues(fields map[string]string) *pycompat.OMap[int64] {
-	out := pycompat.NewOMap[int64]()
+func DiscoveredValues(fields map[string]string) map[string]int64 {
+	out := map[string]int64{}
 	models := subObj(discoveredDoc(fields), "models")
 	if models == nil {
 		return out
 	}
-	for _, k := range models.Keys() {
-		v, _ := models.Get(k)
+	for _, k := range slices.Sorted(maps.Keys(models)) {
+		v := models[k]
 		if n, ok := posInt(v); ok && ValidModel(k) {
-			out.Set(k, n)
+			out[k] = n
 		}
 	}
 	return out
@@ -295,38 +365,38 @@ func DiscoveredValues(fields map[string]string) *pycompat.OMap[int64] {
 
 // DiscoveredSources is the provenance of windows filled by something other
 // than a live probe or declared listing.
-func DiscoveredSources(fields map[string]string) *pycompat.OMap[*pycompat.Obj] {
-	out := pycompat.NewOMap[*pycompat.Obj]()
+func DiscoveredSources(fields map[string]string) map[string]obj {
+	out := map[string]obj{}
 	sources := subObj(discoveredDoc(fields), "sources")
 	if sources == nil {
 		return out
 	}
-	for _, k := range sources.Keys() {
-		v, _ := sources.Get(k)
-		entry, ok := v.(*pycompat.Obj)
+	for _, k := range slices.Sorted(maps.Keys(sources)) {
+		v := sources[k]
+		entry, ok := v.(obj)
 		if !ok || !ValidModel(k) {
 			continue
 		}
-		if s, _ := entry.Get("source"); isString(s) {
-			out.Set(k, entry)
+		if s := entry["source"]; isString(s) {
+			out[k] = entry
 		}
 	}
 	return out
 }
 
-func isString(v pycompat.Value) bool { _, ok := v.(string); return ok }
+func isString(v any) bool { _, ok := v.(string); return ok }
 
 // DiscoveredMisses are models no lookup could size, with the day it last tried.
-func DiscoveredMisses(fields map[string]string) *pycompat.OMap[string] {
-	out := pycompat.NewOMap[string]()
+func DiscoveredMisses(fields map[string]string) map[string]string {
+	out := map[string]string{}
 	misses := subObj(discoveredDoc(fields), "misses")
 	if misses == nil {
 		return out
 	}
-	for _, k := range misses.Keys() {
-		v, _ := misses.Get(k)
+	for _, k := range slices.Sorted(maps.Keys(misses)) {
+		v := misses[k]
 		if day, ok := v.(string); ok && ValidModel(k) {
-			out.Set(k, day)
+			out[k] = day
 		}
 	}
 	return out
@@ -358,18 +428,15 @@ func MappedTarget(fields map[string]string, bare string) string {
 	if text == "" {
 		text = "{}"
 	}
-	v, err := pycompat.Parse([]byte(text))
+	v, err := parseJSON([]byte(text))
 	if err != nil {
-		if _, ok := err.(*pycompat.SyntaxError); ok {
-			return bare
-		}
-		panic(err)
+		return bare
 	}
-	mapping, ok := v.(*pycompat.Obj)
+	mapping, ok := v.(obj)
 	if !ok {
 		return bare
 	}
-	target, _ := mapping.Get(bare)
+	target := mapping[bare]
 	s, ok := target.(string)
 	if !ok || s == "" {
 		return bare
@@ -378,54 +445,57 @@ func MappedTarget(fields map[string]string, bare string) string {
 }
 
 // ProfileWindows is the profile's discovered and manual windows, manual winning.
-func ProfileWindows(profile string) map[string]int64 {
-	var fields map[string]string
-	if e := pycompat.Catch(func() { _, fields = ReadConf(ProfilePath(profile)) }); e != nil {
-		if e.Kind == pycompat.OSError {
-			return map[string]int64{}
-		}
-		panic(e)
+func ProfileWindows(profile string) (map[string]int64, error) {
+	path, err := ProfilePath(profile)
+	if err != nil {
+		return nil, err
 	}
-	out := map[string]int64{}
-	d := DiscoveredValues(fields)
-	for _, k := range d.Keys() {
-		out[k], _ = d.Get(k)
+	_, fields, err := ReadConf(path)
+	if err != nil { // an unreadable conf has no windows
+		return map[string]int64{}, nil
 	}
-	for k, v := range ManualValues(fields) {
-		out[k] = v
-	}
-	return out
+	out := DiscoveredValues(fields)
+	maps.Copy(out, ManualValues(fields))
+	return out, nil
 }
 
 // ProfileLock runs fn holding the profile's lock; a caller that already holds
 // it (CCMORPH_PROFILE_LOCK_HELD) passes straight through.
-func ProfileLock(profile string, fn func()) { ProfileLockCtx(context.Background(), profile, fn) }
+func ProfileLock(profile string, fn func() error) error {
+	_, err := ProfileLockCtx(context.Background(), profile, fn)
+	return err
+}
 
 // ProfileLockCtx is ProfileLock for a caller with a deadline: it stops waiting
 // at ctx.Done and reports whether fn ran. A lock held by another ccmorph must
 // not make a run outlive the deadline that asked it to write.
-func ProfileLockCtx(ctx context.Context, profile string, fn func()) bool {
-	path := ProfilePath(profile)
+func ProfileLockCtx(ctx context.Context, profile string, fn func() error) (bool, error) {
+	path, err := ProfilePath(profile)
+	if err != nil {
+		return false, err
+	}
 	for _, held := range strings.Split(os.Getenv("CCMORPH_PROFILE_LOCK_HELD"), ":") {
 		if held == path {
-			fn()
-			return true
+			return true, fn()
 		}
 	}
 	// The lock holds no configuration data; its inode stays stable across remove/recreate.
-	f, err := os.OpenFile(lockPath(path), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	lock, err := lockPath(path)
 	if err != nil {
-		pycompat.RaiseOS(err)
+		return false, err
+	}
+	f, err := os.OpenFile(lock, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return false, err
 	}
 	defer f.Close()
 	if err := flockCtx(ctx, f); err != nil {
 		if ctx.Err() != nil {
-			return false
+			return false, nil
 		}
-		pycompat.RaiseOS(err)
+		return false, err
 	}
-	fn()
-	return true
+	return true, fn()
 }
 
 // flockCtx takes an exclusive flock, polling only when the caller has a
@@ -474,7 +544,7 @@ type rank struct {
 func confRank(key string) rank {
 	for s, patterns := range confSections {
 		for p, pattern := range patterns {
-			if pycompat.Fnmatch(key, pattern) {
+			if glob(key, pattern) {
 				r := rank{section: s, position: p}
 				if strings.Contains(pattern, "*") {
 					r.key = key
@@ -549,11 +619,14 @@ func str(s string) *string { return &s }
 
 // ReplaceFields rewrites path with the given fields and lays it out canonically.
 // With expected, it gives up (false) if the file changed since.
-func ReplaceFields(path string, fields []Field, expected *Identity) bool {
-	text, _ := ReadConf(path)
+func ReplaceFields(path string, fields []Field, expected *Identity) (bool, error) {
+	text, _, err := ReadConf(path)
+	if err != nil {
+		return false, err
+	}
 	fi, err := os.Stat(path)
 	if err != nil {
-		pycompat.RaiseOS(err)
+		return false, err
 	}
 	mode := fi.Mode().Perm() | fi.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky)
 	names := map[string]bool{}
@@ -578,48 +651,44 @@ func ReplaceFields(path string, fields []Field, expected *Identity) bool {
 	}
 	updated = CanonicalConf(updated)
 	if updated == text {
-		return true
+		return true, nil
 	}
-	dir := path[:strings.LastIndex(path, "/")+1]
-	if dir == "" {
-		dir = "."
-	}
-	tmp, err := os.CreateTemp(dir, ".context-")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".context-")
 	if err != nil {
-		pycompat.RaiseOS(err)
+		return false, err
 	}
 	defer os.Remove(tmp.Name())
 	if err := tmp.Chmod(mode); err != nil {
 		tmp.Close()
-		pycompat.RaiseOS(err)
+		return false, err
 	}
 	if _, err := tmp.WriteString(updated); err != nil {
 		tmp.Close()
-		pycompat.RaiseOS(err)
+		return false, err
 	}
 	if err := tmp.Close(); err != nil {
-		pycompat.RaiseOS(err)
+		return false, err
 	}
 	if expected != nil {
 		// Also protects against non-locking editors before the atomic replace.
 		cur, err := os.Open(path)
 		if err != nil {
-			pycompat.RaiseOS(err)
+			return false, err
 		}
 		now, err := identityOf(cur)
 		cur.Close()
 		if err != nil {
-			pycompat.RaiseOS(err)
+			return false, err
 		}
 		now.models = expected.models // ReplaceFields guards the conf only
 		if *now != *expected {
-			return false
+			return false, nil
 		}
 	}
 	if err := os.Rename(tmp.Name(), path); err != nil {
-		pycompat.RaiseOS(err)
+		return false, err
 	}
-	return true
+	return true, nil
 }
 
 // SaveDiscovered merges values (and their provenance and misses) into the
@@ -627,108 +696,97 @@ func ReplaceFields(path string, fields []Field, expected *Identity) bool {
 // something other than a live probe or declared listing; a value written
 // without a tag retires any catalogue tag the model carried. It returns false
 // when the conf changed since expected was read.
-func SaveDiscovered(profile string, values *pycompat.OMap[int64], expected *Identity, overwrite bool,
-	sources *pycompat.OMap[*pycompat.Obj], misses *pycompat.OMap[string]) bool {
+func SaveDiscovered(profile string, values map[string]int64, expected *Identity, overwrite bool,
+	sources map[string]obj, misses map[string]string) (bool, error) {
 	return SaveDiscoveredCtx(context.Background(), profile, values, expected, overwrite, sources, misses)
 }
 
 // SaveDiscoveredCtx is SaveDiscovered under a caller's deadline: when the
 // profile lock is still held elsewhere at ctx.Done it writes nothing and
 // returns false.
-func SaveDiscoveredCtx(ctx context.Context, profile string, values *pycompat.OMap[int64], expected *Identity, overwrite bool,
-	sources *pycompat.OMap[*pycompat.Obj], misses *pycompat.OMap[string]) (saved bool) {
+func SaveDiscoveredCtx(ctx context.Context, profile string, values map[string]int64, expected *Identity, overwrite bool,
+	sources map[string]obj, misses map[string]string) (saved bool, err error) {
 	if expected == nil {
-		return false
+		return false, nil
 	}
-	if !ProfileLockCtx(ctx, profile, func() {
+	ran, err := ProfileLockCtx(ctx, profile, func() error {
 		if got := ProfileIdentity(profile); got == nil || *got != *expected {
-			return
+			return nil
 		}
-		path := ProfilePath(profile)
-		_, fields := ReadConf(path)
+		path, err := ProfilePath(profile)
+		if err != nil {
+			return err
+		}
+		_, fields, err := ReadConf(path)
+		if err != nil {
+			return err
+		}
 		merged := DiscoveredValues(fields)
 		mergedSources := DiscoveredSources(fields)
-		valid := pycompat.NewOMap[int64]()
-		for _, m := range values.Keys() {
-			if v, _ := values.Get(m); ValidModel(m) && v > 0 {
-				valid.Set(m, v)
+		valid := map[string]int64{}
+		for m, v := range values {
+			if ValidModel(m) && v > 0 {
+				valid[m] = v
 			}
 		}
-		tags := pycompat.NewOMap[*pycompat.Obj]()
-		if sources != nil {
-			for _, m := range sources.Keys() {
-				if valid.Has(m) {
-					t, _ := sources.Get(m)
-					tags.Set(m, t)
-				}
+		tags := map[string]obj{}
+		for m, t := range sources {
+			if _, ok := valid[m]; ok {
+				tags[m] = t
 			}
 		}
 		if overwrite {
-			merged = pycompat.Merge(merged, valid)
-			mergedSources = pycompat.Merge(mergedSources, tags)
-			for _, m := range valid.Keys() {
-				if !tags.Has(m) {
-					mergedSources.Delete(m) // a fresh unsourced write is a real value
+			maps.Copy(merged, valid)
+			maps.Copy(mergedSources, tags)
+			for m := range valid {
+				if _, ok := tags[m]; !ok {
+					delete(mergedSources, m) // a fresh unsourced write is a real value
 				}
 			}
 		} else {
-			merged = pycompat.Merge(valid, merged)
-			mergedSources = pycompat.Merge(tags, mergedSources)
+			maps.Copy(valid, merged) // a stored value outranks a new one
+			merged = valid
+			maps.Copy(tags, mergedSources)
+			mergedSources = tags
 		}
-		kept := pycompat.NewOMap[*pycompat.Obj]()
-		for _, m := range mergedSources.Keys() {
-			if merged.Has(m) {
-				t, _ := mergedSources.Get(m)
-				kept.Set(m, t)
+		record := obj{"route": RouteFingerprint(fields), "models": merged}
+		kept := obj{}
+		for m, t := range mergedSources {
+			if _, ok := merged[m]; ok {
+				kept[m] = t
 			}
 		}
+		if len(kept) > 0 {
+			record["sources"] = kept
+		}
+		keptMisses := obj{}
 		allMisses := DiscoveredMisses(fields)
-		if misses != nil {
-			allMisses = pycompat.Merge(allMisses, misses)
-		}
-		keptMisses := pycompat.NewOMap[string]()
-		for _, m := range allMisses.Keys() {
-			if !merged.Has(m) { // any value for the model retires its miss
-				d, _ := allMisses.Get(m)
-				keptMisses.Set(m, d)
+		maps.Copy(allMisses, misses)
+		for m, d := range allMisses {
+			if _, ok := merged[m]; !ok { // any value for the model retires its miss
+				keptMisses[m] = d
 			}
 		}
-		record := pycompat.NewObj()
-		record.Set("route", RouteFingerprint(fields))
-		models := pycompat.NewObj()
-		for _, m := range merged.Keys() {
-			v, _ := merged.Get(m)
-			models.Set(m, pycompat.Int(v))
+		if len(keptMisses) > 0 {
+			record["misses"] = keptMisses
 		}
-		record.Set("models", models)
-		if kept.Len() > 0 {
-			o := pycompat.NewObj()
-			for _, m := range kept.Keys() {
-				t, _ := kept.Get(m)
-				o.Set(m, t)
-			}
-			record.Set("sources", o)
-		}
-		if keptMisses.Len() > 0 {
-			o := pycompat.NewObj()
-			for _, m := range keptMisses.Keys() {
-				d, _ := keptMisses.Get(m)
-				o.Set(m, d)
-			}
-			record.Set("misses", o)
-		}
-		saved = writeDiscovered(path, record, expected)
-	}) {
-		return false
+		saved, err = writeDiscovered(path, record, expected)
+		return err
+	})
+	if err != nil || !ran {
+		return false, err
 	}
-	return saved
+	return saved, nil
 }
 
 // writeDiscovered stores record as indented JSON in DiscoveredPath and drops any
 // inline context_discovered line the conf still carries. The caller holds the
 // profile lock and has checked expected.
-func writeDiscovered(conf string, record *pycompat.Obj, expected *Identity) bool {
-	text, _ := ReadConf(conf)
+func writeDiscovered(conf string, record obj, expected *Identity) (bool, error) {
+	text, _, err := ReadConf(conf)
+	if err != nil {
+		return false, err
+	}
 	inline := false
 	for _, line := range strings.Split(text, "\n") {
 		if strings.HasPrefix(strings.TrimLeft(line, " \t"), "context_discovered=") {
@@ -737,24 +795,28 @@ func writeDiscovered(conf string, record *pycompat.Obj, expected *Identity) bool
 	}
 	target := DiscoveredPath(conf)
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-		pycompat.RaiseOS(err)
+		return false, err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(target), ".models-")
 	if err != nil {
-		pycompat.RaiseOS(err)
+		return false, err
 	}
 	defer os.Remove(tmp.Name())
-	_, err = tmp.WriteString(pycompat.Marshal(record, pycompat.Format{Indent: 2, ASCII: true}) + "\n")
+	b, _ := json.MarshalIndent(record, "", "  ")
+	_, err = tmp.Write(append(b, '\n'))
 	if cerr := tmp.Close(); err == nil {
 		err = cerr
 	}
 	if err != nil {
-		pycompat.RaiseOS(err)
+		return false, err
 	}
 	if err := os.Rename(tmp.Name(), target); err != nil {
-		pycompat.RaiseOS(err)
+		return false, err
 	}
-	return !inline || ReplaceFields(conf, []Field{{Key: "context_discovered"}}, expected)
+	if !inline {
+		return true, nil
+	}
+	return ReplaceFields(conf, []Field{{Key: "context_discovered"}}, expected)
 }
 
 // Restamp rebinds conf's models.json from route old to route new, for a conf
@@ -765,59 +827,69 @@ func Restamp(conf, old, new string) {
 	if err != nil || old == new {
 		return
 	}
-	v, err := pycompat.Parse(data)
-	doc, ok := v.(*pycompat.Obj)
-	if err != nil || !ok {
+	var doc map[string]any
+	if json.Unmarshal(data, &doc) != nil || doc["route"] != old {
 		return
 	}
-	if route, _ := doc.Get("route"); route != old {
-		return
-	}
-	doc.Set("route", new)
+	doc["route"] = new
+	b, _ := json.MarshalIndent(doc, "", "  ")
 	tmp := path + ".tmp"
-	if os.WriteFile(tmp, []byte(pycompat.Marshal(doc, pycompat.Format{Indent: 2, ASCII: true})+"\n"), 0o600) == nil {
+	if os.WriteFile(tmp, append(b, '\n'), 0o600) == nil {
 		os.Rename(tmp, path)
 	}
 }
 
 // ContextValue is the manual window for model, or "auto".
-func ContextValue(profile, model string) string {
+func ContextValue(profile, model string) (string, error) {
 	if !ValidModel(model) {
-		pycompat.RaiseValue("context model id is invalid")
+		return "", errors.New("context model id is invalid")
 	}
-	_, fields := ReadConf(ProfilePath(profile))
+	path, err := ProfilePath(profile)
+	if err != nil {
+		return "", err
+	}
+	_, fields, err := ReadConf(path)
+	if err != nil {
+		return "", err
+	}
 	if v, ok := ManualValues(fields)[model]; ok {
-		return itoa(v)
+		return strconv.FormatInt(v, 10), nil
 	}
-	return "auto"
+	return "auto", nil
 }
 
-func itoa(n int64) string { return pycompat.Marshal(pycompat.Int(n), pycompat.Format{}) }
-
 // SetContext pins model's window, or clears the pin with "auto".
-func SetContext(profile, model, value string) {
+func SetContext(profile, model, value string) error {
 	if !ValidModel(model) {
-		pycompat.RaiseValue("context model id is invalid")
+		return errors.New("context model id is invalid")
 	}
 	parsed, ok := Positive(value)
 	if value != "auto" && !ok {
-		pycompat.RaiseValue("context tokens must be a positive integer (at most 10 digits) or auto")
+		return errors.New("context tokens must be a positive integer (at most 10 digits) or auto")
 	}
-	ProfileLock(profile, func() {
+	return ProfileLock(profile, func() error {
 		expected := ProfileIdentity(profile)
-		path := ProfilePath(profile)
-		_, fields := ReadConf(path)
+		path, err := ProfilePath(profile)
+		if err != nil {
+			return err
+		}
+		_, fields, err := ReadConf(path)
+		if err != nil {
+			return err
+		}
 		switch fields["type"] {
 		case "apikey", "proxy", "provider":
 		default:
-			pycompat.RaiseValue("context overrides apply to routed profiles")
+			return errors.New("context overrides apply to routed profiles")
 		}
 		f := Field{Key: "context_window." + model}
 		if ok {
-			f.Value = str(itoa(parsed))
+			f.Value = str(strconv.FormatInt(parsed, 10))
 		}
-		if !ReplaceFields(path, []Field{f}, expected) {
-			pycompat.RaiseOSMsg("profile changed while setting context; retry")
+		replaced, err := ReplaceFields(path, []Field{f}, expected)
+		if err == nil && !replaced {
+			err = errors.New("profile changed while setting context; retry")
 		}
+		return err
 	})
 }

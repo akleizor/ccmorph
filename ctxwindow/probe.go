@@ -8,8 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/akleizor/ccmorph/pycompat"
 )
 
 var declared = []*regexp.Regexp{
@@ -55,21 +53,21 @@ func matchDeclared(detail string) (int64, bool) {
 }
 
 // postSized is the single place a sized prompt is built and sent.
-func postSized(ctx context.Context, base, key, model, blob, path string, hdr func(string) [][2]string, timeout time.Duration, op Opener) (*obj, error) {
-	body := pycompat.NewObj()
-	body.Set("model", model)
-	body.Set("max_tokens", pycompat.Int(8))
-	msg := pycompat.NewObj()
-	msg.Set("role", "user")
-	msg.Set("content", blob)
-	body.Set("messages", []any{msg})
+func postSized(ctx context.Context, base, key, model, blob, path string, hdr func(string) [][2]string, timeout time.Duration, op Opener) (obj, error) {
+	body := obj{}
+	body["model"] = model
+	body["max_tokens"] = 8
+	msg := obj{}
+	msg["role"] = "user"
+	msg["content"] = blob
+	body["messages"] = []any{msg}
 	headers := append([][2]string{{"content-type", "application/json"}}, hdr(key)...)
 	resp, err := pick(op).Open(ctx, Request{Method: "POST", URL: APIURL(base, path), Header: headers,
-		Body: []byte(pycompat.Marshal(body, pycompat.Format{ASCII: true}))}, timeout)
+		Body: []byte(jsonString(body))}, timeout)
 	if err != nil {
 		return nil, err
 	}
-	v, perr := pycompat.Parse(resp)
+	v, perr := parseJSON(resp)
 	if perr != nil {
 		return nil, fmt.Errorf("JSONDecodeError: %s", perr.Error())
 	}
@@ -84,7 +82,7 @@ func postSized(ctx context.Context, base, key, model, blob, path string, hdr fun
 var postSizedFn = postSized
 
 // tokens is `usage.input_tokens or usage.prompt_tokens`, 0 when neither is a count.
-func tokens(doc *obj) int64 {
+func tokens(doc obj) int64 {
 	used := asObj(getv(doc, "usage"))
 	if used == nil {
 		return 0
@@ -96,7 +94,7 @@ func tokens(doc *obj) int64 {
 	return n
 }
 
-func stopReason(doc *obj) string { s, _ := asStr(getv(doc, "stop_reason")); return s }
+func stopReason(doc obj) string { s, _ := asStr(getv(doc, "stop_reason")); return s }
 
 // reading is (reported_input_tokens, stop_reason) from one accepted request.
 type reading struct {
@@ -340,7 +338,7 @@ func truncRunes(s string, n int) string {
 }
 
 // firstText is `detailMsg or error_message or error.message`, the first truthy string.
-func firstText(parsed *obj) string {
+func firstText(parsed obj) string {
 	for _, k := range []string{"detailMsg", "error_message"} {
 		if s, ok := asStr(getv(parsed, k)); ok && s != "" {
 			return s

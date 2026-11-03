@@ -2,6 +2,7 @@ package ctxwindow
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/akleizor/ccmorph/profile"
-	"github.com/akleizor/ccmorph/pycompat"
 )
 
 type env struct {
@@ -60,26 +60,61 @@ func read(t *testing.T, path string) string {
 	return string(b)
 }
 
-func one(m string, v int64) *pycompat.OMap[int64] {
-	o := pycompat.NewOMap[int64]()
-	o.Set(m, v)
+func one(m string, v int64) map[string]int64 {
+	o := map[string]int64{}
+	o[m] = v
 	return o
 }
 
-func save(profile string, values *pycompat.OMap[int64]) bool {
-	return SaveDiscovered(profile, values, ProfileIdentity(profile), true, nil, nil)
+func save(profile string, values map[string]int64) bool {
+	saved, err := SaveDiscovered(profile, values, ProfileIdentity(profile), true, nil, nil)
+	if err != nil {
+		panic(err)
+	}
+	return saved
+}
+
+func migrate() int {
+	code, err := Migrate(discard())
+	if err != nil {
+		panic(err)
+	}
+	return code
+}
+
+func recoverBackups() int {
+	code, err := RecoverCacheBackups(discard())
+	if err != nil {
+		panic(err)
+	}
+	return code
+}
+
+func preview() string {
+	p, err := MigrationPreview()
+	if err != nil {
+		panic(err)
+	}
+	return p
+}
+
+func windowsOf(profile string) map[string]int64 {
+	w, err := ProfileWindows(profile)
+	if err != nil {
+		panic(err)
+	}
+	return w
+}
+
+func ctxValue(profile, model string) string {
+	v, err := ContextValue(profile, model)
+	if err != nil {
+		panic(err)
+	}
+	return v
 }
 
 func window(profile, model string) Record { return Resolve(profile, model) }
-
-func raises(t *testing.T, fn func()) *pycompat.Exc {
-	t.Helper()
-	e := pycompat.Catch(fn)
-	if e == nil {
-		t.Fatal("expected an exception")
-	}
-	return e
-}
 
 // Python: test_discovery_and_manual_values_share_conf_and_stay_profile_scoped.
 func TestDiscoveryAndManualValuesShareConfAndStayProfileScoped(t *testing.T) {
@@ -117,13 +152,13 @@ func TestDiscoveryAndManualValuesShareConfAndStayProfileScoped(t *testing.T) {
 func TestUnicodeLineSeparatorsInUnrelatedValuesArePreserved(t *testing.T) {
 	e := setup(t)
 	write(t, e.a, "type=apikey\napi_key=before\u0085context_window.m=keep after\nenv.ANTHROPIC_AUTH_TOKEN=first\u0085second\n")
-	_, fields := ReadConf(e.a)
+	_, fields, _ := ReadConf(e.a)
 	if fields["api_key"] != "before\u0085context_window.m=keep after" || fields["env.ANTHROPIC_AUTH_TOKEN"] != "first\u0085second" {
 		t.Fatal(fields)
 	}
 	SetContext("a", "m", "300000")
 	save("a", one("other", 400000))
-	_, after := ReadConf(e.a)
+	_, after, _ := ReadConf(e.a)
 	if after["api_key"] != "before\u0085context_window.m=keep after" || after["env.ANTHROPIC_AUTH_TOKEN"] != "first\u0085second" || after["context_window.m"] != "300000" {
 		t.Fatal(after)
 	}
@@ -158,7 +193,7 @@ func TestDeletedRecreatedRenamedOrEditedProfileRejectsStaleCommit(t *testing.T) 
 					write(t, e.a, "type=apikey\napi_key=canary\n")
 				}
 			}
-			if SaveDiscovered("a", one("m", 900000), identity, true, nil, nil) {
+			if ok, _ := SaveDiscovered("a", one("m", 900000), identity, true, nil, nil); ok {
 				t.Fatal("stale commit accepted")
 			}
 			if b, err := os.ReadFile(e.a); err == nil && strings.Contains(string(b), "900000") {
@@ -176,12 +211,12 @@ func TestExactManualKeysPreserveCredentialsAndNeighbours(t *testing.T) {
 	if !strings.Contains(read(t, e.a), "api_key=context_window.a.b=keep") {
 		t.Fatal(read(t, e.a))
 	}
-	if window("a", "axb").Window != 500000 || ContextValue("a", "a.b") != "131072" {
+	if window("a", "axb").Window != 500000 || ctxValue("a", "a.b") != "131072" {
 		t.Fatal("neighbour or value lost")
 	}
 	for _, c := range [][2]string{{"bad\nkey", "100000"}, {"a=b", "100000"}, {"m", "0"}, {"m", "-1"}} {
-		if x := raises(t, func() { SetContext("a", c[0], c[1]) }); x.Kind != pycompat.ValueError {
-			t.Fatalf("%v: %v", c, x)
+		if err := SetContext("a", c[0], c[1]); err == nil {
+			t.Fatalf("%v: accepted", c)
 		}
 	}
 }
@@ -196,7 +231,7 @@ func TestMigrationKeepsScopedDataAndOnlyAttributedBareData(t *testing.T) {
 	cache := filepath.Join(e.root, ".claude-profiles/a/cache/context-window")
 	write(t, cache, "bare\t500000\nlocal:tag\t65536\n")
 	SetContext("a", "scoped", "250000")
-	if Migrate(discard()) != 0 {
+	if migrate() != 0 {
 		t.Fatal("migrate failed")
 	}
 	for _, c := range []struct {
@@ -219,7 +254,7 @@ func TestMigrationKeepsScopedDataAndOnlyAttributedBareData(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := read(t, e.a)
-	if Migrate(discard()) != 0 || read(t, e.a) != before {
+	if migrate() != 0 || read(t, e.a) != before {
 		t.Fatal("a second migration changed the conf")
 	}
 }
@@ -237,11 +272,11 @@ func TestMigrationPreviewReportsCountsWithoutWriting(t *testing.T) {
 		return b.String()
 	}
 	before := snapshot()
-	preview := MigrationPreview()
+	preview := preview()
 	if snapshot() != before {
 		t.Fatal("preview wrote")
 	}
-	if !strings.Contains(preview, `"a": {"cached": 0, "scoped": 1}`) || !strings.Contains(preview, `"unattributed_entries": 1`) || strings.Contains(preview, "canary") {
+	if !strings.Contains(preview, `"a":{"cached":0,"scoped":1}`) || !strings.Contains(preview, `"unattributed_entries":1`) || strings.Contains(preview, "canary") {
 		t.Fatal(preview)
 	}
 }
@@ -257,7 +292,7 @@ func TestConcurrentMigrationsArchiveOnceAndPreserveValues(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			codes[i] = Migrate(discard())
+			codes[i] = migrate()
 		}()
 	}
 	wg.Wait()
@@ -280,8 +315,8 @@ func TestSymlinkCacheRefusesMigrationWithoutArchivingRegistry(t *testing.T) {
 	cache := filepath.Join(e.root, ".claude-profiles/a/cache/context-window")
 	os.MkdirAll(filepath.Dir(cache), 0o755)
 	os.Symlink(e.b, cache)
-	if x := raises(t, func() { Migrate(discard()) }); x.Kind != pycompat.OSError {
-		t.Fatal(x)
+	if _, err := Migrate(discard()); err == nil {
+		t.Fatal("symlinked cache migrated")
 	}
 	if _, err := os.Stat(legacy); err != nil {
 		t.Fatal("registry was archived")
@@ -305,7 +340,7 @@ func TestMigrationNeverArchivesCacheWithoutOwningProfile(t *testing.T) {
 	e := setup(t)
 	cache := filepath.Join(e.root, ".claude-profiles/unrelated/cache/context-window")
 	write(t, cache, "m\t300000\n")
-	Migrate(discard())
+	migrate()
 	if _, err := os.Stat(cache); err != nil {
 		t.Fatal("cache without a profile was archived")
 	}
@@ -317,7 +352,7 @@ func TestExplicitRecoveryImportsProfileBackupsWithoutOverwritingCurrent(t *testi
 	cache := filepath.Join(e.root, ".claude-profiles/a/cache/context-window.migrated")
 	write(t, cache, "m\t300000\nknown\t400000\n")
 	save("a", one("known", 500000))
-	RecoverCacheBackups(discard())
+	recoverBackups()
 	if window("a", "m").Window != 300000 || window("a", "known").Window != 500000 {
 		t.Fatal("recovery overwrote or skipped")
 	}
@@ -331,18 +366,18 @@ func TestCacheEntryRulesMatchPreviewMigrationAndRecovery(t *testing.T) {
 	e := setup(t)
 	rows := "tag:variant[1m]\t300000\ntag:variant\t400000\nbad model\t100000\nzero\t0\nnegative\t-1\nextra\t200000\textra\nmissing-tab\n"
 	write(t, filepath.Join(e.root, ".claude-profiles/a/cache/context-window"), rows)
-	if !strings.Contains(MigrationPreview(), `"a": {"cached": 2, "scoped": 0}`) {
-		t.Fatal(MigrationPreview())
+	if !strings.Contains(preview(), `"a":{"cached":2,"scoped":0}`) {
+		t.Fatal(preview())
 	}
-	Migrate(discard())
-	migrated := ProfileWindows("a")
+	migrate()
+	migrated := windowsOf("a")
 	if len(migrated) != 1 || migrated["tag:variant"] != 400000 {
 		t.Fatal(migrated)
 	}
 	backup := filepath.Join(e.root, ".claude-profiles/b/cache/context-window.migrated")
 	write(t, backup, rows)
-	RecoverCacheBackups(discard())
-	got := ProfileWindows("b")
+	recoverBackups()
+	got := windowsOf("b")
 	if len(got) != 1 || got["tag:variant"] != 400000 || read(t, backup) != rows {
 		t.Fatal(got)
 	}
@@ -355,12 +390,11 @@ func TestDiscoveredJSONDoesNotContainCredentials(t *testing.T) {
 	if strings.Contains(read(t, e.a), "context_discovered") {
 		t.Fatal("discovered windows written into the conf")
 	}
-	v, err := pycompat.Parse([]byte(read(t, DiscoveredPath(e.a))))
-	if err != nil {
+	var doc obj
+	if err := json.Unmarshal([]byte(read(t, DiscoveredPath(e.a))), &doc); err != nil {
 		t.Fatal(err)
 	}
-	models, _ := v.(*pycompat.Obj).Get("models")
-	if got := pycompat.Marshal(models, pycompat.Format{Compact: true}); got != `{"m":123000}` {
+	if got := jsonString(doc["models"]); got != `{"m":123000}` {
 		t.Fatal(got)
 	}
 	if line := read(t, DiscoveredPath(e.a)); strings.Contains(line, "canary-a") || strings.Contains(line, "https://a.invalid") {
@@ -441,7 +475,7 @@ func TestAContextWriteLandsTheFileInCanonicalLayout(t *testing.T) {
 	conf := filepath.Join(e.root, "p.conf")
 	write(t, conf, "model=m\ntype=apikey\napi_key=k\n")
 	v := "5000"
-	if !ReplaceFields(conf, []Field{{"context_window.m", &v}}, nil) {
+	if ok, err := ReplaceFields(conf, []Field{{"context_window.m", &v}}, nil); !ok || err != nil {
 		t.Fatal("replace failed")
 	}
 	if got := read(t, conf); got != "type=apikey\napi_key=k\n\nmodel=m\n\ncontext_window.m=5000\n" {
@@ -449,13 +483,13 @@ func TestAContextWriteLandsTheFileInCanonicalLayout(t *testing.T) {
 	}
 }
 
-func TestFnmatchFollowsPython(t *testing.T) {
+func TestGlobMatchesStarAndQuestionMark(t *testing.T) {
 	for _, c := range []struct {
 		name, pat string
 		want      bool
-	}{{"glm-5.2", "glm-*", true}, {"glm", "glm-*", false}, {"za", "z[ab]", true}, {"zc", "z[!ab]", true}, {"zb", "z[!ab]", false}, {"q1", "q?", true}, {"a[", "a[", true}, {"x", "[]", false}} {
-		if got := pycompat.Fnmatch(c.name, c.pat); got != c.want {
-			t.Errorf("fnmatch(%q,%q)=%v", c.name, c.pat, got)
+	}{{"glm-5.2", "glm-*", true}, {"glm", "glm-*", false}, {"q1", "q?", true}, {"a[1m]", "a[1m]", true}, {"org/glm-5", "*glm-?", true}} {
+		if got := glob(c.name, c.pat); got != c.want {
+			t.Errorf("glob(%q,%q)=%v", c.name, c.pat, got)
 		}
 	}
 }
@@ -480,15 +514,15 @@ func TestBundledCatalogueSizesAnUnknownRoutedModelByFamily(t *testing.T) {
 // migration, keeps its windows, and the conf loses the line.
 func TestMigrationMovesInlineDiscoveredToModelsJSON(t *testing.T) {
 	e := setup(t)
-	_, fields := ReadConf(e.a)
+	_, fields, _ := ReadConf(e.a)
 	inline := `context_discovered={"route":"` + RouteFingerprint(fields) + `","models":{"m":321000}}`
 	write(t, e.a, read(t, e.a)+inline+"\n")
 	write(t, e.a+".lock", "")
-	Migrate(discard())
+	migrate()
 	if strings.Contains(read(t, e.a), "context_discovered") || !strings.Contains(read(t, e.a), "# keep") {
 		t.Fatal(read(t, e.a))
 	}
-	if ProfileWindows("a")["m"] != 321000 {
+	if windowsOf("a")["m"] != 321000 {
 		t.Fatal(read(t, DiscoveredPath(e.a)))
 	}
 	if _, err := os.Stat(e.a + ".lock"); err == nil {

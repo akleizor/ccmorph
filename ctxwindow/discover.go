@@ -4,14 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/akleizor/ccmorph/pycompat"
 )
 
 // Note is (reason, subject): what a run learned about a profile or model.
@@ -89,7 +90,7 @@ var ccmorphEnv = func(ctx context.Context, profile string) (map[string]string, e
 		return nil, &RouteUnavailable{msg}
 	}
 	env := map[string]string{}
-	for _, line := range pycompat.SplitLines(out) {
+	for _, line := range strings.Split(strings.ReplaceAll(out, "\r\n", "\n"), "\n") {
 		if k, v, ok := strings.Cut(line, "="); ok {
 			env[k] = v
 		}
@@ -121,15 +122,17 @@ var (
 )
 
 func confFields(path string) (fields map[string]string, ok bool) {
-	e := pycompat.Catch(func() { _, fields = ReadConf(path) })
-	return fields, e == nil
+	_, fields, err := ReadConf(path)
+	return fields, err == nil
 }
 
 func confPaths(profiles []string) []string {
 	var paths []string
 	if profiles != nil {
 		for _, p := range profiles {
-			paths = append(paths, ProfilePath(p))
+			if path, err := ProfilePath(p); err == nil {
+				paths = append(paths, path)
+			}
 		}
 		return paths
 	}
@@ -137,7 +140,7 @@ func confPaths(profiles []string) []string {
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".conf") {
-			paths = append(paths, pycompat.Join(dir, e.Name()))
+			paths = append(paths, filepath.Join(dir, e.Name()))
 		}
 	}
 	return paths
@@ -160,8 +163,8 @@ var priorValues = func(profiles []string) map[string]int64 {
 			continue
 		}
 		d := DiscoveredValues(fields)
-		for _, m := range d.Keys() {
-			values[stem+":"+m], _ = d.Get(m)
+		for _, m := range slices.Sorted(maps.Keys(d)) {
+			values[stem+":"+m], _ = d[m]
 		}
 	}
 	return values
@@ -171,8 +174,8 @@ var priorValues = func(profiles []string) map[string]int64 {
 // catalogue-derived (not verified) baseline entry. It doubles as the "is this
 // key catalogue-derived" test and as the exact tag to carry forward when a run
 // repeats a prior value, so an unverified guess never reads as verified.
-var priorCatalogueTags = func(profiles []string) map[string]*obj {
-	tags := map[string]*obj{}
+var priorCatalogueTags = func(profiles []string) map[string]obj {
+	tags := map[string]obj{}
 	for _, path := range confPaths(profiles) {
 		stem := stemOf(path)
 		if !ValidProfileName(stem) {
@@ -183,8 +186,8 @@ var priorCatalogueTags = func(profiles []string) map[string]*obj {
 			continue
 		}
 		s := DiscoveredSources(fields)
-		for _, m := range s.Keys() {
-			tags[stem+":"+m], _ = s.Get(m)
+		for _, m := range slices.Sorted(maps.Keys(s)) {
+			tags[stem+":"+m], _ = s[m]
 		}
 	}
 	return tags
@@ -203,7 +206,7 @@ func routedProfiles() []string {
 	}
 	sort.Strings(confs)
 	for _, name := range confs {
-		fields, ok := confFields(pycompat.Join(dir, name))
+		fields, ok := confFields(filepath.Join(dir, name))
 		if !ok {
 			continue
 		}
@@ -217,9 +220,9 @@ func routedProfiles() []string {
 
 // Run is the outcome of one discovery pass.
 type Run struct {
-	Values  *pycompat.OMap[int64]
+	Values  map[string]int64
 	Notes   []Note
-	Sources map[string]*obj
+	Sources map[string]obj
 }
 
 // Options configures ProbeAll.
@@ -258,8 +261,8 @@ func pinnedValue(s string) bool { return isDigits(s) && strings.Trim(s, "0") != 
 
 // ProbeAll discovers windows for profiles (all routed ones when nil).
 func ProbeAll(parent context.Context, profiles []string, o Options) Run {
-	values := pycompat.NewOMap[int64]()
-	sources := map[string]*obj{}
+	values := map[string]int64{}
+	sources := map[string]obj{}
 	var notes []Note
 	baseline := priorValues(profiles)
 	catalogueTags := priorCatalogueTags(profiles)
@@ -322,14 +325,15 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 					// Explicit model selection is enough for a catalogue lookup; an
 					// unavailable gateway is not evidence of model absence.
 					models = sortedKeys(o.Only)
-					declared, listingRows = pycompat.NewOMap[int64](), nil
+					declared, listingRows = map[string]int64{}, nil
 					fmt.Fprintf(stderr, "[%s] gateway metadata unavailable; trying catalogue for requested models\n", profile)
 				} else {
 					stopRoute(ctx)
 					continue
 				}
 			}
-			fields, ok := confFields(ProfilePath(profile))
+			path, _ := ProfilePath(profile)
+			fields, ok := confFields(path)
 			if !ok {
 				fields = map[string]string{}
 			}
@@ -392,15 +396,15 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 					pinned[m] = true
 				}
 			}
-			sized := pycompat.NewOMap[int64]()
-			for _, m := range declared.Keys() {
-				if v, _ := declared.Get(m); inModels[m] && !pinned[m] {
-					sized.Set(m, v)
+			sized := map[string]int64{}
+			for _, m := range slices.Sorted(maps.Keys(declared)) {
+				if v := declared[m]; inModels[m] && !pinned[m] {
+					sized[m] = v
 				}
 			}
 			raised, pending := ProviderWindows(ctx, sized, listingRows, fields, listTO, cache)
 			check(ctx)
-			declared = pycompat.Merge(declared, raised)
+			maps.Copy(declared, raised)
 			ownedBy := map[string]string{}
 			for _, row := range listingRows {
 				if ob, ok := asStr(getv(row, "owned_by")); ok {
@@ -425,29 +429,29 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 				// A prior catalogue guess is not verified: a fresh declared value this
 				// run always supersedes it, unlike a real probed/declared value, which
 				// stays pinned.
-				if o.Mode != "probe-all" && haveKnown && known != 0 && !(priorTag != nil && declared.Has(model)) {
-					values.Set(scoped, known)
+				if o.Mode != "probe-all" && haveKnown && known != 0 && !(priorTag != nil && declared[model] != 0) {
+					values[scoped] = known
 					if priorTag != nil {
 						// Repeating the same value must not look like a fresh unsourced
 						// (therefore "verified") write: carry the tag forward exactly.
 						sources[scoped] = priorTag
 					}
-					if d, ok := declared.Get(model); ok && d != known {
+					if d, ok := declared[model]; ok && d != known {
 						reason := fmt.Sprintf("kept saved limit %s; gateway now declares %s", commas(known), commas(d))
 						notes = append(notes, Note{reason, model})
 						fmt.Fprintf(stderr, "  %s: %s\n", model, reason)
 					}
 					continue
 				}
-				if d, ok := declared.Get(model); ok && o.Mode != "probe-all" {
-					values.Set(scoped, d)
+				if d, ok := declared[model]; ok && o.Mode != "probe-all" {
+					values[scoped] = d
 					continue
 				}
 				if o.Mode == "declared-only" {
 					found := CatalogueLookup(ctx, model, ownedBy[model], cache, catalogueTimeout*time.Second)
 					check(ctx)
 					if found != nil {
-						values.Set(scoped, found.Value)
+						values[scoped] = found.Value
 						sources[scoped] = CatalogueTag(found)
 					} else {
 						notes = append(notes, Note{Unresolved, model})
@@ -463,7 +467,7 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 				res := probeFn(ctx, base, key, model, blob, time.Duration(o.ProbeTimeout*float64(time.Second)), op, o.Bisect)
 				check(ctx)
 				if (strings.HasSuffix(res.Kind, ":declared") || strings.HasSuffix(res.Kind, ":truncated") || strings.HasSuffix(res.Kind, ":bisected")) && res.Value > 0 {
-					values.Set(scoped, res.Value)
+					values[scoped] = res.Value
 				} else {
 					why := res.Note
 					if why == "" {

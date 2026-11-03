@@ -4,16 +4,16 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"os"
 	"os/signal"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/akleizor/ccmorph/pycompat"
 )
 
 const prog = "context-probe"
@@ -147,18 +147,10 @@ func parseArgs(argv []string) (*args, error) {
 func isNumber(s string) bool { _, err := strconv.ParseFloat(s, 64); return err == nil }
 
 // ProbeMain runs the helper (argv excludes the program name) and returns its exit code.
-func ProbeMain(argv []string, stdin io.Reader, stdout, errw io.Writer) (code int) {
+func ProbeMain(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
 	stderr = errw
 	defer func() { stderr = os.Stderr }()
-	if e := pycompat.Catch(func() { code = run(argv, stdin, stdout, errw) }); e != nil {
-		if e.Kind == pycompat.Other {
-			fmt.Fprintf(errw, "%s: %s: %s\n", prog, e.Class, e.Msg)
-		} else {
-			fmt.Fprintf(errw, "%s: %s\n", prog, e.Msg)
-		}
-		return 1
-	}
-	return code
+	return run(argv, stdin, stdout, errw)
 }
 
 func run(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
@@ -181,7 +173,8 @@ func run(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
 		}
 		body, rerr := io.ReadAll(stdin)
 		if rerr != nil {
-			pycompat.RaiseOS(rerr)
+			fmt.Fprintf(errw, "%s: %s\n", prog, rerr)
+			return 1
 		}
 		return SizeListing(context.Background(), a.profiles[0], string(body),
 			os.Getenv("ANTHROPIC_BASE_URL"), os.Getenv("ANTHROPIC_API_KEY"), BuildOpener())
@@ -193,6 +186,12 @@ func run(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
 		return fail("--allow-inference requires exactly one --profile and one --model, and cannot be combined with --declared-only")
 	}
 	profiles := a.profiles
+	for _, p := range profiles {
+		if !ValidProfileName(p) {
+			fmt.Fprintf(errw, "%s: invalid profile name\n", prog)
+			return 1
+		}
+	}
 	mode := "declared-only"
 	switch {
 	case a.probeAll:
@@ -236,7 +235,7 @@ func run(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
 	}
 	sort.Strings(unknown)
 
-	if result.Values.Len() == 0 {
+	if len(result.Values) == 0 {
 		// What went wrong, then what was protected, then the fix: one line each.
 		var order []string
 		groups := map[string][]string{}
@@ -288,8 +287,8 @@ func run(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
 			before, after string
 		}
 		var drifts []drift
-		for _, k := range result.Values.Keys() {
-			v, _ := result.Values.Get(k)
+		for _, k := range slices.Sorted(maps.Keys(result.Values)) {
+			v := result.Values[k]
 			if b, ok := baseline[k]; !ok || b != v {
 				before := "None"
 				if ok {

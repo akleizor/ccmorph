@@ -15,9 +15,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode"
 	"unicode/utf8"
-
-	"github.com/akleizor/ccmorph/pycompat"
 )
 
 const (
@@ -50,10 +49,17 @@ type URLError struct{ Reason error }
 func (e *URLError) Error() string { return "<urlopen error " + reasonText(e.Reason) + ">" }
 func (e *URLError) Unwrap() error { return e.Reason }
 
+// errnoText is the system's message for errno, capitalised as Python's OSError prints it.
+func errnoText(errno syscall.Errno) string {
+	msg := []rune(errno.Error())
+	msg[0] = unicode.ToUpper(msg[0])
+	return fmt.Sprintf("[Errno %d] %s", int(errno), string(msg))
+}
+
 func reasonText(err error) string {
 	var errno syscall.Errno
 	if errors.As(err, &errno) {
-		return pycompat.OSErrorText(errno)
+		return errnoText(errno)
 	}
 	return err.Error()
 }
@@ -223,8 +229,7 @@ func WhyUnreachable(err error, base string) string {
 	case errors.As(cause, &dns):
 		detail = fmt.Sprintf("could not resolve %s (DNS)", host)
 	case errors.As(cause, &errno):
-		text := pycompat.OSErrorText(errno)
-		text = text[strings.Index(text, "] ")+2:]
+		text := errnoText(errno)
 		detail = fmt.Sprintf("did not answer at %s (%s)", host, text)
 	default:
 		detail = fmt.Sprintf("could not be reached at %s (%s)", host, cause)

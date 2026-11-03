@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/akleizor/ccmorph/pycompat"
 )
 
 const (
@@ -29,21 +29,21 @@ var validationWindow = regexpMust(`(?i)(?:max_model_len|max_total_tokens|maximum
 func ValidationWindow(ctx context.Context, base, key, model string, op Opener, timeout time.Duration) int64 {
 	op = pick(op)
 	for _, sh := range shapes {
-		body := pycompat.NewObj()
-		body.Set("model", model)
-		body.Set("max_tokens", pycompat.Int(oversizedMaxTokens))
-		msg := pycompat.NewObj()
-		msg.Set("role", "user")
-		msg.Set("content", "hi")
-		body.Set("messages", []any{msg})
+		body := obj{}
+		body["model"] = model
+		body["max_tokens"] = oversizedMaxTokens
+		msg := obj{}
+		msg["role"] = "user"
+		msg["content"] = "hi"
+		body["messages"] = []any{msg}
 		stop := "stop"
 		if sh.name == "anthropic" {
 			stop = "stop_sequences"
 		}
-		body.Set(stop, []any{"\n\n"})
+		body[stop] = []any{"\n\n"}
 		headers := append([][2]string{{"content-type", "application/json"}}, sh.headers(key)...)
 		_, err := op.Open(ctx, Request{Method: "POST", URL: APIURL(base, sh.path), Header: headers,
-			Body: []byte(pycompat.Marshal(body, pycompat.Format{ASCII: true}))}, timeout)
+			Body: []byte(jsonString(body))}, timeout)
 		if err == nil {
 			return 0 // accepted: nothing stated, nothing more to ask
 		}
@@ -92,27 +92,22 @@ func parseDay(s string) (time.Time, bool) {
 // else a dated miss that stops the lookup repeating for a week. Silent by
 // design: the outcome goes to the log, never to the person launching.
 func SizeListing(ctx context.Context, profile, body, base, key string, op Opener) int {
-	var rows []*obj
+	var rows []obj
 	var fields map[string]string
-	e := pycompat.Catch(func() {
-		doc, err := pycompat.Parse([]byte(body))
-		if err != nil {
-			pycompat.RaiseValue("%s", err.Error())
-		}
-		top := asObj(doc)
-		if top == nil {
-			pycompat.Crash("AttributeError", "listing is not an object")
-		}
-		rows = ListingRows(getv(top, "data"))
-		_, fields = ReadConf(ProfilePath(profile))
-	})
-	if e != nil {
+	doc, err := parseJSON([]byte(body))
+	top := asObj(doc)
+	path, perr := ProfilePath(profile)
+	if err != nil || top == nil || perr != nil {
+		return 0 // not a listing: nothing to size
+	}
+	rows = ListingRows(getv(top, "data"))
+	if _, fields, err = ReadConf(path); err != nil {
 		return 0
 	}
 	expected := ProfileIdentity(profile)
 	known := DiscoveredValues(fields)
 	for m := range ManualValues(fields) {
-		known.Set(m, 0)
+		known[m] = 0
 	}
 	excluded := map[string]bool{}
 	for _, m := range strings.Split(fields["excluded_models"], ",") {
@@ -120,18 +115,18 @@ func SizeListing(ctx context.Context, profile, body, base, key string, op Opener
 	}
 	today := time.Now().UTC().Format("2006-01-02")
 	misses := DiscoveredMisses(fields)
-	var todo []*obj
+	var todo []obj
 	for _, row := range rows {
 		id, _ := asStr(getv(row, "id"))
 		if !ValidModel(id) || excluded[id] {
 			continue
 		}
-		if day, ok := misses.Get(id); ok && RecentlyMissed(day, today) {
+		if day, ok := misses[id]; ok && RecentlyMissed(day, today) {
 			continue
 		}
 		covered := false
-		for _, pattern := range known.Keys() {
-			if pycompat.Fnmatch(id, pattern) {
+		for pattern := range known {
+			if glob(id, pattern) {
 				covered = true
 				break
 			}
@@ -143,13 +138,13 @@ func SizeListing(ctx context.Context, profile, body, base, key string, op Opener
 	if len(todo) == 0 {
 		return 0
 	}
-	values := pycompat.NewOMap[int64]()
-	sources := pycompat.NewOMap[*obj]()
-	missed := pycompat.NewOMap[string]()
+	values := map[string]int64{}
+	sources := map[string]obj{}
+	missed := map[string]string{}
 	cache := NewCache(true)
 	to := launchCatalogueTimeout * time.Second
 	declared, pending := ProviderWindows(ctx, DeclaredSizes(todo), todo, fields, to, cache)
-	var rest []*obj
+	var rest []obj
 	for _, row := range todo {
 		if id, _ := asStr(getv(row, "id")); !pending[id] { // retried next launch
 			rest = append(rest, row)
@@ -157,14 +152,14 @@ func SizeListing(ctx context.Context, profile, body, base, key string, op Opener
 	}
 	for _, row := range rest {
 		model, _ := asStr(getv(row, "id"))
-		if v, ok := declared.Get(model); ok {
-			values.Set(model, v)
+		if v, ok := declared[model]; ok {
+			values[model] = v
 			continue
 		}
 		ownedBy, _ := asStr(getv(row, "owned_by"))
 		if found := CatalogueLookup(ctx, model, ownedBy, cache, to); found != nil {
-			values.Set(model, found.Value)
-			sources.Set(model, CatalogueTag(found))
+			values[model] = found.Value
+			sources[model] = CatalogueTag(found)
 			continue
 		}
 		// A provider bridge answers from the user's subscription, and a probe it
@@ -175,27 +170,25 @@ func SizeListing(ctx context.Context, profile, body, base, key string, op Opener
 			stated = validationWindowFn(ctx, base, key, model, op, to)
 		}
 		if stated > 0 {
-			values.Set(model, stated)
+			values[model] = stated
 		} else {
-			missed.Set(model, today)
+			missed[model] = today
 		}
 	}
-	if !SaveDiscovered(profile, values, expected, false, sources, missed) {
+	if saved, err := SaveDiscovered(profile, values, expected, false, sources, missed); err != nil {
+		fmt.Fprintf(stderr, "%s: %s\n", prog, err)
+		return 1
+	} else if !saved {
 		return 1
 	}
-	keys := values.Keys()
-	sort.Strings(keys)
-	for _, model := range keys {
+	for _, model := range slices.Sorted(maps.Keys(values)) {
 		note := ""
-		if sources.Has(model) {
+		if _, tagged := sources[model]; tagged {
 			note = " (catalogue estimate)"
 		}
-		v, _ := values.Get(model)
-		fmt.Fprintf(stderr, "sized %s:%s %d%s\n", profile, model, v, note)
+		fmt.Fprintf(stderr, "sized %s:%s %d%s\n", profile, model, values[model], note)
 	}
-	mk := missed.Keys()
-	sort.Strings(mk)
-	for _, model := range mk {
+	for _, model := range slices.Sorted(maps.Keys(missed)) {
 		fmt.Fprintf(stderr, "no size for %s:%s; launch fallback applies\n", profile, model)
 	}
 	return 0
@@ -204,19 +197,19 @@ func SizeListing(ctx context.Context, profile, body, base, key string, op Opener
 var validationWindowFn = ValidationWindow
 
 // Commit gives each profile its own write: no shared registry or cross-profile fallback.
-func Commit(ctx context.Context, values *pycompat.OMap[int64], baseline map[string]int64, identities map[string]*Identity, sources map[string]*obj) (code int, cut bool) {
-	grouped := map[string]*pycompat.OMap[int64]{}
-	groupedSources := map[string]*pycompat.OMap[*obj]{}
+func Commit(ctx context.Context, values map[string]int64, baseline map[string]int64, identities map[string]*Identity, sources map[string]obj) (code int, cut bool) {
+	grouped := map[string]map[string]int64{}
+	groupedSources := map[string]map[string]obj{}
 	changes := map[string]map[string]int64{}
 	var order []string
-	for _, scoped := range values.Keys() {
-		value, _ := values.Get(scoped)
+	for _, scoped := range slices.Sorted(maps.Keys(values)) {
+		value := values[scoped]
 		profile, model, _ := strings.Cut(scoped, ":")
 		if grouped[profile] == nil {
-			grouped[profile] = pycompat.NewOMap[int64]()
+			grouped[profile] = map[string]int64{}
 			order = append(order, profile)
 		}
-		grouped[profile].Set(model, value)
+		grouped[profile][model] = value
 		if b, ok := baseline[scoped]; !ok || b != value {
 			if changes[profile] == nil {
 				changes[profile] = map[string]int64{}
@@ -225,9 +218,9 @@ func Commit(ctx context.Context, values *pycompat.OMap[int64], baseline map[stri
 		}
 		if tag := sources[scoped]; tag != nil {
 			if groupedSources[profile] == nil {
-				groupedSources[profile] = pycompat.NewOMap[*obj]()
+				groupedSources[profile] = map[string]obj{}
 			}
-			groupedSources[profile].Set(model, tag)
+			groupedSources[profile][model] = tag
 		}
 	}
 	failed := false
@@ -237,7 +230,15 @@ func Commit(ctx context.Context, values *pycompat.OMap[int64], baseline map[stri
 		}
 		models := grouped[profile]
 		expected := identities[profile]
-		if expected == nil || !SaveDiscoveredCtx(ctx, profile, models, expected, true, groupedSources[profile], nil) {
+		saved, err := false, error(nil)
+		if expected != nil {
+			saved, err = SaveDiscoveredCtx(ctx, profile, models, expected, true, groupedSources[profile], nil)
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "%s: %s\n", prog, err)
+			return 1, false
+		}
+		if !saved {
 			if ctx.Err() != nil {
 				return 1, true
 			}
@@ -249,7 +250,7 @@ func Commit(ctx context.Context, values *pycompat.OMap[int64], baseline map[stri
 		// say what is different from before the command ran.
 		changed := changes[profile]
 		if len(changed) == 0 {
-			fmt.Fprintf(stderr, "%s: %d model(s) sized, nothing changed.\n", profile, models.Len())
+			fmt.Fprintf(stderr, "%s: %d model(s) sized, nothing changed.\n", profile, len(models))
 			continue
 		}
 		fmt.Fprintf(stderr, "%s: %d limit(s) updated, applies to new sessions.\n", profile, len(changed))
@@ -260,7 +261,7 @@ func Commit(ctx context.Context, values *pycompat.OMap[int64], baseline map[stri
 		sort.Strings(names)
 		for _, model := range names {
 			note := ""
-			if groupedSources[profile] != nil && groupedSources[profile].Has(model) {
+			if _, tagged := groupedSources[profile][model]; tagged {
 				note = "  (catalogue estimate)"
 			}
 			fmt.Fprintf(stderr, "  %s %s%s\n", pad(model, 30), padLeft(commas(changed[model]), 11), note)

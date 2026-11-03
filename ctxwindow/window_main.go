@@ -1,6 +1,7 @@
 package ctxwindow
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,61 +11,62 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/akleizor/ccmorph/pycompat"
 )
 
 const windowUsage = "usage: model-window <profile> <model> | --context <profile> <model> [tokens|auto] | --migrate"
 
 // WindowMain runs `model-window <args>` (args exclude the program name) and returns its exit code.
-func WindowMain(args []string, stdout, stderr io.Writer) (code int) {
-	if e := pycompat.Catch(func() { code = windowRun(args, stdout, stderr) }); e != nil {
-		if e.Kind == pycompat.Other {
-			fmt.Fprintf(stderr, "model-window: %s: %s\n", e.Class, e.Msg)
-		} else {
-			fmt.Fprintf(stderr, "model-window: %s\n", e.Msg)
-		}
+func WindowMain(args []string, stdout, stderr io.Writer) int {
+	code, err := windowRun(args, stdout, stderr)
+	if err != nil {
+		fmt.Fprintf(stderr, "model-window: %s\n", err)
 		return 1
 	}
 	return code
 }
 
-func windowRun(args []string, stdout, stderr io.Writer) int {
+func windowRun(args []string, stdout, stderr io.Writer) (int, error) {
 	switch {
 	case len(args) == 1 && args[0] == "--recover-cache-backups":
 		return RecoverCacheBackups(stderr)
 	case len(args) == 2 && args[0] == "--migrate" && args[1] == "--check":
-		fmt.Fprintln(stdout, MigrationPreview())
-		return 0
+		preview, err := MigrationPreview()
+		if err != nil {
+			return 0, err
+		}
+		fmt.Fprintln(stdout, preview)
+		return 0, nil
 	case len(args) == 1 && args[0] == "--migrate":
 		type result struct {
 			code int
-			exc  *pycompat.Exc
+			err  error
 		}
 		done := make(chan result, 1)
 		go func() {
-			var r result
-			r.exc = pycompat.Catch(func() { r.code = Migrate(stderr) })
-			done <- r
+			code, err := Migrate(stderr)
+			done <- result{code, err}
 		}()
 		select {
 		case r := <-done:
-			if r.exc != nil {
-				panic(r.exc)
-			}
-			return r.code
+			return r.code, r.err
 		case <-time.After(30 * time.Second):
-			pycompat.RaiseOSMsg("context migration exceeded 30 seconds; retry to finish from retained backups")
+			return 0, errors.New("context migration exceeded 30 seconds; retry to finish from retained backups")
 		}
 	case len(args) >= 3 && args[0] == "--locked":
 		return runLocked(args, stderr)
 	case (len(args) == 3 || len(args) == 4) && args[0] == "--context":
 		profile, model := args[1], args[2]
 		if len(args) == 3 {
-			fmt.Fprintln(stdout, ContextValue(profile, model))
-			return 0
+			value, err := ContextValue(profile, model)
+			if err != nil {
+				return 0, err
+			}
+			fmt.Fprintln(stdout, value)
+			return 0, nil
 		}
-		SetContext(profile, model, args[3])
+		if err := SetContext(profile, model, args[3]); err != nil {
+			return 0, err
+		}
 		what := "set to " + args[3] + " tokens"
 		if args[3] == "auto" {
 			what = "set to automatic"
@@ -73,11 +75,15 @@ func windowRun(args []string, stdout, stderr io.Writer) int {
 		if v, ok := Positive(args[3]); ok && !(v >= 100000 && v <= oneM) {
 			fmt.Fprintln(stderr, "Limit saved. Claude Code's autoCompactWindow setting supports 100,000–1,000,000 tokens; this value is outside that range.")
 		}
-		return 0
+		return 0, nil
 	case len(args) == 2 && args[0] == "--ceiling":
 		var best int64
 		found := false
-		for model, v := range ProfileWindows(args[1]) {
+		windows, err := ProfileWindows(args[1])
+		if err != nil {
+			return 0, err
+		}
+		for model, v := range windows {
 			if !strings.HasPrefix(model, "claude-") && (!found || v > best) {
 				best, found = v, true
 			}
@@ -85,14 +91,14 @@ func windowRun(args []string, stdout, stderr io.Writer) int {
 		if found {
 			fmt.Fprintln(stdout, best)
 		}
-		return 0
+		return 0, nil
 	case len(args) == 3 && args[0] == "--fields":
 		fmt.Fprintln(stdout, strings.Join(Resolve(args[1], args[2]).Fields(), "\t"))
-		return 0
+		return 0, nil
 	}
 	if len(args) != 2 {
 		fmt.Fprintln(stderr, windowUsage)
-		return 2
+		return 2, nil
 	}
 	rec := Resolve(args[0], args[1])
 	if rec.Unprobed {
@@ -100,12 +106,12 @@ func windowRun(args []string, stdout, stderr io.Writer) int {
 			args[1], args[0], commas(CCDefaultWindow), args[0])
 	}
 	fmt.Fprintln(stdout, rec.JSON())
-	return 0
+	return 0, nil
 }
 
 // runLocked holds every named profile's lock while it runs a command, which
 // gets CCMORPH_PROFILE_LOCK_HELD so its own writers do not deadlock.
-func runLocked(args []string, stderr io.Writer) int {
+func runLocked(args []string, stderr io.Writer) (int, error) {
 	set := map[string]bool{}
 	for _, p := range strings.Split(args[1], ",") {
 		set[p] = true
@@ -123,32 +129,37 @@ func runLocked(args []string, stderr io.Writer) int {
 	}()
 	var held []string
 	for _, profile := range profiles {
-		path := ProfilePath(profile)
+		path, err := ProfilePath(profile)
+		if err != nil {
+			return 0, err
+		}
 		if !contains(strings.Split(os.Getenv("CCMORPH_PROFILE_LOCK_HELD"), ":"), path) {
-			f, err := os.OpenFile(lockPath(path), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+			lock, err := lockPath(path)
 			if err != nil {
-				pycompat.RaiseOS(err)
+				return 0, err
+			}
+			f, err := os.OpenFile(lock, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+			if err != nil {
+				return 0, err
 			}
 			locks = append(locks, f)
 			if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-				pycompat.RaiseOS(err)
+				return 0, err
 			}
 		}
-	}
-	for _, profile := range profiles {
-		held = append(held, ProfilePath(profile))
+		held = append(held, path)
 	}
 	cmd := exec.Command(args[2], args[3:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	cmd.Env = append(os.Environ(), "CCMORPH_PROFILE_LOCK_HELD="+strings.Join(held, ":"))
 	if _, err := exec.LookPath(args[2]); err != nil {
-		pycompat.RaiseOSMsg("[Errno 2] No such file or directory: '%s'", args[2])
+		return 0, fmt.Errorf("[Errno 2] No such file or directory: '%s'", args[2])
 	}
 	interrupts := make(chan os.Signal, 1)
 	signal.Notify(interrupts, os.Interrupt)
 	defer signal.Stop(interrupts)
 	if err := cmd.Start(); err != nil {
-		pycompat.RaiseOS(err)
+		return 0, err
 	}
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
@@ -157,22 +168,22 @@ func runLocked(args []string, stderr io.Writer) int {
 		select { // a SIGINT sent just before the child exited still counts as the interrupt
 		case <-interrupts:
 			fmt.Fprintln(stderr, "Cancelled.")
-			return 130
+			return 130, nil
 		case <-time.After(50 * time.Millisecond):
 		}
 		if ee, ok := err.(*exec.ExitError); ok {
 			if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
-				return 256 - int(ws.Signal()) // Python's returncode is -signal, which exit() wraps
+				return 256 - int(ws.Signal()), nil // Python's returncode is -signal, which exit() wraps
 			}
-			return ee.ExitCode()
+			return ee.ExitCode(), nil
 		}
-		return 0
+		return 0, nil
 	case <-interrupts:
 		// KeyboardInterrupt: stop the child, let the locks go, report once.
 		cmd.Process.Kill()
 		<-exited
 		fmt.Fprintln(stderr, "Cancelled.")
-		return 130
+		return 130, nil
 	}
 }
 

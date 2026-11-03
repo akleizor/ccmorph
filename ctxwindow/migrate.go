@@ -1,14 +1,14 @@
 package ctxwindow
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
-
-	"github.com/akleizor/ccmorph/pycompat"
 )
 
 func isFile(path string) bool {
@@ -24,7 +24,7 @@ func globConf(dir string) []string {
 	var out []string
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".conf") {
-			out = append(out, pycompat.Join(dir, e.Name()))
+			out = append(out, filepath.Join(dir, e.Name()))
 		}
 	}
 	sort.Strings(out)
@@ -37,20 +37,20 @@ func stem(path string) string {
 }
 
 func legacyPath(state string) string {
-	legacy := pycompat.Join(state, "model-registry")
-	if !exists(legacy) && exists(pycompat.Join(state, "model-registry.conf")) {
-		legacy = pycompat.Join(state, "model-registry.conf")
+	legacy := filepath.Join(state, "model-registry")
+	if !exists(legacy) && exists(filepath.Join(state, "model-registry.conf")) {
+		legacy = filepath.Join(state, "model-registry.conf")
 	}
 	return legacy
 }
 
 func cacheRoot() string {
-	root := pycompat.Join(StateDir(), "profiles")
+	root := filepath.Join(StateDir(), "profiles")
 	home, _ := os.UserHomeDir()
 	// Pre-migration cache recovery: an unmoved legacy home (a real directory,
 	// not the link the move leaves) still holds the caches, even once a
 	// models.json has created the new root.
-	if legacy := pycompat.Join(home, ".claude-profiles"); !exists(root) || (isDir(legacy) && !isSymlink(legacy)) {
+	if legacy := filepath.Join(home, ".claude-profiles"); !exists(root) || (isDir(legacy) && !isSymlink(legacy)) {
 		root = legacy
 	}
 	return root
@@ -75,23 +75,25 @@ func cacheEntries(lines []string) []cacheEntry {
 	return out
 }
 
-func archive(path string) {
+func archive(path string) error {
 	backup := path + ".migrated"
 	for n := 1; exists(backup); n++ {
 		backup = fmt.Sprintf("%s.migrated.%d", path, n)
 	}
-	if err := os.Rename(path, backup); err != nil {
-		pycompat.RaiseOS(err)
-	}
+	return os.Rename(path, backup)
 }
 
-func readLegacy(legacy string) []cacheEntry {
+func readLegacy(legacy string) ([]cacheEntry, error) {
 	if isSymlink(legacy) {
-		pycompat.RaiseOSMsg("legacy registry is a symlink; migration refused")
+		return nil, errors.New("legacy registry is a symlink; migration refused")
+	}
+	text, err := readText(legacy)
+	if err != nil {
+		return nil, err
 	}
 	var out []cacheEntry
-	for _, line := range pycompat.SplitLines(pycompat.ReadText(legacy)) {
-		key, value, ok := strings.Cut(pycompat.Strip(line), "=")
+	for _, line := range strings.Split(text, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
 		if !ok || strings.HasPrefix(key, "#") {
 			continue
 		}
@@ -99,11 +101,11 @@ func readLegacy(legacy string) []cacheEntry {
 			out = append(out, cacheEntry{key, n})
 		}
 	}
-	return out
+	return out, nil
 }
 
 // MigrationPreview is `--migrate --check`: what a migration would attribute.
-func MigrationPreview() string {
+func MigrationPreview() (string, error) {
 	state := StateDir()
 	legacy := legacyPath(state)
 	type counts struct{ scoped, cached int }
@@ -118,9 +120,13 @@ func MigrationPreview() string {
 	attributed := map[string]bool{}
 	root := cacheRoot()
 	for _, profile := range names {
-		cache := pycompat.Join(root, profile, "cache/context-window")
+		cache := filepath.Join(root, profile, "cache/context-window")
 		if isFile(cache) && !isSymlink(cache) {
-			for _, e := range cacheEntries(pycompat.SplitLines(pycompat.ReadText(cache))) {
+			text, err := readText(cache)
+			if err != nil {
+				return "", err
+			}
+			for _, e := range cacheEntries(strings.Split(text, "\n")) {
 				profiles[profile].cached++
 				attributed[e.model] = true
 			}
@@ -128,7 +134,11 @@ func MigrationPreview() string {
 	}
 	unresolved := 0
 	if exists(legacy) {
-		for _, e := range readLegacy(legacy) {
+		entries, err := readLegacy(legacy)
+		if err != nil {
+			return "", err
+		}
+		for _, e := range entries {
 			scope, _, _ := strings.Cut(e.model, ":")
 			if _, ok := profiles[scope]; ok && strings.HasPrefix(e.model, scope+":") {
 				profiles[scope].scoped++
@@ -137,66 +147,67 @@ func MigrationPreview() string {
 			}
 		}
 	}
-	out := pycompat.NewObj()
-	out.Set("source", legacy)
-	ps := pycompat.NewObj()
+	ps := map[string]any{}
 	for _, n := range names {
-		c := pycompat.NewObj()
-		c.Set("scoped", pycompat.Int(int64(profiles[n].scoped)))
-		c.Set("cached", pycompat.Int(int64(profiles[n].cached)))
-		ps.Set(n, c)
+		ps[n] = map[string]int{"scoped": profiles[n].scoped, "cached": profiles[n].cached}
 	}
-	out.Set("profiles", ps)
-	out.Set("unattributed_entries", pycompat.Int(int64(unresolved)))
-	return pycompat.Marshal(out, pycompat.Format{SortKeys: true, ASCII: true})
+	return jsonString(map[string]any{"source": legacy, "profiles": ps, "unattributed_entries": unresolved}), nil
 }
 
 // Migrate folds the legacy registry and per-profile caches into each profile's conf.
-func Migrate(stderr io.Writer) int {
+func Migrate(stderr io.Writer) (int, error) {
 	state := StateDir()
 	if fi, err := os.Stat(state); err != nil || !fi.IsDir() {
-		return 0
+		return 0, nil
 	}
-	lock, err := os.OpenFile(pycompat.Join(state, ".context-migration.lock"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o666)
+	lock, err := os.OpenFile(filepath.Join(state, ".context-migration.lock"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o666)
 	if err != nil {
-		pycompat.RaiseOS(err)
+		return 0, err
 	}
 	defer lock.Close()
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
-		pycompat.RaiseOS(err)
+		return 0, err
 	}
 	return migrateLocked(state, stderr)
 }
 
-func migrateLocked(state string, stderr io.Writer) int {
+func migrateLocked(state string, stderr io.Writer) (int, error) {
 	legacy := legacyPath(state)
 	root := cacheRoot()
 	var caches []string
 	if dirs, err := os.ReadDir(root); err == nil {
 		for _, d := range dirs {
-			c := pycompat.Join(root, d.Name(), "cache/context-window")
+			c := filepath.Join(root, d.Name(), "cache/context-window")
 			if _, err := os.Lstat(c); err == nil {
 				caches = append(caches, c)
 			}
 		}
 	}
-	moved := moveInlineDiscovered(state)
+	moved, err := moveInlineDiscovered(state)
+	if err != nil {
+		return 0, err
+	}
 	if !exists(legacy) && len(caches) == 0 {
 		if moved > 0 {
 			fmt.Fprintf(stderr, "Moved discovered context limits of %d profile(s) to profiles/<name>/models.json.\n", moved)
 		}
-		return 0
+		return 0, nil
 	}
 	var entries []cacheEntry
 	if exists(legacy) {
-		entries = readLegacy(legacy)
+		if entries, err = readLegacy(legacy); err != nil {
+			return 0, err
+		}
 	}
 	var profiles []string
 	for _, conf := range globConf(state) {
 		if conf[strings.LastIndex(conf, "/")+1:] == "model-registry.conf" || isSymlink(conf) || !ValidProfileName(stem(conf)) {
 			continue
 		}
-		_, fields := ReadConf(conf)
+		_, fields, err := ReadConf(conf)
+		if err != nil {
+			return 0, err
+		}
 		switch fields["type"] {
 		case "apikey", "proxy", "provider", "token", "sub":
 			profiles = append(profiles, stem(conf))
@@ -206,16 +217,20 @@ func migrateLocked(state string, stderr io.Writer) int {
 	attributed := map[string]bool{}
 	for _, c := range caches {
 		if isSymlink(c) {
-			pycompat.RaiseOSMsg("legacy context cache is a symlink; migration refused: %s", c)
+			return 0, fmt.Errorf("legacy context cache is a symlink; migration refused: %s", c)
 		}
 	}
 	for _, profile := range profiles {
 		expected := ProfileIdentity(profile)
-		cache := pycompat.Join(root, profile, "cache/context-window")
-		values := pycompat.NewOMap[int64]()
+		cache := filepath.Join(root, profile, "cache/context-window")
+		values := map[string]int64{}
 		if isFile(cache) && !isSymlink(cache) {
-			for _, e := range cacheEntries(pycompat.SplitLines(pycompat.ReadText(cache))) {
-				values.Set(e.model, e.value)
+			text, err := readText(cache)
+			if err != nil {
+				return 0, err
+			}
+			for _, e := range cacheEntries(strings.Split(text, "\n")) {
+				values[e.model] = e.value
 				attributed[e.model] = true
 			}
 			handled = append(handled, cache)
@@ -224,13 +239,19 @@ func migrateLocked(state string, stderr io.Writer) int {
 		// can attribute it; scoped rows supersede that profile-local fallback.
 		for _, e := range entries {
 			if strings.HasPrefix(e.model, profile+":") {
-				values.Set(e.model[len(profile)+1:], e.value)
+				values[e.model[len(profile)+1:]] = e.value
 				attributed[e.model] = true
 			}
 		}
-		if values.Len() > 0 && !SaveDiscovered(profile, values, expected, false, nil, nil) {
-			fmt.Fprintf(stderr, "Migration paused: profile '%s' changed. Legacy files retained; retry migration.\n", profile)
-			return 1
+		if len(values) > 0 {
+			saved, err := SaveDiscovered(profile, values, expected, false, nil, nil)
+			if err != nil {
+				return 0, err
+			}
+			if !saved {
+				fmt.Fprintf(stderr, "Migration paused: profile '%s' changed. Legacy files retained; retry migration.\n", profile)
+				return 1, nil
+			}
 		}
 	}
 	unresolved := 0
@@ -243,37 +264,51 @@ func migrateLocked(state string, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "%d legacy context entries have no profile attribution; retained in backup, not applied.\n", unresolved)
 	}
 	for _, c := range handled {
-		archive(c)
+		if err := archive(c); err != nil {
+			return 0, err
+		}
 	}
 	if exists(legacy) {
-		archive(legacy)
+		if err := archive(legacy); err != nil {
+			return 0, err
+		}
 	}
 	fmt.Fprintf(stderr, "Context migration complete: %d profile(s) checked. Originals retained as .migrated backups.\n", len(profiles))
-	return 0
+	return 0, nil
 }
 
 // RecoverCacheBackups is explicit recovery only: old backups never become an automatic live source.
-func RecoverCacheBackups(stderr io.Writer) int {
+func RecoverCacheBackups(stderr io.Writer) (int, error) {
 	root := cacheRoot()
 	for _, conf := range globConf(StateDir()) {
 		s := stem(conf)
 		if isSymlink(conf) || !ValidProfileName(s) {
 			continue
 		}
-		cache := pycompat.Join(root, s, "cache/context-window.migrated")
+		cache := filepath.Join(root, s, "cache/context-window.migrated")
 		if !isFile(cache) || isSymlink(cache) {
 			continue
 		}
-		values := pycompat.NewOMap[int64]()
-		for _, e := range cacheEntries(strings.Split(pycompat.ReadText(cache), "\n")) {
-			values.Set(e.model, e.value)
+		text, err := readText(cache)
+		if err != nil {
+			return 0, err
 		}
-		if values.Len() > 0 && !SaveDiscovered(s, values, ProfileIdentity(s), false, nil, nil) {
-			return 1
+		values := map[string]int64{}
+		for _, e := range cacheEntries(strings.Split(text, "\n")) {
+			values[e.model] = e.value
 		}
-		fmt.Fprintf(stderr, "%s: processed %d backup entries; existing limits and backup retained.\n", s, values.Len())
+		if len(values) > 0 {
+			saved, err := SaveDiscovered(s, values, ProfileIdentity(s), false, nil, nil)
+			if err != nil {
+				return 0, err
+			}
+			if !saved {
+				return 1, nil
+			}
+		}
+		fmt.Fprintf(stderr, "%s: processed %d backup entries; existing limits and backup retained.\n", s, len(values))
 	}
-	return 0
+	return 0, nil
 }
 
 func isDir(path string) bool {
@@ -284,7 +319,7 @@ func isDir(path string) bool {
 // moveInlineDiscovered moves each conf's inline context_discovered line to its
 // models.json and removes the retired <name>.conf.lock files. It returns how
 // many profiles moved.
-func moveInlineDiscovered(state string) int {
+func moveInlineDiscovered(state string) (int, error) {
 	moved := 0
 	for _, conf := range globConf(state) {
 		s := stem(conf)
@@ -292,24 +327,32 @@ func moveInlineDiscovered(state string) int {
 			continue
 		}
 		os.Remove(conf + ".lock")
-		text, fields := ReadConf(conf)
+		text, fields, err := ReadConf(conf)
+		if err != nil {
+			return moved, err
+		}
 		if !strings.Contains(text, "context_discovered=") {
 			continue
 		}
-		ProfileLock(s, func() {
+		err = ProfileLock(s, func() error {
 			expected := ProfileIdentity(s)
 			if expected == nil {
-				return
+				return nil
 			}
 			if doc := discoveredDoc(fields); doc != nil {
-				if writeDiscovered(conf, doc, expected) {
+				ok, err := writeDiscovered(conf, doc, expected)
+				if ok {
 					moved++
 				}
-				return
+				return err
 			}
 			// Bound to a route this profile no longer has: every read already ignores it.
-			ReplaceFields(conf, []Field{{Key: "context_discovered"}}, expected)
+			_, err := ReplaceFields(conf, []Field{{Key: "context_discovered"}}, expected)
+			return err
 		})
+		if err != nil {
+			return moved, err
+		}
 	}
-	return moved
+	return moved, nil
 }
