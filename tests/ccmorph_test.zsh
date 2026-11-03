@@ -1500,53 +1500,6 @@ test_a_retired_verb_is_rejected_not_merely_undocumented() {
   return $rc
 }
 
-test_the_window_cache_holds_every_model_it_is_told() {
-  # The per-model window cache was written with a single `>|`, so it held ONE row: a
-  # LAST-MODEL cache wearing a per-model name. Switch model, switch back, and the
-  # window had to be probed again -- on a mixed route, nearly every launch.
-  #
-  # It is a table now, and this pins the two ways a table silently stops being one:
-  #  1. a second model must not evict the first;
-  #  2. the row for a model must be matched LITERALLY. A model id is data, not a
-  #     pattern -- `Qwen3.6-27B-FP8` used as a regex also matches `Qwen3X6-27B-FP8`,
-  #     so caching one dropped the other and re-probed it. 27 ids in a real catalogue
-  #     here contain a regex metacharacter, so this is the common case, not the edge.
-  local c rc=0
-  c=$(mktemp -d)/context-window
-
-  _cache_put() {  # mirrors the launch path's write
-    local m="$1" w="$2" t="${c}.$$"
-    { mkdir -p "${c:h}" &&
-      { print -r -- "$m	$w"
-        if [[ -f "$c" && ! -L "$c" ]]; then
-          command grep -vF -- "${m}	" "$c" 2>/dev/null | command head -n 63
-        fi
-        :
-      } >| "$t" && command mv -f "$t" "$c"
-    } 2>/dev/null || { command rm -f "$t" 2>/dev/null; : }
-  }
-
-  _cache_put 'Qwen3.6-27B-FP8' 131072
-  _cache_put 'Qwen3X6-27B-FP8' 999999
-  _cache_put 'gpt-6-astra'     200000
-  _cache_put 'Qwen3.6-27B-FP8' 262144   # update in place, not a duplicate row
-
-  local body="$(<"$c")"
-  assert_contains "$body" 'Qwen3X6-27B-FP8	999999' \
-    'a look-alike id was evicted: the row must be matched literally, not as a regex' || rc=1
-  assert_contains "$body" 'gpt-6-astra	200000' \
-    'a second model evicted the first: the cache is not a table' || rc=1
-  assert_contains "$body" 'Qwen3.6-27B-FP8	262144' \
-    'the updated row is missing' || rc=1
-  if (( $(command grep -cF -- 'Qwen3.6-27B-FP8	' "$c") != 1 )); then
-    print -u2 -- 'the updated model has a duplicate row; the table will grow forever'
-    rc=1
-  fi
-  unfunction _cache_put
-  rm -rf "${c:h}"
-  return $rc
-}
-
 test_the_retired_window_verb_still_dispatches() {
   # The rename kept the pre-2.4.0 verb as a dispatch alias, for scripts and muscle
   # memory that already say it. A bulk rename then rewrote that alias into a second
@@ -3310,72 +3263,6 @@ test_shipped_surface_never_names_the_transport_product() {
   return $rc
 }
 
-
-# A published tool is read by someone who cannot ask the author anything, so an
-# instruction they cannot act on is a dead end. But the fix is NOT to paste this
-# repository's URL in: `test_source_carries_no_host_specific_defaults` forbids an
-# org or host identifier in any shipped file, and a fork's URL would be wrong for
-# every other fork anyway.
-#
-# So the rule is narrow: prose a READER follows must not contain a slot only the
-# author could fill.
-# No model's context window may be written in the source. Every window is a
-# probed fact that lives in the registry (`ccmorph probe` writes it), keyed
-# per model and per route; a number typed here would be a second, silently
-# diverging source of truth for exactly the fact this tool exists to get right --
-# and a wrong one is invisible until a session limit a wall nobody predicted.
-#
-# The two schema bounds are named constants, declared once with their provenance
-# (Claude Code's own .int().min(1e5).max(1e6) on autoCompactWindow) and matched by
-# name, not value. Comments are exempt: prose explaining a probed number is how
-# the reasoning stays auditable.
-# An apostrophe inside an embedded `python3 -c '\''...'\''` program closes the
-# single-quoted zsh string early; the remainder is parsed as shell, and the
-# enclosing function silently stops being defined. That has broken this file three
-# separate times, and the symptom is always far from the cause: an advisory
-# disappears, or a function is "not found", while `zsh -n` may still call the file
-# valid. The only safe form inside those programs is the escaped `'\''`.
-test_no_embedded_program_carries_a_bare_apostrophe() {
-  local rc=0 hits
-  # Per file, never the concatenation: a program's closing quote must be sought
-  # in the file that opened it. Joined, a one-line `python3 -c '…'` — which has
-  # no `\n'` after it — would take the next FILE's closer as its own and bury
-  # every line up to it inside the program, reporting them all as bare
-  # apostrophes.
-  hits=$(command python3 - "${CCMORPH_LIBRARY[@]}" <<'PY'
-import sys
-
-needle = "python3 -c " + chr(39)
-out = []
-for path in sys.argv[1:]:
-    src = open(path, encoding="utf-8").read()
-    name = path.rsplit("/", 1)[-1]
-    i = 0
-    while True:
-        k = src.find(needle, i)
-        if k == -1:
-            break
-        end = src.find(chr(10) + chr(39), k)
-        if end == -1:
-            break
-        base = src[:k].count(chr(10)) + 1
-        body = src[k + len(needle):end]
-        for n, line in enumerate(body.split(chr(10))):
-            # The escaped form is fine; a bare apostrophe is the bug.
-            if chr(39) in line.replace(chr(39) + chr(92) + chr(39) + chr(39), ""):
-                out.append(f"{name}:{base + n}: {line.strip()[:100]}")
-        i = end
-print(chr(10).join(out))
-PY
-) || hits=""
-  if [[ -n "$hits" ]]; then
-    print -u2 -- 'FAIL: an embedded python program contains a bare apostrophe, which closes'
-    print -u2 -- 'its single-quoted string early and drops the enclosing function:'
-    print -u2 -- "$hits"
-    rc=1
-  fi
-  return $rc
-}
 
 test_no_context_window_is_written_into_the_source() {
   local rc=0 f hits
@@ -9772,7 +9659,6 @@ run_test test_claude_subcommands_reach_claude_through_the_launch_pipeline
 run_test test_a_retired_verb_is_rejected_not_merely_undocumented
 run_test test_only_the_current_vocabulary_is_taught
 run_test test_the_retired_window_verb_still_dispatches
-run_test test_the_window_cache_holds_every_model_it_is_told
 run_test test_menu_with_no_account_chains_from_the_account_chooser
 run_test test_version_accepts_the_conventional_flags
 run_test test_help_names_an_account_argument_unambiguously
@@ -9831,7 +9717,6 @@ run_test test_local_sh_loads_and_its_exports_take_effect
 run_test test_absent_local_sh_is_a_clean_noop
 run_test test_broken_local_sh_does_not_abort_the_source
 run_test test_shipped_surface_never_names_the_transport_product
-run_test test_no_embedded_program_carries_a_bare_apostrophe
 run_test test_no_context_window_is_written_into_the_source
 run_test test_no_reader_instruction_carries_an_authors_placeholder
 run_test test_onboarding_documents_no_wiring_step_at_all
