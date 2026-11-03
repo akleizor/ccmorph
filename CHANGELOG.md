@@ -13,8 +13,11 @@
   `install.sh --uninstall`) still removes only the command, and now lists the
   state root with its profiles, credentials and session history, the usage
   receipts under `~/.local/state/ccmorph`, and on macOS the login-keychain items
-  the confs point at, each with the command that removes it. Before removing the
-  command it repairs the plugin index paths a profile session left in
+  the confs point at, each with the command that removes it. The state root is
+  derived the way the runtime derives it, so a `CCMORPH_STATE_DIR` redirect is
+  honoured: the redirected root is the one named, and `~/.config/ccmorph` is
+  named as the installed code. Before removing the command it repairs the
+  plugin index paths a profile session left in
   `~/.claude/plugins`, so a plugin installed from a profile keeps loading in
   native `claude` once the state root is deleted by hand.
 - **Nothing else in `~/.local/bin` is touched.** The installer and uninstall no
