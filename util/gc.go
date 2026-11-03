@@ -13,9 +13,12 @@ import (
 
 // gcStale is `util gc-stale <state dir> <profiles dir> <tmp dir>`: best-effort reaping of
 // state a killed launch left behind. Relay signals go once their owning launcher is
-// dead and they are a minute old. Launch-settings overlays and provider bridge
-// dirs carry credentials, so they go after 12h unless a live process still names
-// them; the process table is read at most once, and only when something is old.
+// dead and they are a minute old. Session env files carry credentials and live
+// milliseconds (their reader removes them on sight), so a minute-old one in TMPDIR
+// or the state run dir was orphaned by a killed launcher and goes (#142).
+// Launch-settings overlays and provider bridge dirs carry credentials, so they go
+// after 12h unless a live process still names them; the process table is read at
+// most once, and only when something is old.
 func gcStale(args []string, _ io.Reader, _, _ io.Writer) int {
 	if len(args) != 3 {
 		return 2
@@ -38,7 +41,7 @@ func gcStale(args []string, _ io.Reader, _, _ io.Writer) int {
 	}
 
 	overlays, _ := filepath.Glob(filepath.Join(profiles, "*", "cache", "launch-settings.*"))
-	var bridges []string
+	var bridges, envs []string
 	ents, _ := os.ReadDir(tmp)
 	bridgePrefix := "ccmorph-bridge-" + strconv.Itoa(os.Getuid()) + "-"
 	for _, e := range ents {
@@ -47,6 +50,23 @@ func gcStale(args []string, _ io.Reader, _, _ io.Writer) int {
 			overlays = append(overlays, filepath.Join(tmp, n))
 		case strings.HasPrefix(n, bridgePrefix):
 			bridges = append(bridges, filepath.Join(tmp, n))
+		case strings.HasPrefix(n, "ccmorph-session-env."):
+			envs = append(envs, filepath.Join(tmp, n))
+		}
+	}
+	// The run dir is read by name, never globbed: a state dir can hold glob
+	// metacharacters (#113), and the env file lands there when TMPDIR cannot
+	// be written.
+	if run, err := os.ReadDir(filepath.Join(state, "run")); err == nil {
+		for _, e := range run {
+			if strings.HasPrefix(e.Name(), "ccmorph-session-env.") {
+				envs = append(envs, filepath.Join(state, "run", e.Name()))
+			}
+		}
+	}
+	for _, f := range envs {
+		if isFile(f) && old(f, time.Minute) {
+			_ = os.Remove(f)
 		}
 	}
 	var live *string
