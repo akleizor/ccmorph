@@ -7,25 +7,24 @@ import (
 	"testing"
 )
 
-func TestRelayReadConsumesOnlyAWellFormedRequest(t *testing.T) {
+func TestReadRelayConsumesOnlyAWellFormedRequest(t *testing.T) {
 	dir := t.TempDir()
-	run := func(body string) (int, string, string) {
+	run := func(body string) (Relay, error) {
 		p := filepath.Join(dir, "relay")
 		if body != "\x00none" {
 			os.WriteFile(p, []byte(body), 0o600)
 		}
-		var o, e strings.Builder
-		rc := relayRead([]string{p}, nil, &o, &e)
-		if _, err := os.Lstat(p); err == nil {
+		r, err := ReadRelay(p)
+		if _, e := os.Lstat(p); e == nil {
 			t.Errorf("%q: relay file left behind", body)
 		}
-		return rc, o.String(), e.String()
+		return r, err
 	}
-	if rc, _, _ := run("\x00none"); rc != 3 {
-		t.Errorf("no file: rc %d", rc)
+	if _, err := run("\x00none"); err != ErrNoRelay {
+		t.Errorf("no file: %v", err)
 	}
-	if rc, out, _ := run("profile=gw\nsession=abc\nmodel=m"); rc != 0 || out != "profile=gw\nsession=abc\nmodel=m\neffort=\n" {
-		t.Errorf("good: rc %d %q", rc, out)
+	if r, err := run("profile=gw\nsession=abc\nmodel=m"); err != nil || r != (Relay{"gw", "abc", "m", ""}) {
+		t.Errorf("good: %v %+v", err, r)
 	}
 	for body, want := range map[string]string{
 		"profile=gw\nprofile=x\nsession=s\n": "duplicate relay field 'profile'",
@@ -33,8 +32,8 @@ func TestRelayReadConsumesOnlyAWellFormedRequest(t *testing.T) {
 		"profile=gw\n":                       "invalid relay signal",
 		"profile=gw\nsession=s\r\n":          "invalid relay signal",
 	} {
-		if rc, _, e := run(body); rc != 1 || !strings.Contains(e, want) {
-			t.Errorf("%q: rc %d %q", body, rc, e)
+		if _, err := run(body); err == nil || err == ErrNoRelay || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: %v", body, err)
 		}
 	}
 }

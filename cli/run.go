@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"github.com/akleizor/ccmorph/util"
 	"math/rand/v2"
 	"os"
 	"os/exec"
@@ -45,29 +46,20 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 				break
 			}
 		}
-		table := ""
+		var table map[string]string
 		if need {
 			table = l.claudeArity()
 		}
-		out, errOut, rc := l.core(nil, table, append([]string{"util", "launch-argv"}, argv...)...)
-		if rc != 0 {
-			l.err(strings.TrimSpace(out + errOut))
+		parsed, err := util.ParseLaunchArgv(argv, table)
+		if err != nil {
+			l.err(err.Error())
 			return nil, 2
 		}
-		lines := strings.SplitN(out, "\n", 3)
-		for _, line := range lines[:min(2, len(lines))] {
-			switch {
-			case strings.HasPrefix(line, "profile="):
-				if v := strings.TrimPrefix(line, "profile="); v != "" {
-					name = v
-				}
-			case line == "interactive=1":
-				interactive = true
-			}
+		if parsed.Profile != "" {
+			name = parsed.Profile
 		}
-		if len(lines) == 3 {
-			args = splitNUL(lines[2])
-		}
+		interactive = interactive || parsed.Interactive
+		args = parsed.Forward
 	}
 
 	if interactive && name == "" {
@@ -123,7 +115,7 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 	}
 
 	subcommand := os.Getenv("CCMORPH_SUBCOMMAND_LAUNCH") == "1"
-	table := ""
+	var table map[string]string
 	for _, a := range args {
 		if a == "--" {
 			break
@@ -134,44 +126,19 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 			break
 		}
 	}
-	routedArg := "0"
-	if routed {
-		routedArg = "1"
-	}
-	out, errOut, rc := l.core(nil, table, append([]string{"util", "launch-flags", routedArg}, args...)...)
-	if rc != 0 {
-		l.err(strings.TrimSpace(out + errOut))
+	flags, err := util.ParseLaunchFlags(routed, args, table)
+	if err != nil {
+		l.err(err.Error())
 		return nil, 2
 	}
-	explicit, resume, launchModel := "", "", ""
-	userModel, skipModel, askMissing, resumeCarried := false, false, true, false
-	var relayArgs []string
-	for _, line := range strings.Split(out, "\n") {
-		k, v, _ := strings.Cut(line, "=")
-		switch k {
-		case "model":
-			explicit = v
-		case "user_model":
-			userModel = v == "1"
-		case "skip_model":
-			skipModel = v == "1"
-		case "ask_missing_model":
-			askMissing = v == "1"
-		case "resume":
-			resume = v
-		case "interactive":
-			if v == "1" {
-				interactive = true
-			}
-		case "relay":
-			relayArgs = append(relayArgs, v)
-		case "drop":
-			var d int
-			fmt.Sscan(v, &d)
-			if d >= 1 && d <= len(args) {
-				end := min(d+1, len(args))
-				args = append(args[:d-1:d-1], args[end:]...)
-			}
+	explicit, resume, launchModel := flags.Model, flags.Resume, ""
+	userModel, skipModel, askMissing, resumeCarried := flags.UserModel, flags.SkipModel, flags.AskMissingModel, false
+	relayArgs := flags.Relay
+	interactive = interactive || flags.Interactive
+	for _, d := range flags.Drop {
+		if d >= 1 && d <= len(args) {
+			end := min(d+1, len(args))
+			args = append(args[:d-1:d-1], args[end:]...)
 		}
 	}
 
@@ -336,26 +303,16 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 		l.log(fmt.Sprintf("exit rc=%d profile=<none> relay_file_exists=%s", rcClaude, yesNo(isFile(relayFile))))
 	}
 
-	out, errOut, rc = l.core(nil, "", "util", "relay-read", relayFile)
-	if rc == 3 {
+	rs, err := util.ReadRelay(relayFile)
+	if err == util.ErrNoRelay {
 		l.log("normal exit (no relay)")
 		return nil, rcClaude
-	} else if rc != 0 {
-		msg := strings.TrimSpace(out + errOut)
-		if msg == "" {
-			msg = "invalid relay signal"
-		}
-		l.err(msg)
+	} else if err != nil {
+		l.err(err.Error())
 		return nil, 1
 	}
-	rs := map[string]string{}
-	for _, line := range strings.Split(out, "\n") {
-		if k, v, ok := strings.Cut(line, "="); ok {
-			rs[k] = v
-		}
-	}
-	to := rs["profile"]
-	if !profile.ValidName(to) || !l.exists(to) || rs["session"] == "" {
+	to := rs.Profile
+	if !profile.ValidName(to) || !l.exists(to) || rs.Session == "" {
 		l.err("invalid relay signal")
 		return nil, 1
 	}
@@ -366,14 +323,14 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 	if !l.setupDir(to, f["type"]) {
 		return nil, 1
 	}
-	next := &relayNext{args: append([]string{}, relayArgs...), profile: to, session: rs["session"]}
-	if rs["model"] != "" {
-		next.args = append(next.args, "--model", rs["model"])
+	next := &relayNext{args: append([]string{}, relayArgs...), profile: to, session: rs.Session}
+	if rs.Model != "" {
+		next.args = append(next.args, "--model", rs.Model)
 	}
-	if rs["effort"] != "" {
-		next.args = append(next.args, "--effort", rs["effort"])
+	if rs.Effort != "" {
+		next.args = append(next.args, "--effort", rs.Effort)
 	}
-	next.args = append(next.args, "--resume", rs["session"])
+	next.args = append(next.args, "--resume", rs.Session)
 	next.crossed = name == "" || !sameFile(l.conf(name), l.conf(to))
 	return next, 0
 }
@@ -466,8 +423,8 @@ func (l *launcher) resumeModel(id string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	m, rc := l.util(nil, "", "resume-model", transcript)
-	if rc != 0 || m == "" || strings.ContainsAny(m, "\n\r") || strings.ContainsAny(m, " \t\f\v") ||
+	m, ok := util.ResumeModel(transcript)
+	if !ok || m == "" || strings.ContainsAny(m, "\n\r") || strings.ContainsAny(m, " \t\f\v") ||
 		strings.HasPrefix(m, "-") || strings.HasPrefix(m, "@") || m == "?" {
 		return "", false
 	}

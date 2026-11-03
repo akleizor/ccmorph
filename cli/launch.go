@@ -506,26 +506,8 @@ func (l *launcher) claudeHelp() string {
 	return string(help)
 }
 
-// claudeTable is a util parser's answer over claudeHelp, memoised per verb.
-func (l *launcher) claudeTable(verb string) string {
-	if v, ok := l.memo[verb]; ok {
-		return v
-	}
-	v := ""
-	if help := l.claudeHelp(); help != "" {
-		v, _ = l.util(nil, help, verb)
-	}
-	l.memo[verb] = v
-	return v
-}
-
-// claudeArity is the `<option> <arity>` lines the argv walkers read, from claudeHelp.
-func (l *launcher) claudeArity() string {
-	if a := l.claudeTable("claude-opt-arities"); a != "" {
-		return a + "\n"
-	}
-	return ""
-}
+// claudeArity is the option arity table the argv walkers read, from claudeHelp.
+func (l *launcher) claudeArity() map[string]string { return util.ClaudeOptArities(l.claudeHelp()) }
 
 func splitNUL(s string) []string {
 	s = strings.TrimSuffix(s, ".")

@@ -1248,14 +1248,7 @@ test_claude_subcommands_are_asked_for_never_hardcoded() {
   chmod +x "$HOME/bin/claude"
   source "$CCMORPH_SOURCE"
 
-  local rc=0 discovered
-  # Interactive shells may replace grep with an rg wrapper whose -E means
-  # encoding, not extended regex. Parsing must use the executable's contract.
-  discovered=$(
-    grep() { print -u2 -- 'unexpected shell grep override'; return 2; }
-    _ccm_claude_verbs
-  ) 2> "$test_home/discovery.err"
-  [[ "$discovered" == $'invented-verb\nmcp\nstop\nkill' && ! -s "$test_home/discovery.err" ]] || rc=1
+  local rc=0
   _ccm_is_claude_subcommand kill || {
     print -u2 -- 'FAIL: an alias the installed binary lists must be recognised'
     rc=1

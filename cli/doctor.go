@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"github.com/akleizor/ccmorph/util"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -71,9 +72,9 @@ func (l *launcher) doctorEnvironment() int {
 		l.status("OK", "zsh: "+v)
 	}
 	if _, err := os.Lstat(filepath.Join(l.dir, "rc-hosts")); err == nil {
-		v, rc := l.utilQ(nil, "", "rc-interpreter")
+		v, ok := util.RCInterpreter()
 		switch {
-		case rc == 0:
+		case ok:
 			l.status("OK", "remote control interpreter: "+v)
 		case v != "":
 			l.status("FAIL", "remote control interpreter: "+v+" (need 3.8 or newer)")

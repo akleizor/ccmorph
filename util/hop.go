@@ -1,8 +1,6 @@
 package util
 
 import (
-	"fmt"
-	"io"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -60,25 +58,11 @@ var shellComm = regexp.MustCompile(`^-?(zsh|bash|sh|dash)$`)
 // forwarded, which discards the queued switch.
 const launcherComm = "ccmorph-core"
 
-// hopTarget is `util hop-target <relay pid> <pid>`: the Claude Code process to end
-// for a hop -- the first process below the relay in <pid>'s ancestry that is
-// neither a shell nor the core launcher (the shells between are the relay's
-// forwarding subshells and the one Claude Code runs the command in).
-func hopTarget(args []string, _ io.Reader, out, _ io.Writer) int {
-	if len(args) != 2 {
-		return 2
-	}
-	relay, e1 := strconv.Atoi(args[0])
-	pid, e2 := strconv.Atoi(args[1])
-	if e1 != nil || e2 != nil {
-		return 1
-	}
-	if c := findHopTarget(processTable(), relay, pid); c > 0 {
-		fmt.Fprintln(out, c)
-		return 0
-	}
-	return 1
-}
+// HopTarget is the Claude Code process to end for a hop: the first process below
+// the relay in pid's ancestry that is neither a shell nor the core launcher (the
+// shells between are the relay's forwarding subshells and the one Claude Code runs
+// the command in). 0 when there is none.
+func HopTarget(relay, pid int) int { return findHopTarget(processTable(), relay, pid) }
 
 func findHopTarget(t map[int]psRow, relay, pid int) int {
 	var chain []int
@@ -123,19 +107,6 @@ func findSessionAdapter(t map[int]psRow, launcher int) string {
 	return ""
 }
 
-// sessionAdapter is `util session-adapter <launcher pid>`: the profile of the
-// adapter that launcher started, read from its argv.
-func sessionAdapter(args []string, _ io.Reader, out, _ io.Writer) int {
-	if len(args) != 1 {
-		return 2
-	}
-	parent, err := strconv.Atoi(args[0])
-	if err != nil {
-		return 1
-	}
-	if p := findSessionAdapter(processTable(), parent); p != "" {
-		fmt.Fprintln(out, p)
-		return 0
-	}
-	return 1
-}
+// SessionAdapter is the profile of the adapter the launcher pid started, read
+// from its argv; "" when there is none.
+func SessionAdapter(launcher int) string { return findSessionAdapter(processTable(), launcher) }

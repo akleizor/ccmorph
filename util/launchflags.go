@@ -1,36 +1,26 @@
 package util
 
 import (
-	"bufio"
-	"fmt"
-	"io"
+	"errors"
 	"strings"
 )
 
-// launchFlags is `util launch-flags <routed 0|1> <claude args...>` with the option
-// arity table (`<spelling> <flag|value|optional>` lines, from claude-opt-arities)
-// on stdin. It reads what the launch needs from Claude Code's own argv and prints
-// `key=value` lines: model (an explicit --model), user_model, skip_model,
-// ask_missing_model, resume, interactive, relay (--dangerously-skip-permissions,
-// once per occurrence) and drop (the 1-based index of a `--model -i` pair to
-// remove). Every other option steps over the value it owns, so a value that looks
-// like a flag (`--system-prompt --continue`) is never read as one (#334).
-func launchFlags(args []string, in io.Reader, out, errw io.Writer) int {
-	if len(args) < 1 {
-		return 2
-	}
-	routed := args[0] == "1"
-	argv := args[1:]
-	arity := map[string]string{}
-	sc := bufio.NewScanner(in)
-	for sc.Scan() {
-		if k, v, ok := strings.Cut(sc.Text(), " "); ok {
-			arity[k] = v
-		}
-	}
-	model, resume := "", ""
-	user, skip, ask, interactive := false, false, true, false
-	var relay []string
+// LaunchFlags is what the launch needs from Claude Code's own argv: model (an
+// explicit --model), UserModel, SkipModel, AskMissingModel, Resume, Interactive,
+// Relay (--dangerously-skip-permissions, once per occurrence) and Drop (the 1-based
+// indexes of `--model -i` pairs to remove, highest first).
+type LaunchFlags struct {
+	Model, Resume                                      string
+	UserModel, SkipModel, AskMissingModel, Interactive bool
+	Relay                                              []string
+	Drop                                               []int
+}
+
+// ParseLaunchFlags reads argv with the option arity table (spelling to flag, value
+// or optional). Every other option steps over the value it owns, so a value that
+// looks like a flag (`--system-prompt --continue`) is never read as one (#334).
+func ParseLaunchFlags(routed bool, argv []string, arity map[string]string) (LaunchFlags, error) {
+	f := LaunchFlags{AskMissingModel: true}
 	var drop []int
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
@@ -40,69 +30,56 @@ func launchFlags(args []string, in io.Reader, out, errw io.Writer) int {
 		}
 		switch {
 		case a == "--":
-			ask = false
+			f.AskMissingModel = false
 			i = len(argv)
 		case a == "--model":
 			if !hasNext || next == "" || next == "--" {
-				fmt.Fprintln(errw, "--model requires a value")
-				return 2
+				return f, errors.New("--model requires a value")
 			}
 			if next == "-i" || next == "--interactive" {
-				interactive = true
+				f.Interactive = true
 				drop = append(drop, i+1)
 				i++
 				continue
 			}
-			model, user, skip = next, true, true
+			f.Model, f.UserModel, f.SkipModel = next, true, true
 			i++
 		case strings.HasPrefix(a, "--model="):
-			model = strings.TrimPrefix(a, "--model=")
-			if model == "" {
-				fmt.Fprintln(errw, "--model requires a value")
-				return 2
+			f.Model = strings.TrimPrefix(a, "--model=")
+			if f.Model == "" {
+				return f, errors.New("--model requires a value")
 			}
-			user, skip = true, true
+			f.UserModel, f.SkipModel = true, true
 		case a == "--dangerously-skip-permissions":
 			// Process launch state Claude Code does not restore from a resumed transcript.
-			relay = append(relay, a)
+			f.Relay = append(f.Relay, a)
 		case a == "-r" || a == "--resume":
-			ask = false
+			f.AskMissingModel = false
 			if hasNext && next != "" && !strings.HasPrefix(next, "-") {
-				resume = next
+				f.Resume = next
 			}
 			// Claude Code cannot restore a routed model on resume, so a routed
 			// profile keeps forcing it.
-			skip = skip || !routed
+			f.SkipModel = f.SkipModel || !routed
 		case strings.HasPrefix(a, "--resume="):
-			ask, resume = false, strings.TrimPrefix(a, "--resume=")
-			skip = skip || !routed
+			f.AskMissingModel, f.Resume = false, strings.TrimPrefix(a, "--resume=")
+			f.SkipModel = f.SkipModel || !routed
 		case a == "-c" || a == "--continue" || a == "--from-pr":
-			ask = false
-			skip = skip || !routed
+			f.AskMissingModel = false
+			f.SkipModel = f.SkipModel || !routed
 		case a == "-p" || a == "--print" || strings.HasPrefix(a, "--print=") || a == "-h" || a == "--help" ||
 			a == "-v" || a == "--version" || a == "--bg" || a == "--background" || strings.HasPrefix(a, "--from-pr="):
-			ask = false
+			f.AskMissingModel = false
 		case len(a) > 1 && a[0] == '-':
 			if optionStep(arity, a, next, hasNext) == 2 {
 				i++
 			}
 		}
 	}
-	b := func(v bool) int {
-		if v {
-			return 1
-		}
-		return 0
-	}
-	fmt.Fprintf(out, "model=%s\nuser_model=%d\nskip_model=%d\nask_missing_model=%d\nresume=%s\ninteractive=%d\n",
-		model, b(user), b(skip), b(ask), resume, b(interactive))
-	for _, r := range relay {
-		fmt.Fprintln(out, "relay="+r)
-	}
 	for j := len(drop) - 1; j >= 0; j-- {
-		fmt.Fprintf(out, "drop=%d\n", drop[j])
+		f.Drop = append(f.Drop, drop[j])
 	}
-	return 0
+	return f, nil
 }
 
 // optionStep is how many tokens a native option owns: 0 unknown, 1 itself, 2 with

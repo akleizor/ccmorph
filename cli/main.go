@@ -2,10 +2,12 @@ package cli
 
 import (
 	"fmt"
+	"github.com/akleizor/ccmorph/util"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -312,12 +314,7 @@ func (l *launcher) isClaudeSubcommand(word string) bool {
 	if word == "" || ownVerbs[word] {
 		return false
 	}
-	for _, v := range strings.Split(l.claudeTable("claude-verbs"), "\n") {
-		if v != "" && v == word {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(util.ClaudeVerbs(l.claudeHelp()), word)
 }
 
 // hasClaudeSubcommand is _ccm_launch_has_claude_subcommand: does the first
@@ -335,12 +332,7 @@ func (l *launcher) hasClaudeSubcommand(args []string) bool {
 			return false
 		case len(a) > 1 && a[0] == '-':
 			if arity == nil {
-				arity = map[string]string{}
-				for _, line := range strings.Split(l.claudeArity(), "\n") {
-					if k, v, ok := strings.Cut(line, " "); ok {
-						arity[k] = v
-					}
-				}
+				arity = l.claudeArity()
 			}
 			opt := a
 			if strings.HasPrefix(a, "--") {

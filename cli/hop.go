@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"github.com/akleizor/ccmorph/util"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -44,8 +45,10 @@ func (l *launcher) hop(args []string) int {
 		name = picked
 	}
 	if name == "" && relay != "" {
-		if v, rc := l.utilQ(nil, "", "session-adapter", relayPID); rc == 0 && v != "" {
-			name, current = v, true
+		if n, err := strconv.Atoi(relayPID); err == nil {
+			if v := util.SessionAdapter(n); v != "" {
+				name, current = v, true
+			}
 		}
 	}
 	if cfg := os.Getenv("CLAUDE_CONFIG_DIR"); name == "" && relay != "" && cfg != "" {
@@ -74,9 +77,12 @@ func (l *launcher) hop(args []string) int {
 		l.err("this session was not launched by the ccmorph relay")
 		return 1
 	}
-	target, rc := l.utilQ(nil, "", "hop-target", relayPID, strconv.Itoa(os.Getppid()))
-	pid, err := strconv.Atoi(strings.TrimSpace(target))
-	if rc != 0 || err != nil || pid <= 0 {
+	relayN, err := strconv.Atoi(relayPID)
+	pid := 0
+	if err == nil {
+		pid = util.HopTarget(relayN, os.Getppid())
+	}
+	if pid <= 0 {
 		l.err("cannot find the Claude Code process to end. Run hop from the Claude Code prompt (/ccmorph:hop or ! ccmorph hop)")
 		return 1
 	}
@@ -116,12 +122,7 @@ func (l *launcher) sessionState(id string) (string, string, bool) {
 	if !ok {
 		return "", "", false
 	}
-	state, rc := l.util(nil, "", "session-state", transcript)
-	model, effort, has := strings.Cut(state, "\t")
-	if rc != 0 || !has || model == "" || effort == "" {
-		return "", "", false
-	}
-	return model, effort, true
+	return util.SessionState(transcript)
 }
 
 // resolvePath is an absolute, symlink-resolved path, or "" when p is unset.

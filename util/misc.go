@@ -625,14 +625,12 @@ func transcript(path string) (recs []*pycompat.Obj, ok bool) {
 
 func notSidechain(r *pycompat.Obj) bool { return getKey(r, "isSidechain") != true }
 
-// resumeModel prints the model a transcript's session last used: its last /model command, else its last assistant turn.
-func resumeModel(args []string, _ io.Reader, out, _ io.Writer) int {
-	if len(args) != 1 {
-		return 2
-	}
-	recs, ok := transcript(args[0])
+// ResumeModel is the model a transcript's session last used: its last /model
+// command, else its last assistant turn. ok is false for an unreadable transcript.
+func ResumeModel(path string) (model string, ok bool) {
+	recs, ok := transcript(path)
 	if !ok {
-		return 1
+		return "", false
 	}
 	var commandModel, assistantModel string
 	sawCommand := false
@@ -662,23 +660,17 @@ func resumeModel(args []string, _ io.Reader, out, _ io.Writer) int {
 		}
 	}
 	if sawCommand {
-		io.WriteString(out, commandModel)
-	} else {
-		io.WriteString(out, assistantModel)
+		return commandModel, true
 	}
-	return 0
+	return assistantModel, true
 }
 
-// sessionState prints "<model>\t<effort>" from the last assistant turn that recorded both.
-func sessionState(args []string, _ io.Reader, out, _ io.Writer) int {
-	if len(args) != 1 {
-		return 2
-	}
-	recs, ok := transcript(args[0])
+// SessionState is the model and effort of the last assistant turn that recorded both.
+func SessionState(path string) (model, effort string, ok bool) {
+	recs, ok := transcript(path)
 	if !ok {
-		return 1
+		return "", "", false
 	}
-	var model, effort string
 	for _, r := range recs {
 		msg := asObj(getKey(r, "message"))
 		if getKey(r, "type") != "assistant" || !notSidechain(r) || msg == nil || getKey(msg, "role") != "assistant" {
@@ -691,10 +683,9 @@ func sessionState(args []string, _ io.Reader, out, _ io.Writer) int {
 		model, effort = pyStr(m), pyStr(e)
 	}
 	if model == "" || effort == "" || strings.ContainsAny(model+effort, "\t\r\n") {
-		return 1
+		return "", "", false
 	}
-	fmt.Fprintf(out, "%s\t%s", model, effort)
-	return 0
+	return model, effort, true
 }
 
 // Advise wraps msg as the SessionStart hook's systemMessage.

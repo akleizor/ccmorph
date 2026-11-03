@@ -1,66 +1,56 @@
 package util
 
 import (
-	"bytes"
-	"io"
+	"reflect"
 	"strings"
 	"testing"
 )
 
 func TestLaunchFlags(t *testing.T) {
-	arity := "--system-prompt value\n-d optional\n--debug optional\n"
+	arity := map[string]string{"--system-prompt": "value", "-d": "optional", "--debug": "optional"}
 	for _, c := range []struct {
-		routed string
+		routed bool
 		argv   []string
-		want   string
+		want   LaunchFlags
 	}{
-		{"0", nil, "model=\nuser_model=0\nskip_model=0\nask_missing_model=1\nresume=\ninteractive=0\n"},
-		{"0", []string{"--model", "m1"}, "model=m1\nuser_model=1\nskip_model=1\nask_missing_model=1\nresume=\ninteractive=0\n"},
-		{"1", []string{"--resume", "abc"}, "model=\nuser_model=0\nskip_model=0\nask_missing_model=0\nresume=abc\ninteractive=0\n"},
-		{"0", []string{"--resume", "abc"}, "model=\nuser_model=0\nskip_model=1\nask_missing_model=0\nresume=abc\ninteractive=0\n"},
+		{false, nil, LaunchFlags{AskMissingModel: true}},
+		{false, []string{"--model", "m1"}, LaunchFlags{Model: "m1", UserModel: true, SkipModel: true, AskMissingModel: true}},
+		{true, []string{"--resume", "abc"}, LaunchFlags{Resume: "abc"}},
+		{false, []string{"--resume", "abc"}, LaunchFlags{Resume: "abc", SkipModel: true}},
 		// #334: a value that looks like a flag is the option's value, not a resume.
-		{"0", []string{"--system-prompt", "--continue"}, "model=\nuser_model=0\nskip_model=0\nask_missing_model=1\nresume=\ninteractive=0\n"},
-		{"0", []string{"-p", "hi", "--dangerously-skip-permissions"}, "model=\nuser_model=0\nskip_model=0\nask_missing_model=0\nresume=\ninteractive=0\nrelay=--dangerously-skip-permissions\n"},
-		{"1", []string{"x", "--model", "-i"}, "model=\nuser_model=0\nskip_model=0\nask_missing_model=1\nresume=\ninteractive=1\ndrop=2\n"},
-		{"0", []string{"--", "--model", "m"}, "model=\nuser_model=0\nskip_model=0\nask_missing_model=0\nresume=\ninteractive=0\n"},
+		{false, []string{"--system-prompt", "--continue"}, LaunchFlags{AskMissingModel: true}},
+		{false, []string{"-p", "hi", "--dangerously-skip-permissions"}, LaunchFlags{Relay: []string{"--dangerously-skip-permissions"}}},
+		{true, []string{"x", "--model", "-i"}, LaunchFlags{AskMissingModel: true, Interactive: true, Drop: []int{2}}},
+		{false, []string{"--", "--model", "m"}, LaunchFlags{}},
 	} {
-		var out, errw bytes.Buffer
-		if rc := launchFlags(append([]string{c.routed}, c.argv...), strings.NewReader(arity), &out, &errw); rc != 0 || out.String() != c.want {
-			t.Errorf("%v: rc=%d\n got %q\nwant %q", c.argv, rc, out.String(), c.want)
+		got, err := ParseLaunchFlags(c.routed, c.argv, arity)
+		if err != nil || !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%v: err=%v\n got %+v\nwant %+v", c.argv, err, got, c.want)
 		}
 	}
-	var out, errw bytes.Buffer
-	if rc := launchFlags([]string{"0", "--model"}, strings.NewReader(""), &out, &errw); rc != 2 || errw.String() != "--model requires a value\n" {
-		t.Fatalf("missing value: rc=%d %q", rc, errw.String())
+	if _, err := ParseLaunchFlags(false, []string{"--model"}, nil); err == nil || err.Error() != "--model requires a value" {
+		t.Fatalf("missing value: %v", err)
 	}
 }
 
 func TestLaunchArgvClaimsOnlyRunsOwnFlags(t *testing.T) {
 	for _, c := range []struct {
-		args                 []string
-		profile, interactive string
-		fwd                  []string
+		args        []string
+		profile     string
+		interactive bool
+		fwd         []string
 	}{
-		{[]string{"-a", "gw", "-i", "-p", ""}, "gw", "1", []string{"-p", ""}},
-		{[]string{"--system-prompt", "--profile", "--profile=x"}, "x", "0", []string{"--system-prompt", "--profile"}},
-		{[]string{"--", "-a", "gw"}, "", "0", []string{"--", "-a", "gw"}},
+		{[]string{"-a", "gw", "-i", "-p", ""}, "gw", true, []string{"-p", ""}},
+		{[]string{"--system-prompt", "--profile", "--profile=x"}, "x", false, []string{"--system-prompt", "--profile"}},
+		{[]string{"--", "-a", "gw"}, "", false, []string{"--", "-a", "gw"}},
 	} {
-		var b strings.Builder
-		if rc := launchArgv(c.args, strings.NewReader("--system-prompt value\n"), &b, io.Discard); rc != 0 {
-			t.Fatalf("%v: rc %d", c.args, rc)
-		}
-		head, body, _ := strings.Cut(b.String(), "\ninteractive=")
-		interactive, rest, _ := strings.Cut(body, "\n")
-		rest = strings.TrimSuffix(rest, ".")
-		fwd := strings.Split(rest, "\x00")
-		fwd = fwd[:len(fwd)-1]
-		if head != "profile="+c.profile || interactive != c.interactive || strings.Join(fwd, "|") != strings.Join(c.fwd, "|") || len(fwd) != len(c.fwd) {
-			t.Errorf("%v: got %q", c.args, b.String())
+		got, err := ParseLaunchArgv(c.args, map[string]string{"--system-prompt": "value"})
+		if err != nil || got.Profile != c.profile || got.Interactive != c.interactive || strings.Join(got.Forward, "|") != strings.Join(c.fwd, "|") || len(got.Forward) != len(c.fwd) {
+			t.Errorf("%v: got %+v %v", c.args, got, err)
 		}
 	}
-	var e strings.Builder
-	if rc := launchArgv([]string{"-a", "x", "-a", "y"}, strings.NewReader(""), io.Discard, &e); rc != 2 || !strings.Contains(e.String(), "only once") {
-		t.Errorf("duplicate -a: rc %d %q", rc, e.String())
+	if _, err := ParseLaunchArgv([]string{"-a", "x", "-a", "y"}, nil); err == nil || !strings.Contains(err.Error(), "only once") {
+		t.Errorf("duplicate -a: %v", err)
 	}
 }
 
