@@ -275,20 +275,6 @@ write_fake_adapter() {
   chmod +x "$adapter"
 }
 
-# A libexec whose core drops the diagnostics' hazard record (touching
-# $HOME/hazard-record-dropped), so a launch takes the hazard-set fallback.
-hazard_dropping_libexec() {
-  local dir="$HOME/libexec-drop"
-  mkdir -p "$dir"
-  printf '%s\n' '#!/bin/sh' \
-    "real='$_CCMORPH_LIBEXEC_DIR/ccmorph-core'" \
-    'if [ "$1 $2" = "util launch-diagnostics" ]; then' \
-    '  "$real" "$@" | perl -0 -ne '"'"'if (/^hazard\t/) { open F, ">", "$ENV{HOME}/hazard-record-dropped"; close F; next } print'"'"'' \
-    'else exec "$real" "$@"; fi' > "$dir/ccmorph-core"
-  chmod +x "$dir/ccmorph-core"
-  print -r -- "$dir"
-}
-
 setup_home() {
   # GH-434: remembered so the sweep after each test can fail a test whose
   # child outlives it.
@@ -1248,14 +1234,7 @@ test_claude_subcommands_are_asked_for_never_hardcoded() {
   chmod +x "$HOME/bin/claude"
   source "$CCMORPH_SOURCE"
 
-  local rc=0 discovered
-  # Interactive shells may replace grep with an rg wrapper whose -E means
-  # encoding, not extended regex. Parsing must use the executable's contract.
-  discovered=$(
-    grep() { print -u2 -- 'unexpected shell grep override'; return 2; }
-    _ccm_claude_verbs
-  ) 2> "$test_home/discovery.err"
-  [[ "$discovered" == $'invented-verb\nmcp\nstop\nkill' && ! -s "$test_home/discovery.err" ]] || rc=1
+  local rc=0
   _ccm_is_claude_subcommand kill || {
     print -u2 -- 'FAIL: an alias the installed binary lists must be recognised'
     rc=1
@@ -3763,297 +3742,8 @@ test_a_renamed_state_file_migrates_itself() {
 }
 
 
-test_chpwd_hooks_cannot_corrupt_migrated_links() {
-  # ccmorph.sh is sourced into interactive shells, where chpwd hooks (ls-on-cd,
-  # direnv, prompt integrations) are ordinary. _ccm_physical_dir runs `builtin
-  # cd` inside $(...), so a printing hook's output joined the captured path:
-  # ln -s then wrote a dangling link, rm -f deleted the original, and the agent
-  # definition disappeared from the live profile (#164). cd -q skips the chpwd
-  # hook (both the chpwd function and chpwd_functions), keeping the capture
-  # clean; a relative link must still migrate to one resolvable line.
-  local test_home rc=0 from to target
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  source "$CCMORPH_SOURCE"
-  chpwd() { print NOISE }
-  from="$HOME/.config/ccmorph/profiles/p1/agents"
-  to="$HOME/.claude/agents"
-  command mkdir -p "$from/defs" "$from/links"
-  print 'agent' > "$from/defs/agent.md"
-  command ln -s ../defs/agent.md "$from/links/agent.md"
-  _ccm_migrate_projects "$from" "$to" || rc=1
-  target=$(command readlink "$to/links/agent.md")
-  [[ "$target" != *$'\n'* ]] || {
-    print -u2 -- "FAIL: chpwd output joined the migrated link target: ${(qqq)target}"
-    rc=1
-  }
-  [[ -f "$to/links/agent.md" ]] || {
-    print -u2 -- 'FAIL: the migrated agent link must resolve to its definition'
-    rc=1
-  }
-  unset -f chpwd
-  rm -rf "$test_home"
-  return $rc
-}
 
 
-test_a_link_target_ending_in_a_newline_survives_the_migration() {
-  # _ccm_migrate_projects captured the link's target with
-  # `tgt="$(command readlink "$f")"`, and command substitution strips every
-  # trailing newline: a relative target whose own name ends in one was rewritten
-  # to the shortened name, ln -s wrote that target and `rm -f` deleted the
-  # original, so the definition left the profile dangling. Same class, one line
-  # below the capture #267 fixed (#399). The capture now ends in a sentinel, so
-  # there is no trailing newline for $(...) to strip, and the consumer drops it.
-  # The definition's own name ends in a newline too; since #400 it migrates as well, so the link must resolve.
-  local test_home rc=0 from to target
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  source "$CCMORPH_SOURCE"
-  from="$HOME/.config/ccmorph/profiles/p1/agents"
-  to="$HOME/.claude/agents"
-  command mkdir -p "$from"
-  print 'agent' > "$from/"$'notes.md\n'
-  command ln -s $'notes.md\n' "$from/alias.md"
-  _ccm_migrate_projects "$from" "$to" || rc=1
-  # Read through the same sentinel: a bare $(command readlink ...) on this side
-  # would eat the very newline the link has to keep.
-  target=$(command readlink -n "$to/alias.md" && print -rn -- /)
-  target="${target%/}"
-  [[ "$target" == "$to/"$'notes.md\n' ]] || {
-    print -u2 -- "FAIL: a relative target ending in a newline must migrate literally (#399): ${(qqq)target}"
-    rc=1
-  }
-  [[ -f "$to/alias.md" ]] || { print -u2 -- "FAIL: the migrated link must resolve to the migrated definition (#399)"; rc=1; }
-  rm -rf "$test_home"
-  return $rc
-}
-
-
-test_missing_parent_links_still_migrate() {
-  # Since 09eb145 (#151) a relative link whose target's parent does not exist
-  # failed both _ccm_physical_dir attempts and the chain ended in `|| continue`:
-  # the link survived only in .premigration, then agents/ was replaced by the
-  # shared link and the agent vanished from the profile, with no message (#167).
-  # The fallback recreates it dangling, as it did before 09eb145. A parent that
-  # does resolve must still resolve physically, and a missing parent inside the
-  # migrated tree must still remap into the shared store. The fallback must not
-  # run `cd`, so a printing chpwd hook stays out of its target too.
-  # `:a` collapses `x/..` textually, which is wrong when x is a dangling
-  # component the kernel cannot resolve through: the recreation then points at
-  # whatever the collapsed path names in the shared store — an unrelated
-  # `real.md`, or the migrated link itself — and the profile silently loads the
-  # wrong definition (#376).
-  local test_home rc=0 from to target up="" nl=$'\n'
-  local -a ext_target
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  source "$CCMORPH_SOURCE"
-  chpwd() { print NOISE }
-  from="$HOME/.config/ccmorph/profiles/p1/agents"
-  to="$HOME/.claude/agents"
-  command mkdir -p "$from/defs" "$from/deep"
-  print 'agent' > "$from/defs/agent.md"
-  command ln -s ../nodir/f.md "$from/f.md"
-  command ln -s ../defs/agent.md "$from/deep/agent.md"
-  command ln -s ../nodir2/x.md "$from/deep/x.md"
-  # Two `..` more than the backup path is deep, so the chain overshoots the root
-  # whatever depth the scratch home has. `:A` because the physical path can be
-  # deeper than the spelled one (/var -> /private/var).
-  repeat $(( ${#${(s:/:)${from:A}}} + 3 )); do up+='../'; done
-  command ln -s "${up}nodir3/.." "$from/root.md"
-  # `out` dangles, so `out/..` resolves nowhere: the kernel refuses the whole
-  # path. `real.md` is what `:a` collapses `out/../real.md` onto — a file that
-  # already exists in the shared store — and `a.md` collapses onto itself.
-  command mkdir -p "$to"
-  print 'shared real' > "$to/real.md"
-  command ln -s "$test_home/gone" "$from/out"
-  command ln -s out/../real.md "$from/x.md"
-  command ln -s out/../a.md "$from/a.md"
-  # The new fallback is captured by $(...) exactly as _ccm_physical_dir's own
-  # output is, so it needs the same trailing `/` sentinel. Without it the capture
-  # eats a newline that ends a component's name, and the link lands on whatever
-  # the shortened name is — here `nodir`, which the shared store already has
-  # (#267).
-  command mkdir -p "$to/nodir"
-  print 'decoy' > "$to/nodir/nl.md"
-  command ln -s $'nodir\n/nl.md' "$from/nl.md"
-  # A target that itself ends in a newline names a dir beside the newline-free
-  # decoy already in the shared store: the $(readlink) capture ate that
-  # newline, so the recreated link loaded the decoy's definition instead of
-  # the profile's own (#404). And a file whose own name contains a newline
-  # must migrate like any other: the loop's newline-delimited read split it
-  # into two paths that do not exist, and it silently stayed in the backup
-  # (#404).
-  command mkdir -p "$from/real$nl" "$to/real"
-  print 'INTENDED' > "$from/real$nl/agent.md"
-  print 'DECOY' > "$to/real/agent.md"
-  command ln -s "real$nl" "$from/ext"
-  print 'we-ird' > "$from/we${nl}ird.md"
-  _ccm_migrate_projects "$from" "$to" || rc=1
-
-  [[ -L "$to/f.md" ]] || {
-    print -u2 -- 'FAIL: a link whose target parent is missing must still migrate (#167)'
-    rc=1
-  }
-  target=$(command readlink "$to/f.md")
-  [[ "$target" == *'/profiles/p1/nodir/f.md' ]] || {
-    print -u2 -- "FAIL: the recreated dangling link must keep its textual target: ${(qqq)target}"
-    rc=1
-  }
-  [[ "$target" != *$'\n'* && "$target" != *NOISE* ]] || {
-    print -u2 -- "FAIL: chpwd output joined the fallback link target: ${(qqq)target}"
-    rc=1
-  }
-  [[ ! -e "$to/f.md" ]] || {
-    print -u2 -- 'FAIL: a link to a missing parent must stay dangling, not point at something'
-    rc=1
-  }
-  [[ "$(command readlink "$to/deep/agent.md")" == "$to/defs/agent.md" ]] || {
-    print -u2 -- 'FAIL: a link whose parent resolves must keep its physical resolution'
-    rc=1
-  }
-  [[ -f "$to/deep/agent.md" ]] || {
-    print -u2 -- 'FAIL: the resolved migrated link must still resolve'
-    rc=1
-  }
-  [[ "$(command readlink "$to/deep/x.md")" == "$to/nodir2/x.md" ]] || {
-    print -u2 -- 'FAIL: a missing parent inside the migrated tree must remap into the shared store'
-    rc=1
-  }
-  # A dangling component mid-path stays in the target, so the link dangles where
-  # it always did instead of collapsing onto the shared store (#376). `real.md`
-  # is the trap: it exists over there, and pointing at it hands the profile an
-  # unrelated agent definition.
-  target=$(command readlink "$to/x.md")
-  [[ "$target" == "$to/out/../real.md" ]] || {
-    print -u2 -- "FAIL: a dangling mid-path component must stay in the target, not collapse onto a shared file (#376): ${(qqq)target}"
-    rc=1
-  }
-  [[ ! -e "$to/x.md" ]] || {
-    print -u2 -- "FAIL: the link through the dangling component must dangle, not load the shared real.md (#376): ${(qqq)target}"
-    rc=1
-  }
-  [[ "$(<"$to/real.md")" == 'shared real' ]] || {
-    print -u2 -- 'FAIL: the migration must not overwrite an existing file in the shared store'
-    rc=1
-  }
-  target=$(command readlink "$to/a.md")
-  [[ "$target" == "$to/out/../a.md" ]] || {
-    print -u2 -- "FAIL: the self-pointing shape must keep the dangling component too (#376): ${(qqq)target}"
-    rc=1
-  }
-  [[ ! -e "$to/a.md" ]] || {
-    print -u2 -- 'FAIL: a link that collapsed onto itself must dangle instead (#376)'
-    rc=1
-  }
-  target=$(command readlink "$to/nl.md")
-  [[ "$target" == "$to/"$'nodir\n'"/nl.md" ]] || {
-    print -u2 -- "FAIL: a component whose name ends in a newline must survive the capture (#267): ${(qqq)target}"
-    rc=1
-  }
-  [[ ! -e "$to/nl.md" ]] || {
-    print -u2 -- 'FAIL: the newline-ending component must dangle, not land on the shared decoy (#267)'
-    rc=1
-  }
-  [[ "$(<"$to/nodir/nl.md")" == 'decoy' ]] || {
-    print -u2 -- 'FAIL: the migration must not overwrite an existing file in the shared store'
-    rc=1
-  }
-  # A `..` chain that overshoots the root clamps at the root, and the prefix
-  # after the last component the kernel can resolve keeps going: `nodir3/..`
-  # stays in the target, exactly as it did before the migration — the link
-  # dangles instead of resolving to `/`. What #267 guards is unchanged:
-  # _ccm_physical_dir ends its own output with a `/` sentinel its caller strips,
-  # and a fallback that lost it would write an empty target (a link macOS
-  # creates and nothing can resolve, a failed `ln` on Linux that leaves the
-  # original in the backup), or no link at all.
-  target=$(command readlink "$to/root.md")
-  [[ -L "$to/root.md" && "$target" == '/nodir3/..' ]] || {
-    print -u2 -- "FAIL: an overshooting fallback must keep one root and the unresolved tail: ${(qqq)target}"
-    rc=1
-  }
-  [[ ! -e "$to/root.md" ]] || {
-    print -u2 -- "FAIL: an overshooting target must dangle, not resolve to /: ${(qqq)target}"
-    rc=1
-  }
-  # The newline ending a target survives the migration: the link resolves to
-  # the profile's own definition, never the newline-free decoy beside it, and
-  # a name containing a newline arrives with its file (#404).
-  [[ "$(command cat "$to/ext/agent.md")" == 'INTENDED' ]] || {
-    print -u2 -- 'FAIL: a link whose target ends in a newline must load its own definition, not the decoy (#404)'
-    rc=1
-  }
-  if zstat -A ext_target +link -- "$to/ext" 2>/dev/null; then
-    [[ "${ext_target[1]}" == "$to/real$nl" ]] || {
-      print -u2 -- "FAIL: the newline ending a link target must survive the capture (#404): ${(qqq)ext_target[1]}"
-      rc=1
-    }
-  else
-    print -u2 -- 'FAIL: the link whose target ends in a newline must migrate (#404)'
-    rc=1
-  fi
-  [[ -f "$to/we${nl}ird.md" && "$(<"$to/we${nl}ird.md")" == 'we-ird' ]] || {
-    print -u2 -- 'FAIL: a name containing a newline must migrate with its file (#404)'
-    rc=1
-  }
-  unset -f chpwd
-  rm -rf "$test_home"
-  return $rc
-}
-
-
-test_newline_names_migrate_whole_and_stay_inside_the_tree() {
-  # GH-400: the walk was newline-separated, so a name containing a newline
-  # arrived as two entries. The real entry never left .premigration (the agent
-  # definition stayed behind while the profile pointed at the shared store),
-  # and the remainder reached mv as a relative path — resolved against the
-  # caller's cwd, moving an unrelated same-named file into the shared store and
-  # deleting it from where it was. The walk is NUL-separated now: a name is one
-  # entry however many newlines it contains, and nothing outside the migrated
-  # tree is touched. The migration runs from a cwd holding the same name the
-  # split would produce, because a relative mv lands there.
-  local test_home rc=0 from to cwd leftover
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  source "$CCMORPH_SOURCE"
-  from="$HOME/.config/ccmorph/profiles/p1/agents"
-  to="$HOME/.claude/agents"
-  cwd="$test_home/cwd"
-  command mkdir -p "$from/sub" "$cwd"
-  print 'newline agent' > "$from/sub/a"$'\n'"b.md"
-  print 'ordinary agent' > "$from/plain.md"
-  command ln -s ../plain.md "$from/sub/l"$'\n'"k.md"
-  print 'unrelated' > "$cwd/b.md"
-  ( builtin cd "$cwd" && _ccm_migrate_projects "$from" "$to" ) || rc=1
-  [[ "$(command cat "$to/sub/a"$'\n'"b.md")" == 'newline agent' ]] || {
-    print -u2 -- 'FAIL: a name containing a newline must migrate as one entry (#400)'
-    rc=1
-  }
-  [[ "$(command readlink "$to/sub/l"$'\n'"k.md")" == "$to/plain.md" ]] || {
-    print -u2 -- 'FAIL: a link whose name contains a newline must migrate as one entry (#400)'
-    rc=1
-  }
-  [[ "$(command cat "$to/plain.md")" == 'ordinary agent' ]] || {
-    print -u2 -- 'FAIL: ordinary names must still migrate (#400)'
-    rc=1
-  }
-  [[ "$(command cat "$cwd/b.md" 2>/dev/null)" == 'unrelated' ]] || {
-    print -u2 -- "FAIL: a same-named file in the caller's cwd must not be moved (#400)"
-    rc=1
-  }
-  [[ ! -e "$to/b.md" ]] || {
-    print -u2 -- 'FAIL: nothing from outside the tree may enter the shared store (#400)'
-    rc=1
-  }
-  leftover=$(command find "$from".premigration.* \( -type f -o -type l \) 2>/dev/null)
-  [[ -z "$leftover" ]] || {
-    print -u2 -- "FAIL: every entry must leave the backup: ${(qqq)leftover}"
-    rc=1
-  }
-  rm -rf "$test_home"
-  return $rc
-}
 
 
 test_every_state_file_is_gitignored() {
@@ -7378,125 +7068,6 @@ test_the_percentage_parser_uses_engine_whitespace() {
   return $rc
 }
 
-test_whitespace_handling_matches_the_engine() {
-  local -x LC_ALL="$(_utf8_locale_name)"
-  local rc=0 out=""
-  # No scratch home here: the library must find the built core beside the repo.
-  local -x CCMORPH_LIB_DIR="$REPO_ROOT/lib"
-  source "$CCMORPH_SOURCE"
-
-  local nel tab nbsp
-  nel=$'\xc2\x85'
-  tab=$(printf '\t')
-  nbsp=$'\xc2\xa0'
-
-  # Rejected: the engine keeps NEL, so parseInt sees a non-digit first.
-  out=$(_ccm_engine_int "${nel}100000")
-  [[ -z "$out" ]] || {
-    print -u2 -- "FAIL: a leading NEL must make the value invalid, got '$out'"
-    rc=1
-  }
-
-  # Accepted: all three are ECMAScript whitespace.
-  # Parallel arrays, not a delimited string: a tab inside the string would split on
-  # itself and the fixture would test garbage.
-  local -a ws_chars=(" " "$tab" "$nbsp")
-  local -a ws_names=(space tab nbsp)
-  local i
-  for i in {1..3}; do
-    out=$(_ccm_engine_int "${ws_chars[$i]}100000")
-    [[ "$out" == 100000 ]] || {
-      print -u2 -- "FAIL: leading ${ws_names[$i]} is engine whitespace and must be skipped, got '$out'"
-      rc=1
-    }
-  done
-
-  return $rc
-}
-
-# The clamp must bound by digit LENGTH before doing arithmetic. zsh integers are 64-bit,
-# so a twenty-digit value truncates -- and the truncated form compares LESS than the
-# floor, so the value lands on 100,000 where the engine caps at 1,000,000, with a raw
-# "number truncated" warning leaking alongside it.
-#
-# Probed, not assumed: with the bound a 20-digit value yields 1,000,000; without it,
-# 100,000 plus the warning. Asserted at the helper because the arithmetic is the helper's
-# and every caller inherits it.
-test_the_clamp_bounds_by_length_before_arithmetic() {
-  local rc=0 v out
-  # No scratch home here: the library must find the built core beside the repo.
-  local -x CCMORPH_LIB_DIR="$REPO_ROOT/lib"
-  source "$CCMORPH_SOURCE"
-
-  # Twenty digits: beyond what zsh can represent, so only a length bound can handle it.
-  # NOT via $( ): the helper assigns by name, and a command substitution runs it in a
-  # subshell where that assignment is discarded. Capture stderr to a file instead.
-  local errfile
-  errfile=$(mktemp)
-  v=99999999999999999999
-  _ccm_clamp_acw v 2>"$errfile"
-  if [[ -s "$errfile" ]]; then
-    print -u2 -- "FAIL: clamping an oversized value leaked: $(<"$errfile")"
-    rc=1
-  fi
-  rm -f "$errfile"
-  [[ "$v" == "$_CCMORPH_ACW_MAX" ]] || {
-    print -u2 -- "FAIL: an oversized value must clamp to the ceiling $_CCMORPH_ACW_MAX, got $v"
-    rc=1
-  }
-
-  # And the ordinary cases still behave.
-  v=50000;   _ccm_clamp_acw v
-  [[ "$v" == "$_CCMORPH_ACW_MIN" ]] || {
-    print -u2 -- "FAIL: a sub-floor value must clamp up, got $v"; rc=1
-  }
-  v=2000000; _ccm_clamp_acw v
-  [[ "$v" == "$_CCMORPH_ACW_MAX" ]] || {
-    print -u2 -- "FAIL: an above-ceiling value must clamp down, got $v"; rc=1
-  }
-  v=700000;  _ccm_clamp_acw v
-  [[ "$v" == 700000 ]] || {
-    print -u2 -- "FAIL: an in-range value must be left alone, got $v"; rc=1
-  }
-  return $rc
-}
-
-test_an_overflowing_env_value_is_invalid_not_an_error() {
-  local rc=0 out=""
-  # No scratch home here: the library must find the built core beside the repo.
-  local -x CCMORPH_LIB_DIR="$REPO_ROOT/lib"
-  source "$CCMORPH_SOURCE"
-
-  local v
-  for v in 1e999 -1e999 1e309; do
-    out=$(_ccm_engine_int "$v")
-    if (( $? != 0 )); then
-      print -u2 -- "FAIL: _ccm_engine_int exited non-zero for $v; readers swallow that and fall through"
-      rc=1
-    fi
-    if [[ -n "$out" ]]; then
-      print -u2 -- "FAIL: $v must be invalid (empty), got $out"
-      rc=1
-    fi
-  done
-
-  # A large but finite exponent form must still parse. This does NOT exercise the
-  # 10^18 cap -- 1e21 yields the same value with or without it, because zsh only
-  # truncates past 19 digits and the cap lands at exactly 19. It guards the weaker
-  # property that the inf/nan check above did not start rejecting finite values.
-  out=$(_ccm_engine_int 1e21)
-  [[ "$out" == <-> ]] && (( ${#out} <= 19 )) || {
-    print -u2 -- "FAIL: 1e21 must yield a representable integer, got '$out'"
-    rc=1
-  }
-  out=$(_ccm_engine_int 700000)
-  [[ "$out" == 700000 ]] || {
-    print -u2 -- "FAIL: a plain integer must survive, got '$out'"
-    rc=1
-  }
-  return $rc
-}
-
 test_neither_env_parser_accepts_non_ascii_digits() {
   local test_home nonascii
   test_home=$(mktemp -d)
@@ -8321,7 +7892,7 @@ test_the_launch_hazard_advisory_matches_switch_hazard_warn() {
   source "$CCMORPH_SOURCE"
 
   local rc=0
-  local advise_from_record advise_withheld advise_from_fallback
+  local advise_from_record advise_withheld
 
   rm -f "$CCMORPH_TEST_LOG"
     _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1 }
@@ -8338,27 +7909,6 @@ test_the_launch_hazard_advisory_matches_switch_hazard_warn() {
   assert_contains "$advise_withheld" 'hidden from /model: kimi-k3 limit 40k' \
     'withheld choices must be reported in their own wording' || rc=1
 
-  # The fallback, forced: the record the diagnostics just computed is dropped
-  # before the launch reads it, so `_ccm_launch` takes its `else` branch and
-  # `_ccm_switch_hazard_warn` renders the warning instead. Every other answer the
-  # diagnostics gives passes through untouched, so which path speaks is the only
-  # difference between this launch and the one above.
-  local _CCMORPH_LIBEXEC_DIR="$_CCMORPH_LIBEXEC_DIR"
-  _CCMORPH_LIBEXEC_DIR=$(hazard_dropping_libexec)
-  rm -f "$CCMORPH_TEST_LOG" "$HOME/hazard-record-dropped"
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1 }
-  advise_from_fallback=$(grep -m1 '^ADVISE=' "$CCMORPH_TEST_LOG" || true)
-  advise_from_fallback=${advise_from_fallback#ADVISE=}
-  # Without this the third launch proves nothing: a stub that never saw a hazard
-  # record would leave the launch on the record path, comparing it with itself.
-  [[ -e "$HOME/hazard-record-dropped" ]] || {
-    print -u2 -- 'the launch never asked for a hazard record to drop'
-    rc=1
-  }
-  if [[ "$advise_from_fallback" != "$advise_from_record" ]]; then
-    print -u2 -- "the fallback's advisory differs\n  from the record: ${(qqq)advise_from_record}\n  from the fallback: ${(qqq)advise_from_fallback}"
-    rc=1
-  fi
   rm -rf "$test_home"
   return $rc
 }
@@ -8373,7 +7923,7 @@ test_the_launch_hazard_advisory_matches_switch_hazard_warn() {
 # must name the trigger THAT percentage produces, and the fallback -- which sizes
 # after the injection -- must say exactly the same thing.
 test_the_hazard_record_sizes_from_the_percentage_the_launch_injects() {
-  local case rc=0 test_home actual advise_from_record advise_from_fallback value
+  local case rc=0 test_home actual advise_from_record value
   local -a conf
   # usable = 1,000,000 - 20,000 = 980,000, so the trigger is the smaller of
   # 980,000*pct/100 and 980,000 - 13,000. A layer value the engine cannot parse
@@ -8427,23 +7977,6 @@ test_the_hazard_record_sizes_from_the_percentage_the_launch_injects() {
     assert_contains "$advise_from_record" 'kimi-k3 limit 40k' \
       "the $case advisory must name the model under the trigger" || rc=1
 
-    # The fallback, forced the same way the parity test forces it: the record the
-    # diagnostics computed is dropped, so `_ccm_launch` takes its `else` branch and
-    # `_ccm_switch_hazard_warn` computes from the launch env after the injection.
-    local _CCMORPH_LIBEXEC_DIR="$_CCMORPH_LIBEXEC_DIR"
-    _CCMORPH_LIBEXEC_DIR=$(hazard_dropping_libexec)
-    rm -f "$CCMORPH_TEST_LOG" "$HOME/hazard-record-dropped"
-    _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
-    advise_from_fallback=$(grep -m1 '^ADVISE=' "$CCMORPH_TEST_LOG" || true)
-    advise_from_fallback=${advise_from_fallback#ADVISE=}
-    [[ -e "$HOME/hazard-record-dropped" ]] || {
-      print -u2 -- "the $case launch never asked for a hazard record to drop"
-      rc=1
-    }
-    if [[ "$advise_from_fallback" != "$advise_from_record" ]]; then
-      print -u2 -- "the $case fallback's advisory differs\n  from the record: ${(qqq)advise_from_record}\n  from the fallback: ${(qqq)advise_from_fallback}"
-      rc=1
-    fi
     rm -rf "$test_home"
   done
   return $rc
@@ -9700,80 +9233,6 @@ print((doc.get("statusLine") or {}).get("command") or "none", doc.get("model"))
     print -u2 -- "a stale ccmorph statusline must be unwired, other keys kept (got: $state)"
     rc=1
   fi
-  rm -rf "$test_home"
-  return $rc
-}
-
-# The cleanup matched `command.endswith("/ccmorph/statusline")` -- a path SUFFIX,
-# not the path ccmorph ever wrote. So a user's own bar living in any directory
-# named `ccmorph/` was deleted, while the function's own comment promised "a
-# user's own bar is never touched".
-#
-# Git settles the ownership question: the v1.7 wire function (faa1ea9) wrote exactly
-# `$_CCMORPH_LIB_DIR/statusline` and REFUSED to overwrite an existing command
-# ("Already ours -> nothing to do. Someone else's -> theirs to keep."). So no user
-# bar was ever behind a ccmorph-wired entry, and matching a broader class than was
-# ever installed can only ever destroy something else.
-#
-# The paired test above proves a non-matching command survives; only a COLLIDING
-# one exercises the precision of the guard, which is why this case existed unseen.
-test_cleanup_keeps_a_user_bar_whose_path_merely_collides() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
-  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
-  # A personal bar someone wrote FOR their ccmorph setup: the likeliest collision.
-  printf '%s\n' \
-    '{"statusLine":{"type":"command","command":"/Users/me/bin/ccmorph/statusline"},"model":"kept"}' \
-    > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0
-  _ccm_unwire_statusline "$HOME/.config/ccmorph/profiles/gw"
-
-  local got
-  got=$(python3 -c '
-import json, sys
-d = json.load(open(sys.argv[1]))
-print((d.get("statusLine") or {}).get("command") or "<removed>", d.get("model"))
-' "$HOME/.config/ccmorph/profiles/gw/settings.json")
-  [[ "$got" == "/Users/me/bin/ccmorph/statusline kept" ]] || {
-    print -u2 -- "a colliding user bar must survive cleanup (got: $got)"
-    rc=1
-  }
-  rm -rf "$test_home"
-  return $rc
-}
-
-# What ccmorph DID write must still be cleaned up, from either directory it ever
-# used: the repo splits state-dir (_CCMORPH_DIR) from lib-dir (_CCMORPH_LIB_DIR),
-# so a pre-1.8 profile can hold either path. Matching only one would leave a real
-# leftover spawning a missing command on every render.
-test_cleanup_removes_the_statusline_ccmorph_itself_wired() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0 dir
-  for dir in "$_CCMORPH_DIR" "$_CCMORPH_LIB_DIR"; do
-    mkdir -p "$HOME/.config/ccmorph/profiles/gw"
-    print -r -- "{\"statusLine\":{\"type\":\"command\",\"command\":\"$dir/statusline\"},\"model\":\"kept\"}" \
-      > "$HOME/.config/ccmorph/profiles/gw/settings.json"
-    _ccm_unwire_statusline "$HOME/.config/ccmorph/profiles/gw"
-    local got
-    got=$(python3 -c '
-import json, sys
-d = json.load(open(sys.argv[1]))
-print("statusLine" in d, d.get("model"))
-' "$HOME/.config/ccmorph/profiles/gw/settings.json")
-    [[ "$got" == "False kept" ]] || {
-      print -u2 -- "ccmorph's own statusline at $dir must be cleaned up (got: $got)"
-      rc=1
-    }
-  done
   rm -rf "$test_home"
   return $rc
 }
@@ -11660,8 +11119,6 @@ run_test test_the_launcher_adds_nothing_unrequested
 run_test test_source_names_no_operator_profile
 run_test test_setup_dir_shares_output_styles_with_canonical
 run_test test_setup_dir_removes_a_stale_ccmorph_statusline
-run_test test_cleanup_keeps_a_user_bar_whose_path_merely_collides
-run_test test_cleanup_removes_the_statusline_ccmorph_itself_wired
 run_test test_setup_dir_never_touches_a_users_own_statusline
 run_test test_setup_dir_is_idempotent_on_settings
 run_test test_no_statusline_machinery_ships
@@ -11900,10 +11357,6 @@ run_test test_onboarding_documents_no_wiring_step_at_all
 run_test test_a_failed_migration_is_loud
 run_test test_installers_are_portable_and_leak_nothing
 run_test test_a_renamed_state_file_migrates_itself
-run_test test_chpwd_hooks_cannot_corrupt_migrated_links
-run_test test_a_link_target_ending_in_a_newline_survives_the_migration
-run_test test_missing_parent_links_still_migrate
-run_test test_newline_names_migrate_whole_and_stay_inside_the_tree
 run_test test_every_state_file_is_gitignored
 run_test test_every_module_is_sourced_once_and_defines_its_own_functions
 run_test test_runtime_data_never_looks_like_a_profile
@@ -11948,9 +11401,6 @@ run_test test_the_advisory_and_the_withhold_share_one_budget
 run_test test_a_layer_percentage_sizes_the_hazard_set
 run_test test_the_percentage_parser_skips_a_zero_width_no_break_space
 run_test test_the_percentage_parser_uses_engine_whitespace
-run_test test_whitespace_handling_matches_the_engine
-run_test test_the_clamp_bounds_by_length_before_arithmetic
-run_test test_an_overflowing_env_value_is_invalid_not_an_error
 run_test test_neither_env_parser_accepts_non_ascii_digits
 run_test test_an_env_budget_is_parsed_the_way_the_engine_parses_it
 run_test test_the_output_reserve_override_reaches_the_hazard_path

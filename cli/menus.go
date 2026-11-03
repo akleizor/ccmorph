@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"github.com/akleizor/ccmorph/util"
 	"os"
 	"path/filepath"
 	"slices"
@@ -67,6 +68,15 @@ func (l *launcher) menuProfile(types ...string) (string, bool) {
 	return v, rc == 0 && v != ""
 }
 
+// modelRows is the picker's text for gateway models: one "<id>\t<owner>" per line.
+func modelRows(rows []util.ModelRow) string {
+	lines := make([]string, len(rows))
+	for i, r := range rows {
+		lines[i] = r.ID + "\t" + r.Owner
+	}
+	return strings.Join(lines, "\n")
+}
+
 const nativeAliases = "fable\tClaude Code Fable alias\nopus\tClaude Code Opus alias\nsonnet\tClaude Code Sonnet alias\nhaiku\tClaude Code Haiku alias"
 const effortRows = "low\tFastest, least thorough\nmedium\tBalanced\nhigh\tMore reasoning\nxhigh\tMost reasoning, slowest"
 
@@ -84,17 +94,20 @@ func (l *launcher) valueRows(slot, name string, preview ...string) (string, bool
 			if !ok {
 				return "", false
 			}
-			out, rc := l.util(nil, listing+"\n", "gw-models", l.conf(name), "picker")
-			if rc != 0 {
+			rows, ok := util.GwModels(l.conf(name), true, listing)
+			if !ok {
 				l.err("'" + name + "' endpoint returned no usable model list")
 				return "", false
 			}
-			return out, true
+			return modelRows(rows), true
 		case "sub", "token":
 			return nativeAliases, true
 		case "provider":
-			out, rc := l.util(nil, "", "saved-provider-models", filepath.Join(l.profileDirs, name, ".claude.json"))
-			return out, rc == 0
+			var rows []string
+			for _, v := range util.SavedProviderModels(filepath.Join(l.profileDirs, name, ".claude.json")) {
+				rows = append(rows, v+"\tSaved provider model")
+			}
+			return strings.Join(rows, "\n"), true
 		}
 		return "", true
 	case "effort":

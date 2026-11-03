@@ -1,9 +1,8 @@
 package util
 
 import (
+	"errors"
 	"fmt"
-	"io"
-	"os"
 	"regexp"
 	"strings"
 
@@ -110,30 +109,33 @@ func invariantRecords(settings, conf, profile, maxOut, budgetRaw string, no1m bo
 	return records
 }
 
-// launchDiagnostics answers every read-only question a launch asks of the merged
-// settings layers and the profile's own files: `<key>... -- <layer>...`, with the
-// launch's readings in _CCM_* env. Records are NUL-framed `<kind>\t<text>`.
-func launchDiagnostics(args []string, _ io.Reader, out, _ io.Writer) int {
-	split := len(args)
-	for i, a := range args {
-		if a == "--" {
-			split = i
-			break
-		}
-	}
-	keys := args[:split]
-	var paths []string
-	if split < len(args) {
-		paths = args[split+1:]
-	}
-	env := os.Getenv
+// Record is one answer of LaunchDiagnostics: a kind and its text.
+type Record struct{ Kind, Text string }
+
+// DiagIn is the launch's readings; Keys are the env keys to report as chosen.
+type DiagIn struct {
+	Keys, Paths                                       []string
+	Settings, ProfileConf, Profile                    string
+	EnvPct, MaxOut, Budget, Policy, PolicyPct, HdrKey string
+	Ceiling                                           string
+	PctInEnv, No1m, Hazard, Withheld                  bool
+}
+
+// LaunchDiagnostics answers every read-only question a launch asks of the merged
+// settings layers and the profile's own files.
+func LaunchDiagnostics(in DiagIn) (recs []Record) {
+	paths := in.Paths
 	emit := func(fields ...string) {
 		for _, f := range fields {
 			if strings.ContainsRune(f, 0) {
 				return
 			}
 		}
-		io.WriteString(out, strings.Join(fields, "\t")+"\x00")
+		r := Record{Kind: fields[0]}
+		if len(fields) > 1 {
+			r.Text = fields[1]
+		}
+		recs = append(recs, r)
 	}
 
 	// A layer the merge cannot apply answers none of the env questions; the warnings
@@ -157,14 +159,14 @@ func launchDiagnostics(args []string, _ io.Reader, out, _ io.Writer) int {
 		emit("pct-set")
 	}
 
-	pct := env("_CCM_ENV_PCT")
-	runInvariant := env("_CCM_SETTINGS") != ""
-	if env("_CCM_PCT_IN_ENV") != "1" {
+	pct := in.EnvPct
+	runInvariant := in.Settings != ""
+	if !in.PctInEnv {
 		if pctSet {
 			pct = pctRaw
-		} else if p := env("_CCM_POLICY_PCT"); p != "" {
+		} else if p := in.PolicyPct; p != "" {
 			pct = p
-		} else if v, ok := policyPct(env("_CCM_POLICY")); !ok {
+		} else if v, ok := PolicyPct(in.Policy); !ok {
 			runInvariant = false
 		} else {
 			emit("policy", fmt.Sprint(v))
@@ -172,13 +174,13 @@ func launchDiagnostics(args []string, _ io.Reader, out, _ io.Writer) int {
 		}
 	}
 
-	for _, k := range keys {
+	for _, k := range in.Keys {
 		if s, ok := getKey(merged, k).(string); ok && s != "" {
 			emit("chosen", k)
 		}
 	}
 
-	if hk := env("_CCM_HDR_KEY"); hk != "" {
+	if hk := in.HdrKey; hk != "" {
 		if s, ok := getKey(merged, hk).(string); ok {
 			if s = strings.TrimRight(s, "\n"); s != "" {
 				emit("userset", s)
@@ -187,15 +189,15 @@ func launchDiagnostics(args []string, _ io.Reader, out, _ io.Writer) int {
 	}
 
 	if runInvariant {
-		for _, r := range invariantRecords(env("_CCM_SETTINGS"), env("_CCM_PROFILE_CONF"), env("_CCM_PROFILE"),
-			strings.TrimSpace(env("_CCM_MAXOUT")), env("_CCM_BUDGET"), env("_CCM_NO1M") != "", pct) {
+		for _, r := range invariantRecords(in.Settings, in.ProfileConf, in.Profile,
+			strings.TrimSpace(in.MaxOut), in.Budget, in.No1m, pct) {
 			emit(r.kind, r.text)
 		}
 	}
 
-	if env("_CCM_HAZARD") == "1" {
+	if in.Hazard {
 		pycompat.Catch(func() {
-			conf := env("_CCM_PROFILE_CONF")
+			conf := in.ProfileConf
 			var srcs []string
 			anyFile := false
 			for _, p := range paths {
@@ -207,81 +209,43 @@ func launchDiagnostics(args []string, _ io.Reader, out, _ io.Writer) int {
 			if !anyFile || !isFile(conf) {
 				return
 			}
-			rows := hazardRows(hazardIn{
-				profile: env("_CCM_PROFILE"), budget: env("_CCM_BUDGET"), ceiling: env("_CCM_CEILING"),
-				sources: srcs, pctRaw: pct, rawOut: strings.TrimSpace(env("_CCM_MAXOUT")),
-				no1m: env("_CCM_NO1M") != "", conf: conf,
-				pctInEnv: env("_CCM_PCT_IN_ENV") == "1" || (!pctSet && pct != ""),
+			rows := hazardRows(HazardIn{
+				Profile: in.Profile, Budget: in.Budget, Ceiling: in.Ceiling,
+				Sources: srcs, PctRaw: pct, RawOut: strings.TrimSpace(in.MaxOut),
+				No1m: in.No1m, Conf: conf,
+				PctInEnv: in.PctInEnv || (!pctSet && pct != ""),
 			})
-			emit("hazard", hazardMessage(rows, env("_CCM_WITHHELD") == "1"))
+			emit("hazard", HazardMessage(rows, in.Withheld))
 		})
 	}
-	return 0
+	return recs
 }
 
-// hazardSetVerb prints the hazard rows from the _CCM_* environment.
-func hazardSetVerb(_ []string, _ io.Reader, out, errw io.Writer) int {
-	env := os.Getenv
-	var srcs []string
-	for _, p := range strings.Split(env("_CCM_SOURCES"), "\n") {
-		if pycompat.Strip(p) != "" {
-			srcs = append(srcs, p)
-		}
+// HazardSet is the switch advisory's rows, or the error that ended the calculation.
+func HazardSet(in HazardIn) (rows []string, err error) {
+	if e := pycompat.Catch(func() { rows = hazardRows(in) }); e != nil {
+		return nil, errors.New(e.Msg)
 	}
-	var rows []string
-	if e := pycompat.Catch(func() {
-		rows = hazardRows(hazardIn{
-			profile: env("_CCM_PROFILE"), budget: env("_CCM_BUDGET"), ceiling: env("_CCM_CEILING"),
-			sources: srcs, pctRaw: env("_CCM_PCT"), rawOut: strings.TrimSpace(env("_CCM_MAXOUT")),
-			no1m: env("_CCM_NO1M") != "", conf: env("_CCM_PROFILE_CONF"), pctInEnv: env("_CCM_PCT_IN_ENV") != "",
-		})
-	}); e != nil {
-		fmt.Fprintln(errw, e.Msg)
-		return 1
-	}
-	if len(rows) > 0 {
-		fmt.Fprintln(out, strings.Join(rows, "\n"))
-	}
-	return 0
+	return rows, nil
 }
 
-// hazardMsgVerb words the rows in _CCM_ROWS.
-func hazardMsgVerb(_ []string, _ io.Reader, out, errw io.Writer) int {
-	var rows []string
-	for _, l := range strings.Split(os.Getenv("_CCM_ROWS"), "\n") {
-		if pycompat.Strip(l) != "" {
-			rows = append(rows, l)
-		}
-	}
-	var msg string
-	if e := pycompat.Catch(func() { msg = hazardMessage(rows, os.Getenv("_CCM_WITHHELD") == "1") }); e != nil {
-		fmt.Fprintln(errw, e.Msg)
-		return 1
-	}
-	if msg != "" {
-		fmt.Fprintln(out, msg)
-	}
-	return 0
-}
-
-// withholdFatal removes the fatal models in _CCM_ROWS from the generated settings.json
-// at _CCM_SETTINGS, never the one the session is launched on.
-func withholdFatal(_ []string, _ io.Reader, _, _ io.Writer) int {
-	path := os.Getenv("_CCM_SETTINGS")
+// WithholdFatal removes the fatal models in rows from the generated settings.json
+// at path, never the one the session is launched on.
+func WithholdFatal(path string, rows []string, launched string) {
 	v, err := loadJSON(path)
 	if err != nil {
-		return 0
+		return
 	}
 	doc := asObj(v)
 	if doc == nil {
-		return 0
+		return
 	}
 	offered, ok := getKey(doc, "availableModels").([]any)
 	if !ok || len(offered) == 0 {
-		return 0
+		return
 	}
 	fatal := map[string]bool{}
-	for _, line := range strings.Split(os.Getenv("_CCM_ROWS"), "\n") {
+	for _, line := range rows {
 		if pycompat.Strip(line) == "" {
 			continue
 		}
@@ -289,9 +253,9 @@ func withholdFatal(_ []string, _ io.Reader, _, _ io.Writer) int {
 		fatal[name] = true
 	}
 	if len(fatal) == 0 {
-		return 0
+		return
 	}
-	launched := strings.SplitN(os.Getenv("_CCM_LAUNCHED"), "[", 2)[0]
+	launched = strings.SplitN(launched, "[", 2)[0]
 	kept := []any{}
 	for _, m := range offered {
 		s, isStr := m.(string)
@@ -305,10 +269,9 @@ func withholdFatal(_ []string, _ io.Reader, _, _ io.Writer) int {
 		}
 	}
 	if len(kept) == len(offered) {
-		return 0
+		return
 	}
 	doc.Set("availableModels", kept)
 	data := pycompat.Marshal(doc, pycompat.Format{Indent: 2, ASCII: true}) + "\n"
 	AtomicWrite(path, ".ovl.", []byte(data), 0o600, false)
-	return 0
 }

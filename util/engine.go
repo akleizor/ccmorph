@@ -2,7 +2,6 @@ package util
 
 import (
 	"fmt"
-	"io"
 	"math"
 	"os"
 	"regexp"
@@ -73,9 +72,9 @@ func groupedInt(v string) (string, bool) {
 	return digits, true
 }
 
-// engineInt is the integer the engine reads out of an env var (Jd/yN), or ok=false
+// EngineInt is the integer the engine reads out of an env var (Jd/yN), or ok=false
 // when it rejects the value. Positive results are capped at 10**18.
-func engineInt(raw string) (int64, bool) {
+func EngineInt(raw string) (int64, bool) {
 	v := trimJS(raw)
 	if len([]rune(v)) <= 32 {
 		if expForm.MatchString(v) {
@@ -110,33 +109,14 @@ func engineInt(raw string) (int64, bool) {
 	return n, n > 0
 }
 
-// engineBool is the engine's env boolean: "1", "true", "yes" or "on" after an
+// EngineBool is the engine's env boolean: "1", "true", "yes" or "on" after an
 // ECMAScript trim and lowercasing. Anything else (off, no, 0, 2) is false.
-func engineBool(raw string) bool {
+func EngineBool(raw string) bool {
 	switch strings.ToLower(trimJS(raw)) {
 	case "1", "true", "yes", "on":
 		return true
 	}
 	return false
-}
-
-// engineBoolVerb: engine-bool <value> exits 0 when the engine reads it as true.
-func engineBoolVerb(args []string, _ io.Reader, _, _ io.Writer) int {
-	if len(args) == 1 && engineBool(args[0]) {
-		return 0
-	}
-	return 1
-}
-
-func engineIntVerb(args []string, _ io.Reader, out, _ io.Writer) int {
-	raw := ""
-	if len(args) > 0 {
-		raw = args[0]
-	}
-	if n, ok := engineInt(raw); ok {
-		fmt.Fprintln(out, n)
-	}
-	return 0
 }
 
 // enginePct is the percentage the engine honours (parseFloat prefix, in (0, 100]).
@@ -226,23 +206,23 @@ func walls(profile, conf string) map[string]int64 {
 
 var oneMTag = regexp.MustCompile(`(?i)\[1m\]`)
 
-type hazardIn struct {
-	profile, budget, ceiling string
-	sources                  []string
-	pctRaw, rawOut           string
-	no1m                     bool
-	conf                     string
-	pctInEnv                 bool
+type HazardIn struct {
+	Profile, Budget, Ceiling string
+	Sources                  []string
+	PctRaw, RawOut           string
+	No1m                     bool
+	Conf                     string
+	PctInEnv                 bool
 }
 
 // hazardRows is the whole calculation behind the switch advisory: the trigger,
 // then one "<wall>\t<name>" row per model that dies before it compacts, largest
 // wall first. Nothing to say is nil.
-func hazardRows(in hazardIn) []string {
-	budget, ceiling := digitsInt(in.budget), digitsInt(in.ceiling)
-	doc := settingscompose.MergedView(in.sources)
-	pctRaw := in.pctRaw
-	if !in.pctInEnv {
+func hazardRows(in HazardIn) []string {
+	budget, ceiling := digitsInt(in.Budget), digitsInt(in.Ceiling)
+	doc := settingscompose.MergedView(in.Sources)
+	pctRaw := in.PctRaw
+	if !in.PctInEnv {
 		if env := asObj(getKey(doc, "env")); env != nil {
 			if s, ok := getKey(env, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE").(string); ok {
 				pctRaw = s
@@ -264,10 +244,10 @@ func hazardRows(in hazardIn) []string {
 	}
 	reserve := int64(20_000)
 	var rawOut int64
-	if in.rawOut != "" {
-		n, err := strconv.ParseInt(in.rawOut, 10, 64)
+	if in.RawOut != "" {
+		n, err := strconv.ParseInt(in.RawOut, 10, 64)
 		if err != nil {
-			pycompat.Crash("ValueError", "invalid literal for int() with base 10: '%s'", in.rawOut)
+			pycompat.Crash("ValueError", "invalid literal for int() with base 10: '%s'", in.RawOut)
 		}
 		rawOut = n
 		reserve = min(n, 20_000)
@@ -284,7 +264,7 @@ func hazardRows(in hazardIn) []string {
 	if len(offered) == 0 {
 		return nil
 	}
-	w := walls(in.profile, in.conf)
+	w := walls(in.Profile, in.Conf)
 	aliases := map[string]bool{"opus": true, "sonnet": true, "haiku": true, "fable": true}
 	type seenKey struct {
 		bare string
@@ -306,7 +286,7 @@ func hazardRows(in hazardIn) []string {
 		if aliases[bare] {
 			continue
 		}
-		wall := w[in.profile+":"+bare]
+		wall := w[in.Profile+":"+bare]
 		if wall == 0 {
 			wall = w[bare]
 		}
@@ -315,7 +295,7 @@ func hazardRows(in hazardIn) []string {
 		}
 		var ceilM int64
 		switch {
-		case !in.no1m && oneMTag.MatchString(m):
+		case !in.No1m && oneMTag.MatchString(m):
 			ceilM = 1_000_000
 		case strings.HasPrefix(bare, "claude-"):
 			ceilM = 200_000
@@ -364,8 +344,8 @@ func getKey(o *pycompat.Obj, k string) pycompat.Value {
 
 func kTokens(n int64) string { return fmt.Sprintf("%dk", int64(math.RoundToEven(float64(n)/1000))) }
 
-// hazardMessage words hazard rows (trigger first, largest wall first) for the advisory.
-func hazardMessage(rows []string, withheld bool) string {
+// HazardMessage words hazard rows (trigger first, largest wall first) for the advisory.
+func HazardMessage(rows []string, withheld bool) string {
 	if len(rows) < 2 {
 		return ""
 	}
@@ -404,9 +384,9 @@ func hazardMessage(rows []string, withheld bool) string {
 	return fmt.Sprintf("compacts at %s; lower model limits: %s%s. Start a new session on a lower-limit model to size compaction for it. Set CCMORPH_WITHHOLD_FATAL=1 to hide these choices.", kTokens(trigger), list, more)
 }
 
-// policyPct is the fleet context policy's autoCompactAtPercent, or ok=false when the
+// PolicyPct is the fleet context policy's autoCompactAtPercent, or ok=false when the
 // file is missing, malformed or outside the schema this version understands.
-func policyPct(path string) (int64, bool) {
+func PolicyPct(path string) (int64, bool) {
 	var v pycompat.Value
 	if pycompat.Catch(func() {
 		var err error
@@ -437,81 +417,55 @@ func policyPct(path string) (int64, bool) {
 	return i, true
 }
 
-func policyPctVerb(args []string, _ io.Reader, out, _ io.Writer) int {
-	if len(args) < 1 {
-		return 1
-	}
-	v, ok := policyPct(args[0])
-	if !ok {
-		return 1
-	}
-	fmt.Fprintln(out, v)
-	return 0
-}
-
-// effectivePctVerb: effective-pct <conf value> <settings layers...>. Prints the
-// percentage in force, exit 1 when none is set.
-func effectivePctVerb(args []string, _ io.Reader, out, _ io.Writer) int {
-	if len(args) < 1 {
-		return 1
-	}
-	if args[0] != "" {
-		if v, ok := enginePct(args[0]); ok {
-			fmt.Fprintln(out, fmtG(v))
-			return 0
+// EffectivePct is the compaction percentage in force: the profile conf's own
+// value, else the one in the merged settings layers; false when none is honoured.
+func EffectivePct(conf string, layers []string) (string, bool) {
+	if conf != "" {
+		if v, ok := enginePct(conf); ok {
+			return fmtG(v), true
 		}
 	}
-	env := asObj(getKey(settingscompose.MergedView(args[1:]), "env"))
-	raw, isStr := getKey(env, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE").(string)
-	if !isStr {
-		return 1
+	var raw string
+	var isStr bool
+	if pycompat.Catch(func() {
+		env := asObj(getKey(settingscompose.MergedView(layers), "env"))
+		raw, isStr = getKey(env, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE").(string)
+	}) != nil || !isStr {
+		return "", false
 	}
-	v, ok := enginePct(raw)
-	if !ok {
-		return 1
+	if v, ok := enginePct(raw); ok {
+		return fmtG(v), true
 	}
-	fmt.Fprintln(out, fmtG(v))
-	return 0
+	return "", false
 }
 
 // fmtG is Python's format(v, "g").
 func fmtG(v float64) string { return strconv.FormatFloat(v, 'g', 6, 64) }
 
-// clampACW bounds an auto-compact budget to what the engine honours, [1e5, 1e6].
-func clampACW(n int64) int64 { return min(max(n, 100000), 1000000) }
+// clampN bounds an auto-compact budget to what the engine honours, [1e5, 1e6].
+func clampN(n int64) int64 { return min(max(n, 100000), 1000000) }
 
-// effectiveACWVerb is `util effective-acw <env value> <saved> <derived>`: the budget
-// the engine uses, in its order. The env value is parsed and CLAMPED; a saved
-// autoCompactWindow arrives already schema-checked (out of range was dropped); the
-// derived value fills the gap. Prints nothing when none applies.
-func effectiveACWVerb(args []string, _ io.Reader, out, _ io.Writer) int {
-	if len(args) != 3 {
-		return 2
+// EffectiveACW is the budget the engine uses, in its order. The env value is
+// parsed and CLAMPED; a saved autoCompactWindow arrives already schema-checked
+// (out of range was dropped); the derived value fills the gap. "" when none applies.
+func EffectiveACW(env, saved, derived string) string {
+	if n, ok := EngineInt(env); ok && env != "" {
+		return strconv.FormatInt(clampN(n), 10)
+	} else if saved != "" && strings.Trim(saved, "0123456789") == "" {
+		return saved
 	}
-	if n, ok := engineInt(args[0]); ok && args[0] != "" {
-		fmt.Fprintln(out, clampACW(n))
-	} else if args[1] != "" && strings.Trim(args[1], "0123456789") == "" {
-		fmt.Fprintln(out, args[1])
-	} else if args[2] != "" {
-		fmt.Fprintln(out, args[2])
-	}
-	return 0
+	return derived
 }
 
-// clampACWVerb is `util clamp-acw <value>`: a decimal budget clamped, by length
-// first so a twenty-digit value is the ceiling rather than an overflow.
-func clampACWVerb(args []string, _ io.Reader, out, _ io.Writer) int {
-	if len(args) != 1 || args[0] == "" || strings.Trim(args[0], "0123456789") != "" {
-		if len(args) == 1 {
-			fmt.Fprintln(out, args[0])
-		}
-		return 0
+// ClampACW clamps a decimal budget, by length first so a twenty-digit value is the
+// ceiling rather than an overflow. Anything not decimal comes back unchanged.
+func ClampACW(v string) string {
+	if v == "" || strings.Trim(v, "0123456789") != "" {
+		return v
 	}
-	if len(strings.TrimLeft(args[0], "0")) > 7 {
-		fmt.Fprintln(out, 1000000)
-		return 0
+	if len(strings.TrimLeft(v, "0")) > 7 {
+		return "1000000"
 	}
-	n, _ := strconv.ParseInt(args[0], 10, 64)
-	fmt.Fprintln(out, clampACW(n))
-	return 0
+	n, _ := strconv.ParseInt(v, 10, 64)
+	return strconv.FormatInt(clampN(n), 10)
 }

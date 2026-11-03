@@ -99,10 +99,6 @@ func (l *launcher) accountModel(name string) string {
 	return v
 }
 
-func (l *launcher) configStoreQ(verb, name, key string) (string, int) {
-	return l.utilQ(nil, "", l.configStoreArgs(verb, name, key)...)
-}
-
 func providerLabel(p string) string {
 	if p == "xai" {
 		return "xAI"

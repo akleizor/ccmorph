@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"github.com/akleizor/ccmorph/util"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -64,7 +65,7 @@ func (l *launcher) rm(args []string) int {
 		l.err("could not remove profile '" + name + "'")
 		return 1
 	}
-	l.core(nil, "", "util", "keychain-delete", name)
+	util.KeychainDelete(name)
 	os.Remove(filepath.Join(l.profileDirs, "..", ".locks", name+".lock"))
 	if l.active() == name {
 		if err := os.Remove(filepath.Join(l.dir, "active")); err != nil && !os.IsNotExist(err) {
@@ -205,7 +206,7 @@ func (l *launcher) mv(args []string) int {
 		l.err("could not rename profile")
 		return 1
 	}
-	if _, _, rc := l.core(nil, "", "util", "keychain-rename", l.dir, from, to); rc != 0 {
+	if util.KeychainRename(l.dir, from, to) != nil {
 		l.err("renamed, but '" + to + "' still reads its credential from the keychain item of '" + from + "'")
 	}
 	fmt.Println(l.accent + "Renamed" + l.reset + " " + l.bold + from + l.reset + " → " + l.bold + to + l.reset)

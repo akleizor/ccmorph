@@ -32,7 +32,7 @@ func TestListingsAreUndisguisedOnEntry(t *testing.T) {
 func TestModelServedRulesBeforeAnyRequest(t *testing.T) {
 	for _, c := range []struct {
 		want, typ, base string
-		rc              int
+		rc              Served
 	}{
 		{"opus", "apikey", "https://gw.invalid", 0},
 		{"claude-x[1M]", "sub", "", 0},
@@ -41,18 +41,13 @@ func TestModelServedRulesBeforeAnyRequest(t *testing.T) {
 		{"gpt-6", "provider", "", 2},
 		{"gpt-6", "apikey", "https://gw.invalid", 2}, // no key: cannot tell
 	} {
-		if rc := modelServed([]string{c.want, c.typ, c.base, ""}, strings.NewReader("\n"), nil, nil); rc != c.rc {
-			t.Errorf("%+v: rc %d", c, rc)
+		if rc := ModelServed(c.want, c.typ, c.base, "", ""); rc != c.rc {
+			t.Errorf("%+v: got %d", c, rc)
 		}
 	}
 }
 
 func TestEffectiveACWFollowsTheEnginesOrder(t *testing.T) {
-	run := func(f verb, args ...string) string {
-		var b strings.Builder
-		f(args, nil, &b, nil)
-		return strings.TrimSpace(b.String())
-	}
 	for _, c := range []struct{ env, saved, derived, want string }{
 		{"50000", "300000", "784000", "100000"}, // env is clamped, not dropped
 		{"1e5", "", "", "100000"},
@@ -60,12 +55,12 @@ func TestEffectiveACWFollowsTheEnginesOrder(t *testing.T) {
 		{"", "", "784000", "784000"},
 		{"", "", "", ""},
 	} {
-		if got := run(effectiveACWVerb, c.env, c.saved, c.derived); got != c.want {
+		if got := EffectiveACW(c.env, c.saved, c.derived); got != c.want {
 			t.Errorf("%+v: got %q", c, got)
 		}
 	}
 	for in, want := range map[string]string{"99999999999999999999": "1000000", "50000": "100000", "2000000": "1000000", "700000": "700000"} {
-		if got := run(clampACWVerb, in); got != want {
+		if got := ClampACW(in); got != want {
 			t.Errorf("clamp %s: got %s", in, got)
 		}
 	}

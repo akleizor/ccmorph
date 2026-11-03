@@ -2,6 +2,9 @@ package cli
 
 import (
 	"fmt"
+	"github.com/akleizor/ccmorph/util"
+	"io"
+	"os"
 	"slices"
 	"strings"
 )
@@ -63,7 +66,7 @@ var stages = map[string]func(l *launcher, args []string) int{
 		if a[5] == "" {
 			a[5] = "1"
 		}
-		l.reportInvariant(a[0], strings.Split(l.diagnostics(a[0], a[5], a[1], a[2], a[3], a[4], "", "", "", "", nil), "\x00"))
+		l.reportInvariant(a[0], l.diagnostics(a[0], a[5] == "1", a[1], a[2], a[3], a[4], "", "", false, "", nil))
 		return 0
 	},
 	"--launch-window": func(l *launcher, args []string) int { // <profile> [model]
@@ -82,8 +85,8 @@ var stages = map[string]func(l *launcher, args []string) int{
 		if i < 5 {
 			return 2
 		}
-		if rows := l.hazardSet(args[1], args[2], args[3], args[4], args[i+1:]); rows != "" {
-			fmt.Println(rows)
+		if rows := l.hazardSet(args[1], args[2], args[3], args[4], args[i+1:]); len(rows) > 0 {
+			fmt.Println(strings.Join(rows, "\n"))
 		}
 		return 0
 	},
@@ -112,6 +115,30 @@ var stages = map[string]func(l *launcher, args []string) int{
 		return rc(ok)
 	},
 	// <word>: rc 0 when the installed claude names it
+	"--model-known":   func(l *launcher, args []string) int { return l.modelKnown(args[1], args[2]) }, // <profile> <model>: 0 served, 1 not, 2 cannot tell
+	"--profile-ok":    func(l *launcher, args []string) int { return rc(util.ProfileOK(l.profileDirs, args[1])) },
+	"--cleanup-stale": func(l *launcher, _ []string) int { util.GCStale(l.dir, l.profileDirs, tmpDir()); return 0 },
+	// <op> <profile> [key]: the store's text; the change and materialize argv come
+	// from _CCM_CONFIG_{MODEL,EFFORT,SNAPSHOT,TYPE,ENDPOINT,CREDENTIAL} and _CCM_MATERIALIZE
+	"--config-store": func(l *launcher, args []string) int {
+		a := l.storeArgs(args[1], args[2], pad(args[3:], 1)[0])
+		a.Materialize = os.Getenv("_CCM_MATERIALIZE")
+		a.Change = util.StoreChange{Model: os.Getenv("_CCM_CONFIG_MODEL"), Effort: os.Getenv("_CCM_CONFIG_EFFORT"),
+			Snapshot: os.Getenv("_CCM_CONFIG_SNAPSHOT"), Type: os.Getenv("_CCM_CONFIG_TYPE"),
+			Endpoint: os.Getenv("_CCM_CONFIG_ENDPOINT"), Credential: os.Getenv("_CCM_CONFIG_CREDENTIAL")}
+		out, rc := util.ConfigStore(a, os.Stderr)
+		fmt.Print(out)
+		return rc
+	},
+	"--listing-has-unsized": func(l *launcher, args []string) int { return rc(util.ListingHasUnsized(l.conf(args[1]), args[2])) }, // <profile> <listing json>
+	"--gw-models": func(l *launcher, args []string) int { // <profile> <picker|catalogue>, the listing on stdin: its chat models
+		body, _ := io.ReadAll(os.Stdin)
+		rows, ok := util.GwModels(l.conf(args[1]), args[2] == "picker", string(body))
+		if ok {
+			fmt.Println(modelRows(rows))
+		}
+		return rc(ok)
+	},
 	"--claude-subcommand": func(l *launcher, args []string) int { return rc(l.isClaudeSubcommand(args[1])) },
 	"--listing": func(l *launcher, args []string) int { // <base> <key> [<base> <key>...]: one launch's memo
 		for i := 1; i+1 < len(args); i += 2 {

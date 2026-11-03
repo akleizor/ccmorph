@@ -1,7 +1,6 @@
 package util
 
 import (
-	"bytes"
 	"strings"
 	"testing"
 )
@@ -22,15 +21,17 @@ Commands:
 `
 
 func TestClaudeHelpParsers(t *testing.T) {
-	var out bytes.Buffer
-	claudeVerbs(nil, strings.NewReader(sampleHelp), &out, nil)
-	if out.String() != "mcp\nm\ndoctor\nupdate\n" {
-		t.Fatalf("verbs %q", out.String())
+	if got := strings.Join(ClaudeVerbs(sampleHelp), " "); got != "mcp m doctor update" {
+		t.Fatalf("verbs %q", got)
 	}
-	out.Reset()
-	claudeOptArities(nil, strings.NewReader(sampleHelp), &out, nil)
-	want := "-d optional\n--debug optional\n-p flag\n--print flag\n--model value\n--system-prompt value\n"
-	if out.String() != want {
-		t.Fatalf("arities %q", out.String())
+	want := map[string]string{"-d": "optional", "--debug": "optional", "-p": "flag", "--print": "flag", "--model": "value", "--system-prompt": "value"}
+	got := ClaudeOptArities(sampleHelp)
+	if len(got) != len(want) {
+		t.Fatalf("arities %v", got)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Fatalf("arities %v", got)
+		}
 	}
 }

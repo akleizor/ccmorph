@@ -1,52 +1,46 @@
 package util
 
 import (
+	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 )
 
-// relayRead is `util relay-read <relay file>`: consume the hop request a session
-// left behind. No file (or a symlink) exits 3, the normal end of a launch. A
-// well-formed file prints profile=, session=, model=, effort= and is removed;
-// a malformed one is removed and exits 1 with the reason on stderr. The fields
-// are only parsed here: the profile's existence is the caller's check.
-func relayRead(args []string, _ io.Reader, out, errw io.Writer) int {
-	if len(args) != 1 {
-		return 2
-	}
-	path := args[0]
+// ErrNoRelay is the normal end of a launch: no hop request was left behind.
+var ErrNoRelay = errors.New("no relay signal")
+
+// Relay is a session's hop request.
+type Relay struct{ Profile, Session, Model, Effort string }
+
+// ReadRelay consumes the hop request a session left behind, removing the file.
+// No file (or a symlink) is ErrNoRelay; a malformed one is an error with the
+// reason. The fields are only parsed here: the profile's existence is the
+// caller's check.
+func ReadRelay(path string) (Relay, error) {
 	if fi, err := os.Lstat(path); err != nil || !fi.Mode().IsRegular() {
 		os.Remove(path)
-		return 3
+		return Relay{}, ErrNoRelay
 	}
 	raw, err := os.ReadFile(path)
 	os.Remove(path)
 	if err != nil {
-		fmt.Fprintln(errw, "invalid relay signal")
-		return 1
+		return Relay{}, errors.New("invalid relay signal")
 	}
 	fields := map[string]string{"profile": "", "session": "", "model": "", "effort": ""}
 	seen := map[string]bool{}
 	for _, line := range strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n") {
 		k, v, _ := strings.Cut(line, "=")
 		if _, ok := fields[k]; !ok || strings.Contains(v, "\r") {
-			fmt.Fprintln(errw, "invalid relay signal")
-			return 1
+			return Relay{}, errors.New("invalid relay signal")
 		}
 		if seen[k] {
-			fmt.Fprintf(errw, "duplicate relay field '%s'\n", k)
-			return 1
+			return Relay{}, fmt.Errorf("duplicate relay field '%s'", k)
 		}
 		seen[k], fields[k] = true, v
 	}
 	if fields["session"] == "" {
-		fmt.Fprintln(errw, "invalid relay signal")
-		return 1
+		return Relay{}, errors.New("invalid relay signal")
 	}
-	for _, k := range []string{"profile", "session", "model", "effort"} {
-		fmt.Fprintf(out, "%s=%s\n", k, fields[k])
-	}
-	return 0
+	return Relay{fields["profile"], fields["session"], fields["model"], fields["effort"]}, nil
 }

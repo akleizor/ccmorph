@@ -101,18 +101,31 @@ func hasSpace(s string) bool {
 // replaceFile is the commit step of a save; a test seam for a failing replacement.
 var replaceFile = os.Rename
 
-func configStore(args []string, _ io.Reader, out, errw io.Writer) int {
-	if len(args) < 5 {
-		fmt.Fprintln(errw, "usage: util config-store <op> <conf> <settings> <key> <shared> [mapping keys...]")
-		return 2
-	}
-	op, confName, settingsName, key, sharedName := args[0], args[1], args[2], args[3], args[4]
-	mappingKeys := args[5:]
-	materialize := os.Getenv("_CCM_MATERIALIZE")
+// StoreChange is what a set or configure operation saves; a Snapshot, when set,
+// must still match the profile's files. Type, Endpoint and Credential are read by
+// configure only.
+type StoreChange struct{ Model, Effort, Snapshot, Type, Endpoint, Credential string }
+
+// StoreArgs is one operation of the profile's configuration store (get, snapshot,
+// model-settings, seed-model-defaults, prepare-launch, set, configure) over its
+// conf, settings layer and the shared canonical settings. A prepare-launch with a
+// Materialize argv (newline-joined) runs settings-compose over it afterwards.
+type StoreArgs struct {
+	Op, Conf, Settings, Key, Shared string
+	Mapping                         []string
+	Materialize                     string
+	Change                          StoreChange
+}
+
+// ConfigStore runs the operation. The result is its text and its status: 0 done,
+// 1 failed (reasons to errw), 10+n settings-compose's own status n.
+func ConfigStore(a StoreArgs, errw io.Writer) (string, int) {
+	op, materialize := a.Op, a.Materialize
+	var out strings.Builder
 	var projectedJSON string
 	exit := 0
 	e := pycompat.Catch(func() {
-		exit, projectedJSON = configStoreRun(op, confName, settingsName, key, sharedName, mappingKeys, materialize, out, errw)
+		exit, projectedJSON = configStoreRun(a, &out, errw)
 	})
 	if e != nil {
 		switch e.Kind {
@@ -121,22 +134,23 @@ func configStore(args []string, _ io.Reader, out, errw io.Writer) int {
 		default:
 			fmt.Fprintf(errw, "%s: %s\n", e.Class, e.Msg)
 		}
-		return 1
+		return out.String(), 1
 	}
 	if exit != 0 || materialize == "" || op != "prepare-launch" {
-		return exit
+		return out.String(), exit
 	}
 	// settings-compose's own statuses, shifted past the store's: exit 1 still means
 	// "the store failed, do not start".
 	argv := append(strings.Split(materialize, "\n"), "--saved", projectedJSON)
 	if rc := settingscompose.Main(argv, errw); rc != 0 {
-		return 10 + rc
+		return out.String(), 10 + rc
 	}
-	return 0
+	return out.String(), 0
 }
 
-func configStoreRun(op, confName, settingsName, key, sharedName string, mappingKeys []string, materialize string, out, errw io.Writer) (int, string) {
-	conf, settings := confName, settingsName
+func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string) {
+	op, key, sharedName, mappingKeys, materialize := a.Op, a.Key, a.Shared, a.Mapping, a.Materialize
+	conf, settings := a.Conf, a.Settings
 	originals := [2][]byte{content(conf), content(settings)}
 	if originals[0] == nil {
 		pycompat.RaiseValue("profile no longer exists")
@@ -279,11 +293,11 @@ func configStoreRun(op, confName, settingsName, key, sharedName string, mappingK
 		fmt.Fprintln(out, jsonOut(projected))
 		return 0, ""
 	}
-	if expected := os.Getenv("_CCM_CONFIG_SNAPSHOT"); expected != "" && expected != fingerprint(originals[0], originals[1]) {
+	if expected := a.Change.Snapshot; expected != "" && expected != fingerprint(originals[0], originals[1]) {
 		pycompat.RaiseValue("profile changed while configuring; nothing saved")
 	}
 	for _, name := range []string{"model", "effort"} {
-		value := os.Getenv("_CCM_CONFIG_" + strings.ToUpper(name))
+		value := map[string]string{"model": a.Change.Model, "effort": a.Change.Effort}[name]
 		if value == "" {
 			continue
 		}
@@ -306,19 +320,12 @@ func configStoreRun(op, confName, settingsName, key, sharedName string, mappingK
 	changes := defaults.Copy()
 	changes.Set("model_defaults", "1")
 	if op == "configure" {
-		must := func(k string) string {
-			v, ok := os.LookupEnv(k)
-			if !ok {
-				pycompat.Crash("KeyError", "'%s'", k)
-			}
-			return v
-		}
-		switch must("_CCM_CONFIG_TYPE") {
+		switch a.Change.Type {
 		case "apikey":
-			changes.Set("base_url", must("_CCM_CONFIG_ENDPOINT"))
-			changes.Set("api_key", must("_CCM_CONFIG_CREDENTIAL"))
+			changes.Set("base_url", a.Change.Endpoint)
+			changes.Set("api_key", a.Change.Credential)
 		case "token":
-			changes.Set("token", must("_CCM_CONFIG_CREDENTIAL"))
+			changes.Set("token", a.Change.Credential)
 		}
 	}
 	for _, name := range changes.Keys() {

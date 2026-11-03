@@ -73,14 +73,17 @@ func rewriteJSON(path string, mutate func(doc *pycompat.Obj) bool) {
 	})
 }
 
-// projectPicker writes the profile's own /model rows into its .claude.json and the
-// allowlist into its settings layer. Args: home conf own tag profile layer launch;
-// the endpoint's listing is in _CCM_MODELS_JSON.
-func projectPicker(args []string, _ io.Reader, _, errw io.Writer) int {
-	if len(args) != 7 {
-		return 2
-	}
-	home, contextConf, own, tag, profile, layer, launch := args[0], args[1], args[2], args[3], args[4], args[5], args[6]
+// PickerIn is what the project picker needs: the profile's home dir, conf, its own
+// model, the row tag, the profile name, its settings layer, the launch model and
+// the endpoint's /v1/models listing.
+type PickerIn struct {
+	Home, Conf, Own, Tag, Profile, Layer, Launch, ModelsJSON string
+}
+
+// ProjectPicker writes the profile's own /model rows into its .claude.json and the
+// allowlist into its settings layer. False when it could not; reasons go to errw.
+func ProjectPicker(in PickerIn, errw io.Writer) bool {
+	home, contextConf, own, tag, profile, layer, launch := in.Home, in.Conf, in.Own, in.Tag, in.Profile, in.Layer, in.Launch
 	tagText := pycompat.Strip(tag)
 	if tagText == "" {
 		tagText = "Gateway"
@@ -93,7 +96,7 @@ func projectPicker(args []string, _ io.Reader, _, errw io.Writer) int {
 		}
 	}); e != nil {
 		fmt.Fprintln(errw, e.Msg)
-		return 1
+		return false
 	}
 	excluded := map[string]bool{}
 	for _, m := range strings.Split(fields["excluded_models"], ",") {
@@ -110,7 +113,7 @@ func projectPicker(args []string, _ io.Reader, _, errw io.Writer) int {
 
 	var served []any
 	fresh := true
-	if pv, err := pycompat.Parse([]byte(os.Getenv("_CCM_MODELS_JSON"))); err == nil && asObj(pv) != nil {
+	if pv, err := pycompat.Parse([]byte(in.ModelsJSON)); err == nil && asObj(pv) != nil {
 		data := getKey(asObj(pv), "data")
 		if !truthy(data) {
 			data = []any{}
@@ -118,17 +121,17 @@ func projectPicker(args []string, _ io.Reader, _, errw io.Writer) int {
 		items, ok := iterItems(data)
 		if !ok {
 			fmt.Fprintln(errw, "TypeError: object is not iterable")
-			return 1
+			return false
 		}
 		served = items
 	} else {
 		if len(excluded) == 0 {
-			return 0
+			return true
 		}
 		v, lerr := loadJSON(filepath.Join(home, ".claude.json"))
 		if lerr != nil {
 			fmt.Fprintln(errw, lerr.Error())
-			return 1
+			return false
 		}
 		cached := []any{}
 		if o := asObj(v); o != nil {
@@ -136,13 +139,13 @@ func projectPicker(args []string, _ io.Reader, _, errw io.Writer) int {
 				items, ok := iterItems(c)
 				if !ok {
 					fmt.Fprintln(errw, "TypeError: object is not iterable")
-					return 1
+					return false
 				}
 				cached = items
 			}
 		} else {
 			fmt.Fprintln(errw, "AttributeError: object has no attribute 'get'")
-			return 1
+			return false
 		}
 		for _, r := range cached {
 			if value, ok := getKey(asObj(r), "value").(string); ok {
@@ -181,11 +184,18 @@ func projectPicker(args []string, _ io.Reader, _, errw io.Writer) int {
 		if !known {
 			return ""
 		}
-		saved, had := os.LookupEnv("CLAUDE_CODE_MAX_CONTEXT_TOKENS")
-		os.Unsetenv("CLAUDE_CODE_MAX_CONTEXT_TOKENS")
-		os.Setenv("MODEL_WINDOW_PROFILE_CONF", contextConf)
-		if had {
-			defer os.Setenv("CLAUDE_CODE_MAX_CONTEXT_TOKENS", saved)
+		// The resolver reads these from the environment; put them back afterwards.
+		for k, v := range map[string]string{"CLAUDE_CODE_MAX_CONTEXT_TOKENS": "", "MODEL_WINDOW_PROFILE_CONF": contextConf} {
+			if saved, had := os.LookupEnv(k); had {
+				defer os.Setenv(k, saved)
+			} else {
+				defer os.Unsetenv(k)
+			}
+			if v == "" {
+				os.Unsetenv(k)
+			} else {
+				os.Setenv(k, v)
+			}
 		}
 		var rec ctxwindow.Record
 		if pycompat.Catch(func() { rec = ctxwindow.Resolve(profile, id) }) != nil || rec.Unprobed {
@@ -229,9 +239,9 @@ func projectPicker(args []string, _ io.Reader, _, errw io.Writer) int {
 	if len(rows) == 0 {
 		if len(excluded) > 0 {
 			fmt.Fprintln(errw, "ccmorph: no cached or served picker models remain after excluded_models; revise the list or restore gateway access")
-			return 1
+			return false
 		}
-		return 0
+		return true
 	}
 
 	rewriteJSON(filepath.Join(home, ".claude.json"), func(doc *pycompat.Obj) bool {
@@ -339,7 +349,7 @@ func projectPicker(args []string, _ io.Reader, _, errw io.Writer) int {
 		doc.Set("availableModels", merged)
 		return changed()
 	})
-	return 0
+	return true
 }
 
 func toAny(ss []string) []any {
@@ -357,14 +367,11 @@ func orDefault(s, d string) string {
 	return s
 }
 
-// launchWindow prints the one-run window facts a launch needs, tab-separated:
-// the launched model's record (4 fields), the route ceiling, the saved auto-compact
-// budget. Args: profile model layer...; every fact falls through on its own.
-func launchWindow(args []string, _ io.Reader, out, _ io.Writer) int {
-	if len(args) < 2 {
-		return 2
-	}
-	profile, model, sources := args[0], args[1], args[2:]
+// LaunchWindow is the one-run window facts a launch needs, six fields: the launched
+// model's record (4 fields), the route ceiling, the saved auto-compact budget; every
+// fact falls through on its own. It reads the profile through the environment's
+// state dir and MODEL_WINDOW_PROFILE_CONF, as the resolver does.
+func LaunchWindow(profile, model string, sources []string) []string {
 	fields := make([]string, 6)
 	doc := (*pycompat.Obj)(nil)
 	pycompat.Catch(func() { doc = mergedView(sources) })
@@ -404,6 +411,5 @@ func launchWindow(args []string, _ io.Reader, out, _ io.Writer) int {
 			fields[5] = acwString(v)
 		}
 	})
-	fmt.Fprintln(out, strings.Join(fields, "\t"))
-	return 0
+	return fields
 }

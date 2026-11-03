@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -16,12 +17,14 @@ func TestEngineInt(t *testing.T) {
 	for in, want := range map[string]string{
 		"100000": "100000", "1e5": "100000", "2E4": "20000", "100_000": "100000", "100,000": "100000",
 		"100 000": "100000", "100000junk": "100000", "junk100000": "", "0": "", "-5": "", "1e999": "",
-		"-1e999": "", "1e309": "", "1e21": "1000000000000000000", "\u00a0100000": "100000",
+		"-1e999": "", "1e309": "", "1e21": "1000000000000000000", "\u00a0100000": "100000", " 100000": "100000", "\t100000": "100000",
 		"\u0085100000": "", "1.5e0": "", "100_00": "100", "100,000_000": "100",
 	} {
-		var out bytes.Buffer
-		engineIntVerb([]string{in}, nil, &out, nil)
-		if got := strings.TrimSpace(out.String()); got != want {
+		got := ""
+		if n, ok := EngineInt(in); ok {
+			got = strconv.FormatInt(n, 10)
+		}
+		if got != want {
 			t.Errorf("engine-int %q = %q, want %q", in, got, want)
 		}
 	}
@@ -53,17 +56,17 @@ func TestEngineTriggerDividesBeforeMultiplying(t *testing.T) {
 
 func TestHazardMessage(t *testing.T) {
 	rows := []string{"135000", "40000\tkimi-k3"}
-	if got := hazardMessage(rows, false); !strings.HasPrefix(got, "compacts at 135k; lower model limits: kimi-k3 limit 40k.") {
+	if got := HazardMessage(rows, false); !strings.HasPrefix(got, "compacts at 135k; lower model limits: kimi-k3 limit 40k.") {
 		t.Fatal(got)
 	}
-	if got := hazardMessage(rows, true); !strings.Contains(got, "hidden from /model: kimi-k3 limit 40k.") {
+	if got := HazardMessage(rows, true); !strings.Contains(got, "hidden from /model: kimi-k3 limit 40k.") {
 		t.Fatal(got)
 	}
 	many := append([]string{"100000"}, "5000\ta", "4000\tb", "3000\tc", "2000\td", "1000\te")
-	if got := hazardMessage(many, false); !strings.Contains(got, "a limit 5k, b limit 4k, c limit 3k +2 smaller.") {
+	if got := HazardMessage(many, false); !strings.Contains(got, "a limit 5k, b limit 4k, c limit 3k +2 smaller.") {
 		t.Fatal(got)
 	}
-	if hazardMessage([]string{"1"}, false) != "" {
+	if HazardMessage([]string{"1"}, false) != "" {
 		t.Fatal("a trigger alone says nothing")
 	}
 }
@@ -71,16 +74,24 @@ func TestHazardMessage(t *testing.T) {
 func TestUnwireStatuslineKeepsOthers(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "s.json")
-	os.WriteFile(path, []byte(`{"statusLine":{"command":"/mine/statusline"},"x":1}`), 0o600)
-	t.Setenv("_CCM_SL_OWNED", "/mine/statusline")
-	unwireStatusline([]string{path}, nil, nil, nil)
-	if b, _ := os.ReadFile(path); string(b) != "{\n  \"x\": 1\n}\n" {
-		t.Fatalf("%q", b)
+	write := func(command string) {
+		os.WriteFile(path, []byte(`{"statusLine":{"command":"`+command+`"},"x":1}`), 0o600)
 	}
-	os.WriteFile(path, []byte(`{"statusLine":{"command":"/theirs"}}`), 0o600)
-	unwireStatusline([]string{path}, nil, nil, nil)
-	if b, _ := os.ReadFile(path); !strings.Contains(string(b), "/theirs") {
-		t.Fatal("someone else's statusline must stay")
+	// Either directory ccmorph ever wired from is cleaned up, the other keys kept.
+	for _, owned := range []string{"/state/statusline", "/lib/statusline"} {
+		write(owned)
+		UnwireStatusline(path, "/state/statusline", "/lib/statusline")
+		if b, _ := os.ReadFile(path); string(b) != "{\n  \"x\": 1\n}\n" {
+			t.Fatalf("%s: %q", owned, b)
+		}
+	}
+	// A user's own bar stays, even one whose path merely collides with ccmorph's.
+	for _, theirs := range []string{"/theirs", "/Users/me/bin/ccmorph/statusline"} {
+		write(theirs)
+		UnwireStatusline(path, "/state/statusline", "/lib/statusline")
+		if b, _ := os.ReadFile(path); !strings.Contains(string(b), theirs) {
+			t.Fatalf("%s must stay: %q", theirs, b)
+		}
 	}
 }
 
@@ -119,9 +130,8 @@ func TestMigrateRefusesACrossDeviceMoveWithoutCopying(t *testing.T) {
 	old := rename
 	rename = func(string, string) error { return &os.LinkError{Op: "rename", Err: syscall.EXDEV} }
 	defer func() { rename = old }()
-	var errw bytes.Buffer
-	if rc := migrateProfileHome([]string{legacy, target}, nil, nil, &errw); rc != 1 {
-		t.Fatalf("rc=%d %s", rc, errw.String())
+	if _, err := MigrateProfileHome(legacy, target); err == nil {
+		t.Fatal("a cross-device move must fail")
 	}
 	if b, _ := os.ReadFile(filepath.Join(legacy, "fixture")); string(b) != "untouched" {
 		t.Fatal("legacy home must stay")
@@ -136,8 +146,8 @@ func TestMigrateRestoresTheOriginalWhenTheAliasFails(t *testing.T) {
 	old := symlink
 	symlink = func(string, string) error { return errors.New("simulated alias failure") }
 	defer func() { symlink = old }()
-	if rc := migrateProfileHome([]string{legacy, target}, nil, nil, &bytes.Buffer{}); rc != 1 {
-		t.Fatalf("rc=%d", rc)
+	if _, err := MigrateProfileHome(legacy, target); err == nil {
+		t.Fatal("a failed alias must fail the migration")
 	}
 	fi, err := os.Lstat(legacy)
 	if err != nil || fi.Mode()&os.ModeSymlink != 0 {
@@ -176,9 +186,9 @@ func TestConfigStoreFailedConfReplacementLeavesBothFilesAlone(t *testing.T) {
 	old := replaceFile
 	replaceFile = func(string, string) error { return errors.New("simulated replace failure") }
 	defer func() { replaceFile = old }()
-	t.Setenv("_CCM_CONFIG_MODEL", "new")
 	var errw bytes.Buffer
-	if rc := configStore([]string{"set", conf, settings, "", filepath.Join(filepath.Dir(conf), "shared.json")}, nil, &bytes.Buffer{}, &errw); rc != 1 {
+	if _, rc := ConfigStore(StoreArgs{Op: "set", Conf: conf, Settings: settings, Shared: filepath.Join(filepath.Dir(conf), "shared.json"),
+		Change: StoreChange{Model: "new"}}, &errw); rc != 1 {
 		t.Fatalf("rc=%d", rc)
 	}
 	if !strings.Contains(errw.String(), "simulated replace failure") {
@@ -206,7 +216,7 @@ func TestConfigStoreRollsTheConfBackWhenTheSettingsReplacementFails(t *testing.T
 	}
 	defer func() { replaceFile = old }()
 	var errw bytes.Buffer
-	if rc := configStore([]string{"prepare-launch", conf, settings, "", filepath.Join(filepath.Dir(conf), "shared.json")}, nil, &bytes.Buffer{}, &errw); rc != 1 {
+	if _, rc := ConfigStore(StoreArgs{Op: "prepare-launch", Conf: conf, Settings: settings, Shared: filepath.Join(filepath.Dir(conf), "shared.json")}, &errw); rc != 1 {
 		t.Fatalf("rc=%d %s", rc, errw.String())
 	}
 	if a, _ := os.ReadFile(conf); string(a) != string(beforeConf) {
@@ -230,13 +240,8 @@ func TestLaunchDiagnosticsKeepsTheWarningsWhenALayerCannotBeMerged(t *testing.T)
 	if err := os.WriteFile(layer, []byte(`{"$ccmorphUnset": null}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("_CCM_SETTINGS", settings)
-	t.Setenv("_CCM_PCT_IN_ENV", "1")
-	var out bytes.Buffer
-	if rc := launchDiagnostics([]string{"--", layer}, nil, &out, &bytes.Buffer{}); rc != 0 {
-		t.Fatalf("rc=%d", rc)
-	}
-	if got := out.String(); got != "disguised\tdev\x00" {
+	got := LaunchDiagnostics(DiagIn{Paths: []string{layer}, Settings: settings, PctInEnv: true})
+	if len(got) != 1 || got[0] != (Record{"disguised", "dev"}) {
 		t.Fatalf("records = %q", got)
 	}
 }

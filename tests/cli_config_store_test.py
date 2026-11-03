@@ -63,14 +63,8 @@ def file_count(root):
 TOO_DEEP_TO_DECODE = '{"sandbox":' + "[" * 2_000_000 + "0" + "]" * 2_000_000 + "}"
 
 
-# The core's config-store with the paths the CLI hands it, for operations no verb
-# exposes (the zsh wrapper it replaces was deleted with the CLI's move to Go).
-STORE_FN = (
-    '_ccm_config_store() { local d="$_CCMORPH_PROFILE_DIRS/$2" layer; layer="$d/settings.json"\n'
-    '[[ -e $d/settings.profile.json || -L $d/settings.profile.json || -e $d/cache/settings.base.json ]]'
-    ' && layer="$d/settings.profile.json"\n'
-    '"$_CCMORPH_LIBEXEC_DIR/ccmorph-core" util config-store "$1" "$_CCMORPH_DIR/$2.conf" "$layer"'
-    ' "${3:-}" "$HOME/.claude/settings.json" ${(f)"$(ccmorph _env_keys mapping)"}; }\n')
+# The core's config-store, for operations no verb exposes.
+STORE_FN = '_ccm_config_store() { _ccm_launch_core --config-store "$1" "$2" "${3:-}"; }\n'
 
 
 class ConfigurationSaveTest(unittest.TestCase):

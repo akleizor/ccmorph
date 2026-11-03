@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"github.com/akleizor/ccmorph/util"
 	"os"
 	"strings"
 
@@ -101,9 +102,9 @@ func (l *launcher) getSet(verb string, args []string) int {
 	} else {
 		effort = value
 	}
-	env := []string{"_CCM_CONFIG_MODEL=" + model, "_CCM_CONFIG_EFFORT=" + effort, "_CCM_CONFIG_SNAPSHOT=",
-		"_CCM_CONFIG_TYPE=", "_CCM_CONFIG_ENDPOINT=", "_CCM_CONFIG_CREDENTIAL="}
-	if _, rc := l.configStore("set", name, "", env...); rc != 0 {
+	set := l.storeArgs("set", name, "")
+	set.Change = util.StoreChange{Model: model, Effort: effort}
+	if _, rc := l.runStore(set, os.Stderr); rc != 0 {
 		return 1
 	}
 	// The value alone on stdout for scripts; the sentence on stderr for a picked value.
@@ -262,9 +263,9 @@ func (l *launcher) config(args []string) int {
 		return v
 	}
 	say("Model: " + or(model) + " · Effort: " + or(effort))
-	env := []string{"_CCM_CONFIG_MODEL=" + model, "_CCM_CONFIG_EFFORT=" + effort, "_CCM_CONFIG_SNAPSHOT=" + snapshot,
-		"_CCM_CONFIG_TYPE=" + typ, "_CCM_CONFIG_ENDPOINT=" + endpoint, "_CCM_CONFIG_CREDENTIAL=" + credential}
-	if _, rc := l.configStore("configure", name, "", env...); rc != 0 {
+	save := l.storeArgs("configure", name, "")
+	save.Change = util.StoreChange{Model: model, Effort: effort, Snapshot: snapshot, Type: typ, Endpoint: endpoint, Credential: credential}
+	if _, rc := l.runStore(save, os.Stderr); rc != 0 {
 		return 1
 	}
 	fmt.Println("Saved " + name + " (new sessions)")

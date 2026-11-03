@@ -2,10 +2,12 @@ package cli
 
 import (
 	"fmt"
+	"github.com/akleizor/ccmorph/util"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -140,7 +142,12 @@ func (l *launcher) secureDirs() bool {
 		same := isLink(legacyHome) && isDir(l.profileDirs) && !isLink(l.profileDirs) &&
 			resolvePath(legacyHome) == resolvePath(l.profileDirs)
 		if !same {
-			if _, rc := l.util(nil, "", "migrate-profile-home", legacyHome, l.profileDirs); rc != 0 {
+			moved, err := util.MigrateProfileHome(legacyHome, l.profileDirs)
+			if moved {
+				fmt.Fprintf(os.Stderr, "ccmorph: profile storage moved to %s; legacy path retained as a compatibility link\n", l.profileDirs)
+			}
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
 				return false
 			}
 		}
@@ -177,7 +184,7 @@ func (l *launcher) normalizePluginIndex() {
 		}
 		s := string(b)
 		if strings.Contains(s, filepath.Join(home, ".claude-profiles")+"/") || strings.Contains(s, l.profileDirs+"/") {
-			l.utilQ(nil, "", "normalize-plugin-index", home, l.profileDirs)
+			util.NormalizePluginIndex(home, l.profileDirs)
 			return
 		}
 	}
@@ -312,12 +319,7 @@ func (l *launcher) isClaudeSubcommand(word string) bool {
 	if word == "" || ownVerbs[word] {
 		return false
 	}
-	for _, v := range strings.Split(l.claudeTable("claude-verbs"), "\n") {
-		if v != "" && v == word {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(util.ClaudeVerbs(l.claudeHelp()), word)
 }
 
 // hasClaudeSubcommand is _ccm_launch_has_claude_subcommand: does the first
@@ -335,12 +337,7 @@ func (l *launcher) hasClaudeSubcommand(args []string) bool {
 			return false
 		case len(a) > 1 && a[0] == '-':
 			if arity == nil {
-				arity = map[string]string{}
-				for _, line := range strings.Split(l.claudeArity(), "\n") {
-					if k, v, ok := strings.Cut(line, " "); ok {
-						arity[k] = v
-					}
-				}
+				arity = l.claudeArity()
 			}
 			opt := a
 			if strings.HasPrefix(a, "--") {
@@ -375,21 +372,21 @@ func (l *launcher) envVerb(args []string) int {
 		fmt.Fprintln(os.Stderr, "ccmorph: unknown profile '"+name+"'")
 		return 1
 	}
-	out, rc := l.utilQ(nil, "", "profile-env", l.dir, l.profileDirs, name)
-	if rc != 0 {
-		if out == "" {
-			out = "could not read profile '" + name + "'"
+	typ, env, err := util.ProfileEnv(l.dir, l.profileDirs, name, func(string) {})
+	if err != nil {
+		msg := err.Error()
+		if msg == "" {
+			msg = "could not read profile '" + name + "'"
 		}
-		l.err(out)
+		l.err(msg)
 		return 1
 	}
-	head, rest, _ := strings.Cut(out, "\n")
-	if !l.setupDir(name, strings.TrimPrefix(head, "type=")) {
+	if !l.setupDir(name, typ) {
 		return 1
 	}
 	l.prelaunch(name)
-	if rest != "" {
-		fmt.Println(rest)
+	if len(env) > 0 {
+		fmt.Println(strings.Join(env, "\n"))
 	}
 	return 0
 }

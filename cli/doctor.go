@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"github.com/akleizor/ccmorph/util"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -71,9 +72,9 @@ func (l *launcher) doctorEnvironment() int {
 		l.status("OK", "zsh: "+v)
 	}
 	if _, err := os.Lstat(filepath.Join(l.dir, "rc-hosts")); err == nil {
-		v, rc := l.utilQ(nil, "", "rc-interpreter")
+		v, ok := util.RCInterpreter()
 		switch {
-		case rc == 0:
+		case ok:
 			l.status("OK", "remote control interpreter: "+v)
 		case v != "":
 			l.status("FAIL", "remote control interpreter: "+v+" (need 3.8 or newer)")
@@ -165,7 +166,7 @@ func (l *launcher) doctor(name string) int {
 	}
 	settings := l.profileLayer(name)
 	if isFile(settings) {
-		if _, rc := l.utilQ(nil, "", "settings-valid", filepath.Join(os.Getenv("HOME"), ".claude", "settings.json"), settings); rc == 0 {
+		if util.SettingsValid(filepath.Join(os.Getenv("HOME"), ".claude", "settings.json"), settings) {
 			l.status("OK", "profile settings: valid layered JSON ("+settings+" overrides canonical settings)")
 			if m := l.accountModel(name); m != "" {
 				l.status("INFO", "effective model: "+m+" (profile default)")
@@ -184,15 +185,15 @@ func (l *launcher) doctor(name string) int {
 	} else {
 		l.status("SKIP", "credentials: none stored")
 	}
-	out, rc := l.utilQ(nil, key+"\n", "doctor-route", name, base, adapter)
-	if rc != 0 {
+	rows, bad := util.DoctorRoute(name, base, adapter == "true", key)
+	if bad {
 		failed = 1
 	}
-	for _, line := range strings.Split(out, "\n") {
-		if k, v, ok := strings.Cut(line, "\t"); ok {
-			l.status(k, v)
-		} else if line != "" {
-			fmt.Println(line)
+	for _, r := range rows {
+		if r.Kind != "" {
+			l.status(r.Kind, r.Msg)
+		} else {
+			fmt.Println(r.Msg)
 		}
 	}
 	l.status("SKIP", "generated state: ownership/conflict not established (no changes made)")

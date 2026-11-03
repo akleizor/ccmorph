@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,12 +39,10 @@ func resolveLink(p string) string {
 
 func isDir(p string) bool { fi, err := os.Stat(p); return err == nil && fi.IsDir() }
 
-// migrateProfileHome moves a legacy ~/.claude-profiles into the state root under a lock.
-func migrateProfileHome(args []string, _ io.Reader, _, errw io.Writer) int {
-	if len(args) != 2 {
-		return 2
-	}
-	legacy, target := args[0], args[1]
+// MigrateProfileHome moves a legacy ~/.claude-profiles into the state root under a
+// lock. moved reports a move, which the caller announces; the error is the
+// message to show.
+func MigrateProfileHome(legacy, target string) (moved bool, err error) {
 	e := pycompat.Catch(func() {
 		parent := filepath.Dir(target)
 		if err := os.MkdirAll(parent, 0o777); err != nil {
@@ -91,22 +90,19 @@ func migrateProfileHome(args []string, _ io.Reader, _, errw io.Writer) int {
 				}
 				pycompat.RaiseOS(err)
 			}
-			fmt.Fprintf(errw, "ccmorph: profile storage moved to %s; legacy path retained as a compatibility link\n", target)
+			moved = true
 		}
 	})
 	if e != nil {
-		fmt.Fprintf(errw, "ccmorph: profile directory migration incomplete: %s\n", e.Msg)
-		return 1
+		return false, fmt.Errorf("ccmorph: profile directory migration incomplete: %s", e.Msg)
 	}
-	return 0
+	return moved, nil
 }
 
-// normalizePluginIndex repairs plugin index paths made stale by the shared-plugins topology.
-func normalizePluginIndex(args []string, _ io.Reader, _, _ io.Writer) int {
-	if len(args) != 2 {
-		return 2
-	}
-	home, profileRoot := pycompat.Path(args[0]), pycompat.Path(args[1])
+// NormalizePluginIndex repairs plugin index paths made stale by the shared-plugins
+// topology; false when a rewrite failed.
+func NormalizePluginIndex(homeDir, profileDir string) bool {
+	home, profileRoot := pycompat.Path(homeDir), pycompat.Path(profileDir)
 	plugins := filepath.Join(home, ".claude", "plugins")
 	legacyRoot := filepath.Join(home, ".claude-profiles")
 	canonical := func(v pycompat.Value, kind string) (string, bool) {
@@ -155,7 +151,7 @@ func normalizePluginIndex(args []string, _ io.Reader, _, _ io.Writer) int {
 			}
 			if changed {
 				if err := write(known, o); err != nil {
-					return 1
+					return false
 				}
 			}
 		}
@@ -182,44 +178,52 @@ func normalizePluginIndex(args []string, _ io.Reader, _, _ io.Writer) int {
 				}
 				if changed {
 					if err := write(installed, root); err != nil {
-						return 1
+						return false
 					}
 				}
 			}
 		}
 	}
+	return true
+}
+
+// normalizePluginIndexVerb is `util normalize-plugin-index <home> <profiles dir>`,
+// the one verb install.sh runs.
+func normalizePluginIndexVerb(args []string, _ io.Reader, _, _ io.Writer) int {
+	if len(args) != 2 {
+		return 2
+	}
+	if !NormalizePluginIndex(args[0], args[1]) {
+		return 1
+	}
 	return 0
 }
 
-// settingsValid exits 1 unless every existing file named is a JSON object.
-func settingsValid(args []string, _ io.Reader, _, _ io.Writer) int {
-	for _, p := range args {
+// SettingsValid reports whether every existing file named is a JSON object.
+func SettingsValid(paths ...string) bool {
+	for _, p := range paths {
 		v, err := loadJSON(p)
 		if err != nil {
 			if pycompat.IsNotExist(err) {
 				continue
 			}
-			return 1
+			return false
 		}
 		if asObj(v) == nil {
-			return 1
+			return false
 		}
 	}
-	return 0
+	return true
 }
 
-// modelsCount prints the length of data in a model listing on stdin, or exits 1.
-func modelsCount(_ []string, in io.Reader, out, _ io.Writer) int {
-	v, err := pycompat.Parse(readAll(in))
+// modelsCount is the length of data in a model listing; false when it has none.
+func modelsCount(body string) (int, bool) {
+	v, err := pycompat.Parse([]byte(body))
 	if err != nil {
-		return 1
+		return 0, false
 	}
 	list, ok := getKey(asObj(v), "data").([]any)
-	if !ok {
-		return 1
-	}
-	fmt.Fprintln(out, len(list))
-	return 0
+	return len(list), ok
 }
 
 // shellSplit is shlex.split for a ps command column.
@@ -300,22 +304,18 @@ func execIndex(args []string) int {
 	return 0
 }
 
-// runningAdapter prints "<pid>\t<holder>:<name>,..." for the profile's running adapter,
-// nothing when there is none, and __UNKNOWN__ when the process table cannot be read.
+// runningAdapter is "<pid>\t<holder>:<name>,..." for the profile's running adapter,
+// "" when there is none, and __UNKNOWN__ when the process table cannot be read.
 // The holders are the spawned children worth checking (cliproxyapi; a
 // CCMORPH_SHIM_HOOKS build, any child but ccmorph-core) and, when no hooks child exists,
 // the adapter process itself as "shim": the stock shim is served in-process, so
 // its listener is the adapter's own.
-func runningAdapter(args []string, _ io.Reader, out, _ io.Writer) int {
-	if len(args) != 1 {
-		return 2
-	}
+func runningAdapter(profile string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	raw, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,ppid=,command=").Output()
 	if err != nil {
-		fmt.Fprintln(out, "__UNKNOWN__")
-		return 0
+		return "__UNKNOWN__"
 	}
 	type proc struct {
 		pid, ppid int
@@ -359,7 +359,7 @@ func runningAdapter(args []string, _ io.Reader, out, _ io.Writer) int {
 		return "", false
 	}
 	for _, p := range procs {
-		if name, ok := adapterProfile(p.args); !ok || name != args[0] {
+		if name, ok := adapterProfile(p.args); !ok || name != profile {
 			continue
 		}
 		var children []string
@@ -382,32 +382,26 @@ func runningAdapter(args []string, _ io.Reader, out, _ io.Writer) int {
 		if !shimChild {
 			children = append(children, fmt.Sprintf("%d:shim", p.pid))
 		}
-		fmt.Fprintf(out, "%d\t%s\n", p.pid, strings.Join(children, ","))
-		return 0
+		return fmt.Sprintf("%d\t%s", p.pid, strings.Join(children, ","))
 	}
-	return 0
+	return ""
 }
 
-// listenerOf prints the first TCP listen address of a pid, __UNKNOWN__ when lsof cannot say.
-func listenerOf(args []string, _ io.Reader, out, _ io.Writer) int {
-	if len(args) != 1 {
-		return 2
-	}
+// listenerOf is the first TCP listen address of a pid, __UNKNOWN__ when lsof cannot say.
+func listenerOf(pid string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	raw, err := exec.CommandContext(ctx, "lsof", "-nP", "-a", "-p", args[0], "-iTCP", "-sTCP:LISTEN").Output()
+	raw, err := exec.CommandContext(ctx, "lsof", "-nP", "-a", "-p", pid, "-iTCP", "-sTCP:LISTEN").Output()
 	if err != nil {
-		fmt.Fprintln(out, "__UNKNOWN__")
-		return 0
+		return "__UNKNOWN__"
 	}
 	rows := strings.Split(string(raw), "\n")
 	for _, row := range rows[min(1, len(rows)):] {
 		if f := strings.Fields(row); len(f) > 0 {
-			fmt.Fprintln(out, f[max(len(f)-2, 0)])
-			break
+			return f[max(len(f)-2, 0)]
 		}
 	}
-	return 0
+	return ""
 }
 
 // listing returns the entries of payload["data"], ok=false when the payload cannot be read like Python would.
@@ -446,23 +440,20 @@ func chatModel(m pycompat.Value) (string, bool) {
 
 func isExcluded(fields map[string]string, id string) bool { return ctxwindow.IsExcluded(fields, id) }
 
-// modelsFilteredJSON: models-filtered-json <conf>: the listing on stdin with only the
-// chat-capable, non-excluded rows left.
-func modelsFilteredJSON(args []string, in io.Reader, out, _ io.Writer) int {
-	if len(args) != 1 {
-		return 2
-	}
+// ModelsFilteredJSON is the listing with only the chat-capable, non-excluded rows
+// left, as JSON; false when the conf or listing cannot be read.
+func ModelsFilteredJSON(conf, body string) (string, bool) {
 	var fields map[string]string
-	if pycompat.Catch(func() { fields = readConf(args[0]) }) != nil {
-		return 1
+	if pycompat.Catch(func() { fields = readConf(conf) }) != nil {
+		return "", false
 	}
-	payload, err := pycompat.Parse(readAll(in))
+	payload, err := pycompat.Parse([]byte(body))
 	if err != nil {
-		return 1
+		return "", false
 	}
 	entries, ok := listing(payload)
 	if !ok {
-		return 1
+		return "", false
 	}
 	allowed := map[string]bool{}
 	for _, m := range entries {
@@ -478,7 +469,7 @@ func modelsFilteredJSON(args []string, in io.Reader, out, _ io.Writer) int {
 		}
 		switch id := getKey(o, "id").(type) {
 		case []any, *pycompat.Obj:
-			return 1 // unhashable: Python's `in` raises
+			return "", false // unhashable: Python's `in` raises
 		case string:
 			if allowed[id] {
 				kept = append(kept, row)
@@ -486,8 +477,7 @@ func modelsFilteredJSON(args []string, in io.Reader, out, _ io.Writer) int {
 		}
 	}
 	asObj(payload).Set("data", kept)
-	fmt.Fprintln(out, jsonOut(payload))
-	return 0
+	return jsonOut(payload), true
 }
 
 // pyStr is str() of a decoded scalar.
@@ -508,97 +498,83 @@ func pyStr(v pycompat.Value) string {
 	return jsonOut(v)
 }
 
-// windowLabel: "<window> <unprobed 0|1> <label>" from a resolver record on stdin.
-func windowLabel(_ []string, in io.Reader, out, _ io.Writer) int {
-	v, err := pycompat.Parse(readAll(in))
+// WindowLabel reads a model-window resolver record (JSON): the window, whether it
+// is unprobed, and how it was learned.
+func WindowLabel(record string) (window string, unprobed bool, label string, ok bool) {
+	v, err := pycompat.Parse([]byte(record))
 	d := asObj(v)
 	if err != nil || d == nil {
-		return 1
+		return "", false, "", false
 	}
-	window := ""
 	if w := getKey(d, "window"); truthy(w) {
 		window = pyStr(w)
 	}
-	unprobed := 0
-	if truthy(getKey(d, "unprobed")) {
-		unprobed = 1
-	}
-	label := "probed"
+	label = "probed"
 	switch src, _ := getKey(d, "source").(string); src {
 	case "conf-discovered-catalogue", "catalogue-bundled":
 		label = "catalogue-estimate"
 	case "conf-manual":
 		label = "manual"
 	}
-	fmt.Fprintf(out, "%s %d %s\n", window, unprobed, label)
-	return 0
+	return window, truthy(getKey(d, "unprobed")), label, true
 }
 
-// effortRows prints the per-model effort overrides of a projected model-settings document.
-func effortRows(_ []string, in io.Reader, out, _ io.Writer) int {
-	v, err := pycompat.Parse(readAll(in))
+// EffortRow is one model's effort override.
+type EffortRow struct{ Model, Effort string }
+
+// EffortRows are the per-model effort overrides of a projected model-settings
+// document (JSON), by model name.
+func EffortRows(doc string) []EffortRow {
+	v, err := pycompat.Parse([]byte(doc))
 	d := asObj(v)
 	if err != nil || d == nil {
-		return 1
+		return nil
 	}
 	rows := asObj(getKey(d, "modelSettings"))
 	if rows == nil {
-		return 0
+		return nil
 	}
 	keys := rows.Keys()
 	sort.Strings(keys)
+	var out []EffortRow
 	for _, k := range keys {
 		rv, _ := rows.Get(k)
-		fmt.Fprintf(out, "  effort:%s %s  (profile override)\n", k, pyStr(getKey(asObj(rv), "effortLevel")))
+		out = append(out, EffortRow{k, pyStr(getKey(asObj(rv), "effortLevel"))})
 	}
-	return 0
+	return out
 }
 
-// savedProviderModels prints "<value>\tSaved provider model" for the picker rows saved in a provider's .claude.json.
-func savedProviderModels(args []string, _ io.Reader, out, _ io.Writer) int {
-	if len(args) != 1 {
-		return 2
-	}
+// SavedProviderModels are the picker values saved in a provider's .claude.json.
+func SavedProviderModels(claudeJSON string) (values []string) {
 	var rows []any
-	if v, err := loadJSON(args[0]); err == nil {
+	if v, err := loadJSON(claudeJSON); err == nil {
 		rows, _ = getKey(asObj(v), "additionalModelOptionsCache").([]any)
 	}
 	for _, r := range rows {
 		if value, ok := getKey(asObj(r), "value").(string); ok && value != "" && !hasSpace(value) {
-			fmt.Fprintf(out, "%s\tSaved provider model\n", value)
+			values = append(values, value)
 		}
 	}
-	return 0
+	return values
 }
 
-// unwireStatusline drops a statusLine command ccmorph itself once wired (_CCM_SL_OWNED).
-func unwireStatusline(args []string, _ io.Reader, _, _ io.Writer) int {
-	if len(args) != 1 {
-		return 2
-	}
-	owned := map[string]bool{}
-	for _, p := range strings.Split(os.Getenv("_CCM_SL_OWNED"), "\n") {
-		if p != "" {
-			owned[p] = true
-		}
-	}
-	v, err := loadJSON(args[0])
+// UnwireStatusline drops the statusLine of the settings file at path when its
+// command is one ccmorph itself once wired (one of owned).
+func UnwireStatusline(path string, owned ...string) error {
+	v, err := loadJSON(path)
 	if err != nil {
-		return 0
+		return nil
 	}
 	doc := asObj(v)
 	if doc == nil {
-		return 0
+		return nil
 	}
 	cmd, _ := getKey(asObj(getKey(doc, "statusLine")), "command").(string)
-	if !owned[cmd] || cmd == "" {
-		return 0
+	if cmd == "" || !slices.Contains(owned, cmd) {
+		return nil
 	}
 	doc.Delete("statusLine")
-	if AtomicWrite(args[0], ".sl.", []byte(pycompat.Marshal(doc, pycompat.Format{Indent: 2, ASCII: true})+"\n"), 0o600, false) != nil {
-		return 1
-	}
-	return 0
+	return AtomicWrite(path, ".sl.", []byte(pycompat.Marshal(doc, pycompat.Format{Indent: 2, ASCII: true})+"\n"), 0o600, false)
 }
 
 var commandArgs = regexp.MustCompile(`(?s)<command-args>(.*?)</command-args>`)
@@ -625,14 +601,12 @@ func transcript(path string) (recs []*pycompat.Obj, ok bool) {
 
 func notSidechain(r *pycompat.Obj) bool { return getKey(r, "isSidechain") != true }
 
-// resumeModel prints the model a transcript's session last used: its last /model command, else its last assistant turn.
-func resumeModel(args []string, _ io.Reader, out, _ io.Writer) int {
-	if len(args) != 1 {
-		return 2
-	}
-	recs, ok := transcript(args[0])
+// ResumeModel is the model a transcript's session last used: its last /model
+// command, else its last assistant turn. ok is false for an unreadable transcript.
+func ResumeModel(path string) (model string, ok bool) {
+	recs, ok := transcript(path)
 	if !ok {
-		return 1
+		return "", false
 	}
 	var commandModel, assistantModel string
 	sawCommand := false
@@ -662,23 +636,17 @@ func resumeModel(args []string, _ io.Reader, out, _ io.Writer) int {
 		}
 	}
 	if sawCommand {
-		io.WriteString(out, commandModel)
-	} else {
-		io.WriteString(out, assistantModel)
+		return commandModel, true
 	}
-	return 0
+	return assistantModel, true
 }
 
-// sessionState prints "<model>\t<effort>" from the last assistant turn that recorded both.
-func sessionState(args []string, _ io.Reader, out, _ io.Writer) int {
-	if len(args) != 1 {
-		return 2
-	}
-	recs, ok := transcript(args[0])
+// SessionState is the model and effort of the last assistant turn that recorded both.
+func SessionState(path string) (model, effort string, ok bool) {
+	recs, ok := transcript(path)
 	if !ok {
-		return 1
+		return "", "", false
 	}
-	var model, effort string
 	for _, r := range recs {
 		msg := asObj(getKey(r, "message"))
 		if getKey(r, "type") != "assistant" || !notSidechain(r) || msg == nil || getKey(msg, "role") != "assistant" {
@@ -691,47 +659,40 @@ func sessionState(args []string, _ io.Reader, out, _ io.Writer) int {
 		model, effort = pyStr(m), pyStr(e)
 	}
 	if model == "" || effort == "" || strings.ContainsAny(model+effort, "\t\r\n") {
-		return 1
+		return "", "", false
 	}
-	fmt.Fprintf(out, "%s\t%s", model, effort)
-	return 0
+	return model, effort, true
 }
 
-// adviseJSON wraps _CCM_ADVISE as the SessionStart hook's systemMessage.
-func adviseJSON(_ []string, _ io.Reader, out, errw io.Writer) int {
-	msg, ok := os.LookupEnv("_CCM_ADVISE")
-	if !ok {
-		fmt.Fprintln(errw, "KeyError: '_CCM_ADVISE'")
-		return 1
-	}
+// Advise wraps msg as the SessionStart hook's systemMessage.
+func Advise(msg string) string {
 	o := pycompat.NewObj()
 	o.Set("systemMessage", msg)
-	fmt.Fprintln(out, jsonOut(o))
-	return 0
+	return jsonOut(o)
 }
 
-// gwModels: gw-models <conf> <picker|catalogue>: "<id>\t<owner>" rows from the listing on stdin.
-// Exit 1 for an unreadable listing, 2 for one with no usable model.
-func gwModels(args []string, in io.Reader, out, _ io.Writer) int {
-	if len(args) != 2 {
-		return 2
-	}
+// ModelRow is one model of a gateway listing and its owner.
+type ModelRow struct{ ID, Owner string }
+
+// GwModels are the chat models of the listing, sorted; with picker the profile
+// conf's excluded models are left out. False for an unreadable listing or one with
+// no usable model.
+func GwModels(conf string, picker bool, body string) ([]ModelRow, bool) {
 	fields := map[string]string{}
-	if args[1] == "picker" {
-		if pycompat.Catch(func() { fields = readConf(args[0]) }) != nil {
-			return 1
+	if picker {
+		if pycompat.Catch(func() { fields = readConf(conf) }) != nil {
+			return nil, false
 		}
 	}
-	payload, err := pycompat.Parse(readAll(in))
+	payload, err := pycompat.Parse([]byte(body))
 	if err != nil {
-		return 1
+		return nil, false
 	}
 	entries, ok := listing(payload)
 	if !ok {
-		return 1
+		return nil, false
 	}
-	type row struct{ id, owner string }
-	var rows []row
+	var rows []ModelRow
 	for _, m := range entries {
 		id, ok := chatModel(m)
 		if !ok || isExcluded(fields, id) {
@@ -741,30 +702,18 @@ func gwModels(args []string, in io.Reader, out, _ io.Writer) int {
 		if ov := getKey(asObj(m), "owned_by"); truthy(ov) {
 			owner = pyStr(ov)
 		}
-		rows = append(rows, row{id, owner})
+		rows = append(rows, ModelRow{id, owner})
 	}
 	if len(rows) == 0 {
-		return 2
+		return nil, false
 	}
 	sort.Slice(rows, func(i, j int) bool {
-		if rows[i].id != rows[j].id {
-			return rows[i].id < rows[j].id
+		if rows[i].ID != rows[j].ID {
+			return rows[i].ID < rows[j].ID
 		}
-		return rows[i].owner < rows[j].owner
+		return rows[i].Owner < rows[j].Owner
 	})
-	for _, r := range rows {
-		fmt.Fprintf(out, "%s\t%s\n", r.id, r.owner)
-	}
-	return 0
-}
-
-// modelKnown: model-known <want> <model_map json>, listing in _CCM_MODELS_JSON.
-// 0 served, 1 not served, 2 cannot tell.
-func modelKnown(args []string, _ io.Reader, _, _ io.Writer) int {
-	if len(args) != 2 {
-		return 2
-	}
-	return modelInListing(os.Getenv("_CCM_MODELS_JSON"), args[0], args[1])
+	return rows, true
 }
 
 // modelInListing is model-known over a listing body: 0 served, 1 not, 2 cannot tell.
