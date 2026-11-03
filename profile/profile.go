@@ -13,7 +13,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/akleizor/ccmorph/pycompat"
+	"github.com/akleizor/ccmorph/ordjson"
 )
 
 // Lists are the env-key allowlists a conf is checked against; Defaults() builds
@@ -195,7 +195,8 @@ func checkType(name string, f map[string]string, lists Lists) error {
 
 func allowedKey(k string, patterns []string) bool {
 	for _, p := range patterns {
-		if pycompat.Fnmatch(k, p) {
+		// A pattern is a literal key or a literal prefix ending in "*".
+		if prefix, wild := strings.CutSuffix(p, "*"); k == p || wild && strings.HasPrefix(k, prefix) {
 			return true
 		}
 	}
@@ -204,14 +205,14 @@ func allowedKey(k string, patterns []string) bool {
 
 // ValidModelMap: a JSON object of unique model ids to model ids, no key carrying [1m].
 func ValidModelMap(s string) bool {
-	if !strings.HasPrefix(strings.TrimLeftFunc(s, pycompat.IsSpace), "{") {
+	if !strings.HasPrefix(strings.TrimLeftFunc(s, unicode.IsSpace), "{") {
 		return false
 	}
-	v, err := pycompat.Parse([]byte(s))
+	v, err := ordjson.Parse([]byte(s))
 	if err != nil {
 		return false
 	}
-	obj, ok := v.(*pycompat.Obj)
+	obj, ok := v.(*ordjson.Obj)
 	// A duplicate key collapses in the parsed object, so count the raw keys apart.
 	if !ok || rawKeyCount(s) != obj.Len() {
 		return false

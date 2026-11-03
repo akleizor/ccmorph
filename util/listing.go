@@ -1,8 +1,9 @@
 package util
 
 import (
+	"encoding/json"
+
 	"github.com/akleizor/ccmorph/ctxwindow"
-	"github.com/akleizor/ccmorph/pycompat"
 )
 
 // ListingHasUnsized reports whether the /v1/models listing names a chat model the
@@ -10,26 +11,24 @@ import (
 // worth starting. A conf or listing that cannot be read says yes: the sizer
 // decides.
 func ListingHasUnsized(conf, listing string) bool {
-	var fields map[string]string
-	if pycompat.Catch(func() { _, fields = ctxwindow.ReadConf(conf) }) != nil {
-		return true
-	}
-	doc, err := pycompat.Parse([]byte(listing))
+	_, fields, err := ctxwindow.ReadConf(conf)
 	if err != nil {
 		return true
 	}
-	top, _ := doc.(*pycompat.Obj)
-	if top == nil {
+	var top map[string]any
+	if json.Unmarshal([]byte(listing), &top) != nil || top == nil {
 		return true
 	}
-	data, _ := top.Get("data")
+	data := top["data"]
 	known := ctxwindow.DiscoveredValues(fields)
 	misses := ctxwindow.DiscoveredMisses(fields)
 	pins := ctxwindow.ManualValues(fields)
 	for _, row := range ctxwindow.ListingRows(data) {
-		id, _ := row.Get("id")
-		s, _ := id.(string)
-		if _, pinned := pins[s]; ctxwindow.IsExcluded(fields, s) || known.Has(s) || misses.Has(s) || pinned {
+		s, _ := row["id"].(string)
+		_, pinned := pins[s]
+		_, isKnown := known[s]
+		_, missed := misses[s]
+		if ctxwindow.IsExcluded(fields, s) || isKnown || missed || pinned {
 			continue
 		}
 		return true

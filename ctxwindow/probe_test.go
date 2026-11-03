@@ -3,22 +3,24 @@ package ctxwindow
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"testing/synctest"
 	"time"
-
-	"github.com/akleizor/ccmorph/pycompat"
 )
 
 // fake is a scripted Opener: each call pops the next reply for its method+path.
@@ -37,13 +39,13 @@ func (f *fake) Open(ctx context.Context, r Request, timeout time.Duration) ([]by
 
 func httpErr(code int, body string) error { return &HTTPError{code, []byte(body)} }
 
-func parse(t *testing.T, text string) *pycompat.Obj {
+func parse(t *testing.T, text string) obj {
 	t.Helper()
-	v, err := pycompat.Parse([]byte(text))
+	v, err := parseJSON([]byte(text))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return v.(*pycompat.Obj)
+	return v.(obj)
 }
 
 func captureStderr(t *testing.T) *bytes.Buffer {
@@ -67,10 +69,10 @@ func state(t *testing.T) string {
 		t.Setenv(k, "")
 	}
 	old := fetchJSONDict
-	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) *pycompat.Obj { return pycompat.NewObj() }
+	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj { return obj{} }
 	t.Cleanup(func() { fetchJSONDict = old })
 	probeShareDir = func() string { return filepath.Join(dir, "share") }
-	t.Cleanup(func() { probeShareDir = func() string { return pycompat.Join(libDir(), "..", "share") } })
+	t.Cleanup(func() { probeShareDir = func() string { return filepath.Join(libDir(), "..", "share") } })
 	return dir
 }
 
@@ -83,21 +85,21 @@ func put(t *testing.T, path, text string) {
 }
 
 // stubs replaces the discovery seams; restore is automatic.
-func stubs(t *testing.T, env func(string) (map[string]string, error), list func(base string) ([]string, map[string]int64, []*pycompat.Obj, error)) {
+func stubs(t *testing.T, env func(string) (map[string]string, error), list func(base string) ([]string, map[string]int64, []obj, error)) {
 	t.Helper()
 	oe, ol, op, ot, os_ := ccmorphEnv, listModelsFn, priorValues, priorCatalogueTags, routeStop
 	t.Cleanup(func() { ccmorphEnv, listModelsFn, priorValues, priorCatalogueTags, routeStop = oe, ol, op, ot, os_ })
 	ccmorphEnv = func(ctx context.Context, p string) (map[string]string, error) { return env(p) }
-	listModelsFn = func(ctx context.Context, base, key string, timeout time.Duration, op Opener) ([]string, *pycompat.OMap[int64], []*pycompat.Obj, error) {
+	listModelsFn = func(ctx context.Context, base, key string, timeout time.Duration, op Opener) ([]string, map[string]int64, []obj, error) {
 		ids, sizes, rows, err := list(base)
-		m := pycompat.NewOMap[int64]()
+		m := map[string]int64{}
 		keys := make([]string, 0)
 		for k := range sizes {
 			keys = append(keys, k)
 		}
 		sortStrings(keys)
 		for _, k := range keys {
-			m.Set(k, sizes[k])
+			m[k] = sizes[k]
 		}
 		return ids, m, rows, err
 	}
@@ -118,8 +120,8 @@ func okEnv(string) (map[string]string, error) {
 
 func vals(r Run) map[string]int64 {
 	out := map[string]int64{}
-	for _, k := range r.Values.Keys() {
-		out[k], _ = r.Values.Get(k)
+	for _, k := range slices.Sorted(maps.Keys(r.Values)) {
+		out[k], _ = r.Values[k]
 	}
 	return out
 }
@@ -162,11 +164,11 @@ func TestWhyUnreachable(t *testing.T) {
 // test_declared_models_are_recorded_without_probing, test_direct_discovery_default_never_builds_or_sends_a_prompt.
 func TestProbeAllModes(t *testing.T) {
 	state(t)
-	stubs(t, okEnv, func(string) ([]string, map[string]int64, []*pycompat.Obj, error) {
+	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
 		return []string{"a", "b", "c"}, map[string]int64{"a": 128000, "b": 1000000}, nil, nil
 	})
 	priorValues = func([]string) map[string]int64 { return map[string]int64{} }
-	priorCatalogueTags = func([]string) map[string]*pycompat.Obj { return map[string]*pycompat.Obj{} }
+	priorCatalogueTags = func([]string) map[string]obj { return map[string]obj{} }
 	var probed []string
 	oldProbe, oldPayload := probeFn, payloadFn
 	t.Cleanup(func() { probeFn, payloadFn = oldProbe, oldPayload })
@@ -195,11 +197,11 @@ func TestProbeAllModes(t *testing.T) {
 
 func TestProbeFailureReasonIsPrinted(t *testing.T) {
 	state(t)
-	stubs(t, okEnv, func(string) ([]string, map[string]int64, []*pycompat.Obj, error) {
+	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
 		return []string{"known", "failed"}, map[string]int64{"known": 300000}, nil, nil
 	})
 	priorValues = func([]string) map[string]int64 { return nil }
-	priorCatalogueTags = func([]string) map[string]*pycompat.Obj { return nil }
+	priorCatalogueTags = func([]string) map[string]obj { return nil }
 	oldProbe := probeFn
 	t.Cleanup(func() { probeFn = oldProbe })
 	probeFn = func(ctx context.Context, base, key, model, blob string, timeout time.Duration, op Opener, bisect int) ProbeResult {
@@ -217,11 +219,11 @@ func TestProbeFailureReasonIsPrinted(t *testing.T) {
 // Python: RouteScopedMetadata + cached_readings_survive_lower_metadata.
 func TestBaselineIsScopedAndCachedReadingsSurvive(t *testing.T) {
 	state(t)
-	stubs(t, okEnv, func(string) ([]string, map[string]int64, []*pycompat.Obj, error) {
+	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
 		return []string{"a"}, map[string]int64{"a": 200000}, nil, nil
 	})
 	priorValues = func([]string) map[string]int64 { return map[string]int64{"a": 1000000} }
-	priorCatalogueTags = func([]string) map[string]*pycompat.Obj { return nil }
+	priorCatalogueTags = func([]string) map[string]obj { return nil }
 	eq(t, vals(ProbeAll(context.Background(), []string{"other"}, DefaultOptions())), map[string]int64{"other:a": 200000})
 
 	priorValues = func([]string) map[string]int64 { return map[string]int64{"gw:a": 1000000} }
@@ -243,11 +245,11 @@ func TestOneDeadlineCoversEveryPhase(t *testing.T) {
 			block := func(ctx context.Context) { <-ctx.Done() }
 			stubs(t, func(string) (map[string]string, error) {
 				return map[string]string{"ANTHROPIC_API_KEY": "k", "CCMORPH_ROUTE_HANDLE": "handle"}, nil
-			}, func(string) ([]string, map[string]int64, []*pycompat.Obj, error) {
+			}, func(string) ([]string, map[string]int64, []obj, error) {
 				return []string{"a"}, map[string]int64{"a": 123000}, nil, nil
 			})
 			priorValues = func([]string) map[string]int64 { return nil }
-			priorCatalogueTags = func([]string) map[string]*pycompat.Obj { return nil }
+			priorCatalogueTags = func([]string) map[string]obj { return nil }
 			ctxEnv, ctxList, ctxStop := ccmorphEnv, listModelsFn, routeStop
 			switch phase {
 			case "ccmorph_env":
@@ -257,7 +259,7 @@ func TestOneDeadlineCoversEveryPhase(t *testing.T) {
 					return ctxEnv(ctx, p)
 				}
 			case "list_models":
-				listModelsFn = func(ctx context.Context, base, key string, timeout time.Duration, op Opener) ([]string, *pycompat.OMap[int64], []*pycompat.Obj, error) {
+				listModelsFn = func(ctx context.Context, base, key string, timeout time.Duration, op Opener) ([]string, map[string]int64, []obj, error) {
 					block(ctx)
 					return ctxList(ctx, base, key, timeout, op)
 				}
@@ -281,11 +283,11 @@ func TestDeadlineDuringCleanupKeepsValuesAndTriesCleanup(t *testing.T) {
 	state(t)
 	stubs(t, func(string) (map[string]string, error) {
 		return map[string]string{"ANTHROPIC_API_KEY": "k", "CCMORPH_ROUTE_HANDLE": "handle"}, nil
-	}, func(string) ([]string, map[string]int64, []*pycompat.Obj, error) {
+	}, func(string) ([]string, map[string]int64, []obj, error) {
 		return []string{"a"}, map[string]int64{"a": 123000}, nil, nil
 	})
 	priorValues = func([]string) map[string]int64 { return nil }
-	priorCatalogueTags = func([]string) map[string]*pycompat.Obj { return nil }
+	priorCatalogueTags = func([]string) map[string]obj { return nil }
 	var stops []string
 	routeStop = func(ctx context.Context, h string) { stops = append(stops, h); panic(runDeadline{}) }
 	captureStderr(t)
@@ -300,7 +302,7 @@ func TestDeadlineDuringCleanupKeepsValuesAndTriesCleanup(t *testing.T) {
 	// A deadline during listing still attempts one bounded cleanup.
 	stops = nil
 	routeStop = func(ctx context.Context, h string) { stops = append(stops, h) }
-	listModelsFn = func(ctx context.Context, base, key string, timeout time.Duration, op Opener) ([]string, *pycompat.OMap[int64], []*pycompat.Obj, error) {
+	listModelsFn = func(ctx context.Context, base, key string, timeout time.Duration, op Opener) ([]string, map[string]int64, []obj, error) {
 		panic(runDeadline{})
 	}
 	o.Deadline = 5
@@ -322,11 +324,11 @@ func TestCancelInsideRouteStopStillRetiresTheRoute(t *testing.T) {
 	realStop := routeStop
 	stubs(t, func(string) (map[string]string, error) {
 		return map[string]string{"ANTHROPIC_API_KEY": "k", "CCMORPH_ROUTE_HANDLE": "handle"}, nil
-	}, func(string) ([]string, map[string]int64, []*pycompat.Obj, error) {
+	}, func(string) ([]string, map[string]int64, []obj, error) {
 		return []string{"a"}, map[string]int64{"a": 123000}, nil, nil
 	})
 	priorValues = func([]string) map[string]int64 { return nil }
-	priorCatalogueTags = func([]string) map[string]*pycompat.Obj { return nil }
+	priorCatalogueTags = func([]string) map[string]obj { return nil }
 	parent, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	routeStop = func(ctx context.Context, h string) { cancel(); realStop(ctx, h) }
@@ -345,12 +347,16 @@ func TestCancelInsideRouteStopStillRetiresTheRoute(t *testing.T) {
 func TestHeldProfileLockCannotOutliveTheDeadline(t *testing.T) {
 	dir := state(t)
 	put(t, filepath.Join(dir, "gw.conf"), "type=apikey\napi_key=k\n")
-	stubs(t, okEnv, func(string) ([]string, map[string]int64, []*pycompat.Obj, error) {
+	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
 		return []string{"known"}, map[string]int64{"known": 922000}, nil, nil
 	})
 	priorValues = func([]string) map[string]int64 { return map[string]int64{} }
-	priorCatalogueTags = func([]string) map[string]*pycompat.Obj { return nil }
-	lock, err := os.OpenFile(lockPath(filepath.Join(dir, "gw.conf")), os.O_CREATE|os.O_WRONLY, 0o600)
+	priorCatalogueTags = func([]string) map[string]obj { return nil }
+	lockFile, err := lockPath(filepath.Join(dir, "gw.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := os.OpenFile(lockFile, os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +380,7 @@ func TestHeldProfileLockCannotOutliveTheDeadline(t *testing.T) {
 	if code != 1 || !strings.Contains(errb.String(), "Save deadline reached") {
 		t.Fatalf("code %d stderr %q", code, errb.String())
 	}
-	if _, fields := ReadConf(filepath.Join(dir, "gw.conf")); fields["context_discovered"] != "" {
+	if _, fields, _ := ReadConf(filepath.Join(dir, "gw.conf")); fields["context_discovered"] != "" {
 		t.Fatal("a value was written past the deadline")
 	}
 }
@@ -383,11 +389,11 @@ func TestScopeExclusionsAndNearMisses(t *testing.T) {
 	dir := state(t)
 	put(t, filepath.Join(dir, "gw.conf"), "excluded_models=hidden\n")
 	stubs(t, func(string) (map[string]string, error) { return map[string]string{"ANTHROPIC_API_KEY": "k"}, nil },
-		func(string) ([]string, map[string]int64, []*pycompat.Obj, error) {
+		func(string) ([]string, map[string]int64, []obj, error) {
 			return []string{"kept", "hidden", "claude-opus-5-5", "gpt-5"}, nil, nil, nil
 		})
 	priorValues = func([]string) map[string]int64 { return nil }
-	priorCatalogueTags = func([]string) map[string]*pycompat.Obj { return nil }
+	priorCatalogueTags = func([]string) map[string]obj { return nil }
 	captureStderr(t)
 	r := ProbeAll(context.Background(), []string{"gw"}, DefaultOptions())
 	for _, n := range r.Notes {
@@ -403,12 +409,12 @@ func TestScopeExclusionsAndNearMisses(t *testing.T) {
 	}
 	o.Only = map[string]bool{"not-in-catalogue": true}
 	r = ProbeAll(context.Background(), []string{"gw"}, o)
-	if r.Values.Len() != 0 {
+	if len(r.Values) != 0 {
 		t.Fatal("an absent model produced a value")
 	}
 
 	// With the listing down, an explicit --model still reaches the catalogue.
-	listModelsFn = func(ctx context.Context, base, key string, timeout time.Duration, op Opener) ([]string, *pycompat.OMap[int64], []*pycompat.Obj, error) {
+	listModelsFn = func(ctx context.Context, base, key string, timeout time.Duration, op Opener) ([]string, map[string]int64, []obj, error) {
 		return nil, nil, nil, &URLError{context.DeadlineExceeded}
 	}
 	os.WriteFile(filepath.Join(probeShareDir(), "x"), nil, 0) // no-op: share dir may not exist
@@ -426,16 +432,16 @@ func TestScopeExclusionsAndNearMisses(t *testing.T) {
 func TestCatalogueTagLifecycle(t *testing.T) {
 	dir := state(t)
 	put(t, filepath.Join(dir, "gw.conf"), "type=apikey\napi_key=canary\n")
-	rows := []*pycompat.Obj{parse(t, `{"id":"acme/solo","owned_by":"acme"}`)}
+	rows := []obj{parse(t, `{"id":"acme/solo","owned_by":"acme"}`)}
 	stubs(t, func(string) (map[string]string, error) { return map[string]string{"ANTHROPIC_API_KEY": "k"}, nil },
-		func(string) ([]string, map[string]int64, []*pycompat.Obj, error) {
+		func(string) ([]string, map[string]int64, []obj, error) {
 			return []string{"acme/solo"}, nil, rows, nil
 		})
-	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) *pycompat.Obj {
+	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
 		if url == catalogueURL {
 			return parse(t, `{"acme":{"models":{"acme/solo":{"limit":{"context":128000,"input":100000}}}}}`)
 		}
-		return pycompat.NewObj()
+		return obj{}
 	}
 	captureStderr(t)
 	r := ProbeAll(context.Background(), []string{"gw"}, DefaultOptions())
@@ -444,8 +450,8 @@ func TestCatalogueTagLifecycle(t *testing.T) {
 	if tag == nil || getv(tag, "source") != "catalogue" {
 		t.Fatal("untagged catalogue value")
 	}
-	v, _ := tag.Get("context")
-	if n, _ := v.(pycompat.Num); n.Lit != "128000" {
+	v := tag["context"]
+	if v != int64(128000) {
 		t.Fatal(tag)
 	}
 
@@ -454,28 +460,28 @@ func TestCatalogueTagLifecycle(t *testing.T) {
 	if code, _ := Commit(context.Background(), r.Values, nil, identities, r.Sources); code != 0 {
 		t.Fatal("commit failed")
 	}
-	_, fields := ReadConf(filepath.Join(dir, "gw.conf"))
-	if s, ok := DiscoveredSources(fields).Get("acme/solo"); !ok || getv(s, "source") != "catalogue" {
+	_, fields, _ := ReadConf(filepath.Join(dir, "gw.conf"))
+	if s, ok := DiscoveredSources(fields)["acme/solo"]; !ok || getv(s, "source") != "catalogue" {
 		t.Fatal("tag not stored")
 	}
 
 	// A second run with no declared size carries the value AND the tag, without refetching.
 	priorValues = func([]string) map[string]int64 { return map[string]int64{"gw:acme/solo": 100000} }
-	priorCatalogueTags = func([]string) map[string]*pycompat.Obj { return map[string]*pycompat.Obj{"gw:acme/solo": tag} }
-	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) *pycompat.Obj {
+	priorCatalogueTags = func([]string) map[string]obj { return map[string]obj{"gw:acme/solo": tag} }
+	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
 		t.Fatal("refetched")
 		return nil
 	}
 	r = ProbeAll(context.Background(), []string{"gw"}, DefaultOptions())
 	eq(t, vals(r), map[string]int64{"gw:acme/solo": 100000})
-	if r.Sources["gw:acme/solo"] != tag {
+	if !reflect.DeepEqual(r.Sources["gw:acme/solo"], tag) {
 		t.Fatal("the tag was dropped")
 	}
 
 	// A gateway that now declares a size supersedes the prior catalogue guess.
-	listModelsFn = func(ctx context.Context, base, key string, timeout time.Duration, op Opener) ([]string, *pycompat.OMap[int64], []*pycompat.Obj, error) {
-		d := pycompat.NewOMap[int64]()
-		d.Set("acme/solo", 900000)
+	listModelsFn = func(ctx context.Context, base, key string, timeout time.Duration, op Opener) ([]string, map[string]int64, []obj, error) {
+		d := map[string]int64{}
+		d["acme/solo"] = 900000
 		return []string{"acme/solo"}, d, rows, nil
 	}
 	r = ProbeAll(context.Background(), []string{"gw"}, DefaultOptions())
@@ -488,9 +494,9 @@ func TestCatalogueTagLifecycle(t *testing.T) {
 func TestCatalogueFetchedAtMostOncePerRun(t *testing.T) {
 	state(t)
 	n := 0
-	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) *pycompat.Obj {
+	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
 		n++
-		return pycompat.NewObj()
+		return obj{}
 	}
 	cache := NewCache(false)
 	for _, m := range []string{"x", "y", "z"} {
@@ -585,30 +591,30 @@ func TestCatalogueFetchSendsAUserAgent(t *testing.T) {
 	}}
 	defaultOpener = f
 	t.Cleanup(func() { defaultOpener = BuildOpener() })
-	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) *pycompat.Obj {
+	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
 		body, err := pick(nil).Open(ctx, Request{Method: "GET", URL: url, Header: [][2]string{{"User-Agent", userAgent}}}, timeout)
 		if err != nil {
-			return pycompat.NewObj()
+			return obj{}
 		}
 		return parseDict(body)
 	}
-	if got := fetchJSONDict(context.Background(), "http://x/models.json", time.Second); got.Len() != 1 {
+	if got := fetchJSONDict(context.Background(), "http://x/models.json", time.Second); len(got) != 1 {
 		t.Fatal("the fetch was rejected")
 	}
 }
 
 // Python: DeclaredSizes.
 func TestDeclaredSizes(t *testing.T) {
-	rows := []*pycompat.Obj{parse(t, `{"id":"a","context_length":128000}`), parse(t, `{"id":"b","max_input_tokens":200000}`),
+	rows := []obj{parse(t, `{"id":"a","context_length":128000}`), parse(t, `{"id":"b","max_input_tokens":200000}`),
 		parse(t, `{"id":"c"}`), parse(t, `{"id":"d","max_context_length":"not-an-int"}`), parse(t, `{"id":"e","context_window":true}`),
 		parse(t, `{"id":"f","max_input_tokens":0,"context_length":5}`)}
 	got := DeclaredSizes(rows)
 	want := map[string]int64{"a": 128000, "b": 200000, "f": 5}
-	if got.Len() != 3 {
-		t.Fatal(got.Keys())
+	if len(got) != 3 {
+		t.Fatal(slices.Sorted(maps.Keys(got)))
 	}
 	for k, v := range want {
-		if g, _ := got.Get(k); g != v {
+		if g, _ := got[k]; g != v {
 			t.Errorf("%s: %d", k, g)
 		}
 	}
@@ -632,11 +638,11 @@ func TestListModelsOllamaAndDisguisedIDs(t *testing.T) {
 		t.Fatal(ids)
 	}
 	for k, v := range map[string]int64{"qwen3-coder:64k": 65536, "known": 32000, "gpt-6-sol": 272000} {
-		if g, _ := sizes.Get(k); g != v {
+		if g, _ := sizes[k]; g != v {
 			t.Errorf("%s: %d", k, g)
 		}
 	}
-	if sizes.Has("opaque") || len(rows) != 4 {
+	if sizes["opaque"] != 0 || len(rows) != 4 {
 		t.Fatal("opaque must stay unknown; the embedding row is dropped")
 	}
 	var post *Request
@@ -645,7 +651,7 @@ func TestListModelsOllamaAndDisguisedIDs(t *testing.T) {
 			post = &f.seen[i]
 		}
 	}
-	if post == nil || !strings.HasSuffix(post.URL, "/api/show") || string(post.Body) != `{"model": "qwen3-coder:64k"}` || len(f.seen) != 2 {
+	if post == nil || !strings.HasSuffix(post.URL, "/api/show") || string(post.Body) != `{"model":"qwen3-coder:64k"}` || len(f.seen) != 2 {
 		t.Fatalf("%+v", f.seen)
 	}
 	if f.seen[0].URL != "http://local/v1/models" {
@@ -829,7 +835,7 @@ func TestPostSizedIsTheOneRequestBuilder(t *testing.T) {
 		t.Fatal(err, seen.URL)
 	}
 	body := parse(t, string(seen.Body))
-	if n, _ := getv(body, "max_tokens").(pycompat.Num); n.Lit != "8" {
+	if n, _ := getv(body, "max_tokens").(json.Number); n != "8" {
 		t.Fatal(string(seen.Body))
 	}
 	if tokens(doc) != 7 {
@@ -906,9 +912,9 @@ func TestBisectNeverReadsATimeoutAsARefusal(t *testing.T) {
 // Python: InferenceDisclosesItsCost.
 func TestWarningPrecedesTheFirstPaidRequest(t *testing.T) {
 	state(t)
-	stubs(t, okEnv, func(string) ([]string, map[string]int64, []*pycompat.Obj, error) { return []string{"m"}, nil, nil, nil })
+	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) { return []string{"m"}, nil, nil, nil })
 	priorValues = func([]string) map[string]int64 { return nil }
-	priorCatalogueTags = func([]string) map[string]*pycompat.Obj { return nil }
+	priorCatalogueTags = func([]string) map[string]obj { return nil }
 	out := captureStderr(t)
 	oldProbe := probeFn
 	t.Cleanup(func() { probeFn = oldProbe })
@@ -931,14 +937,14 @@ func TestStaleResultIsRejectedAndOtherProfileSurvives(t *testing.T) {
 	}
 	ids := map[string]*Identity{"a": ProfileIdentity("a"), "b": ProfileIdentity("b")}
 	captureStderr(t)
-	v := pycompat.NewOMap[int64]()
-	v.Set("a:m", 500000)
+	v := map[string]int64{}
+	v["a:m"] = 500000
 	if c, _ := Commit(context.Background(), v, nil, ids, nil); c != 0 {
 		t.Fatal(c)
 	}
-	v = pycompat.NewOMap[int64]()
-	v.Set("a:m", 200000)
-	v.Set("b:m", 300000)
+	v = map[string]int64{}
+	v["a:m"] = 200000
+	v["b:m"] = 300000
 	if c, _ := Commit(context.Background(), v, nil, ids, nil); c != 1 {
 		t.Fatal("the stale profile must fail the commit")
 	}
@@ -956,15 +962,15 @@ func TestNewModelWritePreservesExistingValuesAndManualPin(t *testing.T) {
 		m string
 		v int64
 	}{{"one", 200000}, {"two", 300000}} {
-		v := pycompat.NewOMap[int64]()
-		v.Set("a:"+c.m, c.v)
+		v := map[string]int64{}
+		v["a:"+c.m] = c.v
 		ids := map[string]*Identity{"a": ProfileIdentity("a")}
 		if code, _ := Commit(context.Background(), v, nil, ids, nil); code != 0 {
 			t.Fatal(code)
 		}
 	}
 	prior := priorValues(nil)
-	if len(prior) != 2 || prior["a:one"] != 200000 || prior["a:two"] != 300000 || ContextValue("a", "manual") != "100000" {
+	if len(prior) != 2 || prior["a:one"] != 200000 || prior["a:two"] != 300000 || ctxValue("a", "manual") != "100000" {
 		t.Fatal(prior)
 	}
 }
@@ -1143,25 +1149,25 @@ func TestProviderSourceContract(t *testing.T) {
 	 {"slug":"gpt-5.6-sol","context_window":272000,"max_context_window":872000},
 	 {"slug":"gpt-new","context_window":272000,"max_context_window":500000},
 	 {"slug":"gpt-small","context_window":1000000,"max_context_window":272000}]}`
-	var rows []*pycompat.Obj
+	var rows []obj
 	for _, m := range []string{"gpt-6-sol", "gpt-5.6-sol", "gpt-new", "gpt-small"} {
 		rows = append(rows, parse(t, fmt.Sprintf(`{"id":%q,"owned_by":"openai"}`, m)))
 	}
 	rows = append(rows, parse(t, `{"id":"glm-9","owned_by":"zhipu"}`))
-	declared := func() *pycompat.OMap[int64] {
-		d := pycompat.NewOMap[int64]()
+	declared := func() map[string]int64 {
+		d := map[string]int64{}
 		for _, kv := range []struct {
 			k string
 			v int64
 		}{{"gpt-6-sol", 272000}, {"gpt-5.6-sol", 372000}, {"gpt-small", 1000000}, {"glm-9", 272000}} {
-			d.Set(kv.k, kv.v)
+			d[kv.k] = kv.v
 		}
 		return d
 	}
 	serve := func(c string) {
-		fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) *pycompat.Obj {
+		fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
 			if c == "" {
-				return pycompat.NewObj()
+				return obj{}
 			}
 			return parse(t, c)
 		}
@@ -1170,16 +1176,16 @@ func TestProviderSourceContract(t *testing.T) {
 	out, pending := ProviderWindows(context.Background(), declared(), rows, map[string]string{"window_sources": "t"}, time.Second, NewCache(false))
 	want := map[string]int64{"gpt-6-sol": 872000, "gpt-5.6-sol": 372000, "gpt-small": 1000000, "glm-9": 272000}
 	for k, v := range want {
-		if g, _ := out.Get(k); g != v {
+		if g, _ := out[k]; g != v {
 			t.Errorf("%s: %d want %d", k, g, v)
 		}
 	}
-	if len(pending) != 0 || out.Has("gpt-new") {
+	if len(pending) != 0 || out["gpt-new"] != 0 {
 		t.Fatal(pending)
 	}
 	// A profile that does not opt in is untouched.
 	out, _ = ProviderWindows(context.Background(), declared(), rows, map[string]string{}, time.Second, NewCache(false))
-	if g, _ := out.Get("gpt-6-sol"); g != 272000 {
+	if g, _ := out["gpt-6-sol"]; g != 272000 {
 		t.Fatal(g)
 	}
 	// An unreachable source leaves the models it speaks for undecided.
@@ -1190,9 +1196,9 @@ func TestProviderSourceContract(t *testing.T) {
 	}
 	// On the launch path a failure is remembered, so an offline source costs one timeout.
 	fetches := 0
-	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) *pycompat.Obj {
+	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
 		fetches++
-		return pycompat.NewObj()
+		return obj{}
 	}
 	ProviderWindows(context.Background(), declared(), rows, map[string]string{"window_sources": "t"}, time.Second, NewCache(true))
 	ProviderWindows(context.Background(), declared(), rows, map[string]string{"window_sources": "t"}, time.Second, NewCache(true))
@@ -1209,18 +1215,18 @@ func TestLaunchSizesOnlyNewModelsAndRemembersMisses(t *testing.T) {
 	dir := state(t)
 	conf := filepath.Join(dir, "gw.conf")
 	put(t, conf, "type=apikey\nbase_url=https://gw.invalid\napi_key=canary\nexcluded_models=hidden-new\n")
-	_, fields := ReadConf(conf)
+	_, fields, _ := ReadConf(conf)
 	route := RouteFingerprint(fields)
 	f, _ := os.OpenFile(conf, os.O_APPEND|os.O_WRONLY, 0)
 	fmt.Fprintf(f, `context_discovered={"route":%q,"models":{"known-model":123456}}`+"\n", route)
 	f.Close()
 	fetches := 0
-	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) *pycompat.Obj {
+	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
 		fetches++
 		if url == catalogueURL {
 			return parse(t, `{"openai":{"models":{"gpt-5":{"limit":{"context":400000,"input":272000}}}}}`)
 		}
-		return pycompat.NewObj()
+		return obj{}
 	}
 	oldV := validationWindowFn
 	t.Cleanup(func() { validationWindowFn = oldV })
@@ -1229,18 +1235,18 @@ func TestLaunchSizesOnlyNewModelsAndRemembersMisses(t *testing.T) {
 	if c := SizeListing(context.Background(), "gw", listing, "https://gw.invalid", "canary", nil); c != 0 {
 		t.Fatal(c)
 	}
-	w := ProfileWindows("gw")
+	w := windowsOf("gw")
 	if len(w) != 3 || w["known-model"] != 123456 || w["declared-new"] != 500000 || w["gpt-5"] != 272000 {
 		t.Fatal(w)
 	}
-	_, fields = ReadConf(conf)
+	_, fields, _ = ReadConf(conf)
 	today := time.Now().UTC().Format("2006-01-02")
-	if m := DiscoveredMisses(fields); m.Len() != 1 {
-		t.Fatal(m.Keys())
-	} else if d, _ := m.Get("mystery-new"); d != today {
+	if m := DiscoveredMisses(fields); len(m) != 1 {
+		t.Fatal(slices.Sorted(maps.Keys(m)))
+	} else if d, _ := m["mystery-new"]; d != today {
 		t.Fatal(d)
 	}
-	if s, _ := DiscoveredSources(fields).Get("gpt-5"); getv(s, "source") != "catalogue" || fetches == 0 {
+	if s, _ := DiscoveredSources(fields)["gpt-5"]; getv(s, "source") != "catalogue" || fetches == 0 {
 		t.Fatal("catalogue estimate not tagged")
 	}
 	for _, line := range []string{"sized gw:declared-new 500000\n", "sized gw:gpt-5 272000 (catalogue estimate)\n", "no size for gw:mystery-new; launch fallback applies\n"} {
@@ -1249,7 +1255,7 @@ func TestLaunchSizesOnlyNewModelsAndRemembersMisses(t *testing.T) {
 		}
 	}
 	// Next launch inside the retry window asks nobody.
-	fetchJSONDict = func(context.Context, string, time.Duration) *pycompat.Obj { t.Fatal("fetched again"); return nil }
+	fetchJSONDict = func(context.Context, string, time.Duration) obj { t.Fatal("fetched again"); return nil }
 	validationWindowFn = func(context.Context, string, string, string, Opener, time.Duration) int64 {
 		t.Fatal("asked again")
 		return 0
@@ -1261,11 +1267,11 @@ func TestLaunchSizesOnlyNewModelsAndRemembersMisses(t *testing.T) {
 		t.Fatal("retry window")
 	}
 	// A later value retires the miss.
-	v := pycompat.NewOMap[int64]()
-	v.Set("mystery-new", 64000)
+	v := map[string]int64{}
+	v["mystery-new"] = 64000
 	SaveDiscovered("gw", v, ProfileIdentity("gw"), true, nil, nil)
-	_, fields = ReadConf(conf)
-	if DiscoveredMisses(fields).Len() != 0 {
+	_, fields, _ = ReadConf(conf)
+	if len(DiscoveredMisses(fields)) != 0 {
 		t.Fatal("miss survived")
 	}
 }
@@ -1305,7 +1311,7 @@ func TestInternalModelIsSizedFromItsValidationRefusal(t *testing.T) {
 func TestProviderProfileKeepsWindowsSizedThroughItsBridge(t *testing.T) {
 	dir := state(t)
 	put(t, filepath.Join(dir, "codex.conf"), "type=provider\nprovider=codex\n")
-	fetchJSONDict = func(context.Context, string, time.Duration) *pycompat.Obj {
+	fetchJSONDict = func(context.Context, string, time.Duration) obj {
 		t.Fatal("declared size needs no catalogue")
 		return nil
 	}
@@ -1313,7 +1319,7 @@ func TestProviderProfileKeepsWindowsSizedThroughItsBridge(t *testing.T) {
 	if c := SizeListing(context.Background(), "codex", body, "http://127.0.0.1:54321", "ephemeral", nil); c != 0 {
 		t.Fatal(c)
 	}
-	if w := ProfileWindows("codex"); len(w) != 1 || w["gpt-6-sol"] != 272000 {
+	if w := windowsOf("codex"); len(w) != 1 || w["gpt-6-sol"] != 272000 {
 		t.Fatal(w)
 	}
 }
@@ -1328,7 +1334,7 @@ func TestOpenRouterShapedListingNeedsNoManualNumber(t *testing.T) {
 	if c := SizeListing(context.Background(), "or", string(fixture), "https://openrouter.ai/api", "canary", nil); c != 0 {
 		t.Fatal(c)
 	}
-	_, fields := ReadConf(filepath.Join(dir, "or.conf"))
+	_, fields, _ := ReadConf(filepath.Join(dir, "or.conf"))
 	for k := range fields {
 		if strings.HasPrefix(k, "context_window.") {
 			t.Fatal("a number was hand-entered")
@@ -1339,7 +1345,7 @@ func TestOpenRouterShapedListingNeedsNoManualNumber(t *testing.T) {
 			t.Errorf("%s: %+v", model, r)
 		}
 	}
-	if _, ok := ProfileWindows("or")["openai/text-embedding-3-large"]; ok {
+	if _, ok := windowsOf("or")["openai/text-embedding-3-large"]; ok {
 		t.Fatal("a non-chat model was sized")
 	}
 }
@@ -1364,11 +1370,11 @@ func TestMainArgumentsAndReporting(t *testing.T) {
 		routes++
 		return map[string]string{"ANTHROPIC_API_KEY": "k"}, nil
 	},
-		func(string) ([]string, map[string]int64, []*pycompat.Obj, error) {
+		func(string) ([]string, map[string]int64, []obj, error) {
 			return []string{"known", "gpt-5.6-sol"}, map[string]int64{"known": 922000}, nil, nil
 		})
 	priorValues = func([]string) map[string]int64 { return map[string]int64{"profile:known": 922000} }
-	priorCatalogueTags = func([]string) map[string]*pycompat.Obj { return nil }
+	priorCatalogueTags = func([]string) map[string]obj { return nil }
 	for _, args := range [][]string{
 		{"--profile", "gw", "--jobs", "0"}, {"--profile", "gw", "--jobs", "-1"}, {"--profile", "gw", "--bisect"},
 		{"--profile", "gw", "--probe-all"}, {"--profile", "gw", "--allow-inference"},
@@ -1447,7 +1453,7 @@ var _ = io.Discard
 func TestManualOverrideSkipsPaidProbeWithoutBecomingDiscoveredData(t *testing.T) {
 	dir := state(t)
 	put(t, filepath.Join(dir, "gw.conf"), "type=apikey\napi_key=canary\ncontext_window.manual=333333\n")
-	stubs(t, okEnv, func(string) ([]string, map[string]int64, []*pycompat.Obj, error) {
+	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
 		return []string{"manual"}, map[string]int64{}, nil, nil
 	})
 	oldProbe := probeFn
@@ -1471,7 +1477,7 @@ func TestManualOverrideSkipsPaidProbeWithoutBecomingDiscoveredData(t *testing.T)
 // Ported from tests/catalogue_offline_test.py (snapshot shape) and
 // tests/launch_new_models_test.py (shipped sources): the shipped data files.
 func TestShippedDataFilesFollowTheirContracts(t *testing.T) {
-	read := func(name string) *pycompat.Obj {
+	read := func(name string) obj {
 		b, err := os.ReadFile(filepath.Join("..", "share", name))
 		if err != nil {
 			t.Fatal(err)
@@ -1479,41 +1485,41 @@ func TestShippedDataFilesFollowTheirContracts(t *testing.T) {
 		return parse(t, string(b))
 	}
 	cat := read("model-catalogue.json")
-	if s, _ := cat.Get("source"); s != "https://models.dev/models.json" {
+	if s, _ := cat["source"]; s != "https://models.dev/models.json" {
 		t.Fatal(s)
 	}
-	if s, _ := cat.Get("retrieved"); s == nil || s == "" {
+	if s, _ := cat["retrieved"]; s == nil || s == "" {
 		t.Fatal("no retrieved date")
 	}
-	if l, _ := cat.Get("license"); !strings.Contains(fmt.Sprint(l), "Copyright (c) 2025 models.dev") {
+	if l, _ := cat["license"]; !strings.Contains(fmt.Sprint(l), "Copyright (c) 2025 models.dev") {
 		t.Fatal(l)
 	}
-	models, _ := cat.Get("models")
-	rows, ok := models.(*pycompat.Obj)
-	if !ok || rows.Len() == 0 {
+	models := cat["models"]
+	rows, ok := models.(obj)
+	if !ok || len(rows) == 0 {
 		t.Fatal("no models")
 	}
-	for _, id := range rows.Keys() {
-		v, _ := rows.Get(id)
-		for _, k := range v.(*pycompat.Obj).Keys() {
+	for _, id := range slices.Sorted(maps.Keys(rows)) {
+		v := rows[id]
+		for k := range v.(obj) {
 			if k != "id" && k != "family" && k != "limit" {
 				t.Fatalf("%s carries %q", id, k)
 			}
 		}
 	}
-	srcs, _ := read("window-sources.json").Get("sources")
+	srcs := read("window-sources.json")["sources"]
 	list, ok := srcs.([]any)
 	if !ok || len(list) == 0 {
 		t.Fatal("no sources")
 	}
 	for _, s := range list {
-		o := s.(*pycompat.Obj)
+		o := s.(obj)
 		for _, k := range []string{"name", "owned_by", "url", "rows", "id", "window"} {
-			if !o.Has(k) {
+			if _, ok := o[k]; !ok {
 				t.Fatalf("source lacks %q", k)
 			}
 		}
-		if u, _ := o.Get("url"); !strings.HasPrefix(fmt.Sprint(u), "https://") {
+		if u, _ := o["url"]; !strings.HasPrefix(fmt.Sprint(u), "https://") {
 			t.Fatal(u)
 		}
 	}
@@ -1532,11 +1538,11 @@ func TestOpenRouterListingPublishesWindowsAndDropsNonChatModels(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]int64{"anthropic/claude-sonnet-4": 1000000, "openai/gpt-5": 400000, "meta-llama/llama-4-maverick": 900000}
-	if len(ids) != len(want) || sizes.Len() != len(want) {
+	if len(ids) != len(want) || len(sizes) != len(want) {
 		t.Fatal(ids)
 	}
 	for _, id := range ids {
-		if g, _ := sizes.Get(id); g != want[id] {
+		if g, _ := sizes[id]; g != want[id] {
 			t.Errorf("%s: %d want %d", id, g, want[id])
 		}
 	}
@@ -1564,8 +1570,8 @@ func TestUnreachableSourceLeavesTheModelForTheNextLaunch(t *testing.T) {
 	if c := SizeListing(context.Background(), "codex", codexListing(), "http://127.0.0.1:1", "k", nil); c != 0 {
 		t.Fatal(c)
 	}
-	_, fields := ReadConf(filepath.Join(dir, "codex.conf"))
-	if len(ProfileWindows("codex")) != 0 || DiscoveredMisses(fields).Len() != 0 {
+	_, fields, _ := ReadConf(filepath.Join(dir, "codex.conf"))
+	if w := windowsOf("codex"); len(w) != 0 || len(DiscoveredMisses(fields)) != 0 {
 		t.Fatal("a bare declaration was stored while the source was down")
 	}
 }
@@ -1576,9 +1582,9 @@ func TestUnreachableSourceIsFetchedOncePerRetryWindow(t *testing.T) {
 	shippedSources(t)
 	put(t, filepath.Join(dir, "codex.conf"), "type=provider\nprovider=codex\nwindow_sources=codex\n")
 	var urls []string
-	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) *pycompat.Obj {
+	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
 		urls = append(urls, url)
-		return pycompat.NewObj()
+		return obj{}
 	}
 	oldV := validationWindowFn
 	t.Cleanup(func() { validationWindowFn = oldV })
@@ -1597,7 +1603,7 @@ func TestUnreachableSourceIsFetchedOncePerRetryWindow(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("source fetched %d times: %v", n, urls)
 	}
-	if len(ProfileWindows("codex")) != 0 {
+	if len(windowsOf("codex")) != 0 {
 		t.Fatal("window stored")
 	}
 }

@@ -2,6 +2,8 @@ package util
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,9 +16,10 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
-	"github.com/akleizor/ccmorph/pycompat"
+	"github.com/akleizor/ccmorph/ordjson"
 )
 
 // Test seams: the two calls whose failures the migration tests must provoke.
@@ -43,74 +46,74 @@ func isDir(p string) bool { fi, err := os.Stat(p); return err == nil && fi.IsDir
 // lock. moved reports a move, which the caller announces; the error is the
 // message to show.
 func MigrateProfileHome(legacy, target string) (moved bool, err error) {
-	e := pycompat.Catch(func() {
-		parent := filepath.Dir(target)
-		if err := os.MkdirAll(parent, 0o777); err != nil {
-			pycompat.RaiseOS(err)
-		}
-		if isSymlink(parent) {
-			pycompat.RaiseValue("refusing symlinked state root")
-		}
-		fd, err := syscall.Open(filepath.Join(parent, ".profile-home-migration.lock"),
-			syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600)
+	defer func() {
 		if err != nil {
-			pycompat.RaiseOS(&os.PathError{Op: "open", Path: filepath.Join(parent, ".profile-home-migration.lock"), Err: err})
+			err = fmt.Errorf("ccmorph: profile directory migration incomplete: %v", err)
 		}
-		defer syscall.Close(fd)
-		deadline := time.Now().Add(10 * time.Second)
-		for {
-			err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB)
-			if err == nil {
-				break
-			}
-			if err != syscall.EWOULDBLOCK {
-				pycompat.RaiseOS(err)
-			}
-			if !time.Now().Before(deadline) {
-				pycompat.RaiseValue("another profile migration is still running; retry shortly")
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
-		switch {
-		case isSymlink(legacy):
-			if resolveLink(legacy) != resolveLink(target) || !isDir(target) || isSymlink(target) {
-				pycompat.RaiseValue("legacy profile link points elsewhere; nothing moved")
-			}
-		case exists(legacy):
-			if !isDir(legacy) || exists(target) || isSymlink(target) {
-				pycompat.RaiseValue("both profile locations exist or are not directories; nothing moved")
-			}
-			// Rename on the same filesystem: never copy credentials or merge homes.
-			if err := rename(legacy, target); err != nil {
-				pycompat.RaiseOS(err)
-			}
-			if err := symlink(target, legacy); err != nil {
-				if !exists(legacy) && !isSymlink(legacy) {
-					rename(target, legacy)
-				}
-				pycompat.RaiseOS(err)
-			}
-			moved = true
-		}
-	})
-	if e != nil {
-		return false, fmt.Errorf("ccmorph: profile directory migration incomplete: %s", e.Msg)
+	}()
+	parent := filepath.Dir(target)
+	if err := os.MkdirAll(parent, 0o777); err != nil {
+		return false, err
 	}
-	return moved, nil
+	if isSymlink(parent) {
+		return false, errors.New("refusing symlinked state root")
+	}
+	lock := filepath.Join(parent, ".profile-home-migration.lock")
+	fd, err := syscall.Open(lock, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600)
+	if err != nil {
+		return false, &os.PathError{Op: "open", Path: lock, Err: err}
+	}
+	defer syscall.Close(fd)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if err != syscall.EWOULDBLOCK {
+			return false, err
+		}
+		if !time.Now().Before(deadline) {
+			return false, errors.New("another profile migration is still running; retry shortly")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	switch {
+	case isSymlink(legacy):
+		if resolveLink(legacy) != resolveLink(target) || !isDir(target) || isSymlink(target) {
+			return false, errors.New("legacy profile link points elsewhere; nothing moved")
+		}
+	case exists(legacy):
+		if !isDir(legacy) || exists(target) || isSymlink(target) {
+			return false, errors.New("both profile locations exist or are not directories; nothing moved")
+		}
+		// Rename on the same filesystem: never copy credentials or merge homes.
+		if err := rename(legacy, target); err != nil {
+			return false, err
+		}
+		if err := symlink(target, legacy); err != nil {
+			if !exists(legacy) && !isSymlink(legacy) {
+				rename(target, legacy)
+			}
+			return false, err
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 // NormalizePluginIndex repairs plugin index paths made stale by the shared-plugins
 // topology; false when a rewrite failed.
 func NormalizePluginIndex(homeDir, profileDir string) bool {
-	home, profileRoot := pycompat.Path(homeDir), pycompat.Path(profileDir)
+	home, profileRoot := filepath.Clean(homeDir), filepath.Clean(profileDir)
 	plugins := filepath.Join(home, ".claude", "plugins")
 	legacyRoot := filepath.Join(home, ".claude-profiles")
-	canonical := func(v pycompat.Value, kind string) (string, bool) {
+	canonical := func(v any, kind string) (string, bool) {
 		s, ok := v.(string)
 		if !ok || !filepath.IsAbs(s) {
 			return "", false
 		}
-		p := pycompat.Path(s)
+		p := filepath.Clean(s)
 		for _, root := range []string{legacyRoot, profileRoot} {
 			rest, ok := strings.CutPrefix(p, strings.TrimRight(root, "/")+"/")
 			if !ok {
@@ -125,13 +128,13 @@ func NormalizePluginIndex(homeDir, profileDir string) bool {
 		}
 		return "", false
 	}
-	write := func(path string, data pycompat.Value) error {
+	write := func(path string, data any) error {
 		fi, err := os.Stat(path)
 		if err != nil {
 			return err
 		}
 		return AtomicWrite(path, "."+filepath.Base(path)+".",
-			[]byte(pycompat.Marshal(data, pycompat.Format{Indent: 2, ASCII: true})+"\n"), fi.Mode().Perm(), true)
+			[]byte(string(ordjson.Marshal(data, true))+"\n"), fi.Mode().Perm(), true)
 	}
 	known := filepath.Join(plugins, "known_marketplaces.json")
 	if v, err := loadJSON(known); err == nil {
@@ -204,7 +207,7 @@ func SettingsValid(paths ...string) bool {
 	for _, p := range paths {
 		v, err := loadJSON(p)
 		if err != nil {
-			if pycompat.IsNotExist(err) {
+			if os.IsNotExist(err) {
 				continue
 			}
 			return false
@@ -218,7 +221,7 @@ func SettingsValid(paths ...string) bool {
 
 // modelsCount is the length of data in a model listing; false when it has none.
 func modelsCount(body string) (int, bool) {
-	v, err := pycompat.Parse([]byte(body))
+	v, err := ordjson.Parse([]byte(body))
 	if err != nil {
 		return 0, false
 	}
@@ -405,7 +408,7 @@ func listenerOf(pid string) string {
 }
 
 // listing returns the entries of payload["data"], ok=false when the payload cannot be read like Python would.
-func listing(payload pycompat.Value) ([]any, bool) {
+func listing(payload any) ([]any, bool) {
 	o := asObj(payload)
 	if o == nil {
 		return nil, false
@@ -417,14 +420,14 @@ func listing(payload pycompat.Value) ([]any, bool) {
 	switch t := d.(type) {
 	case []any:
 		return t, true
-	case string, *pycompat.Obj:
+	case string, *ordjson.Obj:
 		return nil, true
 	}
 	return nil, false
 }
 
 // chatModel reports the id of a listing row that the endpoint does not deny for chat.
-func chatModel(m pycompat.Value) (string, bool) {
+func chatModel(m any) (string, bool) {
 	row := asObj(m)
 	if row == nil {
 		return "", false
@@ -443,11 +446,11 @@ func isExcluded(fields map[string]string, id string) bool { return ctxwindow.IsE
 // ModelsFilteredJSON is the listing with only the chat-capable, non-excluded rows
 // left, as JSON; false when the conf or listing cannot be read.
 func ModelsFilteredJSON(conf, body string) (string, bool) {
-	var fields map[string]string
-	if pycompat.Catch(func() { fields = readConf(conf) }) != nil {
+	fields, err := readConf(conf)
+	if err != nil {
 		return "", false
 	}
-	payload, err := pycompat.Parse([]byte(body))
+	payload, err := ordjson.Parse([]byte(body))
 	if err != nil {
 		return "", false
 	}
@@ -468,7 +471,7 @@ func ModelsFilteredJSON(conf, body string) (string, bool) {
 			continue
 		}
 		switch id := getKey(o, "id").(type) {
-		case []any, *pycompat.Obj:
+		case []any, *ordjson.Obj:
 			return "", false // unhashable: Python's `in` raises
 		case string:
 			if allowed[id] {
@@ -481,7 +484,7 @@ func ModelsFilteredJSON(conf, body string) (string, bool) {
 }
 
 // pyStr is str() of a decoded scalar.
-func pyStr(v pycompat.Value) string {
+func pyStr(v any) string {
 	switch t := v.(type) {
 	case nil:
 		return "None"
@@ -492,8 +495,8 @@ func pyStr(v pycompat.Value) string {
 			return "True"
 		}
 		return "False"
-	case pycompat.Num:
-		return t.Lit
+	case json.Number:
+		return string(t)
 	}
 	return jsonOut(v)
 }
@@ -501,7 +504,7 @@ func pyStr(v pycompat.Value) string {
 // WindowLabel reads a model-window resolver record (JSON): the window, whether it
 // is unprobed, and how it was learned.
 func WindowLabel(record string) (window string, unprobed bool, label string, ok bool) {
-	v, err := pycompat.Parse([]byte(record))
+	v, err := ordjson.Parse([]byte(record))
 	d := asObj(v)
 	if err != nil || d == nil {
 		return "", false, "", false
@@ -525,7 +528,7 @@ type EffortRow struct{ Model, Effort string }
 // EffortRows are the per-model effort overrides of a projected model-settings
 // document (JSON), by model name.
 func EffortRows(doc string) []EffortRow {
-	v, err := pycompat.Parse([]byte(doc))
+	v, err := ordjson.Parse([]byte(doc))
 	d := asObj(v)
 	if err != nil || d == nil {
 		return nil
@@ -574,19 +577,19 @@ func UnwireStatusline(path string, owned ...string) error {
 		return nil
 	}
 	doc.Delete("statusLine")
-	return AtomicWrite(path, ".sl.", []byte(pycompat.Marshal(doc, pycompat.Format{Indent: 2, ASCII: true})+"\n"), 0o600, false)
+	return AtomicWrite(path, ".sl.", []byte(string(ordjson.Marshal(doc, true))+"\n"), 0o600, false)
 }
 
 var commandArgs = regexp.MustCompile(`(?s)<command-args>(.*?)</command-args>`)
 
 // transcript reads a session transcript: one JSON record per line, unreadable lines skipped.
-func transcript(path string) (recs []*pycompat.Obj, ok bool) {
-	var text string
-	if pycompat.Catch(func() { text = pycompat.ReadText(path) }) != nil {
+func transcript(path string) (recs []*ordjson.Obj, ok bool) {
+	b, err := os.ReadFile(path)
+	if err != nil || !utf8.Valid(b) {
 		return nil, false
 	}
-	for _, line := range strings.Split(text, "\n") {
-		v, err := pycompat.Parse([]byte(line))
+	for _, line := range strings.Split(string(b), "\n") {
+		v, err := ordjson.Parse([]byte(line))
 		if err != nil {
 			continue
 		}
@@ -599,7 +602,7 @@ func transcript(path string) (recs []*pycompat.Obj, ok bool) {
 	return recs, true
 }
 
-func notSidechain(r *pycompat.Obj) bool { return getKey(r, "isSidechain") != true }
+func notSidechain(r *ordjson.Obj) bool { return getKey(r, "isSidechain") != true }
 
 // ResumeModel is the model a transcript's session last used: its last /model
 // command, else its last assistant turn. ok is false for an unreadable transcript.
@@ -666,7 +669,7 @@ func SessionState(path string) (model, effort string, ok bool) {
 
 // Advise wraps msg as the SessionStart hook's systemMessage.
 func Advise(msg string) string {
-	o := pycompat.NewObj()
+	o := ordjson.New()
 	o.Set("systemMessage", msg)
 	return jsonOut(o)
 }
@@ -680,11 +683,12 @@ type ModelRow struct{ ID, Owner string }
 func GwModels(conf string, picker bool, body string) ([]ModelRow, bool) {
 	fields := map[string]string{}
 	if picker {
-		if pycompat.Catch(func() { fields = readConf(conf) }) != nil {
+		var err error
+		if fields, err = readConf(conf); err != nil {
 			return nil, false
 		}
 	}
-	payload, err := pycompat.Parse([]byte(body))
+	payload, err := ordjson.Parse([]byte(body))
 	if err != nil {
 		return nil, false
 	}
@@ -718,7 +722,7 @@ func GwModels(conf string, picker bool, body string) ([]ModelRow, bool) {
 
 // modelInListing is model-known over a listing body: 0 served, 1 not, 2 cannot tell.
 func modelInListing(listing, want, mapJSON string) int {
-	payload, err := pycompat.Parse([]byte(listing))
+	payload, err := ordjson.Parse([]byte(listing))
 	if err != nil {
 		return 2
 	}
@@ -730,7 +734,7 @@ func modelInListing(listing, want, mapJSON string) int {
 	if mapJSON == "" {
 		mapJSON = "{}"
 	}
-	mv, err := pycompat.Parse([]byte(mapJSON))
+	mv, err := ordjson.Parse([]byte(mapJSON))
 	modelMap := asObj(mv)
 	if err != nil || modelMap == nil {
 		return 1

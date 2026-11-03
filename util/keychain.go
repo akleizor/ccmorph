@@ -119,7 +119,7 @@ func keychainMove(conf, name string, from func(string) string) error {
 	if !changed {
 		return nil
 	}
-	_, before := ctxwindow.ReadConf(conf)
+	_, before, _ := ctxwindow.ReadConf(conf)
 	fi, err := os.Stat(conf)
 	if err != nil {
 		return fmt.Errorf("ccmorph: %s: %v", name, err)
@@ -129,7 +129,7 @@ func keychainMove(conf, name string, from func(string) string) error {
 	}
 	// The key is part of the route fingerprint; the same key under a new
 	// spelling must not orphan the profile's discovered windows.
-	_, after := ctxwindow.ReadConf(conf)
+	_, after, _ := ctxwindow.ReadConf(conf)
 	ctxwindow.Restamp(conf, ctxwindow.RouteFingerprint(before), ctxwindow.RouteFingerprint(after))
 	if from != nil {
 		KeychainDelete(strings.TrimSuffix(strings.TrimPrefix(from("api_key"), "keychain:"), ".api_key"))

@@ -1,6 +1,7 @@
 package util
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -10,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
-	"github.com/akleizor/ccmorph/pycompat"
+	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/settingscompose"
 )
 
@@ -201,7 +202,8 @@ func walls(profile, conf string) map[string]int64 {
 			os.Unsetenv("MODEL_WINDOW_PROFILE_CONF")
 		}
 	}()
-	return ctxwindow.ProfileWindows(profile)
+	w, _ := ctxwindow.ProfileWindows(profile)
+	return w
 }
 
 var oneMTag = regexp.MustCompile(`(?i)\[1m\]`)
@@ -218,7 +220,7 @@ type HazardIn struct {
 // hazardRows is the whole calculation behind the switch advisory: the trigger,
 // then one "<wall>\t<name>" row per model that dies before it compacts, largest
 // wall first. Nothing to say is nil.
-func hazardRows(in HazardIn) []string {
+func hazardRows(in HazardIn) ([]string, error) {
 	budget, ceiling := digitsInt(in.Budget), digitsInt(in.Ceiling)
 	doc := settingscompose.MergedView(in.Sources)
 	pctRaw := in.PctRaw
@@ -240,14 +242,14 @@ func hazardRows(in HazardIn) []string {
 		window = ceiling
 	}
 	if window == 0 {
-		return nil
+		return nil, nil
 	}
 	reserve := int64(20_000)
 	var rawOut int64
 	if in.RawOut != "" {
 		n, err := strconv.ParseInt(in.RawOut, 10, 64)
 		if err != nil {
-			pycompat.Crash("ValueError", "invalid literal for int() with base 10: '%s'", in.RawOut)
+			return nil, fmt.Errorf("invalid literal for int() with base 10: '%s'", in.RawOut)
 		}
 		rawOut = n
 		reserve = min(n, 20_000)
@@ -258,11 +260,11 @@ func hazardRows(in HazardIn) []string {
 		trigger = min(int64(float64(usable)*(*pct/100)), trigger)
 	}
 	if trigger <= 0 {
-		return nil
+		return nil, nil
 	}
 	offered, _ := getKey(doc, "availableModels").([]any)
 	if len(offered) == 0 {
-		return nil
+		return nil, nil
 	}
 	w := walls(in.Profile, in.Conf)
 	aliases := map[string]bool{"opus": true, "sonnet": true, "haiku": true, "fable": true}
@@ -319,7 +321,7 @@ func hazardRows(in HazardIn) []string {
 		}
 	}
 	if len(rows) == 0 {
-		return nil
+		return nil, nil
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].wall != rows[j].wall {
@@ -331,10 +333,10 @@ func hazardRows(in HazardIn) []string {
 	for _, r := range rows {
 		out = append(out, fmt.Sprintf("%d\t%s", r.wall, r.name))
 	}
-	return out
+	return out, nil
 }
 
-func getKey(o *pycompat.Obj, k string) pycompat.Value {
+func getKey(o *ordjson.Obj, k string) any {
 	if o == nil {
 		return nil
 	}
@@ -351,7 +353,7 @@ func HazardMessage(rows []string, withheld bool) string {
 	}
 	trigger, err := strconv.ParseInt(strings.TrimSpace(rows[0]), 10, 64)
 	if err != nil {
-		pycompat.Crash("ValueError", "invalid literal for int(): %q", rows[0])
+		return ""
 	}
 	type nw struct {
 		wall int64
@@ -362,7 +364,7 @@ func HazardMessage(rows []string, withheld bool) string {
 		wall, name, _ := strings.Cut(line, "\t")
 		n, err := strconv.ParseInt(strings.TrimSpace(wall), 10, 64)
 		if err != nil {
-			pycompat.Crash("ValueError", "invalid literal for int(): %q", wall)
+			return ""
 		}
 		named = append(named, nw{n, name})
 	}
@@ -387,14 +389,12 @@ func HazardMessage(rows []string, withheld bool) string {
 // PolicyPct is the fleet context policy's autoCompactAtPercent, or ok=false when the
 // file is missing, malformed or outside the schema this version understands.
 func PolicyPct(path string) (int64, bool) {
-	var v pycompat.Value
-	if pycompat.Catch(func() {
-		var err error
-		v, err = pycompat.Parse([]byte(pycompat.ReadText(path)))
-		if err != nil {
-			pycompat.RaiseValue("%v", err)
-		}
-	}) != nil {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	v, err := ordjson.Parse(b)
+	if err != nil {
 		return 0, false
 	}
 	doc := asObj(v)
@@ -406,12 +406,12 @@ func PolicyPct(path string) (int64, bool) {
 		return 0, false
 	}
 	sv, _ := doc.Get("schemaVersion")
-	n, isNum := val.(pycompat.Num)
-	if !pycompat.Equal(sv, pycompat.Int(1)) || !isNum {
+	n, isNum := val.(json.Number)
+	if !ordjson.Equal(sv, json.Number("1")) || !isNum {
 		return 0, false
 	}
-	i, ok := n.Int64()
-	if !ok || !(0 < i && i < 100) {
+	i, err := n.Int64()
+	if err != nil || !(0 < i && i < 100) {
 		return 0, false
 	}
 	return i, true
@@ -425,12 +425,9 @@ func EffectivePct(conf string, layers []string) (string, bool) {
 			return fmtG(v), true
 		}
 	}
-	var raw string
-	var isStr bool
-	if pycompat.Catch(func() {
-		env := asObj(getKey(settingscompose.MergedView(layers), "env"))
-		raw, isStr = getKey(env, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE").(string)
-	}) != nil || !isStr {
+	env := asObj(getKey(settingscompose.MergedView(layers), "env"))
+	raw, isStr := getKey(env, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE").(string)
+	if !isStr {
 		return "", false
 	}
 	if v, ok := enginePct(raw); ok {

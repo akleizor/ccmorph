@@ -1,13 +1,12 @@
 package util
 
 import (
-	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
-	"github.com/akleizor/ccmorph/pycompat"
+	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/settingscompose"
 )
 
@@ -26,7 +25,7 @@ func reverse(s string) string {
 
 // invariantRecords is the two warning blocks, each keeping its own failure rules.
 func invariantRecords(settings, conf, profile, maxOut, budgetRaw string, no1m bool, pct string) (records []record) {
-	var m pycompat.Value
+	var m any
 	if v, err := loadJSON(settings); err == nil {
 		if o := asObj(v); o != nil {
 			m = getKey(o, "model")
@@ -54,7 +53,7 @@ func invariantRecords(settings, conf, profile, maxOut, budgetRaw string, no1m bo
 		switch t := allowed.(type) {
 		case []any:
 			entries = t
-		case *pycompat.Obj:
+		case *ordjson.Obj:
 			for _, k := range t.Keys() {
 				entries = append(entries, k)
 			}
@@ -64,7 +63,7 @@ func invariantRecords(settings, conf, profile, maxOut, budgetRaw string, no1m bo
 		}
 	}
 	var lines []string
-	if e := pycompat.Catch(func() {
+	{
 		ceilings := walls(profile, conf)
 		pinned := digitsInt(maxOut)
 		budget := digitsInt(strings.TrimSpace(budgetRaw))
@@ -100,8 +99,6 @@ func invariantRecords(settings, conf, profile, maxOut, budgetRaw string, no1m bo
 				lines = append(lines, fmt.Sprintf("%s holds %d but compaction starts at %d", bare, ceiling, trigger))
 			}
 		}
-	}); e != nil {
-		return records
 	}
 	if len(lines) > 0 {
 		records = append(records, record{"unsafe", strings.TrimRight(strings.Join(lines, "\n"), "\n")})
@@ -140,14 +137,9 @@ func LaunchDiagnostics(in DiagIn) (recs []Record) {
 
 	// A layer the merge cannot apply answers none of the env questions; the warnings
 	// below read settings.json themselves and still run.
-	var view *pycompat.Obj
-	pycompat.Catch(func() { view = settingscompose.MergedView(paths) })
-	var merged *pycompat.Obj
-	if view != nil {
-		merged = asObj(getKey(view, "env"))
-	}
+	merged := asObj(getKey(settingscompose.MergedView(paths), "env"))
 	if merged == nil {
-		merged = pycompat.NewObj()
+		merged = ordjson.New()
 	}
 	const pctKey = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"
 	pctRaw, isStr := getKey(merged, pctKey).(string)
@@ -196,12 +188,12 @@ func LaunchDiagnostics(in DiagIn) (recs []Record) {
 	}
 
 	if in.Hazard {
-		pycompat.Catch(func() {
+		func() {
 			conf := in.ProfileConf
 			var srcs []string
 			anyFile := false
 			for _, p := range paths {
-				if pycompat.Strip(p) != "" {
+				if strings.TrimSpace(p) != "" {
 					srcs = append(srcs, p)
 					anyFile = anyFile || isFile(p)
 				}
@@ -209,24 +201,23 @@ func LaunchDiagnostics(in DiagIn) (recs []Record) {
 			if !anyFile || !isFile(conf) {
 				return
 			}
-			rows := hazardRows(HazardIn{
+			rows, err := hazardRows(HazardIn{
 				Profile: in.Profile, Budget: in.Budget, Ceiling: in.Ceiling,
 				Sources: srcs, PctRaw: pct, RawOut: strings.TrimSpace(in.MaxOut),
 				No1m: in.No1m, Conf: conf,
 				PctInEnv: in.PctInEnv || (!pctSet && pct != ""),
 			})
-			emit("hazard", HazardMessage(rows, in.Withheld))
-		})
+			if err == nil {
+				emit("hazard", HazardMessage(rows, in.Withheld))
+			}
+		}()
 	}
 	return recs
 }
 
 // HazardSet is the switch advisory's rows, or the error that ended the calculation.
-func HazardSet(in HazardIn) (rows []string, err error) {
-	if e := pycompat.Catch(func() { rows = hazardRows(in) }); e != nil {
-		return nil, errors.New(e.Msg)
-	}
-	return rows, nil
+func HazardSet(in HazardIn) ([]string, error) {
+	return hazardRows(in)
 }
 
 // WithholdFatal removes the fatal models in rows from the generated settings.json
@@ -246,7 +237,7 @@ func WithholdFatal(path string, rows []string, launched string) {
 	}
 	fatal := map[string]bool{}
 	for _, line := range rows {
-		if pycompat.Strip(line) == "" {
+		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		_, name, _ := strings.Cut(line, "\t")
@@ -272,6 +263,6 @@ func WithholdFatal(path string, rows []string, launched string) {
 		return
 	}
 	doc.Set("availableModels", kept)
-	data := pycompat.Marshal(doc, pycompat.Format{Indent: 2, ASCII: true}) + "\n"
+	data := string(ordjson.Marshal(doc, true)) + "\n"
 	AtomicWrite(path, ".ovl.", []byte(data), 0o600, false)
 }

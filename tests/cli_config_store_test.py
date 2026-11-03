@@ -514,7 +514,7 @@ class ConfigurationSaveTest(unittest.TestCase):
              '_', str(ROOT / 'lib/ccmorph.sh')], env=env, text=True,
             capture_output=True, timeout=HANG_TIMEOUT)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('Permission denied', result.stderr)
+        self.assertIn('permission denied', result.stderr)
         self.assertEqual((conf_fields(self.conf), self.settings.read_bytes()), before)
         self.assertEqual(list(self.state.glob('.configure.*')), [])
         self.assertEqual(list(self.settings.parent.glob('.configure.*')), [])
@@ -679,7 +679,7 @@ class ConfigurationSaveTest(unittest.TestCase):
                 # Python script until step 4 of #36: the two word a too-deep document's
                 # RecursionError differently, so that one line is left out of the comparison.
                 def words(r, h):
-                    return [l for l in r.stderr.replace(h, '<home>').splitlines() if 'RecursionError' not in l]
+                    return [l for l in r.stderr.replace(h, '<home>').splitlines() if 'max depth' not in l]
                 self.assertEqual(words(folded, one['HOME']), words(pair, two['HOME']))
                 self.assertIn("could not generate settings for 'demo'", pair.stderr)
                 self.assertEqual(tree(one['HOME']), tree(two['HOME']))
@@ -727,8 +727,8 @@ class ConfigurationSaveTest(unittest.TestCase):
         (self.state / 'profiles/demo/settings.policy.json').symlink_to(shared)
         canon = self.home / '.claude/settings.json'
         good_canon = canon.read_text()
-        crashes = (('deep-canonical', 'RecursionError', canon, TOO_DEEP_TO_DECODE),
-                   ('malformed-tombstones', 'TypeError',
+        crashes = (('deep-canonical', 'max depth', canon, TOO_DEEP_TO_DECODE),
+                   ('malformed-tombstones', '$ccmorphUnset',
                     self.state / 'profiles/demo/settings.profile.json',
                     json.dumps({'$ccmorphUnset': None})))
         for name, crash_class, target, text in crashes:
@@ -748,7 +748,7 @@ class ConfigurationSaveTest(unittest.TestCase):
                 # Python script until step 4 of #36: the two word a too-deep document's
                 # RecursionError differently, so that one line is left out of the comparison.
                 def words(r, h):
-                    return [l for l in r.stderr.replace(h, '<home>').splitlines() if 'RecursionError' not in l]
+                    return [l for l in r.stderr.replace(h, '<home>').splitlines() if 'max depth' not in l]
                 self.assertEqual(words(folded, one['HOME']), words(pair, two['HOME']))
                 self.assertIn("could not generate settings for 'demo'", folded.stderr)
                 self.assertIn('settings.policy.json', folded.stderr)

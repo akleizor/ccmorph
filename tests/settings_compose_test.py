@@ -10,12 +10,7 @@ import pytest
 from support import HANG_TIMEOUT, helper_cmd
 
 ADVISE = '[ -n "$CCMORPH_ADVISE" ] && printf "%s" "$CCMORPH_ADVISE" || true'
-# Nested too deep for any settings file to be held: it fails while the policy is
-# decoded, or, on an interpreter that decodes it anyway, while it is copied in.
-TOO_DEEP = '{"sandbox":' + "[" * 2000 + "0" + "]" * 2000 + "}"
-# Nested past the decoder's own limit, which the interpreter sets from its
-# stack: 3.9 refuses a few thousand nestings, 3.14 a hundred thousand, so this
-# crashes the decode itself rather than the copy of the policy above.
+# Nested past the decoder's own depth limit, so the decode itself fails.
 TOO_DEEP_TO_DECODE = '{"sandbox":' + "[" * 2_000_000 + "0" + "]" * 2_000_000 + "}"
 
 
@@ -410,10 +405,9 @@ def test_a_bom_in_the_composed_files_is_read_like_settings_json_issue_67(home, t
 
 @pytest.mark.parametrize("content,diagnosis", [
     pytest.param(None, "missing file", id="dangling-issue-308"),
-    pytest.param("{", "Expecting", id="invalid-json-issue-308"),
+    pytest.param("{", "invalid JSON", id="invalid-json-issue-308"),
     pytest.param("[]", "root is not a JSON object", id="non-object-issue-308"),
-    pytest.param(b"\xff", "decode", id="invalid-encoding-issue-308"),
-    pytest.param(TOO_DEEP, "recursion", id="too-deep-issue-318"),
+    pytest.param(b"\xff", "invalid JSON", id="invalid-encoding-issue-308"),
 ])
 def test_an_unreadable_policy_fails_instead_of_dropping_the_policy(home, tmp_path, content, diagnosis):
     canonical, profile = home
@@ -496,11 +490,11 @@ def break_the_projection(profile: Path, canonical: Path, broken: str) -> None:
 
 
 @pytest.mark.parametrize("broken,policy,named", [
-    pytest.param("lock", SANDBOX, "Is a directory", id="lock-unopenable-issue-319"),
-    pytest.param("canonical", SANDBOX, "Expecting", id="invalid-canonical-issue-319"),
-    pytest.param("lock", SANDBOX_AND_HOOK, "Is a directory", id="lock-unopenable-hooks-issue-319"),
-    pytest.param("deep-canonical", SANDBOX, "RecursionError", id="deep-canonical-crash-issue-420"),
-    pytest.param("malformed-tombstones", SANDBOX, "TypeError", id="malformed-tombstones-crash-issue-420"),
+    pytest.param("lock", SANDBOX, "is a directory", id="lock-unopenable-issue-319"),
+    pytest.param("canonical", SANDBOX, "invalid JSON", id="invalid-canonical-issue-319"),
+    pytest.param("lock", SANDBOX_AND_HOOK, "is a directory", id="lock-unopenable-hooks-issue-319"),
+    pytest.param("deep-canonical", SANDBOX, "max depth", id="deep-canonical-crash-issue-420"),
+    pytest.param("malformed-tombstones", SANDBOX, "$ccmorphUnset", id="malformed-tombstones-crash-issue-420"),
 ])
 def test_a_failed_projection_refuses_old_settings_without_the_policy(home, tmp_path, compose, capsys, broken, policy, named):
     canonical, profile = home

@@ -9,11 +9,11 @@ import (
 	"strings"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
-	"github.com/akleizor/ccmorph/pycompat"
+	"github.com/akleizor/ccmorph/ordjson"
 )
 
 // iterItems is what Python's `for x in value` yields for a decoded JSON value.
-func iterItems(v pycompat.Value) ([]any, bool) {
+func iterItems(v any) ([]any, bool) {
 	switch t := v.(type) {
 	case []any:
 		return t, true
@@ -23,7 +23,7 @@ func iterItems(v pycompat.Value) ([]any, bool) {
 			out = append(out, string(c))
 		}
 		return out, true
-	case *pycompat.Obj:
+	case *ordjson.Obj:
 		var out []any
 		for _, k := range t.Keys() {
 			out = append(out, k)
@@ -48,29 +48,23 @@ func inList(list []any, s string) bool {
 
 // rewriteJSON is the picker's single read, mutate, atomic replace of one settings file.
 // Any failure leaves the file as it was.
-func rewriteJSON(path string, mutate func(doc *pycompat.Obj) bool) {
-	pycompat.Catch(func() {
-		doc := pycompat.NewObj()
-		b, err := os.ReadFile(path)
-		switch {
-		case err == nil:
-			v, perr := pycompat.Parse(b)
-			if perr != nil {
-				return
-			}
-			o := asObj(v)
-			if o == nil {
-				return
-			}
-			doc = o
-		case !pycompat.IsNotExist(err):
+func rewriteJSON(path string, mutate func(doc *ordjson.Obj) bool) {
+	doc := ordjson.New()
+	b, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		v, perr := ordjson.Parse(b)
+		o := asObj(v)
+		if perr != nil || o == nil {
 			return
 		}
-		if !mutate(doc) {
-			return
-		}
-		AtomicWrite(path, ".proj.", []byte(pycompat.Marshal(doc, pycompat.Format{Indent: 2, ASCII: true})), 0o600, false)
-	})
+		doc = o
+	case !os.IsNotExist(err):
+		return
+	}
+	if mutate(doc) {
+		AtomicWrite(path, ".proj.", ordjson.Marshal(doc, true), 0o600, false)
+	}
 }
 
 // PickerIn is what the project picker needs: the profile's home dir, conf, its own
@@ -84,19 +78,17 @@ type PickerIn struct {
 // allowlist into its settings layer. False when it could not; reasons go to errw.
 func ProjectPicker(in PickerIn, errw io.Writer) bool {
 	home, contextConf, own, tag, profile, layer, launch := in.Home, in.Conf, in.Own, in.Tag, in.Profile, in.Layer, in.Launch
-	tagText := pycompat.Strip(tag)
+	tagText := strings.TrimSpace(tag)
 	if tagText == "" {
 		tagText = "Gateway"
 	}
-	var fields map[string]string
-	if e := pycompat.Catch(func() {
-		fields = map[string]string{}
-		if exists(contextConf) {
-			fields = readConf(contextConf)
+	fields := map[string]string{}
+	if exists(contextConf) {
+		var err error
+		if fields, err = readConf(contextConf); err != nil {
+			fmt.Fprintln(errw, err)
+			return false
 		}
-	}); e != nil {
-		fmt.Fprintln(errw, e.Msg)
-		return false
 	}
 	excluded := map[string]bool{}
 	for _, m := range strings.Split(fields["excluded_models"], ",") {
@@ -104,8 +96,8 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 			excluded[m] = true
 		}
 	}
-	modelMap := pycompat.NewObj()
-	if mv, err := pycompat.Parse([]byte(orDefault(fields["model_map"], "{}"))); err == nil {
+	modelMap := ordjson.New()
+	if mv, err := ordjson.Parse([]byte(orDefault(fields["model_map"], "{}"))); err == nil {
 		if o := asObj(mv); o != nil {
 			modelMap = o
 		}
@@ -113,7 +105,7 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 
 	var served []any
 	fresh := true
-	if pv, err := pycompat.Parse([]byte(in.ModelsJSON)); err == nil && asObj(pv) != nil {
+	if pv, err := ordjson.Parse([]byte(in.ModelsJSON)); err == nil && asObj(pv) != nil {
 		data := getKey(asObj(pv), "data")
 		if !truthy(data) {
 			data = []any{}
@@ -149,7 +141,7 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 		}
 		for _, r := range cached {
 			if value, ok := getKey(asObj(r), "value").(string); ok {
-				row := pycompat.NewObj()
+				row := ordjson.New()
 				row.Set("id", value)
 				served = append(served, row)
 			}
@@ -170,12 +162,12 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 		if !exists(contextConf) {
 			return ""
 		}
-		text := ""
-		if pycompat.Catch(func() { text = pycompat.ReadText(contextConf) }) != nil {
+		text, err := os.ReadFile(contextConf)
+		if err != nil {
 			return ""
 		}
 		known := exists(ctxwindow.DiscoveredPath(contextConf))
-		for _, line := range strings.Split(text, "\n") {
+		for _, line := range strings.Split(string(text), "\n") {
 			if strings.HasPrefix(line, "context_window.") || strings.HasPrefix(line, "context_discovered=") {
 				known = true
 				break
@@ -197,8 +189,8 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 				os.Setenv(k, v)
 			}
 		}
-		var rec ctxwindow.Record
-		if pycompat.Catch(func() { rec = ctxwindow.Resolve(profile, id) }) != nil || rec.Unprobed {
+		rec := ctxwindow.Resolve(profile, id)
+		if rec.Unprobed {
 			return ""
 		}
 		if rec.SendID != id {
@@ -229,7 +221,7 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 				real = send
 			}
 		}
-		row := pycompat.NewObj()
+		row := ordjson.New()
 		row.Set("value", real)
 		row.Set("label", real)
 		row.Set("description", tagText)
@@ -244,21 +236,21 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 		return true
 	}
 
-	rewriteJSON(filepath.Join(home, ".claude.json"), func(doc *pycompat.Obj) bool {
-		if cur, has := doc.Get("additionalModelOptionsCache"); has && pycompat.Equal(cur, rows) {
+	rewriteJSON(filepath.Join(home, ".claude.json"), func(doc *ordjson.Obj) bool {
+		if cur, has := doc.Get("additionalModelOptionsCache"); has && ordjson.Equal(cur, rows) {
 			return false
 		}
 		doc.Set("additionalModelOptionsCache", rows)
 		return true
 	})
 
-	rewriteJSON(layer, func(doc *pycompat.Obj) bool {
+	rewriteJSON(layer, func(doc *ordjson.Obj) bool {
 		beforeModels, _ := doc.Get("availableModels")
 		beforeModel, _ := doc.Get("model")
 		changed := func() bool {
 			am, _ := doc.Get("availableModels")
 			md, _ := doc.Get("model")
-			return !pycompat.Equal(am, beforeModels) || !pycompat.Equal(md, beforeModel)
+			return !ordjson.Equal(am, beforeModels) || !ordjson.Equal(md, beforeModel)
 		}
 		stored, _ := doc.Get("model")
 		if s, ok := stored.(string); ok && cloaked.MatchString(s) {
@@ -276,7 +268,7 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 		if truthy(src) {
 			items, ok := iterItems(src)
 			if !ok {
-				pycompat.Crash("TypeError", "object is not iterable")
+				return false // an allowlist that is not a list is left as it is
 			}
 			for _, m := range items {
 				if s, ok := m.(string); ok && !isExcl(s) {
@@ -373,43 +365,31 @@ func orDefault(s, d string) string {
 // state dir and MODEL_WINDOW_PROFILE_CONF, as the resolver does.
 func LaunchWindow(profile, model string, sources []string) []string {
 	fields := make([]string, 6)
-	doc := (*pycompat.Obj)(nil)
-	pycompat.Catch(func() { doc = mergedView(sources) })
-
+	doc := mergedView(sources)
 	if model != "" {
-		pycompat.Catch(func() {
-			copy(fields[0:4], ctxwindow.Resolve(profile, model).Fields())
-		})
+		copy(fields[0:4], ctxwindow.Resolve(profile, model).Fields())
 	}
-	pycompat.Catch(func() {
-		values := ctxwindow.ProfileWindows(profile)
-		var best int64
-		models, _ := getKey(doc, "availableModels").([]any)
-		for _, mv := range models {
-			m, ok := mv.(string)
-			if !ok {
-				continue
-			}
-			m = strings.SplitN(m, "[", 2)[0]
-			if strings.HasPrefix(m, "claude-") || m == "opus" || m == "sonnet" || m == "haiku" || m == "fable" {
-				continue
-			}
-			if w := values[m]; w > best {
-				best = w
-			}
+	values, _ := ctxwindow.ProfileWindows(profile)
+	var best int64
+	models, _ := getKey(doc, "availableModels").([]any)
+	for _, mv := range models {
+		m, ok := mv.(string)
+		if !ok {
+			continue
 		}
-		if best > 0 {
-			fields[4] = fmt.Sprint(best)
+		m = strings.SplitN(m, "[", 2)[0]
+		if strings.HasPrefix(m, "claude-") || m == "opus" || m == "sonnet" || m == "haiku" || m == "fable" {
+			continue
 		}
-	})
-	pycompat.Catch(func() {
-		if doc == nil {
-			pycompat.Crash("AttributeError", "no view")
+		if w := values[m]; w > best {
+			best = w
 		}
-		v, has := doc.Get("autoCompactWindow")
-		if has && acwValid(v) {
-			fields[5] = acwString(v)
-		}
-	})
+	}
+	if best > 0 {
+		fields[4] = fmt.Sprint(best)
+	}
+	if v, has := doc.Get("autoCompactWindow"); has && acwValid(v) {
+		fields[5] = acwString(v)
+	}
 	return fields
 }

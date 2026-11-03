@@ -9,8 +9,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-
-	"github.com/akleizor/ccmorph/pycompat"
 )
 
 func write(t *testing.T, path, text string) {
@@ -77,7 +75,7 @@ func TestPolicyReadFailurePreservesTheGeneratedSandbox(t *testing.T) {
 		{"disappearing-target", fs.ErrNotExist, false},
 		{"unreadable-target", &fs.PathError{Op: "open", Err: syscall.EACCES}, false},
 		{"replaced-policy", fs.ErrNotExist, true},
-		{"too-deep-target", pycompat.DepthError{}, false},
+		{"other-read-error", errors.New("boom"), false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -154,11 +152,11 @@ func TestACrashWhileDecidingTheFallbackRefuses(t *testing.T) {
 	}
 }
 
-func TestMalformedTombstonesAreACrashNamedTypeError(t *testing.T) {
+func TestMalformedTombstonesFailTheProjection(t *testing.T) {
 	f := newFixture(t)
 	write(t, filepath.Join(f.profile, layerFile), `{"$ccmorphUnset": null}`)
 	code, stderr := f.run("materialize")
-	if code != 1 || !strings.Contains(stderr, "TypeError") {
+	if code != 1 || !strings.Contains(stderr, unsetKey) {
 		t.Fatalf("got %d %q", code, stderr)
 	}
 }
