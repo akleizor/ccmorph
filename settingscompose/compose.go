@@ -8,6 +8,7 @@ package settingscompose
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -21,12 +22,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/akleizor/ccmorph/pycompat"
+	"github.com/akleizor/ccmorph/ordjson"
 )
 
 type (
-	value = pycompat.Value
-	obj   = pycompat.Obj
+	value = any
+	obj   = ordjson.Obj
 )
 
 const (
@@ -51,56 +52,40 @@ var (
 	permissionLists = [][]string{{"permissions", "deny"}}
 )
 
-// Python-style failures. Python catches (OSError, ValueError) in one branch and
-// everything else in another; PolicyError is its own ValueError subclass.
-type kind int
-
-const (
-	kOS kind = iota
-	kValue
-	kPolicy
-	kCrash
-)
-
+// failure is a panic carrying why a projection failed; Main recovers it. A policy
+// failure refuses the fallback (exit 3), any other one keeps the old settings (exit 1).
 type failure struct {
-	kind  kind
-	class string // kCrash: the Python exception class name
-	msg   string
+	policy bool
+	msg    string
 }
 
 func (f *failure) Error() string { return f.msg }
 
-func osFail(err error) { panic(&failure{kind: kOS, msg: pycompat.OSErrorText(err)}) }
+func osFail(err error) { panic(&failure{msg: err.Error()}) }
 func valueFail(format string, a ...any) {
-	panic(&failure{kind: kValue, msg: fmt.Sprintf(format, a...)})
+	panic(&failure{msg: fmt.Sprintf(format, a...)})
 }
 func policyFail(format string, a ...any) {
-	panic(&failure{kind: kPolicy, msg: fmt.Sprintf(format, a...)})
-}
-func crash(class, format string, a ...any) {
-	panic(&failure{kind: kCrash, class: class, msg: fmt.Sprintf(format, a...)})
+	panic(&failure{policy: true, msg: fmt.Sprintf(format, a...)})
 }
 
-// catch runs fn and returns the failure it raised, if any.
+// catch runs fn and returns the failure it raised, if any. A foreign panic (a
+// settings file of an unexpected shape) is a failure too, never a crash of the launch.
 func catch(fn func()) (out *failure) {
 	defer func() {
 		switch r := recover().(type) {
 		case nil:
 		case *failure:
 			out = r
-		case pycompat.DepthError:
-			out = &failure{kind: kCrash, class: "RecursionError", msg: r.Error()}
-		case *pycompat.SyntaxError:
-			out = &failure{kind: kValue, msg: r.Msg}
-		case error:
-			out = &failure{kind: kCrash, class: "RuntimeError", msg: r.Error()}
 		default:
-			out = &failure{kind: kCrash, class: "RuntimeError", msg: fmt.Sprint(r)}
+			out = &failure{msg: fmt.Sprint(r)}
 		}
 	}()
 	fn()
 	return nil
 }
+
+func stripBOM(b []byte) []byte { return bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")) }
 
 type missingT struct{}
 
@@ -113,13 +98,9 @@ var (
 )
 
 func parse(b []byte) value {
-	v, err := pycompat.Parse(b)
+	v, err := ordjson.Parse(b)
 	if err != nil {
-		var s *pycompat.SyntaxError
-		if errors.As(err, &s) {
-			valueFail("%s", s.Msg)
-		}
-		panic(err)
+		valueFail("%s", err)
 	}
 	return v
 }
@@ -161,7 +142,7 @@ func join(dir string, names ...string) string {
 func asObj(v value, attr string) *obj {
 	o, ok := v.(*obj)
 	if !ok {
-		crash("AttributeError", "'%s' object has no attribute '%s'", typeName(v), attr)
+		valueFail("expected a JSON object (for %s), got %s", attr, typeName(v))
 	}
 	return o
 }
@@ -169,7 +150,7 @@ func asObj(v value, attr string) *obj {
 func asList(v value) []any {
 	l, ok := v.([]any)
 	if !ok {
-		crash("TypeError", "object is not iterable as a list")
+		valueFail("expected a JSON array, got %s", typeName(v))
 	}
 	return l
 }
@@ -182,8 +163,9 @@ func truthy(v value) bool {
 		return t
 	case string:
 		return t != ""
-	case pycompat.Num:
-		return t.F64() != 0 || t.Lit == "NaN"
+	case json.Number:
+		f, _ := t.Float64()
+		return f != 0
 	case []any:
 		return len(t) > 0
 	case *obj:
@@ -196,13 +178,13 @@ func load(path string) *obj {
 	b, err := readFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return pycompat.NewObj()
+			return ordjson.New()
 		}
 		osFail(err)
 	}
 	// Every settings file here is one a user's editor may have prefixed with a
 	// BOM: read them all the way settings.json itself is read.
-	o, ok := parse(pycompat.StripBOM(b)).(*obj)
+	o, ok := parse(stripBOM(b)).(*obj)
 	if !ok {
 		valueFail("%s: root is not a JSON object", path)
 	}
@@ -217,17 +199,17 @@ func readPolicy(profileDir string) *obj {
 			// Only an absent entry is optional, not a replaced link.
 			if _, lerr := os.Lstat(policy); lerr != nil {
 				if errors.Is(lerr, fs.ErrNotExist) {
-					return pycompat.NewObj()
+					return ordjson.New()
 				}
-				policyFail("%s: %s", policy, pycompat.OSErrorText(lerr))
+				policyFail("%s: %s", policy, lerr.Error())
 			}
 			policyFail("%s: missing file during policy read", policy)
 		}
-		policyFail("%s: %s", policy, pycompat.OSErrorText(err))
+		policyFail("%s: %s", policy, err.Error())
 	}
-	v, perr := pycompat.Parse(pycompat.StripBOM(b))
+	v, perr := ordjson.Parse(stripBOM(b))
 	if perr != nil {
-		policyFail("%s: %s", policy, perr.Error())
+		policyFail("%s: %s", policy, perr)
 	}
 	doc, ok := v.(*obj)
 	if !ok {
@@ -258,7 +240,7 @@ func readBytes(path string) []byte {
 }
 
 func encode(doc *obj) []byte {
-	return []byte(pycompat.Marshal(doc, pycompat.Format{Indent: 2}) + "\n")
+	return append(ordjson.Marshal(doc, true), '\n')
 }
 
 func writeBytes(path string, data []byte) {
@@ -312,7 +294,7 @@ func settle(profileDir string) {
 // saveBase writes the copy load() re-reads on every later launch, so it carries
 // settings.json's content, never the BOM an editor prefixed the file with.
 func saveBase(profileDir string, data []byte) {
-	data = pycompat.StripBOM(data)
+	data = stripBOM(data)
 	if cur := readBytes(join(profileDir, baseFile)); cur == nil || !bytes.Equal(cur, data) {
 		writeBytes(join(profileDir, baseFile), data)
 	}
@@ -331,14 +313,14 @@ func getObj(o *obj, k string) value {
 }
 
 func withoutInheritedHooks(layerIn, canonical *obj) *obj {
-	layer := pycompat.Clone(layerIn).(*obj)
+	layer := ordjson.Clone(layerIn).(*obj)
 	hooksV := getObj(layer, "hooks")
 	var hooks *obj
 	if truthy(hooksV) {
 		hooks = asObj(hooksV, "items")
 	}
 	if hooks != nil {
-		canonHooks := pycompat.NewObj()
+		canonHooks := ordjson.New()
 		if h := getObj(canonical, "hooks"); truthy(h) {
 			canonHooks = asObj(h, "get")
 		}
@@ -356,7 +338,7 @@ func withoutInheritedHooks(layerIn, canonical *obj) *obj {
 			}
 			has := func(i ident) bool {
 				for _, x := range inherited {
-					if pycompat.Equal(x.matcher, i.matcher) && pycompat.Equal(x.command, i.command) {
+					if ordjson.Equal(x.matcher, i.matcher) && ordjson.Equal(x.command, i.command) {
 						return true
 					}
 				}
@@ -373,7 +355,7 @@ func withoutInheritedHooks(layerIn, canonical *obj) *obj {
 					}
 				}
 				if len(keep) > 0 {
-					c := pycompat.Clone(group).(*obj)
+					c := ordjson.Clone(group).(*obj)
 					c.Set("hooks", keep)
 					kept = append(kept, c)
 				}
@@ -434,7 +416,7 @@ func hasPrefix(p, prefix []string) bool {
 // lists under .hooks.* append, permissions.deny combines without duplicates,
 // other lists replace. base and override are left untouched.
 func merge(base, override *obj, path []string) *obj {
-	result := pycompat.Clone(base).(*obj)
+	result := ordjson.Clone(base).(*obj)
 	mergeInto(result, override, path)
 	return result
 }
@@ -454,33 +436,33 @@ func mergeInto(result, override *obj, path []string) {
 		case vIsList && eIsList:
 			switch {
 			case len(cur) >= 2 && cur[0] == "hooks":
-				result.Set(key, append(append([]any(nil), el...), pycompat.Clone(vl).([]any)...))
+				result.Set(key, append(append([]any(nil), el...), ordjson.Clone(vl).([]any)...))
 			case hasPath(permissionLists, cur):
 				out := append([]any(nil), el...)
 				for _, item := range vl {
 					found := false
 					for _, e := range el {
-						if pycompat.Equal(item, e) {
+						if ordjson.Equal(item, e) {
 							found = true
 							break
 						}
 					}
 					if !found {
-						out = append(out, pycompat.Clone(item))
+						out = append(out, ordjson.Clone(item))
 					}
 				}
 				result.Set(key, out)
 			default:
-				result.Set(key, pycompat.Clone(v))
+				result.Set(key, ordjson.Clone(v))
 			}
 		default:
-			result.Set(key, pycompat.Clone(v))
+			result.Set(key, ordjson.Clone(v))
 		}
 	}
 }
 
 func withoutAdvise(docIn *obj) *obj {
-	doc := pycompat.Clone(docIn).(*obj)
+	doc := ordjson.Clone(docIn).(*obj)
 	hooks, ok := getObj(doc, "hooks").(*obj)
 	if !ok {
 		return doc
@@ -573,12 +555,12 @@ func setPath(doc *obj, path []string, v value) {
 	for _, k := range path[:len(path)-1] {
 		next, ok := getObj(node, k).(*obj)
 		if !ok {
-			next = pycompat.NewObj()
+			next = ordjson.New()
 			node.Set(k, next)
 		}
 		node = next
 	}
-	node.Set(path[len(path)-1], pycompat.Clone(v))
+	node.Set(path[len(path)-1], ordjson.Clone(v))
 }
 
 func deletePath(doc *obj, path []string) bool {
@@ -598,28 +580,25 @@ func deletePath(doc *obj, path []string) bool {
 }
 
 func typeName(v value) string {
-	switch t := v.(type) {
+	switch v.(type) {
 	case nil:
-		return "NoneType"
+		return "null"
 	case bool:
-		return "bool"
-	case pycompat.Num:
-		if t.Float {
-			return "float"
-		}
-		return "int"
+		return "boolean"
+	case json.Number:
+		return "number"
 	case string:
-		return "str"
+		return "string"
 	case []any:
-		return "list"
+		return "array"
 	case *obj:
-		return "dict"
+		return "object"
 	}
-	return "object"
+	return "value"
 }
 
-// tombstones lists the layer's deletions. A malformed list fails the way Python's
-// iteration does: null and numbers raise TypeError, a string or object yields nothing.
+// tombstones lists the layer's deletions. A malformed list fails the projection:
+// null, booleans and numbers are refused, a string or object yields nothing.
 func tombstones(layer *obj) [][]string {
 	raw, ok := layer.Get(unsetKey)
 	if !ok {
@@ -631,7 +610,7 @@ func tombstones(layer *obj) [][]string {
 		case string, *obj:
 			return nil
 		}
-		crash("TypeError", "'%s' object is not iterable", typeName(raw))
+		valueFail("%s must be an array, got %s", unsetKey, typeName(raw))
 	}
 	var out [][]string
 next:
@@ -654,7 +633,7 @@ next:
 }
 
 func withoutTombstones(layer *obj) *obj {
-	out := pycompat.NewObj()
+	out := ordjson.New()
 	for _, k := range layer.Keys() {
 		if k != unsetKey {
 			v, _ := layer.Get(k)
@@ -707,7 +686,7 @@ func pathLess(a, b []string) bool {
 
 // fold carries edits made to settings.json since base into the profile layer.
 func fold(base, current, layerIn, canonical *obj, mapping map[string]bool) *obj {
-	layer := pycompat.Clone(layerIn).(*obj)
+	layer := ordjson.Clone(layerIn).(*obj)
 	unset := tombstones(layer)
 
 	var walk func(b, c *obj, path []string)
@@ -730,7 +709,7 @@ func fold(base, current, layerIn, canonical *obj, mapping map[string]bool) *obj 
 			if v, ok := c.Get(key); ok {
 				after = v
 			}
-			if pycompat.Equal(before, after) {
+			if ordjson.Equal(before, after) {
 				continue
 			}
 			bo, bok := before.(*obj)
@@ -752,7 +731,7 @@ func fold(base, current, layerIn, canonical *obj, mapping map[string]bool) *obj 
 						inCanon := false
 						if canonIsList {
 							for _, e := range canon {
-								if pycompat.Equal(r, e) {
+								if ordjson.Equal(r, e) {
 									inCanon = true
 									break
 								}
@@ -784,19 +763,12 @@ func fold(base, current, layerIn, canonical *obj, mapping map[string]bool) *obj 
 }
 
 func acwValid(v value) bool {
-	n, ok := v.(pycompat.Num)
+	n, ok := v.(json.Number)
 	if !ok {
 		return false
 	}
-	if !n.Float {
-		i, ok := n.Int64()
-		return ok && i >= 100_000 && i <= 1_000_000
-	}
-	f := n.F64()
-	if math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) {
-		return false
-	}
-	return f >= 100_000 && f <= 1_000_000
+	f, err := n.Float64()
+	return err == nil && f == math.Trunc(f) && f >= 100_000 && f <= 1_000_000
 }
 
 func build(canonical, layerIn, saved *obj, strip, mapping map[string]bool, acw *int64) *obj {
@@ -830,11 +802,11 @@ func build(canonical, layerIn, saved *obj, strip, mapping map[string]bool, acw *
 		}
 	}
 	if acw != nil && !acwValid(getObj(data, "autoCompactWindow")) {
-		data.Set("autoCompactWindow", pycompat.Int(*acw))
+		data.Set("autoCompactWindow", json.Number(strconv.FormatInt(*acw, 10)))
 	}
 	hv, ok := data.Get("hooks")
 	if !ok {
-		hv = pycompat.NewObj()
+		hv = ordjson.New()
 		data.Set("hooks", hv)
 	}
 	if hooks, ok := hv.(*obj); ok {
@@ -843,10 +815,10 @@ func build(canonical, layerIn, saved *obj, strip, mapping map[string]bool, acw *
 			ev = []any{}
 		}
 		if entries, ok := ev.([]any); ok {
-			hook := pycompat.NewObj()
+			hook := ordjson.New()
 			hook.Set("type", "command")
 			hook.Set("command", adviseCommand)
-			entry := pycompat.NewObj()
+			entry := ordjson.New()
 			entry.Set("hooks", []any{hook})
 			hooks.Set("SessionStart", append(entries, entry))
 		}
@@ -907,7 +879,7 @@ func capture(profileDir string, current, canonical *obj, mapping map[string]bool
 	}
 	// First run: the old settings.json WAS the profile layer.
 	if current == nil {
-		current = pycompat.NewObj()
+		current = ordjson.New()
 	}
 	return withoutInheritedHooks(withoutAdvise(current), canonical)
 }
@@ -917,7 +889,7 @@ func readCurrent(target string) ([]byte, *obj) {
 	if raw == nil {
 		return nil, nil
 	}
-	doc, ok := parse(pycompat.StripBOM(raw)).(*obj)
+	doc, ok := parse(stripBOM(raw)).(*obj)
 	if !ok {
 		valueFail("%s: root is not a JSON object", target)
 	}
@@ -964,7 +936,7 @@ func carriesPolicyUnsafe(profileDir string, policy *obj) bool {
 			for _, entry := range vl {
 				found := false
 				for _, g := range generated {
-					if pycompat.Equal(entry, g) {
+					if ordjson.Equal(entry, g) {
 						found = true
 						break
 					}
@@ -979,7 +951,7 @@ func carriesPolicyUnsafe(profileDir string, policy *obj) bool {
 		if a == missing || b == missing {
 			return a == b
 		}
-		return pycompat.Equal(a, b)
+		return ordjson.Equal(a, b)
 	}
 	return held(policy, nil)
 }
@@ -994,7 +966,7 @@ func refuseSymlinks(profileDir string) {
 
 func saveLayer(profileDir string, layer *obj) {
 	path := join(profileDir, layerFile)
-	if !exists(path) || !pycompat.Equal(load(path), layer) {
+	if !exists(path) || !ordjson.Equal(load(path), layer) {
 		writeBytes(path, encode(layer))
 	}
 }
@@ -1027,11 +999,8 @@ func materialize(profileDir, canonicalPath string, saved *obj, strip, mapping ma
 			if acwArg == nil {
 				// Keep the budget derived last time; a set one in a layer wins anyway.
 				if prev := getObj(load(basePath), "autoCompactWindow"); acwValid(prev) {
-					n := prev.(pycompat.Num)
-					v, _ := n.Int64()
-					if n.Float {
-						v = int64(n.F64())
-					}
+					f, _ := prev.(json.Number).Float64()
+					v := int64(f)
 					acw = &v
 				}
 			} else if *acwArg != "none" {
@@ -1047,9 +1016,9 @@ func materialize(profileDir, canonicalPath string, saved *obj, strip, mapping ma
 			saveLayer(profileDir, layer)
 			cur := current
 			if cur == nil {
-				cur = pycompat.NewObj()
+				cur = ordjson.New()
 			}
-			if pycompat.Equal(doc, cur) && currentBytes != nil {
+			if ordjson.Equal(doc, cur) && currentBytes != nil {
 				saveBase(profileDir, currentBytes)
 				done = true
 				return
@@ -1215,9 +1184,9 @@ func Main(args []string, stderr io.Writer) int {
 			foldOnly(o.profileDir, o.canonical, set(o.mapping))
 			return
 		}
-		savedV, err := pycompat.Parse([]byte(o.saved))
+		savedV, err := ordjson.Parse([]byte(o.saved))
 		if err != nil {
-			panic(err)
+			valueFail("--saved: %s", err)
 		}
 		saved, ok := savedV.(*obj)
 		if !ok {
@@ -1231,15 +1200,9 @@ func Main(args []string, stderr io.Writer) int {
 	if fail == nil {
 		return 0
 	}
-	switch fail.kind {
-	case kPolicy:
-		fmt.Fprintf(stderr, "settings-compose: %s\n", fail.msg)
+	fmt.Fprintf(stderr, "settings-compose: %s\n", fail.msg)
+	if fail.policy {
 		return 3
-	case kOS, kValue:
-		fmt.Fprintf(stderr, "settings-compose: %s\n", fail.msg)
-	default:
-		// A crash fails the projection like the errors above; naming the class keeps it visible.
-		fmt.Fprintf(stderr, "settings-compose: %s: %s\n", fail.class, fail.msg)
 	}
 	return fallbackOrRefuse(o.command, o.profileDir, stderr)
 }
@@ -1259,11 +1222,11 @@ func isDigits(s string) bool {
 // MergedView is what settings.json would hold for these layers, canon first: the
 // merge plus every layer's tombstones, except a shared policy's. An unreadable or
 // non-object layer is skipped. It is the one reading of the layers other readers share.
-func MergedView(paths []string) *pycompat.Obj {
-	data := pycompat.NewObj()
+func MergedView(paths []string) *ordjson.Obj {
+	data := ordjson.New()
 	for _, path := range paths {
 		var layer *obj
-		if pycompat.Catch(func() {
+		if catch(func() {
 			b, err := readFile(path)
 			if err != nil {
 				osFail(err)
@@ -1282,4 +1245,4 @@ func MergedView(paths []string) *pycompat.Obj {
 }
 
 // ACWValid reports whether v is an autoCompactWindow the engine's schema keeps.
-func ACWValid(v pycompat.Value) bool { return acwValid(v) }
+func ACWValid(v any) bool { return acwValid(v) }
