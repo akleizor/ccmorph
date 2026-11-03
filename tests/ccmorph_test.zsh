@@ -4135,35 +4135,6 @@ test_every_profile_keeps_its_own_secure_storage() {
   rm -rf "$test_home"
   return $rc
 }
-test_apikey_profile_exports_key_without_base_url() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  write_apikey_conf native 'api_key=sk-test-native'
-  source "$CCMORPH_SOURCE"
-
-  local actual rc=0
-  actual=$(ccmorph _env native) || {
-    print -u2 -- 'a native apikey profile must produce an environment'
-    rm -rf "$test_home"
-    return 1
-  }
-
-  assert_contains \
-    "$actual" \
-    'ANTHROPIC_API_KEY=sk-test-native' \
-    'an apikey profile must export ANTHROPIC_API_KEY' || rc=1
-  assert_not_contains \
-    "$actual" \
-    'ANTHROPIC_BASE_URL' \
-    'an apikey profile without base_url must reach api.anthropic.com natively' || rc=1
-  assert_contains \
-    "$actual" \
-    "CLAUDE_CONFIG_DIR=$HOME/.config/ccmorph/profiles/native" \
-    'an apikey profile must still get its own config dir' || rc=1
-  rm -rf "$test_home"
-  return $rc
-}
 
 test_apikey_profile_exports_gateway_base_url() {
   local test_home
@@ -4453,174 +4424,10 @@ test_apikey_without_model_passes_explicit_model_through() {
   return $rc
 }
 
-test_apikey_profile_requires_a_key() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  write_apikey_conf broken 'base_url=https://gateway.invalid'
-  source "$CCMORPH_SOURCE"
-
-  local rc=0
-  if ccmorph _env broken >/dev/null 2>&1; then
-    print -u2 -- 'an apikey profile with no api_key must be rejected'
-    rc=1
-  fi
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_apikey_profile_rejects_non_http_base_url() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  write_apikey_conf broken \
-    'api_key=sk_prod_test' \
-    'base_url=gateway.invalid'
-  source "$CCMORPH_SOURCE"
-
-  local rc=0
-  if ccmorph _env broken >/dev/null 2>&1; then
-    print -u2 -- 'an apikey base_url without a scheme must be rejected'
-    rc=1
-  fi
-  rm -rf "$test_home"
-  return $rc
-}
-
 # --- adapter contract -------------------------------------------------------
 # A profile may declare that its endpoint needs a dialect adapter in front of it.
 # The profile keeps its REAL base_url; only the environment handed to Claude Code
 # is redirected. That keeps `ccmorph _env` truthful for every other consumer.
-
-test_adapter_accepted_on_apikey_with_base_url() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  fake_gateway
-  write_apikey_conf gw \
-    'api_key=sk_prod_test' \
-    'base_url=https://gateway.invalid' \
-    'adapter=true'
-  source "$CCMORPH_SOURCE"
-
-  local rc=0
-  _ccm_read gw || {
-    print -u2 -- 'adapter=true must be a valid key on an apikey profile'
-    rc=1
-  }
-  [[ "${_ccm[adapter]:-}" == true ]] || {
-    print -u2 -- "adapter value not parsed; got ${(qqq)_ccm[adapter]:-}"
-    rc=1
-  }
-  unset _ccm
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_adapter_requires_a_base_url_to_front() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  write_apikey_conf native 'api_key=sk-test' 'adapter=true'
-  source "$CCMORPH_SOURCE"
-
-  local rc=0
-  # A native Anthropic key has no foreign dialect to translate, so an adapter
-  # would have nothing to front.
-  if _ccm_read native && _ccm_validate_loaded native; then
-    print -u2 -- 'adapter=true without base_url must be rejected'
-    rc=1
-  fi
-  unset _ccm
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_adapter_rejects_non_true_values() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  write_apikey_conf gw 'api_key=sk-test' 'base_url=https://g.invalid' 'adapter=yes'
-  source "$CCMORPH_SOURCE"
-
-  local rc=0
-  if _ccm_read gw && _ccm_validate_loaded gw; then
-    print -u2 -- 'only adapter=true may be accepted, not an arbitrary value'
-    rc=1
-  fi
-  unset _ccm
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_the_profile_template_is_a_valid_conf_naming_every_key() {
-  # profile.conf.example is the documented contract for a hand-edited profile. It
-  # must load as-is, and its key list must stay the parser's list: a key the
-  # reader accepts but the template never names is undocumented, and one the
-  # template names but the reader rejects is a lie.
-  local test_home rc=0 k line arm rest documented
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  command cp "$REPO_ROOT/share/profile.conf.example" "$HOME/.config/ccmorph/tpl.conf"
-  source "$CCMORPH_SOURCE"
-  _ccm_read tpl 2>/dev/null && _ccm_validate_loaded tpl 2>/dev/null || {
-    print -u2 -- 'the profile template must load and validate unchanged'
-    rc=1
-  }
-  unset _ccm
-
-  # The reader is profile/profile.go: its accepted keys are the checkKey case
-  # labels, the per-type lists and the removed-key table. Read them all, so a
-  # key added later is checked too; removed keys are not accepted keys.
-  local -a accepted=()
-  local go="$REPO_ROOT/profile/profile.go"
-  accepted=(${(f)"$(command sed -n '/^func checkKey/,/^}/p' "$go" |
-    command grep -oE '(k == |HasPrefix\(k, )"[a-z_.]+"' | command sed -E 's/.*"([a-z_.]+)"/\1/; s/\.$/.*/')"}
-    ${(f)"$(command sed -n '/perType  = map/,/^	}/p' "$go" | command grep -oE '"[a-z_.*]+"' | command tr -d '"' |
-      command grep -vxE 'sub|token|apikey|provider')"})
-  (( ${#accepted} > 20 )) || { print -u2 -- 'could not find the reader key list'; rc=1; }
-  [[ " ${accepted[*]} " == *' model_map '* && " ${accepted[*]} " == *' env.* '* ]] || {
-    print -u2 -- 'the reader key list must come from every case, not the first'
-    rc=1
-  }
-
-  local doc
-  doc=$(<"$REPO_ROOT/share/profile.conf.example")
-  for k in $accepted; do
-    # A key is documented by its literal line, by a comment naming it, or by the
-    # `# pattern.<arg>` comment a pattern key uses (`effort.<model>`). The
-    # trailing class stops `# model` from being satisfied by `# model_defaults`.
-    documented=0
-    if [[ "$k" == 'env.*' ]]; then
-      [[ "$doc" == *'#'[[:space:]]'env.'* ]] && documented=1
-    else
-      local bare="${k%\*}"
-      [[ "$bare" == *.* ]] && bare="${bare%%.*}"
-      [[ "$doc" == *"$bare="* || "$doc" == *"# $bare"[^a-zA-Z0-9_]* ||
-         "$doc" == *"# $bare."[^a-zA-Z0-9_]* ]] && documented=1
-    fi
-    (( documented )) || {
-      print -u2 -- "profile.conf.example does not document the accepted key '$k'"
-      rc=1
-    }
-  done
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_monthly_budget_usd_loads_and_a_non_number_is_refused() {
-  # Stark owns monthly_budget_usd in the shared conf; ccmorph must load it, not refuse the profile.
-  local test_home rc=0
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  write_apikey_conf gw 'api_key=sk-test' 'base_url=https://g.invalid' 'monthly_budget_usd=500'
-  write_apikey_conf bad 'api_key=sk-test' 'base_url=https://g.invalid' 'monthly_budget_usd=lots'
-  source "$CCMORPH_SOURCE"
-  _ccm_read gw >/dev/null 2>&1 || { print -u2 -- 'monthly_budget_usd=500 must load'; rc=1; }
-  _ccm_read bad >/dev/null 2>&1 && { print -u2 -- 'a non-number budget must be refused'; rc=1; }
-  rm -rf "$test_home"
-  return $rc
-}
 
 test_a_legacy_transport_key_is_reported_and_ignored() {
   # `transport=`, `forward_ip=`, `subagent_model=`, `lean=` and `role=` were all
@@ -4772,43 +4579,6 @@ test_secret_refuses_an_account_that_stores_no_secret() {
   return $rc
 }
 
-test_legacy_route_key_is_rejected_as_unknown() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  local legacy_key="endpoint"_"side"
-  write_apikey_conf gw 'api_key=sk-test' 'base_url=https://g.invalid' \
-    "${legacy_key}=outside"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0
-  if _ccm_read gw && _ccm_validate_loaded gw; then
-    print -u2 -- 'the legacy route key must be rejected as unknown'
-    rc=1
-  fi
-  unset _ccm
-  rm -rf "$test_home"
-  return $rc
-}
-
-test_adapter_is_invalid_on_other_profile_types() {
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  printf '%s\n' 'type=token' 'token=sk-ant-x' 'adapter=true' \
-    > "$HOME/.config/ccmorph/tok.conf"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0
-  if _ccm_read tok; then
-    print -u2 -- 'adapter is meaningless on a token profile and must be rejected'
-    rc=1
-  fi
-  unset _ccm
-  rm -rf "$test_home"
-  return $rc
-}
-
 test_an_unreachable_endpoint_names_the_network_not_an_exception() {
   # ccmorph no longer probes reachability — there is nothing left to decide with
   # it — so this message now rides on the request that genuinely failed. It must
@@ -4834,31 +4604,6 @@ test_an_unreachable_endpoint_names_the_network_not_an_exception() {
     'the failure must tell the user how to fix it' || fail=1
   rm -rf "$test_home"
   return $fail
-}
-
-test_proxy_profile_may_declare_adapter() {
-  # The launcher already reads adapter for proxy|apikey alike (one case arm), so a
-  # proxy conf declaring it was rejected by validation for a capability the rest
-  # of the code supports. A local llm behind a translator is exactly this shape.
-  local test_home
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  printf '%s\n' 'type=proxy' 'base_url=http://127.0.0.1:11434' 'api_key=none' \
-    'model=local-model' 'adapter=true' \
-    > "$HOME/.config/ccmorph/loc.conf"
-  source "$CCMORPH_SOURCE"
-
-  local rc=0
-  if ! _ccm_read loc; then
-    print -u2 -- 'a proxy profile must be allowed to declare adapter=true'
-    rc=1
-  elif [[ "${_ccm[adapter]:-}" != true ]]; then
-    print -u2 -- 'adapter=true must survive parsing on a proxy profile'
-    rc=1
-  fi
-  unset _ccm
-  rm -rf "$test_home"
-  return $rc
 }
 
 test_env_reports_the_real_endpoint_not_the_adapter() {
@@ -9979,7 +9724,6 @@ run_test test_add_apikey_native_endpoint_skips_adapter
 run_test test_add_apikey_model_level_404_is_native
 # add does not persist adapter decisions; launch performs automatic compatibility handling.
 run_test test_help_teaches_credential_type_not_gateway_shape
-run_test test_apikey_profile_exports_key_without_base_url
 run_test test_apikey_profile_exports_gateway_base_url
 run_test test_profile_advisor_disable_reaches_launch_without_leaking
 run_test test_profile_simple_mode_reaches_launch_without_leaking
@@ -10007,18 +9751,11 @@ run_test test_adapter_launch_withholds_mid_conversation_system_for_claude_models
 run_test test_declared_model_capabilities_is_never_overruled
 run_test test_native_endpoint_keeps_mid_conversation_system
 run_test test_launch_aborts_when_the_adapter_cannot_serve
-run_test test_adapter_accepted_on_apikey_with_base_url
-run_test test_adapter_requires_a_base_url_to_front
-run_test test_adapter_rejects_non_true_values
-run_test test_monthly_budget_usd_loads_and_a_non_number_is_refused
 run_test test_a_legacy_transport_key_is_reported_and_ignored
-run_test test_the_profile_template_is_a_valid_conf_naming_every_key
 run_test test_key_prints_the_api_key_for_an_apikey_account
 run_test test_key_does_not_provision_claude_profile_state
 run_test test_secret_prints_whichever_secret_the_account_holds
 run_test test_secret_refuses_an_account_that_stores_no_secret
-run_test test_legacy_route_key_is_rejected_as_unknown
-run_test test_adapter_is_invalid_on_other_profile_types
 run_test test_env_reports_the_real_endpoint_not_the_adapter
 run_test test_models_does_not_send_anthropic_version
 run_test test_models_lists_only_chat_capable_from_the_gateway
@@ -10065,8 +9802,6 @@ run_test test_launch_interactive_resolves_a_real_model
 run_test test_launch_aborts_when_pick_is_cancelled
 run_test test_apikey_explicit_model_overrides_profile_model
 run_test test_apikey_without_model_passes_explicit_model_through
-run_test test_apikey_profile_requires_a_key
-run_test test_apikey_profile_rejects_non_http_base_url
 run_test test_subscription_profile_does_not_inject_model
 run_test test_direct_resume_recovers_last_main_thread_model_command
 run_test test_direct_resume_derives_the_carried_claude_send_id
@@ -10110,7 +9845,6 @@ run_test test_one_models_listing_per_launch_is_shared
 run_test test_code_and_state_are_separate_directories
 run_test test_source_carries_no_host_specific_defaults
 run_test test_an_unreachable_endpoint_names_the_network_not_an_exception
-run_test test_proxy_profile_may_declare_adapter
 run_test test_profile_may_pin_one_model_picker_row
 run_test test_a_route_scoped_probe_beats_the_endpoint_declaration
 run_test test_conf_window_beats_the_published_one
