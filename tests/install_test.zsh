@@ -261,6 +261,44 @@ env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
 (( rc == 0 )) && grep -qF 'profiles' "$d/out" && grep -qxF "  rm -rf $d/home/.config/ccmorph" "$d/out" && ! grep -q keychain "$d/out" \
   && ok "uninstall: macOS with no keychain refs still reports in full and exits 0" || { fail "uninstall: macOS without keychain refs rc=$rc"; cat "$d/out" }
 
+# --- 5b. CCMORPH_STATE_DIR moves the profiles: the report names the redirected root
+# The runtime derives the state root from CCMORPH_STATE_DIR (lib/ccmorph.sh), so
+# on a host that sets it the confs, credentials and profile homes live under the
+# redirected root, while ~/.config/ccmorph holds only the installed code. The
+# uninstall names what it leaves: the redirected root as the state root (its
+# profiles counted there, its keychain refs read from there, the rm spelled for
+# it), the code dir as code — never as the profiles' home — and the plugin
+# repair walks the redirected profile homes (#143).
+d=$(fresh_env uninstall_state_dir)
+run_installer "$d" >/dev/null
+cfg="$d/home/.config/ccmorph"          # what the install wrote: the code
+state="$d/moved-state"                 # where the runtime keeps the profiles
+mkdir -p "$state"
+printf 'type=apikey\napi_key=keychain:team.api_key\n' > "$state/team.conf"
+printf 'type=sub\n' > "$state/home.conf"
+mkdir -p "$d/home/.claude/plugins/marketplaces/example"
+# A plugin recorded under the profile's spelling of the shared store, through
+# the REDIRECTED profile home — the path that dangles once the state root goes.
+print -r -- '{"example": {"source": {"source": "github", "repo": "owner/repo"}, "installLocation": "'"$state"'/profiles/team/plugins/marketplaces/example"}}' \
+  > "$d/home/.claude/plugins/known_marketplaces.json"
+printf '#!/bin/sh\necho Darwin\n' > "$d/bin/uname"; chmod +x "$d/bin/uname"
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" CCMORPH_STATE_DIR="$state" \
+  zsh "$REPO/install.sh" --uninstall >"$d/out" 2>&1; rc=$?
+(( rc == 0 )) && ok "state-dir uninstall: exits 0" || { fail "state-dir uninstall rc=$rc"; cat "$d/out" }
+[[ -f "$state/team.conf" && -f "$state/home.conf" ]] \
+  && ok "state-dir uninstall: leaves the redirected state in place" || fail "state-dir uninstall: deleted redirected state"
+grep -qF "$state  (2 profiles," "$d/out" \
+  && ok "state-dir uninstall: names the redirected root and counts its profiles" || { fail "state-dir uninstall: redirected root not named"; cat "$d/out" }
+grep -qxF "  $cfg  (the installed code)" "$d/out" \
+  && ok "state-dir uninstall: names the code dir as code, not as the profiles' home" || { fail "state-dir uninstall: code dir line wrong"; cat "$d/out" }
+grep -qxF "  rm -rf $state $cfg" "$d/out" \
+  && ok "state-dir uninstall: the rm names both roots" || { fail "state-dir uninstall: rm line wrong"; cat "$d/out" }
+grep -qxF "  security delete-generic-password -s ccmorph -a team.api_key" "$d/out" \
+  && ok "state-dir uninstall: keychain refs are read off the redirected confs" || { fail "state-dir uninstall: keychain line missing"; cat "$d/out" }
+grep -qF "\"$d/home/.claude/plugins/marketplaces/example\"" "$d/home/.claude/plugins/known_marketplaces.json" \
+  && ok "state-dir uninstall: the plugin repair walks the redirected profile homes" \
+  || { fail "state-dir uninstall: plugin index still spelled through the profile"; cat "$d/home/.claude/plugins/known_marketplaces.json" }
+
 # --- 6. a RE-RUN is an update: user state survives, and it says so ----------
 # The guarantee people actually care about. Profiles (which now carry their own
 # probed/manual context alongside credentials) and local.sh are never in

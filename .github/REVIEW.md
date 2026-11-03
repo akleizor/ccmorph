@@ -50,6 +50,8 @@ credential, or losing the user's choice.
   Seen 1x (2026-11-03).
 - **A fixture whose mode the runner's umask can mask away** — the 0644 file a refusal fixture writes lands 0600 under a private umask, so the refusal the test exists to pin never happens and the suite fails for the environment, not the code; the same change's 0600 session env file had only defers behind it, which the signal path's os.Exit skips, so a TERM between writing it and starting claude left the credentials with no sweep (2026-11-03) — `example: #142 fix(util): the refusal fixture pins its mode, and gc-stale sweeps ccmorph-session-env.*`.
   Seen 1x (2026-11-03).
+- **An override one reader honours and another forgets** (2026-11-03) — the runtime derives a path from an env override while a second reader of the same path hardcodes the default, so the two disagree about where a thing lives: `install.sh --uninstall` kept naming `~/.config/ccmorph` as the profiles' home on a host whose `CCMORPH_STATE_DIR` had moved them, and never named the redirected root — `example: #143 fix(install): uninstall names the state root CCMORPH_STATE_DIR selects`.
+  Seen 1x (2026-11-03).
 
 ## Never blocks
 
