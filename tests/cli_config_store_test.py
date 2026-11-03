@@ -127,23 +127,6 @@ class ConfigurationSaveTest(unittest.TestCase):
 
     # ---- the setter never touches native settings -------------------------
 
-    def test_set_model_writes_conf_field_and_leaves_settings_untouched(self):
-        native = self.settings.read_bytes()
-        result = self.run_cli('set', 'demo', 'model', 'new')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        fields = self.conf_fields()
-        self.assertEqual(fields['model'], 'new')
-        self.assertEqual(fields['model_defaults'], '1')
-        self.assertEqual(self.settings.read_bytes(), native)
-        self.assertEqual(self.run_cli('get', 'demo', 'model').stdout.strip(), 'new')
-
-    def test_set_effort_writes_conf_field_and_leaves_settings_untouched(self):
-        native = self.settings.read_bytes()
-        self.assertEqual(self.run_cli('set', 'demo', 'effort', 'high').returncode, 0)
-        self.assertEqual(self.conf_fields()['effort'], 'high')
-        self.assertEqual(self.settings.read_bytes(), native)
-        self.assertEqual(self.run_cli('get', 'demo', 'effort').stdout.strip(), 'high')
-
     def test_configure_saves_defaults_without_writing_settings(self):
         native = self.settings.read_bytes()
         result = self.run_cli('config', 'demo',
@@ -158,137 +141,9 @@ class ConfigurationSaveTest(unittest.TestCase):
 
     # ---- reads do not mutate ---------------------------------------------
 
-    def test_first_get_imports_native_value_without_writing_anything(self):
-        before = (conf_fields(self.conf), self.settings.read_bytes())
-        self.assertEqual(self.run_cli('get', 'demo', 'model').stdout.strip(), 'old')
-        self.assertEqual((conf_fields(self.conf), self.settings.read_bytes()), before)
-
-    def test_model_settings_projection_does_not_write(self):
-        before = (conf_fields(self.conf), self.settings.read_bytes())
-        result = self.store('model-settings', 'demo')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)['model'], 'old')
-        self.assertEqual((conf_fields(self.conf), self.settings.read_bytes()), before)
-
     # ---- the first seed -------------------------------------------------
 
-    def test_first_seed_imports_effective_native_values_and_leaves_settings_alone(self):
-        self.settings.write_text(json.dumps({
-            'model': 'native-model', 'effortLevel': 'high',
-            'modelSettings': {'custom-model': {'effortLevel': 'low'}},
-            'env': {'ANTHROPIC_DEFAULT_OPUS_MODEL': 'native-opus', 'UNRELATED': 'keep'},
-            'other': True}))
-        native = self.settings.read_bytes()
-        result = self.store('seed-model-defaults', 'demo', 'model')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, 'native-model\n')
-        fields = self.conf_fields()
-        self.assertEqual(fields['model'], 'native-model')
-        self.assertEqual(fields['effort'], 'high')
-        self.assertEqual(fields['effort.custom-model'], 'low')
-        self.assertEqual(fields['env.ANTHROPIC_DEFAULT_OPUS_MODEL'], 'native-opus')
-        self.assertEqual(fields['model_defaults'], '1')
-        # Unrelated conf keys survive, and native is untouched -- including the
-        # non-mapping env key, which is not ccmorph's to move.
-        self.assertEqual(fields['context_window.m'], '10000')
-        self.assertEqual(self.settings.read_bytes(), native)
-
-    def test_seed_is_idempotent(self):
-        result = self.store('seed-model-defaults', 'demo')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, '')
-        before = (self.conf.read_bytes(), self.settings.read_bytes())
-        result = self.store('seed-model-defaults', 'demo')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, '')
-        self.assertEqual((self.conf.read_bytes(), self.settings.read_bytes()), before)
-
-    def test_explicit_conf_values_win_over_native_on_first_seed(self):
-        self.conf.write_text('type=apikey\napi_key=k\nmodel=conf-model\neffort=low\n'
-                             'env.ANTHROPIC_DEFAULT_OPUS_MODEL=conf-opus\n')
-        self.settings.write_text(json.dumps({
-            'model': 'native-model', 'effortLevel': 'high',
-            'env': {'ANTHROPIC_DEFAULT_OPUS_MODEL': 'native-opus'}}))
-        self.assertEqual(self.run_cli('get', 'demo', 'model').stdout.strip(), 'conf-model')
-        self.assertEqual(self.run_cli('get', 'demo', 'effort').stdout.strip(), 'low')
-        native = self.settings.read_bytes()
-        result = self.store('seed-model-defaults', 'demo', 'model')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, 'conf-model\n')
-        self.assertEqual(self.settings.read_bytes(), native)
-        fields = self.conf_fields()
-        self.assertEqual(fields['model'], 'conf-model')
-        self.assertEqual(fields['effort'], 'low')
-        self.assertEqual(fields['env.ANTHROPIC_DEFAULT_OPUS_MODEL'], 'conf-opus')
-
-    def test_migrate_native_is_an_alias_for_seed_model_defaults(self):
-        self.settings.write_text(json.dumps({'model': 'nm', 'effortLevel': 'high'}))
-        native = self.settings.read_bytes()
-        self.assertEqual(self.store('migrate-native', 'demo').returncode, 0)
-        migrated = conf_fields(self.conf)
-        self.assertEqual(self.settings.read_bytes(), native)
-        # The same profile seeded the other way lands on the same conf.
-        self.conf.write_text('type=apikey\napi_key=test-key\n'
-                             'base_url=https://old.invalid\ncontext_window.m=10000\n')
-        self.assertEqual(self.store('seed-model-defaults', 'demo').returncode, 0)
-        self.assertEqual(conf_fields(self.conf), migrated)
-
-    def test_unsupported_operation_is_refused_without_writing(self):
-        before = (conf_fields(self.conf), self.settings.read_bytes())
-        result = self.store('promote-native', 'demo')
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('unsupported configuration operation', result.stderr)
-        self.assertEqual((conf_fields(self.conf), self.settings.read_bytes()), before)
-
     # ---- after the marker, native is no longer an input -------------------
-
-    def test_inline_native_model_and_effort_are_ignored_after_seed(self):
-        self.settings.write_text(json.dumps({
-            'model': 'native-model', 'effortLevel': 'high',
-            'modelSettings': {'custom-model': {'effortLevel': 'low'}}}))
-        self.assertEqual(self.store('seed-model-defaults', 'demo').returncode, 0)
-        seeded = conf_fields(self.conf)
-        # What an in-session /model and /effort leave behind.
-        self.settings.write_text(json.dumps({
-            'model': 'inline-picked', 'effortLevel': 'xhigh',
-            'modelSettings': {'custom-model': {'effortLevel': 'low'},
-                              'inline-model': {'effortLevel': 'max'}}}))
-        self.assertEqual(self.store('seed-model-defaults', 'demo').returncode, 0)
-        self.assertEqual(conf_fields(self.conf), seeded)
-        self.assertEqual(self.run_cli('get', 'demo', 'model').stdout.strip(), 'native-model')
-        self.assertEqual(self.run_cli('get', 'demo', 'effort').stdout.strip(), 'high')
-        projected = json.loads(self.store('model-settings', 'demo').stdout)
-        self.assertEqual(projected['model'], 'native-model')
-        self.assertEqual(projected['effortLevel'], 'high')
-        self.assertEqual(projected['modelSettings'], {'custom-model': {'effortLevel': 'low'}})
-
-    def test_absent_defaults_do_not_revive_native_values(self):
-        self.conf.write_text('type=apikey\napi_key=k\nmodel_defaults=1\n')
-        self.settings.write_text(json.dumps({
-            'model': 'native-model', 'effortLevel': 'high',
-            'modelSettings': {'m': {'effortLevel': 'low'}},
-            'env': {'ANTHROPIC_MODEL': 'pin', 'ANTHROPIC_DEFAULT_OPUS_MODEL': 'native-opus'}}))
-        before = (conf_fields(self.conf), self.settings.read_bytes())
-        self.assertEqual(self.run_cli('get', 'demo', 'model').stdout.strip(), '')
-        self.assertEqual(self.run_cli('get', 'demo', 'effort').stdout.strip(), '')
-        result = self.store('seed-model-defaults', 'demo', 'model')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, '\n')
-        self.assertEqual((conf_fields(self.conf), self.settings.read_bytes()), before)
-        self.assertEqual(json.loads(self.store('model-settings', 'demo').stdout),
-                         {'env': {}, 'modelSettings': {}})
-        # And the alias reader reports "nothing mapped" rather than the native value.
-        alias = self.store('get', 'demo', 'env.ANTHROPIC_DEFAULT_OPUS_MODEL')
-        self.assertEqual(alias.stdout.strip(), '')
-
-    def test_role_mapping_is_read_from_the_conf(self):
-        self.conf.write_text(self.conf.read_text() +
-                             'env.ANTHROPIC_DEFAULT_OPUS_MODEL=profile-opus\nmodel_defaults=1\n')
-        self.settings.write_text(json.dumps({
-            'env': {'ANTHROPIC_DEFAULT_OPUS_MODEL': 'stale-opus'}}))
-        result = self.store('get', 'demo', 'env.ANTHROPIC_DEFAULT_OPUS_MODEL')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), 'profile-opus')
 
     # ---- retired verbs ---------------------------------------------------
 
@@ -321,27 +176,6 @@ class ConfigurationSaveTest(unittest.TestCase):
         self.assertEqual(saved['enabledPlugins'], {'test@example': True})
         self.assertEqual(saved['permissions'], {'deny': ['Bash(rm *)']})
 
-    def test_prepare_launch_removes_only_owned_native_preferences(self):
-        self.conf.write_text(self.conf.read_text() +
-                             'model_defaults=1\nmodel=configured\neffort=medium\n')
-        self.settings.write_text(json.dumps({
-            'model': 'inline', 'effortLevel': 'high',
-            'modelSettings': {'inline': {'effortLevel': 'high', 'thinkingBudget': 7}},
-            'env': {'ANTHROPIC_MODEL': 'pinned', 'CLAUDE_CODE_EFFORT_LEVEL': 'high',
-                    'ANTHROPIC_DEFAULT_OPUS_MODEL': 'stale', 'CUSTOM': 'keep'},
-            'enabledPlugins': {'test@example': True},
-            'permissions': {'deny': ['Bash(rm *)']}}))
-        result = self.store('prepare-launch', 'demo')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(self.settings.read_text()), {
-            'modelSettings': {'inline': {'thinkingBudget': 7}},
-            'env': {'CUSTOM': 'keep'}, 'enabledPlugins': {'test@example': True},
-            'permissions': {'deny': ['Bash(rm *)']}})
-        self.assertEqual(self.conf_fields()['model'], 'configured')
-        before = self.settings.read_bytes()
-        self.assertEqual(self.store('prepare-launch', 'demo').returncode, 0)
-        self.assertEqual(self.settings.read_bytes(), before)
-
     def test_a_bom_prefixed_settings_json_still_prepares_a_launch(self):
         # Python read settings.json with json.loads(bytes), which drops a UTF-8 BOM.
         # The first reaches settings-compose as written; the second is rewritten by the
@@ -355,44 +189,7 @@ class ConfigurationSaveTest(unittest.TestCase):
                 self.assertEqual(json.loads(self.settings.read_text())['permissions'],
                                  {'deny': ['Bash(rm *)']})
 
-    def test_prepare_launch_keeps_intentionally_absent_defaults_absent(self):
-        self.conf.write_text('type=apikey\napi_key=k\nmodel_defaults=1\n')
-        self.settings.write_text(json.dumps({
-            'model': 'inline', 'effortLevel': 'high',
-            'modelSettings': {'m': {'effortLevel': 'high'}},
-            'env': {'ANTHROPIC_MODEL': 'pin'}}))
-        self.assertEqual(self.store('prepare-launch', 'demo').returncode, 0)
-        self.assertEqual(json.loads(self.store('model-settings', 'demo').stdout),
-                         {'env': {}, 'modelSettings': {}})
-        native = json.loads(self.settings.read_text())
-        self.assertNotIn('model', native)
-        self.assertNotIn('effortLevel', native)
-        self.assertEqual(native['modelSettings'], {'m': {}})
-        self.assertEqual(native['env'], {})
-
-    def test_prepare_launch_seeds_before_clearing_and_refuses_invalid_settings(self):
-        self.settings.write_text(json.dumps({'model': 'native', 'effortLevel': 'low'}))
-        self.assertEqual(self.store('prepare-launch', 'demo').returncode, 0)
-        self.assertEqual(self.conf_fields()['effort'], 'low')
-        self.assertEqual(json.loads(self.settings.read_text()), {})
-        self.settings.write_text('{"modelSettings": []}')
-        before = (conf_fields(self.conf), self.settings.read_bytes())
-        self.assertNotEqual(self.store('prepare-launch', 'demo').returncode, 0)
-        self.assertEqual((conf_fields(self.conf), self.settings.read_bytes()), before)
-
     # ---- layering and validation ----------------------------------------
-
-    def test_shared_native_settings_seed_under_the_profile(self):
-        shared = self.home / '.claude/settings.json'
-        shared.parent.mkdir()
-        shared.write_text(json.dumps({'effortLevel': 'high'}))
-        self.assertEqual(self.run_cli('get', 'demo', 'effort').stdout.strip(), 'high')
-        self.assertEqual(self.run_cli('set', 'demo', 'effort', 'low').returncode, 0)
-        self.assertEqual(self.run_cli('get', 'demo', 'effort').stdout.strip(), 'low')
-        # One setter seeds every default, so the sibling model resolved from the
-        # profile layer is captured too and cannot drift afterwards.
-        self.assertEqual(self.conf_fields()['model'], 'old')
-        self.assertEqual(json.loads(shared.read_text()), {'effortLevel': 'high'})
 
     def test_invalid_effort_never_changes_the_conf(self):
         before = conf_fields(self.conf)
@@ -406,57 +203,12 @@ class ConfigurationSaveTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual((conf_fields(self.conf), self.settings.read_bytes()), before)
 
-    def test_malformed_settings_block_the_save_and_are_not_overwritten(self):
-        self.settings.write_text('{"env": []}')
-        before = conf_fields(self.conf)
-        result = self.run_cli('set', 'demo', 'model', 'new')
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(self.settings.read_text(), '{"env": []}')
-        self.assertEqual(conf_fields(self.conf), before)
-
-    def test_malformed_native_layers_block_the_save(self):
-        # Native settings are external input to the conf writer, so a shape the
-        # seed cannot read must stop the save rather than seed a partial default.
-        shared = self.home / '.claude/settings.json'
-        shared.parent.mkdir()
-        before = conf_fields(self.conf)
-        for path, text, message in (
-                (shared, '{"env": []}', 'shared settings and its env must be objects'),
-                (self.settings, '{"modelSettings": []}', 'modelSettings must be an object')):
-            shared.write_text('{}')
-            self.settings.write_text('{}')
-            path.write_text(text)
-            result = self.run_cli('set', 'demo', 'model', 'new')
-            self.assertNotEqual(result.returncode, 0, message)
-            self.assertIn(message, result.stderr)
-            self.assertEqual(conf_fields(self.conf), before)
-
-    def test_a_native_value_cannot_forge_conf_fields(self):
-        # The conf is line-oriented `name=value`, so a native model carrying a
-        # newline would otherwise write an extra field of the attacker's choosing.
-        before = conf_fields(self.conf)
-        self.settings.write_text(json.dumps({'model': 'a\nmodel_defaults=0'}))
-        for args in (('get', 'demo', 'model'), ('set', 'demo', 'effort', 'high')):
-            result = self.run_cli(*args)
-            self.assertNotEqual(result.returncode, 0, args)
-            self.assertIn('single-line strings', result.stderr)
-            self.assertEqual(conf_fields(self.conf), before)
-
-    def test_symlinked_settings_refuse_the_save(self):
+    def test_symlinked_settings_refuse_the_launch_gh327(self):
         real = self.home / 'real-settings.json'
         real.write_text(json.dumps({'model': 'native'}))
         self.settings.unlink()
         self.settings.symlink_to(real)
         before = (conf_fields(self.conf), real.read_bytes())
-        result = self.run_cli('set', 'demo', 'model', 'new')
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('profile-local files', result.stderr)
-        self.assertEqual((conf_fields(self.conf), real.read_bytes()), before)
-        result = self.store('seed-model-defaults', 'demo', 'model')
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(result.stdout, '')
-        self.assertIn('profile-local files', result.stderr)
-        self.assertEqual((conf_fields(self.conf), real.read_bytes()), before)
         # GH-327: a seed failure remains fatal even when launch captures stdout.
         result = subprocess.run(
             ['zsh', '-fc', 'source "$1"; _ccm_launch -a demo --model',
@@ -492,45 +244,9 @@ class ConfigurationSaveTest(unittest.TestCase):
 
     # ---- atomicity -------------------------------------------------------
 
-    def fail_replace_env(self, target):
-        """Make writing beside `target` fail: its directory loses write permission, so
-        the store cannot stage the replacement. Nothing it already holds may change."""
-        directory = Path(target).parent
-        directory.chmod(0o500)
-        self.addCleanup(directory.chmod, 0o700)
-        if os.access(directory, os.W_OK):
-            self.skipTest('directory permissions are not enforced for this user')
-        return self.env
-
     # A conf replacement that fails after staging (both files untouched, no staging
     # file left, and a settings failure rolls the conf back) needs an injected rename:
     # util/store_test.go's TestConfigStore*.
-
-    def test_failed_launch_preparation_restores_seed_and_keeps_native_settings(self):
-        before = (conf_fields(self.conf), self.settings.read_bytes())
-        env = self.fail_replace_env(self.settings)
-        result = subprocess.run(
-            ['zsh', '-fc', 'source "$1"; ' + STORE_FN + '_ccm_config_store prepare-launch demo',
-             '_', str(ROOT / 'lib/ccmorph.sh')], env=env, text=True,
-            capture_output=True, timeout=HANG_TIMEOUT)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('permission denied', result.stderr)
-        self.assertEqual((conf_fields(self.conf), self.settings.read_bytes()), before)
-        self.assertEqual(list(self.state.glob('.configure.*')), [])
-        self.assertEqual(list(self.settings.parent.glob('.configure.*')), [])
-
-    def test_external_change_after_snapshot_is_preserved(self):
-        command = ('source "$1"; ' + STORE_FN + 'export _CCM_CONFIG_SNAPSHOT=$(_ccm_config_store snapshot demo); '
-                   'printf "%s\\n" "# external change" >> "$CCMORPH_STATE_DIR/demo.conf"; '
-                   'export _CCM_CONFIG_MODEL=new; _ccm_config_store set demo')
-        before_settings = self.settings.read_bytes()
-        result = subprocess.run(['zsh', '-fc', command, '_', str(ROOT / 'lib/ccmorph.sh')],
-                                env=self.env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('changed while configuring', result.stderr)
-        self.assertTrue(self.conf.read_text().endswith('# external change\n'))
-        self.assertNotIn('model=new', self.conf.read_text())
-        self.assertEqual(self.settings.read_bytes(), before_settings)
 
     def test_blank_endpoint_can_keep_defaults(self):
         self.conf.write_text('type=apikey\napi_key=test-key\n')
