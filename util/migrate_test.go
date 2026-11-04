@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func mustWrite(t *testing.T, path, body string) {
@@ -308,5 +309,70 @@ func TestMigrateProjectsKeepsWhatArrivesWhileItMerges(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(filepath.Dir(from), filepath.Base(from))); err != nil {
 		t.Errorf("the profile's own dir must stay: %v", err)
+	}
+}
+
+// #177: a profile link at a real file already in the store drops the link and
+// leaves the file. The link was once written over it, a loop onto itself. Also
+// through another profile's projects link, the shape this machine carries.
+func TestMigrateCarriedLinkAtARealStoreFileKeepsIt(t *testing.T) {
+	for _, through := range []bool{false, true} {
+		root := t.TempDir()
+		store := filepath.Join(root, "store")
+		real := filepath.Join(store, "p", "s.jsonl")
+		mustWrite(t, real, "transcript\n")
+		target := real
+		if through {
+			other := filepath.Join(root, "other")
+			if err := os.MkdirAll(other, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(store, filepath.Join(other, "projects")); err != nil {
+				t.Fatal(err)
+			}
+			target = filepath.Join(other, "projects", "p", "s.jsonl")
+		}
+		own := filepath.Join(root, "own")
+		if err := os.MkdirAll(filepath.Join(own, "p"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(own, "p", "s.jsonl")); err != nil {
+			t.Fatal(err)
+		}
+		if !migrateProjects(own, store, nil) {
+			t.Fatalf("through=%v: merge failed", through)
+		}
+		b, err := os.ReadFile(real)
+		if err != nil || string(b) != "transcript\n" {
+			t.Fatalf("through=%v: real transcript lost: %v %q", through, err, b)
+		}
+		if isLink(real) {
+			t.Fatalf("through=%v: the real file became a link", through)
+		}
+	}
+}
+
+// #177: a copied transcript keeps its age, or every session looks just modified.
+func TestMigrateKeepsTheModificationTime(t *testing.T) {
+	root := t.TempDir()
+	own, store := filepath.Join(root, "own"), filepath.Join(root, "store")
+	f := filepath.Join(own, "p", "s.jsonl")
+	mustWrite(t, f, "x\n")
+	if err := os.MkdirAll(store, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-48 * time.Hour).Truncate(time.Second)
+	if err := os.Chtimes(f, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if !migrateProjects(own, store, nil) {
+		t.Fatal("merge failed")
+	}
+	fi, err := os.Stat(filepath.Join(store, "p", "s.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fi.ModTime().Equal(old) {
+		t.Errorf("mtime %v, want %v", fi.ModTime(), old)
 	}
 }
