@@ -27,6 +27,21 @@ func TestRedactURLNeverPrintsTheUserinfo(t *testing.T) {
 		{"gateway path ending in an @ segment (#139)", "https://gw.example.com/v1/@team", "<redacted>", true},
 		{"at inside a query (#139)", "https://gw.internal/api?x=me@corp.com", "<redacted>", true},
 		{"at path segment on a gateway with a port (#139)", "https://gw.example.com:8443/v1/@team", "<redacted>", true},
+		// Whatever the tail behind that @ parses as, it still belongs to the
+		// path or the query: a tail that reads as host:port must not turn the
+		// segment into an endpoint behind a ported gateway (#164).
+		{"path @ behind a ported gateway, tail host:port (#164)", "https://gw.example.com:8443/v1/@team:8080", "<redacted>", true},
+		{"query @ behind a ported gateway, tail host:port (#164)", "https://gw.internal:8443/api?x=me@corp.com:8080", "<redacted>", true},
+		{"path @ opening the first segment behind a ported gateway (#164)", "https://gw.example.com:8443/@team:8080", "<redacted>", true},
+		// An @ that only ends a path segment names no host when the tail
+		// carries no port: nothing behind the authority marks a userinfo,
+		// so the segment is the URL's own (#164).
+		{"path @ ending a segment behind a ported gateway, tail without a port (#164)", "https://gw.example.com:8443/v1@team", "<redacted>", true},
+		{"path @ ending a longer segment, host-shaped tail without a port (#164)", "https://gw.example.com:8443/team@corp.com", "<redacted>", true},
+		// The same string read from the password's end: a digit head whose
+		// password ends on its separator cannot be told from a segment
+		// boundary, so no host is named for it either (#164).
+		{"digit-headed password ending on its separator (#164)", "http://alice:2024/@proxy:3128", "<redacted>", true},
 		{"hash password whose host never comes", "http://alice:pa?ss@", "<redacted>", false},
 		{"slash password whose tail is only a path", "http://alice:pa/ss@/api", "<redacted>", false},
 		{"empty scheme before the authority", "://alice:pa/ss@proxy:3128", "://proxy:3128", false},
