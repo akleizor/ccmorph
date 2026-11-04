@@ -315,3 +315,24 @@ func TestAPassOffAProviderStopsItsBridge(t *testing.T) {
 		t.Fatal("switching providers must stop the old bridge first")
 	}
 }
+
+// TestEveryStageNamesItsOperands keeps the stage table and its usage lines in step:
+// a stage added without one would still panic on a short argv (#162).
+func TestEveryStageNamesItsOperands(t *testing.T) {
+	for name := range stages {
+		if _, ok := stageOperands[name]; !ok {
+			t.Errorf("stage %s has no usage line", name)
+		}
+	}
+	for name := range stageOperands {
+		if stages[name] == nil {
+			t.Errorf("usage line for %s names no stage", name)
+		}
+	}
+	if got, short := stageShort([]string{"--model-known"}); !short || got != "usage: ccmorph-core launch --model-known <profile> <model>" {
+		t.Fatalf("short --model-known: %q %v", got, short)
+	}
+	if _, short := stageShort([]string{"--model-known", "gw", "glm-5.2"}); short {
+		t.Fatal("a full --model-known still refused")
+	}
+}

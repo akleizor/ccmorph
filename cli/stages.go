@@ -165,3 +165,47 @@ var stages = map[string]func(l *launcher, args []string) int{
 	"--probe-nudge": func(l *launcher, args []string) int { l.probeNudge(args[1]); return 0 },
 	"--log":         func(l *launcher, args []string) int { l.log(strings.Join(args[1:], " ")); return 0 },
 }
+
+// stageOperands is each stage's least argv, its own name included, and the rest of
+// its usage line. A stage called short refuses with that line instead of indexing
+// past its argv (#162).
+var stageOperands = map[string]struct {
+	min   int
+	usage string
+}{
+	"--run-claude":          {1, "[env...] -- [claude args...]"},
+	"--project-picker":      {3, "<profile> <base> <key> [own] [tag] [launch]"},
+	"--project":             {3, "<one|pair|model-settings> <profile> [opts...] -- [penv...]"},
+	"--adapter-start":       {1, "<profile> [model]"},
+	"--invariant":           {1, "<profile> [pct] [max-output] [no-1m] [budget] [pct-in-env]"},
+	"--launch-window":       {1, "<profile> [model]"},
+	"--fold":                {1, "<profile>"},
+	"--hazard-set":          {5, "<profile> <budget> <ceiling> <settings> -- [penv...]"},
+	"--migrate-state":       {0, ""},
+	"--model-window":        {2, "<profile> <model>"},
+	"--prelaunch":           {1, "<profile>"},
+	"--remove-profile":      {1, "<profile>"},
+	"--carry-session":       {2, "<id> <dst>"},
+	"--models-json":         {1, "<profile> [base] [key]"},
+	"--model-known":         {2, "<profile> <model>"},
+	"--profile-ok":          {1, "<profile>"},
+	"--cleanup-stale":       {0, ""},
+	"--config-store":        {2, "<op> <profile> [key]"},
+	"--listing-has-unsized": {2, "<profile> <listing json>"},
+	"--gw-models":           {2, "<profile> <picker|catalogue>"},
+	"--claude-subcommand":   {1, "<word>"},
+	"--listing":             {0, "[<base> <key>...]"},
+	"--resume-model":        {1, "<session id>"},
+	"--trigger-env":         {0, "[KEY=VALUE...]"},
+	"--probe-nudge":         {1, "<profile>"},
+	"--log":                 {0, "[message...]"},
+}
+
+// stageShort is the usage line for a stage invoked without its operands.
+func stageShort(args []string) (string, bool) {
+	op := stageOperands[args[0]]
+	if len(args)-1 >= op.min {
+		return "", false
+	}
+	return strings.TrimSpace("usage: ccmorph-core launch " + args[0] + " " + op.usage), true
+}

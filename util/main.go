@@ -29,6 +29,10 @@ func init() {
 		"profile-env":            profileEnv,
 		"normalize-plugin-index": normalizePluginIndexVerb,
 	}
+	// The shapes a v0.4.6 launcher still execs on the on-disk core (#162).
+	for name, v := range v046Verbs {
+		verbs[name] = v
+	}
 }
 
 // Main runs `util <verb> args...` and returns its exit status.

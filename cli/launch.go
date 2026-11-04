@@ -81,6 +81,10 @@ func (l *launcher) launchMain(args []string) int {
 	// One stage of the launch, for the zsh entry points and the tests.
 	if len(args) > 0 {
 		if stage, ok := stages[args[0]]; ok {
+			if usage, short := stageShort(args); short {
+				fmt.Fprintln(os.Stderr, usage)
+				return 2
+			}
 			return stage(l, args)
 		}
 	}
