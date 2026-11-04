@@ -10737,19 +10737,20 @@ test_a_test_that_leaks_a_child_is_failed_and_reaped() {
 run_test test_leak_canary
 run_test test_a_test_that_leaks_a_child_is_failed_and_reaped
 
-test_profile_history_is_its_own_and_a_shared_link_heals() {
+test_profile_history_is_shared_and_a_real_dir_merges() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   source "$CCMORPH_SOURCE"
   local rc=0 dir="$HOME/.config/ccmorph/profiles/proxy"
-  mkdir -p "$HOME/.claude/projects/p" "$dir"
+  mkdir -p "$HOME/.claude/projects/p" "$dir/projects/p"
   print -r -- old > "$HOME/.claude/projects/p/native.jsonl"
-  ln -sn "$HOME/.claude/projects" "$dir/projects"
+  print -r -- mine > "$dir/projects/p/own.jsonl"
   _ccm_read proxy && _ccm_setup_dir proxy || rc=1
   unset _ccm
-  # The shared-history link goes; the native history it pointed at stays whole.
-  [[ -d "$dir/projects" && ! -L "$dir/projects" ]] || { print -u2 'profile history must be a real dir'; rc=1; }
+  # The profile's own history merges into the shared store; nothing is lost.
+  [[ -L "$dir/projects" ]] || { print -u2 'profile history must link to the shared store'; rc=1; }
   [[ "$(<"$HOME/.claude/projects/p/native.jsonl")" == old ]] || { print -u2 'native history must survive'; rc=1; }
-  _ccm_dir_ok proxy || { print -u2 'a healed profile must pass the fast path'; rc=1; }
+  [[ "$(<"$HOME/.claude/projects/p/own.jsonl")" == mine ]] || { print -u2 'profile history must merge into the store'; rc=1; }
+  _ccm_dir_ok proxy || { print -u2 'a merged profile must pass the fast path'; rc=1; }
   rm -rf "$test_home"
   return $rc
 }
@@ -10840,11 +10841,12 @@ test_hop_carries_the_one_session_into_the_target_history() {
     > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
   source "$CCMORPH_SOURCE"
-  local rc=0 src="$HOME/.config/ccmorph/profiles/proxy/projects/p" dst="$HOME/.config/ccmorph/profiles/target/projects/p"
+  local rc=0 store="$HOME/.claude/projects/p"
   ccmorph run proxy >/dev/null 2>&1 || { print -u2 'the hop must succeed'; rc=1; }
-  [[ "$(<"$src/hop-session.jsonl")" == $'first\nsecond' ]] || { print -u2 'the target must append to the one transcript'; rc=1; }
-  [[ -L "$dst/hop-session.jsonl" && -L "$dst/hop-session" ]] || { print -u2 'the transcript and its sidecar dir must be linked, not copied'; rc=1; }
-  [[ -z "$(command ls -A "$HOME/.claude/projects")" ]] || { print -u2 'profile sessions must not land in native history'; rc=1; }
+  # History is shared, so both profiles write the one transcript in the store.
+  [[ -f "$store/hop-session.jsonl" && ! -L "$store/hop-session.jsonl" ]] || { print -u2 'the transcript must live in the shared store'; rc=1; }
+  [[ "$(<"$store/hop-session.jsonl")" == $'first\nsecond' ]] || { print -u2 'the target must append to the one transcript'; rc=1; }
+  [[ -d "$store/hop-session/subagents" ]] || { print -u2 'the sidecar dir must stay with the transcript'; rc=1; }
   [[ ! -f "$CCMORPH_TEST_LOG" || "$(<"$CCMORPH_TEST_LOG")" != *MISSING* ]] || rc=1
   rm -rf "$test_home"
   return $rc
@@ -10864,7 +10866,7 @@ test_resume_by_id_reaches_another_profiles_session() {
   rm -rf "$test_home"
   return $rc
 }
-run_test test_profile_history_is_its_own_and_a_shared_link_heals
+run_test test_profile_history_is_shared_and_a_real_dir_merges
 run_test test_removing_a_profile_keeps_its_history_resumable
 run_test test_removing_profiles_never_loses_a_carried_transcript
 run_test test_native_resume_carries_into_native_history_even_inside_a_profile

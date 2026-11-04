@@ -13,12 +13,16 @@ import (
 // per profile. Dirs are linked even while empty; a real profile-local file is a
 // deliberate override.
 var (
-	sharedDirs  = []string{"skills", "hooks", "plugins", "commands", "output-styles", "agents", "session-env", "file-history"}
+	sharedDirs  = []string{"skills", "hooks", "plugins", "commands", "output-styles", "agents", "session-env", "file-history", "projects"}
 	sharedFiles = []string{"settings.local.json", "keybindings.json", "CLAUDE.md", ".i-have-adhd-always"}
 )
 
 // mergeable stores hold content the profile owns, so a profile-local copy merges
 // into the shared store; any other collision belongs to its owning tool.
+// ownHistory is a projects link the user aimed at their own store (another
+// disk); it stays a deliberate override, and nothing on that disk is moved.
+func ownHistory(item, link string) bool { return item == "projects" && isDir(link) }
+
 var mergeable = map[string]bool{"agents": true, "projects": true, "session-env": true, "file-history": true}
 
 // resolved is zsh's :A: absolute, every link followed, a missing tail kept as spelled.
@@ -54,12 +58,9 @@ func ProfileOK(profiles, name string) bool {
 	if !isDir(dir) || isLink(dir) || !isFile(dir+"/config.json") || !isFile(dir+"/.claude.json") {
 		return false
 	}
-	if !isDir(dir+"/projects") || isLink(dir+"/projects") {
-		return false
-	}
 	for _, item := range sharedDirs {
 		link, src := dir+"/"+item, canonical+"/"+item
-		if !isDir(src) || !isLink(link) || resolved(link) != resolved(src) {
+		if !isDir(src) || !isLink(link) || (resolved(link) != resolved(src) && !ownHistory(item, link)) {
 			return false
 		}
 	}
@@ -109,6 +110,10 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 		switch {
 		case isLink(link):
 			if resolved(link) != resolved(src) {
+				if ownHistory(item, link) {
+					log("OVERRIDE profile-local '" + item + "' link kept for profile=" + name)
+					continue
+				}
 				return fail("'" + item + "' for '" + name + "' points outside the shared store")
 			}
 		case lexists(link):
@@ -148,16 +153,6 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 		}
 	}
 
-	// History is the profile's own: drop only a shared-history link, never its target.
-	if isLink(dir + "/projects") {
-		if os.Remove(dir+"/projects") != nil {
-			return fail("could not unlink shared history for '" + name + "'")
-		}
-	}
-	if os.MkdirAll(dir+"/projects", 0o700) != nil {
-		return fail("could not create history for '" + name + "'")
-	}
-	_ = os.Chmod(dir+"/projects", 0o700)
 	if isLink(dir + "/settings.json") {
 		if os.Remove(dir+"/settings.json") != nil {
 			return fail("could not remove legacy settings link for '" + name + "'")
