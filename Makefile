@@ -39,7 +39,7 @@ test-py:
 	python3 -m pytest tests/ -q
 
 # The Hive's gate on every landing. Each suite works in its own scratch homes and mostly
-# waits on process spawns, so they overlap: 185 s one after another, under a minute at once.
+# waits on process spawns, so they overlap: about 130 s one after another, under a minute at once.
 gate: shim
 	@$(MAKE) -j5 gate-launch gate-install gate-configure gate-py test-go
 

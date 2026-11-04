@@ -1,6 +1,8 @@
 #!/usr/bin/env zsh
 # install.sh tests — hermetic: fake HOME + ZDOTDIR under a mktemp dir.
 # The installer checks for `claude` on PATH; a stub satisfies it.
+# The sections run as parallel jobs (every case owns its scratch dir under
+# $TMP, like the launch suite's shards); the tally at the end re-joins them.
 
 set -u
 emulate -L zsh
@@ -43,7 +45,76 @@ run_installer() {  # $1 = case dir
     zsh "$REPO/install.sh" >"$1/out" 2>&1 </dev/null
 }
 
+# ---- shared harness, built before the parallel jobs fork --------------------
+# Sections 8, 9 and 14 all install through the stub-curl harness, and two jobs
+# share one tarball, so the fixtures and helpers below are made once here, in
+# the parent, where every forked job inherits them.
+
+remote_env() {  # $1 = case name, $2 = tarball; stub curl bakes in its log and tarball
+  local d; d=$(fresh_env "$1")
+  mkdir -p "$d/tmp"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$@" >> "%s/curl.argv"\nwhile [ $# -gt 0 ]; do\n  if [ "$1" = -o ]; then cp "%s" "$2"; exit 0; fi\n  shift\ndone\nexit 1\n' "$d" "$2" > "$d/bin/curl"
+  chmod +x "$d/bin/curl"
+  print -r -- "$d"
+}
+
+remote_run() {  # $1 = case dir, $2 = cmd|pipe, rest = extra env assignments
+  local d="$1" mode="$2"; shift 2
+  rm -f "$d/curl.argv"
+  if [[ "$mode" == pipe ]]; then
+    cat "$REPO/install.sh" | env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" "$@" \
+      sh >"$d/out" 2>"$d/err"
+  else
+    env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" "$@" \
+      sh -c "$(cat "$REPO/install.sh")" >"$d/out" 2>"$d/err" </dev/null
+  fi
+}
+
+url_release='https://github.com/akleizor/ccmorph/releases/latest/download/ccmorph.tar.gz'
+
+# The download the stub serves: shaped like the release asset the default URL
+# serves — one top dir, `ccmorph-<tag>/`, exactly what `git archive --prefix`
+# writes — so the remote block must accept it whatever the tag names.
+mkdir -p "$TMP/stage/ccmorph-v1.2.3"
+(cd "$REPO" && cp -R bin lib libexec share install.sh "$TMP/stage/ccmorph-v1.2.3/")
+tar -czf "$TMP/src.tar.gz" -C "$TMP/stage" ccmorph-v1.2.3
+# Not a ccmorph tree: one top dir with no lib/ccmorph.sh in it.
+mkdir -p "$TMP/stage-empty/not-ccmorph"; print x > "$TMP/stage-empty/not-ccmorph/README"
+tar -czf "$TMP/empty.tar.gz" -C "$TMP/stage-empty" not-ccmorph
+# The same tree carrying a different version, so a --version after an update
+# proves the new code is the code that runs (section 14).
+mkdir -p "$TMP/stage99"
+cp -R "$TMP/stage/ccmorph-v1.2.3" "$TMP/stage99/ccmorph-main"
+sed 's/^_CCMORPH_VERSION=.*/_CCMORPH_VERSION="9.9.9"/' "$REPO/lib/ccmorph.sh" > "$TMP/stage99/ccmorph-main/lib/ccmorph.sh"
+grep -qxF '_CCMORPH_VERSION="9.9.9"' "$TMP/stage99/ccmorph-main/lib/ccmorph.sh" || fail "update: could not stage the 9.9.9 tree"
+tar -czf "$TMP/src99.tar.gz" -C "$TMP/stage99" ccmorph-main
+
+upd_env() {  # $1 = case; an installed tree, a stub curl serving 9.9.9, and user state
+  local d; d=$(remote_env "$1" "$TMP/src99.tar.gz")
+  run_installer "$d" >/dev/null
+  print 'type=token\ntoken=canary' > "$d/home/.config/ccmorph/work.conf"
+  print 'export CCMORPH_TEST_LOCAL=1' > "$d/home/.config/ccmorph/local.sh"
+  cp "$d/home/.config/ccmorph/work.conf" "$d/work.conf.before"
+  cp "$d/home/.config/ccmorph/local.sh" "$d/local.sh.before"
+  print -r -- "$d"
+}
+cmd_run() {  # $1 = case dir, rest = ccmorph arguments; the installed command, hermetic
+  local d="$1"; shift
+  rm -f "$d/curl.argv"
+  env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" \
+    "$d/home/.local/bin/ccmorph" "$@" >"$d/out" 2>"$d/err" </dev/null
+}
+
+# The jobs: every case builds its own scratch home, so the sections run at
+# once and mostly wait on process spawns and macOS's first-exec scan of each
+# freshly copied ccmorph-core — waits that overlap, the same shape as the
+# launch suite's shards and the Makefile gate. Eight jobs stay far under the
+# parallelism the launch suite measured green under load. A new section joins
+# the job it runs with (add its tally to that job's count), or adds a job and
+# its log to the loop at the end.
+
 # --- 1. fresh install lands every runtime component and wires the rc --------
+{ # job 1: sections 1-5b
 d=$(fresh_env fresh)
 run_installer "$d"; rc=$?
 [[ $rc -eq 0 ]] && ok "fresh install exits 0" || { fail "fresh install rc=$rc"; cat "$d/out" }
@@ -298,8 +369,11 @@ grep -qxF "  security delete-generic-password -s ccmorph -a team.api_key" "$d/ou
 grep -qF "\"$d/home/.claude/plugins/marketplaces/example\"" "$d/home/.claude/plugins/known_marketplaces.json" \
   && ok "state-dir uninstall: the plugin repair walks the redirected profile homes" \
   || { fail "state-dir uninstall: plugin index still spelled through the profile"; cat "$d/home/.claude/plugins/known_marketplaces.json" }
+print -r -- "$passed $failed" > "$TMP/tally.1"
+} > "$TMP/log.1" 2>&1 &
 
 # --- 6. a RE-RUN is an update: user state survives, and it says so ----------
+{ # job 2: sections 6-7
 # The guarantee people actually care about. Profiles (which now carry their own
 # probed/manual context alongside credentials) and local.sh are never in
 # COMPONENTS and are gitignored, so they were always safe — but "safe by
@@ -393,42 +467,15 @@ grep -qF 'cliproxyapi' "$d/out" && ok "absent translator is named" || fail "abse
 grep -qF 'fzf'         "$d/out" && ok "absent fzf is named"        || fail "absent fzf not mentioned"
 grep -qiF 'non-interactive' "$d/out" && ok "non-interactive offer declines loudly" || { fail "offer did not declare itself skipped"; cat "$d/out" }
 grep -qF 'STUB BREW CALLED' "$d/out" && fail "declined offer still ran brew" || ok "declined offer never ran brew"
+print -r -- "$passed $failed" > "$TMP/tally.2"
+} > "$TMP/log.2" 2>&1 &
 
 # --- 8. remote mode: run outside a source tree, install from a download -------
 # `sh -c "$(curl -fsSL .../install.sh)"` and `curl ... | sh` start this script with
 # $0 = sh and no repo beside it. The installer must fetch the tree and run ITS
-# installer. No network here: a stub curl copies a locally built tarball to the
-# path after -o and records its argv. Shaped like the release asset the default
-# URL serves: one top dir, `ccmorph-<tag>/`, exactly what `git archive --prefix`
-# writes — the remote block must accept it whatever the tag names.
-mkdir -p "$TMP/stage/ccmorph-v1.2.3"
-(cd "$REPO" && cp -R bin lib libexec share install.sh "$TMP/stage/ccmorph-v1.2.3/")
-tar -czf "$TMP/src.tar.gz" -C "$TMP/stage" ccmorph-v1.2.3
-# Not a ccmorph tree: one top dir with no lib/ccmorph.sh in it.
-mkdir -p "$TMP/stage-empty/not-ccmorph"; print x > "$TMP/stage-empty/not-ccmorph/README"
-tar -czf "$TMP/empty.tar.gz" -C "$TMP/stage-empty" not-ccmorph
-
-remote_env() {  # $1 = case name, $2 = tarball; stub curl bakes in its log and tarball
-  local d; d=$(fresh_env "$1")
-  mkdir -p "$d/tmp"
-  printf '#!/bin/sh\nprintf "%%s\\n" "$@" >> "%s/curl.argv"\nwhile [ $# -gt 0 ]; do\n  if [ "$1" = -o ]; then cp "%s" "$2"; exit 0; fi\n  shift\ndone\nexit 1\n' "$d" "$2" > "$d/bin/curl"
-  chmod +x "$d/bin/curl"
-  print -r -- "$d"
-}
-
-remote_run() {  # $1 = case dir, $2 = cmd|pipe, rest = extra env assignments
-  local d="$1" mode="$2"; shift 2
-  rm -f "$d/curl.argv"
-  if [[ "$mode" == pipe ]]; then
-    cat "$REPO/install.sh" | env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" "$@" \
-      sh >"$d/out" 2>"$d/err"
-  else
-    env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" "$@" \
-      sh -c "$(cat "$REPO/install.sh")" >"$d/out" 2>"$d/err" </dev/null
-  fi
-}
-
-url_release='https://github.com/akleizor/ccmorph/releases/latest/download/ccmorph.tar.gz'
+# installer. No network here: the preamble's stub curl copies a locally built
+# tarball to the path after -o and records its argv.
+{ # job 3: sections 8.1-8.7
 
 # 8.1 sh -c "$(cat install.sh)": the documented one-liner shape.
 d=$(remote_env remote_c "$TMP/src.tar.gz")
@@ -515,7 +562,10 @@ env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/t
   sh "$REPO/install.sh" >"$d/out" 2>&1 </dev/null; rc=$?
 (( rc == 0 )) && [[ ! -e "$d/curl.argv" ]] \
   && ok "remote: a local sh install exits 0 and never calls curl" || { fail "local sh install rc=$rc or it called curl"; cat "$d/out" }
+print -r -- "$passed $failed" > "$TMP/tally.3"
+} > "$TMP/log.3" 2>&1 &
 
+{ # job 4: section 8.8, the release build
 # 8.8 the default URL names a release asset, so make must build one: dist/
 # ccmorph.tar.gz, a stable-name copy of the tag tarball. A release that attaches
 # only dist/ccmorph-<tag>.tar.gz leaves the one-liner's default download a 404.
@@ -537,8 +587,11 @@ make -C "$TMP/relrepo" dist TAG="$reltag" DIST="$TMP/reldist" >"$TMP/relmake.out
 cmp -s "$TMP/reldist/ccmorph-$reltag.tar.gz" "$TMP/reldist/ccmorph.tar.gz" \
   && ok "release: dist/ccmorph.tar.gz is byte-identical to the tag-named tarball" \
   || fail "release: dist/ccmorph.tar.gz is missing or differs from dist/ccmorph-$reltag.tar.gz"
+print -r -- "$passed $failed" > "$TMP/tally.4"
+} > "$TMP/log.4" 2>&1 &
 
 # --- 9. Windows shells are named and sent to WSL before anything else ----------
+{ # job 5: sections 9-11
 # Git Bash / MSYS / Cygwin have no zsh, and the failure they got was about zsh,
 # not about Windows. A stub uname stands in for the platform; the message must
 # come before remote mode (so no download happens) and before any write to HOME.
@@ -682,8 +735,11 @@ grep -qF 'STUB' "$d/out" && fail "no claude: ran a package manager" || ok "no cl
 d=$(pm_env pm_nopy dnf); pm_run "$d"; rc=$?
 (( rc == 0 )) && ! grep -qiF 'python' "$d/out" && ! grep -qF 'STUB' "$d/out" \
   && ok "no python3: installs, and python3 is never named" || { fail "no python3: wrong result (rc=$rc)"; cat "$d/out"; }
+print -r -- "$passed $failed" > "$TMP/tally.5"
+} > "$TMP/log.5" 2>&1 &
 
 # --- 12. the PATH hint names the file and the syntax for the user's shell -----
+{ # job 6: sections 12-13
 # ~/.local/bin is not on PATH in these runs (the fake PATH never carries it), so
 # the hint fires. It must name the file and print a line the shell can use, and it
 # must still never write to a startup file: three rc files are asserted absent.
@@ -774,38 +830,19 @@ grep -qxF "Check:  $d/home/.local/bin/ccmorph doctor" "$d/out" && ! grep -qF 'cc
 # Last thing printed: the check or the next step, not a stray trailing line.
 last=$(grep -v '^$' "$d/out" | tail -1)
 [[ "$last" == "Check:  "* ]] && ok "end: the check is the last line of an update" || fail "end: last line of an update is '$last'"
+print -r -- "$passed $failed" > "$TMP/tally.6"
+} > "$TMP/log.6" 2>&1 &
 
 # --- 14. `ccmorph update` and `ccmorph uninstall` run the INSTALLED installer ------
 # The installer ships as a component, so the command can update itself with no clone
 # and no URL to remember: `update` hands the installed install.sh to remote mode
 # (--remote), which downloads, unpacks and runs the downloaded installer. The same
-# stub-curl harness as section 8; the tarball carries a different version, so the
-# command's own --version proves the new code is the code that runs.
+# stub-curl harness as section 8; the preamble's tarball carries a different
+# version, so the command's own --version proves the new code is the code that runs.
+{ # job 7: sections 14.0-14.2
 d=$(fresh_env shipped); run_installer "$d" >/dev/null
 [[ -x "$d/home/.config/ccmorph/install.sh" ]] \
   && ok "update: a fresh install ships an executable install.sh" || fail "update: install.sh is not an executable component"
-
-mkdir -p "$TMP/stage99"
-cp -R "$TMP/stage/ccmorph-v1.2.3" "$TMP/stage99/ccmorph-main"
-sed 's/^_CCMORPH_VERSION=.*/_CCMORPH_VERSION="9.9.9"/' "$REPO/lib/ccmorph.sh" > "$TMP/stage99/ccmorph-main/lib/ccmorph.sh"
-grep -qxF '_CCMORPH_VERSION="9.9.9"' "$TMP/stage99/ccmorph-main/lib/ccmorph.sh" || fail "update: could not stage the 9.9.9 tree"
-tar -czf "$TMP/src99.tar.gz" -C "$TMP/stage99" ccmorph-main
-
-upd_env() {  # $1 = case; an installed tree, a stub curl serving 9.9.9, and user state
-  local d; d=$(remote_env "$1" "$TMP/src99.tar.gz")
-  run_installer "$d" >/dev/null
-  print 'type=token\ntoken=canary' > "$d/home/.config/ccmorph/work.conf"
-  print 'export CCMORPH_TEST_LOCAL=1' > "$d/home/.config/ccmorph/local.sh"
-  cp "$d/home/.config/ccmorph/work.conf" "$d/work.conf.before"
-  cp "$d/home/.config/ccmorph/local.sh" "$d/local.sh.before"
-  print -r -- "$d"
-}
-cmd_run() {  # $1 = case dir, rest = ccmorph arguments; the installed command, hermetic
-  local d="$1"; shift
-  rm -f "$d/curl.argv"
-  env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" \
-    "$d/home/.local/bin/ccmorph" "$@" >"$d/out" 2>"$d/err" </dev/null
-}
 
 # 14.1 update: no ref is the latest release (the one-liner's default), new code
 # live, user state byte-identical.
@@ -845,7 +882,10 @@ grep -qxF 'https://github.com/akleizor/ccmorph/archive/v1.2.3.tar.gz' "$d/curl.a
 cmd_run "$d" update feature/x-1.y_z
 grep -qxF 'https://github.com/akleizor/ccmorph/archive/feature/x-1.y_z.tar.gz' "$d/curl.argv" 2>/dev/null \
   && ok "update: a branch name with a slash is accepted" || { fail "update: branch with slash refused"; cat "$d/out" "$d/err" }
+print -r -- "$passed $failed" > "$TMP/tally.7"
+} > "$TMP/log.7" 2>&1 &
 
+{ # job 8: sections 14.3-14.7
 # 14.3 a ref that is not a plain name is refused before anything is downloaded.
 d=$(upd_env upd_badref)
 for bad in 'x;rm' '../evil' 'a..b' '-rf' '/abs' 'a b' '$(id)' ''; do
@@ -908,6 +948,22 @@ for verb in update uninstall; do
     && ok "$verb --help: shows its help and runs nothing" || { fail "$verb --help: rc=$rc"; cat "$d/out" "$d/err" }
 done
 [[ -x "$d/home/.local/bin/ccmorph" ]] && ok "help: asking for help removed nothing" || fail "help: uninstall --help removed the command"
+print -r -- "$passed $failed" > "$TMP/tally.8"
+} > "$TMP/log.8" 2>&1 &
+
+# --- the tally: the jobs ran at once, each in its own scratch homes ----------
+# A job that dies mid-run writes no tally; that is reported as a failure
+# rather than silently losing its cases.
+wait
+for n in 1 2 3 4 5 6 7 8; do
+  cat "$TMP/log.$n"
+  if read -r p f < "$TMP/tally.$n" 2>/dev/null; then
+    (( passed += p , failed += f ))
+  else
+    print -r -- "FAIL: parallel job $n ended with no tally — it died mid-run"
+    (( ++failed ))
+  fi
+done
 
 print ""
 print "install tests: $passed passed, $failed failed"
