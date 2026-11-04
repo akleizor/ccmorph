@@ -19,6 +19,10 @@ var (
 
 // mergeable stores hold content the profile owns, so a profile-local copy merges
 // into the shared store; any other collision belongs to its owning tool.
+// ownHistory is a projects link the user aimed at their own store (another
+// disk); it stays a deliberate override, and nothing on that disk is moved.
+func ownHistory(item, link string) bool { return item == "projects" && isDir(link) }
+
 var mergeable = map[string]bool{"agents": true, "projects": true, "session-env": true, "file-history": true}
 
 // resolved is zsh's :A: absolute, every link followed, a missing tail kept as spelled.
@@ -56,7 +60,7 @@ func ProfileOK(profiles, name string) bool {
 	}
 	for _, item := range sharedDirs {
 		link, src := dir+"/"+item, canonical+"/"+item
-		if !isDir(src) || !isLink(link) || resolved(link) != resolved(src) {
+		if !isDir(src) || !isLink(link) || (resolved(link) != resolved(src) && !ownHistory(item, link)) {
 			return false
 		}
 	}
@@ -106,6 +110,10 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 		switch {
 		case isLink(link):
 			if resolved(link) != resolved(src) {
+				if ownHistory(item, link) {
+					log("OVERRIDE profile-local '" + item + "' link kept for profile=" + name)
+					continue
+				}
 				return fail("'" + item + "' for '" + name + "' points outside the shared store")
 			}
 		case lexists(link):

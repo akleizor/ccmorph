@@ -233,3 +233,25 @@ func TestMigrateKeepsAnExistingRealTranscript(t *testing.T) {
 		t.Fatalf("store transcript replaced: %q", body)
 	}
 }
+
+// A profile whose history the user linked to another disk keeps that link and
+// still launches; nothing is moved off that disk.
+func TestSetupKeepsAProjectsLinkToTheUsersOwnStore(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	profiles := filepath.Join(root, ".config/ccmorph/profiles")
+	elsewhere := filepath.Join(root, "disk/p/projects")
+	mustWrite(t, filepath.Join(elsewhere, "slug/s1.jsonl"), "{}\n")
+	mustLink(t, elsewhere, filepath.Join(profiles, "p/projects"))
+	noop := func(string) {}
+	if !SetupProfile(profiles, "p", "proxy", noop, func(m string) { t.Error(m) }) {
+		t.Fatal("setup refused a profile with its own history link")
+	}
+	linkIs(t, filepath.Join(profiles, "p/projects"), elsewhere, "own history link")
+	if _, err := os.Stat(filepath.Join(elsewhere, "slug/s1.jsonl")); err != nil {
+		t.Fatalf("transcript on the other disk moved: %v", err)
+	}
+	if !ProfileOK(profiles, "p") {
+		t.Fatal("a profile with its own history link must pass the fast path")
+	}
+}
