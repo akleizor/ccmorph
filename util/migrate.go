@@ -1,6 +1,9 @@
 package util
 
 import (
+	"crypto/sha256"
+	"errors"
+	"io"
 	"io/fs"
 	"math/rand"
 	"os"
@@ -9,36 +12,88 @@ import (
 	"strings"
 )
 
-// migrateProjects moves a profile-local
-// sharable dir's files and links into the shared store. The profile dir is first
-// renamed aside to <from>.premigration.<pid>.<n>; a name already in the store wins
-// and its profile copy stays in that backup. A relative link is rewritten to an
-// absolute one, resolved the way the kernel resolves it from its old place (#164,
-// #167, #376, #399, #400). The caller vets the store name.
-func migrateProjects(from, to string) bool {
-	bak := from + ".premigration." + strconv.Itoa(os.Getpid()) + "." + strconv.Itoa(rand.Intn(32768))
-	if os.Rename(from, bak) != nil {
+// migrateProjects moves a profile-local sharable dir's files and links into the
+// shared store by copying (#177): the store may sit on another filesystem,
+// where a rename cannot reach, so every regular file is written to a
+// destination-local temp file, fsynced, verified by size and hash, and linked
+// into place only where no entry exists yet. A same-name entry the store
+// already holds wins unless it is a carried link giving way or a byte-identical
+// duplicate; a divergent one — or a link the store cannot take — is kept side by side in
+// '<from>.premigration.<pid>.<n>' (a link stays a link) and named in report. The originals stay where they are until every file has
+// verified, so a failure anywhere leaves the profile's own copy whole — the
+// caller then keeps the profile on it and the launch still succeeds. A relative
+// link is rewritten to an absolute one, resolved the way the kernel resolves it
+// from its old place (#164, #167, #376, #399, #400). A `from` that is itself a
+// link names the user's own store, on another disk: its target is read, never
+// written, and left intact; only the link is replaced. The caller vets the
+// store name.
+func migrateProjects(from, to string, report func(string)) bool {
+	if report == nil {
+		report = func(string) {}
+	}
+	walk, ownStore := from, false
+	if fi, err := os.Lstat(from); err != nil {
 		return false
-	}
-	bakp := bak
-	if a, err := filepath.Abs(bak); err == nil {
-		if r, err := filepath.EvalSymlinks(a); err == nil {
-			bakp = r
+	} else if fi.Mode()&fs.ModeSymlink != 0 {
+		r, err := filepath.EvalSymlinks(from)
+		if err != nil {
+			return false
 		}
+		walk, ownStore = r, true
 	}
-	_ = filepath.WalkDir(bak, func(f string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+	// The tree's physical root, the way a link's `..` resolves through it.
+	root := walk
+	if r, err := filepath.EvalSymlinks(walk); err == nil {
+		root = r
+	}
+	var remove []walked
+	var diverge []string
+	ok := true
+	_ = filepath.WalkDir(walk, func(f string, d fs.DirEntry, err error) error {
+		if err != nil {
+			ok = false // an unreadable entry is never moved blindly
+			return nil
+		}
+		if d.IsDir() {
 			return nil
 		}
 		if n := d.Name(); n == ".DS_Store" || n == ".localized" {
+			// Finder junk must not hold the tree open; on the user's own disk
+			// it stays (#177: the target is left intact).
+			if !ownStore {
+				_ = os.Remove(f)
+			}
 			return nil
 		}
-		rel := strings.TrimPrefix(f, bak+"/")
+		fi, _ := d.Info()
+		rel := strings.TrimPrefix(f, walk+"/")
 		dest := to + "/" + rel
-		if _, err := os.Lstat(dest); err == nil {
-			return nil
+		if lexists(dest) {
+			switch {
+			case linkGivesWay(dest, f):
+				// A carried session link gives way to the transcript it points
+				// at (or to anything, once it dangles), so the real file never
+				// stays behind (#173).
+				if os.Remove(dest) != nil {
+					ok = false
+					return nil
+				}
+			case d.Type()&fs.ModeSymlink != 0:
+				// A link never overwrites a settled entry.
+				diverge = append(diverge, f)
+				return nil
+			case sameContent(dest, f):
+				// The store already holds this very content; the profile's
+				// copy is a duplicate that can go once everything verifies.
+				remove = append(remove, walked{f, fi, ""})
+				return nil
+			default:
+				diverge = append(diverge, f)
+				return nil
+			}
 		}
 		if os.MkdirAll(zshH(dest), 0o777) != nil {
+			ok = false
 			return nil
 		}
 		tgt := ""
@@ -46,39 +101,255 @@ func migrateProjects(from, to string) bool {
 			tgt, _ = os.Readlink(f)
 		}
 		if tgt == "" || strings.HasPrefix(tgt, "/") {
-			// shortcut: a plain rename, so a store on another filesystem keeps the file in the backup; copy when profiles span volumes.
-			_ = os.Rename(f, dest)
+			// A regular file is copied and verified; an absolute link moves as
+			// a link with the target it already spells.
+			if tgt == "" {
+				if !d.Type().IsRegular() {
+					ok = false // a socket or device is never moved blindly
+					return nil
+				}
+				if copyVerified(f, dest) != nil {
+					ok = false
+					return nil
+				}
+			} else if os.Symlink(tgt, dest) != nil {
+				diverge = append(diverge, f) // parked as a link, the merge goes on
+				return nil
+			}
+			remove = append(remove, walked{f, fi, tgt})
 			return nil
 		}
 		// The parent resolves physically (a link's `..` leaves the link target); the
 		// leaf stays unresolved so a link to a sibling link follows that sibling.
-		phys, leaf := bakp+"/"+zshH(rel)+"/"+tgt, ""
+		phys, leaf := root+"/"+zshH(rel)+"/"+tgt, ""
 		if !(tgt == "." || tgt == ".." || strings.HasSuffix(tgt, "/.") || strings.HasSuffix(tgt, "/..")) {
 			leaf, phys = "/"+zshT(phys), zshH(phys)
 		}
 		// A link dir moved earlier is retried in the store; a parent that resolves
 		// nowhere keeps its unresolvable tail as spelled, so the link dangles where it
 		// pointed rather than collapsing onto another file.
-		pdir, ok := physDir(phys)
-		if !ok {
-			pdir, ok = physDir(to + "/" + strings.TrimPrefix(phys, bakp+"/"))
+		pdir, found := physDir(phys)
+		if !found {
+			pdir, found = physDir(to + "/" + strings.TrimPrefix(phys, root+"/"))
 		}
-		if !ok {
-			pdir, ok = physPrefix(phys)
+		if !found {
+			pdir, found = physPrefix(phys)
 		}
-		if !ok {
+		if !found {
+			diverge = append(diverge, f)
 			return nil
 		}
 		phys = strings.TrimSuffix(pdir, "/") + leaf
-		if strings.HasPrefix(phys, bakp+"/") {
-			phys = to + "/" + strings.TrimPrefix(phys, bakp+"/")
+		if strings.HasPrefix(phys, root+"/") {
+			phys = to + "/" + strings.TrimPrefix(phys, root+"/")
 		}
 		if os.Symlink(phys, dest) == nil {
-			_ = os.Remove(f)
+			remove = append(remove, walked{f, fi, tgt})
+		} else {
+			diverge = append(diverge, f) // parked as a link, the merge goes on
 		}
 		return nil
 	})
-	return true
+	if !ok {
+		return false
+	}
+	if len(diverge) > 0 {
+		bak := from + ".premigration." + strconv.Itoa(os.Getpid()) + "." + strconv.Itoa(rand.Intn(32768))
+		for _, f := range diverge {
+			rel := strings.TrimPrefix(f, walk+"/")
+			if li, err := os.Lstat(f); err == nil && li.Mode()&fs.ModeSymlink != 0 {
+				// A link is parked as the link it is, its literal target kept;
+				// copyVerified would follow it.
+				lt, err := os.Readlink(f)
+				if err != nil || os.MkdirAll(filepath.Dir(bak+"/"+rel), 0o777) != nil || os.Symlink(lt, bak+"/"+rel) != nil {
+					return false
+				}
+			} else if copyVerified(f, bak+"/"+rel) != nil {
+				return false
+			}
+			report("kept '" + rel + "' in '" + bak + "': it could not join the shared store as is")
+			// The parked copy is verified; the original can go with the rest.
+			w := walked{f: f}
+			if fi, err := os.Lstat(f); err == nil {
+				if fi.Mode()&fs.ModeSymlink != 0 {
+					w.link, _ = os.Readlink(f)
+				} else {
+					w.fi = fi
+				}
+				remove = append(remove, w)
+			}
+		}
+	}
+	// The originals go only now that every file has verified, and only where
+	// nothing touched them since: a file a live session appended to, or a link
+	// that was replaced, stays for the next launch rather than losing what
+	// arrived after the copy (#177). The user's own store on another disk
+	// keeps every file.
+	for _, w := range remove {
+		if !ownStore && stillUnchanged(w) {
+			_ = os.Remove(w.f) // a refusal keeps the dir, and prune reports it
+		}
+	}
+	if ownStore {
+		return os.Remove(from) == nil
+	}
+	// Only dirs that are now empty go: anything left — a file that landed
+	// after the walk — keeps its dir, and the caller keeps the profile on
+	// that dir until a later launch migrates what arrived (#177).
+	return pruneEmpty(from)
+}
+
+// walked is one migrated entry with the identity it had when the walk saw it:
+// what the removal step must re-check before the original goes (#177).
+type walked struct {
+	f    string
+	fi   os.FileInfo // walk-time size and mtime of a regular file
+	link string      // the textual target a symlink was migrated as
+}
+
+// stillUnchanged reports whether the entry is what the walk saw: a regular
+// file of the same size and mtime, or a link with the same target. Anything a
+// live session rewrote or replaced since the copy stays for the next launch
+// (#177).
+func stillUnchanged(w walked) bool {
+	fi, err := os.Lstat(w.f)
+	if err != nil {
+		return false
+	}
+	if fi.Mode()&fs.ModeSymlink != 0 {
+		t, err := os.Readlink(w.f)
+		return err == nil && t == w.link
+	}
+	return fi.Size() == w.fi.Size() && fi.ModTime().Equal(w.fi.ModTime())
+}
+
+// pruneEmpty removes a tree's directories bottom-up, only where they are
+// empty, and reports whether the whole tree went: anything still inside — a
+// file that arrived after the walk — survives with its dir (#177).
+func pruneEmpty(root string) bool {
+	var dirs []string
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			dirs = append(dirs, p)
+		}
+		return nil
+	})
+	for i := len(dirs) - 1; i >= 0; i-- {
+		_ = os.Remove(dirs[i]) // a non-empty dir refuses, keeping what is inside
+	}
+	_, err := os.Lstat(root)
+	return err != nil
+}
+
+// copyVerified copies the regular file f into dest through a destination-local
+// temp file (#177): the store may sit on another filesystem, where a rename
+// cannot reach. The bytes are hashed as they stream, the temp file is synced,
+// and both size and hash are read back and compared before the file is linked
+// into place — an existing dest is never overwritten.
+func copyVerified(f, dest string) error {
+	src, err := os.Open(f)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	fi, err := src.Stat()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o777); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(dest), ".ccm-copy-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	if err := os.Chmod(name, fi.Mode().Perm()); err != nil {
+		tmp.Close()
+		os.Remove(name)
+		return err
+	}
+	h := sha256.New()
+	_, werr := io.Copy(io.MultiWriter(tmp, h), src)
+	if werr == nil {
+		werr = tmp.Sync()
+	}
+	if cerr := tmp.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		os.Remove(name)
+		return werr
+	}
+	// Read the temp back: the hash proves what landed on the store's own
+	// filesystem, not what was sent to it.
+	got, err := fileHash(name)
+	if err != nil {
+		os.Remove(name)
+		return err
+	}
+	if got != [sha256.Size]byte(h.Sum(nil)) {
+		os.Remove(name)
+		return errors.New(f + ": the copied bytes did not verify")
+	}
+	if fi2, err := os.Stat(name); err != nil || fi2.Size() != fi.Size() {
+		os.Remove(name)
+		return errors.New(f + ": the copied size did not verify")
+	}
+	// Publish without overwrite: link(2) refuses an existing dest, so a file
+	// another writer created meanwhile is never clobbered.
+	if err := os.Link(name, dest); err != nil {
+		os.Remove(name)
+		return err
+	}
+	os.Remove(name)
+	return nil
+}
+
+// linkGivesWay reports whether the link at dest names f or names nothing.
+func linkGivesWay(dest, f string) bool {
+	t, err := os.Stat(dest)
+	if err != nil {
+		return true
+	}
+	o, err := os.Stat(f)
+	return err == nil && os.SameFile(t, o)
+}
+
+// sameContent reports whether two paths hold the same regular content.
+func sameContent(a, b string) bool {
+	sa, err := os.Stat(a)
+	if err != nil || !sa.Mode().IsRegular() {
+		return false
+	}
+	sb, err := os.Stat(b)
+	if err != nil || !sb.Mode().IsRegular() || sa.Size() != sb.Size() {
+		return false
+	}
+	if os.SameFile(sa, sb) {
+		return true
+	}
+	ha, err := fileHash(a)
+	if err != nil {
+		return false
+	}
+	hb, err := fileHash(b)
+	return err == nil && ha == hb
+}
+
+func fileHash(p string) ([sha256.Size]byte, error) {
+	var h [sha256.Size]byte
+	f, err := os.Open(p)
+	if err != nil {
+		return h, err
+	}
+	defer f.Close()
+	g := sha256.New()
+	if _, err := io.Copy(g, f); err != nil {
+		return h, err
+	}
+	copy(h[:], g.Sum(nil))
+	return h, nil
 }
 
 // physDir is a directory's physical path plus a trailing "/" (so the root is "//"),

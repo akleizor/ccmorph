@@ -84,8 +84,9 @@ as a `.migrated` backup — your profile gains its own context data, nothing in 
 is removed. There is no shell to re-source: the
 new code is live on the next run. `ccmorph uninstall` removes the command
 and leaves your profiles alone: it lists what stays (the state root with its
-profiles, credentials and session history, the usage receipts, and on macOS the
-keychain items) with the commands that remove them. It first repairs the plugin
+profiles and credentials, the shared session history under `~/.claude`, the
+usage receipts, and on macOS the keychain items) with the commands that remove
+them. It first repairs the plugin
 index paths a profile session left in `~/.claude/plugins`, so a plugin installed
 from a profile keeps loading in native `claude` after the state root is gone.
 
@@ -210,7 +211,8 @@ Use `rm` and `mv` instead of deleting or renaming `.conf` files by hand. Both
 manual context overrides and discovered context data live in the one `.conf`, so
 these commands move or remove them along with everything else — no separate
 registry file, no prefix bookkeeping. The profile's conversation
-history is not deleted: it moves into `~/.claude/projects`, where any profile can
+history is not deleted: shared sessions already live in `~/.claude/projects`,
+and a profile still on its own history moves into it, where any profile can
 still resume a session by id. If a `.conf` was removed manually, `rm` recognizes any
 leftover runtime or auth state for that name, lists the exact paths, and asks
 **No / Yes** (or `[y/N]` with piped input) before touching them — no manual filesystem surgery needed, and nothing
