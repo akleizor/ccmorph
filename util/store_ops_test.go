@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/profile"
 )
 
@@ -362,5 +363,28 @@ func TestStoreExternalChangeAfterSnapshotIsPreserved(t *testing.T) { // test_ext
 	if rc == 0 || !strings.Contains(errw, "changed while configuring") ||
 		!strings.HasSuffix(s.read(s.conf), "# external change\n") || strings.Contains(s.read(s.conf), "model=new") || s.read(s.settings) != settings {
 		t.Fatal(rc, errw, s.read(s.conf))
+	}
+}
+
+// The store and ctxwindow must refuse the same model ids: one the store saves
+// and the context reader silently drops is a value lost without a word.
+func TestStoreAndCtxwindowAgreeOnModelIds(t *testing.T) {
+	for r := rune(0); r <= 0x3000; r++ {
+		if r == '=' {
+			continue
+		}
+		id := "a" + string(r) + "b"
+		if hasSpace(id) == ctxwindow.ValidModel(id) {
+			t.Fatalf("rune %U: store rejects=%v ctxwindow accepts=%v", r, hasSpace(id), ctxwindow.ValidModel(id))
+		}
+	}
+	s := newStoreEnv(t)
+	before := s.state()
+	_, errw, rc := s.run("set", "", StoreChange{Model: "a\x1cb"})
+	if rc == 0 || !strings.Contains(errw, "model must be a nonempty model id") {
+		t.Fatalf("rc=%d %q", rc, errw)
+	}
+	if s.state() != before {
+		t.Fatal("a refused model wrote")
 	}
 }

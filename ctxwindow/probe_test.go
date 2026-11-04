@@ -158,6 +158,10 @@ func TestWhyUnreachable(t *testing.T) {
 	if got := WhyUnreachable(errors.New("boom"), "https://gw"); got != "could not be reached at gw (boom); check the endpoint and network access" {
 		t.Fatal(got)
 	}
+	refused := &URLError{&net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}}
+	if got := WhyUnreachable(refused, "https://gw"); got != "did not answer at gw (Connection refused); check the endpoint and network access" {
+		t.Fatalf("errno branch: %q", got)
+	}
 }
 
 // Python: test_partial_probe_failure_prints_its_reason, ClaudeModelsAreProbed,

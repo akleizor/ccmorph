@@ -645,3 +645,28 @@ func TestComposeAFailedProjection(t *testing.T) {
 		})
 	}
 }
+
+// A lone-surrogate escape in a settings file is the user's text; materialize
+// must not rewrite it to U+FFFD, and a file with invalid UTF-8 is refused.
+func TestComposeKeepsUserTextVerbatim(t *testing.T) {
+	t.Run("a lone surrogate in the canonical survives materialize", func(t *testing.T) {
+		h := newHome(t)
+		h.put(h.canonical, `{"theme":"a\ud83d b"}`)
+		h.run()
+		got := h.bytes(h.p("settings.json"))
+		if !bytes.Contains(got, []byte(`"a\ud83d b"`)) || bytes.Contains(got, []byte("\xef\xbf\xbd")) {
+			t.Fatalf("settings.json = %q", got)
+		}
+	})
+	t.Run("invalid UTF-8 in the canonical is refused", func(t *testing.T) {
+		h := newHome(t)
+		h.put(h.canonical, "{\"theme\":\"l\xe9on\"}")
+		rc, stderr := h.materialize("{}")
+		if rc == 0 || !strings.Contains(stderr, "invalid UTF-8") {
+			t.Fatalf("rc=%d stderr=%q", rc, stderr)
+		}
+		if bytes.Contains(h.bytes(h.p("settings.json")), []byte("\xef\xbf\xbd")) {
+			t.Fatalf("settings.json holds U+FFFD: %q", h.bytes(h.p("settings.json")))
+		}
+	})
+}

@@ -87,9 +87,12 @@ func objField(o *ordjson.Obj, key string, msg string) (*ordjson.Obj, error) {
 	return r, nil
 }
 
+// hasSpace is Python's str.isspace, which also counts U+001C-U+001F; ctxwindow
+// refuses those in a model id, and a store that accepted one would write a
+// value the context reader then silently drops.
 func hasSpace(s string) bool {
 	for _, c := range s {
-		if unicode.IsSpace(c) {
+		if unicode.IsSpace(c) || (c >= 0x1c && c <= 0x1f) {
 			return true
 		}
 	}

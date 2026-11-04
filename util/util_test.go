@@ -239,3 +239,40 @@ func TestLaunchDiagnosticsKeepsTheWarningsWhenALayerCannotBeMerged(t *testing.T)
 		t.Fatalf("records = %q", got)
 	}
 }
+
+// .claude.json is the user's file: a value Python round-tripped unchanged
+// must come back byte-for-byte. An unpaired \ud83d escape used to be decoded
+// to a surrogate and written out as U+FFFD, silently mutating the file.
+func TestPickerRewriteKeepsALoneSurrogateByteForByte(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".claude.json")
+	want := "{\n  \"history\": [\n    \"a b\\ud83d c\"\n  ]\n}"
+	if err := os.WriteFile(path, []byte(want), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rewriteJSON(path, func(*ordjson.Obj) bool { return true })
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Fatalf("the rewrite changed the file:\n got %q\nwant %q", got, want)
+	}
+}
+
+// A file with raw invalid UTF-8 is refused, never accepted and rewritten with
+// the replacement character.
+func TestPickerRewriteLeavesInvalidUTF8Alone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".claude.json")
+	want := "{\"k\":\"l\xe9on\"}"
+	if err := os.WriteFile(path, []byte(want), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rewriteJSON(path, func(doc *ordjson.Obj) bool { doc.Set("x", true); return true })
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Fatalf("the rewrite changed the file:\n got %q\nwant %q", got, want)
+	}
+}
