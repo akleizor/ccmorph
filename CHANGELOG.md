@@ -5,6 +5,34 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
+## v0.5.0 — 2026-11-05
+
+### Changed
+
+- **Session history is shared across profiles again.** Every profile links
+  `projects/` and `history.jsonl` to `~/.claude`, so `/resume` and the prompt
+  history show the sessions of every profile (#173). On first launch each
+  profile's own transcripts move into the shared store; a transcript already
+  there is never replaced. A profile whose `projects` you linked to your own
+  store, such as another disk, keeps that link and nothing on it moves. This
+  reverses the per-profile split: `cleanupPeriodDays` now lives once in the
+  base settings, so one profile no longer prunes another's history.
+
+### Fixed
+
+- `CCMORPH_MASK` no longer learns ordinary English words from prose such as
+  "Password: X to read…" and masks them everywhere; a word that opens a
+  sentence is prose, not a password (#174).
+- A v0.4.6 launcher's config-store and bridge-stop answer again (#162).
+- `gc-stale` reaps the private views a killed session leaves (#166).
+- A path or query `@` in an endpoint names no host, whatever follows it (#164).
+- Uninstall names the pre-override profiles `CONFIG_DIR` still holds (#165).
+- A lone surrogate or invalid UTF-8 in a settings file keeps the file intact (#163).
+
+### Docs
+
+- `INTENT.md` at the repo root states eight checked promises (#161).
+
 ## v0.4.7 — 2026-11-04
 
 ### Changed
