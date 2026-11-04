@@ -433,6 +433,12 @@ grep -qF 'STUB BREW CALLED' "$d/out" && fail "declined offer still ran brew" || 
 # writes — the remote block must accept it whatever the tag names.
 mkdir -p "$TMP/stage/ccmorph-v1.2.3"
 (cd "$REPO" && cp -R bin lib libexec share install.sh "$TMP/stage/ccmorph-v1.2.3/")
+# The staged core binary is a stub: these cases assert the installer's
+# orchestration (URL picked, tree unpacked, its installer run, state kept) and
+# never run the downloaded code, while the 13 MB real one would put a
+# signature-validation stall and a full untar into every one of the ~15 unpacks.
+# Section 14 runs the downloaded code, so it stages the real binary itself.
+printf '#!/bin/sh\nexit 0\n' > "$TMP/stage/ccmorph-v1.2.3/libexec/ccmorph-core"
 tar -czf "$TMP/src.tar.gz" -C "$TMP/stage" ccmorph-v1.2.3
 # Not a ccmorph tree: one top dir with no lib/ccmorph.sh in it.
 mkdir -p "$TMP/stage-empty/not-ccmorph"; print x > "$TMP/stage-empty/not-ccmorph/README"
@@ -817,6 +823,9 @@ d=$(fresh_env shipped); run_installer "$d" >/dev/null
 
 mkdir -p "$TMP/stage99"
 cp -R "$TMP/stage/ccmorph-v1.2.3" "$TMP/stage99/ccmorph-main"
+# The downloaded code is RUN here (update, --version, uninstall), so the 9.9.9
+# tree carries the real binary, not the stub the section-8 tarball staged.
+cp "$REPO/libexec/ccmorph-core" "$TMP/stage99/ccmorph-main/libexec/ccmorph-core"
 sed 's/^_CCMORPH_VERSION=.*/_CCMORPH_VERSION="9.9.9"/' "$REPO/lib/ccmorph.sh" > "$TMP/stage99/ccmorph-main/lib/ccmorph.sh"
 grep -qxF '_CCMORPH_VERSION="9.9.9"' "$TMP/stage99/ccmorph-main/lib/ccmorph.sh" || fail "update: could not stage the 9.9.9 tree"
 tar -czf "$TMP/src99.tar.gz" -C "$TMP/stage99" ccmorph-main
