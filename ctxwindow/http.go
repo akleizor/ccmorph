@@ -229,7 +229,9 @@ func WhyUnreachable(err error, base string) string {
 	case errors.As(cause, &dns):
 		detail = fmt.Sprintf("could not resolve %s (DNS)", host)
 	case errors.As(cause, &errno):
-		text := errnoText(errno)
+		// The note names the errno's sentence, as Python's OSError branch did;
+		// errnoText keeps the "[Errno N]" prefix for reasonText's callers.
+		_, text, _ := strings.Cut(errnoText(errno), "] ")
 		detail = fmt.Sprintf("did not answer at %s (%s)", host, text)
 	default:
 		detail = fmt.Sprintf("could not be reached at %s (%s)", host, cause)

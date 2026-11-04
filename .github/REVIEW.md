@@ -52,6 +52,8 @@ credential, or losing the user's choice.
   Seen 1x (2026-11-03).
 - **An override one reader honours and another forgets** (2026-11-03) — the runtime derives a path from an env override while a second reader of the same path hardcodes the default, so the two disagree about where a thing lives: `install.sh --uninstall` kept naming `~/.config/ccmorph` as the profiles' home on a host whose `CCMORPH_STATE_DIR` had moved them, and never named the redirected root — `example: #143 fix(install): uninstall names the state root CCMORPH_STATE_DIR selects`.
   Seen 1x (2026-11-03).
+- **A drop-in replacement that ships without the test pinning the old contract** (2026-11-04) — a hand-written decoder was swapped for the standard library's and its pins were deleted with it, so nothing failed when the new one rewrote a lone-surrogate escape in `.claude.json` to U+FFFD, accepted invalid UTF-8 as U+FFFD, let U+001C-U+001F into the store where the context reader drops them, compared distinct integers above 2^53 equal, and printed `[Errno N]` in the unreachable note; #48's fix was undone in the same change that removed its tests — `example: #163 (bd34df7 and 30ef115 dropped pycompat and its pins; the deleted pins are back in ordjson, util and settingscompose)`.
+  Seen 1x (2026-11-04).
 
 ## Never blocks
 
