@@ -39,16 +39,17 @@ func migrateRoots(t *testing.T) (from, to string) {
 	return filepath.Join(root, "profiles/p1/agents"), filepath.Join(root, "claude/agents")
 }
 
-func leftovers2(t *testing.T, from string) {
+func drop(string) {}
+
+// consumed asserts the migrated tree left nothing behind: the dir itself is
+// gone and no backup was created (#177: v0.5.0 left one per launch).
+func consumed(t *testing.T, from string) {
 	t.Helper()
-	baks, _ := filepath.Glob(from + ".premigration.*")
-	for _, b := range baks {
-		filepath.Walk(b, func(p string, fi os.FileInfo, err error) error {
-			if err == nil && !fi.IsDir() {
-				t.Errorf("every entry must leave the backup: %q", p)
-			}
-			return nil
-		})
+	if _, err := os.Lstat(from); err == nil {
+		t.Errorf("the migrated tree must be consumed: %q remains", from)
+	}
+	if left, _ := filepath.Glob(from + ".*"); len(left) != 0 {
+		t.Errorf("no backup may remain when nothing diverged: %v", left)
 	}
 }
 
@@ -57,12 +58,13 @@ func TestMigrateProjectsRewritesARelativeLink(t *testing.T) {
 	from, to := migrateRoots(t)
 	mustWrite(t, from+"/defs/agent.md", "agent")
 	mustLink(t, "../defs/agent.md", from+"/links/agent.md")
-	if !migrateProjects(from, to) {
+	if !migrateProjects(from, to, drop) {
 		t.Fatal("migrate failed")
 	}
 	if b, err := os.ReadFile(to + "/links/agent.md"); err != nil || string(b) != "agent" {
 		t.Fatalf("the migrated agent link must resolve to its definition: %q %v", b, err)
 	}
+	consumed(t, from)
 }
 
 // #399: a relative target whose own name ends in a newline migrates literally.
@@ -70,13 +72,14 @@ func TestMigrateProjectsKeepsALinkTargetEndingInANewline(t *testing.T) {
 	from, to := migrateRoots(t)
 	mustWrite(t, from+"/notes.md\n", "agent")
 	mustLink(t, "notes.md\n", from+"/alias.md")
-	if !migrateProjects(from, to) {
+	if !migrateProjects(from, to, drop) {
 		t.Fatal("migrate failed")
 	}
 	linkIs(t, to+"/alias.md", to+"/notes.md\n", "a relative target ending in a newline must migrate literally (#399)")
 	if _, err := os.Stat(to + "/alias.md"); err != nil {
 		t.Errorf("the migrated link must resolve to the migrated definition: %v", err)
 	}
+	consumed(t, from)
 }
 
 // #167, #267, #376, #404: links whose parents do not resolve keep their textual
@@ -104,7 +107,7 @@ func TestMigrateProjectsKeepsDanglingLinksDangling(t *testing.T) {
 	mustWrite(t, to+"/real/agent.md", "DECOY")
 	mustLink(t, "real\n", from+"/ext")
 	mustWrite(t, from+"/we\nird.md", "we-ird")
-	if !migrateProjects(from, to) {
+	if !migrateProjects(from, to, drop) {
 		t.Fatal("migrate failed")
 	}
 
@@ -143,7 +146,7 @@ func TestMigrateProjectsKeepsDanglingLinksDangling(t *testing.T) {
 	if b, _ := os.ReadFile(to + "/we\nird.md"); string(b) != "we-ird" {
 		t.Error("a name containing a newline must migrate with its file (#404)")
 	}
-	leftovers2(t, from)
+	consumed(t, from)
 }
 
 // #400: a name containing a newline is one entry, and nothing outside the tree moves.
@@ -157,7 +160,7 @@ func TestMigrateProjectsTreatsANewlineNameAsOneEntry(t *testing.T) {
 	old, _ := os.Getwd()
 	os.Chdir(cwd)
 	defer os.Chdir(old)
-	if !migrateProjects(from, to) {
+	if !migrateProjects(from, to, drop) {
 		t.Fatal("migrate failed")
 	}
 	if b, _ := os.ReadFile(to + "/sub/a\nb.md"); string(b) != "newline agent" {
@@ -173,27 +176,137 @@ func TestMigrateProjectsTreatsANewlineNameAsOneEntry(t *testing.T) {
 	if _, err := os.Stat(to + "/b.md"); err == nil {
 		t.Error("nothing from outside the tree may enter the shared store (#400)")
 	}
+	consumed(t, from)
 }
 
-// A colliding name keeps the shared copy and leaves the profile copy in a backup.
-func TestMigrateProjectsKeepsCollisionsInBackup(t *testing.T) {
+// #177: a same-name file the store already holds divergently is kept side by
+// side in a sibling '.premigration.' park and reported; the store's copy is
+// never overwritten and neither is lost. A link the store cannot take is parked
+// as a link with its literal target. A byte-identical duplicate needs no park.
+func TestMigrateProjectsParksADivergentDuplicate(t *testing.T) {
 	from, to := migrateRoots(t)
 	mustWrite(t, from+"/private", "profile content")
+	mustWrite(t, from+"/same", "shared content")
 	mustWrite(t, from+"/new", "new content")
 	mustWrite(t, to+"/private", "shared content")
-	if !migrateProjects(from, to) {
+	mustWrite(t, to+"/same", "shared content")
+	mustLink(t, "private", from+"/alias")
+	mustWrite(t, to+"/alias", "shared alias")
+	var notes []string
+	if !migrateProjects(from, to, func(s string) { notes = append(notes, s) }) {
 		t.Fatal("migrate failed")
 	}
-	for p, want := range map[string]string{to + "/new": "new content", to + "/private": "shared content"} {
+	for p, want := range map[string]string{to + "/new": "new content", to + "/private": "shared content", to + "/same": "shared content"} {
 		if b, _ := os.ReadFile(p); string(b) != want {
 			t.Errorf("%s = %q, want %q", p, b, want)
 		}
 	}
-	baks, _ := filepath.Glob(from + ".premigration.*")
-	if len(baks) != 1 {
-		t.Fatalf("want one backup, got %v", baks)
+	divs, _ := filepath.Glob(from + ".premigration.*")
+	if len(divs) != 1 {
+		t.Fatalf("want one park, got %v", divs)
 	}
-	if b, _ := os.ReadFile(baks[0] + "/private"); string(b) != "profile content" {
-		t.Errorf("backup private = %q", b)
+	if got, err := os.Readlink(divs[0] + "/alias"); err != nil || got != "private" {
+		t.Errorf("a parked link must stay a link with its literal target: %q %v", got, err)
+	}
+	if b, _ := os.ReadFile(to + "/alias"); string(b) != "shared alias" {
+		t.Errorf("the store's alias must not be overwritten: %q", b)
+	}
+	if b, _ := os.ReadFile(divs[0] + "/private"); string(b) != "profile content" {
+		t.Errorf("the divergent profile copy must be kept: %q", b)
+	}
+	if len(notes) != 2 || !strings.Contains(notes[0], "alias") || !strings.Contains(notes[1], "private") {
+		t.Errorf("each parked entry must be reported once: %v", notes)
+	}
+	if _, err := os.Lstat(from); err == nil {
+		t.Error("the migrated tree must be consumed")
+	}
+}
+
+// A session carried from profile b into profile a reached the store first as a
+// link; b's real transcript must then replace that link, never stay behind (#173).
+func TestMigrateCarriedLinkGivesWayToTheTranscript(t *testing.T) {
+	root := t.TempDir()
+	a, b, store := filepath.Join(root, "p/a/projects"), filepath.Join(root, "p/b/projects"), filepath.Join(root, "claude/projects")
+	real := filepath.Join(b, "slug/s1.jsonl")
+	mustWrite(t, real, "{}\n")
+	mustLink(t, real, filepath.Join(a, "slug/s1.jsonl"))
+	if !migrateProjects(a, store, drop) {
+		t.Fatal("migrate a")
+	}
+	if !migrateProjects(b, store, drop) {
+		t.Fatal("migrate b")
+	}
+	dest := filepath.Join(store, "slug/s1.jsonl")
+	fi, err := os.Lstat(dest)
+	if err != nil || fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("store holds %v (%v), want the real transcript", fi, err)
+	}
+	if body, _ := os.ReadFile(dest); string(body) != "{}\n" {
+		t.Fatalf("transcript body %q", body)
+	}
+}
+
+// #177: a store that refuses writes fails the migration and every original
+// stays where it was — the profile remains on its own store, whole, with no
+// backup dir created (v0.5.0 renamed the tree aside before touching the store).
+func TestMigrateProjectsLeavesTheTreeWholeWhenTheStoreRefuses(t *testing.T) {
+	from, to := migrateRoots(t)
+	mustWrite(t, from+"/a", "one")
+	mustWrite(t, from+"/sub/b", "two")
+	mustWrite(t, to+"/kept", "store content")
+	if err := os.Chmod(to, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(to, 0o755)
+	if migrateProjects(from, to, drop) {
+		t.Fatal("a store that refuses writes must fail the migration")
+	}
+	for p, want := range map[string]string{from + "/a": "one", from + "/sub/b": "two"} {
+		if b, err := os.ReadFile(p); err != nil || string(b) != want {
+			t.Errorf("%s must survive a failed migration: %q %v", p, b, err)
+		}
+	}
+	if b, _ := os.ReadFile(to + "/kept"); string(b) != "store content" {
+		t.Errorf("the store must be untouched: %q", b)
+	}
+	if left, _ := filepath.Glob(from + ".*"); len(left) != 0 {
+		t.Errorf("a failed migration must leave no backup: %v", left)
+	}
+}
+
+// #177: a file that lands under the tree while the merge consumes it — a
+// session a contended launch starts writes into the real dir, and a live
+// session appends to a transcript already copied — survives, and the profile
+// is not linked at a store that lacks it. The report hook fires after the
+// walk, while the tree is being consumed: exactly that window.
+func TestMigrateProjectsKeepsWhatArrivesWhileItMerges(t *testing.T) {
+	from, to := migrateRoots(t)
+	mustWrite(t, from+"/private", "profile content")
+	mustWrite(t, from+"/walked", "walked content\n")
+	mustWrite(t, to+"/private", "shared content")
+	arrived := false
+	ok := migrateProjects(from, to, func(string) {
+		if !arrived {
+			arrived = true
+			mustWrite(t, from+"/late/s2.jsonl", "late\n")
+			mustWrite(t, from+"/walked", "walked content\nappended\n")
+		}
+	})
+	if ok {
+		t.Fatal("a tree that changed while it was merged must not be linked away")
+	}
+	if b, err := os.ReadFile(from + "/late/s2.jsonl"); err != nil || string(b) != "late\n" {
+		t.Errorf("a file that arrived during the merge must survive: %q %v", b, err)
+	}
+	if b, err := os.ReadFile(from + "/walked"); err != nil || string(b) != "walked content\nappended\n" {
+		t.Errorf("a line appended during the merge must survive: %q %v", b, err)
+	}
+	// The walked file was copied before the append; the store keeps that copy
+	// and the profile keeps the fuller original for the next launch.
+	if b, _ := os.ReadFile(to + "/walked"); string(b) != "walked content\n" {
+		t.Errorf("the verified copy stays in the store: %q", b)
+	}
+	if _, err := os.Lstat(filepath.Join(filepath.Dir(from), filepath.Base(from))); err != nil {
+		t.Errorf("the profile's own dir must stay: %v", err)
 	}
 }

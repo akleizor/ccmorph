@@ -5,6 +5,24 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
+## Unreleased
+
+### Changed
+
+- **Session history is shared again, safely.** Every profile links
+  `projects/`, the paste cache and `history.jsonl` into `~/.claude`, so
+  `/resume`, the prompt history and pasted text see every profile's
+  sessions. The migration v0.5.0 withdrew now copies instead of renaming —
+  a destination-local temp file, fsync, a size-and-hash verify read back
+  from the store's own filesystem, and a publish that never overwrites — so
+  a store on another filesystem, reached through a link, takes every file.
+  A profile with a live session is left unchanged at launch and merges at
+  the next idle one; a divergent same-name file is kept beside `projects/`
+  and reported; a failed or overtaken merge leaves the profile on its own
+  history and the launch still succeeds. Prompt history merges under one
+  machine-wide lock and only appends the records the shared file lacks, so
+  concurrent merges and concurrent claude appends lose nothing (#177).
+
 ## v0.5.1 — 2026-11-05
 
 ### Changed

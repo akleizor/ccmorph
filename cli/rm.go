@@ -87,6 +87,24 @@ func (l *launcher) removeProfileDir(name string) bool {
 			return false
 		}
 	}
+	// Transcripts parked beside projects — the divergent duplicates the shared
+	// merge kept (#177) and v0.5.0's backups share the premigration name — exist nowhere
+	// else; they move to native history like any other, and a collision keeps
+	// the profile the same way.
+	parked := []string{}
+	for _, pat := range []string{"projects.premigration.*"} {
+		if hits, _ := filepath.Glob(filepath.Join(p, pat)); len(hits) > 0 {
+			parked = append(parked, hits...)
+		}
+	}
+	for _, d := range parked {
+		if fi, err := os.Lstat(d); err == nil && fi.IsDir() {
+			if !keepHistory(d, filepath.Join(os.Getenv("HOME"), ".claude", "projects")) {
+				l.err("kept '" + name + "': a session in its history collides with native history")
+				return false
+			}
+		}
+	}
 	if present(p) && os.RemoveAll(p) != nil {
 		return false
 	}

@@ -13,7 +13,7 @@
 ## Highlights
 
 - **One profile per backend.** Each subscription, API key or gateway gets its own
-  login, settings and session history. Skills, plugins, hooks and `CLAUDE.md`
+  login and settings. Skills, plugins, hooks, `CLAUDE.md` and session history
   stay shared.
 - **Hop mid-session.** `ccmorph hop <profile>` moves a running conversation to
   another profile, keeping its model and effort.
