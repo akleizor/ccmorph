@@ -5,7 +5,23 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
-## v0.5.0 — 2026-11-05
+## v0.5.1 — 2026-11-05
+
+### Changed
+
+- **Session history is per profile again.** v0.5.0's shared history is
+  withdrawn: on a machine whose `~/.claude/projects` lives on another volume,
+  its migration cannot move a profile's transcripts and the launch failed
+  (`could not migrate profile-local 'projects'`). A profile keeps its own
+  `projects/` as in v0.4.7. Shared history returns once its migration copies
+  across volumes (#177).
+
+### Fixed
+
+- Carries everything else v0.5.0 fixed, including `CCMORPH_MASK` no longer
+  masking ordinary English words learned from prose (#174).
+
+## v0.5.0 — 2026-11-05 (withdrawn)
 
 ### Changed
 

@@ -35,15 +35,8 @@ func migrateProjects(from, to string) bool {
 		}
 		rel := strings.TrimPrefix(f, bak+"/")
 		dest := to + "/" + rel
-		if fi, err := os.Lstat(dest); err == nil {
-			// A carried session link gives way to the transcript it points at (or
-			// to anything, once it dangles), so the real file never stays behind.
-			if fi.Mode()&fs.ModeSymlink == 0 || d.Type()&fs.ModeSymlink != 0 || !linkGivesWay(dest, f) {
-				return nil
-			}
-			if os.Remove(dest) != nil {
-				return nil
-			}
+		if _, err := os.Lstat(dest); err == nil {
+			return nil
 		}
 		if os.MkdirAll(zshH(dest), 0o777) != nil {
 			return nil
@@ -155,14 +148,4 @@ func zshH(p string) string {
 func zshT(p string) string {
 	q := strings.TrimRight(p, "/")
 	return q[strings.LastIndex(q, "/")+1:]
-}
-
-// linkGivesWay reports whether the link at dest names f or names nothing.
-func linkGivesWay(dest, f string) bool {
-	t, err := os.Stat(dest)
-	if err != nil {
-		return true
-	}
-	o, err := os.Stat(f)
-	return err == nil && os.SameFile(t, o)
 }
