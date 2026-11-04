@@ -57,9 +57,9 @@ func RedactURL(raw string) string {
 // only where no other reading exists: when no host stands at the authority —
 // Go refuses alice:pa as a port, so an @ behind it cannot be a path's — or
 // when the userinfo would be one whose digit or empty head Go mistakes for a
-// port and whose host carries a port of its own, the shape the suite has
-// always answered. Behind any other standing authority the @ may be the
-// URL's own, so no host is named for it.
+// port, whose password runs on unbroken to the @ and whose host carries a
+// port of its own, the shape the suite has always answered. Behind any other
+// standing authority the @ may be the URL's own, so no host is named for it.
 func closesUserinfo(raw string, i, at int) bool {
 	rest := raw[i+3:]
 	end := strings.IndexAny(rest, "/?#")
@@ -74,6 +74,22 @@ func closesUserinfo(raw string, i, at int) bool {
 		return true
 	}
 	if !strings.Contains(auth, ":") {
+		return false
+	}
+	// The authority stands with a port, and a digit or empty password head is
+	// the one thing that can hide in it: Go reads the head as the port. The
+	// @ closes that userinfo only while the run between the authority and it
+	// is the password's own tail — non-empty, holding no /, ? or #
+	// (alice:2024/ss@proxy:3128) — and the tail behind the @ still parses as
+	// a host that carries a port of its own, as the password's always has.
+	// Past a second separator (gw:8443/v1/@team:8080), a query's ?
+	// (gw:8443/api?x=me@corp.com:8080), a segment boundary
+	// (gw:8443/@team:8080) or a tail with no port (gw:8443/v1@team) the @
+	// may be the path's or the query's, so no host is named for it. One shape
+	// stays cut as the known limit: gw:8443/v1@team:8080 cannot be told from
+	// alice:2024/ss@proxy:3128 by anything local to the @.
+	run := rest[end+1 : at-i-3]
+	if run == "" || strings.ContainsAny(run, "/?#") {
 		return false
 	}
 	u, err := url.Parse("http://" + raw[at+1:])
