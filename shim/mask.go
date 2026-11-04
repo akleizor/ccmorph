@@ -51,6 +51,9 @@ var (
 	// all-letter password) unless it reads as code: a name of the concept, or
 	// a bare type such as password: string.
 	wordsRE = regexp.MustCompile(`^[A-Za-z-]+$`)
+	// proseRE follows a word that starts a sentence: "password: cannot be
+	// empty". Learned, such a word would be masked everywhere it appears.
+	proseRE = regexp.MustCompile(`^[ \t]+[A-Za-z]`)
 )
 
 // codeWord is an all-letter value that names the concept rather than holding
@@ -226,7 +229,7 @@ func (m *masker) find(s string) {
 			if len(loc) >= 4 && loc[2] >= 0 {
 				a, b = loc[2], loc[3]
 			}
-			if v := s[a:b]; r.ok == nil || r.ok(v) {
+			if v := s[a:b]; (r.ok == nil || r.ok(v)) && !(wordsRE.MatchString(v) && proseRE.MatchString(s[b:])) {
 				m.learn(v, r.kind)
 			}
 		}
