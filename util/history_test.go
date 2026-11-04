@@ -73,3 +73,21 @@ func TestMergeHistorySerializesTwoConcurrentMerges(t *testing.T) {
 		t.Errorf("neither profile's records may be duplicated or dropped: %q", got)
 	}
 }
+
+// #177: a file with no final newline must not glue two records on one line.
+func TestMergeHistoryKeepsRecordsApartWithoutAFinalNewline(t *testing.T) {
+	root := t.TempDir()
+	shared, own := filepath.Join(root, "s.jsonl"), filepath.Join(root, "o.jsonl")
+	mustWrite(t, shared, strings.TrimSuffix(hrec(100, "a"), "\n"))
+	mustWrite(t, own, hrec(150, "m")+strings.TrimSuffix(hrec(200, "b"), "\n"))
+	if !mergeHistory(own, shared) {
+		t.Fatal("merge failed")
+	}
+	b, err := os.ReadFile(shared)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := hrec(100, "a") + hrec(150, "m") + hrec(200, "b"); string(b) != want {
+		t.Errorf("got %q, want %q", b, want)
+	}
+}

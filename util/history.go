@@ -80,6 +80,10 @@ func mergeHistory(from, to string) bool {
 		return missing[i].ts < missing[j].ts
 	})
 	var out strings.Builder
+	// A shared file with no final newline must not glue its last record to ours.
+	if b, err := os.ReadFile(to); err == nil && len(b) > 0 && b[len(b)-1] != '\n' {
+		out.WriteString("\n")
+	}
 	for _, l := range missing {
 		out.WriteString(l.text)
 	}
@@ -148,6 +152,8 @@ func readHistory(p string) ([]string, bool) {
 	lines := strings.SplitAfter(string(b), "\n")
 	if n := len(lines); n > 0 && lines[n-1] == "" {
 		lines = lines[:n-1]
+	} else if n > 0 {
+		lines[n-1] += "\n" // an unterminated last record still compares as a record
 	}
 	return lines, true
 }

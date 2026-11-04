@@ -85,6 +85,9 @@ func secondFS(t *testing.T, base string) string {
 			return d
 		}
 	}
+	if os.Getenv("CI") != "" {
+		t.Fatal("CI must give this test a second filesystem, or the cross-volume path goes untested")
+	}
 	return ""
 }
 

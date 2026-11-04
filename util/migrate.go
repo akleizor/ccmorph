@@ -70,6 +70,12 @@ func migrateProjects(from, to string, report func(string)) bool {
 		dest := to + "/" + rel
 		if lexists(dest) {
 			switch {
+			case d.Type()&fs.ModeSymlink != 0 && sameTarget(f, dest):
+				// The profile's link already reaches this very entry in the store:
+				// only the link goes. Writing it at dest would loop onto itself.
+				tgt, _ := os.Readlink(f)
+				remove = append(remove, walked{f, fi, tgt})
+				return nil
 			case linkGivesWay(dest, f):
 				// A carried session link gives way to the transcript it points
 				// at (or to anything, once it dangles), so the real file never
@@ -296,6 +302,11 @@ func copyVerified(f, dest string) error {
 		os.Remove(name)
 		return errors.New(f + ": the copied size did not verify")
 	}
+	// A migrated session keeps its age: /resume sorts by modification time.
+	if err := os.Chtimes(name, fi.ModTime(), fi.ModTime()); err != nil {
+		os.Remove(name)
+		return err
+	}
 	// Publish without overwrite: link(2) refuses an existing dest, so a file
 	// another writer created meanwhile is never clobbered.
 	if err := os.Link(name, dest); err != nil {
@@ -308,12 +319,25 @@ func copyVerified(f, dest string) error {
 
 // linkGivesWay reports whether the link at dest names f or names nothing.
 func linkGivesWay(dest, f string) bool {
+	if !isLink(dest) {
+		return false // a real file in the store never gives way
+	}
 	t, err := os.Stat(dest)
 	if err != nil {
 		return true
 	}
 	o, err := os.Stat(f)
 	return err == nil && os.SameFile(t, o)
+}
+
+// sameTarget reports whether both paths resolve to one existing file.
+func sameTarget(a, b string) bool {
+	sa, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	sb, err := os.Stat(b)
+	return err == nil && os.SameFile(sa, sb)
 }
 
 // sameContent reports whether two paths hold the same regular content.

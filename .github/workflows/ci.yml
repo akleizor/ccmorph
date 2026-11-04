@@ -74,7 +74,13 @@ jobs:
         with:
           go-version-file: go.mod
       - name: go vet, build and test; build libexec/ccmorph-core for the suites below
-        run: go vet ./... && go build ./... && go test ./... && make shim
+        run: |
+          # A second filesystem for the cross-volume merge test; Linux has /dev/shm.
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            hdiutil create -size 32m -fs HFS+ -volname ccmsecond -attach "$RUNNER_TEMP/second.dmg"
+            export CCMORPH_TEST_SECOND_FS=/Volumes/ccmsecond
+          fi
+          go vet ./... && go build ./... && go test ./... && make shim
       - name: zsh suite
         run: zsh tests/ccmorph_test.zsh
       - name: installer suite
