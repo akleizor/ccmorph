@@ -299,6 +299,36 @@ grep -qF "\"$d/home/.claude/plugins/marketplaces/example\"" "$d/home/.claude/plu
   && ok "state-dir uninstall: the plugin repair walks the redirected profile homes" \
   || { fail "state-dir uninstall: plugin index still spelled through the profile"; cat "$d/home/.claude/plugins/known_marketplaces.json" }
 
+# --- 5c. the redirect came AFTER the profiles: the code dir holds them too (#165)
+# A later CCMORPH_STATE_DIR moves nothing (docs: Where state lives), so at
+# uninstall team.conf, its keychain ref and its profile home are still under
+# ~/.config/ccmorph, beside the code the install wrote. The report must count
+# and name them as kept user data — never as code alone — read their keychain
+# refs, and offer the directory under that honest name: following the printed
+# cleanup must never delete a profile the report did not name.
+d=$(fresh_env uninstall_prior_profiles)
+run_installer "$d" >/dev/null
+cfg="$d/home/.config/ccmorph"          # the code, and the pre-override profiles
+state="$d/moved-state"                 # where the runtime looks now
+printf 'type=apikey\napi_key=keychain:team.api_key\n' > "$cfg/team.conf"
+mkdir -p "$cfg/profiles/team" "$state"
+printf '#!/bin/sh\necho Darwin\n' > "$d/bin/uname"; chmod +x "$d/bin/uname"
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" CCMORPH_STATE_DIR="$state" \
+  zsh "$REPO/install.sh" --uninstall >"$d/out" 2>&1; rc=$?
+(( rc == 0 )) && ok "prior-profiles uninstall: exits 0" || { fail "prior-profiles uninstall rc=$rc"; cat "$d/out" }
+[[ -f "$cfg/team.conf" && -d "$cfg/profiles/team" ]] \
+  && ok "prior-profiles uninstall: leaves the pre-override profile in place" || fail "prior-profiles uninstall: deleted the pre-override profile"
+grep -qF "$state  (0 profiles," "$d/out" \
+  && ok "prior-profiles uninstall: names the redirected root with its own count" || { fail "prior-profiles uninstall: redirected root not named"; cat "$d/out" }
+grep -qF "$cfg  (the installed code, and 1 profile(s), their credentials and session history" "$d/out" \
+  && ok "prior-profiles uninstall: counts and names the pre-override profiles as user data, never as code alone" \
+  || { fail "prior-profiles uninstall: code dir named as code alone"; cat "$d/out" }
+grep -qxF "  security delete-generic-password -s ccmorph -a team.api_key" "$d/out" \
+  && ok "prior-profiles uninstall: names the pre-override profile's keychain item" || { fail "prior-profiles uninstall: keychain line missing"; cat "$d/out" }
+grep -qxF "  rm -rf $state $cfg" "$d/out" \
+  && ok "prior-profiles uninstall: the rm names both roots under the honest naming above" \
+  || { fail "prior-profiles uninstall: rm line wrong"; cat "$d/out" }
+
 # --- 6. a RE-RUN is an update: user state survives, and it says so ----------
 # The guarantee people actually care about. Profiles (which now carry their own
 # probed/manual context alongside credentials) and local.sh are never in
