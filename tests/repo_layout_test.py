@@ -15,7 +15,7 @@ from support import HANG_TIMEOUT
 ROOT = Path(__file__).resolve().parents[1]
 
 LAUNCH_SURFACE = {
-    "AGENTS.md", "CHANGELOG.md", "LICENSE", "Makefile", "README.md",
+    "AGENTS.md", "CHANGELOG.md", "INTENT.md", "LICENSE", "Makefile", "README.md",
     "install.sh", "pytest.ini", "go.mod",
     "adapter", "addons", "ordjson", "profile", "cli", "ctxwindow", "settingscompose", "assets", "bin", "cmd", "docs", "lib", "libexec", "scripts",
     "quirks", "quota", "shim", "share", "tests", "util",
