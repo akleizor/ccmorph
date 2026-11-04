@@ -13,7 +13,7 @@ import (
 // per profile. Dirs are linked even while empty; a real profile-local file is a
 // deliberate override.
 var (
-	sharedDirs  = []string{"skills", "hooks", "plugins", "commands", "output-styles", "agents", "session-env", "file-history"}
+	sharedDirs  = []string{"skills", "hooks", "plugins", "commands", "output-styles", "agents", "session-env", "file-history", "projects"}
 	sharedFiles = []string{"settings.local.json", "keybindings.json", "CLAUDE.md", ".i-have-adhd-always"}
 )
 
@@ -52,9 +52,6 @@ func ProfileOK(profiles, name string) bool {
 	dir := filepath.Join(profiles, name)
 	canonical := filepath.Join(os.Getenv("HOME"), ".claude")
 	if !isDir(dir) || isLink(dir) || !isFile(dir+"/config.json") || !isFile(dir+"/.claude.json") {
-		return false
-	}
-	if !isDir(dir+"/projects") || isLink(dir+"/projects") {
 		return false
 	}
 	for _, item := range sharedDirs {
@@ -148,16 +145,6 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 		}
 	}
 
-	// History is the profile's own: drop only a shared-history link, never its target.
-	if isLink(dir + "/projects") {
-		if os.Remove(dir+"/projects") != nil {
-			return fail("could not unlink shared history for '" + name + "'")
-		}
-	}
-	if os.MkdirAll(dir+"/projects", 0o700) != nil {
-		return fail("could not create history for '" + name + "'")
-	}
-	_ = os.Chmod(dir+"/projects", 0o700)
 	if isLink(dir + "/settings.json") {
 		if os.Remove(dir+"/settings.json") != nil {
 			return fail("could not remove legacy settings link for '" + name + "'")

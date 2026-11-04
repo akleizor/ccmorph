@@ -197,3 +197,39 @@ func TestMigrateProjectsKeepsCollisionsInBackup(t *testing.T) {
 		t.Errorf("backup private = %q", b)
 	}
 }
+
+// A session carried from profile b into profile a reached the store first as a
+// link; b's real transcript must then replace that link, never stay in b's backup.
+func TestMigrateCarriedLinkGivesWayToTheTranscript(t *testing.T) {
+	root := t.TempDir()
+	a, b, store := filepath.Join(root, "p/a/projects"), filepath.Join(root, "p/b/projects"), filepath.Join(root, "claude/projects")
+	real := filepath.Join(b, "slug/s1.jsonl")
+	mustWrite(t, real, "{}\n")
+	mustLink(t, real, filepath.Join(a, "slug/s1.jsonl"))
+	if !migrateProjects(a, store) {
+		t.Fatal("migrate a")
+	}
+	if !migrateProjects(b, store) {
+		t.Fatal("migrate b")
+	}
+	dest := filepath.Join(store, "slug/s1.jsonl")
+	fi, err := os.Lstat(dest)
+	if err != nil || fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("store holds %v (%v), want the real transcript", fi, err)
+	}
+	if body, _ := os.ReadFile(dest); string(body) != "{}\n" {
+		t.Fatalf("transcript body %q", body)
+	}
+}
+
+// A real transcript already in the store is never replaced.
+func TestMigrateKeepsAnExistingRealTranscript(t *testing.T) {
+	root := t.TempDir()
+	from, store := filepath.Join(root, "p/a/projects"), filepath.Join(root, "claude/projects")
+	mustWrite(t, filepath.Join(store, "slug/s1.jsonl"), "native\n")
+	mustWrite(t, filepath.Join(from, "slug/s1.jsonl"), "profile\n")
+	migrateProjects(from, store)
+	if body, _ := os.ReadFile(filepath.Join(store, "slug/s1.jsonl")); string(body) != "native\n" {
+		t.Fatalf("store transcript replaced: %q", body)
+	}
+}
