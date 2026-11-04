@@ -156,7 +156,11 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   # On a host that sets the override, the profiles, credentials and session
   # history live under the redirected root while CONFIG_DIR holds only the
   # installed code — a report that named CONFIG_DIR as the profiles' home would
-  # name a directory nothing lives in and never the real one (#143).
+  # name a directory nothing lives in and never the real one (#143) — unless the
+  # override came after they already lived there: a later redirect moves nothing
+  # (docs: Where state lives), so CONFIG_DIR holds the code AND those profiles,
+  # and they stay user data — counted and named beside the code, never folded
+  # into it (#165).
   _un_root="${CCMORPH_STATE_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/ccmorph}"
   # Claude Code records a plugin installed from a profile session under that
   # profile's spelling of the shared ~/.claude/plugins store. Every ccmorph run
@@ -170,6 +174,11 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   print -r -- "Removed $BIN_DIR/ccmorph."
   _un_state="${XDG_STATE_HOME:-$HOME/.local/state}/ccmorph"
   _un_profiles=("$_un_root"/*.conf(N))
+  # The confs a redirect that came later left in CONFIG_DIR: still user data,
+  # read for their count, their keychain refs and their line on the report
+  # exactly like the redirected root's (#165).
+  _un_prior=()
+  [[ "$_un_root" != "$CONFIG_DIR" ]] && _un_prior=("$CONFIG_DIR"/*.conf(N))
   _un_rm=("$_un_root")
   # With the state root redirected, the code the installer placed in CONFIG_DIR
   # is residue too: named as code — never as the profiles' home — and on the
@@ -178,18 +187,25 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   [[ -d "$CONFIG_DIR" && "$_un_root" != "$CONFIG_DIR" ]] && _un_rm+=("$CONFIG_DIR")
   [[ -d "$_un_state" ]] && _un_rm+=("$_un_state")
   # The keychain items are read off the confs, never by scanning the keychain
-  # (which prompts): a conf is the only thing that names them. `|| :` because a
-  # grep with no match exits 1, an assignment takes its substitution's status,
-  # and `set -e` would end the uninstall right there, mid-report.
+  # (which prompts): a conf is the only thing that names them, so every conf
+  # counted above is read — a redirect that came later must not hide the items
+  # its pre-override confs point at (#165). `|| :` because a grep with no match
+  # exits 1, an assignment takes its substitution's status, and `set -e` would
+  # end the uninstall right there, mid-report.
   _un_keychain=()
   if [[ "$(uname -s 2>/dev/null)" == Darwin ]]; then
-    _un_keychain=(${(f)"$(command grep -hsE '^(api_key|token)=keychain:.' "$_un_root"/*.conf(N) /dev/null || :)"})
+    _un_keychain=(${(f)"$(command grep -hsE '^(api_key|token)=keychain:.' "${_un_profiles[@]}" "${_un_prior[@]}" /dev/null || :)"})
     _un_keychain=(${_un_keychain#*=keychain:})
     _un_keychain=(${_un_keychain:#})
   fi
   print -r -- "Kept, because they are yours:"
   print -r -- "  $_un_root  (${#_un_profiles} profiles, their credentials and session history)"
-  [[ -d "$CONFIG_DIR" && "$_un_root" != "$CONFIG_DIR" ]] && print -r -- "  $CONFIG_DIR  (the installed code)"
+  # The code dir's label: code alone — unless the redirect came later and left
+  # profiles in it, in which case they are named beside the code, or following
+  # the rm below deletes a profile the report never counted (#165).
+  _un_code="the installed code"
+  (( ${#_un_prior} )) && _un_code="the installed code, and ${#_un_prior} profile(s), their credentials and session history, from before the state root was redirected"
+  [[ -d "$CONFIG_DIR" && "$_un_root" != "$CONFIG_DIR" ]] && print -r -- "  $CONFIG_DIR  ($_un_code)"
   [[ -d "$_un_state" ]] && print -r -- "  $_un_state  (usage receipts)"
   (( ${#_un_keychain} )) && print -r -- "  login keychain  (${#_un_keychain} ccmorph item(s))"
   print -r -- "To remove those too:"
