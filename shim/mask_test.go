@@ -71,7 +71,9 @@ func TestMaskRules(t *testing.T) {
 		"password = self.password", "token: ${GITHUB_TOKEN}", "max_tokens: 4096",
 		"api_key = os.environ.get_key", "password: <your password>", "pwd=abc",
 		"secret_key_base = Rails.application.secret", "the word password alone",
-		"password: string", "password = Password",
+		"password: string",
+		// A word that opens a sentence is prose, not a value (#mask-prose).
+		"Password: unable to read the vault", "/1password-1.json.age: resource deadlock avoided", "password = Password",
 	} {
 		if got := maskOne(t, m, plain); got != plain {
 			t.Errorf("masked a non-secret: %q -> %q", plain, got)
