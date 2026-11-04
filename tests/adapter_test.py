@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import shutil
 import signal
@@ -166,6 +167,37 @@ def free_port() -> int:
     port = s.getsockname()[1]
     s.close()
     return port
+
+
+def listener_outside_the_ephemeral_pool(addr: str) -> tuple[socket.socket, int]:
+    """A bound socket on addr and its port number, where the number is one no
+    parallel process can be handed. Every port the gate's processes hold — an
+    xdist worker's fake gateway or endpoint, a zsh or Go suite's listener — is
+    a bind-to-zero draw from the OS's ephemeral range (49152-65535 on macOS,
+    32768-60999 on Linux), and a number held on one address does not stop the
+    OS handing it out on another, so a draw can land on the very number held
+    here; the endpoint then finds its loopback port taken and refuses to start
+    (#176). A number below every range's floor cannot be drawn by anyone; the
+    loopback probe skips the fixed services that do live down there, and a
+    bind that loses its number draws again."""
+    for _ in range(64):
+        p = random.randrange(1024, 32768)
+        probe = socket.socket()
+        try:
+            probe.bind(("127.0.0.1", p))   # the address the endpoint will take
+        except OSError:
+            continue                       # a fixed service holds the number
+        finally:
+            probe.close()
+        other = socket.socket()
+        other.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            other.bind((addr, p))
+        except OSError:
+            other.close()
+            continue
+        return other, p
+    raise RuntimeError(f"no port below the ephemeral ranges is free on {addr}")
 
 
 class AdapterTest(unittest.TestCase):
@@ -1148,12 +1180,9 @@ class AdapterTest(unittest.TestCase):
             finder.close()
         if lan in ("0.0.0.0", "127.0.0.1"):
             self.skipTest("no second address on this machine")
-        other = socket.socket()
-        other.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        other.bind((lan, 0))
+        other, p = listener_outside_the_ephemeral_pool(lan)
         other.listen(8)
         self.addCleanup(other.close)
-        p = other.getsockname()[1]
         self.seeded_cache(id_recycle=False)
         f = self.token_file()
         proc, line = self.start_endpoint("--auto", "--model", "m-anthropic",
