@@ -830,6 +830,22 @@ sed 's/^_CCMORPH_VERSION=.*/_CCMORPH_VERSION="9.9.9"/' "$REPO/lib/ccmorph.sh" > 
 grep -qxF '_CCMORPH_VERSION="9.9.9"' "$TMP/stage99/ccmorph-main/lib/ccmorph.sh" || fail "update: could not stage the 9.9.9 tree"
 tar -czf "$TMP/src99.tar.gz" -C "$TMP/stage99" ccmorph-main
 
+# A release tree names its binary per platform, so no plain libexec/ccmorph-core
+# sits beside the source lib; the install must still finish (#180 broke this).
+mkdir -p "$TMP/stage-rel"
+cp -R "$TMP/stage/ccmorph-v1.2.3" "$TMP/stage-rel/ccmorph-main"
+rm "$TMP/stage-rel/ccmorph-main/libexec/ccmorph-core"
+_rel_os="${$(uname -s):l}"; _rel_arch="$(uname -m)"
+case "$_rel_arch" in x86_64) _rel_arch=amd64 ;; aarch64) _rel_arch=arm64 ;; esac
+cp "$REPO/libexec/ccmorph-core" "$TMP/stage-rel/ccmorph-main/libexec/ccmorph-core-$_rel_os-$_rel_arch"
+tar -czf "$TMP/src-rel.tar.gz" -C "$TMP/stage-rel" ccmorph-main
+d=$(remote_env release-asset "$TMP/src-rel.tar.gz")
+if remote_run "$d" cmd && [[ -x "$d/home/.config/ccmorph/libexec/ccmorph-core" ]]; then
+  ok "remote: a tree with only per-platform binaries installs"
+else
+  fail "remote: a tree with only per-platform binaries did not install"
+fi
+
 upd_env() {  # $1 = case; an installed tree, a stub curl serving 9.9.9, and user state
   local d; d=$(remote_env "$1" "$TMP/src99.tar.gz")
   run_installer "$d" >/dev/null

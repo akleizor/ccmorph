@@ -383,7 +383,11 @@ chmod +x "$BIN_DIR/ccmorph"
 # The SOURCE tree's lib, for the reason the migrate below states: same bytes,
 # but macOS validates a freshly copied binary's signature on its first exec,
 # and the install defers that to the first launch.
-CCMORPH_STATE_DIR="$CONFIG_DIR" CCMORPH_LIB_DIR="$SRC/lib" zsh -fc \
+# A release tarball names its binary per platform, so the source lib finds no
+# ccmorph-core there; only then does this step run the placed copy.
+_secure_lib="$SRC/lib"
+[[ -x "$SRC/libexec/ccmorph-core" ]] || _secure_lib="$CONFIG_DIR/lib"
+CCMORPH_STATE_DIR="$CONFIG_DIR" CCMORPH_LIB_DIR="$_secure_lib" zsh -fc \
   'source "$CCMORPH_LIB_DIR/ccmorph.sh"; ccmorph _secure' || exit 1
 # Consolidate legacy context state only after the owning tool is installed.
 # The migration runs the SOURCE binary, not the copy just placed — same bytes,
