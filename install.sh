@@ -380,7 +380,10 @@ for _name in ccmorph-core; do
 done
 chmod +x "$BIN_DIR/ccmorph"
 # Move profile homes through the same guarded owner used by normal launches.
-CCMORPH_STATE_DIR="$CONFIG_DIR" CCMORPH_LIB_DIR="$CONFIG_DIR/lib" zsh -fc \
+# The SOURCE tree's lib, for the reason the migrate below states: same bytes,
+# but macOS validates a freshly copied binary's signature on its first exec,
+# and the install defers that to the first launch.
+CCMORPH_STATE_DIR="$CONFIG_DIR" CCMORPH_LIB_DIR="$SRC/lib" zsh -fc \
   'source "$CCMORPH_LIB_DIR/ccmorph.sh"; ccmorph _secure' || exit 1
 # Consolidate legacy context state only after the owning tool is installed.
 # The migration runs the SOURCE binary, not the copy just placed — same bytes,
