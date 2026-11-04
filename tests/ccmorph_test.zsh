@@ -224,6 +224,7 @@ _ccm_test_sweep_on_exit() {
   local rc=$?
   (( _ccm_test_homes_exiting )) && return $rc
   _ccm_test_sweep_homes $(( _ccm_test_homes_mark + 1 ))
+  _ccm_test_remove_homes
   return $rc
 }
 
@@ -235,7 +236,18 @@ _ccm_test_sweep_on_signal() {
   (( _ccm_test_homes_exiting )) && return 0
   typeset -gi _ccm_test_homes_exiting=1
   _ccm_test_sweep_homes $(( _ccm_test_homes_mark + 1 ))
+  _ccm_test_remove_homes
   exit $(( 128 + $1 ))
+}
+
+# A test that fails before its own rm -rf, or a killed suite, would leave its
+# mktemp home in TMPDIR for good (3,775 were found on 2026-11-05). Every home
+# went through setup_home, so the exit removes them all.
+_ccm_test_remove_homes() {
+  local home
+  for home in $_ccm_test_homes; do
+    [[ $home == ${TMPDIR:-/tmp}* || $home == /tmp/* || $home == /private/* ]] && rm -rf -- "$home"
+  done
 }
 trap _ccm_test_sweep_on_exit EXIT
 trap '_ccm_test_sweep_on_signal 1' HUP
