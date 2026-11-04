@@ -97,6 +97,34 @@ func TestPrivateViewStartsUnderTheStateRunDirWhenTmpdirCannotBeWritten(t *testin
 	}
 }
 
+// A live private session's view names the claude that runs from it, so the
+// stale sweep can tell it from an orphaned one however long the session runs
+// (#166): the record holds the child claude's pid, not this helper's — a
+// SIGKILL can take the helper while claude lives on, and the view must follow
+// claude, not the helper.
+func TestPrivateViewNamesTheClaudeThatRunsFromIt(t *testing.T) {
+	real := filepath.Join(t.TempDir(), "demo")
+	os.Mkdir(real, 0o700)
+	t.Setenv("CLAUDE_CONFIG_DIR", real)
+	t.Setenv("TMPDIR", t.TempDir())
+	out := filepath.Join(t.TempDir(), "seen")
+	script := filepath.Join(t.TempDir(), "claude")
+	// The stub waits for the owner record the helper writes once it has started
+	// claude, then reports its own pid beside it: the two must be one process.
+	os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' \"$$\" > '"+out+"'\n"+
+		"d=$(dirname \"$CLAUDE_CONFIG_DIR\")\n"+
+		"i=0\nwhile [ ! -f \"$d/"+privateOwner+"\" ] && [ $i -lt 5000 ]; do i=$((i+1)); done\n"+
+		"cat \"$d/"+privateOwner+"\" 2>/dev/null >> '"+out+"'\nexit 7\n"), 0o755)
+	if rc := privateSession(script, nil, "", func() {}, &strings.Builder{}); rc != 7 {
+		t.Fatalf("rc %d, want claude's own 7", rc)
+	}
+	b, _ := os.ReadFile(out)
+	f := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(f) != 2 || f[0] == "" || f[0] != f[1] {
+		t.Fatalf("owner record %q, want the pid of the claude that ran", string(b))
+	}
+}
+
 func TestPrivateViewLinksConfigButNotSessionState(t *testing.T) {
 	real := filepath.Join(t.TempDir(), "demo")
 	for _, n := range []string{"settings.json", "projects", ".claude.json"} {

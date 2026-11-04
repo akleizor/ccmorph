@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -23,6 +24,11 @@ var maskedKeys = []string{"CCMORPH_RANDOM_DEVICE_ID", "CCMORPH_AFFINITY_HEADER",
 // privateSkip stays out of a private view: the session's own transcripts and state.
 var privateSkip = []string{"projects", "sessions", "session-env", "file-history", "history.jsonl",
 	"shell-snapshots", "paste-cache", "debug", "todos", "tasks", "plans", "backups"}
+
+// privateOwner is the file inside a private view's root naming the claude pid
+// that runs from the view: the stale sweep reaps the view only once that
+// process is gone, however long the session ran (#166).
+const privateOwner = "ccmorph-owner"
 
 // claudeSession is `util claude-session <tuning> <profile keys> <launch keys>
 // <backend keys> <launch env> -- <claude args...>`, each key list space-separated.
@@ -175,8 +181,10 @@ func execErr(err error, errw io.Writer) int {
 // when claude exits. The view sits under TMPDIR, or under runDir (the launch's
 // state dir's run/, 0700) when TMPDIR cannot be written — the same fallback root
 // the launch env file uses (#140). A launcher that sends no runDir leaves the
-// state dir to be derived here. TERM and HUP are forwarded to claude; INT and QUIT
-// are claude's own (Ctrl-C keeps the session), so this process ignores them.
+// state dir to be derived here. The view's root records claude's pid for gc-stale
+// (#166): the defer below dies with a SIGKILL, and a view whose claude still runs
+// must survive the sweep. TERM and HUP are forwarded to claude; INT and QUIT are
+// claude's own (Ctrl-C keeps the session), so this process ignores them.
 func privateSession(bin string, args []string, runDir string, say func(), errw io.Writer) int {
 	sigs := make(chan os.Signal, 4)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT)
@@ -233,6 +241,13 @@ func privateSession(bin string, args []string, runDir string, say func(), errw i
 	if err := cmd.Start(); err != nil {
 		return execErr(err, errw)
 	}
+	// The sweep follows claude's pid, never this helper's: a SIGKILL can take
+	// this process while claude lives on, and the view must follow claude. A
+	// record that never lands — the write failed, or this process died in the
+	// moment — puts the view out of the sweep's reach for good: with no
+	// record, age cannot tell a live session from a dead one, so the sweep
+	// takes no view on age alone.
+	_ = os.WriteFile(filepath.Join(tmp, privateOwner), []byte(strconv.Itoa(cmd.Process.Pid)), 0o600)
 	done := make(chan struct{})
 	go func() {
 		for {
