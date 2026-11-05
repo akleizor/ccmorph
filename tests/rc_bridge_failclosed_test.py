@@ -13,16 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, port_outside_the_ephemeral_pool
 
 ADDON = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "rc_addon.py"
 MITMDUMP = shutil.which("mitmdump")
-
-
-def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
 
 
 @pytest.mark.skipif(not MITMDUMP, reason="mitmdump not installed")
@@ -30,7 +24,10 @@ def test_dead_route_fails_closed_and_key_file_is_consumed(tmp_path):
     key_file = tmp_path / "route-key"
     key_file.write_text("route-key")
     key_file.chmod(0o600)
-    port, dead = _free_port(), _free_port()
+    port = port_outside_the_ephemeral_pool()
+    dead = port_outside_the_ephemeral_pool()
+    while dead == port:                      # two draws of one 31744-value space
+        dead = port_outside_the_ephemeral_pool()   # can meet; the route must stay dead
     env = dict(os.environ, RC_UPSTREAM=f"http://127.0.0.1:{dead}", RC_KEY_FILE=str(key_file),
                RC_PARENT_PID=str(os.getpid()))
     proxy = subprocess.Popen(
@@ -105,7 +102,7 @@ def test_launcher_proxy_never_falls_back_to_anthropic(tmp_path):
     key_file.write_text("route-key")
     script = rc.private_addon(tmp_path)
     assert script.parent != ADDON.parent and script.read_bytes() == ADDON.read_bytes()
-    port = _free_port()
+    port = port_outside_the_ephemeral_pool()
     env = dict(os.environ, RC_UPSTREAM=f"http://127.0.0.1:{upstream.server_address[1]}",
                RC_KEY_FILE=str(key_file), RC_PARENT_PID=str(os.getpid()))
     proxy = subprocess.Popen(rc.proxy_command(MITMDUMP, port, tmp_path / "mitm", script),
@@ -160,7 +157,7 @@ def test_addon_dated_epoch_still_loads(tmp_path):
     assert script.stat().st_mtime > 0
     key_file = tmp_path / "route-key"
     key_file.write_text("route-key")
-    port = _free_port()
+    port = port_outside_the_ephemeral_pool()
     env = dict(os.environ, RC_UPSTREAM="http://127.0.0.1:9", RC_KEY_FILE=str(key_file),
                RC_PARENT_PID=str(os.getpid()))
     proxy = subprocess.Popen(rc.proxy_command(MITMDUMP, port, tmp_path / "mitm", script),

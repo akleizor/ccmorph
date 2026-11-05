@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import os
-import random
 import re
 import shutil
 import signal
@@ -24,7 +23,8 @@ import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from support import CORE, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, adapter_cmd
+from support import (CORE, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, adapter_cmd,
+                     port_outside_the_ephemeral_pool)
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -160,15 +160,6 @@ XFF_SEEN: list[str | None] = []
 UPSTREAM: list[tuple[str, dict, bytes]] = []
 
 
-def free_port() -> int:
-    """A loopback port that is free right now: bind, read it, close."""
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
-
-
 def listener_outside_the_ephemeral_pool(addr: str) -> tuple[socket.socket, int]:
     """A bound socket on addr and its port number, where the number is one no
     parallel process can be handed. Every port the gate's processes hold — an
@@ -181,14 +172,7 @@ def listener_outside_the_ephemeral_pool(addr: str) -> tuple[socket.socket, int]:
     loopback probe skips the fixed services that do live down there, and a
     bind that loses its number draws again."""
     for _ in range(64):
-        p = random.randrange(1024, 32768)
-        probe = socket.socket()
-        try:
-            probe.bind(("127.0.0.1", p))   # the address the endpoint will take
-        except OSError:
-            continue                       # a fixed service holds the number
-        finally:
-            probe.close()
+        p = port_outside_the_ephemeral_pool()
         other = socket.socket()
         other.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
@@ -1039,7 +1023,7 @@ class AdapterTest(unittest.TestCase):
         import urllib.request
         self.install_serving_stub_translator()
         self.seeded_cache(id_recycle=True)
-        p = free_port()
+        p = port_outside_the_ephemeral_pool()
         token = "h" * 40
         f = self.token_file(token)
         proc, line = self.start_endpoint("--auto", "--model", "m-anthropic",
@@ -1079,7 +1063,7 @@ class AdapterTest(unittest.TestCase):
         script = self.home / ".config/ccmorph/lib/ccmorph.sh"
         script.write_text(script.read_text().replace(
             "}\n", '  print "CCMORPH_RANDOM_DEVICE_ID=1"\n}\n'))
-        p = free_port()
+        p = port_outside_the_ephemeral_pool()
         token = "h" * 40
         f = self.token_file(token)
         # No translator installed: reaching PORT= at all proves the native
@@ -1115,7 +1099,7 @@ class AdapterTest(unittest.TestCase):
         # after a mere check, it would sit free for all of that, and whoever
         # grabbed it would collect the readiness probe's credential and
         # could answer 200 for a PORT= that points at itself.
-        p = free_port()
+        p = port_outside_the_ephemeral_pool()
         f = self.token_file()
         proc = subprocess.Popen(
             [*adapter_cmd(), "p", "--port", str(p),
@@ -1147,12 +1131,14 @@ class AdapterTest(unittest.TestCase):
         # A listener that closes a live connection first leaves TIME_WAIT on
         # its own port, and a bare bind refuses it. Restarting the long-lived
         # endpoint on such a port must still work: the reservation and the
-        # shim both bind with SO_REUSEADDR.
+        # shim both bind with SO_REUSEADDR. The port is drawn from below the
+        # ephemeral floors because the endpoint rebinds it only after srv
+        # releases it: a number from the pool could be taken first.
+        p = port_outside_the_ephemeral_pool()
         srv = socket.socket()
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        srv.bind(("127.0.0.1", 0))
+        srv.bind(("127.0.0.1", p))
         srv.listen(1)
-        p = srv.getsockname()[1]
         client = socket.create_connection(("127.0.0.1", p), timeout=HANG_TIMEOUT)
         conn, _ = srv.accept()
         conn.close()   # the server closes first: TIME_WAIT lands on :p

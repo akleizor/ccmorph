@@ -1,5 +1,7 @@
 """The suite's shared hang-detection bound; imported by the tests that wait on a real process."""
 import os
+import random
+import socket
 from pathlib import Path
 
 
@@ -17,6 +19,31 @@ HANG_TIMEOUT = float(os.environ.get("CCMORPH_TEST_HANG_TIMEOUT", "120"))
 # macOS; conftest.py patches that away for in-process servers, and a subprocess
 # needs the same line itself. No fake here uses the name it would find.
 FAKE_SERVER_NO_DNS = "import socket\nsocket.getfqdn = lambda name='': name\n"
+
+
+def port_outside_the_ephemeral_pool() -> int:
+    """A loopback port number for a test whose subject binds a port the test
+    chose — the adapter's --port, a shim's listen port, a route that must stay
+    dead — where no parallel process can be handed the number while the test
+    waits for that bind. A number drawn by binding port 0 comes from the OS's
+    ephemeral range (49152-65535 on macOS, 32768-60999 on Linux), the same
+    system-wide pool every parallel gate process draws from, so between the
+    draw and the bind another worker's listener, shim or outbound source port
+    can take it and a full gate fails a test that is green alone (#176, #188).
+    A number below every range's floor cannot be drawn by a bind-to-zero at
+    all; the probe skips the fixed services that do live down there, and a
+    bind that loses its number draws again."""
+    for _ in range(64):
+        p = random.randrange(1024, 32768)
+        s = socket.socket()
+        try:
+            s.bind(("127.0.0.1", p))
+        except OSError:
+            continue                       # a fixed service holds the number
+        finally:
+            s.close()
+        return p
+    raise RuntimeError("no port below the ephemeral ranges is free on 127.0.0.1")
 
 
 # The compiled core (`make shim`): adapter, shim and helper verbs are its subcommands.

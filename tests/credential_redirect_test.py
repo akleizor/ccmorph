@@ -1,5 +1,4 @@
 """Cross-origin redirects must not carry the API key (issue #10)."""
-import contextlib
 import http.server
 import os
 import socket
@@ -10,7 +9,7 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-from support import HANG_TIMEOUT, SHIM, needs_shim
+from support import HANG_TIMEOUT, SHIM, needs_shim, port_outside_the_ephemeral_pool
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -28,14 +27,6 @@ def serve(handler):
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
-
-
-@contextlib.contextmanager
-def socket_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    yield port
 
 
 def wait_port(port):
@@ -83,20 +74,20 @@ class CredentialRedirect(unittest.TestCase):
     @needs_shim
     def test_shim_refuses_cross_origin_redirect_with_key(self):
         seen, base = self._redirect_fixture()
-        with socket_port() as port:
-            shim = subprocess.Popen([*SHIM, str(port), base],
-                                    stdout=subprocess.DEVNULL, env=clean_env())
+        port = port_outside_the_ephemeral_pool()
+        shim = subprocess.Popen([*SHIM, str(port), base],
+                                stdout=subprocess.DEVNULL, env=clean_env())
+        try:
+            wait_port(port)
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/models",
+                                         headers={"x-api-key": "sk-REDIRECT-CANARY"})
             try:
-                wait_port(port)
-                req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/models",
-                                             headers={"x-api-key": "sk-REDIRECT-CANARY"})
-                try:
-                    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-                    opener.open(req, timeout=HANG_TIMEOUT).read()
-                except Exception:
-                    pass
-            finally:
-                shim.kill()
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                opener.open(req, timeout=HANG_TIMEOUT).read()
+            except Exception:
+                pass
+        finally:
+            shim.kill()
         self.assertTrue(self.origin_hits, "the request never reached the fixture")
         self.assertEqual([h for h in seen if "sk-REDIRECT-CANARY" in str(h)], [],
                          "shim forwarded the key to another origin")

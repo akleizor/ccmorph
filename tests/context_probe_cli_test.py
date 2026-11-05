@@ -14,7 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from support import FAKE_SERVER_NO_DNS, HANG_TIMEOUT, helper_cmd  # noqa: F401
+from support import (FAKE_SERVER_NO_DNS, HANG_TIMEOUT, helper_cmd,  # noqa: F401
+                     port_outside_the_ephemeral_pool)
 
 
 def serve(handler_cls):
@@ -173,11 +174,8 @@ def test_excluded_models_are_not_reported_unresolved(gateway):
 
 
 def test_a_gateway_that_is_down_is_explained(gateway):
-    import socket
     fx = gateway([])
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
+    port = port_outside_the_ephemeral_pool()
     (fx.lib / "ccmorph.sh").write_text(
         'ccmorph() { printf "%s\\n" "ANTHROPIC_API_KEY=k" "ANTHROPIC_BASE_URL=http://127.0.0.1:' + str(port) + '"; }\n')
     result = fx.run("--profile", "gw")

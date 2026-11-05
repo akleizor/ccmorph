@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -88,6 +89,30 @@ func jsonReply(w http.ResponseWriter, v any) {
 	body, _ := json.Marshal(v)
 	w.Header().Set("content-type", "application/json")
 	w.Write(body)
+}
+
+// portOutsideTheEphemeralPool is a loopback port number for a test whose
+// subject binds a port the test chose, where no parallel process can be
+// handed the number while the test waits for that bind. A 127.0.0.1:0 draw
+// comes from the OS's ephemeral range (49152-65535 on macOS, 32768-60999 on
+// Linux), the pool every parallel gate process draws from, so between the
+// draw and the bind another worker can take it and a full gate fails a test
+// that is green alone (#176, #188). A number below every range's floor cannot
+// be drawn by a bind-to-zero; the probe skips the fixed services that live
+// down there, and a lost bind draws again.
+func portOutsideTheEphemeralPool(t *testing.T) int {
+	t.Helper()
+	for range 64 {
+		p := 1024 + rand.IntN(32768-1024)
+		l, err := net.Listen("tcp4", "127.0.0.1:"+strconv.Itoa(p))
+		if err != nil {
+			continue // a fixed service holds the number
+		}
+		l.Close()
+		return p
+	}
+	t.Fatal("no port below the ephemeral ranges is free on 127.0.0.1")
+	return 0
 }
 
 // decoy is a listener standing in for an ambient http_proxy; it counts hits.
@@ -495,7 +520,7 @@ func TestNativeLaunchRejectsMappedChatBeforeUpstreamPost(t *testing.T) { // test
 			swap(t, &profileDirs, dir)
 			var required string
 			swap(t, &classifyFn, func(_, _, _, req string, _ bool) ([]Row, error) { required = req; return []Row{row("anthropic")}, nil })
-			edge, _ := freePort()
+			edge := portOutsideTheEphemeralPool(t)
 			swap(t, &freePortFn, func() (int, error) { return edge, nil })
 			swap(t, &exitFn, func(int) { runtime.Goexit() })
 			exiting.Store(false)
