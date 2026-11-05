@@ -46,6 +46,12 @@ not transfer ownership of those tools.
   own shared-plugin topology; package intent, installation, wiring, cache contents,
   and marketplace source identity remain with apm and Claude.
   Permission bypass remains an explicit host opt-in.
+- **Intent note (2026-11-05).** Sharing session history across profiles (#177,
+  #185) knowingly departs from INTENT.md promise 3's "neither changes the
+  other's ... history": every profile links `projects/`, the paste cache and
+  `history.jsonl` into `~/.claude`, so one profile's sessions and prompt history
+  are visible to another. The promise is the maintainers' to restate or the
+  sharing to narrow; this record names the disagreement and does not settle it.
 - A convenience feature must fit this boundary in every delivery path: source
   installer, launcher, recovery, tests, and documentation.
   Shorter typing never justifies taking over a neighboring tool.

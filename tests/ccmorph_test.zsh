@@ -10830,6 +10830,25 @@ test_removing_profiles_never_loses_a_carried_transcript() {
   return $rc
 }
 
+test_removing_a_profile_under_a_glob_named_home_keeps_parked_transcripts() {
+  # #185: the park rescue globbed the unquoted profile path. A state or home
+  # path holding `[` made the pattern malformed, the error was dropped, and
+  # os.RemoveAll then deleted the parked transcripts that exist nowhere else.
+  local base; base=$(mktemp -d)
+  local test_home="$base/h[x"; mkdir -p "$test_home"; setup_home "$test_home"
+  source "$CCMORPH_SOURCE"
+  local rc=0 P="$HOME/.config/ccmorph/profiles"
+  mkdir -p "$P/e/projects.premigration.1.1/p"
+  print -r -- park-free > "$P/e/projects.premigration.1.1/p/S2.jsonl"
+  _ccm_remove_profile_dir e || rc=1
+  [[ "$(<"$HOME/.claude/projects/p/S2.jsonl")" == park-free ]] ||
+    { print -u2 'a parked transcript under a glob-named home must move to native history, not vanish'; rc=1; }
+  [[ ! -e "$P/e" ]] ||
+    { print -u2 'a rescued profile must still be removed'; rc=1; }
+  rm -rf "$base"
+  return $rc
+}
+
 test_native_resume_carries_into_native_history_even_inside_a_profile() {
   # Review of #464: a no-profile launch runs claude on ~/.claude whatever
   # CLAUDE_CONFIG_DIR the calling shell has.
@@ -10895,6 +10914,7 @@ test_resume_by_id_reaches_another_profiles_session() {
 run_test test_profile_history_is_shared_and_a_real_dir_merges
 run_test test_removing_a_profile_keeps_its_history_resumable
 run_test test_removing_profiles_never_loses_a_carried_transcript
+run_test test_removing_a_profile_under_a_glob_named_home_keeps_parked_transcripts
 run_test test_native_resume_carries_into_native_history_even_inside_a_profile
 run_test test_hop_carries_the_one_session_into_the_target_history
 run_test test_resume_by_id_reaches_another_profiles_session

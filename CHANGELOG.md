@@ -22,6 +22,22 @@
   history and the launch still succeeds. Prompt history merges under one
   machine-wide lock and only appends the records the shared file lacks, so
   concurrent merges and concurrent claude appends lose nothing (#177).
+  This knowingly departs from INTENT.md promise 3, where one profile's history
+  is its own; the disagreement is recorded in `docs/ARCHITECTURE.md` (2026-11-05
+  intent note) for the maintainers' decision.
+
+### Fixed
+
+- A session carried by `hop` keeps its sidecar transcripts when the source
+  profile's history merges; a shared store on an unmounted volume no longer
+  fails every launch with `cannot create profile` (the profile runs on its
+  own history and the next launch merges); a store without hard links takes
+  transcripts; a merge never swaps shared history under a launching or live
+  session, and copies never consume a prompt appended mid-merge; prompt
+  history shares on a home where claude only runs through ccmorph;
+  `ccmorph rm` keeps parked transcripts under a state path holding glob
+  characters; and `cleanupPeriodDays` is honoured from the base settings
+  alone (#185).
 
 ## v0.5.1 — 2026-11-05
 

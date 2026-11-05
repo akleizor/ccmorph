@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/akleizor/ccmorph/profile"
 )
@@ -53,6 +55,20 @@ func isLink(p string) bool {
 
 func lexists(p string) bool { _, err := os.Lstat(p); return err == nil }
 
+// linkTargetIs reports whether the link at p spells path; a resolution would
+// follow a dangling store link to nowhere, so the spelled target is compared
+// (#185).
+func linkTargetIs(p, path string) bool {
+	t, err := os.Readlink(p)
+	if err != nil {
+		return false
+	}
+	if !filepath.IsAbs(t) {
+		t = filepath.Join(filepath.Dir(p), t)
+	}
+	return filepath.Clean(t) == filepath.Clean(path)
+}
+
 // ProfileOK reports whether the profile is fully provisioned (auth files, its
 // history shared, the shared layer linked), so a launch needs no lock and no write.
 func ProfileOK(profiles, name string) bool {
@@ -81,11 +97,11 @@ func ProfileOK(profiles, name string) bool {
 	}
 	// Prompt history shares like the dirs, but a real profile-local file is
 	// content to merge, not a deliberate override, so only a link at the
-	// shared file passes (#177).
-	if h := canonical + "/history.jsonl"; isFile(h) {
-		if !isLink(dir+"/history.jsonl") || resolved(dir+"/history.jsonl") != resolved(h) {
-			return false
-		}
+	// shared file passes (#177, #185: a missing shared file is not provisioned
+	// either — setup creates it, and skipping the check left the history
+	// per-profile forever on a home claude only ever runs through ccmorph).
+	if h := canonical + "/history.jsonl"; !isLink(dir+"/history.jsonl") || resolved(dir+"/history.jsonl") != resolved(h) {
+		return false
 	}
 	return true
 }
@@ -108,22 +124,49 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 	}
 	unlock, serialized := setupSerialize(profiles, name)
 	defer unlock()
+	live := HoldLive(profiles, name, log)
+	// #185: the merge runs only while this launch is the sole holder of the
+	// profile's live lock. Another launch may have registered after the pid
+	// sample below, or not yet at all; the lock covers its whole session.
+	exclusive := false
+	if serialized && live != nil {
+		if syscall.Flock(int(live.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil {
+			exclusive = true
+			defer syscall.Flock(int(live.Fd()), syscall.LOCK_SH) // back to live, for claude
+		}
+	}
 	pids := liveSessions(dir)
 	// A live session's sandbox watches the dirs its config tree resolves
 	// through, and its transcript appends reopen by pathname: swapping
 	// projects/ or history.jsonl under it quarantines or loses writes. Busy
 	// means the launch goes ahead on the profile's own history, unchanged —
 	// never a failure, never a half-migrated dir (#177).
-	busy := !serialized || len(pids) > 0
+	busy := !serialized || !exclusive || len(pids) > 0
+	if serialized && !exclusive {
+		log("another launch of '" + name + "' is live or starting; shared history left unchanged")
+	}
 	if len(pids) > 0 {
 		log("profile '" + name + "' has live session(s) " + strings.Join(pidsText(pids), ",") + "; shared history left unchanged")
 	}
 	if !serialized {
 		log("setup lock for '" + name + "' is held elsewhere; shared history left unchanged")
 	}
-	for _, d := range append([]string{dir}, prefixed(canonical, sharedDirs)...) {
-		if os.MkdirAll(d, 0o777) != nil {
-			return fail("cannot create profile '" + name + "'")
+	if os.MkdirAll(dir, 0o777) != nil {
+		return fail("cannot create profile '" + name + "'")
+	}
+	// #185: a shared history store may sit on a volume that is not mounted —
+	// ~/.claude/projects as a link to another disk. Its absence is logged and
+	// the profile keeps its own history; only the rest of the shared layer is
+	// required to provision.
+	unreachable := map[string]bool{}
+	for _, d := range sharedDirs {
+		src := canonical + "/" + d
+		if os.MkdirAll(src, 0o777) != nil {
+			if !historyShares[d] {
+				return fail("cannot create profile '" + name + "'")
+			}
+			unreachable[d] = true
+			log("shared '" + d + "' at '" + src + "' cannot be reached; profile '" + name + "' stays on its own '" + d + "'")
 		}
 	}
 	// Best effort: mkdir already set the mode, and a filesystem refusing chmod must
@@ -137,6 +180,22 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 
 	for _, item := range append(append([]string{}, sharedDirs...), sharedFiles...) {
 		src, link := canonical+"/"+item, dir+"/"+item
+		if unreachable[item] {
+			// #185: the store cannot be reached, so the profile keeps a real
+			// dir of its own; a link into the missing store is replaced.
+			if isLink(link) && linkTargetIs(link, src) {
+				if busy {
+					continue
+				}
+				if os.Remove(link) != nil {
+					return fail("could not unlink '" + item + "' for '" + name + "'")
+				}
+			}
+			if !lexists(link) && os.MkdirAll(link, 0o777) != nil {
+				return fail("cannot create profile '" + name + "'")
+			}
+			continue
+		}
 		if !lexists(src) {
 			continue
 		}
@@ -145,7 +204,7 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 			if resolved(link) == resolved(src) {
 				continue
 			}
-			if item != "projects" {
+			if !historyShares[item] {
 				return fail("'" + item + "' for '" + name + "' points outside the shared store")
 			}
 			// #177: the profile's history lives on the user's own store,
@@ -211,10 +270,24 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 		}
 	}
 
+	// #185: transcripts parked beside the profile (a v0.5.0 launch, an earlier
+	// failed merge) exist nowhere else; merge them into the shared store or
+	// report them, so their sessions return to /resume.
+	if !busy && !unreachable["projects"] {
+		mergeParks(dir, canonical+"/projects", log)
+	}
+
 	// Prompt history: the profile's records merge into the shared file,
 	// chronologically, and the profile links at it (#177). Never while a
 	// session lives — the file it appends to must not change under it.
 	hSrc, hLink := canonical+"/history.jsonl", dir+"/history.jsonl"
+	if !busy && !lexists(hSrc) {
+		// #185: nothing creates the shared file on a home claude only ever runs
+		// through ccmorph, and the link below is only made when it exists.
+		if f, err := os.OpenFile(hSrc, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600); err == nil {
+			f.Close()
+		}
+	}
 	if !busy && (isFile(hSrc) || (lexists(hLink) && !isDir(hLink))) {
 		switch {
 		case isLink(hLink) && resolved(hLink) == resolved(hSrc):
@@ -223,6 +296,15 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 			return fail("could not share history for '" + name + "'")
 		case !lexists(hLink):
 			if os.Symlink(hSrc, hLink) != nil {
+				return fail("could not share history for '" + name + "'")
+			}
+		case sameTarget(hLink, hSrc):
+			// #185: the shared store links at this profile's own real file.
+			// Merging it would delete the link's target and leave a loop, so
+			// the store path becomes the real file (copied, so another disk is
+			// fine) and the profile links at it.
+			if os.Remove(hSrc) != nil || copyVerified(hLink, hSrc) != nil ||
+				os.Remove(hLink) != nil || os.Symlink(hSrc, hLink) != nil {
 				return fail("could not share history for '" + name + "'")
 			}
 		default:
@@ -242,6 +324,71 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 		}
 	}
 	return true
+}
+
+// lockWait bounds every lock the launch path takes: a holder stuck on a
+// stalled volume defers the work to the next launch instead of hanging the
+// session, which INTENT promise 8 forbids (#185). Tests shorten it.
+var lockWait = 2 * time.Second
+
+// flockWithin takes how on f, retrying without blocking until lockWait
+// expires; false means the lock is held by someone else and the caller must
+// go on without it.
+func flockWithin(f *os.File, how int) bool {
+	deadline := time.Now().Add(lockWait)
+	for {
+		if syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB) == nil {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// liveLaunches holds one shared-lock descriptor per profile live lock path for
+// the life of the process (#185).
+var (
+	liveMu  sync.Mutex
+	liveFDs = map[string]*os.File{}
+)
+
+// HoldLive takes the profile's live lock shared and keeps it for the life of
+// the process. The launcher calls it before a session starts, so the lock covers
+// the session from before claude writes sessions/<pid>.json until claude exits:
+// a setup that samples the pid list in that window cannot see it and must not
+// merge under it. A launch that finds the lock held exclusively waits, with a
+// line in the log, for that merge to finish — a merge is file I/O only and
+// never a prompt, so the wait is brief. The descriptor is cached per lock path,
+// so repeated calls in one process share it (an exclusive take is an upgrade of
+// this same descriptor). nil means the lock could not be taken; the caller then
+// defers the merge rather than risk a swap.
+func HoldLive(profiles, name string, log func(string)) *os.File {
+	lock := filepath.Join(filepath.Dir(profiles), ".locks", name+".live")
+	liveMu.Lock()
+	defer liveMu.Unlock()
+	if f, ok := liveFDs[lock]; ok {
+		return f
+	}
+	if os.MkdirAll(filepath.Dir(lock), 0o700) != nil {
+		return nil
+	}
+	f, err := os.OpenFile(lock, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil
+	}
+	if syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB) != nil {
+		if log != nil {
+			log("waiting for another launch of '" + name + "' to finish linking its shared history")
+		}
+		if !flockWithin(f, syscall.LOCK_SH) {
+			f.Close()
+			return nil // a stuck holder: the launch goes on, the merge defers
+		}
+	}
+	liveFDs[lock] = f
+	return f
 }
 
 // setupSerialize takes the profile's setup lock — the same flock rm, set and

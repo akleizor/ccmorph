@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -374,5 +375,127 @@ func TestMigrateKeepsTheModificationTime(t *testing.T) {
 	}
 	if !fi.ModTime().Equal(old) {
 		t.Errorf("mtime %v, want %v", fi.ModTime(), old)
+	}
+}
+
+// #185: hop plants the transcript AND its sidecar dir as links into the source
+// profile's tree. When the source later merges, the sidecar dir link must give
+// way first, so the subagent transcripts are copied into the store — before
+// this fix the parent resolved through the link, os.SameFile answered true, and
+// the removal deleted them from both places.
+func TestMigrateCarriedSidecarDirKeepsItsFiles(t *testing.T) {
+	root := t.TempDir()
+	from, to := filepath.Join(root, "p/projects"), filepath.Join(root, "claude/projects")
+	mustWrite(t, from+"/slug/S.jsonl", "main\n")
+	mustWrite(t, from+"/slug/S/subagents/a.jsonl", "sub\n")
+	mustLink(t, from+"/slug/S.jsonl", to+"/slug/S.jsonl")
+	mustLink(t, from+"/slug/S", to+"/slug/S")
+	if !migrateProjects(from, to, drop) {
+		t.Fatal("the merge must complete")
+	}
+	if fi, err := os.Lstat(to + "/slug/S"); err != nil || fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("the store's sidecar dir must be a real dir: %v %v", fi, err)
+	}
+	if b, err := os.ReadFile(to + "/slug/S/subagents/a.jsonl"); err != nil || string(b) != "sub\n" {
+		t.Fatalf("the sidecar transcript must reach the store: %q %v", b, err)
+	}
+	if fi, err := os.Lstat(to + "/slug/S.jsonl"); err != nil || fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("the store's transcript must be a real file: %v %v", fi, err)
+	}
+	if b, _ := os.ReadFile(to + "/slug/S.jsonl"); string(b) != "main\n" {
+		t.Fatalf("transcript body %q", b)
+	}
+	consumed(t, from)
+}
+
+// #185: a walk-time stat failure leaves no FileInfo; stillUnchanged must answer
+// false (keep the file) instead of dereferencing nil and killing the core.
+func TestStillUnchangedWithoutAWalkTimeStatKeepsTheFile(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "s.jsonl")
+	mustWrite(t, p, "x\n")
+	if stillUnchanged(walked{f: p}) {
+		t.Fatal("an entry with no walk-time stat must not be called unchanged")
+	}
+}
+
+// #185: a profile's absolute link whose target is the very store path it would
+// be written to (the target was pruned) was re-created as a link to itself. It
+// is parked beside the profile instead, never published as an ELOOP entry.
+func TestMigrateProjectsParksALinkToItsOwnStorePath(t *testing.T) {
+	from, to := migrateRoots(t)
+	want := to + "/slug/x.jsonl"
+	mustLink(t, want, from+"/slug/x.jsonl")
+	if !migrateProjects(from, to, drop) {
+		t.Fatal("the merge must complete")
+	}
+	if _, err := os.Lstat(want); err == nil {
+		t.Fatal("a link to the store path it would be written to must not be published")
+	}
+	parks, _ := filepath.Glob(from + ".premigration.*")
+	if len(parks) != 1 {
+		t.Fatalf("want one park beside the profile, got %v", parks)
+	}
+	got, err := os.Readlink(parks[0] + "/slug/x.jsonl")
+	if err != nil || got != want {
+		t.Fatalf("the park must hold the literal link (%q %v)", got, err)
+	}
+}
+
+// #185: a store on exFAT, FAT or an SMB mount refuses link(2). The verified
+// copy is published by a reserved rename instead, and the transcript joins the
+// store rather than every launch reporting an incomplete merge.
+func TestMigrateProjectsWithoutHardLinks(t *testing.T) {
+	from, to := migrateRoots(t)
+	mustWrite(t, from+"/slug/s.jsonl", "x\n")
+	linkFile = func(a, b string) error {
+		return &os.LinkError{Op: "link", Old: a, New: b, Err: syscall.ENOTSUP}
+	}
+	t.Cleanup(func() { linkFile = os.Link })
+	if !migrateProjects(from, to, drop) {
+		t.Fatal("a store without hard links must still take the transcript")
+	}
+	if b, err := os.ReadFile(to + "/slug/s.jsonl"); err != nil || string(b) != "x\n" {
+		t.Fatalf("the transcript must reach the store: %q %v", b, err)
+	}
+	if left, _ := filepath.Glob(to + "/slug/.ccm-copy-*"); len(left) != 0 {
+		t.Errorf("no temp file may remain: %v", left)
+	}
+	consumed(t, from)
+}
+
+// #185/#177: a line appended to a divergent file while its park copy runs is
+// measured before the copy, the way the store-copy guard measures it at the
+// walk. The original stays with the line; the parked copy is already safe.
+func TestMigrateDivergentParkKeepsALineAppendedDuringItsCopy(t *testing.T) {
+	from, to := migrateRoots(t)
+	mustWrite(t, from+"/dup", "profile\n")
+	mustWrite(t, to+"/dup", "shared\n")
+	appended := false
+	ok := migrateProjects(from, to, func(string) {
+		if appended {
+			return
+		}
+		appended = true
+		f, err := os.OpenFile(from+"/dup", os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		if _, err := f.WriteString("late\n"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if ok {
+		t.Fatal("a tree that changed while it merged must not be called consumed")
+	}
+	if b, err := os.ReadFile(from + "/dup"); err != nil || string(b) != "profile\nlate\n" {
+		t.Fatalf("the original must keep the line appended during the park copy: %q %v", b, err)
+	}
+	parks, _ := filepath.Glob(from + ".premigration.*")
+	if len(parks) != 1 {
+		t.Fatalf("want one park, got %v", parks)
+	}
+	if b, err := os.ReadFile(parks[0] + "/dup"); err != nil || string(b) != "profile\n" {
+		t.Fatalf("the park must hold the copy that verified: %q %v", b, err)
 	}
 }

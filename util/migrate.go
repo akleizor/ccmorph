@@ -47,7 +47,7 @@ func migrateProjects(from, to string, report func(string)) bool {
 		root = r
 	}
 	var remove []walked
-	var diverge []string
+	var diverge []walked
 	ok := true
 	_ = filepath.WalkDir(walk, func(f string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -55,6 +55,19 @@ func migrateProjects(from, to string, report func(string)) bool {
 			return nil
 		}
 		if d.IsDir() {
+			if f == walk {
+				return nil
+			}
+			// #185: a carried sidecar dir arrives as a link at the store path.
+			// It must give way before its children are walked: resolving through
+			// the link would make every file look like a duplicate of itself.
+			dest := to + "/" + strings.TrimPrefix(f, walk+"/")
+			if isLink(dest) && linkGivesWay(dest, f) {
+				if os.Remove(dest) != nil {
+					ok = false
+					return fs.SkipDir
+				}
+			}
 			return nil
 		}
 		if n := d.Name(); n == ".DS_Store" || n == ".localized" {
@@ -65,7 +78,11 @@ func migrateProjects(from, to string, report func(string)) bool {
 			}
 			return nil
 		}
-		fi, _ := d.Info()
+		fi, err := d.Info()
+		if err != nil {
+			ok = false // no stat means nothing can be verified as unchanged later
+			return nil
+		}
 		rel := strings.TrimPrefix(f, walk+"/")
 		dest := to + "/" + rel
 		if lexists(dest) {
@@ -86,7 +103,12 @@ func migrateProjects(from, to string, report func(string)) bool {
 				}
 			case d.Type()&fs.ModeSymlink != 0:
 				// A link never overwrites a settled entry.
-				diverge = append(diverge, f)
+				diverge = append(diverge, atWalk(f, fi))
+				return nil
+			case resolved(dest) == resolved(f):
+				// #185: the store path reaches this very file through a link on a
+				// parent dir, so it is never a removable duplicate.
+				ok = false
 				return nil
 			case sameContent(dest, f):
 				// The store already holds this very content; the profile's
@@ -94,7 +116,7 @@ func migrateProjects(from, to string, report func(string)) bool {
 				remove = append(remove, walked{f, fi, ""})
 				return nil
 			default:
-				diverge = append(diverge, f)
+				diverge = append(diverge, atWalk(f, fi))
 				return nil
 			}
 		}
@@ -118,8 +140,13 @@ func migrateProjects(from, to string, report func(string)) bool {
 					ok = false
 					return nil
 				}
+			} else if resolved(tgt) == resolved(dest) {
+				// #185: the target was pruned from the store; writing it here
+				// would make a link to itself. Park it beside the profile.
+				diverge = append(diverge, atWalk(f, fi))
+				return nil
 			} else if os.Symlink(tgt, dest) != nil {
-				diverge = append(diverge, f) // parked as a link, the merge goes on
+				diverge = append(diverge, atWalk(f, fi)) // parked as a link, the merge goes on
 				return nil
 			}
 			remove = append(remove, walked{f, fi, tgt})
@@ -142,7 +169,7 @@ func migrateProjects(from, to string, report func(string)) bool {
 			pdir, found = physPrefix(phys)
 		}
 		if !found {
-			diverge = append(diverge, f)
+			diverge = append(diverge, atWalk(f, fi))
 			return nil
 		}
 		phys = strings.TrimSuffix(pdir, "/") + leaf
@@ -152,7 +179,7 @@ func migrateProjects(from, to string, report func(string)) bool {
 		if os.Symlink(phys, dest) == nil {
 			remove = append(remove, walked{f, fi, tgt})
 		} else {
-			diverge = append(diverge, f) // parked as a link, the merge goes on
+			diverge = append(diverge, atWalk(f, fi)) // parked as a link, the merge goes on
 		}
 		return nil
 	})
@@ -161,7 +188,8 @@ func migrateProjects(from, to string, report func(string)) bool {
 	}
 	if len(diverge) > 0 {
 		bak := from + ".premigration." + strconv.Itoa(os.Getpid()) + "." + strconv.Itoa(rand.Intn(32768))
-		for _, f := range diverge {
+		for _, w := range diverge {
+			f := w.f
 			rel := strings.TrimPrefix(f, walk+"/")
 			if li, err := os.Lstat(f); err == nil && li.Mode()&fs.ModeSymlink != 0 {
 				// A link is parked as the link it is, its literal target kept;
@@ -174,16 +202,10 @@ func migrateProjects(from, to string, report func(string)) bool {
 				return false
 			}
 			report("kept '" + rel + "' in '" + bak + "': it could not join the shared store as is")
-			// The parked copy is verified; the original can go with the rest.
-			w := walked{f: f}
-			if fi, err := os.Lstat(f); err == nil {
-				if fi.Mode()&fs.ModeSymlink != 0 {
-					w.link, _ = os.Readlink(f)
-				} else {
-					w.fi = fi
-				}
-				remove = append(remove, w)
-			}
+			// The parked copy is verified; the original can go with the rest —
+			// but only as the walk saw it: a line that arrived while the park
+			// copy ran keeps the original for the next launch (#177, #185).
+			remove = append(remove, w)
 		}
 	}
 	// The originals go only now that every file has verified, and only where
@@ -203,6 +225,18 @@ func migrateProjects(from, to string, report func(string)) bool {
 	// after the walk — keeps its dir, and the caller keeps the profile on
 	// that dir until a later launch migrates what arrived (#177).
 	return pruneEmpty(from)
+}
+
+// atWalk is a divergent entry with the identity it had when the walk saw it:
+// the park copy runs later, and a file that changed in between must keep its
+// original (#185).
+func atWalk(f string, fi os.FileInfo) walked {
+	w := walked{f: f, fi: fi}
+	if fi != nil && fi.Mode()&fs.ModeSymlink != 0 {
+		w.fi = nil // a link's identity is its literal target
+		w.link, _ = os.Readlink(f)
+	}
+	return w
 }
 
 // walked is one migrated entry with the identity it had when the walk saw it:
@@ -226,6 +260,9 @@ func stillUnchanged(w walked) bool {
 		t, err := os.Readlink(w.f)
 		return err == nil && t == w.link
 	}
+	if w.fi == nil {
+		return false // the walk never saw its size and mtime: never remove
+	}
 	return fi.Size() == w.fi.Size() && fi.ModTime().Equal(w.fi.ModTime())
 }
 
@@ -246,6 +283,10 @@ func pruneEmpty(root string) bool {
 	_, err := os.Lstat(root)
 	return err != nil
 }
+
+// linkFile publishes a verified temp file; a test seam for the filesystems
+// that refuse hard links (#185).
+var linkFile = os.Link
 
 // copyVerified copies the regular file f into dest through a destination-local
 // temp file (#177): the store may sit on another filesystem, where a rename
@@ -309,11 +350,25 @@ func copyVerified(f, dest string) error {
 	}
 	// Publish without overwrite: link(2) refuses an existing dest, so a file
 	// another writer created meanwhile is never clobbered.
-	if err := os.Link(name, dest); err != nil {
+	err = linkFile(name, dest)
+	if err == nil || errors.Is(err, fs.ErrExist) {
 		os.Remove(name)
 		return err
 	}
-	os.Remove(name)
+	// #185: exFAT, FAT and some SMB mounts refuse hard links; rename is atomic
+	// too (shim/mask.go's key falls back the same way). The reserved name keeps
+	// a file another writer created meanwhile from being clobbered.
+	reserved, err2 := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err2 != nil {
+		os.Remove(name)
+		return err2
+	}
+	reserved.Close()
+	if err2 = os.Rename(name, dest); err2 != nil {
+		os.Remove(name)
+		os.Remove(dest)
+		return err2
+	}
 	return nil
 }
 
@@ -443,4 +498,64 @@ func zshH(p string) string {
 func zshT(p string) string {
 	q := strings.TrimRight(p, "/")
 	return q[strings.LastIndex(q, "/")+1:]
+}
+
+// mergeParks returns the transcripts parked beside a profile to /resume: a
+// v0.5.0 launch and every earlier failed merge left '<what>.premigration.*'
+// dirs holding files that exist nowhere else. Each parked file the shared
+// store does not already hold is copied in and leaves the park; a file the
+// store holds differently stays in its park and is named, never clobbered. An
+// emptied park goes (#185).
+func mergeParks(dir, store string, report func(string)) {
+	if report == nil {
+		report = func(string) {}
+	}
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), "projects.premigration.") {
+			continue
+		}
+		park := filepath.Join(dir, e.Name())
+		kept := 0
+		_ = filepath.WalkDir(park, func(f string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			rel := strings.TrimPrefix(f, park+"/")
+			dest := store + "/" + rel
+			if lexists(dest) {
+				if sameContent(dest, f) {
+					_ = os.Remove(f)
+					return nil
+				}
+				report("kept '" + rel + "' in '" + park + "': the shared store already holds a different copy")
+				kept++
+				return nil
+			}
+			if os.MkdirAll(zshH(dest), 0o777) != nil {
+				kept++
+				return nil
+			}
+			if d.Type()&fs.ModeSymlink != 0 {
+				if t, err := os.Readlink(f); err != nil || os.Symlink(t, dest) != nil {
+					kept++
+					return nil
+				}
+				_ = os.Remove(f)
+				return nil
+			}
+			if !d.Type().IsRegular() || copyVerified(f, dest) != nil {
+				kept++
+				return nil
+			}
+			_ = os.Remove(f)
+			return nil
+		})
+		if kept == 0 {
+			_ = os.RemoveAll(park) // only empty dirs are left, RemoveAll takes them
+		}
+	}
 }

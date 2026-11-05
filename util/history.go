@@ -11,6 +11,10 @@ import (
 	"github.com/akleizor/ccmorph/ordjson"
 )
 
+// historyReadHook runs right after mergeHistory read the profile's file; a
+// test seam for the window before the removal (#185).
+var historyReadHook func()
+
 // mergeHistory shares the prompt history at from — the profile's own file, or
 // a link at the user's own history on another disk — into the shared history
 // at to (#177). It holds one machine-wide lock while it works, so two
@@ -25,6 +29,11 @@ import (
 // history whole. The caller re-points the profile at to once this reports
 // success.
 func mergeHistory(from, to string) bool {
+	if sameTarget(from, to) {
+		// The two paths are one file: consuming from would delete the very
+		// records to is meant to hold (#185).
+		return false
+	}
 	src := from
 	if isLink(from) {
 		r, err := filepath.EvalSymlinks(from)
@@ -33,13 +42,33 @@ func mergeHistory(from, to string) bool {
 		}
 		src = r
 	}
+	before, _ := os.Stat(src)
 	own, ok := readHistory(src)
 	if !ok {
 		return false
 	}
+	if historyReadHook != nil {
+		historyReadHook()
+	}
+	// #185: the file may grow between the read and the removal — a session of
+	// this profile appends to it by pathname. Only a file still exactly as it
+	// was read is consumed; a changed one stays for the next launch, and the
+	// records already appended to the shared file dedup away then.
+	remove := func() bool {
+		if !isLink(from) {
+			if before == nil {
+				return false
+			}
+			now, err := os.Stat(src)
+			if err != nil || now.Size() != before.Size() || !now.ModTime().Equal(before.ModTime()) {
+				return false
+			}
+		}
+		return os.Remove(from) == nil
+	}
 	if len(own) == 0 {
 		// Nothing to merge: the profile's file or link simply goes.
-		return os.Remove(from) == nil
+		return remove()
 	}
 	unlock, locked := historyLock(to)
 	defer unlock()
@@ -71,7 +100,7 @@ func mergeHistory(from, to string) bool {
 	}
 	if len(missing) == 0 {
 		// The shared file already holds every record; the profile's file goes.
-		return os.Remove(from) == nil
+		return remove()
 	}
 	sort.SliceStable(missing, func(i, j int) bool {
 		if missing[i].ordered != missing[j].ordered {
@@ -117,21 +146,22 @@ func mergeHistory(from, to string) bool {
 			return false
 		}
 	}
-	return os.Remove(from) == nil
+	return remove()
 }
 
 // historyLock takes the one machine-wide lock every shared-history merge
 // holds — beside the shared file, so any ccmorph, any profile, any launch
 // serializes through it — and returns its release with whether it was taken
-// at all (#177). It blocks: the merge it guards is file I/O only and brief.
+// at all (#177). It waits no longer than lockWait: the merge it guards is file
+// I/O only and brief, and a stuck holder must never hang a launch (#185).
 func historyLock(to string) (func(), bool) {
 	f, err := os.OpenFile(filepath.Join(filepath.Dir(to), ".ccm-history.lock"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return func() {}, false
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if !flockWithin(f, syscall.LOCK_EX) {
 		f.Close()
-		return func() {}, false
+		return func() {}, false // a stuck holder defers the merge to the next launch (#185)
 	}
 	return func() {
 		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
