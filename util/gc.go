@@ -16,11 +16,13 @@ import (
 // milliseconds (their reader removes them on sight), so a minute-old one in TMPDIR
 // or the state run dir was orphaned by a killed launcher and goes (#142). A
 // private session's view — its real transcripts, history and shell snapshots —
-// goes once the claude named inside it is gone and it is a minute old; a view
-// naming no claude is left alone, however old (#166). Launch-settings
+// goes once the claude named inside it is gone — a pid another process now
+// holds is not that claude, however lively (#189) — and it is a minute old; a
+// view naming no claude is left alone, however old (#166). Launch-settings
 // overlays and provider bridge dirs carry credentials, so they go after 12h
-// unless a live process still names them; the process table is read at most
-// once, and only when something is old.
+// unless a live process still names them; the process table is read only when
+// something is old, at most once for a view's owner pid and once for the
+// overlays' and bridges' scan.
 func GCStale(state, profiles, tmp string) {
 	now := time.Now()
 	old := func(p string, age time.Duration) bool {
@@ -74,11 +76,32 @@ func GCStale(state, profiles, tmp string) {
 	}
 	// A private view goes once the claude named inside it is gone and it is a
 	// minute old, and stays however old it is while that claude lives: the
-	// view holds a live session's transcripts. A view naming no claude is
-	// never reaped — this build writes the record before claude writes
-	// anything into the view, so a record-less view either predates the record
-	// or failed to write it, and either can still be a live session whose
-	// transcripts age while claude idles (#166).
+	// view holds a live session's transcripts. Gone is identity, not the
+	// number alone: the OS hands a dead pid's number to any later process,
+	// and a same-user one answers kill(pid, 0) just the same, so the pid's
+	// own command line must still name claude — the launch resolves claude
+	// by that name and runs it with argv[0] "claude", so each form it takes
+	// (a native binary, or a script whose claude-named path the kernel keeps
+	// in argv) names it. A command the table cannot read — the table itself
+	// is unreadable, or the process left between the two checks — reads as
+	// claude: the sweep never takes a live session's transcripts on a guess
+	// (#189). A view naming no claude is never reaped — this build writes
+	// the record before claude writes anything into the view, so a
+	// record-less view either predates the record or failed to write it, and
+	// either can still be a live session whose transcripts age while claude
+	// idles (#166).
+	var tab map[int]psRow
+	read := false
+	runsClaude := func(pid int) bool {
+		if syscall.Kill(pid, 0) != nil {
+			return false
+		}
+		if !read {
+			tab, read = processTable(), true
+		}
+		r, ok := tab[pid]
+		return !ok || r.args == "" || strings.Contains(r.args, "claude")
+	}
 	for _, d := range views {
 		if !isDir(d) {
 			continue
@@ -88,12 +111,10 @@ func GCStale(state, profiles, tmp string) {
 			continue
 		}
 		pid, perr := strconv.Atoi(strings.TrimSpace(string(b)))
-		if perr != nil || pid <= 0 || syscall.Kill(pid, 0) == nil {
-			continue // unreadable owner, or the claude that runs from it lives
+		if perr != nil || pid <= 0 || !old(d, time.Minute) || runsClaude(pid) {
+			continue // unreadable owner, under a minute, or the claude that runs from it lives
 		}
-		if old(d, time.Minute) {
-			_ = os.RemoveAll(d)
-		}
+		_ = os.RemoveAll(d)
 	}
 	var live *string
 	alive := func(needle string) bool {
