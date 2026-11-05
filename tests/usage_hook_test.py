@@ -8,6 +8,11 @@ hook out of the generated settings, appends a turn to the transcript, and runs
 the hook with the hook JSON on stdin. The composition the Go tests cannot show
 is the launcher writing the hook into the session's settings and the row it
 writes carrying the profile, the model, the tokens and a cost estimate.
+
+The Remote Control host with no route is the same composition one layer out: a
+`ccmorph run <sub> -- remote-control` starts the host on the subscription with
+nothing fronting it, so the session the phone drives has only that Stop hook to
+write its row — no adapter holds one for it.
 """
 import json
 import os
@@ -44,9 +49,14 @@ provider_only = pytest.mark.skipif(
 # hooks the launch generated, then plays one turn — one API response, written
 # the way the client writes it (one transcript line per content block, all with
 # the same message id and requestId) — and the Stop the client itself runs at
-# the end of a turn.
+# the end of a turn. Started as `claude remote-control` it stands in for the
+# Remote Control host instead: the session the phone drives runs in the folder
+# the host serves, keeps its transcript in the account config's projects/
+# directory like every session of that config dir, and cannot start at all in a
+# folder the account has not trusted — the stop a headless check hits in a new
+# folder, which is why such a check needs one already trusted.
 CLAUDE = r'''#!/usr/bin/env python3
-import json, os, subprocess, sys
+import json, os, re, subprocess, sys
 home = os.environ["HOME"]
 log = os.path.join(home, "claude.log")
 def note(line):
@@ -67,7 +77,22 @@ commands = [h["command"]
 note("STOP=" + json.dumps(commands))
 usage = {"input_tokens": 10, "output_tokens": 25, "cache_read_input_tokens": 0}
 blocks = [("u1", "thinking"), ("u2", "text"), ("u3", "tool_use")]
-transcript = os.path.join(home, "transcript.jsonl")
+if "remote-control" in sys.argv[1:]:
+    state = {}
+    try:
+        with open(os.path.join(cfg, ".claude.json")) as f:
+            state = json.load(f)
+    except (OSError, ValueError):
+        pass
+    folder = os.getcwd()
+    if not state.get("projects", {}).get(folder, {}).get("hasTrustDialogAccepted"):
+        note("STOPPED=Workspace not trusted: " + folder)
+        sys.exit(1)
+    transcript = os.path.join(cfg, "projects",
+                              re.sub(r"[^A-Za-z0-9]", "-", folder), "s1.jsonl")
+else:
+    transcript = os.path.join(home, "transcript.jsonl")
+os.makedirs(os.path.dirname(transcript), exist_ok=True)
 with open(transcript, "w") as f:
     f.write(json.dumps({"type": "user", "uuid": "u0",
                         "message": {"role": "user", "content": "hi"}}) + "\n")
@@ -152,12 +177,22 @@ class Box:
                    LANG="C.UTF-8", LC_ALL="C.UTF-8", NO_COLOR="1")
         return env
 
-    def run(self, profile, env_extra=None):
+    def run(self, profile, env_extra=None, args=("-p", "hi"), cwd=None):
         env = self.env()
         env.update(env_extra or {})
-        return subprocess.run([str(ROOT / "bin/ccmorph"), "run", profile, "--", "-p", "hi"],
-                              env=env, capture_output=True, text=True,
+        return subprocess.run([str(ROOT / "bin/ccmorph"), "run", profile, "--", *args],
+                              env=env, cwd=cwd, capture_output=True, text=True,
                               timeout=HANG_TIMEOUT)
+
+    def trust(self, profile, folder):
+        """Record folder as already trusted in the account's config — the record
+        ccmorph-rc's seed_trust writes for a routed host. Without it a session in
+        the folder stops at `Workspace not trusted` before any turn."""
+        cfg = self.state / "profiles" / profile / ".claude.json"
+        data = json.loads(cfg.read_text()) if cfg.exists() else {}
+        data.setdefault("projects", {})[str(Path(folder).resolve())] = {
+            "hasTrustDialogAccepted": True}
+        cfg.write_text(json.dumps(data))
 
     def log(self):
         p = self.home / "claude.log"
@@ -222,6 +257,37 @@ def test_a_split_response_is_counted_once(tmp_path):
     assert sum(r["usage"]["input_tokens"] for r in rows) == 10
     assert sum(r["usage"]["output_tokens"] for r in rows) == 25
     assert sum(r["usage"].get("estimated_cost", 0) for r in rows) == rows[0]["usage"]["estimated_cost"]
+
+
+def test_a_remote_control_host_on_a_sub_profile_with_no_route_writes_one_row(tmp_path):
+    """The case no launch check covered: a Remote Control host started as
+    `ccmorph run <sub> -- remote-control` runs on the subscription with no route,
+    so no adapter relays the session it serves and no gateway row appears — the
+    profile's own Stop hook must write the turn's row. The turn is checked
+    headlessly, without the phone; the session cannot start in a folder the
+    account has not trusted, so the check runs in one already trusted."""
+    box = Box(tmp_path / "home")
+    box.conf("sub", "type=sub\nemail=me@example.invalid\n")
+    folder = tmp_path / "served"
+    folder.mkdir()
+    box.run("sub", args=("remote-control",), cwd=folder)
+    assert "Workspace not trusted" in box.log(), box.log()
+    assert box.rows() == [], box.rows()
+    box.trust("sub", folder)
+    out = box.run("sub", args=("remote-control",), cwd=folder)
+    assert out.returncode == 0, out.stderr
+    files = box.wait_rows(1)
+    assert len(files) == 1, [f.read_text() for f in files]
+    row = json.loads(files[0].read_text())
+    assert row["profile"] == "sub", row
+    assert row["served_model"] == "claude-opus-5-5"
+    assert row["usage"]["input_tokens"] == 10
+    assert row["usage"]["output_tokens"] == 25
+    assert row["usage"]["estimated_cost"] > 0
+    assert "cost" not in row["usage"], "the subscription bills nothing per token"
+    assert row["complete"] is True
+    proxies = [l for l in box.log().splitlines() if l.startswith("HTTPS_PROXY=")]
+    assert proxies[-1] == "HTTPS_PROXY=<unset>", proxies   # no route: nothing fronts the session
 
 
 def test_the_session_keeps_its_own_network_path(tmp_path):
