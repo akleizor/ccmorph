@@ -229,7 +229,11 @@ func (m *masker) find(s string) {
 			if len(loc) >= 4 && loc[2] >= 0 {
 				a, b = loc[2], loc[3]
 			}
-			if v := s[a:b]; (r.ok == nil || r.ok(v)) && !(wordsRE.MatchString(v) && proseRE.MatchString(s[b:])) {
+			// An all-letter value is prose when a sentence follows it (#174), unless it
+			// stands right after "=", as in a shell or .env line ("DB_PASSWORD=x DEBUG=1"),
+			// where what follows is the next assignment or argument (#186). A quoted or
+			// spaced value after "=" is code, and its next word may open a sentence.
+			if v := s[a:b]; (r.ok == nil || r.ok(v)) && !(wordsRE.MatchString(v) && proseRE.MatchString(s[b:]) && !(a > loc[0] && s[a-1] == '=')) {
 				m.learn(v, r.kind)
 			}
 		}
