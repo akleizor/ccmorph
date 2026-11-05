@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, port_outside_the_ephemeral_pool
 
 SCRIPT = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccmorph-rc-hosts"
 
@@ -1580,10 +1580,14 @@ def test_a_live_edge_is_the_record_its_own_file_holds(tmp_path, monkeypatch):
     import json, os, socket
     m = load()
     monkeypatch.setattr(m, "EDGES", tmp_path)
+    # Below the ephemeral floors: the record's port must read dead the moment
+    # srv closes it, and a number drawn from the ephemeral pool is free for
+    # any parallel process to take in that gap.
+    port = port_outside_the_ephemeral_pool()
     with socket.socket() as srv:
-        srv.bind(("127.0.0.1", 0))
+        srv.bind(("127.0.0.1", port))
         srv.listen()
-        record = {"pid": os.getpid(), "port": srv.getsockname()[1], "ca": "x",
+        record = {"pid": os.getpid(), "port": port, "ca": "x",
                   "upstream": "u", "tiers": {"fable": "m"}}
         (tmp_path / "gw.json").write_text(json.dumps(record))
         assert m.edge_ready("gw") == record
