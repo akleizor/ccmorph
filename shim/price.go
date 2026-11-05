@@ -76,15 +76,17 @@ func (p price) estimate(u usageRow) (float64, bool) {
 // the first row that needs it and never blocks the relay: until it has loaded, a
 // lookup finds nothing, and the row is rewritten with every usage update.
 type priceBook struct {
-	host   string
-	path   string
-	fetch  func() ([]byte, error)
-	now    func() time.Time
-	once   sync.Once
-	done   chan struct{} // closed when the first load ends
-	waited sync.Once     // only the first lookup waits for it
-	mu     sync.RWMutex
-	table  map[string]price // models.dev id of this host's provider models
+	host       string
+	path       string
+	fetch      func() ([]byte, error)
+	now        func() time.Time
+	once       sync.Once
+	done       chan struct{}                 // closed when the first load ends
+	waited     sync.Once                     // only the first lookup waits for it
+	parse      func([]byte) map[string]price // nil: parsePrices by host
+	cachedOnly bool                          // read the disk slice, never fetch
+	mu         sync.RWMutex
+	table      map[string]price // models.dev id of this host's provider models
 }
 
 func newPriceBook(upstream string) *priceBook {
@@ -110,15 +112,19 @@ func fetchPrices() ([]byte, error) {
 	return io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 }
 
+// priceDoc is the slice of models.dev/api.json both price parsers read.
+type priceDoc = map[string]struct {
+	API    string `json:"api"`
+	NPM    string `json:"npm"`
+	Models map[string]struct {
+		Cost *price `json:"cost"`
+	} `json:"models"`
+}
+
 // parsePrices is the models of every models.dev provider whose api host is host
 // that state a price, first provider id winning a shared model id.
 func parsePrices(api []byte, host string) map[string]price {
-	var doc map[string]struct {
-		API    string `json:"api"`
-		Models map[string]struct {
-			Cost *price `json:"cost"`
-		} `json:"models"`
-	}
+	var doc priceDoc
 	if jsonv2.Unmarshal(api, &doc) != nil {
 		return nil
 	}
@@ -139,6 +145,71 @@ func parsePrices(api []byte, host string) map[string]price {
 		}
 	}
 	return out
+}
+
+// parseOwnedPrices is the models of the models.dev provider named only, or of
+// every provider when only is empty, first provider id winning a shared model id.
+// models.dev gives a first-party vendor (anthropic, openai) no `api` host, so the
+// host lookup above can never price a subscription's Claude models; this one asks
+// by provider id instead. With no id, a vendor's own entry is preferred to a
+// reseller's: models.dev nests a vendor under `npm: "@ai-sdk/<vendor>"`, and the
+// first sorted id otherwise wins.
+func parseOwnedPrices(api []byte, only string) map[string]price {
+	var doc priceDoc
+	if jsonv2.Unmarshal(api, &doc) != nil {
+		return nil
+	}
+	ids := make([]string, 0, len(doc))
+	for id := range doc {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	if only == "" {
+		vendor := func(id string) bool {
+			npm := doc[id].NPM
+			return strings.HasPrefix(npm, "@ai-sdk/") && npm != "@ai-sdk/openai-compatible"
+		}
+		slices.SortStableFunc(ids, func(a, b string) int {
+			switch va, vb := vendor(a), vendor(b); {
+			case va == vb:
+				return strings.Compare(a, b)
+			case va:
+				return -1
+			default:
+				return 1
+			}
+		})
+	}
+	out := map[string]price{}
+	for _, id := range ids {
+		if only != "" && id != only {
+			continue
+		}
+		for m, v := range doc[id].Models {
+			if _, taken := out[m]; !taken && v.Cost != nil {
+				out[m] = *v.Cost
+			}
+		}
+	}
+	return out
+}
+
+// newOwnedPriceBook prices by models.dev provider id: only names one provider
+// (a subscription's own vendor), empty means any provider, its vendor's entry
+// first. It reads the same api.json and keeps the same state-dir cache.
+func newOwnedPriceBook(only string) *priceBook {
+	label := only
+	if label == "" {
+		label = "any"
+	}
+	return &priceBook{
+		done:  make(chan struct{}),
+		host:  "owned:" + label,
+		path:  filepath.Join(stateDir(), "prices-owned-"+label+".json"),
+		fetch: fetchPrices,
+		now:   time.Now,
+		parse: func(api []byte) map[string]price { return parseOwnedPrices(api, only) },
+	}
 }
 
 // priceCache is one host's slice of api.json, kept in the state dir so a session
@@ -162,6 +233,9 @@ func (b *priceBook) load() {
 		return // a stale table keeps serving; the next session retries
 	}
 	models := parsePrices(api, b.host)
+	if b.parse != nil {
+		models = b.parse(api)
+	}
 	if models == nil {
 		return
 	}
@@ -181,8 +255,40 @@ func (b *priceBook) set(m map[string]price) {
 	b.mu.Unlock()
 }
 
+// CachedOwnedPriceBook prices one models.dev provider from the slice already on
+// disk. A Stop hook runs once a turn inside the session's stop: it must answer
+// from the cache or not at all, never wait on a catalogue fetch.
+func CachedOwnedPriceBook(only string) *priceBook {
+	b := newOwnedPriceBook(only)
+	b.cachedOnly = true
+	return b
+}
+
+// RefreshOwnedPrices fetches the models.dev slice and caches it, so a later
+// hook can price a turn. The launcher calls it in the background at launch.
+func RefreshOwnedPrices(only string) { newOwnedPriceBook(only).load() }
+
+// readCache is the cached slice for this book, or an empty table.
+func (b *priceBook) readCache() map[string]price {
+	var c priceCache
+	data, err := os.ReadFile(b.path)
+	if err != nil || jsonv2.Unmarshal(data, &c) != nil || c.Host != b.host {
+		return map[string]price{}
+	}
+	return c.Models
+}
+
 // lookup is the price of model, starting the load on first use.
 func (b *priceBook) lookup(model string) (price, bool) {
+	if b.cachedOnly {
+		b.mu.Lock()
+		if b.table == nil {
+			b.table = b.readCache()
+		}
+		table := b.table
+		b.mu.Unlock()
+		return lookupIn(table, model)
+	}
 	b.once.Do(func() { go func() { defer close(b.done); b.load() }() })
 	// The session's first turn waits briefly for the cached table (a disk read) so it is
 	// priced; a cold fetch that outlasts the wait leaves that row unpriced.
@@ -194,6 +300,20 @@ func (b *priceBook) lookup(model string) (price, bool) {
 	})
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	p, ok := b.table[strings.TrimSuffix(model, "[1m]")]
-	return p, ok
+	return lookupIn(b.table, model)
+}
+
+// lookupIn finds model in one price table. Claude Code can name a dated id
+// (claude-opus-4-5-20251101) for a model models.dev lists undated too; the date
+// is spelling, not another model.
+func lookupIn(table map[string]price, model string) (price, bool) {
+	name := strings.TrimSuffix(model, "[1m]")
+	if p, ok := table[name]; ok {
+		return p, true
+	}
+	if i := strings.LastIndexByte(name, '-'); i > 0 && len(name)-i-1 == 8 && allDigits(name[i+1:]) {
+		p, ok := table[name[:i]]
+		return p, ok
+	}
+	return price{}, false
 }

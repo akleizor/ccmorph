@@ -714,6 +714,9 @@ input price; context tiers are not applied, so `estimated_cost` is a list price 
 under-estimate on a prompt past a tier). An upstream models.dev does not know gets no
 `estimated_cost`. The shim never writes `estimated_cost` from an upstream's response and
 never writes `cost` itself, so a reader that sums billed spend never adds an estimate.
+The usage hook below writes rows in the same schema and with the same rule: its
+rows carry `estimated_cost` at a list price and never `cost`, because a
+subscription or long-lived token bills nothing per token.
 The host's slice of `api.json` is cached in `prices-<host>.json` beside the receipts and
 refreshed after a day. A billed cost is never replaced, and rows written before this existed
 are not recomputed; rows written by builds that carried #34 before `estimated_cost` existed
@@ -791,10 +794,12 @@ unexpected-EOF retry consumes an upstream 500 whose body carries no id, so that
 call produces no row at all. Capture is off unless the adapter passed the route
 spec, so a hand-launched shim writes nothing. Every session that runs through
 `ccmorph-core adapter` carries the shim — it is the stable request shim, served inside the adapter's own process (one helper per gateway session; only a translator route adds the `cliproxyapi` child, a profile's `CCMORPH_SHIM_HOOKS` build is still spawned as its own executable, and one tether per adapter watches every child it spawns), interposed
-with `--preserve-tool-ids` where the upstream does not recycle ids — but a
-profile that never starts the adapter has no shim and therefore no rows:
-native, direct endpoints and any route still served by the shared brew
-translator (§3). Coverage is per launched session, not per profile.
+with `--preserve-tool-ids` where the upstream does not recycle ids. A profile
+with a `sub`, `token` or `provider` type writes them through its own usage hook
+instead (below); `usage_route=direct` and an `apikey` profile on Anthropic's own
+host are the paths with no row, and a Remote Control session's traffic is
+already recorded by the add-on adapter that relays it, so the hook leaves those
+rows alone. Coverage is per launched session, not per profile.
 
 ### What the gateway billed: the export and the report
 
@@ -849,6 +854,77 @@ and never fatal **[test]**, and only `*.json` names are read, so the writer's ow
 no task name, no path, no state directory **[test]** — a model label carrying a newline or
 an escape cannot forge a line of it **[test]**, and the daily publish runs exactly
 `report --days 1` and sends its stdout on **[test]**.
+
+### The usage hook: subscription, long-lived token and provider
+
+Pointing a `sub` or `token` launch at a loopback `ANTHROPIC_BASE_URL` loses two
+things the session is entitled to. Claude Code 2.1.318 refuses Remote Control
+outright under it ("ANTHROPIC_BASE_URL is set and does not point at
+api.anthropic.com"; `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL` "does not apply
+to Remote Control"), and a non-Anthropic base URL stops the first-party
+defaults (the native 1M window, server-managed settings). A process-wide proxy
+would keep those but change what every other process in the session reaches: a
+Bash command, a hook or an MCP server using a TLS stack that does not trust a
+per-launch CA fails its handshake, a nested `ccmorph run` inherits the proxy
+and attributes its rows to the outer profile, and a background job outlives
+the launcher holding a dead address.
+
+So these launches change no network path at all. Claude Code already records
+what each response spent in the session transcript, and its `Stop` hook is
+handed that transcript's path. The settings composed for the session carry one
+extra owned entry in `hooks.Stop`:
+
+```
+<libexec>/ccmorph-core usage-row --profile NAME --pricing anthropic|any
+```
+
+It runs at the end of every turn with the hook JSON (`transcript_path`,
+`session_id`) on stdin. The hook reads the assistant entries after its cursor —
+a per-transcript offset under `usage-cursors/` in the state root, so two
+sessions never share one — and writes one schema-1 row per response, keyed as
+any other row: `response_id` from `message.id`, `served_model` from
+`message.model`, `timestamp` from the entry, and `turn_id` the digest of
+`message.id` and `requestId`. That token makes the write idempotent: the same
+response always owns the same row, so reading a transcript again replaces the
+row instead of spilling a duplicate, and a line still being written waits for
+its newline. Claude Code writes one transcript line per content block of a
+response — a thinking block, a text block and a tool_use block are three lines
+with one `message.id`, one `requestId` and the same usage — so the hook folds a
+response's lines into its one row, keeping the per-key maximum of their usage
+objects, including lines a later pass reads; a response is never counted twice
+**[test]**. `requested_model` is null — the transcript names only the model
+that answered — and `complete` is true, because an entry exists only once its
+response finished.
+The line's content, headers and credential are not read and never stored
+**[test]**. If a row for that response id already exists from another ccmorph
+writer — a Remote Control session and a launch nested inside one run the
+traffic through an adapter that records it — the hook leaves that row alone, so
+one turn still writes one row **[test]**.
+
+Rows from these launches carry `estimated_cost`, never `cost`: a subscription or
+long-lived token bills nothing per token, so there is no billed amount to
+record. The price comes from models.dev by provider id (`anthropic` for sub and
+token, any provider for a bridge, its vendor's own entry first), because
+models.dev gives a first-party vendor no `api` host for the host-keyed book to
+find. The launcher refreshes that slice in the background at start; the hook
+prices from the cached slice and never waits on the network, so a model with no
+cached price keeps its tokens and carries no estimate. `route_id` is a digest of
+the profile and the `transcript` source, and the row holds no header, body,
+token or cookie **[test]**.
+
+Non-failures: the hook swallows every error and exits 0, so a missing or
+unreadable transcript can never fail a turn. The ways a launch declines are an
+`apikey` profile, no profile, and the profile's `usage_route=direct`; all three
+compose no hook, and `settings-compose` strips the owned Stop entry first, so a
+direct launch also removes one an earlier launch installed. A user's own Stop
+hooks are kept, and the owned entry is never folded into the profile layer
+**[test]**.
+
+What is not covered: rows appear when a turn ends, not while it streams; a
+session killed mid-turn records nothing for that turn; and an entry with no
+`message.id` or no usage object writes no row. Nothing else in the session —
+Remote Control, a nested launch, a Bash command, an MCP server, a background
+job — sees any difference from a plain `claude`.
 
 ## 4. Dialects
 

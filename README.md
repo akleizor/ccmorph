@@ -129,11 +129,12 @@ To switch a running session, type in the Claude Code prompt:
 
 ## Usage and cost
 
-Each turn a gateway profile serves writes one receipt under
+Each turn a profile serves writes one receipt under
 `~/.local/state/ccmorph/usage/`: tokens, the model that answered, and the
-cost the gateway billed when it reports one (for a provider reached directly,
-an estimated cost at its models.dev list price, marked as an estimate in the
-receipt and the export). No prompt, header or credential is stored. Export the receipts and read them with ccusage:
+cost the gateway billed when it reports one — otherwise an estimated cost at
+the provider's models.dev list price, marked as an estimate in the receipt and
+the export. No prompt, header or credential is stored. Export the receipts and
+read them with ccusage:
 
 ```sh
 scripts/usage-export --output ~/.cache/ccmorph-usage
@@ -144,7 +145,20 @@ CLAUDE_CONFIG_DIR=~/.cache/ccmorph-usage ccusage claude daily --instances \
 Each profile is one ccusage project. A billed cost is used as is and a
 shim-computed one is marked `costSource: estimate`; a turn with neither is
 priced by ccusage at the provider's list price.
-Subscription profiles talk to Anthropic directly and write no receipts.
+
+Every profile writes these receipts: `apikey`, `provider`, and also `sub` and
+`token`. No launch changes how a session reaches its backend: a `sub` or `token`
+session keeps talking to api.anthropic.com with its own credential, and the
+launch installs a `Stop` hook that reads the usage Claude Code itself records in
+the session's transcript, one row per API response, however many transcript
+lines it spans. A gateway's billed
+`cost` is only ever what it charged. A subscription or long-lived token is not
+billed per token, so its row carries `estimated_cost` instead — the same
+models.dev list price, marked `costSource: estimate` in the export, and never
+added to a billed total. A row's estimate uses the price snapshot cached at
+launch; a model with no cached price keeps its tokens and carries no estimate.
+`usage_route=direct` in a profile's conf installs no hook and writes no
+receipts.
 
 ## Configuration
 

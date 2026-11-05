@@ -336,3 +336,48 @@ func TestEveryStageNamesItsOperands(t *testing.T) {
 		t.Fatal("a full --model-known still refused")
 	}
 }
+
+// The usage hook is the transcript reader a launch installs through settings:
+// it changes no network path, so it covers sub, token and provider profiles
+// alike, and never touches an API-key or direct one.
+func TestUsageHookCoversSubTokenAndProvider(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	l := &launcher{libexec: "/opt/cc/libexec", profileDirs: "/p"}
+	cases := []struct{ name, typ, route, wantPricing string }{
+		{"sub", "sub", "", "anthropic"},
+		{"token", "token", "", "anthropic"},
+		{"codex", "provider", "", "any"},
+		{"other", "sub", "direct", ""},
+		{"api", "apikey", "", ""},
+		{"api", "apikey", "direct", ""},
+	}
+	for _, c := range cases {
+		hook := l.usageHookFor(c.name, c.typ, c.route)
+		if c.wantPricing == "" {
+			if hook != "" {
+				t.Fatalf("%s/%s/%s: no hook expected, got %q", c.name, c.typ, c.route, hook)
+			}
+			continue
+		}
+		want := "/opt/cc/libexec/ccmorph-core usage-row --profile " + c.name + " --pricing " + c.wantPricing
+		if hook != want {
+			t.Fatalf("%s/%s: hook = %q, want %q", c.name, c.typ, hook, want)
+		}
+	}
+}
+
+func TestSettingsArgvCarriesTheHookOnlyWhenOneIsSet(t *testing.T) {
+	l := &launcher{profileDirs: "/p", mapping: []string{"ANTHROPIC_AUTH_TOKEN"}}
+	if got := l.settingsArgv("materialize", "sub"); slices.Contains(got, "--usage-hook=") {
+		t.Fatalf("a launch without a hook carried one: %v", got)
+	}
+	l.usageHook = "ccmorph-core usage-row --profile sub --pricing anthropic"
+	got := l.settingsArgv("materialize", "sub")
+	want := "--usage-hook=" + l.usageHook
+	if !slices.Contains(got, want) {
+		t.Fatalf("argv = %v, want %q", got, want)
+	}
+	if !slices.Contains(got, "--mapping=ANTHROPIC_AUTH_TOKEN") {
+		t.Fatalf("argv lost the mapping: %v", got)
+	}
+}

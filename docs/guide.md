@@ -274,6 +274,7 @@ or read it in full. In brief:
 | `model`, `effort`, `effort.<model>` | Saved default model and effort; per-model override |
 | `env.<NAME>` | Launch environment; see section 3 of the template for the allowlist |
 | `private=1` | Run from a throwaway view: config and settings are linked in, transcripts, prompt history and session state are deleted when the session exits |
+| `usage_route=direct` | `sub`, `token`, `provider`: install no usage hook, so the profile writes no usage receipts (default: the hook) |
 | `excluded_models=<id>,<id>` | Gateway picker exclusions (exact IDs, no spaces) |
 | `window_sources=<name>` | Shipped catalogue to size this route by |
 | `context_window.<model>` | Pinned token limit; beats discovery |
@@ -387,7 +388,7 @@ The cost: the model sees the placeholder, not the value, so it cannot work on th
 itself (why is this token rejected?). Values shorter than six characters and passwords
 with no label around them are not found. Each usage receipt counts what was masked in
 its `masked` field. Masking covers every route the shim fronts; a subscription or
-`api.anthropic.com` profile talks to Anthropic directly and is not masked.
+`api.anthropic.com` profile keeps its own direct connection and is not masked.
 
 ### Gateway edge
 
@@ -535,6 +536,9 @@ dimmed, with its age ("12 min old"); only a profile never read shows the error. 
 and API keys show today's and this month's billed spend from the receipts at
 `~/.local/state/ccmorph/usage/`, marked `(est.)` when a row carried only a list-price
 estimate, and a profile with `monthly_budget_usd` adds a bar against that budget.
+A `sub`, `token` or `provider` profile writes the same receipts: a subscription is not
+billed per token, so its row carries `estimated_cost` at the models.dev list price and
+the screen marks it `(est.)`. `usage_route=direct` turns that off for one profile.
 An API-key profile on DeepSeek, Kimi, GLM, OpenRouter, SiliconFlow or StepFun also
 shows its account balance, read with the profile's own key from that provider's billing
 endpoint (a free GET); the provider is recognised by the base URL's host, and a key is
@@ -691,7 +695,8 @@ HTTPS_PROXY=http://127.0.0.1:<port> ccmorph run <profile>
 ccmorph passes `HTTPS_PROXY`, `https_proxy` and `NO_PROXY` through unchanged to
 every network consumer — the Claude child, the adapter, model listing and
 metadata discovery. Its own loopback health checks never go through a proxy.
-`ARCHITECTURE.md` has the detail.
+No launch sets or clears them: a usage receipt is read from the session's own
+transcript instead. `ARCHITECTURE.md` has the detail.
 
 ## Evidence markers in ARCHITECTURE.md
 

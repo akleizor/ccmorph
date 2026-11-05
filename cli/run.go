@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/profile"
+	"github.com/akleizor/ccmorph/shim"
 )
 
 var nativeModelFlags = map[string]bool{
@@ -84,6 +85,8 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 	}
 
 	defaultModel, tag := "", ""
+	typ, usageRoute := "", ""
+	l.usageHook = ""
 	routed, isProvider, needsAdapter := false, false, false
 	if name != "" {
 		if !l.exists(name) {
@@ -94,6 +97,8 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 		if !ok {
 			return nil, 1
 		}
+		typ, usageRoute = f["type"], f["usage_route"]
+		l.usageHook = l.usageHookFor(name, typ, usageRoute)
 		switch f["type"] {
 		case "apikey":
 			routed, tag = true, f["tag"]
@@ -693,11 +698,40 @@ func (l *launcher) settingsArgv(verb, name string, rest ...string) []string {
 	for _, k := range l.mapping {
 		argv = append(argv, "--mapping="+k)
 	}
+	if l.usageHook != "" {
+		argv = append(argv, "--usage-hook="+l.usageHook)
+	}
 	return append(argv, rest...)
 }
 
 func (l *launcher) route(penv []string, port, key string, adapter bool) ([]string, bool) {
 	return util.LaunchEnv(penv, port, key, adapter, l.adapterPort, os.Getenv("CCMORPH_TASK"), os.Getenv("CCMORPH_ATTEMPT")), true
+}
+
+// usageHookFor is the Stop hook a launch installs to record its own usage. A
+// subscription, long-lived token or provider profile never touches its network
+// path: Claude Code records each response's usage in its transcript, and this
+// hook reads the new lines. It is empty for every other profile type and for
+// `usage_route=direct`, which is also how a launch removes a hook an earlier
+// one installed.
+func (l *launcher) usageHookFor(name, typ, usageRoute string) string {
+	if usageRoute == "direct" {
+		return ""
+	}
+	pricing := ""
+	switch typ {
+	case "sub", "token":
+		pricing = "anthropic"
+	case "provider":
+		pricing = "any"
+	default:
+		return ""
+	}
+	// A turn's row is priced from the models.dev slice on disk; keep it fresh
+	// in the background, never on the turn's own path.
+	go shim.RefreshOwnedPrices(pricing)
+	core := filepath.Join(l.libexec, "ccmorph-core")
+	return shQuote(core) + " usage-row --profile " + shQuote(name) + " --pricing " + shQuote(pricing)
 }
 
 var loopbackProxy = regexp.MustCompile(`^http://127\.0\.0\.1:([0-9]+)/?$`)
