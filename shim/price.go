@@ -199,8 +199,8 @@ func parseOwnedPrices(api []byte, only string) map[string]price {
 // first. It reads the same api.json and keeps the same state-dir cache.
 func newOwnedPriceBook(only string) *priceBook {
 	label := only
-	if label == "" {
-		label = "any"
+	if label == "" || label == "any" { // "any" is the name a launch's hook passes
+		label, only = "any", ""
 	}
 	return &priceBook{
 		done:  make(chan struct{}),

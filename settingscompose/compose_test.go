@@ -286,6 +286,24 @@ func TestMaterializeAddsTheUsageHookOnceAfterTheUsers(t *testing.T) {
 	}
 }
 
+// A session's last response reaches the transcript after its last Stop, so only
+// SessionEnd can record it; a launch without a hook must remove both.
+func TestUsageHookCoversSessionEndAndLeavesWithIt(t *testing.T) {
+	f := newFixture(t)
+	write(t, f.canonical, `{"hooks":{"SessionEnd":[{"hooks":[{"type":"command","command":"say bye"}]}]}}`)
+	f.materialize(t, usageHook)
+	f.materialize(t, usageHook)
+	got := string(settingsBytes(t, f))
+	if strings.Count(got, "usage-row") != 2 || !strings.Contains(got, `"SessionEnd"`) {
+		t.Fatalf("want one usage hook in each of Stop and SessionEnd: %s", got)
+	}
+	f.materialize(t, "")
+	got = string(settingsBytes(t, f))
+	if strings.Contains(got, "usage-row") || !strings.Contains(got, "say bye") {
+		t.Fatalf("after a launch with no hook: %s", got)
+	}
+}
+
 func TestMaterializeWithoutAHookRemovesTheOldOneAndKeepsTheUsers(t *testing.T) {
 	f := newFixture(t)
 	write(t, f.canonical, `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}`)

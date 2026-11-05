@@ -358,3 +358,14 @@ func quote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
 }
+
+// A provider launch's hook passes --pricing any: every provider, not one named "any".
+func TestOwnedPriceBookAnyMeansEveryProvider(t *testing.T) {
+	api := []byte(`{"openai":{"npm":"@ai-sdk/openai","models":{"gpt-x":{"cost":{"input":2,"output":10}}}}}`)
+	if got := newOwnedPriceBook("any").parse(api); got["gpt-x"].Input != 2 {
+		t.Fatalf("any priced nothing: %v", got)
+	}
+	if got := newOwnedPriceBook("anthropic").parse(api); len(got) != 0 {
+		t.Fatalf("a named provider priced another's model: %v", got)
+	}
+}
