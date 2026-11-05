@@ -58,10 +58,11 @@ def _claims_outside_removed(needles):
             for line in body.splitlines() if any(needle in line.lower() for needle in lowered)]
 
 
-def test_unreleased_has_one_changed_heading():
+def test_unreleased_has_at_most_one_changed_heading():
     headings = [heading for heading, _ in _sections(_unreleased()) if heading]
-    assert headings.count("Changed") == 1, (
-        f"`## Unreleased` must hold exactly one `### Changed`: {headings}")
+    # A release empties Unreleased, so zero is valid; two is the defect.
+    assert headings.count("Changed") <= 1, (
+        f"`## Unreleased` must hold at most one `### Changed`: {headings}")
 
 
 def test_unreleased_offers_the_formula_only_where_it_is_removed():

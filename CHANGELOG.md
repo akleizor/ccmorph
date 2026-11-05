@@ -7,6 +7,8 @@
 
 ## Unreleased
 
+## v0.5.2 — 2026-11-05
+
 ### Changed
 
 - **Session history is shared again, safely.** Every profile links
@@ -28,6 +30,8 @@
 
 ### Fixed
 
+- A dangling link left in the shared store, where a transcript's parent dir
+  belongs, no longer stops a profile's history merge on every launch (#184).
 - A session carried by `hop` keeps its sidecar transcripts when the source
   profile's history merges; a shared store on an unmounted volume no longer
   fails every launch with `cannot create profile` (the profile runs on its
