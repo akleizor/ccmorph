@@ -771,6 +771,10 @@ func acwValid(v value) bool {
 	return err == nil && f == math.Trunc(f) && f >= 100_000 && f <= 1_000_000
 }
 
+// machineKeys are settings the shared store makes machine-wide: a profile
+// layer never overrides them (#185).
+var machineKeys = []string{"cleanupPeriodDays"}
+
 func build(canonical, layerIn, saved *obj, strip, mapping map[string]bool, acw *int64) *obj {
 	layer := withoutInheritedHooks(layerIn, canonical)
 	data := merge(canonical, withoutTombstones(layer), nil)
@@ -793,6 +797,16 @@ func build(canonical, layerIn, saved *obj, strip, mapping map[string]bool, acw *
 		}
 	}
 	data = merge(data, saved, nil)
+	// #185: session history is shared, so the value that decides how much of
+	// it is pruned belongs to the machine alone; a profile layer holding the
+	// old per-profile value would prune every profile's history.
+	for _, k := range machineKeys {
+		if v, ok := canonical.Get(k); ok {
+			data.Set(k, ordjson.Clone(v))
+		} else {
+			data.Delete(k)
+		}
+	}
 	if env, ok := getObj(data, "env").(*obj); ok {
 		for k := range strip {
 			env.Delete(k)

@@ -2,6 +2,7 @@ package settingscompose
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -183,5 +184,40 @@ func TestFoldKeepsClaudeEditsInTheLayer(t *testing.T) {
 	layer, _ := os.ReadFile(filepath.Join(f.profile, layerFile))
 	if got, want := string(layer), "{\n  \"verbose\": true\n}\n"; got != want {
 		t.Fatalf("layer = %q, want %q", layer, want)
+	}
+}
+
+// #185: the history cleanupPeriodDays prunes is now shared by every profile,
+// so a profile layer's old per-profile value must not decide it — the base
+// settings' value (or their silence) wins, as CHANGELOG.md already claims.
+func TestAProfileLayerNeverOverridesTheBaseCleanupPeriod(t *testing.T) {
+	cases := []struct{ name, canonical, layer, want string }{
+		{"a layer value is ignored", `{"cleanupPeriodDays":30}`, `{"cleanupPeriodDays":5}`, "30"},
+		{"a layer value is dropped with no base value", `{}`, `{"cleanupPeriodDays":5}`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			write(t, f.canonical, tc.canonical)
+			write(t, filepath.Join(f.profile, layerFile), tc.layer)
+			if code, stderr := f.run("materialize"); code != 0 {
+				t.Fatalf("materialize exited %d: %s", code, stderr)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(settingsBytes(t, f), &got); err != nil {
+				t.Fatal(err)
+			}
+			v, present := got["cleanupPeriodDays"]
+			if tc.want == "" {
+				if present {
+					t.Fatalf("a shared profile must not carry a layer cleanupPeriodDays: %v", v)
+				}
+				return
+			}
+			n, ok := v.(float64)
+			if !ok || int(n) != 30 {
+				t.Fatalf("composed cleanupPeriodDays = %v, want %s", v, tc.want)
+			}
+		})
 	}
 }

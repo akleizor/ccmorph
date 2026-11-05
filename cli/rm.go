@@ -93,9 +93,15 @@ func (l *launcher) removeProfileDir(name string) bool {
 	// the profile the same way.
 	parked := []string{}
 	for _, pat := range []string{"projects.premigration.*"} {
-		if hits, _ := filepath.Glob(filepath.Join(p, pat)); len(hits) > 0 {
-			parked = append(parked, hits...)
+		// #185: a state or home path holding a glob metacharacter made the
+		// pattern malformed; the dropped error skipped the rescue and the
+		// RemoveAll below deleted the parked transcripts.
+		hits, err := filepath.Glob(filepath.Join(globQuote(p), pat))
+		if err != nil {
+			l.err("kept '" + name + "': could not look for its parked transcripts: " + err.Error())
+			return false
 		}
+		parked = append(parked, hits...)
 	}
 	for _, d := range parked {
 		if fi, err := os.Lstat(d); err == nil && fi.IsDir() {

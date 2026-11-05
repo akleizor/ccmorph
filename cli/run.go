@@ -617,6 +617,9 @@ func (l *launcher) profileEnvironment(name string) ([]string, bool) {
 
 // setupDir is _ccm_setup_dir: provision the profile's config dir unless it is.
 func (l *launcher) setupDir(name, typ string) bool {
+	// #185: the live lock covers the session from here until claude exits, so
+	// a concurrent setup never merges shared history under this launch.
+	util.HoldLive(l.profileDirs, name, l.log)
 	if util.ProfileOK(l.profileDirs, name) {
 		return true
 	}
