@@ -499,3 +499,28 @@ func TestMigrateDivergentParkKeepsALineAppendedDuringItsCopy(t *testing.T) {
 		t.Fatalf("the park must hold the copy that verified: %q %v", b, err)
 	}
 }
+
+func TestMigrateReplacesADanglingStoreLinkAtAParentDir(t *testing.T) {
+	root := t.TempDir()
+	from, to := filepath.Join(root, "from"), filepath.Join(root, "to")
+	transcript := filepath.Join(from, "proj", "sess", "subagents", "a.jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcript), 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(transcript, []byte("real\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(to, "proj"), 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "gone"), filepath.Join(to, "proj", "sess")); err != nil {
+		t.Fatal(err)
+	}
+	if !migrateProjects(from, to, nil) {
+		t.Fatal("a dangling store link stopped the merge")
+	}
+	got, err := os.ReadFile(filepath.Join(to, "proj", "sess", "subagents", "a.jsonl"))
+	if err != nil || string(got) != "real\n" {
+		t.Fatalf("transcript = %q, %v", got, err)
+	}
+}

@@ -85,6 +85,9 @@ func migrateProjects(from, to string, report func(string)) bool {
 		}
 		rel := strings.TrimPrefix(f, walk+"/")
 		dest := to + "/" + rel
+		// A dangling link where the store needs a directory names nothing, so it
+		// gives way like a dangling leaf does; left there it stops every later launch.
+		clearDanglingParents(to, rel)
 		if lexists(dest) {
 			switch {
 			case d.Type()&fs.ModeSymlink != 0 && sameTarget(f, dest):
@@ -370,6 +373,21 @@ func copyVerified(f, dest string) error {
 		return err2
 	}
 	return nil
+}
+
+// clearDanglingParents removes the dangling links among rel's parent dirs under
+// the store root.
+func clearDanglingParents(root, rel string) {
+	p := root
+	parts := strings.Split(rel, "/")
+	for _, c := range parts[:len(parts)-1] {
+		p += "/" + c
+		if isLink(p) {
+			if _, err := os.Stat(p); err != nil {
+				_ = os.Remove(p)
+			}
+		}
+	}
 }
 
 // linkGivesWay reports whether the link at dest names f or names nothing.
