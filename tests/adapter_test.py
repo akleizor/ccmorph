@@ -202,6 +202,9 @@ class AdapterTest(unittest.TestCase):
         UPSTREAM.clear()
         Gateway.extra_models = []
         self.home = Path(tempfile.mkdtemp())
+        # The home leaves with its test: before GH-196 every one of them
+        # stayed in TMPDIR for good.
+        self.addCleanup(shutil.rmtree, str(self.home), True)
         # A fake ccmorph whose _env reports the stub endpoint, so the adapter's
         # "credential comes from the profile" path is exercised for real.
         cc = self.home / ".config/ccmorph"
