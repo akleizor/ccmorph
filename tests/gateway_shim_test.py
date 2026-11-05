@@ -1099,8 +1099,11 @@ class GatewayEdgeTest(unittest.TestCase):
         spec = {"profile": "edge", "identity": "i", "upstream": upstream, "models": [],
                 "model_map": mapping or {},
                 "timeout": 5, "key_sha256": hashlib.sha256(self.KEY.encode()).hexdigest()}
+        # The state dir leaves with its test, like UsageSidecarTest's (GH-196).
+        state = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, state, True)
         self.proc, port = start_shim(self, upstream, env={"CCMORPH_MODEL_ROUTE": json.dumps(spec),
-                                                          "XDG_STATE_HOME": tempfile.mkdtemp()},
+                                                          "XDG_STATE_HOME": state},
                                      flags=["--preserve-tool-ids"])
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}{path}", data=json.dumps(body).encode(),

@@ -2,6 +2,13 @@
 # profiles, and a scripted stand-in for `claude`. Touches nothing real.
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 export HOME=$(mktemp -d) PS1='$ '
+# The sandbox is this shell's to put away, however it ends: a recording killed
+# mid-tape must not leave its HOME in the temp dir for good (GH-196). The
+# signal traps exit through the EXIT trap, so one removal covers every ending.
+_ccm_demo_home=$HOME
+trap 'rm -rf -- "$_ccm_demo_home"' EXIT
+trap 'exit 129' HUP
+trap 'exit 143' TERM
 export CCMORPH_STATE_DIR=$HOME/state
 export PATH=$root/assets/demo/bin:$root/bin:$PATH
 mkdir -p "$CCMORPH_STATE_DIR"
