@@ -221,3 +221,89 @@ func TestAProfileLayerNeverOverridesTheBaseCleanupPeriod(t *testing.T) {
 		})
 	}
 }
+
+// --- the launch's usage hook ---------------------------------------------------------
+
+const usageHook = "/libexec/ccmorph-core usage-row --profile 'work' --pricing 'anthropic'"
+
+func (f fixture) materialize(t *testing.T, hook string) {
+	t.Helper()
+	var stderr bytes.Buffer
+	args := []string{"materialize", f.profile, "--canonical", f.canonical, "--saved", "{}"}
+	if hook != "" {
+		args = append(args, "--usage-hook", hook)
+	}
+	if code := Main(args, &stderr); code != 0 {
+		t.Fatalf("materialize exited %d: %s", code, stderr.String())
+	}
+}
+
+// stopCommands is every command the generated settings' Stop list runs.
+func stopCommands(t *testing.T, f fixture) []string {
+	t.Helper()
+	var doc struct {
+		Hooks struct {
+			Stop []struct {
+				Hooks []struct{ Command string } `json:"hooks"`
+			} `json:"Stop"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(settingsBytes(t, f), &doc); err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, e := range doc.Hooks.Stop {
+		for _, h := range e.Hooks {
+			out = append(out, h.Command)
+		}
+	}
+	return out
+}
+
+func TestMaterializeAddsTheUsageHookOnceAfterTheUsers(t *testing.T) {
+	f := newFixture(t)
+	write(t, f.canonical, `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}`)
+	f.materialize(t, usageHook)
+	f.materialize(t, usageHook)
+	if got := stopCommands(t, f); len(got) != 2 || got[0] != "say done" || got[1] != usageHook {
+		t.Fatalf("Stop = %q", got)
+	}
+	// The hook is the launch's, never the user's layer: a fold must not save it.
+	var stderr bytes.Buffer
+	if code := Main([]string{"fold", f.profile, "--canonical", f.canonical}, &stderr); code != 0 {
+		t.Fatalf("fold: %d %s", code, stderr.String())
+	}
+	layer, err := os.ReadFile(filepath.Join(f.profile, layerFile))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(layer), "usage-row") {
+		t.Fatalf("a fold wrote the usage hook into the layer: %s", layer)
+	}
+	// The canonical settings are the user's file: untouched.
+	if b, _ := os.ReadFile(f.canonical); !strings.Contains(string(b), "say done") || strings.Contains(string(b), "usage-row") {
+		t.Fatalf("canonical = %s", b)
+	}
+}
+
+func TestMaterializeWithoutAHookRemovesTheOldOneAndKeepsTheUsers(t *testing.T) {
+	f := newFixture(t)
+	write(t, f.canonical, `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}`)
+	f.materialize(t, usageHook)
+	// A direct or API-key launch asks for no hook; the previous launch's must go.
+	f.materialize(t, "")
+	if got := stopCommands(t, f); len(got) != 1 || got[0] != "say done" {
+		t.Fatalf("Stop = %q", got)
+	}
+	// With no user hook either, the list does not linger empty.
+	f2 := newFixture(t)
+	f2.materialize(t, usageHook)
+	f2.materialize(t, "")
+	var doc map[string]any
+	json.Unmarshal(settingsBytes(t, f2), &doc)
+	if hooks, ok := doc["hooks"].(map[string]any); ok {
+		if _, ok := hooks["Stop"]; ok {
+			t.Fatalf("an empty Stop list survived: %v", hooks)
+		}
+	}
+}

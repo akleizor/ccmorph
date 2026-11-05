@@ -531,7 +531,7 @@ var confSections = [][]string{
 		"env.ANTHROPIC_DEFAULT_FABLE_MODEL", "env.ANTHROPIC_DEFAULT_OPUS_MODEL*",
 		"env.ANTHROPIC_DEFAULT_SONNET_MODEL", "env.ANTHROPIC_DEFAULT_HAIKU_MODEL",
 		"env.ANTHROPIC_SMALL_FAST_MODEL", "env.CLAUDE_CODE_SUBAGENT_MODEL", "excluded_models"},
-	{"private", "env.*"},
+	{"private", "usage_route", "env.*"},
 	{"window_sources", "context_window.*"},
 	{"model_defaults", "context_discovered"},
 }

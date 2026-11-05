@@ -46,10 +46,10 @@ var (
 	efforts  = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true, "max": true}
 	common   = []string{"type", "model", "model_defaults", "private", "monthly_budget_usd", "effort", "effort.*", "context_discovered"}
 	perType  = map[string][]string{
-		"sub":      {"email"},
-		"token":    {"token"},
+		"sub":      {"email", "usage_route"},
+		"token":    {"token", "usage_route"},
 		"apikey":   {"api_key", "base_url", "excluded_models", "adapter", "tag", "env.*", "context_window.*", "window_sources", "model_map"},
-		"provider": {"provider", "excluded_models", "tag", "env.*", "context_window.*", "window_sources"},
+		"provider": {"provider", "excluded_models", "tag", "env.*", "context_window.*", "window_sources", "usage_route"},
 	}
 )
 
@@ -118,7 +118,8 @@ func Read(state, name string, secure bool, lists Lists, warn func(string)) (map[
 func checkKey(name, k, v string, lists Lists) error {
 	switch {
 	case k == "type" || k == "email" || k == "token" || k == "base_url" || k == "api_key" || k == "model" ||
-		k == "adapter" || k == "tag" || k == "provider" || k == "context_discovered" || k == "window_sources":
+		k == "adapter" || k == "tag" || k == "provider" || k == "context_discovered" || k == "window_sources" ||
+		k == "usage_route":
 	case k == "excluded_models":
 		if v == "" || strings.ContainsAny(v, " \t\v\f") || strings.HasPrefix(v, ",") || strings.HasSuffix(v, ",") || strings.Contains(v, ",,") {
 			return fail("excluded_models must be comma-separated exact model IDs")
@@ -278,6 +279,11 @@ func rawKeyCount(s string) int {
 // must carry a clean key, and a base_url, when set, an http(s) scheme. sub, token
 // and provider profiles need nothing further.
 func Validate(name string, f map[string]string) error {
+	// usage_route is the one opt-out from the usage hook; any other value would
+	// read as a route that does not exist.
+	if v := f["usage_route"]; v != "" && v != "direct" {
+		return fail("profile '%s' usage_route must be 'direct' or absent", name)
+	}
 	if f["type"] != "apikey" {
 		return nil
 	}

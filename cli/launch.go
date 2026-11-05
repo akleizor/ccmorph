@@ -49,6 +49,7 @@ type launcher struct {
 	providerActive          string
 	providerPort            string
 	providerKey             string
+	usageHook               string
 
 	mu        sync.Mutex
 	child     *os.Process

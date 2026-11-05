@@ -49,6 +49,10 @@ effort=medium
 # monthly_budget_usd=<n>  positive number; Stark's spend cap, ccmorph keeps it unused
 # private=1    run from a throwaway view: config and settings are linked in,
 #              transcripts, prompt history and session state are deleted on exit
+# usage_route=direct
+#              sub, token, provider: install no usage hook, so the profile
+#              writes no usage receipt. Default: the hook. The launch still
+#              reaches its upstream exactly as it otherwise would.
 # env.<NAME>   only names in ProfileEnv (profile/envkeys.go); sub and token
 #              profiles accept the section 2 model keys only
 

@@ -304,10 +304,7 @@ func (u *UsageSidecar) write(r *record) error {
 			return err
 		}
 	}
-	named := func(key string) string {
-		sum := sha256.Sum256([]byte(key))
-		return filepath.Join(dir, hex.EncodeToString(sum[:])+".json")
-	}
+	named := func(key string) string { return filepath.Join(dir, rowFileName(key)) }
 	primary := named(r.responseID)
 	key := r.responseID + "." + r.turnID
 	spills := []string{named(key)}

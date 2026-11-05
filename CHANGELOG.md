@@ -7,6 +7,22 @@
 
 ## Unreleased
 
+### Added
+
+- **Usage rows for every profile.** `sub`, `token` and `provider` launches now
+  write the same receipt an `apikey` profile does. A launch changes no network
+  path: Claude Code already records each response's model and token counts in
+  its transcript, and the launch adds one `Stop` hook that reads the new
+  assistant entries and writes one row per response, folding the several
+  transcript lines a response spans into it. Remote Control, the
+  first-party defaults, nested launches, Bash commands, hooks and MCP servers
+  keep the connection they had, and no proxy or certificate is installed. A
+  subscription's row carries `estimated_cost` at the models.dev list price,
+  never a billed `cost`; the price comes from a snapshot refreshed in the
+  background at launch, and the hook never waits on the network. A turn's row
+  appears when the turn ends. `usage_route=direct` opts a profile out, and a
+  later launch of that profile removes the hook an earlier one installed.
+
 ## v0.5.2 — 2026-11-05
 
 ### Changed

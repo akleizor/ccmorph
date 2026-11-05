@@ -29,6 +29,8 @@ tags; update rather than patch in place.
 | `~/.config/ccmorph/` | the state root (honours `CCMORPH_STATE_DIR`, then `XDG_CONFIG_HOME`) | `700` |
 | `~/.config/ccmorph/profiles/<name>/` | that profile's Claude Code config, including its own auth state | `700` |
 | `${TMPDIR}/ccmorph-<uid>.log` | launch and adapter diagnostics | ephemeral; created `600`, and an existing log of ours is tightened to `600` |
+| `${XDG_STATE_HOME:-~/.local/state}/ccmorph/usage/` | one metadata receipt per response: profile, model, token counts, cost; no prompt, header or credential | `600` |
+| `${XDG_STATE_HOME:-~/.local/state}/ccmorph/usage-cursors/` | one session transcript's read position for the usage hook; a path digest and an offset, no credential | `600` |
 | `<profile>/adapter/` | a rendered translator config, created per session | `700`, removed on exit |
 
 Every `*.conf` is gitignored, including the manual `context_window.<model>`
@@ -36,6 +38,13 @@ overrides it holds. No
 credential has ever been tracked in this repository.
 
 ## What protects them
+
+- **The usage hook holds no credential.** A `sub`, `token` or `provider` launch
+  adds one `Stop` hook that reads the session's own transcript after a stored
+  offset. It reads only each assistant entry's id, model, timestamp and token
+  counts: no prompt, header, cookie or credential is copied into a receipt, and
+  the launch changes no network path, proxy or certificate. The hook command is
+  a path and a profile name; the credential never appears on it.
 
 - **Atomic writes.** A profile is written to a `mktemp` file and renamed into
   place, so an interrupted write cannot leave a half-file that still parses.

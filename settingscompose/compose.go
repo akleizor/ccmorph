@@ -461,6 +461,81 @@ func mergeInto(result, override *obj, path []string) {
 	}
 }
 
+// usageHookMark is the one command ccmorph owns in a profile's Stop list: the
+// launch's own usage-row writer. A user's Stop hooks are never touched.
+const usageHookMark = "ccmorph-core usage-row --profile "
+
+// isUsageHook is an entry whose command is this profile's usage writer.
+func isUsageHook(entry value) bool {
+	e, ok := entry.(*obj)
+	if !ok {
+		return false
+	}
+	hooks, ok := getObj(e, "hooks").([]any)
+	if !ok {
+		return false
+	}
+	for _, h := range hooks {
+		if ho, ok := h.(*obj); ok {
+			if c, ok := getObj(ho, "command").(string); ok && strings.Contains(c, usageHookMark) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// withoutUsage drops ccmorph's usage hook, so a fold never writes it into the
+// user's layer and a compose that no longer asks for one removes the old one.
+func withoutUsage(docIn *obj) *obj {
+	doc := ordjson.Clone(docIn).(*obj)
+	hooks, ok := getObj(doc, "hooks").(*obj)
+	if !ok {
+		return doc
+	}
+	entries, ok := getObj(hooks, "Stop").([]any)
+	if !ok {
+		return doc
+	}
+	var kept []any
+	for _, e := range entries {
+		if !isUsageHook(e) {
+			kept = append(kept, e)
+		}
+	}
+	if len(kept) > 0 {
+		hooks.Set("Stop", kept)
+	} else {
+		hooks.Delete("Stop")
+		if hooks.Len() == 0 {
+			doc.Delete("hooks")
+		}
+	}
+	return doc
+}
+
+// addUsage puts the launch's usage hook into Stop, after any hook the user set.
+// withoutUsage copies, so the caller keeps the returned document.
+func addUsage(doc *obj, command string) *obj {
+	doc = withoutUsage(doc)
+	if command == "" {
+		return doc
+	}
+	hooks, ok := getObj(doc, "hooks").(*obj)
+	if !ok {
+		hooks = ordjson.New()
+		doc.Set("hooks", hooks)
+	}
+	entries, _ := getObj(hooks, "Stop").([]any)
+	hook := ordjson.New()
+	hook.Set("type", "command")
+	hook.Set("command", command)
+	entry := ordjson.New()
+	entry.Set("hooks", []any{hook})
+	hooks.Set("Stop", append(entries, entry))
+	return doc
+}
+
 func withoutAdvise(docIn *obj) *obj {
 	doc := ordjson.Clone(docIn).(*obj)
 	hooks, ok := getObj(doc, "hooks").(*obj)
@@ -757,7 +832,7 @@ func fold(base, current, layerIn, canonical *obj, mapping map[string]bool) *obj 
 			}
 		}
 	}
-	walk(withoutAdvise(base), withoutAdvise(current), nil)
+	walk(withoutUsage(withoutAdvise(base)), withoutUsage(withoutAdvise(current)), nil)
 	setTombstones(layer, unset)
 	return layer
 }
@@ -775,7 +850,7 @@ func acwValid(v value) bool {
 // layer never overrides them (#185).
 var machineKeys = []string{"cleanupPeriodDays"}
 
-func build(canonical, layerIn, saved *obj, strip, mapping map[string]bool, acw *int64) *obj {
+func build(canonical, layerIn, saved *obj, strip, mapping map[string]bool, acw *int64, usageHook string) *obj {
 	layer := withoutInheritedHooks(layerIn, canonical)
 	data := merge(canonical, withoutTombstones(layer), nil)
 	applyTombstones(data, layer)
@@ -837,6 +912,7 @@ func build(canonical, layerIn, saved *obj, strip, mapping map[string]bool, acw *
 			hooks.Set("SessionStart", append(entries, entry))
 		}
 	}
+	data = addUsage(data, usageHook)
 	return data
 }
 
@@ -895,7 +971,7 @@ func capture(profileDir string, current, canonical *obj, mapping map[string]bool
 	if current == nil {
 		current = ordjson.New()
 	}
-	return withoutInheritedHooks(withoutAdvise(current), canonical)
+	return withoutInheritedHooks(withoutUsage(withoutAdvise(current)), canonical)
 }
 
 func readCurrent(target string) ([]byte, *obj) {
@@ -998,7 +1074,7 @@ func foldOnly(profileDir, canonicalPath string, mapping map[string]bool) {
 	})
 }
 
-func materialize(profileDir, canonicalPath string, saved *obj, strip, mapping map[string]bool, acwArg *string) {
+func materialize(profileDir, canonicalPath string, saved *obj, strip, mapping map[string]bool, acwArg *string, usageHook string) {
 	target := join(profileDir, "settings.json")
 	basePath, pending := join(profileDir, baseFile), join(profileDir, pendingFile)
 	refuseSymlinks(profileDir)
@@ -1021,7 +1097,7 @@ func materialize(profileDir, canonicalPath string, saved *obj, strip, mapping ma
 				n, _ := strconv.ParseInt(*acwArg, 10, 64)
 				acw = &n
 			}
-			doc := build(canonical, layer, saved, strip, mapping, acw)
+			doc := build(canonical, layer, saved, strip, mapping, acw, usageHook)
 			// Claude Code may be writing the same file; start over rather than
 			// replace an edit that landed while this pass was reading.
 			if !bytes.Equal(readBytes(target), currentBytes) || (readBytes(target) == nil) != (currentBytes == nil) {
@@ -1080,6 +1156,7 @@ type options struct {
 	strip      []string
 	mapping    []string
 	acw        *string
+	usageHook  string
 }
 
 func usage(stderr io.Writer, msg string) int {
@@ -1096,7 +1173,7 @@ func parseArgs(args []string) (*options, string) {
 	o := &options{command: args[0], saved: "{}"}
 	home, _ := os.UserHomeDir()
 	o.canonical = pyPath(join(home, ".claude", "settings.json"))
-	flags := map[string]bool{"--canonical": true, "--mapping": true}
+	flags := map[string]bool{"--canonical": true, "--mapping": true, "--usage-hook": true}
 	switch o.command {
 	case "materialize":
 		flags["--saved"], flags["--strip"], flags["--acw"] = true, true, true
@@ -1161,6 +1238,8 @@ func parseArgs(args []string) (*options, string) {
 		case "--acw":
 			v := val
 			o.acw = &v
+		case "--usage-hook":
+			o.usageHook = val
 		}
 	}
 	if len(positionals) < 1 {
@@ -1209,7 +1288,7 @@ func Main(args []string, stderr io.Writer) int {
 		if o.acw != nil && *o.acw != "none" && !isDigits(*o.acw) {
 			valueFail("--acw must be a token count or none")
 		}
-		materialize(o.profileDir, o.canonical, saved, set(o.strip), set(o.mapping), o.acw)
+		materialize(o.profileDir, o.canonical, saved, set(o.strip), set(o.mapping), o.acw, o.usageHook)
 	})
 	if fail == nil {
 		return 0

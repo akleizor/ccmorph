@@ -118,3 +118,64 @@ func TestFirstLookupWaitsForTheLoad(t *testing.T) {
 		t.Fatal("the first lookup must see the table the load produced")
 	}
 }
+
+// ownedDoc is models.dev's shape for a first-party vendor: anthropic and openai
+// state no `api` host, and a reseller shares one model id with the vendor.
+const ownedDoc = `{
+ "anthropic":{"npm":"@ai-sdk/anthropic","models":{
+   "claude-opus-5-5":{"cost":{"input":4,"output":20,"cache_read":0.2,"cache_write":5}},
+   "claude-haiku-5-5":{"cost":{"input":1,"output":5}}}},
+ "openai":{"npm":"@ai-sdk/openai","models":{"gpt-5.6-sol":{"cost":{"input":2,"output":10}}}},
+ "zz-reseller":{"npm":"other","api":"https://api.example.com","models":{
+   "claude-opus-5-5":{"cost":{"input":9,"output":9}},
+   "gpt-5.6-sol":{"cost":{"input":9,"output":9}}}}}`
+
+func TestOwnedPricesReadAProviderWithNoAPIHost(t *testing.T) {
+	m := parseOwnedPrices([]byte(ownedDoc), "anthropic")
+	if len(m) != 2 || m["claude-opus-5-5"].Input != 4 || m["claude-opus-5-5"].Output != 20 {
+		t.Fatalf("%v", m)
+	}
+	if _, ok := m["gpt-5.6-sol"]; ok {
+		t.Fatal("one provider's table must not carry another's model")
+	}
+	// The host-keyed parser finds nothing here: that is why this exists.
+	if len(parsePrices([]byte(ownedDoc), "api.anthropic.com")) != 0 {
+		t.Fatal("an entry with no api host is never found by host")
+	}
+}
+
+func TestOwnedPricesPreferTheVendorOverAReseller(t *testing.T) {
+	m := parseOwnedPrices([]byte(ownedDoc), "")
+	if m["claude-opus-5-5"].Input != 4 || m["gpt-5.6-sol"].Input != 2 {
+		t.Fatalf("a vendor's own entry must win its model: %v", m)
+	}
+}
+
+func TestNewOwnedPriceBookKeysItsCacheByProvider(t *testing.T) {
+	stateHome(t)
+	b := newOwnedPriceBook("anthropic")
+	if b.host != "owned:anthropic" || !strings.HasSuffix(b.path, "prices-owned-anthropic.json") {
+		t.Fatalf("%q %q", b.host, b.path)
+	}
+	if b.parse == nil || b.parse([]byte(ownedDoc))["claude-opus-5-5"].Input != 4 {
+		t.Fatal("the owned book must parse by provider id")
+	}
+	if any := newOwnedPriceBook(""); any.host != "owned:any" || !strings.HasSuffix(any.path, "prices-owned-any.json") {
+		t.Fatalf("%q %q", any.host, any.path)
+	}
+}
+
+func TestLookupIgnoresADateSuffix(t *testing.T) {
+	stateHome(t)
+	b := newOwnedPriceBook("anthropic")
+	b.fetch = func() ([]byte, error) { return []byte(ownedDoc), nil }
+	if p, ok := b.lookup("claude-opus-5-5-20251101"); !ok || p.Input != 4 {
+		t.Fatalf("%v %v", p, ok)
+	}
+	if p, ok := b.lookup("claude-opus-5-5[1m]"); !ok || p.Input != 4 {
+		t.Fatalf("%v %v", p, ok)
+	}
+	if _, ok := b.lookup("claude-opus-5-5-notadate"); ok {
+		t.Fatal("a suffix that is not a date must not be stripped")
+	}
+}

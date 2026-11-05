@@ -33,11 +33,26 @@ func TestReadAcceptsEachTypeAndFoldsProxy(t *testing.T) {
 		"type=proxy\nbase_url=https://x\napi_key=k\n":                 "apikey",
 		"type=sub\nemail=a\nenv.ANTHROPIC_DEFAULT_OPUS_MODEL=m\n":     "sub",
 		"type=apikey\napi_key=k\ncontext_window.m=1000\neffort.m=max": "apikey",
+		"type=sub\nemail=a\nusage_route=direct\n":                     "sub",
+		"type=token\ntoken=t\nusage_route=direct\n":                   "token",
+		"type=provider\nprovider=codex\nusage_route=direct\n":         "provider",
 	} {
 		f, _, err := read(t, conf)
 		if err != nil || f["type"] != typ {
 			t.Fatalf("%q: %v %v", conf, f, err)
 		}
+	}
+}
+
+// usage_route is a key every launch of that type may carry, and only "direct"
+// is a route: Read accepts the key, Validate refuses any other value.
+func TestValidateRefusesAnUnknownUsageRoute(t *testing.T) {
+	f, _, err := read(t, "type=sub\nemail=a\nusage_route=edge\n")
+	if err != nil {
+		t.Fatalf("the key must load so the value can be refused: %v", err)
+	}
+	if err := Validate("p", f); err == nil || !strings.Contains(err.Error(), "usage_route") {
+		t.Fatalf("Validate accepted usage_route=edge: %v", err)
 	}
 }
 
