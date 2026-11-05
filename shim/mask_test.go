@@ -62,6 +62,11 @@ func TestMaskRules(t *testing.T) {
 		"DB_PASSWORD=changeme":                   "changeme",
 		"PASSWORD=correcthorsebatterystaple":     "correcthorsebatterystaple",
 		"password: correct-horse-battery-staple": "correct-horse-battery-staple",
+		// An .env dump on one line, and a command's env prefix: an "="
+		// names an assignment, so the value is a value even when a word
+		// follows it (#186).
+		"DB_PASSWORD=hunterstable DEBUG=1": "hunterstable",
+		"PASSWORD=hunterstable npm start":  "hunterstable",
 	} {
 		if got := maskOne(t, m, in); strings.Contains(got, gone) {
 			t.Errorf("%q kept %q: %q", in, gone, got)
@@ -74,6 +79,9 @@ func TestMaskRules(t *testing.T) {
 		"password: string",
 		// A word that opens a sentence is prose, not a value (#mask-prose).
 		"Password: unable to read the vault", "/1password-1.json.age: resource deadlock avoided", "password = Password",
+		// A quoted or spaced value after "=" is code, and a word after it may open a sentence (#186).
+		`PASSWORD_ERROR = "Invalid username or password"`, `password_hint="Please choose a longer one"`,
+		"password = option if option else fallback",
 	} {
 		if got := maskOne(t, m, plain); got != plain {
 			t.Errorf("masked a non-secret: %q -> %q", plain, got)
