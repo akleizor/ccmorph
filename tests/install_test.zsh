@@ -305,13 +305,21 @@ grep -qF "\"$d/home/.claude/plugins/marketplaces/example\"" "$d/home/.claude/plu
 # ~/.config/ccmorph, beside the code the install wrote. The report must count
 # and name them as kept user data — never as code alone — read their keychain
 # refs, and offer the directory under that honest name: following the printed
-# cleanup must never delete a profile the report did not name.
+# cleanup must never delete a profile the report did not name — and the plugin
+# repair must walk those pre-override profile homes too, or the index still
+# names plugin files the printed rm deletes (#187).
 d=$(fresh_env uninstall_prior_profiles)
 run_installer "$d" >/dev/null
 cfg="$d/home/.config/ccmorph"          # the code, and the pre-override profiles
 state="$d/moved-state"                 # where the runtime looks now
 printf 'type=apikey\napi_key=keychain:team.api_key\n' > "$cfg/team.conf"
 mkdir -p "$cfg/profiles/team" "$state"
+# A plugin installed from that pre-override profile session, recorded under the
+# profile's spelling of the shared store — through the CODE DIR's profiles
+# root, the path the rm line below deletes.
+mkdir -p "$d/home/.claude/plugins/marketplaces/example"
+print -r -- '{"example": {"source": {"source": "github", "repo": "owner/repo"}, "installLocation": "'"$cfg"'/profiles/team/plugins/marketplaces/example"}}' \
+  > "$d/home/.claude/plugins/known_marketplaces.json"
 printf '#!/bin/sh\necho Darwin\n' > "$d/bin/uname"; chmod +x "$d/bin/uname"
 env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" CCMORPH_STATE_DIR="$state" \
   zsh "$REPO/install.sh" --uninstall >"$d/out" 2>&1; rc=$?
@@ -328,6 +336,71 @@ grep -qxF "  security delete-generic-password -s ccmorph -a team.api_key" "$d/ou
 grep -qxF "  rm -rf $state $cfg" "$d/out" \
   && ok "prior-profiles uninstall: the rm names both roots under the honest naming above" \
   || { fail "prior-profiles uninstall: rm line wrong"; cat "$d/out" }
+grep -qF "\"$d/home/.claude/plugins/marketplaces/example\"" "$d/home/.claude/plugins/known_marketplaces.json" \
+  && ok "prior-profiles uninstall: the plugin repair walks the pre-override profile homes too" \
+  || { fail "prior-profiles uninstall: plugin index still spelled through the pre-override profile"; cat "$d/home/.claude/plugins/known_marketplaces.json" }
+
+# --- 5d. an EQUIVALENT spelling of the code dir is not a redirect (#187)
+# "Is the state root elsewhere?" is a question about directories, not strings
+# (the rule the copy step applies to CONFIG_REAL): a CCMORPH_STATE_DIR that
+# spells the config dir with a trailing slash, through a symlinked parent, or
+# as a symlink itself names ONE directory. A string compare counted it as a
+# redirect, so the same profiles, keychain refs and rm targets were printed
+# twice. The report then names and rms the config dir's own spelling: rm on a
+# symlink removes only the link, so a state root that IS one must never be the
+# spelling the printed cleanup carries.
+for spell in slash link leaf; do
+  d=$(fresh_env "uninstall_equiv_$spell")
+  run_installer "$d" >/dev/null
+  cfg="$d/home/.config/ccmorph"
+  state="$cfg/"                        # slash: the same directory, trailing /
+  if [[ "$spell" == link ]]; then      # link: the same directory via a symlinked parent
+    ln -s "$d/home" "$d/home-link"
+    state="$d/home-link/.config/ccmorph"
+  fi
+  if [[ "$spell" == leaf ]]; then      # leaf: the state root itself is a symlink
+    ln -s "$cfg" "$d/state-link"
+    state="$d/state-link"
+  fi
+  printf 'type=apikey\napi_key=keychain:team.api_key\n' > "$cfg/team.conf"
+  mkdir -p "$cfg/profiles/team"
+  # A plugin recorded under the PLAIN spelling of the same directory, from a
+  # session that ran before the override took the other spelling: the repair
+  # must walk that spelling too, or the entry dangles once the rm runs (#187).
+  mkdir -p "$d/home/.claude/plugins/marketplaces/example"
+  print -r -- '{"example": {"source": {"source": "github", "repo": "owner/repo"}, "installLocation": "'"$cfg"'/profiles/team/plugins/marketplaces/example"}}' \
+    > "$d/home/.claude/plugins/known_marketplaces.json"
+  printf '#!/bin/sh\necho Darwin\n' > "$d/bin/uname"; chmod +x "$d/bin/uname"
+  env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" CCMORPH_STATE_DIR="$state" \
+    zsh "$REPO/install.sh" --uninstall >"$d/out" 2>&1; rc=$?
+  (( rc == 0 )) && ok "equiv-$spell uninstall: exits 0" || { fail "equiv-$spell uninstall rc=$rc"; cat "$d/out" }
+  [[ -f "$cfg/team.conf" ]] \
+    && ok "equiv-$spell uninstall: leaves the profile in place" || fail "equiv-$spell uninstall: deleted the profile"
+  grep -qF "$cfg  (1 profiles," "$d/out" \
+    && ok "equiv-$spell uninstall: names the one directory once, by its own spelling" \
+    || { fail "equiv-$spell uninstall: state root line wrong"; cat "$d/out" }
+  grep -qF 'the installed code' "$d/out" \
+    && { fail "equiv-$spell uninstall: the same directory counted as a redirect"; cat "$d/out" } \
+    || ok "equiv-$spell uninstall: an equivalent spelling is not a redirect"
+  grep -qxF "  rm -rf $cfg" "$d/out" \
+    && ok "equiv-$spell uninstall: the rm names the directory, never a link to it" \
+    || { fail "equiv-$spell uninstall: rm line wrong"; cat "$d/out" }
+  (( $(grep -c 'security delete-generic-password' "$d/out") == 1 )) \
+    && ok "equiv-$spell uninstall: one keychain line for the one profile" \
+    || { fail "equiv-$spell uninstall: keychain line count"; cat "$d/out" }
+  grep -qF "\"$d/home/.claude/plugins/marketplaces/example\"" "$d/home/.claude/plugins/known_marketplaces.json" \
+    && ok "equiv-$spell uninstall: the plugin repair walks the plain spelling too" \
+    || { fail "equiv-$spell uninstall: plugin index still spelled through the plain spelling"; cat "$d/home/.claude/plugins/known_marketplaces.json" }
+  # The printed cleanup, run as printed: on a spelling that is itself a link,
+  # rm removes the link and leaves the directory behind — the report must hand
+  # rm a path whose removal removes the data it names.
+  rm_target="$(grep -F '  rm -rf ' "$d/out" | head -1)"
+  rm_target="${rm_target#  rm -rf }"
+  [[ -n "$rm_target" ]] && rm -rf "$rm_target"
+  [[ ! -e "$cfg" ]] \
+    && ok "equiv-$spell uninstall: the printed rm removes the directory" \
+    || fail "equiv-$spell uninstall: the printed rm left the directory behind"
+done
 
 # --- 6. a RE-RUN is an update: user state survives, and it says so ----------
 # The guarantee people actually care about. Profiles (which now carry their own

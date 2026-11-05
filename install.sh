@@ -162,13 +162,31 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   # and they stay user data — counted and named beside the code, never folded
   # into it (#165).
   _un_root="${CCMORPH_STATE_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/ccmorph}"
+  # Whether the state root was redirected is a question about DIRECTORIES, not
+  # strings — the same rule the copy step's CONFIG_REAL comparison applies
+  # below. A CCMORPH_STATE_DIR that spells the config dir with a trailing slash
+  # or through a symlink names one directory; a string compare would count it
+  # as a redirect and print the same profiles, keychain refs and rm targets
+  # twice (#187).
+  _un_redirected=0
+  [[ "${_un_root:A}" != "${CONFIG_DIR:A}" ]] && _un_redirected=1
   # Claude Code records a plugin installed from a profile session under that
   # profile's spelling of the shared ~/.claude/plugins store. Every ccmorph run
   # repairs that, but there is no run after this one: repair now, so the plugin
   # still loads in native claude once the state root is gone. Best effort — a
   # missing or older core (no such subcommand) must not stop the uninstall.
+  # Every profile home the report below can name for deletion gets the repair,
+  # as its own two-operand call: the state root's, and the code dir's whenever
+  # that spells a different path — a redirect moves nothing, so the profiles
+  # from before it still live there, and an index entry they spelled dangles
+  # once the printed cleanup runs (#187). Never one call with more operands:
+  # the core run here is the INSTALLED one, which an older release may still
+  # supply, and a verb whose operand count changed answers exit 2 and repairs
+  # nothing.
   if [[ -x "$CONFIG_DIR/libexec/ccmorph-core" ]]; then
     "$CONFIG_DIR/libexec/ccmorph-core" util normalize-plugin-index "$HOME" "$_un_root/profiles" >/dev/null 2>&1 || :
+    [[ "$_un_root/profiles" != "$CONFIG_DIR/profiles" ]] && \
+      "$CONFIG_DIR/libexec/ccmorph-core" util normalize-plugin-index "$HOME" "$CONFIG_DIR/profiles" >/dev/null 2>&1 || :
   fi
   rm -f "$BIN_DIR/ccmorph"
   print -r -- "Removed $BIN_DIR/ccmorph."
@@ -178,13 +196,22 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   # read for their count, their keychain refs and their line on the report
   # exactly like the redirected root's (#165).
   _un_prior=()
-  [[ "$_un_root" != "$CONFIG_DIR" ]] && _un_prior=("$CONFIG_DIR"/*.conf(N))
-  _un_rm=("$_un_root")
+  (( _un_redirected )) && _un_prior=("$CONFIG_DIR"/*.conf(N))
+  # The spelling the report names and hands to rm for the state root: the
+  # config dir's own whenever the two are one directory. rm on a symlink
+  # removes only the link, so a state root that IS one must never be the
+  # spelling the printed cleanup carries — the profiles, credentials and
+  # session history would survive it, removed as a link and named nowhere
+  # (#187). The repair above still ran under the override's own spelling too:
+  # a session's index entries sit under whichever spelling it ran with.
+  _un_named="$_un_root"
+  (( _un_redirected )) || _un_named="$CONFIG_DIR"
+  _un_rm=("$_un_named")
   # With the state root redirected, the code the installer placed in CONFIG_DIR
   # is residue too: named as code — never as the profiles' home — and on the
   # same rm line, or ccmorph's own files would be left for the user to discover
   # later.
-  [[ -d "$CONFIG_DIR" && "$_un_root" != "$CONFIG_DIR" ]] && _un_rm+=("$CONFIG_DIR")
+  [[ -d "$CONFIG_DIR" ]] && (( _un_redirected )) && _un_rm+=("$CONFIG_DIR")
   [[ -d "$_un_state" ]] && _un_rm+=("$_un_state")
   # The keychain items are read off the confs, never by scanning the keychain
   # (which prompts): a conf is the only thing that names them, so every conf
@@ -199,13 +226,13 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     _un_keychain=(${_un_keychain:#})
   fi
   print -r -- "Kept, because they are yours:"
-  print -r -- "  $_un_root  (${#_un_profiles} profiles, their credentials and session history)"
+  print -r -- "  $_un_named  (${#_un_profiles} profiles, their credentials and session history)"
   # The code dir's label: code alone — unless the redirect came later and left
   # profiles in it, in which case they are named beside the code, or following
   # the rm below deletes a profile the report never counted (#165).
   _un_code="the installed code"
   (( ${#_un_prior} )) && _un_code="the installed code, and ${#_un_prior} profile(s), their credentials and session history, from before the state root was redirected"
-  [[ -d "$CONFIG_DIR" && "$_un_root" != "$CONFIG_DIR" ]] && print -r -- "  $CONFIG_DIR  ($_un_code)"
+  [[ -d "$CONFIG_DIR" ]] && (( _un_redirected )) && print -r -- "  $CONFIG_DIR  ($_un_code)"
   [[ -d "$_un_state" ]] && print -r -- "  $_un_state  (usage receipts)"
   (( ${#_un_keychain} )) && print -r -- "  login keychain  (${#_un_keychain} ccmorph item(s))"
   print -r -- "To remove those too:"
