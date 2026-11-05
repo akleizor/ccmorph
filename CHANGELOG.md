@@ -7,12 +7,14 @@
 
 ## Unreleased
 
+## v0.5.3
+
 ### Added
 
 - **Usage rows for every profile.** `sub`, `token` and `provider` launches now
   write the same receipt an `apikey` profile does. A launch changes no network
   path: Claude Code already records each response's model and token counts in
-  its transcript, and the launch adds one `Stop` hook that reads the new
+  its transcript, and the launch adds one `Stop` and `SessionEnd` hook that reads the new
   assistant entries and writes one row per response, folding the several
   transcript lines a response spans into it. Remote Control, the
   first-party defaults, nested launches, Bash commands, hooks and MCP servers

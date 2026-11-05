@@ -485,6 +485,12 @@ func isUsageHook(entry value) bool {
 	return false
 }
 
+// usageEvents are the hook events that carry the usage writer. Stop fires before
+// Claude Code flushes the turn's last response to the transcript, so that response
+// is read on the next Stop; SessionEnd reads the session's last one, which has no
+// next Stop. The writer's cursor makes the second read of a line a no-op.
+var usageEvents = []string{"Stop", "SessionEnd"}
+
 // withoutUsage drops ccmorph's usage hook, so a fold never writes it into the
 // user's layer and a compose that no longer asks for one removes the old one.
 func withoutUsage(docIn *obj) *obj {
@@ -493,29 +499,31 @@ func withoutUsage(docIn *obj) *obj {
 	if !ok {
 		return doc
 	}
-	entries, ok := getObj(hooks, "Stop").([]any)
-	if !ok {
-		return doc
-	}
-	var kept []any
-	for _, e := range entries {
-		if !isUsageHook(e) {
-			kept = append(kept, e)
+	for _, event := range usageEvents {
+		entries, ok := getObj(hooks, event).([]any)
+		if !ok {
+			continue
+		}
+		var kept []any
+		for _, e := range entries {
+			if !isUsageHook(e) {
+				kept = append(kept, e)
+			}
+		}
+		if len(kept) > 0 {
+			hooks.Set(event, kept)
+		} else {
+			hooks.Delete(event)
 		}
 	}
-	if len(kept) > 0 {
-		hooks.Set("Stop", kept)
-	} else {
-		hooks.Delete("Stop")
-		if hooks.Len() == 0 {
-			doc.Delete("hooks")
-		}
+	if hooks.Len() == 0 {
+		doc.Delete("hooks")
 	}
 	return doc
 }
 
-// addUsage puts the launch's usage hook into Stop, after any hook the user set.
-// withoutUsage copies, so the caller keeps the returned document.
+// addUsage puts the launch's usage hook into each usage event, after any hook the
+// user set. withoutUsage copies, so the caller keeps the returned document.
 func addUsage(doc *obj, command string) *obj {
 	doc = withoutUsage(doc)
 	if command == "" {
@@ -526,13 +534,15 @@ func addUsage(doc *obj, command string) *obj {
 		hooks = ordjson.New()
 		doc.Set("hooks", hooks)
 	}
-	entries, _ := getObj(hooks, "Stop").([]any)
-	hook := ordjson.New()
-	hook.Set("type", "command")
-	hook.Set("command", command)
-	entry := ordjson.New()
-	entry.Set("hooks", []any{hook})
-	hooks.Set("Stop", append(entries, entry))
+	for _, event := range usageEvents {
+		entries, _ := getObj(hooks, event).([]any)
+		hook := ordjson.New()
+		hook.Set("type", "command")
+		hook.Set("command", command)
+		entry := ordjson.New()
+		entry.Set("hooks", []any{hook})
+		hooks.Set(event, append(entries, entry))
+	}
 	return doc
 }
 
