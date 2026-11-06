@@ -8,21 +8,35 @@ import (
 	"os"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
 // One kinfo_proc record, as the kernel lays it out: 648 bytes on arm64 and
-// amd64 alike, the pid at 40, the 17-byte comm at 243 and e_ppid at 560 (the
-// offsets of golang.org/x/sys's KinfoProc, which this file deliberately does
-// not depend on: the standard library is enough, and the repository ships no
-// go.sum for a module to grow behind).
+// amd64 alike, p_starttime (a Timeval: tv_sec int64, tv_usec int32) at 0, the
+// pid at 40, the 17-byte comm at 243 and e_ppid at 560 (the offsets of
+// golang.org/x/sys's KinfoProc, which this file deliberately does not depend
+// on: the standard library is enough, and the repository ships no go.sum for a
+// module to grow behind).
 const (
 	kinfoSize    = 648
+	kinfoStart   = 0
 	kinfoPID     = 40
 	kinfoComm    = 243
 	kinfoCommLen = 17
 	kinfoPPID    = 560
 )
+
+// startTime is when the record's process started, from p_starttime; zero when
+// the record carries no time.
+func startTime(rec []byte) time.Time {
+	sec := int64(binary.LittleEndian.Uint64(rec[kinfoStart:]))
+	usec := int32(binary.LittleEndian.Uint32(rec[kinfoStart+8:]))
+	if sec <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(sec, int64(usec)*1000)
+}
 
 // sysctlRaw reads one sysctl into buf, sizing it first when buf is nil: the
 // table, or false. The size pass and the read are two calls, so a table that
@@ -92,10 +106,21 @@ func sysctlProcessTable() (map[int]psRow, bool) {
 		pid := int(int32(binary.LittleEndian.Uint32(rec[kinfoPID:])))
 		ppid := int(int32(binary.LittleEndian.Uint32(rec[kinfoPPID:])))
 		comm, _, _ := strings.Cut(string(rec[kinfoComm:kinfoComm+kinfoCommLen]), "\x00")
-		rows[pid] = psRow{ppid: ppid, comm: comm, args: procArgs(pid, argBuf)}
+		rows[pid] = psRow{ppid: ppid, comm: comm, args: procArgs(pid, argBuf), start: startTime(rec)}
 	}
 	if r, ok := rows[os.Getpid()]; !ok || r.ppid != os.Getppid() {
 		return nil, false
+	}
+	// A start time read from offsets this kernel does not use would be a wrong
+	// time, and the stale sweep reaps on it. This process started in the past
+	// and before now, so a self that reads as never started or as starting
+	// later means the layout is not this one: keep the rows' identity and drop
+	// every time to the cannot-tell zero the sweep keeps.
+	if self := rows[os.Getpid()]; self.start.IsZero() || self.start.After(time.Now()) {
+		for pid, r := range rows {
+			r.start = time.Time{}
+			rows[pid] = r
+		}
 	}
 	return rows, true
 }

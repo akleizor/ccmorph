@@ -1,25 +1,36 @@
 package util
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type psRow struct {
-	ppid int
-	comm string
-	args string
+	ppid  int
+	comm  string
+	args  string
+	start time.Time // when the process started; zero when the table cannot tell
 }
 
-// processTable is one read of the process table: pid -> parent, executable and
-// argv; sysctl on darwin, ps elsewhere or when that read fails its self-check.
+// processTable is one read of the process table: pid -> parent, executable,
+// argv and start time; sysctl on darwin, ps elsewhere or when that read fails
+// its self-check.
 func processTable() map[int]psRow {
 	if t, ok := sysctlProcessTable(); ok {
 		return t
 	}
+	return psProcessTable()
+}
+
+// psProcessTable is processTable through ps. The start times come from a read
+// of their own: a ps without lstart then costs the times and not the rows hop
+// needs, and a line that does not parse leaves its row at the cannot-tell zero.
+func psProcessTable() map[int]psRow {
 	raw, err := exec.Command("ps", "-axo", "pid=,ppid=,comm=").Output()
 	if err != nil {
 		return nil
@@ -43,6 +54,31 @@ func processTable() map[int]psRow {
 			if pid, err := strconv.Atoi(p); err == nil {
 				r := rows[pid]
 				r.args = strings.TrimSpace(rest)
+				rows[pid] = r
+			}
+		}
+	}
+	// lstart is "Mon Jan _2 15:04:05 2006" in the locale's words, so the read
+	// pins LC_ALL and the fields are joined back for the one layout parsed. A
+	// ps that lacks lstart prints an error and exits non-zero: no times.
+	lstart := exec.Command("ps", "-axo", "pid=,lstart=")
+	lstart.Env = append(os.Environ(), "LC_ALL=C")
+	if raw, err := lstart.Output(); err == nil {
+		for _, l := range strings.Split(string(raw), "\n") {
+			f := strings.Fields(l)
+			if len(f) < 6 {
+				continue
+			}
+			pid, err := strconv.Atoi(f[0])
+			if err != nil {
+				continue
+			}
+			start, err := time.ParseInLocation("Mon Jan 2 15:04:05 2006", strings.Join(f[1:6], " "), time.Local)
+			if err != nil {
+				continue
+			}
+			if r, ok := rows[pid]; ok {
+				r.start = start
 				rows[pid] = r
 			}
 		}

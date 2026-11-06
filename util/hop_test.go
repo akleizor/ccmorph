@@ -1,8 +1,10 @@
 package util
 
 import (
+	"os"
 	"os/exec"
 	"testing"
+	"time"
 )
 
 func TestHopTargetIsTheFirstNonShellBelowTheRelay(t *testing.T) {
@@ -96,5 +98,31 @@ func TestSessionAdapterFindsAReparentedProcessInTheRealTable(t *testing.T) {
 	}
 	if got := findSessionAdapter(tab, launcher); got != "gw" {
 		t.Fatalf("a reparented adapter must be found by its --parent-pid, got %q (row %+v)", got, r)
+	}
+}
+
+func TestPsProcessTableReadsStartTimes(t *testing.T) {
+	// The ps path is the whole table off darwin, and on darwin the fallback, so
+	// its start times are what the stale sweep reads there. lstart carries whole
+	// seconds, and on Linux it is boot time plus clock ticks, which can read a
+	// second early: the floor is two seconds under the test's own clock, far
+	// inside the minute the sweep allows.
+	if err := exec.Command("ps", "-o", "pid=", "-p", "1").Run(); err != nil {
+		t.Skipf("ps cannot run here: %v", err)
+	}
+	before := time.Now().Add(-2 * time.Second)
+	cmd := exec.Command("/bin/sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+
+	tab := psProcessTable()
+	r, ok := tab[cmd.Process.Pid]
+	if !ok || r.ppid != os.Getpid() || r.args != "/bin/sleep 30" {
+		t.Fatalf("the child must be read with its parent and argv, got %+v", r)
+	}
+	if r.start.Before(before) || r.start.After(time.Now().Add(time.Second)) {
+		t.Fatalf("the child must be read with the time it started, got %v, no earlier than %v", r.start, before)
 	}
 }
