@@ -82,6 +82,10 @@ func TestMaskRules(t *testing.T) {
 		// A quoted or spaced value after "=" is code, and a word after it may open a sentence (#186).
 		`PASSWORD_ERROR = "Invalid username or password"`, `password_hint="Please choose a longer one"`,
 		"password = option if option else fallback",
+		// One lowercase word after a ":" label is prose or a name, wherever it ends:
+		// learned, it was masked in every later turn, inside longer words too.
+		"secrets: 1password: cannot\n", "1password-1.json.age: resource.", `token: "optional"`,
+		"tokeneconomizer:microskills: Show the facts", "the password: optional, then optional again",
 	} {
 		if got := maskOne(t, m, plain); got != plain {
 			t.Errorf("masked a non-secret: %q -> %q", plain, got)

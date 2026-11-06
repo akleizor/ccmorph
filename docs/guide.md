@@ -386,7 +386,8 @@ own command, for example `^secrets get\b`. Relaunch to apply.
 
 The cost: the model sees the placeholder, not the value, so it cannot work on the value
 itself (why is this token rejected?). Values shorter than six characters and passwords
-with no label around them are not found. Each usage receipt counts what was masked in
+with no label around them are not found, and neither is a single lowercase word after a
+`password:`-style label (`password: pending`), which is far more often prose than a value. Each usage receipt counts what was masked in
 its `masked` field. Masking covers every route the shim fronts; a subscription or
 `api.anthropic.com` profile keeps its own direct connection and is not masked.
 
