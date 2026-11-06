@@ -56,19 +56,25 @@ var (
 	proseRE = regexp.MustCompile(`^[ \t]+[A-Za-z]`)
 )
 
-// lowerWordRE is one plain lowercase word, or a name:word namespace such as a
-// skill name (tokeneconomizer:microskills:). After a ":" label it is prose or
-// a name, not a value: "1password: cannot read the window", "x.age: resource
-// deadlock". A learned value is masked everywhere, inside longer words too, so
-// one such word turned "optional" into a placeholder in every turn.
-// shortcut: a one-word lowercase password labeled with ":" goes as written
-// (after "=" it is still masked); upgrade if a real leak shows up.
-var lowerWordRE = regexp.MustCompile(`^[a-z]+:?$`)
+// A labeled value is masked only when it is surely a value: a wrong guess is
+// masked in every later turn, inside longer words too, and the model loses it.
+//
+// lettersRE is a value of letters and dashes, with an optional trailing ":" (a
+// skill name such as plugin:name:). After a ":" label it is prose or a name far
+// more often than a password ("1password: <word> read the window"). After "="
+// it is an assignment and is still masked.
+var lettersRE = regexp.MustCompile(`^[A-Za-z-]+:?$`)
 
-// colonLabel is a label match whose separator is ":", not "=".
-func colonLabel(label string) bool {
+// nameLabelRE is a label that names something about the secret, not the secret:
+// secret_name, token_id, password_hint, api_key_path.
+var nameLabelRE = regexp.MustCompile(`(?i)[_.-](?:name|id|ids|type|kind|hint|path|file|url|uri|ref|arn|label|count|len|length|ttl|expiry|expires|expires_at|created|updated|version|scope|scopes|header|env|var|field)$`)
+
+// unsure is a label match whose value may well not be a secret.
+func unsure(label, value string) bool {
 	t := strings.TrimRight(label, " \t\"'")
-	return strings.HasSuffix(t, ":")
+	colon := strings.HasSuffix(t, ":")
+	name := strings.TrimRight(t, ":=\"' \t")
+	return nameLabelRE.MatchString(name) || (colon && lettersRE.MatchString(value))
 }
 
 // codeWord is an all-letter value that names the concept rather than holding
@@ -121,6 +127,89 @@ var maskRules = []maskRule{
 	{"PASSWORD", regexp.MustCompile(`\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@'"]+:([^\s@/'"]+)@`), notTemplate},
 	{"PASSWORD", regexp.MustCompile(`(?i)[A-Za-z0-9_.-]*(?:password|passwd|pwd)[A-Za-z0-9_.-]*["']?\s*[:=]\s*["']?([^\s"'` + "`" + `,;]{6,})`), assigned},
 	{"SECRET", regexp.MustCompile(`(?i)[A-Za-z0-9_.-]*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_.-]*["']?\s*[:=]\s*["']?([^\s"'` + "`" + `,;]{12,})`), assigned},
+	// Personal data. Each pattern is narrow on purpose: a learned value is masked
+	// everywhere, so a loose one hides ordinary numbers from the model.
+	// shortcut: only the written form with the check digit in brackets, A123456(7);
+	// unbracketed, a letter and seven digits is as often a product or order code.
+	{"HKID", regexp.MustCompile(`\b[A-Z]{1,2}[0-9]{6}\([0-9A]\)`), hkidValid},
+	// shortcut: 16-digit cards only (Visa, Mastercard, UnionPay, JCB, Discover), grouped
+	// in fours or written whole; add 15-digit Amex if it is needed.
+	{"CARD", regexp.MustCompile(`\b(?:4[0-9]{3}|5[1-5][0-9]{2}|2(?:2[2-9][0-9]|[3-6][0-9]{2}|7[01][0-9]|720)|62[0-9]{2}|35[0-9]{2}|6011|65[0-9]{2})(?:[ -]?[0-9]{4}){3}\b`), luhnValid},
+	// shortcut: written with a country code only, +852 (HK) and +86 (mainland mobile);
+	// a bare 8-digit number is too often not a phone number.
+	{"PHONE", regexp.MustCompile(`\+852[ -]?[2-9][0-9]{3}[ -]?[0-9]{4}\b|\+86[ -]?1[3-9][0-9][ -]?[0-9]{4}[ -]?[0-9]{4}\b`), nil},
+	{"EMAIL", regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}\b`), personalEmail},
+}
+
+// hkidValid checks an HKID's check digit: letters count 10-35, a missing
+// second letter 36, weights 9 down to 2, and the sum with the check is 0 mod 11.
+func hkidValid(v string) bool {
+	var s []byte
+	for i := 0; i < len(v); i++ {
+		if c := v[i]; (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			s = append(s, c)
+		}
+	}
+	if len(s) == 8 {
+		s = append([]byte{' '}, s...)
+	}
+	if len(s) != 9 {
+		return false
+	}
+	val := func(c byte) int {
+		switch {
+		case c == ' ':
+			return 36
+		case c >= 'A':
+			return int(c-'A') + 10
+		}
+		return int(c - '0')
+	}
+	sum := 0
+	for i := 0; i < 8; i++ {
+		sum += val(s[i]) * (9 - i)
+	}
+	check := 10
+	if s[8] != 'A' {
+		check = int(s[8] - '0')
+	}
+	return (sum+check)%11 == 0
+}
+
+// luhnValid is the card checksum, which also drops most other 16-digit numbers.
+func luhnValid(v string) bool {
+	sum, n := 0, 0
+	for i := len(v) - 1; i >= 0; i-- {
+		c := v[i]
+		if c < '0' || c > '9' {
+			continue
+		}
+		d := int(c - '0')
+		if n%2 == 1 {
+			if d *= 2; d > 9 {
+				d -= 9
+			}
+		}
+		sum, n = sum+d, n+1
+	}
+	return n == 16 && sum%10 == 0
+}
+
+// personalEmail drops addresses that name no person: placeholders, no-reply
+// senders and git's GitHub-hidden addresses, which every commit carries.
+func personalEmail(v string) bool {
+	l := strings.ToLower(v)
+	at := strings.LastIndexByte(l, '@')
+	local, domain := l[:at], l[at+1:]
+	if strings.Contains(local, "noreply") || strings.Contains(local, "no-reply") || local == "git" {
+		return false
+	}
+	for _, d := range []string{"example.com", "example.org", "example.net", "users.noreply.github.com", "localhost"} {
+		if domain == d || strings.HasSuffix(domain, "."+d) {
+			return false
+		}
+	}
+	return notTemplate(v)
 }
 
 // fetchRE is a command whose whole output is a password: one simple command
@@ -249,7 +338,7 @@ func (m *masker) find(s string) {
 			// where what follows is the next assignment or argument (#186). A quoted or
 			// spaced value after "=" is code, and its next word may open a sentence.
 			v := s[a:b]
-			if a > loc[0] && colonLabel(s[loc[0]:a]) && lowerWordRE.MatchString(v) {
+			if a > loc[0] && unsure(s[loc[0]:a], v) {
 				continue
 			}
 			if (r.ok == nil || r.ok(v)) && !(wordsRE.MatchString(v) && proseRE.MatchString(s[b:]) && !(a > loc[0] && s[a-1] == '=')) {
