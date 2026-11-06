@@ -121,6 +121,87 @@ var maskRules = []maskRule{
 	{"PASSWORD", regexp.MustCompile(`\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@'"]+:([^\s@/'"]+)@`), notTemplate},
 	{"PASSWORD", regexp.MustCompile(`(?i)[A-Za-z0-9_.-]*(?:password|passwd|pwd)[A-Za-z0-9_.-]*["']?\s*[:=]\s*["']?([^\s"'` + "`" + `,;]{6,})`), assigned},
 	{"SECRET", regexp.MustCompile(`(?i)[A-Za-z0-9_.-]*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_.-]*["']?\s*[:=]\s*["']?([^\s"'` + "`" + `,;]{12,})`), assigned},
+	// Personal data. Each pattern is narrow on purpose: a learned value is masked
+	// everywhere, so a loose one hides ordinary numbers from the model.
+	{"HKID", regexp.MustCompile(`\b[A-Z]{1,2}[0-9]{6}\s?\(?[0-9A]\)?`), hkidValid},
+	// shortcut: 16-digit cards only (Visa, Mastercard, UnionPay, JCB, Discover), grouped
+	// in fours or written whole; add 15-digit Amex if it is needed.
+	{"CARD", regexp.MustCompile(`\b[3-6][0-9]{3}(?:[ -]?[0-9]{4}){3}\b`), luhnValid},
+	// shortcut: written with a country code only, +852 (HK) and +86 (mainland mobile);
+	// a bare 8-digit number is too often not a phone number.
+	{"PHONE", regexp.MustCompile(`\+852[ -]?[2-9][0-9]{3}[ -]?[0-9]{4}\b|\+86[ -]?1[3-9][0-9][ -]?[0-9]{4}[ -]?[0-9]{4}\b`), nil},
+	{"EMAIL", regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}\b`), personalEmail},
+}
+
+// hkidValid checks an HKID's check digit: letters count 10-35, a missing
+// second letter 36, weights 9 down to 2, and the sum with the check is 0 mod 11.
+func hkidValid(v string) bool {
+	var s []byte
+	for i := 0; i < len(v); i++ {
+		if c := v[i]; (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			s = append(s, c)
+		}
+	}
+	if len(s) == 8 {
+		s = append([]byte{' '}, s...)
+	}
+	if len(s) != 9 {
+		return false
+	}
+	val := func(c byte) int {
+		switch {
+		case c == ' ':
+			return 36
+		case c >= 'A':
+			return int(c-'A') + 10
+		}
+		return int(c - '0')
+	}
+	sum := 0
+	for i := 0; i < 8; i++ {
+		sum += val(s[i]) * (9 - i)
+	}
+	check := 10
+	if s[8] != 'A' {
+		check = int(s[8] - '0')
+	}
+	return (sum+check)%11 == 0
+}
+
+// luhnValid is the card checksum, which also drops most other 16-digit numbers.
+func luhnValid(v string) bool {
+	sum, n := 0, 0
+	for i := len(v) - 1; i >= 0; i-- {
+		c := v[i]
+		if c < '0' || c > '9' {
+			continue
+		}
+		d := int(c - '0')
+		if n%2 == 1 {
+			if d *= 2; d > 9 {
+				d -= 9
+			}
+		}
+		sum, n = sum+d, n+1
+	}
+	return n == 16 && sum%10 == 0
+}
+
+// personalEmail drops addresses that name no person: placeholders, no-reply
+// senders and git's GitHub-hidden addresses, which every commit carries.
+func personalEmail(v string) bool {
+	l := strings.ToLower(v)
+	at := strings.LastIndexByte(l, '@')
+	local, domain := l[:at], l[at+1:]
+	if strings.Contains(local, "noreply") || strings.Contains(local, "no-reply") || local == "git" {
+		return false
+	}
+	for _, d := range []string{"example.com", "example.org", "example.net", "users.noreply.github.com", "localhost"} {
+		if domain == d || strings.HasSuffix(domain, "."+d) {
+			return false
+		}
+	}
+	return notTemplate(v)
 }
 
 // fetchRE is a command whose whole output is a password: one simple command

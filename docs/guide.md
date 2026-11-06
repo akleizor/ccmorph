@@ -376,7 +376,9 @@ id passes through, so caching is unaffected). Relaunch to apply.
 
 `env.CCMORPH_MASK=1` keeps secrets out of what the gateway sees. API keys, tokens,
 private keys and passwords (in URLs, connection strings and `password=`-style
-assignments) go upstream as placeholders such as `{{API_KEY_k3v9x2mqa7bc}}`, and the
+assignments), and personal data (HKID numbers with a valid check digit, 16-digit card
+numbers that pass Luhn, `+852` and `+86` phone numbers, and email addresses other than
+no-reply and `example.com` ones) go upstream as placeholders such as `{{API_KEY_k3v9x2mqa7bc}}`, and the
 shim puts the real value back in the reply, so Claude Code, its files and the commands
 it runs keep the real value. The output of a password-manager command run on its own
 (`op read`, `op item get --reveal`, `security find-generic-password -w`, `bw get

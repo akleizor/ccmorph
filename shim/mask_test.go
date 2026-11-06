@@ -454,3 +454,26 @@ func TestMaskedCountReachesTheReceipt(t *testing.T) {
 type roundTrip func(*http.Request) *http.Response
 
 func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r), nil }
+
+func TestMaskPersonalData(t *testing.T) {
+	m := testMasker(t, "")
+	for _, pii := range []string{
+		"A123456(3)", "A1234563", "4111 1111 1111 1111", "4111-1111-1111-1111", "4111111111111111",
+		"+852 9123 4567", "+8613812345678", "chan.tai.man@gmail.com",
+	} {
+		if got := maskOne(t, m, "call "+pii+" today"); strings.Contains(got, pii) || !placeholderRE.MatchString(got) {
+			t.Errorf("not masked: %q", got)
+		}
+	}
+	for _, plain := range []string{
+		"A123456(4)",          // wrong check digit
+		"4111 1111 1111 1112", // fails Luhn
+		"order 1730851234567890 shipped", "port 9123 4567", "92345678",
+		"noreply@anthropic.com", "dev@example.com", "1234+akleizor@users.noreply.github.com",
+		"git@github.com:akleizor/ccmorph.git", "{{user}}@corp.com",
+	} {
+		if got := maskOne(t, m, plain); got != plain {
+			t.Errorf("masked a non-secret: %q -> %q", plain, got)
+		}
+	}
+}
