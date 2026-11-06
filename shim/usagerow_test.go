@@ -214,6 +214,112 @@ func TestARowAnotherWriterRecordedIsNotDuplicated(t *testing.T) {
 	}
 }
 
+// A row that could not be written sits before the cursor forever unless the
+// cursor holds: a full or unwritable state dir must not lose that response.
+func TestRecordTranscriptRetriesARowItCouldNotWrite(t *testing.T) {
+	dir := stateHome(t)
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A regular file where the usage dir belongs makes every row write fail.
+	if err := os.WriteFile(dir, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTranscript(t, transcriptLine("u1", "msg_1", "claude-opus-5-5", "2026-11-05T10:00:00Z",
+		`{"input_tokens":10,"output_tokens":25}`))
+	if n := RecordTranscript("sub", "anthropic", path); n != 0 {
+		t.Fatalf("an unwritable usage dir wrote %d rows", n)
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if n := RecordTranscript("sub", "anthropic", path); n != 1 {
+		t.Fatalf("the next pass wrote %d rows; the cursor passed a row it could not write", n)
+	}
+	if all := rows(t, dir); len(all) != 1 {
+		t.Fatalf("%v", all)
+	}
+}
+
+// A gateway that mints the same response id for two responses puts the later
+// one in a spill; a later hook pass must fold its line into that spill, not into
+// the primary, or the row shrinks to the last block's numbers.
+func TestARecycledIdsSpillRowNeverShrinks(t *testing.T) {
+	dir := stateHome(t)
+	seedOwnedPrices(t, dir, "anthropic", map[string]price{"claude-opus-5-5": {Input: 4, Output: 20}})
+	path := writeTranscript(t,
+		blockLine("u1", "msg_1", "req_a", "text", `{"input_tokens":10,"output_tokens":25}`),
+		blockLine("u2", "msg_1", "req_b", "text", `{"input_tokens":3,"output_tokens":40}`),
+	)
+	if n := RecordTranscript("sub", "anthropic", path); n != 2 {
+		t.Fatalf("first pass %d", n)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(blockLine("u3", "msg_1", "req_b", "tool_use", `{"input_tokens":3,"output_tokens":5}`))
+	f.Close()
+	if n := RecordTranscript("sub", "anthropic", path); n != 1 {
+		t.Fatalf("the second pass wrote %d rows; it must rewrite its own", n)
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	if len(files) != 2 {
+		t.Fatalf("spill files: %v", files)
+	}
+	var spilled map[string]any
+	for _, raw := range rows(t, dir) {
+		row := decodeRow(t, raw)
+		if row["usage"].(map[string]any)["input_tokens"] == float64(3) {
+			spilled = row
+		}
+	}
+	if spilled == nil {
+		t.Fatalf("the second response's row is gone: %v", rows(t, dir))
+	}
+	if got := spilled["usage"].(map[string]any)["output_tokens"]; got != float64(40) {
+		t.Fatalf("a later pass shrank the spill row: output_tokens = %v, want 40", got)
+	}
+}
+
+// A gateway that recycles a response id across routes: another profile's
+// adapter holds the primary name for an id this session's transcript also
+// carries, and the hook must still record its own response — in a spill.
+func TestARecycledIdAnotherRouteHoldsIsStillRecorded(t *testing.T) {
+	dir := stateHome(t)
+	model := "claude-opus-5-5"
+	other := newSidecar("gw", "adapter")
+	other.prices = CachedOwnedPriceBook("anthropic")
+	rec := other.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("7")}})
+	rec.timestamp = "2026-11-01T09:00:00+00:00"
+	rec.complete = true
+	if err := other.write(rec); err != nil {
+		t.Fatal(err)
+	}
+	before := rows(t, dir)
+	if len(before) != 1 {
+		t.Fatalf("%v", before)
+	}
+	path := writeTranscript(t, transcriptLine("u1", "resp_1", model, "2026-11-05T10:00:00Z",
+		`{"input_tokens":10,"output_tokens":25}`))
+	if n := RecordTranscript("codex", "anthropic", path); n != 1 {
+		t.Fatalf("a recycled id another route holds lost this response: %d", n)
+	}
+	after := rows(t, dir)
+	if len(after) != 2 {
+		t.Fatalf("rows = %d, want 2: %v", len(after), after)
+	}
+	kept := false
+	for _, raw := range after {
+		if raw == before[0] {
+			kept = true
+		}
+	}
+	if !kept {
+		t.Fatalf("the other route's row changed: %v -> %v", before, after)
+	}
+}
+
 func TestMaxUsageKeepsTheLargerNumberPerKey(t *testing.T) {
 	a := usageRow{
 		{"input_tokens", []byte("10")},
@@ -323,6 +429,96 @@ func TestSplitResponseAcrossTwoPassesStaysOneRow(t *testing.T) {
 	usage := decodeRow(t, rows(t, dir)[0])["usage"].(map[string]any)
 	if usage["output_tokens"] != float64(25) || usage["input_tokens"] != float64(10) {
 		t.Fatalf("a later pass must never shrink the row: %v", usage)
+	}
+}
+
+// A transcript a launch resumes may be one no ccmorph hook ever read: created
+// before this release, by native claude, or under a route that writes no rows.
+// Its history was another profile's spend; only the turns this launch serves
+// are its own, so SessionStart marks the file's end as the read position.
+func TestAResumedTranscriptChargesOnlyTheNewTurns(t *testing.T) {
+	dir := stateHome(t)
+	now := time.Now().UTC()
+	model := "claude-opus-5-5"
+	path := writeTranscript(t, transcriptLine("u1", "msg_old", model, now.Add(-time.Hour).Format(time.RFC3339Nano),
+		`{"input_tokens":1000,"output_tokens":500}`))
+	start := `{"session_id":"s1","source":"resume","hook_event_name":"SessionStart","transcript_path":` + quote(path) + `}`
+	if rc := UsageRowMain([]string{"--profile", "sub", "--pricing", "anthropic"}, strings.NewReader(start)); rc != 0 {
+		t.Fatalf("rc %d", rc)
+	}
+	if all := rows(t, dir); len(all) != 0 {
+		t.Fatalf("SessionStart wrote rows: %v", all)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(transcriptLine("u2", "msg_new", model, now.Add(time.Minute).Format(time.RFC3339Nano),
+		`{"input_tokens":10,"output_tokens":25}`))
+	f.Close()
+	stop := `{"session_id":"s1","hook_event_name":"Stop","transcript_path":` + quote(path) + `}`
+	if rc := UsageRowMain([]string{"--profile", "sub", "--pricing", "anthropic"}, strings.NewReader(stop)); rc != 0 {
+		t.Fatalf("rc %d", rc)
+	}
+	all := rows(t, dir)
+	if len(all) != 1 || decodeRow(t, all[0])["response_id"] != "msg_new" {
+		t.Fatalf("a resumed transcript charged its prior history: %v", all)
+	}
+}
+
+// A fork copies the history into a file this launch created, so the cursor's
+// offset alone cannot tell old lines from new: the cursor's start time does.
+func TestAForkedTranscriptsCopiedHistoryIsNotCharged(t *testing.T) {
+	dir := stateHome(t)
+	now := time.Now().UTC()
+	model := "claude-opus-5-5"
+	path := filepath.Join(t.TempDir(), "fork.jsonl")
+	start := `{"session_id":"s1","source":"resume","hook_event_name":"SessionStart","transcript_path":` + quote(path) + `}`
+	if rc := UsageRowMain([]string{"--profile", "sub", "--pricing", "anthropic"}, strings.NewReader(start)); rc != 0 {
+		t.Fatalf("rc %d", rc)
+	}
+	if err := os.WriteFile(path, []byte(
+		transcriptLine("u1", "msg_old", model, now.Add(-time.Hour).Format(time.RFC3339Nano), `{"input_tokens":1000,"output_tokens":500}`)+
+			transcriptLine("u2", "msg_new", model, now.Add(time.Minute).Format(time.RFC3339Nano), `{"input_tokens":10,"output_tokens":25}`)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stop := `{"session_id":"s1","hook_event_name":"Stop","transcript_path":` + quote(path) + `}`
+	if rc := UsageRowMain([]string{"--profile", "sub", "--pricing", "anthropic"}, strings.NewReader(stop)); rc != 0 {
+		t.Fatalf("rc %d", rc)
+	}
+	all := rows(t, dir)
+	if len(all) != 1 || decodeRow(t, all[0])["response_id"] != "msg_new" {
+		t.Fatalf("a fork charged its copied history: %v", all)
+	}
+}
+
+// A compact starts a new session file the launch was already reading, or
+// resumes one it started after: an existing cursor is the read position, and
+// SessionStart must not move it.
+func TestSessionStartKeepsAnExistingCursor(t *testing.T) {
+	dir := stateHome(t)
+	now := time.Now().UTC()
+	model := "claude-opus-5-5"
+	path := writeTranscript(t, transcriptLine("u1", "msg_1", model, now.Add(-time.Minute).Format(time.RFC3339Nano),
+		`{"input_tokens":10,"output_tokens":25}`))
+	stop := `{"session_id":"s1","hook_event_name":"Stop","transcript_path":` + quote(path) + `}`
+	if rc := UsageRowMain([]string{"--profile", "sub", "--pricing", "anthropic"}, strings.NewReader(stop)); rc != 0 {
+		t.Fatalf("rc %d", rc)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(transcriptLine("u2", "msg_2", model, now.Add(time.Minute).Format(time.RFC3339Nano),
+		`{"input_tokens":3,"output_tokens":4}`))
+	f.Close()
+	start := `{"session_id":"s1","source":"compact","hook_event_name":"SessionStart","transcript_path":` + quote(path) + `}`
+	if rc := UsageRowMain([]string{"--profile", "sub", "--pricing", "anthropic"}, strings.NewReader(start)); rc != 0 {
+		t.Fatalf("rc %d", rc)
+	}
+	UsageRowMain([]string{"--profile", "sub", "--pricing", "anthropic"}, strings.NewReader(stop))
+	if all := rows(t, dir); len(all) != 2 {
+		t.Fatalf("a compact's SessionStart moved the cursor: %v", all)
 	}
 }
 

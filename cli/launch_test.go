@@ -342,9 +342,14 @@ func TestEveryStageNamesItsOperands(t *testing.T) {
 
 // The usage hook is the transcript reader a launch installs through settings:
 // it changes no network path, so it covers sub, token and provider profiles
-// alike, and never touches an API-key or direct one.
+// alike, and never touches an API-key or direct one. Building it must not start
+// the models.dev refresh: that belongs to the launch, and a unit test that took
+// this path would reach the network and leave a temp home behind.
 func TestUsageHookCoversSubTokenAndProvider(t *testing.T) {
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	refreshed := 0
+	prev := refreshOwnedPrices
+	refreshOwnedPrices = func(string) { refreshed++ }
+	t.Cleanup(func() { refreshOwnedPrices = prev })
 	l := &launcher{libexec: "/opt/cc/libexec", profileDirs: "/p"}
 	cases := []struct{ name, typ, route, wantPricing string }{
 		{"sub", "sub", "", "anthropic"},
@@ -366,6 +371,9 @@ func TestUsageHookCoversSubTokenAndProvider(t *testing.T) {
 		if hook != want {
 			t.Fatalf("%s/%s: hook = %q, want %q", c.name, c.typ, hook, want)
 		}
+	}
+	if refreshed != 0 {
+		t.Fatalf("building a usage hook started %d price refreshes", refreshed)
 	}
 }
 

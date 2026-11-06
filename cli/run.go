@@ -99,6 +99,11 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 		}
 		typ, usageRoute = f["type"], f["usage_route"]
 		l.usageHook = l.usageHookFor(name, typ, usageRoute)
+		if pricing := usagePricing(typ, usageRoute); pricing != "" {
+			// A turn's row is priced from the models.dev slice on disk; keep it
+			// fresh in the background, never on the turn's own path.
+			refreshOwnedPrices(pricing)
+		}
 		switch f["type"] {
 		case "apikey":
 			routed, tag = true, f["tag"]
@@ -743,26 +748,36 @@ func (l *launcher) route(penv []string, port, key string, adapter bool) ([]strin
 // path: Claude Code records each response's usage in its transcript, and this
 // hook reads the new lines. It is empty for every other profile type and for
 // `usage_route=direct`, which is also how a launch removes a hook an earlier
-// one installed.
+// one installed. It only builds the command: the price refresh is the launch's
+// (usagePricing plus refreshOwnedPrices), never a caller's side effect.
 func (l *launcher) usageHookFor(name, typ, usageRoute string) string {
-	if usageRoute == "direct" {
+	pricing := usagePricing(typ, usageRoute)
+	if pricing == "" {
 		return ""
 	}
-	pricing := ""
-	switch typ {
-	case "sub", "token":
-		pricing = "anthropic"
-	case "provider":
-		pricing = "any"
-	default:
-		return ""
-	}
-	// A turn's row is priced from the models.dev slice on disk; keep it fresh
-	// in the background, never on the turn's own path.
-	go shim.RefreshOwnedPrices(pricing)
 	core := filepath.Join(l.libexec, "ccmorph-core")
 	return shQuote(core) + " usage-row --profile " + shQuote(name) + " --pricing " + shQuote(pricing)
 }
+
+// usagePricing is the models.dev provider slice a launch's usage rows are priced
+// against, or "" when the profile installs no usage hook at all.
+func usagePricing(typ, usageRoute string) string {
+	if usageRoute == "direct" {
+		return ""
+	}
+	switch typ {
+	case "sub", "token":
+		return "anthropic"
+	case "provider":
+		return "any"
+	}
+	return ""
+}
+
+// refreshOwnedPrices keeps the models.dev slice on disk fresh for a later hook.
+// The launch calls it in the background, never on a turn's own path; it is a
+// variable so a test can prove the hook builder starts no fetch.
+var refreshOwnedPrices = func(pricing string) { go shim.RefreshOwnedPrices(pricing) }
 
 var loopbackProxy = regexp.MustCompile(`^http://127\.0\.0\.1:([0-9]+)/?$`)
 
