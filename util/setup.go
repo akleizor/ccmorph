@@ -133,6 +133,14 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 		if syscall.Flock(int(live.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil {
 			exclusive = true
 			defer syscall.Flock(int(live.Fd()), syscall.LOCK_SH) // back to live, for claude
+		} else if !flockWithin(live, syscall.LOCK_SH) {
+			// #205: Linux flock(2) drops the existing shared lock before it tries
+			// a conversion, so a failed upgrade leaves this launch holding
+			// nothing; take the shared lock back. Only a stuck exclusive holder
+			// in that window defeats it, and then the launch cannot be covered.
+			log("lost the live lock for '" + name + "' after a failed upgrade; shared history left unchanged")
+			ReleaseLive(profiles, name)
+			live = nil
 		}
 	}
 	pids := liveSessions(dir)
@@ -302,9 +310,22 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 			// #185: the shared store links at this profile's own real file.
 			// Merging it would delete the link's target and leave a loop, so
 			// the store path becomes the real file (copied, so another disk is
-			// fine) and the profile links at it.
-			if os.Remove(hSrc) != nil || copyVerified(hLink, hSrc) != nil ||
-				os.Remove(hLink) != nil || os.Symlink(hSrc, hLink) != nil {
+			// fine) and the profile links at it. #205: the copy is verified at
+			// a temp beside the store and renamed over the store's link, so the
+			// shared path always names a file; a failed copy leaves both where
+			// they were — logged, never a failed launch.
+			tmp := hSrc + ".ccm-repair." + strconv.Itoa(os.Getpid())
+			_ = os.Remove(tmp)
+			if copyVerified(hLink, tmp) != nil || os.Rename(tmp, hSrc) != nil {
+				_ = os.Remove(tmp)
+				log("kept profile-local 'history.jsonl' for profile=" + name + ": the shared history links at it and the copy into its place did not complete; nothing moved")
+				break
+			}
+			if os.Remove(hLink) != nil {
+				log("kept profile-local 'history.jsonl' for profile=" + name + ": the shared history links at it and its link could not be removed; nothing moved")
+				break
+			}
+			if os.Symlink(hSrc, hLink) != nil {
 				return fail("could not share history for '" + name + "'")
 			}
 		default:
@@ -331,6 +352,14 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 // session, which INTENT promise 8 forbids (#185). Tests shorten it.
 var lockWait = 2 * time.Second
 
+// SetLockWait replaces how long the launch path waits for a lock, for tests in
+// other packages; the returned func restores the previous value.
+func SetLockWait(d time.Duration) (restore func()) {
+	old := lockWait
+	lockWait = d
+	return func() { lockWait = old }
+}
+
 // flockWithin takes how on f, retrying without blocking until lockWait
 // expires; false means the lock is held by someone else and the caller must
 // go on without it.
@@ -354,6 +383,25 @@ var (
 	liveFDs = map[string]*os.File{}
 )
 
+// LiveLockPath names a profile's live lock: a launch holds it shared while its
+// session runs, and a setup takes it exclusive to merge (#185, #205).
+func LiveLockPath(profiles, name string) string {
+	return filepath.Join(filepath.Dir(profiles), ".locks", name+".live")
+}
+
+// ReleaseLive drops the live lock this process holds for the profile, so a
+// hopped-away profile does not read as live for the rest of the process's life
+// (#205). Releasing one this process does not hold is a no-op.
+func ReleaseLive(profiles, name string) {
+	lock := LiveLockPath(profiles, name)
+	liveMu.Lock()
+	defer liveMu.Unlock()
+	if f, ok := liveFDs[lock]; ok {
+		f.Close()
+		delete(liveFDs, lock)
+	}
+}
+
 // HoldLive takes the profile's live lock shared and keeps it for the life of
 // the process. The launcher calls it before a session starts, so the lock covers
 // the session from before claude writes sessions/<pid>.json until claude exits:
@@ -362,10 +410,11 @@ var (
 // line in the log, for that merge to finish — a merge is file I/O only and
 // never a prompt, so the wait is brief. The descriptor is cached per lock path,
 // so repeated calls in one process share it (an exclusive take is an upgrade of
-// this same descriptor). nil means the lock could not be taken; the caller then
-// defers the merge rather than risk a swap.
+// this same descriptor). nil means the lock could not be taken; the caller must
+// then refuse to start the session rather than run it through the window #185
+// covers (#205).
 func HoldLive(profiles, name string, log func(string)) *os.File {
-	lock := filepath.Join(filepath.Dir(profiles), ".locks", name+".live")
+	lock := LiveLockPath(profiles, name)
 	liveMu.Lock()
 	defer liveMu.Unlock()
 	if f, ok := liveFDs[lock]; ok {
@@ -384,7 +433,7 @@ func HoldLive(profiles, name string, log func(string)) *os.File {
 		}
 		if !flockWithin(f, syscall.LOCK_SH) {
 			f.Close()
-			return nil // a stuck holder: the launch goes on, the merge defers
+			return nil // a stuck holder: the caller must not start a session (#205)
 		}
 	}
 	liveFDs[lock] = f
