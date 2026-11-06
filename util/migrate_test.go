@@ -524,3 +524,180 @@ func TestMigrateReplacesADanglingStoreLinkAtAParentDir(t *testing.T) {
 		t.Fatalf("transcript = %q, %v", got, err)
 	}
 }
+
+// parkRoots lays out a profile dir with one park and an empty shared store.
+func parkRoots(t *testing.T) (dir, park, store string) {
+	t.Helper()
+	root := t.TempDir()
+	dir, store = filepath.Join(root, "p"), filepath.Join(root, "claude/projects")
+	if err := os.MkdirAll(store, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	return dir, filepath.Join(dir, "projects.premigration.1.1"), store
+}
+
+// #204: a stalled volume answers the walk with an error and is back by the
+// sweep, so the sweep can reach what the walk never saw. chmod alone cannot show
+// it: RemoveAll cannot enter the dir either, so the mode comes back mid-walk,
+// when the later file publishes.
+func TestMergeParksKeepsWhatItsWalkCouldNotRead(t *testing.T) {
+	dir, park, store := parkRoots(t)
+	mustWrite(t, park+"/a/locked.jsonl", "only copy\n")
+	mustWrite(t, park+"/z/free.jsonl", "free\n")
+	if err := os.Chmod(park+"/a", 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(park+"/a", 0o700) })
+	linkFile = func(a, b string) error {
+		if err := os.Chmod(park+"/a", 0o700); err != nil {
+			return err
+		}
+		return os.Link(a, b)
+	}
+	t.Cleanup(func() { linkFile = os.Link })
+	var notes []string
+	mergeParks(dir, store, func(s string) { notes = append(notes, s) })
+	if b, err := os.ReadFile(park + "/a/locked.jsonl"); err != nil || string(b) != "only copy\n" {
+		t.Fatalf("what the walk could not read must stay in its park: %q %v", b, err)
+	}
+	if b, err := os.ReadFile(store + "/z/free.jsonl"); err != nil || string(b) != "free\n" {
+		t.Errorf("what the walk could read still merges: %q %v", b, err)
+	}
+	if len(notes) != 1 || !strings.Contains(notes[0], park+"/a") {
+		t.Errorf("the unread subtree must be reported once: %v", notes)
+	}
+}
+
+// #204: a link whose target answers EACCES or ETIMEDOUT is a mount refusing or
+// stalled, not a link naming nothing: it holds the user's store, so neither the
+// profile merge nor the park sweep may unlink it.
+func TestMergeKeepsAStoreLinkItCannotStat(t *testing.T) {
+	merges := map[string]func(dir, from, store string){
+		"profile": func(_, from, store string) { migrateProjects(from, store, drop) },
+		"park":    func(dir, _, store string) { mergeParks(dir, store, drop) },
+	}
+	shapes := map[string]struct{ held, file string }{
+		"parent-issue-204": {"sess/kept.jsonl", "proj/sess/a.jsonl"},
+		"leaf-issue-204":   {"sess", "proj/sess"},
+	}
+	for mname, merge := range merges {
+		for sname, shape := range shapes {
+			for _, errno := range []syscall.Errno{syscall.EACCES, syscall.ETIMEDOUT} {
+				t.Run(mname+"/"+sname+"/"+errno.Error(), func(t *testing.T) {
+					dir, park, store := parkRoots(t)
+					mount := filepath.Join(filepath.Dir(dir), "mount")
+					mustWrite(t, mount+"/"+shape.held, "the user's store\n")
+					mustWrite(t, park+"/"+shape.file, "parked\n")
+					link := store + "/proj/sess"
+					mustLink(t, mount+"/sess", link)
+					statTarget = func(p string) (os.FileInfo, error) {
+						if p == link {
+							return nil, &os.PathError{Op: "stat", Path: p, Err: errno}
+						}
+						return os.Stat(p)
+					}
+					t.Cleanup(func() { statTarget = os.Stat })
+					merge(dir, park, store)
+					linkIs(t, link, mount+"/sess", "a link it cannot stat stays")
+					if b, err := os.ReadFile(mount + "/" + shape.held); err != nil || string(b) != "the user's store\n" {
+						t.Errorf("the link's target must survive: %q %v", b, err)
+					}
+				})
+			}
+		}
+	}
+}
+
+// #204: a store link that provably names nothing gives way to a parked file the
+// way it does in the profile merge (#184), so the session returns to /resume.
+func TestMergeParksClearsADeadStoreLink(t *testing.T) {
+	cases := map[string]struct {
+		file, link string
+		target     func(root, link string) string
+	}{
+		"leaf-dangling-issue-204":         {"proj/s.jsonl", "proj/s.jsonl", func(root, _ string) string { return root + "/gone" }},
+		"parent-dangling-issue-204":       {"proj/sess/subagents/a.jsonl", "proj/sess", func(root, _ string) string { return root + "/gone" }},
+		"leaf-self-link-issue-204":        {"proj/s.jsonl", "proj/s.jsonl", func(_, link string) string { return link }},
+		"parent-through-a-file-issue-204": {"proj/sess/a.jsonl", "proj/sess", func(root, _ string) string { return root + "/plain/x" }},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir, park, store := parkRoots(t)
+			root := filepath.Dir(dir)
+			mustWrite(t, root+"/plain", "not a dir\n")
+			mustWrite(t, park+"/"+c.file, "parked\n")
+			link := store + "/" + c.link
+			mustLink(t, c.target(root, link), link)
+			var notes []string
+			mergeParks(dir, store, func(s string) { notes = append(notes, s) })
+			if b, err := os.ReadFile(store + "/" + c.file); err != nil || string(b) != "parked\n" {
+				t.Fatalf("the parked file must reach the store: %q %v (%v)", b, err, notes)
+			}
+			if isLink(link) {
+				t.Errorf("the dead link must have given way: %s", link)
+			}
+			if len(notes) != 0 {
+				t.Errorf("a merged file reports nothing: %v", notes)
+			}
+			if _, err := os.Lstat(park); err == nil {
+				t.Errorf("an emptied park goes: %s", park)
+			}
+		})
+	}
+}
+
+// #204: a store path that reaches the parked file itself holds no second copy.
+// A leaf link gives way to the file it names; a link on a parent keeps the file,
+// and neither is deleted as a duplicate of itself.
+func TestMergeParksKeepsAFileTheStoreReachesThroughALink(t *testing.T) {
+	t.Run("leaf-issue-204", func(t *testing.T) {
+		dir, park, store := parkRoots(t)
+		mustWrite(t, park+"/proj/s.jsonl", "parked\n")
+		mustLink(t, park+"/proj/s.jsonl", store+"/proj/s.jsonl")
+		mergeParks(dir, store, drop)
+		if b, err := os.ReadFile(store + "/proj/s.jsonl"); err != nil || string(b) != "parked\n" {
+			t.Fatalf("the store's link must become the transcript: %q %v", b, err)
+		}
+		if isLink(store + "/proj/s.jsonl") {
+			t.Error("the store must hold the real file")
+		}
+	})
+	t.Run("parent-issue-204", func(t *testing.T) {
+		dir, park, store := parkRoots(t)
+		mustWrite(t, park+"/proj/s.jsonl", "parked\n")
+		mustLink(t, park+"/proj", store+"/proj")
+		var notes []string
+		mergeParks(dir, store, func(s string) { notes = append(notes, s) })
+		if b, err := os.ReadFile(park + "/proj/s.jsonl"); err != nil || string(b) != "parked\n" {
+			t.Fatalf("the only copy must stay: %q %v", b, err)
+		}
+		if len(notes) != 1 || strings.Contains(notes[0], "different copy") {
+			t.Errorf("the kept file must be reported truthfully: %v", notes)
+		}
+	})
+}
+
+// #204: a store link it cannot stat is no proof of a different copy.
+func TestMergeParksNeverCallsAnUnreadableLinkADifferentCopy(t *testing.T) {
+	dir, park, store := parkRoots(t)
+	mount := filepath.Join(filepath.Dir(dir), "mount")
+	mustWrite(t, mount+"/s.jsonl", "the user's store\n")
+	mustWrite(t, park+"/proj/s.jsonl", "parked\n")
+	link := store + "/proj/s.jsonl"
+	mustLink(t, mount+"/s.jsonl", link)
+	statTarget = func(p string) (os.FileInfo, error) {
+		if p == link {
+			return nil, &os.PathError{Op: "stat", Path: p, Err: syscall.EACCES}
+		}
+		return os.Stat(p)
+	}
+	t.Cleanup(func() { statTarget = os.Stat })
+	var notes []string
+	mergeParks(dir, store, func(s string) { notes = append(notes, s) })
+	if len(notes) != 1 || !strings.Contains(notes[0], "could not be read") {
+		t.Errorf("the kept file must be reported as unreadable, not different: %v", notes)
+	}
+	if b, err := os.ReadFile(park + "/proj/s.jsonl"); err != nil || string(b) != "parked\n" {
+		t.Fatalf("the parked file must stay: %q %v", b, err)
+	}
+}

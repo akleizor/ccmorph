@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // migrateProjects moves a profile-local sharable dir's files and links into the
@@ -291,6 +292,10 @@ func pruneEmpty(root string) bool {
 // that refuse hard links (#185).
 var linkFile = os.Link
 
+// statTarget stats a store link's target; a test seam for the errors only a
+// refusing or stalled mount answers (#204).
+var statTarget = os.Stat
+
 // copyVerified copies the regular file f into dest through a destination-local
 // temp file (#177): the store may sit on another filesystem, where a rename
 // cannot reach. The bytes are hashed as they stream, the temp file is synced,
@@ -375,6 +380,15 @@ func copyVerified(f, dest string) error {
 	return nil
 }
 
+// namesNothing reports whether a link's stat error proves the link dangles: the
+// path itself ends nowhere. Any other error (EACCES, EIO, ETIMEDOUT, a stalled
+// mount) says the target could not be asked, and it may hold the user's store
+// (#204).
+func namesNothing(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) ||
+		errors.Is(err, syscall.ELOOP)
+}
+
 // clearDanglingParents removes the dangling links among rel's parent dirs under
 // the store root.
 func clearDanglingParents(root, rel string) {
@@ -383,21 +397,21 @@ func clearDanglingParents(root, rel string) {
 	for _, c := range parts[:len(parts)-1] {
 		p += "/" + c
 		if isLink(p) {
-			if _, err := os.Stat(p); err != nil {
+			if _, err := statTarget(p); namesNothing(err) {
 				_ = os.Remove(p)
 			}
 		}
 	}
 }
 
-// linkGivesWay reports whether the link at dest names f or names nothing.
+// linkGivesWay reports whether the link at dest names f or provably names nothing.
 func linkGivesWay(dest, f string) bool {
 	if !isLink(dest) {
 		return false // a real file in the store never gives way
 	}
-	t, err := os.Stat(dest)
+	t, err := statTarget(dest)
 	if err != nil {
-		return true
+		return namesNothing(err)
 	}
 	o, err := os.Stat(f)
 	return err == nil && os.SameFile(t, o)
@@ -522,8 +536,9 @@ func zshT(p string) string {
 // v0.5.0 launch and every earlier failed merge left '<what>.premigration.*'
 // dirs holding files that exist nowhere else. Each parked file the shared
 // store does not already hold is copied in and leaves the park; a file the
-// store holds differently stays in its park and is named, never clobbered. An
-// emptied park goes (#185).
+// store holds differently stays in its park and is named, never clobbered.
+// Only the dirs left empty go, so what the walk could not read stays parked
+// (#185, #204).
 func mergeParks(dir, store string, report func(string)) {
 	if report == nil {
 		report = func(string) {}
@@ -537,43 +552,60 @@ func mergeParks(dir, store string, report func(string)) {
 			continue
 		}
 		park := filepath.Join(dir, e.Name())
-		kept := 0
 		_ = filepath.WalkDir(park, func(f string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
+			if err != nil {
+				report("could not read '" + f + "': it stays in its park")
+				return nil
+			}
+			if d.IsDir() {
 				return nil
 			}
 			rel := strings.TrimPrefix(f, park+"/")
 			dest := store + "/" + rel
-			if lexists(dest) {
-				if sameContent(dest, f) {
-					_ = os.Remove(f)
-					return nil
-				}
-				report("kept '" + rel + "' in '" + park + "': the shared store already holds a different copy")
-				kept++
+			kept := func(why string) error {
+				report("kept '" + rel + "' in '" + park + "': " + why)
 				return nil
 			}
+			clearDanglingParents(store, rel)
+			if lexists(dest) {
+				switch {
+				case d.Type()&fs.ModeSymlink != 0 && sameTarget(f, dest):
+					// The parked link already reaches this store entry: only it goes.
+					_ = os.Remove(f)
+					return nil
+				case linkGivesWay(dest, f):
+					if os.Remove(dest) != nil {
+						return kept("the shared store could not take it")
+					}
+				case resolved(dest) == resolved(f):
+					return kept("the shared store reaches this very file through a link")
+				case sameContent(dest, f):
+					_ = os.Remove(f)
+					return nil
+				default:
+					if _, err := statTarget(dest); err != nil {
+						return kept("the shared store could not be read")
+					}
+					return kept("the shared store already holds a different copy")
+				}
+			}
 			if os.MkdirAll(zshH(dest), 0o777) != nil {
-				kept++
-				return nil
+				return kept("the shared store could not take it")
 			}
 			if d.Type()&fs.ModeSymlink != 0 {
 				if t, err := os.Readlink(f); err != nil || os.Symlink(t, dest) != nil {
-					kept++
-					return nil
+					return kept("the shared store could not take it")
 				}
 				_ = os.Remove(f)
 				return nil
 			}
 			if !d.Type().IsRegular() || copyVerified(f, dest) != nil {
-				kept++
-				return nil
+				return kept("the shared store could not take it")
 			}
 			_ = os.Remove(f)
 			return nil
 		})
-		if kept == 0 {
-			_ = os.RemoveAll(park) // only empty dirs are left, RemoveAll takes them
-		}
+		// Only dirs left empty go: a sweep never deletes what its walk did not see.
+		pruneEmpty(park)
 	}
 }

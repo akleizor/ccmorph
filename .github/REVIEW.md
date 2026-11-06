@@ -68,6 +68,10 @@ credential, or losing the user's choice.
   Seen 1x (2026-11-06).
 - **A unit test that walks into a background fetch** (2026-11-06) — the test called the function that builds the launch's usage hook, and that function started the models.dev refresh itself, so `go test ./cli` reached the network and its goroutine could recreate the temp home the test had just cleaned up; a constructor starts no I/O its caller did not ask for, and the refresh belongs to the launch — `example: #203 fix(cli): building a usage hook starts no models.dev fetch`.
   Seen 1x (2026-11-06).
+- **A sweep that deletes what its walk failed to see** (2026-11-06) — the walk's callback skipped an errored subtree without counting it, so the `kept == 0` RemoveAll that followed took parked transcripts that existed nowhere else, once a stalled volume answered the walk with an error and recovered before the sweep; a sweep removes only what its walk named or what is provably empty, and a test of one must make the read fail and then recover, since RemoveAll cannot enter a dir chmod left unreadable either — `example: #204 fix(util): a park sweep removes only the dirs left empty`.
+  Seen 1x (2026-11-06).
+- **A dangling-link check that reads every stat error as dangling** (2026-11-06) — any `os.Stat` failure was taken for a link naming nothing, so a store link whose mount answered EACCES or timed out was unlinked, the walk built a real dir in its place, and the shared store stayed detached from the user's data; only ENOENT, ENOTDIR and ELOOP prove a link dangles, and any other error means the target could not be asked — `example: #204 fix(util): only a provably dead store link gives way`.
+  Seen 1x (2026-11-06).
 
 ## Gate rules
 
