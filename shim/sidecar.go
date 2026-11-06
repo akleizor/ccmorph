@@ -304,13 +304,7 @@ func (u *UsageSidecar) write(r *record) error {
 			return err
 		}
 	}
-	named := func(key string) string { return filepath.Join(dir, rowFileName(key)) }
-	primary := named(r.responseID)
-	key := r.responseID + "." + r.turnID
-	spills := []string{named(key)}
-	for n := 1; n <= 3; n++ {
-		spills = append(spills, named(key+"."+strconv.Itoa(n)))
-	}
+	primary, spills := rowNames(dir, r.responseID, r.turnID)
 	f, err := os.CreateTemp(dir, "tmp*.tmp")
 	if err != nil {
 		return err
@@ -343,9 +337,32 @@ func (u *UsageSidecar) write(r *record) error {
 			return nil
 		}
 	}
-	// Every name belongs to another turn: drop this row, never theirs.
-	return fail(fs.ErrExist)
+	// Every name belongs to another turn: drop this row, never theirs. The
+	// sentinel is distinct because a directory failure can also wrap fs.ErrExist
+	// (a file where the usage dir belongs), and a transcript reader must retry
+	// that one while this one is permanent.
+	return fail(errRowNameTaken)
 }
+
+// rowNames is where one response's row can live, in the sidecar's own claim
+// order: the primary name its id owns, then the spills its turn owns when a
+// gateway recycled that id. A writer and a reader of these rows share this one
+// definition, so neither can disagree with the other about the store.
+func rowNames(dir, responseID, turnID string) (primary string, spills []string) {
+	named := func(key string) string { return filepath.Join(dir, rowFileName(key)) }
+	primary = named(responseID)
+	key := responseID + "." + turnID
+	spills = []string{named(key)}
+	for n := 1; n <= 3; n++ {
+		spills = append(spills, named(key+"."+strconv.Itoa(n)))
+	}
+	return primary, spills
+}
+
+// errRowNameTaken is a row no name on disk can hold: every candidate belongs to
+// another turn, so writing it again answers the same. It wraps fs.ErrExist,
+// which the sidecar's own tests read as the shape of a lost row.
+var errRowNameTaken = fmt.Errorf("every row name belongs to another turn: %w", fs.ErrExist)
 
 // observe folds one parsed SSE event into rec and persists what is known.
 // Never fails the relay.

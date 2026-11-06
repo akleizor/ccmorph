@@ -287,20 +287,53 @@ func TestMaterializeAddsTheUsageHookOnceAfterTheUsers(t *testing.T) {
 }
 
 // A session's last response reaches the transcript after its last Stop, so only
-// SessionEnd can record it; a launch without a hook must remove both.
+// SessionEnd can record it; SessionStart marks where this launch begins reading,
+// so a resumed transcript's history is not charged to it. A launch without a
+// hook must remove all three.
 func TestUsageHookCoversSessionEndAndLeavesWithIt(t *testing.T) {
 	f := newFixture(t)
 	write(t, f.canonical, `{"hooks":{"SessionEnd":[{"hooks":[{"type":"command","command":"say bye"}]}]}}`)
 	f.materialize(t, usageHook)
 	f.materialize(t, usageHook)
 	got := string(settingsBytes(t, f))
-	if strings.Count(got, "usage-row") != 2 || !strings.Contains(got, `"SessionEnd"`) {
-		t.Fatalf("want one usage hook in each of Stop and SessionEnd: %s", got)
+	if strings.Count(got, "usage-row") != 3 || !strings.Contains(got, `"SessionEnd"`) || !strings.Contains(got, `"SessionStart"`) {
+		t.Fatalf("want one usage hook in each of SessionStart, Stop and SessionEnd: %s", got)
 	}
 	f.materialize(t, "")
 	got = string(settingsBytes(t, f))
 	if strings.Contains(got, "usage-row") || !strings.Contains(got, "say bye") {
 		t.Fatalf("after a launch with no hook: %s", got)
+	}
+}
+
+// A core path the launch shell-quotes (a home with a space) is still ccmorph's
+// own command: the first-run capture must not fold it into the user's layer, and
+// a launch with no hook must remove it.
+func TestAQuotedCorePathIsStillTheLaunchsHook(t *testing.T) {
+	quoted := "'/Users/a b/libexec/ccmorph-core' usage-row --profile 'work' --pricing 'anthropic'"
+	for _, hook := range []string{usageHook, quoted} {
+		t.Run(hook, func(t *testing.T) {
+			f := newFixture(t)
+			write(t, f.canonical, `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}`)
+			f.materialize(t, hook)
+			// The first-run capture is where a hook it cannot recognize lands in
+			// the user's layer; drop the cache so the next launch takes it.
+			for _, name := range []string{baseFile, layerFile} {
+				if err := os.Remove(filepath.Join(f.profile, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+					t.Fatal(err)
+				}
+			}
+			f.materialize(t, hook)
+			f.materialize(t, hook)
+			if got := stopCommands(t, f); len(got) != 2 || got[0] != "say done" || got[1] != hook {
+				t.Fatalf("Stop = %q", got)
+			}
+			// A direct launch asks for no hook: the old one must go.
+			f.materialize(t, "")
+			if got := stopCommands(t, f); len(got) != 1 || got[0] != "say done" {
+				t.Fatalf("after a launch with no hook: Stop = %q", got)
+			}
+		})
 	}
 }
 

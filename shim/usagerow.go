@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -60,9 +61,16 @@ func UsageRowMain(args []string, stdin io.Reader) int {
 	}
 	var in struct {
 		TranscriptPath string `json:"transcript_path"`
+		HookEventName  string `json:"hook_event_name"`
 	}
 	raw, _ := io.ReadAll(io.LimitReader(stdin, 1<<20))
 	if json.Unmarshal(raw, &in) != nil || in.TranscriptPath == "" {
+		return 0
+	}
+	// SessionStart writes no row: it marks where this launch begins reading, so
+	// a transcript it resumes does not charge its history to this profile.
+	if in.HookEventName == "SessionStart" {
+		StartTranscript(in.TranscriptPath, time.Now())
 		return 0
 	}
 	RecordTranscript(profile, pricing, in.TranscriptPath)
@@ -83,9 +91,19 @@ func RecordTranscript(profile, pricing, path string) int {
 		return 0
 	}
 	cursorPath := cursorFile(path)
-	offset := readCursor(cursorPath)
+	c := readCursor(cursorPath)
+	offset := c.Offset
 	if offset > st.Size() || offset < 0 {
 		offset = 0
+	}
+	// A cursor's start time separates the history a resumed transcript already
+	// held from the turns this launch served, even when a fork copied that
+	// history into a file created after the mark.
+	var since time.Time
+	if c.Since != "" {
+		if t, err := time.Parse(time.RFC3339Nano, c.Since); err == nil {
+			since = t
+		}
 	}
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
 		return 0
@@ -101,6 +119,7 @@ func RecordTranscript(profile, pricing, path string) int {
 	// dashboard summing rows counts that spend once per block.
 	type response struct {
 		id, request, model, timestamp string
+		start                         int64 // offset of the response's first line
 		usage                         usageRow
 	}
 	var order []string
@@ -113,16 +132,22 @@ func RecordTranscript(profile, pricing, path string) int {
 		}
 		line := data[:i+1]
 		data = data[i+1:]
+		start := next
 		next += int64(len(line))
 		e, usage, ok := parseLine(line)
 		if !ok {
 			continue
 		}
+		if !since.IsZero() && e.Timestamp != "" {
+			if ts, err := time.Parse(time.RFC3339Nano, e.Timestamp); err == nil && ts.Before(since) {
+				continue // served before this launch began reading
+			}
+		}
 		key := e.Message.ID + "\x00" + e.RequestID
 		r := responses[key]
 		if r == nil {
 			r = &response{id: e.Message.ID, request: e.RequestID,
-				model: e.Message.Model, timestamp: e.Timestamp, usage: usage}
+				model: e.Message.Model, timestamp: e.Timestamp, start: start, usage: usage}
 			responses[key] = r
 			order = append(order, key)
 			continue
@@ -136,14 +161,21 @@ func RecordTranscript(profile, pricing, path string) int {
 		}
 	}
 	written := 0
+	// The cursor only passes lines whose row is on disk. A failed write holds it
+	// at that response's first line, so the next Stop retries it; a name every
+	// spill already holds is permanent and must not stall the read.
+	at := next
 	for _, key := range order {
 		r := responses[key]
 		ok, err := WriteUsageRow(profile, pricing, r.id, r.model, r.timestamp, responseToken(r.id, r.request), r.usage)
 		if ok && err == nil {
 			written++
 		}
+		if err != nil && !errors.Is(err, errRowNameTaken) && r.start < at {
+			at = r.start
+		}
 	}
-	writeCursor(cursorPath, next)
+	writeCursor(cursorPath, cursor{Offset: at, Since: c.Since})
 	return written
 }
 
@@ -192,7 +224,7 @@ func WriteUsageRow(profile, pricing, responseID, model, timestamp, turnID string
 	// A session whose traffic a ccmorph adapter already relays (a Remote Control
 	// session, or a launch nested inside one) writes its own row for the same
 	// response. One turn, one row: the writer that saw the traffic keeps it.
-	if recordedElsewhere(responseID, s.routeID) {
+	if recordedElsewhere(responseID, s.routeID, profile, timestamp) {
 		return false, nil
 	}
 	// A response's lines can span hook passes — a Stop may read the transcript
@@ -217,9 +249,12 @@ func WriteUsageRow(profile, pricing, responseID, model, timestamp, turnID string
 }
 
 // recordedElsewhere is true when the row under responseID was written by
-// another ccmorph writer: its route id is not this transcript hook's. A row of
-// our own (or none) leaves the write to the sidecar's own ownership rules.
-func recordedElsewhere(responseID, routeID string) bool {
+// another ccmorph writer for this same response: its route id is not this
+// transcript hook's, and the row it holds is this turn's. A row of our own (or
+// none) leaves the write to the sidecar's own ownership rules; a row another
+// route holds for a different response — a gateway that recycled the id — must
+// not swallow ours, so the hook writes its own into a spill.
+func recordedElsewhere(responseID, routeID, profile, timestamp string) bool {
 	data, err := os.ReadFile(filepath.Join(stateDir(), "usage", rowFileName(responseID)))
 	if err != nil {
 		return false
@@ -229,43 +264,89 @@ func recordedElsewhere(responseID, routeID string) bool {
 		return false
 	}
 	rid, ok := d.str("route_id")
-	return ok && rid != routeID
+	if !ok || rid == routeID {
+		return false
+	}
+	// The adapter that relays this session's traffic writes the same profile's
+	// row, within the same turn. A recycled id belongs to another profile's
+	// response, minutes or more away; which of these it is decides whether the
+	// row is ours to leave alone or another response's to write beside.
+	if p, ok := d.str("profile"); ok && p == profile {
+		return true
+	}
+	theirs, ok := d.str("timestamp")
+	if !ok {
+		return true
+	}
+	return sameResponse(timestamp, theirs)
+}
+
+// sameResponseWindow is how far apart two writers' timestamps may sit and still
+// be one response. The relay's row is stamped when its turn starts and the
+// transcript's when the response lands, so the gap is a turn's length.
+const sameResponseWindow = 15 * time.Minute
+
+// sameResponse is true when two row timestamps cannot be told apart: either
+// fails to parse, or they sit within one turn of each other. Not knowing is not
+// grounds for writing a second row.
+func sameResponse(a, b string) bool {
+	ta, err := time.Parse(time.RFC3339Nano, a)
+	if err != nil {
+		return true
+	}
+	tb, err := time.Parse(time.RFC3339Nano, b)
+	if err != nil {
+		return true
+	}
+	gap := ta.Sub(tb)
+	if gap < 0 {
+		gap = -gap
+	}
+	return gap <= sameResponseWindow
 }
 
 // mergeExisting folds the usage this hook's own row for responseID already
 // holds into usage, so a response whose lines span hook passes keeps one row
-// with the larger counts. A row another writer owns never reaches here
-// (recordedElsewhere), and a row carrying a different response's token — a
-// recycled id — keeps its own numbers.
+// with the larger counts. It reads the names the sidecar itself writes — the
+// primary, then the spills a recycled id's turn owns — because that row is not
+// always the primary: when another turn holds <sha(id)>.json, the writer put
+// ours in a spill, and reading the primary alone would replace the row with
+// this pass's lines and shrink it. A row another writer owns for this response
+// never reaches here (recordedElsewhere), and a row carrying a different
+// response's token — a recycled id — keeps its own numbers.
 func mergeExisting(s *UsageSidecar, responseID, turnID string, usage usageRow) usageRow {
-	data, err := os.ReadFile(filepath.Join(stateDir(), "usage", rowFileName(responseID)))
-	if err != nil {
-		return usage
-	}
-	d := parseDoc(data)
-	if d == nil {
-		return usage
-	}
-	if rid, ok := d.str("route_id"); !ok || rid != s.routeID {
-		return usage
-	}
-	if tid, ok := d.str("turn_id"); !ok || tid != turnID {
-		return usage
-	}
-	sp, ok := d.last("usage")
-	if !ok {
-		return usage
-	}
-	// bucketsOf drops the row's own estimated_cost (it is no bucket), and the
-	// billed cost is dropped with it: this pass's lines, not the old row, carry
-	// the numbers, and the estimate is recomputed from them.
-	var old usageRow
-	for _, n := range bucketsOf(d.b, sp, true) {
-		if n.key != "cost" {
-			old = append(old, n)
+	primary, spills := rowNames(filepath.Join(stateDir(), "usage"), responseID, turnID)
+	for _, path := range append([]string{primary}, spills...) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
 		}
+		d := parseDoc(data)
+		if d == nil {
+			continue
+		}
+		if rid, ok := d.str("route_id"); !ok || rid != s.routeID {
+			continue
+		}
+		if tid, ok := d.str("turn_id"); !ok || tid != turnID {
+			continue
+		}
+		sp, ok := d.last("usage")
+		if !ok {
+			continue
+		}
+		// bucketsOf drops the row's own estimated_cost (it is no bucket), and the
+		// billed cost is dropped with it: this pass's lines, not the old row, carry
+		// the numbers, and the estimate is recomputed from them.
+		var old usageRow
+		for _, n := range bucketsOf(d.b, sp, true) {
+			if n.key != "cost" {
+				old = append(old, n)
+			}
+		}
+		return maxUsage(old, usage)
 	}
-	return maxUsage(old, usage)
+	return usage
 }
 
 // maxUsage is the per-key maximum of two usage rows: the counts a response
@@ -332,21 +413,26 @@ func cursorFile(transcript string) string {
 	return filepath.Join(stateDir(), "usage-cursors", hex.EncodeToString(sum[:])+".json")
 }
 
-func readCursor(path string) int64 {
-	var c struct {
-		Offset int64 `json:"offset"`
-	}
-	data, err := os.ReadFile(path)
-	if err != nil || json.Unmarshal(data, &c) != nil {
-		return 0
-	}
-	return c.Offset
+// cursor is where a transcript's read position is kept. Offset is the byte a
+// pass resumes at; Since is when this launch began reading it, so a resumed
+// transcript's older turns — which another profile served — are not charged to
+// this one. A cursor written before Since existed reads as offset only.
+type cursor struct {
+	Offset int64  `json:"offset"`
+	Since  string `json:"since,omitempty"`
 }
 
-func writeCursor(path string, offset int64) {
-	data, err := json.Marshal(struct {
-		Offset int64 `json:"offset"`
-	}{offset})
+func readCursor(path string) cursor {
+	var c cursor
+	data, err := os.ReadFile(path)
+	if err != nil || json.Unmarshal(data, &c) != nil {
+		return cursor{}
+	}
+	return c
+}
+
+func writeCursor(path string, c cursor) {
+	data, err := json.Marshal(c)
 	if err != nil {
 		return
 	}
@@ -357,4 +443,22 @@ func writeCursor(path string, offset int64) {
 	if os.WriteFile(tmp, data, 0o600) == nil && os.Rename(tmp, path) != nil {
 		os.Remove(tmp)
 	}
+}
+
+// StartTranscript marks where this launch begins reading path, for a transcript
+// that has no cursor yet: everything the file already holds was served before
+// this launch — by a pre-release ccmorph, by native claude, or under a route
+// that writes no rows — and none of it is this profile's spend. An existing
+// cursor is left alone: a compact, a clear or a second start resumes the same
+// read position, and moving it would lose the pass that had not written yet.
+func StartTranscript(path string, now time.Time) {
+	cursorPath := cursorFile(path)
+	if _, err := os.Stat(cursorPath); err == nil {
+		return
+	}
+	var offset int64
+	if st, err := os.Stat(path); err == nil && st.Mode().IsRegular() {
+		offset = st.Size()
+	}
+	writeCursor(cursorPath, cursor{Offset: offset, Since: now.UTC().Format(time.RFC3339Nano)})
 }

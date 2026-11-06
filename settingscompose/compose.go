@@ -461,8 +461,11 @@ func mergeInto(result, override *obj, path []string) {
 	}
 }
 
-// usageHookMark is the one command ccmorph owns in a profile's Stop list: the
-// launch's own usage-row writer. A user's Stop hooks are never touched.
+// usageHookMark is the one command ccmorph owns in a profile's hook lists: the
+// launch's own usage-row writer. The launch shell-quotes the core path when it
+// holds anything outside [A-Za-z0-9_./-] (a home with a space), so the mark is
+// matched against the command with its single quotes dropped — otherwise the
+// quoted path is not recognized as ours. A user's own hooks are never touched.
 const usageHookMark = "ccmorph-core usage-row --profile "
 
 // isUsageHook is an entry whose command is this profile's usage writer.
@@ -477,7 +480,8 @@ func isUsageHook(entry value) bool {
 	}
 	for _, h := range hooks {
 		if ho, ok := h.(*obj); ok {
-			if c, ok := getObj(ho, "command").(string); ok && strings.Contains(c, usageHookMark) {
+			if c, ok := getObj(ho, "command").(string); ok &&
+				strings.Contains(strings.ReplaceAll(c, "'", ""), usageHookMark) {
 				return true
 			}
 		}
@@ -485,11 +489,13 @@ func isUsageHook(entry value) bool {
 	return false
 }
 
-// usageEvents are the hook events that carry the usage writer. Stop fires before
+// usageEvents are the hook events that carry the usage writer. SessionStart
+// writes no row: it marks where this launch begins reading, so a resumed
+// transcript's history stays the profile's that served it. Stop fires before
 // Claude Code flushes the turn's last response to the transcript, so that response
 // is read on the next Stop; SessionEnd reads the session's last one, which has no
 // next Stop. The writer's cursor makes the second read of a line a no-op.
-var usageEvents = []string{"Stop", "SessionEnd"}
+var usageEvents = []string{"SessionStart", "Stop", "SessionEnd"}
 
 // withoutUsage drops ccmorph's usage hook, so a fold never writes it into the
 // user's layer and a compose that no longer asks for one removes the old one.
