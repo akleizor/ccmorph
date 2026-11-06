@@ -59,12 +59,13 @@ func TestMaskRules(t *testing.T) {
 		"Authorization: Bearer abcdefghij0123456789xyz": "abcdefghij0123456789xyz",
 		// A labeled password of letters (or letters and dashes) is a value,
 		// not a code identifier.
-		"DB_PASSWORD=changeme":                   "changeme",
-		"PASSWORD=correcthorsebatterystaple":     "correcthorsebatterystaple",
-		"password: correct-horse-battery-staple": "correct-horse-battery-staple",
+		"DB_PASSWORD=changeme":               "changeme",
+		"PASSWORD=correcthorsebatterystaple": "correcthorsebatterystaple",
 		// An .env dump on one line, and a command's env prefix: an "="
 		// names an assignment, so the value is a value even when a word
 		// follows it (#186).
+		// JSON and YAML use ":" too: a value with a digit or symbol is masked.
+		`{"password": "hunter2xyz"}`: "hunter2xyz", "password: Tr0ub4dor&3": "Tr0ub4dor&3",
 		"DB_PASSWORD=hunterstable DEBUG=1": "hunterstable",
 		"PASSWORD=hunterstable npm start":  "hunterstable",
 	} {
@@ -85,7 +86,9 @@ func TestMaskRules(t *testing.T) {
 		// One lowercase word after a ":" label is prose or a name, wherever it ends:
 		// learned, it was masked in every later turn, inside longer words too.
 		"secrets: 1password: cannot\n", "1password-1.json.age: resource.", `token: "optional"`,
-		"tokeneconomizer:microskills: Show the facts", "the password: optional, then optional again",
+		"tokeneconomizer:microskills: Show the facts",
+		// Unsure, so not masked: letters after ":", and a label naming something about the secret.
+		"password: correct-horse-battery-staple", `"secret_name": "prod-db-creds-v2"`, "token_id=tok-2024-11-06-abc", "the password: optional, then optional again",
 	} {
 		if got := maskOne(t, m, plain); got != plain {
 			t.Errorf("masked a non-secret: %q -> %q", plain, got)
@@ -458,7 +461,7 @@ func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f
 func TestMaskPersonalData(t *testing.T) {
 	m := testMasker(t, "")
 	for _, pii := range []string{
-		"A123456(3)", "A1234563", "4111 1111 1111 1111", "4111-1111-1111-1111", "4111111111111111",
+		"A123456(3)", "4111 1111 1111 1111", "4111-1111-1111-1111", "4111111111111111",
 		"+852 9123 4567", "+8613812345678", "chan.tai.man@gmail.com",
 	} {
 		if got := maskOne(t, m, "call "+pii+" today"); strings.Contains(got, pii) || !placeholderRE.MatchString(got) {
@@ -466,8 +469,10 @@ func TestMaskPersonalData(t *testing.T) {
 		}
 	}
 	for _, plain := range []string{
-		"A123456(4)",          // wrong check digit
-		"4111 1111 1111 1112", // fails Luhn
+		"A123456(4)",                // wrong check digit
+		"SKU A1234563 in stock",     // no brackets: a product code as often as an HKID
+		"order 7111 1111 1111 1111", // passes Luhn, no card prefix
+		"4111 1111 1111 1112",       // fails Luhn
 		"order 1730851234567890 shipped", "port 9123 4567", "92345678",
 		"noreply@anthropic.com", "dev@example.com", "1234+akleizor@users.noreply.github.com",
 		"git@github.com:akleizor/ccmorph.git", "{{user}}@corp.com",

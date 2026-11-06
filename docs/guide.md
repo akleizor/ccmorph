@@ -376,7 +376,7 @@ id passes through, so caching is unaffected). Relaunch to apply.
 
 `env.CCMORPH_MASK=1` keeps secrets out of what the gateway sees. API keys, tokens,
 private keys and passwords (in URLs, connection strings and `password=`-style
-assignments), and personal data (HKID numbers with a valid check digit, 16-digit card
+assignments), and personal data (HKID numbers written as `A123456(7)` with a valid check digit, 16-digit card
 numbers that pass Luhn, `+852` and `+86` phone numbers, and email addresses other than
 no-reply and `example.com` ones) go upstream as placeholders such as `{{API_KEY_k3v9x2mqa7bc}}`, and the
 shim puts the real value back in the reply, so Claude Code, its files and the commands
@@ -388,8 +388,9 @@ own command, for example `^secrets get\b`. Relaunch to apply.
 
 The cost: the model sees the placeholder, not the value, so it cannot work on the value
 itself (why is this token rejected?). Values shorter than six characters and passwords
-with no label around them are not found, and neither is a single lowercase word after a
-`password:`-style label (`password: pending`), which is far more often prose than a value. Each usage receipt counts what was masked in
+with no label around them are not found, and neither is a value of letters only after a `password:`-style label,
+or one whose label names something about the secret (`secret_name`, `token_id`): masking
+what is only probably a secret would hide ordinary words from the model in every turn. Each usage receipt counts what was masked in
 its `masked` field. Masking covers every route the shim fronts; a subscription or
 `api.anthropic.com` profile keeps its own direct connection and is not masked.
 
