@@ -402,6 +402,77 @@ for spell in slash link leaf; do
     || fail "equiv-$spell uninstall: the printed rm left the directory behind"
 done
 
+# --- 5e. a link's spelling never reaches the rm line (#207)
+# rm on a symlink removes only the link, so the printed cleanup must carry the
+# directory a link names, whichever root is the link: a redirected state root,
+# the same with a trailing slash or through a second link, the config dir itself,
+# a state root that links at a symlinked config dir, and the usage receipts.
+for spell in state slash chain config equiv usage; do
+  d=$(fresh_env "uninstall_rm_$spell")
+  run_installer "$d" >/dev/null
+  cfg="$d/home/.config/ccmorph"
+  target="$d/elsewhere/data"           # where the link leads: the data under test
+  mkdir -p "$target"
+  link="$d/state-link"
+  state_env=()
+  case "$spell" in
+    state|slash) ln -s "$target" "$link"; state_env=(CCMORPH_STATE_DIR="$link") ;;
+    chain) ln -s "$target" "$d/hop"; ln -s "$d/hop" "$link"; state_env=(CCMORPH_STATE_DIR="$link") ;;
+    config|equiv) rmdir "$target"; mv "$cfg" "$target"; ln -s "$target" "$cfg"; link="$cfg" ;;
+    usage) link="$d/home/.local/state/ccmorph"; mkdir -p "${link:h}"; ln -s "$target" "$link" ;;
+  esac
+  [[ "$spell" == slash ]] && state_env=(CCMORPH_STATE_DIR="$link/")
+  if [[ "$spell" == equiv ]]; then
+    ln -s "$cfg" "$d/state-link"; state_env=(CCMORPH_STATE_DIR="$d/state-link")
+  fi
+  real="${target:A}"
+  if [[ "$spell" == usage ]]; then
+    mkdir -p "$real/usage"; label='(usage receipts)'
+  else
+    printf 'type=apikey\napi_key=keychain:team.api_key\n' > "$real/team.conf"
+    mkdir -p "$real/profiles/team"; label='(1 profiles,'
+    # A plugin recorded under the TARGET's spelling, from a session that ran on the
+    # directory itself: it dangles once the printed rm deletes that directory.
+    mkdir -p "$d/home/.claude/plugins/marketplaces/example"
+    print -r -- '{"example": {"source": {"source": "github", "repo": "owner/repo"}, "installLocation": "'"$real"'/profiles/team/plugins/marketplaces/example"}}' \
+      > "$d/home/.claude/plugins/known_marketplaces.json"
+  fi
+  env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" "${state_env[@]}" \
+    zsh "$REPO/install.sh" --uninstall >"$d/out" 2>&1; rc=$?
+  (( rc == 0 )) && ok "rm-$spell uninstall: exits 0" || { fail "rm-$spell uninstall rc=$rc"; cat "$d/out" }
+  grep -qF "  $real  $label" "$d/out" \
+    && ok "rm-$spell uninstall: the report names the directory the link leads to" \
+    || { fail "rm-$spell uninstall: report line wrong"; cat "$d/out" }
+  grep -qxF "$link is a symlink to $real and stays: it is yours to remove." "$d/out" \
+    && ok "rm-$spell uninstall: the link is named beside the cleanup" \
+    || { fail "rm-$spell uninstall: the link is named nowhere"; cat "$d/out" }
+  if [[ "$spell" != usage ]]; then
+    grep -qF "\"$d/home/.claude/plugins/marketplaces/example\"" "$d/home/.claude/plugins/known_marketplaces.json" \
+      && ok "rm-$spell uninstall: the plugin repair walks the target's spelling" \
+      || { fail "rm-$spell uninstall: plugin index still spelled through the target"; cat "$d/home/.claude/plugins/known_marketplaces.json" }
+  fi
+  rm_line="$(grep -F '  rm -rf ' "$d/out")"
+  [[ "$rm_line" != *"$link"* ]] \
+    && ok "rm-$spell uninstall: the rm line never carries the link" \
+    || { fail "rm-$spell uninstall: the rm line carries the link: $rm_line" }
+  # The printed cleanup, run exactly as printed.
+  eval "$rm_line"
+  [[ ! -e "$target" ]] \
+    && ok "rm-$spell uninstall: the printed rm removes the data" \
+    || fail "rm-$spell uninstall: the printed rm left $target behind"
+done
+
+# A link whose target cannot be reached (the volume is unmounted) has only itself
+# to remove: the report says where it led, so nothing there is left named nowhere.
+d=$(fresh_env uninstall_rm_dangling)
+run_installer "$d" >/dev/null
+ln -s "$d/unmounted/state" "$d/state-link"
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" CCMORPH_STATE_DIR="$d/state-link" \
+  zsh "$REPO/install.sh" --uninstall >"$d/out" 2>&1; rc=$?
+(( rc == 0 )) && grep -qF "$d/state-link is a symlink to $d/unmounted/state, which cannot be reached now" "$d/out" \
+  && ok "dangling-link uninstall: names where the link led and exits 0" \
+  || { fail "dangling-link uninstall rc=$rc"; cat "$d/out" }
+
 # --- 6. a RE-RUN is an update: user state survives, and it says so ----------
 # The guarantee people actually care about. Profiles (which now carry their own
 # probed/manual context alongside credentials) and local.sh are never in
