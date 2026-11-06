@@ -5,7 +5,10 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
+
+	"github.com/akleizor/ccmorph/util"
 )
 
 func TestSplitNULKeepsEmptyValues(t *testing.T) {
@@ -379,5 +382,74 @@ func TestSettingsArgvCarriesTheHookOnlyWhenOneIsSet(t *testing.T) {
 	}
 	if !slices.Contains(got, "--mapping=ANTHROPIC_AUTH_TOKEN") {
 		t.Fatalf("argv lost the mapping: %v", got)
+	}
+}
+
+// #205: a launch that cannot take its profile's live lock (a stuck exclusive
+// holder outlasted the wait) discarded the nil HoldLive returned and started
+// claude with no lock while the other launch's merge was still in flight. It
+// now refuses to start, and says why.
+func TestSetupDirRefusesALaunchWithoutItsLiveLock(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	profiles := filepath.Join(home, ".config/ccmorph/profiles")
+	lock := util.LiveLockPath(profiles, "p")
+	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := os.OpenFile(lock, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	if err := syscall.Flock(int(holder.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(util.SetLockWait(0))
+	l := &launcher{profileDirs: profiles}
+	if l.setupDir("p", "proxy") {
+		t.Fatal("a launch that could not take its live lock must not start claude")
+	}
+	if _, err := os.Stat(filepath.Join(profiles, "p")); !os.IsNotExist(err) {
+		t.Fatalf("a refused launch must not provision the profile either: %v", err)
+	}
+}
+
+// canTakeExclusive reports whether a fresh probe can take the lock at path
+// exclusively right now.
+func canTakeExclusive(t *testing.T, path string) bool {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	return syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil
+}
+
+// #205: the launcher loops in-process across a hop, and HoldLive cached one fd
+// per lock path for the process's life. After A -> B, A's live lock was still
+// held while only B ran, so another launch of A was told a session was live and
+// deferred A's merges for the whole hopped session.
+func TestSetupDirReleasesTheLiveLockOfTheProfileAHopLeaves(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	profiles := filepath.Join(home, ".config/ccmorph/profiles")
+	t.Cleanup(func() {
+		util.ReleaseLive(profiles, "a")
+		util.ReleaseLive(profiles, "b")
+	})
+	l := &launcher{profileDirs: profiles}
+	if !l.setupDir("a", "proxy") {
+		t.Fatal("the first launch must start")
+	}
+	if !l.setupDir("b", "proxy") {
+		t.Fatal("the hop target must start")
+	}
+	if !canTakeExclusive(t, util.LiveLockPath(profiles, "a")) {
+		t.Fatal("after a hop, a launch of the hopped-away profile must find no live session")
+	}
+	if canTakeExclusive(t, util.LiveLockPath(profiles, "b")) {
+		t.Fatal("the hop target must stay covered by its live lock")
 	}
 }

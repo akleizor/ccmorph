@@ -622,13 +622,29 @@ func (l *launcher) profileEnvironment(name string) ([]string, bool) {
 
 // setupDir is _ccm_setup_dir: provision the profile's config dir unless it is.
 func (l *launcher) setupDir(name, typ string) bool {
+	// #205: a hop runs the next profile in this same process. The hopped-away
+	// profile's live lock is released here, or another launch of it reads a
+	// live session — and defers its merges — for the rest of this one's life.
+	if l.liveProfile != "" && l.liveProfile != name {
+		util.ReleaseLive(l.profileDirs, l.liveProfile)
+	}
+	l.liveProfile = name
 	// #185: the live lock covers the session from here until claude exits, so
-	// a concurrent setup never merges shared history under this launch.
-	util.HoldLive(l.profileDirs, name, l.log)
+	// a concurrent setup never merges shared history under this launch. #205: a
+	// launch that cannot take it must not start claude through the window the
+	// lock covers.
+	if !l.holdLive(name) {
+		return false
+	}
 	if util.ProfileOK(l.profileDirs, name) {
 		return true
 	}
 	if !util.SetupProfile(l.profileDirs, name, typ, l.log, l.err) {
+		return false
+	}
+	// The merge releases the lock it could not take back when its upgrade
+	// failed (#205); the session must still be covered before claude starts.
+	if !l.holdLive(name) {
 		return false
 	}
 	if file := l.profileLayer(name); isFile(file) {
@@ -637,6 +653,20 @@ func (l *launcher) setupDir(name, typ string) bool {
 		}
 	}
 	return true
+}
+
+// holdLive takes the profile's live lock shared and keeps it for this process's
+// session. A launch that cannot take it refuses to start: claude would run
+// through the window where another launch's merge may swap shared history under
+// it, and the nil HoldLive returns for a stuck holder used to be discarded
+// (#205).
+func (l *launcher) holdLive(name string) bool {
+	if util.HoldLive(l.profileDirs, name, l.log) != nil {
+		return true
+	}
+	path := util.LiveLockPath(l.profileDirs, name)
+	l.err("another launch of '" + name + "' is holding its live lock (" + path + ") while it links shared history and has not let go; nothing started. Try again in a moment; if it stays stuck, `lsof " + path + "` names the holder.")
+	return false
 }
 
 // prelaunch runs CCMORPH_PRELAUNCH as `<exe> prelaunch <cwd>`: silent, 10s, best effort.

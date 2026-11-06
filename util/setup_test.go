@@ -424,6 +424,7 @@ func TestSetupNeverSwapsUnderALaunchThatLostTheLock(t *testing.T) {
 	}
 	var notes, errs []string
 	log, errf := func(s string) { notes = append(notes, s) }, func(m string) { errs = append(errs, m) }
+	t.Cleanup(func() { ReleaseLive(profiles, "p") })
 	if !SetupProfile(profiles, "p", "proxy", log, errf) {
 		t.Fatalf("a launch sharing a live profile must still succeed: %v", errs)
 	}
@@ -438,6 +439,19 @@ func TestSetupNeverSwapsUnderALaunchThatLostTheLock(t *testing.T) {
 	}
 	// That launch ends; the next one merges.
 	other.Close()
+	// #205: Linux flock(2) removes the existing shared lock before it tries a
+	// conversion, so the failed upgrade above must leave this launch holding its
+	// shared lock, not none. A probe that can take the exclusive lock here means
+	// the session would run through the unprotected window the lock covers.
+	probe, err := os.OpenFile(filepath.Join(lockDir, "p.live"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if syscall.Flock(int(probe.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil {
+		probe.Close()
+		t.Fatal("a failed upgrade must leave the launch holding its live lock")
+	}
+	probe.Close()
 	notes, errs = nil, nil
 	if !SetupProfile(profiles, "p", "proxy", log, errf) {
 		t.Fatalf("setup after the live launch ended failed: %v", errs)
@@ -604,6 +618,9 @@ func TestSetupMergesParkedTranscriptsIntoTheStore(t *testing.T) {
 // the reverse of the shape setup makes. Merging then deleted the link's target
 // and left the store pointing at itself, so every later append failed ELOOP.
 // The store path becomes the real file and the profile links at it.
+// #205: the repair must never unlink the shared file before its replacement is
+// there — a failed copy leaves both where they were, logged, never a failed
+// launch — or every profile linking at the store is left with no history.
 func TestSetupKeepsHistoryWhoseStoreLinksAtIt(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -612,9 +629,37 @@ func TestSetupKeepsHistoryWhoseStoreLinksAtIt(t *testing.T) {
 	mustWrite(t, own, hrec(100, "kept"))
 	shared := filepath.Join(home, ".claude/history.jsonl")
 	mustLink(t, own, shared)
-	var errs []string
-	if !SetupProfile(profiles, "p", "proxy", func(string) {}, func(m string) { errs = append(errs, m) }) {
-		t.Fatalf("setup failed: %v", errs)
+	// The copy into the store fails before anything is published.
+	linkFile = func(a, b string) error { return &os.LinkError{Op: "link", Old: a, New: b, Err: syscall.EEXIST} }
+	t.Cleanup(func() { linkFile = os.Link })
+	var notes, errs []string
+	if !SetupProfile(profiles, "p", "proxy", func(s string) { notes = append(notes, s) }, func(m string) { errs = append(errs, m) }) {
+		t.Fatalf("a repair whose copy failed must not fail the launch: %v", errs)
+	}
+	if fi, err := os.Lstat(shared); err != nil {
+		t.Fatalf("a failed repair must leave the shared history in place: %v", err)
+	} else if fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("a failed repair must not touch the shared path: %v", fi)
+	}
+	if fi, err := os.Lstat(own); err != nil || fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("a failed repair must leave the profile on its own copy: %v %v", fi, err)
+	}
+	if b, err := os.ReadFile(own); err != nil || !strings.Contains(string(b), "kept") {
+		t.Fatalf("the records must survive a failed repair: %q %v", b, err)
+	}
+	if !strings.Contains(strings.Join(notes, "\n"), "kept profile-local 'history.jsonl'") {
+		t.Errorf("a failed repair must be logged: %v", notes)
+	}
+	for _, pat := range []string{home + "/.claude/history.jsonl.ccm-repair*", home + "/.claude/.ccm-copy-*"} {
+		if left, _ := filepath.Glob(pat); len(left) != 0 {
+			t.Errorf("a failed repair must leave no temp behind: %v", left)
+		}
+	}
+	// The next launch, with the copy working, completes the repair.
+	linkFile = os.Link
+	var errs2 []string
+	if !SetupProfile(profiles, "p", "proxy", func(string) {}, func(m string) { errs2 = append(errs2, m) }) {
+		t.Fatalf("setup failed: %v", errs2)
 	}
 	if fi, err := os.Lstat(shared); err != nil || fi.Mode()&os.ModeSymlink != 0 {
 		t.Fatalf("the shared history must become a real file: %v %v", fi, err)

@@ -34,6 +34,7 @@ type launcher struct {
 	tuning, profileEnv, launchEnv, backend, mapping    []string
 	logSet                                             bool
 	launcherPID                                        int
+	liveProfile                                        string // whose live lock this process holds (#205)
 
 	red, yellow, bold, dim, accent, cyan, reset string
 
