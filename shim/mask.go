@@ -56,6 +56,21 @@ var (
 	proseRE = regexp.MustCompile(`^[ \t]+[A-Za-z]`)
 )
 
+// lowerWordRE is one plain lowercase word, or a name:word namespace such as a
+// skill name (tokeneconomizer:microskills:). After a ":" label it is prose or
+// a name, not a value: "1password: cannot read the window", "x.age: resource
+// deadlock". A learned value is masked everywhere, inside longer words too, so
+// one such word turned "optional" into a placeholder in every turn.
+// shortcut: a one-word lowercase password labeled with ":" goes as written
+// (after "=" it is still masked); upgrade if a real leak shows up.
+var lowerWordRE = regexp.MustCompile(`^[a-z]+:?$`)
+
+// colonLabel is a label match whose separator is ":", not "=".
+func colonLabel(label string) bool {
+	t := strings.TrimRight(label, " \t\"'")
+	return strings.HasSuffix(t, ":")
+}
+
 // codeWord is an all-letter value that names the concept rather than holding
 // the secret: secretKey, password: Password, token: apiToken.
 func codeWord(lower string) bool {
@@ -233,7 +248,11 @@ func (m *masker) find(s string) {
 			// stands right after "=", as in a shell or .env line ("DB_PASSWORD=x DEBUG=1"),
 			// where what follows is the next assignment or argument (#186). A quoted or
 			// spaced value after "=" is code, and its next word may open a sentence.
-			if v := s[a:b]; (r.ok == nil || r.ok(v)) && !(wordsRE.MatchString(v) && proseRE.MatchString(s[b:]) && !(a > loc[0] && s[a-1] == '=')) {
+			v := s[a:b]
+			if a > loc[0] && colonLabel(s[loc[0]:a]) && lowerWordRE.MatchString(v) {
+				continue
+			}
+			if (r.ok == nil || r.ok(v)) && !(wordsRE.MatchString(v) && proseRE.MatchString(s[b:]) && !(a > loc[0] && s[a-1] == '=')) {
 				m.learn(v, r.kind)
 			}
 		}
