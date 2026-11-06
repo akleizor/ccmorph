@@ -10,18 +10,96 @@ REPO="${0:A:h:h}"
 # added beside ccmorph.sh is covered here with no edit — and a module dropped
 # from the repo cannot leave a stale name behind in the manifest below.
 module_files=("$REPO"/lib/ccmorph-*.zsh(N:t))   # not `modules`: a readonly zsh special
+
+# ccmorph-core is compiled, so a checkout has none until
+# `make shim` builds them; the installer copies those binaries and refuses to run
+# without them. Before the shard fan-out below, so it runs once, not per shard.
+[[ -x "$REPO/libexec/ccmorph-core" ]] || make -C "$REPO" shim >/dev/null 2>&1
+[[ -x "$REPO/libexec/ccmorph-core" ]] || { print -r -- "FAIL: no libexec/ccmorph-core and 'make shim' did not build it (needs Go)"; exit 1 }
+
+# --- shards -------------------------------------------------------------------
+# Every case builds its own scratch home, so the suite runs as N shards at once
+# (CCMORPH_INSTALL_JOBS=1 runs it serially). It is wait-bound — a hundred real
+# installer runs, 62 s serial — so concurrent shards overlap the
+# waits, the same shape the launch suite shards (#134). Sections that share a
+# case dir (1b+2) form one unit; each unit is dealt longest-first onto the
+# least-loaded shard from the measured seconds in _unit_cost, so a new section
+# needs only its `if _own <name>` wrapper and a cost here. _own refuses a name
+# missing from the table, and the parent fails unless every unit ran exactly
+# once, so a typo costs a loud failure, not a silently lost section.
+readonly _jobs_default=4
+typeset -gA _unit_cost=(
+  basics     3   # 1 + 1b + 2: the legacy check reuses 1b's case dir
+  inplace    1   # 2b
+  migrate    1   # 2c
+  module     1   # 2d
+  symlink    1   # 3
+  uninstall  1   # 4
+  residue    4   # 5
+  statedir   3   # 5b + 5c: the CCMORPH_STATE_DIR redirect report
+  linkspell  9   # 5d + 5e: equivalent spellings, links and the rm line
+  rerun      1   # 6
+  optdeps    2   # 7
+  remote    12   # 8, incl. the make-dist release build
+  windows    1   # 9
+  hint       1   # 10
+  pkgmgr     5   # 11
+  path       7   # 12
+  footer     4   # 13
+  selfupdate 17  # 14
+)
+_own() {  # true when this process runs the unit; records it for the parent's check
+  (( ${+_unit_cost[$1]} )) || { print -u2 -- "FAIL: unit '$1' is not in _unit_cost"; exit 1 }
+  [[ -n "${CCMORPH_INSTALL_RUN_DIR:-}" ]] || return 0        # serial run: every unit
+  (( ${_mine[(Ie)$1]} )) || return 1
+  print -r -- "$1" >> "$CCMORPH_INSTALL_RUN_DIR/units.$CCMORPH_INSTALL_SHARD"
+}
+if [[ -z "${CCMORPH_INSTALL_SHARD:-}" ]] && (( ${CCMORPH_INSTALL_JOBS:-$_jobs_default} > 1 )); then
+  typeset -gi _jobs=${CCMORPH_INSTALL_JOBS:-$_jobs_default}
+  typeset -a _pids=(); typeset -A _load=() _deal=()
+  typeset _u; typeset -gi _s _best _rc=0 _p=0 _f=0
+  for _u in ${(kO)_unit_cost}; do
+    _best=0
+    for (( _s = 1; _s < _jobs; _s++ )); do
+      (( ${_load[$_s]:-0} < ${_load[$_best]:-0} )) && _best=$_s
+    done
+    _load[$_best]=$(( ${_load[$_best]:-0} + _unit_cost[$_u] ))
+    _deal[$_best]="${_deal[$_best]:-}$_u "
+  done
+  _run=$(mktemp -d /tmp/ccmorph-install-shard.XXXXXX)
+  trap 'rm -rf "$_run"' EXIT
+  for (( _s = 0; _s < _jobs; _s++ )); do
+    CCMORPH_INSTALL_SHARD="$_s" CCMORPH_INSTALL_RUN_DIR="$_run" \
+      CCMORPH_INSTALL_UNITS="${_deal[$_s]:-}" zsh "$0" &
+    _pids+=($!)
+  done
+  for _pid in $_pids; do wait $_pid || _rc=1; done
+  for (( _s = 0; _s < _jobs; _s++ )); do
+    if [[ ! -s "$_run/count.$_s" ]]; then
+      print -u2 -- "FAIL: shard $_s never finished"
+      _rc=1; continue
+    fi
+    read -r _pp _ff < "$_run/count.$_s"; _p+=$_pp; _f+=$_ff
+  done
+  typeset -a _ran _want
+  _ran=(${(o)$(cat "$_run"/units.*(N) 2>/dev/null)})
+  _want=(${(k)_unit_cost}); _want=(${(o)_want})
+  if [[ "${(j:,:)_ran}" != "${(j:,:)_want}" ]]; then
+    print -u2 -- "FAIL: the shard deal changed the section set: ran [${_ran[*]:-none}], want [${_want[*]}]"
+    _rc=1
+  fi
+  print ""
+  print "install tests: $_p passed, $_f failed"
+  exit $_rc
+fi
+typeset -ga _mine=(${=CCMORPH_INSTALL_UNITS:-})
+
 TMP=$(mktemp -d /tmp/ccmorph-install-test.XXXXXX)
 trap 'rm -rf "$TMP"' EXIT
 
 passed=0; failed=0
 ok()   { print -r -- "ok: $1"; (( ++passed )) }
 fail() { print -r -- "FAIL: $1"; (( ++failed )) }
-
-# ccmorph-core is compiled, so a checkout has none until
-# `make shim` builds them; the installer copies those binaries and refuses to run
-# without them.
-[[ -x "$REPO/libexec/ccmorph-core" ]] || make -C "$REPO" shim >/dev/null 2>&1
-[[ -x "$REPO/libexec/ccmorph-core" ]] || { print -r -- "FAIL: no libexec/ccmorph-core and 'make shim' did not build it (needs Go)"; exit 1 }
 
 fresh_env() {  # $1 = case dir; prints nothing, sets HOME/ZDOTDIR/PATH stubs
   local d="$TMP/$1"
@@ -43,7 +121,48 @@ run_installer() {  # $1 = case dir
     zsh "$REPO/install.sh" >"$1/out" 2>&1 </dev/null
 }
 
+# The download the remote-mode cases (§8, §9) and the self-update cases (§14)
+# serve through a stub curl: shaped like the release asset the default URL
+# serves — one top dir, `ccmorph-<tag>/`, exactly what `git archive --prefix`
+# writes — so the remote block must accept it whatever the tag names. Built
+# here, before the units, because those sections land on different shards.
+mkdir -p "$TMP/stage/ccmorph-v1.2.3"
+(cd "$REPO" && cp -R bin lib libexec share install.sh "$TMP/stage/ccmorph-v1.2.3/")
+# The staged core binary is a stub: these cases assert the installer's
+# orchestration (URL picked, tree unpacked, its installer run, state kept) and
+# never run the downloaded code, while the 13 MB real one would put a
+# signature-validation stall and a full untar into every one of the ~15 unpacks.
+# Section 14 runs the downloaded code, so it stages the real binary itself.
+printf '#!/bin/sh\nexit 0\n' > "$TMP/stage/ccmorph-v1.2.3/libexec/ccmorph-core"
+tar -czf "$TMP/src.tar.gz" -C "$TMP/stage" ccmorph-v1.2.3
+# Not a ccmorph tree: one top dir with no lib/ccmorph.sh in it.
+mkdir -p "$TMP/stage-empty/not-ccmorph"; print x > "$TMP/stage-empty/not-ccmorph/README"
+tar -czf "$TMP/empty.tar.gz" -C "$TMP/stage-empty" not-ccmorph
+
+url_release='https://github.com/akleizor/ccmorph/releases/latest/download/ccmorph.tar.gz'
+
+remote_env() {  # $1 = case name, $2 = tarball; stub curl bakes in its log and tarball
+  local d; d=$(fresh_env "$1")
+  mkdir -p "$d/tmp"
+  printf '#!/bin/sh\nprintf "%%s\\n" "$@" >> "%s/curl.argv"\nwhile [ $# -gt 0 ]; do\n  if [ "$1" = -o ]; then cp "%s" "$2"; exit 0; fi\n  shift\ndone\nexit 1\n' "$d" "$2" > "$d/bin/curl"
+  chmod +x "$d/bin/curl"
+  print -r -- "$d"
+}
+
+remote_run() {  # $1 = case dir, $2 = cmd|pipe, rest = extra env assignments
+  local d="$1" mode="$2"; shift 2
+  rm -f "$d/curl.argv"
+  if [[ "$mode" == pipe ]]; then
+    cat "$REPO/install.sh" | env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" "$@" \
+      sh >"$d/out" 2>"$d/err"
+  else
+    env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" "$@" \
+      sh -c "$(cat "$REPO/install.sh")" >"$d/out" 2>"$d/err" </dev/null
+  fi
+}
+
 # --- 1. fresh install lands every runtime component and wires the rc --------
+if _own basics; then
 d=$(fresh_env fresh)
 run_installer "$d"; rc=$?
 [[ $rc -eq 0 ]] && ok "fresh install exits 0" || { fail "fresh install rc=$rc"; cat "$d/out" }
@@ -103,8 +222,10 @@ run_installer "$d"; rc=$?
 (( rc == 0 )) && ok "legacy startup block does not fail install" || fail "legacy block install rc=$rc"
 [[ "$(<"$d/home/.zshrc")" == "$original" ]] && ok "installer leaves partial rc byte-identical" || fail "installer edited partial rc"
 grep -qiF 'legacy ccmorph block' "$d/out" && ok "legacy rc ownership is reported" || fail "legacy rc was not reported"
+fi
 
 # --- 2b. an IN-PLACE install (clone already at the target) succeeds -----------
+if _own inplace; then
 # The normal update path on a machine whose repo lives at ~/.config/ccmorph:
 # SRC == CONFIG_DIR, so every copy is a copy onto itself. cp refuses that, and
 # under `set -e` the run aborted before the rc was ever wired — an update that
@@ -127,8 +248,10 @@ grep -qF '# >>> ccmorph >>>' "$d/home/.zshrc" \
   && fail "in-place install wired the rc" || ok "in-place install leaves the rc alone"
 [[ -x "$d/home/.local/bin/ccmorph" ]] \
   && ok "in-place install still places the command" || fail "in-place install skipped the command"
+fi
 
 # --- 2c. upgrading migrates legacy registry data INTO the owning profile's conf --
+if _own migrate; then
 # An upgrade must never hand the user a chore. Installing over a pre-consolidation
 # layout has to carry the probed/scoped registry data across on its own, before the
 # first command runs — install.sh calls `ccmorph-core model-window --migrate`, which attributes
@@ -163,8 +286,10 @@ run_installer "$d"; rc=$?
 [[ ! -e "$d/home/.config/ccmorph/model-registry" ]] \
   && ok "a second install does not resurrect the legacy registry" \
   || fail "a second install re-created the legacy registry"
+fi
 
 # --- 2d. a module added beside ccmorph.sh ships with no installer edit -------
+if _own module; then
 # The whole point of deriving the module set: parts 3–4 of the module split add
 # more ccmorph-*.zsh files, and a name missed in the installer's manifest means
 # a module that never ships — the library then fails to source at launch, in the
@@ -186,8 +311,10 @@ rc=$?
 [[ ! -x "$d/home/.config/ccmorph/lib/ccmorph-zz-probe.zsh" ]] \
   && ok "an installed module is data, not an executable" \
   || fail "an installed module carries the exec bit"
+fi
 
 # --- 3. symlinked and partial startup files remain untouched ------------------
+if _own symlink; then
 d=$(fresh_env symlink)
 mkdir -p "$d/dotfiles"
 print 'export KEEP=1' > "$d/dotfiles/zshrc"
@@ -196,8 +323,10 @@ ln -s "$d/dotfiles/zshrc" "$d/home/.zshrc"
 original=$(<"$d/dotfiles/zshrc")
 run_installer "$d"
 [[ -L "$d/home/.zshrc" && "$(<"$d/dotfiles/zshrc")" == "$original" ]] && ok "symlinked rc stays byte-identical" || fail "installer edited symlinked rc"
+fi
 
 # --- 4. uninstall also leaves startup files untouched ------------------------
+if _own uninstall; then
 d=$(fresh_env uninstall)
 run_installer "$d" >/dev/null
 print '# >>> ccmorph >>>' >> "$d/home/.zshrc"
@@ -207,9 +336,11 @@ env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
   zsh "$REPO/install.sh" --uninstall >/dev/null 2>&1
 [[ "$(<"$d/home/.zshrc")" == "$original" ]] && ok "uninstall leaves rc byte-identical" || fail "uninstall edited rc"
 [[ ! -e "$d/home/.local/bin/ccmorph" ]] && ok "uninstall removes the command" || fail "uninstall left the command on PATH"
+fi
 
 # --- 5. uninstall removes ONLY the command, repairs the plugin index, and names
 # what it leaves with the command that removes it. The uname stub is placed
+if _own residue; then
 # after the install so only the uninstall sees "Darwin" (the keychain branch).
 d=$(fresh_env uninstall_residue)
 mkdir -p "$d/home/.local/bin"
@@ -260,8 +391,10 @@ env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
   zsh "$REPO/install.sh" --uninstall >"$d/out" 2>&1; rc=$?
 (( rc == 0 )) && grep -qF 'profiles' "$d/out" && grep -qxF "  rm -rf $d/home/.config/ccmorph" "$d/out" && ! grep -q keychain "$d/out" \
   && ok "uninstall: macOS with no keychain refs still reports in full and exits 0" || { fail "uninstall: macOS without keychain refs rc=$rc"; cat "$d/out" }
+fi
 
 # --- 5b. CCMORPH_STATE_DIR moves the profiles: the report names the redirected root
+if _own statedir; then
 # The runtime derives the state root from CCMORPH_STATE_DIR (lib/ccmorph.sh), so
 # on a host that sets it the confs, credentials and profile homes live under the
 # redirected root, while ~/.config/ccmorph holds only the installed code. The
@@ -340,7 +473,11 @@ grep -qF "\"$d/home/.claude/plugins/marketplaces/example\"" "$d/home/.claude/plu
   && ok "prior-profiles uninstall: the plugin repair walks the pre-override profile homes too" \
   || { fail "prior-profiles uninstall: plugin index still spelled through the pre-override profile"; cat "$d/home/.claude/plugins/known_marketplaces.json" }
 
+fi
+
 # --- 5d. an EQUIVALENT spelling of the code dir is not a redirect (#187)
+if _own linkspell; then
+
 # "Is the state root elsewhere?" is a question about directories, not strings
 # (the rule the copy step applies to CONFIG_REAL): a CCMORPH_STATE_DIR that
 # spells the config dir with a trailing slash, through a symlinked parent, or
@@ -473,7 +610,10 @@ env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" CCMORPH_STAT
   && ok "dangling-link uninstall: names where the link led and exits 0" \
   || { fail "dangling-link uninstall rc=$rc"; cat "$d/out" }
 
+fi
+
 # --- 6. a RE-RUN is an update: user state survives, and it says so ----------
+if _own rerun; then
 # The guarantee people actually care about. Profiles (which now carry their own
 # probed/manual context alongside credentials) and local.sh are never in
 # COMPONENTS and are gitignored, so they were always safe — but "safe by
@@ -546,8 +686,10 @@ grep -qiF 'Preserved:' "$d/out" && ok "re-run names what it preserved" || fail "
 # And a re-run still leaves the rc alone.
 grep -qF '# >>> ccmorph >>>' "$d/home/.zshrc" \
   && fail "re-run wired the rc" || ok "re-run leaves the rc alone"
+fi
 
 # --- 7. missing optional deps warn, and never install unattended ------------
+if _own optdeps; then
 # The offer must degrade to a decline when there is no tty: a piped or CI run
 # must not block, and must not `brew install` behind the operator's back.
 d=$(fresh_env optdeps)
@@ -567,48 +709,14 @@ grep -qF 'cliproxyapi' "$d/out" && ok "absent translator is named" || fail "abse
 grep -qF 'fzf'         "$d/out" && ok "absent fzf is named"        || fail "absent fzf not mentioned"
 grep -qiF 'non-interactive' "$d/out" && ok "non-interactive offer declines loudly" || { fail "offer did not declare itself skipped"; cat "$d/out" }
 grep -qF 'STUB BREW CALLED' "$d/out" && fail "declined offer still ran brew" || ok "declined offer never ran brew"
+fi
 
 # --- 8. remote mode: run outside a source tree, install from a download -------
+if _own remote; then
 # `sh -c "$(curl -fsSL .../install.sh)"` and `curl ... | sh` start this script with
 # $0 = sh and no repo beside it. The installer must fetch the tree and run ITS
-# installer. No network here: a stub curl copies a locally built tarball to the
-# path after -o and records its argv. Shaped like the release asset the default
-# URL serves: one top dir, `ccmorph-<tag>/`, exactly what `git archive --prefix`
-# writes — the remote block must accept it whatever the tag names.
-mkdir -p "$TMP/stage/ccmorph-v1.2.3"
-(cd "$REPO" && cp -R bin lib libexec share install.sh "$TMP/stage/ccmorph-v1.2.3/")
-# The staged core binary is a stub: these cases assert the installer's
-# orchestration (URL picked, tree unpacked, its installer run, state kept) and
-# never run the downloaded code, while the 13 MB real one would put a
-# signature-validation stall and a full untar into every one of the ~15 unpacks.
-# Section 14 runs the downloaded code, so it stages the real binary itself.
-printf '#!/bin/sh\nexit 0\n' > "$TMP/stage/ccmorph-v1.2.3/libexec/ccmorph-core"
-tar -czf "$TMP/src.tar.gz" -C "$TMP/stage" ccmorph-v1.2.3
-# Not a ccmorph tree: one top dir with no lib/ccmorph.sh in it.
-mkdir -p "$TMP/stage-empty/not-ccmorph"; print x > "$TMP/stage-empty/not-ccmorph/README"
-tar -czf "$TMP/empty.tar.gz" -C "$TMP/stage-empty" not-ccmorph
-
-remote_env() {  # $1 = case name, $2 = tarball; stub curl bakes in its log and tarball
-  local d; d=$(fresh_env "$1")
-  mkdir -p "$d/tmp"
-  printf '#!/bin/sh\nprintf "%%s\\n" "$@" >> "%s/curl.argv"\nwhile [ $# -gt 0 ]; do\n  if [ "$1" = -o ]; then cp "%s" "$2"; exit 0; fi\n  shift\ndone\nexit 1\n' "$d" "$2" > "$d/bin/curl"
-  chmod +x "$d/bin/curl"
-  print -r -- "$d"
-}
-
-remote_run() {  # $1 = case dir, $2 = cmd|pipe, rest = extra env assignments
-  local d="$1" mode="$2"; shift 2
-  rm -f "$d/curl.argv"
-  if [[ "$mode" == pipe ]]; then
-    cat "$REPO/install.sh" | env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" "$@" \
-      sh >"$d/out" 2>"$d/err"
-  else
-    env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" "$@" \
-      sh -c "$(cat "$REPO/install.sh")" >"$d/out" 2>"$d/err" </dev/null
-  fi
-}
-
-url_release='https://github.com/akleizor/ccmorph/releases/latest/download/ccmorph.tar.gz'
+# installer. No network here: a stub curl copies the tarball built in the
+# preamble to the path after -o and records its argv.
 
 # 8.1 sh -c "$(cat install.sh)": the documented one-liner shape.
 d=$(remote_env remote_c "$TMP/src.tar.gz")
@@ -717,8 +825,10 @@ make -C "$TMP/relrepo" dist TAG="$reltag" DIST="$TMP/reldist" >"$TMP/relmake.out
 cmp -s "$TMP/reldist/ccmorph-$reltag.tar.gz" "$TMP/reldist/ccmorph.tar.gz" \
   && ok "release: dist/ccmorph.tar.gz is byte-identical to the tag-named tarball" \
   || fail "release: dist/ccmorph.tar.gz is missing or differs from dist/ccmorph-$reltag.tar.gz"
+fi
 
 # --- 9. Windows shells are named and sent to WSL before anything else ----------
+if _own windows; then
 # Git Bash / MSYS / Cygwin have no zsh, and the failure they got was about zsh,
 # not about Windows. A stub uname stands in for the platform; the message must
 # come before remote mode (so no download happens) and before any write to HOME.
@@ -744,8 +854,10 @@ env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
   sh "$REPO/install.sh" >"$d/out" 2>&1 </dev/null; rc=$?
 (( rc == 0 )) && [[ -x "$d/home/.local/bin/ccmorph" ]] \
   && ok "windows: a Linux/macOS uname still installs" || { fail "non-windows install rc=$rc"; cat "$d/out" }
+fi
 
 # --- 10. one install command for the package manager that is there -----------
+if _own hint; then
 # The zsh-missing message sits in the POSIX preamble, before any zsh exists, so its
 # table is POSIX sh and is tested the same way: the function is cut out of
 # install.sh (no process substitution: that is not POSIX and dash rejects it) and
@@ -798,9 +910,11 @@ grep -qF 'STUB' "$d/err" "$d/out" && fail "no zsh: ran the package manager" || o
 d="$TMP/nozsh_none"; nozsh_run "$d"; rc=$?
 (( rc == 1 )) && grep -qF 'apt install zsh' "$d/err" && grep -qF 'dnf install zsh' "$d/err" && grep -qF 'apk add zsh' "$d/err" \
   && ok "no zsh: with no package manager the three-distro list is the fallback" || { fail "no zsh: fallback list missing (rc=$rc)"; cat "$d/err"; }
+fi
 
 # --- 11. optional deps are offered through any package manager; required ones named
 # These runs need a PATH WITHOUT the host's own package managers (a Linux box has
+if _own pkgmgr; then
 # apt-get in /usr/bin, which would outrank a dnf stub). $TMP/sys links every tool
 # in /usr/bin and /bin except the ones a case must control, so the installer still
 # finds cp, grep, chmod and the rest, and the result does not depend on the host.
@@ -862,8 +976,10 @@ grep -qF 'STUB' "$d/out" && fail "no claude: ran a package manager" || ok "no cl
 d=$(pm_env pm_nopy dnf); pm_run "$d"; rc=$?
 (( rc == 0 )) && ! grep -qiF 'python' "$d/out" && ! grep -qF 'STUB' "$d/out" \
   && ok "no python3: installs, and python3 is never named" || { fail "no python3: wrong result (rc=$rc)"; cat "$d/out"; }
+fi
 
 # --- 12. the PATH hint names the file and the syntax for the user's shell -----
+if _own path; then
 # ~/.local/bin is not on PATH in these runs (the fake PATH never carries it), so
 # the hint fires. It must name the file and print a line the shell can use, and it
 # must still never write to a startup file: three rc files are asserted absent.
@@ -916,8 +1032,10 @@ for sh_val in "" /usr/bin/tcsh; do
   grep -qF "$d/home/.zshrc" "$d/out" && grep -qF 'export PATH=' "$d/out" \
     && ok "path: SHELL='${sh_val:-unset}' falls back to the zsh advice" || { fail "path: SHELL='${sh_val:-unset}' got no zsh advice"; cat "$d/out"; }
 done
+fi
 
 # --- 13. every run ends with the check and the next step ----------------------
+if _own footer; then
 # "Did it work, what now" has one answer at the end of every run: `ccmorph doctor`.
 # A fresh install adds `ccmorph add <name>`; an update never does (it has profiles).
 # When the bin dir is not on PATH the check is spelled with the absolute path, so
@@ -954,9 +1072,11 @@ grep -qxF "Check:  $d/home/.local/bin/ccmorph doctor" "$d/out" && ! grep -qF 'cc
 # Last thing printed: the check or the next step, not a stray trailing line.
 last=$(grep -v '^$' "$d/out" | tail -1)
 [[ "$last" == "Check:  "* ]] && ok "end: the check is the last line of an update" || fail "end: last line of an update is '$last'"
+fi
 
 # --- 14. `ccmorph update` and `ccmorph uninstall` run the INSTALLED installer ------
 # The installer ships as a component, so the command can update itself with no clone
+if _own selfupdate; then
 # and no URL to remember: `update` hands the installed install.sh to remote mode
 # (--remote), which downloads, unpacks and runs the downloaded installer. The same
 # stub-curl harness as section 8; the tarball carries a different version, so the
@@ -1107,7 +1227,14 @@ for verb in update uninstall; do
     && ok "$verb --help: shows its help and runs nothing" || { fail "$verb --help: rc=$rc"; cat "$d/out" "$d/err" }
 done
 [[ -x "$d/home/.local/bin/ccmorph" ]] && ok "help: asking for help removed nothing" || fail "help: uninstall --help removed the command"
+fi
 
-print ""
-print "install tests: $passed passed, $failed failed"
+# A shard reports its counts to the parent, which prints the one summary; a
+# serial run prints it here, exactly as before.
+if [[ -n "${CCMORPH_INSTALL_RUN_DIR:-}" ]]; then
+  print -r -- "$passed $failed" > "$CCMORPH_INSTALL_RUN_DIR/count.$CCMORPH_INSTALL_SHARD"
+else
+  print ""
+  print "install tests: $passed passed, $failed failed"
+fi
 (( failed == 0 ))
