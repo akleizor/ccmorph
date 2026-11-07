@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"github.com/akleizor/ccmorph/util"
-	"os"
 	"strings"
 
 	"github.com/akleizor/ccmorph/profile"
@@ -94,12 +93,26 @@ func (l *launcher) modelsJSON(name string, preview ...string) (string, bool) {
 		l.err("'" + name + "' has no api_key — model discovery needs one")
 		return "", false
 	}
-	out, ok := util.ModelsListing(base, f["api_key"], os.Stderr)
+	out, status, ok := util.ModelsAnswer(base, f["api_key"])
 	out = strings.TrimRight(out, "\n")
 	if !ok {
-		red := profile.RedactURL(base)
-		l.err("could not reach '" + red + "' — if it is an internal endpoint, connect your private network and try again")
+		l.err(listingFailure(name, profile.RedactURL(base), status))
 		return "", false
 	}
 	return out, true
+}
+
+// listingFailure is what a person reads when the endpoint gave no model list:
+// the status the endpoint refused with names the fix, and only an endpoint that
+// never answered blames the network.
+func listingFailure(name, endpoint string, status int) string {
+	switch {
+	case status == 401 || status == 403:
+		return fmt.Sprintf("'%s' rejected the API key for '%s' (HTTP %d) — replace it with: ccmorph config %s", endpoint, name, status, name)
+	case status == 404:
+		return fmt.Sprintf("'%s' has no model list (HTTP 404) — check the Base URL with: ccmorph config %s", endpoint, name)
+	case status != 0:
+		return fmt.Sprintf("'%s' answered the model list request with HTTP %d", endpoint, status)
+	}
+	return "could not reach '" + endpoint + "' — if it is an internal endpoint, connect your private network and try again"
 }

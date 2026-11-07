@@ -35,6 +35,7 @@ class UrlRedaction(unittest.TestCase):
             text = result.stdout + result.stderr + (log.read_text() if log.exists() else "")
             self.assertIn("could not reach", text)
             self.assertIn("http://127.0.0.1:1", text)
+            self.assertNotIn("curl:", text)
             self.assertNotIn("HUNTER2pw", text)
             self.assertNotIn("QTOK", text)
 

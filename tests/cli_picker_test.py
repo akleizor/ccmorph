@@ -29,12 +29,17 @@ MODELS = json.dumps({'data': [{'id': m, 'owned_by': 'fake'} for m in
                               ('picker-alpha', 'picker-beta')]})
 
 # `-w` marks the reachability probe; it must answer or discovery never runs.
+# A numeric CURL_MODE is the HTTP status the endpoint refused with, in curl -f's
+# own words, so the listing path meets a refused key without a network.
 FAKE_CURL = '''#!/bin/sh
 printf '%s\\n' "$*" >> "$CURL_LOG"
 [ "${1-}" = -K ] && cat >> "$CURL_LOG"
 for arg in "$@"; do
   if [ "$arg" = -w ]; then printf 200; exit 0; fi
 done
+case "$CURL_MODE" in
+  [0-9][0-9][0-9]) printf 'curl: (56) The requested URL returned error: %s\n' "$CURL_MODE" >&2; exit 56 ;;
+esac
 [ "$CURL_MODE" = ok ] || exit 22
 printf '%s\\n' "$MODELS"
 '''
@@ -337,6 +342,31 @@ class PickerTTYTest(unittest.TestCase):
         runs = self.tmp / 'home' / 'local-sh-runs'
         self.assertEqual(len(runs.read_text().splitlines()), 1, result.stdout + result.stderr)
 
+    def test_models_names_a_rejected_key_and_keeps_the_network_for_silence(self):
+        self.profile()
+        for mode, want in (('401', "rejected the API key for 'demo' (HTTP 401)"),
+                           ('403', "rejected the API key for 'demo' (HTTP 403)")):
+            with self.subTest(mode=mode):
+                result = subprocess.run(
+                    ['zsh', '-fc', 'source "$1"\nccmorph models demo', 'test', str(CCMORPH)],
+                    env=self.env(curl=mode), stdin=subprocess.DEVNULL,
+                    capture_output=True, text=True, timeout=HANG_TIMEOUT)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(want, result.stderr)
+                self.assertIn('replace it with: ccmorph config demo', result.stderr)
+                # The endpoint answered: the network is not the problem.
+                self.assertNotIn('network', result.stderr)
+                # curl's own line never reaches the terminal.
+                self.assertNotIn('curl:', result.stderr)
+        with self.subTest(mode='fail'):
+            result = subprocess.run(
+                ['zsh', '-fc', 'source "$1"\nccmorph models demo', 'test', str(CCMORPH)],
+                env=self.env(curl='fail'), stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=HANG_TIMEOUT)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn('could not reach', result.stderr)
+            self.assertNotIn('curl:', result.stderr)
+
     def test_configure_picker_offers_endpoint_models_and_saves_the_pick(self):
         env = self.env(fzf=True)
         self.profile()
@@ -474,6 +504,28 @@ class PickerTTYTest(unittest.TestCase):
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.field('keepme', 'model'), 'native-model')
+
+    def test_config_names_a_rejected_key_before_the_fallback_picker(self):
+        env = self.env(fzf=True, curl='401')
+        self.profile()
+        self.spec('Default model=@keep')
+        rc, out, missed = run_pty('ccmorph config demo', env, [
+            (b'Settings', b'\r'),
+            (b'Default effort', b'\r'),
+        ])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        rejected = "rejected the API key for 'demo' (HTTP 401)"
+        self.assertIn(rejected, out)
+        self.assertIn('replace it with: ccmorph config demo', out)
+        # The reason comes before the fallback picker it explains.
+        self.assertLess(out.index(rejected), out.index('Model list unavailable'))
+        # The endpoint answered: the network is not the problem, and curl's own
+        # line never reaches the terminal.
+        self.assertNotIn('network', out)
+        self.assertNotIn('curl:', out)
+        # Keep still means the profile's current model, unchanged.
+        self.assertEqual(self.field('demo', 'model'), 'native-model')
 
     def test_add_uses_native_fixed_menu_even_when_fzf_is_installed(self):
         env = self.env(fzf=True)
