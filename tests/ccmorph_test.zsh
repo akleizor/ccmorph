@@ -7856,6 +7856,7 @@ test_probe_dispatch_preserves_explicit_inference_arguments() {
   test_home=$(mktemp -d)
   setup_home "$test_home"
   source "$CCMORPH_SOURCE"
+  print -r -- 'type=apikey' > "$HOME/.config/ccmorph/gw.conf"
   printf '%s\n' '#!/bin/sh' 'printf "%s\\n" "$@" > "$HOME/probe.args"' \
     > "$CCMORPH_LIB_DIR/../libexec/context-probe"
   chmod +x "$CCMORPH_LIB_DIR/../libexec/context-probe"

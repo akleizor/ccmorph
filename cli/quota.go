@@ -30,7 +30,7 @@ func (l *launcher) context(args []string) int {
 		return 2
 	}
 	if !l.exists(name) {
-		l.err("no profile '" + name + "'. Run: ccmorph list")
+		l.noProfile(name)
 		return 1
 	}
 	if model == "" || model == "-i" || model == "--interactive" {
@@ -69,7 +69,7 @@ func (l *launcher) quota(args []string) int {
 	names := l.confNames()
 	if only != "" {
 		if !l.exists(only) {
-			l.err("no profile '" + only + "'. Run: ccmorph list")
+			l.noProfile(only)
 			return 1
 		}
 		names = []string{only}

@@ -39,7 +39,7 @@ func (l *launcher) rm(args []string) int {
 		name = args[0]
 	}
 	if !profile.ValidName(name) {
-		l.err("usage: ccmorph rm <name>")
+		l.err("usage: ccmorph rm <profile>")
 		return 1
 	}
 	if rc, done := l.locked(name, append([]string{"rm"}, args...)); done {
@@ -48,7 +48,7 @@ func (l *launcher) rm(args []string) int {
 	pdir, auth := filepath.Join(l.profileDirs, name), filepath.Join(l.dir, "auth", name)
 	if !l.exists(name) {
 		if !present(pdir) && !present(auth) {
-			l.err("no profile '" + name + "'")
+			l.noProfile(name)
 			return 1
 		}
 		fmt.Fprintf(os.Stderr, "Profile '%s' has no .conf. Remove leftover private state?\n  %s\n  %s\nShared conversation history will be kept.\n", name, pdir, auth)
@@ -183,7 +183,7 @@ func (l *launcher) mv(args []string) int {
 		return rc
 	}
 	if !l.exists(from) {
-		l.err("no profile '" + from + "'")
+		l.noProfile(from)
 		return 1
 	}
 	if l.exists(to) {

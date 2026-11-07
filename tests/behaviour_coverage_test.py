@@ -384,3 +384,44 @@ def test_inspect_shows_a_profile_whose_conf_fails_validation_gh_113(box):
     assert out.returncode == 0, out.stderr
     assert 'broken' in out.stdout and 'apikey' in out.stdout
     assert 'has no api_key' not in out.stderr
+
+
+# --- an unknown profile name reads the same in every command ---------------
+
+UNKNOWN_PROFILE_ARGV = [
+    ['run', 'zzz'], ['use', 'zzz'], ['quota', 'zzz'], ['models', 'zzz'], ['hop', 'zzz'],
+    ['context', 'zzz', 'm'], ['config', 'zzz'], ['get', 'zzz', 'model'],
+    ['set', 'zzz', 'model', 'x'], ['mv', 'zzz', 'yyy'], ['rm', 'zzz'], ['inspect', 'zzz'],
+    ['login', 'zzz'], ['cred', 'zzz'], ['doctor', 'zzz'], ['probe', 'zzz'],
+]
+
+
+@pytest.mark.parametrize('argv', UNKNOWN_PROFILE_ARGV, ids=lambda a: ' '.join(a))
+def test_an_unknown_profile_reads_the_same_in_every_command(box, argv):
+    seed(box)
+    result = box.run(*argv)
+    out = result.stdout + result.stderr
+    assert result.returncode != 0, out
+    assert "no profile 'zzz'. Profiles: gw tok work" in out, out
+    assert 'Run: ccmorph list' not in out
+    assert 'missing or symlinked' not in out
+    assert 'Nothing discovered' not in out
+
+
+@pytest.mark.parametrize('argv', [['use', 'zzz'], ['inspect', 'zzz'], ['doctor', 'zzz']],
+                         ids=lambda a: ' '.join(a))
+def test_an_unknown_profile_with_none_saved_points_to_add(box, argv):
+    result = box.run(*argv)
+    out = result.stdout + result.stderr
+    assert result.returncode != 0, out
+    assert "no profile 'zzz'. No profiles yet — run: ccmorph add <name>" in out, out
+
+
+def test_add_and_rm_without_a_name_print_usage(box):
+    added = box.run('add')
+    assert added.returncode != 0
+    assert 'usage: ccmorph add <profile>' in added.stderr
+    assert 'invalid name' not in added.stderr
+    removed = box.run('rm')
+    assert removed.returncode != 0
+    assert 'usage: ccmorph rm <profile>' in removed.stderr

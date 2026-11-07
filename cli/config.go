@@ -42,7 +42,7 @@ func (l *launcher) getSet(verb string, args []string) int {
 		return 2
 	}
 	if !l.exists(name) {
-		l.err("no profile '" + name + "'")
+		l.noProfile(name)
 		return 1
 	}
 	key := at(1)
@@ -139,7 +139,7 @@ func (l *launcher) config(args []string) int {
 		return 2
 	}
 	if !l.exists(name) {
-		l.err("no profile '" + name + "'")
+		l.noProfile(name)
 		return 1
 	}
 	if rc, done := l.locked(name, []string{"config", name}); done {

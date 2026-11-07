@@ -48,8 +48,7 @@ func (l *launcher) inspect(args []string) int {
 		return 1
 	}
 	if !l.exists(name) {
-		l.err("no profile '" + name + "'")
-		l.accountsHint()
+		l.noProfile(name)
 		return 1
 	}
 	// The zsh read the conf alone and validated nothing: inspect is the

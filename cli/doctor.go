@@ -124,6 +124,10 @@ func (l *launcher) doctor(name string) int {
 		return 1
 	}
 	conf := filepath.Join(l.dir, name+".conf")
+	if !present(conf) {
+		l.status("FAIL", "profile: "+l.noProfileMsg(name))
+		return 1
+	}
 	if !isFile(conf) || isLink(conf) {
 		l.status("FAIL", "profile: missing or symlinked config ("+conf+")")
 		return 1
