@@ -16,6 +16,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -461,12 +462,34 @@ func mergeInto(result, override *obj, path []string) {
 	}
 }
 
-// usageHookMark is the one command ccmorph owns in a profile's hook lists: the
-// launch's own usage-row writer. The launch shell-quotes the core path when it
-// holds anything outside [A-Za-z0-9_./-] (a home with a space), so the mark is
-// matched against the command with its single quotes dropped — otherwise the
-// quoted path is not recognized as ours. A user's own hooks are never touched.
-const usageHookMark = "ccmorph-core usage-row --profile "
+// usageHookMark is the verb in the one command ccmorph owns in a profile's hook
+// lists: the launch's own usage-row writer.
+const usageHookMark = "usage-row"
+
+// usageWord matches one shell word of that command the way the launcher writes
+// it: bare, or single-quoted as cli's shQuote does, where an embedded quote is
+// written as the escape shQuote emits.
+const usageWord = `(?:[A-Za-z0-9_./~$-]+|'(?:[^']|'\\'')*')`
+
+// usageCommandRE is the whole command the launcher builds (cli's usageHookFor):
+// the core path, the verb and the two flags it passes. A user's own hook that
+// wraps the verb, redirects from it, or runs something after it is not this
+// command and stays the user's.
+var usageCommandRE = regexp.MustCompile(`^(` + usageWord + `) ` + usageHookMark + ` --profile ` + usageWord + ` --pricing ` + usageWord + `$`)
+
+// isUsageCommand is true for that command and no other: its first word, once
+// unquoted, names the ccmorph-core binary.
+func isUsageCommand(command string) bool {
+	m := usageCommandRE.FindStringSubmatch(command)
+	if m == nil {
+		return false
+	}
+	core := m[1]
+	if strings.HasPrefix(core, "'") {
+		core = strings.ReplaceAll(core[1:len(core)-1], `'\''`, "'")
+	}
+	return filepath.Base(core) == "ccmorph-core"
+}
 
 // isUsageHook is an entry whose command is this profile's usage writer.
 func isUsageHook(entry value) bool {
@@ -480,8 +503,7 @@ func isUsageHook(entry value) bool {
 	}
 	for _, h := range hooks {
 		if ho, ok := h.(*obj); ok {
-			if c, ok := getObj(ho, "command").(string); ok &&
-				strings.Contains(strings.ReplaceAll(c, "'", ""), usageHookMark) {
+			if c, ok := getObj(ho, "command").(string); ok && isUsageCommand(c) {
 				return true
 			}
 		}

@@ -2,6 +2,7 @@ package shim
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -195,6 +196,8 @@ func TestARowAnotherWriterRecordedIsNotDuplicated(t *testing.T) {
 	other := newSidecar("sub", "adapter")
 	other.prices = CachedOwnedPriceBook("anthropic")
 	rec := other.start("msg_1", nil, &model, usageRow{{"input_tokens", []byte("10")}})
+	// The relay stamps its row when the turn begins; the reply lands later.
+	rec.timestamp = "2026-11-05T09:59:59+00:00"
 	rec.complete = true
 	if err := other.write(rec); err != nil {
 		t.Fatal(err)
@@ -317,6 +320,198 @@ func TestARecycledIdAnotherRouteHoldsIsStillRecorded(t *testing.T) {
 	}
 	if !kept {
 		t.Fatalf("the other route's row changed: %v -> %v", before, after)
+	}
+}
+
+// A response reaches the store from two writers: the adapter that relays the
+// session's traffic and the hook that reads its transcript. They are one
+// response when they name one request — the id and the input-side counts —
+// however long the turn ran, whichever profile wrote first, and whichever name
+// holds the row. A recycled id is another request under the same id, and both
+// rows stay.
+func TestAnotherRoutesRowForTheSameId(t *testing.T) {
+	model := "claude-opus-5-5"
+	cases := []struct {
+		name                                      string
+		otherProfile, otherTime, otherInput, hook string
+		wantWritten, wantRows                     int
+	}{
+		{
+			name:         "a reply landing long after its turn began is one row",
+			otherProfile: "gw", otherTime: "2026-11-05T09:30:00+00:00", otherInput: "10",
+			hook: "sub", wantWritten: 0, wantRows: 1,
+		},
+		{
+			name:         "a recycled id inside the old window is a different response",
+			otherProfile: "gw", otherTime: "2026-11-05T09:55:00+00:00", otherInput: "7",
+			hook: "codex", wantWritten: 1, wantRows: 2,
+		},
+		{
+			name:         "a recycled id of the same profile is a different response",
+			otherProfile: "sub", otherTime: "2026-11-01T09:00:00+00:00", otherInput: "7",
+			hook: "sub", wantWritten: 1, wantRows: 2,
+		},
+		{
+			name:         "a row stamped after the reply landed is a later response",
+			otherProfile: "gw", otherTime: "2026-11-05T10:05:00+00:00", otherInput: "10",
+			hook: "sub", wantWritten: 1, wantRows: 2,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := stateHome(t)
+			seedOwnedPrices(t, dir, "anthropic", map[string]price{"claude-opus-5-5": {Input: 4, Output: 20}})
+			other := newSidecar(c.otherProfile, "adapter")
+			other.prices = CachedOwnedPriceBook("anthropic")
+			rec := other.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte(c.otherInput)}})
+			rec.timestamp = c.otherTime
+			rec.complete = true
+			if err := other.write(rec); err != nil {
+				t.Fatal(err)
+			}
+			path := writeTranscript(t, transcriptLine("u1", "resp_1", model, "2026-11-05T10:00:00Z",
+				`{"input_tokens":10,"output_tokens":25}`))
+			if n := RecordTranscript(c.hook, "anthropic", path); n != c.wantWritten {
+				t.Fatalf("rows written %d, want %d", n, c.wantWritten)
+			}
+			if got := len(rows(t, dir)); got != c.wantRows {
+				t.Fatalf("rows on disk %d, want %d", got, c.wantRows)
+			}
+		})
+	}
+}
+
+// The recycled id's old row is the same profile's, so the old same-profile
+// shortcut read it as this response and the cursor passed a response with no
+// row of its own. The new response is written beside the old one, and the
+// cursor only moves past a response whose row is on disk.
+func TestARecycledIdOfTheSameProfileDoesNotSwallowTheRow(t *testing.T) {
+	dir := stateHome(t)
+	model := "claude-opus-5-5"
+	other := newSidecar("sub", "adapter")
+	other.prices = CachedOwnedPriceBook("anthropic")
+	rec := other.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("7")}})
+	rec.timestamp = "2026-11-01T09:00:00+00:00"
+	rec.complete = true
+	if err := other.write(rec); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTranscript(t, transcriptLine("u1", "resp_1", model, "2026-11-05T10:00:00Z",
+		`{"input_tokens":10,"output_tokens":25}`))
+	if n := RecordTranscript("sub", "anthropic", path); n != 1 {
+		t.Fatalf("a recycled id of the same profile lost this response: %d", n)
+	}
+	all := rows(t, dir)
+	if len(all) != 2 {
+		t.Fatalf("rows = %d, want 2: %v", len(all), all)
+	}
+	if !strings.Contains(strings.Join(all, "\n"), `"input_tokens":10`) {
+		t.Fatalf("the new response's row is not on disk: %v", all)
+	}
+	// The cursor passed the response only because its row landed: a second pass
+	// writes nothing and adds nothing.
+	if n := RecordTranscript("sub", "anthropic", path); n != 0 {
+		t.Fatalf("second pass wrote %d rows", n)
+	}
+	if got := len(rows(t, dir)); got != 2 {
+		t.Fatalf("rows = %d, want 2", got)
+	}
+}
+
+// reportOutput is what the report prints for the window, captured from stdout.
+func reportOutput(t *testing.T, days float64) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		var b strings.Builder
+		io.Copy(&b, r)
+		done <- b.String()
+	}()
+	report(days)
+	os.Stdout = old
+	w.Close()
+	out := <-done
+	r.Close()
+	return out
+}
+
+// When another turn holds the primary name, the relaying adapter's row for this
+// response lands in a spill — a name the hook cannot derive from the id. The
+// hook must still find it, or the response is counted twice and the report sums
+// both rows.
+func TestAReplyTheAdapterSpilledIsNotWrittenAgain(t *testing.T) {
+	dir := stateHome(t)
+	seedOwnedPrices(t, dir, "anthropic", map[string]price{"claude-opus-5-5": {Input: 4, Output: 20}})
+	model := "claude-opus-5-5"
+	// An old session of the same route still holds the primary for the id.
+	old := newSidecar("gw", "adapter")
+	old.prices = CachedOwnedPriceBook("anthropic")
+	rec := old.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("7")}})
+	rec.timestamp = "2026-11-01T09:00:00+00:00"
+	rec.complete = true
+	if err := old.write(rec); err != nil {
+		t.Fatal(err)
+	}
+	// The adapter relaying this session's traffic writes the same response to a
+	// spill, stamped when the turn began.
+	relay := newSidecar("gw", "adapter")
+	relay.prices = CachedOwnedPriceBook("anthropic")
+	rec = relay.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("10")}})
+	rec.timestamp = "2026-11-05T09:50:00+00:00"
+	rec.complete = true
+	if err := relay.write(rec); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(rows(t, dir)); got != 2 {
+		t.Fatalf("setup rows = %d, want 2: %v", got, rows(t, dir))
+	}
+	path := writeTranscript(t, transcriptLine("u1", "resp_1", model, "2026-11-05T10:00:00Z",
+		`{"input_tokens":10,"output_tokens":25}`))
+	if n := RecordTranscript("codex", "anthropic", path); n != 0 {
+		t.Fatalf("the hook rewrote a reply the adapter had recorded in a spill: %d", n)
+	}
+	if got := len(rows(t, dir)); got != 2 {
+		t.Fatalf("rows = %d, want 2: %v", got, rows(t, dir))
+	}
+	if out := reportOutput(t, 3650); !strings.Contains(out, "over 2 rows") {
+		t.Fatalf("the report does not sum the response once: %s", out)
+	}
+}
+
+// A spill exists only while its primary is held: the sidecar claims the primary
+// first, and nothing removes a primary. With no primary there is no row to
+// match, so the hook must read that one name and move on — an orphan spill
+// beside a new response's id must not suppress it, and a new response must not
+// send the hook reading every row ever written.
+func TestANewResponseReadsOnlyItsPrimary(t *testing.T) {
+	dir := stateHome(t)
+	model := "claude-opus-5-5"
+	other := newSidecar("gw", "adapter")
+	other.prices = CachedOwnedPriceBook("anthropic")
+	rec := other.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("10")}})
+	rec.timestamp = "2026-11-05T09:50:00+00:00"
+	rec.complete = true
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The name the sidecar gives a spill, with no primary beside it.
+	spill := filepath.Join(dir, rowFileName("resp_1."+rec.turnID))
+	if err := os.WriteFile(spill, other.row(rec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTranscript(t, transcriptLine("u1", "resp_1", model, "2026-11-05T10:00:00Z",
+		`{"input_tokens":10,"output_tokens":25}`))
+	if n := RecordTranscript("codex", "anthropic", path); n != 1 {
+		t.Fatalf("a spill with no primary suppressed the response: %d", n)
+	}
+	if got := len(rows(t, dir)); got != 2 {
+		t.Fatalf("rows = %d, want 2: %v", got, rows(t, dir))
 	}
 }
 

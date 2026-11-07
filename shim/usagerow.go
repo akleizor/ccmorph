@@ -224,7 +224,7 @@ func WriteUsageRow(profile, pricing, responseID, model, timestamp, turnID string
 	// A session whose traffic a ccmorph adapter already relays (a Remote Control
 	// session, or a launch nested inside one) writes its own row for the same
 	// response. One turn, one row: the writer that saw the traffic keeps it.
-	if recordedElsewhere(responseID, s.routeID, profile, timestamp) {
+	if recordedElsewhere(responseID, s.routeID, turnID, timestamp, usage) {
 		return false, nil
 	}
 	// A response's lines can span hook passes — a Stop may read the transcript
@@ -248,61 +248,139 @@ func WriteUsageRow(profile, pricing, responseID, model, timestamp, turnID string
 	return true, s.write(rec)
 }
 
-// recordedElsewhere is true when the row under responseID was written by
-// another ccmorph writer for this same response: its route id is not this
-// transcript hook's, and the row it holds is this turn's. A row of our own (or
-// none) leaves the write to the sidecar's own ownership rules; a row another
-// route holds for a different response — a gateway that recycled the id — must
-// not swallow ours, so the hook writes its own into a spill.
-func recordedElsewhere(responseID, routeID, profile, timestamp string) bool {
-	data, err := os.ReadFile(filepath.Join(stateDir(), "usage", rowFileName(responseID)))
+// recordedElsewhere is true when a ccmorph row was written for this same
+// response: the primary name, or a spill the relay left when another turn held
+// that name. A row of our own (or none) leaves the write to the sidecar's own
+// ownership rules; a row another route holds for a different response — a
+// gateway that recycled the id — must not swallow ours, so the hook writes its
+// own into a spill.
+func recordedElsewhere(responseID, routeID, turnID, timestamp string, usage usageRow) bool {
+	dir := filepath.Join(stateDir(), "usage")
+	primary := filepath.Join(dir, rowFileName(responseID))
+	data, err := os.ReadFile(primary)
+	if err != nil {
+		// No row under the id at all: nothing to match, and no spill to look for.
+		// A spill is only written while the primary is held, and nothing removes
+		// a primary, so an absent one means the id was never recorded.
+		return false
+	}
+	if sameResponse(data, responseID, routeID, timestamp, usage) {
+		return true
+	}
+	// This hook's own row for this response is not another writer's: the write is
+	// the sidecar's to replace, and mergeExisting folds it in.
+	if d := parseDoc(data); d != nil {
+		if rid, ok := d.str("route_id"); ok && rid == routeID {
+			if tid, ok := d.str("turn_id"); ok && tid == turnID {
+				return false
+			}
+		}
+	}
+	// The primary holds another response's row (a recycled id, or another route's
+	// reply under the same id). The relay spills under <id>.<its own random turn>,
+	// a name no reader can derive, so the row is found by the response id it
+	// carries. Only this case pays for the scan: a new response reads one file.
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false
 	}
+	needle := append([]byte(`"response_id":`), jsonStr(responseID)...)
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		if path == primary {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil || !bytes.Contains(data, needle) {
+			continue
+		}
+		if sameResponse(data, responseID, routeID, timestamp, usage) {
+			return true
+		}
+	}
+	return false
+}
+
+// sameResponse is true when a row another writer left under this response id is
+// this response: the id, the request's own input counts, and a stamp no later
+// than the reply's. The adapter observes the very payload the client receives,
+// so its input-side counts are the transcript line's; a recycled id carries
+// another request's counts, and a row stamped after the reply landed belongs to
+// a later turn. Neither is this response's row to replace, and neither makes
+// this response one already recorded.
+func sameResponse(data []byte, responseID, routeID, timestamp string, usage usageRow) bool {
 	d := parseDoc(data)
 	if d == nil {
 		return false
 	}
-	rid, ok := d.str("route_id")
-	if !ok || rid == routeID {
+	if rid, ok := d.str("route_id"); !ok || rid == routeID {
 		return false
 	}
-	// The adapter that relays this session's traffic writes the same profile's
-	// row, within the same turn. A recycled id belongs to another profile's
-	// response, minutes or more away; which of these it is decides whether the
-	// row is ours to leave alone or another response's to write beside.
-	if p, ok := d.str("profile"); ok && p == profile {
-		return true
+	if id, ok := d.str("response_id"); !ok || id != responseID {
+		return false
+	}
+	sp, ok := d.last("usage")
+	if !ok {
+		return false
+	}
+	if !sameInput(bucketsOf(d.b, sp, true), usage) {
+		return false
 	}
 	theirs, ok := d.str("timestamp")
 	if !ok {
 		return true
 	}
-	return sameResponse(timestamp, theirs)
+	return !stampedAfter(theirs, timestamp)
 }
 
-// sameResponseWindow is how far apart two writers' timestamps may sit and still
-// be one response. The relay's row is stamped when its turn starts and the
-// transcript's when the response lands, so the gap is a turn's length.
-const sameResponseWindow = 15 * time.Minute
+// inputBuckets are a response's input-side counts. Every writer that sees one
+// response sees one request, so these three are equal however long the reply
+// took, whatever profile wrote first and whichever name holds the row.
+var inputBuckets = []string{"input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"}
 
-// sameResponse is true when two row timestamps cannot be told apart: either
-// fails to parse, or they sit within one turn of each other. Not knowing is not
-// grounds for writing a second row.
-func sameResponse(a, b string) bool {
-	ta, err := time.Parse(time.RFC3339Nano, a)
+// sameInput is true when two usage rows name the same request: every
+// inputBuckets count equals, a missing key counting as zero.
+func sameInput(a, b usageRow) bool {
+	for _, key := range inputBuckets {
+		va, _ := finiteNumber(valueOf(a, key))
+		vb, _ := finiteNumber(valueOf(b, key))
+		if va != vb {
+			return false
+		}
+	}
+	return true
+}
+
+func valueOf(u usageRow, key string) []byte {
+	for _, n := range u {
+		if n.key == key {
+			return n.raw
+		}
+	}
+	return nil
+}
+
+// stampSlack is how much later than the reply a relaying adapter's stamp may
+// sit and still be this turn: the adapter stamps its row at message start, so a
+// row stamped after the reply landed is a later response's, not this one's.
+const stampSlack = time.Minute
+
+// stampedAfter is true when theirs is provably later than ours. An unparsable
+// stamp is never provably later: not knowing is not grounds for writing a
+// second row for one response.
+func stampedAfter(theirs, ours string) bool {
+	ta, err := time.Parse(time.RFC3339Nano, theirs)
 	if err != nil {
-		return true
+		return false
 	}
-	tb, err := time.Parse(time.RFC3339Nano, b)
+	tb, err := time.Parse(time.RFC3339Nano, ours)
 	if err != nil {
-		return true
+		return false
 	}
-	gap := ta.Sub(tb)
-	if gap < 0 {
-		gap = -gap
-	}
-	return gap <= sameResponseWindow
+	return ta.Sub(tb) > stampSlack
 }
 
 // mergeExisting folds the usage this hook's own row for responseID already

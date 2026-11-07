@@ -149,9 +149,11 @@ priced by ccusage at the provider's list price.
 Every profile writes these receipts: `apikey`, `provider`, and also `sub` and
 `token`. No launch changes how a session reaches its backend: a `sub` or `token`
 session keeps talking to api.anthropic.com with its own credential, and the
-launch installs a `Stop` and `SessionEnd` hook that reads the usage Claude Code itself records in
-the session's transcript, one row per API response, however many transcript
-lines it spans. A gateway's billed
+launch installs a `SessionStart`, `Stop` and `SessionEnd` hook that reads the
+usage Claude Code itself records in the session's transcript, one row per API
+response, however many transcript lines it spans. `SessionStart` writes no row:
+it marks where this launch begins reading, so a resumed transcript's earlier
+turns are not charged to this profile. A gateway's billed
 `cost` is only ever what it charged. A subscription or long-lived token is not
 billed per token, so its row carries `estimated_cost` instead — the same
 models.dev list price, marked `costSource: estimate` in the export, and never

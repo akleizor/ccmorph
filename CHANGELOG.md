@@ -5,6 +5,21 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
+## Unreleased
+
+### Fixed
+
+- **One response is one usage row, whoever recorded it.** A reply the relaying
+  adapter wrote before its transcript line landed is no longer written again by
+  the hook — including a reply that lands long after its turn began, and one the
+  adapter had to spill under another name because a recycled response id held
+  the first. A recycled id no longer swallows a new response's row. The launch's
+  hook runs on `SessionStart`, `Stop` and `SessionEnd`; `SessionStart` writes no
+  row, it marks where a resumed transcript begins.
+- **A user's own hook is never removed.** A hook of the user's that merely
+  mentions ccmorph's usage verb (a wrapper command, a redirect) is no longer
+  read as ccmorph's and deleted from their layer.
+
 ## v0.5.3 — 2026-11-05
 
 ### Added
