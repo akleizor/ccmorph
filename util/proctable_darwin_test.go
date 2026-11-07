@@ -34,4 +34,13 @@ func TestSysctlProcessTableSeesAChild(t *testing.T) {
 	if self := tab[os.Getpid()]; self.start.IsZero() || self.start.After(before) {
 		t.Fatalf("this process must be read with the time it started, got %v, no later than %v", self.start, before)
 	}
+	mine, ok := procStartToken(os.Getpid())
+	again, _ := procStartToken(os.Getpid())
+	child, cok := procStartToken(cmd.Process.Pid)
+	if !ok || !cok || mine == "" || mine != again || mine == child {
+		t.Fatalf("each process must read one mark of its own, got self %q/%q, child %q", mine, again, child)
+	}
+	if m, ok := procStartToken(999999); ok {
+		t.Fatalf("a pid nobody holds must read no mark, got %q", m)
+	}
 }

@@ -5,6 +5,7 @@ package util
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"os"
 	"strings"
 	"syscall"
@@ -123,4 +124,31 @@ func sysctlProcessTable() (map[int]psRow, bool) {
 		}
 	}
 	return rows, true
+}
+
+// procStartToken is the kernel's own mark of when pid started: p_starttime as
+// seconds.microseconds, from kern.proc.pid. The kernel stores it at fork and no
+// wall-clock step moves it, so the same mark read twice is the same process.
+// False when the pid is gone, or when this kernel's kinfo_proc is not the
+// layout these offsets describe: this process must read under its real parent
+// with a start in the past.
+func procStartToken(pid int) (string, bool) {
+	self, ok := sysctlRaw([]int32{1, 14, 1, int32(os.Getpid())}, nil)
+	if !ok || len(self) != kinfoSize ||
+		int(int32(binary.LittleEndian.Uint32(self[kinfoPID:]))) != os.Getpid() ||
+		int(int32(binary.LittleEndian.Uint32(self[kinfoPPID:]))) != os.Getppid() {
+		return "", false
+	}
+	if s := startTime(self); s.IsZero() || s.After(time.Now()) {
+		return "", false
+	}
+	rec, ok := sysctlRaw([]int32{1, 14, 1, int32(pid)}, nil)
+	if !ok || len(rec) != kinfoSize || int(int32(binary.LittleEndian.Uint32(rec[kinfoPID:]))) != pid {
+		return "", false
+	}
+	s := startTime(rec)
+	if s.IsZero() {
+		return "", false
+	}
+	return fmt.Sprintf("%d.%06d", s.Unix(), s.Nanosecond()/1000), true
 }

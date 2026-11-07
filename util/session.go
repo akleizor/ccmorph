@@ -30,6 +30,11 @@ var privateSkip = []string{"projects", "sessions", "session-env", "file-history"
 // process is gone, however long the session ran (#166).
 const privateOwner = "ccmorph-owner"
 
+// privateOwnerStart sits beside privateOwner: the kernel's mark of when that
+// claude started (procStartToken), so the sweep knows the claude from a later
+// process that took its number without reading any clock (#218).
+const privateOwnerStart = "ccmorph-owner-start"
+
 // claudeSession is `util claude-session <tuning> <profile keys> <launch keys>
 // <backend keys> <launch env> -- <claude args...>`, each key list space-separated.
 // The launch's own KEY=value entries come from <launch env>: a 0600 file this
@@ -247,6 +252,12 @@ func privateSession(bin string, args []string, runDir string, say func(), errw i
 	// moment — puts the view out of the sweep's reach for good: with no
 	// record, age cannot tell a live session from a dead one, so the sweep
 	// takes no view on age alone.
+	// The mark lands before the record, so any record a sweep sees from this
+	// build has its mark; a mark that cannot be read leaves the record alone,
+	// which the sweep keeps while the pid lives (#218).
+	if mark, ok := procStartToken(cmd.Process.Pid); ok {
+		_ = os.WriteFile(filepath.Join(tmp, privateOwnerStart), []byte(mark), 0o600)
+	}
 	_ = os.WriteFile(filepath.Join(tmp, privateOwner), []byte(strconv.Itoa(cmd.Process.Pid)), 0o600)
 	done := make(chan struct{})
 	go func() {
