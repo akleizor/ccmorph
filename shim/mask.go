@@ -69,8 +69,14 @@ var lettersRE = regexp.MustCompile(`^[A-Za-z-]+:?$`)
 // secret_name, token_id, password_hint, api_key_path.
 var nameLabelRE = regexp.MustCompile(`(?i)[_.-](?:name|id|ids|type|kind|hint|path|file|url|uri|ref|arn|label|count|len|length|ttl|expiry|expires|expires_at|created|updated|version|scope|scopes|header|env|var|field)$`)
 
-// unsure is a label match whose value may well not be a secret.
+// unsure is a label match whose value may well not be a secret. The prefix a
+// URL rule matches is no label — "postgres://app:" names a username in a
+// scheme — so the password behind it is a value however it is spelled, and a
+// name-like username such as "client_id:" must not unmask it either (#215).
 func unsure(label, value string) bool {
+	if strings.Contains(label, "://") {
+		return false
+	}
 	t := strings.TrimRight(label, " \t\"'")
 	colon := strings.HasSuffix(t, ":")
 	name := strings.TrimRight(t, ":=\"' \t")

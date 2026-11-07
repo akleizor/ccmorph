@@ -53,10 +53,16 @@ func TestMaskRules(t *testing.T) {
 		}
 	}
 	for in, gone := range map[string]string{
-		"postgres://app:S3cr3tPw@db:5432/x":             "S3cr3tPw",
-		`DB_PASSWORD="hunter2hunter"`:                   "hunter2hunter",
-		"export OPENAI_API_KEY=abc123def456ghi":         "abc123def456ghi",
-		"Authorization: Bearer abcdefghij0123456789xyz": "abcdefghij0123456789xyz",
+		// A URL or connection string's password is a value however it is
+		// spelled: the text before it is a username in a scheme, not a
+		// label (#215).
+		"postgres://app:sunlitmeridian@db:5432/x":           "sunlitmeridian",
+		"postgres://app:dune-grass-trail@db:5432/x":         "dune-grass-trail",
+		"https://client_id:quay34harbor@host.example.com/x": "quay34harbor",
+		"postgres://app:S3cr3tPw@db:5432/x":                 "S3cr3tPw",
+		`DB_PASSWORD="hunter2hunter"`:                       "hunter2hunter",
+		"export OPENAI_API_KEY=abc123def456ghi":             "abc123def456ghi",
+		"Authorization: Bearer abcdefghij0123456789xyz":     "abcdefghij0123456789xyz",
 		// A labeled password of letters (or letters and dashes) is a value,
 		// not a code identifier.
 		"DB_PASSWORD=changeme":               "changeme",
