@@ -4,7 +4,10 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
+
+import pytest
 
 from support import HANG_TIMEOUT
 
@@ -20,9 +23,33 @@ export PATH="$HOME/fakebin:$PATH"
 '''
 
 def copied_lib(tmp_path):
-    """A throwaway install root, so a test can stub one libexec program in place."""
+    """A throwaway install root, so a test can stub one libexec program in place.
+
+    The copy is the repository's own source — what git tracks, plus libexec's
+    build output — never the checkout's incidental contents: tool data a
+    machine's global gitignore hides (.codegraph's 21 MB database, a daemon's
+    Unix socket, which cannot be copied at all) used to land in every test home
+    and fail the copy itself (#220)."""
     inst = tmp_path / 'inst'
-    shutil.copytree(ROOT, inst, ignore=shutil.ignore_patterns('.git', '.claude', 'tests', '__pycache__'))
+    tracked = subprocess.run(['git', '-C', str(ROOT), 'ls-files', '-z'],
+                             stdout=subprocess.PIPE, check=True,
+                             timeout=HANG_TIMEOUT).stdout
+    for rel in tracked.split(b'\0'):
+        if not rel or rel.startswith((b'tests/', b'.claude/')):
+            continue
+        src = ROOT / os.fsdecode(rel)
+        if not src.is_file():  # a tracked path may be gone from the working tree
+            continue
+        dst = inst / os.fsdecode(rel)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+    # libexec holds only build output (`make shim`; gitignored) and the stub
+    # below renames the built core, so the copy needs it too.
+    for built in (ROOT / 'libexec').iterdir():
+        if built.is_file():
+            dst = inst / 'libexec' / built.name
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(built, dst)
     return inst / 'lib'
 
 
@@ -126,3 +153,33 @@ def test_probe_model_interactive_honours_exclusions(tmp_path):
     r = zsh(FAKE_CURL + 'ccmorph probe demo --model -i', env)
     assert r.returncode == 0, r.stderr
     assert '--model blocked' in (tmp_path / 'probe.args').read_text()
+
+
+def test_copied_lib_copies_source_not_the_checkouts_incidental_contents_issue_220(tmp_path):
+    """`copied_lib` copies the repository's own source, never the checkout's
+    incidental contents: local tooling leaves data git ignores in the root — on
+    this machine codegraph's `.codegraph/` — and its Unix socket cannot be
+    copied at all, which failed every test that used the scaffold (#220)."""
+    planted = ROOT / '.copied-lib-regression-220'
+    shutil.rmtree(planted, ignore_errors=True)
+    planted.mkdir()
+    (planted / 'tool.db').write_text('untracked tool data, not source')
+    sock = socket.socket(socket.AF_UNIX)
+    try:
+        try:
+            sock.bind(str(planted / 'daemon.sock'))
+        except PermissionError:
+            # A sandboxed runner refuses the bind — the same refusal that skips
+            # temp_hygiene's witnesses there; the landing gate runs outside any
+            # sandbox.
+            pytest.skip("this runner refuses unix-socket binds; the landing gate "
+                        "runs this test outside any sandbox")
+        lib = copied_lib(tmp_path)
+    finally:
+        sock.close()
+        shutil.rmtree(planted, ignore_errors=True)
+    assert (lib / 'ccmorph.sh').is_file()            # the source itself is copied
+    assert not (lib.parent / planted.name).exists()  # the planted tool data is not
+    # The filing machine's case: a live .codegraph database in the root. Absent
+    # elsewhere, where this holds vacuously.
+    assert not (lib.parent / '.codegraph').exists()
