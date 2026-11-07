@@ -101,7 +101,9 @@ func TestPrivateViewStartsUnderTheStateRunDirWhenTmpdirCannotBeWritten(t *testin
 // stale sweep can tell it from an orphaned one however long the session runs
 // (#166): the record holds the child claude's pid, not this helper's — a
 // SIGKILL can take the helper while claude lives on, and the view must follow
-// claude, not the helper.
+// claude, not the helper. Beside it sits the kernel's mark of when that claude
+// started, which the sweep reads again to tell it from a later process that
+// took the number (#218).
 func TestPrivateViewNamesTheClaudeThatRunsFromIt(t *testing.T) {
 	real := filepath.Join(t.TempDir(), "demo")
 	os.Mkdir(real, 0o700)
@@ -114,14 +116,15 @@ func TestPrivateViewNamesTheClaudeThatRunsFromIt(t *testing.T) {
 	os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' \"$$\" > '"+out+"'\n"+
 		"d=$(dirname \"$CLAUDE_CONFIG_DIR\")\n"+
 		"i=0\nwhile [ ! -f \"$d/"+privateOwner+"\" ] && [ $i -lt 5000 ]; do i=$((i+1)); done\n"+
-		"cat \"$d/"+privateOwner+"\" 2>/dev/null >> '"+out+"'\nexit 7\n"), 0o755)
+		"cat \"$d/"+privateOwner+"\" 2>/dev/null >> '"+out+"'\nprintf '\\n' >> '"+out+"'\n"+
+		"cat \"$d/"+privateOwnerStart+"\" 2>/dev/null >> '"+out+"'\nexit 7\n"), 0o755)
 	if rc := privateSession(script, nil, "", func() {}, &strings.Builder{}); rc != 7 {
 		t.Fatalf("rc %d, want claude's own 7", rc)
 	}
 	b, _ := os.ReadFile(out)
 	f := strings.Split(strings.TrimSpace(string(b)), "\n")
-	if len(f) != 2 || f[0] == "" || f[0] != f[1] {
-		t.Fatalf("owner record %q, want the pid of the claude that ran", string(b))
+	if len(f) != 3 || f[0] == "" || f[0] != f[1] || f[2] == "" {
+		t.Fatalf("owner record %q, want the pid of the claude that ran and its start mark", string(b))
 	}
 }
 

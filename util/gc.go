@@ -22,12 +22,16 @@ import (
 // a same-user one answers kill(pid, 0) just the same. So the holder is never
 // asked what its command line says: a grep over notes, an editor on a
 // claude.md and another Claude Code session that recycled the number all name
-// claude (#206). It is asked when it started: a view's record is written the
-// moment claude starts, a relay's name carries the launch's own clock, and a
-// holder that started more than a minute after that is not the process it
-// names. A time the table cannot read reads as the owner, and a relay name
-// with no readable clock keeps kill alone: the sweep never takes live state on
-// a guess (#189). Launch-settings overlays and provider bridge dirs carry
+// claude (#206). It is asked when it started. A relay's name carries the
+// launch's own clock, so a launcher that started more than a minute after it
+// is not the one it names. A view keeps the kernel's own mark of its claude's
+// start beside the record, so a holder whose mark differs is not that claude;
+// no wall-clock step or filesystem clock moves that mark, while a record's
+// mtime is a filesystem's clock read against the kernel's (#218). A time the
+// table cannot read reads as the owner, and a view with no readable mark or a
+// relay name with no readable clock keeps kill alone: the sweep never takes
+// live state on a guess (#189).
+// Launch-settings overlays and provider bridge dirs carry
 // credentials, so they go after 12h unless a live process still names them;
 // the process table is read only when something is old, at most once for the
 // view and relay sweeps and once for the overlays' and bridges' scan.
@@ -119,28 +123,41 @@ func GCStale(state, profiles, tmp string) {
 	}
 	// A private view goes once the claude that ran from it is gone and it is a
 	// minute old, and stays however old it is while that claude lives: the
-	// view holds a live session's transcripts. The holder is known by when it
-	// started, never by a word in its command line (#206): the record is
-	// written the moment claude starts, so a process that started more than a
-	// minute after it is not that claude, whoever it is. A holder the table
-	// cannot place or time reads as claude, and a view with no record is never
-	// reaped — this build writes the record before claude writes anything into
-	// the view, so a record-less view either predates the record or failed to
-	// write it, and either can still be a live session whose transcripts age
-	// while claude idles (#166, #189).
+	// view holds a live session's transcripts. The holder is known by the
+	// kernel's own mark of when it started, never by a word in its command
+	// line (#206) and never by a clock: the helper reads that mark the moment
+	// claude starts and keeps it beside the record, and the sweep reads it
+	// again for the pid now. It is the same kernel field, which no wall-clock
+	// step and no filesystem's clock can move, so the same mark is the same
+	// claude and another mark is a later process that took the number. The
+	// record's mtime is a filesystem's clock against the kernel's, two clocks
+	// nothing keeps in step, so it names no one (#218). A mark the sweep
+	// cannot read now, and a record with no mark beside it (written by a build
+	// older than the mark, or one whose mark failed to write), is cannot-tell,
+	// which holds while the pid lives: the sweep never takes live state on a
+	// guess, and such a view goes once the number is free (#189). A view with
+	// no record is never reaped: this build writes the record before claude
+	// writes anything into the view, so a record-less view either predates the
+	// record or failed to write it, and either can still be a live session
+	// whose transcripts age while claude idles (#166).
 	for _, d := range views {
 		if !isDir(d) {
 			continue
 		}
-		rec := filepath.Join(d, privateOwner)
-		b, err := os.ReadFile(rec)
-		fi, serr := os.Stat(rec)
-		if err != nil || serr != nil {
+		b, err := os.ReadFile(filepath.Join(d, privateOwner))
+		if err != nil {
 			continue
 		}
 		pid, perr := strconv.Atoi(strings.TrimSpace(string(b)))
-		if perr != nil || pid <= 0 || !old(d, time.Minute) || holds(pid, fi.ModTime()) {
-			continue // unreadable owner, under a minute, or the claude that runs from it lives
+		if perr != nil || pid <= 0 || !old(d, time.Minute) {
+			continue // unreadable owner, or under a minute
+		}
+		if syscall.Kill(pid, 0) == nil {
+			want, merr := os.ReadFile(filepath.Join(d, privateOwnerStart))
+			cur, ok := procStartToken(pid)
+			if merr != nil || strings.TrimSpace(string(want)) == "" || !ok || cur == strings.TrimSpace(string(want)) {
+				continue // the claude that runs from it lives, or cannot-tell
+			}
 		}
 		_ = os.RemoveAll(d)
 	}
