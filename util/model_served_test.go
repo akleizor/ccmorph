@@ -10,8 +10,9 @@ import (
 
 // fakeCurl puts a curl on PATH that records its arguments and stdin config, prints
 // the listing body and exits with rc, so ModelServed meets a catalogue without a
-// network. It returns the directory the request log lands in.
-func fakeCurl(t *testing.T, body string, rc int) string {
+// network. A complaint, when given, is curl's stderr. It returns the directory the
+// request log lands in.
+func fakeCurl(t *testing.T, body string, rc int, complaint ...string) string {
 	t.Helper()
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "body"), []byte(body), 0o600)
@@ -19,8 +20,11 @@ func fakeCurl(t *testing.T, body string, rc int) string {
 		"printf 'PROXY=%s\\n' \"$HTTPS_PROXY\" > '" + dir + "/request'\n" +
 		"for a do printf 'ARG=%s\\n' \"$a\"; done >> '" + dir + "/request'\n" +
 		"cat >> '" + dir + "/request'\n" +
-		"cat '" + dir + "/body'\n" +
-		"exit " + string(rune('0'+rc/10)) + string(rune('0'+rc%10)) + "\n"
+		"cat '" + dir + "/body'\n"
+	if len(complaint) > 0 {
+		script += "printf '%s\\n' '" + strings.ReplaceAll(complaint[0], "'", `'\''`) + "' >&2\n"
+	}
+	script += "exit " + string(rune('0'+rc/10)) + string(rune('0'+rc%10)) + "\n"
 	os.WriteFile(filepath.Join(dir, "curl"), []byte(script), 0o755)
 	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
 	return dir
@@ -103,5 +107,35 @@ func TestModelsListingRequestShape(t *testing.T) {
 	}
 	if rows, ok := GwModels("", false, body); !ok || len(rows) != 1 || rows[0].ID != "alpha-chat" {
 		t.Errorf("the first page must list its chat model, got %v %v", rows, ok)
+	}
+}
+
+// An endpoint that answered says so with a status, so a caller can tell a refused
+// key from a network that never carried the request; a listing that worked keeps
+// its body and status 0.
+func TestModelsAnswerReadsTheRefusedStatus(t *testing.T) {
+	for _, c := range []struct {
+		name, stderr string
+		rc           int
+		wantStatus   int
+		wantOK       bool
+	}{
+		{"a rejected key", "curl: (56) The requested URL returned error: 401", 56, 401, false},
+		{"a forbidden key", "curl: (22) The requested URL returned error: 403", 22, 403, false},
+		{"an older curl's wrong path", "curl: (22) The requested URL returned error: 404 Not Found", 22, 404, false},
+		{"a server fault", "curl: (22) The requested URL returned error: 500", 22, 500, false},
+		{"nothing answered", "curl: (7) Failed to connect to 127.0.0.1 port 1: Connection refused", 7, 0, false},
+		{"a served listing", "", 0, 0, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fakeCurl(t, catalogue, c.rc, c.stderr)
+			body, status, ok := ModelsAnswer("http://proxy.invalid", "test-key")
+			if ok != c.wantOK || status != c.wantStatus {
+				t.Fatalf("got ok=%v status=%d, want ok=%v status=%d", ok, status, c.wantOK, c.wantStatus)
+			}
+			if c.wantOK && !strings.Contains(body, "served-target") {
+				t.Errorf("a served listing must keep its body, got %q", body)
+			}
+		})
 	}
 }

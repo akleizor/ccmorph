@@ -26,6 +26,20 @@ func ModelsListing(base, key string, errw io.Writer) (body string, ok bool) {
 	return fetchModels(key, errw, "-sS", "-f", "--max-time", "20", apiURL(base, "/v1/models?limit=1000"))
 }
 
+// ModelsAnswer is ModelsListing for a person: curl's complaint is read, never
+// printed, and status is the HTTP status the endpoint refused the request with,
+// 0 when nothing answered.
+func ModelsAnswer(base, key string) (body string, status int, ok bool) {
+	var complaint strings.Builder
+	body, ok = ModelsListing(base, key, &complaint)
+	if !ok {
+		if m := refused.FindStringSubmatch(complaint.String()); m != nil {
+			status, _ = strconv.Atoi(m[1])
+		}
+	}
+	return body, status, ok
+}
+
 func fetchModels(key string, errw io.Writer, curlArgs ...string) (string, bool) {
 	body, err := curlKeyed(key, curlArgs, errw)
 	if err != nil || body == "" {
@@ -73,6 +87,7 @@ func apiURL(base, path string) string {
 var (
 	versioned      = regexp.MustCompile(`/v[0-9]+$`)
 	quotedDisguise = regexp.MustCompile(`"(claude-[^"]*-dd-[^"]+)"`)
+	refused        = regexp.MustCompile(`returned error: ([0-9]{3})`)
 )
 
 // undisguise restores every quoted claude-<cover>-dd-<reversed> id to its real id.
