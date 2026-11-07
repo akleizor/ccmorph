@@ -337,6 +337,73 @@ func TestAQuotedCorePathIsStillTheLaunchsHook(t *testing.T) {
 	}
 }
 
+// Only the command the launcher builds, word for word, is ccmorph's hook. A
+// user's own command that merely mentions the verb — a wrapper, a redirect, a
+// command plus something after it — is theirs.
+func TestIsUsageCommandMatchesOnlyTheLaunchersCommand(t *testing.T) {
+	core := func(path string) string {
+		return path + " usage-row --profile work --pricing anthropic"
+	}
+	ours := []string{
+		usageHook,
+		"'/Users/a b/libexec/ccmorph-core' usage-row --profile 'work' --pricing 'anthropic'",
+		"/opt/cc/libexec/ccmorph-core usage-row --profile sub --pricing any",
+		"'/Users/o'\\''n/libexec/ccmorph-core' usage-row --profile work --pricing anthropic",
+		"$HOME/.config/ccmorph/libexec/ccmorph-core usage-row --profile gw --pricing anthropic",
+	}
+	for _, c := range ours {
+		if !isUsageCommand(c) {
+			t.Errorf("not recognized as the launcher's: %q", c)
+		}
+	}
+	theirs := []string{
+		"sh -c 'ccmorph-core usage-row --profile work >> ~/usage.log'",
+		"ccmorph-core usage-row --profile work >> ~/usage.log",
+		core("echo /x/ccmorph-core"),
+		core("/x/ccmorph-core") + "; say hi",
+		core("/x/not-ccmorph-core"),
+		"ccmorph-core usage-row --profile work",
+	}
+	for _, c := range theirs {
+		if isUsageCommand(c) {
+			t.Errorf("a user's command read as the launcher's: %q", c)
+		}
+	}
+}
+
+// A user's hook that wraps the usage verb is theirs: a launch must keep running
+// it, and a fold must not save it away.
+func TestAUsersHookEmbeddingTheUsageVerbSurvives(t *testing.T) {
+	f := newFixture(t)
+	const wrapper = `sh -c 'ccmorph-core usage-row --profile work >> ~/usage.log'`
+	write(t, f.canonical, `{}`)
+	// A settings.json that predates ccmorph: the first launch captures its hooks
+	// as the user's layer.
+	write(t, filepath.Join(f.profile, "settings.json"),
+		`{"hooks":{"Stop":[{"hooks":[{"type":"command","command":`+
+			`"sh -c 'ccmorph-core usage-row --profile work >> ~/usage.log'"}]}]}}`)
+	f.materialize(t, usageHook)
+	got := stopCommands(t, f)
+	if len(got) != 2 || got[0] != wrapper || got[1] != usageHook {
+		t.Fatalf("Stop = %q", got)
+	}
+	// The fold runs on every launch: the user's hook stays in their layer.
+	if code, stderr := f.run("fold"); code != 0 {
+		t.Fatalf("fold: %d %s", code, stderr)
+	}
+	layer, err := os.ReadFile(filepath.Join(f.profile, layerFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(layer), "~/usage.log") {
+		t.Fatalf("the fold dropped the user's hook from the layer: %s", layer)
+	}
+	f.materialize(t, usageHook)
+	if got := stopCommands(t, f); len(got) != 2 || got[0] != wrapper {
+		t.Fatalf("the launch after the fold lost the user's hook: Stop = %q", got)
+	}
+}
+
 func TestMaterializeWithoutAHookRemovesTheOldOneAndKeepsTheUsers(t *testing.T) {
 	f := newFixture(t)
 	write(t, f.canonical, `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}`)
