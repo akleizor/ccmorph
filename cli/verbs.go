@@ -236,7 +236,7 @@ func (l *launcher) use(args []string) int {
 		return 1
 	}
 	f, ok := l.read(name)
-	if !ok || !l.setupDir(name, f["type"]) {
+	if !ok || !l.setupDir(name, f["type"], liveSilent) {
 		return 1
 	}
 	if err := atomicWrite(filepath.Join(l.dir, "active"), name+"\n"); err != nil {

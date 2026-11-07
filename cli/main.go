@@ -381,7 +381,7 @@ func (l *launcher) envVerb(args []string) int {
 		l.err(msg)
 		return 1
 	}
-	if !l.setupDir(name, typ) {
+	if !l.setupDir(name, typ, liveRefuse) {
 		return 1
 	}
 	l.prelaunch(name)

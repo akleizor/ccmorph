@@ -1,8 +1,8 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
-	"github.com/akleizor/ccmorph/util"
 	"math/rand/v2"
 	"os"
 	"os/exec"
@@ -15,6 +15,7 @@ import (
 
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/shim"
+	"github.com/akleizor/ccmorph/util"
 )
 
 var nativeModelFlags = map[string]bool{
@@ -331,7 +332,7 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 	if !ok {
 		return nil, 1
 	}
-	if !l.setupDir(to, f["type"]) {
+	if !l.setupDir(to, f["type"], liveRefuse) {
 		return nil, 1
 	}
 	next := &relayNext{args: append([]string{}, relayArgs...), profile: to, session: rs.Session}
@@ -618,15 +619,34 @@ func (l *launcher) profileEnvironment(name string) ([]string, bool) {
 		l.err(msg)
 		return nil, false
 	}
-	if !l.setupDir(name, typ) {
+	if !l.setupDir(name, typ, liveRefuse) {
 		return nil, false
 	}
 	l.prelaunch(name)
 	return env, true
 }
 
+// livePolicy is what setupDir does when the profile's live lock cannot be
+// taken or made (#217). The refusal #205 added belongs to the paths that start
+// claude; the verbs that only set state or provision a profile proceed the way
+// they did before 2026-11-06.
+type livePolicy uint8
+
+const (
+	// liveRefuse: a session follows (a run, _env, a hop's relay), and claude
+	// must not start through the window the lock covers — refuse (#205).
+	liveRefuse livePolicy = iota
+	// liveSilent: the verb only sets state (`use`); the lock gates nothing it
+	// does, so it proceeds without a word about locks or sessions.
+	liveSilent
+	// liveNote: the verb provisions a profile (`add`); it proceeds — the
+	// profile it just wrote is never rolled back over a lock — and names the
+	// real cause, a stuck holder or a lock file that could not be made.
+	liveNote
+)
+
 // setupDir is _ccm_setup_dir: provision the profile's config dir unless it is.
-func (l *launcher) setupDir(name, typ string) bool {
+func (l *launcher) setupDir(name, typ string, policy livePolicy) bool {
 	// #205: a hop runs the next profile in this same process. The hopped-away
 	// profile's live lock is released here, or another launch of it reads a
 	// live session — and defers its merges — for the rest of this one's life.
@@ -637,8 +657,9 @@ func (l *launcher) setupDir(name, typ string) bool {
 	// #185: the live lock covers the session from here until claude exits, so
 	// a concurrent setup never merges shared history under this launch. #205: a
 	// launch that cannot take it must not start claude through the window the
-	// lock covers.
-	if !l.holdLive(name) {
+	// lock covers. #217: a verb that starts no session takes it best effort
+	// instead — the merge defers to the next launch, as it did before.
+	if !l.holdLive(name, policy) {
 		return false
 	}
 	if util.ProfileOK(l.profileDirs, name) {
@@ -649,7 +670,9 @@ func (l *launcher) setupDir(name, typ string) bool {
 	}
 	// The merge releases the lock it could not take back when its upgrade
 	// failed (#205); the session must still be covered before claude starts.
-	if !l.holdLive(name) {
+	// No session follows the other policies, so there is nothing to re-cover —
+	// and no second note either (#217).
+	if policy == liveRefuse && !l.holdLive(name, policy) {
 		return false
 	}
 	if file := l.profileLayer(name); isFile(file) {
@@ -661,16 +684,35 @@ func (l *launcher) setupDir(name, typ string) bool {
 }
 
 // holdLive takes the profile's live lock shared and keeps it for this process's
-// session. A launch that cannot take it refuses to start: claude would run
-// through the window where another launch's merge may swap shared history under
-// it, and the nil HoldLive returns for a stuck holder used to be discarded
-// (#205).
-func (l *launcher) holdLive(name string) bool {
-	if util.HoldLive(l.profileDirs, name, l.log) != nil {
+// session, applying policy when it cannot be taken or made. A launch refuses to
+// start: claude would run through the window where another launch's merge may
+// swap shared history under it, and the nil HoldLive returns for a stuck holder
+// used to be discarded (#205) — and a lock file that could not be made is named
+// as what it is, where every failure used to be told a holder (#217). `use`
+// proceeds silently; `add` proceeds and names the real cause, so the profile it
+// just wrote is not rolled back over a lock that gates only its shared history.
+func (l *launcher) holdLive(name string, policy livePolicy) bool {
+	f, why := util.HoldLive(l.profileDirs, name, l.log)
+	if f != nil {
+		return true
+	}
+	if policy == liveSilent {
 		return true
 	}
 	path := util.LiveLockPath(l.profileDirs, name)
-	l.err("another launch of '" + name + "' is holding its live lock (" + path + ") while it links shared history and has not let go; nothing started. Try again in a moment; if it stays stuck, `lsof " + path + "` names the holder.")
+	if policy == liveNote {
+		if errors.Is(why, util.ErrLiveHeld) {
+			l.err("another launch of '" + name + "' is holding its live lock while it links shared history; the shared history links on a later launch")
+		} else {
+			l.err("the live lock for '" + name + "' could not be created at " + path + " (" + why.Error() + "); remove what blocks the path — the shared history links on a later launch that can make it")
+		}
+		return true
+	}
+	if errors.Is(why, util.ErrLiveHeld) {
+		l.err("another launch of '" + name + "' is holding its live lock (" + path + ") while it links shared history and has not let go; nothing started. Try again in a moment; if it stays stuck, `lsof " + path + "` names the holder.")
+	} else {
+		l.err("the live lock for '" + name + "' could not be created at " + path + " (" + why.Error() + "); nothing started. Remove what blocks the path and try again.")
+	}
 	return false
 }
 
