@@ -100,22 +100,33 @@ def test_the_route_conf_declares_no_flag_itself(box):
     assert 'CLAUDE_CODE_MODEL_CAPABILITIES' not in route
 
 
-def test_a_nested_launch_keeps_the_session_route_flags(box):
-    """The reproduced failure: `ccmorph run demo -- -p …` inside a session on a
-    route must not reach the route without the session's advisor opt-out."""
+def test_a_named_profile_is_not_carried_to_the_session_route(box):
+    """`ccmorph run demo -- -p …` inside a session on a route runs on demo's own
+    credential: the edge's proxy and its route flags stay out of the launch."""
     out = box.run(box.session(), 'run', 'demo', '--', '-p', 'Reply ok')
     assert out.returncode == 0, out.stderr
     log = box.log()
-    assert 'DISABLE_ADVISOR=1' in log, log
-    assert f'MODEL_CAPS={box.rc.ADAPTER_MODEL_CAPABILITIES}' in log, log
-    assert 'PROXY=http://127.0.0.1:47670' in log, log
+    assert 'PROXY=<unset>' in log, log
+    assert 'DISABLE_ADVISOR=<unset>' in log and 'MODEL_CAPS=<unset>' in log, log
 
 
-def test_a_nested_launch_honours_a_route_that_serves_the_advisor(box):
-    env = box.session({'CLAUDE_CODE_DISABLE_ADVISOR_TOOL': '0'})
+def test_a_users_own_loopback_proxy_is_kept(box):
+    # No edge record: a loopback proxy outside Remote Control is the user's own.
+    env = box.session()
+    del env['CCMORPH_EDGE_ROUTE_ENV']
     out = box.run(env, 'run', 'demo', '--', '-p', 'ok')
     assert out.returncode == 0, out.stderr
-    assert 'DISABLE_ADVISOR=0' in box.log()
+    assert 'PROXY=http://127.0.0.1:47670' in box.log(), box.log()
+
+
+def test_a_profileless_launch_honours_a_route_that_serves_the_advisor(box):
+    env = box.session({'CLAUDE_CODE_DISABLE_ADVISOR_TOOL': '0'})
+    out = subprocess.run(
+        ['zsh', '-c', 'source "$CCMORPH_LIB_DIR/ccmorph.sh" && _ccm_launch -p ok'],
+        env=env, input='', capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert out.returncode == 0, out.stderr
+    assert 'DISABLE_ADVISOR=0' in box.log(), (box.log(), out.stderr)
+    assert 'PROXY=http://127.0.0.1:47670' in box.log()
 
 
 def test_a_plain_launch_still_clears_an_inherited_flag(box):
@@ -162,13 +173,11 @@ def test_a_profile_with_its_own_endpoint_is_left_alone(box, tmp_path):
 
 
 @pytest.mark.parametrize('url', ['https://api.anthropic.com', 'https://api.anthropic.com/'])
-def test_a_profile_with_the_native_anthropic_url_keeps_the_route_flags(box, url):
-    # base_url=api.anthropic.com is native: it still dials Anthropic, so the edge
-    # proxy reroutes it and the session's flags apply.
+def test_a_profile_with_the_native_anthropic_url_skips_the_edge(box, url):
     (box.state / 'gw2.conf').write_text(f'type=apikey\nbase_url={url}\napi_key=k\n')
     out = box.run(box.session(), 'run', 'gw2', '--', '-p', 'ok')
     assert out.returncode == 0, out.stderr
-    assert 'DISABLE_ADVISOR=1' in box.log(), box.log()
+    assert 'PROXY=<unset>' in box.log(), box.log()
 
 
 def test_a_profileless_nested_launch_keeps_the_route_flags(box):

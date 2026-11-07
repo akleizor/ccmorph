@@ -865,8 +865,8 @@ to Remote Control"), and a non-Anthropic base URL stops the first-party
 defaults (the native 1M window, server-managed settings). A process-wide proxy
 would keep those but change what every other process in the session reaches: a
 Bash command, a hook or an MCP server using a TLS stack that does not trust a
-per-launch CA fails its handshake, a nested `ccmorph run` inherits the proxy
-and attributes its rows to the outer profile, and a background job outlives
+per-launch CA fails its handshake, a nested `ccmorph run` would inherit the proxy
+and attribute its rows to the outer profile, and a background job outlives
 the launcher holding a dead address.
 
 So these launches change no network path at all. Claude Code already records
@@ -1853,15 +1853,20 @@ thinking. The gateway rejects the field with a 400 (`Extra inputs are not permit
 path (`thinking.` becomes `***.`), so Claude Code's fallback never matches. The adapter's translator
 config therefore filters `thinking.block_binding` for the Claude passthrough, last in the chain.
 
-**Nested launches.** Every launch clears the route flags, so a `ccmorph run` started
-inside a Remote Control bridge session would reach the session's route (its loopback
-`HTTPS_PROXY` is inherited) without the advisor opt-out and be rejected with a 400.
-The add-on's session sets `CCMORPH_EDGE_ROUTE_ENV` (`KEY=VALUE` per line, the
-effective `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` and `CLAUDE_CODE_MODEL_CAPABILITIES`,
-defaults included). A launch re-applies exactly those lines after clearing, only when
-`HTTPS_PROXY` is `http://127.0.0.1:<port>`, the profile has no `ANTHROPIC_BASE_URL`
-of its own and is not a provider **[test]**. The variable is the whole interface;
-core reads no add-on file.
+**Nested launches.** A Remote Control bridge session exports its edge's loopback
+`HTTPS_PROXY`, which carries every api.anthropic.com request to the session's route.
+A launch that names a profile runs on that profile's own route and credential, so
+inside the edge (the add-on's `CCMORPH_EDGE_ROUTE_ENV` set and `HTTPS_PROXY` is
+`http://127.0.0.1:<port>`) a native profile's launch clears `HTTPS_PROXY` and
+`https_proxy`; it would otherwise reach the edge's route, which may map the model it
+asked for to another, and its rows would land under the edge's profile **[test]**. A
+loopback proxy without the edge record is the user's own and stays **[test]**.
+A launch with no profile keeps the session's route: every launch clears the route
+flags, so it would reach that route without the advisor opt-out and be rejected
+with a 400. The add-on's session sets `CCMORPH_EDGE_ROUTE_ENV` (`KEY=VALUE` per line,
+the effective `CLAUDE_CODE_DISABLE_ADVISOR_TOOL` and `CLAUDE_CODE_MODEL_CAPABILITIES`,
+defaults included), and a profileless launch re-applies exactly those lines after
+clearing **[test]**. The variable is the whole interface; core reads no add-on file.
 
 The flag and its boolean parsing were checked in Claude Code 2.1.276. The launch
 regression checks delivery to the child and absence of cross-profile leakage.
