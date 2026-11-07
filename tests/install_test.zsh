@@ -601,14 +601,100 @@ done
 
 # A link whose target cannot be reached (the volume is unmounted) has only itself
 # to remove: the report says where it led, so nothing there is left named nowhere.
-d=$(fresh_env uninstall_rm_dangling)
+# The caller's spelling never reaches the rm line — `rm -rf` on a dangling link
+# spelled with a trailing slash exits 0 and leaves the link — and a readlink
+# that fails must not end the uninstall before the report (#219).
+for dspell in plain slash broken; do
+  d=$(fresh_env "uninstall_rm_dangling_$dspell")
+  run_installer "$d" >/dev/null
+  ln -s "$d/unmounted/state" "$d/state-link"
+  dstate="$d/state-link"
+  [[ "$dspell" == slash ]] && dstate="$dstate/"
+  if [[ "$dspell" == broken ]]; then
+    # A readlink that fails: the link is still one the rm must remove, and the
+    # report must still reach the end.
+    printf '#!/bin/sh\nexit 1\n' > "$d/bin/readlink"; chmod +x "$d/bin/readlink"
+  fi
+  want="$d/unmounted/state"
+  [[ "$dspell" == broken ]] && want="an unreadable target"
+  env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" CCMORPH_STATE_DIR="$dstate" \
+    zsh "$REPO/install.sh" --uninstall >"$d/out" 2>&1; rc=$?
+  (( rc == 0 )) && grep -qF "$d/state-link is a symlink to $want, which does not exist now" "$d/out" \
+    && ok "dangling-$dspell uninstall: names where the link led and exits 0" \
+    || { fail "dangling-$dspell uninstall rc=$rc"; cat "$d/out" }
+  grep -qF "To remove those too:" "$d/out" \
+    && ok "dangling-$dspell uninstall: prints the report in full" \
+    || { fail "dangling-$dspell uninstall: report cut short"; cat "$d/out" }
+  rm_line="$(grep -F '  rm -rf ' "$d/out")"
+  eval "$rm_line"
+  [[ ! -L "$d/state-link" ]] \
+    && ok "dangling-$dspell uninstall: the printed rm removes the link" \
+    || { fail "dangling-$dspell uninstall: the printed rm left the link behind"; cat "$d/out" }
+done
+
+# A dangling usage-receipts link is named on the report and removed by the
+# printed cleanup like a dangling state root: a path that tests as a symlink and
+# not as a directory is still one the uninstall must name (#219).
+d=$(fresh_env uninstall_usage_dangling)
 run_installer "$d" >/dev/null
-ln -s "$d/unmounted/state" "$d/state-link"
-env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" CCMORPH_STATE_DIR="$d/state-link" \
+link="$d/home/.local/state/ccmorph"
+mkdir -p "${link:h}"
+ln -s "$d/unmounted/usage" "$link"
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
   zsh "$REPO/install.sh" --uninstall >"$d/out" 2>&1; rc=$?
-(( rc == 0 )) && grep -qF "$d/state-link is a symlink to $d/unmounted/state, which cannot be reached now" "$d/out" \
-  && ok "dangling-link uninstall: names where the link led and exits 0" \
-  || { fail "dangling-link uninstall rc=$rc"; cat "$d/out" }
+(( rc == 0 )) && grep -qxF "  $link  (usage receipts)" "$d/out" \
+  && ok "dangling-usage uninstall: names the usage link on the report" \
+  || { fail "dangling-usage uninstall rc=$rc"; cat "$d/out" }
+grep -qF "$link is a symlink to $d/unmounted/usage, which does not exist now" "$d/out" \
+  && ok "dangling-usage uninstall: says where the link led" \
+  || { fail "dangling-usage uninstall: link named nowhere"; cat "$d/out" }
+rm_line="$(grep -F '  rm -rf ' "$d/out")"
+eval "$rm_line"
+[[ ! -L "$link" ]] \
+  && ok "dangling-usage uninstall: the printed rm removes the link" \
+  || { fail "dangling-usage uninstall: the printed rm left the link behind"; cat "$d/out" }
+
+# A link whose target cannot be asked is not a dangling link (the #204 rule):
+# a mount answering EACCES here, a stalled volume in the field, means nothing in
+# it could be read. The report must say so, count no profiles as fact, name the
+# target unread on the rm line, and leave the link (#219).
+d=$(fresh_env uninstall_rm_unreached)
+run_installer "$d" >/dev/null
+data="$d/locked/state"
+mkdir -p "$data/profiles/team"
+print -r -- 'type=apikey' > "$data/team.conf"
+ln -s "$data" "$d/state-link"
+chmod 000 "$d/locked"
+if [[ -r "$d/locked" ]]; then
+  # Running as root reads through mode 000 and the stat cannot be made to fail.
+  chmod 755 "$d/locked"
+  ok "unreached-link uninstall: not run, this user reads through mode 000"
+else
+  env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" CCMORPH_STATE_DIR="$d/state-link" \
+    zsh "$REPO/install.sh" --uninstall >"$d/out" 2>&1; rc=$?
+  chmod 755 "$d/locked"   # before any assert: the case dir must stay deletable
+  (( rc == 0 )) && ok "unreached-link uninstall: exits 0" || { fail "unreached-link uninstall rc=$rc"; cat "$d/out" }
+  grep -qxF "$d/state-link is a symlink to $data, which could not be reached (EACCES): nothing in it could be read or counted above, and the rm names it unread; the link stays: it is yours to remove." "$d/out" \
+    && ok "unreached-link uninstall: says the target could not be reached" \
+    || { fail "unreached-link uninstall: report line wrong"; cat "$d/out" }
+  grep -qF "does not exist now" "$d/out" \
+    && { fail "unreached-link uninstall: reported as dangling"; cat "$d/out" } \
+    || ok "unreached-link uninstall: not reported as dangling"
+  grep -qF "0 profiles" "$d/out" \
+    && { fail "unreached-link uninstall: counted profiles it could not read"; cat "$d/out" } \
+    || ok "unreached-link uninstall: counts no profiles it could not read"
+  grep -qxF "  $data  (not read, so its profiles, credentials and session history are not counted)" "$d/out" \
+    && ok "unreached-link uninstall: names the target as unread" \
+    || { fail "unreached-link uninstall: root line wrong"; cat "$d/out" }
+  rm_line="$(grep -F '  rm -rf ' "$d/out")"
+  [[ "$rm_line" == *" $data"* && "$rm_line" != *"$d/state-link"* ]] \
+    && ok "unreached-link uninstall: the rm names the target, never the link" \
+    || { fail "unreached-link uninstall: rm line wrong: $rm_line"; cat "$d/out" }
+  eval "$rm_line"
+  [[ ! -e "$data" ]] \
+    && ok "unreached-link uninstall: once the target answers, the printed rm removes it" \
+    || fail "unreached-link uninstall: the printed rm left $data behind"
+fi
 
 fi
 

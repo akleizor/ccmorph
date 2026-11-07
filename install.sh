@@ -206,19 +206,50 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   # survive it, removed as a link and named nowhere (#187, #207). Only the last
   # component matters: rm reaches through a symlinked parent, and the user's own
   # spelling stays readable. A link is named beside the cleanup, because it
-  # outlives what it points at; one that dangles has only itself to remove, and
-  # says where its target was.
+  # outlives what it points at. Only ENOENT, ENOTDIR and ELOOP prove a link
+  # dangles and has only itself to remove — the #204 rule, `.github/REVIEW.md`.
+  # Any other failed stat means the target could not be asked (EACCES, a stalled
+  # volume): nothing in it could be read or counted, the rm names where the link
+  # leads unread, and the link stays, or following the cleanup detaches what the
+  # mount still holds and names it nowhere (#219).
   typeset -U _un_links
   _un_links=()
+  typeset -U _un_unread
+  _un_unread=()
+  # `$ERRNO`/`$errnos` name the stat failure; without the module they stay empty,
+  # which counts as "could not be asked", never as proof of a dangling link.
+  zmodload zsh/system 2>/dev/null || :
   _un_unlinked() {
-    local p="${1:a}"
+    local p="${1:a}" t n first="" e=""
     REPLY="$1"
     [[ -L "$p" ]] || return 0
+    ERRNO=0
     if [[ -e "$p" ]]; then
       REPLY="${p:A}"
       _un_links+=("$p is a symlink to $REPLY and stays: it is yours to remove.")
+      return 0
+    fi
+    # Read before another command can overwrite it.
+    if (( ERRNO )); then e="${errnos[ERRNO]-}"; fi
+    # Follow the link a hop at a time: `${p:A}` cannot resolve a target it
+    # cannot read and would answer with the link itself, while readlink names
+    # each hop without touching the target. 40 hops is the kernel's own limit.
+    t="$p"
+    repeat 40; do
+      [[ -L "$t" ]] || break
+      n="$(command readlink "$t" 2>/dev/null || :)"
+      [[ -n "$n" ]] || break
+      [[ "$n" == /* ]] || n="${t:h}/$n"
+      [[ -n "$first" ]] || first="$n"
+      t="$n"
+    done
+    if [[ "$e" == (ENOENT|ENOTDIR|ELOOP) ]]; then
+      REPLY="$p"
+      _un_links+=("$p is a symlink to ${first:-an unreadable target}, which does not exist now: nothing there is counted above, and the rm removes only the link.")
     else
-      _un_links+=("$p is a symlink to $(command readlink "$p"), which cannot be reached now: nothing there is counted above, and the rm removes only the link.")
+      REPLY="${t:a}"
+      _un_unread+=("$REPLY")
+      _un_links+=("$p is a symlink to ${first:-an unreadable target}, which could not be reached (${e:-unknown error}): nothing in it could be read or counted above, and the rm names it unread; the link stays: it is yours to remove.")
     fi
   }
   _un_unlinked "$_un_root"; _un_named="$REPLY"
@@ -234,7 +265,12 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   # later.
   [[ -d "$CONFIG_DIR" ]] && (( _un_redirected )) && _un_rm+=("$_un_code_dir")
   _un_state_named="$_un_state"
-  if [[ -d "$_un_state" ]]; then
+  # The usage-receipts root gets the state root's treatment whether it answers or
+  # not: a dangling link has receipts nowhere, but it is on the report and the rm
+  # line all the same, or the link is named nowhere and removed by nothing (#219).
+  _un_has_state=0
+  [[ -d "$_un_state" || -L "$_un_state" ]] && _un_has_state=1
+  if (( _un_has_state )); then
     _un_unlinked "$_un_state"; _un_state_named="$REPLY"
     _un_rm+=("$_un_state_named")
   fi
@@ -250,15 +286,20 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     _un_keychain=(${_un_keychain#*=keychain:})
     _un_keychain=(${_un_keychain:#})
   fi
+  # The profile count is a fact only when the root could be read. A link whose
+  # target could not be asked has an unknown count: printing 0 as fact is how the
+  # profiles were detached and named nowhere before (#219).
+  _un_root_label="${#_un_profiles} profiles, their credentials and session history"
+  (( ${_un_unread[(Ie)$_un_named]:-0} )) && _un_root_label="not read, so its profiles, credentials and session history are not counted"
   print -r -- "Kept, because they are yours:"
-  print -r -- "  $_un_named  (${#_un_profiles} profiles, their credentials and session history)"
+  print -r -- "  $_un_named  ($_un_root_label)"
   # The code dir's label: code alone — unless the redirect came later and left
   # profiles in it, in which case they are named beside the code, or following
   # the rm below deletes a profile the report never counted (#165).
   _un_code="the installed code"
   (( ${#_un_prior} )) && _un_code="the installed code, and ${#_un_prior} profile(s), their credentials and session history, from before the state root was redirected"
   [[ -d "$CONFIG_DIR" ]] && (( _un_redirected )) && print -r -- "  $_un_code_dir  ($_un_code)"
-  [[ -d "$_un_state" ]] && print -r -- "  $_un_state_named  (usage receipts)"
+  (( _un_has_state )) && print -r -- "  $_un_state_named  (usage receipts)"
   (( ${#_un_keychain} )) && print -r -- "  login keychain  (${#_un_keychain} ccmorph item(s))"
   print -r -- "To remove those too:"
   print -r -- "  rm -rf" "${(q-)_un_rm[@]}"
