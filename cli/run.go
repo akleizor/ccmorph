@@ -92,7 +92,7 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 	routed, isProvider, needsAdapter := false, false, false
 	if name != "" {
 		if !l.exists(name) {
-			l.err("no profile '" + name + "'")
+			l.noProfile(name)
 			return nil, 1
 		}
 		f, ok := l.read(name)

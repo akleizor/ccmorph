@@ -213,7 +213,7 @@ func (l *launcher) runVerb(args []string) int {
 				l.err("invalid profile name '" + args[0] + "'")
 				return 2
 			}
-			l.err("no profile '" + args[0] + "'. Run: ccmorph list")
+			l.noProfile(args[0])
 			return 1
 		}
 	}
@@ -265,6 +265,18 @@ func (l *launcher) probeVerb(args []string) int {
 		a, args = append(a, "--profile", args[0]), args[1:]
 	}
 	a = append(a, args...)
+	for i, v := range a {
+		p := ""
+		if v == "--profile" && i+1 < len(a) {
+			p = a[i+1]
+		} else if strings.HasPrefix(v, "--profile=") {
+			p = strings.TrimPrefix(v, "--profile=")
+		}
+		if p != "" && profile.ValidName(p) && !l.exists(p) {
+			l.noProfile(p)
+			return 1
+		}
+	}
 	if mi := lastIndex(a, "--model"); mi >= 0 && (mi+1 >= len(a) || a[mi+1] == "" || interactive(a[mi+1])) {
 		pi := lastIndex(a, "--profile")
 		if pi < 0 || pi+1 >= len(a) {

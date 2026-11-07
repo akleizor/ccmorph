@@ -27,6 +27,10 @@ func (l *launcher) add(args []string) int {
 		}
 		name = v
 	}
+	if name == "" {
+		l.err("usage: ccmorph add <profile>")
+		return 1
+	}
 	if !profile.ValidName(name) {
 		l.err("invalid name — use alphanumeric/underscore")
 		return 1
@@ -442,8 +446,7 @@ func (l *launcher) login(args []string) int {
 		return 1
 	}
 	if !l.exists(name) {
-		l.err("no profile '" + name + "'")
-		l.accountsHint()
+		l.noProfile(name)
 		return 1
 	}
 	f, ok := l.readRaw(name)

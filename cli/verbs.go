@@ -116,6 +116,17 @@ func (l *launcher) accountsHint() {
 	}
 }
 
+// noProfileMsg is the one answer every verb gives a name with no .conf: the
+// profiles that do exist, or how to make the first.
+func (l *launcher) noProfileMsg(name string) string {
+	if names := l.confNames(); len(names) > 0 {
+		return "no profile '" + name + "'. Profiles: " + strings.Join(names, " ")
+	}
+	return "no profile '" + name + "'. No profiles yet — run: ccmorph add <name>"
+}
+
+func (l *launcher) noProfile(name string) { l.err(l.noProfileMsg(name)) }
+
 func (l *launcher) list() int {
 	active, found := l.active(), false
 	for _, n := range l.confNames() {
@@ -185,8 +196,7 @@ func (l *launcher) cred(args []string) int {
 		return 1
 	}
 	if !l.exists(name) {
-		l.err("no profile '" + name + "'")
-		l.accountsHint()
+		l.noProfile(name)
 		return 1
 	}
 	f, ok := l.readRaw(name)
@@ -232,7 +242,7 @@ func (l *launcher) use(args []string) int {
 		return 1
 	}
 	if !l.exists(name) {
-		l.err("no profile '" + name + "'. Run: ccmorph list")
+		l.noProfile(name)
 		return 1
 	}
 	f, ok := l.read(name)
@@ -278,7 +288,7 @@ func (l *launcher) modelMenu(args []string) int {
 		return 1
 	}
 	if !l.exists(name) {
-		l.err("no profile '" + name + "'. Run: ccmorph list")
+		l.noProfile(name)
 		return 1
 	}
 	v, ok := l.pickValue("model", name)

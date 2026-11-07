@@ -63,7 +63,7 @@ func (l *launcher) hop(args []string) int {
 		return 1
 	}
 	if !l.exists(name) {
-		l.err("no profile '" + name + "'. Run: ccmorph list")
+		l.noProfile(name)
 		return 1
 	}
 	if _, ok := l.read(name); !ok {

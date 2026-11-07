@@ -38,7 +38,7 @@ func (l *launcher) models(args []string) int {
 		return 1
 	}
 	if !l.exists(name) {
-		l.err("no profile '" + name + "'. Run: ccmorph list")
+		l.noProfile(name)
 		return 1
 	}
 	listing, ok := l.modelsJSON(name)
