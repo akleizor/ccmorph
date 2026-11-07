@@ -130,7 +130,7 @@ func (l *launcher) addSub(name string) int {
 		l.err("could not save profile '" + name + "'")
 		return 1
 	}
-	if !l.setupDir(name, "sub") {
+	if !l.setupDir(name, "sub", liveNote) {
 		l.rollback(name)
 		return 1
 	}
@@ -189,7 +189,7 @@ func (l *launcher) addToken(name string) int {
 		l.err("could not save profile '" + name + "'")
 		return 1
 	}
-	if _, ok := l.readRaw(name); !ok || !l.setupDir(name, "token") {
+	if _, ok := l.readRaw(name); !ok || !l.setupDir(name, "token", liveNote) {
 		l.rollback(name)
 		return 1
 	}
@@ -292,7 +292,7 @@ func (l *launcher) addAPIKey(name string) int {
 		l.err("could not save profile '" + name + "'")
 		return 1
 	}
-	if _, ok := l.read(name); !ok || !l.setupDir(name, "apikey") {
+	if _, ok := l.read(name); !ok || !l.setupDir(name, "apikey", liveNote) {
 		l.rollback(name)
 		return 1
 	}
@@ -321,7 +321,7 @@ func (l *launcher) addProvider(name, provider string) int {
 		os.RemoveAll(filepath.Join(l.dir, "auth", name))
 		return 1
 	}
-	if _, ok := l.readRaw(name); !ok || !l.setupDir(name, "provider") {
+	if _, ok := l.readRaw(name); !ok || !l.setupDir(name, "provider", liveNote) {
 		l.rollback(name)
 		return 1
 	}

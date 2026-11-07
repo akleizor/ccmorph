@@ -1,6 +1,7 @@
 package util
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -562,8 +563,10 @@ func TestHoldLiveGivesUpOnAStuckHolder(t *testing.T) {
 	}
 	lockWait = 0
 	t.Cleanup(func() { lockWait = 2 * time.Second })
-	if f := HoldLive(profiles, "p", nil); f != nil {
-		t.Fatal("a stuck holder must not be waited on past the deadline")
+	// #217: the nil says the lock was not taken, and the error says why — a
+	// stuck holder, not a lock file that could not be made.
+	if f, why := HoldLive(profiles, "p", nil); f != nil || !errors.Is(why, ErrLiveHeld) {
+		t.Fatalf("a stuck holder must not be waited on past the deadline: %v", why)
 	}
 	var errs []string
 	if !SetupProfile(profiles, "p", "proxy", func(string) {}, func(m string) { errs = append(errs, m) }) {
@@ -571,6 +574,28 @@ func TestHoldLiveGivesUpOnAStuckHolder(t *testing.T) {
 	}
 	if fi, err := os.Lstat(projects); err != nil || fi.Mode()&os.ModeSymlink != 0 {
 		t.Fatalf("a stuck holder must not have its history swapped either: %v %v", fi, err)
+	}
+}
+
+// #217: HoldLive's nil meant one thing to every caller — a holder — so a lock
+// file that could not be made at all was reported as a stuck launch. The error
+// tells the two apart.
+func TestHoldLiveNamesALockFileItCannotMake(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	profiles := filepath.Join(home, ".config/ccmorph/profiles")
+	if err := os.MkdirAll(filepath.Dir(profiles), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(profiles), ".locks"), []byte("not a dir\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, why := HoldLive(profiles, "p", nil)
+	if f != nil {
+		t.Fatal("a lock file that cannot be made must not be held")
+	}
+	if why == nil || errors.Is(why, ErrLiveHeld) {
+		t.Fatalf("an unmakeable lock file is not a stuck holder: %v", why)
 	}
 }
 

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -396,7 +397,8 @@ func TestSettingsArgvCarriesTheHookOnlyWhenOneIsSet(t *testing.T) {
 // #205: a launch that cannot take its profile's live lock (a stuck exclusive
 // holder outlasted the wait) discarded the nil HoldLive returned and started
 // claude with no lock while the other launch's merge was still in flight. It
-// now refuses to start, and says why.
+// now refuses to start, and says why. #217 kept this on the paths that start
+// claude only: setupDir's other callers no longer refuse.
 func TestSetupDirRefusesALaunchWithoutItsLiveLock(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -415,11 +417,68 @@ func TestSetupDirRefusesALaunchWithoutItsLiveLock(t *testing.T) {
 	}
 	t.Cleanup(util.SetLockWait(0))
 	l := &launcher{profileDirs: profiles}
-	if l.setupDir("p", "proxy") {
+	if l.setupDir("p", "proxy", liveRefuse) {
 		t.Fatal("a launch that could not take its live lock must not start claude")
 	}
 	if _, err := os.Stat(filepath.Join(profiles, "p")); !os.IsNotExist(err) {
 		t.Fatalf("a refused launch must not provision the profile either: %v", err)
+	}
+}
+
+// #217: the refusal #205 wired into setupDir ran in every caller, so `use`
+// failed over a lock it never needed and `add` rolled back the profile it had
+// just written. The verbs that start no session proceed under a lock they
+// cannot take: silently for `use`, which only sets state, and naming the real
+// cause for `add`, whose profile must survive a stuck holder or a lock file
+// that cannot be made.
+func TestSetupDirProceedsForVerbsThatStartNoSession(t *testing.T) {
+	for _, tc := range []struct {
+		policy   livePolicy
+		wantNote bool
+	}{
+		{liveSilent, false},
+		{liveNote, true},
+	} {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		profiles := filepath.Join(home, ".config/ccmorph/profiles")
+		lock := util.LiveLockPath(profiles, "p")
+		if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		holder, err := os.OpenFile(lock, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := syscall.Flock(int(holder.Fd()), syscall.LOCK_EX); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(util.SetLockWait(0))
+		l := &launcher{profileDirs: profiles}
+		saved := os.Stderr
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Stderr = w
+		ok := l.setupDir("p", "proxy", tc.policy)
+		w.Close()
+		os.Stderr = saved
+		noteBytes, _ := io.ReadAll(r)
+		holder.Close()
+		if !ok {
+			t.Fatalf("policy %d: a verb that starts no session must proceed without the lock", tc.policy)
+		}
+		note := string(noteBytes)
+		if tc.wantNote && note == "" {
+			t.Fatalf("policy %d: the cause must be named, not passed silently", tc.policy)
+		}
+		if !tc.wantNote && note != "" {
+			t.Fatalf("policy %d: a verb that only sets state must say nothing: %q", tc.policy, note)
+		}
+		if fi, err := os.Stat(filepath.Join(profiles, "p")); err != nil || !fi.IsDir() {
+			t.Fatalf("policy %d: the profile must be provisioned, not refused: %v", tc.policy, err)
+		}
 	}
 }
 
@@ -448,10 +507,10 @@ func TestSetupDirReleasesTheLiveLockOfTheProfileAHopLeaves(t *testing.T) {
 		util.ReleaseLive(profiles, "b")
 	})
 	l := &launcher{profileDirs: profiles}
-	if !l.setupDir("a", "proxy") {
+	if !l.setupDir("a", "proxy", liveRefuse) {
 		t.Fatal("the first launch must start")
 	}
-	if !l.setupDir("b", "proxy") {
+	if !l.setupDir("b", "proxy", liveRefuse) {
 		t.Fatal("the hop target must start")
 	}
 	if !canTakeExclusive(t, util.LiveLockPath(profiles, "a")) {

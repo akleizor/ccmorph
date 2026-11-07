@@ -124,7 +124,7 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 	}
 	unlock, serialized := setupSerialize(profiles, name)
 	defer unlock()
-	live := HoldLive(profiles, name, log)
+	live, _ := HoldLive(profiles, name, log)
 	// #185: the merge runs only while this launch is the sole holder of the
 	// profile's live lock. Another launch may have registered after the pid
 	// sample below, or not yet at all; the lock covers its whole session.
@@ -402,6 +402,12 @@ func ReleaseLive(profiles, name string) {
 	}
 }
 
+// ErrLiveHeld is why HoldLive returned no lock: another launch holds the
+// profile's live lock exclusively and outlasted the wait (#205). Any other
+// error means the lock file itself could not be made or opened (#217), so a
+// caller's message can tell a stuck holder from that.
+var ErrLiveHeld = errors.New("another launch is holding the live lock")
+
 // HoldLive takes the profile's live lock shared and keeps it for the life of
 // the process. The launcher calls it before a session starts, so the lock covers
 // the session from before claude writes sessions/<pid>.json until claude exits:
@@ -410,22 +416,24 @@ func ReleaseLive(profiles, name string) {
 // line in the log, for that merge to finish — a merge is file I/O only and
 // never a prompt, so the wait is brief. The descriptor is cached per lock path,
 // so repeated calls in one process share it (an exclusive take is an upgrade of
-// this same descriptor). nil means the lock could not be taken; the caller must
-// then refuse to start the session rather than run it through the window #185
-// covers (#205).
-func HoldLive(profiles, name string, log func(string)) *os.File {
+// this same descriptor). A nil file means the lock could not be taken, and the
+// returned error names why — ErrLiveHeld for a holder that outlasted the wait,
+// the failure of making or opening the lock file otherwise — so the caller that
+// must refuse to start the session rather than run it through the window #185
+// covers (#205) can say which of the two it was (#217).
+func HoldLive(profiles, name string, log func(string)) (*os.File, error) {
 	lock := LiveLockPath(profiles, name)
 	liveMu.Lock()
 	defer liveMu.Unlock()
 	if f, ok := liveFDs[lock]; ok {
-		return f
+		return f, nil
 	}
-	if os.MkdirAll(filepath.Dir(lock), 0o700) != nil {
-		return nil
+	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+		return nil, err
 	}
 	f, err := os.OpenFile(lock, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	if syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB) != nil {
 		if log != nil {
@@ -433,11 +441,11 @@ func HoldLive(profiles, name string, log func(string)) *os.File {
 		}
 		if !flockWithin(f, syscall.LOCK_SH) {
 			f.Close()
-			return nil // a stuck holder: the caller must not start a session (#205)
+			return nil, ErrLiveHeld // a stuck holder: the caller must not start a session (#205)
 		}
 	}
 	liveFDs[lock] = f
-	return f
+	return f, nil
 }
 
 // setupSerialize takes the profile's setup lock — the same flock rm, set and
