@@ -9,6 +9,13 @@
 
 ### Fixed
 
+- **A named profile is not carried off by Remote Control.** `ccmorph run <profile>`
+  started inside a Remote Control session now runs on that profile's own route and
+  credential. It inherited the session's loopback proxy, so a request for one
+  profile's model reached the session's route instead (a Fable request on a
+  subscription profile was served by a gateway's mapped model) and its usage was
+  recorded under the session's profile. A launch with no profile still follows the
+  session's route, and a loopback proxy outside Remote Control is kept.
 - **One response is one usage row, whoever recorded it.** A reply the relaying
   adapter wrote before its transcript line landed is no longer written again by
   the hook — including a reply that lands long after its turn began, and one the

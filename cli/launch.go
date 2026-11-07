@@ -32,6 +32,7 @@ import (
 type launcher struct {
 	dir, libDir, libexec, profileDirs, policy, logPath string
 	tuning, profileEnv, launchEnv, backend, mapping    []string
+	unset                                              []string // this launch's extra keys for claude-session to clear
 	logSet                                             bool
 	launcherPID                                        int
 	liveProfile                                        string // whose live lock this process holds (#205)

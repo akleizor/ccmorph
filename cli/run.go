@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -274,10 +275,11 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 			l.err("profile '" + name + "' produced no environment")
 			return fail()
 		}
-		if !isProvider && !needsAdapter {
-			for _, line := range l.nestedEdgeEnv("CLAUDE_CODE_DISABLE_ADVISOR_TOOL", "CLAUDE_CODE_MODEL_CAPABILITIES") {
-				penv = append(envDrop(penv, strings.SplitN(line, "=", 2)[0]), line)
-			}
+		// A named profile runs on its own route and credential: inside the Remote Control
+		// edge its loopback proxy would carry this launch to the edge's route instead.
+		l.unset = nil
+		if !isProvider && !needsAdapter && l.inEdge() {
+			l.unset = []string{"HTTPS_PROXY", "https_proxy"}
 		}
 		var ok2 bool
 		if penv, ok2 = l.contextEnv(name, penv, explicit, defaultModel, launchModel, resumeCarried, needsAdapter, isProvider, subcommand); !ok2 {
@@ -306,6 +308,7 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 		if resume != "" {
 			l.carrySession(resume, filepath.Join(os.Getenv("HOME"), ".claude", "projects"))
 		}
+		l.unset = nil
 		rcClaude = l.runClaude(append(edge, common...), args)
 		if l.forwardedSig() != 0 {
 			os.Remove(relayFile)
@@ -823,18 +826,31 @@ var refreshOwnedPrices = func(pricing string) { go shim.RefreshOwnedPrices(prici
 
 var loopbackProxy = regexp.MustCompile(`^http://127\.0\.0\.1:([0-9]+)/?$`)
 
-// nestedEdgeEnv is _ccm_nested_edge_env: inside the Remote Control edge, the
-// route keys it named for a native launch.
-func (l *launcher) nestedEdgeEnv(keys ...string) []string {
+// loopbackHTTPSProxy: HTTPS_PROXY (or https_proxy) is http://127.0.0.1:<port>.
+func loopbackHTTPSProxy() bool {
 	proxy := os.Getenv("HTTPS_PROXY")
 	if proxy == "" {
 		proxy = os.Getenv("https_proxy")
 	}
 	m := loopbackProxy.FindStringSubmatch(proxy)
 	if m == nil {
-		return nil
+		return false
 	}
-	if p, ok := posInt(m[1]); !ok || p > 65535 {
+	p, ok := posInt(m[1])
+	return ok && p <= 65535
+}
+
+// inEdge: this process runs inside a Remote Control bridge session, whose add-on
+// sets CCMORPH_EDGE_ROUTE_ENV beside its loopback proxy. A loopback proxy alone may
+// be the user's own, which a launch must keep.
+func (l *launcher) inEdge() bool {
+	return os.Getenv("CCMORPH_EDGE_ROUTE_ENV") != "" && loopbackHTTPSProxy()
+}
+
+// nestedEdgeEnv is _ccm_nested_edge_env: inside the Remote Control edge, the
+// route keys it named for a native launch.
+func (l *launcher) nestedEdgeEnv(keys ...string) []string {
+	if !loopbackHTTPSProxy() {
 		return nil
 	}
 	var out []string
@@ -1005,7 +1021,7 @@ func (l *launcher) runClaude(env, args []string) int {
 	}
 	defer os.Remove(envFile) // the helper removes it on read; this is the backstop
 	argv := append([]string{"util", "claude-session", strings.Join(l.tuning, " "), strings.Join(l.profileEnv, " "),
-		strings.Join(l.launchEnv, " "), strings.Join(l.backend, " "), envFile}, "--")
+		strings.Join(l.launchEnv, " "), strings.Join(append(slices.Clone(l.backend), l.unset...), " "), envFile}, "--")
 	argv = append(argv, args...)
 	cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), argv...)
 	// The helper's own key names the run/ root the env file above already used; the
