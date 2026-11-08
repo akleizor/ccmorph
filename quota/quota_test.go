@@ -353,14 +353,7 @@ func TestQuotaSpend(t *testing.T) {
 	if err := os.MkdirAll(usage, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	receipt := func(n, profile, stamp string, cost, estimate *float64, complete bool) {
-		u := map[string]any{}
-		if cost != nil {
-			u["cost"] = *cost
-		}
-		if estimate != nil {
-			u["estimated_cost"] = *estimate
-		}
+	receipt := func(n, profile, stamp string, u map[string]any, complete bool) {
 		raw, _ := json.Marshal(map[string]any{
 			"complete": complete, "profile": profile, "timestamp": stamp, "usage": u,
 		})
@@ -368,15 +361,20 @@ func TestQuotaSpend(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	receipt("1", "gw", "2026-10-20T09:00:00Z", ptr(1.2), nil, true)    // today, billed
-	receipt("2", "gw", "2026-10-02T00:00:00Z", ptr(3.3), nil, true)    // earlier this month
-	receipt("3", "gw", "2026-10-20T10:00:00Z", nil, ptr(0.5), true)    // today, estimated
-	receipt("4", "gw", "2026-09-15T00:00:00Z", ptr(9.9), nil, true)    // last month
-	receipt("5", "other", "2026-10-20T09:00:00Z", ptr(7.0), nil, true) // another profile
-	receipt("6", "gw", "2026-10-20T09:30:00Z", ptr(4.0), nil, false)   // incomplete
-	receipt("7", "cap", "2026-10-05T00:00:00Z", ptr(100.0), nil, true) // a budget account
+	receipt("1", "gw", "2026-10-20T09:00:00Z", map[string]any{"cost": 1.2}, true)           // today, billed
+	receipt("2", "gw", "2026-10-02T00:00:00Z", map[string]any{"cost": 3.3}, true)           // earlier this month
+	receipt("3", "gw", "2026-10-20T10:00:00Z", map[string]any{"estimated_cost": 0.5}, true) // today, estimated
+	receipt("4", "gw", "2026-09-15T00:00:00Z", map[string]any{"cost": 9.9}, true)           // last month
+	receipt("5", "other", "2026-10-20T09:00:00Z", map[string]any{"cost": 7.0}, true)        // another profile
+	receipt("6", "gw", "2026-10-20T09:30:00Z", map[string]any{"cost": 4.0}, false)          // incomplete
+	receipt("7", "cap", "2026-10-05T00:00:00Z", map[string]any{"cost": 100.0}, true)        // a budget account
+	// Turns no price covered (#234): tokens but no cost, one on gw among priced
+	// turns, a profile whose every turn is unpriced, and one never launched.
+	receipt("8", "gw", "2026-10-20T11:00:00Z", map[string]any{"input_tokens": 120, "output_tokens": 14}, true)
+	receipt("9", "gw2", "2026-10-20T09:30:00Z", map[string]any{"input_tokens": 100, "cache_read_input_tokens": 20, "output_tokens": 14}, true)
+	receipt("10", "gw2", "2026-10-05T08:00:00Z", map[string]any{"input_tokens": 100, "output_tokens": 20}, true)
 
-	in := "gw\tgateway\t\t\ncap\tgateway\t\t500\n"
+	in := "gw\tgateway\t\t\ncap\tgateway\t\t500\ngw2\tgateway\t\t\nwork\tgateway\t\t\n"
 	out, _, code := run(t, nil, in)
 	if code != 0 {
 		t.Fatalf("exit %d", code)
@@ -390,11 +388,17 @@ func TestQuotaSpend(t *testing.T) {
 		"API and gateway profiles",
 		"gw",
 		"  today $1.70 · month $5.00 (est.)",
+		"  1 turn with no price · cost unknown",
+		"gw2",
+		"  2 turns · 254 tokens this month · cost unknown",
+		"work",
+		"  not used this month",
 		"",
 	}, "\n")
 	if out != want {
 		t.Fatalf("\n got %q\nwant %q", out, want)
 	}
+	checkWidth(t, out)
 
 	jout, _, _ := run(t, []string{"--json"}, in)
 	var doc struct {
@@ -407,12 +411,26 @@ func TestQuotaSpend(t *testing.T) {
 	if gw.Kind != "gateway" || gw.Spend == nil || gw.Spend.TodayUSD != 1.7 || gw.Spend.MonthUSD != 5.0 || !gw.Spend.Estimated {
 		t.Fatalf("gw entry %+v", gw)
 	}
+	// The same turn and token counts the text shows, per window (#234).
+	if gw.Spend.TodayTurns != 3 || gw.Spend.MonthTurns != 4 || gw.Spend.TodayTokens != 134 || gw.Spend.MonthTokens != 134 || gw.Spend.UnpricedTurns != 1 {
+		t.Fatalf("gw counts %+v", gw.Spend)
+	}
 	cap := doc.Profiles[1]
 	if cap.Kind != "budget" || cap.Spend == nil || cap.Spend.BudgetUSD == nil || *cap.Spend.BudgetUSD != 500 {
 		t.Fatalf("cap entry %+v", cap)
 	}
 	if len(cap.Windows) != 1 || cap.Windows[0].ID != "month" || cap.Windows[0].Used != 0.2 {
 		t.Fatalf("budget window %+v", cap.Windows)
+	}
+	gw2 := doc.Profiles[2]
+	if gw2.Spend == nil || gw2.Spend.TodayUSD != 0 || gw2.Spend.MonthUSD != 0 ||
+		gw2.Spend.TodayTurns != 1 || gw2.Spend.MonthTurns != 2 ||
+		gw2.Spend.TodayTokens != 134 || gw2.Spend.MonthTokens != 254 || gw2.Spend.UnpricedTurns != 2 {
+		t.Fatalf("gw2 entry %+v", gw2.Spend)
+	}
+	work := doc.Profiles[3]
+	if work.Spend == nil || work.Spend.MonthTurns != 0 || work.Spend.MonthTokens != 0 || work.Spend.UnpricedTurns != 0 {
+		t.Fatalf("work entry %+v", work.Spend)
 	}
 }
 
@@ -662,7 +680,7 @@ func TestQuotaBalance(t *testing.T) {
 		t.Fatalf("sent %v", sent)
 	}
 	out, _, _ := run(t, nil, "ds\tgateway\thttps://api.deepseek.com/anthropic\t\tsk-ds\n")
-	if want := "API and gateway profiles\nds\n  today $0.00 · month $0.00\n  balance ¥40.75\n"; out != want {
+	if want := "API and gateway profiles\nds\n  not used this month\n  balance ¥40.75\n"; out != want {
 		t.Fatalf("\n got %q\nwant %q", out, want)
 	}
 }

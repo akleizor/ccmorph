@@ -526,6 +526,10 @@ work
 ds
   today $0.20 · month $3.10
   balance ¥40.75
+gw
+  6 turns · 804 tokens this month · cost unknown
+spare
+  not used this month
 ```
 
 A plan tier (Pro, Max 5x, Max 20x, Team, Plus, Pro for Codex) is read from the
@@ -540,6 +544,10 @@ dimmed, with its age ("12 min old"); only a profile never read shows the error. 
 and API keys show today's and this month's billed spend from the receipts at
 `~/.local/state/ccmorph/usage/`, marked `(est.)` when a row carried only a list-price
 estimate, and a profile with `monthly_budget_usd` adds a bar against that budget.
+A turn whose model had no price is never read as free: when no turn of the month carried
+a cost, the profile shows the turns and tokens it served and `cost unknown`; when only
+some did, a second line says how many turns had no price; and a profile with no
+receipts this month says `not used this month`.
 A `sub`, `token` or `provider` profile writes the same receipts: a subscription is not
 billed per token, so its row carries `estimated_cost` at the models.dev list price and
 the screen marks it `(est.)`. `usage_route=direct` turns that off for one profile.

@@ -5,6 +5,19 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
+## Unreleased
+
+### Fixed
+
+- **Unpriced use is not free, and an unused profile says so.** `ccmorph quota`
+  read only the cost fields of a profile's receipts, so a profile whose model
+  had no price showed `today $0.00 · month $0.00` — the same line as a profile
+  never launched. A profile whose turns all carried no cost now shows the turns
+  and tokens it served this month with `cost unknown`; a profile with some priced
+  turns adds a line saying how many had no price; a profile with no receipts this month says
+  `not used this month`. `--json` carries the same counts as `today_turns`,
+  `month_turns`, `today_tokens`, `month_tokens` and `unpriced_turns`.
+
 ## v0.5.4 — 2026-11-08
 
 ### Fixed

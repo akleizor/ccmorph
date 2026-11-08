@@ -70,6 +70,9 @@ func renderEntry(w io.Writer, e Entry, color bool) {
 	}
 	if e.Spend != nil {
 		emit(w, spendLine(e.Spend), color, style)
+		if l := unpricedLine(e.Spend); l != "" {
+			emit(w, l, color, style)
+		}
 	}
 	if e.Balance != "" {
 		emit(w, "  balance "+e.Balance, color, style)
@@ -84,7 +87,17 @@ func windowLine(win Window) string {
 	return fmt.Sprintf("  %-8s %s %4s  %s", win.Label, bar(win.Used), percent(win.Used), resetText(win.ResetsAt))
 }
 
+// spendLine is a gateway or budget profile's use. A price turns into money;
+// without one the turns and tokens still show and the cost says it is unknown,
+// never $0.00; no receipts at all say the profile was not used.
 func spendLine(s *Spend) string {
+	if s.MonthTurns == 0 {
+		return "  not used this month"
+	}
+	if s.UnpricedTurns == s.MonthTurns {
+		return fmt.Sprintf("  %d %s · %d %s this month · cost unknown",
+			s.MonthTurns, plural(int64(s.MonthTurns), "turn"), s.MonthTokens, plural(s.MonthTokens, "token"))
+	}
 	line := fmt.Sprintf("  today $%.2f · month $%.2f", s.TodayUSD, s.MonthUSD)
 	if s.BudgetUSD != nil {
 		line += " of $" + trimFloat(*s.BudgetUSD)
@@ -93,6 +106,24 @@ func spendLine(s *Spend) string {
 		line += " (est.)"
 	}
 	return line
+}
+
+// unpricedLine is the mixed case: some of the month's turns were priced and some
+// were not. It sits on its own line so the money line stays within the width and
+// the note is never truncated away. Empty otherwise.
+func unpricedLine(s *Spend) string {
+	if s.UnpricedTurns == 0 || s.UnpricedTurns >= s.MonthTurns {
+		return ""
+	}
+	return fmt.Sprintf("  %d %s with no price · cost unknown", s.UnpricedTurns, plural(int64(s.UnpricedTurns), "turn"))
+}
+
+// plural is the word for n of it: one turn, two turns.
+func plural(n int64, word string) string {
+	if n == 1 {
+		return word
+	}
+	return word + "s"
 }
 
 func trimFloat(v float64) string {
