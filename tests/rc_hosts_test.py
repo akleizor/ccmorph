@@ -2912,3 +2912,50 @@ def test_a_host_that_loses_its_login_again_is_restarted_at_most_once_per_window(
         fh.write("No access token for session fetch\n")
     m.cycle({repo: h}, [repo], clock[0], state)
     assert len(stops) == 2                     # a new window: one more try
+
+
+def test_the_account_login_is_refreshed_before_it_expires(monkeypatch):
+    """Route sessions never refresh the account login, so the supervisor asks
+    Claude Code to, once it nears expiry, one run at a time, never with the
+    route's credential in the environment."""
+    m = load()
+    left = [3600.0]
+    monkeypatch.setattr(m.time, "time", lambda: 1000.0)
+    monkeypatch.setattr(m, "account_login", lambda: {"expiresAt": (1000.0 + left[0]) * 1000})
+
+    class RC:
+        @staticmethod
+        def default_account():
+            return "acct"
+
+        @staticmethod
+        def profile_env(name):
+            return {"CLAUDE_CONFIG_DIR": f"/p/{name}"}
+    monkeypatch.setattr(m, "rc_module", lambda: RC)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "route-key")
+    runs = []
+
+    class Proc:
+        returncode = 0
+
+        def __init__(self, argv, env, **_):
+            runs.append((argv, env))
+
+        def poll(self):
+            return None
+    monkeypatch.setattr(m.subprocess, "Popen", Proc)
+    clock = m.Clock()
+    m.keep_login_fresh(clock, 0.0)
+    assert runs == []                                   # an hour left: nothing to do
+    left[0] = 300.0
+    m.keep_login_fresh(clock, 1.0)
+    m.keep_login_fresh(clock, 2.0)                      # still running: no second run
+    assert len(runs) == 1
+    argv, env = runs[0]
+    assert argv[:2] == ["claude", "-p"]
+    assert env["CLAUDE_CONFIG_DIR"] == "/p/acct" and "ANTHROPIC_API_KEY" not in env
+    clock.refresher.poll = lambda: 0
+    m.keep_login_fresh(clock, 3.0)                      # done, but within the retry wait
+    assert len(runs) == 1
+    m.keep_login_fresh(clock, 3.0 + m.LOGIN_REFRESH_RETRY)
+    assert len(runs) == 2
