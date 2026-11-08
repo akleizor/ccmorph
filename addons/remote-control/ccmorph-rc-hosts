@@ -45,6 +45,17 @@ REWAKE_AFTER (bridge/reconnect, the call Claude Code itself uses to re-queue a
 session), which spawns it again in a fresh or the kept worktree. The same call
 brings back a session whose turn a host restart cut off (recover_interrupted).
 
+A host can also stay alive and still be unable to log its sessions in: Claude Code
+reads the account token when it starts, and a long-running host kept one the
+keychain had rotated away, so every session it spawned answered with a login error
+while the account profile was logged in and only a restart of that host fixed it
+(#239). Every recovery check reads what each running host printed since it started;
+a login failure there, with the account login still valid, restarts that folder's
+host (stop, then the usual relaunch), so the row and the sessions' ids survive and
+their processes are handed back as above. One restart per host per
+LOGIN_RESTART_AFTER; each event is one log line naming the folder. A logged-out
+account is left alone: /login fixes that, a restart loop does not.
+
 An archived session is retired in two steps. After idle_days (default 1) its kept
 worktree is removed, with its branch; unarchiving still resumes it, in a fresh
 worktree. After purge_days (default 7) the session is deleted from the server and
@@ -125,8 +136,17 @@ LOG_CAP = 5_000_000   # a log past this is rotated to .log.1 (at start, and whil
 # A network outage says "Could not reach the server" and must not match.
 ARCHIVED_SIGNAL = re.compile(
     r"session_not_active|Session not active|not found\. It may have been archived")
+# A login the host itself cannot perform any more (#239): Claude Code says one
+# of these when it has no usable account credential, and every session that host
+# spawns then answers with a login error. A route's own 401 and
+# `StopFailure:authentication_failed` are deliberately absent: a key the route
+# rejects is not fixed by restarting the host.
+LOGIN_LOST = re.compile(
+    r"No access token for session fetch|Could not resolve authentication method"
+    r"|\[Bootstrap\] Skipped: no usable OAuth")
 RECOVER_EVERY = 20     # seconds between unarchive checks: one list call
 REWAKE_AFTER = 600     # seconds before the same processless session is handed back again
+LOGIN_RESTART_AFTER = 600   # seconds before the same host is restarted for its login again
 TAIL = 64_000          # bytes of a log worth reading: what a bridge printed last
 
 
@@ -272,6 +292,8 @@ class Host:
         self.edge = False                   # the route's shared adapter+proxy
         self.backoff = BACKOFF_MIN
         self.next_try = 0.0
+        self.log_marks: dict[Path, int] = {}   # bytes of each log owned by the last start
+        self.login_restarted = float("-inf")    # when this host was last restarted for its login
         name = re.sub(r"[^A-Za-z0-9]+", "-", folder.replace(str(Path.home()), "~")).strip("-")
         self.logfile = LOGS / f"{name}.log"
         self.debugfile = LOGS / f"{name}.debug.log"
@@ -288,6 +310,45 @@ class Host:
         """
         logs = [self.logfile, *self.debug_logs()]   # the verdict may land in either
         return any(ARCHIVED_SIGNAL.search(tail(f)) for f in logs)
+
+    def mark_logs(self) -> None:
+        """Remember where each of this host's logs ended, so lost_login() reads
+        only what this run of the host printed: the files outlive a restart."""
+        marks = {}
+        for f in (self.logfile, *self.debug_logs()):
+            try:
+                marks[f] = f.stat().st_size
+            except OSError:
+                continue
+        self.log_marks = marks
+
+    def lost_login(self) -> str | None:
+        """The login failure this run of the host printed, or None.
+
+        A host long enough up keeps a stale account token after the keychain
+        entry rotates, then spawns sessions that answer every turn with a login
+        error while the account profile is logged in (#239). Only the bytes past
+        the mark its start left count: the same files hold the failure of the run
+        before it, and reading that again would restart the host forever.
+        """
+        for f in (self.logfile, *self.debug_logs()):
+            try:
+                size = f.stat().st_size
+            except OSError:
+                continue
+            mark = self.log_marks.get(f, 0)
+            if size < mark:          # bound_logs() truncated it: the whole file is this run's
+                mark = 0
+            try:
+                with open(f, "rb") as fh:
+                    fh.seek(max(mark, size - TAIL))
+                    text = fh.read().decode(errors="replace")
+            except OSError:
+                continue
+            m = LOGIN_LOST.search(text)
+            if m:
+                return f"{m.group(0)} in {f.name}"
+        return None
 
     def ensure_repo(self) -> None:
         """Give the folder what worktree spawn mode needs: a git repo with a HEAD.
@@ -406,6 +467,7 @@ class Host:
             self.ensure_repo()                     # capacity-1 session host reads as dead
             extra += ("--spawn=worktree",)
         claude_args = ("--edge",) if self.edge else ("--", *self.args, *extra)
+        self.mark_logs()      # everything the files hold now belongs to a run before this one
         self.proc = subprocess.Popen(
             ["/usr/bin/script", "-q", "/dev/null", str(HERE / "ccmorph-rc"), self.route,
              *claude_args],
@@ -644,6 +706,57 @@ def host_sessions(folders: list[str], status: str) -> tuple[str, list[tuple[str,
         return "", []
     return token, [(envs[s["environment_id"]], s) for s in found
                    if s.get("environment_id") in envs]
+
+
+def restart_logged_out(hosts: "dict[str, Host]", now: float) -> list[str]:
+    """Restart every host whose sessions lost their login while the account is logged in.
+
+    Claude Code's host holds the account token it read when it started. A host
+    long enough up kept one the keychain had rotated away, and every session it
+    spawned then answered with a login error while the account profile was
+    logged in; only a restart of that host fixed it (#239). ccmorph cannot repair
+    the process from outside, so the supervisor reads the failure from the host's
+    own logs and restarts it: stop() lets it deregister, the relaunch reattaches
+    the same `.claude/rc-host.json` row, and recover_processless hands the
+    folder's sessions back under their own ids.
+
+    Only a running host whose current run printed the failure is restarted, and
+    only while the account login itself reads valid: a logged-out account is
+    fixed by /login, never by a restart loop. One restart per host per
+    LOGIN_RESTART_AFTER, so a host the restart did not fix is retried slowly.
+    Every event is one log line naming the folder. Returns the folders restarted;
+    the loop's one-start-per-tick rule spaces their relaunches.
+    """
+    lost = []
+    for h in hosts.values():
+        if h.proc is None or h.edge:
+            continue
+        if why := h.lost_login():
+            lost.append((h, why))
+    if not lost:
+        return []                  # the keychain is read only after a host lost its login
+    try:
+        account_token()
+    except LOGIN_ERRORS as e:
+        for h, why in lost:
+            h.mark_logs()          # the line is not news on the next check either
+            log(f"{h.folder}: sessions lost their login ({why}) and the account login is "
+                f"unreadable too ({e}); not restarting")
+        return []
+    restarted = []
+    for h, why in lost:
+        h.mark_logs()
+        if now - h.login_restarted < LOGIN_RESTART_AFTER:
+            log(f"{h.folder}: sessions lost their login again ({why}) within "
+                f"{LOGIN_RESTART_AFTER}s of a restart; not restarting yet")
+            continue
+        log(f"{h.folder}: sessions lost their login ({why}) while the account login is "
+            f"valid; restarting its host")
+        h.login_restarted = now
+        h.stop()
+        h.next_try = now           # relaunch on the next tick, not after a backoff
+        restarted.append(h.folder)
+    return restarted
 
 
 def recover_processless(folders: list[str], done: dict[tuple[str, int], float],
@@ -1079,6 +1192,7 @@ def cycle(hosts: "dict[str, Host]", repos: list[str], now: float, clock: Clock) 
     check is due: main() then runs the archived-session cleanup."""
     if now - clock.last_recover >= RECOVER_EVERY:     # a session with no process: bring it back
         clock.last_recover = now
+        restart_logged_out(hosts, now)   # a host that cannot log its sessions in: replace it
         up = {h.folder for h in hosts.values() if h.proc and now - h.started >= RECOVER_EVERY}
         handed_back = recover_processless(repos, clock.recovered, up, clock.hand_back_failed)
         recover_interrupted(repos, up, handed_back)
