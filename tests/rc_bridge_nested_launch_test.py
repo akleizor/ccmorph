@@ -52,6 +52,9 @@ class Box:
             '  echo "DISABLE_ADVISOR=${CLAUDE_CODE_DISABLE_ADVISOR_TOOL-<unset>}"\n'
             '  echo "MODEL_CAPS=${CLAUDE_CODE_MODEL_CAPABILITIES-<unset>}"\n'
             '  echo "PROXY=${HTTPS_PROXY-<unset>}"\n'
+            '  echo "CA=${NODE_EXTRA_CA_CERTS-<unset>}"\n'
+            '  echo "TETHER=${CLAUDE_CODE_TETHER_LIVE-<unset>}"\n'
+            '  echo "EDGE=${CCMORPH_EDGE_ROUTE_ENV-<unset>}"\n'
             '  echo "CUSTOM_HEADERS=${ANTHROPIC_CUSTOM_HEADERS-<unset>}"\n'
             '} >> "$HOME/claude.log"\n')
         claude.chmod(claude.stat().st_mode | stat.S_IXUSR)
@@ -75,7 +78,8 @@ class Box:
         route_env = self.rc.resolve_route('gateway') if route_env is None else route_env
         base = dict(self.env)
         env = self.rc.session_env(base, route_env, route_models=False)
-        env.update(HTTPS_PROXY='http://127.0.0.1:47670', NO_PROXY='localhost,127.0.0.1,::1')
+        env.update(HTTPS_PROXY='http://127.0.0.1:47670', NO_PROXY='localhost,127.0.0.1,::1',
+                   NODE_EXTRA_CA_CERTS='/edge/mitm-ca.pem')
         return env
 
     def run(self, env, *args):
@@ -108,6 +112,8 @@ def test_a_named_profile_is_not_carried_to_the_session_route(box):
     log = box.log()
     assert 'PROXY=<unset>' in log, log
     assert 'DISABLE_ADVISOR=<unset>' in log and 'MODEL_CAPS=<unset>' in log, log
+    # Nothing else the edge set for its own route: its CA, thread setting or record.
+    assert 'CA=<unset>' in log and 'TETHER=<unset>' in log and 'EDGE=<unset>' in log, log
 
 
 def test_a_users_own_loopback_proxy_is_kept(box):
@@ -170,6 +176,8 @@ def test_a_profile_with_its_own_endpoint_is_left_alone(box, tmp_path):
     out = box.run(env, 'run', 'gw2', '--', '-p', 'ok')
     assert out.returncode == 0, out.stderr
     assert 'DISABLE_ADVISOR=1' in box.log(), box.log()
+    # Its adapter dials its own endpoint, never through the edge.
+    assert 'PROXY=<unset>' in box.log() and 'EDGE=<unset>' in box.log(), box.log()
 
 
 @pytest.mark.parametrize('url', ['https://api.anthropic.com', 'https://api.anthropic.com/'])

@@ -18,6 +18,15 @@
   `not used this month`. `--json` carries the same counts as `today_turns`,
   `month_turns`, `today_tokens`, `month_tokens` and `unpriced_turns`.
 
+## Unreleased
+
+### Fixed
+
+- **Nothing of a Remote Control session reaches another profile.** A launch that
+  names a profile inside a Remote Control session also drops the session's CA
+  path, thread setting and edge record, and an adapter or provider profile's own
+  traffic no longer passes through the session's proxy.
+
 ## v0.5.4 — 2026-11-08
 
 ### Fixed
