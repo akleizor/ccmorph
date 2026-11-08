@@ -6,16 +6,28 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/akleizor/ccmorph/profile"
 )
 
-// doctorVerb is `ccmorph doctor [profile|-i]`: read-only, so it runs before the
-// state dirs are secured and falls back to a not-yet-migrated ~/.claude-profiles.
+// doctorVerb is `ccmorph doctor [--verbose] [profile|-i]`: read-only, so it runs
+// before the state dirs are secured and falls back to a not-yet-migrated
+// ~/.claude-profiles. --verbose adds a running adapter's processes and ports.
 func (l *launcher) doctorVerb(args []string) int {
+	verbose := false
+	rest := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "-v" || a == "--verbose" {
+			verbose = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	args = rest
 	if len(args) > 1 {
-		l.err("usage: ccmorph doctor [profile]")
+		l.err("usage: ccmorph doctor [--verbose] [profile]")
 		return 2
 	}
 	legacy := filepath.Join(os.Getenv("HOME"), ".claude-profiles")
@@ -33,7 +45,7 @@ func (l *launcher) doctorVerb(args []string) int {
 		}
 		name = picked
 	}
-	return l.doctor(name)
+	return l.doctor(name, verbose)
 }
 
 func (l *launcher) status(kind, msg string) {
@@ -105,7 +117,7 @@ func (l *launcher) doctorEnvironment() int {
 	return failed
 }
 
-func (l *launcher) doctor(name string) int {
+func (l *launcher) doctor(name string, verbose bool) int {
 	active := filepath.Join(l.dir, "active")
 	if name == "" && isFile(active) && !isLink(active) {
 		b, _ := os.ReadFile(active)
@@ -147,47 +159,72 @@ func (l *launcher) doctor(name string) int {
 		return 1
 	}
 	failed := 0
+	var fails, warns []string
+	// report prints one line and remembers its subject (the text before the
+	// first colon) so the verdict can name what to fix without repeating it.
+	report := func(kind, msg string) {
+		subject, _, _ := strings.Cut(msg, ":")
+		switch kind {
+		case "FAIL":
+			if !slices.Contains(fails, subject) {
+				fails = append(fails, subject)
+			}
+		case "WARN":
+			if !slices.Contains(warns, subject) {
+				warns = append(warns, subject)
+			}
+		}
+		l.status(kind, msg)
+	}
 	switch typ {
 	case "apikey", "sub", "token", "provider":
 	default:
-		l.status("FAIL", "config: unsupported profile type '"+typ+"'")
+		report("FAIL", "config: unsupported profile type '"+typ+"'")
 		failed = 1
 	}
 	if typ == "apikey" && key == "" {
-		l.status("FAIL", "config: apikey profile has no credential (value not displayed)")
+		report("FAIL", "config: apikey profile has no credential (value not displayed)")
 		failed = 1
 	}
-	l.status("OK", "profile: "+name+" ("+typ+")")
-	l.status("OK", "ccmorph executable: "+l.libDir+"/ccmorph.sh")
+	report("OK", "profile: "+name+" ("+typ+")")
+	report("OK", "ccmorph executable: "+l.libDir+"/ccmorph.sh")
 	if !l.doctorClaude() {
 		failed = 1
+		fails = append(fails, "claude executable")
 	}
 	if dir := filepath.Join(l.profileDirs, name); isDir(dir) {
-		l.status("OK", "profile home: "+dir)
+		report("OK", "profile home: "+dir)
 	} else {
-		l.status("FAIL", "profile home: missing ("+dir+")")
+		report("FAIL", "profile home: missing ("+dir+")")
 		failed = 1
 	}
 	settings := l.profileLayer(name)
 	if isFile(settings) {
 		if util.SettingsValid(filepath.Join(os.Getenv("HOME"), ".claude", "settings.json"), settings) {
-			l.status("OK", "profile settings: valid layered JSON ("+settings+" overrides canonical settings)")
+			report("OK", "profile settings: valid layered JSON ("+settings+" overrides canonical settings)")
 			if m := l.accountModel(name); m != "" {
-				l.status("INFO", "effective model: "+m+" (profile default)")
+				report("INFO", "effective model: "+m+" (profile default)")
 			} else {
-				l.status("INFO", "effective model: Claude Code default (no saved model)")
+				report("INFO", "effective model: Claude Code default (no saved model)")
 			}
 		} else {
-			l.status("FAIL", "profile settings: invalid JSON or non-object ("+settings+")")
+			report("FAIL", "profile settings: invalid JSON or non-object ("+settings+")")
 			failed = 1
 		}
 	} else {
-		l.status("SKIP", "profile settings: missing ("+settings+")")
+		report("INFO", "profile settings: none yet (Claude Code defaults apply)")
 	}
 	if key != "" {
-		l.status("OK", "credentials: present (value hidden)")
+		report("OK", "credentials: present (value hidden)")
 	} else {
-		l.status("SKIP", "credentials: none stored")
+		switch typ {
+		case "sub":
+			report("INFO", "credentials: Claude sign-in, kept in the profile home")
+		case "provider":
+			report("INFO", "credentials: provider login (renew it: ccmorph login "+name+")")
+		default:
+			report("SKIP", "credentials: none stored")
+		}
 	}
 	if typ == "apikey" && key != "" {
 		// A refused key is stored by Claude Code, not by ccmorph: the credential
@@ -195,25 +232,30 @@ func (l *launcher) doctor(name string) int {
 		// login menu instead of using it.
 		switch util.KeyResponse(filepath.Join(l.profileDirs, name), key) {
 		case util.KeyRefused:
-			l.status("FAIL", "api key: Claude Code was told not to use it, so a launch would open its login menu — fix: ccmorph login "+name)
+			report("FAIL", "api key: Claude Code was told not to use it, so a launch would open its login menu — fix: ccmorph login "+name)
 			failed = 1
 		case util.KeyApproved:
-			l.status("OK", "api key: approved for Claude Code")
+			report("OK", "api key: approved for Claude Code")
 		default:
-			l.status("INFO", "api key: ccmorph approves it for Claude Code at the next launch")
+			report("INFO", "api key: ccmorph approves it for Claude Code at the next launch")
 		}
 	}
-	rows, bad := util.DoctorRoute(name, base, adapter == "true", key)
+	rows, bad := util.DoctorRoute(name, typ, base, adapter == "true", key, verbose)
 	if bad {
 		failed = 1
 	}
 	for _, r := range rows {
-		if r.Kind != "" {
-			l.status(r.Kind, r.Msg)
-		} else {
-			fmt.Println(r.Msg)
-		}
+		report(r.Kind, r.Msg)
 	}
-	l.status("SKIP", "generated state: ownership/conflict not established (no changes made)")
+	// The verdict is the report's last line and answers the only question a
+	// person has: is this profile ready to run, or what must be fixed first.
+	switch {
+	case len(fails) > 0:
+		l.status("FAIL", "not ready: fix "+strings.Join(fails, ", ")+" (see above)")
+	case len(warns) > 0:
+		l.status("WARN", "may not start: check "+strings.Join(warns, ", ")+" (see above); then: ccmorph run "+name)
+	default:
+		l.status("OK", "ready: start it with ccmorph run "+name)
+	}
 	return failed
 }

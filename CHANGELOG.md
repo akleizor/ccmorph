@@ -28,6 +28,13 @@
   turns adds a line saying how many had no price; a profile with no receipts this month says
   `not used this month`. `--json` carries the same counts as `today_turns`,
   `month_turns`, `today_tokens`, `month_tokens` and `unpriced_turns`.
+- **`ccmorph doctor` ends with a verdict.** The last line says whether the
+  profile is ready to run or which lines to fix, instead of leaving a reader to
+  guess whether a `SKIP` meant fine or broken. An API key on Anthropic's own
+  endpoint is now checked like a gateway's, and a rejected key is reported with
+  the command that replaces it (`ccmorph config <name>`). The internal
+  generated-state line is gone, and a running adapter's processes and ports
+  appear only with `ccmorph doctor --verbose`.
 
 ## Unreleased
 

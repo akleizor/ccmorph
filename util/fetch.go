@@ -49,10 +49,14 @@ func fetchModels(key string, errw io.Writer, curlArgs ...string) (string, bool) 
 }
 
 // ProbeListing is doctor's never-failing probe: the body and the HTTP status, 000
-// when nothing answered.
-func ProbeListing(base, key string) (body, code string) {
-	body, err := curlKeyed(key, []string{"-sS", "--connect-timeout", "2", "--max-time", "5", "-w", `\n__CCMORPH_STATUS__%{http_code}`,
-		apiURL(base, "/v1/models?limit=1000")}, io.Discard)
+// when nothing answered. Each header is sent as a curl -H argument, so a native
+// Anthropic check can ask for a version the way the launch route does.
+func ProbeListing(base, key string, headers ...string) (body, code string) {
+	args := []string{"-sS", "--connect-timeout", "2", "--max-time", "5", "-w", `\n__CCMORPH_STATUS__%{http_code}`}
+	for _, h := range headers {
+		args = append(args, "-H", h)
+	}
+	body, err := curlKeyed(key, append(args, apiURL(base, "/v1/models?limit=1000")), io.Discard)
 	code = "000"
 	if i := strings.LastIndex(body, "__CCMORPH_STATUS__"); err == nil && i >= 0 {
 		body, code = strings.TrimSuffix(body[:i], "\n"), strings.TrimRight(body[i+len("__CCMORPH_STATUS__"):], "\n")

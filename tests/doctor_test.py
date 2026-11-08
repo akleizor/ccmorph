@@ -19,7 +19,7 @@ from support import FAKE_SERVER_NO_DNS, HANG_TIMEOUT
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_doctor(tmp_path, conf, curl=None):
+def run_doctor(tmp_path, conf, curl=None, args=()):
     state = tmp_path / "state"
     home = tmp_path / "home"
     bindir = tmp_path / "bin"
@@ -42,7 +42,7 @@ def run_doctor(tmp_path, conf, curl=None):
            "CCMORPH_STATE_DIR": str(state), "CCMORPH_LIB_DIR": str(ROOT / "lib"),
            "CURL_ARGS": str(bindir / "curl.args"), "CURL_CALLED": str(bindir / "called"),
            "DOCTOR_MARKER": str(bindir / "doctor.marker")}
-    result = subprocess.run([str(ROOT / "bin/ccmorph"), "doctor", "demo"], env=env,
+    result = subprocess.run([str(ROOT / "bin/ccmorph"), "doctor", *args, "demo"], env=env,
                             capture_output=True, text=True, timeout=HANG_TIMEOUT)
     return result, state / "demo.conf", bindir
 
@@ -84,7 +84,8 @@ def test_doctor_reports_a_refused_api_key(tmp_path):
     doc = home / ".claude.json"
     body = json.dumps({"customApiKeyResponses": {"approved": [], "rejected": [key[-20:]]}})
     doc.write_text(body)
-    result, _, _ = run_doctor(tmp_path, f"type=apikey\napi_key={key}\n")
+    # The key probe on Anthropic's endpoint is stubbed: no test reaches the network.
+    result, _, _ = run_doctor(tmp_path, f"type=apikey\napi_key={key}\n", OK_CURL)
     assert result.returncode == 1, result.stdout + result.stderr
     assert "FAIL" in result.stdout
     assert "ccmorph login demo" in result.stdout
@@ -259,8 +260,16 @@ printf '%s\n' '__CCMORPH_STATUS__200'
     _adapter_stubs(tmp_path / "bin", slow, ADAPTER_PS_ROWS[shape])
     result, _, bindir = run_doctor(tmp_path, conf, curl)
     assert result.returncode == 0, result.stderr
-    assert_adapter_report(result.stdout, shape)
+    # One adapter line by default: what launch will do, never a pid or a
+    # process-inspection detail a first-time reader cannot act on.
+    adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
+    assert len(adapters) == 1, result.stdout
+    assert adapters[0].startswith("INFO adapter: ccmorph run starts a compatibility adapter"), result.stdout
     # Read-only: the profile's own hook never ran, so nothing was started.
+    assert not (bindir / "doctor.marker").exists()
+    verbose, _, _ = run_doctor(tmp_path, conf, curl, args=("--verbose",))
+    assert verbose.returncode == 0, verbose.stderr
+    assert_adapter_report(verbose.stdout, shape)
     assert not (bindir / "doctor.marker").exists()
 
 
@@ -302,8 +311,85 @@ def test_doctor_missing_credential_fails_without_request(tmp_path):
 def test_doctor_native_profile_without_base_url_is_clear(tmp_path):
     result, _, _ = run_doctor(tmp_path, "type=sub\nemail=test@example.test\n")
     assert result.returncode == 0
-    assert "native endpoint" in result.stdout
-    assert "native profile path" in result.stdout
+    assert "INFO endpoint: Anthropic" in result.stdout
+    assert "adapter:" not in result.stdout
+
+
+@pytest.mark.parametrize("base", ["", "https://api.anthropic.com"],
+                         ids=["no-base-url", "anthropic-base-url"])
+@pytest.mark.parametrize("code", ["401", "200"])
+def test_doctor_reports_a_rejected_native_key(tmp_path, base, code):
+    """An apikey profile on Anthropic's own endpoint gets the same key check a
+    gateway profile gets: a rejected key is a FAIL naming the command that
+    replaces it, so the most common reason a profile fails is caught here."""
+    curl = f"""#!/bin/sh
+printf '%s\\n' "$@" > "$CURL_ARGS"
+[ "$1" = -K ] && cat >> "$CURL_ARGS"
+printf '%s\\n' '{{"data":[]}}'
+printf '%s\\n' '__CCMORPH_STATUS__{code}'
+"""
+    conf = "type=apikey\napi_key=k\n"
+    if base:
+        conf += f"base_url={base}\n"
+    result, _, bindir = run_doctor(tmp_path, conf, curl)
+    assert "adapter:" not in result.stdout
+    args = (bindir / "curl.args").read_text()
+    assert "https://api.anthropic.com/v1/models?limit=1000" in args
+    assert "anthropic-version: 2023-06-01" in args
+    if code == "401":
+        assert result.returncode == 1, result.stdout
+        assert ("FAIL credentials: Anthropic rejected the API key (HTTP 401); "
+                "replace it: ccmorph config demo") in result.stdout
+    else:
+        assert result.returncode == 0, result.stdout
+        assert "OK endpoint: Anthropic accepted the API key (HTTP 200)" in result.stdout
+
+
+@pytest.mark.parametrize("case", ["gateway-ok", "missing-credential", "malformed-listing"])
+def test_doctor_ends_with_a_verdict(tmp_path, case):
+    """The last line answers the only question a person has: is this profile
+    ready to run, or what must be fixed first."""
+    if case == "gateway-ok":
+        result, _, _ = run_doctor(
+            tmp_path, "type=apikey\nbase_url=https://example.test\napi_key=k\n", OK_CURL)
+    elif case == "missing-credential":
+        result, _, _ = run_doctor(tmp_path, "type=apikey\nbase_url=https://example.test\n")
+    else:
+        malformed = """#!/bin/sh
+printf '%s\n' '{"data":"not-a-list"}'
+printf '%s\n' '__CCMORPH_STATUS__200'
+"""
+        result, _, _ = run_doctor(
+            tmp_path, "type=apikey\nbase_url=https://example.test\napi_key=k\n", malformed)
+    last = result.stdout.splitlines()[-1]
+    if case == "gateway-ok":
+        assert result.returncode == 0, result.stdout
+        assert last == "OK ready: start it with ccmorph run demo", result.stdout
+    elif case == "missing-credential":
+        assert result.returncode == 1, result.stdout
+        assert last == "FAIL not ready: fix config (see above)", result.stdout
+    else:
+        assert result.returncode == 1, result.stdout
+        assert last.startswith("FAIL not ready: fix") and "gateway" in last, result.stdout
+
+
+@pytest.mark.parametrize("case", ["gateway", "native", "sub"])
+def test_doctor_healthy_profile_has_no_skip_lines(tmp_path, case):
+    """A working profile must not print a SKIP line a first-time user cannot act
+    on, and every line must carry its status word."""
+    if case == "gateway":
+        conf, curl = "type=apikey\nbase_url=https://example.test\napi_key=k\n", OK_CURL
+    elif case == "native":
+        conf, curl = "type=apikey\napi_key=k\n", OK_CURL
+    else:
+        conf, curl = "type=sub\nemail=test@example.test\n", None
+    result, _, _ = run_doctor(tmp_path, conf, curl)
+    assert result.returncode == 0, result.stdout
+    assert "generated state" not in result.stdout
+    assert len([l for l in result.stdout.splitlines() if "adapter:" in l]) <= 1
+    for line in result.stdout.splitlines():
+        assert line.split(" ", 1)[0] in {"OK", "FAIL", "WARN", "INFO", "SKIP"}, repr(line)
+        assert not line.startswith("SKIP"), result.stdout
 
 
 def test_run_doctor_remains_native_passthrough(tmp_path):
