@@ -82,8 +82,6 @@ antigravity-credits: false
 	// registers them. Only a 200 naming a model is ready: the launch's picker and
 	// sizer read this listing once. No proxy: an ambient HTTPS_PROXY answers for
 	// loopback while the bridge is fine.
-	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: nil}}
-	url := "http://127.0.0.1:" + strconv.Itoa(port) + "/v1/models"
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
@@ -92,21 +90,28 @@ antigravity-credits: false
 			return fail("bridge for '" + profile + "' exited before becoming ready")
 		default:
 		}
-		req, _ := http.NewRequest("GET", url, nil)
-		req.Header.Set("Authorization", "Bearer "+key)
-		if resp, err := client.Do(req); err == nil {
-			var listing struct{ Data []json.RawMessage }
-			decoded := json.NewDecoder(resp.Body).Decode(&listing) == nil
-			resp.Body.Close()
-			if resp.StatusCode == 200 && decoded && len(listing.Data) > 0 {
-				fmt.Fprintf(out, "PID=%d\nPORT=%d\nKEY=%s\nTMPDIR=%s\n", cmd.Process.Pid, port, key, tmp)
-				return 0
-			}
+		if listsModel(strconv.Itoa(port), key) {
+			fmt.Fprintf(out, "PID=%d\nPORT=%d\nKEY=%s\nTMPDIR=%s\n", cmd.Process.Pid, port, key, tmp)
+			return 0
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 	stop()
 	return fail(fmt.Sprintf("bridge for '%s' on port %d: /v1/models served no model within 30s", profile, port))
+}
+
+// listsModel is whether the bridge on port answers /v1/models with a model.
+func listsModel(port, key string) bool {
+	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: nil}}
+	req, _ := http.NewRequest("GET", "http://127.0.0.1:"+port+"/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	var listing struct{ Data []json.RawMessage }
+	return resp.StatusCode == 200 && json.NewDecoder(resp.Body).Decode(&listing) == nil && len(listing.Data) > 0
 }
 
 // BridgeStop sends the bridge TERM, then KILL after 5s, then re-tightens the OAuth

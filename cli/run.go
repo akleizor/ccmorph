@@ -249,7 +249,7 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 		l.stopForeignBridge(name, isProvider)
 		if isProvider {
 			if l.providerActive != name {
-				if !l.providerStart(name) {
+				if !l.providerStart(name, true) {
 					return fail()
 				}
 			}
@@ -879,7 +879,11 @@ func (l *launcher) nestedEdgeEnv(keys ...string) []string {
 	return out
 }
 
-func (l *launcher) providerStart(name string) bool {
+// providerStart starts or joins the profile's bridge. shared is false only for
+// _route_env, whose process exits while the route lives and so cannot hold the
+// users lock. shortcut: such a route gets a private bridge beside any shared
+// one; share it once a route has a long-lived owner.
+func (l *launcher) providerStart(name string, shared bool) bool {
 	bin, err := exec.LookPath("cliproxyapi")
 	if err != nil {
 		l.err("cliproxyapi not found — install it: brew install cliproxyapi")
@@ -900,24 +904,40 @@ func (l *launcher) providerStart(name string) bool {
 		return false
 	}
 	l.logInit()
-	cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), "util", "bridge-start", name, bin, auth, l.logOrNull())
-	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
-	if err != nil {
-		return false
-	}
-	for _, line := range strings.Split(string(out), "\n") {
-		k, v, _ := strings.Cut(line, "=")
-		switch k {
-		case "PID":
-			l.providerPID = v
-		case "PORT":
-			l.providerPort = v
-		case "KEY":
-			l.providerKey = v
-		case "TMPDIR":
-			l.providerTD = v
+	start := func() (pid, port, key, tmp string, ok bool) {
+		cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), "util", "bridge-start", name, bin, auth, l.logOrNull())
+		cmd.Stderr = os.Stderr
+		out, err := cmd.Output()
+		if err != nil {
+			return "", "", "", "", false
 		}
+		for _, line := range strings.Split(string(out), "\n") {
+			k, v, _ := strings.Cut(line, "=")
+			switch k {
+			case "PID":
+				pid = v
+			case "PORT":
+				port = v
+			case "KEY":
+				key = v
+			case "TMPDIR":
+				tmp = v
+			}
+		}
+		return pid, port, key, tmp, true
+	}
+	if !shared {
+		var ok bool
+		if l.providerPID, l.providerPort, l.providerKey, l.providerTD, ok = start(); !ok {
+			return false
+		}
+	} else {
+		b, ok := util.AcquireBridge(root, name, start)
+		if !ok {
+			return false
+		}
+		l.providerBridge = b
+		l.providerPID, l.providerPort, l.providerKey, l.providerTD = b.PID, b.Port, b.Key, b.TmpDir
 	}
 	l.providerAuth, l.providerActive = auth, name
 	return true
@@ -933,7 +953,10 @@ func (l *launcher) stopForeignBridge(name string, isProvider bool) {
 }
 
 func (l *launcher) providerStop() {
-	if l.providerPID+l.providerTD+l.providerAuth != "" {
+	if l.providerBridge != nil {
+		l.providerBridge.Release(l.providerAuth)
+		l.providerBridge = nil
+	} else if l.providerPID+l.providerTD+l.providerAuth != "" {
 		pid, _ := strconv.Atoi(l.providerPID)
 		util.BridgeStop(pid, l.providerTD, l.providerAuth)
 	}

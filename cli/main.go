@@ -424,7 +424,7 @@ func (l *launcher) routeEnv(args []string) int {
 	if f["type"] != "provider" {
 		return l.envVerb(args)
 	}
-	if !l.providerStart(name) {
+	if !l.providerStart(name, false) {
 		return 1
 	}
 	if l.envVerb(args) != 0 {
