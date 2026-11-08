@@ -3,6 +3,7 @@ package util
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -77,8 +78,10 @@ antigravity-credits: false
 	stop := func() { BridgeStop(cmd.Process.Pid, tmp, authDir) }
 
 	// A bound port is not a ready router: it listens before its model catalogue
-	// loads. Only a 200 from /v1/models, the client's own contract, is ready. No
-	// proxy: an ambient HTTPS_PROXY answers for loopback while the bridge is fine.
+	// loads, and a fresh login (antigravity) answers 200 with no models while it
+	// registers them. Only a 200 naming a model is ready: the launch's picker and
+	// sizer read this listing once. No proxy: an ambient HTTPS_PROXY answers for
+	// loopback while the bridge is fine.
 	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: nil}}
 	url := "http://127.0.0.1:" + strconv.Itoa(port) + "/v1/models"
 	deadline := time.Now().Add(30 * time.Second)
@@ -92,8 +95,10 @@ antigravity-credits: false
 		req, _ := http.NewRequest("GET", url, nil)
 		req.Header.Set("Authorization", "Bearer "+key)
 		if resp, err := client.Do(req); err == nil {
+			var listing struct{ Data []json.RawMessage }
+			decoded := json.NewDecoder(resp.Body).Decode(&listing) == nil
 			resp.Body.Close()
-			if resp.StatusCode == 200 {
+			if resp.StatusCode == 200 && decoded && len(listing.Data) > 0 {
 				fmt.Fprintf(out, "PID=%d\nPORT=%d\nKEY=%s\nTMPDIR=%s\n", cmd.Process.Pid, port, key, tmp)
 				return 0
 			}
@@ -101,7 +106,7 @@ antigravity-credits: false
 		time.Sleep(200 * time.Millisecond)
 	}
 	stop()
-	return fail(fmt.Sprintf("bridge for '%s' on port %d: /v1/models never returned 200 within 30s", profile, port))
+	return fail(fmt.Sprintf("bridge for '%s' on port %d: /v1/models served no model within 30s", profile, port))
 }
 
 // BridgeStop sends the bridge TERM, then KILL after 5s, then re-tightens the OAuth
