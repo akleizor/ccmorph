@@ -47,6 +47,7 @@ type launcher struct {
 	adapterPort             string
 	providerPID, providerTD string
 	providerAuth            string
+	providerBridge          *util.SharedBridge
 	providerActive          string
 	providerPort            string
 	providerKey             string
