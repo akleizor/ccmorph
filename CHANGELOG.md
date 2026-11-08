@@ -5,7 +5,7 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
-## v0.5.5 — 2026-11-08
+## v0.5.6 — 2026-11-08
 
 ### Changed
 
@@ -19,6 +19,29 @@
   day folders once, after reading its window — a row younger than an hour
   stays flat for the writer an upgrade may still have running. Before and
   after the move it prints the same totals.
+
+### Fixed
+
+- **A provider's first launch after sign-in shows its models.** A fresh
+  Antigravity login answers `/v1/models` with an empty list while it registers
+  its models, and the bridge counted that as ready, so `/model` kept Claude
+  Code's own Fable and Opus rows and no context window was sized. The bridge is
+  now ready only once its listing names a model.
+- **Remote Control keeps the account signed in.** The supervisor refreshes the
+  account login before it expires, and also checks hosts an earlier supervisor
+  started for a lost login, so route sessions stop asking to sign in again.
+- **A gateway turn with no billed cost is priced at the model's list price.**
+  A gateway that bills nothing for some models (llmgate's OpenAI models) no
+  longer shows them at $0.
+- **`ccmorph doctor` ends with a verdict.** The last line says whether the
+  profile is ready to run or which lines to fix, instead of leaving a reader to
+  guess whether a `SKIP` meant fine or broken. An API key on Anthropic's own
+  endpoint is now checked like a gateway's, and a rejected key is reported with
+  the command that replaces it (`ccmorph config <name>`). The internal
+  generated-state line is gone, and a running adapter's processes and ports
+  appear only with `ccmorph doctor --verbose`.
+
+## v0.5.5 — 2026-11-08
 
 ### Fixed
 
@@ -41,23 +64,6 @@
   turns adds a line saying how many had no price; a profile with no receipts this month says
   `not used this month`. `--json` carries the same counts as `today_turns`,
   `month_turns`, `today_tokens`, `month_tokens` and `unpriced_turns`.
-- **`ccmorph doctor` ends with a verdict.** The last line says whether the
-  profile is ready to run or which lines to fix, instead of leaving a reader to
-  guess whether a `SKIP` meant fine or broken. An API key on Anthropic's own
-  endpoint is now checked like a gateway's, and a rejected key is reported with
-  the command that replaces it (`ccmorph config <name>`). The internal
-  generated-state line is gone, and a running adapter's processes and ports
-  appear only with `ccmorph doctor --verbose`.
-
-## Unreleased
-
-### Fixed
-
-- **A provider's first launch after sign-in shows its models.** A fresh
-  Antigravity login answers `/v1/models` with an empty list while it registers
-  its models, and the bridge counted that as ready, so `/model` kept Claude
-  Code's own Fable and Opus rows and no context window was sized. The bridge is
-  now ready only once its listing names a model.
 - **Nothing of a Remote Control session reaches another profile.** A launch that
   names a profile inside a Remote Control session also drops the session's CA
   path, thread setting and edge record, and an adapter or provider profile's own
