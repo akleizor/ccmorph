@@ -9,6 +9,17 @@
 
 ### Fixed
 
+- **A Remote Control host that lost its login is restarted, not left serving
+  errors.** Claude Code reads the account token when it starts, and a
+  long-running `ccmorph-rc-hosts` host could keep one the keychain had rotated
+  away: every session it spawned then answered with a login error while the
+  account profile stayed logged in, and only restarting that folder's host fixed
+  it (#239). The supervisor now reads that failure from the host's log and its
+  sessions' debug logs, checks the account login still reads valid, and restarts
+  that folder's host at its next recovery check — at most once per ten minutes,
+  logging `<folder>: sessions lost their login` each time. The folder's
+  `rc-host.json` row and each session's id are unchanged, so the sessions come
+  back as themselves.
 - **Unpriced use is not free, and an unused profile says so.** `ccmorph quota`
   read only the cost fields of a profile's receipts, so a profile whose model
   had no price showed `today $0.00 · month $0.00` — the same line as a profile

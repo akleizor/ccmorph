@@ -13,7 +13,13 @@ ccmorph-rc gateway -- --continue         # reattach the session last served here
 Pass-through: anything after `--` goes to `claude remote-control` unchanged.
 `ccmorph-rc-hosts` (LaunchAgent `com.ccmorph.rc-hosts`, installed by install.sh) keeps every folder listed in
 `rc-hosts` served and relaunches a dead host within seconds; an archived pinned
-conversation's host is deleted after `idle_days` (default 1). A phone session whose
+conversation's host is deleted after `idle_days` (default 1). A host that is alive but can no longer log its
+sessions in -- Claude Code read the account token when it started and the keychain
+rotated it away, so every session answers with a login error while the account
+profile is logged in -- is restarted at the next recovery check (inside a few
+minutes), in the same folder, so its row and its sessions' ids stay; it is restarted
+at most once per ten minutes, and each event is logged as `<folder>: sessions lost
+their login`. A logged-out account is not restarted: signing in fixes it. A phone session whose
 turn a host restart cut off is handed back to its host once that host is up again,
 so it carries on without being opened on the phone. Any active phone
 session left without a process (unarchived, exited while idle, crashed) is handed

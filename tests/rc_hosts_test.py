@@ -2715,3 +2715,200 @@ def test_main_loop_cycle_caps_an_oversized_running_log(tmp_path, monkeypatch):
     assert h.debugfile.stat().st_size == m.LOG_CAP + 1
     assert m.cycle(hosts, [h.folder], clock[0] + m.IDLE_CHECK, state) is True
     assert h.debugfile.stat().st_size == 0
+
+
+@pytest.mark.parametrize("where, line, signal", [
+    pytest.param("log", "[bridge] No access token for session fetch",
+                 "No access token for session fetch", id="host-log-no-access-token"),
+    pytest.param("debug", "API error (attempt 1/11): Could not resolve authentication method",
+                 "Could not resolve authentication method", id="host-debug-resolve-auth"),
+    pytest.param("session", "[Bootstrap] Skipped: no usable OAuth, WIF, or API key",
+                 "[Bootstrap] Skipped: no usable OAuth", id="session-bootstrap"),
+])
+def test_a_lost_login_counts_only_when_this_run_of_the_host_wrote_it(tmp_path, monkeypatch,
+                                                                     where, line, signal):
+    """GH-239: a host that can no longer log its sessions in is recognised from
+    the lines the issue recorded. Only what this run printed counts: the same
+    log files survive a restart, and every check re-reading an earlier run's
+    failure would restart the host again and again."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    monkeypatch.setattr(m.Host, "ensure_repo", lambda self: None)
+    monkeypatch.setattr(m.subprocess, "Popen", lambda cmd, **kw: FakeProc())
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    h = m.Host(str(repo), "gw")
+    target = {"log": h.logfile, "debug": h.debugfile,
+              "session": logs / f"{h.debugfile.stem}-cse_01A.log"}[where]
+    target.write_text(line + "\n")
+    h.start()
+    assert h.lost_login() is None              # an earlier run's line is not this run's
+    with target.open("a") as fh:
+        fh.write(line + "\n")
+    assert signal in h.lost_login()
+
+
+@pytest.mark.parametrize("line", [
+    pytest.param("StopFailure:authentication_failed", id="stop-failure"),
+    pytest.param('API Error: 401 {"error":{"type":"authentication_error"}}', id="route-401"),
+])
+def test_a_rejected_route_key_is_not_a_lost_account_login(tmp_path, monkeypatch, line):
+    """A 401 from the route and Claude Code's `authentication_failed` say the
+    route refused, not that the account login is gone; restarting the host would
+    not fix either. Only the login lines the issue recorded count."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    monkeypatch.setattr(m.Host, "ensure_repo", lambda self: None)
+    monkeypatch.setattr(m.subprocess, "Popen", lambda cmd, **kw: FakeProc())
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    h = m.Host(str(repo), "gw")
+    h.start()
+    with h.logfile.open("a") as fh:
+        fh.write(line + "\n")
+    assert h.lost_login() is None
+
+
+def test_a_debug_log_truncated_after_start_is_read_from_its_start(tmp_path, monkeypatch):
+    """bound_logs() truncates a running host's debug log in place, so the byte
+    offset remembered at start can sit past the new end. The whole file is then
+    this run's, and a login failure written after the truncation counts."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    monkeypatch.setattr(m.Host, "ensure_repo", lambda self: None)
+    monkeypatch.setattr(m.subprocess, "Popen", lambda cmd, **kw: FakeProc())
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    h = m.Host(str(repo), "gw")
+    h.debugfile.write_text("x" * 10_000)
+    h.start()
+    os.truncate(h.debugfile, 0)
+    h.debugfile.write_text("Could not resolve authentication method\n")
+    assert h.lost_login() is not None
+
+
+def _lost_login_host(tmp_path, monkeypatch):
+    """A registered repo folder with its host up, and the account API faked.
+
+    The host's stop()/start() are replaced on the instance: the real stop()
+    signals its process group, and FakeProc reports pid 1, which is this
+    machine's launchd. stop() drops the process as the real one does; start()
+    is what the loop's next tick does after a restart.
+    """
+    import json
+    m = load()
+    monkeypatch.setattr(m, "LOGS", tmp_path / "logs")
+    (tmp_path / "logs").mkdir(exist_ok=True)
+    monkeypatch.setattr(m, "BUSY", tmp_path / "busy.json")
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "rc-host.json").write_text(json.dumps({"environmentId": "env_01R"}))
+    clock = [1000.0]
+    posts, stops, starts = [], [], []
+
+    def api(method, path, token, body=None):
+        if method == "POST":
+            posts.append((path, body["session_id"]))
+            return {}
+        return {"data": [{"id": "cse_01B", "environment_id": "env_01R",
+                          "connection_status": "disconnected"}]}
+
+    def start():                               # the relaunch a stopped host gets next tick
+        starts.append(clock[0])
+        h.proc, h.started = FakeProc(), clock[0]
+        h.mark_logs()
+
+    def stop():
+        stops.append(clock[0])
+        h.proc = None
+
+    monkeypatch.setattr(m, "api", api)
+    monkeypatch.setattr(m, "account_token", lambda: "tok")
+    monkeypatch.setattr(m.time, "time", lambda: clock[0])
+    h = m.Host(str(repo), "profile")
+    h.proc, h.started = FakeProc(), clock[0] - 10 * m.RECOVER_EVERY
+    monkeypatch.setattr(h, "start", start)
+    monkeypatch.setattr(h, "stop", stop)
+    return m, h, str(repo), clock, posts, stops
+
+
+def _recovery_due(m, clock):
+    state = m.Clock()
+    state.last_recover = clock[0] - m.RECOVER_EVERY
+    state.last_idle_check = clock[0]
+    return state
+
+
+def test_a_host_that_lost_its_login_is_restarted_and_its_sessions_keep_their_ids(
+        tmp_path, monkeypatch, capsys):
+    """GH-239: three folders' hosts kept a stale account token for ten hours and
+    every session they spawned answered with a login error while the account
+    profile was logged in. Restarting a host fixed it, and its row and session
+    ids survived. The supervisor now does that at its next recovery check: one
+    line naming the folder, then the same host in the same folder, whose
+    processless session is handed back under its own id."""
+    m, h, repo, clock, posts, stops = _lost_login_host(tmp_path, monkeypatch)
+    (tmp_path / "logs" / f"{h.debugfile.stem}-cse_01B.log").write_text(
+        "API error (attempt 1/11): Could not resolve authentication method\n")
+    kept = (tmp_path / "repo" / ".claude" / "rc-host.json").read_text()
+    state = _recovery_due(m, clock)
+    m.cycle({repo: h}, [repo], clock[0], state)
+    assert stops == [clock[0]]
+    assert f"{repo}: sessions lost their login" in capsys.readouterr().out
+    assert h.proc is None                      # nothing else starts the host this tick
+    assert h.tend(clock[0])                    # next tick: the same folder, reattached
+    clock[0] += 2 * m.RECOVER_EVERY
+    m.cycle({repo: h}, [repo], clock[0], state)
+    assert posts == [("/v1/environments/env_01R/bridge/reconnect", "cse_01B")]
+    assert (tmp_path / "repo" / ".claude" / "rc-host.json").read_text() == kept
+
+
+def test_a_lost_login_does_not_restart_a_host_while_the_account_login_is_unreadable(
+        tmp_path, monkeypatch, capsys):
+    """A restart cannot fix an account that is itself logged out; it would only
+    replace the host in a loop. The event is logged all the same, and the host
+    is left to serve whatever it still can."""
+    m, h, repo, clock, posts, stops = _lost_login_host(tmp_path, monkeypatch)
+
+    def logged_out():
+        raise KeyError("claudeAiOauth")
+
+    monkeypatch.setattr(m, "account_token", logged_out)
+    (tmp_path / "logs" / f"{h.debugfile.stem}-cse_01B.log").write_text(
+        "[Bootstrap] Skipped: no usable OAuth, WIF, or API key\n")
+    m.cycle({repo: h}, [repo], clock[0], _recovery_due(m, clock))
+    assert stops == [] and h.proc is not None
+    out = capsys.readouterr().out
+    assert f"{repo}: sessions lost their login" in out
+    assert "account login is unreadable" in out
+
+
+def test_a_host_that_loses_its_login_again_is_restarted_at_most_once_per_window(
+        tmp_path, monkeypatch, capsys):
+    """A restart that did not fix the host must not become a restart loop: the
+    same folder gets at most one login restart per LOGIN_RESTART_AFTER, and the
+    suppressed one is logged with its own wording."""
+    m, h, repo, clock, posts, stops = _lost_login_host(tmp_path, monkeypatch)
+    log = tmp_path / "logs" / f"{h.debugfile.stem}-cse_01B.log"
+    log.write_text("Could not resolve authentication method\n")
+    state = _recovery_due(m, clock)
+    m.cycle({repo: h}, [repo], clock[0], state)
+    assert len(stops) == 1
+    h.tend(clock[0])
+    with log.open("a") as fh:
+        fh.write("No access token for session fetch\n")
+    clock[0] += m.RECOVER_EVERY
+    m.cycle({repo: h}, [repo], clock[0], state)
+    assert len(stops) == 1                     # inside the window: waits
+    assert "again" in capsys.readouterr().out
+    clock[0] += m.LOGIN_RESTART_AFTER
+    with log.open("a") as fh:
+        fh.write("No access token for session fetch\n")
+    m.cycle({repo: h}, [repo], clock[0], state)
+    assert len(stops) == 2                     # a new window: one more try
