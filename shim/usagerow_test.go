@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -34,9 +35,14 @@ func transcriptLine(uuid, id, model, ts string, usage string) string {
 
 // blockLine is one content block of a response, the way Claude Code splits an
 // assistant message into one transcript line per block: every block line of a
-// response carries its own uuid, the same requestId, and the same message.
-func blockLine(uuid, id, req, block, usage string) string {
-	return `{"type":"assistant","uuid":"` + uuid + `","requestId":"` + req + `","timestamp":"2026-11-05T10:00:00Z",` +
+// response carries its own uuid, the same requestId, and the same message. An
+// optional last argument is the line's timestamp (2026-11-05T10:00:00Z).
+func blockLine(uuid, id, req, block, usage string, ts ...string) string {
+	stamp := "2026-11-05T10:00:00Z"
+	if len(ts) > 0 {
+		stamp = ts[0]
+	}
+	return `{"type":"assistant","uuid":"` + uuid + `","requestId":"` + req + `","timestamp":"` + stamp + `",` +
 		`"message":{"id":"` + id + `","model":"claude-opus-5-5","content":[{"type":"` + block + `"}],` +
 		`"usage":` + usage + `}}` + "\n"
 }
@@ -105,6 +111,114 @@ func TestRecordTranscriptWritesOneRowPerAssistantMessage(t *testing.T) {
 	if second == nil || second["usage"].(map[string]any)["cache_read_input_tokens"] != float64(2000) {
 		t.Fatalf("%v", second)
 	}
+	// Each row lives in the day folder of its UTC stamp (#227): a windowed
+	// read then opens that day's folder alone, never every row ever written.
+	for _, id := range []string{"msg_1", "msg_2"} {
+		if _, err := os.Stat(filepath.Join(dir, "2026-11-05", rowFileName(id))); err != nil {
+			t.Fatalf("the row for %s is not in its day folder: %v", id, err)
+		}
+	}
+}
+
+// The one-time move puts each flat row into the day folder of its mtime, keeps
+// a row whose name is already taken in that folder flat, and is safe to run
+// again (#227).
+func TestTheMovePutsFlatRowsIntoTheirMtimeDayFolder(t *testing.T) {
+	dir := stateHome(t)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	write := func(name, body string, mtime time.Time) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(filepath.Join(dir, name), mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The mtime names the day: a row written yesterday belongs to yesterday.
+	yday := time.Now().UTC().AddDate(0, 0, -1)
+	write("a.json", `{"response_id":"a"}`, yday)
+	write("taken.json", `{"response_id":"first"}`, yday)
+	write("tmp9.tmp", `{"response_id":"in flight"}`, yday) // the atomic writer's, never a row
+	// A writer of the build before the shards may still rewrite a row inside
+	// its live stream, under the flat name the move would free: a row that
+	// young stays flat, or the old writer's next claim would be a second copy.
+	write("fresh.json", `{"response_id":"fresh"}`, time.Now())
+	folder := filepath.Join(dir, yday.Format("2006-01-02"))
+	if err := os.MkdirAll(folder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A name already held in that day folder is another row's: the flat one
+	// stays; never a row is destroyed.
+	if err := os.WriteFile(filepath.Join(folder, "taken.json"), []byte(`{"response_id":"second"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	moveFlatRows()
+	moved := filepath.Join(folder, "a.json")
+	if data, err := os.ReadFile(moved); err != nil || string(data) != `{"response_id":"a"}` {
+		t.Fatalf("the row was not moved into its mtime's day folder: %v %s", err, data)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a.json")); !os.IsNotExist(err) {
+		t.Fatalf("the moved row left a flat copy: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, "taken.json")); err != nil || string(data) != `{"response_id":"first"}` {
+		t.Fatalf("a taken name must leave the flat row be: %v %s", err, data)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "tmp9.tmp")); err != nil {
+		t.Fatalf("an in-flight temp is not the move's to take: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "fresh.json")); err != nil {
+		t.Fatalf("a row a pre-shard writer may still rewrite must stay flat: %v", err)
+	}
+	if st, err := os.Stat(folder); err != nil || st.Mode().Perm() != 0o700 {
+		t.Fatalf("the day folder is not private: %v %v", err, st)
+	}
+	// Safe to run again: nothing movable is flat any more, and nothing changes.
+	before := rowFilesOf(dir)
+	moveFlatRows()
+	if after := rowFilesOf(dir); strings.Join(after, "\x00") != strings.Join(before, "\x00") {
+		t.Fatalf("a second move changed the store: %v -> %v", before, after)
+	}
+}
+
+// A response whose later lines land on the next UTC day: the next pass folds
+// the row's earlier lines and replaces it where the new stamp says, leaving no
+// copy in the old day folder — one response, one row, in the day folder of the
+// stamp it was last read with (#227).
+func TestARowWhoseStampCrossesMidnightMovesFolders(t *testing.T) {
+	dir := stateHome(t)
+	seedOwnedPrices(t, dir, "anthropic", map[string]price{"claude-opus-5-5": {Input: 4, Output: 20}})
+	path := writeTranscript(t,
+		blockLine("u1", "msg_1", "req_1", "thinking", `{"input_tokens":10,"output_tokens":25}`, "2026-11-05T23:59:30Z"),
+	)
+	if n := RecordTranscript("sub", "anthropic", path); n != 1 {
+		t.Fatalf("first pass %d", n)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(blockLine("u2", "msg_1", "req_1", "tool_use", `{"input_tokens":10,"output_tokens":5}`, "2026-11-06T00:00:20Z"))
+	f.Close()
+	if n := RecordTranscript("sub", "anthropic", path); n != 1 {
+		t.Fatalf("the second pass wrote %d rows; it must rewrite its own", n)
+	}
+	files := rowFilesOf(dir)
+	if len(files) != 1 || filepath.Base(filepath.Dir(files[0])) != "2026-11-06" {
+		t.Fatalf("the row did not move to the day folder of its new stamp: %v", files)
+	}
+	usage := decodeRow(t, rows(t, dir)[0])["usage"].(map[string]any)
+	if usage["output_tokens"] != float64(25) || usage["input_tokens"] != float64(10) {
+		t.Fatalf("a later pass must never shrink the row: %v", usage)
+	}
+	if n := RecordTranscript("sub", "anthropic", path); n != 0 {
+		t.Fatalf("a third pass wrote %d rows; the cursor passed the response", n)
+	}
+	if got := len(rowFilesOf(dir)); got != 1 {
+		t.Fatalf("rows = %d, want 1", got)
+	}
 }
 
 func TestRecordTranscriptIsIdempotentAndResumesFromTheCursor(t *testing.T) {
@@ -149,7 +263,7 @@ func TestRecordTranscriptIsIdempotentAndResumesFromTheCursor(t *testing.T) {
 	if len(all) != 2 {
 		t.Fatalf("a rewritten transcript must not spill duplicates: %v", all)
 	}
-	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	files := rowFilesOf(dir)
 	if len(files) != 2 {
 		t.Fatalf("spill files: %v", files)
 	}
@@ -266,7 +380,7 @@ func TestARecycledIdsSpillRowNeverShrinks(t *testing.T) {
 	if n := RecordTranscript("sub", "anthropic", path); n != 1 {
 		t.Fatalf("the second pass wrote %d rows; it must rewrite its own", n)
 	}
-	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	files := rowFilesOf(dir)
 	if len(files) != 2 {
 		t.Fatalf("spill files: %v", files)
 	}
@@ -441,6 +555,87 @@ func reportOutput(t *testing.T, days float64) string {
 	return out
 }
 
+// A windowed report reads the day folders its window touches and the rows a
+// pre-shard store still holds flat, never a folder outside the window: the day
+// folder is the index that keeps a time-window read from opening every row ever
+// written (#227).
+func TestAWindowedReportReadsTheDayFoldersItTouches(t *testing.T) {
+	dir := stateHome(t)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	row := func(name, folder, task string, stamped time.Time, cost string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(dir, folder), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		raw := `{"response_id":"` + name + `"`
+		if task != "" {
+			raw += `,"task":"` + task + `"`
+		}
+		raw += `,"served_model":"sonnet-x","timestamp":"` +
+			stamped.Format(time.RFC3339Nano) + `","usage":{"input_tokens":5,"cost":` + cost +
+			`},"complete":true}`
+		if err := os.WriteFile(filepath.Join(dir, folder, name+".json"), []byte(raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	today, old := now.Format("2006-01-02"), now.AddDate(0, 0, -3).Format("2006-01-02")
+	row("sharded", today, "", now.Add(-30*time.Minute), "2") // in the window, in its day folder
+	row("flat", "", "", now.Add(-20*time.Minute), "3")       // in the window, still flat
+	row("before", old, "", now.Add(-72*time.Hour), "5")
+	if out := reportOutput(t, 1); !strings.Contains(out, "total spend $5.00") {
+		t.Fatalf("the report did not read its window's day folders beside the flat rows: %s", out)
+	}
+	// A task named by a verdict in the window keeps its whole-task cost: its
+	// row before the window lives in an older folder, and the task read still
+	// reaches it while a run with no verdict opens only its window.
+	row("task-old", old, "t", now.Add(-72*time.Hour), "5")
+	row("task-new", today, "t", now.Add(-20*time.Minute), "1")
+	outcomes := `{"task":"t","outcome":"accepted","timestamp":"` + now.Format(time.RFC3339) + `"}` + "\n"
+	if err := os.WriteFile(filepath.Join(stateDir(), "outcomes.jsonl"), []byte(outcomes), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out := reportOutput(t, 1); !strings.Contains(out, "  accepted 1  $6.00/task") {
+		t.Fatalf("a task report lost the task's pre-window usage: %s", out)
+	}
+}
+
+// The store's row files for a window: the flat rows plus the day folders whose
+// day falls inside it, and nothing else — an older day folder, a newer one, a
+// folder that is no day shard, the atomic writer's in-flight tmp.
+func TestUsageRowFilesSelectsTheWindowsDayFolders(t *testing.T) {
+	base := t.TempDir()
+	write := func(name string) string {
+		t.Helper()
+		path := filepath.Join(base, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	inWindow := write(filepath.Join("2026-11-08", "a.json"))
+	write(filepath.Join("2026-11-08", "tmp492.tmp")) // the atomic writer's in-flight name
+	write(filepath.Join("2026-11-05", "b.json"))     // a day before the window
+	write(filepath.Join("2026-11-20", "c.json"))     // a day after it
+	write(filepath.Join("not-a-day", "d.json"))      // a folder that is no day shard
+	flat := write("e.json")
+	since := time.Date(2026, 11, 7, 18, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
+	got := usageRowFiles(base, since, now)
+	want := []string{flat, inWindow}
+	for _, list := range [][]string{got, want} {
+		sort.Strings(list)
+	}
+	if len(got) != 2 || strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("usageRowFiles = %v, want %v", got, want)
+	}
+}
+
 // When another turn holds the primary name, the relaying adapter's row for this
 // response lands in a spill — a name the hook cannot derive from the id. The
 // hook must still find it, or the response is counted twice and the report sums
@@ -550,7 +745,7 @@ func TestOneResponseSplitAcrossLinesIsOneRow(t *testing.T) {
 	if n := RecordTranscript("sub", "anthropic", path); n != 1 {
 		t.Fatalf("a three-block response wrote %d rows", n)
 	}
-	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	files := rowFilesOf(dir)
 	if len(files) != 1 {
 		t.Fatalf("spill files: %v", files)
 	}
@@ -590,7 +785,7 @@ func TestTwoResponsesAreTwoRows(t *testing.T) {
 	if n := RecordTranscript("sub", "anthropic", path); n != 2 {
 		t.Fatalf("%d", n)
 	}
-	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	files := rowFilesOf(dir)
 	if len(files) != 2 {
 		t.Fatalf("spill files: %v", files)
 	}
@@ -617,7 +812,7 @@ func TestSplitResponseAcrossTwoPassesStaysOneRow(t *testing.T) {
 	if n := RecordTranscript("sub", "anthropic", path); n != 1 {
 		t.Fatalf("the second pass wrote %d rows; it must rewrite its own", n)
 	}
-	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	files := rowFilesOf(dir)
 	if len(files) != 1 {
 		t.Fatalf("spill files: %v", files)
 	}

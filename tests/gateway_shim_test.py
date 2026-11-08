@@ -784,19 +784,25 @@ class UsageSidecarTest(unittest.TestCase):
         _, port = start_shim(self, self.target, env=base, flags=flags)
         return port
 
-    def row_path(self, response_id):
-        # The primary row is named sha256(response_id).json — the name a
-        # consumer computes from a transcript's message id. Only a recycled id
-        # (same id, different turn) spills to sha256(id.turn_id).json.
-        return (self.state / "ccmorph" / "usage"
+    def row_path(self, response_id, day=None):
+        # The primary row is named sha256(response_id).json in the day folder of
+        # its UTC stamp — the name a consumer computes from a transcript's
+        # message id. Only a recycled id (same id, different turn) spills to
+        # sha256(id.turn_id).json.
+        if day is None:
+            day = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+        return (self.state / "ccmorph" / "usage" / day
                 / (hashlib.sha256(response_id.encode()).hexdigest() + ".json"))
 
     def row_for(self, response_id):
         """Find the single row file for a response id, regardless of the
-        turn-id suffix in the filename. Polls until the row appears."""
+        turn-id suffix in the filename or the day folder it landed in. Polls
+        until the row appears."""
         deadline = time.monotonic() + HANG_TIMEOUT
+        rows = []
         while time.monotonic() < deadline:
-            rows = [p for p in (self.state / "ccmorph" / "usage").glob("*.json")
+            store = self.state / "ccmorph" / "usage"
+            rows = [p for pattern in ("*.json", "*/*.json") for p in store.glob(pattern)
                     if json.loads(p.read_text()).get("response_id") == response_id]
             if len(rows) == 1:
                 return rows[0]
@@ -804,8 +810,14 @@ class UsageSidecarTest(unittest.TestCase):
         self.fail(f"expected 1 row for {response_id}, got {len(rows)}")
 
     def rows(self):
+        store = self.state / "ccmorph" / "usage"
         return {p.name: json.loads(p.read_text())
-                for p in (self.state / "ccmorph" / "usage").glob("*.json")}
+                for pattern in ("*.json", "*/*.json") for p in store.glob(pattern)}
+
+    def wait_for_row(self, response_id, predicate=bool):
+        """The row is found by its response id, then polled for the predicate —
+        the store is sharded by day, so the path is the row's to say."""
+        return self.wait_for(self.row_for(response_id), predicate)
 
     def wait_for(self, path, predicate=bool):
         """The shim writes the row after the client has its bytes, so every row
@@ -829,10 +841,13 @@ class UsageSidecarTest(unittest.TestCase):
     def test_nonstream_message_is_one_complete_row(self):
         with self.post(self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})) as r:
             self.assertEqual(upstream_bytes(self, r.read()), CAPTURE_JSON)
-        # The row sits at exactly sha256(response_id).json, the consumer's join key.
         row_path = self.row_for("msg_capture_json")
-        self.assertEqual(row_path, self.row_path("msg_capture_json"))
         row = self.wait_for(row_path)
+        stamp = datetime.datetime.fromisoformat(row["timestamp"].replace("Z", "+00:00"))
+        # The row sits at exactly sha256(response_id).json, in the day folder of
+        # its UTC stamp — the consumer's join key.
+        self.assertEqual(row_path, self.row_path("msg_capture_json",
+                                                 day=stamp.strftime("%Y-%m-%d")))
         self.assertEqual(len(list(self.rows())), 1)
         self.assertEqual((row["schema"], row["response_id"]), (1, "msg_capture_json"))
         self.assertEqual(row["profile"], "test-profile")
@@ -851,6 +866,7 @@ class UsageSidecarTest(unittest.TestCase):
         # Private by mode, and nothing secret-derived is in the row: not the
         # identity digest, not the key, not its hash, not the rendered config path.
         self.assertEqual((self.state / "ccmorph" / "usage").stat().st_mode & 0o077, 0)
+        self.assertEqual(row_path.parent.stat().st_mode & 0o077, 0)  # its day folder
         self.assertEqual(row_path.stat().st_mode & 0o077, 0)
         text = json.dumps(row)
         for secret in (IDENTITY, hashlib.sha256(b"k").hexdigest(), "/nowhere/gateway.conf"):
@@ -864,7 +880,7 @@ class UsageSidecarTest(unittest.TestCase):
                          flags=("--retry-transport",))
         with self.post(port) as r:
             self.assertEqual(upstream_bytes(self, r.read()), CAPTURE_JSON)
-        row = self.wait_for(self.row_path("msg_capture_json"))
+        row = self.wait_for_row("msg_capture_json")
         self.assertEqual(row["retries"], 2)
         self.assertEqual(row["attempt"], 1)
 
@@ -874,7 +890,7 @@ class UsageSidecarTest(unittest.TestCase):
         CaptureUpstream.eof_first = 1
         with self.post(self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})) as r:
             self.assertEqual(upstream_bytes(self, r.read()), CAPTURE_JSON)
-        row = self.wait_for(self.row_path("msg_capture_json"))
+        row = self.wait_for_row("msg_capture_json")
         self.assertEqual(row["retries"], 1)
 
     def test_explicit_model_map_records_request_and_target_but_keeps_picker_identity(self):
@@ -894,7 +910,7 @@ class UsageSidecarTest(unittest.TestCase):
                 self.assertEqual(json.loads(seen[0])["model"], "gpt-6.1-sol")
                 self.assertIn(b'claude-sonnet-5-5', data)
                 response_id = "msg_capture_json" if mode == "json" else "msg_capture_sse"
-                row = self.wait_for(self.row_path(response_id), lambda r: r["complete"])
+                row = self.wait_for_row(response_id, lambda r: r["complete"])
                 self.assertEqual((row["requested_model"], row["served_model"], row["response_model"]),
                                  (asked, "gpt-6.1-sol", "claude-sonnet-5-5"))
 
@@ -984,7 +1000,7 @@ class UsageSidecarTest(unittest.TestCase):
         return self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC})
 
     def row(self):
-        return self.wait_for(self.row_path("msg_capture_json"))
+        return self.wait_for_row("msg_capture_json")
 
     def test_task_tags_the_row_and_never_changes_the_model(self):
         h = {"x-ccmorph-task": "issue-42", "x-ccmorph-attempt": "2"}

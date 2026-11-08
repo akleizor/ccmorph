@@ -664,15 +664,21 @@ model). A shim holding that spec writes one metadata-only row for every
 `/v1/messages` response it relays, at
 
 ```
-${XDG_STATE_HOME:-~/.local/state}/ccmorph/usage/<sha256(response_id)>.json
+${XDG_STATE_HOME:-~/.local/state}/ccmorph/usage/<YYYY-MM-DD>/<sha256(response_id)>.json
 ```
 
-so a response id quoted in a Claude Code transcript joins to what that turn
-cost by computing that filename directly. If a gateway recycles an id, the
+the day folder of the row's own UTC stamp, so a response id quoted in a Claude
+Code transcript joins to what that turn
+cost by computing that filename directly. The day folders are an index a
+time-window read uses: it opens only the folders its window touches — a row
+never sits in a folder before its stamp's day — plus any rows a pre-shard
+build (or a move that could not rename) still holds flat at the top level.
+If a gateway recycles an id, the
 earlier row is never overwritten: when that file already holds a row with a
 different `turn_id` (or one that cannot be parsed), the later turn is written
 to `<sha256(response_id.turn_id)>.json` instead, and a consumer that needs
-every turn for an id globs the directory and matches the `response_id` field.
+every turn for an id globs the day folders and the flat store, matching the
+`response_id` field.
 If that name too holds another turn's row, the later turn takes the first free
 `<sha256(response_id.turn_id.N)>.json`, N = 1–3; a write only takes a name that
 is free or already holds its own turn's row — the claim is a hardlink where the
@@ -814,7 +820,8 @@ suite now fails if the document names a `scripts/` path the repo does not ship.
 **The export.** `scripts/usage-export` turns the receipts into a ccusage config dir, so the
 ledger is ccusage and not a report tool of our own. Run it as
 `scripts/usage-export --output ROOT [--since YYYYMMDD]`; `--source` defaults to the state
-root's `usage/`, every `*.json` in it is parsed, and it writes one `ccmorph-<profile>`
+root's `usage/`, every `*.json` in it is parsed — the day folders at or after the range's
+first day beside the flat rows, every folder when no range is given — and it writes one `ccmorph-<profile>`
 project per profile — an unsafe character in a profile name is replaced, and a row with no
 profile lands in `ccmorph-unknown` **[test]** — one `YYYY-MM-DD.jsonl` per local-time day,
 and a `ccusage.json` that prices a billed or estimated cost as is and leaves every other
@@ -839,14 +846,25 @@ themselves are never touched **[test]**. The run report is one JSON line — `ro
 `unpriced`, `usd` (gateway-billed only), `estimated_usd`, `gateway_rows`, `estimated_rows`
 — the same billed-versus-estimate split **[test]**.
 
-**The report.** `ccmorph-core shim report [--days N]` is the read-only spend window over
+**The report.** `ccmorph-core shim report [--days N]` is the spend window over
 the same receipts plus the outcome log, one day by default and wider with `--days`
-**[test]**. It prints the total spend (the gateway's billed costs only), unknown spend rows
+**[test]**. It reads the outcome log first, then the day folders its rows need, beside
+any rows still flat at the top level — a row never sits in a folder before its stamp's
+UTC day — and each row's own `timestamp` still decides the window **[test]**. A report
+with no task verdict in its window opens only its window's day folders; one with a
+verdict reads every folder, because a task's earlier usage has no bound. After its rows
+are read and its totals printed it moves the flat rows into the day folders of their
+mtimes, once: the move reads no receipt, takes a name only the sidecar's own claim would
+(a taken name leaves the flat row be), leaves a row younger than an hour flat (a writer
+of the build before the shards may still rewrite it inside its live stream), and is safe
+to run again; before and after it the report
+prints the same totals **[test]**. It prints the total spend (the gateway's billed costs
+only), unknown spend rows
 (no cost, not estimated), estimated spend (a models.dev list price, never billed), and
 spend by served model, where the model is `served_model` else `response_model` with one
 trailing `[1m]` stripped and a row carrying neither is `(unknown)` **[test]**. Under
 `tasks with outcomes` it prints the accepted count, the cost per accepted task —
-whole-task, so usage before the window counts, and `n/a` the moment any accepted task's
+whole-task, so a task's usage before the window counts, and `n/a` the moment any accepted task's
 spend is unknown — and the first-pass and escalated shares **[test]**. A billed cost that
 is not a finite non-negative number under the shim's bound is unknown spend, never a total
 and never fatal **[test]**, and only `*.json` names are read, so the writer's own in-flight

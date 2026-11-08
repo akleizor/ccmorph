@@ -657,13 +657,24 @@ func stateHome(t *testing.T) string {
 }
 
 func rows(t *testing.T, dir string) []string {
-	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
 	var out []string
-	for _, f := range files {
+	for _, f := range rowFilesOf(dir) {
 		b, _ := os.ReadFile(f)
 		out = append(out, string(b))
 	}
 	return out
+}
+
+// rowFilesOf is every row file under a usage store: the flat files at the top
+// level and the day folders' — the layout the writer shards by day.
+func rowFilesOf(dir string) []string {
+	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	entries, _ := filepath.Glob(filepath.Join(dir, "*"))
+	for _, e := range entries {
+		more, _ := filepath.Glob(filepath.Join(e, "*.json"))
+		files = append(files, more...)
+	}
+	return files
 }
 
 func TestSidecarLifecycleAndModes(t *testing.T) {
@@ -687,11 +698,11 @@ func TestSidecarLifecycleAndModes(t *testing.T) {
 	if st, _ := os.Stat(dir); st.Mode().Perm() != 0o700 {
 		t.Fatal(st.Mode())
 	}
-	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	files := rowFilesOf(dir)
 	if st, _ := os.Stat(files[0]); st.Mode().Perm() != 0o600 {
 		t.Fatal(st.Mode())
 	}
-	if m, _ := filepath.Glob(filepath.Join(dir, "*.tmp")); len(m) != 0 {
+	if m, _ := filepath.Glob(filepath.Join(dir, "*", "*.tmp")); len(m) != 0 {
 		t.Fatal("temp file left", m)
 	}
 	for _, secret := range []string{"identity", "standard"} {
@@ -718,7 +729,10 @@ func TestLegacyRowWithoutTurnIDIsNotOwned(t *testing.T) {
 	dir := stateHome(t)
 	u := newSidecar("p", "id")
 	rec := u.observe(parseDoc([]byte(`{"type":"message_start","message":{"id":"legacy"}}`)), nil, nil)
-	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	files := rowFilesOf(dir) // the row sits in its UTC day folder (#227)
+	if len(files) != 1 {
+		t.Fatal(files)
+	}
 	os.WriteFile(files[0], []byte(`{"response_id":"legacy","usage":{"cost":9}}`), 0o600)
 	u.observe(parseDoc([]byte(`{"type":"message_stop"}`)), rec, nil)
 	if b, _ := os.ReadFile(files[0]); !strings.Contains(string(b), `"cost":9`) {

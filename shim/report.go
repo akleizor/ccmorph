@@ -72,8 +72,10 @@ type taskVerdict struct {
 	when    time.Time
 }
 
-// report is the read-only spend window and verdict cohort; accepted costs span
-// the whole task.
+// report is the spend window and verdict cohort; accepted costs span the whole
+// task. Its read writes nothing, and after it the flat rows of a pre-shard
+// store are moved into their day folders — a relocation, never a change to a
+// row's numbers.
 func report(days float64) {
 	base := stateDir()
 	now := time.Now().UTC()
@@ -92,18 +94,48 @@ func report(days float64) {
 	final := map[string]order{}
 	taskCost := map[string]float64{}
 	unpriced := map[string]bool{}
-	usageDir := filepath.Join(base, "usage")
-	entries, _ := os.ReadDir(usageDir)
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		names = append(names, e.Name())
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		if !strings.HasSuffix(name, ".json") {
-			continue // the atomic writer's .tmp is not committed
+	// The outcomes are read first: they name the tasks this window reports on,
+	// and a task's cost is whole-task — its usage before the window counts, so
+	// its row read has no lower bound. A run with no verdict in its window
+	// opens only the day folders its window touches; one with a verdict reads
+	// every folder, plus any rows still flat at the top level. The row's own
+	// timestamp still decides the window.
+	history := map[string][]taskVerdict{} // last valid row in file order is the verdict
+	var taskOrder []string
+	if data, err := os.ReadFile(filepath.Join(base, "outcomes.jsonl")); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			d := parseDoc([]byte(line))
+			if d == nil {
+				continue
+			}
+			task, ok1 := d.str("task")
+			outcome, ok2 := d.str("outcome")
+			ts, ok3 := d.str("timestamp")
+			when, ok4 := parseTime(ts)
+			if !ok1 || !ok2 || !ok3 || !ok4 || !taskRE.MatchString(task) || !slices.Contains(outcomes, outcome) || when.After(now) {
+				continue
+			}
+			if _, seen := history[task]; !seen {
+				taskOrder = append(taskOrder, task)
+			}
+			history[task] = append(history[task], taskVerdict{outcome, when})
 		}
-		data, err := os.ReadFile(filepath.Join(usageDir, name))
+	}
+	var tasks []string
+	for _, t := range taskOrder {
+		if h := history[t]; !h[len(h)-1].when.Before(since) {
+			tasks = append(tasks, t)
+		}
+	}
+	lo := since
+	if len(tasks) > 0 {
+		lo = time.Time{} // a task's earlier usage has no lower bound
+	}
+	usageDir := filepath.Join(base, "usage")
+	paths := usageRowFiles(usageDir, lo, now)
+	sort.Strings(paths)
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
@@ -193,27 +225,12 @@ func report(days float64) {
 		byModel[model] += *cost
 	}
 
-	history := map[string][]taskVerdict{} // last valid row in file order is the verdict
-	var taskOrder []string
-	if data, err := os.ReadFile(filepath.Join(base, "outcomes.jsonl")); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			d := parseDoc([]byte(line))
-			if d == nil {
-				continue
-			}
-			task, ok1 := d.str("task")
-			outcome, ok2 := d.str("outcome")
-			ts, ok3 := d.str("timestamp")
-			when, ok4 := parseTime(ts)
-			if !ok1 || !ok2 || !ok3 || !ok4 || !taskRE.MatchString(task) || !slices.Contains(outcomes, outcome) || when.After(now) {
-				continue
-			}
-			if _, seen := history[task]; !seen {
-				taskOrder = append(taskOrder, task)
-			}
-			history[task] = append(history[task], taskVerdict{outcome, when})
-		}
-	}
+	// The window is read and the totals are in: put the flat rows this
+	// pre-shard store still holds into their day folders, so the next read
+	// pays only its window. This run's numbers came from the rows as they
+	// were; the move relocates them, it never changes one.
+	moveFlatRows()
+
 	pct := func(part, whole int) string {
 		if whole == 0 {
 			return "n/a"
@@ -238,12 +255,6 @@ func report(days float64) {
 		fmt.Printf("  %s  $%.2f\n", label, byModel[m])
 	}
 	fmt.Println("\ntasks with outcomes")
-	var tasks []string
-	for _, t := range taskOrder {
-		if h := history[t]; !h[len(h)-1].when.Before(since) {
-			tasks = append(tasks, t)
-		}
-	}
 	if len(tasks) == 0 {
 		return
 	}
@@ -286,7 +297,91 @@ func report(days float64) {
 // fmtG is Python's "{:g}".
 func fmtG(f float64) string { return strconv.FormatFloat(f, 'g', 6, 64) }
 
-var _ = regexp.MustCompile
+// moveSettle is how new a flat row may be and still be skipped by the move. A
+// writer of the build before the shards rewrites a row inside its live stream,
+// under the flat name this move would free, and no stream outlives the stall
+// timeout; an hour is past every one, and a skipped row stays flat for a later
+// report, which readers read.
+const moveSettle = time.Hour
+
+// moveFlatRows is the one-time move of a pre-shard store: each flat row goes
+// into the day folder of its mtime, so a windowed read stops opening it. The
+// mtime, not the row's own stamp, picks the folder — the move reads no
+// receipt — and no row's writer lets its file sit before its stamp's day, so
+// the folder stays a safe lower bound for a windowed read. A name already
+// taken in that folder (a recycled id whose other row was sharded first) is
+// another row's: the flat one stays, a reader always reads the top level too,
+// and never a row is destroyed. The claim is the sidecar's own — a hardlink
+// under a free name — so a filesystem without hardlinks keeps its rows flat
+// and still read. Safe to run again: a moved row is no longer flat.
+func moveFlatRows() {
+	base := usageBase()
+	now := time.Now()
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue // a day folder, or the atomic writer's in-flight tmp
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if now.Sub(info.ModTime()) < moveSettle {
+			continue // a writer before the shards may still rewrite it
+		}
+		dir := filepath.Join(base, info.ModTime().UTC().Format("2006-01-02"))
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			continue
+		}
+		from := filepath.Join(base, e.Name())
+		to := filepath.Join(dir, e.Name())
+		if link(from, to) != nil {
+			continue
+		}
+		remove(from)
+	}
+}
+
+// dayDirRE is a sharded day folder's name: one UTC date, spelled the way the
+// writer shards a row into it.
+var dayDirRE = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+
+// usageRowFiles is every row file a read of the window [since, now] touches — a
+// zero since reads every day folder, for a task read that has no lower bound:
+// the day folders whose day falls inside the window, plus the flat rows a
+// pre-shard build (or a move that could not rename) left at the top level. A
+// row always sits in a folder at or after its stamp's UTC day — the writer
+// places it there, and the move by an mtime no row's writer lets run before
+// its stamp — so no folder before the window's first day can hold a row the
+// window counts. Anything else in the store — a folder for another day, a
+// name that is not a day, the atomic writer's in-flight tmp — is not read.
+func usageRowFiles(base string, since, now time.Time) []string {
+	first, last := since.UTC().Format("2006-01-02"), now.UTC().Format("2006-01-02")
+	entries, _ := os.ReadDir(base)
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			name := e.Name()
+			if !dayDirRE.MatchString(name) || name < first || name > last {
+				continue
+			}
+			sub, _ := os.ReadDir(filepath.Join(base, name))
+			for _, f := range sub {
+				if !f.IsDir() && strings.HasSuffix(f.Name(), ".json") {
+					out = append(out, filepath.Join(base, name, f.Name()))
+				}
+			}
+			continue
+		}
+		if strings.HasSuffix(e.Name(), ".json") {
+			out = append(out, filepath.Join(base, e.Name()))
+		}
+	}
+	return out
+}
 
 // nonFiniteToNull rewrites the NaN/Infinity/-Infinity tokens Python's json.dump
 // wrote for a bad cost into null, which stays out of every bucket: such a row is

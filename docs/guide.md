@@ -542,7 +542,9 @@ it, and a `token` profile's long-lived token is not allowed to read plan usage.
 When a read is rate-limited or unreachable, the last good reading stays on screen,
 dimmed, with its age ("12 min old"); only a profile never read shows the error. Gateways
 and API keys show today's and this month's billed spend from the receipts at
-`~/.local/state/ccmorph/usage/`, marked `(est.)` when a row carried only a list-price
+`~/.local/state/ccmorph/usage/<YYYY-MM-DD>/` (the day folder of each receipt's
+UTC stamp, so a time-window read opens only the folders its window touches),
+marked `(est.)` when a row carried only a list-price
 estimate, and a profile with `monthly_budget_usd` adds a bar against that budget.
 A turn whose model had no price is never read as free: when no turn of the month carried
 a cost, the profile shows the turns and tokens it served and `cost unknown`; when only

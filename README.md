@@ -130,11 +130,15 @@ To switch a running session, type in the Claude Code prompt:
 ## Usage and cost
 
 Each turn a profile serves writes one receipt under
-`~/.local/state/ccmorph/usage/`: tokens, the model that answered, and the
+`~/.local/state/ccmorph/usage/<YYYY-MM-DD>/` — the day folder of the
+receipt's UTC stamp: tokens, the model that answered, and the
 cost the gateway billed when it reports one — otherwise an estimated cost at
 the provider's models.dev list price, marked as an estimate in the receipt and
-the export. No prompt, header or credential is stored. Export the receipts and
-read them with ccusage:
+the export. The day folders are an index, so a reader with a time window opens
+only the folders its window touches rather than every receipt ever written;
+the report also moves any rows a pre-shard store still holds flat into their
+day folders, once. No prompt, header or credential is stored. Export the
+receipts and read them with ccusage:
 
 ```sh
 scripts/usage-export --output ~/.cache/ccmorph-usage
