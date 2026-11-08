@@ -7,6 +7,19 @@
 
 ## v0.5.5 — 2026-11-08
 
+### Changed
+
+- **Usage rows are sharded by day.** Each receipt is written to
+  `usage/<YYYY-MM-DD>/`, the day folder of its UTC stamp, so a reader with a
+  time window opens only the folders its window touches instead of stating
+  every row ever written. The report, the quota spend and the export read the
+  day folders in their window beside any rows still flat at the top level (a
+  report with a task verdict in its window reads every folder, because a
+  task's cost is whole-task), and the report moves those flat rows into their
+  day folders once, after reading its window — a row younger than an hour
+  stays flat for the writer an upgrade may still have running. Before and
+  after the move it prints the same totals.
+
 ### Fixed
 
 - **A Remote Control host that lost its login is restarted, not left serving

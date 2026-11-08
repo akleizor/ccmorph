@@ -126,10 +126,11 @@ type record struct {
 	complete           bool
 }
 
-// UsageSidecar writes one row per upstream response, keyed by the response id it
-// answers with. A consumer joins a transcript's message id to
-// <sha256(response_id)>.json. Each turn carries a random turn_id for row
-// ownership; if a gateway recycles a response id, the later turn goes to
+// UsageSidecar writes one row per upstream response, keyed by the response id
+// it answers with, in the day folder of the row's UTC stamp. A consumer joins
+// a transcript's message id to <sha256(response_id)>.json. Each turn carries
+// a random turn_id for row ownership; if a gateway recycles a response id,
+// the later turn goes to
 // <sha256(response_id.turn_id)>.json, and on to <...turn_id.N>.json for N=1..3,
 // so even identical timestamps preserve both rows. A name is taken only when it
 // is free or already holds this turn's own row, so a turn whose every name is
@@ -249,6 +250,40 @@ func stateDir() string {
 	return filepath.Join(home, ".local", "state", "ccmorph")
 }
 
+// usageBase is the store every usage row lives in, sharded by UTC day.
+func usageBase() string { return filepath.Join(stateDir(), "usage") }
+
+// usageDay is the UTC day folder a row stamped ts belongs to. A stamp that
+// will not parse is today: the sidecar stamps what it writes now, and a row
+// carries its own timestamp for a reader to filter on.
+func usageDay(ts string) string {
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		t = time.Now()
+	}
+	return t.UTC().Format("2006-01-02")
+}
+
+// rowDirs is where the row of a response stamped ts can be found, and the
+// first entry is where its write claims: the stamp's own UTC day folder, then
+// the neighbouring days (a response that spans a UTC midnight puts its earlier
+// and later stamps one folder apart), then the flat store a build before the
+// shards — or a move that could not rename — left rows in.
+func rowDirs(ts string) []string {
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		t = time.Now()
+	}
+	t = t.UTC()
+	base := usageBase()
+	return []string{
+		filepath.Join(base, t.Format("2006-01-02")),
+		filepath.Join(base, t.AddDate(0, 0, -1).Format("2006-01-02")),
+		filepath.Join(base, t.AddDate(0, 0, 1).Format("2006-01-02")),
+		base,
+	}
+}
+
 // owns is true only when the row on disk at path carries turn: the one thing
 // that makes replacing that name safe.
 func owns(path, turn string) bool {
@@ -295,9 +330,15 @@ func claim(tmp, candidate, turn string) (bool, error) {
 }
 
 func (u *UsageSidecar) write(r *record) error {
-	dir := filepath.Join(stateDir(), "usage")
-	if err := os.MkdirAll(filepath.Dir(dir), 0o777); err != nil {
+	base := usageBase()
+	dir := filepath.Join(base, usageDay(r.timestamp))
+	if err := os.MkdirAll(filepath.Dir(base), 0o777); err != nil {
 		return err
+	}
+	if err := os.Mkdir(base, 0o700); err != nil {
+		if st, serr := os.Stat(base); !errors.Is(err, fs.ErrExist) || serr != nil || !st.IsDir() {
+			return err
+		}
 	}
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		if st, serr := os.Stat(dir); !errors.Is(err, fs.ErrExist) || serr != nil || !st.IsDir() {
@@ -342,6 +383,24 @@ func (u *UsageSidecar) write(r *record) error {
 	// (a file where the usage dir belongs), and a transcript reader must retry
 	// that one while this one is permanent.
 	return fail(errRowNameTaken)
+}
+
+// retireEarlierCopies removes this turn's own row from every directory but the
+// one its write just claimed: a response whose stamp crossed a UTC day between
+// two hook passes — or that a build before the shards wrote flat — would
+// otherwise sit in two places, and a reader would count the response twice.
+// Ownership is the turn_id the row on disk carries; another turn's row is
+// never touched. Only the hook's rows move days (a relay's record keeps the
+// stamp it was started with), so only the hook calls this.
+func retireEarlierCopies(dirs []string, responseID, turnID string) {
+	for _, dir := range dirs[1:] {
+		primary, spills := rowNames(dir, responseID, turnID)
+		for _, path := range append([]string{primary}, spills...) {
+			if owns(path, turnID) {
+				remove(path)
+			}
+		}
+	}
 }
 
 // rowNames is where one response's row can live, in the sidecar's own claim

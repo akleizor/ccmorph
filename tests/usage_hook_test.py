@@ -203,7 +203,10 @@ class Box:
         return json.loads(line[-1][len("STOP="):]) if line else []
 
     def rows(self):
-        return sorted(self.usage.glob("*.json")) if self.usage.exists() else []
+        if not self.usage.exists():
+            return []
+        # The store is sharded by UTC day folder beside any flat rows (#227).
+        return sorted(p for pattern in ("*.json", "*/*.json") for p in self.usage.glob(pattern))
 
     def wait_rows(self, count, timeout=HANG_TIMEOUT):
         end = time.time() + timeout

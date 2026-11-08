@@ -343,6 +343,11 @@ func TestQuotaStale(t *testing.T) {
 func TestQuotaSpend(t *testing.T) {
 	at := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	useClock(t, at)
+	// Spending is local-day money and the day folders are UTC days: a zone east
+	// of UTC puts local midnight on the previous UTC day, so a folder walk that
+	// steps local midnights as instants stops before today's folder. HKT is the
+	// machine ccmorph is measured on.
+	time.Local = time.FixedZone("HKT", 8*3600)
 	state := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", state)
 	useTransport(t, func(r *http.Request) (*http.Response, error) {
@@ -353,11 +358,18 @@ func TestQuotaSpend(t *testing.T) {
 	if err := os.MkdirAll(usage, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	receipt := func(n, profile, stamp string, u map[string]any, complete bool) {
+	receipt := func(n, profile, stamp string, u map[string]any, complete bool, day ...string) {
 		raw, _ := json.Marshal(map[string]any{
 			"complete": complete, "profile": profile, "timestamp": stamp, "usage": u,
 		})
-		if err := os.WriteFile(filepath.Join(usage, n+".json"), raw, 0o600); err != nil {
+		folder := usage
+		if len(day) > 0 {
+			folder = filepath.Join(usage, day[0])
+			if err := os.MkdirAll(folder, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(folder, n+".json"), raw, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -373,6 +385,12 @@ func TestQuotaSpend(t *testing.T) {
 	receipt("8", "gw", "2026-10-20T11:00:00Z", map[string]any{"input_tokens": 120, "output_tokens": 14}, true)
 	receipt("9", "gw2", "2026-10-20T09:30:00Z", map[string]any{"input_tokens": 100, "cache_read_input_tokens": 20, "output_tokens": 14}, true)
 	receipt("10", "gw2", "2026-10-05T08:00:00Z", map[string]any{"input_tokens": 100, "output_tokens": 20}, true)
+	// The same store sharded by day: a row lands in the day folder of its UTC
+	// stamp, and the spend still reads it beside the flat rows (#227).
+	receipt("11", "gw", "2026-10-20T08:00:00Z", map[string]any{"cost": 0.25}, true, "2026-10-20")           // today, sharded
+	receipt("12", "gw", "2026-10-02T00:00:00Z", map[string]any{"estimated_cost": 0.25}, true, "2026-10-02") // this month
+	receipt("13", "gw", "2026-09-15T00:00:00Z", map[string]any{"cost": 50.0}, true, "2026-09-15")           // last month
+	receipt("14", "other", "2026-10-20T07:00:00Z", map[string]any{"cost": 6.0}, true, "2026-10-20")         // another profile
 
 	in := "gw\tgateway\t\t\ncap\tgateway\t\t500\ngw2\tgateway\t\t\nwork\tgateway\t\t\n"
 	out, _, code := run(t, nil, in)
@@ -387,7 +405,7 @@ func TestQuotaSpend(t *testing.T) {
 		"",
 		"API and gateway profiles",
 		"gw",
-		"  today $1.70 · month $5.00 (est.)",
+		"  today $1.95 · month $5.50 (est.)",
 		"  1 turn with no price · cost unknown",
 		"gw2",
 		"  2 turns · 254 tokens this month · cost unknown",
@@ -408,11 +426,12 @@ func TestQuotaSpend(t *testing.T) {
 		t.Fatal(err)
 	}
 	gw := doc.Profiles[0]
-	if gw.Kind != "gateway" || gw.Spend == nil || gw.Spend.TodayUSD != 1.7 || gw.Spend.MonthUSD != 5.0 || !gw.Spend.Estimated {
+	if gw.Kind != "gateway" || gw.Spend == nil || gw.Spend.TodayUSD != 1.95 || gw.Spend.MonthUSD != 5.5 || !gw.Spend.Estimated {
 		t.Fatalf("gw entry %+v", gw)
 	}
-	// The same turn and token counts the text shows, per window (#234).
-	if gw.Spend.TodayTurns != 3 || gw.Spend.MonthTurns != 4 || gw.Spend.TodayTokens != 134 || gw.Spend.MonthTokens != 134 || gw.Spend.UnpricedTurns != 1 {
+	// The same turn and token counts the text shows, per window (#234), with
+	// the sharded rows' turns counted beside the flat ones (#227).
+	if gw.Spend.TodayTurns != 4 || gw.Spend.MonthTurns != 6 || gw.Spend.TodayTokens != 134 || gw.Spend.MonthTokens != 134 || gw.Spend.UnpricedTurns != 1 {
 		t.Fatalf("gw counts %+v", gw.Spend)
 	}
 	cap := doc.Profiles[1]

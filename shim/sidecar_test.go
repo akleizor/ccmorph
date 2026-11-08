@@ -33,7 +33,7 @@ func nameOf(key string) string {
 // byName is every row in dir, keyed by file name, as written.
 func byName(t *testing.T, dir string) map[string]string {
 	t.Helper()
-	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	files := rowFilesOf(dir)
 	out := map[string]string{}
 	for _, f := range files {
 		b, _ := os.ReadFile(f)
@@ -222,7 +222,7 @@ func TestRemovedClaimReclaimedByAnotherTurnIsNotOverwritten(t *testing.T) {
 	u := newSidecar("p", "identity")
 	first, second := turn(u, "msg_reclaimed", 1), turn(u, "msg_reclaimed", 2)
 	u.write(first)
-	os.Remove(filepath.Join(dir, nameOf("msg_reclaimed")))
+	os.Remove(filepath.Join(dir, usageDay(first.timestamp), nameOf("msg_reclaimed")))
 	u.write(second)
 	first.complete = true
 	u.write(first)
@@ -238,7 +238,7 @@ func TestSpillRewriteKeepsItsPathWhenPrimaryIsRemoved(t *testing.T) {
 	first, second := turn(u, "msg_spill_stable", 1), turn(u, "msg_spill_stable", 2)
 	u.write(first)
 	u.write(second)
-	os.Remove(filepath.Join(dir, nameOf("msg_spill_stable")))
+	os.Remove(filepath.Join(dir, usageDay(first.timestamp), nameOf("msg_spill_stable")))
 	second.usage = usageRow{{"cost", []byte("9")}}
 	u.write(second)
 	second.complete = true
@@ -305,7 +305,7 @@ func TestSpillAliasingAnotherPrimaryKeepsEveryRow(t *testing.T) {
 				t.Fatalf("%s changed", name)
 			}
 		}
-		if tmp, _ := filepath.Glob(filepath.Join(dir, "*.tmp")); len(tmp) != 0 || len(after) != 7 {
+		if tmp, _ := filepath.Glob(filepath.Join(dir, "*", "*.tmp")); len(tmp) != 0 || len(after) != 7 {
 			t.Fatal("temp left or row added", tmp)
 		}
 	})

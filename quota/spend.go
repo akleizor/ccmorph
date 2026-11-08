@@ -71,7 +71,26 @@ func spendEntry(name, budgetRaw string) Entry {
 	today := now()
 	todayStart := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, time.Local)
 	monthStart := time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, time.Local)
-	paths, _ := filepath.Glob(filepath.Join(stateDir(), "usage", "*.json"))
+	// The receipts this month's spend can sit in: the flat store plus the day
+	// folders from the month's first UTC day to today's, compared by name —
+	// stepping local midnights as instants lands after now east of UTC and
+	// skips today's folder. A row always sits in a folder at or after its
+	// stamp's UTC day, so an earlier folder holds only rows the month window
+	// itself excludes; the stamp still decides.
+	usageDir := filepath.Join(stateDir(), "usage")
+	first, last := monthStart.UTC().Format("2006-01-02"), today.UTC().Format("2006-01-02")
+	paths, _ := filepath.Glob(filepath.Join(usageDir, "*.json"))
+	entries, _ := os.ReadDir(usageDir)
+	for _, e := range entries {
+		if !e.IsDir() || e.Name() < first || e.Name() > last {
+			continue
+		}
+		if _, err := time.Parse("2006-01-02", e.Name()); err != nil {
+			continue // a folder that is not a day shard
+		}
+		more, _ := filepath.Glob(filepath.Join(usageDir, e.Name(), "*.json"))
+		paths = append(paths, more...)
+	}
 	for _, p := range paths {
 		raw, err := os.ReadFile(p)
 		if err != nil {

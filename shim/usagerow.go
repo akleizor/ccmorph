@@ -230,7 +230,7 @@ func WriteUsageRow(profile, pricing, responseID, model, timestamp, turnID string
 	// A response's lines can span hook passes — a Stop may read the transcript
 	// before its last block landed — so fold in what this response's own row
 	// already holds, and a later pass grows the row instead of adding to it.
-	usage = mergeExisting(s, responseID, turnID, usage)
+	usage = mergeExisting(s, responseID, turnID, timestamp, usage)
 	s.prices = CachedOwnedPriceBook(pricing)
 	var modelPtr *string
 	if model != "" {
@@ -245,7 +245,14 @@ func WriteUsageRow(profile, pricing, responseID, model, timestamp, turnID string
 		rec.timestamp = ts
 	}
 	rec.complete = true
-	return true, s.write(rec)
+	if err := s.write(rec); err != nil {
+		return true, err
+	}
+	// A pass whose lines crossed a UTC day left this turn's row in the old
+	// day's folder — or flat, from a build before the shards: retire it, so a
+	// response is one row wherever its latest stamp says it lives.
+	retireEarlierCopies(rowDirs(rec.timestamp), responseID, rec.turnID)
+	return true, nil
 }
 
 // recordedElsewhere is true when a ccmorph row was written for this same
@@ -253,52 +260,64 @@ func WriteUsageRow(profile, pricing, responseID, model, timestamp, turnID string
 // that name. A row of our own (or none) leaves the write to the sidecar's own
 // ownership rules; a row another route holds for a different response — a
 // gateway that recycled the id — must not swallow ours, so the hook writes its
-// own into a spill.
+// own into a spill. The names are looked up in every directory the row can
+// live in: its stamp's day and its neighbours, and the flat store.
 func recordedElsewhere(responseID, routeID, turnID, timestamp string, usage usageRow) bool {
-	dir := filepath.Join(stateDir(), "usage")
-	primary := filepath.Join(dir, rowFileName(responseID))
-	data, err := os.ReadFile(primary)
-	if err != nil {
-		// No row under the id at all: nothing to match, and no spill to look for.
-		// A spill is only written while the primary is held, and nothing removes
-		// a primary, so an absent one means the id was never recorded.
-		return false
-	}
-	if sameResponse(data, responseID, routeID, timestamp, usage) {
-		return true
-	}
-	// This hook's own row for this response is not another writer's: the write is
-	// the sidecar's to replace, and mergeExisting folds it in.
-	if d := parseDoc(data); d != nil {
-		if rid, ok := d.str("route_id"); ok && rid == routeID {
-			if tid, ok := d.str("turn_id"); ok && tid == turnID {
-				return false
-			}
-		}
-	}
-	// The primary holds another response's row (a recycled id, or another route's
-	// reply under the same id). The relay spills under <id>.<its own random turn>,
-	// a name no reader can derive, so the row is found by the response id it
-	// carries. Only this case pays for the scan: a new response reads one file.
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return false
-	}
-	needle := append([]byte(`"response_id":`), jsonStr(responseID)...)
-	for _, e := range entries {
-		if !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		path := filepath.Join(dir, e.Name())
-		if path == primary {
-			continue
-		}
-		data, err := os.ReadFile(path)
-		if err != nil || !bytes.Contains(data, needle) {
+	dirs := rowDirs(timestamp)
+	primaryName := rowFileName(responseID)
+	held := false
+	for _, dir := range dirs {
+		data, err := os.ReadFile(filepath.Join(dir, primaryName))
+		if err != nil {
 			continue
 		}
 		if sameResponse(data, responseID, routeID, timestamp, usage) {
 			return true
+		}
+		// This hook's own row for this response is not another writer's: the
+		// write is the sidecar's to replace, and mergeExisting folds it in.
+		if d := parseDoc(data); d != nil {
+			if rid, ok := d.str("route_id"); ok && rid == routeID {
+				if tid, ok := d.str("turn_id"); ok && tid == turnID {
+					continue
+				}
+			}
+		}
+		held = true
+	}
+	if !held {
+		// No row under the id but our own, or none at all: nothing to match,
+		// and no spill to look for. A spill is only written while the primary
+		// is held, and nothing removes a primary, so an absent one means the
+		// id was never recorded.
+		return false
+	}
+	// A primary holds another response's row (a recycled id, or another route's
+	// reply under the same id). The relay spills under <id>.<its own random turn>,
+	// a name no reader can derive, so the row is found by the response id it
+	// carries. Only this case pays for the scan: a new response reads one file.
+	needle := append([]byte(`"response_id":`), jsonStr(responseID)...)
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		primary := filepath.Join(dir, primaryName)
+		for _, e := range entries {
+			if !strings.HasSuffix(e.Name(), ".json") {
+				continue
+			}
+			path := filepath.Join(dir, e.Name())
+			if path == primary {
+				continue
+			}
+			data, err := os.ReadFile(path)
+			if err != nil || !bytes.Contains(data, needle) {
+				continue
+			}
+			if sameResponse(data, responseID, routeID, timestamp, usage) {
+				return true
+			}
 		}
 	}
 	return false
@@ -386,43 +405,46 @@ func stampedAfter(theirs, ours string) bool {
 // mergeExisting folds the usage this hook's own row for responseID already
 // holds into usage, so a response whose lines span hook passes keeps one row
 // with the larger counts. It reads the names the sidecar itself writes — the
-// primary, then the spills a recycled id's turn owns — because that row is not
-// always the primary: when another turn holds <sha(id)>.json, the writer put
-// ours in a spill, and reading the primary alone would replace the row with
-// this pass's lines and shrink it. A row another writer owns for this response
-// never reaches here (recordedElsewhere), and a row carrying a different
-// response's token — a recycled id — keeps its own numbers.
-func mergeExisting(s *UsageSidecar, responseID, turnID string, usage usageRow) usageRow {
-	primary, spills := rowNames(filepath.Join(stateDir(), "usage"), responseID, turnID)
-	for _, path := range append([]string{primary}, spills...) {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		d := parseDoc(data)
-		if d == nil {
-			continue
-		}
-		if rid, ok := d.str("route_id"); !ok || rid != s.routeID {
-			continue
-		}
-		if tid, ok := d.str("turn_id"); !ok || tid != turnID {
-			continue
-		}
-		sp, ok := d.last("usage")
-		if !ok {
-			continue
-		}
-		// bucketsOf drops the row's own estimated_cost (it is no bucket), and the
-		// billed cost is dropped with it: this pass's lines, not the old row, carry
-		// the numbers, and the estimate is recomputed from them.
-		var old usageRow
-		for _, n := range bucketsOf(d.b, sp, true) {
-			if n.key != "cost" {
-				old = append(old, n)
+// primary, then the spills a recycled id's turn owns — in every directory the
+// row can live in, because that row is not always the primary: when another
+// turn holds <sha(id)>.json, the writer put ours in a spill, and reading the
+// primary alone would replace the row with this pass's lines and shrink it. A
+// row another writer owns for this response never reaches here
+// (recordedElsewhere), and a row carrying a different response's token — a
+// recycled id — keeps its own numbers.
+func mergeExisting(s *UsageSidecar, responseID, turnID, timestamp string, usage usageRow) usageRow {
+	for _, dir := range rowDirs(timestamp) {
+		primary, spills := rowNames(dir, responseID, turnID)
+		for _, path := range append([]string{primary}, spills...) {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
 			}
+			d := parseDoc(data)
+			if d == nil {
+				continue
+			}
+			if rid, ok := d.str("route_id"); !ok || rid != s.routeID {
+				continue
+			}
+			if tid, ok := d.str("turn_id"); !ok || tid != turnID {
+				continue
+			}
+			sp, ok := d.last("usage")
+			if !ok {
+				continue
+			}
+			// bucketsOf drops the row's own estimated_cost (it is no bucket), and the
+			// billed cost is dropped with it: this pass's lines, not the old row, carry
+			// the numbers, and the estimate is recomputed from them.
+			var old usageRow
+			for _, n := range bucketsOf(d.b, sp, true) {
+				if n.key != "cost" {
+					old = append(old, n)
+				}
+			}
+			return maxUsage(old, usage)
 		}
-		return maxUsage(old, usage)
 	}
 	return usage
 }
@@ -477,8 +499,9 @@ func rowTime(ts string) string {
 	return out + "+00:00"
 }
 
-// rowFileName is the file a response's row lives in, by response id, so a
-// transcript or a gateway error quoting that id joins to it.
+// rowFileName is the file a response's row lives in, inside its stamp's day
+// folder, by response id, so a transcript or a gateway error quoting that id
+// joins to it.
 func rowFileName(responseID string) string {
 	sum := sha256.Sum256([]byte(responseID))
 	return hex.EncodeToString(sum[:]) + ".json"
