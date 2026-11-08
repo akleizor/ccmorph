@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -226,6 +225,13 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 	}
 	var rcClaude int
 	if name != "" {
+		// A named profile runs on its own route and credential: nothing the Remote
+		// Control edge set up for its own route reaches it, or its adapter, or claude.
+		if l.inEdge() {
+			for _, k := range edgeEnv {
+				os.Unsetenv(k)
+			}
+		}
 		penv, ok := l.profileEnvironment(name)
 		if !ok {
 			return fail()
@@ -275,12 +281,6 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 			l.err("profile '" + name + "' produced no environment")
 			return fail()
 		}
-		// A named profile runs on its own route and credential: inside the Remote Control
-		// edge its loopback proxy would carry this launch to the edge's route instead.
-		l.unset = nil
-		if !isProvider && !needsAdapter && l.inEdge() {
-			l.unset = []string{"HTTPS_PROXY", "https_proxy"}
-		}
 		var ok2 bool
 		if penv, ok2 = l.contextEnv(name, penv, explicit, defaultModel, launchModel, resumeCarried, needsAdapter, isProvider, subcommand); !ok2 {
 			return nil, 1
@@ -308,7 +308,6 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 		if resume != "" {
 			l.carrySession(resume, filepath.Join(os.Getenv("HOME"), ".claude", "projects"))
 		}
-		l.unset = nil
 		rcClaude = l.runClaude(append(edge, common...), args)
 		if l.forwardedSig() != 0 {
 			os.Remove(relayFile)
@@ -826,6 +825,10 @@ var refreshOwnedPrices = func(pricing string) { go shim.RefreshOwnedPrices(prici
 
 var loopbackProxy = regexp.MustCompile(`^http://127\.0\.0\.1:([0-9]+)/?$`)
 
+// edgeEnv is what ccmorph-rc's session_env sets for the edge's route: its proxy and
+// CA, the route's thread setting and the record a nested launch reads.
+var edgeEnv = []string{"HTTPS_PROXY", "https_proxy", "NODE_EXTRA_CA_CERTS", "CLAUDE_CODE_TETHER_LIVE", "CCMORPH_EDGE_ROUTE_ENV"}
+
 // loopbackHTTPSProxy: HTTPS_PROXY (or https_proxy) is http://127.0.0.1:<port>.
 func loopbackHTTPSProxy() bool {
 	proxy := os.Getenv("HTTPS_PROXY")
@@ -1021,7 +1024,7 @@ func (l *launcher) runClaude(env, args []string) int {
 	}
 	defer os.Remove(envFile) // the helper removes it on read; this is the backstop
 	argv := append([]string{"util", "claude-session", strings.Join(l.tuning, " "), strings.Join(l.profileEnv, " "),
-		strings.Join(l.launchEnv, " "), strings.Join(append(slices.Clone(l.backend), l.unset...), " "), envFile}, "--")
+		strings.Join(l.launchEnv, " "), strings.Join(l.backend, " "), envFile}, "--")
 	argv = append(argv, args...)
 	cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), argv...)
 	// The helper's own key names the run/ root the env file above already used; the

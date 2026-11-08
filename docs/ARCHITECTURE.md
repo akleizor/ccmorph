@@ -1857,8 +1857,10 @@ config therefore filters `thinking.block_binding` for the Claude passthrough, la
 `HTTPS_PROXY`, which carries every api.anthropic.com request to the session's route.
 A launch that names a profile runs on that profile's own route and credential, so
 inside the edge (the add-on's `CCMORPH_EDGE_ROUTE_ENV` set and `HTTPS_PROXY` is
-`http://127.0.0.1:<port>`) a native profile's launch clears `HTTPS_PROXY` and
-`https_proxy`; it would otherwise reach the edge's route, which may map the model it
+`http://127.0.0.1:<port>`) every launch that names a profile clears what the edge set
+for its own route: `HTTPS_PROXY`, `https_proxy`, `NODE_EXTRA_CA_CERTS`,
+`CLAUDE_CODE_TETHER_LIVE` and `CCMORPH_EDGE_ROUTE_ENV`, before its adapter or Claude
+Code starts. It would otherwise reach the edge's route, which may map the model it
 asked for to another, and its rows would land under the edge's profile **[test]**. A
 loopback proxy without the edge record is the user's own and stays **[test]**.
 A launch with no profile keeps the session's route: every launch clears the route
