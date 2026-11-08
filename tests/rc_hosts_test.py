@@ -2959,3 +2959,30 @@ def test_the_account_login_is_refreshed_before_it_expires(monkeypatch):
     assert len(runs) == 1
     m.keep_login_fresh(clock, 3.0 + m.LOGIN_REFRESH_RETRY)
     assert len(runs) == 2
+
+
+def test_a_host_an_earlier_supervisor_left_running_is_restarted_when_it_lost_its_login(
+        tmp_path, monkeypatch, capsys):
+    """2026-11-08: the mindmur host outlived two supervisor restarts. The new
+    supervisor only waited on it, so when it logged "No OAuth token available
+    for refresh" nothing checked it and its sessions stayed dead. Such a host is
+    now checked too and interrupted by its exact pid."""
+    m, h, repo, clock, posts, stops = _lost_login_host(tmp_path, monkeypatch)
+    h.proc = None                              # not this supervisor's child
+    monkeypatch.setattr(h, "live_pointer_pid", lambda: 4242)
+    stopped = []
+    monkeypatch.setattr(m, "stop_orphan", stopped.append)
+    h.debugfile.write_text("[bridge:token] No OAuth token available for refresh (failure 1/3)\n")
+    m.cycle({repo: h}, [repo], clock[0], _recovery_due(m, clock))
+    assert stopped == [4242]
+    assert f"{repo}: sessions lost their login" in capsys.readouterr().out
+
+
+def test_a_folder_with_no_host_at_all_is_not_checked_for_its_login(tmp_path, monkeypatch):
+    m, h, repo, clock, posts, stops = _lost_login_host(tmp_path, monkeypatch)
+    h.proc = None
+    monkeypatch.setattr(h, "live_pointer_pid", lambda: None)
+    monkeypatch.setattr(m, "stop_orphan", lambda pid: pytest.fail("no host to stop"))
+    h.debugfile.write_text("Remote Control is only available with claude.ai subscriptions\n")
+    m.cycle({repo: h}, [repo], clock[0], _recovery_due(m, clock))
+    assert stops == []

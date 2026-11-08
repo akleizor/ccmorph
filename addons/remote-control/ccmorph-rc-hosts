@@ -143,7 +143,8 @@ ARCHIVED_SIGNAL = re.compile(
 # rejects is not fixed by restarting the host.
 LOGIN_LOST = re.compile(
     r"No access token for session fetch|Could not resolve authentication method"
-    r"|\[Bootstrap\] Skipped: no usable OAuth")
+    r"|\[Bootstrap\] Skipped: no usable OAuth|No OAuth token available for refresh"
+    r"|Remote Control is only available with claude\.ai subscriptions")
 RECOVER_EVERY = 20     # seconds between unarchive checks: one list call
 REWAKE_AFTER = 600     # seconds before the same processless session is handed back again
 LOGIN_RESTART_AFTER = 600   # seconds before the same host is restarted for its login again
@@ -758,6 +759,19 @@ def host_sessions(folders: list[str], status: str) -> tuple[str, list[tuple[str,
                    if s.get("environment_id") in envs]
 
 
+def stop_orphan(pid: int) -> None:
+    """Interrupt a host an earlier supervisor left running, by its exact pid, as
+    stop() would: SIGINT lets it release its environment. Only a pid whose own
+    command line is `claude remote-control` is signalled."""
+    try:
+        argv = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True,
+                              text=True, errors="replace", timeout=10).stdout.split()
+        if "remote-control" in argv[1:2] and Path(argv[0]).name == "claude":
+            os.kill(pid, signal.SIGINT)
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        pass
+
+
 def restart_logged_out(hosts: "dict[str, Host]", now: float) -> list[str]:
     """Restart every host whose sessions lost their login while the account is logged in.
 
@@ -779,22 +793,27 @@ def restart_logged_out(hosts: "dict[str, Host]", now: float) -> list[str]:
     """
     lost = []
     for h in hosts.values():
-        if h.proc is None or h.edge:
+        if h.edge:
+            continue
+        # A host an earlier supervisor started outlives it, and this one only
+        # waits on it; it can lose its login the same way, so it is checked too.
+        orphan = h.live_pointer_pid() if h.proc is None else None
+        if h.proc is None and orphan is None:
             continue
         if why := h.lost_login():
-            lost.append((h, why))
+            lost.append((h, why, orphan))
     if not lost:
         return []                  # the keychain is read only after a host lost its login
     try:
         account_token()
     except LOGIN_ERRORS as e:
-        for h, why in lost:
+        for h, why, _ in lost:
             h.mark_logs()          # the line is not news on the next check either
             log(f"{h.folder}: sessions lost their login ({why}) and the account login is "
                 f"unreadable too ({e}); not restarting")
         return []
     restarted = []
-    for h, why in lost:
+    for h, why, orphan in lost:
         h.mark_logs()
         if now - h.login_restarted < LOGIN_RESTART_AFTER:
             log(f"{h.folder}: sessions lost their login again ({why}) within "
@@ -803,6 +822,8 @@ def restart_logged_out(hosts: "dict[str, Host]", now: float) -> list[str]:
         log(f"{h.folder}: sessions lost their login ({why}) while the account login is "
             f"valid; restarting its host")
         h.login_restarted = now
+        if orphan is not None:
+            stop_orphan(orphan)
         h.stop()
         h.next_try = now           # relaunch on the next tick, not after a backoff
         restarted.append(h.folder)
