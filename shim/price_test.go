@@ -179,3 +179,17 @@ func TestLookupIgnoresADateSuffix(t *testing.T) {
 		t.Fatal("a suffix that is not a date must not be stripped")
 	}
 }
+
+func TestGatewayRowWithNoBilledCostIsPricedFromTheVendor(t *testing.T) {
+	stateHome(t)
+	b := newPriceBook("https://llmgate.example.com")
+	b.fetch = func() ([]byte, error) { return []byte(apiDoc), nil }
+	b.fallback = newOwnedPriceBook("")
+	b.fallback.fetch = func() ([]byte, error) { return []byte(ownedDoc), nil }
+	if p, ok := b.lookup("gpt-5.6-sol"); !ok || p.Input != 2 {
+		t.Fatal("a model the gateway host does not list must take the vendor list price", p, ok)
+	}
+	if _, ok := b.lookup("unlisted"); ok {
+		t.Fatal("a model no provider lists stays unpriced")
+	}
+}

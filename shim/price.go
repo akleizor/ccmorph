@@ -87,6 +87,7 @@ type priceBook struct {
 	cachedOnly bool                          // read the disk slice, never fetch
 	mu         sync.RWMutex
 	table      map[string]price // models.dev id of this host's provider models
+	fallback   *priceBook       // asked when this table has no price for a model
 }
 
 func newPriceBook(upstream string) *priceBook {
@@ -299,8 +300,12 @@ func (b *priceBook) lookup(model string) (price, bool) {
 		}
 	})
 	b.mu.RLock()
-	defer b.mu.RUnlock()
-	return lookupIn(b.table, model)
+	p, ok := lookupIn(b.table, model)
+	b.mu.RUnlock()
+	if !ok && b.fallback != nil {
+		return b.fallback.lookup(model)
+	}
+	return p, ok
 }
 
 // lookupIn finds model in one price table. Claude Code can name a dated id

@@ -330,6 +330,11 @@ func newModelRoutes(raw string, client *http.Client) (*ModelRoutes, error) {
 	if spec.Profile != "" {
 		r.usage = newSidecar(spec.Profile, spec.Identity)
 		r.usage.prices = newPriceBook(spec.Upstream)
+		if r.usage.prices != nil {
+			// a gateway (llmgate) is no models.dev provider, so its host table is empty: a row it bills
+			// no cost for is priced at the model's own list price, the vendor's entry first
+			r.usage.prices.fallback = newOwnedPriceBook("")
+		}
 	}
 	return r, nil
 }
