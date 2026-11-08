@@ -5,6 +5,18 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
+## v0.5.7 — 2026-11-08
+
+### Fixed
+
+- **Two sessions of one Codex profile no longer sign it out.** Each
+  `ccmorph run` of a provider profile started its own cliproxyapi on the same
+  sign-in files. OpenAI refresh tokens work once, and cliproxyapi joins
+  concurrent refreshes only inside one process, so two sessions could send the
+  same refresh token; the second got `refresh_token_reused` and the profile
+  needed `ccmorph login` again. Sessions of one provider profile now share one
+  bridge, and the last session to exit stops it (#250).
+
 ## v0.5.6 — 2026-11-08
 
 ### Changed
