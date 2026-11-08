@@ -27,6 +27,8 @@ func TestTwoSessionsShareOneBridge(t *testing.T) {
 		starts++
 		var out, errw bytes.Buffer
 		if bridgeStart([]string{"p", bin, auth, filepath.Join(dir, "log")}, nil, &out, &errw) != 0 {
+			log, _ := os.ReadFile(filepath.Join(dir, "log"))
+			t.Logf("bridge start failed: %s; bridge log: %s", errw.String(), log)
 			return "", "", "", "", false
 		}
 		got := map[string]string{}
