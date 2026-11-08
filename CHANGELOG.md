@@ -5,6 +5,20 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
+## Unreleased
+
+### Fixed
+
+- **Every profile picker opens on the default profile.** `run -i`, `use -i`,
+  `config`, `inspect` and the other profile choosers put the cursor on the
+  first profile alphabetically, so a bare Enter switched to a different
+  account or gateway than the starred one. The cursor now starts on the
+  default (fzf 0.36.0 or newer; an older fzf still opens at the top), and the
+  `default` marker moved beside the profile's kind, where a narrow terminal
+  no longer cuts it off. At 56 columns the hint keeps its whole "Esc Cancel"
+  on a second header line, and the numbered fallback names one way to cancel
+  instead of two (#271).
+
 ## v0.5.7 — 2026-11-08
 
 ### Fixed

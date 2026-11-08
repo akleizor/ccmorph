@@ -9,7 +9,9 @@ import (
 	"strings"
 )
 
-// profileRows is _ccm_profile_rows: ID<TAB>kind<TAB>detail<TAB>marker per profile.
+// profileRows is _ccm_profile_rows: ID<TAB>kind<TAB>detail per profile; the
+// default's kind carries " · default", beside the ID where a narrow picker
+// still shows it (issue 271).
 func (l *launcher) profileRows(active string, types []string) []string {
 	var rows []string
 	for _, n := range l.confNames() {
@@ -44,18 +46,18 @@ func (l *launcher) profileRows(active string, types []string) []string {
 				detail += " → " + m
 			}
 		}
-		marker := ""
 		if n == active {
-			marker = "default"
+			kind += " · default"
 		}
-		rows = append(rows, n+"\t"+kind+"\t"+strings.ReplaceAll(detail, "\t", " ")+"\t"+marker)
+		rows = append(rows, n+"\t"+kind+"\t"+strings.ReplaceAll(detail, "\t", " "))
 	}
 	return rows
 }
 
 // menuProfile is _ccm_menu_profile: the profile chooser, limited to types when given.
 func (l *launcher) menuProfile(types ...string) (string, bool) {
-	rows := l.profileRows(l.active(), types)
+	active := l.active()
+	rows := l.profileRows(active, types)
 	if len(rows) == 0 {
 		if len(types) > 0 {
 			l.err("no compatible profiles for this command. Run: ccmorph add <profile>")
@@ -64,7 +66,8 @@ func (l *launcher) menuProfile(types ...string) (string, bool) {
 		}
 		return "", false
 	}
-	v, rc := uiSelect("search", "Profile", strings.Join(rows, "\n"), "all")
+	// The picker opens on the default, so Enter alone keeps it (issue 271).
+	v, rc := uiSelect("search", "Profile", strings.Join(rows, "\n"), "all", active)
 	return v, rc == 0 && v != ""
 }
 
@@ -118,9 +121,10 @@ func (l *launcher) valueRows(slot, name string, preview ...string) (string, bool
 }
 
 // chooseValue is _ccm_choose_value: effort is a fixed menu, models are searchable.
+// Neither opens on a saved value: which model was last used is #279's question.
 func chooseValue(slot, prompt, rows, display string) (string, int) {
 	if slot != "effort" {
-		return uiSelect("search", prompt, rows, display)
+		return uiSelect("search", prompt, rows, display, "")
 	}
 	var labeled []string
 	for _, row := range splitRows(rows) {
@@ -140,7 +144,7 @@ func chooseValue(slot, prompt, rows, display string) (string, int) {
 		}
 		labeled = append(labeled, row)
 	}
-	return uiSelect("native", prompt, strings.Join(labeled, "\n"), "labels")
+	return uiSelect("native", prompt, strings.Join(labeled, "\n"), "labels", "")
 }
 
 func title(s string) string { return strings.ToUpper(s[:1]) + s[1:] }

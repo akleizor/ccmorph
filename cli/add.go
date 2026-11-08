@@ -104,7 +104,7 @@ func (l *launcher) add(args []string) int {
 // choose is a native menu on a terminal; piped input picks by number or ID.
 func (l *launcher) choose(title, rows string) (string, bool) {
 	if isTTY(0) {
-		v, rc := uiSelect("native", title, rows, "")
+		v, rc := uiSelect("native", title, rows, "", "")
 		return v, rc == 0
 	}
 	themeFor(2).list(title, splitRows(rows), "labels")
@@ -230,7 +230,7 @@ func (l *launcher) addAPIKey(name string) int {
 	rows = append(rows, "custom\tCustom endpoint\tAnthropic or any gateway URL")
 	var pick string
 	if isTTY(0) {
-		v, rc := uiSelect("search", "Provider — "+name, strings.Join(rows, "\n"), "")
+		v, rc := uiSelect("search", "Provider — "+name, strings.Join(rows, "\n"), "", "")
 		if rc != 0 {
 			return 1
 		}

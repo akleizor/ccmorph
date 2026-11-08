@@ -163,8 +163,10 @@ func splitRows(rows string) []string {
 	return out
 }
 
-// uiSelect is ccm_ui_select: the chosen ID, or rc 1 cancelled, 2 invalid, 128+n signal.
-func uiSelect(mode, title, rows, display string) (string, int) {
+// uiSelect is ccm_ui_select: the chosen ID, or rc 1 cancelled, 2 invalid, 128+n
+// signal. start, when it names a row, is where the search cursor opens, so a
+// bare Enter means it.
+func uiSelect(mode, title, rows, display, start string) (string, int) {
 	if display == "" {
 		display = "labels"
 	}
@@ -186,10 +188,56 @@ func uiSelect(mode, title, rows, display string) (string, int) {
 				list[i] = rowID(r) + "\t" + r
 			}
 		}
-		return t.search(title, list)
+		return t.search(title, list, start)
 	}
 	uiErr(t, "unknown UI mode: "+mode)
 	return "", 2
+}
+
+// startPos is the 0-based row the cursor opens on: the row whose ID is start,
+// or the first row when start names none.
+func startPos(rows []string, start string) int {
+	if start == "" {
+		return 0
+	}
+	for i, r := range rows {
+		if rowID(r) == start {
+			return i
+		}
+	}
+	return 0
+}
+
+// fzfVersionOK reports whether a `fzf --version` output knows the `start`
+// event and the pos action (0.36.0): `--sync --bind start:pos(N)` is the
+// documented way to open on the Nth line.
+func fzfVersionOK(version string) bool {
+	var major, minor int
+	if n, _ := fmt.Sscanf(version, "%d.%d", &major, &minor); n < 2 {
+		return false
+	}
+	return major > 0 || minor >= 36
+}
+
+// fzfCanPos probes fzf for the same; one whose version will not say opens at
+// the top, as every fzf did before.
+func fzfCanPos(fzf string) bool {
+	out, err := exec.Command(fzf, "--version").Output()
+	if err != nil {
+		return false
+	}
+	return fzfVersionOK(string(out))
+}
+
+// fzfHeader is the search hint for a terminal of this width. fzf cuts a
+// header line it cannot fit, so on a narrow terminal the hint takes two
+// shorter lines and keeps its whole cancel (issue 271).
+func fzfHeader(columns int) string {
+	const one = "↑/↓ Move · Type to filter · Enter Select · Esc Cancel"
+	if cells(one) > columns-8 {
+		return "↑/↓ Move · Type to filter\nEnter Select · Esc Cancel"
+	}
+	return one
 }
 
 // list is ccm_ui_list: the numbered rows, painted on stderr.
@@ -212,7 +260,7 @@ func (t uiTheme) numbered(prompt string, rows []string, display string) (string,
 	}
 	t.list(prompt, rows, display)
 	for {
-		choice, rc := uiInput(fmt.Sprintf("Select [1-%d] (q to cancel): ", len(rows)), false)
+		choice, rc := uiInputHint(fmt.Sprintf("Select [1-%d] (q to cancel): ", len(rows)), false, "")
 		if rc != 0 || choice == "q" || choice == "Q" {
 			return "", 1
 		}
@@ -410,26 +458,34 @@ func (t uiTheme) receipt(title, choice string) {
 }
 
 // search is _ccm_ui_search: fzf when present, else the numbered list.
-func (t uiTheme) search(prompt string, rows []string) (string, int) {
+func (t uiTheme) search(prompt string, rows []string, start string) (string, int) {
 	if len(rows) == 0 {
 		uiErr(t, "no available choices")
 		return "", 1
 	}
 	fzf, ferr := exec.LookPath("fzf")
 	if os.Getenv("TERM") != "dumb" && ferr == nil {
-		width := labelWidth(rows, "labels")
+		_, columns := termSize()
+		// fzf's border, padding and pointer column leave this much of a row.
+		rowWidth := columns - 6
+		width := min(labelWidth(rows, "labels"), rowWidth)
 		var rendered []string
 		for _, r := range rows {
-			rendered = append(rendered, rowID(r)+"\t"+t.label(visible(r, "labels"), width, false, 0))
+			rendered = append(rendered, rowID(r)+"\t"+t.label(visible(r, "labels"), width, false, rowWidth))
 		}
 		theme := []string{"--color", fzfTheme}
 		if os.Getenv("NO_COLOR") != "" {
 			theme = []string{"--no-color"}
 		}
+		header := fzfHeader(columns)
 		args := append([]string{"--height", "45%", "--reverse", "--border=rounded", "--pointer=❯", "--marker=✓",
 			"--no-multi", "--no-print-query", "--ansi"}, theme...)
 		args = append(args, "--delimiter", "\t", "--with-nth=2..", "--prompt", prompt+"> ",
-			"--header", "↑/↓ Move · Type to filter · Enter Select · Esc Cancel")
+			"--header", header)
+		if pos := startPos(rows, start); pos > 0 && fzfCanPos(fzf) {
+			// Open on the start row, so Enter alone means it (issue 271).
+			args = append(args, "--sync", "--bind", "start:pos("+strconv.Itoa(pos+1)+")")
+		}
 		cmd := exec.Command(fzf, args...)
 		cmd.Env = append(os.Environ(), "FZF_DEFAULT_OPTS=", "FZF_DEFAULT_OPTS_FILE=")
 		cmd.Stdin = strings.NewReader(strings.Join(rendered, "\n") + "\n")
@@ -462,6 +518,12 @@ func (t uiTheme) search(prompt string, rows []string) (string, int) {
 
 // uiInput is ccm_ui_input: one line, hidden when secret. rc 1 cancelled or EOF.
 func uiInput(prompt string, secret bool) (string, int) {
+	return uiInputHint(prompt, secret, "Enter Submit · Esc Cancel")
+}
+
+// uiInputHint is uiInput with the hint named; the numbered menu passes none,
+// because its prompt already says how to cancel (issue 271).
+func uiInputHint(prompt string, secret bool, hint string) (string, int) {
 	t := themeFor(2)
 	w := os.Stderr
 	if !isTTY(0) {
@@ -486,9 +548,15 @@ func uiInput(prompt string, secret bool) (string, int) {
 	}
 	if isTTY(2) && os.Getenv("TERM") != "dumb" {
 		_, columns := termSize()
-		fmt.Fprint(w, t.heading(prompt, columns)+"\n"+uiMargin+t.gray+"Enter Submit · Esc Cancel"+t.reset+"\n"+t.focus+"❯"+t.reset+" ")
+		shown := t.heading(prompt, columns) + "\n"
+		if hint != "" {
+			shown += uiMargin + t.gray + hint + t.reset + "\n"
+		}
+		fmt.Fprint(w, shown+t.focus+"❯"+t.reset+" ")
+	} else if hint != "" {
+		fmt.Fprint(w, prompt+" ("+hint+") ")
 	} else {
-		fmt.Fprint(w, prompt+" (Enter Submit · Esc Cancel) ")
+		fmt.Fprint(w, prompt)
 	}
 	value, rc := readKeyLine(readKeys(), sigs, secret, w)
 	restore()
@@ -582,7 +650,7 @@ func readKeyLine(k *keys, sigs <-chan os.Signal, secret bool, w *os.File) (strin
 func uiConfirm(prompt string) int {
 	var answer string
 	if isTTY(0) && isTTY(2) && os.Getenv("TERM") != "dumb" {
-		a, rc := uiSelect("native", prompt, "n\tNo\ny\tYes", "")
+		a, rc := uiSelect("native", prompt, "n\tNo\ny\tYes", "", "")
 		if rc != 0 {
 			return 2
 		}
@@ -600,7 +668,7 @@ func uiConfirm(prompt string) int {
 	return 1
 }
 
-// uiVerb exposes the menus to the tests: select MODE TITLE ROWS [DISPLAY],
+// uiVerb exposes the menus to the tests: select MODE TITLE ROWS [DISPLAY] [START],
 // numbered|list TITLE ROWS [DISPLAY], input PROMPT [secret], confirm PROMPT,
 // rows|pick SLOT PROFILE, default SLOT PROFILE CURRENT. The answer goes to
 // stdout, so it is never wired to a real credential prompt.
@@ -609,7 +677,7 @@ func (l *launcher) uiVerb(args []string) int {
 	answer, rc := "", 0
 	switch a[0] {
 	case "select":
-		answer, rc = uiSelect(a[1], a[2], a[3], a[4])
+		answer, rc = uiSelect(a[1], a[2], a[3], a[4], a[5])
 	case "numbered":
 		answer, rc = themeFor(2).numbered(a[1], splitRows(a[2]), a[3])
 	case "list":

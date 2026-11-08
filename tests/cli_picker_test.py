@@ -45,12 +45,18 @@ printf '%s\\n' "$MODELS"
 '''
 
 # Selects by prompt argv: FZF_SPEC holds `prompt-substring=row-value` lines.
+# `--version` is answered before anything is logged — the picker probes it for
+# the cursor bind — and with no spec, Enter alone returns the row the
+# `start:pos(N)` bind names, as the real fzf's opening cursor would.
 FAKE_FZF = '''#!/bin/sh
+[ "$1" = --version ] && { printf '0.75.0 (ccmorph test)\\n'; exit 0; }
 rows=$(cat)
 printf 'ARGS %s\\nROWS %s\\n' "$*" "$rows" >> "$FZF_LOG"
-prompt=""; previous=""
+prompt=""; previous=""; pos=""
 for arg in "$@"; do
   [ "$previous" = --prompt ] && prompt="$arg"
+  case "$arg" in start:pos\\(*\\)) pos=${arg#start:pos(}; pos=${pos%)} ;;
+  esac
   previous="$arg"
 done
 pick=""
@@ -65,6 +71,8 @@ if [ "$pick" = CANCEL ]; then exit 130; fi  # Esc, as the real fzf does
 if [ -n "$pick" ]; then
   printf '%s\\n' "$rows" |
     awk -F'\\t' -v want="$pick" '$1 == want { print; found = 1; exit } END { exit !found }'
+elif [ -n "$pos" ]; then
+  printf '%s\\n' "$rows" | sed -n "${pos}p"
 else
   printf '%s\\n' "$rows" | head -1
 fi
@@ -452,6 +460,20 @@ class PickerTTYTest(unittest.TestCase):
         self.assertIn('  1) alpha    \x1b[38;2;153;153;153mfirst choice', out)
         self.assertTrue(out.rstrip().endswith('beta'), out)
 
+    def test_select_opens_on_the_named_row_issue_271(self):
+        # The START argument is where the search cursor opens: headless, the
+        # fake fzf's answer to Enter alone is that row.
+        env = self.env(fzf=True)
+        env['ROWS'] = 'alpha\tFirst\nbeta\tSecond\ngamma\tThird'
+        self.spec()
+        result = subprocess.run(
+            ['zsh', '-fc', 'source "$1"\n' + UI_SHIM +
+             'ccm_ui_select search "Pick" "$ROWS" all beta', 'test', str(CCMORPH)],
+            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=HANG_TIMEOUT)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, 'beta\n')
+        self.assertIn('--sync --bind start:pos(2)', (self.tmp / 'fzf.log').read_text())
+
     def test_set_without_slot_picks_slot_then_value(self):
         env = self.env()
         self.profile()
@@ -640,6 +662,38 @@ class PickerTTYTest(unittest.TestCase):
                     self.assertNotIn(name, values)
                 self.assertNotIn('fixture-secret', out)
 
+    def test_profile_picker_opens_on_the_default_profile_issue_271(self):
+        env = self.env(fzf=True)
+        for name in ('alpha', 'gamma', 'zeta'):
+            (self.state / f'{name}.conf').write_text(f'type=token\ntoken={{SECRET_tk{name}}}\n')
+        (self.state / 'active').write_text('gamma\n')
+        # The picker runs headless: no spec, so the fake fzf answers Enter
+        # alone, with the row the opening cursor sits on.
+        self.spec()
+        result = subprocess.run(['zsh', '-fc', 'source "$1"\nccmorph use -i', 'test', str(CCMORPH)],
+                                env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                                text=True, timeout=HANG_TIMEOUT)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('Default set to gamma', result.stdout + result.stderr)
+        log = (self.tmp / 'fzf.log').read_text()
+        # The default is the second of three rows, not the first.
+        self.assertIn('--sync --bind start:pos(2)', log)
+        rows = log.split('ROWS ', 1)[1].splitlines()
+        self.assertEqual([row.split('\t')[0] for row in rows], ['alpha', 'gamma', 'zeta'])
+        # The default marker rides beside the kind, where truncation spares it.
+        self.assertIn('Claude token · default', log)
+
+        # With no default set, the cursor stays on the first row, as before.
+        (self.state / 'active').unlink()
+        (self.tmp / 'fzf.log').write_text('')
+        self.spec('Profile=zeta')
+        result = subprocess.run(['zsh', '-fc', 'source "$1"\nccmorph use -i', 'test', str(CCMORPH)],
+                                env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                                text=True, timeout=HANG_TIMEOUT)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('Default set to zeta', result.stdout + result.stderr)
+        self.assertNotIn('start:pos', (self.tmp / 'fzf.log').read_text())
+
     def test_current_value_is_not_offered_twice(self):
         env = self.env(fzf=True)
         self.profile()
@@ -661,6 +715,22 @@ class PickerTTYTest(unittest.TestCase):
             self.assertIsNone(missed, out)
             self.assertNotEqual(rc, 0, out)
             self.assertNotIn('\x1b[', out)
+            # The numbered prompt names one way to cancel: its own q (issue 271).
+            self.assertNotIn('Enter Submit', out)
+            self.assertNotIn('Esc Cancel', out)
+
+    def test_numbered_prompt_names_one_way_to_cancel_piped_issue_271(self):
+        # Piped input takes the plain branch of the same prompt.
+        env = self.env()
+        env['ROWS'] = 'a\tFirst\nb\tSecond'
+        result = subprocess.run(
+            ['zsh', '-fc', 'source "$1"\n' + UI_SHIM + '_ccm_ui_numbered choose "$ROWS"',
+             'test', str(CCMORPH)],
+            env=env, input='q\n', capture_output=True, text=True, timeout=HANG_TIMEOUT)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('(q to cancel):', result.stderr)
+        self.assertNotIn('Enter Submit', result.stderr)
+        self.assertNotIn('Esc Cancel', result.stderr)
 
     def test_command_entrypoint_configures_only_the_selected_task(self):
         env = self.env(fzf=True)
@@ -703,6 +773,70 @@ class PickerTTYTest(unittest.TestCase):
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 1, out)
         self.assertNotIn('RESULT=', out)
+
+    def test_real_fzf_enter_alone_keeps_the_default_profile_issue_271(self):
+        real_fzf = shutil.which('fzf')
+        if not real_fzf:
+            self.skipTest('real fzf not installed; the fake-fzf bind is covered headlessly')
+        env = self.env(fzf=True)
+        (self.tmp / 'bin/fzf').unlink()
+        env['PATH'] = str(Path(real_fzf).parent) + os.pathsep + env['PATH']
+        for name in ('alpha', 'gamma', 'zeta'):
+            (self.state / f'{name}.conf').write_text(f'type=token\ntoken={{SECRET_tk{name}}}\n')
+        (self.state / 'active').write_text('gamma\n')
+        # A bare Enter, the moment the list is up: it must mean the default.
+        rc, out, missed = run_pty('ccmorph use -i', env, [(b'zeta', b'\r')])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertIn('Default set to gamma', out)
+        self.assertNotIn('Default set to alpha', out)
+
+    def test_search_picker_fits_hint_and_marker_at_56_columns_issue_271(self):
+        env = self.env(fzf=True)
+        (self.state / 'alpha.conf').write_text('type=apikey\napi_key=alpha-fixture-key\nbase_url=https://alpha.example/v1\n\n\n')
+        gamma_conf = 'type=apikey\napi_key={{SECRET_h2gdqlcjoqvi}}\nbase_url=https://gamma.example/with/a/really/long/path\n'
+        (self.state / 'gamma.conf').write_text(gamma_conf)
+        (self.state / 'active').write_text('gamma\n')
+        self.spec('Profile=gamma')
+        rc, out, missed = run_pty('ccmorph use -i', env, size=(24, 56))
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertIn('Default set to gamma', out)
+        log = (self.tmp / 'fzf.log').read_text()
+        # The whole cancel hint stays, on a second header line.
+        self.assertIn('Type to filter\nEnter Select · Esc Cancel', log)
+        self.assertNotIn('Type to filter · Enter Select', log)
+        self.assertIn('--sync --bind start:pos(2)', log)
+        # The default marker rides beside the kind and every row fits what
+        # fzf's border, padding and pointer leave of 56 columns.
+        rows = log.split('ROWS ', 1)[1].splitlines()
+        self.assertEqual([row.split('\t')[0] for row in rows], ['alpha', 'gamma'])
+        for row in rows:
+            plain = re.sub(r'\x1b\[[0-9;]*m', '', row.split('\t', 1)[1])
+            self.assertLessEqual(cells(plain), 50, row)
+        gamma = re.sub(r'\x1b\[[0-9;]*m', '', next(r for r in rows if r.startswith('gamma\t')))
+        self.assertIn('API key · default', gamma)
+        self.assertTrue(gamma.endswith('…'), gamma)
+
+    def test_real_fzf_keeps_the_whole_hint_at_56_columns_issue_271(self):
+        real_fzf = shutil.which('fzf')
+        if not real_fzf:
+            self.skipTest('real fzf not installed; the fake-fzf header is covered separately')
+        env = self.env(fzf=True)
+        (self.tmp / 'bin/fzf').unlink()
+        env['PATH'] = str(Path(real_fzf).parent) + os.pathsep + env['PATH']
+        (self.state / 'alpha.conf').write_text(
+            'type=apikey\napi_key={{SECRET_aka}}\nbase_url=https://alpha.example/v1\n')
+        (self.state / 'gamma.conf').write_text(
+            'type=apikey\napi_key={{SECRET_gka}}\n'
+            'base_url=https://gamma.example/with/a/really/long/path\n')
+        (self.state / 'active').write_text('gamma\n')
+        # The pump only reaches its reply once fzf has drawn the whole hint,
+        # and the default marker must be on screen beside the kind.
+        rc, out, missed = run_pty('ccmorph use -i', env, [(b'Esc Cancel', b'\x1b')], size=(24, 56))
+        self.assertIsNone(missed, out)
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn('· default', re.sub(r'\x1b\[[0-9;]*m', '', out))
 
     def test_command_entrypoint_accepts_real_arrow_and_enter_without_extra_questions(self):
         env = self.env(fzf=True)

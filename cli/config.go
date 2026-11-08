@@ -58,7 +58,7 @@ func (l *launcher) getSet(verb string, args []string) int {
 	}
 	if (key == "" || interactive(key)) && len(args) <= 2 {
 		k, rc := uiSelect("native", "Setting — "+name,
-			"model\tModel\tDefault model for new sessions\neffort\tReasoning\tDefault reasoning level", "")
+			"model\tModel\tDefault model for new sessions\neffort\tReasoning\tDefault reasoning level", "", "")
 		if rc != 0 {
 			return 1
 		}
@@ -176,7 +176,7 @@ func (l *launcher) config(args []string) int {
 			} else {
 				rows += "\nconnection\tSign-in token\tReplace the stored token"
 			}
-			s, rc := uiSelect("native", "Settings — "+name, rows, "")
+			s, rc := uiSelect("native", "Settings — "+name, rows, "", "")
 			if rc != 0 {
 				return 1
 			}
