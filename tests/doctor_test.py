@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import signal
 import subprocess
@@ -71,6 +72,23 @@ printf '%s\\n' '__CCMORPH_STATUS__200'
     # through the caller's own HTTPS_PROXY rather than refusing every proxy.
     assert "--noproxy" not in args
     assert any("/v1/models?limit=1000" in arg for arg in args)
+
+
+def test_doctor_reports_a_refused_api_key(tmp_path):
+    # Claude Code stores a refusal in the profile's .claude.json; the credential
+    # is still there, so only the stored answer tells doctor why a launch would
+    # open the login menu. Its fix is one command, and doctor changes nothing.
+    key = "sk-issue-236-doctor-key"
+    home = tmp_path / "state" / "profiles" / "demo"
+    home.mkdir(parents=True)
+    doc = home / ".claude.json"
+    body = json.dumps({"customApiKeyResponses": {"approved": [], "rejected": [key[-20:]]}})
+    doc.write_text(body)
+    result, _, _ = run_doctor(tmp_path, f"type=apikey\napi_key={key}\n")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "FAIL" in result.stdout
+    assert "ccmorph login demo" in result.stdout
+    assert doc.read_text() == body
 
 
 def test_doctor_rejects_malformed_listing(tmp_path):

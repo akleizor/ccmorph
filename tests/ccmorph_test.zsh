@@ -7909,6 +7909,99 @@ test_add_native_profile_stays_quiet_about_probe() {
   return $rc
 }
 
+test_add_apikey_profile_approves_its_key() {
+  # Claude Code asks "Do you want to use this API key?" on a profile's first
+  # launch and highlights No, which stores the key as refused for good. `add`
+  # records the answer it would have stored, so the question never appears.
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  source "$CCMORPH_SOURCE"
+  local key='sk-issue-236-test-key' out rc=0
+  out=$(print -l apikey custom "$key" '' '' | ccmorph add nat 2>&1)
+  python3 - "$HOME/.config/ccmorph/profiles/nat/.claude.json" "${key[-20,-1]}" <<'PYKEY' || rc=1
+import json, sys
+doc = json.load(open(sys.argv[1]))
+responses = doc.get("customApiKeyResponses") or {}
+assert responses.get("approved") == [sys.argv[2]], responses
+assert sys.argv[2] not in (responses.get("rejected") or []), responses
+PYKEY
+  [[ "$out" == *"Added"* ]] || { print -u2 -- 'adding an api-key profile must succeed'; rc=1; }
+  assert_not_contains "$out" 'may ask you to approve' \
+    'add must not leave the person to guess which answer to give' || rc=1
+  assert_not_contains "$out" "$key" 'add must never print the key' || rc=1
+  # A file ccmorph cannot safely rewrite keeps the question, so add says which
+  # answer to give instead of leaving No highlighted as the only guidance.
+  printf '%s\n' '{"customApiKeyResponses":"not-an-object"}' > "$HOME/.claude.json"
+  out=$(print -l apikey custom "$key" '' '' | ccmorph add asked 2>&1)
+  [[ "$out" == *"Added"* ]] || { print -u2 -- 'add must still succeed when the answer cannot be recorded'; rc=1; }
+  assert_contains "$out" 'choose Yes' \
+    'add must name the answer when it cannot record it' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_launch_refuses_a_key_claude_code_was_told_to_refuse() {
+  # A profile made before #236 (or one whose question was answered No) has its
+  # key stored as refused; Claude Code would open its login menu and never use
+  # the key. The launch records the answer when it can, and stops with the one
+  # command that fixes it when it must not.
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  install_model_window
+  write_apikey_conf gw 'api_key=sk-issue-236-test-key' 'base_url=https://gateway.invalid' 'model=gpt-example'
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  source "$CCMORPH_SOURCE"
+  local _CCMORPH_LIBEXEC_DIR="$_CCMORPH_LIBEXEC_DIR"
+  fake_context_refresh
+  local tail='k-issue-236-test-key' rc=0
+  local doc="$HOME/.config/ccmorph/profiles/gw/.claude.json" out st
+  # First launch of a profile with no stored answer: the launch records it.
+  _ccm_launch -a gw prompt >/dev/null 2>&1 || { print -u2 -- 'the first launch must succeed'; rc=1; }
+  python3 - "$doc" "$tail" <<'PYKEY' || rc=1
+import json, sys
+responses = json.load(open(sys.argv[1])).get("customApiKeyResponses") or {}
+assert responses.get("approved") == [sys.argv[2]], responses
+PYKEY
+  # Claude Code was told No earlier: claude must not start through it.
+  print -r -- '{"customApiKeyResponses":{"approved":[],"rejected":["'"$tail"'"]}}' > "$doc"
+  : > "$CCMORPH_TEST_LOG"
+  out=$(_ccm_launch -a gw prompt 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'a refused key must stop the launch'; rc=1; }
+  assert_contains "$out" 'ccmorph login gw' 'the refusal must name the command that fixes it' || rc=1
+  [[ ! -s "$CCMORPH_TEST_LOG" ]] || { print -u2 -- 'claude started through a refused key'; rc=1; }
+  # `ccmorph login` is that command, and it records a new answer.
+  out=$(ccmorph login gw 2>&1)
+  st=$?
+  (( st == 0 )) || { print -u2 -- "ccmorph login gw failed: $out"; rc=1; }
+  python3 - "$doc" "$tail" <<'PYKEY' || rc=1
+import json, sys
+responses = json.load(open(sys.argv[1])).get("customApiKeyResponses") or {}
+assert responses.get("approved") == [sys.argv[2]], responses
+assert sys.argv[2] not in (responses.get("rejected") or []), responses
+PYKEY
+  # And the next launch runs claude.
+  : > "$CCMORPH_TEST_LOG"
+  _ccm_launch -a gw prompt >/dev/null 2>&1 || { print -u2 -- 'the launch after login must succeed'; rc=1; }
+  [[ -s "$CCMORPH_TEST_LOG" ]] || { print -u2 -- 'claude did not start after login'; rc=1; }
+  # A file ccmorph cannot safely rewrite keeps the question; the launch must
+  # name the answer rather than start claude into a highlighted No.
+  print -r -- '{"customApiKeyResponses":"not-an-object"}' > "$doc"
+  : > "$CCMORPH_TEST_LOG"
+  out=$(_ccm_launch -a gw prompt 2>&1)
+  st=$?
+  (( st == 0 )) || { print -u2 -- "the launch must proceed when only the answer cannot be recorded: $out"; rc=1; }
+  assert_contains "$out" 'choose Yes' 'the launch must name the answer when it cannot record it' || rc=1
+  [[ -s "$CCMORPH_TEST_LOG" ]] || { print -u2 -- 'claude did not start after the unrecordable answer'; rc=1; }
+  [[ "$(<"$doc")" == '{"customApiKeyResponses":"not-an-object"}' ]] \
+    || { print -u2 -- 'the launch rewrote a file it could not safely change'; rc=1; }
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_an_unprobed_launch_is_not_given_a_siblings_ceiling() {
   # The route ceiling is the LARGEST probed window among the models a route serves, so
   # on a mixed route an unprobed model would inherit a sibling's number -- and the
@@ -9435,6 +9528,8 @@ run_test test_launch_context_lookup_is_local_before_background_refresh
 run_test test_probe_dispatch_preserves_explicit_inference_arguments
 run_test test_add_gateway_profile_offers_probe
 run_test test_add_native_profile_stays_quiet_about_probe
+run_test test_add_apikey_profile_approves_its_key
+run_test test_launch_refuses_a_key_claude_code_was_told_to_refuse
 run_test test_an_unprobed_launch_is_not_given_a_siblings_ceiling
 run_test test_the_launch_window_reports_every_window_fact
 run_test test_a_broken_settings_compose_does_not_take_the_window_facts_with_it

@@ -624,7 +624,8 @@ Omit the profile to check the default. Does not repair or launch a session.`},
 	"get": {"", `Read or save a default for new sessions. Missing arguments open pickers.
 Use explicit arguments in scripts. Values are printed to stdout.
 Effort: low, medium, high, xhigh. Available models come from the profile.`},
-	"login": {"ccmorph login [profile|-i]", `Sign in again to a provider-backed profile using its browser login.
+	"login": {"ccmorph login [profile|-i]", `Sign in again to a provider-backed profile using its browser login, or let
+Claude Code use an API-key profile's key again after it was refused.
 To replace an API key or token instead: ccmorph config <profile>`},
 	"mv": {"ccmorph mv <old> <new>", "Rename a profile and its private state. Existing destinations are refused."},
 	"rm": {"ccmorph rm <profile>", `Delete this profile, its saved credential and private sign-in state.

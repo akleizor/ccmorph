@@ -626,7 +626,7 @@ class PickerTTYTest(unittest.TestCase):
         for verb, offered, excluded in [
             ('models', ('gateway',), ('subscription', 'token', 'provider')),
             ('cred', ('gateway', 'token'), ('subscription', 'provider')),
-            ('login', ('provider',), ('gateway', 'subscription', 'token')),
+            ('login', ('gateway', 'provider'), ('subscription', 'token')),
         ]:
             with self.subTest(verb=verb):
                 (self.tmp / 'fzf.log').write_text('')

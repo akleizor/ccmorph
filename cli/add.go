@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/akleizor/ccmorph/profile"
+	"github.com/akleizor/ccmorph/util"
 )
 
 // add is `ccmorph add [name]`: a sign-in method, its credential, and a saved
@@ -311,7 +312,13 @@ func (l *launcher) addAPIKey(name string) int {
 	if url != "" {
 		l.probeNudge(name)
 	}
-	fmt.Println(l.dim + "Claude Code may ask you to approve this key on first launch." + l.reset)
+	// Claude Code asks whether to use a profile's key on its first launch, and
+	// highlights No. The answer it would store is recorded here instead, so the
+	// question never appears. A file ccmorph cannot safely rewrite leaves the
+	// question in place, and the person is told which answer to give.
+	if err := util.ApproveKey(filepath.Join(l.profileDirs, name), key); err != nil {
+		fmt.Println(l.dim + keyQuestionHint + l.reset)
+	}
 	return 0
 }
 
@@ -435,7 +442,7 @@ func (l *launcher) login(args []string) int {
 		name = args[0]
 	}
 	if name == "" || interactive(name) {
-		picked, ok := l.menuProfile("provider")
+		picked, ok := l.menuProfile("provider", "apikey")
 		if !ok {
 			return 1
 		}
@@ -453,8 +460,25 @@ func (l *launcher) login(args []string) int {
 	if !ok {
 		return 1
 	}
+	if f["type"] == "apikey" {
+		// The profile's key is already stored; what was refused is Claude
+		// Code's answer to using it. Record the answer again.
+		if f["api_key"] == "" {
+			l.err("'" + name + "' has no api_key — replace it: ccmorph config " + name)
+			return 1
+		}
+		if !l.setupDir(name, "apikey", liveSilent) {
+			return 1
+		}
+		if err := util.ApproveKey(filepath.Join(l.profileDirs, name), f["api_key"]); err != nil {
+			l.err("could not record the key approval for '" + name + "': " + err.Error())
+			return 1
+		}
+		fmt.Println("Claude Code will use the API key of '" + name + "' again. Start it: ccmorph run " + name)
+		return 0
+	}
 	if f["type"] != "provider" {
-		l.err("'" + name + "' is not a provider profile — login is only for provider profiles")
+		l.err("'" + name + "' is not a provider or API-key profile — login is only for those")
 		return 1
 	}
 	if !l.providerLogin(name, f["provider"]) {
