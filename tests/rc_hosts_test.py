@@ -2986,3 +2986,10 @@ def test_a_folder_with_no_host_at_all_is_not_checked_for_its_login(tmp_path, mon
     h.debugfile.write_text("Remote Control is only available with claude.ai subscriptions\n")
     m.cycle({repo: h}, [repo], clock[0], _recovery_due(m, clock))
     assert stops == []
+
+
+def test_a_kept_worktree_is_reported_once_per_run(capsys):
+    m = load()
+    for _ in range(3):
+        m.kept_once("/r: cse_1 archived; worktree kept: its branch is missing")
+    assert capsys.readouterr().out.count("worktree kept") == 1

@@ -978,6 +978,17 @@ def stamp(iso: object) -> float | None:
         return None
 
 
+KEPT_SAID: set[str] = set()
+
+
+def kept_once(line: str) -> None:
+    """Log why a worktree is kept once per run: the check repeats every
+    IDLE_CHECK and the same lines buried every other event in the log."""
+    if line not in KEPT_SAID:
+        KEPT_SAID.add(line)
+        log(line)
+
+
 def clean_archived(folders: list[str], now: float, limit: float, purge: float,
                    pinned: tuple[str, ...] = ()) -> None:
     """Retire each archived session in two steps, by the time since it was archived.
@@ -1010,25 +1021,25 @@ def clean_archived(folders: list[str], now: float, limit: float, purge: float,
             # bridge worktrees start from origin/<default>, which the host may lag.
             branch = f"refs/heads/worktree-bridge-{sid}"
             if subprocess.run(git + ["show-ref", "--verify", "--quiet", branch]).returncode:
-                log(f"{folder}: {sid} archived; worktree kept: its branch is missing")
+                kept_once(f"{folder}: {sid} archived; worktree kept: its branch is missing")
                 continue
             r = subprocess.run(["git", "-C", str(wt), "rev-list", "--count", "HEAD", branch,
                                 "--not", f"--exclude=worktree-bridge-{sid}", "--branches", "--remotes", "--tags", "--"],
                                capture_output=True, text=True)
             ahead = r.stdout.strip()
             if r.returncode or not ahead.isdigit():
-                log(f"{folder}: {sid} archived; worktree kept: "
+                kept_once(f"{folder}: {sid} archived; worktree kept: "
                     f"git could not tell if it holds work: {r.stderr.strip()[:200]}")
                 continue
             if ahead != "0":
-                log(f"{folder}: {sid} archived; worktree kept: "
+                kept_once(f"{folder}: {sid} archived; worktree kept: "
                     f"{ahead} commit(s) not reachable from any other branch, remote or tag")
                 continue
             subprocess.run(git + ["worktree", "unlock", str(wt)], capture_output=True)
             rm = subprocess.run(git + ["worktree", "remove", str(wt)], capture_output=True, text=True)
             if rm.returncode:
                 subprocess.run(git + ["worktree", "lock", str(wt)], capture_output=True)
-                log(f"{folder}: {sid} archived; worktree kept: {rm.stderr.strip()[:200]}")
+                kept_once(f"{folder}: {sid} archived; worktree kept: {rm.stderr.strip()[:200]}")
                 continue
             # The guard above counted 0 unique commits; `-d` would still refuse on a
             # lagging host HEAD or a branch with no upstream.
