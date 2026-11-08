@@ -536,7 +536,7 @@ func (l *launcher) usage(topic string) int {
 		help("ccmorph config [profile]", "Change model, reasoning, or connection")
 		head("Troubleshooting:")
 		help("ccmorph inspect [profile]", "Show effective settings; no secrets")
-		help("ccmorph doctor [profile]", "Check why a profile is not working")
+		help("ccmorph doctor [--verbose] [profile]", "Check why a profile is not working")
 		fmt.Println("\nStart here: ccmorph add work")
 		fmt.Println("More commands: ccmorph help all")
 		fmt.Println("Command details: ccmorph help <command>")
@@ -617,7 +617,8 @@ Omit the profile to list every profile.`},
 	"use": {"ccmorph use [profile|-i]", "Set the default without launching. No argument shows the current default."},
 	"inspect": {"ccmorph inspect [profile|-i]", `Show effective settings and their sources, never the stored credential.
 Omit the profile to inspect the default; -i opens the profile picker.`},
-	"doctor": {"ccmorph doctor [profile|-i]", `Read-only checks of the executable, endpoint and generated state.
+	"doctor": {"ccmorph doctor [--verbose] [profile|-i]", `Read-only checks of the executable, sign-in and endpoint, ending with whether
+the profile is ready. --verbose adds a running adapter's processes and ports.
 Omit the profile to check the default. Does not repair or launch a session.`},
 	"models": {"ccmorph models [profile] [--filtered|--filtered-json]", `List models from an API-key endpoint. Omit the profile to choose one.
 --filtered applies profile exclusions; --filtered-json returns JSON.`},

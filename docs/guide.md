@@ -105,7 +105,9 @@ With no profiles yet, `doctor` reports the machine instead of a profile:
 the version, `zsh`, `claude`, `fzf`, `cliproxyapi`, and whether
 `ccmorph` is on your `PATH`. It changes nothing, and fails only when a required
 tool is missing or too old. After you add a profile, `ccmorph doctor <profile>`
-checks that profile.
+checks that profile, including whether its sign-in or API key is accepted. Its
+last line says whether the profile is ready to run or which lines to fix;
+`--verbose` adds a running adapter's processes and ports.
 
 Then set up your first profile:
 
