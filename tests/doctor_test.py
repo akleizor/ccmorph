@@ -409,14 +409,16 @@ def test_run_doctor_remains_native_passthrough(tmp_path):
     (bindir / "claude").write_text("#!/bin/sh\nif [ \"$1\" = --help ]; then printf 'Commands:\\n  doctor\\n'; else printf '%s\\n' \"$@\" > \"$NATIVE_OUT\"; fi\n")
     (bindir / "claude").chmod(0o755)
     # A provider profile's launch needs a cliproxyapi that binds a port and answers
-    # /v1/models with 200; stub it so the test does not depend on the host's install.
+    # /v1/models with 200 naming a model; stub it so the test does not depend on the
+    # host's install.
     (bindir / "cliproxyapi").write_text(
         "#!/usr/bin/env python3\n"
         "from http.server import BaseHTTPRequestHandler, HTTPServer\n" + FAKE_SERVER_NO_DNS +
         "class H(BaseHTTPRequestHandler):\n"
         "    def do_GET(self):\n"
-        "        self.send_response(200); self.send_header('Content-Length', '2')\n"
-        "        self.end_headers(); self.wfile.write(b'{}')\n"
+        "        body = b'{\"data\":[{\"id\":\"m\"}]}'\n"
+        "        self.send_response(200); self.send_header('Content-Length', str(len(body)))\n"
+        "        self.end_headers(); self.wfile.write(body)\n"
         "    def log_message(self, *a): pass\n"
         "import re, sys\n"
         "port = int(re.search(r'port: (\\d+)', open(sys.argv[2]).read()).group(1))\n"
