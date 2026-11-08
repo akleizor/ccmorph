@@ -230,6 +230,15 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 		if !ok {
 			return fail()
 		}
+		// Claude Code asks whether to use ANTHROPIC_API_KEY on a profile's first
+		// launch and highlights No; ccmorph records the answer before it starts
+		// (#236). A key that was refused earlier stops the launch here, before
+		// any request, with the one command that records a new answer.
+		if !isProvider {
+			if k, ok := envGet(penv, "ANTHROPIC_API_KEY"); ok && k != "" && !l.keyApproval(name, k) {
+				return fail()
+			}
+		}
 		l.foldSettings(name)
 		l.stopForeignBridge(name, isProvider)
 		if isProvider {

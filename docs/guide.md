@@ -166,7 +166,7 @@ ccmorph inspect [<profile>] # effective configuration and its sources
 ccmorph use <profile>      # make it the default for new sessions
 ccmorph add <profile>      # create one with guided setup
 ccmorph config <profile>   # choose which settings to change
-ccmorph login <profile>    # re-authenticate a provider-backed profile
+ccmorph login <profile>    # re-authenticate a provider, or re-allow a refused key
 ccmorph rm <profile>       # remove it and its config directory
 ccmorph mv <old> <new>     # rename it
 ccmorph cred <profile>      # print its credential to stdout

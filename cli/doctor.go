@@ -189,6 +189,20 @@ func (l *launcher) doctor(name string) int {
 	} else {
 		l.status("SKIP", "credentials: none stored")
 	}
+	if typ == "apikey" && key != "" {
+		// A refused key is stored by Claude Code, not by ccmorph: the credential
+		// is present and the route may be healthy, yet every launch opens the
+		// login menu instead of using it.
+		switch util.KeyResponse(filepath.Join(l.profileDirs, name), key) {
+		case util.KeyRefused:
+			l.status("FAIL", "api key: Claude Code was told not to use it, so a launch would open its login menu — fix: ccmorph login "+name)
+			failed = 1
+		case util.KeyApproved:
+			l.status("OK", "api key: approved for Claude Code")
+		default:
+			l.status("INFO", "api key: ccmorph approves it for Claude Code at the next launch")
+		}
+	}
 	rows, bad := util.DoctorRoute(name, base, adapter == "true", key)
 	if bad {
 		failed = 1

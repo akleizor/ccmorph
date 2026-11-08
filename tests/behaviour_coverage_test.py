@@ -5,6 +5,7 @@ guards of `ccmorph run`, and the credential environment a launch hands Claude
 Code per profile type. Everything runs the real `ccmorph` executable against an
 isolated HOME with a stub `claude`; nothing touches the network or a real home.
 """
+import json
 import os
 import stat
 import subprocess
@@ -217,10 +218,22 @@ def test_rm_unknown_profile_is_an_error(box):
 
 # --- login ----------------------------------------------------------------------
 
-def test_login_is_refused_for_a_profile_that_is_not_provider_backed(box):
+def test_login_for_an_api_key_profile_records_the_approval_again(box):
+    # The fix a refused launch names: the key stays as it is, and Claude Code is
+    # told to use it, so the next launch reaches a session instead of the login menu.
     seed(box)
+    key = next(line.split('=', 1)[1] for line in (box.state / 'gw.conf').read_text().splitlines()
+               if line.startswith('api_key='))
     out = box.run('login', 'gw')
-    assert out.returncode != 0 and 'not a provider profile' in out.stderr
+    assert out.returncode == 0, out.stderr
+    doc = json.loads((box.state / 'profiles' / 'gw' / '.claude.json').read_text())
+    assert doc['customApiKeyResponses']['approved'] == [key[-20:]], doc
+    # login still refuses what it cannot serve: only provider and API-key
+    # profiles are its work, and a subscription or token profile must not fall
+    # through to the provider browser login.
+    for other in ('work', 'tok'):
+        bad = box.run('login', other)
+        assert bad.returncode != 0 and 'not a provider or API-key profile' in bad.stderr
     gone = box.run('login', 'ghost')
     assert gone.returncode != 0 and "no profile 'ghost'" in gone.stderr
 
