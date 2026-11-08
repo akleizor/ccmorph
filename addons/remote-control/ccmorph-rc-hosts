@@ -147,6 +147,8 @@ LOGIN_LOST = re.compile(
 RECOVER_EVERY = 20     # seconds between unarchive checks: one list call
 REWAKE_AFTER = 600     # seconds before the same processless session is handed back again
 LOGIN_RESTART_AFTER = 600   # seconds before the same host is restarted for its login again
+LOGIN_REFRESH_BEFORE = 600   # seconds of account token left when Claude Code is asked to refresh it
+LOGIN_REFRESH_RETRY = 120    # seconds between attempts: Claude Code refreshes only inside its own buffer
 TAIL = 64_000          # bytes of a log worth reading: what a bridge printed last
 
 
@@ -633,8 +635,8 @@ def keychain_service() -> str:
     return "Claude Code-credentials-" + hashlib.sha256(account_dir.encode()).hexdigest()[:8]
 
 
-def account_token() -> str:
-    """The claude.ai account's access token, read fresh: Claude Code rotates it.
+def account_login() -> dict:
+    """The claude.ai account's stored login, read fresh: Claude Code rotates it.
 
     The entry name is shared with an MCP-only item under another account name,
     so the lookup names the user's account.
@@ -642,7 +644,55 @@ def account_token() -> str:
     login = subprocess.run(["security", "find-generic-password", "-a", getpass.getuser(),
                             "-s", keychain_service(), "-w"],
                            capture_output=True, text=True, timeout=10).stdout
-    return json.loads(login)["claudeAiOauth"]["accessToken"]
+    return json.loads(login)["claudeAiOauth"]
+
+
+def account_token() -> str:
+    """The claude.ai account's access token."""
+    return account_login()["accessToken"]
+
+
+def keep_login_fresh(clock: "Clock", now: float) -> None:
+    """Have Claude Code refresh the account login before its access token expires.
+
+    The hosts read the account token and never refresh it, and their sessions run
+    on the route, so with no first-party session on the account profile nothing
+    refreshes it: about eight hours later every host logs "No OAuth token available
+    for refresh", each session's own token runs out, the sessions exit and the app
+    asks to sign in again, though the refresh token was still good. One tiny turn
+    on the account profile makes Claude Code refresh it under its own lock and
+    store it; a host restart only re-reads the expired token.
+    """
+    p = clock.refresher
+    if p is not None:
+        if p.poll() is None:
+            return
+        clock.refresher = None
+        if p.returncode:
+            log(f"account login refresh: claude exited {p.returncode}")
+    if now - clock.last_refresh < LOGIN_REFRESH_RETRY:
+        return
+    try:
+        left = account_login()["expiresAt"] / 1000 - time.time()
+        if left > LOGIN_REFRESH_BEFORE:
+            return
+        rc = rc_module()
+        account = rc.profile_env(rc.default_account())
+    except LOGIN_ERRORS:
+        return                     # logged out or unreadable: /login fixes that
+    clock.last_refresh = now
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("ANTHROPIC_") and k != "CLAUDE_CODE_OAUTH_TOKEN"}
+    env.update(account)
+    log(f"account login expires in {int(left // 60)} min; asking Claude Code to refresh it")
+    try:
+        clock.refresher = subprocess.Popen(
+            ["claude", "-p", "ok", "--model", "haiku", "--setting-sources", "",
+             "--strict-mcp-config", "--no-session-persistence"],
+            env=env, cwd=Path.home(), stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        log(f"account login refresh: {e}")
 
 
 def api(method: str, path: str, token: str, body: dict | None = None) -> dict:
@@ -1185,6 +1235,8 @@ class Clock:
         self.last_recover = self.last_idle_check  # ditto: hosts start one per tick, so nothing is up yet
         self.recovered: dict = {}
         self.hand_back_failed: set = set()   # keys in `recovered` whose last hand-back failed
+        self.refresher: subprocess.Popen | None = None   # the running account login refresh
+        self.last_refresh = float("-inf")
 
 
 def cycle(hosts: "dict[str, Host]", repos: list[str], now: float, clock: Clock) -> bool:
@@ -1192,6 +1244,7 @@ def cycle(hosts: "dict[str, Host]", repos: list[str], now: float, clock: Clock) 
     check is due: main() then runs the archived-session cleanup."""
     if now - clock.last_recover >= RECOVER_EVERY:     # a session with no process: bring it back
         clock.last_recover = now
+        keep_login_fresh(clock, now)     # nothing else refreshes the account login (route sessions)
         restart_logged_out(hosts, now)   # a host that cannot log its sessions in: replace it
         up = {h.folder for h in hosts.values() if h.proc and now - h.started >= RECOVER_EVERY}
         handed_back = recover_processless(repos, clock.recovered, up, clock.hand_back_failed)
