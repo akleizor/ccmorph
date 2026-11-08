@@ -20,11 +20,22 @@ type Reading struct {
 
 // Spend is a gateway or budget profile's billed total from its receipts.
 // Estimated is true when any counted row carried only a list-price estimate.
+// Turns and Tokens count every completed turn the profile served in the window
+// and the tokens those turns carried, priced or not, and UnpricedTurns is how
+// many of the month's turns carried no cost at all — their price was unknown,
+// so they add to the counts and never to the money.
 type Spend struct {
 	TodayUSD  float64  `json:"today_usd"`
 	MonthUSD  float64  `json:"month_usd"`
 	Estimated bool     `json:"estimated"`
 	BudgetUSD *float64 `json:"budget_usd,omitempty"`
+	// TodayTurns and MonthTurns are the completed responses the profile served
+	// in the window; TodayTokens and MonthTokens the tokens they carried.
+	TodayTurns    int   `json:"today_turns"`
+	MonthTurns    int   `json:"month_turns"`
+	TodayTokens   int64 `json:"today_tokens"`
+	MonthTokens   int64 `json:"month_tokens"`
+	UnpricedTurns int   `json:"unpriced_turns"`
 }
 
 // Entry is one profile's row. Kind is "claude", "codex", "budget" or "gateway";
