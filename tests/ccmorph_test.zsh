@@ -4880,6 +4880,33 @@ test_an_unreachable_endpoint_names_the_network_not_an_exception() {
   return $fail
 }
 
+test_a_refused_endpoint_is_named_as_refused_not_a_network_problem() {
+  # GH-260: a refused connection is a different cause with a different fix:
+  # named as what it is, with host and port, and never told to connect a
+  # private network.
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  source "$CCMORPH_SOURCE"
+
+  printf '%s\n' 'type=proxy' 'base_url=http://unreachable.invalid' 'api_key=k' \
+    'model=m' > "$HOME/.config/ccmorph/dead.conf"
+
+  local err fail=0
+  # curl's own words name the refusal, the way every real refused connection does.
+  write_curl_mock "print -u2 'curl: (7) Failed to connect to unreachable.invalid port 80 after 0 ms: Connection refused'; return 7"
+  err=$(_ccm_gw_models_json dead 2>&1 >/dev/null) && {
+    print -u2 -- 'a refused endpoint must fail model discovery'
+    fail=1
+  }
+  assert_contains "$err" 'connection refused: unreachable.invalid port 80' \
+    'a refused connection is named as what it is' || fail=1
+  assert_not_contains "$err" 'private network' \
+    'a refused connection is not a private-network problem' || fail=1
+  rm -rf "$test_home"
+  return $fail
+}
+
 test_env_reports_the_real_endpoint_not_the_adapter() {
   local test_home
   test_home=$(mktemp -d)
@@ -10715,6 +10742,7 @@ run_test test_one_models_listing_per_launch_is_shared
 run_test test_code_and_state_are_separate_directories
 run_test test_source_carries_no_host_specific_defaults
 run_test test_an_unreachable_endpoint_names_the_network_not_an_exception
+run_test test_a_refused_endpoint_is_named_as_refused_not_a_network_problem
 run_test test_profile_may_pin_one_model_picker_row
 run_test test_a_route_scoped_probe_beats_the_endpoint_declaration
 run_test test_conf_window_beats_the_published_one

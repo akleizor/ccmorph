@@ -112,26 +112,31 @@ func TestModelsListingRequestShape(t *testing.T) {
 
 // An endpoint that answered says so with a status, so a caller can tell a refused
 // key from a network that never carried the request; a listing that worked keeps
-// its body and status 0.
+// its body and status 0; nothing answering is named in plain words (#260).
 func TestModelsAnswerReadsTheRefusedStatus(t *testing.T) {
 	for _, c := range []struct {
 		name, stderr string
 		rc           int
 		wantStatus   int
 		wantOK       bool
+		wantWhy      string
 	}{
-		{"a rejected key", "curl: (56) The requested URL returned error: 401", 56, 401, false},
-		{"a forbidden key", "curl: (22) The requested URL returned error: 403", 22, 403, false},
-		{"an older curl's wrong path", "curl: (22) The requested URL returned error: 404 Not Found", 22, 404, false},
-		{"a server fault", "curl: (22) The requested URL returned error: 500", 22, 500, false},
-		{"nothing answered", "curl: (7) Failed to connect to 127.0.0.1 port 1: Connection refused", 7, 0, false},
-		{"a served listing", "", 0, 0, true},
+		{"a rejected key", "curl: (56) The requested URL returned error: 401", 56, 401, false, ""},
+		{"a forbidden key", "curl: (22) The requested URL returned error: 403", 22, 403, false, ""},
+		{"an older curl's wrong path", "curl: (22) The requested URL returned error: 404 Not Found", 22, 404, false, ""},
+		{"a server fault", "curl: (22) The requested URL returned error: 500", 22, 500, false, ""},
+		{"nothing answered", "curl: (7) Failed to connect to 127.0.0.1 port 1: Connection refused", 7, 0, false,
+			"connection refused: proxy.invalid port 80"},
+		{"a served listing", "", 0, 0, true, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			fakeCurl(t, catalogue, c.rc, c.stderr)
-			body, status, ok := ModelsAnswer("http://proxy.invalid", "test-key")
+			body, status, why, ok := ModelsAnswer("http://proxy.invalid", "test-key")
 			if ok != c.wantOK || status != c.wantStatus {
 				t.Fatalf("got ok=%v status=%d, want ok=%v status=%d", ok, status, c.wantOK, c.wantStatus)
+			}
+			if why != c.wantWhy {
+				t.Errorf("got why %q, want %q", why, c.wantWhy)
 			}
 			if c.wantOK && !strings.Contains(body, "served-target") {
 				t.Errorf("a served listing must keep its body, got %q", body)

@@ -89,19 +89,35 @@ func (l *launcher) modelsJSON(name string, preview ...string) (string, bool) {
 		l.err("'" + name + "' has no api_key — model discovery needs one")
 		return "", false
 	}
-	out, status, ok := util.ModelsAnswer(base, f["api_key"])
+	// A launch that already named this gateway down must not wait on it again
+	// in its picker (#260): the verdict's sentence was said once, so this pass
+	// fails quietly — saying it again would only repeat the same line. A
+	// preview is a different, unsaved door the verdict never covered.
+	if len(preview) == 0 && l.unreachable[memoKey(base, f["api_key"])] {
+		return "", false
+	}
+	out, status, why, ok := util.ModelsAnswer(base, f["api_key"])
 	out = strings.TrimRight(out, "\n")
 	if !ok {
-		l.err(listingFailure(name, profile.RedactURL(base), status))
+		l.err(listingFailureWhy(name, profile.RedactURL(base), status, why))
 		return "", false
 	}
 	return out, true
 }
 
 // listingFailure is what a person reads when the endpoint gave no model list:
-// the status the endpoint refused with names the fix, and only an endpoint that
-// never answered blames the network.
+// the status the endpoint refused with names the fix. Status 0 is an endpoint
+// that never answered, said in the generic words only where no cause is known;
+// where one is, listingFailureWhy says it.
 func listingFailure(name, endpoint string, status int) string {
+	return listingFailureWhy(name, endpoint, status, "if it is an internal endpoint, connect your private network and try again")
+}
+
+// listingFailureWhy is listingFailure with the cause an endpoint that never
+// answered is blamed on, in plain words — which door did not open, or that
+// nothing did — carrying the private-network advice only where it can be the
+// explanation (#260).
+func listingFailureWhy(name, endpoint string, status int, why string) string {
 	switch {
 	case status == 401 || status == 403:
 		return fmt.Sprintf("'%s' rejected the API key for '%s' (HTTP %d) — replace it with: ccmorph config %s", endpoint, name, status, name)
@@ -110,5 +126,5 @@ func listingFailure(name, endpoint string, status int) string {
 	case status != 0:
 		return fmt.Sprintf("'%s' answered the model list request with HTTP %d", endpoint, status)
 	}
-	return "could not reach '" + endpoint + "' — if it is an internal endpoint, connect your private network and try again"
+	return "could not reach '" + endpoint + "' — " + why
 }

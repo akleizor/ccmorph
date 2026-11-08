@@ -39,6 +39,9 @@ type launcher struct {
 	red, yellow, bold, dim, accent, cyan, reset string
 
 	memo                map[string]string
+	reached             map[string]bool   // gateway reachability verdicts this run already gave (#260)
+	unreachable         map[string]bool   // gateways this run found down; their listing waits are skipped (#260)
+	downSaid            map[string]string // profile -> the sentence its down gateway was named with (#260)
 	version, zshVersion string
 	migrated            bool
 

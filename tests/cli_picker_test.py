@@ -28,17 +28,29 @@ UI_SHIM = ('ccm_ui_select() { ccmorph _ui select "$@"; }\n'
 MODELS = json.dumps({'data': [{'id': m, 'owned_by': 'fake'} for m in
                               ('picker-alpha', 'picker-beta')]})
 
-# `-w` marks the reachability probe; it must answer or discovery never runs.
-# A numeric CURL_MODE is the HTTP status the endpoint refused with, in curl -f's
-# own words, so the listing path meets a refused key without a network.
+# `-w` marks the reachability probe (doctor's and the launch path's); it must
+# answer or discovery never runs. A numeric CURL_MODE is the HTTP status the
+# endpoint refused with, in curl -f's own words, so the listing path meets a
+# refused key without a network. The transport modes are curl's own exit shapes
+# for the four causes of GH-260, and `silent` is a gateway that never answers.
 FAKE_CURL = '''#!/bin/sh
 printf '%s\\n' "$*" >> "$CURL_LOG"
 [ "${1-}" = -K ] && cat >> "$CURL_LOG"
 for arg in "$@"; do
-  if [ "$arg" = -w ]; then printf 200; exit 0; fi
+  if [ "$arg" = -w ]; then
+    case "$CURL_MODE" in
+      ok) printf '%s\\n__CCMORPH_STATUS__200' "$MODELS"; exit 0 ;;
+      [0-9][0-9][0-9]) printf '__CCMORPH_STATUS__%s' "$CURL_MODE"; exit 0 ;;
+    esac
+  fi
 done
 case "$CURL_MODE" in
-  [0-9][0-9][0-9]) printf 'curl: (56) The requested URL returned error: %s\n' "$CURL_MODE" >&2; exit 56 ;;
+  [0-9][0-9][0-9]) printf 'curl: (56) The requested URL returned error: %s\\n' "$CURL_MODE" >&2; exit 56 ;;
+  dns) printf 'curl: (6) Could not resolve host: old.example\\n' >&2; exit 6 ;;
+  refused) printf 'curl: (7) Failed to connect to old.example port 443 after 0 ms: Connection refused\\n' >&2; exit 7 ;;
+  tls) printf 'curl: (35) LibreSSL/3.3.6: error:1404B42E:SSL routines:ST_CONNECT:tlsv1 alert protocol version\\n' >&2; exit 35 ;;
+  timeout) printf 'curl: (28) Operation timed out after 20001 milliseconds\\n' >&2; exit 28 ;;
+  silent) while :; do :; done ;;
 esac
 [ "$CURL_MODE" = ok ] || exit 22
 printf '%s\\n' "$MODELS"
@@ -270,6 +282,114 @@ class PickerTTYTest(unittest.TestCase):
         self.assertNotEqual(rc, 0, out)
         self.assertNotIn('SELECTED=', out)  # cancellation must not start anything
 
+    def test_run_prints_a_progress_line_and_gives_up_on_a_silent_gateway(self):
+        # GH-260: a launch on a gateway that never answers owed a line within
+        # two seconds and a give-up within doctor's own patience, not ~21s of
+        # silence in a terminal or ~30s of adapter waits without one. The fake
+        # curl never answers; the two bounds are shrunk through the same env
+        # knobs the adapter deadlines use, so the test watches the real
+        # mechanism without waiting a real second or five.
+        env = self.env(curl='silent')
+        env.update(CCMORPH_REACH_PROGRESS='0.1', CCMORPH_REACH_BOUND='0.5')
+        self.profile()
+        rc, out, missed = run_pty(ADAPTER_BOUNDARY + 'ccmorph run demo', env)
+        self.assertIsNone(missed, out)
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("ccmorph: Waiting for 'demo' endpoint", out)  # a line, not silence
+        self.assertIn('no answer from old.example port 443 after 1 second', out)
+        self.assertIn('private network', out)
+        self.assertNotIn('SELECTED=', out)  # the adapter is never started
+
+    def test_run_names_the_unreachable_gateway_the_same_with_and_without_a_terminal(self):
+        # GH-260: the terminal and headless launches of a gateway that never
+        # answers end with the same sentence, the one ccmorph models prints,
+        # naming the one cause in plain words — and neither reaches its adapter,
+        # because silence is the one cause a launch with nothing remembered
+        # gives up on, in no more time than doctor takes.
+        want = ("could not reach 'https://old.example' — "
+                'no answer from old.example port 443 after 20 seconds '
+                '(if it is an internal endpoint, connect your private network '
+                'and try again)')
+        env = self.env(curl='timeout')
+        # The window is widened so a slow spawn can never race the bound: the
+        # sentence names the seconds curl itself reported, not the probe's kill.
+        env.update(CCMORPH_REACH_PROGRESS='30', CCMORPH_REACH_BOUND='60')
+        self.profile()
+        rc, out, missed = run_pty(ADAPTER_BOUNDARY + 'ccmorph run demo', env)
+        self.assertIsNone(missed, out)
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn(want, out)
+        self.assertNotIn('SELECTED=', out)  # the give-up comes before the adapter
+        result = subprocess.run(
+            ['zsh', '-fc', 'source "$1"\n' + ADAPTER_BOUNDARY + 'ccmorph run demo',
+             'test', str(CCMORPH)],
+            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=HANG_TIMEOUT)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(want, result.stderr)  # the same sentence, no terminal
+        self.assertNotIn('SELECTED=', result.stderr)
+        self.assertNotIn('adapter exited before readiness', result.stderr)
+
+    def test_run_gives_up_on_silence_even_with_a_window_remembered(self):
+        # GH-260 (gate): a remembered context window sizes a session, it does not
+        # make a silent gateway ready — the adapter would wait on the same silence
+        # for a minute. Silence the probe sat through ends the launch.
+        want = ("could not reach 'https://old.example' — "
+                'no answer from old.example port 443 after 20 seconds '
+                '(if it is an internal endpoint, connect your private network '
+                'and try again)')
+        env = self.env(curl='timeout')
+        env.update(CCMORPH_REACH_PROGRESS='30', CCMORPH_REACH_BOUND='60')
+        self.profile()
+        conf = self.state / 'demo.conf'
+        conf.write_text(conf.read_text() + 'context_window.native-model=200000\n')
+        result = subprocess.run(
+            ['zsh', '-fc', 'source "$1"\n' + ADAPTER_BOUNDARY + 'ccmorph run demo',
+             'test', str(CCMORPH)],
+            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=HANG_TIMEOUT)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(want, result.stderr)
+        self.assertNotIn('SELECTED=', result.stderr)  # the adapter is never started
+
+    def test_run_names_a_refused_gateway_once_and_keeps_launching(self):
+        # GH-260: an instantly refused gateway is named — once, in the same
+        # plain words — but the launch keeps the contract it always had: a
+        # refused port is answered at once, so nothing downstream hangs on it
+        # and the adapter is still started (the profile's endpoint is its
+        # adapter's business, the nested-launch shape of issue #1). Only
+        # silence, with nothing remembered, is a give-up.
+        want = ("could not reach 'https://old.example' — "
+                'connection refused: old.example port 443')
+        env = self.env(curl='refused')
+        # Widened for the same reason as above: a slow spawn must never turn an
+        # instant refusal into a bound-kill, which the launch would answer
+        # differently.
+        env.update(CCMORPH_REACH_PROGRESS='30', CCMORPH_REACH_BOUND='60')
+        self.profile()
+        # In a terminal the picker would wait on the same gateway again: the
+        # verdict already names it, so the picker fails at once, without a
+        # second sentence and without starting the adapter.
+        rc, out, missed = run_pty(ADAPTER_BOUNDARY + 'ccmorph run demo', env)
+        self.assertIsNone(missed, out)
+        self.assertNotEqual(rc, 0, out)
+        self.assertEqual(out.count(want), 1)
+        self.assertNotIn('SELECTED=', out)
+        # Without a terminal there is no picker to fail: the cause is named
+        # once and the launch goes on to its adapter.
+        result = subprocess.run(
+            ['zsh', '-fc', 'source "$1"\n' + ADAPTER_BOUNDARY + 'ccmorph run demo',
+             'test', str(CCMORPH)],
+            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=HANG_TIMEOUT)
+        self.assertIn('SELECTED=<native-model>', result.stderr)  # the launch went on
+        # The adapter (here a stub that dies) cannot read the route, so the launch
+        # ends on the very sentence the terminal's picker stops with — not on the
+        # adapter's own account of its death.
+        self.assertTrue(result.stderr.rstrip().endswith(want), result.stderr)
+        self.assertEqual(result.stderr.count(want), 2)  # named, then the ending
+        self.assertNotIn('did not answer', result.stderr)
+
     def test_automatic_picker_preserves_explicit_saved_and_headless_choices(self):
         env = self.env(fzf=True)
         self.profile()
@@ -366,6 +486,26 @@ class PickerTTYTest(unittest.TestCase):
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertIn('could not reach', result.stderr)
             self.assertNotIn('curl:', result.stderr)
+        # GH-260: each transport failure names its one cause, in plain words with
+        # the host and port, and the private-network advice rides only on the
+        # no-answer case, where a private endpoint is the likely explanation.
+        for mode, want in (('dns', 'name not found: old.example port 443'),
+                           ('refused', 'connection refused: old.example port 443'),
+                           ('tls', 'secure connection failed: old.example port 443'),
+                           ('timeout', 'no answer from old.example port 443 after 20 seconds '
+                                       '(if it is an internal endpoint, connect your private network and try again)')):
+            with self.subTest(mode=mode):
+                result = subprocess.run(
+                    ['zsh', '-fc', 'source "$1"\nccmorph models demo', 'test', str(CCMORPH)],
+                    env=self.env(curl=mode), stdin=subprocess.DEVNULL,
+                    capture_output=True, text=True, timeout=HANG_TIMEOUT)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("could not reach 'https://old.example' — " + want, result.stderr)
+                if mode == 'timeout':
+                    self.assertIn('private network', result.stderr)
+                else:
+                    self.assertNotIn('network', result.stderr)
+                self.assertNotIn('curl:', result.stderr)
 
     def test_configure_picker_offers_endpoint_models_and_saves_the_pick(self):
         env = self.env(fzf=True)

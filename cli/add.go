@@ -453,7 +453,7 @@ func (l *launcher) checkKey(url, key string) bool {
 	if util.NativeBase(base) {
 		headers = []string{"anthropic-version: 2023-06-01"}
 	}
-	_, code := util.ProbeListing(base, key, headers...)
+	_, code, _ := util.ProbeListing(base, key, headers...)
 	switch {
 	case strings.HasPrefix(code, "2") && len(code) == 3:
 		fmt.Println(l.dim + shown + " accepted the API key (HTTP " + code + ")" + l.reset)

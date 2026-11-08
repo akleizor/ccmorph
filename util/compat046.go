@@ -107,7 +107,7 @@ func v046FetchListing(args []string, in io.Reader, out, errw io.Writer) int {
 		io.WriteString(out, body)
 		return 0
 	case "doctor":
-		body, code := ProbeListing(base, key)
+		body, code, _ := ProbeListing(base, key)
 		fmt.Fprintf(out, "%s\n%s", body, code)
 		return 0
 	}

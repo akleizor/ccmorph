@@ -43,7 +43,7 @@ func DoctorRoute(name, typ, base, model, modelMap string, adapter bool, key, hom
 		case typ == "provider":
 			row("INFO", "endpoint: provider bridge, started by ccmorph run")
 		case typ == "apikey" && key != "":
-			_, code := ProbeListing("https://api.anthropic.com", key, "anthropic-version: 2023-06-01")
+			_, code, _ := ProbeListing("https://api.anthropic.com", key, "anthropic-version: 2023-06-01")
 			switch {
 			case strings.HasPrefix(code, "2") && len(code) == 3:
 				row("OK", "endpoint: Anthropic accepted the API key (HTTP "+code+")")
@@ -115,7 +115,7 @@ func DoctorRoute(name, typ, base, model, modelMap string, adapter bool, key, hom
 	case key == "":
 		row("SKIP", "gateway: no API credential for metadata request")
 	default:
-		body, code := ProbeListing(base, key)
+		body, code, why := ProbeListing(base, key)
 		switch {
 		case strings.HasPrefix(code, "2") && len(code) == 3:
 			if n, ok := modelsCount(body); ok {
@@ -132,7 +132,7 @@ func DoctorRoute(name, typ, base, model, modelMap string, adapter bool, key, hom
 				row("FAIL", fmt.Sprintf("gateway: malformed model listing (HTTP %s)", code))
 			}
 		case code == "000" || code == "":
-			row("WARN", "gateway: did not answer within 5 seconds (if it is a private endpoint, connect that network)")
+			row("WARN", "gateway: "+why)
 		case code == "401" || code == "403":
 			row("FAIL", "gateway: rejected the API key (HTTP "+code+"); replace it: ccmorph config "+name)
 		default:

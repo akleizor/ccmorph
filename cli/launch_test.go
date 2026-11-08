@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/util"
 )
 
@@ -35,6 +36,55 @@ func TestEnvHelpersReadTheLastValue(t *testing.T) {
 	}
 	if authKey([]string{"ANTHROPIC_AUTH_TOKEN=t"}) != "t" || authKey([]string{"ANTHROPIC_AUTH_TOKEN=t", "ANTHROPIC_API_KEY=k"}) != "k" {
 		t.Fatal("authKey must prefer the API key")
+	}
+}
+
+// #260: the reachability probe and the launch itself read one effective route.
+// A later value in the profile env is the override — profile.Env appends its
+// env.* entries after base_url/api_key — and both readers take that one.
+func TestRouteOfReadsTheEffectiveOverride(t *testing.T) {
+	route := []string{
+		"ANTHROPIC_BASE_URL=https://stored.invalid",
+		"ANTHROPIC_API_KEY=stored-key",
+		"ANTHROPIC_BASE_URL=https://override.example",
+		"ANTHROPIC_API_KEY=override-key",
+	}
+	if base, key := routeOf(route); base != "https://override.example" || key != "override-key" {
+		t.Fatalf("got base=%q key=%q, want the env override", base, key)
+	}
+}
+
+// #260: a launch may go on without its endpoint only when a window is already
+// known, and the remembered record's route is the conf's raw one: profile.Read
+// folds the legacy proxy type to apikey, which would never match the route the
+// window was saved under.
+func TestWindowRememberedUsesTheStoredRoute(t *testing.T) {
+	dir := t.TempDir()
+	l := &launcher{dir: dir}
+	conf := "type=proxy\nbase_url=https://gw.example\napi_key=k\n"
+	write := func(text string) {
+		t.Helper()
+		if err := os.WriteFile(l.conf("p"), []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(conf)
+	if l.windowRemembered("p") {
+		t.Fatal("a profile that never learned a window must ask its endpoint")
+	}
+	fields := map[string]string{"type": "proxy", "base_url": "https://gw.example", "api_key": "k"}
+	write(conf + `context_discovered={"route":"` + ctxwindow.RouteFingerprint(fields) + `","models":{"m":372000}}` + "\n")
+	if !l.windowRemembered("p") {
+		t.Fatal("a window remembered for this route must let the launch go on")
+	}
+	other := map[string]string{"type": "proxy", "base_url": "https://elsewhere.example", "api_key": "k"}
+	write(conf + `context_discovered={"route":"` + ctxwindow.RouteFingerprint(other) + `","models":{"m":372000}}` + "\n")
+	if l.windowRemembered("p") {
+		t.Fatal("a window saved under another route is not this route's")
+	}
+	write(conf + "context_window.m=300000\n")
+	if !l.windowRemembered("p") {
+		t.Fatal("a manual window is a known window")
 	}
 }
 

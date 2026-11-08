@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/shim"
 	"github.com/akleizor/ccmorph/util"
@@ -129,6 +130,25 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 			} else {
 				fmt.Fprintf(os.Stderr, "%sccmorph: env.CCMORPH_MASK=%s is set, but nothing is masked on this route — it reaches its backend without ccmorph's shim%s\n",
 					l.dim, f["env.CCMORPH_MASK"], l.reset)
+			}
+		}
+		// A gateway launch waits on its endpoint before anything else does, so an
+		// unreachable one is named here — the same sentence doctor and models
+		// print — instead of a silent picker wait or an adapter that cannot start
+		// (#260). One verdict per gateway per run: a hop inside a session whose
+		// adapter already runs must survive a blip.
+		if needsAdapter {
+			// The probe asks the route the launch will use, not the stored
+			// fields: profile.Env is how the launch env is built, and an env.*
+			// override there wins over base_url/api_key — routeOf reads the
+			// same env the launch block below reads, so the probe reports on
+			// the door the launch actually opens.
+			route, _ := profile.Env(name, l.profileDirs, f)
+			// Only silence with no remembered window ends the launch here; every
+			// other verdict is named while the launch keeps its old contract of
+			// going on (reachEndpoint says which and why).
+			if base, key := routeOf(route); !l.reachEndpoint(name, base, key, l.windowRemembered(name)) {
+				return nil, 1
 			}
 		}
 		var rc int
@@ -276,7 +296,7 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 					if base == "" {
 						base = "https://api.anthropic.com"
 					}
-					if _, code := util.ProbeListing(base, k, "anthropic-version: 2023-06-01"); code == "401" || code == "403" {
+					if _, code, _ := util.ProbeListing(base, k, "anthropic-version: 2023-06-01"); code == "401" || code == "403" {
 						rejected, _ := strconv.Atoi(code)
 						l.err(listingFailure(name, profile.RedactURL(base), rejected))
 						return fail()
@@ -296,8 +316,7 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 				return fail()
 			}
 		}
-		base, _ := envGet(penv, "ANTHROPIC_BASE_URL")
-		key := authKey(penv)
+		base, key := routeOf(penv)
 		// A gateway that answers its listing knows what it serves. Refusing the
 		// request here keeps the failure before Claude opens, where the first
 		// message would otherwise fail with the gateway's own confusing words
@@ -488,6 +507,14 @@ func authKey(env []string) string {
 	}
 	v, _ := envGet(env, "ANTHROPIC_AUTH_TOKEN")
 	return v
+}
+
+// routeOf is the endpoint and key a launch env names: the effective route after
+// profile.Env's env.* overrides, read the one way every launch reader reads it,
+// so the reachability probe and the launch can never ask different doors (#260).
+func routeOf(route []string) (base, key string) {
+	base, _ = envGet(route, "ANTHROPIC_BASE_URL")
+	return base, authKey(route)
 }
 
 var sessionID = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
@@ -701,7 +728,10 @@ func (l *launcher) listing(base, key string) (string, bool) {
 	if base == "" || key == "" {
 		return "", false
 	}
-	mk := base + "\x1f" + key
+	mk := memoKey(base, key)
+	if l.unreachable[mk] {
+		return "", false
+	}
 	if v, ok := l.memo[mk]; ok && v != "" {
 		return v, true
 	}
@@ -712,6 +742,89 @@ func (l *launcher) listing(base, key string) (string, bool) {
 	}
 	l.memo[mk] = v
 	return v, true
+}
+
+// memoKey is the listing memo's key: one answer per (base, key).
+func memoKey(base, key string) string {
+	return base + "\x1f" + key
+}
+
+// reachEndpoint is launch's early answer to an unreachable gateway (#260): the
+// request the launch route itself makes, waited on with a deadline of its own,
+// so a person reads a progress line and then the same plain-words cause doctor
+// and models print — not a silent picker wait or an adapter that cannot start.
+// A 2xx answer is the launch route's own listing, kept for it in the memo; an
+// HTTP answer or a cause the four cannot name is stepped aside for, left to
+// the paths that already had their own words for it. One verdict per (base,
+// key) per run: later passes, hops included, keep a session whose endpoint
+// blipped alive, and no later listing waits on a gateway this run found down.
+//
+// A verdict names the cause and almost never stops the launch: a route with a
+// remembered window launches through a blip, and an instant failure — a name
+// that does not resolve, a port that refuses — is named while the launch keeps
+// going the way it always has, because its adapter may not need the endpoint
+// this second. The one give-up is silence with nothing remembered: a gateway
+// that never answers hangs every later wait the same way (the picker's twenty
+// seconds, the adapter's thirty), so the launch ends there — in no more time
+// than doctor takes, with the one sentence the terminal and the no-terminal
+// launch both end with.
+func (l *launcher) reachEndpoint(name, base, key string, remembered bool) bool {
+	if base == "" || key == "" {
+		return true
+	}
+	if l.reached == nil {
+		l.reached = map[string]bool{}
+	}
+	mk := memoKey(base, key)
+	if l.reached[mk] {
+		return true
+	}
+	l.reached[mk] = true
+	progress := func() {
+		fmt.Fprintf(os.Stderr, "ccmorph: Waiting for '%s' endpoint (%ds); Ctrl-C to cancel.\n",
+			name, util.ReachGiveUpSeconds())
+	}
+	body, ok, why := util.ReachListing(base, key, progress)
+	if !ok {
+		if l.unreachable == nil {
+			l.unreachable = map[string]bool{}
+		}
+		// The launch may go on without this endpoint, so its later listing
+		// paths must not wait on it again, and the picker must not repeat the
+		// sentence: the cause was just said once.
+		l.unreachable[mk] = true
+		said := listingFailureWhy(name, profile.RedactURL(base), 0, why)
+		if l.downSaid == nil {
+			l.downSaid = map[string]string{}
+		}
+		l.downSaid[name] = said
+		l.err(said)
+		// Silence the probe waited out ends the launch even with a window
+		// remembered: the adapter's own classification would wait on the same
+		// silence for a minute. Only a connect failure curl gave no reason for,
+		// answered at once, may launch through a remembered window (a blip).
+		if util.SaysNoAnswer(why) && (!remembered || util.SaysWaitedNoAnswer(why)) {
+			return false
+		}
+		return true
+	}
+	if body != "" {
+		l.memo[memoKey(base, key)] = body
+	}
+	return true
+}
+
+// windowRemembered is whether a launch can size its session without asking the
+// endpoint: a manual context_window.<model> entry or a discovered window bound
+// to this route. It reads the conf as stored, not profile.Read's fields — Read
+// folds the legacy proxy type first, which would not match the route the
+// remembered window was saved under (#260).
+func (l *launcher) windowRemembered(name string) bool {
+	_, fields, err := ctxwindow.ReadConf(l.conf(name))
+	if err != nil {
+		return false
+	}
+	return len(ctxwindow.ManualValues(fields)) > 0 || len(ctxwindow.DiscoveredValues(fields)) > 0
 }
 
 func (l *launcher) projectPicker(name, base, key, own, tag, launch string) bool {
@@ -1144,12 +1257,12 @@ func (l *launcher) routeRefusal(name string) string {
 		if base == "" {
 			base = "https://api.anthropic.com"
 		}
-		if _, code := util.ProbeListing(base, authKey(env), "anthropic-version: 2023-06-01"); code == "401" || code == "403" {
+		if _, code, _ := util.ProbeListing(base, authKey(env), "anthropic-version: 2023-06-01"); code == "401" || code == "403" {
 			return "Anthropic rejected the API key (HTTP " + code + ")"
 		}
 		return ""
 	}
-	_, code := util.ProbeListing(base, authKey(env))
+	_, code, _ := util.ProbeListing(base, authKey(env))
 	switch {
 	case code == "" || code == "000":
 		return "the endpoint " + profile.RedactURL(base) + " did not answer"
@@ -1195,12 +1308,19 @@ func (l *launcher) adapterStart(name, model string) bool {
 	if err != nil {
 		// Plain words first when the cause is the route itself (#286), then the
 		// one command that diagnoses the whole route.
-		if why := l.routeRefusal(name); why != "" {
+		said := l.downSaid[name]
+		if why := l.routeRefusal(name); why != "" && said == "" {
 			fmt.Fprintln(os.Stderr, "  "+why+".")
 		}
 		fmt.Fprintln(os.Stderr, "  Check the route: ccmorph doctor "+name)
 		if l.logPath != "" && fileExists(l.logPath) {
 			fmt.Fprintln(os.Stderr, "  Log: "+l.logPath)
+		}
+		// A gateway this run already named down ends the launch with that same
+		// sentence, whatever the adapter said on its way out: the terminal's
+		// picker and this headless start stop on one explanation (#260).
+		if said != "" {
+			l.err(said)
 		}
 		return false
 	}
