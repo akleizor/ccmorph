@@ -53,6 +53,11 @@
 
 ### Fixed
 
+- **A provider's first launch after sign-in shows its models.** A fresh
+  Antigravity login answers `/v1/models` with an empty list while it registers
+  its models, and the bridge counted that as ready, so `/model` kept Claude
+  Code's own Fable and Opus rows and no context window was sized. The bridge is
+  now ready only once its listing names a model.
 - **Nothing of a Remote Control session reaches another profile.** A launch that
   names a profile inside a Remote Control session also drops the session's CA
   path, thread setting and edge record, and an adapter or provider profile's own
