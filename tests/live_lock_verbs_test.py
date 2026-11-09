@@ -53,6 +53,15 @@ def exclusive_holder(state, name="gw"):
     return holder
 
 
+def shared_holder(state, name="gw"):
+    """Hold the profile's live lock the way a running session does: shared."""
+    lock = state / ".locks" / f"{name}.live"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    holder = open(lock, "a+")
+    fcntl.flock(holder, fcntl.LOCK_SH)
+    return holder
+
+
 def test_use_sets_the_default_while_another_launch_holds_the_live_lock(tmp_path):
     # `use` only sets state; before 2026-11-06 it proceeded while another
     # launch linked the profile's shared history.
@@ -121,3 +130,29 @@ def test_a_launch_refusal_names_a_lock_file_that_cannot_be_made(tmp_path):
     assert "could not be created" in result.stderr
     assert "nothing started" in result.stderr
     assert "another launch" not in result.stderr
+
+
+def test_login_leaves_a_live_api_key_profiles_claude_json_alone(tmp_path):
+    # #299: recording the key approval is a read-modify-write of the same
+    # .claude.json a running session writes. While a session holds the live
+    # lock, login changes nothing and names the running session instead of
+    # overwriting whatever the session saved.
+    home, state = fresh_state(tmp_path)
+    key = "sk-issue-299-test-key-0001\n"
+    (state / "gw.conf").write_text(f"type=apikey\napi_key={key}\n")
+    body = '{"numStartups":3}'
+    (state / "profiles" / "gw").mkdir(parents=True)
+    claude_json = state / "profiles" / "gw" / ".claude.json"
+    claude_json.write_text(body)
+
+    holder = shared_holder(state)
+    try:
+        result = run(home, state, "login gw")
+    finally:
+        holder.close()
+
+    assert result.returncode == 1, result.stderr
+    assert "a running session or launch of 'gw'" in result.stderr
+    assert "will use the API key" not in result.stdout
+    assert claude_json.read_text() == body
+    assert key[-20:] not in claude_json.read_text()
