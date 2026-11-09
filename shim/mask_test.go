@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 func testMasker(t *testing.T, commands string) *masker {
@@ -229,7 +231,7 @@ func TestMaskSetting(t *testing.T) {
 	if srv.Handler.(*Server).mask == nil {
 		t.Fatal("masking off")
 	}
-	path := filepath.Join(stateDir(), "mask.key")
+	path := filepath.Join(paths.StateDir(), "mask.key")
 	k1, _ := os.ReadFile(path)
 	st, _ := os.Stat(path)
 	k2, _ := maskKey()

@@ -29,6 +29,8 @@ import (
 	"strings"
 	"sync"
 	"unicode/utf8"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // minMasked is the shortest value masked, in characters. shortcut: a shorter
@@ -258,7 +260,7 @@ func newMasker(key []byte, commands string) (*masker, error) {
 // The key file is never seen half-written: it is written whole to a temp file
 // and linked into place, so two launches starting together both come up.
 func maskKey() ([]byte, error) {
-	dir := stateDir()
+	dir := paths.StateDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}

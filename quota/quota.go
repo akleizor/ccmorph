@@ -14,8 +14,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -125,14 +123,4 @@ func fetch(client *http.Client, req *http.Request) ([]byte, int, error) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	return body, resp.StatusCode, nil
-}
-
-// stateDir is where receipts and the quota cache live, the same root
-// shim/sidecar.go uses.
-func stateDir() string {
-	if root := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); root != "" {
-		return filepath.Join(root, "ccmorph")
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "state", "ccmorph")
 }

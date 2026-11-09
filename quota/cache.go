@@ -5,13 +5,15 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // The cache is the last good reading of one profile, so a later 429 or network
 // error shows real numbers with their age instead of a blank row. It holds
 // readings only: no token, no header, nothing a credential could be read from.
 
-func cacheDir() string { return filepath.Join(stateDir(), "quota") }
+func cacheDir() string { return filepath.Join(paths.StateDir(), "quota") }
 
 func cachePath(name string) string { return filepath.Join(cacheDir(), name+".json") }
 

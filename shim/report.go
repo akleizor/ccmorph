@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // recordOutcome appends one task outcome beside the usage rows; the join key is
@@ -21,7 +23,7 @@ func recordOutcome(task, result string) {
 	if !taskRE.MatchString(task) || !slices.Contains(outcomes, result) {
 		die(fmt.Sprintf("usage: %s outcome <task> %s", os.Args[0], strings.Join(outcomes, "|")))
 	}
-	dir := stateDir()
+	dir := paths.StateDir()
 	os.MkdirAll(filepath.Dir(dir), 0o777)
 	if err := os.Mkdir(dir, 0o700); err != nil && !os.IsExist(err) {
 		die(err.Error())
@@ -80,7 +82,7 @@ type taskVerdict struct {
 // store are moved into their day folders — a relocation, never a change to a
 // row's numbers.
 func report(days float64) {
-	base := stateDir()
+	base := paths.StateDir()
 	now := time.Now().UTC()
 	usage := func() { die(fmt.Sprintf("usage: %s report [--days N]", os.Args[0])) }
 	if !(days > 0) || days > 739000 {

@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -626,15 +627,6 @@ func isAdvise(entry value) bool {
 	return false
 }
 
-func contains(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
-			return true
-		}
-	}
-	return false
-}
-
 func owned(path []string, mapping map[string]bool) bool {
 	if len(path) > 0 && path[0] == "hooks" {
 		// Hooks flow one way, canonical -> profile; folding them back out of
@@ -642,10 +634,10 @@ func owned(path []string, mapping map[string]bool) bool {
 		return true
 	}
 	if len(path) == 1 {
-		return contains(ownedTop, path[0])
+		return slices.Contains(ownedTop, path[0])
 	}
 	if len(path) == 2 && path[0] == "env" {
-		return contains(ownedEnv, path[1]) || mapping[path[1]]
+		return slices.Contains(ownedEnv, path[1]) || mapping[path[1]]
 	}
 	if len(path) == 3 && path[0] == "modelSettings" {
 		return path[2] == "effortLevel"

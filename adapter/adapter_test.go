@@ -14,11 +14,14 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // --- helpers -------------------------------------------------------------------
@@ -616,7 +619,7 @@ func TestCachedNativeMainNeedsNoTranslator(t *testing.T) { // test_cached_native
 func TestOnlyTheDirectRouteRetriesInTheShim(t *testing.T) { // test_only_the_direct_route_retries_in_the_shim
 	// The in-process shim takes the same Options; the spawned hooks build shows the argv.
 	cmd := spawnedDirect(t, map[string]string{"CCMORPH_SHIM_HOOKS": "/stable/hooks.py"})
-	if !contains(cmd.Args, "--retry-transport") {
+	if !slices.Contains(cmd.Args, "--retry-transport") {
 		t.Fatalf("argv %v", cmd.Args)
 	}
 }
@@ -630,7 +633,7 @@ func TestDirectRouteHandsProfileKeysToTheShimEnv(t *testing.T) { // test_the_dir
 		}
 	}
 	for _, flag := range []string{"--repair-tool-references", "--affinity-header"} {
-		if contains(cmd.Args, flag) {
+		if slices.Contains(cmd.Args, flag) {
 			t.Errorf("new shim flag %s", flag)
 		}
 	}
@@ -814,24 +817,9 @@ func TestProfileEnvSourcesThePackagedScript(t *testing.T) { // test_profile_env_
 	}
 	n := len(argv)
 	// The profile is a positional argument, never interpolated into the script.
-	if !reflect.DeepEqual(argv[n-3:], []string{"ccmorph-adapter", ccmorphScript(), "p; nope"}) ||
+	if !reflect.DeepEqual(argv[n-3:], []string{"ccmorph-adapter", paths.Script(), "p; nope"}) ||
 		!strings.Contains(argv[2], `source "$1"`) || !strings.Contains(argv[2], `ccmorph _env "$2"`) {
 		t.Fatalf("argv %q", argv)
-	}
-}
-
-func TestLibDirDefaults(t *testing.T) { // the CCMORPH path half of test_profile_env_sources_the_packaged_ccmorph_script
-	t.Setenv("CCMORPH_LIB_DIR", "/somewhere/lib")
-	if got := defaultLibDir(); got != "/somewhere/lib" {
-		t.Errorf("override ignored: %s", got)
-	}
-	t.Setenv("CCMORPH_LIB_DIR", "")
-	exe, _ := os.Executable()
-	if r, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = r
-	}
-	if want := filepath.Join(filepath.Dir(filepath.Dir(exe)), "lib"); defaultLibDir() != want {
-		t.Errorf("default %s, want %s", defaultLibDir(), want)
 	}
 }
 

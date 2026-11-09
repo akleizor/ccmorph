@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // --- estimated cost for upstreams that bill outside the response -----------------
@@ -95,7 +97,7 @@ func newPriceBook(upstream string) *priceBook {
 	if err != nil || u.Hostname() == "" {
 		return nil
 	}
-	return &priceBook{done: make(chan struct{}), host: strings.ToLower(u.Hostname()), path: filepath.Join(stateDir(), "prices-"+strings.ToLower(u.Hostname())+".json"), fetch: fetchPrices, now: time.Now}
+	return &priceBook{done: make(chan struct{}), host: strings.ToLower(u.Hostname()), path: filepath.Join(paths.StateDir(), "prices-"+strings.ToLower(u.Hostname())+".json"), fetch: fetchPrices, now: time.Now}
 }
 
 func fetchPrices() ([]byte, error) {
@@ -206,7 +208,7 @@ func newOwnedPriceBook(only string) *priceBook {
 	return &priceBook{
 		done:  make(chan struct{}),
 		host:  "owned:" + label,
-		path:  filepath.Join(stateDir(), "prices-owned-"+label+".json"),
+		path:  filepath.Join(paths.StateDir(), "prices-owned-"+label+".json"),
 		fetch: fetchPrices,
 		now:   time.Now,
 		parse: func(api []byte) map[string]price { return parseOwnedPrices(api, only) },

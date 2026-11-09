@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // costLimit matches shim/sidecar.go: a price at or past it is damage, not a
@@ -81,9 +83,9 @@ func spendEntry(name, budgetRaw string) Entry {
 	// skips today's folder. A row always sits in a folder at or after its
 	// stamp's UTC day, so an earlier folder holds only rows the month window
 	// itself excludes; the stamp still decides.
-	usageDir := filepath.Join(stateDir(), "usage")
+	usageDir := filepath.Join(paths.StateDir(), "usage")
 	first, last := monthStart.UTC().Format("2006-01-02"), today.UTC().Format("2006-01-02")
-	paths, _ := filepath.Glob(filepath.Join(usageDir, "*.json"))
+	files, _ := filepath.Glob(filepath.Join(usageDir, "*.json"))
 	entries, _ := os.ReadDir(usageDir)
 	for _, e := range entries {
 		if !e.IsDir() || e.Name() < first || e.Name() > last {
@@ -93,10 +95,10 @@ func spendEntry(name, budgetRaw string) Entry {
 			continue // a folder that is not a day shard
 		}
 		more, _ := filepath.Glob(filepath.Join(usageDir, e.Name(), "*.json"))
-		paths = append(paths, more...)
+		files = append(files, more...)
 	}
 	counted := map[string]bool{}
-	for _, p := range paths {
+	for _, p := range files {
 		raw, err := os.ReadFile(p)
 		if err != nil {
 			continue
