@@ -9,6 +9,14 @@
 
 ### Fixed
 
+- **`ccmorph help all` is one list with one ending.** The page was the short
+  help printed unchanged and then a second list below it, so the short page's
+  footer sat in the middle: a reader who had asked for every command was told
+  to run `ccmorph help all`, the where-to-start advice named a profile they
+  already had, and the lines about command details and the version never came
+  at the end. The full page now shows every command in its groups and ends on
+  the details and version lines once, and the where-to-start line appears only
+  while no profile exists, so it never points at one the reader has (#365).
 - **A gateway with no saved model is asked which one at every launch, and
   every surface now says so.** inspect claimed "— Claude Code chooses" for the
   one profile kind that is false for; the launch picker answered and said

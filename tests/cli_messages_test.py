@@ -135,6 +135,25 @@ def test_help_is_concise_truthful_and_read_only(tmp_path):
         else:
             for phrase in ('arrow keys', 'type to search', 'Esc to cancel'):
                 assert phrase in detail.stdout, verb
+    # The page someone asked every command of is one list: no command row twice,
+    # no line sending them back to `help all`, and the details/version footer
+    # ends the page once (#365).
+    assert 'ccmorph help all' not in result.stdout
+    rows = [line for line in result.stdout.splitlines() if line.startswith('  ccmorph ')]
+    assert len(rows) == len(set(rows)), 'a command row appears twice'
+    assert result.stdout.count('Command details:') == 1
+    assert result.stdout.count('Version: ccmorph --version') == 1
+    assert result.stdout.rstrip().endswith(
+        'Command details: ccmorph help <command>\nVersion: ccmorph --version')
+    assert 'Start here: ccmorph add work' in result.stdout  # no profile exists yet
+    # A reader with a profile has already started: neither page may point them
+    # at a first profile they have (#365).
+    (state / 'work.conf').write_text('type=apikey\nbase_url=https://api.anthropic.com\n')
+    for args in (['--help'], ['help', 'all']):
+        page = subprocess.run([cli, *args], env=env, capture_output=True,
+                              text=True, timeout=HANG_TIMEOUT)
+        assert page.returncode == 0, page.stderr
+        assert 'Start here' not in page.stdout, args
     for verb in ('help', 'version'):
         page = subprocess.run([cli, 'help', verb], env=env, capture_output=True,
                               text=True, timeout=HANG_TIMEOUT)

@@ -675,7 +675,10 @@ func (l *launcher) usage(topic string) int {
 	help := func(k, t string) { grid(32, k, t) }
 	head := func(s string) { fmt.Println("\n" + l.bold + s + l.reset) }
 	switch topic {
-	case "":
+	case "", "all":
+		// `all` is the same page with the rest of the vocabulary below the
+		// everyday groups, not the short page printed again inside it (#365).
+		all := topic == "all"
 		fmt.Println("ccmorph — Claude Code profile switcher")
 		fmt.Println("\nUsage: ccmorph <command> [arguments]")
 		head("Launch:")
@@ -692,27 +695,34 @@ func (l *launcher) usage(topic string) int {
 		head("Troubleshooting:")
 		help("ccmorph inspect [profile]", "Show effective settings; no secrets")
 		help("ccmorph doctor [--verbose] [profile]", "Check why a profile is not working")
-		fmt.Println("\nStart here: ccmorph add work")
-		fmt.Println("More commands: ccmorph help all")
+		if all {
+			head("More commands:")
+			help("ccmorph models <profile>", "List models from an API-key endpoint")
+			help("ccmorph get <profile> <model|effort>", "Read a saved default")
+			help("ccmorph set <profile> <model|effort> [value]", "Save a default; omit value to choose")
+			help("ccmorph login <profile>", "Sign in again to a provider account")
+			help("ccmorph mv <old> <new>", "Rename a profile")
+			help("ccmorph rm <profile>", "Delete a profile and its private sign-in state")
+			help("ccmorph profile", "Name the profile a session runs on")
+			help("ccmorph cred <profile>", "Print a stored secret (sensitive)")
+			help("ccmorph update [ref]", "Update to the latest version, or to a branch or tag")
+			help("ccmorph uninstall", "Remove the command; profiles stay")
+			head("Advanced troubleshooting (normally automatic):")
+			help("ccmorph probe [profile]", "Refresh context-limit metadata; no inference")
+			help("ccmorph context <profile> <model> [tokens|auto]", "Override or reset one model context limit")
+		}
+		// The footer ends whichever page this is, once. Where to start is advice
+		// for a reader with no profile yet: one who has any is past it, and the
+		// example name might be a profile they already have (#365).
+		fmt.Println()
+		if len(l.confNames()) == 0 {
+			fmt.Println("Start here: ccmorph add work")
+		}
+		if !all {
+			fmt.Println("More commands: ccmorph help all")
+		}
 		fmt.Println("Command details: ccmorph help <command>")
 		fmt.Println("Version: ccmorph --version")
-		return 0
-	case "all":
-		l.usage("")
-		head("More commands:")
-		help("ccmorph models <profile>", "List models from an API-key endpoint")
-		help("ccmorph get <profile> <model|effort>", "Read a saved default")
-		help("ccmorph set <profile> <model|effort> [value]", "Save a default; omit value to choose")
-		help("ccmorph login <profile>", "Sign in again to a provider account")
-		help("ccmorph mv <old> <new>", "Rename a profile")
-		help("ccmorph rm <profile>", "Delete a profile and its private sign-in state")
-		help("ccmorph profile", "Name the profile a session runs on")
-		help("ccmorph cred <profile>", "Print a stored secret (sensitive)")
-		help("ccmorph update [ref]", "Update to the latest version, or to a branch or tag")
-		help("ccmorph uninstall", "Remove the command; profiles stay")
-		head("Advanced troubleshooting (normally automatic):")
-		help("ccmorph probe [profile]", "Refresh context-limit metadata; no inference")
-		help("ccmorph context <profile> <model> [tokens|auto]", "Override or reset one model context limit")
 		return 0
 	}
 	t, ok := usageTopics[topic]
