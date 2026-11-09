@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -515,17 +516,48 @@ func readEndedSession(pid int) string {
 	return sid
 }
 
+// readEndedTranscript reads the transcript path Claude Code gave the SessionEnd
+// hook of the claude that ran as pid — the hook keeps Claude Code's JSON input
+// beside the id record — and consumes the file, as readEndedSession does. It
+// names where that session's conversation is, or would be had a message been
+// sent. "" when there is no input, or it is not Claude Code's JSON (#359).
+func readEndedTranscript(pid int) string {
+	f := filepath.Join(tmpDir(), "ccmorph-session-end."+strconv.Itoa(pid)+".json")
+	b, err := os.ReadFile(f)
+	if err != nil {
+		return ""
+	}
+	os.Remove(f)
+	var in struct {
+		TranscriptPath string `json:"transcript_path"`
+	}
+	if json.Unmarshal(b, &in) != nil {
+		return ""
+	}
+	return in.TranscriptPath
+}
+
 // resumeHint prints the command that resumes the session Claude Code just
 // ended on the profile it ran under (#285): Claude Code's own exit line names
-// a bare `claude --resume <id>`, which reopens the default config folder —
+// a bare `claude --resume <id>`, which reopens the default config folder --
 // first-run screens, another account — instead of this profile. After a hop
 // the final pass prints its own profile, so the line names where the session
-// now runs. A session that recorded nothing — a print run, a background run —
-// prints nothing, keeping captured output clean.
+// now runs. A session that recorded nothing — a print run, a background run --
+// prints nothing, keeping captured output clean; so does one whose transcript,
+// the path Claude Code gave its SessionEnd hook, holds no conversation Claude
+// Code can resume — a session ended before its first message, or the id of a
+// resume that found none — whose command would only fail with Claude Code's
+// own "No conversation found" and be offered again by the failed run (#359).
+// A record that names no transcript says nothing against the session, so it
+// keeps its line. The relay applies the same check before it hands an id to
+// --resume (#288).
 func (l *launcher) resumeHint(name string) {
-	sid := l.ended
-	l.ended = ""
+	sid, transcript := l.ended, l.endedTranscript
+	l.ended, l.endedTranscript = "", ""
 	if sid == "" || name == "" {
+		return
+	}
+	if transcript != "" && !util.HasConversation(transcript) {
 		return
 	}
 	fmt.Printf("\n%sccmorph:%s resume this session with: %sccmorph run %s --resume %s%s\n",
@@ -1305,6 +1337,7 @@ func (l *launcher) runClaude(env, args []string) int {
 	l.child = nil
 	l.mu.Unlock()
 	l.ended = readEndedSession(cmd.Process.Pid)
+	l.endedTranscript = readEndedTranscript(cmd.Process.Pid)
 	if err == nil {
 		return 0
 	}

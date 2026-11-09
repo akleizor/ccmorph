@@ -202,6 +202,73 @@ func TestRunClaudeReadsTheEndedSessionRecord(t *testing.T) {
 	}
 }
 
+// The hint may only offer a session Claude Code can resume. Claude Code names
+// the transcript of the session its SessionEnd hook reports: one that holds no
+// conversation — empty, or never written — belongs to a session closed before
+// its first message (or a resume of an id Claude Code could not find), whose id
+// draws Claude Code's own "No conversation found", and the failed resume run
+// would print the same unusable command again (#359). A session that spoke keeps
+// its hint (#285), and so does one whose record names no transcript: nothing
+// says it is empty.
+func TestResumeHintNeedsAConversationToOffer(t *testing.T) {
+	dir := t.TempDir()
+	// The record a first message writes: the identity a --resume looks for (#288).
+	spoken := `{"type":"user","sessionId":"sid-359","uuid":"u1","timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"user","content":"hi"}}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "spoken.jsonl"), []byte(spoken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "quiet.jsonl"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hint := "\nccmorph: resume this session with: ccmorph run work --resume sid-359\n"
+	for _, c := range []struct {
+		name       string
+		transcript string
+		want       string
+	}{
+		{"a session that spoke", filepath.Join(dir, "spoken.jsonl"), hint},
+		{"a session that ended before its first message", filepath.Join(dir, "quiet.jsonl"), ""},
+		{"a session whose transcript was never written", filepath.Join(dir, "ghost.jsonl"), ""},
+		{"a record that names no transcript", "", hint},
+	} {
+		l := &launcher{ended: "sid-359", endedTranscript: c.transcript}
+		if out, _ := captureStdout(t, func() int { l.resumeHint("work"); return 0 }); out != c.want {
+			t.Errorf("%s: hint printed %q, want %q", c.name, out, c.want)
+		}
+		if l.ended != "" || l.endedTranscript != "" {
+			t.Errorf("%s: the hint prints once, but left %q %q", c.name, l.ended, l.endedTranscript)
+		}
+	}
+}
+
+// readEndedTranscript returns the transcript path Claude Code gave the
+// SessionEnd hook for the claude that ran as pid, and consumes the file the
+// hook kept it in: a launcher that died is swept by gc-stale, never re-read.
+// Input that is not Claude Code's JSON reads as no transcript (#359).
+func TestReadEndedTranscript(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	f := filepath.Join(tmp, "ccmorph-session-end.4194304.json")
+	for _, c := range []struct{ name, body, want string }{
+		{"claude code's input", `{"session_id":"sid-359","transcript_path":"/p/sid-359.jsonl","hook_event_name":"SessionEnd"}`, "/p/sid-359.jsonl"},
+		{"input that is not json", "not json", ""},
+		{"empty input", "", ""},
+	} {
+		if err := os.WriteFile(f, []byte(c.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := readEndedTranscript(4194304); got != c.want {
+			t.Errorf("%s: read %q, want %q", c.name, got, c.want)
+		}
+		if _, err := os.Stat(f); !os.IsNotExist(err) {
+			t.Errorf("%s: file left behind: %v", c.name, err)
+		}
+	}
+	if got := readEndedTranscript(4194305); got != "" {
+		t.Fatalf("another session's input read as %q", got)
+	}
+}
+
 func TestNestedEdgeEnvOnlyBehindTheLoopbackEdge(t *testing.T) {
 	l := &launcher{}
 	t.Setenv("CCMORPH_EDGE_ROUTE_ENV", "X=1\nY=2\nZ=3")

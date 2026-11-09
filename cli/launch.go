@@ -62,6 +62,9 @@ type launcher struct {
 	ranClaude bool   // claude started on the pass that just ran (else it never began)
 	launched  string // the profile the pass that just ran resolved to, "" for none
 	ended     string // the id of the session the exited claude recorded (#285)
+	// where Claude Code told its SessionEnd hook that session's transcript is;
+	// "" when it said nothing (#359)
+	endedTranscript string
 
 	// relayCrossed marks the pass that follows a hop onto another profile's
 	// config: only there can first-run questions meet a person mid-session, so

@@ -5,6 +5,17 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
+## Unreleased
+
+### Fixed
+
+- **A session closed before its first message no longer ends with a resume
+  command that fails.** The command named an id with no saved conversation, so
+  it ended with Claude Code's "No conversation found" and printed itself again.
+  The launcher now prints the line only when the session's transcript holds a
+  conversation; a session with a message keeps it, and a resume of an id that
+  does not exist ends with the error alone (#359).
+
 ## v0.5.8 — 2026-11-10
 
 ### Added
