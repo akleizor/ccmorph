@@ -2750,6 +2750,59 @@ def test_a_lost_login_counts_only_when_this_run_of_the_host_wrote_it(tmp_path, m
     assert signal in h.lost_login()
 
 
+@pytest.mark.parametrize("where", [
+    pytest.param("log", id="host-log"),
+    pytest.param("debug", id="host-debug"),
+    pytest.param("session", id="session-log"),
+])
+def test_a_failure_line_is_detected_however_much_output_follows_it(tmp_path, monkeypatch, where):
+    """GH-296: lost_login() read only the last TAIL bytes past the mark, so a
+    verbose host buried its own failure line under tool output and was never
+    restarted. The line counts wherever in this run's output it sits."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    monkeypatch.setattr(m.Host, "ensure_repo", lambda self: None)
+    monkeypatch.setattr(m.subprocess, "Popen", lambda cmd, **kw: FakeProc())
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    h = m.Host(str(repo), "gw")
+    target = {"log": h.logfile, "debug": h.debugfile,
+              "session": logs / f"{h.debugfile.stem}-cse_01A.log"}[where]
+    target.write_text("an earlier run's output\n")
+    h.start()
+    with target.open("a") as fh:
+        fh.write("No access token for session fetch\n")
+        fh.write("x" * (m.TAIL + 1) + "\n")     # the run talked on after it failed
+    assert h.lost_login() is not None
+
+
+def test_a_failure_line_the_writer_had_not_finished_is_still_detected(tmp_path, monkeypatch):
+    """GH-296: the forward reader must not step past a line the writer had not
+    finished. A check that read only `No access token for ` and the next one,
+    after `session fetch` arrived, must together see the whole line -- the tail
+    window re-read the region and did, so the scan may advance only past
+    complete lines."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    monkeypatch.setattr(m.Host, "ensure_repo", lambda self: None)
+    monkeypatch.setattr(m.subprocess, "Popen", lambda cmd, **kw: FakeProc())
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    h = m.Host(str(repo), "gw")
+    h.start()
+    with h.logfile.open("a") as fh:
+        fh.write("No access token for ")
+    assert h.lost_login() is None              # the line is not whole yet
+    with h.logfile.open("a") as fh:
+        fh.write("session fetch\n")
+        fh.write("x" * 1000 + "\n")            # and the run talked on after it
+    assert h.lost_login() is not None
+
+
 @pytest.mark.parametrize("line", [
     pytest.param("StopFailure:authentication_failed", id="stop-failure"),
     pytest.param('API Error: 401 {"error":{"type":"authentication_error"}}', id="route-401"),
@@ -2889,11 +2942,16 @@ def test_a_lost_login_does_not_restart_a_host_while_the_account_login_is_unreada
     assert "account login is unreadable" in out
 
 
+@pytest.mark.parametrize("line_after_the_window", [True, False],
+                         ids=["a-new-line-arrives", "only-the-line-inside-the-window"])
 def test_a_host_that_loses_its_login_again_is_restarted_at_most_once_per_window(
-        tmp_path, monkeypatch, capsys):
+        tmp_path, monkeypatch, capsys, line_after_the_window):
     """A restart that did not fix the host must not become a restart loop: the
     same folder gets at most one login restart per LOGIN_RESTART_AFTER, and the
-    suppressed one is logged with its own wording."""
+    suppressed one is logged with its own wording. The line the window defers on
+    is the one the check after the window must still see (GH-296: it was marked
+    read at the deferral, so only a brand-new failure could restart the host,
+    and none arriving left it serving errors for good)."""
     m, h, repo, clock, posts, stops = _lost_login_host(tmp_path, monkeypatch)
     log = tmp_path / "logs" / f"{h.debugfile.stem}-cse_01B.log"
     log.write_text("Could not resolve authentication method\n")
@@ -2908,8 +2966,9 @@ def test_a_host_that_loses_its_login_again_is_restarted_at_most_once_per_window(
     assert len(stops) == 1                     # inside the window: waits
     assert "again" in capsys.readouterr().out
     clock[0] += m.LOGIN_RESTART_AFTER
-    with log.open("a") as fh:
-        fh.write("No access token for session fetch\n")
+    if line_after_the_window:
+        with log.open("a") as fh:
+            fh.write("No access token for session fetch\n")
     m.cycle({repo: h}, [repo], clock[0], state)
     assert len(stops) == 2                     # a new window: one more try
 
