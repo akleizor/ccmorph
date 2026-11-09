@@ -74,3 +74,36 @@ func TestOptionStep(t *testing.T) {
 		}
 	}
 }
+
+// The exemption the native key check grants a launch that opens no session (#255)
+// reads argv with ParseLaunchFlags' own walk: an option's flag-shaped value is
+// its value, never a version request (#334).
+func TestOpensNoSession(t *testing.T) {
+	arity := map[string]string{"--system-prompt": "value", "-z": "optional"}
+	for _, c := range []struct {
+		argv []string
+		want bool
+	}{
+		{[]string{"--version"}, true},
+		{[]string{"-v"}, true},
+		{[]string{"prompt", "--help"}, true},
+		{nil, false},
+		{[]string{"-p", "hello"}, false},
+		// A flag-shaped value is the value --system-prompt owns.
+		{[]string{"--system-prompt", "--version", "-p", "hello"}, false},
+		{[]string{"--system-prompt=--version"}, false},
+		// --model owns its value even with no arity table to say so.
+		{[]string{"--model", "--version"}, false},
+		// An optional value never takes a flag-shaped token; -p owns nothing.
+		{[]string{"--resume", "--version"}, true},
+		{[]string{"--resume", "abc", "--version"}, true},
+		{[]string{"-z", "--version"}, true},
+		{[]string{"-p", "--version"}, true},
+		// After -- every token is a positional, even a version spelling.
+		{[]string{"--", "--version"}, false},
+	} {
+		if got := OpensNoSession(c.argv, arity); got != c.want {
+			t.Errorf("OpensNoSession(%q) = %v, want %v", c.argv, got, c.want)
+		}
+	}
+}

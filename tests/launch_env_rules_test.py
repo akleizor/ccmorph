@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from behaviour_coverage_test import Box, ROOT  # noqa: E402
-from support import HANG_TIMEOUT  # noqa: E402
+from support import HANG_TIMEOUT, anthropic_accepts_the_key  # noqa: E402
 
 TUNING = ("MAX_THINKING_TOKENS", "CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
 # Pinned literally (#106): deriving this from the launcher would let a name dropped from
@@ -64,6 +64,7 @@ BACKEND = (
 @pytest.fixture
 def box(tmp_path):
     b = Box(tmp_path)
+    anthropic_accepts_the_key(tmp_path / 'bin')
     (tmp_path / 'bin/claude').write_text(
         '#!/bin/sh\n[ "$1" = --help ] && exit 0\n'
         'env | grep -E "^(MAX_THINKING|CLAUDE_CODE_|AWS_|ANTHROPIC_|CCMORPH_SET)" | sort >> "$HOME/env.log"\n'

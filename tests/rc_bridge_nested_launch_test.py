@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 import fake_adapter
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, anthropic_accepts_the_key
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -58,6 +58,7 @@ class Box:
             '  echo "CUSTOM_HEADERS=${ANTHROPIC_CUSTOM_HEADERS-<unset>}"\n'
             '} >> "$HOME/claude.log"\n')
         claude.chmod(claude.stat().st_mode | stat.S_IXUSR)
+        anthropic_accepts_the_key(home / 'bin')
         self.env = {k: v for k, v in os.environ.items()
                     if not k.startswith(('CCMORPH', '_CCMORPH', 'CLAUDE_', 'ANTHROPIC_'))
                     and k not in ('HTTPS_PROXY', 'https_proxy', 'NO_PROXY')}

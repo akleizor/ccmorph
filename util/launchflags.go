@@ -82,6 +82,47 @@ func ParseLaunchFlags(routed bool, argv []string, arity map[string]string) (Laun
 	return f, nil
 }
 
+// OpensNoSession reports an argv whose own options make Claude Code print and
+// exit — its version or help — instead of opening a session: the exemption the
+// native key check grants a launch with no session to kill (#255). The walk is
+// ParseLaunchFlags': every option steps over the value it owns, so a
+// flag-shaped value (`--system-prompt --version`) is a value, never a version
+// request (#334). A nil arity table covers the spellings the launch parses
+// itself.
+func OpensNoSession(argv []string, arity map[string]string) bool {
+	for i := 0; i < len(argv); i++ {
+		a := argv[i]
+		next, hasNext := "", i+1 < len(argv)
+		if hasNext {
+			next = argv[i+1]
+		}
+		switch {
+		case a == "--":
+			return false
+		case a == "-h" || a == "--help" || a == "-v" || a == "--version":
+			return true
+		case a == "--model":
+			if hasNext && next != "" && next != "--" {
+				i++
+			}
+		case a == "-r" || a == "--resume":
+			if hasNext && next != "" && !strings.HasPrefix(next, "-") {
+				i++
+			}
+		case strings.HasPrefix(a, "--model=") || strings.HasPrefix(a, "--resume=") || strings.HasPrefix(a, "--print=") ||
+			strings.HasPrefix(a, "--from-pr=") || a == "--dangerously-skip-permissions" || a == "-c" || a == "--continue" ||
+			a == "--from-pr" || a == "-p" || a == "--print" || a == "--bg" || a == "--background":
+			// A spelling ParseLaunchFlags reads itself; it never owns the token
+			// after it.
+		case len(a) > 1 && a[0] == '-':
+			if optionStep(arity, a, next, hasNext) == 2 {
+				i++
+			}
+		}
+	}
+	return false
+}
+
 // optionStep is how many tokens a native option owns: 0 unknown, 1 itself, 2 with
 // its value. A --spelling=value carries its value inside the token.
 func optionStep(arity map[string]string, opt, next string, hasNext bool) int {

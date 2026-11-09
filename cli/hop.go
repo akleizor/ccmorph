@@ -141,9 +141,10 @@ func privateViewProfile(cfg string) string {
 // hopCheck is what a hop owes the session it is about to end (#286): the target
 // must be able to start, or the switch is refused before anything closes and
 // the session keeps running. It mirrors the target's own launch aborts — a key
-// Claude Code was told to refuse, a provider whose bridge cannot start, and
-// doctor's endpoint probe — so what hop refuses is what run would fail on. It
-// never mutates state the relay pass would not touch anyway.
+// Claude Code was told to refuse, a provider whose bridge cannot start, and the
+// endpoint probe the launch itself makes (a gateway's listing, a native key,
+// #255) — so what hop refuses is what run would fail on. It never mutates state
+// the relay pass would not touch anyway.
 func (l *launcher) hopCheck(name string) bool {
 	typ, env, err := util.ProfileEnv(l.dir, l.profileDirs, name, func(string) {})
 	if err != nil {

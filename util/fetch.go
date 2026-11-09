@@ -48,8 +48,9 @@ func fetchModels(key string, errw io.Writer, curlArgs ...string) (string, bool) 
 	return undisguise(body), true
 }
 
-// ProbeListing is doctor's never-failing probe: the body and the HTTP status, 000
-// when nothing answered. Each header is sent as a curl -H argument, so a native
+// ProbeListing is the never-failing probe behind doctor's route checks and the
+// launch's native key check (#255): the body and the HTTP status, 000 when
+// nothing answered. Each header is sent as a curl -H argument, so a native
 // Anthropic check can ask for a version the way the launch route does.
 func ProbeListing(base, key string, headers ...string) (body, code string) {
 	args := []string{"-sS", "--connect-timeout", "2", "--max-time", "5", "-w", `\n__CCMORPH_STATUS__%{http_code}`}

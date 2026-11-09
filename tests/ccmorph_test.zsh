@@ -397,6 +397,19 @@ make_fake_curl_probe_aware() {
   chmod +x "$f"
 }
 
+# Answers the keyed status probe (-w %{http_code}, the shape doctor and the
+# launch's native key check send) with the given HTTP status, keeping whatever
+# stub is installed for every other shape. ProbeListing reads the answer from
+# the __CCMORPH_STATUS__ marker. The latest status wins: each call prepends its
+# case, and the first match exits.
+make_fake_curl_status() {
+  local f="$HOME/bin/curl"
+  { print -r -- '#!/bin/sh'
+    print -r -- 'for a do case "$a" in *http_code*) printf "\n__CCMORPH_STATUS__'"$1"'"; exit 0 ;; esac; done'
+    tail -n +2 "$f"; } > "$f.new" && mv "$f.new" "$f"
+  chmod +x "$f"
+}
+
 write_curl_mock() {
   printf '%s\n' '#!/bin/zsh' "$1" > "$HOME/bin/curl"
   chmod +x "$HOME/bin/curl"
@@ -2854,52 +2867,69 @@ test_hop_relays_model_and_effort() {
 test_hop_refuses_to_end_the_session_when_the_target_cannot_start() {
   # The promise a hop owes the session it is about to end: check first that the
   # target can start, and when it cannot, say so in the same session -- plain
-  # words for the cause, doctor for the fix -- and end nothing.
+  # words for the cause, doctor for the fix -- and end nothing. A native target
+  # has no gateway listing to read; its launch now asks Anthropic about the key
+  # before a session opens (#255), so the hop must ask before it ends one too.
   local test_home out st rc=0
   test_home=$(mktemp -d)
   setup_home "$test_home"
   printf '%s\n' 'type=proxy' 'base_url=http://dead.invalid' 'api_key=dead-key' \
     > "$HOME/.config/ccmorph/dead.conf"
+  write_apikey_conf anth 'api_key=dead-key'
   source "$CCMORPH_SOURCE"
 
-  local relay_id="$$.dead" cause
-  for cause in no-answer rejected-key; do
+  local relay_id="$$.dead" cause target
+  for cause in no-answer rejected-key native-rejected; do
     rm -f "$HOME/claude-ended"
-    if [[ "$cause" == no-answer ]]; then
+    target=dead
+    case "$cause" in
+    no-answer)
       printf '%s\n' '#!/bin/sh' 'exit 1' > "$HOME/bin/curl"
-    else
+      ;;
+    *)
+      if [[ "$cause" == native-rejected ]]; then target=anth; fi
       printf '%s\n' '#!/bin/sh' \
         'for arg do [ "$arg" = "-w" ] && { printf "__CCMORPH_STATUS__401"; exit 0; }; done' \
         'exit 1' > "$HOME/bin/curl"
-    fi
+      ;;
+    esac
     chmod +x "$HOME/bin/curl"
     export CLAUDE_CODE_SESSION_ID='dead-session' CCMORPH_RELAY_ID="$relay_id"
 
-    out=$(hop_as_claude dead 2>&1); st=$?
+    out=$(hop_as_claude "$target" 2>&1); st=$?
 
     [[ "$st" != 0 ]] || { print -u2 -- "[$cause] hop must refuse, got 0: ${(qqq)out}"; rc=1 }
     [[ "$out" == *'This session keeps running.'* ]] || {
       print -u2 -- "[$cause] hop must say the session survives: ${(qqq)out}"
       rc=1
     }
-    [[ "$out" == *'ccmorph doctor dead'* ]] || {
+    [[ "$out" == *"ccmorph doctor $target"* ]] || {
       print -u2 -- "[$cause] hop must point at doctor: ${(qqq)out}"
       rc=1
     }
     [[ ! -e "$HOME/claude-ended" ]] || { print -u2 -- "[$cause] hop must not end the session"; rc=1 }
     [[ ! -e "$HOME/.config/ccmorph/.reswitch.$relay_id" ]] || { print -u2 -- "[$cause] hop must queue nothing"; rc=1 }
     [[ "$out" != *'Switching'* ]] || { print -u2 -- "[$cause] hop must not announce a switch: ${(qqq)out}"; rc=1 }
-    if [[ "$cause" == no-answer ]]; then
+    case "$cause" in
+    no-answer)
       [[ "$out" == *'the endpoint http://dead.invalid did not answer'* ]] || {
         print -u2 -- "[no-answer] the cause must be plain words: ${(qqq)out}"
         rc=1
       }
-    else
+      ;;
+    rejected-key)
       [[ "$out" == *'the endpoint rejected the API key (HTTP 401)'* ]] || {
         print -u2 -- "[rejected-key] the cause must be plain words: ${(qqq)out}"
         rc=1
       }
-    fi
+      ;;
+    native-rejected)
+      [[ "$out" == *'Anthropic rejected the API key (HTTP 401)'* ]] || {
+        print -u2 -- "[native-rejected] the cause must be plain words: ${(qqq)out}"
+        rc=1
+      }
+      ;;
+    esac
   done
   unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID
   rm -rf "$test_home"
@@ -4363,6 +4393,71 @@ test_apikey_profile_without_model_defers_to_claude_code() {
     "$actual" \
     '--model' \
     'an apikey profile with no model must let Claude Code own model selection' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_launch_names_a_rejected_native_key_before_the_session_opens() {
+  # GH-255: a native apikey profile gets no model picker, so a key Anthropic
+  # rejected still opened a session whose first message then died on Claude
+  # Code's own "Fix external API key" line. The launch must ask Anthropic
+  # itself and stop with the wording a gateway profile already gets.
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  write_apikey_conf anth 'api_key=k-issue-255-test-key'
+  source "$CCMORPH_SOURCE"
+  local rc=0 out st
+
+  # Anthropic rejects the key: the launch stops before claude starts.
+  make_fake_curl_status 401
+  out=$(_ccm_launch -a anth prompt 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'a rejected key must stop the launch'; rc=1; }
+  assert_contains "$out" "'https://api.anthropic.com' rejected the API key for 'anth' (HTTP 401)" \
+    'the rejection must use the wording a gateway profile gets' || rc=1
+  assert_contains "$out" 'replace it with: ccmorph config anth' \
+    'the rejection must name the command that fixes it' || rc=1
+  [[ ! -s "$CCMORPH_TEST_LOG" ]] || { print -u2 -- 'claude started on a rejected key'; rc=1; }
+
+  # A launch that opens no session asks nothing about the key: a Claude
+  # subcommand, and Claude's version printout, pass their arguments through
+  # untouched (INTENT promise 6) -- there is no first message for a rejected
+  # key to kill, so the launch must not stop on one.
+  : > "$CCMORPH_TEST_LOG"
+  CCMORPH_SUBCOMMAND_LAUNCH=1 _ccm_launch -a anth mcp list >/dev/null 2>&1 || {
+    print -u2 -- 'a subcommand launch on a rejected key must still reach claude'
+    rc=1
+  }
+  [[ -s "$CCMORPH_TEST_LOG" ]] || { print -u2 -- 'claude did not start for a subcommand launch'; rc=1; }
+  : > "$CCMORPH_TEST_LOG"
+  _ccm_launch -a anth --version >/dev/null 2>&1 || {
+    print -u2 -- 'a version launch on a rejected key must still reach claude'
+    rc=1
+  }
+  [[ -s "$CCMORPH_TEST_LOG" ]] || { print -u2 -- 'claude did not start for a version launch'; rc=1; }
+
+  # A flag-shaped option VALUE is not a version request (#334): in
+  # `--system-prompt --version`, the version spelling is the prompt text the
+  # option owns, and the launch opens a session -- so the rejection must stop
+  # it exactly as it does for any other session-opening argv. The arity that
+  # says --system-prompt owns a value comes from the installed claude's own
+  # Options section.
+  fake_claude_help
+  : > "$CCMORPH_TEST_LOG"
+  out=$(_ccm_launch -a anth --system-prompt --version -p hello 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'a flag-shaped option value must not skip the key check'; rc=1; }
+  assert_contains "$out" "'https://api.anthropic.com' rejected the API key for 'anth' (HTTP 401)" \
+    'the rejection must use the wording a gateway profile gets' || rc=1
+  [[ ! -s "$CCMORPH_TEST_LOG" ]] || { print -u2 -- 'claude started on a rejected key behind a flag-shaped value'; rc=1; }
+
+  # A key Anthropic accepts still starts the session, with nothing in the way.
+  make_fake_curl_status 200
+  : > "$CCMORPH_TEST_LOG"
+  _ccm_launch -a anth prompt >/dev/null 2>&1 || { print -u2 -- 'an accepted key must still start the session'; rc=1; }
+  [[ -s "$CCMORPH_TEST_LOG" ]] || { print -u2 -- 'claude did not start on an accepted key'; rc=1; }
+
   rm -rf "$test_home"
   return $rc
 }
@@ -10360,6 +10455,7 @@ run_test test_profile_advisor_disable_reaches_launch_without_leaking
 run_test test_profile_simple_mode_reaches_launch_without_leaking
 run_test test_apikey_profile_passes_unknown_model_window_flag
 run_test test_apikey_profile_without_model_defers_to_claude_code
+run_test test_launch_names_a_rejected_native_key_before_the_session_opens
 run_test test_apikey_profile_with_model_injects_it
 run_test test_shell_env_does_not_leak_into_a_profile
 run_test test_adapter_redirects_claude_to_the_local_port

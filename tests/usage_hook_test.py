@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from support import FAKE_SERVER_NO_DNS, HANG_TIMEOUT, needs_shim
+from support import FAKE_SERVER_NO_DNS, HANG_TIMEOUT, anthropic_accepts_the_key, needs_shim
 
 pytestmark = needs_shim
 
@@ -145,6 +145,7 @@ class Box:
         (home / ".claude/projects").mkdir(parents=True)
         self.script(home / "bin/claude", CLAUDE)
         self.script(home / "bin/cliproxyapi", CLIPROXYAPI)
+        anthropic_accepts_the_key(home / "bin")
         state_home = home / ".local/state/ccmorph"
         (state_home / "usage").mkdir(parents=True)
         self.usage = state_home / "usage"
