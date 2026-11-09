@@ -616,6 +616,101 @@ func TestCachedNativeMainNeedsNoTranslator(t *testing.T) { // test_cached_native
 	}
 }
 
+func TestAModelMustBeNamedWhenTheGatewayOffersNoList(t *testing.T) { // issue #357
+	// The headless launch can discover no model without a listing, so it must
+	// refuse — and the refusal must carry the cause and the one step to the
+	// ready-file reader, not end as a bare process death.
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".adapter-cache"), 0o755)
+	swap(t, &profileDirs, dir)
+	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gateway"})
+	swap(t, &inventoryFn, func(string, string, *http.Client) ([]string, error) {
+		return nil, refusingStatus{404}
+	})
+	swap(t, &dialectAutoFn, func(_, _, _ string) (string, string, int) { panic("no probe can name a model") })
+	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
+		panic("nothing is served")
+	})
+	stdio := captureStdio(t)
+	var status int
+	exits(t, func() { status = Main([]string{"demo", "--auto"}) })
+	if status != 1 {
+		t.Fatalf("Main = %d, want 1 (a launch without a model on a listless gateway must refuse)", status)
+	}
+	out := stdio()
+	if !strings.Contains(out, "EXIT=") || !strings.Contains(out, "offers no model list (HTTP 404)") {
+		t.Fatalf("the refusal must say why in plain words, got: %s", out)
+	}
+	if !strings.Contains(out, "ccmorph set demo model <model-id>") {
+		t.Fatalf("the refusal must name the step, got: %s", out)
+	}
+}
+
+func TestARefusedListingNamesItsTrueCause(t *testing.T) { // issue #357
+	// A rejected key is not an absent model list: the refusal must name the
+	// credential and its repair, never a model-setting step that cannot fix it.
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".adapter-cache"), 0o755)
+	swap(t, &profileDirs, dir)
+	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gateway"})
+	swap(t, &inventoryFn, func(string, string, *http.Client) ([]string, error) {
+		return nil, refusingStatus{401}
+	})
+	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
+		panic("nothing is served")
+	})
+	stdio := captureStdio(t)
+	var status int
+	exits(t, func() { status = Main([]string{"demo", "--auto"}) })
+	if status != 1 {
+		t.Fatalf("Main = %d, want 1", status)
+	}
+	out := stdio()
+	if !strings.Contains(out, "rejected the API key (HTTP 401)") || !strings.Contains(out, "replace it: ccmorph config demo") {
+		t.Fatalf("the refusal must name the rejected key and its repair, got: %s", out)
+	}
+	if strings.Contains(out, "offers no model list") || strings.Contains(out, "set demo model") {
+		t.Fatalf("a rejected key is not an absent model list, so the refusal must not say it is; got: %s", out)
+	}
+}
+
+func TestAWarmCacheIsNotAModelChoice(t *testing.T) { // issue #357
+	// Cached rows are endpoint knowledge, not the profile's model choice: with
+	// no model named and no listing offered, the launch must refuse and name
+	// the step, not front a session that never picked a model.
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".adapter-cache"), 0o755)
+	swap(t, &profileDirs, dir)
+	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gateway"})
+	cache := filepath.Join(dir, ".adapter-cache", hashHex("https://gateway")[:16]+".json")
+	os.WriteFile(cache, []byte(`{"endpoint":"https://gateway","anthropic_path":"/v1/messages","thinking_probe":2,`+
+		`"rows":[{"model":"delta-1","dialect":"anthropic","note":"","cap":null,"nothink":false,"id_recycle":false,"status":200}]}`), 0o600)
+	swap(t, &inventoryFn, func(string, string, *http.Client) ([]string, error) {
+		return nil, refusingStatus{404}
+	})
+	served := false
+	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
+		served = true
+		return 0
+	})
+	stdio := captureStdio(t)
+	var status int
+	exits(t, func() { status = Main([]string{"demo", "--auto"}) })
+	if served {
+		t.Fatal("a warm cache fronted a session with no model chosen")
+	}
+	if status != 1 {
+		t.Fatalf("Main = %d, want 1", status)
+	}
+	out := stdio()
+	if !strings.Contains(out, "EXIT=") || !strings.Contains(out, "offers no model list (HTTP 404)") {
+		t.Fatalf("the refusal must say why in plain words, got: %s", out)
+	}
+	if !strings.Contains(out, "ccmorph set demo model <model-id>") {
+		t.Fatalf("the refusal must name the step, got: %s", out)
+	}
+}
+
 func TestOnlyTheDirectRouteRetriesInTheShim(t *testing.T) { // test_only_the_direct_route_retries_in_the_shim
 	// The in-process shim takes the same Options; the spawned hooks build shows the argv.
 	cmd := spawnedDirect(t, map[string]string{"CCMORPH_SHIM_HOOKS": "/stable/hooks.py"})
@@ -639,6 +734,40 @@ func TestDirectRouteHandsProfileKeysToTheShimEnv(t *testing.T) { // test_the_dir
 	}
 	if cmd.Path != "/stable/hooks.py" {
 		t.Errorf("ran %s, not the profile's hooks build", cmd.Path)
+	}
+}
+
+func TestDirectRouteReadinessNeedsNoModelList(t *testing.T) { // issue #357
+	// A gateway whose /v1/models answers 404 still fronts directly: readiness
+	// asks the shim itself and never the gateway's model list, so the wait
+	// sends the gateway nothing and cannot spin on an answer that never comes.
+	swap(t, &readyTimeout, 2*time.Second) // the refusal path must fail fast, not in 90s
+	done := make(chan struct{})
+	var once sync.Once
+	shut := func() { once.Do(func() { close(done) }) }
+	swap(t, &freePortFn, func() (int, error) { return 45999, nil })
+	swap(t, &spawnShim, func(c *exec.Cmd) (*proc, error) {
+		return &proc{done: done, stop: shut}, nil // a shim that stays up until told
+	})
+	swap(t, &servingFn, func(port int, key string) bool {
+		t.Error("readiness asked the gateway's model list (a relayed GET /v1/models)")
+		return false
+	})
+	probes := 0
+	swap(t, &answeredFn, func(port int) bool { probes++; shut(); return true })
+	stdio := captureStdio(t)
+	code, did := exits(t, func() {
+		frontDirectly(&cliArgs{profile: "demo", reserved: -1}, "https://gateway", "k", "id",
+			[]Row{row("anthropic")}, map[string]string{"CCMORPH_SHIM_HOOKS": "/stable/hooks.py"}, nil, nil)
+	})
+	if !did || code != 1 { // the fake shim's exit must be what stops the loop
+		t.Fatalf("frontDirectly = (%d, exited=%v); the fake shim's exit must end it", code, did)
+	}
+	if out := stdio(); !strings.Contains(out, "PORT=45999") {
+		t.Fatalf("no PORT= line for a gateway without a model list; stdio:\n%s", out)
+	}
+	if probes != 1 {
+		t.Errorf("readiness probed %d time(s); the first answer must end the wait", probes)
 	}
 }
 

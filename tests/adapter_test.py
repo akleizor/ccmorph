@@ -330,15 +330,19 @@ class AdapterTest(unittest.TestCase):
         stub.chmod(0o755)
         self._install_fake_translator(stub)
 
-    def start_endpoint(self, *args) -> tuple[subprocess.Popen, str]:
+    def start_endpoint(self, *args, env=None) -> tuple[subprocess.Popen, str]:
         """Run the adapter as a real serving process; return it with its first
         stdout line (the PORT= contract). Cleanup terminates it and drains both
         pipes — communicate(), never a bare wait(), so a full pipe cannot hang
-        the test. XDG_STATE_HOME keeps shim usage rows inside the test home."""
+        the test. XDG_STATE_HOME keeps shim usage rows inside the test home.
+        env widens that launch context, never replacing it."""
+        launch = self._launch_env(XDG_STATE_HOME=str(self.home / ".local/state"))
+        if env:
+            launch.update(env)
         proc = subprocess.Popen(
             [*adapter_cmd(), "p", *args],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            env=self._launch_env(XDG_STATE_HOME=str(self.home / ".local/state")))
+            env=launch)
 
         def stop():
             if proc.poll() is None:
@@ -1178,6 +1182,78 @@ class AdapterTest(unittest.TestCase):
                                          "--port", str(p),
                                          "--inbound-token-file", str(f))
         self.assertEqual(line, f"PORT={p}")
+
+    def _install_no_list_gateway(self):
+        """A stand-in gateway that answers messages but 404s /v1/models (#357).
+        Returns the handler class, whose `hits` counts the listing requests."""
+        class NoList(Gateway):
+            hits = 0
+
+            def do_GET(self):
+                NoList.hits += 1
+                self._json(404, {"error": "no model list"})
+
+        srv = HTTPServer(("127.0.0.1", 0), NoList)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        self.addCleanup(srv.server_close)
+        base = f"http://127.0.0.1:{srv.server_address[1]}"
+        self.base = base  # the stub below points here, so the cache keys on it
+        stub = self.home / ".config/ccmorph/lib/ccmorph.sh"
+        stub.write_text(
+            "ccmorph() {\n"
+            '  [[ "$1" == _env ]] || return 1\n'
+            f'  print "ANTHROPIC_BASE_URL={base}"\n'
+            '  print "ANTHROPIC_API_KEY=stub-key"\n'
+            "}\n")
+        return NoList
+
+    def test_a_gateway_with_no_model_list_still_starts(self):
+        # Issue #357: a gateway that answers /v1/messages but 404s /v1/models
+        # could never be launched — the direct route's readiness wait relayed a
+        # GET /v1/models every 400ms for the whole ready window, waiting for
+        # the 200 only a model list brings. Readiness must ask the shim itself:
+        # the gateway sees classification's requests and nothing more.
+        no_list = self._install_no_list_gateway()
+        # A short ready window keeps a regression a fast failure instead of a
+        # 90s hang: a healthy shim answers the first probe in milliseconds.
+        proc, line = self.start_endpoint("--auto", "--model", "m-anthropic",
+                                         env={"CCMORPH_ADAPTER_READY_TIMEOUT": "5"})
+        self.assertTrue(line.startswith("PORT="), line)
+        self.assertLess(no_list.hits, 5,
+                        f"the launch asked the gateway for its model list "
+                        f"{no_list.hits} times; the readiness wait must send none")
+
+    def test_a_model_must_be_named_when_the_gateway_offers_no_list(self):
+        # Issue #357: with no listing there is nothing to discover a model
+        # from, so a modelless launch must refuse with the cause and the one
+        # step — not die and leave the launcher to report a cause-less death.
+        self._install_no_list_gateway()
+        proc, line = self.start_endpoint("--auto")
+        self.assertTrue(line.startswith("EXIT="), line)
+        self.assertIn("offers no model list (HTTP 404)", line)
+        self.assertIn("ccmorph set p model <model-id>", line)
+
+    def test_a_warm_cache_cannot_stand_in_for_a_model_choice(self):
+        # Issue #357: cached rows are endpoint knowledge, not the profile's
+        # model choice — with no listing offered and no model named, the launch
+        # must refuse and say the step, not front a session that never picked
+        # a model because another profile's launch once classified one.
+        self._install_no_list_gateway()
+        cache = self.cache_file()
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps({
+            "endpoint": self.base,
+            "anthropic_path": "/v1/messages",
+            "thinking_probe": 2,
+            "rows": [{"model": "m-anthropic", "dialect": "anthropic",
+                      "note": "", "cap": None, "nothink": False,
+                      "id_recycle": False, "status": 200}],
+        }))
+        proc, line = self.start_endpoint("--auto")
+        self.assertTrue(line.startswith("EXIT="), line)
+        self.assertIn("offers no model list (HTTP 404)", line)
+        self.assertIn("ccmorph set p model <model-id>", line)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -168,6 +168,17 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 			row("FAIL", "gateway: rejected the API key (HTTP "+code+"); replace it: ccmorph config "+name,
 				"replace the API key: ccmorph config "+name)
 			keyRejected = true
+		case code == "404":
+			// The gateway answered, so it is not unreachable: it offers no model
+			// list (#357). A saved model still launches — classification probes
+			// it directly — and cannot be checked against a listing; without
+			// one, no launch can pick a model, so the report names the step.
+			if strings.TrimSpace(model) != "" {
+				row("OK", "gateway: reachable (HTTP 404), but offers no model list; the saved model cannot be checked against one")
+			} else {
+				row("FAIL", "gateway: reachable (HTTP 404), but offers no model list and no model is set",
+					"set a model: ccmorph set "+name+" model <model-id>")
+			}
 		default:
 			row("FAIL", fmt.Sprintf("gateway: unreachable or rejected (HTTP %s)", code),
 				"check the endpoint, or change it: ccmorph config "+name)

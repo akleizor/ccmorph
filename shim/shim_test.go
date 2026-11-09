@@ -632,6 +632,25 @@ func TestInternalHeadersAndHooksNeverReachUpstream(t *testing.T) {
 	}
 }
 
+func TestUnsupportedMethodIsAnsweredByTheShimAlone(t *testing.T) {
+	// The direct route's readiness probe is a HEAD (issue #357): the shim
+	// answers the methods it does not relay itself, so the probe needs no
+	// credential and never travels upstream.
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("a %s reached the upstream", r.Method)
+	}))
+	defer up.Close()
+	req, _ := http.NewRequest("HEAD", front(t, NewServer(up.URL))+"/", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 501 {
+		t.Fatalf("HEAD answered %d, want the shim's own 501", resp.StatusCode)
+	}
+}
+
 func TestInboundTokenSwap(t *testing.T) {
 	var got http.Header
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { got = r.Header.Clone() }))

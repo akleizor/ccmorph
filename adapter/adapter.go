@@ -30,6 +30,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -68,6 +69,7 @@ var (
 	classifyFn       = classify
 	frontDirectlyFn  = frontDirectly
 	servingFn        = serving
+	answeredFn       = answered
 	freePortFn       = freePort
 	detachStdin      = true
 	profileDirs      = defaultProfileDirs()
@@ -436,20 +438,17 @@ func frontDirectly(a *cliArgs, upstream, key, routeIdentity string, usable []Row
 	watchSignals(shutdown)
 
 	deadline := time.Now().Add(readyTimeout)
-	cred := a.token
-	if cred == "" {
-		cred = key
-	}
 	for {
 		a.checkParent(shutdown)
-		// The child is checked before the probe, never after: the probe carries
-		// the inbound credential, and it must not be sent to a listener that may
-		// not be our own shim.
+		// The child is checked before the probe, never after: a listener that
+		// may not be our own shim must not be vouched for by this loop. The
+		// probe itself is bodiless and carries no credential, and asks only
+		// whether our shim answers — a gateway with no model list is ready too.
 		if shimProc.exited() || !time.Now().Before(deadline) {
 			logf("shim did not serve on :%d", port)
 			shutdown(1)
 		}
-		if servingFn(port, cred) {
+		if answeredFn(port) {
 			break
 		}
 		time.Sleep(400 * time.Millisecond)
@@ -591,6 +590,25 @@ func Main(argv []string) int {
 	rows, err := classifyFn(upstream, key, cacheFile, required, a.auto)
 	stop()
 	if err != nil {
+		// A launch with no model can discover one only from a listing; a
+		// refusal the endpoint answered must reach the ready-file reader as
+		// its true cause and the one step that repairs it — never a bare
+		// process death, and never a cause that is not what happened (#357).
+		var refused refusingStatus
+		if a.auto && required == "" && errors.As(err, &refused) {
+			switch refused.code {
+			case 404:
+				fmt.Printf("EXIT=the endpoint offers no model list (HTTP 404) and no model is set; set a model with ccmorph set %s model <model-id> and retry (the compatibility check may incur a small charge)\n",
+					a.profile)
+			case 401, 403:
+				fmt.Printf("EXIT=the endpoint rejected the API key (HTTP %d); replace it: ccmorph config %s\n",
+					refused.code, a.profile)
+			default:
+				fmt.Printf("EXIT=the endpoint answered HTTP %d when asked for its model list; check the endpoint, or change it: ccmorph config %s\n",
+					refused.code, a.profile)
+			}
+			return 1
+		}
 		die("%v", err)
 	}
 	return serve(a, rows, required, upstream, key, routeIdentity, upstreamProxy, shimBinary, extras, env, modelMap)
