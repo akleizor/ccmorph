@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/profile"
 )
 
@@ -141,6 +142,18 @@ func (l *launcher) doctorEnvironment() int {
 	return failed
 }
 
+// credentialStorage says where a profile's credential is kept: the login
+// keychain when the conf carries only its keychain reference, the conf file
+// when it holds the value itself. The caller's read has already resolved the
+// reference into the value, so the raw conf is what answers; the value never
+// appears in the answer.
+func credentialStorage(conf, field string) string {
+	if _, raw, err := ctxwindow.ReadConf(conf); err == nil && strings.HasPrefix(raw[field], "keychain:") {
+		return "in the login keychain"
+	}
+	return "in the conf file, unencrypted"
+}
+
 func (l *launcher) doctor(name string, verbose bool) int {
 	active := filepath.Join(l.dir, "active")
 	if name == "" && isFile(active) && !isLink(active) {
@@ -174,9 +187,9 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		return 1
 	}
 	typ, base, adapter := f["type"], f["base_url"], f["adapter"]
-	key := f["api_key"]
+	key, keyField := f["api_key"], "api_key"
 	if key == "" {
-		key = f["token"]
+		key, keyField = f["token"], "token"
 	}
 	if typ == "" {
 		l.status("FAIL", "config: missing type")
@@ -245,7 +258,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		report("INFO", "profile settings: none yet (Claude Code defaults apply)")
 	}
 	if key != "" {
-		report("OK", "credentials: present (value hidden)")
+		report("OK", "credentials: present "+credentialStorage(conf, keyField)+" (value hidden)")
 	} else {
 		switch typ {
 		case "sub":

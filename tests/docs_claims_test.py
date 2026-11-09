@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CHANGELOG = ROOT / "CHANGELOG.md"
 GUIDE = ROOT / "docs/guide.md"
 ARCHITECTURE = ROOT / "docs/ARCHITECTURE.md"
+SECURITY = ROOT / ".github/SECURITY.md"
 
 # A `scripts/<name>` the architecture document names, backticked or bare, at a
 # path boundary: `scripts/usage-export` matches in a code span and in prose.
@@ -116,3 +117,23 @@ def test_architecture_names_only_scripts_that_exist_issue_69():
     missing = sorted(name for name in named if not (ROOT / "scripts" / name).is_file())
     assert not missing, (
         f"ARCHITECTURE.md names scripts/ paths the repo does not ship: {missing}")
+
+
+def test_security_tells_one_credential_storage_story_issue_262():
+    """#262: SECURITY.md's table said the macOS key and token move to the login
+    keychain while a later section denied any keychain integration — a reader
+    could not tell where a key would live. The one story, both halves: the
+    login keychain on macOS when there is one, the conf file otherwise, and
+    what each does and does not defend against."""
+    flat = _flatten(SECURITY.read_text(encoding="utf-8"))
+    assert "There is no keychain integration" not in flat, (
+        "SECURITY.md still denies the keychain integration the product has")
+    assert "Credentials are stored unencrypted" not in flat, (
+        "SECURITY.md still states the pre-keychain blanket claim")
+    assert "move to the login keychain on first use" in flat, (
+        "SECURITY.md no longer states the macOS keychain half of the story")
+    assert "no login keychain" in flat, (
+        "SECURITY.md no longer states the fallback half: with no login keychain "
+        "the credential stays in the conf")
+    assert "not a boundary inside your own session" in flat, (
+        "SECURITY.md no longer says what the login keychain does not defend against")

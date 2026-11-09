@@ -23,7 +23,7 @@ tags; update rather than patch in place.
 
 | Path | Holds | Mode |
 |---|---|---|
-| `~/.config/ccmorph/<name>.conf` | one profile: API key, OAuth token, or an email for a subscription login. On macOS the key and token move to the login keychain on first use and the conf keeps only `keychain:<name>.<key>` | `600` |
+| `~/.config/ccmorph/<name>.conf` | one profile: API key, OAuth token, or an email for a subscription login. On macOS the key and token move to the login keychain on first use and the conf keeps only `keychain:<name>.<key>`; with no login keychain (Linux, CI, a throwaway `$HOME`) they stay in this file in plain text | `600` |
 | login keychain, service `ccmorph` | that profile's API key or OAuth token (macOS) | keychain ACL |
 | `~/.config/ccmorph/profiles/<name>/models.json` | context limits `ccmorph probe` discovered for the profile's route; no credential | `600` |
 | `~/.config/ccmorph/` | the state root (honours `CCMORPH_STATE_DIR`, then `XDG_CONFIG_HOME`) | `700` |
@@ -82,9 +82,17 @@ credential has ever been tracked in this repository.
 
 Know these before trusting the tool with a key.
 
-- **Credentials are stored unencrypted**, protected by file permissions alone.
-  Anything running as your user can read them. There is no keychain integration
-  and no passphrase.
+- **With no login keychain the credential sits in the conf unencrypted**
+  (Linux, CI, a throwaway `$HOME`): mode `600`, file permissions alone, and a
+  copy of the file is the credential itself. On macOS the same is true only
+  until first use moves the key to the keychain.
+- **The login keychain is not a boundary inside your own session.** ccmorph
+  reads the item back on every launch, with no passphrase, through the
+  `security` command — and anything running as your user can run that same
+  command and read the key too. What it does buy: the conf then holds only the
+  `keychain:<name>.<key>` reference, so a copied, synced or stolen conf never
+  holds the credential itself, and the item is encrypted at rest instead of
+  lying in a readable file.
 - **`ccmorph cred <profile>` prints a stored credential to stdout** by design,
   for piping into another command. Redirect them deliberately; a shell that logs
   command output will capture the value.

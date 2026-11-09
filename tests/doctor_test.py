@@ -134,6 +134,35 @@ def test_doctor_names_the_history_a_private_profile_deletes_gh_292(tmp_path, con
     result, _, _ = run_doctor(tmp_path, conf, OK_CURL)
     assert result.returncode == 0, result.stderr
     assert ("history: deleted when the session ends (private=1)" in result.stdout) == marked
+@pytest.mark.parametrize(
+    "conf,security_stub,expected",
+    [("type=apikey\napi_key=plain-demo-key\n", None,
+      "OK credentials: present in the conf file, unencrypted (value hidden)"),
+     ("type=apikey\napi_key=keychain:demo.api_key\n", "sk-issue-262-keychain-key",
+      "OK credentials: present in the login keychain (value hidden)")],
+    ids=["plain-in-the-conf", "keychain-reference"])
+def test_doctor_names_where_the_credential_is_stored_issue_262(tmp_path, conf, security_stub, expected):
+    """#262: a person deciding whether to trust ccmorph with a key must be able
+    to learn from doctor itself whether a profile's credential is in the login
+    keychain or in the conf file, without the value ever being shown. The
+    keychain reference is resolved through a `security` double, so the test says
+    nothing about the host and touches no real keychain."""
+    if security_stub is not None:
+        bindir = tmp_path / "bin"
+        bindir.mkdir(parents=True, exist_ok=True)
+        security = bindir / "security"
+        security.write_text(
+            "#!/bin/sh\n"
+            "[ \"$1\" = find-generic-password ] && [ \"$2\" = -s ] && [ \"$3\" = ccmorph ]"
+            " && [ \"$4\" = -a ] && [ \"$5\" = demo.api_key ] && [ \"$6\" = -w ]"
+            f" && printf '%s\\n' '{security_stub}' && exit 0\n"
+            "exit 1\n")
+        security.chmod(0o755)
+    result, _, _ = run_doctor(tmp_path, conf, OK_CURL)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert expected in result.stdout, result.stdout
+    if security_stub is not None:
+        assert security_stub not in result.stdout + result.stderr
 
 
 def test_doctor_reports_the_profile_default_model_whatever_its_origin(tmp_path):
