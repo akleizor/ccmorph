@@ -22,6 +22,7 @@ var verbs map[string]verb
 func init() {
 	verbs = map[string]verb{
 		"bridge-start":           bridgeStart,
+		"route-hold":             routeHold,
 		"adapter-start":          adapterStart,
 		"launch-env":             launchEnv,
 		"claude-session":         claudeSession,

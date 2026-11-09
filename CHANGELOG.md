@@ -45,6 +45,18 @@
   distinction the money line already makes; a profile with priced turns
   keeps its bar (#301).
 
+- **A route through a provider profile runs on that profile's one shared
+  bridge.** `ccmorph _route_env` — the seam `ccmorph probe` and the Remote
+  Control addon dial a provider through — started a private bridge beside the
+  shared one a session runs, and two bridges on one auth directory spend the
+  same single-use refresh token twice, signing the profile out. The route now
+  joins the shared bridge, starting it only when none runs; a holder process
+  owns the route's use of it until `ccmorph _route_stop` retires the route, so
+  neither the last session out nor a sibling route's retirement stops the
+  bridge under a live route, a hold that cannot land refuses the route
+  outright, and retiring a route whose bridge was replaced preserves the
+  replacement's record (#300).
+
 - **The hop help page no longer tells you to exit Claude.** The switch happens
   at once — hop itself ends the session and the relay resumes the conversation
   on the new profile — so following the page's instruction ended the freshly

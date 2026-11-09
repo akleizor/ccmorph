@@ -585,9 +585,16 @@ for one process per profile.
 - **A subprocess that must REACH the endpoint asks for the route, not just the
   environment.** `ccmorph _env` answers "what does this account launch as", which
   for every type but `provider` is also enough to dial it. A `provider` has no
-  endpoint until its bridge process runs, so `ccmorph _route_env` starts one and
-  prints `CCMORPH_ROUTE_HANDLE`; the caller owns that bridge and retires it with
-  `ccmorph _route_stop <handle>` **[test]**.
+  endpoint until its bridge process runs, so `ccmorph _route_env` prints
+  `CCMORPH_ROUTE_HANDLE` naming the profile's **shared** bridge — the one a
+  session of that profile runs, started only when none does, never a second one
+  beside it — and a holder process keeps the route's use of that bridge until
+  `ccmorph _route_stop <handle>` retires it, so the last session out or a
+  sibling route's retirement cannot stop the bridge under a live route. The
+  holder keeps none of the caller's streams, so a caller capturing the route
+  env's output sees it end when the env process exits. A hold that never lands
+  refuses the route outright rather than leave it unprotected, and a retirement
+  preserves the record of a bridge that replaced the handle's own **[test]**.
 
 ### When no translator is needed at all
 

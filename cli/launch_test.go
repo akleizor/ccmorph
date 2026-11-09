@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -397,6 +400,514 @@ func TestAPassOffAProviderStopsItsBridge(t *testing.T) {
 	l.stopForeignBridge("other", true)
 	if _, err := os.Stat(td); err == nil {
 		t.Fatal("switching providers must stop the old bridge first")
+	}
+}
+
+// routeFixture is a provider profile with what a route needs: a state dir
+// holding codex.conf and its auth directory, cliproxyapi on PATH (only its
+// presence is asked for), and a stub ccmorph-core that logs and fakes a
+// bridge-start and runs whatever hold the test asks route-hold to take.
+type routeFixture struct {
+	l     *launcher
+	state string
+	log   string
+}
+
+func newRouteFixture(t *testing.T) *routeFixture {
+	return newRouteFixtureWithHold(t,
+		"CCMORPH_TEST_HOLD_USERS=\"$3\" exec '"+os.Args[0]+"' -test.run='^TestRouteHoldChild$'")
+}
+
+// TestRouteHoldChild is the working holder the route fixture's stub
+// ccmorph-core runs for `util route-hold`: the test binary re-run, so no test
+// depends on an interpreter being installed. It takes the shared lock the real
+// holder takes, answers one byte and waits to be signaled. Run on its own it
+// does nothing.
+func TestRouteHoldChild(t *testing.T) {
+	users := os.Getenv("CCMORPH_TEST_HOLD_USERS")
+	if users == "" {
+		return
+	}
+	f, err := os.OpenFile(users, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		os.Exit(1)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH); err != nil {
+		os.Exit(1)
+	}
+	os.Stdout.WriteString("1")
+	time.Sleep(24 * time.Hour)
+}
+
+// newRouteFixtureWithHold builds the fixture with route-hold running hold: the
+// working holder takes the shared lock the real one takes and answers one byte.
+func newRouteFixtureWithHold(t *testing.T, hold string) *routeFixture {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CCMORPH_PRELAUNCH", "")
+	// macOS hands a session a TMPDIR ending in '/'. Every runner gets that
+	// shape here, so a stub building paths from $TMPDIR fails in the sandbox
+	// as it would under the gate.
+	t.Setenv("TMPDIR", t.TempDir()+string(os.PathSeparator))
+	state := t.TempDir()
+	profiles := filepath.Join(state, "profiles")
+	auth := filepath.Join(state, "auth", "codex")
+	for _, d := range []string{profiles, auth} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(state, "codex.conf"), []byte("type=provider\nprovider=codex\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "cliproxyapi"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	libexec := t.TempDir()
+	starts := filepath.Join(libexec, "starts")
+	// The stub bridge's config dir comes from a clean directory of the test's
+	// own, never from $TMPDIR as given: ours() matches the cleaned
+	// <tmp>/config.yaml against the bridge's argv, and a '//' from a TMPDIR
+	// ending in '/' would make a live, held bridge read as dead.
+	bridges := filepath.Clean(t.TempDir())
+	body := "#!/bin/sh\n" +
+		"case \"$1 $2\" in\n" +
+		"'util route-hold')\n" +
+		hold + "\n" +
+		";;\n" +
+		"'util bridge-start')\n" +
+		"printf x >> '" + starts + "'\n" +
+		"d=\"$(mktemp -d '" + bridges + "/gh300bridge.XXXXXX')\"\n" +
+		"ln -s \"$(command -v sleep)\" \"$d/config.yaml\"\n" +
+		"\"$d/config.yaml\" 60 >/dev/null 2>&1 &\n" +
+		"printf 'PID=%d\\nPORT=4199\\nKEY=stub\\nTMPDIR=%s\\n' \"$!\" \"$d\"\n" +
+		";;\n" +
+		"*)\n" +
+		"printf 'PID=99999\\nPORT=4199\\nKEY=stub\\nTMPDIR=" + libexec + "\\n'\n" +
+		";;\n" +
+		"esac\n"
+	if err := os.WriteFile(filepath.Join(libexec, "ccmorph-core"), []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fx := &routeFixture{
+		l:     &launcher{dir: state, profileDirs: profiles, libexec: libexec},
+		state: state,
+		log:   starts,
+	}
+	// Backstop: whatever the record names when a test ends must not outlive it.
+	t.Cleanup(func() {
+		b, err := os.ReadFile(filepath.Join(state, "auth", ".codex.bridge"))
+		if err != nil || len(strings.Fields(string(b))) == 0 {
+			return
+		}
+		if n, err := strconv.Atoi(strings.Fields(string(b))[0]); err == nil {
+			syscall.Kill(n, syscall.SIGTERM)
+		}
+	})
+	return fx
+}
+
+// freshLauncher is another process's launcher over the same state: a session or
+// a second route, with holds of its own.
+func (fx *routeFixture) freshLauncher() *launcher {
+	return &launcher{dir: fx.l.dir, profileDirs: fx.l.profileDirs, libexec: fx.l.libexec}
+}
+
+// holdUsers takes the shared lock on the bridge a session holds, without a
+// bridge of its own; release ends it.
+func (fx *routeFixture) holdUsers(t *testing.T) (release func()) {
+	t.Helper()
+	users, err := os.OpenFile(filepath.Join(fx.state, "auth", ".codex.bridge.users"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(users.Fd()), syscall.LOCK_SH); err != nil {
+		t.Fatal(err)
+	}
+	return func() {
+		syscall.Flock(int(users.Fd()), syscall.LOCK_UN)
+		users.Close()
+	}
+}
+
+// bridgeStarts is how many bridge-starts the stub core ran.
+func (fx *routeFixture) bridgeStarts() int {
+	b, _ := os.ReadFile(fx.log)
+	return strings.Count(string(b), "x")
+}
+
+// sessionBridge starts the shared bridge a live session of the profile holds:
+// a sleeper whose argv names its rendered config, as cliproxyapi's -config
+// does, recorded in the handle a session would find. release ends that hold.
+func (fx *routeFixture) sessionBridge(t *testing.T) (pid int, handle string, release func()) {
+	t.Helper()
+	tmp := t.TempDir()
+	cmd := exec.Command("sleep", "60")
+	cmd.Args[0] = filepath.Join(tmp, "config.yaml")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go cmd.Wait()
+	t.Cleanup(func() { cmd.Process.Kill() })
+	auth := filepath.Join(fx.state, "auth", "codex")
+	record := filepath.Join(fx.state, "auth", ".codex.bridge")
+	if err := os.WriteFile(record, []byte(strconv.Itoa(cmd.Process.Pid)+" 4100 skey "+tmp), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	users, err := os.OpenFile(filepath.Join(fx.state, "auth", ".codex.bridge.users"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(users.Fd()), syscall.LOCK_SH); err != nil {
+		t.Fatal(err)
+	}
+	return cmd.Process.Pid,
+		"provider|" + strconv.Itoa(cmd.Process.Pid) + "|" + tmp + "|" + auth,
+		func() {
+			syscall.Flock(int(users.Fd()), syscall.LOCK_UN)
+			users.Close()
+		}
+}
+
+// captureStdout runs f with os.Stdout swapped for a pipe and returns what it
+// printed, with f's exit status.
+func captureStdout(t *testing.T, f func() int) (string, int) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	rc := f()
+	os.Stdout = old
+	w.Close()
+	b, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b), rc
+}
+
+// handleOf is the CCMORPH_ROUTE_HANDLE line a route env printed.
+func handleOf(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if v, ok := strings.CutPrefix(line, "CCMORPH_ROUTE_HANDLE="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// holderOf is the holder pid that handle names — the process owning the route's
+// use of the bridge — "" when the handle names none.
+func holderOf(out string) string {
+	if parts := strings.Split(handleOf(out), "|"); len(parts) >= 5 {
+		return parts[4]
+	}
+	return ""
+}
+
+// stopHolder ends a holder a route env spawned, so a test that does not retire
+// its route leaves nothing behind.
+func stopHolder(holder string) {
+	if n, err := strconv.Atoi(holder); err == nil && n > 0 {
+		syscall.Kill(n, syscall.SIGTERM)
+	}
+}
+
+// A route env for a provider profile runs on the profile's one shared bridge.
+// It used to start a private one beside it, and two bridges on one auth
+// directory spend the same single-use refresh token twice, signing the profile
+// out (#300).
+func TestARouteEnvForAProviderRunsOnTheSharedBridge(t *testing.T) {
+	t.Run("beside a session's shared bridge", func(t *testing.T) {
+		fx := newRouteFixture(t)
+		pid, handle, release := fx.sessionBridge(t)
+		defer release()
+		out, rc := captureStdout(t, func() int { return fx.l.routeEnv([]string{"codex"}) })
+		if rc != 0 {
+			t.Fatalf("route env refused: rc=%d out=%q", rc, out)
+		}
+		if n := fx.bridgeStarts(); n != 0 {
+			t.Fatalf("a route env beside the shared bridge started %d private bridge(s)", n)
+		}
+		if !strings.Contains(out, "CCMORPH_ROUTE_HANDLE="+handle) {
+			t.Fatalf("the route must hand back the shared bridge's handle %q: %q", handle, out)
+		}
+		if !strings.Contains(out, "ANTHROPIC_BASE_URL=http://127.0.0.1:4100") || !strings.Contains(out, "ANTHROPIC_API_KEY=skey") {
+			t.Fatalf("the route must point at the shared bridge: %q", out)
+		}
+		if syscall.Kill(pid, 0) != nil {
+			t.Fatal("the shared bridge must keep running for the route")
+		}
+		if h := holderOf(out); h == "" {
+			t.Fatalf("the route must own its use of the shared bridge through a holder: %q", out)
+		} else {
+			t.Cleanup(func() { stopHolder(h) })
+		}
+	})
+	t.Run("with nothing running", func(t *testing.T) {
+		fx := newRouteFixture(t)
+		out, rc := captureStdout(t, func() int { return fx.l.routeEnv([]string{"codex"}) })
+		if rc != 0 {
+			t.Fatalf("route env refused: rc=%d out=%q", rc, out)
+		}
+		if n := fx.bridgeStarts(); n != 1 {
+			t.Fatalf("a route env with nothing running must start one bridge, started %d", n)
+		}
+		record := filepath.Join(fx.state, "auth", ".codex.bridge")
+		b, err := os.ReadFile(record)
+		if err != nil {
+			t.Fatalf("the bridge a route starts must be the recorded shared one: %v", err)
+		}
+		if !strings.Contains(out, "CCMORPH_ROUTE_HANDLE=provider|"+strings.Fields(string(b))[0]+"|") {
+			t.Fatalf("the handle must name the recorded bridge: %q vs record %q", out, b)
+		}
+		if h := holderOf(out); h == "" {
+			t.Fatalf("the route must own its use of the shared bridge through a holder: %q", out)
+		} else {
+			t.Cleanup(func() { stopHolder(h) })
+		}
+	})
+}
+
+// A session ending leaves the bridge a route uses running: the route's hold —
+// a holder process that lives until the route retires — owns the bridge with
+// the sessions, so the last session out cannot stop it under a live route
+// (#300). Before the hold, that release stopped the shared bridge the route
+// ran on.
+func TestASessionEndingLeavesABridgeARouteUsesRunning(t *testing.T) {
+	fx := newRouteFixture(t)
+	out, rc := captureStdout(t, func() int { return fx.l.routeEnv([]string{"codex"}) })
+	if rc != 0 {
+		t.Fatalf("route env refused: rc=%d out=%q", rc, out)
+	}
+	holder := holderOf(out)
+	t.Cleanup(func() { stopHolder(holder) })
+	if n := fx.bridgeStarts(); n != 1 {
+		t.Fatalf("the route must start the one shared bridge, started %d", n)
+	}
+	record := filepath.Join(fx.state, "auth", ".codex.bridge")
+	before, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("the bridge a route starts must be recorded: %v", err)
+	}
+	bridgePID, _ := strconv.Atoi(strings.Fields(string(before))[0])
+	// A session of the profile joins the bridge the route started, then ends.
+	s := fx.freshLauncher()
+	if !s.providerStart("codex") {
+		t.Fatal("the session must join the shared bridge")
+	}
+	if n := fx.bridgeStarts(); n != 1 {
+		t.Fatalf("the session must join, not replace, the route's bridge; %d started", n)
+	}
+	fx.l.providerStop() // the route env process ends with its print
+	if syscall.Kill(bridgePID, 0) != nil {
+		t.Fatal("the route env process ending must not stop the bridge the route uses")
+	}
+	s.providerStop()
+	if syscall.Kill(bridgePID, 0) != nil {
+		t.Fatal("a session ending must not stop the bridge a live route uses")
+	}
+	if after, err := os.ReadFile(record); err != nil || string(after) != string(before) {
+		t.Fatalf("the route's bridge and its record must outlive the session: %q err=%v", after, err)
+	}
+	if holder == "" {
+		t.Fatalf("the route must own its use of the shared bridge through a holder: %q", out)
+	}
+	// With the route itself gone, its retirement owns the stop.
+	if rc := fx.freshLauncher().routeStop([]string{handleOf(out)}); rc != 0 {
+		t.Fatalf("route stop failed: rc=%d", rc)
+	}
+	if syscall.Kill(bridgePID, 0) == nil {
+		t.Fatal("once nothing uses it, retiring the route must stop the bridge")
+	}
+	if _, err := os.Stat(record); err == nil {
+		t.Fatal("the handle must be removed with the bridge")
+	}
+}
+
+// One of two routes retiring leaves the bridge the other uses running: each
+// route owns its own hold, so the first retirement must not stop the bridge
+// under the second (#300).
+func TestOneOfTwoRoutesRetiringLeavesTheOthersBridgeRunning(t *testing.T) {
+	fx := newRouteFixture(t)
+	out1, rc := captureStdout(t, func() int { return fx.l.routeEnv([]string{"codex"}) })
+	if rc != 0 {
+		t.Fatalf("route env refused: rc=%d out=%q", rc, out1)
+	}
+	holder1 := holderOf(out1)
+	// A session of the profile uses the bridge while the second route is built,
+	// then leaves: both routes, and the bridge, outlive it.
+	release := fx.holdUsers(t)
+	r2 := fx.freshLauncher()
+	out2, rc := captureStdout(t, func() int { return r2.routeEnv([]string{"codex"}) })
+	if rc != 0 {
+		t.Fatalf("route env refused: rc=%d out=%q", rc, out2)
+	}
+	holder2 := holderOf(out2)
+	t.Cleanup(func() { stopHolder(holder1); stopHolder(holder2) })
+	if n := fx.bridgeStarts(); n != 1 {
+		t.Fatalf("two routes must share one bridge; %d started", n)
+	}
+	record := filepath.Join(fx.state, "auth", ".codex.bridge")
+	before, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("the shared bridge must be recorded: %v", err)
+	}
+	bridgePID, _ := strconv.Atoi(strings.Fields(string(before))[0])
+	fx.l.providerStop() // each route env process ends with its print
+	r2.providerStop()
+	release() // the session leaves
+	if rc := fx.freshLauncher().routeStop([]string{handleOf(out1)}); rc != 0 {
+		t.Fatalf("route stop failed: rc=%d", rc)
+	}
+	if syscall.Kill(bridgePID, 0) != nil {
+		t.Fatal("one route retiring must not stop the bridge the other still uses")
+	}
+	if after, err := os.ReadFile(record); err != nil || string(after) != string(before) {
+		t.Fatalf("the surviving route's bridge and record must stay: %q err=%v", after, err)
+	}
+	if holder1 == "" || holder2 == "" || holder2 == holder1 {
+		t.Fatalf("each route must own its own hold: %q vs %q", out1, out2)
+	}
+	if rc := fx.freshLauncher().routeStop([]string{handleOf(out2)}); rc != 0 {
+		t.Fatalf("route stop failed: rc=%d", rc)
+	}
+	if syscall.Kill(bridgePID, 0) == nil {
+		t.Fatal("once no route uses it, retiring the last one must stop the bridge")
+	}
+	if _, err := os.Stat(record); err == nil {
+		t.Fatal("the handle must be removed with the bridge")
+	}
+}
+
+// Retiring a route whose bridge was replaced keeps the replacement: the handle
+// names a bridge that is gone and the record now names a newer one, so removing
+// it would leave that bridge unrecorded and let the next acquire start a second
+// bridge beside it on the same auth directory (#300).
+func TestRetiringARouteWhoseBridgeWasReplacedKeepsTheReplacement(t *testing.T) {
+	fx := newRouteFixture(t)
+	pid, _, release := fx.sessionBridge(t)
+	release() // the bridge is recorded and running, but nothing holds it
+	record := filepath.Join(fx.state, "auth", ".codex.bridge")
+	before, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := "provider|777777|/gh300-replaced|" + filepath.Join(fx.state, "auth", "codex")
+	if rc := (&launcher{}).routeStop([]string{stale}); rc != 0 {
+		t.Fatalf("route stop failed: rc=%d", rc)
+	}
+	if syscall.Kill(pid, 0) != nil {
+		t.Fatal("retiring a replaced route must not stop the replacement bridge")
+	}
+	if after, err := os.ReadFile(record); err != nil || string(after) != string(before) {
+		t.Fatalf("the replacement's record must survive the stale handle's retirement: %q err=%v", after, err)
+	}
+}
+
+// A route whose hold on the bridge never lands is refused with a plain reason
+// and leaves nothing behind: running it unprotected would hand the route a
+// bridge any session's exit could stop (#300, INTENT promise 8).
+func TestARouteWhoseHoldNeverLandsIsRefused(t *testing.T) {
+	fx := newRouteFixtureWithHold(t, "printf '0\\n'")
+	out, rc := captureStdout(t, func() int { return fx.l.routeEnv([]string{"codex"}) })
+	if rc == 0 {
+		t.Fatalf("a route whose hold never lands must be refused: %q", out)
+	}
+	if strings.Contains(out, "CCMORPH_ROUTE_HANDLE=") {
+		t.Fatalf("a refused route must hand back no handle: %q", out)
+	}
+	if n := fx.bridgeStarts(); n != 1 {
+		t.Fatalf("the refused route still started its bridge first, started %d", n)
+	}
+	if _, err := os.Stat(filepath.Join(fx.state, "auth", ".codex.bridge")); err == nil {
+		t.Fatal("a refused route must leave no bridge recorded")
+	}
+}
+
+// TestRouteEnvChild is the separate _route_env process
+// TestARouteEnvsCapturedOutputEndsWhenItExits captures: the test binary re-run
+// into it. Run on its own it does nothing.
+func TestRouteEnvChild(t *testing.T) {
+	state := os.Getenv("CCMORPH_TEST_ROUTE_ENV_STATE")
+	if state == "" {
+		return
+	}
+	l := &launcher{dir: state, profileDirs: filepath.Join(state, "profiles"), libexec: os.Getenv("CCMORPH_TEST_ROUTE_ENV_LIBEXEC")}
+	os.Exit(l.routeEnv([]string{"codex"}))
+}
+
+// A caller that captures _route_env's output — Remote Control's
+// subprocess.run(capture_output=True), probe's runZsh — sees it end when the
+// env process exits. The holder outlives that process by design, so it must
+// keep none of the caller's streams: holding the inherited stderr left Remote
+// Control waiting out its 180-second timeout, and probe its WaitDelay, on a
+// route already built, whose retirement is registered only after the capture
+// returns (#300).
+func TestARouteEnvsCapturedOutputEndsWhenItExits(t *testing.T) {
+	fx := newRouteFixture(t)
+	cmd := exec.Command(os.Args[0], "-test.run=^TestRouteEnvChild$")
+	cmd.Env = append(os.Environ(),
+		"CCMORPH_TEST_ROUTE_ENV_STATE="+fx.state,
+		"CCMORPH_TEST_ROUTE_ENV_LIBEXEC="+fx.l.libexec)
+	var out, errb strings.Builder
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	cmd.WaitDelay = 3 * time.Second
+	err := cmd.Run()
+	h := holderOf(out.String())
+	t.Cleanup(func() { stopHolder(h) })
+	if errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("the route env exited, but a process it left running kept its caller's capture open: holder %q, stdout %q", h, out.String())
+	}
+	if err != nil {
+		t.Fatalf("route env failed: %v stdout=%q stderr=%q", err, out.String(), errb.String())
+	}
+	if h == "" {
+		t.Fatalf("the route must own its use of the shared bridge through a holder: %q", out.String())
+	}
+	if n, _ := strconv.Atoi(h); syscall.Kill(n, 0) != nil {
+		t.Fatal("the holder must outlive the env process: only _route_stop ends the route's hold")
+	}
+	users, err := os.OpenFile(filepath.Join(fx.state, "auth", ".codex.bridge.users"), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer users.Close()
+	if syscall.Flock(int(users.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil {
+		t.Fatal("the route's hold on the bridge must outlive the env process")
+	}
+}
+
+// Retiring a route leaves the shared bridge a session still uses running: only
+// the last user out — a session, or a route whose hold has died with its
+// holder — owns the stop (#300).
+func TestRetiringARouteLeavesABridgeASessionUsesRunning(t *testing.T) {
+	fx := newRouteFixture(t)
+	pid, handle, release := fx.sessionBridge(t)
+	record := filepath.Join(fx.state, "auth", ".codex.bridge")
+	if rc := (&launcher{}).routeStop([]string{handle}); rc != 0 {
+		t.Fatalf("route stop failed: rc=%d", rc)
+	}
+	if syscall.Kill(pid, 0) != nil {
+		t.Fatal("retiring a route must not stop a bridge a session still uses")
+	}
+	if _, err := os.Stat(record); err != nil {
+		t.Fatal("retiring a route must leave the handle a later session joins")
+	}
+	release()
+	if rc := (&launcher{}).routeStop([]string{handle}); rc != 0 {
+		t.Fatalf("route stop failed: rc=%d", rc)
+	}
+	if syscall.Kill(pid, 0) == nil {
+		t.Fatal("once no session uses it, retiring the route must stop the bridge")
+	}
+	if _, err := os.Stat(record); err == nil {
+		t.Fatal("the handle must be removed with the bridge")
 	}
 }
 
