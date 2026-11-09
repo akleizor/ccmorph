@@ -91,28 +91,66 @@ func TestKeyApprovalDropsASavedApprovalOnceAnswered(t *testing.T) {
 	}
 }
 
+// gh299UnansweredBody is a config Claude Code has never answered the key
+// question in — the state `ccmorph add` provisions before the first launch.
+func gh299UnansweredBody() string {
+	return `{"numStartups":3}`
+}
+
 // #299: while the profile's session is open, the saved approval cannot be
 // recorded and nothing starts; the answer stays saved for the launch that
-// follows the session.
+// follows the session — whatever the file holds for the key, a refusal or no
+// answer yet.
 func TestKeyApprovalKeepsASavedApprovalWhileTheProfileIsInUse(t *testing.T) {
-	l, path := keyApprovalLauncher(t, gh299RefusedBody())
+	for name, body := range map[string]string{
+		"over a refusal":     gh299RefusedBody(),
+		"over no answer yet": gh299UnansweredBody(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			l, path := keyApprovalLauncher(t, body)
+			before, _ := os.ReadFile(path)
+			if err := util.SaveApproval(l.profileDirs, "gw", gh299Key); err != nil {
+				t.Fatal(err)
+			}
+			lock := util.LiveLockPath(l.profileDirs, "gw")
+			if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			f, err := os.OpenFile(lock, os.O_CREATE|os.O_RDWR, 0o600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+			if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH); err != nil {
+				t.Fatal(err)
+			}
+			defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+			restore := util.SetLockWait(0)
+			defer restore()
+
+			if l.keyApproval("gw", gh299Key) {
+				t.Fatal("a launch must not start while the saved approval cannot be recorded")
+			}
+			after, _ := os.ReadFile(path)
+			if string(after) != string(before) {
+				t.Fatalf("the file was rewritten under the session: %s", after)
+			}
+			if !util.ApprovalSaved(l.profileDirs, "gw", gh299Key) {
+				t.Fatal("the saved approval was dropped while it still waits")
+			}
+		})
+	}
+}
+
+// #299: a file that cannot be rewritten at all — here one that does not parse —
+// keeps its saved approval too; the answer is not thrown away just because it
+// could not be recorded this time.
+func TestKeyApprovalKeepsASavedApprovalTheFileRefuses(t *testing.T) {
+	l, path := keyApprovalLauncher(t, `{"customApiKeyResponses":`)
 	before, _ := os.ReadFile(path)
 	if err := util.SaveApproval(l.profileDirs, "gw", gh299Key); err != nil {
 		t.Fatal(err)
 	}
-	lock := util.LiveLockPath(l.profileDirs, "gw")
-	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	f, err := os.OpenFile(lock, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH); err != nil {
-		t.Fatal(err)
-	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 	restore := util.SetLockWait(0)
 	defer restore()
 
@@ -121,9 +159,9 @@ func TestKeyApprovalKeepsASavedApprovalWhileTheProfileIsInUse(t *testing.T) {
 	}
 	after, _ := os.ReadFile(path)
 	if string(after) != string(before) {
-		t.Fatalf("the file was rewritten under the session: %s", after)
+		t.Fatalf("the file was rewritten although it could not be read: %s", after)
 	}
 	if !util.ApprovalSaved(l.profileDirs, "gw", gh299Key) {
-		t.Fatal("the saved approval was dropped while it still waits")
+		t.Fatal("the saved approval was dropped although it was never recorded")
 	}
 }

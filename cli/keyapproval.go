@@ -18,7 +18,10 @@ const keyQuestionHint = `Claude Code will ask "Do you want to use this API key?"
 // back: the launch stops and names the one command that records a new answer —
 // unless that answer is already saved, waiting for the profile's open session
 // or launch to end (#299), in which case it is recorded here, before Claude
-// Code starts.
+// Code starts. A saved approval that cannot be recorded — the profile is in
+// use, or the file refuses a safe rewrite — stays saved whatever the file
+// holds for the key, and the launch stops rather than ask the person the
+// question ccmorph already holds the answer to.
 func (l *launcher) keyApproval(name, key string) bool {
 	home := filepath.Join(l.profileDirs, name)
 	saved := util.ApprovalSaved(l.profileDirs, name, key)
@@ -32,9 +35,16 @@ func (l *launcher) keyApproval(name, key string) bool {
 		return true
 	}
 	err := util.ApproveKey(l.profileDirs, name, key)
-	if err != nil && state == util.KeyRefused {
+	if err != nil && saved {
+		// The saved approval could not be recorded, whether the file holds a
+		// refusal or no answer yet. It stays saved for the launch that follows,
+		// and nothing starts under it (#299).
 		if errors.Is(err, util.ErrProfileInUse) {
-			l.err("the approval `ccmorph login " + name + "` saved for the API key of '" + name + "' waits for the open session or launch of '" + name + "' to end; until it is recorded Claude Code would open its login menu, so nothing started. Close that session, then: ccmorph run " + name)
+			would := "open its login menu"
+			if state == util.KeyUnanswered {
+				would = "ask \"Do you want to use this API key?\" — the highlighted No turns the key off"
+			}
+			l.err("the approval `ccmorph login " + name + "` saved for the API key of '" + name + "' waits for the open session or launch of '" + name + "' to end; until it is recorded Claude Code would " + would + ", so nothing started. Close that session, then: ccmorph run " + name)
 		} else {
 			l.err("could not record the approval `ccmorph login " + name + "` saved for the API key of '" + name + "': " + err.Error() + "; nothing started.")
 		}
