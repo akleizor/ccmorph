@@ -734,7 +734,8 @@ Native Claude help: ccmorph run <profile> --help`},
 Claude account: sign in to Claude with your browser.
   Claude token: a long-lived token for scripts/CI; quota cannot read plan usage.
   API key: credential presented to Anthropic or a gateway, checked with that
-  endpoint before the profile is saved.
+  endpoint before the profile is saved. The provider list opens with Anthropic
+  itself, then known gateways.
 
 Credentials are hidden while typing. Ctrl-C cancels setup.`},
 	"config": {"ccmorph config [profile]", `Choose what to change: model and reasoning, or connection/sign-in details.

@@ -197,7 +197,7 @@ def test_add_done_messages_use_display_names(box):
     out = box.run('add', 't1', answer='2\nsk-ant-oat01-pasted-example-fixture-not-real-00000\n')
     assert out.returncode == 0, out.stderr
     assert 'Added t1 (Claude token)' in out.stdout
-    out = box.run('add', 'k1', answer='3\ncustom\nsecret-key\n\n')
+    out = box.run('add', 'k1', answer='3\ncustom\n\nsecret-key\n')
     assert out.returncode == 0, out.stderr
     assert 'Added k1 (API key → api.anthropic.com)' in out.stdout
     asked = out.stdout + out.stderr

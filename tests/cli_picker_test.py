@@ -45,7 +45,10 @@ printf '%s\\n' "$MODELS"
 '''
 
 # Selects by prompt argv: FZF_SPEC holds `prompt-substring=row-value` lines.
+# --version answers before anything is logged: the core probes it to decide
+# which flags the installed fzf understands, and that probe is not a selection.
 FAKE_FZF = '''#!/bin/sh
+if [ "$1" = --version ]; then printf '0.75.0 (fake)\\n'; exit 0; fi
 rows=$(cat)
 printf 'ARGS %s\\nROWS %s\\n' "$*" "$rows" >> "$FZF_LOG"
 prompt=""; previous=""
@@ -588,6 +591,63 @@ class PickerTTYTest(unittest.TestCase):
         self.assertIsNone(self.field('demo', 'model'))
         self.assertIsNone(self.field('demo', 'effort'))
 
+    def test_add_apikey_lists_anthropic_first_and_asks_only_for_the_key(self):
+        env = self.env(fzf=True)
+        self.spec('Provider=anthropic')
+        rc, out, missed = run_pty('ccmorph add demo', env, [
+            (b'Sign-in method', b'\x1b[B' * 2 + b'\r'),  # API key — Anthropic or a gateway
+            (b'API key for demo (Anthropic) (hidden):', b'sk-ant-fixture\n'),
+        ])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        # The provider list names Anthropic itself, first, ahead of every
+        # gateway: the sign-in menu promises "Anthropic or a gateway" (#278).
+        rows = (self.tmp / 'fzf.log').read_text().split('ROWS ', 1)[1]
+        first = rows.splitlines()[0]
+        self.assertEqual(first.split('\t')[0], 'anthropic')
+        self.assertIn('Anthropic', first)
+        self.assertIn('api.anthropic.com', first)
+        # A list that may outgrow its window is reachable end to end, says what
+        # is hidden, and grows to fit when the terminal allows it.
+        log = (self.tmp / 'fzf.log').read_text()
+        for flag in ('--prompt Provider — demo>', '--cycle', '--scrollbar',
+                     'home:first,end:last', '--height ~-1'):
+            self.assertIn(flag, log)
+        # The row asks for the key only, named for its service: no address, no
+        # tier mapping. The key is checked against Anthropic's own address only.
+        self.assertIn('API key for demo (Anthropic)', out)
+        self.assertNotIn('Base URL', out)
+        self.assertEqual(self.field('demo', 'type'), 'apikey')
+        self.assertEqual(self.field('demo', 'api_key'), 'sk-ant-fixture')
+        self.assertIsNone(self.field('demo', 'base_url'))
+        self.assertNotIn('sk-ant-fixture', out)
+        log = (self.tmp / 'curl.log').read_text()
+        self.assertIn('https://api.anthropic.com', log)
+        self.assertEqual(log.count('https://'), log.count('https://api.anthropic.com'))
+        self.assertIn('API key → api.anthropic.com', out)
+        self.assertIn('Next: ccmorph run demo', out)
+
+    def test_typing_anthropic_ranks_the_anthropic_row_first(self):
+        real_fzf = shutil.which('fzf')
+        if not real_fzf:
+            self.skipTest('fzf is not installed; numbered fallback covered separately')
+        env = self.env(fzf=True)
+        (self.tmp / 'bin/fzf').unlink()
+        env['PATH'] = str(Path(real_fzf).parent) + os.pathsep + env['PATH']
+        rc, out, missed = run_pty('ccmorph add demo', env, [
+            (b'Sign-in method', b'\x1b[B' * 2 + b'\r'),
+            (b'Provider', b'anthropic\r'),  # filter the list, accept the top match
+            (b'API key for demo (Anthropic) (hidden):', b'sk-ant-real\n'),
+        ])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        # The top match of "anthropic" is Anthropic itself, not a gateway whose
+        # URL merely contains the word (#278).
+        self.assertEqual(self.field('demo', 'api_key'), 'sk-ant-real')
+        self.assertIsNone(self.field('demo', 'base_url'))
+        self.assertNotIn('sk-ant-real', out)
+        self.assertIn('API key → api.anthropic.com', out)
+
     def test_default_picker_hides_internal_action_values(self):
         env = self.env(fzf=True)
         self.profile()
@@ -733,10 +793,15 @@ class PickerTTYTest(unittest.TestCase):
         env = self.env(fzf=True)
         env['ROWS'] = 'alpha\tFirst\tDescription\nbeta\tSecond\tDescription'
         command = 'picked=$(ccm_ui_select native "Native choices" "$ROWS"); rc=$?; print -r -- "RESULT=$picked"; exit $rc'
+        # ↑ at the first row and ↓ at the last stay put, as they always did;
+        # Home/End put either end one key away (#278).
         cases = [(b'\r', 0, 'alpha'), (b'\x1b[A\r', 0, 'alpha'),
                  (b'\x1b[B\r', 0, 'beta'), (b'\x1bOB\r', 0, 'beta'),
                  (b'\x1b[B\x1b[A\r', 0, 'alpha'), (b'\x1b', 1, ''),
-                 (b'\x03', 130, ''), (b'\x04', 1, '')]
+                 (b'\x03', 130, ''), (b'\x04', 1, ''),
+                 (b'\x1b[B\x1b[B\r', 0, 'beta'),
+                 (b'\x1b[F\r', 0, 'beta'), (b'\x1bOF\r', 0, 'beta'),
+                 (b'\x1b[F\x1b[H\r', 0, 'alpha')]
         for keys, expected_rc, value in cases:
             with self.subTest(keys=keys):
                 rc, out, missed = run_pty(command, env, [(b'Esc Cancel', keys)])
@@ -756,8 +821,27 @@ class PickerTTYTest(unittest.TestCase):
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
         self.assertIn('RESULT=9', out)
+        # A window that cuts rows says so at each edge, in rows, not just by
+        # stopping (#278): the list opens announcing what follows below it...
+        self.assertIn('↓ 9 more', out)
+        # ...and once it reaches the bottom, what sits above.
+        self.assertIn('↑ 9 more', out)
         self.assertTrue(all(int(n) <= 7 for n in re.findall(r'\x1b\[(\d+)A', out)), out)
         self.assertFalse((self.tmp / 'fzf.log').exists())
+
+    def test_native_fixed_menu_in_a_tiny_terminal_still_says_the_list_is_cut(self):
+        env = self.env(fzf=True)
+        env['ROWS'] = '\n'.join(f'{i}\tOption {i}' for i in range(10))
+        rc, out, missed = run_pty(
+            'picked=$(ccm_ui_select native "Native choices" "$ROWS") || exit $?; print -r -- "RESULT=$picked"',
+            env, [(b'Esc Cancel', b'\x1b[F\r')], size=(6, 80))
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertIn('RESULT=9', out)
+        # Too short for the "N more" edge lines, the footer carries the position
+        # in the whole list instead (#278).
+        self.assertIn('1/10', out)
+        self.assertIn('10/10', out)
 
     def test_native_fixed_menu_preserves_no_color_and_aligns_descriptions(self):
         env = {**self.env(fzf=True), 'NO_COLOR': '1',

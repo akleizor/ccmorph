@@ -791,6 +791,45 @@ test_set_model_interactively_saves_the_chosen_id() {
   return $rc
 }
 
+# An fzf without a scrollbar (before 0.36) must not hide rows silently: the
+# window is sized to the list when the terminal allows, and the header says so
+# when it cannot (#278).
+test_search_picker_on_an_old_fzf_never_hides_rows_silently_issue_278() {
+  local test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'if [ "$1" = --version ]; then echo 0.29.0; exit 0; fi' \
+    'for a do printf "%s\n" "$a"; done > "$HOME/fzf.args"' \
+    'head -n 1' > "$HOME/bin/fzf"
+  chmod +x "$HOME/bin/fzf"
+  source "$CCMORPH_SOURCE"
+  local rc=0 picked i
+  local -a short long
+  for i in {1..10}; do short+=("r$i"$'\t'"Row $i"); done
+  for i in {1..30}; do long+=("r$i"$'\t'"Row $i"); done
+
+  picked=$(TERM=xterm-256color ccmorph _ui select search Pick "${(F)short}" 2>/dev/null)
+  [[ "$picked" == r1 ]] || { print -u2 -- "the first offered row must be picked (got: $picked)"; rc=1 }
+  assert_contains "$(<"$HOME/fzf.args")" $'--height\n15\n' \
+    'a list that fits must get a window of rows plus the five lines fzf spends' || rc=1
+  assert_contains "$(<"$HOME/fzf.args")" $'--header\n↑/↓ Move' \
+    'a list that fits needs no cut warning' || rc=1
+  assert_not_contains "$(<"$HOME/fzf.args")" 'More rows than fit here' \
+    'a list that fits must not claim rows are cut' || rc=1
+  assert_not_contains "$(<"$HOME/fzf.args")" '--scrollbar' \
+    'an old fzf must not be given the scrollbar flag' || rc=1
+
+  picked=$(TERM=xterm-256color ccmorph _ui select search Pick "${(F)long}" 2>/dev/null)
+  assert_contains "$(<"$HOME/fzf.args")" $'--height\n23\n' \
+    'a list the terminal cannot hold gets the whole terminal' || rc=1
+  assert_contains "$(<"$HOME/fzf.args")" $'--header\nMore rows than fit here:' \
+    'a cut list must say rows are cut' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
 # The five levels are Claude Code's own fixed enum, so this picker needs no
 # endpoint call -- and must not make one.
 test_set_effort_interactively_offers_the_engine_levels() {
@@ -2195,6 +2234,34 @@ test_add_apikey_preset_fills_endpoint_and_tiers() {
   return $rc
 }
 
+test_add_apikey_lists_anthropic_first() {
+  # The sign-in menu promises "Anthropic or a gateway", so the provider list must
+  # name Anthropic itself — first, not as the blank default of Custom endpoint's
+  # last question (#278). Choosing it asks for the key only: no address, no tier
+  # mapping, no base_url written (Claude Code's own default endpoint).
+  local test_home rc=0 out actual
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  source "$CCMORPH_SOURCE"
+  command cp "$REPO_ROOT/share/provider-presets.tsv" "$HOME/.config/ccmorph/share/"
+  out=$(ccmorph add anth <<< $'3\nanthropic\nsk-an\n' 2>&1)
+  actual="$(<"$HOME/.config/ccmorph/anth.conf")"
+  assert_contains "$actual" 'type=apikey' 'the Anthropic row must make an apikey profile' || rc=1
+  assert_contains "$actual" 'api_key=sk-an' 'the key must be saved' || rc=1
+  assert_not_contains "$actual" 'base_url=' 'Anthropic needs no address' || rc=1
+  assert_not_contains "$actual" 'env.ANTHROPIC_DEFAULT' 'Anthropic maps no tiers' || rc=1
+  assert_contains "$out" 'Added anth (API key → api.anthropic.com)' 'add must name the kind and the endpoint' || rc=1
+  # First row of the provider list, ahead of every gateway preset.
+  [[ "${out%% 2) DeepSeek*}" == *" 1) Anthropic"* ]] || {
+    print -u2 -- 'the provider list must open with Anthropic as row 1'
+    rc=1
+  }
+  assert_contains "$out" 'API key for anth (Anthropic) (hidden): ' 'the key prompt must name Anthropic' || rc=1
+  assert_not_contains "$out" 'Base URL' 'the Anthropic row asks for no address' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_add_apikey_native_endpoint_skips_adapter() {
   local test_home
   test_home=$(mktemp -d)
@@ -2202,9 +2269,15 @@ test_add_apikey_native_endpoint_skips_adapter() {
   source "$CCMORPH_SOURCE"
 
   # Default curl stub returns 200 for -w probes — the endpoint speaks
-  # /v1/messages natively, so no adapter should be set.
+  # /v1/messages natively, so no adapter should be set. The address comes
+  # before the key so the key prompt can name the service it is for (#278).
   local out
-  out=$(ccmorph add nativegw <<< $'3\ncustom\nnative-key\nhttp://native.invalid\n') || {
+  out=$(ccmorph add nativegw <<< $'3\ncustom\nhttp://native.invalid\nnative-key\n' 2>&1) || {
+    rm -rf "$test_home"
+    return 1
+  }
+  assert_contains "$out" 'API key for nativegw (http://native.invalid) (hidden): ' \
+    'the key prompt must name the service the key is for' || {
     rm -rf "$test_home"
     return 1
   }
@@ -2252,7 +2325,7 @@ test_add_apikey_model_level_404_is_native() {
   _stub_probe_response 404 '{"type":"error","error":{"type":"not_found_error","message":"model: probe"}}'
 
   local out rc=0
-  out=$(ccmorph add nativemodel404 <<< $'3\ncustom\nk\nhttp://native404.invalid\n') || {
+  out=$(ccmorph add nativemodel404 <<< $'3\ncustom\nhttp://native404.invalid\nk\n') || {
     rm -rf "$test_home"
     return 1
   }
@@ -8281,7 +8354,7 @@ test_add_context_refresh_is_background_and_declared_only() {
   local _CCMORPH_LIBEXEC_DIR="$_CCMORPH_LIBEXEC_DIR"
   fake_context_refresh
   local out rc=0
-  out=$(print -l apikey custom sk-test-not-real 'http://gw.invalid' '' | ccmorph add gw 2>&1)
+  out=$(print -l apikey custom 'http://gw.invalid' sk-test-not-real '' | ccmorph add gw 2>&1)
   assert_contains "$out" 'Added' 'adding a gateway must still succeed' || rc=1
   local scheduled=""
   local -i i
@@ -8433,7 +8506,7 @@ test_add_gateway_profile_offers_probe() {
   export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
   source "$CCMORPH_SOURCE"
   local out rc=0
-  out=$(print -l apikey custom sk-test-not-real 'http://gw.invalid' '' | ccmorph add gw 2>&1)
+  out=$(print -l apikey custom 'http://gw.invalid' sk-test-not-real '' | ccmorph add gw 2>&1)
   # The nudge runs against an unreachable fake gateway, so it may produce no
   # window-related output — that is correct: a down endpoint is not an error.
   # Verify the profile was created and the nudge did not abort the add.
@@ -8451,7 +8524,7 @@ test_add_native_profile_stays_quiet_about_probe() {
   export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
   source "$CCMORPH_SOURCE"
   local out rc=0
-  out=$(print -l apikey custom sk-test-not-real '' '' | ccmorph add nat 2>&1)
+  out=$(print -l apikey custom '' sk-test-not-real '' | ccmorph add nat 2>&1)
   [[ "$out" == *"ccmorph probe"* ]] \
     && { print -u2 -- 'a native profile must not be nudged to probe'; rc=1 }
   rm -rf "$test_home"
@@ -8468,7 +8541,7 @@ test_add_apikey_profile_approves_its_key() {
   export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
   source "$CCMORPH_SOURCE"
   local key='sk-issue-236-test-key' out rc=0
-  out=$(print -l apikey custom "$key" '' '' | ccmorph add nat 2>&1)
+  out=$(print -l apikey custom '' "$key" '' | ccmorph add nat 2>&1)
   python3 - "$HOME/.config/ccmorph/profiles/nat/.claude.json" "${key[-20,-1]}" <<'PYKEY' || rc=1
 import json, sys
 doc = json.load(open(sys.argv[1]))
@@ -8483,7 +8556,7 @@ PYKEY
   # A file ccmorph cannot safely rewrite keeps the question, so add says which
   # answer to give instead of leaving No highlighted as the only guidance.
   printf '%s\n' '{"customApiKeyResponses":"not-an-object"}' > "$HOME/.claude.json"
-  out=$(print -l apikey custom "$key" '' '' | ccmorph add asked 2>&1)
+  out=$(print -l apikey custom '' "$key" '' | ccmorph add asked 2>&1)
   [[ "$out" == *"Added"* ]] || { print -u2 -- 'add must still succeed when the answer cannot be recorded'; rc=1; }
   assert_contains "$out" 'choose Yes' \
     'add must name the answer when it cannot record it' || rc=1
@@ -8502,7 +8575,7 @@ test_add_cleans_a_pasted_credential_issue_254() {
   export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
   source "$CCMORPH_SOURCE"
   # Quotes and surrounding spaces come off an API key, and the profile saves.
-  out=$(print -l apikey custom '  "sk-quoted-not-real"  ' http://gw.invalid | ccmorph add trim 2>&1)
+  out=$(print -l apikey custom http://gw.invalid '  "sk-quoted-not-real"  ' | ccmorph add trim 2>&1)
   [[ "$(<"$HOME/.config/ccmorph/trim.conf")" == *$'api_key=sk-quoted-not-real\n'* ]] \
     || { print -u2 -- 'a quoted, space-padded key must be stored clean'; rc=1 }
   # The token prompt cleans the same way. ($(<file) drops the file's final
@@ -8511,9 +8584,9 @@ test_add_cleans_a_pasted_credential_issue_254() {
   [[ "$(<"$HOME/.config/ccmorph/tok.conf")" == *$'\ntoken=sk-ant-oat01-example-token-0123456789abcdef' ]] \
     || { print -u2 -- 'a quoted, space-padded token must be stored clean'; rc=1 }
   # Internal whitespace is refused at the key prompt itself: the re-prompted
-  # key is the next line, and the Base URL question still comes after a good
-  # key — not between a bad one and its refusal.
-  out=$(print -l apikey custom 'sk bad' 'sk-good' http://gw.invalid | ccmorph add ws 2>&1)
+  # key is the next line, and the endpoint question is asked once, before the
+  # key — not again between a bad key and its refusal.
+  out=$(print -l apikey custom http://gw.invalid 'sk bad' 'sk-good' | ccmorph add ws 2>&1)
   assert_contains "$out" 'api key contains whitespace' \
     'internal whitespace must be named at the key prompt' || rc=1
   [[ "$(<"$HOME/.config/ccmorph/ws.conf")" == *$'api_key=sk-good\n'* ]] \
@@ -8544,8 +8617,8 @@ case "$conf" in
   *) print -- "{\"object\":\"list\",\"data\":[]}"; print -- "__CCMORPH_STATUS__200" ;;
 esac'
   # A refused key is named in the same step, and the re-entered one is checked
-  # and saved — the Base URL is not asked twice.
-  out=$(print -l apikey custom sk-rejected-not-real http://gw.invalid sk-live-not-real \
+  # and saved — the endpoint is not asked twice.
+  out=$(print -l apikey custom http://gw.invalid sk-rejected-not-real sk-live-not-real \
     | ccmorph add gw 2>&1)
   assert_contains "$out" 'http://gw.invalid rejected the API key (HTTP 401)' \
     'a refused key must be reported in the add step, not at launch' || rc=1
@@ -8567,7 +8640,7 @@ esac'
   assert_contains "$(cat "$HOME/curl.stdin")" 'x-api-key: sk-live-not-real' \
     'the key must travel through the curl stdin config' || rc=1
   # A native add checks api.anthropic.com with the version header doctor sends.
-  out=$(print -l apikey custom sk-native-not-real '' | ccmorph add nat 2>&1)
+  out=$(print -l apikey custom '' sk-native-not-real | ccmorph add nat 2>&1)
   assert_contains "$out" 'api.anthropic.com accepted the API key (HTTP 200)' \
     'a native key must be checked against api.anthropic.com' || rc=1
   assert_contains "$(cat "$HOME/curl.argv")" 'https://api.anthropic.com/v1/models?limit=1000' \
@@ -8575,14 +8648,14 @@ esac'
   assert_contains "$(cat "$HOME/curl.argv")" 'anthropic-version: 2023-06-01' \
     'the native check must send the version header, like doctor' || rc=1
   # Cancelling at the re-prompt (EOF) saves nothing — no half-profile.
-  out=$(print -l apikey custom sk-rejected-not-real http://gw.invalid | ccmorph add die 2>&1)
+  out=$(print -l apikey custom http://gw.invalid sk-rejected-not-real | ccmorph add die 2>&1)
   rc_die=$?
   [[ $rc_die -ne 0 ]] || { print -u2 -- 'a cancelled re-entry must fail the add'; rc=1 }
   [[ ! -e "$HOME/.config/ccmorph/die.conf" ]] \
     || { print -u2 -- 'a cancelled re-entry must save nothing'; rc=1 }
   # An endpoint that does not answer is not a verdict on the key: said so, saved.
   write_curl_mock 'exit 1'
-  out=$(print -l apikey custom sk-quiet-not-real http://private.invalid | ccmorph add quiet 2>&1)
+  out=$(print -l apikey custom http://private.invalid sk-quiet-not-real | ccmorph add quiet 2>&1)
   assert_contains "$out" 'http://private.invalid did not answer, so the API key was not checked' \
     'a silent endpoint must be reported as not-checked' || rc=1
   assert_contains "$out" 'Added quiet' 'an unanswered check must not block the add' || rc=1
@@ -10580,6 +10653,7 @@ run_test test_proxy_context_limit_reaches_claude
 # Adapter choice is automatic at launch; add only persists profile credentials.
 run_test test_add_never_asks_how_to_reach_the_endpoint
 run_test test_add_apikey_preset_fills_endpoint_and_tiers
+run_test test_add_apikey_lists_anthropic_first
 run_test test_add_apikey_native_endpoint_skips_adapter
 run_test test_add_apikey_model_level_404_is_native
 # add does not persist adapter decisions; launch performs automatic compatibility handling.
@@ -10642,6 +10716,7 @@ run_test test_the_listing_refuses_words_after_the_verb
 run_test test_model_command_sets_the_profiles_default_model
 run_test test_set_model_interactively_saves_the_chosen_id
 run_test test_set_effort_interactively_offers_the_engine_levels
+run_test test_search_picker_on_an_old_fzf_never_hides_rows_silently_issue_278
 run_test test_the_picker_without_fzf_names_the_direct_command_and_the_choices
 run_test test_saved_default_model_beats_the_confs_bootstrap_model_at_launch
 run_test test_explicit_model_flag_beats_the_saved_default
