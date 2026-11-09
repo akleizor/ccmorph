@@ -353,7 +353,7 @@ func (l *launcher) runVerb(args []string) int {
 	}
 	if account == "" && l.active() == "" && !hasI {
 		if len(l.confNames()) == 0 {
-			l.err("no profiles yet — run: ccmorph add <name>")
+			l.err(noProfilesMsg)
 			return 1
 		}
 		l.err("no default profile set — run: ccmorph use <profile> or ccmorph run -i")

@@ -630,6 +630,37 @@ def test_an_unknown_profile_with_none_saved_points_to_add(box, argv):
     assert "no profile 'zzz'. No profiles yet — run: ccmorph add <name>" in out, out
 
 
+# --- a fresh install hears one sentence from every command -------------------
+
+# GH-269: with no profiles, seven commands answered seven different ways. The
+# sentence is now one, never indented, and each command keeps the exit status
+# its own nature asks for (a report succeeds, a refused act fails).
+NO_PROFILES_YET = 'No profiles yet — run: ccmorph add <name>'
+
+FRESH_INSTALL_ARGV = [
+    (['list'], 0), (['quota'], 0), (['probe'], 0),
+    # a valid option is still a sweep of nothing; an invalid one stays a usage error
+    (['probe', '--check'], 0), (['probe', '--declared-only'], 0), (['probe', '--model', 'm'], 0),
+    (['run'], 1), (['inspect'], 1), (['config'], 1), (['models'], 1),
+    (['context'], 1), (['doctor', 'nosuch'], 1),
+]
+
+
+@pytest.mark.parametrize('argv, code', FRESH_INSTALL_ARGV,
+                         ids=[' '.join(argv) for argv, _ in FRESH_INSTALL_ARGV])
+def test_a_fresh_install_hears_one_sentence_from_every_command_gh_269(box, argv, code):
+    result = box.run(*argv)
+    out = result.stdout + result.stderr
+    lines = [ln for ln in out.splitlines() if NO_PROFILES_YET in ln]
+    assert lines, out
+    assert all(not ln.startswith((' ', '\t')) for ln in lines), lines
+    assert result.returncode == code, out
+    # The private wordings the issue lists are gone.
+    for gone in ('No profiles. Run:', 'no saved profiles.', 'no compatible profiles',
+                 'profiles tried: )', 'Nothing discovered'):
+        assert gone not in out, gone
+
+
 def test_add_and_rm_without_a_name_print_usage(box):
     added = box.run('add')
     assert added.returncode != 0

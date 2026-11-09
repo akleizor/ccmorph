@@ -18,6 +18,11 @@ import (
 
 const prog = "context-probe"
 
+// NoProfilesMsg is the one sentence a fresh install hears from every command
+// that needs a profile. The cli says it for its own verbs and the probe says it
+// for a sweep with nothing to sweep, so it is written once, here.
+const NoProfilesMsg = "No profiles yet — run: ccmorph add <name>"
+
 const usageText = `usage: ccmorph probe [profile] [options]
 options: [-h] [--profile PROFILES] [--model MODELS] [--check] [--jobs JOBS]
          [--deadline SECONDS] [--probe-timeout SECONDS] [--allow-inference]
@@ -192,6 +197,23 @@ func run(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
 			return 1
 		}
 	}
+	// A run that names no profile sweeps every routed one; when none exists
+	// there is nothing to probe, which is not a failure. This is after the
+	// arguments are parsed and checked, so an option error still exits 2 and
+	// every valid option hears the same answer. `tried` is also what the
+	// empty-result report names, so a sweep never lists nothing.
+	tried := profiles
+	if tried == nil {
+		tried = routedProfiles()
+	}
+	if len(tried) == 0 {
+		if profiles == nil && len(confPaths(nil)) == 0 {
+			fmt.Fprintln(errw, NoProfilesMsg)
+		} else {
+			fmt.Fprintln(errw, "Nothing to probe.")
+		}
+		return 0
+	}
 	mode := "declared-only"
 	switch {
 	case a.probeAll:
@@ -270,7 +292,7 @@ func run(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
 			fmt.Fprintf(errw, "  %s\n", line)
 		}
 		if len(notes) == 0 {
-			fmt.Fprintf(errw, "  no route produced a model listing (profiles tried: %s)\n", strings.Join(profiles, ", "))
+			fmt.Fprintf(errw, "  no route produced a model listing (profiles tried: %s)\n", strings.Join(tried, ", "))
 		}
 		if len(baseline) > 0 {
 			fmt.Fprintf(errw, "%d saved limit(s) untouched.\n", len(baseline))

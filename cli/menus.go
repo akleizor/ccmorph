@@ -57,9 +57,12 @@ func (l *launcher) profileRows(active string, types []string) []string {
 func (l *launcher) menuProfile(types ...string) (string, bool) {
 	rows := l.profileRows(l.active(), types)
 	if len(rows) == 0 {
-		if len(types) > 0 {
+		switch {
+		case len(l.confNames()) == 0:
+			l.err(noProfilesMsg)
+		case len(types) > 0:
 			l.err("no compatible profiles for this command. Run: ccmorph add <profile>")
-		} else {
+		default:
 			l.err("no saved profiles. Run: ccmorph add <profile>")
 		}
 		return "", false

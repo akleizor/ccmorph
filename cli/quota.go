@@ -95,6 +95,12 @@ func (l *launcher) quota(args []string) int {
 		}
 		names = []string{only}
 	}
+	// The core's stdin contract has no next step in it; the sentence is the
+	// cli's to say. JSON keeps its machine shape either way.
+	if len(names) == 0 && !asJSON {
+		fmt.Println(noProfilesMsg)
+		return 0
+	}
 	var in strings.Builder
 	row := func(f ...string) { in.WriteString(strings.Join(f, "\t") + "\n") }
 	for _, n := range names {
