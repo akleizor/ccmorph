@@ -537,8 +537,15 @@ func (l *launcher) envVerb(args []string) int {
 	return 0
 }
 
-// routeEnv is `ccmorph _route_env <profile>`: _env, plus a started provider bridge
-// and the handle that retires it.
+// routeEnv is `ccmorph _route_env <profile>`: _env, plus the profile's shared
+// bridge and the handle that retires it. The route joins the bridge a session
+// of the profile runs, or starts it as the shared one — a second, private
+// bridge on the same auth dir would spend the single-use refresh token twice
+// and sign the profile out (#300). This process exits with the env, so a
+// holder process owns the route's use of the bridge until the route retires:
+// without it, the last session out or a sibling route's retirement would stop
+// the bridge under a live route. A hold that never lands refuses the route
+// outright rather than leave it unprotected.
 func (l *launcher) routeEnv(args []string) int {
 	name := ""
 	if len(args) > 0 {
@@ -558,32 +565,42 @@ func (l *launcher) routeEnv(args []string) int {
 	if f["type"] != "provider" {
 		return l.envVerb(args)
 	}
-	if !l.providerStart(name, false) {
+	if !l.providerStart(name) {
+		return 1
+	}
+	holder, held := l.routeHold(filepath.Join(l.dir, "auth"), name)
+	if !held {
+		l.providerStop()
+		l.err("could not keep a hold on the bridge for '" + name + "'; the route was not started — try again")
 		return 1
 	}
 	if l.envVerb(args) != 0 {
+		util.EndRouteHold(holder, util.BridgeFiles(filepath.Join(l.dir, "auth"), name)[2])
 		l.providerStop()
 		return 1
 	}
 	fmt.Println("ANTHROPIC_BASE_URL=http://127.0.0.1:" + l.providerPort)
 	fmt.Println("ANTHROPIC_API_KEY=" + l.providerKey)
-	fmt.Println("CCMORPH_ROUTE_HANDLE=provider|" + l.providerPID + "|" + l.providerTD + "|" + l.providerAuth)
+	fmt.Println("CCMORPH_ROUTE_HANDLE=provider|" + l.providerPID + "|" + l.providerTD + "|" + l.providerAuth + "|" + holder)
 	return 0
 }
 
 // routeStop retires a route _route_env started; only a provider ever opens one.
+// The handle names the profile's shared bridge and the holder that owns the
+// route's use of it, so retiring it leaves a bridge a session or another route
+// still uses running (#300).
 func (l *launcher) routeStop(args []string) int {
 	if len(args) == 0 || !strings.HasPrefix(args[0], "provider|") {
 		return 0
 	}
 	parts := strings.Split(args[0], "|")
-	for len(parts) < 4 {
+	for len(parts) < 5 {
 		parts = append(parts, "")
 	}
 	if !digits.MatchString(parts[1]) {
 		return 1
 	}
-	l.providerPID, l.providerTD, l.providerAuth = parts[1], parts[2], parts[3]
+	l.providerPID, l.providerTD, l.providerAuth, l.providerHolder = parts[1], parts[2], parts[3], parts[4]
 	l.providerStop()
 	return 0
 }

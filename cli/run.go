@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"os"
 	"os/exec"
@@ -288,7 +289,7 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 		l.stopForeignBridge(name, isProvider)
 		if isProvider {
 			if l.providerActive != name {
-				if !l.providerStart(name, true) {
+				if !l.providerStart(name) {
 					return fail()
 				}
 			}
@@ -1044,11 +1045,10 @@ func (l *launcher) providerStartRefusal(name string) string {
 	return ""
 }
 
-// providerStart starts or joins the profile's bridge. shared is false only for
-// _route_env, whose process exits while the route lives and so cannot hold the
-// users lock. shortcut: such a route gets a private bridge beside any shared
-// one; share it once a route has a long-lived owner.
-func (l *launcher) providerStart(name string, shared bool) bool {
+// providerStart starts or joins the profile's shared bridge, recording the
+// handle every session of the profile shares. A route env joins it too, and a
+// holder process keeps the route's use of it until the route retires (#300).
+func (l *launcher) providerStart(name string) bool {
 	if why := l.providerStartRefusal(name); why != "" {
 		l.err(why)
 		return false
@@ -1079,22 +1079,15 @@ func (l *launcher) providerStart(name string, shared bool) bool {
 		}
 		return pid, port, key, tmp, true
 	}
-	if !shared {
-		var ok bool
-		if l.providerPID, l.providerPort, l.providerKey, l.providerTD, ok = start(); !ok {
-			return false
-		}
-	} else {
-		b, ok, err := util.AcquireBridge(root, name, start)
-		if err != nil && !errors.Is(err, util.ErrBridgeNotStarted) {
-			l.err(err.Error())
-		}
-		if !ok {
-			return false
-		}
-		l.providerBridge = b
-		l.providerPID, l.providerPort, l.providerKey, l.providerTD = b.PID, b.Port, b.Key, b.TmpDir
+	b, ok, err := util.AcquireBridge(root, name, start)
+	if err != nil && !errors.Is(err, util.ErrBridgeNotStarted) {
+		l.err(err.Error())
 	}
+	if !ok {
+		return false
+	}
+	l.providerBridge = b
+	l.providerPID, l.providerPort, l.providerKey, l.providerTD = b.PID, b.Port, b.Key, b.TmpDir
 	l.providerAuth, l.providerActive = auth, name
 	return true
 }
@@ -1108,15 +1101,54 @@ func (l *launcher) stopForeignBridge(name string, isProvider bool) {
 	}
 }
 
+// routeHold spawns the holder that owns a route's use of the shared bridge it
+// runs on: a `util route-hold` process holding the users lock until the route
+// retires it. The route env process exits with its env, so without a holder
+// nothing owns the route's use — the last session out, or a sibling route's
+// retirement, would stop the bridge under a live route (#300). Ok is false
+// when the hold never lands: the route must then refuse, not run unprotected.
+func (l *launcher) routeHold(root, name string) (string, bool) {
+	users := util.BridgeFiles(root, name)[2]
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return "", false
+	}
+	defer pr.Close()
+	cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), "util", "route-hold", users)
+	// The holder outlives this process by design, so it keeps none of the
+	// caller's streams: a caller capturing _route_env's output (Remote Control,
+	// probe) reads until every writer is gone, and an inherited stderr would
+	// hold that read open past the env's exit — until a retirement registered
+	// only once the read returns (#300). Its one word is the readiness byte on
+	// its own pipe; its stdin and stderr are /dev/null.
+	cmd.Stdout = pw
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // outlive the env process and its terminal
+	if err := cmd.Start(); err != nil {
+		pw.Close()
+		return "", false
+	}
+	go cmd.Wait() // reap it; a holder this process leaves behind reparents to launchd
+	pw.Close()
+	one := make([]byte, 1)
+	pr.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if _, err := io.ReadFull(pr, one); err != nil || one[0] != '1' {
+		cmd.Process.Kill()
+		return "", false
+	}
+	return strconv.Itoa(cmd.Process.Pid), true
+}
+
 func (l *launcher) providerStop() {
 	if l.providerBridge != nil {
 		l.providerBridge.Release(l.providerAuth)
 		l.providerBridge = nil
 	} else if l.providerPID+l.providerTD+l.providerAuth != "" {
-		pid, _ := strconv.Atoi(l.providerPID)
-		util.BridgeStop(pid, l.providerTD, l.providerAuth)
+		// No SharedBridge: the handle came from a route (_route_stop). Retire
+		// it — ending the route's hold first — without stopping a bridge a
+		// session of the profile still uses (#300).
+		util.RetireRoute(l.providerAuth, l.providerPID, l.providerTD, l.providerHolder)
 	}
-	l.providerPID, l.providerActive, l.providerPort, l.providerKey, l.providerTD, l.providerAuth = "", "", "", "", "", ""
+	l.providerPID, l.providerActive, l.providerPort, l.providerKey, l.providerTD, l.providerAuth, l.providerHolder = "", "", "", "", "", "", ""
 }
 
 func (l *launcher) logOrNull() string {

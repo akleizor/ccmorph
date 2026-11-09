@@ -3,11 +3,14 @@ package util
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // ErrBridgeNotStarted is AcquireBridge's answer when start failed; it has
@@ -202,3 +205,90 @@ func (b *SharedBridge) Release(authDir string) {
 	b.users.Close()
 	b.users = nil
 }
+
+// RetireRoute stops the bridge a route's handle names, but only once nothing
+// else uses it. The route's holder kept its use while the route ran, so ending
+// that hold is retirement's first act and the stop belongs to the last user
+// out — a session, or the last route (#300). The handle may also name a bridge
+// a replacement has already superseded: the record, not the handle, says which
+// bridge the profile runs now, and a retirement must not take the
+// replacement's record with the bridge it names.
+func RetireRoute(authDir, pid, tmp, holder string) {
+	if authDir == "" { // a handle without an auth directory names no bridge files
+		endHold(holder, "")
+		n, _ := strconv.Atoi(pid)
+		BridgeStop(n, tmp, "")
+		return
+	}
+	root, name := filepath.Dir(authDir), filepath.Base(authDir)
+	files := BridgeFiles(root, name)
+	endHold(holder, files[2])
+	if mu, err := lockFile(files[1], syscall.LOCK_EX); err == nil {
+		defer mu.Close()
+	}
+	if othersHold(files[2]) {
+		return
+	}
+	// A record naming another bridge means the handle's died and something
+	// started a replacement that the record now owns: stopping what the handle
+	// names could hit a reused PID, and removing the record would leave the
+	// replacement running beside the next acquire's bridge on one auth
+	// directory (#300). The handle's own leftovers are still its to take.
+	n, _ := strconv.Atoi(pid)
+	if raw, err := os.ReadFile(files[0]); err == nil {
+		if rpid, _, _, rtmp, ok := parseHandle(string(raw)); ok && (rpid != pid || rtmp != tmp) {
+			stopIfOurs(pid, tmp)
+			return
+		}
+	}
+	BridgeStop(n, tmp, authDir)
+	os.Remove(files[0])
+}
+
+// routeHold is `util route-hold <users-file>`: the holder behind a route's
+// ownership of the shared bridge it runs on. It takes the same shared lock a
+// session of the profile holds and keeps it until it is signaled, so the
+// bridge's stop owners — the last session out, a sibling route's retirement —
+// see the route's use and leave the bridge running. The hold dies with the
+// process: the kernel closes the lock.
+func routeHold(args []string, in io.Reader, out, errw io.Writer) int {
+	if len(args) != 1 {
+		fmt.Fprintln(errw, "usage: ccmorph-core util route-hold <users-file>")
+		return 2
+	}
+	f, err := lockFile(args[0], syscall.LOCK_SH)
+	if err != nil {
+		return 1
+	}
+	defer f.Close()
+	fmt.Fprint(out, "1") // the hold has landed
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, syscall.SIGTERM, syscall.SIGINT)
+	<-c
+	return 0
+}
+
+// endHold ends the holder a route's handle names and waits, briefly, for its
+// hold to lift: TERM, then poll until the holder is gone or the users lock it
+// held reads free. A holder this process has reaped stays a zombie until
+// Wait returns, so the lock, not the PID alone, must get the chance to say so.
+func endHold(holder, users string) {
+	n, err := strconv.Atoi(holder)
+	if err != nil || n <= 0 {
+		return
+	}
+	syscall.Kill(n, syscall.SIGTERM)
+	for range 200 { // ~2s
+		if syscall.Kill(n, 0) != nil {
+			return
+		}
+		if users != "" && !othersHold(users) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// EndRouteHold ends a route's hold without retiring anything: a route whose
+// env could not be built owns no use of the bridge it started.
+func EndRouteHold(holder, users string) { endHold(holder, users) }
