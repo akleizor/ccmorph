@@ -193,6 +193,9 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 			}
 		}
 	}
+	// What the person asked to run, before a send id or a saved default replaces
+	// it: the unserved-id check (#267) judges the request, not the derived id.
+	askedModel := explicit
 	target := defaultModel
 	if explicit != "" {
 		target = explicit
@@ -295,6 +298,24 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 		}
 		base, _ := envGet(penv, "ANTHROPIC_BASE_URL")
 		key := authKey(penv)
+		// A gateway that answers its listing knows what it serves. Refusing the
+		// request here keeps the failure before Claude opens, where the first
+		// message would otherwise fail with the gateway's own confusing words
+		// (#267). A --model given to `ccmorph run` is judged with or without
+		// --resume. `_ccm_launch -a ... --resume` is the relaunch entry point other
+		// tools call, whose unserved id still starts Claude Code, and an in-process
+		// hop already judged its model in cli/hop.go. A subcommand's --model belongs
+		// to claude's own verb.
+		if askedModel != "" && needsAdapter && !subcommand && (resume == "" || native) {
+			if cf, ok := l.readQuiet(name); ok {
+				if listing, ok := l.listing(base, key); ok {
+					if msg, refuse := util.ServedRefusal(listing, askedModel, cf["model_map"], name); refuse {
+						l.err(msg)
+						return fail()
+					}
+				}
+			}
+		}
 		if listing, ok := l.listing(base, key); ok {
 			if unsized, ok := try(l, "listing-has-unsized", func() bool { return util.ListingHasUnsized(l.conf(name), listing) }); !ok || unsized {
 				l.logInit()

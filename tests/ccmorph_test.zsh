@@ -1057,6 +1057,103 @@ test_set_model_refuses_a_flag_shaped_value() {
   return $rc
 }
 
+# GH-267: a gateway that answers its listing knows what it serves, so `set model`
+# must not save an unserved id silently -- the next session would fail at its
+# first message. The refusal names the id, the closest listed ids and every
+# served one, and the id is saved only when the person confirms it.
+test_set_model_refuses_an_unserved_id_and_saves_only_on_confirm_issue_267() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  fake_gateway
+  write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://gateway.invalid'
+  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
+  print -r -- '{"model":"kept-model"}' > "$HOME/.config/ccmorph/profiles/gw/settings.json"
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 err still
+  # zeta-chaat is one letter off zeta-chat: the closest-match list must name it.
+  err=$(printf 'n\n' | ccmorph set gw model zeta-chaat 2>&1) && {
+    print -u2 -- 'an unserved model id must be refused, not saved'
+    rc=1
+  }
+  assert_contains "$err" "'zeta-chaat' is not served by gw" \
+    'the refusal must name the id and the profile (got: $err)' || rc=1
+  assert_contains "$err" 'closest: zeta-chat' \
+    'the refusal must name the closest listed ids (got: $err)' || rc=1
+  assert_contains "$err" 'served: alpha-chat, zeta-chat' \
+    'the refusal must name every served id, chat-capable only (got: $err)' || rc=1
+  assert_not_contains "$err" 'embed-only' \
+    'a model the endpoint denies for chat is not offered as served' || rc=1
+  still=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("model"))' \
+    "$HOME/.config/ccmorph/profiles/gw/settings.json")
+  [[ "$still" == kept-model ]] || {
+    print -u2 -- "a refused model id must not overwrite the default (now: $still)"
+    rc=1
+  }
+  assert_not_contains "$(<"$HOME/.config/ccmorph/gw.conf")" 'zeta-chaat' \
+    'a refused model id must not be written to the conf' || rc=1
+
+  # The person's yes is the one way an unserved id is saved.
+  err=$(printf 'y\n' | ccmorph set gw model zeta-chaat 2>&1) || {
+    print -u2 -- "a confirmed unserved id must be saved (got: $err)"
+    rc=1
+  }
+  still=$(ccmorph get gw model 2>/dev/null)
+  [[ "$still" == zeta-chaat ]] || {
+    print -u2 -- "the confirmed id must be saved (got: $still)"
+    rc=1
+  }
+  rm -rf "$test_home"
+  return $rc
+}
+
+# GH-267: an unserved --model id must stop the launch before Claude Code opens.
+# Claude Code's own answer to a model it cannot reach is the wrong explanation
+# ("restricted by your organization's settings") plus a silent swap to another
+# model, so the session must never get far enough to print it: ccmorph refuses
+# with the same message `set` prints and the ids that are served.
+test_run_model_flag_refuses_an_unserved_id_before_claude_opens_issue_267() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  fake_gateway
+  write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://gateway.invalid'
+  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 out
+  : > "$CCMORPH_TEST_LOG"
+  out=$(_ccm_launch -a gw --model zeta-chaat 2>&1) && {
+    print -u2 -- 'an unserved --model id must stop the launch'
+    rc=1
+  }
+  assert_contains "$out" "'zeta-chaat' is not served by gw" \
+    'the refusal must name the id and the profile (got: $out)' || rc=1
+  assert_contains "$out" 'served: alpha-chat, zeta-chat' \
+    'the refusal must name the served ids (got: $out)' || rc=1
+  [[ ! -s "$CCMORPH_TEST_LOG" ]] || {
+    print -u2 -- 'claude must not open for an unserved model id, or it answers with its own wrong explanation'
+    rc=1
+  }
+  # Resuming a session does not excuse a --model the person typed: only a model
+  # carried over from the session is mapped to the default.
+  : > "$CCMORPH_TEST_LOG"
+  out=$(ccmorph run gw --resume existing-session --model zeta-chaat 2>&1) && {
+    print -u2 -- 'an unserved --model id must stop a --resume launch too'
+    rc=1
+  }
+  assert_contains "$out" "'zeta-chaat' is not served by gw" \
+    'the resume refusal must name the id and the profile (got: $out)' || rc=1
+  [[ "$(<"$CCMORPH_TEST_LOG")" != *existing-session* ]] || {
+    print -u2 -- 'claude must not open on --resume with an unserved --model id'
+    rc=1
+  }
+  rm -rf "$test_home"
+  return $rc
+}
+
 # `-i` for effort needs no endpoint call: the four levels are Claude Code's own
 # fixed enum, so the picker lists them directly.
 test_set_adapter_is_rejected_as_automatic() {
@@ -10547,6 +10644,8 @@ run_test test_effort_command_leaves_native_per_model_state_untouched
 run_test test_effort_command_sets_the_profiles_default_effort
 run_test test_effort_command_refuses_a_level_claude_code_would_drop
 run_test test_set_model_refuses_a_flag_shaped_value
+run_test test_set_model_refuses_an_unserved_id_and_saves_only_on_confirm_issue_267
+run_test test_run_model_flag_refuses_an_unserved_id_before_claude_opens_issue_267
 run_test test_set_adapter_is_rejected_as_automatic
 run_test test_effort_interactive_still_requires_a_real_profile
 run_test test_launch_sizes_without_waiting_on_the_network

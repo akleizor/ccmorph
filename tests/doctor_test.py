@@ -178,11 +178,16 @@ def test_doctor_reports_the_profile_default_model_whatever_its_origin(tmp_path):
     profile.mkdir(parents=True)
     profile_settings = profile / "settings.json"
 
+    # The listing serves every id this test saves, so the label is all that varies.
+    served = ",".join('{"id":"%s"}' % m for m in (
+        "saved", "global", "shared-pin", "profile-model", "conf-model", "native-model"))
+    listing = OK_CURL.replace('{"data":[]}', '{"data":[%s]}' % served)
+
     def effective(conf_text, profile_json):
         profile_settings.write_text(profile_json)
         (tmp_path / "state" / "demo.conf").parent.mkdir(exist_ok=True)
         (tmp_path / "state" / "demo.conf").write_text(conf_text)
-        result, path, _ = run_doctor(tmp_path, conf_text, OK_CURL)
+        result, path, _ = run_doctor(tmp_path, conf_text, listing)
         assert result.returncode == 0, result.stderr
         line = [l for l in result.stdout.splitlines() if "effective model:" in l]
         assert len(line) == 1, result.stdout
@@ -204,6 +209,53 @@ def test_doctor_reports_the_profile_default_model_whatever_its_origin(tmp_path):
     assert effective(conf + "model_defaults=1\n", '{"model":"native-model"}') \
         == "Claude Code default (no saved model)"
     assert effective(conf, '{}') == "Claude Code default (no saved model)"
+
+
+GW_LISTING = """#!/bin/sh
+printf '%s\\n' '{"data":[{"id":"glm-4.6"},{"id":"glm-4.5-air"}]}'
+printf '%s\\n' '__CCMORPH_STATUS__200'
+"""
+
+
+def test_doctor_fails_while_the_saved_model_is_not_served_issue_267(tmp_path):
+    # GH-267: a reachable listing that names models adjudicates the saved default.
+    # Printing ready anyway promised a launch that fails at its first message.
+    conf = "type=apikey\nbase_url=https://example.test\napi_key=k\nmodel=glm-4.6-air\n"
+    result, path, _ = run_doctor(tmp_path, conf, GW_LISTING)
+    assert result.returncode != 0, result.stdout
+    assert "model: 'glm-4.6-air' is not served by this gateway" in result.stdout
+    assert "closest: glm-4.5-air, glm-4.6" in result.stdout
+    assert "served: glm-4.5-air, glm-4.6" in result.stdout
+    assert "not ready: fix model" in result.stdout
+    assert path.read_text() == conf
+
+
+@pytest.mark.parametrize("rows", [
+    "",
+    '{"id":"embed-only","capabilities":{"chat_completion":false}}',
+], ids=["empty-catalogue", "only-chat-denied"])
+def test_doctor_fails_when_the_gateway_serves_no_chat_model_issue_267(tmp_path, rows):
+    # A complete listing that serves nothing proves the saved model absent.
+    listing = """#!/bin/sh
+printf '%s\\n' '{"data":[ROWS]}'
+printf '%s\\n' '__CCMORPH_STATUS__200'
+""".replace("ROWS", rows)
+    conf = "type=apikey\nbase_url=https://example.test\n" + "api_key=k\n" + "model=glm-4.6-air\n"
+    result, _, _ = run_doctor(tmp_path, conf, listing)
+    assert result.returncode != 0, result.stdout
+    assert "model: 'glm-4.6-air' is not served by this gateway; served: (none)" in result.stdout
+    assert "not ready: fix model" in result.stdout
+
+
+def test_doctor_stays_ready_when_the_saved_model_is_served(tmp_path):
+    # The refusal must not fire on a served default: an empty or unreadable
+    # listing declines to adjudicate (covered elsewhere); a listing that names
+    # the model is a clean bill of health.
+    conf = "type=apikey\nbase_url=https://example.test\napi_key=k\nmodel=glm-4.6\n"
+    result, _, _ = run_doctor(tmp_path, conf, GW_LISTING)
+    assert result.returncode == 0, result.stdout
+    assert "ready: start it with ccmorph run demo" in result.stdout
+    assert "is not served" not in result.stdout
 
 
 def test_doctor_rejects_invalid_profile_settings_json(tmp_path):

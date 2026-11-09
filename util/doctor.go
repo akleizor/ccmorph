@@ -23,10 +23,12 @@ func NativeBase(base string) bool {
 // DoctorRoute is doctor's read-only endpoint and adapter checks for a profile of
 // the given type, base_url, adapter flag and credential; home is the profile
 // home, where a sub profile's sign-in is read when Claude Code keeps it there.
-// failed is true when a row is FAIL. verbose adds a running adapter's processes
-// and ports; the default report says only what launch will do, which is what a
-// reader can act on. Nothing is started and nothing is written.
-func DoctorRoute(name, typ, base string, adapter bool, key, home string, verbose bool) (rows []DoctorRow, failed bool) {
+// failed is true when a row is FAIL. model and modelMap are the profile's saved
+// default and map, so a reachable listing can adjudicate the default (#267).
+// verbose adds a running adapter's processes and ports; the default report says
+// only what launch will do, which is what a reader can act on. Nothing is started
+// and nothing is written.
+func DoctorRoute(name, typ, base, model, modelMap string, adapter bool, key, home string, verbose bool) (rows []DoctorRow, failed bool) {
 	row := func(kind, msg string) {
 		if kind == "FAIL" {
 			failed = true
@@ -35,8 +37,8 @@ func DoctorRoute(name, typ, base string, adapter bool, key, home string, verbose
 	}
 
 	if NativeBase(base) {
-		// Launch asks Anthropic the same question before a session opens (#255);
-		// this probe answers it read-only, without starting anything.
+		// Launch sends no request here, so this is the only place a key on
+		// Anthropic's own endpoint can be checked before a session fails.
 		switch {
 		case typ == "provider":
 			row("INFO", "endpoint: provider bridge, started by ccmorph run")
@@ -118,6 +120,14 @@ func DoctorRoute(name, typ, base string, adapter bool, key, home string, verbose
 		case strings.HasPrefix(code, "2") && len(code) == 3:
 			if n, ok := modelsCount(body); ok {
 				row("OK", fmt.Sprintf("gateway: reachable (HTTP %s); models: %d", code, n))
+				// A listing that answers and names models adjudicates the saved
+				// default: ready would promise a launch that fails at its first
+				// message (#267).
+				if typ == "apikey" {
+					if msg, refuse := ServedRefusal(body, model, modelMap, "this gateway"); refuse {
+						row("FAIL", "model: "+msg)
+					}
+				}
 			} else {
 				row("FAIL", fmt.Sprintf("gateway: malformed model listing (HTTP %s)", code))
 			}

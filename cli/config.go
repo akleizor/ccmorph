@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"github.com/akleizor/ccmorph/util"
+	"io"
 	"os"
 	"strings"
 
@@ -101,6 +102,22 @@ func (l *launcher) getSet(verb string, args []string) int {
 		return rc
 	}
 	value := args[2]
+	if key == "model" {
+		// A gateway that answers its listing knows what it serves: an id it does
+		// not serve is saved only when the person confirms it, because the
+		// alternative is a session that fails at its first message (#267). A
+		// listing that cannot be read adjudicates nothing, so the save proceeds.
+		if f, ok := l.read(name); ok && f["type"] == "apikey" && !util.NativeBase(f["base_url"]) && strings.TrimSpace(f["api_key"]) != "" {
+			if listing, ok := util.ModelsListing(f["base_url"], f["api_key"], io.Discard); ok {
+				if msg, refuse := util.ServedRefusal(listing, value, f["model_map"], name); refuse {
+					l.err(msg)
+					if uiConfirm("save '"+value+"' anyway?") != 0 {
+						return 1
+					}
+				}
+			}
+		}
+	}
 	model, effort := "", ""
 	if key == "model" {
 		model = value

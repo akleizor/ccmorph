@@ -139,3 +139,57 @@ func TestModelsAnswerReadsTheRefusedStatus(t *testing.T) {
 		})
 	}
 }
+
+// ServedRefusal is the one message set, run and doctor print for an id a
+// reachable listing does not serve (#267): the id as the person spelled it, the
+// closest listed ids, and every chat-capable id the listing serves. Everything
+// a listing cannot adjudicate -- a served or mapped id, a tier alias, a value
+// not shaped like a model id, an unreadable or paged listing -- declines
+// so the caller proceeds exactly as before.
+func TestServedRefusalNamesTheClosestAndServedIds(t *testing.T) {
+	family := `{"data":[{"id":"glm-4.0"},{"id":"glm-4.5"},{"id":"glm-4.5-air"},{"id":"glm-4.6"},{"id":"embed-only","capabilities":{"chat_completion":false}}]}`
+	for _, c := range []struct {
+		name, body, want, mapJSON string
+		refuse                    bool
+		contains                  []string
+	}{
+		{"unserved, nearest first, three at most", family, "glm-4.6-air", "", true,
+			[]string{"'glm-4.6-air' is not served by gw", "closest: glm-4.5-air, glm-4.6, glm-4.5",
+				"served: glm-4.0, glm-4.5, glm-4.5-air, glm-4.6"}},
+		{"no id is close enough", family, "totally-different", "", true,
+			[]string{"'totally-different' is not served by gw; served: glm-4.0, glm-4.5, glm-4.5-air, glm-4.6"}},
+		{"a chat-denied id is refused and not offered", family, "embed-only", "", true,
+			[]string{"'embed-only' is not served by gw", "served: glm-4.0, glm-4.5, glm-4.5-air, glm-4.6"}},
+		{"the window marker is judged stripped but quoted whole", family, "glm-4.5-max[1m]", "", true,
+			[]string{"'glm-4.5-max[1m]' is not served by gw"}},
+		{"a served id is not refused", family, "glm-4.6", "", false, nil},
+		{"a window marker over a served id is not refused", family, "glm-4.6[1m]", "", false, nil},
+		{"a mapped id is judged by its target", family, "alias", `{"alias":"glm-4.6"}`, false, nil},
+		{"a mapped id whose target is absent is refused", family, "alias", `{"alias":"absent-target"}`, true,
+			[]string{"'alias' is not served by gw"}},
+		{"a tier alias always resolves", family, "sonnet", "", false, nil},
+		{"a flag-shaped value is not a model id", family, "--menu", "", false, nil},
+		{"a picker token is not a model id", family, "?", "", false, nil},
+		{"a spaced value is not a model id", family, "kimi k3", "", false, nil},
+		{"a complete listing that serves nothing proves absence", `{"data":[]}`, "glm-4.6-air", "", true,
+			[]string{"'glm-4.6-air' is not served by gw", "served: (none)"}},
+		{"a listing of only chat-denied ids serves nothing", `{"data":[{"id":"embed-only","capabilities":{"chat_completion":false}}]}`, "glm-4.6-air", "", true,
+			[]string{"'glm-4.6-air' is not served by gw", "served: (none)"}},
+		{"a paged empty listing cannot adjudicate", `{"has_more":true,"data":[]}`, "glm-4.6-air", "", false, nil},
+		{"a listing without data cannot adjudicate", `{}`, "glm-4.6-air", "", false, nil},
+		{"a paged listing cannot adjudicate", `{"has_more":true,"data":[{"id":"glm-4.6"}]}`, "glm-4.6-air", "", false, nil},
+		{"an unreadable listing cannot adjudicate", `{"data":"not-a-list"}`, "glm-4.6-air", "", false, nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			msg, refuse := ServedRefusal(c.body, c.want, c.mapJSON, "gw")
+			if refuse != c.refuse {
+				t.Fatalf("refused=%v, want %v (msg: %q)", refuse, c.refuse, msg)
+			}
+			for _, want := range c.contains {
+				if !strings.Contains(msg, want) {
+					t.Errorf("message %q lacks %q", msg, want)
+				}
+			}
+		})
+	}
+}
