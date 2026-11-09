@@ -1,12 +1,32 @@
 [
   {
-    "criterion": "Each Kimi service has one name that is the same in the sign-in methods, the provider list, help add and the README.",
+    "criterion": "After a picker is answered, the screen keeps one line that names the choice in full, with no description cut off by an ellipsis.",
     "pass": true,
-    "evidence": "profile.ProviderName now maps kimi-ai→'Kimi For Coding (global)' and kimi→'Kimi For Coding (China)' — the labels share/provider-presets.tsv already gives api.kimi.ai/coding and api.kimi.com/coding — and providerLabel feeds every surface: the sign-in menu rows and Added line (cli/add.go), ccmorph list/inspect/doctor, and help add's login list (cli/main.go). The browserLogins const, README.md and docs/guide.md carry the same two names. Watched red on the broken code, green after: test_kimi_sign_ins_and_provider_list_share_one_name_per_service_gh_366 in tests/behaviour_coverage_test.py (red: 'the sign-in methods do not name Kimi For Coding (global)', rows read Kimi-ai/Kimi), the separate test_add_help_names_both_kimi_sign_ins_by_region_gh_366 in tests/cli_messages_test.py (red: help add printed 'Kimi-ai, Kimi'), which sits beside the unchanged two-login test_add_help_names_provider_logins_only_when_the_bridge_is_installed; after #364 landed the wrap pins in cli/help_wrap_test.go TestHelpAddWrapsTheProviderSentenceAsOneListItem carry the same two names (red: 'piped help add lost the authored provider line' with the old Kimi-ai, Kimi pins), the widened docs test in tests/docs_claims_test.py (red: 'README.md does not name the Kimi For Coding (global) browser login'), and the Go table TestKindLabelNamesEveryProfileKindForPeople. Hermetic run with a fake cliproxyapi: sign-in rows 7/8 read 'Kimi For Coding (global)'/'Kimi For Coding (China)', provider-list rows 5/6 read the same names for api.kimi.ai/coding and api.kimi.com/coding, help add lists 'Antigravity, Codex, Devin, Kimi For Coding (global), Kimi For Coding (China), Meta, xAI'."
+    "evidence": "cli/ui.go receiptLine never cuts the choice; the question yields space down to receiptTitleFloor. go test ./cli/ -count=1 ok (5.149s): TestReceiptNeverCutsTheChoiceIssue361, TestSearchReceiptNamesTheLabelNotTheDescriptionIssue361 (receipt names 'Custom endpoint', not the description). pty screen() assertions in tests/cli_picker_test.py run in CI."
   },
   {
-    "criterion": "The name tells a person which one to pick, for example by region or by the kind of account, not only by a domain.",
+    "criterion": "After a typed question is answered, the screen keeps one line with the question and the answer, and no key hint. A hidden answer shows no text.",
     "pass": true,
-    "evidence": "Each name carries the region — (global) for the kimi.ai service, (China) for kimi.com — and the plan (For Coding), the same way every other vendor in the provider list is told apart (Kimi (Moonshot, China), GLM (Zhipu, China), MiniMax (China)). The domain appears only in the row's second column ('Browser sign-in to a kimi.ai account, through cliproxyapi'), never as the label; the login step's own lines name the service by its label too ('Opening your browser to sign in to Kimi For Coding (global)'). The behaviour test asserts both region names in the sign-in list and that 'Kimi-ai' is gone; hermetic sign-in menu run shows the label column naming the region."
+    "evidence": "cli/ui.go uiInput folds the prompt block with eraseLines(2 + typedLines(echoed)); an answer too long to share the line keeps its question whole and wraps beneath it; a secret prints the question alone. go test ok: TestTypedLinesCountsTheWrap, TestReceiptNeverCutsTheChoiceIssue361 (120-cell answer keeps '  Value: › '). pty test_answered_input_folds_to_one_summary_line_issue_361 runs in CI; the exact Go byte stream was replayed through screen() offline (6/6)."
+  },
+  {
+    "criterion": "The sign-in, provider and model pickers leave summary lines of the same shape.",
+    "pass": true,
+    "evidence": "All three end in receiptLine ('Title › choice'); search passes the original row's label, numbered folds to the same receipt. pty screen() assertions for '  Sign-in method — demo › API key', '  Provider — demo › Anthropic', '  Default model — demo › picker-beta' run in CI; offline replay of the native and numbered streams confirmed the one-line shape."
+  },
+  {
+    "criterion": "The question for the key names the provider once, without nested brackets.",
+    "pass": true,
+    "evidence": "cli/add.go builds 'API key for <name> — <label>'. zsh suite: 319 PASS, 0 FAIL after the three literals in tests/ccmorph_test.zsh moved to the dash form (proven red against the old code first). pty asserts 'API key for demo — Anthropic (hidden):' in the real-fzf and fake-fzf flows."
+  },
+  {
+    "criterion": "Owner's follow-up: with no fzf on PATH, an answered numbered list also folds to one line that names the choice.",
+    "pass": true,
+    "evidence": "cli/ui.go numbered folding branch erases len(rows)+2 plus one line per round and reprompt, then prints the receipt; a leave prints Cancelled. pty test_numbered_add_folds_each_answered_step_to_one_line_issue_361 and the reprompt/cancel screen assertions run in CI; offline replay validated the erase arithmetic."
+  },
+  {
+    "criterion": "Gate rule S3: every existing test the change edits still fails on every output its main version failed on. test_plain_terminal_output_and_explicit_cancel rejects any '\\x1b[' in the TERM=dumb output, unfiltered; test_labeled_menu_and_help_remain_plain_when_color_is_disabled allows exactly the two folds the numbered list writes and no other escape anywhere, the --help output included.",
+    "pass": true,
+    "evidence": "tests/cli_picker_test.py: the TERM=dumb branch is main's assertNotIn('\\x1b[', out) on the raw output; the NO_COLOR branch asserts the exact fold list ['3','5'] and no other escape; the labeled-list test asserts the exact fold list ['3','4'], no other escape, and none after the list's fold (so --help adds none). Replayed offline against synthetic streams, 7/7: correct outputs pass; a fold in dumb output, an extra fold after --help, a color code in --help and an extra fold after Cancelled all fail. File parses, 59 tests collect; the pty suite runs in CI (pty.openpty is refused here)."
   }
 ]

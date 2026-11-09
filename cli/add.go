@@ -394,10 +394,11 @@ func (l *launcher) addAPIKey(name string) int {
 	}
 	prompt := "API key for " + name
 	if label != "" {
-		prompt += " (" + label + ")"
+		prompt += " — " + label
 	} else {
 		// Custom endpoint names its address before the key, so the key prompt
-		// can name the service the key is for (#278).
+		// can name the service the key is for (#278). The dash, not brackets:
+		// labels like "Qwen (Alibaba Cloud, China)" bring their own (#361).
 		v, rc := uiInput("Endpoint (blank = api.anthropic.com): ", false)
 		if rc != 0 {
 			return 1
@@ -407,7 +408,7 @@ func (l *launcher) addAPIKey(name string) int {
 		if service == "" {
 			service = "api.anthropic.com"
 		}
-		prompt += " (" + service + ")"
+		prompt += " — " + service
 	}
 	// The endpoint is asked the listing question doctor asks, in this step: a
 	// key it refuses is named here and asked for again, not saved as Added and

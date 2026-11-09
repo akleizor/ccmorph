@@ -2300,7 +2300,7 @@ test_add_apikey_preset_fills_endpoint_and_tiers() {
   assert_contains "$actual" 'env.ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-v4-pro' 'a preset must map the opus tier' || rc=1
   assert_contains "$actual" 'env.ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-flash' 'a preset must map the haiku tier' || rc=1
   assert_contains "$out" 'Added dsk (API key → https://api.deepseek.com/anthropic)' 'the done line must name the kind and the endpoint' || rc=1
-  assert_contains "$err" 'API key for dsk (DeepSeek)' 'add must name the provider' || rc=1
+  assert_contains "$err" 'API key for dsk — DeepSeek' 'add must name the provider' || rc=1
   assert_not_contains "$err" 'Added dsk' 'the done line belongs on stdout, not stderr' || rc=1
   ccmorph add bogus <<< $'3\nnope\nk\n' >/dev/null 2>&1 && { print -u2 -- 'an unknown preset must be refused'; rc=1 }
   [[ ! -e "$HOME/.config/ccmorph/bogus.conf" ]] || { print -u2 -- 'a refused preset must save nothing'; rc=1 }
@@ -2335,7 +2335,7 @@ test_add_apikey_lists_anthropic_first() {
     print -u2 -- 'the provider list must open with Anthropic as row 1'
     rc=1
   }
-  assert_contains "$out" 'API key for anth (Anthropic) (hidden): ' 'the key prompt must name Anthropic' || rc=1
+  assert_contains "$out" 'API key for anth — Anthropic (hidden): ' 'the key prompt must name Anthropic' || rc=1
   assert_not_contains "$out" 'Base URL' 'the Anthropic row asks for no address' || rc=1
   rm -rf "$test_home"
   return $rc
@@ -2355,7 +2355,7 @@ test_add_apikey_native_endpoint_skips_adapter() {
     rm -rf "$test_home"
     return 1
   }
-  assert_contains "$out" 'API key for nativegw (http://native.invalid) (hidden): ' \
+  assert_contains "$out" 'API key for nativegw — http://native.invalid (hidden): ' \
     'the key prompt must name the service the key is for' || {
     rm -rf "$test_home"
     return 1
