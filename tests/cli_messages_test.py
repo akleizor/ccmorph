@@ -114,13 +114,20 @@ def test_help_is_concise_truthful_and_read_only(tmp_path):
                             text=True, timeout=HANG_TIMEOUT)
     for verb in ('run', 'add', 'list', 'use', 'config', 'inspect', 'doctor', 'models',
                  'get', 'set', 'login', 'mv', 'rm', 'hop', 'cred', 'probe', 'context',
-                 'update', 'uninstall'):
+                 'update', 'uninstall', 'quota'):
         assert 'ccmorph ' + verb in result.stdout
         detail = subprocess.run([cli, 'help', verb], env=env, capture_output=True,
                                 text=True, timeout=HANG_TIMEOUT)
         assert detail.returncode == 0, detail.stderr
         assert detail.stdout.startswith('Usage: ccmorph ' + verb)
         assert '[-a <profile>]' not in detail.stdout
+    result = subprocess.run([cli, 'help', 'quota'], env=env, capture_output=True,
+                            text=True, timeout=HANG_TIMEOUT)
+    # One line names which profile kinds show plan usage (#270), so a token
+    # profile's row is expected to explain rather than show windows.
+    flat = ' '.join(result.stdout.split())
+    assert 'Plan usage is read for Claude account and Codex profiles' in flat
+    assert 'a pasted Claude token cannot read it' in flat
     result = subprocess.run([cli, 'help', 'typo'], env=env, capture_output=True,
                             text=True, timeout=HANG_TIMEOUT)
     assert result.returncode == 2
