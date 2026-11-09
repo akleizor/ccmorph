@@ -143,7 +143,8 @@ EXECUTABLES=(bin/ccmorph install.sh share/usage-export)
 DATA_FILES=(share/model-catalogue.json share/window-sources.json share/provider-presets.tsv
   share/claude-plugin/.claude-plugin/plugin.json
   share/claude-plugin/commands/hop.md share/claude-plugin/commands/profile.md
-  share/claude-plugin/hooks/hooks.json)
+  share/claude-plugin/hooks/hooks.json
+  share/zsh/site-functions/_ccmorph)
 COMPONENTS=($LIBS $EXECUTABLES $DATA_FILES)
 
 # ---- uninstall ------------------------------------------------------------
@@ -439,7 +440,7 @@ CONFIG_REAL="${CONFIG_DIR:A}"
 
 # If running from inside the target dir, files are already home; otherwise copy.
 if [[ "$SRC" != "$CONFIG_REAL" ]]; then
-  mkdir -p "$CONFIG_DIR"/{bin,lib,libexec,share/claude-plugin/{.claude-plugin,commands,hooks}}
+  mkdir -p "$CONFIG_DIR"/{bin,lib,libexec,share/claude-plugin/{.claude-plugin,commands,hooks},share/zsh/site-functions}
   for _f in "${COMPONENTS[@]}"; do cp "$SRC/$_f" "$CONFIG_DIR/$_f"; done
 fi
 cp "$SRC/bin/ccmorph" "$BIN_DIR/ccmorph"
@@ -532,6 +533,30 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
   c_y "$BIN_DIR is not on your PATH, so 'ccmorph' will not be found yet."
   c_dim "  Add this line to $_rc_file yourself, then open a new terminal:"
   print "  $_rc_line"
+fi
+
+# ---- Tab completion ---------------------------------------------------------
+# zsh finds a completion by scanning fpath for a file whose first line names a
+# command. That file ships in $CONFIG_DIR/share/zsh/site-functions, a directory
+# no stock zsh searches — so, like PATH, this is checked and reported, never
+# arranged. The line belongs above compinit (or Oh My Zsh, which runs it);
+# bash and fish are told nothing, and a .zshrc that already names the directory
+# is read, never written. Homebrew links the same file into its own
+# site-functions, which `brew shellenv` puts on fpath; `ccmorph doctor`
+# prints this line wherever zsh still does not find the file (cli/doctor.go).
+_comp_dir="$CONFIG_DIR/share/zsh/site-functions"
+_zshrc="${ZDOTDIR:-$HOME}/.zshrc"
+_comp_wanted=1
+_login_shell="${SHELL:-}"
+case "${_login_shell:t}" in
+  bash|fish) _comp_wanted=0 ;;
+esac
+[[ -f "$_zshrc" ]] && grep -qF 'ccmorph/share/zsh/site-functions' "$_zshrc" && _comp_wanted=0
+if (( _comp_wanted )); then
+  print ""
+  c_y "Tab completion for ccmorph is in $_comp_dir, which zsh does not search yet."
+  c_dim "  Add this line to $_zshrc yourself, above the line that runs compinit (or loads Oh My Zsh); Tab completes in the next zsh you start:"
+  print -r -- "  fpath=(${(q)_comp_dir} \$fpath)"
 fi
 
 print ""

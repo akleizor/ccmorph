@@ -26,6 +26,18 @@
   `ccmorph profile` — or `/ccmorph:profile` in the Claude Code prompt — prints
   the name from inside the session. The README demo is re-recorded to show
   these real surfaces instead of labels its stand-in invented (#275).
+- **Tab completes ccmorph in zsh.** After `ccmorph`, Tab offers every command
+  `ccmorph help all` lists; after `run`, `use`, `rm`, `mv`, `config`, `doctor`,
+  `inspect`, `quota`, `set`, `get`, `models`, `login`, `cred`, `hop`, `probe`
+  and `context`, it offers the profile names from the state directory. The
+  completion is one zsh file, so a Tab starts no process. Clone and one-liner
+  installs put it in `~/.config/ccmorph/share/zsh/site-functions`; stock zsh
+  does not search that directory, so the installer prints the one `fpath=` line
+  to add above `compinit` (quoted when the path has a space), and never writes
+  a startup file. A Homebrew install links it into
+  `$(brew --prefix)/share/zsh/site-functions`, already on `fpath` through
+  `brew shellenv`; `ccmorph doctor` prints the line wherever zsh still does
+  not find it (#281).
 
 ### Fixed
 

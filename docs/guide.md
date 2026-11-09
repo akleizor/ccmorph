@@ -63,6 +63,26 @@ to add, for your login shell:
 | bash | `~/.bashrc` (Linux), `~/.bash_profile` (macOS) | `export PATH="$HOME/.local/bin:$PATH"` |
 | fish | `~/.config/fish/config.fish` | `fish_add_path $HOME/.local/bin` |
 
+Tab completion for zsh is one file, `_ccmorph`, installed with the runtime in
+`~/.config/ccmorph/share/zsh/site-functions`. Stock zsh does not search that
+directory, so the installer prints the one line to add above the line that runs
+`compinit` (or loads Oh My Zsh), as it does for `PATH`; it never writes it:
+
+```zsh
+fpath=(~/.config/ccmorph/share/zsh/site-functions $fpath)
+```
+
+After that, Tab completes the command names after `ccmorph`, and the profile
+names after `run`, `use`, `rm`, `mv`, `config`, `doctor`, `inspect`, `quota`,
+`set`, `get`, `models`, `login`, `cred`, `hop`, `probe` and `context`.
+
+A Homebrew install links the same file into
+`$(brew --prefix)/share/zsh/site-functions`, which `brew shellenv` already
+puts on `fpath`, and `brew install` says so (`zsh completions have been
+installed to: …`); it needs no line. If zsh still does not find the file,
+`ccmorph doctor` prints the one line to add, with the directory quoted when
+its path has a space.
+
 Every install ends with `Check:  ccmorph doctor`; a fresh install adds
 `Next:   ccmorph add <name>`. While `~/.local/bin` is off your `PATH` the check
 keeps the full path, so it runs in the terminal you are already in; the next

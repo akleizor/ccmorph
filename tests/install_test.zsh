@@ -199,6 +199,21 @@ bin_got=("$d/home/.local/bin/"*(N:t))
   && ok "profile template installed" || fail "profile.conf.example missing"
 [[ ! -e "$d/home/.config/ccmorph/local.sh" ]] \
   && ok "no local.sh activated on a fresh install" || fail "install activated local.sh"
+# Tab completion is data, like the plugin: installed beside the library and
+# never wired into a startup file. Stock zsh does not search the directory, so
+# the hint prints the one fpath= line — the same checked-and-reported shape as
+# the PATH hint above.
+comp="$d/home/.config/ccmorph/share/zsh/site-functions/_ccmorph"
+[[ -f "$comp" ]] && grep -qxF '#compdef ccmorph' "$comp" \
+  && ok "completion function installed for zsh" \
+  || fail "completion function missing or does not start with #compdef ccmorph"
+grep -qF "fpath=($d/home/.config/ccmorph/share/zsh/site-functions \$fpath)" "$d/out" \
+  && ok "completion hint prints the fpath line" \
+  || { fail "completion hint missing the fpath line"; cat "$d/out"; }
+grep -qF "Add this line to $d/home/.zshrc" "$d/out" \
+  && ok "completion hint names ~/.zshrc" || fail "completion hint does not name .zshrc"
+[[ ! -e "$d/home/.zshrc" ]] \
+  && ok "completion hint writes no rc" || fail "completion hint wrote a startup file"
 # The rc must be left ALONE. ccmorph is one executable, so there is nothing to
 # wire; an installer that edits a startup file makes every session's behaviour
 # depend on whether one file was sourced.
@@ -833,6 +848,10 @@ remote_run "$d" cmd; rc=$?
   && ok "remote: sh -c installs the library" || fail "remote sh -c did not install lib/ccmorph.sh"
 [[ -x "$d/home/.local/bin/ccmorph" ]] \
   && ok "remote: sh -c installs the command" || fail "remote sh -c did not install ~/.local/bin/ccmorph"
+# The one-liner runs the downloaded tree's installer, so it ships the completion
+# through the same DATA_FILES list a clone does.
+[[ -f "$d/home/.config/ccmorph/share/zsh/site-functions/_ccmorph" ]] \
+  && ok "remote: sh -c installs the zsh completion" || fail "remote sh -c did not install the completion"
 grep -qxF "$url_release" "$d/curl.argv" 2>/dev/null \
   && ok "remote: default URL is the latest release, not main" || { fail "remote: curl did not get $url_release"; cat "$d/curl.argv" 2>&1 }
 [[ -z "$(print -rl -- "$d"/tmp/ccmorph-install.*(N))" ]] \
@@ -1116,6 +1135,7 @@ grep -qF "fish_add_path $d/home/.local/bin" "$d/out" \
 grep -qF "$d/home/.config/fish/config.fish" "$d/out" \
   && ok "path: fish names ~/.config/fish/config.fish" || fail "path: fish config file not named"
 grep -qF 'export PATH=' "$d/out" && fail "path: fish was handed a bash-style export" || ok "path: fish is not handed an export line"
+grep -qF 'fpath=' "$d/out" && fail "path: fish was handed a zsh completion line" || ok "path: fish gets no completion hint"
 no_rc_written "$d" && ok "path: fish run edits no startup file" || fail "path: fish run wrote a startup file"
 
 d=$(path_run path_bash_linux /bin/bash Linux)
@@ -1123,6 +1143,7 @@ grep -qF "$d/home/.bashrc" "$d/out" \
   && ok "path: bash on Linux names ~/.bashrc" || { fail "path: bash/Linux does not name .bashrc"; cat "$d/out"; }
 grep -qF "export PATH=\"$d/home/.local/bin:\$PATH\"" "$d/out" \
   && ok "path: bash gets the export line" || fail "path: bash export line missing"
+grep -qF 'fpath=' "$d/out" && fail "path: bash was handed a zsh completion line" || ok "path: bash gets no completion hint"
 no_rc_written "$d" && ok "path: bash run edits no startup file" || fail "path: bash run wrote a startup file"
 
 d=$(path_run path_bash_mac /bin/bash Darwin)
@@ -1135,7 +1156,33 @@ grep -qF "$d/home/.zshrc" "$d/out" \
   && ok "path: zsh names ~/.zshrc" || { fail "path: zsh does not name .zshrc"; cat "$d/out"; }
 grep -qF "export PATH=\"$d/home/.local/bin:\$PATH\"" "$d/out" \
   && ok "path: zsh gets the export line" || fail "path: zsh export line missing"
+grep -qxF "  fpath=($d/home/.config/ccmorph/share/zsh/site-functions \$fpath)" "$d/out" \
+  && ok "path: zsh gets the completion fpath line" || { fail "path: zsh completion line missing"; cat "$d/out"; }
 no_rc_written "$d" && ok "path: zsh run edits no startup file" || fail "path: zsh run wrote a startup file"
+
+# A home with a space in it: the printed line must still be ONE array element,
+# or zsh adds two wrong directories and Tab never finds _ccmorph. Run the line
+# the installer printed in a clean zsh and read fpath back.
+d=$(path_run "path comp space" /bin/zsh Linux)
+want="$d/home/.config/ccmorph/share/zsh/site-functions"
+comp_line=$(grep -F 'fpath=(' "$d/out" | sed 's/^ *//')
+got=$(zsh -fc 'fpath=(/sentinel); eval "$1"; print -r -- "${#fpath}|${fpath[1]}|${fpath[2]}"' _ "$comp_line")
+[[ "$got" == "2|$want|/sentinel" ]] \
+  && ok "path: the completion line keeps a home with spaces as one fpath element" \
+  || { fail "path: completion line splits a home with spaces: $got"; cat "$d/out"; }
+
+# A .zshrc that already puts the installed directory on fpath needs no hint: the
+# line would be noise, and reading the file must leave it byte-identical.
+d=$(fresh_env path_comp_done)
+print 'fpath=($HOME/.config/ccmorph/share/zsh/site-functions $fpath)' > "$d/home/.zshrc"
+print 'autoload -Uz compinit; compinit' >> "$d/home/.zshrc"
+comp_rc=$(<"$d/home/.zshrc")
+d=$(path_run path_comp_done /bin/zsh Linux)
+grep -qF 'fpath=' "$d/out" \
+  && fail "path: completion hint repeats a line the rc already has" \
+  || ok "path: no completion hint when .zshrc already names the directory"
+[[ "$(<"$d/home/.zshrc")" == "$comp_rc" ]] \
+  && ok "path: an already-configured .zshrc stays byte-identical" || fail "path: installer edited .zshrc"
 
 # ZDOTDIR moves the zsh file; an unknown or unset SHELL gets the zsh advice, which
 # is what a bare `env -i` run (every test above this section) always printed.
