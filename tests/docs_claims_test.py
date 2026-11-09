@@ -119,6 +119,7 @@ def test_architecture_names_only_scripts_that_exist_issue_69():
         f"ARCHITECTURE.md names scripts/ paths the repo does not ship: {missing}")
 
 
+
 def test_security_tells_one_credential_storage_story_issue_262():
     """#262: SECURITY.md's table said the macOS key and token move to the login
     keychain while a later section denied any keychain integration — a reader
@@ -137,3 +138,23 @@ def test_security_tells_one_credential_storage_story_issue_262():
         "the credential stays in the conf")
     assert "not a boundary inside your own session" in flat, (
         "SECURITY.md no longer says what the login keychain does not defend against")
+
+
+def test_docs_name_the_provider_type_and_its_dependency_issue_283():
+    """#283: `provider` was in the `.conf` field table but missing from Profile
+    types, and neither README nor guide said that the browser logins need the
+    optional cliproxyapi. A person without it never learned they exist."""
+    logins = ("Antigravity", "Codex", "Devin", "Kimi", "Meta", "xAI")
+    for doc in (ROOT / "README.md", GUIDE):
+        flat = _flatten(doc.read_text(encoding="utf-8"))
+        assert "`provider`" in flat, f"{doc.name} does not name the provider profile type"
+        assert "cliproxyapi" in flat, f"{doc.name} does not name the program provider profiles need"
+        for login in logins:
+            assert login in flat, f"{doc.name} does not name the {login} browser login"
+    guide = GUIDE.read_text(encoding="utf-8")
+    profile_types = re.search(r"^## Profile types\n(.*?)(?=^## )", guide, re.M | re.S)
+    assert profile_types, "docs/guide.md has no Profile types section"
+    assert "| `provider` |" in _flatten(profile_types.group(1)), (
+        "the Profile types table in docs/guide.md leaves out `provider`")
+    assert "cliproxyapi" in _flatten(profile_types.group(1)), (
+        "the Profile types table does not say a provider profile needs cliproxyapi")
