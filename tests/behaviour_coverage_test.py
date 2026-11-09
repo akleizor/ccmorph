@@ -160,6 +160,11 @@ def test_mv_carries_conf_profile_dir_auth_and_default_to_the_new_name(box):
     box.run('use', 'work')
     (box.state / 'profiles/work').mkdir(exist_ok=True)
     (box.state / 'profiles/work/settings.json').write_text('{"keep":true}')
+    auth = box.state / 'auth'
+    auth.mkdir(exist_ok=True)
+    (auth / '.work.bridge').write_text('handle')
+    (auth / '.work.bridge.lock').write_text('')
+    (auth / '.work.bridge.users').write_text('')
     done = box.run('mv', 'work', 'job')
     assert done.returncode == 0, done.stderr
     assert not (box.state / 'work.conf').exists()
@@ -167,6 +172,9 @@ def test_mv_carries_conf_profile_dir_auth_and_default_to_the_new_name(box):
     assert (box.state / 'profiles/job/settings.json').read_text() == '{"keep":true}'
     assert not (box.state / 'profiles/work').exists()
     assert box.active == 'job'
+    assert (auth / '.job.bridge').read_text() == 'handle'
+    assert (auth / '.job.bridge.lock').exists() and (auth / '.job.bridge.users').exists()
+    assert not list(auth.glob('.work.bridge*'))
 
 
 def test_mv_refuses_an_existing_target_and_changes_nothing(box):
@@ -195,6 +203,10 @@ def test_rm_deletes_the_profile_and_clears_it_as_the_default(box):
     seed(box)
     box.run('use', 'gw')
     (box.state / 'profiles/gw').mkdir(exist_ok=True)
+    auth = box.state / 'auth'
+    auth.mkdir(exist_ok=True)
+    for f in ('.gw.bridge', '.gw.bridge.lock', '.gw.bridge.users', '.tok.bridge'):
+        (auth / f).write_text('x')
     done = box.run('rm', 'gw')
     assert done.returncode == 0, done.stderr
     assert not (box.state / 'gw.conf').exists()
@@ -202,6 +214,8 @@ def test_rm_deletes_the_profile_and_clears_it_as_the_default(box):
     assert box.active is None
     assert (box.state / 'tok.conf').exists()
     assert 'gw' not in box.run('list').stdout
+    assert not list(auth.glob('.gw.bridge*'))
+    assert (auth / '.tok.bridge').exists()
 
 
 def test_rm_of_a_non_default_profile_keeps_the_default(box):
