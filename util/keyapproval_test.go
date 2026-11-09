@@ -2,7 +2,9 @@ package util
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -247,6 +249,81 @@ func TestApproveKeyUnderALiveSessionKeepsTheSessionsSaveAndLandsWhenItEnds(t *te
 	for _, want := range []string{`"numStartups":4`, `"` + tail + `"`} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %s in %s", want, got)
+		}
+	}
+}
+
+// TestHelperApproveKeyProcess is re-executed by
+// TestTwoApprovalsAtOnceBothLand as a second process, so two ApproveKey calls
+// race for the same file the way two real approvals do. Without its env var it
+// is this process's own pass and does nothing.
+func TestHelperApproveKeyProcess(t *testing.T) {
+	if os.Getenv("CCMORPH_TEST_APPROVE_CHILD") != "1" {
+		return
+	}
+	restore := SetLockWait(0)
+	defer restore()
+	err := ApproveKey(os.Getenv("CCMORPH_TEST_PROFILES"), "p", os.Getenv("CCMORPH_TEST_KEY"))
+	switch {
+	case err == nil:
+		fmt.Println("CHILD:recorded")
+	case errors.Is(err, ErrProfileInUse):
+		fmt.Println("CHILD:in-use")
+	default:
+		fmt.Println("CHILD:error " + err.Error())
+	}
+}
+
+// approveKeyChild runs one ApproveKey in a second process and reports its
+// word. The key travels in the environment, never on a command line (promise 5).
+func approveKeyChild(t *testing.T, profiles, key string) string {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperApproveKeyProcess$", "-test.count=1")
+	cmd.Env = append(os.Environ(),
+		"CCMORPH_TEST_APPROVE_CHILD=1",
+		"CCMORPH_TEST_PROFILES="+profiles,
+		"CCMORPH_TEST_KEY="+key)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the child approval did not run: %v\n%s", err, out)
+	}
+	for _, w := range strings.Fields(string(out)) {
+		if strings.HasPrefix(w, "CHILD:") {
+			return strings.TrimPrefix(w, "CHILD:")
+		}
+	}
+	t.Fatalf("the child approval said nothing:\n%s", out)
+	return ""
+}
+
+// #299: two approvals at once are two whole-file rewrites. The second finds
+// the profile in use at the first's seam and lands once the first finishes, so
+// both answers survive.
+func TestTwoApprovalsAtOnceBothLand(t *testing.T) {
+	const key = "sk-issue-299-test-key-0001"
+	const other = "sk-issue-299-second-key-0002"
+	profiles := filepath.Join(t.TempDir(), "profiles")
+	path := writeClaudeJSON(t, filepath.Join(profiles, "p"), `{"numStartups":3}`)
+	if err := os.MkdirAll(filepath.Dir(LiveLockPath(profiles, "p")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := approveKeyRead
+	t.Cleanup(func() { approveKeyRead = old })
+	var during string
+	approveKeyRead = func() { during = approveKeyChild(t, profiles, other) }
+	if err := ApproveKey(profiles, "p", key); err != nil {
+		t.Fatal(err)
+	}
+	if during != "in-use" {
+		t.Fatalf("a second approval at the first's seam did not find the profile in use: %q", during)
+	}
+	if after := approveKeyChild(t, profiles, other); after != "recorded" {
+		t.Fatalf("the second approval did not land once the first finished: %q", after)
+	}
+	got := mustRead(t, path)
+	for _, want := range []string{`"numStartups":3`, `"` + keyTail(key) + `"`, `"` + keyTail(other) + `"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %s in %s — one of two simultaneous approvals was lost", want, got)
 		}
 	}
 }
