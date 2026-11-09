@@ -1,21 +1,51 @@
 package ctxwindow
 
-import "strconv"
+import (
+	"sort"
+	"strconv"
+)
 
 // ClosestMatch is difflib.get_close_matches(word, models, n=1) with its default
 // cutoff of 0.6: the best-scoring candidate, ties going to the larger string.
 func ClosestMatch(word string, models []string) string {
-	best, bestScore, found := "", 0.0, false
+	if best := ClosestMatches(word, models, 1); len(best) == 1 {
+		return best[0]
+	}
+	return ""
+}
+
+// ClosestMatches is difflib.get_close_matches(word, models, n) with its default
+// cutoff of 0.6: up to n candidates, best score first, ties to the larger string.
+func ClosestMatches(word string, models []string, n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	type scored struct {
+		id    string
+		score float64
+	}
+	var rows []scored
 	for _, m := range models {
 		score := ratio([]rune(m), []rune(word))
 		if score < 0.6 {
 			continue
 		}
-		if !found || score > bestScore || (score == bestScore && m > best) {
-			best, bestScore, found = m, score, true
-		}
+		rows = append(rows, scored{m, score})
 	}
-	return best
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].score != rows[j].score {
+			return rows[i].score > rows[j].score
+		}
+		return rows[i].id > rows[j].id
+	})
+	if len(rows) > n {
+		rows = rows[:n]
+	}
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = r.id
+	}
+	return out
 }
 
 // ratio is SequenceMatcher(None, a, b).ratio() for strings short enough that

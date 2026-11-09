@@ -800,3 +800,59 @@ func modelInListing(listing, want, mapJSON string) int {
 	}
 	return 1
 }
+
+// modelIDShape is whether v can be a model id at all: the store's own rule for a
+// saved model, so a flag or picker token keeps its dedicated refusal instead of
+// being misdescribed as "not served".
+func modelIDShape(v string) bool {
+	return v != "" && v != "?" && !strings.HasPrefix(v, "-") && !strings.HasPrefix(v, "@") && !hasSpace(v)
+}
+
+// ServedRefusal is the one message set, run and doctor print when a requested
+// model id is not served by a reachable listing (#267): the id as the person
+// spelled it, the closest listed ids, and every chat-capable id the listing
+// serves. who names the route -- a profile name, or "this gateway". ok is false
+// when the listing cannot adjudicate the id -- it is served or mapped to a
+// served target, it is a tier alias, it is not shaped like a model id, or the
+// listing is unreadable or paged -- so the caller proceeds as before.
+func ServedRefusal(body, want, mapJSON, who string) (string, bool) {
+	if !modelIDShape(want) {
+		return "", false
+	}
+	orig := want
+	if strings.HasSuffix(strings.ToLower(want), "[1m]") {
+		want = want[:len(want)-4]
+	}
+	switch want {
+	case "", "opus", "sonnet", "haiku", "fable":
+		return "", false
+	}
+	// A readable, complete listing proves absence even when it serves nothing; a
+	// malformed or paged one cannot (modelInListing answers 2 for those).
+	if _, ok := modelsCount(body); !ok {
+		return "", false
+	}
+	if modelInListing(body, want, mapJSON) != 1 {
+		return "", false
+	}
+	rows, _ := GwModels("", false, body)
+	var ids []string
+	seen := map[string]bool{}
+	for _, r := range rows {
+		if seen[r.ID] {
+			continue
+		}
+		seen[r.ID] = true
+		ids = append(ids, r.ID)
+	}
+	msg := "'" + orig + "' is not served by " + who
+	if closest := ctxwindow.ClosestMatches(want, ids, 3); len(closest) > 0 {
+		msg += " (closest: " + strings.Join(closest, ", ") + ")"
+	}
+	served := "(none)"
+	if len(ids) > 0 {
+		served = strings.Join(ids, ", ")
+	}
+	msg += "; served: " + served
+	return msg, true
+}

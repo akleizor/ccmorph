@@ -334,7 +334,7 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 		if value == "" {
 			continue
 		}
-		if name == "model" && (strings.HasPrefix(value, "-") || strings.HasPrefix(value, "@") || value == "?" || hasSpace(value)) {
+		if name == "model" && !modelIDShape(value) {
 			return 0, "", fmt.Errorf("model must be a nonempty model id, not a flag or picker token")
 		}
 		if name == "effort" && !slices.Contains(profile.Efforts, value) {

@@ -255,11 +255,14 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		report("INFO", "history: deleted when the session ends (private=1)")
 	}
 	settings := l.profileLayer(name)
+	// The effective model is named below and adjudicated by DoctorRoute when the
+	// listing answers (#267); read it once, read-only.
+	model := l.accountModel(name)
 	if isFile(settings) {
 		if util.SettingsValid(filepath.Join(os.Getenv("HOME"), ".claude", "settings.json"), settings) {
 			report("OK", "profile settings: valid layered JSON ("+settings+" overrides canonical settings)")
-			if m := l.accountModel(name); m != "" {
-				report("INFO", "effective model: "+m+" (profile default)")
+			if model != "" {
+				report("INFO", "effective model: "+model+" (profile default)")
 			} else {
 				report("INFO", "effective model: Claude Code default (no saved model)")
 			}
@@ -317,7 +320,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 			report("INFO", "api key: ccmorph approves it for Claude Code at the next launch")
 		}
 	}
-	rows, bad := util.DoctorRoute(name, typ, base, adapter == "true", key, home, verbose)
+	rows, bad := util.DoctorRoute(name, typ, base, model, f["model_map"], adapter == "true", key, home, verbose)
 	if bad {
 		failed = 1
 	}
