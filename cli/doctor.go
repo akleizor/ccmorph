@@ -197,6 +197,11 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		report("FAIL", "profile home: missing ("+dir+")")
 		failed = 1
 	}
+	// The conf's one silent promise, said aloud where the profile's other
+	// behaviour is reported (#292).
+	if f["private"] == "1" {
+		report("INFO", "history: deleted when the session ends (private=1)")
+	}
 	settings := l.profileLayer(name)
 	if isFile(settings) {
 		if util.SettingsValid(filepath.Join(os.Getenv("HOME"), ".claude", "settings.json"), settings) {

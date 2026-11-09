@@ -138,11 +138,19 @@ func TestPrivateViewLinksConfigButNotSessionState(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "seen")
 	script := filepath.Join(t.TempDir(), "claude")
 	os.WriteFile(script, []byte("#!/bin/sh\nls -A \"$CLAUDE_CONFIG_DIR\" > '"+out+"'; echo \"$CLAUDE_SECURESTORAGE_CONFIG_DIR\" >> '"+out+"'; exit 7\n"), 0o755)
-	if rc := privateSession(script, nil, "", func() {}, &strings.Builder{}); rc != 7 {
+	// The end notice rides the same writer every other private-session message
+	// rides, so this test sees exactly what the terminal sees (#292).
+	var end strings.Builder
+	if rc := privateSession(script, nil, "", func() {}, &end); rc != 7 {
 		t.Fatalf("rc %d, want claude's own 7", rc)
 	}
 	b, _ := os.ReadFile(out)
 	if got := string(b); got != ".claude.json\nsettings.json\n"+real+"\n" {
 		t.Errorf("view saw %q", got)
+	}
+	// The session's end says what the deleted view means for the person at the
+	// terminal: the conversation is gone, and no resume command survives (#292).
+	if e := end.String(); !strings.Contains(e, "conversation was deleted") || !strings.Contains(e, "private=1") {
+		t.Errorf("end said %q", e)
 	}
 }

@@ -170,6 +170,11 @@ func (l *launcher) list() int {
 				label += l.dim + arrow(m) + l.reset
 			}
 		}
+		if f["private"] == "1" {
+			// Marked where profiles are listed; inspect and doctor say what the
+			// mark means (#292).
+			label += " " + l.yellow + "· private" + l.reset
+		}
 		fmt.Printf(" %s %s (%s)\n", marker, nameFmt, label)
 		found = true
 	}

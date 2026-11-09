@@ -650,7 +650,7 @@ there is no extra confirmation. Esc cancels a picker without saving.
 Changes affect new sessions.
 
 For a single setting: ccmorph set <profile> model|effort [value]`},
-	"list": {"ccmorph list", "List saved profiles. * marks the default used by ccmorph run."},
+	"list": {"ccmorph list", "List saved profiles. * marks the default used by ccmorph run; private marks one whose history is deleted when the session ends."},
 	"quota": {"ccmorph quota [profile] [--json]", `Every profile in one view, grouped by kind: Claude subscriptions, Codex
 subscriptions, budget accounts, and API or gateway profiles. Each plan window is a
 bar with the percent used and when it resets; a plan tier comes from the provider's

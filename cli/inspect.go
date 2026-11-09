@@ -146,6 +146,11 @@ func (l *launcher) inspect(args []string) int {
 	default:
 		grid(10, "protocol", "automatic — cached compatibility or validation at launch")
 	}
+	// The one promise only this option makes, and no other row names: the
+	// session's history does not outlive it (#292).
+	if f["private"] == "1" {
+		grid(10, "history", "deleted when the session ends  "+l.dim+"private=1"+l.reset)
+	}
 	fmt.Println()
 	if model != "" && typ == "apikey" {
 		fmt.Println("  " + l.dim + "launches as" + l.reset + "  claude --model " + model)

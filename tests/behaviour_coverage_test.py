@@ -112,6 +112,7 @@ def test_use_refuses_an_unknown_or_invalid_profile_and_keeps_the_default(box):
 def test_list_marks_the_default_and_labels_every_profile_type(box):
     seed(box)
     box.run('use', 'tok')
+    box.conf('priv', 'type=token\ntoken=t\nprivate=1\n')
     out = box.run('list').stdout
     rows = {line.split()[1] if line.lstrip().startswith('*') else line.split()[0]: line
             for line in out.splitlines() if line.strip()}
@@ -120,6 +121,7 @@ def test_list_marks_the_default_and_labels_every_profile_type(box):
     assert 'sub: me@example.invalid' in rows['work']
     assert 'apikey: https://gw.example.invalid' in rows['gw']
     assert 'canary' not in out
+    assert 'private' in rows['priv'] and 'private' not in rows['tok']
 
 
 def test_list_with_no_profiles_points_at_add(box):
@@ -410,6 +412,7 @@ def test_inspect_never_prints_the_stored_credential(box):
         out = box.run('inspect', name)
         assert out.returncode == 0, out.stderr
         assert 'canary' not in out.stdout + out.stderr
+        assert 'deleted when the session ends' not in out.stdout
 
 
 def test_inspect_shows_a_profile_whose_conf_fails_validation_gh_113(box):
@@ -422,6 +425,17 @@ def test_inspect_shows_a_profile_whose_conf_fails_validation_gh_113(box):
     assert out.returncode == 0, out.stderr
     assert 'broken' in out.stdout and 'apikey' in out.stdout
     assert 'has no api_key' not in out.stderr
+
+
+def test_inspect_names_the_history_a_private_profile_deletes_gh_292(box):
+    # GH-292: a private profile deletes its conversation when the session ends,
+    # and no view said so. inspect is where a profile's promises are read, each
+    # line naming its source, so the deleted history is named there too.
+    box.conf('priv', 'type=token\ntoken=t\nprivate=1\n')
+    out = box.run('inspect', 'priv')
+    assert out.returncode == 0, out.stderr
+    assert 'deleted when the session ends' in out.stdout
+    assert 'private=1' in out.stdout
 
 
 # --- an unknown profile name reads the same in every command ---------------
