@@ -1,0 +1,37 @@
+#compdef ccmorph
+# Tab completion for ccmorph: the command names, then a profile name.
+# The command names are the ones `ccmorph help all` lists
+# (tests/completion_test.py keeps the two equal). Profile names are the .conf
+# files in the state directory, found as lib/ccmorph.sh finds it. Pure zsh, so
+# a Tab starts no process.
+local -a commands=(run add list quota use config inspect doctor models get set
+  login mv rm hop cred update uninstall probe context profile help)
+local -a profile_verbs=(run use rm mv config doctor inspect quota set get models
+  login cred hop probe context)
+local state="${CCMORPH_STATE_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/ccmorph}"
+local -a profiles=("$state"/*.conf(N:t:r))
+
+if (( CURRENT == 2 )); then
+  compadd -- "${commands[@]}"
+  return
+fi
+case "${words[2]}" in
+  help)
+    (( CURRENT == 3 )) && { compadd -- "${commands[@]}" all; return }
+    ;;
+  doctor)
+    if (( CURRENT == 3 )); then
+      compadd -- --verbose "${profiles[@]}"; return
+    elif (( CURRENT == 4 )) && [[ "${words[3]}" == --verbose ]]; then
+      compadd -- "${profiles[@]}"; return
+    fi
+    ;;
+  get|set)
+    (( CURRENT == 4 )) && { compadd -- model effort; return }
+    ;;
+esac
+if (( CURRENT == 3 && ${profile_verbs[(Ie)${words[2]}]} )); then
+  compadd -- "${profiles[@]}"
+  return
+fi
+_files
