@@ -251,6 +251,12 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	for _, r := range rows {
 		report(r.Kind, r.Msg)
 	}
+	// A masking mismatch is a privacy gap, not a start failure: the profile
+	// still runs, so the row warns without weighing on the verdict (#293).
+	if on, _ := util.MaskOn(f["env.CCMORPH_MASK"]); on && !util.Maskable(typ, base) {
+		l.status("WARN", "masking: env.CCMORPH_MASK="+f["env.CCMORPH_MASK"]+
+			" is set but nothing is masked — this route reaches its backend without ccmorph's shim; masking covers gateway (apikey) routes only")
+	}
 	// The verdict is the report's last line and answers the only question a
 	// person has: is this profile ready to run, or what must be fixed first.
 	switch {

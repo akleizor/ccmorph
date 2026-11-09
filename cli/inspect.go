@@ -151,6 +151,24 @@ func (l *launcher) inspect(args []string) int {
 	if f["private"] == "1" {
 		grid(10, "history", "deleted when the session ends  "+l.dim+"private=1"+l.reset)
 	}
+
+	// Masking is a promise about what leaves the machine, so it gets a row
+	// whatever the profile: on, off, or not available on the route — and a
+	// plain word when the setting is on where nothing is masked (#293).
+	maskVal, maskable := f["env.CCMORPH_MASK"], util.Maskable(typ, base)
+	maskOn, maskBad := util.MaskOn(maskVal)
+	switch {
+	case maskable && maskOn:
+		grid(10, "masking", "on  "+l.dim+"— secrets reach the endpoint as placeholders"+l.reset)
+	case maskable && maskBad:
+		grid(10, "masking", "env.CCMORPH_MASK="+maskVal+"  "+l.dim+"— a launch refuses this value (must be 1 or 0)"+l.reset)
+	case maskable:
+		grid(10, "masking", "off")
+	case maskOn:
+		grid(10, "masking", "env.CCMORPH_MASK="+maskVal+"  "+l.dim+"— not available on this route, nothing is masked"+l.reset)
+	default:
+		grid(10, "masking", "not available on this route")
+	}
 	fmt.Println()
 	if model != "" && typ == "apikey" {
 		fmt.Println("  " + l.dim + "launches as" + l.reset + "  claude --model " + model)
