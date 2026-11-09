@@ -263,6 +263,17 @@ def test_the_first_added_profile_becomes_the_default(box):
     assert box.active == 't1'
 
 
+def test_add_token_prompt_names_where_a_token_comes_from_issue_290(box):
+    # GH-290: the token prompt asked for a paste and never said where a token
+    # comes from or what a valid one starts with, so a person without one hit a
+    # dead end that no other screen in ccmorph opened a way out of.
+    done = box.run('add', 'tk1', answer='token\nsk-ant-oat01-pasted-example\n')
+    assert done.returncode == 0, done.stderr
+    assert 'claude setup-token' in done.stdout
+    assert 'starts with sk-ant-oat01-' in done.stdout
+    assert 'For scripts/CI; quota cannot read plan usage' in done.stderr
+
+
 @pytest.mark.parametrize('with_a_default', [
     pytest.param(True, id='an-existing-default-is-kept-gh-17'),
     pytest.param(False, id='a-first-subscription-profile-becomes-the-default'),

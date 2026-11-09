@@ -555,6 +555,8 @@ class PickerTTYTest(unittest.TestCase):
         self.assertFalse((self.tmp / 'fzf.log').exists())
         self.assertIn('\x1b[38;2;177;185;249mClaude account\x1b[0m    \x1b[38;2;153;153;153mSign in with your browser\x1b[0m', out)
         self.assertIn('API key           \x1b[38;2;153;153;153mAnthropic or a gateway\x1b[0m', out)
+        # GH-290: the row must say when a token beats a browser sign-in and what it cannot do.
+        self.assertIn('Claude token      \x1b[38;2;153;153;153mFor scripts/CI; quota cannot read plan usage\x1b[0m', out)
         self.assertFalse((self.state / 'demo.conf').exists())
 
     def test_labeled_menu_and_help_remain_plain_when_color_is_disabled(self):
@@ -787,7 +789,7 @@ class PickerTTYTest(unittest.TestCase):
         for label in ('Antigravity', 'Codex', 'Devin', 'Kimi', 'Meta', 'xAI'):
             self.assertIn(label, out)
         self.assertIn('\x1b[38;2;153;153;153mSign in with your browser', out)
-        self.assertIn('\x1b[38;2;153;153;153mPaste an existing OAuth token', out)
+        self.assertIn('\x1b[38;2;153;153;153mFor scripts/CI; quota cannot read plan usage', out)
         self.assertIn('PROVIDER_ID=xai', out)
         self.assertNotIn('PROVIDER_ID=xAI', out)
         self.assertFalse((self.tmp / 'fzf.log').exists())

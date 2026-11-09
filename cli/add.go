@@ -52,7 +52,7 @@ func (l *launcher) add(args []string) int {
 			}
 		}
 	}
-	rows := "sub\tClaude account\tSign in with your browser\ntoken\tClaude token\tPaste an existing OAuth token\napikey\tAPI key\tAnthropic or a gateway"
+	rows := "sub\tClaude account\tSign in with your browser\ntoken\tClaude token\tFor scripts/CI; quota cannot read plan usage\napikey\tAPI key\tAnthropic or a gateway"
 	for _, p := range providers {
 		rows += "\n" + p + "\t" + providerLabel(p) + "\tSign in with your browser"
 	}
@@ -178,6 +178,7 @@ func (l *launcher) addSub(name string) int {
 }
 
 func (l *launcher) addToken(name string) int {
+	fmt.Println(l.dim + "Make one with claude setup-token; a valid one starts with sk-ant-oat01-." + l.reset)
 	token, rc := uiInput("Paste token for "+name+" (hidden): ", true)
 	if rc != 0 {
 		return 1
