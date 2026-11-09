@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -314,9 +315,17 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 	selected, drawn, result, rc := 0, 0, 1, 0
 	var heading string
 	var height, rowWidth, lw int
+	var hidden bool
 	resize := func() {
 		r, columns := termSize()
 		height = max(1, r-5)
+		// Rows the window cuts off are named by an "N more" line at each edge.
+		// They come out of the item window, so the menu still fits the terminal,
+		// and below eight rows there is no room for them (#278).
+		hidden = len(rows) > height && r >= 8
+		if hidden {
+			height = max(1, r-7)
+		}
 		rowWidth = columns - len(uiMargin)
 		lw = max(1, min(width, rowWidth-uiGap-1))
 		heading = t.heading(prompt, columns)
@@ -343,6 +352,9 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 			last := min(first+height, len(rows))
 			var b bytes.Buffer
 			b.WriteString("\033[2K" + heading + "\n\033[2K\n")
+			if hidden {
+				b.WriteString(t.moreLine("↑", first) + "\n")
+			}
 			for i := first; i < last; i++ {
 				ptr := " "
 				if i == selected {
@@ -350,9 +362,15 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 				}
 				b.WriteString("\033[2K" + ptr + " " + t.label(visible(rows[i], display), lw, i == selected, rowWidth) + "\n")
 			}
-			b.WriteString("\033[2K\n\033[2K" + uiMargin + t.gray + "↑/↓ Move · Enter Select · Esc Cancel" + t.reset + "\n")
+			if hidden {
+				b.WriteString(t.moreLine("↓", len(rows)-last) + "\n")
+			}
+			b.WriteString("\033[2K\n\033[2K" + uiMargin + t.gray + "↑/↓ Move · Home/End Jump · Enter Select · Esc Cancel" + t.reset + "\n")
 			w.Write(b.Bytes())
 			drawn = last - first + 4
+			if hidden {
+				drawn += 2
+			}
 			c, s, ok := k.next(0, sigs, winch)
 			if c == keyResize {
 				resize()
@@ -383,10 +401,17 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 				if !ok {
 					return
 				}
-				if n == 'A' && selected > 0 {
-					selected--
-				} else if n == 'B' && selected < len(rows)-1 {
-					selected++
+				// The list wraps — the last row is one ↑ away from the first —
+				// and Home/End jump to either end (#278).
+				switch n {
+				case 'A':
+					selected = (selected + len(rows) - 1) % len(rows)
+				case 'B':
+					selected = (selected + 1) % len(rows)
+				case 'H':
+					selected = 0
+				case 'F':
+					selected = len(rows) - 1
 				}
 			}
 		}
@@ -402,11 +427,46 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 	return rowID(rows[selected]), 0
 }
 
+// moreLine is one edge of a native menu's window: how many rows sit beyond it.
+// The line is written even when that side cuts nothing, so the menu keeps one
+// shape while it scrolls.
+func (t uiTheme) moreLine(arrow string, cut int) string {
+	if cut < 1 {
+		return "\033[2K"
+	}
+	return "\033[2K" + uiMargin + t.gray + arrow + " " + strconv.Itoa(cut) + " more" + t.reset
+}
+
 // receipt is _ccm_ui_receipt: Title › choice.
 func (t uiTheme) receipt(title, choice string) {
 	_, columns := termSize()
 	choice = fit(choice, columns/2)
 	fmt.Fprintln(os.Stderr, t.heading(title, columns-cells(choice)-3)+" "+t.focus+"›"+t.reset+" "+t.gray+choice+t.reset)
+}
+
+// fzfVersion is the installed fzf's --version line, empty when it cannot run.
+func fzfVersion(bin string) string {
+	out, err := exec.Command(bin, "--version").CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return string(out)
+}
+
+var fzfVersionRE = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+)`)
+
+// fzfAtLeast reports whether a --version line names MINOR of 0.MINOR or a later
+// major. The scrollbar and the first/last jump binds arrived in 0.36, the
+// adaptive ~-window in 0.71; an older or unreadable version keeps the menu
+// working without them.
+func fzfAtLeast(version string, minor int) bool {
+	m := fzfVersionRE.FindStringSubmatch(version)
+	if m == nil {
+		return false
+	}
+	major, _ := strconv.Atoi(m[1])
+	min, _ := strconv.Atoi(m[2])
+	return major > 0 || min >= minor
 }
 
 // search is _ccm_ui_search: fzf when present, else the numbered list.
@@ -426,10 +486,25 @@ func (t uiTheme) search(prompt string, rows []string) (string, int) {
 		if os.Getenv("NO_COLOR") != "" {
 			theme = []string{"--no-color"}
 		}
-		args := append([]string{"--height", "45%", "--reverse", "--border=rounded", "--pointer=❯", "--marker=✓",
-			"--no-multi", "--no-print-query", "--ansi"}, theme...)
+		// A list longer than its window must be reachable end to end and say
+		// that rows are hidden: --cycle wraps the ends together, and a new
+		// enough fzf adds the scrollbar and the Home/End jump. Its window also
+		// grows to the list itself, so a list that fits the terminal is never
+		// cut at all (#278).
+		version := fzfVersion(fzf)
+		height := "45%"
+		if fzfAtLeast(version, 71) {
+			height = "~-1"
+		}
+		args := append([]string{"--height", height, "--reverse", "--border=rounded", "--pointer=❯", "--marker=✓",
+			"--no-multi", "--no-print-query", "--ansi", "--cycle"}, theme...)
+		header := "↑/↓ Move · Type to filter · Enter Select · Esc Cancel"
+		if fzfAtLeast(version, 36) {
+			args = append(args, "--scrollbar", "--bind", "home:first,end:last")
+			header = "↑/↓ Move · Home/End Jump · Type to filter · Enter Select · Esc Cancel"
+		}
 		args = append(args, "--delimiter", "\t", "--with-nth=2..", "--prompt", prompt+"> ",
-			"--header", "↑/↓ Move · Type to filter · Enter Select · Esc Cancel")
+			"--header", header)
 		cmd := exec.Command(fzf, args...)
 		cmd.Env = append(os.Environ(), "FZF_DEFAULT_OPTS=", "FZF_DEFAULT_OPTS_FILE=")
 		cmd.Stdin = strings.NewReader(strings.Join(rendered, "\n") + "\n")
