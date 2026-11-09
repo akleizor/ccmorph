@@ -232,7 +232,10 @@ The existing piped-input configuration sequence is unchanged for scripts.
 [`cli/ui.go`](../cli/ui.go) owns every interactive renderer and theme. Commands supply
 rows and choose `native` (↑/↓ menu) or `search` (fzf); they do not implement key
 handling, cursor movement, or styling. `NO_COLOR` disables styling; `TERM=dumb` and
-missing `fzf` use numbered choices. Claude Code's own in-session menus are
+missing `fzf` use numbered choices. On fzf 0.36 and later the search list shows a
+scrollbar and Home/End jump to either end; an older fzf gets a window sized to the
+whole list when the terminal allows, and otherwise its header begins *More rows than
+fit here*. Claude Code's own in-session menus are
 owned by Claude Code, not rendered or replaced by ccmorph.
 
 Profile pickers offer only usable profiles: `models` lists API-key profiles,

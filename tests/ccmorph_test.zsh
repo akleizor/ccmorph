@@ -791,6 +791,45 @@ test_set_model_interactively_saves_the_chosen_id() {
   return $rc
 }
 
+# An fzf without a scrollbar (before 0.36) must not hide rows silently: the
+# window is sized to the list when the terminal allows, and the header says so
+# when it cannot (#278).
+test_search_picker_on_an_old_fzf_never_hides_rows_silently_issue_278() {
+  local test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'if [ "$1" = --version ]; then echo 0.29.0; exit 0; fi' \
+    'for a do printf "%s\n" "$a"; done > "$HOME/fzf.args"' \
+    'head -n 1' > "$HOME/bin/fzf"
+  chmod +x "$HOME/bin/fzf"
+  source "$CCMORPH_SOURCE"
+  local rc=0 picked i
+  local -a short long
+  for i in {1..10}; do short+=("r$i"$'\t'"Row $i"); done
+  for i in {1..30}; do long+=("r$i"$'\t'"Row $i"); done
+
+  picked=$(TERM=xterm-256color ccmorph _ui select search Pick "${(F)short}" 2>/dev/null)
+  [[ "$picked" == r1 ]] || { print -u2 -- "the first offered row must be picked (got: $picked)"; rc=1 }
+  assert_contains "$(<"$HOME/fzf.args")" $'--height\n15\n' \
+    'a list that fits must get a window of rows plus the five lines fzf spends' || rc=1
+  assert_contains "$(<"$HOME/fzf.args")" $'--header\n↑/↓ Move' \
+    'a list that fits needs no cut warning' || rc=1
+  assert_not_contains "$(<"$HOME/fzf.args")" 'More rows than fit here' \
+    'a list that fits must not claim rows are cut' || rc=1
+  assert_not_contains "$(<"$HOME/fzf.args")" '--scrollbar' \
+    'an old fzf must not be given the scrollbar flag' || rc=1
+
+  picked=$(TERM=xterm-256color ccmorph _ui select search Pick "${(F)long}" 2>/dev/null)
+  assert_contains "$(<"$HOME/fzf.args")" $'--height\n23\n' \
+    'a list the terminal cannot hold gets the whole terminal' || rc=1
+  assert_contains "$(<"$HOME/fzf.args")" $'--header\nMore rows than fit here:' \
+    'a cut list must say rows are cut' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
 # The five levels are Claude Code's own fixed enum, so this picker needs no
 # endpoint call -- and must not make one.
 test_set_effort_interactively_offers_the_engine_levels() {
@@ -10677,6 +10716,7 @@ run_test test_the_listing_refuses_words_after_the_verb
 run_test test_model_command_sets_the_profiles_default_model
 run_test test_set_model_interactively_saves_the_chosen_id
 run_test test_set_effort_interactively_offers_the_engine_levels
+run_test test_search_picker_on_an_old_fzf_never_hides_rows_silently_issue_278
 run_test test_the_picker_without_fzf_names_the_direct_command_and_the_choices
 run_test test_saved_default_model_beats_the_confs_bootstrap_model_at_launch
 run_test test_explicit_model_flag_beats_the_saved_default
