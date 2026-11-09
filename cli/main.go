@@ -58,6 +58,21 @@ func (l *launcher) extraArg(verb, word string) int {
 	return 2
 }
 
+// realVerbs is every verb `ccmorph <verb>` answers to, in one list for the typo
+// hint: a word one edit away from exactly one of these is told to run it.
+var realVerbs = []string{"add", "config", "context", "cred", "doctor", "get", "help", "hop",
+	"inspect", "list", "login", "models", "mv", "probe", "quota", "rm", "run", "set",
+	"uninstall", "update", "use", "version"}
+
+// topFlags are the flags ccmorph itself takes before the verb.
+var topFlags = []string{"--help", "--version"}
+
+// guessedVerbs are the words a newcomer guesses at ccmorph's terser verbs; each
+// names the command that does what it says.
+var guessedVerbs = map[string]string{
+	"ls": "list", "remove": "rm", "delete": "rm", "rename": "mv", "switch": "use",
+}
+
 // dispatch is the `ccmorph` command: every verb, help and the launch's own argv.
 func (l *launcher) dispatch(args []string) int {
 	first := ""
@@ -158,18 +173,45 @@ func (l *launcher) dispatch(args []string) int {
 		"_menu", "_ui", "config", "add", "login", "hop", "quota":
 		return l.verb(args)
 	}
+	return l.unknown(first, args)
+}
+
+// unknown answers a word no verb matched. A word that names a command — a
+// common guess, or one typo away from a real verb — is told which one; the
+// profile list waits for a word that could itself be a profile, so it never
+// runs under a command guess or a flag.
+func (l *launcher) unknown(first string, args []string) int {
 	if strings.HasPrefix(first, "-") {
-		l.err("unknown command '" + first + "'. Launch flags go after the verb: ccmorph run " + first)
-	} else {
-		l.err("unknown command '" + first + "'. Run: ccmorph --help")
-		if l.exists(first) {
-			fmt.Fprintln(os.Stderr, "  To launch that profile: ccmorph run "+first)
+		if now := oneEditFrom(first, topFlags); now != "" {
+			l.err("unknown option '" + first + "'. Run: ccmorph " + now)
+		} else {
+			l.err("unknown option '" + first + "'. Launch flags go after the verb: ccmorph run " + first)
 		}
+		return 1 // a flag is never a profile name
 	}
-	l.accountsHint()
+	// The guess wins over a profile of the same name: a bare verb-shaped word
+	// is what a newcomer typing a command produces.
+	if now := guessedVerbs[first]; now != "" {
+		return l.retired(first, now, args)
+	}
+	if l.exists(first) {
+		l.err("unknown command '" + first + "'. Run: ccmorph --help")
+		fmt.Fprintln(os.Stderr, "  To launch that profile: ccmorph run "+first)
+		l.accountsHint()
+		return 1
+	}
+	if now := oneEditFrom(first, realVerbs); now != "" {
+		return l.retired(first, now, args)
+	}
+	l.err("unknown command '" + first + "'. Run: ccmorph --help")
+	if profile.ValidName(first) {
+		l.accountsHint()
+	}
 	return 1
 }
 
+// retired answers a word ccmorph does not run — a retired verb, a common
+// guess, or a typo — by naming the command that does what it says.
 func (l *launcher) retired(verb, now string, args []string) int {
 	msg := "unknown command '" + verb + "'. Run: ccmorph " + now
 	if len(args) > 1 {
@@ -177,6 +219,46 @@ func (l *launcher) retired(verb, now string, args []string) int {
 	}
 	l.err(msg)
 	return 1
+}
+
+// oneEditFrom returns the word one insertion, deletion, substitution or
+// adjacent transposition from word — the shape of a typo — when exactly one of
+// words is, and "" when none or several are (a tie says nothing).
+func oneEditFrom(word string, words []string) string {
+	hit, ties := "", 0
+	for _, w := range words {
+		if oneEdit(word, w) {
+			hit, ties = w, ties+1
+		}
+	}
+	if ties == 1 {
+		return hit
+	}
+	return ""
+}
+
+// oneEdit reports whether a and b are at most one insertion, deletion,
+// substitution or adjacent transposition apart.
+func oneEdit(a, b string) bool {
+	x, y := []rune(a), []rune(b)
+	i := 0
+	for i < len(x) && i < len(y) && x[i] == y[i] {
+		i++
+	}
+	if i == len(x) && i == len(y) {
+		return true
+	}
+	tail := func(ai, bi int) bool { return slices.Equal(x[ai:], y[bi:]) }
+	switch {
+	case len(x) == len(y): // a substitution, or one swapped pair
+		return tail(i+1, i+1) ||
+			i+1 < len(x) && x[i] == y[i+1] && x[i+1] == y[i] && tail(i+2, i+2)
+	case len(x) == len(y)+1: // one rune x has and y lacks
+		return tail(i+1, i)
+	case len(y) == len(x)+1: // one rune y has and x lacks
+		return tail(i, i+1)
+	}
+	return false
 }
 
 // secureDirs is _ccm_secure_dirs: refuse symlinked roots, migrate, create and
