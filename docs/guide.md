@@ -488,7 +488,9 @@ instead, or `ccmorph set <profile> model -i` to pick from the endpoint's listing
 
 `ccmorph hop` ends the current Claude Code session and the relay resumes it on
 the new profile with its current model and effort intact — one command, no
-exit. It only works **from inside a running Claude Code session** — it reads
+exit. A hop typed before the session's first message has no conversation to
+resume, so the target starts a new one and says so in one line. It only works
+**from inside a running Claude Code session** — it reads
 that session's id, model, and effort to hand them to the next one. In the
 Claude Code prompt, use the `/ccmorph:hop` command every ccmorph launch loads,
 or run it with a leading `!`:

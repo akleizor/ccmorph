@@ -667,6 +667,27 @@ func SessionState(path string) (model, effort string, ok bool) {
 	return model, effort, true
 }
 
+// HasConversation reports whether a transcript holds a conversation Claude Code
+// can resume. Claude Code refuses an id whose transcript carries no record with
+// the identity it resumes by -- which is every session that has yet to see its
+// first message, the file still empty or not written (#288).
+func HasConversation(path string) bool {
+	recs, ok := transcript(path)
+	if !ok {
+		return false
+	}
+	for _, r := range recs {
+		if s, ok := getKey(r, "sessionId").(string); ok && s != "" {
+			if u, ok := getKey(r, "uuid").(string); ok && u != "" {
+				if ts, ok := getKey(r, "timestamp").(string); ok && ts != "" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // Advise wraps msg as the SessionStart hook's systemMessage.
 func Advise(msg string) string {
 	o := ordjson.New()

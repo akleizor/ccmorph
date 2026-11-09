@@ -2571,6 +2571,15 @@ install_hopping_claude() {
   chmod +x "$HOME/bin/claude"
 }
 
+# The record Claude Code writes with a session's first message: the identity a
+# --resume looks for. A relay only resumes a session that has one (#288), so a
+# test that means "a session with history" seeds its transcript.
+seed_session_transcript() {
+  mkdir -p "$HOME/.claude/projects/p"
+  printf '{"type":"user","sessionId":"%s","uuid":"seed-1","timestamp":"2026-01-01T00:00:00.000Z","isSidechain":false,"message":{"role":"user","content":"%s"}}\n' \
+    "$1" "$2" > "$HOME/.claude/projects/p/$1.jsonl"
+}
+
 test_hop_inside_a_core_launch_resumes_on_the_target() {
   # The whole path a user runs: `ccmorph run`, a hop from inside the session, and
   # the relay resuming it on the target profile. It fails when hop-target picks the
@@ -2581,6 +2590,8 @@ test_hop_inside_a_core_launch_resumes_on_the_target() {
   setup_home "$test_home"
   printf '%s\n' 'type=proxy' 'base_url=http://target.invalid' 'api_key=target-key' 'model=target-model' \
     > "$HOME/.config/ccmorph/target.conf"
+  # The resume this test asserts needs a conversation to resume.
+  seed_session_transcript hop-session 'spoken before the hop'
   source "$CCMORPH_SOURCE"
   install_hopping_claude target
 
@@ -2626,6 +2637,7 @@ test_hop_failure_names_the_way_back_to_the_source_profile() {
   local test_home out st rc=0
   test_home=$(mktemp -d)
   setup_home "$test_home"
+  seed_session_transcript hop-session 'spoken before the hop'
   printf '%s\n' 'type=proxy' 'base_url=http://dead.invalid' 'api_key=dead-key' 'model=dead-model' \
     > "$HOME/.config/ccmorph/dead.conf"
   # The route answers the pre-close probe (the default curl stub), but only the
@@ -2651,6 +2663,94 @@ test_hop_failure_names_the_way_back_to_the_source_profile() {
   local log="$(<"$CCMORPH_TEST_LOG")"
   [[ "$(print -r -- "$log" | grep -c '^TERM$')" == 1 ]] || {
     print -u2 -- "the hop itself must still end Claude Code once: ${(qqq)log}"
+    rc=1
+  }
+  unset CCMORPH_TEST_SOURCE CCMORPH_TEST_HOP_ARGS CCMORPH_TEST_TESTS_DIR
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_hop_before_the_first_message_starts_a_new_conversation_issue_288() {
+  # Before the first message Claude Code has written no transcript for the
+  # session, so handing its id to --resume ended the hop at Claude Code's own
+  # "No conversation found" and left the person at the shell (#288). The relay
+  # must start the target profile on a new conversation instead, and say so in
+  # one line -- with no resume and no cache notice, for nothing is carried.
+  local test_home out st rc=0
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  printf '%s\n' 'type=proxy' 'base_url=http://target.invalid' 'api_key=target-key' 'model=target-model' \
+    > "$HOME/.config/ccmorph/target.conf"
+  source "$CCMORPH_SOURCE"
+  install_hopping_claude target
+
+  out=$(_ccm_launch -a proxy 2>&1); st=$?
+
+  [[ "$st" == 0 ]] || { print -u2 -- "the launch must end on the target's own exit, got $st"; rc=1 }
+  [[ "$out" == *'starting a new conversation as target'* ]] || {
+    print -u2 -- "a hop with no conversation must start one on the target: ${(qqq)out}"
+    rc=1
+  }
+  [[ "$out" != *'resuming as'* ]] || {
+    print -u2 -- "nothing was resumed, so the resume line must not print: ${(qqq)out}"
+    rc=1
+  }
+  [[ "$out" != *'Switching accounts or backends'* ]] || {
+    print -u2 -- "with no conversation to carry the cache notice must not print: ${(qqq)out}"
+    rc=1
+  }
+  local log="$(<"$CCMORPH_TEST_LOG")"
+  [[ "$(print -r -- "$log" | grep -c '^TERM$')" == 1 ]] || {
+    print -u2 -- "hop must end Claude Code, not the launcher: ${(qqq)log}"
+    rc=1
+  }
+  [[ "$log" != *--resume* ]] || {
+    print -u2 -- "a session with no conversation must not be passed to --resume: ${(qqq)log}"
+    rc=1
+  }
+  [[ "$(print -r -- "$log" | grep -c '^CFG=target$')" == 1 ]] || {
+    print -u2 -- "the new conversation must run on the target profile: ${(qqq)log}"
+    rc=1
+  }
+  local -a left=("$HOME"/.config/ccmorph/.reswitch.*(N))
+  (( ${#left} == 0 )) || {
+    print -u2 -- 'the switch request must be consumed, not left behind'
+    rc=1
+  }
+  unset CCMORPH_TEST_SOURCE CCMORPH_TEST_HOP_ARGS CCMORPH_TEST_TESTS_DIR
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_failed_switch_with_no_conversation_does_not_offer_a_resume_issue_288() {
+  # A hop before the first message starts the target on a new conversation. If that
+  # target cannot start, the way back must not tell the person to --resume an id
+  # with no conversation: that ends at Claude Code's own "No conversation found".
+  local test_home out st rc=0
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  printf '%s\n' 'type=proxy' 'base_url=http://dead.invalid' 'api_key=dead-key' 'model=dead-model' \
+    > "$HOME/.config/ccmorph/dead.conf"
+  write_fake_adapter \
+    '[ "$1" = dead ] && exit 1' \
+    'echo "NATIVE=1"' \
+    'trap "exit 0" TERM INT'
+  source "$CCMORPH_SOURCE"
+  install_hopping_claude dead
+
+  out=$(_ccm_launch -a proxy 2>&1); st=$?
+
+  [[ "$st" != 0 ]] || { print -u2 -- "a switch whose target cannot start must fail: ${(qqq)out}"; rc=1 }
+  [[ "$out" == *'starting a new conversation as dead'* ]] || {
+    print -u2 -- "the relay must start the target on a new conversation: ${(qqq)out}"
+    rc=1
+  }
+  [[ "$out" == *'adapter exited before readiness'* ]] || {
+    print -u2 -- "the failure must still name its cause: ${(qqq)out}"
+    rc=1
+  }
+  [[ "$out" != *--resume* ]] || {
+    print -u2 -- "no conversation exists to resume, so none may be offered: ${(qqq)out}"
     rc=1
   }
   unset CCMORPH_TEST_SOURCE CCMORPH_TEST_HOP_ARGS CCMORPH_TEST_TESTS_DIR
@@ -2943,6 +3043,8 @@ test_relay_resume_preserves_dangerous_permission_mode() {
     '[ "$code" != 000 ]' \
     > "$HOME/bin/curl"
   chmod +x "$HOME/bin/curl"
+  # The relay resumes relay-session: seed its conversation so the resume holds (#288).
+  seed_session_transcript relay-session 'spoken before the switch'
   printf '%s\n' \
     '#!/bin/sh' \
     'printf "ARG" >> "$CCMORPH_TEST_LOG"' \
@@ -3001,6 +3103,9 @@ check_relay_cache_notice_absent() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
+  # Every relay here means to resume relay-session: seed its conversation so the
+  # resume holds and the notice this helper checks for stays the resume's own (#288).
+  seed_session_transcript relay-session 'spoken before the switch'
   # Seeding atomically replaces the conf: finish it before creating the alias.
   source "$CCMORPH_SOURCE"
   _ccm_config_store seed-model-defaults proxy || { rm -rf "$test_home"; return 1; }
@@ -9778,6 +9883,8 @@ run_test test_resume_rejects_flag_picker_and_multitoken_model_values
 run_test test_hop_relays_model_and_effort
 run_test test_hop_inside_a_core_launch_resumes_on_the_target
 run_test test_hop_failure_names_the_way_back_to_the_source_profile
+run_test test_hop_before_the_first_message_starts_a_new_conversation_issue_288
+run_test test_failed_switch_with_no_conversation_does_not_offer_a_resume_issue_288
 run_test test_a_hop_reads_the_catalogue_afresh
 run_test test_hop_refuses_to_end_the_session_when_the_target_cannot_start
 run_test test_launch_failure_names_the_cause_and_the_doctor_command
@@ -11104,6 +11211,12 @@ test_hop_carries_the_one_session_into_the_target_history() {
     > "$HOME/.config/ccmorph/target.conf"
   printf '%s\n' '#!/bin/sh' 'printf 200' > "$HOME/bin/curl"
   chmod +x "$HOME/bin/curl"
+  # The record a session's first message writes: the identity a resume needs
+  # (#288). A bare line would start a new conversation instead of carrying this
+  # one. Handed to the stub through the environment, so the assertion below
+  # checks the very literal that was seeded.
+  local record='{"type":"user","sessionId":"hop-session","uuid":"seed-1","timestamp":"2026-01-01T00:00:00.000Z","isSidechain":false,"message":{"role":"user","content":"first"}}'
+  export CCMORPH_TEST_RECORD="$record"
   # First run (proxy) writes the session and asks for a hop; the second (target)
   # appends to whatever its own history holds under that id.
   printf '%s\n' \
@@ -11111,7 +11224,8 @@ test_hop_carries_the_one_session_into_the_target_history() {
     'h="$CLAUDE_CONFIG_DIR/projects/p"' \
     'if [ ! -f "$HOME/relay-triggered" ]; then' \
     '  : > "$HOME/relay-triggered"' \
-    '  mkdir -p "$h/hop-session/subagents" && echo first > "$h/hop-session.jsonl"' \
+    '  mkdir -p "$h/hop-session/subagents"' \
+    '  printf "%s\n" "$CCMORPH_TEST_RECORD" > "$h/hop-session.jsonl"' \
     '  printf "profile=target\nsession=hop-session\n" > "$HOME/.config/ccmorph/.reswitch.$CCMORPH_RELAY_ID"' \
     'elif [ -f "$h/hop-session.jsonl" ]; then echo second >> "$h/hop-session.jsonl"' \
     'else echo MISSING >> "$CCMORPH_TEST_LOG"; fi' \
@@ -11120,9 +11234,17 @@ test_hop_carries_the_one_session_into_the_target_history() {
   source "$CCMORPH_SOURCE"
   local rc=0 store="$HOME/.claude/projects/p"
   ccmorph run proxy >/dev/null 2>&1 || { print -u2 'the hop must succeed'; rc=1; }
-  # History is shared, so both profiles write the one transcript in the store.
+  unset CCMORPH_TEST_RECORD
+  # History is shared, so both profiles write the one transcript in the store:
+  # the seeded record, then the line the target appended -- the whole file,
+  # exactly, so no extra or repeated line slips through.
   [[ -f "$store/hop-session.jsonl" && ! -L "$store/hop-session.jsonl" ]] || { print -u2 'the transcript must live in the shared store'; rc=1; }
-  [[ "$(<"$store/hop-session.jsonl")" == $'first\nsecond' ]] || { print -u2 'the target must append to the one transcript'; rc=1; }
+  local expected="$record"$'\n'second
+  local actual="$(<"$store/hop-session.jsonl")"
+  [[ "$actual" == "$expected" ]] || {
+    print -u2 -- "the target must resume the one transcript and append its line\n  expected: ${(qqq)expected}\n  actual: ${(qqq)actual}"
+    rc=1
+  }
   [[ -d "$store/hop-session/subagents" ]] || { print -u2 'the sidecar dir must stay with the transcript'; rc=1; }
   [[ ! -f "$CCMORPH_TEST_LOG" || "$(<"$CCMORPH_TEST_LOG")" != *MISSING* ]] || rc=1
   rm -rf "$test_home"
