@@ -21,6 +21,13 @@ def run(home, state, verb, input=""):
            if not k.startswith(("CCMORPH_", "_CCMORPH_", "CLAUDE_", "ANTHROPIC_"))}
     env.update(HOME=str(home), ZDOTDIR=str(home),
                CCMORPH_STATE_DIR=str(state), CCMORPH_LIB_DIR=str(ROOT / "lib"))
+    # `add` offers a pasted credential to its endpoint before saving it; point
+    # that fetch at a port nothing owns so the box stays offline and the answer
+    # is always "not checked" (setup_home does the same for the zsh suite).
+    env.update(HTTP_PROXY='http://127.0.0.1:1', HTTPS_PROXY='http://127.0.0.1:1',
+               http_proxy='http://127.0.0.1:1', https_proxy='http://127.0.0.1:1')
+    env.pop('NO_PROXY', None)
+    env.pop('no_proxy', None)
     return subprocess.run(["zsh", "-fc", f'. "$1"; ccmorph {verb}', "_", str(ROOT / "lib/ccmorph.sh")],
                           env=env, input=input, text=True, capture_output=True, timeout=HANG_TIMEOUT)
 
@@ -67,11 +74,11 @@ def test_add_keeps_its_conf_while_another_launch_holds_the_live_lock(tmp_path):
     home, state = fresh_state(tmp_path)
     holder = exclusive_holder(state)
     try:
-        result = run(home, state, "add gw", "token\nexample-token\n")
+        result = run(home, state, "add gw", "token\nsk-ant-oat01-live-lock-fixture-not-real-00000000000000000")
     finally:
         holder.close()
     assert result.returncode == 0, result.stderr
-    assert (state / "gw.conf").read_text() == "type=token\ntoken=example-token\n"
+    assert (state / "gw.conf").read_text() == "type=token\ntoken=sk-ant-oat01-live-lock-fixture-not-real-00000000000000000\n"
     assert (state / "profiles" / "gw").is_dir()
     assert "another launch" in result.stderr
     assert "nothing started" not in result.stderr
@@ -82,9 +89,9 @@ def test_add_keeps_its_conf_when_the_lock_dir_cannot_be_made(tmp_path):
     # message names that, not a holder.
     home, state = fresh_state(tmp_path)
     (state / ".locks").write_text("not a directory\n")
-    result = run(home, state, "add gw", "token\nexample-token\n")
+    result = run(home, state, "add gw", "token\nsk-ant-oat01-live-lock-fixture-not-real-00000000000000000")
     assert result.returncode == 0, result.stderr
-    assert (state / "gw.conf").read_text() == "type=token\ntoken=example-token\n"
+    assert (state / "gw.conf").read_text() == "type=token\ntoken=sk-ant-oat01-live-lock-fixture-not-real-00000000000000000\n"
     assert (state / "profiles" / "gw").is_dir()
     assert "could not be created" in result.stderr
     assert "another launch" not in result.stderr

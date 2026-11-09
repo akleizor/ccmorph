@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/util"
@@ -198,6 +199,44 @@ func (l *launcher) addSub(name string) int {
 	return 0
 }
 
+// cleanCredential strips what a paste picks up: whitespace around the value,
+// one layer of matching quotes, then whitespace again. A typed credential has
+// none of these and comes back unchanged.
+func cleanCredential(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') && s[0] == s[len(s)-1] {
+		s = strings.TrimSpace(s[1 : len(s)-1])
+	}
+	return s
+}
+
+// credentialSpace reports whitespace that cleaning cannot remove: it sits
+// inside the credential, and a credential is one piece.
+func credentialSpace(s string) bool {
+	return strings.IndexFunc(s, unicode.IsSpace) >= 0
+}
+
+// askCredential reads one credential at prompt, cleaning paste artifacts and
+// refusing what cannot be cleaned at the prompt itself — never after later
+// questions. An empty answer or EOF cancels the whole add.
+func (l *launcher) askCredential(prompt, what string) (string, bool) {
+	for {
+		v, rc := uiInput(prompt, true)
+		if rc != 0 {
+			return "", false
+		}
+		if v = cleanCredential(v); v == "" {
+			l.err("empty " + what)
+			return "", false
+		}
+		if credentialSpace(v) {
+			l.err(what + " contains whitespace — copy it again as one piece")
+			continue
+		}
+		return v, true
+	}
+}
+
 // subLogin is `ccmorph login` on a Claude account profile: the browser sign-in
 // add performs, run on the profile's existing home, so a signed-out profile
 // signs in again without being re-created. Only the email line changes; the
@@ -239,28 +278,42 @@ func (l *launcher) setEmail(name, email string) error {
 
 func (l *launcher) addToken(name string) int {
 	fmt.Println(l.dim + "Make one with claude setup-token; a valid one starts with sk-ant-oat01-." + l.reset)
-	token, rc := uiInput("Paste token for "+name+" (hidden): ", true)
-	if rc != 0 {
-		return 1
+	// A Claude token has one shape, so a paste without it is refused at the
+	// prompt. A shaped one is offered to Anthropic here — Bearer-only, like the
+	// launch that will spend it — and only Anthropic can judge it: a refusal is
+	// reported and the token asked for again before anything is saved; no
+	// answer is not a verdict, so it is said as not-checked and the add saves.
+	for {
+		token, ok := l.askCredential("Paste token for "+name+" (hidden): ", "token")
+		if !ok {
+			return 1
+		}
+		if !util.TokenShaped(token) {
+			l.err("that is not a Claude token's shape — copy the whole token again")
+			continue
+		}
+		switch code := util.ProbeToken(token); {
+		case strings.HasPrefix(code, "2") && len(code) == 3:
+			fmt.Println(l.dim + "Anthropic accepted the token (HTTP " + code + ")" + l.reset)
+		case code == "401" || code == "403":
+			l.err("Anthropic rejected the token (HTTP " + code + ") — paste it again")
+			continue
+		case code == "000" || code == "":
+			fmt.Println(l.dim + "Anthropic did not answer, so the token was not checked" + l.reset)
+		default:
+			fmt.Println(l.dim + "Anthropic answered HTTP " + code + ", so the token was not checked" + l.reset)
+		}
+		if atomicWrite(l.conf(name), "type=token\ntoken="+token+"\n") != nil {
+			l.err("could not save profile '" + name + "'")
+			return 1
+		}
+		if _, ok := l.readRaw(name); !ok || !l.setupDir(name, "token", liveNote) {
+			l.rollback(name)
+			return 1
+		}
+		fmt.Println(l.accent + "Added" + l.reset + " " + name + " (token)")
+		return 0
 	}
-	if token == "" {
-		l.err("empty token")
-		return 1
-	}
-	if strings.ContainsAny(token, "\r\n") {
-		l.err("token contains CR/LF")
-		return 1
-	}
-	if atomicWrite(l.conf(name), "type=token\ntoken="+token+"\n") != nil {
-		l.err("could not save profile '" + name + "'")
-		return 1
-	}
-	if _, ok := l.readRaw(name); !ok || !l.setupDir(name, "token", liveNote) {
-		l.rollback(name)
-		return 1
-	}
-	fmt.Println(l.accent + "Added" + l.reset + " " + name + " (token)")
-	return 0
 }
 
 // presets reads share/provider-presets.tsv: id, label, base URL, three tier models.
@@ -327,24 +380,32 @@ func (l *launcher) addAPIKey(name string) int {
 	if label != "" {
 		prompt += " (" + label + ")"
 	}
-	key, rc := uiInput(prompt+" (hidden): ", true)
-	if rc != 0 {
-		return 1
-	}
-	if key == "" {
-		l.err("empty api key")
-		return 1
-	}
-	if label == "" {
-		v, rc := uiInput("Base URL (blank = api.anthropic.com): ", false)
-		if rc != 0 {
+	// The endpoint is asked the listing question doctor asks, in this step: a
+	// key it refuses is named here and asked for again, not saved as Added and
+	// discovered at launch. The Base URL is answered once; a re-entered key is
+	// checked against the same endpoint.
+	var key string
+	for first := true; ; first = false {
+		var ok bool
+		key, ok = l.askCredential(prompt+" (hidden): ", "api key")
+		if !ok {
 			return 1
 		}
-		url = v
-	}
-	if strings.ContainsAny(key+url, "\r\n") {
-		l.err("apikey values cannot contain CR/LF")
-		return 1
+		if label == "" && first {
+			v, rc := uiInput("Base URL (blank = api.anthropic.com): ", false)
+			if rc != 0 {
+				return 1
+			}
+			url = cleanCredential(v)
+		}
+		if strings.ContainsAny(key+url, "\r\n") {
+			l.err("apikey values cannot contain CR/LF")
+			return 1
+		}
+		if !l.checkKey(url, key) {
+			continue
+		}
+		break
 	}
 	conf := "type=apikey\napi_key=" + key + "\n"
 	if url != "" {
@@ -381,6 +442,36 @@ func (l *launcher) addAPIKey(name string) int {
 		fmt.Println(l.dim + keyQuestionHint + l.reset)
 	}
 	return 0
+}
+
+// checkKey asks the endpoint the listing question doctor asks — the only
+// request that can vouch for a key before a session spends it — and reports
+// the answer in the add's own step. A 2xx accepts; 401/403 refuses and returns
+// false so the key is asked for again; anything else is not a verdict on the
+// key, so it is said as not-checked and the add continues. The key reaches curl
+// through its stdin config, never a command line.
+func (l *launcher) checkKey(url, key string) bool {
+	base, shown := url, url
+	if base == "" {
+		base, shown = "https://api.anthropic.com", "api.anthropic.com"
+	}
+	var headers []string
+	if util.NativeBase(base) {
+		headers = []string{"anthropic-version: 2023-06-01"}
+	}
+	_, code := util.ProbeListing(base, key, headers...)
+	switch {
+	case strings.HasPrefix(code, "2") && len(code) == 3:
+		fmt.Println(l.dim + shown + " accepted the API key (HTTP " + code + ")" + l.reset)
+	case code == "401" || code == "403":
+		l.err(shown + " rejected the API key (HTTP " + code + ") — paste it again")
+		return false
+	case code == "000" || code == "":
+		fmt.Println(l.dim + shown + " did not answer, so the API key was not checked" + l.reset)
+	default:
+		fmt.Println(l.dim + shown + " answered HTTP " + code + ", so the API key was not checked" + l.reset)
+	}
+	return true
 }
 
 func (l *launcher) addProvider(name, provider string) int {

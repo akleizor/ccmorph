@@ -576,13 +576,13 @@ class PickerTTYTest(unittest.TestCase):
         rc, out, missed = run_pty(
             '_ccm_provider_list() { REPLY=(claude); return 0 }\nccmorph add demo', env, [
             (b'Sign-in method', b'\x1b[B\r'),
-            (b'Paste token for', b'test-token\n'),
+            (b'Paste token for', b'sk-ant-oat01-picker-echo-fixture-not-real-00000000000\n'),
         ])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
         self.assertNotIn('Configure model', out)
         self.assertNotIn('Save changes?', out)
-        self.assertNotIn('test-token', out)
+        self.assertNotIn('sk-ant-oat01-picker-echo-fixture-not-real-00000000000', out)
         self.assertIn('Next: ccmorph run demo', out)
         self.assertIsNone(self.field('demo', 'model'))
         self.assertIsNone(self.field('demo', 'effort'))
@@ -715,13 +715,13 @@ class PickerTTYTest(unittest.TestCase):
             env['XDG_CONFIG_HOME'] = str(ROOT.parent)
         rc, out, missed = run_pty('exec "$CLI_TARGET" add demo', env, [
             (b'Claude token', b'\x1b[B\r'),
-            (b'Paste token for', b'fixture-token\n'),
+            (b'Paste token for', b'sk-ant-oat01-entrypoint-fixture-not-real-00000000000\n'),
         ])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.field('demo', 'type'), 'token')
-        self.assertEqual(self.field('demo', 'token'), 'fixture-token')
-        self.assertNotIn('fixture-token', out)
+        self.assertEqual(self.field('demo', 'token'), 'sk-ant-oat01-entrypoint-fixture-not-real-00000000000')
+        self.assertNotIn('sk-ant-oat01-entrypoint-fixture-not-real-00000000000', out)
         self.assertFalse((self.tmp / 'fzf.log').exists())
         self.assertNotIn('Select [', out)
         self.assertNotIn('Save changes?', out)

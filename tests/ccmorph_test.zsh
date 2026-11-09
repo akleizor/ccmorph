@@ -8262,6 +8262,154 @@ PYKEY
   return $rc
 }
 
+test_add_cleans_a_pasted_credential_issue_254() {
+  # A credential pasted from a password manager or a chat arrives wrapped in
+  # quotes or trailing whitespace; the terminal adds nothing a typed secret has.
+  # Both are removed at the prompt, and only INTERNAL whitespace is refused —
+  # there, at the key prompt, not after later questions in config-file words.
+  local test_home rc=0 out
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  source "$CCMORPH_SOURCE"
+  # Quotes and surrounding spaces come off an API key, and the profile saves.
+  out=$(print -l apikey custom '  "sk-quoted-not-real"  ' http://gw.invalid | ccmorph add trim 2>&1)
+  [[ "$(<"$HOME/.config/ccmorph/trim.conf")" == *$'api_key=sk-quoted-not-real\n'* ]] \
+    || { print -u2 -- 'a quoted, space-padded key must be stored clean'; rc=1 }
+  # The token prompt cleans the same way. ($(<file) drops the file's final
+  # newline, so the token is pinned to its own line and the end of the string.)
+  out=$(print -l token '  "sk-ant-oat01-example-token-0123456789abcdef"  ' | ccmorph add tok 2>&1)
+  [[ "$(<"$HOME/.config/ccmorph/tok.conf")" == *$'\ntoken=sk-ant-oat01-example-token-0123456789abcdef' ]] \
+    || { print -u2 -- 'a quoted, space-padded token must be stored clean'; rc=1 }
+  # Internal whitespace is refused at the key prompt itself: the re-prompted
+  # key is the next line, and the Base URL question still comes after a good
+  # key — not between a bad one and its refusal.
+  out=$(print -l apikey custom 'sk bad' 'sk-good' http://gw.invalid | ccmorph add ws 2>&1)
+  assert_contains "$out" 'api key contains whitespace' \
+    'internal whitespace must be named at the key prompt' || rc=1
+  [[ "$(<"$HOME/.config/ccmorph/ws.conf")" == *$'api_key=sk-good\n'* ]] \
+    || { print -u2 -- 'a key refused at the prompt must accept the re-entered one'; rc=1 }
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_add_reports_a_rejected_key_in_the_same_step_issue_254() {
+  # The issue's first leg: a made-up key was saved as Added, and the refusal
+  # surfaced only at launch (401) or a later doctor. The add now asks the
+  # endpoint the same listing question doctor asks, in its own step: 2xx accepts,
+  # 401/403 is refused and the key is asked for again, and anything else is not a
+  # verdict on the key, so the profile saves and says it was not checked.
+  local test_home rc=0 out rc_die
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  source "$CCMORPH_SOURCE"
+  # A gateway that answers the listing: 401 for a key it refuses, 200 plus a
+  # listing for one it takes. It records each argv line and the -K stdin config,
+  # so the test can prove the key reached curl only through that config.
+  write_curl_mock 'conf=$(cat)
+for a do printf "%s\n" "$a" >> "$HOME/curl.argv"; done
+printf "%s\n" "$conf" >> "$HOME/curl.stdin"
+case "$conf" in
+  *rejected*) print -- "__CCMORPH_STATUS__401" ;;
+  *) print -- "{\"object\":\"list\",\"data\":[]}"; print -- "__CCMORPH_STATUS__200" ;;
+esac'
+  # A refused key is named in the same step, and the re-entered one is checked
+  # and saved — the Base URL is not asked twice.
+  out=$(print -l apikey custom sk-rejected-not-real http://gw.invalid sk-live-not-real \
+    | ccmorph add gw 2>&1)
+  assert_contains "$out" 'http://gw.invalid rejected the API key (HTTP 401)' \
+    'a refused key must be reported in the add step, not at launch' || rc=1
+  assert_contains "$out" 'http://gw.invalid accepted the API key (HTTP 200)' \
+    'a re-entered key must be checked and its acceptance said' || rc=1
+  assert_contains "$out" 'Added gw' 'an accepted key must still save the profile' || rc=1
+  [[ "$(<"$HOME/.config/ccmorph/gw.conf")" == *'api_key=sk-live-not-real'* ]] \
+    || { print -u2 -- 'the saved key must be the re-entered one'; rc=1 }
+  assert_contains "$(cat "$HOME/curl.argv")" 'http://gw.invalid/v1/models?limit=1000' \
+    'the check must ask the endpoint for its model listing' || rc=1
+  if [[ -e "$HOME/curl.argv" ]] && grep -q 'anthropic-version' "$HOME/curl.argv"; then
+    print -u2 -- 'a gateway check must not send anthropic-version'
+    rc=1
+  fi
+  if [[ -e "$HOME/curl.argv" ]] && grep -q 'sk-' "$HOME/curl.argv"; then
+    print -u2 -- 'the key must never appear on a curl command line'
+    rc=1
+  fi
+  assert_contains "$(cat "$HOME/curl.stdin")" 'x-api-key: sk-live-not-real' \
+    'the key must travel through the curl stdin config' || rc=1
+  # A native add checks api.anthropic.com with the version header doctor sends.
+  out=$(print -l apikey custom sk-native-not-real '' | ccmorph add nat 2>&1)
+  assert_contains "$out" 'api.anthropic.com accepted the API key (HTTP 200)' \
+    'a native key must be checked against api.anthropic.com' || rc=1
+  assert_contains "$(cat "$HOME/curl.argv")" 'https://api.anthropic.com/v1/models?limit=1000' \
+    'the native check must ask Anthropic for its listing' || rc=1
+  assert_contains "$(cat "$HOME/curl.argv")" 'anthropic-version: 2023-06-01' \
+    'the native check must send the version header, like doctor' || rc=1
+  # Cancelling at the re-prompt (EOF) saves nothing — no half-profile.
+  out=$(print -l apikey custom sk-rejected-not-real http://gw.invalid | ccmorph add die 2>&1)
+  rc_die=$?
+  [[ $rc_die -ne 0 ]] || { print -u2 -- 'a cancelled re-entry must fail the add'; rc=1 }
+  [[ ! -e "$HOME/.config/ccmorph/die.conf" ]] \
+    || { print -u2 -- 'a cancelled re-entry must save nothing'; rc=1 }
+  # An endpoint that does not answer is not a verdict on the key: said so, saved.
+  write_curl_mock 'exit 1'
+  out=$(print -l apikey custom sk-quiet-not-real http://private.invalid | ccmorph add quiet 2>&1)
+  assert_contains "$out" 'http://private.invalid did not answer, so the API key was not checked' \
+    'a silent endpoint must be reported as not-checked' || rc=1
+  assert_contains "$out" 'Added quiet' 'an unanswered check must not block the add' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_add_flags_a_malformed_token_and_checks_a_shaped_one_issue_254() {
+  # The issue's second leg: 'abc' was accepted by add and later called ready by
+  # doctor. A Claude token has one shape, so a paste without it is refused at
+  # the prompt; a shaped one is offered to Anthropic right there — Bearer-only,
+  # like the launch that will spend it — and a refusal is asked for again.
+  local test_home rc=0 out
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  source "$CCMORPH_SOURCE"
+  # Answers the listing a token is checked with: 401 for a token containing
+  # 'wrong', 200 plus a listing otherwise. Records argv and the -K stdin config
+  # so the test can prove the token never touched a command line.
+  write_curl_mock 'conf=$(cat)
+for a do printf "%s\n" "$a" >> "$HOME/curl.argv"; done
+printf "%s\n" "$conf" >> "$HOME/curl.stdin"
+case "$conf" in
+  *Bearer*wrong*) print -- "__CCMORPH_STATUS__401" ;;
+  *) print -- "{\"object\":\"list\",\"data\":[]}"; print -- "__CCMORPH_STATUS__200" ;;
+esac'
+  out=$(print -l token abc sk-ant-oat01-wrong-not-real-not-real sk-ant-oat01-live-not-real-not-real \
+    | ccmorph add tok 2>&1)
+  assert_contains "$out" 'not a Claude token' \
+    'a plainly malformed token must be flagged before it is saved' || rc=1
+  assert_contains "$out" 'Anthropic rejected the token (HTTP 401)' \
+    'a refused token must be reported in the add step' || rc=1
+  assert_contains "$out" 'Anthropic accepted the token (HTTP 200)' \
+    'a re-entered token must be checked and its acceptance said' || rc=1
+  assert_contains "$out" 'Added tok' 'an accepted token must still save the profile' || rc=1
+  [[ "$(<"$HOME/.config/ccmorph/tok.conf")" == *'token=sk-ant-oat01-live-not-real-not-real'* ]] \
+    || { print -u2 -- 'the saved token must be the re-entered one'; rc=1 }
+  assert_contains "$(cat "$HOME/curl.argv")" 'https://api.anthropic.com/v1/models?limit=1000' \
+    'the check must ask Anthropic for its model listing' || rc=1
+  assert_contains "$(cat "$HOME/curl.argv")" 'anthropic-version: 2023-06-01' \
+    'the check must send the version header, like doctor' || rc=1
+  if [[ -e "$HOME/curl.argv" ]] && grep -q 'sk-ant-oat01' "$HOME/curl.argv"; then
+    print -u2 -- 'the token must never appear on a curl command line'
+    rc=1
+  fi
+  assert_contains "$(cat "$HOME/curl.stdin")" 'Authorization: Bearer sk-ant-oat01-live-not-real-not-real' \
+    'the token must travel as a Bearer through the curl stdin config' || rc=1
+  if [[ -e "$HOME/curl.stdin" ]] && grep -q 'x-api-key' "$HOME/curl.stdin"; then
+    print -u2 -- 'a token check must not send an x-api-key header'
+    rc=1
+  fi
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_launch_refuses_a_key_claude_code_was_told_to_refuse() {
   # A profile made before #236 (or one whose question was answered No) has its
   # key stored as refused; Claude Code would open its login menu and never use
@@ -9979,6 +10127,9 @@ run_test test_probe_dispatch_preserves_explicit_inference_arguments
 run_test test_add_gateway_profile_offers_probe
 run_test test_add_native_profile_stays_quiet_about_probe
 run_test test_add_apikey_profile_approves_its_key
+run_test test_add_cleans_a_pasted_credential_issue_254
+run_test test_add_reports_a_rejected_key_in_the_same_step_issue_254
+run_test test_add_flags_a_malformed_token_and_checks_a_shaped_one_issue_254
 run_test test_launch_refuses_a_key_claude_code_was_told_to_refuse
 run_test test_an_unprobed_launch_is_not_given_a_siblings_ceiling
 run_test test_the_launch_window_reports_every_window_fact

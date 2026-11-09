@@ -21,11 +21,12 @@ func NativeBase(base string) bool {
 }
 
 // DoctorRoute is doctor's read-only endpoint and adapter checks for a profile of
-// the given type, base_url, adapter flag and credential; failed is true when a
-// row is FAIL. verbose adds a running adapter's processes and ports; the default
-// report says only what launch will do, which is what a reader can act on.
-// Nothing is started and nothing is written.
-func DoctorRoute(name, typ, base string, adapter bool, key string, verbose bool) (rows []DoctorRow, failed bool) {
+// the given type, base_url, adapter flag and credential; home is the profile
+// home, where a sub profile's sign-in is read when Claude Code keeps it there.
+// failed is true when a row is FAIL. verbose adds a running adapter's processes
+// and ports; the default report says only what launch will do, which is what a
+// reader can act on. Nothing is started and nothing is written.
+func DoctorRoute(name, typ, base string, adapter bool, key, home string, verbose bool) (rows []DoctorRow, failed bool) {
 	row := func(kind, msg string) {
 		if kind == "FAIL" {
 			failed = true
@@ -53,8 +54,48 @@ func DoctorRoute(name, typ, base string, adapter bool, key string, verbose bool)
 			}
 		case typ == "apikey":
 			row("SKIP", "endpoint: Anthropic; key not checked (no API key stored)")
+		case typ == "token" && key != "":
+			// A token is spent as a Bearer on Anthropic's own endpoint, and
+			// launch sends no request first: this is the only place a token can
+			// be checked before a session fails.
+			code := ProbeToken(key)
+			switch {
+			case strings.HasPrefix(code, "2") && len(code) == 3:
+				row("OK", "credentials: Anthropic accepted the token (HTTP "+code+")")
+			case code == "401" || code == "403":
+				row("FAIL", "credentials: Anthropic rejected the token (HTTP "+code+"); replace it: ccmorph config "+name)
+			case code == "000" || code == "":
+				row("WARN", "endpoint: Anthropic did not answer, so the token was not checked (check your network)")
+			default:
+				row("WARN", "endpoint: Anthropic answered HTTP "+code+", so the token was not checked")
+			}
+		case typ == "sub":
+			// The sign-in is a sub profile's whole credential, and launch sends
+			// no request first: this is the only place it can be asked about.
+			// Where Claude Code keeps it in the profile home it is read and
+			// probed; where it does not (macOS keeps it in the login keychain),
+			// the report says it was not checked instead of vouching for it.
+			// A rejection is a warning, not a failure: a sign-in is refreshable
+			// by design, and the next session refreshes it if it can.
+			token := StoredSignin(home)
+			switch {
+			case token == "":
+				row("WARN", "credentials: the sign-in was not checked (Claude Code keeps it outside the profile home; the next session refreshes it if it can)")
+			default:
+				code := ProbeToken(token)
+				switch {
+				case strings.HasPrefix(code, "2") && len(code) == 3:
+					row("OK", "credentials: Anthropic accepted the stored sign-in (HTTP "+code+")")
+				case code == "401" || code == "403":
+					row("WARN", "credentials: Anthropic rejected the stored sign-in (HTTP "+code+"); the next session refreshes it if it can, else it opens the login menu")
+				case code == "000" || code == "":
+					row("WARN", "endpoint: Anthropic did not answer, so the sign-in was not checked (check your network)")
+				default:
+					row("WARN", "endpoint: Anthropic answered HTTP "+code+", so the sign-in was not checked")
+				}
+			}
 		default:
-			row("INFO", "endpoint: Anthropic (claude checks this profile's sign-in at launch)")
+			row("SKIP", "endpoint: Anthropic; no credential to check")
 		}
 		// Launch starts no adapter on a native endpoint, so there is no
 		// adapter row to print.

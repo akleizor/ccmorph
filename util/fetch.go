@@ -66,17 +66,32 @@ func ProbeListing(base, key string, headers ...string) (body, code string) {
 	return undisguise(body), code
 }
 
-// curlKeyed runs curl with the credential headers fed through its stdin config
-// (-K -), so the key never appears on a command line.
+// curlFed runs curl with a credential fed through its stdin config (-K -), so
+// a credential never appears on a command line.
 // shortcut: curl is the transport so the gateway test stubs keep answering; move to
 // net/http when those fixtures become a loopback server.
-func curlKeyed(key string, args []string, errw io.Writer) (string, error) {
-	esc := strings.ReplaceAll(strings.ReplaceAll(key, `\`, `\\`), `"`, `\"`)
+func curlFed(config string, args []string, errw io.Writer) (string, error) {
 	cmd := exec.Command("curl", append([]string{"-K", "-"}, args...)...)
-	cmd.Stdin = strings.NewReader("header = \"x-api-key: " + esc + "\"\nheader = \"Authorization: Bearer " + esc + "\"\n")
+	cmd.Stdin = strings.NewReader(config)
 	cmd.Stderr = errw
 	b, err := cmd.Output()
 	return string(b), err
+}
+
+// escCred escapes a credential for one line of curl's stdin config.
+func escCred(s string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), `"`, `\"`)
+}
+
+// curlKeyed sends both credential headers, because a gateway may take either.
+func curlKeyed(key string, args []string, errw io.Writer) (string, error) {
+	esc := escCred(key)
+	return curlFed("header = \"x-api-key: "+esc+"\"\nheader = \"Authorization: Bearer "+esc+"\"\n", args, errw)
+}
+
+// curlBearer sends only the Bearer header an OAuth token travels as.
+func curlBearer(token string, args []string, errw io.Writer) (string, error) {
+	return curlFed("header = \"Authorization: Bearer "+escCred(token)+"\"\n", args, errw)
 }
 
 // apiURL joins an API root or a versioned SDK base (".../v1") with a /v1 path.

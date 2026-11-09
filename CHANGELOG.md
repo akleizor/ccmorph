@@ -39,6 +39,29 @@
   older version's dead Cellar path re-points it to the same stable path. A
   clone or one-line install keeps naming the binary that wrote it (#287).
 
+- **A pasted credential is cleaned at its prompt.** A key or token pasted from
+  a password manager or a chat arrived wrapped in quotes or padding
+  whitespace and was stored that way — and a key with a trailing space was
+  refused only after the Base URL question, in config-file words. The key and
+  token prompts now strip surrounding whitespace and one layer of matching
+  quotes, and a value with whitespace inside it is named at the prompt itself
+  and asked for again (#254).
+- **An API key is checked with its endpoint in the add's own step.** A made-up
+  key was saved as `Added` and discovered only at first launch (401) or by a
+  later `doctor`. `ccmorph add` now asks the endpoint the same listing question
+  `doctor` asks: an accepted key is said so, a refused one is reported and
+  asked for again before anything is saved, and an endpoint that does not
+  answer is said so and the profile saved (#254).
+- **A Claude token is judged before it is saved, and doctor reports the
+  verdict.** A plainly malformed paste was saved as `Added`, and `doctor`
+  called the profile ready because it never asked. `ccmorph add` now refuses
+  a paste without a token's shape at the prompt, and offers a shaped one to
+  Anthropic — Bearer-only, like the launch that will spend it — reporting a
+  refusal and asking for the token again before anything is saved.
+  `ccmorph doctor <profile>` asks the same question for a token profile, so
+  `ready` means the token was accepted, and an unanswered check says it was
+  not checked (#254).
+
 ## v0.5.7 — 2026-11-08
 
 ### Fixed

@@ -216,10 +216,11 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		failed = 1
 		fails = append(fails, "claude executable")
 	}
-	if dir := filepath.Join(l.profileDirs, name); isDir(dir) {
-		report("OK", "profile home: "+dir)
+	home := filepath.Join(l.profileDirs, name)
+	if isDir(home) {
+		report("OK", "profile home: "+home)
 	} else {
-		report("FAIL", "profile home: missing ("+dir+")")
+		report("FAIL", "profile home: missing ("+home+")")
 		failed = 1
 	}
 	// The conf's one silent promise, said aloud where the profile's other
@@ -280,7 +281,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		// A refused key is stored by Claude Code, not by ccmorph: the credential
 		// is present and the route may be healthy, yet every launch opens the
 		// login menu instead of using it.
-		switch util.KeyResponse(filepath.Join(l.profileDirs, name), key) {
+		switch util.KeyResponse(home, key) {
 		case util.KeyRefused:
 			report("FAIL", "api key: Claude Code was told not to use it, so a launch would open its login menu — fix: ccmorph login "+name)
 			failed = 1
@@ -290,7 +291,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 			report("INFO", "api key: ccmorph approves it for Claude Code at the next launch")
 		}
 	}
-	rows, bad := util.DoctorRoute(name, typ, base, adapter == "true", key, verbose)
+	rows, bad := util.DoctorRoute(name, typ, base, adapter == "true", key, home, verbose)
 	if bad {
 		failed = 1
 	}

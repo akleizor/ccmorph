@@ -638,7 +638,8 @@ Examples:
 Native Claude help: ccmorph run <profile> --help`},
 	"add": {"ccmorph add <profile>", `Choose how to sign in. Only the selected method asks for credentials:
   Subscription: sign in to Claude with your browser.
-  API key: credential presented to Anthropic or a gateway (apikey).
+  API key: credential presented to Anthropic or a gateway (apikey), and
+  checked with that endpoint before the profile is saved.
   OAuth token: a long-lived token for scripts/CI; quota cannot read plan usage.
   Provider: browser login, when a supported provider bridge is installed.
 

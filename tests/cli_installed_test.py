@@ -40,6 +40,13 @@ def _isolated_env(home):
     env = {k: v for k, v in os.environ.items() if not k.startswith(('CCMORPH_', '_CCMORPH_', 'CLAUDE_', 'ANTHROPIC_'))}
     env.update(HOME=str(home), ZDOTDIR=str(home), XDG_CONFIG_HOME=str(home / '.config'),
                PATH=f'{home}/.local/bin:{native}:/opt/homebrew/bin:/usr/bin:/bin')
+    # `add` offers a pasted credential to its endpoint before saving it; point
+    # that fetch at a port nothing owns so the home stays offline and the answer
+    # is always "not checked" (setup_home does the same for the zsh suite).
+    env.update(HTTP_PROXY='http://127.0.0.1:1', HTTPS_PROXY='http://127.0.0.1:1',
+               http_proxy='http://127.0.0.1:1', https_proxy='http://127.0.0.1:1')
+    env.pop('NO_PROXY', None)
+    env.pop('no_proxy', None)
     return env
 
 
@@ -68,7 +75,7 @@ class InstalledCliTest(unittest.TestCase):
         assert help_result.stderr == ''
         assert 'ccmorph help <command>' in help_result.stdout
         cls.help_stdout = help_result.stdout
-        added = cls._run_cli([cls.cli, 'add', 'demo'], 'token\nexample-token\nn\n')
+        added = cls._run_cli([cls.cli, 'add', 'demo'], 'token\nsk-ant-oat01-installed-cli-fixture-not-real-0000000000\nn\n')
         assert added.returncode == 0, added.stdout + added.stderr
         assert cls._run_cli([cls.cli, 'use', 'demo']).returncode == 0
         configured = cls._run_cli([cls.cli, 'config', 'demo'], 'n\nsonnet\nhigh\ny\n')
@@ -117,8 +124,8 @@ class InstalledCliTest(unittest.TestCase):
         inspected = self._run_cli([self.cli, 'inspect', 'demo'])
         self.assertEqual(inspected.returncode, 0, inspected.stderr)
         self.assertIn('sonnet', inspected.stdout)
-        self.assertNotIn('example-token', inspected.stdout)
-        self.assertEqual(self._run_cli([self.cli, 'cred', 'demo']).stdout, 'example-token')
+        self.assertNotIn('sk-ant-oat01-installed-cli-fixture-not-real-0000000000', inspected.stdout)
+        self.assertEqual(self._run_cli([self.cli, 'cred', 'demo']).stdout, 'sk-ant-oat01-installed-cli-fixture-not-real-0000000000')
 
     def test_run_launches_named_profile(self):
         profile, _ = self._launch([self.cli, 'run', 'demo', '--version'])
