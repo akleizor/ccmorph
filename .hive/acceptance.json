@@ -1,17 +1,17 @@
 [
   {
-    "criterion": "ccmorph help all shows each command once, in groups, with no line that tells the reader to run ccmorph help all.",
+    "criterion": "In an 80-column terminal, no line of ccmorph help add, help all or any other help page is cut inside a word.",
     "pass": true,
-    "evidence": "cli/main.go usage(): `case \"\", \"all\"` renders one page — the everyday groups, then (all only) More commands and Advanced troubleshooting, then the footer; the short page is no longer printed inside it. Widened test_help_is_concise_truthful_and_read_only in tests/cli_messages_test.py asserts no 'ccmorph help all' line in the help-all page and no duplicated '  ccmorph ' row; watched red on the broken code (the line 'More commands: ccmorph help all' mid-page), green after. Hermetic run with two profiles (work, personal) shows the five groups and no self-referential line."
+    "evidence": "cli/help_wrap_test.go TestEveryHelpPageFitsEightyColumnsWithoutCuttingAWord renders every topic at 80 columns and asserts every line is at most 80 cells and carries exactly the unwrapped page's words; go test ./cli/ -run TestEveryHelpPageFitsEightyColumns -count=1 → ok. Watched red first: lines of 81, 86, 93, 114 and 127 cells (help all, quota, list, update, and the 119-cell add provider line in TestHelpAddWrapsTheProviderSentenceAsOneListItem)."
   },
   {
-    "criterion": "The line about where to start does not name a profile that exists, or does not appear when profiles exist.",
+    "criterion": "A long description wraps under its own column, as the doctor line for doctor [--verbose] [profile] does.",
     "pass": true,
-    "evidence": "The footer prints 'Start here: ccmorph add work' only when l.confNames() is empty. The same test writes state/work.conf and asserts neither --help nor help all prints 'Start here' (rc asserted 0 so the pages really rendered); the empty-state phase asserts the line is still there for a fresh install. Hermetic runs confirm: with work.conf present the line is gone from both pages; without confs it appears on both."
+    "evidence": "cli/help_wrap_test.go TestHelpAllWrapsALongDescriptionUnderItsOwnColumn: help all at 80 columns continues the rm row with 35 spaces + \"state\", the column the doctor row's description already sits in; go test ./cli/ -run TestHelpAllWrapsALongDescriptionUnderItsOwnColumn -count=1 → ok. Watched red first: one 81-cell line, continuation was the next command's row."
   },
   {
-    "criterion": "The lines about command details and the version appear once, at the end of the page.",
+    "criterion": "In ccmorph help add, the four sign-in methods are indented the same way and the list reads as one list.",
     "pass": true,
-    "evidence": "The footer ends both pages once: Command details and Version are the last two lines, after every group. The test asserts count('Command details:') == 1, count('Version: ccmorph --version') == 1 and stdout ends with those two lines; watched red on the broken code (the page ended on the context-limit row), green after. Hermetic help-all run ends: 'Command details: ccmorph help <command>' then 'Version: ccmorph --version'."
+    "evidence": "tests/cli_messages_test.py test_add_help_indents_every_sign_in_method_the_same_way_gh_364: Claude account, Claude token, API key and the provider line all at indent 2 through the real bin/ccmorph; pytest tests/cli_messages_test.py -k gh_364 → 1 passed. Watched red first: indents {0, 2, 2, 2}."
   }
 ]

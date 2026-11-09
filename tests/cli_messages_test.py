@@ -300,6 +300,18 @@ def test_add_help_names_provider_logins_only_when_the_bridge_is_installed(tmp_pa
     assert 'Claude: sign in to that service' not in with_bridge
 
 
+def test_add_help_indents_every_sign_in_method_the_same_way_gh_364(tmp_path):
+    # GH-364: the first method sat flush with the left edge while the others
+    # were indented, so the list read as one method and a stray paragraph.
+    lines = _help_add(tmp_path, bridge=True).splitlines()
+    indents = {}
+    for method in ('Claude account:', 'Claude token:', 'API key:', 'Antigravity,'):
+        line = next((l for l in lines if l.lstrip().startswith(method)), None)
+        assert line is not None, method
+        indents[method] = len(line) - len(line.lstrip())
+    assert set(indents.values()) == {2}, indents
+
+
 def test_run_without_claude_names_the_problem_and_the_path_it_searched(tmp_path):
     """#282: a launch that cannot find claude says what is missing, links its
     setup page and shows the PATH it searched (the sentence doctor and the

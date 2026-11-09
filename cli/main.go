@@ -671,8 +671,92 @@ func exitCode(err error) int {
 	return 1
 }
 
+// helpWidth is the columns a help page wraps to: stdout's terminal width when
+// it is a terminal, 0 — no wrapping, the authored lines stay as written — when
+// it is a pipe or file, and 80 when a terminal reports no width.
+func helpWidth() int {
+	if !isTTY(1) {
+		return 0
+	}
+	_, cols := winsize(1)
+	if cols < 1 {
+		return 80
+	}
+	return cols
+}
+
+// wrapWords breaks text into lines of at most width cells on word boundaries;
+// a word is never split, so one wider than width keeps a line of its own.
+func wrapWords(text string, width int) []string {
+	if width < 1 {
+		return []string{text}
+	}
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return []string{""}
+	}
+	lines, line := []string{}, words[0]
+	for _, word := range words[1:] {
+		if cells(line)+1+cells(word) <= width {
+			line += " " + word
+			continue
+		}
+		lines, line = append(lines, line), word
+	}
+	return append(lines, line)
+}
+
+// wrapBody wraps every line of a help body to width columns, continuing under
+// the line's own indent so a wrapped list item stays one item. width 0 returns
+// the body unchanged.
+func wrapBody(body string, width int) string {
+	if width <= 0 {
+		return body
+	}
+	var out []string
+	for _, line := range strings.Split(body, "\n") {
+		text := strings.TrimLeft(line, " ")
+		indent := line[:len(line)-len(text)]
+		if cells(line) <= width {
+			out = append(out, line)
+			continue
+		}
+		for _, wrapped := range wrapWords(text, width-cells(indent)) {
+			out = append(out, indent+wrapped)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// helpGrid is grid for the help pages: the same row, but a description longer
+// than the width left after the label column wraps under that column, the way
+// grid already places a long label's description there. width 0 prints the row
+// exactly as grid does.
+func helpGrid(w int, label, desc string, width int) {
+	if width <= 0 {
+		grid(w, label, desc)
+		return
+	}
+	col := 2 + w + 1
+	chunks := wrapWords(desc, width-col)
+	if len(label) > w {
+		fmt.Printf("  %s\n  %-*s %s\n", label, w, "", chunks[0])
+	} else {
+		fmt.Printf("  %-*s %s\n", w, label, chunks[0])
+	}
+	for _, chunk := range chunks[1:] {
+		fmt.Println(strings.Repeat(" ", col) + chunk)
+	}
+}
+
 func (l *launcher) usage(topic string) int {
-	help := func(k, t string) { grid(32, k, t) }
+	return l.usageAt(topic, helpWidth())
+}
+
+// usageAt prints a help page wrapped to width columns (helpWidth). width 0 is
+// what a pipe receives: the authored lines, unwrapped.
+func (l *launcher) usageAt(topic string, width int) int {
+	help := func(k, t string) { helpGrid(32, k, t, width) }
 	head := func(s string) { fmt.Println("\n" + l.bold + s + l.reset) }
 	switch topic {
 	case "", "all":
@@ -744,9 +828,9 @@ func (l *launcher) usage(topic string) int {
 				"\n  "+strings.Join(labels, ", ")+": sign in to that service with your browser (through cliproxyapi).\n\nCredentials", 1)
 		}
 	}
-	fmt.Println(body)
+	fmt.Println(wrapBody(body, width))
 	if pickerTopics[topic] {
-		fmt.Println("\n" + pickerNote)
+		fmt.Println("\n" + wrapBody(pickerNote, width))
 	}
 	return 0
 }
@@ -777,7 +861,7 @@ Examples:
 
 Native Claude help: ccmorph run <profile> --help`},
 	"add": {"ccmorph add <profile>", `Choose how to sign in. Only the selected method asks for credentials:
-Claude account: sign in to Claude with your browser.
+  Claude account: sign in to Claude with your browser.
   Claude token: a long-lived token for scripts/CI; quota cannot read plan usage.
   API key: credential presented to Anthropic or a gateway, checked with that
   endpoint before the profile is saved. The provider list opens with Anthropic
@@ -793,13 +877,15 @@ Changes affect new sessions.
 For a single setting: ccmorph set <profile> model|effort [value]`},
 	"list": {"ccmorph list", "List saved profiles. * marks the default used by ccmorph run; private marks one whose history is deleted when the session ends."},
 	"quota": {"ccmorph quota [profile] [--json]", `Every profile in one view, grouped by kind: Claude accounts and tokens,
-Codex subscriptions, budget accounts, and API key or provider profiles. Each plan window is a
-bar with the percent used and when it resets; a plan tier comes from the provider's
-own account data. Plan usage is read for Claude account and Codex profiles; a pasted
-Claude token cannot read it. A rate-limited or unreachable read shows the last good
-reading and its age. Gateways and API keys show today's and this month's billed spend from
-their receipts, and the account balance where the provider publishes one (DeepSeek,
-Kimi, GLM, OpenRouter, SiliconFlow, StepFun). --json prints the same data for tools. No inference, nothing billed.
+Codex subscriptions, budget accounts, and API key or provider profiles. Each
+plan window is a bar with the percent used and when it resets; a plan tier
+comes from the provider's own account data. Plan usage is read for Claude
+account and Codex profiles; a pasted Claude token cannot read it. A
+rate-limited or unreachable read shows the last good reading and its age.
+Gateways and API keys show today's and this month's billed spend from their
+receipts, and the account balance where the provider publishes one (DeepSeek,
+Kimi, GLM, OpenRouter, SiliconFlow, StepFun). --json prints the same data for
+tools. No inference, nothing billed.
 Omit the profile to list every profile.`},
 	"use": {"ccmorph use [profile|-i]", "Set the default without launching. No argument shows the current default."},
 	"inspect": {"ccmorph inspect [profile|-i]", `Show effective settings and their sources, never the stored credential.
