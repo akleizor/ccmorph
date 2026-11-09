@@ -453,6 +453,14 @@ func (l *launcher) addAPIKey(name string) int {
 	if url != "" {
 		l.probeNudge(name)
 	}
+	// A gateway is asked which model at every launch until a default is saved;
+	// the command that ends the question is named here, while the person is
+	// still reading (#360). Custom can also name Anthropic's own endpoint,
+	// which launches native — nothing asks there — so the line is gated on the
+	// same predicate inspect's model row uses, not on a non-empty URL alone.
+	if util.Maskable("apikey", url) {
+		fmt.Println(l.dim + "Each launch asks which model until one is saved:  ccmorph set " + name + " model <model-id>" + l.reset)
+	}
 	// Claude Code asks whether to use a profile's key on its first launch, and
 	// highlights No. The answer it would store is recorded here instead, so the
 	// question never appears. A file ccmorph cannot safely rewrite leaves the

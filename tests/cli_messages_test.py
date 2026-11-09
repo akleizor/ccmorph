@@ -217,6 +217,24 @@ def test_hop_usage_line_agrees_across_help_and_the_slash_command(tmp_path):
     assert usage in command
 
 
+def test_run_help_names_the_plain_run_question_and_its_keep_command_gh_360(tmp_path):
+    # GH-360: the page tied the model question to -i alone, though a plain
+    # `ccmorph run` on a gateway with no model saved asks too, and it never
+    # named the command that keeps a choice.
+    state = tmp_path / 'state'
+    state.mkdir()
+    env = {**os.environ, 'HOME': str(tmp_path / 'home'),
+           'CCMORPH_LIB_DIR': str(ROOT / "lib"), 'CCMORPH_STATE_DIR': str(state)}
+    cli = str(ROOT / "bin/ccmorph")
+    page = subprocess.run([cli, 'help', 'run'], env=env, capture_output=True,
+                          text=True, timeout=HANG_TIMEOUT)
+    assert page.returncode == 0, page.stderr
+    flat = ' '.join(page.stdout.split())
+    assert 'asked on a plain run too' in flat
+    assert 'this session only' in flat
+    assert 'ccmorph set <profile> model <id>' in flat
+
+
 def test_update_and_uninstall_under_homebrew_name_the_brew_command(tmp_path):
     # A brew install keeps the library under the Cellar with no installer beside it.
     root = tmp_path / 'Cellar/ccmorph/0.2.0/libexec'

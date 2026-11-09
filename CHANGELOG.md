@@ -9,6 +9,15 @@
 
 ### Fixed
 
+- **A gateway with no saved model is asked which one at every launch, and
+  every surface now says so.** inspect claimed "— Claude Code chooses" for the
+  one profile kind that is false for; the launch picker answered and said
+  nothing about the next launch; run's help tied the model question to -i
+  alone; and add ended without a word about models. inspect now says ccmorph
+  asks which model at each launch, the picker prints the command that keeps
+  the choice (`ccmorph set <profile> model <id>`) right after a pick, run's
+  help says a plain run asks too, and add names the question and the command
+  that ends it (#360).
 - **A session closed before its first message no longer ends with a resume
   command that fails.** The command named an id with no saved conversation, so
   it ended with Claude Code's "No conversation found" and printed itself again.

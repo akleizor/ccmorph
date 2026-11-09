@@ -204,6 +204,20 @@ def test_add_done_messages_use_display_names(box):
     asked = out.stdout + out.stderr
     assert 'Endpoint (blank = api.anthropic.com): ' in asked
     assert 'Base URL' not in asked
+    # Issue #360: adding a gateway ends by naming the model question each
+    # launch will ask, and the command that saves a default and ends it.
+    out = box.run('add', 'gw1', answer='3\ncustom\nhttps://gw.example\nsecret-key\n')
+    assert out.returncode == 0, out.stderr
+    assert 'Added gw1 (API key → https://gw.example)' in out.stdout
+    asked = out.stdout + out.stderr
+    assert 'Each launch asks which model until one is saved' in asked
+    assert 'ccmorph set gw1 model <model-id>' in asked
+    # Custom can also name Anthropic's own endpoint; that profile launches
+    # native, so add must not promise a model question (#360).
+    out = box.run('add', 'nat1', answer='3\ncustom\nhttps://api.anthropic.com\nsecret-key\n')
+    assert out.returncode == 0, out.stderr
+    assert 'Added nat1 (API key → https://api.anthropic.com)' in out.stdout
+    assert 'Each launch asks which model' not in out.stdout + out.stderr
 
 
 def test_add_menu_names_each_kind_and_explains_a_provider_login(box):

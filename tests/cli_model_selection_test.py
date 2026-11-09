@@ -1,10 +1,11 @@
 """Model selection through the shipped `ccmorph` command, end to end.
 
 One test per path that decides which model (and which window) Claude Code gets:
-`--model <id>`, `--model=<id>`, `--model -i`, `set <profile> model`, the profile
-default, flag-beats-default, the `[1m]` send id, and the window each id resolves
-to. A stub `claude` records argv and the environment; a stub `curl` and adapter
-keep it offline. Each child gets its own HOME and state dir.
+`--model <id>`, `--model=<id>`, `--model -i`, the launch picker's pick,
+`set <profile> model`, the profile default, flag-beats-default, the `[1m]` send
+id, and the window each id resolves to. A stub `claude` records argv and the
+environment; a stub `curl` and adapter keep it offline. Each child gets its own
+HOME and state dir.
 
 Each test id also holds at most one launch, however cheap an extra one looks: a
 launch is a stack of interpreter startups, so stacking several in one id puts it
@@ -47,6 +48,21 @@ PY
 CURL = '''#!/bin/sh
 for a do case "$a" in *http_code*) echo 200; exit 0 ;; esac; done
 exit 1
+'''
+# The picker's own curl: the reachability probe still answers, and the
+# /v1/models listing is served from a file the test wrote.
+CURL_LISTING = '''#!/bin/sh
+for a do case "$a" in *http_code*) echo 200; exit 0 ;; esac; done
+cat "$HOME/bin/models.json"
+'''
+# An fzf that selects rather than searches: the row whose id is FAKE_FZF_PICK,
+# else the first row. --version is probed before any selection runs.
+FZF_PICK = '''#!/bin/sh
+[ "$1" = --version ] && { printf '0.75.0 (fake)\\n'; exit 0; }
+rows=$(cat)
+pick=$(printf '%s\\n' "$rows" | awk -F '\\t' -v want="$FAKE_FZF_PICK" '$1 == want { print; exit }')
+[ -n "$pick" ] || pick=$(printf '%s\\n' "$rows" | head -1)
+printf '%s\\n' "$pick"
 '''
 # Honours the launcher's --parent-pid like the real adapter (issue #386): a
 # stub that spins forever outlives a hard-killed launch.
@@ -105,6 +121,22 @@ class ModelSelection(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
 
+    def cold_gateway(self, pick, *ids):
+        """Build the profile the #360 question meets — a gateway with no model
+        saved — and the picker machinery a pick needs: the endpoint's model
+        list and an fzf, neither of which is on this suite's PATH. fzf reads
+        the rendered rows and answers with the FAKE_FZF_PICK row, which is how
+        a pick happens with no terminal to hand one to."""
+        (self.state / 'cold.conf').write_text(
+            'type=proxy\nbase_url=http://gw.invalid\napi_key=k\n')
+        (self.home / 'bin' / 'models.json').write_text(json.dumps(
+            {'data': [{'id': m, 'owned_by': 'fake'} for m in ids]}))
+        for name, body in (('curl', CURL_LISTING), ('fzf', FZF_PICK)):
+            stub = self.home / 'bin' / name
+            stub.write_text(body)
+            stub.chmod(0o755)
+        self.env.update(TERM='xterm', FAKE_FZF_PICK=pick)
+
     def test_model_flag_space_form_reaches_claude_verbatim(self):
         row = self.launch('tp', '--model', 'opus')
         self.assertEqual(row['argv'], ['--model', 'opus'])
@@ -126,6 +158,28 @@ class ModelSelection(unittest.TestCase):
         row = self.launch('tp', '--model', '-i')
         self.assertNotIn('--model', row['argv'])
         self.assertEqual(row['env']['ANTHROPIC_MODEL'], 'sonnet')
+
+    def test_a_launch_pick_is_session_only_and_the_screen_says_how_to_keep_it(self):
+        """#360: the launch picker's choice is invocation-only, and the person
+        picking it must be told so — by the command that keeps the choice."""
+        # The suite's gw has a model saved; the person this test speaks for has
+        # none, so a cold gateway is built — the profile the question meets at
+        # every launch.
+        self.cold_gateway('picker-beta', 'picker-alpha', 'picker-beta')
+        row = self.launch('cold', '-i')
+        self.assertEqual(row['env']['ANTHROPIC_MODEL'], 'picker-beta')
+        self.assertIn('this session only', row['stderr'])
+        self.assertIn('ccmorph set cold model picker-beta', row['stderr'])
+        # The pick saved nothing: the next launch would ask again.
+        self.assertEqual(self.cli('get', 'cold', 'model').stdout, '')
+
+    def test_the_keep_command_quotes_an_id_the_shell_would_glob(self):
+        """A gateway listing can serve an id like vendor[beta]; the keep
+        command must survive the zsh it is pasted into (#360)."""
+        self.cold_gateway('vendor[beta]', 'picker-alpha', 'vendor[beta]')
+        row = self.launch('cold', '-i')
+        self.assertEqual(row['env']['ANTHROPIC_MODEL'], 'vendor[beta]')
+        self.assertIn("ccmorph set cold model 'vendor[beta]'", row['stderr'])
 
     def test_profile_default_reaches_claude_without_a_flag(self):
         self.assertEqual(self.launch('tp')['env']['ANTHROPIC_MODEL'], 'sonnet')

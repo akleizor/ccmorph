@@ -755,8 +755,10 @@ var pickerTopics = map[string]bool{"run": true, "add": true, "config": true, "us
 
 var usageTopics = map[string][2]string{
 	"run": {"ccmorph run [profile] [-i] [-- <claude arguments...>]", `Omit the profile to use your default. -i asks for a profile if needed,
-then a model for routed profiles. Explicit --model <id> skips the model picker.
-Choices apply to this session only; saved defaults are unchanged.
+then a model for routed profiles; a gateway with no model saved is
+asked on a plain run too. Explicit --model <id> skips the model picker.
+Choices apply to this session only; save a default with
+ccmorph set <profile> model <id>.
 
 Examples:
   ccmorph run work
