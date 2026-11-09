@@ -1225,17 +1225,21 @@ truncation nor success.
 
 Hence the rule that makes the invariant maintainable rather than a coincidence:
 
-> **The route ceiling is the max; the budget is per model; a model the budget
-> cannot protect is named, not hidden.**
-> `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is fixed at process start, so ccmorph sets it
-> to the LARGEST probed window the route serves (`_ccm_launch_window`) — a
-> mid-session `/model` switch can then never run clamped below its real window.
-> The launched model's own limit rides the native `autoCompactWindow` setting
-> instead, written into the generated settings, so the compaction trigger is
-> `min(ceiling, launched-model wall)`.
+> **The ceiling is the launched model's window; the budget is the user's.**
+> `CLAUDE_CODE_MAX_CONTEXT_TOKENS` is fixed at process start and is the only
+> ceiling a non-claude id has, so ccmorph sets it to the LAUNCHED model's sized
+> window. The user's own `autoCompactWindow` and `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`
+> then apply to that window natively: one cap and one percentage serve every
+> model, because the engine's trigger is `min(ceiling, cap) × pct`. A model with
+> no size keeps the route's largest window and a conservative budget.
 >
-> That trigger is fixed for the session's life, which makes a switch DOWN fatal
-> rather than merely inexact: a model whose wall sits under the trigger can never
+> The earlier rule set the ceiling to the route's LARGEST window, so a mid-session
+> switch up could use its full window. That made the user's cap the only limit for
+> every non-claude model: on a route with a 1,048,576-token sibling, a 114,000-token
+> model launched directly was told it had 470,000 and never compacted. The trigger
+> is fixed for the session's life, so a switch DOWN is still fatal; a switch UP now
+> runs capped at the launched window, which wastes room but never fails. A switch
+> down is fatal because a model whose wall sits under the trigger can never
 > compact, so it runs into the gateway's over-limit error — and by then the
 > transcript no longer fits in a `/compact` summarization request either, so the
 > session cannot be recovered at all.

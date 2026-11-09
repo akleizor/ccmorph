@@ -6037,11 +6037,11 @@ test_launch_reads_its_arrays_under_a_callers_ksh_arrays() {
   return $rc
 }
 
-# A mid-session /model switch cannot change CLAUDE_CODE_MAX_CONTEXT_TOKENS (env is
-# fixed at process start), so the env must already cover the LARGEST model the route
-# serves -- or a switch to it runs clamped at the launched model's window. The
-# launched model's own budget is then narrowed per model by autoCompactWindow.
-test_the_window_env_covers_every_model_the_route_serves() {
+# CLAUDE_CODE_MAX_CONTEXT_TOKENS is a non-claude model's only ceiling, so a sized
+# launch model carries its OWN window: the route's largest would let the user's
+# autoCompactWindow and percentage trigger past the launched model's wall. A switch
+# up mid-session then runs capped at this window -- wasteful, never fatal.
+test_the_window_env_is_the_launched_models_own_window() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
@@ -6060,8 +6060,8 @@ test_the_window_env_covers_every_model_the_route_serves() {
   local rc=0
   _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
-  assert_contains "$actual" 'MAX_CONTEXT=900000' \
-    'the env ceiling must cover the largest model the route serves, not just the launched one' || rc=1
+  assert_contains "$actual" 'MAX_CONTEXT=200000' \
+    'the env ceiling must be the launched model'"'"'s own window, not the route'"'"'s largest' || rc=1
   rm -rf "$test_home"
   return $rc
 }
@@ -6497,10 +6497,10 @@ test_the_budget_never_exceeds_the_launched_models_wall() {
   local rc=0
     _ccm_launch -a gw prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
   local actual="$(<"$CCMORPH_TEST_LOG")"
-  # The ceiling covers the route (so a switch up is not clamped)...
-  assert_contains "$actual" 'MAX_CONTEXT=1000000' \
-    'the env ceiling must still cover the largest model the route serves' || rc=1
-  # ...while the budget stays on the launched model's own wall.
+  # The ceiling is the launched model's own wall, never the route's largest...
+  assert_contains "$actual" 'MAX_CONTEXT=200000' \
+    'the env ceiling must be the launched model'"'"'s own window' || rc=1
+  # ...and so is the budget.
   assert_contains "$actual" '"autoCompactWindow":200000' \
     'the budget must track the launched model, never the route ceiling' || rc=1
   assert_not_contains "$actual" '"autoCompactWindow":1000000' \
@@ -10978,7 +10978,7 @@ run_test test_conf_window_beats_the_published_one
 run_test test_endpoint_publishing_no_window_changes_nothing
 run_test test_registry_supplies_window_when_endpoint_probe_has_none
 run_test test_launch_reads_its_arrays_under_a_callers_ksh_arrays
-run_test test_the_window_env_covers_every_model_the_route_serves
+run_test test_the_window_env_is_the_launched_models_own_window
 run_test test_the_launched_model_budgets_through_the_native_setting
 run_test test_a_mapped_alias_budgets_against_its_target
 run_test test_a_session_never_offers_a_model_it_cannot_compact

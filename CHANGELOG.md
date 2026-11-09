@@ -203,6 +203,20 @@
   needed `ccmorph login` again. Sessions of one provider profile now share one
   bridge, and the last session to exit stops it (#250).
 
+## Unreleased
+
+### Fixed
+
+- **A routed model compacts inside its own window.** Claude Code gives a
+  non-Claude model one ceiling, `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, and ccmorph set
+  it to the largest window the route serves. Your `autoCompactWindow` and
+  `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` then applied to that number, so a 114,000-token
+  model on a route with a 1,048,576-token sibling was told it had 470,000 and
+  never compacted. The ceiling is now the launched model's own window, so one cap
+  and one percentage give every model its own trigger. A mid-session switch to a
+  larger model runs capped at the launched window; launch on the larger model to
+  use all of it.
+
 ## v0.5.6 — 2026-11-08
 
 ### Changed
