@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -332,7 +333,7 @@ def assert_adapter_report(out, shape):
     bounded at one second, and a bound blown under load is answered SKIP (GH-467).
     A dropped report, a WARN, or the decoy pid stays red in every outcome."""
     assert "pid 4000" not in out  # the /bin/echo decoy row is never an adapter
-    if "process inspection unavailable" in out:
+    if "could not tell whether a translator is running" in out:
         # ps blew its bound: one SKIP line is the whole answer — nothing
         # half-reported, nothing started.
         assert "listener" not in out, out
@@ -342,6 +343,18 @@ def assert_adapter_report(out, shape):
                     and f"(pid {pid}; read-only check)" in out)
         unknown = f"adapter: {subject} listener status unknown (pid {pid})" in out
         assert reported or unknown, out
+
+
+# The adapter line's answers (GH-272). Whether cliproxyapi is installed depends
+# on the machine, so the line that says so is matched, not compared.
+TRANSLATOR_NOW = ("OK adapter: this profile needs a translator now: "
+                  "an open session on it is running cliproxyapi")
+NO_TRANSLATOR_NOW = ("OK adapter: this profile needs no translator now: "
+                     "its open session runs without one")
+UNTIL_A_MODEL = re.compile(
+    r"INFO adapter: this profile needs no translator until a model is chosen "
+    r"\(none is set, and the endpoint's model list names no protocol\); "
+    r"cliproxyapi is (not )?installed; choose one: ccmorph set demo model <model-id>")
 
 
 @pytest.mark.parametrize("slow", ["", "ps", "lsof"],
@@ -359,17 +372,242 @@ printf '%s\n' '__CCMORPH_STATUS__200'
     _adapter_stubs(tmp_path / "bin", slow, ADAPTER_PS_ROWS[shape])
     result, _, bindir = run_doctor(tmp_path, conf, curl)
     assert result.returncode == 0, result.stderr
-    # One adapter line by default: what launch will do, never a pid or a
-    # process-inspection detail a first-time reader cannot act on.
+    # One adapter line by default, in every case (also when ps blew its bound):
+    # whether this profile needs a translator now, never a pid or a
+    # process-inspection detail a first-time reader cannot act on. Nothing is
+    # classified and no model is set, so the answer is what the open session
+    # shows; with no session readable, that none starts until a model is chosen.
+    # A running adapter alone is not a translator: only a cliproxyapi child is.
     adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
     assert len(adapters) == 1, result.stdout
-    assert adapters[0].startswith("INFO adapter: ccmorph run starts a compatibility adapter"), result.stdout
+    if slow == "ps":
+        assert UNTIL_A_MODEL.fullmatch(adapters[0]), result.stdout
+    elif shape == "native-route":
+        assert adapters == [NO_TRANSLATOR_NOW], result.stdout
+    else:
+        assert adapters == [TRANSLATOR_NOW], result.stdout
     # Read-only: the profile's own hook never ran, so nothing was started.
     assert not (bindir / "doctor.marker").exists()
     verbose, _, _ = run_doctor(tmp_path, conf, curl, args=("--verbose",))
     assert verbose.returncode == 0, verbose.stderr
     assert_adapter_report(verbose.stdout, shape)
     assert not (bindir / "doctor.marker").exists()
+
+
+@pytest.mark.parametrize("shape,suffix", [
+    ("translator-route", "; an open session on this profile is using one now"),
+    ("native-route", ""),
+], ids=["translator-running", "shim-only"])
+def test_doctor_adapter_line_names_a_running_translator_issue_272(tmp_path, shape, suffix):
+    """GH-272: with a classification cached, the line states the need, and an
+    open session is added only when a cliproxyapi child is really running."""
+    conf = "type=apikey\nbase_url=https://example.test\napi_key=k\n"
+    _adapter_stubs(tmp_path / "bin", "", ADAPTER_PS_ROWS[shape])
+    _seed_adapter_cache(tmp_path, "https://example.test", [("m-openai", "responses")])
+    stub = tmp_path / "bin" / "cliproxyapi"
+    stub.write_text("#!/bin/sh\nexit 0\n")
+    stub.chmod(0o755)
+    result, _, _ = run_doctor(tmp_path, conf, OK_CURL)
+    assert result.returncode == 0, result.stdout + result.stderr
+    adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
+    assert adapters == ["OK adapter: this endpoint needs a translator; cliproxyapi is installed" + suffix], result.stdout
+
+
+def _status_lines(stdout):
+    """(kind, subject) for every report line. The subject — the text before the
+    first colon — is what the verdict line groups by, so it is also where a
+    contradiction (an OK line and a FAIL line about the same thing) would live."""
+    out = []
+    for line in stdout.splitlines():
+        kind, _, rest = line.partition(" ")
+        if kind in {"OK", "FAIL", "WARN", "INFO", "SKIP"}:
+            subject, _, _ = rest.partition(":")
+            out.append((kind, subject))
+    return out
+
+
+def _seed_adapter_cache(tmp_path, base, rows):
+    """The endpoint-keyed classification cache a launch writes (the same file
+    adapter/classify.go writes and re-reads): doctor's adapter line reports
+    what launch learned there, so the fixture mirrors its keying exactly."""
+    key = hashlib.sha256(base.encode()).hexdigest()[:16]
+    cache = tmp_path / "state" / "profiles" / ".adapter-cache" / f"{key}.json"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps({
+        "endpoint": base, "anthropic_path": "/v1/messages", "thinking_probe": 2,
+        "rows": [{"model": model, "dialect": dialect, "note": "", "status": 200,
+                  "cap": None, "nothink": False, "id_recycle": False}
+                 for model, dialect in rows]}))
+
+
+@pytest.mark.parametrize("route", ["native", "gateway", "token"])
+def test_doctor_never_calls_a_rejected_key_fine_issue_272(tmp_path, route):
+    """GH-272: the approved line reported Claude Code's locally stored answer,
+    which says nothing about the endpoint, so a rejected key was called fine
+    two lines above its FAIL. When the endpoint rejects the key, no line may
+    call it fine, and no subject may carry both OK and FAIL."""
+    key = "sk-issue-272-rejected-key"
+    home = tmp_path / "state" / "profiles" / "demo"
+    home.mkdir(parents=True)
+    (home / ".claude.json").write_text(json.dumps(
+        {"customApiKeyResponses": {"approved": [key[-20:]], "rejected": []}}))
+    curl = '#!/bin/sh\nprintf \'%s\\n\' \'{"data":[]}\'\nprintf \'%s\\n\' \'__CCMORPH_STATUS__401\'\n'
+    conf = f"type=apikey\napi_key={key}\n"
+    if route == "gateway":
+        conf += "base_url=https://example.test\n"
+    if route == "token":
+        conf = f"type=token\ntoken={key}\n"
+    result, _, _ = run_doctor(tmp_path, conf, curl)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "approved" not in result.stdout, result.stdout
+    assert "replace it: ccmorph config demo" in result.stdout, result.stdout
+    kinds_by_subject = {}
+    for kind, subject in _status_lines(result.stdout):
+        kinds_by_subject.setdefault(subject, set()).add(kind)
+    for subject, kinds in kinds_by_subject.items():
+        assert not ({"OK", "FAIL"} <= kinds), (subject, result.stdout)
+    # A renamed subject must not hide the contradiction: the credential is
+    # never called present, accepted or fine above its own rejection.
+    for kind, subject in _status_lines(result.stdout):
+        assert not (kind == "OK" and subject in {"credentials", "api key", "token"}), result.stdout
+    assert "credentials: present" not in result.stdout, result.stdout
+    expected = {
+        "native": "FAIL credentials: Anthropic rejected the API key (HTTP 401); replace it: ccmorph config demo",
+        "gateway": "FAIL gateway: rejected the API key (HTTP 401); replace it: ccmorph config demo",
+        "token": "FAIL credentials: Anthropic rejected the token (HTTP 401); replace it: ccmorph config demo",
+    }[route]
+    assert expected in result.stdout.splitlines(), result.stdout
+
+
+def test_doctor_lines_stay_plain_words_issue_272(tmp_path):
+    """GH-272: doctor spoke in internals — layered JSON, canonical settings,
+    process inspection — none of which a first-time reader can act on. Every
+    line, --verbose included, names what was checked in plain words, and a
+    non-OK line names the way out."""
+    conf = "type=apikey\nbase_url=https://example.test\napi_key=k\n"
+    profile = tmp_path / "state" / "profiles" / "demo"
+    profile.mkdir(parents=True)
+    (profile / "settings.json").write_text('{"model":"glm-4.6"}')
+    # ps over its one-second bound: the whole running-adapter answer is one
+    # SKIP line in plain words (GH-467's nothing-half-reported, reworded).
+    _adapter_stubs(tmp_path / "bin", "ps", ADAPTER_PS_ROWS["translator-route"])
+    result, _, _ = run_doctor(tmp_path, conf, GW_LISTING, args=("--verbose",))
+    assert result.returncode == 0, result.stdout + result.stderr
+    for banned in ("layered JSON", "canonical settings", "process inspection"):
+        assert banned not in result.stdout, (banned, result.stdout)
+    assert "profile settings: valid JSON (" in result.stdout, result.stdout
+    assert "SKIP adapter: could not tell whether a translator is running" in result.stdout
+    # A broken settings file is told how to be dealt with, not just that it is broken.
+    (profile / "settings.json").write_text("{ invalid")
+    broken, _, _ = run_doctor(tmp_path, conf, GW_LISTING)
+    assert "invalid JSON" in broken.stdout
+    assert f"({profile / 'settings.json'}); fix that file" in broken.stdout, broken.stdout
+
+
+def test_doctor_names_the_settings_file_that_is_actually_broken_issue_272(tmp_path):
+    """GH-272: a malformed shared ~/.claude/settings.json was reported against
+    the profile's own (valid) file, with advice to fix or remove that one —
+    which would lose the profile's settings and leave the real fault in place."""
+    conf = "type=apikey\nbase_url=https://example.test\napi_key=k\n"
+    profile = tmp_path / "state" / "profiles" / "demo"
+    profile.mkdir(parents=True)
+    (profile / "settings.json").write_text('{"model":"glm-4.6"}')
+    shared = tmp_path / "home" / ".claude" / "settings.json"
+    shared.parent.mkdir(parents=True)
+    shared.write_text("{ invalid")
+    result, _, _ = run_doctor(tmp_path, conf, GW_LISTING)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert f"({shared}); fix that file" in result.stdout, result.stdout
+    assert str(profile / "settings.json") not in result.stdout, result.stdout
+
+
+def test_doctor_names_the_command_not_the_script_path_issue_272(tmp_path):
+    """GH-272: the ccmorph line printed the internal wrapper script's path;
+    it names the command the person types instead."""
+    result, _, _ = run_doctor(
+        tmp_path, "type=apikey\nbase_url=https://example.test\napi_key=k\n", OK_CURL)
+    assert result.returncode == 0, result.stdout + result.stderr
+    lines = result.stdout.splitlines()
+    assert any(l.startswith("OK ccmorph: ") and l.endswith(" (command: ccmorph)")
+               for l in lines), result.stdout
+    assert not any("ccmorph.sh" in l for l in lines), result.stdout
+
+
+@pytest.mark.parametrize("cache_rows,stub,expected", [
+    (None, False, None),
+    ([("m-anthropic", "anthropic")], False,
+     "OK adapter: this endpoint needs no translator"),
+    ([("m-openai", "responses")], True,
+     "OK adapter: this endpoint needs a translator; cliproxyapi is installed"),
+], ids=["no-cache-no-model", "native-endpoint", "translator-endpoint"])
+def test_doctor_adapter_line_states_the_need_issue_272(tmp_path, cache_rows, stub, expected):
+    """GH-272: the adapter line said only that launch 'starts a compatibility
+    adapter if this endpoint needs one'. It now answers the question — whether
+    this endpoint needs a translator, and whether cliproxyapi is installed —
+    from the classification cache a launch itself consults; with nothing cached
+    and no model set it says no translator starts until a model is chosen.
+    (The not-installed wording is pinned in util/doctor_test.go: a machine with
+    cliproxyapi installed cannot produce that verdict end to end.)"""
+    conf = "type=apikey\nbase_url=https://example.test\napi_key=k\n"
+    if cache_rows is not None:
+        _seed_adapter_cache(tmp_path, "https://example.test", cache_rows)
+    if stub:
+        s = tmp_path / "bin" / "cliproxyapi"
+        s.parent.mkdir(parents=True, exist_ok=True)
+        s.write_text("#!/bin/sh\nexit 0\n")
+        s.chmod(0o755)
+    result, _, _ = run_doctor(tmp_path, conf, OK_CURL)
+    assert result.returncode == 0, result.stdout + result.stderr
+    adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
+    assert len(adapters) == 1, result.stdout
+    if cache_rows is None:
+        assert UNTIL_A_MODEL.fullmatch(adapters[0]), result.stdout
+    else:
+        assert adapters == [expected], result.stdout
+
+
+@pytest.mark.parametrize("path,stub,expected", [
+    ("/v1/messages", False, "OK adapter: this endpoint needs no translator"),
+    ("/v1/chat/completions", True,
+     "OK adapter: this endpoint needs a translator; cliproxyapi is installed"),
+], ids=["declared-messages", "declared-chat"])
+def test_doctor_adapter_line_reads_declared_protocols_issue_272(tmp_path, path, stub, expected):
+    """GH-272: with nothing cached, a model the gateway's own listing declares
+    speaks a protocol a launch reads without any request, so doctor says
+    whether the translator is needed from that declaration."""
+    curl = ("#!/bin/sh\nprintf '%s\\n' '"
+            + json.dumps({"data": [{"id": "m-1", "supported_endpoints": [path]}]})
+            + "'\nprintf '%s\\n' '__CCMORPH_STATUS__200'\n")
+    if stub:
+        s = tmp_path / "bin" / "cliproxyapi"
+        s.parent.mkdir(parents=True, exist_ok=True)
+        s.write_text("#!/bin/sh\nexit 0\n")
+        s.chmod(0o755)
+    result, _, _ = run_doctor(
+        tmp_path, "type=apikey\nbase_url=https://example.test\napi_key=k\n", curl)
+    assert result.returncode == 0, result.stdout + result.stderr
+    adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
+    assert adapters == [expected], result.stdout
+
+
+@pytest.mark.parametrize("rows,expected", [
+    ("'1 0 /sbin/launchd'", None),
+    (ADAPTER_PS_ROWS["translator-route"], TRANSLATOR_NOW),
+], ids=["no-session-line-omitted", "session-with-translator"])
+def test_doctor_omits_the_adapter_line_for_an_unclassified_saved_model_issue_272(tmp_path, rows, expected):
+    """GH-272: a saved model nothing has classified can only be answered by a
+    billed check, which doctor never sends: the line is left out rather than
+    guessed. An open session that shows a translator still says so."""
+    conf = "type=apikey\nbase_url=https://example.test\napi_key=k\nmodel=glm-4.6\n"
+    _adapter_stubs(tmp_path / "bin", "", rows)
+    result, _, _ = run_doctor(tmp_path, conf, GW_LISTING)
+    assert result.returncode == 0, result.stdout + result.stderr
+    adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
+    if expected is None:
+        assert adapters == [], result.stdout
+        assert "ready: start it with ccmorph run demo" in result.stdout, result.stdout
+    else:
+        assert adapters == [expected], result.stdout
 
 
 def test_doctor_tolerates_a_conf_that_still_declares_removed_keys(tmp_path):
@@ -485,9 +723,11 @@ printf '%s\\n' '__CCMORPH_STATUS__{code}'
         assert result.returncode == 1, result.stdout
         assert ("FAIL credentials: Anthropic rejected the API key (HTTP 401); "
                 "replace it: ccmorph config demo") in result.stdout
+        assert "credentials: present" not in result.stdout, result.stdout
     else:
         assert result.returncode == 0, result.stdout
         assert "OK endpoint: Anthropic accepted the API key (HTTP 200)" in result.stdout
+        assert "OK credentials: present in the conf file, unencrypted (value hidden)" in result.stdout, result.stdout
 
 
 @pytest.mark.parametrize("code", ["401", "200", "none"])
@@ -512,13 +752,17 @@ printf '%s\\n' '__CCMORPH_STATUS__{code}'
         assert result.returncode == 1, result.stdout
         assert ("FAIL credentials: Anthropic rejected the token (HTTP 401); "
                 "replace it: ccmorph config demo") in result.stdout
+        assert "credentials: present" not in result.stdout, result.stdout
         assert not result.stdout.splitlines()[-1].startswith("OK ready"), result.stdout
     elif code == "200":
         assert result.returncode == 0, result.stdout
         assert "OK credentials: Anthropic accepted the token (HTTP 200)" in result.stdout
+        assert "OK credentials: present in the conf file, unencrypted (value hidden)" in result.stdout, result.stdout
     else:
         assert "WARN endpoint: Anthropic did not answer, so the token was not checked" in result.stdout
         assert "rejected the token" not in result.stdout
+        # An unanswered probe is not a rejection: the credential is still present.
+        assert "OK credentials: present in the conf file, unencrypted (value hidden)" in result.stdout, result.stdout
     # However it answered, the request itself is the one a launch sends: the
     # token as a Bearer against Anthropic's listing, never an x-api-key, never
     # on a command line.

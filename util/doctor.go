@@ -20,15 +20,28 @@ func NativeBase(base string) bool {
 	return base == "" || base == "https://api.anthropic.com" || base == "https://api.anthropic.com/"
 }
 
+// TranslatorNeed is doctor's verdict on whether a launch of this profile would
+// start the translator: Needed is meaningful only when Known is true, which says
+// the adapter cache or the endpoint's own model listing decides it. The caller
+// computes it from what a launch itself reads without inference, so doctor
+// reports what launch would actually do, never a guess.
+type TranslatorNeed struct {
+	Known     bool // the cache or the listing's declarations decide the need
+	Needed    bool // at least one usable model needs the translator
+	Installed bool // cliproxyapi can be found and run
+}
+
 // DoctorRoute is doctor's read-only endpoint and adapter checks for a profile of
-// the given type, base_url, adapter flag and credential; home is the profile
-// home, where a sub profile's sign-in is read when Claude Code keeps it there.
-// failed is true when a row is FAIL. model and modelMap are the profile's saved
-// default and map, so a reachable listing can adjudicate the default (#267).
-// verbose adds a running adapter's processes and ports; the default report says
-// only what launch will do, which is what a reader can act on. Nothing is started
-// and nothing is written.
-func DoctorRoute(name, typ, base, model, modelMap string, adapter bool, key, home string, verbose bool) (rows []DoctorRow, failed bool) {
+// the given type, base_url and credential; home is the profile home, where a
+// sub profile's sign-in is read when Claude Code keeps it there. failed is true
+// when a row is FAIL, and keyRejected is true when the endpoint itself refused
+// the credential — the caller uses it to drop Claude Code's locally stored
+// answer, which would otherwise call a rejected key fine (GH-272). model and
+// modelMap are the profile's saved default and map, so a reachable listing can
+// adjudicate the default (#267). verbose adds a running adapter's processes and
+// ports; the default report says only what launch will do, which is what a
+// reader can act on. Nothing is started and nothing is written.
+func DoctorRoute(name, typ, base, model, modelMap string, need func(listing string) TranslatorNeed, key, home string, verbose bool) (rows []DoctorRow, failed, keyRejected bool) {
 	row := func(kind, msg string) {
 		if kind == "FAIL" {
 			failed = true
@@ -49,6 +62,7 @@ func DoctorRoute(name, typ, base, model, modelMap string, adapter bool, key, hom
 				row("OK", "endpoint: Anthropic accepted the API key (HTTP "+code+")")
 			case code == "401" || code == "403":
 				row("FAIL", "credentials: Anthropic rejected the API key (HTTP "+code+"); replace it: ccmorph config "+name)
+				keyRejected = true
 			case code == "000" || code == "":
 				row("WARN", "endpoint: Anthropic did not answer, so the key was not checked (check your network)")
 			default:
@@ -66,6 +80,7 @@ func DoctorRoute(name, typ, base, model, modelMap string, adapter bool, key, hom
 				row("OK", "credentials: Anthropic accepted the token (HTTP "+code+")")
 			case code == "401" || code == "403":
 				row("FAIL", "credentials: Anthropic rejected the token (HTTP "+code+"); replace it: ccmorph config "+name)
+				keyRejected = true
 			case code == "000" || code == "":
 				row("WARN", "endpoint: Anthropic did not answer, so the token was not checked (check your network)")
 			default:
@@ -101,9 +116,10 @@ func DoctorRoute(name, typ, base, model, modelMap string, adapter bool, key, hom
 		}
 		// Launch starts no adapter on a native endpoint, so there is no
 		// adapter row to print.
-		return rows, failed
+		return rows, failed, keyRejected
 	}
 
+	listing := ""
 	valid := httpURL.MatchString(base)
 	if !valid {
 		row("FAIL", "config: endpoint must be an http(s) URL without query or fragment")
@@ -119,6 +135,7 @@ func DoctorRoute(name, typ, base, model, modelMap string, adapter bool, key, hom
 		switch {
 		case strings.HasPrefix(code, "2") && len(code) == 3:
 			if n, ok := modelsCount(body); ok {
+				listing = body
 				row("OK", fmt.Sprintf("gateway: reachable (HTTP %s); models: %d", code, n))
 				// A listing that answers and names models adjudicates the saved
 				// default: ready would promise a launch that fails at its first
@@ -135,27 +152,24 @@ func DoctorRoute(name, typ, base, model, modelMap string, adapter bool, key, hom
 			row("WARN", "gateway: did not answer within 5 seconds (if it is a private endpoint, connect that network)")
 		case code == "401" || code == "403":
 			row("FAIL", "gateway: rejected the API key (HTTP "+code+"); replace it: ccmorph config "+name)
+			keyRejected = true
 		default:
 			row("FAIL", fmt.Sprintf("gateway: unreachable or rejected (HTTP %s)", code))
 		}
 	}
 
-	// One adapter line answers the reader's question — what happens at launch —
-	// and says so when a session already uses one. Pids, listeners and a failed
-	// process inspection are internal detail: they appear only with --verbose.
-	what := "adapter: ccmorph run starts a compatibility adapter if this endpoint needs one"
-	if adapter {
-		what = "adapter: ccmorph run starts a compatibility adapter for this endpoint (adapter=true)"
-	}
+	// One adapter line answers the reader's question — does this profile need a
+	// translator now, and can launch find one — or is left out when only a billed
+	// check could answer. Pids, listeners and a failed ps are
+	// internal detail: --verbose only.
 	running := runningAdapter(name)
-	if running != "" && running != "__UNKNOWN__" {
-		what += "; an open session on this profile is using one now"
+	if kind, msg := adapterLine(name, model, listing, running, need(listing)); kind != "" {
+		row(kind, msg)
 	}
-	row("INFO", what)
 	if verbose {
 		switch {
 		case running == "__UNKNOWN__":
-			row("SKIP", "adapter: status unknown (process inspection unavailable; not started by doctor)")
+			row("SKIP", "adapter: could not tell whether a translator is running")
 		case running != "":
 			pid, children, _ := strings.Cut(running, "\t")
 			for _, spec := range strings.Split(children, ",") {
@@ -176,5 +190,40 @@ func DoctorRoute(name, typ, base, model, modelMap string, adapter bool, key, hom
 			}
 		}
 	}
-	return rows, failed
+	return rows, failed, keyRejected
+}
+
+// adapterLine is the one adapter row, or none (kind ""). running is
+// runningAdapter's answer and listing the model list doctor read ("" if none).
+// The first applicable answer wins: what launch would do from the cache and the
+// declared protocols; else what an open session shows; else, when no model is
+// set and nothing names a protocol, that no translator starts until one is
+// chosen. A saved model nothing has classified is left out: only a billed
+// check could answer it, and doctor sends none.
+func adapterLine(name, model, listing, running string, n TranslatorNeed) (kind, msg string) {
+	translator := running != "__UNKNOWN__" && strings.Contains(running, ":cliproxyapi")
+	inUse := ""
+	if translator {
+		inUse = "; an open session on this profile is using one now"
+	}
+	switch {
+	case n.Known && n.Needed && n.Installed:
+		return "OK", "adapter: this endpoint needs a translator; cliproxyapi is installed" + inUse
+	case n.Known && n.Needed:
+		return "FAIL", "adapter: this endpoint needs a translator; cliproxyapi is not installed; install it: brew install cliproxyapi" + inUse
+	case n.Known:
+		return "OK", "adapter: this endpoint needs no translator"
+	case translator:
+		return "OK", "adapter: this profile needs a translator now: an open session on it is running cliproxyapi"
+	case running != "" && running != "__UNKNOWN__":
+		return "OK", "adapter: this profile needs no translator now: its open session runs without one"
+	case strings.TrimSpace(model) == "" && listing != "":
+		installed := "cliproxyapi is not installed"
+		if n.Installed {
+			installed = "cliproxyapi is installed"
+		}
+		return "INFO", "adapter: this profile needs no translator until a model is chosen (none is set, and the endpoint's model list names no protocol); " +
+			installed + "; choose one: ccmorph set " + name + " model <model-id>"
+	}
+	return "", ""
 }

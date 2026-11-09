@@ -290,6 +290,52 @@ func dialectAuto(base, key, model string) (string, string, int) {
 	return "unusable", noInference + ": no per-model endpoint declaration or proven cache", 0
 }
 
+// declaredDialect is dialectAuto's answer read from an already-fetched model
+// listing: the dialect a model's own supported_endpoints declares, or "" when
+// it declares none. It sends nothing, so doctor can use it read-only.
+func declaredDialect(data []any, model string) string {
+	for _, r := range data {
+		row, ok := r.(map[string]any)
+		if !ok || row["id"] != model {
+			continue
+		}
+		endpoints, ok := row["supported_endpoints"].([]any)
+		if !ok {
+			return ""
+		}
+		for _, p := range [][2]string{{"/v1/messages", "anthropic"}, {"/v1/responses", "responses"}, {"/v1/chat/completions", "chat"}} {
+			for _, e := range endpoints {
+				if e == p[0] {
+					return p[1]
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// listedModels is inventory's id list read from an already-fetched listing,
+// with the same filters and no logging.
+func listedModels(data []any) []string {
+	out := []string{}
+	for _, item := range data {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if caps, ok := m["capabilities"].(map[string]any); ok && !truthy(caps["chat_completion"]) {
+			continue
+		}
+		id, ok := m["id"].(string)
+		if !ok || id == "" || !safeModelID.MatchString(id) {
+			continue
+		}
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func anthropicHeaders(key string) map[string]string {
 	return map[string]string{"x-api-key": key, "anthropic-version": "2023-06-01"}
 }
