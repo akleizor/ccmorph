@@ -274,6 +274,12 @@ func privateSession(bin string, args []string, runDir string, say func(), errw i
 	}()
 	err = cmd.Wait()
 	close(done)
+	// Claude Code's exit line offers to resume; the view this return is about to
+	// remove is where that conversation lived, so the end must say so and leave
+	// no command to run (#292). A stderr with no reader costs only the notice,
+	// as on stdout: caught, SIGPIPE spares this process and claude's own status.
+	signal.Notify(make(chan os.Signal, 1), syscall.SIGPIPE)
+	fmt.Fprintln(errw, "ccmorph: this session's conversation was deleted (private=1); there is nothing to resume")
 	if ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
 		return 128 + int(ws.Signal())
 	}

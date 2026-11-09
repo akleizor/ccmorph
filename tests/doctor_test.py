@@ -118,6 +118,17 @@ printf '%s\n' '__CCMORPH_STATUS__200'
 """
 
 
+@pytest.mark.parametrize("conf_line, marked", [("private=1\n", True), ("", False)],
+                         ids=["private", "keeps-history"])
+def test_doctor_names_the_history_a_private_profile_deletes_gh_292(tmp_path, conf_line, marked):
+    # GH-292: private=1 deletes the session's conversation when it ends, and
+    # doctor read every other promise the conf makes without saying so.
+    conf = "type=apikey\nbase_url=https://example.test\napi_key=k\n" + conf_line
+    result, _, _ = run_doctor(tmp_path, conf, OK_CURL)
+    assert result.returncode == 0, result.stderr
+    assert ("history: deleted when the session ends (private=1)" in result.stdout) == marked
+
+
 def test_doctor_reports_the_profile_default_model_whatever_its_origin(tmp_path):
     # The model is one profile-owned default now, so doctor names it as such
     # instead of pointing at whichever native layer happened to hold it. Every

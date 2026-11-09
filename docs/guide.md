@@ -171,7 +171,7 @@ lines. All `*.conf` are gitignored: they carry credentials and never enter
 history.
 
 ```sh
-ccmorph list               # list profiles; the default is marked
+ccmorph list               # list profiles; the default is marked, and a private profile is marked private
 ccmorph inspect [<profile>] # effective configuration and its sources
 ccmorph use <profile>      # make it the default for new sessions
 ccmorph add <profile>      # create one with guided setup
@@ -285,7 +285,7 @@ or read it in full. In brief:
 | `tag` | Label for this route in the model picker |
 | `model`, `effort`, `effort.<model>` | Saved default model and effort; per-model override |
 | `env.<NAME>` | Launch environment; see section 3 of the template for the allowlist |
-| `private=1` | Run from a throwaway view: config and settings are linked in, transcripts, prompt history and session state are deleted when the session exits |
+| `private=1` | Run from a throwaway view: config and settings are linked in, transcripts, prompt history and session state are deleted when the session exits — marked in `list`, `inspect` and `doctor`; the ended session says the conversation was deleted, and a hop away is refused |
 | `usage_route=direct` | `sub`, `token`, `provider`: install no usage hook, so the profile writes no usage receipts (default: the hook) |
 | `excluded_models=<id>,<id>` | Gateway picker exclusions (exact IDs, no spaces) |
 | `window_sources=<name>` | Shipped catalogue to size this route by |

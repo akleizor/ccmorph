@@ -20,6 +20,15 @@
 
 ### Fixed
 
+- **A private profile says what it does to the conversation.** `private=1`
+  ran from a throwaway view whose transcripts were deleted at exit, yet no
+  ccmorph view said so: `list`, `inspect` and `doctor` mark the profile and
+  name the deleted history, a session's end reports that the conversation
+  was deleted instead of leaving Claude Code's resume line pointing at one
+  that no longer exists, and a hop away is refused before the session ends —
+  the conversation cannot follow a switch, in words that name the option
+  (#292).
+
 - **A usage hook survives a `brew upgrade`.** A launch wrote its Stop,
   SessionStart and SessionEnd hook with the full path of the ccmorph-core
   running it — under Homebrew the versioned

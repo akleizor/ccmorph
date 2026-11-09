@@ -2906,6 +2906,34 @@ test_hop_refuses_to_end_the_session_when_the_target_cannot_start() {
   return $rc
 }
 
+test_hop_refuses_to_switch_away_from_a_private_profile() {
+  # A private session's conversation is deleted when the session ends, so a hop
+  # cannot carry it over: the switch is refused before anything closes, in plain
+  # words that name the private option, and the session keeps running (#292).
+  local test_home out st rc=0
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  source "$CCMORPH_SOURCE"
+
+  # The view a private launch builds: a throwaway root named ccmorph-private.*
+  # holding the profile's own directory.
+  local relay_id="$$.private" view="$test_home/ccmorph-private.stand-in/priv"
+  export CLAUDE_CODE_SESSION_ID='priv-session' CCMORPH_RELAY_ID="$relay_id" CLAUDE_CONFIG_DIR="$view"
+
+  out=$(hop_as_claude proxy 2>&1); st=$?
+
+  [[ "$st" != 0 ]] || { print -u2 -- "hop must refuse, got 0: ${(qqq)out}"; rc=1 }
+  [[ "$out" == *'private=1'* ]] || { print -u2 -- "the refusal must name the private option: ${(qqq)out}"; rc=1 }
+  [[ "$out" == *'deleted when the session ends'* ]] || { print -u2 -- "the refusal must say why in plain words: ${(qqq)out}"; rc=1 }
+  [[ "$out" == *'This session keeps running.'* ]] || { print -u2 -- "hop must say the session survives: ${(qqq)out}"; rc=1 }
+  [[ ! -e "$HOME/claude-ended" ]] || { print -u2 -- "hop must not end the session"; rc=1 }
+  [[ ! -e "$HOME/.config/ccmorph/.reswitch.$relay_id" ]] || { print -u2 -- "hop must queue nothing"; rc=1 }
+  [[ "$out" != *'Switching'* ]] || { print -u2 -- "hop must not announce a switch: ${(qqq)out}"; rc=1 }
+  unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID CLAUDE_CONFIG_DIR
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_launch_failure_names_the_cause_and_the_doctor_command() {
   # The launch path's own failure must speak the same plain words as a refused
   # hop and point at doctor, never adapter jargon alone (#286) -- and a plain
@@ -9942,6 +9970,7 @@ run_test test_hop_before_the_first_message_starts_a_new_conversation_issue_288
 run_test test_failed_switch_with_no_conversation_does_not_offer_a_resume_issue_288
 run_test test_a_hop_reads_the_catalogue_afresh
 run_test test_hop_refuses_to_end_the_session_when_the_target_cannot_start
+run_test test_hop_refuses_to_switch_away_from_a_private_profile
 run_test test_launch_failure_names_the_cause_and_the_doctor_command
 run_test test_hop_refuses_when_no_claude_process_runs_it
 run_test test_hop_without_profile_uses_current_profile
@@ -10222,15 +10251,21 @@ run_test test_adapter_controls_do_not_reach_claude_or_overlay
 test_private_session_leaves_no_transcript_behind() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   source "$CCMORPH_SOURCE"
-  local prof="$test_home/prof" rc=0 seen
+  local prof="$test_home/prof" rc=0 seen end
   mkdir -p "$prof/projects" && print '{}' > "$prof/.claude.json"
   # The fake claude writes a transcript and reports where its config dir was.
   printf '%s\n' '#!/bin/sh' 'mkdir -p "$CLAUDE_CONFIG_DIR/projects/p" && echo t > "$CLAUDE_CONFIG_DIR/projects/p/s.jsonl"; test -L "$CLAUDE_CONFIG_DIR/.claude.json" && echo "$CLAUDE_CONFIG_DIR"' > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
-  seen=$(_ccm_run_claude "CLAUDE_CONFIG_DIR=$prof" CCMORPH_PRIVATE=1 --)
+  seen=$(_ccm_run_claude "CLAUDE_CONFIG_DIR=$prof" CCMORPH_PRIVATE=1 -- 2>"$test_home/private-end")
   [[ -n "$seen" && "$seen" != "$prof" && "${seen:t}" == "${prof:t}" ]] || rc=1
   [[ ! -e "${seen:h}" ]] || rc=1
   [[ ! -e "$prof/projects/p" ]] || rc=1
+  # The session's end must say what became of the conversation, and offer no
+  # way back: it was deleted because the profile runs private (#292).
+  end="$(<$test_home/private-end)"
+  [[ "$end" == *'conversation was deleted'* ]] || { print -u2 -- "the end must say the conversation was deleted: ${(qqq)end}"; rc=1 }
+  [[ "$end" == *'private=1'* ]] || { print -u2 -- "the end must name the private option: ${(qqq)end}"; rc=1 }
+  [[ "$end" != *--resume* ]] || { print -u2 -- "the end must print no resume command: ${(qqq)end}"; rc=1 }
   # The same private session starts when TMPDIR cannot be written: the view
   # falls back to the state dir's run/, where the launch env file already lands
   # (#140), and it is removed when claude exits.
@@ -10238,13 +10273,18 @@ test_private_session_leaves_no_transcript_behind() {
   mkdir -p "$rotmp" && chmod 500 "$rotmp"
   seen=$(
     export TMPDIR="$rotmp"
-    _ccm_run_claude "CLAUDE_CONFIG_DIR=$prof" CCMORPH_PRIVATE=1 --
+    _ccm_run_claude "CLAUDE_CONFIG_DIR=$prof" CCMORPH_PRIVATE=1 -- 2>/dev/null
   )
   [[ -n "$seen" && "${seen:h:h}" == "$_CCMORPH_DIR/run" ]] || rc=1
   [[ ! -e "${seen:h}" ]] || rc=1
   chmod 700 "$rotmp"
-  seen=$(_ccm_run_claude "CLAUDE_CONFIG_DIR=$prof" --)
+  seen=$(_ccm_run_claude "CLAUDE_CONFIG_DIR=$prof" -- 2>"$test_home/normal-end")
   [[ -e "$prof/projects/p/s.jsonl" ]] || rc=1
+  # A session that keeps its history must not be told it was deleted.
+  [[ "$(<$test_home/normal-end)" != *'conversation was deleted'* ]] || {
+    print -u2 -- 'a session that keeps its history must not be told it was deleted'
+    rc=1
+  }
   rm -rf "$test_home"
   return $rc
 }
@@ -10353,6 +10393,34 @@ test_private_session_is_removed_when_hop_notice_hits_closed_stdout() {
   return $rc
 }
 run_test test_private_session_is_removed_when_hop_notice_hits_closed_stdout
+
+test_private_session_is_removed_when_the_end_notice_hits_closed_stderr() {
+  # The deleted-conversation notice (#292) is the private launch's one stderr
+  # write, and it comes at the session's end, after claude has already exited:
+  # a stderr with no reader (SIGPIPE) must cost only the notice, not claude's
+  # status or the view's removal. No pending hop notice here -- say()'s own
+  # SIGPIPE catch would mask the end notice's, and this test is its only guard.
+  local test_home; test_home=$(mktemp -d); setup_home "$test_home"
+  local prof="$test_home/prof" rc=0 st=0 r w
+  local TMPDIR="$test_home/tmp"
+  mkdir -p "$prof" "$TMPDIR" && print '{}' > "$prof/.claude.json"
+  printf '%s\n' '#!/bin/sh' ': > "$HOME/claude-started"' > "$HOME/bin/claude"
+  chmod +x "$HOME/bin/claude"
+  # A pipe whose only reader is already closed: the first write raises SIGPIPE.
+  mkfifo "$test_home/err"
+  exec {r}<>"$test_home/err" {w}>"$test_home/err"
+  exec {r}<&-
+  TMPDIR="$TMPDIR" zsh -c 'source "$1"; _ccm_run_claude "CLAUDE_CONFIG_DIR=$2" CCMORPH_PRIVATE=1 --' \
+    _ "$CCMORPH_SOURCE" "$prof" >"$test_home/out" 2>&$w || st=$?
+  exec {w}>&-
+  local -a left=("$TMPDIR"/ccmorph-private.*(DN))
+  (( ${#left} == 0 )) || { print -u2 -- "private dir left behind: $left"; rc=1 }
+  (( st == 0 )) || { print -u2 -- "status $st, expected claude's 0"; rc=1 }
+  [[ -e "$HOME/claude-started" ]] || { print -u2 -- 'claude did not start'; rc=1 }
+  rm -rf "$test_home"
+  return $rc
+}
+run_test test_private_session_is_removed_when_the_end_notice_hits_closed_stderr
 
 test_private_session_is_removed_on_group_quit() {
   # Ctrl-\ sends SIGQUIT to the whole foreground group: the launcher must outlive

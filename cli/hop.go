@@ -77,6 +77,15 @@ func (l *launcher) hop(args []string) int {
 		l.err("this session was not launched by the ccmorph relay")
 		return 1
 	}
+	if prof := privateViewProfile(os.Getenv("CLAUDE_CONFIG_DIR")); prof != "" {
+		// A private session's conversation is deleted when the session ends
+		// (#292): it cannot follow a hop, and copying it out would break the
+		// promise the option makes, so the switch is refused before anything
+		// closes.
+		l.refuseHop(name, "the conversation is deleted when the session ends ("+prof+
+			" runs with private=1), so it cannot follow a switch")
+		return 1
+	}
 	relayN, err := strconv.Atoi(relayPID)
 	pid := 0
 	if err == nil {
@@ -114,6 +123,19 @@ func (l *launcher) hop(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// privateViewProfile names the profile a private session runs from, "" when the
+// session is not one: the launch builds a private session's throwaway view
+// under a ccmorph-private.* root named for the profile (#292).
+func privateViewProfile(cfg string) string {
+	if cfg == "" {
+		return ""
+	}
+	if root := filepath.Base(filepath.Dir(cfg)); strings.HasPrefix(root, "ccmorph-private.") {
+		return filepath.Base(cfg)
+	}
+	return ""
 }
 
 // hopCheck is what a hop owes the session it is about to end (#286): the target
