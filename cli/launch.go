@@ -63,10 +63,11 @@ type launcher struct {
 }
 
 // relayNext is what one launch hands the driver when Claude Code exited for a hop.
+// fresh marks a hop with no conversation to carry: the target starts a new one.
 type relayNext struct {
 	args             []string
 	profile, session string
-	crossed          bool
+	crossed, fresh   bool
 }
 
 // Main runs one `ccmorph run`: the zsh wrapper exports the paths and env-key
@@ -119,6 +120,17 @@ func (l *launcher) launchMain(args []string) int {
 		}
 		from, relaySession = l.launched, next.session
 		args, profileName, interactive, native = next.args, next.profile, false, true
+		if next.fresh {
+			// No conversation to carry: one line says so, and the cache notice a
+			// resume owes stays unsaid (#288).
+			// If this pass cannot start either, there is no conversation to point
+			// back at: --resume on the empty id would end at Claude Code's own
+			// "No conversation found".
+			relaySession = ""
+			l.log("relay fresh profile=" + next.profile + " session=" + next.session)
+			fmt.Printf("\n%sccmorph:%s starting a new conversation as %s%s%s...\n\n", l.accent, l.reset, l.bold, next.profile, l.reset)
+			continue
+		}
 		l.log("relay resume profile=" + next.profile + " session=" + next.session)
 		fmt.Printf("\n%sccmorph:%s resuming as %s%s%s...\n\n", l.accent, l.reset, l.bold, next.profile, l.reset)
 		if next.crossed {

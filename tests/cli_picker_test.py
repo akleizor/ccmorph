@@ -854,6 +854,14 @@ ccm_ui_list Pick $'a\tAlpha' 2>&1 >/dev/null | od -c | grep -q 033 && print LIST
         for name in ('demo', 'target'):
             (self.state / f'{name}.conf').write_text(
                 'type=token\ntoken=synthetic-token\nmodel=sonnet\neffort=low\nmodel_defaults=1\n')
+        # The relay resumes fixture-session: seed the record its first message
+        # writes, so the resume has a conversation to carry (#288).
+        projects = self.tmp / 'home/.claude/projects/p'
+        projects.mkdir(parents=True)
+        (projects / 'fixture-session.jsonl').write_text(
+            '{"type":"user","sessionId":"fixture-session","uuid":"seed-1",'
+            '"timestamp":"2026-01-01T00:00:00.000Z","isSidechain":false,'
+            '"message":{"role":"user","content":"spoken before the switch"}}\n')
         # Exercise the real launch/resume driver with a non-networked Claude stub.
         claude = self.tmp / 'bin/claude'
         claude.write_text("""#!/bin/sh

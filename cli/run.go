@@ -354,7 +354,15 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 	if rs.Effort != "" {
 		next.args = append(next.args, "--effort", rs.Effort)
 	}
-	next.args = append(next.args, "--resume", rs.Session)
+	// Claude Code cannot resume a session whose transcript holds no conversation
+	// yet: a hop before the first message would hand it an empty id and end at
+	// Claude Code's own "No conversation found" (#288). Start the target on a
+	// new conversation instead.
+	if transcript, ok := l.sessionFile(rs.Session); ok && util.HasConversation(transcript) {
+		next.args = append(next.args, "--resume", rs.Session)
+	} else {
+		next.fresh = true
+	}
 	next.crossed = name == "" || !sameFile(l.conf(name), l.conf(to))
 	return next, 0
 }
