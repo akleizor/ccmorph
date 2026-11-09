@@ -174,6 +174,19 @@ def test_help_is_concise_truthful_and_read_only(tmp_path):
                                   text=True, timeout=HANG_TIMEOUT).stdout for verb in ('get', 'set')}
     assert 'read' in pages['get'].lower() and 'save' not in pages['get'].lower(), pages['get']
     assert 'save' in pages['set'].lower(), pages['set']
+    # One word names the model/effort setting on every page that names it (#367):
+    # the config menu and its help once said "reasoning" where set, get, inspect
+    # and the errors say effort, and nothing tied the two words together.
+    pages['short'] = subprocess.run([cli, '--help'], env=env, capture_output=True,
+                                    text=True, timeout=HANG_TIMEOUT).stdout
+    pages['all'] = subprocess.run([cli, 'help', 'all'], env=env, capture_output=True,
+                                  text=True, timeout=HANG_TIMEOUT).stdout
+    pages['config'] = subprocess.run([cli, 'help', 'config'], env=env, capture_output=True,
+                                     text=True, timeout=HANG_TIMEOUT).stdout
+    for name, page in pages.items():
+        assert 'reasoning' not in page.lower(), name
+    assert 'Change model, effort, or connection' in pages['short']
+    assert 'model and effort' in pages['config']
     assert not marker.exists()
 
 

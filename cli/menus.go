@@ -124,6 +124,16 @@ func (l *launcher) valueRows(slot, name string, preview ...string) (string, bool
 	return "", false
 }
 
+// effortLabel is the picker's label for one effort level: the plain name,
+// naming beside it the value the commands accept (#367).
+func effortLabel(value string) string {
+	label := strings.ToUpper(value[:1]) + strings.ToLower(value[1:])
+	if value == "xhigh" {
+		label = "Extra high (xhigh)"
+	}
+	return label
+}
+
 // chooseValue is _ccm_choose_value: effort is a fixed menu, models are searchable.
 func chooseValue(slot, prompt, rows, display string) (string, int) {
 	if slot != "effort" {
@@ -139,11 +149,7 @@ func chooseValue(slot, prompt, rows, display string) (string, int) {
 					detail = d
 				}
 			}
-			label := strings.ToUpper(value[:1]) + strings.ToLower(value[1:])
-			if value == "xhigh" {
-				label = "Extra high"
-			}
-			row = value + "\t" + label + "\t" + detail
+			row = value + "\t" + effortLabel(value) + "\t" + detail
 		}
 		labeled = append(labeled, row)
 	}

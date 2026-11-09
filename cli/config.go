@@ -64,7 +64,7 @@ func (l *launcher) getSet(verb string, args []string) int {
 	}
 	if (key == "" || interactive(key)) && len(args) <= 2 {
 		k, rc := uiSelect("native", "Setting — "+name,
-			"model\tModel\tDefault model for new sessions\neffort\tReasoning\tDefault reasoning level", "")
+			"model\tModel\tDefault model for new sessions\neffort\tEffort\tDefault effort level", "")
 		if rc != 0 {
 			return 1
 		}
@@ -83,6 +83,11 @@ func (l *launcher) getSet(verb string, args []string) int {
 		}
 	}
 	if key != "model" && key != "effort" {
+		if strings.EqualFold(key, "reasoning") {
+			// The menus once called this setting reasoning (#367): say the word
+			// the commands take, not a usage line whose [model|effort] buries it.
+			l.err("the setting is called effort, not reasoning")
+		}
 		l.err("usage: " + usageLine(verb))
 		return 2
 	}
@@ -206,7 +211,7 @@ func (l *launcher) config(args []string) int {
 	if isTTY(0) {
 		section = "defaults"
 		if typ == "apikey" || typ == "token" {
-			rows := "defaults\tModel and reasoning\tDefaults for new sessions"
+			rows := "defaults\tModel and effort\tDefaults for new sessions"
 			if typ == "apikey" {
 				rows += "\nconnection\tConnection\tEndpoint or API key"
 			} else {

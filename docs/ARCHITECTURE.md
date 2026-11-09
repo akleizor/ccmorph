@@ -354,7 +354,7 @@ over tab-separated ID/label/description rows, line input with hidden credential 
 and a confirm whose default is No. It holds no profile or persistence logic.
 
 Native selection uses one Claude Code-style layout for sign-in, settings,
-reasoning, and confirmation: orange headings, lavender chevrons, gray descriptions,
+effort, and confirmation: orange headings, lavender chevrons, gray descriptions,
 and blank-line spacing. Layout has one left edge: headings, labels, hints and
 numbered indexes start after a two-cell margin, and only the `❯` pointer hangs in
 it. Descriptions start a fixed four-cell gap after the widest label. Headings,
@@ -375,7 +375,7 @@ Menus go to stderr, selected IDs alone to stdout; text and secret input return i
 arguments and the existing piped configuration sequence retain their behavior.
 
 `add` offers profile types and discovered providers, then only the corresponding
-sign-in fields. `config` separates model/reasoning from connection editing.
+sign-in fields. `config` separates model/effort from connection editing.
 Model rows come from `_ccm_value_rows`: API-key endpoints advertise their own
 models; subscription/token profiles use Claude aliases; provider profiles reuse
 saved rows. Model discovery failure still permits keeping the current default or

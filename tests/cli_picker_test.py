@@ -379,6 +379,7 @@ class PickerTTYTest(unittest.TestCase):
         rc, out, missed = run_pty('ccmorph config -i', env, [(b'Settings', b'\r'), (b'Default effort', b'\x1b[B' * 3 + b'\r')])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
+        self.assertIn('Model and effort', out)  # one word names the setting (#367)
         log = (self.tmp / 'fzf.log').read_text()
         self.assertIn('--prompt Default model — demo>', log)
         self.assertIn('picker-beta', log)  # the endpoint's own listing reached the picker
@@ -459,14 +460,17 @@ class PickerTTYTest(unittest.TestCase):
     def test_set_without_slot_picks_slot_then_value(self):
         env = self.env()
         self.profile()
+        # The value menu is pumped on its full header: the setting menu's own
+        # rows name "Effort" too (#367), so the bare word would match them.
         rc, out, missed = run_pty('ccmorph set demo', env, [
             (b'Setting', b'\x1b[B\r'),  # effort
-            (b'Effort', b'\x1b[B' * 2 + b'\r'),  # high
+            (b'Effort \xe2\x80\x94 demo', b'\x1b[B' * 2 + b'\r'),  # high
         ])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
+        self.assertIn('Default effort level', out)  # one word names the setting (#367)
         self.assertIn('Medium', out)
-        self.assertIn('Extra high', out)
+        self.assertIn('Extra high (xhigh)', out)  # the label names the value set takes (#367)
         self.assertIn('Max', out)  # gh264: the menu names every level the conf accepts
         self.assertEqual(self.field('demo', 'effort'), 'high')
         self.assertEqual(self.field('demo', 'model'), 'native-model')  # seeded, not guessed

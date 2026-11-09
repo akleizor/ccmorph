@@ -1,17 +1,17 @@
 [
   {
-    "criterion": "In an 80-column terminal, no line of ccmorph help add, help all or any other help page is cut inside a word.",
+    "criterion": "One word names this setting in the config menu, its question, the help pages, the README, set, get, inspect and the error messages.",
     "pass": true,
-    "evidence": "cli/help_wrap_test.go TestEveryHelpPageFitsEightyColumnsWithoutCuttingAWord renders every topic at 80 columns and asserts every line is at most 80 cells and carries exactly the unwrapped page's words; go test ./cli/ -run TestEveryHelpPageFitsEightyColumns -count=1 → ok. Watched red first: lines of 81, 86, 93, 114 and 127 cells (help all, quota, list, update, and the 119-cell add provider line in TestHelpAddWrapsTheProviderSentenceAsOneListItem)."
+    "evidence": "The word is effort. cli/config.go renames the setting-chooser row to 'effort\\tEffort\\tDefault effort level' and the config section to 'Model and effort'; cli/main.go's short help says 'Change model, effort, or connection' and the config help page says 'model and effort'; README.md:118, docs/guide.md and docs/ARCHITECTURE.md match; set/get/inspect/errors already said effort and are unchanged. tests/cli_messages_test.py::test_help_is_concise_truthful_and_read_only asserts no help page contains 'reasoning' and the config page says 'model and effort'; tests/docs_claims_test.py::test_docs_name_the_setting_effort_alone_issue_367 pins the README and guide phrases — both failed before the fix and passed after ('41 passed, 17 subtests passed' over cli_messages, cli_config_store, docs_claims, docs_anchor). Hermetic run with an isolated HOME: 'ccmorph --help' prints 'Change model, effort, or connection', 'ccmorph help config' prints 'model and effort', 'ccmorph get work effort' prints the saved level, 'ccmorph inspect work' shows 'effort     xhigh  profile default'."
   },
   {
-    "criterion": "A long description wraps under its own column, as the doctor line for doctor [--verbose] [profile] does.",
+    "criterion": "A person who types the other word into set is told which word to use, not only shown a usage line.",
     "pass": true,
-    "evidence": "cli/help_wrap_test.go TestHelpAllWrapsALongDescriptionUnderItsOwnColumn: help all at 80 columns continues the rm row with 35 spaces + \"state\", the column the doctor row's description already sits in; go test ./cli/ -run TestHelpAllWrapsALongDescriptionUnderItsOwnColumn -count=1 → ok. Watched red first: one 81-cell line, continuation was the next command's row."
+    "evidence": "cli/config.go's wrong-key branch answers a case-insensitive 'reasoning' with 'the setting is called effort, not reasoning' before the usage line. tests/cli_config_store_test.py::test_specialized_commands_refuse_without_changing_anything asserts that exact phrase on stderr for both 'set demo reasoning high' and 'get demo reasoning' — it failed before the fix (the stderr held only 'ccmorph: usage: ccmorph set [profile] [model|effort] [value]') and passed after, without changing any stored file. Hermetic run: 'ccmorph set work reasoning high' and 'ccmorph get work reasoning' both print 'ccmorph: the setting is called effort, not reasoning' plus the usage line, exit 2."
   },
   {
-    "criterion": "In ccmorph help add, the four sign-in methods are indented the same way and the list reads as one list.",
+    "criterion": "The level names in the picker and the values the commands accept match, or the picker shows both.",
     "pass": true,
-    "evidence": "tests/cli_messages_test.py test_add_help_indents_every_sign_in_method_the_same_way_gh_364: Claude account, Claude token, API key and the provider line all at indent 2 through the real bin/ccmorph; pytest tests/cli_messages_test.py -k gh_364 → 1 passed. Watched red first: indents {0, 2, 2, 2}."
+    "evidence": "cli/menus.go's effortLabel now labels xhigh 'Extra high (xhigh)', naming the value beside the plain name; every other level's label already is its value. cli/menus_test.go::TestTheEffortPickerAndHelpNameTheConfLevels loops over profile.Efforts asserting each label contains its value — red before ('the picker labels \"xhigh\" as \"Extra high\", which does not name the value'), green after ('go test ./cli/' → ok). Headless no-TTY row dump shows 'xhigh\\tExtra high (xhigh)\\tEven more reasoning'. The pty assertions in tests/cli_picker_test.py ('Extra high (xhigh)', 'Effort — demo', 'Model and effort') could not run here: this sandbox refuses pty allocation, so they are left to CI."
   }
 ]
