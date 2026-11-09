@@ -29,6 +29,14 @@
 
 ### Fixed
 
+- **A budget bar never reads unpriced turns as free.** A profile with
+  `monthly_budget_usd` showed its month's spend share as a bar; when every
+  turn that month was unpriced the bar read `0%` — the same picture as a
+  month with no spend at all, even though turns were served. The bar now
+  stays empty and says `cost unknown` in place of the percent, the
+  distinction the money line already makes; a profile with priced turns
+  keeps its bar (#301).
+
 - **The hop help page no longer tells you to exit Claude.** The switch happens
   at once — hop itself ends the session and the relay resumes the conversation
   on the new profile — so following the page's instruction ended the freshly

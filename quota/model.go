@@ -38,6 +38,14 @@ type Spend struct {
 	UnpricedTurns int   `json:"unpriced_turns"`
 }
 
+// allUnpriced reports whether the profile served turns this month and not one
+// of them carried a price: the money lines then say the cost is unknown (#234),
+// and a budget bar has no share to show, so it says so too instead of 0% (#301).
+// A nil spend — a plan window's entry, never a spend's — is never all-unpriced.
+func (s *Spend) allUnpriced() bool {
+	return s != nil && s.MonthTurns > 0 && s.UnpricedTurns == s.MonthTurns
+}
+
 // Entry is one profile's row. Kind is "claude", "codex", "budget" or "gateway";
 // budget and gateway entries carry Spend and never a network reading.
 type Entry struct {
