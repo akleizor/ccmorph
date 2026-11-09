@@ -69,6 +69,13 @@
   outright, and retiring a route whose bridge was replaced preserves the
   replacement's record (#300).
 
+- **Recording a key approval no longer drops what a running session saved.**
+  `ccmorph add`, `login`, a launch and a hop record Claude Code's answer in the
+  profile's `.claude.json`; the rewrite now holds the profile's live lock that
+  every session and every other writer of that file takes, so a key approval
+  and a save made at the same time both survive. While a session or another
+  launch holds the lock, ccmorph writes nothing and says the profile is in use
+  instead of overwriting the file (#299).
 - **The hop help page no longer tells you to exit Claude.** The switch happens
   at once — hop itself ends the session and the relay resumes the conversation
   on the new profile — so following the page's instruction ended the freshly
