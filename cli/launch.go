@@ -621,17 +621,6 @@ func (l *launcher) claudeHelp() string {
 // claudeArity is the option arity table the argv walkers read, from claudeHelp.
 func (l *launcher) claudeArity() map[string]string { return util.ClaudeOptArities(l.claudeHelp()) }
 
-func splitNUL(s string) []string {
-	s = strings.TrimSuffix(s, ".")
-	var out []string
-	for strings.Contains(s, "\x00") {
-		i := strings.IndexByte(s, 0)
-		out = append(out, s[:i])
-		s = s[i+1:]
-	}
-	return out
-}
-
 func isTTY(fd int) bool {
 	_, err := ioctlTermios(fd)
 	return err == nil

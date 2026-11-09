@@ -16,15 +16,6 @@ import (
 	"github.com/akleizor/ccmorph/util"
 )
 
-func TestSplitNULKeepsEmptyValues(t *testing.T) {
-	if got := splitNUL("a\x00\x00b c\x00."); !slices.Equal(got, []string{"a", "", "b c"}) {
-		t.Fatalf("got %q", got)
-	}
-	if got := splitNUL("."); len(got) != 0 {
-		t.Fatalf("got %q", got)
-	}
-}
-
 func TestEnvHelpersReadTheLastValue(t *testing.T) {
 	env := []string{"A=1", "B=x=y", "A=2"}
 	if v, ok := envGet(env, "A"); !ok || v != "2" {
