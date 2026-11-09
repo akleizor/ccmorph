@@ -40,6 +40,10 @@ def run(canonical, profile, *extra, saved=None, raw=False):
     doc = get(profile / "settings.json")
     if raw:
         return doc
+    # The status line naming the profile is the projection's too (#275).
+    sl = doc.get("statusLine")
+    if isinstance(sl, dict) and sl.get("command") == f"printf 'profile: {profile.name}'":
+        del doc["statusLine"]
     start = doc.get("hooks", {}).get("SessionStart", [])
     kept = [e for e in start if not any(h.get("command") == ADVISE for h in e.get("hooks", []))]
     if kept:

@@ -22,7 +22,7 @@ const retiredVerb = "mea" + "sure"
 // ownVerbs are ccmorph's verbs; they win over any Claude Code verb of the same name.
 var ownVerbs = map[string]bool{"list": true, "inspect": true, "show": true, "add": true, "config": true,
 	"login": true, "default": true, "use": true, "rm": true, "mv": true, "get": true, "set": true,
-	"context": true, "cred": true, "secret": true, "creds": true, "probe": true, "hop": true,
+	"context": true, "cred": true, "secret": true, "creds": true, "probe": true, "hop": true, "profile": true,
 	"help": true, "version": true, "run": true, "start": true, retiredVerb: true}
 
 // helpAsked reports whether any word asks for help.
@@ -170,7 +170,7 @@ func (l *launcher) dispatch(args []string) int {
 	case "_env":
 		return l.envVerb(args[1:])
 	case "list", "use", "cred", "inspect", "context", "models", "_models", "rm", "mv", "get", "set",
-		"_menu", "_ui", "config", "add", "login", "hop", "quota":
+		"_menu", "_ui", "config", "add", "login", "hop", "profile", "quota":
 		return l.verb(args)
 	}
 	return l.unknown(first, args)
@@ -686,6 +686,7 @@ func (l *launcher) usage(topic string) int {
 		help("ccmorph mv <old> <new>", "Rename a profile")
 		help("ccmorph rm <profile>", "Delete a profile and its private sign-in state")
 		help("ccmorph hop <profile>", "Switch a running session; use inside Claude")
+		help("ccmorph profile", "Name the profile a session runs on")
 		help("ccmorph cred <profile>", "Print a stored secret (sensitive)")
 		help("ccmorph update [ref]", "Update to the latest version, or to a branch or tag")
 		help("ccmorph uninstall", "Remove the command; profiles stay")
@@ -777,6 +778,9 @@ Leftover private state from a missing profile requires confirmation.`},
 	"hop": {"ccmorph hop <profile>", `Inside a running Claude session, type: ! ccmorph hop <profile>
 Then exit Claude to complete the switch. Keeps model and effort when supported.
 This command does not work from an unrelated terminal.`},
+	"profile": {"ccmorph profile", `Inside a running Claude session, type: ! ccmorph profile
+It prints the profile the session runs on. The status line names the same
+profile without a command, and a hop changes both.`},
 	"cred": {"ccmorph cred [profile]", `Print the stored API key or token to stdout. This reveals a secret.
 Only profiles with a stored key or token are offered. Name one in scripts.`},
 	"update": {"ccmorph update [ref]", `Download the latest release and run its installer, which updates this install

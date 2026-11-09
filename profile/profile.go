@@ -365,12 +365,12 @@ func KindLabel(typ, provider string) string {
 }
 
 // Env is the launch environment a profile's fields produce, in the order `ccmorph
-// _env` prints it: the profile's own CLAUDE_CONFIG_DIR, the credential its type
-// carries, the model map, then every env.* override. A sub profile authenticates
-// from its own config dir and a provider gets its endpoint from the bridge at
-// launch, so neither carries a credential here.
+// _env` prints it: the profile's own CLAUDE_CONFIG_DIR, the profile's name for the
+// session to see (#275), the credential its type carries, the model map, then every
+// env.* override. A sub profile authenticates from its own config dir and a provider
+// gets its endpoint from the bridge at launch, so neither carries a credential here.
 func Env(name, profileDirs string, f map[string]string) ([]string, error) {
-	out := []string{"CLAUDE_CONFIG_DIR=" + profileDirs + "/" + name}
+	out := []string{"CLAUDE_CONFIG_DIR=" + profileDirs + "/" + name, "CCMORPH_PROFILE=" + name}
 	if f["private"] == "1" {
 		out = append(out, "CCMORPH_PRIVATE=1")
 	}

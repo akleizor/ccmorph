@@ -6,7 +6,7 @@
 
 [Install](#install) · [Quick start](#quick-start) · [Usage](#usage) · [Docs](docs/guide.md)
 
-<img src="assets/demo.gif" alt="Terminal demo: a conversation started on the work profile continues on the personal profile after ccmorph hop" width="780">
+<img src="assets/demo.gif" alt="Terminal demo: a conversation started on the work profile shows profile: work in its status line and answers ccmorph profile; after ccmorph hop personal it resumes with the status line reading profile: personal" width="780">
 
 </div>
 
@@ -16,7 +16,8 @@
   provider gets its own login and settings. Skills, plugins, hooks, `CLAUDE.md` and session history
   stay shared.
 - **Hop mid-session.** `ccmorph hop <profile>` moves a running conversation to
-  another profile, keeping its model and effort.
+  another profile, keeping its model and effort. The status line names the
+  profile a session runs on, and `ccmorph profile` answers from the prompt.
 - **Any endpoint.** Gateways that do not speak Anthropic's API are translated
   automatically through a per-launch adapter.
 - **Cost per profile.** Every gateway turn leaves a receipt with the billed cost;
@@ -126,6 +127,9 @@ To switch a running session, type in the Claude Code prompt:
 ```
 
 `! ccmorph hop personal` does the same.
+
+The session's status line names the profile it runs on, and changes with a hop.
+`/ccmorph:profile` (or `! ccmorph profile`) prints the name.
 
 `ccmorph --help` shows everyday commands, `ccmorph help all` the full list, and
 `ccmorph help <command>` the details of one.

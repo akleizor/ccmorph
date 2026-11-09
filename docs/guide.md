@@ -493,6 +493,7 @@ ccmorph run --model -i              # default profile, ask only for model
 ccmorph run <profile> --model -i    # named profile, ask only for model
 ccmorph run <profile> --model <id> # profile plus explicit model
 ccmorph hop <profile>              # hop a RUNNING session, keeping model + effort
+ccmorph profile                    # name the profile this session runs on
 ```
 
 After the optional profile and ccmorph's interactive selection flag, native
@@ -551,6 +552,16 @@ In a plain terminal it exits with `not inside a Claude Code session`, and a
 session started by plain `claude` (bypassing the launcher) reports `this session
 was not launched by the ccmorph relay` — start it with `ccmorph` and hop from
 there.
+
+Which profile a session runs on is visible without running anything: every
+launch gives the session a status line reading `profile: <name>`, and a hop
+changes it with the profile it resumes on. A `statusLine` of your own, wherever
+you set it, wins over that line and is never touched; the session then opens
+with one message, `ccmorph profile: <name>`, at every start and resume (so
+after a hop). Deleting the status line opts out of both for good. To ask
+outright, `/ccmorph:profile` in the Claude Code prompt — or `! ccmorph profile`
+— prints the name; in a plain terminal it answers `not inside a ccmorph
+session`.
 
 
 ### Plan usage and balance before a hop

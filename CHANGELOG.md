@@ -17,6 +17,15 @@
   `ccmorph run <profile> --resume <id>` right after Claude Code's line; after
   a hop the line names the profile the session ended on. A `--print` or
   background run records nothing, so captured output stays clean (#285).
+- **A running session names its profile.** Every launch now gives the session a
+  status line reading `profile: <name>`, which Claude Code renders on its own,
+  and a hop changes it with the profile it resumes on. A `statusLine` of your
+  own, wherever you set it, still wins and is never touched; the session then
+  opens with a `ccmorph profile: <name>` message at every start and resume
+  instead, and deleting the status line opts out of both for good.
+  `ccmorph profile` — or `/ccmorph:profile` in the Claude Code prompt — prints
+  the name from inside the session. The README demo is re-recorded to show
+  these real surfaces instead of labels its stand-in invented (#275).
 
 ### Fixed
 
