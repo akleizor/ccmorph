@@ -29,6 +29,14 @@
 
 ### Fixed
 
+- **A missing Claude Code gets one answer, and doctor's verdict names the
+  fix.** With `claude` off the PATH, `ccmorph run` printed the shell's
+  `claude: command not found`, doctor ended with `fix claude executable (see
+  above)`, and only the installer linked Claude Code's setup page. Run, doctor
+  and the installer now print one sentence with that link, and run shows the
+  PATH it searched. Doctor's `not ready` line now names the command or step
+  that fixes the first failed check, for every check, instead of pointing at
+  the lines above (#282).
 - **A budget bar never reads unpriced turns as free.** A profile with
   `monthly_budget_usd` showed its month's spend share as a bar; when every
   turn that month was unpriced the bar read `0%` — the same picture as a

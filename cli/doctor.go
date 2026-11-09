@@ -98,7 +98,7 @@ func (l *launcher) doctorClaude() bool {
 		l.status("OK", "claude executable: "+p)
 		return true
 	}
-	l.status("FAIL", "claude executable: not found on PATH")
+	l.status("FAIL", "claude executable: "+util.ClaudeMissing)
 	return false
 }
 
@@ -183,6 +183,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		}
 	}
 	conf := filepath.Join(l.dir, name+".conf")
+	recreate := "edit " + conf + " to fix it, or re-create the profile: ccmorph rm " + name + " && ccmorph add " + name
 	// GH-259: on a volume that ignores letter case present(conf) is true for a
 	// name typed with the wrong case, and doctor read tok.conf as TOK and
 	// recommended `ccmorph run TOK`. Only a directory entry spelled as typed is
@@ -198,6 +199,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	f, ok := l.readRaw(name)
 	if !ok {
 		l.status("FAIL", "config: invalid profile schema (launch would reject it)")
+		l.status("FAIL", "not ready: "+recreate)
 		return 1
 	}
 	typ, base := f["type"], f["base_url"]
@@ -207,18 +209,26 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	}
 	if typ == "" {
 		l.status("FAIL", "config: missing type")
+		l.status("FAIL", "not ready: "+recreate)
 		return 1
 	}
 	failed := 0
-	var fails, warns []string
+	var warns []string
+	// firstFix is the command or step that repairs the first failed check: the
+	// verdict names it instead of pointing at the rows above (#282).
+	firstFix := ""
 	// report prints one line and remembers its subject (the text before the
-	// first colon) so the verdict can name what to fix without repeating it.
-	report := func(kind, msg string) {
+	// first colon) so a warning can be named in the verdict without repeating it.
+	report := func(kind, msg string, fix ...string) {
 		subject, _, _ := strings.Cut(msg, ":")
 		switch kind {
 		case "FAIL":
-			if !slices.Contains(fails, subject) {
-				fails = append(fails, subject)
+			step := "fix " + subject
+			if len(fix) > 0 && fix[0] != "" {
+				step = fix[0]
+			}
+			if firstFix == "" {
+				firstFix = step
 			}
 		case "WARN":
 			if !slices.Contains(warns, subject) {
@@ -230,24 +240,27 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	switch typ {
 	case "apikey", "sub", "token", "provider":
 	default:
-		report("FAIL", "config: unsupported profile type '"+typ+"'")
+		report("FAIL", "config: unsupported profile type '"+typ+"'", recreate)
 		failed = 1
 	}
 	if typ == "apikey" && key == "" {
-		report("FAIL", "config: API key profile has no credential (value not displayed)")
+		report("FAIL", "config: API key profile has no credential (value not displayed)",
+			"set the API key: ccmorph config "+name)
 		failed = 1
 	}
 	report("OK", "profile: "+name+" ("+profile.KindLabel(typ, f["provider"])+")")
 	report("OK", "ccmorph: "+l.version+" (command: ccmorph)")
 	if !l.doctorClaude() {
 		failed = 1
-		fails = append(fails, "claude executable")
+		if firstFix == "" {
+			firstFix = util.ClaudeMissing
+		}
 	}
 	home := filepath.Join(l.profileDirs, name)
 	if isDir(home) {
 		report("OK", "profile home: "+home)
 	} else {
-		report("FAIL", "profile home: missing ("+home+")")
+		report("FAIL", "profile home: missing ("+home+")", "the first launch creates it: ccmorph run "+name)
 		failed = 1
 	}
 	// The conf's one silent promise, said aloud where the profile's other
@@ -278,7 +291,8 @@ func (l *launcher) doctor(name string, verbose bool) int {
 				report("INFO", "effective model: Claude Code default (no saved model)")
 			}
 		} else {
-			report("FAIL", "profile settings: invalid JSON or not an object ("+broken+"); fix that file")
+			report("FAIL", "profile settings: invalid JSON or not an object ("+broken+"); fix that file",
+				"fix the JSON in "+broken)
 			failed = 1
 		}
 	} else {
@@ -318,7 +332,8 @@ func (l *launcher) doctor(name string, verbose bool) int {
 			case m == nil:
 				report("WARN", "credentials: cannot tell (claude auth status reported no sign-in state)")
 			case string(m[1]) != "true":
-				report("FAIL", "credentials: not signed in — sign in again: ccmorph login "+name)
+				report("FAIL", "credentials: not signed in — sign in again: ccmorph login "+name,
+					"sign in again: ccmorph login "+name)
 				failed = 1
 			default:
 				if e := emailRE.FindSubmatch(out); e != nil {
@@ -341,7 +356,8 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		// needs to know.
 		switch util.KeyResponse(home, key) {
 		case util.KeyRefused:
-			report("FAIL", "api key: Claude Code was told not to use it, so a launch would open its login menu — fix: ccmorph login "+name)
+			report("FAIL", "api key: Claude Code was told not to use it, so a launch would open its login menu — fix: ccmorph login "+name,
+				"let Claude Code use the key again: ccmorph login "+name)
 			failed = 1
 		default:
 			report("OK", "api key: Claude Code will use it without asking")
@@ -351,7 +367,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		failed = 1
 	}
 	for _, r := range rows {
-		report(r.Kind, r.Msg)
+		report(r.Kind, r.Msg, r.Fix)
 	}
 	// A masking mismatch is a privacy gap, not a start failure: the profile
 	// still runs, so the row warns without weighing on the verdict (#293).
@@ -362,8 +378,8 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	// The verdict is the report's last line and answers the only question a
 	// person has: is this profile ready to run, or what must be fixed first.
 	switch {
-	case len(fails) > 0:
-		l.status("FAIL", "not ready: fix "+strings.Join(fails, ", ")+" (see above)")
+	case firstFix != "":
+		l.status("FAIL", "not ready: "+firstFix)
 	case len(warns) > 0:
 		l.status("WARN", "may not start: check "+strings.Join(warns, ", ")+" (see above); then: ccmorph run "+name)
 	default:

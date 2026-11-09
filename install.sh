@@ -364,9 +364,10 @@ if (( ${#missing} )); then
   c_r "Missing required dependencies:"
   for m in "${missing[@]}"; do print "  - $m"; done
   # Required tools are named, never installed: they need root or belong to another
-  # vendor. Claude Code gets its setup page and no command at all.
+  # vendor. Claude Code gets the one sentence — with the setup link — that run
+  # and doctor print for the same missing program (#282), and no command at all.
   _pkg_cmd zsh;     (( ${missing[(I)zsh]} ))     && (( ${#reply} )) && print "  zsh:     ${reply[*]}"
-  (( ${missing[(I)claude*]} )) && print "Install Claude Code first: https://docs.anthropic.com/en/docs/claude-code/setup"
+  (( ${missing[(I)claude*]} )) && print "Claude Code is not installed or not on the PATH — install it: https://docs.anthropic.com/en/docs/claude-code/setup"
   print "Install those first, then re-run."
   exit 1
 fi

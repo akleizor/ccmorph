@@ -35,6 +35,12 @@ const privateOwner = "ccmorph-owner"
 // process that took its number without reading any clock (#218).
 const privateOwnerStart = "ccmorph-owner-start"
 
+// ClaudeMissing is the one sentence, with the one link, for a claude no PATH
+// search can find (#282): a launch prints it with the PATH it searched, doctor
+// puts it on its claude row, and the installer says it too, so the same failure
+// gets the same answer wherever a person meets it.
+const ClaudeMissing = "Claude Code is not installed or not on the PATH — install it: https://docs.anthropic.com/en/docs/claude-code/setup"
+
 // claudeSession is `util claude-session <tuning> <profile keys> <launch keys>
 // <backend keys> <launch env> -- <claude args...>`, each key list space-separated.
 // The launch's own KEY=value entries come from <launch env>: a 0600 file this
@@ -120,7 +126,11 @@ func claudeSession(args []string, _ io.Reader, out, errw io.Writer) int {
 	}
 	bin, err := exec.LookPath("claude")
 	if err != nil {
-		fmt.Fprintln(errw, "ccmorph: claude: command not found")
+		// The shell's own line ("command not found") names neither the program
+		// nor the fix; a launch says what is missing, where it looked, and where
+		// to get it (#282).
+		fmt.Fprintln(errw, "ccmorph: "+ClaudeMissing)
+		fmt.Fprintln(errw, "ccmorph: PATH searched: "+os.Getenv("PATH"))
 		return 127
 	}
 	say := func() {

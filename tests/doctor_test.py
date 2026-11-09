@@ -15,24 +15,32 @@ from unittest.mock import patch
 
 import pytest
 
-from support import FAKE_SERVER_NO_DNS, HANG_TIMEOUT
+from support import CLAUDE_MISSING, FAKE_SERVER_NO_DNS, HANG_TIMEOUT
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_doctor(tmp_path, conf, curl=None, args=(), claude=None):
+def run_doctor(tmp_path, conf, curl=None, args=(), claude=None, home=True):
     state = tmp_path / "state"
-    home = tmp_path / "home"
+    home_dir = tmp_path / "home"
     bindir = tmp_path / "bin"
-    (state / "profiles" / "demo").mkdir(parents=True, exist_ok=True)
-    state.mkdir(exist_ok=True)
+    if home:
+        (state / "profiles" / "demo").mkdir(parents=True, exist_ok=True)
+    state.mkdir(parents=True, exist_ok=True)
     bindir.mkdir(exist_ok=True)
     if not (state / "demo.conf").exists():
         (state / "demo.conf").write_text(conf)
     if not (state / "local.sh").exists():
         (state / "local.sh").write_text("printf marker > \"$DOCTOR_MARKER\"\n")
     (state / "local.sh").chmod(0o700)
-    if claude is None:
+    path = f"{bindir}:{os.environ['PATH']}"
+    if claude is False:
+        # No claude anywhere: a PATH the host's own claude cannot reach, and a
+        # curl that answers nothing so no request leaves the machine.
+        path = f"{bindir}:/usr/bin:/bin"
+        if curl is None:
+            curl = "#!/bin/sh\nprintf '%s\\n' '__CCMORPH_STATUS__000'\n"
+    elif claude is None:
         # A healthy account profile is signed in, and doctor now asks claude
         # for that state the way add does — so the default stub must answer.
         claude = ('#!/bin/sh\n'
@@ -40,13 +48,14 @@ def run_doctor(tmp_path, conf, curl=None, args=(), claude=None):
                   'printf \'{"loggedIn": true, "authMethod": "claude.ai", '
                   '"email": "test@example.test"}\\n\'\n'
                   'exit 0\n')
-    (bindir / "claude").write_text(claude)
-    (bindir / "claude").chmod(0o755)
+    if claude is not False:
+        (bindir / "claude").write_text(claude)
+        (bindir / "claude").chmod(0o755)
     if curl is not None:
         c = bindir / "curl"
         c.write_text(curl)
         c.chmod(0o755)
-    env = {**os.environ, "HOME": str(home), "PATH": f"{bindir}:{os.environ['PATH']}",
+    env = {**os.environ, "HOME": str(home_dir), "PATH": path,
            "CCMORPH_STATE_DIR": str(state), "CCMORPH_LIB_DIR": str(ROOT / "lib"),
            "CURL_ARGS": str(bindir / "curl.args"), "CURL_CALLED": str(bindir / "called"),
            "DOCTOR_MARKER": str(bindir / "doctor.marker")}
@@ -212,6 +221,16 @@ def test_doctor_reports_the_profile_default_model_whatever_its_origin(tmp_path):
     assert effective(conf, '{}') == "Claude Code default (no saved model)"
 
 
+MALFORMED_CURL = """#!/bin/sh
+printf '%s\n' '{"data":"not-a-list"}'
+printf '%s\n' '__CCMORPH_STATUS__200'
+"""
+
+
+def status_curl(code):
+    return f"#!/bin/sh\nprintf '%s\\n' '{{}}'\nprintf '%s\\n' '__CCMORPH_STATUS__{code}'\n"
+
+
 GW_LISTING = """#!/bin/sh
 printf '%s\\n' '{"data":[{"id":"glm-4.6"},{"id":"glm-4.5-air"}]}'
 printf '%s\\n' '__CCMORPH_STATUS__200'
@@ -227,7 +246,7 @@ def test_doctor_fails_while_the_saved_model_is_not_served_issue_267(tmp_path):
     assert "model: 'glm-4.6-air' is not served by this gateway" in result.stdout
     assert "closest: glm-4.5-air, glm-4.6" in result.stdout
     assert "served: glm-4.5-air, glm-4.6" in result.stdout
-    assert "not ready: fix model" in result.stdout
+    assert "FAIL not ready: choose a served model: ccmorph set demo model <model-id>" in result.stdout
     assert path.read_text() == conf
 
 
@@ -245,7 +264,11 @@ printf '%s\\n' '__CCMORPH_STATUS__200'
     result, _, _ = run_doctor(tmp_path, conf, listing)
     assert result.returncode != 0, result.stdout
     assert "model: 'glm-4.6-air' is not served by this gateway; served: (none)" in result.stdout
-    assert "not ready: fix model" in result.stdout
+    # Nothing is served, so there is no model to choose: the fix is the gateway or its endpoint.
+    assert result.stdout.splitlines()[-1] == (
+        "FAIL not ready: make a chat model available on this gateway, "
+        "or change the endpoint: ccmorph config demo"), result.stdout
+    assert "choose a served model" not in result.stdout
 
 
 def test_doctor_stays_ready_when_the_saved_model_is_served(tmp_path):
@@ -680,7 +703,7 @@ def test_doctor_names_the_fix_for_a_signed_out_account_profile(tmp_path):
     result, _, _ = run_doctor(tmp_path, "type=sub\nemail=test@example.test\n", claude=claude)
     assert result.returncode == 1, result.stdout
     assert "credentials: not signed in — sign in again: ccmorph login demo" in result.stdout
-    assert "not ready: fix credentials" in result.stdout
+    assert "FAIL not ready: sign in again: ccmorph login demo" in result.stdout
     assert "kept in the profile home" not in result.stdout
 
 
@@ -903,10 +926,63 @@ printf '%s\n' '__CCMORPH_STATUS__200'
         assert last == "OK ready: start it with ccmorph run demo", result.stdout
     elif case == "missing-credential":
         assert result.returncode == 1, result.stdout
-        assert last == "FAIL not ready: fix config (see above)", result.stdout
+        assert last == "FAIL not ready: set the API key: ccmorph config demo", result.stdout
     else:
         assert result.returncode == 1, result.stdout
-        assert last.startswith("FAIL not ready: fix") and "gateway" in last, result.stdout
+        assert last == ("FAIL not ready: check the endpoint (it must list models at /v1/models): "
+                        "ccmorph config demo"), result.stdout
+
+
+GW = "type=apikey\nbase_url=https://example.test\napi_key=k\n"
+NATIVE = "type=apikey\napi_key=k\n"
+REFUSED_KEY = "sk-issue-282-doctor-key"
+SIGNED_OUT = ('#!/bin/sh\n[ "$1 $2" = "auth status" ] && '
+              'printf \'{"loggedIn": false, "authMethod": "none"}\\n\' && exit 1\nexit 0\n')
+
+
+@pytest.mark.parametrize("case,conf,curl,expected", [
+    ("no-credential", "type=apikey\nbase_url=https://example.test\n", None,
+     "set the API key: ccmorph config demo"),
+    ("bad-endpoint", "type=apikey\nbase_url=https://example.test/v1?x=1\napi_key=k\n", OK_CURL,
+     "set an http(s) endpoint: ccmorph config demo"),
+    ("gateway-rejects-key", GW, status_curl(401), "replace the API key: ccmorph config demo"),
+    ("gateway-down", GW, status_curl(500), "check the endpoint, or change it: ccmorph config demo"),
+    ("malformed-listing", GW, MALFORMED_CURL,
+     "check the endpoint (it must list models at /v1/models): ccmorph config demo"),
+    ("model-not-served", GW + "model=glm-4.6-air\n", GW_LISTING,
+     "choose a served model: ccmorph set demo model <model-id>"),
+    ("native-key-rejected", NATIVE, status_curl(401), "replace the API key: ccmorph config demo"),
+    ("token-rejected", "type=token\ntoken=sk-ant-oat01-issue-282\n", status_curl(401),
+     "replace the token: ccmorph config demo"),
+    ("signed-out", "type=sub\nemail=demo@example.test\n", OK_CURL, "sign in again: ccmorph login demo"),
+    ("key-refused-by-claude", f"type=apikey\napi_key={REFUSED_KEY}\n", OK_CURL,
+     "let Claude Code use the key again: ccmorph login demo"),
+    ("settings-invalid", GW, OK_CURL, "fix the JSON in {settings}"),
+    ("schema-invalid", "type=token\nbase_url=https://example.test\n", None,
+     "edit {conf} to fix it, or re-create the profile: ccmorph rm demo && ccmorph add demo"),
+    ("missing-type", "api_key=k\n", None,
+     "edit {conf} to fix it, or re-create the profile: ccmorph rm demo && ccmorph add demo"),
+    ("claude-missing", NATIVE, OK_CURL, CLAUDE_MISSING),
+    ("home-missing", NATIVE, OK_CURL, "the first launch creates it: ccmorph run demo"),
+])
+def test_doctor_verdict_names_the_fix_for_every_failed_check_issue_282(tmp_path, case, conf, curl, expected):
+    """#282: the last line names the command or step that repairs the first
+    failed check, whatever the check, never a pointer to the rows above."""
+    home = tmp_path / "state" / "profiles" / "demo"
+    if case == "key-refused-by-claude":
+        home.mkdir(parents=True)
+        (home / ".claude.json").write_text(json.dumps(
+            {"customApiKeyResponses": {"approved": [], "rejected": [REFUSED_KEY[-20:]]}}))
+    if case == "settings-invalid":
+        home.mkdir(parents=True)
+        (home / "settings.json").write_text("{ invalid")
+    claude = {"signed-out": SIGNED_OUT, "claude-missing": False}.get(case)
+    result, _, _ = run_doctor(tmp_path, conf, curl, claude=claude, home=case != "home-missing")
+    last = result.stdout.splitlines()[-1]
+    assert result.returncode == 1, result.stdout
+    assert last == "FAIL not ready: " + expected.format(
+        settings=home / "settings.json", conf=tmp_path / "state" / "demo.conf"), result.stdout
+    assert "(see above)" not in last, result.stdout
 
 
 @pytest.mark.parametrize("case", ["gateway", "native", "sub"])
@@ -1129,7 +1205,7 @@ def test_doctor_on_a_fresh_install_reports_the_environment(tmp_path):
 def test_doctor_on_a_fresh_install_fails_without_claude(tmp_path):
     result, _ = run_bare_doctor(tmp_path, claude=False)
     assert result.returncode == 1, result.stdout + result.stderr
-    assert "FAIL claude executable: not found" in result.stdout
+    assert f"FAIL claude executable: {CLAUDE_MISSING}" in result.stdout
     assert "no profiles yet" in result.stdout
 
 
