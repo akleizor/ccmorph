@@ -2914,16 +2914,23 @@ def test_a_host_that_loses_its_login_again_is_restarted_at_most_once_per_window(
     assert len(stops) == 2                     # a new window: one more try
 
 
-def test_the_account_login_is_refreshed_before_it_expires(monkeypatch):
-    """Route sessions never refresh the account login, so the supervisor asks
-    Claude Code to, once it nears expiry, one run at a time, never with the
-    route's credential in the environment."""
+def _login_refresh(monkeypatch):
+    """The supervisor with a fake keychain and a fake claude, for the account
+    login refresh: `left` is the seconds of token left, `reads` counts keychain
+    reads and `runs` holds one Proc per refresh turn started."""
     m = load()
     left = [3600.0]
+    reads = []
     monkeypatch.setattr(m.time, "time", lambda: 1000.0)
-    monkeypatch.setattr(m, "account_login", lambda: {"expiresAt": (1000.0 + left[0]) * 1000})
+
+    def login():
+        reads.append(1)
+        return {"expiresAt": (1000.0 + left[0]) * 1000}
+    monkeypatch.setattr(m, "account_login", login)
 
     class RC:
+        PROXY_ENV = ("HTTPS_PROXY",)
+
         @staticmethod
         def default_account():
             return "acct"
@@ -2931,34 +2938,83 @@ def test_the_account_login_is_refreshed_before_it_expires(monkeypatch):
         @staticmethod
         def profile_env(name):
             return {"CLAUDE_CONFIG_DIR": f"/p/{name}"}
+
+        @staticmethod
+        def strip_env():
+            return ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_USE_BEDROCK",
+                    "AWS_BEARER_TOKEN_BEDROCK", "HTTPS_PROXY")
     monkeypatch.setattr(m, "rc_module", lambda: RC)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "route-key")
+    monkeypatch.setenv("CLAUDE_CODE_USE_BEDROCK", "1")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-key")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy:3128")
     runs = []
 
     class Proc:
         returncode = 0
+        killed = False
 
         def __init__(self, argv, env, **_):
-            runs.append((argv, env))
+            self.argv, self.env = argv, env
+            runs.append(self)
 
         def poll(self):
             return None
+
+        def kill(self):
+            self.killed = True
+            self.returncode = -9
+
+        def wait(self, timeout=None):
+            return self.returncode
     monkeypatch.setattr(m.subprocess, "Popen", Proc)
+    return m, left, reads, runs
+
+
+def test_the_account_login_is_refreshed_before_it_expires(monkeypatch):
+    """Route sessions never refresh the account login, so the supervisor asks
+    Claude Code to, once it nears expiry, one run at a time, never with the
+    route's credential in the environment."""
+    m, left, reads, runs = _login_refresh(monkeypatch)
     clock = m.Clock()
     m.keep_login_fresh(clock, 0.0)
     assert runs == []                                   # an hour left: nothing to do
+    assert len(reads) == 1
+    for t in range(m.RECOVER_EVERY, 3000, m.RECOVER_EVERY):
+        m.keep_login_fresh(clock, float(t))
+    # a token with an hour left is not re-read from the keychain every 20 s cycle
+    assert len(reads) == 1 and runs == []
     left[0] = 300.0
-    m.keep_login_fresh(clock, 1.0)
-    m.keep_login_fresh(clock, 2.0)                      # still running: no second run
+    m.keep_login_fresh(clock, 3000.0)
+    m.keep_login_fresh(clock, 3001.0)                   # still running: no second run
     assert len(runs) == 1
-    argv, env = runs[0]
+    argv, env = runs[0].argv, runs[0].env
     assert argv[:2] == ["claude", "-p"]
     assert env["CLAUDE_CONFIG_DIR"] == "/p/acct" and "ANTHROPIC_API_KEY" not in env
+    # a Bedrock-routed profile's own env must not send the refresh turn to Bedrock,
+    # but the proxy stays: a host behind one needs it to reach the account endpoint
+    assert "CLAUDE_CODE_USE_BEDROCK" not in env and "AWS_BEARER_TOKEN_BEDROCK" not in env
+    assert env["HTTPS_PROXY"] == "http://proxy:3128"
     clock.refresher.poll = lambda: 0
-    m.keep_login_fresh(clock, 3.0)                      # done, but within the retry wait
+    m.keep_login_fresh(clock, 3002.0)                   # done, but within the retry wait
     assert len(runs) == 1
-    m.keep_login_fresh(clock, 3.0 + m.LOGIN_REFRESH_RETRY)
+    m.keep_login_fresh(clock, 3002.0 + m.LOGIN_REFRESH_RETRY)
     assert len(runs) == 2
+
+
+def test_a_refresh_turn_that_never_exits_is_killed_and_replaced(monkeypatch):
+    """A refresh turn that hangs past the deadline is killed and a new one starts
+    in the same cycle, so one stuck claude never blocks later refreshes."""
+    m, left, reads, runs = _login_refresh(monkeypatch)
+    left[0] = 300.0
+    clock = m.Clock()
+    m.keep_login_fresh(clock, 0.0)
+    assert len(runs) == 1 and not runs[0].killed
+    m.keep_login_fresh(clock, m.LOGIN_REFRESH_DEADLINE - 1.0)
+    assert len(runs) == 1 and not runs[0].killed        # inside the deadline: waits
+    m.keep_login_fresh(clock, float(m.LOGIN_REFRESH_DEADLINE))
+    assert runs[0].killed                               # past it: killed, not waited on
+    assert len(runs) == 2 and clock.refresher is runs[1]   # and replaced at once
 
 
 def test_a_host_an_earlier_supervisor_left_running_is_restarted_when_it_lost_its_login(
