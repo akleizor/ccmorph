@@ -165,13 +165,14 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 		if pmodelEnv != "" {
 			pseed = pwin
 		}
+		// A non-claude id gets its ceiling from this env alone, so a sized launch model
+		// carries its own window: the route's largest would let the user's
+		// autoCompactWindow and percentage trigger past a smaller model's wall. A switch
+		// up mid-session then runs capped at this window, which wastes room but never
+		// fails. An unsized model keeps the route ceiling and its conservative budget.
 		pceil = field(plw, 5)
 		if digits.MatchString(pseed) {
-			s, _ := posInt(pseed)
-			c, _ := posInt(pceil)
-			if s > c {
-				pceil = pseed
-			}
+			pceil = pseed
 		}
 		if _, ok := posInt(pceil); ok {
 			penv = append(penv, "CLAUDE_CODE_MAX_CONTEXT_TOKENS="+pceil)
