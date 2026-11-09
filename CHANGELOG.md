@@ -75,6 +75,18 @@
   install route provides ccusage; it says how to point ccusage at the export
   (#261).
 
+- **The installer's translator note speaks plainly, and its Next line waits for
+  the new terminal.** The cliproxyapi note was written for people who already
+  had a gateway profile: `adapter=true`, "OpenAI-shaped" — words a first
+  install has never seen, sounding like an error for an optional tool. It now
+  says in two plain sentences what the tool is for (using non-Anthropic models
+  — gpt, kimi, glm, qwen — from a gateway with Claude Code) and that nothing
+  else needs it. And when the install folder is off the `PATH`, the
+  `Next: ccmorph add <name>` line stood bare beside a Check line that carried
+  the full path, so typing it in the same terminal failed with "command not
+  found"; it keeps its bare spelling but is now shown after a line that says to
+  run it in the new terminal the `PATH` warning asked for (#273).
+
 ### Changed
 
 - Every screen names a profile kind the same way — Claude account, Claude token,
