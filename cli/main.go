@@ -662,6 +662,7 @@ func (l *launcher) usage(topic string) int {
 		help("ccmorph run", "Launch the default profile")
 		help("ccmorph run <profile>", "Use a profile for this session")
 		help("ccmorph run -i", "Choose a profile interactively")
+		help("ccmorph hop <profile>", "Switch a running session, from inside Claude")
 		head("Profiles:")
 		help("ccmorph add <profile>", "Add an account or API key")
 		help("ccmorph list", "See profiles and the default")
@@ -685,7 +686,6 @@ func (l *launcher) usage(topic string) int {
 		help("ccmorph login <profile>", "Sign in again to a provider account")
 		help("ccmorph mv <old> <new>", "Rename a profile")
 		help("ccmorph rm <profile>", "Delete a profile and its private sign-in state")
-		help("ccmorph hop <profile>", "Switch a running session; use inside Claude")
 		help("ccmorph profile", "Name the profile a session runs on")
 		help("ccmorph cred <profile>", "Print a stored secret (sensitive)")
 		help("ccmorph update [ref]", "Update to the latest version, or to a branch or tag")
@@ -775,8 +775,12 @@ instead: ccmorph config <profile>`},
 	"rm": {"ccmorph rm <profile>", `Delete this profile, its saved credential and private sign-in state.
 Shared conversation history is kept. This cannot be undone.
 Leftover private state from a missing profile requires confirmation.`},
-	"hop": {"ccmorph hop <profile>", `Inside a running Claude session, type: ! ccmorph hop <profile>
-Then exit Claude to complete the switch. Keeps model and effort when supported.
+	"hop": {"ccmorph hop <profile>", `Inside a running Claude Code session, type one of:
+  /ccmorph:hop <profile>
+  ! ccmorph hop <profile>
+The switch happens at once: hop ends this session and the relay resumes the
+conversation on the new profile, keeping its model and effort when that profile
+serves them. No exit is needed.
 This command does not work from an unrelated terminal.`},
 	"profile": {"ccmorph profile", `Inside a running Claude session, type: ! ccmorph profile
 It prints the profile the session runs on. The status line names the same
