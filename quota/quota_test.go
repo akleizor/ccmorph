@@ -126,6 +126,10 @@ func TestQuota(t *testing.T) {
 		switch r.Header.Get("Authorization") {
 		case "Bearer live":
 			return reply(200, liveReply()), nil
+		case "Bearer qt":
+			// The answer a token profile's repeated reads earn once the endpoint
+			// tires of refusing them (#270): the row must not change with it.
+			return reply(429, ""), nil
 		default:
 			return reply(403, ""), nil
 		}
@@ -135,18 +139,24 @@ func TestQuota(t *testing.T) {
 	creds := map[string]string{
 		"live":    claudeCreds("live", "max", "default_claude_max_20x"),
 		"expired": `{"claudeAiOauth":{"accessToken":"old","expiresAt":1000,"subscriptionType":"pro","rateLimitTier":"default_claude_pro"}}`,
+		// An account sign-in the usage endpoint refuses (403): its row keeps the
+		// account wording, unlike a token's refusal (#270).
+		"refused": claudeCreds("refused", "pro", "default_claude_pro"),
 	}
 	dirs := map[string]string{}
 	for name, raw := range creds {
 		dirs[name] = writeCreds(t, home, name, raw)
 	}
-	keychainFrom(t, map[string]string{dirs["live"]: creds["live"], dirs["expired"]: creds["expired"]})
+	keychainFrom(t, map[string]string{
+		dirs["live"]: creds["live"], dirs["expired"]: creds["expired"], dirs["refused"]: creds["refused"]})
 
 	in := strings.Join([]string{
 		"live\tsub\t" + dirs["live"],
 		"expired\tsub\t" + dirs["expired"],
+		"refused\tsub\t" + dirs["refused"],
 		"none\tsub\t" + filepath.Join(home, "none"),
 		"tk\ttoken\t" + home + "\ttk",
+		"qt\ttoken\t" + home + "\tqt",
 	}, "\n")
 	out, errOut, code := run(t, nil, in)
 	if code != 0 {
@@ -160,20 +170,30 @@ func TestQuota(t *testing.T) {
 		row("7d Opus", 1, "5%", "Tue 01:00"),
 		"expired  Pro",
 		"  sign-in expired; start a session on it to refresh",
+		"refused  Pro",
+		"  sign-in refused; start a session on it to sign in",
 		"none",
 		"  not signed in — sign in again: ccmorph login none",
 		"tk",
-		"  this token cannot read plan usage",
+		"  plan usage needs a Claude account profile (ccmorph add)",
+		"qt",
+		"  plan usage needs a Claude account profile (ccmorph add)",
 		"",
 	}, "\n")
 	if out != want {
 		t.Fatalf("\n got %q\nwant %q", out, want)
 	}
-	// An expired or missing sign-in is never sent.
-	if strings.Join(auth, ",") != "Bearer live,Bearer tk" {
+	// Every sign-in that can be sent is, both tokens included: an expired or
+	// missing sign-in is never sent. Whatever the endpoint answers a token, a
+	// refusal (tk) or the rate limit repeated reads earn (qt), its row is the
+	// one explanation above (#270).
+	if strings.Join(auth, ",") != "Bearer live,Bearer refused,Bearer tk,Bearer qt" {
 		t.Fatalf("sent %v", auth)
 	}
 	// A refused read must not overwrite the cache; a good one does.
+	if _, ok := load("refused"); ok {
+		t.Fatal("a refused read must not be cached")
+	}
 	if _, ok := load("tk"); ok {
 		t.Fatal("a refused read must not be cached")
 	}
@@ -192,7 +212,7 @@ func TestQuota(t *testing.T) {
 	if err := json.Unmarshal([]byte(jout), &doc); err != nil {
 		t.Fatalf("%v: %s", err, jout)
 	}
-	if len(doc.Profiles) != 4 {
+	if len(doc.Profiles) != 6 {
 		t.Fatalf("%d entries in %s", len(doc.Profiles), jout)
 	}
 	live := doc.Profiles[0]
@@ -211,8 +231,20 @@ func TestQuota(t *testing.T) {
 	if live.ReadAt == nil || *live.ReadAt != at.Unix() || live.AgeSeconds == nil || *live.AgeSeconds != 0 || live.Stale {
 		t.Fatalf("fresh entry %+v", live)
 	}
-	if doc.Profiles[3].Error != "this token cannot read plan usage" || doc.Profiles[3].Windows == nil {
-		t.Fatalf("tk entry %+v", doc.Profiles[3])
+	// The refusal path an account hits: its plan stays, its wording names the
+	// fix, and the read happened (the auth assertion above).
+	refused := doc.Profiles[2]
+	if refused.Profile != "refused" || refused.Plan != "Pro" ||
+		refused.Error != "sign-in refused; start a session on it to sign in" || refused.Windows == nil {
+		t.Fatalf("refused entry %+v", refused)
+	}
+	// A token profile's explanation is one wording, in both views, whatever the
+	// endpoint would answer for the token: a refusal (tk) or the rate limit its
+	// repeated reads earn (qt) — #270.
+	for _, p := range doc.Profiles[4:6] {
+		if p.Error != "plan usage needs a Claude account profile (ccmorph add)" || p.Windows == nil {
+			t.Fatalf("token entry %+v", p)
+		}
 	}
 }
 

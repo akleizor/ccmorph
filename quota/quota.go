@@ -106,6 +106,8 @@ func read(client *http.Client, name, kind, arg, extra string) Entry {
 		if extra == "" {
 			return Entry{Profile: name, Kind: "claude", Windows: []Window{}, Error: "not signed in"}
 		}
+		// The token's read is still sent, but its row does not follow the
+		// endpoint's answer: anything but a usage reply is tokenNoPlanUsage (#270).
 		return readClaude(client, name, extra, "", true)
 	case "codex":
 		return readCodex(client, name, arg)

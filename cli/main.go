@@ -748,8 +748,9 @@ For a single setting: ccmorph set <profile> model|effort [value]`},
 	"quota": {"ccmorph quota [profile] [--json]", `Every profile in one view, grouped by kind: Claude accounts and tokens,
 Codex subscriptions, budget accounts, and API key or provider profiles. Each plan window is a
 bar with the percent used and when it resets; a plan tier comes from the provider's
-own account data. A rate-limited or unreachable read shows the last good reading
-and its age. Gateways and API keys show today's and this month's billed spend from
+own account data. Plan usage is read for Claude account and Codex profiles; a pasted
+Claude token cannot read it. A rate-limited or unreachable read shows the last good
+reading and its age. Gateways and API keys show today's and this month's billed spend from
 their receipts, and the account balance where the provider publishes one (DeepSeek,
 Kimi, GLM, OpenRouter, SiliconFlow, StepFun). --json prints the same data for tools. No inference, nothing billed.
 Omit the profile to list every profile.`},

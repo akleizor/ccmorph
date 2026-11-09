@@ -23,6 +23,13 @@ var readKeychain = func(service, account string) ([]byte, error) {
 	return exec.Command("/usr/bin/security", "find-generic-password", "-a", account, "-s", service, "-w").Output()
 }
 
+// tokenNoPlanUsage is a token profile's row whenever its read does not come back
+// as usage. A pasted long-lived token is not allowed to read plan usage, and the
+// endpoint's answer to it varies (403, then the rate limit repeated reads earn),
+// so the row cannot follow the answer: it explains instead, the same wording in
+// the text and JSON views on every run, never a cached reading (#270).
+const tokenNoPlanUsage = "plan usage needs a Claude account profile (ccmorph add)"
+
 // readClaude reads one Claude subscription or setup-token profile.
 func readClaude(client *http.Client, name, token, plan string, tokenOnly bool) Entry {
 	e := Entry{Profile: name, Kind: "claude", Plan: plan, Windows: []Window{}}
@@ -30,15 +37,17 @@ func readClaude(client *http.Client, name, token, plan string, tokenOnly bool) E
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
 	body, status, err := fetch(client, req)
+	// A token's refusal varies (403, then 429 once repeated reads earn a rate
+	// limit); its row must not, and no cached reading stands in for it (#270).
+	if tokenOnly && (err != nil || status != 200) {
+		e.Error = tokenNoPlanUsage
+		return e
+	}
 	switch {
 	case err != nil:
 		return stale(name, e.Kind, plan, "unreachable", "not read yet: usage endpoint unreachable")
 	case status == 401 || status == 403:
-		if tokenOnly {
-			e.Error = "this token cannot read plan usage"
-		} else {
-			e.Error = "sign-in refused; start a session on it to sign in"
-		}
+		e.Error = "sign-in refused; start a session on it to sign in"
 		return e
 	case status == 429:
 		return stale(name, e.Kind, plan, "rate-limited", "not read yet: usage endpoint is rate-limiting")
