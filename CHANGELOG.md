@@ -19,6 +19,15 @@
   reasoning" before the usage line, and the effort picker labels its Extra
   high level "Extra high (xhigh)" so the level chosen in the menu is the word
   the commands accept (#367).
+- **The two Kimi sign-ins carry the names the provider list already used.**
+  `ccmorph add` offered the browser logins as *Kimi-ai* and *Kimi*, told apart
+  only by the domain in their explanations, while the API-key provider list
+  called the same two sites *Kimi For Coding (global)* and *Kimi For Coding
+  (China)* — and the plain name stood for the less obvious site, kimi.com. The
+  sign-in methods, `help add`, the README and the guide now name both services
+  the way the provider list does, so the region tells a person with a Kimi
+  account which entry is theirs; the row's explanation still names the domain
+  (#366).
 - **`ccmorph help all` is one list with one ending.** The page was the short
   help printed unchanged and then a second list below it, so the short page's
   footer sat in the middle: a reader who had asked for every command was told

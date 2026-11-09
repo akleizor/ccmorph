@@ -236,6 +236,31 @@ def test_add_menu_names_each_kind_and_explains_a_provider_login(box):
     assert 'Claude: sign in to that service' not in asked
 
 
+def test_kimi_sign_ins_and_provider_list_share_one_name_per_service_gh_366(box):
+    # GH-366: the sign-in methods called the two Kimi sites Kimi-ai and Kimi,
+    # while the API-key provider list called the same sites Kimi For Coding
+    # (global) and Kimi For Coding (China), so the lists could not be matched
+    # and the plain name stood for the less obvious site. Both lists now carry
+    # the same region name for each service, and the domain stays in the
+    # sign-in row's explanation, not in its name.
+    fake = box.home / 'bin/cliproxyapi'
+    fake.write_text('#!/bin/sh\n'
+                    'if [ "$1" = --help ]; then for p in claude kimi-ai kimi; do echo "  -$p-login"; done; exit 0; fi\n'
+                    'exit 1\n')
+    fake.chmod(0o755)
+    box.env['PATH'] = f'{box.home}/bin:/usr/bin:/bin'
+    sign_in = box.run('add', 'p1', answer='x\n')
+    sign_in = sign_in.stdout + sign_in.stderr
+    assert 'kimi.ai account' in sign_in and 'kimi.com account' in sign_in
+    provider_list = box.run('add', 'p2', answer='3\nx\n')
+    provider_list = provider_list.stdout + provider_list.stderr
+    assert 'api.kimi.ai/coding' in provider_list and 'api.kimi.com/coding' in provider_list
+    for name in ('Kimi For Coding (global)', 'Kimi For Coding (China)'):
+        assert name in sign_in, f'the sign-in methods do not name {name}'
+        assert name in provider_list, f'the provider list does not name {name}'
+    assert 'Kimi-ai' not in sign_in, 'the kimi.ai sign-in is still named by its domain alone'
+
+
 def test_list_with_no_profiles_points_at_add(box):
     out = box.run('list')
     assert out.returncode == 0 and 'ccmorph add' in out.stdout

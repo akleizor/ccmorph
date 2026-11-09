@@ -64,7 +64,7 @@ func TestHelpAddWrapsTheProviderSentenceAsOneListItem(t *testing.T) {
 	}
 	t.Setenv("PATH", dir)
 	wide, piped := helpPage(t, "add", 80), helpPage(t, "add", 0)
-	sentence := "  Antigravity, Codex, Devin, Kimi-ai, Kimi, Meta, xAI: sign in to that service with your browser (through cliproxyapi)."
+	sentence := "  Antigravity, Codex, Devin, Kimi For Coding (global), Kimi For Coding (China), Meta, xAI: sign in to that service with your browser (through cliproxyapi)."
 	if !strings.Contains(piped, sentence) {
 		t.Fatalf("piped help add lost the authored provider line:\n%s", piped)
 	}
@@ -79,10 +79,10 @@ func TestHelpAddWrapsTheProviderSentenceAsOneListItem(t *testing.T) {
 	if first < 0 {
 		t.Fatalf("help add at 80 columns lost the provider sentence:\n%s", wide)
 	}
-	if want := "  Antigravity, Codex, Devin, Kimi-ai, Kimi, Meta, xAI: sign in to that service"; lines[first] != want {
+	if want := "  Antigravity, Codex, Devin, Kimi For Coding (global), Kimi For Coding (China),"; lines[first] != want {
 		t.Errorf("provider line = %q, want %q", lines[first], want)
 	}
-	if want := "  with your browser (through cliproxyapi)."; lines[first+1] != want {
+	if want := "  Meta, xAI: sign in to that service with your browser (through cliproxyapi)."; lines[first+1] != want {
 		t.Errorf("provider continuation = %q, want %q", lines[first+1], want)
 	}
 }

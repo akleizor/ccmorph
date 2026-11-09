@@ -143,8 +143,13 @@ def test_security_tells_one_credential_storage_story_issue_262():
 def test_docs_name_the_provider_type_and_its_dependency_issue_283():
     """#283: `provider` was in the `.conf` field table but missing from Profile
     types, and neither README nor guide said that the browser logins need the
-    optional cliproxyapi. A person without it never learned they exist."""
-    logins = ("Antigravity", "Codex", "Devin", "Kimi", "Meta", "xAI")
+    optional cliproxyapi. A person without it never learned they exist.
+
+    #366: the two Kimi logins are named by region, with the same names the
+    sign-in menu and the API-key provider list use, so each doc names both
+    services instead of one plain Kimi."""
+    logins = ("Antigravity", "Codex", "Devin",
+              "Kimi For Coding (global)", "Kimi For Coding (China)", "Meta", "xAI")
     for doc in (ROOT / "README.md", GUIDE):
         flat = _flatten(doc.read_text(encoding="utf-8"))
         assert "`provider`" in flat, f"{doc.name} does not name the provider profile type"
