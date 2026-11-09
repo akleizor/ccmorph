@@ -14,9 +14,9 @@ var httpURL = regexp.MustCompile(`^https?://[^?#]*$`)
 // INFO, SKIP) and its message; an empty Kind is a bare line.
 type DoctorRow struct{ Kind, Msg string }
 
-// nativeBase lists the endpoints that need no adapter: launch treats these as
+// NativeBase lists the endpoints that need no adapter: launch treats these as
 // Anthropic's own, where only the key is in question.
-func nativeBase(base string) bool {
+func NativeBase(base string) bool {
 	return base == "" || base == "https://api.anthropic.com" || base == "https://api.anthropic.com/"
 }
 
@@ -33,7 +33,7 @@ func DoctorRoute(name, typ, base string, adapter bool, key string, verbose bool)
 		rows = append(rows, DoctorRow{kind, msg})
 	}
 
-	if nativeBase(base) {
+	if NativeBase(base) {
 		// Launch sends no request here, so this is the only place a key on
 		// Anthropic's own endpoint can be checked before a session fails.
 		switch {

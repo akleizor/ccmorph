@@ -58,6 +58,8 @@ type launcher struct {
 	forwarded int
 	notice    string
 	chosen    map[string]bool
+	ranClaude bool   // claude started on the pass that just ran (else it never began)
+	launched  string // the profile the pass that just ran resolved to, "" for none
 }
 
 // relayNext is what one launch hands the driver when Claude Code exited for a hop.
@@ -97,12 +99,25 @@ func (l *launcher) launchMain(args []string) int {
 	for _, k := range []string{"_CCMORPH_LAUNCH_PROFILE", "_CCMORPH_INTERACTIVE", "_CCMORPH_NATIVE_ARGS"} {
 		os.Unsetenv(k)
 	}
+	// The relay pass's origin: which profile the conversation came from, and the
+	// session a failed switch must point back at.
+	from, relaySession := "", ""
 	for {
+		l.ranClaude = false
 		next, rc := l.launch(profileName, interactive, native, args)
 		l.notice = ""
 		if next == nil {
+			// A relay pass that failed before claude began leaves the person at
+			// the shell with the conversation on the profile it came from (#286).
+			// Claude Code prints its own way back when it ran at all, so this is
+			// only for the switch that never started.
+			if from != "" && relaySession != "" && rc != 0 && !l.ranClaude {
+				l.err("the switch to '" + profileName + "' did not finish; the conversation is still on '" + from + "'.")
+				fmt.Fprintf(os.Stderr, "  Resume it there: ccmorph run %s --resume %s\n", from, relaySession)
+			}
 			return rc
 		}
+		from, relaySession = l.launched, next.session
 		args, profileName, interactive, native = next.args, next.profile, false, true
 		l.log("relay resume profile=" + next.profile + " session=" + next.session)
 		fmt.Printf("\n%sccmorph:%s resuming as %s%s%s...\n\n", l.accent, l.reset, l.bold, next.profile, l.reset)

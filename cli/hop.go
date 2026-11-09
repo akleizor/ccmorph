@@ -86,6 +86,9 @@ func (l *launcher) hop(args []string) int {
 		l.err("cannot find the Claude Code process to end. Run hop from the Claude Code prompt (/ccmorph:hop or ! ccmorph hop)")
 		return 1
 	}
+	if !l.hopCheck(name) {
+		return 1
+	}
 	signal := "profile=" + name + "\nsession=" + session
 	if model, effort, ok := l.sessionState(session); ok {
 		if current || l.modelKnown(name, model) != 1 {
@@ -111,6 +114,43 @@ func (l *launcher) hop(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// hopCheck is what a hop owes the session it is about to end (#286): the target
+// must be able to start, or the switch is refused before anything closes and
+// the session keeps running. It mirrors the target's own launch aborts — a key
+// Claude Code was told to refuse, a provider whose bridge cannot start, and
+// doctor's endpoint probe — so what hop refuses is what run would fail on. It
+// never mutates state the relay pass would not touch anyway.
+func (l *launcher) hopCheck(name string) bool {
+	typ, env, err := util.ProfileEnv(l.dir, l.profileDirs, name, func(string) {})
+	if err != nil {
+		return true // the target's own launch reports this in its own words
+	}
+	if typ == "provider" {
+		if why := l.providerStartRefusal(name); why != "" {
+			l.refuseHop(name, why)
+			return false
+		}
+	} else if k, ok := envGet(env, "ANTHROPIC_API_KEY"); ok && k != "" && !l.keyApproval(name, k) {
+		// keyApproval said why in the launch path's own words; the session
+		// survives, and `ccmorph login <name>` is the fix, not doctor.
+		fmt.Fprintln(os.Stderr, "  This session keeps running.")
+		return false
+	}
+	if why := l.routeRefusal(name); why != "" {
+		l.refuseHop(name, why)
+		fmt.Fprintln(os.Stderr, "  Check the route: ccmorph doctor "+name)
+		fmt.Fprintln(os.Stderr, "  This session keeps running.")
+		return false
+	}
+	return true
+}
+
+// refuseHop is a hop refused before the session it runs in was ended.
+func (l *launcher) refuseHop(name, why string) {
+	l.err("not switching to '" + name + "': " + why)
+	fmt.Fprintln(os.Stderr, "  This session keeps running.")
 }
 
 // sessionState is _ccm_session_state: the transcript's last model and effort.
