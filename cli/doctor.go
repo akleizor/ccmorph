@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -304,11 +306,53 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		}
 	}
 	home := filepath.Join(l.profileDirs, name)
-	if isDir(home) {
+	// homeBlocker names the path that stops a launch from making the profile
+	// home, with what to do about it; both empty when nothing does. The launch's
+	// own MkdirAll (util.SetupProfile) walks these two paths, so doctor reads
+	// them the same way: a path that is simply missing is ordinary absence — the
+	// launch makes it — while anything else that is not a folder (Lstat under a
+	// file answers ENOTDIR, which a bare exists-check misreads as absence), or
+	// cannot be read, is the blocker the verdict must name.
+	homeBlocker := func() (blocker, fix string) {
+		for _, p := range []string{l.profileDirs, home} {
+			fi, err := os.Lstat(p)
+			switch {
+			case errors.Is(err, fs.ErrNotExist):
+				// Not there yet: the first launch makes it.
+			case err != nil:
+				return err.Error(), "check the permissions on " + p
+			case fi.IsDir():
+			case fi.Mode()&os.ModeSymlink != 0:
+				// A symlink to a folder is transparent to the launch; a
+				// dangling one, or one to a file, is what blocks it.
+				if s, e := os.Stat(p); e != nil || !s.IsDir() {
+					return p + " is a symlink, not a folder",
+						"remove " + p + " so the first launch can create the profile home: ccmorph run " + name
+				}
+			default:
+				return p + " is not a directory",
+					"remove " + p + " so the first launch can create the profile home: ccmorph run " + name
+			}
+		}
+		return "", ""
+	}
+	blocker, fix := homeBlocker()
+	switch {
+	case isDir(home):
 		report("OK", "profile home: "+home)
-	} else {
-		report("FAIL", "profile home: missing ("+home+")", "the first launch creates it: ccmorph run "+name)
+	case blocker != "":
+		// GH-291: a launch genuinely cannot make the home — something other
+		// than a folder sits at the home or where the state keeps its
+		// profiles, or a path cannot be read — so this is a real failed
+		// check, and its fix names the blocker and what clears it.
+		report("FAIL", "profile home: cannot be created — "+blocker, fix)
 		failed = 1
+	default:
+		// GH-291: the home is the launch's own artefact — run makes it, and so
+		// does the login a refused key or a signed-out account needs — so a
+		// profile copied in or hand-written, never yet launched, is ready: the
+		// missing folder is a note, not a failed check.
+		report("INFO", "profile home: not created yet ("+home+"); the first launch makes it: ccmorph run "+name)
 	}
 	// The conf's one silent promise, said aloud where the profile's other
 	// behaviour is reported (#292).
