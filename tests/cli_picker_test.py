@@ -142,6 +142,72 @@ def cells(text):
     return sum(2 if unicodedata.east_asian_width(c) in 'WF' else 1 for c in text)
 
 
+def screen(raw, columns=100):
+    """The rows a terminal holds after replaying `raw`, the way run_pty emits it.
+
+    Carriage returns, newlines, cursor moves, line/screen erases and autowrap at
+    `columns` move and clear the way the child wrote them; SGR and private-mode
+    sequences draw nothing, so the rows are what a person reads, color-free.
+    Writing past the last row grows the screen; trailing blank rows drop. Wide
+    characters count as one cell — the screens these tests read stay ASCII.
+    """
+    rows, r, c = [''], 0, 0
+
+    def grow(row):
+        while len(rows) <= row:
+            rows.append('')
+
+    i, n = 0, len(raw)
+    while i < n:
+        ch = raw[i]
+        if ch == '\x1b' and raw.startswith('[', i + 1):
+            j = i + 2
+            while j < n and not raw[j].isalpha():
+                j += 1
+            seq, cmd = raw[i + 2:j], raw[j] if j < n else ''
+            if cmd == 'A':
+                r = max(0, r - (int(seq) if seq.isdigit() else 1))
+            elif cmd == 'B':
+                r += int(seq) if seq.isdigit() else 1
+                grow(r)
+            elif cmd == 'J':
+                if seq in ('', '0'):  # cursor to end of screen
+                    grow(r)
+                    rows[r] = rows[r][:c]
+                    for k in range(r + 1, len(rows)):
+                        rows[k] = ''
+            elif cmd == 'K':
+                grow(r)
+                rows[r] = rows[r][:c]
+            elif cmd == 'H':
+                parts = (seq or '1;1').split(';')
+                r, c = int(parts[0]) - 1, int(parts[1]) - 1 if len(parts) > 1 else 0
+                grow(r)
+            i = j + 1
+            continue
+        if ch == '\r':
+            c = 0
+        elif ch == '\n':
+            r, c = r + 1, 0
+            grow(r)
+        elif ch == '\b':
+            c = max(0, c - 1)
+        else:
+            if c >= columns:  # autowrap, pending at the last column
+                r, c = r + 1, 0
+                grow(r)
+            line = rows[r]
+            if c < len(line):
+                rows[r] = line[:c] + ch + line[c + 1:]
+            else:
+                rows[r] = line + ' ' * (c - len(line)) + ch
+            c += 1
+        i += 1
+    while rows and rows[-1] == '':
+        rows.pop()
+    return rows
+
+
 def _controlling_terminal():
     os.setsid()
     fcntl.ioctl(0, termios.TIOCSCTTY, 0)
@@ -389,6 +455,11 @@ class PickerTTYTest(unittest.TestCase):
         self.assertNotIn('Save changes?', out)
         self.assertNotIn('Endpoint [', out)
         self.assertNotIn('Replace stored credential?', out)
+        # The answered pickers agree on one summary shape (#361): the settings
+        # menu and the effort menu each fold to "Title › choice".
+        flat = '\n'.join(screen(out))
+        self.assertIn('  Settings — demo › Model and effort', flat, out)
+        self.assertIn('  Default effort — demo › Extra high', flat, out)
 
     def test_cancelling_configure_saves_nothing(self):
         env = self.env()
@@ -449,13 +520,21 @@ class PickerTTYTest(unittest.TestCase):
         env['ROWS'] = 'alpha\tfirst choice\nbeta\tsecond choice'
         rc, out, missed = run_pty('source "$1"\nccm_ui_select search "pick one" "$ROWS" all', env, [
             (b'Select [1-2]', b'abc\n'),                                # not a number
-            (b'Please choose one of the numbered options.', b'9\n'),  # out of range
-            (b'Please choose one of the numbered options.', b'2\n'),
+            # Each answer waits for the prompt it answers, not the reprompt
+            # message before it: typed ahead of the raw-mode prompt, the line
+            # echoes into the screen the fold erases.
+            (b'Please choose one of the numbered options.', b''),
+            (b'Select [1-2]', b'9\n'),                                  # out of range
+            (b'Please choose one of the numbered options.', b''),
+            (b'Select [1-2]', b'2\n'),
         ])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
         self.assertIn('  1) alpha    \x1b[38;2;153;153;153mfirst choice', out)
         self.assertTrue(out.rstrip().endswith('beta'), out)
+        # The answered list folds (#361): the rows, the Select prompt, its hint
+        # and the two reprompts leave the one summary line, and stdout after it.
+        self.assertEqual(screen(out), ['  pick one › beta', 'beta'], out)
 
     def test_set_without_slot_picks_slot_then_value(self):
         env = self.env()
@@ -487,6 +566,11 @@ class PickerTTYTest(unittest.TestCase):
         self.assertNotIn('Use: ccmorph set', out)
         self.assertNotIn('usage:', out)
         self.assertEqual(self.field('demo', 'model'), 'native-model')
+        # The leave folds the numbered list away too (#361): one Cancelled line
+        # under the slot's receipt, and no list row or Select prompt above it.
+        rows = screen(out)
+        self.assertEqual(rows[-1], '  Cancelled', out)
+        self.assertFalse(any('Select [1-' in row for row in rows), rows)
 
     def test_set_dash_i_chains_profile_then_value_without_losing_the_slot(self):
         env = self.env(fzf=True)
@@ -560,6 +644,9 @@ class PickerTTYTest(unittest.TestCase):
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
         self.assertEqual(self.field('demo', 'model'), 'picker-beta')
+        # The model picker leaves the same one summary line as every picker
+        # (#361): the row's own label, not fzf's echoed line or its description.
+        self.assertIn('  Default model — demo › picker-beta', '\n'.join(screen(out)), out)
         # stdout carries the value alone on its own line; stderr's "Saved …" line
         # and whatever the shell prints after it share the pty.
         self.assertIn('picker-beta', [line.strip() for line in out.splitlines()], out)
@@ -654,7 +741,15 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn('Action    Description', out)
         self.assertIn('Launch the default profile', out)
-        self.assertNotIn('\x1b[', out)
+        # The answered list folds (#361): NO_COLOR governs color, not cursor
+        # movement. The only escapes are the two folds: the Select question's
+        # (heading, hint, typed line: 3) and the list's (heading, blank, one
+        # row, the Select receipt: 4). After the list's fold — its receipt
+        # and the whole --help output — no escape at all, as on main.
+        folds = list(re.finditer(r'\x1b\[(\d+)A\r\x1b\[J', out))
+        self.assertEqual([m.group(1) for m in folds], ['3', '4'], out)
+        self.assertNotIn('\x1b[', re.sub(r'\x1b\[\d+A\r\x1b\[J', '', out))
+        self.assertNotIn('\x1b[', out[folds[-1].end():])
 
     def test_add_finishes_without_optional_setup_questions(self):
         env = self.env(fzf=True)
@@ -678,7 +773,7 @@ class PickerTTYTest(unittest.TestCase):
         self.spec('Provider=anthropic')
         rc, out, missed = run_pty('ccmorph add demo', env, [
             (b'Sign-in method', b'\x1b[B' * 2 + b'\r'),  # API key — Anthropic or a gateway
-            (b'API key for demo (Anthropic) (hidden):', b'sk-ant-fixture\n'),
+            (b'API key for demo', b'sk-ant-fixture\n'),  # … — Anthropic (hidden):
         ])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
@@ -697,7 +792,7 @@ class PickerTTYTest(unittest.TestCase):
             self.assertIn(flag, log)
         # The row asks for the key only, named for its service: no address, no
         # tier mapping. The key is checked against Anthropic's own address only.
-        self.assertIn('API key for demo (Anthropic)', out)
+        self.assertIn('API key for demo — Anthropic', out)
         self.assertNotIn('Base URL', out)
         self.assertEqual(self.field('demo', 'type'), 'apikey')
         self.assertEqual(self.field('demo', 'api_key'), 'sk-ant-fixture')
@@ -708,6 +803,43 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(log.count('https://'), log.count('https://api.anthropic.com'))
         self.assertIn('API key → api.anthropic.com', out)
         self.assertIn('Next: ccmorph run demo', out)
+        # The answered steps agree on one summary shape (#361): the sign-in
+        # menu, the provider search and the typed key question each leave one
+        # line — and no list, footer, hint, typed answer or cut description
+        # stays above them.
+        flat = '\n'.join(screen(out))
+        for row in ('  Sign-in method — demo › API key',
+                    '  Provider — demo › Anthropic',
+                    '  API key for demo — Anthropic (hidden):'):
+            self.assertIn(row, flat, out)
+        for residue in ('Enter Submit', '❯', 'Select [', '(q to cancel)', '↑/↓ Move', '…'):
+            self.assertNotIn(residue, flat)
+
+    def test_numbered_add_folds_each_answered_step_to_one_line_issue_361(self):
+        # The owner's follow-up on #361: with no fzf on PATH the provider
+        # question falls back to the numbered list, and an answered list folds
+        # like every picker. Each step leaves its one summary line; the rows,
+        # the numbered prompt's dead hint and the menu footers do not stay.
+        env = self.env()
+        rc, out, missed = run_pty('ccmorph add eps', env, [
+            (b'Sign-in method', b'\x1b[B' * 2 + b'\r'),  # API key
+            (b'Select [1-', b'2\n'),                     # DeepSeek, the first gateway
+            (b'API key for eps', b'sk-ds-fixture\n'),
+        ])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        flat = '\n'.join(screen(out))
+        for row in ('  Sign-in method — eps › API key',
+                    '  Provider — eps › DeepSeek',
+                    '  API key for eps — DeepSeek (hidden):'):
+            self.assertIn(row, flat, out)
+        for residue in ('Enter Submit', '❯', 'Select [', '(q to cancel)', '↑/↓ Move', '…'):
+            self.assertNotIn(residue, flat)
+        self.assertNotIn('sk-ds-fixture', out)
+        self.assertEqual(self.field('eps', 'type'), 'apikey')
+        self.assertEqual(self.field('eps', 'api_key'), 'sk-ds-fixture')
+        self.assertEqual(self.field('eps', 'base_url'), 'https://api.deepseek.com/anthropic')
+        self.assertIn('Next: ccmorph run eps', out)
 
     def test_typing_anthropic_ranks_the_anthropic_row_first(self):
         real_fzf = shutil.which('fzf')
@@ -719,7 +851,7 @@ class PickerTTYTest(unittest.TestCase):
         rc, out, missed = run_pty('ccmorph add demo', env, [
             (b'Sign-in method', b'\x1b[B' * 2 + b'\r'),
             (b'Provider', b'anthropic\r'),  # filter the list, accept the top match
-            (b'API key for demo (Anthropic) (hidden):', b'sk-ant-real\n'),
+            (b'API key for demo', b'sk-ant-real\n'),  # … — Anthropic (hidden):
         ])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
@@ -729,6 +861,9 @@ class PickerTTYTest(unittest.TestCase):
         self.assertIsNone(self.field('demo', 'base_url'))
         self.assertNotIn('sk-ant-real', out)
         self.assertIn('API key → api.anthropic.com', out)
+        # The pump matches the prompt's ASCII prefix; this pins its full shape:
+        # the provider named once, the answer hidden (#361).
+        self.assertIn('API key for demo — Anthropic (hidden):', out)
 
     def test_default_picker_hides_internal_action_values(self):
         env = self.env(fzf=True)
@@ -859,7 +994,16 @@ class PickerTTYTest(unittest.TestCase):
             self.assertIsNone(missed, out)
             self.assertNotEqual(rc, 0, out)
             self.assertIn('Cancelled', out)  # q answers like Esc: one short line
-            self.assertNotIn('\x1b[', out)
+            if 'NO_COLOR' in settings:
+                # NO_COLOR keeps folding (#361): color is off, cursor movement
+                # is not. The only escapes are the two folds: the Select
+                # question's (heading, hint, typed line: 3) and the list's
+                # (heading, blank, two rows, the Select receipt: 5).
+                self.assertEqual(re.findall(r'\x1b\[(\d+)A\r\x1b\[J', out), ['3', '5'], out)
+                self.assertNotIn('\x1b[', re.sub(r'\x1b\[\d+A\r\x1b\[J', '', out))
+            else:
+                # TERM=dumb keeps the plain path: no escape at all, as on main.
+                self.assertNotIn('\x1b[', out)
 
     def test_command_entrypoint_configures_only_the_selected_task(self):
         env = self.env(fzf=True)
@@ -1215,6 +1359,41 @@ fi
         self.assertNotIn('…', out)
         self.assertIn('VALUE=<abc>', out)
         self.assertIn('KSH_KEPT', out)
+
+    def test_answered_input_folds_to_one_summary_line_issue_361(self):
+        # An answered question folds like an answered picker (#361): the
+        # heading, the "Enter Submit · Esc Cancel" hint and the typed line give
+        # way to one line naming the question and its answer. A secret answer,
+        # which echoed nothing, leaves the question alone — no answer text. An
+        # answer longer than the terminal wraps beneath its question — the
+        # question is never squeezed out — and the fold still erases every
+        # line the answer touched, so the summary is all that stays.
+        cases = (
+            ('text', 'an-answer', ['  Value: › an-answer']),
+            ('secret', 's3cret', ['  Value:']),
+            # 120 cells: the echoed "❯ "-prefixed line wraps to 2, so the fold
+            # must erase 4 lines; the answer cannot share the line with its
+            # question, so the question stays whole and the answer wraps under
+            # it, never cut.
+            ('text', 'a' * 120, ['  Value: › ' + 'a' * 89, 'a' * 31]),
+        )
+        for mode, typed, summary in cases:
+            with self.subTest(mode=mode, answer=typed[:12]):
+                rc, out, missed = run_pty(
+                    'ccm_ui_input "Value: " ' + mode + ' || exit $?; '
+                    'print -r -- "LEN=${#REPLY}"', self.env(),
+                    [(b'Value:', typed.encode() + b'\r')])
+                self.assertIsNone(missed, out)
+                self.assertEqual(rc, 0, out)
+                rows = screen(out)
+                self.assertEqual([row.rstrip() for row in rows],
+                                 [row.rstrip() for row in summary] + ['LEN=%d' % len(typed)],
+                                 out)
+                flat = '\n'.join(rows)
+                self.assertNotIn('Enter Submit', flat)  # the hint folds away
+                self.assertNotIn('❯', flat)
+                if mode == 'secret':
+                    self.assertNotIn(typed, out)  # a hidden answer shows no text
 
     def test_installed_connection_input_cancel_preserves_profile(self):
         env = self.env(fzf=True)

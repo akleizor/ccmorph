@@ -112,6 +112,14 @@ func labelWidth(rows []string, display string) int {
 	return w
 }
 
+// typedLines is how many terminal lines an answered prompt's last line
+// occupies: "❯ " plus ECHOED cells, wrapping at COLUMNS. Reaching the last
+// column is not a wrap — the next character is — so folding the question
+// away erases every line the answer touched (#361).
+func typedLines(echoed, columns int) int {
+	return (1+echoed)/columns + 1
+}
+
 // termSize is _ccm_ui_size: rows, columns of stderr's terminal.
 func termSize() (int, int) {
 	if !isTTY(2) {
@@ -170,6 +178,15 @@ func (t uiTheme) cancelled() {
 	fmt.Fprintln(os.Stderr, uiMargin+t.gray+"Cancelled"+t.reset)
 }
 
+// eraseLines folds away the last n printed lines: cursor up n, column 0, erase
+// to the end of the screen. A screen that scrolled past its top erases from
+// the top, so the fold still ends one line.
+func eraseLines(n int) {
+	if n > 0 {
+		fmt.Fprintf(os.Stderr, "\033[%dA\r\033[J", n)
+	}
+}
+
 // uiSelect is ccm_ui_select: the chosen ID, or rc 1 cancelled, 2 invalid or no
 // terminal to pick with, 128+n signal.
 func uiSelect(mode, title, rows, display string) (string, int) {
@@ -219,20 +236,46 @@ func (t uiTheme) numbered(prompt string, rows []string, display string) (string,
 		return "", 1
 	}
 	t.list(prompt, rows, display)
+	if !(isTTY(2) && os.Getenv("TERM") != "dumb") {
+		// A pipe or a dumb terminal keeps the plain list: no cursor codes.
+		for {
+			choice, rc := uiInput(fmt.Sprintf("Select [1-%d] (q to cancel): ", len(rows)), false)
+			if rc != 0 || choice == "q" || choice == "Q" {
+				if rc == 0 {
+					// uiInput has already answered its own cancels; q is a
+					// line only this menu knows means leave.
+					t.cancelled()
+				}
+				return "", 1
+			}
+			if n, err := strconv.Atoi(choice); err == nil && n >= 1 && n <= len(rows) && choice == strconv.Itoa(n) {
+				return rowID(rows[n-1]), 0
+			}
+			fmt.Fprintln(os.Stderr, "Please choose one of the numbered options.")
+		}
+	}
+	// On a terminal the answered list folds like every picker: one receipt
+	// line names the choice, and the rows and the dead key hint do not stay
+	// above it (#361). Each uiInput round has already folded itself to one
+	// line, so one line per round and per reprompt is what adds to the list.
+	lines := len(rows) + 2 // heading, blank, rows
 	for {
 		choice, rc := uiInput(fmt.Sprintf("Select [1-%d] (q to cancel): ", len(rows)), false)
+		lines++
 		if rc != 0 || choice == "q" || choice == "Q" {
-			if rc == 0 {
-				// uiInput has already answered its own cancels; q is a line only
-				// this menu knows means leave.
-				t.cancelled()
-			}
+			// A leave answers with the one Cancelled line, not the list above
+			// it: uiInput's own Cancelled is erased with the rest.
+			eraseLines(lines)
+			t.cancelled()
 			return "", 1
 		}
 		if n, err := strconv.Atoi(choice); err == nil && n >= 1 && n <= len(rows) && choice == strconv.Itoa(n) {
+			eraseLines(lines)
+			t.receipt(prompt, rowID(visible(rows[n-1], display)))
 			return rowID(rows[n-1]), 0
 		}
 		fmt.Fprintln(os.Stderr, "Please choose one of the numbered options.")
+		lines++
 	}
 }
 
@@ -461,8 +504,35 @@ func (t uiTheme) moreLine(arrow string, cut int) string {
 // receipt is _ccm_ui_receipt: Title › choice.
 func (t uiTheme) receipt(title, choice string) {
 	_, columns := termSize()
-	choice = fit(choice, columns/2)
-	fmt.Fprintln(os.Stderr, t.heading(title, columns-cells(choice)-3)+" "+t.focus+"›"+t.reset+" "+t.gray+choice+t.reset)
+	fmt.Fprintln(os.Stderr, t.receiptLine(title, choice, columns))
+}
+
+// receiptTitleFloor is the least of the question a one-line receipt keeps: an
+// answer that would squeeze its question below this wraps beneath the whole
+// question instead (#361).
+const receiptTitleFloor = 12
+
+// receiptLine is the one line a picker leaves behind: Title › choice, fitted
+// to COLUMNS. The choice is what the person picked, so it is never cut — the
+// question yields space first, down to receiptTitleFloor. An answer that
+// cannot share the line even then keeps its question whole: a choice that fits
+// a line of its own breaks onto it, a longer one wraps beneath the question. No
+// answer erases the question it answers (#361). A question ends in
+// ": " and the receipt adds its own space before ›, so the title's does not
+// double it.
+func (t uiTheme) receiptLine(title, choice string, columns int) string {
+	choice = noCntrl(choice)
+	title = strings.TrimRight(title, " ")
+	w := columns - cells(choice) - 3
+	if w-len(uiMargin) < receiptTitleFloor {
+		if len(uiMargin)+cells(choice) <= columns {
+			// The choice fits a line of its own: the line breaks before it, so
+			// no line outgrows the terminal and the choice is still whole.
+			return t.heading(title, columns-2) + " " + t.focus + "›" + t.reset + "\n" + uiMargin + t.gray + choice + t.reset
+		}
+		w = columns
+	}
+	return t.heading(title, w) + " " + t.focus + "›" + t.reset + " " + t.gray + choice + t.reset
 }
 
 // fzfChrome is the lines an fzf window spends on itself besides the rows: the
@@ -564,7 +634,10 @@ func (t uiTheme) search(prompt string, rows []string) (string, int) {
 		value := rowID(choice)
 		for _, r := range rows {
 			if rowID(r) == value {
-				t.receipt(prompt, rowID(visible(choice, "labels")))
+				// The receipt names the row's own label, not the line fzf
+				// printed back — that one carries the description again, and
+				// it is the picker's job to have shown it (#361).
+				t.receipt(prompt, rowID(visible(r, "labels")))
 				return value, 0
 			}
 		}
@@ -605,18 +678,39 @@ func uiInput(prompt string, secret bool) (string, int) {
 	if err != nil {
 		return "", 1
 	}
-	if isTTY(2) && os.Getenv("TERM") != "dumb" {
-		_, columns := termSize()
-		fmt.Fprint(w, t.heading(prompt, columns)+"\n"+uiMargin+t.gray+"Enter Submit · Esc Cancel"+t.reset+"\n"+t.focus+"❯"+t.reset+" ")
+	_, columns := termSize()
+	fold := isTTY(2) && os.Getenv("TERM") != "dumb"
+	if fold {
+		// The hint is fitted like the heading, so the block is always two
+		// lines plus the answer: the fold's erase counts what was printed.
+		fmt.Fprint(w, t.heading(prompt, columns)+"\n"+uiMargin+t.gray+fit("Enter Submit · Esc Cancel", columns-len(uiMargin))+t.reset+"\n"+t.focus+"❯"+t.reset+" ")
 	} else {
 		fmt.Fprint(w, prompt+" (Enter Submit · Esc Cancel) ")
 	}
 	value, rc := readKeyLine(readKeys(), sigs, secret, w)
 	restore()
 	fmt.Fprintln(w)
+	if fold {
+		// An answered question leaves one line, like an answered picker: the
+		// question with its answer — or without it, when the answer is secret
+		// or empty. The hint and the typed line fold away (#361). A secret
+		// echoed nothing, so its answer line is the ❯ alone.
+		echoed := ""
+		if !secret {
+			echoed = value
+		}
+		eraseLines(2 + typedLines(cells(echoed), columns))
+	}
 	if rc != 0 {
 		t.cancelled()
 		return "", rc
+	}
+	if fold {
+		if secret || value == "" {
+			fmt.Fprintln(w, t.heading(prompt, columns))
+		} else {
+			t.receipt(prompt, value)
+		}
 	}
 	return value, 0
 }
@@ -637,7 +731,9 @@ func readLine(f *os.File) (string, bool) {
 	}
 }
 
-// readKeyLine is _ccm_ui_readline: Esc cancels at once, ^U/^W/DEL edit.
+// readKeyLine is _ccm_ui_readline: Esc cancels at once, ^U/^W/DEL edit. A
+// cancel still returns what was typed, so the caller can erase the echoed
+// line; callers ignore the value when rc is not 0.
 func readKeyLine(k *keys, sigs <-chan os.Signal, secret bool, w *os.File) (string, int) {
 	var value []byte
 	erase := func(removed []byte) {
@@ -648,22 +744,22 @@ func readKeyLine(k *keys, sigs <-chan os.Signal, secret bool, w *os.File) (strin
 	for {
 		c, s, ok := k.next(0, sigs, nil)
 		if s != nil {
-			return "", sigRC(s)
+			return string(value), sigRC(s)
 		}
 		if !ok {
-			return "", 1
+			return string(value), 1
 		}
 		switch {
 		case c == '\r' || c == '\n':
 			return string(value), 0
 		case c == 3:
-			return "", 130
+			return string(value), 130
 		case c == 4:
-			return "", 1
+			return string(value), 1
 		case c == 27:
 			n, _, ok := k.next(80*time.Millisecond, sigs, nil)
 			if !ok || (n != '[' && n != 'O') {
-				return "", 1
+				return string(value), 1
 			}
 			for {
 				n, _, ok = k.next(80*time.Millisecond, sigs, nil)

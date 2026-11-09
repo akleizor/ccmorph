@@ -243,7 +243,9 @@ installer output, and successful doctor checks use the same orange—not green.
 Confirmation defaults to **No**.
 Text and secret prompts show **Enter Submit · Esc Cancel**. Escape immediately
 cancels without saving partial input; Ctrl+C also exits cleanly without a traceback.
-Piped input retains its line-based behavior.
+Piped input retains its line-based behavior. An answered question or picker folds
+to one summary line — `Title › choice`; a secret shows the question alone, and an
+answer longer than the terminal wraps beneath its question.
 Prompts use sentence case; product names retain their casing, and profile names
 and model IDs remain literal. Changes save when you finish; cancelling an
 unfinished edit leaves settings intact.
