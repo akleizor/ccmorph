@@ -2195,6 +2195,34 @@ test_add_apikey_preset_fills_endpoint_and_tiers() {
   return $rc
 }
 
+test_add_apikey_lists_anthropic_first() {
+  # The sign-in menu promises "Anthropic or a gateway", so the provider list must
+  # name Anthropic itself — first, not as the blank default of Custom endpoint's
+  # last question (#278). Choosing it asks for the key only: no address, no tier
+  # mapping, no base_url written (Claude Code's own default endpoint).
+  local test_home rc=0 out actual
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  source "$CCMORPH_SOURCE"
+  command cp "$REPO_ROOT/share/provider-presets.tsv" "$HOME/.config/ccmorph/share/"
+  out=$(ccmorph add anth <<< $'3\nanthropic\nsk-an\n' 2>&1)
+  actual="$(<"$HOME/.config/ccmorph/anth.conf")"
+  assert_contains "$actual" 'type=apikey' 'the Anthropic row must make an apikey profile' || rc=1
+  assert_contains "$actual" 'api_key=sk-an' 'the key must be saved' || rc=1
+  assert_not_contains "$actual" 'base_url=' 'Anthropic needs no address' || rc=1
+  assert_not_contains "$actual" 'env.ANTHROPIC_DEFAULT' 'Anthropic maps no tiers' || rc=1
+  assert_contains "$out" 'Added anth (Anthropic → api.anthropic.com)' 'add must name the provider and its endpoint' || rc=1
+  # First row of the provider list, ahead of every gateway preset.
+  [[ "${out%% 2) DeepSeek*}" == *" 1) Anthropic"* ]] || {
+    print -u2 -- 'the provider list must open with Anthropic as row 1'
+    rc=1
+  }
+  assert_contains "$out" 'API key for anth (Anthropic) (hidden): ' 'the key prompt must name Anthropic' || rc=1
+  assert_not_contains "$out" 'Base URL' 'the Anthropic row asks for no address' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_add_apikey_native_endpoint_skips_adapter() {
   local test_home
   test_home=$(mktemp -d)
@@ -2202,9 +2230,15 @@ test_add_apikey_native_endpoint_skips_adapter() {
   source "$CCMORPH_SOURCE"
 
   # Default curl stub returns 200 for -w probes — the endpoint speaks
-  # /v1/messages natively, so no adapter should be set.
+  # /v1/messages natively, so no adapter should be set. The address comes
+  # before the key so the key prompt can name the service it is for (#278).
   local out
-  out=$(ccmorph add nativegw <<< $'3\ncustom\nnative-key\nhttp://native.invalid\n') || {
+  out=$(ccmorph add nativegw <<< $'3\ncustom\nhttp://native.invalid\nnative-key\n' 2>&1) || {
+    rm -rf "$test_home"
+    return 1
+  }
+  assert_contains "$out" 'API key for nativegw (http://native.invalid) (hidden): ' \
+    'the key prompt must name the service the key is for' || {
     rm -rf "$test_home"
     return 1
   }
@@ -2252,7 +2286,7 @@ test_add_apikey_model_level_404_is_native() {
   _stub_probe_response 404 '{"type":"error","error":{"type":"not_found_error","message":"model: probe"}}'
 
   local out rc=0
-  out=$(ccmorph add nativemodel404 <<< $'3\ncustom\nk\nhttp://native404.invalid\n') || {
+  out=$(ccmorph add nativemodel404 <<< $'3\ncustom\nhttp://native404.invalid\nk\n') || {
     rm -rf "$test_home"
     return 1
   }
@@ -8281,7 +8315,7 @@ test_add_context_refresh_is_background_and_declared_only() {
   local _CCMORPH_LIBEXEC_DIR="$_CCMORPH_LIBEXEC_DIR"
   fake_context_refresh
   local out rc=0
-  out=$(print -l apikey custom sk-test-not-real 'http://gw.invalid' '' | ccmorph add gw 2>&1)
+  out=$(print -l apikey custom 'http://gw.invalid' sk-test-not-real '' | ccmorph add gw 2>&1)
   assert_contains "$out" 'Added' 'adding a gateway must still succeed' || rc=1
   local scheduled=""
   local -i i
@@ -8433,7 +8467,7 @@ test_add_gateway_profile_offers_probe() {
   export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
   source "$CCMORPH_SOURCE"
   local out rc=0
-  out=$(print -l apikey custom sk-test-not-real 'http://gw.invalid' '' | ccmorph add gw 2>&1)
+  out=$(print -l apikey custom 'http://gw.invalid' sk-test-not-real '' | ccmorph add gw 2>&1)
   # The nudge runs against an unreachable fake gateway, so it may produce no
   # window-related output — that is correct: a down endpoint is not an error.
   # Verify the profile was created and the nudge did not abort the add.
@@ -8451,7 +8485,7 @@ test_add_native_profile_stays_quiet_about_probe() {
   export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
   source "$CCMORPH_SOURCE"
   local out rc=0
-  out=$(print -l apikey custom sk-test-not-real '' '' | ccmorph add nat 2>&1)
+  out=$(print -l apikey custom '' sk-test-not-real '' | ccmorph add nat 2>&1)
   [[ "$out" == *"ccmorph probe"* ]] \
     && { print -u2 -- 'a native profile must not be nudged to probe'; rc=1 }
   rm -rf "$test_home"
@@ -8468,7 +8502,7 @@ test_add_apikey_profile_approves_its_key() {
   export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
   source "$CCMORPH_SOURCE"
   local key='sk-issue-236-test-key' out rc=0
-  out=$(print -l apikey custom "$key" '' '' | ccmorph add nat 2>&1)
+  out=$(print -l apikey custom '' "$key" '' | ccmorph add nat 2>&1)
   python3 - "$HOME/.config/ccmorph/profiles/nat/.claude.json" "${key[-20,-1]}" <<'PYKEY' || rc=1
 import json, sys
 doc = json.load(open(sys.argv[1]))
@@ -8483,7 +8517,7 @@ PYKEY
   # A file ccmorph cannot safely rewrite keeps the question, so add says which
   # answer to give instead of leaving No highlighted as the only guidance.
   printf '%s\n' '{"customApiKeyResponses":"not-an-object"}' > "$HOME/.claude.json"
-  out=$(print -l apikey custom "$key" '' '' | ccmorph add asked 2>&1)
+  out=$(print -l apikey custom '' "$key" '' | ccmorph add asked 2>&1)
   [[ "$out" == *"Added"* ]] || { print -u2 -- 'add must still succeed when the answer cannot be recorded'; rc=1; }
   assert_contains "$out" 'choose Yes' \
     'add must name the answer when it cannot record it' || rc=1
@@ -10580,6 +10614,7 @@ run_test test_proxy_context_limit_reaches_claude
 # Adapter choice is automatic at launch; add only persists profile credentials.
 run_test test_add_never_asks_how_to_reach_the_endpoint
 run_test test_add_apikey_preset_fills_endpoint_and_tiers
+run_test test_add_apikey_lists_anthropic_first
 run_test test_add_apikey_native_endpoint_skips_adapter
 run_test test_add_apikey_model_level_404_is_native
 # add does not persist adapter decisions; launch performs automatic compatibility handling.

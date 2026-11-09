@@ -332,7 +332,10 @@ func (l *launcher) presets() [][]string {
 
 func (l *launcher) addAPIKey(name string) int {
 	presets := l.presets()
-	var rows []string
+	// Anthropic's own API leads the list: the sign-in menu promises "Anthropic or
+	// a gateway", and a blank base_url is Claude Code's default endpoint, so the
+	// row needs no address and no tier mapping (#278).
+	rows := []string{"anthropic\tAnthropic\tapi.anthropic.com"}
 	for _, p := range presets {
 		if len(p) >= 3 {
 			rows = append(rows, p[0]+"\t"+p[1]+"\t"+strings.TrimPrefix(p[2], "https://"))
@@ -359,7 +362,11 @@ func (l *launcher) addAPIKey(name string) int {
 	}
 	label, url := "", ""
 	var tiers []string
-	if pick != "custom" {
+	switch pick {
+	case "anthropic":
+		label = "Anthropic"
+	case "custom":
+	default:
 		found := false
 		for _, p := range presets {
 			if p[0] == pick {
@@ -376,24 +383,30 @@ func (l *launcher) addAPIKey(name string) int {
 	prompt := "API key for " + name
 	if label != "" {
 		prompt += " (" + label + ")"
+	} else {
+		// Custom endpoint names its address before the key, so the key prompt
+		// can name the service the key is for (#278).
+		v, rc := uiInput("Base URL (blank = api.anthropic.com): ", false)
+		if rc != 0 {
+			return 1
+		}
+		url = cleanCredential(v)
+		service := url
+		if service == "" {
+			service = "api.anthropic.com"
+		}
+		prompt += " (" + service + ")"
 	}
 	// The endpoint is asked the listing question doctor asks, in this step: a
 	// key it refuses is named here and asked for again, not saved as Added and
-	// discovered at launch. The endpoint is answered once; a re-entered key is
-	// checked against the same endpoint.
+	// discovered at launch. The endpoint was answered once, before the key; a
+	// re-entered key is checked against the same endpoint.
 	var key string
-	for first := true; ; first = false {
+	for {
 		var ok bool
 		key, ok = l.askCredential(prompt+" (hidden): ", "api key")
 		if !ok {
 			return 1
-		}
-		if label == "" && first {
-			v, rc := uiInput("Endpoint (blank = api.anthropic.com): ", false)
-			if rc != 0 {
-				return 1
-			}
-			url = cleanCredential(v)
 		}
 		if strings.ContainsAny(key+url, "\r\n") {
 			l.err("apikey values cannot contain CR/LF")
