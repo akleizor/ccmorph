@@ -3,6 +3,7 @@ package adapter
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -222,6 +223,13 @@ func classifyLocked(base, key, cache, required string, auto bool) ([]Row, error)
 		var err error
 		models, err = inventoryFn(base, key, nil)
 		if err != nil {
+			// A refusal the endpoint answered is not a discovery failure: with no
+			// model named, cached rows are endpoint knowledge, not a model choice,
+			// and a launch must not front a session that never picked one (#357).
+			var refused refusingStatus
+			if required == "" && errors.As(err, &refused) {
+				return nil, err
+			}
 			if len(known) == 0 {
 				return nil, err // no cache to fall back on
 			}

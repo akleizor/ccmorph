@@ -181,6 +181,14 @@ func keyHeaders(key string) map[string]string {
 	return map[string]string{"x-api-key": key, "Authorization": "Bearer " + key}
 }
 
+// refusingStatus is a listing request the endpoint answered without serving
+// one. Its message keeps the "HTTP Error %d" shape inventory has always
+// reported, so logs and other callers read identically, while a caller can
+// tell a gateway that offers no model list from a transport failure (#357).
+type refusingStatus struct{ code int }
+
+func (e refusingStatus) Error() string { return fmt.Sprintf("HTTP Error %d", e.code) }
+
 // inventory lists the usable chat model ids. No anthropic-version header:
 // proxies rewrite non-claude ids into claude-<junk>-<reversed-id> when they see it.
 func inventory(base, key string, c *http.Client) ([]string, error) {
@@ -193,7 +201,7 @@ func inventory(base, key string, c *http.Client) ([]string, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("HTTP Error %d", resp.StatusCode)
+		return nil, refusingStatus{resp.StatusCode}
 	}
 	var doc map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
@@ -496,4 +504,18 @@ func serving(port int, key string) bool {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode == 200
+}
+
+// answered reports whether a loopback endpoint answers at all — any HTTP
+// status, and no credential on the wire. The shim answers a HEAD itself (it
+// relays only GET, POST, PUT and DELETE), so a direct-route gateway that
+// offers no model list still reads as ready, and the readiness probe never
+// travels upstream (#357).
+func answered(port int) bool {
+	resp, err := do(loopback, "HEAD", "http://127.0.0.1:"+strconv.Itoa(port)+"/", nil, nil, 5*time.Second)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return true
 }

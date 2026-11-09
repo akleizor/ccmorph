@@ -282,6 +282,27 @@ def test_doctor_stays_ready_when_the_saved_model_is_served(tmp_path):
     assert "is not served" not in result.stdout
 
 
+def test_doctor_does_not_call_a_listless_gateway_unreachable_issue_357(tmp_path):
+    # #357: a gateway that answers HTTP is not unreachable — it offers no model
+    # list. With no model saved no launch can pick one, so the verdict names
+    # the one step instead of sending the reader to fix a working endpoint.
+    result, _, _ = run_doctor(tmp_path, GW, status_curl(404))
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "unreachable" not in result.stdout, result.stdout
+    assert "gateway: reachable (HTTP 404), but offers no model list" in result.stdout
+    assert "FAIL not ready: set a model: ccmorph set demo model <model-id>" in result.stdout
+
+
+def test_doctor_stays_ready_when_a_listless_gateway_has_a_saved_model_issue_357(tmp_path):
+    # A saved model needs no listing: classification probes it directly, so the
+    # profile runs — the report says the list is not offered and stays ready.
+    result, _, _ = run_doctor(tmp_path, GW + "model=glm-4.6\n", status_curl(404))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "gateway: reachable (HTTP 404), but offers no model list" in result.stdout
+    assert "ready: start it with ccmorph run demo" in result.stdout
+    assert "not ready" not in result.stdout
+
+
 def test_doctor_rejects_invalid_profile_settings_json(tmp_path):
     conf = "type=apikey\nbase_url=https://example.test\napi_key=k\n"
     profile = tmp_path / "state" / "profiles" / "demo"
