@@ -2,6 +2,7 @@
 """shim report across the one-time move of flat usage rows into UTC day folders (#227)."""
 
 import datetime
+import fcntl
 import os
 import unittest
 
@@ -51,6 +52,22 @@ class ShardReportTest(unittest.TestCase):
         self.assertEqual(len(list(usage.glob("*/*.json"))), 5)
         self.assertTrue(any(folder.name < (base.NOW - datetime.timedelta(hours=48)).strftime("%Y-%m-%d")
                             for folder in usage.iterdir() if folder.is_dir()), list(usage.iterdir()))
+
+    def test_a_held_move_lock_leaves_the_store_to_its_holder(self):
+        # Two reports can run at once. A run that cannot take the store's move
+        # lock leaves the move to its holder, so one run's rollback can never
+        # meet another run's remove and take a row's last name (#298).
+        usage = self.state / "ccmorph" / "usage"
+        path = self.row(None, "sonnet-x", 1.0, hours=2)
+        self.age(path, 2)
+        with open(usage / ".move.lock", "w") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.report()
+            self.assertTrue(path.exists(), "a move ran beside its lock's holder")
+            fcntl.flock(held, fcntl.LOCK_UN)
+        self.report()
+        self.assertFalse(path.exists(), "the move did not run once the lock was free")
+        self.assertEqual(len(list(usage.glob("*/*.json"))), 1)
 
 
 if __name__ == "__main__":

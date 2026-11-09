@@ -513,6 +513,37 @@ func TestQuotaSpend(t *testing.T) {
 	}
 }
 
+// A response the store holds under two names (the flat copy and the day
+// folder's, left by a move that stopped halfway) is one turn: the spend counts
+// it once, while a recycled id's other turn at the same stamp is still its own
+// (#298).
+func TestQuotaSpendCountsAResponseInBothStoresOnce(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	day := filepath.Join(usage, "2026-10-20")
+	if err := os.MkdirAll(day, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := func(turn, cost string) []byte {
+		return []byte(`{"response_id":"resp_1","turn_id":"` + turn + `","profile":"gw",` +
+			`"timestamp":"2026-10-20T09:00:00Z","usage":{"cost":` + cost + `},"complete":true}`)
+	}
+	for _, path := range []string{filepath.Join(usage, "resp_1.json"), filepath.Join(day, "resp_1.json")} {
+		if err := os.WriteFile(path, body("turn_a", "1.5"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(day, "resp_1.turn_b.json"), body("turn_b", "0.5"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := spendEntry("gw", "").Spend
+	if s.MonthUSD != 2 || s.MonthTurns != 2 || s.TodayUSD != 2 || s.TodayTurns != 2 {
+		t.Fatalf("a response in both stores was not counted exactly once: %+v", s)
+	}
+}
+
 var ansi = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
 func checkWidth(t *testing.T, out string) {

@@ -1,7 +1,9 @@
 package shim
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -9,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -134,6 +137,7 @@ func report(days float64) {
 	usageDir := filepath.Join(base, "usage")
 	paths := usageRowFiles(usageDir, lo, now)
 	sort.Strings(paths)
+	counted := map[string]bool{}
 	for _, path := range paths {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -162,6 +166,14 @@ func report(days float64) {
 				continue
 			}
 			attempt = n
+		}
+		// A row read under two names (a flat copy and its day folder's, left by
+		// a move that stopped halfway) is one response: count it once (#298).
+		if key, ok := rowIdentity(d, ts); ok {
+			if counted[key] {
+				continue
+			}
+			counted[key] = true
 		}
 		var cost *float64
 		for _, kvp := range bucketsOf(d.b, us, true) {
@@ -313,9 +325,20 @@ const moveSettle = time.Hour
 // another row's: the flat one stays, a reader always reads the top level too,
 // and never a row is destroyed. The claim is the sidecar's own — a hardlink
 // under a free name — so a filesystem without hardlinks keeps its rows flat
-// and still read. Safe to run again: a moved row is no longer flat.
+// and still read. One report moves the store at a time: a run that finds the
+// move lock held leaves the move to its holder, so a run finishing an earlier
+// claim never meets the one rolling that claim back. Safe to run again, and it
+// finishes what an earlier run left:
+// a day-folder name that is a second name for the flat file is that run's
+// claim, so the flat name goes, and a remove that fails takes the claim back,
+// so no row is read from both stores (#298).
 func moveFlatRows() {
 	base := usageBase()
+	lock, ok := moveLock(base)
+	if !ok {
+		return // another report is moving this store; it leaves every row in one place
+	}
+	defer lock.Close()
 	now := time.Now()
 	entries, err := os.ReadDir(base)
 	if err != nil {
@@ -338,11 +361,51 @@ func moveFlatRows() {
 		}
 		from := filepath.Join(base, e.Name())
 		to := filepath.Join(dir, e.Name())
-		if link(from, to) != nil {
-			continue
+		if err := link(from, to); err != nil {
+			// A taken name is this very row only when it is a second name for
+			// the flat file: an earlier move linked it and stopped before its
+			// remove. Any other file there is another row's; the flat one stays.
+			if !errors.Is(err, fs.ErrExist) || !sameFile(from, to) {
+				continue
+			}
 		}
-		remove(from)
+		if err := remove(from); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			// The flat name would not go: take the day name back, so the row is
+			// read from one place until a later run can finish the move — only
+			// while the flat name still holds this very file, never a row's
+			// last name.
+			if sameFile(from, to) {
+				remove(to)
+			}
+		}
 	}
+}
+
+// moveLock is the exclusive lock the move holds for its whole run. Two reports
+// can run at once, and a rollback that ran beside another run's remove could
+// take a row's last name; serialized, the move's steps are the only writer of
+// these names. The kernel drops the lock when its process exits, so a report
+// killed mid-move leaves no lock behind (#298).
+func moveLock(base string) (*os.File, bool) {
+	f, err := os.OpenFile(filepath.Join(base, ".move.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, false
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, false
+	}
+	return f, true
+}
+
+// sameFile is true only when both names hold one file: the claim a move left.
+func sameFile(a, b string) bool {
+	ia, err := os.Lstat(a)
+	if err != nil {
+		return false
+	}
+	ib, err := os.Lstat(b)
+	return err == nil && os.SameFile(ia, ib)
 }
 
 // dayDirRE is a sharded day folder's name: one UTC date, spelled the way the
@@ -381,6 +444,22 @@ func usageRowFiles(base string, since, now time.Time) []string {
 		}
 	}
 	return out
+}
+
+// rowIdentity is the response a row records: its id, its stamp as written and,
+// when it has one, its turn. It is the identity share/usage-export dedupes on,
+// so a response the store holds under two names counts once. A row with no id
+// has no identity and is always counted.
+func rowIdentity(d *doc, ts string) (string, bool) {
+	id, ok := d.str("response_id")
+	if !ok || id == "" {
+		return "", false
+	}
+	key := id + "\x00" + ts
+	if turn, ok := d.str("turn_id"); ok && turn != "" {
+		key += "\x00" + turn
+	}
+	return key, true
 }
 
 // nonFiniteToNull rewrites the NaN/Infinity/-Infinity tokens Python's json.dump
