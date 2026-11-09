@@ -129,11 +129,13 @@ run `ccmorph add`.
 `ccmorph add` asks which kind of profile (see *Profile types* below) and prompts
 only for what that kind needs: a Claude account opens the normal browser login, a
 Claude token asks you to paste one, an API key asks which provider and then only for
-the key. A preset provider (DeepSeek,
+the key. The provider list opens with *Anthropic* itself (no address, no model
+mapping), followed by the preset gateways (DeepSeek,
 Kimi, GLM, MiniMax, Qwen, Xiaomi MiMo, StepFun, OpenRouter, SiliconFlow; the list is
 `share/provider-presets.tsv`) fills its official Anthropic-compatible endpoint and
 maps Claude Code's opus, sonnet and haiku tiers to its models; *Custom endpoint*
-asks for the endpoint (blank = api.anthropic.com). The endpoint is then asked
+asks for the endpoint first (blank = api.anthropic.com), so the key prompt can
+name the service it belongs to. The endpoint is then asked
 whether it accepts the pasted key — in this step, not at first launch — and a
 refused key is asked for again rather than saved. A pasted Claude token is
 judged the same way: a paste without a token's shape is refused at the prompt,
@@ -230,7 +232,10 @@ The existing piped-input configuration sequence is unchanged for scripts.
 [`cli/ui.go`](../cli/ui.go) owns every interactive renderer and theme. Commands supply
 rows and choose `native` (↑/↓ menu) or `search` (fzf); they do not implement key
 handling, cursor movement, or styling. `NO_COLOR` disables styling; `TERM=dumb` and
-missing `fzf` use numbered choices. Claude Code's own in-session menus are
+missing `fzf` use numbered choices. On fzf 0.36 and later the search list shows a
+scrollbar and Home/End jump to either end; an older fzf gets a window sized to the
+whole list when the terminal allows, and otherwise its header begins *More rows than
+fit here*. Claude Code's own in-session menus are
 owned by Claude Code, not rendered or replaced by ccmorph.
 
 Profile pickers offer only usable profiles: `models` lists API-key profiles,
