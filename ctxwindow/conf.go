@@ -298,6 +298,32 @@ func Positive(value string) (int64, bool) {
 	return n, n > 0
 }
 
+// ParseTokens is Positive with the k/m scale people type: "100k" and "2m" are
+// the token counts they mean, resolved to plain digits. The scaled value keeps
+// Positive's ten-digit bound.
+func ParseTokens(value string) (int64, bool) {
+	if n, ok := Positive(value); ok {
+		return n, true
+	}
+	if len(value) < 2 {
+		return 0, false
+	}
+	var scale int64
+	switch value[len(value)-1] {
+	case 'k', 'K':
+		scale = 1_000
+	case 'm', 'M':
+		scale = 1_000_000
+	default:
+		return 0, false
+	}
+	n, ok := Positive(value[:len(value)-1])
+	if !ok || n > (9_999_999_999/scale) {
+		return 0, false
+	}
+	return n * scale, true
+}
+
 // RealID undoes the translator disguise: claude-<cover>-dd-<reversed id> -> the true id.
 func RealID(modelID string) string {
 	head, tail, ok := strings.Cut(modelID, "-dd-")
@@ -444,6 +470,24 @@ func ManualValues(fields map[string]string) map[string]int64 {
 		}
 	}
 	return out
+}
+
+// routeKnown says whether the endpoint has listed model: a discovered window
+// for the id model_map serves for it, glob patterns included. A pin the person
+// saved earlier is not evidence (a typo stays a typo), and neither is the
+// bundled catalogue, which knows models, not what this route serves.
+func routeKnown(fields map[string]string, model string) bool {
+	target := MappedTarget(fields, model)
+	discovered := DiscoveredValues(fields)
+	if _, ok := discovered[target]; ok {
+		return true
+	}
+	for _, p := range slices.Sorted(maps.Keys(discovered)) {
+		if glob(target, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // MappedTarget is the id the shim serves for bare, or bare when nothing rewrites
@@ -890,9 +934,9 @@ func SetContext(profile, model, value string) error {
 	if !ValidModel(model) {
 		return errors.New("context model id is invalid")
 	}
-	parsed, ok := Positive(value)
+	parsed, ok := ParseTokens(value)
 	if value != "auto" && !ok {
-		return errors.New("context tokens must be a positive integer (at most 10 digits) or auto")
+		return errors.New("context tokens must be a positive integer of at most 10 digits, with an optional k or m suffix (for example 100000, 100k or 2m), or auto")
 	}
 	return ProfileLock(profile, func() error {
 		expected := ProfileIdentity(profile)

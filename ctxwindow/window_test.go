@@ -514,6 +514,60 @@ func TestBundledCatalogueSizesAnUnknownRoutedModelByFamily(t *testing.T) {
 	}
 }
 
+// The --context setter's answers through WindowMain, the surface `ccmorph
+// context` runs: errors carry the ccmorph prefix, a k/m suffix is stored as the
+// digits it means, an out-of-range limit gets one sentence saying what new
+// sessions do with it, and a model the endpoint has not shown is saved with a
+// warning naming the command that lists what it serves.
+func TestContextSetAnswersPrefixSuffixesRangeAndUnknownModels(t *testing.T) {
+	e := setup(t)
+	save("a", one("known.model", 200000))
+	run := func(args ...string) (int, string, string) {
+		var out, errb bytes.Buffer
+		code := WindowMain(append([]string{"--context"}, args...), &out, &errb)
+		return code, out.String(), errb.String()
+	}
+	if code, out, errs := run("a", "m", "12x"); code != 1 || !strings.HasPrefix(errs, "ccmorph: ") || !strings.Contains(errs, "100k") {
+		t.Fatalf("refusal: code=%d out=%q errs=%q", code, out, errs)
+	}
+	for _, v := range [][2]string{{"100k", "100000"}, {"1m", "1000000"}} {
+		code, out, errs := run("a", "known.model", v[0])
+		if code != 0 || !strings.Contains(out, "set to "+v[1]+" tokens") || ctxValue("a", "known.model") != v[1] {
+			t.Fatalf("%s: code=%d out=%q value=%s", v[0], code, out, ctxValue("a", "known.model"))
+		}
+		if errs != "" {
+			t.Fatalf("%s: in-range save spoke: %q", v[0], errs)
+		}
+	}
+	code, out, errs := run("a", "known.model", "64000")
+	if code != 0 || !strings.Contains(out, "set to 64000 tokens") || ctxValue("a", "known.model") != "64000" {
+		t.Fatalf("out-of-range: code=%d out=%q value=%s", code, out, ctxValue("a", "known.model"))
+	}
+	if errs != "Limit saved. New sessions use it: the model's auto-compact window is sized from it, clamped into the 100,000–1,000,000 tokens Claude Code supports, and the session's context cap is the route's largest window, this limit included — set a value in that range, or auto, for a limit that is applied without clamping.\n" {
+		t.Fatalf("range sentence: %q", errs)
+	}
+	if code, _, errs = run("a", "known.model", "auto"); code != 0 || errs != "" {
+		t.Fatalf("auto: code=%d errs=%q", code, errs)
+	}
+	code, _, errs = run("a", "nosuch-model", "64000")
+	if code != 0 || ctxValue("a", "nosuch-model") != "64000" {
+		t.Fatalf("unknown model not saved: code=%d", code)
+	}
+	if !strings.Contains(errs, "nosuch-model") || !strings.Contains(errs, "ccmorph models a") {
+		t.Fatalf("unknown model warning: %q", errs)
+	}
+	// The pin just saved is not evidence the endpoint lists the model: saving again warns again.
+	code, _, errs = run("a", "nosuch-model", "100k")
+	if code != 0 || ctxValue("a", "nosuch-model") != "100000" || !strings.Contains(errs, "ccmorph models a") {
+		t.Fatalf("second save of an unlisted model: code=%d errs=%q", code, errs)
+	}
+	write(t, e.b, "type=provider\nprovider=codex\n")
+	code, _, errs = run("b", "nosuch-model", "64000")
+	if code != 0 || !strings.Contains(errs, "ccmorph probe b") {
+		t.Fatalf("provider warning: code=%d errs=%q", code, errs)
+	}
+}
+
 // An inline context_discovered line from before models.json moves out on
 // migration, keeps its windows, and the conf loses the line.
 func TestMigrationMovesInlineDiscoveredToModelsJSON(t *testing.T) {
