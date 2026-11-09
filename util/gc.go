@@ -15,6 +15,8 @@ import (
 // dead and they are a minute old. Session env files carry credentials and live
 // milliseconds (their reader removes them on sight), so a minute-old one in TMPDIR
 // or the state run dir was orphaned by a killed launcher and goes (#142). A
+// session-end record — the id of a session that just ended, read once by its
+// launcher for the resume hint — goes the same way (#285). A
 // private session's view — its real transcripts, history and shell snapshots —
 // goes once the claude that ran from it is gone and it is a minute old; a view
 // naming no claude is left alone, however old (#166). Gone is identity, not
@@ -88,7 +90,7 @@ func GCStale(state, profiles, tmp string) {
 	}
 
 	overlays, _ := filepath.Glob(filepath.Join(profiles, "*", "cache", "launch-settings.*"))
-	var bridges, envs, views []string
+	var bridges, envs, ends, views []string
 	ents, _ := os.ReadDir(tmp)
 	bridgePrefix := "ccmorph-bridge-" + strconv.Itoa(os.Getuid()) + "-"
 	for _, e := range ents {
@@ -99,6 +101,8 @@ func GCStale(state, profiles, tmp string) {
 			bridges = append(bridges, filepath.Join(tmp, n))
 		case strings.HasPrefix(n, "ccmorph-session-env."):
 			envs = append(envs, filepath.Join(tmp, n))
+		case strings.HasPrefix(n, "ccmorph-session-end."):
+			ends = append(ends, filepath.Join(tmp, n))
 		case strings.HasPrefix(n, "ccmorph-private."):
 			views = append(views, filepath.Join(tmp, n))
 		}
@@ -117,6 +121,13 @@ func GCStale(state, profiles, tmp string) {
 		}
 	}
 	for _, f := range envs {
+		if isFile(f) && old(f, time.Minute) {
+			_ = os.Remove(f)
+		}
+	}
+	// A session-end record is consumed the instant its launcher's claude exits;
+	// a minute-old one belongs to a launcher that died before it could read it.
+	for _, f := range ends {
 		if isFile(f) && old(f, time.Minute) {
 			_ = os.Remove(f)
 		}

@@ -316,6 +316,17 @@ user saved a budget, which always wins.
 and names the `[1m]` id on stderr. Models ccmorph chooses itself (the default, the
 picker, a resume) still launch with the derived id.
 
+**The plugin the launch loads is also a channel back.** Every launch points
+`CLAUDE_CODE_PLUGIN_DIRS` at `share/claude-plugin` (the `/ccmorph:hop` command
+comes from there), and that plugin's `SessionEnd` hook writes the ended
+session's id to `$TMPDIR/ccmorph-session-end.<claude pid>` — only for a session
+a user attended on a profile, so a `--print` or background run records nothing.
+The launcher reads and removes that file the moment its claude exits and prints
+the command that resumes the session on that profile; after a hop the final
+pass's line names the profile the session ended on. A launcher that died
+before reading leaves reaping to gc-stale, a minute old like every other
+TMPDIR record, and a record that is not a session id reads as no session (#285).
+
 ### Interactive selection is one flag, resolved per verb
 
 `ccmorph run -i` resolves one saved profile through a credential-free `fzf`

@@ -152,6 +152,61 @@ func TestRunClaudeStartsWhenTmpdirCannotBeWritten(t *testing.T) {
 	}
 }
 
+// readEndedSession returns the session id Claude Code's SessionEnd hook left
+// for the claude that ran as pid, and consumes the record: a launcher that
+// died is swept by gc-stale, never re-read. The file sits in a shared TMPDIR
+// anyone can write, so a record that is not a session id reads as no session
+// rather than reaching the terminal (#285).
+func TestReadEndedSession(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	f := filepath.Join(tmp, "ccmorph-session-end.4194304")
+	if err := os.WriteFile(f, []byte(" sid-285 \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := readEndedSession(4194304); got != "sid-285" {
+		t.Fatalf("read %q", got)
+	}
+	if _, err := os.Stat(f); !os.IsNotExist(err) {
+		t.Fatalf("record left behind: %v", err)
+	}
+	if err := os.WriteFile(f, []byte("not a session id"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := readEndedSession(4194304); got != "" {
+		t.Fatalf("a record that is not a session id read as %q", got)
+	}
+	if _, err := os.Stat(f); !os.IsNotExist(err) {
+		t.Fatalf("record left behind: %v", err)
+	}
+	if got := readEndedSession(4194305); got != "" {
+		t.Fatalf("another session's record read as %q", got)
+	}
+}
+
+// runClaude reads the record the SessionEnd hook of the claude it waited on
+// leaves behind, so the launcher can print the command that resumes that
+// session on its profile (#285). The stub is the whole child: its own pid is
+// the pid the record is keyed by.
+func TestRunClaudeReadsTheEndedSessionRecord(t *testing.T) {
+	dir := t.TempDir()
+	body := "#!/bin/sh\nprintf %s sid-285 > \"$TMPDIR/ccmorph-session-end.$$\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "ccmorph-core"), []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", t.TempDir())
+	l := &launcher{libexec: dir}
+	if rc := l.runClaude(nil, nil); rc != 0 {
+		t.Fatalf("rc %d", rc)
+	}
+	if l.ended != "sid-285" {
+		t.Fatalf("ended session %q", l.ended)
+	}
+	if left, _ := filepath.Glob(filepath.Join(os.TempDir(), "ccmorph-session-end.*")); len(left) != 0 {
+		t.Fatalf("records left behind: %q", left)
+	}
+}
+
 func TestNestedEdgeEnvOnlyBehindTheLoopbackEdge(t *testing.T) {
 	l := &launcher{}
 	t.Setenv("CCMORPH_EDGE_ROUTE_ENV", "X=1\nY=2\nZ=3")

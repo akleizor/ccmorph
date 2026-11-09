@@ -139,7 +139,8 @@ LIBS=(lib/ccmorph.sh ${MODULES/#/lib/})
 # `ccmorph uninstall` have the installer to run without a clone or a URL.
 EXECUTABLES=(bin/ccmorph install.sh)
 DATA_FILES=(share/model-catalogue.json share/window-sources.json share/provider-presets.tsv
-  share/claude-plugin/.claude-plugin/plugin.json share/claude-plugin/commands/hop.md)
+  share/claude-plugin/.claude-plugin/plugin.json share/claude-plugin/commands/hop.md
+  share/claude-plugin/hooks/hooks.json)
 COMPONENTS=($LIBS $EXECUTABLES $DATA_FILES)
 
 # ---- uninstall ------------------------------------------------------------
@@ -433,7 +434,7 @@ CONFIG_REAL="${CONFIG_DIR:A}"
 
 # If running from inside the target dir, files are already home; otherwise copy.
 if [[ "$SRC" != "$CONFIG_REAL" ]]; then
-  mkdir -p "$CONFIG_DIR"/{bin,lib,libexec,share/claude-plugin/{.claude-plugin,commands}}
+  mkdir -p "$CONFIG_DIR"/{bin,lib,libexec,share/claude-plugin/{.claude-plugin,commands,hooks}}
   for _f in "${COMPONENTS[@]}"; do cp "$SRC/$_f" "$CONFIG_DIR/$_f"; done
 fi
 cp "$SRC/bin/ccmorph" "$BIN_DIR/ccmorph"

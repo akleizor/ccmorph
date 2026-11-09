@@ -330,6 +330,9 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 	rs, err := util.ReadRelay(relayFile)
 	if err == util.ErrNoRelay {
 		l.log("normal exit (no relay)")
+		if name != "" {
+			l.resumeHint(name)
+		}
 		return nil, rcClaude
 	} else if err != nil {
 		l.err(err.Error())
@@ -424,6 +427,45 @@ func authKey(env []string) string {
 }
 
 var sessionID = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// readEndedSession reads the session id Claude Code's SessionEnd hook recorded
+// for the claude that ran as pid, and consumes the record: the hint prints
+// once, and a launcher that died leaves reaping to gc-stale, never a re-read.
+// The hook writes only for a session a user attended on a profile; a private
+// session's claude is a grandchild with another pid, and its transcripts die
+// with its view, so nothing of it is ever read here. The file sits in a shared
+// TMPDIR anyone can write, so a record that is not a session id reads as no
+// session rather than reaching the terminal (#285).
+func readEndedSession(pid int) string {
+	f := filepath.Join(tmpDir(), "ccmorph-session-end."+strconv.Itoa(pid))
+	b, err := os.ReadFile(f)
+	if err != nil {
+		return ""
+	}
+	os.Remove(f)
+	sid := strings.TrimSpace(string(b))
+	if !sessionID.MatchString(sid) {
+		return ""
+	}
+	return sid
+}
+
+// resumeHint prints the command that resumes the session Claude Code just
+// ended on the profile it ran under (#285): Claude Code's own exit line names
+// a bare `claude --resume <id>`, which reopens the default config folder —
+// first-run screens, another account — instead of this profile. After a hop
+// the final pass prints its own profile, so the line names where the session
+// now runs. A session that recorded nothing — a print run, a background run —
+// prints nothing, keeping captured output clean.
+func (l *launcher) resumeHint(name string) {
+	sid := l.ended
+	l.ended = ""
+	if sid == "" || name == "" {
+		return
+	}
+	fmt.Printf("\n%sccmorph:%s resume this session with: %sccmorph run %s --resume %s%s\n",
+		l.accent, l.reset, l.bold, name, sid, l.reset)
+}
 
 // sessionFile is _ccm_session_file: the physical transcript of a session, from
 // native Claude Code's history or any profile's.
@@ -1153,6 +1195,7 @@ func (l *launcher) runClaude(env, args []string) int {
 	l.mu.Lock()
 	l.child = nil
 	l.mu.Unlock()
+	l.ended = readEndedSession(cmd.Process.Pid)
 	if err == nil {
 		return 0
 	}

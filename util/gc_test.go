@@ -164,3 +164,41 @@ func TestGCReapsWhatAKilledLaunchLeaves(t *testing.T) {
 		}
 	}
 }
+
+// A session-end record — the id of a session that just ended, read once by its
+// launcher for the resume hint — is reaped by gc-stale once it is a minute
+// old: a record that old belongs to a launcher that died before it could read
+// it (#285). The record names the claude that ended, not its launcher, and the
+// OS may since have handed that number to a live process, so the sweep never
+// asks the number — only age decides, unlike a relay's or a view's, whose
+// owner the sweep must still prove gone. What is under a minute old stays:
+// its launcher may still be between its claude's exit and its read.
+func TestGCReapsAStaleSessionEndRecord(t *testing.T) {
+	// The number the stale record names is held by a live process by now —
+	// the OS recycled the ended claude's pid — so a sweep that asked it would
+	// keep the record forever.
+	recycled := exec.Command("/bin/sleep", "30")
+	recycled.Args = []string{"grep -r claude /Users/someone/notes", "30"}
+	if recycled.Start() != nil {
+		t.Fatal("could not start the recycled-pid stand-in")
+	}
+	defer func() { recycled.Process.Kill(); recycled.Wait() }()
+	root := t.TempDir()
+	state, tmp := filepath.Join(root, "state"), filepath.Join(root, "tmp")
+	os.MkdirAll(filepath.Join(state, "run"), 0o700)
+	os.MkdirAll(tmp, 0o700)
+	past := time.Now().Add(-2 * time.Minute)
+	stale := filepath.Join(tmp, "ccmorph-session-end."+strconv.Itoa(recycled.Process.Pid))
+	fresh := filepath.Join(tmp, "ccmorph-session-end.42")
+	for _, f := range []string{stale, fresh} {
+		os.WriteFile(f, []byte("sid-285"), 0o600)
+	}
+	os.Chtimes(stale, past, past)
+	GCStale(state, filepath.Join(root, "profiles"), tmp)
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("%s must stay: its launcher has yet to read it", fresh)
+	}
+	if _, err := os.Stat(stale); err == nil {
+		t.Fatalf("%s must go: its launcher died before it could read it", stale)
+	}
+}

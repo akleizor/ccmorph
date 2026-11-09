@@ -2533,7 +2533,9 @@ sys.exit(subprocess.call(["zsh", "-c", "source \"$1\"; shift; NO_COLOR=1 ccmorph
 # A stand-in Claude Code for a session the Go core launches: it records its argv
 # and config dir, hops once (with $CCMORPH_TEST_HOP_ARGS) on its first run, and
 # then dies the way a session ended by hop does -- on the TERM hop sends it. It
-# must be python, not a shell: hop-target skips shells in the ancestry.
+# must be python, not a shell: hop-target skips shells in the ancestry. A session
+# that ends -- on hop's TERM, or on its own -- records its id the way ccmorph's
+# SessionEnd hook does (#285); `--help` starts no session, so it records nothing.
 install_hopping_claude() {
   export CCMORPH_TEST_SOURCE="$CCMORPH_SOURCE"
   export CCMORPH_TEST_HOP_ARGS="$*"
@@ -2544,6 +2546,8 @@ install_hopping_claude() {
     'sys.path.insert(0, os.environ["CCMORPH_TEST_TESTS_DIR"])' \
     'from support import HANG_TIMEOUT' \
     'argv = sys.argv[1:]' \
+    'def record_end():' \
+    '    open(os.path.join(os.environ.get("TMPDIR", "/tmp"), "ccmorph-session-end.%d" % os.getpid()), "w").write("hop-session")' \
     'with open(os.environ["CCMORPH_TEST_LOG"], "a") as log:' \
     '    log.write("ARG\t" + "\t".join(argv) + "\n")' \
     '    log.write("CFG=" + os.path.basename(os.environ.get("CLAUDE_CONFIG_DIR", "")) + "\n")' \
@@ -2552,6 +2556,7 @@ install_hopping_claude() {
     'signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})' \
     'hopped = os.path.join(os.environ["HOME"], "hopped")' \
     'if os.path.exists(hopped):' \
+    '    record_end()' \
     '    sys.exit(0)' \
     'open(hopped, "w").close()' \
     'next_catalogue = os.path.join(os.environ["HOME"], "catalogue.next")' \
@@ -2562,6 +2567,7 @@ install_hopping_claude() {
     '                      os.environ["CCMORPH_TEST_SOURCE"],' \
     '                      *os.environ["CCMORPH_TEST_HOP_ARGS"].split()], env=env, timeout=HANG_TIMEOUT)' \
     'def ended(*_):' \
+    '    record_end()' \
     '    with open(os.environ["CCMORPH_TEST_LOG"], "a") as log:' \
     '        log.write("TERM\n")' \
     '    os._exit(143)' \
@@ -2624,6 +2630,12 @@ test_hop_inside_a_core_launch_resumes_on_the_target() {
     print -u2 -- "the resumed session must run on the target profile: ${(qqq)log}"
     rc=1
   }
+  # After the hop the session ended on the target, so the resume command the
+  # launcher prints must name the target, not the profile it started on (#285).
+  [[ "$out" == *'ccmorph run target --resume hop-session'* ]] || {
+    print -u2 -- "an ended session must name the command that resumes it on the profile it ended on: ${(qqq)out}"
+    rc=1
+  }
   local -a left=("$HOME"/.config/ccmorph/.reswitch.*(N))
   (( ${#left} == 0 )) || {
     print -u2 -- 'the switch request must be consumed, not left behind'
@@ -2670,6 +2682,44 @@ test_hop_failure_names_the_way_back_to_the_source_profile() {
     rc=1
   }
   unset CCMORPH_TEST_SOURCE CCMORPH_TEST_HOP_ARGS CCMORPH_TEST_TESTS_DIR
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_an_ended_session_prints_the_command_that_resumes_it() {
+  # #285: Claude Code's exit line suggests a bare `claude --resume <id>`, which
+  # reopens the default config folder instead of the profile the session ran
+  # on. The launcher must answer it with the command that resumes the session
+  # on that profile -- and a print run, whose output a script captures, must
+  # stay clean.
+  local test_home rc=0 out
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  # The stand-in Claude Code ends an attended session the way ccmorph's
+  # SessionEnd hook does: the session id in a pid-keyed TMPDIR file. A print
+  # run records nothing, so captured output carries no resume line.
+  printf '%s\n' \
+    '#!/bin/sh' \
+    '{' \
+    '  printf "ARG"' \
+    '  for arg do printf "\t%s" "$arg"; done' \
+    '  printf "\n"' \
+    '  attended=1' \
+    '  for arg do case "$arg" in -p|--print) attended=0 ;; esac; done' \
+    '  if [ "$attended" = 1 ]; then' \
+    '    printf %s ended-session > "${TMPDIR:-/tmp}/ccmorph-session-end.$$"' \
+    '  fi' \
+    '} >> "$CCMORPH_TEST_LOG"' \
+    'exit 0' > "$HOME/bin/claude"
+  chmod +x "$HOME/bin/claude"
+  source "$CCMORPH_SOURCE"
+
+  out=$(_ccm_launch -a proxy 2>&1) || rc=1
+  assert_contains "$out" 'ccmorph run proxy --resume ended-session' \
+    'an ended session must name the command that resumes it on its profile' || rc=1
+  out=$(_ccm_launch -a proxy -p x 2>&1) || rc=1
+  assert_not_contains "$out" 'ccmorph run proxy --resume' \
+    'a print run must not put a resume line in captured output' || rc=1
   rm -rf "$test_home"
   return $rc
 }
@@ -9887,6 +9937,7 @@ run_test test_resume_rejects_flag_picker_and_multitoken_model_values
 run_test test_hop_relays_model_and_effort
 run_test test_hop_inside_a_core_launch_resumes_on_the_target
 run_test test_hop_failure_names_the_way_back_to_the_source_profile
+run_test test_an_ended_session_prints_the_command_that_resumes_it
 run_test test_hop_before_the_first_message_starts_a_new_conversation_issue_288
 run_test test_failed_switch_with_no_conversation_does_not_offer_a_resume_issue_288
 run_test test_a_hop_reads_the_catalogue_afresh

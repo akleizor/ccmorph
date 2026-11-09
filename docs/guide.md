@@ -475,6 +475,18 @@ arguments pass through to Claude Code. `ccmorph run work -p 'summarise this'`
 and `ccmorph run work --resume <session-id>` work as
 you would expect. A leading flag belongs after the verb: `ccmorph run -p 'hi'`.
 
+When a launched session ends, Claude Code prints the id it would resume with as
+a bare `claude --resume <id>` — a command that opens the default config folder,
+not the profile the session ran on. ccmorph prints the working one right after
+it, naming the profile's own config:
+
+```
+ccmorph: resume this session with: ccmorph run work --resume <session-id>
+```
+
+After a hop the line names the profile the session ended on. A `--print` or
+background run ends without one — captured output stays clean.
+
 Claude Code's own subcommands work the same way, on the default profile or a named
 one — and going through ccmorph is what points them at the right profile's config
 directory, which matters because MCP servers, logins and plugins are per-profile:
