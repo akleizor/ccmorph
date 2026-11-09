@@ -110,6 +110,34 @@ func TestModelsListingRequestShape(t *testing.T) {
 	}
 }
 
+// The second column of the model list names the model: the owner when the
+// listing carries one, else the display name Anthropic-shaped listings carry,
+// and empty when there is neither — never a lone question mark, which named
+// nothing (#279).
+func TestGwModelsSecondColumnCarriesOwnerOrDisplayName(t *testing.T) {
+	const body = `{"data":[
+	 {"id":"owned-chat","owned_by":"vendor-a"},
+	 {"id":"named-chat","display_name":"Fake Claude 1"},
+	 {"id":"both-chat","owned_by":"vendor-a","display_name":"Fake Both 1"},
+	 {"id":"bare-chat"}
+	]}`
+	want := map[string]string{
+		"owned-chat": "vendor-a",
+		"named-chat": "Fake Claude 1",
+		"both-chat":  "vendor-a",
+		"bare-chat":  "",
+	}
+	rows, ok := GwModels("", false, body)
+	if !ok || len(rows) != len(want) {
+		t.Fatalf("every chat model must be listed, got %v (ok %v)", rows, ok)
+	}
+	for _, r := range rows {
+		if r.Label != want[r.ID] {
+			t.Errorf("%s: second column %q, want %q", r.ID, r.Label, want[r.ID])
+		}
+	}
+}
+
 // An endpoint that answered says so with a status, so a caller can tell a refused
 // key from a network that never carried the request; a listing that worked keeps
 // its body and status 0.

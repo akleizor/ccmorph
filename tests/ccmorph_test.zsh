@@ -518,6 +518,47 @@ test_models_lists_only_chat_capable_from_the_gateway() {
   return $rc
 }
 
+# GH-279: the listing's second column must name the model — the owner when the
+# listing carries one, else the display name Anthropic-shaped listings carry, and
+# nothing at all when there is neither. A lone ? named nothing.
+test_models_second_column_shows_display_name_or_owner() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'for a do case "$a" in *http_code*) echo 200; exit 0 ;; esac; done' \
+    'cat <<JSON' \
+    '{"object":"list","data":[' \
+    '{"id":"claude-haiku-fake-1","display_name":"Fake Haiku 1"},' \
+    '{"id":"glm-fake-9","object":"model","owned_by":"fakeco"},' \
+    '{"id":"bare-fake-2"}' \
+    ']}' \
+    'JSON' > "$HOME/bin/curl"
+  chmod +x "$HOME/bin/curl"
+  write_apikey_conf gw \
+    'api_key=sk_prod_test' \
+    'base_url=https://gateway.invalid'
+  source "$CCMORPH_SOURCE"
+
+  local actual
+  actual=$(ccmorph _models gw) || {
+    print -u2 -- 'ccmorph models must succeed against a reachable gateway'
+    rm -rf "$test_home"
+    return 1
+  }
+
+  # Sorted, one row per chat model: the id, then the display name or the owner,
+  # and an empty column when the listing has neither.
+  local want=$'bare-fake-2\t\nclaude-haiku-fake-1\tFake Haiku 1\nglm-fake-9\tfakeco'
+  [[ "$actual" == "$want" ]] || {
+    print -u2 -- "the second column must name the model, never a bare ? (got: ${(qqq)actual})"
+    rm -rf "$test_home"
+    return 1
+  }
+  rm -rf "$test_home"
+}
+
 # A gateway records the HTTPS_PROXY it was invoked with, so a test can prove
 # discovery went through the connect proxy.
 fake_gateway_records_proxy() {
@@ -1144,6 +1185,15 @@ test_set_model_refuses_an_unserved_id_and_saves_only_on_confirm_issue_267() {
     print -u2 -- "the confirmed id must be saved (got: $still)"
     rc=1
   }
+
+  # Saying the saved id again changes nothing, so it is not asked about: this is
+  # what the picker's "Keep <saved model>" row hands back (#279).
+  err=$(ccmorph set gw model zeta-chaat </dev/null 2>&1) || {
+    print -u2 -- "re-setting the saved id must not be refused (got: $err)"
+    rc=1
+  }
+  assert_not_contains "$err" 'is not served by' \
+    'the saved id is not judged again when it is kept' || rc=1
   rm -rf "$test_home"
   return $rc
 }
@@ -10703,6 +10753,7 @@ run_test test_secret_refuses_an_account_that_stores_no_secret
 run_test test_env_reports_the_real_endpoint_not_the_adapter
 run_test test_models_does_not_send_anthropic_version
 run_test test_models_lists_only_chat_capable_from_the_gateway
+run_test test_models_second_column_shows_display_name_or_owner
 run_test test_models_discovery_uses_the_ambient_proxy
 run_test test_models_keeps_entries_that_declare_no_capabilities
 run_test test_models_defaults_to_anthropic_when_profile_has_no_base_url

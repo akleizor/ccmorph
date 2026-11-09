@@ -46,12 +46,19 @@ func (l *launcher) getSet(verb string, args []string) int {
 	}
 	key := at(1)
 	pick := func(key string) (string, bool) {
+		if key == "model" {
+			return l.pickModelDefault(name)
+		}
 		return l.pickValue(key, name)
 	}
 	if verb == "set" && (key == "model" || key == "effort") && (len(args) == 2 || interactive(at(2))) {
 		v, ok := pick(key)
 		if !ok {
 			return 1
+		}
+		if v == "" {
+			// The picker kept a default that was never set: nothing to store.
+			return 0
 		}
 		args = []string{name, key, v}
 	}
@@ -64,9 +71,13 @@ func (l *launcher) getSet(verb string, args []string) int {
 		key = k
 		args = []string{name, key}
 		if verb == "set" {
-			v, ok := l.pickValue(key, name)
+			v, ok := pick(key)
 			if !ok {
 				return 1
+			}
+			if v == "" {
+				// The picker kept a default that was never set: nothing to store.
+				return 0
 			}
 			args = append(args, v)
 		}
@@ -109,8 +120,9 @@ func (l *launcher) getSet(verb string, args []string) int {
 		// A gateway that answers its listing knows what it serves: an id it does
 		// not serve is saved only when the person confirms it, because the
 		// alternative is a session that fails at its first message (#267). A
-		// listing that cannot be read adjudicates nothing, so the save proceeds.
-		if f, ok := l.read(name); ok && f["type"] == "apikey" && !util.NativeBase(f["base_url"]) && strings.TrimSpace(f["api_key"]) != "" {
+		// listing that cannot be read adjudicates nothing, so the save proceeds. The
+		// model already saved is not judged again: keeping it changes nothing (#279).
+		if f, ok := l.read(name); ok && value != l.accountModel(name) && f["type"] == "apikey" && !util.NativeBase(f["base_url"]) && strings.TrimSpace(f["api_key"]) != "" {
 			if listing, ok := util.ModelsListing(f["base_url"], f["api_key"], io.Discard); ok {
 				if msg, refuse := util.ServedRefusal(listing, value, f["model_map"], name); refuse {
 					l.err(msg)
@@ -313,45 +325,5 @@ func (l *launcher) promptDefault(slot, name, current, typ string, preview []stri
 		}
 		return answer, true
 	}
-	if slot == "model" && typ == "apikey" {
-		say("Loading models from the selected endpoint…")
-	}
-	var rows string
-	if typ == "apikey" && slot == "model" {
-		rows, _ = l.valueRows(slot, name, preview...)
-	} else {
-		rows, _ = l.valueRows(slot, name)
-	}
-	if slot == "model" && rows == "" {
-		say("Model list unavailable. Keep the current default or enter a custom model ID.")
-	}
-	menu := []string{"@keep\tKeep " + shown}
-	for _, row := range splitRows(rows) {
-		value := rowID(row)
-		if value == current {
-			continue
-		}
-		menu = append(menu, value+"\t"+value+"\t"+strings.TrimPrefix(row, value+"\t"))
-	}
-	if slot == "model" {
-		menu = append(menu, "@custom\tEnter a custom model ID…")
-	}
-	choice, rc := chooseValue(slot, "Default "+slot+" — "+name, strings.Join(menu, "\n"), "labels")
-	if rc != 0 {
-		return "", false
-	}
-	switch choice {
-	case "@keep":
-		return current, true
-	case "@custom":
-		answer, rc := uiInput("Custom model ID (Enter keeps current): ", false)
-		if rc != 0 {
-			return "", false
-		}
-		if answer == "" {
-			answer = current
-		}
-		return answer, true
-	}
-	return choice, true
+	return l.valueMenu(slot, name, current, l.defaultRows(slot, name, typ, preview...), true)
 }
