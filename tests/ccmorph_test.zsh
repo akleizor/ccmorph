@@ -357,10 +357,12 @@ setup_home() {
   chmod +x "$HOME/bin/claude"
 
   # Default launcher probes are hermetically reachable. Tests for discovery,
-  # published metadata, and transport failure replace this stub explicitly.
+  # published metadata, and transport failure replace this stub explicitly. The
+  # route probe (-w) answers with the __CCMORPH_STATUS__ marker doctor's probe
+  # reads, so a hop's pre-close check sees a healthy route.
   printf '%s\n' \
     '#!/bin/sh' \
-    'for arg do [ "$arg" = "-w" ] && { printf "200"; exit 0; }; done' \
+    'for arg do [ "$arg" = "-w" ] && { printf "__CCMORPH_STATUS__200"; exit 0; }; done' \
     'for arg do case "$arg" in *messages*) printf "200"; exit 0 ;; esac; done' \
     'exit 1' \
     > "$HOME/bin/curl"
@@ -385,11 +387,12 @@ setup_home() {
 # carry any per-model knowledge, so the fixture is the only source of truth
 # about which models exist.
 # The route probe asks curl for -w %{http_code}; any fake that only cats a body
-# must answer 200 there or the launch routes via a proxy that does not exist.
+# must answer with the __CCMORPH_STATUS__ marker the probe reads, or a hop's
+# pre-close check sees a route that never answered.
 make_fake_curl_probe_aware() {
   local f="$HOME/bin/curl"
   { print -r -- '#!/bin/sh'
-    print -r -- 'for a do case "$a" in *http_code*) echo 200; exit 0 ;; esac; done'
+    print -r -- 'for a do case "$a" in *http_code*) printf "__CCMORPH_STATUS__200"; exit 0 ;; esac; done'
     tail -n +2 "$f"; } > "$f.new" && mv "$f.new" "$f"
   chmod +x "$f"
 }
@@ -2408,7 +2411,7 @@ test_mapped_model_resume_and_hop_keep_servable_identity() {
     'model=other-default' \
     'model_map={"claude-sonnet-5-5":"gpt-6.1-sol","plain-alias":"gpt-6.1-sol","bad-alias":"unavailable"}' \
     > "$HOME/.config/ccmorph/mapped.conf"
-  write_curl_mock 'for a do case "$a" in *http_code*) print 200; exit 0 ;; esac; done
+  write_curl_mock 'for a do case "$a" in *http_code*) print -r -- __CCMORPH_STATUS__200; exit 0 ;; esac; done
 print -r -- '\''{"has_more":false,"data":[{"id":"gpt-6.1-sol"},{"id":"other-default"}]}'\'''
   source "$CCMORPH_SOURCE"
 
@@ -2616,6 +2619,45 @@ test_hop_inside_a_core_launch_resumes_on_the_target() {
   return $rc
 }
 
+test_hop_failure_names_the_way_back_to_the_source_profile() {
+  # A target that answers the pre-close check can still fail once the session it
+  # replaced is gone: its adapter dies before readiness. The terminal must then
+  # carry the exact command that resumes the conversation where it still lives.
+  local test_home out st rc=0
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  printf '%s\n' 'type=proxy' 'base_url=http://dead.invalid' 'api_key=dead-key' 'model=dead-model' \
+    > "$HOME/.config/ccmorph/dead.conf"
+  # The route answers the pre-close probe (the default curl stub), but only the
+  # target's adapter dies before readiness; the source's keeps working.
+  write_fake_adapter \
+    '[ "$1" = dead ] && exit 1' \
+    'echo "NATIVE=1"' \
+    'trap "exit 0" TERM INT'
+  source "$CCMORPH_SOURCE"
+  install_hopping_claude dead
+
+  out=$(_ccm_launch -a proxy 2>&1); st=$?
+
+  [[ "$st" != 0 ]] || { print -u2 -- "a switch whose target cannot start must fail: ${(qqq)out}"; rc=1 }
+  [[ "$out" == *'resuming as dead'* ]] || {
+    print -u2 -- "the relay must still run the target pass: ${(qqq)out}"
+    rc=1
+  }
+  [[ "$out" == *'ccmorph run proxy --resume hop-session'* ]] || {
+    print -u2 -- "the failure must name the way back to the source session: ${(qqq)out}"
+    rc=1
+  }
+  local log="$(<"$CCMORPH_TEST_LOG")"
+  [[ "$(print -r -- "$log" | grep -c '^TERM$')" == 1 ]] || {
+    print -u2 -- "the hop itself must still end Claude Code once: ${(qqq)log}"
+    rc=1
+  }
+  unset CCMORPH_TEST_SOURCE CCMORPH_TEST_HOP_ARGS CCMORPH_TEST_TESTS_DIR
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_hop_relays_model_and_effort() {
   local test_home
   local relay_id="$$.test"
@@ -2651,6 +2693,97 @@ test_hop_relays_model_and_effort() {
       "relay must carry the current model and effort\n  expected: ${(qqq)expected}\n  actual: ${(qqq)actual}"
     rc=1
   fi
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_hop_refuses_to_end_the_session_when_the_target_cannot_start() {
+  # The promise a hop owes the session it is about to end: check first that the
+  # target can start, and when it cannot, say so in the same session -- plain
+  # words for the cause, doctor for the fix -- and end nothing.
+  local test_home out st rc=0
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  printf '%s\n' 'type=proxy' 'base_url=http://dead.invalid' 'api_key=dead-key' \
+    > "$HOME/.config/ccmorph/dead.conf"
+  source "$CCMORPH_SOURCE"
+
+  local relay_id="$$.dead" cause
+  for cause in no-answer rejected-key; do
+    rm -f "$HOME/claude-ended"
+    if [[ "$cause" == no-answer ]]; then
+      printf '%s\n' '#!/bin/sh' 'exit 1' > "$HOME/bin/curl"
+    else
+      printf '%s\n' '#!/bin/sh' \
+        'for arg do [ "$arg" = "-w" ] && { printf "__CCMORPH_STATUS__401"; exit 0; }; done' \
+        'exit 1' > "$HOME/bin/curl"
+    fi
+    chmod +x "$HOME/bin/curl"
+    export CLAUDE_CODE_SESSION_ID='dead-session' CCMORPH_RELAY_ID="$relay_id"
+
+    out=$(hop_as_claude dead 2>&1); st=$?
+
+    [[ "$st" != 0 ]] || { print -u2 -- "[$cause] hop must refuse, got 0: ${(qqq)out}"; rc=1 }
+    [[ "$out" == *'This session keeps running.'* ]] || {
+      print -u2 -- "[$cause] hop must say the session survives: ${(qqq)out}"
+      rc=1
+    }
+    [[ "$out" == *'ccmorph doctor dead'* ]] || {
+      print -u2 -- "[$cause] hop must point at doctor: ${(qqq)out}"
+      rc=1
+    }
+    [[ ! -e "$HOME/claude-ended" ]] || { print -u2 -- "[$cause] hop must not end the session"; rc=1 }
+    [[ ! -e "$HOME/.config/ccmorph/.reswitch.$relay_id" ]] || { print -u2 -- "[$cause] hop must queue nothing"; rc=1 }
+    [[ "$out" != *'Switching'* ]] || { print -u2 -- "[$cause] hop must not announce a switch: ${(qqq)out}"; rc=1 }
+    if [[ "$cause" == no-answer ]]; then
+      [[ "$out" == *'the endpoint http://dead.invalid did not answer'* ]] || {
+        print -u2 -- "[no-answer] the cause must be plain words: ${(qqq)out}"
+        rc=1
+      }
+    else
+      [[ "$out" == *'the endpoint rejected the API key (HTTP 401)'* ]] || {
+        print -u2 -- "[rejected-key] the cause must be plain words: ${(qqq)out}"
+        rc=1
+      }
+    fi
+  done
+  unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_launch_failure_names_the_cause_and_the_doctor_command() {
+  # The launch path's own failure must speak the same plain words as a refused
+  # hop and point at doctor, never adapter jargon alone (#286) -- and a plain
+  # launch, with no switch to undo, must not claim one.
+  local test_home out st rc=0
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  printf '%s\n' 'type=proxy' 'base_url=http://dead.invalid' 'api_key=dead-key' 'model=dead-model' \
+    > "$HOME/.config/ccmorph/dead.conf"
+  write_fake_adapter \
+    '[ "$1" = dead ] && exit 1' \
+    'echo "NATIVE=1"' \
+    'trap "exit 0" TERM INT'
+  printf '%s\n' '#!/bin/sh' 'exit 1' > "$HOME/bin/curl"
+  chmod +x "$HOME/bin/curl"
+  source "$CCMORPH_SOURCE"
+
+  out=$(_ccm_launch -a dead 2>&1); st=$?
+
+  [[ "$st" != 0 ]] || { print -u2 -- "a launch whose route is dead must fail: ${(qqq)out}"; rc=1 }
+  [[ "$out" == *'the endpoint http://dead.invalid did not answer.'* ]] || {
+    print -u2 -- "the failure must name its cause in plain words: ${(qqq)out}"
+    rc=1
+  }
+  [[ "$out" == *'ccmorph doctor dead'* ]] || {
+    print -u2 -- "the failure must point at doctor: ${(qqq)out}"
+    rc=1
+  }
+  [[ "$out" != *'Resume it there'* ]] || {
+    print -u2 -- "a plain launch has no switch to undo: ${(qqq)out}"
+    rc=1
+  }
   rm -rf "$test_home"
   return $rc
 }
@@ -9644,7 +9777,10 @@ run_test test_invalid_resume_model_falls_back_to_profile_model
 run_test test_resume_rejects_flag_picker_and_multitoken_model_values
 run_test test_hop_relays_model_and_effort
 run_test test_hop_inside_a_core_launch_resumes_on_the_target
+run_test test_hop_failure_names_the_way_back_to_the_source_profile
 run_test test_a_hop_reads_the_catalogue_afresh
+run_test test_hop_refuses_to_end_the_session_when_the_target_cannot_start
+run_test test_launch_failure_names_the_cause_and_the_doctor_command
 run_test test_hop_refuses_when_no_claude_process_runs_it
 run_test test_hop_without_profile_uses_current_profile
 run_test test_hop_falls_back_when_the_target_cannot_serve_the_model

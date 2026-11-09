@@ -211,6 +211,7 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 	if err := os.Remove(relayFile); err != nil && !os.IsNotExist(err) {
 		return nil, 1
 	}
+	l.launched = name
 	if name != "" {
 		l.log("launch profile=" + name + " relay_id=" + relayID)
 	} else {
@@ -879,30 +880,39 @@ func (l *launcher) nestedEdgeEnv(keys ...string) []string {
 	return out
 }
 
+// providerStartRefusal is why a profile's bridge cannot start at all, in the
+// words its own launch would say; "" when the prerequisites are there. hop asks
+// before it ends the session it runs in (#286).
+func (l *launcher) providerStartRefusal(name string) string {
+	if _, err := exec.LookPath("cliproxyapi"); err != nil {
+		return "cliproxyapi not found — install it: brew install cliproxyapi"
+	}
+	root := filepath.Join(l.dir, "auth")
+	if fi, err := os.Lstat(root); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return "auth directory root is a symlink, refusing: " + root
+	}
+	auth := filepath.Join(root, name)
+	if fi, err := os.Lstat(auth); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return "auth directory for '" + name + "' is a symlink, refusing: " + auth
+	}
+	if fi, err := os.Stat(auth); err != nil || !fi.IsDir() {
+		return "no auth directory for '" + name + "' — run: ccmorph login " + name
+	}
+	return ""
+}
+
 // providerStart starts or joins the profile's bridge. shared is false only for
 // _route_env, whose process exits while the route lives and so cannot hold the
 // users lock. shortcut: such a route gets a private bridge beside any shared
 // one; share it once a route has a long-lived owner.
 func (l *launcher) providerStart(name string, shared bool) bool {
-	bin, err := exec.LookPath("cliproxyapi")
-	if err != nil {
-		l.err("cliproxyapi not found — install it: brew install cliproxyapi")
+	if why := l.providerStartRefusal(name); why != "" {
+		l.err(why)
 		return false
 	}
+	bin, _ := exec.LookPath("cliproxyapi")
 	root := filepath.Join(l.dir, "auth")
-	if fi, err := os.Lstat(root); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-		l.err("auth directory root is a symlink, refusing: " + root)
-		return false
-	}
 	auth := filepath.Join(root, name)
-	if fi, err := os.Lstat(auth); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-		l.err("auth directory for '" + name + "' is a symlink, refusing: " + auth)
-		return false
-	}
-	if fi, err := os.Stat(auth); err != nil || !fi.IsDir() {
-		l.err("no auth directory for '" + name + "' — run: ccmorph login " + name)
-		return false
-	}
 	l.logInit()
 	start := func() (pid, port, key, tmp string, ok bool) {
 		cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), "util", "bridge-start", name, bin, auth, l.logOrNull())
@@ -970,6 +980,29 @@ func (l *launcher) logOrNull() string {
 	return l.logPath
 }
 
+// routeRefusal is a definite reason the profile's endpoint cannot serve a
+// session, in doctor's words; "" when the route answered or has nothing to
+// probe. Only sure causes refuse — nothing answered, or the key was rejected —
+// because a hop must not strand a session over a guess (#286).
+func (l *launcher) routeRefusal(name string) string {
+	typ, env, err := util.ProfileEnv(l.dir, l.profileDirs, name, func(string) {})
+	if err != nil || typ != "apikey" {
+		return ""
+	}
+	base, _ := envGet(env, "ANTHROPIC_BASE_URL")
+	if util.NativeBase(base) {
+		return ""
+	}
+	_, code := util.ProbeListing(base, authKey(env))
+	switch {
+	case code == "" || code == "000":
+		return "the endpoint " + profile.RedactURL(base) + " did not answer"
+	case code == "401" || code == "403":
+		return "the endpoint rejected the API key (HTTP " + code + ")"
+	}
+	return ""
+}
+
 // adapterModel is the gateway id the adapter serves: the explicit or default
 // model, a tier resolved through the profile's mapping or its saved alias.
 func (l *launcher) adapterModel(name string, penv []string, explicit, defaultModel string) (string, bool) {
@@ -1004,7 +1037,12 @@ func (l *launcher) adapterStart(name, model string) bool {
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "  Check configuration: ccmorph inspect "+name)
+		// Plain words first when the cause is the route itself (#286), then the
+		// one command that diagnoses the whole route.
+		if why := l.routeRefusal(name); why != "" {
+			fmt.Fprintln(os.Stderr, "  "+why+".")
+		}
+		fmt.Fprintln(os.Stderr, "  Check the route: ccmorph doctor "+name)
 		if l.logPath != "" && fileExists(l.logPath) {
 			fmt.Fprintln(os.Stderr, "  Log: "+l.logPath)
 		}
@@ -1071,6 +1109,7 @@ func (l *launcher) runClaude(env, args []string) int {
 		fmt.Fprintln(os.Stderr, "ccmorph: "+err.Error())
 		return 127
 	}
+	l.ranClaude = true
 	l.child = cmd.Process
 	l.mu.Unlock()
 	err = cmd.Wait()

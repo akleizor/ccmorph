@@ -62,7 +62,7 @@ def test_adapter_failure_reports_observation_not_guessed_cause():
         assert 'adapter exited before readiness' in result.stderr
         assert 'bug or a broken install' not in result.stderr
         assert 'Usually the gateway refused' not in result.stderr
-        assert 'ccmorph inspect demo' in result.stderr
+        assert 'ccmorph doctor demo' in result.stderr
 
 
 def test_help_is_concise_truthful_and_read_only(tmp_path):
