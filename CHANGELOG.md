@@ -7,6 +7,17 @@
 
 ## Unreleased
 
+### Added
+
+- **A session that ends names the command that resumes it on its profile.**
+  Claude Code's own exit line suggests a bare `claude --resume <id>`, which
+  opens the default config folder — first-run screens, another account —
+  instead of the profile the session ran on. A `SessionEnd` hook in ccmorph's
+  plugin records the ended session's id, and the launcher prints
+  `ccmorph run <profile> --resume <id>` right after Claude Code's line; after
+  a hop the line names the profile the session ended on. A `--print` or
+  background run records nothing, so captured output stays clean (#285).
+
 ### Fixed
 
 - **A usage hook survives a `brew upgrade`.** A launch wrote its Stop,

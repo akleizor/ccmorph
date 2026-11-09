@@ -169,9 +169,12 @@ run_installer "$d"; rc=$?
 # The installed surface is EXACTLY the manifest — nothing extra ever rides
 # along (this is what keeps any other product from shipping inside ccmorph),
 # and nothing missing either, which subsumes a per-component presence loop.
+# The plugin subtree is pinned one level deeper than the rest of share/:
+# its hooks file is what carries a session's end to the launcher (#285), so
+# an installer that drops it must fail here, not in a user's terminal.
 (( ${#module_files} )) || fail "no ccmorph-*.zsh module found beside ccmorph.sh — the manifest below would be silently short"
-want=(bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/ccmorph-core share/model-catalogue.json share/window-sources.json share/provider-presets.tsv local.sh.example profile.conf.example install.sh profiles)
-got=(${(f)"$(cd "$d/home/.config/ccmorph" && print -l *(N) {bin,lib,libexec,share}/*(N.) | grep -vxE 'bin|lib|libexec|share')"})
+want=(bin/ccmorph lib/ccmorph.sh ${module_files/#/lib/} libexec/ccmorph-core share/model-catalogue.json share/window-sources.json share/provider-presets.tsv share/claude-plugin/.claude-plugin/plugin.json share/claude-plugin/commands/hop.md share/claude-plugin/hooks/hooks.json local.sh.example profile.conf.example install.sh profiles)
+got=(${(f)"$(cd "$d/home/.config/ccmorph" && print -l *(N) {bin,lib,libexec,share}/*(N.) share/claude-plugin/*/*(ND.) | grep -vxE 'bin|lib|libexec|share')"})
 extra=(${got:|want}); missing=(${want:|got})
 (( ${#extra} == 0 && ${#missing} == 0 )) \
   && ok "install places exactly its own manifest" \

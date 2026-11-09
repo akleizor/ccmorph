@@ -60,6 +60,7 @@ type launcher struct {
 	chosen    map[string]bool
 	ranClaude bool   // claude started on the pass that just ran (else it never began)
 	launched  string // the profile the pass that just ran resolved to, "" for none
+	ended     string // the id of the session the exited claude recorded (#285)
 }
 
 // relayNext is what one launch hands the driver when Claude Code exited for a hop.

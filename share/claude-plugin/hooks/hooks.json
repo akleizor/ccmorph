@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ \"$CLAUDE_CODE_SESSION_ATTENDED\" = 1 ] && [ -n \"$CLAUDE_CONFIG_DIR\" ] && [ -n \"$CLAUDE_CODE_SESSION_ID\" ]; then printf %s \"$CLAUDE_CODE_SESSION_ID\" > \"${TMPDIR:-/tmp}/ccmorph-session-end.$CLAUDE_PID\"; fi; exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}
