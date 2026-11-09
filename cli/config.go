@@ -77,10 +77,21 @@ func (l *launcher) getSet(verb string, args []string) int {
 			return 2
 		}
 		out, rc := l.configStore("get", name, key)
-		if rc == 0 {
-			fmt.Println(out)
+		if rc != 0 {
+			return rc
 		}
-		return rc
+		if out == "" {
+			// Unset is a real state, not a broken one (#268): say so on stderr
+			// and keep stdout empty — not even a newline — for scripts.
+			if key == "model" {
+				say(name + ": no model saved — Claude Code chooses")
+			} else {
+				say(name + ": no effort saved — Claude Code's own default")
+			}
+			return 0
+		}
+		fmt.Println(out)
+		return 0
 	}
 	if len(args) != 3 || args[2] == "" {
 		l.err("usage: " + usageLine("set"))

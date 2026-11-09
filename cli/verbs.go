@@ -28,7 +28,7 @@ func Verb(args []string) int {
 func (l *launcher) verb(args []string) int {
 	switch args[0] {
 	case "list":
-		return l.list()
+		return l.list(args[1:])
 	case "use":
 		return l.use(args[1:])
 	case "cred":
@@ -137,7 +137,13 @@ func caseClashMsg(name, twin string) string {
 
 func (l *launcher) noProfile(name string) { l.err(l.noProfileMsg(name)) }
 
-func (l *launcher) list() int {
+func (l *launcher) list(args []string) int {
+	// `list` has no options, so a word after it (a --json that never existed,
+	// say) was silently ignored and read as success (#268). Name it instead.
+	if len(args) > 0 {
+		l.err("list takes no arguments: '" + args[0] + "'")
+		return 2
+	}
 	active, found := l.active(), false
 	for _, n := range l.confNames() {
 		f, ok := l.readRaw(n)

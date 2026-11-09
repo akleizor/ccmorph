@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,8 +48,29 @@ func (l *launcher) context(args []string) int {
 	cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"),
 		append([]string{"model-window", "--context", name, model}, rest...)...)
 	cmd.Env = append(os.Environ(), "CCMORPH_STATE_DIR="+l.dir)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return runRC(cmd)
+	cmd.Stdin, cmd.Stderr = os.Stdin, os.Stderr
+	if len(rest) > 0 {
+		cmd.Stdout = os.Stdout
+		return runRC(cmd)
+	}
+	// The read form captures the core's answer: "auto" promises discovery will
+	// size the model, so a model the route does not serve is named instead of
+	// reading as auto (#268). A pin for an unlisted model still reads back, and
+	// a route whose listing cannot be read keeps answering auto.
+	out, err := cmd.Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return ee.ExitCode()
+		}
+		return 127
+	}
+	answer := strings.TrimRight(string(out), "\n")
+	if answer == "auto" && l.listingKnown(name, model) == 1 {
+		l.err(model + " is not served by " + name + ". Run: ccmorph models " + name)
+		return 1
+	}
+	fmt.Println(answer)
+	return 0
 }
 
 // quota is `ccmorph quota [profile] [--json]`. Each secret reaches the core on

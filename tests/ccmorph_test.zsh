@@ -680,6 +680,30 @@ test_the_listing_names_an_account_with_no_default_model() {
   return $rc
 }
 
+# `list` silently ignored anything after it (#268): `ccmorph list --json` printed
+# the plain listing with exit 0, so a person believed a flag that never existed.
+# The unknown word is named and refused.
+test_the_listing_refuses_words_after_the_verb() {
+  local test_home; test_home=$(mktemp -d); setup_home "$test_home"
+  write_apikey_conf gw 'api_key=k' 'base_url=https://gateway.invalid'
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 err
+  if err=$(ccmorph list --json 2>&1 >/dev/null); then
+    print -u2 -- 'list --json must fail, not print the plain listing as if it worked'
+    rc=1
+  fi
+  assert_contains "$err" '--json' 'the unknown option must be named' || rc=1
+  if err=$(ccmorph list extra words here 2>&1 >/dev/null); then
+    print -u2 -- 'a stray word after list must fail'
+    rc=1
+  fi
+  assert_contains "$err" 'extra' 'the stray word must be named' || rc=1
+
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_model_command_sets_the_profiles_default_model() {
   local test_home
   test_home=$(mktemp -d)
@@ -10512,6 +10536,7 @@ run_test test_version_accepts_the_conventional_flags
 run_test test_help_names_an_account_argument_unambiguously
 run_test test_the_listing_shows_the_model_that_will_actually_launch
 run_test test_the_listing_names_an_account_with_no_default_model
+run_test test_the_listing_refuses_words_after_the_verb
 run_test test_model_command_sets_the_profiles_default_model
 run_test test_set_model_interactively_saves_the_chosen_id
 run_test test_set_effort_interactively_offers_the_engine_levels
@@ -10740,6 +10765,64 @@ test_context_verb_reads_sets_and_clears_one_models_window() {
   return $rc
 }
 run_test test_context_verb_reads_sets_and_clears_one_models_window
+
+# `auto` promises discovery will find a size; a model the profile does not list
+# has nothing to discover (#268). The read must say so instead of auto, while a
+# served unpinned model still reads auto and a pin still reads back.
+test_context_names_a_model_the_profile_does_not_list() {
+  local test_home; test_home=$(mktemp -d); setup_home "$test_home"
+  fake_gateway
+  write_apikey_conf gw 'api_key=k' 'base_url=https://gateway.invalid'
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 out err
+  out=$(ccmorph context gw nosuch-model 2>/dev/null)
+  [[ "$out" == '' ]] || {
+    print -u2 -- "a model the profile does not list must not read as auto: ${(qqq)out}"
+    rc=1
+  }
+  if err=$(ccmorph context gw nosuch-model 2>&1 >/dev/null); then
+    print -u2 -- 'reading a model the profile does not list must fail'
+    rc=1
+  fi
+  assert_contains "$err" 'nosuch-model is not served by gw' \
+    'the refusal must name the model and the profile' || rc=1
+
+  out=$(ccmorph context gw zeta-chat 2>/dev/null)
+  [[ "$out" == 'auto' ]] || {
+    print -u2 -- "a served model with no pin must still read auto: ${(qqq)out}"; rc=1
+  }
+
+  write_profile_context gw nosuch-model=128000
+  out=$(ccmorph context gw nosuch-model 2>/dev/null)
+  [[ "$out" == '128000' ]] || {
+    print -u2 -- "a pinned unlisted model must still read back: ${(qqq)out}"; rc=1
+  }
+
+  # A key with no Base URL talks to api.anthropic.com, whose listing `models`
+  # reads: the launch check calls any claude-* id served there, but a read that
+  # promises discovery must ask the listing too.
+  write_apikey_conf nat 'api_key=k'
+  out=$(ccmorph context nat claude-nosuch-model 2>/dev/null)
+  [[ "$out" == '' ]] || {
+    print -u2 -- "an unlisted claude-* model on a default-base key must not read as auto: ${(qqq)out}"
+    rc=1
+  }
+  if err=$(ccmorph context nat claude-nosuch-model 2>&1 >/dev/null); then
+    print -u2 -- 'reading an unlisted claude-* model on a default-base key must fail'
+    rc=1
+  fi
+  assert_contains "$err" 'claude-nosuch-model is not served by nat' \
+    'the refusal must name the model and the profile' || rc=1
+  out=$(ccmorph context nat zeta-chat 2>/dev/null)
+  [[ "$out" == 'auto' ]] || {
+    print -u2 -- "a listed model on a default-base key must still read auto: ${(qqq)out}"; rc=1
+  }
+
+  rm -rf "$test_home"
+  return $rc
+}
+run_test test_context_names_a_model_the_profile_does_not_list
 
 test_picker_uses_gateway_before_adapter_and_settings_overlay() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"

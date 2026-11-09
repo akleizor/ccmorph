@@ -272,7 +272,9 @@ stay explicit — destructive operations should not be a menu selection.
 `/effort` choices affect the current session, not the next ccmorph launch.
 It prints the bare value to stdout
 (so `m=$(ccmorph get gw model)` and existing scripts keep working) and confirms
-the save on stderr. `inspect` reports the effective selection.
+the save on stderr. An unset setting reads back an empty stdout; the
+explanation — no model saved, Claude Code chooses (or Claude Code's own effort
+default) — goes to stderr. `inspect` reports the effective selection.
 
 `ccmorph inspect` is the one to reach for when a session does not behave as
 expected: every line names the layer its value came from, and the last line is
@@ -672,7 +674,8 @@ profile state. `probe` is the explicit command for refreshing metadata, and
 `ccmorph context <profile> <model> [tokens|auto]` reads, sets, or clears one
 model's limit by hand — the free answer for a model too new for the gateway and
 every catalogue to publish a size, where the only alternative is a paid probe.
-`auto` returns that model to discovery.
+`auto` returns that model to discovery. Reading a model the route does not serve
+names it instead of answering `auto`; a pinned override still reads back.
 
 `ccmorph probe <profile>` refreshes that profile's discovered context data,
 stored as `context_discovered` in the same `.conf`. The default probe is

@@ -1318,3 +1318,15 @@ func (l *launcher) modelKnown(name, want string) int {
 	}
 	return int(util.ModelServed(want, f["type"], f["base_url"], f["model_map"], f["api_key"]))
 }
+
+// listingKnown is modelKnown for a read that promises discovery (`ccmorph
+// context`): a key with no Base URL talks to api.anthropic.com, so it asks that
+// listing — the one `ccmorph models` reads — instead of the launch check that
+// calls every claude-* id served there. 0 served, 1 not served, 2 cannot tell.
+func (l *launcher) listingKnown(name, want string) int {
+	f, ok := l.readQuiet(name)
+	if ok && f["type"] == "apikey" && f["base_url"] == "" && profile.Validate(name, f) == nil {
+		return int(util.ModelServed(want, "apikey", "https://api.anthropic.com", "", f["api_key"]))
+	}
+	return l.modelKnown(name, want)
+}
