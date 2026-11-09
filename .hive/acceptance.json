@@ -1,22 +1,17 @@
 [
   {
-    "criterion": "With effort xhigh saved on a profile whose model is a claude-* id, ccmorph run opens the session at that level (banner reads \"with xhigh effort\"); the same holds for low, medium, high and max.",
+    "criterion": "ccmorph help all shows each command once, in groups, with no line that tells the reader to run ccmorph help all.",
     "pass": true,
-    "evidence": "test_saved_effort_starts_new_sessions PASS: every level low/medium/high/xhigh/max, saved with `ccmorph set` then launched, reaches claude's argv as `--effort <level>`. The seam is the fake claude's ARG log — the banner is Claude Code's own rendering of that argv, and the filer verified `--effort` is the spelling it honors (it ignores the settings `effortLevel` for models it knows)."
+    "evidence": "cli/main.go usage(): `case \"\", \"all\"` renders one page — the everyday groups, then (all only) More commands and Advanced troubleshooting, then the footer; the short page is no longer printed inside it. Widened test_help_is_concise_truthful_and_read_only in tests/cli_messages_test.py asserts no 'ccmorph help all' line in the help-all page and no duplicated '  ccmorph ' row; watched red on the broken code (the line 'More commands: ccmorph help all' mid-page), green after. Hermetic run with two profiles (work, personal) shows the five groups and no self-referential line."
   },
   {
-    "criterion": "An effort typed on the command line still decides over the saved one.",
+    "criterion": "The line about where to start does not name a profile that exists, or does not appear when profiles exist.",
     "pass": true,
-    "evidence": "test_typed_effort_decides_over_the_saved_one PASS: saved xhigh, launched with `--effort low` — the argv carries low and never xhigh (one spelling decides, no fight)."
+    "evidence": "The footer prints 'Start here: ccmorph add work' only when l.confNames() is empty. The same test writes state/work.conf and asserts neither --help nor help all prints 'Start here' (rc asserted 0 so the pages really rendered); the empty-state phase asserts the line is still there for a fresh install. Hermetic runs confirm: with work.conf present the line is gone from both pages; without confs it appears on both."
   },
   {
-    "criterion": "After ccmorph hop, the new session runs at the effort the old one had.",
+    "criterion": "The lines about command details and the version appear once, at the end of the page.",
     "pass": true,
-    "evidence": "The relay pass already carries its own --effort (test_relay_resume_preserves_dangerous_permission_mode PASS: relaunch argv is --dangerously-skip-permissions --model source-model --effort high --resume relay-session; test_hop_relays_model_and_effort PASS covers the relay file). test_resume_keeps_the_conversations_own_effort PASS proves the launch adds no saved level to a resumed argv — a hop's effort arrives exactly once."
-  },
-  {
-    "criterion": "ccmorph inspect never names an effort the session will not run at.",
-    "pass": true,
-    "evidence": "inspect is untouched; it reads the same conf keys the launch applies, with the same precedence (per-model effort.<model> before effort), and the lookup follows the model the session actually runs at — the one the person typed or picked, else the saved default. The landing gate caught the typed case (a --model left the lookup on the profile default); it is fixed and covered: test_saved_effort_honors_a_per_model_override PASS asserts `--model chosen-model --effort xhigh`, the typed model's own row over the default. Hermetic run: saved xhigh → inspect 'xhigh profile default', argv --effort xhigh; per-model high over default low → inspect names both rows, argv --effort high. Every level inspect names is a level a session on the profile runs at."
+    "evidence": "The footer ends both pages once: Command details and Version are the last two lines, after every group. The test asserts count('Command details:') == 1, count('Version: ccmorph --version') == 1 and stdout ends with those two lines; watched red on the broken code (the page ended on the context-limit row), green after. Hermetic help-all run ends: 'Command details: ccmorph help <command>' then 'Version: ccmorph --version'."
   }
 ]
