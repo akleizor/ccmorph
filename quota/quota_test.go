@@ -353,6 +353,19 @@ func TestQuotaStale(t *testing.T) {
 		t.Fatalf("a never-read entry is not stale, must not be dimmed: %q", colored)
 	}
 
+	// #274: on a light terminal dim is a fixed grey, because a terminal is free
+	// to render SGR 2 below any readable contrast there.
+	light, _, _ := run(t, []string{"--color=light"}, in)
+	if !strings.Contains(light, "\033[38;2;107;107;107mslow  Pro  12 min old, rate-limited\033[0m") {
+		t.Fatalf("stale entry not dimmed readably on light: %q", light)
+	}
+	if strings.Contains(light, "\033[2m") {
+		t.Fatalf("light output must not rely on the terminal's dim rendering: %q", light)
+	}
+	if !strings.Contains(light, "\033[1mClaude accounts and tokens\033[0m") {
+		t.Fatalf("light output keeps bold titles: %q", light)
+	}
+
 	jout, _, _ := run(t, []string{"--json"}, in)
 	var doc struct {
 		Profiles []Entry `json:"profiles"`

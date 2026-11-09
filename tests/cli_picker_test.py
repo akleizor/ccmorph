@@ -12,7 +12,7 @@ import fcntl, json, os, pty, re, select, shutil, signal, struct, subprocess, sys
 from pathlib import Path
 from unittest.mock import patch
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, contrast_on_white, rgb_codes
 
 ROOT = Path(__file__).resolve().parents[1]
 CCMORPH = ROOT / 'lib/ccmorph.sh'
@@ -27,6 +27,12 @@ UI_SHIM = ('ccm_ui_select() { ccmorph _ui select "$@"; }\n'
            '_ccm_prompt_default() { ccmorph _ui default "$@"; }\n')
 MODELS = json.dumps({'data': [{'id': m, 'owned_by': 'fake'} for m in
                               ('picker-alpha', 'picker-beta')]})
+
+# A terminal answers the background query (OSC 11) with its own colour, as it
+# answers fzf's cursor-position query; these stand in for a white and a dark
+# one, with the two channel widths and terminators real terminals use.
+WHITE_BACKGROUND = (b'\x1b]11;?', b'\x1b]11;rgb:ffff/ffff/ffff\x1b\\')
+DARK_BACKGROUND = (b'\x1b]11;?', b'\x1b]11;rgb:00/2b/36\x07')
 
 # `-w` marks the reachability probe; it must answer or discovery never runs.
 # A numeric CURL_MODE is the HTTP status the endpoint refused with, in curl -f's
@@ -570,6 +576,76 @@ class PickerTTYTest(unittest.TestCase):
         self.assertIn('Action    Description', out)
         self.assertIn('Launch the default profile', out)
         self.assertNotIn('\x1b[', out)
+
+    # --- the terminal's background picks the palette (#274) -------------------
+
+    def seed_every_kind(self):
+        """One profile per kind with one of them the default, so `list` paints
+        every role: the accent star and provider label, the focus kind words,
+        the yellow token word, and the dim details."""
+        (self.state / 'gw.conf').write_text(
+            'type=apikey\napi_key={{SECRET_pwp7jxpjhsdt}}\nbase_url=https://gw.example\n')
+        (self.state / 'subscription.conf').write_text('type=sub\nemail=demo@example.com\n')
+        (self.state / 'token.conf').write_text('type=token\ntoken=tok-1\n')
+        (self.state / 'provider.conf').write_text('type=provider\nprovider=mockprov\n')
+        (self.state / 'active').write_text('token\n')
+
+    def test_list_colours_meet_contrast_on_a_white_terminal_issue_274(self):
+        env = self.env()
+        self.seed_every_kind()
+        rc, out, missed = run_pty('ccmorph list', env, [WHITE_BACKGROUND])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        codes = rgb_codes(out)
+        self.assertTrue(codes, out)  # the roles stay distinct, not uncoloured
+        for code in codes:
+            self.assertGreaterEqual(contrast_on_white(code), 4.5, f'{code} in {out!r}')
+        self.assertIn('\x1b[38;2;160;72;29m*\x1b[0m \x1b[1mtoken\x1b[0m', out)
+        self.assertIn('\x1b[38;2;68;83;176msub\x1b[0m\x1b[38;2;107;107;107m: demo@example.com', out)
+        self.assertIn('\x1b[38;2;138;97;0mtoken\x1b[0m', out)
+        self.assertIn('\x1b[38;2;68;83;176mapikey\x1b[0m\x1b[38;2;107;107;107m: https://gw.example', out)
+        self.assertIn('\x1b[38;2;160;72;29mMockprov\x1b[0m', out)
+
+    def test_error_prefix_meets_contrast_on_a_white_terminal_issue_274(self):
+        env = self.env()
+        self.seed_every_kind()
+        rc, out, missed = run_pty('ccmorph use nope', env, [WHITE_BACKGROUND])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 1, out)
+        self.assertIn('\x1b[38;2;176;37;80mccmorph:\x1b[0m', out)
+        for code in rgb_codes(out):
+            self.assertGreaterEqual(contrast_on_white(code), 4.5, f'{code} in {out!r}')
+
+    def test_colours_are_unchanged_on_a_dark_terminal_issue_274(self):
+        env = self.env()
+        self.seed_every_kind()
+        rc, out, missed = run_pty('ccmorph list', env, [DARK_BACKGROUND])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertIn('\x1b[38;2;215;119;87m*\x1b[0m \x1b[1mtoken\x1b[0m', out)
+        self.assertIn('\x1b[38;2;177;185;249msub\x1b[0m\x1b[2m: demo@example.com', out)
+        self.assertIn('\x1b[38;2;255;196;7mtoken\x1b[0m', out)
+        self.assertIn('\x1b[38;2;177;185;249mapikey\x1b[0m\x1b[2m: https://gw.example', out)
+        rc, out, missed = run_pty('ccmorph use nope', env, [DARK_BACKGROUND])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 1, out)
+        self.assertIn('\x1b[38;2;255;107;128mccmorph:\x1b[0m', out)
+
+    def test_ccmorph_theme_and_colorfgbg_pick_the_palette_issue_274(self):
+        # A terminal that never answers the background query still gets a
+        # readable palette: the forced theme first, else the COLORFGBG hint.
+        for overrides, star in [
+            ({'CCMORPH_THEME': 'light'}, '\x1b[38;2;160;72;29m*\x1b[0m'),
+            ({'CCMORPH_THEME': 'dark', 'COLORFGBG': '0;15'}, '\x1b[38;2;215;119;87m*\x1b[0m'),
+            ({'COLORFGBG': '0;15'}, '\x1b[38;2;160;72;29m*\x1b[0m'),
+        ]:
+            with self.subTest(**overrides):
+                env = {**self.env(), **overrides}
+                self.seed_every_kind()
+                rc, out, missed = run_pty('ccmorph list', env)
+                self.assertIsNone(missed, out)
+                self.assertEqual(rc, 0, out)
+                self.assertIn(star + ' \x1b[1mtoken\x1b[0m', out)
 
     def test_add_finishes_without_optional_setup_questions(self):
         env = self.env(fzf=True)

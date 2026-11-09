@@ -793,10 +793,15 @@ def test_doctor_terminal_statuses(tmp_path):
            "PATH": f"{bindir}:{os.environ['PATH']}",
            "CCMORPH_STATE_DIR": str(conf.parent), "CCMORPH_LIB_DIR": str(ROOT / "lib"),
            "TERM": "xterm-256color"}
-    env.pop("NO_COLOR", None)
+    # The goldens below are the dark palette: nothing inherited may pick the
+    # light one (a forced theme, or tmux's COLORFGBG hint on a light desktop).
+    for inherited in ("NO_COLOR", "CCMORPH_THEME", "COLORFGBG"):
+        env.pop(inherited, None)
     for overrides, profile, expected, code in [
         ({}, "demo", "\x1b[38;2;215;119;87m✓\x1b[0m", 0),
         ({}, "missing", "\x1b[38;2;255;107;128m✗\x1b[0m", 1),
+        ({"CCMORPH_THEME": "light"}, "demo", "\x1b[38;2;160;72;29m✓\x1b[0m", 0),
+        ({"CCMORPH_THEME": "light"}, "missing", "\x1b[38;2;176;37;80m✗\x1b[0m", 1),
         ({"NO_COLOR": "1"}, "demo", "✓ profile:", 0),
         ({"TERM": "dumb"}, "demo", "✓ profile:", 0),
     ]:
@@ -828,7 +833,7 @@ def test_doctor_terminal_statuses(tmp_path):
             assert expected in text, repr(text)
             assert "\\e[" not in text
             assert "\x1b[32m" not in text
-            if overrides:
+            if "NO_COLOR" in overrides or overrides.get("TERM") == "dumb":
                 assert "\x1b[" not in text
         finally:
             if result is not None and result.poll() is None:

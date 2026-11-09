@@ -1,6 +1,7 @@
 """The suite's shared hang-detection bound; imported by the tests that wait on a real process."""
 import os
 import random
+import re
 import shlex
 import shutil
 import socket
@@ -15,6 +16,25 @@ from pathlib import Path
 # over, where the cap would fire in the middle of the polling.
 # Override with CCMORPH_TEST_HANG_TIMEOUT.
 HANG_TIMEOUT = float(os.environ.get("CCMORPH_TEST_HANG_TIMEOUT", "120"))
+def rgb_codes(out):
+    """Every 24-bit colour a command painted with, as (r, g, b) triples.
+
+    Reads the escape ccmorph emits (`ESC [ 38 ; 2 ; r ; g ; b m`), so a test can
+    hold the real output to a contrast bar instead of a list of hex literals.
+    """
+    return [tuple(int(v) for v in m) for m in re.findall(r'\x1b\[38;2;(\d+);(\d+);(\d+)m', out)]
+
+
+def contrast_on_white(rgb):
+    """WCAG 2.x contrast ratio of one (r, g, b) colour against a white background."""
+    def channel(v):
+        v /= 255.0
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (channel(v) for v in rgb)
+    return 1.05 / (0.2126 * r + 0.7152 * g + 0.0722 * b + 0.05)
+
+
 # Source for a fake HTTP server the tests write out and run as its own process,
 # placed after its http.server import. HTTPServer.server_bind resolves 127.0.0.1
 # with socket.getfqdn, a reverse DNS lookup that can stall for tens of seconds on
