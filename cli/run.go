@@ -802,14 +802,43 @@ func (l *launcher) route(penv []string, port, key string, adapter bool) ([]strin
 // hook reads the new lines. It is empty for every other profile type and for
 // `usage_route=direct`, which is also how a launch removes a hook an earlier
 // one installed. It only builds the command: the price refresh is the launch's
-// (usagePricing plus refreshOwnedPrices), never a caller's side effect.
+// (usagePricing plus refreshOwnedPrices), never a caller's side effect. The
+// command is frozen into the profile's settings for the sessions that outlive
+// this launch, so under Homebrew it names brew's stable opt path, not the
+// versioned Cellar dir this process runs from (stableCore, #287); the next
+// launch's materialize replaces whatever hook it finds with this one.
 func (l *launcher) usageHookFor(name, typ, usageRoute string) string {
 	pricing := usagePricing(typ, usageRoute)
 	if pricing == "" {
 		return ""
 	}
-	core := filepath.Join(l.libexec, "ccmorph-core")
-	return shQuote(core) + " usage-row --profile " + shQuote(name) + " --pricing " + shQuote(pricing)
+	return shQuote(stableCore(l.libexec)) + " usage-row --profile " + shQuote(name) + " --pricing " + shQuote(pricing)
+}
+
+// brewCellarRE is Homebrew's versioned install prefix, <prefix>/Cellar/ccmorph/
+// <version>: where the running binary sits under brew. An upgrade moves it and
+// a cleanup deletes it, so a path frozen under it at launch time is stale
+// against the sessions that still run.
+var brewCellarRE = regexp.MustCompile(`^(.+)/Cellar/ccmorph/[^/]+(/.*)?$`)
+
+// stableCore is the ccmorph-core a usage hook names. Under Homebrew that is the
+// stable <prefix>/opt/ccmorph path, the symlink brew re-points at every
+// upgrade, so the hook survives `brew upgrade` and `brew cleanup`; anywhere
+// else — a clone, install.sh's config-dir layout — it is the core beside the
+// ccmorph that is running, as before. The opt path is taken only when a core
+// sits behind it: a Cellar-shaped path without brew's link is not a brew
+// install.
+func stableCore(libexec string) string {
+	core := filepath.Join(libexec, "ccmorph-core")
+	m := brewCellarRE.FindStringSubmatch(libexec)
+	if m == nil {
+		return core
+	}
+	stable := filepath.Clean(m[1] + "/opt/ccmorph" + m[2])
+	if !isFile(filepath.Join(stable, "ccmorph-core")) {
+		return core
+	}
+	return filepath.Join(stable, "ccmorph-core")
 }
 
 // usagePricing is the models.dev provider slice a launch's usage rows are priced
