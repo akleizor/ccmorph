@@ -340,3 +340,26 @@ def test_every_routed_profile_is_swept_when_none_is_named(gateway):
     assert result.returncode == 0, result.stderr
     assert "gw: 1 limit(s) updated" in result.stderr and "other: 1 limit(s) updated" in result.stderr
     assert "native" not in result.stderr
+
+
+@pytest.mark.parametrize('conf, said', [
+    pytest.param(None, "No profiles yet — run: ccmorph add <name>\n", id='no-profiles'),
+    pytest.param('type=sub\n', "Nothing to probe.\n", id='subscription-only'),
+])
+def test_nothing_to_probe_is_not_a_failure_gh_269(tmp_path, conf, said):
+    # GH-269: with nothing routed, the run printed "Nothing discovered." with an
+    # empty "(profiles tried: )" list and exited 1, as though something had broken.
+    # Nothing is contacted on this path, so no fake gateway: only a state dir,
+    # and a proxy any accidental fetch would fail against at once.
+    state = tmp_path / "state"
+    state.mkdir()
+    if conf is not None:
+        (state / "gw.conf").write_text(conf)
+    env = {k: v for k, v in os.environ.items() if not k.upper().endswith("_PROXY")}
+    env.update(CCMORPH_STATE_DIR=str(state), HOME=str(tmp_path),
+               HTTPS_PROXY="http://127.0.0.1:9")
+    result = subprocess.run(helper_cmd("context-probe"), env=env, input='',
+                            capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == said
+    assert result.stdout == ""

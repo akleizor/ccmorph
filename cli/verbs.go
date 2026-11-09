@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/profile"
 )
 
@@ -116,6 +117,11 @@ func (l *launcher) accountsHint() {
 	}
 }
 
+// noProfilesMsg is the one sentence a fresh install hears from every command
+// that needs a profile, never indented, each command in its own voice. The probe
+// core says it too, so the text is owned by ctxwindow.
+const noProfilesMsg = ctxwindow.NoProfilesMsg
+
 // noProfileMsg is the one answer every verb gives a name with no .conf: the
 // profiles that do exist, or how to make the first.
 func (l *launcher) noProfileMsg(name string) string {
@@ -125,7 +131,7 @@ func (l *launcher) noProfileMsg(name string) string {
 	if names := l.confNames(); len(names) > 0 {
 		return "no profile '" + name + "'. Profiles: " + strings.Join(names, " ")
 	}
-	return "no profile '" + name + "'. No profiles yet — run: ccmorph add <name>"
+	return "no profile '" + name + "'. " + noProfilesMsg
 }
 
 // caseClashMsg names the profile a new or renamed name collides with on a
@@ -195,7 +201,7 @@ func (l *launcher) list(args []string) int {
 		found = true
 	}
 	if !found {
-		fmt.Println(l.dim + "  No profiles. Run: ccmorph add <name>" + l.reset)
+		fmt.Println(l.dim + noProfilesMsg + l.reset)
 	}
 	return 0
 }
