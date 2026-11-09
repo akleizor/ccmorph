@@ -58,8 +58,14 @@ func (l *launcher) rm(args []string) int {
 			return 1
 		}
 		fmt.Fprintf(os.Stderr, "Profile '%s' has no .conf. Remove leftover private state?\n  %s\n  %s\nShared conversation history will be kept.\n", name, pdir, auth)
-		if uiConfirm("Remove these leftovers?") != 0 {
-			l.err("cancelled; nothing removed")
+		if rc := uiConfirm("Remove these leftovers?"); rc != 0 {
+			// Esc at a terminal is already answered by the picker's own Cancelled
+			// line (rc 2), and a second line would make rm the one command that
+			// answers a leave twice. Answering No, or having no terminal to show
+			// the prompt on, still needs this line to say nothing was removed.
+			if rc != 2 || !isTTY(0) {
+				l.err("cancelled; nothing removed")
+			}
 			return 1
 		}
 	}

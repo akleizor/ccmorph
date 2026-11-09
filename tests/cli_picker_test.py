@@ -470,6 +470,19 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(self.field('demo', 'effort'), 'high')
         self.assertEqual(self.field('demo', 'model'), 'native-model')  # seeded, not guessed
 
+        # Leaving the value picker answers like every picker (issue #280): one
+        # Cancelled line and status 1, not a fall-through to a usage error.
+        rc, out, missed = run_pty('ccmorph set demo', env, [
+            (b'Setting', b'\r'),  # model
+            (b'Select [1-', b'\x1b'),
+        ])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 1, out)
+        self.assertIn('Cancelled', out)
+        self.assertNotIn('Use: ccmorph set', out)
+        self.assertNotIn('usage:', out)
+        self.assertEqual(self.field('demo', 'model'), 'native-model')
+
     def test_set_dash_i_chains_profile_then_value_without_losing_the_slot(self):
         env = self.env(fzf=True)
         self.profile()
@@ -539,6 +552,7 @@ class PickerTTYTest(unittest.TestCase):
             env, [(b'Esc Cancel', b'\x1b')])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 1, out)
+        self.assertIn('Cancelled', out)  # the leave is answered, not silent
         self.assertIn('\x1b[38;2;215;119;87m\x1b[1mSign-in method — demo\x1b[0m', out)
         self.assertIn('\x1b[38;2;177;185;249mClaude account\x1b[0m    \x1b[38;2;153;153;153mSign in with your browser\x1b[0m', out)
         self.assertNotIn('type to filter', out)
@@ -703,6 +717,59 @@ class PickerTTYTest(unittest.TestCase):
                     self.assertNotIn(name, values)
                 self.assertNotIn('fixture-secret', out)
 
+    def test_cancelled_pickers_answer_with_one_line_and_status_one_issue_280(self):
+        # Leaving a picker answers the same way everywhere: one short Cancelled
+        # line and exit status 1 — never silence, never a usage line. The search
+        # picker runs fzf without needing a terminal, so this is checked headless.
+        env = self.env(fzf=True)
+        self.profile()
+        cases = [
+            ('profile picker of models', 'ccmorph models', 'Profile=CANCEL'),
+            ('profile picker of get', 'ccmorph get', 'Profile=CANCEL'),
+            ('value picker of set', 'ccmorph set demo model -i', 'Model=CANCEL'),
+        ]
+        for label, command, spec in cases:
+            with self.subTest(picker=label):
+                self.spec(spec)
+                result = subprocess.run(
+                    ['zsh', '-fc', 'source "$1"\n' + command, 'test', str(CCMORPH)],
+                    env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                    text=True, timeout=HANG_TIMEOUT)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertNotIn('Use: ccmorph set', result.stderr)
+                self.assertNotIn('usage:', result.stderr)
+                self.assertEqual(result.stderr.count('Cancelled'), 1, result.stderr)
+                self.assertTrue(result.stderr.rstrip('\n').endswith('Cancelled'), result.stderr)
+
+    def test_rm_leftover_confirmation_answers_a_leave_with_one_line_issue_280(self):
+        # A profile with private state but no .conf asks before removing it. Esc
+        # at that prompt is a leave like any other: the picker's one Cancelled
+        # line, status 1, and rm adds no second line of its own.
+        env = self.env()
+        leftover = self.state / 'profiles' / 'demo'
+        leftover.mkdir(parents=True)
+        rc, out, missed = run_pty('ccmorph rm demo', env, [(b'Remove these leftovers?', b'\x1b')])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out.count('Cancelled'), 1, out)
+        self.assertNotIn('nothing removed', out)
+        self.assertTrue(leftover.is_dir())
+
+    def test_rm_leftover_confirmation_without_a_terminal_still_says_nothing_was_removed(self):
+        # With no terminal nothing showed the prompt, so rm's own line is the only
+        # answer a script gets that the leftovers were kept (the headless refusal
+        # of issue #280 keeps its words; only a leave at a terminal drops them).
+        env = self.env()
+        leftover = self.state / 'profiles' / 'demo'
+        leftover.mkdir(parents=True)
+        result = subprocess.run(
+            ['zsh', '-fc', 'source "$1"\nccmorph rm demo', 'test', str(CCMORPH)],
+            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=HANG_TIMEOUT)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(result.stderr.count('cancelled; nothing removed'), 1, result.stderr)
+        self.assertTrue(leftover.is_dir())
+
     def test_current_value_is_not_offered_twice(self):
         env = self.env(fzf=True)
         self.profile()
@@ -723,6 +790,7 @@ class PickerTTYTest(unittest.TestCase):
             ])
             self.assertIsNone(missed, out)
             self.assertNotEqual(rc, 0, out)
+            self.assertIn('Cancelled', out)  # q answers like Esc: one short line
             self.assertNotIn('\x1b[', out)
 
     def test_command_entrypoint_configures_only_the_selected_task(self):
@@ -766,6 +834,7 @@ class PickerTTYTest(unittest.TestCase):
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 1, out)
         self.assertNotIn('RESULT=', out)
+        self.assertIn('Cancelled', out)  # a real Esc is answered like any picker
 
     def test_command_entrypoint_accepts_real_arrow_and_enter_without_extra_questions(self):
         env = self.env(fzf=True)

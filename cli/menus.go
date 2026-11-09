@@ -163,7 +163,12 @@ func (l *launcher) pickValue(slot, name string) (string, bool) {
 	}
 	v, rc := chooseValue(slot, title(slot)+" — "+name, rows, "all")
 	if rc != 0 {
-		say("Use: ccmorph set " + name + " " + slot + " <" + slot + ">")
+		// A leave is answered by the picker's own Cancelled line; the usage
+		// line belongs to the headless refusal, where no picker ever ran and
+		// the caller needs the direct command spelled out.
+		if rc == 2 {
+			say("Use: ccmorph set " + name + " " + slot + " <" + slot + ">")
+		}
 		return "", false
 	}
 	return v, v != ""
