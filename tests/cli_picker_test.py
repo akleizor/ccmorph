@@ -496,6 +496,69 @@ class PickerTTYTest(unittest.TestCase):
         self.assertNotIn('--prompt Effort — demo>', log)  # and was not re-asked as a slot menu
         self.assertEqual(self.field('demo', 'effort'), 'medium')
 
+    def test_set_model_picker_opens_the_config_model_step_issue_279(self):
+        """`set <profile> model -i` and config's model step are one picker.
+
+        They used to differ: the set picker offered a bare catalogue that
+        ignored the saved model, while config marked it Keep (#279). Both must
+        open the same rows the same way, with the saved model marked."""
+        env = self.env(fzf=True)
+        env['MODELS'] = json.dumps({'data': [
+            {'id': 'picker-alpha', 'owned_by': 'fake'},
+            {'id': 'picker-beta', 'display_name': 'Picker Beta'}]})
+        self.profile()
+
+        def first_menu():
+            """The first fzf call's argv and offered rows, from the fzf log."""
+            lines = (self.tmp / 'fzf.log').read_text().splitlines()
+            start = next(i for i, line in enumerate(lines) if line.startswith('ARGS '))
+            args, rows, in_rows = lines[start], [], False
+            for line in lines[start + 1:]:
+                if line.startswith('ARGS '):
+                    break
+                if line.startswith('ROWS '):
+                    rows.append(line[5:])
+                    in_rows = True
+                elif in_rows:
+                    rows.append(line)
+            return args, rows
+
+        # Effort is a native menu, not fzf: a key answers it, never the spec.
+        # Enter takes its first row, the Keep row.
+        self.spec('Default model=@keep')
+        rc, out, missed = run_pty('ccmorph config demo', env, [
+            (b'Settings', b'\r'),
+            (b'Default effort', b'\r'),
+        ])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        config_args, config_rows = first_menu()
+
+        (self.tmp / 'fzf.log').unlink()
+        self.spec('Default model=@keep')
+        rc, out, missed = run_pty('ccmorph set demo model -i', env)
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        set_args, set_rows = first_menu()
+
+        self.assertEqual(set_args, config_args)   # the same way of opening
+        self.assertEqual(set_rows, config_rows)   # the same list
+        self.assertIn('--prompt Default model — demo>', set_args)
+        self.assertTrue(set_rows[0].startswith('@keep\t'), set_rows)
+        self.assertIn('Keep native-model', set_rows[0])  # the saved model marked
+        self.assertTrue(any('Picker Beta' in row for row in set_rows), set_rows)
+        self.assertEqual(self.field('demo', 'model'), 'native-model')  # Keep kept it
+
+        # A catalogue row picked from the new menu still saves.
+        self.spec('Default model=picker-beta')
+        rc, out, missed = run_pty('ccmorph set demo model -i', env)
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.field('demo', 'model'), 'picker-beta')
+        # stdout carries the value alone on its own line; stderr's "Saved …" line
+        # and whatever the shell prints after it share the pty.
+        self.assertIn('picker-beta', [line.strip() for line in out.splitlines()], out)
+
     def test_unavailable_catalogue_still_allows_keep_or_custom(self):
         env = self.env(fzf=True, curl='fail')
         self.profile('demo')
@@ -726,7 +789,7 @@ class PickerTTYTest(unittest.TestCase):
         cases = [
             ('profile picker of models', 'ccmorph models', 'Profile=CANCEL'),
             ('profile picker of get', 'ccmorph get', 'Profile=CANCEL'),
-            ('value picker of set', 'ccmorph set demo model -i', 'Model=CANCEL'),
+            ('value picker of set', 'ccmorph set demo model -i', 'Default model=CANCEL'),
         ]
         for label, command, spec in cases:
             with self.subTest(picker=label):

@@ -695,8 +695,9 @@ func Advise(msg string) string {
 	return jsonOut(o)
 }
 
-// ModelRow is one model of a gateway listing and its owner.
-type ModelRow struct{ ID, Owner string }
+// ModelRow is one model of a gateway listing and its label: the owner when the
+// listing names one, else the display name.
+type ModelRow struct{ ID, Label string }
 
 // GwModels are the chat models of the listing, sorted; with picker the profile
 // conf's excluded models are left out. False for an unreadable listing or one with
@@ -723,11 +724,13 @@ func GwModels(conf string, picker bool, body string) ([]ModelRow, bool) {
 		if !ok || isExcluded(fields, id) {
 			continue
 		}
-		owner := "?"
-		if ov := getKey(asObj(m), "owned_by"); truthy(ov) {
-			owner = pyStr(ov)
+		label := ""
+		if v := getKey(asObj(m), "owned_by"); truthy(v) {
+			label = pyStr(v)
+		} else if v := getKey(asObj(m), "display_name"); truthy(v) {
+			label = pyStr(v)
 		}
-		rows = append(rows, ModelRow{id, owner})
+		rows = append(rows, ModelRow{id, label})
 	}
 	if len(rows) == 0 {
 		return nil, false
@@ -736,7 +739,7 @@ func GwModels(conf string, picker bool, body string) ([]ModelRow, bool) {
 		if rows[i].ID != rows[j].ID {
 			return rows[i].ID < rows[j].ID
 		}
-		return rows[i].Owner < rows[j].Owner
+		return rows[i].Label < rows[j].Label
 	})
 	return rows, true
 }
