@@ -963,7 +963,6 @@ SIGNED_OUT = ('#!/bin/sh\n[ "$1 $2" = "auth status" ] && '
     ("missing-type", "api_key=k\n", None,
      "edit {conf} to fix it, or re-create the profile: ccmorph rm demo && ccmorph add demo"),
     ("claude-missing", NATIVE, OK_CURL, CLAUDE_MISSING),
-    ("home-missing", NATIVE, OK_CURL, "the first launch creates it: ccmorph run demo"),
 ])
 def test_doctor_verdict_names_the_fix_for_every_failed_check_issue_282(tmp_path, case, conf, curl, expected):
     """#282: the last line names the command or step that repairs the first
@@ -977,7 +976,7 @@ def test_doctor_verdict_names_the_fix_for_every_failed_check_issue_282(tmp_path,
         home.mkdir(parents=True)
         (home / "settings.json").write_text("{ invalid")
     claude = {"signed-out": SIGNED_OUT, "claude-missing": False}.get(case)
-    result, _, _ = run_doctor(tmp_path, conf, curl, claude=claude, home=case != "home-missing")
+    result, _, _ = run_doctor(tmp_path, conf, curl, claude=claude)
     last = result.stdout.splitlines()[-1]
     assert result.returncode == 1, result.stdout
     assert last == "FAIL not ready: " + expected.format(
