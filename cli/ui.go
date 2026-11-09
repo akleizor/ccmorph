@@ -451,22 +451,35 @@ func (t uiTheme) receipt(title, choice string) {
 	fmt.Fprintln(os.Stderr, t.heading(title, columns-cells(choice)-3)+" "+t.focus+"›"+t.reset+" "+t.gray+choice+t.reset)
 }
 
-// fzfArgs is the fzf command line for a version and a list of n rows. --cycle
-// wraps the ends on every version; 0.36+ adds the scrollbar and the Home/End
-// jump, 0.71+ lets the window grow to the list. An older fzf has no scrollbar,
-// so its header says how many rows the list holds: a window that cuts some
-// never stops silently (#278).
-func fzfArgs(version string, n int, prompt string, theme []string) []string {
+// fzfChrome is the lines an fzf window spends on itself besides the rows: the
+// top and bottom border, the prompt, the info line and the header.
+const fzfChrome = 5
+
+// fzfArgs is the fzf command line for a version, a list of n rows and a
+// terminal of lines rows. --cycle wraps the ends on every version; 0.36+ adds
+// the scrollbar and the Home/End jump, 0.71+ lets the window grow to the list.
+// An older fzf has neither, so ccmorph sizes its window itself: the whole list
+// when the terminal allows it, otherwise the header says rows are cut. A list
+// never stops silently at the window's edge (#278).
+func fzfArgs(version string, n, lines int, prompt string, theme []string) []string {
 	height := "45%"
 	if fzfAtLeast(version, 71) {
 		height = "~-1"
 	}
+	header := "↑/↓ Move · Type to filter · Enter Select · Esc Cancel"
+	if fzfAtLeast(version, 36) {
+		header = "↑/↓ Move · Home/End Jump · Type to filter · Enter Select · Esc Cancel"
+	} else {
+		room := max(1, lines-1)
+		height = strconv.Itoa(min(n+fzfChrome, room))
+		if n+fzfChrome > room {
+			header = "More rows than fit here: ↑/↓ scroll · Type to filter · Enter Select · Esc Cancel"
+		}
+	}
 	args := append([]string{"--height", height, "--reverse", "--border=rounded", "--pointer=❯", "--marker=✓",
 		"--no-multi", "--no-print-query", "--ansi", "--cycle"}, theme...)
-	header := fmt.Sprintf("%d rows · ↑/↓ Move (wraps) · Type to filter · Enter Select · Esc Cancel", n)
 	if fzfAtLeast(version, 36) {
 		args = append(args, "--scrollbar", "--bind", "home:first,end:last")
-		header = "↑/↓ Move · Home/End Jump · Type to filter · Enter Select · Esc Cancel"
 	}
 	return append(args, "--delimiter", "\t", "--with-nth=2..", "--prompt", prompt+"> ", "--header", header)
 }
@@ -518,7 +531,8 @@ func (t uiTheme) search(prompt string, rows []string) (string, int) {
 		// enough fzf adds the scrollbar and the Home/End jump. Its window also
 		// grows to the list itself, so a list that fits the terminal is never
 		// cut at all (#278).
-		args := fzfArgs(fzfVersion(fzf), len(rows), prompt, theme)
+		lines, _ := termSize()
+		args := fzfArgs(fzfVersion(fzf), len(rows), lines, prompt, theme)
 		cmd := exec.Command(fzf, args...)
 		cmd.Env = append(os.Environ(), "FZF_DEFAULT_OPTS=", "FZF_DEFAULT_OPTS_FILE=")
 		cmd.Stdin = strings.NewReader(strings.Join(rendered, "\n") + "\n")

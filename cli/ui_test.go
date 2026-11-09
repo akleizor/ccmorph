@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -53,22 +54,55 @@ func TestFzfAtLeast(t *testing.T) {
 	}
 }
 
-// An fzf too old for the scrollbar still says how long the list is, and every
-// version cycles; a newer one gets the scrollbar and the Home/End jump (#278).
-func TestFzfArgsSayHowLongTheListIs(t *testing.T) {
-	join := func(v string) string { return strings.Join(fzfArgs(v, 19, "Provider", nil), " ") }
-	old := join("0.35.1 (homebrew)\n")
-	if !strings.Contains(old, "--cycle") || !strings.Contains(old, "19 rows") {
-		t.Errorf("old fzf args must cycle and name the row count: %s", old)
+func flagValue(args []string, flag string) string {
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			return args[i+1]
+		}
 	}
-	if strings.Contains(old, "--scrollbar") || strings.Contains(old, "end:last") || strings.Contains(old, "~-1") {
-		t.Errorf("old fzf must not get flags it lacks: %s", old)
+	return ""
+}
+
+// An fzf too old for the scrollbar gets a window sized by ccmorph: the whole
+// list when the terminal allows it, and a header that says rows are cut when
+// not. Every version cycles; a newer one gets the scrollbar and the Home/End
+// jump (#278).
+func TestFzfArgsNeverHideRowsSilently(t *testing.T) {
+	cut := "More rows than fit here:"
+	old := fzfArgs("0.35.1 (homebrew)\n", 19, 45, "Provider", nil)
+	if flagValue(old, "--height") != "24" || !strings.HasPrefix(flagValue(old, "--header"), "↑/↓ Move") {
+		t.Errorf("a list that fits gets a window of rows+5: %v", old)
 	}
-	mid := join("0.40.0\n")
-	if !strings.Contains(mid, "--scrollbar") || !strings.Contains(mid, "home:first,end:last") || strings.Contains(mid, "~-1") {
-		t.Errorf("0.40 gets the scrollbar and jump, not the adaptive window: %s", mid)
+	if !strings.Contains(strings.Join(old, " "), "--cycle") || strings.Contains(strings.Join(old, " "), "--scrollbar") ||
+		strings.Contains(strings.Join(old, " "), "end:last") {
+		t.Errorf("old fzf cycles and gets no flags it lacks: %v", old)
 	}
-	if !strings.Contains(join("0.75.0\n"), "--height ~-1") {
-		t.Errorf("0.75 grows the window to the list")
+	tight := fzfArgs("0.29.0\n", 19, 24, "Provider", nil)
+	if flagValue(tight, "--height") != "23" || !strings.HasPrefix(flagValue(tight, "--header"), cut) {
+		t.Errorf("a list the terminal cannot hold must say rows are cut: %v", tight)
+	}
+	if got := flagValue(fzfArgs("", 3, 24, "P", nil), "--height"); got != "8" {
+		t.Errorf("an unreadable version is treated as old: height %q", got)
+	}
+	mid := fzfArgs("0.40.0\n", 19, 45, "Provider", nil)
+	if flagValue(mid, "--height") != "45%" || !strings.Contains(strings.Join(mid, " "), "--scrollbar") ||
+		!strings.Contains(strings.Join(mid, " "), "home:first,end:last") {
+		t.Errorf("0.40 gets the scrollbar and jump, not the adaptive window: %v", mid)
+	}
+	if got := flagValue(fzfArgs("0.75.0\n", 19, 45, "P", nil), "--height"); got != "~-1" {
+		t.Errorf("0.75 grows the window to the list: %q", got)
+	}
+	for lines := 6; lines <= 60; lines++ {
+		for n := 1; n <= 40; n++ {
+			args := fzfArgs("0.29.0\n", n, lines, "P", nil)
+			h, _ := strconv.Atoi(flagValue(args, "--height"))
+			says := strings.HasPrefix(flagValue(args, "--header"), cut)
+			if (n+fzfChrome > h) != says {
+				t.Fatalf("n=%d lines=%d: height %d, header says cut = %v", n, lines, h, says)
+			}
+			if h > lines-1 {
+				t.Fatalf("n=%d lines=%d: window %d overflows the terminal", n, lines, h)
+			}
+		}
 	}
 }
