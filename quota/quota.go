@@ -93,7 +93,13 @@ func read(client *http.Client, name, kind, arg, extra string) Entry {
 	case "sub":
 		token, plan, err := subscriptionToken(arg)
 		if err != nil {
-			return Entry{Profile: name, Kind: "claude", Plan: plan, Windows: []Window{}, Error: err.Error()}
+			// The same command cred and login name: a missing sign-in has a
+			// working fix, and quota is where a person first sees the state.
+			msg := err.Error()
+			if msg == "not signed in" {
+				msg = "not signed in — sign in again: ccmorph login " + name
+			}
+			return Entry{Profile: name, Kind: "claude", Plan: plan, Windows: []Window{}, Error: msg}
 		}
 		return readClaude(client, name, token, plan, false)
 	case "token":

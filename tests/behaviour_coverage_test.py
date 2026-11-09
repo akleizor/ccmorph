@@ -244,14 +244,28 @@ def test_login_for_an_api_key_profile_records_the_approval_again(box):
     assert out.returncode == 0, out.stderr
     doc = json.loads((box.state / 'profiles' / 'gw' / '.claude.json').read_text())
     assert doc['customApiKeyResponses']['approved'] == [key[-20:]], doc
-    # login still refuses what it cannot serve: only provider and API-key
-    # profiles are its work, and a subscription or token profile must not fall
-    # through to the provider browser login.
-    for other in ('work', 'tok'):
-        bad = box.run('login', other)
-        assert bad.returncode != 0 and 'not a provider or API-key profile' in bad.stderr
+    # login still refuses what it cannot serve: a token profile has no sign-in
+    # to renew, so the refusal names the command that replaces its credential.
+    bad = box.run('login', 'tok')
+    assert bad.returncode != 0 and 'ccmorph config tok' in bad.stderr
     gone = box.run('login', 'ghost')
     assert gone.returncode != 0 and "no profile 'ghost'" in gone.stderr
+
+
+def test_login_signs_a_signed_out_account_profile_in_again(box):
+    # GH-256: cred pointed at `ccmorph login` for an account profile and login
+    # refused it — a circle with no working command. login runs the browser
+    # sign-in on the profile's existing home and records the account it lands
+    # on, the same readback `add` performs on a fresh profile.
+    seed(box)
+    box.stub_oauth_claude('sub@example.invalid')
+    out = box.run('login', 'work')
+    assert out.returncode == 0, out.stderr
+    assert 'Signed in to Claude as sub@example.invalid' in out.stdout
+    assert (box.state / 'work.conf').read_text() == 'type=sub\nemail=sub@example.invalid\n'
+    # The circle's other half: cred's refusal names the command that works.
+    refused = box.run('cred', 'work')
+    assert refused.returncode == 1 and 'ccmorph login work' in refused.stderr
 
 
 # --- run guards ------------------------------------------------------------------

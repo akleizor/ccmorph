@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -119,7 +120,13 @@ func (l *launcher) rollback(name string) {
 }
 
 func (l *launcher) claudeAuth(dir string, args ...string) *exec.Cmd {
-	cmd := exec.Command("claude", append([]string{"auth"}, args...)...)
+	return l.claudeAuthCtx(context.Background(), dir, args...)
+}
+
+// claudeAuthCtx is claudeAuth bound to ctx, for the one caller that must not
+// wait forever (doctor's sign-in check); a browser login keeps no deadline.
+func (l *launcher) claudeAuthCtx(ctx context.Context, dir string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "claude", append([]string{"auth"}, args...)...)
 	env := os.Environ()
 	for _, k := range append(append([]string{}, l.backend...), "CLAUDE_SECURESTORAGE_CONFIG_DIR") {
 		env = envDrop(env, k)
@@ -129,6 +136,38 @@ func (l *launcher) claudeAuth(dir string, args ...string) *exec.Cmd {
 }
 
 var emailRE = regexp.MustCompile(`"email": "([^"]*)"`)
+
+// claudeStatusRE reads `claude auth status`'s JSON: whether Claude Code holds
+// a sign-in for the config dir it was pointed at.
+var claudeStatusRE = regexp.MustCompile(`"loggedIn":\s*(true|false)`)
+
+// subBrowserLogin runs Claude Code's browser sign-in against the profile's
+// config dir and returns the signed-in email. add and login both put a Claude
+// account profile through it; the readback is what names the profile.
+func (l *launcher) subBrowserLogin(name string) (string, bool) {
+	dir := filepath.Join(l.profileDirs, name)
+	fmt.Println(l.dim + "Opening your browser to sign in — Ctrl-C to cancel." + l.reset)
+	login := l.claudeAuth(dir, "login")
+	login.Stdin, login.Stdout, login.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if login.Run() != nil {
+		l.err("login failed")
+		return "", false
+	}
+	out, err := l.claudeAuth(dir, "status").CombinedOutput()
+	if err != nil {
+		l.err("could not read authentication status")
+		return "", false
+	}
+	email := ""
+	if m := emailRE.FindSubmatch(out); m != nil {
+		email = string(m[1])
+	}
+	if email == "" || strings.ContainsAny(email, "\r\n") {
+		l.err("no subscription profile found after login — nothing was saved")
+		return "", false
+	}
+	return email, true
+}
 
 func (l *launcher) addSub(name string) int {
 	if atomicWrite(l.conf(name), "type=sub\n") != nil {
@@ -145,26 +184,8 @@ func (l *launcher) addSub(name string) int {
 		l.rollback(name)
 		return 1
 	}
-	fmt.Println(l.dim + "Opening your browser to sign in — Ctrl-C to cancel." + l.reset)
-	login := l.claudeAuth(dir, "login")
-	login.Stdin, login.Stdout, login.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if login.Run() != nil {
-		l.err("login failed")
-		l.rollback(name)
-		return 1
-	}
-	out, err := l.claudeAuth(dir, "status").CombinedOutput()
-	if err != nil {
-		l.err("could not read authentication status")
-		l.rollback(name)
-		return 1
-	}
-	email := ""
-	if m := emailRE.FindSubmatch(out); m != nil {
-		email = string(m[1])
-	}
-	if email == "" || strings.ContainsAny(email, "\r\n") {
-		l.err("no subscription profile found after login — nothing was saved")
+	email, ok := l.subBrowserLogin(name)
+	if !ok {
 		l.rollback(name)
 		return 1
 	}
@@ -175,6 +196,45 @@ func (l *launcher) addSub(name string) int {
 	}
 	fmt.Println(l.accent + "Added" + l.reset + " " + name + " (sub: " + email + ")")
 	return 0
+}
+
+// subLogin is `ccmorph login` on a Claude account profile: the browser sign-in
+// add performs, run on the profile's existing home, so a signed-out profile
+// signs in again without being re-created. Only the email line changes; the
+// sign-in itself lives in the profile home, where Claude Code keeps it.
+func (l *launcher) subLogin(name string, f map[string]string) int {
+	if !l.setupDir(name, "sub", liveSilent) {
+		return 1
+	}
+	email, ok := l.subBrowserLogin(name)
+	if !ok {
+		return 1
+	}
+	if f["email"] != email {
+		if err := l.setEmail(name, email); err != nil {
+			l.err("could not save profile '" + name + "'")
+			return 1
+		}
+	}
+	fmt.Println("Signed in to Claude as " + email + ". Start it: ccmorph run " + name)
+	return 0
+}
+
+// setEmail rewrites the profile conf's email line, leaving every other line as
+// it is, so a renewed sign-in does not discard what config wrote around it.
+func (l *launcher) setEmail(name, email string) error {
+	raw, err := os.ReadFile(l.conf(name))
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(raw), "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "email=") {
+			lines[i] = "email=" + email
+			return atomicWrite(l.conf(name), strings.Join(lines, "\n"))
+		}
+	}
+	return nil
 }
 
 func (l *launcher) addToken(name string) int {
@@ -436,14 +496,16 @@ func (l *launcher) providerLogin(name, provider string) bool {
 	return true
 }
 
-// login is `ccmorph login [profile]`: sign a provider profile in again.
+// login is `ccmorph login [profile]`: sign a profile in again — a Claude
+// account profile with its browser login, a provider-backed profile with its
+// own, or an API-key profile by letting Claude Code use the key it refused.
 func (l *launcher) login(args []string) int {
 	name := ""
 	if len(args) > 0 {
 		name = args[0]
 	}
 	if name == "" || interactive(name) {
-		picked, ok := l.menuProfile("provider", "apikey")
+		picked, ok := l.menuProfile("sub", "provider", "apikey")
 		if !ok {
 			return 1
 		}
@@ -460,6 +522,14 @@ func (l *launcher) login(args []string) int {
 	f, ok := l.readRaw(name)
 	if !ok {
 		return 1
+	}
+	if f["type"] == "sub" {
+		// The sign-in rewrites the conf's email line, so it takes the profile
+		// context lock config takes for the same write.
+		if rc, done := l.locked(name, []string{"login", name}); done {
+			return rc
+		}
+		return l.subLogin(name, f)
 	}
 	if f["type"] == "apikey" {
 		// The profile's key is already stored; what was refused is Claude
@@ -479,7 +549,9 @@ func (l *launcher) login(args []string) int {
 		return 0
 	}
 	if f["type"] != "provider" {
-		l.err("'" + name + "' is not a provider or API-key profile — login is only for those")
+		// Only a token profile is left, and its credential is replaced, not
+		// renewed: name the command that does that.
+		l.err("'" + name + "' is a " + f["type"] + " profile — replace its token: ccmorph config " + name)
 		return 1
 	}
 	if !l.providerLogin(name, f["provider"]) {

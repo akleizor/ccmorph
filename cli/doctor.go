@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"github.com/akleizor/ccmorph/util"
 	"os"
@@ -8,9 +9,33 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/akleizor/ccmorph/profile"
 )
+
+// authStatusDeadline bounds doctor's `claude auth status`: Claude Code owns the
+// sign-in and can wait on a person (a keychain prompt) or wedge, and doctor's
+// promise is a verdict, never a hang. A variable so the test can shorten it.
+var authStatusDeadline = 10 * time.Second
+
+// signInStatus asks Claude Code whether it holds a sign-in for the profile's
+// config dir. answered is false when claude did not finish in time — a hang is
+// "cannot tell", never a guess. The answer is read from the output: a real
+// signed-out status still prints its JSON and exits 1.
+func (l *launcher) signInStatus(name string) (out []byte, answered bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), authStatusDeadline)
+	defer cancel()
+	cmd := l.claudeAuthCtx(ctx, filepath.Join(l.profileDirs, name), "status")
+	// A wedged claude's helpers can outlive it holding the output pipe; after
+	// the kill, wait at most this long for the pipe before reading what came.
+	cmd.WaitDelay = time.Second
+	out, _ = cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		return nil, false
+	}
+	return out, true
+}
 
 // doctorVerb is `ccmorph doctor [--verbose] [profile|-i]`: read-only, so it runs
 // before the state dirs are secured and falls back to a not-yet-migrated
@@ -223,7 +248,28 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	} else {
 		switch typ {
 		case "sub":
-			report("INFO", "credentials: Claude sign-in, kept in the profile home")
+			// Claude Code owns this sign-in state, so ask it the same way add
+			// does after a browser login — bounded, because a claude that
+			// never answers must not hold the verdict. A real signed-out
+			// status still prints its JSON and exits 1, so the answer is read
+			// from the output, not the exit code.
+			out, answered := l.signInStatus(name)
+			m := claudeStatusRE.FindSubmatch(out)
+			switch {
+			case !answered:
+				report("WARN", "credentials: cannot tell (claude auth status did not answer within 10 seconds)")
+			case m == nil:
+				report("WARN", "credentials: cannot tell (claude auth status reported no sign-in state)")
+			case string(m[1]) != "true":
+				report("FAIL", "credentials: not signed in — sign in again: ccmorph login "+name)
+				failed = 1
+			default:
+				if e := emailRE.FindSubmatch(out); e != nil {
+					report("OK", "credentials: signed in to Claude as "+string(e[1]))
+				} else {
+					report("OK", "credentials: signed in to Claude")
+				}
+			}
 		case "provider":
 			report("INFO", "credentials: provider login (renew it: ccmorph login "+name+")")
 		default:

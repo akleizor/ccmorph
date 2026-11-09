@@ -161,7 +161,7 @@ func TestQuota(t *testing.T) {
 		"expired  Pro",
 		"  sign-in expired; start a session on it to refresh",
 		"none",
-		"  not signed in",
+		"  not signed in — sign in again: ccmorph login none",
 		"tk",
 		"  this token cannot read plan usage",
 		"",
