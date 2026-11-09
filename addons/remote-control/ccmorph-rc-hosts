@@ -130,6 +130,7 @@ TICK = 1               # a dead host is relaunched within seconds, not minutes
 BACKOFF_MIN, BACKOFF_MAX, HEALTHY_AFTER = 2, 60, 300
 GRACE_INTERRUPT = 12   # seconds for a host to deregister and exit on SIGINT
 GRACE_TERM = 5         # seconds more before SIGKILL, if the interrupt was ignored
+STOP_POLL = 0.1        # seconds between liveness probes while a stop waits for its pid
 IDLE_CHECK = 600
 LOG_CAP = 5_000_000   # a log past this is rotated to .log.1 (at start, and while running)
 # Terminal from the app side: archived (409) or the session itself is gone (404).
@@ -805,17 +806,52 @@ def host_sessions(folders: list[str], status: str) -> tuple[str, list[tuple[str,
                    if s.get("environment_id") in envs]
 
 
-def stop_orphan(pid: int) -> None:
-    """Interrupt a host an earlier supervisor left running, by its exact pid, as
-    stop() would: SIGINT lets it release its environment. Only a pid whose own
-    command line is `claude remote-control` is signalled."""
+def gone_within(pid: int, seconds: float) -> bool:
+    """Whether nothing runs at `pid` within `seconds`, waiting in place for it.
+
+    The wait is counted in STOP_POLL sleeps, never read from the clock: the
+    tests freeze time, and a deadline read from a frozen clock would never
+    expire while a real stop still has to wait real seconds.
+    """
+    for i in range(int(seconds / STOP_POLL) + 1):
+        if i:
+            time.sleep(STOP_POLL)
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            pass                    # another user's process: alive, and not ours to wait out
+    return False
+
+
+def stop_orphan(pid: int) -> bool:
+    """Stop a host an earlier supervisor left running, by its exact pid, as
+    stop() would: SIGINT lets it release its environment, SIGTERM follows after
+    GRACE_INTERRUPT, SIGKILL after GRACE_TERM. Only a pid whose own command line
+    is `claude remote-control` is signalled. True once nothing runs at the pid;
+    False while it may still run, so its restart is not recorded (#297)."""
     try:
-        argv = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True,
-                              text=True, errors="replace", timeout=10).stdout.split()
-        if "remote-control" in argv[1:2] and Path(argv[0]).name == "claude":
-            os.kill(pid, signal.SIGINT)
-    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
-        pass
+        out = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True,
+                             text=True, errors="replace", timeout=10).stdout
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+    argv = out.split()
+    if not argv:
+        return True                 # nothing at the pid: an earlier stop took
+    if not ("remote-control" in argv[1:2] and Path(argv[0]).name == "claude"):
+        return True                 # not a host (a recycled pid): nothing of ours to stop
+    for sig, grace in ((signal.SIGINT, GRACE_INTERRUPT), (signal.SIGTERM, GRACE_TERM),
+                       (signal.SIGKILL, GRACE_TERM)):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return False            # another user's process: alive and not ours to stop
+        if gone_within(pid, grace):
+            return True
+    return False
 
 
 def restart_logged_out(hosts: "dict[str, Host]", now: float) -> list[str]:
@@ -835,7 +871,9 @@ def restart_logged_out(hosts: "dict[str, Host]", now: float) -> list[str]:
     fixed by /login, never by a restart loop. One restart per host per
     LOGIN_RESTART_AFTER, so a host the restart did not fix is retried slowly.
     Every event is one log line naming the folder. Returns the folders restarted;
-    the loop's one-start-per-tick rule spaces their relaunches.
+    the loop's one-start-per-tick rule spaces their relaunches. A host an
+    earlier supervisor left is restarted only once its pid is confirmed gone
+    (#297); one that survives keeps its failure, so the next check tries again.
     """
     lost = []
     for h in hosts.values():
@@ -867,12 +905,16 @@ def restart_logged_out(hosts: "dict[str, Host]", now: float) -> list[str]:
             log(f"{h.folder}: sessions lost their login again ({why}) within "
                 f"{LOGIN_RESTART_AFTER}s of a restart; not restarting yet")
             continue
-        h.mark_logs()        # this failure is settled: the restart takes the folder from here
         log(f"{h.folder}: sessions lost their login ({why}) while the account login is "
             f"valid; restarting its host")
+        if orphan is not None and not stop_orphan(orphan):
+            # The failure is not marked read: a host still running has not been
+            # replaced, and the check after this one must try it again (#297).
+            log(f"{h.folder}: host pid {orphan} did not stop; not restarted, "
+                f"the next check tries again")
+            continue
+        h.mark_logs()        # this failure is settled: the restart takes the folder from here
         h.login_restarted = now
-        if orphan is not None:
-            stop_orphan(orphan)
         h.stop()
         h.next_try = now           # relaunch on the next tick, not after a backoff
         restarted.append(h.folder)
