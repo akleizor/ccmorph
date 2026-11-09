@@ -12,8 +12,8 @@
 
 ## Highlights
 
-- **One profile per backend.** Each subscription, API key or gateway gets its own
-  login and settings. Skills, plugins, hooks, `CLAUDE.md` and session history
+- **One profile per backend.** Each Claude account, Claude token, API key or
+  provider gets its own login and settings. Skills, plugins, hooks, `CLAUDE.md` and session history
   stay shared.
 - **Hop mid-session.** `ccmorph hop <profile>` moves a running conversation to
   another profile, keeping its model and effort.
@@ -25,7 +25,7 @@
   See [Scope and ownership](docs/ARCHITECTURE.md#scope-and-ownership).
 
 ```
-                   +--> work       subscription login  -->  Anthropic
+                   +--> work       Claude account      -->  Anthropic
 ccmorph run  ------+--> personal   API key             -->  Anthropic API
                    +--> gateway    API key             -->  any other model API
                                                             (translated for you)
@@ -162,15 +162,15 @@ runtime in the formula's prefix, so run the exporter from there instead:
 From a clone, `./share/usage-export --output ~/.cache/ccmorph-usage` runs as is, and
 `./scripts/usage-export` still reaches it.
 
-Every profile writes these receipts: `apikey`, `provider`, and also `sub` and
-`token`. No launch changes how a session reaches its backend: a `sub` or `token`
-session keeps talking to api.anthropic.com with its own credential, and the
+Every profile writes these receipts: API key, provider, and also Claude account
+and Claude token. No launch changes how a session reaches its backend: a Claude
+account or Claude token session keeps talking to api.anthropic.com with its own credential, and the
 launch installs a `SessionStart`, `Stop` and `SessionEnd` hook that reads the
 usage Claude Code itself records in the session's transcript, one row per API
 response, however many transcript lines it spans. `SessionStart` writes no row:
 it marks where this launch begins reading, so a resumed transcript's earlier
 turns are not charged to this profile. A gateway's billed
-`cost` is only ever what it charged. A subscription or long-lived token is not
+`cost` is only ever what it charged. A Claude account or Claude token is not
 billed per token, so its row carries `estimated_cost` instead — the same
 models.dev list price, marked `costSource: estimate` in the export, and never
 added to a billed total. A row's estimate uses the price snapshot cached at

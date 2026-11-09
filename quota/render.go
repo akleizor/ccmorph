@@ -17,10 +17,10 @@ const maxWidth = 60
 const barCells = 16
 
 var groups = []struct{ kind, title string }{
-	{"claude", "Claude subscriptions"},
+	{"claude", "Claude accounts and tokens"},
 	{"codex", "Codex subscriptions"},
 	{"budget", "Budget accounts"},
-	{"gateway", "API and gateway profiles"},
+	{"gateway", "API key and provider profiles"},
 }
 
 // renderText prints the whole view: one group per kind, one entry per profile,

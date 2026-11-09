@@ -104,7 +104,7 @@ func DoctorRoute(name, typ, base string, adapter bool, key, home string, verbose
 
 	valid := httpURL.MatchString(base)
 	if !valid {
-		row("FAIL", "config: base_url must be an http(s) URL without query or fragment")
+		row("FAIL", "config: endpoint must be an http(s) URL without query or fragment")
 	}
 	row("INFO", "endpoint: "+profile.RedactURL(base))
 	switch {

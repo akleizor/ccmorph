@@ -153,7 +153,7 @@ func TestQuota(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
 	want := strings.Join([]string{
-		"Claude subscriptions",
+		"Claude accounts and tokens",
 		"live  Max 20x",
 		row("5h", 2, "12%", "in 4h 10m"),
 		row("7d", 6, "40%", "Tue 01:00"),
@@ -302,7 +302,7 @@ func TestQuotaStale(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	want := strings.Join([]string{
-		"Claude subscriptions",
+		"Claude accounts and tokens",
 		"slow  Pro  12 min old, rate-limited",
 		row("5h", 3, "20%", "in 1h"),
 		"fresh  Pro",
@@ -403,7 +403,7 @@ func TestQuotaSpend(t *testing.T) {
 		row("month", 3, "20%", "Nov 1"),
 		"  today $0.00 · month $100.00 of $500",
 		"",
-		"API and gateway profiles",
+		"API key and provider profiles",
 		"gw",
 		"  today $1.95 · month $5.50 (est.)",
 		"  1 turn with no price · cost unknown",
@@ -534,7 +534,7 @@ func TestQuotaFixtureHomes(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
 	for _, want := range []string{
-		"Claude subscriptions", "Codex subscriptions", "API and gateway profiles",
+		"Claude accounts and tokens", "Codex subscriptions", "API key and provider profiles",
 		"pro  Pro", row("5h", 2, "10%", "in 4h 10m"),
 		"max  Max 5x  12 min old, rate-limited", row("5h", 9, "55%", "in 1h 30m"),
 		"cx  Plus", row("5h", 6, "35%", "in 2h 14m"), row("7d", 10, "60%", "Sun 15:00"),
@@ -699,7 +699,7 @@ func TestQuotaBalance(t *testing.T) {
 		t.Fatalf("sent %v", sent)
 	}
 	out, _, _ := run(t, nil, "ds\tgateway\thttps://api.deepseek.com/anthropic\t\tsk-ds\n")
-	if want := "API and gateway profiles\nds\n  not used this month\n  balance ¥40.75\n"; out != want {
+	if want := "API key and provider profiles\nds\n  not used this month\n  balance ¥40.75\n"; out != want {
 		t.Fatalf("\n got %q\nwant %q", out, want)
 	}
 }

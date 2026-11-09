@@ -1,5 +1,5 @@
 // Package quota is `ccmorph quota`: one view of every profile's plan windows
-// and spend. Claude subscriptions are read from claude.ai's usage endpoint (the
+// and spend. Claude account usage is read from claude.ai's usage endpoint (the
 // one Claude Code's /usage reads) with the profile's own sign-in; Codex
 // subscriptions from Codex's own usage endpoint with the cliproxyapi sign-in;
 // gateways and API keys from the receipts their turns already wrote. A GET to a

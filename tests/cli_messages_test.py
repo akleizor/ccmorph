@@ -144,3 +144,31 @@ def test_update_and_uninstall_under_homebrew_name_the_brew_command(tmp_path):
                                 capture_output=True, text=True, timeout=HANG_TIMEOUT)
         assert result.returncode != 0
         assert brew in result.stderr, result.stderr
+
+
+def _help_add(tmp_path, bridge):
+    """help add with a PATH that has only a fake cliproxyapi, when bridge is given."""
+    bin_dir = tmp_path / 'bin'
+    bin_dir.mkdir(exist_ok=True)
+    if bridge:
+        fake = bin_dir / 'cliproxyapi'
+        fake.write_text('#!/bin/sh\n'
+                        'if [ "$1" = --help ]; then for p in claude antigravity codex; do'
+                        ' echo "  -$p-login"; done; exit 0; fi\n'
+                        'exit 1\n')
+        fake.chmod(0o755)
+    env = {**os.environ, 'HOME': str(tmp_path / 'home'), 'PATH': f'{bin_dir}:/usr/bin:/bin',
+           'CCMORPH_LIB_DIR': str(ROOT / "lib"), 'CCMORPH_STATE_DIR': str(tmp_path / 'state')}
+    result = subprocess.run([str(ROOT / "bin/ccmorph"), 'help', 'add'], env=env,
+                            capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert result.returncode == 0, result.stderr
+    return result.stdout + result.stderr
+
+
+def test_add_help_names_provider_logins_only_when_the_bridge_is_installed(tmp_path):
+    without = _help_add(tmp_path, bridge=False)
+    assert 'cliproxyapi' not in without
+    assert 'Provider' not in without
+    with_bridge = _help_add(tmp_path, bridge=True)
+    assert 'Antigravity, Codex: sign in to that service with your browser (through cliproxyapi).' in with_bridge
+    assert 'Claude: sign in to that service' not in with_bridge

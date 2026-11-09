@@ -455,3 +455,13 @@ def test_a_route_declared_model_mask_reaches_the_session():
     assert rc.session_env({"CLAUDE_CODE_MODEL_CAPABILITIES": "x=-y"}, {}, route_models=False)["CLAUDE_CODE_MODEL_CAPABILITIES"] == "x=-y"
     # A route-declared mask travels to later hosts through the shared edge record.
     assert "CLAUDE_CODE_MODEL_CAPABILITIES" in rc.ROUTE_ENV
+
+
+def test_default_account_names_claude_account_profiles(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CCMORPH_STATE_DIR", str(tmp_path))
+    rc = _launcher()
+    with pytest.raises(SystemExit):
+        rc.default_account()
+    err = capsys.readouterr().err
+    assert "Claude account profiles found" in err
+    assert "subscription" not in err

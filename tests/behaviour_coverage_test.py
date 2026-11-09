@@ -142,12 +142,12 @@ def test_a_default_saved_with_the_wrong_case_still_marks_the_real_profile_gh_259
     (box.state / 'active').write_text('TOK\n')
     assert box.run('use').stdout.strip() == 'tok'
     out = box.run('list').stdout
-    tok = next(line for line in out.splitlines() if line.strip().endswith('(token)'))
+    tok = next(line for line in out.splitlines() if line.strip().endswith('(Claude token)'))
     assert tok.lstrip().startswith('*'), out
     # doctor with no name reads the same default, not the spelling TOK.
     doctor = box.run('doctor')
     assert doctor.returncode == 0, doctor.stdout
-    assert 'profile: tok (token)' in doctor.stdout, doctor.stdout
+    assert 'profile: tok (Claude token)' in doctor.stdout, doctor.stdout
 
 
 def test_doctor_refuses_a_wrong_case_name_with_the_real_spelling_gh_259(box):
@@ -170,12 +170,54 @@ def test_list_marks_the_default_and_labels_every_profile_type(box):
     out = box.run('list').stdout
     rows = {line.split()[1] if line.lstrip().startswith('*') else line.split()[0]: line
             for line in out.splitlines() if line.strip()}
-    assert rows['tok'].lstrip().startswith('*') and '(token)' in rows['tok']
+    assert rows['tok'].lstrip().startswith('*') and '(Claude token)' in rows['tok']
     assert not rows['work'].lstrip().startswith('*')
-    assert 'sub: me@example.invalid' in rows['work']
-    assert 'apikey: https://gw.example.invalid' in rows['gw']
+    assert 'Claude account: me@example.invalid' in rows['work']
+    assert 'API key: https://gw.example.invalid' in rows['gw']
+    for internal in ('sub:', '(token)', 'apikey:'):
+        assert internal not in out, 'list must not show the file spelling'
     assert 'canary' not in out
     assert 'private' in rows['priv'] and 'private' not in rows['tok']
+
+
+def test_doctor_names_the_kind_and_the_endpoint(box):
+    seed(box)
+    (box.state / 'profiles/tok').mkdir()
+    out = box.run('doctor', 'tok')
+    assert out.returncode == 0, out.stderr
+    assert 'profile: tok (Claude token)' in out.stdout
+    box.conf('bad', 'type=apikey\napi_key=canary-key\nbase_url=gateway.invalid\n')
+    out = box.run('doctor', 'bad')
+    assert '(API key)' in out.stdout
+    assert 'endpoint must be an http(s) URL' in out.stdout
+    assert 'base_url' not in out.stdout
+
+
+def test_add_done_messages_use_display_names(box):
+    out = box.run('add', 't1', answer='2\nsk-ant-oat01-pasted-example-fixture-not-real-00000\n')
+    assert out.returncode == 0, out.stderr
+    assert 'Added t1 (Claude token)' in out.stdout
+    out = box.run('add', 'k1', answer='3\ncustom\nsecret-key\n\n')
+    assert out.returncode == 0, out.stderr
+    assert 'Added k1 (API key → api.anthropic.com)' in out.stdout
+    asked = out.stdout + out.stderr
+    assert 'Endpoint (blank = api.anthropic.com): ' in asked
+    assert 'Base URL' not in asked
+
+
+def test_add_menu_names_each_kind_and_explains_a_provider_login(box):
+    fake = box.home / 'bin/cliproxyapi'
+    fake.write_text('#!/bin/sh\n'
+                    'if [ "$1" = --help ]; then for p in claude codex; do echo "  -$p-login"; done; exit 0; fi\n'
+                    'exit 1\n')
+    fake.chmod(0o755)
+    box.env['PATH'] = f'{box.home}/bin:/usr/bin:/bin'
+    out = box.run('add', 'p1', answer='x\n')
+    asked = out.stdout + out.stderr
+    assert 'Claude token' in asked
+    assert 'For scripts/CI; quota cannot read plan usage' in asked
+    assert 'Sign in to Codex with your browser (through cliproxyapi)' in asked
+    assert 'Claude: sign in to that service' not in asked
 
 
 def test_list_with_no_profiles_points_at_add(box):
@@ -584,7 +626,7 @@ def test_inspect_shows_a_profile_whose_conf_fails_validation_gh_113(box):
     box.conf('broken', 'type=apikey\n')
     out = box.run('inspect', 'broken')
     assert out.returncode == 0, out.stderr
-    assert 'broken' in out.stdout and 'apikey' in out.stdout
+    assert 'broken' in out.stdout and 'API key' in out.stdout
     assert 'has no api_key' not in out.stderr
 
 

@@ -137,13 +137,13 @@ func TestValidate(t *testing.T) {
 	}{
 		{map[string]string{"type": "sub"}, ""},
 		{map[string]string{"type": "apikey", "api_key": "k"}, ""},
-		{map[string]string{"type": "apikey"}, "apikey 'p' has no api_key"},
-		{map[string]string{"type": "apikey", "api_key": "a b"}, "apikey 'p' api_key contains whitespace"},
-		{map[string]string{"type": "apikey", "api_key": "k", "base_url": "gateway.invalid"}, "apikey 'p' base_url must use http:// or https://"},
-		{map[string]string{"type": "apikey", "api_key": "k", "base_url": "ftp://x"}, "apikey 'p' base_url must use http:// or https://"},
-		{map[string]string{"type": "apikey", "api_key": "k", "base_url": "https://x y"}, "apikey 'p' base_url contains whitespace"},
-		{map[string]string{"type": "apikey", "api_key": "k", "adapter": "yes"}, "apikey 'p' adapter must be 'true', 'false', or absent"},
-		{map[string]string{"type": "apikey", "api_key": "k", "adapter": "true"}, "apikey 'p' has adapter=true but no base_url to front"},
+		{map[string]string{"type": "apikey"}, "API key profile 'p' has no api_key"},
+		{map[string]string{"type": "apikey", "api_key": "a b"}, "API key profile 'p' api_key contains whitespace"},
+		{map[string]string{"type": "apikey", "api_key": "k", "base_url": "gateway.invalid"}, "API key profile 'p' endpoint must use http:// or https://"},
+		{map[string]string{"type": "apikey", "api_key": "k", "base_url": "ftp://x"}, "API key profile 'p' endpoint must use http:// or https://"},
+		{map[string]string{"type": "apikey", "api_key": "k", "base_url": "https://x y"}, "API key profile 'p' endpoint contains whitespace"},
+		{map[string]string{"type": "apikey", "api_key": "k", "adapter": "yes"}, "API key profile 'p' adapter must be 'true', 'false', or absent"},
+		{map[string]string{"type": "apikey", "api_key": "k", "adapter": "true"}, "API key profile 'p' has adapter=true but no endpoint to front"},
 		{map[string]string{"type": "apikey", "api_key": "k", "adapter": "true", "base_url": "https://g"}, ""},
 	} {
 		got := ""
@@ -185,6 +185,23 @@ func TestValidModelMap(t *testing.T) {
 	} {
 		if got := ValidModelMap(in); got != want {
 			t.Errorf("ValidModelMap(%s) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestKindLabelNamesEveryProfileKindForPeople(t *testing.T) {
+	for _, c := range []struct{ typ, provider, want string }{
+		{"sub", "", "Claude account"},
+		{"token", "", "Claude token"},
+		{"apikey", "", "API key"},
+		{"proxy", "", "API key"},
+		{"provider", "codex", "Codex"},
+		{"provider", "xai", "xAI"},
+		{"provider", "", "Provider"},
+		{"quantum", "", "quantum"},
+	} {
+		if got := KindLabel(c.typ, c.provider); got != c.want {
+			t.Errorf("KindLabel(%q, %q) = %q, want %q", c.typ, c.provider, got, c.want)
 		}
 	}
 }

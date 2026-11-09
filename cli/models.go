@@ -106,7 +106,7 @@ func listingFailure(name, endpoint string, status int) string {
 	case status == 401 || status == 403:
 		return fmt.Sprintf("'%s' rejected the API key for '%s' (HTTP %d) — replace it with: ccmorph config %s", endpoint, name, status, name)
 	case status == 404:
-		return fmt.Sprintf("'%s' has no model list (HTTP 404) — check the Base URL with: ccmorph config %s", endpoint, name)
+		return fmt.Sprintf("'%s' has no model list (HTTP 404) — check the endpoint with: ccmorph config %s", endpoint, name)
 	case status != 0:
 		return fmt.Sprintf("'%s' answered the model list request with HTTP %d", endpoint, status)
 	}

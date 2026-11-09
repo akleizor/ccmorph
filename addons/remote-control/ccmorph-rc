@@ -224,7 +224,7 @@ def profile_type(profile: str) -> str:
 def default_account() -> str:
     subs = sorted(p.stem for p in STATE_ROOT.glob("*.conf") if profile_type(p.stem) == "sub")
     if len(subs) != 1:
-        die(f"pass --as <profile>; claude.ai subscription profiles found: {subs or 'none'}")
+        die(f"pass --as <profile>; Claude account profiles found: {subs or 'none'}")
     return subs[0]
 
 
@@ -366,7 +366,7 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
     # From here the route is up; tie its teardown to this pid before anything can die.
     retire_route_with(me, route_env.get("CCMORPH_ROUTE_HANDLE", ""))
     key = route_env.get("ANTHROPIC_API_KEY") or die(f"route profile '{route}' has no key")
-    route_env.get("ANTHROPIC_BASE_URL") or die(f"route profile '{route}' has no base_url")
+    route_env.get("ANTHROPIC_BASE_URL") or die(f"route profile '{route}' has no endpoint")
 
     upstream = start_adapter(route, me, adapter_env())
 
@@ -447,7 +447,7 @@ def main(argv: list[str]) -> None:
         argv, rc_args = argv[:i], argv[i + 1:]
     ap = argparse.ArgumentParser(prog="ccmorph-rc", description=__doc__.split("\n\n")[0])
     ap.add_argument("route", help="ccmorph profile that serves inference")
-    ap.add_argument("--as", dest="account", help="claude.ai subscription profile (default: the only one)")
+    ap.add_argument("--as", dest="account", help="Claude account profile (default: the only one)")
     ap.add_argument("--debug", action="store_true", help="log method+path per request to the state dir")
     ap.add_argument("--route-models", action="store_true",
                     help="use the route profile's model aliases instead of real Claude ids")
@@ -460,11 +460,11 @@ def main(argv: list[str]) -> None:
     claude = shutil.which("claude") or die("claude not found on PATH")
     account = args.account or default_account()
     if profile_type(account) != "sub":
-        die(f"'{account}' is not a claude.ai subscription profile")
+        die(f"'{account}' is not a Claude account profile")
     if (route_type := profile_type(route := args.route)) == "sub":
-        die(f"'{route}' is a subscription profile; the route must be an endpoint profile")
+        die(f"'{route}' is a Claude account profile; the route must be an API key profile")
     if route_type == "provider":
-        die(f"'{route}' is a provider profile; ccmorph-rc routes only to endpoint profiles")
+        die(f"'{route}' is a provider profile; ccmorph-rc routes only to API key profiles")
 
     account_dir = profile_env(account).get("CLAUDE_CONFIG_DIR") or die(f"no config dir for '{account}'")
     me = os.getpid()                       # becomes Claude's pid after exec

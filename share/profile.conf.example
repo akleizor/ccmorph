@@ -17,7 +17,7 @@
 # type        sub | token | apikey | provider        (required; `proxy` = old apikey)
 # provider    provider:  provider name, e.g. codex
 # email       sub:       account email (the profile's identity)
-# token       token:     long-lived OAuth token
+# token       token:     a Claude token from claude setup-token
 # base_url    apikey:    endpoint; omit for the native Anthropic API
 # api_key     apikey:    key presented to that endpoint; on macOS ccmorph moves it
 #                        to the login keychain and writes keychain:<name>.api_key
@@ -56,7 +56,7 @@ effort=medium
 # env.CCMORPH_MASK=1
 #              mask secrets before they reach the endpoint: keys, tokens and
 #              personal data go upstream as placeholders and are put back in
-#              replies. Covers gateway (apikey) routes only — a subscription,
+#              replies. Covers API key routes only — a Claude account,
 #              api.anthropic.com and provider profiles keep a direct connection,
 #              where nothing is masked. Guide: docs/guide.md#secret-masking
 # env.<NAME>   only names in ProfileEnv (profile/envkeys.go); sub and token
