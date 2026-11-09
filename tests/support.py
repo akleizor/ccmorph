@@ -1,6 +1,8 @@
 """The suite's shared hang-detection bound; imported by the tests that wait on a real process."""
 import os
 import random
+import shlex
+import shutil
 import socket
 from pathlib import Path
 
@@ -19,6 +21,30 @@ HANG_TIMEOUT = float(os.environ.get("CCMORPH_TEST_HANG_TIMEOUT", "120"))
 # macOS; conftest.py patches that away for in-process servers, and a subprocess
 # needs the same line itself. No fake here uses the name it would find.
 FAKE_SERVER_NO_DNS = "import socket\nsocket.getfqdn = lambda name='': name\n"
+
+
+def anthropic_accepts_the_key(bindir):
+    """Write bindir/curl for a test that launches a native apikey profile.
+
+    Such a launch asks Anthropic whether its key works before the session opens
+    (#255). A test's key is a placeholder Anthropic would reject, and a test must
+    not reach the network to find that out: this curl answers a request to
+    api.anthropic.com as Anthropic answers a working key (HTTP 200, an empty
+    model list) and hands every other request to the real curl, so a test's own
+    gateway or loopback server is reached exactly as before."""
+    bindir = Path(bindir)
+    elsewhere = os.pathsep.join(p for p in os.environ.get("PATH", "").split(os.pathsep)
+                                if p and Path(p).resolve() != bindir.resolve())
+    real = shutil.which("curl", path=elsewhere) or "/usr/bin/curl"
+    curl = bindir / "curl"
+    curl.write_text(
+        "#!/bin/sh\n"
+        "for a do case \"$a\" in https://api.anthropic.com/*)\n"
+        "  printf '%s' '{\"data\":[]}'\n"
+        "  for b do case \"$b\" in *http_code*) printf '\\n__CCMORPH_STATUS__200' ;; esac; done\n"
+        "  exit 0 ;; esac; done\n"
+        f"exec {shlex.quote(real)} \"$@\"\n")
+    curl.chmod(0o755)
 
 
 def port_outside_the_ephemeral_pool() -> int:

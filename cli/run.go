@@ -248,13 +248,37 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 		if !ok {
 			return fail()
 		}
-		// Claude Code asks whether to use ANTHROPIC_API_KEY on a profile's first
-		// launch and highlights No; ccmorph records the answer before it starts
-		// (#236). A key that was refused earlier stops the launch here, before
-		// any request, with the one command that records a new answer.
 		if !isProvider {
-			if k, ok := envGet(penv, "ANTHROPIC_API_KEY"); ok && k != "" && !l.keyApproval(name, k) {
-				return fail()
+			if k, ok := envGet(penv, "ANTHROPIC_API_KEY"); ok && k != "" {
+				// Claude Code asks whether to use ANTHROPIC_API_KEY on a profile's first
+				// launch and highlights No; ccmorph records the answer before it starts
+				// (#236). A key that was refused earlier stops the launch here, before
+				// any request, with the one command that records a new answer.
+				if !l.keyApproval(name, k) {
+					return fail()
+				}
+				// A native endpoint has no model picker, so nothing asked Anthropic
+				// whether the key works before Claude Code opened a session that dies
+				// on its first message (#255). Ask the way doctor does — only a
+				// rejection stops the launch, so a network that stays silent or
+				// answers anything else keeps out of the way — with the wording a
+				// gateway profile already gets. A launch that opens no session — a
+				// Claude subcommand, or its version or help printout, told from a
+				// flag-shaped option value by the same arity-aware walk the flags
+				// get (#334) — passes its arguments through untouched (INTENT
+				// promise 6) and has no first message for a rejected key to kill,
+				// so it keeps out of the way too.
+				if !needsAdapter && !subcommand && !util.OpensNoSession(args, table) {
+					base, _ := envGet(penv, "ANTHROPIC_BASE_URL")
+					if base == "" {
+						base = "https://api.anthropic.com"
+					}
+					if _, code := util.ProbeListing(base, k, "anthropic-version: 2023-06-01"); code == "401" || code == "403" {
+						rejected, _ := strconv.Atoi(code)
+						l.err(listingFailure(name, profile.RedactURL(base), rejected))
+						return fail()
+					}
+				}
 			}
 		}
 		l.foldSettings(name)
@@ -1092,6 +1116,16 @@ func (l *launcher) routeRefusal(name string) string {
 	}
 	base, _ := envGet(env, "ANTHROPIC_BASE_URL")
 	if util.NativeBase(base) {
+		// A native endpoint's launch now asks Anthropic whether the key works
+		// before a session opens (#255), so the hop asks the same question, with
+		// the same header, before it ends one (#286). Only a rejection refuses:
+		// silence keeps out of the way, exactly as at launch.
+		if base == "" {
+			base = "https://api.anthropic.com"
+		}
+		if _, code := util.ProbeListing(base, authKey(env), "anthropic-version: 2023-06-01"); code == "401" || code == "403" {
+			return "Anthropic rejected the API key (HTTP " + code + ")"
+		}
 		return ""
 	}
 	_, code := util.ProbeListing(base, authKey(env))

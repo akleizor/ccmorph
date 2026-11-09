@@ -35,8 +35,8 @@ func DoctorRoute(name, typ, base string, adapter bool, key, home string, verbose
 	}
 
 	if NativeBase(base) {
-		// Launch sends no request here, so this is the only place a key on
-		// Anthropic's own endpoint can be checked before a session fails.
+		// Launch asks Anthropic the same question before a session opens (#255);
+		// this probe answers it read-only, without starting anything.
 		switch {
 		case typ == "provider":
 			row("INFO", "endpoint: provider bridge, started by ccmorph run")
