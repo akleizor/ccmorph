@@ -825,24 +825,62 @@ def gone_within(pid: int, seconds: float) -> bool:
     return False
 
 
+def ps_argv(pid: int) -> "list[str] | None":
+    """ps's words for `pid`, or None when ps could not answer at all.
+
+    An empty list means ps ran and named no process. None means its answer
+    cannot be trusted -- a timeout, a failed or unreadable process table -- so
+    the caller falls back to a liveness probe rather than reading silence as
+    an exit (#297)."""
+    try:
+        seen = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True,
+                              text=True, errors="replace", timeout=10)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if seen.returncode:
+        return None
+    return seen.stdout.split()
+
+
+def host_at(pid: int) -> str:
+    """What `pid` holds now: "host", "gone", or "unknown".
+
+    "gone" is a pid that no longer runs the `claude remote-control` host: it is
+    dead, or ps answered with another command because the pid was reused.
+    "unknown" is ps silent while something is alive there; a caller may retry
+    on it, but never signals and never records a stop on it (#297)."""
+    argv = ps_argv(pid)
+    if argv:
+        if "remote-control" in argv[1:2] and Path(argv[0]).name == "claude":
+            return "host"
+        return "gone"               # ps answered with another command: reused
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return "gone"
+    except OSError:
+        return "unknown"            # EPERM: alive, but not readable as the host
+    return "unknown"                # ps named nothing while the pid lives: no proof
+
+
 def stop_orphan(pid: int) -> bool:
     """Stop a host an earlier supervisor left running, by its exact pid, as
     stop() would: SIGINT lets it release its environment, SIGTERM follows after
     GRACE_INTERRUPT, SIGKILL after GRACE_TERM. Only a pid whose own command line
-    is `claude remote-control` is signalled. True once nothing runs at the pid;
-    False while it may still run, so its restart is not recorded (#297)."""
-    try:
-        out = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True,
-                             text=True, errors="replace", timeout=10).stdout
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return False
-    argv = out.split()
-    if not argv:
-        return True                 # nothing at the pid: an earlier stop took
-    if not ("remote-control" in argv[1:2] and Path(argv[0]).name == "claude"):
-        return True                 # not a host (a recycled pid): nothing of ours to stop
+    is `claude remote-control` is signalled, and that is re-read before every
+    signal, so a pid reused by another process is left alone. True once the host
+    is gone; False while it may still run, so its restart is not recorded
+    (#297)."""
+    state = host_at(pid)
+    if state == "gone":
+        return True                 # dead, or the pid holds another command now
+    if state == "unknown":
+        return False                # never signal, and never record a stop, on a guess
     for sig, grace in ((signal.SIGINT, GRACE_INTERRUPT), (signal.SIGTERM, GRACE_TERM),
                        (signal.SIGKILL, GRACE_TERM)):
+        state = host_at(pid)
+        if state != "host":
+            return state == "gone"  # reused (gone), or alive but unreadable (unknown)
         try:
             os.kill(pid, sig)
         except ProcessLookupError:

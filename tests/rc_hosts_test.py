@@ -2898,38 +2898,43 @@ def _recovery_due(m, clock):
     return state
 
 
-def _orphan_host(tmp_path, monkeypatch, dies_on):
+def _orphan_host(tmp_path, monkeypatch, dies_on, reused_by=""):
     """A host an earlier supervisor left running, with its pid faked.
 
-    `dies_on` names the signals the fake process does not survive: os.kill is
-    the process table (signal 0 probes liveness, a real signal is recorded and
-    stops the pid), time.sleep is a no-op, and subprocess.run answers `ps` for
-    the pid. Nothing here is a real process or a real wait.
+    `dies_on` names the signals the fake host does not survive; once one lands
+    the pid is empty, or -- when `reused_by` names a command -- it is held by
+    that other process, as a recycled pid is. os.kill is the process table
+    (signal 0 probes liveness, a real signal is recorded and changes the
+    state), time.sleep is a no-op, and subprocess.run answers `ps`. Nothing
+    here is a real process or a real wait.
     """
     import signal
     import subprocess
     m, h, repo, clock, posts, stops = _lost_login_host(tmp_path, monkeypatch)
     h.proc = None                              # not this supervisor's child
-    running, sent = [True], []
+    state, sent = ["host"], []                 # host, gone, or reused
 
     def kill(pid, sig):
-        if not running[0]:
+        if state[0] == "gone":
             raise ProcessLookupError(pid)
         if sig == 0:
             return
+        if state[0] == "reused":
+            pytest.fail("signalled a pid the host no longer holds")
         name = signal.Signals(sig).name
         sent.append(name)
-        running[0] = name not in dies_on
+        if name in dies_on:
+            state[0] = "reused" if reused_by else "gone"
 
     def run(*cmd, **opts):
-        return subprocess.CompletedProcess(cmd, 0, stdout=(
-            "/Users/me/.local/bin/claude remote-control --spawn=worktree\n"
-            if running[0] else ""), stderr="")
+        out = {"host": "/Users/me/.local/bin/claude remote-control --spawn=worktree\n",
+               "reused": f"{reused_by}\n", "gone": ""}[state[0]]
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
 
     monkeypatch.setattr(m.os, "kill", kill)
     monkeypatch.setattr(m.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(m.subprocess, "run", run)
-    monkeypatch.setattr(h, "live_pointer_pid", lambda: 4242 if running[0] else None)
+    monkeypatch.setattr(h, "live_pointer_pid", lambda: 4242 if state[0] != "gone" else None)
     h.debugfile.write_text("[bridge:token] No OAuth token available for refresh (failure 1/3)\n")
     return m, h, repo, clock, sent
 
@@ -3146,6 +3151,40 @@ def test_an_orphan_that_ignores_sigint_is_escalated_and_only_a_confirmed_stop_is
     assert (first, second) == (([repo] if restarted else []), [])
     assert sent == expected
     assert (h.login_restarted == clock[0]) is restarted
+
+
+@pytest.mark.parametrize("returncode", [1, 0], ids=["ps-failed-issue-297", "ps-blind-issue-297"])
+def test_a_ps_that_cannot_show_the_live_orphan_does_not_record_a_stop(
+        tmp_path, monkeypatch, returncode):
+    """#297's refusal: ps's exit status was discarded, so a ps that failed or
+    named no process read as the orphan gone. While something lives at the pid
+    the stop is unconfirmed: it is not signalled blind, nothing records a
+    restart, and the next check tries again."""
+    import subprocess
+    m, h, repo, clock, sent = _orphan_host(tmp_path, monkeypatch, dies_on=set())
+
+    def silent(*cmd, **opts):
+        return subprocess.CompletedProcess(cmd, returncode, stdout="", stderr="ps: unreadable")
+
+    monkeypatch.setattr(m.subprocess, "run", silent)
+    first = m.restart_logged_out({repo: h}, clock[0])
+    second = m.restart_logged_out({repo: h}, clock[0] + m.RECOVER_EVERY)
+    assert (first, second) == ([], [])
+    assert sent == []                          # no signal on an unread identity
+    assert h.login_restarted == float("-inf")  # no cooldown suppressing the retry
+
+
+def test_a_pid_reused_after_the_interrupt_is_never_signalled_issue_297(tmp_path, monkeypatch):
+    """#297's second refusal: the host exits on SIGINT and another process takes
+    the pid. The host is confirmed gone, so the restart is recorded, but the
+    replacement is alive and must not receive SIGTERM or SIGKILL."""
+    m, h, repo, clock, sent = _orphan_host(
+        tmp_path, monkeypatch, dies_on={"SIGINT"}, reused_by="/usr/bin/python3 -m http.server")
+    first = m.restart_logged_out({repo: h}, clock[0])
+    second = m.restart_logged_out({repo: h}, clock[0] + m.RECOVER_EVERY)
+    assert (first, second) == ([repo], [])
+    assert sent == ["SIGINT"]                  # nothing reached the reused pid
+    assert h.login_restarted == clock[0]
 
 
 def test_a_folder_with_no_host_at_all_is_not_checked_for_its_login(tmp_path, monkeypatch):
