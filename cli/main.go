@@ -732,10 +732,23 @@ func (l *launcher) usage(topic string) int {
 		}
 	}
 	fmt.Println(body)
-	fmt.Println("\nFixed choices: ↑/↓ move, Enter selects one, Esc cancels. No search box.")
-	fmt.Println("Profile/model catalogues: type to search with fzf; numbers without it.")
+	if pickerTopics[topic] {
+		fmt.Println("\n" + pickerNote)
+	}
 	return 0
 }
+
+// pickerNote teaches a picker's keys. It ends only the pages whose command can
+// open one (#263); a page for a command that never shows a picker stays silent.
+const pickerNote = "Pickers: move with the arrow keys, Enter selects, Esc to cancel.\n" +
+	"Profile and model lists also let you type to search (with fzf installed);\n" +
+	"without fzf, type the number of your choice."
+
+// pickerTopics are the help pages whose command, used as its page teaches, can
+// open a picker: an omitted argument, -i, or a menu the command always shows.
+var pickerTopics = map[string]bool{"run": true, "add": true, "config": true, "use": true,
+	"inspect": true, "doctor": true, "models": true, "get": true, "set": true, "login": true,
+	"cred": true, "probe": true, "context": true}
 
 var usageTopics = map[string][2]string{
 	"run": {"ccmorph run [profile] [-i] [-- <claude arguments...>]", `Omit the profile to use your default. -i asks for a profile if needed,
@@ -781,8 +794,13 @@ the profile is ready. --verbose adds a running adapter's processes and ports.
 Omit the profile to check the default. Does not repair or launch a session.`},
 	"models": {"ccmorph models [profile] [--filtered|--filtered-json]", `List models from an API-key endpoint. Omit the profile to choose one.
 --filtered applies profile exclusions; --filtered-json returns JSON.`},
-	"get": {"", `Read or save a default for new sessions. Missing arguments open pickers.
-Use explicit arguments in scripts. Values are printed to stdout.
+	"get": {"", `Read the default model or effort level that new sessions use; nothing changes.
+Omit the profile or the setting to choose it in a picker.
+The value is printed to stdout; name both in scripts.
+Effort: ` + strings.Join(profile.Efforts, ", ") + `. Available models come from the profile.`},
+	"set": {"", `Save a default for new sessions: the model or the effort level.
+Omit the profile, the setting or the value to choose it in a picker.
+Name all three in scripts.
 Effort: ` + strings.Join(profile.Efforts, ", ") + `. Available models come from the profile.`},
 	"login": {"ccmorph login [profile|-i]", `Sign in again: a Claude account profile with its browser login, a
 provider-backed profile with its own, or let Claude Code use an API-key
@@ -823,5 +841,3 @@ Normally unnecessary: compatibility and context limits are automatic.`},
 -h or --help after any command shows that command's page.`},
 	"version": {"ccmorph version", "Print the installed version of ccmorph. Same as ccmorph --version, -v or -V."},
 }
-
-func init() { usageTopics["set"] = usageTopics["get"] }

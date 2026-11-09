@@ -1592,6 +1592,35 @@ test_arguments_reach_claude_exactly_as_given() {
   return $rc
 }
 
+test_run_with_a_profile_keeps_claudes_native_help() {
+  # `ccmorph run <profile> --help` is Claude Code's own help, passed through
+  # untouched (INTENT.md promise 6). A bare `run --help` now prints ccmorph's
+  # own page (#263); that interception must not swallow the flag once a profile
+  # is named. The fake answers --help with Claude's usage, so the proof is the
+  # session's output: Claude's usage, never ccmorph's run page.
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  write_apikey_conf gw 'api_key=k' 'base_url=https://gateway.invalid' 'model=gw-model'
+  fake_claude_help
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 output actual_rc=0
+  output=$(ccmorph run gw --help 2>&1) || actual_rc=$?
+  [[ "$actual_rc" == 0 ]] || {
+    print -u2 -- "FAIL: ccmorph run gw --help must succeed, status $actual_rc"
+    rc=1
+  }
+  assert_contains "$output" 'Usage: claude [options] [command]' \
+    "run <profile> --help must print Claude Code's own help" || rc=1
+  assert_not_contains "$output" 'Usage: ccmorph run' \
+    'run gw --help must not print ccmorph page instead of forwarding' || rc=1
+
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_a_missing_argument_prints_usage_under_nounset() {
   # ccmorph is sourced into whatever options the caller runs, and `local.sh` or a
   # strict wrapper script can `setopt nounset`. A bare `$2` in a usage guard then
@@ -10728,6 +10757,7 @@ run_test test_menu_returns_a_bare_model_id
 run_test test_the_former_pick_name_still_works
 run_test test_claude_subcommands_are_asked_for_never_hardcoded
 run_test test_arguments_reach_claude_exactly_as_given
+run_test test_run_with_a_profile_keeps_claudes_native_help
 run_test test_a_missing_argument_prints_usage_under_nounset
 run_test test_claude_subcommands_reach_claude_through_the_launch_pipeline
 run_test test_a_retired_verb_is_rejected_not_merely_undocumented
