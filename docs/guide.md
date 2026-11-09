@@ -572,10 +572,10 @@ or run it with a leading `!`:
 
 `/ccmorph:hop` with no profile names the other profiles to choose from, the one
 the session runs on marked; hopping to that profile changes nothing. In a plain
-terminal a bare hop prints its usage line, a named one exits with `not inside a
-Claude Code session`, and a session started by plain `claude` (bypassing the
-launcher) reports `this session was not launched by the ccmorph relay` — start
-it with `ccmorph` and hop from there.
+terminal hop answers `not inside a Claude Code session` and names the two
+forms to type inside the session, profile or no profile; a session started by
+plain `claude` (bypassing the launcher) reports `this session was not launched
+by the ccmorph relay` — start it with `ccmorph` and hop from there.
 
 Which profile a session runs on is visible without running anything: every
 launch gives the session a status line reading `profile: <name>`, and a hop

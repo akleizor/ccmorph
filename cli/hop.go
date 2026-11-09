@@ -77,8 +77,7 @@ func (l *launcher) hop(args []string) int {
 	}
 	if name == "" {
 		if session == "" {
-			l.err("usage: " + usageLine("hop"))
-			return 1
+			return l.notInsideSession()
 		}
 		if !relayValid(relay) {
 			l.err("this session was not launched by the ccmorph relay")
@@ -105,8 +104,7 @@ func (l *launcher) hop(args []string) int {
 		return 1
 	}
 	if session == "" {
-		l.err("not inside a Claude Code session")
-		return 1
+		return l.notInsideSession()
 	}
 	if !relayValid(relay) {
 		l.err("this session was not launched by the ccmorph relay")
@@ -215,6 +213,16 @@ func (l *launcher) hopCheck(name string) bool {
 func (l *launcher) refuseHop(name, why string) {
 	l.err("not switching to '" + name + "': " + why)
 	fmt.Fprintln(os.Stderr, "  This session keeps running.")
+}
+
+// notInsideSession is hop's one answer wherever no Claude Code session runs
+// (#362): what it ends and relaunches is such a session, and the two forms the
+// help page teaches are the way in. A usage line would blame a profile left
+// out, and the profile is optional.
+func (l *launcher) notInsideSession() int {
+	l.err("not inside a Claude Code session")
+	fmt.Fprintln(os.Stderr, "  Run hop from the Claude Code prompt (/ccmorph:hop or ! ccmorph hop)")
+	return 1
 }
 
 // hopChoices is the answer to a hop that named no profile: the profiles worth

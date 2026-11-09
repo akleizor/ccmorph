@@ -1,22 +1,17 @@
 [
   {
-    "criterion": "With effort xhigh saved on a profile whose model is a claude-* id, ccmorph run opens the session at that level (banner reads \"with xhigh effort\"); the same holds for low, medium, high and max.",
+    "criterion": "ccmorph hop in a terminal outside a session says that it works only inside a Claude Code session, as ccmorph hop work does.",
     "pass": true,
-    "evidence": "test_saved_effort_starts_new_sessions PASS: every level low/medium/high/xhigh/max, saved with `ccmorph set` then launched, reaches claude's argv as `--effort <level>`. The seam is the fake claude's ARG log — the banner is Claude Code's own rendering of that argv, and the filer verified `--effort` is the spelling it honors (it ignores the settings `effortLevel` for models it knows)."
+    "evidence": "test_hop_usage_line_agrees_across_help_and_the_slash_command (tests/cli_messages_test.py) now runs both `ccmorph hop` and `ccmorph hop work` in a session-scrubbed env with a seeded work profile and asserts named.stderr == bare.stderr, both carrying 'not inside a Claude Code session'. Watched red on the unfixed code for the issue's own reason (bare.stderr was 'ccmorph: usage: ccmorph hop [profile]'), green after the fix; hermetic rerun of both commands prints the same two-line reply, exit=1."
   },
   {
-    "criterion": "An effort typed on the command line still decides over the saved one.",
+    "criterion": "The reply also says what to type inside a session (/ccmorph:hop, or ! ccmorph hop).",
     "pass": true,
-    "evidence": "test_typed_effort_decides_over_the_saved_one PASS: saved xhigh, launched with `--effort low` — the argv carries low and never xhigh (one spelling decides, no fight)."
+    "evidence": "The reply's second line is '  Run hop from the Claude Code prompt (/ccmorph:hop or ! ccmorph hop)' — the same hint cli/hop.go already gave when it could not find the Claude Code process. The test asserts '/ccmorph:hop or ! ccmorph hop' in bare.stderr (and so in named.stderr, being byte-identical)."
   },
   {
-    "criterion": "After ccmorph hop, the new session runs at the effort the old one had.",
+    "criterion": "A usage line appears only for input that is wrong, not for an optional profile left out.",
     "pass": true,
-    "evidence": "The relay pass already carries its own --effort (test_relay_resume_preserves_dangerous_permission_mode PASS: relaunch argv is --dangerously-skip-permissions --model source-model --effort high --resume relay-session; test_hop_relays_model_and_effort PASS covers the relay file). test_resume_keeps_the_conversations_own_effort PASS proves the launch adds no saved level to a resumed argv — a hop's effort arrives exactly once."
-  },
-  {
-    "criterion": "ccmorph inspect never names an effort the session will not run at.",
-    "pass": true,
-    "evidence": "inspect is untouched; it reads the same conf keys the launch applies, with the same precedence (per-model effort.<model> before effort), and the lookup follows the model the session actually runs at — the one the person typed or picked, else the saved default. The landing gate caught the typed case (a --model left the lookup on the profile default); it is fixed and covered: test_saved_effort_honors_a_per_model_override PASS asserts `--model chosen-model --effort xhigh`, the typed model's own row over the default. Hermetic run: saved xhigh → inspect 'xhigh profile default', argv --effort xhigh; per-model high over default low → inspect names both rows, argv --effort high. Every level inspect names is a level a session on the profile runs at."
+    "evidence": "The reshaped test asserts 'usage:' not in bare.stderr — a profile left out is no longer a usage error. Wrong input keeps the line: the same test's `hop --slash a b` case still gets \"unexpected argument 'b'\" + 'usage: ccmorph hop [profile]' (exit 2), and the untouched guards test_a_wrong_argument_names_the_help_pages_usage[hop bad/name] and test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage[('hop', 1)] PASS in the touched-file run (170 passed: cli_messages, docs_claims, docs_anchor, behaviour_coverage). go vet ./... clean, go test ./cli/ and go test ./util/ -run Hop ok, CCMORPH_TEST_FILTER=hop zsh tests/ccmorph_test.zsh 18/18."
   }
 ]

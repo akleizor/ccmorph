@@ -188,6 +188,7 @@ def test_hop_usage_line_agrees_across_help_and_the_slash_command(tmp_path):
     # — and the slash command's description named neither.
     state = tmp_path / 'state'
     state.mkdir()
+    (state / 'work.conf').write_text('type=token\ntoken=k\n')
     # Scrub the runner's own session: this suite may run inside a Claude Code
     # session, where a bare hop is a question, not a usage error.
     env = {k: v for k, v in os.environ.items()
@@ -198,8 +199,17 @@ def test_hop_usage_line_agrees_across_help_and_the_slash_command(tmp_path):
     usage = 'ccmorph hop [profile]'
     bare = subprocess.run([cli, 'hop'], env=env, capture_output=True,
                           text=True, timeout=HANG_TIMEOUT)
+    # GH-362: outside a session the reply names the session hop needs and the
+    # forms to type inside one — the profile is optional, so leaving it out is
+    # not a usage error, and the named command answers the same.
     assert bare.returncode == 1, bare.stdout
-    assert 'usage: ' + usage in bare.stderr, bare.stderr
+    assert 'not inside a Claude Code session' in bare.stderr, bare.stderr
+    assert '/ccmorph:hop or ! ccmorph hop' in bare.stderr, bare.stderr
+    assert 'usage:' not in bare.stderr, bare.stderr
+    named = subprocess.run([cli, 'hop', 'work'], env=env, capture_output=True,
+                           text=True, timeout=HANG_TIMEOUT)
+    assert named.returncode == 1, named.stdout
+    assert named.stderr == bare.stderr, named.stderr
     detail = subprocess.run([cli, 'help', 'hop'], env=env, capture_output=True,
                             text=True, timeout=HANG_TIMEOUT)
     assert detail.returncode == 0, detail.stderr
