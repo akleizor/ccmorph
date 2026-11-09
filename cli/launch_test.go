@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/akleizor/ccmorph/util"
 )
@@ -340,6 +341,30 @@ func TestClaudeAuthDropsEveryBackendKey(t *testing.T) {
 	// add sub reads the email from the profile it just logged into, never the global file.
 	if v, _ := envGet(env, "CLAUDE_CONFIG_DIR"); v != "/tmp/p" {
 		t.Fatalf("auth status must run against the given profile dir")
+	}
+}
+
+// INTENT promise 8: doctor never hangs. A claude that never answers `auth
+// status` (a keychain prompt, a wedged install) must be cut off at the
+// deadline and read as "cannot tell", not block the report forever. The stub's
+// child keeps the output pipe open, as a real wedged claude's helpers do.
+func TestSignInStatusStopsWaitingForAClaudeThatNeverAnswers(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	old := authStatusDeadline
+	authStatusDeadline = 100 * time.Millisecond
+	t.Cleanup(func() { authStatusDeadline = old })
+	l := &launcher{profileDirs: t.TempDir()}
+	start := time.Now()
+	out, answered := l.signInStatus("demo")
+	if answered || len(out) != 0 {
+		t.Fatalf("a claude that never answered read as answered: %q", out)
+	}
+	if took := time.Since(start); took > 10*time.Second {
+		t.Fatalf("signInStatus waited %v for a claude that never answers", took)
 	}
 }
 

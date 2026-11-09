@@ -19,7 +19,7 @@ from support import FAKE_SERVER_NO_DNS, HANG_TIMEOUT
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_doctor(tmp_path, conf, curl=None, args=()):
+def run_doctor(tmp_path, conf, curl=None, args=(), claude=None):
     state = tmp_path / "state"
     home = tmp_path / "home"
     bindir = tmp_path / "bin"
@@ -31,9 +31,16 @@ def run_doctor(tmp_path, conf, curl=None, args=()):
     if not (state / "local.sh").exists():
         (state / "local.sh").write_text("printf marker > \"$DOCTOR_MARKER\"\n")
     (state / "local.sh").chmod(0o700)
-    claude = bindir / "claude"
-    claude.write_text("#!/bin/sh\nexit 0\n")
-    claude.chmod(0o755)
+    if claude is None:
+        # A healthy account profile is signed in, and doctor now asks claude
+        # for that state the way add does — so the default stub must answer.
+        claude = ('#!/bin/sh\n'
+                  '[ "$1 $2" = "auth status" ] && '
+                  'printf \'{"loggedIn": true, "authMethod": "claude.ai", '
+                  '"email": "test@example.test"}\\n\'\n'
+                  'exit 0\n')
+    (bindir / "claude").write_text(claude)
+    (bindir / "claude").chmod(0o755)
     if curl is not None:
         c = bindir / "curl"
         c.write_text(curl)
@@ -324,6 +331,36 @@ def test_doctor_native_profile_without_base_url_is_clear(tmp_path):
     assert result.returncode == 0
     assert "INFO endpoint: Anthropic" in result.stdout
     assert "adapter:" not in result.stdout
+
+
+def test_doctor_names_the_fix_for_a_signed_out_account_profile(tmp_path):
+    """GH-256: doctor called a signed-out Claude account profile ready. It must
+    say the profile is not signed in and name the command that signs it in
+    again — the same command cred and quota name. Signed-out is what a real
+    `claude auth status` reports: loggedIn false, exit 1."""
+    claude = ('#!/bin/sh\n'
+              '[ "$1 $2" = "auth status" ] && '
+              'printf \'{"loggedIn": false, "authMethod": "none"}\\n\' && exit 1\n'
+              'exit 0\n')
+    result, _, _ = run_doctor(tmp_path, "type=sub\nemail=test@example.test\n", claude=claude)
+    assert result.returncode == 1, result.stdout
+    assert "credentials: not signed in — sign in again: ccmorph login demo" in result.stdout
+    assert "not ready: fix credentials" in result.stdout
+    assert "kept in the profile home" not in result.stdout
+
+
+def test_doctor_admits_when_it_cannot_read_the_sign_in_state(tmp_path):
+    """When claude answers nothing doctor must not guess: it says plainly it
+    cannot tell, warns in the verdict, and does not fail a profile it could
+    not read."""
+    claude = "#!/bin/sh\nexit 0\n"
+    result, _, _ = run_doctor(tmp_path, "type=sub\nemail=test@example.test\n", claude=claude)
+    assert result.returncode == 0, result.stdout
+    assert "credentials: cannot tell" in result.stdout
+    assert "not signed in" not in result.stdout
+    # Unread is not healthy: the verdict must not say ready right after it.
+    assert "may not start: check credentials" in result.stdout
+    assert "ready: start it" not in result.stdout
 
 
 @pytest.mark.parametrize("base", ["", "https://api.anthropic.com"],

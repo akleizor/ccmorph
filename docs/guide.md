@@ -162,6 +162,12 @@ starts with `sk-ant-oat01-`); run `ccmorph add <name>` and choose *Claude
 token* to paste it (typing is hidden). One thing it cannot do: read plan usage,
 so `ccmorph quota` shows no plan windows for it.
 
+Signing in again, per type: a `sub` profile reopens the browser login with
+`ccmorph login <profile>`, a provider-backed profile renews its login the same
+way, and a `token` or `apikey` profile has its credential replaced with
+`ccmorph config <profile>` — though an API key Claude Code was told to refuse is
+re-allowed by `ccmorph login <profile>` instead.
+
 `proxy` is a legacy alias retained only so existing profile files keep working.
 New profiles use `apikey`; endpoint, dialect, network route, model, and effort are
 separate settings rather than additional profile types.
@@ -176,7 +182,7 @@ ccmorph inspect [<profile>] # effective configuration and its sources
 ccmorph use <profile>      # make it the default for new sessions
 ccmorph add <profile>      # create one with guided setup
 ccmorph config <profile>   # choose which settings to change
-ccmorph login <profile>    # re-authenticate a provider, or re-allow a refused key
+ccmorph login <profile>    # sign an account or provider profile in again, or re-allow a refused key
 ccmorph rm <profile>       # remove it and its config directory
 ccmorph mv <old> <new>     # rename it
 ccmorph cred <profile>      # print its credential to stdout
@@ -217,7 +223,8 @@ missing `fzf` use numbered choices. Claude Code's own in-session menus are
 owned by Claude Code, not rendered or replaced by ccmorph.
 
 Profile pickers offer only usable profiles: `models` lists API-key profiles,
-`cred` lists stored keys/tokens, and `login` lists provider-backed accounts.
+`cred` lists stored keys/tokens, and `login` lists account, provider and
+API-key profiles.
 
 Use `rm` and `mv` instead of deleting or renaming `.conf` files by hand. Both
 manual context overrides and discovered context data live in the one `.conf`, so
@@ -563,7 +570,8 @@ provider's own account data, never guessed. Claude subscriptions are read from
 claude.ai's usage endpoint (the one `/usage` shows) with the profile's own sign-in,
 Codex subscriptions from Codex's own usage endpoint; no inference, nothing billed. An
 expired sign-in is reported, not refreshed; the next session on that profile refreshes
-it, and a `token` profile's long-lived token is not allowed to read plan usage.
+it. A missing sign-in is reported with the command that restores it, and a
+`token` profile's long-lived token is not allowed to read plan usage.
 
 When a read is rate-limited or unreachable, the last good reading stays on screen,
 dimmed, with its age ("12 min old"); only a profile never read shows the error. Gateways

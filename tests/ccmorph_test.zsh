@@ -9503,6 +9503,57 @@ test_add_sub_completes_the_browser_login() {
   return $rc
 }
 
+# GH-256: `cred` on a signed-out account profile names `ccmorph login` as the
+# way out, and login used to refuse the very profile it was pointed at — a
+# circle with no working command. login must run the browser sign-in `add`
+# runs, on the profile's existing home, and record the account it lands on.
+test_login_signs_a_signed_out_account_profile_in_again() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  # Status flips only once login ran, so the readback proves the fresh sign-in
+  # was seen, not a stale one. Signed-out status is what real claude prints.
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'case "$1 $2" in' \
+    '  "auth login") : > "$HOME/login.ran"; exit 0 ;;' \
+    '  "auth status")' \
+    '    if [ -f "$HOME/login.ran" ]; then' \
+    '      printf '"'"'{"loggedIn": true, "authMethod": "claude.ai", "email": "new@example.com"}\n'"'"'' \
+    '    else' \
+    '      printf '"'"'{"loggedIn": false, "authMethod": "none"}\n'"'"'' \
+    '      exit 1' \
+    '    fi' \
+    '    exit 0 ;;' \
+    'esac' \
+    'exit 0' \
+    > "$HOME/bin/claude"
+  chmod +x "$HOME/bin/claude"
+  printf '%s\n' 'type=sub' 'email=old@example.com' > "$HOME/.config/ccmorph/s.conf"
+  mkdir -p "$HOME/.config/ccmorph/profiles/s"
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 out
+  # The circle's first half: cred refuses the profile but names the way out.
+  out=$(ccmorph cred s 2>&1) && {
+    print -u2 -- 'cred must refuse a profile that stores no credential'
+    rc=1
+  }
+  assert_contains "$out" 'ccmorph login s' \
+    'the refusal must name the command that signs the profile in again' || rc=1
+  # The second half: that command must not refuse the profile it names.
+  out=$(ccmorph login s 2>&1) || { print -u2 -- "$out"; rc=1; }
+  assert_contains "$out" 'Signed in to Claude as new@example.com' \
+    'login must complete the browser sign-in it was pointed at' || rc=1
+  [[ -f "$HOME/login.ran" ]] || { print -u2 -- 'the browser login never ran'; rc=1; }
+  command grep -qx 'email=new@example.com' "$HOME/.config/ccmorph/s.conf" ||
+    { print -u2 -- 'the profile must record the account the sign-in landed on'; rc=1; }
+  command grep -qx 'type=sub' "$HOME/.config/ccmorph/s.conf" ||
+    { print -u2 -- 'the sign-in must not rewrite the profile type'; rc=1; }
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_add_sub_auth_calls_scrub_securestorage_dir() {
   # A private session exports CLAUDE_SECURESTORAGE_CONFIG_DIR; status, logout and
   # login must not inherit it (they would read/write the wrong credential store).
@@ -10147,6 +10198,7 @@ run_test test_launch_says_whether_secrets_are_masked
 run_test test_launch_compacts_at_fleet_percent_unless_the_conf_overrules
 run_test test_a_settings_file_compaction_trigger_is_not_overruled
 run_test test_add_sub_completes_the_browser_login
+run_test test_login_signs_a_signed_out_account_profile_in_again
 run_test test_launch_skips_the_sizer_when_nothing_is_new
 run_test test_add_sub_auth_calls_scrub_securestorage_dir
 run_test test_one_interactive_flag_is_the_only_way_to_ask

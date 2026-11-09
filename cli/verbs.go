@@ -214,7 +214,7 @@ func (l *launcher) cred(args []string) int {
 	}
 	if c == "" {
 		l.err("'" + name + "' is a " + f["type"] + " profile and stores no credential here")
-		l.err("subscription profiles use browser login: ccmorph login " + name)
+		l.err("sign in again: ccmorph login " + name)
 		return 1
 	}
 	if isTTY(1) {
