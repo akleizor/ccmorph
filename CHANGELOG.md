@@ -5,7 +5,7 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
-## Unreleased
+## v0.5.8 — 2026-11-10
 
 ### Added
 
@@ -41,6 +41,15 @@
 
 ### Fixed
 
+- **A routed model compacts inside its own window.** Claude Code gives a
+  non-Claude model one ceiling, `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, and ccmorph set
+  it to the largest window the route serves. Your `autoCompactWindow` and
+  `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` then applied to that number, so a 114,000-token
+  model on a route with a 1,048,576-token sibling was told it had 470,000 and
+  never compacted. The ceiling is now the launched model's own window, so one cap
+  and one percentage give every model its own trigger. A mid-session switch to a
+  larger model runs capped at the launched window; launch on the larger model to
+  use all of it.
 - **A profile not yet launched is ready, not broken.** The guide says a
   profile handed over by a colleague is copied in and works at once, yet
   `ccmorph doctor` failed it — `profile home: missing` — for the one state
@@ -202,20 +211,6 @@
   same refresh token; the second got `refresh_token_reused` and the profile
   needed `ccmorph login` again. Sessions of one provider profile now share one
   bridge, and the last session to exit stops it (#250).
-
-## Unreleased
-
-### Fixed
-
-- **A routed model compacts inside its own window.** Claude Code gives a
-  non-Claude model one ceiling, `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, and ccmorph set
-  it to the largest window the route serves. Your `autoCompactWindow` and
-  `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` then applied to that number, so a 114,000-token
-  model on a route with a 1,048,576-token sibling was told it had 470,000 and
-  never compacted. The ceiling is now the launched model's own window, so one cap
-  and one percentage give every model its own trigger. A mid-session switch to a
-  larger model runs capped at the launched window; launch on the larger model to
-  use all of it.
 
 ## v0.5.6 — 2026-11-08
 
