@@ -498,6 +498,65 @@ def test_retired_verbs_point_at_their_replacement_and_launch_nothing(box):
     assert box.log() == '' and box.active is None
 
 
+# A guessed or mistyped command names the real one, and the profile list stays
+# for a word that could be a profile (#266).
+@pytest.mark.parametrize('argv, hint', [
+    (('ls',), 'Run: ccmorph list'),
+    (('lst',), 'Run: ccmorph list'),
+    (('remove', 'gw'), 'Run: ccmorph rm gw'),
+    (('delete', 'gw'), 'Run: ccmorph rm gw'),
+    (('rename', 'a', 'b'), 'Run: ccmorph mv a b'),
+    (('switch', 'gw'), 'Run: ccmorph use gw'),
+], ids=['ls-issue-266', 'lst-issue-266', 'remove-issue-266',
+        'delete-issue-266', 'rename-issue-266', 'switch-issue-266'])
+def test_a_guessed_command_names_the_real_one_and_prints_no_profile_list(box, argv, hint):
+    seed(box)
+    out = box.run(*argv)
+    assert out.returncode == 1, out.stderr
+    assert f"unknown command '{argv[0]}'" in out.stderr
+    assert hint in out.stderr, out.stderr
+    assert 'profiles:' not in out.stderr
+    assert box.log() == '' and box.active is None
+
+
+@pytest.mark.parametrize('flag, near', [
+    ('--versoin', '--version'),
+    ('--helpp', '--help'),
+], ids=['versoin-issue-266', 'helpp-issue-266'])
+def test_a_mistyped_flag_is_an_unknown_option_not_a_command(box, flag, near):
+    seed(box)
+    out = box.run(flag)
+    assert out.returncode == 1, out.stderr
+    assert f"unknown option '{flag}'" in out.stderr
+    assert f'Run: ccmorph {near}' in out.stderr
+    assert 'go after the verb' not in out.stderr
+    assert 'profiles:' not in out.stderr
+
+
+def test_a_misplaced_launch_flag_keeps_the_pointer_behind_run(box):
+    seed(box)
+    out = box.run('-p', 'hi')
+    assert out.returncode == 1, out.stderr
+    assert "unknown option '-p'" in out.stderr
+    assert 'Launch flags go after the verb: ccmorph run -p' in out.stderr
+    assert 'profiles:' not in out.stderr
+
+
+def test_the_profile_list_appears_only_under_a_word_that_could_be_a_profile(box):
+    seed(box)
+    # A word that names a profile keeps the launch pointer and the list.
+    out = box.run('gw')
+    assert out.returncode == 1 and "unknown command 'gw'" in out.stderr
+    assert 'To launch that profile: ccmorph run gw' in out.stderr
+    assert 'profiles:' in out.stderr
+    # A word that could be a profile but is not one keeps the list too: it may
+    # be a mistyped profile name, and the list is what spots that.
+    out = box.run('no_such_profile')
+    assert out.returncode == 1 and "unknown command 'no_such_profile'" in out.stderr
+    assert 'To launch that profile' not in out.stderr
+    assert 'profiles:' in out.stderr
+
+
 def test_cred_prints_the_stored_secret_bare_and_refuses_when_there_is_none(box):
     seed(box)
     assert box.run('cred', 'tok').stdout == 'sk-ant-oat-canary'
