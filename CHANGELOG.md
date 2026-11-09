@@ -61,6 +61,19 @@
   `ccmorph doctor <profile>` asks the same question for a token profile, so
   `ready` means the token was accepted, and an unanswered check says it was
   not checked (#254).
+- **The usage export ships with every install.** The README's export step ran
+  `scripts/usage-export`, a file only a source checkout has — a Homebrew or
+  one-liner install died on the first token. The exporter now lives at
+  `share/usage-export`, the tree every delivery path already copies, and the
+  README names each route's path: `~/.config/ccmorph/share/usage-export` for a
+  clone or one-liner install, the Homebrew prefix for a brew install;
+  `scripts/usage-export` stays in a checkout as a launcher for it. A fresh
+  install now passes a check that every command the README names — in a block
+  or inline — is found for real on a reader's PATH (the fresh install, then
+  `/usr/bin` and `/bin`; `brew` also in Homebrew's own prefix), or is spelled
+  from the checkout. The README no longer prints a `ccusage` command, since no
+  install route provides ccusage; it says how to point ccusage at the export
+  (#261).
 
 ## v0.5.7 — 2026-11-08
 

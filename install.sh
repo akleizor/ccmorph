@@ -136,8 +136,10 @@ MODULES=("$SRC"/lib/ccmorph-*.zsh(N:t))
 # Paths are relative to the repo root and installed with the same structure.
 LIBS=(lib/ccmorph.sh ${MODULES/#/lib/})
 # install.sh ships too (an executable at the install root), so `ccmorph update` and
-# `ccmorph uninstall` have the installer to run without a clone or a URL.
-EXECUTABLES=(bin/ccmorph install.sh)
+# `ccmorph uninstall` have the installer to run without a clone or a URL. The usage
+# exporter ships in share/ — the README's export step runs it from there, so every
+# install route places it, not only a checkout (#261).
+EXECUTABLES=(bin/ccmorph install.sh share/usage-export)
 DATA_FILES=(share/model-catalogue.json share/window-sources.json share/provider-presets.tsv
   share/claude-plugin/.claude-plugin/plugin.json share/claude-plugin/commands/hop.md
   share/claude-plugin/hooks/hooks.json)

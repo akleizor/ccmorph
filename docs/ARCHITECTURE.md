@@ -829,16 +829,18 @@ and the report. A third reader this section described from the first release —
 usage-summary over a sqlite index — never shipped; #69 took the description out, and the
 suite now fails if the document names a `scripts/` path the repo does not ship.
 
-**The export.** `scripts/usage-export` turns the receipts into a ccusage config dir, so the
-ledger is ccusage and not a report tool of our own. Run it as
-`scripts/usage-export --output ROOT [--since YYYYMMDD]`; `--source` defaults to the state
-root's `usage/`, every `*.json` in it is parsed — the day folders at or after the range's
-first day beside the flat rows, every folder when no range is given — and it writes one `ccmorph-<profile>`
-project per profile — an unsafe character in a profile name is replaced, and a row with no
-profile lands in `ccmorph-unknown` **[test]** — one `YYYY-MM-DD.jsonl` per local-time day,
+**The export.** `share/usage-export` turns the receipts into a ccusage config dir, so the
+ledger is ccusage and not a report tool of our own. It lives in `share/`, the one tree
+every delivery path copies, so a Homebrew or one-liner install has it too, not only a
+checkout (#261); a checkout's `scripts/usage-export` only forwards to it. Run it as `share/usage-export --output ROOT [--since YYYYMMDD]`;
+`--source` defaults to the state root's `usage/`, every `*.json` in it is parsed — the day
+folders at or after the range's first day beside the flat rows, every folder when no range
+is given — and it writes one `ccmorph-<profile>` project per profile — an unsafe
+character in a profile name is replaced, and a row with no profile lands in
+`ccmorph-unknown` **[test]** — one `YYYY-MM-DD.jsonl` per local-time day,
 and a `ccusage.json` that prices a billed or estimated cost as is and leaves every other
-turn to ccusage's own list prices. It is private (`scripts/`), stdlib only, starts no
-service, and reads no transcript and no credential. Each receipt's own `timestamp` decides
+turn to ccusage's own list prices. It is stdlib only, starts no service, and reads no
+transcript and no credential. Each receipt's own `timestamp` decides
 its day and its range, never the file's mtime **[test]**, and the exported stamp is UTC
 milliseconds with a `Z`, the one spelling ccusage reads **[test]**. A turn the gateway
 billed exports that billed `cost` (`costSource: gateway`); a turn the shim priced itself
