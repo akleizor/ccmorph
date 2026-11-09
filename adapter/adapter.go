@@ -138,6 +138,75 @@ func findTranslator() string {
 	return "/opt/homebrew/opt/cliproxyapi/bin/cliproxyapi"
 }
 
+// TranslatorVerdict reports whether a launch against this endpoint would start
+// the translator, read from what an automatic launch consults without
+// inference: the classification cache, and the per-model protocol declarations
+// in the endpoint's model listing (listing is that JSON, or "" when doctor read
+// none). Nothing is probed, so doctor stays read-only. With a model set, that
+// model is the one launch classifies: cached, else declared; a model that is
+// neither is undecided, and the answer then rests on the cached rows alone
+// (known only when they already need the translator, since the undecided model
+// could only add to that). Without a model every listed, declared model counts.
+// needed mirrors serve()'s own native test over the usable rows. known is false
+// when no usable row decides it, in which case there is no honest verdict.
+func TranslatorVerdict(base, cacheDir, model, listing string) (needed, known bool) {
+	upstream := strings.TrimRight(base, "/")
+	cache := filepath.Join(cacheDir, ".adapter-cache", hashHex(upstream)[:16]+".json")
+	rows := cachedRows(upstream, cache)
+	var doc map[string]any
+	_ = json.Unmarshal([]byte(listing), &doc)
+	data, _ := doc["data"].([]any)
+	cached := func(m string) bool {
+		for _, r := range rows {
+			if r.Model == m {
+				return true
+			}
+		}
+		return false
+	}
+	model = strings.SplitN(strings.TrimSpace(model), "[", 2)[0]
+	undecided := false
+	if model != "" {
+		if !cached(model) {
+			if d := declaredDialect(data, model); d != "" {
+				rows = append(rows, Row{Model: model, Dialect: d})
+			} else {
+				undecided = true
+			}
+		}
+	} else {
+		for _, id := range listedModels(data) {
+			if cached(id) {
+				continue
+			}
+			if d := declaredDialect(data, id); d != "" {
+				rows = append(rows, Row{Model: id, Dialect: d})
+			}
+		}
+	}
+	var usable []Row
+	for _, r := range rows {
+		if r.Dialect != "unusable" {
+			usable = append(usable, r)
+		}
+	}
+	if len(usable) == 0 {
+		return false, false
+	}
+	native := true
+	for _, r := range usable {
+		native = native && r.Dialect == "anthropic" && !r.capped() && !r.Nothink && !r.IDRecycle
+	}
+	if undecided && native {
+		return false, false
+	}
+	return !native, true
+}
+
+// TranslatorInstalled reports whether the translator can be found and run, by
+// the same discovery a launch uses.
+func TranslatorInstalled() bool { return executable(translatorBinary()) }
+
 // profileEnv returns the endpoint and credential, from the profile and nowhere
 // else. The profile name is a positional argument, never interpolated into the
 // script: it reaches this process from a caller's command line and `zsh -c`

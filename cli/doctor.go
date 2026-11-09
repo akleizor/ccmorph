@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"github.com/akleizor/ccmorph/util"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,8 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/akleizor/ccmorph/adapter"
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/profile"
+	"github.com/akleizor/ccmorph/util"
 )
 
 // authStatusDeadline bounds doctor's `claude auth status`: Claude Code owns the
@@ -104,7 +105,7 @@ func (l *launcher) doctorClaude() bool {
 // doctorEnvironment is what a fresh install can say before any profile exists.
 func (l *launcher) doctorEnvironment() int {
 	failed := 0
-	l.status("OK", "ccmorph: "+l.version+" ("+l.libDir+")")
+	l.status("OK", "ccmorph: "+l.version)
 	if v := l.zshVersion; v != "" {
 		l.status("OK", "zsh: "+v)
 	}
@@ -199,7 +200,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		l.status("FAIL", "config: invalid profile schema (launch would reject it)")
 		return 1
 	}
-	typ, base, adapter := f["type"], f["base_url"], f["adapter"]
+	typ, base := f["type"], f["base_url"]
 	key, keyField := f["api_key"], "api_key"
 	if key == "" {
 		key, keyField = f["token"], "token"
@@ -237,7 +238,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		failed = 1
 	}
 	report("OK", "profile: "+name+" ("+profile.KindLabel(typ, f["provider"])+")")
-	report("OK", "ccmorph executable: "+l.libDir+"/ccmorph.sh")
+	report("OK", "ccmorph: "+l.version+" (command: ccmorph)")
 	if !l.doctorClaude() {
 		failed = 1
 		fails = append(fails, "claude executable")
@@ -259,22 +260,48 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	// listing answers (#267); read it once, read-only.
 	model := l.accountModel(name)
 	if isFile(settings) {
-		if util.SettingsValid(filepath.Join(os.Getenv("HOME"), ".claude", "settings.json"), settings) {
-			report("OK", "profile settings: valid layered JSON ("+settings+" overrides canonical settings)")
+		// Each file is judged on its own, so the line names the one that is
+		// actually broken: the shared canonical file and the profile's file are
+		// fixed in different places.
+		broken := ""
+		for _, p := range []string{filepath.Join(os.Getenv("HOME"), ".claude", "settings.json"), settings} {
+			if !util.SettingsValid(p) {
+				broken = p
+				break
+			}
+		}
+		if broken == "" {
+			report("OK", "profile settings: valid JSON ("+settings+")")
 			if model != "" {
 				report("INFO", "effective model: "+model+" (profile default)")
 			} else {
 				report("INFO", "effective model: Claude Code default (no saved model)")
 			}
 		} else {
-			report("FAIL", "profile settings: invalid JSON or non-object ("+settings+")")
+			report("FAIL", "profile settings: invalid JSON or not an object ("+broken+"); fix that file")
 			failed = 1
 		}
 	} else {
 		report("INFO", "profile settings: none yet (Claude Code defaults apply)")
 	}
+	// The route rows are computed before the api-key lines print, because the
+	// endpoint's own verdict decides whether Claude Code's locally stored answer
+	// is worth a line: an approval says the key was accepted locally, which a
+	// rejection below would contradict two lines later (GH-272). The translator
+	// verdict comes from what a launch itself reads without inference (the
+	// classification cache and the listing's declared protocols), so doctor
+	// reports what launch would actually do, never a guess.
+	need := func(listing string) util.TranslatorNeed {
+		needed, known := adapter.TranslatorVerdict(base, l.profileDirs, model, listing)
+		return util.TranslatorNeed{Known: known, Needed: needed, Installed: adapter.TranslatorInstalled()}
+	}
+	rows, bad, keyRejected := util.DoctorRoute(name, typ, base, model, f["model_map"], need, key, home, verbose)
 	if key != "" {
-		report("OK", "credentials: present "+credentialStorage(conf, keyField)+" (value hidden)")
+		// The endpoint refused it (a FAIL row below): "present" would call a
+		// rejected credential fine above its FAIL (GH-272).
+		if !keyRejected {
+			report("OK", "credentials: present "+credentialStorage(conf, keyField)+" (value hidden)")
+		}
 	} else {
 		switch typ {
 		case "sub":
@@ -306,21 +333,20 @@ func (l *launcher) doctor(name string, verbose bool) int {
 			report("SKIP", "credentials: none stored")
 		}
 	}
-	if typ == "apikey" && key != "" {
+	if typ == "apikey" && key != "" && !keyRejected {
 		// A refused key is stored by Claude Code, not by ccmorph: the credential
 		// is present and the route may be healthy, yet every launch opens the
-		// login menu instead of using it.
+		// login menu instead of using it. Any other stored answer — or none yet
+		// — means a launch uses the key without asking, which is all a reader
+		// needs to know.
 		switch util.KeyResponse(home, key) {
 		case util.KeyRefused:
 			report("FAIL", "api key: Claude Code was told not to use it, so a launch would open its login menu — fix: ccmorph login "+name)
 			failed = 1
-		case util.KeyApproved:
-			report("OK", "api key: approved for Claude Code")
 		default:
-			report("INFO", "api key: ccmorph approves it for Claude Code at the next launch")
+			report("OK", "api key: Claude Code will use it without asking")
 		}
 	}
-	rows, bad := util.DoctorRoute(name, typ, base, model, f["model_map"], adapter == "true", key, home, verbose)
 	if bad {
 		failed = 1
 	}
