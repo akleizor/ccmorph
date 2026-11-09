@@ -11,8 +11,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // --- usage sidecar (metadata only) -------------------------------------------
@@ -242,16 +243,8 @@ func (u *UsageSidecar) withCost(r *record) usageRow {
 	return append(slices.Clone(r.usage), kv{"estimated_cost", []byte(strconv.FormatFloat(c, 'f', -1, 64))})
 }
 
-func stateDir() string {
-	if root := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); root != "" {
-		return filepath.Join(root, "ccmorph")
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "state", "ccmorph")
-}
-
 // usageBase is the store every usage row lives in, sharded by UTC day.
-func usageBase() string { return filepath.Join(stateDir(), "usage") }
+func usageBase() string { return filepath.Join(paths.StateDir(), "usage") }
 
 // usageDay is the UTC day folder a row stamped ts belongs to. A stamp that
 // will not parse is today: the sidecar stamps what it writes now, and a row

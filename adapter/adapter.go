@@ -35,6 +35,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -43,6 +44,7 @@ import (
 
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/shim"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // Timings, overridable for tests (the Python tests rewrote the constants in a
@@ -69,7 +71,6 @@ var (
 	freePortFn       = freePort
 	detachStdin      = true
 	profileDirs      = defaultProfileDirs()
-	libDir           = defaultLibDir()
 	translatorBinary = findTranslator
 	spawnShim        = start
 	cloakNeverFn     = func() bool { return cloakNeverFor(translatorBinary()) }
@@ -101,17 +102,6 @@ func defaultProfileDirs() string {
 		root = filepath.Join(cfg, "ccmorph")
 	}
 	return filepath.Join(root, "profiles")
-}
-
-func defaultLibDir() string {
-	if d := os.Getenv("CCMORPH_LIB_DIR"); d != "" {
-		return d
-	}
-	exe := selfPath()
-	if r, err := filepath.EvalSymlinks(exe); err == nil {
-		exe = r
-	}
-	return filepath.Join(filepath.Dir(filepath.Dir(exe)), "lib")
 }
 
 func executable(p string) bool { return syscall.Access(p, 1) == nil }
@@ -230,11 +220,9 @@ var runCommand = func(timeout time.Duration, name string, args ...string) (strin
 	return stdout.String(), stderr.String(), cmd.ProcessState.ExitCode()
 }
 
-func ccmorphScript() string { return filepath.Join(libDir, "ccmorph.sh") }
-
 func profileEnv(profile string) map[string]string {
 	out, errText, code := runCommand(90*time.Second, "zsh", "-c", `source "$1" && ccmorph _env "$2"`,
-		"ccmorph-adapter", ccmorphScript(), profile)
+		"ccmorph-adapter", paths.Script(), profile)
 	if code != 0 {
 		die("ccmorph _env %s failed: %s", profile, strings.TrimSpace(errText))
 	}
@@ -414,7 +402,7 @@ func frontDirectly(a *cliArgs, upstream, key, routeIdentity string, usable []Row
 	// its request-retry does, and a second layer would multiply attempts.
 	hooksBin := strings.TrimSpace(extras["CCMORPH_SHIM_HOOKS"])
 	o := shim.Options{Port: port, Target: upstream, PreserveIDs: true, RetryTransport: true,
-		RandomDeviceID: contains(privacyArgs, "--random-device-id")}
+		RandomDeviceID: slices.Contains(privacyArgs, "--random-device-id")}
 	models := make([]string, len(usable))
 	for i, r := range usable {
 		models[i] = r.Model
@@ -624,7 +612,7 @@ func ensureConfig(a *cliArgs, required, upstream, key, routeIdentity, cacheFile,
 	if err != nil {
 		die("%v", err)
 	}
-	if !contains(advertised, required) {
+	if !slices.Contains(advertised, required) {
 		die("model %s is not advertised by this gateway", shim.PyRepr(required))
 	}
 	rows, err := classifyFn(upstream, key, cacheFile, required, true)
@@ -666,7 +654,7 @@ func ensureConfig(a *cliArgs, required, upstream, key, routeIdentity, cacheFile,
 		if err != nil {
 			die("%v", err)
 		}
-		if contains(ids, required) {
+		if slices.Contains(ids, required) {
 			break
 		}
 		if !time.Now().Before(deadline) {
@@ -680,15 +668,6 @@ func ensureConfig(a *cliArgs, required, upstream, key, routeIdentity, cacheFile,
 	cleanups = cleanups[:len(cleanups)-1] // success: keep the new config
 	exitMu.Unlock()
 	return 0
-}
-
-func contains(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
-			return true
-		}
-	}
-	return false
 }
 
 func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstreamProxy, shimBinary string,
@@ -863,7 +842,7 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 	}
 	a.releasePort()
 	sp, err := startShim(shimBinary, shim.Options{Port: shimPort, Target: "http://127.0.0.1:" + strconv.Itoa(port),
-		PreserveIDs: !recyclesIDs, RandomDeviceID: contains(privacyArgs, "--random-device-id")}, shimEnv, logfile, logfile)
+		PreserveIDs: !recyclesIDs, RandomDeviceID: slices.Contains(privacyArgs, "--random-device-id")}, shimEnv, logfile, logfile)
 	if err != nil {
 		logf("cannot start the gateway shim: %v", err)
 		shutdown(1)

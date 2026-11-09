@@ -21,6 +21,8 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // fake is a scripted Opener: each call pops the next reply for its method+path.
@@ -72,7 +74,7 @@ func state(t *testing.T) string {
 	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj { return obj{} }
 	t.Cleanup(func() { fetchJSONDict = old })
 	probeShareDir = func() string { return filepath.Join(dir, "share") }
-	t.Cleanup(func() { probeShareDir = func() string { return filepath.Join(libDir(), "..", "share") } })
+	t.Cleanup(func() { probeShareDir = func() string { return filepath.Join(paths.LibDir(), "..", "share") } })
 	return dir
 }
 

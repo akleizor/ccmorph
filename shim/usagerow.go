@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // --- usage rows from the client's own transcript --------------------------------
@@ -511,7 +513,7 @@ func rowFileName(responseID string) string {
 // transcript path, so two sessions never share one.
 func cursorFile(transcript string) string {
 	sum := sha256.Sum256([]byte(transcript))
-	return filepath.Join(stateDir(), "usage-cursors", hex.EncodeToString(sum[:])+".json")
+	return filepath.Join(paths.StateDir(), "usage-cursors", hex.EncodeToString(sum[:])+".json")
 }
 
 // cursor is where a transcript's read position is kept. Offset is the byte a

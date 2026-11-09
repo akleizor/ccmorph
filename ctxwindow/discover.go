@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // Note is (reason, subject): what a run learned about a profile or model.
@@ -74,7 +76,7 @@ var ccmorphEnv = func(ctx context.Context, profile string) (map[string]string, e
 	// Starting a provider bridge is not a local read.
 	cctx, cancel := context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
-	out, errOut, code, err := runZsh(cctx, `source "$1" && ccmorph _route_env "$2"`, ccmorphScript(), profile)
+	out, errOut, code, err := runZsh(cctx, `source "$1" && ccmorph _route_env "$2"`, paths.Script(), profile)
 	check(ctx)
 	if err != nil || cctx.Err() != nil {
 		if cctx.Err() != nil {
@@ -111,7 +113,7 @@ var routeStop = func(ctx context.Context, handle string) {
 	}
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	runZsh(cctx, `source "$1" && ccmorph _route_stop "$2"`, ccmorphScript(), handle)
+	runZsh(cctx, `source "$1" && ccmorph _route_stop "$2"`, paths.Script(), handle)
 	check(ctx)
 }
 

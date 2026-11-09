@@ -11,6 +11,8 @@ import (
 	"time"
 
 	jsonv2 "encoding/json/v2"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 func seedOwnedPrices(t *testing.T, usageDir, provider string, models map[string]price) {
@@ -690,7 +692,7 @@ func TestAWindowedReportReadsTheDayFoldersItTouches(t *testing.T) {
 	row("task-old", old, "t", now.Add(-72*time.Hour), "5")
 	row("task-new", today, "t", now.Add(-20*time.Minute), "1")
 	outcomes := `{"task":"t","outcome":"accepted","timestamp":"` + now.Format(time.RFC3339) + `"}` + "\n"
-	if err := os.WriteFile(filepath.Join(stateDir(), "outcomes.jsonl"), []byte(outcomes), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(paths.StateDir(), "outcomes.jsonl"), []byte(outcomes), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if out := reportOutput(t, 1); !strings.Contains(out, "  accepted 1  $6.00/task") {

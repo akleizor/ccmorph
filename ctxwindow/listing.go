@@ -16,6 +16,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 type (
@@ -36,18 +38,8 @@ const (
 // number; the summary keys its "here is how to resolve it" block off this note.
 const Unresolved = "no size published by the gateway, and no catalogue entry for this model id"
 
-// libDir is where lib/ccmorph.sh lives; shareDir holds the bundled catalogue.
-func libDir() string {
-	if v := os.Getenv("CCMORPH_LIB_DIR"); v != "" {
-		return v
-	}
-	return filepath.Join(ExecDir(), "..", "lib")
-}
-
-func ccmorphScript() string { return filepath.Join(libDir(), "ccmorph.sh") }
-
 // probeShareDir is a var so tests can point it at a fixture. It follows CCMORPH_LIB_DIR; the resolver's ShareDir follows the executable (shortcut: two roots kept to preserve both commands' behaviour, unify when one is chosen).
-var probeShareDir = func() string { return filepath.Join(libDir(), "..", "share") }
+var probeShareDir = func() string { return filepath.Join(paths.LibDir(), "..", "share") }
 
 func asObj(v val) obj { o, _ := v.(map[string]any); return o }
 

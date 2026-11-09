@@ -119,6 +119,13 @@
 
 ### Changed
 
+- Three tiny helpers every package had hand-written — a slice-contains, the
+  state-directory path and the driver-script path — have one definition each
+  now: `slices.Contains` from the standard library, and `paths.StateDir` and
+  `paths.Script` for the two durable path contracts (where usage rows live,
+  where the driver script lives), so the copies cannot drift apart. No
+  behaviour changes (#303).
+
 - Every screen names a profile kind the same way — Claude account, Claude token,
   API key, or the provider's own name — and the gateway address is called its
   endpoint everywhere. `ccmorph help add` names provider logins only when a
