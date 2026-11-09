@@ -316,6 +316,14 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 			}
 		}
 		env := append(append(penv, "CCMORPH_SET_ENV="+strings.Join(setLayers, " ")), common...)
+		// The last line before claude starts: the person's first-run answers are
+		// carried into this profile (#258), and on a hop that crossed profiles,
+		// what could not be carried names the safe answer to the question that
+		// still meets the resumed session. Seeding can lose the live lock, so the
+		// re-check inside personAnswers gates the start (#185, #205).
+		if !l.personAnswers(name, l.relayCrossed) {
+			return fail()
+		}
 		rcClaude = l.runClaude(env, args)
 		if l.forwardedSig() != 0 {
 			os.Remove(relayFile)

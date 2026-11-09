@@ -544,6 +544,47 @@ func TestSetupDirRefusesALaunchWithoutItsLiveLock(t *testing.T) {
 	}
 }
 
+// #258: seeding rewrites the profile's .claude.json under its live lock taken
+// exclusively, and a failed upgrade can leave the launch holding nothing (Linux
+// drops the shared lock first). Claude must not start in that window — the same
+// re-check setup does after a merge (#185, #205): the answers wait, and a launch
+// that cannot take its live lock again refuses to start.
+func TestPersonAnswersRequiresTheLiveLockBeforeClaudeStarts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	profiles := filepath.Join(home, ".config/ccmorph/profiles")
+	lock := util.LiveLockPath(profiles, "p")
+	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := os.OpenFile(lock, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	if err := syscall.Flock(int(holder.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(util.SetLockWait(0))
+	l := &launcher{profileDirs: profiles}
+	saved := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	ok := l.personAnswers("p", false)
+	w.Close()
+	os.Stderr = saved
+	note, _ := io.ReadAll(r)
+	if ok {
+		t.Fatal("a launch that could not take its live lock must not start claude")
+	}
+	if len(note) == 0 {
+		t.Fatal("the refusal must name what blocks the session")
+	}
+}
+
 // #217: the refusal #205 wired into setupDir ran in every caller, so `use`
 // failed over a lock it never needed and `add` rolled back the profile it had
 // just written. The verbs that start no session proceed under a lock they

@@ -61,6 +61,11 @@ type launcher struct {
 	ranClaude bool   // claude started on the pass that just ran (else it never began)
 	launched  string // the profile the pass that just ran resolved to, "" for none
 	ended     string // the id of the session the exited claude recorded (#285)
+
+	// relayCrossed marks the pass that follows a hop onto another profile's
+	// config: only there can first-run questions meet a person mid-session, so
+	// only there does the launch say which answer is safe (#258).
+	relayCrossed bool
 }
 
 // relayNext is what one launch hands the driver when Claude Code exited for a hop.
@@ -121,6 +126,7 @@ func (l *launcher) launchMain(args []string) int {
 		}
 		from, relaySession = l.launched, next.session
 		args, profileName, interactive, native = next.args, next.profile, false, true
+		l.relayCrossed = next.crossed
 		if next.fresh {
 			// No conversation to carry: one line says so, and the cache notice a
 			// resume owes stays unsaid (#288).
