@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"syscall"
 
 	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/profile"
@@ -108,12 +107,13 @@ var approveKeyRead = func() {}
 // Code never asks the first-launch question. An earlier refusal for the same
 // key is cleared. Every other key in the file keeps its place and value, and
 // the file is rewritten only when the answer actually changes. Because the
-// rewrite is a whole-file swap that a running session or SeedPersonAnswers may
-// race, it runs only while this process holds the profile's live lock
-// exclusively; while another holder has it the call changes nothing and names
-// the running session. A symlinked or unparsable file, or a
-// customApiKeyResponses that is not an object, is an error: the caller must not
-// guess and clobber what Claude Code wrote.
+// rewrite is a whole-file swap that a running session, SeedPersonAnswers or a
+// launch's merge may race, it runs while this process holds the profile's live
+// lock shared — the mode a running session holds, so an open session never
+// stops the approval being recorded, and the exclusive whole-file writers wait
+// for it. A symlinked or unparsable file, or a customApiKeyResponses that is
+// not an object, is an error: the caller must not guess and clobber what
+// Claude Code wrote.
 func ApproveKey(profiles, name, key string) error {
 	if !profile.ValidName(name) {
 		return errors.New("invalid profile name: " + name)
@@ -126,10 +126,14 @@ func ApproveKey(profiles, name, key string) error {
 		return errors.New(path + ": not a regular file")
 	}
 	// This is a whole-file read-modify-write of a file the profile's live
-	// sessions and SeedPersonAnswers also write, so it runs only while this
-	// process holds the profile's live lock exclusively — the lock every writer
-	// of the file takes (#299). Two approvals serialize; a running session or
-	// another launch keeps the file to itself and this call changes nothing.
+	// sessions and SeedPersonAnswers also write. It holds the profile's live
+	// lock shared across the read and the rename — the mode a running session
+	// holds — so the repo's writers that replace the whole file, which take it
+	// exclusively (seeding a profile, a launch's merge), cannot swap it under
+	// the approval. A running session must not block the approval: an approval
+	// dropped because a session is open is exactly the loss this guards
+	// against (#299). An exclusive holder is waited for, bounded by lockWait,
+	// never outlasted (promise 8).
 	lock := LiveLockPath(profiles, name)
 	liveMu.Lock()
 	_, held := liveFDs[lock]
@@ -137,7 +141,7 @@ func ApproveKey(profiles, name, key string) error {
 	live, why := HoldLive(profiles, name, nil)
 	if live == nil {
 		if errors.Is(why, ErrLiveHeld) {
-			return errors.New(path + ": a running session or launch of '" + name + "' is using it; try again once it ends")
+			return errors.New(path + ": another launch is rewriting the profile's config; try again once it finishes")
 		}
 		return errors.New(lock + ": the live lock could not be created: " + why.Error())
 	}
@@ -146,15 +150,6 @@ func ApproveKey(profiles, name, key string) error {
 		// must not keep its lock past this call.
 		defer ReleaseLive(profiles, name)
 	}
-	if syscall.Flock(int(live.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
-		// The failed conversion can leave this fd unlocked (Linux drops the
-		// shared lock first), so take the lock back or drop it before refusing.
-		if !flockWithin(live, syscall.LOCK_SH) {
-			ReleaseLive(profiles, name)
-		}
-		return errors.New(path + ": a running session or launch of '" + name + "' is using it; try again once it ends")
-	}
-	defer syscall.Flock(int(live.Fd()), syscall.LOCK_SH)
 	doc, err := loadObj(path, ordjson.New())
 	if err != nil {
 		return err

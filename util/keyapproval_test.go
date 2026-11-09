@@ -168,46 +168,67 @@ func TestApproveKeyKeepsAWriteMadeBetweenItsReadAndItsRename(t *testing.T) {
 	}
 }
 
-func TestApproveKeyDefersWhileALiveSessionHoldsTheLock(t *testing.T) {
-	cases := []struct {
-		name string
-		how  int
-	}{
-		{"a live session holds it shared", syscall.LOCK_SH},
-		{"a merge holds it exclusively", syscall.LOCK_EX},
+// #299: a live session holds the live lock shared. Refusing the approval there
+// drops it, so the approval takes the lock shared too and records the answer;
+// the session's own keys stay.
+func TestApproveKeyRecordsWhileALiveSessionHoldsTheLock(t *testing.T) {
+	profiles := filepath.Join(t.TempDir(), "profiles")
+	path := writeClaudeJSON(t, filepath.Join(profiles, "p"), `{"numStartups":3}`)
+	if err := os.MkdirAll(filepath.Dir(LiveLockPath(profiles, "p")), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			profiles := filepath.Join(t.TempDir(), "profiles")
-			body := `{"numStartups":3}`
-			path := writeClaudeJSON(t, filepath.Join(profiles, "p"), body)
-			if err := os.MkdirAll(filepath.Dir(LiveLockPath(profiles, "p")), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			f, err := os.OpenFile(LiveLockPath(profiles, "p"), os.O_CREATE|os.O_RDWR, 0o600)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer f.Close()
-			if err := syscall.Flock(int(f.Fd()), tc.how); err != nil {
-				t.Fatal(err)
-			}
-			defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-			restore := SetLockWait(0)
-			defer restore()
+	f, err := os.OpenFile(LiveLockPath(profiles, "p"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 
-			err = ApproveKey(profiles, "p", "sk-issue-236-test-key")
+	if err := ApproveKey(profiles, "p", "sk-issue-236-test-key"); err != nil {
+		t.Fatalf("a live session must not drop the approval: %v", err)
+	}
+	got := mustRead(t, path)
+	for _, want := range []string{`"numStartups":3`, `"k-issue-236-test-key"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %s in %s", want, got)
+		}
+	}
+}
 
-			if err == nil {
-				t.Fatal("an approval must not write while another holder has the live lock")
-			}
-			if !strings.Contains(err.Error(), "a running session or launch of 'p'") {
-				t.Fatalf("the refusal does not name the holder: %v", err)
-			}
-			if after := mustRead(t, path); after != body {
-				t.Fatalf("the file was rewritten: %s", after)
-			}
-		})
+// The repo's whole-file writers take the live lock exclusively; the approval
+// waits for one within lockWait and writes nothing if it outlasts the wait.
+func TestApproveKeyWaitsOutAnExclusiveHolder(t *testing.T) {
+	profiles := filepath.Join(t.TempDir(), "profiles")
+	body := `{"numStartups":3}`
+	path := writeClaudeJSON(t, filepath.Join(profiles, "p"), body)
+	if err := os.MkdirAll(filepath.Dir(LiveLockPath(profiles, "p")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(LiveLockPath(profiles, "p"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	restore := SetLockWait(0)
+	defer restore()
+
+	err = ApproveKey(profiles, "p", "sk-issue-236-test-key")
+
+	if err == nil {
+		t.Fatal("an approval must not write while a whole-file writer holds the lock")
+	}
+	if !strings.Contains(err.Error(), "another launch is rewriting the profile's config") {
+		t.Fatalf("the refusal does not name the holder: %v", err)
+	}
+	if after := mustRead(t, path); after != body {
+		t.Fatalf("the file was rewritten: %s", after)
 	}
 }
 

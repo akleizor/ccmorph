@@ -6,6 +6,7 @@ just written back over a lock it could not even make. The lock is the session's
 cover: only the paths that start claude refuse without it.
 """
 import fcntl
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -132,18 +133,16 @@ def test_a_launch_refusal_names_a_lock_file_that_cannot_be_made(tmp_path):
     assert "another launch" not in result.stderr
 
 
-def test_login_leaves_a_live_api_key_profiles_claude_json_alone(tmp_path):
-    # #299: recording the key approval is a read-modify-write of the same
-    # .claude.json a running session writes. While a session holds the live
-    # lock, login changes nothing and names the running session instead of
-    # overwriting whatever the session saved.
+def test_login_records_the_approval_while_a_live_session_runs(tmp_path):
+    # #299: refusing while a session holds the live lock drops the approval.
+    # The approval takes the lock shared too — the session's own mode — records
+    # the answer, and the session's own keys survive.
     home, state = fresh_state(tmp_path)
-    key = "sk-issue-299-test-key-0001\n"
+    key = "sk-issue-299-test-key-0001"
     (state / "gw.conf").write_text(f"type=apikey\napi_key={key}\n")
-    body = '{"numStartups":3}'
     (state / "profiles" / "gw").mkdir(parents=True)
     claude_json = state / "profiles" / "gw" / ".claude.json"
-    claude_json.write_text(body)
+    claude_json.write_text('{"numStartups":3}')
 
     holder = shared_holder(state)
     try:
@@ -151,8 +150,8 @@ def test_login_leaves_a_live_api_key_profiles_claude_json_alone(tmp_path):
     finally:
         holder.close()
 
-    assert result.returncode == 1, result.stderr
-    assert "a running session or launch of 'gw'" in result.stderr
-    assert "will use the API key" not in result.stdout
-    assert claude_json.read_text() == body
-    assert key[-20:] not in claude_json.read_text()
+    assert result.returncode == 0, result.stderr
+    assert "will use the API key" in result.stdout
+    doc = json.loads(claude_json.read_text())
+    assert doc["numStartups"] == 3, doc
+    assert doc["customApiKeyResponses"]["approved"] == [key[-20:]], doc
