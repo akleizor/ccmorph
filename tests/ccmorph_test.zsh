@@ -4439,6 +4439,135 @@ test_native_effort_validation_belongs_to_claude() {
   return $rc
 }
 
+# GH-356: a saved effort is the level the session starts at. The projected
+# settings.json carries effortLevel, but Claude Code ignores that key for a
+# model it knows and opens the session at its own default, so the launch puts
+# the profile's saved level on claude's argv itself: --effort is the spelling
+# it honors. Every level of the enum, because each is a choice the person made.
+test_saved_effort_starts_new_sessions() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  # The launch carries the saved level only when the installed Claude Code
+  # documents --effort, so the claude on PATH must answer a real Options page.
+  fake_claude_help
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 level
+  for level in low medium high xhigh max; do
+    ccmorph set proxy effort "$level" >/dev/null || {
+      print -u2 -- "ccmorph set proxy effort $level must succeed"
+      rm -rf "$test_home"
+      return 1
+    }
+    : > "$CCMORPH_TEST_LOG"
+    _ccm_launch -a proxy || {
+      rm -rf "$test_home"
+      return 1
+    }
+    assert_contains "$(<"$CCMORPH_TEST_LOG")" $'ARG\t--effort\t'"$level" \
+      "a new session must start at the saved effort ($level)" || rc=1
+  done
+  rm -rf "$test_home"
+  return $rc
+}
+
+# GH-356: the effort the person typed decides over the saved one — and the
+# saved level must not also reach the argv, or two spellings would fight over
+# one session.
+test_typed_effort_decides_over_the_saved_one() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  fake_claude_help
+  source "$CCMORPH_SOURCE"
+
+  ccmorph set proxy effort xhigh >/dev/null || {
+    rm -rf "$test_home"
+    return 1
+  }
+  _ccm_launch -a proxy --effort low || {
+    rm -rf "$test_home"
+    return 1
+  }
+
+  local actual="$(<"$CCMORPH_TEST_LOG")"
+  local rc=0
+  assert_contains "$actual" $'ARG\t--effort\tlow' \
+    'the typed effort must decide over the saved one' || rc=1
+  assert_not_contains "$actual" $'--effort\txhigh' \
+    'the saved effort must not also reach the argv' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
+# GH-356: Claude Code consults a per-model effort before the top-level default
+# — an in-session /effort writes those modelSettings rows — so the level the
+# launch carries must reproduce that hierarchy: the override for the model the
+# session runs at wins over the profile's default. That model is the saved
+# default, and just as much the one the person typed: a --model names the
+# session's model too, so its row must decide there — the level a session runs
+# at is a choice already made, not one for the default to silently override.
+test_saved_effort_honors_a_per_model_override() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  fake_claude_help
+  mkdir -p "$HOME/.config/ccmorph/profiles/proxy"
+  print -r -- \
+    '{"modelSettings":{"bootstrap-model":{"effortLevel":"high"},"chosen-model":{"effortLevel":"xhigh"}}}' \
+    > "$HOME/.config/ccmorph/profiles/proxy/settings.json"
+  source "$CCMORPH_SOURCE"
+
+  ccmorph set proxy effort low >/dev/null || {
+    rm -rf "$test_home"
+    return 1
+  }
+  local rc=0
+  _ccm_launch -a proxy || {
+    rm -rf "$test_home"
+    return 1
+  }
+  assert_contains "$(<"$CCMORPH_TEST_LOG")" $'ARG\t--effort\thigh' \
+    'the per-model override must win over the profile default' || rc=1
+  : > "$CCMORPH_TEST_LOG"
+  _ccm_launch -a proxy --model chosen-model || {
+    rm -rf "$test_home"
+    return 1
+  }
+  assert_contains "$(<"$CCMORPH_TEST_LOG")" $'--model\tchosen-model\t--effort\txhigh' \
+    'the model the person typed has its own row, and that row must decide' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
+# GH-356: the saved effort is a default for new sessions, as `ccmorph set`
+# says. A resume restores the conversation's own level, and a hop hands the
+# relay its own --effort, so the launch must not add the saved level to a
+# resumed argv.
+test_resume_keeps_the_conversations_own_effort() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  fake_claude_help
+  source "$CCMORPH_SOURCE"
+
+  ccmorph set proxy effort xhigh >/dev/null || {
+    rm -rf "$test_home"
+    return 1
+  }
+  _ccm_launch -a proxy --resume 8f1c2a34-5b6d-4e7f-8a9b-0c1d2e3f4a5b || {
+    rm -rf "$test_home"
+    return 1
+  }
+
+  assert_not_contains "$(<"$CCMORPH_TEST_LOG")" '--effort' \
+    'a resume must keep the effort of the conversation it resumes, not the profile default'
+  local rc=$?
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_subscription_profile_does_not_inject_model() {
   local test_home
   test_home=$(mktemp -d)
@@ -10894,6 +11023,10 @@ run_test test_every_profile_keeps_its_own_secure_storage
 run_test test_quota_hands_every_profile_to_the_core_with_no_key_in_argv
 run_test test_native_effort_does_not_rewrite_explicit_model
 run_test test_native_effort_validation_belongs_to_claude
+run_test test_saved_effort_starts_new_sessions
+run_test test_typed_effort_decides_over_the_saved_one
+run_test test_saved_effort_honors_a_per_model_override
+run_test test_resume_keeps_the_conversations_own_effort
 run_test test_proxy_model_is_bootstrap_fallback
 run_test test_proxy_context_limit_reaches_claude
 # Adapter choice is automatic at launch; add only persists profile credentials.
