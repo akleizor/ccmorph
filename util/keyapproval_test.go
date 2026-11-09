@@ -1,10 +1,16 @@
 package util
 
 import (
+	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+
+	"github.com/akleizor/ccmorph/ordjson"
 )
 
 func writeClaudeJSON(t *testing.T, home, body string) string {
@@ -48,13 +54,16 @@ func TestApproveKeyRecordsTheTailAndClearsARefusal(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			home := t.TempDir()
+			profiles := filepath.Join(t.TempDir(), "profiles")
+			home := filepath.Join(profiles, "p")
 			path := filepath.Join(home, ".claude.json")
 			if tc.body != "" {
 				path = writeClaudeJSON(t, home, tc.body)
+			} else if err := os.MkdirAll(home, 0o700); err != nil {
+				t.Fatal(err)
 			}
 			before, _ := os.ReadFile(path)
-			if err := ApproveKey(home, key); err != nil {
+			if err := ApproveKey(profiles, "p", key); err != nil {
 				t.Fatal(err)
 			}
 			after, err := os.ReadFile(path)
@@ -83,23 +92,341 @@ func TestApproveKeyRecordsTheTailAndClearsARefusal(t *testing.T) {
 }
 
 func TestApproveKeyRefusesWhatItCannotSafelyRewrite(t *testing.T) {
-	home := t.TempDir()
+	profiles := filepath.Join(t.TempDir(), "profiles")
+	home := filepath.Join(profiles, "p")
 	path := writeClaudeJSON(t, home, `{"customApiKeyResponses":"oops"}`)
-	if err := ApproveKey(home, "sk-issue-236-test-key"); err == nil {
+	if err := ApproveKey(profiles, "p", "sk-issue-236-test-key"); err == nil {
 		t.Fatal("a non-object customApiKeyResponses must be refused")
 	}
 	if data, _ := os.ReadFile(path); string(data) != `{"customApiKeyResponses":"oops"}` {
 		t.Fatalf("the file was changed: %s", data)
 	}
-	link := filepath.Join(t.TempDir(), "home")
+	link := filepath.Join(profiles, "x")
 	if err := os.MkdirAll(link, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(path, filepath.Join(link, ".claude.json")); err != nil {
 		t.Skip("no symlink support")
 	}
-	if err := ApproveKey(link, "sk-issue-236-test-key"); err == nil {
+	if err := ApproveKey(profiles, "x", "sk-issue-236-test-key"); err == nil {
 		t.Fatal("a symlinked .claude.json must be refused")
+	}
+	// A name that is not a profile name names no profile to approve for.
+	if err := ApproveKey(profiles, "active", "sk-issue-236-test-key"); err == nil {
+		t.Fatal("an invalid profile name must be refused")
+	}
+}
+
+// #299: a sibling writer of the same .claude.json — SeedPersonAnswers, a live
+// session — rewrites it only holding the profile's live lock. A key approval
+// that reads and renames without that lock loses a write made between them.
+func TestApproveKeyKeepsAWriteMadeBetweenItsReadAndItsRename(t *testing.T) {
+	const key = "sk-issue-236-test-key"
+	const tail = "k-issue-236-test-key"
+	profiles := filepath.Join(t.TempDir(), "profiles")
+	if err := os.MkdirAll(filepath.Dir(LiveLockPath(profiles, "p")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := writeClaudeJSON(t, filepath.Join(profiles, "p"), `{"numStartups":3}`)
+
+	// otherWriter behaves like every sibling writer: it rewrites the file only
+	// while it holds the live lock exclusively, and reports whether it did.
+	otherWriter := func() bool {
+		f, err := os.OpenFile(LiveLockPath(profiles, "p"), os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		if syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
+			return false
+		}
+		defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		doc, err := loadObj(path, ordjson.New())
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc.Set("otherWriter", true)
+		if err := atomicJSON(path, doc); err != nil {
+			t.Fatal(err)
+		}
+		return true
+	}
+
+	old := approveKeyRead
+	t.Cleanup(func() { approveKeyRead = old })
+	pending := false
+	approveKeyRead = func() { pending = !otherWriter() }
+
+	if err := ApproveKey(profiles, "p", key); err != nil {
+		t.Fatal(err)
+	}
+	if pending && !otherWriter() {
+		t.Fatal("the live lock outlived ApproveKey")
+	}
+	got := mustRead(t, path)
+	for _, want := range []string{`"numStartups":3`, `"otherWriter":true`, `"` + tail + `"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %s in %s — the write made between ApproveKey's read and its rename was lost", want, got)
+		}
+	}
+}
+
+// #299: the rewrite must be the only writer while it runs. At the seam a fresh
+// descriptor can take the live lock neither shared nor exclusively: ApproveKey
+// holds it alone, and it does not outlive the call.
+func TestApproveKeyHoldsTheLiveLockAloneBetweenItsReadAndItsRename(t *testing.T) {
+	profiles := filepath.Join(t.TempDir(), "profiles")
+	writeClaudeJSON(t, filepath.Join(profiles, "p"), `{"numStartups":3}`)
+	if err := os.MkdirAll(filepath.Dir(LiveLockPath(profiles, "p")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	take := func(how int) bool {
+		f, err := os.OpenFile(LiveLockPath(profiles, "p"), os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		return syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB) == nil
+	}
+	old := approveKeyRead
+	t.Cleanup(func() { approveKeyRead = old })
+	approveKeyRead = func() {
+		if take(syscall.LOCK_SH) {
+			t.Error("the live lock could be taken shared under the rewrite: a session could start under it")
+		}
+		if take(syscall.LOCK_EX) {
+			t.Error("the live lock could be taken exclusively under the rewrite: another writer could swap the file under it")
+		}
+	}
+	if err := ApproveKey(profiles, "p", "sk-issue-236-test-key"); err != nil {
+		t.Fatal(err)
+	}
+	if !take(syscall.LOCK_EX) {
+		t.Fatal("the live lock outlived ApproveKey")
+	}
+}
+
+// #299: a live session holds the live lock shared and writes its own
+// .claude.json. The approval must not rewrite the file under it; it lands once
+// the session ends, and the session's own save survives.
+func TestApproveKeyUnderALiveSessionKeepsTheSessionsSaveAndLandsWhenItEnds(t *testing.T) {
+	const key = "sk-issue-236-test-key"
+	const tail = "k-issue-236-test-key"
+	profiles := filepath.Join(t.TempDir(), "profiles")
+	body := `{"numStartups":3}`
+	path := writeClaudeJSON(t, filepath.Join(profiles, "p"), body)
+	if err := os.MkdirAll(filepath.Dir(LiveLockPath(profiles, "p")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(LiveLockPath(profiles, "p"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH); err != nil {
+		t.Fatal(err)
+	}
+	restore := SetLockWait(0)
+	defer restore()
+
+	if err := ApproveKey(profiles, "p", key); !errors.Is(err, ErrProfileInUse) {
+		t.Fatalf("an open session must hold off the rewrite: %v", err)
+	}
+	if after := mustRead(t, path); after != body {
+		t.Fatalf("the file was rewritten under the session: %s", after)
+	}
+	// The session saves its own state, then ends.
+	if err := os.WriteFile(path, []byte(`{"numStartups":4}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	if err := ApproveKey(profiles, "p", key); err != nil {
+		t.Fatal(err)
+	}
+	got := mustRead(t, path)
+	for _, want := range []string{`"numStartups":4`, `"` + tail + `"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %s in %s", want, got)
+		}
+	}
+}
+
+// TestHelperApproveKeyProcess is re-executed by
+// TestTwoApprovalsAtOnceBothLand as a second process, so two ApproveKey calls
+// race for the same file the way two real approvals do. Without its env var it
+// is this process's own pass and does nothing.
+func TestHelperApproveKeyProcess(t *testing.T) {
+	if os.Getenv("CCMORPH_TEST_APPROVE_CHILD") != "1" {
+		return
+	}
+	restore := SetLockWait(0)
+	defer restore()
+	err := ApproveKey(os.Getenv("CCMORPH_TEST_PROFILES"), "p", os.Getenv("CCMORPH_TEST_KEY"))
+	switch {
+	case err == nil:
+		fmt.Println("CHILD:recorded")
+	case errors.Is(err, ErrProfileInUse):
+		fmt.Println("CHILD:in-use")
+	default:
+		fmt.Println("CHILD:error " + err.Error())
+	}
+}
+
+// approveKeyChild runs one ApproveKey in a second process and reports its
+// word. The key travels in the environment, never on a command line (promise 5).
+func approveKeyChild(t *testing.T, profiles, key string) string {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperApproveKeyProcess$", "-test.count=1")
+	cmd.Env = append(os.Environ(),
+		"CCMORPH_TEST_APPROVE_CHILD=1",
+		"CCMORPH_TEST_PROFILES="+profiles,
+		"CCMORPH_TEST_KEY="+key)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the child approval did not run: %v\n%s", err, out)
+	}
+	for _, w := range strings.Fields(string(out)) {
+		if strings.HasPrefix(w, "CHILD:") {
+			return strings.TrimPrefix(w, "CHILD:")
+		}
+	}
+	t.Fatalf("the child approval said nothing:\n%s", out)
+	return ""
+}
+
+// #299: two approvals at once are two whole-file rewrites. The second finds
+// the profile in use at the first's seam and lands once the first finishes, so
+// both answers survive.
+func TestTwoApprovalsAtOnceBothLand(t *testing.T) {
+	const key = "sk-issue-299-test-key-0001"
+	const other = "sk-issue-299-second-key-0002"
+	profiles := filepath.Join(t.TempDir(), "profiles")
+	path := writeClaudeJSON(t, filepath.Join(profiles, "p"), `{"numStartups":3}`)
+	if err := os.MkdirAll(filepath.Dir(LiveLockPath(profiles, "p")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := approveKeyRead
+	t.Cleanup(func() { approveKeyRead = old })
+	var during string
+	approveKeyRead = func() { during = approveKeyChild(t, profiles, other) }
+	if err := ApproveKey(profiles, "p", key); err != nil {
+		t.Fatal(err)
+	}
+	if during != "in-use" {
+		t.Fatalf("a second approval at the first's seam did not find the profile in use: %q", during)
+	}
+	if after := approveKeyChild(t, profiles, other); after != "recorded" {
+		t.Fatalf("the second approval did not land once the first finished: %q", after)
+	}
+	got := mustRead(t, path)
+	for _, want := range []string{`"numStartups":3`, `"` + keyTail(key) + `"`, `"` + keyTail(other) + `"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %s in %s — one of two simultaneous approvals was lost", want, got)
+		}
+	}
+}
+
+// The repo's whole-file writers take the live lock exclusively; the approval
+// waits for one within lockWait and writes nothing if it outlasts the wait.
+func TestApproveKeyWaitsOutAnExclusiveHolder(t *testing.T) {
+	profiles := filepath.Join(t.TempDir(), "profiles")
+	body := `{"numStartups":3}`
+	path := writeClaudeJSON(t, filepath.Join(profiles, "p"), body)
+	if err := os.MkdirAll(filepath.Dir(LiveLockPath(profiles, "p")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(LiveLockPath(profiles, "p"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	restore := SetLockWait(0)
+	defer restore()
+
+	err = ApproveKey(profiles, "p", "sk-issue-236-test-key")
+
+	if err == nil {
+		t.Fatal("an approval must not write while a whole-file writer holds the lock")
+	}
+	if !errors.Is(err, ErrProfileInUse) {
+		t.Fatalf("the refusal does not name the profile as in use: %v", err)
+	}
+	if !strings.Contains(err.Error(), "another launch is rewriting the profile's config") {
+		t.Fatalf("the refusal does not name the holder: %v", err)
+	}
+	if after := mustRead(t, path); after != body {
+		t.Fatalf("the file was rewritten: %s", after)
+	}
+}
+
+// #299: an approval an open session holds off is kept as a marker beside the
+// profile's locks — empty, owner-only, and named by a digest, so it holds no
+// key material — until the next launch records it.
+func TestSavedApprovalIsOwnerOnlyAndNamesNoKey(t *testing.T) {
+	const key = "sk-issue-299-test-key-0001"
+	profiles := filepath.Join(t.TempDir(), "profiles")
+	if err := os.MkdirAll(filepath.Join(profiles, "p"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	locks := filepath.Dir(LiveLockPath(profiles, "p"))
+	saved := func() bool { return ApprovalSaved(profiles, "p", key) }
+	if saved() {
+		t.Fatal("nothing is saved yet")
+	}
+	if err := SaveApproval(profiles, "p", key); err != nil {
+		t.Fatal(err)
+	}
+	if !saved() {
+		t.Fatal("the approval was not saved")
+	}
+	if ApprovalSaved(profiles, "p", "sk-another-key-entirely-0003") {
+		t.Fatal("a different key read as saved")
+	}
+	ents, err := os.ReadDir(locks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var markers []string
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), "p.approve-") {
+			markers = append(markers, e.Name())
+		}
+	}
+	if len(markers) != 1 {
+		t.Fatalf("wanted exactly one saved-approval marker, got %v", markers)
+	}
+	if strings.Contains(markers[0], key) || strings.Contains(markers[0], key[len(key)-20:]) {
+		t.Fatalf("the marker's name holds key material: %s", markers[0])
+	}
+	fi, err := os.Lstat(filepath.Join(locks, markers[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fi.Mode().IsRegular() || fi.Size() != 0 {
+		t.Fatalf("the marker is not an empty regular file: %v", fi)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("the marker is not owner-only: %v", fi.Mode().Perm())
+	}
+	if err := SaveApproval(profiles, "active", key); err == nil {
+		t.Fatal("an invalid profile name must be refused")
+	}
+	DropApproval(profiles, "p", key)
+	if saved() {
+		t.Fatal("the approval stayed saved after DropApproval")
+	}
+	if err := SaveApproval(profiles, "p", key); err != nil {
+		t.Fatal(err)
+	}
+	DropApprovals(profiles, "p")
+	if saved() {
+		t.Fatal("the approval stayed saved after DropApprovals")
 	}
 }
 

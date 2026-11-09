@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -457,8 +458,12 @@ func (l *launcher) addAPIKey(name string) int {
 	// highlights No. The answer it would store is recorded here instead, so the
 	// question never appears. A file ccmorph cannot safely rewrite leaves the
 	// question in place, and the person is told which answer to give.
-	if err := util.ApproveKey(filepath.Join(l.profileDirs, name), key); err != nil {
-		fmt.Println(l.dim + keyQuestionHint + l.reset)
+	if err := util.ApproveKey(l.profileDirs, name, key); err != nil {
+		if errors.Is(err, util.ErrProfileInUse) && util.SaveApproval(l.profileDirs, name, key) == nil {
+			fmt.Println(l.dim + "A session or launch of '" + name + "' is still open, so your answer to Claude Code's API key question is saved; the next launch records it." + l.reset)
+		} else {
+			fmt.Println(l.dim + keyQuestionHint + l.reset)
+		}
 	}
 	return 0
 }
@@ -696,10 +701,22 @@ func (l *launcher) login(args []string) int {
 		if !l.setupDir(name, "apikey", liveSilent) {
 			return 1
 		}
-		if err := util.ApproveKey(filepath.Join(l.profileDirs, name), f["api_key"]); err != nil {
+		if err := util.ApproveKey(l.profileDirs, name, f["api_key"]); err != nil {
+			if errors.Is(err, util.ErrProfileInUse) {
+				// A session or launch of the profile is open and rewrites the
+				// file itself; the answer is kept for the next launch to record
+				// (#299) instead of racing it.
+				if serr := util.SaveApproval(l.profileDirs, name, f["api_key"]); serr != nil {
+					l.err("could not save the key approval for '" + name + "' while it is in use: " + serr.Error())
+					return 1
+				}
+				fmt.Println("A session or launch of '" + name + "' is still open, so Claude Code's answer cannot be written into its config now; it is saved, and the next launch records it once it ends. Then start it: ccmorph run " + name)
+				return 0
+			}
 			l.err("could not record the key approval for '" + name + "': " + err.Error())
 			return 1
 		}
+		util.DropApproval(l.profileDirs, name, f["api_key"])
 		fmt.Println("Claude Code will use the API key of '" + name + "' again. Start it: ccmorph run " + name)
 		return 0
 	}

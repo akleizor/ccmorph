@@ -94,7 +94,11 @@ It includes manual `context_window.<model>` overrides. What ccmorph writes for i
 lives beside the profile, not in it: `profiles/<name>/models.json` (indented JSON,
 `{route: <fingerprint>, models: {<id>: <tokens>}}`) holds the limits `ccmorph probe`
 discovered for the profile's current route, and `.locks/<name>.lock` is its writer
-lock. A conf from before this split still carrying an inline `context_discovered=`
+lock. A key approval an open session holds off is kept the same way:
+`.locks/<name>.approve-<digest>` is an empty, owner-only file named by a digest of
+the key's last 20 characters (the part Claude Code itself stores in plain text),
+kept until the next launch records it and removed by `rm`. A conf from before this
+split still carrying an inline `context_discovered=`
 line is read as before and moved out by the next migration. On macOS `api_key` and
 `token` move to the login keychain (service `ccmorph`) on first use; the conf keeps
 `keychain:<name>.<key>` and `profile.Read` resolves it, so no caller sees the reference.
