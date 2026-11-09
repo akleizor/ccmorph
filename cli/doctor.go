@@ -139,8 +139,55 @@ func (l *launcher) doctorEnvironment() int {
 	} else {
 		l.status("INFO", "PATH: ccmorph is not on PATH (add the directory it was installed to)")
 	}
+	l.doctorCompletion()
 	l.status("INFO", "state: "+l.dir+" (no profiles yet) — next: ccmorph add <name>")
 	return failed
+}
+
+// shellWord spells s as one shell word: bare when it is plain, else in single quotes.
+func shellWord(s string) string {
+	plain := s != ""
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("/._-+,:@%=", r)) {
+			plain = false
+		}
+	}
+	if plain {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// doctorCompletion says how to make zsh find the completion this install
+// carries. Like the PATH row it reports and never edits: it stays silent when
+// a directory on FPATH already holds `_ccmorph` or the .zshrc names the
+// directory, and for a bash or fish login shell. Homebrew links the file into
+// its own share/zsh/site-functions, which `brew shellenv` puts on FPATH, so
+// there the FPATH check keeps this row quiet.
+func (l *launcher) doctorCompletion() {
+	dir := filepath.Join(filepath.Dir(l.libDir), "share", "zsh", "site-functions")
+	if !isFile(filepath.Join(dir, "_ccmorph")) {
+		return
+	}
+	switch filepath.Base(os.Getenv("SHELL")) {
+	case "bash", "fish":
+		return
+	}
+	for _, d := range filepath.SplitList(os.Getenv("FPATH")) {
+		if d == dir || isFile(filepath.Join(d, "_ccmorph")) {
+			return
+		}
+	}
+	zdot := os.Getenv("ZDOTDIR")
+	if zdot == "" {
+		zdot = os.Getenv("HOME")
+	}
+	if b, err := os.ReadFile(filepath.Join(zdot, ".zshrc")); err == nil &&
+		(strings.Contains(string(b), dir) || strings.Contains(string(b), "ccmorph/share/zsh/site-functions")) {
+		return
+	}
+	l.status("INFO", "completion: zsh does not search "+dir+" yet — add this line to "+filepath.Join(zdot, ".zshrc")+
+		" above compinit (or Oh My Zsh): fpath=("+shellWord(dir)+" $fpath)")
 }
 
 // credentialStorage says where a profile's credential is kept: the login
@@ -369,6 +416,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	for _, r := range rows {
 		report(r.Kind, r.Msg, r.Fix)
 	}
+	l.doctorCompletion()
 	// A masking mismatch is a privacy gap, not a start failure: the profile
 	// still runs, so the row warns without weighing on the verdict (#293).
 	if on, _ := util.MaskOn(f["env.CCMORPH_MASK"]); on && !util.Maskable(typ, base) {
