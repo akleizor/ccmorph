@@ -223,8 +223,13 @@ def profile_type(profile: str) -> str:
 
 def default_account() -> str:
     subs = sorted(p.stem for p in STATE_ROOT.glob("*.conf") if profile_type(p.stem) == "sub")
-    if len(subs) != 1:
-        die(f"pass --as <profile>; Claude account profiles found: {subs or 'none'}")
+    if not subs:
+        # There is nothing to pass --as yet, so the refusal names the command that
+        # creates the profile instead (issue #276).
+        die("no Claude account profiles found — Remote Control signs the session in with one; "
+            "create it with 'ccmorph add <name>' and choose 'Claude account'")
+    if len(subs) > 1:
+        die(f"pass --as <profile>; Claude account profiles found: {', '.join(subs)}")
     return subs[0]
 
 

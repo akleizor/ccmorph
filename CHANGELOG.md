@@ -87,12 +87,30 @@
   found"; it keeps its bare spelling but is now shown after a line that says to
   run it in the new terminal the `PATH` warning asked for (#273).
 
+- **`ccmorph-rc` with no Claude account profile says how to create one.**
+  It told the reader to pass `--as <profile>` in the same breath as reporting that
+  none exist — advice that cannot be followed. It now says Remote Control signs the
+  session in with a Claude account profile, and names `ccmorph add <name>`
+  (choose "Claude account") as the command that creates it (#276).
+
 ### Changed
 
 - Every screen names a profile kind the same way — Claude account, Claude token,
   API key, or the provider's own name — and the gateway address is called its
   endpoint everywhere. `ccmorph help add` names provider logins only when a
   provider bridge is installed (#265).
+
+### Docs
+
+- **The Remote Control add-on page opens with its requirements and install routes.**
+  The page began with `addons/remote-control/install.sh`, a path that exists only
+  inside a source checkout, although the main README installs ccmorph three ways —
+  and neither Homebrew nor the one-line installer puts an `addons` folder on disk.
+  The page now says who it is for, what it requires (macOS, Python 3.8+, mitmproxy,
+  a Claude account profile and an endpoint profile), and plainly that the add-on
+  runs from a clone, with those commands. Its examples spell the route argument as
+  `<route-profile>` — `gateway` there was the operator's profile name, and read as a
+  subcommand (#276).
 
 ## v0.5.7 — 2026-11-08
 
