@@ -1,13 +1,58 @@
 # Remote Control bridge (add-on)
 
 Drive Claude Code from the Claude iPhone app on a claude.ai subscription, while every
-model call is served by a ccmorph endpoint profile.
+model call is served by a ccmorph endpoint profile. You need it if you use Remote
+Control in the Claude app and want those model calls on your own endpoint — a gateway
+or an API key — instead of the subscription: the phone signs in with the claude.ai
+account, and every model call is served by the route profile.
+
+An add-on, not core: nothing in ccmorph knows it exists, and deleting this directory
+removes the feature (see [Boundary](#boundary)).
+
+## Requirements
+
+- macOS: the supervisor is a launchd LaunchAgent (`com.ccmorph.rc-hosts`).
+- The `claude` CLI and `zsh`, as ccmorph itself.
+- Python 3.8 or newer, and [mitmproxy](https://mitmproxy.org) (`brew install mitmproxy`).
+- Two ccmorph profiles: a Claude account profile (the account the phone
+  signs in with) and an endpoint profile (the route that serves inference).
+  `ccmorph add` creates both — see [First use](#first-use).
+
+## Install
+
+The add-on runs from a ccmorph clone, and only from one: neither of the other install
+routes puts it on disk — Homebrew installs no `addons` folder, and the one-line
+installer unpacks its download into a temporary directory it deletes afterwards. From
+either of those, clone first. This is the clone route of the main README's
+[Install](../../README.md#install) section, plus the add-on's own installer:
 
 ```sh
-addons/remote-control/install.sh          # commands on PATH + supervisor LaunchAgent
-ccmorph-rc gateway                       # serve the current folder to the Claude app
-ccmorph-rc gateway --probe               # one prompt through the same wiring
-ccmorph-rc gateway -- --continue         # reattach the session last served here
+git clone https://github.com/akleizor/ccmorph && cd ccmorph
+make shim                          # build libexec/ccmorph-core (needs Go)
+./install.sh                       # ccmorph itself, from this clone
+addons/remote-control/install.sh   # the add-on: commands on PATH + supervisor LaunchAgent
+```
+
+`addons/remote-control/install.sh --uninstall` stops the supervisor and removes what
+the installer added. The commands are symlinked into `~/.local/bin` and run from this
+tree, so the clone must stay; `git pull` and `make shim` update the add-on with it.
+
+## First use
+
+Create the two profiles it needs:
+
+```sh
+ccmorph add <account-profile>   # choose "Claude account": sign in with your browser
+ccmorph add <route-profile>     # choose "API key": the endpoint that serves every model call
+```
+
+Then, in the folder to serve — the route argument is that endpoint profile,
+`<route-profile>` in every example below:
+
+```sh
+ccmorph-rc <route-profile>                 # serve the current folder to the Claude app
+ccmorph-rc <route-profile> --probe         # one prompt through the same wiring
+ccmorph-rc <route-profile> -- --continue   # reattach the session last served here
 ```
 
 Pass-through: anything after `--` goes to `claude remote-control` unchanged.
@@ -49,8 +94,8 @@ the route; none is substituted. A tier pinned by the caller (`ANTHROPIC_DEFAULT_
 covers the whole family: the proxy rewrites full ids (`claude-fable-5-1`) too.
 `--route-models` uses the route profile's own alias map instead.
 
-`--as <profile>` picks the claude.ai account when there is more than one `type=sub`
-profile. `--debug` writes one line per request (method, path, who served it) to
+`--as <account-profile>` picks the claude.ai account when there is more than one
+`type=sub` profile. `--debug` writes one line per request (method, path, who served it) to
 `profiles/.rc-bridge/debug.log`; no headers or bodies are ever logged.
 
 ## After a Mac restart
@@ -59,7 +104,7 @@ Nothing starts by itself. From any terminal, including SSH from the phone, serve
 your home folder as one generic entry the app can start sessions in:
 
 ```sh
-tmux new-session -d -s rc-bridge -c ~ 'ccmorph-rc gateway -- --no-create-session-in-dir'
+tmux new-session -d -s rc-bridge -c ~ 'ccmorph-rc <route-profile> -- --no-create-session-in-dir'
 ```
 
 Sessions started from the phone begin in `~` and can move into any repository;

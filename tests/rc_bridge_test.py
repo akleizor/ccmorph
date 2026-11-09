@@ -435,6 +435,33 @@ def test_session_keeps_claude_prompt_prefix_stable_behind_the_adapter():
     assert keep["CLAUDE_CODE_DISABLE_ADVISOR_TOOL"] == "0"
 
 
+@pytest.mark.parametrize("confs, must, must_not", [
+    # Issue #276: with no Claude account profile there is nothing to pass --as, so
+    # the refusal must name the command that creates one instead.
+    pytest.param({}, ["Claude account profiles found", "ccmorph add"], ["--as"], id="none-names-add-issue-276"),
+    pytest.param({"a.conf": "type=sub\n", "b.conf": "type=sub\n"}, ["--as", "a", "b"], [],
+                 id="two-still-ask-for-as"),
+])
+def test_the_account_refusal_names_a_step_that_can_be_taken(tmp_path, monkeypatch, capsys,
+                                                            confs, must, must_not):
+    """`default_account()` refuses to guess in two shapes, and each refusal must
+    name a step the reader can actually take: with no Claude account
+    profile, the command that creates one; with several, the --as choice between
+    the profiles it lists."""
+    monkeypatch.setenv("CCMORPH_STATE_DIR", str(tmp_path))
+    for name, text in confs.items():
+        (tmp_path / name).write_text(text)
+    rc = _launcher()
+    with pytest.raises(SystemExit) as raised:
+        rc.default_account()
+    assert raised.value.code == 1
+    err = capsys.readouterr().err
+    for needle in must:
+        assert needle in err, err
+    for needle in must_not:
+        assert needle not in err, err
+
+
 def test_a_route_declared_model_mask_reaches_the_session():
     """A route that declares its own capability mask must reach the phone session.
 
