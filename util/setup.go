@@ -510,11 +510,3 @@ func pidsText(pids []int) []string {
 	}
 	return out
 }
-
-func prefixed(base string, items []string) []string {
-	out := make([]string, len(items))
-	for i, s := range items {
-		out[i] = base + "/" + s
-	}
-	return out
-}
