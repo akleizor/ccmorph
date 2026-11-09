@@ -64,7 +64,10 @@ func (l *launcher) getSet(verb string, args []string) int {
 		key = k
 		args = []string{name, key}
 		if verb == "set" {
-			v, _ := l.pickValue(key, name)
+			v, ok := l.pickValue(key, name)
+			if !ok {
+				return 1
+			}
 			args = append(args, v)
 		}
 	}

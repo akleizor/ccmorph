@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -104,5 +107,37 @@ func TestFzfArgsNeverHideRowsSilently(t *testing.T) {
 				t.Fatalf("n=%d lines=%d: window %d overflows the terminal", n, lines, h)
 			}
 		}
+	}
+}
+
+// A search picker the person leaves (fzf answers Esc with exit 130) prints the
+// one Cancelled line every picker answers with — not silence, not a usage line.
+func TestSearchCancelPrintsTheOneCancelledLineIssue280(t *testing.T) {
+	dir := t.TempDir()
+	fzf := "#!/bin/sh\nexit 130\n"
+	if err := os.WriteFile(filepath.Join(dir, "fzf"), []byte(fzf), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("TERM", "xterm")
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	v, rc := uiSelect("search", "Profile", "demo\tDemo profile", "labels")
+	os.Stderr = old
+	w.Close()
+	b, _ := io.ReadAll(r)
+	r.Close()
+	if rc != 1 || v != "" {
+		t.Fatalf("uiSelect = (%q, %d), want (\"\", 1)", v, rc)
+	}
+	if n := strings.Count(string(b), "Cancelled"); n != 1 {
+		t.Fatalf("stderr printed Cancelled %d times, want 1: %q", n, b)
+	}
+	if line := strings.TrimRight(string(b), "\n"); line != "  Cancelled" {
+		t.Fatalf("stderr = %q, want the one line \"  Cancelled\"", b)
 	}
 }

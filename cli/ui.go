@@ -164,7 +164,14 @@ func splitRows(rows string) []string {
 	return out
 }
 
-// uiSelect is ccm_ui_select: the chosen ID, or rc 1 cancelled, 2 invalid, 128+n signal.
+// cancelled is the one line every picker answers with when the person leaves it
+// without choosing, so Esc means the same thing in every command.
+func (t uiTheme) cancelled() {
+	fmt.Fprintln(os.Stderr, uiMargin+t.gray+"Cancelled"+t.reset)
+}
+
+// uiSelect is ccm_ui_select: the chosen ID, or rc 1 cancelled, 2 invalid or no
+// terminal to pick with, 128+n signal.
 func uiSelect(mode, title, rows, display string) (string, int) {
 	if display == "" {
 		display = "labels"
@@ -215,6 +222,11 @@ func (t uiTheme) numbered(prompt string, rows []string, display string) (string,
 	for {
 		choice, rc := uiInput(fmt.Sprintf("Select [1-%d] (q to cancel): ", len(rows)), false)
 		if rc != 0 || choice == "q" || choice == "Q" {
+			if rc == 0 {
+				// uiInput has already answered its own cancels; q is a line only
+				// this menu knows means leave.
+				t.cancelled()
+			}
 			return "", 1
 		}
 		if n, err := strconv.Atoi(choice); err == nil && n >= 1 && n <= len(rows) && choice == strconv.Itoa(n) {
@@ -295,7 +307,9 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 	if !isTTY(0) || !isTTY(2) {
 		uiErr(t, "selection needs a terminal; pass the value directly")
 		fmt.Fprintln(os.Stderr, strings.Join(rows, "\n"))
-		return "", 1
+		// rc 2, not a cancel: no picker ran, so the caller needs the direct
+		// command, not a Cancelled line.
+		return "", 2
 	}
 	if os.Getenv("TERM") == "dumb" {
 		return t.numbered(prompt, rows, display)
@@ -427,7 +441,7 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 		return "", rc
 	}
 	if result != 0 {
-		fmt.Fprintln(w, uiMargin+t.gray+"Cancelled"+t.reset)
+		t.cancelled()
 		return "", 1
 	}
 	t.receipt(prompt, rowID(visible(rows[selected], display)))
@@ -540,6 +554,8 @@ func (t uiTheme) search(prompt string, rows []string) (string, int) {
 		out, err := cmd.Output()
 		choice := strings.TrimRight(string(out), "\n")
 		if err != nil || choice == "" {
+			// fzf answers Esc with exit 130 and no choice: a leave, like any picker.
+			t.cancelled()
 			return "", 1
 		}
 		if i := strings.IndexByte(choice, '\n'); i >= 0 {
@@ -560,7 +576,9 @@ func (t uiTheme) search(prompt string, rows []string) (string, int) {
 	}
 	uiErr(t, "selection needs a terminal or fzf; pass the value directly")
 	fmt.Fprintln(os.Stderr, strings.Join(rows, "\n"))
-	return "", 1
+	// rc 2, not a cancel: no picker ran, so the caller needs the direct
+	// command, not a Cancelled line.
+	return "", 2
 }
 
 // uiInput is ccm_ui_input: one line, hidden when secret. rc 1 cancelled or EOF.
@@ -597,7 +615,7 @@ func uiInput(prompt string, secret bool) (string, int) {
 	restore()
 	fmt.Fprintln(w)
 	if rc != 0 {
-		fmt.Fprintln(w, uiMargin+t.gray+"Cancelled"+t.reset)
+		t.cancelled()
 		return "", rc
 	}
 	return value, 0
