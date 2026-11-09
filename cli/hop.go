@@ -24,12 +24,24 @@ func relayValid(id string) bool {
 	return true
 }
 
+// hopSlashFlag marks the call the /ccmorph:hop slash command makes. Claude Code
+// wraps a slash command's non-zero exit in "Shell command failed for pattern
+// ...", so that call alone answers a wrong profile on stdout with exit 0 (#257);
+// `! ccmorph hop` and a terminal keep the error and exit 1. It is hidden: never
+// in help, usage or docs.
+const hopSlashFlag = "--slash"
+
 // hop is `ccmorph hop [profile]`: queue a relaunch of this Claude Code session
-// on another profile, then end the session so the relay picks it up.
+// on another profile, then end the session so the relay picks it up. Without a
+// profile it names the choices instead of restarting where it already is.
 func (l *launcher) hop(args []string) int {
 	session, relay := os.Getenv("CLAUDE_CODE_SESSION_ID"), os.Getenv("CCMORPH_RELAY_ID")
 	relayPID, _, _ := strings.Cut(relay, ".")
-	name, current := "", false
+	slash := len(args) > 0 && args[0] == hopSlashFlag
+	if slash {
+		args = args[1:]
+	}
+	name := ""
 	if len(args) > 0 {
 		name = args[0]
 	}
@@ -44,25 +56,48 @@ func (l *launcher) hop(args []string) int {
 		}
 		name = picked
 	}
-	if name == "" && relay != "" {
+	// The profile this session runs on, when it can be told: to mark it among
+	// the choices and to notice a hop that would change nothing. It never picks
+	// the destination — GH-257: a hop without a profile used to fill this in and
+	// restart the session on the profile it was already on.
+	current := ""
+	if relay != "" {
 		if n, err := strconv.Atoi(relayPID); err == nil {
-			if v := util.SessionAdapter(n); v != "" {
-				name, current = v, true
+			current = util.SessionAdapter(n)
+		}
+		if current == "" {
+			if cfg := os.Getenv("CLAUDE_CONFIG_DIR"); cfg != "" {
+				// Like zsh's :A, resolve what exists: the profile dir itself may not yet.
+				parent, dirs := resolvePath(filepath.Dir(cfg)), resolvePath(l.profileDirs)
+				if parent != "" && parent == dirs {
+					current = filepath.Base(cfg)
+				}
 			}
 		}
 	}
-	if cfg := os.Getenv("CLAUDE_CONFIG_DIR"); name == "" && relay != "" && cfg != "" {
-		// Like zsh's :A, resolve what exists: the profile dir itself may not yet.
-		parent, dirs := resolvePath(filepath.Dir(cfg)), resolvePath(l.profileDirs)
-		if parent != "" && parent == dirs {
-			name, current = filepath.Base(cfg), true
+	if name == "" {
+		if session == "" {
+			l.err("usage: " + usageLine("hop"))
+			return 1
 		}
+		if !relayValid(relay) {
+			l.err("this session was not launched by the ccmorph relay")
+			return 1
+		}
+		l.hopChoices(current)
+		return 0
 	}
-	if !profile.ValidName(name) {
+	inSession := session != "" && relayValid(relay)
+	valid := profile.ValidName(name)
+	if !valid && !inSession {
 		l.err("usage: " + usageLine("hop"))
 		return 1
 	}
-	if !l.exists(name) {
+	if !valid || !l.exists(name) {
+		if slash {
+			fmt.Println(l.yellow + "ccmorph:" + l.reset + " " + l.noProfileMsg(name))
+			return 0
+		}
 		l.noProfile(name)
 		return 1
 	}
@@ -76,6 +111,12 @@ func (l *launcher) hop(args []string) int {
 	if !relayValid(relay) {
 		l.err("this session was not launched by the ccmorph relay")
 		return 1
+	}
+	if name == current {
+		// A hop to the profile this session already runs on changes nothing, so
+		// the session keeps running instead of ending and relaunching (#257).
+		fmt.Println("Already on " + l.bold + name + l.reset + " — nothing changed")
+		return 0
 	}
 	if prof := privateViewProfile(os.Getenv("CLAUDE_CONFIG_DIR")); prof != "" {
 		// A private session's conversation is deleted when the session ends
@@ -100,7 +141,7 @@ func (l *launcher) hop(args []string) int {
 	}
 	signal := "profile=" + name + "\nsession=" + session
 	if model, effort, ok := l.sessionState(session); ok {
-		if current || l.modelKnown(name, model) != 1 {
+		if l.modelKnown(name, model) != 1 {
 			signal += "\nmodel=" + model
 		} else {
 			fmt.Printf("%sccmorph:%s %s%s%s is not served by %s%s%s — resuming on its default model.\n",
@@ -174,6 +215,31 @@ func (l *launcher) hopCheck(name string) bool {
 func (l *launcher) refuseHop(name, why string) {
 	l.err("not switching to '" + name + "': " + why)
 	fmt.Fprintln(os.Stderr, "  This session keeps running.")
+}
+
+// hopChoices is the answer to a hop that named no profile: the profiles worth
+// hopping to, with the one this session runs on marked.
+func (l *launcher) hopChoices(current string) {
+	names := l.confNames()
+	if current == "" {
+		if len(names) == 0 {
+			fmt.Println("No profiles yet — run: ccmorph add <name>")
+			return
+		}
+		fmt.Println("Name a profile to hop to: " + strings.Join(names, " "))
+		return
+	}
+	var others []string
+	for _, n := range names {
+		if n != current {
+			others = append(others, n)
+		}
+	}
+	if len(others) == 0 {
+		fmt.Println(current + " is the only profile — add another with: ccmorph add <name>")
+		return
+	}
+	fmt.Println("Name a profile to hop to (now on " + l.bold + current + l.reset + "): " + strings.Join(others, " "))
 }
 
 // sessionState is _ccm_session_state: the transcript's last model and effort.

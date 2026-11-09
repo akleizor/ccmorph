@@ -3357,6 +3357,130 @@ test_hop_asks_the_gateway_which_models_it_serves() {
   return $rc
 }
 
+test_hop_without_a_profile_names_the_choices_instead_of_restarting() {
+  # GH-257: an argument-free hop filled in the profile the session already ran
+  # on and restarted it there. Asked nothing, hop must answer with the other
+  # profiles — the current one marked — and leave the session alone: no queued
+  # switch, no TERM.
+  local test_home
+  local relay_id="$$.choose"
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  printf '%s\n' 'type=sub' 'email=a@b.c' > "$HOME/.config/ccmorph/subacct.conf"
+  source "$CCMORPH_SOURCE"
+
+  export CLAUDE_CODE_SESSION_ID='choose-session'
+  export CCMORPH_RELAY_ID="$relay_id"
+
+  local out st rc=0
+  out=$(CLAUDE_CONFIG_DIR="$HOME/.config/ccmorph/profiles/proxy" hop_as_claude 2>&1); st=$?
+  [[ $st == 0 ]] || { print -u2 -- "a bare hop must not fail: exit $st, ${(qqq)out}"; rc=1 }
+  [[ "$out" == 'Name a profile to hop to (now on proxy): subacct' ]] || {
+    print -u2 -- "a bare hop must list the other profiles with the current one marked: ${(qqq)out}"
+    rc=1
+  }
+  [[ ! -e "$HOME/.config/ccmorph/.reswitch.$relay_id" ]] || {
+    print -u2 -- 'a bare hop must queue no switch'
+    rc=1
+  }
+  [[ ! -e "$HOME/claude-ended" ]] || {
+    print -u2 -- 'a bare hop must not end the session'
+    rc=1
+  }
+
+  # The only profile left is the one the session runs on.
+  rm "$HOME/.config/ccmorph/subacct.conf"
+  out=$(CLAUDE_CONFIG_DIR="$HOME/.config/ccmorph/profiles/proxy" hop_as_claude 2>&1); st=$?
+  [[ $st == 0 ]] || { print -u2 -- "a bare hop must not fail: exit $st, ${(qqq)out}"; rc=1 }
+  [[ "$out" == 'proxy is the only profile — add another with: ccmorph add <name>' ]] || {
+    print -u2 -- "a bare hop with nowhere to go must say so in one line: ${(qqq)out}"
+    rc=1
+  }
+  [[ ! -e "$HOME/.config/ccmorph/.reswitch.$relay_id" && ! -e "$HOME/claude-ended" ]] || {
+    print -u2 -- 'a bare hop must queue no switch and end nothing'
+    rc=1
+  }
+
+  unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_hop_to_the_running_profile_changes_nothing() {
+  # GH-257: hopping to the profile the session already runs on must say so and
+  # keep the session running: no queued switch, no TERM.
+  local test_home
+  local relay_id="$$.same"
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  source "$CCMORPH_SOURCE"
+
+  export CLAUDE_CODE_SESSION_ID='same-profile-session'
+  export CCMORPH_RELAY_ID="$relay_id"
+
+  local out st rc=0
+  out=$(CLAUDE_CONFIG_DIR="$HOME/.config/ccmorph/profiles/proxy" hop_as_claude proxy 2>&1); st=$?
+  [[ $st == 0 ]] || { print -u2 -- "a same-profile hop must not fail: exit $st, ${(qqq)out}"; rc=1 }
+  [[ "$out" == 'Already on proxy — nothing changed' ]] || {
+    print -u2 -- "a same-profile hop must say nothing changed: ${(qqq)out}"
+    rc=1
+  }
+  [[ ! -e "$HOME/.config/ccmorph/.reswitch.$relay_id" ]] || {
+    print -u2 -- 'a same-profile hop must queue no switch'
+    rc=1
+  }
+  [[ ! -e "$HOME/claude-ended" ]] || {
+    print -u2 -- 'a same-profile hop must not end the session'
+    rc=1
+  }
+
+  unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_hop_to_a_wrong_name_inside_claude_answers_in_one_line() {
+  # GH-257: Claude Code renders a non-zero exit of the slash command's line as
+  # 'Shell command failed for pattern "!`ccmorph hop nosuch`": [stderr] ...'.
+  # That line (ccmorph hop --slash) answers a wrong profile on stdout with a
+  # zero exit; `! ccmorph hop` and a terminal keep the error and exit 1.
+  local test_home
+  local relay_id="$$.wrong"
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  printf '%s\n' 'type=sub' 'email=a@b.c' > "$HOME/.config/ccmorph/subacct.conf"
+  source "$CCMORPH_SOURCE"
+
+  export CLAUDE_CODE_SESSION_ID='wrong-name-session'
+  export CCMORPH_RELAY_ID="$relay_id"
+
+  # A name that is not even a valid profile name (a hyphen, a dot, a reserved
+  # word) is the likelier typo, and answers the same way.
+  local out st rc=0 bad
+  for bad in nosuch no-such work.2 active; do
+    out=$(CLAUDE_CONFIG_DIR="$HOME/.config/ccmorph/profiles/proxy" hop_as_claude --slash "$bad" 2>&1); st=$?
+    [[ $st == 0 ]] || { print -u2 -- "a wrong name '$bad' must answer, not fail: exit $st, ${(qqq)out}"; rc=1 }
+    [[ "$out" == "ccmorph: no profile '$bad'. Profiles: proxy subacct" ]] || {
+      print -u2 -- "a wrong name '$bad' must name the available profiles in one line: ${(qqq)out}"
+      rc=1
+    }
+    out=$(CLAUDE_CONFIG_DIR="$HOME/.config/ccmorph/profiles/proxy" hop_as_claude "$bad" 2>&1); st=$?
+    [[ $st == 1 ]] || { print -u2 -- "the ! form must keep the error for '$bad': exit $st, ${(qqq)out}"; rc=1 }
+    [[ "$out" == "ccmorph: no profile '$bad'. Profiles: proxy subacct" ]] || {
+      print -u2 -- "the ! form must name the available profiles for '$bad': ${(qqq)out}"
+      rc=1
+    }
+  done
+  [[ ! -e "$HOME/.config/ccmorph/.reswitch.$relay_id" ]] || {
+    print -u2 -- 'a wrong name must queue no switch'
+    rc=1
+  }
+
+  unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_relay_resume_preserves_dangerous_permission_mode() {
   local test_home
   test_home=$(mktemp -d)
@@ -10788,6 +10912,9 @@ run_test test_hop_refuses_to_end_the_session_when_the_target_cannot_start
 run_test test_hop_refuses_to_switch_away_from_a_private_profile
 run_test test_launch_failure_names_the_cause_and_the_doctor_command
 run_test test_hop_refuses_when_no_claude_process_runs_it
+run_test test_hop_without_a_profile_names_the_choices_instead_of_restarting
+run_test test_hop_to_the_running_profile_changes_nothing
+run_test test_hop_to_a_wrong_name_inside_claude_answers_in_one_line
 run_test test_hop_falls_back_when_the_target_cannot_serve_the_model
 run_test test_hop_asks_the_gateway_which_models_it_serves
 run_test test_relay_resume_preserves_dangerous_permission_mode

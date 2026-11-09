@@ -15,9 +15,10 @@
 - **One profile per backend.** Each Claude account, Claude token, API key or
   provider gets its own login and settings. Skills, plugins, hooks, `CLAUDE.md` and session history
   stay shared.
-- **Hop mid-session.** `ccmorph hop <profile>` moves a running conversation to
-  another profile, keeping its model and effort. The status line names the
-  profile a session runs on, and `ccmorph profile` answers from the prompt.
+- **Hop mid-session.** `ccmorph hop [profile]` moves a running conversation to
+  another profile, keeping its model and effort; without a profile it names the
+  others to choose from. The status line names the profile a session runs on,
+  and `ccmorph profile` answers from the prompt.
 - **Any endpoint.** Gateways that do not speak Anthropic's API are translated
   automatically through a per-launch adapter.
 - **Cost per profile.** Every gateway turn leaves a receipt with the billed cost;
@@ -127,7 +128,9 @@ To switch a running session, type in the Claude Code prompt:
 /ccmorph:hop personal
 ```
 
-`! ccmorph hop personal` does the same.
+`! ccmorph hop personal` does the same. `/ccmorph:hop` with no profile names the
+other profiles to choose from; hopping to the profile the session already runs
+on changes nothing.
 
 The session's status line names the profile it runs on, and changes with a hop.
 `/ccmorph:profile` (or `! ccmorph profile`) prints the name.

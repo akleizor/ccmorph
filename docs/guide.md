@@ -514,7 +514,7 @@ ccmorph run -i                     # ask which profile, then which model
 ccmorph run --model -i              # default profile, ask only for model
 ccmorph run <profile> --model -i    # named profile, ask only for model
 ccmorph run <profile> --model <id> # profile plus explicit model
-ccmorph hop <profile>              # hop a RUNNING session, keeping model + effort
+ccmorph hop [profile]              # hop a RUNNING session, keeping model + effort
 ccmorph profile                    # name the profile this session runs on
 ```
 
@@ -570,10 +570,12 @@ or run it with a leading `!`:
 ! ccmorph hop personal
 ```
 
-In a plain terminal it exits with `not inside a Claude Code session`, and a
-session started by plain `claude` (bypassing the launcher) reports `this session
-was not launched by the ccmorph relay` — start it with `ccmorph` and hop from
-there.
+`/ccmorph:hop` with no profile names the other profiles to choose from, the one
+the session runs on marked; hopping to that profile changes nothing. In a plain
+terminal a bare hop prints its usage line, a named one exits with `not inside a
+Claude Code session`, and a session started by plain `claude` (bypassing the
+launcher) reports `this session was not launched by the ccmorph relay` — start
+it with `ccmorph` and hop from there.
 
 Which profile a session runs on is visible without running anything: every
 launch gives the session a status line reading `profile: <name>`, and a hop

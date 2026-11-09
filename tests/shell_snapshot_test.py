@@ -1,5 +1,6 @@
 """A captured public function must not depend on uncaptured private shell state."""
 import os
+import re
 from pathlib import Path
 import subprocess
 
@@ -55,6 +56,25 @@ def test_public_function_survives_without_private_helpers(env, args):
     else:
         assert result.returncode == 1
         assert "no profile 'missing'" in result.stderr
+
+
+@pytest.mark.parametrize('arg,answer', [
+    ('missing', "no profile 'missing'. Profiles: demo"),
+    ('', 'Name a profile to hop to: demo'),
+])
+def test_the_slash_command_answers_on_stdout_gh_257(env, arg, answer):
+    # GH-257: Claude Code wraps a slash command's non-zero exit in "Shell
+    # command failed for pattern ...", so the /ccmorph:hop line itself answers a
+    # wrong or missing name on stdout with exit 0, and switches nothing.
+    text = (ROOT / 'share/claude-plugin/commands/hop.md').read_text()
+    line = re.search(r'!`([^`]*)`', text).group(1).replace('$ARGUMENTS', arg)
+    captured = shell('source "$CCMORPH_LIB_DIR/ccmorph.sh"; functions ccmorph', env)
+    assert captured.returncode == 0, captured.stderr
+    result = shell(captured.stdout + '\nunsetopt bareglobqual\n' + line, env)
+    assert result.returncode == 0, result.stderr
+    assert answer in result.stdout
+    assert 'no profile' not in result.stderr
+    assert not list(Path(env['CCMORPH_STATE_DIR']).glob('.reswitch.*'))
 
 
 def test_sourced_function_restores_options_without_changing_callers(env):

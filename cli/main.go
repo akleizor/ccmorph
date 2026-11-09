@@ -132,6 +132,9 @@ func (l *launcher) dispatch(args []string) int {
 		if helpAsked(rest) {
 			return l.usage(first)
 		}
+		if first == "hop" && len(rest) > 0 && rest[0] == hopSlashFlag {
+			n++ // the slash command's marker is not a word the user typed
+		}
 		if len(rest) > n {
 			return l.extraArg(first, rest[n])
 		}
@@ -679,7 +682,7 @@ func (l *launcher) usage(topic string) int {
 		help("ccmorph run", "Launch the default profile")
 		help("ccmorph run <profile>", "Use a profile for this session")
 		help("ccmorph run -i", "Choose a profile interactively")
-		help("ccmorph hop <profile>", "Switch a running session, from inside Claude")
+		help("ccmorph hop [profile]", "Switch a running session, from inside Claude")
 		head("Profiles:")
 		help("ccmorph add <profile>", "Add an account or API key")
 		help("ccmorph list", "See profiles and the default")
@@ -792,12 +795,14 @@ instead: ccmorph config <profile>`},
 	"rm": {"ccmorph rm <profile>", `Delete this profile, its saved credential and private sign-in state.
 Shared conversation history is kept. This cannot be undone.
 Leftover private state from a missing profile requires confirmation.`},
-	"hop": {"ccmorph hop <profile>", `Inside a running Claude Code session, type one of:
+	"hop": {"ccmorph hop [profile]", `Inside a running Claude Code session, type one of:
   /ccmorph:hop <profile>
   ! ccmorph hop <profile>
 The switch happens at once: hop ends this session and the relay resumes the
 conversation on the new profile, keeping its model and effort when that profile
 serves them. No exit is needed.
+Without a profile it names the other profiles to choose from; hopping to the
+profile already running changes nothing.
 This command does not work from an unrelated terminal.`},
 	"profile": {"ccmorph profile", `Inside a running Claude session, type: ! ccmorph profile
 It prints the profile the session runs on. The status line names the same

@@ -159,6 +159,41 @@ def test_hop_help_needs_no_exit_and_names_both_forms_gh_289(tmp_path):
     assert 'inside Claude' in hop_line
 
 
+def test_hop_usage_line_agrees_across_help_and_the_slash_command(tmp_path):
+    # GH-257: the places a user meets hop each drew their own usage line — a
+    # bare `ccmorph hop` said [profile] while `ccmorph help hop` said <profile>
+    # — and the slash command's description named neither.
+    state = tmp_path / 'state'
+    state.mkdir()
+    # Scrub the runner's own session: this suite may run inside a Claude Code
+    # session, where a bare hop is a question, not a usage error.
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(('CCMORPH', 'CLAUDE_', 'ANTHROPIC_'))}
+    env.update(HOME=str(tmp_path / 'home'), CCMORPH_STATE_DIR=str(state),
+               CCMORPH_LIB_DIR=str(ROOT / 'lib'), NO_COLOR='1')
+    cli = str(ROOT / 'bin/ccmorph')
+    usage = 'ccmorph hop [profile]'
+    bare = subprocess.run([cli, 'hop'], env=env, capture_output=True,
+                          text=True, timeout=HANG_TIMEOUT)
+    assert bare.returncode == 1, bare.stdout
+    assert 'usage: ' + usage in bare.stderr, bare.stderr
+    detail = subprocess.run([cli, 'help', 'hop'], env=env, capture_output=True,
+                            text=True, timeout=HANG_TIMEOUT)
+    assert detail.returncode == 0, detail.stderr
+    assert detail.stdout.splitlines()[0] == 'Usage: ' + usage
+    assert '--slash' not in detail.stdout
+    extra = subprocess.run([cli, 'hop', '--slash', 'a', 'b'], env=env, capture_output=True,
+                           text=True, timeout=HANG_TIMEOUT)
+    assert extra.returncode == 2, extra.stdout
+    assert "unexpected argument 'b'" in extra.stderr
+    assert 'usage: ' + usage in extra.stderr
+    listing = subprocess.run([cli, 'help', 'all'], env=env, capture_output=True,
+                             text=True, timeout=HANG_TIMEOUT)
+    assert usage in listing.stdout
+    command = (ROOT / 'share/claude-plugin/commands/hop.md').read_text()
+    assert usage in command
+
+
 def test_update_and_uninstall_under_homebrew_name_the_brew_command(tmp_path):
     # A brew install keeps the library under the Cellar with no installer beside it.
     root = tmp_path / 'Cellar/ccmorph/0.2.0/libexec'
