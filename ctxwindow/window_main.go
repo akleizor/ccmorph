@@ -122,6 +122,7 @@ func runLocked(args []string, stderr io.Writer) (int, error) {
 	}
 	sort.Strings(profiles)
 	var locks []*os.File
+	var taken []os.FileInfo
 	defer func() {
 		for _, f := range locks {
 			f.Close()
@@ -133,21 +134,37 @@ func runLocked(args []string, stderr io.Writer) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		if !contains(strings.Split(os.Getenv("CCMORPH_PROFILE_LOCK_HELD"), ":"), path) {
-			lock, err := lockPath(path)
-			if err != nil {
-				return 0, err
-			}
-			f, err := os.OpenFile(lock, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-			if err != nil {
-				return 0, err
-			}
-			locks = append(locks, f)
-			if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-				return 0, err
+		held = append(held, path)
+		if heldLock(path) {
+			continue
+		}
+		lock, err := lockPath(path)
+		if err != nil {
+			return 0, err
+		}
+		f, err := os.OpenFile(lock, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			return 0, err
+		}
+		locks = append(locks, f)
+		fi, err := f.Stat()
+		if err != nil {
+			return 0, err
+		}
+		again := false
+		for _, prev := range taken {
+			if os.SameFile(fi, prev) {
+				again = true
+				break
 			}
 		}
-		held = append(held, path)
+		if again { // one lock file reached under two names: already held
+			continue
+		}
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+			return 0, err
+		}
+		taken = append(taken, fi)
 	}
 	cmd := exec.Command(args[2], args[3:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -185,13 +202,4 @@ func runLocked(args []string, stderr io.Writer) (int, error) {
 		fmt.Fprintln(stderr, "Cancelled.")
 		return 130, nil
 	}
-}
-
-func contains(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
-			return true
-		}
-	}
-	return false
 }

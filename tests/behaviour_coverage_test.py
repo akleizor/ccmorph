@@ -117,6 +117,52 @@ def test_use_refuses_an_unknown_or_invalid_profile_and_keeps_the_default(box):
     assert box.active == 'work'
 
 
+@pytest.mark.parametrize('verb', ['use', 'rm', 'run'])
+def test_a_wrong_case_name_is_refused_with_the_real_spelling_gh_259(box, verb):
+    # GH-259: on a case-insensitive volume every conf open succeeded under the
+    # wrong case, so use rewrote the default to TOK, rm deleted gw2, and run
+    # launched with .../profiles/TOK.
+    seed(box)
+    box.run('use', 'work')
+    done = box.run(verb, 'TOK')
+    assert done.returncode != 0, done.stdout
+    assert "no profile 'TOK'" in done.stderr
+    assert "'tok'" in done.stderr, done.stderr
+    assert 'Removed' not in done.stdout and 'Default set' not in done.stdout
+    assert 'type=token' in (box.state / 'tok.conf').read_text()
+    assert box.active == 'work'
+    assert box.log() == ''
+
+
+def test_a_default_saved_with_the_wrong_case_still_marks_the_real_profile_gh_259(box):
+    # A ccmorph before this fix wrote the typed spelling into `active`; reading
+    # it as the profile that is really there restores the person's default.
+    seed(box)
+    box.run('use', 'tok')
+    (box.state / 'active').write_text('TOK\n')
+    assert box.run('use').stdout.strip() == 'tok'
+    out = box.run('list').stdout
+    tok = next(line for line in out.splitlines() if line.strip().endswith('(token)'))
+    assert tok.lstrip().startswith('*'), out
+    # doctor with no name reads the same default, not the spelling TOK.
+    doctor = box.run('doctor')
+    assert doctor.returncode == 0, doctor.stdout
+    assert 'profile: tok (token)' in doctor.stdout, doctor.stdout
+
+
+def test_doctor_refuses_a_wrong_case_name_with_the_real_spelling_gh_259(box):
+    # GH-259: doctor opened tok.conf as TOK and could end with
+    # `ready: start it with ccmorph run TOK`, a command that now refuses TOK.
+    seed(box)
+    box.run('use', 'tok')
+    done = box.run('doctor', 'TOK')
+    assert done.returncode != 0, done.stdout
+    assert "no profile 'TOK'" in done.stdout
+    assert "'tok'" in done.stdout, done.stdout
+    assert 'profile: TOK' not in done.stdout
+    assert 'ready: start it with ccmorph run TOK' not in done.stdout
+
+
 def test_list_marks_the_default_and_labels_every_profile_type(box):
     seed(box)
     box.run('use', 'tok')
@@ -165,6 +211,18 @@ def test_list_tolerates_glob_metacharacters_in_the_state_dir_gh_113(tmp_path, me
 
 # --- mv / rm ------------------------------------------------------------------
 
+def test_add_refuses_a_name_that_differs_only_by_case_and_names_the_clash_gh_259(box):
+    seed(box)
+    names = sorted(p.name for p in box.state.glob('*.conf'))
+    before = (box.state / 'work.conf').read_text()
+    done = box.run('add', 'Work')
+    assert done.returncode != 0, done.stdout
+    assert "'work'" in done.stderr, done.stderr
+    assert 'ccmorph rm' not in done.stderr, done.stderr
+    assert sorted(p.name for p in box.state.glob('*.conf')) == names
+    assert (box.state / 'work.conf').read_text() == before
+
+
 def test_mv_carries_conf_profile_dir_auth_and_default_to_the_new_name(box):
     seed(box)
     box.run('use', 'work')
@@ -185,6 +243,28 @@ def test_mv_carries_conf_profile_dir_auth_and_default_to_the_new_name(box):
     assert (auth / '.job.bridge').read_text() == 'handle'
     assert (auth / '.job.bridge.lock').exists() and (auth / '.job.bridge.users').exists()
     assert not list(auth.glob('.work.bridge*'))
+
+
+def test_mv_refuses_a_case_only_rename_gh_259(box):
+    # GH-259: mv tok Tok never returned — --locked flocked the one lock file
+    # .locks/work2.lock twice. It is refused before any lock is taken.
+    seed(box)
+    names = sorted(p.name for p in box.state.glob('*.conf'))
+    before = (box.state / 'tok.conf').read_text()
+    done = box.run('mv', 'tok', 'Tok')
+    assert done.returncode != 0, done.stdout
+    assert 'only by letter case' in done.stderr, done.stderr
+    assert sorted(p.name for p in box.state.glob('*.conf')) == names
+    assert (box.state / 'tok.conf').read_text() == before
+
+
+def test_mv_refuses_a_target_that_differs_only_by_case_from_another_profile_gh_259(box):
+    seed(box)
+    done = box.run('mv', 'work', 'TOK')
+    assert done.returncode != 0, done.stdout
+    assert "'tok'" in done.stderr, done.stderr
+    assert (box.state / 'work.conf').exists()
+    assert 'type=token' in (box.state / 'tok.conf').read_text()
 
 
 def test_mv_refuses_an_existing_target_and_changes_nothing(box):

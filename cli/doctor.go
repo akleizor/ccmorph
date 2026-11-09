@@ -156,9 +156,11 @@ func credentialStorage(conf, field string) string {
 
 func (l *launcher) doctor(name string, verbose bool) int {
 	active := filepath.Join(l.dir, "active")
+	fromDefault := false
 	if name == "" && isFile(active) && !isLink(active) {
 		b, _ := os.ReadFile(active)
 		name = strings.TrimRight(string(b), "\n")
+		fromDefault = true
 	}
 	if name == "" {
 		if len(l.confNames()) == 0 {
@@ -172,13 +174,24 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		l.status("FAIL", "profile: invalid profile name")
 		return 1
 	}
-	conf := filepath.Join(l.dir, name+".conf")
-	if !present(conf) {
-		l.status("FAIL", "profile: "+l.noProfileMsg(name))
-		return 1
+	// A default written by an older ccmorph carries the spelling the person
+	// typed; read it as the profile that is really there, as use and list do.
+	if fromDefault && !l.exists(name) {
+		if twin := l.caseTwin(name); twin != "" {
+			name = twin
+		}
 	}
-	if !isFile(conf) || isLink(conf) {
-		l.status("FAIL", "profile: missing or symlinked config ("+conf+")")
+	conf := filepath.Join(l.dir, name+".conf")
+	// GH-259: on a volume that ignores letter case present(conf) is true for a
+	// name typed with the wrong case, and doctor read tok.conf as TOK and
+	// recommended `ccmorph run TOK`. Only a directory entry spelled as typed is
+	// this profile; every other verb decides the same way.
+	if !l.exists(name) {
+		if isLink(conf) {
+			l.status("FAIL", "profile: missing or symlinked config ("+conf+")")
+		} else {
+			l.status("FAIL", "profile: "+l.noProfileMsg(name))
+		}
 		return 1
 	}
 	f, ok := l.readRaw(name)

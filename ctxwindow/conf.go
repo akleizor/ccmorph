@@ -133,13 +133,42 @@ func DiscoveredPath(conf string) string {
 	return filepath.Join(dir, "profiles", strings.TrimSuffix(name, ".conf"), "models.json")
 }
 
-// lockPath is the conf's lock file, kept out of the state root's listing.
-func lockPath(conf string) (string, error) {
+// lockName is the conf's lock file path, kept out of the state root's listing.
+func lockName(conf string) string {
 	dir, name := filepath.Split(conf)
-	if err := os.MkdirAll(filepath.Join(dir, ".locks"), 0o700); err != nil {
+	return filepath.Join(dir, ".locks", strings.TrimSuffix(name, ".conf")+".lock")
+}
+
+// lockPath is lockName with the .locks directory made first.
+func lockPath(conf string) (string, error) {
+	lock := lockName(conf)
+	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, ".locks", strings.TrimSuffix(name, ".conf")+".lock"), nil
+	return lock, nil
+}
+
+// heldLock reports whether this process already holds conf's lock: either the
+// same conf path is named in CCMORPH_PROFILE_LOCK_HELD, or a named conf's lock
+// file and this one are one file on disk (macOS ignores letter case, so
+// work2.conf and Work2.conf can share .locks/work2.lock). Taking that file
+// again would wait forever on ourselves.
+func heldLock(conf string) bool {
+	lock, err := os.Stat(lockName(conf))
+	for _, held := range strings.Split(os.Getenv("CCMORPH_PROFILE_LOCK_HELD"), ":") {
+		if held == "" {
+			continue
+		}
+		if held == conf {
+			return true
+		}
+		if err == nil {
+			if other, err := os.Stat(lockName(held)); err == nil && os.SameFile(lock, other) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // RouteFingerprint hashes the fields that decide where requests go.
@@ -474,10 +503,8 @@ func ProfileLockCtx(ctx context.Context, profile string, fn func() error) (bool,
 	if err != nil {
 		return false, err
 	}
-	for _, held := range strings.Split(os.Getenv("CCMORPH_PROFILE_LOCK_HELD"), ":") {
-		if held == path {
-			return true, fn()
-		}
+	if heldLock(path) {
+		return true, fn()
 	}
 	// The lock holds no configuration data; its inode stays stable across remove/recreate.
 	lock, err := lockPath(path)

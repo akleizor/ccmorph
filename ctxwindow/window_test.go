@@ -2,12 +2,16 @@ package ctxwindow
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/akleizor/ccmorph/profile"
 )
@@ -527,5 +531,74 @@ func TestMigrationMovesInlineDiscoveredToModelsJSON(t *testing.T) {
 	}
 	if _, err := os.Stat(e.a + ".lock"); err == nil {
 		t.Fatal("retired lock file left in the state root")
+	}
+}
+
+// oneLockFile makes .locks/<a>.lock and .locks/<b>.lock one file on disk: a
+// hard link where the volume tells the names apart, the same name where it
+// does not (macOS ignores letter case).
+func oneLockFile(t *testing.T, state, a, b string) {
+	t.Helper()
+	dir := filepath.Join(state, ".locks")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	first, second := filepath.Join(dir, a+".lock"), filepath.Join(dir, b+".lock")
+	if err := os.WriteFile(first, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(first, second); err != nil && !os.IsExist(err) {
+		t.Fatal(err)
+	}
+}
+
+// GH-259: mv tok Tok named both profiles, and on a volume that ignores letter
+// case both names reached one lock file. --locked flocked it twice and waited
+// on itself forever.
+func TestLockedNamesSharingOneLockFileTakeItOnce(t *testing.T) {
+	e := setup(t)
+	oneLockFile(t, e.state, "work2", "Work2")
+	done := make(chan int, 1)
+	go func() {
+		code, err := windowRun([]string{"--locked", "work2,Work2", "true"}, io.Discard, io.Discard)
+		if err != nil {
+			t.Error(err)
+		}
+		done <- code
+	}()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("locked exit %d", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("locked deadlocked on its own lock")
+	}
+}
+
+// GH-259: a profile's writer passed through only when CCMORPH_PROFILE_LOCK_HELD
+// spelled the conf path the same way; a held lock reached under another
+// spelling blocked it.
+func TestProfileLockPassesThroughALockHeldUnderAnotherSpelling(t *testing.T) {
+	e := setup(t)
+	oneLockFile(t, e.state, "a", "A")
+	held, err := os.OpenFile(filepath.Join(e.state, ".locks", "A.lock"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	if err := syscall.Flock(int(held.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CCMORPH_PROFILE_LOCK_HELD", filepath.Join(e.state, "A.conf"))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ran := false
+	ok, err := ProfileLockCtx(ctx, "a", func() error { ran = true; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || !ran {
+		t.Fatalf("writer did not pass through a lock held under another spelling (ran=%v ok=%v)", ran, ok)
 	}
 }
