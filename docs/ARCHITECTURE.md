@@ -327,6 +327,11 @@ the command that resumes the session on that profile; after a hop the final
 pass's line names the profile the session ended on. A launcher that died
 before reading leaves reaping to gc-stale, a minute old like every other
 TMPDIR record, and a record that is not a session id reads as no session (#285).
+The hook also keeps Claude Code's own input, whose `transcript_path` names where
+that session's conversation is, in `ccmorph-session-end.<claude pid>.json`. When
+that transcript holds no conversation — the session was closed before its first
+message, or was a resume of an id Claude Code could not find — no line prints,
+since the command could only fail with "No conversation found" (#359).
 
 ### Interactive selection is one flag, resolved per verb
 

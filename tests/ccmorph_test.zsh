@@ -3024,6 +3024,74 @@ test_an_ended_session_prints_the_command_that_resumes_it() {
   return $rc
 }
 
+test_a_session_with_no_conversation_ends_without_a_resume_command_issue_359() {
+  # A session closed before its first message wrote no conversation, so the
+  # command that resumes it fails with Claude Code's own "No conversation found"
+  # -- and the failed run used to print the same command again (#359). The
+  # launcher knows the difference from the transcript Claude Code names to its
+  # SessionEnd hook.
+  local test_home rc=0 out st
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  # The stand-in Claude Code ends an attended session the way ccmorph's
+  # SessionEnd hook does -- the id in a pid-keyed TMPDIR file, Claude Code's
+  # JSON input beside it -- and answers --resume the way Claude Code does: the
+  # conversation comes back when a transcript holds it, its own error and exit
+  # 1 when none does, and the hook still records that id.
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'attended=1 resume= prev=' \
+    'for arg do' \
+    '  case "$arg" in -p|--print) attended=0 ;; esac' \
+    '  [ "$prev" = --resume ] && resume=$arg' \
+    '  prev=$arg' \
+    'done' \
+    '{' \
+    '  printf "ARG"' \
+    '  for arg do printf "\t%s" "$arg"; done' \
+    '  printf "\n"' \
+    '} >> "$CCMORPH_TEST_LOG"' \
+    'sid=${CCMORPH_TEST_SESSION_ID:-ended-session}' \
+    'if [ -n "$resume" ]; then' \
+    '  sid=$resume' \
+    '  if [ ! -f "$HOME/.claude/projects/p/$resume.jsonl" ]; then' \
+    '    echo "No conversation found with session ID: $resume" >&2' \
+    '    st=1' \
+    '  fi' \
+    'fi' \
+    'if [ "$attended" = 1 ]; then' \
+    '  f="${TMPDIR:-/tmp}/ccmorph-session-end.$$"' \
+    '  printf "{\"session_id\":\"%s\",\"transcript_path\":\"%s\",\"hook_event_name\":\"SessionEnd\"}" "$sid" "$HOME/.claude/projects/p/$sid.jsonl" > "$f.json"' \
+    '  printf %s "$sid" > "$f"' \
+    'fi' \
+    'exit ${st:-0}' > "$HOME/bin/claude"
+  chmod +x "$HOME/bin/claude"
+  source "$CCMORPH_SOURCE"
+
+  # A session that spoke keeps its line, and the command it names resumes it.
+  seed_session_transcript spoken-session 'a first message'
+  out=$(CCMORPH_TEST_SESSION_ID=spoken-session _ccm_launch -a proxy 2>&1) || rc=1
+  assert_contains "$out" 'ccmorph run proxy --resume spoken-session' \
+    'a session with a message must name the command that resumes it' || rc=1
+  out=$(_ccm_launch -a proxy --resume spoken-session 2>&1) || rc=1
+  assert_contains "$out" 'ccmorph run proxy --resume spoken-session' \
+    'the resumed session must again name the command that resumes it' || rc=1
+  # A session closed before any message: nothing was saved, so no command.
+  out=$(CCMORPH_TEST_SESSION_ID=quiet-session _ccm_launch -a proxy 2>&1) || rc=1
+  assert_not_contains "$out" 'ccmorph run proxy --resume' \
+    'a session closed before its first message must not offer a resume command' || rc=1
+  # A resume of an id that does not exist ends with Claude Code's error and
+  # its status, and no new command.
+  out=$(_ccm_launch -a proxy --resume ghost-session 2>&1); st=$?
+  [[ "$st" != 0 ]] || { print -u2 -- "Claude Code's own failure must keep its exit status: ${(qqq)out}"; rc=1 }
+  assert_contains "$out" 'No conversation found with session ID: ghost-session' \
+    'the failed resume must end with the error Claude Code printed' || rc=1
+  assert_not_contains "$out" 'ccmorph run proxy --resume' \
+    'a failed resume must not offer the same command again' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_hop_before_the_first_message_starts_a_new_conversation_issue_288() {
   # Before the first message Claude Code has written no transcript for the
   # session, so handing its id to --resume ended the hop at Claude Code's own
@@ -10935,6 +11003,7 @@ run_test test_hop_relays_model_and_effort
 run_test test_hop_inside_a_core_launch_resumes_on_the_target
 run_test test_hop_failure_names_the_way_back_to_the_source_profile
 run_test test_an_ended_session_prints_the_command_that_resumes_it
+run_test test_a_session_with_no_conversation_ends_without_a_resume_command_issue_359
 run_test test_hop_before_the_first_message_starts_a_new_conversation_issue_288
 run_test test_failed_switch_with_no_conversation_does_not_offer_a_resume_issue_288
 run_test test_a_hop_reads_the_catalogue_afresh
