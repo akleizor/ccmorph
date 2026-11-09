@@ -285,14 +285,14 @@ def test_update_and_uninstall_under_homebrew_name_the_brew_command(tmp_path):
         assert brew in result.stderr, result.stderr
 
 
-def _help_add(tmp_path, bridge):
+def _help_add(tmp_path, bridge, providers='claude antigravity codex'):
     """help add with a PATH that has only a fake cliproxyapi, when bridge is given."""
     bin_dir = tmp_path / 'bin'
     bin_dir.mkdir(exist_ok=True)
     if bridge:
         fake = bin_dir / 'cliproxyapi'
         fake.write_text('#!/bin/sh\n'
-                        'if [ "$1" = --help ]; then for p in claude antigravity codex; do'
+                        f'if [ "$1" = --help ]; then for p in {providers}; do'
                         ' echo "  -$p-login"; done; exit 0; fi\n'
                         'exit 1\n')
         fake.chmod(0o755)
@@ -311,6 +311,18 @@ def test_add_help_names_provider_logins_only_when_the_bridge_is_installed(tmp_pa
     with_bridge = _help_add(tmp_path, bridge=True)
     assert 'Antigravity, Codex: sign in to that service with your browser (through cliproxyapi).' in with_bridge
     assert 'Claude: sign in to that service' not in with_bridge
+
+
+def test_add_help_names_both_kimi_sign_ins_by_region_gh_366(tmp_path):
+    # GH-366: the login list called the two Kimi sites Kimi-ai and Kimi — names
+    # only a domain tells apart — while the API-key provider list calls the same
+    # sites Kimi For Coding (global) and Kimi For Coding (China), and the plain
+    # name stood for the less obvious one. help add carries the provider list's
+    # name for each service, beside the two-login case above.
+    with_bridge = _help_add(tmp_path, bridge=True, providers='claude kimi-ai kimi')
+    assert ('Kimi For Coding (global), Kimi For Coding (China): '
+            'sign in to that service with your browser (through cliproxyapi).') in with_bridge
+    assert 'Kimi-ai' not in with_bridge
 
 
 def test_add_help_indents_every_sign_in_method_the_same_way_gh_364(tmp_path):

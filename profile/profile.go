@@ -332,10 +332,21 @@ func ValidateBaseURL(label, u string) error {
 func hasSpace(s string) bool { return strings.IndexFunc(s, unicode.IsSpace) >= 0 }
 
 // ProviderName is a provider id as a person sees it: xAI keeps its casing, any
-// other id capitalises its first rune, and an empty id stays empty.
+// other id capitalises its first rune, and an empty id stays empty. The two
+// Kimi ids are the exception that spells a name: kimi.ai and kimi.com are the
+// global and the China service, and every list that names one — the sign-in
+// methods, the API-key provider list, help add, the README — calls it what the
+// provider presets call it, so the region tells them apart, not the domain
+// (#366).
 func ProviderName(p string) string {
 	if p == "xai" {
 		return "xAI"
+	}
+	if p == "kimi-ai" {
+		return "Kimi For Coding (global)"
+	}
+	if p == "kimi" {
+		return "Kimi For Coding (China)"
 	}
 	if p == "" {
 		return p

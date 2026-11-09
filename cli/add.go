@@ -537,8 +537,11 @@ func addProviders() ([]string, bool) {
 	return out, ok
 }
 
-// browserLogins is what the provider sign-ins sign in to, in menu order.
-const browserLogins = "Antigravity, Codex, Devin, Kimi, Meta and xAI"
+// browserLogins is what the provider sign-ins sign in to, in menu order. Both
+// Kimi services are named — with the names the provider list uses — so the
+// list names one login per row, never one Kimi for two (#366).
+const browserLogins = "Antigravity, Codex, Devin, Kimi For Coding (global), " +
+	"Kimi For Coding (China), Meta and xAI"
 
 // cliproxyInstall is the one step that turns the browser logins on.
 const cliproxyInstall = "brew install cliproxyapi"
@@ -613,7 +616,7 @@ func (l *launcher) providerLogin(name, provider string) bool {
 		l.err("could not create auth directory")
 		return false
 	}
-	fmt.Println(l.dim + "Opening your browser to sign in to " + l.bold + provider + l.reset + l.dim + " — Ctrl-C to cancel." + l.reset)
+	fmt.Println(l.dim + "Opening your browser to sign in to " + l.bold + providerLabel(provider) + l.reset + l.dim + " — Ctrl-C to cancel." + l.reset)
 	tmp, err := os.MkdirTemp(tmpDir(), fmt.Sprintf("ccmorph-login-%d-", os.Getuid()))
 	if err != nil {
 		return false
@@ -633,7 +636,7 @@ func (l *launcher) providerLogin(name, provider string) bool {
 	cmd := exec.Command(bin, "-"+provider+"-login", "-config", conf)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if cmd.Run() != nil {
-		l.err(provider + " login failed")
+		l.err(providerLabel(provider) + " login failed")
 		return false
 	}
 	for _, pat := range []string{"*.json", "*/*.json"} {

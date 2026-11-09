@@ -197,6 +197,10 @@ func TestKindLabelNamesEveryProfileKindForPeople(t *testing.T) {
 		{"proxy", "", "API key"},
 		{"provider", "codex", "Codex"},
 		{"provider", "xai", "xAI"},
+		// #366: the two Kimi logins carry the provider list's names — the
+		// region tells them apart, not only the domain in the row's text.
+		{"provider", "kimi-ai", "Kimi For Coding (global)"},
+		{"provider", "kimi", "Kimi For Coding (China)"},
 		{"provider", "", "Provider"},
 		{"quantum", "", "quantum"},
 	} {

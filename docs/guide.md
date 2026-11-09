@@ -188,7 +188,7 @@ A profile is the unit you choose and isolate. Its runtime state lives under
 | Claude account | `sub` | the browser sign-in | Anthropic |
 | Claude token | `token` | a token pasted from `claude setup-token` | Anthropic |
 | API key | `apikey` | key presented to the selected endpoint, optional `base_url` | Anthropic or any API-key gateway; custom endpoint translation is automatic |
-| Antigravity, Codex, Kimi, … | `provider` | the browser login of that product, through `cliproxyapi` | Antigravity, Codex (ChatGPT), Devin, Kimi (kimi.ai or kimi.com), Meta, xAI |
+| Antigravity, Codex, Kimi For Coding (global), … | `provider` | the browser login of that product, through `cliproxyapi` | Antigravity, Codex (ChatGPT), Devin, Kimi For Coding (global) and Kimi For Coding (China), Meta, xAI |
 
 A Claude token profile is for unattended use — scripts, CI, a server — where
 signing in with a browser is impractical: it holds a Claude token, pasted

@@ -1008,8 +1008,12 @@ class PickerTTYTest(unittest.TestCase):
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 1, out)  # stop before authentication or saving
         self.assertIn('Sign-in method — my_profile', out)
-        for label in ('Antigravity', 'Codex', 'Devin', 'Kimi', 'Meta', 'xAI'):
+        # GH-366: seven logins, seven names — the two Kimi rows carry the
+        # region names the provider list uses, not a bare Kimi and a domain.
+        for label in ('Antigravity', 'Codex', 'Devin', 'Kimi For Coding (global)',
+                      'Kimi For Coding (China)', 'Meta', 'xAI'):
             self.assertIn(label, out)
+        self.assertNotIn('Kimi-ai', out)
         self.assertIn('\x1b[38;2;153;153;153mSign in with your browser', out)
         self.assertIn('\x1b[38;2;153;153;153mFor scripts/CI; quota cannot read plan usage', out)
         # Each row says which product or plan it signs in to (issue #283) while
@@ -1042,7 +1046,8 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(rc, 1, out)  # told the step, saved nothing
         plain = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', out)
         self.assertIn('More sign-ins', plain)
-        self.assertIn('Antigravity, Codex, Devin, Kimi, Meta and xAI', plain)
+        self.assertIn('Antigravity, Codex, Devin, Kimi For Coding (global), '
+                      'Kimi For Coding (China), Meta and xAI', plain)
         self.assertIn('brew install cliproxyapi', plain)
         self.assertIn('ccmorph add demo', plain)
         self.assertFalse((self.state / 'demo.conf').exists())
