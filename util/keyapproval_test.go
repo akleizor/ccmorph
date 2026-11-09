@@ -232,6 +232,71 @@ func TestApproveKeyWaitsOutAnExclusiveHolder(t *testing.T) {
 	}
 }
 
+// #299: an approval an open session holds off is kept as a marker beside the
+// profile's locks — empty, owner-only, and named by a digest, so it holds no
+// key material — until the next launch records it.
+func TestSavedApprovalIsOwnerOnlyAndNamesNoKey(t *testing.T) {
+	const key = "sk-issue-299-test-key-0001"
+	profiles := filepath.Join(t.TempDir(), "profiles")
+	if err := os.MkdirAll(filepath.Join(profiles, "p"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	locks := filepath.Dir(LiveLockPath(profiles, "p"))
+	saved := func() bool { return ApprovalSaved(profiles, "p", key) }
+	if saved() {
+		t.Fatal("nothing is saved yet")
+	}
+	if err := SaveApproval(profiles, "p", key); err != nil {
+		t.Fatal(err)
+	}
+	if !saved() {
+		t.Fatal("the approval was not saved")
+	}
+	if ApprovalSaved(profiles, "p", "sk-another-key-entirely-0003") {
+		t.Fatal("a different key read as saved")
+	}
+	ents, err := os.ReadDir(locks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var markers []string
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), "p.approve-") {
+			markers = append(markers, e.Name())
+		}
+	}
+	if len(markers) != 1 {
+		t.Fatalf("wanted exactly one saved-approval marker, got %v", markers)
+	}
+	if strings.Contains(markers[0], key) || strings.Contains(markers[0], key[len(key)-20:]) {
+		t.Fatalf("the marker's name holds key material: %s", markers[0])
+	}
+	fi, err := os.Lstat(filepath.Join(locks, markers[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fi.Mode().IsRegular() || fi.Size() != 0 {
+		t.Fatalf("the marker is not an empty regular file: %v", fi)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Fatalf("the marker is not owner-only: %v", fi.Mode().Perm())
+	}
+	if err := SaveApproval(profiles, "active", key); err == nil {
+		t.Fatal("an invalid profile name must be refused")
+	}
+	DropApproval(profiles, "p", key)
+	if saved() {
+		t.Fatal("the approval stayed saved after DropApproval")
+	}
+	if err := SaveApproval(profiles, "p", key); err != nil {
+		t.Fatal(err)
+	}
+	DropApprovals(profiles, "p")
+	if saved() {
+		t.Fatal("the approval stayed saved after DropApprovals")
+	}
+}
+
 func TestKeyResponseReadsClaudeCodesAnswer(t *testing.T) {
 	const key = "sk-issue-236-test-key"
 	const tail = "k-issue-236-test-key"
