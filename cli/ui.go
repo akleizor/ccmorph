@@ -315,14 +315,17 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 	selected, drawn, result, rc := 0, 0, 1, 0
 	var heading string
 	var height, rowWidth, lw int
-	var hidden bool
+	var hidden, cut bool
 	resize := func() {
 		r, columns := termSize()
 		height = max(1, r-5)
 		// Rows the window cuts off are named by an "N more" line at each edge.
-		// They come out of the item window, so the menu still fits the terminal,
-		// and below eight rows there is no room for them (#278).
-		hidden = len(rows) > height && r >= 8
+		// They come out of the item window, so the menu still fits the terminal.
+		// Below eight rows there is no room for the edge lines, so the footer
+		// carries the position instead (see counted): a cut list never stops
+		// silently (#278).
+		cut = len(rows) > height
+		hidden = cut && r >= 8
 		if hidden {
 			height = max(1, r-7)
 		}
@@ -365,7 +368,11 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 			if hidden {
 				b.WriteString(t.moreLine("↓", len(rows)-last) + "\n")
 			}
-			b.WriteString("\033[2K\n\033[2K" + uiMargin + t.gray + "↑/↓ Move · Home/End Jump · Enter Select · Esc Cancel" + t.reset + "\n")
+			foot := "↑/↓ Move · Home/End Jump · Enter Select · Esc Cancel"
+			if cut && !hidden {
+				foot = fmt.Sprintf("%d/%d · %s", selected+1, len(rows), foot)
+			}
+			b.WriteString("\033[2K\n\033[2K" + uiMargin + t.gray + foot + t.reset + "\n")
 			w.Write(b.Bytes())
 			drawn = last - first + 4
 			if hidden {
@@ -401,13 +408,13 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 				if !ok {
 					return
 				}
-				// The list wraps — the last row is one ↑ away from the first —
-				// and Home/End jump to either end (#278).
+				// ↑/↓ stop at the ends as they always did; Home/End put either end
+				// one key away (#278).
 				switch n {
 				case 'A':
-					selected = (selected + len(rows) - 1) % len(rows)
+					selected = max(selected-1, 0)
 				case 'B':
-					selected = (selected + 1) % len(rows)
+					selected = min(selected+1, len(rows)-1)
 				case 'H':
 					selected = 0
 				case 'F':
@@ -442,6 +449,26 @@ func (t uiTheme) receipt(title, choice string) {
 	_, columns := termSize()
 	choice = fit(choice, columns/2)
 	fmt.Fprintln(os.Stderr, t.heading(title, columns-cells(choice)-3)+" "+t.focus+"›"+t.reset+" "+t.gray+choice+t.reset)
+}
+
+// fzfArgs is the fzf command line for a version and a list of n rows. --cycle
+// wraps the ends on every version; 0.36+ adds the scrollbar and the Home/End
+// jump, 0.71+ lets the window grow to the list. An older fzf has no scrollbar,
+// so its header says how many rows the list holds: a window that cuts some
+// never stops silently (#278).
+func fzfArgs(version string, n int, prompt string, theme []string) []string {
+	height := "45%"
+	if fzfAtLeast(version, 71) {
+		height = "~-1"
+	}
+	args := append([]string{"--height", height, "--reverse", "--border=rounded", "--pointer=❯", "--marker=✓",
+		"--no-multi", "--no-print-query", "--ansi", "--cycle"}, theme...)
+	header := fmt.Sprintf("%d rows · ↑/↓ Move (wraps) · Type to filter · Enter Select · Esc Cancel", n)
+	if fzfAtLeast(version, 36) {
+		args = append(args, "--scrollbar", "--bind", "home:first,end:last")
+		header = "↑/↓ Move · Home/End Jump · Type to filter · Enter Select · Esc Cancel"
+	}
+	return append(args, "--delimiter", "\t", "--with-nth=2..", "--prompt", prompt+"> ", "--header", header)
 }
 
 // fzfVersion is the installed fzf's --version line, empty when it cannot run.
@@ -491,20 +518,7 @@ func (t uiTheme) search(prompt string, rows []string) (string, int) {
 		// enough fzf adds the scrollbar and the Home/End jump. Its window also
 		// grows to the list itself, so a list that fits the terminal is never
 		// cut at all (#278).
-		version := fzfVersion(fzf)
-		height := "45%"
-		if fzfAtLeast(version, 71) {
-			height = "~-1"
-		}
-		args := append([]string{"--height", height, "--reverse", "--border=rounded", "--pointer=❯", "--marker=✓",
-			"--no-multi", "--no-print-query", "--ansi", "--cycle"}, theme...)
-		header := "↑/↓ Move · Type to filter · Enter Select · Esc Cancel"
-		if fzfAtLeast(version, 36) {
-			args = append(args, "--scrollbar", "--bind", "home:first,end:last")
-			header = "↑/↓ Move · Home/End Jump · Type to filter · Enter Select · Esc Cancel"
-		}
-		args = append(args, "--delimiter", "\t", "--with-nth=2..", "--prompt", prompt+"> ",
-			"--header", header)
+		args := fzfArgs(fzfVersion(fzf), len(rows), prompt, theme)
 		cmd := exec.Command(fzf, args...)
 		cmd.Env = append(os.Environ(), "FZF_DEFAULT_OPTS=", "FZF_DEFAULT_OPTS_FILE=")
 		cmd.Stdin = strings.NewReader(strings.Join(rendered, "\n") + "\n")

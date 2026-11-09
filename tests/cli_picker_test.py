@@ -762,14 +762,6 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn('RESULT=beta', out)
         self.assertNotIn('RESULT=alpha', out)
-        # The ends wrap and End jumps to the last row: every row stays one key
-        # away (#278).
-        for keys in (b'\x1b[A\r', b'\x1b[F\r'):
-            with self.subTest(keys=keys):
-                rc, out, missed = run_pty(command, env, [(b'Second option', keys)])
-                self.assertIsNone(missed, out)
-                self.assertEqual(rc, 0, out)
-                self.assertIn('RESULT=beta', out)
         rc, out, missed = run_pty(command, env, [(b'Second option', b'\x1b')])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 1, out)
@@ -801,14 +793,15 @@ class PickerTTYTest(unittest.TestCase):
         env = self.env(fzf=True)
         env['ROWS'] = 'alpha\tFirst\tDescription\nbeta\tSecond\tDescription'
         command = 'picked=$(ccm_ui_select native "Native choices" "$ROWS"); rc=$?; print -r -- "RESULT=$picked"; exit $rc'
-        # The list wraps — ↑ from the first row reaches the last — and Home/End
-        # jump to either end, so no row is a long hold away (#278).
-        cases = [(b'\r', 0, 'alpha'), (b'\x1b[A\r', 0, 'beta'),
+        # ↑ at the first row and ↓ at the last stay put, as they always did;
+        # Home/End put either end one key away (#278).
+        cases = [(b'\r', 0, 'alpha'), (b'\x1b[A\r', 0, 'alpha'),
                  (b'\x1b[B\r', 0, 'beta'), (b'\x1bOB\r', 0, 'beta'),
-                 (b'\x1b[B\x1b[A\r', 0, 'alpha'), (b'\x1b[B\x1b[B\r', 0, 'alpha'),
+                 (b'\x1b[B\x1b[A\r', 0, 'alpha'), (b'\x1b', 1, ''),
+                 (b'\x03', 130, ''), (b'\x04', 1, ''),
+                 (b'\x1b[B\x1b[B\r', 0, 'beta'),
                  (b'\x1b[F\r', 0, 'beta'), (b'\x1bOF\r', 0, 'beta'),
-                 (b'\x1b[F\x1b[H\r', 0, 'alpha'), (b'\x1b', 1, ''),
-                 (b'\x03', 130, ''), (b'\x04', 1, '')]
+                 (b'\x1b[F\x1b[H\r', 0, 'alpha')]
         for keys, expected_rc, value in cases:
             with self.subTest(keys=keys):
                 rc, out, missed = run_pty(command, env, [(b'Esc Cancel', keys)])
@@ -835,6 +828,20 @@ class PickerTTYTest(unittest.TestCase):
         self.assertIn('↑ 9 more', out)
         self.assertTrue(all(int(n) <= 7 for n in re.findall(r'\x1b\[(\d+)A', out)), out)
         self.assertFalse((self.tmp / 'fzf.log').exists())
+
+    def test_native_fixed_menu_in_a_tiny_terminal_still_says_the_list_is_cut(self):
+        env = self.env(fzf=True)
+        env['ROWS'] = '\n'.join(f'{i}\tOption {i}' for i in range(10))
+        rc, out, missed = run_pty(
+            'picked=$(ccm_ui_select native "Native choices" "$ROWS") || exit $?; print -r -- "RESULT=$picked"',
+            env, [(b'Esc Cancel', b'\x1b[F\r')], size=(6, 80))
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertIn('RESULT=9', out)
+        # Too short for the "N more" edge lines, the footer carries the position
+        # in the whole list instead (#278).
+        self.assertIn('1/10', out)
+        self.assertIn('10/10', out)
 
     def test_native_fixed_menu_preserves_no_color_and_aligns_descriptions(self):
         env = {**self.env(fzf=True), 'NO_COLOR': '1',
