@@ -11,8 +11,9 @@ import (
 var httpURL = regexp.MustCompile(`^https?://[^?#]*$`)
 
 // DoctorRow is one line of doctor's route report: a status (OK, FAIL, WARN,
-// INFO, SKIP) and its message; an empty Kind is a bare line.
-type DoctorRow struct{ Kind, Msg string }
+// INFO, SKIP) and its message; an empty Kind is a bare line. Fix is the command
+// or step that repairs a FAIL row, and doctor's verdict names the first one (#282).
+type DoctorRow struct{ Kind, Msg, Fix string }
 
 // NativeBase lists the endpoints that need no adapter: launch treats these as
 // Anthropic's own, where only the key is in question.
@@ -42,11 +43,15 @@ type TranslatorNeed struct {
 // ports; the default report says only what launch will do, which is what a
 // reader can act on. Nothing is started and nothing is written.
 func DoctorRoute(name, typ, base, model, modelMap string, need func(listing string) TranslatorNeed, key, home string, verbose bool) (rows []DoctorRow, failed, keyRejected bool) {
-	row := func(kind, msg string) {
+	row := func(kind, msg string, fix ...string) {
 		if kind == "FAIL" {
 			failed = true
 		}
-		rows = append(rows, DoctorRow{kind, msg})
+		r := DoctorRow{Kind: kind, Msg: msg}
+		if len(fix) > 0 {
+			r.Fix = fix[0]
+		}
+		rows = append(rows, r)
 	}
 
 	if NativeBase(base) {
@@ -61,7 +66,8 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 			case strings.HasPrefix(code, "2") && len(code) == 3:
 				row("OK", "endpoint: Anthropic accepted the API key (HTTP "+code+")")
 			case code == "401" || code == "403":
-				row("FAIL", "credentials: Anthropic rejected the API key (HTTP "+code+"); replace it: ccmorph config "+name)
+				row("FAIL", "credentials: Anthropic rejected the API key (HTTP "+code+"); replace it: ccmorph config "+name,
+					"replace the API key: ccmorph config "+name)
 				keyRejected = true
 			case code == "000" || code == "":
 				row("WARN", "endpoint: Anthropic did not answer, so the key was not checked (check your network)")
@@ -79,7 +85,8 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 			case strings.HasPrefix(code, "2") && len(code) == 3:
 				row("OK", "credentials: Anthropic accepted the token (HTTP "+code+")")
 			case code == "401" || code == "403":
-				row("FAIL", "credentials: Anthropic rejected the token (HTTP "+code+"); replace it: ccmorph config "+name)
+				row("FAIL", "credentials: Anthropic rejected the token (HTTP "+code+"); replace it: ccmorph config "+name,
+					"replace the token: ccmorph config "+name)
 				keyRejected = true
 			case code == "000" || code == "":
 				row("WARN", "endpoint: Anthropic did not answer, so the token was not checked (check your network)")
@@ -122,7 +129,7 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 	listing := ""
 	valid := httpURL.MatchString(base)
 	if !valid {
-		row("FAIL", "config: endpoint must be an http(s) URL without query or fragment")
+		row("FAIL", "config: endpoint must be an http(s) URL without query or fragment", "set an http(s) endpoint: ccmorph config "+name)
 	}
 	row("INFO", "endpoint: "+profile.RedactURL(base))
 	switch {
@@ -142,19 +149,28 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 				// message (#267).
 				if typ == "apikey" {
 					if msg, refuse := ServedRefusal(body, model, modelMap, "this gateway"); refuse {
-						row("FAIL", "model: "+msg)
+						// With nothing served there is no model to choose: the fix is on the
+						// gateway, or in the endpoint (#282).
+						fix := "choose a served model: ccmorph set " + name + " model <model-id>"
+						if strings.HasSuffix(msg, "; served: (none)") {
+							fix = "make a chat model available on this gateway, or change the endpoint: ccmorph config " + name
+						}
+						row("FAIL", "model: "+msg, fix)
 					}
 				}
 			} else {
-				row("FAIL", fmt.Sprintf("gateway: malformed model listing (HTTP %s)", code))
+				row("FAIL", fmt.Sprintf("gateway: malformed model listing (HTTP %s)", code),
+					"check the endpoint (it must list models at /v1/models): ccmorph config "+name)
 			}
 		case code == "000" || code == "":
 			row("WARN", "gateway: did not answer within 5 seconds (if it is a private endpoint, connect that network)")
 		case code == "401" || code == "403":
-			row("FAIL", "gateway: rejected the API key (HTTP "+code+"); replace it: ccmorph config "+name)
+			row("FAIL", "gateway: rejected the API key (HTTP "+code+"); replace it: ccmorph config "+name,
+				"replace the API key: ccmorph config "+name)
 			keyRejected = true
 		default:
-			row("FAIL", fmt.Sprintf("gateway: unreachable or rejected (HTTP %s)", code))
+			row("FAIL", fmt.Sprintf("gateway: unreachable or rejected (HTTP %s)", code),
+				"check the endpoint, or change it: ccmorph config "+name)
 		}
 	}
 
@@ -164,7 +180,11 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 	// internal detail: --verbose only.
 	running := runningAdapter(name)
 	if kind, msg := adapterLine(name, model, listing, running, need(listing)); kind != "" {
-		row(kind, msg)
+		fix := ""
+		if kind == "FAIL" {
+			fix = "install the translator: brew install cliproxyapi"
+		}
+		row(kind, msg, fix)
 	}
 	if verbose {
 		switch {

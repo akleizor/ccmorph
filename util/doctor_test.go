@@ -55,6 +55,13 @@ func TestDoctorRouteAdapterLine(t *testing.T) {
 			if line.Kind != c.kind || line.Msg != c.msg {
 				t.Fatalf("got %s %q, want %s %q", line.Kind, line.Msg, c.kind, c.msg)
 			}
+			wantFix := ""
+			if c.kind == "FAIL" {
+				wantFix = "install the translator: brew install cliproxyapi"
+			}
+			if line.Fix != wantFix {
+				t.Fatalf("fix %q, want %q", line.Fix, wantFix)
+			}
 			if failed != (c.kind == "FAIL") {
 				t.Fatalf("failed=%v, want %v", failed, c.kind == "FAIL")
 			}

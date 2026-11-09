@@ -7,7 +7,7 @@ import tempfile
 
 import pytest
 
-from support import HANG_TIMEOUT
+from support import CLAUDE_MISSING, HANG_TIMEOUT, anthropic_accepts_the_key
 from fake_adapter import CORE_DISPATCH
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -203,3 +203,25 @@ def test_add_help_names_provider_logins_only_when_the_bridge_is_installed(tmp_pa
     with_bridge = _help_add(tmp_path, bridge=True)
     assert 'Antigravity, Codex: sign in to that service with your browser (through cliproxyapi).' in with_bridge
     assert 'Claude: sign in to that service' not in with_bridge
+
+
+def test_run_without_claude_names_the_problem_and_the_path_it_searched(tmp_path):
+    """#282: a launch that cannot find claude says what is missing, links its
+    setup page and shows the PATH it searched (the sentence doctor and the
+    installer print) instead of the shell's own command-not-found line."""
+    state, home, bindir, tmp = (tmp_path / d for d in ('state', 'home', 'bin', 'tmp'))
+    for d in (state, home, bindir, tmp):
+        d.mkdir()
+    (state / 'demo.conf').write_text('type=apikey\napi_key=k\n')
+    # The launch asks Anthropic about the key before it looks for claude (#255).
+    anthropic_accepts_the_key(bindir)
+    # A PATH with no claude on it: the host's own PATH may carry one.
+    env = {**os.environ, 'HOME': str(home), 'PATH': f'{bindir}:/usr/bin:/bin',
+           'TMPDIR': str(tmp), 'CCMORPH_STATE_DIR': str(state),
+           'CCMORPH_LIB_DIR': str(ROOT / 'lib')}
+    result = subprocess.run([str(ROOT / 'bin/ccmorph'), 'run', 'demo'], env=env,
+                            capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert result.returncode != 0, result.stdout
+    assert CLAUDE_MISSING in result.stderr, result.stderr
+    assert f'PATH searched: {bindir}' in result.stderr, result.stderr
+    assert 'command not found' not in result.stderr, result.stderr

@@ -141,6 +141,12 @@ tar -czf "$TMP/empty.tar.gz" -C "$TMP/stage-empty" not-ccmorph
 
 url_release='https://github.com/akleizor/ccmorph/releases/latest/download/ccmorph.tar.gz'
 
+# One sentence, one link, wherever a missing claude is reported (#282): the
+# installer prints it, and the same bytes sit in the core binary, which is what
+# `ccmorph run` and `ccmorph doctor` print — checked here so the three cannot
+# drift apart.
+claude_missing='Claude Code is not installed or not on the PATH — install it: https://docs.anthropic.com/en/docs/claude-code/setup'
+
 remote_env() {  # $1 = case name, $2 = tarball; stub curl bakes in its log and tarball
   local d; d=$(fresh_env "$1")
   mkdir -p "$d/tmp"
@@ -1066,8 +1072,16 @@ d=$(pm_env pm_none); pm_run "$d"; rc=$?
 # nothing installed.
 d=$(pm_env pm_noclaude apt-get); rm -f "$d/bin/claude"; pm_run "$d"; rc=$?
 (( rc == 1 )) && ok "no claude: exits 1" || { fail "no claude: rc=$rc (want 1)"; cat "$d/out"; }
-grep -qF 'Install Claude Code first: https://docs.anthropic.com/en/docs/claude-code/setup' "$d/out" \
-  && ok "no claude: points at the Claude Code setup page" || { fail "no claude: setup link missing"; cat "$d/out"; }
+grep -qF -- "$claude_missing" "$d/out" \
+  && ok "no claude: says the one sentence, with the setup link" || { fail "no claude: the sentence is missing"; cat "$d/out"; }
+# The binary is searched with zsh itself, not grep: macOS grep -F silently
+# fails to match a multibyte pattern inside a binary file when no UTF-8
+# locale is in the environment, and the sentence carries an em dash.
+if [[ "$(<"$REPO/libexec/ccmorph-core")" == *"$claude_missing"* ]]; then
+  ok "no claude: installer and core binary carry the same sentence"
+else
+  fail "no claude: the core binary does not embed the installer's sentence"
+fi
 grep -qiE 'npm|curl|apt-get install -y claude|brew install claude' "$d/out" \
   && fail "no claude: embeds an install command for another vendor's product" || ok "no claude: no install command for it"
 [[ ! -e "$d/home/.config/ccmorph" ]] && ok "no claude: nothing installed" || fail "no claude: wrote ~/.config/ccmorph"
