@@ -41,6 +41,16 @@
 
 ### Fixed
 
+- **A profile not yet launched is ready, not broken.** The guide says a
+  profile handed over by a colleague is copied in and works at once, yet
+  `ccmorph doctor` failed it — `profile home: missing` — for the one state
+  every copied-in or hand-written profile is in before its first run, a state
+  the launch itself fixes by making the folder. The missing home is now a
+  note naming that first launch, and the verdict is ready with exit status 0;
+  only a path the launch cannot take — a file at the home or where the state
+  keeps its profiles, or a path that cannot be read — still fails, naming the
+  blocker and what clears it (#291).
+
 - **A missing Claude Code gets one answer, and doctor's verdict names the
   fix.** With `claude` off the PATH, `ccmorph run` printed the shell's
   `claude: command not found`, doctor ended with `fix claude executable (see

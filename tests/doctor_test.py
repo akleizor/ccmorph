@@ -985,6 +985,47 @@ def test_doctor_verdict_names_the_fix_for_every_failed_check_issue_282(tmp_path,
     assert "(see above)" not in last, result.stdout
 
 
+@pytest.mark.parametrize("case,rc,row,last", [
+    ("absent", 0,
+     "INFO profile home: not created yet ({home}); the first launch makes it: ccmorph run demo",
+     "OK ready: start it with ccmorph run demo"),
+    ("home-occupied", 1,
+     "FAIL profile home: cannot be created — {home} is not a directory",
+     "FAIL not ready: remove {home} so the first launch can create the profile home: ccmorph run demo"),
+    ("profiles-occupied", 1,
+     "FAIL profile home: cannot be created — {profiles} is not a directory",
+     "FAIL not ready: remove {profiles} so the first launch can create the profile home: ccmorph run demo"),
+    ("unreadable", 1,
+     "FAIL profile home: cannot be created — lstat {home}",
+     "FAIL not ready: check the permissions on {home}"),
+])
+def test_doctor_tells_absence_from_a_blocked_home_issue_291(tmp_path, case, rc, row, last):
+    """#291: a home that is simply not created yet is a note — the first launch
+    makes it, so a profile copied in and never launched is ready — while a home
+    that launch cannot make is a failed check naming the blocker. Lstat under a
+    file answers ENOTDIR, which reads as absence to a bare exists-check, so the
+    blocked shapes include a file where the state keeps its profiles."""
+    state = tmp_path / "state"
+    state.mkdir()
+    profiles = state / "profiles"
+    home = profiles / "demo"
+    if case == "home-occupied":
+        profiles.mkdir()
+        home.write_text("not a directory")
+    elif case == "profiles-occupied":
+        profiles.write_text("not a directory")
+    elif case == "unreadable":
+        profiles.mkdir()
+        profiles.chmod(0o000)
+    result, _, _ = run_doctor(tmp_path, NATIVE, OK_CURL, home=False)
+    if case == "unreadable":
+        profiles.chmod(0o700)  # let pytest's tmp cleanup back in
+    assert result.returncode == rc, result.stdout
+    assert row.format(home=home, profiles=profiles) in result.stdout, result.stdout
+    assert result.stdout.splitlines()[-1] == last.format(home=home, profiles=profiles), result.stdout
+    assert ("FAIL" in result.stdout) == (rc == 1), result.stdout
+
+
 @pytest.mark.parametrize("case", ["gateway", "native", "sub"])
 def test_doctor_healthy_profile_has_no_skip_lines(tmp_path, case):
     """A working profile must not print a SKIP line a first-time user cannot act
