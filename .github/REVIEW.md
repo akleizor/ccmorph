@@ -86,6 +86,8 @@ credential, or losing the user's choice.
   Seen 1× (2026-11-09).
 - **A stop recorded without waiting for the process to be gone** (2026-11-09) — the Remote Control supervisor sent an orphaned host one SIGINT and recorded the restart, its retry time and the cooldown at once: no deadline, no SIGTERM or SIGKILL, no check that the pid had exited, so a host that ignored SIGINT kept its port and kept serving while the cooldown said it was replaced and nothing tried again. A stop waits a bounded time for the pid to be gone, escalates SIGINT → SIGTERM → SIGKILL, and records only a confirmed exit; one that survives is retried — Example: 91eed07 (2026-11-09).
   Seen 1× (2026-11-09).
+- **A two-step migration that ignores the failure between its steps while its readers trust it** (2026-11-09) — the one-time move of flat usage rows into day folders linked each row into its day folder and then removed the flat name with the remove's error dropped, so a crash between the two or a remove that failed left the row under both names; a re-run met the day name as taken (EEXIST) and kept the flat copy forever, and the report and the quota, trusting the move to leave each row in one place, summed both copies on every run. A step that can stop halfway is finished or undone by the next run (a taken name that is a second name for this very file is the earlier run's claim, not another row's), every step's error is checked, and a reader that spans the old and the new store counts a row once by its identity — Example: 1304cf1 (2026-11-09).
+  Seen 1× (2026-11-09).
 
 ## Gate rules
 

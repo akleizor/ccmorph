@@ -18,10 +18,14 @@ const costLimit = (1 << 53) / 100.0
 const tokenLimit = 1 << 53
 
 type receipt struct {
-	Complete  bool         `json:"complete"`
-	Profile   string       `json:"profile"`
-	Timestamp string       `json:"timestamp"`
-	Usage     receiptUsage `json:"usage"`
+	Complete bool   `json:"complete"`
+	Profile  string `json:"profile"`
+	// ResponseID and TurnID are the row's identity. They are any, not string,
+	// so a row whose id is not a string still decodes and still counts.
+	ResponseID any          `json:"response_id"`
+	TurnID     any          `json:"turn_id"`
+	Timestamp  string       `json:"timestamp"`
+	Usage      receiptUsage `json:"usage"`
 }
 
 // receiptUsage is what a receipt's usage carries that this view counts: the
@@ -91,6 +95,7 @@ func spendEntry(name, budgetRaw string) Entry {
 		more, _ := filepath.Glob(filepath.Join(usageDir, e.Name(), "*.json"))
 		paths = append(paths, more...)
 	}
+	counted := map[string]bool{}
 	for _, p := range paths {
 		raw, err := os.ReadFile(p)
 		if err != nil {
@@ -103,6 +108,19 @@ func spendEntry(name, budgetRaw string) Entry {
 		ts, err := time.Parse(time.RFC3339, r.Timestamp)
 		if err != nil || ts.Before(monthStart) {
 			continue
+		}
+		// A response the store holds under two names (a flat copy and its day
+		// folder's) is one turn: count it once, by the identity
+		// share/usage-export keys on (#298). A row with no id always counts.
+		if id, ok := r.ResponseID.(string); ok && id != "" {
+			key := id + "\x00" + r.Timestamp
+			if turn, ok := r.TurnID.(string); ok && turn != "" {
+				key += "\x00" + turn
+			}
+			if counted[key] {
+				continue
+			}
+			counted[key] = true
 		}
 		// Every completed response is a turn the profile served, and its tokens
 		// are use a missing price must not hide (#234).

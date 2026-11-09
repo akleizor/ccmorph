@@ -183,6 +183,102 @@ func TestTheMovePutsFlatRowsIntoTheirMtimeDayFolder(t *testing.T) {
 	}
 }
 
+// A move stopped between its link and its remove (killed, or a remove that
+// failed) must leave each row in one place, and the next run finishes it: a
+// row read from the flat store and a day folder is counted twice (#298).
+func TestAnInterruptedMoveLeavesEveryRowInOnePlace(t *testing.T) {
+	dir := stateHome(t)
+	yday := time.Now().UTC().AddDate(0, 0, -1)
+	folder := filepath.Join(dir, yday.Format("2006-01-02"))
+	if err := os.MkdirAll(folder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	flat := func(name string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(`{"response_id":"`+name+`"}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, yday, yday); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	// A move killed after its link: the row sits under both names.
+	killed := flat("killed.json")
+	if err := os.Link(killed, filepath.Join(folder, "killed.json")); err != nil {
+		t.Fatal(err)
+	}
+	// A move whose remove fails: the flat name will not go.
+	stuck := flat("stuck.json")
+	old := remove
+	t.Cleanup(func() { remove = old })
+	remove = func(path string) error {
+		if path == stuck {
+			return &os.PathError{Op: "remove", Path: path, Err: os.ErrPermission}
+		}
+		return old(path)
+	}
+	moveFlatRows()
+	if got := usageRowFiles(dir, time.Time{}, time.Now()); len(got) != 2 {
+		t.Fatalf("a row is read from two stores: %v", got)
+	}
+	if _, err := os.Stat(killed); !os.IsNotExist(err) {
+		t.Fatalf("the re-run kept the killed move's flat copy: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(folder, "killed.json")); err != nil {
+		t.Fatalf("the killed move's row is gone: %v", err)
+	}
+	if _, err := os.Stat(stuck); err != nil {
+		t.Fatalf("a row whose flat name would not go must stay flat: %v", err)
+	}
+	// Once the remove works, a re-run completes the move.
+	remove = old
+	moveFlatRows()
+	if _, err := os.Stat(stuck); !os.IsNotExist(err) {
+		t.Fatalf("the re-run did not complete the move: %v", err)
+	}
+	if got := usageRowFiles(dir, time.Time{}, time.Now()); len(got) != 2 {
+		t.Fatalf("after the re-run: %v", got)
+	}
+}
+
+// Two reports can run at once, and a move that ran beside another run's
+// rollback could take a row's last name: one run finds the interrupted move's
+// claim and removes the flat name while the other takes the day name back.
+// The move holds one lock, so a run that finds it held leaves the move to its
+// holder — the kernel drops the lock when the holder exits (#298).
+func TestTheMoveRunsUnderOneLockAtATime(t *testing.T) {
+	dir := stateHome(t)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	yday := time.Now().UTC().AddDate(0, 0, -1)
+	path := filepath.Join(dir, "a.json")
+	if err := os.WriteFile(path, []byte(`{"response_id":"a"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, yday, yday); err != nil {
+		t.Fatal(err)
+	}
+	held, ok := moveLock(dir)
+	if !ok {
+		t.Fatal("the move lock was free")
+	}
+	moveFlatRows()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("a move ran beside the lock's holder: %v", err)
+	}
+	held.Close()
+	moveFlatRows()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("the move did not run once the lock was free: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, yday.Format("2006-01-02"), "a.json")); err != nil {
+		t.Fatalf("the row did not reach its day folder: %v", err)
+	}
+}
+
 // A response whose later lines land on the next UTC day: the next pass folds
 // the row's earlier lines and replaces it where the new stamp says, leaving no
 // copy in the old day folder — one response, one row, in the day folder of the
@@ -599,6 +695,35 @@ func TestAWindowedReportReadsTheDayFoldersItTouches(t *testing.T) {
 	}
 	if out := reportOutput(t, 1); !strings.Contains(out, "  accepted 1  $6.00/task") {
 		t.Fatalf("a task report lost the task's pre-window usage: %s", out)
+	}
+}
+
+// A response the store holds under two names (the flat copy and the day
+// folder's, left by a move that stopped halfway) is one response: the report
+// counts it once, while a recycled id's other turn at the same stamp is still
+// its own response (#298).
+func TestAResponseInBothStoresIsCountedOnce(t *testing.T) {
+	dir := stateHome(t)
+	now := time.Now().UTC()
+	today := filepath.Join(dir, now.Format("2006-01-02"))
+	if err := os.MkdirAll(today, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stamp := now.Add(-30 * time.Minute).Format(time.RFC3339Nano)
+	body := func(turn, cost string) []byte {
+		return []byte(`{"schema":1,"response_id":"resp_1","turn_id":"` + turn + `","served_model":"sonnet-x","timestamp":"` +
+			stamp + `","usage":{"input_tokens":5,"cost":` + cost + `},"complete":true}`)
+	}
+	for _, path := range []string{filepath.Join(dir, "resp_1.json"), filepath.Join(today, "resp_1.json")} {
+		if err := os.WriteFile(path, body("turn_a", "2"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(today, "resp_1.turn_b.json"), body("turn_b", "3"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out := reportOutput(t, 1); !strings.Contains(out, "total spend $5.00") {
+		t.Fatalf("a response in both stores was not counted exactly once: %s", out)
 	}
 }
 
