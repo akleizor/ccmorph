@@ -122,8 +122,9 @@ argument. Adding another never changes the default; `ccmorph list` marks it and
 run `ccmorph add`.
 
 `ccmorph add` asks which kind of profile (see *Profile types* below) and prompts
-only for what that kind needs: a subscription opens the normal browser login, an
-API key asks which provider and then only for the key. A preset provider (DeepSeek,
+only for what that kind needs: a subscription opens the normal browser login, a
+token asks you to paste one, an API key asks which provider and then only for
+the key. A preset provider (DeepSeek,
 Kimi, GLM, MiniMax, Qwen, Xiaomi MiMo, StepFun, OpenRouter, SiliconFlow; the list is
 `share/provider-presets.tsv`) fills its official Anthropic-compatible endpoint and
 maps Claude Code's opus, sonnet and haiku tiers to its models; *Custom endpoint*
@@ -153,6 +154,13 @@ A profile is the unit you choose and isolate. Its runtime state lives under
 | `sub` | OAuth subscription state | Anthropic |
 | `token` | a long-lived OAuth token | Anthropic |
 | `apikey` | key presented to the selected endpoint, optional `base_url` | Anthropic or any API-key gateway; custom endpoint translation is automatic |
+
+A `token` profile is for unattended use — scripts, CI, a server — where signing
+in with a browser is impractical: it holds a long-lived OAuth token, pasted
+once. Claude Code's `claude setup-token` prints such a token (a valid one
+starts with `sk-ant-oat01-`); run `ccmorph add <name>` and choose *Claude
+token* to paste it (typing is hidden). One thing it cannot do: read plan usage,
+so `ccmorph quota` shows no plan windows for it.
 
 `proxy` is a legacy alias retained only so existing profile files keep working.
 New profiles use `apikey`; endpoint, dialect, network route, model, and effort are

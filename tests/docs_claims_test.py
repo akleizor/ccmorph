@@ -88,8 +88,12 @@ def test_unreleased_never_names_the_retired_role_feature():
         f"`## Unreleased` still mentions the never-shipped role feature: {offenders}")
 
 
-def test_guide_states_the_never_older_model_fallback():
-    """#188: an unserved id takes the same version or newer, else goes as asked."""
+def test_guide_states_the_model_fallback_and_where_a_token_comes_from():
+    """#188: an unserved id takes the same version or newer, else goes as asked.
+    #290: the guide called a token profile 'a long-lived OAuth token' and never
+    said where one comes from, so a reader with no token could not get one. One
+    passage must carry the whole flow: the command that makes a token, what a
+    valid one starts with, and the `ccmorph add` step that pastes it."""
     flat = _flatten(GUIDE.read_text(encoding="utf-8"))
     assert "newest served model" not in flat, (
         "docs/guide.md still describes the pre-#188 fallback ('newest served model')")
@@ -97,6 +101,10 @@ def test_guide_states_the_never_older_model_fallback():
         "docs/guide.md no longer states that an older model is never substituted")
     assert "through unchanged when none exists" in flat, (
         "docs/guide.md no longer states that an id with no such model goes through unchanged")
+    assert re.search(r"claude setup-token.{0,400}sk-ant-oat01-", flat), (
+        "docs/guide.md names no command that makes a token beside what a valid one starts with")
+    assert re.search(r"sk-ant-oat01-.{0,300}Claude token", flat), (
+        "docs/guide.md never ties a made token to the menu choice that adds it")
 
 
 def test_architecture_names_only_scripts_that_exist_issue_69():

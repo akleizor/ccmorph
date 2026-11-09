@@ -2137,6 +2137,10 @@ test_help_teaches_credential_type_not_gateway_shape() {
     'help must teach the one API-key credential type' || rc=1
   assert_contains "$help" 'credential presented to Anthropic or a gateway' \
     'apikey must be defined by credential mechanism, not provider identity' || rc=1
+  assert_contains "$help" 'for scripts/CI' \
+    'help must say when to choose a token over a Claude account' || rc=1
+  assert_contains "$help" 'quota cannot read plan usage' \
+    'help must say what a token profile cannot do' || rc=1
   assert_not_contains "$help" $'\n  proxy' \
     'help must not teach legacy proxy as a second profile type' || rc=1
   rm -rf "$test_home"
