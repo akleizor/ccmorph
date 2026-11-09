@@ -463,6 +463,7 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn('Medium', out)
         self.assertIn('Extra high', out)
+        self.assertIn('Max', out)  # gh264: the menu names every level the conf accepts
         self.assertEqual(self.field('demo', 'effort'), 'high')
         self.assertEqual(self.field('demo', 'model'), 'native-model')  # seeded, not guessed
 

@@ -78,7 +78,10 @@ func modelRows(rows []util.ModelRow) string {
 }
 
 const nativeAliases = "fable\tClaude Code Fable alias\nopus\tClaude Code Opus alias\nsonnet\tClaude Code Sonnet alias\nhaiku\tClaude Code Haiku alias"
-const effortRows = "low\tFastest, least thorough\nmedium\tBalanced\nhigh\tMore reasoning\nxhigh\tMost reasoning, slowest"
+
+// effortRows mirrors profile.Efforts, lowest to highest, one "<level>\t<description>"
+// per line (#264).
+const effortRows = "low\tFastest, least thorough\nmedium\tBalanced\nhigh\tMore reasoning\nxhigh\tEven more reasoning\nmax\tMost reasoning, slowest"
 
 // valueRows is _ccm_value_rows. base and key, when set, preview an unsaved endpoint.
 func (l *launcher) valueRows(slot, name string, preview ...string) (string, bool) {

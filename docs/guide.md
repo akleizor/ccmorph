@@ -251,7 +251,7 @@ session on it. `get` reads one setting; `set` writes one:
 ```sh
 ccmorph get <profile> model             # or effort
 ccmorph set <profile> model kimi-k3
-ccmorph set <profile> effort xhigh      # low | medium | high | xhigh
+ccmorph set <profile> effort xhigh      # low | medium | high | xhigh | max
 ccmorph set <profile> model -i          # choose from what the endpoint serves
 ccmorph set <profile> model             # a missing value asks the same way
 ccmorph set -i                          # choose the profile too

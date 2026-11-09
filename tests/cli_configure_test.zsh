@@ -56,7 +56,11 @@ assert_eq "$(<"$SETTINGS")" "$native" 'set left native settings untouched'
 ccmorph set demo model >/dev/null 2>&1 && fail 'set accepted missing value'
 ccmorph set demo model -i >/dev/null 2>&1 && fail 'set accepted interactive flag'
 ccmorph get demo model extra >/dev/null 2>&1 && fail 'get accepted extra argument'
-ccmorph set demo effort invalid >/dev/null 2>&1 && fail 'set accepted invalid effort'
+# gh264: a level off the list is refused as one sentence naming the levels, not
+# as a failed save or read; max is a level like the template lists.
+output=$(ccmorph set demo effort invalid 2>&1) && fail 'set accepted invalid effort'
+[[ "$output" == "ccmorph: effort must be low, medium, high, xhigh or max" ]] || \
+  fail "off-list effort refusal was not one sentence naming the levels (got ${(qqq)output})"
 output=$(ccmorph configure demo </dev/null 2>&1) && fail 'removed configure alias was accepted'
 [[ "$output" == *"unknown command 'configure'"* ]] || fail 'configure must be an unknown command'
 
@@ -65,6 +69,10 @@ print -r -- '{"model":"inline-picked","effortLevel":"xhigh","other":{"keep":true
 assert_eq "$(ccmorph get demo model)" new-model 'inline native model ignored'
 assert_eq "$(ccmorph get demo effort)" high 'inline native effort ignored'
 print -r -- "$native" > "$SETTINGS"
+
+ccmorph set demo effort max >/dev/null || fail 'set refused effort max'
+assert_eq "$(ccmorph get demo effort)" max 'set effort max persisted'
+assert_eq "$(conf_field effort)" max 'effort max saved to the conf'
 
 before_conf=$(<"$CONF")
 before_settings=$(<"$SETTINGS")

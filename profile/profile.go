@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -38,12 +39,16 @@ var removed = map[string]string{
 	"role":           "role= was removed; pick the model with --model instead",
 }
 
+// Efforts is the one list of effort levels, lowest to highest: the conf
+// validator, the store's set, the pickers and the help all name it, so a level
+// here is a level everywhere (#264).
+var Efforts = []string{"low", "medium", "high", "xhigh", "max"}
+
 var (
 	nameRE   = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 	budgetRE = regexp.MustCompile(`^([0-9]+\.?[0-9]*|\.[0-9]+)$`)
 	digits   = regexp.MustCompile(`^[0-9]+$`)
 	modelID  = regexp.MustCompile(`^[A-Za-z0-9._:\[\]()@/-]+$`)
-	efforts  = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true, "max": true}
 	common   = []string{"type", "model", "model_defaults", "private", "monthly_budget_usd", "effort", "effort.*", "context_discovered"}
 	perType  = map[string][]string{
 		"sub":      {"email", "usage_route"},
@@ -141,7 +146,7 @@ func checkKey(name, k, v string, lists Lists) error {
 			return fail("private must be 1")
 		}
 	case k == "effort" || strings.HasPrefix(k, "effort."):
-		if !efforts[v] || k == "effort." {
+		if !slices.Contains(Efforts, v) || k == "effort." {
 			return fail("invalid effort setting '%s'", k)
 		}
 	case strings.HasPrefix(k, "env."):

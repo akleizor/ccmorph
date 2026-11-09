@@ -767,7 +767,7 @@ test_set_model_interactively_saves_the_chosen_id() {
   return $rc
 }
 
-# The four levels are Claude Code's own fixed enum, so this picker needs no
+# The five levels are Claude Code's own fixed enum, so this picker needs no
 # endpoint call -- and must not make one.
 test_set_effort_interactively_offers_the_engine_levels() {
   local test_home=$(mktemp -d)
@@ -786,7 +786,7 @@ test_set_effort_interactively_offers_the_engine_levels() {
   ccmorph set gw effort "$out" >/dev/null 2>&1 || { print -u2 -- '-i must save a chosen effort level'; rc=1; }
   [[ ! -f "$HOME/fzf.input" ]] || { print -u2 -- "fixed effort choices must not invoke fzf"; rc=1; }
   local level
-  for level in low medium high xhigh; do
+  for level in low medium high xhigh max; do
     assert_contains "$offered" "$level" "the picker must offer $level" || rc=1
   done
   # No endpoint call belongs in a closed-enum picker.
@@ -966,8 +966,8 @@ print(d.get("effortLevel"), d.get("model"))
   return $rc
 }
 
-# Claude Code's own enum is low|medium|high|xhigh. Accepting anything else would
-# write a value the binary drops, so the profile would silently keep the old one.
+# Claude Code's own enum is low|medium|high|xhigh|max. Accepting anything else
+# would write a value the binary drops, so the profile would silently keep the old one.
 test_effort_command_refuses_a_level_claude_code_would_drop() {
   local test_home
   test_home=$(mktemp -d)
@@ -979,7 +979,7 @@ test_effort_command_refuses_a_level_claude_code_would_drop() {
 
   local rc=0
   if ccmorph set gw effort turbo >/dev/null 2>&1; then
-    print -u2 -- 'an effort level outside low|medium|high|xhigh must be refused'
+    print -u2 -- 'an effort level outside low|medium|high|xhigh|max must be refused'
     rc=1
   fi
   [[ ! -f "$HOME/.config/ccmorph/profiles/gw/settings.json" ]] ||

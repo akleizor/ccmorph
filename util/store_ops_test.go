@@ -104,9 +104,28 @@ func TestStoreSetWritesTheConfAndLeavesNativeAlone(t *testing.T) { // test_set_m
 	if got := s.ok("get", "model", StoreChange{}); got != "new\n" {
 		t.Fatal(got)
 	}
-	s.ok("set", "", StoreChange{Effort: "high"})
-	if got := s.ok("get", "effort", StoreChange{}); got != "high\n" || s.read(s.settings) != native {
-		t.Fatal(got)
+	// Every level the conf accepts must be saveable: #264 had set refuse max
+	// while a hand-edited effort=max loaded fine.
+	for _, lvl := range profile.Efforts {
+		s.ok("set", "", StoreChange{Effort: lvl})
+		if got := s.ok("get", "effort", StoreChange{}); got != lvl+"\n" || s.read(s.settings) != native {
+			t.Fatalf("effort %s: %q", lvl, got)
+		}
+	}
+}
+
+// An effort off the list is a fault in the request, not in the configuration
+// files: the refusal is one sentence naming the levels, never a failed save or
+// read (#264).
+func TestStoreOffListEffortIsRefusedAsOneSentence(t *testing.T) {
+	s := newStoreEnv(t)
+	before := s.state()
+	_, errw, rc := s.run("set", "", StoreChange{Effort: "turbo"})
+	if rc == 0 || s.state() != before {
+		t.Fatalf("rc=%d: an off-list effort was saved", rc)
+	}
+	if want := "ccmorph: effort must be low, medium, high, xhigh or max\n"; errw != want {
+		t.Fatalf("refusal read %q, want %q", errw, want)
 	}
 }
 

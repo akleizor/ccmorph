@@ -44,6 +44,16 @@ func TestReadAcceptsEachTypeAndFoldsProxy(t *testing.T) {
 	}
 }
 
+// Every level the template documents loads in a conf: the reader is one of the
+// surfaces that must name the same list of levels (#264).
+func TestReadAcceptsEveryEffortLevel(t *testing.T) {
+	for _, lvl := range Efforts {
+		if _, _, err := read(t, "type=apikey\napi_key=k\neffort="+lvl+"\n"); err != nil {
+			t.Fatalf("effort=%s: %v", lvl, err)
+		}
+	}
+}
+
 // usage_route is a key every launch of that type may carry, and only "direct"
 // is a route: Read accepts the key, Validate refuses any other value.
 func TestValidateRefusesAnUnknownUsageRoute(t *testing.T) {
