@@ -378,6 +378,45 @@ func TestUsageHookCoversSubTokenAndProvider(t *testing.T) {
 	}
 }
 
+// #287: under Homebrew the running binary sits in the versioned Cellar dir,
+// which a `brew upgrade` moves and a `brew cleanup` deletes, so a hook that
+// names a file under it dies with the version that wrote it. The hook names
+// the stable opt/ccmorph path brew keeps pointed at the current version
+// instead; only a Cellar-shaped path that is not a brew install (no opt link,
+// so no core behind it) keeps naming the binary that wrote it.
+func TestUsageHookUnderACellarPathNamesTheStableOptPath(t *testing.T) {
+	home := t.TempDir()
+	cellar := filepath.Join(home, "Cellar", "ccmorph", "0.5.7", "libexec", "libexec")
+	if err := os.MkdirAll(cellar, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cellar, "ccmorph-core"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	opt := filepath.Join(home, "opt", "ccmorph")
+	if err := os.MkdirAll(filepath.Dir(opt), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, "Cellar", "ccmorph", "0.5.7"), opt); err != nil {
+		t.Fatal(err)
+	}
+	l := &launcher{libexec: cellar, profileDirs: "/p"}
+	want := filepath.Join(opt, "libexec", "libexec", "ccmorph-core") +
+		" usage-row --profile sub --pricing anthropic"
+	if hook := l.usageHookFor("sub", "sub", ""); hook != want {
+		t.Fatalf("hook = %q, want %q", hook, want)
+	}
+	// A Cellar-shaped path with no stable link behind it is not a brew
+	// install: the hook keeps naming the binary that wrote it.
+	if err := os.Remove(opt); err != nil {
+		t.Fatal(err)
+	}
+	want = filepath.Join(cellar, "ccmorph-core") + " usage-row --profile sub --pricing anthropic"
+	if hook := l.usageHookFor("sub", "sub", ""); hook != want {
+		t.Fatalf("without the opt link, hook = %q, want %q", hook, want)
+	}
+}
+
 func TestSettingsArgvCarriesTheHookOnlyWhenOneIsSet(t *testing.T) {
 	l := &launcher{profileDirs: "/p", mapping: []string{"ANTHROPIC_AUTH_TOKEN"}}
 	if got := l.settingsArgv("materialize", "sub"); slices.Contains(got, "--usage-hook=") {

@@ -5,6 +5,20 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
+## Unreleased
+
+### Fixed
+
+- **A usage hook survives a `brew upgrade`.** A launch wrote its Stop,
+  SessionStart and SessionEnd hook with the full path of the ccmorph-core
+  running it — under Homebrew the versioned
+  `Cellar/ccmorph/<version>/libexec/libexec`, which an upgrade moves and a
+  cleanup deletes, so every session that lived across an upgrade errored on
+  each hook event. The hook now names brew's stable `opt/ccmorph` path, which
+  brew re-points at every upgrade, and a launch that finds a hook naming an
+  older version's dead Cellar path re-points it to the same stable path. A
+  clone or one-line install keeps naming the binary that wrote it (#287).
+
 ## v0.5.7 — 2026-11-08
 
 ### Fixed

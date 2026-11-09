@@ -349,3 +349,36 @@ def test_a_later_direct_launch_removes_the_hook_it_found(tmp_path):
     assert out.returncode == 0, out.stderr
     assert box.hooks() == [], box.log()
     assert len(box.rows()) == 1, "the earlier turn's row is kept; this launch adds none"
+
+
+def test_a_launch_repoints_a_stale_cellar_hook_onto_the_stable_path(tmp_path):
+    """#287: a Homebrew install runs from the versioned Cellar dir, which an
+    upgrade moves and a cleanup deletes — the usage hook a launch wrote named
+    it, so every session that lived across the upgrade lost its hook. A launch
+    now writes brew's stable opt path, and one that finds a hook naming an
+    older version's dead Cellar path re-points it, so the session that still
+    runs keeps writing its rows."""
+    box = Box(tmp_path / "home")
+    box.conf("sub", "type=sub\nemail=me@example.invalid\n")
+    brew = tmp_path / "brew"
+    tree = brew / "Cellar/ccmorph/0.5.7/libexec"
+    tree.mkdir(parents=True)
+    (tree / "lib").symlink_to(ROOT / "lib")
+    (tree / "libexec").symlink_to(ROOT / "libexec")
+    opt = brew / "opt/ccmorph"
+    opt.parent.mkdir(parents=True)
+    opt.symlink_to(brew / "Cellar/ccmorph/0.5.7")
+    # The settings an older ccmorph wrote: its hook names that version's Cellar
+    # dir, deleted by the cleanup after the upgrade.
+    stale = brew / "Cellar/ccmorph/0.5.5/libexec/libexec/ccmorph-core"
+    profile = box.state / "profiles/sub"
+    profile.mkdir(parents=True)
+    (profile / "settings.json").write_text(json.dumps({"hooks": {"Stop": [
+        {"hooks": [{"type": "command", "command": str(stale) +
+                    " usage-row --profile sub --pricing anthropic"}]}]}}))
+    out = box.run("sub", {"CCMORPH_LIB_DIR": str(tree / "lib")})
+    assert out.returncode == 0, out.stderr
+    stable = str(opt / "libexec/libexec/ccmorph-core") + \
+        " usage-row --profile sub --pricing anthropic"
+    assert box.hooks() == [stable], (box.hooks(), box.log())
+    assert len(box.wait_rows(1)) == 1, "the re-pointed hook must run and write the turn's row"
