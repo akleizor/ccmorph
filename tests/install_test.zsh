@@ -795,6 +795,18 @@ env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
 rc=$?
 [[ $rc -eq 0 ]] && ok "missing optional deps do not fail the install" || { fail "optional dep aborted install rc=$rc"; cat "$d/out" }
 grep -qF 'cliproxyapi' "$d/out" && ok "absent translator is named" || fail "absent translator not mentioned"
+# The note a person on a FIRST install reads: what the translator is FOR, in
+# plain words, and that nothing else needs it — never `adapter=true`, a setting
+# someone with no profile yet has never seen (#273).
+grep -qxF 'note: cliproxyapi not found.' "$d/out" \
+  && ok "the translator note headline carries no parenthetical label" || { fail "the translator note headline still has a label"; cat "$d/out" }
+grep -qF 'needed only to use non-Anthropic models' "$d/out" && grep -qF 'from a gateway with Claude Code' "$d/out" \
+  && ok "the translator note says what the tool is for" || { fail "the translator note does not say what the tool is for"; cat "$d/out" }
+grep -qF 'Nothing else needs it' "$d/out" \
+  && ok "the translator note says nothing else needs it" || { fail "the note does not say nothing else needs it"; cat "$d/out" }
+grep -qF 'adapter=true' "$d/out" \
+  && { fail "the translator note still names the adapter=true setting"; cat "$d/out" } \
+  || ok "the translator note names no profile setting"
 grep -qF 'fzf'         "$d/out" && ok "absent fzf is named"        || fail "absent fzf not mentioned"
 grep -qiF 'non-interactive' "$d/out" && ok "non-interactive offer declines loudly" || { fail "offer did not declare itself skipped"; cat "$d/out" }
 grep -qF 'STUB BREW CALLED' "$d/out" && fail "declined offer still ran brew" || ok "declined offer never ran brew"
@@ -1128,7 +1140,9 @@ if _own footer; then
 # "Did it work, what now" has one answer at the end of every run: `ccmorph doctor`.
 # A fresh install adds `ccmorph add <name>`; an update never does (it has profiles).
 # When the bin dir is not on PATH the check is spelled with the absolute path, so
-# it works before the shell is fixed. The old four-line "Start here" block is gone.
+# it works before the shell is fixed, and the next step — still the bare command —
+# is introduced by the line that says which terminal to run it in (#273). The old
+# four-line "Start here" block is gone.
 end_run() {  # $1 = case dir, $2 = "onpath" | "offpath"
   local extra=""; [[ "$2" == onpath ]] && extra="$1/home/.local/bin:"
   env -i HOME="$1/home" ZDOTDIR="$1/home" PATH="$extra$1/bin:/usr/bin:/bin" \
@@ -1141,11 +1155,20 @@ grep -qxF 'Check:  ccmorph doctor' "$d/out" && ok "end: fresh install ends with 
 grep -qxF 'Next:   ccmorph add <name>' "$d/out" && ok "end: fresh install says 'Next:   ccmorph add <name>'" || fail "end: fresh install has no next-step line"
 grep -qE 'ccmorph (use|list)|Start here' "$d/out" && fail "end: the old Start here block is still printed" || ok "end: the old use/list block is gone"
 grep -qF 'not on your PATH' "$d/out" && fail "end: on-PATH run still warns about PATH" || ok "end: no PATH warning when the bin dir is on PATH"
+# On PATH the bare Next line runs in the terminal the person is already in, so
+# gating it on a new terminal there would be wrong advice (#273).
+grep -qF 'new terminal' "$d/out" && fail "end: on-PATH run gates the next step on a new terminal" || ok "end: no new-terminal line when the bin dir is on PATH"
 
 d=$(fresh_env end_fresh_off); end_run "$d" offpath
 grep -qxF "Check:  $d/home/.local/bin/ccmorph doctor" "$d/out" \
   && ok "end: off PATH the check uses the absolute path" || { fail "end: off-PATH check is not absolute"; cat "$d/out"; }
 grep -qxF 'Next:   ccmorph add <name>' "$d/out" && ok "end: off PATH a fresh install still names the next step" || fail "end: off-PATH next-step line missing"
+# That bare Next line cannot run in THIS terminal, so it must not stand alone: the
+# line printed just above it has to send the person to the new terminal the PATH
+# warning asked for (#273).
+instr=$(awk 'p && $0 == "Next:   ccmorph add <name>" { print p; exit } { p = $0 }' "$d/out")
+[[ "$instr" == *'new terminal'* ]] \
+  && ok "end: off PATH the next step is shown after the new-terminal instruction" || { fail "end: off-PATH next step is not introduced by the new-terminal line"; cat "$d/out"; }
 grep -qxF 'Check:  ccmorph doctor' "$d/out" && fail "end: off PATH the bare check was printed too" || ok "end: off PATH only the absolute check is printed"
 
 d=$(fresh_env end_update_on); end_run "$d" onpath; end_run "$d" onpath; rc=$?

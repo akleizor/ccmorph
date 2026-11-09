@@ -63,9 +63,11 @@ to add, for your login shell:
 | bash | `~/.bashrc` (Linux), `~/.bash_profile` (macOS) | `export PATH="$HOME/.local/bin:$PATH"` |
 | fish | `~/.config/fish/config.fish` | `fish_add_path $HOME/.local/bin` |
 
-Every install ends with `Check:  ccmorph doctor` (spelled with the full path
-while `~/.local/bin` is off your `PATH`). A fresh install adds
-`Next:   ccmorph add <name>`.
+Every install ends with `Check:  ccmorph doctor`; a fresh install adds
+`Next:   ccmorph add <name>`. While `~/.local/bin` is off your `PATH` the check
+keeps the full path, so it runs in the terminal you are already in; the next
+step keeps its bare spelling and is shown after the instruction to open a new
+terminal, where the bare command works.
 
 ## Updating
 

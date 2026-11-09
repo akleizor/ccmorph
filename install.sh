@@ -396,17 +396,18 @@ _offer() {   # $1 = human reason block (already printed), $2.. = command
   return 0
 }
 
-# The dialect translator. `adapter=true` profiles front a gateway whose
-# non-Anthropic models speak OpenAI dialects Claude Code cannot; ccmorph-adapter
-# shells out to this to translate. Claude-family models need none of it, which is
-# why this is a warning and not a hard requirement — and why the note says which
-# half of the catalogue is at stake instead of just naming a missing binary.
+# The dialect translator: a gateway's non-Anthropic models (gpt-*, kimi, glm,
+# qwen) speak OpenAI dialects Claude Code cannot, and the adapter shells out to
+# this to translate; Claude-family models need none of it, which is why this is
+# a note and not a hard requirement. The note itself stays plain and names no
+# profile setting: a first install has no profile yet, so `adapter=true` is a
+# word the reader has never seen — it says what the tool is FOR, and that
+# nothing else needs it (#273).
 # homebrew/core, upstream github.com/router-for-me/CLIProxyAPI, no runtime deps.
 if ! command -v cliproxyapi >/dev/null 2>&1; then
-  c_y "note: cliproxyapi (dialect translator) not found."
-  c_dim "  Without it, an 'adapter=true' profile can reach only its Claude-family"
-  c_dim "  models; the gateway's OpenAI-shaped ones (gpt-*, kimi, glm, qwen) fail"
-  c_dim "  at launch. Claude models work either way."
+  c_y "note: cliproxyapi not found."
+  c_dim "  It is optional — needed only to use non-Anthropic models (gpt, kimi,"
+  c_dim "  glm, qwen) from a gateway with Claude Code. Nothing else needs it."
   if command -v brew >/dev/null 2>&1; then
     _offer brew install cliproxyapi || true
   else
@@ -515,7 +516,7 @@ fi
 # The hint names the file and the syntax for the shell this was started from
 # ($SHELL is the login shell, which is the one whose startup file matters). Bash
 # reads ~/.bash_profile for a login shell on macOS and ~/.bashrc elsewhere.
-CCMORPH_CMD=ccmorph   # how the closing report spells the command: bare once it is on PATH
+CCMORPH_CMD=ccmorph   # how the Check line spells the command: bare once it is on PATH
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
   CCMORPH_CMD="$BIN_DIR/ccmorph"   # absolute, so the check works before the shell is fixed
   _login_shell="${SHELL:-}"   # unset under cron or `env -i`; set -u must not kill the hint
@@ -555,7 +556,14 @@ fi
 
 # One closing block for every run, so the end of the output answers "did it work,
 # what now". Only a fresh install has no profile to add yet; an update has its own.
+# Off PATH the Check line carries the absolute path (it works right here), while
+# the Next step stays the bare command the person will type once the shell is
+# fixed — and never stands alone: the line above it says to run it in the new
+# terminal, so nobody types it where 'ccmorph' is still not found (#273).
 print "Check:  $CCMORPH_CMD doctor"
+if (( ! IS_UPDATE )) && [[ "$CCMORPH_CMD" != ccmorph ]]; then
+  c_dim "Run the next step in the new terminal above — this one cannot find 'ccmorph' yet:"
+fi
 (( IS_UPDATE )) || print "Next:   ccmorph add <name>"
 
 # Context discovery is metadata-only and automatic on add/unknown launch.
