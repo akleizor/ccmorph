@@ -66,7 +66,7 @@ func renderEntry(w io.Writer, e Entry, color bool) {
 	}
 	emit(w, head, color, style)
 	for _, win := range e.Windows {
-		emit(w, windowLine(win), color, style)
+		emit(w, windowLine(win, e.Spend), color, style)
 	}
 	if e.Spend != nil {
 		emit(w, spendLine(e.Spend), color, style)
@@ -82,9 +82,16 @@ func renderEntry(w io.Writer, e Entry, color bool) {
 	}
 }
 
-// windowLine is "  5h       ██░░░░░░░░░░░░░░  12%  in 4h 10m".
-func windowLine(win Window) string {
-	return fmt.Sprintf("  %-8s %s %4s  %s", win.Label, bar(win.Used), percent(win.Used), resetText(win.ResetsAt))
+// windowLine is "  5h       ██░░░░░░░░░░░░░░  12%  in 4h 10m". A budget window
+// is the month's priced spend over the budget; when no turn this month was
+// priced there is no share to show, so the bar stays empty and its label says
+// the cost is unknown — never 0%, the picture of a month with no spend (#301).
+func windowLine(win Window, s *Spend) string {
+	share := percent(win.Used)
+	if s.allUnpriced() {
+		share = "cost unknown"
+	}
+	return fmt.Sprintf("  %-8s %s %4s  %s", win.Label, bar(win.Used), share, resetText(win.ResetsAt))
 }
 
 // spendLine is a gateway or budget profile's use. A price turns into money;
@@ -94,7 +101,7 @@ func spendLine(s *Spend) string {
 	if s.MonthTurns == 0 {
 		return "  not used this month"
 	}
-	if s.UnpricedTurns == s.MonthTurns {
+	if s.allUnpriced() {
 		return fmt.Sprintf("  %d %s · %d %s this month · cost unknown",
 			s.MonthTurns, plural(int64(s.MonthTurns), "turn"), s.MonthTokens, plural(s.MonthTokens, "token"))
 	}

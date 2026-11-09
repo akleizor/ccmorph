@@ -417,6 +417,10 @@ func TestQuotaSpend(t *testing.T) {
 	receipt("8", "gw", "2026-10-20T11:00:00Z", map[string]any{"input_tokens": 120, "output_tokens": 14}, true)
 	receipt("9", "gw2", "2026-10-20T09:30:00Z", map[string]any{"input_tokens": 100, "cache_read_input_tokens": 20, "output_tokens": 14}, true)
 	receipt("10", "gw2", "2026-10-05T08:00:00Z", map[string]any{"input_tokens": 100, "output_tokens": 20}, true)
+	// A budget account whose every turn this month is unpriced (#301): its bar
+	// must say the cost is unknown, never 0% — the picture of no spend.
+	receipt("15", "capu", "2026-10-20T09:00:00Z", map[string]any{"input_tokens": 200, "output_tokens": 30}, true)
+	receipt("16", "capu", "2026-10-06T09:00:00Z", map[string]any{"input_tokens": 50}, true)
 	// The same store sharded by day: a row lands in the day folder of its UTC
 	// stamp, and the spend still reads it beside the flat rows (#227).
 	receipt("11", "gw", "2026-10-20T08:00:00Z", map[string]any{"cost": 0.25}, true, "2026-10-20")           // today, sharded
@@ -424,7 +428,7 @@ func TestQuotaSpend(t *testing.T) {
 	receipt("13", "gw", "2026-09-15T00:00:00Z", map[string]any{"cost": 50.0}, true, "2026-09-15")           // last month
 	receipt("14", "other", "2026-10-20T07:00:00Z", map[string]any{"cost": 6.0}, true, "2026-10-20")         // another profile
 
-	in := "gw\tgateway\t\t\ncap\tgateway\t\t500\ngw2\tgateway\t\t\nwork\tgateway\t\t\n"
+	in := "gw\tgateway\t\t\ncap\tgateway\t\t500\ncapu\tgateway\t\t40\ncap0\tgateway\t\t40\ngw2\tgateway\t\t\nwork\tgateway\t\t\n"
 	out, _, code := run(t, nil, in)
 	if code != 0 {
 		t.Fatalf("exit %d", code)
@@ -434,6 +438,15 @@ func TestQuotaSpend(t *testing.T) {
 		"cap",
 		row("month", 3, "20%", "Nov 1"),
 		"  today $0.00 · month $100.00 of $500",
+		// A budget whose turns are all unpriced has no share to show: an empty
+		// bar labelled cost unknown, not the 0% of a month with no spend, which
+		// cap0 — never launched — still shows (#301).
+		"capu",
+		row("month", 0, "cost unknown", "Nov 1"),
+		"  2 turns · 280 tokens this month · cost unknown",
+		"cap0",
+		row("month", 0, "0%", "Nov 1"),
+		"  not used this month",
 		"",
 		"API key and provider profiles",
 		"gw",
@@ -473,13 +486,28 @@ func TestQuotaSpend(t *testing.T) {
 	if len(cap.Windows) != 1 || cap.Windows[0].ID != "month" || cap.Windows[0].Used != 0.2 {
 		t.Fatalf("budget window %+v", cap.Windows)
 	}
-	gw2 := doc.Profiles[2]
+	// The all-unpriced budget keeps its --json shape: the window's used stays 0
+	// beside the spend counts that say why, and the text view carries the
+	// unknown (#301).
+	capu := doc.Profiles[2]
+	if capu.Kind != "budget" || capu.Spend == nil || capu.Spend.BudgetUSD == nil || *capu.Spend.BudgetUSD != 40 {
+		t.Fatalf("capu entry %+v", capu)
+	}
+	if len(capu.Windows) != 1 || capu.Windows[0].Used != 0 ||
+		capu.Spend.MonthTurns != 2 || capu.Spend.MonthTokens != 280 || capu.Spend.UnpricedTurns != 2 {
+		t.Fatalf("capu unknown-cost entry %+v", capu)
+	}
+	cap0 := doc.Profiles[3]
+	if cap0.Kind != "budget" || cap0.Spend == nil || cap0.Spend.MonthTurns != 0 || len(cap0.Windows) != 1 {
+		t.Fatalf("cap0 entry %+v", cap0)
+	}
+	gw2 := doc.Profiles[4]
 	if gw2.Spend == nil || gw2.Spend.TodayUSD != 0 || gw2.Spend.MonthUSD != 0 ||
 		gw2.Spend.TodayTurns != 1 || gw2.Spend.MonthTurns != 2 ||
 		gw2.Spend.TodayTokens != 134 || gw2.Spend.MonthTokens != 254 || gw2.Spend.UnpricedTurns != 2 {
 		t.Fatalf("gw2 entry %+v", gw2.Spend)
 	}
-	work := doc.Profiles[3]
+	work := doc.Profiles[5]
 	if work.Spend == nil || work.Spend.MonthTurns != 0 || work.Spend.MonthTokens != 0 || work.Spend.UnpricedTurns != 0 {
 		t.Fatalf("work entry %+v", work.Spend)
 	}

@@ -584,6 +584,14 @@ Codex subscriptions
 cx  Plus
   5h       ██████░░░░░░░░░░  35%  in 2h 14m
 
+Budget accounts
+main
+  month    ███░░░░░░░░░░░░░  20%  Nov 1
+  today $0.00 · month $100.00 of $500
+side
+  month    ░░░░░░░░░░░░░░░░ cost unknown  Nov 1
+  2 turns · 280 tokens this month · cost unknown
+
 API key and provider profiles
 work
   today $1.70 · month $5.00 (est.)
@@ -612,9 +620,10 @@ UTC stamp, so a time-window read opens only the folders its window touches),
 marked `(est.)` when a row carried only a list-price
 estimate, and a profile with `monthly_budget_usd` adds a bar against that budget.
 A turn whose model had no price is never read as free: when no turn of the month carried
-a cost, the profile shows the turns and tokens it served and `cost unknown`; when only
-some did, a second line says how many turns had no price; and a profile with no
-receipts this month says `not used this month`.
+a cost, the profile shows the turns and tokens it served and `cost unknown`, and its
+budget bar says `cost unknown` in place of a percent — never the 0% of a month with no
+spend; when only some did, a second line says how many turns had no price; and a profile
+with no receipts this month says `not used this month`.
 A Claude account, Claude token or provider profile writes the same receipts: a Claude account is not
 billed per token, so its row carries `estimated_cost` at the models.dev list price and
 the screen marks it `(est.)`. `usage_route=direct` turns that off for one profile.
