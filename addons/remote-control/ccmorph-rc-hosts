@@ -150,6 +150,7 @@ REWAKE_AFTER = 600     # seconds before the same processless session is handed b
 LOGIN_RESTART_AFTER = 600   # seconds before the same host is restarted for its login again
 LOGIN_REFRESH_BEFORE = 600   # seconds of account token left when Claude Code is asked to refresh it
 LOGIN_REFRESH_RETRY = 120    # seconds between attempts: Claude Code refreshes only inside its own buffer
+LOGIN_REFRESH_DEADLINE = 180  # seconds a refresh turn may run before it is killed and replaced
 TAIL = 64_000          # bytes of a log worth reading: what a bridge printed last
 
 
@@ -663,27 +664,49 @@ def keep_login_fresh(clock: "Clock", now: float) -> None:
     asks to sign in again, though the refresh token was still good. One tiny turn
     on the account profile makes Claude Code refresh it under its own lock and
     store it; a host restart only re-reads the expired token.
+
+    A turn that runs past LOGIN_REFRESH_DEADLINE is killed, so one stuck
+    claude never blocks every later refresh.
     """
     p = clock.refresher
     if p is not None:
         if p.poll() is None:
-            return
-        clock.refresher = None
-        if p.returncode:
-            log(f"account login refresh: claude exited {p.returncode}")
-    if now - clock.last_refresh < LOGIN_REFRESH_RETRY:
+            if now - clock.refresher_started < LOGIN_REFRESH_DEADLINE:
+                return
+            # A stuck turn would otherwise block every later refresh for this
+            # supervisor's life: kill it and let this cycle start a new one.
+            p.kill()
+            try:
+                p.wait(GRACE_TERM)
+            except subprocess.TimeoutExpired:
+                pass
+            log(f"account login refresh: claude still running after {LOGIN_REFRESH_DEADLINE} s; killed it")
+            clock.refresher = None
+        else:
+            clock.refresher = None
+            if p.returncode:
+                log(f"account login refresh: claude exited {p.returncode}")
+    if now < clock.next_login_check or now - clock.last_refresh < LOGIN_REFRESH_RETRY:
         return
     try:
         left = account_login()["expiresAt"] / 1000 - time.time()
         if left > LOGIN_REFRESH_BEFORE:
+            # Fresh: nothing to do until the refresh-before window opens, so the
+            # keychain is not queried again on every 20 s recovery cycle.
+            clock.next_login_check = now + left - LOGIN_REFRESH_BEFORE
             return
         rc = rc_module()
         account = rc.profile_env(rc.default_account())
+        # The one backend/credential list (`ccmorph _backend_env`), read through
+        # ccmorph-rc's strip_env(): a Bedrock- or Vertex-routed profile must not send
+        # this turn to that backend. The proxy half stays -- a host behind a proxy
+        # needs it to reach the account endpoint.
+        backend = set(rc.strip_env()) - set(rc.PROXY_ENV)
     except LOGIN_ERRORS:
         return                     # logged out or unreadable: /login fixes that
     clock.last_refresh = now
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith("ANTHROPIC_") and k != "CLAUDE_CODE_OAUTH_TOKEN"}
+           if k not in backend and not k.startswith("ANTHROPIC_")}
     env.update(account)
     log(f"account login expires in {int(left // 60)} min; asking Claude Code to refresh it")
     try:
@@ -692,6 +715,7 @@ def keep_login_fresh(clock: "Clock", now: float) -> None:
              "--strict-mcp-config", "--no-session-persistence"],
             env=env, cwd=Path.home(), stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        clock.refresher_started = now
     except OSError as e:
         log(f"account login refresh: {e}")
 
@@ -1269,6 +1293,8 @@ class Clock:
         self.hand_back_failed: set = set()   # keys in `recovered` whose last hand-back failed
         self.refresher: subprocess.Popen | None = None   # the running account login refresh
         self.last_refresh = float("-inf")
+        self.refresher_started = 0.0   # when the running refresh turn was started
+        self.next_login_check = float("-inf")   # no keychain read before this: the token was fresh
 
 
 def cycle(hosts: "dict[str, Host]", repos: list[str], now: float, clock: Clock) -> bool:
