@@ -1,6 +1,7 @@
 package util
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -168,12 +169,50 @@ func TestApproveKeyKeepsAWriteMadeBetweenItsReadAndItsRename(t *testing.T) {
 	}
 }
 
-// #299: a live session holds the live lock shared. Refusing the approval there
-// drops it, so the approval takes the lock shared too and records the answer;
-// the session's own keys stay.
-func TestApproveKeyRecordsWhileALiveSessionHoldsTheLock(t *testing.T) {
+// #299: the rewrite must be the only writer while it runs. At the seam a fresh
+// descriptor can take the live lock neither shared nor exclusively: ApproveKey
+// holds it alone, and it does not outlive the call.
+func TestApproveKeyHoldsTheLiveLockAloneBetweenItsReadAndItsRename(t *testing.T) {
 	profiles := filepath.Join(t.TempDir(), "profiles")
-	path := writeClaudeJSON(t, filepath.Join(profiles, "p"), `{"numStartups":3}`)
+	writeClaudeJSON(t, filepath.Join(profiles, "p"), `{"numStartups":3}`)
+	if err := os.MkdirAll(filepath.Dir(LiveLockPath(profiles, "p")), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	take := func(how int) bool {
+		f, err := os.OpenFile(LiveLockPath(profiles, "p"), os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer f.Close()
+		return syscall.Flock(int(f.Fd()), how|syscall.LOCK_NB) == nil
+	}
+	old := approveKeyRead
+	t.Cleanup(func() { approveKeyRead = old })
+	approveKeyRead = func() {
+		if take(syscall.LOCK_SH) {
+			t.Error("the live lock could be taken shared under the rewrite: a session could start under it")
+		}
+		if take(syscall.LOCK_EX) {
+			t.Error("the live lock could be taken exclusively under the rewrite: another writer could swap the file under it")
+		}
+	}
+	if err := ApproveKey(profiles, "p", "sk-issue-236-test-key"); err != nil {
+		t.Fatal(err)
+	}
+	if !take(syscall.LOCK_EX) {
+		t.Fatal("the live lock outlived ApproveKey")
+	}
+}
+
+// #299: a live session holds the live lock shared and writes its own
+// .claude.json. The approval must not rewrite the file under it; it lands once
+// the session ends, and the session's own save survives.
+func TestApproveKeyUnderALiveSessionKeepsTheSessionsSaveAndLandsWhenItEnds(t *testing.T) {
+	const key = "sk-issue-236-test-key"
+	const tail = "k-issue-236-test-key"
+	profiles := filepath.Join(t.TempDir(), "profiles")
+	body := `{"numStartups":3}`
+	path := writeClaudeJSON(t, filepath.Join(profiles, "p"), body)
 	if err := os.MkdirAll(filepath.Dir(LiveLockPath(profiles, "p")), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -185,13 +224,27 @@ func TestApproveKeyRecordsWhileALiveSessionHoldsTheLock(t *testing.T) {
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH); err != nil {
 		t.Fatal(err)
 	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	restore := SetLockWait(0)
+	defer restore()
 
-	if err := ApproveKey(profiles, "p", "sk-issue-236-test-key"); err != nil {
-		t.Fatalf("a live session must not drop the approval: %v", err)
+	if err := ApproveKey(profiles, "p", key); !errors.Is(err, ErrProfileInUse) {
+		t.Fatalf("an open session must hold off the rewrite: %v", err)
+	}
+	if after := mustRead(t, path); after != body {
+		t.Fatalf("the file was rewritten under the session: %s", after)
+	}
+	// The session saves its own state, then ends.
+	if err := os.WriteFile(path, []byte(`{"numStartups":4}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	if err := ApproveKey(profiles, "p", key); err != nil {
+		t.Fatal(err)
 	}
 	got := mustRead(t, path)
-	for _, want := range []string{`"numStartups":3`, `"k-issue-236-test-key"`} {
+	for _, want := range []string{`"numStartups":4`, `"` + tail + `"`} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %s in %s", want, got)
 		}
@@ -223,6 +276,9 @@ func TestApproveKeyWaitsOutAnExclusiveHolder(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("an approval must not write while a whole-file writer holds the lock")
+	}
+	if !errors.Is(err, ErrProfileInUse) {
+		t.Fatalf("the refusal does not name the profile as in use: %v", err)
 	}
 	if !strings.Contains(err.Error(), "another launch is rewriting the profile's config") {
 		t.Fatalf("the refusal does not name the holder: %v", err)

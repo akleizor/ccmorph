@@ -133,16 +133,18 @@ def test_a_launch_refusal_names_a_lock_file_that_cannot_be_made(tmp_path):
     assert "another launch" not in result.stderr
 
 
-def test_login_records_the_approval_while_a_live_session_runs(tmp_path):
-    # #299: refusing while a session holds the live lock drops the approval.
-    # The approval takes the lock shared too — the session's own mode — records
-    # the answer, and the session's own keys survive.
+def test_login_while_a_session_runs_saves_the_approval_and_leaves_the_file_alone(tmp_path):
+    # #299: a session holds the live lock shared and rewrites .claude.json
+    # itself, so the approval must not rewrite the file under it. login saves
+    # the answer for the next launch to record; the file is left alone.
     home, state = fresh_state(tmp_path)
     key = "sk-issue-299-test-key-0001"
     (state / "gw.conf").write_text(f"type=apikey\napi_key={key}\n")
     (state / "profiles" / "gw").mkdir(parents=True)
     claude_json = state / "profiles" / "gw" / ".claude.json"
-    claude_json.write_text('{"numStartups":3}')
+    body = json.dumps({"numStartups": 3,
+                       "customApiKeyResponses": {"approved": [], "rejected": [key[-20:]]}})
+    claude_json.write_text(body)
 
     holder = shared_holder(state)
     try:
@@ -151,7 +153,12 @@ def test_login_records_the_approval_while_a_live_session_runs(tmp_path):
         holder.close()
 
     assert result.returncode == 0, result.stderr
-    assert "will use the API key" in result.stdout
-    doc = json.loads(claude_json.read_text())
-    assert doc["numStartups"] == 3, doc
-    assert doc["customApiKeyResponses"]["approved"] == [key[-20:]], doc
+    assert "next launch" in result.stdout, result.stdout
+    assert result.stderr == "", result.stderr
+    assert claude_json.read_text() == body
+    markers = list((state / ".locks").glob("gw.approve-*"))
+    assert len(markers) == 1, markers
+    marker = markers[0]
+    assert key not in marker.name and key[-20:] not in marker.name, marker.name
+    assert marker.stat().st_size == 0, marker.name
+    assert marker.stat().st_mode & 0o777 == 0o600, marker.name

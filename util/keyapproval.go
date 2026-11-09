@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -110,14 +111,16 @@ var approveKeyRead = func() {}
 // ApproveKey records key as approved in the profile's .claude.json, so Claude
 // Code never asks the first-launch question. An earlier refusal for the same
 // key is cleared. Every other key in the file keeps its place and value, and
-// the file is rewritten only when the answer actually changes. Because the
-// rewrite is a whole-file swap that a running session, SeedPersonAnswers or a
-// launch's merge may race, it runs while this process holds the profile's live
-// lock shared — the mode a running session holds, so an open session never
-// stops the approval being recorded, and the exclusive whole-file writers wait
-// for it. A symlinked or unparsable file, or a customApiKeyResponses that is
-// not an object, is an error: the caller must not guess and clobber what
-// Claude Code wrote.
+// the file is rewritten only when the answer actually changes. The rewrite is
+// a whole-file read-modify-write of a file a running session, SeedPersonAnswers
+// or a launch's merge also writes, so it runs while this process is the sole
+// holder of the profile's live lock — exclusively from the read to the rename,
+// the mode those siblings take — and no write can be lost under it (#299).
+// When the lock cannot be taken that way within the bounded wait, nothing is
+// written and the error wraps ErrProfileInUse, so the caller can keep the
+// approval for the next launch with SaveApproval. A symlinked or unparsable
+// file, or a customApiKeyResponses that is not an object, is an error: the
+// caller must not guess and clobber what Claude Code wrote.
 func ApproveKey(profiles, name, key string) error {
 	if !profile.ValidName(name) {
 		return errors.New("invalid profile name: " + name)
@@ -129,15 +132,13 @@ func ApproveKey(profiles, name, key string) error {
 	if fi, err := os.Lstat(path); err == nil && !fi.Mode().IsRegular() {
 		return errors.New(path + ": not a regular file")
 	}
-	// This is a whole-file read-modify-write of a file the profile's live
-	// sessions and SeedPersonAnswers also write. It holds the profile's live
-	// lock shared across the read and the rename — the mode a running session
-	// holds — so the repo's writers that replace the whole file, which take it
-	// exclusively (seeding a profile, a launch's merge), cannot swap it under
-	// the approval. A running session must not block the approval: an approval
-	// dropped because a session is open is exactly the loss this guards
-	// against (#299). An exclusive holder is waited for, bounded by lockWait,
-	// never outlasted (promise 8).
+	// The profile's live lock is held exclusively across the read and the
+	// rename: every ccmorph session holds it shared for its life and every
+	// whole-file writer takes it exclusively, so while this rewrite runs no
+	// session, launch or second approval can write the file — and none of
+	// theirs can be lost under it either (#299). A holder that outlasts the
+	// bounded wait (promise 8) leaves the file untouched; the caller can save
+	// the approval for the next launch instead of dropping it.
 	lock := LiveLockPath(profiles, name)
 	liveMu.Lock()
 	_, held := liveFDs[lock]
@@ -145,7 +146,7 @@ func ApproveKey(profiles, name, key string) error {
 	live, why := HoldLive(profiles, name, nil)
 	if live == nil {
 		if errors.Is(why, ErrLiveHeld) {
-			return errors.New(path + ": another launch is rewriting the profile's config; try again once it finishes")
+			return fmt.Errorf("%s: another launch is rewriting the profile's config: %w", path, ErrProfileInUse)
 		}
 		return errors.New(lock + ": the live lock could not be created: " + why.Error())
 	}
@@ -154,6 +155,16 @@ func ApproveKey(profiles, name, key string) error {
 		// must not keep its lock past this call.
 		defer ReleaseLive(profiles, name)
 	}
+	if !flockWithin(live, syscall.LOCK_EX) {
+		// The failed conversion can leave this fd unlocked (Linux drops the
+		// shared lock first), so the lock the session runs under is taken back
+		// or gone; either way this rewrite waits for a caller that holds it.
+		if !flockWithin(live, syscall.LOCK_SH) {
+			ReleaseLive(profiles, name)
+		}
+		return fmt.Errorf("%s: %w", path, ErrProfileInUse)
+	}
+	defer syscall.Flock(int(live.Fd()), syscall.LOCK_SH)
 	doc, err := loadObj(path, ordjson.New())
 	if err != nil {
 		return err
