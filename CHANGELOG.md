@@ -15,6 +15,17 @@
   The launcher now prints the line only when the session's transcript holds a
   conversation; a session with a message keeps it, and a resume of an id that
   does not exist ends with the error alone (#359).
+- **A saved effort is the effort the session starts at.** `ccmorph set
+  <profile> effort xhigh` saved the level and `ccmorph inspect` confirmed it,
+  but Claude Code ignored the profile's `effortLevel` setting for models it
+  knows — every claude-* model — and opened at its own default, so the level
+  took effect only when it was typed: `ccmorph run <profile> --effort xhigh`.
+  A launch that opens a new conversation now carries the saved level on
+  claude's argv as `--effort`: the per-model override for the model the session
+  runs at — the one you typed, or the saved default — ahead of the profile-wide
+  default, the same precedence Claude Code itself applies. An effort typed on
+  the command line still decides; a resume, and a hop, still runs at the effort
+  of the conversation it continues (#356).
 
 ## v0.5.8 — 2026-11-10
 

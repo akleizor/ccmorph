@@ -15,8 +15,24 @@ func TestLaunchFlags(t *testing.T) {
 	}{
 		{false, nil, LaunchFlags{AskMissingModel: true}},
 		{false, []string{"--model", "m1"}, LaunchFlags{Model: "m1", UserModel: true, SkipModel: true, AskMissingModel: true}},
-		{true, []string{"--resume", "abc"}, LaunchFlags{Resume: "abc"}},
-		{false, []string{"--resume", "abc"}, LaunchFlags{Resume: "abc", SkipModel: true}},
+		{true, []string{"--resume", "abc"}, LaunchFlags{Resume: "abc", Resuming: true}},
+		{false, []string{"--resume", "abc"}, LaunchFlags{Resume: "abc", Resuming: true, SkipModel: true}},
+		// Every resume spelling marks the launch as resuming (#356): the saved
+		// effort is a default for new conversations only.
+		{true, []string{"--resume"}, LaunchFlags{Resuming: true}},
+		{false, []string{"--resume=abc"}, LaunchFlags{Resume: "abc", Resuming: true, SkipModel: true}},
+		{false, []string{"-c"}, LaunchFlags{Resuming: true, SkipModel: true}},
+		{false, []string{"--continue"}, LaunchFlags{Resuming: true, SkipModel: true}},
+		{false, []string{"--from-pr", "12"}, LaunchFlags{Resuming: true, SkipModel: true}},
+		{false, []string{"--from-pr=12"}, LaunchFlags{Resuming: true}},
+		// #356: a typed effort is the person's own decision; a bare --effort stays
+		// on the argv for Claude Code to judge, and a flag-shaped token is its
+		// value (#334), never an option.
+		{false, []string{"--effort", "xhigh"}, LaunchFlags{Effort: "xhigh", UserEffort: true, AskMissingModel: true}},
+		{false, []string{"--effort=low"}, LaunchFlags{Effort: "low", UserEffort: true, AskMissingModel: true}},
+		{false, []string{"--effort"}, LaunchFlags{UserEffort: true, AskMissingModel: true}},
+		{false, []string{"--effort="}, LaunchFlags{UserEffort: true, AskMissingModel: true}},
+		{false, []string{"--effort", "--continue"}, LaunchFlags{Effort: "--continue", UserEffort: true, AskMissingModel: true}},
 		// #334: a value that looks like a flag is the option's value, not a resume.
 		{false, []string{"--system-prompt", "--continue"}, LaunchFlags{AskMissingModel: true}},
 		{false, []string{"-p", "hi", "--dangerously-skip-permissions"}, LaunchFlags{Relay: []string{"--dangerously-skip-permissions"}}},
@@ -94,6 +110,9 @@ func TestOpensNoSession(t *testing.T) {
 		{[]string{"--system-prompt=--version"}, false},
 		// --model owns its value even with no arity table to say so.
 		{[]string{"--model", "--version"}, false},
+		// So does --effort (#356); its = spelling carries the value inside.
+		{[]string{"--effort", "--version"}, false},
+		{[]string{"--effort=xhigh", "--version"}, true},
 		// An optional value never takes a flag-shaped token; -p owns nothing.
 		{[]string{"--resume", "--version"}, true},
 		{[]string{"--resume", "abc", "--version"}, true},

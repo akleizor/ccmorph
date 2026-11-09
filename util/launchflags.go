@@ -7,11 +7,14 @@ import (
 
 // LaunchFlags is what the launch needs from Claude Code's own argv: model (an
 // explicit --model), UserModel, SkipModel, AskMissingModel, Resume, Interactive,
-// Relay (--dangerously-skip-permissions, once per occurrence) and Drop (the 1-based
-// indexes of `--model -i` pairs to remove, highest first).
+// Relay (--dangerously-skip-permissions, once per occurrence), Effort (an
+// explicit --effort, UserEffort its bare presence), Resuming (any spelling that
+// resumes a conversation instead of starting one) and Drop (the 1-based indexes
+// of `--model -i` pairs to remove, highest first).
 type LaunchFlags struct {
-	Model, Resume                                      string
+	Model, Resume, Effort                              string
 	UserModel, SkipModel, AskMissingModel, Interactive bool
+	UserEffort, Resuming                               bool
 	Relay                                              []string
 	Drop                                               []int
 }
@@ -50,11 +53,22 @@ func ParseLaunchFlags(routed bool, argv []string, arity map[string]string) (Laun
 				return f, errors.New("--model requires a value")
 			}
 			f.UserModel, f.SkipModel = true, true
+		case a == "--effort":
+			// #356: an effort the person typed decides over any saved default.
+			// A bare --effort stays on the argv for Claude Code to judge — its
+			// levels are its enum, not ccmorph's to validate here.
+			f.UserEffort = true
+			if hasNext && next != "" && next != "--" {
+				f.Effort = next
+				i++
+			}
+		case strings.HasPrefix(a, "--effort="):
+			f.UserEffort, f.Effort = true, strings.TrimPrefix(a, "--effort=")
 		case a == "--dangerously-skip-permissions":
 			// Process launch state Claude Code does not restore from a resumed transcript.
 			f.Relay = append(f.Relay, a)
 		case a == "-r" || a == "--resume":
-			f.AskMissingModel = false
+			f.AskMissingModel, f.Resuming = false, true
 			if hasNext && next != "" && !strings.HasPrefix(next, "-") {
 				f.Resume = next
 			}
@@ -62,13 +76,15 @@ func ParseLaunchFlags(routed bool, argv []string, arity map[string]string) (Laun
 			// profile keeps forcing it.
 			f.SkipModel = f.SkipModel || !routed
 		case strings.HasPrefix(a, "--resume="):
-			f.AskMissingModel, f.Resume = false, strings.TrimPrefix(a, "--resume=")
+			f.AskMissingModel, f.Resuming, f.Resume = false, true, strings.TrimPrefix(a, "--resume=")
 			f.SkipModel = f.SkipModel || !routed
 		case a == "-c" || a == "--continue" || a == "--from-pr":
-			f.AskMissingModel = false
+			f.AskMissingModel, f.Resuming = false, true
 			f.SkipModel = f.SkipModel || !routed
+		case strings.HasPrefix(a, "--from-pr="):
+			f.AskMissingModel, f.Resuming = false, true
 		case a == "-p" || a == "--print" || strings.HasPrefix(a, "--print=") || a == "-h" || a == "--help" ||
-			a == "-v" || a == "--version" || a == "--bg" || a == "--background" || strings.HasPrefix(a, "--from-pr="):
+			a == "-v" || a == "--version" || a == "--bg" || a == "--background":
 			f.AskMissingModel = false
 		case len(a) > 1 && a[0] == '-':
 			if optionStep(arity, a, next, hasNext) == 2 {
@@ -105,13 +121,17 @@ func OpensNoSession(argv []string, arity map[string]string) bool {
 			if hasNext && next != "" && next != "--" {
 				i++
 			}
+		case a == "--effort":
+			if hasNext && next != "" && next != "--" {
+				i++
+			}
 		case a == "-r" || a == "--resume":
 			if hasNext && next != "" && !strings.HasPrefix(next, "-") {
 				i++
 			}
 		case strings.HasPrefix(a, "--model=") || strings.HasPrefix(a, "--resume=") || strings.HasPrefix(a, "--print=") ||
-			strings.HasPrefix(a, "--from-pr=") || a == "--dangerously-skip-permissions" || a == "-c" || a == "--continue" ||
-			a == "--from-pr" || a == "-p" || a == "--print" || a == "--bg" || a == "--background":
+			strings.HasPrefix(a, "--effort=") || strings.HasPrefix(a, "--from-pr=") || a == "--dangerously-skip-permissions" ||
+			a == "-c" || a == "--continue" || a == "--from-pr" || a == "-p" || a == "--print" || a == "--bg" || a == "--background":
 			// A spelling ParseLaunchFlags reads itself; it never owns the token
 			// after it.
 		case len(a) > 1 && a[0] == '-':

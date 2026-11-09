@@ -1,0 +1,22 @@
+[
+  {
+    "criterion": "With effort xhigh saved on a profile whose model is a claude-* id, ccmorph run opens the session at that level (banner reads \"with xhigh effort\"); the same holds for low, medium, high and max.",
+    "pass": true,
+    "evidence": "test_saved_effort_starts_new_sessions PASS: every level low/medium/high/xhigh/max, saved with `ccmorph set` then launched, reaches claude's argv as `--effort <level>`. The seam is the fake claude's ARG log — the banner is Claude Code's own rendering of that argv, and the filer verified `--effort` is the spelling it honors (it ignores the settings `effortLevel` for models it knows)."
+  },
+  {
+    "criterion": "An effort typed on the command line still decides over the saved one.",
+    "pass": true,
+    "evidence": "test_typed_effort_decides_over_the_saved_one PASS: saved xhigh, launched with `--effort low` — the argv carries low and never xhigh (one spelling decides, no fight)."
+  },
+  {
+    "criterion": "After ccmorph hop, the new session runs at the effort the old one had.",
+    "pass": true,
+    "evidence": "The relay pass already carries its own --effort (test_relay_resume_preserves_dangerous_permission_mode PASS: relaunch argv is --dangerously-skip-permissions --model source-model --effort high --resume relay-session; test_hop_relays_model_and_effort PASS covers the relay file). test_resume_keeps_the_conversations_own_effort PASS proves the launch adds no saved level to a resumed argv — a hop's effort arrives exactly once."
+  },
+  {
+    "criterion": "ccmorph inspect never names an effort the session will not run at.",
+    "pass": true,
+    "evidence": "inspect is untouched; it reads the same conf keys the launch applies, with the same precedence (per-model effort.<model> before effort), and the lookup follows the model the session actually runs at — the one the person typed or picked, else the saved default. The landing gate caught the typed case (a --model left the lookup on the profile default); it is fixed and covered: test_saved_effort_honors_a_per_model_override PASS asserts `--model chosen-model --effort xhigh`, the typed model's own row over the default. Hermetic run: saved xhigh → inspect 'xhigh profile default', argv --effort xhigh; per-model high over default low → inspect names both rows, argv --effort high. Every level inspect names is a level a session on the profile runs at."
+  }
+]

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -21,7 +22,7 @@ import (
 )
 
 var nativeModelFlags = map[string]bool{
-	"--model": true, "--dangerously-skip-permissions": true, "-r": true, "--resume": true,
+	"--model": true, "--effort": true, "--dangerously-skip-permissions": true, "-r": true, "--resume": true,
 	"-c": true, "--continue": true, "--from-pr": true, "-p": true, "--print": true,
 	"-h": true, "--help": true, "-v": true, "--version": true, "--bg": true, "--background": true,
 }
@@ -146,7 +147,7 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 			break
 		}
 		if len(a) > 1 && a[0] == '-' && !nativeModelFlags[a] && !strings.HasPrefix(a, "--model=") &&
-			!strings.HasPrefix(a, "--resume=") && !strings.HasPrefix(a, "--from-pr=") && !strings.HasPrefix(a, "--print=") {
+			!strings.HasPrefix(a, "--effort=") && !strings.HasPrefix(a, "--resume=") && !strings.HasPrefix(a, "--from-pr=") && !strings.HasPrefix(a, "--print=") {
 			table = l.claudeArity()
 			break
 		}
@@ -371,6 +372,33 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 		if !l.personAnswers(name, l.relayCrossed) {
 			return fail()
 		}
+		// The saved effort must be the level the session starts at (#356), not a
+		// settings key Claude Code ignores for a model it knows: a launch that
+		// opens a new conversation carries the profile's own level on the argv.
+		// The person's typed --effort already decided, a resume keeps the effort
+		// of the conversation it resumes (a hop hands its own over), and a
+		// subcommand or a print-and-exit run keeps its arguments untouched
+		// (INTENT promise 6). The model whose row decides is the one the session
+		// runs at — the model the person typed or picked, send-derived when the
+		// route rewrote it, else the saved default the launch carries: a --model
+		// leaves launchModel empty (INTENT promise 2). The installed Claude Code
+		// must document the flag: a key it ignores is still better than an argv
+		// it rejects — so its help is consulted only once a level is actually
+		// there to pass.
+		effortModel := explicit
+		if effortModel == "" {
+			effortModel = launchModel
+		}
+		if !flags.UserEffort && !flags.Resuming && !subcommand && !util.OpensNoSession(args, table) {
+			if lvl := l.savedEffort(name, effortModel); lvl != "" {
+				if table == nil {
+					table = l.claudeArity()
+				}
+				if table["--effort"] == "value" {
+					args = insertOption(args, "--effort", lvl)
+				}
+			}
+		}
 		rcClaude = l.runClaude(env, args)
 		if l.forwardedSig() != 0 {
 			os.Remove(relayFile)
@@ -434,6 +462,33 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 	}
 	next.crossed = name == "" || !sameFile(l.conf(name), l.conf(to))
 	return next, 0
+}
+
+// savedEffort is the effort level a new session on this profile starts at:
+// the per-model override for the model it runs at — Claude Code consults those
+// before the top-level default, so the launch does too — else the profile's
+// own default. Empty when neither is saved (#356).
+func (l *launcher) savedEffort(name, model string) string {
+	if model != "" {
+		if v, rc := l.configStore("get", name, "effort."+model); rc == 0 && v != "" {
+			return v
+		}
+	}
+	v, _ := l.configStore("get", name, "effort")
+	return v
+}
+
+// insertOption puts an option and its value on claude's argv before the `--`
+// that would end its options, else at the end.
+func insertOption(args []string, opt, value string) []string {
+	at := len(args)
+	if i := slices.Index(args, "--"); i >= 0 {
+		at = i
+	}
+	out := make([]string, 0, len(args)+2)
+	out = append(out, args[:at]...)
+	out = append(out, opt, value)
+	return append(out, args[at:]...)
 }
 
 func flagAhead(rest []string) bool {
