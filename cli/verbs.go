@@ -57,6 +57,8 @@ func (l *launcher) verb(args []string) int {
 		return l.login(args[1:])
 	case "hop":
 		return l.hop(args[1:])
+	case "profile":
+		return l.profileVerb(args[1:])
 	case "quota":
 		return l.quota(args[1:])
 	}

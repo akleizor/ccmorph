@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/profile"
 )
 
 type (
@@ -44,6 +45,11 @@ const (
 	adviseCommand = `[ -n "$CCMORPH_ADVISE" ] && printf "%s" "$CCMORPH_ADVISE" || true`
 	// The first release read the advisory from a file; its entry may still sit in a profile's settings.
 	adviseCommandV1 = `f="$CCMORPH_ADVISE_FILE"; [ -n "$f" ] && [ -f "$f" ] && cat "$f" || true`
+	// A static hook for a profile whose status line is the user's own (#275): it
+	// shows the user, once per start and again on every resume (so after a hop),
+	// the profile the session runs on. The name is the launch's CCMORPH_PROFILE,
+	// a valid profile name, so it cannot break the JSON it is printed into.
+	noticeCommand = `[ -n "$CCMORPH_PROFILE" ] && printf '{"systemMessage":"ccmorph profile: %s"}' "$CCMORPH_PROFILE" || true`
 )
 
 var (
@@ -828,11 +834,19 @@ func fold(base, current, layerIn, canonical *obj, mapping map[string]bool) *obj 
 			bo, bok := before.(*obj)
 			ao, aok := after.(*obj)
 			switch {
-			case bok && aok:
+			// An edit to the projection's own status line is saved whole, not
+			// as a diff: nothing beneath the layer supplies its required type.
+			// Any other status line, inherited from canonical or the layer,
+			// is folded as a diff, so a removed field is tombstoned and sticks.
+			case bok && aok && !(len(here) == 1 && here[0] == "statusLine" && isProjectedLine(before)):
 				walk(bo, ao, here)
 			case after == missing:
 				deletePath(layer, here)
-				if getPath(canonical, here) != missing {
+				// A deleted top-level statusLine must stay deleted: it was the
+				// profile's own or the projection's (#275), and either way the
+				// next projection would bring one back.
+				if getPath(canonical, here) != missing ||
+					(len(here) == 1 && here[0] == "statusLine") {
 					unset = append(unset, here)
 				}
 			default:
@@ -888,7 +902,38 @@ func acwValid(v value) bool {
 // layer never overrides them (#185).
 var machineKeys = []string{"cleanupPeriodDays"}
 
-func build(canonical, layerIn, saved *obj, strip, mapping map[string]bool, acw *int64, usageHook string) *obj {
+// statusLineFor is the status line a projection gives a profile that has none
+// of its own: Claude Code renders the command's first output line at the bottom
+// of every session, so the profile a session runs on is visible without running
+// a command (#275). The name is baked into a single-quoted shell word, and a
+// directory whose name is not a profile name — the only way that word could
+// break — gets no line at all.
+func statusLineFor(name string) *obj {
+	if !profile.ValidName(name) {
+		return nil
+	}
+	line := ordjson.New()
+	line.Set("type", "command")
+	line.Set("command", "printf 'profile: "+name+"'")
+	return line
+}
+
+// isProjectedLine reports whether v is exactly the status line a projection
+// made (statusLineFor), not one a profile set: nothing beneath the layer
+// supplies its fields, so an edit to it is saved whole.
+func isProjectedLine(v value) bool {
+	o, ok := v.(*obj)
+	if !ok {
+		return false
+	}
+	c, _ := getObj(o, "command").(string)
+	name, found := strings.CutPrefix(c, "printf 'profile: ")
+	name, closed := strings.CutSuffix(name, "'")
+	line := statusLineFor(name)
+	return found && closed && line != nil && ordjson.Equal(o, line)
+}
+
+func build(profileName string, canonical, layerIn, saved *obj, strip, mapping map[string]bool, acw *int64, usageHook string) *obj {
 	layer := withoutInheritedHooks(layerIn, canonical)
 	data := merge(canonical, withoutTombstones(layer), nil)
 	applyTombstones(data, layer)
@@ -931,6 +976,16 @@ func build(canonical, layerIn, saved *obj, strip, mapping map[string]bool, acw *
 	if acw != nil && !acwValid(getObj(data, "autoCompactWindow")) {
 		data.Set("autoCompactWindow", json.Number(strconv.FormatInt(*acw, 10)))
 	}
+	// #275: name the profile in the one surface Claude Code renders on its own,
+	// but only while the profile has no status line of its own — the user's,
+	// wherever they set it, wins, and the layer's tombstone for a deleted one
+	// keeps this projection from bringing it back. A profile that keeps its own
+	// status line still gets the profile named, by the session-start notice below.
+	ownLine := getPath(data, []string{"statusLine"}) != missing
+	if line := statusLineFor(profileName); line != nil && !ownLine &&
+		!hasPath(tombstones(layer), []string{"statusLine"}) {
+		data.Set("statusLine", line)
+	}
 	hv, ok := data.Get("hooks")
 	if !ok {
 		hv = ordjson.New()
@@ -947,6 +1002,13 @@ func build(canonical, layerIn, saved *obj, strip, mapping map[string]bool, acw *
 			hook.Set("command", adviseCommand)
 			entry := ordjson.New()
 			entry.Set("hooks", []any{hook})
+			if ownLine && statusLineFor(profileName) != nil {
+				// Same entry as the advisory: isAdvise drops both from a fold.
+				notice := ordjson.New()
+				notice.Set("type", "command")
+				notice.Set("command", noticeCommand)
+				entry.Set("hooks", []any{hook, notice})
+			}
 			hooks.Set("SessionStart", append(entries, entry))
 		}
 	}
@@ -1135,7 +1197,7 @@ func materialize(profileDir, canonicalPath string, saved *obj, strip, mapping ma
 				n, _ := strconv.ParseInt(*acwArg, 10, 64)
 				acw = &n
 			}
-			doc := build(canonical, layer, saved, strip, mapping, acw, usageHook)
+			doc := build(filepath.Base(profileDir), canonical, layer, saved, strip, mapping, acw, usageHook)
 			// Claude Code may be writing the same file; start over rather than
 			// replace an edit that landed while this pass was reading.
 			if !bytes.Equal(readBytes(target), currentBytes) || (readBytes(target) == nil) != (currentBytes == nil) {

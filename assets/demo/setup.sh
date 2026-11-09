@@ -11,10 +11,14 @@ trap 'exit 129' HUP
 trap 'exit 143' TERM
 export CCMORPH_STATE_DIR=$HOME/state
 export PATH=$root/assets/demo/bin:$root/bin:$PATH
+# Pin the checkout's library. A recording often runs inside a ccmorph-launched
+# session, whose CCMORPH_LIB_DIR names the installed ccmorph — authoritative by
+# design — so without this the demo would record the wrong build.
+export CCMORPH_LIB_DIR=$root/lib
 mkdir -p "$CCMORPH_STATE_DIR"
 printf 'type=sub\nemail=you@example.com\n' > "$CCMORPH_STATE_DIR/work.conf"
-printf 'type=apikey\nbase_url=https://api.anthropic.com/\napi_key=sk-demo-not-real\n' > "$CCMORPH_STATE_DIR/personal.conf"
-printf 'type=apikey\nbase_url=https://gateway.example/\napi_key=sk-demo-not-real\nmodel=gpt-6.1-sol\n' > "$CCMORPH_STATE_DIR/gateway.conf"
+printf 'type=apikey\napi_key=sk-demo-not-real\n\n' > "$CCMORPH_STATE_DIR/personal.conf"
+printf 'type=apikey\nbase_url=https://gateway.example/\napi_key=sk-demo-not-real\nmodel=gpt-6.1-sol\n\n' > "$CCMORPH_STATE_DIR/gateway.conf"
 ccmorph use work >/dev/null
 # Hide the launcher's stderr notices so only the story shows.
 ccmorph() { command ccmorph "$@" 2>/dev/null; }

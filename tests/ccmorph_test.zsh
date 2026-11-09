@@ -2763,6 +2763,7 @@ install_hopping_claude() {
     'with open(os.environ["CCMORPH_TEST_LOG"], "a") as log:' \
     '    log.write("ARG\t" + "\t".join(argv) + "\n")' \
     '    log.write("CFG=" + os.path.basename(os.environ.get("CLAUDE_CONFIG_DIR", "")) + "\n")' \
+    '    log.write("PROFILE=" + os.environ.get("CCMORPH_PROFILE", "<unset>") + "\n")' \
     'if "--help" in argv:' \
     '    sys.exit(0)' \
     'signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})' \
@@ -2846,6 +2847,14 @@ test_hop_inside_a_core_launch_resumes_on_the_target() {
   # launcher prints must name the target, not the profile it started on (#285).
   [[ "$out" == *'ccmorph run target --resume hop-session'* ]] || {
     print -u2 -- "an ended session must name the command that resumes it on the profile it ended on: ${(qqq)out}"
+    rc=1
+  }
+  [[ "$(print -r -- "$log" | grep -c '^PROFILE=target$')" == 1 ]] || {
+    print -u2 -- "the resumed session must name the target in CCMORPH_PROFILE: ${(qqq)log}"
+    rc=1
+  }
+  [[ "$(print -r -- "$log" | grep -c '^PROFILE=<unset>$')" == 0 ]] || {
+    print -u2 -- "a session must never run without a profile name: ${(qqq)log}"
     rc=1
   }
   local -a left=("$HOME"/.config/ccmorph/.reswitch.*(N))

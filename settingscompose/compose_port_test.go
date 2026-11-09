@@ -82,7 +82,22 @@ func (h home) materialize(saved string, extra ...string) (int, string) {
 // run projects and returns settings.json without the advisory hook every projection adds.
 func (h home) run(extra ...string) map[string]any { return h.runSaved("{}", extra...) }
 
+// runRaw is run with the profile-naming status line left in the document, for
+// the tests whose point is that no status line came back.
+func (h home) runRaw(extra ...string) map[string]any { return h.runSavedRaw("{}", extra...) }
+
 func (h home) runSaved(saved string, extra ...string) map[string]any {
+	doc := h.runSavedRaw(saved, extra...)
+	// The status line naming the profile is the projection's too (#275).
+	if sl, _ := doc["statusLine"].(map[string]any); sl != nil {
+		if c, _ := sl["command"].(string); c == "printf 'profile: "+filepath.Base(h.profile)+"'" {
+			delete(doc, "statusLine")
+		}
+	}
+	return doc
+}
+
+func (h home) runSavedRaw(saved string, extra ...string) map[string]any {
 	h.t.Helper()
 	if rc, stderr := h.materialize(saved, extra...); rc != 0 {
 		h.t.Fatalf("materialize: %d %s", rc, stderr)
@@ -273,7 +288,7 @@ func TestComposeLayering(t *testing.T) {
 		h.run()
 		h.edit(h.p("settings.json"), func(m map[string]any) { delete(m, "statusLine") })
 		for range 2 {
-			if _, ok := h.run()["statusLine"]; ok {
+			if _, ok := h.runRaw()["statusLine"]; ok {
 				t.Fatal("a removed key came back")
 			}
 		}

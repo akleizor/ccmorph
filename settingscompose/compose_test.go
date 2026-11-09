@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -182,7 +183,10 @@ func TestFoldKeepsClaudeEditsInTheLayer(t *testing.T) {
 		t.Fatal(code, stderr)
 	}
 	layer, _ := os.ReadFile(filepath.Join(f.profile, layerFile))
-	if got, want := string(layer), "{\n  \"verbose\": true\n}\n"; got != want {
+	// The rewritten settings lost the projection's status line (#275), so the
+	// fold records that deletion too: the next projection leaves it out.
+	want := "{\n  \"verbose\": true,\n  \"$ccmorphUnset\": [\n    [\n      \"statusLine\"\n    ]\n  ]\n}\n"
+	if got := string(layer); got != want {
 		t.Fatalf("layer = %q, want %q", layer, want)
 	}
 }
@@ -423,5 +427,290 @@ func TestMaterializeWithoutAHookRemovesTheOldOneAndKeepsTheUsers(t *testing.T) {
 		if _, ok := hooks["Stop"]; ok {
 			t.Fatalf("an empty Stop list survived: %v", hooks)
 		}
+	}
+}
+
+// --- the profile's status line --------------------------------------------------------
+
+// namedFixture is a fixture whose profile directory carries a profile's name:
+// the status line a projection adds names that directory (#275).
+func namedFixture(t *testing.T, name string) fixture {
+	t.Helper()
+	dir := t.TempDir()
+	f := fixture{filepath.Join(dir, "claude", "settings.json"), filepath.Join(dir, name), filepath.Join(dir, "policy.json")}
+	write(t, f.canonical, "{}")
+	if err := os.MkdirAll(f.profile, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+// statusLineField is one field of the generated settings' status line, "" when
+// there is no status line.
+func statusLineField(t *testing.T, f fixture, field string) string {
+	t.Helper()
+	var doc struct {
+		StatusLine map[string]any `json:"statusLine"`
+	}
+	if err := json.Unmarshal(settingsBytes(t, f), &doc); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := doc.StatusLine[field].(string)
+	return s
+}
+
+// statusLineCommand is the command the generated settings' status line runs.
+func statusLineCommand(t *testing.T, f fixture) string {
+	t.Helper()
+	return statusLineField(t, f, "command")
+}
+
+// noticeCommands are the profile-naming session-start hooks in the generated
+// settings: the notice a profile with its own status line gets instead of one.
+func noticeCommands(t *testing.T, f fixture) []string {
+	t.Helper()
+	var doc struct {
+		Hooks struct {
+			SessionStart []struct {
+				Hooks []struct{ Command string } `json:"hooks"`
+			}
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(settingsBytes(t, f), &doc); err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, e := range doc.Hooks.SessionStart {
+		for _, h := range e.Hooks {
+			if h.Command == noticeCommand {
+				out = append(out, h.Command)
+			}
+		}
+	}
+	return out
+}
+
+// editSettings changes the generated settings the way Claude Code does: read
+// the document, change it, write it back.
+func editSettings(t *testing.T, f fixture, change func(doc map[string]any)) {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal(settingsBytes(t, f), &doc); err != nil {
+		t.Fatal(err)
+	}
+	change(doc)
+	b, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(f.profile, "settings.json"), string(b))
+}
+
+// #275: a running session must show which profile it is on without a command,
+// and the one surface Claude Code renders on its own is the status line, so a
+// profile without a status line of its own gets one naming it.
+func TestMaterializeNamesTheProfileInTheStatusLine(t *testing.T) {
+	f := namedFixture(t, "work")
+	f.materialize(t, "")
+	if got := statusLineCommand(t, f); got != "printf 'profile: work'" {
+		t.Fatalf("statusLine.command = %q", got)
+	}
+	// The line is the projection's, never the profile's own: a fold must not
+	// save it into the layer.
+	if code, stderr := f.run("fold"); code != 0 {
+		t.Fatalf("fold: %d %s", code, stderr)
+	}
+	layer, err := os.ReadFile(filepath.Join(f.profile, layerFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(layer), "statusLine") {
+		t.Fatalf("a fold saved the projection's status line into the layer: %s", layer)
+	}
+}
+
+// A user's own status line, wherever they set it, is theirs: the projection
+// never replaces it.
+func TestAUsersOwnStatusLineWins(t *testing.T) {
+	mine := `{"type":"command","command":"~/.bin/line"}`
+	for _, where := range []string{"canonical", "layer", "saved"} {
+		t.Run(where, func(t *testing.T) {
+			f := namedFixture(t, "work")
+			switch where {
+			case "canonical":
+				write(t, f.canonical, `{"statusLine":`+mine+`}`)
+			case "layer":
+				write(t, filepath.Join(f.profile, layerFile), `{"statusLine":`+mine+`}`)
+			}
+			var stderr bytes.Buffer
+			args := []string{"materialize", f.profile, "--canonical", f.canonical, "--saved", "{}"}
+			if where == "saved" {
+				args[5] = `{"statusLine":` + mine + `}`
+			}
+			if code := Main(args, &stderr); code != 0 {
+				t.Fatalf("materialize exited %d: %s", code, stderr.String())
+			}
+			if got := statusLineCommand(t, f); got != "~/.bin/line" {
+				t.Fatalf("%s: statusLine.command = %q", where, got)
+			}
+		})
+	}
+}
+
+// Deleting the status line opts out: the fold tombstones it, and the next
+// projection leaves the settings without one instead of bringing it back.
+func TestDeletingTheStatusLineSticks(t *testing.T) {
+	f := namedFixture(t, "work")
+	f.materialize(t, "")
+	editSettings(t, f, func(doc map[string]any) { delete(doc, "statusLine") })
+	if code, stderr := f.run("fold"); code != 0 {
+		t.Fatalf("fold: %d %s", code, stderr)
+	}
+	layer, err := os.ReadFile(filepath.Join(f.profile, layerFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(layer), `"statusLine"`) {
+		t.Fatalf("the fold kept no tombstone for the deleted line: %s", layer)
+	}
+	f.materialize(t, "")
+	if got := statusLineCommand(t, f); got != "" {
+		t.Fatalf("the projection brought the deleted line back: %q", got)
+	}
+}
+
+// Editing the projected line makes it the user's: the fold saves it into the
+// layer, and the next projection keeps it as written.
+func TestEditingTheProjectedStatusLineMakesItTheUsers(t *testing.T) {
+	f := namedFixture(t, "work")
+	f.materialize(t, "")
+	editSettings(t, f, func(doc map[string]any) {
+		sl, ok := doc["statusLine"].(map[string]any)
+		if !ok {
+			t.Fatal("no status line to edit")
+		}
+		sl["command"] = "echo mine"
+	})
+	if code, stderr := f.run("fold"); code != 0 {
+		t.Fatalf("fold: %d %s", code, stderr)
+	}
+	layer, err := os.ReadFile(filepath.Join(f.profile, layerFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(layer), "echo mine") {
+		t.Fatalf("the fold did not save the edited line: %s", layer)
+	}
+	f.materialize(t, "")
+	if got := statusLineCommand(t, f); got != "echo mine" {
+		t.Fatalf("statusLine.command = %q", got)
+	}
+	// The unchanged type travels with the edited command: a line without its
+	// type is invalid, and the fold must not have dropped it as "unchanged".
+	if got := statusLineField(t, f, "type"); got != "command" {
+		t.Fatalf("the edited status line lost its type: %q", got)
+	}
+}
+
+// Removing one field of an inherited status line sticks: the fold records the
+// removal, and the next projection does not bring the field back from canonical.
+func TestRemovingAFieldOfAnInheritedStatusLineSticks(t *testing.T) {
+	f := namedFixture(t, "work")
+	write(t, f.canonical, `{"statusLine":{"type":"command","command":"echo context","padding":2}}`)
+	f.materialize(t, "")
+	editSettings(t, f, func(doc map[string]any) {
+		sl, ok := doc["statusLine"].(map[string]any)
+		if !ok {
+			t.Fatal("no status line to edit")
+		}
+		delete(sl, "padding")
+	})
+	if code, stderr := f.run("fold"); code != 0 {
+		t.Fatalf("fold: %d %s", code, stderr)
+	}
+	f.materialize(t, "")
+	var doc struct {
+		StatusLine map[string]any `json:"statusLine"`
+	}
+	if err := json.Unmarshal(settingsBytes(t, f), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc.StatusLine["padding"]; ok {
+		t.Fatalf("the removed padding came back: %v", doc.StatusLine)
+	}
+	if doc.StatusLine["type"] != "command" || doc.StatusLine["command"] != "echo context" {
+		t.Fatalf("the rest of the inherited line changed: %v", doc.StatusLine)
+	}
+}
+
+// A profile that keeps its own status line cannot show the profile there, so
+// it gets the profile named once per start (and again on every resume, so after
+// a hop) by a session-start hook; a profile with the projected line or none gets
+// no hook, because the line already names it or the person opted out.
+func TestAUsersOwnStatusLineStillHasTheProfileNamed(t *testing.T) {
+	f := namedFixture(t, "work")
+	write(t, f.canonical, `{"statusLine":{"type":"command","command":"~/.bin/line"}}`)
+	f.materialize(t, "")
+	if got := statusLineCommand(t, f); got != "~/.bin/line" {
+		t.Fatalf("statusLine.command = %q", got)
+	}
+	if n := len(noticeCommands(t, f)); n != 1 {
+		t.Fatalf("%d profile notices, want 1", n)
+	}
+	// What the hook prints is the JSON Claude Code shows the user, and it names
+	// the launch's profile, not the one projected: a hop relaunches with the new name.
+	for _, name := range []string{"work", "personal"} {
+		cmd := exec.Command("sh", "-c", noticeCommand)
+		cmd.Env = append(os.Environ(), "CCMORPH_PROFILE="+name)
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var msg struct{ SystemMessage string }
+		if err := json.Unmarshal(out, &msg); err != nil {
+			t.Fatalf("the notice printed %q: %v", out, err)
+		}
+		if want := "ccmorph profile: " + name; msg.SystemMessage != want {
+			t.Fatalf("systemMessage = %q, want %q", msg.SystemMessage, want)
+		}
+	}
+	// Outside a ccmorph launch the hook is silent.
+	cmd := exec.Command("sh", "-c", noticeCommand)
+	cmd.Env = append(os.Environ(), "CCMORPH_PROFILE=")
+	if out, err := cmd.Output(); err != nil || len(out) != 0 {
+		t.Fatalf("the notice printed %q (%v) with no profile", out, err)
+	}
+	// A fold never saves the notice into the layer.
+	if code, stderr := f.run("fold"); code != 0 {
+		t.Fatalf("fold: %d %s", code, stderr)
+	}
+	if layer, _ := os.ReadFile(filepath.Join(f.profile, layerFile)); strings.Contains(string(layer), "systemMessage") {
+		t.Fatalf("a fold saved the notice into the layer: %s", layer)
+	}
+}
+
+func TestTheProjectedStatusLineNeedsNoNotice(t *testing.T) {
+	f := namedFixture(t, "work")
+	f.materialize(t, "")
+	if n := len(noticeCommands(t, f)); n != 0 {
+		t.Fatalf("%d profile notices beside the projected status line", n)
+	}
+	editSettings(t, f, func(doc map[string]any) { delete(doc, "statusLine") })
+	if code, stderr := f.run("fold"); code != 0 {
+		t.Fatalf("fold: %d %s", code, stderr)
+	}
+	f.materialize(t, "")
+	if n := len(noticeCommands(t, f)); n != 0 {
+		t.Fatalf("%d profile notices after the person opted out of a status line", n)
+	}
+}
+
+// The line bakes the directory's name into a single-quoted shell word, so a
+// directory whose name is not a profile name gets no line at all.
+func TestADirectoryThatIsNotAProfileNameGetsNoStatusLine(t *testing.T) {
+	f := namedFixture(t, "od d; rm -rf")
+	f.materialize(t, "")
+	if got := statusLineCommand(t, f); got != "" {
+		t.Fatalf("statusLine.command = %q", got)
 	}
 }

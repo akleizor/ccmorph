@@ -141,7 +141,8 @@ LIBS=(lib/ccmorph.sh ${MODULES/#/lib/})
 # install route places it, not only a checkout (#261).
 EXECUTABLES=(bin/ccmorph install.sh share/usage-export)
 DATA_FILES=(share/model-catalogue.json share/window-sources.json share/provider-presets.tsv
-  share/claude-plugin/.claude-plugin/plugin.json share/claude-plugin/commands/hop.md
+  share/claude-plugin/.claude-plugin/plugin.json
+  share/claude-plugin/commands/hop.md share/claude-plugin/commands/profile.md
   share/claude-plugin/hooks/hooks.json)
 COMPONENTS=($LIBS $EXECUTABLES $DATA_FILES)
 

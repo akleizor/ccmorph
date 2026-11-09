@@ -35,6 +35,7 @@ class Box:
             '  echo "KEY=${ANTHROPIC_API_KEY-<unset>}"\n'
             '  echo "BASE=${ANTHROPIC_BASE_URL-<unset>}"\n'
             '  echo "CFG=${CLAUDE_CONFIG_DIR-<unset>}"\n'
+            '  echo "PROFILE=${CCMORPH_PROFILE-<unset>}"\n'
             '} >> "$HOME/claude.log"\n')
         claude.chmod(claude.stat().st_mode | stat.S_IXUSR)
         self.env = {k: v for k, v in os.environ.items()
@@ -507,6 +508,55 @@ def test_a_subscription_profile_launches_with_no_injected_credential(box):
     log = box.log()
     assert 'TOKEN=<unset>' in log and 'KEY=<unset>' in log
     assert f'CFG={box.state}/profiles/work' in log
+
+
+def test_a_running_session_names_its_profile_in_env_and_status_line(box):
+    # #275: a person with a work subscription and a personal key must be able to
+    # tell from inside the session which one serves it. The session's environment
+    # carries the name, and the settings a launch projects render it in the status
+    # line Claude Code draws on its own. An ambient value from an outer session
+    # must never survive into the launch.
+    seed(box)
+    box.env['CCMORPH_PROFILE'] = 'ambient-must-not-leak'
+    out = box.run('run', 'work')
+    assert out.returncode == 0, out.stderr
+    log = box.log()
+    assert 'PROFILE=work\n' in log
+    assert 'ambient-must-not-leak' not in log
+    settings = json.loads((box.state / 'profiles/work/settings.json').read_text())
+    assert settings['statusLine']['command'] == "printf 'profile: work'"
+
+
+# --- the running session's one-word answer -------------------------------------------
+
+def test_profile_answers_from_inside_a_session(box):
+    # #275: one short command names the profile the session runs on.
+    seed(box)
+    box.env.update(CCMORPH_PROFILE='work', CLAUDE_CONFIG_DIR=str(box.state / 'profiles/work'))
+    out = box.run('profile')
+    assert (out.returncode, out.stdout) == (0, 'work\n'), out.stderr
+
+
+def test_profile_names_the_config_dir_of_an_older_launch(box):
+    # A session of a ccmorph older than CCMORPH_PROFILE still names its config
+    # dir, which sits under the launcher's profile dirs.
+    seed(box)
+    box.env['CLAUDE_CONFIG_DIR'] = str(box.state / 'profiles/work')
+    out = box.run('profile')
+    assert (out.returncode, out.stdout) == (0, 'work\n'), out.stderr
+
+
+def test_profile_outside_a_session_names_nothing(box):
+    seed(box)
+    out = box.run('profile')
+    assert out.returncode == 1
+    assert 'not inside a ccmorph session' in out.stderr
+
+
+def test_profile_refuses_arguments(box):
+    out = box.run('profile', 'extra')
+    assert out.returncode == 2
+    assert 'usage: ccmorph profile' in out.stderr
 
 
 # --- launch arguments, retired verbs, secret handling ----------------------------------

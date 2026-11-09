@@ -1,23 +1,77 @@
-#!/bin/sh
+#!/usr/bin/env python3
 # Scripted stand-in for the claude CLI, used only by the README recording.
 # No network: it keeps a tiny transcript in $HOME so a hopped session "resumes".
-t=$HOME/.demo-transcript
-p=$(basename "$CLAUDE_CONFIG_DIR")
-case $p in work) c=36 ;; *) c=35 ;; esac
-tag() { printf '\033[2m  answered on \033[0m\033[%sm%s\033[0m\n' "$c" "$p"; }
-printf '\033[2J\033[H\n  \033[1mClaude Code\033[0m   profile: \033[1;%sm%s\033[0m\n\n' "$c" "$p"
-[ -f "$t" ] && cat "$t"
-n=$(grep -c '^> ' "$t" 2>/dev/null || echo 0)
-while printf '> ' && read -r line; do
-  case $line in
-    '#'*|'') ;;
-    '! '*) sh -c "${line#! }" ;;
-    /exit) exit 0 ;;
-    *)
-      n=$((n+1))
-      if [ "$n" = 1 ]; then r="Done. I added a --verbose flag and updated the help text."
-      else r="Added a test for --verbose. All tests pass."; fi
-      printf '\n  %s\n' "$r"; tag; echo
-      { printf '> %s\n\n  %s\n' "$line" "$r"; tag; echo; } >> "$t" ;;
-  esac
-done
+# It draws only what the real CLI draws: the banner, the prompt, and the status
+# line the launch projected into $CLAUDE_CONFIG_DIR/settings.json — run here the
+# way Claude Code runs it, below the prompt (#275).
+#
+# Python, not sh, on purpose: ccmorph hop ends the Claude Code process, which it
+# finds by walking up from the command to the first process that is neither a
+# shell nor the launcher — a stand-in running as sh would be skipped as one.
+import json
+import os
+import re
+import subprocess
+import sys
+
+transcript = os.path.join(os.environ.get("HOME", ""), ".demo-transcript")
+config = os.environ.get("CLAUDE_CONFIG_DIR", "")
+os.environ["CLAUDE_CODE_SESSION_ID"] = "demo-session"
+
+
+def status_line():
+    """The projected status line's own output, or None: only what settings.json says."""
+    try:
+        with open(os.path.join(config, "settings.json")) as f:
+            command = (json.load(f).get("statusLine") or {}).get("command")
+    except (OSError, ValueError):
+        return None
+    if not command:
+        return None
+    try:
+        out = subprocess.run(["/bin/sh", "-c", command], input=b"{}",
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except OSError:
+        return None
+    return out.stdout.decode("utf-8", "replace").strip() or None
+
+
+def prompt():
+    sys.stdout.write("> ")
+    line = status_line()
+    if line:
+        # The status line sits below the prompt; the cursor returns to the prompt.
+        sys.stdout.write("\n\033[2m  " + line + "\033[0m\r\033[1A\033[2C")
+    sys.stdout.flush()
+
+
+sys.stdout.write("\033[2J\033[H\n  \033[1mClaude Code\033[0m\n\n")
+if os.path.exists(transcript):
+    with open(transcript) as f:
+        sys.stdout.write(f.read())
+replies = 0
+if os.path.exists(transcript):
+    with open(transcript) as f:
+        replies = len(re.findall(r"^> ", f.read(), re.M))
+while True:
+    prompt()
+    text = sys.stdin.readline()
+    if not text:
+        sys.exit(0)
+    sys.stdout.write("\n")  # past the status line, so output never covers it
+    sys.stdout.flush()
+    text = text.rstrip("\n")
+    if text.startswith("#") or not text:
+        continue
+    if text == "/exit":
+        sys.exit(0)
+    if text.startswith("! "):
+        subprocess.run(["/bin/sh", "-c", text[2:]])
+        continue
+    replies += 1
+    reply = ("Done. I added a --verbose flag and updated the help text."
+             if replies == 1 else "Added a test for --verbose. All tests pass.")
+    sys.stdout.write("\n  " + reply + "\n\n")
+    sys.stdout.flush()
+    with open(transcript, "a") as f:
+        f.write("> " + text + "\n\n  " + reply + "\n\n")
