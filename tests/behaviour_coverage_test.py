@@ -5,6 +5,7 @@ guards of `ccmorph run`, and the credential environment a launch hands Claude
 Code per profile type. Everything runs the real `ccmorph` executable against an
 isolated HOME with a stub `claude`; nothing touches the network or a real home.
 """
+import fcntl
 import json
 import os
 import stat
@@ -396,6 +397,48 @@ def test_login_for_an_api_key_profile_records_the_approval_again(box):
     assert bad.returncode != 0 and 'ccmorph config tok' in bad.stderr
     gone = box.run('login', 'ghost')
     assert gone.returncode != 0 and "no profile 'ghost'" in gone.stderr
+
+
+def test_a_login_saved_under_an_open_session_lands_at_the_next_launch(box):
+    # #299: while a session of the profile is open, login saves the answer
+    # instead of rewriting .claude.json under the session. A launch then waits
+    # for the session and starts nothing; once it ends, the next launch records
+    # the answer before claude starts, and the session's own save survives.
+    key = 'sk-issue-299-test-key-0001'
+    box.conf('gw', f'type=apikey\napi_key={key}\n')
+    home = box.state / 'profiles' / 'gw'
+    home.mkdir(parents=True)
+    (home / '.claude.json').write_text(json.dumps(
+        {"numStartups": 3, "customApiKeyResponses": {"approved": [], "rejected": [key[-20:]]}}))
+    (box.state / '.locks').mkdir(parents=True)
+
+    holder = open(box.state / '.locks' / 'gw.live', 'a+')
+    fcntl.flock(holder, fcntl.LOCK_SH)
+    try:
+        saved = box.run('login', 'gw')
+        assert saved.returncode == 0, saved.stderr
+        assert 'next launch' in saved.stdout, saved.stdout
+        assert list((box.state / '.locks').glob('gw.approve-*')), 'no approval was saved'
+
+        blocked = box.run('run', 'gw')
+        assert blocked.returncode != 0, blocked.stdout
+        assert 'waits for the open session' in blocked.stderr, blocked.stderr
+        assert box.log() == '', box.log()
+
+        # The session saves its own state, then ends.
+        (home / '.claude.json').write_text(json.dumps(
+            {"numStartups": 4, "customApiKeyResponses": {"approved": [], "rejected": [key[-20:]]}}))
+    finally:
+        holder.close()
+
+    done = box.run('run', 'gw')
+    assert done.returncode == 0, done.stderr
+    doc = json.loads((home / '.claude.json').read_text())
+    assert doc['numStartups'] == 4, doc
+    assert doc['customApiKeyResponses']['approved'] == [key[-20:]], doc
+    assert doc['customApiKeyResponses']['rejected'] == [], doc
+    assert f'KEY={key}' in box.log(), box.log()
+    assert not list((box.state / '.locks').glob('gw.approve-*')), 'the marker outlived its landing'
 
 
 def test_login_signs_a_signed_out_account_profile_in_again(box):

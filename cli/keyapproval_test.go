@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/akleizor/ccmorph/util"
@@ -87,5 +88,42 @@ func TestKeyApprovalDropsASavedApprovalOnceAnswered(t *testing.T) {
 	}
 	if util.ApprovalSaved(l.profileDirs, "gw", gh299Key) {
 		t.Fatal("the saved approval stayed after the key was already approved")
+	}
+}
+
+// #299: while the profile's session is open, the saved approval cannot be
+// recorded and nothing starts; the answer stays saved for the launch that
+// follows the session.
+func TestKeyApprovalKeepsASavedApprovalWhileTheProfileIsInUse(t *testing.T) {
+	l, path := keyApprovalLauncher(t, gh299RefusedBody())
+	before, _ := os.ReadFile(path)
+	if err := util.SaveApproval(l.profileDirs, "gw", gh299Key); err != nil {
+		t.Fatal(err)
+	}
+	lock := util.LiveLockPath(l.profileDirs, "gw")
+	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(lock, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	restore := util.SetLockWait(0)
+	defer restore()
+
+	if l.keyApproval("gw", gh299Key) {
+		t.Fatal("a launch must not start while the saved approval cannot be recorded")
+	}
+	after, _ := os.ReadFile(path)
+	if string(after) != string(before) {
+		t.Fatalf("the file was rewritten under the session: %s", after)
+	}
+	if !util.ApprovalSaved(l.profileDirs, "gw", gh299Key) {
+		t.Fatal("the saved approval was dropped while it still waits")
 	}
 }
