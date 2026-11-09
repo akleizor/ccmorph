@@ -1021,7 +1021,10 @@ func (l *launcher) providerStart(name string, shared bool) bool {
 			return false
 		}
 	} else {
-		b, ok := util.AcquireBridge(root, name, start)
+		b, ok, err := util.AcquireBridge(root, name, start)
+		if err != nil && !errors.Is(err, util.ErrBridgeNotStarted) {
+			l.err(err.Error())
+		}
 		if !ok {
 			return false
 		}

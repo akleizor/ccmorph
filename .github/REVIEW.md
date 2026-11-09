@@ -78,6 +78,8 @@ credential, or losing the user's choice.
   Seen 1x (2026-11-07).
 - **A background refresher with no hang deadline that re-runs a cheap check every cycle** (2026-11-09) — the Remote Control supervisor's account login refresher waited on its `claude -p` turn with no deadline, so one stuck turn blocked every later refresh for the supervisor's life (the silent expiry #245 exists to prevent); its env filter dropped only `ANTHROPIC_*` and `CLAUDE_CODE_OAUTH_TOKEN` instead of the `ccmorph _backend_env` list, so `CLAUDE_CODE_USE_BEDROCK` could send the turn to a backend; and a fresh token left the clock unset, so a keychain subprocess ran every 20 s forever. A background job gets a deadline it is killed past, its env comes from the one backend list, and a check that found nothing to do schedules when it next matters — `Example: ef0aa66 (2026-11-09)`.
   Seen 1× (2026-11-09).
+- **A shared resource torn down or doubled on transient evidence, with state files that outlive their owner** (2026-11-09) — one failed probe read as death, so a live bridge another session held was killed and a second started on its auth dir; the last user out signalled a recorded PID without checking it still ran the bridge; a handle that could not be written left a running bridge unrecorded; a handle parsed with strings.Fields lost a TMPDIR with a space; rm and mv left the handle and locks for a recreated name to join. Kill or replace a shared resource only on proof (no holder left, ownership re-read against the process table), and give its state files the same lifetime as the thing they describe — Example: a4e69bc (2026-11-09).
+  Seen 1× (2026-11-09).
 
 ## Gate rules
 

@@ -99,8 +99,9 @@ line is read as before and moved out by the next migration. On macOS `api_key` a
 `token` move to the login keychain (service `ccmorph`) on first use; the conf keeps
 `keychain:<name>.<key>` and `profile.Read` resolves it, so no caller sees the reference.
 There is no separate shared registry file: `rm` and `mv` move or delete the
-`.conf` and the profile directory together, discovered data and keychain items
-included, with no registry-prefix bookkeeping. `add`
+`.conf` and the profile directory together, discovered data, keychain items and
+the shared bridge's `auth/.<name>.bridge*` files included, with no registry-prefix
+bookkeeping. `add`
 refuses orphaned private state left by a manually deleted configuration. Shared
 conversation history survives profile removal. All `*.conf` are gitignored: they
 carry credentials and never enter history.

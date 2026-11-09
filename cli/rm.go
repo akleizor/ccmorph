@@ -67,6 +67,9 @@ func (l *launcher) rm(args []string) int {
 	}
 	util.KeychainDelete(name)
 	os.Remove(filepath.Join(l.profileDirs, "..", ".locks", name+".lock"))
+	for _, p := range util.BridgeFiles(filepath.Join(l.dir, "auth"), name) {
+		os.Remove(p)
+	}
 	if l.active() == name {
 		if err := os.Remove(filepath.Join(l.dir, "active")); err != nil && !os.IsNotExist(err) {
 			l.err("could not clear default profile")
@@ -172,6 +175,28 @@ func keepHistory(from, to string) bool {
 	return !left
 }
 
+// moveBridgeFiles moves a profile's bridge state with the auth directory; a
+// leftover under the new name is removed rather than joined. False, with every
+// move undone, when a rename fails.
+func moveBridgeFiles(root, from, to string) bool {
+	src, dst := util.BridgeFiles(root, from), util.BridgeFiles(root, to)
+	for i := range src {
+		if !present(src[i]) {
+			os.Remove(dst[i])
+			continue
+		}
+		if os.Rename(src[i], dst[i]) != nil {
+			for j := 0; j < i; j++ {
+				if present(dst[j]) {
+					os.Rename(dst[j], src[j])
+				}
+			}
+			return false
+		}
+	}
+	return true
+}
+
 // mv is `ccmorph mv <old> <new>`, rolled back whole on any failure.
 func (l *launcher) mv(args []string) int {
 	if len(args) < 2 || !profile.ValidName(args[0]) || !profile.ValidName(args[1]) {
@@ -214,12 +239,22 @@ func (l *launcher) mv(args []string) int {
 			movedA = true
 		}
 	}
+	authRoot := filepath.Join(l.dir, "auth")
+	movedB := false
+	if ok {
+		if ok = moveBridgeFiles(authRoot, from, to); ok {
+			movedB = true
+		}
+	}
 	if ok && l.active() == from {
 		ok = atomicWrite(filepath.Join(l.dir, "active"), to+"\n") == nil
 	}
 	if !ok {
 		if present(l.conf(to)) {
 			os.Rename(l.conf(to), l.conf(from))
+		}
+		if movedB {
+			moveBridgeFiles(authRoot, to, from)
 		}
 		if movedA {
 			os.Rename(newA, oldA)
