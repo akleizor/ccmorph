@@ -59,7 +59,7 @@ func eachLinkMode(t *testing.T, fn func(t *testing.T)) {
 }
 
 func TestCostLimitIsTheExporters(t *testing.T) {
-	// scripts/usage-export pins the same literal; neither side may drift.
+	// share/usage-export pins the same literal; neither side may drift.
 	if costLimit != float64(1<<53)/100 {
 		t.Fatal(costLimit)
 	}

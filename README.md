@@ -34,13 +34,16 @@ ccmorph run  ------+--> personal   API key             -->  Anthropic API
 ## Requirements
 
 - `zsh` and the `claude` CLI. The installer names the command to install a missing
-  one for your package manager, and stops. `python3` 3.8 or newer is needed only
-  for the optional Remote Control add-on.
+  one for your package manager, and stops. `python3` 3.8 or newer is needed by the
+  usage export and the optional Remote Control add-on.
 - A release ships `ccmorph-core` prebuilt for macOS and Linux (arm64, amd64).
   Installing from a clone needs Go to build it (`make shim`).
 - Optional: `cliproxyapi` for non-Anthropic endpoints, `fzf` for searchable
   pickers. The installer offers fzf through your package manager and
   cliproxyapi through Homebrew, and installs only on confirm.
+- To install: `brew` for Homebrew, `git` and `make` for a clone, or `curl`
+  and `sh` for the one-liner. Reading the usage export needs `ccusage`, which
+  no install route provides: get it from [ccusage](https://github.com/ccusage/ccusage).
 - macOS or Linux. On Windows, use WSL.
 
 ## Install
@@ -138,17 +141,26 @@ the export. The day folders are an index, so a reader with a time window opens
 only the folders its window touches rather than every receipt ever written;
 the report also moves any rows a pre-shard store still holds flat into their
 day folders, once. No prompt, header or credential is stored. Export the
-receipts and read them with ccusage:
+receipts and read them with ccusage — where `ccmorph quota` shows each
+profile's live plan usage and spend, the export turns the whole receipt
+history into a ccusage report under the `--output` directory:
 
 ```sh
-scripts/usage-export --output ~/.cache/ccmorph-usage
-CLAUDE_CONFIG_DIR=~/.cache/ccmorph-usage ccusage claude daily --instances \
-  --config ~/.cache/ccmorph-usage/ccusage.json
+~/.config/ccmorph/share/usage-export --output ~/.cache/ccmorph-usage
 ```
 
+No ccmorph install provides [ccusage](https://github.com/ccusage/ccusage); see
+[Requirements](#requirements). With it installed, set `CLAUDE_CONFIG_DIR` to the
+`--output` directory and ask ccusage for its daily Claude report with
+`--instances`, passing the `ccusage.json` the export wrote there as `--config`;
+the exporter's `--help` prints that command in full.
 Each profile is one ccusage project. A billed cost is used as is and a
 shim-computed one is marked `costSource: estimate`; a turn with neither is
-priced by ccusage at the provider's list price.
+priced by ccusage at the provider's list price. A Homebrew install keeps the
+runtime in the formula's prefix, so run the exporter from there instead:
+`"$(brew --prefix ccmorph)/libexec/share/usage-export" --output ~/.cache/ccmorph-usage`.
+From a clone, `./share/usage-export --output ~/.cache/ccmorph-usage` runs as is, and
+`./scripts/usage-export` still reaches it.
 
 Every profile writes these receipts: `apikey`, `provider`, and also `sub` and
 `token`. No launch changes how a session reaches its backend: a `sub` or `token`

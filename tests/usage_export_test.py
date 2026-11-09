@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import subprocess
 import sys
 import time
 
@@ -12,13 +13,14 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from rc_hosts_test import is_python_helper  # noqa: E402
+from support import HANG_TIMEOUT  # noqa: E402
 
 # The shim's own bound (costLimit in shim/sidecar.go, 2**53/100); shim/sidecar_test.go
 # asserts the Go constant equals this literal, and the test below that the exporter's matches.
 SHIM_COST_LIMIT = 2 ** 53 / 100
 
 SPEC = importlib.util.spec_from_loader("usage_export", importlib.machinery.SourceFileLoader(
-    "usage_export", str(pathlib.Path(__file__).parent.parent / "scripts/usage-export")))
+    "usage_export", str(pathlib.Path(__file__).parent.parent / "share/usage-export")))
 ue = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ue)
 
@@ -608,3 +610,26 @@ def test_the_exported_timestamp_is_utc_with_milliseconds_and_z(tmp_path):
 def test_the_python_floor_scan_covers_the_exporter():
     """Issue #248: the exporter stays in the Python floor scan."""
     assert is_python_helper(pathlib.Path(SPEC.origin).read_text())
+
+
+def test_the_checkout_launcher_runs_the_shipped_exporter(tmp_path):
+    """#261: the exporter ships as share/usage-export; scripts/usage-export is
+    the checkout's pre-existing spelling and must still reach it."""
+    (tmp_path / "rows").mkdir()
+    ran = subprocess.run(
+        [str(pathlib.Path(SPEC.origin).parent.parent / "scripts/usage-export"),
+         "--output", str(tmp_path / "out"), "--source", str(tmp_path / "rows")],
+        capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert ran.returncode == 0, ran.stderr
+    assert json.loads(ran.stdout)["rows"] == 0
+    assert (tmp_path / "out/ccusage.json").is_file()
+
+
+def test_help_prints_the_ccusage_command_that_reads_the_export():
+    """#261: no install provides ccusage, so the README prints no ccusage
+    command; it points at the exporter's --help, which must give it."""
+    ran = subprocess.run([sys.executable, SPEC.origin, "--help"],
+                         capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert ran.returncode == 0, ran.stderr
+    assert ("CLAUDE_CONFIG_DIR=ROOT ccusage claude daily --instances --config "
+            "ROOT/ccusage.json") in " ".join(ran.stdout.split())
