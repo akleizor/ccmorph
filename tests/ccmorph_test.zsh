@@ -8322,6 +8322,203 @@ PYKEY
   return $rc
 }
 
+# Writes the answers a person gave Claude Code on one profile -- the onboarding
+# acknowledgment, the theme, and the folder's trust -- into that profile's
+# .claude.json, the way answering the questions once does.
+write_person_answers() {
+  local doc="$1" folder="$2"
+  python3 - "$doc" "$folder" <<'PYANS'
+import json, sys
+doc = {"hasCompletedOnboarding": True, "theme": "dark",
+       "projects": {sys.argv[2]: {"hasTrustDialogAccepted": True,
+                                   "hasCompletedProjectOnboarding": True}}}
+open(sys.argv[1], "w").write(json.dumps(doc))
+PYANS
+}
+
+# Asserts doc holds the person's answers for folder: the acknowledgment, the
+# theme, and the trust Claude Code records once they are given.
+check_person_answers() {
+  local doc="$1" folder="$2"
+  python3 - "$doc" "$folder" <<'PYANS'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+assert doc.get("hasCompletedOnboarding") is True, doc
+assert doc.get("theme") == "dark", doc
+entry = doc.get("projects", {}).get(sys.argv[2])
+assert isinstance(entry, dict), doc
+assert entry.get("hasTrustDialogAccepted") is True, doc
+assert entry.get("hasCompletedProjectOnboarding") is True, doc
+PYANS
+}
+
+test_launch_carries_the_persons_answers_to_the_next_profile() {
+  # Claude Code asks its theme, security and folder-trust questions once per
+  # config dir, and every profile is its own config dir: the answers the person
+  # gave on one profile were asked again on the next that opened in the folder
+  # (#258). A launch now carries them over, filling gaps, so the next profile
+  # opens straight to the prompt -- and the profile that holds the answers is
+  # never rewritten to get there.
+  local test_home rc=0
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  local profiles="$HOME/.config/ccmorph/profiles"
+  printf '%s\n' 'type=proxy' 'base_url=http://gw.invalid' 'api_key=test-key' 'model=alpha-chat' \
+    > "$HOME/.config/ccmorph/gw.conf"
+  printf '%s\n' 'type=proxy' 'base_url=http://gw.invalid' 'api_key=test-key' 'model=alpha-chat' \
+    > "$HOME/.config/ccmorph/anth.conf"
+  mkdir -p "$profiles/gw" "$profiles/anth" "$HOME/work"
+  # The person answered on gw, in this folder, and never anywhere else.
+  local folder
+  folder=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$HOME/work")
+  write_person_answers "$profiles/gw/.claude.json" "$folder"
+  local before
+  before="$(<"$profiles/gw/.claude.json")"
+  print -r -- '{}' > "$profiles/anth/.claude.json"
+  export _CCMORPH_PROFILE_DIRS="$profiles"
+  source "$CCMORPH_SOURCE"
+  local out
+  out=$(cd "$HOME/work" && _ccm_launch -a anth prompt 2>&1)
+  [[ -s "$CCMORPH_TEST_LOG" ]] || { print -u2 -- 'claude must start on the next profile'; rc=1 }
+  check_person_answers "$profiles/anth/.claude.json" "$folder" \
+    || { print -u2 -- 'the next profile must open with the answers already given'; rc=1; }
+  assert_not_contains "$out" 'Is this a project you created' \
+    'a profile that received the answers must not warn about the trust question' || rc=1
+  assert_not_contains "$out" 'first-run theme and security questions' \
+    'a profile that received the answers must not warn about the first-run screens' || rc=1
+  [[ "$(<"$profiles/gw/.claude.json")" == "$before" ]] \
+    || { print -u2 -- 'the profile holding the answers must stay untouched'; rc=1; }
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_hop_lands_on_the_resumed_conversation_not_the_questions() {
+  # The hop case of #258: /ccmorph:hop to a profile that never ran put the theme
+  # list, the security notes and the folder-trust question between the person and
+  # the resumed conversation. The relay pass now carries the person's answers to
+  # the target before claude resumes, so the next thing on screen is the
+  # conversation it resumed.
+  local test_home out st rc=0
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  local profiles="$HOME/.config/ccmorph/profiles"
+  printf '%s\n' 'type=proxy' 'base_url=http://target.invalid' 'api_key=target-key' 'model=target-model' \
+    > "$HOME/.config/ccmorph/target.conf"
+  mkdir -p "$profiles/proxy" "$HOME/work"
+  # The hop resumes a conversation, so give the id a transcript Claude Code can
+  # resume: without one the relay rightly starts a new conversation instead (#288).
+  seed_session_transcript hop-session 'spoken before the hop'
+  # The person answered the questions on the profile the session runs on.
+  local folder
+  folder=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$HOME/work")
+  write_person_answers "$profiles/proxy/.claude.json" "$folder"
+  source "$CCMORPH_SOURCE"
+  install_hopping_claude target
+
+  out=$(cd "$HOME/work" && _ccm_launch -a proxy 2>&1); st=$?
+
+  [[ "$st" == 0 ]] || { print -u2 -- "the launch must end on the target's own exit, got $st"; rc=1 }
+  [[ "$out" == *'resuming as target'* ]] || {
+    print -u2 -- "hop must resume the session on the target profile: ${(qqq)out}"
+    rc=1
+  }
+  assert_not_contains "$out" 'Is this a project you created' \
+    'a hop whose answers carried over must not warn about the trust question' || rc=1
+  assert_not_contains "$out" 'first-run theme and security questions' \
+    'a hop whose answers carried over must not warn about the first-run screens' || rc=1
+  check_person_answers "$profiles/target/.claude.json" "$folder" \
+    || { print -u2 -- 'the hopped-to profile must resume with the answers already given'; rc=1; }
+  local log
+  log="$(<"$CCMORPH_TEST_LOG")"
+  [[ "$(print -r -- "$log" | grep -c '^CFG=target$')" == 1 ]] || {
+    print -u2 -- "the resumed session must run on the target profile: ${(qqq)log}"
+    rc=1
+  }
+  local -a lines=("${(@f)log}")
+  local resumes=0 line
+  for line in "${lines[@]}"; do
+    [[ "$line" == $'ARG\t--resume\thop-session' ]] && (( resumes += 1 ))
+  done
+  (( resumes == 1 )) || {
+    print -u2 -- "the session must resume once, by id: ${(qqq)log}"
+    rc=1
+  }
+  unset CCMORPH_TEST_SOURCE CCMORPH_TEST_HOP_ARGS CCMORPH_TEST_TESTS_DIR
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_launch_names_the_safe_answer_when_a_question_remains() {
+  # The end of the #258 chain: a hop onto a profile nobody answered on, in a
+  # folder nobody trusted, still meets the resumed session with the trust
+  # question -- whose highlighted answer ends it. The relaunch says so first,
+  # in one line naming the safe answer, so pressing Enter out of habit is an
+  # informed choice. A file whose answers cannot be recorded keeps the warning,
+  # the relaunch, and its shape.
+  local test_home out st rc=0
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  local profiles="$HOME/.config/ccmorph/profiles"
+  printf '%s\n' 'type=proxy' 'base_url=http://gw.invalid' 'api_key=test-key' 'model=alpha-chat' \
+    > "$HOME/.config/ccmorph/gw.conf"
+  mkdir -p "$HOME/work"
+  # The hop resumes a conversation, so give the id a transcript Claude Code can
+  # resume: without one the relay rightly starts a new conversation instead (#288).
+  seed_session_transcript relay-session 'spoken before the switch'
+  # Claude Code relays once, onto a profile with no answers anywhere to draw
+  # from, and records nothing a person would have.
+  export CCMORPH_TEST_RELAY_TARGET=to
+  printf '%s\n' 'type=proxy' 'base_url=http://to.invalid' 'api_key=to-key' 'model=alpha-chat' \
+    > "$HOME/.config/ccmorph/to.conf"
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'printf "STARTED\n" >> "$CCMORPH_TEST_LOG"' \
+    'printf "CFG=%s\n" "${CLAUDE_CONFIG_DIR##*/}" >> "$CCMORPH_TEST_LOG"' \
+    'if [ ! -f "$HOME/relay-triggered" ]; then' \
+    '  : > "$HOME/relay-triggered"' \
+    '  printf "profile=%s\nsession=relay-session\n" "$CCMORPH_TEST_RELAY_TARGET" > "$HOME/.config/ccmorph/.reswitch.$CCMORPH_RELAY_ID"' \
+    'fi' \
+    > "$HOME/bin/claude"
+  chmod +x "$HOME/bin/claude"
+  export _CCMORPH_PROFILE_DIRS="$profiles"
+  source "$CCMORPH_SOURCE"
+  out=$(cd "$HOME/work" && _ccm_launch -a gw prompt 2>&1); st=$?
+  [[ "$st" == 0 ]] || { print -u2 -- "the launch must end on the target's own exit, got $st"; rc=1 }
+  [[ "$out" == *'resuming as to'* ]] || { print -u2 -- "the hop must resume on the target: ${(qqq)out}"; rc=1 }
+  assert_contains "$out" 'choose Yes, I trust this folder' \
+    'the relaunch must name the safe answer to the trust question' || rc=1
+  assert_contains "$out" 'No, exit ends the session' \
+    'the warning must say what the highlighted answer does' || rc=1
+  local log
+  log="$(<"$CCMORPH_TEST_LOG")"
+  [[ "$(print -r -- "$log" | grep -c '^STARTED$')" == 2 ]] || {
+    print -u2 -- "claude must run on both sides of the hop: ${(qqq)log}"
+    rc=1
+  }
+  [[ "$(print -r -- "$log" | grep -c '^CFG=to$')" == 1 ]] || {
+    print -u2 -- "the resumed session must run on the target profile: ${(qqq)log}"
+    rc=1
+  }
+  # A file ccmorph cannot safely rewrite keeps the question and the warning;
+  # claude still starts, and the person's file keeps its shape.
+  rm -f "$HOME/relay-triggered"
+  print -r -- '{"projects":"not-an-object"}' > "$profiles/to/.claude.json"
+  : > "$CCMORPH_TEST_LOG"
+  out=$(cd "$HOME/work" && _ccm_launch -a gw prompt 2>&1); st=$?
+  [[ "$st" == 0 ]] || { print -u2 -- "the launch must proceed when only the answers cannot be recorded, got $st"; rc=1 }
+  [[ "$(print -r -- "$(<"$CCMORPH_TEST_LOG")" | grep -c '^STARTED$')" == 2 ]] || {
+    print -u2 -- 'claude must start when only the answers cannot be recorded'
+    rc=1
+  }
+  assert_contains "$out" 'choose Yes, I trust this folder' \
+    'the relaunch must name the answer when it cannot record it' || rc=1
+  [[ "$(<"$profiles/to/.claude.json")" == *'"projects":"not-an-object"'* ]] \
+    || { print -u2 -- 'the relaunch rewrote the projects key it could not safely change'; rc=1 }
+  unset CCMORPH_TEST_RELAY_TARGET
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_an_unprobed_launch_is_not_given_a_siblings_ceiling() {
   # The route ceiling is the LARGEST probed window among the models a route serves, so
   # on a mixed route an unprobed model would inherit a sibling's number -- and the
@@ -9980,6 +10177,9 @@ run_test test_add_gateway_profile_offers_probe
 run_test test_add_native_profile_stays_quiet_about_probe
 run_test test_add_apikey_profile_approves_its_key
 run_test test_launch_refuses_a_key_claude_code_was_told_to_refuse
+run_test test_launch_carries_the_persons_answers_to_the_next_profile
+run_test test_hop_lands_on_the_resumed_conversation_not_the_questions
+run_test test_launch_names_the_safe_answer_when_a_question_remains
 run_test test_an_unprobed_launch_is_not_given_a_siblings_ceiling
 run_test test_the_launch_window_reports_every_window_fact
 run_test test_a_broken_settings_compose_does_not_take_the_window_facts_with_it
