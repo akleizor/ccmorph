@@ -84,6 +84,8 @@ credential, or losing the user's choice.
   Seen 1× (2026-11-09).
 - **A verdict line reports ready without testing the thing it vouches for** — the report's last line is a promise: `OK ready` says the profile will start, so a check that prints a neutral line — an INFO naming what launch does — and leaves the verdict green has passed nothing; the verdict inherited confidence from a line that never asked the question, and whatever a report vouches for, it either tests it or says it was not checked. The gap hides best one branch over from a check that was just added: the sibling branch reads as coverage — `example: 41be89c (2026-11-09) fix(doctor): the report ends with whether the profile is ready (#231), which tested only the API-key branch, so a sub or token profile on Anthropic's own endpoint kept a ready verdict with its credential never tested`.
   Seen 1× (2026-11-09).
+- **A stop recorded without waiting for the process to be gone** (2026-11-09) — the Remote Control supervisor sent an orphaned host one SIGINT and recorded the restart, its retry time and the cooldown at once: no deadline, no SIGTERM or SIGKILL, no check that the pid had exited, so a host that ignored SIGINT kept its port and kept serving while the cooldown said it was replaced and nothing tried again. A stop waits a bounded time for the pid to be gone, escalates SIGINT → SIGTERM → SIGKILL, and records only a confirmed exit; one that survives is retried — Example: 91eed07 (2026-11-09).
+  Seen 1× (2026-11-09).
 
 ## Gate rules
 

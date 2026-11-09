@@ -2898,6 +2898,47 @@ def _recovery_due(m, clock):
     return state
 
 
+def _orphan_host(tmp_path, monkeypatch, dies_on, reused_by=""):
+    """A host an earlier supervisor left running, with its pid faked.
+
+    `dies_on` names the signals the fake host does not survive; once one lands
+    the pid is empty, or -- when `reused_by` names a command -- it is held by
+    that other process, as a recycled pid is. os.kill is the process table
+    (signal 0 probes liveness, a real signal is recorded and changes the
+    state), time.sleep is a no-op, and subprocess.run answers `ps`. Nothing
+    here is a real process or a real wait.
+    """
+    import signal
+    import subprocess
+    m, h, repo, clock, posts, stops = _lost_login_host(tmp_path, monkeypatch)
+    h.proc = None                              # not this supervisor's child
+    state, sent = ["host"], []                 # host, gone, or reused
+
+    def kill(pid, sig):
+        if state[0] == "gone":
+            raise ProcessLookupError(pid)
+        if sig == 0:
+            return
+        if state[0] == "reused":
+            pytest.fail("signalled a pid the host no longer holds")
+        name = signal.Signals(sig).name
+        sent.append(name)
+        if name in dies_on:
+            state[0] = "reused" if reused_by else "gone"
+
+    def run(*cmd, **opts):
+        out = {"host": "/Users/me/.local/bin/claude remote-control --spawn=worktree\n",
+               "reused": f"{reused_by}\n", "gone": ""}[state[0]]
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(m.os, "kill", kill)
+    monkeypatch.setattr(m.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(m.subprocess, "run", run)
+    monkeypatch.setattr(h, "live_pointer_pid", lambda: 4242 if state[0] != "gone" else None)
+    h.debugfile.write_text("[bridge:token] No OAuth token available for refresh (failure 1/3)\n")
+    return m, h, repo, clock, sent
+
+
 def test_a_host_that_lost_its_login_is_restarted_and_its_sessions_keep_their_ids(
         tmp_path, monkeypatch, capsys):
     """GH-239: three folders' hosts kept a stale account token for ten hours and
@@ -3086,11 +3127,64 @@ def test_a_host_an_earlier_supervisor_left_running_is_restarted_when_it_lost_its
     h.proc = None                              # not this supervisor's child
     monkeypatch.setattr(h, "live_pointer_pid", lambda: 4242)
     stopped = []
-    monkeypatch.setattr(m, "stop_orphan", stopped.append)
+    monkeypatch.setattr(m, "stop_orphan", lambda pid: stopped.append(pid) or True)
     h.debugfile.write_text("[bridge:token] No OAuth token available for refresh (failure 1/3)\n")
     m.cycle({repo: h}, [repo], clock[0], _recovery_due(m, clock))
     assert stopped == [4242]
+    assert h.login_restarted == clock[0]       # recorded only with the stop confirmed
     assert f"{repo}: sessions lost their login" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("dies_on, expected, restarted", [
+    ({"SIGTERM"}, ["SIGINT", "SIGTERM"], True),
+    (set(), ["SIGINT", "SIGTERM", "SIGKILL"] * 2, False),
+], ids=["ignores-sigint-issue-297", "outlives-sigkill-issue-297"])
+def test_an_orphan_that_ignores_sigint_is_escalated_and_only_a_confirmed_stop_is_a_restart(
+        tmp_path, monkeypatch, dies_on, expected, restarted):
+    """2026-11-09, #297: an orphan that ignored SIGINT stayed up while the
+    supervisor recorded its restart, set the cooldown and never tried again.
+    A stop now waits, escalates to SIGTERM and SIGKILL, and only a pid that is
+    gone counts as a restart; one that survives is signalled again next check."""
+    m, h, repo, clock, sent = _orphan_host(tmp_path, monkeypatch, dies_on)
+    first = m.restart_logged_out({repo: h}, clock[0])
+    second = m.restart_logged_out({repo: h}, clock[0] + m.RECOVER_EVERY)
+    assert (first, second) == (([repo] if restarted else []), [])
+    assert sent == expected
+    assert (h.login_restarted == clock[0]) is restarted
+
+
+@pytest.mark.parametrize("returncode", [1, 0], ids=["ps-failed-issue-297", "ps-blind-issue-297"])
+def test_a_ps_that_cannot_show_the_live_orphan_does_not_record_a_stop(
+        tmp_path, monkeypatch, returncode):
+    """#297's refusal: ps's exit status was discarded, so a ps that failed or
+    named no process read as the orphan gone. While something lives at the pid
+    the stop is unconfirmed: it is not signalled blind, nothing records a
+    restart, and the next check tries again."""
+    import subprocess
+    m, h, repo, clock, sent = _orphan_host(tmp_path, monkeypatch, dies_on=set())
+
+    def silent(*cmd, **opts):
+        return subprocess.CompletedProcess(cmd, returncode, stdout="", stderr="ps: unreadable")
+
+    monkeypatch.setattr(m.subprocess, "run", silent)
+    first = m.restart_logged_out({repo: h}, clock[0])
+    second = m.restart_logged_out({repo: h}, clock[0] + m.RECOVER_EVERY)
+    assert (first, second) == ([], [])
+    assert sent == []                          # no signal on an unread identity
+    assert h.login_restarted == float("-inf")  # no cooldown suppressing the retry
+
+
+def test_a_pid_reused_after_the_interrupt_is_never_signalled_issue_297(tmp_path, monkeypatch):
+    """#297's second refusal: the host exits on SIGINT and another process takes
+    the pid. The host is confirmed gone, so the restart is recorded, but the
+    replacement is alive and must not receive SIGTERM or SIGKILL."""
+    m, h, repo, clock, sent = _orphan_host(
+        tmp_path, monkeypatch, dies_on={"SIGINT"}, reused_by="/usr/bin/python3 -m http.server")
+    first = m.restart_logged_out({repo: h}, clock[0])
+    second = m.restart_logged_out({repo: h}, clock[0] + m.RECOVER_EVERY)
+    assert (first, second) == ([repo], [])
+    assert sent == ["SIGINT"]                  # nothing reached the reused pid
+    assert h.login_restarted == clock[0]
 
 
 def test_a_folder_with_no_host_at_all_is_not_checked_for_its_login(tmp_path, monkeypatch):
