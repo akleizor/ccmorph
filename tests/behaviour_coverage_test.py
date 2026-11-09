@@ -44,6 +44,14 @@ class Box:
                         CCMORPH_STATE_DIR=str(self.state), CCMORPH_LIB_DIR=str(ROOT / "lib"),
                         PATH=f'{home}/bin:{os.environ["PATH"]}', LANG='C.UTF-8', LC_ALL='C.UTF-8',
                         NO_COLOR='1')
+        # `add` offers a pasted credential to its endpoint before saving it, and
+        # a launch's sizing fetches the models.dev catalogue; point both at a
+        # port nothing owns so the box stays offline and every answer is the
+        # deterministic one (setup_home does the same for the zsh suite).
+        self.env.update(HTTP_PROXY='http://127.0.0.1:1', HTTPS_PROXY='http://127.0.0.1:1',
+                        http_proxy='http://127.0.0.1:1', https_proxy='http://127.0.0.1:1')
+        self.env.pop('NO_PROXY', None)
+        self.env.pop('no_proxy', None)
 
     def conf(self, name, text):
         (self.state / f'{name}.conf').write_text(text)
@@ -285,10 +293,10 @@ def test_run_with_no_profiles_points_at_add(box):
 
 
 def test_the_first_added_profile_becomes_the_default(box):
-    first = box.run('add', 't1', answer='token\nsk-ant-oat-canary\n')
+    first = box.run('add', 't1', answer='token\nsk-ant-oat01-first-added-profile-fixture-not-real-00000')
     assert first.returncode == 0, first.stderr
     assert box.active == 't1'
-    second = box.run('add', 't2', answer='token\nsk-ant-oat-canary2\n')
+    second = box.run('add', 't2', answer='token\nsk-ant-oat01-second-added-profile-fixture-not-real-0000\n')
     assert second.returncode == 0, second.stderr
     assert box.active == 't1'
 
@@ -297,7 +305,7 @@ def test_add_token_prompt_names_where_a_token_comes_from_issue_290(box):
     # GH-290: the token prompt asked for a paste and never said where a token
     # comes from or what a valid one starts with, so a person without one hit a
     # dead end that no other screen in ccmorph opened a way out of.
-    done = box.run('add', 'tk1', answer='token\nsk-ant-oat01-pasted-example\n')
+    done = box.run('add', 'tk1', answer='token\nsk-ant-oat01-pasted-example-fixture-not-real-00000\n')
     assert done.returncode == 0, done.stderr
     assert 'claude setup-token' in done.stdout
     assert 'starts with sk-ant-oat01-' in done.stdout

@@ -105,7 +105,10 @@ With no profiles yet, `doctor` reports the machine instead of a profile:
 the version, `zsh`, `claude`, `fzf`, `cliproxyapi`, and whether
 `ccmorph` is on your `PATH`. It changes nothing, and fails only when a required
 tool is missing or too old. After you add a profile, `ccmorph doctor <profile>`
-checks that profile, including whether its sign-in or API key is accepted. Its
+checks that profile, including whether its token or API key is accepted. A
+Claude-account sign-in is checked the same way where Claude Code keeps it in
+the profile home; where it does not (macOS keeps it in the login keychain),
+the report says the sign-in was not checked rather than vouching for it. Its
 last line says whether the profile is ready to run or which lines to fix;
 `--verbose` adds a running adapter's processes and ports.
 
@@ -128,7 +131,12 @@ the key. A preset provider (DeepSeek,
 Kimi, GLM, MiniMax, Qwen, Xiaomi MiMo, StepFun, OpenRouter, SiliconFlow; the list is
 `share/provider-presets.tsv`) fills its official Anthropic-compatible endpoint and
 maps Claude Code's opus, sonnet and haiku tiers to its models; *Custom endpoint*
-asks for the base URL (blank = api.anthropic.com). Nothing is written outside
+asks for the base URL (blank = api.anthropic.com). The endpoint is then asked
+whether it accepts the pasted key — in this step, not at first launch — and a
+refused key is asked for again rather than saved. A pasted Claude token is
+judged the same way: a paste without a token's shape is refused at the prompt,
+and a shaped one is offered to Anthropic — Bearer-only, like the launch that
+will spend it — before it is saved. Nothing is written outside
 `~/.config/ccmorph` and the profile directory.
 
 A fresh install has **no profiles** — like a newly installed app. Nothing is

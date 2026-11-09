@@ -319,17 +319,33 @@ printf '%s\n' '__CCMORPH_STATUS__200'
     assert not (bindir / "called").exists()
 
 
-def test_doctor_missing_credential_fails_without_request(tmp_path):
-    result, _, _ = run_doctor(tmp_path, "type=apikey\nbase_url=https://example.test\n")
+@pytest.mark.parametrize("typ", ["apikey", "token"])
+def test_doctor_missing_credential_fails_without_request(tmp_path, typ):
+    # Either way the verdict must stop short of ready with no request sent;
+    # the apikey conf is the one shape the schema still accepts without a
+    # credential, so doctor names it itself, while a token profile with no
+    # token is refused the way launch would refuse it.
+    result, _, _ = run_doctor(tmp_path, f"type={typ}\nbase_url=https://example.test\n")
     assert result.returncode != 0
-    assert "has no credential" in result.stdout
-    assert "no API credential" in result.stdout
+    assert not result.stdout.splitlines()[-1].startswith("OK ready"), result.stdout
+    if typ == "apikey":
+        assert "has no credential" in result.stdout
+        assert "no API credential" in result.stdout
+    else:
+        assert "invalid profile schema" in result.stdout
+        assert "has no token" in result.stderr
 
 
 def test_doctor_native_profile_without_base_url_is_clear(tmp_path):
-    result, _, _ = run_doctor(tmp_path, "type=sub\nemail=test@example.test\n")
-    assert result.returncode == 0
-    assert "INFO endpoint: Anthropic" in result.stdout
+    # A sub profile whose sign-in Claude Code keeps in the profile home needs
+    # no base_url: its endpoint is Anthropic's own, and no adapter is started.
+    home = tmp_path / "state" / "profiles" / "demo"
+    home.mkdir(parents=True)
+    (home / ".credentials.json").write_text(
+        json.dumps({"claudeAiOauth": {"accessToken": SUB_SIGNIN}}))
+    result, _, _ = run_doctor(tmp_path, "type=sub\nemail=test@example.test\n", OK_CURL)
+    assert result.returncode == 0, result.stdout
+    assert "OK credentials: Anthropic accepted the stored sign-in (HTTP 200)" in result.stdout
     assert "adapter:" not in result.stdout
 
 
@@ -391,6 +407,125 @@ printf '%s\\n' '__CCMORPH_STATUS__{code}'
     else:
         assert result.returncode == 0, result.stdout
         assert "OK endpoint: Anthropic accepted the API key (HTTP 200)" in result.stdout
+
+
+@pytest.mark.parametrize("code", ["401", "200", "none"])
+def test_doctor_on_a_token_profile_probes_the_token(tmp_path, code):
+    """A token profile used to print the neutral sign-in line and a ready
+    verdict whatever the token was: the issue's 'abc' was ready until launch
+    answered 401. Doctor now asks Anthropic the one question that can vouch
+    for the token, Bearer-only like the launch that will spend it, and says
+    so when it could not check."""
+    token = "sk-ant-oat01-example-token-0123456789abcdef"
+    if code == "none":
+        curl = "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CURL_ARGS\"\n[ \"$1\" = -K ] && cat >> \"$CURL_ARGS\"\nexit 1\n"
+    else:
+        curl = f"""#!/bin/sh
+printf '%s\\n' "$@" > "$CURL_ARGS"
+[ "$1" = -K ] && cat >> "$CURL_ARGS"
+printf '%s\\n' '{{"data":[]}}'
+printf '%s\\n' '__CCMORPH_STATUS__{code}'
+"""
+    result, _, bindir = run_doctor(tmp_path, f"type=token\ntoken={token}\n", curl)
+    if code == "401":
+        assert result.returncode == 1, result.stdout
+        assert ("FAIL credentials: Anthropic rejected the token (HTTP 401); "
+                "replace it: ccmorph config demo") in result.stdout
+        assert not result.stdout.splitlines()[-1].startswith("OK ready"), result.stdout
+    elif code == "200":
+        assert result.returncode == 0, result.stdout
+        assert "OK credentials: Anthropic accepted the token (HTTP 200)" in result.stdout
+    else:
+        assert "WARN endpoint: Anthropic did not answer, so the token was not checked" in result.stdout
+        assert "rejected the token" not in result.stdout
+    # However it answered, the request itself is the one a launch sends: the
+    # token as a Bearer against Anthropic's listing, never an x-api-key, never
+    # on a command line.
+    args = (bindir / "curl.args").read_text()
+    assert "https://api.anthropic.com/v1/models?limit=1000" in args
+    assert "anthropic-version: 2023-06-01" in args
+    bearer = f'header = "Authorization: Bearer {token}"'
+    lines = args.splitlines()
+    assert bearer in lines
+    assert not any(token in line for line in lines if line != bearer)
+    assert not any("x-api-key" in line for line in lines)
+
+
+# The sign-in a sub profile's home can hold: Claude Code's own file layout for
+# a claude.ai account, written where it cannot use the keychain.
+SUB_SIGNIN = "{{API_KEY_jn4wq8v2ytse}}"
+
+
+@pytest.mark.parametrize("code", ["401", "200", "none"])
+def test_doctor_on_a_sub_profile_probes_the_stored_sign_in(tmp_path, code):
+    """A sub profile used to print only the neutral sign-in line and a ready
+    verdict whatever the stored sign-in was: where Claude Code keeps the
+    sign-in in the profile home (.credentials.json), doctor now reads it and
+    asks Anthropic the one question that can vouch for it, Bearer-only like the
+    launch that will spend it. A sign-in is refreshable by design, so a
+    rejection is a warning naming what the next session does with it, not a
+    failed profile."""
+    home = tmp_path / "state" / "profiles" / "demo"
+    home.mkdir(parents=True)
+    (home / ".credentials.json").write_text(
+        json.dumps({"claudeAiOauth": {"accessToken": SUB_SIGNIN,
+                                      "refreshToken": "r", "expiresAt": "e"}}))
+    if code == "none":
+        curl = "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CURL_ARGS\"\n[ \"$1\" = -K ] && cat >> \"$CURL_ARGS\"\nexit 1\n"
+    else:
+        curl = f"""#!/bin/sh
+printf '%s\\n' "$@" > "$CURL_ARGS"
+[ "$1" = -K ] && cat >> "$CURL_ARGS"
+printf '%s\\n' '{{"data":[]}}'
+printf '%s\\n' '__CCMORPH_STATUS__{code}'
+"""
+    result, _, bindir = run_doctor(tmp_path, "type=sub\nemail=test@example.test\n", curl)
+    if code == "401":
+        assert ("WARN credentials: Anthropic rejected the stored sign-in (HTTP 401); "
+                "the next session refreshes it if it can, else it opens the login menu") in result.stdout
+        assert not result.stdout.splitlines()[-1].startswith("OK ready"), result.stdout
+    elif code == "200":
+        assert result.returncode == 0, result.stdout
+        assert "OK credentials: Anthropic accepted the stored sign-in (HTTP 200)" in result.stdout
+    else:
+        assert "WARN endpoint: Anthropic did not answer, so the sign-in was not checked" in result.stdout
+        assert "rejected the stored sign-in" not in result.stdout
+    # However it answered, the request itself is the one a launch sends: the
+    # sign-in as a Bearer against Anthropic's listing, never an x-api-key,
+    # never on a command line.
+    args = (bindir / "curl.args").read_text().splitlines()
+    assert "https://api.anthropic.com/v1/models?limit=1000" in args
+    assert "anthropic-version: 2023-06-01" in args
+    bearer = f'header = "Authorization: Bearer {SUB_SIGNIN}"'
+    assert bearer in args
+    assert not any(SUB_SIGNIN in line for line in args if line != bearer)
+    assert not any("x-api-key" in line for line in args)
+
+
+def test_doctor_on_a_sub_profile_without_a_readable_sign_in_does_not_vouch(tmp_path):
+    """Where Claude Code keeps the sign-in outside the profile home (macOS
+    keeps it in the login keychain), doctor cannot ask Anthropic about it: the
+    report says the sign-in was not checked and the verdict stops short of
+    ready, instead of inheriting the old neutral line's confidence. The report
+    keeps its shape with no sign-in to read: no adapter is started on
+    Anthropic's own endpoint, no SKIP line appears, and every line carries its
+    status word."""
+    curl = "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CURL_ARGS\"\n[ \"$1\" = -K ] && cat >> \"$CURL_ARGS\"\nexit 1\n"
+    result, _, bindir = run_doctor(tmp_path, "type=sub\nemail=test@example.test\n", curl)
+    assert ("WARN credentials: the sign-in was not checked (Claude Code keeps it "
+            "outside the profile home; the next session refreshes it if it can)") in result.stdout
+    assert result.stdout.splitlines()[-1].startswith("WARN may not start"), result.stdout
+    assert result.returncode == 0, result.stdout
+    # The report keeps its shape with no sign-in to read: the endpoint is
+    # Anthropic's own, so no adapter line; no SKIP line a first-time user
+    # cannot act on; every line carries its status word.
+    assert "adapter:" not in result.stdout
+    assert "generated state" not in result.stdout
+    for line in result.stdout.splitlines():
+        assert line.split(" ", 1)[0] in {"OK", "FAIL", "WARN", "INFO", "SKIP"}, repr(line)
+        assert not line.startswith("SKIP"), result.stdout
+    # With no sign-in to read, nothing was asked: no request leaves the machine.
+    assert not (bindir / "curl.args").exists()
 
 
 @pytest.mark.parametrize("conf", [
@@ -458,7 +593,11 @@ def test_doctor_healthy_profile_has_no_skip_lines(tmp_path, case):
     elif case == "native":
         conf, curl = "type=apikey\napi_key=k\n", OK_CURL
     else:
-        conf, curl = "type=sub\nemail=test@example.test\n", None
+        conf, curl = "type=sub\nemail=test@example.test\n", OK_CURL
+        home = tmp_path / "state" / "profiles" / "demo"
+        home.mkdir(parents=True)
+        (home / ".credentials.json").write_text(
+            json.dumps({"claudeAiOauth": {"accessToken": SUB_SIGNIN}}))
     result, _, _ = run_doctor(tmp_path, conf, curl)
     assert result.returncode == 0, result.stdout
     assert "generated state" not in result.stdout

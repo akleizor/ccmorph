@@ -82,6 +82,8 @@ credential, or losing the user's choice.
   Seen 1× (2026-11-09).
 - **Evidence consumed before the decision that needs it, beside a tail window that can skip the line that matters** (2026-11-09) — the Remote Control supervisor marked a host's logs read before its 10-minute login-restart cooldown check, so the failure line it deferred on was gone when the window closed and a host that lost its login again inside the cooldown was never restarted; and its login reader looked only at the last 64 KB of each log, so a verbose session that buried its own failure line under later output was never seen. Consume evidence only once the decision it serves is made, read everything a run printed since the last look, and never step past a line the writer has not finished — Example: 5cf8680 (2026-11-09).
   Seen 1× (2026-11-09).
+- **A verdict line reports ready without testing the thing it vouches for** — the report's last line is a promise: `OK ready` says the profile will start, so a check that prints a neutral line — an INFO naming what launch does — and leaves the verdict green has passed nothing; the verdict inherited confidence from a line that never asked the question, and whatever a report vouches for, it either tests it or says it was not checked. The gap hides best one branch over from a check that was just added: the sibling branch reads as coverage — `example: 41be89c (2026-11-09) fix(doctor): the report ends with whether the profile is ready (#231), which tested only the API-key branch, so a sub or token profile on Anthropic's own endpoint kept a ready verdict with its credential never tested`.
+  Seen 1× (2026-11-09).
 
 ## Gate rules
 
