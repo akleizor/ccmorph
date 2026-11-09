@@ -231,6 +231,15 @@ handling, cursor movement, or styling. `NO_COLOR` disables styling; `TERM=dumb` 
 missing `fzf` use numbered choices. Claude Code's own in-session menus are
 owned by Claude Code, not rendered or replaced by ccmorph.
 
+Colours come in two palettes: the dark one (Claude Code's own roles, used
+unchanged) and a light one with the same roles darkened to at least 4.5:1
+contrast against white, so every mark and word stays readable on either
+background. `CCMORPH_THEME=light` or `CCMORPH_THEME=dark` forces one outright.
+Otherwise ccmorph asks the terminal for its background colour (the OSC 11
+query) and picks by luminance; a terminal that does not answer falls back to
+`COLORFGBG`, and one that says nothing gets the dark palette. `NO_COLOR`
+still removes colour entirely.
+
 Profile pickers offer only usable profiles: `models` lists API-key profiles,
 `cred` lists stored keys/tokens, and `login` lists account, provider and
 API-key profiles.

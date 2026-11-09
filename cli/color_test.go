@@ -12,11 +12,11 @@ import (
 func TestLightPaletteMeetsContrastOnLightBackgroundsIssue274(t *testing.T) {
 	for role, hex := range map[string]string{
 		"accent (OK mark, default star, headings)": lightPalette.accent,
-		"focus (INFO mark, apikey/sub words)":       lightPalette.focus,
-		"yellow (WARN mark, token word)":            lightPalette.yellow,
-		"red (FAIL mark, ccmorph: prefix)":          lightPalette.red,
-		"gray (SKIP mark, descriptions)":            lightPalette.gray,
-		"dim (details on light terminals)":          lightPalette.dim,
+		"focus (INFO mark, apikey/sub words)":      lightPalette.focus,
+		"yellow (WARN mark, token word)":           lightPalette.yellow,
+		"red (FAIL mark, ccmorph: prefix)":         lightPalette.red,
+		"gray (SKIP mark, descriptions)":           lightPalette.gray,
+		"dim (details on light terminals)":         lightPalette.dim,
 	} {
 		for _, bg := range []string{"ffffff", "fdf6e3"} {
 			if c := contrastRatio(hex, bg); c < 4.5 {
@@ -75,10 +75,10 @@ func TestFzfSpecFollowsThePaletteIssue274(t *testing.T) {
 // channel, BEL or ST terminator, possibly riding along after another reply.
 func TestParseBackgroundReplyIssue274(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		reply string
+		name    string
+		reply   string
 		r, g, b int
-		ok   bool
+		ok      bool
 	}{
 		{"16-bit channels, ST terminator", "\x1b]11;rgb:ffff/ffff/ffff\x1b\\", 255, 255, 255, true},
 		{"16-bit channels, BEL terminator", "\x1b]11;rgb:8080/7f7f/0000\x07", 128, 127, 0, true},
@@ -97,13 +97,46 @@ func TestParseBackgroundReplyIssue274(t *testing.T) {
 	}
 }
 
+// The probe owns the reply and nothing else: whatever it read around the reply
+// is handed back to be pushed onto the input queue, in order, and an unfinished
+// reply is not handed back as junk.
+func TestSplitBackgroundReplyKeepsOtherInputIssue274(t *testing.T) {
+	for _, tc := range []struct {
+		name, got, rest string
+		done, found     bool
+	}{
+		{"type-ahead before, ST", "ab\x1b]11;rgb:ffff/ffff/ffff\x1b\\", "ab", true, true},
+		{"type-ahead around, BEL", "ab\x1b]11;rgb:00/00/00\x07cd", "abcd", true, true},
+		{"reply alone", "\x1b]11;rgb:00/00/00\x07", "", true, true},
+		{"reply with no colour", "x\x1b]11;?\x07y", "xy", true, false},
+		{"ESC that is not an ST ends the reply", "\x1b]11;rgb:00/00/00\x1b[A", "\x1b[A", true, true},
+		{"waiting for the ST", "\x1b]11;rgb:00/00/00\x1b", "\x1b]11;rgb:00/00/00\x1b", false, false},
+		{"no reply yet", "abc", "abc", false, false},
+	} {
+		rest, _, _, _, done, found := splitBackgroundReply([]byte(tc.got))
+		if string(rest) != tc.rest || done != tc.done || found != tc.found {
+			t.Errorf("%s: got (%q,%v,%v), want (%q,%v,%v)", tc.name, rest, done, found, tc.rest, tc.done, tc.found)
+		}
+	}
+	for _, tc := range []struct{ got, want string }{
+		{"ab", "ab"},
+		{"ab\x1b]11;rgb:ff", "ab"},
+		{"ab\x1b]", "ab"},
+		{"ab\x1b", "ab\x1b"},
+	} {
+		if got := string(withoutPartialReply([]byte(tc.got))); got != tc.want {
+			t.Errorf("withoutPartialReply(%q) = %q, want %q", tc.got, got, tc.want)
+		}
+	}
+}
+
 // The background is light when its luminance says so: white and the common
 // light themes are light, dark themes and mid-greys are not.
 func TestLightBackgroundIssue274(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
+		name    string
 		r, g, b int
-		light bool
+		light   bool
 	}{
 		{"white", 255, 255, 255, true},
 		{"solarized light", 0xfd, 0xf6, 0xe3, true},
@@ -120,11 +153,11 @@ func TestLightBackgroundIssue274(t *testing.T) {
 // light, anything else (default, empty) is no answer at all.
 func TestFgbgLightIssue274(t *testing.T) {
 	for _, tc := range []struct {
-		fgbg     string
-		light    bool
-		ok bool
+		fgbg  string
+		light bool
+		ok    bool
 	}{
-		{"15;0", true, true},
+		{"15;0", false, true},
 		{"0;15", true, true},
 		{"0;7", true, true},
 		{"0;9", true, true},

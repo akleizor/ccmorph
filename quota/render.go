@@ -24,8 +24,9 @@ var groups = []struct{ kind, title string }{
 }
 
 // renderText prints the whole view: one group per kind, one entry per profile,
-// header line then one bar line per window.
-func renderText(w io.Writer, entries []Entry, color bool) {
+// header line then one bar line per window. light is the #274 light palette:
+// the same styles, with dim a fixed grey instead of SGR 2.
+func renderText(w io.Writer, entries []Entry, color, light bool) {
 	first := true
 	for _, g := range groups {
 		rows := []Entry{}
@@ -41,14 +42,14 @@ func renderText(w io.Writer, entries []Entry, color bool) {
 			fmt.Fprintln(w)
 		}
 		first = false
-		emit(w, g.title, color, "bold")
+		emit(w, g.title, color, light, "bold")
 		for _, e := range rows {
-			renderEntry(w, e, color)
+			renderEntry(w, e, color, light)
 		}
 	}
 }
 
-func renderEntry(w io.Writer, e Entry, color bool) {
+func renderEntry(w io.Writer, e Entry, color, light bool) {
 	style := ""
 	if e.Stale {
 		style = "dim"
@@ -64,21 +65,21 @@ func renderEntry(w io.Writer, e Entry, color bool) {
 			reason = ""
 		}
 	}
-	emit(w, head, color, style)
+	emit(w, head, color, light, style)
 	for _, win := range e.Windows {
-		emit(w, windowLine(win), color, style)
+		emit(w, windowLine(win), color, light, style)
 	}
 	if e.Spend != nil {
-		emit(w, spendLine(e.Spend), color, style)
+		emit(w, spendLine(e.Spend), color, light, style)
 		if l := unpricedLine(e.Spend); l != "" {
-			emit(w, l, color, style)
+			emit(w, l, color, light, style)
 		}
 	}
 	if e.Balance != "" {
-		emit(w, "  balance "+e.Balance, color, style)
+		emit(w, "  balance "+e.Balance, color, light, style)
 	}
 	if reason != "" {
-		emit(w, "  "+reason, color, style)
+		emit(w, "  "+reason, color, light, style)
 	}
 }
 
@@ -171,8 +172,10 @@ func resetText(at *int64) string {
 }
 
 // emit writes one line: truncated to maxWidth runes so it never wraps, then
-// styled only when the terminal supports colour.
-func emit(w io.Writer, s string, color bool, style string) {
+// styled only when the terminal supports colour. On a light background dim is
+// a fixed grey, the same #6b6b6b the cli package paints with (#274), because a
+// terminal may render SGR 2 below any readable contrast there.
+func emit(w io.Writer, s string, color, light bool, style string) {
 	r := []rune(s)
 	if len(r) > maxWidth {
 		s = string(r[:maxWidth-1]) + "…"
@@ -182,7 +185,11 @@ func emit(w io.Writer, s string, color bool, style string) {
 	case style == "bold":
 		s = "\033[1m" + s + "\033[0m"
 	case style == "dim":
-		s = "\033[2m" + s + "\033[0m"
+		pre := "\033[2m"
+		if light {
+			pre = "\033[38;2;107;107;107m"
+		}
+		s = pre + s + "\033[0m"
 	}
 	fmt.Fprintln(w, s)
 }

@@ -34,15 +34,17 @@ var (
 // cliproxyapi auth dir) or "gateway" (arg is the base URL, extra is
 // monthly_budget_usd; either may be empty, and a fifth field carries an API key).
 func Main(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
-	jsonOut, color := false, false
+	jsonOut, color, light := false, false, false
 	for _, a := range argv {
 		switch a {
 		case "--json":
 			jsonOut = true
 		case "--color":
 			color = true
+		case "--color=light":
+			color, light = true, true
 		default:
-			fmt.Fprintln(stderr, "usage: ccmorph-core quota [--json] [--color] < profiles")
+			fmt.Fprintln(stderr, "usage: ccmorph-core quota [--json] [--color[=light]] < profiles")
 			return 2
 		}
 	}
@@ -83,7 +85,7 @@ func Main(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	renderText(stdout, entries, color)
+	renderText(stdout, entries, color, light)
 	return 0
 }
 

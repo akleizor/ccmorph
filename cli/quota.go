@@ -131,7 +131,11 @@ func (l *launcher) quota(args []string) int {
 	if asJSON {
 		flags = append(flags, "--json")
 	} else if isTTY(1) && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb" {
-		flags = append(flags, "--color")
+		flag := "--color"
+		if lightTerminal(os.Stdout) {
+			flag = "--color=light" // #274: darkened roles on a light background
+		}
+		flags = append(flags, flag)
 	}
 	cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), append([]string{"quota"}, flags...)...)
 	cmd.Stdin = strings.NewReader(in.String())

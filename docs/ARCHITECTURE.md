@@ -357,7 +357,10 @@ rows, hints and the one-line `Title › choice` receipt are fitted to the termin
 width in cells, measured in UTF-8 even under a byte locale; the choice keeps
 priority over the title. Output that is not a terminal is never truncated.
 Help and `inspect` share one two-column grid. The palette comes from the installed Claude Code 2.1.278
-dark-theme roles; native ANSI and fzf colors derive from the same values. Profile and all model selectors use the
+dark-theme roles; native ANSI and fzf colors derive from the same values. A
+second, light palette holds the same roles darkened to ≥4.5:1 on white (#274):
+`CCMORPH_THEME` forces it, else the terminal's OSC 11 background answer picks
+by luminance, else `COLORFGBG`, else dark. Profile and all model selectors use the
 single `fzf` adapter, including Claude aliases and unavailable-list keep/custom
 choices. Both adapters share label rendering, column widths, and theme tokens.
 Only the module handles key reads, terminal modes, cursor movement, and fzf argv.

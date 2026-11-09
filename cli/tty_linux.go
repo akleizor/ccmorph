@@ -33,3 +33,14 @@ func winsize(fd int) (int, int) {
 	}
 	return int(ws.Row), int(ws.Col)
 }
+
+// pushInput puts bytes back on the terminal's input queue, in order, as if they
+// had just been typed: the way a probe returns what it read but did not own.
+// Best effort — a kernel that refuses TIOCSTI drops them.
+func pushInput(fd int, b []byte) {
+	for i := range b {
+		if _, _, e := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), syscall.TIOCSTI, uintptr(unsafe.Pointer(&b[i]))); e != 0 {
+			return
+		}
+	}
+}

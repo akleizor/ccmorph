@@ -631,6 +631,19 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn('\x1b[38;2;255;107;128mccmorph:\x1b[0m', out)
 
+    def test_background_probe_hands_back_type_ahead_issue_274(self):
+        # Keys typed while the question is out ride in front of the answer;
+        # they belong to whatever reads next, not to the probe.
+        env = self.env()
+        self.seed_every_kind()
+        rc, out, missed = run_pty('ccmorph list; read -r typed; print -r -- "typed=<$typed>"', env, [
+            (WHITE_BACKGROUND[0], b'abc' + WHITE_BACKGROUND[1]),
+            (b'demo@example.com', b'\n'),
+        ])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertIn('typed=<abc>', out)
+
     def test_ccmorph_theme_and_colorfgbg_pick_the_palette_issue_274(self):
         # A terminal that never answers the background query still gets a
         # readable palette: the forced theme first, else the COLORFGBG hint.

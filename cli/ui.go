@@ -21,9 +21,7 @@ import (
 const uiMargin = "  "
 const uiGap = 4
 
-type uiTheme struct{ bold, dim, reset, accent, focus, gray, red string }
-
-var fzfTheme = "fg:-1,bg:-1,hl:#b1b9f9,fg+:#b1b9f9,bg+:-1,hl+:#b1b9f9,pointer:#b1b9f9,marker:#b1b9f9,prompt:#d77757,header:#999999,info:#999999,border:#888888"
+type uiTheme struct{ bold, dim, reset, accent, focus, gray, red, fzf string }
 
 func rgb(hex string) string {
 	r, _ := strconv.ParseUint(hex[0:2], 16, 8)
@@ -32,12 +30,18 @@ func rgb(hex string) string {
 	return fmt.Sprintf("\033[38;2;%d;%d;%dm", r, g, b)
 }
 
-// themeFor is _ccm_ui_theme for one stream.
+// themeFor is _ccm_ui_theme for one stream: the dark roles, or their light
+// counterparts when the terminal paints on a light background (#274).
 func themeFor(fd int) uiTheme {
 	if !isTTY(fd) || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
 		return uiTheme{}
 	}
-	return uiTheme{"\033[1m", "\033[2m", "\033[0m", rgb("d77757"), rgb("b1b9f9"), rgb("999999"), rgb("ff6b80")}
+	out := os.Stderr
+	if fd == 1 {
+		out = os.Stdout
+	}
+	p := themePalette(out)
+	return uiTheme{"\033[1m", p.dimEscape(), "\033[0m", rgb(p.accent), rgb(p.focus), rgb(p.gray), rgb(p.red), p.fzfSpec()}
 }
 
 func uiErr(t uiTheme, msg string) { fmt.Fprintf(os.Stderr, "%sccmorph:%s %s\n", t.red, t.reset, msg) }
@@ -422,7 +426,7 @@ func (t uiTheme) search(prompt string, rows []string) (string, int) {
 		for _, r := range rows {
 			rendered = append(rendered, rowID(r)+"\t"+t.label(visible(r, "labels"), width, false, 0))
 		}
-		theme := []string{"--color", fzfTheme}
+		theme := []string{"--color", t.fzf}
 		if os.Getenv("NO_COLOR") != "" {
 			theme = []string{"--no-color"}
 		}

@@ -243,13 +243,15 @@ func (l *launcher) defaultPaths() {
 	}
 }
 
-// theme is _ccm_ui_theme: truecolor roles when stdout is a terminal.
+// theme is _ccm_ui_theme: truecolor roles when stdout is a terminal, darkened
+// for a light background (#274).
 func (l *launcher) theme() {
 	if !isTTY(1) || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
 		return
 	}
-	l.bold, l.dim, l.reset = "\033[1m", "\033[2m", "\033[0m"
-	l.accent, l.yellow, l.red, l.cyan = rgb("d77757"), rgb("ffc107"), rgb("ff6b80"), rgb("b1b9f9")
+	p := themePalette(os.Stdout)
+	l.bold, l.dim, l.reset = "\033[1m", p.dimEscape(), "\033[0m"
+	l.accent, l.yellow, l.red, l.cyan = rgb(p.accent), rgb(p.yellow), rgb(p.red), rgb(p.focus)
 }
 
 // signals is _ccm_launch's traps and _ccm_fork_forward's: INT and QUIT belong to

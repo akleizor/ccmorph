@@ -74,15 +74,15 @@ func (l *launcher) doctorVerb(args []string) int {
 }
 
 func (l *launcher) status(kind, msg string) {
-	symbols := map[string][2]string{"OK": {"✓", "d77757"}, "FAIL": {"✗", "ff6b80"},
-		"WARN": {"!", "ffc107"}, "INFO": {"ℹ", "b1b9f9"}, "SKIP": {"–", "999999"}}
+	symbols := map[string][2]string{"OK": {"✓", "accent"}, "FAIL": {"✗", "red"},
+		"WARN": {"!", "yellow"}, "INFO": {"ℹ", "focus"}, "SKIP": {"–", "gray"}}
 	s, ok := symbols[kind]
 	switch {
 	case !ok:
 		fmt.Println(kind + " " + msg)
 	case isTTY(1) && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb":
 		var r, g, b int
-		fmt.Sscanf(s[1], "%02x%02x%02x", &r, &g, &b)
+		fmt.Sscanf(themePalette(os.Stdout).hex(s[1]), "%02x%02x%02x", &r, &g, &b)
 		fmt.Printf("\033[38;2;%d;%d;%dm%s\033[0m %s\n", r, g, b, s[0], msg)
 	case isTTY(1):
 		fmt.Println(s[0] + " " + msg)
