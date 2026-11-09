@@ -10307,6 +10307,41 @@ test_inspect_names_masking_for_every_profile() {
   return $rc
 }
 
+# GH-360: a gateway profile with no saved model opens the model picker at every
+# launch -- a plain run, not only -i -- so inspect must say ccmorph asks, not
+# claim Claude Code chooses. Native profiles keep the old line: nothing asks
+# there without -i, and a saved model answers the question before it is asked.
+test_inspect_names_the_model_question_for_a_gateway() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  write_apikey_conf gw 'base_url=http://gw.invalid' 'api_key=gw-key'
+  write_apikey_conf anth 'api_key=anth-key'
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 actual
+  actual=$(ccmorph inspect gw) || { rm -rf "$test_home"; return 1; }
+  assert_contains "$actual" 'ccmorph asks which model at each launch' \
+    'a gateway profile without a saved model must say ccmorph asks at each launch' || rc=1
+  assert_contains "$actual" '(ccmorph asks which model)' \
+    'the launches-as line must say ccmorph asks which model' || rc=1
+  assert_not_contains "$actual" 'Claude Code chooses' \
+    'a gateway launch does not leave the model to Claude Code' || rc=1
+  assert_not_contains "$actual" 'Claude Code picks the model' \
+    'the launches-as line must not claim Claude Code picks the model' || rc=1
+  actual=$(ccmorph inspect anth) || { rm -rf "$test_home"; return 1; }
+  assert_contains "$actual" '— Claude Code chooses' \
+    'a native profile without a saved model keeps Claude Code chooses' || rc=1
+  # setup_home's proxy is a gateway profile with model=bootstrap-model saved.
+  actual=$(ccmorph inspect proxy) || { rm -rf "$test_home"; return 1; }
+  assert_contains "$actual" 'bootstrap-model' \
+    'a gateway profile with a saved model shows the model' || rc=1
+  assert_not_contains "$actual" 'asks which model' \
+    'a saved model means no question at launch' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
 # GH-293: a launch with masking on must say so in one line, and say plainly when
 # the route cannot be masked -- the setting alone is not a promise, and the
 # session is already running by the time its first secret leaves.
@@ -11238,6 +11273,7 @@ run_test test_picker_projects_a_derived_1m_row_for_a_probed_claude
 run_test test_launch_substitutes_the_derived_send_id_for_a_claude_model
 run_test test_inspect_uses_the_fleet_or_default_compaction_percent
 run_test test_inspect_names_masking_for_every_profile
+run_test test_inspect_names_the_model_question_for_a_gateway
 run_test test_launch_says_whether_secrets_are_masked
 run_test test_launch_compacts_at_fleet_percent_unless_the_conf_overrules
 run_test test_a_settings_file_compaction_trigger_is_not_overruled

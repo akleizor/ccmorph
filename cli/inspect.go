@@ -95,6 +95,10 @@ func (l *launcher) inspect(args []string) int {
 	}
 	if model != "" {
 		grid(10, "model", model+"  "+l.dim+from+l.reset)
+	} else if util.Maskable(typ, base) {
+		// A gateway with no saved model is asked which one at every launch —
+		// the picker opens on a plain run too, so Claude Code never chooses (#360).
+		grid(10, "model", l.dim+"— none saved; ccmorph asks which model at each launch"+l.reset)
 	} else {
 		grid(10, "model", l.dim+"— Claude Code chooses"+l.reset)
 	}
@@ -172,6 +176,8 @@ func (l *launcher) inspect(args []string) int {
 	fmt.Println()
 	if model != "" && typ == "apikey" {
 		fmt.Println("  " + l.dim + "launches as" + l.reset + "  claude --model " + model)
+	} else if util.Maskable(typ, base) {
+		fmt.Println("  " + l.dim + "launches as" + l.reset + "  claude " + l.dim + "(ccmorph asks which model)"+l.reset)
 	} else {
 		fmt.Println("  " + l.dim + "launches as" + l.reset + "  claude " + l.dim + "(Claude Code picks the model)" + l.reset)
 	}

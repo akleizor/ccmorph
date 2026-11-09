@@ -185,6 +185,12 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 			return nil, 1
 		}
 		explicit, launchModel, skipModel = picked, picked, true
+		// The pick answers this launch only; without the keep command the next
+		// one asks again, and a person cannot guess why (#360). The id is quoted
+		// as a shell would need it: a listing can serve ids like vendor[beta],
+		// which a pasted bare word would glob away in zsh.
+		fmt.Fprintf(os.Stderr, "%sccmorph: %s runs this session only — keep it with: ccmorph set %s model %s%s\n",
+			l.dim, picked, name, shQuote(picked), l.reset)
 	}
 	if routed && explicit == "" && resume != "" {
 		if m, ok := l.resumeModel(resume); ok {

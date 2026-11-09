@@ -266,6 +266,7 @@ class PickerTTYTest(unittest.TestCase):
         self.assertIsNone(missed, out)
         self.assertIn('SELECTED=<picker-beta>', out)
         self.assertIsNone(self.field('demo', 'model'))  # invocation-only choice
+        self.assertIn('ccmorph set demo model picker-beta', out)  # told how to keep it (#360)
         self.assertNotIn('old-secret', out)
 
         self.spec('=CANCEL')
