@@ -8,12 +8,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/settingscompose"
 )
 
@@ -102,6 +104,22 @@ func hasSpace(s string) bool {
 // replaceFile is the commit step of a save; a test seam for a failing replacement.
 var replaceFile = os.Rename
 
+// refusal is a value the store was asked to save and will not: the fault is in
+// the request, not in the configuration files, so it prints as its own sentence,
+// never as a failed save or read (#264).
+type refusal struct{ msg string }
+
+func (r *refusal) Error() string { return r.msg }
+
+func refuse(format string, a ...any) error { return &refusal{fmt.Sprintf(format, a...)} }
+
+// effortList names the accepted levels as prose — "low, medium, high, xhigh or
+// max" — for the refusal's one sentence.
+func effortList() string {
+	ls := profile.Efforts
+	return strings.Join(ls[:len(ls)-1], ", ") + " or " + ls[len(ls)-1]
+}
+
 // StoreChange is what a set or configure operation saves; a Snapshot, when set,
 // must still match the profile's files. Type, Endpoint and Credential are read by
 // configure only.
@@ -125,7 +143,12 @@ func ConfigStore(a StoreArgs, errw io.Writer) (string, int) {
 	var out strings.Builder
 	exit, projectedJSON, err := configStoreRun(a, &out, errw)
 	if err != nil {
-		fmt.Fprintf(errw, "ccmorph: could not save/read configuration: %v\n", err)
+		var r *refusal
+		if errors.As(err, &r) {
+			fmt.Fprintf(errw, "ccmorph: %v\n", err)
+		} else {
+			fmt.Fprintf(errw, "ccmorph: could not save/read configuration: %v\n", err)
+		}
 		return out.String(), 1
 	}
 	if exit != 0 || materialize == "" || op != "prepare-launch" {
@@ -266,12 +289,7 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 			return 0, "", fmt.Errorf("model defaults must be single-line strings with valid keys")
 		}
 		if name == "effort" || strings.HasPrefix(name, "effort.") {
-			switch value {
-			case "low", "medium", "high", "xhigh", "max":
-			default:
-				return 0, "", fmt.Errorf("invalid saved effort default")
-			}
-			if name == "effort." {
+			if !slices.Contains(profile.Efforts, value) || name == "effort." {
 				return 0, "", fmt.Errorf("invalid saved effort default")
 			}
 		}
@@ -319,8 +337,8 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 		if name == "model" && (strings.HasPrefix(value, "-") || strings.HasPrefix(value, "@") || value == "?" || hasSpace(value)) {
 			return 0, "", fmt.Errorf("model must be a nonempty model id, not a flag or picker token")
 		}
-		if name == "effort" && value != "low" && value != "medium" && value != "high" && value != "xhigh" {
-			return 0, "", fmt.Errorf("effort must be low, medium, high or xhigh")
+		if name == "effort" && !slices.Contains(profile.Efforts, value) {
+			return 0, "", refuse("effort must be %s", effortList())
 		}
 		defaults.Set(name, value)
 	}

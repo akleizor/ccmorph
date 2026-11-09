@@ -670,7 +670,7 @@ Omit the profile to check the default. Does not repair or launch a session.`},
 --filtered applies profile exclusions; --filtered-json returns JSON.`},
 	"get": {"", `Read or save a default for new sessions. Missing arguments open pickers.
 Use explicit arguments in scripts. Values are printed to stdout.
-Effort: low, medium, high, xhigh. Available models come from the profile.`},
+Effort: ` + strings.Join(profile.Efforts, ", ") + `. Available models come from the profile.`},
 	"login": {"ccmorph login [profile|-i]", `Sign in again: a Claude account profile with its browser login, a
 provider-backed profile with its own, or let Claude Code use an API-key
 profile's key again after it was refused. To replace an API key or token

@@ -71,3 +71,19 @@ func TestTheProfileTemplateLoadsAndDocumentsEveryAcceptedKey(t *testing.T) {
 		}
 	}
 }
+
+// The template's effort line is the list of levels a hand-edit may write, so it
+// names exactly the levels the reader accepts (#264).
+func TestTheTemplatesEffortLineNamesTheAcceptedLevels(t *testing.T) {
+	tpl, err := os.ReadFile("../share/profile.conf.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^# effort\s+([a-z]+(?: \| [a-z]+)*)$`).FindStringSubmatch(string(tpl))
+	if m == nil {
+		t.Fatal("profile.conf.example names no effort levels")
+	}
+	if levels := strings.Split(m[1], " | "); !slices.Equal(levels, Efforts) {
+		t.Errorf("the template's effort levels %v are not the accepted levels %v", levels, Efforts)
+	}
+}
