@@ -59,7 +59,7 @@ func (l *launcher) hop(args []string) int {
 		}
 	}
 	if !profile.ValidName(name) {
-		l.err("usage: ccmorph hop [profile]")
+		l.err("usage: " + usageLine("hop"))
 		return 1
 	}
 	if !l.exists(name) {

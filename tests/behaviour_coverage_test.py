@@ -449,3 +449,91 @@ def test_add_and_rm_without_a_name_print_usage(box):
     removed = box.run('rm')
     assert removed.returncode != 0
     assert 'usage: ccmorph rm <profile>' in removed.stderr
+
+
+# --- a help flag anywhere is help; a word too many is refused ---------------
+
+def state_files(root):
+    return {str(p.relative_to(root)): p.read_bytes()
+            for p in sorted(root.rglob('*')) if p.is_file()}
+
+
+HELP_ANYWHERE = [
+    ['rm', 'gw', '--help'], ['rm', 'gw', '-h'], ['use', 'tok', '-h'],
+    ['login', 'gw', '--help'], ['cred', 'gw', '--help'], ['inspect', 'gw', '-h'],
+    ['context', 'gw', 'm', '--help'], ['models', 'gw', '--help'],
+    ['doctor', 'gw', '--help'], ['quota', 'gw', '--help'], ['config', 'gw', '--help'],
+    ['get', 'gw', '--help'], ['set', 'gw', 'model', '--help'], ['mv', 'gw', 'new', '--help'],
+    ['hop', 'gw', '--help'], ['add', 'new', '--help'], ['list', '--help'],
+    ['update', 'v1', '--help'], ['uninstall', '--help'], ['version', '--help'],
+    ['help', 'rm', '--help'], ['run', '--help'],
+]
+
+
+@pytest.mark.parametrize('argv', HELP_ANYWHERE, ids=lambda a: ' '.join(a))
+def test_a_help_flag_anywhere_prints_help_and_changes_nothing(box, argv):
+    # The issue: `ccmorph rm gw --help` deleted gw, `ccmorph cred gw --help`
+    # printed the key, and use/login changed state. Help must win wherever the
+    # flag sits, before secureDirs or any verb runs.
+    seed(box)
+    assert box.run('use', 'tok').returncode == 0
+    before = state_files(box.state)
+    result = box.run(*argv)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith('Usage: ccmorph ' + argv[0]), result.stdout
+    assert state_files(box.state) == before
+    assert box.active == 'tok'
+    assert 'canary-key\nbase_url=https://gw.example.invalid\n' not in result.stdout + result.stderr
+    assert box.log() == ''
+
+
+VERB_ARITY = [('list', 0), ('use', 1), ('cred', 1), ('inspect', 1), ('context', 3),
+              ('models', 2), ('rm', 1), ('mv', 2), ('get', 2), ('set', 3), ('config', 1),
+              ('add', 1), ('login', 1), ('hop', 1), ('quota', 2), ('doctor', 2),
+              ('update', 1), ('uninstall', 0)]
+
+
+@pytest.mark.parametrize('verb,n', VERB_ARITY, ids=lambda v: str(v))
+def test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage(box, verb, n):
+    # The issue's second half: `ccmorph rm gw tok` was read as `rm gw`. One word
+    # beyond what a command takes is refused before anything runs, named in the
+    # message, with the same usage line its help page prints.
+    seed(box)
+    assert box.run('use', 'tok').returncode == 0
+    page = box.run('help', verb)
+    assert page.returncode == 0, page.stderr
+    usage = page.stdout.splitlines()[0]
+    assert usage.startswith('Usage: '), usage
+    argv = [verb, *['gw', 'tok', 'x'][:n], 'extra9']
+    before = state_files(box.state)
+    result = box.run(*argv)
+    assert result.returncode == 2, result.stderr
+    assert "unexpected argument 'extra9'" in result.stderr
+    assert 'usage: ' + usage[len('Usage: '):] in result.stderr
+    assert state_files(box.state) == before
+    assert box.active == 'tok'
+
+
+WRONG_ARGUMENT = [
+    ['models', 'gw', '--bogus'], ['doctor', 'gw', 'tok'], ['quota', 'gw', 'tok'],
+    ['get', 'gw', 'bogus'], ['set', 'gw', 'bogus'], ['config', 'bad/name'],
+    ['login', 'bad/name'], ['inspect', 'bad/name'], ['hop', 'bad/name'],
+    ['cred', 'bad/name'], ['mv', 'gw'], ['context', 'bad/name'], ['rm'],
+]
+
+
+@pytest.mark.parametrize('argv', WRONG_ARGUMENT, ids=lambda a: ' '.join(a))
+def test_a_wrong_argument_names_the_help_pages_usage(box, argv):
+    # Every rejected shape prints the same usage line its help page does, so
+    # the correction cannot drift from the documentation.
+    seed(box)
+    assert box.run('use', 'tok').returncode == 0
+    page = box.run('help', argv[0])
+    assert page.returncode == 0, page.stderr
+    usage = page.stdout.splitlines()[0]
+    assert usage.startswith('Usage: '), usage
+    before = state_files(box.state)
+    result = box.run(*argv)
+    assert result.returncode != 0, (result.stdout, result.stderr)
+    assert 'usage: ' + usage[len('Usage: '):] in result.stderr, result.stderr
+    assert state_files(box.state) == before

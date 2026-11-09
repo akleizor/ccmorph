@@ -15,12 +15,10 @@ func interactive(a string) bool { return a == "-i" || a == "--interactive" }
 // [model|effort] [value]`. A missing profile, key or value opens its chooser.
 func (l *launcher) getSet(verb string, args []string) int {
 	if verb == "get" && len(args) > 2 {
-		l.err("usage: ccmorph get [profile] [model|effort]")
-		return 2
+		return l.extraArg(verb, args[2])
 	}
 	if verb == "set" && len(args) > 3 {
-		l.err("usage: ccmorph set [profile] [model|effort] [value]")
-		return 2
+		return l.extraArg(verb, args[3])
 	}
 	at := func(i int) string {
 		if i < len(args) {
@@ -38,7 +36,7 @@ func (l *launcher) getSet(verb string, args []string) int {
 		name = picked
 	}
 	if !profile.ValidName(name) {
-		l.err("usage: ccmorph " + verb + " <profile>")
+		l.err("usage: " + usageLine(verb))
 		return 2
 	}
 	if !l.exists(name) {
@@ -70,16 +68,12 @@ func (l *launcher) getSet(verb string, args []string) int {
 		}
 	}
 	if key != "model" && key != "effort" {
-		if verb == "get" {
-			l.err("usage: ccmorph get <profile> <model|effort>")
-		} else {
-			l.err("usage: ccmorph set <profile> <model|effort> [value]  (omit the value, or pass -i, to choose from a list)")
-		}
+		l.err("usage: " + usageLine(verb))
 		return 2
 	}
 	if verb == "get" {
 		if len(args) != 2 {
-			l.err("usage: ccmorph get <profile> <model|effort>")
+			l.err("usage: " + usageLine("get"))
 			return 2
 		}
 		out, rc := l.configStore("get", name, key)
@@ -89,7 +83,7 @@ func (l *launcher) getSet(verb string, args []string) int {
 		return rc
 	}
 	if len(args) != 3 || args[2] == "" {
-		l.err("usage: ccmorph set <profile> <model|effort> [value]  (omit the value, or pass -i, to choose from a list)")
+		l.err("usage: " + usageLine("set"))
 		return 2
 	}
 	if rc, done := l.locked(name, append([]string{"set"}, args...)); done {
@@ -120,8 +114,7 @@ func (l *launcher) getSet(verb string, args []string) int {
 // save. A terminal chooses a section; piped input keeps the full sequence.
 func (l *launcher) config(args []string) int {
 	if len(args) > 1 {
-		l.err("usage: ccmorph config [profile]")
-		return 2
+		return l.extraArg("config", args[1])
 	}
 	name := ""
 	if len(args) == 1 {
@@ -135,7 +128,7 @@ func (l *launcher) config(args []string) int {
 		name = picked
 	}
 	if !profile.ValidName(name) {
-		l.err("usage: ccmorph config <profile>")
+		l.err("usage: " + usageLine("config"))
 		return 2
 	}
 	if !l.exists(name) {

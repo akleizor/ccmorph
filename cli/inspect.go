@@ -44,7 +44,7 @@ func (l *launcher) inspect(args []string) int {
 		name = picked
 	}
 	if !profile.ValidName(name) {
-		l.err("usage: ccmorph inspect [<profile>]")
+		l.err("usage: " + usageLine("inspect"))
 		return 1
 	}
 	if !l.exists(name) {

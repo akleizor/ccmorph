@@ -192,7 +192,7 @@ func (l *launcher) cred(args []string) int {
 		name = picked
 	}
 	if !profile.ValidName(name) {
-		l.err("usage: ccmorph cred <profile>")
+		l.err("usage: " + usageLine("cred"))
 		return 1
 	}
 	if !l.exists(name) {

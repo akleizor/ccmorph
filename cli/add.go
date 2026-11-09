@@ -29,7 +29,7 @@ func (l *launcher) add(args []string) int {
 		name = v
 	}
 	if name == "" {
-		l.err("usage: ccmorph add <profile>")
+		l.err("usage: " + usageLine("add"))
 		return 1
 	}
 	if !profile.ValidName(name) {
@@ -450,7 +450,7 @@ func (l *launcher) login(args []string) int {
 		name = picked
 	}
 	if !profile.ValidName(name) {
-		l.err("usage: ccmorph login <name>")
+		l.err("usage: " + usageLine("login"))
 		return 1
 	}
 	if !l.exists(name) {

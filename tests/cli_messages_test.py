@@ -5,22 +5,40 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+import pytest
+
 from support import HANG_TIMEOUT
 from fake_adapter import CORE_DISPATCH
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_probe_help_has_no_progress_banner_and_remains_actionable():
+@pytest.mark.parametrize('argv', [
+    ['probe', '--help'], ['probe', 'gw', '--help'], ['probe', '-i', '-h'],
+    ['mea' + 'sure', '--help'],
+], ids=lambda a: ' '.join(a))
+def test_probe_help_has_no_progress_banner_and_remains_actionable(argv):
     with tempfile.TemporaryDirectory() as tmp:
         env = {**os.environ, 'HOME': tmp, 'XDG_CONFIG_HOME': str(Path(tmp) / '.config'),
                'CCMORPH_LIB_DIR': str(ROOT / "lib"), 'CCMORPH_STATE_DIR': str(Path(tmp) / 'state')}
-        result = subprocess.run([str(ROOT / "bin/ccmorph"), 'probe', '--help'], env=env,
+        result = subprocess.run([str(ROOT / "bin/ccmorph"), *argv], env=env,
                                 capture_output=True, text=True, timeout=HANG_TIMEOUT)
         assert result.returncode == 0, result.stderr
+        assert result.stdout.startswith('usage: ccmorph probe [profile] [options]'), result.stdout
         assert 'Refreshing' not in result.stdout
         assert 'inference probe' not in result.stdout
         assert '--allow-inference' in result.stdout
+
+
+def test_probe_refuses_an_unknown_option_with_its_usage():
+    with tempfile.TemporaryDirectory() as tmp:
+        env = {**os.environ, 'HOME': tmp, 'XDG_CONFIG_HOME': str(Path(tmp) / '.config'),
+               'CCMORPH_LIB_DIR': str(ROOT / "lib"), 'CCMORPH_STATE_DIR': str(Path(tmp) / 'state')}
+        result = subprocess.run([str(ROOT / "bin/ccmorph"), 'probe', '--bogus'], env=env,
+                                capture_output=True, text=True, timeout=HANG_TIMEOUT)
+        assert result.returncode == 2, result.stderr
+        assert result.stderr.startswith('usage: ccmorph probe [profile] [options]'), result.stderr
+        assert 'unrecognized arguments: --bogus' in result.stderr
 
 
 def test_adapter_decline_surfaces_actionable_reason():
@@ -75,7 +93,9 @@ def test_help_is_concise_truthful_and_read_only(tmp_path):
     cli = str(ROOT / "bin/ccmorph")
     for args in ([], ['--help'], ['help', 'config'], ['add', '--help'],
                  ['doctor', '--help'], ['update', '--help'], ['uninstall', '--help'],
-                 ['help', 'update'], ['--version']):
+                 ['help', 'update'], ['--version'],
+                 ['rm', 'gw', '--help'], ['cred', 'gw', '-h'], ['use', 'gw', '--help'],
+                 ['run', '--help'], ['probe', 'gw', '--help']):
         result = subprocess.run([cli, *args], env=env, capture_output=True,
                                 text=True, timeout=HANG_TIMEOUT)
         assert result.returncode == 0, result.stderr

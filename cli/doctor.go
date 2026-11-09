@@ -27,8 +27,7 @@ func (l *launcher) doctorVerb(args []string) int {
 	}
 	args = rest
 	if len(args) > 1 {
-		l.err("usage: ccmorph doctor [--verbose] [profile]")
-		return 2
+		return l.extraArg("doctor", args[1])
 	}
 	legacy := filepath.Join(os.Getenv("HOME"), ".claude-profiles")
 	if _, err := os.Lstat(l.profileDirs); err != nil && isDir(legacy) && !isLink(legacy) {
