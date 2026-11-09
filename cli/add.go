@@ -42,6 +42,10 @@ func (l *launcher) add(args []string) int {
 		l.err("'" + name + "' already exists. Remove first: ccmorph rm " + name)
 		return 1
 	}
+	if twin := l.caseTwin(name); twin != "" {
+		l.err(caseClashMsg(name, twin))
+		return 1
+	}
 	if present(filepath.Join(l.profileDirs, name)) || present(filepath.Join(l.dir, "auth", name)) {
 		l.err("leftover private state for '" + name + "'; run ccmorph rm " + name + " to review and remove it, or choose another name")
 		return 1

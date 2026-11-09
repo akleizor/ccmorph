@@ -42,6 +42,12 @@ func (l *launcher) rm(args []string) int {
 		l.err("usage: " + usageLine("rm"))
 		return 1
 	}
+	// A name that differs only by case is refused before the leftover branch:
+	// on a volume that ignores letter case, profiles/GW2 is the real gw2.
+	if !l.exists(name) && l.caseTwin(name) != "" {
+		l.noProfile(name)
+		return 1
+	}
 	if rc, done := l.locked(name, append([]string{"rm"}, args...)); done {
 		return rc
 	}
@@ -204,6 +210,12 @@ func (l *launcher) mv(args []string) int {
 		return 1
 	}
 	from, to := args[0], args[1]
+	// A volume that ignores letter case cannot hold both names while the rename
+	// runs, so a case-only rename is refused before any lock or write.
+	if from != to && strings.EqualFold(from, to) {
+		l.err("'" + to + "' differs from '" + from + "' only by letter case; a rename cannot change only the case. Choose another name.")
+		return 1
+	}
 	if rc, done := l.locked(from+","+to, append([]string{"mv"}, args...)); done {
 		return rc
 	}
@@ -213,6 +225,10 @@ func (l *launcher) mv(args []string) int {
 	}
 	if l.exists(to) {
 		l.err("'" + to + "' already exists")
+		return 1
+	}
+	if twin := l.caseTwin(to); twin != "" {
+		l.err(caseClashMsg(to, twin))
 		return 1
 	}
 	oldP, newP := filepath.Join(l.profileDirs, from), filepath.Join(l.profileDirs, to)

@@ -383,9 +383,43 @@ func owned(fi os.FileInfo) bool {
 
 func (l *launcher) conf(name string) string { return filepath.Join(l.dir, name+".conf") }
 
+// exists reports whether name is a profile spelled exactly as stored. On a
+// volume that ignores letter case com/Tok.conf opens tok.conf, so the conf is
+// only this profile's when a directory entry names it as typed.
 func (l *launcher) exists(name string) bool {
 	fi, err := os.Lstat(l.conf(name))
-	return err == nil && fi.Mode().IsRegular()
+	if err != nil || !fi.Mode().IsRegular() {
+		return false
+	}
+	entries, err := os.ReadDir(l.dir)
+	if err != nil {
+		return true
+	}
+	for _, e := range entries {
+		if e.Name() == name+".conf" && e.Type().IsRegular() {
+			return true
+		}
+	}
+	return false
+}
+
+// caseTwin is the profile whose name differs from name only by letter case, or
+// "" when there is none. An exact match always wins.
+func (l *launcher) caseTwin(name string) string {
+	entries, err := os.ReadDir(l.dir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		stem, ok := strings.CutSuffix(e.Name(), ".conf")
+		if !ok || stem == name || !strings.EqualFold(stem, name) {
+			continue
+		}
+		if e.Type().IsRegular() && profile.ValidName(stem) {
+			return stem
+		}
+	}
+	return ""
 }
 
 // readActive is _ccm_read_active: the default profile, "" when none is set.
@@ -410,6 +444,13 @@ func (l *launcher) readActive() (string, bool) {
 	if !profile.ValidName(name) {
 		l.err("invalid active profile '" + name + "'")
 		return "", false
+	}
+	// An older ccmorph wrote the spelling the person typed; read it as the
+	// profile that is really there. The file is only rewritten by use or mv.
+	if !l.exists(name) {
+		if twin := l.caseTwin(name); twin != "" {
+			name = twin
+		}
 	}
 	return name, true
 }

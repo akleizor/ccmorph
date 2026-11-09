@@ -3221,9 +3221,11 @@ check_relay_cache_notice_absent() {
   # Seeding atomically replaces the conf: finish it before creating the alias.
   source "$CCMORPH_SOURCE"
   _ccm_config_store seed-model-defaults proxy || { rm -rf "$test_home"; return 1; }
-  # Use a regular same-file alias when the filesystem distinguishes case.
-  if [[ "$target" == PROXY && ! -e "$HOME/.config/ccmorph/PROXY.conf" ]]; then
-    ln "$HOME/.config/ccmorph/proxy.conf" "$HOME/.config/ccmorph/PROXY.conf"
+  # A same-file profile is a second directory entry for proxy.conf (a hard
+  # link). Its name differs by more than letter case: on a volume that ignores
+  # case PROXY.conf opens proxy.conf, yet it is no profile of its own (#259).
+  if [[ "$target" == proxy_link ]]; then
+    ln "$HOME/.config/ccmorph/proxy.conf" "$HOME/.config/ccmorph/proxy_link.conf"
   fi
   local preflight="${4:-}"
   case "$preflight" in
@@ -3275,11 +3277,17 @@ test_relay_same_profile_omits_cache_notice_issue_226() {
 }
 
 test_relay_same_file_profile_omits_cache_notice_issue_226() {
-  check_relay_cache_notice_absent PROXY $'\nccmorph: resuming as PROXY...' 0
+  check_relay_cache_notice_absent proxy_link $'\nccmorph: resuming as proxy_link...' 0
 }
 
 test_relay_failed_switch_omits_cache_notice_issue_226() {
   check_relay_cache_notice_absent missing 'ccmorph: invalid relay signal' 1
+}
+
+# GH-259: a relay naming the wrong letter case is no switch to the real
+# profile, even where PROXY.conf opens proxy.conf: it is refused.
+test_relay_to_a_wrong_case_name_is_refused_gh_259() {
+  check_relay_cache_notice_absent PROXY 'ccmorph: invalid relay signal' 1
 }
 
 test_relay_settings_preflight_omits_cache_notice_issue_226() {
@@ -10557,6 +10565,7 @@ run_test test_relay_resume_preserves_dangerous_permission_mode
 run_test test_relay_same_profile_omits_cache_notice_issue_226
 run_test test_relay_same_file_profile_omits_cache_notice_issue_226
 run_test test_relay_failed_switch_omits_cache_notice_issue_226
+run_test test_relay_to_a_wrong_case_name_is_refused_gh_259
 run_test test_relay_settings_preflight_omits_cache_notice_issue_226
 run_test test_relay_provider_preflight_omits_cache_notice_issue_226
 run_test test_prelaunch_runs_configured_step_silently

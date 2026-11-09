@@ -119,10 +119,20 @@ func (l *launcher) accountsHint() {
 // noProfileMsg is the one answer every verb gives a name with no .conf: the
 // profiles that do exist, or how to make the first.
 func (l *launcher) noProfileMsg(name string) string {
+	if twin := l.caseTwin(name); twin != "" {
+		return "no profile '" + name + "'. Did you mean '" + twin + "'? Profile names match letter case exactly."
+	}
 	if names := l.confNames(); len(names) > 0 {
 		return "no profile '" + name + "'. Profiles: " + strings.Join(names, " ")
 	}
 	return "no profile '" + name + "'. No profiles yet — run: ccmorph add <name>"
+}
+
+// caseClashMsg names the profile a new or renamed name collides with on a
+// volume that ignores letter case. It never offers rm: that would delete the
+// other profile.
+func caseClashMsg(name, twin string) string {
+	return "'" + name + "' clashes with the existing profile '" + twin + "' (the names differ only by letter case). Choose another name."
 }
 
 func (l *launcher) noProfile(name string) { l.err(l.noProfileMsg(name)) }
