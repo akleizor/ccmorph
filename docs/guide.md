@@ -183,9 +183,11 @@ ccmorph cred <profile>      # print its credential to stdout
 ```
 
 `ccmorph --help` shows everyday actions. Use `ccmorph help all` for the full
-command list and `ccmorph help <command>` for details. Management commands also
-accept `--help`; `ccmorph run <profile> --help` still opens Claude's native help.
-Help and version requests do not load host overrides, migrate state, or launch.
+command list and `ccmorph help <command>` for details. `-h` or `--help` anywhere
+after a command shows that command's page, and a word beyond the arguments a
+command takes is refused. `ccmorph run <profile> --help` still opens Claude's
+native help. Help and version requests do not load host overrides, migrate
+state, or launch.
 
 In a terminal, `config` asks what you want to change: **model and reasoning** or
 **connection/sign-in details**, where applicable. Changing a model does not ask

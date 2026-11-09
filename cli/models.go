@@ -8,14 +8,11 @@ import (
 	"github.com/akleizor/ccmorph/profile"
 )
 
-const modelsUsage = "usage: ccmorph models <profile> [--filtered|--filtered-json]"
-
 // models is `ccmorph models [profile] [--filtered|--filtered-json]`: the
 // endpoint's own /v1/models, as the catalogue, the picker or filtered JSON.
 func (l *launcher) models(args []string) int {
 	if len(args) > 2 {
-		l.err("usage: ccmorph models [profile] [--filtered|--filtered-json]")
-		return 2
+		return l.extraArg("models", args[2])
 	}
 	if len(args) == 0 || args[0] == "-i" || args[0] == "--interactive" {
 		picked, ok := l.menuProfile("apikey")
@@ -29,8 +26,7 @@ func (l *launcher) models(args []string) int {
 		mode = args[1]
 	}
 	if mode != "" && mode != "--filtered" && mode != "--filtered-json" {
-		l.err(modelsUsage)
-		return 2
+		return l.extraArg("models", mode)
 	}
 	name := args[0]
 	if !profile.ValidName(name) {

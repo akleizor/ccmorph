@@ -39,7 +39,7 @@ func (l *launcher) rm(args []string) int {
 		name = args[0]
 	}
 	if !profile.ValidName(name) {
-		l.err("usage: ccmorph rm <profile>")
+		l.err("usage: " + usageLine("rm"))
 		return 1
 	}
 	if rc, done := l.locked(name, append([]string{"rm"}, args...)); done {
@@ -175,7 +175,7 @@ func keepHistory(from, to string) bool {
 // mv is `ccmorph mv <old> <new>`, rolled back whole on any failure.
 func (l *launcher) mv(args []string) int {
 	if len(args) < 2 || !profile.ValidName(args[0]) || !profile.ValidName(args[1]) {
-		l.err("usage: ccmorph mv <old> <new>")
+		l.err("usage: " + usageLine("mv"))
 		return 1
 	}
 	from, to := args[0], args[1]

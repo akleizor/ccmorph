@@ -18,11 +18,11 @@ import (
 
 const prog = "context-probe"
 
-const usageText = `usage: context-probe [-h] [--profile PROFILES] [--model MODELS]
-                              [--check] [--jobs JOBS] [--deadline SECONDS]
-                              [--probe-timeout SECONDS] [--allow-inference]
-                              [--bisect] [--bisect-accepts N] [--listing-stdin]
-                              [--declared-only | --probe-all]`
+const usageText = `usage: ccmorph probe [profile] [options]
+options: [-h] [--profile PROFILES] [--model MODELS] [--check] [--jobs JOBS]
+         [--deadline SECONDS] [--probe-timeout SECONDS] [--allow-inference]
+         [--bisect] [--bisect-accepts N] [--listing-stdin]
+         [--declared-only | --probe-all]`
 
 type args struct {
 	profiles, models []string

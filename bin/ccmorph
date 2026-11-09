@@ -18,10 +18,18 @@ set -eu
 
 # Help, version and doctor must not source host opt-ins: local.sh is executable
 # zsh and may mutate state. Detect read-only requests before loading the library.
+# A help flag anywhere is a help request, except after a run profile, where the
+# words are Claude Code's (ccmorph run <profile> --help is Claude's help).
 case "${1:-}" in
   doctor|''|-h|--help|help|-v|-V|--version|version) export CCMORPH_DOCTOR_READONLY=1 ;;
+  run)
+    if [[ "${2:-}" == (-h|--help) ]]; then
+      export CCMORPH_DOCTOR_READONLY=1
+    fi
+    ;;
+  _*) ;;
   *)
-    if (( $# == 2 )) && [[ "$2" == (-h|--help) && "$1" != (run|probe|measure) ]]; then
+    if (( ${@[(Ie)-h]} || ${@[(Ie)--help]} )); then
       export CCMORPH_DOCTOR_READONLY=1
     fi
     ;;

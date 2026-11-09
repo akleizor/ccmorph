@@ -26,7 +26,7 @@ func (l *launcher) context(args []string) int {
 		name = picked
 	}
 	if !profile.ValidName(name) {
-		l.err("usage: ccmorph context <profile> <model> [tokens|auto]")
+		l.err("usage: " + usageLine("context"))
 		return 2
 	}
 	if !l.exists(name) {
@@ -60,8 +60,7 @@ func (l *launcher) quota(args []string) int {
 		case a == "--json":
 			asJSON = true
 		case strings.HasPrefix(a, "-") || only != "":
-			l.err("usage: ccmorph quota [profile] [--json]")
-			return 2
+			return l.extraArg("quota", a)
 		default:
 			only = a
 		}

@@ -25,6 +25,39 @@ var ownVerbs = map[string]bool{"list": true, "inspect": true, "show": true, "add
 	"context": true, "cred": true, "secret": true, "creds": true, "probe": true, "hop": true,
 	"help": true, "version": true, "run": true, "start": true, retiredVerb: true}
 
+// helpAsked reports whether any word asks for help.
+func helpAsked(words []string) bool {
+	return slices.Contains(words, "-h") || slices.Contains(words, "--help")
+}
+
+// verbArity is the most words each public command takes after the verb itself.
+// One more is refused before anything runs. run and probe are handled apart:
+// run's words after the profile are Claude Code's, and probe's are parsed by
+// context-probe, which reports its own usage.
+var verbArity = map[string]int{"list": 0, "use": 1, "cred": 1, "inspect": 1, "context": 3,
+	"models": 2, "rm": 1, "mv": 2, "get": 2, "set": 3, "config": 1, "add": 1, "login": 1,
+	"hop": 1, "quota": 2, "doctor": 2, "update": 1, "uninstall": 0, "version": 0, "help": 1}
+
+// usageLine is the Usage line of a command's help page, shared with its errors
+// so the two cannot drift apart.
+func usageLine(topic string) string {
+	if topic == "get" || topic == "set" {
+		line := "ccmorph " + topic + " [profile] [model|effort]"
+		if topic == "set" {
+			line += " [value]"
+		}
+		return line
+	}
+	return usageTopics[topic][0]
+}
+
+// extraArg refuses a word beyond what the command takes, naming it.
+func (l *launcher) extraArg(verb, word string) int {
+	l.err("unexpected argument '" + word + "'")
+	l.err("usage: " + usageLine(verb))
+	return 2
+}
+
 // dispatch is the `ccmorph` command: every verb, help and the launch's own argv.
 func (l *launcher) dispatch(args []string) int {
 	first := ""
@@ -33,16 +66,26 @@ func (l *launcher) dispatch(args []string) int {
 	}
 	switch first {
 	case "", "-h", "--help", "help":
-		if len(args) > 2 {
-			l.err("usage: ccmorph help [command|all]")
-			return 2
+		rest := args[min(1, len(args)):]
+		if first == "help" && helpAsked(rest) {
+			return l.usage("help")
+		}
+		rest = slices.DeleteFunc(slices.Clone(rest), func(a string) bool { return a == "-h" || a == "--help" })
+		if len(rest) > 1 {
+			return l.extraArg("help", rest[1])
 		}
 		topic := ""
-		if len(args) == 2 {
-			topic = args[1]
+		if len(rest) == 1 {
+			topic = rest[0]
 		}
 		return l.usage(topic)
 	case "-v", "-V", "--version", "version":
+		if helpAsked(args[1:]) {
+			return l.usage("version")
+		}
+		if len(args) > 1 {
+			return l.extraArg("version", args[1])
+		}
 		fmt.Println("ccmorph " + l.version)
 		return 0
 	case "_backend_env":
@@ -58,21 +101,30 @@ func (l *launcher) dispatch(args []string) int {
 		fmt.Println(strings.Join(v, "\n"))
 		return 0
 	}
-	if len(args) == 2 && (args[1] == "-h" || args[1] == "--help") && first != "run" && first != "probe" && first != retiredVerb {
-		return l.usage(first)
+	if rest := args[1:]; first == "run" {
+		// After a run profile the words are Claude Code's (INTENT promise 6), so
+		// only a leading -h/--help is ccmorph's.
+		if len(rest) > 0 && (rest[0] == "-h" || rest[0] == "--help") {
+			return l.usage("run")
+		}
+	} else if first == "probe" || first == retiredVerb {
+		// probe's options are context-probe's; hand a help request to it before
+		// secureDirs, so no picker opens and no state is provisioned.
+		if helpAsked(rest) {
+			return l.probeVerb([]string{"--help"})
+		}
+	} else if n, public := verbArity[first]; public {
+		if helpAsked(rest) {
+			return l.usage(first)
+		}
+		if len(rest) > n {
+			return l.extraArg(first, rest[n])
+		}
 	}
 	switch first {
 	case "update":
-		if len(args) > 2 {
-			l.err("usage: ccmorph update [ref]")
-			return 2
-		}
 		return l.runInstaller("update", args[1:])
 	case "uninstall":
-		if len(args) != 1 {
-			l.err("usage: ccmorph uninstall")
-			return 2
-		}
 		return l.runInstaller("uninstall", nil)
 	case "doctor":
 		return l.doctorVerb(args[1:])
@@ -280,7 +332,7 @@ func (l *launcher) probeVerb(args []string) int {
 	if mi := lastIndex(a, "--model"); mi >= 0 && (mi+1 >= len(a) || a[mi+1] == "" || interactive(a[mi+1])) {
 		pi := lastIndex(a, "--profile")
 		if pi < 0 || pi+1 >= len(a) {
-			l.err("usage: ccmorph probe <profile> --model -i")
+			l.err("--model -i needs a profile: ccmorph probe <profile> --model -i")
 			return 2
 		}
 		m, ok := l.pickValue("model", a[pi+1])
@@ -565,14 +617,7 @@ func (l *launcher) usage(topic string) int {
 		l.err("unknown help topic '" + topic + "'. Run: ccmorph help all")
 		return 2
 	}
-	usage := t[0]
-	if topic == "get" || topic == "set" {
-		usage = "ccmorph " + topic + " [profile] [model|effort]"
-		if topic == "set" {
-			usage += " [value]"
-		}
-	}
-	fmt.Println("Usage: " + usage)
+	fmt.Println("Usage: " + usageLine(topic))
 	fmt.Println()
 	fmt.Println(t[1])
 	fmt.Println("\nFixed choices: ↑/↓ move, Enter selects one, Esc cancels. No search box.")
@@ -652,6 +697,9 @@ Paid inference requires --allow-inference, --profile and --model explicitly.
 Full probe options: ccmorph probe --help`},
 	"context": {"ccmorph context <profile> <model> [tokens|auto]", `Read a context limit, set a known token count, or restore automatic discovery.
 Normally unnecessary: compatibility and context limits are automatic.`},
+	"help": {"ccmorph help [command|all]", `Show the everyday commands, every command (all), or one command's page.
+-h or --help after any command shows that command's page.`},
+	"version": {"ccmorph version", "Print the installed version of ccmorph. Same as ccmorph --version, -v or -V."},
 }
 
 func init() { usageTopics["set"] = usageTopics["get"] }
