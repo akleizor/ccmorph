@@ -80,6 +80,8 @@ credential, or losing the user's choice.
   Seen 1× (2026-11-09).
 - **A shared resource torn down or doubled on transient evidence, with state files that outlive their owner** (2026-11-09) — one failed probe read as death, so a live bridge another session held was killed and a second started on its auth dir; the last user out signalled a recorded PID without checking it still ran the bridge; a handle that could not be written left a running bridge unrecorded; a handle parsed with strings.Fields lost a TMPDIR with a space; rm and mv left the handle and locks for a recreated name to join. Kill or replace a shared resource only on proof (no holder left, ownership re-read against the process table), and give its state files the same lifetime as the thing they describe — Example: a4e69bc (2026-11-09).
   Seen 1× (2026-11-09).
+- **Evidence consumed before the decision that needs it, beside a tail window that can skip the line that matters** (2026-11-09) — the Remote Control supervisor marked a host's logs read before its 10-minute login-restart cooldown check, so the failure line it deferred on was gone when the window closed and a host that lost its login again inside the cooldown was never restarted; and its login reader looked only at the last 64 KB of each log, so a verbose session that buried its own failure line under later output was never seen. Consume evidence only once the decision it serves is made, read everything a run printed since the last look, and never step past a line the writer has not finished — Example: 5cf8680 (2026-11-09).
+  Seen 1× (2026-11-09).
 
 ## Gate rules
 

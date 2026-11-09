@@ -297,6 +297,8 @@ class Host:
         self.backoff = BACKOFF_MIN
         self.next_try = 0.0
         self.log_marks: dict[Path, int] = {}   # bytes of each log owned by the last start
+        self.login_scans: dict[Path, int] = {}  # bytes of each log the login reader has taken
+        self.login_lost: str | None = None     # the failure this run printed, held until acted on
         self.login_restarted = float("-inf")    # when this host was last restarted for its login
         name = re.sub(r"[^A-Za-z0-9]+", "-", folder.replace(str(Path.home()), "~")).strip("-")
         self.logfile = LOGS / f"{name}.log"
@@ -325,6 +327,8 @@ class Host:
             except OSError:
                 continue
         self.log_marks = marks
+        self.login_scans = dict(marks)   # the login reader starts over with the new run
+        self.login_lost = None           # and holds no failure the run before it printed
 
     def lost_login(self) -> str | None:
         """The login failure this run of the host printed, or None.
@@ -334,24 +338,42 @@ class Host:
         error while the account profile is logged in (#239). Only the bytes past
         the mark its start left count: the same files hold the failure of the run
         before it, and reading that again would restart the host forever.
+
+        The failure can sit anywhere in what this run printed -- a verbose
+        session buries its own line under megabytes of tool output, which a
+        fixed tail window stopped reading before (#296) -- so each log is taken
+        forward from where the last look ended, and a line the writer had not
+        finished when the look ended is left whole for the next one: the window
+        re-read the region and saw the completed line, so the forward reader may
+        not step past its start. What this run printed does not change, so a
+        failure found is held: restart_logged_out() defers a restart inside
+        LOGIN_RESTART_AFTER, and the line it deferred on is the one the check
+        after the window must still see (#296).
         """
+        if self.login_lost is not None:
+            return self.login_lost
         for f in (self.logfile, *self.debug_logs()):
             try:
                 size = f.stat().st_size
             except OSError:
                 continue
             mark = self.log_marks.get(f, 0)
-            if size < mark:          # bound_logs() truncated it: the whole file is this run's
-                mark = 0
+            pos = self.login_scans.get(f, mark)
+            if mark > size or pos > size:  # bound_logs() truncated it: the whole file is this run's
+                pos = 0
             try:
                 with open(f, "rb") as fh:
-                    fh.seek(max(mark, size - TAIL))
-                    text = fh.read().decode(errors="replace")
+                    fh.seek(pos)
+                    data = fh.read()
             except OSError:
                 continue
-            m = LOGIN_LOST.search(text)
+            # past the complete lines only: bytes after the last newline are a
+            # line still being written, and the next check must take it whole
+            self.login_scans[f] = pos + data.rfind(b"\n") + 1
+            m = LOGIN_LOST.search(data.decode(errors="replace"))
             if m:
-                return f"{m.group(0)} in {f.name}"
+                self.login_lost = f"{m.group(0)} in {f.name}"
+                return self.login_lost
         return None
 
     def ensure_repo(self) -> None:
@@ -838,11 +860,14 @@ def restart_logged_out(hosts: "dict[str, Host]", now: float) -> list[str]:
         return []
     restarted = []
     for h, why, orphan in lost:
-        h.mark_logs()
         if now - h.login_restarted < LOGIN_RESTART_AFTER:
+            # The line is not marked read: this deferral is the very failure the
+            # check after the window must still see (#296 -- consuming it here
+            # meant the retry the cooldown promised could never fire).
             log(f"{h.folder}: sessions lost their login again ({why}) within "
                 f"{LOGIN_RESTART_AFTER}s of a restart; not restarting yet")
             continue
+        h.mark_logs()        # this failure is settled: the restart takes the folder from here
         log(f"{h.folder}: sessions lost their login ({why}) while the account login is "
             f"valid; restarting its host")
         h.login_restarted = now
