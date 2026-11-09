@@ -19,10 +19,12 @@ func TestTheEffortPickerAndHelpNameTheConfLevels(t *testing.T) {
 			t.Errorf("picker row %d is %q, want %q", i, id, lvl)
 		}
 	}
-	help := usageTopics["get"][1] // "set" is the same entry
-	for _, lvl := range profile.Efforts {
-		if !strings.Contains(help, lvl) {
-			t.Errorf("ccmorph help get/set does not name the effort level %q", lvl)
+	for _, verb := range []string{"get", "set"} { // each verb has its own page (#263)
+		help := usageTopics[verb][1]
+		for _, lvl := range profile.Efforts {
+			if !strings.Contains(help, lvl) {
+				t.Errorf("ccmorph help %s does not name the effort level %q", verb, lvl)
+			}
 		}
 	}
 }

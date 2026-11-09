@@ -1,5 +1,6 @@
 """Human output stays concise without changing machine-readable command output."""
 import os
+import re
 import shutil
 from pathlib import Path
 import subprocess
@@ -11,6 +12,9 @@ from support import CLAUDE_MISSING, HANG_TIMEOUT, anthropic_accepts_the_key
 from fake_adapter import CORE_DISPATCH
 
 ROOT = Path(__file__).resolve().parents[1]
+# Commands that never open a picker: their help pages say nothing about one (#263).
+PICKERLESS = ('list', 'quota', 'mv', 'rm', 'hop', 'profile', 'update', 'uninstall')
+PICKER_WORDS = r'picker|arrow|\besc\b|fzf|search|↑|↓'
 
 
 @pytest.mark.parametrize('argv', [
@@ -95,13 +99,18 @@ def test_help_is_concise_truthful_and_read_only(tmp_path):
                  ['doctor', '--help'], ['update', '--help'], ['uninstall', '--help'],
                  ['help', 'update'], ['--version'],
                  ['rm', 'gw', '--help'], ['cred', 'gw', '-h'], ['use', 'gw', '--help'],
-                 ['run', '--help'], ['probe', 'gw', '--help']):
+                 ['run', '--help'], ['run', '-h'], ['probe', 'gw', '--help']):
         result = subprocess.run([cli, *args], env=env, capture_output=True,
                                 text=True, timeout=HANG_TIMEOUT)
         assert result.returncode == 0, result.stderr
         assert not marker.exists(), 'help must not source executable host overrides'
         assert not (state / 'profiles').exists(), 'help must not provision state'
         assert result.stderr == ''
+    for flag in ('--help', '-h'):
+        page = subprocess.run([cli, 'run', flag], env=env, capture_output=True,
+                              text=True, timeout=HANG_TIMEOUT)
+        assert page.stdout.startswith('Usage: ccmorph run'), page.stdout
+        assert 'ccmorph run <profile> --help' in page.stdout
     result = subprocess.run([cli, '--help'], env=env, capture_output=True,
                             text=True, timeout=HANG_TIMEOUT)
     assert len(result.stdout.splitlines()) <= 28
@@ -114,13 +123,23 @@ def test_help_is_concise_truthful_and_read_only(tmp_path):
                             text=True, timeout=HANG_TIMEOUT)
     for verb in ('run', 'add', 'list', 'use', 'config', 'inspect', 'doctor', 'models',
                  'get', 'set', 'login', 'mv', 'rm', 'hop', 'cred', 'probe', 'context',
-                 'update', 'uninstall', 'quota'):
+                 'update', 'uninstall', 'quota', 'profile'):
         assert 'ccmorph ' + verb in result.stdout
         detail = subprocess.run([cli, 'help', verb], env=env, capture_output=True,
                                 text=True, timeout=HANG_TIMEOUT)
         assert detail.returncode == 0, detail.stderr
         assert detail.stdout.startswith('Usage: ccmorph ' + verb)
         assert '[-a <profile>]' not in detail.stdout
+        if verb in PICKERLESS:
+            assert not re.search(PICKER_WORDS, detail.stdout, re.I), verb
+        else:
+            for phrase in ('arrow keys', 'type to search', 'Esc to cancel'):
+                assert phrase in detail.stdout, verb
+    for verb in ('help', 'version'):
+        page = subprocess.run([cli, 'help', verb], env=env, capture_output=True,
+                              text=True, timeout=HANG_TIMEOUT)
+        assert page.returncode == 0, page.stderr
+        assert not re.search(PICKER_WORDS, page.stdout, re.I), verb
     result = subprocess.run([cli, 'help', 'quota'], env=env, capture_output=True,
                             text=True, timeout=HANG_TIMEOUT)
     # One line names which profile kinds show plan usage (#270), so a token
@@ -132,6 +151,10 @@ def test_help_is_concise_truthful_and_read_only(tmp_path):
                             text=True, timeout=HANG_TIMEOUT)
     assert result.returncode == 2
     assert 'ccmorph help all' in result.stderr
+    pages = {verb: subprocess.run([cli, 'help', verb], env=env, capture_output=True,
+                                  text=True, timeout=HANG_TIMEOUT).stdout for verb in ('get', 'set')}
+    assert 'read' in pages['get'].lower() and 'save' not in pages['get'].lower(), pages['get']
+    assert 'save' in pages['set'].lower(), pages['set']
     assert not marker.exists()
 
 

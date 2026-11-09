@@ -779,7 +779,7 @@ HELP_ANYWHERE = [
     ['get', 'gw', '--help'], ['set', 'gw', 'model', '--help'], ['mv', 'gw', 'new', '--help'],
     ['hop', 'gw', '--help'], ['add', 'new', '--help'], ['list', '--help'],
     ['update', 'v1', '--help'], ['uninstall', '--help'], ['version', '--help'],
-    ['help', 'rm', '--help'], ['run', '--help'],
+    ['help', 'rm', '--help'], ['run', '--help'], ['run', '-h'],
 ]
 
 
