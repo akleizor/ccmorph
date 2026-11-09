@@ -71,12 +71,14 @@
 
 - **Recording a key approval no longer drops what a running session saved.**
   `ccmorph add`, `login`, a launch and a hop record Claude Code's answer in the
-  profile's `.claude.json`; the rewrite now holds the profile's live lock shared
-  — the mode a running session holds — across its read and its rename, so the
-  writers that replace the whole file, which take the lock exclusively, cannot
-  swap it under the approval, and an open session no longer stops the answer
-  being recorded. A launch that is rewriting the profile's config is waited
-  for, bounded, and named if it outlasts the wait (#299).
+  profile's `.claude.json`; the rewrite now holds the profile's live lock
+  exclusively across its read and its rename — the mode the repo's other
+  whole-file writers take — so a running session's own save and a second
+  approval can no longer be lost under it. While a session of the profile is
+  open, `login` and `add` save the answer and the next launch records it before
+  Claude Code starts; a launch that finds it still waiting says so and starts
+  nothing. A launch that is rewriting the profile's config is waited for,
+  bounded, and named if it outlasts the wait (#299).
 - **The hop help page no longer tells you to exit Claude.** The switch happens
   at once — hop itself ends the session and the relay resumes the conversation
   on the new profile — so following the page's instruction ended the freshly
