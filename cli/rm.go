@@ -79,6 +79,8 @@ func (l *launcher) rm(args []string) int {
 	}
 	util.KeychainDelete(name)
 	os.Remove(filepath.Join(l.profileDirs, "..", ".locks", name+".lock"))
+	// A saved approval waits for a session that may never end now (#299).
+	util.DropApprovals(l.profileDirs, name)
 	for _, p := range util.BridgeFiles(filepath.Join(l.dir, "auth"), name) {
 		os.Remove(p)
 	}

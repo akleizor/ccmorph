@@ -364,6 +364,20 @@ def test_rm_unknown_profile_is_an_error(box):
     assert out.returncode != 0 and "no profile 'ghost'" in out.stderr
 
 
+def test_rm_removes_a_saved_key_approval(box):
+    # #299: an approval login saved while a session was open waits in
+    # .locks/<name>.approve-*; removing the profile must not leave it behind.
+    seed(box)
+    locks = box.state / '.locks'
+    locks.mkdir(parents=True)
+    (locks / 'gw.approve-0123456789abcdef').touch()
+    (locks / 'tok.approve-0123456789abcdef').touch()
+    done = box.run('rm', 'gw')
+    assert done.returncode == 0, done.stderr
+    assert not (locks / 'gw.approve-0123456789abcdef').exists()
+    assert (locks / 'tok.approve-0123456789abcdef').exists()
+
+
 # --- login ----------------------------------------------------------------------
 
 def test_login_for_an_api_key_profile_records_the_approval_again(box):
