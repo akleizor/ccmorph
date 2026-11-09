@@ -992,13 +992,13 @@ class PickerTTYTest(unittest.TestCase):
         # A fake cliproxyapi: its --help lists the logins; a login names its id.
         fake = self.tmp / 'bin' / 'cliproxyapi'
         fake.write_text('#!/bin/sh\n'
-                        'if [ "$1" = --help ]; then for p in claude antigravity codex devin kimi meta xai; do'
+                        'if [ "$1" = --help ]; then for p in claude antigravity codex devin kimi-ai kimi meta xai; do'
                         ' echo "  -$p-login"; done; exit 0; fi\n'
                         'p=${1#-}; echo "PROVIDER_ID=${p%-login}"; exit 1\n')
         fake.chmod(0o755)
         command = 'ccmorph add my_profile'
         rc, out, missed = run_pty(command, env, [
-            (b'Esc Cancel', b'\x1b[B' * 8 + b'\r'),
+            (b'Esc Cancel', b'\x1b[B' * 9 + b'\r'),
         ])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 1, out)  # stop before authentication or saving
@@ -1007,10 +1007,40 @@ class PickerTTYTest(unittest.TestCase):
             self.assertIn(label, out)
         self.assertIn('\x1b[38;2;153;153;153mSign in with your browser', out)
         self.assertIn('\x1b[38;2;153;153;153mFor scripts/CI; quota cannot read plan usage', out)
-        self.assertIn('Sign in to xAI with your browser (through cliproxyapi)', out)
+        # Each row says which product or plan it signs in to (issue #283) while
+        # the rendered row keeps its browser-and-bridge explanation: the two
+        # Kimi logins are kimi.ai and kimi.com, not the same text twice.
+        plain = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', out)
+        self.assertIn('kimi.ai account', plain)
+        self.assertIn('kimi.com account', plain)
+        self.assertIn('ChatGPT (Codex)', plain)
+        self.assertIn('Browser sign-in to xAI (Grok), through cliproxyapi', out)
+        self.assertIn('\x1b[38;2;153;153;153mBrowser sign-in to a kimi.ai account', out)
         self.assertIn('PROVIDER_ID=xai', out)
         self.assertNotIn('PROVIDER_ID=xAI', out)
         self.assertFalse((self.tmp / 'fzf.log').exists())
+
+    def test_add_without_cliproxyapi_names_the_browser_logins_and_the_install_step(self):
+        # Issue #283: without the optional cliproxyapi the menu used to stop at
+        # three rows, so nobody learned the browser logins exist or what turns
+        # them on. The menu now carries a row saying both; nothing is saved.
+        env = self.env(fzf=True)
+        entries = [e for e in env['PATH'].split(os.pathsep)
+                   if not (Path(e) / 'cliproxyapi').exists()]
+        env['PATH'] = os.pathsep.join(entries)
+        self.assertFalse(shutil.which('cliproxyapi', path=env['PATH']),
+                         'the test PATH must not hold a real cliproxyapi')
+        rc, out, missed = run_pty('ccmorph add demo', env, [
+            (b'Esc Cancel', b'\x1b[B' * 3 + b'\r'),
+        ])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 1, out)  # told the step, saved nothing
+        plain = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', out)
+        self.assertIn('More sign-ins', plain)
+        self.assertIn('Antigravity, Codex, Devin, Kimi, Meta and xAI', plain)
+        self.assertIn('brew install cliproxyapi', plain)
+        self.assertIn('ccmorph add demo', plain)
+        self.assertFalse((self.state / 'demo.conf').exists())
 
     def test_standalone_ui_contract_and_unicode_alignment(self):
         env = {**self.env(fzf=True), 'NO_COLOR': '1',

@@ -39,8 +39,9 @@ ccmorph run  ------+--> personal   API key             -->  Anthropic API
   usage export and the optional Remote Control add-on.
 - A release ships `ccmorph-core` prebuilt for macOS and Linux (arm64, amd64).
   Installing from a clone needs Go to build it (`make shim`).
-- Optional: `cliproxyapi` for non-Anthropic endpoints, `fzf` for searchable
-  pickers. The installer offers fzf through your package manager and
+- Optional: `cliproxyapi` for non-Anthropic endpoints and for `provider` profiles
+  (browser sign-in to Antigravity, Codex, Devin, Kimi, Meta and xAI), `fzf` for
+  searchable pickers. The installer offers fzf through your package manager and
   cliproxyapi through Homebrew, and installs only on confirm.
 - To install: `brew` for Homebrew, `git` and `make` for a clone, or `curl`
   and `sh` for the one-liner. Reading the usage export needs `ccusage`, which

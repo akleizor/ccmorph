@@ -50,14 +50,22 @@ func (l *launcher) add(args []string) int {
 		l.err("leftover private state for '" + name + "'; run ccmorph rm " + name + " to review and remove it, or choose another name")
 		return 1
 	}
-	providers := addProviders()
+	providers, haveBridge := addProviders()
 	rows := "sub\tClaude account\tSign in with your browser\ntoken\tClaude token\tFor scripts/CI; quota cannot read plan usage\napikey\tAPI key\tAnthropic or a gateway"
 	for _, p := range providers {
-		rows += "\n" + p + "\t" + providerLabel(p) + "\tSign in to " + providerLabel(p) + " with your browser (through cliproxyapi)"
+		rows += "\n" + p + "\t" + providerLabel(p) + "\t" + providerDetail(p)
+	}
+	if !haveBridge {
+		// Issue #283: a person without cliproxyapi still learns the browser
+		// logins exist and the one step that turns them on.
+		rows += "\nmore\tMore sign-ins\t" + browserLogins + ": install cliproxyapi"
 	}
 	choice, ok := l.choose("Sign-in method — "+name, rows)
 	if !ok {
 		return 1
+	}
+	if !haveBridge && choice == "4" {
+		choice = "more"
 	}
 	var rc int
 	switch choice {
@@ -67,6 +75,10 @@ func (l *launcher) add(args []string) int {
 		rc = l.addToken(name)
 	case "3", "apikey", "api_key", "api-key":
 		rc = l.addAPIKey(name)
+	case "more":
+		fmt.Println("Browser sign-in to " + browserLogins + " needs cliproxyapi.")
+		fmt.Println("Install it: " + cliproxyInstall + ", then run: ccmorph add " + name)
+		return 1
 	default:
 		matched := ""
 		if n, err := strconv.Atoi(choice); err == nil && n >= 4 && n < 4+len(providers) {
@@ -502,18 +514,26 @@ func (l *launcher) addProvider(name, provider string) int {
 }
 
 // addProviders is the provider logins the add menu offers, other than Claude:
-// each one needs a provider bridge (cliproxyapi) on PATH.
-func addProviders() []string {
+// each one needs a provider bridge (cliproxyapi) on PATH. ok is false when the
+// bridge is missing, so the menu can offer the step that turns them on (#283).
+func addProviders() ([]string, bool) {
 	var out []string
-	if list, ok := providerList(); ok {
+	list, ok := providerList()
+	if ok {
 		for _, p := range list {
 			if p != "claude" {
 				out = append(out, p)
 			}
 		}
 	}
-	return out
+	return out, ok
 }
+
+// browserLogins is what the provider sign-ins sign in to, in menu order.
+const browserLogins = "Antigravity, Codex, Devin, Kimi, Meta and xAI"
+
+// cliproxyInstall is the one step that turns the browser logins on.
+const cliproxyInstall = "brew install cliproxyapi"
 
 // providerList is _ccm_provider_list: the -<name>-login flags cliproxyapi offers.
 func providerList() ([]string, bool) {
@@ -537,11 +557,34 @@ func providerList() ([]string, bool) {
 	return list, true
 }
 
+// providerDetail is the sign-in row's second column: the product or plan the
+// browser login is for, so two rows with the same label still differ (#283),
+// and the bridge the login goes through stays named (#265).
+func providerDetail(p string) string {
+	switch p {
+	case "antigravity":
+		return "Browser sign-in to Google Antigravity, through cliproxyapi"
+	case "codex":
+		return "Browser sign-in to ChatGPT (Codex), through cliproxyapi"
+	case "devin":
+		return "Browser sign-in to Devin, through cliproxyapi"
+	case "kimi-ai":
+		return "Browser sign-in to a kimi.ai account, through cliproxyapi"
+	case "kimi":
+		return "Browser sign-in to a kimi.com account, through cliproxyapi"
+	case "meta":
+		return "Browser sign-in to Meta AI, through cliproxyapi"
+	case "xai":
+		return "Browser sign-in to xAI (Grok), through cliproxyapi"
+	}
+	return "Sign in to " + providerLabel(p) + " with your browser, through cliproxyapi"
+}
+
 // providerLogin is _ccm_provider_login: cliproxyapi's browser login into auth/<name>.
 func (l *launcher) providerLogin(name, provider string) bool {
 	bin, err := exec.LookPath("cliproxyapi")
 	if err != nil {
-		l.err("cliproxyapi not found — install it: brew install cliproxyapi")
+		l.err("cliproxyapi not found — install it: " + cliproxyInstall)
 		return false
 	}
 	root := filepath.Join(l.dir, "auth")

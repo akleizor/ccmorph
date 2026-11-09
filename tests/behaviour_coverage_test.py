@@ -217,7 +217,8 @@ def test_add_menu_names_each_kind_and_explains_a_provider_login(box):
     asked = out.stdout + out.stderr
     assert 'Claude token' in asked
     assert 'For scripts/CI; quota cannot read plan usage' in asked
-    assert 'Sign in to Codex with your browser (through cliproxyapi)' in asked
+    # Issue #283: the row names the product it signs in to, not just the bridge.
+    assert 'Browser sign-in to ChatGPT (Codex), through cliproxyapi' in asked
     assert 'Claude: sign in to that service' not in asked
 
 

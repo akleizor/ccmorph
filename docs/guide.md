@@ -50,7 +50,7 @@ confirm — never silently, and never without a terminal):
 | | Needed for | Without it | Installer |
 |---|---|---|---|
 | `fzf` | searchable profile and model pickers | numbered choices in a terminal; explicit arguments in scripts | offered through the detected package manager |
-| `cliproxyapi` | non-native custom endpoints — automatic dialect translation | only the endpoint's Claude-family models are reachable | offered through `brew` only; elsewhere it points to the project page |
+| `cliproxyapi` | non-native custom endpoints — automatic dialect translation; `provider` profiles — browser sign-in | only the endpoint's Claude-family models are reachable; `ccmorph add` offers no browser sign-in and names the install step | offered through `brew` only; elsewhere it points to the project page |
 
 The installer copies the runtime (`lib/`, `libexec/`, `share/`) into `~/.config/ccmorph` and the `ccmorph`
 command into `~/.local/bin`. It does not edit your shell config; if
@@ -129,8 +129,10 @@ run `ccmorph add`.
 `ccmorph add` asks which kind of profile (see *Profile types* below) and prompts
 only for what that kind needs: a Claude account opens the normal browser login, a
 Claude token asks you to paste one, an API key asks which provider and then only for
-the key. The provider list opens with *Anthropic* itself (no address, no model
-mapping), followed by the preset gateways (DeepSeek,
+the key, and a provider profile opens that product's browser sign-in through
+cliproxyapi; without cliproxyapi the menu ends with *More sign-ins*, which names
+the install step. The provider list opens with *Anthropic* itself (no address, no
+model mapping), followed by the preset gateways (DeepSeek,
 Kimi, GLM, MiniMax, Qwen, Xiaomi MiMo, StepFun, OpenRouter, SiliconFlow; the list is
 `share/provider-presets.tsv`) fills its official Anthropic-compatible endpoint and
 maps Claude Code's opus, sonnet and haiku tiers to its models; *Custom endpoint*
@@ -166,7 +168,7 @@ A profile is the unit you choose and isolate. Its runtime state lives under
 | Claude account | `sub` | the browser sign-in | Anthropic |
 | Claude token | `token` | a token pasted from `claude setup-token` | Anthropic |
 | API key | `apikey` | key presented to the selected endpoint, optional `base_url` | Anthropic or any API-key gateway; custom endpoint translation is automatic |
-| Codex, xAI, … | `provider` | the browser login of that provider, through `cliproxyapi` | that provider |
+| Antigravity, Codex, Kimi, … | `provider` | the browser login of that product, through `cliproxyapi` | Antigravity, Codex (ChatGPT), Devin, Kimi (kimi.ai or kimi.com), Meta, xAI |
 
 A Claude token profile is for unattended use — scripts, CI, a server — where
 signing in with a browser is impractical: it holds a Claude token, pasted

@@ -121,6 +121,12 @@
   `<route-profile>` — `gateway` there was the operator's profile name, and read as a
   subcommand (#276).
 
+- **`ccmorph add` says which browser logins exist.** Every browser-login row
+  names the product or plan it signs in to — kimi.ai and kimi.com are told
+  apart — and without cliproxyapi the menu ends with a *More sign-ins* row
+  that names the six logins and the install step, saving nothing. The README
+  and guide list the `provider` profile type and the program it needs (#283).
+
 ## v0.5.7 — 2026-11-08
 
 ### Fixed

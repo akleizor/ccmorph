@@ -705,7 +705,7 @@ func (l *launcher) usage(topic string) int {
 	body := t[1]
 	if topic == "add" {
 		// A provider login needs a bridge; name those only when one is installed.
-		if list := addProviders(); len(list) > 0 {
+		if list, _ := addProviders(); len(list) > 0 {
 			labels := make([]string, len(list))
 			for i, p := range list {
 				labels[i] = providerLabel(p)
