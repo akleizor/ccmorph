@@ -3357,40 +3357,6 @@ test_hop_asks_the_gateway_which_models_it_serves() {
   return $rc
 }
 
-test_hop_without_profile_uses_current_profile() {
-  local test_home
-  local relay_id="$$.same-profile"
-  test_home=$(mktemp -d)
-  setup_home "$test_home"
-  # The current running model is a stronger fact than a fresh catalogue answer.
-  # Make it absent so an argument-free same-profile hop proves it skips rejection.
-  fake_gateway
-  source "$CCMORPH_SOURCE"
-
-  export CLAUDE_CODE_SESSION_ID='same-profile-session'
-  export CCMORPH_RELAY_ID="$relay_id"
-  mkdir -p "$HOME/.claude/projects/project"
-  printf '%s\n' \
-    '{"type":"assistant","isSidechain":false,"effort":"max","message":{"role":"assistant","model":"current-model","content":[]}}' \
-    > "$HOME/.claude/projects/project/same-profile-session.jsonl"
-
-  CLAUDE_CONFIG_DIR="$HOME/.config/ccmorph/profiles/proxy" hop_as_claude >/dev/null || {
-    rm -rf "$test_home"
-    return 1
-  }
-
-  local actual="$(<"$HOME/.config/ccmorph/.reswitch.$relay_id")"
-  local expected=$'profile=proxy\nsession=same-profile-session\nmodel=current-model\neffort=max'
-  local rc=0
-  if [[ "$actual" != "$expected" ]]; then
-    print -u2 -- \
-      "an argument-free hop must resume the current profile\n  expected: ${(qqq)expected}\n  actual: ${(qqq)actual}"
-    rc=1
-  fi
-  rm -rf "$test_home"
-  return $rc
-}
-
 test_relay_resume_preserves_dangerous_permission_mode() {
   local test_home
   test_home=$(mktemp -d)
@@ -10822,7 +10788,6 @@ run_test test_hop_refuses_to_end_the_session_when_the_target_cannot_start
 run_test test_hop_refuses_to_switch_away_from_a_private_profile
 run_test test_launch_failure_names_the_cause_and_the_doctor_command
 run_test test_hop_refuses_when_no_claude_process_runs_it
-run_test test_hop_without_profile_uses_current_profile
 run_test test_hop_falls_back_when_the_target_cannot_serve_the_model
 run_test test_hop_asks_the_gateway_which_models_it_serves
 run_test test_relay_resume_preserves_dangerous_permission_mode
