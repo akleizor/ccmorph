@@ -457,7 +457,7 @@ func (l *launcher) addAPIKey(name string) int {
 	// highlights No. The answer it would store is recorded here instead, so the
 	// question never appears. A file ccmorph cannot safely rewrite leaves the
 	// question in place, and the person is told which answer to give.
-	if err := util.ApproveKey(filepath.Join(l.profileDirs, name), key); err != nil {
+	if err := util.ApproveKey(l.profileDirs, name, key); err != nil {
 		fmt.Println(l.dim + keyQuestionHint + l.reset)
 	}
 	return 0
@@ -696,7 +696,7 @@ func (l *launcher) login(args []string) int {
 		if !l.setupDir(name, "apikey", liveSilent) {
 			return 1
 		}
-		if err := util.ApproveKey(filepath.Join(l.profileDirs, name), f["api_key"]); err != nil {
+		if err := util.ApproveKey(l.profileDirs, name, f["api_key"]); err != nil {
 			l.err("could not record the key approval for '" + name + "': " + err.Error())
 			return 1
 		}

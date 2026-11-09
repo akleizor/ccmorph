@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/profile"
 )
 
 // Claude Code asks "Do you want to use this API key?" on a profile's first
@@ -98,14 +99,21 @@ func KeyResponse(home, key string) KeyState {
 	return KeyUnanswered
 }
 
-// ApproveKey records key as approved in the profile home's .claude.json, so
-// Claude Code never asks the first-launch question. An earlier refusal for the
-// same key is cleared. Every other key in the file keeps its place and value,
-// and the file is rewritten only when the answer actually changes. A symlinked
-// or unparsable file, or a customApiKeyResponses that is not an object, is an
+// approveKeyRead runs between ApproveKey's read of .claude.json and its write;
+// a test puts a second writer of the same file there (#299).
+var approveKeyRead = func() {}
+
+// ApproveKey records key as approved in the profile's .claude.json, so Claude
+// Code never asks the first-launch question. An earlier refusal for the same
+// key is cleared. Every other key in the file keeps its place and value, and
+// the file is rewritten only when the answer actually changes. A symlinked or
+// unparsable file, or a customApiKeyResponses that is not an object, is an
 // error: the caller must not guess and clobber what Claude Code wrote.
-func ApproveKey(home, key string) error {
-	path := filepath.Join(home, ".claude.json")
+func ApproveKey(profiles, name, key string) error {
+	if !profile.ValidName(name) {
+		return errors.New("invalid profile name: " + name)
+	}
+	path := filepath.Join(profiles, name, ".claude.json")
 	if isSymlink(path) {
 		return errors.New(path + ": symbolic links are not allowed")
 	}
@@ -116,6 +124,7 @@ func ApproveKey(home, key string) error {
 	if err != nil {
 		return err
 	}
+	approveKeyRead()
 	responses := keyResponses(doc)
 	created := false
 	if responses == nil {

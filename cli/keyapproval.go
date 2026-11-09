@@ -24,7 +24,7 @@ func (l *launcher) keyApproval(name, key string) bool {
 	case util.KeyApproved:
 		return true
 	}
-	if err := util.ApproveKey(home, key); err != nil {
+	if err := util.ApproveKey(l.profileDirs, name, key); err != nil {
 		l.err(keyQuestionHint)
 	}
 	return true

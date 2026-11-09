@@ -48,13 +48,16 @@ func TestApproveKeyRecordsTheTailAndClearsARefusal(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			home := t.TempDir()
+			profiles := filepath.Join(t.TempDir(), "profiles")
+			home := filepath.Join(profiles, "p")
 			path := filepath.Join(home, ".claude.json")
 			if tc.body != "" {
 				path = writeClaudeJSON(t, home, tc.body)
+			} else if err := os.MkdirAll(home, 0o700); err != nil {
+				t.Fatal(err)
 			}
 			before, _ := os.ReadFile(path)
-			if err := ApproveKey(home, key); err != nil {
+			if err := ApproveKey(profiles, "p", key); err != nil {
 				t.Fatal(err)
 			}
 			after, err := os.ReadFile(path)
@@ -83,23 +86,28 @@ func TestApproveKeyRecordsTheTailAndClearsARefusal(t *testing.T) {
 }
 
 func TestApproveKeyRefusesWhatItCannotSafelyRewrite(t *testing.T) {
-	home := t.TempDir()
+	profiles := filepath.Join(t.TempDir(), "profiles")
+	home := filepath.Join(profiles, "p")
 	path := writeClaudeJSON(t, home, `{"customApiKeyResponses":"oops"}`)
-	if err := ApproveKey(home, "sk-issue-236-test-key"); err == nil {
+	if err := ApproveKey(profiles, "p", "sk-issue-236-test-key"); err == nil {
 		t.Fatal("a non-object customApiKeyResponses must be refused")
 	}
 	if data, _ := os.ReadFile(path); string(data) != `{"customApiKeyResponses":"oops"}` {
 		t.Fatalf("the file was changed: %s", data)
 	}
-	link := filepath.Join(t.TempDir(), "home")
+	link := filepath.Join(profiles, "x")
 	if err := os.MkdirAll(link, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(path, filepath.Join(link, ".claude.json")); err != nil {
 		t.Skip("no symlink support")
 	}
-	if err := ApproveKey(link, "sk-issue-236-test-key"); err == nil {
+	if err := ApproveKey(profiles, "x", "sk-issue-236-test-key"); err == nil {
 		t.Fatal("a symlinked .claude.json must be refused")
+	}
+	// A name that is not a profile name names no profile to approve for.
+	if err := ApproveKey(profiles, "active", "sk-issue-236-test-key"); err == nil {
+		t.Fatal("an invalid profile name must be refused")
 	}
 }
 
