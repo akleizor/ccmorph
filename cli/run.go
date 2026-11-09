@@ -120,6 +120,17 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 				tag = f["provider"]
 			}
 		}
+		// The launch is the last moment to say what the masking setting does
+		// before a session sends its first secret (#293). needsAdapter is the
+		// route the shim fronts, and the shim is what masks.
+		if on, _ := util.MaskOn(f["env.CCMORPH_MASK"]); on {
+			if needsAdapter {
+				fmt.Fprintf(os.Stderr, "%sccmorph: masking on — secrets reach the endpoint as placeholders%s\n", l.dim, l.reset)
+			} else {
+				fmt.Fprintf(os.Stderr, "%sccmorph: env.CCMORPH_MASK=%s is set, but nothing is masked on this route — it reaches its backend without ccmorph's shim%s\n",
+					l.dim, f["env.CCMORPH_MASK"], l.reset)
+			}
+		}
 		var rc int
 		if defaultModel, rc = l.configStore("seed-model-defaults", name, "model"); rc != 0 {
 			return nil, 1

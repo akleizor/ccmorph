@@ -356,6 +356,34 @@ printf '%s\\n' '__CCMORPH_STATUS__{code}'
         assert "OK endpoint: Anthropic accepted the API key (HTTP 200)" in result.stdout
 
 
+@pytest.mark.parametrize("conf", [
+    "type=apikey\napi_key=k\nenv.CCMORPH_MASK=1\n",
+    "type=apikey\napi_key=k\nbase_url=https://api.anthropic.com\nenv.CCMORPH_MASK=1\n",
+    "type=provider\nprovider=test\nenv.CCMORPH_MASK=1\n",
+], ids=["no-base-url", "anthropic-base-url", "provider-bridge"])
+def test_doctor_warns_when_masking_is_on_for_a_route_that_cannot_mask(tmp_path, conf):
+    """Masking is a promise about what reaches the backend. On a route the shim
+    does not front, the setting silently masks nothing (GH-293), so doctor must
+    say so -- as a warning about the route, not a readiness failure: the profile
+    still starts, and the verdict must not claim otherwise."""
+    result, _, _ = run_doctor(tmp_path, conf, OK_CURL)
+    assert result.returncode == 0, result.stdout
+    warns = [l for l in result.stdout.splitlines() if l.startswith("WARN")]
+    assert any("masking" in l for l in warns), result.stdout
+    assert any("nothing is masked" in l for l in warns), result.stdout
+    assert result.stdout.splitlines()[-1] == "OK ready: start it with ccmorph run demo"
+
+
+def test_doctor_stays_quiet_when_masking_covers_the_route(tmp_path):
+    """A gateway route is fronted by the shim, so masking on there is the
+    promise kept (GH-293): no warning line, and the verdict stays ready."""
+    conf = "type=apikey\nbase_url=https://example.test\napi_key=k\nenv.CCMORPH_MASK=1\n"
+    result, _, _ = run_doctor(tmp_path, conf, OK_CURL)
+    assert result.returncode == 0, result.stdout
+    assert "masking" not in result.stdout
+    assert result.stdout.splitlines()[-1] == "OK ready: start it with ccmorph run demo"
+
+
 @pytest.mark.parametrize("case", ["gateway-ok", "missing-credential", "malformed-listing"])
 def test_doctor_ends_with_a_verdict(tmp_path, case):
     """The last line answers the only question a person has: is this profile

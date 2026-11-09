@@ -9245,6 +9245,85 @@ test_inspect_uses_the_fleet_or_default_compaction_percent() {
   return $rc
 }
 
+# GH-293: masking is a promise about what leaves the machine, yet no view said
+# whether it held. inspect must name it for every profile -- on, off, or not
+# available on the route -- and say plainly when the setting masks nothing.
+test_inspect_names_masking_for_every_profile() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  write_apikey_conf gw 'base_url=http://gw.invalid' 'api_key=gw-key' 'env.CCMORPH_MASK=1'
+  write_apikey_conf anth 'api_key=anth-key' 'env.CCMORPH_MASK=1'
+  write_apikey_conf anthquiet 'api_key=anth-key'
+  printf '%s\n' 'type=sub' 'email=a@b.c' > "$HOME/.config/ccmorph/subacct.conf"
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 actual
+  # setup_home's proxy is a gateway profile without the setting.
+  actual=$(ccmorph inspect proxy) || { rm -rf "$test_home"; return 1; }
+  assert_contains "$actual" 'masking    off' \
+    'a gateway profile without the setting must say masking is off' || rc=1
+  actual=$(ccmorph inspect gw) || { rm -rf "$test_home"; return 1; }
+  assert_contains "$actual" 'masking    on' \
+    'a gateway profile with env.CCMORPH_MASK=1 must say masking is on' || rc=1
+  assert_contains "$actual" 'secrets reach the endpoint as placeholders' \
+    'the on line must say what masking does' || rc=1
+  actual=$(ccmorph inspect anth) || { rm -rf "$test_home"; return 1; }
+  assert_contains "$actual" 'env.CCMORPH_MASK=1' \
+    'a direct Anthropic profile with the setting on must show the setting' || rc=1
+  assert_contains "$actual" 'not available on this route, nothing is masked' \
+    'the setting on a route the shim does not front must say nothing is masked' || rc=1
+  actual=$(ccmorph inspect anthquiet) || { rm -rf "$test_home"; return 1; }
+  assert_contains "$actual" 'masking    not available on this route' \
+    'a direct Anthropic profile without the setting must say masking is not available' || rc=1
+  assert_not_contains "$actual" 'nothing is masked' \
+    'without the setting the row must not claim a refused promise' || rc=1
+  actual=$(ccmorph inspect subacct) || { rm -rf "$test_home"; return 1; }
+  assert_contains "$actual" 'masking    not available on this route' \
+    'a subscription profile must say masking is not available on its route' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
+# GH-293: a launch with masking on must say so in one line, and say plainly when
+# the route cannot be masked -- the setting alone is not a promise, and the
+# session is already running by the time its first secret leaves.
+test_launch_says_whether_secrets_are_masked() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  write_apikey_conf gw 'base_url=http://gw.invalid' 'api_key=gw-key' 'env.CCMORPH_MASK=1'
+  write_apikey_conf anth 'api_key=anth-key' 'env.CCMORPH_MASK=1'
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 out st
+  out=$(_ccm_launch -a gw 2>&1); st=$?
+  [[ "$st" == 0 ]] || { print -u2 -- "the gateway launch must succeed, got $st: ${(qqq)out}"; rc=1 }
+  [[ "$out" == *'ccmorph: masking on'* ]] || {
+    print -u2 -- "a masked gateway launch must say so in one line: ${(qqq)out}"
+    rc=1
+  }
+  [[ "$out" == *'secrets reach the endpoint as placeholders'* ]] || {
+    print -u2 -- "the masking line must say what is promised: ${(qqq)out}"
+    rc=1
+  }
+  out=$(_ccm_launch -a anth 2>&1); st=$?
+  [[ "$st" == 0 ]] || { print -u2 -- "the native launch must succeed, got $st: ${(qqq)out}"; rc=1 }
+  [[ "$out" == *'env.CCMORPH_MASK=1 is set, but nothing is masked'* ]] || {
+    print -u2 -- "the setting on a route the shim does not front must say nothing is masked: ${(qqq)out}"
+    rc=1
+  }
+  # Without the setting the launch says nothing about masking at all.
+  out=$(_ccm_launch -a proxy 2>&1); st=$?
+  [[ "$st" == 0 ]] || { print -u2 -- "the plain gateway launch must succeed, got $st: ${(qqq)out}"; rc=1 }
+  [[ "$out" != *'masking'* ]] || {
+    print -u2 -- "masking off must not print a line: ${(qqq)out}"
+    rc=1
+  }
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_launch_compacts_at_fleet_percent_unless_the_conf_overrules() {
   local test_home
   test_home=$(mktemp -d)
@@ -10063,6 +10142,8 @@ run_test test_picker_without_a_registry_offers_rows_and_spawns_nothing
 run_test test_picker_projects_a_derived_1m_row_for_a_probed_claude
 run_test test_launch_substitutes_the_derived_send_id_for_a_claude_model
 run_test test_inspect_uses_the_fleet_or_default_compaction_percent
+run_test test_inspect_names_masking_for_every_profile
+run_test test_launch_says_whether_secrets_are_masked
 run_test test_launch_compacts_at_fleet_percent_unless_the_conf_overrules
 run_test test_a_settings_file_compaction_trigger_is_not_overruled
 run_test test_add_sub_completes_the_browser_login
