@@ -135,6 +135,30 @@ def test_help_is_concise_truthful_and_read_only(tmp_path):
     assert not marker.exists()
 
 
+def test_hop_help_needs_no_exit_and_names_both_forms_gh_289(tmp_path):
+    # GH-289: the page said "Then exit Claude to complete the switch" although
+    # hop switches the session at once, and taught only the ! form.
+    state = tmp_path / 'state'
+    state.mkdir()
+    env = {**os.environ, 'HOME': str(tmp_path / 'home'),
+           'CCMORPH_LIB_DIR': str(ROOT / "lib"), 'CCMORPH_STATE_DIR': str(state)}
+    cli = str(ROOT / "bin/ccmorph")
+    page = subprocess.run([cli, 'help', 'hop'], env=env, capture_output=True,
+                          text=True, timeout=HANG_TIMEOUT)
+    assert page.returncode == 0, page.stderr
+    assert '/ccmorph:hop <profile>' in page.stdout
+    assert '! ccmorph hop <profile>' in page.stdout
+    assert 'exit Claude' not in page.stdout
+    assert 'at once' in page.stdout
+    assert 'No exit is needed' in page.stdout
+    first = subprocess.run([cli, '--help'], env=env, capture_output=True,
+                           text=True, timeout=HANG_TIMEOUT)
+    assert first.returncode == 0, first.stderr
+    hop_line = next((l for l in first.stdout.splitlines() if 'ccmorph hop' in l), '')
+    assert hop_line, 'the first help screen must list hop'
+    assert 'inside Claude' in hop_line
+
+
 def test_update_and_uninstall_under_homebrew_name_the_brew_command(tmp_path):
     # A brew install keeps the library under the Cellar with no installer beside it.
     root = tmp_path / 'Cellar/ccmorph/0.2.0/libexec'

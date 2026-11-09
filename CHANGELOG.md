@@ -29,6 +29,13 @@
 
 ### Fixed
 
+- **The hop help page no longer tells you to exit Claude.** The switch happens
+  at once — hop itself ends the session and the relay resumes the conversation
+  on the new profile — so following the page's instruction ended the freshly
+  switched session. The page now says no exit is needed, shows both the
+  `/ccmorph:hop` and `! ccmorph hop` forms, and `ccmorph --help` lists hop with
+  how to use it inside a session (#289).
+
 - **A private profile says what it does to the conversation.** `private=1`
   ran from a throwaway view whose transcripts were deleted at exit, yet no
   ccmorph view said so: `list`, `inspect` and `doctor` mark the profile and
