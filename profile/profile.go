@@ -292,7 +292,7 @@ func Validate(name string, f map[string]string) error {
 	if f["type"] != "apikey" {
 		return nil
 	}
-	label := "apikey '" + name + "'"
+	label := "API key profile '" + name + "'"
 	switch key := f["api_key"]; {
 	case key == "":
 		return fail("%s has no api_key", label)
@@ -309,7 +309,7 @@ func Validate(name string, f map[string]string) error {
 	case "", "false":
 	case "true":
 		if f["base_url"] == "" {
-			return fail("%s has adapter=true but no base_url to front", label)
+			return fail("%s has adapter=true but no endpoint to front", label)
 		}
 	default:
 		return fail("%s adapter must be 'true', 'false', or absent", label)
@@ -320,16 +320,49 @@ func Validate(name string, f map[string]string) error {
 // ValidateBaseURL refuses a base_url without an http(s) scheme or with whitespace.
 func ValidateBaseURL(label, u string) error {
 	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
-		return fail("%s base_url must use http:// or https://", label)
+		return fail("%s endpoint must use http:// or https://", label)
 	}
 	if hasSpace(u) {
-		return fail("%s base_url contains whitespace", label)
+		return fail("%s endpoint contains whitespace", label)
 	}
 	return nil
 }
 
 // hasSpace is zsh [[:space:]] in a UTF-8 locale.
 func hasSpace(s string) bool { return strings.IndexFunc(s, unicode.IsSpace) >= 0 }
+
+// ProviderName is a provider id as a person sees it: xAI keeps its casing, any
+// other id capitalises its first rune, and an empty id stays empty.
+func ProviderName(p string) string {
+	if p == "xai" {
+		return "xAI"
+	}
+	if p == "" {
+		return p
+	}
+	r := []rune(p)
+	return string(unicode.ToUpper(r[0])) + strings.ToLower(string(r[1:]))
+}
+
+// KindLabel is the one display name every screen uses for a profile kind: the
+// settings in the file (sub, token, apikey) are spellings for the file, not for
+// people. A provider profile is named by its provider.
+func KindLabel(typ, provider string) string {
+	switch typ {
+	case "sub":
+		return "Claude account"
+	case "token":
+		return "Claude token"
+	case "apikey", "proxy":
+		return "API key"
+	case "provider":
+		if provider == "" {
+			return "Provider"
+		}
+		return ProviderName(provider)
+	}
+	return typ
+}
 
 // Env is the launch environment a profile's fields produce, in the order `ccmorph
 // _env` prints it: the profile's own CLAUDE_CONFIG_DIR, the credential its type

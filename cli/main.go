@@ -701,7 +701,19 @@ func (l *launcher) usage(topic string) int {
 	}
 	fmt.Println("Usage: " + usageLine(topic))
 	fmt.Println()
-	fmt.Println(t[1])
+	body := t[1]
+	if topic == "add" {
+		// A provider login needs a bridge; name those only when one is installed.
+		if list := addProviders(); len(list) > 0 {
+			labels := make([]string, len(list))
+			for i, p := range list {
+				labels[i] = providerLabel(p)
+			}
+			body = strings.Replace(body, "\n\nCredentials",
+				"\n  "+strings.Join(labels, ", ")+": sign in to that service with your browser (through cliproxyapi).\n\nCredentials", 1)
+		}
+	}
+	fmt.Println(body)
 	fmt.Println("\nFixed choices: ↑/↓ move, Enter selects one, Esc cancels. No search box.")
 	fmt.Println("Profile/model catalogues: type to search with fzf; numbers without it.")
 	return 0
@@ -719,11 +731,10 @@ Examples:
 
 Native Claude help: ccmorph run <profile> --help`},
 	"add": {"ccmorph add <profile>", `Choose how to sign in. Only the selected method asks for credentials:
-  Subscription: sign in to Claude with your browser.
-  API key: credential presented to Anthropic or a gateway (apikey), and
-  checked with that endpoint before the profile is saved.
-  OAuth token: a long-lived token for scripts/CI; quota cannot read plan usage.
-  Provider: browser login, when a supported provider bridge is installed.
+Claude account: sign in to Claude with your browser.
+  Claude token: a long-lived token for scripts/CI; quota cannot read plan usage.
+  API key: credential presented to Anthropic or a gateway, checked with that
+  endpoint before the profile is saved.
 
 Credentials are hidden while typing. Ctrl-C cancels setup.`},
 	"config": {"ccmorph config [profile]", `Choose what to change: model and reasoning, or connection/sign-in details.
@@ -734,8 +745,8 @@ Changes affect new sessions.
 
 For a single setting: ccmorph set <profile> model|effort [value]`},
 	"list": {"ccmorph list", "List saved profiles. * marks the default used by ccmorph run; private marks one whose history is deleted when the session ends."},
-	"quota": {"ccmorph quota [profile] [--json]", `Every profile in one view, grouped by kind: Claude subscriptions, Codex
-subscriptions, budget accounts, and API or gateway profiles. Each plan window is a
+	"quota": {"ccmorph quota [profile] [--json]", `Every profile in one view, grouped by kind: Claude accounts and tokens,
+Codex subscriptions, budget accounts, and API key or provider profiles. Each plan window is a
 bar with the percent used and when it resets; a plan tier comes from the provider's
 own account data. A rate-limited or unreachable read shows the last good reading
 and its age. Gateways and API keys show today's and this month's billed spend from

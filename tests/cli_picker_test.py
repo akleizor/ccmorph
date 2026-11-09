@@ -791,6 +791,7 @@ class PickerTTYTest(unittest.TestCase):
             self.assertIn(label, out)
         self.assertIn('\x1b[38;2;153;153;153mSign in with your browser', out)
         self.assertIn('\x1b[38;2;153;153;153mFor scripts/CI; quota cannot read plan usage', out)
+        self.assertIn('Sign in to xAI with your browser (through cliproxyapi)', out)
         self.assertIn('PROVIDER_ID=xai', out)
         self.assertNotIn('PROVIDER_ID=xAI', out)
         self.assertFalse((self.tmp / 'fzf.log').exists())

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/akleizor/ccmorph/profile"
 )
 
 // profileRows is _ccm_profile_rows: ID<TAB>kind<TAB>detail<TAB>marker per profile.
@@ -22,12 +24,11 @@ func (l *launcher) profileRows(active string, types []string) []string {
 		if len(types) > 0 && !slices.Contains(types, typ) {
 			continue
 		}
-		kind, detail := typ, ""
+		kind, detail := profile.KindLabel(typ, f["provider"]), ""
 		switch typ {
 		case "sub":
-			kind, detail = "Claude account", f["email"]
+			detail = f["email"]
 		case "token":
-			kind = "Claude token"
 		case "provider":
 			kind = providerLabel(f["provider"])
 			detail = l.accountModel(n)
@@ -35,7 +36,6 @@ func (l *launcher) profileRows(active string, types []string) []string {
 				detail = "Browser login"
 			}
 		case "apikey":
-			kind = "API key"
 			detail = f["base_url"]
 			if detail == "" {
 				detail = "api.anthropic.com"

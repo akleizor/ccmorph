@@ -125,13 +125,13 @@ argument. Adding another never changes the default; `ccmorph list` marks it and
 run `ccmorph add`.
 
 `ccmorph add` asks which kind of profile (see *Profile types* below) and prompts
-only for what that kind needs: a subscription opens the normal browser login, a
-token asks you to paste one, an API key asks which provider and then only for
+only for what that kind needs: a Claude account opens the normal browser login, a
+Claude token asks you to paste one, an API key asks which provider and then only for
 the key. A preset provider (DeepSeek,
 Kimi, GLM, MiniMax, Qwen, Xiaomi MiMo, StepFun, OpenRouter, SiliconFlow; the list is
 `share/provider-presets.tsv`) fills its official Anthropic-compatible endpoint and
 maps Claude Code's opus, sonnet and haiku tiers to its models; *Custom endpoint*
-asks for the base URL (blank = api.anthropic.com). The endpoint is then asked
+asks for the endpoint (blank = api.anthropic.com). The endpoint is then asked
 whether it accepts the pasted key — in this step, not at first launch — and a
 refused key is asked for again rather than saved. A pasted Claude token is
 judged the same way: a paste without a token's shape is refused at the prompt,
@@ -157,24 +157,25 @@ on your own route.
 A profile is the unit you choose and isolate. Its runtime state lives under
 `~/.config/ccmorph/profiles/<name>`.
 
-| Type | What it holds | Backend |
+| Shown as | `type` in the file | What it holds | Backend |
 |---|---|---|
-| `sub` | OAuth subscription state | Anthropic |
-| `token` | a long-lived OAuth token | Anthropic |
-| `apikey` | key presented to the selected endpoint, optional `base_url` | Anthropic or any API-key gateway; custom endpoint translation is automatic |
+| Claude account | `sub` | the browser sign-in | Anthropic |
+| Claude token | `token` | a token pasted from `claude setup-token` | Anthropic |
+| API key | `apikey` | key presented to the selected endpoint, optional `base_url` | Anthropic or any API-key gateway; custom endpoint translation is automatic |
+| Codex, xAI, … | `provider` | the browser login of that provider, through `cliproxyapi` | that provider |
 
-A `token` profile is for unattended use — scripts, CI, a server — where signing
-in with a browser is impractical: it holds a long-lived OAuth token, pasted
+A Claude token profile is for unattended use — scripts, CI, a server — where
+signing in with a browser is impractical: it holds a Claude token, pasted
 once. Claude Code's `claude setup-token` prints such a token (a valid one
 starts with `sk-ant-oat01-`); run `ccmorph add <name>` and choose *Claude
 token* to paste it (typing is hidden). One thing it cannot do: read plan usage,
 so `ccmorph quota` shows no plan windows for it.
 
-Signing in again, per type: a `sub` profile reopens the browser login with
-`ccmorph login <profile>`, a provider-backed profile renews its login the same
-way, and a `token` or `apikey` profile has its credential replaced with
-`ccmorph config <profile>` — though an API key Claude Code was told to refuse is
-re-allowed by `ccmorph login <profile>` instead.
+Signing in again, per kind: a Claude account profile reopens the browser login
+with `ccmorph login <profile>`, a provider-backed profile renews its login the
+same way, and a Claude token or API key profile has its credential replaced
+with `ccmorph config <profile>` — though an API key Claude Code was told to
+refuse is re-allowed by `ccmorph login <profile>` instead.
 
 `proxy` is a legacy alias retained only so existing profile files keep working.
 New profiles use `apikey`; endpoint, dialect, network route, model, and effort are
@@ -420,7 +421,7 @@ itself (why is this token rejected?). Values shorter than six characters and pas
 with no label around them are not found, and neither is a value of letters only after a `password:`-style label,
 or one whose label names something about the secret (`secret_name`, `token_id`): masking
 what is only probably a secret would hide ordinary words from the model in every turn. Each usage receipt counts what was masked in
-its `masked` field. Masking covers every route the shim fronts; a subscription or
+its `masked` field. Masking covers every route the shim fronts; a Claude account or
 `api.anthropic.com` profile keeps its own direct connection and is not masked.
 
 ### Gateway edge
@@ -452,7 +453,7 @@ an explicit or saved model when no usable protocol is cached or declared. Resume
 and native subcommands never trigger this automatic picker. Endpoint failures still
 fail explicitly.
 
-OpenAI-compatible base URLs may include an API version, such as `/api/v4`.
+OpenAI-compatible endpoints may include an API version, such as `/api/v4`.
 Anthropic-compatible bases must be the prefix before `/v1/messages`, as required by
 Claude Code and the translator. Compatibility and context probes use those same
 client URL conventions.
@@ -552,7 +553,7 @@ profile to hop to or see what a gateway is costing. Each plan window is a bar wi
 percent used and its reset time (local; "in 2h 14m" inside a day, else "Tue 09:00"):
 
 ```
-Claude subscriptions
+Claude accounts and tokens
 alex  Max 20x
   5h       ██░░░░░░░░░░░░░░  12%  in 4h 10m
   7d       ██████░░░░░░░░░░  40%  Tue 09:00
@@ -563,7 +564,7 @@ Codex subscriptions
 cx  Plus
   5h       ██████░░░░░░░░░░  35%  in 2h 14m
 
-API and gateway profiles
+API key and provider profiles
 work
   today $1.70 · month $5.00 (est.)
 ds
@@ -576,12 +577,12 @@ spare
 ```
 
 A plan tier (Pro, Max 5x, Max 20x, Team, Plus, Pro for Codex) is read from the
-provider's own account data, never guessed. Claude subscriptions are read from
+provider's own account data, never guessed. Claude account usage is read from
 claude.ai's usage endpoint (the one `/usage` shows) with the profile's own sign-in,
 Codex subscriptions from Codex's own usage endpoint; no inference, nothing billed. An
 expired sign-in is reported, not refreshed; the next session on that profile refreshes
 it. A missing sign-in is reported with the command that restores it, and a
-`token` profile's long-lived token is not allowed to read plan usage.
+Claude token is not allowed to read plan usage.
 
 When a read is rate-limited or unreachable, the last good reading stays on screen,
 dimmed, with its age ("12 min old"); only a profile never read shows the error. Gateways
@@ -594,12 +595,12 @@ A turn whose model had no price is never read as free: when no turn of the month
 a cost, the profile shows the turns and tokens it served and `cost unknown`; when only
 some did, a second line says how many turns had no price; and a profile with no
 receipts this month says `not used this month`.
-A `sub`, `token` or `provider` profile writes the same receipts: a subscription is not
+A Claude account, Claude token or provider profile writes the same receipts: a Claude account is not
 billed per token, so its row carries `estimated_cost` at the models.dev list price and
 the screen marks it `(est.)`. `usage_route=direct` turns that off for one profile.
 An API-key profile on DeepSeek, Kimi, GLM, OpenRouter, SiliconFlow or StepFun also
 shows its account balance, read with the profile's own key from that provider's billing
-endpoint (a free GET); the provider is recognised by the base URL's host, and a key is
+endpoint (a free GET); the provider is recognised by the endpoint's host, and a key is
 never sent to any other host.
 
 `ccmorph quota --json` prints the same data for tools (profile, kind, plan, windows with
@@ -648,7 +649,7 @@ once:
   Fresh installs create only the nested directory, with no legacy link.
 
 Untouched by all of this: native `~/.claude` and the shared harness layer inside
-it. Each profile keeps its own secure storage, so a subscription login made in one
+it. Each profile keeps its own secure storage, so a Claude account login made in one
 profile is never visible to another; MCP credentials are shared through MCP
 capsules instead. `./install.sh --uninstall` still leaves your
 profile state and credentials in place — removing the state root remains a

@@ -2170,17 +2170,20 @@ test_add_never_asks_how_to_reach_the_endpoint() {
 test_add_apikey_preset_fills_endpoint_and_tiers() {
   # A preset is picked by id (or number) and fills the endpoint and the tier
   # models; only the key is asked. Every preset row names six fields.
-  local test_home rc=0 out actual line
+  local test_home rc=0 out err actual line
   test_home=$(mktemp -d)
   setup_home "$test_home"
   source "$CCMORPH_SOURCE"
   command cp "$REPO_ROOT/share/provider-presets.tsv" "$HOME/.config/ccmorph/share/"
-  out=$(ccmorph add dsk <<< $'3\ndeepseek\nsk-ds\n') || rc=1
+  out=$(ccmorph add dsk <<< $'3\ndeepseek\nsk-ds\n' 2>"$test_home/add.err") || rc=1
+  err="$(<"$test_home/add.err")"
   actual="$(<"$HOME/.config/ccmorph/dsk.conf")"
   assert_contains "$actual" 'base_url=https://api.deepseek.com/anthropic' 'a preset must fill its endpoint' || rc=1
   assert_contains "$actual" 'env.ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-v4-pro' 'a preset must map the opus tier' || rc=1
   assert_contains "$actual" 'env.ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-flash' 'a preset must map the haiku tier' || rc=1
-  assert_contains "$out" 'Added dsk (DeepSeek → https://api.deepseek.com/anthropic)' 'add must name the provider' || rc=1
+  assert_contains "$out" 'Added dsk (API key → https://api.deepseek.com/anthropic)' 'the done line must name the kind and the endpoint' || rc=1
+  assert_contains "$err" 'API key for dsk (DeepSeek)' 'add must name the provider' || rc=1
+  assert_not_contains "$err" 'Added dsk' 'the done line belongs on stdout, not stderr' || rc=1
   ccmorph add bogus <<< $'3\nnope\nk\n' >/dev/null 2>&1 && { print -u2 -- 'an unknown preset must be refused'; rc=1 }
   [[ ! -e "$HOME/.config/ccmorph/bogus.conf" ]] || { print -u2 -- 'a refused preset must save nothing'; rc=1 }
   while IFS= read -r line; do
@@ -2267,10 +2270,12 @@ test_help_teaches_credential_type_not_gateway_shape() {
   source "$CCMORPH_SOURCE"
 
   local help="$(ccmorph help add)" rc=0
-  assert_contains "$help" 'apikey' \
+  assert_contains "$help" 'API key: credential presented to Anthropic or a gateway' \
     'help must teach the one API-key credential type' || rc=1
-  assert_contains "$help" 'credential presented to Anthropic or a gateway' \
-    'apikey must be defined by credential mechanism, not provider identity' || rc=1
+  assert_not_contains "$help" 'OAuth token' \
+    'help must name a Claude token, not an OAuth token' || rc=1
+  assert_not_contains "$help" 'Subscription' \
+    'help must name a Claude account, not a Subscription' || rc=1
   assert_contains "$help" 'for scripts/CI' \
     'help must say when to choose a token over a Claude account' || rc=1
   assert_contains "$help" 'quota cannot read plan usage' \

@@ -50,17 +50,10 @@ func (l *launcher) add(args []string) int {
 		l.err("leftover private state for '" + name + "'; run ccmorph rm " + name + " to review and remove it, or choose another name")
 		return 1
 	}
-	var providers []string
-	if list, ok := providerList(); ok {
-		for _, p := range list {
-			if p != "claude" {
-				providers = append(providers, p)
-			}
-		}
-	}
+	providers := addProviders()
 	rows := "sub\tClaude account\tSign in with your browser\ntoken\tClaude token\tFor scripts/CI; quota cannot read plan usage\napikey\tAPI key\tAnthropic or a gateway"
 	for _, p := range providers {
-		rows += "\n" + p + "\t" + providerLabel(p) + "\tSign in with your browser"
+		rows += "\n" + p + "\t" + providerLabel(p) + "\tSign in to " + providerLabel(p) + " with your browser (through cliproxyapi)"
 	}
 	choice, ok := l.choose("Sign-in method — "+name, rows)
 	if !ok {
@@ -168,7 +161,7 @@ func (l *launcher) subBrowserLogin(name string) (string, bool) {
 		email = string(m[1])
 	}
 	if email == "" || strings.ContainsAny(email, "\r\n") {
-		l.err("no subscription profile found after login — nothing was saved")
+		l.err("no Claude account profile found after login — nothing was saved")
 		return "", false
 	}
 	return email, true
@@ -199,7 +192,7 @@ func (l *launcher) addSub(name string) int {
 		l.rollback(name)
 		return 1
 	}
-	fmt.Println(l.accent + "Added" + l.reset + " " + name + " (sub: " + email + ")")
+	fmt.Println(l.accent + "Added" + l.reset + " " + name + " (Claude account: " + email + ")")
 	return 0
 }
 
@@ -315,7 +308,7 @@ func (l *launcher) addToken(name string) int {
 			l.rollback(name)
 			return 1
 		}
-		fmt.Println(l.accent + "Added" + l.reset + " " + name + " (token)")
+		fmt.Println(l.accent + "Added" + l.reset + " " + name + " (Claude token)")
 		return 0
 	}
 }
@@ -386,7 +379,7 @@ func (l *launcher) addAPIKey(name string) int {
 	}
 	// The endpoint is asked the listing question doctor asks, in this step: a
 	// key it refuses is named here and asked for again, not saved as Added and
-	// discovered at launch. The Base URL is answered once; a re-entered key is
+	// discovered at launch. The endpoint is answered once; a re-entered key is
 	// checked against the same endpoint.
 	var key string
 	for first := true; ; first = false {
@@ -396,7 +389,7 @@ func (l *launcher) addAPIKey(name string) int {
 			return 1
 		}
 		if label == "" && first {
-			v, rc := uiInput("Base URL (blank = api.anthropic.com): ", false)
+			v, rc := uiInput("Endpoint (blank = api.anthropic.com): ", false)
 			if rc != 0 {
 				return 1
 			}
@@ -427,14 +420,11 @@ func (l *launcher) addAPIKey(name string) int {
 		l.rollback(name)
 		return 1
 	}
-	shown, kind := url, label
+	shown := url
 	if shown == "" {
 		shown = "api.anthropic.com"
 	}
-	if kind == "" {
-		kind = "apikey"
-	}
-	fmt.Println(l.accent + "Added" + l.reset + " " + name + " (" + kind + " → " + shown + ")")
+	fmt.Println(l.accent + "Added" + l.reset + " " + name + " (API key → " + shown + ")")
 	if url != "" {
 		l.probeNudge(name)
 	}
@@ -492,10 +482,24 @@ func (l *launcher) addProvider(name, provider string) int {
 		l.rollback(name)
 		return 1
 	}
-	fmt.Println(l.accent + "Added" + l.reset + " " + name + " (provider: " + provider + ")")
+	fmt.Println(l.accent + "Added" + l.reset + " " + name + " (" + providerLabel(provider) + ")")
 	fmt.Println(l.dim + "Set a default model:  ccmorph set " + name + " model <model-id>" + l.reset)
 	fmt.Println(l.dim + "Configure defaults: ccmorph config " + name + l.reset)
 	return 0
+}
+
+// addProviders is the provider logins the add menu offers, other than Claude:
+// each one needs a provider bridge (cliproxyapi) on PATH.
+func addProviders() []string {
+	var out []string
+	if list, ok := providerList(); ok {
+		for _, p := range list {
+			if p != "claude" {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
 }
 
 // providerList is _ccm_provider_list: the -<name>-login flags cliproxyapi offers.
@@ -646,7 +650,7 @@ func (l *launcher) login(args []string) int {
 	if f["type"] != "provider" {
 		// Only a token profile is left, and its credential is replaced, not
 		// renewed: name the command that does that.
-		l.err("'" + name + "' is a " + f["type"] + " profile — replace its token: ccmorph config " + name)
+		l.err("'" + name + "' is a " + profile.KindLabel(f["type"], f["provider"]) + " profile — replace its credential: ccmorph config " + name)
 		return 1
 	}
 	if !l.providerLogin(name, f["provider"]) {

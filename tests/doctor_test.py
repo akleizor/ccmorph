@@ -114,7 +114,7 @@ printf '%s\n' '__CCMORPH_STATUS__200'
                                   "https:user:secret@gw.example/v1"])
 def test_doctor_never_echoes_userinfo_of_an_invalid_endpoint(tmp_path, base):
     result, _, _ = run_doctor(tmp_path, f"type=apikey\nbase_url={base}\napi_key=k\n")
-    assert "base_url must be an http(s) URL" in result.stdout
+    assert "endpoint must be an http(s) URL" in result.stdout
     assert "endpoint:" in result.stdout
     assert "secret" not in result.stdout + result.stderr
 

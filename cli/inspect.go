@@ -61,7 +61,7 @@ func (l *launcher) inspect(args []string) int {
 	typ, base, tag := f["type"], f["base_url"], f["tag"]
 	pctConf := f["env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"]
 
-	head := l.bold + name + l.reset + "  " + l.dim + typ
+	head := l.bold + name + l.reset + "  " + l.dim + profile.KindLabel(typ, f["provider"])
 	if tag != "" {
 		head += " · " + tag
 	}

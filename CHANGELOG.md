@@ -75,6 +75,13 @@
   install route provides ccusage; it says how to point ccusage at the export
   (#261).
 
+### Changed
+
+- Every screen names a profile kind the same way — Claude account, Claude token,
+  API key, or the provider's own name — and the gateway address is called its
+  endpoint everywhere. `ccmorph help add` names provider logins only when a
+  provider bridge is installed (#265).
+
 ## v0.5.7 — 2026-11-08
 
 ### Fixed

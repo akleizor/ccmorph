@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"unicode"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/profile"
@@ -100,16 +99,7 @@ func (l *launcher) accountModel(name string) string {
 	return v
 }
 
-func providerLabel(p string) string {
-	if p == "xai" {
-		return "xAI"
-	}
-	if p == "" {
-		return p
-	}
-	r := []rune(p)
-	return string(unicode.ToUpper(r[0])) + strings.ToLower(string(r[1:]))
-}
+func providerLabel(p string) string { return profile.ProviderName(p) }
 
 func (l *launcher) accountsHint() {
 	if names := l.confNames(); len(names) > 0 {
@@ -161,7 +151,7 @@ func (l *launcher) list(args []string) int {
 		if n == active {
 			marker, nameFmt = l.accent+"*"+l.reset, l.bold+n+l.reset
 		}
-		label := l.dim + f["type"] + l.reset
+		label := l.dim + profile.KindLabel(f["type"], f["provider"]) + l.reset
 		arrow := func(m string) string {
 			if m == "" {
 				return ""
@@ -171,16 +161,16 @@ func (l *launcher) list(args []string) int {
 		switch f["type"] {
 		case "sub":
 			if f["email"] != "" {
-				label = l.cyan + "sub" + l.reset + l.dim + ": " + f["email"] + l.reset
+				label = l.cyan + "Claude account" + l.reset + l.dim + ": " + f["email"] + l.reset
 			}
 		case "token":
-			label = l.yellow + "token" + l.reset
+			label = l.yellow + "Claude token" + l.reset
 		case "apikey":
 			base := f["base_url"]
 			if base == "" {
 				base = "api.anthropic.com"
 			}
-			label = l.cyan + "apikey" + l.reset + l.dim + ": " + base + arrow(l.accountModel(n)) + l.reset
+			label = l.cyan + "API key" + l.reset + l.dim + ": " + base + arrow(l.accountModel(n)) + l.reset
 		case "provider":
 			m := l.accountModel(n)
 			p := f["provider"]
@@ -235,7 +225,7 @@ func (l *launcher) cred(args []string) int {
 		c = f["token"]
 	}
 	if c == "" {
-		l.err("'" + name + "' is a " + f["type"] + " profile and stores no credential here")
+		l.err("'" + name + "' is a " + profile.KindLabel(f["type"], f["provider"]) + " profile and stores no credential here")
 		l.err("sign in again: ccmorph login " + name)
 		return 1
 	}

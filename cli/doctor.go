@@ -233,10 +233,10 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		failed = 1
 	}
 	if typ == "apikey" && key == "" {
-		report("FAIL", "config: apikey profile has no credential (value not displayed)")
+		report("FAIL", "config: API key profile has no credential (value not displayed)")
 		failed = 1
 	}
-	report("OK", "profile: "+name+" ("+typ+")")
+	report("OK", "profile: "+name+" ("+profile.KindLabel(typ, f["provider"])+")")
 	report("OK", "ccmorph executable: "+l.libDir+"/ccmorph.sh")
 	if !l.doctorClaude() {
 		failed = 1
