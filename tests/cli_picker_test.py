@@ -614,15 +614,17 @@ class PickerTTYTest(unittest.TestCase):
                      'home:first,end:last', '--height ~-1'):
             self.assertIn(flag, log)
         # The row asks for the key only, named for its service: no address, no
-        # tier mapping, nothing to probe.
+        # tier mapping. The key is checked against Anthropic's own address only.
         self.assertIn('API key for demo (Anthropic)', out)
         self.assertNotIn('Base URL', out)
         self.assertEqual(self.field('demo', 'type'), 'apikey')
         self.assertEqual(self.field('demo', 'api_key'), 'sk-ant-fixture')
         self.assertIsNone(self.field('demo', 'base_url'))
         self.assertNotIn('sk-ant-fixture', out)
-        self.assertEqual((self.tmp / 'curl.log').read_text(), '')
-        self.assertIn('Anthropic → api.anthropic.com', out)
+        log = (self.tmp / 'curl.log').read_text()
+        self.assertIn('https://api.anthropic.com', log)
+        self.assertEqual(log.count('https://'), log.count('https://api.anthropic.com'))
+        self.assertIn('API key → api.anthropic.com', out)
         self.assertIn('Next: ccmorph run demo', out)
 
     def test_typing_anthropic_ranks_the_anthropic_row_first(self):
@@ -644,7 +646,7 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(self.field('demo', 'api_key'), 'sk-ant-real')
         self.assertIsNone(self.field('demo', 'base_url'))
         self.assertNotIn('sk-ant-real', out)
-        self.assertIn('Anthropic → api.anthropic.com', out)
+        self.assertIn('API key → api.anthropic.com', out)
 
     def test_default_picker_hides_internal_action_values(self):
         env = self.env(fzf=True)

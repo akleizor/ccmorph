@@ -386,7 +386,7 @@ func (l *launcher) addAPIKey(name string) int {
 	} else {
 		// Custom endpoint names its address before the key, so the key prompt
 		// can name the service the key is for (#278).
-		v, rc := uiInput("Base URL (blank = api.anthropic.com): ", false)
+		v, rc := uiInput("Endpoint (blank = api.anthropic.com): ", false)
 		if rc != 0 {
 			return 1
 		}

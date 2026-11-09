@@ -2211,7 +2211,7 @@ test_add_apikey_lists_anthropic_first() {
   assert_contains "$actual" 'api_key=sk-an' 'the key must be saved' || rc=1
   assert_not_contains "$actual" 'base_url=' 'Anthropic needs no address' || rc=1
   assert_not_contains "$actual" 'env.ANTHROPIC_DEFAULT' 'Anthropic maps no tiers' || rc=1
-  assert_contains "$out" 'Added anth (Anthropic → api.anthropic.com)' 'add must name the provider and its endpoint' || rc=1
+  assert_contains "$out" 'Added anth (API key → api.anthropic.com)' 'add must name the kind and the endpoint' || rc=1
   # First row of the provider list, ahead of every gateway preset.
   [[ "${out%% 2) DeepSeek*}" == *" 1) Anthropic"* ]] || {
     print -u2 -- 'the provider list must open with Anthropic as row 1'
@@ -8536,7 +8536,7 @@ test_add_cleans_a_pasted_credential_issue_254() {
   export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
   source "$CCMORPH_SOURCE"
   # Quotes and surrounding spaces come off an API key, and the profile saves.
-  out=$(print -l apikey custom '  "sk-quoted-not-real"  ' http://gw.invalid | ccmorph add trim 2>&1)
+  out=$(print -l apikey custom http://gw.invalid '  "sk-quoted-not-real"  ' | ccmorph add trim 2>&1)
   [[ "$(<"$HOME/.config/ccmorph/trim.conf")" == *$'api_key=sk-quoted-not-real\n'* ]] \
     || { print -u2 -- 'a quoted, space-padded key must be stored clean'; rc=1 }
   # The token prompt cleans the same way. ($(<file) drops the file's final
@@ -8545,9 +8545,9 @@ test_add_cleans_a_pasted_credential_issue_254() {
   [[ "$(<"$HOME/.config/ccmorph/tok.conf")" == *$'\ntoken=sk-ant-oat01-example-token-0123456789abcdef' ]] \
     || { print -u2 -- 'a quoted, space-padded token must be stored clean'; rc=1 }
   # Internal whitespace is refused at the key prompt itself: the re-prompted
-  # key is the next line, and the Base URL question still comes after a good
-  # key — not between a bad one and its refusal.
-  out=$(print -l apikey custom 'sk bad' 'sk-good' http://gw.invalid | ccmorph add ws 2>&1)
+  # key is the next line, and the endpoint question is asked once, before the
+  # key — not again between a bad key and its refusal.
+  out=$(print -l apikey custom http://gw.invalid 'sk bad' 'sk-good' | ccmorph add ws 2>&1)
   assert_contains "$out" 'api key contains whitespace' \
     'internal whitespace must be named at the key prompt' || rc=1
   [[ "$(<"$HOME/.config/ccmorph/ws.conf")" == *$'api_key=sk-good\n'* ]] \
@@ -8578,8 +8578,8 @@ case "$conf" in
   *) print -- "{\"object\":\"list\",\"data\":[]}"; print -- "__CCMORPH_STATUS__200" ;;
 esac'
   # A refused key is named in the same step, and the re-entered one is checked
-  # and saved — the Base URL is not asked twice.
-  out=$(print -l apikey custom sk-rejected-not-real http://gw.invalid sk-live-not-real \
+  # and saved — the endpoint is not asked twice.
+  out=$(print -l apikey custom http://gw.invalid sk-rejected-not-real sk-live-not-real \
     | ccmorph add gw 2>&1)
   assert_contains "$out" 'http://gw.invalid rejected the API key (HTTP 401)' \
     'a refused key must be reported in the add step, not at launch' || rc=1
@@ -8601,7 +8601,7 @@ esac'
   assert_contains "$(cat "$HOME/curl.stdin")" 'x-api-key: sk-live-not-real' \
     'the key must travel through the curl stdin config' || rc=1
   # A native add checks api.anthropic.com with the version header doctor sends.
-  out=$(print -l apikey custom sk-native-not-real '' | ccmorph add nat 2>&1)
+  out=$(print -l apikey custom '' sk-native-not-real | ccmorph add nat 2>&1)
   assert_contains "$out" 'api.anthropic.com accepted the API key (HTTP 200)' \
     'a native key must be checked against api.anthropic.com' || rc=1
   assert_contains "$(cat "$HOME/curl.argv")" 'https://api.anthropic.com/v1/models?limit=1000' \
@@ -8609,14 +8609,14 @@ esac'
   assert_contains "$(cat "$HOME/curl.argv")" 'anthropic-version: 2023-06-01' \
     'the native check must send the version header, like doctor' || rc=1
   # Cancelling at the re-prompt (EOF) saves nothing — no half-profile.
-  out=$(print -l apikey custom sk-rejected-not-real http://gw.invalid | ccmorph add die 2>&1)
+  out=$(print -l apikey custom http://gw.invalid sk-rejected-not-real | ccmorph add die 2>&1)
   rc_die=$?
   [[ $rc_die -ne 0 ]] || { print -u2 -- 'a cancelled re-entry must fail the add'; rc=1 }
   [[ ! -e "$HOME/.config/ccmorph/die.conf" ]] \
     || { print -u2 -- 'a cancelled re-entry must save nothing'; rc=1 }
   # An endpoint that does not answer is not a verdict on the key: said so, saved.
   write_curl_mock 'exit 1'
-  out=$(print -l apikey custom sk-quiet-not-real http://private.invalid | ccmorph add quiet 2>&1)
+  out=$(print -l apikey custom http://private.invalid sk-quiet-not-real | ccmorph add quiet 2>&1)
   assert_contains "$out" 'http://private.invalid did not answer, so the API key was not checked' \
     'a silent endpoint must be reported as not-checked' || rc=1
   assert_contains "$out" 'Added quiet' 'an unanswered check must not block the add' || rc=1
