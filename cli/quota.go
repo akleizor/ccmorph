@@ -45,6 +45,10 @@ func (l *launcher) context(args []string) int {
 	if len(args) > 2 {
 		rest = args[2:]
 	}
+	if len(rest) > 1 {
+		l.err("usage: ccmorph context <profile> <model> [tokens|auto]")
+		return 2
+	}
 	cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"),
 		append([]string{"model-window", "--context", name, model}, rest...)...)
 	cmd.Env = append(os.Environ(), "CCMORPH_STATE_DIR="+l.dir)

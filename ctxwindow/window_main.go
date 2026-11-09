@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -19,7 +20,7 @@ const windowUsage = "usage: model-window <profile> <model> | --context <profile>
 func WindowMain(args []string, stdout, stderr io.Writer) int {
 	code, err := windowRun(args, stdout, stderr)
 	if err != nil {
-		fmt.Fprintf(stderr, "model-window: %s\n", err)
+		fmt.Fprintf(stderr, "ccmorph: %s\n", err)
 		return 1
 	}
 	return code
@@ -64,16 +65,34 @@ func windowRun(args []string, stdout, stderr io.Writer) (int, error) {
 			fmt.Fprintln(stdout, value)
 			return 0, nil
 		}
+		pinned, numeric := ParseTokens(args[3])
+		unlisted := false
+		var fields map[string]string
+		if numeric {
+			// Read before the save: the pin about to be written must not make the
+			// model count as one the route knows.
+			if path, err := ProfilePath(profile); err == nil {
+				_, fields, _ = ReadConf(path)
+			}
+			unlisted = !routeKnown(fields, model)
+		}
 		if err := SetContext(profile, model, args[3]); err != nil {
 			return 0, err
 		}
-		what := "set to " + args[3] + " tokens"
-		if args[3] == "auto" {
-			what = "set to automatic"
+		what := "set to automatic"
+		if numeric {
+			what = "set to " + strconv.FormatInt(pinned, 10) + " tokens"
 		}
 		fmt.Fprintf(stdout, "%s: %s context %s (new sessions)\n", profile, model, what)
-		if v, ok := Positive(args[3]); ok && !(v >= 100000 && v <= oneM) {
-			fmt.Fprintln(stderr, "Limit saved. Claude Code's autoCompactWindow setting supports 100,000–1,000,000 tokens; this value is outside that range.")
+		if numeric && !(pinned >= 100000 && pinned <= oneM) {
+			fmt.Fprintln(stderr, "Limit saved. New sessions use it: the model's auto-compact window is sized from it, clamped into the 100,000–1,000,000 tokens Claude Code supports, and the session's context cap is the route's largest window, this limit included — set a value in that range, or auto, for a limit that is applied without clamping.")
+		}
+		if unlisted {
+			advice := "ccmorph models " + profile
+			if fields["type"] == "provider" {
+				advice = "ccmorph probe " + profile
+			}
+			fmt.Fprintf(stderr, "ccmorph: warning: '%s' is not on this route; the limit is saved for when it appears. Check the listing with: %s\n", model, advice)
 		}
 		return 0, nil
 	case len(args) == 2 && args[0] == "--ceiling":
