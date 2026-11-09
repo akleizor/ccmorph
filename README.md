@@ -115,7 +115,7 @@ ccmorph use <profile>              # make a profile the default for `ccmorph run
 ccmorph run -i                     # choose the profile, then the model
 ccmorph run <profile> --model <id> # profile plus explicit model
 ccmorph run work mcp list          # native Claude Code arguments pass through
-ccmorph config <profile>           # change model, reasoning, or connection
+ccmorph config <profile>           # change model, effort, or connection
 ccmorph set <profile> model -i     # save a default model, chosen from the endpoint
 ccmorph inspect [<profile>]        # effective settings and where each came from
 ccmorph doctor [<profile>]         # check why a profile is not working

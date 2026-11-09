@@ -230,11 +230,11 @@ command takes is refused. `ccmorph run <profile> --help` still opens Claude's
 native help. Help and version requests do not load host overrides, migrate
 state, or launch.
 
-In a terminal, `config` asks what you want to change: **model and reasoning** or
+In a terminal, `config` asks what you want to change: **model and effort** or
 **connection/sign-in details**, where applicable. Changing a model does not ask
 for a URL or credential; replacing a key does not fetch or ask for models.
 Use ↑/↓ to move, Enter to select one option, and Esc to cancel. Sign-in methods,
-settings sections, reasoning levels, and yes/no confirmations use one native
+settings sections, effort levels, and yes/no confirmations use one native
 selector: warm orange headings, a lavender `❯` selection marker, blank-line
 separation, and aligned gray descriptions, matching Claude Code’s dark palette. Profile and **all model lists** use `fzf` for search,
 including Claude aliases and the keep/custom fallback when discovery fails.

@@ -150,10 +150,16 @@ class ConfigurationSaveTest(unittest.TestCase):
     def test_specialized_commands_refuse_without_changing_anything(self):
         before = (conf_fields(self.conf), self.settings.read_bytes())
         for role in ('fable', 'opus', 'sonnet', 'haiku', 'small-fast', 'subagent',
-                     'effort:custom-model'):
+                     'effort:custom-model', 'reasoning'):
             self.assertEqual(self.run_cli('set', 'demo', role, 'value').returncode, 2)
             self.assertEqual(self.run_cli('get', 'demo', role).returncode, 2)
             self.assertEqual((conf_fields(self.conf), self.settings.read_bytes()), before)
+        # The config menu once called the effort setting "reasoning" (#367): a
+        # person who learned the word there is told which word the commands
+        # take, not shown a usage line whose [model|effort] hides the answer.
+        for result in (self.run_cli('set', 'demo', 'reasoning', 'high'),
+                       self.run_cli('get', 'demo', 'reasoning')):
+            self.assertIn('the setting is called effort', result.stderr)
 
     def test_generated_settings_ignore_inline_defaults_but_preserve_other_settings(self):
         self.conf.write_text(self.conf.read_text() + 'model_defaults=1\nmodel=configured\neffort=medium\n')

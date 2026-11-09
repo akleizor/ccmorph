@@ -27,4 +27,11 @@ func TestTheEffortPickerAndHelpNameTheConfLevels(t *testing.T) {
 			}
 		}
 	}
+	// The label the picker shows names the value the commands accept, so a word
+	// learned in the menu works in set (#367): "Extra high" alone did not.
+	for _, lvl := range profile.Efforts {
+		if label := effortLabel(lvl); !strings.Contains(strings.ToLower(label), lvl) {
+			t.Errorf("the picker labels %q as %q, which does not name the value", lvl, label)
+		}
+	}
 }

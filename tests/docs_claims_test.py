@@ -158,3 +158,23 @@ def test_docs_name_the_provider_type_and_its_dependency_issue_283():
         "the Profile types table in docs/guide.md leaves out `provider`")
     assert "cliproxyapi" in _flatten(profile_types.group(1)), (
         "the Profile types table does not say a provider profile needs cliproxyapi")
+
+
+def test_docs_name_the_setting_effort_alone_issue_367():
+    """#367: the config menu, its help and the README called the effort setting
+    "reasoning" while set, get, inspect and the errors say effort, so a person
+    who learned the word from the menu typed it into set and met a usage line.
+    One word names the setting everywhere a person can read it. The guide keeps
+    "reasoning" as the plain noun (the reasoning behind a behaviour), so only
+    the phrases that name the setting are pinned."""
+    readme = _flatten((ROOT / "README.md").read_text(encoding="utf-8")).lower()
+    assert "change model, effort, or connection" in readme, (
+        "README.md no longer names effort on the config line")
+    assert "model, reasoning, or connection" not in readme, (
+        "README.md still calls the effort setting reasoning")
+    guide = _flatten(GUIDE.read_text(encoding="utf-8")).lower()
+    assert "model and effort" in guide, (
+        "docs/guide.md no longer names model and effort as what config changes")
+    for phrase in ("model and reasoning", "reasoning levels"):
+        assert phrase not in guide, (
+            f"docs/guide.md still calls the effort setting reasoning ('{phrase}')")

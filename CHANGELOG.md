@@ -9,6 +9,16 @@
 
 ### Fixed
 
+- **The effort setting has one name, and the picker's Extra high names the
+  value.** The short help, the config help page, the config menu and the
+  setting chooser called the effort setting "reasoning", while `set`, `get`,
+  `inspect` and the error messages say effort — a person who learned the word
+  from the menu and typed `ccmorph set <profile> reasoning high` met a bare
+  usage line that did not say which word was meant. Every surface now says
+  effort, that word is answered with "the setting is called effort, not
+  reasoning" before the usage line, and the effort picker labels its Extra
+  high level "Extra high (xhigh)" so the level chosen in the menu is the word
+  the commands accept (#367).
 - **`ccmorph help all` is one list with one ending.** The page was the short
   help printed unchanged and then a second list below it, so the short page's
   footer sat in the middle: a reader who had asked for every command was told

@@ -775,7 +775,7 @@ func (l *launcher) usageAt(topic string, width int) int {
 		help("ccmorph list", "See profiles and the default")
 		help("ccmorph quota [profile]", "Plan usage and spend of every profile")
 		help("ccmorph use <profile>", "Set the default; do not launch")
-		help("ccmorph config [profile]", "Change model, reasoning, or connection")
+		help("ccmorph config [profile]", "Change model, effort, or connection")
 		head("Troubleshooting:")
 		help("ccmorph inspect [profile]", "Show effective settings; no secrets")
 		help("ccmorph doctor [--verbose] [profile]", "Check why a profile is not working")
@@ -868,7 +868,7 @@ Native Claude help: ccmorph run <profile> --help`},
   itself, then known gateways.
 
 Credentials are hidden while typing. Ctrl-C cancels setup.`},
-	"config": {"ccmorph config [profile]", `Choose what to change: model and reasoning, or connection/sign-in details.
+	"config": {"ccmorph config [profile]", `Choose what to change: model and effort, or connection/sign-in details.
 Only settings relevant to that task and profile are shown.
 Keep the current defaults or select new values. Changes save when you finish;
 there is no extra confirmation. Esc cancels a picker without saving.
