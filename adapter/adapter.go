@@ -45,6 +45,7 @@ import (
 
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/shim"
+	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -778,7 +779,9 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 		os.Remove(conf)
 		// Name the command, not just the concept: this fires on a first run against
 		// a copied profile, where the reader has never heard of the translator.
-		die("translator not found or not executable: %s\nThis endpoint needs cliproxyapi for automatic protocol compatibility.\n  brew install cliproxyapi\nPut cliproxyapi on PATH and try again.", translator)
+		// The step is the machine's own (#369): brew's command, or the project
+		// page where there is no brew.
+		die("translator not found or not executable: %s\nThis endpoint needs cliproxyapi for automatic protocol compatibility.\n  %s\nPut cliproxyapi on PATH and try again.", translator, util.ClipInstallStep())
 	}
 
 	logPath := filepath.Join(state, "translator.log")

@@ -57,8 +57,10 @@ func (l *launcher) add(args []string) int {
 	}
 	if !haveBridge {
 		// Issue #283: a person without cliproxyapi still learns the browser
-		// logins exist and the one step that turns them on.
-		rows += "\nmore\tMore sign-ins\t" + browserLogins + ": install cliproxyapi"
+		// logins exist and the prerequisite that turns them on; where the row
+		// must cut, it ends on a whole word (#369), and the answer below
+		// names the machine's own install step.
+		rows += "\nmore\tMore sign-ins\t" + browserLogins + " (cliproxyapi)"
 	}
 	choice, ok := l.choose("Sign-in method — "+name, rows)
 	if !ok {
@@ -77,7 +79,7 @@ func (l *launcher) add(args []string) int {
 		rc = l.addAPIKey(name)
 	case "more":
 		fmt.Println("Browser sign-in to " + browserLogins + " needs cliproxyapi.")
-		fmt.Println("Install it: " + cliproxyInstall + ", then run: ccmorph add " + name)
+		fmt.Println("Install it: " + util.ClipInstallStep() + ", then run: ccmorph add " + name)
 		return 1
 	default:
 		matched := ""
@@ -544,9 +546,6 @@ func addProviders() ([]string, bool) {
 const browserLogins = "Antigravity, Codex, Devin, Kimi For Coding (global), " +
 	"Kimi For Coding (China), Meta and xAI"
 
-// cliproxyInstall is the one step that turns the browser logins on.
-const cliproxyInstall = "brew install cliproxyapi"
-
 // providerList is _ccm_provider_list: the -<name>-login flags cliproxyapi offers.
 func providerList() ([]string, bool) {
 	bin, err := exec.LookPath("cliproxyapi")
@@ -596,7 +595,7 @@ func providerDetail(p string) string {
 func (l *launcher) providerLogin(name, provider string) bool {
 	bin, err := exec.LookPath("cliproxyapi")
 	if err != nil {
-		l.err("cliproxyapi not found — install it: " + cliproxyInstall)
+		l.err("cliproxyapi not found — install it: " + util.ClipInstallStep())
 		return false
 	}
 	root := filepath.Join(l.dir, "auth")

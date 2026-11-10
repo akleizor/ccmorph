@@ -19,6 +19,28 @@ func TestFitCutsWholeCharacters(t *testing.T) {
 	}
 }
 
+// fit ends on a whole word when one fits before the width, so a cut row never
+// ends in half a word (#369); the space before the ellipsis stays, and a single
+// long word still hard-cuts, because a narrower lie would be worse.
+func TestFitEndsOnAWholeWord(t *testing.T) {
+	if got := fit("install cliproxyapi", 12); got != "install …" {
+		t.Fatalf("fit = %q", got)
+	}
+	// The More sign-ins row's detail — the real one, whose names #366 made
+	// too long for any 80-column budget — at the native menu's 60-cell detail
+	// budget and the numbered list's 57: each cut lands after a whole name,
+	// never inside one.
+	if got := fit(browserLogins+" (cliproxyapi)", 60); got != "Antigravity, Codex, Devin, Kimi For Coding (global), Kimi …" {
+		t.Fatalf("fit = %q", got)
+	}
+	if got := fit(browserLogins+" (cliproxyapi)", 57); got != "Antigravity, Codex, Devin, Kimi For Coding (global), …" {
+		t.Fatalf("fit = %q", got)
+	}
+	if got := fit("cliproxyapi", 6); got != "clipr…" {
+		t.Fatalf("fit = %q", got)
+	}
+}
+
 // moreLine names the rows a native menu's window cuts, and keeps its line even
 // when that side cuts nothing, so the menu keeps one shape while it scrolls.
 func TestMoreLineNamesTheCutAndKeepsItsShape(t *testing.T) {

@@ -1081,11 +1081,29 @@ d=$TMP/pm_brew
 grep -qF 'Run yourself: brew install cliproxyapi' "$d/out" \
   && ok "brew: cliproxyapi is still offered through brew" || fail "brew: cliproxyapi offer lost"
 grep -qF 'sudo' "$d/out" && fail "brew: a sudo appeared in a brew offer" || ok "brew: no sudo in a brew offer"
+# The step the installer offers is the one the core names too (#369): the
+# binary embeds it, so `ccmorph add` and `ccmorph doctor` give a brew machine
+# the same command the installer does.
+if [[ "$(<"$REPO/libexec/ccmorph-core")" == *"brew install cliproxyapi"* ]]; then
+  ok "brew: installer and core binary name the same step"
+else
+  fail "brew: the core binary does not embed the brew step"
+fi
 
 # No package manager at all: both notes appear, nothing is offered, install succeeds.
 d=$(pm_env pm_none); pm_run "$d"; rc=$?
 (( rc == 0 )) && grep -qF 'fzf not found' "$d/out" && ! grep -qF 'Run yourself' "$d/out" \
   && ok "no manager: fzf is named and no command is invented" || { fail "no manager: wrong output (rc=$rc)"; cat "$d/out"; }
+# No manager means no brew, so cliproxyapi's step is the project page — and the
+# core binary embeds the same page (#369), so add and doctor answer a no-brew
+# machine exactly as the installer does.
+grep -qF 'github.com/router-for-me/CLIProxyAPI' "$d/out" \
+  && ok "no manager: cliproxyapi is named with its project page" || { fail "no manager: the project page is missing"; cat "$d/out"; }
+if [[ "$(<"$REPO/libexec/ccmorph-core")" == *"https://github.com/router-for-me/CLIProxyAPI"* ]]; then
+  ok "no manager: the core binary carries the same page"
+else
+  fail "no manager: the core binary does not embed the project page"
+fi
 
 # A missing claude is named with where to get it, never with a command; exit 1;
 # nothing installed.

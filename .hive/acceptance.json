@@ -1,32 +1,17 @@
 [
   {
-    "criterion": "After a picker is answered, the screen keeps one line that names the choice in full, with no description cut off by an ellipsis.",
+    "criterion": "Where Homebrew is not on the PATH, the answer to More sign-ins names a step that works there, for example the project page the installer gives.",
     "pass": true,
-    "evidence": "cli/ui.go receiptLine never cuts the choice; the question yields space down to receiptTitleFloor. go test ./cli/ -count=1 ok (5.149s): TestReceiptNeverCutsTheChoiceIssue361, TestSearchReceiptNamesTheLabelNotTheDescriptionIssue361 (receipt names 'Custom endpoint', not the description). pty screen() assertions in tests/cli_picker_test.py run in CI."
+    "evidence": "tests/cli_messages_test.py test_add_more_signins_names_the_machines_own_install_step_gh_369 runs the real bin/ccmorph on a PATH with neither cliproxyapi nor brew, answers the menu's More sign-ins, and asserts the answer names https://github.com/router-for-me/CLIProxyAPI and no 'brew install'; stubbing brew flips it to the command. pytest -k gh_369 → 1 passed (re-verified after each rebase onto main, through #361). Watched red first: 'Install it: brew install cliproxyapi, then run: ccmorph add demo'. tests/cli_picker_test.py test_add_without_brew_answers_with_the_project_page_gh_369 covers the picker path on a pty; this sandbox refuses ptys ('out of pty devices'), so it runs in CI."
   },
   {
-    "criterion": "After a typed question is answered, the screen keeps one line with the question and the answer, and no key hint. A hidden answer shows no text.",
+    "criterion": "The installer, ccmorph add and ccmorph doctor give the same install step for cliproxyapi on the same machine.",
     "pass": true,
-    "evidence": "cli/ui.go uiInput folds the prompt block with eraseLines(2 + typedLines(echoed)); an answer too long to share the line keeps its question whole and wraps beneath it; a secret prints the question alone. go test ok: TestTypedLinesCountsTheWrap, TestReceiptNeverCutsTheChoiceIssue361 (120-cell answer keeps '  Value: › '). pty test_answered_input_folds_to_one_summary_line_issue_361 runs in CI; the exact Go byte stream was replayed through screen() offline (6/6)."
+    "evidence": "One answer per machine: util.ClipInstallStep (util/installstep.go) returns brew's command or the project page from PATH, and every surface calls it — add's More answer and providerLogin, run's providerStartRefusal, doctor's two adapter rows (util/doctor.go), the adapter's die. install_test.zsh ties the halves on both machine shapes: pm_brew asserts the installer offers 'Run yourself: brew install cliproxyapi' and the core binary embeds that command; pm_none asserts the installer prints the project page and the binary embeds the URL (red before by construction: git grep found no Go source at HEAD mentioning the page). zsh tests/install_test.zsh → 331 passed, 0 failed (re-run after each rebase onto main, through #361). Doctor's wording per shape: util/doctor_test.go TestDoctorRouteAdapterLine/TestAdapterLine 'no brew' cases, watched red first ('install it: brew install cliproxyapi' under a brew-less PATH); go test ./util/ → ok after the rebase."
   },
   {
-    "criterion": "The sign-in, provider and model pickers leave summary lines of the same shape.",
+    "criterion": "In an 80-column terminal, the More sign-ins row does not end in a half word.",
     "pass": true,
-    "evidence": "All three end in receiptLine ('Title › choice'); search passes the original row's label, numbered folds to the same receipt. pty screen() assertions for '  Sign-in method — demo › API key', '  Provider — demo › Anthropic', '  Default model — demo › picker-beta' run in CI; offline replay of the native and numbered streams confirmed the one-line shape."
-  },
-  {
-    "criterion": "The question for the key names the provider once, without nested brackets.",
-    "pass": true,
-    "evidence": "cli/add.go builds 'API key for <name> — <label>'. zsh suite: 319 PASS, 0 FAIL after the three literals in tests/ccmorph_test.zsh moved to the dash form (proven red against the old code first). pty asserts 'API key for demo — Anthropic (hidden):' in the real-fzf and fake-fzf flows."
-  },
-  {
-    "criterion": "Owner's follow-up: with no fzf on PATH, an answered numbered list also folds to one line that names the choice.",
-    "pass": true,
-    "evidence": "cli/ui.go numbered folding branch erases len(rows)+2 plus one line per round and reprompt, then prints the receipt; a leave prints Cancelled. pty test_numbered_add_folds_each_answered_step_to_one_line_issue_361 and the reprompt/cancel screen assertions run in CI; offline replay validated the erase arithmetic."
-  },
-  {
-    "criterion": "Gate rule S3: every existing test the change edits still fails on every output its main version failed on. test_plain_terminal_output_and_explicit_cancel rejects any '\\x1b[' in the TERM=dumb output, unfiltered; test_labeled_menu_and_help_remain_plain_when_color_is_disabled allows exactly the two folds the numbered list writes and no other escape anywhere, the --help output included.",
-    "pass": true,
-    "evidence": "tests/cli_picker_test.py: the TERM=dumb branch is main's assertNotIn('\\x1b[', out) on the raw output; the NO_COLOR branch asserts the exact fold list ['3','5'] and no other escape; the labeled-list test asserts the exact fold list ['3','4'], no other escape, and none after the list's fold (so --help adds none). Replayed offline against synthetic streams, 7/7: correct outputs pass; a fold in dumb output, an extra fold after --help, a color code in --help and an extra fold after Cancelled all fail. File parses, 59 tests collect; the pty suite runs in CI (pty.openpty is refused here)."
+    "evidence": "fit (cli/ui.go) now cuts at a word boundary, keeping one space before the ellipsis and hard-cutting a single long word; after #366's longer login names the More sign-ins row (browserLogins + ' (cliproxyapi)', 104 cells) must cut at 80 columns and ends '… Kimi For Coding (global), …' — a whole word, never 'install clip…'. cli/ui_test.go TestFitEndsOnAWholeWord pins fit(browserLogins + \" (cliproxyapi)\", 60) and (…, 57) — the native and numbered budgets at 80 columns — ending 'Kimi …' and '(global), …', plus the single-word hard cut; watched red first on the pre-fix cut (fit('install cliproxyapi', 12) = 'install cli…'); go test ./cli/ → ok after the rebase onto main (through #361's fold work in the same file). tests/cli_picker_test.py test_add_more_signins_row_ends_on_a_whole_word_at_80_columns_gh_369 renders the menu at (24, 80) and asserts the More sign-ins line never carries a non-space before its ellipsis (no half word); it needs a pty this sandbox refuses, so it runs in CI."
   }
 ]
