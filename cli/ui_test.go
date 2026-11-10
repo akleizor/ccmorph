@@ -3,7 +3,9 @@ package cli
 import (
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -118,6 +120,11 @@ func TestFzfArgsNeverHideRowsSilently(t *testing.T) {
 	if got := flagValue(fzfArgs("0.75.0\n", 19, 45, "P", nil), "--height"); got != "~-1" {
 		t.Errorf("0.75 grows the window to the list: %q", got)
 	}
+	for _, v := range []string{"", "0.29.0\n", "0.40.0\n", "0.75.0\n"} {
+		if !strings.Contains(strings.Join(fzfArgs(v, 3, 24, "P", nil), " "), "--no-hscroll") {
+			t.Errorf("fzf %q may scroll a row sideways on a match until only its id's tail shows (#385)", v)
+		}
+	}
 	for lines := 6; lines <= 60; lines++ {
 		for n := 1; n <= 40; n++ {
 			args := fzfArgs("0.29.0\n", n, lines, "P", nil)
@@ -206,6 +213,222 @@ func TestSearchReceiptNamesTheLabelNotTheDescriptionIssue361(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "Custom endpoint") || strings.Contains(string(b), "Anthropic or any gateway") {
 		t.Fatalf("the receipt must name the label and not the description: %q", b)
+	}
+}
+
+// One very long model id must not take the width from every row of a search
+// picker (#385). The rows were padded to the longest id, so a single outlier
+// pushed every name past fzf's window: fzf answered with two dots where the
+// name was, and a match typed in a name scrolled the row sideways until only
+// the id's tail showed. Now only an id past half the room a row has inside
+// the window is cut, keeping what tells it from the others; every name
+// reaches fzf whole, and fzf never scrolls a row sideways.
+func TestSearchRowsKeepNamesBesideOneLongIDIssue385(t *testing.T) {
+	plain := uiTheme{}
+	// The gateway of #385: many models whose ids are ~30 cells, one 92.
+	long := "anthropic/model-040-instruct-preview-" + strings.Repeat("x", 55)
+	rows := []string{
+		"@custom\tEnter a custom model ID…",
+		"anthropic/model-008-instruct\tanthropic/model-008-instruct\tAnthropic Model 8 Instruct",
+		"openai/model-137-instruct\topenai/model-137-instruct\tOpenai/Model 137 Instruct",
+		long + "\t" + long + "\tAnthropic Model 40 Preview",
+	}
+	for _, columns := range []int{110, 80} {
+		rendered := plain.searchRows(rows, columns)
+		if len(rendered) != len(rows) {
+			t.Fatalf("columns %d: searchRows gave %d rows, want %d", columns, len(rendered), len(rows))
+		}
+		for _, row := range rendered {
+			id, display, _ := strings.Cut(row, "\t")
+			// fzf draws a row inside its window's borders, behind the pointer
+			// and the scrollbar, and with --no-hscroll never scrolls it: a
+			// person sees the first columns-6 cells, one a rune here (#385).
+			seen := string([]rune(display)[:min(columns-6, len([]rune(display)))])
+			switch id {
+			case "anthropic/model-008-instruct", "openai/model-137-instruct":
+				if !strings.Contains(seen, id) {
+					t.Errorf("columns %d: a short id is shortened: %q", columns, seen)
+				}
+				name := map[string]string{
+					"anthropic/model-008-instruct": "Anthropic Model 8 Instruct",
+					"openai/model-137-instruct":    "Openai/Model 137 Instruct",
+				}[id]
+				if !strings.Contains(seen, name) {
+					t.Errorf("columns %d: the name is not whole in sight beside a short id: %q", columns, seen)
+				}
+			case long:
+				if strings.Contains(seen, long) {
+					t.Errorf("columns %d: the one very long id is not shortened: %q", columns, seen)
+				}
+				// It parts from anthropic/model-008-instruct at "4".
+				if !strings.HasPrefix(seen, "anthropic/model-04") || !strings.Contains(seen, "…") {
+					t.Errorf("columns %d: the cut id must keep its head past where it differs and show …: %q", columns, seen)
+				}
+				if !strings.Contains(display, long) {
+					t.Errorf("columns %d: the whole id must stay in the row, past the window's edge, for a search to match: %q", columns, display)
+				}
+			case "@custom":
+				if !strings.Contains(seen, "Enter a custom model ID…") {
+					t.Errorf("columns %d: the custom row is cut: %q", columns, seen)
+				}
+			}
+		}
+	}
+}
+
+// A cut id keeps in sight the part that tells it from the other ids (#385).
+// Ids that share a long head and differ only at the end lost their ends to a
+// cut that kept the head alone: two rows with the same name beside them read
+// the same. Each pair below must read differently at 80 and 110 columns, an
+// id that fits must stay whole, and a cut one must show "…".
+func TestCutIDKeepsWhatTellsIDsApartIssue385(t *testing.T) {
+	head := "gateway/team/" + strings.Repeat("shared-prefix-", 4)
+	mid := "vendor/" + strings.Repeat("x", 30)
+	k, z := strings.Repeat("k", 40), strings.Repeat("z", 40)
+	twin, tail := "gateway/team/"+strings.Repeat("shared-prefix-", 2), strings.Repeat("shared-tail-", 4)
+	gate, shared := "gateway/team/"+strings.Repeat("x", 24), strings.Repeat("shared-", 6)
+	cases := []struct {
+		name string
+		ids  []string
+	}{
+		{"differ at the end", []string{head + "instruct", head + "reasoning"}},
+		{"differ at the start", []string{"anthropic/" + strings.Repeat("y", 70) + "-a", "openai/" + strings.Repeat("y", 70) + "-a"}},
+		{"differ in the middle", []string{mid + "-alpha-" + strings.Repeat("y", 30), mid + "-gamma-" + strings.Repeat("y", 30)}},
+		{"differ past a short twin", []string{"anthropic/model-040-instruct-preview-" + strings.Repeat("x", 55), "anthropic/model-040-instruct"}},
+		// Two places no head and tail reach together: the middle (v1 or v2) and
+		// the end (instruct or reasoning), or the start and the middle.
+		{"differ in the middle and at the end", []string{
+			twin + "v1/" + tail + "instruct", twin + "v2/" + tail + "instruct",
+			twin + "v1/" + tail + "reasoning", twin + "v2/" + tail + "reasoning"}},
+		{"differ at the start and in the middle", []string{
+			"anthropic/" + k + "v1/" + z, "openai/" + k + "v1/" + z,
+			"anthropic/" + k + "v2/" + z, "openai/" + k + "v2/" + z}},
+		// No place tells these two apart but their length.
+		{"one the other repeated", []string{strings.Repeat("model-", 20), strings.Repeat("model-", 21)}},
+		// Beside them one that differs from the shorter at character 60 alone:
+		// cut on its own, it read like a repeated id, and the column grew.
+		{"one the other repeated beside one that differs once", []string{
+			strings.Repeat("model-", 20), strings.Repeat("model-", 21),
+			strings.Repeat("model-", 10) + "Xodel-" + strings.Repeat("model-", 9)}},
+		{"three differ in the middle", []string{"a/" + k + "1" + z, "a/" + k + "2" + z, "a/" + k + "3" + z}},
+		// The head reaches v1 or v2 only past 38 characters, and the tails are
+		// one shared run: no head and tail part these four, and a search for
+		// a shape with a window in the middle gave up and cut them alike.
+		{"differ in the middle twice past a long head", []string{
+			gate + "v1/" + shared + "instruct/" + shared, gate + "v2/" + shared + "instruct/" + shared,
+			gate + "v1/" + shared + "reasoning/" + shared, gate + "v2/" + shared + "reasoning/" + shared}},
+	}
+	for _, c := range cases {
+		rows := []string{"anthropic/model-008-instruct\tanthropic/model-008-instruct\tSame Owner"}
+		for _, id := range c.ids {
+			rows = append(rows, id+"\t"+id+"\tSame Owner")
+		}
+		for _, columns := range []int{80, 110} {
+			given := columnWidth(labelWidth(rows, "labels"), max(1, columns-fzfRowChrome))
+			labels, width := idColumn(rows, "labels", given)
+			if width != given {
+				t.Errorf("%s, %d columns: the column grew from %d to %d cells", c.name, columns, given, width)
+			}
+			reads := map[string]string{}
+			for i, r := range labels {
+				id, shown := rowID(rows[i]), rowID(r)
+				if cells(shown) > width {
+					t.Errorf("%s, %d columns: %q is %d cells, the column %d", c.name, columns, shown, cells(shown), width)
+				}
+				if cells(id) <= width && shown != id {
+					t.Errorf("%s, %d columns: an id that fits is cut: %q", c.name, columns, shown)
+				}
+				if cells(id) > width && !strings.Contains(shown, "…") {
+					t.Errorf("%s, %d columns: a cut id must show …: %q", c.name, columns, shown)
+				}
+				if other, ok := reads[shown]; ok {
+					t.Errorf("%s, %d columns: %q and %q both read %q", c.name, columns, other, id, shown)
+				}
+				reads[shown] = id
+			}
+		}
+	}
+}
+
+// A search finds what the window cuts (#385). fzf searches only the text it
+// shows — never a field --with-nth hides — so a name cut before fzf could not
+// be found by its last word, and a cut id not by the part the cut took. Real
+// fzf filters the rows of an 80-column terminal; skipped where fzf is absent.
+func TestSearchFindsWhatTheWindowCutsIssue385(t *testing.T) {
+	fzf, err := exec.LookPath("fzf")
+	if err != nil {
+		t.Skip("fzf is not installed")
+	}
+	long := "anthropic/model-040-instruct-preview-" + strings.Repeat("x", 55)
+	rows := []string{
+		"@custom\tEnter a custom model ID…",
+		"anthropic/model-008-instruct\tanthropic/model-008-instruct\tAnthropic Model 8 Instruct",
+		"openai/model-137-instruct\topenai/model-137-instruct\tOpenai Model 137 Instruct specialized",
+		long + "\t" + long + "\tAnthropic Model 40 Preview",
+	}
+	in := strings.Join((uiTheme{}).searchRows(rows, 80), "\n") + "\n"
+	for query, want := range map[string]string{"specialized": "openai/model-137-instruct", long: long} {
+		cmd := exec.Command(fzf, append(fzfArgs(fzfVersion(fzf), len(rows), 24, "P", nil), "--filter", query)...)
+		cmd.Stdin = strings.NewReader(in)
+		out, err := cmd.Output()
+		if err != nil {
+			t.Errorf("fzf finds no row for %q: %v", query, err)
+			continue
+		}
+		if lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n"); len(lines) != 1 || rowID(lines[0]) != want {
+			t.Errorf("fzf for %q gave %q, want the one row of %s", query, out, want)
+		}
+	}
+}
+
+// The line an answered model pick leaves behind names the id alone: fzf prints
+// the chosen row back with the id column's padding and the name beside it, and
+// a receipt that echoed that line ended in a stray ellipsis where the name was
+// (#385). The receipt names the row's own id — as for every label since #361;
+// this pins it for the long-id row that carries the padding.
+func TestSearchReceiptNamesTheIDOnALongPaddedRowIssue385(t *testing.T) {
+	dir := t.TempDir()
+	// Pure builtins: PATH holds only this dir. The fake answers fzf with the
+	// last row on stdin — the long id's, padded the way fzf echoes it.
+	fzf := "#!/bin/sh\nwhile IFS= read -r line; do row=$line; done\nprintf '%s\\n' \"$row\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "fzf"), []byte(fzf), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("TERM", "xterm")
+	long := "anthropic/model-040-instruct-preview-" + strings.Repeat("x", 55)
+	rows := strings.Join([]string{
+		"anthropic/model-008-instruct\tanthropic/model-008-instruct\tAnthropic Model 8 Instruct",
+		long + "\t" + long + "\tAnthropic Model 40 Preview",
+	}, "\n")
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	v, rc := uiSelect("search", "Default model — many", rows, "")
+	os.Stderr = old
+	w.Close()
+	b, _ := io.ReadAll(r)
+	r.Close()
+	if rc != 0 || v != long {
+		t.Fatalf("uiSelect = (%q, %d), want (%q, 0)", v, rc, long)
+	}
+	if n := strings.Count(string(b), "\n"); n != 1 {
+		t.Fatalf("the answer is %d lines, want the one receipt line: %q", n, b)
+	}
+	if !strings.Contains(string(b), "Default model — many › "+long) {
+		t.Fatalf("the receipt must name the whole id: %q", b)
+	}
+	if strings.Contains(string(b), "…") || strings.Contains(string(b), "Anthropic Model 40") {
+		t.Fatalf("the receipt must carry no stray ellipsis and no name from the padded echo: %q", b)
+	}
+	// On the 110-column terminal of #385 the question is what yields space to
+	// the 92-cell id — never the id — so the line the person keeps ends in the
+	// whole id, no stray ellipsis where the padded echo was cut in 0.5.8.
+	if got, want := (uiTheme{}).receiptLine("Default model — many", long, 110), "  Default … › "+long; got != want {
+		t.Fatalf("receiptLine = %q, want %q", got, want)
 	}
 }
 
@@ -397,5 +620,213 @@ func TestNumberListCutsToTheScreenAndNamesTheFzfStepIssue387(t *testing.T) {
 	}
 	if !strings.Contains(out, "262) Enter a custom model ID…") || strings.Contains(out, "more\n") || strings.Contains(out, "fzf adds search") {
 		t.Fatalf("plain render must show every row and no cut or hint:\n%s", out[:2000])
+	}
+}
+
+// No list of ids makes two rows read alike, however the ids share their
+// parts and however narrow the column (#385). A search for a cut that gave
+// up after a budget cut four ids alike; every cut now parts the ids by
+// construction, the column grows only past what no cut fits, and an id that
+// fits stays whole. Each cut id shows its own characters, in order, with "…"
+// for what it hides. A column of 17 cells or more, half what an 80-column
+// terminal gives, never grows for these few ids: a grown column pushes every
+// name, and the end of a long id, out of sight.
+func TestCutIDsNeverReadAlikeIssue385(t *testing.T) {
+	parts := []string{"gateway/", "team/", "shared-", "x", "xx", "v1", "v2", "/", "-", "instruct", "reasoning", "a", "日本"}
+	rng := rand.New(rand.NewSource(385))
+	grew := 0
+	for n := 0; n < 3000; n++ {
+		var base strings.Builder
+		for k := 2 + rng.Intn(14); k > 0; k-- {
+			base.WriteString(parts[rng.Intn(len(parts))])
+		}
+		ids := []string{"anthropic/model-008-instruct"}
+		for k := 1 + rng.Intn(6); k > 0; k-- {
+			r := []rune(base.String())
+			for e := rng.Intn(4); e > 0 && len(r) > 1; e-- {
+				at, part := rng.Intn(len(r)), []rune(parts[rng.Intn(len(parts))])
+				switch rng.Intn(3) {
+				case 0:
+					r = append(r[:at], append(part, r[at:]...)...)
+				case 1:
+					r = append(r[:at], r[at+1:]...)
+				default:
+					r[at] = part[0]
+				}
+			}
+			ids = append(ids, string(r))
+		}
+		given := 2 + rng.Intn(60)
+		out, width := cutIDs(ids, given)
+		if width < given {
+			t.Fatalf("%q at %d: the column shrank to %d", ids, given, width)
+		}
+		if width > given {
+			grew++
+			if given >= 17 {
+				t.Fatalf("%q at %d: the column grew to %d", ids, given, width)
+			}
+		}
+		reads := map[string]string{}
+		for i, id := range ids {
+			shown := out[i]
+			if other, ok := reads[shown]; ok && other != id {
+				t.Fatalf("%q at %d: %q and %q both read %q", ids, given, other, id, shown)
+			}
+			reads[shown] = id
+			if cells(shown) > width {
+				t.Fatalf("%q at %d: %q is %d cells, the column %d", ids, given, shown, cells(shown), width)
+			}
+			if cells(id) <= given {
+				if shown != id {
+					t.Fatalf("%q at %d: %q fits and is cut to %q", ids, given, id, shown)
+				}
+				continue
+			}
+			if shown == id {
+				continue
+			}
+			rest := id
+			for _, piece := range strings.Split(shown, "…") {
+				at := strings.Index(rest, piece)
+				if at < 0 {
+					t.Fatalf("%q at %d: %q is not %q's own characters in order", ids, given, shown, id)
+				}
+				rest = rest[at+len(piece):]
+			}
+		}
+	}
+	t.Logf("the column grew in %d of 3000 lists", grew)
+}
+
+// Every row of the picker reads differently in what fzf shows of it, and
+// the name beside a short id stays in sight (#385). fzf never scrolls a row
+// (--no-hscroll), so a column grown past the window put every name out of
+// sight and left two long ids reading alike up to the window's edge.
+func TestSearchRowsShowEveryRowApartIssue385(t *testing.T) {
+	a, b := strings.Repeat("model-", 20), strings.Repeat("model-", 21)
+	once := []rune(a)
+	once[60] = 'X'
+	gate, shared := "gateway/team/"+strings.Repeat("x", 24), strings.Repeat("shared-", 6)
+	short := "openai/model-137-instruct"
+	for _, ids := range [][]string{
+		{short, a, b, string(once)},
+		{short, a, b},
+		{short, gate + "v1/" + shared + "instruct/" + shared, gate + "v2/" + shared + "instruct/" + shared,
+			gate + "v1/" + shared + "reasoning/" + shared, gate + "v2/" + shared + "reasoning/" + shared},
+	} {
+		var rows []string
+		for _, id := range ids {
+			rows = append(rows, id+"\t"+id+"\tSame Owner")
+		}
+		for _, columns := range []int{80, 110} {
+			seen := map[string]string{}
+			for i, row := range (uiTheme{}).searchRows(rows, columns) {
+				_, display, _ := strings.Cut(row, "\t")
+				// A person sees the first columns-6 cells, one a rune here.
+				shown := string([]rune(display)[:min(columns-6, len([]rune(display)))])
+				if other, ok := seen[shown]; ok {
+					t.Errorf("%d columns: %q and %q both show %q", columns, other, ids[i], shown)
+				}
+				seen[shown] = ids[i]
+				if ids[i] == short && !strings.Contains(shown, short+"  ") {
+					t.Errorf("%d columns: the short id is cut: %q", columns, shown)
+				}
+				if !strings.Contains(shown, "Same Owner") {
+					t.Errorf("%d columns: the name beside %q is out of sight: %q", columns, ids[i], shown)
+				}
+			}
+		}
+	}
+}
+
+// Many ids that only a length tells apart keep the column and read apart in
+// what fzf shows (#385): "model-" repeated n times for n from 20 to 55, or to
+// 74, beside a short id, all named alike. Parting them where the shorter ends
+// took marks wider than any viewport, so the column grew to 71 and 109 cells
+// and every name left the window. Each is cut to a head and a tail of its own.
+func TestSearchRowsShowManyRepeatedIDsApartIssue385(t *testing.T) {
+	short := "openai/model-137-instruct"
+	for _, last := range []int{55, 74} {
+		ids := []string{short}
+		for n := 20; n <= last; n++ {
+			ids = append(ids, strings.Repeat("model-", n))
+		}
+		var rows []string
+		for _, id := range ids {
+			rows = append(rows, id+"\t"+id+"\tSame Owner")
+		}
+		for _, columns := range []int{80, 110} {
+			given := columnWidth(labelWidth(rows, "labels"), max(1, columns-fzfRowChrome))
+			if _, width := idColumn(rows, "labels", given); width != given {
+				t.Errorf("%d ids, %d columns: the column grew from %d to %d cells", len(ids), columns, given, width)
+			}
+			seen := map[string]string{}
+			for i, row := range (uiTheme{}).searchRows(rows, columns) {
+				_, display, _ := strings.Cut(row, "\t")
+				shown := string([]rune(display)[:min(columns-6, len([]rune(display)))])
+				if other, ok := seen[shown]; ok {
+					t.Errorf("%d ids, %d columns: %q and %q both show %q", len(ids), columns, other, ids[i], shown)
+				}
+				seen[shown] = ids[i]
+				if !strings.Contains(shown, "Same Owner") {
+					t.Errorf("%d ids, %d columns: the name beside %q is out of sight: %q", len(ids), columns, ids[i], shown)
+				}
+				if ids[i] == short && !strings.Contains(shown, short+"  ") {
+					t.Errorf("%d ids, %d columns: the short id is cut: %q", len(ids), columns, shown)
+				}
+			}
+		}
+	}
+}
+
+// Ids that only a length tells apart, one id repeated more or fewer times,
+// are cut so the shorter ends where the longer goes on: the column keeps its
+// width, so the name beside a short id stays in sight, and no two rows read
+// alike (#385). Beside them an id that differs from a at one character was
+// cut on its own, one repeated id was then cut like it, and the column grew
+// to 126 cells.
+func TestCutIDsPartIdsOnlyALengthTellsApartIssue385(t *testing.T) {
+	a, b := strings.Repeat("model-", 20), strings.Repeat("model-", 21)
+	once := []rune(a)
+	once[60] = 'X'
+	short := "openai/model-137-instruct"
+	for _, c := range [][]string{
+		{short, a, b},
+		{short, a, b, string(once)},
+		{short, a, b, strings.Repeat("model-", 22), "gateway/" + strings.Repeat("x", 90) + "v1", "gateway/" + strings.Repeat("x", 90) + "v2"},
+		{strings.Repeat("ab", 30), strings.Repeat("ab", 31)},
+	} {
+		for _, given := range []int{34, 49, 20, 8} {
+			out, width := cutIDs(c, given)
+			if width != given {
+				t.Errorf("%q at %d: the column grew to %d cells", c, given, width)
+			}
+			reads := map[string]string{}
+			for i, id := range c {
+				if other, ok := reads[out[i]]; ok {
+					t.Errorf("%q at %d: %q and %q both read %q", c, given, other, id, out[i])
+				}
+				reads[out[i]] = id
+				if cells(out[i]) > width || (cells(id) <= given) != (out[i] == id) {
+					t.Errorf("%q at %d: %q shows as %q (%d cells)", c, given, id, out[i], cells(out[i]))
+				}
+			}
+		}
+	}
+	// Four such ids in a column of 3 cells: no cut that parts them fits, so
+	// the column grows, only to the fewest marks that part them: "…", "…a…",
+	// "…a…a…" and "…a…a…ab".
+	many := []string{strings.Repeat("ab", 30), strings.Repeat("ab", 31), strings.Repeat("ab", 32), strings.Repeat("ab", 33)}
+	out, width := cutIDs(many, 3)
+	if width != 7 {
+		t.Errorf("four repeats at 3 cells: the column is %d cells, want 7", width)
+	}
+	reads := map[string]bool{}
+	for _, f := range out {
+		if reads[f] || cells(f) > width {
+			t.Errorf("four repeats at 3 cells: %q reads like another or overflows: %q", f, out)
+		}
+		reads[f] = true
 	}
 }

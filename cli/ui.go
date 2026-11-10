@@ -120,6 +120,334 @@ func labelWidth(rows []string, display string) int {
 	return w
 }
 
+// columnWidth is a label column's width in a row of room cells: the widest
+// label, unless one outlier would take more than the row's half — the
+// description beside it must still fit, so only the outlier is cut (#385).
+func columnWidth(widest, room int) int {
+	return min(widest, max(1, (room-uiGap)/2))
+}
+
+// cutIDs is each id as it shows in a column of width cells, the ids that do
+// not fit cut so the part that tells them from every other id stays in sight
+// (#385), and the column's width. An id that fits stays whole. A cut id is its
+// head, one "…" and its tail when such a cut parts every two ids; else it is
+// cut at its differences by cutAtDifferences when the places that part the ids
+// fit the column; else each id keeps a head and a tail of its own, by
+// cutOneEach, as many repeats of one id need. Each cut is only taken when no
+// two ids then read alike. The column grows only when none of these fits, to
+// the fewest marks cutAtDifferences needs, which parts every two ids by
+// construction, even one id and the same id repeated; the ids stay whole only
+// when a cut id would read as an id shown whole, which takes an id with an "…"
+// of its own: two rows never read alike.
+func cutIDs(ids []string, width int) ([]string, int) {
+	out := make([]string, len(ids))
+	runes := make([][]rune, len(ids))
+	var cut []int
+	widest := width
+	for i, id := range ids {
+		out[i] = noCntrl(id)
+		runes[i] = []rune(out[i])
+		if c := cells(out[i]); c > width {
+			cut = append(cut, i)
+			widest = max(widest, c)
+		}
+	}
+	if len(cut) == 0 {
+		return out, width
+	}
+	whole := map[string]bool{}
+	for i := range ids {
+		if cells(out[i]) <= width {
+			whole[out[i]] = true
+		}
+	}
+	// parts is whether forms, the cut ids in order, fit w cells and no two
+	// different ids then read alike.
+	parts := func(forms []string, w int) bool {
+		seen := map[string]string{}
+		for k, i := range cut {
+			if cells(forms[k]) > w || whole[forms[k]] {
+				return false
+			}
+			if id, ok := seen[forms[k]]; ok && id != out[i] {
+				return false
+			}
+			seen[forms[k]] = out[i]
+		}
+		return true
+	}
+	cutRunes := make([][]rune, len(cut))
+	for k, i := range cut {
+		cutRunes[k] = runes[i]
+	}
+	set := func(forms []string, w int) ([]string, int) {
+		for k, i := range cut {
+			out[i] = forms[k]
+		}
+		return out, w
+	}
+	keep := width - 1
+	minLen := len(cutRunes[0])
+	for _, r := range cutRunes {
+		minLen = min(minLen, len(r))
+	}
+	if keep >= 2 && minLen > keep {
+		half := keep - keep/2
+		// The head that reaches past the first difference comes first, then
+		// the heads nearest an even split.
+		heads := []int{}
+		first := 0
+		for _, i := range cut {
+			for j := range ids {
+				if j != i {
+					first = max(first, commonPrefix(runes[i], runes[j])+1)
+				}
+			}
+		}
+		if first < keep {
+			heads = append(heads, max(half, first))
+		}
+		for d := 0; d < keep; d++ {
+			for _, h := range []int{half - d, half + d} {
+				if h >= 1 && h < keep {
+					heads = append(heads, h)
+				}
+			}
+		}
+		for _, h := range heads {
+			forms := make([]string, len(cut))
+			for k, r := range cutRunes {
+				forms[k] = string(r[:h]) + "…" + string(r[len(r)-(keep-h):])
+			}
+			if parts(forms, width) {
+				return set(forms, width)
+			}
+		}
+	}
+	diffs, diffsW := cutAtDifferences(cutRunes, width)
+	if diffsW <= width && parts(diffs, diffsW) {
+		return set(diffs, diffsW)
+	}
+	if forms := cutOneEach(cutRunes, width); forms != nil && parts(forms, width) {
+		return set(forms, width)
+	}
+	if parts(diffs, diffsW) {
+		return set(diffs, diffsW)
+	}
+	return out, widest
+}
+
+// cutOneEach is ids, each wider than width cells, each cut to its head, one
+// "…" and its tail, a head and a tail of its own so that no two forms are the
+// same, in a column of width cells (#385). It is for ids that few places part,
+// as one id repeated 20 to 74 times, which cutAtDifferences parts only by
+// widening the column. The same id twice gets the same form. Each id takes the
+// widest form, the nearest an even split, that no id before it took. It is nil
+// when an id has no form left that fits.
+func cutOneEach(ids [][]rune, width int) []string {
+	forms := make([]string, len(ids))
+	used := map[string]bool{}
+	byID := map[string]string{}
+	for k, r := range ids {
+		if f, ok := byID[string(r)]; ok {
+			forms[k] = f
+			continue
+		}
+		for total := min(width-1, len(r)-1); total >= 2 && forms[k] == ""; total-- {
+			half := total - total/2
+			for d := 0; d < total && forms[k] == ""; d++ {
+				for _, h := range []int{half - d, half + d} {
+					if h < 1 || h >= total {
+						continue
+					}
+					f := string(r[:h]) + "…" + string(r[len(r)-(total-h):])
+					if cells(f) <= width && !used[f] {
+						used[f], forms[k] = true, f
+						break
+					}
+				}
+			}
+		}
+		if forms[k] == "" {
+			return nil
+		}
+		byID[string(r)] = forms[k]
+	}
+	return forms
+}
+
+// cutAtDifferences is ids, each wider than width cells, cut at the places
+// where they differ, and the width they take: width, or more when the places
+// that part the ids do not fit it (#385). Each id is read between two edges,
+// one before its first character and one after its last, so two different
+// ids always differ first at a place p counted from the start and at a place
+// s counted from the end: where one id ends and the other goes on counts too,
+// so an id and the same id repeated, as "aa" and "aaa", differ at the end of
+// the shorter. Every id keeps each place p it has up to its own depth front,
+// with nothing from its end before it, and each place s up to its depth back,
+// with nothing from its start after it; everything else is the same for two
+// ids up to a place they share. So two ids read alike up to the place where
+// they differ and differently there, or the one that ends there is the
+// shorter: no two ids read alike, by construction. An edge shows nothing and
+// hides nothing. Room left in the column goes to the head, to a window at
+// each place and to the tail, a character to each in turn.
+func cutAtDifferences(ids [][]rune, width int) ([]string, int) {
+	// edge is the place before an id's first character and after its last;
+	// no character is a negative rune.
+	const edge = -1
+	edged := make([][]rune, len(ids))
+	for i, r := range ids {
+		edged[i] = append(append([]rune{edge}, r...), edge)
+	}
+	ids = edged
+	type pair struct{ a, b, p, s int }
+	var pairs []pair
+	longest := 0
+	for a := range ids {
+		longest = max(longest, len(ids[a]))
+		for b := a + 1; b < len(ids); b++ {
+			if string(ids[a]) != string(ids[b]) {
+				pairs = append(pairs, pair{a, b, commonPrefix(ids[a], ids[b]), commonSuffix(ids[a], ids[b])})
+			}
+		}
+	}
+	// draw is the ids with their first h places, their last t, and c places
+	// at each place where they differ, one before it and the rest after it
+	// (from the start) or before it (from the end).
+	draw := func(front, back []int, h, c, t int) []string {
+		forms := make([]string, len(ids))
+		lead := min(c, 1)
+		for i, r := range ids {
+			keep := make([]bool, len(r))
+			mark := func(lo, hi, floor, ceil int) {
+				for k := max(lo, floor); k <= min(hi, ceil); k++ {
+					keep[k] = true
+				}
+			}
+			ahead, behind := len(r)-2-back[i], front[i]+1
+			mark(0, h-1, 0, ahead)
+			mark(len(r)-t, len(r)-1, behind, len(r)-1)
+			for _, pr := range pairs {
+				if pr.a != i && pr.b != i {
+					continue
+				}
+				if pr.p <= front[i] {
+					mark(pr.p-lead, pr.p+c-lead, 0, ahead)
+				}
+				if pr.s <= back[i] {
+					e := len(r) - 1 - pr.s
+					mark(e-c+lead, e+lead, behind, len(r)-1)
+				}
+			}
+			var s strings.Builder
+			gap := false
+			for k, kept := range keep {
+				switch {
+				case r[k] == edge:
+				case !kept:
+					gap = true
+				default:
+					if gap {
+						s.WriteString("…")
+					}
+					s.WriteRune(r[k])
+					gap = false
+				}
+			}
+			if gap {
+				s.WriteString("…")
+			}
+			forms[i] = s.String()
+		}
+		return forms
+	}
+	widest := func(forms []string) int {
+		w := 0
+		for _, f := range forms {
+			w = max(w, cells(f))
+		}
+		return w
+	}
+	// A pair parts from the start when its place p is up to x, else from the
+	// end. Of every x, the one whose bare places are narrowest is taken, the
+	// deepest x first; the deepest parts every pair from the start, and
+	// always fits.
+	var front, back []int
+	least := -1
+	for x := longest - 1; x >= 0; x-- {
+		f, b := make([]int, len(ids)), make([]int, len(ids))
+		for i := range ids {
+			f[i], b[i] = -1, -1
+		}
+		for _, pr := range pairs {
+			if pr.p <= x {
+				f[pr.a], f[pr.b] = max(f[pr.a], pr.p), max(f[pr.b], pr.p)
+			} else {
+				b[pr.a], b[pr.b] = max(b[pr.a], pr.s), max(b[pr.b], pr.s)
+			}
+		}
+		ok := true
+		for i, r := range ids {
+			ok = ok && f[i]+b[i]+2 <= len(r)
+		}
+		if !ok {
+			continue
+		}
+		if w := widest(draw(f, b, 0, 0, 0)); least < 0 || w < least {
+			front, back, least = f, b, w
+		}
+	}
+	w := max(width, least)
+	size := []int{0, 0, 0}
+	for grows := []bool{true, true, true}; grows[0] || grows[1] || grows[2]; {
+		for g := range size {
+			if !grows[g] {
+				continue
+			}
+			size[g]++
+			if widest(draw(front, back, size[0], size[1], size[2])) > w || size[g] > longest {
+				size[g]--
+				grows[g] = false
+			}
+		}
+	}
+	return draw(front, back, size[0], size[1], size[2]), w
+}
+
+// commonPrefix is how many runes a and b have in common from the start.
+func commonPrefix(a, b []rune) int {
+	n := 0
+	for n < len(a) && n < len(b) && a[n] == b[n] {
+		n++
+	}
+	return n
+}
+
+// commonSuffix is how many runes a and b have in common from the end.
+func commonSuffix(a, b []rune) int {
+	n := 0
+	for n < len(a) && n < len(b) && a[len(a)-1-n] == b[len(b)-1-n] {
+		n++
+	}
+	return n
+}
+
+// idColumn is each row's visible part with its label cut by cutIDs to width
+// cells (#385) and its description beside it unchanged.
+func idColumn(rows []string, display string, width int) ([]string, int) {
+	var ids []string
+	for _, r := range rows {
+		ids = append(ids, noCntrl(rowID(visible(r, display))))
+	}
+	out, width := cutIDs(ids, width)
+	for i, r := range rows {
+		if _, detail, has := strings.Cut(visible(r, display), "\t"); has {
+			out[i] += "\t" + detail
+		}
+	}
+	return out, width
+}
+
 // typedLines is how many terminal lines an answered prompt's last line
 // occupies: "❯ " plus ECHOED cells, wrapping at COLUMNS. Reaching the last
 // column is not a wrap — the next character is — so folding the question
@@ -231,11 +559,11 @@ func (t uiTheme) list(prompt string, rows []string, display string) int {
 	_, columns := termSize()
 	index := len(strconv.Itoa(len(rows)))
 	rowWidth := columns - len(uiMargin) - index - 2
-	width := min(labelWidth(rows, display), rowWidth)
+	labels, width := idColumn(rows, display, columnWidth(labelWidth(rows, display), rowWidth))
 	fmt.Fprintln(os.Stderr, t.heading(prompt, columns))
 	fmt.Fprintln(os.Stderr)
-	for i, r := range rows {
-		fmt.Fprintf(os.Stderr, "%s%*d) %s\n", uiMargin, index, i+1, t.label(visible(r, display), width, false, rowWidth))
+	for i, r := range labels {
+		fmt.Fprintf(os.Stderr, "%s%*d) %s\n", uiMargin, index, i+1, t.label(r, width, false, rowWidth))
 	}
 	return len(rows) + 2 // heading, blank, rows
 }
@@ -698,12 +1026,19 @@ func (t uiTheme) receiptLine(title, choice string, columns int) string {
 // top and bottom border, the prompt, the info line and the header.
 const fzfChrome = 5
 
+// fzfRowChrome is the columns an fzf window spends on itself besides a row:
+// the borders, the pointer and the marker, the scrollbar — six of a
+// 110-column terminal in #385, two spare. The id column takes at most half of
+// what is left, so one very long id cannot push every name out of sight.
+const fzfRowChrome = 8
+
 // fzfArgs is the fzf command line for a version, a list of n rows and a
 // terminal of lines rows. --cycle wraps the ends on every version; 0.36+ adds
 // the scrollbar and the Home/End jump, 0.71+ lets the window grow to the list.
 // An older fzf has neither, so ccmorph sizes its window itself: the whole list
 // when the terminal allows it, otherwise the header says rows are cut. A list
-// never stops silently at the window's edge (#278).
+// never stops silently at the window's edge (#278). --no-hscroll keeps a row's
+// start in sight on a match past the window's edge (#385).
 func fzfArgs(version string, n, lines int, prompt string, theme []string) []string {
 	height := "45%"
 	if fzfAtLeast(version, 71) {
@@ -720,7 +1055,7 @@ func fzfArgs(version string, n, lines int, prompt string, theme []string) []stri
 		}
 	}
 	args := append([]string{"--height", height, "--reverse", "--border=rounded", "--pointer=❯", "--marker=✓",
-		"--no-multi", "--no-print-query", "--ansi", "--cycle"}, theme...)
+		"--no-multi", "--no-print-query", "--ansi", "--cycle", "--no-hscroll"}, theme...)
 	if fzfAtLeast(version, 36) {
 		args = append(args, "--scrollbar", "--bind", "home:first,end:last")
 	}
@@ -752,6 +1087,26 @@ func fzfAtLeast(version string, minor int) bool {
 	return major > 0 || min >= minor
 }
 
+// searchRows is the lines a search picker feeds fzf, one per row: the row's
+// id, a tab fzf keeps out of sight, then the label in a column at most half
+// the room a row has inside the window, cut by cutID, and the description
+// whole beside it (#385). fzf searches only the text it shows, so nothing a
+// person may type is cut away: a description runs past the window's edge
+// rather than be cut, and a cut id's whole text follows past the edge.
+func (t uiTheme) searchRows(rows []string, columns int) []string {
+	room := max(1, columns-fzfRowChrome)
+	labels, width := idColumn(rows, "labels", columnWidth(labelWidth(rows, "labels"), room))
+	var rendered []string
+	for i, r := range labels {
+		line := t.label(r, width, false, 0)
+		if id := noCntrl(rowID(visible(rows[i], "labels"))); rowID(r) != id {
+			line += strings.Repeat(" ", max(uiGap, columns-cells((uiTheme{}).label(r, width, false, 0)))) + id
+		}
+		rendered = append(rendered, rowID(rows[i])+"\t"+line)
+	}
+	return rendered
+}
+
 // search is _ccm_ui_search: fzf when present, else the numbered list.
 func (t uiTheme) search(prompt string, rows []string) (string, int) {
 	if len(rows) == 0 {
@@ -760,21 +1115,17 @@ func (t uiTheme) search(prompt string, rows []string) (string, int) {
 	}
 	fzf, ferr := exec.LookPath("fzf")
 	if os.Getenv("TERM") != "dumb" && ferr == nil {
-		width := labelWidth(rows, "labels")
-		var rendered []string
-		for _, r := range rows {
-			rendered = append(rendered, rowID(r)+"\t"+t.label(visible(r, "labels"), width, false, 0))
-		}
-		theme := []string{"--color", fzfTheme}
-		if os.Getenv("NO_COLOR") != "" {
-			theme = []string{"--no-color"}
-		}
 		// A list longer than its window must be reachable end to end and say
 		// that rows are hidden: --cycle wraps the ends together, and a new
 		// enough fzf adds the scrollbar and the Home/End jump. Its window also
 		// grows to the list itself, so a list that fits the terminal is never
 		// cut at all (#278).
-		lines, _ := termSize()
+		lines, columns := termSize()
+		rendered := t.searchRows(rows, columns)
+		theme := []string{"--color", fzfTheme}
+		if os.Getenv("NO_COLOR") != "" {
+			theme = []string{"--no-color"}
+		}
 		args := fzfArgs(fzfVersion(fzf), len(rows), lines, prompt, theme)
 		cmd := exec.Command(fzf, args...)
 		cmd.Env = append(os.Environ(), "FZF_DEFAULT_OPTS=", "FZF_DEFAULT_OPTS_FILE=")
