@@ -137,47 +137,73 @@ func AcquireBridge(root, name string, start func() (pid, port, key, tmp string, 
 	return b, true, nil
 }
 
-// ours is whether pid still runs the bridge whose config lives in tmp, read
-// from the process table, never a reused PID.
-func ours(pid int, tmp string) bool {
+// ownershipTable reads the process table the ownership checks use; a test
+// swaps in a table that cannot answer for a pid, as an unreadable table or a
+// row without argv does.
+var ownershipTable = processTable
+
+// owns is whether pid still runs the bridge whose config lives in tmp, read
+// from the process table, never a reused PID. known is false when the table
+// cannot answer for pid: no table was read, or the row's argv was not. A PID
+// missing from a table that was read is dead. Doubt is read as alive, the way
+// othersHold treats a lock it cannot read.
+func owns(pid int, tmp string) (yours, known bool) {
 	if pid <= 0 || tmp == "" {
-		return false
+		return false, true
 	}
-	return strings.Contains(processTable()[pid].args, filepath.Join(tmp, "config.yaml"))
+	tab := ownershipTable()
+	r, ok := tab[pid]
+	if !ok {
+		return false, tab != nil
+	}
+	if r.args == "" {
+		return false, false
+	}
+	return strings.Contains(r.args, filepath.Join(tmp, "config.yaml")), true
 }
 
 // answers is whether the recorded bridge serves. One failed probe proves
 // nothing while the bridge still runs its config and another session holds it:
 // joining a slow bridge keeps one refresher, while killing it and starting a
 // second signs the profile out (#294). Without a holder alive, a bounded retry
-// is what says dead.
+// is what says dead; a table that could not answer for the PID is not death.
 func answers(pid, port, key, tmp string, held bool) bool {
 	n, _ := strconv.Atoi(pid)
+	doubt := false
 	for i := 0; i < bridgeProbeTries; i++ {
 		if probeBridge(port, key) {
 			return true
 		}
-		if !ours(n, tmp) {
+		yours, known := owns(n, tmp)
+		if known && !yours {
 			return false // dead or a reused PID: nothing to wait for
 		}
 		if held {
 			return true
 		}
+		doubt = !known
 	}
-	return false
+	// Doubt is not death: a table that could not answer never makes a launch
+	// start a second bridge on the same auth dir.
+	return doubt
 }
 
 // stopIfOurs stops a recorded bridge only while that PID still runs the
-// cliproxyapi whose config lives in tmp, never a reused PID.
+// cliproxyapi whose config lives in tmp, never a reused PID. A table that
+// cannot answer proves neither death nor ownership, so it stops nothing and
+// leaves the config for the bridge that may still run it.
 func stopIfOurs(pid, tmp string) {
 	n, err := strconv.Atoi(pid)
 	if err != nil || n <= 0 || tmp == "" {
 		return
 	}
-	if ours(n, tmp) {
+	yours, known := owns(n, tmp)
+	if yours {
 		BridgeStop(n, tmp, "")
-	} else if _, err := os.Stat(tmp); err == nil && strings.Contains(filepath.Base(tmp), "ccmorph-bridge-") {
-		os.RemoveAll(tmp)
+	} else if known {
+		if _, err := os.Stat(tmp); err == nil && strings.Contains(filepath.Base(tmp), "ccmorph-bridge-") {
+			os.RemoveAll(tmp)
+		}
 	}
 }
 
@@ -196,11 +222,18 @@ func (b *SharedBridge) Release(authDir string) {
 	syscall.Flock(fd, syscall.LOCK_UN)
 	if syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB) == nil {
 		pid, _ := strconv.Atoi(b.PID)
-		if !ours(pid, b.TmpDir) {
-			pid = 0 // a bridge that died left its PID to whatever the system started next
+		yours, known := owns(pid, b.TmpDir)
+		// A table that cannot answer proves nothing: the bridge may still run,
+		// so its record and config stay for the next launch to join or stop.
+		// Reading doubt as death here cleared the PID, skipped the stop and
+		// orphaned a live bridge (#409).
+		if known {
+			if !yours {
+				pid = 0 // a bridge that died left its PID to whatever the system started next
+			}
+			BridgeStop(pid, b.TmpDir, authDir)
+			os.Remove(b.state)
 		}
-		BridgeStop(pid, b.TmpDir, authDir)
-		os.Remove(b.state)
 	}
 	b.users.Close()
 	b.users = nil
