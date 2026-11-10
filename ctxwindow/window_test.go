@@ -517,8 +517,11 @@ func TestBundledCatalogueSizesAnUnknownRoutedModelByFamily(t *testing.T) {
 // The --context setter's answers through WindowMain, the surface `ccmorph
 // context` runs: errors carry the ccmorph prefix, a k/m suffix is stored as the
 // digits it means, an out-of-range limit gets one sentence saying what new
-// sessions do with it, and a model the endpoint has not shown is saved with a
-// warning naming the command that lists what it serves.
+// sessions do with it, and a model the endpoint has not shown still saves. The
+// warning that names an unlisted model is the cli's to say now, from the
+// listing `ccmorph models` reads (#370) — the helper's discovered table cannot
+// answer it — so a save here is silent (tests/ccmorph_test.zsh,
+// test_context_save_warns_only_for_models_the_listing_leaves_out_issue_370).
 func TestContextSetAnswersPrefixSuffixesRangeAndUnknownModels(t *testing.T) {
 	e := setup(t)
 	save("a", one("known.model", 200000))
@@ -549,22 +552,20 @@ func TestContextSetAnswersPrefixSuffixesRangeAndUnknownModels(t *testing.T) {
 	if code, _, errs = run("a", "known.model", "auto"); code != 0 || errs != "" {
 		t.Fatalf("auto: code=%d errs=%q", code, errs)
 	}
-	code, _, errs = run("a", "nosuch-model", "64000")
-	if code != 0 || ctxValue("a", "nosuch-model") != "64000" {
-		t.Fatalf("unknown model not saved: code=%d", code)
-	}
-	if !strings.Contains(errs, "nosuch-model") || !strings.Contains(errs, "ccmorph models a") {
-		t.Fatalf("unknown model warning: %q", errs)
-	}
-	// The pin just saved is not evidence the endpoint lists the model: saving again warns again.
 	code, _, errs = run("a", "nosuch-model", "100k")
-	if code != 0 || ctxValue("a", "nosuch-model") != "100000" || !strings.Contains(errs, "ccmorph models a") {
+	if code != 0 || ctxValue("a", "nosuch-model") != "100000" || errs != "" {
+		t.Fatalf("unknown model save: code=%d errs=%q", code, errs)
+	}
+	// Saving again is the same save: the pin already there is not evidence of
+	// anything, and the helper has nothing to say about it either way.
+	code, _, errs = run("a", "nosuch-model", "100000")
+	if code != 0 || ctxValue("a", "nosuch-model") != "100000" || errs != "" {
 		t.Fatalf("second save of an unlisted model: code=%d errs=%q", code, errs)
 	}
 	write(t, e.b, "type=provider\nprovider=codex\n")
-	code, _, errs = run("b", "nosuch-model", "64000")
-	if code != 0 || !strings.Contains(errs, "ccmorph probe b") {
-		t.Fatalf("provider warning: code=%d errs=%q", code, errs)
+	code, _, errs = run("b", "nosuch-model", "100k")
+	if code != 0 || ctxValue("b", "nosuch-model") != "100000" || errs != "" {
+		t.Fatalf("provider save: code=%d errs=%q", code, errs)
 	}
 }
 

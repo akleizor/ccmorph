@@ -11423,6 +11423,152 @@ test_context_names_a_model_the_profile_does_not_list() {
 }
 run_test test_context_names_a_model_the_profile_does_not_list
 
+# GH-370: the set form's warning trusted the discovered table, which stays empty
+# whenever no model could be sized, so a model the gateway lists — one `ccmorph
+# models` shows — was warned about exactly like a made-up name. The save now
+# asks the route's own listing, the one `models` reads, with the id as spelled
+# (a model the map rewrites is still one the listing spells): a listed model
+# saves in silence, a model the listing does not carry still saves, with a
+# warning that says the route does not list it — on every save, not just the
+# first — and a listing that cannot be read keeps the save silent rather than
+# guess. A provider's catalogue is not readable with the profile's own
+# credentials, so its probe's record is asked instead.
+test_context_save_warns_only_for_models_the_listing_leaves_out_issue_370() {
+  local test_home; test_home=$(mktemp -d); setup_home "$test_home"
+  fake_gateway
+  write_apikey_conf gw 'api_key=k' 'base_url=https://gateway.invalid'
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 err out
+  if err=$(ccmorph context gw zeta-chat 100000 2>&1 >/dev/null); then
+    [[ "$err" == '' ]] || {
+      print -u2 -- "a model the gateway lists must save without a warning: ${(qqq)err}"
+      rc=1
+    }
+  else
+    print -u2 -- 'saving a listed model must succeed'
+    rc=1
+  fi
+  assert_contains "$(<"$HOME/.config/ccmorph/gw.conf")" \
+    'context_window.zeta-chat=100000' \
+    'a listed model still saves its pin' || rc=1
+
+  if err=$(ccmorph context gw nosuch-model 100000 2>&1 >/dev/null); then
+    assert_contains "$err" "'nosuch-model' is not listed by gw" \
+      'the warning must say the route does not list the model' || rc=1
+    assert_contains "$err" 'the limit is saved for when it appears' \
+      'the warning must say the pin is kept' || rc=1
+    assert_contains "$err" 'ccmorph models gw' \
+      'the warning must name the command that lists the route' || rc=1
+  else
+    print -u2 -- 'saving an unlisted model must still succeed'
+    rc=1
+  fi
+  assert_contains "$(<"$HOME/.config/ccmorph/gw.conf")" \
+    'context_window.nosuch-model=100000' \
+    'an unlisted model still saves its pin' || rc=1
+
+  # The pin just saved is not evidence the route lists the model: saving again
+  # warns again, exactly like the first save.
+  if err=$(ccmorph context gw nosuch-model 150000 2>&1 >/dev/null); then
+    assert_contains "$err" "'nosuch-model' is not listed by gw" \
+      'a second unlisted save must warn again' || rc=1
+  else
+    print -u2 -- 'a second unlisted save must still succeed'
+    rc=1
+  fi
+  assert_contains "$(<"$HOME/.config/ccmorph/gw.conf")" \
+    'context_window.nosuch-model=150000' \
+    'the second save still writes its pin' || rc=1
+
+  # Out of range: the clamp advisory and the listing warning both print (GH-370).
+  if err=$(ccmorph context gw nosuch-model 64000 2>&1 >/dev/null); then
+    assert_contains "$err" 'Limit saved' \
+      'an out-of-range save must still print the clamp advisory' || rc=1
+    assert_contains "$err" "'nosuch-model' is not listed by gw" \
+      'an out-of-range unlisted save must still warn' || rc=1
+    assert_contains "$err" 'ccmorph models gw' \
+      'the out-of-range warning must name the listing command' || rc=1
+  else
+    print -u2 -- 'an out-of-range unlisted save must still succeed'
+    rc=1
+  fi
+  assert_contains "$(<"$HOME/.config/ccmorph/gw.conf")" \
+    'context_window.nosuch-model=64000' \
+    'the out-of-range save still writes its pin' || rc=1
+
+  # A model the map rewrites is still one the listing spells — `ccmorph models`
+  # prints the id as stored — so saving it must not warn even when the target it
+  # maps to is absent. Launch keeps judging the target (that is what a session
+  # runs); the save asks the listing the person reads.
+  write_apikey_conf gw 'api_key=k' 'base_url=https://gateway.invalid' \
+    'model_map={"zeta-chat":"absent-target"}'
+  out=$(ccmorph models gw) || { print -u2 -- 'models must still read the listing'; rc=1 }
+  assert_contains "$out" 'zeta-chat' \
+    'the mapped id is still one the listing spells' || rc=1
+  if err=$(ccmorph context gw zeta-chat 100000 2>&1 >/dev/null); then
+    [[ "$err" == '' ]] || {
+      print -u2 -- "a model the listing spells must save without a warning even when mapped away: ${(qqq)err}"
+      rc=1
+    }
+  else
+    print -u2 -- 'saving a mapped listed model must succeed'
+    rc=1
+  fi
+
+  # A provider's catalogue is not readable with the profile's own credentials:
+  # the record its probe fills is the evidence. An unprobed model warns with the
+  # probe that would list it; one the probe recorded saves in silence.
+  printf '%s\n' 'type=provider' 'provider=codex' > "$HOME/.config/ccmorph/b.conf"
+  if err=$(ccmorph context b nosuch-model 100000 2>&1 >/dev/null); then
+    assert_contains "$err" "'nosuch-model' is not listed by b" \
+      'the provider warning must say the route does not list the model' || rc=1
+    assert_contains "$err" 'ccmorph probe b' \
+      'the provider warning must name the probe that lists the route' || rc=1
+  else
+    print -u2 -- 'saving an unprobed provider model must still succeed'
+    rc=1
+  fi
+  if err=$(ccmorph context b nosuch-model 64000 2>&1 >/dev/null); then
+    assert_contains "$err" 'Limit saved' \
+      'an out-of-range provider save must still print the clamp advisory' || rc=1
+    assert_contains "$err" "'nosuch-model' is not listed by b" \
+      'an out-of-range provider save must still warn' || rc=1
+    assert_contains "$err" 'ccmorph probe b' \
+      'the out-of-range provider warning must name the probe' || rc=1
+  else
+    print -u2 -- 'an out-of-range unprobed provider save must still succeed'
+    rc=1
+  fi
+  write_profile_discovered b gpt-5=200000
+  if err=$(ccmorph context b gpt-5 100000 2>&1 >/dev/null); then
+    [[ "$err" == '' ]] || {
+      print -u2 -- "a provider model its probe recorded must save without a warning: ${(qqq)err}"
+      rc=1
+    }
+  else
+    print -u2 -- 'saving a probed provider model must succeed'
+    rc=1
+  fi
+
+  # A listing that cannot be read is not a refusal: the save stays silent.
+  printf '%s\n' '#!/bin/sh' 'exit 1' > "$HOME/bin/curl"
+  chmod +x "$HOME/bin/curl"
+  if err=$(ccmorph context gw zeta-chat 100000 2>&1 >/dev/null); then
+    [[ "$err" == '' ]] || {
+      print -u2 -- "an unreadable listing must not guess a warning: ${(qqq)err}"
+      rc=1
+    }
+  else
+    print -u2 -- 'the save itself must not depend on the listing'
+    rc=1
+  fi
+
+  rm -rf "$test_home"
+  return $rc
+}
+run_test test_context_save_warns_only_for_models_the_listing_leaves_out_issue_370
+
 test_picker_uses_gateway_before_adapter_and_settings_overlay() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   write_apikey_conf gw 'api_key=canary' 'base_url=http://gateway.invalid' 'model=first' 'adapter=true'

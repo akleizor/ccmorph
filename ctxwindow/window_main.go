@@ -66,16 +66,6 @@ func windowRun(args []string, stdout, stderr io.Writer) (int, error) {
 			return 0, nil
 		}
 		pinned, numeric := ParseTokens(args[3])
-		unlisted := false
-		var fields map[string]string
-		if numeric {
-			// Read before the save: the pin about to be written must not make the
-			// model count as one the route knows.
-			if path, err := ProfilePath(profile); err == nil {
-				_, fields, _ = ReadConf(path)
-			}
-			unlisted = !routeKnown(fields, model)
-		}
 		if err := SetContext(profile, model, args[3]); err != nil {
 			return 0, err
 		}
@@ -87,13 +77,9 @@ func windowRun(args []string, stdout, stderr io.Writer) (int, error) {
 		if numeric && !(pinned >= 100000 && pinned <= oneM) {
 			fmt.Fprintln(stderr, "Limit saved. New sessions use it: the model's auto-compact window is sized from it, clamped into the 100,000–1,000,000 tokens Claude Code supports, and the session's context cap is the route's largest window, this limit included — set a value in that range, or auto, for a limit that is applied without clamping.")
 		}
-		if unlisted {
-			advice := "ccmorph models " + profile
-			if fields["type"] == "provider" {
-				advice = "ccmorph probe " + profile
-			}
-			fmt.Fprintf(stderr, "ccmorph: warning: '%s' is not on this route; the limit is saved for when it appears. Check the listing with: %s\n", model, advice)
-		}
+		// A model the route's listing does not carry is the cli's to name, from
+		// that listing — the one `ccmorph models` reads (#370); the discovered
+		// table this helper holds says nothing about what a route lists.
 		return 0, nil
 	case len(args) == 2 && args[0] == "--ceiling":
 		var best int64

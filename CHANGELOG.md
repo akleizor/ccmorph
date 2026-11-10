@@ -18,6 +18,16 @@
   https://github.com/router-for-me/CLIProxyAPI where it is not. A menu row
   that must cut — the More sign-ins row among them, at 80 columns — now ends
   on a whole word instead of inside one (#369).
+- **`ccmorph context` no longer warns about a model the route lists.** The set
+  form's warning read the discovered table, which stays empty whenever no model
+  could be sized, so a model `ccmorph models` listed was warned about exactly
+  like a made-up name. The save now asks the route's own listing — the one
+  `models` reads, with the id as spelled so a model the map rewrites still
+  counts — and only a model that listing does not carry is named, in a warning
+  that says the route does not list it and wraps to the terminal's width, so an
+  80-column terminal no longer breaks it inside a word. A provider's catalogue
+  is not readable with the profile's own credentials, so its probe's record is
+  asked instead, as before (#370).
 - **The effort setting has one name, and the picker's Extra high names the
   value.** The short help, the config help page, the config menu and the
   setting chooser called the effort setting "reasoning", while `set`, `get`,

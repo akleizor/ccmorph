@@ -472,24 +472,6 @@ func ManualValues(fields map[string]string) map[string]int64 {
 	return out
 }
 
-// routeKnown says whether the endpoint has listed model: a discovered window
-// for the id model_map serves for it, glob patterns included. A pin the person
-// saved earlier is not evidence (a typo stays a typo), and neither is the
-// bundled catalogue, which knows models, not what this route serves.
-func routeKnown(fields map[string]string, model string) bool {
-	target := MappedTarget(fields, model)
-	discovered := DiscoveredValues(fields)
-	if _, ok := discovered[target]; ok {
-		return true
-	}
-	for _, p := range slices.Sorted(maps.Keys(discovered)) {
-		if glob(target, p) {
-			return true
-		}
-	}
-	return false
-}
-
 // MappedTarget is the id the shim serves for bare, or bare when nothing rewrites
 // it: the map's target is final, so it sizes the session.
 func MappedTarget(fields map[string]string, bare string) string {
@@ -515,6 +497,25 @@ func MappedTarget(fields map[string]string, bare string) string {
 		return bare
 	}
 	return strings.TrimSuffix(s, "[1m]")
+}
+
+// RouteKnown is whether the route's discovered table carries model, as itself
+// or through a glob pattern, mapped to its target first. It is the judgement
+// `ccmorph context`'s save form makes for a provider, whose catalogue is not
+// readable with the profile's own credentials — the probe that fills this
+// table is the evidence the route offers.
+func RouteKnown(fields map[string]string, model string) bool {
+	target := MappedTarget(fields, model)
+	discovered := DiscoveredValues(fields)
+	if _, ok := discovered[target]; ok {
+		return true
+	}
+	for _, p := range slices.Sorted(maps.Keys(discovered)) {
+		if glob(target, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // ProfileWindows is the profile's discovered and manual windows, manual winning.

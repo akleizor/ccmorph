@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import unittest
 
-from support import HANG_TIMEOUT, helper_cmd
+from support import HANG_TIMEOUT, anthropic_accepts_the_key, helper_cmd
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -100,10 +100,48 @@ class ContextOverride(unittest.TestCase):
             result = run_helper('--context', 'gw', 'nosuch-model', '64000')
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('context_window.nosuch-model=64000', conf.read_text())
-            self.assertIn('nosuch-model', result.stderr)
-            self.assertIn('ccmorph models gw', result.stderr)
-            # The pin just saved is no evidence the endpoint lists the model: the next save warns again.
+            # 64000 is out of range, so the one stderr line is the clamp advisory; the
+            # unlisted-model warning is the cli's to say, from the listing `ccmorph
+            # models` reads (GH-370; tests/ccmorph_test.zsh,
+            # test_context_save_warns_only_for_models_the_listing_leaves_out_issue_370).
+            self.assertEqual(result.stderr.count('\n'), 1, result.stderr)
+            self.assertIn('Limit saved', result.stderr)
+            # Saving again is the same save: the pin already there is not evidence of
+            # anything, and the helper has nothing to say about it either way.
             result = run_helper('--context', 'gw', 'nosuch-model', '100k')
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('context_window.nosuch-model=100000', conf.read_text())
+            self.assertEqual(result.stderr, '')
+            # The warning is the cli's, and it fires on every unlisted save, not
+            # just the first (GH-370): a stub curl answers api.anthropic.com with
+            # a readable empty listing, so both saves through the real command
+            # warn exactly like the zsh suite's gateway case.
+            stub = home / 'bin'
+            stub.mkdir()
+            anthropic_accepts_the_key(stub)
+            env['PATH'] = str(stub) + os.pathsep + env['PATH']
+            for value, digits in (('100k', '100000'), ('150000', '150000')):
+                result = cli('context', 'gw', 'nosuch-model', value)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('set to %s tokens' % digits, result.stdout)
+                self.assertIn("'nosuch-model' is not listed by gw", result.stderr)
+                self.assertIn('ccmorph models gw', result.stderr)
+                self.assertEqual(result.stderr.count('\n'), 1, result.stderr)
+            self.assertIn('context_window.nosuch-model=150000', conf.read_text())
+            # Out of range (GH-370): the clamp advisory, then the listing warning.
+            result = cli('context', 'gw', 'nosuch-model', '64000')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('set to 64000 tokens', result.stdout)
+            self.assertIn('Limit saved', result.stderr)
+            self.assertIn("'nosuch-model' is not listed by gw", result.stderr)
             self.assertIn('ccmorph models gw', result.stderr)
+            self.assertEqual(result.stderr.count('\n'), 2, result.stderr)
+            self.assertIn('context_window.nosuch-model=64000', conf.read_text())
+            # A provider is asked through its probe's record; unprobed, it warns with the probe.
+            (state / 'b.conf').write_text('type=provider\nprovider=codex\n')
+            result = cli('context', 'b', 'nosuch-model', '64000')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('Limit saved', result.stderr)
+            self.assertIn("'nosuch-model' is not listed by b", result.stderr)
+            self.assertIn('ccmorph probe b', result.stderr)
+            self.assertEqual(result.stderr.count('\n'), 2, result.stderr)

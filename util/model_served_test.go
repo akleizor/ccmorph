@@ -56,6 +56,47 @@ func TestModelServedMatchesTheShimsMappingScope(t *testing.T) {
 	}
 }
 
+// ContextServed agrees with the listing `ccmorph models` prints, not with the
+// map a launch follows: a mapped-away id the listing still spells is carried,
+// and so is an id counted through its target, while ModelServed keeps judging
+// the target a session runs (issue #370).
+func TestContextServedAsksTheListingTheModelsVerbPrints(t *testing.T) {
+	fakeCurl(t, catalogue, 0)
+	const mapJSON = `{"literal-id":"absent-target","mapped-alias":"served-target"}`
+	rows, ok := GwModels("", false, catalogue)
+	if !ok {
+		t.Fatalf("the listing must be printable")
+	}
+	prints := map[string]bool{}
+	for _, r := range rows {
+		prints[r.ID] = true
+	}
+	if !prints["literal-id"] {
+		t.Errorf("the premise fails: `ccmorph models` does not print literal-id: %v", rows)
+	}
+	for _, c := range []struct {
+		model                 string
+		contextServed, launch Served
+	}{
+		{"literal-id", ServedYes, ServedNo},    // the listing spells it; its target is absent
+		{"mapped-alias", ServedYes, ServedYes}, // carried through its target
+		{"served-target", ServedYes, ServedYes},
+		{"unmapped-alias", ServedNo, ServedNo},
+		{"embed-only", ServedNo, ServedNo}, // chat-denied, so `ccmorph models` prints nothing
+	} {
+		if got := ContextServed(c.model, "apikey", "http://mapped.invalid", mapJSON, "test-key"); got != c.contextServed {
+			t.Errorf("ContextServed %s: got %d, want %d", c.model, got, c.contextServed)
+		}
+		if got := ModelServed(c.model, "apikey", "http://mapped.invalid", mapJSON, "test-key"); got != c.launch {
+			t.Errorf("ModelServed %s: got %d, want %d", c.model, got, c.launch)
+		}
+	}
+	// A native route runs no adapter, so its map is unused there as everywhere.
+	if got := ContextServed("literal-id", "apikey", "https://api.anthropic.com", mapJSON, "test-key"); got != ServedYes {
+		t.Errorf("native literal-id: got %d, want %d", got, ServedYes)
+	}
+}
+
 // A catalogue that cannot prove absence leaves a carried model alone (2); an
 // explicit chat denial is a definite no, undeclared capabilities stay carryable,
 // and only a terminal window suffix is stripped before comparing.
