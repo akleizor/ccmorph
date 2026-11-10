@@ -14,6 +14,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/akleizor/ccmorph/util"
 )
 
 // The terminal UI that lib/ccmorph-ui.zsh was: ROWS are ID<TAB>label[<TAB>description];
@@ -223,8 +225,9 @@ func uiSelect(mode, title, rows, display string) (string, int) {
 	return "", 2
 }
 
-// list is ccm_ui_list: the numbered rows, painted on stderr.
-func (t uiTheme) list(prompt string, rows []string, display string) {
+// list is ccm_ui_list: the numbered rows, painted on stderr. It returns the
+// lines it printed, the count a fold over it erases.
+func (t uiTheme) list(prompt string, rows []string, display string) int {
 	_, columns := termSize()
 	index := len(strconv.Itoa(len(rows)))
 	rowWidth := columns - len(uiMargin) - index - 2
@@ -234,6 +237,108 @@ func (t uiTheme) list(prompt string, rows []string, display string) {
 	for i, r := range rows {
 		fmt.Fprintf(os.Stderr, "%s%*d) %s\n", uiMargin, index, i+1, t.label(visible(r, display), width, false, rowWidth))
 	}
+	return len(rows) + 2 // heading, blank, rows
+}
+
+// numberWindow is how the numbered menu fits a screen h rows tall (#387):
+// every row while the whole block fits — heading, blank, rows and the three
+// prompt lines, plus the standing line a failed answer's message takes — else
+// the first h-7, leaving room beside that chrome for the "N more" line and the
+// line under it, so the title and the first rows stay on screen while the
+// person chooses, between retries as at the first question. One row shows even
+// on a screen too short for all the chrome: a window that showed nothing could
+// not be answered.
+func numberWindow(rows, h int, noted bool) (shown int, cut bool) {
+	fit := 5
+	if noted {
+		fit = 6 // the message a failed answer leaves standing under the list
+	}
+	if rows+fit <= h {
+		return rows, false
+	}
+	return max(1, h-7), true
+}
+
+// numberMode is where the numbered menu paints: a pipe takes data — every row,
+// nothing under it; a dumb terminal is a screen that must not see cursor codes;
+// a full terminal folds its answered rounds away (#361).
+type numberMode int
+
+const (
+	numberPipe numberMode = iota
+	numberDumb
+	numberFold
+)
+
+// numberList paints the numbered menu's rows: no more than fit the screen, the
+// rest named by a "N more" line (#387, #278), and — a long list being exactly
+// where not knowing hurts — the one line under it saying fzf adds search and
+// how to get it, the step this machine's own installer would name. A failed
+// answer's NOTE takes that line's place, so a retry keeps the block's height
+// and the title stays in view. It returns the lines it printed, the count the
+// answer's fold erases.
+func (t uiTheme) numberList(prompt string, rows []string, display string, mode numberMode, note string) int {
+	shown := rows
+	more := 0
+	if mode != numberPipe {
+		height, _ := termSize()
+		if n, cut := numberWindow(len(rows), height, note != ""); cut {
+			shown = rows[:n]
+			more = 1
+		}
+	}
+	lines := t.list(prompt, shown, display)
+	if mode == numberPipe {
+		return lines // data, not display: every row, no chrome
+	}
+	_, columns := termSize()
+	extra := 0
+	if more > 0 {
+		if mode == numberFold {
+			fmt.Fprintln(os.Stderr, t.moreLine("↓", len(rows)-len(shown)))
+		} else {
+			// A dumb terminal sees no cursor codes: the same line, unarmed.
+			fmt.Fprintf(os.Stderr, "%s↓ %d more\n", uiMargin, len(rows)-len(shown))
+		}
+		extra++
+	}
+	// The line under the list: the fzf hint, unless a failed answer left its
+	// message, which takes the hint's place.
+	below := ""
+	if note != "" {
+		below = note
+	} else if more > 0 {
+		below = "fzf adds search: " + util.FzfInstallStep()
+	}
+	if below != "" {
+		fmt.Fprintln(os.Stderr, uiMargin+t.gray+fit(below, columns-len(uiMargin))+t.reset)
+		extra++
+	}
+	return lines + extra
+}
+
+// numberPrompt is the numbered menu's question: a row number, or a typed name
+// (#387) — the id, or any part of one — so a long list needs no counting.
+func numberPrompt(n int) string {
+	return fmt.Sprintf("Select [1-%d] or type a name (q to cancel): ", n)
+}
+
+// numberMiss is what an answer that matches no row hears: both ways the menu
+// takes, named together.
+const numberMiss = "Please choose a number or part of a name."
+
+// matchRows is the typed half of the numbered menu (#387): the rows whose id
+// or visible text contains the fragment, case folded.
+func matchRows(rows []string, fragment, display string) []string {
+	needle := strings.ToLower(fragment)
+	var out []string
+	for _, r := range rows {
+		if strings.Contains(strings.ToLower(rowID(r)), needle) ||
+			strings.Contains(strings.ToLower(visible(r, display)), needle) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func (t uiTheme) numbered(prompt string, rows []string, display string) (string, int) {
@@ -241,11 +346,21 @@ func (t uiTheme) numbered(prompt string, rows []string, display string) (string,
 		uiErr(t, "no available choices")
 		return "", 1
 	}
-	t.list(prompt, rows, display)
-	if !(isTTY(2) && os.Getenv("TERM") != "dumb") {
-		// A pipe or a dumb terminal keeps the plain list: no cursor codes.
+	// A dumb terminal is a screen too: the list must fit it and name the fzf
+	// search it lacks — only the cursor codes are barred there (#387).
+	mode := numberPipe
+	if isTTY(2) {
+		mode = numberDumb
+		if os.Getenv("TERM") != "dumb" {
+			mode = numberFold
+		}
+	}
+	lines := t.numberList(prompt, rows, display, mode, "")
+	if mode != numberFold {
+		// A pipe or a dumb terminal keeps the plain loop: no cursor codes, so
+		// nothing folds — a dumb screen repaints the cut list on a miss instead.
 		for {
-			choice, rc := uiInput(fmt.Sprintf("Select [1-%d] (q to cancel): ", len(rows)), false)
+			choice, rc := uiInput(numberPrompt(len(rows)), false)
 			if rc != 0 || choice == "q" || choice == "Q" {
 				if rc == 0 {
 					// uiInput has already answered its own cancels; q is a
@@ -257,16 +372,33 @@ func (t uiTheme) numbered(prompt string, rows []string, display string) (string,
 			if n, err := strconv.Atoi(choice); err == nil && n >= 1 && n <= len(rows) && choice == strconv.Itoa(n) {
 				return rowID(rows[n-1]), 0
 			}
-			fmt.Fprintln(os.Stderr, "Please choose one of the numbered options.")
+			if choice != "" {
+				if matches := matchRows(rows, choice, display); len(matches) == 1 {
+					return rowID(matches[0]), 0
+				} else if len(matches) > 1 {
+					rows = matches
+					t.numberList(prompt, rows, display, mode, "")
+					continue
+				}
+			}
+			if mode == numberDumb {
+				// A dumb terminal cannot erase the failed round, and a bare
+				// message plus the next question push the title off a full
+				// screen by the second miss: the cut list repaints under
+				// them, the message in the hint's line, so the newest screen
+				// opens on the title and the first rows again (#387).
+				t.numberList(prompt, rows, display, mode, numberMiss)
+				continue
+			}
+			fmt.Fprintln(os.Stderr, numberMiss)
 		}
 	}
 	// On a terminal the answered list folds like every picker: one receipt
 	// line names the choice, and the rows and the dead key hint do not stay
 	// above it (#361). Each uiInput round has already folded itself to one
-	// line, so one line per round and per reprompt is what adds to the list.
-	lines := len(rows) + 2 // heading, blank, rows
+	// line, so one line per round is what adds to the list.
 	for {
-		choice, rc := uiInput(fmt.Sprintf("Select [1-%d] (q to cancel): ", len(rows)), false)
+		choice, rc := uiInput(numberPrompt(len(rows)), false)
 		lines++
 		if rc != 0 || choice == "q" || choice == "Q" {
 			// A leave answers with the one Cancelled line, not the list above
@@ -280,8 +412,29 @@ func (t uiTheme) numbered(prompt string, rows []string, display string) (string,
 			t.receipt(prompt, rowID(visible(rows[n-1], display)))
 			return rowID(rows[n-1]), 0
 		}
-		fmt.Fprintln(os.Stderr, "Please choose one of the numbered options.")
-		lines++
+		if choice != "" {
+			matches := matchRows(rows, choice, display)
+			if len(matches) == 1 {
+				eraseLines(lines)
+				t.receipt(prompt, rowID(visible(matches[0], display)))
+				return rowID(matches[0]), 0
+			}
+			if len(matches) > 1 {
+				// Several rows carry the name: narrow the list to those and
+				// ask again — the shorter question the answer made.
+				eraseLines(lines)
+				rows = matches
+				lines = t.numberList(prompt, rows, display, numberFold, "")
+				continue
+			}
+		}
+		// The answer matched nothing. Leaving the message under the round would
+		// grow the block past the screen on the second try, so the round folds
+		// with the list and the message takes the hint's line under it: the
+		// block keeps its height, and the title and the first rows stay in view
+		// while the next question waits (#387).
+		eraseLines(lines)
+		lines = t.numberList(prompt, rows, display, numberFold, numberMiss)
 	}
 }
 

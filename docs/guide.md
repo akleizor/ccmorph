@@ -49,7 +49,7 @@ confirm — never silently, and never without a terminal):
 
 | | Needed for | Without it | Installer |
 |---|---|---|---|
-| `fzf` | searchable profile and model pickers | numbered choices in a terminal; explicit arguments in scripts | offered through the detected package manager |
+| `fzf` | searchable profile and model pickers | numbered choices that also take a typed name; explicit arguments in scripts | offered through the detected package manager |
 | `cliproxyapi` | non-native custom endpoints — automatic dialect translation; `provider` profiles — browser sign-in | only the endpoint's Claude-family models are reachable; `ccmorph add` offers no browser sign-in and names the install step | offered through `brew` only; elsewhere it points to the project page |
 
 The installer copies the runtime (`lib/`, `libexec/`, `share/`) into `~/.config/ccmorph` and the `ccmorph`
@@ -264,7 +264,8 @@ The existing piped-input configuration sequence is unchanged for scripts.
 [`cli/ui.go`](../cli/ui.go) owns every interactive renderer and theme. Commands supply
 rows and choose `native` (↑/↓ menu) or `search` (fzf); they do not implement key
 handling, cursor movement, or styling. `NO_COLOR` disables styling; `TERM=dumb` and
-missing `fzf` use numbered choices. On fzf 0.36 and later the search list shows a
+missing `fzf` use the numbered fallback: row numbers or a typed name, never
+longer than the screen. On fzf 0.36 and later the search list shows a
 scrollbar and Home/End jump to either end; an older fzf gets a window sized to the
 whole list when the terminal allows, and otherwise its header begins *More rows than
 fit here*. Claude Code's own in-session menus are
@@ -304,7 +305,8 @@ model list comes from the endpoint itself, and effort from Claude Code's four
 levels. `-i` works the same way on `run`, `set`, `get`, `context`, `inspect`,
 `use`, `login`, and `cred`, and picks the profile when none is named. With
 `fzf`, dynamic catalogues support type-to-filter; without it they use numbered
-choices (`q` cancels). Fixed menus always use native arrow keys, regardless of
+choices that also take a typed id or part of one, cut to the screen with a "more"
+line when the list is long (`q` cancels). Fixed menus always use native arrow keys, regardless of
 whether `fzf` is installed; `TERM=dumb` uses the numbered fallback. Scripts should pass explicit arguments. `rm` and `mv`
 stay explicit — destructive operations should not be a menu selection.
 
