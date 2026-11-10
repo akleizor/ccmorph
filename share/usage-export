@@ -2,7 +2,9 @@
 """Export metadata-only ccmorph receipts for ccusage, one project per profile.
 
 Usage: usage-export --output ROOT [--since YYYYMMDD]
-Then: CLAUDE_CONFIG_DIR=ROOT ccusage claude daily --instances --config ROOT/ccusage.json
+Then, with ccusage installed:
+CLAUDE_CONFIG_DIR=ROOT ccusage claude daily --instances --config ROOT/ccusage.json
+
 A turn the gateway billed carries that cost; a turn the shim priced itself carries
 usage.estimated_cost, a models.dev list price without context tiers, and is marked
 costSource "estimate"; ccusage prices every other turn at its list price (a model
@@ -19,6 +21,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shlex
 import tempfile
 
 BUCKETS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
@@ -231,25 +234,73 @@ def export(root, output, since=None):
     config = {"defaults": {"mode": "auto", "breakdown": True}}
     atomic_write(output / "ccusage.json", json.dumps(config, indent=2) + "\n")
     rows = [r for records in days.values() for r in records]
+    # The three priced kinds are the whole export, so a reader can reconcile the
+    # counts: gateway + estimate + list is rows (#382).
     return {"rows": len(seen), "days": len({d for _, d in days}), "unpriced": unpriced,
             # usd is what a gateway itself billed; an estimate is its own total.
             "usd": sum(r.get("costUSD", 0) for r in rows if r["ccmorph"]["costSource"] == "gateway"),
             "estimated_usd": sum(r.get("costUSD", 0) for r in rows if r["ccmorph"]["costSource"] == "estimate"),
             "gateway_rows": sum(r["ccmorph"]["costSource"] == "gateway" for r in rows),
-            "estimated_rows": sum(r["ccmorph"]["costSource"] == "estimate" for r in rows)}
+            "estimated_rows": sum(r["ccmorph"]["costSource"] == "estimate" for r in rows),
+            "list_rows": sum(r["ccmorph"]["costSource"] == "list" for r in rows)}
+
+
+def report(stats, output):
+    """The end of an export, for the person who ran it: where the files went,
+    every count by a name that adds up, money at cents, and the exact command
+    that reads the result — not a machine's JSON line (#382)."""
+    root = os.path.abspath(output)
+
+    def count(n, word):
+        return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+    return "\n".join([
+        f"Exported {count(stats['rows'], 'turn')} over {count(stats['days'], 'day')} to {root}",
+        "one folder per profile under projects/, ccusage.json beside it",
+        f"{count(stats['gateway_rows'], 'turn')} the gateway billed, ${stats['usd']:.2f}",
+        f"{count(stats['estimated_rows'], 'turn')} ccmorph estimated, ${stats['estimated_usd']:.2f}",
+        f"{count(stats['list_rows'], 'turn')} left for ccusage to price at its list price",
+        f"{count(stats['unpriced'], 'turn')} unpriced (a damaged cost, not exported)",
+        "Then, with ccusage installed:",
+        # Both paths shell-quoted, so a folder with spaces in its name does not
+        # tear the command apart at the first space (#382).
+        f"CLAUDE_CONFIG_DIR={shlex.quote(root)} ccusage claude daily --instances "
+        f"--config {shlex.quote(os.path.join(root, 'ccusage.json'))}",
+    ])
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--source", type=Path, default=Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "ccmorph/usage")
-    parser.add_argument("--since", help="First local date to export, YYYYMMDD; default all history")
+    # RawDescriptionHelpFormatter keeps the authored lines: the ccusage command
+    # stays on its own line, ready to copy, instead of reflowing into one
+    # paragraph (#382).
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--output", type=Path, required=True, metavar="ROOT",
+                        help="directory the export lands in")
+    parser.add_argument("--source", type=Path, metavar="ROOT",
+                        default=Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "ccmorph/usage",
+                        help="ccmorph receipt store to read; default the state root's usage/")
+    parser.add_argument("--since", metavar="YYYYMMDD",
+                        help="first local date to export; default all history")
     args = parser.parse_args()
+    since = None
+    if args.since is not None:
+        try:
+            # Exactly eight digits before the calendar is read: strptime alone
+            # accepts unpadded fields (2026111 as 2026-11-01), and an explicitly
+            # empty value must not slip through as all history either (#382).
+            if not re.fullmatch(r"[0-9]{8}", args.since):
+                raise ValueError
+            since = dt.datetime.strptime(args.since, "%Y%m%d").astimezone()
+        except ValueError:
+            # Name the format the person is asked for, not strptime's own.
+            parser.exit(1, f"usage-export: --since '{args.since}' must be a date as "
+                           "YYYYMMDD, for example 20261110\n")
     try:
-        since = dt.datetime.strptime(args.since, "%Y%m%d").astimezone() if args.since else None
-        print(json.dumps(export(args.source, args.output, since)))
+        stats = export(args.source, args.output, since)
     except (OSError, ValueError) as exc:
         parser.exit(1, f"usage-export: {exc}\n")
+    print(report(stats, args.output))
 
 
 if __name__ == "__main__":

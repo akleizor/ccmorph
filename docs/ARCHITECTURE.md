@@ -868,9 +868,15 @@ token count, a profile that is not a name) fails the whole export before it repl
 anything, naming the receipt **[test]**. Each run is a snapshot of its range: a day no
 usable receipt supports any more is removed, earlier days and every file the exporter does
 not own stay, two overlapping runs never undo each other's days, and the receipts
-themselves are never touched **[test]**. The run report is one JSON line — `rows`, `days`,
-`unpriced`, `usd` (gateway-billed only), `estimated_usd`, `gateway_rows`, `estimated_rows`
-— the same billed-versus-estimate split **[test]**.
+themselves are never touched **[test]**. The run ends with a summary for the person who
+ran it, not a machine's JSON line: where the files went, every count by a name — the
+three priced kinds, gateway, estimate and list, add up to the whole — money at cents,
+and the exact ccusage command for that output folder, both paths shell-quoted so a
+folder with spaces in its name does not break it **[test]**. A `--since` that is not
+eight digits YYYYMMDD — dashes, an unpadded field, an empty value — is answered with
+that format and an example, never a parse error **[test]**, and the help page keeps its
+authored lines — the ccusage command on its own line, ready to copy — with every option
+described **[test]**.
 
 **The report.** `ccmorph-core shim report [--days N]` is the spend window over
 the same receipts plus the outcome log, one day by default and wider with `--days`
