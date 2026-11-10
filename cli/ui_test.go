@@ -690,13 +690,19 @@ func TestCutIDsNeverReadAlikeIssue385(t *testing.T) {
 }
 
 // Ids that only a length tells apart, one id repeated more or fewer times,
-// are each cut to a length of their own: the column keeps its width, so the
-// name beside a short id stays in sight, and no two rows read alike (#385).
+// are cut so the shorter ends where the longer goes on: the column keeps its
+// width, so the name beside a short id stays in sight, and no two rows read
+// alike (#385). Beside them an id that differs from a at one character was
+// cut on its own, one repeated id was then cut like it, and the column grew
+// to 126 cells.
 func TestCutIDsPartIdsOnlyALengthTellsApartIssue385(t *testing.T) {
 	a, b := strings.Repeat("model-", 20), strings.Repeat("model-", 21)
+	once := []rune(a)
+	once[60] = 'X'
 	short := "openai/model-137-instruct"
 	for _, c := range [][]string{
 		{short, a, b},
+		{short, a, b, string(once)},
 		{short, a, b, strings.Repeat("model-", 22), "gateway/" + strings.Repeat("x", 90) + "v1", "gateway/" + strings.Repeat("x", 90) + "v2"},
 		{strings.Repeat("ab", 30), strings.Repeat("ab", 31)},
 	} {
@@ -717,11 +723,13 @@ func TestCutIDsPartIdsOnlyALengthTellsApartIssue385(t *testing.T) {
 			}
 		}
 	}
-	// More such ids than the column has lengths: it grows to one length each.
+	// Four such ids in a column of 3 cells: no cut that parts them fits, so
+	// the column grows, only to the fewest marks that part them: "…", "…a…",
+	// "…a…a…" and "…a…a…ab".
 	many := []string{strings.Repeat("ab", 30), strings.Repeat("ab", 31), strings.Repeat("ab", 32), strings.Repeat("ab", 33)}
 	out, width := cutIDs(many, 3)
-	if width != 5 {
-		t.Errorf("four repeats at 3 cells: the column is %d cells, want 5", width)
+	if width != 7 {
+		t.Errorf("four repeats at 3 cells: the column is %d cells, want 7", width)
 	}
 	reads := map[string]bool{}
 	for _, f := range out {

@@ -132,11 +132,11 @@ func columnWidth(widest, room int) int {
 // (#385), and the column's width. An id that fits stays whole. A cut id is its
 // head, one "…" and its tail when such a cut parts every two ids; else it is
 // cut at its differences by cutAtDifferences, which parts every two ids by
-// construction, and an id that is another repeated by its length, in
-// cutByLength. Each cut is only taken when no two ids then read alike. The
-// width grows only when the fewest marks that part the ids are wider than the
-// column, and the ids stay whole when no cut can part them (an id with an "…"
-// of its own, or a wide character that no cut fits): two rows never read alike.
+// construction, even one id and the same id repeated. Either cut is only
+// taken when no two ids then read alike. The width grows only when the fewest
+// marks that part the ids are wider than the column, and the ids stay whole
+// only when a cut id would read as an id shown whole, which takes an id with
+// an "…" of its own: two rows never read alike.
 func cutIDs(ids []string, width int) ([]string, int) {
 	out := make([]string, len(ids))
 	runes := make([][]rune, len(ids))
@@ -222,111 +222,50 @@ func cutIDs(ids []string, width int) ([]string, int) {
 			}
 		}
 	}
-	if forms, w := cutAtDifferences(cutRunes, width); forms != nil && parts(forms, w) {
-		return set(forms, w)
-	}
-	if forms, w := cutByLength(cutRunes, width); forms != nil && parts(forms, w) {
+	if forms, w := cutAtDifferences(cutRunes, width); parts(forms, w) {
 		return set(forms, w)
 	}
 	return out, widest
 }
 
-// cutByLength is ids, each wider than width cells, cut when some of them are
-// one id repeated more or fewer times, as "aa" and "aaa": no place tells such
-// ids apart but their length, so each of those ids keeps its head, one "…"
-// and its tail, a character fewer for each, and no two read alike (#385). The
-// other ids are cut at their differences. It also gives the width, which grows
-// only to give each repeated id its own length. It is nil when an id is too
-// short to cut so, or the ids it cuts alike are not all of that kind.
-func cutByLength(ids [][]rune, width int) ([]string, int) {
-	var rest [][]rune
-	var like []string
-	known := map[string]bool{}
-	for a, r := range ids {
-		repeated := false
-		for b, o := range ids {
-			if a != b && string(r) != string(o) {
-				short := min(len(r), len(o))
-				repeated = repeated || (commonPrefix(r, o) >= short && commonSuffix(r, o) >= short)
-			}
-		}
-		switch {
-		case !repeated:
-			rest = append(rest, r)
-		case !known[string(r)]:
-			known[string(r)] = true
-			like = append(like, string(r))
-		}
-	}
-	w := max(width, len(like)+1)
-	var cut []string
-	if len(rest) > 0 {
-		var restW int
-		if cut, restW = cutAtDifferences(rest, width); cut == nil {
-			return nil, 0
-		}
-		w = max(w, restW)
-	}
-	shown := map[string]string{}
-	for k, id := range like {
-		r := []rune(id)
-		kept := w - 1 - k
-		if len(r) <= kept {
-			return nil, 0
-		}
-		head := kept - kept/2
-		shown[id] = string(r[:head]) + "…" + string(r[len(r)-(kept-head):])
-	}
-	forms := make([]string, len(ids))
-	next := 0
-	for a, r := range ids {
-		if f, ok := shown[string(r)]; ok {
-			forms[a] = f
-		} else {
-			forms[a] = cut[next]
-			next++
-		}
-	}
-	return forms, w
-}
-
 // cutAtDifferences is ids, each wider than width cells, cut at the places
 // where they differ, and the width they take: width, or more when the places
-// that part the ids do not fit it (#385). Two ids differ first at a place p
-// counted from the start, or one is the start of the other and they differ
-// first at a place s counted from the end. Every id keeps each place p it
-// has up to its own depth front, with nothing from its end before it, and
-// each place s up to its depth back, with nothing from its start after it;
-// everything else is the same for two ids up to a place they share. So two
-// ids read alike up to the place where they differ and differently there:
-// no two ids read alike, by construction. Room left in the column goes to
-// the head, to a window at each place and to the tail, a character to each
-// in turn. It is nil when no places part two ids: one is the other repeated,
-// as "aa" and "aaa".
+// that part the ids do not fit it (#385). Each id is read between two edges,
+// one before its first character and one after its last, so two different
+// ids always differ first at a place p counted from the start and at a place
+// s counted from the end: where one id ends and the other goes on counts too,
+// so an id and the same id repeated, as "aa" and "aaa", differ at the end of
+// the shorter. Every id keeps each place p it has up to its own depth front,
+// with nothing from its end before it, and each place s up to its depth back,
+// with nothing from its start after it; everything else is the same for two
+// ids up to a place they share. So two ids read alike up to the place where
+// they differ and differently there, or the one that ends there is the
+// shorter: no two ids read alike, by construction. An edge shows nothing and
+// hides nothing. Room left in the column goes to the head, to a window at
+// each place and to the tail, a character to each in turn.
 func cutAtDifferences(ids [][]rune, width int) ([]string, int) {
-	type pair struct {
-		a, b, p, s int
-		fwd, bwd   bool
+	// edge is the place before an id's first character and after its last;
+	// no character is a negative rune.
+	const edge = -1
+	edged := make([][]rune, len(ids))
+	for i, r := range ids {
+		edged[i] = append(append([]rune{edge}, r...), edge)
 	}
+	ids = edged
+	type pair struct{ a, b, p, s int }
 	var pairs []pair
 	longest := 0
 	for a := range ids {
 		longest = max(longest, len(ids[a]))
 		for b := a + 1; b < len(ids); b++ {
-			if string(ids[a]) == string(ids[b]) {
-				continue
+			if string(ids[a]) != string(ids[b]) {
+				pairs = append(pairs, pair{a, b, commonPrefix(ids[a], ids[b]), commonSuffix(ids[a], ids[b])})
 			}
-			short := min(len(ids[a]), len(ids[b]))
-			p, s := commonPrefix(ids[a], ids[b]), commonSuffix(ids[a], ids[b])
-			if p >= short && s >= short {
-				return nil, 0
-			}
-			pairs = append(pairs, pair{a, b, p, s, p < short, s < short})
 		}
 	}
-	// draw is the ids with their first h characters, their last t, and c
-	// characters at each place, one before it and the rest after it (from
-	// the start) or before it (from the end).
+	// draw is the ids with their first h places, their last t, and c places
+	// at each place where they differ, one before it and the rest after it
+	// (from the start) or before it (from the end).
 	draw := func(front, back []int, h, c, t int) []string {
 		forms := make([]string, len(ids))
 		lead := min(c, 1)
@@ -344,10 +283,10 @@ func cutAtDifferences(ids [][]rune, width int) ([]string, int) {
 				if pr.a != i && pr.b != i {
 					continue
 				}
-				if pr.fwd && pr.p <= front[i] {
+				if pr.p <= front[i] {
 					mark(pr.p-lead, pr.p+c-lead, 0, ahead)
 				}
-				if pr.bwd && pr.s <= back[i] {
+				if pr.s <= back[i] {
 					e := len(r) - 1 - pr.s
 					mark(e-c+lead, e+lead, behind, len(r)-1)
 				}
@@ -355,15 +294,17 @@ func cutAtDifferences(ids [][]rune, width int) ([]string, int) {
 			var s strings.Builder
 			gap := false
 			for k, kept := range keep {
-				if !kept {
+				switch {
+				case r[k] == edge:
+				case !kept:
 					gap = true
-					continue
+				default:
+					if gap {
+						s.WriteString("…")
+					}
+					s.WriteRune(r[k])
+					gap = false
 				}
-				if gap {
-					s.WriteString("…")
-				}
-				s.WriteRune(r[k])
-				gap = false
 			}
 			if gap {
 				s.WriteString("…")
@@ -379,27 +320,25 @@ func cutAtDifferences(ids [][]rune, width int) ([]string, int) {
 		}
 		return w
 	}
-	// A pair parts from the start when it can at a place up to x, else from
-	// the end. Of every x, the one whose bare places are narrowest is taken,
-	// the deepest x first.
+	// A pair parts from the start when its place p is up to x, else from the
+	// end. Of every x, the one whose bare places are narrowest is taken, the
+	// deepest x first; the deepest parts every pair from the start, and
+	// always fits.
 	var front, back []int
 	least := -1
-	for x := longest - 1; x >= -1; x-- {
+	for x := longest - 1; x >= 0; x-- {
 		f, b := make([]int, len(ids)), make([]int, len(ids))
 		for i := range ids {
 			f[i], b[i] = -1, -1
 		}
-		ok := true
 		for _, pr := range pairs {
-			switch {
-			case pr.fwd && pr.p <= x:
+			if pr.p <= x {
 				f[pr.a], f[pr.b] = max(f[pr.a], pr.p), max(f[pr.b], pr.p)
-			case pr.bwd:
+			} else {
 				b[pr.a], b[pr.b] = max(b[pr.a], pr.s), max(b[pr.b], pr.s)
-			default:
-				ok = false
 			}
 		}
+		ok := true
 		for i, r := range ids {
 			ok = ok && f[i]+b[i]+2 <= len(r)
 		}
@@ -409,9 +348,6 @@ func cutAtDifferences(ids [][]rune, width int) ([]string, int) {
 		if w := widest(draw(f, b, 0, 0, 0)); least < 0 || w < least {
 			front, back, least = f, b, w
 		}
-	}
-	if least < 0 {
-		return nil, 0
 	}
 	w := max(width, least)
 	size := []int{0, 0, 0}
