@@ -17,3 +17,32 @@ func ClipInstallStep() string {
 	}
 	return clipProjectPage
 }
+
+// fzfProjectPage is fzf's project page: the install step on a machine whose
+// PATH holds none of the package managers install.sh's table knows.
+const fzfProjectPage = "https://github.com/junegunn/fzf"
+
+// fzfSteps is install.sh's _ccm_pkg_hint table for fzf: the first manager on
+// PATH, in the installer's own probe order, names the command it takes.
+var fzfSteps = []struct{ probe, step string }{
+	{"brew", "brew install fzf"},
+	{"apt-get", "sudo apt-get install -y fzf"},
+	{"dnf", "sudo dnf install -y fzf"},
+	{"apk", "sudo apk add fzf"},
+	{"pacman", "sudo pacman -S fzf"},
+	{"zypper", "sudo zypper install -y fzf"},
+}
+
+// FzfInstallStep is the one step that installs fzf on this machine (#387):
+// the first package-manager command the PATH answers, else the project page —
+// the same answer install.sh's own hint gives, so the picker's hint and the
+// installer name one step for the same machine, never a command it cannot
+// run (#369).
+func FzfInstallStep() string {
+	for _, pm := range fzfSteps {
+		if _, err := exec.LookPath(pm.probe); err == nil {
+			return pm.step
+		}
+	}
+	return fzfProjectPage
+}

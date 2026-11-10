@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -252,5 +253,149 @@ func TestSearchCancelPrintsTheOneCancelledLineIssue280(t *testing.T) {
 	}
 	if line := strings.TrimRight(string(b), "\n"); line != "  Cancelled" {
 		t.Fatalf("stderr = %q, want the one line \"  Cancelled\"", b)
+	}
+}
+
+// numberWindow is how the numbered menu fits the screen (#387): the whole
+// list while heading, blank, rows and the three prompt lines fit; else the
+// first rows that leave room for the "N more" line and the fzf hint beside
+// that chrome, so the title and the first rows stay in view. One row shows
+// even where the screen is too short for all the chrome. Once a failed answer
+// has left its message standing under the list, that line counts against the
+// fit too: a list that filled the screen cuts rather than push the title off.
+func TestNumberWindowFitsTheScreenIssue387(t *testing.T) {
+	for _, tc := range []struct {
+		rows, height int
+		noted        bool
+		shown        int
+		cut          bool
+	}{
+		{260, 24, false, 17, true}, // the issue's gateway: 17 rows, 245 more
+		{260, 24, true, 17, true},  // the message takes the hint's line, not a row
+		{20, 24, false, 17, true},  // one row past fitting cuts, not the whole list
+		{19, 24, false, 19, false}, // 19 rows + 5 chrome lines fit a 24-line screen
+		{19, 24, true, 17, true},   // beside the standing message they do not
+		{18, 24, true, 18, false},  // 18 rows still fit with the message
+		{2, 24, false, 2, false},
+		{2, 24, true, 2, false},
+		{1, 24, false, 1, false},
+		{260, 8, false, 1, true}, // a short screen still shows one row
+		{260, 8, true, 1, true},
+		{2, 6, false, 1, true},
+	} {
+		shown, cut := numberWindow(tc.rows, tc.height, tc.noted)
+		if shown != tc.shown || cut != tc.cut {
+			t.Fatalf("numberWindow(%d, %d, %v) = (%d, %v), want (%d, %v)",
+				tc.rows, tc.height, tc.noted, shown, cut, tc.shown, tc.cut)
+		}
+	}
+}
+
+// numberList paints a list longer than the screen cut to it, with the "N more"
+// line naming the cut and the fzf hint naming the search fzf would add and
+// this machine's own step to get it (#387). A dumb terminal gets the same cut
+// and hint as plain text, and a failed answer's message takes the hint's line,
+// so the retry keeps the block's height. A piped stderr still reports 24 rows
+// to termSize, so the cut renders headless too.
+func TestNumberListCutsToTheScreenAndNamesTheFzfStepIssue387(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "brew"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	rows := []string{"@keep\tKeep native-model"}
+	for n := 1; n <= 260; n++ {
+		rows = append(rows, fmt.Sprintf("openai/model-%d-instruct\topenai/model-%d-instruct\tfake", n, n))
+	}
+	rows = append(rows, "@custom\tEnter a custom model ID…")
+
+	render := func(rs []string, mode numberMode, note string) (string, int) {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		old := os.Stderr
+		os.Stderr = w
+		lines := uiTheme{}.numberList("Default model — many", rs, "labels", mode, note)
+		os.Stderr = old
+		w.Close()
+		b, _ := io.ReadAll(r)
+		r.Close()
+		return string(b), lines
+	}
+	cutRender := func(rs []string, mode numberMode, note string) (string, int) {
+		out, lines := render(rs, mode, note)
+		if lines != 21 {
+			t.Fatalf("numberList(%v, %q) reported %d lines, want 21", mode, note, lines)
+		}
+		if got := strings.Count(out, "\n"); got != 21 {
+			t.Fatalf("numberList(%v, %q) painted %d lines, want 21", mode, note, got)
+		}
+		for _, want := range []string{
+			"  Default model — many\n",      // the title leads the block
+			"  2) openai/model-1-instruct",  // the catalogue starts in view
+			" 17) openai/model-16-instruct", // the last row that fits
+		} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("cut render missing %q:\n%s", want, out)
+			}
+		}
+		if strings.Contains(out, "model-17-instruct") {
+			t.Fatalf("cut render shows a row past the window:\n%s", out)
+		}
+		return out, lines
+	}
+	// A terminal: heading, blank, 17 rows, the more line, the hint — 21 lines,
+	// three left for the question below them.
+	out, _ := cutRender(rows, numberFold, "")
+	for _, want := range []string{"  ↓ 245 more\n", "  fzf adds search: brew install fzf\n"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("fold render missing %q:\n%s", want, out)
+		}
+	}
+	// A dumb terminal is a screen without cursor codes: the same cut, the same
+	// hint, not one escape (#387).
+	out, _ = cutRender(rows, numberDumb, "")
+	for _, want := range []string{"  ↓ 245 more\n", "  fzf adds search: brew install fzf\n"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("dumb render missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "\x1b") {
+		t.Fatalf("dumb render must carry no cursor codes:\n%s", out)
+	}
+	// A dumb terminal cannot erase a failed round: its retry repaints the same
+	// cut block, the message in the hint's line, still without one escape (#387).
+	out, _ = cutRender(rows, numberDumb, numberMiss)
+	if !strings.Contains(out, "  Please choose a number or part of a name.\n") ||
+		strings.Contains(out, "fzf adds search") || strings.Contains(out, "\x1b") {
+		t.Fatalf("dumb retry render must give the message the hint's line, plain:\n%s", out)
+	}
+	// A failed answer's message takes the hint's line, so the block a retry
+	// repaints is as tall as the one it answered (#387).
+	out, _ = cutRender(rows, numberFold, numberMiss)
+	if !strings.Contains(out, "  Please choose a number or part of a name.\n") {
+		t.Fatalf("retry render missing the message:\n%s", out)
+	}
+	if strings.Contains(out, "fzf adds search") {
+		t.Fatalf("retry render must give the message the hint's line:\n%s", out)
+	}
+	// A list that fit the screen whole cuts rather than overflow beside the
+	// message: 19 rows fit alone, not with the standing line.
+	out, lines := render(rows[:19], numberFold, "")
+	if lines != 21 || strings.Contains(out, "more\n") || strings.Contains(out, "fzf adds search") {
+		t.Fatalf("19 rows fit alone: %d lines\n%s", lines, out)
+	}
+	out, _ = cutRender(rows[:19], numberFold, numberMiss)
+	if !strings.Contains(out, "  ↓ 2 more\n") {
+		t.Fatalf("19 rows beside the message must cut by two:\n%s", out)
+	}
+	// Without a screen the list is data, not display: every row, no cut, no hint.
+	out, lines = render(rows, numberPipe, "")
+	if lines != len(rows)+2 {
+		t.Fatalf("plain numberList reported %d lines, want %d", lines, len(rows)+2)
+	}
+	if !strings.Contains(out, "262) Enter a custom model ID…") || strings.Contains(out, "more\n") || strings.Contains(out, "fzf adds search") {
+		t.Fatalf("plain render must show every row and no cut or hint:\n%s", out[:2000])
 	}
 }

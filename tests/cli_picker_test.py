@@ -585,13 +585,13 @@ class PickerTTYTest(unittest.TestCase):
         env = self.env()
         env['ROWS'] = 'alpha\tfirst choice\nbeta\tsecond choice'
         rc, out, missed = run_pty('source "$1"\nccm_ui_select search "pick one" "$ROWS" all', env, [
-            (b'Select [1-2]', b'abc\n'),                                # not a number
+            (b'Select [1-2]', b'abc\n'),                                # matches no row
             # Each answer waits for the prompt it answers, not the reprompt
             # message before it: typed ahead of the raw-mode prompt, the line
             # echoes into the screen the fold erases.
-            (b'Please choose one of the numbered options.', b''),
-            (b'Select [1-2]', b'9\n'),                                  # out of range
-            (b'Please choose one of the numbered options.', b''),
+            (b'Please choose a number or part of a name.', b''),
+            (b'Select [1-2]', b'9\n'),                                  # out of range, matches nothing
+            (b'Please choose a number or part of a name.', b''),
             (b'Select [1-2]', b'2\n'),
         ])
         self.assertIsNone(missed, out)
@@ -601,6 +601,214 @@ class PickerTTYTest(unittest.TestCase):
         # The answered list folds (#361): the rows, the Select prompt, its hint
         # and the two reprompts leave the one summary line, and stdout after it.
         self.assertEqual(screen(out), ['  pick one › beta', 'beta'], out)
+
+    def test_numbered_fallback_takes_a_typed_id_or_part_issue_387(self):
+        """#387: without fzf the numbered menu answered only row numbers, so a
+        260-model gateway could not be answered with the model's own name — the
+        person had to count rows. The same loop now takes the id or part of it,
+        and a part that matches several rows narrows the list to those. The
+        piped stdin drives the same matching loop a terminal does."""
+        env = self.env(fzf=False)
+        env['ROWS'] = '\n'.join(['@keep\tKeep native-model']
+                                + [f'openai/model-{n}-instruct\topenai/model-{n}-instruct\tfake'
+                                   for n in range(1, 261)]
+                                + ['@custom\tEnter a custom model ID…'])
+
+        def number(*answers):
+            return subprocess.run(
+                ['zsh', '-fc', 'source "$1"\n' + UI_SHIM
+                 + '_ccm_ui_numbered "Default model — many" "$ROWS" labels',
+                 'numbered-387', str(CCMORPH)],
+                env=env, input=''.join(a + '\n' for a in answers),
+                capture_output=True, text=True, timeout=HANG_TIMEOUT)
+
+        # The whole id — the answer the issue's person typed and was refused.
+        r = number('openai/model-137-instruct')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout, 'openai/model-137-instruct\n')
+        self.assertNotIn('Please choose', r.stderr)
+        # Part of one, unique among the rows: no counting, no narrowing.
+        r = number('model-137')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout, 'openai/model-137-instruct\n')
+        # A part that matches several rows narrows the list to those, renumbered.
+        r = number('model-13', '1')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout, 'openai/model-13-instruct\n')
+        self.assertIn('Select [1-11]', r.stderr)  # 13 and 130 through 139
+        # A number still answers the row it names.
+        r = number('2')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout, 'openai/model-1-instruct\n')
+        # What matches nothing keeps the list and asks again, naming both ways.
+        r = number('no-such-model', 'q')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('Please choose a number or part of a name.', r.stderr)
+        self.assertIn('Cancelled', r.stderr)
+
+    def test_numbered_fallback_fits_the_screen_and_names_the_fzf_step_issue_387(self):
+        """#387: a 260-model gateway on a 24-line terminal pushed the title and
+        the first rows out of sight before the person could answer, and nothing
+        on screen said fzf would add search. The list now fits the screen with a
+        "N more" line and the one fzf hint, and a typed id reaches a model no
+        visible row names."""
+        env = self.env(fzf=False)
+        env['MODELS'] = json.dumps({'data': [{'id': m, 'owned_by': 'fake'} for m in
+                                             [f'openai/model-{n}-instruct' for n in range(1, 261)]]})
+        self.profile('many', 'https://gw.example', 'gw-secret')
+        rc, out, missed = run_pty('ccmorph set many model -i', env, [
+            (b'Select [1-262]', b'openai/model-137-instruct\n'),
+        ], size=(24, 80))
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        # The screen the person answers on: the title and the first rows are
+        # still in view, the cut is named, and the hint says what fzf adds.
+        pos = out.find('Select [1-262]') + len('Select [1-262]')
+        rows = screen(out[:pos], columns=80)
+        self.assertLessEqual(len(rows), 24, rows)
+        self.assertIn('  Default model — many', rows)
+        self.assertTrue(any(row.startswith('   2) openai/model-1-instruct ') for row in rows), rows)  # the catalogue starts in view
+        self.assertTrue(any('↓ 245 more' in row for row in rows), rows)
+        self.assertTrue(any('fzf adds search:' in row for row in rows), rows)
+        self.assertFalse(any('openai/model-260-instruct' in row for row in rows), rows)
+        # The typed id reaches a model no visible row names, and the answer
+        # folds (#361): the receipt, the save, the value.
+        self.assertEqual(self.field('many', 'model'), 'openai/model-137-instruct')
+        flat = '\n'.join(screen(out, columns=80))
+        self.assertIn('  Default model — many › openai/model-137-instruct', flat)
+        self.assertIn('Saved many model = openai/model-137-instruct (new sessions)', flat)
+        self.assertNotIn('Select [1-', flat)
+        self.assertNotIn('fzf adds search', flat)
+        self.assertNotIn('↓ 245 more', flat)
+
+    def test_numbered_fallback_narrows_a_typed_part_issue_387(self):
+        """#387: a part that matches several rows narrows the list to those,
+        renumbered, so the second answer is short — and the fold still ends one
+        receipt line."""
+        env = self.env(fzf=False)
+        env['MODELS'] = json.dumps({'data': [{'id': m, 'owned_by': 'fake'} for m in
+                                             [f'openai/model-{n}-instruct' for n in range(1, 261)]]})
+        self.profile('many', 'https://gw.example', 'gw-secret')
+        rc, out, missed = run_pty('ccmorph set many model -i', env, [
+            (b'Select [1-262]', b'model-1\n'),      # 1, 10-19, 100-199: 111 rows
+            (b'Select [1-111]', b'model-137\n'),
+        ], size=(24, 80))
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        pos = out.find('Select [1-111]') + len('Select [1-111]')
+        rows = screen(out[:pos], columns=80)
+        self.assertLessEqual(len(rows), 24, rows)
+        self.assertIn('  Default model — many', rows)  # the narrowed list reopens on the title
+        self.assertTrue(any('↓ 94 more' in row for row in rows), rows)
+        self.assertFalse(any('openai/model-2-instruct' in row for row in rows), rows)
+        self.assertEqual(self.field('many', 'model'), 'openai/model-137-instruct')
+        flat = '\n'.join(screen(out, columns=80))
+        self.assertIn('  Default model — many › openai/model-137-instruct', flat)
+        self.assertIn('Saved many model = openai/model-137-instruct (new sessions)', flat)
+        self.assertNotIn('Select [1-', flat)
+
+    def test_numbered_fallback_keeps_the_screen_across_a_retry_issue_387(self):
+        """#387: a failed answer used to leave its message and the next question
+        below the cut list, so the block grew past a 24-line screen — the title
+        and the first rows were gone before a valid choice. The round now folds
+        with the list and the message takes the hint's line: the second question
+        finds the same 24 rows the first did."""
+        env = self.env(fzf=False)
+        env['MODELS'] = json.dumps({'data': [{'id': m, 'owned_by': 'fake'} for m in
+                                             [f'openai/model-{n}-instruct' for n in range(1, 261)]]})
+        self.profile('many', 'https://gw.example', 'gw-secret')
+        rc, out, missed = run_pty('ccmorph set many model -i', env, [
+            (b'Select [1-262]', b'999\n'),  # the issue's out-of-range number
+            # The answer waits for the prompt it answers, not the message before
+            # it: typed ahead of the raw-mode prompt, the line echoes onto the
+            # screen the fold erases.
+            (b'Please choose a number or part of a name.', b''),
+            (b'Select [1-262]', b'2\n'),
+        ], size=(24, 80))
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        # The question after the refusal: anchored past the message the retry
+        # painted, so the receipt the failed round left is not mistaken for it.
+        note = out.find('Please choose a number or part of a name.')
+        second = out.find('Select [1-262]', note)
+        self.assertGreater(note, 0, out)
+        self.assertGreater(second, 0, out)
+        rows = screen(out[:second + len('Select [1-262]')], columns=80)
+        self.assertLessEqual(len(rows), 24, rows)
+        self.assertIn('  Default model — many', rows)  # the title survived the retry
+        self.assertTrue(any(row.startswith('   2) openai/model-1-instruct ') for row in rows), rows)
+        self.assertTrue(any('↓ 245 more' in row for row in rows), rows)
+        self.assertTrue(any('Please choose a number or part of a name.' in row for row in rows), rows)
+        self.assertFalse(any('fzf adds search' in row for row in rows), rows)  # the message took its line
+        self.assertFalse(any('openai/model-260-instruct' in row for row in rows), rows)
+        self.assertEqual(self.field('many', 'model'), 'openai/model-1-instruct')
+        flat = '\n'.join(screen(out, columns=80))
+        self.assertIn('  Default model — many › openai/model-1-instruct', flat)
+        self.assertIn('Saved many model = openai/model-1-instruct (new sessions)', flat)
+        self.assertNotIn('Select [1-', flat)
+        self.assertNotIn('Please choose a number', flat)
+
+    def test_numbered_fallback_cuts_the_list_on_a_dumb_terminal_issue_387(self):
+        """#387: a dumb terminal is a screen too. The cut list, its "N more"
+        line and the fzf hint painted only where cursor codes were allowed, so
+        TERM=dumb still got all 262 rows and no word about fzf. They now paint
+        there as well, as plain text."""
+        env = self.env(fzf=False)
+        env['TERM'] = 'dumb'
+        env['MODELS'] = json.dumps({'data': [{'id': m, 'owned_by': 'fake'} for m in
+                                             [f'openai/model-{n}-instruct' for n in range(1, 261)]]})
+        self.profile('many', 'https://gw.example', 'gw-secret')
+        rc, out, missed = run_pty('ccmorph set many model -i', env, [
+            (b'Select [1-262]', b'openai/model-137-instruct\n'),
+        ], size=(24, 80))
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn('\x1b[', out)  # a dumb screen sees no cursor codes at all
+        rows = screen(out[:out.find('Select [1-262]') + len('Select [1-262]')], columns=80)
+        self.assertLessEqual(len(rows), 24, rows)
+        self.assertIn('  Default model — many', rows)
+        self.assertTrue(any(row.startswith('   2) openai/model-1-instruct ') for row in rows), rows)
+        self.assertTrue(any('↓ 245 more' in row for row in rows), rows)
+        self.assertTrue(any('fzf adds search:' in row for row in rows), rows)
+        self.assertFalse(any('openai/model-260-instruct' in row for row in rows), rows)
+        self.assertEqual(self.field('many', 'model'), 'openai/model-137-instruct')
+        self.assertIn('Saved many model = openai/model-137-instruct (new sessions)', out)
+
+    def test_numbered_fallback_keeps_the_screen_across_retries_on_a_dumb_terminal_issue_387(self):
+        """#387: a dumb terminal cannot erase, so each failed answer left its
+        message and the next question under the cut list: two misses on a
+        24-line screen pushed the title out of sight before a valid choice.
+        A miss now repaints the cut list, the message in the hint's line, so
+        the screen the third question waits on opens on the title again."""
+        env = self.env(fzf=False)
+        env['TERM'] = 'dumb'
+        env['MODELS'] = json.dumps({'data': [{'id': m, 'owned_by': 'fake'} for m in
+                                             [f'openai/model-{n}-instruct' for n in range(1, 261)]]})
+        self.profile('many', 'https://gw.example', 'gw-secret')
+        rc, out, missed = run_pty('ccmorph set many model -i', env, [
+            (b'Select [1-262]', b'999\n'),  # the issue's out-of-range number
+            (b'Please choose a number or part of a name.', b''),
+            (b'Select [1-262]', b'999\n'),  # and again
+            (b'Please choose a number or part of a name.', b''),
+            (b'Select [1-262]', b'2\n'),
+        ], size=(24, 80))
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn('\x1b[', out)  # a dumb screen sees no cursor codes at all
+        # The third question: a dumb screen only scrolls, so the 24 rows a
+        # 24-line terminal shows are the last 24.
+        at = -1
+        for _ in range(3):
+            at = out.find('Select [1-262]', at + 1)
+            self.assertGreaterEqual(at, 0, out)
+        view = screen(out[:at + len('Select [1-262]')], columns=80)[-24:]
+        self.assertIn('  Default model — many', view)  # the title survived both misses
+        self.assertTrue(any(row.startswith('   2) openai/model-1-instruct ') for row in view), view)
+        self.assertTrue(any('↓ 245 more' in row for row in view), view)
+        self.assertTrue(any('Please choose a number or part of a name.' in row for row in view), view)
+        self.assertFalse(any('openai/model-260-instruct' in row for row in view), view)
+        self.assertEqual(self.field('many', 'model'), 'openai/model-1-instruct')
+        self.assertIn('Saved many model = openai/model-1-instruct (new sessions)', out)
 
     def test_set_without_slot_picks_slot_then_value(self):
         env = self.env()

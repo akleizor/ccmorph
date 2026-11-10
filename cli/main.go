@@ -900,7 +900,7 @@ func (l *launcher) usageAt(topic string, width int) int {
 // open one (#263); a page for a command that never shows a picker stays silent.
 const pickerNote = "Pickers: move with the arrow keys, Enter selects, Esc to cancel.\n" +
 	"Profile and model lists also let you type to search (with fzf installed);\n" +
-	"without fzf, type the number of your choice."
+	"without fzf, type the number or part of the name of your choice."
 
 // pickerTopics are the help pages whose command, used as its page teaches, can
 // open a picker: an omitted argument, -i, or a menu the command always shows.
