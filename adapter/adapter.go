@@ -599,7 +599,7 @@ func Main(argv []string) int {
 		if a.auto && required == "" && errors.As(err, &refused) {
 			switch refused.code {
 			case 404:
-				fmt.Printf("EXIT=the endpoint offers no model list (HTTP 404) and no model is set; set a model with ccmorph set %s model <model-id> and retry (the compatibility check may incur a small charge)\n",
+				fmt.Printf("EXIT=the endpoint offers no model list (HTTP 404) and no model is set; save one: ccmorph set %s model <model-id>\n",
 					a.profile)
 			case 401, 403:
 				fmt.Printf("EXIT=the endpoint rejected the API key (HTTP %d); replace it: ccmorph config %s\n",
@@ -699,7 +699,8 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 	}
 	if len(usable) == 0 {
 		if a.auto && required == "" {
-			fmt.Printf("EXIT=no declared or cached model protocol; set a model with ccmorph set %s model <model-id> and retry (the compatibility check may incur a small charge)\n", a.profile)
+			fmt.Printf("EXIT=no model is set and none can be picked from the model list; list them: ccmorph models %s, then save one: ccmorph set %s model <model-id>\n",
+				a.profile, a.profile)
 			return 1
 		}
 		die("no usable models on this endpoint; refusing to start")

@@ -1233,6 +1233,7 @@ class AdapterTest(unittest.TestCase):
         self.assertTrue(line.startswith("EXIT="), line)
         self.assertIn("offers no model list (HTTP 404)", line)
         self.assertIn("ccmorph set p model <model-id>", line)
+        self.assertNotIn("compatibility check", line)
 
     def test_a_warm_cache_cannot_stand_in_for_a_model_choice(self):
         # Issue #357: cached rows are endpoint knowledge, not the profile's
@@ -1254,6 +1255,7 @@ class AdapterTest(unittest.TestCase):
         self.assertTrue(line.startswith("EXIT="), line)
         self.assertIn("offers no model list (HTTP 404)", line)
         self.assertIn("ccmorph set p model <model-id>", line)
+        self.assertNotIn("compatibility check", line)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

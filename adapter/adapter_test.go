@@ -644,6 +644,51 @@ func TestAModelMustBeNamedWhenTheGatewayOffersNoList(t *testing.T) { // issue #3
 	if !strings.Contains(out, "ccmorph set demo model <model-id>") {
 		t.Fatalf("the refusal must name the step, got: %s", out)
 	}
+	if strings.Contains(out, "compatibility check") {
+		t.Fatalf("the refusal must not mention a compatibility check, got: %s", out)
+	}
+}
+
+func TestAModelMustBeNamedWhenNoListingModelCanBePicked(t *testing.T) { // issue #379
+	// A listing that names no protocol leaves an automatic launch nothing to
+	// pick a model from: it must refuse in plain words and name both commands —
+	// the one that lists the models and the one that saves one — never jargon
+	// the ready-file reader cannot act on.
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".adapter-cache"), 0o755)
+	swap(t, &profileDirs, dir)
+	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gateway"})
+	swap(t, &inventoryFn, func(string, string, *http.Client) ([]string, error) {
+		return []string{"gpt-5.6"}, nil
+	})
+	swap(t, &dialectAutoFn, func(_, _, _ string) (string, string, int) {
+		return "unusable", "", 200
+	})
+	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
+		panic("nothing is served")
+	})
+	stdio := captureStdio(t)
+	var status int
+	exits(t, func() { status = Main([]string{"demo", "--auto"}) })
+	if status != 1 {
+		t.Fatalf("Main = %d, want 1 (a launch whose listing offers no pickable model must refuse)", status)
+	}
+	out := stdio()
+	refusal := ""
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "EXIT=") {
+			refusal = line
+		}
+	}
+	if refusal == "" {
+		t.Fatalf("the refusal must reach the ready-file reader, got: %s", out)
+	}
+	if !strings.Contains(refusal, "ccmorph models demo") || !strings.Contains(refusal, "ccmorph set demo model <model-id>") {
+		t.Fatalf("the refusal must name the command that lists the models next to the one that saves one, got: %s", refusal)
+	}
+	if strings.Contains(refusal, "protocol") || strings.Contains(refusal, "compatibility check") {
+		t.Fatalf("the refusal must use plain words, got: %s", refusal)
+	}
 }
 
 func TestARefusedListingNamesItsTrueCause(t *testing.T) { // issue #357
@@ -708,6 +753,9 @@ func TestAWarmCacheIsNotAModelChoice(t *testing.T) { // issue #357
 	}
 	if !strings.Contains(out, "ccmorph set demo model <model-id>") {
 		t.Fatalf("the refusal must name the step, got: %s", out)
+	}
+	if strings.Contains(out, "compatibility check") {
+		t.Fatalf("the refusal must not mention a compatibility check, got: %s", out)
 	}
 }
 
