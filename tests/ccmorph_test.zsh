@@ -3297,6 +3297,32 @@ test_hop_refuses_to_end_the_session_when_the_target_cannot_start() {
     [[ ! -e "$HOME/claude-ended" ]] || { print -u2 -- "[$cause] hop must not end the session"; rc=1 }
     [[ ! -e "$HOME/.config/ccmorph/.reswitch.$relay_id" ]] || { print -u2 -- "[$cause] hop must queue nothing"; rc=1 }
     [[ "$out" != *'Switching'* ]] || { print -u2 -- "[$cause] hop must not announce a switch: ${(qqq)out}"; rc=1 }
+    # #380: the refusal reads top to bottom -- the reason first, then the
+    # session's survival, then the command that checks the route, each said
+    # once -- and a target that was never launched is not told to watch for a
+    # first-launch key question no new session will ask.
+    local -a rlines
+    local keeps=0 line=''
+    rlines=("${(f)out}")
+    for line in "${rlines[@]}"; do
+      [[ "$line" == *'This session keeps running.' ]] && (( keeps++ ))
+    done
+    [[ "${rlines[1]}" == "ccmorph: not switching to '$target': "* ]] || {
+      print -u2 -- "[$cause] the refusal's first line must be its reason: ${(qqq)out}"
+      rc=1
+    }
+    (( keeps == 1 )) || {
+      print -u2 -- "[$cause] the session's survival must be said once, said $keeps times: ${(qqq)out}"
+      rc=1
+    }
+    [[ "$out" == *'This session keeps running.'$'\n''  Check the route: ccmorph doctor '* ]] || {
+      print -u2 -- "[$cause] the survival must come before the route check: ${(qqq)out}"
+      rc=1
+    }
+    [[ "$out" != *'Do you want to use this API key'* ]] || {
+      print -u2 -- "[$cause] a refused hop must not mention the first-launch key question: ${(qqq)out}"
+      rc=1
+    }
     case "$cause" in
     no-answer)
       [[ "$out" == *'the endpoint http://dead.invalid did not answer'* ]] || {
@@ -3318,6 +3344,57 @@ test_hop_refuses_to_end_the_session_when_the_target_cannot_start() {
       ;;
     esac
   done
+  unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_hop_refuses_a_key_claude_code_was_told_to_refuse() {
+  # A key Claude Code was told to refuse stops the target's own launch before
+  # any request (#236), so the hop refuses too, before it ends anything: the
+  # reason in the launch's own words first, the session's survival said once,
+  # and the one command that records a new answer. The route is healthy, so
+  # doctor is not named, and no hint about the first-launch question appears --
+  # the stored No answer already settled it (#380).
+  local test_home out st rc=0
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  local key='gh380-refused-key-fixture'
+  local tail="${key[-20,-1]}"
+  write_apikey_conf gw "api_key=$key" 'base_url=https://gateway.invalid'
+  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
+  print -r -- '{"customApiKeyResponses":{"approved":[],"rejected":["'"$tail"'"]}}' \
+    > "$HOME/.config/ccmorph/profiles/gw/.claude.json"
+  source "$CCMORPH_SOURCE"
+
+  local relay_id="$$.refused"
+  export CLAUDE_CODE_SESSION_ID='refused-session' CCMORPH_RELAY_ID="$relay_id"
+  out=$(hop_as_claude gw 2>&1); st=$?
+
+  [[ "$st" != 0 ]] || { print -u2 -- "hop must refuse, got 0: ${(qqq)out}"; rc=1 }
+  local -a rlines
+  local keeps=0 line=''
+  rlines=("${(f)out}")
+  for line in "${rlines[@]}"; do
+    [[ "$line" == *'This session keeps running.' ]] && (( keeps++ ))
+  done
+  [[ "${rlines[1]}" == "ccmorph: Claude Code was told not to use the API key of 'gw'"* ]] || {
+    print -u2 -- "the refusal's first line must be its reason: ${(qqq)out}"
+    rc=1
+  }
+  (( keeps == 1 )) || {
+    print -u2 -- "the session's survival must be said once, said $keeps times: ${(qqq)out}"
+    rc=1
+  }
+  assert_contains "$out" 'ccmorph login gw' \
+    'the refusal must name the command that records a new answer' || rc=1
+  assert_not_contains "$out" 'Check the route' \
+    'a healthy route must not send the person to doctor' || rc=1
+  assert_not_contains "$out" 'Claude Code will ask' \
+    'a stored No answer must not be answered with the question it settled' || rc=1
+  [[ ! -e "$HOME/claude-ended" ]] || { print -u2 -- "hop must not end the session"; rc=1 }
+  [[ ! -e "$HOME/.config/ccmorph/.reswitch.$relay_id" ]] || { print -u2 -- "hop must queue nothing"; rc=1 }
+  [[ "$out" != *'Switching'* ]] || { print -u2 -- "hop must not announce a switch: ${(qqq)out}"; rc=1 }
   unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID
   rm -rf "$test_home"
   return $rc
@@ -11214,6 +11291,7 @@ run_test test_hop_before_the_first_message_starts_a_new_conversation_issue_288
 run_test test_failed_switch_with_no_conversation_does_not_offer_a_resume_issue_288
 run_test test_a_hop_reads_the_catalogue_afresh
 run_test test_hop_refuses_to_end_the_session_when_the_target_cannot_start
+run_test test_hop_refuses_a_key_claude_code_was_told_to_refuse
 run_test test_hop_refuses_to_switch_away_from_a_private_profile
 run_test test_launch_failure_names_the_cause_and_the_doctor_command
 run_test test_hop_refuses_when_no_claude_process_runs_it
