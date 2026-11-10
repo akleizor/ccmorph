@@ -851,7 +851,7 @@ func (l *launcher) uiVerb(args []string) int {
 			answer, ok = l.pickValue(a[1], a[2])
 		default:
 			f, _ := l.readRaw(a[2])
-			answer, ok = l.promptDefault(a[1], a[2], a[3], f["type"], nil)
+			answer, ok = l.promptDefault(a[1], a[2], a[3], f["type"], f["base_url"], nil)
 		}
 		if !ok {
 			rc = 1

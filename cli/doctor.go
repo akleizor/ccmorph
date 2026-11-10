@@ -480,11 +480,11 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	// The effective model is named below and adjudicated by DoctorRoute when the
 	// listing answers (#267); read it once, read-only.
 	model := l.accountModel(name)
+	broken := ""
 	if isFile(settings) {
 		// Each file is judged on its own, so the line names the one that is
 		// actually broken: the shared canonical file and the profile's file are
 		// fixed in different places.
-		broken := ""
 		for _, p := range []string{filepath.Join(os.Getenv("HOME"), ".claude", "settings.json"), settings} {
 			if !util.SettingsValid(p) {
 				broken = p
@@ -493,18 +493,34 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		}
 		if broken == "" {
 			report("OK", "profile settings: valid JSON ("+settings+")")
-			if model != "" {
-				report("INFO", "effective model: "+model+" (profile default)")
-			} else {
-				report("INFO", "effective model: Claude Code default (no saved model)")
-			}
 		} else {
 			report("FAIL", "profile settings: invalid JSON or not an object ("+broken+"); fix that file",
 				"fix the JSON in "+broken)
 			failed = 1
 		}
 	} else {
-		report("INFO", "profile settings: none yet (Claude Code defaults apply)")
+		report("INFO", "profile settings: none yet (a launch writes them)")
+	}
+	// The effective rows answer what a plain launch of this profile runs with, in
+	// the words every screen shares for the unsaved state (#381). They stand with
+	// or without a settings file — a profile never launched is ready (#291) — and
+	// only a broken file above, or a store that cannot answer, leaves them out.
+	if top, rc := l.configStoreQ("get", name, "effort"); rc == 0 && broken == "" {
+		if model != "" {
+			report("INFO", "effective model: "+model+" (profile default)")
+		} else {
+			report("INFO", "effective model: "+unsavedModelWords(typ, base)+" (no saved model)")
+		}
+		// The level is the one a plain launch passes (#356): the override saved
+		// for the model above, else the profile's own default.
+		switch effort := l.savedEffort(name, model); effort {
+		case "":
+			report("INFO", "effective effort: "+unsavedEffortWords+" (no saved effort)")
+		case top:
+			report("INFO", "effective effort: "+effort+" (profile default)")
+		default:
+			report("INFO", "effective effort: "+effort+" (profile override for "+model+")")
+		}
 	}
 	// The route rows are computed before the api-key lines print, because the
 	// endpoint's own verdict decides whether Claude Code's locally stored answer
