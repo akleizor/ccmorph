@@ -15,10 +15,17 @@ import (
 // terminal; 0 is the width a pipe receives.
 func helpPage(t *testing.T, topic string, width int) string {
 	t.Helper()
+	return helpPageFrom(t, &launcher{}, topic, width)
+}
+
+// helpPageFrom is helpPage on a launcher the caller built, so a page can be
+// checked as the machine that resolved it prints it.
+func helpPageFrom(t *testing.T, l *launcher, topic string, width int) string {
+	t.Helper()
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
-	rc := (&launcher{}).usageAt(topic, width)
+	rc := l.usageAt(topic, width)
 	w.Close()
 	os.Stdout = old
 	b, _ := io.ReadAll(r)
@@ -125,6 +132,63 @@ func TestProbeHelpGivesEveryOptionOneLine(t *testing.T) {
 				t.Errorf("width %d: want one option row with a meaning for %s, got %d:\n%s",
 					width, name, counts[name], page)
 			}
+		}
+	}
+}
+
+// GH-384: no help page named masking, so a person who met the word on the
+// inspect screen could not learn what it is or how to turn it on without
+// opening the guide. The command catalog names it, and the two pages someone
+// checks from that row — inspect, the screen that shows it, and config, the
+// settings command — carry the switch that turns it on.
+func TestHelpNamesMaskingAndHowToTurnItOn(t *testing.T) {
+	for _, topic := range []string{"all", "inspect", "config"} {
+		for _, width := range []int{0, 80} {
+			// The word the way a person greps for it: any case, as in the
+			// issue's `ccmorph help <topic> | grep -i mask`.
+			if page := helpPage(t, topic, width); !strings.Contains(strings.ToLower(page), "masking") {
+				t.Errorf("help %q at %d columns never names masking:\n%s", topic, width, page)
+			}
+		}
+	}
+	for _, topic := range []string{"inspect", "config"} {
+		if page := helpPage(t, topic, 0); !strings.Contains(page, "env.CCMORPH_MASK=1") {
+			t.Errorf("help %q names no switch that turns masking on:\n%s", topic, page)
+		}
+	}
+}
+
+// GH-384, follow-up: the masking paragraphs spelled the conf file
+// ~/.config/ccmorph/<profile>.conf for every reader while the launch reads the
+// state root CCMORPH_STATE_DIR or XDG_CONFIG_HOME selects, so on a redirected
+// host the advertised path was a file the launch never read — adding the line
+// there left inspect reporting masking off. The pages name the root this
+// launcher resolved; the default root keeps its tilde spelling.
+func TestHelpNamesTheConfFileAtTheResolvedStateRoot(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory:", err)
+	}
+	redirected := filepath.Join(t.TempDir(), "elsewhere", "ccmorph")
+	underHome := filepath.Join(home, "moved-ccmorph")
+	defaultRoot := filepath.Join(home, ".config", "ccmorph")
+	spellings := map[string]string{
+		redirected:  redirected,
+		underHome:   "~/moved-ccmorph",
+		defaultRoot: "~/.config/ccmorph",
+	}
+	for root, spelled := range spellings {
+		for _, topic := range []string{"inspect", "config"} {
+			l := &launcher{dir: root}
+			if page := helpPageFrom(t, l, topic, 0); !strings.Contains(page, spelled+"/<profile>.conf") {
+				t.Errorf("help %q with the state root at %s does not name it as %s:\n%s", topic, root, spelled, page)
+			}
+		}
+	}
+	// A redirected page must not keep pointing at the default root.
+	for _, topic := range []string{"inspect", "config"} {
+		if page := helpPageFrom(t, &launcher{dir: redirected}, topic, 0); strings.Contains(page, "~/.config/ccmorph") {
+			t.Errorf("help %q with the state root at %s still names the default root:\n%s", topic, redirected, page)
 		}
 	}
 }

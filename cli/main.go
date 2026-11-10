@@ -791,6 +791,20 @@ func (l *launcher) usage(topic string) int {
 	return l.usageAt(topic, helpWidth())
 }
 
+// confDirSpelling is the state root as a help page spells a conf file's
+// directory: the root this launcher resolved, cleaned, spelled ~/… under the
+// home directory — so the default root spells itself ~/.config/ccmorph and
+// only a redirected one changes a page.
+func (l *launcher) confDirSpelling() string {
+	root := filepath.Clean(l.dir)
+	if home, err := os.UserHomeDir(); err == nil {
+		if rel, ok := strings.CutPrefix(root, home+string(filepath.Separator)); ok {
+			return "~/" + rel
+		}
+	}
+	return root
+}
+
 // usageAt prints a help page wrapped to width columns (helpWidth). width 0 is
 // what a pipe receives: the authored lines, unwrapped.
 func (l *launcher) usageAt(topic string, width int) int {
@@ -815,7 +829,7 @@ func (l *launcher) usageAt(topic string, width int) int {
 		help("ccmorph use <profile>", "Set the default; do not launch")
 		help("ccmorph config [profile]", "Change model, effort, or connection")
 		head("Troubleshooting:")
-		help("ccmorph inspect [profile]", "Show effective settings; no secrets")
+		help("ccmorph inspect [profile]", "Show effective settings and masking; no secrets")
 		help("ccmorph doctor [--verbose] [profile]", "Check why a profile is not working")
 		if all {
 			head("More commands:")
@@ -866,6 +880,12 @@ func (l *launcher) usageAt(topic string, width int) int {
 				"\n  "+strings.Join(labels, ", ")+": sign in to that service with your browser (through cliproxyapi).\n\nCredentials", 1)
 		}
 	}
+	// A page that names a conf file names the one this launcher reads: the
+	// state root follows CCMORPH_STATE_DIR and XDG_CONFIG_HOME, so a redirected
+	// root — not the default spelling — is where the advice takes effect.
+	if l.dir != "" {
+		body = strings.ReplaceAll(body, "~/.config/ccmorph/", l.confDirSpelling()+"/")
+	}
 	fmt.Println(wrapBody(body, width))
 	if pickerTopics[topic] {
 		fmt.Println("\n" + wrapBody(pickerNote, width))
@@ -912,7 +932,11 @@ Keep the current defaults or select new values. Changes save when you finish;
 there is no extra confirmation. Esc cancels a picker without saving.
 Changes affect new sessions.
 
-For a single setting: ccmorph set <profile> model|effort [value]`},
+For a single setting: ccmorph set <profile> model|effort [value]
+
+Masking is a line in the profile's conf file, not a menu item: on an API-key
+gateway profile, env.CCMORPH_MASK=1 in ~/.config/ccmorph/<profile>.conf sends
+secrets as placeholders; ccmorph inspect shows whether it is on.`},
 	"list": {"ccmorph list", "List saved profiles. * marks the default used by ccmorph run; private marks one whose history is deleted when the session ends."},
 	"quota": {"ccmorph quota [profile] [--json]", `Every profile in one view, grouped by kind: Claude accounts and tokens,
 Codex subscriptions, budget accounts, and API key or provider profiles. Each
@@ -927,7 +951,13 @@ tools. No inference, nothing billed.
 Omit the profile to list every profile.`},
 	"use": {"ccmorph use [profile|-i]", "Set the default without launching. No argument shows the current default."},
 	"inspect": {"ccmorph inspect [profile|-i]", `Show effective settings and their sources, never the stored credential.
-Omit the profile to inspect the default; -i opens the profile picker.`},
+Omit the profile to inspect the default; -i opens the profile picker.
+
+Masking replaces secrets with placeholders before they reach the endpoint and
+puts the real values back in replies. It is off unless the profile's conf file
+(~/.config/ccmorph/<profile>.conf) sets env.CCMORPH_MASK=1, and it covers
+API-key gateway routes only: a Claude account or api.anthropic.com profile
+keeps its direct connection, where nothing is masked.`},
 	"doctor": {"ccmorph doctor [--verbose] [profile|-i]", `Read-only checks of the executable, sign-in and endpoint, ending with whether
 the profile is ready. --verbose adds a running adapter's processes and ports.
 Omit the profile to check the default. Does not repair or launch a session.`},

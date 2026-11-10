@@ -9,6 +9,18 @@
 
 ### Fixed
 
+- **`ccmorph inspect` explains masking while it is off, and help names
+  masking.** The masking row read `off` with no words, no help page contained
+  the word, and no config screen offered the setting, so a person who wanted
+  secrets kept out of their prompts could not learn what masking is or how to
+  turn it on without opening the guide — the on state explained itself and the
+  off state did not. The off row now says what the state means and names the
+  switch (`off — secrets reach the endpoint as they are; env.CCMORPH_MASK=1
+  sends them as placeholders`); the command catalog's inspect row names
+  masking; and the `inspect` and `config` help pages say what masking does,
+  the conf line that turns it on, where that file is — the state root the
+  machine resolves, so a `CCMORPH_STATE_DIR` or `XDG_CONFIG_HOME` redirect is
+  the path the pages name — and the API-key gateway routes it covers (#384).
 - **The usage export ends with a summary a person can act on.** `usage-export`
   printed one raw JSON line — long floating-point money, no output folder, no
   next command — and its counts did not add up for a reader, because the turns
