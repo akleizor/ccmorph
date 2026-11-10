@@ -140,12 +140,20 @@ func findTranslator() string {
 // neither is undecided, and the answer then rests on the cached rows alone
 // (known only when they already need the translator, since the undecided model
 // could only add to that). Without a model every listed, declared model counts.
+// An unsettled cached row — a refusal or no answer, or any unusable row from a
+// cache older than refusal_verdicts — is re-asked at launch (#375), so here it
+// counts as uncached and the listing's declaration decides, as in AutoPickable.
 // needed mirrors serve()'s own native test over the usable rows. known is false
 // when no usable row decides it, in which case there is no honest verdict.
 func TranslatorVerdict(base, cacheDir, model, listing string) (needed, known bool) {
 	upstream := strings.TrimRight(base, "/")
 	cache := filepath.Join(cacheDir, ".adapter-cache", hashHex(upstream)[:16]+".json")
-	rows := cachedRows(upstream, cache)
+	var rows []Row
+	for _, r := range cachedRows(upstream, cache) {
+		if !unsettled(r) {
+			rows = append(rows, r)
+		}
+	}
 	var doc map[string]any
 	_ = json.Unmarshal([]byte(listing), &doc)
 	data, _ := doc["data"].([]any)

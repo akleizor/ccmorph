@@ -679,6 +679,25 @@ def test_doctor_says_a_hop_needs_a_saved_model_beside_a_cached_verdict_issue_379
     assert [l for l in lines if l.partition(" ")[2].startswith("hop:")] == hop, result.stdout
 
 
+def test_doctor_reads_an_old_cache_verdict_as_a_launch_does_issue_379(tmp_path):
+    """#379: a cache from before refusal_verdicts may hold an unusable row that
+    was a gateway's refused message in disguise. A launch asks that model again,
+    and the listing declares /v1/messages for it, so a model can be picked:
+    doctor must not say none can be picked or that a hop will need a saved model."""
+    _seed_adapter_cache(tmp_path, "https://example.test", [("m-1", "unusable")])
+    curl = ("#!/bin/sh\nprintf '%s\\n' '"
+            + json.dumps({"data": [{"id": "m-1", "supported_endpoints": ["/v1/messages"]}]})
+            + "'\nprintf '%s\\n' '__CCMORPH_STATUS__200'\n")
+    result, _, _ = run_doctor(
+        tmp_path, "type=apikey\nbase_url=https://example.test\napi_key=k\n", curl)
+    assert result.returncode == 0, result.stdout + result.stderr
+    lines = result.stdout.splitlines()
+    assert [l for l in lines if "adapter:" in l] == [
+        "OK adapter: this endpoint needs no translator"], result.stdout
+    assert [l for l in lines if l.partition(" ")[2].startswith("hop:")] == [], result.stdout
+    assert "none can be picked" not in result.stdout, result.stdout
+
+
 @pytest.mark.parametrize("path,stub,expected", [
     ("/v1/messages", False, "OK adapter: this endpoint needs no translator"),
     ("/v1/chat/completions", True,
