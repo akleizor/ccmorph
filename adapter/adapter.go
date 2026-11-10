@@ -196,6 +196,48 @@ func TranslatorVerdict(base, cacheDir, model, listing string) (needed, known boo
 	return !native, true
 }
 
+// AutoPickable reports whether an automatic launch — no model named — could
+// pick a usable model from THIS listing: one the listing serves that is cached
+// usable or declares its dialect. It mirrors what classify() keeps and serve()
+// accepts: a cached row for a model the listing no longer serves is dropped, so
+// it decides nothing here, and a cached unusable row stands even where the
+// listing now declares a dialect (#379). A listing that does not parse is an
+// inventory failure at launch, where classify falls back to the cache — so
+// there the usable cached rows decide.
+func AutoPickable(base, cacheDir, listing string) bool {
+	upstream := strings.TrimRight(base, "/")
+	cache := filepath.Join(cacheDir, ".adapter-cache", hashHex(upstream)[:16]+".json")
+	rows := cachedRows(upstream, cache)
+	var doc map[string]any
+	if json.Unmarshal([]byte(listing), &doc) != nil {
+		for _, r := range rows {
+			if r.Dialect != "unusable" {
+				return true
+			}
+		}
+		return false
+	}
+	data, _ := doc["data"].([]any)
+	for _, id := range listedModels(data) {
+		dialect, cached := "", false
+		for _, r := range rows {
+			if r.Model == id {
+				dialect, cached = r.Dialect, true
+			}
+		}
+		if cached {
+			if dialect != "unusable" {
+				return true
+			}
+			continue // a cached unusable verdict stands even where the listing declares one
+		}
+		if declaredDialect(data, id) != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // TranslatorInstalled reports whether the translator can be found and run, by
 // the same discovery a launch uses.
 func TranslatorInstalled() bool { return executable(translatorBinary()) }

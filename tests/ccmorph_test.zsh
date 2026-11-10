@@ -3515,6 +3515,31 @@ test_a_hop_to_a_profile_that_cannot_pick_a_model_is_refused_in_session_issue_379
   [[ ! -e "$HOME/.config/ccmorph/.reswitch.$relay_id" ]] || { print -u2 -- 'the hop must queue nothing'; rc=1 }
   [[ "$out" != *'Switching'* ]] || { print -u2 -- "the hop must not announce a switch: ${(qqq)out}"; rc=1 }
 
+  # A warm cache for a model this listing no longer serves decides nothing: the
+  # launch's own classification keeps only models the current inventory serves,
+  # so the hop must still refuse (#379).
+  local cache_key
+  cache_key=$(printf %s 'http://strict.invalid' | shasum -a 256 | cut -c1-16)
+  mkdir -p "$HOME/.config/ccmorph/profiles/.adapter-cache"
+  printf '%s\n' \
+    '{"endpoint":"http://strict.invalid","anthropic_path":"/v1/messages","thinking_probe":2,"rows":[{"model":"old-model","dialect":"anthropic","note":"","status":200,"cap":null,"nothink":false,"id_recycle":false}]}' \
+    > "$HOME/.config/ccmorph/profiles/.adapter-cache/$cache_key.json"
+  out=$(hop_as_claude strict 2>&1); st=$?
+
+  [[ "$st" != 0 ]] || { print -u2 -- "the hop must refuse on a stale cache too, got 0: ${(qqq)out}"; rc=1 }
+  [[ "$out" == *"not switching to 'strict'"* ]] || {
+    print -u2 -- "the refusal must name the target: ${(qqq)out}"
+    rc=1
+  }
+  [[ "$out" == *'ccmorph models strict'* && "$out" == *'ccmorph set strict model <model-id>'* ]] || {
+    print -u2 -- "the refusal must name the command that lists the models next to the one that saves one: ${(qqq)out}"
+    rc=1
+  }
+  [[ ! -e "$HOME/claude-ended" ]] || { print -u2 -- 'the hop must not end the session'; rc=1 }
+  [[ ! -e "$HOME/.config/ccmorph/.reswitch.$relay_id" ]] || { print -u2 -- 'the hop must queue nothing'; rc=1 }
+  [[ "$out" != *'Switching'* ]] || { print -u2 -- "the hop must not announce a switch: ${(qqq)out}"; rc=1 }
+  rm -rf "$HOME/.config/ccmorph/profiles/.adapter-cache"
+
   # The same listing with the model now declaring a protocol: the adapter can
   # pick a model without a saved one, so the hop must proceed and end the
   # session it runs in.
@@ -3531,6 +3556,109 @@ test_a_hop_to_a_profile_that_cannot_pick_a_model_is_refused_in_session_issue_379
   local actual="$(<"$HOME/.config/ccmorph/.reswitch.$relay_id")"
   [[ "$actual" == $'profile=strict\nsession=strict-session\neffort=high' ]] || {
     print -u2 -- "a model the target does not serve must stay dropped\n  actual: ${(qqq)actual}"
+    rc=1
+  }
+
+  unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_a_hop_to_an_endpoint_with_no_model_list_is_refused_in_session_issue_379() {
+  # #379: a gateway that answers 404 for its model list offers nothing to pick
+  # from, and it will not start serving one later, so a hop without a saved model
+  # or one to recover cannot land there. The listing command has nothing to list
+  # on such an endpoint, so the refusal names only the command that saves a model.
+  local test_home out st rc=0
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  source "$CCMORPH_SOURCE"
+
+  printf '%s\n' 'type=proxy' 'base_url=http://strict.invalid' 'api_key=strict-key' \
+    > "$HOME/.config/ccmorph/strict.conf"
+  local relay_id="$$.strict404"
+  export CLAUDE_CODE_SESSION_ID='quiet-session' CCMORPH_RELAY_ID="$relay_id"
+  # A conversation to resume, one that names no model: nothing is carried and
+  # nothing recovered, so the target needs a model of its own.
+  seed_session_transcript quiet-session 'spoken before the hop'
+
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'for a do case "$a" in *http_code*) printf "\n__CCMORPH_STATUS__404" ;; esac; done' \
+    > "$HOME/bin/curl"
+  chmod +x "$HOME/bin/curl"
+
+  out=$(hop_as_claude strict 2>&1); st=$?
+
+  [[ "$st" != 0 ]] || { print -u2 -- "the hop must refuse, got 0: ${(qqq)out}"; rc=1 }
+  [[ "$out" == *"not switching to 'strict'"* ]] || {
+    print -u2 -- "the refusal must name the target: ${(qqq)out}"
+    rc=1
+  }
+  [[ "$out" == *'This session keeps running.'* ]] || {
+    print -u2 -- "the refusal must say the session survives: ${(qqq)out}"
+    rc=1
+  }
+  [[ "$out" == *'offers no model list'* && "$out" == *'ccmorph set strict model <model-id>'* ]] || {
+    print -u2 -- "the refusal must name the missing list and the command that saves a model: ${(qqq)out}"
+    rc=1
+  }
+  [[ "$out" != *'ccmorph models strict'* ]] || {
+    print -u2 -- "an endpoint with no model list cannot answer the listing command, so the refusal must not name it: ${(qqq)out}"
+    rc=1
+  }
+  [[ ! -e "$HOME/claude-ended" ]] || { print -u2 -- 'the hop must not end the session'; rc=1 }
+  [[ ! -e "$HOME/.config/ccmorph/.reswitch.$relay_id" ]] || { print -u2 -- 'the hop must queue nothing'; rc=1 }
+  [[ "$out" != *'Switching'* ]] || { print -u2 -- "the hop must not announce a switch: ${(qqq)out}"; rc=1 }
+
+  unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_a_hop_that_recovers_a_model_from_the_conversation_is_not_refused_issue_379() {
+  # #379: a transcript whose last assistant turn records a model but no effort
+  # carries neither in the relay signal (both travel together), yet the relay
+  # pass still recovers that model from the conversation and launches on it. The
+  # preflight must account for the model the launch would recover, so this hop
+  # proceeds instead of refusing.
+  local test_home out st rc=0
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  source "$CCMORPH_SOURCE"
+
+  printf '%s\n' 'type=proxy' 'base_url=http://strict.invalid' 'api_key=strict-key' \
+    > "$HOME/.config/ccmorph/strict.conf"
+  local relay_id="$$.recover"
+  export CLAUDE_CODE_SESSION_ID='recovered-session' CCMORPH_RELAY_ID="$relay_id"
+  # The last assistant turn names a model the target serves, but records no
+  # effort; the listing serves it without declaring a protocol, so only the
+  # conversation's own record names it.
+  seed_session_transcript recovered-session 'spoken before the hop'
+  printf '%s\n' \
+    '{"type":"assistant","isSidechain":false,"message":{"role":"assistant","model":"alpha-chat","content":[]}}' \
+    >> "$HOME/.claude/projects/p/recovered-session.jsonl"
+
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'cat <<JSON' \
+    '{"object":"list","data":[{"id":"alpha-chat","capabilities":{"chat_completion":true}}]}' \
+    'JSON' \
+    'for a do case "$a" in *http_code*) printf "\n__CCMORPH_STATUS__200" ;; esac; done' \
+    > "$HOME/bin/curl"
+  chmod +x "$HOME/bin/curl"
+
+  out=$(hop_as_claude strict 2>&1); st=$?
+
+  [[ "$st" == 0 ]] || { print -u2 -- "a hop whose model the conversation recovers must proceed, got $st: ${(qqq)out}"; rc=1 }
+  [[ "$out" == *'Switching → strict'* ]] || {
+    print -u2 -- "the hop must announce the switch: ${(qqq)out}"
+    rc=1
+  }
+  [[ "$(<"$HOME/claude-ended")" == ended ]] || { print -u2 -- 'the hop must end the session it runs in'; rc=1 }
+  local actual="$(<"$HOME/.config/ccmorph/.reswitch.$relay_id")"
+  [[ "$actual" == $'profile=strict\nsession=recovered-session' ]] || {
+    print -u2 -- "a conversation that records no effort must carry none\n  actual: ${(qqq)actual}"
     rc=1
   }
 
@@ -11270,6 +11398,8 @@ run_test test_hop_to_a_wrong_name_inside_claude_answers_in_one_line
 run_test test_hop_falls_back_when_the_target_cannot_serve_the_model
 run_test test_hop_asks_the_gateway_which_models_it_serves
 run_test test_a_hop_to_a_profile_that_cannot_pick_a_model_is_refused_in_session_issue_379
+run_test test_a_hop_to_an_endpoint_with_no_model_list_is_refused_in_session_issue_379
+run_test test_a_hop_that_recovers_a_model_from_the_conversation_is_not_refused_issue_379
 run_test test_relay_resume_preserves_dangerous_permission_mode
 run_test test_relay_same_profile_omits_cache_notice_issue_226
 run_test test_relay_same_file_profile_omits_cache_notice_issue_226

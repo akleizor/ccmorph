@@ -234,9 +234,10 @@ func (l *launcher) refuseHop(name, why string) {
 
 // hopModelRefusal is why a hop that carries no model cannot land on this target
 // (#379): a relay pass that resumes the conversation opens no model picker, so
-// the target must already have a model — saved, or one its own model list lets
-// the adapter pick. Like routeRefusal, only a sure answer refuses; every other
-// case stays the launch's own to report, never a hop's guess.
+// the target must already have a model — saved, one the conversation itself
+// recovers, or one its own model list lets the adapter pick. Like routeRefusal,
+// only a sure answer refuses; every other case stays the launch's own to report,
+// never a hop's guess.
 func (l *launcher) hopModelRefusal(name, session string) string {
 	f, ok := l.readQuiet(name)
 	if !ok || f["type"] != "apikey" || util.NativeBase(f["base_url"]) {
@@ -252,11 +253,20 @@ func (l *launcher) hopModelRefusal(name, session string) string {
 	if !ok || !util.HasConversation(transcript) {
 		return "" // a fresh start opens the model picker
 	}
+	if m, ok := l.resumeModel(session); ok && l.modelKnown(name, m) != 1 {
+		return "" // the relay pass recovers this model from the conversation and launches on it
+	}
 	body, code := util.ProbeListing(f["base_url"], f["api_key"])
+	if code == "404" {
+		// A listing that is not there will not come back, and `ccmorph models`
+		// has nothing to list on such an endpoint: only a saved model starts
+		// this target.
+		return "the endpoint offers no model list (HTTP 404) and no model is set, so a hop here needs a saved model; save one: ccmorph set " + name + " model <model-id>"
+	}
 	if !(len(code) == 3 && strings.HasPrefix(code, "2")) {
 		return "" // the route's own refusals own every other answer
 	}
-	if _, known := adapter.TranslatorVerdict(f["base_url"], l.profileDirs, "", body); known {
+	if adapter.AutoPickable(f["base_url"], l.profileDirs, body) {
 		return "" // the adapter can pick a model from the listing
 	}
 	return "no model is set and none can be picked from its model list; list them: ccmorph models " + name +
