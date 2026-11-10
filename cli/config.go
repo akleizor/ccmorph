@@ -37,8 +37,7 @@ func (l *launcher) getSet(verb string, args []string) int {
 		name = picked
 	}
 	if !profile.ValidName(name) {
-		l.err("usage: " + usageLine(verb))
-		return 2
+		return l.badName(verb, name)
 	}
 	if !l.exists(name) {
 		l.noProfile(name)
@@ -176,8 +175,7 @@ func (l *launcher) config(args []string) int {
 		name = picked
 	}
 	if !profile.ValidName(name) {
-		l.err("usage: " + usageLine("config"))
-		return 2
+		return l.badName("config", name)
 	}
 	if !l.exists(name) {
 		l.noProfile(name)

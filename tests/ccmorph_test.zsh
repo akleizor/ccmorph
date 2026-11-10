@@ -3552,19 +3552,24 @@ test_hop_to_a_wrong_name_inside_claude_answers_in_one_line() {
   export CCMORPH_RELAY_ID="$relay_id"
 
   # A name that is not even a valid profile name (a hyphen, a dot, a reserved
-  # word) is the likelier typo, and answers the same way.
-  local out st rc=0 bad
+  # word) is the likelier typo, and answers in one line too (#373).
+  local out st rc=0 bad want
   for bad in nosuch no-such work.2 active; do
+    case $bad in
+      (nosuch) want="ccmorph: no profile 'nosuch'. Profiles: proxy subacct" ;;
+      (no-such|work.2) want="ccmorph: invalid profile name '$bad': a name may hold only A-Z, a-z, 0-9 and _ (no hyphen, dot, slash or space). Profiles: proxy subacct" ;;
+      (active) want="ccmorph: invalid profile name 'active': that word is reserved; choose another. Profiles: proxy subacct" ;;
+    esac
     out=$(CLAUDE_CONFIG_DIR="$HOME/.config/ccmorph/profiles/proxy" hop_as_claude --slash "$bad" 2>&1); st=$?
     [[ $st == 0 ]] || { print -u2 -- "a wrong name '$bad' must answer, not fail: exit $st, ${(qqq)out}"; rc=1 }
-    [[ "$out" == "ccmorph: no profile '$bad'. Profiles: proxy subacct" ]] || {
-      print -u2 -- "a wrong name '$bad' must name the available profiles in one line: ${(qqq)out}"
+    [[ "$out" == "$want" ]] || {
+      print -u2 -- "a wrong name '$bad' must answer in one line: ${(qqq)out}"
       rc=1
     }
     out=$(CLAUDE_CONFIG_DIR="$HOME/.config/ccmorph/profiles/proxy" hop_as_claude "$bad" 2>&1); st=$?
     [[ $st == 1 ]] || { print -u2 -- "the ! form must keep the error for '$bad': exit $st, ${(qqq)out}"; rc=1 }
-    [[ "$out" == "ccmorph: no profile '$bad'. Profiles: proxy subacct" ]] || {
-      print -u2 -- "the ! form must name the available profiles for '$bad': ${(qqq)out}"
+    [[ "$out" == "$want" ]] || {
+      print -u2 -- "the ! form must answer in one line for '$bad': ${(qqq)out}"
       rc=1
     }
   done

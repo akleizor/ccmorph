@@ -35,8 +35,7 @@ func (l *launcher) add(args []string) int {
 		return 1
 	}
 	if !profile.ValidName(name) {
-		l.err("invalid name — use alphanumeric/underscore")
-		return 1
+		return l.badName("add", name)
 	}
 	if l.exists(name) {
 		l.err("'" + name + "' already exists. Remove first: ccmorph rm " + name)
@@ -678,8 +677,7 @@ func (l *launcher) login(args []string) int {
 		name = picked
 	}
 	if !profile.ValidName(name) {
-		l.err("usage: " + usageLine("login"))
-		return 1
+		return l.badName("login", name)
 	}
 	if !l.exists(name) {
 		l.noProfile(name)

@@ -85,8 +85,7 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 	}
 	if name != "" {
 		if !profile.ValidName(name) {
-			l.err("invalid profile name '" + name + "'")
-			return nil, 2
+			return nil, l.badName("run", name)
 		}
 	} else if active, ok := l.readActive(); ok {
 		name = active
