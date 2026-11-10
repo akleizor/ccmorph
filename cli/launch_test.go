@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/util"
 )
 
@@ -1247,5 +1248,142 @@ func TestSetupDirReleasesTheLiveLockOfTheProfileAHopLeaves(t *testing.T) {
 	}
 	if canTakeExclusive(t, util.LiveLockPath(profiles, "b")) {
 		t.Fatal("the hop target must stay covered by its live lock")
+	}
+}
+
+// coreCalls is a stub ccmorph-core that appends each invocation's argument
+// vector to a log, so a test can see every call, not only the last one.
+func coreCalls(t *testing.T) (dir string, calls func() string) {
+	t.Helper()
+	dir = t.TempDir()
+	log := filepath.Join(dir, "calls.log")
+	body := "#!/bin/sh\n{ for a do printf '%s\\n' \"$a\"; done; printf '.\\n'; } >> '" + log + "'\n"
+	if err := os.WriteFile(filepath.Join(dir, "ccmorph-core"), []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir, func() string {
+		b, _ := os.ReadFile(log)
+		return string(b)
+	}
+}
+
+// A gateway that rejects the key refuses the launch before any adapter starts,
+// names the key and the one command that replaces it — doctor's own — whichever
+// model is named or none, and carries the rejected key to the listing once
+// (#374).
+func TestAGatewayThatRejectsTheKeyRefusesTheLaunchBeforeAnyAdapter(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		argv []string
+	}{
+		{"a named model", []string{"--model", "alpha-opus-1", "-p", "hi"}},
+		{"no model", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			state, profiles := t.TempDir(), t.TempDir()
+			libexec, calls := coreCalls(t)
+			os.MkdirAll(filepath.Join(profiles, "gw374"), 0o755)
+			os.WriteFile(filepath.Join(state, "gw374.conf"), []byte(
+				"type=apikey\nbase_url=http://127.0.0.1:18081\napi_key=sk-wrong-374\n"), 0o600)
+
+			probes := 0
+			old := probeListing
+			probeListing = func(base, key string, headers ...string) (string, string) {
+				probes++
+				if base != "http://127.0.0.1:18081" || key != "sk-wrong-374" {
+					t.Errorf("the pre-flight asked %q with key %q", base, key)
+				}
+				return "", "401"
+			}
+			t.Cleanup(func() { probeListing = old })
+
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			saved := os.Stderr
+			os.Stderr = w
+			l := &launcher{dir: state, profileDirs: profiles, libexec: libexec, launchEnv: profile.LaunchEnv, memo: map[string]string{}}
+			_, rc := l.launch("gw374", false, false, tc.argv)
+			w.Close()
+			os.Stderr = saved
+			outB, _ := io.ReadAll(r)
+			out := string(outB)
+
+			if rc != 1 {
+				t.Fatalf("rc %d, want 1: a launch whose key the gateway rejected must refuse", rc)
+			}
+			if !strings.Contains(out, "rejected the API key") || !strings.Contains(out, "HTTP 401") {
+				t.Fatalf("the failure's first line must say the key was rejected, got: %s", out)
+			}
+			if !strings.Contains(out, "ccmorph config gw374") {
+				t.Fatalf("the failure must name the command that replaces the key, got: %s", out)
+			}
+			if strings.Contains(out, "adapter") {
+				t.Fatalf("a profile doctor says needs no translator must not mention an adapter, got: %s", out)
+			}
+			if log := calls(); strings.Contains(log, "adapter-start") {
+				t.Fatalf("the adapter started for a rejected key:\n%s", log)
+			}
+			if probes != 1 {
+				t.Fatalf("%d listing request(s) carried the rejected key; want 1", probes)
+			}
+		})
+	}
+}
+
+// A refusal the adapter worded itself — the cause and the one command that
+// repairs it — is the whole failure: the launcher must not repeat the cause or
+// name a command that disagrees with it. A bare death still gets the route
+// checks (#286, #374).
+func TestAnAdapterRefusalStandsAlone(t *testing.T) { // issue #374
+	refusal := "ccmorph: the endpoint rejected the API key (HTTP 401); replace it: ccmorph config gw374b"
+	for _, tc := range []struct {
+		name    string
+		body    string
+		why     string
+		refused bool
+	}{
+		{"a refused key", "echo " + util.Refused + "; echo '" + refusal + "' >&2; exit 1", "rejected the API key", true},
+		{"a bare death", "echo 'ccmorph: gw374b: adapter exited before readiness; session not started.' >&2; exit 1", "exited before readiness", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state, profiles, libexec := t.TempDir(), t.TempDir(), t.TempDir()
+			os.MkdirAll(filepath.Join(profiles, "gw374b"), 0o755)
+			os.WriteFile(filepath.Join(state, "gw374b.conf"), []byte(
+				"type=apikey\nbase_url=http://127.0.0.1:9\napi_key=k"), 0o600)
+			os.WriteFile(filepath.Join(libexec, "ccmorph-core"), []byte("#!/bin/sh\n"+tc.body+"\n"), 0o755)
+
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			saved := os.Stderr
+			os.Stderr = w
+			l := &launcher{dir: state, profileDirs: profiles, libexec: libexec, launcherPID: os.Getpid()}
+			ok := l.adapterStart("gw374b", "")
+			w.Close()
+			os.Stderr = saved
+			outB, _ := io.ReadAll(r)
+			out := string(outB)
+
+			if ok {
+				t.Fatal("the adapter start reported success for a failed adapter")
+			}
+			if !strings.Contains(out, tc.why) {
+				t.Fatalf("the failure must say why in plain words, got: %s", out)
+			}
+			if tc.refused {
+				if strings.Count(out, tc.why) != 1 {
+					t.Fatalf("the refusal must appear once, not once per surface, got: %s", out)
+				}
+				if strings.Contains(out, "Check the route") {
+					t.Fatalf("a refusal that names its own repair must not point at doctor as well, got: %s", out)
+				}
+			} else if !strings.Contains(out, "Check the route: ccmorph doctor gw374b") {
+				t.Fatalf("a bare death still names the route check, got: %s", out)
+			}
+		})
 	}
 }

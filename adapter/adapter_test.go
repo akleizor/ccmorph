@@ -646,31 +646,65 @@ func TestAModelMustBeNamedWhenTheGatewayOffersNoList(t *testing.T) { // issue #3
 	}
 }
 
-func TestARefusedListingNamesItsTrueCause(t *testing.T) { // issue #357
+func TestARefusedListingNamesItsTrueCause(t *testing.T) { // issues #357, #374
 	// A rejected key is not an absent model list: the refusal must name the
-	// credential and its repair, never a model-setting step that cannot fix it.
-	dir := t.TempDir()
-	os.MkdirAll(filepath.Join(dir, ".adapter-cache"), 0o755)
-	swap(t, &profileDirs, dir)
-	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gateway"})
-	swap(t, &inventoryFn, func(string, string, *http.Client) ([]string, error) {
-		return nil, refusingStatus{401}
-	})
-	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
-		panic("nothing is served")
-	})
-	stdio := captureStdio(t)
-	var status int
-	exits(t, func() { status = Main([]string{"demo", "--auto"}) })
-	if status != 1 {
-		t.Fatalf("Main = %d, want 1", status)
-	}
-	out := stdio()
-	if !strings.Contains(out, "rejected the API key (HTTP 401)") || !strings.Contains(out, "replace it: ccmorph config demo") {
-		t.Fatalf("the refusal must name the rejected key and its repair, got: %s", out)
-	}
-	if strings.Contains(out, "offers no model list") || strings.Contains(out, "set demo model") {
-		t.Fatalf("a rejected key is not an absent model list, so the refusal must not say it is; got: %s", out)
+	// credential and its repair, never a model-setting step that cannot fix it —
+	// on whichever path the launch met the listing, and without spending
+	// inference requests a rejected key answers the same way (#374).
+	for _, tc := range []struct {
+		name  string
+		argv  []string
+		setup func(t *testing.T) func() int
+	}{
+		{"no model named", []string{"demo", "--auto"}, func(t *testing.T) func() int {
+			swap(t, &inventoryFn, func(string, string, *http.Client) ([]string, error) {
+				return nil, refusingStatus{401}
+			})
+			return func() int { return 0 }
+		}},
+		{"a model is named", []string{"demo", "--auto", "--model", "m"}, func(t *testing.T) func() int {
+			swap(t, &dialectAutoFn, func(_, _, _ string) (string, string, int) {
+				return "unusable", noInference + ": HTTP Error 401", 401
+			})
+			calls := 0
+			swap(t, &dialectOfFn, func(_, _, _ string, _ bool) (string, string, int) {
+				calls++
+				return "unusable", "HTTP Error 401", 401
+			})
+			return func() int { return calls }
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			os.MkdirAll(filepath.Join(dir, ".adapter-cache"), 0o755)
+			swap(t, &profileDirs, dir)
+			stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gateway"})
+			inferences := tc.setup(t)
+			swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
+				panic("nothing is served")
+			})
+			stdio := captureStdio(t)
+			// The refusal must be Main's own return, never a death on the way:
+			// exits discards the intercepted code, so a die leaves status 0.
+			var status int
+			exits(t, func() { status = Main(tc.argv) })
+			if status != 1 {
+				t.Fatalf("Main = %d, want 1", status)
+			}
+			out := stdio()
+			if !strings.Contains(out, "EXIT=") || !strings.Contains(out, "rejected the API key (HTTP 401)") || !strings.Contains(out, "replace it: ccmorph config demo") {
+				t.Fatalf("the refusal must be the structured EXIT= line naming the rejected key and its repair, got: %s", out)
+			}
+			if strings.Contains(out, "offers no model list") || strings.Contains(out, "set demo model") {
+				t.Fatalf("a rejected key is not an absent model list, so the refusal must not say it is; got: %s", out)
+			}
+			if strings.Contains(out, "model m is unusable") {
+				t.Fatalf("a rejected key is not a verdict about the model, so the refusal must not say it is; got: %s", out)
+			}
+			if n := inferences(); n != 0 {
+				t.Fatalf("%d inference request(s) spent on a key the endpoint had already rejected", n)
+			}
+		})
 	}
 }
 

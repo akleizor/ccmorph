@@ -256,7 +256,9 @@ func classifyLocked(base, key, cache, required string, auto bool) ([]Row, error)
 		one := func(model string) Row {
 			if auto {
 				dialect, note, status := dialectAutoFn(base, key, model)
-				if dialect == "unusable" && model == required {
+				if dialect == "unusable" && model == required && status != 401 && status != 403 {
+					// A key the endpoint rejected answers every inference request
+					// the same way; the listing already said so (#374).
 					logf("Checking compatibility for %s: up to four small inference requests (8/16 output tokens each); charges may apply.", shim.PyRepr(model))
 					dialect, note, status = dialectOfFn(base, key, model, true)
 				}
@@ -272,6 +274,12 @@ func classifyLocked(base, key, cache, required string, auto bool) ([]Row, error)
 		}
 		if required != "" {
 			row := one(required)
+			// A key the endpoint rejected is not a verdict about the model: the
+			// refusal reaches the ready-file reader as its true cause, never a
+			// model-unusable death that names no repair (#374).
+			if auto && row.Dialect == "unusable" && (row.Status == 401 || row.Status == 403) {
+				return nil, refusingStatus{row.Status}
+			}
 			known[row.Model] = row
 		} else {
 			results := make([]Row, len(fresh))
