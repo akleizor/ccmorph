@@ -582,10 +582,39 @@ func UnwireStatusline(path string, owned ...string) error {
 
 var commandArgs = regexp.MustCompile(`(?s)<command-args>(.*?)</command-args>`)
 
+// ReadRegular reads path only when it names a regular file, and never waits on
+// what it finds: a FIFO in a directory another account can write, or a device
+// that never ends, is refused rather than read, and so is a symlink at the final
+// name (nothing ccmorph writes there is one), so a planted one cannot send the
+// read somewhere else (#410). A positive limit also bounds the read, for a file
+// whose whole body is one small message at a name anyone can plant; a transcript
+// passes 0 and is read whole, because a conversation's size is the user's — a
+// limit there would take the resume line from a session that earned it.
+func ReadRegular(path string, limit int64) ([]byte, bool) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || !fi.Mode().IsRegular() || (limit > 0 && fi.Size() > limit) {
+		return nil, false
+	}
+	var r io.Reader = f
+	if limit > 0 {
+		r = io.LimitReader(f, limit)
+	}
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return nil, false
+	}
+	return b, true
+}
+
 // transcript reads a session transcript: one JSON record per line, unreadable lines skipped.
 func transcript(path string) (recs []*ordjson.Obj, ok bool) {
-	b, err := os.ReadFile(path)
-	if err != nil || !utf8.Valid(b) {
+	b, ok := ReadRegular(path, 0)
+	if !ok || !utf8.Valid(b) {
 		return nil, false
 	}
 	for _, line := range strings.Split(string(b), "\n") {

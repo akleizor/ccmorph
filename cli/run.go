@@ -582,6 +582,10 @@ func authKey(env []string) string {
 
 var sessionID = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
+// endedRecordMax bounds a session-end record read; a real one is a session id
+// or Claude Code's small JSON input, so anything larger is not a record.
+const endedRecordMax = 64 << 10
+
 // readEndedSession reads the session id Claude Code's SessionEnd hook recorded
 // for the claude that ran as pid, and consumes the record: the hint prints
 // once, and a launcher that died leaves reaping to gc-stale, never a re-read.
@@ -589,11 +593,12 @@ var sessionID = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // session's claude is a grandchild with another pid, and its transcripts die
 // with its view, so nothing of it is ever read here. The file sits in a shared
 // TMPDIR anyone can write, so a record that is not a session id reads as no
-// session rather than reaching the terminal (#285).
+// session rather than reaching the terminal (#285), and a planted link, FIFO or
+// device at its name is refused without being followed or waited on (#410).
 func readEndedSession(pid int) string {
 	f := filepath.Join(tmpDir(), "ccmorph-session-end."+strconv.Itoa(pid))
-	b, err := os.ReadFile(f)
-	if err != nil {
+	b, ok := util.ReadRegular(f, endedRecordMax)
+	if !ok {
 		return ""
 	}
 	os.Remove(f)
@@ -608,11 +613,12 @@ func readEndedSession(pid int) string {
 // hook of the claude that ran as pid — the hook keeps Claude Code's JSON input
 // beside the id record — and consumes the file, as readEndedSession does. It
 // names where that session's conversation is, or would be had a message been
-// sent. "" when there is no input, or it is not Claude Code's JSON (#359).
+// sent. "" when there is no input, it is not Claude Code's JSON (#359), or it
+// is not a regular file at the name the hook is expected to write (#410).
 func readEndedTranscript(pid int) string {
 	f := filepath.Join(tmpDir(), "ccmorph-session-end."+strconv.Itoa(pid)+".json")
-	b, err := os.ReadFile(f)
-	if err != nil {
+	b, ok := util.ReadRegular(f, endedRecordMax)
+	if !ok {
 		return ""
 	}
 	os.Remove(f)

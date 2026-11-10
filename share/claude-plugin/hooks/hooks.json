@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ \"$CLAUDE_CODE_SESSION_ATTENDED\" = 1 ] && [ -n \"$CLAUDE_CONFIG_DIR\" ] && [ -n \"$CLAUDE_CODE_SESSION_ID\" ]; then f=\"${TMPDIR:-/tmp}/ccmorph-session-end.$CLAUDE_PID\"; cat > \"$f.json\"; printf %s \"$CLAUDE_CODE_SESSION_ID\" > \"$f\"; fi; exit 0"
+            "command": "if [ \"$CLAUDE_CODE_SESSION_ATTENDED\" = 1 ] && [ -n \"$CLAUDE_CONFIG_DIR\" ] && [ -n \"$CLAUDE_CODE_SESSION_ID\" ]; then d=\"${TMPDIR:-/tmp}\"; f=\"$d/ccmorph-session-end.$CLAUDE_PID\"; t=$(mktemp \"$d/ccmorph-session-end.XXXXXX\") || exit 0; { cat > \"$t\" && ln \"$t\" \"$f.json\"; } 2>/dev/null; rm -f \"$t\"; t=$(mktemp \"$d/ccmorph-session-end.XXXXXX\") || exit 0; { printf %s \"$CLAUDE_CODE_SESSION_ID\" > \"$t\" && ln \"$t\" \"$f\"; } 2>/dev/null; rm -f \"$t\"; fi; exit 0"
           }
         ]
       }
