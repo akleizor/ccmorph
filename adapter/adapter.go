@@ -200,14 +200,21 @@ func TranslatorVerdict(base, cacheDir, model, listing string) (needed, known boo
 // pick a usable model from THIS listing: one the listing serves that is cached
 // usable or declares its dialect. It mirrors what classify() keeps and serve()
 // accepts: a cached row for a model the listing no longer serves is dropped, so
-// it decides nothing here, and a cached unusable row stands even where the
-// listing now declares a dialect (#379). A listing that does not parse is an
-// inventory failure at launch, where classify falls back to the cache — so
-// there the usable cached rows decide.
+// it decides nothing here, and a settled unusable row stands even where the
+// listing now declares a dialect (#379). An unsettled row — a refusal or no
+// answer, or any unusable row from a cache older than refusal_verdicts — is
+// re-asked at launch (#375), so it decides nothing here either. A listing that
+// does not parse is an inventory failure at launch, where classify falls back
+// to the cache — so there the usable cached rows decide.
 func AutoPickable(base, cacheDir, listing string) bool {
 	upstream := strings.TrimRight(base, "/")
 	cache := filepath.Join(cacheDir, ".adapter-cache", hashHex(upstream)[:16]+".json")
-	rows := cachedRows(upstream, cache)
+	var rows []Row
+	for _, r := range cachedRows(upstream, cache) {
+		if !unsettled(r) {
+			rows = append(rows, r)
+		}
+	}
 	var doc map[string]any
 	if json.Unmarshal([]byte(listing), &doc) != nil {
 		for _, r := range rows {

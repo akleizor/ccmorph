@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -100,6 +101,16 @@ func TestAutoPickable(t *testing.T) {
 		{"cached unusable, still served", []Row{cached("m-x", "unusable")}, serves("m-x"), false},
 		{"cached unusable where the listing declares one", []Row{cached("m-x", "unusable")},
 			declares("m-x", "/v1/chat/completions"), false},
+		// A gateway's refusal or silence is not knowledge about the model: the
+		// launch re-asks it (#375), so it decides nothing here either.
+		{"unusable from a refused message, where the listing declares one",
+			[]Row{{Model: "m-a", Dialect: "unusable", Note: "n", Status: 402}},
+			declares("m-a", "/v1/messages"), true},
+		{"unusable from no answer, where the listing declares one",
+			[]Row{{Model: "m-a", Dialect: "unusable", Note: "n", Status: 0}},
+			declares("m-a", "/v1/messages"), true},
+		{"unusable from a refused message, nothing declared",
+			[]Row{{Model: "m-a", Dialect: "unusable", Note: "n", Status: 402}}, serves("m-a"), false},
 		{"declared, nothing cached", nil, declares("m-o", "/v1/chat/completions"), true},
 		{"chat_completion false is not pickable", nil,
 			`{"data":[{"id":"m-n","capabilities":{"chat_completion":false},"supported_endpoints":["/v1/chat/completions"]}]}`, false},
@@ -118,6 +129,43 @@ func TestAutoPickable(t *testing.T) {
 				}
 			}
 			if got := AutoPickable(base, dir, c.listing); got != c.want {
+				t.Fatalf("got %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// A cache written before refusal_verdicts may hold an unusable row that was a
+// refused message in disguise. A launch re-asks it, so the hop preflight must
+// not call the model unpickable on its word: it agrees with classification
+// (#379, after #375).
+func TestAutoPickableIgnoresAnOldCachesUnusableRow(t *testing.T) {
+	const base = "https://gw.test/"
+	listing := `{"data":[{"id":"m-1","supported_endpoints":["/v1/messages"]}]}`
+	for _, c := range []struct {
+		name     string
+		refusals any // the cache's refusal_verdicts marker; nil leaves it out
+		want     bool
+	}{
+		{"cache from before refusal_verdicts", nil, true},
+		{"cache with the current refusal_verdicts", float64(refusalVerdicts), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			blob := map[string]any{
+				"endpoint": "https://gw.test", "anthropic_path": "/v1/messages",
+				"thinking_probe": thinkingProbeVersion,
+				"rows":           []any{rowJSON(Row{Model: "m-1", Dialect: "unusable", Note: "n", Status: 404})},
+			}
+			if c.refusals != nil {
+				blob["refusal_verdicts"] = c.refusals
+			}
+			cache := filepath.Join(dir, ".adapter-cache", hashHex("https://gw.test")[:16]+".json")
+			if err := os.MkdirAll(filepath.Dir(cache), 0o777); err != nil {
+				t.Fatal(err)
+			}
+			writeCacheJSON(t, cache, blob)
+			if got := AutoPickable(base, dir, listing); got != c.want {
 				t.Fatalf("got %v, want %v", got, c.want)
 			}
 		})
