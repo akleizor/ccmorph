@@ -240,7 +240,9 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 // one is chosen — and that a hop here will need a saved model, because a
 // resumed hop opens no model picker (#379). A saved model nothing has
 // classified is left out: only a billed check could answer it, and doctor
-// sends none.
+// sends none. The no-model row says none can be picked, so it is left out where
+// the listing leaves a model to pick (Pickable): saying nothing beats a false
+// warning, and a pickable listing carries a known verdict that answers instead.
 func adapterLine(name, model, listing, running string, n TranslatorNeed) (kind, msg string) {
 	translator := running != "__UNKNOWN__" && strings.Contains(running, ":cliproxyapi")
 	inUse := ""
@@ -258,7 +260,7 @@ func adapterLine(name, model, listing, running string, n TranslatorNeed) (kind, 
 		return "OK", "adapter: this profile needs a translator now: an open session on it is running cliproxyapi"
 	case running != "" && running != "__UNKNOWN__":
 		return "OK", "adapter: this profile needs no translator now: its open session runs without one"
-	case strings.TrimSpace(model) == "" && listing != "":
+	case strings.TrimSpace(model) == "" && listing != "" && !n.Pickable:
 		installed := "cliproxyapi is not installed"
 		if n.Installed {
 			installed = "cliproxyapi is installed"

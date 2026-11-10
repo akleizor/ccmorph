@@ -128,6 +128,7 @@ func TestAdapterLine(t *testing.T) {
 			"adapter: this profile needs no translator until a model is chosen, and a hop here will need a saved model (none is set, and none can be picked from the endpoint's model list); cliproxyapi is not installed; list them: ccmorph models demo, then save one: ccmorph set demo model <model-id>"},
 		{"no model, process listing unreadable", "", list, "__UNKNOWN__", TranslatorNeed{}, false, "INFO",
 			"adapter: this profile needs no translator until a model is chosen, and a hop here will need a saved model (none is set, and none can be picked from the endpoint's model list); cliproxyapi is not installed; list them: ccmorph models demo, then save one: ccmorph set demo model <model-id>"},
+		{"no model, the listing leaves a model to pick, nothing decides the need", "", list, "", TranslatorNeed{Installed: true, Pickable: true}, true, "", ""},
 		{"stale cache, no model: the cached verdict stands", "", list, "", TranslatorNeed{Known: true, Installed: true}, true, "OK",
 			"adapter: this endpoint needs no translator"},
 		{"pickable listing, no model", "", `{"data":[{"id":"m-1","supported_endpoints":["/v1/chat/completions"]}]}`, "",
@@ -186,7 +187,7 @@ func TestHopLine(t *testing.T) {
 // read, nothing in it to pick — exactly one doctor row says a hop will need a
 // saved model; anywhere else none does (#379).
 func TestTheHopWarningPrintsOnce(t *testing.T) {
-	needs := []TranslatorNeed{{}, {Known: true}, {Known: true, Needed: true, Installed: true}, {Known: true, Pickable: true}}
+	needs := []TranslatorNeed{{}, {Known: true}, {Known: true, Needed: true, Installed: true}, {Known: true, Pickable: true}, {Pickable: true}}
 	for _, model := range []string{"", "glm-4.6"} {
 		for _, listing := range []string{"", `{"data":[]}`} {
 			for _, running := range []string{"", "__UNKNOWN__", "4321\t4321:shim", "4321\t4322:cliproxyapi,4321:shim"} {
