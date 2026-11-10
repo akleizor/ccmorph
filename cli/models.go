@@ -41,6 +41,9 @@ func (l *launcher) models(args []string) int {
 		l.noProfile(name)
 		return 1
 	}
+	if l.noModelList(name) {
+		return 1
+	}
 	listing, ok := l.modelsJSON(name)
 	if !ok {
 		return 1
@@ -70,6 +73,20 @@ func printNonEmpty(s string) {
 	if s != "" {
 		fmt.Println(s)
 	}
+}
+
+// noModelList answers models and probe for a Claude account or token profile
+// (#390): neither kind has a model list from an endpoint, and set's picker is
+// what chooses its model. It reports whether it answered; any other kind, or a
+// conf that does not read, goes on to the command's own checks and refusal.
+func (l *launcher) noModelList(name string) bool {
+	f, ok := l.readQuiet(name)
+	if !ok || (f["type"] != "sub" && f["type"] != "token") {
+		return false
+	}
+	l.err("'" + name + "' is a " + profile.KindLabel(f["type"], f["provider"]) + " profile and has no model list from an endpoint")
+	l.err("choose its model: ccmorph set " + name + " model -i")
+	return true
 }
 
 // modelsJSON is _ccm_gw_models_json. preview is an unsaved base and key that

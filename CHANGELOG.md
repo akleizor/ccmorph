@@ -9,6 +9,9 @@
 
 ### Fixed
 
+- **`ccmorph models` and `ccmorph probe` answer a Claude account or token
+  profile alike** (#390): the same two lines say it has no model list from an
+  endpoint and name `ccmorph set <name> model -i`, and both exit 1.
 - **The state of no saved model reads the same words everywhere, and the words
   say what a launch does.** A profile with nothing saved was worded five ways
   across four screens: `config` offered "Keep Claude default" and summarised
