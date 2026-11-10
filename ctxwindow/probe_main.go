@@ -23,11 +23,15 @@ const prog = "context-probe"
 // for a sweep with nothing to sweep, so it is written once, here.
 const NoProfilesMsg = "No profiles yet — run: ccmorph add <name>"
 
+// The full page belongs to the cli, which owns every command's help; a helper
+// error keeps only the usage line a script needs and points at that page.
 const usageText = `usage: ccmorph probe [profile] [options]
-options: [-h] [--profile PROFILES] [--model MODELS] [--check] [--jobs JOBS]
-         [--deadline SECONDS] [--probe-timeout SECONDS] [--allow-inference]
-         [--bisect] [--bisect-accepts N] [--listing-stdin]
-         [--declared-only | --probe-all]`
+Options and what they do: ccmorph help probe`
+
+// ProbeOptions is every option parseArgs accepts, in the order the help page
+// lists them. The page is held to this list so an option cannot ship unhelpful.
+var ProbeOptions = []string{"--profile", "--model", "--check", "--jobs", "--deadline", "--probe-timeout",
+	"--allow-inference", "--bisect", "--bisect-accepts", "--listing-stdin", "--declared-only", "--probe-all", "--help"}
 
 type args struct {
 	profiles, models []string
@@ -73,8 +77,6 @@ func parseArgs(argv []string) (*args, error) {
 	a := &args{deadline: runTimeout, probeTimeout: probeTimeout, bisectAccepts: BisectMaxAccepts}
 	takesValue := map[string]bool{"--profile": true, "--model": true, "--jobs": true, "--deadline": true,
 		"--probe-timeout": true, "--bisect-accepts": true}
-	flags := []string{"--profile", "--model", "--check", "--jobs", "--deadline", "--probe-timeout",
-		"--allow-inference", "--bisect", "--bisect-accepts", "--listing-stdin", "--declared-only", "--probe-all", "--help"}
 	var exclusive []string
 	for i := 0; i < len(argv); i++ {
 		arg := argv[i]
@@ -86,7 +88,7 @@ func parseArgs(argv []string) (*args, error) {
 		}
 		name, val, hasVal := strings.Cut(arg, "=")
 		var match []string
-		for _, f := range flags {
+		for _, f := range ProbeOptions {
 			if f == name {
 				match = []string{f}
 				break
@@ -257,50 +259,24 @@ func run(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
 	}
 	sort.Strings(unknown)
 
+	// A profile is sized when it has at least one window to save; one with none
+	// still gets its own group in the report.
+	sized := map[string]int{}
+	for scoped := range result.Values {
+		profile, _, _ := strings.Cut(scoped, ":")
+		sized[profile]++
+	}
+
 	if len(result.Values) == 0 {
-		// What went wrong, then what was protected, then the fix: one line each.
-		var order []string
-		groups := map[string][]string{}
+		reportProfiles(errw, tried, notes, sized, nil)
+		// A model with no size is a result: it runs at Claude Code's default.
+		// A note that Failed means the lookup itself broke, and that is exit 1.
 		for _, n := range notes {
-			if n.Reason == Unresolved {
-				continue
+			if n.Failed {
+				return 1
 			}
-			if _, ok := groups[n.Reason]; !ok {
-				order = append(order, n.Reason)
-			}
-			groups[n.Reason] = append(groups[n.Reason], n.Subject)
 		}
-		fmt.Fprintln(errw, "Nothing discovered.")
-		for _, reason := range order {
-			subjects := groups[reason]
-			// Grouped by reason: 46 models failing the same way is one line, not 46.
-			var line string
-			if len(subjects) == 1 {
-				line = reason
-				if !strings.Contains(reason, subjects[0]) {
-					line = subjects[0] + ": " + reason
-				}
-			} else {
-				sorted := append([]string(nil), subjects...)
-				sort.Strings(sorted)
-				names := strings.Join(sorted[:min(4, len(sorted))], ", ")
-				if len(subjects) > 4 {
-					names += fmt.Sprintf(", and %d more", len(subjects)-4)
-				}
-				line = fmt.Sprintf("%s (%d): %s", reason, len(subjects), names)
-			}
-			fmt.Fprintf(errw, "  %s\n", line)
-		}
-		if len(notes) == 0 {
-			fmt.Fprintf(errw, "  no route produced a model listing (profiles tried: %s)\n", strings.Join(tried, ", "))
-		}
-		if len(baseline) > 0 {
-			fmt.Fprintf(errw, "%d saved limit(s) untouched.\n", len(baseline))
-		}
-		if len(unknown) > 0 {
-			ReportUnresolved(errw, unknown, profiles)
-		}
-		return 1
+		return 0
 	}
 
 	if a.check {
@@ -309,6 +285,7 @@ func run(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
 			before, after string
 		}
 		var drifts []drift
+		changed := map[string]int{}
 		for _, k := range slices.Sorted(maps.Keys(result.Values)) {
 			v := result.Values[k]
 			if b, ok := baseline[k]; !ok || b != v {
@@ -317,6 +294,8 @@ func run(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
 					before = fmt.Sprint(b)
 				}
 				drifts = append(drifts, drift{k, before, fmt.Sprint(v)})
+				profile, _, _ := strings.Cut(k, ":")
+				changed[profile]++
 			}
 		}
 		sort.Slice(drifts, func(i, j int) bool { return drifts[i].key < drifts[j].key })
@@ -326,9 +305,7 @@ func run(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
 		if len(drifts) == 0 && len(unknown) == 0 {
 			fmt.Fprintln(stdout, "No context-limit changes found.")
 		}
-		if len(unknown) > 0 {
-			ReportUnresolved(errw, unknown, profiles)
-		}
+		reportProfiles(errw, tried, notes, sized, changed)
 		switch {
 		case len(drifts) > 0:
 			return 2
@@ -355,9 +332,11 @@ func run(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
 		return 1
 	}
 	// What happened, THEN what is still open and how to close it.
-	if len(unknown) > 0 {
-		ReportUnresolved(errw, unknown, profiles)
-	}
+	reportProfiles(errw, tried, notes, sized, nil)
+	// A run that sized something keeps the exit it had: unsized models are
+	// reported, but only a run that found no sizes at all (above) treats them
+	// as the result rather than an unfinished lookup. A failed save is a
+	// failure either way.
 	if committed != 0 || len(unknown) > 0 {
 		return 1
 	}

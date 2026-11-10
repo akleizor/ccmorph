@@ -28,10 +28,15 @@ def test_probe_help_has_no_progress_banner_and_remains_actionable(argv):
         result = subprocess.run([str(ROOT / "bin/ccmorph"), *argv], env=env,
                                 capture_output=True, text=True, timeout=HANG_TIMEOUT)
         assert result.returncode == 0, result.stderr
-        assert result.stdout.startswith('usage: ccmorph probe [profile] [options]'), result.stdout
+        assert result.stdout.startswith('Usage: ccmorph probe [profile] [options]'), result.stdout
         assert 'Refreshing' not in result.stdout
         assert 'inference probe' not in result.stdout
         assert '--allow-inference' in result.stdout
+        assert 'context window' in result.stdout
+        helped = subprocess.run([str(ROOT / "bin/ccmorph"), 'help', 'probe'], env=env,
+                                capture_output=True, text=True, timeout=HANG_TIMEOUT)
+        assert helped.returncode == 0, helped.stderr
+        assert result.stdout == helped.stdout, (result.stdout, helped.stdout)
 
 
 def test_probe_refuses_an_unknown_option_with_its_usage():
@@ -43,6 +48,7 @@ def test_probe_refuses_an_unknown_option_with_its_usage():
         assert result.returncode == 2, result.stderr
         assert result.stderr.startswith('usage: ccmorph probe [profile] [options]'), result.stderr
         assert 'unrecognized arguments: --bogus' in result.stderr
+        assert 'ccmorph help probe' in result.stderr
 
 
 def test_adapter_decline_surfaces_actionable_reason():

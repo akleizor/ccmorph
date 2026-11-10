@@ -17,8 +17,16 @@ import (
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
-// Note is (reason, subject): what a run learned about a profile or model.
-type Note struct{ Reason, Subject string }
+// Note is what a run learned about a profile or model. Profile is the profile
+// the note belongs to, or "" for a note about the whole run; Failed marks
+// something that could not be looked up at all, which is not the same as a
+// working profile whose models publish no size.
+type Note struct {
+	Reason  string
+	Subject string
+	Profile string
+	Failed  bool
+}
 
 // RouteUnavailable means ccmorph could not produce a reachable endpoint for a profile.
 type RouteUnavailable struct{ Msg string }
@@ -297,7 +305,7 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 			if err != nil {
 				var ru *RouteUnavailable
 				if errors.As(err, &ru) {
-					notes = append(notes, Note{strings.TrimSpace(strings.ReplaceAll(ru.Msg, "ccmorph:", "")), profile})
+					notes = append(notes, Note{Reason: strings.TrimSpace(strings.ReplaceAll(ru.Msg, "ccmorph:", "")), Subject: profile, Profile: profile, Failed: true})
 					continue
 				}
 				panic(err)
@@ -305,7 +313,7 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 			handle = env["CCMORPH_ROUTE_HANDLE"]
 			key := env["ANTHROPIC_API_KEY"]
 			if key == "" {
-				notes = append(notes, Note{"profile has no api key, skipped", profile})
+				notes = append(notes, Note{Reason: "profile has no api key, skipped", Subject: profile, Profile: profile, Failed: true})
 				stopRoute(ctx)
 				continue
 			}
@@ -322,7 +330,7 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 			models, declared, listingRows, err := listModelsFn(ctx, base, key, listTO, op)
 			check(ctx)
 			if err != nil {
-				notes = append(notes, Note{WhyUnreachable(err, base), profile})
+				notes = append(notes, Note{Reason: WhyUnreachable(err, base), Subject: profile, Profile: profile, Failed: true})
 				if o.Mode == "declared-only" && o.OnlySet && len(o.Only) > 0 {
 					// Explicit model selection is enough for a catalogue lookup; an
 					// unavailable gateway is not evidence of model absence.
@@ -366,7 +374,7 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 					if near != "" {
 						hint = "; did you mean " + near + "?"
 					}
-					notes = append(notes, Note{fmt.Sprintf("'%s' is not on this route%s", wanted, hint), profile})
+					notes = append(notes, Note{Reason: fmt.Sprintf("'%s' is not on this route%s", wanted, hint), Subject: profile, Profile: profile, Failed: true})
 				}
 				var kept []string
 				for _, m := range models {
@@ -417,12 +425,12 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 			for _, model := range models {
 				check(ctx)
 				if pending[model] {
-					notes = append(notes, Note{"provider catalogue unreachable; size left for the next run", model})
+					notes = append(notes, Note{Reason: "provider catalogue unreachable; size left for the next run", Subject: model, Profile: profile, Failed: true})
 					continue
 				}
 				pin := fields["context_window."+model]
 				if pinnedValue(pin) && o.Mode != "probe-all" {
-					notes = append(notes, Note{"manual context override configured; not probed", model})
+					notes = append(notes, Note{Reason: "manual context override configured; not probed", Subject: model, Profile: profile})
 					continue
 				}
 				scoped := profile + ":" + model
@@ -440,8 +448,7 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 					}
 					if d, ok := declared[model]; ok && d != known {
 						reason := fmt.Sprintf("kept saved limit %s; gateway now declares %s", commas(known), commas(d))
-						notes = append(notes, Note{reason, model})
-						fmt.Fprintf(stderr, "  %s: %s\n", model, reason)
+						notes = append(notes, Note{Reason: reason, Subject: model, Profile: profile})
 					}
 					continue
 				}
@@ -456,13 +463,17 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 						values[scoped] = found.Value
 						sources[scoped] = CatalogueTag(found)
 					} else {
-						notes = append(notes, Note{Unresolved, model})
+						notes = append(notes, Note{Reason: Unresolved, Subject: model, Profile: profile})
 					}
 					continue
 				}
-				fmt.Fprintf(stderr, "[%s] %s: paid probe enabled. The first %s-character prompt may be billed in full.\n"+
-					"  Confirmation and search requests add cost; rates and tokenization "+
-					"depend on the gateway. A timeout does not undo billing.\n", profile, model, commas(OvershootChars))
+				// The warning is output too: wrap it at the same width as the
+				// report, so a narrow terminal never breaks a word in it.
+				wrapLine(stderr, fmt.Sprintf("[%s] %s: paid probe enabled.", profile, model), "", "  ")
+				wrapLine(stderr, fmt.Sprintf("The first %s-character prompt may be billed in full.",
+					commas(OvershootChars)), "  ", "  ")
+				wrapLine(stderr, "Confirmation and search requests add cost; rates and tokenization "+
+					"depend on the gateway. A timeout does not undo billing.", "  ", "  ")
 				if blob == "" {
 					blob = payloadFn(OvershootChars)
 				}
@@ -475,7 +486,7 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 					if why == "" {
 						why = res.Kind
 					}
-					notes = append(notes, Note{why, model})
+					notes = append(notes, Note{Reason: why, Subject: model, Profile: profile, Failed: true})
 				}
 				shown := "-"
 				if res.Value != 0 {
@@ -494,7 +505,7 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 		if parent.Err() != nil {
 			reason = "interrupted; existing values are preserved"
 		}
-		notes = append(notes, Note{reason, "discovery"})
+		notes = append(notes, Note{Reason: reason, Subject: "discovery", Failed: true})
 		fmt.Fprintln(stderr, notes[len(notes)-1].Reason)
 	}
 	if handle != "" {

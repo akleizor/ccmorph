@@ -3,7 +3,6 @@ package ctxwindow
 import (
 	"context"
 	"fmt"
-	"io"
 	"maps"
 	"regexp"
 	"slices"
@@ -242,7 +241,7 @@ func Commit(ctx context.Context, values map[string]int64, baseline map[string]in
 			if ctx.Err() != nil {
 				return 1, true
 			}
-			fmt.Fprintf(stderr, "profile '%s' changed during discovery; its configuration was left unchanged\n", profile)
+			wrapLine(stderr, fmt.Sprintf("%s: changed during discovery; its context window sizes were not saved", profile), "", "  ")
 			failed = true
 			continue
 		}
@@ -250,10 +249,12 @@ func Commit(ctx context.Context, values map[string]int64, baseline map[string]in
 		// say what is different from before the command ran.
 		changed := changes[profile]
 		if len(changed) == 0 {
-			fmt.Fprintf(stderr, "%s: %d model(s) sized, nothing changed.\n", profile, len(models))
+			wrapLine(stderr, fmt.Sprintf("%s: found context window sizes for %s; all were already saved.",
+				profile, plural(len(models), "model")), "", "  ")
 			continue
 		}
-		fmt.Fprintf(stderr, "%s: %d limit(s) updated, applies to new sessions.\n", profile, len(changed))
+		wrapLine(stderr, fmt.Sprintf("%s: found context window sizes for %s; %d saved for new sessions:",
+			profile, plural(len(models), "model"), len(changed)), "", "  ")
 		names := make([]string, 0, len(changed))
 		for m := range changed {
 			names = append(names, m)
@@ -264,29 +265,19 @@ func Commit(ctx context.Context, values map[string]int64, baseline map[string]in
 			if _, tagged := groupedSources[profile][model]; tagged {
 				note = "  (catalogue estimate)"
 			}
-			fmt.Fprintf(stderr, "  %s %s%s\n", pad(model, 30), padLeft(commas(changed[model]), 11), note)
+			row := fmt.Sprintf("  %s %s%s", pad(model, 30), padLeft(commas(changed[model]), 11), note)
+			if runes(row) <= reportWidth {
+				fmt.Fprintln(stderr, row)
+				continue
+			}
+			// A model id too long for the row goes on its own line, with its
+			// size and provenance under it, so the id is never split.
+			fmt.Fprintln(stderr, "  "+model)
+			fmt.Fprintln(stderr, "    "+commas(changed[model])+note)
 		}
 	}
 	if failed {
 		return 1, false
 	}
 	return 0, false
-}
-
-// ReportUnresolved says how to give these models a window, in the order a
-// reader should try it. It prints on BOTH exits: a run naming one model has no
-// other value to report, and must still end with a next step.
-func ReportUnresolved(w io.Writer, models []string, profiles []string) {
-	account := "<profile>"
-	if len(profiles) == 1 {
-		account = profiles[0]
-	}
-	model := "<model>"
-	if len(models) == 1 {
-		model = models[0]
-	}
-	fmt.Fprintf(w, "\n%d unresolved, running at Claude Code's %s-token default:\n", len(models), commas(CCDefaultWindow))
-	fmt.Fprintln(w, "  "+strings.Join(models, ", "))
-	fmt.Fprintf(w, "Set it:      ccmorph context %s %s <tokens>\n", account, model)
-	fmt.Fprintf(w, "Measure it:  ccmorph probe %s --model %s --allow-inference   (one large prompt, may be billed)\n", account, model)
 }

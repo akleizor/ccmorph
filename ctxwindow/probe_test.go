@@ -935,6 +935,42 @@ func TestWarningPrecedesTheFirstPaidRequest(t *testing.T) {
 	ProbeAll(context.Background(), []string{"gw"}, o)
 }
 
+// GH-371: the paid-probe warning is probe output, so it wraps at 80 too; a
+// long profile and model id must not push a line past the terminal.
+func TestPaidProbeWarningFitsEightyColumns(t *testing.T) {
+	dir := state(t)
+	profile := "a_profile_with_a_rather_long_name"
+	model := strings.Repeat("m", 40)
+	put(t, filepath.Join(dir, profile+".conf"), "type=apikey\napi_key=k\n")
+	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
+		return []string{model}, nil, nil, nil
+	})
+	priorValues = func([]string) map[string]int64 { return nil }
+	priorCatalogueTags = func([]string) map[string]obj { return nil }
+	out := captureStderr(t)
+	oldProbe := probeFn
+	t.Cleanup(func() { probeFn = oldProbe })
+	probeFn = func(ctx context.Context, base, key, model, blob string, timeout time.Duration, op Opener, bisect int) ProbeResult {
+		return ProbeResult{"anthropic:declared", 1, ""}
+	}
+	o := DefaultOptions()
+	o.Mode = "auto"
+	ProbeAll(context.Background(), []string{profile}, o)
+	for _, line := range strings.Split(strings.TrimRight(out.String(), "\n"), "\n") {
+		if n := len([]rune(line)); n > 80 {
+			t.Errorf("line of %d cells: %q", n, line)
+		}
+		if strings.TrimSpace(line) == ")" || strings.Count(line, "(") != strings.Count(line, ")") {
+			t.Errorf("line splits a bracket: %q", line)
+		}
+	}
+	text := strings.Join(strings.Fields(out.String()), " ")
+	if !strings.Contains(text, "paid probe enabled") || !strings.Contains(text, "may be billed in full") ||
+		!strings.Contains(text, "A timeout does not undo billing.") {
+		t.Errorf("warning lost its words:\n%s", out.String())
+	}
+}
+
 // Python: ProfileCommitOrdering.
 func TestStaleResultIsRejectedAndOtherProfileSurvives(t *testing.T) {
 	dir := state(t)
@@ -1398,7 +1434,21 @@ func TestMainArgumentsAndReporting(t *testing.T) {
 	}
 	var out, errb bytes.Buffer
 	code := ProbeMain([]string{"--profile", "gw"}, strings.NewReader(""), &out, &errb)
-	if code != 1 || !strings.Contains(errb.String(), "1 unresolved") || !strings.Contains(errb.String(), "ccmorph context gw gpt-5.6-sol <tokens>") || strings.Contains(out.String(), "matches discovery") {
+	// GH-371: an unsized model is reported in the profile's group, and a run that
+	// sized something keeps its old exit status when one stayed unsized. A
+	// lookup that breaks is exit 1 too, and is not passed off as a result, as
+	// the not-on-this-route run below shows.
+	if code != 1 || !strings.Contains(errb.String(), "gw: looked for context window sizes for 1 model and found none:") ||
+		!strings.Contains(errb.String(), "ccmorph context gw gpt-5.6-sol <tokens>") ||
+		!strings.Contains(errb.String(), "To measure a size (sends one large prompt, may be billed):") ||
+		strings.Contains(out.String(), "matches discovery") {
+		t.Fatal(code, errb.String())
+	}
+	out.Reset()
+	errb.Reset()
+	code = ProbeMain([]string{"--profile", "gw", "--model", "not-on-this-route"}, strings.NewReader(""), &out, &errb)
+	if code != 1 || !strings.Contains(errb.String(), "gw: 'not-on-this-route' is not on this route") ||
+		strings.Contains(errb.String(), "The profile still works") {
 		t.Fatal(code, errb.String())
 	}
 	out.Reset()
@@ -1409,18 +1459,210 @@ func TestMainArgumentsAndReporting(t *testing.T) {
 	}
 }
 
+// GH-371: --check saves nothing, so Commit never speaks for it. A check that
+// found sizes and no change must still name the profile and say what it found,
+// rather than leave stderr empty under an anonymous stdout line.
+func TestCheckSaysWhatItFoundWhenNothingChanged(t *testing.T) {
+	dir := state(t)
+	put(t, filepath.Join(dir, "gw.conf"), "type=apikey\napi_key=k\n")
+	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
+		return []string{"a", "b"}, map[string]int64{"a": 1000, "b": 2000}, nil, nil
+	})
+	priorValues = func([]string) map[string]int64 { return map[string]int64{"gw:a": 1000, "gw:b": 2000} }
+	priorCatalogueTags = func([]string) map[string]obj { return nil }
+	var out, errb bytes.Buffer
+	if code := ProbeMain([]string{"--profile", "gw", "--check"}, strings.NewReader(""), &out, &errb); code != 0 {
+		t.Fatalf("exit %d\n%s", code, errb.String())
+	}
+	if out.String() != "No context-limit changes found.\n" {
+		t.Errorf("stdout = %q", out.String())
+	}
+	if errb.String() != "gw: found context window sizes for 2 models; no changes.\n" {
+		t.Errorf("stderr = %q", errb.String())
+	}
+}
+
 func TestReportUnresolvedOrdersTheFreeFixBeforeThePaidOne(t *testing.T) {
 	var b bytes.Buffer
-	ReportUnresolved(&b, []string{"deepseek-v4.1-flash"}, []string{"gateway"})
+	ReportUnresolved(&b, "gateway", []string{"deepseek-v4.1-flash"})
 	s := b.String()
 	if !strings.Contains(s, "ccmorph context gateway deepseek-v4.1-flash") || !strings.Contains(s, "200,000") ||
 		strings.Index(s, "ccmorph context") > strings.Index(s, "--allow-inference") {
 		t.Fatal(s)
 	}
 	b.Reset()
-	ReportUnresolved(&b, []string{"a", "b"}, nil)
-	if !strings.Contains(b.String(), "2 unresolved") || !strings.Contains(b.String(), "ccmorph context <profile> <model> <tokens>") {
+	ReportUnresolved(&b, "gw", []string{"a", "b"})
+	if !strings.Contains(b.String(), "2 models") || !strings.Contains(b.String(), "ccmorph context gw <model> <tokens>") {
 		t.Fatal(b.String())
+	}
+}
+
+// GH-371: the issue's case. A gateway lists models and publishes no sizes, and
+// nothing else knows them. That is a result — the profile still works at the
+// default — and the run must say what it looked for, name the models, and give
+// both fixes in the order a reader should try them.
+func TestProbeSaysWhatItLookedForWhenNoSizeIsPublished(t *testing.T) {
+	dir := state(t)
+	put(t, filepath.Join(dir, "work.conf"), "type=apikey\napi_key=k\n")
+	stubs(t, func(p string) (map[string]string, error) {
+		if p == "nokey" {
+			return map[string]string{"ANTHROPIC_BASE_URL": "http://x"}, nil
+		}
+		return okEnv(p)
+	}, func(string) ([]string, map[string]int64, []obj, error) {
+		return []string{"alpha-haiku-1", "alpha-opus-1", "alpha-sonnet-1"}, nil, nil, nil
+	})
+	priorValues = func([]string) map[string]int64 { return nil }
+	priorCatalogueTags = func([]string) map[string]obj { return nil }
+	var out, errb bytes.Buffer
+	code := ProbeMain([]string{"--profile", "work"}, strings.NewReader(""), &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit %d, want 0 (an unsized model is not a failure):\n%s", code, errb.String())
+	}
+	want := "work: looked for context window sizes for 3 models and found none:\n" +
+		"  alpha-haiku-1, alpha-opus-1, alpha-sonnet-1\n"
+	if !strings.HasPrefix(errb.String(), want) {
+		t.Fatalf("stderr starts:\n%s\nwant:\n%s", errb.String(), want)
+	}
+	s := errb.String()
+	for _, needle := range []string{
+		"The profile still works",
+		"200,000",
+		"ccmorph context work <model> <tokens>",
+		"ccmorph probe work --model <model> --allow-inference",
+	} {
+		if !strings.Contains(s, needle) {
+			t.Errorf("missing %q:\n%s", needle, s)
+		}
+	}
+	if strings.Index(s, "ccmorph context") > strings.Index(s, "--allow-inference") {
+		t.Errorf("the free fix must come before the paid one:\n%s", s)
+	}
+	if strings.Contains(s, "Nothing discovered") || out.Len() != 0 {
+		t.Errorf("old wording or stdout output:\nstdout %q\nstderr %s", out.String(), s)
+	}
+
+	// A lookup that broke is still a failure, and still names its profile.
+	put(t, filepath.Join(dir, "nokey.conf"), "type=apikey\n")
+	out.Reset()
+	errb.Reset()
+	if code := ProbeMain([]string{"--profile", "nokey"}, strings.NewReader(""), &out, &errb); code != 1 ||
+		!strings.Contains(errb.String(), "nokey: profile has no api key, skipped") {
+		t.Fatalf("a run with no key: exit %d\n%s", code, errb.String())
+	}
+}
+
+// GH-371: every profile's result has one shape — the profile's name, then what
+// the run found about context window sizes — whether it saved sizes or found
+// none, and whether it runs once or twice.
+func TestProbeReportsEveryProfileInOneShape(t *testing.T) {
+	dir := state(t)
+	put(t, filepath.Join(dir, "gamma.conf"), "type=apikey\napi_key=k\n")
+	put(t, filepath.Join(dir, "work.conf"), "type=apikey\napi_key=k\n")
+	stubs(t, func(p string) (map[string]string, error) {
+		return map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "http://" + p}, nil
+	}, func(base string) ([]string, map[string]int64, []obj, error) {
+		if base == "http://gamma" {
+			return []string{"g1", "g2", "g3"}, map[string]int64{"g1": 1000, "g2": 2000, "g3": 3000}, nil, nil
+		}
+		return []string{"alpha-haiku-1", "alpha-opus-1", "alpha-sonnet-1"}, nil, nil, nil
+	})
+	var out, errb bytes.Buffer
+	// gamma was sized, so the run keeps the old exit while work stays unsized.
+	if code := ProbeMain(nil, strings.NewReader(""), &out, &errb); code != 1 {
+		t.Fatalf("sweep: exit %d\n%s", code, errb.String())
+	}
+	for _, line := range strings.Split(strings.TrimSpace(errb.String()), "\n") {
+		if line != "" && !strings.HasPrefix(line, " ") &&
+			!strings.HasPrefix(line, "gamma: ") && !strings.HasPrefix(line, "work: ") {
+			t.Errorf("result line does not start with its profile: %q", line)
+		}
+	}
+	if !strings.Contains(errb.String(), "gamma: found context window sizes for 3 models; 3 saved for new sessions:") {
+		t.Errorf("first run does not say what it saved:\n%s", errb.String())
+	}
+	if !strings.Contains(errb.String(), "work: looked for context window sizes for 3 models and found none:") {
+		t.Errorf("first run does not say what it looked for:\n%s", errb.String())
+	}
+	out.Reset()
+	errb.Reset()
+	if code := ProbeMain(nil, strings.NewReader(""), &out, &errb); code != 1 {
+		t.Fatalf("second sweep: exit %d\n%s", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "gamma: found context window sizes for 3 models; all were already saved.") {
+		t.Errorf("second run does not say the sizes were already saved:\n%s", errb.String())
+	}
+}
+
+// GH-371: a long profile name and long model ids still fit a 80-column
+// terminal: no line is wider, no id is split, and no line is a lone bracket.
+func TestProbeOutputFitsEightyColumns(t *testing.T) {
+	dir := state(t)
+	profile := "a_profile_with_a_rather_long_name"
+	put(t, filepath.Join(dir, profile+".conf"), "type=apikey\napi_key=k\n")
+	ids := []string{strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40)}
+	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
+		return append(append([]string{}, ids...), "sized-model"), map[string]int64{"sized-model": 1000}, nil, nil
+	})
+	priorValues = func([]string) map[string]int64 { return nil }
+	priorCatalogueTags = func([]string) map[string]obj { return nil }
+	var out, errb bytes.Buffer
+	// One model was sized, so the run keeps the old exit; its output is what
+	// this test is about.
+	if code := ProbeMain([]string{"--profile", profile}, strings.NewReader(""), &out, &errb); code != 1 {
+		t.Fatalf("exit %d\n%s", code, errb.String())
+	}
+	s := errb.String()
+	for _, line := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+		if n := len([]rune(line)); n > 80 {
+			t.Errorf("line of %d cells: %q", n, line)
+		}
+		if strings.TrimSpace(line) == ")" || strings.Count(line, "(") != strings.Count(line, ")") {
+			t.Errorf("line splits a bracket: %q", line)
+		}
+	}
+	for _, id := range ids {
+		if !strings.Contains(s, id) {
+			t.Errorf("model id %q is missing or was split:\n%s", id, s)
+		}
+	}
+	if !strings.Contains(s, "<model>") {
+		t.Errorf("a command names a model it could not fit whole:\n%s", s)
+	}
+}
+
+// GH-371: a note names the profile it belongs to and says whether the lookup
+// failed, so the report can group it and the exit code can tell an unsized
+// model (a result) from a broken lookup (a failure).
+func TestNotesNameTheirProfileAndWhetherTheyFailed(t *testing.T) {
+	dir := state(t)
+	put(t, filepath.Join(dir, "nokey.conf"), "type=apikey\n")
+	put(t, filepath.Join(dir, "work.conf"), "type=apikey\napi_key=k\n")
+	stubs(t, func(p string) (map[string]string, error) {
+		if p == "nokey" {
+			return map[string]string{"ANTHROPIC_BASE_URL": "http://x"}, nil
+		}
+		return okEnv(p)
+	}, func(string) ([]string, map[string]int64, []obj, error) {
+		return []string{"mystery"}, nil, nil, nil
+	})
+	priorValues = func([]string) map[string]int64 { return nil }
+	priorCatalogueTags = func([]string) map[string]obj { return nil }
+	r := ProbeAll(context.Background(), []string{"nokey", "work"}, DefaultOptions())
+	var noKey, unresolved *Note
+	for i := range r.Notes {
+		switch {
+		case r.Notes[i].Reason == "profile has no api key, skipped":
+			noKey = &r.Notes[i]
+		case r.Notes[i].Reason == Unresolved:
+			unresolved = &r.Notes[i]
+		}
+	}
+	if noKey == nil || noKey.Profile != "nokey" || !noKey.Failed {
+		t.Errorf("no-key note = %+v, want profile nokey, failed", noKey)
+	}
+	if unresolved == nil || unresolved.Profile != "work" || unresolved.Failed {
+		t.Errorf("unresolved note = %+v, want profile work, not failed", unresolved)
 	}
 }
 
