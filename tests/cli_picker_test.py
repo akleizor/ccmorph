@@ -321,6 +321,21 @@ class PickerTTYTest(unittest.TestCase):
     def native(self, name='demo'):
         return (self.state / 'profiles' / name / 'settings.json').read_bytes()
 
+    def first_menu(self):
+        """The first fzf call's argv and offered rows, from the fzf log."""
+        lines = (self.tmp / 'fzf.log').read_text().splitlines()
+        start = next(i for i, line in enumerate(lines) if line.startswith('ARGS '))
+        args, rows, in_rows = lines[start], [], False
+        for line in lines[start + 1:]:
+            if line.startswith('ARGS '):
+                break
+            if line.startswith('ROWS '):
+                rows.append(line[5:])
+                in_rows = True
+            elif in_rows:
+                rows.append(line)
+        return args, rows
+
     def test_cold_launch_selects_a_model_before_starting_the_adapter(self):
         env = self.env(fzf=True)
         self.profile()
@@ -365,6 +380,57 @@ class PickerTTYTest(unittest.TestCase):
         rc, out, _ = run_pty(command + ' -i', env)
         self.assertIn('SELECTED=<picker-beta>', out)
         self.assertEqual(self.field('demo', 'model'), 'picker-alpha')
+
+    def test_launch_picker_opens_on_the_saved_model_issue_377(self):
+        """`run -i` must meet the person where `set model -i` does (#377).
+
+        It opened a bare catalogue on the alphabetically first model, ignoring
+        the profile's saved one, so Enter alone started Haiku on a profile
+        whose default was Sonnet. The saved model comes first, as the Keep row
+        `set model -i` opens on (#279)."""
+        env = self.env(fzf=True)
+        self.profile()
+        (self.state / 'profiles/demo/settings.json').write_text('{}')
+        with (self.state / 'demo.conf').open('a') as conf:
+            conf.write('model=picker-beta\n')
+        # No spec line matches this prompt: the fake fzf answers with the first
+        # offered row, exactly as Enter alone answers the real one.
+        self.spec('no-such-prompt=novalue')
+        rc, out, missed = run_pty(ADAPTER_BOUNDARY + 'ccmorph run demo -i', env)
+        self.assertIsNone(missed, out)
+        self.assertIn('SELECTED=<picker-beta>', out)  # Enter alone kept the saved model
+        args, rows = self.first_menu()
+        self.assertIn('--prompt Model — demo>', args)
+        self.assertEqual(rows[0], '@keep\tKeep picker-beta')  # the saved model marked, first
+        self.assertEqual([row.split('\t')[0] for row in rows], ['@keep', 'picker-alpha'])
+        # Keeping the default is not a pick to keep: the session-only note (#360)
+        # would send a person to save what is already saved.
+        self.assertNotIn('this session only', out)
+
+        # The same marking in `set model -i`: the Keep row is the row both share.
+        (self.tmp / 'fzf.log').unlink()
+        self.spec('Default model=@keep')
+        rc, out, missed = run_pty('ccmorph set demo model -i', env)
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        _, set_rows = self.first_menu()
+        self.assertEqual(set_rows[0], rows[0])
+        self.assertEqual(self.field('demo', 'model'), 'picker-beta')  # Keep kept it
+
+    def test_launch_picker_without_a_saved_model_says_so_issue_377(self):
+        """A profile with nothing saved opens without a marker, titled so (#377)."""
+        env = self.env(fzf=True)
+        self.profile()
+        (self.state / 'profiles/demo/settings.json').write_text('{}')
+        self.spec('=picker-alpha')
+        rc, out, missed = run_pty(ADAPTER_BOUNDARY + 'ccmorph run demo -i', env)
+        self.assertIsNone(missed, out)
+        self.assertIn('SELECTED=<picker-alpha>', out)
+        args, rows = self.first_menu()
+        self.assertIn('--prompt Model — demo (none saved)>', args)
+        self.assertFalse(any(row.startswith('@keep') for row in rows), rows)
+        self.assertEqual([row.split('\t')[0] for row in rows], ['picker-alpha', 'picker-beta'])
+        self.assertIn('this session only', out)  # a real pick is still session-only (#360)
 
     def test_unexported_prelaunch_in_local_sh_runs_the_hook(self):
         env = self.env(fzf=True)
@@ -597,21 +663,6 @@ class PickerTTYTest(unittest.TestCase):
             {'id': 'picker-beta', 'display_name': 'Picker Beta'}]})
         self.profile()
 
-        def first_menu():
-            """The first fzf call's argv and offered rows, from the fzf log."""
-            lines = (self.tmp / 'fzf.log').read_text().splitlines()
-            start = next(i for i, line in enumerate(lines) if line.startswith('ARGS '))
-            args, rows, in_rows = lines[start], [], False
-            for line in lines[start + 1:]:
-                if line.startswith('ARGS '):
-                    break
-                if line.startswith('ROWS '):
-                    rows.append(line[5:])
-                    in_rows = True
-                elif in_rows:
-                    rows.append(line)
-            return args, rows
-
         # Effort is a native menu, not fzf: a key answers it, never the spec.
         # Enter takes its first row, the Keep row.
         self.spec('Default model=@keep')
@@ -621,14 +672,14 @@ class PickerTTYTest(unittest.TestCase):
         ])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
-        config_args, config_rows = first_menu()
+        config_args, config_rows = self.first_menu()
 
         (self.tmp / 'fzf.log').unlink()
         self.spec('Default model=@keep')
         rc, out, missed = run_pty('ccmorph set demo model -i', env)
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 0, out)
-        set_args, set_rows = first_menu()
+        set_args, set_rows = self.first_menu()
 
         self.assertEqual(set_args, config_args)   # the same way of opening
         self.assertEqual(set_rows, config_rows)   # the same list

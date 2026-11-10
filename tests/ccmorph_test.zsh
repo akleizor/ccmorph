@@ -2027,6 +2027,38 @@ test_launch_interactive_with_an_account_asks_only_the_model() {
   return $rc
 }
 
+# #377: the launch picker must open on the profile's saved model, marked the
+# way `set model -i` marks it — the Keep row first — so Enter alone keeps it.
+# fake_fzf takes the first offered row, which is Enter alone.
+test_launch_interactive_opens_on_the_saved_model_issue_377() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  fake_gateway
+  fake_fzf
+  write_apikey_conf alpha 'api_key=sk-test-alpha' 'base_url=https://gateway.invalid' 'model=zeta-chat'
+  source "$CCMORPH_SOURCE"
+
+  local rc=0
+  ccmorph run alpha -i prompt 2> "$HOME/launch.err" || rc=1
+  local actual="$(<"$CCMORPH_TEST_LOG")"
+  assert_contains "$actual" 'MODEL_ENV=zeta-chat' \
+    'Enter alone in the launch picker must keep the saved model' || rc=1
+  # Keeping the default is not a pick to keep: the session-only note (#360)
+  # would send a person to save what is already saved.
+  assert_not_contains "$(<"$HOME/launch.err")" 'this session only' \
+    'keeping the saved model must not be announced as session-only' || rc=1
+  local rows="$(<"$HOME/fzf.input")"
+  assert_contains "$rows" $'@keep\tKeep zeta-chat' \
+    'the launch picker must mark the saved model as the Keep row' || rc=1
+  [[ "$(head -n 1 "$HOME/fzf.input")" == @keep$'\t'* ]] || {
+    print -u2 -- 'the launch picker must offer the Keep row first, so the cursor opens on it'
+    rc=1
+  }
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_public_model_picker_flag_asks_only_for_model() {
   local form test_home actual rc=0
   for form in default explicit; do
@@ -11152,6 +11184,7 @@ run_test test_effort_interactive_still_requires_a_real_profile
 run_test test_launch_sizes_without_waiting_on_the_network
 run_test test_launch_interactive_resolves_the_account
 run_test test_launch_interactive_with_an_account_asks_only_the_model
+run_test test_launch_interactive_opens_on_the_saved_model_issue_377
 run_test test_public_model_picker_flag_asks_only_for_model
 run_test test_interactive_asks_no_model_where_ccmorph_owns_no_list
 run_test test_cancelled_profile_picker_launches_nothing
