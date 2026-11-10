@@ -24,7 +24,7 @@ func bridgeProc(t *testing.T, tmp string) *exec.Cmd {
 	}
 	go cmd.Wait()
 	t.Cleanup(func() { cmd.Process.Kill() })
-	if !ours(cmd.Process.Pid, tmp) {
+	if yours, known := owns(cmd.Process.Pid, tmp); !known || !yours {
 		t.Fatalf("the fake bridge (pid %d, tmp %s) must read as ours", cmd.Process.Pid, tmp)
 	}
 	return cmd
@@ -187,6 +187,66 @@ func TestReleaseNeverSignalsAPidNotRunningTheBridge(t *testing.T) {
 	}
 	if _, err := os.Stat(a.TmpDir); err == nil {
 		t.Fatal("release still removes the bridge's config dir")
+	}
+}
+
+// A process table that cannot answer for the recorded bridge's PID proves
+// nothing: the last session out must not read that as death and remove the
+// record and config of a live bridge, or the next launch starts a second on
+// the same auth dir (#409).
+func TestReleaseKeepsALiveBridgeTheProcessTableCannotAnswerFor(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		table func(pid int) map[int]psRow
+	}{
+		{"unreadable table", func(int) map[int]psRow { return nil }},
+		{"row without argv", func(pid int) map[int]psRow { return map[int]psRow{pid: {}} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			stubProbe(t, func(port, key string) bool { return true })
+			starts := 0
+			start := func() (pid, port, key, tmp string, ok bool) {
+				starts++
+				tmp = filepath.Join(root, "ccmorph-bridge-"+strconv.Itoa(starts))
+				cmd := bridgeProc(t, tmp)
+				return strconv.Itoa(cmd.Process.Pid), "4100", "k", tmp, true
+			}
+			auth := filepath.Join(root, "p")
+			a, ok, err := AcquireBridge(root, "p", start)
+			if !ok || err != nil {
+				t.Fatalf("first launch: ok=%v err=%v", ok, err)
+			}
+			pid, _ := strconv.Atoi(a.PID)
+			// The bridge runs; the table now answers nothing for its PID.
+			ownershipTable = func() map[int]psRow { return tc.table(pid) }
+			t.Cleanup(func() { ownershipTable = processTable })
+			a.Release(auth)
+			if syscall.Kill(pid, 0) != nil {
+				return // release stopped it, which also never orphans it
+			}
+			if _, err := os.Stat(a.TmpDir); err != nil {
+				t.Fatalf("release removed the config of a live bridge it could not identify: %v", err)
+			}
+			raw, err := os.ReadFile(filepath.Join(root, ".p.bridge"))
+			if err != nil {
+				t.Fatalf("release removed the record of a live bridge it could not identify: %v", err)
+			}
+			if rpid, _, _, _, ok := parseHandle(string(raw)); !ok || rpid != a.PID {
+				t.Fatalf("the record must still name the live bridge, got %q", raw)
+			}
+			// The next launch joins the recorded bridge instead of starting a
+			// second on the same auth dir.
+			ownershipTable = processTable
+			b, ok, err := AcquireBridge(root, "p", start)
+			if !ok || err != nil {
+				t.Fatalf("next launch: ok=%v err=%v", ok, err)
+			}
+			defer b.Release(auth)
+			if starts != 1 {
+				t.Fatal("the next launch started a second bridge beside the live one")
+			}
+		})
 	}
 }
 
