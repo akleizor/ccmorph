@@ -181,6 +181,39 @@ func (l *launcher) pickValue(slot, name string) (string, bool) {
 	return v, v != ""
 }
 
+// pickLaunchModel is the model picker of `run -i`: the saved model first, as
+// the Keep row `set model -i` opens on, so Enter alone means the saved model
+// (#377). The custom-ID escape stays with the commands that can save one; a
+// profile with nothing saved opens the plain catalogue, titled so.
+func (l *launcher) pickLaunchModel(name, saved string) (string, bool) {
+	rows, ok := l.valueRows("model", name)
+	if !ok {
+		return "", false
+	}
+	if rows == "" {
+		l.err("No saved model list. Use: ccmorph config " + name + " to enter a custom ID.")
+		return "", false
+	}
+	heading := "Model — " + name
+	if saved == "" {
+		heading += " (none saved)"
+	}
+	choice, rc := chooseValue("model", heading, strings.Join(menuRows("model", saved, rows, saved != "", false), "\n"), "labels")
+	if rc != 0 {
+		// A leave is answered by the picker's own Cancelled line; the usage
+		// line belongs to the headless refusal, where no picker ever ran and
+		// the caller needs the direct command spelled out.
+		if rc == 2 {
+			say("Use: ccmorph set " + name + " model <model>")
+		}
+		return "", false
+	}
+	if choice == "@keep" {
+		return saved, true
+	}
+	return choice, choice != ""
+}
+
 // defaultRows is the catalogue a default picker opens on, saying so when a
 // model list cannot be read. base and key, when set, preview an unsaved endpoint.
 func (l *launcher) defaultRows(slot, name, typ string, preview ...string) string {
@@ -194,16 +227,17 @@ func (l *launcher) defaultRows(slot, name, typ string, preview ...string) string
 	return rows
 }
 
-// valueMenu is the menu every default picker opens: the current value first,
-// the catalogue without it, and a custom-ID escape for models. keep offers the
-// keep row even when nothing is set, as config can keep the Claude default.
-func (l *launcher) valueMenu(slot, name, current, rows string, keep bool) (string, bool) {
-	shown := current
-	if shown == "" {
-		shown = "Claude default"
-	}
+// menuRows is the list every model menu opens on: the current value first, as
+// the Keep row, then the catalogue without it. keep offers that row even when
+// nothing is set, as config can keep the Claude default; custom adds the
+// custom-ID escape, which belongs to the commands that can save one.
+func menuRows(slot, current, rows string, keep, custom bool) []string {
 	menu := []string{}
 	if keep {
+		shown := current
+		if shown == "" {
+			shown = "Claude default"
+		}
 		menu = append(menu, "@keep\tKeep "+shown)
 	}
 	for _, row := range splitRows(rows) {
@@ -213,9 +247,17 @@ func (l *launcher) valueMenu(slot, name, current, rows string, keep bool) (strin
 		}
 		menu = append(menu, value+"\t"+value+"\t"+strings.TrimPrefix(row, value+"\t"))
 	}
-	if slot == "model" {
+	if custom && slot == "model" {
 		menu = append(menu, "@custom\tEnter a custom model ID…")
 	}
+	return menu
+}
+
+// valueMenu is the menu every default picker opens: the current value first,
+// the catalogue without it, and a custom-ID escape for models. keep offers the
+// keep row even when nothing is set, as config can keep the Claude default.
+func (l *launcher) valueMenu(slot, name, current, rows string, keep bool) (string, bool) {
+	menu := menuRows(slot, current, rows, keep, true)
 	choice, rc := chooseValue(slot, "Default "+slot+" — "+name, strings.Join(menu, "\n"), "labels")
 	if rc != 0 {
 		return "", false

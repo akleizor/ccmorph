@@ -179,7 +179,7 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 			l.err("-i needs an profile: name one, or set a default with ccmorph use <profile>")
 			return nil, 2
 		}
-		picked, ok := l.pickValue("model", name)
+		picked, ok := l.pickLaunchModel(name, defaultModel)
 		if !ok {
 			return nil, 1
 		}
@@ -191,9 +191,13 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 		// The pick answers this launch only; without the keep command the next
 		// one asks again, and a person cannot guess why (#360). The id is quoted
 		// as a shell would need it: a listing can serve ids like vendor[beta],
-		// which a pasted bare word would glob away in zsh.
-		fmt.Fprintf(os.Stderr, "%sccmorph: %s runs this session only — keep it with: ccmorph set %s model %s%s\n",
-			l.dim, picked, name, shQuote(picked), l.reset)
+		// which a pasted bare word would glob away in zsh. Keeping the saved
+		// model is not a pick to keep: the note would send a person to save what
+		// is already saved (#377).
+		if picked != defaultModel {
+			fmt.Fprintf(os.Stderr, "%sccmorph: %s runs this session only — keep it with: ccmorph set %s model %s%s\n",
+				l.dim, picked, name, shQuote(picked), l.reset)
+		}
 	}
 	if routed && explicit == "" && resume != "" {
 		if m, ok := l.resumeModel(resume); ok {

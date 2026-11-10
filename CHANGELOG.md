@@ -9,6 +9,15 @@
 
 ### Fixed
 
+- **`ccmorph run -i` opens on the profile's saved model.** The launch picker
+  offered a bare catalogue and put the cursor on the alphabetically first
+  model, so pressing Enter straight away started a different model than the
+  profile's default — Haiku on a profile saved as Sonnet — with nothing marking
+  the saved one in the list. The picker now opens on the saved model, marked
+  as the `Keep` row exactly as `set model -i` marks it, so Enter alone means
+  the saved model; a profile with no model saved opens the plain catalogue
+  under a title that says so, and keeping the saved model is no longer
+  announced as a session-only pick (#377).
 - **A word that can never be a profile name gets one reply, from every
   command.** `ccmorph add my-work` said "use alphanumeric/underscore"; `rm`,
   `use`, `inspect` and `login` printed a usage line; `run`, `config`, `get`,
