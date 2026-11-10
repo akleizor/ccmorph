@@ -189,14 +189,19 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 	// One adapter line answers the reader's question — does this profile need a
 	// translator now, and can launch find one — or is left out when only a billed
 	// check could answer. Pids, listeners and a failed ps are
-	// internal detail: --verbose only.
+	// internal detail: --verbose only. A hop row follows it where a hop would need
+	// a saved model and the adapter line does not say so (#379).
 	running := runningAdapter(name)
-	if kind, msg := adapterLine(name, model, listing, running, need(listing)); kind != "" {
+	n := need(listing)
+	if kind, msg := adapterLine(name, model, listing, running, n); kind != "" {
 		fix := ""
 		if kind == "FAIL" {
 			fix = "install the translator: " + ClipInstallStep()
 		}
 		row(kind, msg, fix)
+	}
+	if kind, msg := hopLine(name, model, listing, running, n); kind != "" {
+		row(kind, msg)
 	}
 	if verbose {
 		switch {
@@ -260,4 +265,20 @@ func adapterLine(name, model, listing, running string, n TranslatorNeed) (kind, 
 			installed + "; list them: ccmorph models " + name + ", then save one: ccmorph set " + name + " model <model-id>"
 	}
 	return "", ""
+}
+
+// hopLine is the hop row, or none (kind ""). A hop resumes the conversation and
+// a resumed launch opens no model picker, so with no model set a hop lands only
+// where the listing leaves the adapter a model to pick — the same answer
+// cli/hop.go's refusal reads (#379). Where nothing decides the translator need
+// and no session is open, adapterLine already says so; where a cached verdict
+// or an open session answers that row instead (GH-272), this row says what a hop
+// needs, so the warning is printed once.
+func hopLine(name, model, listing, running string, n TranslatorNeed) (kind, msg string) {
+	session := running != "" && running != "__UNKNOWN__"
+	if strings.TrimSpace(model) != "" || listing == "" || n.Pickable || !(n.Known || session) {
+		return "", ""
+	}
+	return "INFO", "hop: a hop here will need a saved model (none is set, and none can be picked from the endpoint's model list); list them: ccmorph models " +
+		name + ", then save one: ccmorph set " + name + " model <model-id>"
 }

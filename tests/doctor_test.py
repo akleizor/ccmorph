@@ -614,6 +614,61 @@ def test_doctor_adapter_line_states_the_need_issue_272(tmp_path, cache_rows, stu
         assert adapters == [expected], result.stdout
 
 
+HOP_NEEDS_A_MODEL = (
+    "INFO hop: a hop here will need a saved model (none is set, and none can be "
+    "picked from the endpoint's model list); list them: ccmorph models demo, "
+    "then save one: ccmorph set demo model <model-id>")
+
+
+@pytest.mark.parametrize("cache_rows,served,stub,session,adapter,hop", [
+    ([("m-anthropic", "anthropic")], None, False, None,
+     "OK adapter: this endpoint needs no translator", [HOP_NEEDS_A_MODEL]),
+    ([("m-openai", "responses")], None, True, None,
+     "OK adapter: this endpoint needs a translator; cliproxyapi is installed", [HOP_NEEDS_A_MODEL]),
+    ([("m-openai", "responses")], None, True, "translator-route",
+     "OK adapter: this endpoint needs a translator; cliproxyapi is installed; "
+     "an open session on this profile is using one now", [HOP_NEEDS_A_MODEL]),
+    ([("m-anthropic", "anthropic")], "m-anthropic", False, None,
+     "OK adapter: this endpoint needs no translator", []),
+    ([("m-openai", "responses")], "m-openai", True, None,
+     "OK adapter: this endpoint needs a translator; cliproxyapi is installed", []),
+    (None, None, False, None, None, []),
+], ids=["native-cache-not-served", "translator-cache-not-served",
+        "translator-cache-not-served-open-session", "native-cache-served",
+        "translator-cache-served", "no-cache"])
+def test_doctor_says_a_hop_needs_a_saved_model_beside_a_cached_verdict_issue_379(
+        tmp_path, cache_rows, served, stub, session, adapter, hop):
+    """#379: a hop resumes the conversation and opens no model picker, so a
+    profile with no saved model takes a hop only when its listing leaves a model
+    to pick. A cached verdict still answers the adapter line (GH-272), but cached
+    rows for models the listing no longer serves leave nothing to pick, and an
+    open session gives a hop no model either: a hop line says the hop will need
+    a saved model. With nothing cached and no session open the adapter line
+    already says so, and the hop line is not printed twice."""
+    conf = "type=apikey\nbase_url=https://example.test\napi_key=k\n"
+    if session is not None:
+        _adapter_stubs(tmp_path / "bin", "", ADAPTER_PS_ROWS[session])
+    if cache_rows is not None:
+        _seed_adapter_cache(tmp_path, "https://example.test", cache_rows)
+    if stub:
+        s = tmp_path / "bin" / "cliproxyapi"
+        s.parent.mkdir(parents=True, exist_ok=True)
+        s.write_text("#!/bin/sh\nexit 0\n")
+        s.chmod(0o755)
+    listing = OK_CURL
+    if served is not None:
+        listing = OK_CURL.replace('{"data":[]}', '{"data":[{"id":"%s"}]}' % served)
+    result, _, _ = run_doctor(tmp_path, conf, listing)
+    assert result.returncode == 0, result.stdout + result.stderr
+    lines = result.stdout.splitlines()
+    adapters = [l for l in lines if "adapter:" in l]
+    if adapter is None:
+        assert len(adapters) == 1 and UNTIL_A_MODEL.fullmatch(adapters[0]), result.stdout
+    else:
+        assert adapters == [adapter], result.stdout
+    assert [l for l in lines if l.partition(" ")[2].startswith("hop:")] == hop, result.stdout
+
+
 @pytest.mark.parametrize("path,stub,expected", [
     ("/v1/messages", False, "OK adapter: this endpoint needs no translator"),
     ("/v1/chat/completions", True,

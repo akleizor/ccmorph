@@ -148,3 +148,65 @@ func TestAdapterLine(t *testing.T) {
 		})
 	}
 }
+
+// hopLine's answer for every branch, exactly as the reader sees it (#379).
+func TestHopLine(t *testing.T) {
+	const list = `{"data":[]}`
+	const warning = "hop: a hop here will need a saved model (none is set, and none can be picked from the endpoint's model list); list them: ccmorph models demo, then save one: ccmorph set demo model <model-id>"
+	translatorSession := "4321\t4322:cliproxyapi,4321:shim"
+	cases := []struct {
+		name                    string
+		model, listing, running string
+		need                    TranslatorNeed
+		kind, msg               string
+	}{
+		{"cached verdict, listing serves none of it", "", list, "", TranslatorNeed{Known: true}, "INFO", warning},
+		{"cached translator verdict, listing serves none of it", "", list, "", TranslatorNeed{Known: true, Needed: true, Installed: true}, "INFO", warning},
+		{"cached verdict, process listing unreadable", "", list, "__UNKNOWN__", TranslatorNeed{Known: true}, "INFO", warning},
+		{"open session, cached verdict", "", list, translatorSession, TranslatorNeed{Known: true}, "INFO", warning},
+		{"open session, nothing cached", "", list, "4321\t4321:shim", TranslatorNeed{}, "INFO", warning},
+		{"listing leaves a model to pick", "", `{"data":[{"id":"m-1","supported_endpoints":["/v1/chat/completions"]}]}`, "",
+			TranslatorNeed{Known: true, Needed: true, Installed: true, Pickable: true}, "", ""},
+		{"saved model", "glm-4.6", list, "", TranslatorNeed{Known: true}, "", ""},
+		{"no listing read", "", "", "", TranslatorNeed{Known: true}, "", ""},
+		{"nothing decides the need, the adapter row says it", "", list, "", TranslatorNeed{}, "", ""},
+		{"nothing decides the need, process listing unreadable, the adapter row says it", "", list, "__UNKNOWN__", TranslatorNeed{}, "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			kind, msg := hopLine("demo", c.model, c.listing, c.running, c.need)
+			if kind != c.kind || msg != c.msg {
+				t.Fatalf("got %q %q, want %q %q", kind, msg, c.kind, c.msg)
+			}
+		})
+	}
+}
+
+// Wherever a hop with no model to carry is refused — no saved model, a listing
+// read, nothing in it to pick — exactly one doctor row says a hop will need a
+// saved model; anywhere else none does (#379).
+func TestTheHopWarningPrintsOnce(t *testing.T) {
+	needs := []TranslatorNeed{{}, {Known: true}, {Known: true, Needed: true, Installed: true}, {Known: true, Pickable: true}}
+	for _, model := range []string{"", "glm-4.6"} {
+		for _, listing := range []string{"", `{"data":[]}`} {
+			for _, running := range []string{"", "__UNKNOWN__", "4321\t4321:shim", "4321\t4322:cliproxyapi,4321:shim"} {
+				for _, n := range needs {
+					said := 0
+					if _, msg := adapterLine("demo", model, listing, running, n); strings.Contains(msg, "a hop here will need a saved model") {
+						said++
+					}
+					if _, msg := hopLine("demo", model, listing, running, n); strings.Contains(msg, "a hop here will need a saved model") {
+						said++
+					}
+					want := 0
+					if model == "" && listing != "" && !n.Pickable {
+						want = 1
+					}
+					if said != want {
+						t.Errorf("model %q, listing %q, running %q, need %+v: said %d times, want %d", model, listing, running, n, said, want)
+					}
+				}
+			}
+		}
+	}
+}
