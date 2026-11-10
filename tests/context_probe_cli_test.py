@@ -102,14 +102,21 @@ def test_default_run_writes_declared_limits_and_says_what_changed(gateway):
     result = fx.run("--profile", "gw")
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
-    assert result.stderr == ("gw: 2 limit(s) updated, applies to new sessions.\n"
+    assert result.stderr == ("gw: found context window sizes for 2 models; 2 saved for new sessions:\n"
                              "  a                                  128,000\n"
                              "  b                                   64,000\n")
     stored = fx.stored()
     assert stored["models"] == {"a": 128000, "b": 64000} and "route" in stored
     assert fx.requests == [("GET", "/v1/models")]
     again = fx.run("--profile", "gw")
-    assert again.returncode == 0 and again.stderr == "gw: 2 model(s) sized, nothing changed.\n"
+    assert again.returncode == 0 and again.stderr == (
+        "gw: found context window sizes for 2 models; all were already saved.\n")
+    # GH-371: --check saves nothing, so it says its own result under the
+    # profile's name even when there is no change to report.
+    checked = fx.run("--profile", "gw", "--check")
+    assert checked.returncode == 0
+    assert checked.stdout == "No context-limit changes found.\n"
+    assert checked.stderr == "gw: found context window sizes for 2 models; no changes.\n"
 
 
 def test_check_reports_drift_without_writing(gateway):
@@ -120,7 +127,7 @@ def test_check_reports_drift_without_writing(gateway):
     result = fx.run("--profile", "gw", "--check")
     assert result.returncode == 2
     assert result.stdout == "DRIFT gw:c: None -> 32000\n"
-    assert "  a: kept saved limit 128,000; gateway now declares 256,000\n" in result.stderr
+    assert "gw: a: kept saved limit 128,000; gateway now declares 256,000\n" in result.stderr
     assert fx.conf.read_text() == before
 
 
@@ -145,25 +152,49 @@ def test_a_missing_model_suggests_the_real_id_and_the_free_fix(gateway):
     fx = gateway([{"id": "claude-opus-5-5", "max_input_tokens": 1}, {"id": "gpt-5"}])
     result = fx.run("--profile", "gw", "--model", "opus-5-5")
     assert result.returncode == 1
-    assert "Nothing discovered.\n" in result.stderr
-    assert "'opus-5-5' is not on this route; did you mean claude-opus-5-5?" in result.stderr
-    assert "Set it:" not in result.stderr  # nothing unresolved: the model was never on the route
+    assert "gw: 'opus-5-5' is not on this route; did you mean claude-opus-5-5?" in result.stderr
+    assert "ccmorph context" not in result.stderr  # nothing unresolved: the model was never on the route
     assert fx.stored() is None
 
 
 def test_an_unsized_model_names_the_remedies_and_exits_one(gateway):
     fx = gateway([{"id": "a", "max_input_tokens": 128000}, {"id": "mystery"}])
     result = fx.run("--profile", "gw")
-    assert result.returncode == 1
+    # GH-371: the unsized model is reported under the profile's name, and the
+    # report says the profile still works. This run sized another model, so it
+    # keeps its old exit status; a gateway with no sizes at all exits 0 (next).
+    assert result.returncode == 1, result.stderr
     assert fx.stored()["models"] == {"a": 128000}
-    assert ("\n1 unresolved, running at Claude Code's 200,000-token default:\n  mystery\n"
-            "Set it:      ccmorph context gw mystery <tokens>\n"
-            "Measure it:  ccmorph probe gw --model mystery --allow-inference"
-            "   (one large prompt, may be billed)\n") in result.stderr
+    text = " ".join(result.stderr.split())
+    assert "gw: looked for context window sizes for 1 model and found none: mystery" in text
+    assert "The profile still works" in text
+    assert "ccmorph context gw mystery <tokens>" in text
+    assert "ccmorph probe gw --model mystery --allow-inference" in text
+    # The paid remedy still carries the billing disclosure.
+    assert "To measure a size (sends one large prompt, may be billed):" in text
+    assert text.index("ccmorph context") < text.index("--allow-inference")
     # --check says so too, and still names the fix.
     checked = fx.run("--profile", "gw", "--check")
     assert checked.returncode == 1 and checked.stdout == ""
-    assert "Set it:      ccmorph context gw mystery <tokens>" in checked.stderr
+    assert "ccmorph context gw mystery <tokens>" in checked.stderr
+
+
+def test_a_gateway_with_no_sizes_says_what_it_looked_for_gh_371(gateway):
+    # GH-371: three models, no published size anywhere, nothing written. The
+    # report says what was looked for, names the models, and says the profile
+    # still works; every line fits an 80-column terminal.
+    fx = gateway([{"id": "alpha-haiku-1"}, {"id": "alpha-opus-1"}, {"id": "alpha-sonnet-1"}])
+    result = fx.run("--profile", "gw")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    assert result.stderr.startswith(
+        "gw: looked for context window sizes for 3 models and found none:\n"
+        "  alpha-haiku-1, alpha-opus-1, alpha-sonnet-1\n"), result.stderr
+    assert "The profile still works" in result.stderr
+    for line in result.stderr.splitlines():
+        assert len(line) <= 80, line
+        assert line.strip() != ")", line
+    assert fx.stored() is None
 
 
 def test_excluded_models_are_not_reported_unresolved(gateway):
@@ -180,9 +211,9 @@ def test_a_gateway_that_is_down_is_explained(gateway):
         'ccmorph() { printf "%s\\n" "ANTHROPIC_API_KEY=k" "ANTHROPIC_BASE_URL=http://127.0.0.1:' + str(port) + '"; }\n')
     result = fx.run("--profile", "gw")
     assert result.returncode == 1
-    assert "Nothing discovered." in result.stderr
-    assert f"did not answer at 127.0.0.1:{port} (" in result.stderr
-    assert "check the endpoint and network access" in result.stderr
+    text = " ".join(result.stderr.split())
+    assert f"gw: did not answer at 127.0.0.1:{port} (" in text
+    assert "check the endpoint and network access" in text
 
 
 def test_paid_probe_reads_the_ceiling_from_the_refusal_and_warns_first(gateway):
@@ -194,9 +225,10 @@ def test_paid_probe_reads_the_ceiling_from_the_refusal_and_warns_first(gateway):
     assert fx.stored()["models"] == {"m": 500000}
     posts = [r for r in fx.requests if r[0] == "POST"]
     assert len(posts) == 1 and posts[0][1] == "/v1/messages" and posts[0][2] > 5_900_000
-    assert result.stderr.startswith("[gw] m: paid probe enabled. The first 6,000,000-character prompt may be billed in full.\n"
-                                    "  Confirmation and search requests add cost; rates and tokenization "
-                                    "depend on the gateway. A timeout does not undo billing.\n")
+    assert result.stderr.startswith("[gw] m: paid probe enabled.\n"
+                                    "  The first 6,000,000-character prompt may be billed in full.\n"
+                                    "  Confirmation and search requests add cost; rates and tokenization depend on\n"
+                                    "  the gateway. A timeout does not undo billing.\n")
     assert "  m                              anthropic:declared 500000\n" in result.stderr
 
 
@@ -281,8 +313,9 @@ def test_a_cross_origin_redirect_never_carries_the_key(tmp_path, gateway):
             f'"ANTHROPIC_BASE_URL=http://127.0.0.1:{bounce.server_port}"; }}\n')
         result = fx.run("--profile", "gw")
         bounce.shutdown()
-        assert result.returncode == 1 and "Nothing discovered." in result.stderr
-        assert "cross-origin redirect refused" in result.stderr
+        assert result.returncode == 1
+        assert "gw: did not answer at 127.0.0.1:" in " ".join(result.stderr.split())
+        assert "cross-origin redirect refused" in " ".join(result.stderr.split())
         assert [h for h in seen if "sk-REDIRECT-CANARY" in str(h)] == [] and seen == []
         assert fx.stored() is None
     finally:
@@ -322,14 +355,14 @@ def test_a_route_that_fails_is_a_note_not_a_crash(gateway):
     (fx.lib / "ccmorph.sh").write_text('ccmorph() { echo "ccmorph: profile gw has no endpoint" >&2; return 1; }\n')
     result = fx.run("--profile", "gw")
     assert result.returncode == 1
-    assert "Nothing discovered.\n  profile gw has no endpoint\n" in result.stderr
+    assert "gw: profile gw has no endpoint" in result.stderr
 
 
 def test_a_route_without_a_key_is_skipped(gateway):
     fx = gateway([])
     (fx.lib / "ccmorph.sh").write_text('ccmorph() { echo "ANTHROPIC_BASE_URL=http://x"; }\n')
     result = fx.run("--profile", "gw")
-    assert result.returncode == 1 and "profile has no api key, skipped" in result.stderr
+    assert result.returncode == 1 and "gw: profile has no api key, skipped" in result.stderr
 
 
 def test_every_routed_profile_is_swept_when_none_is_named(gateway):
@@ -338,7 +371,8 @@ def test_every_routed_profile_is_swept_when_none_is_named(gateway):
     (fx.state / "other.conf").write_text("type=proxy\napi_key=k\n")
     result = fx.run()
     assert result.returncode == 0, result.stderr
-    assert "gw: 1 limit(s) updated" in result.stderr and "other: 1 limit(s) updated" in result.stderr
+    assert "gw: found context window sizes for 1 model; 1 saved for new sessions:" in result.stderr
+    assert "other: found context window sizes for 1 model; 1 saved for new sessions:" in result.stderr
     assert "native" not in result.stderr
 
 

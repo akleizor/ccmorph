@@ -123,10 +123,10 @@ func (l *launcher) dispatch(args []string) int {
 			return l.usage("run")
 		}
 	} else if first == "probe" || first == retiredVerb {
-		// probe's options are context-probe's; hand a help request to it before
+		// The page is the cli's, as every command's is; answer it before
 		// secureDirs, so no picker opens and no state is provisioned.
 		if helpAsked(rest) {
-			return l.probeVerb([]string{"--help"})
+			return l.usage("probe")
 		}
 	} else if n, public := verbArity[first]; public {
 		if helpAsked(rest) {
@@ -792,7 +792,7 @@ func (l *launcher) usageAt(topic string, width int) int {
 			help("ccmorph update [ref]", "Update to the latest version, or to a branch or tag")
 			help("ccmorph uninstall", "Remove the command; profiles stay")
 			head("Advanced troubleshooting (normally automatic):")
-			help("ccmorph probe [profile]", "Refresh context-limit metadata; no inference")
+			help("ccmorph probe [profile]", "Look up context window sizes; no inference")
 			help("ccmorph context <profile> <model> [tokens|auto]", "Override or reset one model context limit")
 		}
 		// The footer ends whichever page this is, once. Where to start is advice
@@ -935,9 +935,30 @@ install from the README once.`},
 in ~/.config/ccmorph; it lists what it left (state, usage receipts, keychain
 items) with the commands that remove them, if you want them gone.
 Needs the install.sh that sits beside the library.`},
-	"probe": {"ccmorph probe [profile] [options]", `Refresh published context metadata; no inference requests by default.
-Paid inference requires --allow-inference, --profile and --model explicitly.
-Full probe options: ccmorph probe --help`},
+	"probe": {"ccmorph probe [profile] [options]", `Look up each model's context window size, the most tokens one session can hold,
+in what the gateway publishes and in the model catalogue, and save the sizes for
+new sessions. Omit the profile to look up every API-key, proxy and provider
+profile. A model with no size found still works, at Claude Code's 200,000-token
+default. No inference request is made unless --allow-inference.
+
+Options:
+  -i                         Choose the profile from a list
+  --profile <name>           Look up this profile; repeat for more
+  --model <id>               Only this model; repeat for more, or -i to choose
+  --check                    Show what would change and save nothing
+  --declared-only            Use published sizes only, no inference (default)
+  --allow-inference          Measure --model with a large prompt; may be billed
+  --probe-all                With --allow-inference, measure a sized model too
+  --bisect                   If a refusal names no limit, try shorter prompts
+  --bisect-accepts <n>       Stop --bisect after n accepted prompts (default 1)
+  --probe-timeout <seconds>  Longest wait for each gateway reply (default 10)
+  --deadline <seconds>       Time limit for the whole run (default 30)
+  --listing-stdin            Size a model listing read from stdin (used by run)
+  --jobs <n>                 Ignored; kept so older scripts still work
+  -h, --help                 Show this page
+
+--allow-inference needs one profile and one --model; --probe-all and --bisect
+need --allow-inference.`},
 	"context": {"ccmorph context <profile> <model> [tokens|auto]", `Read a context limit, set a known token count, or restore automatic discovery.
 Normally unnecessary: compatibility and context limits are automatic.`},
 	"help": {"ccmorph help [command|all]", `Show the everyday commands, every command (all), or one command's page.

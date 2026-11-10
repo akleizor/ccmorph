@@ -9,6 +9,20 @@
 
 ### Fixed
 
+- **`ccmorph probe` says what it looked for, in one shape for every profile.**
+  A gateway that publishes no size for its models made the command print
+  "Nothing discovered." and exit 1, as though the lookup had broken; a model
+  with no size runs at Claude Code's 200,000-token default, so the profile
+  works. Each profile now gets one group that starts with its name — sizes
+  found and saved, sizes already saved, no size published, or a lookup that
+  failed — and an unsized model names the models, the free `ccmorph context`
+  fix and the paid `--allow-inference` probe. A run that found no sizes at all
+  exits 0, since nothing failed; a run that sized something keeps its old
+  exit status while a model stays unsized. A failed lookup still exits 1,
+  and `--check` still exits 2 on drift. `probe --help` now
+  starts with `Usage:`, gives every option one line with its meaning, and no
+  line of the report or the page is wider than 80 columns or breaks inside
+  a word or a model id (#371).
 - **The step that installs cliproxyapi is the machine's own.** The answer to
   More sign-ins in `ccmorph add` said `brew install cliproxyapi` on a machine
   with no Homebrew to run it — while the installer on the same machine points

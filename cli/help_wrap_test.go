@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/akleizor/ccmorph/ctxwindow"
 )
 
 // helpPage is one help page as usage prints it wrapped to width columns. The
@@ -84,6 +86,46 @@ func TestHelpAddWrapsTheProviderSentenceAsOneListItem(t *testing.T) {
 	}
 	if want := "  Meta, xAI: sign in to that service with your browser (through cliproxyapi)."; lines[first+1] != want {
 		t.Errorf("provider continuation = %q, want %q", lines[first+1], want)
+	}
+}
+
+// GH-371: probe --help used to be context-probe's argparse dump, twelve
+// options and no meaning. The page is the cli's now: it opens with a capital
+// Usage line, says what the command looks up, and gives every option the
+// parser accepts — plus -i, which the cli adds — one line with its meaning.
+// The names come from the parser's own list, so an option cannot ship unhelped.
+func TestProbeHelpGivesEveryOptionOneLine(t *testing.T) {
+	for _, width := range []int{0, 80} {
+		page := helpPage(t, "probe", width)
+		if !strings.HasPrefix(page, "Usage: ccmorph probe [profile] [options]\n") {
+			t.Fatalf("width %d: probe page starts %q", width, page)
+		}
+		if !strings.Contains(page, "context window") {
+			t.Errorf("width %d: probe page does not say what it looks up:\n%s", width, page)
+		}
+		meanings := map[string]string{}
+		counts := map[string]int{}
+		for _, line := range strings.Split(page, "\n") {
+			if !strings.HasPrefix(line, "  -") {
+				continue
+			}
+			row := strings.TrimPrefix(line, "  ")
+			cut := strings.Index(row, "  ")
+			if cut < 0 {
+				continue
+			}
+			label, meaning := row[:cut], strings.TrimSpace(row[cut:])
+			for _, name := range strings.FieldsFunc(label, func(r rune) bool { return r == ' ' || r == ',' }) {
+				meanings[name], counts[name] = meaning, counts[name]+1
+			}
+		}
+		names := append(append([]string{}, ctxwindow.ProbeOptions...), "-i")
+		for _, name := range names {
+			if meanings[name] == "" || counts[name] != 1 {
+				t.Errorf("width %d: want one option row with a meaning for %s, got %d:\n%s",
+					width, name, counts[name], page)
+			}
+		}
 	}
 }
 
