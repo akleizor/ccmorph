@@ -614,22 +614,139 @@ def test_the_python_floor_scan_covers_the_exporter():
 
 def test_the_checkout_launcher_runs_the_shipped_exporter(tmp_path):
     """#261: the exporter ships as share/usage-export; scripts/usage-export is
-    the checkout's pre-existing spelling and must still reach it."""
+    the checkout's pre-existing spelling and must still reach it. #382: what the
+    launcher answers is the report a person reads, so the check is the whole
+    report, exactly — not a substring another line could also satisfy — with the
+    zero-row count it stands on."""
     (tmp_path / "rows").mkdir()
+    output = tmp_path / "out"
     ran = subprocess.run(
         [str(pathlib.Path(SPEC.origin).parent.parent / "scripts/usage-export"),
-         "--output", str(tmp_path / "out"), "--source", str(tmp_path / "rows")],
+         "--output", str(output), "--source", str(tmp_path / "rows")],
         capture_output=True, text=True, timeout=HANG_TIMEOUT)
     assert ran.returncode == 0, ran.stderr
-    assert json.loads(ran.stdout)["rows"] == 0
+    root = os.path.abspath(output)
+    assert ran.stdout == "\n".join([
+        f"Exported 0 turns over 0 days to {root}",
+        "one folder per profile under projects/, ccusage.json beside it",
+        "0 turns the gateway billed, $0.00",
+        "0 turns ccmorph estimated, $0.00",
+        "0 turns left for ccusage to price at its list price",
+        "0 turns unpriced (a damaged cost, not exported)",
+        "Then, with ccusage installed:",
+        f"CLAUDE_CONFIG_DIR={root} ccusage claude daily --instances "
+        f"--config {root}/ccusage.json",
+    ]) + "\n"
     assert (tmp_path / "out/ccusage.json").is_file()
+
+
+def test_the_summary_names_where_the_files_went_and_the_command_to_run_next_issue_382(tmp_path):
+    """#382: the export used to end on one raw JSON line — long floating-point
+    money, no output folder, no next command — and its counts (13 gateway rows
+    plus 5 estimated rows is not 33 rows) left the third kind, the turns ccusage
+    prices itself, unnamed. The end of an export is for the person who ran it:
+    the folder the files went to, every count by a name that adds up, money at
+    cents, and the exact ccusage command for that folder on its own line."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    rows.mkdir()
+    write(rows, "a.json", receipt("a", "claude-opus-5-5", "2026-10-16T01:00:00+00:00", cost=0.1))
+    write(rows, "b.json", receipt("b", "claude-opus-5-5", "2026-10-16T02:00:00+00:00", cost=0.0599))
+    write(rows, "c.json", receipt("c", "deepseek-flash", "2026-10-16T03:00:00+00:00",
+                                  estimate=0.05333333333333333))
+    write(rows, "d.json", receipt("d", "claude-opus-5-5", "2026-10-16T04:00:00+00:00"))
+    write(rows, "e.json", receipt("e", "claude-opus-5-5", "2026-10-16T05:00:00+00:00", cost=1e14))
+
+    ran = subprocess.run(
+        [sys.executable, SPEC.origin, "--output", str(output), "--source", str(rows),
+         "--since", "20261016"],
+        capture_output=True, text=True, timeout=HANG_TIMEOUT)
+
+    assert ran.returncode == 0, ran.stderr
+    # The whole report, exactly — nothing extra, nothing conflicting — because a
+    # substring check would pass beside output that disagrees with it.
+    root = os.path.abspath(output)
+    assert ran.stdout == "\n".join([
+        f"Exported 4 turns over 1 day to {root}",  # where the files went
+        "one folder per profile under projects/, ccusage.json beside it",
+        # 0.1 + 0.0599 is 0.15990000000000001 and the estimate 0.05333333333333333:
+        # both print at cents, never as the float's own spelling. The three priced
+        # kinds are the whole 4, so a reader can reconcile the counts.
+        "2 turns the gateway billed, $0.16",
+        "1 turn ccmorph estimated, $0.05",
+        "1 turn left for ccusage to price at its list price",
+        "1 turn unpriced (a damaged cost, not exported)",
+        "Then, with ccusage installed:",
+        f"CLAUDE_CONFIG_DIR={root} ccusage claude daily --instances "
+        f"--config {root}/ccusage.json",
+    ]) + "\n"
+
+
+def test_the_printed_command_runs_as_printed_for_a_folder_with_spaces_issue_382(tmp_path):
+    """#382: the printed command interpolated both paths bare, so an export to a
+    folder named 'out with spaces' printed a command the shell tore apart —
+    '/bin/sh: with: command not found', exit 127. The command a person copies
+    must run exactly as printed, so this runs the printed line itself against a
+    ccusage stub and asks the stub what it was handed."""
+    rows, output = tmp_path / "rows", tmp_path / "out with spaces"
+    rows.mkdir()
+    write(rows, "a.json", receipt("a", "claude-opus-5-5", "2026-10-16T01:00:00+00:00", cost=0.1))
+
+    ran = subprocess.run(
+        [sys.executable, SPEC.origin, "--output", str(output), "--source", str(rows)],
+        capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert ran.returncode == 0, ran.stderr
+    command = next(l for l in ran.stdout.splitlines() if l.startswith("CLAUDE_CONFIG_DIR="))
+
+    # A ccusage stub on PATH records the config dir it ran under and every
+    # argument it was called with, so the assertion reads the command's effect.
+    stub_dir, seen = tmp_path / "bin", tmp_path / "seen"
+    stub_dir.mkdir()
+    (stub_dir / "ccusage").write_text(
+        '#!/bin/sh\nprintf \'%s\\n\' "$CLAUDE_CONFIG_DIR" "$@" > "$CCUSAGE_STUB_SEEN"\n')
+    os.chmod(stub_dir / "ccusage", 0o755)
+    ran_command = subprocess.run(
+        ["/bin/sh", "-c", command],
+        env=dict(os.environ, PATH=f"{stub_dir}{os.pathsep}{os.environ['PATH']}",
+                 CCUSAGE_STUB_SEEN=str(seen)),
+        capture_output=True, text=True, timeout=HANG_TIMEOUT)
+
+    assert ran_command.returncode == 0, ran_command.stderr
+    assert seen.read_text().splitlines() == [
+        str(output), "claude", "daily", "--instances", "--config",
+        str(output / "ccusage.json")]
 
 
 def test_help_prints_the_ccusage_command_that_reads_the_export():
     """#261: no install provides ccusage, so the README prints no ccusage
-    command; it points at the exporter's --help, which must give it."""
+    command; it points at the exporter's --help, which must give it. #382: the
+    parser reflowed the description into one paragraph, gluing the command to
+    the sentence after it so it could not be copied as one line, and --output
+    and --source were bare — a flag and a placeholder, nothing else."""
     ran = subprocess.run([sys.executable, SPEC.origin, "--help"],
                          capture_output=True, text=True, timeout=HANG_TIMEOUT)
     assert ran.returncode == 0, ran.stderr
     assert ("CLAUDE_CONFIG_DIR=ROOT ccusage claude daily --instances --config "
-            "ROOT/ccusage.json") in " ".join(ran.stdout.split())
+            "ROOT/ccusage.json") in ran.stdout.splitlines()
+    for flag in ("--output", "--source", "--since"):
+        line = next((l for l in ran.stdout.splitlines() if l.lstrip().startswith(flag)), "")
+        assert len(line.split()) > 2, f"{flag} is missing or says nothing: {line!r}"
+
+
+@pytest.mark.parametrize("since", ["2026-11-10", "2026111", ""])
+def test_a_date_in_the_wrong_format_names_the_format_and_an_example_issue_382(tmp_path, since):
+    """#382: --since 2026-11-10 answered with Python's own parse error — time
+    data '2026-11-10' does not match format '%Y%m%d' — which names a strptime
+    format, not the format the person is asked for. And the format asked for has
+    to be enforced as stated: strptime reads unpadded fields (2026111 as
+    2026-11-01), and an explicitly empty value slipped past a truthiness check
+    into a full-history export, so both must reach the same answer."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    rows.mkdir()
+    ran = subprocess.run(
+        [sys.executable, SPEC.origin, "--output", str(output), "--source", str(rows),
+         "--since", since],
+        capture_output=True, text=True, timeout=HANG_TIMEOUT)
+
+    assert ran.returncode == 1
+    assert since in ran.stderr  # the person's own input, named back
+    assert "YYYYMMDD" in ran.stderr and "20261110" in ran.stderr

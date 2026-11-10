@@ -9,6 +9,21 @@
 
 ### Fixed
 
+- **The usage export ends with a summary a person can act on.** `usage-export`
+  printed one raw JSON line — long floating-point money, no output folder, no
+  next command — and its counts did not add up for a reader, because the turns
+  ccusage prices itself went unnamed; `--help` reflowed the description into
+  one paragraph, gluing the follow-up ccusage command into the sentence after
+  it, while `--output` and `--source` said nothing at all; and a `--since`
+  date typed with dashes answered with Python's own parse error (`time data
+  '2026-11-10' does not match format '%Y%m%d'`). The export now ends with
+  where the files went, every count by a name that adds up (gateway, estimate,
+  list, unpriced), money rounded to cents, and the exact ccusage command for
+  that folder on its own line, both paths shell-quoted so a folder named with
+  spaces does not break the command; the help page keeps its authored lines —
+  the ccusage command ready to copy — describes every option, and a `--since`
+  that is not exactly eight digits — dashes, an unpadded day, an empty value —
+  is told to write it as YYYYMMDD, for example 20261110 (#382).
 - **`ccmorph run -i` opens on the profile's saved model.** The launch picker
   offered a bare catalogue and put the cursor on the alphabetically first
   model, so pressing Enter straight away started a different model than the
