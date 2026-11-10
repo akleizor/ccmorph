@@ -284,6 +284,16 @@ def test_doctor_stays_ready_when_the_saved_model_is_served(tmp_path):
     assert "is not served" not in result.stdout
 
 
+def test_doctor_says_no_message_was_sent_issue_375(tmp_path):
+    # #375: the gateway row vouches reachability from a model list alone — it
+    # must say so, or "OK ready" reads as a passed message test on a gateway
+    # that would refuse the first one.
+    result, _, _ = run_doctor(tmp_path, GW, GW_LISTING)
+    assert result.returncode == 0, result.stdout
+    assert "gateway: reachable (HTTP 200); models: 2; no message was sent (the model list only)" in result.stdout
+    assert "ready: start it with ccmorph run demo" in result.stdout
+
+
 def test_doctor_does_not_call_a_listless_gateway_unreachable_issue_357(tmp_path):
     # #357: a gateway that answers HTTP is not unreachable — it offers no model
     # list. With no model saved no launch can pick one, so the verdict names

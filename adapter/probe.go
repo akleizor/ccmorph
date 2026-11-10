@@ -103,11 +103,23 @@ type cancelBody struct {
 func (b *cancelBody) Close() error { b.cancel(); return b.ReadCloser.Close() }
 
 // indeterminate is true when a probe's status says nothing about the model: a
-// transport error (0), a 5xx, or 401/403/429 -- properties of the credential or
-// the gateway, which must not settle as a cached verdict shared by every
-// profile on the endpoint.
+// transport error (0), a 5xx, or 401/402/403/429 -- properties of the
+// credential, the account's balance, or the gateway, which must not settle as a
+// cached verdict shared by every profile on the endpoint.
 func indeterminate(status int) bool {
-	return status == 401 || status == 403 || status == 429 || status == 0 || (status >= 500 && status < 600)
+	return status == 401 || status == 402 || status == 403 || status == 429 || status == 0 || (status >= 500 && status < 600)
+}
+
+// refusedMessage is true when a status is the gateway refusing the request
+// itself -- an empty balance (402), a rate limit (429), or its own failure
+// (the remaining 5xx) -- rather than saying the model does not speak this
+// dialect. Such an answer applies to every dialect, so probing stops at the
+// first one (#375). 401/403 stay probeable because the Anthropic path and the
+// Bearer paths send different credentials, 0 is a transport failure, not an
+// answer, and 501 is excluded: it names an operation the gateway does not
+// implement on this path, so the working dialect is still tried.
+func refusedMessage(status int) bool {
+	return status == 402 || status == 429 || (status >= 500 && status < 600 && status != 501)
 }
 
 func truncRunes(s string, n int) string {
@@ -137,6 +149,12 @@ func postImpl(u string, body map[string]any, headers map[string]string) (int, st
 			if s, ok := parsed[k].(string); ok && s != "" {
 				detail = s
 				break
+			}
+		}
+		// The Anthropic error shape nests the explanation one level down.
+		if e, ok := parsed["error"].(map[string]any); ok {
+			if s, ok := e["message"].(string); ok && s != "" {
+				detail = s
 			}
 		}
 	}
@@ -188,6 +206,25 @@ func keyHeaders(key string) map[string]string {
 type refusingStatus struct{ code int }
 
 func (e refusingStatus) Error() string { return fmt.Sprintf("HTTP Error %d", e.code) }
+
+// messageRefusal is the gateway refusing the launch's message itself: not that
+// the model speaks no known dialect, but that the account or the gateway
+// answered no to the one question a session depends on. Its text is the
+// gateway's own explanation, so the ready-file reader sees what the gateway
+// said, never an adapter problem (#375).
+type messageRefusal struct {
+	model  string
+	status int
+	text   string
+}
+
+func (e messageRefusal) Error() string {
+	if note := strings.TrimSpace(e.text); note != "" {
+		return fmt.Sprintf("the gateway refused the message for model %s (HTTP %d): %s",
+			shim.PyRepr(e.model), e.status, truncRunes(note, 150))
+	}
+	return fmt.Sprintf("the gateway refused the message for model %s (HTTP %d)", shim.PyRepr(e.model), e.status)
+}
 
 // inventory lists the usable chat model ids. No anthropic-version header:
 // proxies rewrite non-claude ids into claude-<junk>-<reversed-id> when they see it.
@@ -262,20 +299,24 @@ func truthy(v any) bool {
 const noInference = "cannot determine protocol without inference"
 
 // dialectAuto uses an explicit per-model endpoint declaration, never schema
-// error guesses.
+// error guesses. The status is the refusal's own when the endpoint answered —
+// a rejected key's 401, so the caller can refuse without inference — and 0
+// only when nothing answered (#374).
 func dialectAuto(base, key, model string) (string, string, int) {
 	resp, err := do(client, "GET", apiURL(base, "/v1/models"), nil, keyHeaders(key), probeTimeout)
 	var doc map[string]any
+	status := 0
 	if err == nil {
 		defer resp.Body.Close()
 		if resp.StatusCode >= 300 {
 			err = fmt.Errorf("HTTP Error %d", resp.StatusCode)
+			status = resp.StatusCode
 		} else {
 			err = json.NewDecoder(resp.Body).Decode(&doc)
 		}
 	}
 	if err != nil {
-		return "unusable", noInference + ": " + err.Error(), 0
+		return "unusable", noInference + ": " + err.Error(), status
 	}
 	rows, _ := doc["data"].([]any)
 	for _, r := range rows {
@@ -354,16 +395,23 @@ func hi() []any { return []any{map[string]any{"role": "user", "content": "hi"}} 
 
 // dialectOf finds which dialect the model serves, preferring the one needing no
 // translation. The status characterizes an "unusable" verdict: the first
-// indeterminate status seen, otherwise the last definite one. No thinking field
-// on the Anthropic probe: dialect and thinking support are separate axes.
+// indeterminate status seen, otherwise the last definite one. A status the
+// gateway refuses outright (402, 429, 5xx) applies to every dialect, so probing
+// stops at the first such answer and its note becomes the verdict's (#375). No
+// thinking field on the Anthropic probe: dialect and thinking support are
+// separate axes.
 func dialectOf(base, key, model string, bounded bool) (string, string, int) {
 	var seen []int
+	var notes []string
 	status, first := post(apiURL(base, "/v1/messages"),
 		map[string]any{"model": model, "max_tokens": 8, "tools": toolAnthropic, "messages": hi()},
 		anthropicHeaders(key))
-	seen = append(seen, status)
+	seen, notes = append(seen, status), append(notes, first)
 	if status == 200 {
 		return "anthropic", "", 200
+	}
+	if refusedMessage(status) {
+		return "unusable", truncRunes(first, 150), status
 	}
 
 	resp := map[string]any{"model": model, "reasoning": map[string]any{"effort": "low"},
@@ -371,42 +419,55 @@ func dialectOf(base, key, model string, bounded bool) (string, string, int) {
 	if bounded {
 		resp["max_output_tokens"] = 16
 	}
-	status, _ = post(apiURL(base, "/v1/responses"), resp, bearer(key))
-	seen = append(seen, status)
+	status, note := post(apiURL(base, "/v1/responses"), resp, bearer(key))
+	seen, notes = append(seen, status), append(notes, note)
 	if status == 200 {
 		return "responses", "", 200
 	}
+	if refusedMessage(status) {
+		return "unusable", truncRunes(note, 150), status
+	}
 
-	status, note := post(apiURL(base, "/v1/chat/completions"),
+	status, note = post(apiURL(base, "/v1/chat/completions"),
 		map[string]any{"model": model, "max_tokens": 8, "tools": toolChat,
 			"reasoning_effort": "low", "messages": hi()}, bearer(key))
-	seen = append(seen, status)
+	seen, notes = append(seen, status), append(notes, note)
 	if status == 200 {
 		return "chat", "", 200
+	}
+	if refusedMessage(status) {
+		return "unusable", truncRunes(note, 150), status
 	}
 
 	// Rejecting reasoning_effort is not a reason to drop a model: the translator
 	// can strip it.
 	status, noteNR := post(apiURL(base, "/v1/chat/completions"),
 		map[string]any{"model": model, "max_tokens": 8, "tools": toolChat, "messages": hi()}, bearer(key))
-	seen = append(seen, status)
+	seen, notes = append(seen, status), append(notes, noteNR)
 	if status == 200 {
 		return "chat-noreason", "", 200
 	}
-
-	verdict := seen[len(seen)-1]
-	for _, s := range seen {
-		if indeterminate(s) {
-			verdict = s
-			break
-		}
+	if refusedMessage(status) {
+		return "unusable", truncRunes(noteNR, 150), status
 	}
-	n := note
+
+	verdict, n := seen[len(seen)-1], note
 	if n == "" {
 		n = noteNR
 	}
 	if n == "" {
 		n = first
+	}
+	for i, s := range seen {
+		if indeterminate(s) {
+			verdict = s
+			// An indeterminate answer the gateway actually gave outranks a
+			// later definite one's note: it is the truer cause.
+			if s != 0 && notes[i] != "" {
+				n = notes[i]
+			}
+			break
+		}
 	}
 	return "unusable", truncRunes(n, 150), verdict
 }

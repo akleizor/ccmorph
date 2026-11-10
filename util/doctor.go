@@ -144,7 +144,9 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 		case strings.HasPrefix(code, "2") && len(code) == 3:
 			if n, ok := modelsCount(body); ok {
 				listing = body
-				row("OK", fmt.Sprintf("gateway: reachable (HTTP %s); models: %d", code, n))
+				// The listing is all doctor asked: say so, so an OK here never
+				// reads as a passed message test (#375).
+				row("OK", fmt.Sprintf("gateway: reachable (HTTP %s); models: %d; no message was sent (the model list only)", code, n))
 				// A listing that answers and names models adjudicates the saved
 				// default: ready would promise a launch that fails at its first
 				// message (#267).

@@ -2027,6 +2027,38 @@ test_launch_interactive_with_an_account_asks_only_the_model() {
   return $rc
 }
 
+# #377: the launch picker must open on the profile's saved model, marked the
+# way `set model -i` marks it — the Keep row first — so Enter alone keeps it.
+# fake_fzf takes the first offered row, which is Enter alone.
+test_launch_interactive_opens_on_the_saved_model_issue_377() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  fake_gateway
+  fake_fzf
+  write_apikey_conf alpha 'api_key=sk-test-alpha' 'base_url=https://gateway.invalid' 'model=zeta-chat'
+  source "$CCMORPH_SOURCE"
+
+  local rc=0
+  ccmorph run alpha -i prompt 2> "$HOME/launch.err" || rc=1
+  local actual="$(<"$CCMORPH_TEST_LOG")"
+  assert_contains "$actual" 'MODEL_ENV=zeta-chat' \
+    'Enter alone in the launch picker must keep the saved model' || rc=1
+  # Keeping the default is not a pick to keep: the session-only note (#360)
+  # would send a person to save what is already saved.
+  assert_not_contains "$(<"$HOME/launch.err")" 'this session only' \
+    'keeping the saved model must not be announced as session-only' || rc=1
+  local rows="$(<"$HOME/fzf.input")"
+  assert_contains "$rows" $'@keep\tKeep zeta-chat' \
+    'the launch picker must mark the saved model as the Keep row' || rc=1
+  [[ "$(head -n 1 "$HOME/fzf.input")" == @keep$'\t'* ]] || {
+    print -u2 -- 'the launch picker must offer the Keep row first, so the cursor opens on it'
+    rc=1
+  }
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_public_model_picker_flag_asks_only_for_model() {
   local form test_home actual rc=0
   for form in default explicit; do
@@ -3265,6 +3297,32 @@ test_hop_refuses_to_end_the_session_when_the_target_cannot_start() {
     [[ ! -e "$HOME/claude-ended" ]] || { print -u2 -- "[$cause] hop must not end the session"; rc=1 }
     [[ ! -e "$HOME/.config/ccmorph/.reswitch.$relay_id" ]] || { print -u2 -- "[$cause] hop must queue nothing"; rc=1 }
     [[ "$out" != *'Switching'* ]] || { print -u2 -- "[$cause] hop must not announce a switch: ${(qqq)out}"; rc=1 }
+    # #380: the refusal reads top to bottom -- the reason first, then the
+    # session's survival, then the command that checks the route, each said
+    # once -- and a target that was never launched is not told to watch for a
+    # first-launch key question no new session will ask.
+    local -a rlines
+    local keeps=0 line=''
+    rlines=("${(f)out}")
+    for line in "${rlines[@]}"; do
+      [[ "$line" == *'This session keeps running.' ]] && (( keeps++ ))
+    done
+    [[ "${rlines[1]}" == "ccmorph: not switching to '$target': "* ]] || {
+      print -u2 -- "[$cause] the refusal's first line must be its reason: ${(qqq)out}"
+      rc=1
+    }
+    (( keeps == 1 )) || {
+      print -u2 -- "[$cause] the session's survival must be said once, said $keeps times: ${(qqq)out}"
+      rc=1
+    }
+    [[ "$out" == *'This session keeps running.'$'\n''  Check the route: ccmorph doctor '* ]] || {
+      print -u2 -- "[$cause] the survival must come before the route check: ${(qqq)out}"
+      rc=1
+    }
+    [[ "$out" != *'Do you want to use this API key'* ]] || {
+      print -u2 -- "[$cause] a refused hop must not mention the first-launch key question: ${(qqq)out}"
+      rc=1
+    }
     case "$cause" in
     no-answer)
       [[ "$out" == *'the endpoint http://dead.invalid did not answer'* ]] || {
@@ -3286,6 +3344,57 @@ test_hop_refuses_to_end_the_session_when_the_target_cannot_start() {
       ;;
     esac
   done
+  unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_hop_refuses_a_key_claude_code_was_told_to_refuse() {
+  # A key Claude Code was told to refuse stops the target's own launch before
+  # any request (#236), so the hop refuses too, before it ends anything: the
+  # reason in the launch's own words first, the session's survival said once,
+  # and the one command that records a new answer. The route is healthy, so
+  # doctor is not named, and no hint about the first-launch question appears --
+  # the stored No answer already settled it (#380).
+  local test_home out st rc=0
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  local key='gh380-refused-key-fixture'
+  local tail="${key[-20,-1]}"
+  write_apikey_conf gw "api_key=$key" 'base_url=https://gateway.invalid'
+  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
+  print -r -- '{"customApiKeyResponses":{"approved":[],"rejected":["'"$tail"'"]}}' \
+    > "$HOME/.config/ccmorph/profiles/gw/.claude.json"
+  source "$CCMORPH_SOURCE"
+
+  local relay_id="$$.refused"
+  export CLAUDE_CODE_SESSION_ID='refused-session' CCMORPH_RELAY_ID="$relay_id"
+  out=$(hop_as_claude gw 2>&1); st=$?
+
+  [[ "$st" != 0 ]] || { print -u2 -- "hop must refuse, got 0: ${(qqq)out}"; rc=1 }
+  local -a rlines
+  local keeps=0 line=''
+  rlines=("${(f)out}")
+  for line in "${rlines[@]}"; do
+    [[ "$line" == *'This session keeps running.' ]] && (( keeps++ ))
+  done
+  [[ "${rlines[1]}" == "ccmorph: Claude Code was told not to use the API key of 'gw'"* ]] || {
+    print -u2 -- "the refusal's first line must be its reason: ${(qqq)out}"
+    rc=1
+  }
+  (( keeps == 1 )) || {
+    print -u2 -- "the session's survival must be said once, said $keeps times: ${(qqq)out}"
+    rc=1
+  }
+  assert_contains "$out" 'ccmorph login gw' \
+    'the refusal must name the command that records a new answer' || rc=1
+  assert_not_contains "$out" 'Check the route' \
+    'a healthy route must not send the person to doctor' || rc=1
+  assert_not_contains "$out" 'Claude Code will ask' \
+    'a stored No answer must not be answered with the question it settled' || rc=1
+  [[ ! -e "$HOME/claude-ended" ]] || { print -u2 -- "hop must not end the session"; rc=1 }
+  [[ ! -e "$HOME/.config/ccmorph/.reswitch.$relay_id" ]] || { print -u2 -- "hop must queue nothing"; rc=1 }
+  [[ "$out" != *'Switching'* ]] || { print -u2 -- "hop must not announce a switch: ${(qqq)out}"; rc=1 }
   unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID
   rm -rf "$test_home"
   return $rc
@@ -3765,19 +3874,24 @@ test_hop_to_a_wrong_name_inside_claude_answers_in_one_line() {
   export CCMORPH_RELAY_ID="$relay_id"
 
   # A name that is not even a valid profile name (a hyphen, a dot, a reserved
-  # word) is the likelier typo, and answers the same way.
-  local out st rc=0 bad
+  # word) is the likelier typo, and answers in one line too (#373).
+  local out st rc=0 bad want
   for bad in nosuch no-such work.2 active; do
+    case $bad in
+      (nosuch) want="ccmorph: no profile 'nosuch'. Profiles: proxy subacct" ;;
+      (no-such|work.2) want="ccmorph: invalid profile name '$bad': a name may hold only A-Z, a-z, 0-9 and _ (no hyphen, dot, slash or space). Profiles: proxy subacct" ;;
+      (active) want="ccmorph: invalid profile name 'active': that word is reserved; choose another. Profiles: proxy subacct" ;;
+    esac
     out=$(CLAUDE_CONFIG_DIR="$HOME/.config/ccmorph/profiles/proxy" hop_as_claude --slash "$bad" 2>&1); st=$?
     [[ $st == 0 ]] || { print -u2 -- "a wrong name '$bad' must answer, not fail: exit $st, ${(qqq)out}"; rc=1 }
-    [[ "$out" == "ccmorph: no profile '$bad'. Profiles: proxy subacct" ]] || {
-      print -u2 -- "a wrong name '$bad' must name the available profiles in one line: ${(qqq)out}"
+    [[ "$out" == "$want" ]] || {
+      print -u2 -- "a wrong name '$bad' must answer in one line: ${(qqq)out}"
       rc=1
     }
     out=$(CLAUDE_CONFIG_DIR="$HOME/.config/ccmorph/profiles/proxy" hop_as_claude "$bad" 2>&1); st=$?
     [[ $st == 1 ]] || { print -u2 -- "the ! form must keep the error for '$bad': exit $st, ${(qqq)out}"; rc=1 }
-    [[ "$out" == "ccmorph: no profile '$bad'. Profiles: proxy subacct" ]] || {
-      print -u2 -- "the ! form must name the available profiles for '$bad': ${(qqq)out}"
+    [[ "$out" == "$want" ]] || {
+      print -u2 -- "the ! form must answer in one line for '$bad': ${(qqq)out}"
       rc=1
     }
   done
@@ -10498,6 +10612,13 @@ test_inspect_names_masking_for_every_profile() {
   actual=$(ccmorph inspect proxy) || { rm -rf "$test_home"; return 1; }
   assert_contains "$actual" 'masking    off' \
     'a gateway profile without the setting must say masking is off' || rc=1
+  # GH-384: the off state carried no words, so the row could only be read
+  # once the setting was already known. It must say what the state means and
+  # name the switch that changes it.
+  assert_contains "$actual" 'secrets reach the endpoint as they are' \
+    'the off line must say what off means for secrets' || rc=1
+  assert_contains "$actual" 'env.CCMORPH_MASK=1 sends them as placeholders' \
+    'the off line must say what masking is and how to turn it on' || rc=1
   actual=$(ccmorph inspect gw) || { rm -rf "$test_home"; return 1; }
   assert_contains "$actual" 'masking    on' \
     'a gateway profile with env.CCMORPH_MASK=1 must say masking is on' || rc=1
@@ -11360,6 +11481,7 @@ run_test test_effort_interactive_still_requires_a_real_profile
 run_test test_launch_sizes_without_waiting_on_the_network
 run_test test_launch_interactive_resolves_the_account
 run_test test_launch_interactive_with_an_account_asks_only_the_model
+run_test test_launch_interactive_opens_on_the_saved_model_issue_377
 run_test test_public_model_picker_flag_asks_only_for_model
 run_test test_interactive_asks_no_model_where_ccmorph_owns_no_list
 run_test test_cancelled_profile_picker_launches_nothing
@@ -11389,6 +11511,7 @@ run_test test_hop_before_the_first_message_starts_a_new_conversation_issue_288
 run_test test_failed_switch_with_no_conversation_does_not_offer_a_resume_issue_288
 run_test test_a_hop_reads_the_catalogue_afresh
 run_test test_hop_refuses_to_end_the_session_when_the_target_cannot_start
+run_test test_hop_refuses_a_key_claude_code_was_told_to_refuse
 run_test test_hop_refuses_to_switch_away_from_a_private_profile
 run_test test_launch_failure_names_the_cause_and_the_doctor_command
 run_test test_hop_refuses_when_no_claude_process_runs_it

@@ -88,13 +88,14 @@ func (l *launcher) hop(args []string) int {
 		l.hopChoices(current)
 		return 0
 	}
-	inSession := session != "" && relayValid(relay)
-	valid := profile.ValidName(name)
-	if !valid && !inSession {
-		l.err("usage: " + usageLine("hop"))
-		return 1
+	if !profile.ValidName(name) {
+		if slash {
+			fmt.Println(l.yellow + "ccmorph:" + l.reset + " " + l.badNameMsg(name))
+			return 0
+		}
+		return l.badName("hop", name)
 	}
-	if !valid || !l.exists(name) {
+	if !l.exists(name) {
 		if slash {
 			fmt.Println(l.yellow + "ccmorph:" + l.reset + " " + l.noProfileMsg(name))
 			return 0
@@ -199,8 +200,10 @@ func privateViewProfile(cfg string) string {
 // the session keeps running. It mirrors the target's own launch aborts — a key
 // Claude Code was told to refuse, a provider whose bridge cannot start, and the
 // endpoint probe the launch itself makes (a gateway's listing, a native key,
-// #255) — so what hop refuses is what run would fail on. It never mutates state
-// the relay pass would not touch anyway.
+// #255) — so what hop refuses is what run would fail on. It only reads:
+// recording a key answer is the relay pass's own step, after the setup that
+// makes the write land, and the hint a failed write prints belongs to a session
+// about to start — a hop that ends nothing starts none (#380).
 func (l *launcher) hopCheck(name string) bool {
 	typ, env, err := util.ProfileEnv(l.dir, l.profileDirs, name, func(string) {})
 	if err != nil {
@@ -211,16 +214,18 @@ func (l *launcher) hopCheck(name string) bool {
 			l.refuseHop(name, why)
 			return false
 		}
-	} else if k, ok := envGet(env, "ANTHROPIC_API_KEY"); ok && k != "" && !l.keyApproval(name, k) {
-		// keyApproval said why in the launch path's own words; the session
-		// survives, and `ccmorph login <name>` is the fix, not doctor.
-		fmt.Fprintln(os.Stderr, "  This session keeps running.")
-		return false
+	} else if k, ok := envGet(env, "ANTHROPIC_API_KEY"); ok && k != "" {
+		if util.KeyResponse(filepath.Join(l.profileDirs, name), k) == util.KeyRefused {
+			// The refusal is the launch's own words; the session survives, and
+			// `ccmorph login <name>` is the fix, not doctor.
+			l.err(keyRefusedMsg(name))
+			fmt.Fprintln(os.Stderr, "  This session keeps running.")
+			return false
+		}
 	}
 	if why := l.routeRefusal(name); why != "" {
 		l.refuseHop(name, why)
 		fmt.Fprintln(os.Stderr, "  Check the route: ccmorph doctor "+name)
-		fmt.Fprintln(os.Stderr, "  This session keeps running.")
 		return false
 	}
 	return true

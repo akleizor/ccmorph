@@ -37,6 +37,13 @@ MODELS = ["m-anthropic", "m-responses", "m-noreason", "m-dead", "m-shaky",
 class Gateway(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     extra_models: list[str] = []
+    # (status, body) when the whole gateway refuses every message — the
+    # stand-ins of #375: an empty balance, a rate limit, a broken upstream.
+    # None answers each request normally.
+    message_refusal: tuple[int, dict] | None = None
+    # True when /v1/messages answers 501 while the chat paths still work: a
+    # chat-only gateway, for the dialect-fallback half of #375.
+    messages_not_implemented = False
     # Set when a stalled probe's client goes away, freeing this single-threaded
     # server for the next request. `test_selected_launch_has_its_own_global_deadline`
     # reads it instead of racing the stall with a client timeout.
@@ -67,6 +74,19 @@ class Gateway(BaseHTTPRequestHandler):
         body = json.loads(raw or b"{}")
         model = body.get("model", "")
         PROBES.append((self.path.split("?")[0], model))
+        # A gateway-level refusal answers before any model-specific handling:
+        # it is the account or the gateway saying no, whatever the model.
+        if Gateway.message_refusal is not None:
+            code, refusal = Gateway.message_refusal
+            self._json(code, refusal)
+            return
+        # A 501 names an operation this gateway does not implement on this
+        # path — a property of the path, not a refusal of the model, so the
+        # dialect sweep must walk past it to the working API.
+        if Gateway.messages_not_implemented and self.path.startswith("/v1/messages"):
+            self._json(501, {"error": {"message":
+                "Messages API not implemented; use chat completions"}})
+            return
 
         def ok():
             self._json(200, {"type": "message", "role": "assistant",
@@ -201,6 +221,8 @@ class AdapterTest(unittest.TestCase):
         XFF_SEEN.clear()
         UPSTREAM.clear()
         Gateway.extra_models = []
+        Gateway.message_refusal = None
+        Gateway.messages_not_implemented = False
         self.home = Path(tempfile.mkdtemp())
         # The home leaves with its test: before GH-196 every one of them
         # stayed in TMPDIR for good.
@@ -1256,6 +1278,102 @@ class AdapterTest(unittest.TestCase):
         self.assertIn("offers no model list (HTTP 404)", line)
         self.assertIn("ccmorph set p model <model-id>", line)
         self.assertNotIn("compatibility check", line)
+
+    def test_a_refusing_gateway_ends_the_launch_with_its_own_answer_issue_375(self):
+        # Issue #375: a gateway that lists its models (HTTP 200) but refuses
+        # every message ended the launch as a cause-less adapter death, and the
+        # log named a 404 for paths the gateway does not even implement. The
+        # refusal is the launch's true cause: the ready-file line carries the
+        # status and the gateway's own words, one refused answer is enough to
+        # end classification, and nothing is cached against the next launch.
+        for code, refusal, words in [
+            (402, {"type": "error", "error": {"type": "billing_error",
+                                              "message": "Insufficient balance: top up your account to continue"}},
+             "Insufficient balance: top up your account to continue"),
+            (429, {"type": "error", "error": {"type": "rate_limit_error",
+                                              "message": "Rate limit reached: 3 requests per minute"}},
+             "Rate limit reached: 3 requests per minute"),
+            (500, {"error": {"message": "mock gateway exploded"}},
+             "mock gateway exploded"),
+        ]:
+            with self.subTest(f"HTTP {code}"):
+                Gateway.message_refusal = (code, refusal)
+                PROBES.clear()  # one count per status, not across the loop
+                out = self.run_adapter("--auto", "--model", "m-anthropic")
+                self.assertNotEqual(out.returncode, 0,
+                                    out.stdout + out.stderr)
+                self.assertTrue(out.stdout.startswith("EXIT="), out.stdout)
+                self.assertIn(f"HTTP {code}", out.stdout)
+                self.assertIn(words, out.stdout)
+                # Not an adapter problem, and not a different error than the
+                # one the gateway answered.
+                self.assertNotIn("unusable", out.stdout + out.stderr)
+                self.assertNotIn("no route", out.stdout + out.stderr)
+                # The log names the same cause the ready-file line carries.
+                self.assertIn(f"HTTP {code}", out.stderr)
+                # One refused answer ends the launch: the remaining dialect
+                # probes would ask the same gateway the same refused question.
+                self.assertEqual([p for p, _m in PROBES], ["/v1/messages"])
+                # A refusal is account or gateway state, not model knowledge:
+                # nothing is settled into the shared cache.
+                self.assertFalse(self.cache_file().exists())
+
+    def test_a_refusing_gateway_is_not_cached_against_the_next_launch_issue_375(self):
+        # Issue #375: the second launch must report the gateway's fresh answer,
+        # not die on a verdict the first launch should never have settled.
+        Gateway.message_refusal = (402, {"error": {"message":
+            "Insufficient balance: top up your account to continue"}})
+        for launch in (1, 2):
+            out = self.run_adapter("--auto", "--model", "m-anthropic")
+            self.assertNotEqual(out.returncode, 0, out.stdout + out.stderr)
+            self.assertTrue(out.stdout.startswith("EXIT="), out.stdout)
+            self.assertIn("HTTP 402", out.stdout)
+            self.assertIn("Insufficient balance: top up your account to continue",
+                          out.stdout)
+        self.assertFalse(self.cache_file().exists())
+
+    def test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375(self):
+        # The merge gate's finding: a profile that already ran the pre-#375
+        # core holds a settled unusable row — and the row that version
+        # actually wrote carried the LAST probe's 404 and its "no route"
+        # note, with status 404, because the refusal's own 402 was
+        # overwritten by the later probes. Upgrading must not leave that row
+        # between the person and the gateway's fresh answer.
+        cache = self.cache_file()
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps({
+            "endpoint": self.base, "anthropic_path": "/v1/messages",
+            "thinking_probe": 2,
+            "rows": [{"model": "m-anthropic", "dialect": "unusable",
+                      "note": '{"error":"no route"}', "status": 404,
+                      "cap": None, "nothink": False, "id_recycle": False}]}))
+        Gateway.message_refusal = (402, {"error": {"message":
+            "Insufficient balance: top up your account to continue"}})
+        out = self.run_adapter("--auto", "--model", "m-anthropic")
+        self.assertNotEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertTrue(out.stdout.startswith("EXIT="), out.stdout)
+        self.assertIn("HTTP 402", out.stdout)
+        self.assertIn("Insufficient balance: top up your account to continue",
+                      out.stdout)
+        self.assertNotIn("cached as unusable", out.stdout + out.stderr)
+        self.assertNotIn("no route", out.stdout + out.stderr)
+        # The stale row was re-asked, not served.
+        self.assertEqual([p for p, _m in PROBES], ["/v1/messages"])
+
+    def test_an_unimplemented_messages_path_is_not_a_refusal_issue_375(self):
+        # The merge gate's finding: a 501 answers "this gateway does not
+        # implement that operation" — a property of the path, not a refusal
+        # of the model. A chat-only gateway must classify through its working
+        # dialect instead of dying on the Messages API's 501.
+        Gateway.messages_not_implemented = True
+        out = self.run_adapter("--print-config", "--model", "m-noreason")
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertEqual(self.classification().get("m-noreason"), "chat-noreason")
+        # The sweep walked past the 501 and the missing /v1/responses route to
+        # the working chat path (a fifth probe reads the output cap).
+        self.assertEqual([p for p, _m in PROBES][:4],
+                         ["/v1/messages", "/v1/responses",
+                          "/v1/chat/completions", "/v1/chat/completions"])
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

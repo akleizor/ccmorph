@@ -44,8 +44,7 @@ func (l *launcher) inspect(args []string) int {
 		name = picked
 	}
 	if !profile.ValidName(name) {
-		l.err("usage: " + usageLine("inspect"))
-		return 1
+		return l.badName("inspect", name)
 	}
 	if !l.exists(name) {
 		l.noProfile(name)
@@ -165,7 +164,9 @@ func (l *launcher) inspect(args []string) int {
 
 	// Masking is a promise about what leaves the machine, so it gets a row
 	// whatever the profile: on, off, or not available on the route — and a
-	// plain word when the setting is on where nothing is masked (#293).
+	// plain word when the setting is on where nothing is masked (#293). The
+	// off state says what that means and names the switch, so the row can be
+	// read without already knowing the setting (#384).
 	maskVal, maskable := f["env.CCMORPH_MASK"], util.Maskable(typ, base)
 	maskOn, maskBad := util.MaskOn(maskVal)
 	switch {
@@ -174,7 +175,7 @@ func (l *launcher) inspect(args []string) int {
 	case maskable && maskBad:
 		grid(10, "masking", "env.CCMORPH_MASK="+maskVal+"  "+l.dim+"— a launch refuses this value (must be 1 or 0)"+l.reset)
 	case maskable:
-		grid(10, "masking", "off")
+		grid(10, "masking", "off  "+l.dim+"— secrets reach the endpoint as they are; env.CCMORPH_MASK=1 sends them as placeholders"+l.reset)
 	case maskOn:
 		grid(10, "masking", "env.CCMORPH_MASK="+maskVal+"  "+l.dim+"— not available on this route, nothing is masked"+l.reset)
 	default:
@@ -184,7 +185,7 @@ func (l *launcher) inspect(args []string) int {
 	if model != "" && typ == "apikey" {
 		fmt.Println("  " + l.dim + "launches as" + l.reset + "  claude --model " + model)
 	} else if util.Maskable(typ, base) {
-		fmt.Println("  " + l.dim + "launches as" + l.reset + "  claude " + l.dim + "(ccmorph asks which model)"+l.reset)
+		fmt.Println("  " + l.dim + "launches as" + l.reset + "  claude " + l.dim + "(ccmorph asks which model)" + l.reset)
 	} else {
 		fmt.Println("  " + l.dim + "launches as" + l.reset + "  claude " + l.dim + "(Claude Code picks the model)" + l.reset)
 	}

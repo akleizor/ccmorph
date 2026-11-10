@@ -2,7 +2,9 @@
 """Export metadata-only ccmorph receipts for ccusage, one project per profile.
 
 Usage: usage-export --output ROOT [--since YYYYMMDD]
-Then: CLAUDE_CONFIG_DIR=ROOT ccusage claude daily --instances --config ROOT/ccusage.json
+Then, with ccusage installed:
+CLAUDE_CONFIG_DIR=ROOT ccusage claude daily --instances --config ROOT/ccusage.json
+
 A turn the gateway billed carries that cost; a turn the shim priced itself carries
 usage.estimated_cost, a models.dev list price without context tiers, and is marked
 costSource "estimate"; ccusage prices every other turn at its list price (a model
@@ -19,11 +21,19 @@ import math
 import os
 from pathlib import Path
 import re
+import shlex
 import tempfile
 
 BUCKETS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
-# A profile name becomes a folder name; anything else in it is replaced.
+# The profile name is the project label ccusage prints, cut to its head at a narrow
+# terminal, and the folder name; anything else in it is replaced (#383).
 UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
+# The file that marks a projects/ folder as this exporter's own: the folder name is
+# the profile alone now (#383), so ownership can no longer be read from the name, and
+# the output is a ccusage config dir a live Claude Code may write its own project
+# folders into — those must never be reconciled. ccusage reads day files only, so a
+# file with another name is invisible to it.
+MARKER = ".ccmorph-export"
 DAY_FILE = re.compile(r"\d{4}-\d{2}-\d{2}\.jsonl")
 # A sharded receipt folder: one UTC date, the receipt's own stamp's day (#227).
 DAY_DIR = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -134,14 +144,49 @@ def atomic_write(path, text):
             os.unlink(name)
 
 
+def is_ours(folder):
+    """The marker file, not the folder's name, says a folder is this exporter's: the
+    name is the profile alone (#383), and a config dir may hold a live Claude Code's
+    own project folders, which are never ours to reconcile. A symlinked marker is
+    not read: only a regular file this exporter wrote counts."""
+    marker = folder / MARKER
+    return not marker.is_symlink() and marker.is_file()
+
+
+def own(folder):
+    """Mark a profile folder as this exporter's before its first day file lands: the
+    marker, not the name, is what a later run reconciles by (#383)."""
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.close(os.open(folder / MARKER, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+    except FileExistsError:
+        pass  # ours already, or another run marked it first
+
+
+def claimed(folder):
+    """A folder this exporter treats as its own to reconcile: one that carries its
+    marker, or the `ccmorph-<profile>` naming an export before #383 wrote. The folders
+    a run may write into are exactly the folders it would reconcile, so a folder that
+    is neither — a live Claude Code's own project folder in the config dir, or anything
+    a hand placed there — is never written into either, however much it looks like a
+    destination (#383)."""
+    return folder.name.startswith("ccmorph-") or is_ours(folder)
+
+
 def owned_days(projects):
     """The day files this exporter owns, each with the stamp it had: a regular file named
-    YYYY-MM-DD.jsonl for a real calendar date, directly in a `ccmorph-<profile>` folder.
-    A symlink, another name or another folder is never ours, however much it looks
-    like an export."""
+    YYYY-MM-DD.jsonl for a real calendar date, directly in a folder this exporter claims,
+    so a rerun reconciles what earlier naming left behind. A symlink, another name or
+    another folder is never ours, however much it looks like an export."""
     days = {}
-    for folder in projects.glob("ccmorph-*"):
+    try:
+        folders = list(projects.iterdir())
+    except OSError:
+        return days  # no projects dir yet, or one this run cannot read: nothing to reconcile
+    for folder in folders:
         if folder.is_symlink() or not folder.is_dir():
+            continue
+        if not claimed(folder):
             continue
         for entry in os.scandir(folder):
             if not DAY_FILE.fullmatch(entry.name) or not entry.is_file(follow_symlinks=False):
@@ -205,10 +250,26 @@ def export(root, output, since=None):
         if key in seen:
             continue
         seen.add(key)
-        folder = "ccmorph-" + UNSAFE.sub("_", record["ccmorph"]["profile"] or "unknown")
+        # The profile name is the whole label, so nothing constant eats the width a
+        # narrow terminal leaves it (#383); a profile that is no folder (only damage
+        # writes one — a name is letters, digits and underscores) lands with the
+        # profile-less.
+        folder = UNSAFE.sub("_", record["ccmorph"]["profile"] or "unknown")
+        if folder in (".", ".."):
+            folder = "unknown"
         days.setdefault((folder, stamp.astimezone().strftime("%Y-%m-%d")), []).append(record)
-    # Validate the whole input before replacing any prior export.
+    # Validate the whole input before replacing any prior export — and the output too:
+    # a destination folder that is already there and not this exporter's is never taken
+    # over by being written into, because the marker the write leaves would make a later
+    # run remove that folder's other day files too (#383). The collision fails the whole
+    # export before anything is written, naming the folder as a malformed receipt is
+    # named: the folder keeps its owner.
+    for folder in dict.fromkeys(folder for folder, _ in days):
+        target = projects / folder
+        if target.is_symlink() or (target.exists() and not claimed(target)):
+            raise ValueError(f"projects/{folder} already exists and is not this exporter's")
     for (folder, day), records in days.items():
+        own(projects / folder)
         atomic_write(projects / folder / f"{day}.jsonl",
                      "".join(json.dumps(r, separators=(",", ":")) + "\n" for r in sorted(records, key=lambda r: r["timestamp"])))
     # A snapshot of this run's range: an owned day no usable receipt supports any more goes,
@@ -231,25 +292,73 @@ def export(root, output, since=None):
     config = {"defaults": {"mode": "auto", "breakdown": True}}
     atomic_write(output / "ccusage.json", json.dumps(config, indent=2) + "\n")
     rows = [r for records in days.values() for r in records]
+    # The three priced kinds are the whole export, so a reader can reconcile the
+    # counts: gateway + estimate + list is rows (#382).
     return {"rows": len(seen), "days": len({d for _, d in days}), "unpriced": unpriced,
             # usd is what a gateway itself billed; an estimate is its own total.
             "usd": sum(r.get("costUSD", 0) for r in rows if r["ccmorph"]["costSource"] == "gateway"),
             "estimated_usd": sum(r.get("costUSD", 0) for r in rows if r["ccmorph"]["costSource"] == "estimate"),
             "gateway_rows": sum(r["ccmorph"]["costSource"] == "gateway" for r in rows),
-            "estimated_rows": sum(r["ccmorph"]["costSource"] == "estimate" for r in rows)}
+            "estimated_rows": sum(r["ccmorph"]["costSource"] == "estimate" for r in rows),
+            "list_rows": sum(r["ccmorph"]["costSource"] == "list" for r in rows)}
+
+
+def report(stats, output):
+    """The end of an export, for the person who ran it: where the files went,
+    every count by a name that adds up, money at cents, and the exact command
+    that reads the result — not a machine's JSON line (#382)."""
+    root = os.path.abspath(output)
+
+    def count(n, word):
+        return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+    return "\n".join([
+        f"Exported {count(stats['rows'], 'turn')} over {count(stats['days'], 'day')} to {root}",
+        "one folder per profile under projects/, ccusage.json beside it",
+        f"{count(stats['gateway_rows'], 'turn')} the gateway billed, ${stats['usd']:.2f}",
+        f"{count(stats['estimated_rows'], 'turn')} ccmorph estimated, ${stats['estimated_usd']:.2f}",
+        f"{count(stats['list_rows'], 'turn')} left for ccusage to price at its list price",
+        f"{count(stats['unpriced'], 'turn')} unpriced (a damaged cost, not exported)",
+        "Then, with ccusage installed:",
+        # Both paths shell-quoted, so a folder with spaces in its name does not
+        # tear the command apart at the first space (#382).
+        f"CLAUDE_CONFIG_DIR={shlex.quote(root)} ccusage claude daily --instances "
+        f"--config {shlex.quote(os.path.join(root, 'ccusage.json'))}",
+    ])
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--source", type=Path, default=Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "ccmorph/usage")
-    parser.add_argument("--since", help="First local date to export, YYYYMMDD; default all history")
+    # RawDescriptionHelpFormatter keeps the authored lines: the ccusage command
+    # stays on its own line, ready to copy, instead of reflowing into one
+    # paragraph (#382).
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--output", type=Path, required=True, metavar="ROOT",
+                        help="directory the export lands in")
+    parser.add_argument("--source", type=Path, metavar="ROOT",
+                        default=Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "ccmorph/usage",
+                        help="ccmorph receipt store to read; default the state root's usage/")
+    parser.add_argument("--since", metavar="YYYYMMDD",
+                        help="first local date to export; default all history")
     args = parser.parse_args()
+    since = None
+    if args.since is not None:
+        try:
+            # Exactly eight digits before the calendar is read: strptime alone
+            # accepts unpadded fields (2026111 as 2026-11-01), and an explicitly
+            # empty value must not slip through as all history either (#382).
+            if not re.fullmatch(r"[0-9]{8}", args.since):
+                raise ValueError
+            since = dt.datetime.strptime(args.since, "%Y%m%d").astimezone()
+        except ValueError:
+            # Name the format the person is asked for, not strptime's own.
+            parser.exit(1, f"usage-export: --since '{args.since}' must be a date as "
+                           "YYYYMMDD, for example 20261110\n")
     try:
-        since = dt.datetime.strptime(args.since, "%Y%m%d").astimezone() if args.since else None
-        print(json.dumps(export(args.source, args.output, since)))
+        stats = export(args.source, args.output, since)
     except (OSError, ValueError) as exc:
         parser.exit(1, f"usage-export: {exc}\n")
+    print(report(stats, args.output))
 
 
 if __name__ == "__main__":

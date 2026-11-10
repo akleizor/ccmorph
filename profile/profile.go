@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -58,10 +59,47 @@ var (
 	}
 )
 
-// ValidName mirrors _ccm_valid: [A-Za-z0-9_]+, never a reserved name in any case.
+// MaxNameLen is the longest profile name. The longest file a profile makes is
+// ".<name>.bridge.users" (+14), so 200 leaves every derived name far under
+// NAME_MAX while staying past any name a person types.
+const MaxNameLen = 200
+
+// ValidName mirrors _ccm_valid: [A-Za-z0-9_]+, at most MaxNameLen bytes, never
+// a reserved name in any case.
 func ValidName(s string) bool {
 	l := strings.ToLower(s)
-	return nameRE.MatchString(s) && l != "active" && l != "ccmorph"
+	return len(s) <= MaxNameLen && nameRE.MatchString(s) && l != "active" && l != "ccmorph"
+}
+
+// BadNameMsg is the one refusal every command gives a word that can never be a
+// profile name (#373): one line, the reason, and the name shown short and
+// printable.
+func BadNameMsg(name string) string {
+	head := "invalid profile name '" + shownName(name) + "': "
+	switch {
+	case !nameRE.MatchString(name):
+		return head + "a name may hold only A-Z, a-z, 0-9 and _ (no hyphen, dot, slash or space)"
+	case len(name) > MaxNameLen:
+		return head + "too long; at most " + strconv.Itoa(MaxNameLen) + " of A-Z, a-z, 0-9 and _"
+	}
+	return head + "that word is reserved; choose another"
+}
+
+// shownName is the name as a refusal shows it: at most 32 runes, with control
+// and other non-printing runes replaced so a reply is always one short line.
+func shownName(s string) string {
+	var b strings.Builder
+	for i, r := range []rune(s) {
+		if i == 32 {
+			b.WriteString("…")
+			break
+		}
+		if !unicode.IsPrint(r) {
+			r = '?'
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // Read loads state/<name>.conf. warn receives one line per removed key. With

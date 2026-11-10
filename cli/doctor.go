@@ -339,8 +339,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		return 1
 	}
 	if !profile.ValidName(name) {
-		l.status("FAIL", "profile: invalid profile name")
-		return 1
+		return l.badName("doctor", name)
 	}
 	// A default written by an older ccmorph carries the spelling the person
 	// typed; read it as the profile that is really there, as use and list do.

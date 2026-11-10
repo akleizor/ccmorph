@@ -637,19 +637,36 @@ func Main(argv []string) int {
 		// refusal the endpoint answered must reach the ready-file reader as
 		// its true cause and the one step that repairs it — never a bare
 		// process death, and never a cause that is not what happened (#357).
+		// A rejected key is dead whatever model is named, so its refusal needs
+		// no model to be actionable (#374); the other refusals are about the
+		// listing itself, where no model named means no launch can pick one.
 		var refused refusingStatus
-		if a.auto && required == "" && errors.As(err, &refused) {
-			switch refused.code {
-			case 404:
-				fmt.Printf("EXIT=the endpoint offers no model list (HTTP 404) and no model is set; save one: ccmorph set %s model <model-id>\n",
-					a.profile)
-			case 401, 403:
+		if a.auto && errors.As(err, &refused) {
+			if refused.code == 401 || refused.code == 403 {
 				fmt.Printf("EXIT=the endpoint rejected the API key (HTTP %d); replace it: ccmorph config %s\n",
 					refused.code, a.profile)
-			default:
-				fmt.Printf("EXIT=the endpoint answered HTTP %d when asked for its model list; check the endpoint, or change it: ccmorph config %s\n",
-					refused.code, a.profile)
+				return 1
 			}
+			if required == "" {
+				switch refused.code {
+				case 404:
+					fmt.Printf("EXIT=the endpoint offers no model list (HTTP 404) and no model is set; save one: ccmorph set %s model <model-id>\n",
+						a.profile)
+				default:
+					fmt.Printf("EXIT=the endpoint answered HTTP %d when asked for its model list; check the endpoint, or change it: ccmorph config %s\n",
+						refused.code, a.profile)
+				}
+				return 1
+			}
+		}
+		// A gateway that answered the launch's message with a refusal — an
+		// empty balance, a rate limit, its own failure — has named the launch's
+		// true cause: the reader sees the status and the gateway's own words,
+		// never an adapter problem (#375).
+		var refusal messageRefusal
+		if a.auto && required != "" && errors.As(err, &refusal) {
+			logf("%v", refusal)
+			fmt.Printf("EXIT=%v\n", refusal)
 			return 1
 		}
 		die("%v", err)

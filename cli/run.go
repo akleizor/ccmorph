@@ -31,6 +31,10 @@ func runFlag(a string) bool {
 	return a == "-a" || a == "--profile" || strings.HasPrefix(a, "--profile=") || a == "-i" || a == "--interactive"
 }
 
+// probeListing is the launch's key pre-flight probe, a package var so a test can
+// answer a listing without a network.
+var probeListing = util.ProbeListing
+
 // launch is one pass of _ccm_launch: nil when the run is over (rc is its status),
 // or the relaunch a hop asked for.
 func (l *launcher) launch(name string, interactive, native bool, argv []string) (*relayNext, int) {
@@ -81,8 +85,7 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 	}
 	if name != "" {
 		if !profile.ValidName(name) {
-			l.err("invalid profile name '" + name + "'")
-			return nil, 2
+			return nil, l.badName("run", name)
 		}
 	} else if active, ok := l.readActive(); ok {
 		name = active
@@ -176,7 +179,7 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 			l.err("-i needs an profile: name one, or set a default with ccmorph use <profile>")
 			return nil, 2
 		}
-		picked, ok := l.pickValue("model", name)
+		picked, ok := l.pickLaunchModel(name, defaultModel)
 		if !ok {
 			return nil, 1
 		}
@@ -188,9 +191,13 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 		// The pick answers this launch only; without the keep command the next
 		// one asks again, and a person cannot guess why (#360). The id is quoted
 		// as a shell would need it: a listing can serve ids like vendor[beta],
-		// which a pasted bare word would glob away in zsh.
-		fmt.Fprintf(os.Stderr, "%sccmorph: %s runs this session only — keep it with: ccmorph set %s model %s%s\n",
-			l.dim, picked, name, shQuote(picked), l.reset)
+		// which a pasted bare word would glob away in zsh. Keeping the saved
+		// model is not a pick to keep: the note would send a person to save what
+		// is already saved (#377).
+		if picked != defaultModel {
+			fmt.Fprintf(os.Stderr, "%sccmorph: %s runs this session only — keep it with: ccmorph set %s model %s%s\n",
+				l.dim, picked, name, shQuote(picked), l.reset)
+		}
 	}
 	if routed && explicit == "" && resume != "" {
 		if m, ok := l.resumeModel(resume); ok {
@@ -271,24 +278,44 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 				}
 				// A native endpoint has no model picker, so nothing asked Anthropic
 				// whether the key works before Claude Code opened a session that dies
-				// on its first message (#255). Ask the way doctor does — only a
-				// rejection stops the launch, so a network that stays silent or
-				// answers anything else keeps out of the way — with the wording a
-				// gateway profile already gets. A launch that opens no session — a
-				// Claude subcommand, or its version or help printout, told from a
-				// flag-shaped option value by the same arity-aware walk the flags
-				// get (#334) — passes its arguments through untouched (INTENT
-				// promise 6) and has no first message for a rejected key to kill,
-				// so it keeps out of the way too.
-				if !needsAdapter && !subcommand && !util.OpensNoSession(args, table) {
+				// on its first message (#255). A gateway's listing is asked anyway —
+				// for served ids and context — but with the status thrown away, so a
+				// key the gateway rejected read as no listing at all and the launch
+				// waited on an adapter whose every request repeated the rejection
+				// (#374). Both ask the way doctor does — only a rejection stops the
+				// launch, so a network that stays silent or answers anything else
+				// keeps out of the way — with the wording a gateway profile already
+				// gets. A launch that opens no session — a Claude subcommand, or its
+				// version or help printout, told from a flag-shaped option value by
+				// the same arity-aware walk the flags get (#334) — passes its
+				// arguments through untouched (INTENT promise 6) and has no first
+				// message for a rejected key to kill, so it keeps out of the way too.
+				if !subcommand && !util.OpensNoSession(args, table) {
 					base, _ := envGet(penv, "ANTHROPIC_BASE_URL")
-					if base == "" {
-						base = "https://api.anthropic.com"
-					}
-					if _, code := util.ProbeListing(base, k, "anthropic-version: 2023-06-01"); code == "401" || code == "403" {
-						rejected, _ := strconv.Atoi(code)
-						l.err(listingFailure(name, profile.RedactURL(base), rejected))
-						return fail()
+					if !needsAdapter {
+						if base == "" {
+							base = "https://api.anthropic.com"
+						}
+						if _, code := probeListing(base, k, "anthropic-version: 2023-06-01"); code == "401" || code == "403" {
+							rejected, _ := strconv.Atoi(code)
+							l.err(listingFailure(name, profile.RedactURL(base), rejected))
+							return fail()
+						}
+					} else {
+						// Doctor's own request for a gateway — no anthropic-version
+						// header — so what doctor calls a rejection, launch does too.
+						body, code := probeListing(base, k)
+						if code == "401" || code == "403" {
+							rejected, _ := strconv.Atoi(code)
+							l.err(listingFailure(name, profile.RedactURL(base), rejected))
+							return fail()
+						}
+						if strings.HasPrefix(code, "2") && len(code) == 3 {
+							// The listing this pass was about to fetch anyway is
+							// already in hand, so the happy path still asks the
+							// route once.
+							l.memo[base+"\x1f"+k] = strings.TrimRight(body, "\n")
+						}
 					}
 				}
 			}
@@ -1318,12 +1345,17 @@ func (l *launcher) adapterStart(name, model string) bool {
 	cmd.Stderr = os.Stderr
 	out, err := cmd.Output()
 	if err != nil {
-		// Plain words first when the cause is the route itself (#286), then the
-		// one command that diagnoses the whole route.
-		if why := l.routeRefusal(name); why != "" {
-			fmt.Fprintln(os.Stderr, "  "+why+".")
+		// A refusal the adapter worded itself — the cause and the one command
+		// that repairs it — is the whole message: the route checks would repeat
+		// the cause and name a command that disagrees with it (#374). A bare
+		// death or a timeout still gets plain words first when the cause is the
+		// route itself (#286), then the one command that diagnoses the route.
+		if !strings.Contains(string(out), util.Refused) {
+			if why := l.routeRefusal(name); why != "" {
+				fmt.Fprintln(os.Stderr, "  "+why+".")
+			}
+			fmt.Fprintln(os.Stderr, "  Check the route: ccmorph doctor "+name)
 		}
-		fmt.Fprintln(os.Stderr, "  Check the route: ccmorph doctor "+name)
 		if l.logPath != "" && fileExists(l.logPath) {
 			fmt.Fprintln(os.Stderr, "  Log: "+l.logPath)
 		}

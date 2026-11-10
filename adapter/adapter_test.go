@@ -691,31 +691,65 @@ func TestAModelMustBeNamedWhenNoListingModelCanBePicked(t *testing.T) { // issue
 	}
 }
 
-func TestARefusedListingNamesItsTrueCause(t *testing.T) { // issue #357
+func TestARefusedListingNamesItsTrueCause(t *testing.T) { // issues #357, #374
 	// A rejected key is not an absent model list: the refusal must name the
-	// credential and its repair, never a model-setting step that cannot fix it.
-	dir := t.TempDir()
-	os.MkdirAll(filepath.Join(dir, ".adapter-cache"), 0o755)
-	swap(t, &profileDirs, dir)
-	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gateway"})
-	swap(t, &inventoryFn, func(string, string, *http.Client) ([]string, error) {
-		return nil, refusingStatus{401}
-	})
-	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
-		panic("nothing is served")
-	})
-	stdio := captureStdio(t)
-	var status int
-	exits(t, func() { status = Main([]string{"demo", "--auto"}) })
-	if status != 1 {
-		t.Fatalf("Main = %d, want 1", status)
-	}
-	out := stdio()
-	if !strings.Contains(out, "rejected the API key (HTTP 401)") || !strings.Contains(out, "replace it: ccmorph config demo") {
-		t.Fatalf("the refusal must name the rejected key and its repair, got: %s", out)
-	}
-	if strings.Contains(out, "offers no model list") || strings.Contains(out, "set demo model") {
-		t.Fatalf("a rejected key is not an absent model list, so the refusal must not say it is; got: %s", out)
+	// credential and its repair, never a model-setting step that cannot fix it —
+	// on whichever path the launch met the listing, and without spending
+	// inference requests a rejected key answers the same way (#374).
+	for _, tc := range []struct {
+		name  string
+		argv  []string
+		setup func(t *testing.T) func() int
+	}{
+		{"no model named", []string{"demo", "--auto"}, func(t *testing.T) func() int {
+			swap(t, &inventoryFn, func(string, string, *http.Client) ([]string, error) {
+				return nil, refusingStatus{401}
+			})
+			return func() int { return 0 }
+		}},
+		{"a model is named", []string{"demo", "--auto", "--model", "m"}, func(t *testing.T) func() int {
+			swap(t, &dialectAutoFn, func(_, _, _ string) (string, string, int) {
+				return "unusable", noInference + ": HTTP Error 401", 401
+			})
+			calls := 0
+			swap(t, &dialectOfFn, func(_, _, _ string, _ bool) (string, string, int) {
+				calls++
+				return "unusable", "HTTP Error 401", 401
+			})
+			return func() int { return calls }
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			os.MkdirAll(filepath.Join(dir, ".adapter-cache"), 0o755)
+			swap(t, &profileDirs, dir)
+			stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gateway"})
+			inferences := tc.setup(t)
+			swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
+				panic("nothing is served")
+			})
+			stdio := captureStdio(t)
+			// The refusal must be Main's own return, never a death on the way:
+			// exits discards the intercepted code, so a die leaves status 0.
+			var status int
+			exits(t, func() { status = Main(tc.argv) })
+			if status != 1 {
+				t.Fatalf("Main = %d, want 1", status)
+			}
+			out := stdio()
+			if !strings.Contains(out, "EXIT=") || !strings.Contains(out, "rejected the API key (HTTP 401)") || !strings.Contains(out, "replace it: ccmorph config demo") {
+				t.Fatalf("the refusal must be the structured EXIT= line naming the rejected key and its repair, got: %s", out)
+			}
+			if strings.Contains(out, "offers no model list") || strings.Contains(out, "set demo model") {
+				t.Fatalf("a rejected key is not an absent model list, so the refusal must not say it is; got: %s", out)
+			}
+			if strings.Contains(out, "model m is unusable") {
+				t.Fatalf("a rejected key is not a verdict about the model, so the refusal must not say it is; got: %s", out)
+			}
+			if n := inferences(); n != 0 {
+				t.Fatalf("%d inference request(s) spent on a key the endpoint had already rejected", n)
+			}
+		})
 	}
 }
 
@@ -756,6 +790,203 @@ func TestAWarmCacheIsNotAModelChoice(t *testing.T) { // issue #357
 	}
 	if strings.Contains(out, "compatibility check") {
 		t.Fatalf("the refusal must not mention a compatibility check, got: %s", out)
+	}
+}
+
+// refusingTransport is the issue's stand-in gateway as an HTTP transport: it
+// answers the model list (HTTP 200) but refuses every /v1/messages request with
+// the given status and body, and answers every other message path with the 404
+// of a route it does not implement. Swapped into the adapter's client, the
+// whole launch path runs for real over it with no socket.
+type refusingTransport struct {
+	status int
+	body   string
+	calls  []string
+}
+
+func (f *refusingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	f.calls = append(f.calls, r.Method+" "+r.URL.Path)
+	code, body := 200, `{"data":[{"id":"eta-opus-1","object":"model"}]}`
+	if r.Method == "POST" {
+		if r.URL.Path == "/v1/messages" {
+			code, body = f.status, f.body
+		} else {
+			code, body = 404, `{"error":"no route"}`
+		}
+	}
+	return &http.Response{StatusCode: code, Status: fmt.Sprintf("%d %s", code, http.StatusText(code)),
+		Body:   io.NopCloser(strings.NewReader(body)),
+		Header: http.Header{"Content-Type": []string{"application/json"}}, Request: r}, nil
+}
+
+// refuseMessages stands the refusing gateway up for the test and guards the
+// launch: a refused message must never front a session.
+func refuseMessages(t *testing.T, status int, body string) *refusingTransport {
+	t.Helper()
+	gw := &refusingTransport{status: status, body: body}
+	swap(t, &client, &http.Client{Transport: gw})
+	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
+		panic("a refused message must not front a session")
+	})
+	return gw
+}
+
+func TestARefusedMessageEndsTheLaunchWithItsStatusAndText(t *testing.T) { // issue #375
+	// The issue's three stand-ins: a gateway that lists its models (HTTP 200)
+	// but refuses every message — an empty balance, a rate limit, a broken
+	// upstream. The refusal is the launch's true cause: it must reach the
+	// ready-file reader with the status and the gateway's own words, never as
+	// an adapter death, and one refused answer must be enough to end it.
+	for _, standIn := range []struct {
+		name        string
+		status      int
+		body        string
+		explanation string
+	}{
+		{"eta-billing", 402,
+			`{"type":"error","error":{"type":"billing_error","message":"Insufficient balance: top up your account to continue"}}`,
+			"Insufficient balance: top up your account to continue"},
+		{"theta-rate-limit", 429,
+			`{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit reached: 3 requests per minute"}}`,
+			"Rate limit reached: 3 requests per minute"},
+		{"eps-server-error", 500,
+			`{"error":{"message":"mock gateway exploded"}}`,
+			"mock gateway exploded"},
+	} {
+		t.Run(standIn.name, func(t *testing.T) {
+			dir := t.TempDir()
+			os.MkdirAll(filepath.Join(dir, ".adapter-cache"), 0o755)
+			swap(t, &profileDirs, dir)
+			stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://standin"})
+			gw := refuseMessages(t, standIn.status, standIn.body)
+			stdio := captureStdio(t)
+			var status int
+			exits(t, func() { status = Main([]string{"demo", "--auto", "--model", "eta-opus-1"}) })
+			if status != 1 {
+				t.Fatalf("Main = %d, want 1 (a refused message must not start a session)", status)
+			}
+			out := stdio()
+			for _, want := range []string{"EXIT=", fmt.Sprintf("HTTP %d", standIn.status), standIn.explanation} {
+				if !strings.Contains(out, want) {
+					t.Errorf("the refusal must say %q, got: %s", want, out)
+				}
+			}
+			// Not an adapter problem, and not a different error than the one the
+			// gateway answered: the old wording called the model unusable and
+			// carried the 404 of a path the stand-in does not implement.
+			for _, stale := range []string{"unusable", "no route", "exited before readiness"} {
+				if strings.Contains(out, stale) {
+					t.Errorf("the refusal must not say %q, got: %s", stale, out)
+				}
+			}
+			// One refused answer ends the launch: the remaining dialect probes
+			// would ask the same gateway the same refused question.
+			if want := []string{"GET /v1/models", "POST /v1/messages"}; !slices.Equal(gw.calls, want) {
+				t.Errorf("the gateway was asked %v, want exactly %v", gw.calls, want)
+			}
+		})
+	}
+}
+
+func TestARefusedMessageIsNotSettledAgainstTheNextLaunch(t *testing.T) { // issue #375
+	// A refusal the gateway answered is account or gateway state, not a
+	// property of the model: no launch may cache it as settled knowledge, or
+	// the next one would die on the stale verdict instead of reporting the
+	// gateway's fresh answer.
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, ".adapter-cache"), 0o755)
+	swap(t, &profileDirs, dir)
+	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://standin"})
+	refuseMessages(t, 402, `{"error":{"message":"Insufficient balance: top up your account to continue"}}`)
+	for launch := 1; launch <= 2; launch++ {
+		stdio := captureStdio(t)
+		var status int
+		exits(t, func() { status = Main([]string{"demo", "--auto", "--model", "eta-opus-1"}) })
+		out := stdio()
+		if status != 1 || !strings.Contains(out, "EXIT=") || !strings.Contains(out, "HTTP 402") ||
+			!strings.Contains(out, "Insufficient balance: top up your account to continue") {
+			t.Fatalf("launch %d: the refusal must reach the reader with its status and text (status %d): %s", launch, status, out)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".adapter-cache", hashHex("https://standin")[:16]+".json")); !os.IsNotExist(err) {
+		t.Fatalf("a refused message must not be cached as settled knowledge: %v", err)
+	}
+}
+
+func TestALegacyCachedRefusalIsReaskedNotServed(t *testing.T) { // issue #375
+	// A version before the fix settled a refused message as a cached unusable
+	// verdict — and the row it actually wrote carried the LAST probe's 404 and
+	// its "no route" note, with status 404, because the refusal's own 402 was
+	// overwritten by the later probes. The cache must not stand between the
+	// person and the gateway's fresh answer.
+	dir := t.TempDir()
+	cache := filepath.Join(dir, ".adapter-cache", hashHex("https://standin")[:16]+".json")
+	os.MkdirAll(filepath.Dir(cache), 0o755)
+	writeCacheJSON(t, cache, map[string]any{"endpoint": "https://standin", "anthropic_path": "/v1/messages",
+		"thinking_probe": thinkingProbeVersion,
+		"rows": []any{rowJSON(Row{Model: "eta-opus-1", Dialect: "unusable",
+			Note: `{"error":"no route"}`, Status: 404})}})
+	swap(t, &profileDirs, dir)
+	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://standin"})
+	gw := refuseMessages(t, 402, `{"error":{"message":"Insufficient balance: top up your account to continue"}}`)
+	stdio := captureStdio(t)
+	var status int
+	exits(t, func() { status = Main([]string{"demo", "--auto", "--model", "eta-opus-1"}) })
+	out := stdio()
+	if status != 1 || !strings.Contains(out, "EXIT=") || !strings.Contains(out, "HTTP 402") ||
+		!strings.Contains(out, "Insufficient balance: top up your account to continue") {
+		t.Fatalf("the fresh refusal must reach the reader (status %d): %s", status, out)
+	}
+	if strings.Contains(out, "cached as unusable") || strings.Contains(out, "no route") {
+		t.Fatalf("a cached refusal must not be served as knowledge: %s", out)
+	}
+	if want := []string{"GET /v1/models", "POST /v1/messages"}; !slices.Equal(gw.calls, want) {
+		t.Errorf("the gateway was asked %v, want exactly %v", gw.calls, want)
+	}
+}
+
+// chatOnlyTransport is a chat-only gateway as an HTTP transport: it lists its
+// models, answers the Messages API with a 501 that says to use chat
+// completions, has no /v1/responses route, and serves /v1/chat/completions.
+type chatOnlyTransport struct{ calls []string }
+
+func (f *chatOnlyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	f.calls = append(f.calls, r.Method+" "+r.URL.Path)
+	code, body := 200, `{"data":[{"id":"chat-only-1","object":"model"}]}`
+	if r.Method == "POST" {
+		switch r.URL.Path {
+		case "/v1/messages":
+			code, body = 501, `{"error":{"message":"Messages API not implemented; use chat completions"}}`
+		case "/v1/responses":
+			code, body = 404, `{"error":"no route"}`
+		case "/v1/chat/completions":
+			code, body = 200, `{"id":"c","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi"}}]}`
+		}
+	}
+	return &http.Response{StatusCode: code, Status: fmt.Sprintf("%d %s", code, http.StatusText(code)),
+		Body:   io.NopCloser(strings.NewReader(body)),
+		Header: http.Header{"Content-Type": []string{"application/json"}}, Request: r}, nil
+}
+
+func TestAnUnimplementedPathIsNotARefusalOfEveryDialect(t *testing.T) { // issue #375
+	// The merge gate's finding: a 501 answers "this gateway does not implement
+	// that operation" — a property of the path, not a refusal of the model. A
+	// chat-only gateway must classify through its working dialect instead of
+	// dying on the Messages API's 501 (INTENT: any provider's model can run).
+	gw := &chatOnlyTransport{}
+	swap(t, &client, &http.Client{Transport: gw})
+	dir := t.TempDir()
+	rows, err := classify("https://standin", "k", filepath.Join(dir, "cache.json"), "chat-only-1", true)
+	if err != nil {
+		t.Fatalf("classify: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Model != "chat-only-1" || rows[0].Dialect != "chat" {
+		t.Fatalf("rows %v, want chat-only-1 speaking chat", rows)
+	}
+	// The sweep walked past the 501 to the working dialect.
+	if want := []string{"GET /v1/models", "POST /v1/messages", "POST /v1/responses",
+		"POST /v1/chat/completions"}; !slices.Equal(gw.calls, want) {
+		t.Errorf("the gateway was asked %v, want %v", gw.calls, want)
 	}
 }
 

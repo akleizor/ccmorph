@@ -130,6 +130,41 @@ func TestReadRefusesBadNamesAndSymlinks(t *testing.T) {
 	}
 }
 
+func TestValidNameCapsTheLength(t *testing.T) {
+	if !ValidName(strings.Repeat("y", MaxNameLen)) {
+		t.Fatal("a name at the limit must be valid")
+	}
+	if ValidName(strings.Repeat("y", MaxNameLen+1)) {
+		t.Fatal("a name one past the limit must be refused")
+	}
+}
+
+// BadNameMsg is the one reply every command gives a name that can never be a
+// profile (#373): the reason, the name shown short, and never a second line.
+func TestBadNameMsg(t *testing.T) {
+	const chars = "a name may hold only A-Z, a-z, 0-9 and _ (no hyphen, dot, slash or space)"
+	for _, c := range []struct{ name, want string }{
+		{"my-work", "invalid profile name 'my-work': " + chars},
+		{"a/b", "invalid profile name 'a/b': " + chars},
+		{"bad name", "invalid profile name 'bad name': " + chars},
+		{"a.b", "invalid profile name 'a.b': " + chars},
+		{"日本語", "invalid profile name '日本語': " + chars},
+		{"a\nb", "invalid profile name 'a?b': " + chars},
+		{strings.Repeat("y", MaxNameLen+100), "invalid profile name '" + strings.Repeat("y", 32) +
+			"…': too long; at most 200 of A-Z, a-z, 0-9 and _"},
+		{"Active", "invalid profile name 'Active': that word is reserved; choose another"},
+		{"ccmorph", "invalid profile name 'ccmorph': that word is reserved; choose another"},
+	} {
+		got := BadNameMsg(c.name)
+		if got != c.want {
+			t.Fatalf("BadNameMsg(%q) = %q, want %q", c.name, got, c.want)
+		}
+		if strings.ContainsAny(got, "\n\r") {
+			t.Fatalf("BadNameMsg(%q) is not one line: %q", c.name, got)
+		}
+	}
+}
+
 func TestValidate(t *testing.T) {
 	for _, c := range []struct {
 		f    map[string]string

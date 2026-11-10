@@ -9,6 +9,66 @@
 
 ### Fixed
 
+- **`ccmorph inspect` explains masking while it is off, and help names
+  masking.** The masking row read `off` with no words, no help page contained
+  the word, and no config screen offered the setting, so a person who wanted
+  secrets kept out of their prompts could not learn what masking is or how to
+  turn it on without opening the guide — the on state explained itself and the
+  off state did not. The off row now says what the state means and names the
+  switch (`off — secrets reach the endpoint as they are; env.CCMORPH_MASK=1
+  sends them as placeholders`); the command catalog's inspect row names
+  masking; and the `inspect` and `config` help pages say what masking does,
+  the conf line that turns it on, where that file is — the state root the
+  machine resolves, so a `CCMORPH_STATE_DIR` or `XDG_CONFIG_HOME` redirect is
+  the path the pages name — and the API-key gateway routes it covers (#384).
+- **The usage export ends with a summary a person can act on.** `usage-export`
+  printed one raw JSON line — long floating-point money, no output folder, no
+  next command — and its counts did not add up for a reader, because the turns
+  ccusage prices itself went unnamed; `--help` reflowed the description into
+  one paragraph, gluing the follow-up ccusage command into the sentence after
+  it, while `--output` and `--source` said nothing at all; and a `--since`
+  date typed with dashes answered with Python's own parse error (`time data
+  '2026-11-10' does not match format '%Y%m%d'`). The export now ends with
+  where the files went, every count by a name that adds up (gateway, estimate,
+  list, unpriced), money rounded to cents, and the exact ccusage command for
+  that folder on its own line, both paths shell-quoted so a folder named with
+  spaces does not break the command; the help page keeps its authored lines —
+  the ccusage command ready to copy — describes every option, and a `--since`
+  that is not exactly eight digits — dashes, an unpadded day, an empty value —
+  is told to write it as YYYYMMDD, for example 20261110 (#382).
+- **The ccusage report names each block with its profile, at any terminal
+  width.** The export named every project folder `ccmorph-<profile>`, and
+  ccusage's daily table cuts each label to its head when the terminal is
+  narrow: at 110 columns every block read `ccmorph…`, so no profile could be
+  told apart — the README's "each profile is one ccusage project" was exactly
+  the part the cut ate. The folder, and so the label, is now the profile
+  alone, so a cut label keeps the profile as its head. Ownership of a folder
+  is no longer read from its name: each one carries a marker file, so a
+  folder a live Claude Code or a hand placed in the config dir is still never
+  touched — not even when its name is the one a profile would take: the
+  export fails before anything is written, naming the folder, so it keeps
+  its owner — and a full rerun clears the `ccmorph-<profile>` day files an
+  export written before this change left behind (#383).
+- **`ccmorph run -i` opens on the profile's saved model.** The launch picker
+  offered a bare catalogue and put the cursor on the alphabetically first
+  model, so pressing Enter straight away started a different model than the
+  profile's default — Haiku on a profile saved as Sonnet — with nothing marking
+  the saved one in the list. The picker now opens on the saved model, marked
+  as the `Keep` row exactly as `set model -i` marks it, so Enter alone means
+  the saved model; a profile with no model saved opens the plain catalogue
+  under a title that says so, and keeping the saved model is no longer
+  announced as a session-only pick (#377).
+- **A word that can never be a profile name gets one reply, from every
+  command.** `ccmorph add my-work` said "use alphanumeric/underscore"; `rm`,
+  `use`, `inspect` and `login` printed a usage line; `run`, `config`, `get`,
+  `set` and `context` exited 2 with "invalid profile name"; `models` said
+  "model listing requires an profile"; `doctor` printed a FAIL row; and `probe`
+  handed the word to the context probe. A 300-letter name instead reached the
+  sign-in menu in `add` and a file path in `rm` and `mv`. Every command now
+  answers one line naming the characters a profile name may hold (or that the
+  name is too long), plus the profiles that do exist when any, exits 1, and
+  stops before touching state. Names are capped
+  at 200 characters, and a name left out still gets the usage line (#373).
 - **`ccmorph context <profile> <model>` answers the window, not the pin.** The
   read form printed `auto` for a model with no manual override — and a bare
   number once one was set — so a person asking for the limit was told the

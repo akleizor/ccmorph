@@ -39,8 +39,7 @@ func (l *launcher) rm(args []string) int {
 		name = args[0]
 	}
 	if !profile.ValidName(name) {
-		l.err("usage: " + usageLine("rm"))
-		return 1
+		return l.badName("rm", name)
 	}
 	// A name that differs only by case is refused before the leftover branch:
 	// on a volume that ignores letter case, profiles/GW2 is the real gw2.
@@ -211,9 +210,14 @@ func moveBridgeFiles(root, from, to string) bool {
 
 // mv is `ccmorph mv <old> <new>`, rolled back whole on any failure.
 func (l *launcher) mv(args []string) int {
-	if len(args) < 2 || !profile.ValidName(args[0]) || !profile.ValidName(args[1]) {
+	if len(args) < 2 {
 		l.err("usage: " + usageLine("mv"))
 		return 1
+	}
+	for _, n := range args[:2] {
+		if !profile.ValidName(n) {
+			return l.badName("mv", n)
+		}
 	}
 	from, to := args[0], args[1]
 	// A volume that ignores letter case cannot hold both names while the rename

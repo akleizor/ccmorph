@@ -30,8 +30,7 @@ func (l *launcher) context(args []string) int {
 		name = picked
 	}
 	if !profile.ValidName(name) {
-		l.err("usage: " + usageLine("context"))
-		return 2
+		return l.badName("context", name)
 	}
 	if !l.exists(name) {
 		l.noProfile(name)
@@ -211,7 +210,7 @@ func (l *launcher) quota(args []string) int {
 		switch {
 		case a == "--json":
 			asJSON = true
-		case strings.HasPrefix(a, "-") || only != "":
+		case only != "":
 			return l.extraArg("quota", a)
 		default:
 			only = a
@@ -219,6 +218,9 @@ func (l *launcher) quota(args []string) int {
 	}
 	names := l.confNames()
 	if only != "" {
+		if !profile.ValidName(only) {
+			return l.badName("quota", only)
+		}
 		if !l.exists(only) {
 			l.noProfile(only)
 			return 1
