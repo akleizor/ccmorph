@@ -83,4 +83,5 @@ func TestProbe2604HowTheOldStubSleeperReads(t *testing.T) {
 	go cmd.Wait()
 	t.Cleanup(func() { cmd.Process.Kill() })
 	facts("go-started", cmd.Process.Pid, cdir)
+	t.Errorf("PROBE2604 deliberate failure so the printed facts surface; temporary diagnostic, deleted before landing")
 }
