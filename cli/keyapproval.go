@@ -11,6 +11,13 @@ import (
 // turns the profile's key off for good.
 const keyQuestionHint = `Claude Code will ask "Do you want to use this API key?": choose Yes — the highlighted No turns this profile's key off.`
 
+// keyRefusedMsg is the refusal a stored No answer earns, in the launch's own
+// words: neither a launch nor a hop that checks one overrides the person's
+// answer behind their back.
+func keyRefusedMsg(name string) string {
+	return "Claude Code was told not to use the API key of '" + name + "' (the No answer to \"Do you want to use this API key?\"), so it would open its login menu instead; nothing started. Fix: ccmorph login " + name
+}
+
 // keyApproval makes sure Claude Code will use the profile's key before it
 // starts, so a first launch never reaches the question whose default turns the
 // key off. A key the person refused earlier is not overridden behind their
@@ -19,7 +26,7 @@ func (l *launcher) keyApproval(name, key string) bool {
 	home := filepath.Join(l.profileDirs, name)
 	switch util.KeyResponse(home, key) {
 	case util.KeyRefused:
-		l.err("Claude Code was told not to use the API key of '" + name + "' (the No answer to \"Do you want to use this API key?\"), so it would open its login menu instead; nothing started. Fix: ccmorph login " + name)
+		l.err(keyRefusedMsg(name))
 		return false
 	case util.KeyApproved:
 		return true
