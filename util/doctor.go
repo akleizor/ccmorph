@@ -228,12 +228,10 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 // adapterLine is the one adapter row, or none (kind ""). running is
 // runningAdapter's answer and listing the model list doctor read ("" if none).
 // The first applicable answer wins: what launch would do from the cache and the
-// declared protocols — but only where a launch without a model could act on it,
-// because a cached row for a model the listing no longer serves decides nothing
-// such a launch could pick (#379); else what an open session shows; else, when
-// no model is set and none can be picked from the listing, that no translator
-// starts until one is chosen — and that a hop here will need a saved model,
-// because a resumed hop opens no model picker (#379). A saved model nothing has
+// declared protocols; else what an open session shows; else, when no model is
+// set and none can be picked from the listing, that no translator starts until
+// one is chosen — and that a hop here will need a saved model, because a
+// resumed hop opens no model picker (#379). A saved model nothing has
 // classified is left out: only a billed check could answer it, and doctor
 // sends none.
 func adapterLine(name, model, listing, running string, n TranslatorNeed) (kind, msg string) {
@@ -242,20 +240,7 @@ func adapterLine(name, model, listing, running string, n TranslatorNeed) (kind, 
 	if translator {
 		inUse = "; an open session on this profile is using one now"
 	}
-	// No model is set, the listing leaves the adapter nothing to pick, and no
-	// open session shows this profile running: a hop here needs a saved model
-	// (#379). An open session answers first — it already shows the profile at
-	// work — so the warning never displaces it.
-	stale := strings.TrimSpace(model) == "" && listing != "" && !n.Pickable &&
-		!(running != "" && running != "__UNKNOWN__")
 	switch {
-	case stale:
-		installed := "cliproxyapi is not installed"
-		if n.Installed {
-			installed = "cliproxyapi is installed"
-		}
-		return "INFO", "adapter: this profile needs no translator until a model is chosen, and a hop here will need a saved model (none is set, and none can be picked from the endpoint's model list); " +
-			installed + "; list them: ccmorph models " + name + ", then save one: ccmorph set " + name + " model <model-id>"
 	case n.Known && n.Needed && n.Installed:
 		return "OK", "adapter: this endpoint needs a translator; cliproxyapi is installed" + inUse
 	case n.Known && n.Needed:
@@ -266,6 +251,13 @@ func adapterLine(name, model, listing, running string, n TranslatorNeed) (kind, 
 		return "OK", "adapter: this profile needs a translator now: an open session on it is running cliproxyapi"
 	case running != "" && running != "__UNKNOWN__":
 		return "OK", "adapter: this profile needs no translator now: its open session runs without one"
+	case strings.TrimSpace(model) == "" && listing != "":
+		installed := "cliproxyapi is not installed"
+		if n.Installed {
+			installed = "cliproxyapi is installed"
+		}
+		return "INFO", "adapter: this profile needs no translator until a model is chosen, and a hop here will need a saved model (none is set, and none can be picked from the endpoint's model list); " +
+			installed + "; list them: ccmorph models " + name + ", then save one: ccmorph set " + name + " model <model-id>"
 	}
 	return "", ""
 }
