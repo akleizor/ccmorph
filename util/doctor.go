@@ -228,9 +228,11 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 // runningAdapter's answer and listing the model list doctor read ("" if none).
 // The first applicable answer wins: what launch would do from the cache and the
 // declared protocols; else what an open session shows; else, when no model is
-// set and nothing names a protocol, that no translator starts until one is
-// chosen. A saved model nothing has classified is left out: only a billed
-// check could answer it, and doctor sends none.
+// set and none can be picked from the listing, that no translator starts until
+// one is chosen — and that a hop here will need a saved model, because a
+// resumed hop opens no model picker (#379). A saved model nothing has
+// classified is left out: only a billed check could answer it, and doctor
+// sends none.
 func adapterLine(name, model, listing, running string, n TranslatorNeed) (kind, msg string) {
 	translator := running != "__UNKNOWN__" && strings.Contains(running, ":cliproxyapi")
 	inUse := ""
@@ -253,8 +255,8 @@ func adapterLine(name, model, listing, running string, n TranslatorNeed) (kind, 
 		if n.Installed {
 			installed = "cliproxyapi is installed"
 		}
-		return "INFO", "adapter: this profile needs no translator until a model is chosen (none is set, and the endpoint's model list names no protocol); " +
-			installed + "; choose one: ccmorph set " + name + " model <model-id>"
+		return "INFO", "adapter: this profile needs no translator until a model is chosen, and a hop here will need a saved model (none is set, and none can be picked from the endpoint's model list); " +
+			installed + "; list them: ccmorph models " + name + ", then save one: ccmorph set " + name + " model <model-id>"
 	}
 	return "", ""
 }

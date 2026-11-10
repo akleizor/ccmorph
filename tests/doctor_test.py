@@ -398,9 +398,11 @@ TRANSLATOR_NOW = ("OK adapter: this profile needs a translator now: "
 NO_TRANSLATOR_NOW = ("OK adapter: this profile needs no translator now: "
                      "its open session runs without one")
 UNTIL_A_MODEL = re.compile(
-    r"INFO adapter: this profile needs no translator until a model is chosen "
-    r"\(none is set, and the endpoint's model list names no protocol\); "
-    r"cliproxyapi is (not )?installed; choose one: ccmorph set demo model <model-id>")
+    r"INFO adapter: this profile needs no translator until a model is chosen, "
+    r"and a hop here will need a saved model "
+    r"\(none is set, and none can be picked from the endpoint's model list\); "
+    r"cliproxyapi is (not )?installed; list them: ccmorph models demo, "
+    r"then save one: ccmorph set demo model <model-id>")
 
 
 @pytest.mark.parametrize("slow", ["", "ps", "lsof"],
