@@ -35,13 +35,22 @@ func TestAdapterStartHandsBackPortAndNeverTheTTY(t *testing.T) {
 }
 
 func TestAdapterStartSaysWhyItFailed(t *testing.T) {
-	for body, want := range map[string]string{
-		"echo 'EXIT=no route for p'": "no route for p",
-		"exit 3":                     "exited before readiness",
+	// Every failure exits 1, a refusal included: the Refused line on stdout is
+	// what tells the launcher the adapter worded the whole message itself, so
+	// it adds nothing to it, where a bare death still gets the route checks
+	// (#374). A child dying with the refusal's own status is still a bare
+	// death: only the EXIT line refuses.
+	for _, tc := range []struct {
+		body    string
+		want    string
+		refused bool
+	}{
+		{"echo 'EXIT=no route for p'", "no route for p", true},
+		{"exit 3", "exited before readiness", false},
 	} {
-		var errw bytes.Buffer
-		if rc := adapterStart([]string{fakeCore(t, body), "p", "m", "1", os.DevNull}, nil, &bytes.Buffer{}, &errw); rc != 1 || !strings.Contains(errw.String(), want) {
-			t.Errorf("%q: rc %d, stderr %q", body, rc, errw.String())
+		var out, errw bytes.Buffer
+		if rc := adapterStart([]string{fakeCore(t, tc.body), "p", "m", "1", os.DevNull}, nil, &out, &errw); rc != 1 || !strings.Contains(errw.String(), tc.want) || tc.refused != strings.Contains(out.String(), Refused) {
+			t.Errorf("%q: rc %d, out %q, stderr %q", tc.body, rc, out.String(), errw.String())
 		}
 	}
 }

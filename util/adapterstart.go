@@ -10,9 +10,17 @@ import (
 	"time"
 )
 
+// Refused is the line adapter-start prints on its stdout when the adapter
+// itself refused with a complete cause-and-repair line: the launcher adds
+// nothing to it, where a bare death or a timeout still gets the route checks
+// (#374). The exit status stays 1 either way; only this line says "refused".
+const Refused = "REFUSED"
+
 // adapterStart is `util adapter-start <core> <profile> <model or ""> <parent pid> <log>`:
 // start `<core> adapter` for a launch and wait for its first readiness line. Prints
-// PID=<n> and then PORT=<n> or NATIVE=1; exit 1 with the reason on stderr.
+// PID=<n> and then PORT=<n> or NATIVE=1; exit 1 with the reason on stderr —
+// after a Refused line on stdout when the adapter's own refusal is the whole
+// message.
 //
 // stdin is /dev/null, never the tty (the 610137d wedge). stdout goes to a file the
 // adapter keeps after this verb exits, so a later line can never hit a closed pipe.
@@ -68,6 +76,10 @@ func adapterStart(args []string, _ io.Reader, out, errw io.Writer) int {
 		fmt.Fprintln(errw, "ccmorph: "+msg)
 		return 1
 	}
+	refuse := func(msg string) int {
+		fmt.Fprintln(out, Refused)
+		return fail(msg)
+	}
 	said := 0
 	for {
 		line := firstLine()
@@ -76,13 +88,13 @@ func adapterStart(args []string, _ io.Reader, out, errw io.Writer) int {
 			fmt.Fprintf(out, "PID=%d\n%s\n", cmd.Process.Pid, line)
 			return 0
 		case strings.HasPrefix(line, "EXIT="):
-			return fail(strings.TrimPrefix(line, "EXIT="))
+			return refuse(strings.TrimPrefix(line, "EXIT="))
 		}
 		select {
 		case <-died:
 			// The last line may have landed between the read above and the exit.
 			if line = firstLine(); strings.HasPrefix(line, "EXIT=") {
-				return fail(strings.TrimPrefix(line, "EXIT="))
+				return refuse(strings.TrimPrefix(line, "EXIT="))
 			} else if strings.HasPrefix(line, "PORT=") || line == "NATIVE=1" {
 				fmt.Fprintf(out, "PID=%d\n%s\n", cmd.Process.Pid, line)
 				return 0

@@ -262,20 +262,24 @@ func truthy(v any) bool {
 const noInference = "cannot determine protocol without inference"
 
 // dialectAuto uses an explicit per-model endpoint declaration, never schema
-// error guesses.
+// error guesses. The status is the refusal's own when the endpoint answered —
+// a rejected key's 401, so the caller can refuse without inference — and 0
+// only when nothing answered (#374).
 func dialectAuto(base, key, model string) (string, string, int) {
 	resp, err := do(client, "GET", apiURL(base, "/v1/models"), nil, keyHeaders(key), probeTimeout)
 	var doc map[string]any
+	status := 0
 	if err == nil {
 		defer resp.Body.Close()
 		if resp.StatusCode >= 300 {
 			err = fmt.Errorf("HTTP Error %d", resp.StatusCode)
+			status = resp.StatusCode
 		} else {
 			err = json.NewDecoder(resp.Body).Decode(&doc)
 		}
 	}
 	if err != nil {
-		return "unusable", noInference + ": " + err.Error(), 0
+		return "unusable", noInference + ": " + err.Error(), status
 	}
 	rows, _ := doc["data"].([]any)
 	for _, r := range rows {
