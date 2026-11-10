@@ -20,7 +20,7 @@ from support import CLAUDE_MISSING, FAKE_SERVER_NO_DNS, HANG_TIMEOUT
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_doctor(tmp_path, conf, curl=None, args=(), claude=None, home=True):
+def run_doctor(tmp_path, conf, curl=None, args=(), claude=None, home=True, env_extra=None):
     state = tmp_path / "state"
     home_dir = tmp_path / "home"
     bindir = tmp_path / "bin"
@@ -59,6 +59,8 @@ def run_doctor(tmp_path, conf, curl=None, args=(), claude=None, home=True):
            "CCMORPH_STATE_DIR": str(state), "CCMORPH_LIB_DIR": str(ROOT / "lib"),
            "CURL_ARGS": str(bindir / "curl.args"), "CURL_CALLED": str(bindir / "called"),
            "DOCTOR_MARKER": str(bindir / "doctor.marker")}
+    if env_extra:
+        env.update(env_extra)
     result = subprocess.run([str(ROOT / "bin/ccmorph"), "doctor", *args, "demo"], env=env,
                             capture_output=True, text=True, timeout=HANG_TIMEOUT)
     return result, state / "demo.conf", bindir
@@ -1262,6 +1264,13 @@ def test_doctor_on_a_fresh_install_reports_the_environment(tmp_path):
     assert not (state / "profiles").exists()
     assert sorted(p.name for p in state.iterdir()) == []
 
+def test_bare_doctor_names_both_completion_lines_gh363(tmp_path):
+    # Issue #363: a fresh home runs neither the fpath line nor compinit, so the
+    # no-profile doctor must print both halves of the completion hint.
+    result, _ = run_bare_doctor(tmp_path)
+    assert "INFO   fpath=(" in result.stdout, result.stdout
+    assert "INFO   autoload -Uz compinit && compinit # add both lines to ~/.zshrc" in result.stdout, result.stdout
+
 
 def test_doctor_on_a_fresh_install_fails_without_claude(tmp_path):
     result, _ = run_bare_doctor(tmp_path, claude=False)
@@ -1291,3 +1300,54 @@ def test_doctor_checks_python_only_where_remote_control_is_in_use(tmp_path):
     assert "FAIL remote control interpreter: not found (need 3.8 or newer)" in absent.stdout
     ok, _ = run_bare_doctor(tmp_path / "ok", python="#!/bin/sh\necho 3.12.1\nexit 0\n", rc_hosts=True)
     assert "OK remote control interpreter: 3.12.1" in ok.stdout, ok.stdout
+
+
+def zsh_fpath_fails_compaudit(shell):
+    # GitHub's Ubuntu image runs `chmod -R 777 /usr/share`, so compaudit rejects
+    # zsh's own fpath there and a plain compinit aborts without a terminal.
+    env = {k: v for k, v in os.environ.items() if k not in ("FPATH", "ZDOTDIR")}
+    probe = subprocess.run([shell, "-fc", "autoload -Uz compaudit && compaudit"],
+                           env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                           text=True, timeout=HANG_TIMEOUT)
+    return probe.returncode != 0
+
+
+def test_doctor_completion_row_lasts_until_a_new_zsh_completes(tmp_path):
+    # Issue #363: the row used to vanish once the .zshrc carried the fpath
+    # line, though zsh runs no completion system by itself — Tab completed
+    # nothing. The row must stay until a new zsh completes the ccmorph
+    # command, and say only the half the startup files still miss.
+    conf = "type=apikey\napi_key=k\n"
+    home = tmp_path / "home"
+    home.mkdir()
+    # A copy no group can write: compinit refuses a group-writable fpath
+    # directory (a checkout made under umask 002, as on CI, is one) and would
+    # leave a new zsh with no completion, which is not the case under test.
+    install = tmp_path / "install"
+    install.mkdir(mode=0o755)
+    (install / "lib").symlink_to(ROOT / "lib")
+    (install / "libexec").symlink_to(ROOT / "libexec")
+    site = install / "share/zsh/site-functions"
+    shutil.copytree(ROOT / "share/zsh/site-functions", site)
+    for d in (install / "share", install / "share/zsh", site):
+        d.chmod(0o755)
+    for f in site.iterdir():
+        f.chmod(0o644)
+    shell = shutil.which("zsh") or "/bin/zsh"
+    (home / ".zshrc").write_text(f"fpath=({site} $fpath)\n")
+    result, _, _ = run_doctor(tmp_path, conf, claude=False,
+                              env_extra={"SHELL": shell, "ZDOTDIR": str(home),
+                                         "CCMORPH_LIB_DIR": str(install / "lib")})
+    assert "INFO completion:" in result.stdout
+    assert "autoload -Uz compinit && compinit" in result.stdout
+    assert f"fpath=({site} $fpath)" not in result.stdout
+    # The fpath line followed by the missing half: a new zsh now completes
+    # ccmorph, so doctor stops reporting a completion problem.
+    compinit = "autoload -Uz compinit && compinit"
+    if zsh_fpath_fails_compaudit(shell):
+        compinit += " -u"  # the host's own fpath, not the hint, fails there
+    (home / ".zshrc").write_text(f"fpath=({site} $fpath)\n{compinit}\n")
+    result, _, _ = run_doctor(tmp_path, conf, claude=False,
+                              env_extra={"SHELL": shell, "ZDOTDIR": str(home),
+                                         "CCMORPH_LIB_DIR": str(install / "lib")})
+    assert "INFO completion:" not in result.stdout
