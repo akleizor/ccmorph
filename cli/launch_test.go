@@ -152,7 +152,9 @@ func TestRunClaudeStartsWhenTmpdirCannotBeWritten(t *testing.T) {
 // for the claude that ran as pid, and consumes the record: a launcher that
 // died is swept by gc-stale, never re-read. The file sits in a shared TMPDIR
 // anyone can write, so a record that is not a session id reads as no session
-// rather than reaching the terminal (#285).
+// rather than reaching the terminal (#285), and a name that is not a regular
+// file — a link another account planted, or a FIFO that would wait for a
+// writer — reads as no record rather than being followed or waited on (#410).
 func TestReadEndedSession(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
@@ -178,6 +180,28 @@ func TestReadEndedSession(t *testing.T) {
 	if got := readEndedSession(4194305); got != "" {
 		t.Fatalf("another session's record read as %q", got)
 	}
+	if err := syscall.Mkfifo(f, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fifoWriter(f, "sid-410")
+	if got := readEndedSession(4194304); got != "" {
+		t.Fatalf("a fifo at the record's name read as %q", got)
+	}
+}
+
+// fifoWriter answers a reader that opens the FIFO at path, so a reader that
+// wrongly takes the FIFO for a record completes instead of hanging the test:
+// it writes body and closes. A reader that refuses the FIFO never opens it, so
+// the writer stays where it is; nothing waits on it.
+func fifoWriter(path, body string) {
+	go func() {
+		w, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			return
+		}
+		_, _ = w.WriteString(body)
+		w.Close()
+	}()
 }
 
 // runClaude reads the record the SessionEnd hook of the claude it waited on
@@ -210,7 +234,8 @@ func TestRunClaudeReadsTheEndedSessionRecord(t *testing.T) {
 // draws Claude Code's own "No conversation found", and the failed resume run
 // would print the same unusable command again (#359). A session that spoke keeps
 // its hint (#285), and so does one whose record names no transcript: nothing
-// says it is empty.
+// says it is empty. A transcript path that is a FIFO is not read at all: it
+// would wait for a writer that never comes and hang the launch (#410).
 func TestResumeHintNeedsAConversationToOffer(t *testing.T) {
 	dir := t.TempDir()
 	// The record a first message writes: the identity a --resume looks for (#288).
@@ -221,6 +246,11 @@ func TestResumeHintNeedsAConversationToOffer(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "quiet.jsonl"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	fifo := filepath.Join(dir, "fifo.jsonl")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fifoWriter(fifo, spoken)
 	hint := "\nccmorph: resume this session with: ccmorph run work --resume sid-359\n"
 	for _, c := range []struct {
 		name       string
@@ -231,6 +261,7 @@ func TestResumeHintNeedsAConversationToOffer(t *testing.T) {
 		{"a session that ended before its first message", filepath.Join(dir, "quiet.jsonl"), ""},
 		{"a session whose transcript was never written", filepath.Join(dir, "ghost.jsonl"), ""},
 		{"a record that names no transcript", "", hint},
+		{"a transcript that is a fifo", fifo, ""},
 	} {
 		l := &launcher{ended: "sid-359", endedTranscript: c.transcript}
 		if out, _ := captureStdout(t, func() int { l.resumeHint("work"); return 0 }); out != c.want {
@@ -245,7 +276,10 @@ func TestResumeHintNeedsAConversationToOffer(t *testing.T) {
 // readEndedTranscript returns the transcript path Claude Code gave the
 // SessionEnd hook for the claude that ran as pid, and consumes the file the
 // hook kept it in: a launcher that died is swept by gc-stale, never re-read.
-// Input that is not Claude Code's JSON reads as no transcript (#359).
+// Input that is not Claude Code's JSON reads as no transcript (#359), and a
+// name that is not a regular file — a link another account planted, or a FIFO
+// that would wait for a writer — reads as no input rather than being followed
+// or waited on (#410).
 func TestReadEndedTranscript(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
@@ -267,6 +301,13 @@ func TestReadEndedTranscript(t *testing.T) {
 	}
 	if got := readEndedTranscript(4194305); got != "" {
 		t.Fatalf("another session's input read as %q", got)
+	}
+	if err := syscall.Mkfifo(f, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fifoWriter(f, `{"session_id":"sid-410","transcript_path":"/p/sid-410.jsonl"}`)
+	if got := readEndedTranscript(4194304); got != "" {
+		t.Fatalf("a fifo at the input's name read as %q", got)
 	}
 }
 
