@@ -910,6 +910,56 @@ class PickerTTYTest(unittest.TestCase):
         # and whatever the shell prints after it share the pty.
         self.assertIn('picker-beta', [line.strip() for line in out.splitlines()], out)
 
+    def test_one_long_model_id_leaves_the_names_readable_issue_385(self):
+        """A search picker keeps every name in sight beside one very long model id.
+
+        The rows were padded to the longest id, so a single 92-cell id pushed
+        every name past fzf's window: each row answered with two dots where the
+        name was, a match typed in a name scrolled the row sideways until only
+        the id's tail showed, and at 80 columns the name column was gone (#385).
+        Only the outlier is shortened now, keeping what tells it apart; names
+        reach fzf whole and fzf never scrolls a row sideways."""
+        models = [{'id': f'{v}/model-{i:03d}-instruct',
+                   'owned_by': f'{v.capitalize()} Model {i} Instruct'}
+                  for i, v in enumerate(('anthropic', 'openai', 'deepseek', 'mistral', 'qwen') * 3)]
+        long_id = 'anthropic/model-040-instruct-preview-' + 'x' * 55
+        models.append({'id': long_id, 'owned_by': 'Anthropic Model 40 Preview'})
+        env = self.env(fzf=True)
+        env['MODELS'] = json.dumps({'data': models})
+        self.profile('many')
+        self.spec(f'Default model={long_id}')
+
+        rc, out, missed = run_pty('ccmorph set many model -i', env, size=(24, 110))
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        args, rows = self.first_menu()
+        self.assertIn('--prompt Default model — many>', args)
+        # fzf draws a row inside its window (borders, pointer, scrollbar: six
+        # columns of 110) and, with --no-hscroll, never scrolls it sideways:
+        # a person sees each row's first 104 cells. Colors drop first; the
+        # rows are then ASCII but for "…", one cell a character.
+        self.assertIn('--no-hscroll', args)
+        plain = {row.split('\t', 1)[0]: re.sub(r'\x1b\[[0-9;]*m', '', row.split('\t', 1)[1]) for row in rows}
+        seen = {value: display[:110 - 6] for value, display in plain.items()}
+        # Every short id keeps its whole id and its whole name in sight.
+        for model in models[:-1]:
+            self.assertIn(model['id'], seen[model['id']], rows)
+            self.assertIn(model['owned_by'], seen[model['id']], rows)
+        # The one very long id is the only id shortened: its head reaches past
+        # where it parts from anthropic/model-010-instruct, the cut shows "…",
+        # and the whole id stays in the row past the window's edge, where a
+        # search still matches it.
+        self.assertNotIn(long_id, seen[long_id])
+        self.assertTrue(seen[long_id].startswith('anthropic/model-04'), seen[long_id])
+        self.assertIn('…', seen[long_id])
+        self.assertIn(long_id, plain[long_id])
+        # The receipt ends in the whole chosen id — no stray ellipsis where the
+        # padded echo was cut in 0.5.8 (#385). The question is what yields
+        # space to it, down to its floor (#361), and the choice saves whole.
+        drawn = screen(out, columns=110)
+        self.assertIn('  Default … › ' + long_id, drawn)
+        self.assertEqual(self.field('many', 'model'), long_id)
+
     def test_unavailable_catalogue_still_allows_keep_or_custom(self):
         env = self.env(fzf=True, curl='fail')
         self.profile('demo')

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -118,6 +119,11 @@ func TestFzfArgsNeverHideRowsSilently(t *testing.T) {
 	if got := flagValue(fzfArgs("0.75.0\n", 19, 45, "P", nil), "--height"); got != "~-1" {
 		t.Errorf("0.75 grows the window to the list: %q", got)
 	}
+	for _, v := range []string{"", "0.29.0\n", "0.40.0\n", "0.75.0\n"} {
+		if !strings.Contains(strings.Join(fzfArgs(v, 3, 24, "P", nil), " "), "--no-hscroll") {
+			t.Errorf("fzf %q may scroll a row sideways on a match until only its id's tail shows (#385)", v)
+		}
+	}
 	for lines := 6; lines <= 60; lines++ {
 		for n := 1; n <= 40; n++ {
 			args := fzfArgs("0.29.0\n", n, lines, "P", nil)
@@ -206,6 +212,204 @@ func TestSearchReceiptNamesTheLabelNotTheDescriptionIssue361(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "Custom endpoint") || strings.Contains(string(b), "Anthropic or any gateway") {
 		t.Fatalf("the receipt must name the label and not the description: %q", b)
+	}
+}
+
+// One very long model id must not take the width from every row of a search
+// picker (#385). The rows were padded to the longest id, so a single outlier
+// pushed every name past fzf's window: fzf answered with two dots where the
+// name was, and a match typed in a name scrolled the row sideways until only
+// the id's tail showed. Now only an id past half the room a row has inside
+// the window is cut, keeping what tells it from the others; every name
+// reaches fzf whole, and fzf never scrolls a row sideways.
+func TestSearchRowsKeepNamesBesideOneLongIDIssue385(t *testing.T) {
+	plain := uiTheme{}
+	// The gateway of #385: many models whose ids are ~30 cells, one 92.
+	long := "anthropic/model-040-instruct-preview-" + strings.Repeat("x", 55)
+	rows := []string{
+		"@custom\tEnter a custom model ID…",
+		"anthropic/model-008-instruct\tanthropic/model-008-instruct\tAnthropic Model 8 Instruct",
+		"openai/model-137-instruct\topenai/model-137-instruct\tOpenai/Model 137 Instruct",
+		long + "\t" + long + "\tAnthropic Model 40 Preview",
+	}
+	for _, columns := range []int{110, 80} {
+		rendered := plain.searchRows(rows, columns)
+		if len(rendered) != len(rows) {
+			t.Fatalf("columns %d: searchRows gave %d rows, want %d", columns, len(rendered), len(rows))
+		}
+		for _, row := range rendered {
+			id, display, _ := strings.Cut(row, "\t")
+			// fzf draws a row inside its window's borders, behind the pointer
+			// and the scrollbar, and with --no-hscroll never scrolls it: a
+			// person sees the first columns-6 cells, one a rune here (#385).
+			seen := string([]rune(display)[:min(columns-6, len([]rune(display)))])
+			switch id {
+			case "anthropic/model-008-instruct", "openai/model-137-instruct":
+				if !strings.Contains(seen, id) {
+					t.Errorf("columns %d: a short id is shortened: %q", columns, seen)
+				}
+				name := map[string]string{
+					"anthropic/model-008-instruct": "Anthropic Model 8 Instruct",
+					"openai/model-137-instruct":    "Openai/Model 137 Instruct",
+				}[id]
+				if !strings.Contains(seen, name) {
+					t.Errorf("columns %d: the name is not whole in sight beside a short id: %q", columns, seen)
+				}
+			case long:
+				if strings.Contains(seen, long) {
+					t.Errorf("columns %d: the one very long id is not shortened: %q", columns, seen)
+				}
+				// It parts from anthropic/model-008-instruct at "4".
+				if !strings.HasPrefix(seen, "anthropic/model-04") || !strings.Contains(seen, "…") {
+					t.Errorf("columns %d: the cut id must keep its head past where it differs and show …: %q", columns, seen)
+				}
+				if !strings.Contains(display, long) {
+					t.Errorf("columns %d: the whole id must stay in the row, past the window's edge, for a search to match: %q", columns, display)
+				}
+			case "@custom":
+				if !strings.Contains(seen, "Enter a custom model ID…") {
+					t.Errorf("columns %d: the custom row is cut: %q", columns, seen)
+				}
+			}
+		}
+	}
+}
+
+// A cut id keeps in sight the part that tells it from the other ids (#385).
+// Ids that share a long head and differ only at the end lost their ends to a
+// cut that kept the head alone: two rows with the same name beside them read
+// the same. Each pair below must read differently at 80 and 110 columns, an
+// id that fits must stay whole, and a cut one must show "…".
+func TestCutIDKeepsWhatTellsIDsApartIssue385(t *testing.T) {
+	head := "gateway/team/" + strings.Repeat("shared-prefix-", 4)
+	mid := "vendor/" + strings.Repeat("x", 30)
+	k, z := strings.Repeat("k", 40), strings.Repeat("z", 40)
+	twin, tail := "gateway/team/"+strings.Repeat("shared-prefix-", 2), strings.Repeat("shared-tail-", 4)
+	cases := []struct {
+		name string
+		ids  []string
+	}{
+		{"differ at the end", []string{head + "instruct", head + "reasoning"}},
+		{"differ at the start", []string{"anthropic/" + strings.Repeat("y", 70) + "-a", "openai/" + strings.Repeat("y", 70) + "-a"}},
+		{"differ in the middle", []string{mid + "-alpha-" + strings.Repeat("y", 30), mid + "-gamma-" + strings.Repeat("y", 30)}},
+		{"differ past a short twin", []string{"anthropic/model-040-instruct-preview-" + strings.Repeat("x", 55), "anthropic/model-040-instruct"}},
+		// Two places no head and tail reach together: the middle (v1 or v2) and
+		// the end (instruct or reasoning), or the start and the middle.
+		{"differ in the middle and at the end", []string{
+			twin + "v1/" + tail + "instruct", twin + "v2/" + tail + "instruct",
+			twin + "v1/" + tail + "reasoning", twin + "v2/" + tail + "reasoning"}},
+		{"differ at the start and in the middle", []string{
+			"anthropic/" + k + "v1/" + z, "openai/" + k + "v1/" + z,
+			"anthropic/" + k + "v2/" + z, "openai/" + k + "v2/" + z}},
+		{"three differ in the middle", []string{"a/" + k + "1" + z, "a/" + k + "2" + z, "a/" + k + "3" + z}},
+	}
+	for _, c := range cases {
+		rows := []string{"anthropic/model-008-instruct\tanthropic/model-008-instruct\tSame Owner"}
+		for _, id := range c.ids {
+			rows = append(rows, id+"\t"+id+"\tSame Owner")
+		}
+		for _, columns := range []int{80, 110} {
+			width := columnWidth(labelWidth(rows, "labels"), max(1, columns-fzfRowChrome))
+			reads := map[string]string{}
+			for i, r := range idColumn(rows, "labels", width) {
+				id, shown := rowID(rows[i]), rowID(r)
+				if cells(shown) > width {
+					t.Errorf("%s, %d columns: %q is %d cells, the column %d", c.name, columns, shown, cells(shown), width)
+				}
+				if cells(id) <= width && shown != id {
+					t.Errorf("%s, %d columns: an id that fits is cut: %q", c.name, columns, shown)
+				}
+				if cells(id) > width && !strings.Contains(shown, "…") {
+					t.Errorf("%s, %d columns: a cut id must show …: %q", c.name, columns, shown)
+				}
+				if other, ok := reads[shown]; ok {
+					t.Errorf("%s, %d columns: %q and %q both read %q", c.name, columns, other, id, shown)
+				}
+				reads[shown] = id
+			}
+		}
+	}
+}
+
+// A search finds what the window cuts (#385). fzf searches only the text it
+// shows — never a field --with-nth hides — so a name cut before fzf could not
+// be found by its last word, and a cut id not by the part the cut took. Real
+// fzf filters the rows of an 80-column terminal; skipped where fzf is absent.
+func TestSearchFindsWhatTheWindowCutsIssue385(t *testing.T) {
+	fzf, err := exec.LookPath("fzf")
+	if err != nil {
+		t.Skip("fzf is not installed")
+	}
+	long := "anthropic/model-040-instruct-preview-" + strings.Repeat("x", 55)
+	rows := []string{
+		"@custom\tEnter a custom model ID…",
+		"anthropic/model-008-instruct\tanthropic/model-008-instruct\tAnthropic Model 8 Instruct",
+		"openai/model-137-instruct\topenai/model-137-instruct\tOpenai Model 137 Instruct specialized",
+		long + "\t" + long + "\tAnthropic Model 40 Preview",
+	}
+	in := strings.Join((uiTheme{}).searchRows(rows, 80), "\n") + "\n"
+	for query, want := range map[string]string{"specialized": "openai/model-137-instruct", long: long} {
+		cmd := exec.Command(fzf, append(fzfArgs(fzfVersion(fzf), len(rows), 24, "P", nil), "--filter", query)...)
+		cmd.Stdin = strings.NewReader(in)
+		out, err := cmd.Output()
+		if err != nil {
+			t.Errorf("fzf finds no row for %q: %v", query, err)
+			continue
+		}
+		if lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n"); len(lines) != 1 || rowID(lines[0]) != want {
+			t.Errorf("fzf for %q gave %q, want the one row of %s", query, out, want)
+		}
+	}
+}
+
+// The line an answered model pick leaves behind names the id alone: fzf prints
+// the chosen row back with the id column's padding and the name beside it, and
+// a receipt that echoed that line ended in a stray ellipsis where the name was
+// (#385). The receipt names the row's own id — as for every label since #361;
+// this pins it for the long-id row that carries the padding.
+func TestSearchReceiptNamesTheIDOnALongPaddedRowIssue385(t *testing.T) {
+	dir := t.TempDir()
+	// Pure builtins: PATH holds only this dir. The fake answers fzf with the
+	// last row on stdin — the long id's, padded the way fzf echoes it.
+	fzf := "#!/bin/sh\nwhile IFS= read -r line; do row=$line; done\nprintf '%s\\n' \"$row\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "fzf"), []byte(fzf), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Setenv("TERM", "xterm")
+	long := "anthropic/model-040-instruct-preview-" + strings.Repeat("x", 55)
+	rows := strings.Join([]string{
+		"anthropic/model-008-instruct\tanthropic/model-008-instruct\tAnthropic Model 8 Instruct",
+		long + "\t" + long + "\tAnthropic Model 40 Preview",
+	}, "\n")
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	v, rc := uiSelect("search", "Default model — many", rows, "")
+	os.Stderr = old
+	w.Close()
+	b, _ := io.ReadAll(r)
+	r.Close()
+	if rc != 0 || v != long {
+		t.Fatalf("uiSelect = (%q, %d), want (%q, 0)", v, rc, long)
+	}
+	if n := strings.Count(string(b), "\n"); n != 1 {
+		t.Fatalf("the answer is %d lines, want the one receipt line: %q", n, b)
+	}
+	if !strings.Contains(string(b), "Default model — many › "+long) {
+		t.Fatalf("the receipt must name the whole id: %q", b)
+	}
+	if strings.Contains(string(b), "…") || strings.Contains(string(b), "Anthropic Model 40") {
+		t.Fatalf("the receipt must carry no stray ellipsis and no name from the padded echo: %q", b)
+	}
+	// On the 110-column terminal of #385 the question is what yields space to
+	// the 92-cell id — never the id — so the line the person keeps ends in the
+	// whole id, no stray ellipsis where the padded echo was cut in 0.5.8.
+	if got, want := (uiTheme{}).receiptLine("Default model — many", long, 110), "  Default … › "+long; got != want {
+		t.Fatalf("receiptLine = %q, want %q", got, want)
 	}
 }
 
