@@ -628,7 +628,9 @@ func TestNumberListCutsToTheScreenAndNamesTheFzfStepIssue387(t *testing.T) {
 // up after a budget cut four ids alike; every cut now parts the ids by
 // construction, the column grows only past what no cut fits, and an id that
 // fits stays whole. Each cut id shows its own characters, in order, with "…"
-// for what it hides.
+// for what it hides. A column of 17 cells or more, half what an 80-column
+// terminal gives, never grows for these few ids: a grown column pushes every
+// name, and the end of a long id, out of sight.
 func TestCutIDsNeverReadAlikeIssue385(t *testing.T) {
 	parts := []string{"gateway/", "team/", "shared-", "x", "xx", "v1", "v2", "/", "-", "instruct", "reasoning", "a", "日本"}
 	rng := rand.New(rand.NewSource(385))
@@ -661,6 +663,9 @@ func TestCutIDsNeverReadAlikeIssue385(t *testing.T) {
 		}
 		if width > given {
 			grew++
+			if given >= 17 {
+				t.Fatalf("%q at %d: the column grew to %d", ids, given, width)
+			}
 		}
 		reads := map[string]string{}
 		for i, id := range ids {
