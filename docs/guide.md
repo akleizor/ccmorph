@@ -599,7 +599,9 @@ with one message, `ccmorph profile: <name>`, at every start and resume (so
 after a hop). Deleting the status line opts out of both for good. To ask
 outright, `/ccmorph:profile` in the Claude Code prompt — or `! ccmorph profile`
 — prints the name; in a plain terminal it answers `not inside a ccmorph
-session`.
+session`. To keep the name on screen beside a status line of your own, have
+its command print `$CCMORPH_PROFILE`, which every launch sets, and a hop
+relaunches with the new name.
 
 
 ### Plan usage and balance before a hop

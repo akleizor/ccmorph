@@ -9,6 +9,13 @@
 
 ### Fixed
 
+- **The README and `ccmorph help profile` say what a status line of your own
+  shows** (#393): both promised that the status line names the profile, which
+  holds only while you have no status line of your own. They now say yours is
+  kept as written without the name, that the session names the profile in one
+  message at start and resume, and that `/ccmorph:profile` prints it at any
+  point; the README and the guide add that your own line can print
+  `$CCMORPH_PROFILE`.
 - **`ccmorph add` on a name already taken names `ccmorph config`** (#391):
   it no longer answers only with `ccmorph rm`, which deletes the profile and
   its saved credential for good. A Claude account or provider profile is told
