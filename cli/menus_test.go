@@ -78,7 +78,7 @@ func TestBothModelMenusMarkTheSavedModelAsTheKeepRowIssue377(t *testing.T) {
 			name:    "the set picker with nothing saved",
 			current: "", keep: true, custom: true,
 			want: []string{
-				"@keep\tKeep Claude default",
+				"@keep\tKeep none — Claude Code picks the model",
 				"picker-alpha\tpicker-alpha\tfake",
 				"picker-beta\tpicker-beta\tPicker Beta",
 				"@custom\tEnter a custom model ID…",
@@ -87,7 +87,7 @@ func TestBothModelMenusMarkTheSavedModelAsTheKeepRowIssue377(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := menuRows("model", tc.current, rows, tc.keep, tc.custom)
+			got := menuRows("model", tc.current, "", "", rows, tc.keep, tc.custom)
 			if !slices.Equal(got, tc.want) {
 				t.Errorf("menuRows(%q) = %q, want %q", tc.current, got, tc.want)
 			}
@@ -95,8 +95,8 @@ func TestBothModelMenusMarkTheSavedModelAsTheKeepRowIssue377(t *testing.T) {
 	}
 	// The Keep row is the row both menus share byte for byte: the marking a
 	// person learns in one menu answers in the other.
-	launch := menuRows("model", "picker-beta", rows, true, false)
-	set := menuRows("model", "picker-beta", rows, true, true)
+	launch := menuRows("model", "picker-beta", "", "", rows, true, false)
+	set := menuRows("model", "picker-beta", "", "", rows, true, true)
 	if launch[0] != set[0] || launch[0] != "@keep\tKeep picker-beta" {
 		t.Errorf("the launch menu marks the saved model as %q, the set menu as %q", launch[0], set[0])
 	}

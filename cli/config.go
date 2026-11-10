@@ -101,11 +101,17 @@ func (l *launcher) getSet(verb string, args []string) int {
 		}
 		if out == "" {
 			// Unset is a real state, not a broken one (#268): say so on stderr
-			// and keep stdout empty — not even a newline — for scripts.
+			// and keep stdout empty — not even a newline — for scripts. The
+			// words after the dash are the shared unsaved-state words (#381):
+			// what a launch of this profile does with nothing saved.
 			if key == "model" {
-				say(name + ": no model saved — Claude Code chooses")
+				typ, base := "", ""
+				if f, ok := l.readQuiet(name); ok {
+					typ, base = f["type"], f["base_url"]
+				}
+				say(name + ": no model saved — " + unsavedModelWords(typ, base))
 			} else {
-				say(name + ": no effort saved — Claude Code's own default")
+				say(name + ": no effort saved — " + unsavedEffortWords)
 			}
 			return 0
 		}
@@ -277,10 +283,10 @@ func (l *launcher) config(args []string) int {
 	}
 	if section != "connection" {
 		preview := []string{endpoint, credential}
-		if model, ok = l.promptDefault("model", name, model, typ, preview); !ok {
+		if model, ok = l.promptDefault("model", name, model, typ, endpoint, preview); !ok {
 			return 1
 		}
-		if effort, ok = l.promptDefault("effort", name, effort, typ, preview); !ok {
+		if effort, ok = l.promptDefault("effort", name, effort, typ, endpoint, preview); !ok {
 			return 1
 		}
 	}
@@ -295,13 +301,16 @@ func (l *launcher) config(args []string) int {
 		}
 		say("Credential: hidden")
 	}
-	or := func(v string) string {
+	or := func(slot, v string) string {
 		if v == "" {
-			return "Claude default"
+			if slot == "model" {
+				return unsavedModelWords(typ, endpoint)
+			}
+			return unsavedEffortWords
 		}
 		return v
 	}
-	say("Model: " + or(model) + " · Effort: " + or(effort))
+	say("Model: " + or("model", model) + " · Effort: " + or("effort", effort))
 	save := l.storeArgs("configure", name, "")
 	save.Change = util.StoreChange{Model: model, Effort: effort, Snapshot: snapshot, Type: typ, Endpoint: endpoint, Credential: credential}
 	if _, rc := l.runStore(save, os.Stderr); rc != 0 {
@@ -312,11 +321,12 @@ func (l *launcher) config(args []string) int {
 }
 
 // promptDefault is _ccm_prompt_default: keep the current value by default, and
-// allow a custom model id when the catalogue is unavailable.
-func (l *launcher) promptDefault(slot, name, current, typ string, preview []string) (string, bool) {
+// allow a custom model id when the catalogue is unavailable. Nothing saved
+// shows as the none it keeps with the words for what that means at launch.
+func (l *launcher) promptDefault(slot, name, current, typ, base string, preview []string) (string, bool) {
 	shown := current
 	if shown == "" {
-		shown = "Claude default"
+		shown = unsavedLabel(slot, typ, base)
 	}
 	if !isTTY(0) {
 		answer, rc := uiInput("Default "+slot+" ["+shown+"]: ", false)
@@ -328,5 +338,5 @@ func (l *launcher) promptDefault(slot, name, current, typ string, preview []stri
 		}
 		return answer, true
 	}
-	return l.valueMenu(slot, name, current, l.defaultRows(slot, name, typ, preview...), true)
+	return l.valueMenu(slot, name, current, typ, base, l.defaultRows(slot, name, typ, preview...), true)
 }

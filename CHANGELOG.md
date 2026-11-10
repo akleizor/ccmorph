@@ -9,6 +9,19 @@
 
 ### Fixed
 
+- **The state of no saved model reads the same words everywhere, and the words
+  say what a launch does.** A profile with nothing saved was worded five ways
+  across four screens: `config` offered "Keep Claude default" and summarised
+  "Model: Claude default"; `inspect` said "Claude Code chooses";
+  `get` said "Claude Code chooses"; `doctor` said "Claude Code default (no
+  saved model)". None of them said what the session would really use, and for
+  a gateway every one of them was wrong — a plain launch asks which model at
+  each launch (#360). Every screen now shares one phrase per state, matching
+  the launch: "ccmorph asks which model at each launch" for a gateway with no
+  model, "Claude Code picks the model" everywhere else, and "Claude Code's own
+  default" for no saved effort. `doctor` also names the effective effort — the
+  level a plain launch passes, the saved model's own override first — and
+  prints both rows before a profile's first launch too (#381).
 - **`ccmorph inspect` explains masking while it is off, and help names
   masking.** The masking row read `off` with no words, no help page contained
   the word, and no config screen offered the setting, so a person who wanted

@@ -731,6 +731,70 @@ def test_inspect_names_the_history_a_private_profile_deletes_gh_292(box):
     assert 'private=1' in out.stdout
 
 
+@pytest.mark.parametrize('with_settings', [True, False], ids=['settings', 'no-settings'])
+@pytest.mark.parametrize('name,endpoint,words', [
+    ('nat', '', 'Claude Code picks the model'),
+    ('gw', 'https://gw.example', 'ccmorph asks which model at each launch'),
+])
+def test_the_unsaved_state_reads_the_same_words_on_every_screen_gh_381(box, name, endpoint, words,
+                                                                        with_settings):
+    # GH-381: a profile with no saved model was worded five ways across config,
+    # inspect, get and doctor, and none of the five said what a launch does.
+    # Every screen now carries the same words for the state, and the words are
+    # what the launch really does for that profile type: a gateway (an API key
+    # on another endpoint) is asked which model at each launch (#360), every
+    # other profile leaves the model to Claude Code, and no saved effort passes
+    # no level, so the session starts at Claude Code's own default.
+    box.conf(name, 'type=apikey\napi_key={{SECRET_4zo8c1xfyqjs}}\n'
+                   + (f'base_url={endpoint}\n' if endpoint else ''))
+    # A profile never launched has no settings file and is ready (#291):
+    # every screen, doctor too, names the state the same way without one.
+    if with_settings:
+        (box.state / f'profiles/{name}').mkdir()
+        (box.state / f'profiles/{name}/settings.json').write_text('{}')
+    effort_words = "Claude Code's own default"
+    screens = {}
+    # get: stdout stays empty for scripts (#268); the sentence on stderr names
+    # the state and the shared words.
+    out = box.run('get', name, 'model')
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == ''
+    assert f'{name}: no model saved — {words}' in out.stderr
+    screens['get'] = out.stderr
+    out = box.run('get', name, 'effort')
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == ''
+    assert f'{name}: no effort saved — {effort_words}' in out.stderr
+    screens['get'] += out.stderr
+    # inspect: the model, effort and launches-as rows carry the shared words;
+    # the gateway's model row keeps its "none saved; " lead-in.
+    out = box.run('inspect', name)
+    assert out.returncode == 0, out.stderr
+    model_row = f'— none saved; {words}' if endpoint else f'— {words}'
+    assert model_row in out.stdout
+    assert f'— {effort_words}' in out.stdout
+    assert f'({words})' in out.stdout
+    screens['inspect'] = out.stdout
+    # doctor: the effective rows answer what the session runs with.
+    out = box.run('doctor', name)
+    assert out.returncode == 0, out.stderr
+    assert f'effective model: {words} (no saved model)' in out.stdout
+    assert f'effective effort: {effort_words} (no saved effort)' in out.stdout
+    screens['doctor'] = out.stdout
+    # config: the prompt shows what keeping nothing means, and the summary
+    # prints the shared words instead of a name for the state.
+    out = box.run('config', name, answer='\n\n\n\n')
+    assert out.returncode == 0, out.stderr
+    assert f'Default model [none — {words}]: ' in out.stderr
+    assert f'Default effort [none — {effort_words}]: ' in out.stderr
+    assert f'Model: {words} · Effort: {effort_words}' in out.stderr
+    screens['config'] = out.stderr
+    # None of the four screens may fall back to the old drift words.
+    for screen, text in screens.items():
+        for old in ('Claude Code chooses', 'Claude default', 'Claude Code default'):
+            assert old not in text, (screen, old)
+
+
 def test_context_answers_the_window_the_session_will_use_gh_372(box):
     # GH-372: `ccmorph context <profile> <model>` answered the pin alone --
     # `auto`, or a bare number once one was set -- while inspect showed the

@@ -113,8 +113,8 @@ ccmorph get demo model >/dev/null 2>&1 || fail 'reading an unset model must stil
 raw=$(ccmorph get demo model 2>/dev/null; printf x)
 assert_eq "$raw" 'x' 'unset model printed nothing to stdout, not even a newline'
 notice=$(ccmorph get demo model 2>&1 >/dev/null)
-[[ "$notice" == *'Claude Code chooses'* ]] ||
-  fail "unset model must say Claude Code chooses on stderr (got ${(qqq)notice})"
+[[ "$notice" == *'Claude Code picks the model'* ]] ||
+  fail "unset model must say Claude Code picks the model on stderr (got ${(qqq)notice})"
 ccmorph get demo effort >/dev/null 2>&1 || fail 'reading an unset effort must still succeed'
 raw=$(ccmorph get demo effort 2>/dev/null; printf x)
 assert_eq "$raw" 'x' 'unset effort printed nothing to stdout, not even a newline'

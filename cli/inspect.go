@@ -97,9 +97,9 @@ func (l *launcher) inspect(args []string) int {
 	} else if util.Maskable(typ, base) {
 		// A gateway with no saved model is asked which one at every launch —
 		// the picker opens on a plain run too, so Claude Code never chooses (#360).
-		grid(10, "model", l.dim+"— none saved; ccmorph asks which model at each launch"+l.reset)
+		grid(10, "model", l.dim+"— none saved; "+unsavedModelWords(typ, base)+l.reset)
 	} else {
-		grid(10, "model", l.dim+"— Claude Code chooses"+l.reset)
+		grid(10, "model", l.dim+"— "+unsavedModelWords(typ, base)+l.reset)
 	}
 
 	effort, rc := l.configStore("get", name, "effort")
@@ -109,7 +109,7 @@ func (l *launcher) inspect(args []string) int {
 	if effort != "" {
 		grid(10, "effort", effort+"  "+l.dim+"profile default"+l.reset)
 	} else {
-		grid(10, "effort", l.dim+"— Claude Code's own default"+l.reset)
+		grid(10, "effort", l.dim+"— "+unsavedEffortWords+l.reset)
 	}
 	if ms, rc := l.configStore("model-settings", name, ""); rc == 0 {
 		for _, r := range util.EffortRows(ms) {
@@ -184,10 +184,10 @@ func (l *launcher) inspect(args []string) int {
 	fmt.Println()
 	if model != "" && typ == "apikey" {
 		fmt.Println("  " + l.dim + "launches as" + l.reset + "  claude --model " + model)
-	} else if util.Maskable(typ, base) {
-		fmt.Println("  " + l.dim + "launches as" + l.reset + "  claude " + l.dim + "(ccmorph asks which model)" + l.reset)
 	} else {
-		fmt.Println("  " + l.dim + "launches as" + l.reset + "  claude " + l.dim + "(Claude Code picks the model)" + l.reset)
+		// The same words the model row above reads (#381): what a launch of
+		// this profile does with no model saved.
+		fmt.Println("  " + l.dim + "launches as" + l.reset + "  claude " + l.dim + "(" + unsavedModelWords(typ, base) + ")" + l.reset)
 	}
 	return 0
 }

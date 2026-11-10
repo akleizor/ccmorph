@@ -195,17 +195,17 @@ def test_doctor_reports_the_profile_default_model_whatever_its_origin(tmp_path):
         "saved", "global", "shared-pin", "profile-model", "conf-model", "native-model"))
     listing = OK_CURL.replace('{"data":[]}', '{"data":[%s]}' % served)
 
-    def effective(conf_text, profile_json):
+    def effective(conf_text, profile_json, row="model"):
         profile_settings.write_text(profile_json)
         (tmp_path / "state" / "demo.conf").parent.mkdir(exist_ok=True)
         (tmp_path / "state" / "demo.conf").write_text(conf_text)
         result, path, _ = run_doctor(tmp_path, conf_text, listing)
         assert result.returncode == 0, result.stderr
-        line = [l for l in result.stdout.splitlines() if "effective model:" in l]
+        line = [l for l in result.stdout.splitlines() if f"effective {row}:" in l]
         assert len(line) == 1, result.stdout
         # Doctor is a read-only check: resolving the default must not seed the conf.
         assert path.read_text() == conf_text
-        return line[0].split("effective model:", 1)[1].strip()
+        return line[0].split(f"effective {row}:", 1)[1].strip()
 
     assert effective(conf, '{"env":{"ANTHROPIC_MODEL":"saved"}}') == "saved (profile default)"
     assert effective(conf, '{}') == "global (profile default)"
@@ -218,9 +218,21 @@ def test_doctor_reports_the_profile_default_model_whatever_its_origin(tmp_path):
     assert effective(conf + "model=conf-model\n", '{"model":"native-model"}') \
         == "conf-model (profile default)"
     # A seeded profile with no default names none, and native cannot revive it.
+    # The words are the shared unsaved-state words (#381): this conf is a
+    # gateway, so a launch asks which model at each launch.
     assert effective(conf + "model_defaults=1\n", '{"model":"native-model"}') \
-        == "Claude Code default (no saved model)"
-    assert effective(conf, '{}') == "Claude Code default (no saved model)"
+        == "ccmorph asks which model at each launch (no saved model)"
+    assert effective(conf, '{}') == "ccmorph asks which model at each launch (no saved model)"
+    # The effort row names the level a plain launch passes (#381), resolved the
+    # way the launch resolves it (#356): the override saved for the profile's
+    # model first, then the profile's own default.
+    assert effective(conf, '{"model":"profile-model","modelSettings":{"profile-model":{"effortLevel":"high"}}}',
+                     "effort") == "high (profile override for profile-model)"
+    assert effective(conf + "model=conf-model\neffort=low\n", '{}', "effort") == "low (profile default)"
+    assert effective(conf + "model=conf-model\neffort=low\neffort.conf-model=max\n", '{}', "effort") \
+        == "max (profile override for conf-model)"
+    assert effective(conf + "model_defaults=1\n", '{"effortLevel":"high"}', "effort") \
+        == "Claude Code's own default (no saved effort)"
 
 
 MALFORMED_CURL = """#!/bin/sh

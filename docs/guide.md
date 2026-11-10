@@ -313,8 +313,10 @@ stay explicit — destructive operations should not be a menu selection.
 It prints the bare value to stdout
 (so `m=$(ccmorph get gw model)` and existing scripts keep working) and confirms
 the save on stderr. An unset setting reads back an empty stdout; the
-explanation — no model saved, Claude Code chooses (or Claude Code's own effort
-default) — goes to stderr. `inspect` reports the effective selection.
+explanation — no model saved, so Claude Code picks the model (a gateway is
+asked which model at each launch), or no effort saved, so the session starts
+at Claude Code's own default — goes to stderr. `inspect` reports the effective
+selection.
 
 `ccmorph inspect` is the one to reach for when a session does not behave as
 expected: every line names the layer its value came from, and the last line is

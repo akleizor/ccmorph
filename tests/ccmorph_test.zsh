@@ -10430,8 +10430,9 @@ test_inspect_names_masking_for_every_profile() {
 
 # GH-360: a gateway profile with no saved model opens the model picker at every
 # launch -- a plain run, not only -i -- so inspect must say ccmorph asks, not
-# claim Claude Code chooses. Native profiles keep the old line: nothing asks
-# there without -i, and a saved model answers the question before it is asked.
+# claim Claude Code chooses. Native profiles say Claude Code picks the model
+# (#381): nothing asks there without -i, and a saved model answers the question
+# before it is asked.
 test_inspect_names_the_model_question_for_a_gateway() {
   local test_home
   test_home=$(mktemp -d)
@@ -10444,15 +10445,15 @@ test_inspect_names_the_model_question_for_a_gateway() {
   actual=$(ccmorph inspect gw) || { rm -rf "$test_home"; return 1; }
   assert_contains "$actual" 'ccmorph asks which model at each launch' \
     'a gateway profile without a saved model must say ccmorph asks at each launch' || rc=1
-  assert_contains "$actual" '(ccmorph asks which model)' \
-    'the launches-as line must say ccmorph asks which model' || rc=1
+  assert_contains "$actual" '(ccmorph asks which model at each launch)' \
+    'the launches-as line must say ccmorph asks which model at each launch' || rc=1
   assert_not_contains "$actual" 'Claude Code chooses' \
     'a gateway launch does not leave the model to Claude Code' || rc=1
   assert_not_contains "$actual" 'Claude Code picks the model' \
     'the launches-as line must not claim Claude Code picks the model' || rc=1
   actual=$(ccmorph inspect anth) || { rm -rf "$test_home"; return 1; }
-  assert_contains "$actual" '— Claude Code chooses' \
-    'a native profile without a saved model keeps Claude Code chooses' || rc=1
+  assert_contains "$actual" '— Claude Code picks the model' \
+    'a native profile without a saved model says Claude Code picks the model' || rc=1
   # setup_home's proxy is a gateway profile with model=bootstrap-model saved.
   actual=$(ccmorph inspect proxy) || { rm -rf "$test_home"; return 1; }
   assert_contains "$actual" 'bootstrap-model' \

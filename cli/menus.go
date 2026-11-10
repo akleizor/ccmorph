@@ -198,7 +198,7 @@ func (l *launcher) pickLaunchModel(name, saved string) (string, bool) {
 	if saved == "" {
 		heading += " (none saved)"
 	}
-	choice, rc := chooseValue("model", heading, strings.Join(menuRows("model", saved, rows, saved != "", false), "\n"), "labels")
+	choice, rc := chooseValue("model", heading, strings.Join(menuRows("model", saved, "", "", rows, saved != "", false), "\n"), "labels")
 	if rc != 0 {
 		// A leave is answered by the picker's own Cancelled line; the usage
 		// line belongs to the headless refusal, where no picker ever ran and
@@ -229,14 +229,15 @@ func (l *launcher) defaultRows(slot, name, typ string, preview ...string) string
 
 // menuRows is the list every model menu opens on: the current value first, as
 // the Keep row, then the catalogue without it. keep offers that row even when
-// nothing is set, as config can keep the Claude default; custom adds the
-// custom-ID escape, which belongs to the commands that can save one.
-func menuRows(slot, current, rows string, keep, custom bool) []string {
+// nothing is set, as config can keep the unsaved state — worded as what
+// keeping it means at launch (#381); custom adds the custom-ID escape, which
+// belongs to the commands that can save one.
+func menuRows(slot, current, typ, base, rows string, keep, custom bool) []string {
 	menu := []string{}
 	if keep {
 		shown := current
 		if shown == "" {
-			shown = "Claude default"
+			shown = unsavedLabel(slot, typ, base)
 		}
 		menu = append(menu, "@keep\tKeep "+shown)
 	}
@@ -255,9 +256,10 @@ func menuRows(slot, current, rows string, keep, custom bool) []string {
 
 // valueMenu is the menu every default picker opens: the current value first,
 // the catalogue without it, and a custom-ID escape for models. keep offers the
-// keep row even when nothing is set, as config can keep the Claude default.
-func (l *launcher) valueMenu(slot, name, current, rows string, keep bool) (string, bool) {
-	menu := menuRows(slot, current, rows, keep, true)
+// keep row even when nothing is set, as config can keep the unsaved state —
+// worded as what keeping it means at launch (#381).
+func (l *launcher) valueMenu(slot, name, current, typ, base, rows string, keep bool) (string, bool) {
+	menu := menuRows(slot, current, typ, base, rows, keep, true)
 	choice, rc := chooseValue(slot, "Default "+slot+" — "+name, strings.Join(menu, "\n"), "labels")
 	if rc != 0 {
 		return "", false
@@ -288,7 +290,7 @@ func (l *launcher) pickModelDefault(name string) (string, bool) {
 	}
 	current := l.accountModel(name)
 	// A leave is answered by the picker's own Cancelled line (#280): no usage line here.
-	return l.valueMenu("model", name, current, l.defaultRows("model", name, f["type"]), current != "")
+	return l.valueMenu("model", name, current, f["type"], f["base_url"], l.defaultRows("model", name, f["type"]), current != "")
 }
 
 func say(msg string) { fmt.Fprintln(os.Stderr, msg) }
