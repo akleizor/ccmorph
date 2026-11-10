@@ -214,3 +214,18 @@ func TestHelpAllWrapsALongDescriptionUnderItsOwnColumn(t *testing.T) {
 		t.Errorf("rm row continues with %q, want %q", lines[row+1], want)
 	}
 }
+
+// GH-393: the profile page said the status line names the profile, which a
+// person with a status line of their own never sees after the first screen.
+// The page says theirs is kept without the name and that this command still
+// answers, at every width it prints at.
+func TestHelpProfileSaysAStatusLineOfYourOwnHasNoName(t *testing.T) {
+	for _, width := range []int{0, 80} {
+		page := strings.ToLower(strings.Join(strings.Fields(helpPage(t, "profile", width)), " "))
+		for _, want := range []string{"a status line of your own is kept as written", "this command still answers"} {
+			if !strings.Contains(page, want) {
+				t.Errorf("help profile at %d columns lacks %q:\n%s", width, want, page)
+			}
+		}
+	}
+}

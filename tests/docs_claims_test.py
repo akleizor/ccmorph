@@ -183,3 +183,23 @@ def test_docs_name_the_setting_effort_alone_issue_367():
     for phrase in ("model and reasoning", "reasoning levels"):
         assert phrase not in guide, (
             f"docs/guide.md still calls the effort setting reasoning ('{phrase}')")
+
+
+def test_readme_says_what_a_status_line_of_your_own_shows_issue_393():
+    """#393: the README said the session's status line names the profile, in
+    the highlights and under Usage, but a status line of your own is kept as
+    written and never shows the name, and the startup message that names it
+    scrolls away. Every README block that promises the name in the status line
+    says what a status line of your own shows and names the one step that
+    prints the profile at any point."""
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    # A paragraph or one list item: the highlights are a list with no blank lines.
+    blocks = [_flatten(b).lower() for b in re.split(r"\n\s*\n|\n(?=- )", text)]
+    promises = [b for b in blocks if "status line names the profile" in b]
+    assert promises, "README.md no longer says the status line names the profile"
+    for block in promises:
+        assert "status line of your own" in block, (
+            f"README.md promises the name in the status line without saying "
+            f"what a status line of your own shows: {block}")
+        assert "/ccmorph:profile" in block, (
+            f"README.md names no step that prints the profile beside: {block}")
