@@ -9,6 +9,17 @@
 
 ### Fixed
 
+- **`ccmorph context <profile> <model>` answers the window, not the pin.** The
+  read form printed `auto` for a model with no manual override — and a bare
+  number once one was set — so a person asking for the limit was told the
+  setting's state instead, while `inspect` showed the window the session would
+  actually run at. The read now answers that window in tokens and says where it
+  came from — set by hand, found by ccmorph, estimated from the model
+  catalogue, or left at Claude Code's default — the same count `inspect`
+  shows; a `CLAUDE_CODE_MAX_CONTEXT_TOKENS` ceiling set by hand in the
+  profile's env, which a launch keeps instead of deriving the window, is
+  answered as the count every model runs at, and `inspect`'s window line shows
+  that same cap (#372).
 - **`ccmorph probe` says what it looked for, in one shape for every profile.**
   A gateway that publishes no size for its models made the command print
   "Nothing discovered." and exit 1, as though the lookup had broken; a model

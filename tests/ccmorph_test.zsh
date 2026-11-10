@@ -11338,12 +11338,13 @@ test_context_verb_reads_sets_and_clears_one_models_window() {
     'base_url=https://gw.example.com' > "$HOME/.config/ccmorph/gw.conf"
 
   actual=$(ccmorph context gw brand-new-model 2>&1)
-  assert_contains "$actual" 'auto' 'an unset window reads as automatic' || rc=1
+  assert_contains "$actual" '200,000' 'an unset window answers the default it runs at' || rc=1
+  assert_contains "$actual" "left at Claude Code's default" 'the default is named as that' || rc=1
 
   actual=$(ccmorph context gw brand-new-model 128000 2>&1)
   assert_contains "$actual" '128000' 'setting a window confirms the number' || rc=1
   actual=$(ccmorph context gw brand-new-model 2>&1)
-  [[ "$actual" == '128000' ]] || {
+  [[ "$actual" == 'gw: brand-new-model context 128,000 tokens · set by hand' ]] || {
     print -u2 -- "a set window must read back: ${(qqq)actual}"; rc=1
   }
   assert_contains "$(<"$HOME/.config/ccmorph/gw.conf")" \
@@ -11352,8 +11353,8 @@ test_context_verb_reads_sets_and_clears_one_models_window() {
 
   ccmorph context gw brand-new-model auto >/dev/null 2>&1 || rc=1
   actual=$(ccmorph context gw brand-new-model 2>&1)
-  [[ "$actual" == 'auto' ]] || {
-    print -u2 -- "auto must return the model to discovery: ${(qqq)actual}"; rc=1
+  [[ "$actual" == "gw: brand-new-model context 200,000 tokens · left at Claude Code's default" ]] || {
+    print -u2 -- "auto must return the model to the default discovery leaves: ${(qqq)actual}"; rc=1
   }
 
   # An unknown profile and a missing model are usage errors, not silent writes.
@@ -11365,9 +11366,10 @@ test_context_verb_reads_sets_and_clears_one_models_window() {
 }
 run_test test_context_verb_reads_sets_and_clears_one_models_window
 
-# `auto` promises discovery will find a size; a model the profile does not list
-# has nothing to discover (#268). The read must say so instead of auto, while a
-# served unpinned model still reads auto and a pin still reads back.
+# A model the profile does not list has nothing to discover, so the default it
+# would run at is all it can ever answer (#268): the read names the model
+# instead of answering, while a served unpinned model still answers and a pin
+# still reads back.
 test_context_names_a_model_the_profile_does_not_list() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   fake_gateway
@@ -11377,7 +11379,7 @@ test_context_names_a_model_the_profile_does_not_list() {
   local rc=0 out err
   out=$(ccmorph context gw nosuch-model 2>/dev/null)
   [[ "$out" == '' ]] || {
-    print -u2 -- "a model the profile does not list must not read as auto: ${(qqq)out}"
+    print -u2 -- "a model the profile does not list must not be answered: ${(qqq)out}"
     rc=1
   }
   if err=$(ccmorph context gw nosuch-model 2>&1 >/dev/null); then
@@ -11388,13 +11390,13 @@ test_context_names_a_model_the_profile_does_not_list() {
     'the refusal must name the model and the profile' || rc=1
 
   out=$(ccmorph context gw zeta-chat 2>/dev/null)
-  [[ "$out" == 'auto' ]] || {
-    print -u2 -- "a served model with no pin must still read auto: ${(qqq)out}"; rc=1
+  [[ "$out" == "gw: zeta-chat context 200,000 tokens · left at Claude Code's default" ]] || {
+    print -u2 -- "a served model with no pin must answer the default it runs at: ${(qqq)out}"; rc=1
   }
 
   write_profile_context gw nosuch-model=128000
   out=$(ccmorph context gw nosuch-model 2>/dev/null)
-  [[ "$out" == '128000' ]] || {
+  [[ "$out" == 'gw: nosuch-model context 128,000 tokens · set by hand' ]] || {
     print -u2 -- "a pinned unlisted model must still read back: ${(qqq)out}"; rc=1
   }
 
@@ -11404,7 +11406,7 @@ test_context_names_a_model_the_profile_does_not_list() {
   write_apikey_conf nat 'api_key=k'
   out=$(ccmorph context nat claude-nosuch-model 2>/dev/null)
   [[ "$out" == '' ]] || {
-    print -u2 -- "an unlisted claude-* model on a default-base key must not read as auto: ${(qqq)out}"
+    print -u2 -- "an unlisted claude-* model on a default-base key must not be answered: ${(qqq)out}"
     rc=1
   }
   if err=$(ccmorph context nat claude-nosuch-model 2>&1 >/dev/null); then
@@ -11414,8 +11416,8 @@ test_context_names_a_model_the_profile_does_not_list() {
   assert_contains "$err" 'claude-nosuch-model is not served by nat' \
     'the refusal must name the model and the profile' || rc=1
   out=$(ccmorph context nat zeta-chat 2>/dev/null)
-  [[ "$out" == 'auto' ]] || {
-    print -u2 -- "a listed model on a default-base key must still read auto: ${(qqq)out}"; rc=1
+  [[ "$out" == "nat: zeta-chat context 200,000 tokens · left at Claude Code's default" ]] || {
+    print -u2 -- "a listed model on a default-base key must still answer: ${(qqq)out}"; rc=1
   }
 
   rm -rf "$test_home"

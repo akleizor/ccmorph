@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
@@ -71,24 +72,72 @@ func (l *launcher) context(args []string) int {
 		}
 		return rc
 	}
-	// The read form captures the core's answer: "auto" promises discovery will
-	// size the model, so a model the route does not serve is named instead of
-	// reading as auto (#268). A pin for an unlisted model still reads back, and
-	// a route whose listing cannot be read keeps answering auto.
-	out, err := cmd.Output()
+	// The read answers the window the session will use, the record inspect's
+	// window line reads (#372): legacy discovered state moves forward first, as
+	// inspect does, and the shell's exported ceiling is dropped so the
+	// profile's own state answers.
+	l.migrateState()
+	read := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), "model-window", "--context", name, model)
+	read.Env = append(envDrop(os.Environ(), "CLAUDE_CODE_MAX_CONTEXT_TOKENS"), l.windowEnv(name)...)
+	read.Stderr = os.Stderr
+	out, err := read.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			return ee.ExitCode()
 		}
 		return 127
 	}
-	answer := strings.TrimRight(string(out), "\n")
-	if answer == "auto" && l.listingKnown(name, model) == 1 {
+	w, unprobed, label, ok := util.WindowLabel(strings.TrimRight(string(out), "\n"))
+	n, perr := strconv.ParseInt(w, 10, 64)
+	if !ok || perr != nil || n <= 0 {
+		l.err("no context window could be read for " + model)
+		return 1
+	}
+	// A ceiling set by hand in the profile's env is the cap every model
+	// launches under: launch keeps it instead of deriving the model window, so
+	// it is the count this read answers, whatever the resolver found.
+	f, _ := l.readQuiet(name)
+	if v, ok := envCeiling(f); ok {
+		n, label, unprobed = v, "manual", false
+	}
+	// A model the route does not serve has nothing to discover, so the default
+	// is all it could ever answer: it is named instead (#268). A pin set by
+	// hand still reads back, and a route whose listing cannot be read keeps
+	// answering.
+	if label != "manual" && l.listingKnown(name, model) == 1 {
 		l.err(model + " is not served by " + name + ". Run: ccmorph models " + name)
 		return 1
 	}
-	fmt.Println(answer)
+	fmt.Println(contextAnswer(name, model, n, label, unprobed))
 	return 0
+}
+
+// envCeiling is the profile's hand-set env.CLAUDE_CODE_MAX_CONTEXT_TOKENS read
+// the way launch (contextEnv's engineInt) and Claude Code read it: the cap a
+// launch keeps instead of deriving the model window, so the count the session
+// runs at (#372). false when the key is absent or not a positive count.
+func envCeiling(f map[string]string) (int64, bool) {
+	v, ok := f["env.CLAUDE_CODE_MAX_CONTEXT_TOKENS"]
+	if !ok {
+		return 0, false
+	}
+	return util.EngineInt(v)
+}
+
+// contextAnswer is the read form's one line (#372): the count the session will
+// use, in tokens, and where it came from — the words the issue asks the answer
+// to choose from, so a line copied out of the terminal is clear on its own.
+func contextAnswer(name, model string, n int64, label string, unprobed bool) string {
+	provenance := "found by ccmorph"
+	switch {
+	case label == "manual":
+		provenance = "set by hand"
+	case unprobed:
+		provenance = "left at Claude Code's default"
+	case label == "catalogue-estimate":
+		provenance = "estimated from the model catalogue"
+	}
+	return name + ": " + model + " context " + thousands(n) + " tokens · " + provenance
 }
 
 // unlistedWarning is what the set form says when the route does not carry the

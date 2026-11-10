@@ -58,11 +58,21 @@ func windowRun(args []string, stdout, stderr io.Writer) (int, error) {
 	case (len(args) == 3 || len(args) == 4) && args[0] == "--context":
 		profile, model := args[1], args[2]
 		if len(args) == 3 {
-			value, err := ContextValue(profile, model)
+			// The read answers the record the session will use, not the pin
+			// alone (#372): the resolver's window with its source, so the
+			// caller can name where the count came from. The pin's own
+			// validation surface stays.
+			if !ValidModel(model) {
+				return 0, errors.New("context model id is invalid")
+			}
+			path, err := ProfilePath(profile)
 			if err != nil {
 				return 0, err
 			}
-			fmt.Fprintln(stdout, value)
+			if _, _, err := ReadConf(path); err != nil {
+				return 0, err
+			}
+			fmt.Fprintln(stdout, Resolve(profile, model).JSON())
 			return 0, nil
 		}
 		pinned, numeric := ParseTokens(args[3])

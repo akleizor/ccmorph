@@ -1012,7 +1012,7 @@ func TestNewModelWritePreservesExistingValuesAndManualPin(t *testing.T) {
 		}
 	}
 	prior := priorValues(nil)
-	if len(prior) != 2 || prior["a:one"] != 200000 || prior["a:two"] != 300000 || ctxValue("a", "manual") != "100000" {
+	if len(prior) != 2 || prior["a:one"] != 200000 || prior["a:two"] != 300000 || window("a", "manual").Window != 100000 {
 		t.Fatal(prior)
 	}
 }

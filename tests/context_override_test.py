@@ -31,8 +31,12 @@ class ContextOverride(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('api_key=secret-context_window.a.b=keep', conf.read_text())
             self.assertIn('context_window.axb=654321', conf.read_text())
-            self.assertEqual(subprocess.run([*helper_cmd('model-window'), '--context', 'gw', 'a.b'], env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT).stdout.strip(), '131072')
             import json
+            # The --context read answers the resolver's record (#372): the pin
+            # the session will use, named as set by hand.
+            read = subprocess.run([*helper_cmd('model-window'), '--context', 'gw', 'a.b'], env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
+            self.assertEqual(json.loads(read.stdout)['window'], 131072)
+            self.assertEqual(json.loads(read.stdout)['source'], 'conf-manual')
             resolved = subprocess.run([*helper_cmd('model-window'), 'gw', 'a.b'], env=env,
                                       capture_output=True, text=True, timeout=HANG_TIMEOUT)
             self.assertEqual(json.loads(resolved.stdout)['window'], 131072)
@@ -47,7 +51,9 @@ class ContextOverride(unittest.TestCase):
             self.assertIn('other\t300000', cache.with_name('context-window.migrated').read_text())
             self.assertEqual(json.loads((conf.parent / 'profiles' / conf.stem / 'models.json').read_text())['models']['other'], 300000)
             self.assertEqual(subprocess.run([*helper_cmd('model-window'), '--context', 'gw', 'a.b', 'auto'], env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT).returncode, 0)
-            self.assertEqual(subprocess.run([*helper_cmd('model-window'), '--context', 'gw', 'a.b'], env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT).stdout.strip(), 'auto')
+            read = subprocess.run([*helper_cmd('model-window'), '--context', 'gw', 'a.b'], env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
+            self.assertEqual(json.loads(read.stdout)['window'], 200000)
+            self.assertEqual(json.loads(read.stdout)['source'], 'conf-discovered')
             resolved = subprocess.run([*helper_cmd('model-window'), 'gw', 'a.b'], env=env,
                                       capture_output=True, text=True, timeout=HANG_TIMEOUT)
             self.assertEqual(json.loads(resolved.stdout)['window'], 200000)
