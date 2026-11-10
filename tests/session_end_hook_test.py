@@ -62,6 +62,55 @@ def test_the_hook_records_attended_profile_sessions(attended, config_dir, expect
     assert _recorded(tmp_path, 4194304) == expected
 
 
+@pytest.mark.parametrize("suffix", ["", ".json"])
+def test_the_hook_never_writes_through_a_planted_link_issue_410(suffix, tmp_path):
+    # The record names are predictable in a shared TMPDIR, so another account
+    # can plant a link at one before the hook runs. The hook must not follow it:
+    # the file the link names stays as it was (#410).
+    victim = tmp_path / "victim"
+    victim.write_text("keep me", encoding="utf-8")
+    (tmp_path / f"ccmorph-session-end.4194304{suffix}").symlink_to(victim)
+    env = {
+        "TMPDIR": str(tmp_path),
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "CLAUDE_CODE_SESSION_ATTENDED": "1",
+        "CLAUDE_CODE_SESSION_ID": "sid-410",
+        "CLAUDE_CONFIG_DIR": "/profiles/work",
+        "CLAUDE_PID": "4194304",
+    }
+    ran = subprocess.run(
+        ["/bin/sh", "-c", _session_end_command()],
+        env=env,
+        input='{"session_id":"sid-410","transcript_path":"/p/sid-410.jsonl"}',
+        text=True,
+        timeout=HANG_TIMEOUT,
+    )
+    assert ran.returncode == 0, "no outcome may fail the hook at session end"
+    assert victim.read_text(encoding="utf-8") == "keep me", "the hook wrote through a planted link"
+
+
+def test_the_hook_does_not_wait_on_a_planted_fifo_issue_410(tmp_path):
+    # A FIFO at the record's name would leave the hook's own write waiting for
+    # a reader that never comes, so the session that is ending never ends (#410).
+    os.mkfifo(tmp_path / "ccmorph-session-end.4194304")
+    env = {
+        "TMPDIR": str(tmp_path),
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "CLAUDE_CODE_SESSION_ATTENDED": "1",
+        "CLAUDE_CODE_SESSION_ID": "sid-410",
+        "CLAUDE_CONFIG_DIR": "/profiles/work",
+        "CLAUDE_PID": "4194304",
+    }
+    ran = subprocess.run(
+        ["/bin/sh", "-c", _session_end_command()],
+        env=env,
+        input='{"session_id":"sid-410","transcript_path":"/p/sid-410.jsonl"}',
+        text=True,
+        timeout=HANG_TIMEOUT,
+    )
+    assert ran.returncode == 0, "no outcome may fail the hook at session end"
+
+
 @pytest.mark.parametrize("attended", ["1", "0"])
 def test_the_hook_keeps_claude_codes_input_beside_the_record(attended, tmp_path):
     # Claude Code hands its SessionEnd hook a JSON input on stdin; its
