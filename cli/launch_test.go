@@ -498,6 +498,20 @@ func TestRouteHoldChild(t *testing.T) {
 	time.Sleep(24 * time.Hour)
 }
 
+// TestBridgeSleeperChild is the stub bridge the route fixture's stub
+// ccmorph-core starts for `util bridge-start`: the test binary re-run with the
+// bridge's <tmp>/config.yaml in its argv, which is all ours() reads. A sleep run
+// through a symlink named config.yaml read the same way until ubuntu 26.04's
+// multicall coreutils took argv[0] for the tool's name and exited at once, so
+// every launch found the recorded bridge dead and started a second. Run on its
+// own it does nothing.
+func TestBridgeSleeperChild(t *testing.T) {
+	if os.Getenv("CCMORPH_TEST_BRIDGE_SLEEP") == "" {
+		return
+	}
+	time.Sleep(60 * time.Second)
+}
+
 // newRouteFixtureWithHold builds the fixture with route-hold running hold: the
 // working holder takes the shared lock the real one takes and answers one byte.
 func newRouteFixtureWithHold(t *testing.T, hold string) *routeFixture {
@@ -539,8 +553,7 @@ func newRouteFixtureWithHold(t *testing.T, hold string) *routeFixture {
 		"'util bridge-start')\n" +
 		"printf x >> '" + starts + "'\n" +
 		"d=\"$(mktemp -d '" + bridges + "/gh300bridge.XXXXXX')\"\n" +
-		"ln -s \"$(command -v sleep)\" \"$d/config.yaml\"\n" +
-		"\"$d/config.yaml\" 60 >/dev/null 2>&1 &\n" +
+		"CCMORPH_TEST_BRIDGE_SLEEP=1 '" + os.Args[0] + "' -test.run='^TestBridgeSleeperChild$' \"$d/config.yaml\" >/dev/null 2>&1 &\n" +
 		"printf 'PID=%d\\nPORT=4199\\nKEY=stub\\nTMPDIR=%s\\n' \"$!\" \"$d\"\n" +
 		";;\n" +
 		"*)\n" +
