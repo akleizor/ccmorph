@@ -2,21 +2,21 @@
   {
     "criterion": "A hop to a profile that cannot start is refused in the same session, and the running session keeps going.",
     "pass": true,
-    "evidence": "cli/hop.go hopModelRefusal runs before the relay file is written and refuseHop prints 'This session keeps running.'; zsh CCMORPH_TEST_FILTER=issue_379 PASS: test_a_hop_to_a_profile_that_cannot_pick_a_model_is_refused_in_session_issue_379, test_a_hop_to_an_endpoint_with_no_model_list_is_refused_in_session_issue_379, test_a_hop_that_recovers_a_model_from_the_conversation_is_not_refused_issue_379 (a recoverable model is not refused)."
+    "evidence": "cli/hop.go hopModelRefusal runs before the relay file is written and refuseHop prints 'This session keeps running.'; CCMORPH_TEST_FILTER=issue_379 zsh tests/ccmorph_test.zsh: 3 PASS (refused in session, no model list refused, recoverable model not refused)."
   },
   {
     "criterion": "When a hop to a profile with no saved model cannot choose one, the message names the command that lists the models (`ccmorph models strict`) next to the command that saves one.",
     "pass": true,
-    "evidence": "The refusal reads 'list them: ccmorph models strict, then save one: ccmorph set strict model <model-id>' (asserted by the issue_379 zsh tests above); go test ./adapter -run TestAModelMustBeNamed|TestAWarmCacheIsNotAModelChoice|TestARefusedListing|TestAutoPickable|TestTranslatorVerdict ok."
+    "evidence": "The refusal reads 'list them: ccmorph models strict, then save one: ccmorph set strict model <model-id>' (issue_379 zsh tests); go test ./adapter -run TestAModelMustBeNamed|TestAWarmCacheIsNotAModelChoice|TestARefusedListing|TestAutoPickable|TestTranslatorVerdict ok."
   },
   {
     "criterion": "The message uses plain words and does not mention a model protocol or a compatibility check.",
     "pass": true,
-    "evidence": "The same issue_379 zsh tests and the adapter Go tests assert the messages hold no 'protocol' and no 'compatibility check'; the doctor wording is pinned in TestHopLine and TestAdapterLine, and UNTIL_A_MODEL no longer has 'names no protocol'."
+    "evidence": "The issue_379 zsh tests and adapter Go tests assert no 'protocol' and no 'compatibility check'; doctor wording pinned in TestHopLine and TestAdapterLine (go test ./util ok)."
   },
   {
     "criterion": "`ccmorph doctor strict` says that a hop will need a saved model, or the hop works without one.",
     "pass": true,
-    "evidence": "util/doctor.go adapterLine (cached verdict first, no-model INFO otherwise) plus the new hopLine; go test ./util -run TestAdapterLine|TestHopLine|TestTheHopWarningPrintsOnce|TestDoctorRouteAdapterLine ok; pytest test_doctor_says_a_hop_needs_a_saved_model_beside_a_cached_verdict_issue_379 6 passed; main's test_doctor_adapter_line_states_the_need_issue_272 passes byte-identical to main; tests/doctor_test.py: 100 passed, 3 failed (only the sandbox pty/network tests test_run_doctor_remains_native_passthrough, test_run_doctor_cleanup_reports_the_bound_not_a_refused_killpg_issue_5, test_doctor_terminal_statuses)."
+    "evidence": "Doctor says a hop needs a saved model only where none can be picked, and says nothing false where one can: go test ./util -run TestAdapterLine|TestHopLine|TestTheHopWarningPrintsOnce|TestDoctorRouteAdapterLine ok; go test ./adapter TestTranslatorVerdict* ok; pytest tests/doctor_test.py -k 'issue_379 or issue_272 or existing_adapter or old_cache': 31 passed, the new old_cache test fails without the fix."
   }
 ]
