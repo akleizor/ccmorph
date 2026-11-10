@@ -285,6 +285,7 @@ func TestCutIDKeepsWhatTellsIDsApartIssue385(t *testing.T) {
 	mid := "vendor/" + strings.Repeat("x", 30)
 	k, z := strings.Repeat("k", 40), strings.Repeat("z", 40)
 	twin, tail := "gateway/team/"+strings.Repeat("shared-prefix-", 2), strings.Repeat("shared-tail-", 4)
+	gate, shared := "gateway/team/"+strings.Repeat("x", 24), strings.Repeat("shared-", 6)
 	cases := []struct {
 		name string
 		ids  []string
@@ -302,6 +303,12 @@ func TestCutIDKeepsWhatTellsIDsApartIssue385(t *testing.T) {
 			"anthropic/" + k + "v1/" + z, "openai/" + k + "v1/" + z,
 			"anthropic/" + k + "v2/" + z, "openai/" + k + "v2/" + z}},
 		{"three differ in the middle", []string{"a/" + k + "1" + z, "a/" + k + "2" + z, "a/" + k + "3" + z}},
+		// The head reaches v1 or v2 only past 38 characters, and the tails are
+		// one shared run: no head and tail part these four, and a search for
+		// a shape with a window in the middle gave up and cut them alike.
+		{"differ in the middle twice past a long head", []string{
+			gate + "v1/" + shared + "instruct/" + shared, gate + "v2/" + shared + "instruct/" + shared,
+			gate + "v1/" + shared + "reasoning/" + shared, gate + "v2/" + shared + "reasoning/" + shared}},
 	}
 	for _, c := range cases {
 		rows := []string{"anthropic/model-008-instruct\tanthropic/model-008-instruct\tSame Owner"}
@@ -309,9 +316,13 @@ func TestCutIDKeepsWhatTellsIDsApartIssue385(t *testing.T) {
 			rows = append(rows, id+"\t"+id+"\tSame Owner")
 		}
 		for _, columns := range []int{80, 110} {
-			width := columnWidth(labelWidth(rows, "labels"), max(1, columns-fzfRowChrome))
+			given := columnWidth(labelWidth(rows, "labels"), max(1, columns-fzfRowChrome))
+			labels, width := idColumn(rows, "labels", given)
+			if width != given {
+				t.Errorf("%s, %d columns: the column grew from %d to %d cells", c.name, columns, given, width)
+			}
 			reads := map[string]string{}
-			for i, r := range idColumn(rows, "labels", width) {
+			for i, r := range labels {
 				id, shown := rowID(rows[i]), rowID(r)
 				if cells(shown) > width {
 					t.Errorf("%s, %d columns: %q is %d cells, the column %d", c.name, columns, shown, cells(shown), width)

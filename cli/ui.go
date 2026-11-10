@@ -129,38 +129,28 @@ func columnWidth(widest, room int) int {
 
 // cutIDs is each id as it shows in a column of width cells, the ids that do
 // not fit cut so the part that tells them from every other id stays in sight
-// (#385). An id that fits stays whole. A cut id is its head, one "…" and its
-// tail; when no head and tail can part every two ids it is its head, a "…", a
-// window of the id's middle, a second "…" and its tail. The shape is the same
-// for every cut id and is only taken when no two ids then read alike, so the
-// cut can never hide a difference behind another that is in sight. The head
-// reaches past where an id first differs from the others when it can, and the
-// three parts of a three-part cut are as even as they can be. Ids no shape
-// can part (a wide character, a column too narrow) are cut by fit.
-func cutIDs(ids []string, width int) []string {
+// (#385), and the column's width. An id that fits stays whole. A cut id is its
+// head, one "…" and its tail when such a cut parts every two ids; else it is
+// cut at its differences by cutAtDifferences, which parts every two ids by
+// construction. Either cut is only taken when no two ids then read alike. The
+// width grows only when the fewest marks that part the ids are wider than the
+// column, and the ids stay whole when no cut can part them (one id the other
+// repeated, or an id with an "…" of its own): two rows never read alike.
+func cutIDs(ids []string, width int) ([]string, int) {
 	out := make([]string, len(ids))
 	runes := make([][]rune, len(ids))
 	var cut []int
+	widest := width
 	for i, id := range ids {
 		out[i] = noCntrl(id)
 		runes[i] = []rune(out[i])
-		if cells(out[i]) > width {
+		if c := cells(out[i]); c > width {
 			cut = append(cut, i)
+			widest = max(widest, c)
 		}
 	}
 	if len(cut) == 0 {
-		return out
-	}
-	keep := width - 1
-	minLen := len(runes[cut[0]])
-	for _, i := range cut {
-		minLen = min(minLen, len(runes[i]))
-	}
-	if keep < 5 || minLen <= keep {
-		for _, i := range cut {
-			out[i] = fit(out[i], width)
-		}
-		return out
+		return out, width
 	}
 	whole := map[string]bool{}
 	for i := range ids {
@@ -168,86 +158,213 @@ func cutIDs(ids []string, width int) []string {
 			whole[out[i]] = true
 		}
 	}
-	// try is the cut ids as shape draws them, or nil when one does not fit its
-	// column or reads like another id.
-	try := func(shape func(r []rune) string) []string {
-		forms := make([]string, len(cut))
-		seen := map[string]bool{}
+	// parts is whether forms, the cut ids in order, fit w cells and no two
+	// different ids then read alike.
+	parts := func(forms []string, w int) bool {
+		seen := map[string]string{}
 		for k, i := range cut {
-			s := shape(runes[i])
-			if cells(s) > width || whole[s] || seen[s] {
-				return nil
+			if cells(forms[k]) > w || whole[forms[k]] {
+				return false
 			}
-			seen[s], forms[k] = true, s
+			if id, ok := seen[forms[k]]; ok && id != out[i] {
+				return false
+			}
+			seen[forms[k]] = out[i]
 		}
-		return forms
+		return true
 	}
-	set := func(forms []string) []string {
+	cutRunes := make([][]rune, len(cut))
+	for k, i := range cut {
+		cutRunes[k] = runes[i]
+	}
+	set := func(forms []string, w int) ([]string, int) {
 		for k, i := range cut {
 			out[i] = forms[k]
 		}
-		return out
+		return out, w
 	}
-	headTail := func(head int) func(r []rune) string {
-		return func(r []rune) string { return string(r[:head]) + "…" + string(r[len(r)-(keep-head):]) }
+	keep := width - 1
+	minLen := len(cutRunes[0])
+	for _, r := range cutRunes {
+		minLen = min(minLen, len(r))
 	}
-	half := keep - keep/2
-	// The head that reaches past the first difference comes first, then the
-	// heads nearest an even split.
-	heads := []int{}
-	first := 0
-	for _, i := range cut {
-		for j := range ids {
-			if j != i {
-				first = max(first, commonPrefix(runes[i], runes[j])+1)
+	if keep >= 2 && minLen > keep {
+		half := keep - keep/2
+		// The head that reaches past the first difference comes first, then
+		// the heads nearest an even split.
+		heads := []int{}
+		first := 0
+		for _, i := range cut {
+			for j := range ids {
+				if j != i {
+					first = max(first, commonPrefix(runes[i], runes[j])+1)
+				}
+			}
+		}
+		if first < keep {
+			heads = append(heads, max(half, first))
+		}
+		for d := 0; d < keep; d++ {
+			for _, h := range []int{half - d, half + d} {
+				if h >= 1 && h < keep {
+					heads = append(heads, h)
+				}
+			}
+		}
+		for _, h := range heads {
+			forms := make([]string, len(cut))
+			for k, r := range cutRunes {
+				forms[k] = string(r[:h]) + "…" + string(r[len(r)-(keep-h):])
+			}
+			if parts(forms, width) {
+				return set(forms, width)
 			}
 		}
 	}
-	if first < keep {
-		heads = append(heads, max(half, first))
+	if forms, w := cutAtDifferences(cutRunes, width); forms != nil && parts(forms, w) {
+		return set(forms, w)
 	}
-	for d := 0; d < keep; d++ {
-		for _, h := range []int{half - d, half + d} {
-			if h >= 1 && h < keep {
-				heads = append(heads, h)
+	return out, widest
+}
+
+// cutAtDifferences is ids, each wider than width cells, cut at the places
+// where they differ, and the width they take: width, or more when the places
+// that part the ids do not fit it (#385). Two ids differ first at a place p
+// counted from the start, or one is the start of the other and they differ
+// first at a place s counted from the end. Every id keeps each place p it
+// has up to its own depth front, with nothing from its end before it, and
+// each place s up to its depth back, with nothing from its start after it;
+// everything else is the same for two ids up to a place they share. So two
+// ids read alike up to the place where they differ and differently there:
+// no two ids read alike, by construction. Room left in the column goes to
+// the head, to a window at each place and to the tail, a character to each
+// in turn. It is nil when no places part two ids: one is the other repeated,
+// as "aa" and "aaa".
+func cutAtDifferences(ids [][]rune, width int) ([]string, int) {
+	type pair struct {
+		a, b, p, s int
+		fwd, bwd   bool
+	}
+	var pairs []pair
+	longest := 0
+	for a := range ids {
+		longest = max(longest, len(ids[a]))
+		for b := a + 1; b < len(ids); b++ {
+			if string(ids[a]) == string(ids[b]) {
+				continue
 			}
+			short := min(len(ids[a]), len(ids[b]))
+			p, s := commonPrefix(ids[a], ids[b]), commonSuffix(ids[a], ids[b])
+			if p >= short && s >= short {
+				return nil, 0
+			}
+			pairs = append(pairs, pair{a, b, p, s, p < short, s < short})
 		}
 	}
-	for _, h := range heads {
-		if forms := try(headTail(h)); forms != nil {
-			return set(forms)
-		}
-	}
-	// The ids differ in two places no head and tail reach together. The window
-	// takes the middle where they part. Shapes are tried from the most even
-	// split of head, window and tail to the least, up to a budget.
-	budget := 20000
-search:
-	for m := (keep - 1) / 3; m >= 1; m-- {
-		for h := m; h <= keep-1-2*m; h++ {
-			for t := m; t <= keep-1-2*m; t++ {
-				w := keep - 1 - h - t
-				if w < m {
+	// draw is the ids with their first h characters, their last t, and c
+	// characters at each place, one before it and the rest after it (from
+	// the start) or before it (from the end).
+	draw := func(front, back []int, h, c, t int) []string {
+		forms := make([]string, len(ids))
+		lead := min(c, 1)
+		for i, r := range ids {
+			keep := make([]bool, len(r))
+			mark := func(lo, hi, floor, ceil int) {
+				for k := max(lo, floor); k <= min(hi, ceil); k++ {
+					keep[k] = true
+				}
+			}
+			ahead, behind := len(r)-2-back[i], front[i]+1
+			mark(0, h-1, 0, ahead)
+			mark(len(r)-t, len(r)-1, behind, len(r)-1)
+			for _, pr := range pairs {
+				if pr.a != i && pr.b != i {
 					continue
 				}
-				for p := h + 1; p+w < minLen-t; p++ {
-					if budget--; budget < 0 {
-						break search
-					}
-					shape := func(r []rune) string {
-						return string(r[:h]) + "…" + string(r[p:p+w]) + "…" + string(r[len(r)-t:])
-					}
-					if forms := try(shape); forms != nil {
-						return set(forms)
-					}
+				if pr.fwd && pr.p <= front[i] {
+					mark(pr.p-lead, pr.p+c-lead, 0, ahead)
 				}
+				if pr.bwd && pr.s <= back[i] {
+					e := len(r) - 1 - pr.s
+					mark(e-c+lead, e+lead, behind, len(r)-1)
+				}
+			}
+			var s strings.Builder
+			gap := false
+			for k, kept := range keep {
+				if !kept {
+					gap = true
+					continue
+				}
+				if gap {
+					s.WriteString("…")
+				}
+				s.WriteRune(r[k])
+				gap = false
+			}
+			if gap {
+				s.WriteString("…")
+			}
+			forms[i] = s.String()
+		}
+		return forms
+	}
+	widest := func(forms []string) int {
+		w := 0
+		for _, f := range forms {
+			w = max(w, cells(f))
+		}
+		return w
+	}
+	// A pair parts from the start when it can at a place up to x, else from
+	// the end. Of every x, the one whose bare places are narrowest is taken,
+	// the deepest x first.
+	var front, back []int
+	least := -1
+	for x := longest - 1; x >= -1; x-- {
+		f, b := make([]int, len(ids)), make([]int, len(ids))
+		for i := range ids {
+			f[i], b[i] = -1, -1
+		}
+		ok := true
+		for _, pr := range pairs {
+			switch {
+			case pr.fwd && pr.p <= x:
+				f[pr.a], f[pr.b] = max(f[pr.a], pr.p), max(f[pr.b], pr.p)
+			case pr.bwd:
+				b[pr.a], b[pr.b] = max(b[pr.a], pr.s), max(b[pr.b], pr.s)
+			default:
+				ok = false
+			}
+		}
+		for i, r := range ids {
+			ok = ok && f[i]+b[i]+2 <= len(r)
+		}
+		if !ok {
+			continue
+		}
+		if w := widest(draw(f, b, 0, 0, 0)); least < 0 || w < least {
+			front, back, least = f, b, w
+		}
+	}
+	if least < 0 {
+		return nil, 0
+	}
+	w := max(width, least)
+	size := []int{0, 0, 0}
+	for grows := []bool{true, true, true}; grows[0] || grows[1] || grows[2]; {
+		for g := range size {
+			if !grows[g] {
+				continue
+			}
+			size[g]++
+			if widest(draw(front, back, size[0], size[1], size[2])) > w || size[g] > longest {
+				size[g]--
+				grows[g] = false
 			}
 		}
 	}
-	for _, i := range cut {
-		out[i] = headTail(half)(runes[i])
-	}
-	return out
+	return draw(front, back, size[0], size[1], size[2]), w
 }
 
 // commonPrefix is how many runes a and b have in common from the start.
@@ -259,20 +376,29 @@ func commonPrefix(a, b []rune) int {
 	return n
 }
 
+// commonSuffix is how many runes a and b have in common from the end.
+func commonSuffix(a, b []rune) int {
+	n := 0
+	for n < len(a) && n < len(b) && a[len(a)-1-n] == b[len(b)-1-n] {
+		n++
+	}
+	return n
+}
+
 // idColumn is each row's visible part with its label cut by cutIDs to width
 // cells (#385) and its description beside it unchanged.
-func idColumn(rows []string, display string, width int) []string {
+func idColumn(rows []string, display string, width int) ([]string, int) {
 	var ids []string
 	for _, r := range rows {
 		ids = append(ids, noCntrl(rowID(visible(r, display))))
 	}
-	out := cutIDs(ids, width)
+	out, width := cutIDs(ids, width)
 	for i, r := range rows {
 		if _, detail, has := strings.Cut(visible(r, display), "\t"); has {
 			out[i] += "\t" + detail
 		}
 	}
-	return out
+	return out, width
 }
 
 // typedLines is how many terminal lines an answered prompt's last line
@@ -386,10 +512,10 @@ func (t uiTheme) list(prompt string, rows []string, display string) int {
 	_, columns := termSize()
 	index := len(strconv.Itoa(len(rows)))
 	rowWidth := columns - len(uiMargin) - index - 2
-	width := columnWidth(labelWidth(rows, display), rowWidth)
+	labels, width := idColumn(rows, display, columnWidth(labelWidth(rows, display), rowWidth))
 	fmt.Fprintln(os.Stderr, t.heading(prompt, columns))
 	fmt.Fprintln(os.Stderr)
-	for i, r := range idColumn(rows, display, width) {
+	for i, r := range labels {
 		fmt.Fprintf(os.Stderr, "%s%*d) %s\n", uiMargin, index, i+1, t.label(r, width, false, rowWidth))
 	}
 	return len(rows) + 2 // heading, blank, rows
@@ -922,9 +1048,9 @@ func fzfAtLeast(version string, minor int) bool {
 // rather than be cut, and a cut id's whole text follows past the edge.
 func (t uiTheme) searchRows(rows []string, columns int) []string {
 	room := max(1, columns-fzfRowChrome)
-	width := columnWidth(labelWidth(rows, "labels"), room)
+	labels, width := idColumn(rows, "labels", columnWidth(labelWidth(rows, "labels"), room))
 	var rendered []string
-	for i, r := range idColumn(rows, "labels", width) {
+	for i, r := range labels {
 		line := t.label(r, width, false, 0)
 		if id := noCntrl(rowID(visible(rows[i], "labels"))); rowID(r) != id {
 			line += strings.Repeat(" ", max(uiGap, columns-cells((uiTheme{}).label(r, width, false, 0)))) + id
