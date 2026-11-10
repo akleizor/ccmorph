@@ -130,24 +130,9 @@ const (
 // native route needs a claude-* id; a provider's catalogue lives in its bridge, so
 // only a claude-* id is a definite no there.
 func ModelServed(want, typ, base, modelMap, key string) Served {
-	if strings.HasSuffix(strings.ToLower(want), "[1m]") {
-		want = want[:len(want)-4]
-	}
-	switch {
-	case want == "":
-		return ServedUnknown
-	case want == "opus" || want == "sonnet" || want == "haiku" || want == "fable":
-		return ServedYes
-	case typ == "provider":
-		if strings.HasPrefix(want, "claude-") {
-			return ServedNo
-		}
-		return ServedUnknown
-	case base == "":
-		if strings.HasPrefix(want, "claude-") {
-			return ServedYes
-		}
-		return ServedNo
+	want, answer, decided := servedBeforeListing(want, typ, base)
+	if decided {
+		return answer
 	}
 	// Native routes launch without an adapter, so their maps are unused.
 	if strings.TrimSuffix(base, "/") == "https://api.anthropic.com" {
@@ -161,4 +146,56 @@ func ModelServed(want, typ, base, modelMap, key string) Served {
 		return ServedUnknown
 	}
 	return Served(modelInListing(listing, want, modelMap))
+}
+
+// ContextServed reports whether the route's listing carries want the way
+// `ccmorph models` prints it: with the id as spelled, so a model the map
+// rewrites still counts through its target (#370). ModelServed stays the
+// launch judgement — the target is what a session runs.
+func ContextServed(want, typ, base, modelMap, key string) Served {
+	want, answer, decided := servedBeforeListing(want, typ, base)
+	if decided {
+		return answer
+	}
+	// Native routes launch without an adapter, so their maps are unused.
+	if strings.TrimSuffix(base, "/") == "https://api.anthropic.com" {
+		modelMap = ""
+	}
+	if strings.TrimSpace(key) == "" {
+		return ServedUnknown
+	}
+	listing, ok := ModelsListing(base, key, io.Discard)
+	if !ok {
+		return ServedUnknown
+	}
+	if modelInListing(listing, want, "") == 0 {
+		return ServedYes
+	}
+	return Served(modelInListing(listing, want, modelMap))
+}
+
+// servedBeforeListing is the judgement a listing is not asked for: want minus
+// any [1m], the tier aliases, and the provider and bare-route answers. decided
+// says the answer is final; otherwise the caller asks the route's listing.
+func servedBeforeListing(want, typ, base string) (spelled string, answer Served, decided bool) {
+	if strings.HasSuffix(strings.ToLower(want), "[1m]") {
+		want = want[:len(want)-4]
+	}
+	switch {
+	case want == "":
+		return want, ServedUnknown, true
+	case want == "opus" || want == "sonnet" || want == "haiku" || want == "fable":
+		return want, ServedYes, true
+	case typ == "provider":
+		if strings.HasPrefix(want, "claude-") {
+			return want, ServedNo, true
+		}
+		return want, ServedUnknown, true
+	case base == "":
+		if strings.HasPrefix(want, "claude-") {
+			return want, ServedYes, true
+		}
+		return want, ServedNo, true
+	}
+	return want, ServedUnknown, false
 }
