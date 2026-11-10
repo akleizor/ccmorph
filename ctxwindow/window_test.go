@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -110,14 +111,6 @@ func windowsOf(profile string) map[string]int64 {
 	return w
 }
 
-func ctxValue(profile, model string) string {
-	v, err := ContextValue(profile, model)
-	if err != nil {
-		panic(err)
-	}
-	return v
-}
-
 func window(profile, model string) Record { return Resolve(profile, model) }
 
 // Python: test_discovery_and_manual_values_share_conf_and_stay_profile_scoped.
@@ -215,7 +208,7 @@ func TestExactManualKeysPreserveCredentialsAndNeighbours(t *testing.T) {
 	if !strings.Contains(read(t, e.a), "api_key=context_window.a.b=keep") {
 		t.Fatal(read(t, e.a))
 	}
-	if window("a", "axb").Window != 500000 || ctxValue("a", "a.b") != "131072" {
+	if window("a", "axb").Window != 500000 || window("a", "a.b").Window != 131072 {
 		t.Fatal("neighbour or value lost")
 	}
 	for _, c := range [][2]string{{"bad\nkey", "100000"}, {"a=b", "100000"}, {"m", "0"}, {"m", "-1"}} {
@@ -535,16 +528,17 @@ func TestContextSetAnswersPrefixSuffixesRangeAndUnknownModels(t *testing.T) {
 	}
 	for _, v := range [][2]string{{"100k", "100000"}, {"1m", "1000000"}} {
 		code, out, errs := run("a", "known.model", v[0])
-		if code != 0 || !strings.Contains(out, "set to "+v[1]+" tokens") || ctxValue("a", "known.model") != v[1] {
-			t.Fatalf("%s: code=%d out=%q value=%s", v[0], code, out, ctxValue("a", "known.model"))
+		want, _ := strconv.ParseInt(v[1], 10, 64)
+		if code != 0 || !strings.Contains(out, "set to "+v[1]+" tokens") || window("a", "known.model").Window != want {
+			t.Fatalf("%s: code=%d out=%q value=%d", v[0], code, out, window("a", "known.model").Window)
 		}
 		if errs != "" {
 			t.Fatalf("%s: in-range save spoke: %q", v[0], errs)
 		}
 	}
 	code, out, errs := run("a", "known.model", "64000")
-	if code != 0 || !strings.Contains(out, "set to 64000 tokens") || ctxValue("a", "known.model") != "64000" {
-		t.Fatalf("out-of-range: code=%d out=%q value=%s", code, out, ctxValue("a", "known.model"))
+	if code != 0 || !strings.Contains(out, "set to 64000 tokens") || window("a", "known.model").Window != 64000 {
+		t.Fatalf("out-of-range: code=%d out=%q value=%d", code, out, window("a", "known.model").Window)
 	}
 	if errs != "Limit saved. New sessions use it: the model's auto-compact window is sized from it, clamped into the 100,000–1,000,000 tokens Claude Code supports, and the session's context cap is the route's largest window, this limit included — set a value in that range, or auto, for a limit that is applied without clamping.\n" {
 		t.Fatalf("range sentence: %q", errs)
@@ -553,19 +547,47 @@ func TestContextSetAnswersPrefixSuffixesRangeAndUnknownModels(t *testing.T) {
 		t.Fatalf("auto: code=%d errs=%q", code, errs)
 	}
 	code, _, errs = run("a", "nosuch-model", "100k")
-	if code != 0 || ctxValue("a", "nosuch-model") != "100000" || errs != "" {
+	if code != 0 || window("a", "nosuch-model").Window != 100000 || errs != "" {
 		t.Fatalf("unknown model save: code=%d errs=%q", code, errs)
 	}
 	// Saving again is the same save: the pin already there is not evidence of
 	// anything, and the helper has nothing to say about it either way.
 	code, _, errs = run("a", "nosuch-model", "100000")
-	if code != 0 || ctxValue("a", "nosuch-model") != "100000" || errs != "" {
+	if code != 0 || window("a", "nosuch-model").Window != 100000 || errs != "" {
 		t.Fatalf("second save of an unlisted model: code=%d errs=%q", code, errs)
 	}
 	write(t, e.b, "type=provider\nprovider=codex\n")
 	code, _, errs = run("b", "nosuch-model", "100k")
-	if code != 0 || ctxValue("b", "nosuch-model") != "100000" || errs != "" {
+	if code != 0 || window("b", "nosuch-model").Window != 100000 || errs != "" {
 		t.Fatalf("provider save: code=%d errs=%q", code, errs)
+	}
+}
+
+// The --context read form answers the resolver's record — the window the
+// session will use, with where it came from — not the pin alone (#372): a
+// discovered or catalogue-estimated model answers its window, a model nothing
+// sized answers the default, and an invalid id keeps its refusal.
+func TestContextReadAnswersTheWindowTheSessionWillUseIssue372(t *testing.T) {
+	e := setup(t)
+	write(t, filepath.Join(e.root, "share/model-catalogue.json"),
+		`{"models":{"anthropic/claude-opus-5":{"limit":{"context":1000000}}}}`)
+	save("a", one("known.model", 200000))
+	run := func(args ...string) (int, string, string) {
+		var out, errb bytes.Buffer
+		code := WindowMain(append([]string{"--context"}, args...), &out, &errb)
+		return code, out.String(), errb.String()
+	}
+	for _, model := range []string{"known.model", "claude-opus-5", "brand-new"} {
+		code, out, errs := run("a", model)
+		if code != 0 || errs != "" {
+			t.Fatalf("%s: code=%d errs=%q", model, code, errs)
+		}
+		if want := window("a", model).JSON() + "\n"; out != want {
+			t.Fatalf("%s: read %q want %q", model, out, want)
+		}
+	}
+	if code, _, errs := run("a", "bad\nkey"); code != 1 || !strings.HasPrefix(errs, "ccmorph: context model id is invalid") {
+		t.Fatalf("invalid id: code=%d errs=%q", code, errs)
 	}
 }
 

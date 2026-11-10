@@ -911,25 +911,6 @@ func Restamp(conf, old, new string) {
 	}
 }
 
-// ContextValue is the manual window for model, or "auto".
-func ContextValue(profile, model string) (string, error) {
-	if !ValidModel(model) {
-		return "", errors.New("context model id is invalid")
-	}
-	path, err := ProfilePath(profile)
-	if err != nil {
-		return "", err
-	}
-	_, fields, err := ReadConf(path)
-	if err != nil {
-		return "", err
-	}
-	if v, ok := ManualValues(fields)[model]; ok {
-		return strconv.FormatInt(v, 10), nil
-	}
-	return "auto", nil
-}
-
 // SetContext pins model's window, or clears the pin with "auto".
 func SetContext(profile, model, value string) error {
 	if !ValidModel(model) {

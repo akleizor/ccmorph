@@ -728,13 +728,19 @@ profile state. `probe` is the explicit command for refreshing metadata, and
 `ccmorph context <profile> <model> [tokens|auto]` reads, sets, or clears one
 model's limit by hand — the free answer for a model too new for the gateway and
 every catalogue to publish a size, where the only alternative is a paid probe.
-`auto` returns that model to discovery. Reading a model the route does not serve
-names it instead of answering `auto`; a pinned override still reads back. Saving
-a limit for a model the route's listing does not carry warns that the route does
+`auto` returns that model to discovery. Reading answers the window the session
+will use — the same count `inspect` shows — as a token count with where it came
+from: set by hand, found by ccmorph, estimated from the model catalogue, or left
+at Claude Code's default. A `CLAUDE_CODE_MAX_CONTEXT_TOKENS` ceiling set by hand
+in the profile's env is the cap every model launches under, so the read answers
+it over any window, and `inspect`'s window line shows the same cap as
+`manual (env.CLAUDE_CODE_MAX_CONTEXT_TOKENS)`. A model the route does not serve
+is named rather than answered; a pinned override still reads back. Saving a
+limit for a model the route's listing does not carry warns that the route does
 not list it — the limit is kept for when the model appears, a model the map
 rewrites still counts as one the listing spells, and a listing that cannot be
-read saves in silence. A provider answers through the record its probe keeps, so
-an unprobed model warns with the probe that would list it.
+read saves in silence. A provider answers through the record its probe keeps,
+so an unprobed model warns with the probe that would list it.
 
 `ccmorph probe <profile>` refreshes that profile's discovered context data,
 stored as `context_discovered` in the same `.conf`. The default probe is
