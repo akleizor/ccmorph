@@ -429,6 +429,9 @@ func (l *launcher) probeVerb(args []string) int {
 			l.noProfile(p)
 			return 1
 		}
+		if l.noModelList(p) {
+			return 1
+		}
 	}
 	if mi := lastIndex(a, "--model"); mi >= 0 && (mi+1 >= len(a) || a[mi+1] == "" || interactive(a[mi+1])) {
 		pi := lastIndex(a, "--profile")

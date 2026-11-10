@@ -527,6 +527,21 @@ def test_a_key_foreign_to_the_profile_type_is_rejected(box):
     assert box.log() == ''
 
 
+@pytest.mark.parametrize('name, kind', [('work', 'Claude account'), ('tok', 'Claude token')])
+def test_models_and_probe_answer_an_account_or_token_profile_alike_gh_390(box, name, kind):
+    # GH-390: models named the internal key api_key and probe said "profile has
+    # no api key, skipped"; neither named the kind or a command that helps.
+    seed(box)
+    replies = [box.run(verb, name) for verb in ('models', 'probe')]
+    for out in replies:
+        assert out.returncode == 1, out.stderr
+        assert out.stdout == ''
+        assert f"'{name}' is a {kind} profile and has no model list from an endpoint" in out.stderr
+        assert f'choose its model: ccmorph set {name} model -i' in out.stderr
+        assert 'api_key' not in out.stderr and 'api key' not in out.stderr
+    assert replies[0].stderr == replies[1].stderr
+
+
 # --- the credential environment a launch hands Claude Code -------------------------
 
 def test_a_token_profile_launches_with_its_token_and_no_api_key(box):
