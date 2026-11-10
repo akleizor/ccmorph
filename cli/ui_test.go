@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -612,5 +613,86 @@ func TestNumberListCutsToTheScreenAndNamesTheFzfStepIssue387(t *testing.T) {
 	}
 	if !strings.Contains(out, "262) Enter a custom model ID…") || strings.Contains(out, "more\n") || strings.Contains(out, "fzf adds search") {
 		t.Fatalf("plain render must show every row and no cut or hint:\n%s", out[:2000])
+	}
+}
+
+// No list of ids makes two rows read alike, however the ids share their
+// parts and however narrow the column (#385). A search for a cut that gave
+// up after a budget cut four ids alike; every cut now parts the ids by
+// construction, the column grows only past what no cut fits, and an id that
+// fits stays whole. Each cut id shows its own characters, in order, with "…"
+// for what it hides.
+func TestCutIDsNeverReadAlikeIssue385(t *testing.T) {
+	parts := []string{"gateway/", "team/", "shared-", "x", "xx", "v1", "v2", "/", "-", "instruct", "reasoning", "a", "日本"}
+	rng := rand.New(rand.NewSource(385))
+	grew := 0
+	for n := 0; n < 3000; n++ {
+		var base strings.Builder
+		for k := 2 + rng.Intn(14); k > 0; k-- {
+			base.WriteString(parts[rng.Intn(len(parts))])
+		}
+		ids := []string{"anthropic/model-008-instruct"}
+		for k := 1 + rng.Intn(6); k > 0; k-- {
+			r := []rune(base.String())
+			for e := rng.Intn(4); e > 0 && len(r) > 1; e-- {
+				at, part := rng.Intn(len(r)), []rune(parts[rng.Intn(len(parts))])
+				switch rng.Intn(3) {
+				case 0:
+					r = append(r[:at], append(part, r[at:]...)...)
+				case 1:
+					r = append(r[:at], r[at+1:]...)
+				default:
+					r[at] = part[0]
+				}
+			}
+			ids = append(ids, string(r))
+		}
+		given := 2 + rng.Intn(60)
+		out, width := cutIDs(ids, given)
+		if width < given {
+			t.Fatalf("%q at %d: the column shrank to %d", ids, given, width)
+		}
+		if width > given {
+			grew++
+		}
+		reads := map[string]string{}
+		for i, id := range ids {
+			shown := out[i]
+			if other, ok := reads[shown]; ok && other != id {
+				t.Fatalf("%q at %d: %q and %q both read %q", ids, given, other, id, shown)
+			}
+			reads[shown] = id
+			if cells(shown) > width {
+				t.Fatalf("%q at %d: %q is %d cells, the column %d", ids, given, shown, cells(shown), width)
+			}
+			if cells(id) <= given {
+				if shown != id {
+					t.Fatalf("%q at %d: %q fits and is cut to %q", ids, given, id, shown)
+				}
+				continue
+			}
+			if shown == id {
+				continue
+			}
+			rest := id
+			for _, piece := range strings.Split(shown, "…") {
+				at := strings.Index(rest, piece)
+				if at < 0 {
+					t.Fatalf("%q at %d: %q is not %q's own characters in order", ids, given, shown, id)
+				}
+				rest = rest[at+len(piece):]
+			}
+		}
+	}
+	t.Logf("the column grew in %d of 3000 lists", grew)
+}
+
+// Ids that only a length tells apart, "a" repeated, stay whole: no cut can
+// part them, and two rows never read alike (#385).
+func TestCutIDsKeepWholeWhatNoCutPartsIssue385(t *testing.T) {
+	ids := []string{"model-008", strings.Repeat("a", 60), strings.Repeat("a", 61)}
+	out, width := cutIDs(ids, 20)
+	if width != 61 || out[1] != ids[1] || out[2] != ids[2] || out[0] != ids[0] {
+		t.Fatalf("got %q at %d cells", out, width)
 	}
 }
