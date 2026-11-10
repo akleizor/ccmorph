@@ -303,6 +303,8 @@ func TestCutIDKeepsWhatTellsIDsApartIssue385(t *testing.T) {
 		{"differ at the start and in the middle", []string{
 			"anthropic/" + k + "v1/" + z, "openai/" + k + "v1/" + z,
 			"anthropic/" + k + "v2/" + z, "openai/" + k + "v2/" + z}},
+		// No place tells these two apart but their length.
+		{"one the other repeated", []string{strings.Repeat("model-", 20), strings.Repeat("model-", 21)}},
 		{"three differ in the middle", []string{"a/" + k + "1" + z, "a/" + k + "2" + z, "a/" + k + "3" + z}},
 		// The head reaches v1 or v2 only past 38 characters, and the tails are
 		// one shared run: no head and tail part these four, and a search for
@@ -687,12 +689,45 @@ func TestCutIDsNeverReadAlikeIssue385(t *testing.T) {
 	t.Logf("the column grew in %d of 3000 lists", grew)
 }
 
-// Ids that only a length tells apart, "a" repeated, stay whole: no cut can
-// part them, and two rows never read alike (#385).
-func TestCutIDsKeepWholeWhatNoCutPartsIssue385(t *testing.T) {
-	ids := []string{"model-008", strings.Repeat("a", 60), strings.Repeat("a", 61)}
-	out, width := cutIDs(ids, 20)
-	if width != 61 || out[1] != ids[1] || out[2] != ids[2] || out[0] != ids[0] {
-		t.Fatalf("got %q at %d cells", out, width)
+// Ids that only a length tells apart, one id repeated more or fewer times,
+// are each cut to a length of their own: the column keeps its width, so the
+// name beside a short id stays in sight, and no two rows read alike (#385).
+func TestCutIDsPartIdsOnlyALengthTellsApartIssue385(t *testing.T) {
+	a, b := strings.Repeat("model-", 20), strings.Repeat("model-", 21)
+	short := "openai/model-137-instruct"
+	for _, c := range [][]string{
+		{short, a, b},
+		{short, a, b, strings.Repeat("model-", 22), "gateway/" + strings.Repeat("x", 90) + "v1", "gateway/" + strings.Repeat("x", 90) + "v2"},
+		{strings.Repeat("ab", 30), strings.Repeat("ab", 31)},
+	} {
+		for _, given := range []int{34, 49, 20, 8} {
+			out, width := cutIDs(c, given)
+			if width != given {
+				t.Errorf("%q at %d: the column grew to %d cells", c, given, width)
+			}
+			reads := map[string]string{}
+			for i, id := range c {
+				if other, ok := reads[out[i]]; ok {
+					t.Errorf("%q at %d: %q and %q both read %q", c, given, other, id, out[i])
+				}
+				reads[out[i]] = id
+				if cells(out[i]) > width || (cells(id) <= given) != (out[i] == id) {
+					t.Errorf("%q at %d: %q shows as %q (%d cells)", c, given, id, out[i], cells(out[i]))
+				}
+			}
+		}
+	}
+	// More such ids than the column has lengths: it grows to one length each.
+	many := []string{strings.Repeat("ab", 30), strings.Repeat("ab", 31), strings.Repeat("ab", 32), strings.Repeat("ab", 33)}
+	out, width := cutIDs(many, 3)
+	if width != 5 {
+		t.Errorf("four repeats at 3 cells: the column is %d cells, want 5", width)
+	}
+	reads := map[string]bool{}
+	for _, f := range out {
+		if reads[f] || cells(f) > width {
+			t.Errorf("four repeats at 3 cells: %q reads like another or overflows: %q", f, out)
+		}
+		reads[f] = true
 	}
 }

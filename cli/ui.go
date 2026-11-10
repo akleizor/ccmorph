@@ -132,10 +132,11 @@ func columnWidth(widest, room int) int {
 // (#385), and the column's width. An id that fits stays whole. A cut id is its
 // head, one "…" and its tail when such a cut parts every two ids; else it is
 // cut at its differences by cutAtDifferences, which parts every two ids by
-// construction. Either cut is only taken when no two ids then read alike. The
+// construction, and an id that is another repeated by its length, in
+// cutByLength. Each cut is only taken when no two ids then read alike. The
 // width grows only when the fewest marks that part the ids are wider than the
-// column, and the ids stay whole when no cut can part them (one id the other
-// repeated, or an id with an "…" of its own): two rows never read alike.
+// column, and the ids stay whole when no cut can part them (an id with an "…"
+// of its own, or a wide character that no cut fits): two rows never read alike.
 func cutIDs(ids []string, width int) ([]string, int) {
 	out := make([]string, len(ids))
 	runes := make([][]rune, len(ids))
@@ -224,7 +225,69 @@ func cutIDs(ids []string, width int) ([]string, int) {
 	if forms, w := cutAtDifferences(cutRunes, width); forms != nil && parts(forms, w) {
 		return set(forms, w)
 	}
+	if forms, w := cutByLength(cutRunes, width); forms != nil && parts(forms, w) {
+		return set(forms, w)
+	}
 	return out, widest
+}
+
+// cutByLength is ids, each wider than width cells, cut when some of them are
+// one id repeated more or fewer times, as "aa" and "aaa": no place tells such
+// ids apart but their length, so each of those ids keeps its head, one "…"
+// and its tail, a character fewer for each, and no two read alike (#385). The
+// other ids are cut at their differences. It also gives the width, which grows
+// only to give each repeated id its own length. It is nil when an id is too
+// short to cut so, or the ids it cuts alike are not all of that kind.
+func cutByLength(ids [][]rune, width int) ([]string, int) {
+	var rest [][]rune
+	var like []string
+	known := map[string]bool{}
+	for a, r := range ids {
+		repeated := false
+		for b, o := range ids {
+			if a != b && string(r) != string(o) {
+				short := min(len(r), len(o))
+				repeated = repeated || (commonPrefix(r, o) >= short && commonSuffix(r, o) >= short)
+			}
+		}
+		switch {
+		case !repeated:
+			rest = append(rest, r)
+		case !known[string(r)]:
+			known[string(r)] = true
+			like = append(like, string(r))
+		}
+	}
+	w := max(width, len(like)+1)
+	var cut []string
+	if len(rest) > 0 {
+		var restW int
+		if cut, restW = cutAtDifferences(rest, width); cut == nil {
+			return nil, 0
+		}
+		w = max(w, restW)
+	}
+	shown := map[string]string{}
+	for k, id := range like {
+		r := []rune(id)
+		kept := w - 1 - k
+		if len(r) <= kept {
+			return nil, 0
+		}
+		head := kept - kept/2
+		shown[id] = string(r[:head]) + "…" + string(r[len(r)-(kept-head):])
+	}
+	forms := make([]string, len(ids))
+	next := 0
+	for a, r := range ids {
+		if f, ok := shown[string(r)]; ok {
+			forms[a] = f
+		} else {
+			forms[a] = cut[next]
+			next++
+		}
+	}
+	return forms, w
 }
 
 // cutAtDifferences is ids, each wider than width cells, cut at the places
