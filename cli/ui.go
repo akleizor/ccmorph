@@ -131,12 +131,14 @@ func columnWidth(widest, room int) int {
 // not fit cut so the part that tells them from every other id stays in sight
 // (#385), and the column's width. An id that fits stays whole. A cut id is its
 // head, one "…" and its tail when such a cut parts every two ids; else it is
-// cut at its differences by cutAtDifferences, which parts every two ids by
-// construction, even one id and the same id repeated. Either cut is only
-// taken when no two ids then read alike. The width grows only when the fewest
-// marks that part the ids are wider than the column, and the ids stay whole
-// only when a cut id would read as an id shown whole, which takes an id with
-// an "…" of its own: two rows never read alike.
+// cut at its differences by cutAtDifferences when the places that part the ids
+// fit the column; else each id keeps a head and a tail of its own, by
+// cutOneEach, as many repeats of one id need. Each cut is only taken when no
+// two ids then read alike. The column grows only when none of these fits, to
+// the fewest marks cutAtDifferences needs, which parts every two ids by
+// construction, even one id and the same id repeated; the ids stay whole only
+// when a cut id would read as an id shown whole, which takes an id with an "…"
+// of its own: two rows never read alike.
 func cutIDs(ids []string, width int) ([]string, int) {
 	out := make([]string, len(ids))
 	runes := make([][]rune, len(ids))
@@ -222,10 +224,56 @@ func cutIDs(ids []string, width int) ([]string, int) {
 			}
 		}
 	}
-	if forms, w := cutAtDifferences(cutRunes, width); parts(forms, w) {
-		return set(forms, w)
+	diffs, diffsW := cutAtDifferences(cutRunes, width)
+	if diffsW <= width && parts(diffs, diffsW) {
+		return set(diffs, diffsW)
+	}
+	if forms := cutOneEach(cutRunes, width); forms != nil && parts(forms, width) {
+		return set(forms, width)
+	}
+	if parts(diffs, diffsW) {
+		return set(diffs, diffsW)
 	}
 	return out, widest
+}
+
+// cutOneEach is ids, each wider than width cells, each cut to its head, one
+// "…" and its tail, a head and a tail of its own so that no two forms are the
+// same, in a column of width cells (#385). It is for ids that few places part,
+// as one id repeated 20 to 74 times, which cutAtDifferences parts only by
+// widening the column. The same id twice gets the same form. Each id takes the
+// widest form, the nearest an even split, that no id before it took. It is nil
+// when an id has no form left that fits.
+func cutOneEach(ids [][]rune, width int) []string {
+	forms := make([]string, len(ids))
+	used := map[string]bool{}
+	byID := map[string]string{}
+	for k, r := range ids {
+		if f, ok := byID[string(r)]; ok {
+			forms[k] = f
+			continue
+		}
+		for total := min(width-1, len(r)-1); total >= 2 && forms[k] == ""; total-- {
+			half := total - total/2
+			for d := 0; d < total && forms[k] == ""; d++ {
+				for _, h := range []int{half - d, half + d} {
+					if h < 1 || h >= total {
+						continue
+					}
+					f := string(r[:h]) + "…" + string(r[len(r)-(total-h):])
+					if cells(f) <= width && !used[f] {
+						used[f], forms[k] = true, f
+						break
+					}
+				}
+			}
+		}
+		if forms[k] == "" {
+			return nil
+		}
+		byID[string(r)] = forms[k]
+	}
+	return forms
 }
 
 // cutAtDifferences is ids, each wider than width cells, cut at the places

@@ -740,6 +740,46 @@ func TestSearchRowsShowEveryRowApartIssue385(t *testing.T) {
 	}
 }
 
+// Many ids that only a length tells apart keep the column and read apart in
+// what fzf shows (#385): "model-" repeated n times for n from 20 to 55, or to
+// 74, beside a short id, all named alike. Parting them where the shorter ends
+// took marks wider than any viewport, so the column grew to 71 and 109 cells
+// and every name left the window. Each is cut to a head and a tail of its own.
+func TestSearchRowsShowManyRepeatedIDsApartIssue385(t *testing.T) {
+	short := "openai/model-137-instruct"
+	for _, last := range []int{55, 74} {
+		ids := []string{short}
+		for n := 20; n <= last; n++ {
+			ids = append(ids, strings.Repeat("model-", n))
+		}
+		var rows []string
+		for _, id := range ids {
+			rows = append(rows, id+"\t"+id+"\tSame Owner")
+		}
+		for _, columns := range []int{80, 110} {
+			given := columnWidth(labelWidth(rows, "labels"), max(1, columns-fzfRowChrome))
+			if _, width := idColumn(rows, "labels", given); width != given {
+				t.Errorf("%d ids, %d columns: the column grew from %d to %d cells", len(ids), columns, given, width)
+			}
+			seen := map[string]string{}
+			for i, row := range (uiTheme{}).searchRows(rows, columns) {
+				_, display, _ := strings.Cut(row, "\t")
+				shown := string([]rune(display)[:min(columns-6, len([]rune(display)))])
+				if other, ok := seen[shown]; ok {
+					t.Errorf("%d ids, %d columns: %q and %q both show %q", len(ids), columns, other, ids[i], shown)
+				}
+				seen[shown] = ids[i]
+				if !strings.Contains(shown, "Same Owner") {
+					t.Errorf("%d ids, %d columns: the name beside %q is out of sight: %q", len(ids), columns, ids[i], shown)
+				}
+				if ids[i] == short && !strings.Contains(shown, short+"  ") {
+					t.Errorf("%d ids, %d columns: the short id is cut: %q", len(ids), columns, shown)
+				}
+			}
+		}
+	}
+}
+
 // Ids that only a length tells apart, one id repeated more or fewer times,
 // are cut so the shorter ends where the longer goes on: the column keeps its
 // width, so the name beside a short id stays in sight, and no two rows read
