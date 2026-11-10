@@ -24,6 +24,19 @@
   the ccusage command ready to copy — describes every option, and a `--since`
   that is not exactly eight digits — dashes, an unpadded day, an empty value —
   is told to write it as YYYYMMDD, for example 20261110 (#382).
+- **The ccusage report names each block with its profile, at any terminal
+  width.** The export named every project folder `ccmorph-<profile>`, and
+  ccusage's daily table cuts each label to its head when the terminal is
+  narrow: at 110 columns every block read `ccmorph…`, so no profile could be
+  told apart — the README's "each profile is one ccusage project" was exactly
+  the part the cut ate. The folder, and so the label, is now the profile
+  alone, so a cut label keeps the profile as its head. Ownership of a folder
+  is no longer read from its name: each one carries a marker file, so a
+  folder a live Claude Code or a hand placed in the config dir is still never
+  touched — not even when its name is the one a profile would take: the
+  export fails before anything is written, naming the folder, so it keeps
+  its owner — and a full rerun clears the `ccmorph-<profile>` day files an
+  export written before this change left behind (#383).
 - **`ccmorph run -i` opens on the profile's saved model.** The launch picker
   offered a bare catalogue and put the cursor on the alphabetically first
   model, so pressing Enter straight away started a different model than the

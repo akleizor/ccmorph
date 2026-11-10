@@ -83,7 +83,7 @@ def read_day_in(output, folder, day):
 
 
 def read_day(output, day):
-    path = output / "projects" / "ccmorph-ledger" / f"{day}.jsonl"
+    path = output / "projects" / "ledger" / f"{day}.jsonl"
     return [json.loads(l) for l in path.read_text().splitlines() if l]
 
 
@@ -249,7 +249,7 @@ def test_a_rerun_drops_days_whose_last_usable_receipt_is_gone(tmp_path, gone):
     receipt supports a day, its exported file must leave the consumer's input too, or
     the summary reports a cost the consumer still shows."""
     rows, output = tmp_path / "rows", tmp_path / "out"
-    ledger = output / "projects" / "ccmorph-ledger"
+    ledger = output / "projects" / "ledger"
     rows.mkdir()
     write(rows, "a.json", receipt("a", "claude-opus-5-5", "2026-10-15T01:00:00+00:00"))
     write(rows, "b.json", receipt("b", "claude-opus-5-5", "2026-10-16T01:00:00+00:00", cost=1.25))
@@ -328,7 +328,7 @@ def test_a_since_rerun_reconciles_only_its_range(tmp_path):
     """--since rewrites its own range and nothing else: the day it has no receipt for
     goes, an earlier day stays, and every file the exporter does not own is left alone."""
     rows, output = tmp_path / "rows", tmp_path / "out"
-    ledger = output / "projects" / "ccmorph-ledger"
+    ledger = output / "projects" / "ledger"
     rows.mkdir()
     for rid, day in [("a", "2026-10-14"), ("b", "2026-10-16"), ("c", "2026-10-17")]:
         write(rows, f"{rid}.json", receipt(rid, "claude-opus-5-5", f"{day}T01:00:00+00:00"))
@@ -399,7 +399,7 @@ def test_since_filters_by_local_day(tmp_path, since, expected_days, expected_unp
 
     stats = ue.export(rows, output, boundary)
 
-    ledger = output / "projects" / "ccmorph-ledger"
+    ledger = output / "projects" / "ledger"
     assert {p.stem: [r["timestamp"] for r in read_day(output, p.stem)]
             for p in ledger.glob("*.jsonl")} == expected_days
     assert stats["rows"] == sum(len(records) for records in expected_days.values())
@@ -566,17 +566,77 @@ def test_a_legacy_row_without_served_model_exports_unchanged(tmp_path):
 
 
 def test_receipts_of_two_profiles_land_in_two_profile_folders(tmp_path):
+    """One folder per profile, named with the profile alone (#383): the label ccusage
+    prints for a block is the folder name, cut to its head at a narrow terminal, so a
+    label that began with the constant `ccmorph-` prefix lost exactly the part that
+    differs — every profile read `ccmorph…`. A folder also carries the marker file
+    that says whose it is, the name alone no longer can; an unsafe character in a
+    profile is replaced, a profile that is no folder (only damage writes one — a name
+    is letters, digits and underscores) lands with the profile-less, and so does a
+    row with no profile."""
     rows, output = tmp_path / "rows", tmp_path / "out"
     rows.mkdir()
     write(rows, "a.json", {**receipt("a", "claude-opus-5-5", "2026-10-16T01:00:00+00:00"), "profile": "work"})
     write(rows, "b.json", {**receipt("b", "claude-opus-5-5", "2026-10-16T02:00:00+00:00"), "profile": "a/b"})
     write(rows, "c.json", {**receipt("c", "claude-opus-5-5", "2026-10-16T03:00:00+00:00"), "profile": None})
+    write(rows, "d.json", {**receipt("d", "claude-opus-5-5", "2026-10-16T04:00:00+00:00"), "profile": ".."})
 
     ue.export(rows, output)
 
     folders = sorted(p.name for p in (output / "projects").iterdir())
-    assert folders == ["ccmorph-a_b", "ccmorph-unknown", "ccmorph-work"]
-    assert len(read_day_in(output, "ccmorph-work", "2026-10-16")) == 1
+    assert folders == ["a_b", "unknown", "work"]
+    assert len(read_day_in(output, "work", "2026-10-16")) == 1
+    assert len(read_day_in(output, "unknown", "2026-10-16")) == 2
+    assert all((output / "projects" / f / ue.MARKER).is_file() for f in folders)
+
+
+def test_a_rerun_reconciles_an_export_from_before_the_profile_named_folders(tmp_path):
+    """#383: an export written before the change holds `ccmorph-<profile>` folders. A
+    full rerun moves its days to the profile-named folders and removes the legacy day
+    files — one profile stays one project, not two — while the emptied legacy folder
+    itself stays, and a folder the exporter never marked is still not ours to touch."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    rows.mkdir()
+    write(rows, "a.json", receipt("a", "claude-opus-5-5", "2026-10-16T01:00:00+00:00", cost=1.25))
+    legacy = output / "projects" / "ccmorph-ledger"
+    legacy.mkdir(parents=True)
+    (legacy / "2026-10-16.jsonl").write_text("previous export\n")
+    foreign = output / "projects" / "other"
+    foreign.mkdir(parents=True)
+    (foreign / "2026-10-16.jsonl").write_text("someone else's day\n")
+
+    stats = ue.export(rows, output)
+
+    assert [r["costUSD"] for r in read_day(output, "2026-10-16")] == [1.25]
+    assert not (legacy / "2026-10-16.jsonl").exists()
+    assert legacy.is_dir()  # day files are reconciled, folders are never removed
+    assert (foreign / "2026-10-16.jsonl").read_text() == "someone else's day\n"
+    assert stats["rows"] == 1
+
+
+def test_a_folder_the_exporter_does_not_own_is_never_taken_over(tmp_path):
+    """#383: a folder in the output that carries no marker — a live Claude Code's own
+    project folder in the config dir, or anything a hand placed there — keeps its name
+    even when a profile's destination is exactly that folder: taking it over would mark
+    it ours, overwrite its matching day file and let a later run remove its other days.
+    The whole export fails before anything is written, naming the folder, and every
+    file in it stays as it was."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    rows.mkdir()
+    write(rows, "a.json", {**receipt("a", "claude-opus-5-5", "2026-10-16T01:00:00+00:00", cost=1.25),
+                           "profile": "work"})
+    foreign = output / "projects" / "work"
+    foreign.mkdir(parents=True)
+    (foreign / "2026-10-16.jsonl").write_text("someone else's day\n")
+    (foreign / "2026-10-17.jsonl").write_text("someone else's next day\n")
+
+    with pytest.raises(ValueError, match="projects/work"):
+        ue.export(rows, output)
+
+    assert (foreign / "2026-10-16.jsonl").read_text() == "someone else's day\n"
+    assert (foreign / "2026-10-17.jsonl").read_text() == "someone else's next day\n"
+    assert not (foreign / ue.MARKER).exists()
+    assert not (output / "ccusage.json").exists()
 
 
 def test_a_profile_that_is_not_a_name_fails_the_export_cleanly(tmp_path):
