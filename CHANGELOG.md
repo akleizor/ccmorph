@@ -9,6 +9,11 @@
 
 ### Fixed
 
+- **`ccmorph add` on a name already taken names `ccmorph config`** (#391):
+  it no longer answers only with `ccmorph rm`, which deletes the profile and
+  its saved credential for good. A Claude account or provider profile is told
+  to sign in again with `ccmorph login`; an API key or token profile hears
+  `rm` only as the way to start over, with what it deletes.
 - **`ccmorph models` and `ccmorph probe` answer a Claude account or token
   profile alike** (#390): the same two lines say it has no model list from an
   endpoint and name `ccmorph set <name> model -i`, and both exit 1.

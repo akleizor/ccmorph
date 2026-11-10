@@ -306,6 +306,28 @@ def test_add_refuses_a_name_that_differs_only_by_case_and_names_the_clash_gh_259
     assert (box.state / 'work.conf').read_text() == before
 
 
+@pytest.mark.parametrize('name, renew', [
+    ('work', 'ccmorph login work'), ('cx', 'ccmorph login cx'), ('gw', None), ('tok', None)])
+def test_add_on_an_existing_name_names_config_and_rm_only_as_starting_over_gh_391(box, name, renew):
+    # GH-391: add on a taken name offered only rm, which deletes the profile and
+    # its credential for good. It names config, the command that changes a
+    # profile; a browser sign-in is renewed by login and never hears rm.
+    seed(box)
+    box.conf('cx', 'type=provider\nprovider=codex\n')
+    before = {p.name: p.read_text() for p in box.state.glob('*.conf')}
+    done = box.run('add', name)
+    assert done.returncode != 0, done.stdout
+    assert f"'{name}' already exists" in done.stderr, done.stderr
+    assert f'ccmorph config {name}' in done.stderr, done.stderr
+    if renew:
+        assert renew in done.stderr, done.stderr
+        assert 'ccmorph rm' not in done.stderr, done.stderr
+    else:
+        assert (f'To start over instead: ccmorph rm {name} deletes the profile '
+                'and its saved credential for good') in done.stderr, done.stderr
+    assert {p.name: p.read_text() for p in box.state.glob('*.conf')} == before
+
+
 def test_mv_carries_conf_profile_dir_auth_and_default_to_the_new_name(box):
     seed(box)
     box.run('use', 'work')
