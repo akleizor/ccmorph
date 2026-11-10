@@ -38,7 +38,12 @@ func (l *launcher) add(args []string) int {
 		return l.badName("add", name)
 	}
 	if l.exists(name) {
-		l.err("'" + name + "' already exists. Remove first: ccmorph rm " + name)
+		// A broken conf reads as no type here; existsMsg's default still answers
+		// with config, and readQuiet keeps its own refusal off the screen.
+		f, _ := l.readQuiet(name)
+		for _, line := range existsMsg(name, f["type"]) {
+			l.err(line)
+		}
 		return 1
 	}
 	if twin := l.caseTwin(name); twin != "" {

@@ -133,6 +133,26 @@ func caseClashMsg(name, twin string) string {
 	return "'" + name + "' clashes with the existing profile '" + twin + "' (the names differ only by letter case). Choose another name."
 }
 
+// existsMsg is what add says for a name already taken (#391), one line per
+// l.err. It names config, the command that changes a profile. A browser
+// sign-in (a Claude account or a provider) is renewed by login and never
+// hears rm; any other kind hears rm only as starting over, with what it deletes.
+func existsMsg(name, typ string) []string {
+	restart := "To start over instead: ccmorph rm " + name + " deletes the profile and its saved credential for good, then ccmorph add " + name
+	switch typ {
+	case "sub", "provider":
+		return []string{
+			"'" + name + "' already exists. Sign in to it again: ccmorph login " + name,
+			"To change its model or effort: ccmorph config " + name,
+		}
+	case "apikey":
+		return []string{"'" + name + "' already exists. To change its key, endpoint, model or effort: ccmorph config " + name, restart}
+	case "token":
+		return []string{"'" + name + "' already exists. To replace its token or change its model or effort: ccmorph config " + name, restart}
+	}
+	return []string{"'" + name + "' already exists. To change it: ccmorph config " + name, restart}
+}
+
 func (l *launcher) noProfile(name string) { l.err(l.noProfileMsg(name)) }
 
 // badNameMsg is profile.BadNameMsg plus the profiles that do exist, when any:
