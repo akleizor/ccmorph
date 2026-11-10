@@ -847,9 +847,13 @@ every delivery path copies, so a Homebrew or one-liner install has it too, not o
 checkout (#261); a checkout's `scripts/usage-export` only forwards to it. Run it as `share/usage-export --output ROOT [--since YYYYMMDD]`;
 `--source` defaults to the state root's `usage/`, every `*.json` in it is parsed — the day
 folders at or after the range's first day beside the flat rows, every folder when no range
-is given — and it writes one `ccmorph-<profile>` project per profile — an unsafe
-character in a profile name is replaced, and a row with no profile lands in
-`ccmorph-unknown` **[test]** — one `YYYY-MM-DD.jsonl` per local-time day,
+is given — and it writes one project per profile, named with the profile alone so a
+label cut to its head at a narrow terminal still names the profile (#383) — an unsafe
+character in a profile name is replaced, a row with no profile lands in `unknown`, and
+each folder carries a marker file that says whose it is, so a folder the exporter does
+not own is never reconciled and never written into — a destination such a folder
+already holds fails the whole export before anything is written, naming the folder,
+exactly like a malformed receipt **[test]** — one `YYYY-MM-DD.jsonl` per local-time day,
 and a `ccusage.json` that prices a billed or estimated cost as is and leaves every other
 turn to ccusage's own list prices. It is stdlib only, starts no service, and reads no
 transcript and no credential. Each receipt's own `timestamp` decides
@@ -867,8 +871,9 @@ fatal **[test]** — while a malformed receipt (another schema, an impossible
 token count, a profile that is not a name) fails the whole export before it replaces
 anything, naming the receipt **[test]**. Each run is a snapshot of its range: a day no
 usable receipt supports any more is removed, earlier days and every file the exporter does
-not own stay, two overlapping runs never undo each other's days, and the receipts
-themselves are never touched **[test]**. The run ends with a summary for the person who
+not own stay — a `ccmorph-<profile>` folder an export before #383 wrote is still ours,
+so a full rerun clears its days — two overlapping runs never undo each other's days, and
+the receipts themselves are never touched **[test]**. The run ends with a summary for the person who
 ran it, not a machine's JSON line: where the files went, every count by a name — the
 three priced kinds, gateway, estimate and list, add up to the whole — money at cents,
 and the exact ccusage command for that output folder, both paths shell-quoted so a
