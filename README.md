@@ -17,8 +17,9 @@
   stay shared.
 - **Hop mid-session.** `ccmorph hop [profile]` moves a running conversation to
   another profile, keeping its model and effort; without a profile it names the
-  others to choose from. The status line names the profile a session runs on,
-  and `ccmorph profile` answers from the prompt.
+  others to choose from. The status line names the profile a session runs on;
+  a status line of your own is kept as written, without the name. Either way,
+  `/ccmorph:profile` answers from the prompt.
 - **Any endpoint.** Gateways that do not speak Anthropic's API are translated
   automatically through a per-launch adapter.
 - **Cost per profile.** Every gateway turn leaves a receipt with the billed cost;
@@ -134,7 +135,11 @@ other profiles to choose from; hopping to the profile the session already runs
 on changes nothing.
 
 The session's status line names the profile it runs on, and changes with a hop.
-`/ccmorph:profile` (or `! ccmorph profile`) prints the name.
+A status line of your own is kept as written and does not show the name: the
+session then names the profile in one message when it starts or resumes, and
+that message scrolls away as you work. At any point, `/ccmorph:profile` (or
+`! ccmorph profile`) prints the name in one step. To keep the name on screen,
+have your own status line print `$CCMORPH_PROFILE`, which every launch sets.
 
 `ccmorph --help` shows everyday commands, `ccmorph help all` the full list, and
 `ccmorph help <command>` the details of one.
