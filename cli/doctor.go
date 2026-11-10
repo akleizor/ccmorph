@@ -513,10 +513,13 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	// rejection below would contradict two lines later (GH-272). The translator
 	// verdict comes from what a launch itself reads without inference (the
 	// classification cache and the listing's declared protocols), so doctor
-	// reports what launch would actually do, never a guess.
+	// reports what launch would actually do, never a guess. Pickable answers the
+	// hop question the same read-only way: whether the listing leaves a launch
+	// with no model named something to pick (#379).
 	need := func(listing string) util.TranslatorNeed {
 		needed, known := adapter.TranslatorVerdict(base, l.profileDirs, model, listing)
-		return util.TranslatorNeed{Known: known, Needed: needed, Installed: adapter.TranslatorInstalled()}
+		return util.TranslatorNeed{Known: known, Needed: needed, Installed: adapter.TranslatorInstalled(),
+			Pickable: model == "" && adapter.AutoPickable(base, l.profileDirs, listing)}
 	}
 	rows, bad, keyRejected := util.DoctorRoute(name, typ, base, model, f["model_map"], need, key, home, verbose)
 	if key != "" {

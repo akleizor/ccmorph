@@ -128,6 +128,13 @@ func TestAdapterLine(t *testing.T) {
 			"adapter: this profile needs no translator until a model is chosen, and a hop here will need a saved model (none is set, and none can be picked from the endpoint's model list); cliproxyapi is not installed; list them: ccmorph models demo, then save one: ccmorph set demo model <model-id>"},
 		{"no model, process listing unreadable", "", list, "__UNKNOWN__", TranslatorNeed{}, false, "INFO",
 			"adapter: this profile needs no translator until a model is chosen, and a hop here will need a saved model (none is set, and none can be picked from the endpoint's model list); cliproxyapi is not installed; list them: ccmorph models demo, then save one: ccmorph set demo model <model-id>"},
+		{"stale cache, no model", "", list, "", TranslatorNeed{Known: true, Installed: true}, true, "INFO",
+			"adapter: this profile needs no translator until a model is chosen, and a hop here will need a saved model (none is set, and none can be picked from the endpoint's model list); cliproxyapi is installed; list them: ccmorph models demo, then save one: ccmorph set demo model <model-id>"},
+		{"pickable listing, no model", "", `{"data":[{"id":"m-1","supported_endpoints":["/v1/chat/completions"]}]}`, "",
+			TranslatorNeed{Known: true, Needed: true, Installed: true, Pickable: true}, true, "OK",
+			"adapter: this endpoint needs a translator; cliproxyapi is installed"},
+		{"open session outranks the hop warning", "", list, translatorSession, TranslatorNeed{Known: true}, true, "OK",
+			"adapter: this endpoint needs no translator"},
 		{"saved model nothing classified", "glm-4.6", list, "", TranslatorNeed{Installed: true}, true, "", ""},
 		{"no model, no listing", "", "", "", TranslatorNeed{}, false, "", ""},
 	}

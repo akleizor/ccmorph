@@ -581,19 +581,26 @@ def test_doctor_names_the_command_not_the_script_path_issue_272(tmp_path):
     assert not any("ccmorph.sh" in l for l in lines), result.stdout
 
 
-@pytest.mark.parametrize("cache_rows,stub,expected", [
-    (None, False, None),
-    ([("m-anthropic", "anthropic")], False,
+@pytest.mark.parametrize("cache_rows,served,stub,expected", [
+    (None, None, False, None),
+    ([("m-anthropic", "anthropic")], "m-anthropic", False,
      "OK adapter: this endpoint needs no translator"),
-    ([("m-openai", "responses")], True,
+    ([("m-openai", "responses")], "m-openai", True,
      "OK adapter: this endpoint needs a translator; cliproxyapi is installed"),
-], ids=["no-cache-no-model", "native-endpoint", "translator-endpoint"])
-def test_doctor_adapter_line_states_the_need_issue_272(tmp_path, cache_rows, stub, expected):
+    ([("m-anthropic", "anthropic")], None, False, None),
+    ([("m-openai", "responses")], None, True, None),
+], ids=["no-cache-no-model", "native-endpoint", "translator-endpoint",
+        "cache-the-listing-no-longer-serves", "translator-cache-no-longer-served"])
+def test_doctor_adapter_line_states_the_need_issue_272(tmp_path, cache_rows, served, stub, expected):
     """GH-272: the adapter line said only that launch 'starts a compatibility
     adapter if this endpoint needs one'. It now answers the question — whether
     this endpoint needs a translator, and whether cliproxyapi is installed —
     from the classification cache a launch itself consults; with nothing cached
     and no model set it says no translator starts until a model is chosen.
+    #379: a cached row for a model the current listing no longer serves decides
+    nothing a launch without a model could pick — classification keeps only what
+    the inventory serves — so a hop to such a profile needs a saved model, and
+    the line says so instead of reading the stale cache as the verdict.
     (The not-installed wording is pinned in util/doctor_test.go: a machine with
     cliproxyapi installed cannot produce that verdict end to end.)"""
     conf = "type=apikey\nbase_url=https://example.test\napi_key=k\n"
@@ -604,11 +611,17 @@ def test_doctor_adapter_line_states_the_need_issue_272(tmp_path, cache_rows, stu
         s.parent.mkdir(parents=True, exist_ok=True)
         s.write_text("#!/bin/sh\nexit 0\n")
         s.chmod(0o755)
-    result, _, _ = run_doctor(tmp_path, conf, OK_CURL)
+    listing = OK_CURL
+    if served is not None:
+        # The listing must serve the cached model for the cache to be the
+        # verdict; otherwise the row is exactly the stale shape #379 refuses to
+        # lean on.
+        listing = OK_CURL.replace('{"data":[]}', '{"data":[{"id":"%s"}]}' % served)
+    result, _, _ = run_doctor(tmp_path, conf, listing)
     assert result.returncode == 0, result.stdout + result.stderr
     adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
     assert len(adapters) == 1, result.stdout
-    if cache_rows is None:
+    if expected is None:
         assert UNTIL_A_MODEL.fullmatch(adapters[0]), result.stdout
     else:
         assert adapters == [expected], result.stdout
