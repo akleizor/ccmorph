@@ -18,7 +18,11 @@ import (
 
 const (
 	thinkingProbeVersion = 2
-	jobs                 = 8
+	// refusalVerdicts marks caches written since a gateway's refused message
+	// stopped settling as an unusable verdict (#375): an older unusable row may
+	// hide the refusal behind a later probe's 404, so it is re-asked.
+	refusalVerdicts = 1
+	jobs            = 8
 	// How long to wait for another process's classification before falling back
 	// to the cache. Must stay under the caller's readiness budget (600 s).
 	lockWait = 120 * time.Second
@@ -33,6 +37,10 @@ type Row struct {
 	Cap       *int   `json:"cap"`
 	Nothink   bool   `json:"nothink"`
 	IDRecycle bool   `json:"id_recycle"`
+	// preRefusal marks an unusable row read from a cache written before
+	// refusal_verdicts: a later probe's 404 may hide a refused message behind
+	// it, so it is listed but re-asked, never served or written back (#375).
+	preRefusal bool
 }
 
 func (r Row) capped() bool { return r.Cap != nil && *r.Cap != 0 }
@@ -100,13 +108,27 @@ func cachedRows(base, cache string) []Row {
 		return nil
 	}
 	oldThinking := blob["thinking_probe"] != float64(thinkingProbeVersion)
+	// Rows written before #375 settled a gateway's refused message as unusable,
+	// carrying the LAST probe's 404 and its note instead of the refusal, so an
+	// old unusable row is listed but marked: it is not knowledge about the model.
+	oldRefusals := blob["refusal_verdicts"] != float64(refusalVerdicts)
 	var rows []Row
 	for _, v := range rowsIn {
 		if r, ok := usableRow(v); ok && !(oldThinking && r.Nothink) {
+			r.preRefusal = oldRefusals && r.Dialect == "unusable"
 			rows = append(rows, r)
 		}
 	}
 	return rows
+}
+
+// unsettled is true of a cached or fresh row whose unusable verdict the gateway
+// itself caused -- a refusal, or no answer at all -- and of an unusable row a
+// cache from before refusal_verdicts holds. Such a verdict is not knowledge
+// about the model: it is re-asked on the next launch, never served and never
+// written back as settled (#375).
+func unsettled(r Row) bool {
+	return r.Dialect == "unusable" && (r.preRefusal || indeterminate(r.Status))
 }
 
 func cachedSelection(base, cache string, cached []Row, required string) []Row {
@@ -121,6 +143,11 @@ func cachedSelection(base, cache string, cached []Row, required string) []Row {
 		return nil
 	}
 	if row.Dialect == "unusable" {
+		// A row the gateway itself refused (or never answered) is stale the
+		// moment it is read: ask again instead of dying on it (#375).
+		if unsettled(*row) {
+			return nil
+		}
 		note := row.Note
 		if note == "" {
 			note = "no usable dialect answered"
@@ -159,11 +186,12 @@ func classify(base, key, cache, required string, auto bool) ([]Row, error) {
 	for syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
 		if !time.Now().Before(deadline) {
 			cached := cachedRows(base, cache)
-			// A selected model waits for ITS OWN row, not merely for any cache.
+			// A selected model waits for ITS OWN row, not merely for any cache --
+			// and a row the gateway refused is not one worth waiting for (#375).
 			if required != "" {
 				found := false
 				for _, r := range cached {
-					found = found || r.Model == required
+					found = found || (r.Model == required && !unsettled(r))
 				}
 				if !found {
 					die("another classification of %s has held the lock for %ds and %s is still not cached; retry after the active check finishes",
@@ -193,6 +221,9 @@ func classifyLocked(base, key, cache, required string, auto bool) ([]Row, error)
 	cached := cachedRows(base, cache)
 	known := map[string]Row{}
 	for _, r := range cached {
+		if unsettled(r) {
+			continue
+		}
 		known[r.Model] = r
 	}
 	// The launch we waited on may have just cached the selected model.
@@ -309,14 +340,14 @@ func classifyLocked(base, key, cache, required string, auto bool) ([]Row, error)
 	}
 	sortRows(rows)
 
-	// An indeterminate verdict (a 5xx or a transport error) says nothing about
-	// the model, so it is not cached -- but it must not suppress the verdicts of
-	// the models that answered cleanly either: omitting a shaky model re-probes
-	// exactly it next launch.
+	// An unsettled verdict (the gateway's own refusal, or no answer) says nothing
+	// about the model, so it is not cached -- but it must not suppress the
+	// verdicts of the models that answered cleanly either: omitting a shaky model
+	// re-probes exactly it next launch.
 	shaky := map[string]bool{}
 	var shakyNames []string
 	for _, r := range rows {
-		if r.Dialect == "unusable" && (indeterminate(r.Status) || (auto && strings.HasPrefix(r.Note, noInference))) {
+		if unsettled(r) || (auto && strings.HasPrefix(r.Note, noInference)) {
 			shaky[r.Model] = true
 			shakyNames = append(shakyNames, r.Model)
 		}
@@ -329,8 +360,8 @@ func classifyLocked(base, key, cache, required string, auto bool) ([]Row, error)
 	// Write the union, not this key's slice: the cache is shared by every profile
 	// on the endpoint, and a key with a narrower entitlement must not truncate a
 	// wider key's rows. `known` IS that union and the flock has been held
-	// throughout. The delete is not dead: it evicts a row an older version wrote
-	// as a settled `unusable` 403.
+	// throughout; unsettled rows never reach it -- the cached ones are skipped on
+	// read, the fresh ones here.
 	var keep []Row
 	for m, r := range known {
 		if !shaky[m] {
@@ -349,6 +380,12 @@ func classifyLocked(base, key, cache, required string, auto bool) ([]Row, error)
 	if required != "" {
 		for _, r := range rows {
 			if r.Model == required && r.Dialect == "unusable" {
+				// A refusal the gateway answered is the launch's true cause: it
+				// must reach the ready-file reader with the gateway's own words,
+				// never end as an adapter death (#375).
+				if unsettled(r) && r.Status != 0 {
+					return nil, messageRefusal{model: required, status: r.Status, text: r.Note}
+				}
 				note := r.Note
 				if note == "" {
 					note = "no usable dialect answered"
@@ -376,11 +413,12 @@ func writeCache(cache, base string, rows []Row) error {
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(struct {
-		Endpoint      string `json:"endpoint"`
-		AnthropicPath string `json:"anthropic_path"`
-		ThinkingProbe int    `json:"thinking_probe"`
-		Rows          []Row  `json:"rows"`
-	}{base, "/v1/messages", thinkingProbeVersion, rows})
+		Endpoint        string `json:"endpoint"`
+		AnthropicPath   string `json:"anthropic_path"`
+		ThinkingProbe   int    `json:"thinking_probe"`
+		RefusalVerdicts int    `json:"refusal_verdicts"`
+		Rows            []Row  `json:"rows"`
+	}{base, "/v1/messages", thinkingProbeVersion, refusalVerdicts, rows})
 	_, err = tmp.Write(bytes.TrimRight(buf.Bytes(), "\n"))
 	if cerr := tmp.Close(); err == nil {
 		err = cerr

@@ -617,6 +617,16 @@ func Main(argv []string) int {
 				return 1
 			}
 		}
+		// A gateway that answered the launch's message with a refusal — an
+		// empty balance, a rate limit, its own failure — has named the launch's
+		// true cause: the reader sees the status and the gateway's own words,
+		// never an adapter problem (#375).
+		var refusal messageRefusal
+		if a.auto && required != "" && errors.As(err, &refusal) {
+			logf("%v", refusal)
+			fmt.Printf("EXIT=%v\n", refusal)
+			return 1
+		}
 		die("%v", err)
 	}
 	return serve(a, rows, required, upstream, key, routeIdentity, upstreamProxy, shimBinary, extras, env, modelMap)
