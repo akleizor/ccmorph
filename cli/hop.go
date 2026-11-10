@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/akleizor/ccmorph/adapter"
 	"github.com/akleizor/ccmorph/profile"
 )
 
@@ -140,14 +141,28 @@ func (l *launcher) hop(args []string) int {
 		return 1
 	}
 	signal := "profile=" + name + "\nsession=" + session
+	carried, dropped := "", ""
 	if model, effort, ok := l.sessionState(session); ok {
 		if l.modelKnown(name, model) != 1 {
 			signal += "\nmodel=" + model
+			carried = model
 		} else {
-			fmt.Printf("%sccmorph:%s %s%s%s is not served by %s%s%s — resuming on its default model.\n",
-				l.yellow, l.reset, l.bold, model, l.reset, l.bold, name, l.reset)
+			dropped = model
 		}
 		signal += "\neffort=" + effort
+	}
+	// A relay pass that resumes the conversation opens no model picker, so a
+	// target with no model to launch on cannot start once the session is gone
+	// (#379): the hop refuses before anything closes.
+	if carried == "" {
+		if why := l.hopModelRefusal(name, session); why != "" {
+			l.refuseHop(name, why)
+			return 1
+		}
+	}
+	if dropped != "" {
+		fmt.Printf("%sccmorph:%s %s%s%s is not served by %s%s%s — resuming on its default model.\n",
+			l.yellow, l.reset, l.bold, dropped, l.reset, l.bold, name, l.reset)
 	}
 	file := filepath.Join(l.dir, ".reswitch."+relay)
 	if atomicWrite(file, signal+"\n") != nil {
@@ -215,6 +230,37 @@ func (l *launcher) hopCheck(name string) bool {
 func (l *launcher) refuseHop(name, why string) {
 	l.err("not switching to '" + name + "': " + why)
 	fmt.Fprintln(os.Stderr, "  This session keeps running.")
+}
+
+// hopModelRefusal is why a hop that carries no model cannot land on this target
+// (#379): a relay pass that resumes the conversation opens no model picker, so
+// the target must already have a model — saved, or one its own model list lets
+// the adapter pick. Like routeRefusal, only a sure answer refuses; every other
+// case stays the launch's own to report, never a hop's guess.
+func (l *launcher) hopModelRefusal(name, session string) string {
+	f, ok := l.readQuiet(name)
+	if !ok || f["type"] != "apikey" || util.NativeBase(f["base_url"]) {
+		return "" // a target that is not a gateway route picks a model its own way
+	}
+	if strings.TrimSpace(f["api_key"]) == "" {
+		return "" // the route's own refusals own a missing credential
+	}
+	if l.accountModel(name) != "" {
+		return "" // the relay pass launches on the saved model
+	}
+	transcript, ok := l.sessionFile(session)
+	if !ok || !util.HasConversation(transcript) {
+		return "" // a fresh start opens the model picker
+	}
+	body, code := util.ProbeListing(f["base_url"], f["api_key"])
+	if !(len(code) == 3 && strings.HasPrefix(code, "2")) {
+		return "" // the route's own refusals own every other answer
+	}
+	if _, known := adapter.TranslatorVerdict(f["base_url"], l.profileDirs, "", body); known {
+		return "" // the adapter can pick a model from the listing
+	}
+	return "no model is set and none can be picked from its model list; list them: ccmorph models " + name +
+		", then save one: ccmorph set " + name + " model <model-id>"
 }
 
 // hopChoices is the answer to a hop that named no profile: the profiles worth

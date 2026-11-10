@@ -3454,6 +3454,91 @@ test_hop_asks_the_gateway_which_models_it_serves() {
   return $rc
 }
 
+test_a_hop_to_a_profile_that_cannot_pick_a_model_is_refused_in_session_issue_379() {
+  # #379: a hop to an API-key profile with no saved model ended the session
+  # before the relay discovered the target could not start -- a listing that
+  # names no protocol leaves the resumed relay pass no model picker and no model
+  # to launch on. The hop must refuse before anything closes, naming both
+  # commands in plain words: the one that lists the models, the one that saves
+  # one. The second half is the guard, not a blanket: a listing that declares a
+  # protocol lets the adapter pick a model, so that hop must proceed.
+  local test_home out st rc=0
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  source "$CCMORPH_SOURCE"
+
+  printf '%s\n' 'type=proxy' 'base_url=http://strict.invalid' 'api_key=strict-key' \
+    > "$HOME/.config/ccmorph/strict.conf"
+  local relay_id="$$.strict"
+  export CLAUDE_CODE_SESSION_ID='strict-session' CCMORPH_RELAY_ID="$relay_id"
+  # A conversation to resume, whose last assistant model the target does not
+  # serve: the relay pass would resume without a model and without a picker.
+  seed_session_transcript strict-session 'spoken before the hop'
+  printf '%s\n' \
+    '{"type":"assistant","isSidechain":false,"effort":"high","message":{"role":"assistant","model":"claude-opus-5","content":[]}}' \
+    >> "$HOME/.claude/projects/p/strict-session.jsonl"
+
+  # The gateway answers every shape (the probe appends the status marker after
+  # the body) and offers one model. $1 adds a protocol declaration to it.
+  strict_listing() {
+    printf '%s\n' \
+      '#!/bin/sh' \
+      'cat <<JSON' \
+      "{\"object\":\"list\",\"data\":[{\"id\":\"gpt-5.6\",\"capabilities\":{\"chat_completion\":true}$1}]}" \
+      'JSON' \
+      'for a do case "$a" in *http_code*) printf "\n__CCMORPH_STATUS__200" ;; esac; done' \
+      > "$HOME/bin/curl"
+    chmod +x "$HOME/bin/curl"
+  }
+
+  strict_listing ''
+  out=$(hop_as_claude strict 2>&1); st=$?
+
+  [[ "$st" != 0 ]] || { print -u2 -- "the hop must refuse, got 0: ${(qqq)out}"; rc=1 }
+  [[ "$out" == *"not switching to 'strict'"* ]] || {
+    print -u2 -- "the refusal must name the target: ${(qqq)out}"
+    rc=1
+  }
+  [[ "$out" == *'This session keeps running.'* ]] || {
+    print -u2 -- "the refusal must say the session survives: ${(qqq)out}"
+    rc=1
+  }
+  [[ "$out" == *'ccmorph models strict'* && "$out" == *'ccmorph set strict model <model-id>'* ]] || {
+    print -u2 -- "the refusal must name the command that lists the models next to the one that saves one: ${(qqq)out}"
+    rc=1
+  }
+  [[ "$out" != *protocol* && "$out" != *'compatibility check'* ]] || {
+    print -u2 -- "the refusal must use plain words: ${(qqq)out}"
+    rc=1
+  }
+  [[ ! -e "$HOME/claude-ended" ]] || { print -u2 -- 'the hop must not end the session'; rc=1 }
+  [[ ! -e "$HOME/.config/ccmorph/.reswitch.$relay_id" ]] || { print -u2 -- 'the hop must queue nothing'; rc=1 }
+  [[ "$out" != *'Switching'* ]] || { print -u2 -- "the hop must not announce a switch: ${(qqq)out}"; rc=1 }
+
+  # The same listing with the model now declaring a protocol: the adapter can
+  # pick a model without a saved one, so the hop must proceed and end the
+  # session it runs in.
+  rm -f "$HOME/claude-ended"
+  strict_listing ',"supported_endpoints":["/v1/chat/completions"]'
+  out=$(hop_as_claude strict 2>&1); st=$?
+
+  [[ "$st" == 0 ]] || { print -u2 -- "a hop whose target can pick a model must proceed, got $st: ${(qqq)out}"; rc=1 }
+  [[ "$out" == *'Switching → strict'* ]] || {
+    print -u2 -- "the hop must announce the switch: ${(qqq)out}"
+    rc=1
+  }
+  [[ "$(<"$HOME/claude-ended")" == ended ]] || { print -u2 -- 'the hop must end the session it runs in'; rc=1 }
+  local actual="$(<"$HOME/.config/ccmorph/.reswitch.$relay_id")"
+  [[ "$actual" == $'profile=strict\nsession=strict-session\neffort=high' ]] || {
+    print -u2 -- "a model the target does not serve must stay dropped\n  actual: ${(qqq)actual}"
+    rc=1
+  }
+
+  unset CLAUDE_CODE_SESSION_ID CCMORPH_RELAY_ID
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_hop_without_a_profile_names_the_choices_instead_of_restarting() {
   # GH-257: an argument-free hop filled in the profile the session already ran
   # on and restarted it there. Asked nothing, hop must answer with the other
@@ -11184,6 +11269,7 @@ run_test test_hop_to_the_running_profile_changes_nothing
 run_test test_hop_to_a_wrong_name_inside_claude_answers_in_one_line
 run_test test_hop_falls_back_when_the_target_cannot_serve_the_model
 run_test test_hop_asks_the_gateway_which_models_it_serves
+run_test test_a_hop_to_a_profile_that_cannot_pick_a_model_is_refused_in_session_issue_379
 run_test test_relay_resume_preserves_dangerous_permission_mode
 run_test test_relay_same_profile_omits_cache_notice_issue_226
 run_test test_relay_same_file_profile_omits_cache_notice_issue_226
