@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -498,6 +499,30 @@ func TestRouteHoldChild(t *testing.T) {
 	time.Sleep(24 * time.Hour)
 }
 
+// TestBridgeSleeperChild is the stub core's bridge: the test binary re-run,
+// starting the bridge's sleeper the way the real bridge-start starts
+// cliproxyapi — a daemon Go itself starts, whose argv names its rendered
+// config and whose PID Go printed — then answering with the PID=, PORT=,
+// KEY= and TMPDIR= lines the launcher reads and exiting, the bridge left
+// behind as the real one is. The stub ran the sleeper through /bin/sh's
+// `exec <config> &` before, and on ubuntu 26.04 the sleeper that leaves is
+// not the PID sh reports, so every launch read the recorded bridge as dead
+// and started a second one beside it. Run on its own it does nothing.
+func TestBridgeSleeperChild(t *testing.T) {
+	d := os.Getenv("CCMORPH_TEST_BRIDGE_TMP")
+	if d == "" {
+		return
+	}
+	cmd := exec.Command("sleep", "60")
+	cmd.Args[0] = filepath.Join(d, "config.yaml")
+	if err := cmd.Start(); err != nil {
+		os.Exit(1)
+	}
+	go cmd.Wait() // the sleeper outlives this process, as the real bridge does
+	fmt.Printf("PID=%d\nPORT=4199\nKEY=stub\nTMPDIR=%s\n", cmd.Process.Pid, d)
+	os.Exit(0)
+}
+
 // newRouteFixtureWithHold builds the fixture with route-hold running hold: the
 // working holder takes the shared lock the real one takes and answers one byte.
 func newRouteFixtureWithHold(t *testing.T, hold string) *routeFixture {
@@ -539,9 +564,7 @@ func newRouteFixtureWithHold(t *testing.T, hold string) *routeFixture {
 		"'util bridge-start')\n" +
 		"printf x >> '" + starts + "'\n" +
 		"d=\"$(mktemp -d '" + bridges + "/gh300bridge.XXXXXX')\"\n" +
-		"ln -s \"$(command -v sleep)\" \"$d/config.yaml\"\n" +
-		"\"$d/config.yaml\" 60 >/dev/null 2>&1 &\n" +
-		"printf 'PID=%d\\nPORT=4199\\nKEY=stub\\nTMPDIR=%s\\n' \"$!\" \"$d\"\n" +
+		"CCMORPH_TEST_BRIDGE_TMP=\"$d\" exec '" + os.Args[0] + "' -test.run='^TestBridgeSleeperChild$'\n" +
 		";;\n" +
 		"*)\n" +
 		"printf 'PID=99999\\nPORT=4199\\nKEY=stub\\nTMPDIR=" + libexec + "\\n'\n" +

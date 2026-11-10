@@ -993,7 +993,8 @@ profile already running changes nothing.
 This command does not work from an unrelated terminal.`},
 	"profile": {"ccmorph profile", `Inside a running Claude session, type: ! ccmorph profile
 It prints the profile the session runs on. The status line names the same
-profile without a command, and a hop changes both.`},
+profile without a command, and a hop changes both. A status line of your own
+is kept as written and does not show the name; this command still answers.`},
 	"cred": {"ccmorph cred [profile]", `Print the stored API key or token to stdout. This reveals a secret.
 Only profiles with a stored key or token are offered. Name one in scripts.`},
 	"update": {"ccmorph update [ref]", `Download the latest release and run its installer, which updates this install
