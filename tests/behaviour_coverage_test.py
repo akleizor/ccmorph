@@ -114,7 +114,7 @@ def test_use_refuses_an_unknown_or_invalid_profile_and_keeps_the_default(box):
     missing = box.run('use', 'nope')
     assert missing.returncode != 0 and "no profile 'nope'" in missing.stderr
     bad = box.run('use', 'bad/name')
-    assert bad.returncode != 0 and 'invalid name' in bad.stderr
+    assert bad.returncode != 0 and 'invalid profile name' in bad.stderr
     assert box.active == 'work'
 
 
@@ -841,10 +841,130 @@ def test_add_and_rm_without_a_name_print_usage(box):
     added = box.run('add')
     assert added.returncode != 0
     assert 'usage: ccmorph add <profile>' in added.stderr
-    assert 'invalid name' not in added.stderr
+    assert 'invalid profile name' not in added.stderr
     removed = box.run('rm')
     assert removed.returncode != 0
     assert 'usage: ccmorph rm <profile>' in removed.stderr
+
+
+# --- a word that can never be a profile name gets one reply (#373) ----------
+
+NAME_RULE = 'a name may hold only A-Z, a-z, 0-9 and _ (no hyphen, dot, slash or space)'
+BAD_NAME_REPLIES = [
+    ('a/b', "invalid profile name 'a/b': " + NAME_RULE),
+    ('bad name', "invalid profile name 'bad name': " + NAME_RULE),
+    ('a.b', "invalid profile name 'a.b': " + NAME_RULE),
+    ('my-work', "invalid profile name 'my-work': " + NAME_RULE),
+    ('日本語', "invalid profile name '日本語': " + NAME_RULE),
+    ('y' * 300, "invalid profile name '" + 'y' * 32 + "…': too long; at most 200 of A-Z, a-z, 0-9 and _"),
+    ('active', "invalid profile name 'active': that word is reserved; choose another"),
+]
+BAD_NAME_ARGV = [
+    ['add', '{n}'], ['use', '{n}'], ['login', '{n}'], ['inspect', '{n}'],
+    ['rm', '{n}'], ['mv', '{n}', 'zzz'], ['mv', 'gw', '{n}'], ['cred', '{n}'],
+    ['run', '{n}'], ['config', '{n}'], ['get', '{n}', 'model'],
+    ['set', '{n}', 'model', 'x'], ['context', '{n}', 'm'], ['context', '{n}'],
+    ['probe', '{n}'], ['probe', '--profile', '{n}'], ['probe', '--profile={n}'],
+    ['quota', '{n}'], ['quota', '--json', '{n}'], ['models', '{n}'],
+    ['doctor', '{n}'], ['hop', '{n}'], ['_menu', '{n}'],
+]
+
+
+@pytest.mark.parametrize('name,reply', BAD_NAME_REPLIES,
+                         ids=['slash', 'space', 'dot', 'hyphen', 'cjk', 'too long', 'reserved'])
+@pytest.mark.parametrize('argv', BAD_NAME_ARGV, ids=lambda a: ' '.join(a))
+def test_a_bad_name_gets_the_one_reply_from_every_command_gh_373(box, argv, name, reply):
+    seed(box)
+    assert box.run('use', 'tok').returncode == 0
+    before = state_files(box.state)
+    result = box.run(*[a.format(n=name) for a in argv])
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    # The reply names the words that could be the typo, as the no-profile reply
+    # does (#228), so a bad name still cannot hide the profiles that exist.
+    assert result.stderr == 'ccmorph: ' + reply + '. Profiles: gw tok work\n', result.stderr
+    assert result.stdout == '', result.stdout
+    assert state_files(box.state) == before
+    assert box.log() == '', box.log()
+
+
+@pytest.mark.parametrize('argv', BAD_NAME_ARGV, ids=lambda a: ' '.join(a))
+def test_a_leading_hyphen_word_gets_the_one_reply_gh_373(box, argv):
+    seed(box)
+    assert box.run('use', 'tok').returncode == 0
+    before = state_files(box.state)
+    result = box.run(*[a.format(n='-x') for a in argv])
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert result.stderr == ("ccmorph: invalid profile name '-x': " + NAME_RULE
+                             + '. Profiles: gw tok work\n'), result.stderr
+    assert result.stdout == '', result.stdout
+    assert state_files(box.state) == before
+    # -x in run's profile slot must not reach a launch (the stub logs every call).
+    assert box.log() == '', box.log()
+
+
+# A short word led by one of Claude Code's own short options is Claude's: the
+# rest is that option's value (-nTitle, -dapi) or more of its flags (-pc), so it
+# passes through untouched, a profile named or not (INTENT promise 6). A lone -
+# was forwarded before #373 and still is.
+@pytest.mark.parametrize('argv, forwarded', [
+    (('-nTitle', '-p', 'hello'), 'ARGS [-nTitle] [-p] [hello]'),
+    (('tok', '-nTitle', '-p', 'hello'), 'ARGS [-nTitle] [-p] [hello]'),
+    (('-dapi', '-p', 'hello'), 'ARGS [-dapi] [-p] [hello]'),
+    (('-pc',), 'ARGS [-pc]'),
+    (('-',), 'ARGS [-]'),
+], ids=['attached value', 'attached value after a profile', 'attached optional value',
+        'combined flags', 'lone dash'])
+def test_a_native_short_option_with_more_attached_still_launches_gh_373(box, argv, forwarded):
+    seed(box)
+    assert box.run('use', 'tok').returncode == 0
+    out = box.run('run', *argv)
+    assert out.returncode == 0, out.stderr
+    assert 'invalid profile name' not in out.stderr, out.stderr
+    assert forwarded in box.log(), box.log()
+
+
+# A short option Claude Code's own help lists is Claude's too, though it is not
+# one of the documented ones the stubbed runs fall back to.
+def test_a_short_option_from_claudes_help_still_launches_gh_373(box):
+    seed(box)
+    assert box.run('use', 'tok').returncode == 0
+    claude = box.home / 'bin/claude'
+    claude.write_text(claude.read_text().replace(
+        '[ "$1" = --help ] && exit 0\n',
+        "[ \"$1\" = --help ] && printf 'Options:\\n  -q, --quiet  Hush\\n' && exit 0\n"))
+    out = box.run('run', '-qx', '-p', 'hello')
+    assert out.returncode == 0, out.stderr
+    assert 'ARGS [-qx] [-p] [hello]' in box.log(), box.log()
+    refused = box.run('run', '-x')
+    assert refused.returncode == 1, refused.stderr
+    assert "invalid profile name '-x'" in refused.stderr, refused.stderr
+
+
+@pytest.mark.parametrize('argv', [
+    ['rm', ''], ['mv', ''], ['mv', '', 'x'], ['mv', 'x', ''], ['cred', ''], ['cred', '-i'],
+    ['models', ''], ['probe', ''],
+], ids=lambda a: repr(a))
+def test_a_left_out_name_keeps_the_usage_line_gh_373(box, argv):
+    seed(box)
+    page = box.run('help', argv[0])
+    assert page.returncode == 0, page.stderr
+    usage = page.stdout.splitlines()[0]
+    assert usage.startswith('Usage: '), usage
+    result = box.run(*argv)
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert 'usage: ' + usage[len('Usage: '):] in result.stderr, result.stderr
+    assert 'invalid profile name' not in result.stderr
+
+
+@pytest.mark.parametrize('flag', ['--filtered', '--filtered-json'])
+def test_models_with_only_a_mode_flag_is_a_left_out_profile_gh_373(box, flag):
+    seed(box)
+    result = box.run('models', flag)
+    out = result.stdout + result.stderr
+    assert result.returncode != 0, out
+    assert 'invalid profile name' not in out
+    assert 'model listing requires' not in out
+    assert 'usage:' not in out
 
 
 # --- a help flag anywhere is help; a word too many is refused ---------------
@@ -912,9 +1032,9 @@ def test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage(box, ve
 
 WRONG_ARGUMENT = [
     ['models', 'gw', '--bogus'], ['doctor', 'gw', 'tok'], ['quota', 'gw', 'tok'],
-    ['get', 'gw', 'bogus'], ['set', 'gw', 'bogus'], ['config', 'bad/name'],
-    ['login', 'bad/name'], ['inspect', 'bad/name'], ['hop', 'bad/name'],
-    ['cred', 'bad/name'], ['mv', 'gw'], ['context', 'bad/name'], ['rm'],
+    ['get', 'gw', 'bogus'], ['set', 'gw', 'bogus'], ['config', 'gw', 'extra9'],
+    ['login', 'gw', 'extra9'], ['inspect', 'gw', 'extra9'], ['hop', 'gw', 'extra9'],
+    ['cred', 'gw', 'extra9'], ['mv', 'gw'], ['context', 'gw', 'm', 'x', 'extra9'], ['rm'],
 ]
 
 

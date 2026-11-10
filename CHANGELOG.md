@@ -9,6 +9,17 @@
 
 ### Fixed
 
+- **A word that can never be a profile name gets one reply, from every
+  command.** `ccmorph add my-work` said "use alphanumeric/underscore"; `rm`,
+  `use`, `inspect` and `login` printed a usage line; `run`, `config`, `get`,
+  `set` and `context` exited 2 with "invalid profile name"; `models` said
+  "model listing requires an profile"; `doctor` printed a FAIL row; and `probe`
+  handed the word to the context probe. A 300-letter name instead reached the
+  sign-in menu in `add` and a file path in `rm` and `mv`. Every command now
+  answers one line naming the characters a profile name may hold (or that the
+  name is too long), plus the profiles that do exist when any, exits 1, and
+  stops before touching state. Names are capped
+  at 200 characters, and a name left out still gets the usage line (#373).
 - **`ccmorph context <profile> <model>` answers the window, not the pin.** The
   read form printed `auto` for a model with no manual override — and a bare
   number once one was set — so a person asking for the limit was told the

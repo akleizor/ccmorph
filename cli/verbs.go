@@ -135,6 +135,28 @@ func caseClashMsg(name, twin string) string {
 
 func (l *launcher) noProfile(name string) { l.err(l.noProfileMsg(name)) }
 
+// badNameMsg is profile.BadNameMsg plus the profiles that do exist, when any:
+// one line, the same from every verb, and the list that spots a typo the way
+// the no-profile reply does (#228, #373).
+func (l *launcher) badNameMsg(name string) string {
+	msg := profile.BadNameMsg(name)
+	if names := l.confNames(); len(names) > 0 {
+		msg += ". Profiles: " + strings.Join(names, " ")
+	}
+	return msg
+}
+
+// badName is the one refusal every verb gives a word that can never be a
+// profile name (#373). A name left out is a usage fault, not a bad word.
+func (l *launcher) badName(verb, name string) int {
+	if name == "" {
+		l.err("usage: " + usageLine(verb))
+		return 1
+	}
+	l.err(l.badNameMsg(name))
+	return 1
+}
+
 func (l *launcher) list(args []string) int {
 	// `list` has no options, so a word after it (a --json that never existed,
 	// say) was silently ignored and read as success (#268). Name it instead.
@@ -210,9 +232,11 @@ func (l *launcher) cred(args []string) int {
 		}
 		name = picked
 	}
+	if interactive(name) {
+		name = ""
+	}
 	if !profile.ValidName(name) {
-		l.err("usage: " + usageLine("cred"))
-		return 1
+		return l.badName("cred", name)
 	}
 	if !l.exists(name) {
 		l.noProfile(name)
@@ -257,8 +281,7 @@ func (l *launcher) use(args []string) int {
 		name = picked
 	}
 	if !profile.ValidName(name) {
-		l.err("invalid name — use alphanumeric/underscore")
-		return 1
+		return l.badName("use", name)
 	}
 	if !l.exists(name) {
 		l.noProfile(name)
@@ -303,8 +326,7 @@ func (l *launcher) modelMenu(args []string) int {
 		name = picked
 	}
 	if !profile.ValidName(name) {
-		l.err("usage: the model picker needs an profile")
-		return 1
+		return l.badName("models", name)
 	}
 	if !l.exists(name) {
 		l.noProfile(name)

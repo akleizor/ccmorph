@@ -87,13 +87,14 @@ func (l *launcher) hop(args []string) int {
 		l.hopChoices(current)
 		return 0
 	}
-	inSession := session != "" && relayValid(relay)
-	valid := profile.ValidName(name)
-	if !valid && !inSession {
-		l.err("usage: " + usageLine("hop"))
-		return 1
+	if !profile.ValidName(name) {
+		if slash {
+			fmt.Println(l.yellow + "ccmorph:" + l.reset + " " + l.badNameMsg(name))
+			return 0
+		}
+		return l.badName("hop", name)
 	}
-	if !valid || !l.exists(name) {
+	if !l.exists(name) {
 		if slash {
 			fmt.Println(l.yellow + "ccmorph:" + l.reset + " " + l.noProfileMsg(name))
 			return 0

@@ -14,6 +14,11 @@ func (l *launcher) models(args []string) int {
 	if len(args) > 2 {
 		return l.extraArg("models", args[2])
 	}
+	// A mode flag with no profile leaves the profile out, not wrong: the
+	// picker still chooses one, as it does when the word is absent.
+	if len(args) == 1 && (args[0] == "--filtered" || args[0] == "--filtered-json") {
+		args = []string{"-i", args[0]}
+	}
 	if len(args) == 0 || args[0] == "-i" || args[0] == "--interactive" {
 		picked, ok := l.menuProfile("apikey")
 		if !ok {
@@ -30,8 +35,7 @@ func (l *launcher) models(args []string) int {
 	}
 	name := args[0]
 	if !profile.ValidName(name) {
-		l.err("model listing requires an profile")
-		return 1
+		return l.badName("models", name)
 	}
 	if !l.exists(name) {
 		l.noProfile(name)

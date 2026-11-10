@@ -338,6 +338,11 @@ func (l *launcher) runVerb(args []string) int {
 	if len(args) > 0 && (args[0] == "-i" || args[0] == "--interactive") {
 		hasI, interactive, args = true, true, args[1:]
 	}
+	// A short word that is not one of Claude Code's options is a profile name
+	// typed with a leading hyphen, not a launch flag (#373).
+	if len(args) > 0 && !l.runFlag(args[0]) {
+		return l.badName("run", args[0])
+	}
 	account := ""
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		if l.exists(args[0]) {
@@ -347,8 +352,7 @@ func (l *launcher) runVerb(args []string) int {
 			}
 		} else if !l.isClaudeSubcommand(args[0]) {
 			if !profile.ValidName(args[0]) {
-				l.err("invalid profile name '" + args[0] + "'")
-				return 2
+				return l.badName("run", args[0])
 			}
 			l.noProfile(args[0])
 			return 1
@@ -398,18 +402,30 @@ func (l *launcher) probeVerb(args []string) int {
 		}
 		a, args = append(a, "--profile", p), args[1:]
 	}
+	// context-probe takes long options only; its one short, -h, is answered as
+	// help before a verb runs. Any other short word in the profile slot is a
+	// name typed with a leading hyphen, not an option (#373).
+	if len(args) > 0 && strings.HasPrefix(args[0], "-") && !strings.HasPrefix(args[0], "--") {
+		return l.badName("probe", args[0])
+	}
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		a, args = append(a, "--profile", args[0]), args[1:]
 	}
 	a = append(a, args...)
 	for i, v := range a {
-		p := ""
+		p, named := "", false
 		if v == "--profile" && i+1 < len(a) {
-			p = a[i+1]
+			p, named = a[i+1], true
 		} else if strings.HasPrefix(v, "--profile=") {
-			p = strings.TrimPrefix(v, "--profile=")
+			p, named = strings.TrimPrefix(v, "--profile="), true
 		}
-		if p != "" && profile.ValidName(p) && !l.exists(p) {
+		if !named {
+			continue
+		}
+		if !profile.ValidName(p) {
+			return l.badName("probe", p)
+		}
+		if !l.exists(p) {
 			l.noProfile(p)
 			return 1
 		}
@@ -437,6 +453,28 @@ func (l *launcher) probeVerb(args []string) int {
 	cmd.Env = append(os.Environ(), l.handoff()...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return exitCode(cmd.Run())
+}
+
+// documentedShorts are Claude Code's short options, for the runs where its help
+// cannot be read (a stub, an install that answers nothing).
+var documentedShorts = []string{"-c", "-d", "-h", "-n", "-p", "-r", "-v", "-w"}
+
+// runFlag reports whether word may lead a run as an option of Claude Code's,
+// rather than being read as a profile name. A long option is Claude's and passes
+// through untouched (INTENT promise 6), and so is a lone "-". A short word is
+// Claude's when its first letter is one of Claude's short options, from its help
+// or the documented list: Claude reads the rest as that option's value (-nTitle)
+// or as more of its flags (-pc). Any other short word, -x among them, can only be
+// a name typed with a leading hyphen (#373).
+func (l *launcher) runFlag(word string) bool {
+	if len(word) < 2 || word[0] != '-' || word[1] == '-' {
+		return true
+	}
+	short := word[:2]
+	if slices.Contains(documentedShorts, short) {
+		return true
+	}
+	return l.claudeArity()[short] != ""
 }
 
 func lastIndex(a []string, v string) int {

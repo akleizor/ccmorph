@@ -44,8 +44,7 @@ func (l *launcher) inspect(args []string) int {
 		name = picked
 	}
 	if !profile.ValidName(name) {
-		l.err("usage: " + usageLine("inspect"))
-		return 1
+		return l.badName("inspect", name)
 	}
 	if !l.exists(name) {
 		l.noProfile(name)
