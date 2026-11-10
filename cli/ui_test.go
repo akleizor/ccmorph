@@ -305,6 +305,11 @@ func TestCutIDKeepsWhatTellsIDsApartIssue385(t *testing.T) {
 			"anthropic/" + k + "v2/" + z, "openai/" + k + "v2/" + z}},
 		// No place tells these two apart but their length.
 		{"one the other repeated", []string{strings.Repeat("model-", 20), strings.Repeat("model-", 21)}},
+		// Beside them one that differs from the shorter at character 60 alone:
+		// cut on its own, it read like a repeated id, and the column grew.
+		{"one the other repeated beside one that differs once", []string{
+			strings.Repeat("model-", 20), strings.Repeat("model-", 21),
+			strings.Repeat("model-", 10) + "Xodel-" + strings.Repeat("model-", 9)}},
 		{"three differ in the middle", []string{"a/" + k + "1" + z, "a/" + k + "2" + z, "a/" + k + "3" + z}},
 		// The head reaches v1 or v2 only past 38 characters, and the tails are
 		// one shared run: no head and tail part these four, and a search for
@@ -687,6 +692,47 @@ func TestCutIDsNeverReadAlikeIssue385(t *testing.T) {
 		}
 	}
 	t.Logf("the column grew in %d of 3000 lists", grew)
+}
+
+// Every row of the picker reads differently in what fzf shows of it, and
+// the name beside a short id stays in sight (#385). fzf never scrolls a row
+// (--no-hscroll), so a column grown past the window put every name out of
+// sight and left two long ids reading alike up to the window's edge.
+func TestSearchRowsShowEveryRowApartIssue385(t *testing.T) {
+	a, b := strings.Repeat("model-", 20), strings.Repeat("model-", 21)
+	once := []rune(a)
+	once[60] = 'X'
+	gate, shared := "gateway/team/"+strings.Repeat("x", 24), strings.Repeat("shared-", 6)
+	short := "openai/model-137-instruct"
+	for _, ids := range [][]string{
+		{short, a, b, string(once)},
+		{short, a, b},
+		{short, gate + "v1/" + shared + "instruct/" + shared, gate + "v2/" + shared + "instruct/" + shared,
+			gate + "v1/" + shared + "reasoning/" + shared, gate + "v2/" + shared + "reasoning/" + shared},
+	} {
+		var rows []string
+		for _, id := range ids {
+			rows = append(rows, id+"\t"+id+"\tSame Owner")
+		}
+		for _, columns := range []int{80, 110} {
+			seen := map[string]string{}
+			for i, row := range (uiTheme{}).searchRows(rows, columns) {
+				_, display, _ := strings.Cut(row, "\t")
+				// A person sees the first columns-6 cells, one a rune here.
+				shown := string([]rune(display)[:min(columns-6, len([]rune(display)))])
+				if other, ok := seen[shown]; ok {
+					t.Errorf("%d columns: %q and %q both show %q", columns, other, ids[i], shown)
+				}
+				seen[shown] = ids[i]
+				if ids[i] == short && !strings.Contains(shown, short+"  ") {
+					t.Errorf("%d columns: the short id is cut: %q", columns, shown)
+				}
+				if !strings.Contains(shown, "Same Owner") {
+					t.Errorf("%d columns: the name beside %q is out of sight: %q", columns, ids[i], shown)
+				}
+			}
+		}
+	}
 }
 
 // Ids that only a length tells apart, one id repeated more or fewer times,
