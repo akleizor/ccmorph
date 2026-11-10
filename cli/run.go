@@ -1122,7 +1122,7 @@ func (l *launcher) nestedEdgeEnv(keys ...string) []string {
 // before it ends the session it runs in (#286).
 func (l *launcher) providerStartRefusal(name string) string {
 	if _, err := exec.LookPath("cliproxyapi"); err != nil {
-		return "cliproxyapi not found — install it: brew install cliproxyapi"
+		return "cliproxyapi not found — install it: " + util.ClipInstallStep()
 	}
 	root := filepath.Join(l.dir, "auth")
 	if fi, err := os.Lstat(root); err == nil && fi.Mode()&os.ModeSymlink != 0 {

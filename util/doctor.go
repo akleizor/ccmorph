@@ -193,7 +193,7 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 	if kind, msg := adapterLine(name, model, listing, running, need(listing)); kind != "" {
 		fix := ""
 		if kind == "FAIL" {
-			fix = "install the translator: brew install cliproxyapi"
+			fix = "install the translator: " + ClipInstallStep()
 		}
 		row(kind, msg, fix)
 	}
@@ -241,7 +241,7 @@ func adapterLine(name, model, listing, running string, n TranslatorNeed) (kind, 
 	case n.Known && n.Needed && n.Installed:
 		return "OK", "adapter: this endpoint needs a translator; cliproxyapi is installed" + inUse
 	case n.Known && n.Needed:
-		return "FAIL", "adapter: this endpoint needs a translator; cliproxyapi is not installed; install it: brew install cliproxyapi" + inUse
+		return "FAIL", "adapter: this endpoint needs a translator; cliproxyapi is not installed; install it: " + ClipInstallStep() + inUse
 	case n.Known:
 		return "OK", "adapter: this endpoint needs no translator"
 	case translator:

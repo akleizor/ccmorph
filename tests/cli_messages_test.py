@@ -337,6 +337,36 @@ def test_add_help_indents_every_sign_in_method_the_same_way_gh_364(tmp_path):
     assert set(indents.values()) == {2}, indents
 
 
+def test_add_more_signins_names_the_machines_own_install_step_gh_369(tmp_path):
+    """#369: the step More sign-ins names is the machine's own — the brew
+    command where Homebrew is on PATH, the project page the installer gives
+    where it is not — never a command the machine cannot run. The numbered
+    menu (piped stdin) drives the same answer the picker does."""
+    state, home, bindir, tmp = (tmp_path / d for d in ('state', 'home', 'bin', 'tmp'))
+    for d in (state, home, bindir, tmp):
+        d.mkdir()
+    env = {**os.environ, 'HOME': str(home), 'PATH': f'{bindir}:/usr/bin:/bin',
+           'TMPDIR': str(tmp), 'CCMORPH_STATE_DIR': str(state),
+           'CCMORPH_LIB_DIR': str(ROOT / 'lib')}
+    assert shutil.which('cliproxyapi', path=env['PATH']) is None, 'the test PATH must not hold a cliproxyapi'
+    assert shutil.which('brew', path=env['PATH']) is None, 'the test PATH must not hold a brew'
+    result = subprocess.run([str(ROOT / 'bin/ccmorph'), 'add', 'demo'], env=env,
+                            input='more\n', capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert 'https://github.com/router-for-me/CLIProxyAPI' in result.stdout, result.stdout
+    assert 'brew install' not in result.stdout, result.stdout
+    assert 'ccmorph add demo' in result.stdout, result.stdout
+    assert not (state / 'demo.conf').exists()
+    # The same machine with Homebrew on PATH: the command, not the page.
+    (bindir / 'brew').write_text('#!/bin/sh\nexit 0\n')
+    (bindir / 'brew').chmod(0o755)
+    result = subprocess.run([str(ROOT / 'bin/ccmorph'), 'add', 'demo'], env=env,
+                            input='more\n', capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert 'brew install cliproxyapi' in result.stdout, result.stdout
+    assert 'router-for-me' not in result.stdout, result.stdout
+
+
 def test_run_without_claude_names_the_problem_and_the_path_it_searched(tmp_path):
     """#282: a launch that cannot find claude says what is missing, links its
     setup page and shows the PATH it searched (the sentence doctor and the

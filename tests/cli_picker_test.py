@@ -1177,12 +1177,16 @@ class PickerTTYTest(unittest.TestCase):
         # Issue #283: without the optional cliproxyapi the menu used to stop at
         # three rows, so nobody learned the browser logins exist or what turns
         # them on. The menu now carries a row saying both; nothing is saved.
+        # The step the answer names is the machine's own (#369), so the brew
+        # this test wants is a stub on the test PATH, not the host's.
         env = self.env(fzf=True)
         entries = [e for e in env['PATH'].split(os.pathsep)
                    if not (Path(e) / 'cliproxyapi').exists()]
         env['PATH'] = os.pathsep.join(entries)
         self.assertFalse(shutil.which('cliproxyapi', path=env['PATH']),
                          'the test PATH must not hold a real cliproxyapi')
+        (self.tmp / 'bin' / 'brew').write_text('#!/bin/sh\nexit 0\n')
+        (self.tmp / 'bin' / 'brew').chmod(0o755)
         rc, out, missed = run_pty('ccmorph add demo', env, [
             (b'Esc Cancel', b'\x1b[B' * 3 + b'\r'),
         ])
@@ -1193,8 +1197,55 @@ class PickerTTYTest(unittest.TestCase):
         self.assertIn('Antigravity, Codex, Devin, Kimi For Coding (global), '
                       'Kimi For Coding (China), Meta and xAI', plain)
         self.assertIn('brew install cliproxyapi', plain)
+        self.assertNotIn('router-for-me', plain)
         self.assertIn('ccmorph add demo', plain)
         self.assertFalse((self.state / 'demo.conf').exists())
+
+    def test_add_without_brew_answers_with_the_project_page_gh_369(self):
+        # Issue #369: `brew install cliproxyapi` cannot be run on a machine
+        # with no Homebrew, yet that is what More sign-ins used to say there.
+        # The installer's own answer on such a machine is the project page,
+        # and add gives the same one.
+        env = self.env(fzf=True)
+        entries = [e for e in env['PATH'].split(os.pathsep)
+                   if not (Path(e) / 'cliproxyapi').exists()
+                   and not (Path(e) / 'brew').exists()]
+        env['PATH'] = os.pathsep.join(entries)
+        self.assertIsNone(shutil.which('cliproxyapi', path=env['PATH']),
+                          'the test PATH must not hold a real cliproxyapi')
+        self.assertIsNone(shutil.which('brew', path=env['PATH']),
+                          'the test PATH must not hold a real brew')
+        rc, out, missed = run_pty('ccmorph add demo', env, [
+            (b'Esc Cancel', b'\x1b[B' * 3 + b'\r'),
+        ])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 1, out)
+        plain = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', out)
+        self.assertIn('More sign-ins', plain)
+        self.assertIn('https://github.com/router-for-me/CLIProxyAPI', plain)
+        self.assertNotIn('brew install', plain)
+        self.assertIn('ccmorph add demo', plain)
+        self.assertFalse((self.state / 'demo.conf').exists())
+
+    def test_add_more_signins_row_ends_on_a_whole_word_at_80_columns_gh_369(self):
+        # Issue #369: at 80 columns the More sign-ins row used to end inside a
+        # word ("install clip…"). After #366's fuller login names the row no
+        # longer fits whole, so what matters is where the cut lands: after a
+        # whole word — never a non-space right before the ellipsis.
+        env = self.env(fzf=True)
+        entries = [e for e in env['PATH'].split(os.pathsep)
+                   if not (Path(e) / 'cliproxyapi').exists()]
+        env['PATH'] = os.pathsep.join(entries)
+        rc, out, missed = run_pty('ccmorph add demo', env, [
+            (b'Esc Cancel', b'\x1b'),
+        ], size=(24, 80))
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 1, out)
+        plain = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', out)
+        rows = [line for line in plain.splitlines() if 'More sign-ins' in line]
+        self.assertTrue(rows, out)
+        self.assertIn('Antigravity', rows[0])
+        self.assertNotRegex(rows[0], r'\S…')
 
     def test_standalone_ui_contract_and_unicode_alignment(self):
         env = {**self.env(fzf=True), 'NO_COLOR': '1',

@@ -70,7 +70,10 @@ func noCntrl(s string) string {
 	}, s)
 }
 
-// fit is _ccm_ui_fit: cut to width cells with an ellipsis.
+// fit is _ccm_ui_fit: cut to width cells with an ellipsis. The cut lands on a
+// whole word when one fits before the width (#369), so a row never ends in
+// half a word; a single long word still hard-cuts, and the space before the
+// ellipsis stays.
 func fit(s string, width int) string {
 	s = noCntrl(s)
 	if width < 1 {
@@ -82,6 +85,9 @@ func fit(s string, width int) string {
 	for cells(s) >= width {
 		_, n := utf8.DecodeLastRuneInString(s)
 		s = s[:len(s)-n]
+	}
+	if i := strings.LastIndexByte(s, ' '); i > 0 {
+		s = strings.TrimRight(s[:i], " ") + " "
 	}
 	return s + "…"
 }

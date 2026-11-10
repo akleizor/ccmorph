@@ -9,6 +9,15 @@
 
 ### Fixed
 
+- **The step that installs cliproxyapi is the machine's own.** The answer to
+  More sign-ins in `ccmorph add` said `brew install cliproxyapi` on a machine
+  with no Homebrew to run it — while the installer on the same machine points
+  at the project page — and so did the refusal when a provider profile cannot
+  start and the adapter's own error. Every surface now gives the step the
+  installer gives: the brew command where brew is on PATH, the page
+  https://github.com/router-for-me/CLIProxyAPI where it is not. A menu row
+  that must cut — the More sign-ins row among them, at 80 columns — now ends
+  on a whole word instead of inside one (#369).
 - **The effort setting has one name, and the picker's Extra high names the
   value.** The short help, the config help page, the config menu and the
   setting chooser called the effort setting "reasoning", while `set`, `get`,
