@@ -200,8 +200,9 @@ bin_got=("$d/home/.local/bin/"*(N:t))
 [[ ! -e "$d/home/.config/ccmorph/local.sh" ]] \
   && ok "no local.sh activated on a fresh install" || fail "install activated local.sh"
 # Tab completion is data, like the plugin: installed beside the library and
-# never wired into a startup file. Stock zsh does not search the directory, so
-# the hint prints the one fpath= line — the same checked-and-reported shape as
+# never wired into a startup file. Stock zsh searches no such directory and
+# starts no completion system by itself (#363), so on this fresh home the hint
+# prints both lines a new Mac needs — the same checked-and-reported shape as
 # the PATH hint above.
 comp="$d/home/.config/ccmorph/share/zsh/site-functions/_ccmorph"
 [[ -f "$comp" ]] && grep -qxF '#compdef ccmorph' "$comp" \
@@ -210,7 +211,10 @@ comp="$d/home/.config/ccmorph/share/zsh/site-functions/_ccmorph"
 grep -qF "fpath=($d/home/.config/ccmorph/share/zsh/site-functions \$fpath)" "$d/out" \
   && ok "completion hint prints the fpath line" \
   || { fail "completion hint missing the fpath line"; cat "$d/out"; }
-grep -qF "Add this line to $d/home/.zshrc" "$d/out" \
+grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
+  && ok "completion hint prints the compinit line a new Mac needs" \
+  || { fail "completion hint missing the compinit line"; cat "$d/out"; }
+grep -qF "Add these two lines to $d/home/.zshrc" "$d/out" \
   && ok "completion hint names ~/.zshrc" || fail "completion hint does not name .zshrc"
 [[ ! -e "$d/home/.zshrc" ]] \
   && ok "completion hint writes no rc" || fail "completion hint wrote a startup file"
@@ -1189,8 +1193,9 @@ got=$(zsh -fc 'fpath=(/sentinel); eval "$1"; print -r -- "${#fpath}|${fpath[1]}|
   && ok "path: the completion line keeps a home with spaces as one fpath element" \
   || { fail "path: completion line splits a home with spaces: $got"; cat "$d/out"; }
 
-# A .zshrc that already puts the installed directory on fpath needs no hint: the
-# line would be noise, and reading the file must leave it byte-identical.
+# A .zshrc that already puts the installed directory on fpath AND runs
+# compinit needs no hint: the lines would be noise, and reading the file must
+# leave it byte-identical.
 d=$(fresh_env path_comp_done)
 print 'fpath=($HOME/.config/ccmorph/share/zsh/site-functions $fpath)' > "$d/home/.zshrc"
 print 'autoload -Uz compinit; compinit' >> "$d/home/.zshrc"
@@ -1201,6 +1206,34 @@ grep -qF 'fpath=' "$d/out" \
   || ok "path: no completion hint when .zshrc already names the directory"
 [[ "$(<"$d/home/.zshrc")" == "$comp_rc" ]] \
   && ok "path: an already-configured .zshrc stays byte-identical" || fail "path: installer edited .zshrc"
+
+# A .zshrc with only the fpath line — the old advice, followed (#363): zsh
+# runs no completion system by itself, so Tab still completes nothing. The
+# installer must say the missing half, not fall silent, and never write it.
+d=$(fresh_env path_comp_half)
+print 'fpath=($HOME/.config/ccmorph/share/zsh/site-functions $fpath)' > "$d/home/.zshrc"
+half_rc=$(<"$d/home/.zshrc")
+d=$(path_run path_comp_half /bin/zsh Linux)
+grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
+  && ok "path: a half-followed rc is told the compinit line" \
+  || { fail "path: half-followed rc got no compinit advice"; cat "$d/out"; }
+grep -qF 'fpath=' "$d/out" \
+  && fail "path: the fpath line the rc already has is repeated" \
+  || ok "path: a half-followed rc is not told the fpath line again"
+[[ "$(<"$d/home/.zshrc")" == "$half_rc" ]] \
+  && ok "path: the half-followed .zshrc stays byte-identical" || fail "path: installer edited .zshrc"
+
+# A .zshrc that runs compinit but does not name the directory: only the fpath
+# line is missing, and that is all the installer says.
+d=$(fresh_env path_comp_fpath)
+print 'autoload -Uz compinit; compinit' > "$d/home/.zshrc"
+d=$(path_run path_comp_fpath /bin/zsh Linux)
+grep -qxF "  fpath=($d/home/.config/ccmorph/share/zsh/site-functions \$fpath)" "$d/out" \
+  && ok "path: a rc with compinit alone is told the fpath line" \
+  || { fail "path: rc with compinit only got no fpath advice"; cat "$d/out"; }
+grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
+  && fail "path: the compinit line is repeated" \
+  || ok "path: a rc with compinit alone is not told the compinit line again"
 
 # ZDOTDIR moves the zsh file; an unknown or unset SHELL gets the zsh advice, which
 # is what a bare `env -i` run (every test above this section) always printed.

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/akleizor/ccmorph/adapter"
@@ -141,7 +142,7 @@ func (l *launcher) doctorEnvironment() int {
 	} else {
 		l.status("INFO", "PATH: ccmorph is not on PATH (add the directory it was installed to)")
 	}
-	l.doctorCompletion()
+	l.doctorCompinit(l.doctorCompletion())
 	l.status("INFO", "state: "+l.dir+" (no profiles yet) — next: ccmorph add <name>")
 	return failed
 }
@@ -160,36 +161,153 @@ func shellWord(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// doctorCompletion says how to make zsh find the completion this install
-// carries. Like the PATH row it reports and never edits: it stays silent when
-// a directory on FPATH already holds `_ccmorph` or the .zshrc names the
-// directory, and for a bash or fish login shell. Homebrew links the file into
-// its own share/zsh/site-functions, which `brew shellenv` puts on FPATH, so
-// there the FPATH check keeps this row quiet.
-func (l *launcher) doctorCompletion() {
-	dir := filepath.Join(filepath.Dir(l.libDir), "share", "zsh", "site-functions")
-	if !isFile(filepath.Join(dir, "_ccmorph")) {
-		return
+// completionProbeDeadline bounds the zsh the completion row starts; a shell
+// that cannot answer in time is read as "cannot tell": the row then says what
+// the startup files still miss — never a guess, and never silence, which would
+// read as a working completion. A variable so the test can shorten it.
+var completionProbeDeadline = 5 * time.Second
+
+// completionBound asks a new zsh the only question that matters: does that
+// shell have a completion bound to the ccmorph command? It starts the login
+// shell a new terminal would ($SHELL, or zsh from PATH) with ZDOTDIR forced to
+// zdot so the person's own startup files are the ones that load, and FPATH
+// dropped so the shell rebuilds fpath from those files exactly as a fresh
+// terminal does — a leaked FPATH would replace the whole array and hide even
+// compinit. answered is false when no marker came back (no shell, a broken
+// rc, a timeout); bound is true only when the shell named a completion. The
+// shell may write a zcompdump or touch nothing else a terminal's shells do
+// not; nothing of the person's is edited.
+func (l *launcher) completionBound(zdot string) (bound, answered bool) {
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		if p, err := exec.LookPath("zsh"); err == nil {
+			shell = p
+		} else {
+			return false, false
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), completionProbeDeadline)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, shell, "-ilc",
+		`print -r -- "__ccmorph_completion_${_comps[ccmorph]-}"`)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = time.Second
+	env := make([]string, 0, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "FPATH=") || strings.HasPrefix(kv, "ZDOTDIR=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	cmd.Env = append(env, "ZDOTDIR="+zdot)
+	out, _ := cmd.Output()
+	if ctx.Err() != nil {
+		return false, false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if v, ok := strings.CutPrefix(line, "__ccmorph_completion_"); ok {
+			return v != "", true
+		}
+	}
+	return false, false
+}
+
+// zshCompletion is what doctor read about Tab completion in a new zsh (#363):
+// zsh completes ccmorph only when the install's directory is on fpath and
+// something has run compinit, so the hint has two halves, each its own method.
+// ask is false when there is nothing to say: no completion file installed, or a
+// bash or fish login shell.
+type zshCompletion struct {
+	ask      bool
+	dir      string // the install's share/zsh/site-functions
+	rcName   string // the .zshrc as a person writes it: ~/.zshrc under HOME
+	onFpath  bool   // the startup files or FPATH already reach a _ccmorph
+	compinit bool   // the .zshrc names compinit or Oh My Zsh
+	bound    bool   // a new zsh answered with a completion bound to ccmorph
+}
+
+// doctorCompletion reads what a new zsh would have and prints the fpath half
+// of the completion hint: the fpath line, when zsh does not reach the
+// directory, or where it belongs, when it sits below compinit. When zsh
+// already reaches the file the fpath half is done and this prints nothing;
+// doctorCompinit, given what this returns, says whether compinit is the half
+// still missing. Doctor calls the two together, so the whole hint goes quiet
+// only when a new zsh answers that it completes the ccmorph command (see
+// completionBound) — a shell that cannot answer is never a working verdict.
+// The whole hint fits in two short lines at an 80-column terminal. Like the
+// PATH row it reports and never edits. Homebrew links the file into its own
+// share/zsh/site-functions, which `brew shellenv` puts on fpath; there the
+// missing half, if any, is only the line that starts completions.
+func (l *launcher) doctorCompletion() zshCompletion {
+	c := zshCompletion{dir: filepath.Join(filepath.Dir(l.libDir), "share", "zsh", "site-functions")}
+	if !isFile(filepath.Join(c.dir, "_ccmorph")) {
+		return c
 	}
 	switch filepath.Base(os.Getenv("SHELL")) {
 	case "bash", "fish":
-		return
+		return c
 	}
-	for _, d := range filepath.SplitList(os.Getenv("FPATH")) {
-		if d == dir || isFile(filepath.Join(d, "_ccmorph")) {
-			return
-		}
-	}
+	c.ask = true
 	zdot := os.Getenv("ZDOTDIR")
 	if zdot == "" {
 		zdot = os.Getenv("HOME")
 	}
-	if b, err := os.ReadFile(filepath.Join(zdot, ".zshrc")); err == nil &&
-		(strings.Contains(string(b), dir) || strings.Contains(string(b), "ccmorph/share/zsh/site-functions")) {
-		return
+	rcFile := filepath.Join(zdot, ".zshrc")
+	c.rcName = rcFile
+	if home := os.Getenv("HOME"); home != "" {
+		if rest, ok := strings.CutPrefix(rcFile, home+"/"); ok {
+			c.rcName = "~/" + rest
+		}
 	}
-	l.status("INFO", "completion: zsh does not search "+dir+" yet — add this line to "+filepath.Join(zdot, ".zshrc")+
-		" above compinit (or Oh My Zsh): fpath=("+shellWord(dir)+" $fpath)")
+	rc, _ := os.ReadFile(rcFile)
+	c.onFpath = strings.Contains(string(rc), c.dir) ||
+		strings.Contains(string(rc), "ccmorph/share/zsh/site-functions")
+	if !c.onFpath {
+		for _, d := range filepath.SplitList(os.Getenv("FPATH")) {
+			if d == c.dir || isFile(filepath.Join(d, "_ccmorph")) {
+				c.onFpath = true
+				break
+			}
+		}
+	}
+	c.compinit = strings.Contains(string(rc), "compinit") ||
+		strings.Contains(string(rc), "oh-my-zsh")
+	bound, answered := l.completionBound(zdot)
+	c.bound = answered && bound
+	if c.bound {
+		return c
+	}
+	// Every line is its own row: doctor's report keeps one status word a line.
+	switch {
+	case c.onFpath && c.compinit:
+		l.status("INFO", "completion: put the fpath line above compinit in "+c.rcName+":")
+		l.status("INFO", "  fpath=("+shellWord(c.dir)+" $fpath)")
+	case c.onFpath:
+		// zsh reaches the file; doctorCompinit names the line it still misses.
+	case c.compinit:
+		l.status("INFO", "completion: add to "+c.rcName+", above compinit (or Oh My Zsh):")
+		l.status("INFO", "  fpath=("+shellWord(c.dir)+" $fpath)")
+	default:
+		l.status("INFO", "  fpath=("+shellWord(c.dir)+" $fpath)")
+	}
+	return c
+}
+
+// doctorCompinit prints the compinit half of the completion hint from what
+// doctorCompletion read: nothing when a new zsh completes ccmorph or the
+// .zshrc already runs compinit, the compinit line under a short lead when the
+// directory is on fpath, or — when the fpath half printed its line — the
+// compinit line carrying the lead as a comment, so the two read as one hint.
+func (l *launcher) doctorCompinit(c zshCompletion) {
+	switch {
+	case !c.ask || c.bound || c.compinit:
+	case c.onFpath:
+		l.status("INFO", "completion: nothing in "+c.rcName+" runs compinit — add:")
+		l.status("INFO", "  autoload -Uz compinit && compinit")
+	default:
+		l.status("INFO", "  autoload -Uz compinit && compinit # add both lines to "+c.rcName)
+	}
 }
 
 // credentialStorage says where a profile's credential is kept: the login
@@ -460,7 +578,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	for _, r := range rows {
 		report(r.Kind, r.Msg, r.Fix)
 	}
-	l.doctorCompletion()
+	l.doctorCompinit(l.doctorCompletion())
 	// A masking mismatch is a privacy gap, not a start failure: the profile
 	// still runs, so the row warns without weighing on the verdict (#293).
 	if on, _ := util.MaskOn(f["env.CCMORPH_MASK"]); on && !util.Maskable(typ, base) {

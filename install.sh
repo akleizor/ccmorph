@@ -537,13 +537,18 @@ fi
 
 # ---- Tab completion ---------------------------------------------------------
 # zsh finds a completion by scanning fpath for a file whose first line names a
-# command. That file ships in $CONFIG_DIR/share/zsh/site-functions, a directory
-# no stock zsh searches — so, like PATH, this is checked and reported, never
-# arranged. The line belongs above compinit (or Oh My Zsh, which runs it);
-# bash and fish are told nothing, and a .zshrc that already names the directory
-# is read, never written. Homebrew links the same file into its own
-# site-functions, which `brew shellenv` puts on fpath; `ccmorph doctor`
-# prints this line wherever zsh still does not find the file (cli/doctor.go).
+# command — but only once something has started the completion system, and zsh
+# runs no compinit by itself (#363): a Mac's /etc/zshrc never does, so an
+# fpath line alone leaves Tab completing nothing. The file ships in
+# $CONFIG_DIR/share/zsh/site-functions, a directory no stock zsh searches — so,
+# like PATH, this is checked and reported, never arranged: the hint prints
+# exactly the line or lines the rc still misses, the fpath line above compinit
+# (or Oh My Zsh, which runs it), the compinit line under the fpath line. bash
+# and fish are told nothing, and a .zshrc that already has both halves is
+# read, never written. Homebrew links the same file into its own
+# site-functions, which `brew shellenv` puts on fpath; `ccmorph doctor` asks a
+# new zsh directly whether Tab completes and prints the missing lines
+# (cli/doctor.go).
 _comp_dir="$CONFIG_DIR/share/zsh/site-functions"
 _zshrc="${ZDOTDIR:-$HOME}/.zshrc"
 _comp_wanted=1
@@ -551,12 +556,29 @@ _login_shell="${SHELL:-}"
 case "${_login_shell:t}" in
   bash|fish) _comp_wanted=0 ;;
 esac
-[[ -f "$_zshrc" ]] && grep -qF 'ccmorph/share/zsh/site-functions' "$_zshrc" && _comp_wanted=0
+_comp_dir_in_rc=0
+_compinit_in_rc=0
+if [[ -f "$_zshrc" ]]; then
+  grep -qF 'ccmorph/share/zsh/site-functions' "$_zshrc" && _comp_dir_in_rc=1
+  grep -qE 'compinit|oh-my-zsh' "$_zshrc" && _compinit_in_rc=1
+fi
+(( _comp_dir_in_rc && _compinit_in_rc )) && _comp_wanted=0
 if (( _comp_wanted )); then
   print ""
-  c_y "Tab completion for ccmorph is in $_comp_dir, which zsh does not search yet."
-  c_dim "  Add this line to $_zshrc yourself, above the line that runs compinit (or loads Oh My Zsh); Tab completes in the next zsh you start:"
-  print -r -- "  fpath=(${(q)_comp_dir} \$fpath)"
+  if (( _compinit_in_rc )); then
+    c_y "Tab completion for ccmorph is in $_comp_dir, which zsh does not search yet."
+    c_dim "  Add this line to $_zshrc yourself, above the line that runs compinit (or loads Oh My Zsh); Tab completes in the next zsh you start:"
+    print -r -- "  fpath=(${(q)_comp_dir} \$fpath)"
+  elif (( _comp_dir_in_rc )); then
+    c_y "$_zshrc puts $_comp_dir on fpath, but nothing in it starts zsh's completion system."
+    c_dim "  Add this line to $_zshrc yourself, under the fpath line; Tab completes in the next zsh you start:"
+    print -r -- "  autoload -Uz compinit && compinit"
+  else
+    c_y "Tab completion for ccmorph is in $_comp_dir, which zsh does not search — and nothing starts zsh's completion system."
+    c_dim "  Add these two lines to $_zshrc yourself; Tab completes in the next zsh you start:"
+    print -r -- "  fpath=(${(q)_comp_dir} \$fpath)"
+    print -r -- "  autoload -Uz compinit && compinit"
+  fi
 fi
 
 print ""
