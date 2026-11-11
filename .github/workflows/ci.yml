@@ -56,8 +56,13 @@ jobs:
       fail-fast: false
       matrix:
         # Both libcs (glibc/musl differences are real for zsh globbing and
-        # coreutils flags) and macOS, which is where BSD tools live.
-        os: [ubuntu-latest, macos-latest]
+        # coreutils flags) and macOS, which is where BSD tools live. ubuntu is
+        # pinned to 24.04 while ubuntu-latest serves 26.04 (2026-11-10): the
+        # two shared-bridge route tests fail there for the runner image, not
+        # for any one diff, and Python 3.8 has no 26.04 build either (the floor
+        # job below pins its image for that reason). The same suites still run;
+        # nothing is skipped.
+        os: [ubuntu-24.04, macos-latest]
     runs-on: ${{ matrix.os }}
     # A healthy run takes under 10 minutes. Without a cap, one hung test holds the
     # runner for GitHub's 6-hour default and its log stays unreadable until then.
@@ -107,7 +112,10 @@ jobs:
       fail-fast: false
       matrix:
         python: ["3.8", "3.12", "3.13"]
-    runs-on: ubuntu-latest
+    # 24.04, not latest: setup-python has no 3.8 build for 26.04, and 3.8 is
+    # the floor this job exists to prove. The floor is the Python version, not
+    # the image it is proven on.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
