@@ -788,22 +788,31 @@ func TestARefusedMessageEndsTheLaunchWithItsStatusAndText(t *testing.T) { // iss
 	// but refuses every message — an empty balance, a rate limit, a broken
 	// upstream. The refusal is the launch's true cause: it must reach the
 	// ready-file reader with the status and the gateway's own words, never as
-	// an adapter death, and one refused answer must be enough to end it.
+	// an adapter death, and one refused answer must be enough to end it. The
+	// launcher passes a REFUSED line through untouched, so the repair its
+	// siblings carry has to be on this line too (#448): a balance or a rate
+	// limit is the provider's own account and names the endpoint this profile
+	// reaches, and any other refusal is the gateway's own failure, where
+	// doctor is the one command that checks the route.
 	for _, standIn := range []struct {
 		name        string
 		status      int
 		body        string
 		explanation string
+		repair      string
 	}{
 		{"eta-billing", 402,
 			`{"type":"error","error":{"type":"billing_error","message":"Insufficient balance: top up your account to continue"}}`,
-			"Insufficient balance: top up your account to continue"},
+			"Insufficient balance: top up your account to continue",
+			"top up the provider account, then retry; or change the route: ccmorph config demo"},
 		{"theta-rate-limit", 429,
 			`{"type":"error","error":{"type":"rate_limit_error","message":"Rate limit reached: 3 requests per minute"}}`,
-			"Rate limit reached: 3 requests per minute"},
+			"Rate limit reached: 3 requests per minute",
+			"wait for the provider's rate limit to reset, then retry; or change the route: ccmorph config demo"},
 		{"eps-server-error", 500,
 			`{"error":{"message":"mock gateway exploded"}}`,
-			"mock gateway exploded"},
+			"mock gateway exploded",
+			"retry, or check the route: ccmorph doctor demo"},
 	} {
 		t.Run(standIn.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -818,7 +827,7 @@ func TestARefusedMessageEndsTheLaunchWithItsStatusAndText(t *testing.T) { // iss
 				t.Fatalf("Main = %d, want 1 (a refused message must not start a session)", status)
 			}
 			out := stdio()
-			for _, want := range []string{"EXIT=", fmt.Sprintf("HTTP %d", standIn.status), standIn.explanation} {
+			for _, want := range []string{"EXIT=", fmt.Sprintf("HTTP %d", standIn.status), standIn.explanation, standIn.repair} {
 				if !strings.Contains(out, want) {
 					t.Errorf("the refusal must say %q, got: %s", want, out)
 				}
@@ -856,8 +865,9 @@ func TestARefusedMessageIsNotSettledAgainstTheNextLaunch(t *testing.T) { // issu
 		exits(t, func() { status = Main([]string{"demo", "--auto", "--model", "eta-opus-1"}) })
 		out := stdio()
 		if status != 1 || !strings.Contains(out, "EXIT=") || !strings.Contains(out, "HTTP 402") ||
-			!strings.Contains(out, "Insufficient balance: top up your account to continue") {
-			t.Fatalf("launch %d: the refusal must reach the reader with its status and text (status %d): %s", launch, status, out)
+			!strings.Contains(out, "Insufficient balance: top up your account to continue") ||
+			!strings.Contains(out, "or change the route: ccmorph config demo") {
+			t.Fatalf("launch %d: the refusal must reach the reader with its status, text and repair (status %d): %s", launch, status, out)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".adapter-cache", hashHex("https://standin")[:16]+".json")); !os.IsNotExist(err) {
