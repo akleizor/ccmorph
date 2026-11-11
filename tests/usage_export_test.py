@@ -672,17 +672,24 @@ def test_the_python_floor_scan_covers_the_exporter():
     assert is_python_helper(pathlib.Path(SPEC.origin).read_text())
 
 
-def test_the_checkout_launcher_runs_the_shipped_exporter(tmp_path):
+@pytest.mark.parametrize("via", ["path", "symlink"], ids=["direct-issue-261", "through-a-symlink-issue-416"])
+def test_the_checkout_launcher_runs_the_shipped_exporter(tmp_path, via):
     """#261: the exporter ships as share/usage-export; scripts/usage-export is
-    the checkout's pre-existing spelling and must still reach it. #382: what the
+    the checkout's pre-existing spelling and must still reach it. #416: the
+    wrapper is reached through a link in another directory, so its neighbour is
+    named beside the script, never beside the link. #382: what the
     launcher answers is the report a person reads, so the check is the whole
     report, exactly — not a substring another line could also satisfy — with the
     zero-row count it stands on."""
     (tmp_path / "rows").mkdir()
     output = tmp_path / "out"
+    script = pathlib.Path(SPEC.origin).parent.parent / "scripts/usage-export"
+    launcher = script
+    if via == "symlink":
+        launcher = tmp_path / "usage-export"
+        launcher.symlink_to(script)
     ran = subprocess.run(
-        [str(pathlib.Path(SPEC.origin).parent.parent / "scripts/usage-export"),
-         "--output", str(output), "--source", str(tmp_path / "rows")],
+        [str(launcher), "--output", str(output), "--source", str(tmp_path / "rows")],
         capture_output=True, text=True, timeout=HANG_TIMEOUT)
     assert ran.returncode == 0, ran.stderr
     root = os.path.abspath(output)

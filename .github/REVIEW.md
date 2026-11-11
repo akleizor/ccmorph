@@ -92,6 +92,8 @@ credential, or losing the user's choice.
   Seen 1× (2026-11-10).
 - **One table of a set gaining an entry the others miss** (2026-11-10) — `profile` joined ownVerbs and its help page when the verb arrived (#275), but neither verbArity nor realVerbs, so `ccmorph profile --help` answered `ccmorph: usage: ccmorph profile` with exit 2 and a mistyped `profil` was offered no command; a verb that joins one table joins them all, and every table's own surface is tested when a verb arrives — `example: #413 fix(cli): the profile verb joins the arity and typo-hint tables`.
   Seen 1× (2026-11-10).
+- **A wrapper that names its neighbour from the link's directory instead of the script's** (2026-11-10) — a launcher reached through a symlink took `dirname "$0"` as where it lived, so the program it execs was joined beside the link and the command died with no such file; follow the link chain to the script before building the path to what ships beside it — `example: #416 fix(scripts): the usage-export wrapper follows a link before naming its neighbour (2026-11-10)`.
+  Seen 1× (2026-11-10).
 
 ## Gate rules
 
