@@ -12595,23 +12595,44 @@ run_test test_the_runners_session_env_never_reaches_a_fixture
 # and the bystander is the recycled pid the tail keeps trusting.
 test_the_serve_tail_leaves_when_its_own_launcher_is_gone() {
   local test_home; test_home=$(mktemp -d)
-  local rc=0 serve_pid bystander
+  local rc=0 serve_pid bystander clock
+  local deadline="$test_home/deadline"
   /bin/sleep 300 & bystander=$!
   /bin/sh -c 'sh "$1" gw --parent-pid "$2" &
 echo $! > "$3"' _ "$SCRIPT_DIR/fake_adapter_serve.sh" "$bystander" "$test_home/serve.pid" 2>/dev/null
   serve_pid=$(<"$test_home/serve.pid")
+  # #419: the orphan still gets main's ten seconds, fifty of its own 0.2 s
+  # passes, but on a clock a loaded host slows as it slows the tail: this
+  # reference forks the same sleep, runs ps on every tenth pass as the tail
+  # does, and marks $deadline when the fifty are done. A sleep the host could
+  # not start is no time passed. The wait ends on the first event, the tail
+  # gone or the deadline marked, and CCMORPH_TEST_HANG_TIMEOUT only backstops a
+  # reference that never finishes: an idle host rejects every tail the literal
+  # ten seconds rejected, and a loaded one stretches both sides alike.
+  /bin/sh -c 'mark=$1 pass=0
+while [ "$pass" -lt 50 ]; do
+  sleep 0.2 || continue
+  pass=$(( pass + 1 ))
+  [ $(( pass % 10 )) -ne 0 ] || set -- $(ps -o ppid= -p $$ 2>/dev/null)
+done
+: > "$mark"' _ "$deadline" </dev/null >/dev/null 2>&1 &
+  clock=$!
   local -i i=0
-  while kill -0 "$serve_pid" 2>/dev/null; do
-    (( ++i < 100 )) || break
+  while kill -0 "$serve_pid" 2>/dev/null && [[ ! -e $deadline ]]; do
+    (( ++i < CCMORPH_TEST_HANG_TIMEOUT * 10 )) || break
     sleep 0.1
   done
   if kill -0 "$serve_pid" 2>/dev/null; then
-    print -u2 -- "the serve tail outlived its orphaned launcher for 10s while --parent-pid named a live pid"
+    if [[ -e $deadline ]]; then
+      print -u2 -- "the serve tail outlived its orphaned launcher for fifty 0.2 s passes, ten seconds on an idle host, while --parent-pid named a live pid"
+    else
+      print -u2 -- "neither the serve tail left nor its ten-second reference finished within ${CCMORPH_TEST_HANG_TIMEOUT}s"
+    fi
     kill -KILL "$serve_pid" 2>/dev/null
     rc=1
   fi
-  kill -KILL "$bystander" 2>/dev/null
-  wait "$bystander" 2>/dev/null
+  kill -KILL "$clock" "$bystander" 2>/dev/null
+  wait "$clock" "$bystander" 2>/dev/null
   rm -rf "$test_home"
   return $rc
 }
