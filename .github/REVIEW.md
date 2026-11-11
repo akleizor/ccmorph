@@ -92,6 +92,8 @@ credential, or losing the user's choice.
   Seen 1× (2026-11-10).
 - **One table of a set gaining an entry the others miss** (2026-11-10) — `profile` joined ownVerbs and its help page when the verb arrived (#275), but neither verbArity nor realVerbs, so `ccmorph profile --help` answered `ccmorph: usage: ccmorph profile` with exit 2 and a mistyped `profil` was offered no command; a verb that joins one table joins them all, and every table's own surface is tested when a verb arrives — `example: #413 fix(cli): the profile verb joins the arity and typo-hint tables`.
   Seen 1× (2026-11-10).
+- **A test that pins an exact count of events a retrying transport can duplicate** (2026-11-10) — a transport that resends one logical request over a fresh connection when a reused keep-alive connection has died makes an exact arrival count fail for the retry rather than the behaviour the test pins, as a loaded runner did (2026-11-10: #375's re-ask test asserted one probe and the retry transport doubled it on a loaded runner). The count is what detects an unintended second logical probe, so a fix keeps it and makes the retry deterministically absent from the test's path or distinguishable to the assertion (a marked resend the count excludes), never widened to accept any number of arrivals — `example: b75c63c fix(adapter): a refused message ends the launch with the gateway's own answer (#375)`.
+  Seen 1× (2026-11-10).
 
 ## Gate rules
 
