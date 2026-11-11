@@ -39,6 +39,7 @@ func TestTranslatorVerdict(t *testing.T) {
 		{"cached responses plus undeclared model", []Row{cached("m-o", "responses")}, `{"data":[{"id":"m-x"}]}`, "m-x", true, true},
 		{"cached anthropic plus undeclared model", []Row{cached("m-a", "anthropic")}, `{"data":[{"id":"m-x"}]}`, "m-x", false, false},
 		{"model with a suffix, declared chat", nil, declares("m-o", "/v1/chat/completions"), "m-o[1m]", true, true},
+		{"model with another bracket is not cut", nil, declares("m-o[fast]", "/v1/chat/completions"), "m-o[fast]", true, true},
 		{"chat_completion false is not counted", nil,
 			`{"data":[{"id":"m-n","capabilities":{"chat_completion":false},"supported_endpoints":["/v1/chat/completions"]}]}`, "", false, false},
 		{"messages wins over responses", nil, declares("m-a", "/v1/responses", "/v1/messages"), "", false, true},

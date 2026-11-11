@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -23,6 +24,12 @@ import (
 // sign-in and can wait on a person (a keychain prompt) or wedge, and doctor's
 // promise is a verdict, never a hang. A variable so the test can shorten it.
 var authStatusDeadline = 10 * time.Second
+
+// translatorInstalled is adapter.TranslatorInstalled. A variable so a test can
+// pin the not-installed verdict: a machine with cliproxyapi at one of launch's
+// fixed paths would otherwise decide it, and the row this issue is about is
+// the one that says the translator is missing.
+var translatorInstalled = adapter.TranslatorInstalled
 
 // signInStatus asks Claude Code whether it holds a sign-in for the profile's
 // config dir. answered is false when claude did not finish in time — a hang is
@@ -528,10 +535,24 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	// rejection below would contradict two lines later (GH-272). The translator
 	// verdict comes from what a launch itself reads without inference (the
 	// classification cache and the listing's declared protocols), so doctor
-	// reports what launch would actually do, never a guess.
+	// reports what launch would actually do, never a guess. Launch cuts the
+	// spelling at its first '[' before the adapter sees it (util/adapterstart),
+	// translates that wire id through model_map, and classifies the target; so
+	// the verdict is asked about that id. A row decided for a model the launch
+	// never classifies would call a profile ready that dies at adapter start
+	// (#412). A map that does not parse is launch's to reject; doctor then asks
+	// about the wire id rather than inventing a translation.
+	wire := strings.SplitN(model, "[", 2)[0]
+	var modelMap map[string]any
+	if raw := strings.TrimSpace(f["model_map"]); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &modelMap); err != nil {
+			modelMap = nil
+		}
+	}
+	classified := adapter.LaunchModel(wire, modelMap)
 	need := func(listing string) util.TranslatorNeed {
-		needed, known := adapter.TranslatorVerdict(base, l.profileDirs, model, listing)
-		return util.TranslatorNeed{Known: known, Needed: needed, Installed: adapter.TranslatorInstalled()}
+		needed, known := adapter.TranslatorVerdict(base, l.profileDirs, classified, listing)
+		return util.TranslatorNeed{Known: known, Needed: needed, Installed: translatorInstalled()}
 	}
 	rows, bad, keyRejected := util.DoctorRoute(name, typ, base, model, f["model_map"], need, key, home, verbose)
 	if key != "" {
