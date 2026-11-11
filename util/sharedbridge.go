@@ -146,6 +146,42 @@ func ours(pid int, tmp string) bool {
 	return strings.Contains(processTable()[pid].args, filepath.Join(tmp, "config.yaml"))
 }
 
+// holdsRoute is whether pid still runs the core's route hold on users, read
+// from the process table, never a reused PID: the kernel names its executable
+// ccmorph-core and its argv, argument by argument, is <dir>/ccmorph-core util
+// route-hold <users>, as the launch spawned it. The executable is the proof,
+// and the argument boundaries are kept: the joined command line ps prints can
+// not tell one operand reading "/x/ccmorph-core util route-hold <users>" from
+// the three words it spells, so a hold on some other file would pass for this
+// route's. comm goes through Base because the ps fallback on darwin prints a
+// path. No users file, no readable argv, no proof (#408).
+func holdsRoute(pid int, users string) bool {
+	if pid <= 0 || users == "" || filepath.Base(processTable()[pid].comm) != launcherComm {
+		return false
+	}
+	argv, ok := argvOf(pid)
+	return ok && len(argv) == 4 && filepath.Base(argv[0]) == launcherComm &&
+		argv[1] == "util" && argv[2] == "route-hold" && argv[3] == users
+}
+
+// retirable is the PID a retirement may signal for the bridge its handle
+// names: pid while the process table shows it running that bridge, 0 once it
+// is gone, so the auth files and the rendered config are still cleaned up.
+// Ok is false while pid still runs something the table does not show as that
+// bridge — a PID the system reused, perhaps another session's, or a bridge
+// whose argv the table could not read: nothing of it is the retirement's to
+// touch, and the next acquire probes the record (#408).
+func retirable(pid, tmp string) (n int, ok bool) {
+	n, _ = strconv.Atoi(pid)
+	if ours(n, tmp) {
+		return n, true
+	}
+	if n > 0 && syscall.Kill(n, 0) != syscall.ESRCH {
+		return 0, false
+	}
+	return 0, true
+}
+
 // answers is whether the recorded bridge serves. One failed probe proves
 // nothing while the bridge still runs its config and another session holds it:
 // joining a slow bridge keeps one refresher, while killing it and starting a
@@ -212,12 +248,15 @@ func (b *SharedBridge) Release(authDir string) {
 // out — a session, or the last route (#300). The handle may also name a bridge
 // a replacement has already superseded: the record, not the handle, says which
 // bridge the profile runs now, and a retirement must not take the
-// replacement's record with the bridge it names.
+// replacement's record with the bridge it names. The bridge and the holder
+// are signalled only while the process table shows each still running its
+// own, so a PID the system reused is never stopped (#408).
 func RetireRoute(authDir, pid, tmp, holder string) {
 	if authDir == "" { // a handle without an auth directory names no bridge files
 		endHold(holder, "")
-		n, _ := strconv.Atoi(pid)
-		BridgeStop(n, tmp, "")
+		if n, ok := retirable(pid, tmp); ok {
+			BridgeStop(n, tmp, "")
+		}
 		return
 	}
 	root, name := filepath.Dir(authDir), filepath.Base(authDir)
@@ -234,12 +273,15 @@ func RetireRoute(authDir, pid, tmp, holder string) {
 	// names could hit a reused PID, and removing the record would leave the
 	// replacement running beside the next acquire's bridge on one auth
 	// directory (#300). The handle's own leftovers are still its to take.
-	n, _ := strconv.Atoi(pid)
 	if raw, err := os.ReadFile(files[0]); err == nil {
 		if rpid, _, _, rtmp, ok := parseHandle(string(raw)); ok && (rpid != pid || rtmp != tmp) {
 			stopIfOurs(pid, tmp)
 			return
 		}
+	}
+	n, ok := retirable(pid, tmp)
+	if !ok {
+		return
 	}
 	BridgeStop(n, tmp, authDir)
 	os.Remove(files[0])
@@ -272,9 +314,13 @@ func routeHold(args []string, in io.Reader, out, errw io.Writer) int {
 // hold to lift: TERM, then poll until the holder is gone or the users lock it
 // held reads free. A holder this process has reaped stays a zombie until
 // Wait returns, so the lock, not the PID alone, must get the chance to say so.
+// The PID is signalled only while the process table shows it as the core
+// running `util route-hold` on users (holdsRoute): a number the system reused may be another
+// session's process, and its hold — and the bridge that hold keeps alive —
+// would end with it (#408).
 func endHold(holder, users string) {
 	n, err := strconv.Atoi(holder)
-	if err != nil || n <= 0 {
+	if err != nil || n <= 0 || !holdsRoute(n, users) {
 		return
 	}
 	syscall.Kill(n, syscall.SIGTERM)

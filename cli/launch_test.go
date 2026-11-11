@@ -472,9 +472,52 @@ type routeFixture struct {
 	log   string
 }
 
+// coreCopy is this test binary under the name ccmorph-core: a hard link, or a
+// copy where the temp dir is on another volume. Never a symlink: darwin names a
+// process after the file a symlink resolves to, so a linked holder would read
+// as cli.test, never as the core (#408).
+func coreCopy(t *testing.T) string {
+	t.Helper()
+	core := filepath.Join(t.TempDir(), "ccmorph-core")
+	if os.Link(os.Args[0], core) == nil {
+		return core
+	}
+	src, err := os.Open(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	dst, err := os.OpenFile(core, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		t.Fatal(err)
+	}
+	if err := dst.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return core
+}
+
+// TestMain lets the route fixture run this test binary as the core's route
+// hold: started as `<core> util route-hold <users>` with
+// CCMORPH_TEST_HOLD_USERS set, it runs util's own route-hold, so the process
+// table shows the fixture's holder the way it shows the real one (#408).
+func TestMain(m *testing.M) {
+	if os.Getenv("CCMORPH_TEST_HOLD_USERS") != "" && len(os.Args) > 1 && os.Args[1] == "util" {
+		os.Exit(util.Main(os.Args[2:], os.Stdin, os.Stdout, io.Discard))
+	}
+	os.Exit(m.Run())
+}
+
+// The holder is this test binary under the name ccmorph-core running util's
+// route-hold, so its executable and argv are what the real holder's are, and a
+// retirement reading the process table can prove the PID is the route's holder
+// before it signals it (#408).
 func newRouteFixture(t *testing.T) *routeFixture {
 	return newRouteFixtureWithHold(t,
-		"CCMORPH_TEST_HOLD_USERS=\"$3\" exec '"+os.Args[0]+"' -test.run='^TestRouteHoldChild$'")
+		"CCMORPH_TEST_HOLD_USERS=\"$3\" exec '"+coreCopy(t)+"' util route-hold \"$3\"")
 }
 
 // TestRouteHoldChild is the working holder the route fixture's stub
@@ -967,6 +1010,53 @@ func TestRetiringARouteLeavesABridgeASessionUsesRunning(t *testing.T) {
 	}
 	if _, err := os.Stat(record); err == nil {
 		t.Fatal("the handle must be removed with the bridge")
+	}
+}
+
+// A route's handle names its holder by number alone. When the system has
+// reused that number for a session of the profile, retirement must read the
+// process table before it signals, or it ends the session's hold and stops
+// the bridge under it (#408).
+func TestRetiringARouteWhoseHolderPidWasReusedLeavesTheSessionsBridge(t *testing.T) {
+	fx := newRouteFixture(t)
+	pid, handle, release := fx.sessionBridge(t)
+	release() // only the session below holds the bridge now
+	users := filepath.Join(fx.state, "auth", ".codex.bridge.users")
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := exec.Command(os.Args[0], "-test.run=^TestRouteHoldChild$")
+	session.Env = append(os.Environ(), "CCMORPH_TEST_HOLD_USERS="+users)
+	session.Stdout = pw
+	if err := session.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pw.Close()
+	go session.Wait()
+	t.Cleanup(func() { session.Process.Kill() })
+	pr.SetReadDeadline(time.Now().Add(10 * time.Second))
+	one := make([]byte, 1)
+	if _, err := io.ReadFull(pr, one); err != nil || one[0] != '1' {
+		t.Fatalf("the session never took its hold on the bridge: %v %q", err, one)
+	}
+	pr.Close()
+	record := filepath.Join(fx.state, "auth", ".codex.bridge")
+	before, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc := (&launcher{}).routeStop([]string{handle + "|" + strconv.Itoa(session.Process.Pid)}); rc != 0 {
+		t.Fatalf("route stop failed: rc=%d", rc)
+	}
+	if syscall.Kill(pid, 0) != nil {
+		t.Fatal("retiring a route must not stop a bridge a session still uses")
+	}
+	if after, err := os.ReadFile(record); err != nil || string(after) != string(before) {
+		t.Fatalf("the record must stay for the session's bridge: %v %q", err, after)
+	}
+	if syscall.Kill(session.Process.Pid, 0) != nil {
+		t.Fatal("retiring a route must never signal a PID that does not run its hold")
 	}
 }
 
