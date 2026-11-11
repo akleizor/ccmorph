@@ -126,7 +126,6 @@ func TestTheWindowRowAnswersAClaudeIDsDefaultIssue447(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(core, "ccmorph-core"), []byte(stub), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	l := &launcher{dir: state, libexec: core, migrated: true}
 	capture := func(fn func() int) (int, string) {
 		old := os.Stdout
 		r, w, err := os.Pipe()
@@ -152,6 +151,9 @@ func TestTheWindowRowAnswersAClaudeIDsDefaultIssue447(t *testing.T) {
 			[]byte("type=apikey\nmodel="+c.model+"\nenv.CLAUDE_CODE_MAX_CONTEXT_TOKENS=300000\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
+		// each case is its own command: a fresh launcher, so the profile conf
+		// this case wrote is the one it reads (GH-561 memoizes it per command).
+		l := &launcher{dir: state, libexec: core, migrated: true}
 		rc, out := capture(func() int { return l.context([]string{"gw", c.model}) })
 		if rc != 0 || strings.TrimSpace(out) != c.read {
 			t.Errorf("%s: rc %d, read got %q want %q", c.model, rc, strings.TrimSpace(out), c.read)
