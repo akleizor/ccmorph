@@ -90,6 +90,8 @@ credential, or losing the user's choice.
   Seen 1× (2026-11-09).
 - **A refusal that names the cause but not the repair its channel promises** (2026-11-10) — the line is the whole message on a channel that passes it through untouched, so one that stops at the cause leaves the person holding it: 2026-11-10: #375's message-refusal EXIT carried the gateway's own words with no repair, while the REFUSED contract says the launcher adds nothing because the line is the whole message, though every sibling refusal ends with the one command that repairs or diagnoses it — Example: #448 fix(adapter): a gateway's message refusal ends with its repair.
   Seen 1× (2026-11-10).
+- **One table of a set gaining an entry the others miss** (2026-11-10) — `profile` joined ownVerbs and its help page when the verb arrived (#275), but neither verbArity nor realVerbs, so `ccmorph profile --help` answered `ccmorph: usage: ccmorph profile` with exit 2 and a mistyped `profil` was offered no command; a verb that joins one table joins them all, and every table's own surface is tested when a verb arrives — `example: #413 fix(cli): the profile verb joins the arity and typo-hint tables`.
+  Seen 1× (2026-11-10).
 
 ## Gate rules
 

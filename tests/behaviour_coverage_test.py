@@ -676,8 +676,10 @@ def test_retired_verbs_point_at_their_replacement_and_launch_nothing(box):
     (('delete', 'gw'), 'Run: ccmorph rm gw'),
     (('rename', 'a', 'b'), 'Run: ccmorph mv a b'),
     (('switch', 'gw'), 'Run: ccmorph use gw'),
+    (('profil',), 'Run: ccmorph profile'),
 ], ids=['ls-issue-266', 'lst-issue-266', 'remove-issue-266',
-        'delete-issue-266', 'rename-issue-266', 'switch-issue-266'])
+        'delete-issue-266', 'rename-issue-266', 'switch-issue-266',
+        'profil-issue-413'])
 def test_a_guessed_command_names_the_real_one_and_prints_no_profile_list(box, argv, hint):
     seed(box)
     out = box.run(*argv)
@@ -1084,6 +1086,8 @@ HELP_ANYWHERE = [
     ['hop', 'gw', '--help'], ['add', 'new', '--help'], ['list', '--help'],
     ['update', 'v1', '--help'], ['uninstall', '--help'], ['version', '--help'],
     ['help', 'rm', '--help'], ['run', '--help'], ['run', '-h'],
+    pytest.param(['profile', '--help'], id='profile-help-issue-413'),
+    pytest.param(['profile', '-h'], id='profile-short-help-issue-413'),
 ]
 
 
@@ -1107,7 +1111,7 @@ def test_a_help_flag_anywhere_prints_help_and_changes_nothing(box, argv):
 VERB_ARITY = [('list', 0), ('use', 1), ('cred', 1), ('inspect', 1), ('context', 3),
               ('models', 2), ('rm', 1), ('mv', 2), ('get', 2), ('set', 3), ('config', 1),
               ('add', 1), ('login', 1), ('hop', 1), ('quota', 2), ('doctor', 2),
-              ('update', 1), ('uninstall', 0)]
+              ('update', 1), ('uninstall', 0), ('profile', 0)]
 
 
 @pytest.mark.parametrize('verb,n', VERB_ARITY, ids=lambda v: str(v))
