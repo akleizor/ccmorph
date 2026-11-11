@@ -1355,8 +1355,15 @@ class AdapterTest(unittest.TestCase):
                       out.stdout)
         self.assertNotIn("cached as unusable", out.stdout + out.stderr)
         self.assertNotIn("no route", out.stdout + out.stderr)
-        # The stale row was re-asked, not served.
-        self.assertEqual([p for p, _m in PROBES], ["/v1/messages"])
+        # The stale row was re-asked, not served. The retry transport can
+        # resend the first probe over a fresh connection when a reused
+        # keep-alive one has died, so arrivals are not the contract: the
+        # first probe went to /v1/messages, and no other path was probed.
+        paths = [p for p, _m in PROBES]
+        self.assertEqual(paths[:1], ["/v1/messages"],
+                         "the stale row was not re-asked through /v1/messages")
+        self.assertEqual(set(paths), {"/v1/messages"},
+                         "a path other than the stale row's was probed")
 
     def test_an_unimplemented_messages_path_is_not_a_refusal_issue_375(self):
         # The merge gate's finding: a 501 answers "this gateway does not
