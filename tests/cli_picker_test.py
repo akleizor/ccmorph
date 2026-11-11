@@ -232,7 +232,11 @@ def run_pty(command, env, exchanges=(), size=(24, 100), library=CCMORPH):
             if pos is None:
                 missed = pattern
                 break
-            if reply:
+            if callable(reply):
+                # Some answers are more than bytes — a signal timed against
+                # the sequence it interrupts — and drive the pty themselves.
+                reply(master, out)
+            elif reply:
                 os.write(master, reply)
         if missed is None:
             _drain(master, out, deadline, process)
@@ -1442,14 +1446,18 @@ class PickerTTYTest(unittest.TestCase):
         env['ROWS'] = 'alpha\tFirst\tDescription\nbeta\tSecond\tDescription'
         command = 'picked=$(ccm_ui_select native "Native choices" "$ROWS"); rc=$?; print -r -- "RESULT=$picked"; exit $rc'
         # ↑ at the first row and ↓ at the last stay put, as they always did;
-        # Home/End put either end one key away (#278).
+        # Home/End put either end one key away (#278) — in every terminal's
+        # spelling of them (#388): tmux and screen end the key with ~, rxvt
+        # numbers it 7 or 8.
         cases = [(b'\r', 0, 'alpha'), (b'\x1b[A\r', 0, 'alpha'),
                  (b'\x1b[B\r', 0, 'beta'), (b'\x1bOB\r', 0, 'beta'),
                  (b'\x1b[B\x1b[A\r', 0, 'alpha'), (b'\x1b', 1, ''),
                  (b'\x03', 130, ''), (b'\x04', 1, ''),
                  (b'\x1b[B\x1b[B\r', 0, 'beta'),
                  (b'\x1b[F\r', 0, 'beta'), (b'\x1bOF\r', 0, 'beta'),
-                 (b'\x1b[F\x1b[H\r', 0, 'alpha')]
+                 (b'\x1b[F\x1b[H\r', 0, 'alpha'),
+                 (b'\x1b[4~\r', 0, 'beta'), (b'\x1b[B\x1b[1~\r', 0, 'alpha'),
+                 (b'\x1b[8~\r', 0, 'beta'), (b'\x1b[B\x1b[7~\r', 0, 'alpha')]
         for keys, expected_rc, value in cases:
             with self.subTest(keys=keys):
                 rc, out, missed = run_pty(command, env, [(b'Esc Cancel', keys)])
@@ -1458,6 +1466,55 @@ class PickerTTYTest(unittest.TestCase):
                 self.assertIn('RESULT=' + value, out)
                 self.assertIn('\x1b[?25h', out)
                 self.assertIn('\x1b[?7h', out)
+        self.assertFalse((self.tmp / 'fzf.log').exists())
+
+    def test_native_sigterm_mid_sequence_ends_the_menu(self):
+        # A leave that arrives while the reader waits for the final ~ of
+        # ESC [ 1 must end the menu with its own exit status: the tail's
+        # reader once consumed the signal and threw it away, so the menu went
+        # on waiting for the rest of a key its sender had already interrupted
+        # (#388).
+        env = self.env(fzf=True)
+        env['ROWS'] = 'alpha\tFirst\tDescription\nbeta\tSecond\tDescription'
+        # The picker runs as a background job so the shell can name its pid:
+        # _ccm_main_exec execs the core (the public ccmorph path waits on it
+        # through command env), so $! is the core itself. An async list's
+        # stdin is /dev/null by default, so the terminal fd is saved and duped
+        # back onto the job.
+        command = ('exec {tty}<&0\n'
+                   '_ccm_main_exec _ui select native "Native choices" "$ROWS" <&$tty & picker=$!\n'
+                   'exec {tty}<&-\n'
+                   'print -r -- "PICKER=$picker"\n'
+                   'wait $picker; rc=$?\n'
+                   'print -r -- "RESULT="\n'
+                   'exit $rc')
+
+        def stab(master, out):
+            # The shell prints PICKER= before the core can draw; still, read
+            # on until the whole line is in rather than trust that order.
+            deadline = time.monotonic() + HANG_TIMEOUT
+            found = re.search(rb'PICKER=(\d+)\r?\n', bytes(out))
+            while found is None and time.monotonic() < deadline:
+                if select.select([master], [], [], .25)[0]:
+                    out.extend(os.read(master, 65536))
+                found = re.search(rb'PICKER=(\d+)\r?\n', bytes(out))
+            pid = int(found.group(1))
+            # tmux's Home cut before its final ~, in one write: the menu has
+            # read ESC [ 1 and waits for the ~ when the leave arrives. Every
+            # byte is in before the signal, so no pause decides the outcome:
+            # the leave lands inside the tail's 80ms window, which must hand
+            # it back, or after it, where the menu's own wait takes it, and
+            # both end with 143. A pause between ESC [ and its digit could
+            # outlast the window on a slow runner, and an empty tail is Esc's
+            # own leave (rc 1).
+            os.write(master, b'\x1b[1')
+            time.sleep(0.01)  # lets the reader reach the tail; 143 never depends on it
+            os.kill(pid, signal.SIGTERM)
+
+        rc, out, missed = run_pty(command, env, [(b'Esc Cancel', stab), (b'RESULT=', b'')])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 143, out)
+        self.assertIn('RESULT=', out)
         self.assertFalse((self.tmp / 'fzf.log').exists())
 
     def test_native_fixed_menu_scrolls_in_a_small_terminal(self):

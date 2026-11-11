@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // fit cuts on whole characters (valid UTF-8) and marks the cut with an ellipsis.
@@ -397,5 +399,55 @@ func TestNumberListCutsToTheScreenAndNamesTheFzfStepIssue387(t *testing.T) {
 	}
 	if !strings.Contains(out, "262) Enter a custom model ID…") || strings.Contains(out, "more\n") || strings.Contains(out, "fzf adds search") {
 		t.Fatalf("plain render must show every row and no cut or hint:\n%s", out[:2000])
+	}
+}
+
+// tailReader hands out one byte per Read, then reads nothing, as a raw
+// terminal's VTIME read does. After its first byte it raises sig on stop:
+// a leave that lands between a sequence's bytes.
+type tailReader struct {
+	data []byte
+	stop chan os.Signal
+	sig  os.Signal
+}
+
+func (r *tailReader) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		time.Sleep(time.Millisecond)
+		return 0, nil
+	}
+	p[0], r.data = r.data[0], r.data[1:]
+	if r.sig != nil {
+		r.stop <- r.sig
+		r.sig = nil
+	}
+	return 1, nil
+}
+
+func TestSeqTailReadsEachHomeEndSpellingIssue388(t *testing.T) {
+	for _, c := range []struct {
+		in   string
+		done bool
+	}{
+		{"H", true}, {"F", true}, {"A", true}, {"B", true},
+		{"1~", true}, {"4~", true}, {"7~", true}, {"8~", true},
+		{"", false},   // a bare Esc: the leave it asks for
+		{"12", false}, // never finished: ignored
+	} {
+		stop := make(chan os.Signal, 1)
+		k := &keys{in: &tailReader{data: []byte(c.in), stop: stop}}
+		tail, done, s := k.seqTail(stop)
+		if tail != c.in || done != c.done || s != nil {
+			t.Errorf("seqTail(%q) = %q, %v, %v; want %q, %v, nil", c.in, tail, done, s, c.in, c.done)
+		}
+	}
+}
+
+func TestSeqTailHandsBackASignalMidSequenceIssue388(t *testing.T) {
+	stop := make(chan os.Signal, 1)
+	k := &keys{in: &tailReader{data: []byte("1"), stop: stop, sig: syscall.SIGTERM}}
+	tail, done, s := k.seqTail(stop)
+	if tail != "1" || done || s != syscall.SIGTERM {
+		t.Fatalf("seqTail = %q, %v, %v; want \"1\", false, terminated", tail, done, s)
 	}
 }
