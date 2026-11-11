@@ -85,10 +85,10 @@ func SeedPersonAnswers(profiles, name, folder string) (PersonGaps, error) {
 // asking. A projects tree it cannot read counts as untrusted.
 func personGaps(doc *ordjson.Obj, folder string) PersonGaps {
 	gaps := PersonGaps{Onboarding: true, Trust: true}
-	if truthy(getKey(doc, "hasCompletedOnboarding")) {
+	if ordjson.Truthy(getKey(doc, "hasCompletedOnboarding")) {
 		gaps.Onboarding = false
 	}
-	if entry, err := folderEntry(doc, folder); err == nil && entry != nil && truthy(getKey(entry, "hasTrustDialogAccepted")) {
+	if entry, err := folderEntry(doc, folder); err == nil && entry != nil && ordjson.Truthy(getKey(entry, "hasTrustDialogAccepted")) {
 		gaps.Trust = false
 	}
 	return gaps
@@ -171,9 +171,9 @@ func readPersonDoc(path string) (personDoc, bool) {
 // every other key and projects entry stays as it is.
 func seedPerson(doc *ordjson.Obj, docs []personDoc, folder string) (bool, error) {
 	dirty := false
-	if !truthy(getKey(doc, "hasCompletedOnboarding")) {
+	if !ordjson.Truthy(getKey(doc, "hasCompletedOnboarding")) {
 		for _, d := range docs {
-			if truthy(getKey(d.doc, "hasCompletedOnboarding")) {
+			if ordjson.Truthy(getKey(d.doc, "hasCompletedOnboarding")) {
 				doc.Set("hasCompletedOnboarding", true)
 				dirty = true
 				break
@@ -214,11 +214,11 @@ func seedTrust(doc *ordjson.Obj, docs []personDoc, folder string) (bool, error) 
 	}
 	dirty := false
 	for _, k := range []string{"hasTrustDialogAccepted", "hasCompletedProjectOnboarding"} {
-		if truthy(getKey(entry, k)) {
+		if ordjson.Truthy(getKey(entry, k)) {
 			continue
 		}
 		for _, d := range docs {
-			if e, err := folderEntry(d.doc, folder); err == nil && e != nil && truthy(getKey(e, k)) {
+			if e, err := folderEntry(d.doc, folder); err == nil && e != nil && ordjson.Truthy(getKey(e, k)) {
 				entry.Set(k, true)
 				dirty = true
 				break

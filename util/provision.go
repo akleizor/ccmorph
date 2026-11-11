@@ -77,7 +77,7 @@ func provisionProfile(pdir, kind string) error {
 		return err
 	}
 	if kind == "sub" {
-		hasToken := existing != nil && (truthy(getKey(existing, "oauth:tokenCache")) || truthy(getKey(existing, "oauth:tokenCacheV2")))
+		hasToken := existing != nil && (ordjson.Truthy(getKey(existing, "oauth:tokenCache")) || ordjson.Truthy(getKey(existing, "oauth:tokenCacheV2")))
 		// Best effort, and no longer load-bearing: a subscription credential comes from the profile's own /login.
 		if !hasToken {
 			seed, err := loadObj(appCfg, nil)

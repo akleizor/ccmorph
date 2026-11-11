@@ -7,6 +7,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/akleizor/ccmorph/ordjson"
 )
 
 // answeredDoc is the .claude.json of a profile the person answered Claude
@@ -27,7 +29,7 @@ func checkAnswers(t *testing.T, path, folder, theme string) {
 	if err != nil {
 		t.Fatalf("%s: %v", path, err)
 	}
-	if !truthy(getKey(doc, "hasCompletedOnboarding")) {
+	if !ordjson.Truthy(getKey(doc, "hasCompletedOnboarding")) {
 		t.Fatalf("onboarding not carried: %s", mustRead(t, path))
 	}
 	if got, _ := getKey(doc, "theme").(string); got != theme {
@@ -38,7 +40,7 @@ func checkAnswers(t *testing.T, path, folder, theme string) {
 		t.Fatalf("no trust entry for %s: %s (%v)", folder, mustRead(t, path), err)
 	}
 	for _, k := range []string{"hasTrustDialogAccepted", "hasCompletedProjectOnboarding"} {
-		if !truthy(getKey(entry, k)) {
+		if !ordjson.Truthy(getKey(entry, k)) {
 			t.Fatalf("%s not carried: %s", k, mustRead(t, path))
 		}
 	}
@@ -188,7 +190,7 @@ func TestSeedPersonAnswersKeepsThePersonsOwnChoices(t *testing.T) {
 		if err != nil || entry == nil {
 			t.Fatalf("no trust entry: %s (%v)", mustRead(t, target), err)
 		}
-		if !truthy(getKey(entry, "hasTrustDialogAccepted")) || !truthy(getKey(entry, "hasCompletedProjectOnboarding")) {
+		if !ordjson.Truthy(getKey(entry, "hasTrustDialogAccepted")) || !ordjson.Truthy(getKey(entry, "hasCompletedProjectOnboarding")) {
 			t.Fatalf("the trust answer was not carried: %s", mustRead(t, target))
 		}
 		if tools, ok := getKey(entry, "allowedTools").([]any); !ok || len(tools) != 1 {

@@ -508,7 +508,7 @@ func WindowLabel(record string) (window string, unprobed bool, label string, ok 
 	if err != nil || d == nil {
 		return "", false, "", false
 	}
-	if w := getKey(d, "window"); truthy(w) {
+	if w := getKey(d, "window"); ordjson.Truthy(w) {
 		window = pyStr(w)
 	}
 	label = "probed"
@@ -518,7 +518,7 @@ func WindowLabel(record string) (window string, unprobed bool, label string, ok 
 	case "conf-manual":
 		label = "manual"
 	}
-	return window, truthy(getKey(d, "unprobed")), label, true
+	return window, ordjson.Truthy(getKey(d, "unprobed")), label, true
 }
 
 // EffortRow is one model's effort override.
@@ -724,9 +724,9 @@ func GwModels(conf string, picker bool, body string) ([]ModelRow, bool) {
 			continue
 		}
 		label := ""
-		if v := getKey(asObj(m), "owned_by"); truthy(v) {
+		if v := getKey(asObj(m), "owned_by"); ordjson.Truthy(v) {
 			label = pyStr(v)
-		} else if v := getKey(asObj(m), "display_name"); truthy(v) {
+		} else if v := getKey(asObj(m), "display_name"); ordjson.Truthy(v) {
 			label = pyStr(v)
 		}
 		rows = append(rows, ModelRow{id, label})

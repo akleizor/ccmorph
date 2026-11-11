@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
+	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/shim"
 )
@@ -122,13 +122,6 @@ func refusedMessage(status int) bool {
 	return status == 402 || status == 429 || (status >= 500 && status < 600 && status != 501)
 }
 
-func truncRunes(s string, n int) string {
-	if utf8.RuneCountInString(s) <= n {
-		return s
-	}
-	return string([]rune(s)[:n])
-}
-
 func postImpl(u string, body map[string]any, headers map[string]string) (int, string) {
 	resp, err := do(client, "POST", u, body, headers, probeTimeout)
 	if err != nil {
@@ -158,7 +151,7 @@ func postImpl(u string, body map[string]any, headers map[string]string) (int, st
 			}
 		}
 	}
-	return resp.StatusCode, strings.ReplaceAll(truncRunes(detail, 600), "\n", " ")
+	return resp.StatusCode, strings.ReplaceAll(ordjson.TruncRunes(detail, 600), "\n", " ")
 }
 
 // postJSON returns the parsed response object, or nil on any failure.
@@ -221,7 +214,7 @@ type messageRefusal struct {
 func (e messageRefusal) Error() string {
 	if note := strings.TrimSpace(e.text); note != "" {
 		return fmt.Sprintf("the gateway refused the message for model %s (HTTP %d): %s",
-			shim.PyRepr(e.model), e.status, truncRunes(note, 150))
+			shim.PyRepr(e.model), e.status, ordjson.TruncRunes(note, 150))
 	}
 	return fmt.Sprintf("the gateway refused the message for model %s (HTTP %d)", shim.PyRepr(e.model), e.status)
 }
@@ -269,7 +262,7 @@ func inventory(base, key string, c *http.Client) ([]string, error) {
 		sort.Strings(unsafe)
 		reprs := make([]string, len(unsafe))
 		for i, u := range unsafe {
-			reprs[i] = shim.PyRepr(truncRunes(u, 60))
+			reprs[i] = shim.PyRepr(ordjson.TruncRunes(u, 60))
 		}
 		logf("skipping %d model id(s) with unsafe characters: %s", len(unsafe), strings.Join(reprs, ", "))
 	}
@@ -277,7 +270,9 @@ func inventory(base, key string, c *http.Client) ([]string, error) {
 	return out, nil
 }
 
-// truthy is Python truthiness for decoded JSON.
+// truthy is Python truthiness for decoded JSON. It is not ordjson.Truthy: this
+// package decodes with encoding/json, so numbers are float64 and objects
+// map[string]any rather than json.Number and *ordjson.Obj.
 func truthy(v any) bool {
 	switch t := v.(type) {
 	case nil:
@@ -411,7 +406,7 @@ func dialectOf(base, key, model string, bounded bool) (string, string, int) {
 		return "anthropic", "", 200
 	}
 	if refusedMessage(status) {
-		return "unusable", truncRunes(first, 150), status
+		return "unusable", ordjson.TruncRunes(first, 150), status
 	}
 
 	resp := map[string]any{"model": model, "reasoning": map[string]any{"effort": "low"},
@@ -425,7 +420,7 @@ func dialectOf(base, key, model string, bounded bool) (string, string, int) {
 		return "responses", "", 200
 	}
 	if refusedMessage(status) {
-		return "unusable", truncRunes(note, 150), status
+		return "unusable", ordjson.TruncRunes(note, 150), status
 	}
 
 	status, note = post(apiURL(base, "/v1/chat/completions"),
@@ -436,7 +431,7 @@ func dialectOf(base, key, model string, bounded bool) (string, string, int) {
 		return "chat", "", 200
 	}
 	if refusedMessage(status) {
-		return "unusable", truncRunes(note, 150), status
+		return "unusable", ordjson.TruncRunes(note, 150), status
 	}
 
 	// Rejecting reasoning_effort is not a reason to drop a model: the translator
@@ -448,7 +443,7 @@ func dialectOf(base, key, model string, bounded bool) (string, string, int) {
 		return "chat-noreason", "", 200
 	}
 	if refusedMessage(status) {
-		return "unusable", truncRunes(noteNR, 150), status
+		return "unusable", ordjson.TruncRunes(noteNR, 150), status
 	}
 
 	verdict, n := seen[len(seen)-1], note
@@ -469,7 +464,7 @@ func dialectOf(base, key, model string, bounded bool) (string, string, int) {
 			break
 		}
 	}
-	return "unusable", truncRunes(n, 150), verdict
+	return "unusable", ordjson.TruncRunes(n, 150), verdict
 }
 
 // outputCap is the largest max_tokens accepted, when the model states one in its

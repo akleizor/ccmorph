@@ -4,8 +4,6 @@
 package util
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"io"
@@ -48,34 +46,11 @@ func Main(args []string, in io.Reader, out, errw io.Writer) int {
 // jsonOut is the compact JSON a shell caller parses.
 func jsonOut(v any) string { return string(ordjson.Marshal(v, false)) }
 
-// stripBOM drops the byte-order mark an editor may have put on a JSON file.
-func stripBOM(b []byte) []byte { return bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")) }
-
 func readAll(r io.Reader) []byte { b, _ := io.ReadAll(r); return b }
 
 func asObj(v any) *ordjson.Obj { o, _ := v.(*ordjson.Obj); return o }
 
 func str(v any) (string, bool) { s, ok := v.(string); return s, ok }
-
-// truthy is Python's bool() over a decoded JSON value.
-func truthy(v any) bool {
-	switch t := v.(type) {
-	case nil:
-		return false
-	case bool:
-		return t
-	case string:
-		return t != ""
-	case json.Number:
-		f, _ := t.Float64()
-		return f != 0
-	case []any:
-		return len(t) > 0
-	case *ordjson.Obj:
-		return t.Len() > 0
-	}
-	return true
-}
 
 // AtomicWrite replaces path through a same-dir temp file, renamed into place.
 func AtomicWrite(path, prefix string, data []byte, mode os.FileMode, sync bool) error {

@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/quirks"
 	"github.com/akleizor/ccmorph/shim"
 )
@@ -97,7 +98,7 @@ func render(rows []Row, key string, port int, upstream, authdir, proxy, shimPath
 		if safeModelID.MatchString(r.Model) {
 			safe = append(safe, r)
 		} else {
-			logf("omitting model id with unsafe characters: %s", shim.PyRepr(truncRunes(r.Model, 60)))
+			logf("omitting model id with unsafe characters: %s", shim.PyRepr(ordjson.TruncRunes(r.Model, 60)))
 		}
 	}
 	rows = safe

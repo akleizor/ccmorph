@@ -110,7 +110,7 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 	fresh := true
 	if pv, err := ordjson.Parse([]byte(in.ModelsJSON)); err == nil && asObj(pv) != nil {
 		data := getKey(asObj(pv), "data")
-		if !truthy(data) {
+		if !ordjson.Truthy(data) {
 			data = []any{}
 		}
 		items, ok := iterItems(data)
@@ -255,7 +255,7 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 		}
 		var current []any
 		src, _ := doc.Get("availableModels")
-		if truthy(src) {
+		if ordjson.Truthy(src) {
 			items, ok := iterItems(src)
 			if !ok {
 				return false // an allowlist that is not a list is left as it is

@@ -50,7 +50,7 @@ func invariantRecords(settings, conf, profile, maxOut, budgetRaw string, no1m bo
 	}
 	allowed := getKey(root, "availableModels")
 	var entries []any
-	if truthy(allowed) {
+	if ordjson.Truthy(allowed) {
 		switch t := allowed.(type) {
 		case []any:
 			entries = t
