@@ -456,9 +456,10 @@ func rawTTY(f *os.File) (func(), error) {
 // keys reads the raw terminal on stdin synchronously: rawTTY's VTIME makes
 // each read return within 0.1s, so signals and resizes are seen between reads
 // and no reader is left behind to take a key meant for fzf or the next prompt.
-type keys struct{}
+// in is the terminal; a test hands it a reader of its own.
+type keys struct{ in io.Reader }
 
-func readKeys() *keys { return &keys{} }
+func readKeys() *keys { return &keys{in: os.Stdin} }
 
 const keyResize = -2
 
@@ -475,7 +476,7 @@ func (k *keys) next(timeout time.Duration, stop, winch <-chan os.Signal) (int, o
 			return keyResize, nil, true
 		default:
 		}
-		n, err := os.Stdin.Read(b)
+		n, err := k.in.Read(b)
 		if n == 1 {
 			return int(b[0]), nil, true
 		}
@@ -498,6 +499,29 @@ func sigRC(s os.Signal) int {
 		return 129
 	}
 	return 1
+}
+
+// seqTail reads the rest of an escape sequence whose [ or O introducer was
+// just consumed: the bytes through its final one. Xterm's arrows, Home and
+// End end in a letter; the Home and End tmux, screen and rxvt send end in
+// digits and ~ (#388). done false is a sequence that never finished inside
+// Esc's own 80ms window — an empty tail is then the leave a bare Esc asks.
+// A termination signal answers s: the sequence's reader hands it back, so
+// the menu ends with the signal's own exit status instead of waiting out a
+// key its sender already interrupted.
+func (k *keys) seqTail(stop <-chan os.Signal) (tail string, done bool, s os.Signal) {
+	var b []byte
+	for len(b) < 16 {
+		n, sig, ok := k.next(80*time.Millisecond, stop, nil)
+		if !ok {
+			return string(b), false, sig
+		}
+		b = append(b, byte(n))
+		if n == '~' || unicode.IsLetter(rune(n)) {
+			return string(b), true, nil
+		}
+	}
+	return string(b), false, nil
 }
 
 // native is _ccm_ui_native: an inline ↑/↓ menu on the terminal.
@@ -616,24 +640,37 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 			case 4:
 				return
 			case 27:
-				n, _, ok := k.next(80*time.Millisecond, sigs, nil)
+				// A signal read inside the sequence's windows is not part of
+				// the key: it ends the menu with its own exit status, the
+				// same answer the wait at the top of the loop would give.
+				n, s, ok := k.next(80*time.Millisecond, sigs, nil)
+				if s != nil {
+					rc = sigRC(s)
+					return
+				}
 				if !ok || (n != '[' && n != 'O') {
 					return
 				}
-				n, _, ok = k.next(80*time.Millisecond, sigs, nil)
-				if !ok {
+				tail, done, s := k.seqTail(sigs)
+				if s != nil {
+					rc = sigRC(s)
 					return
 				}
-				// ↑/↓ stop at the ends as they always did; Home/End put either end
-				// one key away (#278).
-				switch n {
-				case 'A':
+				if !done && tail == "" {
+					return
+				}
+				// ↑/↓ stop at the ends as they always did; Home/End put either
+				// end one key away (#278), in every terminal's spelling of
+				// them: xterm and application mode end the key with a letter,
+				// tmux, screen and rxvt with digits and ~ (#388).
+				switch tail {
+				case "A":
 					selected = max(selected-1, 0)
-				case 'B':
+				case "B":
 					selected = min(selected+1, len(rows)-1)
-				case 'H':
+				case "H", "1~", "7~":
 					selected = 0
-				case 'F':
+				case "F", "4~", "8~":
 					selected = len(rows) - 1
 				}
 			}
