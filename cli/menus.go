@@ -160,6 +160,31 @@ func title(s string) string { return strings.ToUpper(s[:1]) + s[1:] }
 
 // pickValue is _ccm_pick_value: choose a model or effort for a saved profile.
 func (l *launcher) pickValue(slot, name string) (string, bool) {
+	return l.pickRows(slot, name, "", "all", func(rows string) (string, string) {
+		return title(slot) + " — " + name, rows
+	})
+}
+
+// pickLaunchModel is the model picker of `run -i`: the saved model first, as
+// the Keep row `set model -i` opens on, so Enter alone means the saved model
+// (#377). The custom-ID escape stays with the commands that can save one; a
+// profile with nothing saved opens the plain catalogue, titled so.
+func (l *launcher) pickLaunchModel(name, saved string) (string, bool) {
+	heading := "Model — " + name
+	if saved == "" {
+		heading += " (none saved)"
+	}
+	return l.pickRows("model", name, saved, "labels", func(rows string) (string, string) {
+		return heading, strings.Join(menuRows("model", saved, "", "", rows, saved != "", false), "\n")
+	})
+}
+
+// pickRows is the walk the two catalogue pickers share: read the slot's rows,
+// refuse an empty catalogue with the one sentence, open the menu the caller
+// builds from those rows, and answer a leave once. keep is what the menu's
+// @keep row stands for; an empty keep means no such row was offered, so a
+// catalogue value literally spelled @keep stays the answer.
+func (l *launcher) pickRows(slot, name, keep, display string, menu func(rows string) (string, string)) (string, bool) {
 	rows, ok := l.valueRows(slot, name)
 	if !ok {
 		return "", false
@@ -168,7 +193,8 @@ func (l *launcher) pickValue(slot, name string) (string, bool) {
 		l.err("No saved model list. Use: ccmorph config " + name + " to enter a custom ID.")
 		return "", false
 	}
-	v, rc := chooseValue(slot, title(slot)+" — "+name, rows, "all")
+	heading, list := menu(rows)
+	choice, rc := chooseValue(slot, heading, list, display)
 	if rc != 0 {
 		// A leave is answered by the picker's own Cancelled line; the usage
 		// line belongs to the headless refusal, where no picker ever ran and
@@ -178,38 +204,8 @@ func (l *launcher) pickValue(slot, name string) (string, bool) {
 		}
 		return "", false
 	}
-	return v, v != ""
-}
-
-// pickLaunchModel is the model picker of `run -i`: the saved model first, as
-// the Keep row `set model -i` opens on, so Enter alone means the saved model
-// (#377). The custom-ID escape stays with the commands that can save one; a
-// profile with nothing saved opens the plain catalogue, titled so.
-func (l *launcher) pickLaunchModel(name, saved string) (string, bool) {
-	rows, ok := l.valueRows("model", name)
-	if !ok {
-		return "", false
-	}
-	if rows == "" {
-		l.err("No saved model list. Use: ccmorph config " + name + " to enter a custom ID.")
-		return "", false
-	}
-	heading := "Model — " + name
-	if saved == "" {
-		heading += " (none saved)"
-	}
-	choice, rc := chooseValue("model", heading, strings.Join(menuRows("model", saved, "", "", rows, saved != "", false), "\n"), "labels")
-	if rc != 0 {
-		// A leave is answered by the picker's own Cancelled line; the usage
-		// line belongs to the headless refusal, where no picker ever ran and
-		// the caller needs the direct command spelled out.
-		if rc == 2 {
-			say("Use: ccmorph set " + name + " model <model>")
-		}
-		return "", false
-	}
-	if choice == "@keep" {
-		return saved, true
+	if choice == "@keep" && keep != "" {
+		return keep, true
 	}
 	return choice, choice != ""
 }

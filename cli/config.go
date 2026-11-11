@@ -301,16 +301,7 @@ func (l *launcher) config(args []string) int {
 		}
 		say("Credential: hidden")
 	}
-	or := func(slot, v string) string {
-		if v == "" {
-			if slot == "model" {
-				return unsavedModelWords(typ, endpoint)
-			}
-			return unsavedEffortWords
-		}
-		return v
-	}
-	say("Model: " + or("model", model) + " · Effort: " + or("effort", effort))
+	say("Model: " + valueOrUnsaved(model, "model", typ, endpoint) + " · Effort: " + valueOrUnsaved(effort, "effort", typ, endpoint))
 	save := l.storeArgs("configure", name, "")
 	save.Change = util.StoreChange{Model: model, Effort: effort, Snapshot: snapshot, Type: typ, Endpoint: endpoint, Credential: credential}
 	if _, rc := l.runStore(save, os.Stderr); rc != 0 {
