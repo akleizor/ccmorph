@@ -2846,6 +2846,37 @@ def test_a_debug_log_truncated_after_start_is_read_from_its_start(tmp_path, monk
     assert h.lost_login() is not None
 
 
+def test_a_capped_log_regrown_past_its_old_position_is_read_from_its_head_issue_417(
+        tmp_path, monkeypatch):
+    """GH-417: bound_logs() truncates a running host's debug log in place, then
+    fresh output can regrow it past the position the login reader had already
+    taken. Size alone proved nothing then -- mark and pos were both below the
+    new size -- so the reader seeked past the new head and a login failure
+    written at that head was never seen, leaving a logged-out host down. The
+    truncation now tells the reader the whole file is this run's."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    monkeypatch.setattr(m, "LOG_CAP", 4_000)
+    monkeypatch.setattr(m.Host, "ensure_repo", lambda self: None)
+    monkeypatch.setattr(m.subprocess, "Popen", lambda cmd, **kw: FakeProc())
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    h = m.Host(str(repo), "gw")
+    h.debugfile.write_text("x" * 100)
+    h.start()                                  # the reader's mark sits at 100 bytes
+    with h.debugfile.open("a") as fh:
+        fh.write("y" * 3_900 + "\n")           # past the cap; the reader takes it
+    assert h.lost_login() is None
+    h.bound_logs()                             # the cap truncates the live log
+    with h.debugfile.open("a") as fh:
+        fh.write("No access token for session fetch\n")
+        fh.write("z" * 5_000 + "\n")           # regrown past the old position
+    why = h.lost_login()
+    assert why is not None and "No access token for session fetch" in why
+
+
 def _lost_login_host(tmp_path, monkeypatch):
     """A registered repo folder with its host up, and the account API faked.
 
@@ -3012,6 +3043,28 @@ def test_a_host_that_loses_its_login_again_is_restarted_at_most_once_per_window(
             fh.write("No access token for session fetch\n")
     m.cycle({repo: h}, [repo], clock[0], state)
     assert len(stops) == 2                     # a new window: one more try
+
+
+def test_a_host_that_loses_its_login_after_a_cap_truncation_is_restarted_issue_417(
+        tmp_path, monkeypatch, capsys):
+    """GH-417: a session log the cap truncated and fresh output regrew past the
+    reader's old position still names the lost login at its head, and the next
+    recovery check restarts the host instead of leaving it down."""
+    m, h, repo, clock, posts, stops = _lost_login_host(tmp_path, monkeypatch)
+    monkeypatch.setattr(m, "LOG_CAP", 4_000)
+    log = tmp_path / "logs" / f"{h.debugfile.stem}-cse_01B.log"
+    log.write_text("x" * 100)
+    h.mark_logs()                              # this supervisor's run starts here
+    with log.open("a") as fh:
+        fh.write("y" * 3_900 + "\n")           # past the cap; the reader takes it
+    assert h.lost_login() is None
+    h.bound_logs()                             # the cap truncates the live log
+    with log.open("a") as fh:
+        fh.write("Could not resolve authentication method\n")
+        fh.write("z" * 5_000 + "\n")           # regrown past the old position
+    m.cycle({repo: h}, [repo], clock[0], _recovery_due(m, clock))
+    assert stops == [clock[0]]
+    assert f"{repo}: sessions lost their login" in capsys.readouterr().out
 
 
 def _login_refresh(monkeypatch):
