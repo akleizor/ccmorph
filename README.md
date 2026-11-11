@@ -190,7 +190,12 @@ receipts.
 ## Configuration
 
 A profile is one file, `~/.config/ccmorph/<name>.conf`, of `key=value` lines;
-`profile.conf.example` is the template and lists every allowed key. Runtime state
+`profile.conf.example` is the template and lists every allowed key, including
+ones no picker offers, such as `model_map` and `env.CCMORPH_MASK`. A clone or
+one-liner install keeps it at `~/.config/ccmorph/profile.conf.example`; a
+Homebrew install keeps it in the formula's prefix, at
+`"$(brew --prefix ccmorph)/libexec/share/profile.conf.example"`. On any install,
+`ccmorph help config` prints the path of the template it holds. Runtime state
 lives under `~/.config/ccmorph/profiles/<name>`. The state root is
 `$CCMORPH_STATE_DIR`, else `$XDG_CONFIG_HOME/ccmorph`, else `~/.config/ccmorph`.
 Use `ccmorph rm` and `ccmorph mv` rather than editing files by hand.

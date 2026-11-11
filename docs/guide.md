@@ -333,8 +333,10 @@ writes as configured defaults on the next launch.
 
 The profile's `~/.config/ccmorph/<profile>.conf` owns model defaults and mappings,
 alongside connection settings. The keys a profile may carry are fixed by its type,
-and `profile.conf.example` (installed beside the library) is the template: copy it,
-or read it in full. In brief:
+and `profile.conf.example` is the template: copy it, or read it in full. A clone or
+one-liner install keeps it at `~/.config/ccmorph/profile.conf.example`, a Homebrew
+install at `"$(brew --prefix ccmorph)/libexec/share/profile.conf.example"`, and
+`ccmorph help config` prints where this install keeps it. In brief:
 
 | `.conf` field | Purpose |
 |---|---|

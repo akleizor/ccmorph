@@ -9,6 +9,12 @@
 
 ### Fixed
 
+- **The README and `ccmorph help config` say where the profile template is**
+  (#392): the README called `profile.conf.example` the template that lists
+  every allowed key but gave no path, and no help page named it, so a Homebrew
+  install, which keeps it in its prefix, left no route to the keys no picker
+  offers. The README names the path for each install, and
+  `ccmorph help config` prints the one this install holds.
 - **`ccmorph add` on a name already taken names `ccmorph config`** (#391):
   it no longer answers only with `ccmorph rm`, which deletes the profile and
   its saved credential for good. A Claude account or provider profile is told
