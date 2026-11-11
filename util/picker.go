@@ -10,6 +10,7 @@ import (
 
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // iterItems is what Python's `for x in value` yields for a decoded JSON value.
@@ -84,7 +85,7 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 	}
 	confText := ""
 	fields := map[string]string{}
-	confExists := exists(contextConf)
+	confExists := paths.Exists(contextConf)
 	if confExists {
 		var err error
 		if confText, fields, err = ctxwindow.ReadConf(contextConf); err != nil {
@@ -164,7 +165,7 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 	// send-id check reads is constant: read and parse it once, before the loop.
 	known := false
 	if confExists {
-		known = exists(ctxwindow.DiscoveredPath(contextConf))
+		known = paths.Exists(ctxwindow.DiscoveredPath(contextConf))
 		for _, line := range strings.Split(confText, "\n") {
 			if strings.HasPrefix(line, "context_window.") || strings.HasPrefix(line, "context_discovered=") {
 				known = true

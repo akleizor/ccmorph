@@ -17,6 +17,7 @@ import (
 	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/settingscompose"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // content is one file read as bytes; nil means it does not exist.
@@ -347,7 +348,7 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 	default:
 		return 0, "", fmt.Errorf("unsupported configuration operation")
 	}
-	if isSymlink(conf) || isSymlink(settings) {
+	if paths.IsSymlink(conf) || paths.IsSymlink(settings) {
 		return 0, "", fmt.Errorf("model defaults require profile-local files")
 	}
 	changes := ordjson.Clone(defaults).(*ordjson.Obj)

@@ -26,6 +26,7 @@ import (
 
 	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/profile"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 type (
@@ -1047,14 +1048,12 @@ func locked(profileDir string, fn func()) {
 	fn()
 }
 
-func exists(path string) bool { _, err := os.Stat(path); return err == nil }
-
 // capture is the profile layer with every edit made to settings.json since it was generated.
 func capture(profileDir string, current, canonical *obj, mapping map[string]bool) *obj {
 	layerPath, basePath := join(profileDir, layerFile), join(profileDir, baseFile)
-	if exists(basePath) || exists(layerPath) {
+	if paths.Exists(basePath) || paths.Exists(layerPath) {
 		layer := load(layerPath)
-		if exists(basePath) && current != nil {
+		if paths.Exists(basePath) && current != nil {
 			layer = fold(load(basePath), current, layer, canonical, mapping)
 		}
 		return layer
@@ -1148,7 +1147,7 @@ func refuseSymlinks(profileDir string) {
 
 func saveLayer(profileDir string, layer *obj) {
 	path := join(profileDir, layerFile)
-	if !exists(path) || !ordjson.Equal(load(path), layer) {
+	if !paths.Exists(path) || !ordjson.Equal(load(path), layer) {
 		writeBytes(path, encode(layer))
 	}
 }
@@ -1160,7 +1159,7 @@ func foldOnly(profileDir, canonicalPath string, mapping map[string]bool) {
 		raw, current := readCurrent(join(profileDir, "settings.json"))
 		saveLayer(profileDir, capture(profileDir, current, canonicalFor(profileDir, canonicalPath), mapping))
 		// The saved copy now matches the layer, so the same edits are never folded twice.
-		if raw != nil && exists(join(profileDir, baseFile)) {
+		if raw != nil && paths.Exists(join(profileDir, baseFile)) {
 			saveBase(profileDir, raw)
 		}
 	})

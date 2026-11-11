@@ -17,6 +17,7 @@ import (
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // authStatusDeadline bounds doctor's `claude auth status`: Claude Code owns the
@@ -60,7 +61,7 @@ func (l *launcher) doctorVerb(args []string) int {
 		return l.extraArg("doctor", args[1])
 	}
 	legacy := filepath.Join(os.Getenv("HOME"), ".claude-profiles")
-	if _, err := os.Lstat(l.profileDirs); err != nil && isDir(legacy) && !isLink(legacy) {
+	if _, err := os.Lstat(l.profileDirs); err != nil && paths.IsDir(legacy) && !isLink(legacy) {
 		l.profileDirs = legacy
 	}
 	name := ""
@@ -241,7 +242,7 @@ type zshCompletion struct {
 // missing half, if any, is only the line that starts completions.
 func (l *launcher) doctorCompletion() zshCompletion {
 	c := zshCompletion{dir: filepath.Join(filepath.Dir(l.libDir), "share", "zsh", "site-functions")}
-	if !isFile(filepath.Join(c.dir, "_ccmorph")) {
+	if !paths.IsFile(filepath.Join(c.dir, "_ccmorph")) {
 		return c
 	}
 	switch filepath.Base(os.Getenv("SHELL")) {
@@ -265,7 +266,7 @@ func (l *launcher) doctorCompletion() zshCompletion {
 		strings.Contains(string(rc), "ccmorph/share/zsh/site-functions")
 	if !c.onFpath {
 		for _, d := range filepath.SplitList(os.Getenv("FPATH")) {
-			if d == c.dir || isFile(filepath.Join(d, "_ccmorph")) {
+			if d == c.dir || paths.IsFile(filepath.Join(d, "_ccmorph")) {
 				c.onFpath = true
 				break
 			}
@@ -325,7 +326,7 @@ func credentialStorage(conf, field string) string {
 func (l *launcher) doctor(name string, verbose bool) int {
 	active := filepath.Join(l.dir, "active")
 	fromDefault := false
-	if name == "" && isFile(active) && !isLink(active) {
+	if name == "" && paths.IsFile(active) && !isLink(active) {
 		b, _ := os.ReadFile(active)
 		name = strings.TrimRight(string(b), "\n")
 		fromDefault = true
@@ -455,7 +456,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	}
 	blocker, fix := homeBlocker()
 	switch {
-	case isDir(home):
+	case paths.IsDir(home):
 		report("OK", "profile home: "+home)
 	case blocker != "":
 		// GH-291: a launch genuinely cannot make the home — something other
@@ -481,7 +482,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	// listing answers (#267); read it once, read-only.
 	model := l.accountModel(name)
 	broken := ""
-	if isFile(settings) {
+	if paths.IsFile(settings) {
 		// Each file is judged on its own, so the line names the one that is
 		// actually broken: the shared canonical file and the profile's file are
 		// fixed in different places.

@@ -14,6 +14,7 @@ import (
 
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // add is `ccmorph add [name]`: a sign-in method, its credential, and a saved
@@ -653,7 +654,7 @@ func (l *launcher) providerLogin(name, provider string) bool {
 	for _, pat := range []string{"*.json", "*/*.json"} {
 		if m, _ := filepath.Glob(filepath.Join(auth, pat)); len(m) > 0 && cred == "" {
 			for _, f := range m {
-				if isFile(f) {
+				if paths.IsFile(f) {
 					cred = f
 					break
 				}

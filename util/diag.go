@@ -8,6 +8,7 @@ import (
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/settingscompose"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 var disguised = regexp.MustCompile(`^claude-.*-dd(?:-|\n?\z)`)
@@ -121,7 +122,7 @@ type DiagIn struct {
 // LaunchDiagnostics answers every read-only question a launch asks of the merged
 // settings layers and the profile's own files.
 func LaunchDiagnostics(in DiagIn) (recs []Record) {
-	paths := in.Paths
+	layerPaths := in.Paths
 	emit := func(fields ...string) {
 		for _, f := range fields {
 			if strings.ContainsRune(f, 0) {
@@ -137,7 +138,7 @@ func LaunchDiagnostics(in DiagIn) (recs []Record) {
 
 	// A layer the merge cannot apply answers none of the env questions; the warnings
 	// below read settings.json themselves and still run.
-	merged := asObj(getKey(settingscompose.MergedView(paths), "env"))
+	merged := asObj(getKey(settingscompose.MergedView(layerPaths), "env"))
 	if merged == nil {
 		merged = ordjson.New()
 	}
@@ -192,13 +193,13 @@ func LaunchDiagnostics(in DiagIn) (recs []Record) {
 			conf := in.ProfileConf
 			var srcs []string
 			anyFile := false
-			for _, p := range paths {
+			for _, p := range layerPaths {
 				if strings.TrimSpace(p) != "" {
 					srcs = append(srcs, p)
-					anyFile = anyFile || isFile(p)
+					anyFile = anyFile || paths.IsFile(p)
 				}
 			}
-			if !anyFile || !isFile(conf) {
+			if !anyFile || !paths.IsFile(conf) {
 				return
 			}
 			rows, err := hazardRows(HazardIn{

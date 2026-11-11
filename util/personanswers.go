@@ -9,6 +9,7 @@ import (
 
 	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/profile"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // PersonGaps names the first-run questions Claude Code will still ask after
@@ -40,7 +41,7 @@ func SeedPersonAnswers(profiles, name, folder string) (PersonGaps, error) {
 	}
 	folder = resolved(folder)
 	path := filepath.Join(profiles, name, ".claude.json")
-	if isSymlink(path) {
+	if paths.IsSymlink(path) {
 		return PersonGaps{Onboarding: true, Trust: true}, errors.New(path + ": symbolic links are not allowed")
 	}
 	doc, err := loadObj(path, ordjson.New())

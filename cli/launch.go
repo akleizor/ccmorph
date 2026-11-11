@@ -580,10 +580,6 @@ func (l *launcher) configStoreQ(verb, name, key string) (string, int) {
 
 func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
 
-func isDir(p string) bool { fi, err := os.Stat(p); return err == nil && fi.IsDir() }
-
-func isFile(p string) bool { fi, err := os.Stat(p); return err == nil && fi.Mode().IsRegular() }
-
 var digits = regexp.MustCompile(`^[0-9]+$`)
 
 func posInt(s string) (int64, bool) {

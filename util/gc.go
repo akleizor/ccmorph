@@ -8,6 +8,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // GCStale is `util gc-stale <state dir> <profiles dir> <tmp dir>`: best-effort reaping of
@@ -76,7 +78,7 @@ func GCStale(state, profiles, tmp string) {
 		if hasUsec {
 			usec, _ = strconv.Atoi(usecS)
 		}
-		if err != nil || !isFile(f) || !old(f, time.Minute) {
+		if err != nil || !paths.IsFile(f) || !old(f, time.Minute) {
 			continue
 		}
 		if serr != nil {
@@ -121,14 +123,14 @@ func GCStale(state, profiles, tmp string) {
 		}
 	}
 	for _, f := range envs {
-		if isFile(f) && old(f, time.Minute) {
+		if paths.IsFile(f) && old(f, time.Minute) {
 			_ = os.Remove(f)
 		}
 	}
 	// A session-end record is consumed the instant its launcher's claude exits;
 	// a minute-old one belongs to a launcher that died before it could read it.
 	for _, f := range ends {
-		if isFile(f) && old(f, time.Minute) {
+		if paths.IsFile(f) && old(f, time.Minute) {
 			_ = os.Remove(f)
 		}
 	}
@@ -152,7 +154,7 @@ func GCStale(state, profiles, tmp string) {
 	// record or failed to write it, and either can still be a live session
 	// whose transcripts age while claude idles (#166).
 	for _, d := range views {
-		if !isDir(d) {
+		if !paths.IsDir(d) {
 			continue
 		}
 		b, err := os.ReadFile(filepath.Join(d, privateOwner))
@@ -185,12 +187,12 @@ func GCStale(state, profiles, tmp string) {
 		return *live != "" && strings.Contains(*live, needle)
 	}
 	for _, f := range overlays {
-		if isFile(f) && old(f, 12*time.Hour) && !alive(f) {
+		if paths.IsFile(f) && old(f, 12*time.Hour) && !alive(f) {
 			_ = os.Remove(f)
 		}
 	}
 	for _, d := range bridges {
-		if isDir(d) && old(d, 12*time.Hour) && !alive(d+"/config.yaml") {
+		if paths.IsDir(d) && old(d, 12*time.Hour) && !alive(d+"/config.yaml") {
 			_ = os.RemoveAll(d)
 		}
 	}
