@@ -7,13 +7,14 @@ isolated HOME with a stub `claude`; nothing touches the network or a real home.
 """
 import json
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, path_without
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -41,10 +42,14 @@ class Box:
         self.env = {k: v for k, v in os.environ.items()
                     if k != 'CLAUDECODE'
                     and not k.startswith(('CCMORPH', '_CCMORPH', 'CLAUDE_', 'ANTHROPIC_'))}
+        # The host's own fzf and cliproxyapi must not answer a verb that seeded
+        # neither: a real fzf opens a picker no one answers, and the bridge
+        # decides the add menu's provider rows (#414). A test that needs one
+        # writes its stub in home/bin, ahead of this PATH.
+        hermetic = os.pathsep.join(p for p in (f'{home}/bin', path_without()) if p)
         self.env.update(HOME=str(home), ZDOTDIR=str(home), XDG_CONFIG_HOME=str(home / '.config'),
                         CCMORPH_STATE_DIR=str(self.state), CCMORPH_LIB_DIR=str(ROOT / "lib"),
-                        PATH=f'{home}/bin:{os.environ["PATH"]}', LANG='C.UTF-8', LC_ALL='C.UTF-8',
-                        NO_COLOR='1')
+                        PATH=hermetic, LANG='C.UTF-8', LC_ALL='C.UTF-8', NO_COLOR='1')
         # `add` offers a pasted credential to its endpoint before saving it, and
         # a launch's sizing fetches the models.dev catalogue; point both at a
         # port nothing owns so the box stays offline and every answer is the
@@ -88,6 +93,35 @@ class Box:
 @pytest.fixture
 def box(tmp_path):
     return Box(tmp_path)
+
+
+def test_box_hides_the_hosts_picker_and_bridge(box):
+    """#414: the box prepends its stubs to the inherited PATH, so the host's
+    real fzf and cliproxyapi reached every verb: a picker no one answers, and
+    provider rows and widths the test never seeded."""
+    for tool in ('fzf', 'cliproxyapi'):
+        assert shutil.which(tool, path=box.env['PATH']) is None, box.env['PATH']
+    # Hiding a tool must not take its directory's other executables with it:
+    # bin/ccmorph's `#!/usr/bin/env zsh` has to find a shell.
+    assert shutil.which('zsh', path=box.env['PATH']), 'the box must still find zsh'
+
+
+def test_hiding_a_tool_keeps_its_directorys_other_executables(tmp_path):
+    """#414: hiding fzf by dropping its whole PATH entry also hid zsh on a
+    merged-/usr Linux, where /usr/bin is both fzf's home and the shell that
+    bin/ccmorph's `#!/usr/bin/env zsh` needs; the entry becomes links to its
+    other executables instead."""
+    host = tmp_path / 'host-bin'
+    host.mkdir()
+    real_zsh = shutil.which('zsh')
+    assert real_zsh, 'the test needs a zsh on the host PATH'
+    (host / 'zsh').symlink_to(real_zsh)
+    (host / 'fzf').symlink_to(shutil.which('sh') or '/bin/sh')
+    shadowed = path_without('fzf', path=str(host))
+    assert shutil.which('fzf', path=shadowed) is None, shadowed
+    kept = shutil.which('zsh', path=shadowed)
+    assert kept is not None, shadowed
+    assert Path(kept).resolve() == Path(real_zsh).resolve(), shadowed
 
 
 def seed(box):

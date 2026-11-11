@@ -12,7 +12,7 @@ import fcntl, json, os, pty, re, select, shutil, signal, struct, subprocess, sys
 from pathlib import Path
 from unittest.mock import patch
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, path_without
 
 ROOT = Path(__file__).resolve().parents[1]
 CCMORPH = ROOT / 'lib/ccmorph.sh'
@@ -289,12 +289,15 @@ class PickerTTYTest(unittest.TestCase):
             path = self.tmp / 'bin' / name
             path.write_text(body)
             path.chmod(0o755)
-        # Real PATH minus any entry carrying a real fzf: `whence -p fzf` must fail
-        # for the numbered fallback, while python3 and zsh still resolve.
+        # Real PATH minus any entry carrying a real fzf or cliproxyapi: `whence
+        # -p fzf` must fail for the numbered fallback, and the add menu's
+        # provider rows must be the test's own, not the host's (#414), while
+        # python3 and zsh still resolve.
+        hidden = ('cliproxyapi',) if fzf else ('fzf', 'cliproxyapi')
         entries = [str(self.tmp / 'bin')]
-        for entry in os.environ['PATH'].split(os.pathsep):
-            if fzf or not (Path(entry) / 'fzf').exists():
-                entries.append(entry)
+        rest = path_without(*hidden)
+        if rest:
+            entries.extend(rest.split(os.pathsep))
         (self.tmp / 'curl.log').touch()
         return {'HOME': str(self.tmp / 'home'), 'CCMORPH_STATE_DIR': str(self.state),
                 'CCMORPH_LIB_DIR': str(ROOT / "lib"), 'PATH': os.pathsep.join(entries),
@@ -312,6 +315,13 @@ class PickerTTYTest(unittest.TestCase):
         home.mkdir(parents=True, exist_ok=True)
         settings = {'model': 'native-model', 'effortLevel': 'low', 'other': {'keep': True}}
         (home / 'settings.json').write_text(json.dumps(settings))
+
+    def bridge(self, *providers):
+        """A fake cliproxyapi whose --help lists exactly these logins."""
+        logins = ' '.join(f"'-{p}-login'" for p in providers)
+        path = self.tmp / 'bin' / 'cliproxyapi'
+        path.write_text(f"#!/bin/sh\nprintf '%s\\n' {logins}\n")
+        path.chmod(0o755)
 
     def field(self, name, key):
         lines = (self.state / f'{name}.conf').read_text().splitlines()
@@ -335,6 +345,21 @@ class PickerTTYTest(unittest.TestCase):
             elif in_rows:
                 rows.append(line)
         return args, rows
+
+    def test_a_test_env_hides_the_hosts_fzf_and_bridge(self):
+        """#414: the add menu reads its provider rows from the cliproxyapi on
+        PATH, and the real Kimi names widen its label column, so the padding
+        the two add tests pin held only on a machine without the bridge. Each
+        env now hides both tools the suite stubs, and a test that wants either
+        writes its own."""
+        for fzf in (False, True):
+            env = self.env(fzf=fzf)
+            self.assertIsNone(shutil.which('cliproxyapi', path=env['PATH']), env['PATH'])
+            if fzf:
+                self.assertEqual(Path(shutil.which('fzf', path=env['PATH'])).parent,
+                                 self.tmp / 'bin')
+            else:
+                self.assertIsNone(shutil.which('fzf', path=env['PATH']), env['PATH'])
 
     def test_cold_launch_selects_a_model_before_starting_the_adapter(self):
         env = self.env(fzf=True)
@@ -1041,15 +1066,18 @@ class PickerTTYTest(unittest.TestCase):
 
     def test_add_uses_native_fixed_menu_even_when_fzf_is_installed(self):
         env = self.env(fzf=True)
+        # The provider rows come from the cliproxyapi the core finds on PATH
+        # (#414); the env keeps the host's out, so the test seeds its own list.
+        self.bridge('claude', 'mockprov')
         self.spec('=CANCEL')  # fzf must not be reached at all
         rc, out, missed = run_pty(
-            '_ccm_provider_list() { REPLY=(claude mockprov); return 0 }\nccmorph add demo',
-            env, [(b'Esc Cancel', b'\x1b')])
+            'ccmorph add demo', env, [(b'Esc Cancel', b'\x1b')])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 1, out)
         self.assertIn('Cancelled', out)  # the leave is answered, not silent
         self.assertIn('\x1b[38;2;215;119;87m\x1b[1mSign-in method — demo\x1b[0m', out)
         self.assertIn('\x1b[38;2;177;185;249mClaude account\x1b[0m    \x1b[38;2;153;153;153mSign in with your browser\x1b[0m', out)
+        self.assertIn('Sign in to Mockprov with your browser', out)  # the stub bridge's row
         self.assertNotIn('type to filter', out)
         self.assertNotIn('Select [', out)
         self.assertFalse((self.tmp / 'fzf.log').exists())
@@ -1094,8 +1122,7 @@ class PickerTTYTest(unittest.TestCase):
     def test_add_finishes_without_optional_setup_questions(self):
         env = self.env(fzf=True)
         self.spec('Sign-in method=token')
-        rc, out, missed = run_pty(
-            '_ccm_provider_list() { REPLY=(claude); return 0 }\nccmorph add demo', env, [
+        rc, out, missed = run_pty('ccmorph add demo', env, [
             (b'Sign-in method', b'\x1b[B\r'),
             (b'Paste token for', b'sk-ant-oat01-picker-echo-fixture-not-real-00000000000\n'),
         ])
