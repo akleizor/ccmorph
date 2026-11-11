@@ -179,6 +179,30 @@ class ReadmeInstallTest(unittest.TestCase):
         self.assertEqual(problems, [], "README names commands a fresh install "
                          "cannot run:\n  " + "\n  ".join(problems))
 
+    def test_the_readme_and_help_config_name_the_profile_template_issue_392(self):
+        """#392: the README called `profile.conf.example` the template that lists
+        every allowed key but gave no path, and a Homebrew install keeps it in
+        the package's prefix, far from the profiles. The README names the path
+        for each install route and the help page that prints this install's;
+        each path is a file there, and `ccmorph help config` on a fresh install
+        names the template the install placed."""
+        flat = re.sub(r"\s+", " ", README.read_text(encoding="utf-8"))
+        for named in ("~/.config/ccmorph/profile.conf.example",
+                      f"{BREW_LIBEXEC}share/profile.conf.example",
+                      "ccmorph help config"):
+            self.assertIn(named, flat, f"the README never names {named}")
+        installed = self.config / "profile.conf.example"
+        self.assertTrue(installed.is_file(), f"a fresh install has no {installed}")
+        # A Homebrew package's libexec holds the repository's own tree.
+        self.assertTrue((ROOT / "share/profile.conf.example").is_file())
+        result = self._run_cli([self.cli, "help", "config"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        named = [line.strip() for line in result.stdout.splitlines()
+                 if line.strip().endswith("profile.conf.example")]
+        self.assertEqual(len(named), 1, result.stdout)
+        path = Path(re.sub(r"^~/", f"{self.home}/", named[0]))
+        self.assertEqual(path.resolve(), installed.resolve(), result.stdout)
+
     def test_the_check_rejects_what_a_fresh_install_lacks(self):
         """The negative control: each way a README command can be missing is
         reported, in a block and inline, so a green check means something.

@@ -7,13 +7,14 @@ isolated HOME with a stub `claude`; nothing touches the network or a real home.
 """
 import json
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, path_without
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -41,10 +42,14 @@ class Box:
         self.env = {k: v for k, v in os.environ.items()
                     if k != 'CLAUDECODE'
                     and not k.startswith(('CCMORPH', '_CCMORPH', 'CLAUDE_', 'ANTHROPIC_'))}
+        # The host's own fzf and cliproxyapi must not answer a verb that seeded
+        # neither: a real fzf opens a picker no one answers, and the bridge
+        # decides the add menu's provider rows (#414). A test that needs one
+        # writes its stub in home/bin, ahead of this PATH.
+        hermetic = os.pathsep.join(p for p in (f'{home}/bin', path_without()) if p)
         self.env.update(HOME=str(home), ZDOTDIR=str(home), XDG_CONFIG_HOME=str(home / '.config'),
                         CCMORPH_STATE_DIR=str(self.state), CCMORPH_LIB_DIR=str(ROOT / "lib"),
-                        PATH=f'{home}/bin:{os.environ["PATH"]}', LANG='C.UTF-8', LC_ALL='C.UTF-8',
-                        NO_COLOR='1')
+                        PATH=hermetic, LANG='C.UTF-8', LC_ALL='C.UTF-8', NO_COLOR='1')
         # `add` offers a pasted credential to its endpoint before saving it, and
         # a launch's sizing fetches the models.dev catalogue; point both at a
         # port nothing owns so the box stays offline and every answer is the
@@ -90,6 +95,35 @@ def box(tmp_path):
     return Box(tmp_path)
 
 
+def test_box_hides_the_hosts_picker_and_bridge(box):
+    """#414: the box prepends its stubs to the inherited PATH, so the host's
+    real fzf and cliproxyapi reached every verb: a picker no one answers, and
+    provider rows and widths the test never seeded."""
+    for tool in ('fzf', 'cliproxyapi'):
+        assert shutil.which(tool, path=box.env['PATH']) is None, box.env['PATH']
+    # Hiding a tool must not take its directory's other executables with it:
+    # bin/ccmorph's `#!/usr/bin/env zsh` has to find a shell.
+    assert shutil.which('zsh', path=box.env['PATH']), 'the box must still find zsh'
+
+
+def test_hiding_a_tool_keeps_its_directorys_other_executables(tmp_path):
+    """#414: hiding fzf by dropping its whole PATH entry also hid zsh on a
+    merged-/usr Linux, where /usr/bin is both fzf's home and the shell that
+    bin/ccmorph's `#!/usr/bin/env zsh` needs; the entry becomes links to its
+    other executables instead."""
+    host = tmp_path / 'host-bin'
+    host.mkdir()
+    real_zsh = shutil.which('zsh')
+    assert real_zsh, 'the test needs a zsh on the host PATH'
+    (host / 'zsh').symlink_to(real_zsh)
+    (host / 'fzf').symlink_to(shutil.which('sh') or '/bin/sh')
+    shadowed = path_without('fzf', path=str(host))
+    assert shutil.which('fzf', path=shadowed) is None, shadowed
+    kept = shutil.which('zsh', path=shadowed)
+    assert kept is not None, shadowed
+    assert Path(kept).resolve() == Path(real_zsh).resolve(), shadowed
+
+
 def seed(box):
     box.conf('work', 'type=sub\nemail=me@example.invalid\n')
     box.conf('tok', 'type=token\ntoken=sk-ant-oat-canary\n')
@@ -100,10 +134,16 @@ def seed(box):
 
 def test_use_sets_the_default_and_bare_use_reports_it(box):
     seed(box)
-    assert 'No default set' in box.run('use').stdout
+    bare = box.run('use')
+    assert 'No default set' in bare.stdout
+    # GH-368: profiles exist but none is the default, so the answer names the
+    # profiles to choose from and never the command just typed.
+    assert 'Profiles: gw tok work' in bare.stdout
+    assert 'ccmorph use' not in bare.stdout
     done = box.run('use', 'tok')
     assert done.returncode == 0, done.stderr
     assert 'Default set' in done.stdout
+    assert done.stdout == 'Default set to tok\n', done.stdout
     assert box.active == 'tok'
     assert box.run('use').stdout.strip() == 'tok'
 
@@ -676,8 +716,10 @@ def test_retired_verbs_point_at_their_replacement_and_launch_nothing(box):
     (('delete', 'gw'), 'Run: ccmorph rm gw'),
     (('rename', 'a', 'b'), 'Run: ccmorph mv a b'),
     (('switch', 'gw'), 'Run: ccmorph use gw'),
+    (('profil',), 'Run: ccmorph profile'),
 ], ids=['ls-issue-266', 'lst-issue-266', 'remove-issue-266',
-        'delete-issue-266', 'rename-issue-266', 'switch-issue-266'])
+        'delete-issue-266', 'rename-issue-266', 'switch-issue-266',
+        'profil-issue-413'])
 def test_a_guessed_command_names_the_real_one_and_prints_no_profile_list(box, argv, hint):
     seed(box)
     out = box.run(*argv)
@@ -918,6 +960,9 @@ FRESH_INSTALL_ARGV = [
     (['list'], 0), (['quota'], 0), (['probe'], 0),
     # a valid option is still a sweep of nothing; an invalid one stays a usage error
     (['probe', '--check'], 0), (['probe', '--declared-only'], 0), (['probe', '--model', 'm'], 0),
+    # GH-368: bare use reports like list, so a fresh install hears the same
+    # sentence, not an answer naming the command just typed.
+    (['use'], 0),
     (['run'], 1), (['inspect'], 1), (['config'], 1), (['models'], 1),
     (['context'], 1), (['doctor', 'nosuch'], 1),
 ]
@@ -1084,6 +1129,8 @@ HELP_ANYWHERE = [
     ['hop', 'gw', '--help'], ['add', 'new', '--help'], ['list', '--help'],
     ['update', 'v1', '--help'], ['uninstall', '--help'], ['version', '--help'],
     ['help', 'rm', '--help'], ['run', '--help'], ['run', '-h'],
+    pytest.param(['profile', '--help'], id='profile-help-issue-413'),
+    pytest.param(['profile', '-h'], id='profile-short-help-issue-413'),
 ]
 
 
@@ -1107,7 +1154,7 @@ def test_a_help_flag_anywhere_prints_help_and_changes_nothing(box, argv):
 VERB_ARITY = [('list', 0), ('use', 1), ('cred', 1), ('inspect', 1), ('context', 3),
               ('models', 2), ('rm', 1), ('mv', 2), ('get', 2), ('set', 3), ('config', 1),
               ('add', 1), ('login', 1), ('hop', 1), ('quota', 2), ('doctor', 2),
-              ('update', 1), ('uninstall', 0)]
+              ('update', 1), ('uninstall', 0), ('profile', 0)]
 
 
 @pytest.mark.parametrize('verb,n', VERB_ARITY, ids=lambda v: str(v))

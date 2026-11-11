@@ -17,6 +17,7 @@ import (
 	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/settingscompose"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // content is one file read as bytes; nil means it does not exist.
@@ -184,7 +185,7 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 	}
 	doc := ordjson.New()
 	if originals[1] != nil {
-		v, err := ordjson.Parse(stripBOM(originals[1]))
+		v, err := ordjson.Parse(ordjson.StripBOM(originals[1]))
 		if err != nil {
 			return 0, "", err
 		}
@@ -235,7 +236,7 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 			return 0, "", err
 		}
 		if len(sb) > 0 {
-			v, err := ordjson.Parse(stripBOM(sb))
+			v, err := ordjson.Parse(ordjson.StripBOM(sb))
 			if err != nil {
 				return 0, "", err
 			}
@@ -258,25 +259,25 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 			env = ordjson.New()
 		}
 		chosen := getKey(env, "ANTHROPIC_MODEL")
-		if !truthy(chosen) {
+		if !ordjson.Truthy(chosen) {
 			chosen = getKey(native, "model")
 		}
-		if truthy(chosen) {
+		if ordjson.Truthy(chosen) {
 			setDefault("model", chosen)
 		}
-		if lvl := getKey(env, "CLAUDE_CODE_EFFORT_LEVEL"); truthy(lvl) {
+		if lvl := getKey(env, "CLAUDE_CODE_EFFORT_LEVEL"); ordjson.Truthy(lvl) {
 			setDefault("effort", lvl)
-		} else if lvl := getKey(native, "effortLevel"); truthy(lvl) {
+		} else if lvl := getKey(native, "effortLevel"); ordjson.Truthy(lvl) {
 			setDefault("effort", lvl)
 		}
 		for _, model := range rows.Keys() {
 			rv, _ := rows.Get(model)
-			if row := asObj(rv); row != nil && truthy(getKey(row, "effortLevel")) {
+			if row := asObj(rv); row != nil && ordjson.Truthy(getKey(row, "effortLevel")) {
 				setDefault("effort."+model, getKey(row, "effortLevel"))
 			}
 		}
 		for _, name := range mappingKeys {
-			if v := getKey(env, name); truthy(v) {
+			if v := getKey(env, name); ordjson.Truthy(v) {
 				setDefault("env."+name, v)
 			}
 		}
@@ -310,7 +311,7 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 	projected.Set("env", projEnv)
 	projected.Set("modelSettings", modelSettings)
 	for _, f := range [][2]string{{"model", "model"}, {"effort", "effortLevel"}} {
-		if v, _ := defaults.Get(f[0]); truthy(v) {
+		if v, _ := defaults.Get(f[0]); ordjson.Truthy(v) {
 			projected.Set(f[1], v)
 		}
 	}
@@ -335,7 +336,7 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 			continue
 		}
 		if name == "model" && !modelIDShape(value) {
-			return 0, "", fmt.Errorf("model must be a nonempty model id, not a flag or picker token")
+			return 0, "", refuse("model must be a nonempty model id, not a flag or picker token")
 		}
 		if name == "effort" && !slices.Contains(profile.Efforts, value) {
 			return 0, "", refuse("effort must be %s", effortList())
@@ -347,7 +348,7 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 	default:
 		return 0, "", fmt.Errorf("unsupported configuration operation")
 	}
-	if isSymlink(conf) || isSymlink(settings) {
+	if paths.IsSymlink(conf) || paths.IsSymlink(settings) {
 		return 0, "", fmt.Errorf("model defaults require profile-local files")
 	}
 	changes := ordjson.Clone(defaults).(*ordjson.Obj)
@@ -374,7 +375,7 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 		}
 	}
 	for _, name := range changes.Keys() {
-		if v, _ := changes.Get(name); truthy(v) {
+		if v, _ := changes.Get(name); ordjson.Truthy(v) {
 			kept = append(kept, fmt.Sprintf("%s=%v", name, v))
 		}
 	}
@@ -407,7 +408,7 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 			}
 		}
 		if originals[1] != nil {
-			orig, _ := ordjson.Parse(stripBOM(originals[1]))
+			orig, _ := ordjson.Parse(ordjson.StripBOM(originals[1]))
 			if !ordjson.Equal(doc, orig) {
 				targets = append(targets, target{settings, originals[1], []byte(string(ordjson.Marshal(doc, true)) + "\n")})
 			}

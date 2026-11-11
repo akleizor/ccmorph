@@ -14,6 +14,7 @@ import (
 
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // add is `ccmorph add [name]`: a sign-in method, its credential, and a saved
@@ -564,7 +565,14 @@ func providerList() ([]string, bool) {
 		}
 		line = strings.TrimLeft(line, " \t")
 		line = strings.TrimPrefix(line, "-")
-		line = line[:strings.Index(line, "-login")]
+		// The leading dash the trim removes can itself be the row's only
+		// -login marker (a bridge flag like -login-proxy string, #456): with
+		// none left the row is not a provider login, never a slice at -1.
+		at := strings.Index(line, "-login")
+		if at < 0 {
+			continue
+		}
+		line = line[:at]
 		if line != "" && !strings.Contains(line, "device") {
 			list = append(list, line)
 		}
@@ -646,7 +654,7 @@ func (l *launcher) providerLogin(name, provider string) bool {
 	for _, pat := range []string{"*.json", "*/*.json"} {
 		if m, _ := filepath.Glob(filepath.Join(auth, pat)); len(m) > 0 && cred == "" {
 			for _, f := range m {
-				if isFile(f) {
+				if paths.IsFile(f) {
 					cred = f
 					break
 				}

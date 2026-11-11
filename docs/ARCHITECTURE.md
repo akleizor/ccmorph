@@ -599,7 +599,12 @@ for one process per profile.
   holder keeps none of the caller's streams, so a caller capturing the route
   env's output sees it end when the env process exits. A hold that never lands
   refuses the route outright rather than leave it unprotected, and a retirement
-  preserves the record of a bridge that replaced the handle's own **[test]**.
+  preserves the record of a bridge that replaced the handle's own **[test]**. It
+  signals the bridge only while the process table shows it running the handle's
+  config, and the holder only while the table shows the ccmorph-core executable
+  running `util route-hold` on the route's users file, so neither a PID the
+  system reused nor a program whose arguments carry the same words is ever
+  stopped **[test]**.
 
 ### When no translator is needed at all
 

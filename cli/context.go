@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/paths"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -71,9 +72,9 @@ func (l *launcher) hazardSet(name, budget, ceiling, settings string, penv []stri
 	}
 	any := false
 	for _, s := range sources {
-		any = any || isFile(s)
+		any = any || paths.IsFile(s)
 	}
-	if !any || !isFile(l.conf(name)) {
+	if !any || !paths.IsFile(l.conf(name)) {
 		return nil
 	}
 	pct, maxout, no1m := l.triggerEnv(penv)
@@ -343,7 +344,7 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 	}
 	if os.Getenv("CCMORPH_WITHHOLD_FATAL") == "1" {
 		gen := filepath.Join(l.profileDirs, name, "settings.json")
-		if isFile(gen) {
+		if paths.IsFile(gen) {
 			if rows := l.hazardSet(name, pacw, pceil, gen, penv); len(rows) > 1 {
 				util.WithholdFatal(gen, rows[1:], pmodel)
 			}
@@ -433,7 +434,7 @@ func (l *launcher) probeNudge(name string) {
 // settings.json beside an existing conf.
 func (l *launcher) diagnostics(name string, pctInEnv bool, pct, maxout, no1m, budget, policyPct, hdrKey string, hazard bool, ceiling string, routeKeys []string) []util.Record {
 	settings := filepath.Join(l.profileDirs, name, "settings.json")
-	if fi, err := os.Lstat(settings); err != nil || !fi.Mode().IsRegular() || !isFile(l.conf(name)) {
+	if fi, err := os.Lstat(settings); err != nil || !fi.Mode().IsRegular() || !paths.IsFile(l.conf(name)) {
 		settings = ""
 	}
 	return util.LaunchDiagnostics(util.DiagIn{

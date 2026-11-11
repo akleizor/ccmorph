@@ -314,7 +314,9 @@ stay explicit — destructive operations should not be a menu selection.
 `/effort` choices affect the current session, not the next ccmorph launch.
 It prints the bare value to stdout
 (so `m=$(ccmorph get gw model)` and existing scripts keep working) and confirms
-the save on stderr. An unset setting reads back an empty stdout; the
+the save on stderr. On a terminal that shows both, the value line folds into that
+confirmation, so a person reads the save once; `TERM=dumb`, which cannot fold,
+shows only the confirmation. An unset setting reads back an empty stdout; the
 explanation — no model saved, so Claude Code picks the model (a gateway is
 asked which model at each launch), or no effort saved, so the session starts
 at Claude Code's own default — goes to stderr. `inspect` reports the effective
@@ -333,8 +335,10 @@ writes as configured defaults on the next launch.
 
 The profile's `~/.config/ccmorph/<profile>.conf` owns model defaults and mappings,
 alongside connection settings. The keys a profile may carry are fixed by its type,
-and `profile.conf.example` (installed beside the library) is the template: copy it,
-or read it in full. In brief:
+and `profile.conf.example` is the template: copy it, or read it in full. A clone or
+one-liner install keeps it at `~/.config/ccmorph/profile.conf.example`, a Homebrew
+install at `"$(brew --prefix ccmorph)/libexec/share/profile.conf.example"`, and
+`ccmorph help config` prints where this install keeps it. In brief:
 
 | `.conf` field | Purpose |
 |---|---|

@@ -23,11 +23,27 @@ func unsavedModelWords(typ, base string) string {
 // is passed, so the session starts at Claude Code's own default.
 const unsavedEffortWords = "Claude Code's own default"
 
+// unsavedWords is the dispatch behind the unsaved state's words, without a
+// screen's own lead-in: a model answers what a launch does with it, an effort
+// names the level a session starts at.
+func unsavedWords(slot, typ, base string) string {
+	if slot == "model" {
+		return unsavedModelWords(typ, base)
+	}
+	return unsavedEffortWords
+}
+
+// valueOrUnsaved is a value as a summary shows it: the value itself when set,
+// the unsaved words for its slot when nothing is saved.
+func valueOrUnsaved(v, slot, typ, base string) string {
+	if v == "" {
+		return unsavedWords(slot, typ, base)
+	}
+	return v
+}
+
 // unsavedLabel is the unsaved state as a picker shows it: the none it keeps,
 // then what that means at launch.
 func unsavedLabel(slot, typ, base string) string {
-	if slot == "model" {
-		return "none — " + unsavedModelWords(typ, base)
-	}
-	return "none — " + unsavedEffortWords
+	return "none — " + unsavedWords(slot, typ, base)
 }

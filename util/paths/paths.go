@@ -1,8 +1,9 @@
 // Package paths holds the installed layout's durable contracts: where
-// machine-local state lives and where the driver script lives. Each was a
-// small helper hand-written in every package that needed it, and copies drift
-// (#303); each has this one definition instead. The zsh layer resolves the
-// same paths in lib/ccmorph.sh and bin/ccmorph.
+// machine-local state lives, where the driver script lives, and the file
+// predicates every package asks of a path. Each was a small helper
+// hand-written in every package that needed it, and copies drift (#303,
+// #422); each has this one definition instead. The zsh layer resolves the
+// same state and script paths in lib/ccmorph.sh and bin/ccmorph.
 package paths
 
 import (
@@ -42,3 +43,25 @@ func LibDir() string {
 
 // Script is the driver script, the runtime's only entry point: lib/ccmorph.sh.
 func Script() string { return filepath.Join(LibDir(), "ccmorph.sh") }
+
+// Exists reports whether path can be stat'ed at all.
+func Exists(path string) bool { _, err := os.Stat(path); return err == nil }
+
+// IsDir reports whether path is a directory.
+func IsDir(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.IsDir()
+}
+
+// IsFile reports whether path is a regular file.
+func IsFile(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.Mode().IsRegular()
+}
+
+// IsSymlink reports whether path itself is a symbolic link (a link to a
+// directory is a symlink, not a directory).
+func IsSymlink(path string) bool {
+	fi, err := os.Lstat(path)
+	return err == nil && fi.Mode()&os.ModeSymlink != 0
+}

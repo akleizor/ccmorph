@@ -90,13 +90,13 @@ func emptyThinkingRemovedFromJSON(t *testing.T, preserve bool) {
 	s := NewServer("http://x")
 	s.PreserveIDs = preserve
 	for name, tc := range map[string]struct{ in, want string }{
-		"empty dropped":        {`{"content":[{"type":"thinking","thinking":""},{"type":"text","text":"a"}]}`, `{"content":[{"type":"text","text":"a"}]}`},
-		"missing text":         {`{"content":[{"type":"thinking"},{"type":"text","text":"a"}]}`, `{"content":[{"type":"text","text":"a"}]}`},
-		"only block":           {`{"content":[{"type":"thinking","thinking":"","signature":""}]}`, `{"content":[]}`},
-		"signed empty kept":    {`{"content":[{"type":"thinking","thinking":"","signature":"s"}]}`, ""},
-		"text kept":            {`{"content":[{"type":"thinking","thinking":"hm"}]}`, ""},
+		"empty dropped":                       {`{"content":[{"type":"thinking","thinking":""},{"type":"text","text":"a"}]}`, `{"content":[{"type":"text","text":"a"}]}`},
+		"missing text":                        {`{"content":[{"type":"thinking"},{"type":"text","text":"a"}]}`, `{"content":[{"type":"text","text":"a"}]}`},
+		"only block":                          {`{"content":[{"type":"thinking","thinking":"","signature":""}]}`, `{"content":[]}`},
+		"signed empty kept":                   {`{"content":[{"type":"thinking","thinking":"","signature":"s"}]}`, ""},
+		"text kept":                           {`{"content":[{"type":"thinking","thinking":"hm"}]}`, ""},
 		"mixed: only the unsigned block goes": {`{"content":[{"type":"thinking","thinking":""},{"type":"thinking","thinking":"","signature":"s","extra":"keep"},{"type":"tool_use","name":"E","input":{"content":[{"type":"thinking","thinking":""}]}}]}`, `{"content":[{"type":"thinking","thinking":"","signature":"s","extra":"keep"},{"type":"tool_use","name":"E","input":{"content":[{"type":"thinking","thinking":""}]}}]}`},
-		"tool input untouched": {`{"content":[{"type":"tool_use","id":"","input":{"content":[{"type":"thinking"}]}}]}`, ""},
+		"tool input untouched":                {`{"content":[{"type":"tool_use","id":"","input":{"content":[{"type":"thinking"}]}}]}`, ""},
 	} {
 		out, changed := s.rewrite([]byte(tc.in), "", false)
 		if tc.want == "" {

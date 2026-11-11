@@ -480,6 +480,40 @@ func TestAContextWriteLandsTheFileInCanonicalLayout(t *testing.T) {
 	}
 }
 
+// A caller resolving many models loads the conf, the endpoint env JSON and the
+// catalogue once: after Preload, resolving further models answers from those
+// inputs, not from files or the environment (#424).
+func TestResolverInputsServeManyModelsAfterOneLoad(t *testing.T) {
+	e := setup(t)
+	write(t, e.a, "type=apikey\nbase_url=https://a.invalid\napi_key={{SECRET_mnvzztcsdqnk}}\n"+
+		"context_window.pinned-model=123000\n")
+	catalogue := filepath.Join(e.root, "share/model-catalogue.json")
+	write(t, catalogue, `{"models":{"x/fam":{"family":"fam","limit":{"context":1000000}}}}`)
+	t.Setenv("MODEL_WINDOW_ENDPOINT_JSON", `[{"id":"declared","context_length":321000}]`)
+
+	in := LoadInputs(e.a)
+	in.Preload()
+	// Delete every file and change the env: a per-model read or parse would now
+	// see nothing, so the answers below prove the inputs were hoisted.
+	for _, path := range []string{e.a, catalogue} {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("MODEL_WINDOW_ENDPOINT_JSON", `[{"id":"declared","context_length":9}]`)
+	for i := 0; i < 10; i++ {
+		if got := in.Resolve("pinned-model"); got.Window != 123000 {
+			t.Fatalf("conf pin lost on resolve %d: %+v", i, got)
+		}
+		if got := in.Resolve("declared"); got.Window != 321000 || got.Source != "endpoint" {
+			t.Fatalf("endpoint window lost on resolve %d: %+v", i, got)
+		}
+		if got := in.Resolve("fam"); got.Window != 1000000 || got.Source != "catalogue-bundled" {
+			t.Fatalf("catalogue window lost on resolve %d: %+v", i, got)
+		}
+	}
+}
+
 func TestGlobMatchesStarAndQuestionMark(t *testing.T) {
 	for _, c := range []struct {
 		name, pat string

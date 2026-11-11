@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -17,12 +18,19 @@ import (
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // authStatusDeadline bounds doctor's `claude auth status`: Claude Code owns the
 // sign-in and can wait on a person (a keychain prompt) or wedge, and doctor's
 // promise is a verdict, never a hang. A variable so the test can shorten it.
 var authStatusDeadline = 10 * time.Second
+
+// translatorInstalled is adapter.TranslatorInstalled. A variable so a test can
+// pin the not-installed verdict: a machine with cliproxyapi at one of launch's
+// fixed paths would otherwise decide it, and the row this issue is about is
+// the one that says the translator is missing.
+var translatorInstalled = adapter.TranslatorInstalled
 
 // signInStatus asks Claude Code whether it holds a sign-in for the profile's
 // config dir. answered is false when claude did not finish in time — a hang is
@@ -60,7 +68,7 @@ func (l *launcher) doctorVerb(args []string) int {
 		return l.extraArg("doctor", args[1])
 	}
 	legacy := filepath.Join(os.Getenv("HOME"), ".claude-profiles")
-	if _, err := os.Lstat(l.profileDirs); err != nil && isDir(legacy) && !isLink(legacy) {
+	if _, err := os.Lstat(l.profileDirs); err != nil && paths.IsDir(legacy) && !isLink(legacy) {
 		l.profileDirs = legacy
 	}
 	name := ""
@@ -241,7 +249,7 @@ type zshCompletion struct {
 // missing half, if any, is only the line that starts completions.
 func (l *launcher) doctorCompletion() zshCompletion {
 	c := zshCompletion{dir: filepath.Join(filepath.Dir(l.libDir), "share", "zsh", "site-functions")}
-	if !isFile(filepath.Join(c.dir, "_ccmorph")) {
+	if !paths.IsFile(filepath.Join(c.dir, "_ccmorph")) {
 		return c
 	}
 	switch filepath.Base(os.Getenv("SHELL")) {
@@ -265,7 +273,7 @@ func (l *launcher) doctorCompletion() zshCompletion {
 		strings.Contains(string(rc), "ccmorph/share/zsh/site-functions")
 	if !c.onFpath {
 		for _, d := range filepath.SplitList(os.Getenv("FPATH")) {
-			if d == c.dir || isFile(filepath.Join(d, "_ccmorph")) {
+			if d == c.dir || paths.IsFile(filepath.Join(d, "_ccmorph")) {
 				c.onFpath = true
 				break
 			}
@@ -325,7 +333,7 @@ func credentialStorage(conf, field string) string {
 func (l *launcher) doctor(name string, verbose bool) int {
 	active := filepath.Join(l.dir, "active")
 	fromDefault := false
-	if name == "" && isFile(active) && !isLink(active) {
+	if name == "" && paths.IsFile(active) && !isLink(active) {
 		b, _ := os.ReadFile(active)
 		name = strings.TrimRight(string(b), "\n")
 		fromDefault = true
@@ -455,7 +463,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	}
 	blocker, fix := homeBlocker()
 	switch {
-	case isDir(home):
+	case paths.IsDir(home):
 		report("OK", "profile home: "+home)
 	case blocker != "":
 		// GH-291: a launch genuinely cannot make the home — something other
@@ -481,7 +489,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	// listing answers (#267); read it once, read-only.
 	model := l.accountModel(name)
 	broken := ""
-	if isFile(settings) {
+	if paths.IsFile(settings) {
 		// Each file is judged on its own, so the line names the one that is
 		// actually broken: the shared canonical file and the profile's file are
 		// fixed in different places.
@@ -528,10 +536,24 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	// rejection below would contradict two lines later (GH-272). The translator
 	// verdict comes from what a launch itself reads without inference (the
 	// classification cache and the listing's declared protocols), so doctor
-	// reports what launch would actually do, never a guess.
+	// reports what launch would actually do, never a guess. Launch cuts the
+	// spelling at its first '[' before the adapter sees it (util/adapterstart),
+	// translates that wire id through model_map, and classifies the target; so
+	// the verdict is asked about that id. A row decided for a model the launch
+	// never classifies would call a profile ready that dies at adapter start
+	// (#412). A map that does not parse is launch's to reject; doctor then asks
+	// about the wire id rather than inventing a translation.
+	wire := strings.SplitN(model, "[", 2)[0]
+	var modelMap map[string]any
+	if raw := strings.TrimSpace(f["model_map"]); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &modelMap); err != nil {
+			modelMap = nil
+		}
+	}
+	classified := adapter.LaunchModel(wire, modelMap)
 	need := func(listing string) util.TranslatorNeed {
-		needed, known := adapter.TranslatorVerdict(base, l.profileDirs, model, listing)
-		return util.TranslatorNeed{Known: known, Needed: needed, Installed: adapter.TranslatorInstalled()}
+		needed, known := adapter.TranslatorVerdict(base, l.profileDirs, classified, listing)
+		return util.TranslatorNeed{Known: known, Needed: needed, Installed: translatorInstalled()}
 	}
 	rows, bad, keyRejected := util.DoctorRoute(name, typ, base, model, f["model_map"], need, key, home, verbose)
 	if key != "" {
@@ -596,7 +618,17 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	l.doctorCompinit(l.doctorCompletion())
 	// A masking mismatch is a privacy gap, not a start failure: the profile
 	// still runs, so the row warns without weighing on the verdict (#293).
-	if on, _ := util.MaskOn(f["env.CCMORPH_MASK"]); on && !util.Maskable(typ, base) {
+	// A value the shim refuses is different: the launch stops in the shim, so
+	// the row fails and the verdict names the value to replace (#411).
+	maskOn, maskBad := util.MaskOn(f["env.CCMORPH_MASK"])
+	maskable := util.Maskable(typ, base)
+	switch {
+	case maskable && maskBad:
+		report("FAIL", "masking: env.CCMORPH_MASK="+f["env.CCMORPH_MASK"]+
+			" is refused — a launch stops in the shim before a session starts (must be 1 or 0)",
+			"set env.CCMORPH_MASK=1 or 0: ccmorph config "+name)
+		failed = 1
+	case maskOn && !maskable:
 		l.status("WARN", "masking: env.CCMORPH_MASK="+f["env.CCMORPH_MASK"]+
 			" is set but nothing is masked — this route reaches its backend without ccmorph's shim; masking covers gateway (apikey) routes only")
 	}

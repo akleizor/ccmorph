@@ -9,6 +9,16 @@
 
 ### Fixed
 
+- **The README and `ccmorph help config` say where the profile template is**
+  (#392): the README called `profile.conf.example` the template that lists
+  every allowed key but gave no path, and no help page named it, so a Homebrew
+  install, which keeps it in its prefix, left no route to the keys no picker
+  offers. The README names the path for each install, and
+  `ccmorph help config` prints the one this install holds.
+- **`ccmorph set` confirms once in a terminal** (#358): the Saved line was
+  followed by the bare value on a line of its own. stdout still carries the
+  value for scripts; on the terminal that shows both, that line folds into the
+  Saved line.
 - **`ccmorph add` on a name already taken names `ccmorph config`** (#391):
   it no longer answers only with `ccmorph rm`, which deletes the profile and
   its saved credential for good. A Claude account or provider profile is told
@@ -30,6 +40,18 @@
   default" for no saved effort. `doctor` also names the effective effort — the
   level a plain launch passes, the saved model's own override first — and
   prints both rows before a profile's first launch too (#381).
+- **Home and End jump in the arrow-key menus inside tmux, screen and
+  rxvt.** The menus read only xterm's and application mode's spellings of
+  the two keys (`ESC [ H`/`ESC [ F` and `ESC O H`/`ESC O F`), so inside
+  tmux or screen — whose terminfo sends `ESC [ 1 ~` and `ESC [ 4 ~` — and
+  in rxvt, which sends `ESC [ 7 ~` and `ESC [ 8 ~`, the keys did nothing
+  while the hint line offered them; the searchable fzf picker answered the
+  same keys in the same terminal, because it parses them itself. The menu
+  now reads the whole tail of an escape sequence — a letter, or digits
+  ended by `~` — and every spelling of Home and End jumps to the first or
+  last row, so the hint line's keys work in any terminal; a termination
+  signal that arrives mid-sequence ends the menu with its own exit status
+  instead of being read as part of the key (#388).
 - **`ccmorph inspect` explains masking while it is off, and help names
   masking.** The masking row read `off` with no words, no help page contained
   the word, and no config screen offered the setting, so a person who wanted

@@ -135,13 +135,16 @@ func findTranslator() string {
 // the translator, read from what an automatic launch consults without
 // inference: the classification cache, and the per-model protocol declarations
 // in the endpoint's model listing (listing is that JSON, or "" when doctor read
-// none). Nothing is probed, so doctor stays read-only. With a model set, that
-// model is the one launch classifies: cached, else declared; a model that is
-// neither is undecided, and the answer then rests on the cached rows alone
-// (known only when they already need the translator, since the undecided model
-// could only add to that). Without a model every listed, declared model counts.
-// needed mirrors serve()'s own native test over the usable rows. known is false
-// when no usable row decides it, in which case there is no honest verdict.
+// none). Nothing is probed, so doctor stays read-only. model is the id launch
+// classifies, so only ccmorph's own trailing [1m] marker is stripped here — a
+// mapped id may carry any other bracket and launch keeps it whole. With a model
+// set, that model is the one launch classifies: cached, else declared; a model
+// that is neither is undecided, and the answer then rests on the cached rows
+// alone (known only when they already need the translator, since the undecided
+// model could only add to that). Without a model every listed, declared model
+// counts. needed mirrors serve()'s own native test over the usable rows. known
+// is false when no usable row decides it, in which case there is no honest
+// verdict.
 func TranslatorVerdict(base, cacheDir, model, listing string) (needed, known bool) {
 	upstream := strings.TrimRight(base, "/")
 	cache := filepath.Join(cacheDir, ".adapter-cache", hashHex(upstream)[:16]+".json")
@@ -157,7 +160,7 @@ func TranslatorVerdict(base, cacheDir, model, listing string) (needed, known boo
 		}
 		return false
 	}
-	model = strings.SplitN(strings.TrimSpace(model), "[", 2)[0]
+	model = strings.TrimSuffix(strings.TrimSpace(model), "[1m]")
 	undecided := false
 	if model != "" {
 		if !cached(model) {
@@ -482,6 +485,24 @@ func newToken() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
+// LaunchModel is the model a launch classifies and serves: the wire id with
+// ccmorph's own [1m] marker removed, translated once through the profile's
+// model_map — keyed by the wire id, never by the spelling the caller used, and
+// never chained — and stripped of the marker again on the mapped id. A map
+// entry that is not a string yields the empty model, as it always has. Doctor
+// asks its translator verdict about this same id, so the row it prints is the
+// one a launch would reach (#412).
+func LaunchModel(model string, modelMap map[string]any) string {
+	required := strings.TrimSuffix(strings.TrimSpace(model), "[1m]")
+	if model == "" {
+		return required
+	}
+	if mapped, ok := modelMap[required]; ok {
+		required, _ = mapped.(string)
+	}
+	return strings.TrimSuffix(required, "[1m]")
+}
+
 // Main runs the adapter and returns its exit status.
 func Main(argv []string) int {
 	a := parseArgs(argv)
@@ -536,10 +557,7 @@ func Main(argv []string) int {
 	// Preparation keys the map by the wire model id, like the shim's request-side
 	// lookup: never by the spelling the caller used.
 	if a.model != "" && a.ensureConfig == "" {
-		if mapped, ok := modelMap[required]; ok {
-			required, _ = mapped.(string)
-		}
-		required = strings.TrimSuffix(required, "[1m]")
+		required = LaunchModel(a.model, modelMap)
 	}
 	key := env["ANTHROPIC_API_KEY"]
 	if key == "" {
@@ -623,8 +641,22 @@ func Main(argv []string) int {
 		// never an adapter problem (#375).
 		var refusal messageRefusal
 		if a.auto && required != "" && errors.As(err, &refusal) {
+			// The launcher passes a REFUSED line through untouched, so this
+			// line is the whole message: the repair its siblings carry has to
+			// be on it too (#448). An empty balance or a rate limit is the
+			// provider's own account, not this route, so it says so and names
+			// the command that shows or changes the endpoint this profile
+			// reaches; any other refusal is the gateway's own failure, where
+			// doctor is the one command that checks the route.
+			repair := "retry, or check the route: ccmorph doctor " + a.profile
+			switch refusal.status {
+			case 402:
+				repair = "top up the provider account, then retry; or change the route: ccmorph config " + a.profile
+			case 429:
+				repair = "wait for the provider's rate limit to reset, then retry; or change the route: ccmorph config " + a.profile
+			}
 			logf("%v", refusal)
-			fmt.Printf("EXIT=%v\n", refusal)
+			fmt.Printf("EXIT=%v; %s\n", refusal, repair)
 			return 1
 		}
 		die("%v", err)

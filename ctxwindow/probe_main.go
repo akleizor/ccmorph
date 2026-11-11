@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/akleizor/ccmorph/ordjson"
 )
 
 const prog = "context-probe"
@@ -106,7 +108,7 @@ func parseArgs(argv []string) (*args, error) {
 		name = match[0]
 		if takesValue[name] {
 			if !hasVal {
-				if i+1 >= len(argv) || (strings.HasPrefix(argv[i+1], "-") && len(argv[i+1]) > 1 && !isNumber(argv[i+1])) {
+				if i+1 >= len(argv) || (strings.HasPrefix(argv[i+1], "-") && len(argv[i+1]) > 1 && !ordjson.IsNumber(argv[i+1])) {
 					return nil, usageError{fmt.Sprintf("argument %s: expected one argument", name)}
 				}
 				i++
@@ -150,8 +152,6 @@ func parseArgs(argv []string) (*args, error) {
 	}
 	return a, nil
 }
-
-func isNumber(s string) bool { _, err := strconv.ParseFloat(s, 64); return err == nil }
 
 // ProbeMain runs the helper (argv excludes the program name) and returns its exit code.
 func ProbeMain(argv []string, stdin io.Reader, stdout, errw io.Writer) int {

@@ -3,10 +3,6 @@
 # directly into an interactive shell.
 
 _CCMORPH_VERSION="0.5.8"
-# The pre-2.4.0 name for `probe`, still accepted so a script that already says it keeps
-# working. Assembled rather than written so the retired word appears nowhere in this
-# source; a test pins that the alias still dispatches.
-_ccm_retired_verb="mea""sure"
 
 # TWO directories, deliberately. They were one, which worked only because a
 # git clone was also the install: the same path held ccmorph.sh and the helper

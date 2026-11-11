@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/paths"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,7 +37,8 @@ func helpAsked(words []string) bool {
 // context-probe, which reports its own usage.
 var verbArity = map[string]int{"list": 0, "use": 1, "cred": 1, "inspect": 1, "context": 3,
 	"models": 2, "rm": 1, "mv": 2, "get": 2, "set": 3, "config": 1, "add": 1, "login": 1,
-	"hop": 1, "quota": 2, "doctor": 2, "update": 1, "uninstall": 0, "version": 0, "help": 1}
+	"hop": 1, "quota": 2, "doctor": 2, "update": 1, "uninstall": 0, "version": 0, "help": 1,
+	"profile": 0}
 
 // usageLine is the Usage line of a command's help page, shared with its errors
 // so the two cannot drift apart.
@@ -61,7 +63,7 @@ func (l *launcher) extraArg(verb, word string) int {
 // realVerbs is every verb `ccmorph <verb>` answers to, in one list for the typo
 // hint: a word one edit away from exactly one of these is told to run it.
 var realVerbs = []string{"add", "config", "context", "cred", "doctor", "get", "help", "hop",
-	"inspect", "list", "login", "models", "mv", "probe", "quota", "rm", "run", "set",
+	"inspect", "list", "login", "models", "mv", "probe", "profile", "quota", "rm", "run", "set",
 	"uninstall", "update", "use", "version"}
 
 // topFlags are the flags ccmorph itself takes before the verb.
@@ -276,7 +278,7 @@ func (l *launcher) secureDirs() bool {
 	home := os.Getenv("HOME")
 	legacyHome := filepath.Join(home, ".claude-profiles")
 	if _, err := os.Lstat(legacyHome); err == nil {
-		same := isLink(legacyHome) && isDir(l.profileDirs) && !isLink(l.profileDirs) &&
+		same := isLink(legacyHome) && paths.IsDir(l.profileDirs) && !isLink(l.profileDirs) &&
 			resolvePath(legacyHome) == resolvePath(l.profileDirs)
 		if !same {
 			moved, err := util.MigrateProfileHome(legacyHome, l.profileDirs)
@@ -671,7 +673,7 @@ func (l *launcher) runInstaller(verb string, rest []string) int {
 		l.err("ccmorph was installed with Homebrew; run: brew " + brew + " ccmorph")
 		return 1
 	}
-	if !isFile(installer) {
+	if !paths.IsFile(installer) {
 		l.err("no installer at " + installer + ", so ccmorph cannot " + verb + " itself. Run the one-line install once:")
 		fmt.Fprintln(os.Stderr, `  sh -c "$(curl -fsSL https://github.com/akleizor/ccmorph/releases/latest/download/install.sh)"`)
 		return 1
@@ -794,18 +796,54 @@ func (l *launcher) usage(topic string) int {
 	return l.usageAt(topic, helpWidth())
 }
 
-// confDirSpelling is the state root as a help page spells a conf file's
-// directory: the root this launcher resolved, cleaned, spelled ~/… under the
-// home directory — so the default root spells itself ~/.config/ccmorph and
-// only a redirected one changes a page.
-func (l *launcher) confDirSpelling() string {
-	root := filepath.Clean(l.dir)
+// spelledFromHome is path cleaned and spelled ~/… under the home directory.
+func spelledFromHome(path string) string {
+	root := filepath.Clean(path)
 	if home, err := os.UserHomeDir(); err == nil {
 		if rel, ok := strings.CutPrefix(root, home+string(filepath.Separator)); ok {
 			return "~/" + rel
 		}
 	}
 	return root
+}
+
+// confDirSpelling is the state root as a help page spells a conf file's
+// directory: the root this launcher resolved, cleaned, spelled ~/… under the
+// home directory — so the default root spells itself ~/.config/ccmorph and
+// only a redirected one changes a page.
+func (l *launcher) confDirSpelling() string {
+	return spelledFromHome(l.dir)
+}
+
+// profileTemplate is the profile.conf.example this install holds, spelled for a
+// help page, or "" when there is none (#392). The code root is lib/'s parent:
+// install.sh copies the template to that root on a clone or one-line install;
+// a Homebrew package and a source checkout keep the repository's tree, so it
+// is in share/ there.
+func (l *launcher) profileTemplate() string {
+	if l.libDir == "" {
+		return ""
+	}
+	root := filepath.Dir(filepath.Clean(l.libDir))
+	for _, p := range []string{
+		filepath.Join(root, "profile.conf.example"),
+		filepath.Join(root, "share", "profile.conf.example"),
+	} {
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
+			return spelledFromHome(p)
+		}
+	}
+	return ""
+}
+
+// templateNote ends the config page: where this install keeps the template that
+// lists every key a conf file may carry (#392).
+func (l *launcher) templateNote() string {
+	const lead = "Every key a profile's conf file may carry, including ones no menu offers, is\nlisted with what it does in "
+	if p := l.profileTemplate(); p != "" {
+		return lead + "this install's template:\n  " + p
+	}
+	return lead + "the template profile.conf.example, which this\ninstall is missing: reinstall ccmorph to restore it."
 }
 
 // usageAt prints a help page wrapped to width columns (helpWidth). width 0 is
@@ -888,6 +926,11 @@ func (l *launcher) usageAt(topic string, width int) int {
 	// root — not the default spelling — is where the advice takes effect.
 	if l.dir != "" {
 		body = strings.ReplaceAll(body, "~/.config/ccmorph/", l.confDirSpelling()+"/")
+	}
+	// The template's path is the code's, not the state root's: added after the
+	// conf-dir rewrite, so a redirected root never rewrites it (#392).
+	if topic == "config" {
+		body += "\n\n" + l.templateNote()
 	}
 	fmt.Println(wrapBody(body, width))
 	if pickerTopics[topic] {
@@ -972,7 +1015,8 @@ The value is printed to stdout; name both in scripts.
 Effort: ` + strings.Join(profile.Efforts, ", ") + `. Available models come from the profile.`},
 	"set": {"", `Save a default for new sessions: the model or the effort level.
 Omit the profile, the setting or the value to choose it in a picker.
-Name all three in scripts.
+The saved value goes to stdout for a script to capture; a terminal shows
+one confirming line. Name all three in scripts.
 Effort: ` + strings.Join(profile.Efforts, ", ") + `. Available models come from the profile.`},
 	"login": {"ccmorph login [profile|-i]", `Sign in again: a Claude account profile with its browser login, a
 provider-backed profile with its own, or let Claude Code use an API-key

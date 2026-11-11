@@ -296,7 +296,17 @@ setup_home() {
   # the launcher passes them through, so scrub them for a hermetic fixture.
   unset CLAUDE_CODE_SIMPLE MAX_THINKING_TOKENS CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CCMORPH_SET_ENV CLAUDECODE CLAUDE_CODE_CHILD_SESSION
   export CCMORPH_TEST_LOG="$HOME/claude.log"
-  export PATH="$HOME/bin:$ORIGINAL_PATH"
+  # The machine's own provider bridge must not answer a test that seeded none:
+  # the add menu reads its provider rows from cliproxyapi on PATH, so a real
+  # copy's longer login names widen the menu's label column and fail the same
+  # pins only where the bridge is installed (#414). Every PATH entry carrying
+  # one is dropped; a test that wants provider rows writes a stub in $HOME/bin.
+  local -a clean_path entry
+  for entry in "${(@s.:.)ORIGINAL_PATH}"; do
+    [[ -x "$entry/cliproxyapi" ]] && continue
+    clean_path+=("$entry")
+  done
+  export PATH="$HOME/bin:${(j.:.)clean_path}"
   # A launch's sizing path reaches past the curl stubs: the models.dev catalogue
   # fetch and the validation probes go through net/http, so a fresh home paid a
   # 3 s catalogue timeout plus an endpoint DNS roundtrip per launch -- and the
@@ -932,6 +942,29 @@ test_the_picker_without_fzf_names_the_direct_command_and_the_choices() {
   return $rc
 }
 
+# A test home's PATH must not carry the machine's own provider bridge: the add
+# menu reads its provider rows from cliproxyapi on PATH, so a real copy decides
+# the rows and the label column a test sees — green on a gate without it and
+# red only where the bridge is installed (#414).
+test_a_test_home_hides_the_machines_bridge_issue_414() {
+  local test_home=$(mktemp -d)
+  local rc=0
+  setup_home "$test_home"
+  whence -p cliproxyapi >/dev/null 2>&1 && {
+    print -u2 -- "the machine's cliproxyapi reached the test PATH: $(whence -p cliproxyapi)"
+    rc=1
+  }
+  # A test's own stub is still found: that is how an add test seeds its rows.
+  printf '%s\n' '#!/bin/sh' 'exit 0' > "$HOME/bin/cliproxyapi"
+  chmod +x "$HOME/bin/cliproxyapi"
+  [[ "$(whence -p cliproxyapi)" == "$HOME/bin/cliproxyapi" ]] || {
+    print -u2 -- "a stub bridge in \$HOME/bin must be what the test's PATH finds"
+    rc=1
+  }
+  rm -rf "$test_home"
+  return $rc
+}
+
 # `ccmorph model` writes settings.json's `model`, but a profile naming a backend
 # model in its conf ALSO injects `--model <conf value>` at launch -- and a CLI
 # argument outranks every settings layer in Claude Code. So on exactly the profiles
@@ -1342,6 +1375,35 @@ test_menu_with_no_account_chains_from_the_account_chooser() {
   # first model. So a chained run emits a MODEL id, not an profile name.
   [[ "$picked" == alpha-chat ]] || {
     print -u2 -- "chaining must end at a model id; got: ${(qqq)picked}"
+    rc=1
+  }
+  rm -rf "$test_home"
+  return $rc
+}
+
+# A provider catalogue is the person's own saved list, and one of its values may
+# literally be spelled @keep. Only a picker that offers @keep as its own sentinel
+# row may read it that way; `ccmorph _menu` must hand the catalogue value back
+# unchanged instead of swallowing it as Keep-before-anything-was-saved.
+test_menu_keeps_a_catalogue_value_spelled_at_keep() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  fake_fzf
+  mkdir -p "$HOME/.config/ccmorph/profiles/prov"
+  print -r -- '{"additionalModelOptionsCache":[{"value":"@keep","label":"Keep"}]}' \
+    > "$HOME/.config/ccmorph/profiles/prov/.claude.json"
+  printf '%s\n' 'type=provider' 'provider=codex' > "$HOME/.config/ccmorph/prov.conf"
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 picked
+  picked=$(ccmorph _menu prov) || {
+    print -u2 -- 'the model menu must succeed on a provider catalogue'
+    rm -rf "$test_home"
+    return 1
+  }
+  [[ "$picked" == '@keep' ]] || {
+    print -u2 -- "the menu must answer the catalogue value unchanged; got: ${(qqq)picked}"
     rc=1
   }
   rm -rf "$test_home"
@@ -1899,6 +1961,18 @@ test_only_the_current_vocabulary_is_taught() {
   # muscle memory). Guard it so it cannot drift back in beside `start`.
   if grep -qE '^\s*go\)' "${CCMORPH_LIBRARY[@]}"; then
     print -u2 -- 'the rejected `go` verb must not reappear alongside start'
+    rc=1
+  fi
+  # The retired window verb's one spelling lives in the core's dispatch
+  # (cli/main.go: retiredVerb). The zsh library once carried a variable for it,
+  # with a comment claiming a test pinned the alias through that variable; no
+  # line in the library ever read it, and the pin drove the core instead, so it
+  # was a second vocabulary kept alive by prose alone (#421). The name is
+  # assembled from fragments like the retired word above, so `git grep` for it
+  # finds nothing while this guard still catches it coming back.
+  local _dead_alias="_ccm_retired""_verb"
+  if grep -q "$_dead_alias" "${CCMORPH_LIBRARY[@]}"; then
+    print -u2 -- 'the zsh library must not define a variable for the retired window verb; the core owns that alias'
     rc=1
   fi
   return $rc
@@ -10473,6 +10547,8 @@ test_launch_says_whether_secrets_are_masked() {
   setup_home "$test_home"
   write_apikey_conf gw 'base_url=http://gw.invalid' 'api_key=gw-key' 'env.CCMORPH_MASK=1'
   write_apikey_conf anth 'api_key=anth-key' 'env.CCMORPH_MASK=1'
+  write_apikey_conf badmask 'base_url=http://gw.invalid' 'api_key=gw-key' 'env.CCMORPH_MASK=yes'
+  write_apikey_conf anthbad 'api_key=anth-key' 'env.CCMORPH_MASK=yes'
   source "$CCMORPH_SOURCE"
 
   local rc=0 out st
@@ -10490,6 +10566,22 @@ test_launch_says_whether_secrets_are_masked() {
   [[ "$st" == 0 ]] || { print -u2 -- "the native launch must succeed, got $st: ${(qqq)out}"; rc=1 }
   [[ "$out" == *'env.CCMORPH_MASK=1 is set, but nothing is masked'* ]] || {
     print -u2 -- "the setting on a route the shim does not front must say nothing is masked: ${(qqq)out}"
+    rc=1
+  }
+  # GH-411: a value the shim refuses is not masking off; the notice must name
+  # it instead of staying silent until the shim stops the session.
+  out=$(_ccm_launch -a badmask 2>&1); st=$?
+  [[ "$st" == 0 ]] || { print -u2 -- "the refused-value launch must still start, got $st: ${(qqq)out}"; rc=1 }
+  [[ "$out" == *'env.CCMORPH_MASK=yes is refused'* ]] || {
+    print -u2 -- "a mask value the shim refuses must be named in the launch notice: ${(qqq)out}"
+    rc=1
+  }
+  # The same refused value where no shim starts still names it, and says why
+  # nothing is masked.
+  out=$(_ccm_launch -a anthbad 2>&1); st=$?
+  [[ "$st" == 0 ]] || { print -u2 -- "the refused-value native launch must still start, got $st: ${(qqq)out}"; rc=1 }
+  [[ "$out" == *'env.CCMORPH_MASK=yes is not 1 or 0'* ]] || {
+    print -u2 -- "a refused mask value on a route with no shim must still be named: ${(qqq)out}"
     rc=1
   }
   # Without the setting the launch says nothing about masking at all.
@@ -11246,6 +11338,7 @@ run_test test_a_retired_verb_is_rejected_not_merely_undocumented
 run_test test_only_the_current_vocabulary_is_taught
 run_test test_the_retired_window_verb_still_dispatches
 run_test test_menu_with_no_account_chains_from_the_account_chooser
+run_test test_menu_keeps_a_catalogue_value_spelled_at_keep
 run_test test_version_accepts_the_conventional_flags
 run_test test_help_names_an_account_argument_unambiguously
 run_test test_the_listing_shows_the_model_that_will_actually_launch
@@ -11256,6 +11349,7 @@ run_test test_set_model_interactively_saves_the_chosen_id
 run_test test_set_effort_interactively_offers_the_engine_levels
 run_test test_search_picker_on_an_old_fzf_never_hides_rows_silently_issue_278
 run_test test_the_picker_without_fzf_names_the_direct_command_and_the_choices
+run_test test_a_test_home_hides_the_machines_bridge_issue_414
 run_test test_saved_default_model_beats_the_confs_bootstrap_model_at_launch
 run_test test_explicit_model_flag_beats_the_saved_default
 run_test test_effort_command_leaves_native_per_model_state_untouched

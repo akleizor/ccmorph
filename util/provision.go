@@ -9,6 +9,7 @@ import (
 
 	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/settingscompose"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 func mergedView(paths []string) *ordjson.Obj { return settingscompose.MergedView(paths) }
@@ -68,7 +69,7 @@ func provisionProfile(pdir, kind string) error {
 	}
 
 	cfg := filepath.Join(pdir, "config.json")
-	if isSymlink(cfg) {
+	if paths.IsSymlink(cfg) {
 		return errors.New(cfg + ": symbolic links are not allowed")
 	}
 	existing, err := loadObj(cfg, nil)
@@ -76,7 +77,7 @@ func provisionProfile(pdir, kind string) error {
 		return err
 	}
 	if kind == "sub" {
-		hasToken := existing != nil && (truthy(getKey(existing, "oauth:tokenCache")) || truthy(getKey(existing, "oauth:tokenCacheV2")))
+		hasToken := existing != nil && (ordjson.Truthy(getKey(existing, "oauth:tokenCache")) || ordjson.Truthy(getKey(existing, "oauth:tokenCacheV2")))
 		// Best effort, and no longer load-bearing: a subscription credential comes from the profile's own /login.
 		if !hasToken {
 			seed, err := loadObj(appCfg, nil)
@@ -116,7 +117,7 @@ func provisionProfile(pdir, kind string) error {
 	}
 
 	claudeJSON := filepath.Join(pdir, ".claude.json")
-	if isSymlink(claudeJSON) {
+	if paths.IsSymlink(claudeJSON) {
 		return errors.New(claudeJSON + ": symbolic links are not allowed")
 	}
 	data, err := loadObj(claudeJSON, nil)

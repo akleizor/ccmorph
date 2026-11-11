@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/profile"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // The shared harness layer (skills, plugins, hooks, memory, keybindings...) belongs
@@ -77,18 +78,18 @@ func ProfileOK(profiles, name string) bool {
 	}
 	dir := filepath.Join(profiles, name)
 	canonical := filepath.Join(os.Getenv("HOME"), ".claude")
-	if !isDir(dir) || isLink(dir) || !isFile(dir+"/config.json") || !isFile(dir+"/.claude.json") {
+	if !paths.IsDir(dir) || isLink(dir) || !paths.IsFile(dir+"/config.json") || !paths.IsFile(dir+"/.claude.json") {
 		return false
 	}
 	for _, item := range sharedDirs {
 		link, src := dir+"/"+item, canonical+"/"+item
-		if !isDir(src) || !isLink(link) || resolved(link) != resolved(src) {
+		if !paths.IsDir(src) || !isLink(link) || resolved(link) != resolved(src) {
 			return false
 		}
 	}
 	for _, item := range sharedFiles {
 		link, src := dir+"/"+item, canonical+"/"+item
-		if !exists(src) {
+		if !paths.Exists(src) {
 			continue
 		}
 		if !lexists(link) || (isLink(link) && resolved(link) != resolved(src)) {
@@ -229,7 +230,7 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 				return fail("could not migrate profile-local '" + item + "' for '" + name + "'")
 			}
 		case lexists(link):
-			if !isDir(link) {
+			if !paths.IsDir(link) {
 				// A real profile-local FILE (a per-profile CLAUDE.md) is a deliberate override.
 				log("OVERRIDE profile-local '" + item + "' kept for profile=" + name)
 				continue
@@ -296,10 +297,10 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 			f.Close()
 		}
 	}
-	if !busy && (isFile(hSrc) || (lexists(hLink) && !isDir(hLink))) {
+	if !busy && (paths.IsFile(hSrc) || (lexists(hLink) && !paths.IsDir(hLink))) {
 		switch {
 		case isLink(hLink) && resolved(hLink) == resolved(hSrc):
-		case isDir(hLink):
+		case paths.IsDir(hLink):
 			errf("shared 'history.jsonl' collision at '" + hLink + "'; nothing moved — reconcile through its owning tool")
 			return fail("could not share history for '" + name + "'")
 		case !lexists(hLink):

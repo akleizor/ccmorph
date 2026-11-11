@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // maskedKeys are ccmorph's own knobs: they configure the shim, never Claude Code.
@@ -141,7 +142,7 @@ func claudeSession(args []string, _ io.Reader, out, errw io.Writer) int {
 			fmt.Fprintln(out, notice)
 		}
 	}
-	if !private || !isDir(os.Getenv("CLAUDE_CONFIG_DIR")) {
+	if !private || !paths.IsDir(os.Getenv("CLAUDE_CONFIG_DIR")) {
 		say()
 		return execErr(syscall.Exec(bin, append([]string{"claude"}, rest...), os.Environ()), errw)
 	}

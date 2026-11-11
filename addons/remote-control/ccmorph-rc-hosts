@@ -544,12 +544,22 @@ class Host:
     def bound_logs(self) -> None:
         """Cap the debug logs of a running repo host: claude appends to them for the
         life of the process. Copy then truncate in place; the writer's O_APPEND
-        position follows the new end."""
+        position follows the new end.
+
+        Truncating gives the file a new head, and fresh output can regrow it past
+        the position the login reader had already taken before the next check. A
+        size comparison then sees nothing odd -- both marks are below the new
+        size -- and the reader seeks past a login failure written at that head
+        (#417). So the moment a log is truncated, the whole file is marked as
+        this run's: the reader starts over at its new head.
+        """
         for f in self.debug_logs():
             try:
                 if f.stat().st_size > LOG_CAP:
                     shutil.copyfile(f, f.with_suffix(".log.1"))
                     os.truncate(f, 0)
+                    self.login_scans[f] = 0
+                    self.log_marks[f] = 0
             except OSError:
                 pass
 

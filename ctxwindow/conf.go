@@ -29,6 +29,8 @@ import (
 	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 const (
@@ -79,14 +81,9 @@ func ProfilePath(profile string) (string, error) {
 	return filepath.Join(StateDir(), profile+".conf"), nil
 }
 
-func isSymlink(path string) bool {
-	fi, err := os.Lstat(path)
-	return err == nil && fi.Mode()&os.ModeSymlink != 0
-}
-
 // ReadConf returns the conf text and its key=value fields.
 func ReadConf(path string) (string, map[string]string, error) {
-	if isSymlink(path) {
+	if paths.IsSymlink(path) {
 		return "", nil, errors.New("profile configuration must not be a symlink")
 	}
 	text, err := readText(path)
@@ -265,7 +262,7 @@ func identityOf(f *os.File) (*Identity, error) {
 // profile's models.json, so a writer sees a discovery saved since it read.
 func ProfileIdentity(profile string) *Identity {
 	path, err := ProfilePath(profile)
-	if err != nil || isSymlink(path) {
+	if err != nil || paths.IsSymlink(path) {
 		return nil
 	}
 	f, err := os.Open(path)

@@ -10,6 +10,7 @@ import (
 
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // iterItems is what Python's `for x in value` yields for a decoded JSON value.
@@ -77,15 +78,17 @@ type PickerIn struct {
 // ProjectPicker writes the profile's own /model rows into its .claude.json and the
 // allowlist into its settings layer. False when it could not; reasons go to errw.
 func ProjectPicker(in PickerIn, errw io.Writer) bool {
-	home, contextConf, own, tag, profile, layer, launch := in.Home, in.Conf, in.Own, in.Tag, in.Profile, in.Layer, in.Launch
+	home, contextConf, own, tag, layer, launch := in.Home, in.Conf, in.Own, in.Tag, in.Layer, in.Launch
 	tagText := strings.TrimSpace(tag)
 	if tagText == "" {
 		tagText = "Gateway"
 	}
+	confText := ""
 	fields := map[string]string{}
-	if exists(contextConf) {
+	confExists := paths.Exists(contextConf)
+	if confExists {
 		var err error
-		if fields, err = readConf(contextConf); err != nil {
+		if confText, fields, err = ctxwindow.ReadConf(contextConf); err != nil {
 			fmt.Fprintln(errw, err)
 			return false
 		}
@@ -107,7 +110,7 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 	fresh := true
 	if pv, err := ordjson.Parse([]byte(in.ModelsJSON)); err == nil && asObj(pv) != nil {
 		data := getKey(asObj(pv), "data")
-		if !truthy(data) {
+		if !ordjson.Truthy(data) {
 			data = []any{}
 		}
 		items, ok := iterItems(data)
@@ -158,38 +161,25 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 		target, ok := getKey(modelMap, bare).(string)
 		return ok && target != "" && !isExcl(target)
 	}
-	derivedSendID := func(id string) string {
-		if !exists(contextConf) {
-			return ""
-		}
-		text, err := os.ReadFile(contextConf)
-		if err != nil {
-			return ""
-		}
-		known := exists(ctxwindow.DiscoveredPath(contextConf))
-		for _, line := range strings.Split(string(text), "\n") {
+	// The conf is written before the picker runs, so everything the derived
+	// send-id check reads is constant: read and parse it once, before the loop.
+	known := false
+	if confExists {
+		known = paths.Exists(ctxwindow.DiscoveredPath(contextConf))
+		for _, line := range strings.Split(confText, "\n") {
 			if strings.HasPrefix(line, "context_window.") || strings.HasPrefix(line, "context_discovered=") {
 				known = true
 				break
 			}
 		}
+	}
+	windowInputs := ctxwindow.NewInputs(fields)
+	windowInputs.Preload()
+	derivedSendID := func(id string) string {
 		if !known {
 			return ""
 		}
-		// The resolver reads these from the environment; put them back afterwards.
-		for k, v := range map[string]string{"CLAUDE_CODE_MAX_CONTEXT_TOKENS": "", "MODEL_WINDOW_PROFILE_CONF": contextConf} {
-			if saved, had := os.LookupEnv(k); had {
-				defer os.Setenv(k, saved)
-			} else {
-				defer os.Unsetenv(k)
-			}
-			if v == "" {
-				os.Unsetenv(k)
-			} else {
-				os.Setenv(k, v)
-			}
-		}
-		rec := ctxwindow.Resolve(profile, id)
+		rec := windowInputs.Resolve(id)
 		if rec.Unprobed {
 			return ""
 		}
@@ -265,7 +255,7 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 		}
 		var current []any
 		src, _ := doc.Get("availableModels")
-		if truthy(src) {
+		if ordjson.Truthy(src) {
 			items, ok := iterItems(src)
 			if !ok {
 				return false // an allowlist that is not a list is left as it is

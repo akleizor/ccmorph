@@ -3,8 +3,14 @@ package util
 import (
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 )
+
+// pkgHintRow matches one row of install.sh's _ccm_pkg_hint table: the manager
+// the row probes for and the install command it prints, with $1 unexpanded.
+var pkgHintRow = regexp.MustCompile(`command -v (\S+).*then echo "([^"]+)"`)
 
 // ClipInstallStep answers from the machine's PATH, the same branch install.sh
 // takes (#369): the brew command where Homebrew is there, the project page
@@ -50,5 +56,46 @@ func TestFzfInstallStep(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	if got := FzfInstallStep(); got != fzfProjectPage {
 		t.Fatalf("without a package manager: %q", got)
+	}
+}
+
+// fzfSteps is install.sh's _ccm_pkg_hint table copied into Go, and nothing
+// else pins the two (#452): a manager added or reordered in the installer
+// would leave this table naming the wrong command, or a command the machine
+// cannot run (#369). So read the shell table itself, in its own probe order,
+// and hold fzfSteps to it.
+func TestFzfStepsMatchInstallerTable(t *testing.T) {
+	installer, err := os.ReadFile("../install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(installer)
+	start := strings.Index(body, "_ccm_pkg_hint() {")
+	if start < 0 {
+		t.Fatal("install.sh has no _ccm_pkg_hint table")
+	}
+	body = body[start:]
+	end := strings.Index(body, "\n}\n")
+	if end < 0 {
+		t.Fatal("install.sh: _ccm_pkg_hint is not closed")
+	}
+	body = body[:end]
+
+	type row struct{ probe, step string }
+	var want []row
+	for _, m := range pkgHintRow.FindAllStringSubmatch(body, -1) {
+		want = append(want, row{m[1], strings.ReplaceAll(m[2], "$1", "fzf")})
+	}
+	if len(want) == 0 {
+		t.Fatal("install.sh: _ccm_pkg_hint table parsed empty")
+	}
+	if len(want) != len(fzfSteps) {
+		t.Fatalf("install.sh's _ccm_pkg_hint names %d managers, fzfSteps names %d", len(want), len(fzfSteps))
+	}
+	for i, w := range want {
+		if w.probe != fzfSteps[i].probe || w.step != fzfSteps[i].step {
+			t.Errorf("manager %d: install.sh says %q -> %q, fzfSteps says %q -> %q",
+				i, w.probe, w.step, fzfSteps[i].probe, fzfSteps[i].step)
+		}
 	}
 }

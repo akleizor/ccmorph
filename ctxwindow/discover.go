@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -255,19 +256,7 @@ func closeMatches(word string, models []string) string {
 	return ClosestMatch(word, models)
 }
 
-func isDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-func pinnedValue(s string) bool { return isDigits(s) && strings.Trim(s, "0") != "" }
+func pinnedValue(s string) bool { return ordjson.IsDigits(s) && strings.Trim(s, "0") != "" }
 
 // ProbeAll discovers windows for profiles (all routed ones when nil).
 func ProbeAll(parent context.Context, profiles []string, o Options) Run {

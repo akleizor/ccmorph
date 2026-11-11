@@ -193,6 +193,38 @@ func TestHelpNamesTheConfFileAtTheResolvedStateRoot(t *testing.T) {
 	}
 }
 
+// GH-392: the README called profile.conf.example the template that lists every
+// allowed key, but no help page named it, and a Homebrew install keeps it in
+// its prefix, far from the profiles. help config names the file this install
+// holds: at the code root on a clone or one-line install, in share/ on Homebrew
+// and in a checkout; with neither, it says the file is missing.
+func TestHelpConfigNamesTheProfileTemplateThisInstallHolds(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // the roots below are not under it: absolute spellings
+	for _, rel := range []string{"profile.conf.example", filepath.Join("share", "profile.conf.example")} {
+		root := t.TempDir()
+		tpl := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(tpl), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(tpl, []byte("type=apikey\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		page := helpPageFrom(t, &launcher{libDir: filepath.Join(root, "lib")}, "config", 0)
+		if !strings.Contains(page, "\n  "+tpl+"\n") {
+			t.Errorf("help config with the template at %s does not name it on a line of its own:\n%s", tpl, page)
+		}
+	}
+	root := t.TempDir()
+	page := helpPageFrom(t, &launcher{libDir: filepath.Join(root, "lib")}, "config", 0)
+	flat := strings.Join(strings.Fields(page), " ")
+	if !strings.Contains(flat, "the template profile.conf.example, which this install is missing: reinstall ccmorph to restore it.") {
+		t.Errorf("help config with no template does not say it is missing:\n%s", page)
+	}
+	if strings.Contains(page, root) {
+		t.Errorf("help config with no template names a path under %s:\n%s", root, page)
+	}
+}
+
 // GH-364: a description longer than the width left after its label column
 // wraps under that column, the way the doctor row's description already sits
 // under the column its long usage line opens.

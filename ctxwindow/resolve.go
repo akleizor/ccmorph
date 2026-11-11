@@ -132,17 +132,83 @@ func ExecDir() string {
 // ShareDir holds the bundled catalogue; a var so tests can point it elsewhere.
 var ShareDir = func() string { return filepath.Join(ExecDir(), "..", "share") }
 
-func bundledWindow(model string) (int64, bool) {
-	b, err := os.ReadFile(filepath.Join(ShareDir(), "model-catalogue.json"))
-	if err != nil {
-		return 0, false
+// Inputs is what Resolve reads outside the launched environment and that cannot
+// change while one caller runs: a conf's fields, the endpoint's declared
+// windows, and for a routed profile the bundled catalogue. Build it once and
+// resolve every model, so a caller resolving many models reads and parses each
+// input once instead of once per model (#424).
+type Inputs struct {
+	fields        map[string]string
+	endpoints     []any
+	haveEndpoints bool
+	catalogue     obj
+	haveCatalogue bool
+}
+
+// NewInputs is a resolver over conf fields its caller has already read.
+func NewInputs(fields map[string]string) *Inputs { return &Inputs{fields: fields} }
+
+// LoadInputs reads the conf at path once and returns its resolver inputs.
+func LoadInputs(path string) *Inputs {
+	var fields map[string]string
+	if _, f, err := ReadConf(path); err == nil {
+		fields = f
 	}
-	v, err := parseJSON(b)
-	top := objOf(v)
-	if err != nil || top == nil {
-		return 0, false
+	return NewInputs(fields)
+}
+
+// Preload reads and parses every input Resolve can consult: the endpoint env
+// JSON and, for a routed profile, the bundled catalogue. Afterwards Resolve
+// touches no file or environment variable, so a caller resolving many models
+// calls it once before its loop.
+func (in *Inputs) Preload() {
+	in.endpointRows()
+	if routed(in.fields) {
+		in.catalogueModels()
 	}
-	models := objOf(top["models"])
+}
+
+func (in *Inputs) endpointRows() []any {
+	if !in.haveEndpoints {
+		in.haveEndpoints = true
+		text, ok := os.LookupEnv("MODEL_WINDOW_ENDPOINT_JSON")
+		if !ok {
+			text = "[]"
+		}
+		if v, err := parseJSON([]byte(text)); err == nil {
+			in.endpoints, _ = v.([]any)
+		}
+	}
+	return in.endpoints
+}
+
+func (in *Inputs) endpointWindow(model string) (int64, bool) {
+	for _, r := range in.endpointRows() {
+		if row := objOf(r); row != nil {
+			if id := row["id"]; id == model {
+				return stated(row)
+			}
+		}
+	}
+	return 0, false
+}
+
+func (in *Inputs) catalogueModels() obj {
+	if !in.haveCatalogue {
+		in.haveCatalogue = true
+		if b, err := os.ReadFile(filepath.Join(ShareDir(), "model-catalogue.json")); err == nil {
+			if v, err := parseJSON(b); err == nil {
+				if top := objOf(v); top != nil {
+					in.catalogue = objOf(top["models"])
+				}
+			}
+		}
+	}
+	return in.catalogue
+}
+
+func (in *Inputs) bundledWindow(model string) (int64, bool) {
+	models := in.catalogueModels()
 	if models == nil {
 		return 0, false
 	}
@@ -157,26 +223,6 @@ func stated(row obj) (int64, bool) {
 		v := row[f]
 		if n, ok := posInt(v); ok {
 			return n, true
-		}
-	}
-	return 0, false
-}
-
-func endpointWindow(model string) (int64, bool) {
-	text, ok := os.LookupEnv("MODEL_WINDOW_ENDPOINT_JSON")
-	if !ok {
-		text = "[]"
-	}
-	v, err := parseJSON([]byte(text))
-	if err != nil {
-		return 0, false
-	}
-	rows, _ := v.([]any)
-	for _, r := range rows {
-		if row := objOf(r); row != nil {
-			if id := row["id"]; id == model {
-				return stated(row)
-			}
 		}
 	}
 	return 0, false
@@ -221,18 +267,23 @@ func routed(fields map[string]string) bool {
 }
 
 // Resolve sizes model on profile: env pin, manual pin, discovered window,
-// endpoint metadata, bundled catalogue, then the unknown budget.
+// endpoint metadata, bundled catalogue, then the unknown budget. A caller
+// resolving many models builds Inputs once and calls its Resolve instead.
 func Resolve(profile, model string) Record {
 	if pin, ok := Positive(os.Getenv("CLAUDE_CODE_MAX_CONTEXT_TOKENS")); ok {
 		return Record{Window: pin, SendID: model, Source: "conf"}
 	}
-	bare := strings.TrimSuffix(model, "[1m]")
-	fields := map[string]string{}
 	if path, err := ProfilePath(profile); err == nil {
-		if _, f, err := ReadConf(path); err == nil {
-			fields = f
-		}
+		return LoadInputs(path).Resolve(model)
 	}
+	return NewInputs(nil).Resolve(model)
+}
+
+// Resolve sizes model from the preloaded inputs. It ignores the
+// CLAUDE_CODE_MAX_CONTEXT_TOKENS pin: that belongs to Resolve's environment.
+func (in *Inputs) Resolve(model string) Record {
+	fields := in.fields
+	bare := strings.TrimSuffix(model, "[1m]")
 	// The served id sizes the session; the requested id stays what the client sees.
 	target := MappedTarget(fields, bare)
 	manual := ManualValues(fields)
@@ -267,11 +318,11 @@ func Resolve(profile, model string) Record {
 		}
 	}
 	if !have {
-		window, have = endpointWindow(target)
+		window, have = in.endpointWindow(target)
 		source = "endpoint"
 	}
 	if !have && routed(fields) {
-		window, have = bundledWindow(target)
+		window, have = in.bundledWindow(target)
 		source = "catalogue-bundled"
 	}
 	rec := Record{Window: window, SendID: bare, Source: source}

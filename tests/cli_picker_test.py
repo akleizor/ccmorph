@@ -12,7 +12,7 @@ import fcntl, json, os, pty, re, select, shutil, signal, struct, subprocess, sys
 from pathlib import Path
 from unittest.mock import patch
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, path_without
 
 ROOT = Path(__file__).resolve().parents[1]
 CCMORPH = ROOT / 'lib/ccmorph.sh'
@@ -232,7 +232,11 @@ def run_pty(command, env, exchanges=(), size=(24, 100), library=CCMORPH):
             if pos is None:
                 missed = pattern
                 break
-            if reply:
+            if callable(reply):
+                # Some answers are more than bytes — a signal timed against
+                # the sequence it interrupts — and drive the pty themselves.
+                reply(master, out)
+            elif reply:
                 os.write(master, reply)
         if missed is None:
             _drain(master, out, deadline, process)
@@ -289,12 +293,15 @@ class PickerTTYTest(unittest.TestCase):
             path = self.tmp / 'bin' / name
             path.write_text(body)
             path.chmod(0o755)
-        # Real PATH minus any entry carrying a real fzf: `whence -p fzf` must fail
-        # for the numbered fallback, while python3 and zsh still resolve.
+        # Real PATH minus any entry carrying a real fzf or cliproxyapi: `whence
+        # -p fzf` must fail for the numbered fallback, and the add menu's
+        # provider rows must be the test's own, not the host's (#414), while
+        # python3 and zsh still resolve.
+        hidden = ('cliproxyapi',) if fzf else ('fzf', 'cliproxyapi')
         entries = [str(self.tmp / 'bin')]
-        for entry in os.environ['PATH'].split(os.pathsep):
-            if fzf or not (Path(entry) / 'fzf').exists():
-                entries.append(entry)
+        rest = path_without(*hidden)
+        if rest:
+            entries.extend(rest.split(os.pathsep))
         (self.tmp / 'curl.log').touch()
         return {'HOME': str(self.tmp / 'home'), 'CCMORPH_STATE_DIR': str(self.state),
                 'CCMORPH_LIB_DIR': str(ROOT / "lib"), 'PATH': os.pathsep.join(entries),
@@ -312,6 +319,13 @@ class PickerTTYTest(unittest.TestCase):
         home.mkdir(parents=True, exist_ok=True)
         settings = {'model': 'native-model', 'effortLevel': 'low', 'other': {'keep': True}}
         (home / 'settings.json').write_text(json.dumps(settings))
+
+    def bridge(self, *providers):
+        """A fake cliproxyapi whose --help lists exactly these logins."""
+        logins = ' '.join(f"'-{p}-login'" for p in providers)
+        path = self.tmp / 'bin' / 'cliproxyapi'
+        path.write_text(f"#!/bin/sh\nprintf '%s\\n' {logins}\n")
+        path.chmod(0o755)
 
     def field(self, name, key):
         lines = (self.state / f'{name}.conf').read_text().splitlines()
@@ -335,6 +349,21 @@ class PickerTTYTest(unittest.TestCase):
             elif in_rows:
                 rows.append(line)
         return args, rows
+
+    def test_a_test_env_hides_the_hosts_fzf_and_bridge(self):
+        """#414: the add menu reads its provider rows from the cliproxyapi on
+        PATH, and the real Kimi names widen its label column, so the padding
+        the two add tests pin held only on a machine without the bridge. Each
+        env now hides both tools the suite stubs, and a test that wants either
+        writes its own."""
+        for fzf in (False, True):
+            env = self.env(fzf=fzf)
+            self.assertIsNone(shutil.which('cliproxyapi', path=env['PATH']), env['PATH'])
+            if fzf:
+                self.assertEqual(Path(shutil.which('fzf', path=env['PATH'])).parent,
+                                 self.tmp / 'bin')
+            else:
+                self.assertIsNone(shutil.which('fzf', path=env['PATH']), env['PATH'])
 
     def test_cold_launch_selects_a_model_before_starting_the_adapter(self):
         env = self.env(fzf=True)
@@ -859,6 +888,87 @@ class PickerTTYTest(unittest.TestCase):
         self.assertNotIn('--prompt Effort — demo>', log)  # and was not re-asked as a slot menu
         self.assertEqual(self.field('demo', 'effort'), 'medium')
 
+    def test_set_confirms_once_in_a_terminal_and_pipes_the_value_alone_issue_358(self):
+        """#358: a terminal saw the Saved sentence and then the value again on a
+        line of its own: the sentence went to stderr, the value to stdout, and a
+        terminal shows both streams. stdout still carries the value alone for a
+        script; on the terminal that shows the sentence, that line folds into it
+        (#361), so a person reads one confirming line."""
+        env = self.env()
+        self.profile()
+        # A script capturing set reads the saved value alone; stderr stays empty.
+        result = subprocess.run(['zsh', '-fc', 'source "$1"\nccmorph set demo effort high',
+                                 'test', str(CCMORPH)], env=env, stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=HANG_TIMEOUT)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'high\n', result.stderr)
+        self.assertEqual(result.stderr, '', result.stderr)
+        # A typed value: the screen holds the one Saved line, no echo below it.
+        for key, value in (('effort', 'high'), ('model', 'picker-alpha')):
+            with self.subTest(key=key):
+                self.profile()
+                rc, out, missed = run_pty('ccmorph set demo %s %s' % (key, value), env)
+                self.assertIsNone(missed, out)
+                self.assertEqual(rc, 0, out)
+                self.assertEqual(self.field('demo', key), value, out)
+                self.assertEqual(screen(out),
+                                 ['Saved demo %s = %s (new sessions)' % (key, value)], out)
+        # A value wider than the terminal wraps; the fold takes every row it used.
+        with self.subTest(columns=10):
+            self.profile()
+            rc, out, missed = run_pty('ccmorph set demo model picker-alpha', env, size=(24, 10))
+            self.assertIsNone(missed, out)
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(''.join(screen(out, columns=10)),
+                             'Saved demo model = picker-alpha (new sessions)', out)
+        # A capture inside a terminal session: the person reads Saved once,
+        # and the script still gets the value.
+        with self.subTest(stdout='captured'):
+            self.profile()
+            rc, out, missed = run_pty('v=$(ccmorph set demo effort high); print -r -- "got=<$v>"', env)
+            self.assertIsNone(missed, out)
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(screen(out),
+                             ['Saved demo effort = high (new sessions)', 'got=<high>'], out)
+        # stderr hidden: no sentence is shown, so the value is the one line.
+        with self.subTest(stderr='hidden'):
+            self.profile()
+            rc, out, missed = run_pty('ccmorph set demo effort high 2>/dev/null', env)
+            self.assertIsNone(missed, out)
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(screen(out), ['high'], out)
+        # A dumb terminal cannot fold and sees no cursor codes (#387): the
+        # sentence alone, the bare value left out.
+        with self.subTest(term='dumb'):
+            self.profile()
+            rc, out, missed = run_pty('ccmorph set demo effort high', {**env, 'TERM': 'dumb'})
+            self.assertIsNone(missed, out)
+            self.assertEqual(rc, 0, out)
+            self.assertNotIn('\x1b[', out)
+            self.assertEqual(screen(out), ['Saved demo effort = high (new sessions)'], out)
+            self.assertNotIn('high', [line.strip() for line in out.splitlines()], out)
+        # A picked value folds the same way, under the picker's own receipt.
+        env = self.env(fzf=True)
+        with self.subTest(key='model', picked=True):
+            self.profile()
+            self.spec('Default model=picker-beta')
+            rc, out, missed = run_pty('ccmorph set demo model -i', env)
+            self.assertIsNone(missed, out)
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(self.field('demo', 'model'), 'picker-beta', out)
+            rows = screen(out)
+            self.assertEqual(rows[-1], 'Saved demo model = picker-beta (new sessions)', out)
+            self.assertNotIn('picker-beta', rows, out)
+        with self.subTest(key='effort', picked=True):
+            self.profile()
+            rc, out, missed = run_pty('ccmorph set demo effort -i', env, [(b'Effort', b'\x1b[B\r')])
+            self.assertIsNone(missed, out)
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(self.field('demo', 'effort'), 'medium', out)
+            rows = screen(out)
+            self.assertEqual(rows[-1], 'Saved demo effort = medium (new sessions)', out)
+            self.assertNotIn('medium', rows, out)
+
     def test_set_model_picker_opens_the_config_model_step_issue_279(self):
         """`set <profile> model -i` and config's model step are one picker.
 
@@ -960,15 +1070,18 @@ class PickerTTYTest(unittest.TestCase):
 
     def test_add_uses_native_fixed_menu_even_when_fzf_is_installed(self):
         env = self.env(fzf=True)
+        # The provider rows come from the cliproxyapi the core finds on PATH
+        # (#414); the env keeps the host's out, so the test seeds its own list.
+        self.bridge('claude', 'mockprov')
         self.spec('=CANCEL')  # fzf must not be reached at all
         rc, out, missed = run_pty(
-            '_ccm_provider_list() { REPLY=(claude mockprov); return 0 }\nccmorph add demo',
-            env, [(b'Esc Cancel', b'\x1b')])
+            'ccmorph add demo', env, [(b'Esc Cancel', b'\x1b')])
         self.assertIsNone(missed, out)
         self.assertEqual(rc, 1, out)
         self.assertIn('Cancelled', out)  # the leave is answered, not silent
         self.assertIn('\x1b[38;2;215;119;87m\x1b[1mSign-in method — demo\x1b[0m', out)
         self.assertIn('\x1b[38;2;177;185;249mClaude account\x1b[0m    \x1b[38;2;153;153;153mSign in with your browser\x1b[0m', out)
+        self.assertIn('Sign in to Mockprov with your browser', out)  # the stub bridge's row
         self.assertNotIn('type to filter', out)
         self.assertNotIn('Select [', out)
         self.assertFalse((self.tmp / 'fzf.log').exists())
@@ -1013,8 +1126,7 @@ class PickerTTYTest(unittest.TestCase):
     def test_add_finishes_without_optional_setup_questions(self):
         env = self.env(fzf=True)
         self.spec('Sign-in method=token')
-        rc, out, missed = run_pty(
-            '_ccm_provider_list() { REPLY=(claude); return 0 }\nccmorph add demo', env, [
+        rc, out, missed = run_pty('ccmorph add demo', env, [
             (b'Sign-in method', b'\x1b[B\r'),
             (b'Paste token for', b'sk-ant-oat01-picker-echo-fixture-not-real-00000000000\n'),
         ])
@@ -1334,14 +1446,18 @@ class PickerTTYTest(unittest.TestCase):
         env['ROWS'] = 'alpha\tFirst\tDescription\nbeta\tSecond\tDescription'
         command = 'picked=$(ccm_ui_select native "Native choices" "$ROWS"); rc=$?; print -r -- "RESULT=$picked"; exit $rc'
         # ↑ at the first row and ↓ at the last stay put, as they always did;
-        # Home/End put either end one key away (#278).
+        # Home/End put either end one key away (#278) — in every terminal's
+        # spelling of them (#388): tmux and screen end the key with ~, rxvt
+        # numbers it 7 or 8.
         cases = [(b'\r', 0, 'alpha'), (b'\x1b[A\r', 0, 'alpha'),
                  (b'\x1b[B\r', 0, 'beta'), (b'\x1bOB\r', 0, 'beta'),
                  (b'\x1b[B\x1b[A\r', 0, 'alpha'), (b'\x1b', 1, ''),
                  (b'\x03', 130, ''), (b'\x04', 1, ''),
                  (b'\x1b[B\x1b[B\r', 0, 'beta'),
                  (b'\x1b[F\r', 0, 'beta'), (b'\x1bOF\r', 0, 'beta'),
-                 (b'\x1b[F\x1b[H\r', 0, 'alpha')]
+                 (b'\x1b[F\x1b[H\r', 0, 'alpha'),
+                 (b'\x1b[4~\r', 0, 'beta'), (b'\x1b[B\x1b[1~\r', 0, 'alpha'),
+                 (b'\x1b[8~\r', 0, 'beta'), (b'\x1b[B\x1b[7~\r', 0, 'alpha')]
         for keys, expected_rc, value in cases:
             with self.subTest(keys=keys):
                 rc, out, missed = run_pty(command, env, [(b'Esc Cancel', keys)])
@@ -1350,6 +1466,55 @@ class PickerTTYTest(unittest.TestCase):
                 self.assertIn('RESULT=' + value, out)
                 self.assertIn('\x1b[?25h', out)
                 self.assertIn('\x1b[?7h', out)
+        self.assertFalse((self.tmp / 'fzf.log').exists())
+
+    def test_native_sigterm_mid_sequence_ends_the_menu(self):
+        # A leave that arrives while the reader waits for the final ~ of
+        # ESC [ 1 must end the menu with its own exit status: the tail's
+        # reader once consumed the signal and threw it away, so the menu went
+        # on waiting for the rest of a key its sender had already interrupted
+        # (#388).
+        env = self.env(fzf=True)
+        env['ROWS'] = 'alpha\tFirst\tDescription\nbeta\tSecond\tDescription'
+        # The picker runs as a background job so the shell can name its pid:
+        # _ccm_main_exec execs the core (the public ccmorph path waits on it
+        # through command env), so $! is the core itself. An async list's
+        # stdin is /dev/null by default, so the terminal fd is saved and duped
+        # back onto the job.
+        command = ('exec {tty}<&0\n'
+                   '_ccm_main_exec _ui select native "Native choices" "$ROWS" <&$tty & picker=$!\n'
+                   'exec {tty}<&-\n'
+                   'print -r -- "PICKER=$picker"\n'
+                   'wait $picker; rc=$?\n'
+                   'print -r -- "RESULT="\n'
+                   'exit $rc')
+
+        def stab(master, out):
+            # The shell prints PICKER= before the core can draw; still, read
+            # on until the whole line is in rather than trust that order.
+            deadline = time.monotonic() + HANG_TIMEOUT
+            found = re.search(rb'PICKER=(\d+)\r?\n', bytes(out))
+            while found is None and time.monotonic() < deadline:
+                if select.select([master], [], [], .25)[0]:
+                    out.extend(os.read(master, 65536))
+                found = re.search(rb'PICKER=(\d+)\r?\n', bytes(out))
+            pid = int(found.group(1))
+            # tmux's Home cut before its final ~, in one write: the menu has
+            # read ESC [ 1 and waits for the ~ when the leave arrives. Every
+            # byte is in before the signal, so no pause decides the outcome:
+            # the leave lands inside the tail's 80ms window, which must hand
+            # it back, or after it, where the menu's own wait takes it, and
+            # both end with 143. A pause between ESC [ and its digit could
+            # outlast the window on a slow runner, and an empty tail is Esc's
+            # own leave (rc 1).
+            os.write(master, b'\x1b[1')
+            time.sleep(0.01)  # lets the reader reach the tail; 143 never depends on it
+            os.kill(pid, signal.SIGTERM)
+
+        rc, out, missed = run_pty(command, env, [(b'Esc Cancel', stab), (b'RESULT=', b'')])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 143, out)
+        self.assertIn('RESULT=', out)
         self.assertFalse((self.tmp / 'fzf.log').exists())
 
     def test_native_fixed_menu_scrolls_in_a_small_terminal(self):

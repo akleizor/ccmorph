@@ -1,3 +1,15 @@
 #!/bin/sh
 # The pre-#261 spelling in a checkout; the exporter itself is share/usage-export, which every install ships.
-exec "$(dirname "$0")/../share/usage-export" "$@"
+# A link to this wrapper can sit anywhere, so follow it home before naming the
+# exporter: the path is built beside the script, never beside the link (#416).
+self="$0"
+hops=0
+while [ -L "$self" ] && [ "$hops" -lt 40 ]; do
+  link="$(readlink "$self")" || break
+  case "$link" in
+    /*) self="$link" ;;
+    *) self="$(dirname "$self")/$link" ;;
+  esac
+  hops=$((hops + 1))
+done
+exec "$(dirname "$self")/../share/usage-export" "$@"

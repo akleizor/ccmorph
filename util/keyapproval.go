@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // Claude Code asks "Do you want to use this API key?" on a profile's first
@@ -74,7 +75,7 @@ func keyResponses(doc *ordjson.Obj) *ordjson.Obj {
 // .claude.json. It never writes, so doctor can call it.
 func KeyResponse(home, key string) KeyState {
 	path := filepath.Join(home, ".claude.json")
-	if isSymlink(path) {
+	if paths.IsSymlink(path) {
 		return KeyUnanswered
 	}
 	doc, err := loadObj(path, nil)
@@ -106,7 +107,7 @@ func KeyResponse(home, key string) KeyState {
 // error: the caller must not guess and clobber what Claude Code wrote.
 func ApproveKey(home, key string) error {
 	path := filepath.Join(home, ".claude.json")
-	if isSymlink(path) {
+	if paths.IsSymlink(path) {
 		return errors.New(path + ": symbolic links are not allowed")
 	}
 	if fi, err := os.Lstat(path); err == nil && !fi.Mode().IsRegular() {
