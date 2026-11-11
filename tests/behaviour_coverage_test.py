@@ -100,7 +100,12 @@ def seed(box):
 
 def test_use_sets_the_default_and_bare_use_reports_it(box):
     seed(box)
-    assert 'No default set' in box.run('use').stdout
+    bare = box.run('use')
+    assert 'No default set' in bare.stdout
+    # GH-368: profiles exist but none is the default, so the answer names the
+    # profiles to choose from and never the command just typed.
+    assert 'Profiles: gw tok work' in bare.stdout
+    assert 'ccmorph use' not in bare.stdout
     done = box.run('use', 'tok')
     assert done.returncode == 0, done.stderr
     assert 'Default set' in done.stdout
@@ -920,6 +925,9 @@ FRESH_INSTALL_ARGV = [
     (['list'], 0), (['quota'], 0), (['probe'], 0),
     # a valid option is still a sweep of nothing; an invalid one stays a usage error
     (['probe', '--check'], 0), (['probe', '--declared-only'], 0), (['probe', '--model', 'm'], 0),
+    # GH-368: bare use reports like list, so a fresh install hears the same
+    # sentence, not an answer naming the command just typed.
+    (['use'], 0),
     (['run'], 1), (['inspect'], 1), (['config'], 1), (['models'], 1),
     (['context'], 1), (['doctor', 'nosuch'], 1),
 ]
