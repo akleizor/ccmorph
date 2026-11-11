@@ -314,7 +314,9 @@ stay explicit — destructive operations should not be a menu selection.
 `/effort` choices affect the current session, not the next ccmorph launch.
 It prints the bare value to stdout
 (so `m=$(ccmorph get gw model)` and existing scripts keep working) and confirms
-the save on stderr. An unset setting reads back an empty stdout; the
+the save on stderr. On a terminal that shows both, the value line folds into that
+confirmation, so a person reads the save once; `TERM=dumb`, which cannot fold,
+shows only the confirmation. An unset setting reads back an empty stdout; the
 explanation — no model saved, so Claude Code picks the model (a gateway is
 asked which model at each launch), or no effort saved, so the session starts
 at Claude Code's own default — goes to stderr. `inspect` reports the effective

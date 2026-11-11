@@ -1015,7 +1015,8 @@ The value is printed to stdout; name both in scripts.
 Effort: ` + strings.Join(profile.Efforts, ", ") + `. Available models come from the profile.`},
 	"set": {"", `Save a default for new sessions: the model or the effort level.
 Omit the profile, the setting or the value to choose it in a picker.
-Name all three in scripts.
+The saved value goes to stdout for a script to capture; a terminal shows
+one confirming line. Name all three in scripts.
 Effort: ` + strings.Join(profile.Efforts, ", ") + `. Available models come from the profile.`},
 	"login": {"ccmorph login [profile|-i]", `Sign in again: a Claude account profile with its browser login, a
 provider-backed profile with its own, or let Claude Code use an API-key

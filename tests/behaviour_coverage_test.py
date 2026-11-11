@@ -104,6 +104,7 @@ def test_use_sets_the_default_and_bare_use_reports_it(box):
     done = box.run('use', 'tok')
     assert done.returncode == 0, done.stderr
     assert 'Default set' in done.stdout
+    assert done.stdout == 'Default set to tok\n', done.stdout
     assert box.active == 'tok'
     assert box.run('use').stdout.strip() == 'tok'
 

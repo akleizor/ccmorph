@@ -12,6 +12,23 @@ import (
 
 func interactive(a string) bool { return a == "-i" || a == "--interactive" }
 
+// sameTerminal reports whether a and b are one terminal: the screen a person
+// reads both on.
+func sameTerminal(a, b *os.File) bool {
+	if !isTTY(int(a.Fd())) || !isTTY(int(b.Fd())) {
+		return false
+	}
+	sa, errA := a.Stat()
+	sb, errB := b.Stat()
+	return errA == nil && errB == nil && os.SameFile(sa, sb)
+}
+
+// valueRows is how many terminal rows a value line took, columns wide: a line
+// that exactly fills a row does not wrap, and the newline moves on (#361).
+func valueRows(value string, columns int) int {
+	return (max(cells(value), 1)-1)/columns + 1
+}
+
 // getSet is `ccmorph get [profile] [model|effort]` and `ccmorph set [profile]
 // [model|effort] [value]`. A missing profile, key or value opens its chooser.
 func (l *launcher) getSet(verb string, args []string) int {
@@ -154,12 +171,23 @@ func (l *launcher) getSet(verb string, args []string) int {
 	if _, rc := l.runStore(set, os.Stderr); rc != 0 {
 		return 1
 	}
-	// The value alone on stdout for scripts; the sentence on stderr for a picked value.
+	// stdout carries the value alone on its own line, for a script to capture.
+	// On the terminal the Saved sentence goes to, that line is an echo: a full
+	// terminal folds it into the sentence, as every picker folds its answer
+	// (#361); a dumb one cannot erase, so there it is left out (#358).
+	shared := sameTerminal(os.Stdout, os.Stderr)
+	fold := shared && os.Getenv("TERM") != "dumb"
+	if !shared || fold {
+		fmt.Println(value)
+	}
+	if fold {
+		_, columns := termSize()
+		eraseLines(valueRows(value, columns))
+	}
 	if isTTY(2) {
 		fmt.Fprintf(os.Stderr, "%sSaved%s %s %s = %s%s%s %s(new sessions)%s\n",
 			l.accent, l.reset, name, key, l.bold, value, l.reset, l.dim, l.reset)
 	}
-	fmt.Println(value)
 	return 0
 }
 

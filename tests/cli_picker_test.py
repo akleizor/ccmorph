@@ -859,6 +859,87 @@ class PickerTTYTest(unittest.TestCase):
         self.assertNotIn('--prompt Effort — demo>', log)  # and was not re-asked as a slot menu
         self.assertEqual(self.field('demo', 'effort'), 'medium')
 
+    def test_set_confirms_once_in_a_terminal_and_pipes_the_value_alone_issue_358(self):
+        """#358: a terminal saw the Saved sentence and then the value again on a
+        line of its own: the sentence went to stderr, the value to stdout, and a
+        terminal shows both streams. stdout still carries the value alone for a
+        script; on the terminal that shows the sentence, that line folds into it
+        (#361), so a person reads one confirming line."""
+        env = self.env()
+        self.profile()
+        # A script capturing set reads the saved value alone; stderr stays empty.
+        result = subprocess.run(['zsh', '-fc', 'source "$1"\nccmorph set demo effort high',
+                                 'test', str(CCMORPH)], env=env, stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=HANG_TIMEOUT)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'high\n', result.stderr)
+        self.assertEqual(result.stderr, '', result.stderr)
+        # A typed value: the screen holds the one Saved line, no echo below it.
+        for key, value in (('effort', 'high'), ('model', 'picker-alpha')):
+            with self.subTest(key=key):
+                self.profile()
+                rc, out, missed = run_pty('ccmorph set demo %s %s' % (key, value), env)
+                self.assertIsNone(missed, out)
+                self.assertEqual(rc, 0, out)
+                self.assertEqual(self.field('demo', key), value, out)
+                self.assertEqual(screen(out),
+                                 ['Saved demo %s = %s (new sessions)' % (key, value)], out)
+        # A value wider than the terminal wraps; the fold takes every row it used.
+        with self.subTest(columns=10):
+            self.profile()
+            rc, out, missed = run_pty('ccmorph set demo model picker-alpha', env, size=(24, 10))
+            self.assertIsNone(missed, out)
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(''.join(screen(out, columns=10)),
+                             'Saved demo model = picker-alpha (new sessions)', out)
+        # A capture inside a terminal session: the person reads Saved once,
+        # and the script still gets the value.
+        with self.subTest(stdout='captured'):
+            self.profile()
+            rc, out, missed = run_pty('v=$(ccmorph set demo effort high); print -r -- "got=<$v>"', env)
+            self.assertIsNone(missed, out)
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(screen(out),
+                             ['Saved demo effort = high (new sessions)', 'got=<high>'], out)
+        # stderr hidden: no sentence is shown, so the value is the one line.
+        with self.subTest(stderr='hidden'):
+            self.profile()
+            rc, out, missed = run_pty('ccmorph set demo effort high 2>/dev/null', env)
+            self.assertIsNone(missed, out)
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(screen(out), ['high'], out)
+        # A dumb terminal cannot fold and sees no cursor codes (#387): the
+        # sentence alone, the bare value left out.
+        with self.subTest(term='dumb'):
+            self.profile()
+            rc, out, missed = run_pty('ccmorph set demo effort high', {**env, 'TERM': 'dumb'})
+            self.assertIsNone(missed, out)
+            self.assertEqual(rc, 0, out)
+            self.assertNotIn('\x1b[', out)
+            self.assertEqual(screen(out), ['Saved demo effort = high (new sessions)'], out)
+            self.assertNotIn('high', [line.strip() for line in out.splitlines()], out)
+        # A picked value folds the same way, under the picker's own receipt.
+        env = self.env(fzf=True)
+        with self.subTest(key='model', picked=True):
+            self.profile()
+            self.spec('Default model=picker-beta')
+            rc, out, missed = run_pty('ccmorph set demo model -i', env)
+            self.assertIsNone(missed, out)
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(self.field('demo', 'model'), 'picker-beta', out)
+            rows = screen(out)
+            self.assertEqual(rows[-1], 'Saved demo model = picker-beta (new sessions)', out)
+            self.assertNotIn('picker-beta', rows, out)
+        with self.subTest(key='effort', picked=True):
+            self.profile()
+            rc, out, missed = run_pty('ccmorph set demo effort -i', env, [(b'Effort', b'\x1b[B\r')])
+            self.assertIsNone(missed, out)
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(self.field('demo', 'effort'), 'medium', out)
+            rows = screen(out)
+            self.assertEqual(rows[-1], 'Saved demo effort = medium (new sessions)', out)
+            self.assertNotIn('medium', rows, out)
+
     def test_set_model_picker_opens_the_config_model_step_issue_279(self):
         """`set <profile> model -i` and config's model step are one picker.
 

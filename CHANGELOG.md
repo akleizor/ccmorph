@@ -15,6 +15,10 @@
   install, which keeps it in its prefix, left no route to the keys no picker
   offers. The README names the path for each install, and
   `ccmorph help config` prints the one this install holds.
+- **`ccmorph set` confirms once in a terminal** (#358): the Saved line was
+  followed by the bare value on a line of its own. stdout still carries the
+  value for scripts; on the terminal that shows both, that line folds into the
+  Saved line.
 - **`ccmorph add` on a name already taken names `ccmorph config`** (#391):
   it no longer answers only with `ccmorph rm`, which deletes the profile and
   its saved credential for good. A Claude account or provider profile is told
