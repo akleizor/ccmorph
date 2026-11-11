@@ -12688,31 +12688,26 @@ run_test test_the_runners_session_env_never_reaches_a_fixture
 # came, at zero CPU. The starter here exits at once, so the tail is orphaned,
 # and the bystander is the recycled pid the tail keeps trusting.
 test_the_serve_tail_leaves_when_its_own_launcher_is_gone() {
-  setopt local_options no_bg_nice
   local test_home; test_home=$(mktemp -d)
   local rc=0 serve_pid bystander
   /bin/sleep 300 & bystander=$!
   /bin/sh -c 'sh "$1" gw --parent-pid "$2" &
 echo $! > "$3"' _ "$SCRIPT_DIR/fake_adapter_serve.sh" "$bystander" "$test_home/serve.pid" 2>/dev/null
   serve_pid=$(<"$test_home/serve.pid")
-  # GH-419: the one clock is this loop, and its length is a share of the suite's
-  # shared bound, CCMORPH_TEST_HANG_TIMEOUT, not a count of its own: a tail is
-  # late when it outlasts three quarters of that bound in 0.1s ticks (nine
-  # seconds at the default). Each tick is main's own primitive, a PATH sleep, and
-  # every sixth of the bound it also looks a process up, as the tail does once
-  # per ten passes. Load stretches the forks and the lookups here at least as
-  # much as it stretches the tail's far fewer, so a healthy tail, which is gone
-  # in about two seconds, stays well inside it, while a tail that is still
-  # alive when it ends fails as before. There is no second clock to slow apart.
-  local -i i=0 late_after=CCMORPH_TEST_HANG_TIMEOUT*3/4 look_every=CCMORPH_TEST_HANG_TIMEOUT/6
-  (( look_every > 0 )) || look_every=1
+  # GH-419: the count of 0.1s ticks is a share of the suite's shared bound,
+  # CCMORPH_TEST_HANG_TIMEOUT, not a literal: three quarters of it, nine seconds
+  # at the default 120. Unlike the suite's other waits this one is a deadline on
+  # purpose -- how soon an orphaned tail leaves is the contract under test -- so
+  # it never grows past main's ten seconds: a tail main rejected is rejected
+  # here too. The loop is main's own, a PATH sleep and nothing else, so no other
+  # work can stretch it past the old wait.
+  local -i i=0 ticks=CCMORPH_TEST_HANG_TIMEOUT*3/4
   while kill -0 "$serve_pid" 2>/dev/null; do
-    (( ++i < late_after )) || break
-    command sleep 0.1
-    (( i % look_every )) || /bin/ps -o ppid= -p "$serve_pid" >/dev/null 2>&1
+    (( ++i < ticks )) || break
+    sleep 0.1
   done
   if kill -0 "$serve_pid" 2>/dev/null; then
-    print -u2 -- "the serve tail outlived its orphaned launcher for ${late_after} ticks of 0.1s (three quarters of CCMORPH_TEST_HANG_TIMEOUT=${CCMORPH_TEST_HANG_TIMEOUT}) while --parent-pid named a live pid"
+    print -u2 -- "the serve tail outlived its orphaned launcher for ${ticks} ticks of 0.1s (three quarters of CCMORPH_TEST_HANG_TIMEOUT=${CCMORPH_TEST_HANG_TIMEOUT}s) while --parent-pid named a live pid"
     kill -KILL "$serve_pid" 2>/dev/null
     rc=1
   fi
