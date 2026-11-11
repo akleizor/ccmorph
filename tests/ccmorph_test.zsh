@@ -1348,6 +1348,35 @@ test_menu_with_no_account_chains_from_the_account_chooser() {
   return $rc
 }
 
+# A provider catalogue is the person's own saved list, and one of its values may
+# literally be spelled @keep. Only a picker that offers @keep as its own sentinel
+# row may read it that way; `ccmorph _menu` must hand the catalogue value back
+# unchanged instead of swallowing it as Keep-before-anything-was-saved.
+test_menu_keeps_a_catalogue_value_spelled_at_keep() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  fake_fzf
+  mkdir -p "$HOME/.config/ccmorph/profiles/prov"
+  print -r -- '{"additionalModelOptionsCache":[{"value":"@keep","label":"Keep"}]}' \
+    > "$HOME/.config/ccmorph/profiles/prov/.claude.json"
+  printf '%s\n' 'type=provider' 'provider=codex' > "$HOME/.config/ccmorph/prov.conf"
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 picked
+  picked=$(ccmorph _menu prov) || {
+    print -u2 -- 'the model menu must succeed on a provider catalogue'
+    rm -rf "$test_home"
+    return 1
+  }
+  [[ "$picked" == '@keep' ]] || {
+    print -u2 -- "the menu must answer the catalogue value unchanged; got: ${(qqq)picked}"
+    rc=1
+  }
+  rm -rf "$test_home"
+  return $rc
+}
+
 # Every other tool spells it -V. Accepting only -v/--version means a habit from
 # any other CLI meets an "unknown command" error for no reason.
 test_version_accepts_the_conventional_flags() {
@@ -11246,6 +11275,7 @@ run_test test_a_retired_verb_is_rejected_not_merely_undocumented
 run_test test_only_the_current_vocabulary_is_taught
 run_test test_the_retired_window_verb_still_dispatches
 run_test test_menu_with_no_account_chains_from_the_account_chooser
+run_test test_menu_keeps_a_catalogue_value_spelled_at_keep
 run_test test_version_accepts_the_conventional_flags
 run_test test_help_names_an_account_argument_unambiguously
 run_test test_the_listing_shows_the_model_that_will_actually_launch
