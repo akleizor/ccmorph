@@ -131,11 +131,12 @@ func (l *launcher) inspect(args []string) int {
 				}
 			}
 		}
-		// A ceiling set by hand in the profile's env is the cap every model
-		// launches under — launch keeps it instead of deriving the window — so it
-		// is the window this line shows, named by its key: the count `ccmorph
-		// context` answers (#372).
-		if c, ok := envCeiling(f); ok {
+		// A ceiling set by hand in the profile's env is the cap a launch keeps
+		// instead of deriving the window, so it is the window this line shows,
+		// named by its key: the count `ccmorph context` answers (#372) — unless
+		// the id starts with `claude-`: Claude Code ignores the var for its own
+		// ids (#447), so the row keeps the resolver's own answer there.
+		if c, ok := envCeiling(f, model); ok {
 			tok, unprobed, source = strconv.FormatInt(c, 10), "0", "manual (env.CLAUDE_CODE_MAX_CONTEXT_TOKENS)"
 		}
 		n, err := strconv.ParseInt(tok, 10, 64)
