@@ -949,6 +949,19 @@ def test_doctor_stays_quiet_when_masking_covers_the_route(tmp_path):
     assert result.stdout.splitlines()[-1] == "OK ready: start it with ccmorph run demo"
 
 
+def test_doctor_fails_a_mask_value_the_shim_refuses_issue_411(tmp_path):
+    """A mask value the shim refuses at start is not masking off: the launch
+    stops in the shim (GH-411), so doctor must name the refused value and keep
+    the verdict from ready instead of printing no masking row at all."""
+    conf = ("type=apikey\nbase_url=https://example.test\n"
+            "api_key=k\n"
+            "env.CCMORPH_MASK=yes\n")
+    result, _, _ = run_doctor(tmp_path, conf, OK_CURL)
+    assert result.returncode == 1, result.stdout
+    assert "FAIL masking: env.CCMORPH_MASK=yes is refused" in result.stdout, result.stdout
+    assert result.stdout.splitlines()[-1].startswith("FAIL not ready"), result.stdout
+
+
 @pytest.mark.parametrize("case", ["gateway-ok", "missing-credential", "malformed-listing"])
 def test_doctor_ends_with_a_verdict(tmp_path, case):
     """The last line answers the only question a person has: is this profile

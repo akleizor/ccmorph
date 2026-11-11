@@ -618,7 +618,17 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	l.doctorCompinit(l.doctorCompletion())
 	// A masking mismatch is a privacy gap, not a start failure: the profile
 	// still runs, so the row warns without weighing on the verdict (#293).
-	if on, _ := util.MaskOn(f["env.CCMORPH_MASK"]); on && !util.Maskable(typ, base) {
+	// A value the shim refuses is different: the launch stops in the shim, so
+	// the row fails and the verdict names the value to replace (#411).
+	maskOn, maskBad := util.MaskOn(f["env.CCMORPH_MASK"])
+	maskable := util.Maskable(typ, base)
+	switch {
+	case maskable && maskBad:
+		report("FAIL", "masking: env.CCMORPH_MASK="+f["env.CCMORPH_MASK"]+
+			" is refused — a launch stops in the shim before a session starts (must be 1 or 0)",
+			"set env.CCMORPH_MASK=1 or 0: ccmorph config "+name)
+		failed = 1
+	case maskOn && !maskable:
 		l.status("WARN", "masking: env.CCMORPH_MASK="+f["env.CCMORPH_MASK"]+
 			" is set but nothing is masked — this route reaches its backend without ccmorph's shim; masking covers gateway (apikey) routes only")
 	}

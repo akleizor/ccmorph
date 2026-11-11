@@ -10547,6 +10547,8 @@ test_launch_says_whether_secrets_are_masked() {
   setup_home "$test_home"
   write_apikey_conf gw 'base_url=http://gw.invalid' 'api_key=gw-key' 'env.CCMORPH_MASK=1'
   write_apikey_conf anth 'api_key=anth-key' 'env.CCMORPH_MASK=1'
+  write_apikey_conf badmask 'base_url=http://gw.invalid' 'api_key=gw-key' 'env.CCMORPH_MASK=yes'
+  write_apikey_conf anthbad 'api_key=anth-key' 'env.CCMORPH_MASK=yes'
   source "$CCMORPH_SOURCE"
 
   local rc=0 out st
@@ -10564,6 +10566,22 @@ test_launch_says_whether_secrets_are_masked() {
   [[ "$st" == 0 ]] || { print -u2 -- "the native launch must succeed, got $st: ${(qqq)out}"; rc=1 }
   [[ "$out" == *'env.CCMORPH_MASK=1 is set, but nothing is masked'* ]] || {
     print -u2 -- "the setting on a route the shim does not front must say nothing is masked: ${(qqq)out}"
+    rc=1
+  }
+  # GH-411: a value the shim refuses is not masking off; the notice must name
+  # it instead of staying silent until the shim stops the session.
+  out=$(_ccm_launch -a badmask 2>&1); st=$?
+  [[ "$st" == 0 ]] || { print -u2 -- "the refused-value launch must still start, got $st: ${(qqq)out}"; rc=1 }
+  [[ "$out" == *'env.CCMORPH_MASK=yes is refused'* ]] || {
+    print -u2 -- "a mask value the shim refuses must be named in the launch notice: ${(qqq)out}"
+    rc=1
+  }
+  # The same refused value where no shim starts still names it, and says why
+  # nothing is masked.
+  out=$(_ccm_launch -a anthbad 2>&1); st=$?
+  [[ "$st" == 0 ]] || { print -u2 -- "the refused-value native launch must still start, got $st: ${(qqq)out}"; rc=1 }
+  [[ "$out" == *'env.CCMORPH_MASK=yes is not 1 or 0'* ]] || {
+    print -u2 -- "a refused mask value on a route with no shim must still be named: ${(qqq)out}"
     rc=1
   }
   # Without the setting the launch says nothing about masking at all.
