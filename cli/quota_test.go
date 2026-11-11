@@ -105,3 +105,55 @@ func TestTheReadKeepsAHandSetCeilingOffAClaudeIDIssue447(t *testing.T) {
 		}
 	}
 }
+
+// #447, the half a catalogue estimate never reaches: a claude- id nothing
+// sized still runs at Claude Code's own default — the var never caps it — so
+// under a hand-set ceiling the read and inspect's window row answer that
+// default, its count named as the default, while every other id keeps
+// answering the ceiling. The core is stubbed to the resolver's unprobed
+// default, a count apart from the ceiling, so an answer of the ceiling can
+// only be the manual cap, and a row of unknown is the default suppressed.
+func TestTheWindowRowAnswersAClaudeIDsDefaultIssue447(t *testing.T) {
+	state := t.TempDir()
+	core := t.TempDir()
+	stub := "#!/bin/sh\nprintf '%s\\n' " +
+		"'{\"window\":200000,\"send_id\":\"m\",\"source\":\"default\",\"unprobed\":true}'\n"
+	if err := os.WriteFile(filepath.Join(core, "ccmorph-core"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	l := &launcher{dir: state, libexec: core, migrated: true}
+	capture := func(fn func() int) (int, string) {
+		old := os.Stdout
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Stdout = w
+		rc := fn()
+		w.Close()
+		os.Stdout = old
+		out, _ := io.ReadAll(r)
+		return rc, string(out)
+	}
+	for _, c := range []struct{ model, read, row string }{
+		{"claude-mystery-9",
+			"gw: claude-mystery-9 context 200,000 tokens · left at Claude Code's default",
+			"200,000  Claude Code's default"},
+		{"glm-mystery-9",
+			"gw: glm-mystery-9 context 300,000 tokens · set by hand",
+			"300,000  manual (env.CLAUDE_CODE_MAX_CONTEXT_TOKENS)"},
+	} {
+		if err := os.WriteFile(filepath.Join(state, "gw.conf"),
+			[]byte("type=apikey\nmodel="+c.model+"\nenv.CLAUDE_CODE_MAX_CONTEXT_TOKENS=300000\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		rc, out := capture(func() int { return l.context([]string{"gw", c.model}) })
+		if rc != 0 || strings.TrimSpace(out) != c.read {
+			t.Errorf("%s: rc %d, read got %q want %q", c.model, rc, strings.TrimSpace(out), c.read)
+		}
+		rc, out = capture(func() int { return l.inspect([]string{"gw"}) })
+		if rc != 0 || !strings.Contains(out, c.row) {
+			t.Errorf("%s: rc %d, window row wants %q in:\n%s", c.model, rc, c.row, out)
+		}
+	}
+}
