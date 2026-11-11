@@ -90,6 +90,8 @@ credential, or losing the user's choice.
   Seen 1× (2026-11-09).
 - **A refusal that names the cause but not the repair its channel promises** (2026-11-10) — the line is the whole message on a channel that passes it through untouched, so one that stops at the cause leaves the person holding it: 2026-11-10: #375's message-refusal EXIT carried the gateway's own words with no repair, while the REFUSED contract says the launcher adds nothing because the line is the whole message, though every sibling refusal ends with the one command that repairs or diagnoses it — Example: #448 fix(adapter): a gateway's message refusal ends with its repair.
   Seen 1× (2026-11-10).
+- **A test that pins an exact count of events a retrying transport can duplicate** — the assertion counts HTTP arrivals, and the retry transport resends the same logical request over a fresh connection when a reused keep-alive connection has died, so a loaded runner sees one probe arrive twice and the test fails for the transport's retry rather than the behaviour it pins; assert that the event happened and that no other path did, never how many arrivals carried it (2026-11-10: #375's re-ask test asserted one probe and the retry transport doubled it on a loaded runner) — `example: #454 test(adapter): the re-ask pin tolerates a retried probe`.
+  Seen 1× (2026-11-10).
 
 ## Gate rules
 
