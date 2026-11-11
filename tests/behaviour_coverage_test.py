@@ -855,27 +855,67 @@ def test_context_answers_the_window_the_session_will_use_gh_372(box):
     out = box.run('context', 'gw', 'claude-mystery-9')
     assert out.returncode == 0, out.stderr
     assert out.stdout == "gw: claude-mystery-9 context 200,000 tokens · left at Claude Code's default\n"
-    # a ceiling set by hand in the profile's env is the cap every model launches
-    # under -- launch keeps it instead of deriving the window -- so the read
-    # answers it over the pin
+    # a ceiling set by hand in the profile's env is the cap every model but a
+    # claude- id launches under -- launch keeps it instead of deriving the
+    # window -- so the read answers it over the pin
+    box.conf('cap', 'type=apikey\napi_key={{SECRET_0eqa8i3kouoh}}\nmodel=glm-5.2\n'
+                    'env.CLAUDE_CODE_MAX_CONTEXT_TOKENS=300000\n'
+                    'context_window.glm-5.2=500000\n')
+    out = box.run('context', 'cap', 'glm-5.2')
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == 'cap: glm-5.2 context 300,000 tokens · set by hand\n'
+    # inspect's window line shows the same cap, named by the key that set it
+    window = [ln for ln in box.run('inspect', 'cap').stdout.splitlines() if ln.strip().startswith('window')]
+    assert len(window) == 1 and '300,000  manual (env.CLAUDE_CODE_MAX_CONTEXT_TOKENS)' in window[0], window
+    # the ceiling is read as launch and Claude Code read it: 1e5 is 100,000
+    box.conf('scicap', 'type=apikey\napi_key={{SECRET_0eqa8i3kouoh}}\nmodel=glm-5.2\n'
+                       'env.CLAUDE_CODE_MAX_CONTEXT_TOKENS=1e5\n'
+                       'context_window.glm-5.2=500000\n')
+    out = box.run('context', 'scicap', 'glm-5.2')
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == 'scicap: glm-5.2 context 100,000 tokens · set by hand\n'
+    window = [ln for ln in box.run('inspect', 'scicap').stdout.splitlines() if ln.strip().startswith('window')]
+    assert len(window) == 1 and '100,000  manual (env.CLAUDE_CODE_MAX_CONTEXT_TOKENS)' in window[0], window
+    # a claude- id is the one model the ceiling never binds (GH-447): Claude
+    # Code ignores the var for its own ids, so both surfaces answer the
+    # resolver's own window -- with a pin set, that answer is the pin, and the
+    # manual cap never overrides it
     box.conf('ceil', 'type=apikey\napi_key={{SECRET_0eqa8i3kouoh}}\nmodel=claude-sonnet-5-5\n'
                      'env.CLAUDE_CODE_MAX_CONTEXT_TOKENS=300000\n'
                      'context_window.claude-sonnet-5-5=500000\n')
     out = box.run('context', 'ceil', 'claude-sonnet-5-5')
     assert out.returncode == 0, out.stderr
-    assert out.stdout == 'ceil: claude-sonnet-5-5 context 300,000 tokens · set by hand\n'
-    # inspect's window line shows the same cap, named by the key that set it
+    assert out.stdout == 'ceil: claude-sonnet-5-5 context 500,000 tokens · set by hand\n'
+    # inspect's window line shows the resolver's own answer, not the cap
     window = [ln for ln in box.run('inspect', 'ceil').stdout.splitlines() if ln.strip().startswith('window')]
-    assert len(window) == 1 and '300,000  manual (env.CLAUDE_CODE_MAX_CONTEXT_TOKENS)' in window[0], window
-    # the ceiling is read as launch and Claude Code read it: 1e5 is 100,000
+    assert len(window) == 1 and '500,000  manual' in window[0], window
+    # a scientific-notation ceiling is ignored for a claude- id too -- never
+    # parsed into the window the answer names
     box.conf('sci', 'type=apikey\napi_key={{SECRET_0eqa8i3kouoh}}\nmodel=claude-sonnet-5-5\n'
                     'env.CLAUDE_CODE_MAX_CONTEXT_TOKENS=1e5\n'
                     'context_window.claude-sonnet-5-5=500000\n')
     out = box.run('context', 'sci', 'claude-sonnet-5-5')
     assert out.returncode == 0, out.stderr
-    assert out.stdout == 'sci: claude-sonnet-5-5 context 100,000 tokens · set by hand\n'
+    assert out.stdout == 'sci: claude-sonnet-5-5 context 500,000 tokens · set by hand\n'
     window = [ln for ln in box.run('inspect', 'sci').stdout.splitlines() if ln.strip().startswith('window')]
-    assert len(window) == 1 and '100,000  manual (env.CLAUDE_CODE_MAX_CONTEXT_TOKENS)' in window[0], window
+    assert len(window) == 1 and '500,000  manual' in window[0], window
+    # with no pin, the resolver's own window is the catalogue estimate
+    box.conf('own', 'type=apikey\napi_key={{SECRET_0eqa8i3kouoh}}\nmodel=claude-opus-5\n'
+                    'env.CLAUDE_CODE_MAX_CONTEXT_TOKENS=300000\n')
+    out = box.run('context', 'own', 'claude-opus-5')
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == 'own: claude-opus-5 context 1,000,000 tokens · estimated from the model catalogue\n'
+    window = [ln for ln in box.run('inspect', 'own').stdout.splitlines() if ln.strip().startswith('window')]
+    assert len(window) == 1 and '1,000,000  catalogue-estimate' in window[0], window
+    # and for a claude- id nothing sized, it is Claude Code's own default, on
+    # both surfaces -- inspect's window line answers the count, not an unknown
+    box.conf('def', 'type=apikey\napi_key={{SECRET_0eqa8i3kouoh}}\nmodel=claude-mystery-9\n'
+                    'env.CLAUDE_CODE_MAX_CONTEXT_TOKENS=300000\n')
+    out = box.run('context', 'def', 'claude-mystery-9')
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == "def: claude-mystery-9 context 200,000 tokens · left at Claude Code's default\n"
+    window = [ln for ln in box.run('inspect', 'def').stdout.splitlines() if ln.strip().startswith('window')]
+    assert len(window) == 1 and "200,000  Claude Code's default" in window[0], window
 
 
 # --- an unknown profile name reads the same in every command ---------------

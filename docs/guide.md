@@ -744,9 +744,12 @@ every catalogue to publish a size, where the only alternative is a paid probe.
 will use — the same count `inspect` shows — as a token count with where it came
 from: set by hand, found by ccmorph, estimated from the model catalogue, or left
 at Claude Code's default. A `CLAUDE_CODE_MAX_CONTEXT_TOKENS` ceiling set by hand
-in the profile's env is the cap every model launches under, so the read answers
-it over any window, and `inspect`'s window line shows the same cap as
-`manual (env.CLAUDE_CODE_MAX_CONTEXT_TOKENS)`. A model the route does not serve
+in the profile's env is the cap every model but a `claude-` id launches under —
+Claude Code ignores the var for its own ids, the window chain's one exception
+(rules: ARCHITECTURE.md §5) — so the read answers it over any window, and
+`inspect`'s window line shows the same cap as
+`manual (env.CLAUDE_CODE_MAX_CONTEXT_TOKENS)`; a `claude-` id answers the
+resolver's own window instead. A model the route does not serve
 is named rather than answered; a pinned override still reads back. Saving a
 limit for a model the route's listing does not carry warns that the route does
 not list it — the limit is kept for when the model appears, a model the map
