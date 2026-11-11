@@ -78,6 +78,18 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: every Go file is gofmt-clean
+        # gofmt is the standard formatter, so its verdict is what every Go editor
+        # shows; CI built and tested every package but ran no formatter, and drift
+        # landed silently (#420). Fail before the build, naming the files and diff.
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt-clean:"
+            printf '%s\n' "$unformatted"
+            printf '%s\n' "$unformatted" | xargs gofmt -d
+            exit 1
+          fi
       - name: go vet, build and test; build libexec/ccmorph-core for the suites below
         run: |
           # A second filesystem for the cross-volume merge test; Linux has /dev/shm.
