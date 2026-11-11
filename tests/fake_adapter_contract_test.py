@@ -171,6 +171,32 @@ def test_the_fake_ends_when_its_own_launcher_is_gone_gh_434(tmp_path):
         _reap(bystander, starter)
 
 
+def test_a_pinned_reap_is_recorded_before_the_fake_exits_gh_419(tmp_path):
+    """A test that waits on the shared bound must still tell a reap from a clock.
+
+    #419 keeps the zsh orphan test's wait on the suite's shared bound instead
+    of a ten-second literal, so a tail that merely sleeps eleven seconds would
+    otherwise pass where the old deadline rejected it. The fake records the
+    reap it took here; the zsh test requires that record, and a tail that left
+    on its own clock writes none.
+    """
+    launch = subprocess.Popen(['/bin/sleep', '300'])
+    record = tmp_path / 'reaped'
+    fake = subprocess.Popen(
+        [_install(tmp_path), *LAUNCH_ARGV, '--parent-pid', str(launch.pid)],
+        stdout=subprocess.PIPE, text=True,
+        env={**os.environ, 'CCMORPH_TEST_SERVE_REAPED': str(record)})
+    try:
+        assert fake.stdout.readline() == 'PORT=45999\n'
+        assert not record.exists()             # serving: no reap to record
+        launch.kill()
+        launch.wait()                          # reaped, not a zombie
+        assert fake.wait(timeout=HANG_TIMEOUT) == 0
+        assert record.exists()
+    finally:
+        _reap(fake, launch)
+
+
 def _logical_lines(text: str):
     """`(first physical line number, the whole command)` for each command.
 

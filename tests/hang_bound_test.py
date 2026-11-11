@@ -235,6 +235,12 @@ ZSH_SHARED_COUNT = re.compile(r"\s*\(\([^)]*\bCCMORPH_TEST_HANG_TIMEOUT\b[^)]*\)
 ZSH_COUNTED_REPEAT = re.compile(r"\s*([0-9]+|\$)")
 # A `sleep` that is a wait — not the suite defining or removing one.
 ZSH_SLEEP = re.compile(r"(?<!unfunction )\bsleep\b(?!\s*\()")
+# A literal retry cap in a loop body: an incremented counter compared with a
+# number, the `(( ++i < 100 )) || break` idiom. The comparison must close the
+# arithmetic group, so a header condition such as
+# `while (( ++pass <= 3 && ... ))` is a poll header, not this shape.
+ZSH_LITERAL_RETRY = re.compile(
+    r"\(\(\s*(?:\+\+\s*[A-Za-z_]\w*|[A-Za-z_]\w*\s*\+\+)\s*(?:<|<=)\s*[0-9]+\s*\)\)")
 ZSH_HEREDOC = re.compile(r"<<-?")
 ZSH_HEREDOC_TAG = re.compile(r"\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 
@@ -280,17 +286,19 @@ def _zsh_mask(raw, in_single, in_double):
 
 
 def zsh_counted_sleep_loops(text):
-    """Lines whose loop opens a counted sleep loop — `for x in {a..b}` or
-    `$(seq ...)`, a C-style `for ((init; cond; ...))`, or `repeat N` — with a
-    `sleep` somewhere inside. The count is the same fixed wall-clock budget the
-    AST check reads in `range(...)` loops; an event loop (`while`, `until`,
-    `for ((;;))`, a plain word list) is a poll and stays quiet, and so is a
-    C-style count taken from `CCMORPH_TEST_HANG_TIMEOUT` in the header itself —
-    it expires no earlier than the shared bound. Quoted text is blanked and
-    heredoc bodies skipped, so data never parses as zsh; a sleep reports the
-    innermost counted loop around it."""
+    """Lines whose loop holds a fixed wall-clock budget with a `sleep` inside:
+    a counted loop — `for x in {a..b}` or `$(seq ...)`, a C-style
+    `for ((init; cond; ...))`, or `repeat N` — or an event loop whose body
+    leaves after a literal number of passes (`(( ++i < 100 )) || break`). That
+    count is the same budget the AST check reads in `range(...)` loops. An
+    event loop (`while`, `until`, `for ((;;))`, a plain word list) with no
+    literal cap is a poll and stays quiet, and so is a C-style count taken from
+    `CCMORPH_TEST_HANG_TIMEOUT` in the header itself — it expires no earlier
+    than the shared bound. Quoted text is blanked and heredoc bodies skipped,
+    so data never parses as zsh; a sleep reports the innermost counted loop
+    around it, and a literal cap its own loop."""
     offenders = set()
-    loops = []            # (header line, counted), innermost last
+    loops = []            # [header line, counted, slept, literal cap], innermost last
     heredoc = None        # (terminator, strip leading tabs?)
     in_single = in_double = False
     for lineno, raw in enumerate(text.splitlines(), 1):
@@ -310,28 +318,37 @@ def zsh_counted_sleep_loops(text):
         events = [(m.start(), m.end(), m.group(1)) for m in ZSH_LOOP_OPEN.finditer(code)]
         events += [(m.start(), m.end(), "done") for m in ZSH_DONE.finditer(code)]
         events += [(m.start(), m.end(), "sleep") for m in ZSH_SLEEP.finditer(code)]
+        events += [(m.start(), m.end(), "cap") for m in ZSH_LITERAL_RETRY.finditer(code)]
         for start, end, kind in sorted(events):
             if kind == "done":
                 if loops:
-                    loops.pop()
+                    header, counted, slept, capped = loops.pop()
+                    if capped and slept:
+                        offenders.add(header)
             elif kind == "sleep":
-                for header, counted in reversed(loops):
+                for loop in loops:
+                    loop[2] = True
+                for header, counted, _, _ in reversed(loops):
                     if counted:
                         offenders.add(header)
                         break
+            elif kind == "cap":
+                if loops:
+                    loops[-1][3] = True
             elif kind == "select":
                 # jq's `select(` is a function call, not zsh's menu loop; the
                 # loop reads a name after the keyword.
                 if re.match(r"\s*[A-Za-z_]", code[end:]):
-                    loops.append((lineno, False))
+                    loops.append([lineno, False, False, False])
             elif kind == "for":
                 rest = code[end:]
-                loops.append((lineno, bool(ZSH_COUNTED_FOR.match(rest))
-                              and not ZSH_SHARED_COUNT.match(rest)))
+                loops.append([lineno, bool(ZSH_COUNTED_FOR.match(rest))
+                              and not ZSH_SHARED_COUNT.match(rest), False, False])
             elif kind == "repeat":
-                loops.append((lineno, bool(ZSH_COUNTED_REPEAT.match(code[end:]))))
+                loops.append([lineno, bool(ZSH_COUNTED_REPEAT.match(code[end:])),
+                              False, False])
             else:  # while, until
-                loops.append((lineno, False))
+                loops.append([lineno, False, False, False])
     return sorted(offenders)
 
 
@@ -392,6 +409,28 @@ def test_the_zsh_scanner_reads_the_language_it_polices():
           [[ -s out ]] && break
           sleep 0.1
         done
+        """) == []
+    # a literal retry cap in a poll's body is a budget too: whatever event the
+    # loop also waits on, it leaves after that many passes
+    assert loops("""
+        while kill -0 $pid 2>/dev/null; do
+          (( ++i < 100 )) || break
+          sleep 0.1
+        done
+        """) == [1]
+    assert loops("""
+        while [[ ! -e $ready ]]; do
+          sleep 0.1
+          (( i++ < 200 )) || break
+        done
+        """) == [1]
+    # the shared bound in the body, and a cap outside any loop, are not budgets
+    assert loops("""
+        while kill -0 $pid 2>/dev/null; do
+          (( ++i < CCMORPH_TEST_HANG_TIMEOUT * 10 )) || break
+          sleep 0.1
+        done
+        (( ++j < 5 )) || break
         """) == []
     # the shared bound must be the count, in the header: naming it only in the
     # body leaves a literal budget standing
