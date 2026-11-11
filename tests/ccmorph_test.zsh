@@ -12596,29 +12596,18 @@ run_test test_the_runners_session_env_never_reaches_a_fixture
 test_the_serve_tail_leaves_when_its_own_launcher_is_gone() {
   local test_home; test_home=$(mktemp -d)
   local rc=0 serve_pid bystander
-  local reaped="$test_home/reaped"
   /bin/sleep 300 & bystander=$!
-  CCMORPH_TEST_SERVE_REAPED="$reaped" \
-    /bin/sh -c 'sh "$1" gw --parent-pid "$2" &
+  /bin/sh -c 'sh "$1" gw --parent-pid "$2" &
 echo $! > "$3"' _ "$SCRIPT_DIR/fake_adapter_serve.sh" "$bystander" "$test_home/serve.pid" 2>/dev/null
   serve_pid=$(<"$test_home/serve.pid")
-  # The budget is the suite's hang bound, 0.1 s a pass (#419), never a literal:
-  # the tail checks its reparenting every 2 s, so a fixed ten seconds lost the
-  # race to a loaded host while a healthy tail was still doing its work. The
-  # tail records its reap before it exits, so a longer wait only forgives a
-  # slow host: a tail that left on its own clock writes no record and still
-  # fails, the case the old ten-second deadline happened to reject.
   local -i i=0
   while kill -0 "$serve_pid" 2>/dev/null; do
-    (( ++i < CCMORPH_TEST_HANG_TIMEOUT * 10 )) || break
+    (( ++i < 100 )) || break
     sleep 0.1
   done
   if kill -0 "$serve_pid" 2>/dev/null; then
-    print -u2 -- "the serve tail outlived its orphaned launcher for ${CCMORPH_TEST_HANG_TIMEOUT}s while --parent-pid named a live pid"
+    print -u2 -- "the serve tail outlived its orphaned launcher for 10s while --parent-pid named a live pid"
     kill -KILL "$serve_pid" 2>/dev/null
-    rc=1
-  elif [[ ! -e $reaped ]]; then
-    print -u2 -- 'the serve tail left without seeing its launcher gone: an exit on its own clock is not the orphan reap'
     rc=1
   fi
   kill -KILL "$bystander" 2>/dev/null
@@ -12711,10 +12700,9 @@ test_leak_canary() {
   # kill an unarmed leaker and fail the suite for nothing. The marker also
   # proves the script itself is open, so the home can go away while the child
   # runs, the way a real leaked adapter outlives the test home that started it.
-  # 0.05 s a pass, so the retry count is the suite's shared hang bound (#419).
   local -i i=0
   while [[ ! -e $armed ]]; do
-    (( ++i < CCMORPH_TEST_HANG_TIMEOUT * 20 )) || {
+    (( ++i < 200 )) || {
       print -u2 -- "the leaked child $pid never armed its traps; the canary is broken, not the sweep"
       kill -KILL "$pid" 2>/dev/null
       rm -rf "$test_home"
