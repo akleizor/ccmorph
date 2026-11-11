@@ -335,7 +335,7 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 			continue
 		}
 		if name == "model" && !modelIDShape(value) {
-			return 0, "", fmt.Errorf("model must be a nonempty model id, not a flag or picker token")
+			return 0, "", refuse("model must be a nonempty model id, not a flag or picker token")
 		}
 		if name == "effort" && !slices.Contains(profile.Efforts, value) {
 			return 0, "", refuse("effort must be %s", effortList())

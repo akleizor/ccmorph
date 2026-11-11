@@ -61,6 +61,12 @@ ccmorph get demo model extra >/dev/null 2>&1 && fail 'get accepted extra argumen
 output=$(ccmorph set demo effort invalid 2>&1) && fail 'set accepted invalid effort'
 [[ "$output" == "ccmorph: effort must be low, medium, high, xhigh or max" ]] || \
   fail "off-list effort refusal was not one sentence naming the levels (got ${(qqq)output})"
+# gh418: a flag or picker token is a fault in the request too, so the model
+# refusal is its own one sentence, never the could-not-save-or-read wrap.
+output=$(ccmorph set demo model '@x' 2>&1); rc=$?
+(( rc == 1 )) || fail "flag-shaped model exited $rc, not 1"
+[[ "$output" == "ccmorph: model must be a nonempty model id, not a flag or picker token" ]] || \
+  fail "flag-shaped model refusal was not one sentence naming the refusal (got ${(qqq)output})"
 output=$(ccmorph configure demo </dev/null 2>&1) && fail 'removed configure alias was accepted'
 [[ "$output" == *"unknown command 'configure'"* ]] || fail 'configure must be an unknown command'
 
