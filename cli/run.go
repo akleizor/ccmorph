@@ -19,6 +19,7 @@ import (
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/shim"
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 var nativeModelFlags = map[string]bool{
@@ -438,7 +439,7 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 			l.log(fmt.Sprintf("signal %d forwarded to claude; no relay", l.forwardedSig()))
 			return nil, rcClaude
 		}
-		l.log(fmt.Sprintf("exit rc=%d profile=%s relay_file_exists=%s", rcClaude, name, yesNo(isFile(relayFile))))
+		l.log(fmt.Sprintf("exit rc=%d profile=%s relay_file_exists=%s", rcClaude, name, yesNo(paths.IsFile(relayFile))))
 	} else {
 		edge := l.nestedEdgeEnv("CLAUDE_CODE_DISABLE_ADVISOR_TOOL", "CLAUDE_CODE_MODEL_CAPABILITIES")
 		l.stopForeignBridge("", false)
@@ -451,7 +452,7 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 			l.log(fmt.Sprintf("signal %d forwarded to claude; no relay", l.forwardedSig()))
 			return nil, rcClaude
 		}
-		l.log(fmt.Sprintf("exit rc=%d profile=<none> relay_file_exists=%s", rcClaude, yesNo(isFile(relayFile))))
+		l.log(fmt.Sprintf("exit rc=%d profile=<none> relay_file_exists=%s", rcClaude, yesNo(paths.IsFile(relayFile))))
 	}
 
 	rs, err := util.ReadRelay(relayFile)
@@ -663,7 +664,7 @@ func (l *launcher) sessionFile(id string) (string, bool) {
 	for _, store := range append(stores, more...) {
 		hits, _ := filepath.Glob(filepath.Join(globQuote(store), "*", id+".jsonl"))
 		for _, h := range hits {
-			if isFile(h) {
+			if paths.IsFile(h) {
 				if real, err := filepath.EvalSymlinks(h); err == nil {
 					abs, _ := filepath.Abs(real)
 					return abs, true
@@ -698,7 +699,7 @@ func (l *launcher) carrySession(id, dst string) bool {
 	}
 	hits, _ := filepath.Glob(filepath.Join(globQuote(dst), "*", id+".jsonl"))
 	for _, h := range hits {
-		if isFile(h) {
+		if paths.IsFile(h) {
 			return true
 		}
 	}
@@ -922,7 +923,7 @@ func (l *launcher) setupDir(name, typ string, policy livePolicy) bool {
 	if policy == liveRefuse && !l.holdLive(name, policy) {
 		return false
 	}
-	if file := l.profileLayer(name); isFile(file) {
+	if file := l.profileLayer(name); paths.IsFile(file) {
 		if fi, err := os.Lstat(file); err == nil && fi.Mode().IsRegular() {
 			util.UnwireStatusline(file, filepath.Join(l.dir, "statusline"), filepath.Join(l.libDir, "statusline"))
 		}
@@ -1071,7 +1072,7 @@ func stableCore(libexec string) string {
 		return core
 	}
 	stable := filepath.Clean(m[1] + "/opt/ccmorph" + m[2])
-	if !isFile(filepath.Join(stable, "ccmorph-core")) {
+	if !paths.IsFile(filepath.Join(stable, "ccmorph-core")) {
 		return core
 	}
 	return filepath.Join(stable, "ccmorph-core")

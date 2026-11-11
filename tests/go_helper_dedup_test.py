@@ -7,6 +7,10 @@ one copy the others miss is a silent behaviour change. So each keeps one
 definition: `contains` is the standard library's `slices.Contains`, and the two
 path contracts are `paths.StateDir` and `paths.Script`. This guard fails on any
 re-introduction of a hand-written copy.
+
+Issue #422: the file predicates `exists`, `isDir`, `isFile` and `isSymlink`
+were hand-written eleven times across six files. Their one definition each is
+exported from `util/paths`; this guard fails on a new copy anywhere else.
 """
 import re
 from pathlib import Path
@@ -19,6 +23,16 @@ CONSOLIDATED = {
     "stateDir": "paths.StateDir",
     "ccmorphScript": "paths.Script",
 }
+# #422's predicates: the unexported spelling a new copy would take, mapped to
+# the exported definition that replaced it. Only that exported spelling, and
+# only inside util/paths, may be defined.
+PREDICATES = {
+    "exists": "Exists",
+    "isdir": "IsDir",
+    "isfile": "IsFile",
+    "issymlink": "IsSymlink",
+}
+PATHS_PACKAGE = ROOT / "util" / "paths"
 DEFINITION = re.compile(r"^func (\w+)\(", re.MULTILINE)
 
 
@@ -41,4 +55,19 @@ def test_the_consolidated_helpers_are_not_hand_written_again():
     assert not offenders, (
         "a helper #303 consolidated is hand-written again (it must be "
         + ", ".join(f"{n} -> {home}" for n, home in CONSOLIDATED.items())
+        + "; copies drift): " + "; ".join(offenders))
+
+
+def test_the_file_predicates_are_defined_only_in_paths():
+    offenders = []
+    for path, name in go_definitions():
+        shared = PREDICATES.get(name.lower())
+        if shared is None:
+            continue
+        if PATHS_PACKAGE in path.parents and name == shared:
+            continue
+        offenders.append(f"{path.relative_to(ROOT)}: func {name}(")
+    assert not offenders, (
+        "a file predicate #422 consolidated is hand-written outside util/paths "
+        "(it must be " + ", ".join(f"{n} -> paths.{p}" for n, p in PREDICATES.items())
         + "; copies drift): " + "; ".join(offenders))

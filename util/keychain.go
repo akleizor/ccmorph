@@ -12,6 +12,7 @@ import (
 
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/profile"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // A credential held in the login keychain is written in the conf as
@@ -73,7 +74,7 @@ func KeychainMigrate(state string) error {
 	var errs []error
 	for _, conf := range confs {
 		name := strings.TrimSuffix(filepath.Base(conf), ".conf")
-		if !ctxwindow.ValidProfileName(name) || isSymlink(conf) {
+		if !ctxwindow.ValidProfileName(name) || paths.IsSymlink(conf) {
 			continue
 		}
 		if err := keychainMove(conf, name, nil); err != nil {

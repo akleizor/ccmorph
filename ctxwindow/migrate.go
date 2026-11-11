@@ -9,14 +9,9 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
-
-func isFile(path string) bool {
-	fi, err := os.Stat(path)
-	return err == nil && fi.Mode().IsRegular()
-}
-
-func exists(path string) bool { _, err := os.Stat(path); return err == nil }
 
 // globConf lists state/*.conf (sorted), as paths.
 func globConf(dir string) []string {
@@ -38,7 +33,7 @@ func stem(path string) string {
 
 func legacyPath(state string) string {
 	legacy := filepath.Join(state, "model-registry")
-	if !exists(legacy) && exists(filepath.Join(state, "model-registry.conf")) {
+	if !paths.Exists(legacy) && paths.Exists(filepath.Join(state, "model-registry.conf")) {
 		legacy = filepath.Join(state, "model-registry.conf")
 	}
 	return legacy
@@ -50,7 +45,7 @@ func cacheRoot() string {
 	// Pre-migration cache recovery: an unmoved legacy home (a real directory,
 	// not the link the move leaves) still holds the caches, even once a
 	// models.json has created the new root.
-	if legacy := filepath.Join(home, ".claude-profiles"); !exists(root) || (isDir(legacy) && !isSymlink(legacy)) {
+	if legacy := filepath.Join(home, ".claude-profiles"); !paths.Exists(root) || (paths.IsDir(legacy) && !paths.IsSymlink(legacy)) {
 		root = legacy
 	}
 	return root
@@ -77,14 +72,14 @@ func cacheEntries(lines []string) []cacheEntry {
 
 func archive(path string) error {
 	backup := path + ".migrated"
-	for n := 1; exists(backup); n++ {
+	for n := 1; paths.Exists(backup); n++ {
 		backup = fmt.Sprintf("%s.migrated.%d", path, n)
 	}
 	return os.Rename(path, backup)
 }
 
 func readLegacy(legacy string) ([]cacheEntry, error) {
-	if isSymlink(legacy) {
+	if paths.IsSymlink(legacy) {
 		return nil, errors.New("legacy registry is a symlink; migration refused")
 	}
 	text, err := readText(legacy)
@@ -112,7 +107,7 @@ func MigrationPreview() (string, error) {
 	profiles := map[string]*counts{}
 	var names []string
 	for _, p := range globConf(state) {
-		if s := stem(p); !isSymlink(p) && ValidProfileName(s) {
+		if s := stem(p); !paths.IsSymlink(p) && ValidProfileName(s) {
 			profiles[s] = &counts{}
 			names = append(names, s)
 		}
@@ -121,7 +116,7 @@ func MigrationPreview() (string, error) {
 	root := cacheRoot()
 	for _, profile := range names {
 		cache := filepath.Join(root, profile, "cache/context-window")
-		if isFile(cache) && !isSymlink(cache) {
+		if paths.IsFile(cache) && !paths.IsSymlink(cache) {
 			text, err := readText(cache)
 			if err != nil {
 				return "", err
@@ -133,7 +128,7 @@ func MigrationPreview() (string, error) {
 		}
 	}
 	unresolved := 0
-	if exists(legacy) {
+	if paths.Exists(legacy) {
 		entries, err := readLegacy(legacy)
 		if err != nil {
 			return "", err
@@ -187,21 +182,21 @@ func migrateLocked(state string, stderr io.Writer) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if !exists(legacy) && len(caches) == 0 {
+	if !paths.Exists(legacy) && len(caches) == 0 {
 		if moved > 0 {
 			fmt.Fprintf(stderr, "Moved discovered context limits of %d profile(s) to profiles/<name>/models.json.\n", moved)
 		}
 		return 0, nil
 	}
 	var entries []cacheEntry
-	if exists(legacy) {
+	if paths.Exists(legacy) {
 		if entries, err = readLegacy(legacy); err != nil {
 			return 0, err
 		}
 	}
 	var profiles []string
 	for _, conf := range globConf(state) {
-		if conf[strings.LastIndex(conf, "/")+1:] == "model-registry.conf" || isSymlink(conf) || !ValidProfileName(stem(conf)) {
+		if conf[strings.LastIndex(conf, "/")+1:] == "model-registry.conf" || paths.IsSymlink(conf) || !ValidProfileName(stem(conf)) {
 			continue
 		}
 		_, fields, err := ReadConf(conf)
@@ -216,7 +211,7 @@ func migrateLocked(state string, stderr io.Writer) (int, error) {
 	var handled []string
 	attributed := map[string]bool{}
 	for _, c := range caches {
-		if isSymlink(c) {
+		if paths.IsSymlink(c) {
 			return 0, fmt.Errorf("legacy context cache is a symlink; migration refused: %s", c)
 		}
 	}
@@ -224,7 +219,7 @@ func migrateLocked(state string, stderr io.Writer) (int, error) {
 		expected := ProfileIdentity(profile)
 		cache := filepath.Join(root, profile, "cache/context-window")
 		values := map[string]int64{}
-		if isFile(cache) && !isSymlink(cache) {
+		if paths.IsFile(cache) && !paths.IsSymlink(cache) {
 			text, err := readText(cache)
 			if err != nil {
 				return 0, err
@@ -268,7 +263,7 @@ func migrateLocked(state string, stderr io.Writer) (int, error) {
 			return 0, err
 		}
 	}
-	if exists(legacy) {
+	if paths.Exists(legacy) {
 		if err := archive(legacy); err != nil {
 			return 0, err
 		}
@@ -282,11 +277,11 @@ func RecoverCacheBackups(stderr io.Writer) (int, error) {
 	root := cacheRoot()
 	for _, conf := range globConf(StateDir()) {
 		s := stem(conf)
-		if isSymlink(conf) || !ValidProfileName(s) {
+		if paths.IsSymlink(conf) || !ValidProfileName(s) {
 			continue
 		}
 		cache := filepath.Join(root, s, "cache/context-window.migrated")
-		if !isFile(cache) || isSymlink(cache) {
+		if !paths.IsFile(cache) || paths.IsSymlink(cache) {
 			continue
 		}
 		text, err := readText(cache)
@@ -311,11 +306,6 @@ func RecoverCacheBackups(stderr io.Writer) (int, error) {
 	return 0, nil
 }
 
-func isDir(path string) bool {
-	fi, err := os.Stat(path)
-	return err == nil && fi.IsDir()
-}
-
 // moveInlineDiscovered moves each conf's inline context_discovered line to its
 // models.json and removes the retired <name>.conf.lock files. It returns how
 // many profiles moved.
@@ -323,7 +313,7 @@ func moveInlineDiscovered(state string) (int, error) {
 	moved := 0
 	for _, conf := range globConf(state) {
 		s := stem(conf)
-		if isSymlink(conf) || !ValidProfileName(s) {
+		if paths.IsSymlink(conf) || !ValidProfileName(s) {
 			continue
 		}
 		os.Remove(conf + ".lock")

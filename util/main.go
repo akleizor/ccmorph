@@ -53,15 +53,6 @@ func stripBOM(b []byte) []byte { return bytes.TrimPrefix(b, []byte("\xef\xbb\xbf
 
 func readAll(r io.Reader) []byte { b, _ := io.ReadAll(r); return b }
 
-func exists(p string) bool { _, err := os.Stat(p); return err == nil }
-
-func isFile(p string) bool { fi, err := os.Stat(p); return err == nil && fi.Mode().IsRegular() }
-
-func isSymlink(p string) bool {
-	fi, err := os.Lstat(p)
-	return err == nil && fi.Mode()&os.ModeSymlink != 0
-}
-
 func asObj(v any) *ordjson.Obj { o, _ := v.(*ordjson.Obj); return o }
 
 func str(v any) (string, bool) { s, ok := v.(string); return s, ok }

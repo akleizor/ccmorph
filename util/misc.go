@@ -20,6 +20,7 @@ import (
 
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // Test seams: the two calls whose failures the migration tests must provoke.
@@ -40,8 +41,6 @@ func resolveLink(p string) string {
 	return abs
 }
 
-func isDir(p string) bool { fi, err := os.Stat(p); return err == nil && fi.IsDir() }
-
 // MigrateProfileHome moves a legacy ~/.claude-profiles into the state root under a
 // lock. moved reports a move, which the caller announces; the error is the
 // message to show.
@@ -55,7 +54,7 @@ func MigrateProfileHome(legacy, target string) (moved bool, err error) {
 	if err := os.MkdirAll(parent, 0o777); err != nil {
 		return false, err
 	}
-	if isSymlink(parent) {
+	if paths.IsSymlink(parent) {
 		return false, errors.New("refusing symlinked state root")
 	}
 	lock := filepath.Join(parent, ".profile-home-migration.lock")
@@ -79,12 +78,12 @@ func MigrateProfileHome(legacy, target string) (moved bool, err error) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	switch {
-	case isSymlink(legacy):
-		if resolveLink(legacy) != resolveLink(target) || !isDir(target) || isSymlink(target) {
+	case paths.IsSymlink(legacy):
+		if resolveLink(legacy) != resolveLink(target) || !paths.IsDir(target) || paths.IsSymlink(target) {
 			return false, errors.New("legacy profile link points elsewhere; nothing moved")
 		}
-	case exists(legacy):
-		if !isDir(legacy) || exists(target) || isSymlink(target) {
+	case paths.Exists(legacy):
+		if !paths.IsDir(legacy) || paths.Exists(target) || paths.IsSymlink(target) {
 			return false, errors.New("both profile locations exist or are not directories; nothing moved")
 		}
 		// Rename on the same filesystem: never copy credentials or merge homes.
@@ -92,7 +91,7 @@ func MigrateProfileHome(legacy, target string) (moved bool, err error) {
 			return false, err
 		}
 		if err := symlink(target, legacy); err != nil {
-			if !exists(legacy) && !isSymlink(legacy) {
+			if !paths.Exists(legacy) && !paths.IsSymlink(legacy) {
 				rename(target, legacy)
 			}
 			return false, err
@@ -124,7 +123,7 @@ func NormalizePluginIndex(homeDir, profileDir string) bool {
 				return "", false
 			}
 			target := filepath.Join(append([]string{plugins}, parts[2:]...)...)
-			return target, exists(target)
+			return target, paths.Exists(target)
 		}
 		return "", false
 	}

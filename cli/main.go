@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/paths"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -277,7 +278,7 @@ func (l *launcher) secureDirs() bool {
 	home := os.Getenv("HOME")
 	legacyHome := filepath.Join(home, ".claude-profiles")
 	if _, err := os.Lstat(legacyHome); err == nil {
-		same := isLink(legacyHome) && isDir(l.profileDirs) && !isLink(l.profileDirs) &&
+		same := isLink(legacyHome) && paths.IsDir(l.profileDirs) && !isLink(l.profileDirs) &&
 			resolvePath(legacyHome) == resolvePath(l.profileDirs)
 		if !same {
 			moved, err := util.MigrateProfileHome(legacyHome, l.profileDirs)
@@ -672,7 +673,7 @@ func (l *launcher) runInstaller(verb string, rest []string) int {
 		l.err("ccmorph was installed with Homebrew; run: brew " + brew + " ccmorph")
 		return 1
 	}
-	if !isFile(installer) {
+	if !paths.IsFile(installer) {
 		l.err("no installer at " + installer + ", so ccmorph cannot " + verb + " itself. Run the one-line install once:")
 		fmt.Fprintln(os.Stderr, `  sh -c "$(curl -fsSL https://github.com/akleizor/ccmorph/releases/latest/download/install.sh)"`)
 		return 1
