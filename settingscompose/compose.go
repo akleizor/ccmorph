@@ -94,8 +94,6 @@ func catch(fn func()) (out *failure) {
 	return nil
 }
 
-func stripBOM(b []byte) []byte { return bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")) }
-
 type missingT struct{}
 
 var missing value = missingT{}
@@ -164,25 +162,6 @@ func asList(v value) []any {
 	return l
 }
 
-func truthy(v value) bool {
-	switch t := v.(type) {
-	case nil:
-		return false
-	case bool:
-		return t
-	case string:
-		return t != ""
-	case json.Number:
-		f, _ := t.Float64()
-		return f != 0
-	case []any:
-		return len(t) > 0
-	case *obj:
-		return t.Len() > 0
-	}
-	return true
-}
-
 func load(path string) *obj {
 	b, err := readFile(path)
 	if err != nil {
@@ -193,7 +172,7 @@ func load(path string) *obj {
 	}
 	// Every settings file here is one a user's editor may have prefixed with a
 	// BOM: read them all the way settings.json itself is read.
-	o, ok := parse(stripBOM(b)).(*obj)
+	o, ok := parse(ordjson.StripBOM(b)).(*obj)
 	if !ok {
 		valueFail("%s: root is not a JSON object", path)
 	}
@@ -216,7 +195,7 @@ func readPolicy(profileDir string) *obj {
 		}
 		policyFail("%s: %s", policy, err.Error())
 	}
-	v, perr := ordjson.Parse(stripBOM(b))
+	v, perr := ordjson.Parse(ordjson.StripBOM(b))
 	if perr != nil {
 		policyFail("%s: %s", policy, perr)
 	}
@@ -303,7 +282,7 @@ func settle(profileDir string) {
 // saveBase writes the copy load() re-reads on every later launch, so it carries
 // settings.json's content, never the BOM an editor prefixed the file with.
 func saveBase(profileDir string, data []byte) {
-	data = stripBOM(data)
+	data = ordjson.StripBOM(data)
 	if cur := readBytes(join(profileDir, baseFile)); cur == nil || !bytes.Equal(cur, data) {
 		writeBytes(join(profileDir, baseFile), data)
 	}
@@ -325,12 +304,12 @@ func withoutInheritedHooks(layerIn, canonical *obj) *obj {
 	layer := ordjson.Clone(layerIn).(*obj)
 	hooksV := getObj(layer, "hooks")
 	var hooks *obj
-	if truthy(hooksV) {
+	if ordjson.Truthy(hooksV) {
 		hooks = asObj(hooksV, "items")
 	}
 	if hooks != nil {
 		canonHooks := ordjson.New()
-		if h := getObj(canonical, "hooks"); truthy(h) {
+		if h := getObj(canonical, "hooks"); ordjson.Truthy(h) {
 			canonHooks = asObj(h, "get")
 		}
 		for _, event := range hooks.Keys() {
@@ -376,7 +355,7 @@ func withoutInheritedHooks(layerIn, canonical *obj) *obj {
 			}
 		}
 	}
-	if v, ok := layer.Get("hooks"); ok && !truthy(v) {
+	if v, ok := layer.Get("hooks"); ok && !ordjson.Truthy(v) {
 		layer.Delete("hooks")
 	}
 	return layer
@@ -932,7 +911,7 @@ func build(profileName string, canonical, layerIn, saved *obj, strip, mapping ma
 	applyTombstones(data, layer)
 	data.Delete("model")
 	data.Delete("effortLevel")
-	if ms := getObj(data, "modelSettings"); truthy(ms) {
+	if ms := getObj(data, "modelSettings"); ordjson.Truthy(ms) {
 		for _, k := range asObj(ms, "values").Keys() {
 			if row, ok := getObj(ms.(*obj), k).(*obj); ok {
 				row.Delete("effortLevel")
@@ -1070,7 +1049,7 @@ func readCurrent(target string) ([]byte, *obj) {
 	if raw == nil {
 		return nil, nil
 	}
-	doc, ok := parse(stripBOM(raw)).(*obj)
+	doc, ok := parse(ordjson.StripBOM(raw)).(*obj)
 	if !ok {
 		valueFail("%s: root is not a JSON object", target)
 	}
@@ -1311,7 +1290,7 @@ func parseArgs(args []string) (*options, string) {
 		}
 		name = match[0]
 		if !hasVal {
-			if i+1 >= len(rest) || (strings.HasPrefix(rest[i+1], "-") && len(rest[i+1]) > 1 && !isNumber(rest[i+1])) {
+			if i+1 >= len(rest) || (strings.HasPrefix(rest[i+1], "-") && len(rest[i+1]) > 1 && !ordjson.IsNumber(rest[i+1])) {
 				return nil, fmt.Sprintf("argument %s: expected one argument", name)
 			}
 			i++
@@ -1342,8 +1321,6 @@ func parseArgs(args []string) (*options, string) {
 	o.profileDir = pyPath(positionals[0])
 	return o, ""
 }
-
-func isNumber(s string) bool { _, err := strconv.ParseFloat(s, 64); return err == nil }
 
 func set(items []string) map[string]bool {
 	m := map[string]bool{}
@@ -1376,7 +1353,7 @@ func Main(args []string, stderr io.Writer) int {
 		if !ok {
 			valueFail("--saved must be a JSON object")
 		}
-		if o.acw != nil && *o.acw != "none" && !isDigits(*o.acw) {
+		if o.acw != nil && *o.acw != "none" && !ordjson.IsDigits(*o.acw) {
 			valueFail("--acw must be a token count or none")
 		}
 		materialize(o.profileDir, o.canonical, saved, set(o.strip), set(o.mapping), o.acw, o.usageHook)
@@ -1389,18 +1366,6 @@ func Main(args []string, stderr io.Writer) int {
 		return 3
 	}
 	return fallbackOrRefuse(o.command, o.profileDir, stderr)
-}
-
-func isDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 // MergedView is what settings.json would hold for these layers, canon first: the

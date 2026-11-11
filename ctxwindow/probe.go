@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/akleizor/ccmorph/ordjson"
 )
 
 var declared = []*regexp.Regexp{
@@ -322,19 +324,11 @@ func Probe(ctx context.Context, base, key, model, blob string, timeout time.Dura
 			if val > 0 {
 				return ProbeResult{sh.name + ":bisected", val, why}
 			}
-			return ProbeResult{sh.name + ":opaque", 0, strings.Join(strings.Fields(truncRunes(detail, 200)), " ") + " — " + why}
+			return ProbeResult{sh.name + ":opaque", 0, strings.Join(strings.Fields(ordjson.TruncRunes(detail, 200)), " ") + " — " + why}
 		}
-		return ProbeResult{sh.name + ":opaque", 0, strings.Join(strings.Fields(truncRunes(detail, 300)), " ")}
+		return ProbeResult{sh.name + ":opaque", 0, strings.Join(strings.Fields(ordjson.TruncRunes(detail, 300)), " ")}
 	}
 	return ProbeResult{"unsupported", 0, "rejected on both shapes"}
-}
-
-func truncRunes(s string, n int) string {
-	r := []rune(s)
-	if len(r) > n {
-		r = r[:n]
-	}
-	return string(r)
 }
 
 // firstText is `detailMsg or error_message or error.message`, the first truthy string.
