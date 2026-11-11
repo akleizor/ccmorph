@@ -1930,6 +1930,18 @@ test_only_the_current_vocabulary_is_taught() {
     print -u2 -- 'the rejected `go` verb must not reappear alongside start'
     rc=1
   fi
+  # The retired window verb's one spelling lives in the core's dispatch
+  # (cli/main.go: retiredVerb). The zsh library once carried a variable for it,
+  # with a comment claiming a test pinned the alias through that variable; no
+  # line in the library ever read it, and the pin drove the core instead, so it
+  # was a second vocabulary kept alive by prose alone (#421). The name is
+  # assembled from fragments like the retired word above, so `git grep` for it
+  # finds nothing while this guard still catches it coming back.
+  local _dead_alias="_ccm_retired""_verb"
+  if grep -q "$_dead_alias" "${CCMORPH_LIBRARY[@]}"; then
+    print -u2 -- 'the zsh library must not define a variable for the retired window verb; the core owns that alias'
+    rc=1
+  fi
   return $rc
 }
 
