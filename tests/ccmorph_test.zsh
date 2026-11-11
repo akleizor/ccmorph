@@ -12689,10 +12689,10 @@ run_test test_the_runners_session_env_never_reaches_a_fixture
 # and the bystander is the recycled pid the tail keeps trusting.
 test_the_serve_tail_leaves_when_its_own_launcher_is_gone() {
   local test_home; test_home=$(mktemp -d)
-  local rc=0 serve_pid bystander line cmd odd= look=
+  local rc=0 serve_pid bystander line cmd odd= look= alien= foreign=
   local record="$test_home/record" real_ps=${commands[ps]-}
   local -a entries after
-  local -i i=0 at
+  local -i i=0 at npass=0 ncolon=0 nkill=0 nsleep=0
   typeset -F 1 clock=0
   if [[ -z $real_ps ]]; then
     print -u2 -- "the serve tail needs a ps on PATH to look up its ppid"
@@ -12706,7 +12706,10 @@ test_the_serve_tail_leaves_when_its_own_launcher_is_gone() {
   # the tail must leave on a ppid look that answered 1, within main's ten
   # seconds of its own sleeping. The wait ends on an event -- the tail gone, a
   # look ps could not answer, or a sleep after a look that answered 1 -- and
-  # only CCMORPH_TEST_HANG_TIMEOUT bounds it.
+  # only CCMORPH_TEST_HANG_TIMEOUT bounds it. Time the tail spends outside its
+  # sleeps would escape that sum, so the record may hold only the commands the
+  # fixture's poll runs, once a pass each: any other command, output or busy
+  # pass is a failure, never load.
   mkdir "$test_home/bin"
   : > "$record"
   printf '%s\n' '#!/bin/sh' \
@@ -12744,25 +12747,44 @@ echo $! > "$3"' _ "$SCRIPT_DIR/fake_adapter_serve.sh" "$bystander" "$test_home/s
     rc=1
   else
     for line in $entries; do
-      [[ $line == +* ]] || continue
+      [[ $line == look\ * ]] && continue
+      if [[ $line != +* ]]; then
+        foreign=$line
+        continue
+      fi
       cmd=$line
       while [[ $cmd == +* ]]; do cmd=${cmd#+}; done
-      cmd=${cmd# }
-      [[ $cmd == (|*/)sleep\ * ]] || continue
-      if [[ ${cmd#*sleep } == <->(|.<->) ]]; then
-        (( clock += ${cmd#*sleep } ))
-      else
-        odd=${cmd#*sleep }
-      fi
+      cmd=${${cmd# }//\'/}
+      case $cmd in
+        (|*/)sleep\ *)
+          nsleep+=1
+          if [[ ${cmd#*sleep } == <->(|.<->) ]]; then
+            (( clock += ${cmd#*sleep } ))
+          else
+            odd=${cmd#*sleep }
+          fi ;;
+        pass=0) ;;
+        pass=<->) npass+=1 ;;
+        :) ncolon+=1 ;;
+        kill\ -0\ <->) nkill+=1 ;;
+        parent=|parent=<->|prev=*|for\ arg\ in\ *|case\ *|\[\ *\ \]|ps\ -o\ ppid=\ -p\ <->|set\ --\ *|exit\ 0) ;;
+        *) alien=$cmd ;;
+      esac
     done
     if [[ $look != 'look 0 1' || -n ${(M)after:#*sleep *} ]]; then
       print -u2 -- "the serve tail left without seeing its launcher gone: its last ppid look was '$look', not one that answered 1 and ended it"
+      rc=1
+    elif [[ -n $alien$foreign ]]; then
+      print -u2 -- "the serve tail did '$alien$foreign', which the fixture's poll never does: work outside its sleeps is time its own clock cannot count"
       rc=1
     elif [[ -n $odd ]]; then
       print -u2 -- "the serve tail slept '$odd', which its own clock cannot count"
       rc=1
     elif (( clock > 10 )); then
       print -u2 -- "the serve tail left after ${clock}s of its own sleeping, past the ten seconds an orphan gets"
+      rc=1
+    elif (( npass != nsleep + 1 || ncolon != npass || nkill != npass )); then
+      print -u2 -- "the serve tail made $npass passes with $nsleep sleeps ($ncolon loops, $nkill parent checks): a pass that does not sleep once is busy work"
       rc=1
     fi
   fi
