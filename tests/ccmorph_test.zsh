@@ -12694,13 +12694,20 @@ test_the_serve_tail_leaves_when_its_own_launcher_is_gone() {
   /bin/sh -c 'sh "$1" gw --parent-pid "$2" &
 echo $! > "$3"' _ "$SCRIPT_DIR/fake_adapter_serve.sh" "$bystander" "$test_home/serve.pid" 2>/dev/null
   serve_pid=$(<"$test_home/serve.pid")
-  local -i i=0
+  # GH-419: the count of 0.1s ticks is a share of the suite's shared bound,
+  # CCMORPH_TEST_HANG_TIMEOUT, not a literal: three quarters of it, nine seconds
+  # at the default 120. Unlike the suite's other waits this one is a deadline on
+  # purpose -- how soon an orphaned tail leaves is the contract under test -- so
+  # it never grows past main's ten seconds: a tail main rejected is rejected
+  # here too. The loop is main's own, a PATH sleep and nothing else, so no other
+  # work can stretch it past the old wait.
+  local -i i=0 ticks=CCMORPH_TEST_HANG_TIMEOUT*3/4
   while kill -0 "$serve_pid" 2>/dev/null; do
-    (( ++i < 100 )) || break
+    (( ++i < ticks )) || break
     sleep 0.1
   done
   if kill -0 "$serve_pid" 2>/dev/null; then
-    print -u2 -- "the serve tail outlived its orphaned launcher for 10s while --parent-pid named a live pid"
+    print -u2 -- "the serve tail outlived its orphaned launcher for ${ticks} ticks of 0.1s (three quarters of CCMORPH_TEST_HANG_TIMEOUT=${CCMORPH_TEST_HANG_TIMEOUT}s) while --parent-pid named a live pid"
     kill -KILL "$serve_pid" 2>/dev/null
     rc=1
   fi
