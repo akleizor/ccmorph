@@ -796,18 +796,54 @@ func (l *launcher) usage(topic string) int {
 	return l.usageAt(topic, helpWidth())
 }
 
-// confDirSpelling is the state root as a help page spells a conf file's
-// directory: the root this launcher resolved, cleaned, spelled ~/… under the
-// home directory — so the default root spells itself ~/.config/ccmorph and
-// only a redirected one changes a page.
-func (l *launcher) confDirSpelling() string {
-	root := filepath.Clean(l.dir)
+// spelledFromHome is path cleaned and spelled ~/… under the home directory.
+func spelledFromHome(path string) string {
+	root := filepath.Clean(path)
 	if home, err := os.UserHomeDir(); err == nil {
 		if rel, ok := strings.CutPrefix(root, home+string(filepath.Separator)); ok {
 			return "~/" + rel
 		}
 	}
 	return root
+}
+
+// confDirSpelling is the state root as a help page spells a conf file's
+// directory: the root this launcher resolved, cleaned, spelled ~/… under the
+// home directory — so the default root spells itself ~/.config/ccmorph and
+// only a redirected one changes a page.
+func (l *launcher) confDirSpelling() string {
+	return spelledFromHome(l.dir)
+}
+
+// profileTemplate is the profile.conf.example this install holds, spelled for a
+// help page, or "" when there is none (#392). The code root is lib/'s parent:
+// install.sh copies the template to that root on a clone or one-line install;
+// a Homebrew package and a source checkout keep the repository's tree, so it
+// is in share/ there.
+func (l *launcher) profileTemplate() string {
+	if l.libDir == "" {
+		return ""
+	}
+	root := filepath.Dir(filepath.Clean(l.libDir))
+	for _, p := range []string{
+		filepath.Join(root, "profile.conf.example"),
+		filepath.Join(root, "share", "profile.conf.example"),
+	} {
+		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
+			return spelledFromHome(p)
+		}
+	}
+	return ""
+}
+
+// templateNote ends the config page: where this install keeps the template that
+// lists every key a conf file may carry (#392).
+func (l *launcher) templateNote() string {
+	const lead = "Every key a profile's conf file may carry, including ones no menu offers, is\nlisted with what it does in "
+	if p := l.profileTemplate(); p != "" {
+		return lead + "this install's template:\n  " + p
+	}
+	return lead + "the template profile.conf.example, which this\ninstall is missing: reinstall ccmorph to restore it."
 }
 
 // usageAt prints a help page wrapped to width columns (helpWidth). width 0 is
@@ -890,6 +926,11 @@ func (l *launcher) usageAt(topic string, width int) int {
 	// root — not the default spelling — is where the advice takes effect.
 	if l.dir != "" {
 		body = strings.ReplaceAll(body, "~/.config/ccmorph/", l.confDirSpelling()+"/")
+	}
+	// The template's path is the code's, not the state root's: added after the
+	// conf-dir rewrite, so a redirected root never rewrites it (#392).
+	if topic == "config" {
+		body += "\n\n" + l.templateNote()
 	}
 	fmt.Println(wrapBody(body, width))
 	if pickerTopics[topic] {
