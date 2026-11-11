@@ -94,6 +94,8 @@ credential, or losing the user's choice.
   Seen 1× (2026-11-10).
 - **A wrapper that names its neighbour from the link's directory instead of the script's** (2026-11-10) — a launcher reached through a symlink took `dirname "$0"` as where it lived, so the program it execs was joined beside the link and the command died with no such file; follow the link chain to the script before building the path to what ships beside it — `example: #416 fix(scripts): the usage-export wrapper follows a link before naming its neighbour (2026-11-10)`.
   Seen 1× (2026-11-10).
+- **A formatter's drift the gate never runs** (2026-11-10) — `gofmt -l` named `cli/inspect.go` and `shim/shim_test.go` on main while CI built and tested every Go package and ran no formatter, so drift an editor reports at once landed silently and stayed: the inspect line came in with #360's wording change (e6d2bb4, 2026-11-09), the shim test table was older, and nothing on the gate named either until a hand-run on 2026-11-10. A formatter the repo standardises on is a step in the gate, so a branch whose `gofmt -l` is non-empty fails before its build — `example: #420 ci: the gate fails on gofmt drift`.
+  Seen 1× (2026-11-10).
 
 ## Gate rules
 
