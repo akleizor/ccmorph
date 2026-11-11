@@ -130,22 +130,11 @@ const (
 // native route needs a claude-* id; a provider's catalogue lives in its bridge, so
 // only a claude-* id is a definite no there.
 func ModelServed(want, typ, base, modelMap, key string) Served {
-	want, answer, decided := servedBeforeListing(want, typ, base)
-	if decided {
-		return answer
+	p := probeServed(want, typ, base, modelMap, key)
+	if p.decided {
+		return p.answer
 	}
-	// Native routes launch without an adapter, so their maps are unused.
-	if strings.TrimSuffix(base, "/") == "https://api.anthropic.com" {
-		modelMap = ""
-	}
-	if strings.TrimSpace(key) == "" {
-		return ServedUnknown
-	}
-	listing, ok := ModelsListing(base, key, io.Discard)
-	if !ok {
-		return ServedUnknown
-	}
-	return Served(modelInListing(listing, want, modelMap))
+	return Served(modelInListing(p.listing, p.want, p.modelMap))
 }
 
 // ContextServed reports whether the route's listing carries want the way
@@ -153,25 +142,50 @@ func ModelServed(want, typ, base, modelMap, key string) Served {
 // rewrites still counts through its target (#370). ModelServed stays the
 // launch judgement — the target is what a session runs.
 func ContextServed(want, typ, base, modelMap, key string) Served {
-	want, answer, decided := servedBeforeListing(want, typ, base)
-	if decided {
-		return answer
+	p := probeServed(want, typ, base, modelMap, key)
+	if p.decided {
+		return p.answer
+	}
+	if modelInListing(p.listing, p.want, "") == 0 {
+		return ServedYes
+	}
+	return Served(modelInListing(p.listing, p.want, p.modelMap))
+}
+
+// servedProbe is the shared prologue of the two served judgements: the
+// judgement a listing is not asked for, the native route's unused map dropped,
+// the empty-key answer and the listing fetch. decided says answer is final;
+// otherwise listing is the fetched body and want and modelMap are what the
+// caller's own last step judges.
+type servedProbe struct {
+	listing        string
+	want, modelMap string
+	answer         Served
+	decided        bool
+}
+
+func probeServed(want, typ, base, modelMap, key string) servedProbe {
+	p := servedProbe{}
+	p.want, p.answer, p.decided = servedBeforeListing(want, typ, base)
+	if p.decided {
+		return p
 	}
 	// Native routes launch without an adapter, so their maps are unused.
 	if strings.TrimSuffix(base, "/") == "https://api.anthropic.com" {
 		modelMap = ""
 	}
+	p.modelMap = modelMap
 	if strings.TrimSpace(key) == "" {
-		return ServedUnknown
+		p.answer, p.decided = ServedUnknown, true
+		return p
 	}
 	listing, ok := ModelsListing(base, key, io.Discard)
 	if !ok {
-		return ServedUnknown
+		p.answer, p.decided = ServedUnknown, true
+		return p
 	}
-	if modelInListing(listing, want, "") == 0 {
-		return ServedYes
-	}
-	return Served(modelInListing(listing, want, modelMap))
+	p.listing = listing
+	return p
 }
 
 // servedBeforeListing is the judgement a listing is not asked for: want minus
