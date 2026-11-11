@@ -88,6 +88,8 @@ credential, or losing the user's choice.
   Seen 1× (2026-11-09).
 - **A two-step migration that ignores the failure between its steps while its readers trust it** (2026-11-09) — the one-time move of flat usage rows into day folders linked each row into its day folder and then removed the flat name with the remove's error dropped, so a crash between the two or a remove that failed left the row under both names; a re-run met the day name as taken (EEXIST) and kept the flat copy forever, and the report and the quota, trusting the move to leave each row in one place, summed both copies on every run. A step that can stop halfway is finished or undone by the next run (a taken name that is a second name for this very file is the earlier run's claim, not another row's), every step's error is checked, and a reader that spans the old and the new store counts a row once by its identity — Example: 1304cf1 (2026-11-09).
   Seen 1× (2026-11-09).
+- **A refusal that names the cause but not the repair its channel promises** (2026-11-10) — the line is the whole message on a channel that passes it through untouched, so one that stops at the cause leaves the person holding it: 2026-11-10: #375's message-refusal EXIT carried the gateway's own words with no repair, while the REFUSED contract says the launcher adds nothing because the line is the whole message, though every sibling refusal ends with the one command that repairs or diagnoses it — Example: #448 fix(adapter): a gateway's message refusal ends with its repair.
+  Seen 1× (2026-11-10).
 
 ## Gate rules
 

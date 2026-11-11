@@ -623,8 +623,22 @@ func Main(argv []string) int {
 		// never an adapter problem (#375).
 		var refusal messageRefusal
 		if a.auto && required != "" && errors.As(err, &refusal) {
+			// The launcher passes a REFUSED line through untouched, so this
+			// line is the whole message: the repair its siblings carry has to
+			// be on it too (#448). An empty balance or a rate limit is the
+			// provider's own account, not this route, so it says so and names
+			// the command that shows or changes the endpoint this profile
+			// reaches; any other refusal is the gateway's own failure, where
+			// doctor is the one command that checks the route.
+			repair := "retry, or check the route: ccmorph doctor " + a.profile
+			switch refusal.status {
+			case 402:
+				repair = "top up the provider account, then retry; or change the route: ccmorph config " + a.profile
+			case 429:
+				repair = "wait for the provider's rate limit to reset, then retry; or change the route: ccmorph config " + a.profile
+			}
 			logf("%v", refusal)
-			fmt.Printf("EXIT=%v\n", refusal)
+			fmt.Printf("EXIT=%v; %s\n", refusal, repair)
 			return 1
 		}
 		die("%v", err)
