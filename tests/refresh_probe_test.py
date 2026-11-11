@@ -144,11 +144,16 @@ class DiscoveryHTTP(unittest.TestCase):
         (auth / "token.json").chmod(0o644)
         repo = Path(__file__).resolve().parent.parent
         # _route_env starts a bridge and hands back its handle; _route_stop is
-        # the real one, so the assertions see the product's own cleanup.
+        # the real one, so the assertions see the product's own cleanup. The
+        # fake bridge runs through {bridge}/config.yaml, as cliproxyapi runs
+        # its rendered config, so the retirement's ownership check can prove
+        # the PID before it stops it (#408).
         self.script.write_text(f"""ccmorph() {{
   case "$1" in
     _route_env)
-      command sleep 300 </dev/null >/dev/null 2>&1 &
+      mkdir -p "{bridge}"
+      ln -s "$(command -v sleep)" "{bridge}/config.yaml"
+      "{bridge}/config.yaml" 300 </dev/null >/dev/null 2>&1 &
       local pid=$!
       print -r -- "$pid" > "{root}/bridge.pid"
       print "ANTHROPIC_API_KEY=canary"

@@ -1,12 +1,14 @@
 package util
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // bridgeProc starts a stand-in for a bridge: a sleeper whose argv carries the
@@ -188,6 +190,213 @@ func TestReleaseNeverSignalsAPidNotRunningTheBridge(t *testing.T) {
 	if _, err := os.Stat(a.TmpDir); err == nil {
 		t.Fatal("release still removes the bridge's config dir")
 	}
+}
+
+// RetireRoute signals the bridge its handle names only while the process
+// table shows that PID running it: a number the system reused belongs to
+// someone else, and the record may name a bridge another session still uses
+// (#408).
+func TestRetireRouteNeverSignalsAPidNotRunningTheBridge(t *testing.T) {
+	root := t.TempDir()
+	auth := filepath.Join(root, "p")
+	tmp := filepath.Join(root, "ccmorph-bridge-1")
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := BridgeFiles(root, "p")[0]
+	sleep := func(t *testing.T) *exec.Cmd {
+		t.Helper()
+		cmd := exec.Command("sleep", "60")
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		go cmd.Wait()
+		t.Cleanup(func() { cmd.Process.Kill() })
+		return cmd
+	}
+	t.Run("the record names the handle", func(t *testing.T) {
+		other := sleep(t)
+		want := strconv.Itoa(other.Process.Pid) + " 4100 k " + tmp
+		if err := os.WriteFile(record, []byte(want), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		RetireRoute(auth, strconv.Itoa(other.Process.Pid), tmp, "")
+		if syscall.Kill(other.Process.Pid, 0) != nil {
+			t.Fatal("retirement must never signal a PID that does not run this bridge")
+		}
+		if raw, err := os.ReadFile(record); err != nil || string(raw) != want {
+			t.Fatalf("the record must stay for the bridge it names: %v %q", err, raw)
+		}
+		if _, err := os.Stat(tmp); err != nil {
+			t.Fatal("the config dir of a bridge that may still run must stay")
+		}
+	})
+	t.Run("no auth directory", func(t *testing.T) {
+		other := sleep(t)
+		RetireRoute("", strconv.Itoa(other.Process.Pid), tmp, "")
+		if syscall.Kill(other.Process.Pid, 0) != nil {
+			t.Fatal("retirement must never signal a PID that does not run this bridge")
+		}
+	})
+	t.Run("a PID that is gone", func(t *testing.T) {
+		gone := exec.Command("sleep", "60")
+		if err := gone.Start(); err != nil {
+			t.Fatal(err)
+		}
+		gone.Process.Kill()
+		gone.Wait()
+		want := strconv.Itoa(gone.Process.Pid) + " 4100 k " + tmp
+		if err := os.WriteFile(record, []byte(want), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		RetireRoute(auth, strconv.Itoa(gone.Process.Pid), tmp, "")
+		if _, err := os.Stat(record); err == nil {
+			t.Fatal("a dead bridge's record must not outlive it")
+		}
+		if _, err := os.Stat(tmp); err == nil {
+			t.Fatal("a dead bridge's config dir must not outlive it")
+		}
+	})
+}
+
+// TestMain lets a test run this binary as a route hold: with
+// CCMORPH_TEST_HOLD_USERS set it takes routeHold's hold on that file, whatever
+// its argv says, and runs no test.
+func TestMain(m *testing.M) {
+	if users := os.Getenv("CCMORPH_TEST_HOLD_USERS"); users != "" {
+		os.Exit(routeHold([]string{users}, nil, os.Stdout, io.Discard))
+	}
+	os.Exit(m.Run())
+}
+
+// coreCopy is this test binary under the name ccmorph-core: a hard link, or a
+// copy where the temp dir is on another volume. Never a symlink: darwin names a
+// process after the file a symlink resolves to, so a linked holder would read
+// as util.test, never as the core (#408).
+func coreCopy(t *testing.T) string {
+	t.Helper()
+	core := filepath.Join(t.TempDir(), "ccmorph-core")
+	if os.Link(os.Args[0], core) == nil {
+		return core
+	}
+	src, err := os.Open(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	dst, err := os.OpenFile(core, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		t.Fatal(err)
+	}
+	if err := dst.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return core
+}
+
+// holdProc runs this test binary from the file exe with argv as its whole argv,
+// holding users (TestMain), and returns once the hold has landed.
+func holdProc(t *testing.T, exe, users string, argv ...string) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command(exe)
+	cmd.Args = argv
+	cmd.Env = append(os.Environ(), "CCMORPH_TEST_HOLD_USERS="+users)
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stdout = pw
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	pw.Close()
+	go cmd.Wait()
+	t.Cleanup(func() { cmd.Process.Kill() })
+	defer pr.Close()
+	pr.SetReadDeadline(time.Now().Add(10 * time.Second))
+	one := make([]byte, 1)
+	if _, err := io.ReadFull(pr, one); err != nil || one[0] != '1' {
+		t.Fatalf("the hold never landed: %v %q", err, one)
+	}
+	return cmd
+}
+
+// argvOf keeps the argument boundaries the joined command line loses: one
+// argument holding spaces is one element (#408). The process it reads stays
+// running until it is read (holdProc), because a process that exits on its own
+// arguments has no command line left to read on Linux.
+func TestArgvOfKeepsArgumentBoundaries(t *testing.T) {
+	users := BridgeFiles(t.TempDir(), "p")[2]
+	p := holdProc(t, os.Args[0], users, "argv0", "60", "a b", "c")
+	argv, ok := argvOf(p.Process.Pid)
+	if !ok || len(argv) != 4 || argv[0] != "argv0" || argv[1] != "60" || argv[2] != "a b" || argv[3] != "c" {
+		t.Fatalf("argv must read one element per argument, got %q %v", argv, ok)
+	}
+}
+
+// endHold signals a holder PID only while the process table shows the core's
+// route hold on the users file, proven by the executable (comm ccmorph-core)
+// and the exact operands: a number the system reused, or a program whose argv
+// carries the same words, may be another session's process, whose hold — and
+// the bridge that hold keeps alive — would end with it (#408).
+func TestEndRouteHoldSignalsOnlyTheRouteHold(t *testing.T) {
+	users := BridgeFiles(t.TempDir(), "p")[2]
+	t.Run("a PID the system reused", func(t *testing.T) {
+		other := exec.Command("sleep", "60")
+		if err := other.Start(); err != nil {
+			t.Fatal(err)
+		}
+		go other.Wait()
+		t.Cleanup(func() { other.Process.Kill() })
+		EndRouteHold(strconv.Itoa(other.Process.Pid), users)
+		// A signalled sleep turns zombie until reaped, and Kill alone reads a
+		// zombie as alive, so the check must reap: waitGone polls Wait4.
+		if waitGone(other.Process.Pid, 1e9) {
+			t.Fatal("endHold must never signal a PID that does not run the route's hold")
+		}
+	})
+	core, self := coreCopy(t), os.Args[0]
+	survives := func(name string, start func(t *testing.T) *exec.Cmd) {
+		t.Run(name, func(t *testing.T) {
+			p := start(t)
+			EndRouteHold(strconv.Itoa(p.Process.Pid), users)
+			if waitGone(p.Process.Pid, 1e9) {
+				t.Fatal("endHold must never signal a process that is not the route's own hold")
+			}
+		})
+	}
+	survives("another program with the words in one argument", func(t *testing.T) *exec.Cmd {
+		return holdProc(t, self, users, self, "-c", "import time; time.sleep(60)", "util route-hold "+users)
+	})
+	survives("another program under the name ccmorph-core", func(t *testing.T) *exec.Cmd {
+		return holdProc(t, self, users, core, "util", "route-hold", users)
+	})
+	survives("ccmorph-core holding another users file", func(t *testing.T) *exec.Cmd {
+		return holdProc(t, core, users+"x", core, "util", "route-hold", users+"x")
+	})
+	survives("ccmorph-core with an extra operand", func(t *testing.T) *exec.Cmd {
+		return holdProc(t, core, users, core, "util", "route-hold", users, "more")
+	})
+	// The joined command line cannot tell this one operand from the words it
+	// spells: the process holds another file whose name ends the way a route's
+	// argv does.
+	survives("ccmorph-core holding a file named like the route's argv", func(t *testing.T) *exec.Cmd {
+		other := t.TempDir() + "/ccmorph-core util route-hold " + users
+		if err := os.MkdirAll(filepath.Dir(other), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return holdProc(t, core, other, core, "util", "route-hold", other)
+	})
+	t.Run("the route's own holder", func(t *testing.T) {
+		h := holdProc(t, core, users, core, "util", "route-hold", users)
+		EndRouteHold(strconv.Itoa(h.Process.Pid), users)
+		if !waitGone(h.Process.Pid, 3e9) {
+			t.Fatal("the route's own holder must still be ended")
+		}
+	})
 }
 
 // A session that outlives its profile's rm puts none of the bridge files back.

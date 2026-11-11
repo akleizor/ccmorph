@@ -36,3 +36,14 @@ func procStartToken(pid int) (string, bool) {
 	}
 	return strings.TrimSpace(string(boot)) + ":" + f[19], true
 }
+
+// argvOf is pid's argv with its argument boundaries, from /proc/<pid>/cmdline,
+// whose arguments are NUL-ended; false where there is no /proc, the pid is gone
+// or the command line is empty.
+func argvOf(pid int) ([]string, bool) {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/cmdline")
+	if err != nil || len(b) == 0 {
+		return nil, false
+	}
+	return strings.Split(strings.TrimSuffix(string(b), "\x00"), "\x00"), true
+}

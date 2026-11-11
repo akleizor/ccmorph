@@ -66,19 +66,19 @@ func sysctlRaw(mib []int32, buf []byte) ([]byte, bool) {
 	return nil, false
 }
 
-// procArgs is a process's argv from kern.procargs2, space-joined the way ps's
-// command= column reads; "" when it cannot be read (another user's process, a
-// process that left between the two reads).
-func procArgs(pid int, buf []byte) string {
+// procArgv is a process's argv from kern.procargs2, one element per argument as
+// the process was started with them; nil when it cannot be read (another
+// user's process, a process that left between the two reads).
+func procArgv(pid int, buf []byte) []string {
 	b, ok := sysctlRaw([]int32{1, 49, int32(pid)}, buf)
 	if !ok || len(b) < 4 {
-		return ""
+		return nil
 	}
 	argc := int(binary.LittleEndian.Uint32(b))
 	rest := b[4:]
 	i := bytes.IndexByte(rest, 0) // the exec path, then NUL padding
 	if i < 0 {
-		return ""
+		return nil
 	}
 	rest = bytes.TrimLeft(rest[i:], "\x00")
 	args := make([]string, 0, argc)
@@ -87,7 +87,18 @@ func procArgs(pid int, buf []byte) string {
 		args = append(args, string(a))
 		rest = r
 	}
-	return strings.Join(args, " ")
+	return args
+}
+
+// procArgs is procArgv space-joined the way ps's command= column reads; ""
+// when it cannot be read.
+func procArgs(pid int, buf []byte) string { return strings.Join(procArgv(pid, buf), " ") }
+
+// argvOf is pid's argv with its argument boundaries, read from the kernel; false
+// when it cannot be read.
+func argvOf(pid int) ([]string, bool) {
+	argv := procArgv(pid, nil)
+	return argv, len(argv) > 0
 }
 
 // sysctlProcessTable is processTable without ps, which a sandboxed Claude Code
