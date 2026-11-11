@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
@@ -47,6 +48,37 @@ class Gateway(BaseHTTPRequestHandler):
     # `test_selected_launch_has_its_own_global_deadline` reads it instead of
     # racing the stall with a client timeout.
     stall_released = threading.Event()
+    # Every arrival is stamped with the test generation that accepted its
+    # connection. An adapter terminated mid-probe (#454: the fixed-port test
+    # ends while its sweep is in flight) leaves request bytes in the kernel's
+    # socket buffer, and a handler starved by a loaded runner reads them after
+    # the next test has begun — an arrival no running test asked for. The
+    # generation tells a live test's probe from such a leftover.
+    generation = 0
+    # Set when an arrival is recognized as a dead client's leftover.
+    stale_dropped = threading.Event()
+    # Held by the regression test only: seconds a handler sits between
+    # accepting a connection and reading from it — the starvation a loaded
+    # runner causes — so its read provably lands past a generation bump.
+    read_delay = 0.0
+    read_started = threading.Event()
+
+    def setup(self):
+        super().setup()
+        self.gen = Gateway.generation
+        if Gateway.read_delay:
+            Gateway.read_started.set()
+            time.sleep(Gateway.read_delay)
+
+    def _stale(self):
+        # True when this connection was accepted for an earlier test: its
+        # client is a dead adapter, and whatever arrives on it is a leftover,
+        # not a probe of the running test. Close without reading further.
+        if self.gen != Gateway.generation:
+            Gateway.stale_dropped.set()
+            self.close_connection = True
+            return True
+        return False
 
     def log_message(self, format, *args):  # noqa: A002
         pass
@@ -60,11 +92,15 @@ class Gateway(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_GET(self):
+        if self._stale():
+            return
         XFF_SEEN.append(self.headers.get("X-Forwarded-For"))
         ids = list(MODELS) + list(Gateway.extra_models)
         self._json(200, {"data": [{"id": i, "object": "model"} for i in ids]})
 
     def do_POST(self):
+        if self._stale():
+            return
         XFF_SEEN.append(self.headers.get("X-Forwarded-For"))
         raw = self.rfile.read(int(self.headers.get("content-length") or 0))
         # What the upstream really received — path, headers (lowercased), raw
@@ -220,6 +256,13 @@ class AdapterTest(unittest.TestCase):
         cls.srv.shutdown()
 
     def setUp(self):
+        # The test that begins here counts only arrivals on connections it
+        # accepted: everything from an earlier generation is a dead client's
+        # leftover arriving late, and must not enter this test's lists.
+        Gateway.generation += 1
+        Gateway.read_delay = 0.0
+        Gateway.read_started.clear()
+        Gateway.stale_dropped.clear()
         PROBES.clear()
         XFF_SEEN.clear()
         UPSTREAM.clear()
@@ -1426,6 +1469,47 @@ class AdapterTest(unittest.TestCase):
         self.assertNotIn("no route", out.stdout + out.stderr)
         # The stale row was re-asked, not served.
         self.assertEqual([p for p, _m in PROBES], ["/v1/messages"])
+
+    def test_a_dead_clients_late_request_is_not_counted_in_a_later_test_issue_454(self):
+        # Issue #454: the re-ask pin above failed on loaded runners only, with
+        # a second /v1/messages no test asked for. The fixed-port test ends
+        # while its adapter's classification sweep is still in flight, and its
+        # cleanup terminates that adapter: the POST bytes the dead client wrote
+        # sit in the kernel's socket buffer, and a handler starved by the load
+        # reads one after the next test has already begun and cleared the
+        # lists. An arrival whose connection was accepted in an earlier test
+        # generation is such a leftover — the gateway must never count it.
+        Gateway.read_delay = 0.3
+        body = json.dumps({"model": "m-anthropic"}).encode()
+        sock = socket.create_connection(("127.0.0.1", self.port),
+                                        timeout=HANG_TIMEOUT)
+        sock.sendall(b"POST /v1/messages HTTP/1.1\r\nhost: x\r\n"
+                     b"content-type: application/json\r\ncontent-length: "
+                     + str(len(body)).encode() + b"\r\n\r\n" + body)
+        sock.close()  # the client is gone; only the kernel holds the bytes now
+        # The handler has accepted and stamped the connection, and sits on the
+        # held read; only now does the next test begin, so the leftover's read
+        # lands in the new generation, as it did on the loaded runner.
+        self.assertTrue(Gateway.read_started.wait(HANG_TIMEOUT),
+                        "the gateway never accepted the dead client")
+        Gateway.generation += 1  # what the next test's setUp does
+        # The held read completes either as a counted arrival (the bug: the
+        # leftover enters the new test's list) or as a drop.
+        self.assertTrue(wait_until(lambda: Gateway.stale_dropped.is_set() or PROBES,
+                                   HANG_TIMEOUT),
+                        "the gateway never read the dead client's request")
+        self.assertEqual(PROBES, [],
+                         "a dead client's late request must not be counted")
+        self.assertFalse(XFF_SEEN, "a dead client's late request must not be counted")
+        # The drop must not cost the running test its own arrivals: a live
+        # probe of the current generation is recorded, as always.
+        import urllib.request
+        req = urllib.request.Request(self.base + "/v1/messages",
+                                     data=body, method="POST")
+        with urllib.request.urlopen(req, timeout=HANG_TIMEOUT) as response:
+            response.read()
+        self.assertEqual([p for p, _m in PROBES], ["/v1/messages"])
+        self.assertTrue(XFF_SEEN)
 
     def test_an_unimplemented_messages_path_is_not_a_refusal_issue_375(self):
         # The merge gate's finding: a 501 answers "this gateway does not
