@@ -36,7 +36,8 @@ func helpAsked(words []string) bool {
 // context-probe, which reports its own usage.
 var verbArity = map[string]int{"list": 0, "use": 1, "cred": 1, "inspect": 1, "context": 3,
 	"models": 2, "rm": 1, "mv": 2, "get": 2, "set": 3, "config": 1, "add": 1, "login": 1,
-	"hop": 1, "quota": 2, "doctor": 2, "update": 1, "uninstall": 0, "version": 0, "help": 1}
+	"hop": 1, "quota": 2, "doctor": 2, "update": 1, "uninstall": 0, "version": 0, "help": 1,
+	"profile": 0}
 
 // usageLine is the Usage line of a command's help page, shared with its errors
 // so the two cannot drift apart.
@@ -61,7 +62,7 @@ func (l *launcher) extraArg(verb, word string) int {
 // realVerbs is every verb `ccmorph <verb>` answers to, in one list for the typo
 // hint: a word one edit away from exactly one of these is told to run it.
 var realVerbs = []string{"add", "config", "context", "cred", "doctor", "get", "help", "hop",
-	"inspect", "list", "login", "models", "mv", "probe", "quota", "rm", "run", "set",
+	"inspect", "list", "login", "models", "mv", "probe", "profile", "quota", "rm", "run", "set",
 	"uninstall", "update", "use", "version"}
 
 // topFlags are the flags ccmorph itself takes before the verb.
