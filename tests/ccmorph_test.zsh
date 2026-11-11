@@ -296,7 +296,17 @@ setup_home() {
   # the launcher passes them through, so scrub them for a hermetic fixture.
   unset CLAUDE_CODE_SIMPLE MAX_THINKING_TOKENS CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CCMORPH_SET_ENV CLAUDECODE CLAUDE_CODE_CHILD_SESSION
   export CCMORPH_TEST_LOG="$HOME/claude.log"
-  export PATH="$HOME/bin:$ORIGINAL_PATH"
+  # The machine's own provider bridge must not answer a test that seeded none:
+  # the add menu reads its provider rows from cliproxyapi on PATH, so a real
+  # copy's longer login names widen the menu's label column and fail the same
+  # pins only where the bridge is installed (#414). Every PATH entry carrying
+  # one is dropped; a test that wants provider rows writes a stub in $HOME/bin.
+  local -a clean_path entry
+  for entry in "${(@s.:.)ORIGINAL_PATH}"; do
+    [[ -x "$entry/cliproxyapi" ]] && continue
+    clean_path+=("$entry")
+  done
+  export PATH="$HOME/bin:${(j.:.)clean_path}"
   # A launch's sizing path reaches past the curl stubs: the models.dev catalogue
   # fetch and the validation probes go through net/http, so a fresh home paid a
   # 3 s catalogue timeout plus an endpoint DNS roundtrip per launch -- and the
@@ -928,6 +938,29 @@ test_the_picker_without_fzf_names_the_direct_command_and_the_choices() {
     'the refusal must name the direct command with the profile filled in' || rc=1
   assert_contains "$err" 'xhigh' \
     'the refusal must still show what there was to choose from' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
+# A test home's PATH must not carry the machine's own provider bridge: the add
+# menu reads its provider rows from cliproxyapi on PATH, so a real copy decides
+# the rows and the label column a test sees — green on a gate without it and
+# red only where the bridge is installed (#414).
+test_a_test_home_hides_the_machines_bridge_issue_414() {
+  local test_home=$(mktemp -d)
+  local rc=0
+  setup_home "$test_home"
+  whence -p cliproxyapi >/dev/null 2>&1 && {
+    print -u2 -- "the machine's cliproxyapi reached the test PATH: $(whence -p cliproxyapi)"
+    rc=1
+  }
+  # A test's own stub is still found: that is how an add test seeds its rows.
+  printf '%s\n' '#!/bin/sh' 'exit 0' > "$HOME/bin/cliproxyapi"
+  chmod +x "$HOME/bin/cliproxyapi"
+  [[ "$(whence -p cliproxyapi)" == "$HOME/bin/cliproxyapi" ]] || {
+    print -u2 -- "a stub bridge in \$HOME/bin must be what the test's PATH finds"
+    rc=1
+  }
   rm -rf "$test_home"
   return $rc
 }
@@ -11298,6 +11331,7 @@ run_test test_set_model_interactively_saves_the_chosen_id
 run_test test_set_effort_interactively_offers_the_engine_levels
 run_test test_search_picker_on_an_old_fzf_never_hides_rows_silently_issue_278
 run_test test_the_picker_without_fzf_names_the_direct_command_and_the_choices
+run_test test_a_test_home_hides_the_machines_bridge_issue_414
 run_test test_saved_default_model_beats_the_confs_bootstrap_model_at_launch
 run_test test_explicit_model_flag_beats_the_saved_default
 run_test test_effort_command_leaves_native_per_model_state_untouched

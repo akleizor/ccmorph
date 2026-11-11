@@ -1,9 +1,11 @@
 """The suite's shared hang-detection bound; imported by the tests that wait on a real process."""
+import atexit
 import os
 import random
 import shlex
 import shutil
 import socket
+import tempfile
 from pathlib import Path
 
 
@@ -28,6 +30,74 @@ CLAUDE_MISSING = ("Claude Code is not installed or not on the PATH — install i
 # macOS; conftest.py patches that away for in-process servers, and a subprocess
 # needs the same line itself. No fake here uses the name it would find.
 FAKE_SERVER_NO_DNS = "import socket\nsocket.getfqdn = lambda name='': name\n"
+
+# Tools whose real copy on the host must not answer a test that seeded neither:
+# the picker falls back to fzf when it finds one, and the add menu reads its
+# provider rows from cliproxyapi on PATH, so a machine that carries either
+# decides rows and widths the test never asked for (#414). A test that needs
+# one writes its own stub, in a directory in front of this PATH.
+HERMETIC_TOOLS = ("fzf", "cliproxyapi")
+
+# One mirror directory per (real directory, hidden names), made once per process:
+# every test env that hides the same tools from the same directory reuses it.
+_MIRRORED_PATHS = {}
+
+
+def _mirror_without(entry, hidden):
+    """A directory linking every executable in `entry` except the `hidden` names."""
+    try:
+        real = Path(entry).resolve()
+    except OSError:
+        return None
+    key = (str(real), frozenset(hidden))
+    if key in _MIRRORED_PATHS:
+        return _MIRRORED_PATHS[key]
+    try:
+        names = os.listdir(real)
+    except OSError:
+        return None
+    target = Path(tempfile.mkdtemp(prefix="ccmorph-path-"))
+    atexit.register(shutil.rmtree, str(target), True)
+    for name in names:
+        if name in hidden:
+            continue
+        source = real / name
+        try:
+            if source.is_file() and os.access(source, os.X_OK):
+                (target / name).symlink_to(source)
+        except OSError:
+            continue
+    _MIRRORED_PATHS[key] = str(target)
+    return str(target)
+
+
+def path_without(*tools, path=None):
+    """PATH minus `tools` (default: HERMETIC_TOOLS), keeping every other tool.
+
+    An entry carrying one of `tools` is replaced by a directory of links to its
+    other executables: dropping the entry whole would also drop zsh and the
+    coreutils a test's shell needs, and a merged-/usr Linux keeps both fzf and
+    zsh in /usr/bin (#414). The caller puts its own stub directory first, in
+    front of this result."""
+    entries = (os.environ.get("PATH", "") if path is None else path).split(os.pathsep)
+    hidden = tools or HERMETIC_TOOLS
+    kept, seen = [], set()
+    for entry in entries:
+        if not entry:
+            continue
+        if any((Path(entry) / tool).exists() for tool in hidden):
+            # A relative entry cannot be mirrored from a test's directory and
+            # then mean the same thing to the child; hiding wins.
+            if not os.path.isabs(entry):
+                continue
+            entry = _mirror_without(entry, hidden)
+            if entry is None:
+                continue
+        if entry in seen:
+            continue
+        seen.add(entry)
+        kept.append(entry)
+    return os.pathsep.join(kept)
 
 
 def anthropic_accepts_the_key(bindir):
