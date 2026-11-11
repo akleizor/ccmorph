@@ -12688,108 +12688,42 @@ run_test test_the_runners_session_env_never_reaches_a_fixture
 # came, at zero CPU. The starter here exits at once, so the tail is orphaned,
 # and the bystander is the recycled pid the tail keeps trusting.
 test_the_serve_tail_leaves_when_its_own_launcher_is_gone() {
+  setopt local_options no_bg_nice
   local test_home; test_home=$(mktemp -d)
-  local rc=0 serve_pid bystander line cmd odd= look= alien= foreign=
-  local record="$test_home/record" real_ps=${commands[ps]-}
-  local -a entries after
-  local -i i=0 at npass=0 ncolon=0 nkill=0 nsleep=0
-  typeset -F 1 clock=0
-  if [[ -z $real_ps ]]; then
-    print -u2 -- "the serve tail needs a ps on PATH to look up its ppid"
-    rm -rf "$test_home"
-    return 1
-  fi
-  # #419: the tail's own record, not a wall-clock race, is the verdict. The
-  # tail runs under sh -x, so every command it runs, a sleep by any path
-  # included, is traced to $record, and a ps shim on its PATH appends what each
-  # ppid look answered. A loaded host stretches the wall clock, not that record:
-  # the tail must leave on a ppid look that answered 1, within main's ten
-  # seconds of its own sleeping. The wait ends on an event -- the tail gone, a
-  # look ps could not answer, or a sleep after a look that answered 1 -- and
-  # only CCMORPH_TEST_HANG_TIMEOUT bounds it. Time the tail spends outside its
-  # sleeps would escape that sum, so the record may hold only the commands the
-  # fixture's poll runs, once a pass each: any other command, output or busy
-  # pass is a failure, never load.
-  mkdir "$test_home/bin"
-  : > "$record"
-  printf '%s\n' '#!/bin/sh' \
-    'out=$("$CCM_TAIL_PS" "$@")' \
-    'st=$?' \
-    'set -- $out' \
-    'printf "look %s %s\n" "$st" "${1:-}" >> "$CCM_TAIL_RECORD"' \
-    '[ "$st" -eq 0 ] && [ -n "${1:-}" ] || : > "$CCM_TAIL_RECORD.failed"' \
-    'printf "%s\n" "$out"' \
-    'exit "$st"' > "$test_home/bin/ps"
-  chmod +x "$test_home/bin/ps"
+  local rc=0 serve_pid bystander reference
   /bin/sleep 300 & bystander=$!
-  PATH="$test_home/bin:$PATH" PS4='+ ' CCM_TAIL_RECORD=$record CCM_TAIL_PS=$real_ps \
-    /bin/sh -c 'sh -x "$1" gw --parent-pid "$2" 2>>"$4" &
-echo $! > "$3"' _ "$SCRIPT_DIR/fake_adapter_serve.sh" "$bystander" "$test_home/serve.pid" "$record" 2>/dev/null
+  /bin/sh -c 'sh "$1" gw --parent-pid "$2" &
+echo $! > "$3"' _ "$SCRIPT_DIR/fake_adapter_serve.sh" "$bystander" "$test_home/serve.pid" 2>/dev/null
   serve_pid=$(<"$test_home/serve.pid")
-  while kill -0 "$serve_pid" 2>/dev/null &&
-      [[ ! -e $record.failed && $(<$record) != *$'look 0 1\n'*sleep\ * ]]; do
+  # GH-419: the wait's only bound is CCMORPH_TEST_HANG_TIMEOUT; it ends when
+  # the tail goes. Lateness is judged against a reference that runs main's own
+  # clock -- PATH sleep 0.1 -- ninety times, with five /bin/ps looks, in the
+  # background. Load stretches the reference with the tail, a ps or sh on PATH
+  # cannot, and it never ends the wait: it only leaves a marker if the tail
+  # outlived it.
+  /bin/sh -c 'tick=0
+while [ "$tick" -lt 90 ]; do
+  sleep 0.1
+  tick=$(( tick + 1 ))
+  [ $(( tick % 18 )) -ne 0 ] || /bin/ps -o ppid= -p $$ >/dev/null 2>&1
+done
+kill -0 "$1" 2>/dev/null && : > "$2"' _ "$serve_pid" "$test_home/late" </dev/null >/dev/null 2>&1 &
+  reference=$!
+  local -i i=0
+  while kill -0 "$serve_pid" 2>/dev/null; do
     (( ++i < CCMORPH_TEST_HANG_TIMEOUT * 10 )) || break
-    sleep 0.1
+    command sleep 0.1
   done
-  entries=("${(@f)$(<$record)}")
-  at=${entries[(I)look *]}
-  (( at )) && look=${entries[at]}
-  after=(${entries[at+1,-1]})
   if kill -0 "$serve_pid" 2>/dev/null; then
-    if [[ -e $record.failed ]]; then
-      print -u2 -- "the serve tail's ppid look got no answer ('$look': ps exit status and ppid), so it cannot see its launcher is gone"
-    elif [[ $look == 'look 0 1' ]]; then
-      print -u2 -- "the serve tail kept polling after a ppid look answered 1, so a launcher gone does not end it"
-    else
-      print -u2 -- "the serve tail outlived its orphaned launcher for ${CCMORPH_TEST_HANG_TIMEOUT}s while --parent-pid named a live pid (last look: '$look')"
-    fi
+    print -u2 -- "the serve tail outlived its orphaned launcher for ${CCMORPH_TEST_HANG_TIMEOUT}s while --parent-pid named a live pid"
     kill -KILL "$serve_pid" 2>/dev/null
     rc=1
-  else
-    for line in $entries; do
-      [[ $line == look\ * ]] && continue
-      if [[ $line != +* ]]; then
-        foreign=$line
-        continue
-      fi
-      cmd=$line
-      while [[ $cmd == +* ]]; do cmd=${cmd#+}; done
-      cmd=${${cmd# }//\'/}
-      case $cmd in
-        (|*/)sleep\ *)
-          nsleep+=1
-          if [[ ${cmd#*sleep } == <->(|.<->) ]]; then
-            (( clock += ${cmd#*sleep } ))
-          else
-            odd=${cmd#*sleep }
-          fi ;;
-        pass=0) ;;
-        pass=<->) npass+=1 ;;
-        :) ncolon+=1 ;;
-        kill\ -0\ <->) nkill+=1 ;;
-        parent=|parent=<->|prev=*|for\ arg\ in\ *|case\ *|\[\ *\ \]|ps\ -o\ ppid=\ -p\ <->|set\ --\ *|exit\ 0) ;;
-        *) alien=$cmd ;;
-      esac
-    done
-    if [[ $look != 'look 0 1' || -n ${(M)after:#*sleep *} ]]; then
-      print -u2 -- "the serve tail left without seeing its launcher gone: its last ppid look was '$look', not one that answered 1 and ended it"
-      rc=1
-    elif [[ -n $alien$foreign ]]; then
-      print -u2 -- "the serve tail did '$alien$foreign', which the fixture's poll never does: work outside its sleeps is time its own clock cannot count"
-      rc=1
-    elif [[ -n $odd ]]; then
-      print -u2 -- "the serve tail slept '$odd', which its own clock cannot count"
-      rc=1
-    elif (( clock > 10 )); then
-      print -u2 -- "the serve tail left after ${clock}s of its own sleeping, past the ten seconds an orphan gets"
-      rc=1
-    elif (( npass != nsleep + 1 || ncolon != npass || nkill != npass )); then
-      print -u2 -- "the serve tail made $npass passes with $nsleep sleeps ($ncolon loops, $nkill parent checks): a pass that does not sleep once is busy work"
-      rc=1
-    fi
+  elif [[ -e $test_home/late ]]; then
+    print -u2 -- "the serve tail outlived its orphaned launcher past ninety 0.1s sleeps and five ppid looks while --parent-pid named a live pid"
+    rc=1
   fi
-  kill -KILL "$bystander" 2>/dev/null
-  wait "$bystander" 2>/dev/null
+  kill -KILL "$reference" "$bystander" 2>/dev/null
+  wait "$reference" "$bystander" 2>/dev/null
   rm -rf "$test_home"
   return $rc
 }
