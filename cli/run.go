@@ -129,11 +129,20 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 		}
 		// The launch is the last moment to say what the masking setting does
 		// before a session sends its first secret (#293). needsAdapter is the
-		// route the shim fronts, and the shim is what masks.
-		if on, _ := util.MaskOn(f["env.CCMORPH_MASK"]); on {
-			if needsAdapter {
+		// route the shim fronts, and the shim is what masks — and refuses a
+		// value that is neither on nor off, so the notice names a refused value
+		// instead of reading it as off (#411).
+		if on, bad := util.MaskOn(f["env.CCMORPH_MASK"]); on || bad {
+			switch {
+			case bad && needsAdapter:
+				fmt.Fprintf(os.Stderr, "%sccmorph: env.CCMORPH_MASK=%s is refused (must be 1 or 0) — a launch that starts the shim stops there%s\n",
+					l.dim, f["env.CCMORPH_MASK"], l.reset)
+			case bad:
+				fmt.Fprintf(os.Stderr, "%sccmorph: env.CCMORPH_MASK=%s is not 1 or 0; this route starts no shim, so nothing is masked%s\n",
+					l.dim, f["env.CCMORPH_MASK"], l.reset)
+			case needsAdapter:
 				fmt.Fprintf(os.Stderr, "%sccmorph: masking on — secrets reach the endpoint as placeholders%s\n", l.dim, l.reset)
-			} else {
+			default:
 				fmt.Fprintf(os.Stderr, "%sccmorph: env.CCMORPH_MASK=%s is set, but nothing is masked on this route — it reaches its backend without ccmorph's shim%s\n",
 					l.dim, f["env.CCMORPH_MASK"], l.reset)
 			}
