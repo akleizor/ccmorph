@@ -14,7 +14,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"os/user"
 	"path/filepath"
 	"regexp"
 	"runtime/debug"
@@ -27,6 +26,7 @@ import (
 
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 type launcher struct {
@@ -181,36 +181,15 @@ func (l *launcher) handoff() []string {
 		"_CCMORPH_CONTEXT_POLICY=" + l.policy, "_CCMORPH_LOG=" + l.logPath}
 }
 
-// accountHome is the passwd entry's home, for a launch started with HOME unset.
-var accountHome = func() string {
-	if u, err := user.Current(); err == nil {
-		return u.HomeDir
-	}
-	return ""
-}
-
 // defaultPaths fills what no shell handed over, the way lib/ccmorph.sh derives it, so
-// the core also runs on its own: state from CCMORPH_STATE_DIR or XDG, code beside
-// this executable (libexec/ccmorph-core, with lib/ next to libexec/).
+// the core also runs on its own: state from the one profile-root ladder
+// (paths.ProfileRoot, which carries the account-home fallback and the HOME
+// re-export #138 put there), code beside this executable (libexec/ccmorph-core,
+// with lib/ next to libexec/).
 func (l *launcher) defaultPaths() {
-	home, err := os.UserHomeDir()
-	if err != nil { // no HOME: the account's own, never a path relative to the cwd
-		if home = accountHome(); home == "" {
-			fmt.Fprintln(os.Stderr, "ccmorph: HOME is unset and no home directory is known; set HOME")
-			os.Exit(1)
-		}
-		// Every reader (canonical settings, the projects stores, doctor, rm,
-		// setup-profile, settings-compose, Claude Code) reads HOME: give them this one.
-		os.Setenv("HOME", home)
-	}
+	home := paths.Home() // $HOME, else the account's own, re-exported for every later reader
 	if l.dir == "" {
-		if l.dir = os.Getenv("CCMORPH_STATE_DIR"); l.dir == "" {
-			cfg := os.Getenv("XDG_CONFIG_HOME")
-			if cfg == "" {
-				cfg = filepath.Join(home, ".config")
-			}
-			l.dir = filepath.Join(cfg, "ccmorph")
-		}
+		l.dir = paths.ProfileRoot()
 	}
 	if l.libexec == "" {
 		if exe, err := os.Executable(); err == nil {

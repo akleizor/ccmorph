@@ -51,6 +51,19 @@ name). The rest leave no name to ban: the twice-compiled regexp, the
 status-marker split, the home `.claude.json` fallback pair, and the ten verb
 preambles are inline duplicates, which `requireProfile`/`judgeProfile` now
 own.
+
+Issue #523: the profile-root ladder — `$CCMORPH_STATE_DIR`, else
+`$XDG_CONFIG_HOME/ccmorph`, else `~/.config/ccmorph` over the account home
+#138 made every reader use — was spelled three times: complete in the
+launcher's `defaultPaths`, degraded in `ctxwindow`'s `StateDir` (HOME unset
+answered `/.config/ccmorph`) and in the adapter's `defaultProfileDirs` (HOME
+unset answered `.config/ccmorph` relative to the cwd). Its one definition is
+`paths.ProfileRoot` over `paths.Home`, which carries the account-home
+fallback and the HOME re-export; the adapter's private `home()` is gone and
+`findTranslator` reads `paths.Home`. `bin/ccmorph` keeps a
+deliberately-parallel derivation of its own — it must find `lib/ccmorph.sh`
+from zsh before any Go code can run — so the guard bans only the Go env
+reads, not the zsh spelling.
 """
 import os
 import re
@@ -219,6 +232,33 @@ def test_the_probe_verdict_switch_is_spelled_once():
         f"util.ProbeVerdict (#516): {'; '.join(offenders)}")
     assert home in spelled, (
         f"the probe verdict's status switch (#516) is no longer in {home.relative_to(ROOT)}")
+
+
+# #523: the profile-root ladder ($CCMORPH_STATE_DIR, else $XDG_CONFIG_HOME,
+# else ~/.config/ccmorph over the account home) was spelled three times — the
+# launcher's copy complete, the probe's answering /.config/ccmorph with HOME
+# unset and the adapter's a path relative to the cwd. It has one definition,
+# paths.ProfileRoot over paths.Home; this guard fails on a new hand-spelled
+# copy.
+LADDER_RUNGS = ('os.Getenv("CCMORPH_STATE_DIR")', 'os.Getenv("XDG_CONFIG_HOME")')
+
+
+def test_the_profile_root_ladder_is_spelled_once():
+    home = ROOT / "util" / "paths" / "paths.go"
+    offenders = []
+    spelled = []
+    for path in go_sources():
+        rungs = [rung for rung in LADDER_RUNGS if rung in path.read_text()]
+        if not rungs:
+            continue
+        spelled.append(path)
+        if path != home:
+            offenders.append(f"{path.relative_to(ROOT)}: {', '.join(rungs)}")
+    assert not offenders, (
+        "the profile-root ladder (#523) is hand-spelled outside util/paths "
+        "(it is paths.ProfileRoot there, over paths.Home): " + "; ".join(offenders))
+    assert home in spelled, (
+        f"the profile-root ladder (#523) is no longer spelled in {home.relative_to(ROOT)}")
 
 
 COPY = ("package shim\n\n"

@@ -59,15 +59,7 @@ func ValidProfileName(s string) bool { return profileName.MatchString(s) }
 
 // StateDir is where ccmorph keeps profiles and the registry.
 func StateDir() string {
-	if v := os.Getenv("CCMORPH_STATE_DIR"); v != "" {
-		return filepath.Clean(v)
-	}
-	base := os.Getenv("XDG_CONFIG_HOME")
-	if base == "" {
-		home, _ := os.UserHomeDir()
-		base = home + "/.config"
-	}
-	return filepath.Join(base, "ccmorph")
+	return paths.ProfileRoot()
 }
 
 // ProfilePath is the conf file for a profile (MODEL_WINDOW_PROFILE_CONF overrides).

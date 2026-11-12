@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -177,6 +178,30 @@ func TestDetectionUsesAnthropicClientsPath(t *testing.T) { // test_detection_use
 	cfg := render([]Row{row("anthropic")}, "test-key", 1234, base, "/unused", "", "", nil, false)
 	if !strings.Contains(cfg, `base-url: "`+base+`"`) {
 		t.Fatal("passthrough base-url is not the bare upstream")
+	}
+}
+
+// GH-523: the profile root is spelled once. With HOME unset and no env rung
+// to answer it, the adapter's profile dirs hang off the account home's
+// .config/ccmorph/profiles — the root the launcher and the context probe
+// resolve (their leg is pinned in cli) — and never off a path relative to
+// the cwd, which is where the adapter's own home() used to answer.
+func TestHomeUnsetDefaultProfileDirsAnswerTheAccountHomesRoot(t *testing.T) {
+	for _, k := range []string{"HOME", "CCMORPH_STATE_DIR", "XDG_CONFIG_HOME"} {
+		t.Setenv(k, "")
+		os.Unsetenv(k)
+	}
+	u, err := user.Current()
+	if err != nil {
+		t.Skipf("no passwd entry to read the account home from: %v", err)
+	}
+	want := filepath.Join(u.HomeDir, ".config", "ccmorph", "profiles")
+	got := defaultProfileDirs()
+	if got != want {
+		t.Fatalf("profile dirs = %q, want %q", got, want)
+	}
+	if !filepath.IsAbs(got) {
+		t.Fatalf("profile dirs %q is relative to the cwd", got)
 	}
 }
 
