@@ -1,6 +1,7 @@
 package util
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,21 +19,33 @@ type psRow struct {
 	start time.Time // when the process started; zero when the table cannot tell
 }
 
+// sysctlTable is sysctlProcessTable. A variable so a test can reach the ps
+// fallback on darwin, where the kernel's read never fails and no PATH double
+// reaches it.
+var sysctlTable = sysctlProcessTable
+
 // processTable is one read of the process table: pid -> parent, executable,
 // argv and start time; sysctl on darwin, ps elsewhere or when that read fails
-// its self-check.
-func processTable() map[int]psRow {
-	if t, ok := sysctlProcessTable(); ok {
+// its self-check. Its ps fallback reads without a deadline: a caller that needs
+// one uses processTableWithin.
+func processTable() map[int]psRow { return processTableWithin(context.Background()) }
+
+// processTableWithin is processTable with the ps fallback bounded by ctx: a
+// caller that has given up on the read leaves no ps of its own running.
+func processTableWithin(ctx context.Context) map[int]psRow {
+	if t, ok := sysctlTable(); ok {
 		return t
 	}
-	return psProcessTable()
+	return psProcessTable(ctx)
 }
 
 // psProcessTable is processTable through ps. The start times come from a read
 // of their own: a ps without lstart then costs the times and not the rows hop
 // needs, and a line that does not parse leaves its row at the cannot-tell zero.
-func psProcessTable() map[int]psRow {
-	raw, err := exec.Command("ps", "-axo", "pid=,ppid=,comm=").Output()
+// Every pass runs under ctx, so a stalled ps is killed with the caller's
+// deadline rather than outliving the read.
+func psProcessTable(ctx context.Context) map[int]psRow {
+	raw, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,ppid=,comm=").Output()
 	if err != nil {
 		return nil
 	}
@@ -48,7 +61,7 @@ func psProcessTable() map[int]psRow {
 			rows[pid] = psRow{ppid: ppid, comm: strings.Join(f[2:], " ")}
 		}
 	}
-	if raw, err := exec.Command("ps", "-axo", "pid=,command=").Output(); err == nil {
+	if raw, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,command=").Output(); err == nil {
 		for _, l := range strings.Split(string(raw), "\n") {
 			l = strings.TrimSpace(l)
 			p, rest, _ := strings.Cut(l, " ")
@@ -62,7 +75,7 @@ func psProcessTable() map[int]psRow {
 	// lstart is "Mon Jan _2 15:04:05 2006" in the locale's words, so the read
 	// pins LC_ALL and the fields are joined back for the one layout parsed. A
 	// ps that lacks lstart prints an error and exits non-zero: no times.
-	lstart := exec.Command("ps", "-axo", "pid=,lstart=")
+	lstart := exec.CommandContext(ctx, "ps", "-axo", "pid=,lstart=")
 	lstart.Env = append(os.Environ(), "LC_ALL=C")
 	if raw, err := lstart.Output(); err == nil {
 		for _, l := range strings.Split(string(raw), "\n") {

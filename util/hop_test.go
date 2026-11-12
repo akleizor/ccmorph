@@ -1,6 +1,7 @@
 package util
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"strconv"
@@ -165,7 +166,7 @@ func TestPsProcessTableReadsStartTimes(t *testing.T) {
 	}
 	defer func() { cmd.Process.Kill(); cmd.Wait() }()
 
-	tab := psProcessTable()
+	tab := psProcessTable(context.Background())
 	r, ok := tab[cmd.Process.Pid]
 	if !ok || r.ppid != os.Getpid() || r.args != "/bin/sleep 30" {
 		t.Fatalf("the child must be read with its parent and argv, got %+v", r)
