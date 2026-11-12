@@ -5,6 +5,16 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
+## Unreleased
+
+## v0.5.10 — 2026-11-12
+
+### Fixed
+
+- Antigravity (provider) profiles no longer get 429 RESOURCE_EXHAUSTED from
+  Claude Code; the bridge rewrites Claude Code's opening identity line for
+  the antigravity protocol.
+
 ## v0.5.9 — 2026-11-12
 
 ### Added
