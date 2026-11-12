@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -57,7 +58,7 @@ logging-to-file: false
 switch-project: false
 switch-preview-model: false
 antigravity-credits: false
-`, port, authDir, key)
+`, port, authDir, key) + antigravityIdentityRules()
 	if os.WriteFile(conf, []byte(yaml), 0o600) != nil {
 		os.RemoveAll(tmp)
 		return 1
@@ -156,4 +157,27 @@ func pickPort() (int, error) {
 	}
 	defer l.Close()
 	return l.Addr().(*net.TCPAddr).Port, nil
+}
+
+// claudeIdentityLines are the opening lines Claude Code puts in its system
+// prompt. Antigravity answers 429 RESOURCE_EXHAUSTED to any request carrying
+// one, while the rest of the prompt passes (2026-11-12, gpro).
+var claudeIdentityLines = []string{
+	"You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+	"You are Claude Code, Anthropic's official CLI for Claude.",
+}
+
+// antigravityIdentityRules is cliproxyapi payload config that replaces only a
+// system part equal to one of those lines, on the Antigravity protocol only.
+// shortcut: parts 0-3 cover where Claude Code puts it today; widen if it moves.
+func antigravityIdentityRules() string {
+	var b strings.Builder
+	b.WriteString("payload:\n  override:\n")
+	for n := 0; n < 4; n++ {
+		p := fmt.Sprintf("systemInstruction.parts.%d.text", n)
+		for _, line := range claudeIdentityLines {
+			fmt.Fprintf(&b, "    - models:\n        - name: \"*\"\n          protocol: \"antigravity\"\n          match:\n            - %q: %q\n      params:\n        %q: \"You are an interactive coding agent.\"\n", p, line, p)
+		}
+	}
+	return b.String()
 }

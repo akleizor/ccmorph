@@ -98,3 +98,21 @@ func TestBridgeThatDiesIsReported(t *testing.T) {
 		t.Fatalf("rc=%d err=%q", rc, errw.String())
 	}
 }
+
+// The rules must be cliproxyapi YAML that rewrites only an exact identity line,
+// on the Antigravity protocol only.
+func TestAntigravityIdentityRules(t *testing.T) {
+	r := antigravityIdentityRules()
+	for _, want := range []string{
+		"protocol: \"antigravity\"",
+		"\"systemInstruction.parts.0.text\": \"You are a Claude agent, built on Anthropic's Claude Agent SDK.\"",
+		"\"systemInstruction.parts.3.text\": \"You are Claude Code, Anthropic's official CLI for Claude.\"",
+	} {
+		if !strings.Contains(r, want) {
+			t.Fatalf("rules lack %q:\n%s", want, r)
+		}
+	}
+	if strings.Count(r, "- models:") != 8 || strings.Contains(r, "protocol: \"gemini\"") {
+		t.Fatalf("want 8 antigravity-only rules:\n%s", r)
+	}
+}
