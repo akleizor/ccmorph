@@ -303,7 +303,6 @@ func hazardRows(in HazardIn) ([]string, error) {
 	if window == 0 {
 		return nil, nil
 	}
-	reserve := int64(20_000)
 	var rawOut int64
 	if in.RawOut != "" {
 		n, err := strconv.ParseInt(in.RawOut, 10, 64)
@@ -311,13 +310,10 @@ func hazardRows(in HazardIn) ([]string, error) {
 			return nil, fmt.Errorf("invalid literal for int() with base 10: '%s'", in.RawOut)
 		}
 		rawOut = n
-		reserve = min(n, 20_000)
 	}
+	reserve := engineReserve("", rawOut)
 	usable := window - min(window, reserve)
-	trigger := usable - 13_000
-	if pct != nil {
-		trigger = min(int64(float64(usable)*(*pct/100)), trigger)
-	}
+	trigger := engineTrigger(usable, pct)
 	if trigger <= 0 {
 		return nil, nil
 	}
