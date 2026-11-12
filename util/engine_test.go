@@ -34,6 +34,28 @@ func TestHazardRecordAndTheFallbackAgree(t *testing.T) {
 	}
 }
 
+// The unsafe warning and the hazard set are one walk over the offered models, so
+// they must agree where a model's wall meets its trigger exactly: the engine
+// compacts at e >= trigger, so a wall AT the trigger is compacted in time and is
+// safe — the set has always said so. The warning's old boundary (trigger >= wall)
+// named such a model while the set stayed silent (#483). A wall one token under
+// the trigger is fatal on both.
+func TestTheWarningAndTheSetAgreeAModelWalledAtItsTriggerIsSafe(t *testing.T) {
+	conf, set := hazardWorld(t, "claude-edge=28999 claude-under=28998", `{"availableModels":["claude-edge","claude-under"]}`)
+	surfaces := []struct{ name, text string }{
+		{"the unsafe warning", unsafeText(DiagIn{Profile: "gw", ProfileConf: conf, Settings: set, PctInEnv: true, EnvPct: "29", Budget: "120000"})},
+		{"the hazard set", hazardNames(t, HazardIn{Profile: "gw", Budget: "120000", Sources: []string{set}, PctRaw: "29", Conf: conf, PctInEnv: true})},
+	}
+	for _, s := range surfaces {
+		if strings.Contains(s.text, "claude-edge") {
+			t.Errorf("%s names a model walled exactly at its trigger, got %q", s.name, s.text)
+		}
+		if !strings.Contains(s.text, "claude-under") {
+			t.Errorf("%s must name the model walled one token under the trigger, got %q", s.name, s.text)
+		}
+	}
+}
+
 // The engine's env boolean: ECMAScript trim (U+FEFF included, NEL not), then 1/true/yes/on.
 func TestEngineBoolReadsLikeTheEngine(t *testing.T) {
 	for _, v := range []string{"1", "true", "yes", "on", "TRUE", "On", " on ", "yes ", "\ufeffon", "\ufeff1"} {
