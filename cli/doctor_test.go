@@ -47,12 +47,16 @@ func TestDoctorTranslatorVerdictUsesTheModelLaunchClassifies(t *testing.T) {
 	for _, tc := range []struct {
 		name, saved, mapped, mapping, alias string
 		tierMissing                         bool
+		// emptyMapping writes the env mapping set but with no value, the edge
+		// the three spellings of the resolution answered three ways (#517).
+		emptyMapping bool
 	}{
-		{"saved spelling", "m-spelled", "m-mapped", `"m-spelled":"m-mapped"`, "", false},
-		{"saved window marker", "m-spelled[1m]", "m-mapped", `"m-spelled":"m-mapped"`, "", false},
-		{"mapped id keeps another bracket", "m-spelled", "m-mapped[fast]", `"m-spelled":"m-mapped[fast]"`, "", false},
-		{"tier word resolved through the profile alias", "opus", "m-mapped", "", "m-mapped", false},
-		{"tier word with no mapping", "opus", "m-other", "", "", true},
+		{"saved spelling", "m-spelled", "m-mapped", `"m-spelled":"m-mapped"`, "", false, false},
+		{"saved window marker", "m-spelled[1m]", "m-mapped", `"m-spelled":"m-mapped"`, "", false, false},
+		{"mapped id keeps another bracket", "m-spelled", "m-mapped[fast]", `"m-spelled":"m-mapped[fast]"`, "", false, false},
+		{"tier word resolved through the profile alias", "opus", "m-mapped", "", "m-mapped", false, false},
+		{"tier word with no mapping", "opus", "m-other", "", "", true, false},
+		{"tier word whose env mapping is set but empty", "opus", "m-other", "", "", true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := t.TempDir()
@@ -61,7 +65,7 @@ func TestDoctorTranslatorVerdictUsesTheModelLaunchClassifies(t *testing.T) {
 			if tc.mapping != "" {
 				conf += "model_map={" + tc.mapping + "}\n"
 			}
-			if tc.alias != "" {
+			if tc.alias != "" || tc.emptyMapping {
 				conf += "env.ANTHROPIC_DEFAULT_OPUS_MODEL=" + tc.alias + "\n"
 			}
 			if err := os.WriteFile(filepath.Join(state, "gw412.conf"), []byte(conf), 0o600); err != nil {

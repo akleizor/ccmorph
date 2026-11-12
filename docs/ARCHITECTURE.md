@@ -1598,7 +1598,7 @@ For a `claude-*` id the window is chosen by the id: `[1m]` reads 1M, a bare `cla
 prefix takes a hardcoded 200,000 and ignores the env ceiling. ccmorph derives the
 suffixed `send_id` only when the **launch target itself** starts with `claude-` — the gate
 `strings.HasPrefix(target, "claude-")` in `cli/run.go`; a bare alias never does, and the mapped
-target is read separately, for budget sizing alone, where `pmodel = alias[bare]` in
+target is read separately, for budget sizing alone, where `pmodel = resolved` in
 `cli/context.go` swaps the alias for the model behind it. So mapping `opus` → `claude-opus-5`
 leaves a `--model opus` launch on the 200,000 family ceiling — the mapping changes which
 model answers, not which window it gets. Two further limits: the tag is inert under

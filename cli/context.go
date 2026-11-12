@@ -103,47 +103,30 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 	refresh, plwRan := false, false
 	var plw []string
 	if !envHas(penv, "CLAUDE_CODE_MAX_CONTEXT_TOKENS") {
-		pbase, pkey := "", ""
-		alias := map[string]string{}
+		pbase := ""
 		for _, e := range penv {
 			k, v, _ := strings.Cut(e, "=")
 			switch k {
 			case "ANTHROPIC_BASE_URL":
 				pbase = v
-			case "ANTHROPIC_API_KEY":
-				pkey = v
-			case "ANTHROPIC_AUTH_TOKEN":
-				if pkey == "" {
-					pkey = v
-				}
 			case "ANTHROPIC_MODEL":
 				pmodel = v
-			case "ANTHROPIC_DEFAULT_OPUS_MODEL":
-				alias["opus"] = v
-			case "ANTHROPIC_DEFAULT_SONNET_MODEL":
-				alias["sonnet"] = v
-			case "ANTHROPIC_DEFAULT_HAIKU_MODEL":
-				alias["haiku"] = v
-			case "ANTHROPIC_DEFAULT_FABLE_MODEL":
-				alias["fable"] = v
 			}
 		}
-		_ = pkey
 		if explicit != "" {
 			pmodel = explicit
 		}
 		if pmodel == "" {
 			pmodel = defaultModel
 		}
-		bare := strings.SplitN(pmodel, "[", 2)[0]
-		if alias[bare] == "" && isTier(bare) {
-			if v, ok := l.tierAlias(name, bare); ok {
-				alias[bare] = v
-			}
-		}
-		if alias[bare] != "" {
-			l.log("alias resolved profile=" + name + " alias=" + pmodel + " model=" + alias[bare])
-			pmodel = alias[bare]
+		// A tier word resolves to the gateway id behind it — resolveTier, the
+		// one spelling (#517) — before the window is probed for it. Nothing
+		// mapped keeps the word, and the probe answers for it as it did before.
+		if resolved, ok := resolveTier(pmodel,
+			func(key string) (string, bool) { return envGet(penv, key) },
+			func(tier string) (string, bool) { return l.tierAlias(name, tier) }); ok && resolved != pmodel {
+			l.log("alias resolved profile=" + name + " alias=" + pmodel + " model=" + resolved)
+			pmodel = resolved
 		}
 		pmodelEnv := pmodel
 		if strings.HasPrefix(pmodelEnv, "claude-") {

@@ -485,23 +485,19 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	savedModel := l.accountModel(name)
 	model := savedModel
 	// A tier word is a valid saved model (#475), and a launch resolves it to a
-	// gateway id before it classifies one: the profile env's
-	// ANTHROPIC_DEFAULT_<TIER>_MODEL, else the saved tier alias — the order and
-	// sources of adapterModel (cli/run.go), which contextEnv (cli/context.go)
-	// reads the same way. The rows below ask about that id, the one launch
-	// classifies; asking about the tier word left a chat-dialect gateway behind
-	// an alias with no adapter row and a ready verdict (#412, one branch over).
+	// gateway id before it classifies one — resolveTier, the one spelling of
+	// that rule, which this mirrored by hand until #517. The rows below ask
+	// about that id, the one launch classifies; asking about the tier word left
+	// a chat-dialect gateway behind an alias with no adapter row and a ready
+	// verdict (#412, one branch over).
 	tierMissing := ""
 	if bare := strings.SplitN(savedModel, "[", 2)[0]; isTier(bare) && typ == "apikey" && !util.NativeBase(base) {
-		if v, ok := f["env.ANTHROPIC_DEFAULT_"+strings.ToUpper(bare)+"_MODEL"]; ok {
-			model = v
-		}
-		if strings.SplitN(model, "[", 2)[0] == bare {
-			if v, ok := l.tierAlias(name, bare); ok {
-				model = v
-			} else {
-				tierMissing = bare
-			}
+		if resolved, ok := resolveTier(savedModel,
+			func(key string) (string, bool) { v, ok := f["env."+key]; return v, ok },
+			func(tier string) (string, bool) { return l.tierAlias(name, tier) }); ok {
+			model = resolved
+		} else {
+			tierMissing = bare
 		}
 	}
 	broken := ""

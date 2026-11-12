@@ -646,8 +646,6 @@ func field(rec []string, n int) string {
 	return ""
 }
 
-func isTier(s string) bool { return s == "opus" || s == "sonnet" || s == "haiku" || s == "fable" }
-
 func yesNo(b bool) string {
 	if b {
 		return "yes"
@@ -1419,26 +1417,20 @@ func (l *launcher) routeRefusal(name string) string {
 }
 
 // adapterModel is the gateway id the adapter serves: the explicit or default
-// model, a tier resolved through the profile's mapping or its saved alias.
+// model, a tier word resolved by resolveTier — the one spelling of that rule.
 func (l *launcher) adapterModel(name string, penv []string, explicit, defaultModel string) (string, bool) {
 	model := explicit
 	if model == "" {
 		model = defaultModel
 	}
-	if bare := strings.SplitN(model, "[", 2)[0]; isTier(bare) {
-		if v, ok := envGet(penv, "ANTHROPIC_DEFAULT_"+strings.ToUpper(bare)+"_MODEL"); ok {
-			model = v
-		}
-		if strings.SplitN(model, "[", 2)[0] == bare {
-			v, ok := l.tierAlias(name, bare)
-			if !ok {
-				l.err("no gateway model is mapped to tier '" + bare + "'; choose an explicit --model id")
-				return "", false
-			}
-			model = v
-		}
+	resolved, ok := resolveTier(model,
+		func(key string) (string, bool) { return envGet(penv, key) },
+		func(tier string) (string, bool) { return l.tierAlias(name, tier) })
+	if !ok {
+		l.err("no gateway model is mapped to tier '" + strings.SplitN(model, "[", 2)[0] + "'; choose an explicit --model id")
+		return "", false
 	}
-	return model, true
+	return resolved, true
 }
 
 func (l *launcher) adapterStart(name, model string) bool {
