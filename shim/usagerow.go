@@ -553,10 +553,7 @@ func writeCursor(path string, c cursor) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return
 	}
-	tmp := path + "." + fmt.Sprint(os.Getpid()) + ".tmp"
-	if os.WriteFile(tmp, data, 0o600) == nil && os.Rename(tmp, path) != nil {
-		os.Remove(tmp)
-	}
+	AtomicWrite(path, data, 0o600, filepath.Base(path)+".*.tmp")
 }
 
 // StartTranscript marks where this launch begins reading path, for a transcript

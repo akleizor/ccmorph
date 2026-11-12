@@ -685,21 +685,7 @@ func ensureConfig(a *cliArgs, required, upstream, key, routeIdentity, cacheFile,
 	rendered := render(rows, key, a.ensurePort, upstream, filepath.Join(filepath.Dir(conf), "auth"),
 		upstreamProxy, shimBinary, environWith(extras), cloakNeverFn())
 	replace := func(data []byte) error {
-		tmp, err := os.CreateTemp(filepath.Dir(conf), ".route-")
-		if err != nil {
-			return err
-		}
-		_, err = tmp.Write(data)
-		if cerr := tmp.Close(); err == nil {
-			err = cerr
-		}
-		if err == nil {
-			err = os.Rename(tmp.Name(), conf)
-		}
-		if err != nil {
-			os.Remove(tmp.Name())
-		}
-		return err
+		return shim.AtomicWrite(conf, data, 0o600, ".route-")
 	}
 	if err := replace([]byte(rendered)); err != nil {
 		die("%v", err)

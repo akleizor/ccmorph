@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -247,10 +246,7 @@ func (b *priceBook) load() {
 	b.set(models)
 	if data, err := jsonv2.Marshal(priceCache{b.host, b.now().Unix(), models}); err == nil {
 		os.MkdirAll(filepath.Dir(b.path), 0o700)
-		tmp := b.path + "." + strconv.Itoa(os.Getpid()) + ".tmp"
-		if os.WriteFile(tmp, data, 0o600) == nil && os.Rename(tmp, b.path) != nil {
-			os.Remove(tmp)
-		}
+		AtomicWrite(b.path, data, 0o600, filepath.Base(b.path)+".*.tmp")
 	}
 }
 
