@@ -21,6 +21,11 @@ func TestLaunchFlags(t *testing.T) {
 		// effort is a default for new conversations only.
 		{true, []string{"--resume"}, LaunchFlags{Resuming: true}},
 		{false, []string{"--resume=abc"}, LaunchFlags{Resume: "abc", Resuming: true, SkipModel: true}},
+		// The = spelling carries its value inside the token, empty or not: the
+		// last selector wins, so a final --resume= clears the session named
+		// before it (a routed launch reads Resume to pick its model, run.go).
+		{false, []string{"--resume=abc", "--resume="}, LaunchFlags{Resuming: true, SkipModel: true}},
+		{true, []string{"--resume", "abc", "--resume="}, LaunchFlags{Resuming: true}},
 		{false, []string{"-c"}, LaunchFlags{Resuming: true, SkipModel: true}},
 		{false, []string{"--continue"}, LaunchFlags{Resuming: true, SkipModel: true}},
 		{false, []string{"--from-pr", "12"}, LaunchFlags{Resuming: true, SkipModel: true}},
@@ -58,6 +63,13 @@ func TestLaunchArgvClaimsOnlyRunsOwnFlags(t *testing.T) {
 	}{
 		{[]string{"-a", "gw", "-i", "-p", ""}, "gw", true, []string{"-p", ""}},
 		{[]string{"--system-prompt", "--profile", "--profile=x"}, "x", false, []string{"--system-prompt", "--profile"}},
+		// The grammar's own --model owns its value with no arity table to say
+		// so (#490): -i is the pair's value, forwarded, not the interactive flag.
+		{[]string{"--model", "-i"}, "", false, []string{"--model", "-i"}},
+		// The same rule one level deeper: the value --model owns is itself a
+		// native option, so the claim after it stays a claim — the flags walk
+		// has always read --model's value this way (#334, #490).
+		{[]string{"--model", "--system-prompt", "-i"}, "", true, []string{"--model", "--system-prompt"}},
 		{[]string{"--", "-a", "gw"}, "", false, []string{"--", "-a", "gw"}},
 	} {
 		got, err := ParseLaunchArgv(c.args, map[string]string{"--system-prompt": "value"})
@@ -79,6 +91,9 @@ func TestOptionStep(t *testing.T) {
 		want      int
 	}{
 		{"--invented-value", "--continue", 2},
+		// The -- separator is never an option's value: it ends the scan, so
+		// the tokens after it stay positionals (#405, #490).
+		{"--invented-value", "--", 1},
 		{"--invented-flag", "x", 1},
 		{"-z", "x", 2},
 		{"--invented-optional", "-p", 1},
