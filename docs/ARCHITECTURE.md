@@ -721,7 +721,7 @@ and a timestamp was therefore not a usable ownership key. Rows written before
 `turn_id` existed carry no token and stay readable:
 
 ```
-{schema: 1, response_id, turn_id, route_id, profile, requested_model, task, attempt,
+{schema: 1, response_id, turn_id, route_id, profile, requested_model, task, session?, attempt,
  served_model, retries, masked?, response_model, timestamp, usage, complete}
 ```
 
@@ -731,6 +731,11 @@ carries the whole history, so it counts what that request kept back, not new fin
 **[test]**.
 
 `task` and `attempt` are the task tags below (`null`, `1` when a launch set none).
+`session` is Claude Code's own session id, from the `x-claude-code-session-id` request
+header (the usage hook reads `sessionId` from the transcript line), written only when it
+matches the task tag's shape (`[A-Za-z0-9._-]{1,64}`) and is not the request's own
+key (`x-api-key` or bearer token), and absent otherwise **[test]**. It is an opaque
+grouping key, never a credential.
 `retries` is how many times the shim re-sent the request before the response this row
 describes: up to two transport retries under `--retry-transport`, otherwise the single
 unexpected-EOF replay, so `0` when it re-sent nothing **[test]**.
@@ -756,8 +761,8 @@ The host's slice of `api.json` is cached in `prices-<host>.json` beside the rece
 refreshed after a day. A billed cost is never replaced, and rows written before this existed
 are not recomputed; rows written by builds that carried #34 before `estimated_cost` existed
 hold that computed amount in `cost`, and nothing marks them as estimates. A string (`service_tier`), an unknown key or
-a bool never enters the file, and neither does a prompt, a header, a session
-identifier or a credential **[test]**. `route_id` is a domain-separated digest
+a bool never enters the file, and neither does a prompt, a header or a credential
+**[test]**; the only session identifier is the optional `session` above. `route_id` is a domain-separated digest
 of the profile and the adapter's route identity; that identity is itself a
 digest of `upstream + key`, so it, the key, its hash, the rendered config path
 and the token are never written anywhere in the row.
@@ -822,8 +827,8 @@ leaves the last known partial row rather than a half-written one, and a sidecar
 that cannot write leaves the relayed response byte-identical. A non-stream JSON
 message is one complete row.
 
-**Limits.** The response id is the only join key — nothing here identifies a
-session, by design, since the transcript already carries the id. A response
+**Limits.** The response id is the join key; `session` is an optional extra, absent from
+rows written before it existed and whenever the client sent no usable session id. A response
 whose id never reaches the client cannot be attributed: the shim's own
 unexpected-EOF retry consumes an upstream 500 whose body carries no id, so that
 call produces no row at all. Capture is off unless the adapter passed the route

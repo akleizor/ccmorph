@@ -120,6 +120,7 @@ type record struct {
 	retries            int
 	masked             map[string]int
 	task               *string
+	session            *string
 	attempt            int
 	responseModel      *string
 	timestamp          string
@@ -171,7 +172,7 @@ func (u *UsageSidecar) start(id string, requested *string, model *string, usage 
 	}
 	return &record{
 		responseID: id, turnID: randHex(16), requested: requested, servedModel: u.served,
-		retries: u.retries, masked: u.masked, task: u.tags.task, attempt: u.tags.attempt, responseModel: model,
+		retries: u.retries, masked: u.masked, task: u.tags.task, session: u.tags.session, attempt: u.tags.attempt, responseModel: model,
 		timestamp: ts + "+00:00", usage: usage,
 	}
 }
@@ -206,6 +207,10 @@ func (u *UsageSidecar) row(r *record) []byte {
 	}
 	out = append(out, `,"task":`...)
 	out = append(out, optStr(r.task)...)
+	if r.session != nil {
+		out = append(out, `,"session":`...)
+		out = append(out, optStr(r.session)...)
+	}
 	out = append(out, `,"attempt":`+strconv.Itoa(r.attempt)+`,"response_model":`...)
 	out = append(out, optStr(r.responseModel)...)
 	out = append(out, `,"timestamp":"`+r.timestamp+`","usage":`...)

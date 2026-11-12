@@ -117,15 +117,20 @@ var (
 type taskTags struct {
 	task    *string
 	attempt int
+	session *string
 }
 
-var noTags = taskTags{nil, 1}
+var noTags = taskTags{nil, 1, nil}
 
-// tagsOf are the whitelisted task/attempt tags from the request headers.
+// tagsOf are the whitelisted task/attempt tags and Claude Code session id from the
+// request headers; the session id is held to the task tag's shape and is dropped if it equals the request's own key.
 func tagsOf(h http.Header) taskTags {
 	t := noTags
 	if task := strings.TrimSpace(h.Get("x-ccmorph-task")); taskRE.MatchString(task) {
 		t.task = &task
+	}
+	if sess := strings.TrimSpace(h.Get("x-claude-code-session-id")); taskRE.MatchString(sess) && sess != bearerKey(h) {
+		t.session = &sess
 	}
 	if a := strings.TrimSpace(h.Get("x-ccmorph-attempt")); attemptRE.MatchString(a) {
 		if n, _ := strconv.Atoi(a); n > 0 && n < 1000 {

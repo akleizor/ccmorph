@@ -120,9 +120,9 @@ func RecordTranscript(profile, pricing, path string) int {
 	// its lines are folded into one row here, never written one each, or a
 	// dashboard summing rows counts that spend once per block.
 	type response struct {
-		id, request, model, timestamp string
-		start                         int64 // offset of the response's first line
-		usage                         usageRow
+		id, request, model, timestamp, session string
+		start                                  int64 // offset of the response's first line
+		usage                                  usageRow
 	}
 	var order []string
 	responses := map[string]*response{}
@@ -149,7 +149,7 @@ func RecordTranscript(profile, pricing, path string) int {
 		r := responses[key]
 		if r == nil {
 			r = &response{id: e.Message.ID, request: e.RequestID,
-				model: e.Message.Model, timestamp: e.Timestamp, start: start, usage: usage}
+				model: e.Message.Model, timestamp: e.Timestamp, session: e.SessionID, start: start, usage: usage}
 			responses[key] = r
 			order = append(order, key)
 			continue
@@ -169,7 +169,7 @@ func RecordTranscript(profile, pricing, path string) int {
 	at := next
 	for _, key := range order {
 		r := responses[key]
-		ok, err := WriteUsageRow(profile, pricing, r.id, r.model, r.timestamp, responseToken(r.id, r.request), r.usage)
+		ok, err := WriteUsageRow(profile, pricing, r.id, r.model, r.timestamp, r.session, responseToken(r.id, r.request), r.usage)
 		if ok && err == nil {
 			written++
 		}
@@ -187,6 +187,7 @@ type transcriptEntry struct {
 	Type      string `json:"type"`
 	UUID      string `json:"uuid"`
 	RequestID string `json:"requestId"`
+	SessionID string `json:"sessionId"`
 	Timestamp string `json:"timestamp"`
 	Message   struct {
 		ID    string          `json:"id"`
@@ -218,11 +219,14 @@ func parseLine(line []byte) (transcriptEntry, usageRow, bool) {
 // the same row, so a re-read replaces it instead of spilling a duplicate.
 // It reports false when the row was deliberately not written: no profile or id,
 // or a row another ccmorph writer already holds for that response.
-func WriteUsageRow(profile, pricing, responseID, model, timestamp, turnID string, usage usageRow) (bool, error) {
+func WriteUsageRow(profile, pricing, responseID, model, timestamp, session, turnID string, usage usageRow) (bool, error) {
 	if profile == "" || responseID == "" {
 		return false, nil
 	}
 	s := newSidecar(profile, "transcript")
+	if taskRE.MatchString(session) {
+		s.tags.session = &session
+	}
 	// A session whose traffic a ccmorph adapter already relays (a Remote Control
 	// session, or a launch nested inside one) writes its own row for the same
 	// response. One turn, one row: the writer that saw the traffic keeps it.

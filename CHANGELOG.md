@@ -5,7 +5,16 @@
 > predecessor — so a reader following an old entry types the command that exists
 > today. The former spelling still dispatches, undocumented.
 
-## Unreleased
+## v0.5.9 — 2026-11-12
+
+### Added
+
+- **Usage rows carry the Claude Code session.** A row written for a Claude
+  request, by the shim or the usage hook, adds an optional `session` from the
+  `x-claude-code-session-id` header (the transcript's `sessionId` for the
+  hook), so spend can be grouped by session. It must look like a task tag
+  (`[A-Za-z0-9._-]{1,64}`); anything else leaves the field out. See "The usage
+  sidecar" in docs/ARCHITECTURE.md.
 
 ### Fixed
 
