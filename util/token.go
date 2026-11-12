@@ -62,6 +62,6 @@ func ProbeToken(token string) (code string) {
 	body, err := curlBearer(token, []string{"-sS", "--connect-timeout", "2", "--max-time", "5",
 		"-w", `\n` + statusMarker + `%{http_code}`, "-H", "anthropic-version: 2023-06-01",
 		apiURL("https://api.anthropic.com", "/v1/models?limit=1000")}, io.Discard)
-	_, code, _ = probeStatus(body, err)
+	_, code = splitProbeAnswer(body, err)
 	return code
 }

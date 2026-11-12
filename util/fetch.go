@@ -58,7 +58,7 @@ func ProbeListing(base, key string, headers ...string) (body, code string) {
 		args = append(args, "-H", h)
 	}
 	raw, err := curlKeyed(key, append(args, apiURL(base, "/v1/models?limit=1000")), io.Discard)
-	body, code, _ = probeStatus(raw, err)
+	body, code = splitProbeAnswer(raw, err)
 	return undisguise(body), code
 }
 
@@ -66,14 +66,49 @@ func ProbeListing(base, key string, headers ...string) (body, code string) {
 // an answer: everything before it is the body, after it the HTTP status.
 const statusMarker = "__CCMORPH_STATUS__"
 
-// probeStatus splits a probe's raw answer at the status marker: the body before
-// it with its trailing newline trimmed, the HTTP status after it, "000" when
-// nothing answered or no marker came back.
-func probeStatus(body string, err error) (payload, code string, ok bool) {
+// splitProbeAnswer splits a probe's raw answer at the status marker: the body
+// before it with its trailing newline trimmed, the HTTP status after it, "000"
+// when nothing answered or no marker came back. The verdict on that status is
+// ProbeVerdict's; the third answer this splitter once carried was read nowhere
+// (#516).
+func splitProbeAnswer(body string, err error) (payload, code string) {
 	if i := strings.LastIndex(body, statusMarker); err == nil && i >= 0 {
-		return strings.TrimSuffix(body[:i], "\n"), strings.TrimRight(body[i+len(statusMarker):], "\n"), true
+		return strings.TrimSuffix(body[:i], "\n"), strings.TrimRight(body[i+len(statusMarker):], "\n")
 	}
-	return "", "000", false
+	return "", "000"
+}
+
+// ProbeStatus is what a probe's HTTP status says about the credential it
+// offered — the verdict, not the answer itself.
+type ProbeStatus int
+
+const (
+	ProbeAccepted ProbeStatus = iota // a 2xx: the credential was taken
+	ProbeRejected                    // 401 or 403: the credential was refused
+	ProbeSilent                      // "000" or "": nothing answered
+	ProbeOther                       // any other status: no verdict on the credential
+)
+
+// ProbeVerdict is the status switch every probe of a credential reads, spelled
+// once (#488 gave it one copy in cli; #516 moved it down so doctor's four route
+// checks read the same one): a 2xx accepts, 401/403 rejects, "000" or empty
+// says nothing answered, and anything else is an answer that is no verdict on
+// the credential — #255, #286 and #374 all landed in one of this switch's
+// copies. The probe that produces the code stays each caller's own, with the
+// header set its branch needs: a native endpoint is asked with the
+// anthropic-version header its route sends, a gateway with none, doctor's own
+// request.
+func ProbeVerdict(code string) ProbeStatus {
+	switch {
+	case strings.HasPrefix(code, "2") && len(code) == 3:
+		return ProbeAccepted
+	case code == "401" || code == "403":
+		return ProbeRejected
+	case code == "000" || code == "":
+		return ProbeSilent
+	default:
+		return ProbeOther
+	}
 }
 
 // curlFed runs curl with a credential fed through its stdin config (-K -), so

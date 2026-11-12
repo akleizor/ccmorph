@@ -156,20 +156,23 @@ def in_a_sibling_worktree(path, siblings, tracked):
     return path not in tracked and any(parent in siblings for parent in path.parents)
 
 
+def go_sources():
+    """Every .go file of this tree, by the walk `go_definitions` documents."""
+    tracked = tree_tracked_files(ROOT)
+    siblings = sibling_worktrees(ROOT)
+    for path in sorted(ROOT.glob("**/*.go")):
+        if ".git" in path.parts or in_a_sibling_worktree(path, siblings, tracked):
+            continue
+        yield path
+
+
 def go_definitions():
     """[(file, name)] for every function or method a .go file of this tree defines.
 
     The walk reads every .go file under ROOT, tracked, untracked or ignored, as
     8a151a5's did. It skips only an untracked file inside a sibling worktree."""
-    tracked = tree_tracked_files(ROOT)
-    siblings = sibling_worktrees(ROOT)
-    found = []
-    for path in sorted(ROOT.glob("**/*.go")):
-        if ".git" in path.parts or in_a_sibling_worktree(path, siblings, tracked):
-            continue
-        for name in DEFINITION.findall(path.read_text()):
-            found.append((path, name))
-    return found
+    return [(path, name) for path in go_sources()
+            for name in DEFINITION.findall(path.read_text())]
 
 
 def test_the_consolidated_helpers_are_not_hand_written_again():
@@ -197,6 +200,25 @@ def test_the_file_predicates_are_defined_only_in_paths():
         "a file predicate #422 consolidated is hand-written outside util/paths "
         "(it must be " + ", ".join(f"{n} -> paths.{p}" for n, p in PREDICATES.items())
         + "; copies drift): " + "; ".join(offenders))
+
+
+# #516: the verdict a probe's HTTP status earns — a 2xx accepts, 401/403
+# rejects, "000" or empty says nothing answered — was hand-spelled in cli and
+# again in each of doctor's four route checks. It has one definition,
+# util.ProbeVerdict, which cli and util both read; this guard fails on a new
+# hand-spelled copy.
+VERDICT_SWITCH = 'HasPrefix(code, "2")'
+
+
+def test_the_probe_verdict_switch_is_spelled_once():
+    home = ROOT / "util" / "fetch.go"
+    spelled = [path for path in go_sources() if VERDICT_SWITCH in path.read_text()]
+    offenders = [str(path.relative_to(ROOT)) for path in spelled if path != home]
+    assert not offenders, (
+        "the probe verdict's status switch is hand-spelled outside "
+        f"util.ProbeVerdict (#516): {'; '.join(offenders)}")
+    assert home in spelled, (
+        f"the probe verdict's status switch (#516) is no longer in {home.relative_to(ROOT)}")
 
 
 COPY = ("package shim\n\n"
