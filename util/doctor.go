@@ -63,14 +63,14 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 			row("INFO", "endpoint: provider bridge, started by ccmorph run")
 		case typ == "apikey" && key != "":
 			_, code := ProbeListing("https://api.anthropic.com", key, "anthropic-version: 2023-06-01")
-			switch {
-			case strings.HasPrefix(code, "2") && len(code) == 3:
+			switch ProbeVerdict(code) {
+			case ProbeAccepted:
 				row("OK", "endpoint: Anthropic accepted the API key (HTTP "+code+")")
-			case code == "401" || code == "403":
+			case ProbeRejected:
 				row("FAIL", "credentials: Anthropic rejected the API key (HTTP "+code+"); replace it: ccmorph config "+name,
 					"replace the API key: ccmorph config "+name)
 				keyRejected = true
-			case code == "000" || code == "":
+			case ProbeSilent:
 				row("WARN", "endpoint: Anthropic did not answer, so the key was not checked (check your network)")
 			default:
 				row("WARN", "endpoint: Anthropic answered HTTP "+code+", so the key was not checked")
@@ -82,14 +82,14 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 			// launch sends no request first: this is the only place a token can
 			// be checked before a session fails.
 			code := ProbeToken(key)
-			switch {
-			case strings.HasPrefix(code, "2") && len(code) == 3:
+			switch ProbeVerdict(code) {
+			case ProbeAccepted:
 				row("OK", "credentials: Anthropic accepted the token (HTTP "+code+")")
-			case code == "401" || code == "403":
+			case ProbeRejected:
 				row("FAIL", "credentials: Anthropic rejected the token (HTTP "+code+"); replace it: ccmorph config "+name,
 					"replace the token: ccmorph config "+name)
 				keyRejected = true
-			case code == "000" || code == "":
+			case ProbeSilent:
 				row("WARN", "endpoint: Anthropic did not answer, so the token was not checked (check your network)")
 			default:
 				row("WARN", "endpoint: Anthropic answered HTTP "+code+", so the token was not checked")
@@ -108,12 +108,12 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 				row("WARN", "credentials: the sign-in was not checked (Claude Code keeps it outside the profile home; the next session refreshes it if it can)")
 			default:
 				code := ProbeToken(token)
-				switch {
-				case strings.HasPrefix(code, "2") && len(code) == 3:
+				switch ProbeVerdict(code) {
+				case ProbeAccepted:
 					row("OK", "credentials: Anthropic accepted the stored sign-in (HTTP "+code+")")
-				case code == "401" || code == "403":
+				case ProbeRejected:
 					row("WARN", "credentials: Anthropic rejected the stored sign-in (HTTP "+code+"); the next session refreshes it if it can, else it opens the login menu")
-				case code == "000" || code == "":
+				case ProbeSilent:
 					row("WARN", "endpoint: Anthropic did not answer, so the sign-in was not checked (check your network)")
 				default:
 					row("WARN", "endpoint: Anthropic answered HTTP "+code+", so the sign-in was not checked")
@@ -140,8 +140,8 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 		row("SKIP", "gateway: no API credential for metadata request")
 	default:
 		body, code := ProbeListing(base, key)
-		switch {
-		case strings.HasPrefix(code, "2") && len(code) == 3:
+		switch ProbeVerdict(code) {
+		case ProbeAccepted:
 			payload, perr := ordjson.Parse([]byte(body))
 			n, ok := 0, false
 			if perr == nil {
@@ -170,26 +170,28 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 				row("FAIL", fmt.Sprintf("gateway: malformed model listing (HTTP %s)", code),
 					"check the endpoint (it must list models at /v1/models): ccmorph config "+name)
 			}
-		case code == "000" || code == "":
-			row("WARN", "gateway: did not answer within 5 seconds (if it is a private endpoint, connect that network)")
-		case code == "401" || code == "403":
+		case ProbeRejected:
 			row("FAIL", "gateway: rejected the API key (HTTP "+code+"); replace it: ccmorph config "+name,
 				"replace the API key: ccmorph config "+name)
 			keyRejected = true
-		case code == "404":
-			// The gateway answered, so it is not unreachable: it offers no model
-			// list (#357). A saved model still launches — classification probes
-			// it directly — and cannot be checked against a listing; without
-			// one, no launch can pick a model, so the report names the step.
-			if strings.TrimSpace(model) != "" {
-				row("OK", "gateway: reachable (HTTP 404), but offers no model list; the saved model cannot be checked against one")
-			} else {
-				row("FAIL", "gateway: reachable (HTTP 404), but offers no model list and no model is set",
-					"set a model: ccmorph set "+name+" model <model-id>")
-			}
+		case ProbeSilent:
+			row("WARN", "gateway: did not answer within 5 seconds (if it is a private endpoint, connect that network)")
 		default:
-			row("FAIL", fmt.Sprintf("gateway: unreachable or rejected (HTTP %s)", code),
-				"check the endpoint, or change it: ccmorph config "+name)
+			if code == "404" {
+				// The gateway answered, so it is not unreachable: it offers no model
+				// list (#357). A saved model still launches — classification probes
+				// it directly — and cannot be checked against a listing; without
+				// one, no launch can pick a model, so the report names the step.
+				if strings.TrimSpace(model) != "" {
+					row("OK", "gateway: reachable (HTTP 404), but offers no model list; the saved model cannot be checked against one")
+				} else {
+					row("FAIL", "gateway: reachable (HTTP 404), but offers no model list and no model is set",
+						"set a model: ccmorph set "+name+" model <model-id>")
+				}
+			} else {
+				row("FAIL", fmt.Sprintf("gateway: unreachable or rejected (HTTP %s)", code),
+					"check the endpoint, or change it: ccmorph config "+name)
+			}
 		}
 	}
 

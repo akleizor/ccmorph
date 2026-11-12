@@ -36,36 +36,21 @@ func runFlag(a string) bool {
 // answer a listing without a network.
 var probeListing = util.ProbeListing
 
-// probeStatus is what a probe's HTTP status says about the credential it
-// offered — the verdict, not the answer itself.
-type probeStatus int
+// probeStatus is util.ProbeStatus, and probeVerdict is util.ProbeVerdict: the
+// one status switch every probe of a credential reads (#488 spelled it once in
+// cli; #516 moved it down so doctor's four route checks read the same one).
+// These names keep this package's six call sites — and the table test that
+// pins the verdict — on that one definition.
+type probeStatus = util.ProbeStatus
 
 const (
-	probeAccepted probeStatus = iota // a 2xx: the credential was taken
-	probeRejected                    // 401 or 403: the credential was refused
-	probeSilent                      // "000" or "": nothing answered
-	probeOther                       // any other status: no verdict on the credential
+	probeAccepted = util.ProbeAccepted
+	probeRejected = util.ProbeRejected
+	probeSilent   = util.ProbeSilent
+	probeOther    = util.ProbeOther
 )
 
-// probeVerdict is the status switch every probe of a credential reads, spelled
-// once (#488): a 2xx accepts, 401/403 rejects, "000" or empty says nothing
-// answered, and anything else is an answer that is no verdict on the
-// credential — #255, #286 and #374 all landed in one of this switch's copies.
-// The probe that produces the code stays each caller's own, with the header
-// set its branch needs: a native endpoint is asked with the anthropic-version
-// header its route sends, a gateway with none, doctor's own request.
-func probeVerdict(code string) probeStatus {
-	switch {
-	case strings.HasPrefix(code, "2") && len(code) == 3:
-		return probeAccepted
-	case code == "401" || code == "403":
-		return probeRejected
-	case code == "000" || code == "":
-		return probeSilent
-	default:
-		return probeOther
-	}
-}
+func probeVerdict(code string) probeStatus { return util.ProbeVerdict(code) }
 
 // nativeBase is the one rule for Anthropic's own endpoint: the URL an empty
 // base_url means, and the spellings that count as that endpoint — the bare URL
