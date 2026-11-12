@@ -183,3 +183,19 @@ def test_docs_name_the_setting_effort_alone_issue_367():
     for phrase in ("model and reasoning", "reasoning levels"):
         assert phrase not in guide, (
             f"docs/guide.md still calls the effort setting reasoning ('{phrase}')")
+
+
+def test_no_doc_chains_the_suites_one_after_another():
+    """The one-command full set is `make test`, which runs the suites at once
+    (the user order pytest.ini pins: no test run over a minute). The docs used
+    to chain the suites with `&&` instead, sending a release or a PR onto the
+    sequential path — 185 s on an idle machine and minutes on the shared mini,
+    over the order every time (docs/test-runtime.md). Released CHANGELOG
+    entries keep what was true when they shipped, so they are not scanned."""
+    chained = re.compile(r"zsh tests/[\w./]+ &&")
+    for doc in (GUIDE, ARCHITECTURE, ROOT / ".github/CONTRIBUTING.md",
+                ROOT / "README.md"):
+        text = doc.read_text(encoding="utf-8")
+        assert not chained.search(text), (
+            f"{doc} chains the suites one after another; "
+            "the full set is `make test`, which runs them at once")
