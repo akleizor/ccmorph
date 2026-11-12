@@ -514,6 +514,49 @@ func TestResolverInputsServeManyModelsAfterOneLoad(t *testing.T) {
 	}
 }
 
+// GH-485: after Preload, Resolve parses neither the model map nor the discovered
+// doc again: corrupting the caller's fields leaves every answer intact.
+func TestResolverInputsParseTheMapAndDiscoveredDocOnceIssue485(t *testing.T) {
+	e := setup(t)
+	write(t, e.a, "type=apikey\nbase_url=https://a.invalid\napi_key={{SECRET_mnvzztcsdqnk}}\n"+
+		"context_window.pinned-model=123000\nmodel_map={\"proxy-model\":\"real-model\"}\n")
+	// A stored window for the mapped target, keyed to the conf's route.
+	_, pre, _ := ReadConf(e.a)
+	write(t, DiscoveredPath(e.a), `{"route":"`+RouteFingerprint(pre)+`","models":{"real-model":654000}}`+"\n")
+	catalogue := filepath.Join(e.root, "share/model-catalogue.json")
+	write(t, catalogue, `{"models":{"x/fam":{"family":"fam","limit":{"context":1000000}}}}`)
+	t.Setenv("MODEL_WINDOW_ENDPOINT_JSON", `[{"id":"declared","context_length":321000}]`)
+
+	_, fields, _ := ReadConf(e.a)
+	in := NewInputs(fields)
+	in.Preload()
+	// Delete every file and change the env: a per-model read or parse would now
+	// see nothing, so the answers below prove the inputs were hoisted. Corrupting
+	// the caller's map covers the two parses that never touched a file.
+	for _, path := range []string{e.a, DiscoveredPath(e.a), catalogue} {
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("MODEL_WINDOW_ENDPOINT_JSON", `[{"id":"declared","context_length":9}]`)
+	fields["model_map"] = "not json"
+	fields["context_discovered"] = "not json"
+	for i := 0; i < 10; i++ {
+		if got := in.Resolve("pinned-model"); got.Window != 123000 {
+			t.Fatalf("conf pin lost on resolve %d: %+v", i, got)
+		}
+		if got := in.Resolve("declared"); got.Window != 321000 || got.Source != "endpoint" {
+			t.Fatalf("endpoint window lost on resolve %d: %+v", i, got)
+		}
+		if got := in.Resolve("fam"); got.Window != 1000000 || got.Source != "catalogue-bundled" {
+			t.Fatalf("catalogue window lost on resolve %d: %+v", i, got)
+		}
+		if got := in.Resolve("proxy-model"); got.Window != 654000 || got.Source != "conf-discovered" || got.SendID != "proxy-model" {
+			t.Fatalf("mapped discovered window lost on resolve %d: %+v", i, got)
+		}
+	}
+}
+
 func TestGlobMatchesStarAndQuestionMark(t *testing.T) {
 	for _, c := range []struct {
 		name, pat string
@@ -642,6 +685,74 @@ func TestMigrationMovesInlineDiscoveredToModelsJSON(t *testing.T) {
 	}
 	if _, err := os.Stat(e.a + ".lock"); err == nil {
 		t.Fatal("retired lock file left in the state root")
+	}
+}
+
+// GH-485: migration rewrote with the conf text it read before taking the
+// profile lock. A writer that held the lock and added a manual context pin
+// while migration waited was erased: the identity check read the edited file,
+// so it passed, and the rewrite wrote the older text. The text, the fields and
+// the identity now come from one read inside the lock. The conf is a FIFO whose
+// writer serves the old text and then holds it open, so migration's read parks
+// with the old text consumed; the pin lands while it is parked, and only a read
+// inside the lock can carry it into the rewrite.
+func TestMigrationKeepsAPinAddedAfterItsReadIssue485(t *testing.T) {
+	e := setup(t)
+	base := read(t, e.a)
+	record := `context_discovered={"route":"` + RouteFingerprint(parseConf(base)) + `","models":{"m":321000}}`
+	v1 := base + record + "\n"
+	if err := os.Remove(e.a); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(e.a, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	written := make(chan struct{})
+	release := make(chan struct{})
+	go func() { // the conf's writer: serves the old text, then holds it open
+		f, err := os.OpenFile(e.a, os.O_WRONLY, 0)
+		if err != nil {
+			return
+		}
+		if _, err := f.WriteString(v1); err != nil {
+			f.Close()
+			return
+		}
+		close(written)
+		<-release
+		f.Close()
+	}()
+	done := make(chan error, 1)
+	go func() {
+		_, err := Migrate(discard())
+		done <- err
+	}()
+	select {
+	case <-written:
+	case <-time.After(10 * time.Second):
+		close(release)
+		t.Fatal("migration never read the conf")
+	}
+	// The lock-holding writer's edit, landed while migration is between its
+	// read and its write.
+	pin := base + "context_window.manual=456000\n" + record + "\n"
+	if err := os.WriteFile(e.a+".new", []byte(pin), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(e.a+".new", e.a); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("migrate: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("migration never finished")
+	}
+	if got := read(t, e.a); !strings.Contains(got, "context_window.manual=456000") {
+		t.Fatalf("migration erased a manual pin added while it ran:\n%s", got)
 	}
 }
 

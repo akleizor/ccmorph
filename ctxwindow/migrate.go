@@ -315,27 +315,31 @@ func moveInlineDiscovered(state string) (int, error) {
 			continue
 		}
 		os.Remove(conf + ".lock")
-		text, fields, err := ReadConf(conf)
-		if err != nil {
-			return moved, err
-		}
-		if !strings.Contains(text, "context_discovered=") {
-			continue
-		}
-		err = ProfileLock(s, func() error {
-			expected := ProfileIdentity(s)
-			if expected == nil {
+		err := ProfileLock(s, func() error {
+			// One read inside the lock carries the identity to check, the
+			// fields to move and the text to rewrite: text read before the
+			// lock can be older than a writer that held it meanwhile, and
+			// the rewrite would erase that writer's lines (GH-485).
+			snap, serr := snapshotOf(conf)
+			if serr != nil {
+				if os.IsNotExist(serr) {
+					return nil // the conf vanished mid-migration; nothing to move
+				}
+				return serr
+			}
+			text, fields := snap.Text, snap.Fields
+			if !strings.Contains(text, "context_discovered=") {
 				return nil
 			}
 			if doc := discoveredDoc(fields); doc != nil {
-				ok, err := writeDiscovered(conf, doc, expected)
+				ok, err := writeDiscovered(conf, text, doc, snap.ID)
 				if ok {
 					moved++
 				}
 				return err
 			}
 			// Bound to a route this profile no longer has: every read already ignores it.
-			_, err := ReplaceFields(conf, []Field{{Key: "context_discovered"}}, expected)
+			_, err := replaceFields(conf, text, []Field{{Key: "context_discovered"}}, snap.ID)
 			return err
 		})
 		if err != nil {

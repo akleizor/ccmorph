@@ -83,20 +83,11 @@ func ProfilePath(profile string) (string, error) {
 
 // ReadConf returns the conf text and its key=value fields.
 func ReadConf(path string) (string, map[string]string, error) {
-	if paths.IsSymlink(path) {
-		return "", nil, errors.New("profile configuration must not be a symlink")
-	}
-	text, err := readText(path)
+	text, err := confText(path)
 	if err != nil {
 		return "", nil, err
 	}
-	fields := map[string]string{}
-	for _, line := range strings.Split(text, "\n") {
-		key, value, ok := strings.Cut(strings.Trim(line, " \t\r"), "=")
-		if ok && !strings.HasPrefix(key, "#") {
-			fields[key] = value
-		}
-	}
+	fields := parseConf(text)
 	// Machine-written windows live beside the profile; a conf that still carries
 	// the old inline record wins until the next save moves it out.
 	if _, inline := fields["context_discovered"]; !inline {
@@ -107,12 +98,26 @@ func ReadConf(path string) (string, map[string]string, error) {
 	return text, fields, nil
 }
 
+// confText is a conf's text alone: no symlink, readable, valid UTF-8. Callers
+// that need no sidecar merge read this instead of ReadConf.
+func confText(path string) (string, error) {
+	if paths.IsSymlink(path) {
+		return "", errors.New("profile configuration must not be a symlink")
+	}
+	return readText(path)
+}
+
 // readText is a file's text with "\r\n" and "\r" read as "\n".
 func readText(path string) (string, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
+	return textOf(b, path)
+}
+
+// textOf is bytes as a conf's text with "\r\n" and "\r" read as "\n".
+var textOf = func(b []byte, path string) (string, error) {
 	if !utf8.Valid(b) {
 		return "", fmt.Errorf("%s is not valid UTF-8", path)
 	}
@@ -121,6 +126,18 @@ func readText(path string) (string, error) {
 		text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n")
 	}
 	return text, nil
+}
+
+// parseConf is conf text as key=value fields.
+func parseConf(text string) map[string]string {
+	fields := map[string]string{}
+	for _, line := range strings.Split(text, "\n") {
+		key, value, ok := strings.Cut(strings.Trim(line, " \t\r"), "=")
+		if ok && !strings.HasPrefix(key, "#") {
+			fields[key] = value
+		}
+	}
+	return fields
 }
 
 // DiscoveredPath is where a conf's discovered windows are kept:
@@ -242,42 +259,83 @@ type Identity struct {
 	sum, models [32]byte
 }
 
-func identityOf(f *os.File) (*Identity, error) {
+func identityOf(f *os.File) (*Identity, []byte, error) {
 	fi, err := f.Stat()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	data, err := io.ReadAll(f)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	id := &Identity{mtimeNs: fi.ModTime().UnixNano(), sum: sha256.Sum256(data)}
 	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
 		id.dev, id.ino = uint64(st.Dev), uint64(st.Ino) //nolint: portable across the unix targets
 	}
-	return id, nil
+	return id, data, nil
+}
+
+// Snapshot is one read of a profile: the conf's identity, text and fields, with
+// the sidecar hashed into the identity and its record merged into the fields.
+// A caller that needs all three builds this instead of reading the files again.
+type Snapshot struct {
+	ID     *Identity
+	Text   string
+	Fields map[string]string
+}
+
+// profileSnapshot reads a profile's conf and sidecar once. A symlink or an
+// unreadable conf is (nil, ReadConf's error); text the conf cannot carry (invalid
+// UTF-8) still pins the identity, but is an error, like ReadConf.
+func profileSnapshot(profile string) (*Snapshot, error) {
+	path, err := ProfilePath(profile)
+	if err != nil {
+		return nil, err
+	}
+	return snapshotOf(path)
+}
+
+// snapshotOf is profileSnapshot over a conf path the caller already holds, as
+// confScan hands out: the same read, without the profile-name lookup.
+func snapshotOf(path string) (*Snapshot, error) {
+	if paths.IsSymlink(path) {
+		return nil, errors.New("profile configuration must not be a symlink")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	id, data, err := identityOf(f)
+	if err != nil {
+		return nil, err
+	}
+	// The sidecar is hashed whatever the conf's text turns out to be, so the
+	// identity always pins both files.
+	var sidecar []byte
+	if b, serr := os.ReadFile(DiscoveredPath(path)); serr == nil {
+		sidecar = b
+		id.models = sha256.Sum256(sidecar)
+	}
+	text, terr := textOf(data, path)
+	if terr != nil {
+		return &Snapshot{ID: id}, terr
+	}
+	fields := parseConf(text)
+	if _, inline := fields["context_discovered"]; !inline && sidecar != nil {
+		fields["context_discovered"] = string(sidecar)
+	}
+	return &Snapshot{ID: id, Text: text, Fields: fields}, nil
 }
 
 // ProfileIdentity is nil for a symlink or an unreadable conf. It also pins the
 // profile's models.json, so a writer sees a discovery saved since it read.
 func ProfileIdentity(profile string) *Identity {
-	path, err := ProfilePath(profile)
-	if err != nil || paths.IsSymlink(path) {
+	snap, _ := profileSnapshot(profile)
+	if snap == nil {
 		return nil
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-	id, err := identityOf(f)
-	if err != nil {
-		return nil
-	}
-	if data, err := os.ReadFile(DiscoveredPath(path)); err == nil {
-		id.models = sha256.Sum256(data)
-	}
-	return id
+	return snap.ID
 }
 
 // Positive is positive(value) for a string: up to ten ASCII digits, above zero.
@@ -396,8 +454,13 @@ func subObj(doc obj, key string) obj {
 
 // DiscoveredValues is the route-bound window table, in stored order.
 func DiscoveredValues(fields map[string]string) map[string]int64 {
+	return valuesOf(discoveredDoc(fields))
+}
+
+// valuesOf is the route-bound window table from an already-parsed doc.
+func valuesOf(doc obj) map[string]int64 {
 	out := map[string]int64{}
-	models := subObj(discoveredDoc(fields), "models")
+	models := subObj(doc, "models")
 	if models == nil {
 		return out
 	}
@@ -413,8 +476,13 @@ func DiscoveredValues(fields map[string]string) map[string]int64 {
 // DiscoveredSources is the provenance of windows filled by something other
 // than a live probe or declared listing.
 func DiscoveredSources(fields map[string]string) map[string]obj {
+	return sourcesOf(discoveredDoc(fields))
+}
+
+// sourcesOf is the provenance table from an already-parsed doc.
+func sourcesOf(doc obj) map[string]obj {
 	out := map[string]obj{}
-	sources := subObj(discoveredDoc(fields), "sources")
+	sources := subObj(doc, "sources")
 	if sources == nil {
 		return out
 	}
@@ -435,8 +503,13 @@ func isString(v any) bool { _, ok := v.(string); return ok }
 
 // DiscoveredMisses are models no lookup could size, with the day it last tried.
 func DiscoveredMisses(fields map[string]string) map[string]string {
+	return missesOf(discoveredDoc(fields))
+}
+
+// missesOf is the miss table from an already-parsed doc.
+func missesOf(doc obj) map[string]string {
 	out := map[string]string{}
-	misses := subObj(discoveredDoc(fields), "misses")
+	misses := subObj(doc, "misses")
 	if misses == nil {
 		return out
 	}
@@ -467,20 +540,31 @@ func ManualValues(fields map[string]string) map[string]int64 {
 // MappedTarget is the id the shim serves for bare, or bare when nothing rewrites
 // it: the map's target is final, so it sizes the session.
 func MappedTarget(fields map[string]string, bare string) string {
-	base := strings.TrimRight(fields["base_url"], "/")
-	if base == "" || base == "https://api.anthropic.com" {
-		return bare
-	}
+	return mappedTarget(fields, parseModelMap(fields), bare)
+}
+
+// parseModelMap is the conf's model_map as a JSON object; nil when absent or
+// not one, which mappedTarget reads as "no mapping".
+func parseModelMap(fields map[string]string) obj {
 	text := fields["model_map"]
 	if text == "" {
 		text = "{}"
 	}
 	v, err := parseJSON([]byte(text))
 	if err != nil {
+		return nil
+	}
+	mapping, _ := v.(obj)
+	return mapping
+}
+
+// mappedTarget is MappedTarget over an already-parsed mapping.
+func mappedTarget(fields map[string]string, mapping obj, bare string) string {
+	base := strings.TrimRight(fields["base_url"], "/")
+	if base == "" || base == "https://api.anthropic.com" {
 		return bare
 	}
-	mapping, ok := v.(obj)
-	if !ok {
+	if mapping == nil {
 		return bare
 	}
 	target := mapping[bare]
@@ -684,10 +768,16 @@ func str(s string) *string { return &s }
 // ReplaceFields rewrites path with the given fields and lays it out canonically.
 // With expected, it gives up (false) if the file changed since.
 func ReplaceFields(path string, fields []Field, expected *Identity) (bool, error) {
-	text, _, err := ReadConf(path)
+	text, err := confText(path)
 	if err != nil {
 		return false, err
 	}
+	return replaceFields(path, text, fields, expected)
+}
+
+// replaceFields is ReplaceFields over conf text the caller already read; it
+// reads the conf's mode and re-checks its identity, nothing else.
+func replaceFields(path, text string, fields []Field, expected *Identity) (bool, error) {
 	fi, err := os.Stat(path)
 	if err != nil {
 		return false, err
@@ -739,7 +829,7 @@ func ReplaceFields(path string, fields []Field, expected *Identity) (bool, error
 		if err != nil {
 			return false, err
 		}
-		now, err := identityOf(cur)
+		now, _, err := identityOf(cur)
 		cur.Close()
 		if err != nil {
 			return false, err
@@ -774,17 +864,20 @@ func SaveDiscoveredCtx(ctx context.Context, profile string, values map[string]in
 		return false, nil
 	}
 	ran, err := ProfileLockCtx(ctx, profile, func() error {
-		if got := ProfileIdentity(profile); got == nil || *got != *expected {
+		// One read of the profile carries the identity to check, the fields to
+		// merge and the text to rewrite (GH-485).
+		snap, serr := profileSnapshot(profile)
+		if snap == nil || *snap.ID != *expected {
 			return nil
+		}
+		if serr != nil {
+			return serr
 		}
 		path, err := ProfilePath(profile)
 		if err != nil {
 			return err
 		}
-		_, fields, err := ReadConf(path)
-		if err != nil {
-			return err
-		}
+		fields := snap.Fields
 		merged := DiscoveredValues(fields)
 		mergedSources := DiscoveredSources(fields)
 		valid := map[string]int64{}
@@ -834,7 +927,7 @@ func SaveDiscoveredCtx(ctx context.Context, profile string, values map[string]in
 		if len(keptMisses) > 0 {
 			record["misses"] = keptMisses
 		}
-		saved, err = writeDiscovered(path, record, expected)
+		saved, err = writeDiscovered(path, snap.Text, record, expected)
 		return err
 	})
 	if err != nil || !ran {
@@ -845,12 +938,8 @@ func SaveDiscoveredCtx(ctx context.Context, profile string, values map[string]in
 
 // writeDiscovered stores record as indented JSON in DiscoveredPath and drops any
 // inline context_discovered line the conf still carries. The caller holds the
-// profile lock and has checked expected.
-func writeDiscovered(conf string, record obj, expected *Identity) (bool, error) {
-	text, _, err := ReadConf(conf)
-	if err != nil {
-		return false, err
-	}
+// profile lock, has checked expected, and passes the conf text it read.
+func writeDiscovered(conf, text string, record obj, expected *Identity) (bool, error) {
 	inline := false
 	for _, line := range strings.Split(text, "\n") {
 		if strings.HasPrefix(strings.TrimLeft(line, " \t"), "context_discovered=") {
@@ -880,7 +969,7 @@ func writeDiscovered(conf string, record obj, expected *Identity) (bool, error) 
 	if !inline {
 		return true, nil
 	}
-	return ReplaceFields(conf, []Field{{Key: "context_discovered"}}, expected)
+	return replaceFields(conf, text, []Field{{Key: "context_discovered"}}, expected)
 }
 
 // Restamp rebinds conf's models.json from route old to route new, for a conf

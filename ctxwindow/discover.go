@@ -191,28 +191,35 @@ var priorCatalogueTags = func(profiles []string) map[string]obj {
 	return tags
 }
 
-// routedProfiles are the profiles with a routed endpoint: every one has a listing to size.
-func routedProfiles() []string {
+// routedProfiles are the profiles with a routed endpoint, each with the one
+// snapshot of it the probe reuses instead of reading again: every routed
+// profile has a listing to size. The type never comes from the sidecar, whose
+// merge only sets context_discovered.
+func routedProfiles() ([]string, map[string]*Snapshot) {
 	var names []string
+	snaps := map[string]*Snapshot{}
 	dir := StateDir()
 	for _, path := range confScan(dir) {
-		fields, ok := confFields(path)
-		if !ok {
+		snap, err := snapshotOf(path)
+		if err != nil {
 			continue
 		}
-		switch fields["type"] {
+		switch snap.Fields["type"] {
 		case "apikey", "proxy", "provider":
-			names = append(names, stem(path))
+			s := stem(path)
+			names = append(names, s)
+			snaps[s] = snap
 		}
 	}
-	return names
+	return names, snaps
 }
 
 // Run is the outcome of one discovery pass.
 type Run struct {
-	Values  map[string]int64
-	Notes   []Note
-	Sources map[string]obj
+	Values   map[string]int64
+	Notes    []Note
+	Sources  map[string]obj
+	Baseline map[string]int64
 }
 
 // Options configures ProbeAll.
@@ -224,6 +231,9 @@ type Options struct {
 	Deadline     float64
 	Bisect       int
 	Identities   map[string]*Identity
+	// Snaps is the selection's one read of each profile; the pinned loop
+	// reuses it instead of reading the conf again (GH-485).
+	Snaps map[string]*Snapshot
 }
 
 // DefaultOptions are the CLI defaults.
@@ -242,8 +252,14 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 	values := map[string]int64{}
 	sources := map[string]obj{}
 	var notes []Note
-	baseline := priorValues(profiles)
-	catalogueTags := priorCatalogueTags(profiles)
+	baseline := map[string]int64{}
+	catalogueTags := map[string]obj{}
+	if o.Identities == nil {
+		// The entry sweep reads every profile once up front. The pinned path
+		// below reads each profile once itself, so it skips this sweep (GH-485).
+		baseline = priorValues(profiles)
+		catalogueTags = priorCatalogueTags(profiles)
+	}
 	cache := NewCache(false)
 	var blob string
 	handle := ""
@@ -259,14 +275,32 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 	}
 
 	expired := runWithDeadline(parent, o.Deadline-cleanupBudget, func(ctx context.Context) {
+		snaps := o.Snaps
 		if profiles == nil {
-			profiles = routedProfiles()
+			profiles, snaps = routedProfiles()
 		}
 		for _, profile := range profiles {
+			fields := map[string]string{}
 			if o.Identities != nil {
-				o.Identities[profile] = ProfileIdentity(profile)
-				baseline = priorValues([]string{profile})
-				catalogueTags = priorCatalogueTags([]string{profile})
+				// One read of the profile pins its identity and yields the fields,
+				// the baseline and the catalogue tags the loop needs: the
+				// selection's snapshot when there is one, its own otherwise (GH-485).
+				snap := snaps[profile]
+				if snap == nil {
+					snap, _ = profileSnapshot(profile)
+				}
+				if snap == nil {
+					o.Identities[profile] = nil
+				} else {
+					o.Identities[profile] = snap.ID
+					fields = snap.Fields
+					for m, v := range DiscoveredValues(fields) {
+						baseline[profile+":"+m] = v
+					}
+					for m, t := range DiscoveredSources(fields) {
+						catalogueTags[profile+":"+m] = t
+					}
+				}
 			}
 			env, err := ccmorphEnv(ctx, profile)
 			check(ctx)
@@ -310,10 +344,11 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 					continue
 				}
 			}
-			path, _ := ProfilePath(profile)
-			fields, ok := confFields(path)
-			if !ok {
-				fields = map[string]string{}
+			if o.Identities == nil {
+				path, _ := ProfilePath(profile)
+				if f, ok := confFields(path); ok {
+					fields = f
+				}
 			}
 			if o.OnlySet {
 				have := map[string]bool{}
@@ -481,7 +516,7 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 			fmt.Fprintln(stderr, "route cleanup timed out; a provider bridge may still be running")
 		}
 	}
-	return Run{values, notes, sources}
+	return Run{values, notes, sources, baseline}
 }
 
 func sortedKeys(m map[string]bool) []string {
