@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -47,7 +48,7 @@ func Main(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	client := httpClient()
 	sc := bufio.NewScanner(stdin)
 	sc.Buffer(make([]byte, 64<<10), 1<<20)
-	entries := []Entry{}
+	var lines [][]string
 	for sc.Scan() {
 		f := strings.Split(sc.Text(), "\t")
 		if len(f) < 3 || f[0] == "" {
@@ -56,12 +57,24 @@ func Main(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		for len(f) < 5 {
 			f = append(f, "")
 		}
-		e := read(client, f[0], f[1], f[2], f[3])
-		if f[1] == "gateway" {
-			e.Balance, e.Error = balance(client, f[2], f[4], e.Error)
-		}
-		entries = append(entries, e)
+		lines = append(lines, f)
 	}
+	// Each profile's read waits on its own endpoint or on the receipts, never on
+	// another's, so they run at once and the call takes as long as the slowest.
+	entries := make([]Entry, len(lines))
+	var wg sync.WaitGroup
+	for i, f := range lines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			e := read(client, f[0], f[1], f[2], f[3])
+			if f[1] == "gateway" {
+				e.Balance, e.Error = balance(client, f[2], f[4], e.Error)
+			}
+			entries[i] = e
+		}()
+	}
+	wg.Wait()
 	if len(entries) == 0 {
 		if jsonOut {
 			fmt.Fprintln(stdout, `{"profiles":[]}`)

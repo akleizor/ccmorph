@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/akleizor/ccmorph/util/paths"
@@ -194,17 +195,10 @@ func addRows(rows []*spendRow, monthStart, todayStart time.Time, counted map[str
 	}
 }
 
-func readRows(files []string) []*spendRow {
-	rows := make([]*spendRow, 0, len(files))
-	for _, p := range files {
-		rows = append(rows, readRow(p))
-	}
-	return rows
-}
-
 // tallyMemo holds one scan per process: a quota call reads every gateway
 // profile, and each would otherwise re-read the whole month.
 var tallyMemo struct {
+	sync.Mutex
 	key string
 	by  map[string]tally
 }
@@ -219,6 +213,8 @@ var tallyMemo struct {
 // changes (a late move links rows into it).
 func monthTallies(usageDir string, today, monthStart, todayStart time.Time) map[string]tally {
 	key := usageDir + "\x00" + monthStart.String() + "\x00" + todayStart.String()
+	tallyMemo.Lock()
+	defer tallyMemo.Unlock()
 	if tallyMemo.key == key {
 		return tallyMemo.by
 	}
@@ -288,9 +284,11 @@ func closedDay(dir, name string, monthStart, todayStart time.Time) map[string]ta
 		c.MTime == info.ModTime().UnixNano() && c.Month == monthStart.Unix() && c.By != nil {
 		return c.By
 	}
-	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	// A past day still changes (a hook re-reading an old transcript writes into
+	// its stamp's day), so the recount goes through the per-file index: only the
+	// receipts that changed are read.
 	c = dayCache{MTime: info.ModTime().UnixNano(), Month: monthStart.Unix(), By: map[string]tally{}}
-	addRows(readRows(files), monthStart, todayStart, map[string]bool{}, c.By)
+	addRows(openDay(dir, name), monthStart, todayStart, map[string]bool{}, c.By)
 	writeAtomic(cachePath, c)
 	return c.By
 }

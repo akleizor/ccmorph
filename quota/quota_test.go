@@ -12,7 +12,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -26,7 +28,14 @@ func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f
 func useTransport(t *testing.T, f roundTrip) {
 	t.Helper()
 	old := transport
-	transport = f
+	// Profiles are read at once; the stand-in upstream serves one request at a
+	// time, so a test's handler may record into plain slices and maps.
+	var mu sync.Mutex
+	transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return f(r)
+	})
 	t.Cleanup(func() { transport = old })
 }
 
@@ -187,7 +196,8 @@ func TestQuota(t *testing.T) {
 	// missing sign-in is never sent. Whatever the endpoint answers a token, a
 	// refusal (tk) or the rate limit repeated reads earn (qt), its row is the
 	// one explanation above (#270).
-	if strings.Join(auth, ",") != "Bearer live,Bearer refused,Bearer tk,Bearer qt" {
+	sort.Strings(auth) // profiles are read at once: the set is sent, in no order
+	if strings.Join(auth, ",") != "Bearer live,Bearer qt,Bearer refused,Bearer tk" {
 		t.Fatalf("sent %v", auth)
 	}
 	// A refused read must not overwrite the cache; a good one does.
