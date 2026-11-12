@@ -31,7 +31,7 @@ func TestTranslatorChatModelsNamesOnlyTheChatRows(t *testing.T) {
 // The direct route has no translator, so its shim never gets the list and
 // strips the carrier with every other thinking block.
 func TestTheDirectRouteNamesNoTranslatorChatModels(t *testing.T) {
-	cmd := spawnedDirect(t, map[string]string{"CCMORPH_SHIM_HOOKS": "/stable/hooks.py"})
+	cmd := spawnedDirect(t, map[string]string{"CCMORPH_SHIM_HOOKS": "/stable/hooks.py"}, false)
 	if env := strings.Join(cmd.Env, "\n"); strings.Contains(env, "CCMORPH_TRANSLATOR_CHAT_MODELS") {
 		t.Fatalf("the direct route's shim env names translator chat models")
 	}
