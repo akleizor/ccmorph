@@ -16,7 +16,7 @@ type Limit struct {
 }
 
 func posIntPtr(v any) *int64 {
-	if n, ok := posInt(v); ok {
+	if n, ok := asPosInt(v); ok {
 		return &n
 	}
 	return nil
@@ -50,8 +50,6 @@ func LimitWindow(limit any) *Limit {
 	return &Limit{value, input, context}
 }
 
-func objOf(v any) obj { o, _ := v.(map[string]any); return o }
-
 func windowOf(entry obj) *Limit {
 	v := entry["limit"]
 	return LimitWindow(v)
@@ -63,14 +61,14 @@ func CanonicalCatalogueWindow(catalogue obj, modelID, ownedBy string) *Limit {
 	var entry obj
 	if ownedBy != "" {
 		v := catalogue[ownedBy+"/"+modelID]
-		entry = objOf(v)
+		entry = asObj(v)
 	}
 	if entry == nil {
 		suffix := "/" + modelID
 		var matches []obj
 		for _, k := range slices.Sorted(maps.Keys(catalogue)) {
 			v := catalogue[k]
-			if o := objOf(v); o != nil && strings.HasSuffix(k, suffix) {
+			if o := asObj(v); o != nil && strings.HasSuffix(k, suffix) {
 				matches = append(matches, o)
 			}
 		}
@@ -91,7 +89,7 @@ func CanonicalCatalogueWindow(catalogue obj, modelID, ownedBy string) *Limit {
 	var family []obj
 	for _, k := range slices.Sorted(maps.Keys(catalogue)) {
 		v := catalogue[k]
-		o := objOf(v)
+		o := asObj(v)
 		if o == nil {
 			continue
 		}
@@ -184,7 +182,7 @@ func (in *Inputs) endpointRows() []any {
 
 func (in *Inputs) endpointWindow(model string) (int64, bool) {
 	for _, r := range in.endpointRows() {
-		if row := objOf(r); row != nil {
+		if row := asObj(r); row != nil {
 			if id := row["id"]; id == model {
 				return stated(row)
 			}
@@ -198,8 +196,8 @@ func (in *Inputs) catalogueModels() obj {
 		in.haveCatalogue = true
 		if b, err := os.ReadFile(filepath.Join(ShareDir(), "model-catalogue.json")); err == nil {
 			if v, err := parseJSON(b); err == nil {
-				if top := objOf(v); top != nil {
-					in.catalogue = objOf(top["models"])
+				if top := asObj(v); top != nil {
+					in.catalogue = asObj(top["models"])
 				}
 			}
 		}
@@ -221,7 +219,7 @@ func (in *Inputs) bundledWindow(model string) (int64, bool) {
 func stated(row obj) (int64, bool) {
 	for _, f := range DeclaredFields {
 		v := row[f]
-		if n, ok := posInt(v); ok {
+		if n, ok := asPosInt(v); ok {
 			return n, true
 		}
 	}

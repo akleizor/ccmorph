@@ -385,11 +385,6 @@ func discoveredDoc(fields map[string]string) obj {
 	return doc
 }
 
-func posInt(v any) (int64, bool) {
-	i, ok := anyInt(v)
-	return i, ok && i > 0 // shortcut: a window past int64 is dropped, none is real
-}
-
 func subObj(doc obj, key string) obj {
 	if doc == nil {
 		return nil
@@ -408,7 +403,7 @@ func DiscoveredValues(fields map[string]string) map[string]int64 {
 	}
 	for _, k := range slices.Sorted(maps.Keys(models)) {
 		v := models[k]
-		if n, ok := posInt(v); ok && ValidModel(k) {
+		if n, ok := asPosInt(v); ok && ValidModel(k) {
 			out[k] = n
 		}
 	}

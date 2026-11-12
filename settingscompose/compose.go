@@ -26,6 +26,7 @@ import (
 
 	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/profile"
+	"github.com/akleizor/ccmorph/util/argparse"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -286,13 +287,6 @@ func saveBase(profileDir string, data []byte) {
 	if cur := readBytes(join(profileDir, baseFile)); cur == nil || !bytes.Equal(cur, data) {
 		writeBytes(join(profileDir, baseFile), data)
 	}
-}
-
-func list(v value) (out []any) {
-	if l, ok := v.([]any); ok {
-		return l
-	}
-	return nil
 }
 
 func getObj(o *obj, k string) value {
@@ -1170,7 +1164,8 @@ func materialize(profileDir, canonicalPath string, saved *obj, strip, mapping ma
 			doc := build(filepath.Base(profileDir), canonical, layer, saved, strip, mapping, acw, usageHook)
 			// Claude Code may be writing the same file; start over rather than
 			// replace an edit that landed while this pass was reading.
-			if !bytes.Equal(readBytes(target), currentBytes) || (readBytes(target) == nil) != (currentBytes == nil) {
+			onDisk := readBytes(target)
+			if !bytes.Equal(onDisk, currentBytes) || (onDisk == nil) != (currentBytes == nil) {
 				continue
 			}
 			saveLayer(profileDir, layer)
@@ -1243,10 +1238,10 @@ func parseArgs(args []string) (*options, string) {
 	o := &options{command: args[0], saved: "{}"}
 	home, _ := os.UserHomeDir()
 	o.canonical = pyPath(join(home, ".claude", "settings.json"))
-	flags := map[string]bool{"--canonical": true, "--mapping": true, "--usage-hook": true}
+	flags := []string{"--canonical", "--mapping", "--usage-hook"}
 	switch o.command {
 	case "materialize":
-		flags["--saved"], flags["--strip"], flags["--acw"] = true, true, true
+		flags = append(flags, "--saved", "--strip", "--acw")
 	case "fold":
 	default:
 		return nil, fmt.Sprintf("argument command: invalid choice: '%s' (choose from 'materialize', 'fold')", o.command)
@@ -1272,16 +1267,7 @@ func parseArgs(args []string) (*options, string) {
 			continue
 		}
 		name, val, hasVal := strings.Cut(a, "=")
-		var match []string
-		for f := range flags {
-			if f == name {
-				match = []string{f}
-				break
-			}
-			if strings.HasPrefix(f, name) {
-				match = append(match, f)
-			}
-		}
+		match := argparse.Matches(name, flags)
 		if len(match) != 1 {
 			if name == "--help" {
 				return nil, "help"
@@ -1290,7 +1276,7 @@ func parseArgs(args []string) (*options, string) {
 		}
 		name = match[0]
 		if !hasVal {
-			if i+1 >= len(rest) || (strings.HasPrefix(rest[i+1], "-") && len(rest[i+1]) > 1 && !ordjson.IsNumber(rest[i+1])) {
+			if i+1 >= len(rest) || argparse.OptionLike(rest[i+1]) {
 				return nil, fmt.Sprintf("argument %s: expected one argument", name)
 			}
 			i++
@@ -1322,14 +1308,6 @@ func parseArgs(args []string) (*options, string) {
 	return o, ""
 }
 
-func set(items []string) map[string]bool {
-	m := map[string]bool{}
-	for _, s := range items {
-		m[s] = true
-	}
-	return m
-}
-
 // Main runs `settings-compose <materialize|fold> ...` and returns its exit code.
 func Main(args []string, stderr io.Writer) int {
 	o, bad := parseArgs(args)
@@ -1342,7 +1320,7 @@ func Main(args []string, stderr io.Writer) int {
 	}
 	fail := catch(func() {
 		if o.command == "fold" {
-			foldOnly(o.profileDir, o.canonical, set(o.mapping))
+			foldOnly(o.profileDir, o.canonical, profile.SetOf(o.mapping))
 			return
 		}
 		savedV, err := ordjson.Parse([]byte(o.saved))
@@ -1356,7 +1334,7 @@ func Main(args []string, stderr io.Writer) int {
 		if o.acw != nil && *o.acw != "none" && !ordjson.IsDigits(*o.acw) {
 			valueFail("--acw must be a token count or none")
 		}
-		materialize(o.profileDir, o.canonical, saved, set(o.strip), set(o.mapping), o.acw, o.usageHook)
+		materialize(o.profileDir, o.canonical, saved, profile.SetOf(o.strip), profile.SetOf(o.mapping), o.acw, o.usageHook)
 	})
 	if fail == nil {
 		return 0

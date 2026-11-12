@@ -135,12 +135,14 @@ func (t *thinkingStream) feed(line []byte) {
 		kind, _ = obj.str("type")
 	}
 	if t.held != nil {
-		if idx, ok := intField(obj0(obj), "index"); obj != nil && kind == "content_block_stop" && ok && idx == t.held.index {
-			t.dropped = append(t.dropped, t.held.index)
-			t.held = nil
-			t.pending = nil
-			t.swallowBlank = true
-			return
+		if obj != nil && kind == "content_block_stop" {
+			if idx, ok := intField(obj, "index"); ok && idx == t.held.index {
+				t.dropped = append(t.dropped, t.held.index)
+				t.held = nil
+				t.pending = nil
+				t.swallowBlank = true
+				return
+			}
 		}
 		t.release()
 	}
@@ -156,13 +158,6 @@ func (t *thinkingStream) feed(line []byte) {
 	t.out = append(t.out, t.pending...)
 	t.pending = nil
 	t.out = append(t.out, t.reindex(line, obj))
-}
-
-func obj0(d *doc) *doc {
-	if d == nil {
-		return &doc{}
-	}
-	return d
 }
 
 func (t *thinkingStream) release() {

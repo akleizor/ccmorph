@@ -490,6 +490,18 @@ func responseToken(messageID, requestID string) string {
 	return hex.EncodeToString(sum[:16])
 }
 
+// utcStamp is the one spelling of a UTC timestamp the usage store uses:
+// whole seconds, six fractional digits when they are not zero, +00:00. Every
+// row and outcome carries it: the sidecar stamps what it writes now, and
+// rowTime re-spells a transcript's stamp in it.
+func utcStamp(t time.Time) string {
+	out := t.Format("2006-01-02T15:04:05")
+	if us := t.Nanosecond() / 1000; us != 0 {
+		out += fmt.Sprintf(".%06d", us)
+	}
+	return out + "+00:00"
+}
+
 // rowTime is a transcript timestamp in the row's own spelling (UTC, six
 // fractional digits when it has them).
 func rowTime(ts string) string {
@@ -497,12 +509,7 @@ func rowTime(ts string) string {
 	if err != nil {
 		return ""
 	}
-	t = t.UTC()
-	out := t.Format("2006-01-02T15:04:05")
-	if us := t.Nanosecond() / 1000; us != 0 {
-		out += fmt.Sprintf(".%06d", us)
-	}
-	return out + "+00:00"
+	return utcStamp(t.UTC())
 }
 
 // rowFileName is the file a response's row lives in, inside its stamp's day

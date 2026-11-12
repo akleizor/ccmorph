@@ -241,6 +241,18 @@ def test_paid_probe_reads_the_ceiling_from_the_refusal_and_warns_first(gateway):
     (["--declared-only", "--probe-all"], "not allowed with argument"),
     (["--deadline", "nan"], "--deadline"),
     (["--listing-stdin"], "requires exactly one --profile"),
+    # GH-487 pins the flag-spelling rules the shared argparse helper now owns,
+    # through the real command's own errors: the ambiguous prefix lists every
+    # candidate in help-page order, a unique prefix resolves (--prof reached
+    # --jobs validation, so it was accepted as --profile), a negative number is
+    # a value not an option (-1 fed --deadline and was rejected as a range, not
+    # "expected one argument"), and a known option or the end of argv is never
+    # swallowed as a value.
+    (["--pro", "p"], "ambiguous option: --pro could match --profile, --probe-timeout, --probe-all"),
+    (["--prof", "p", "--jobs", "0"], "argument --jobs: must be > 0"),
+    (["--profile", "p", "--deadline", "-1"], "argument --deadline: must be finite and > 0"),
+    (["--profile", "--check"], "argument --profile: expected one argument"),
+    (["--profile"], "argument --profile: expected one argument"),
 ])
 def test_argument_errors_exit_two_and_never_reach_a_route(gateway, args, needle):
     fx = gateway([])
