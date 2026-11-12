@@ -61,6 +61,11 @@ readonly CCMORPH_SOURCE="$REPO_ROOT/tests/core_lib.zsh"
 typeset -a _ccmorph_library=("$REPO_ROOT/lib/ccmorph.sh" "$REPO_ROOT"/lib/ccmorph-*.zsh(N))
 readonly -a CCMORPH_LIBRARY=(${_ccmorph_library:#*/lib/ccmorph-ui.zsh})
 readonly ORIGINAL_PATH="$PATH"
+# Where bridgeless_path's mirror dirs live. Captured at suite start because a
+# test may point TMPDIR inside its own home before setup_home runs; a mirror
+# made there would be rm -rf'd with that home while the shard still holds its
+# path. At exit the sweep matches this same prefix, so it reaps the mirrors.
+readonly ORIGINAL_TMPDIR="${TMPDIR:-/tmp}"
 # Captured before any test redirects $HOME to a scratch dir. Only for locating
 # things that genuinely live on this machine (see the differential parser test).
 readonly REAL_HOME="$HOME"
@@ -110,6 +115,10 @@ fi
 # children, and when it reaps one it takes that child's whole pid tree: the
 # launcher's own children can hide their argv from pgrep entirely.
 typeset -ga _ccm_test_homes=()
+# One mirror dir per bridge-carrying PATH entry, made once per shard: every
+# home setup_home builds reuses them (#476). The shards are separate processes,
+# so each builds its own.
+typeset -gA _ccm_test_path_mirrors=()
 typeset -gi _ccm_test_homes_mark=0
 typeset -gi _ccm_test_homes_exiting=0
 typeset -ga _ccm_test_leaked=()
@@ -278,6 +287,53 @@ assert_not_contains() {
   fi
 }
 
+# The machine's own provider bridge must not answer a test that seeded none:
+# the add menu reads its provider rows from cliproxyapi on PATH, so a real
+# copy's longer login names widen the menu's label column and fail the same
+# pins only where the bridge is installed (#414). An entry carrying one is
+# replaced by a mirror of its other executables, not dropped whole: dropping
+# it also dropped jq — even zsh — on machines that keep them together (#476),
+# the same rule tests/support.py's _mirror_without applies. A test that wants
+# provider rows writes a stub in $HOME/bin.
+# Prints the cleaned list for the colon-separated $1 and leaves it in REPLY:
+# a $(...) caller keeps the print, but the mirrors register with the sweep in
+# the caller's shell, so setup_home must read REPLY instead.
+bridgeless_path() {
+  local entry name mirror
+  local -a clean_path links
+  for entry in "${(@s.:.)1}"; do
+    [[ -x "$entry/cliproxyapi" ]] || { clean_path+=("$entry"); continue }
+    # A relative entry cannot be mirrored and still mean the same thing to a
+    # child; hiding wins, as tests/support.py's path_without also decides.
+    [[ "$entry" = /* ]] || continue
+    if [[ -n "${_ccm_test_path_mirrors[$entry]:-}" ]]; then
+      clean_path+=("${_ccm_test_path_mirrors[$entry]}")
+      continue
+    fi
+    mirror=$(mktemp -d "${ORIGINAL_TMPDIR}/ccmorph-path.XXXXXX") || continue
+    links=()
+    # _mirror_without's rule: every executable, hidden name aside. -f and -x
+    # follow symlinks, as is_file and X_OK do; (ND) reads dotfiles like
+    # os.listdir, minus . and .. which the glob never yields.
+    for name in "$entry"/*(ND); do
+      [[ "${name:t}" == cliproxyapi ]] && continue
+      [[ -f "$name" && -x "$name" ]] && links+=("$name")
+    done
+    # One fork for the whole entry: a per-link ln costs a fork each, and an
+    # entry can carry hundreds. The guard keeps an empty entry from linking
+    # the mirror itself into the current directory.
+    (( $#links )) && ln -s "${links[@]}" "$mirror"
+    clean_path+=("$mirror")
+    _ccm_test_path_mirrors[$entry]="$mirror"
+    # Registered like a home: a process carrying the mirror in its argv after
+    # the test returns has outlived it, and the exit sweep's rm -rf reaps a
+    # suite killed before its own cleanup.
+    _ccm_test_homes+=("$mirror")
+  done
+  REPLY="${(j.:.)clean_path}"
+  print -r -- "$REPLY"
+}
+
 # Installs a fake ccmorph-adapter: the given lines, then the shared serve loop,
 # which exits once the launch that passed --parent-pid is gone (#373).
 write_fake_adapter() {
@@ -296,17 +352,13 @@ setup_home() {
   # the launcher passes them through, so scrub them for a hermetic fixture.
   unset CLAUDE_CODE_SIMPLE MAX_THINKING_TOKENS CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CCMORPH_SET_ENV CLAUDECODE CLAUDE_CODE_CHILD_SESSION
   export CCMORPH_TEST_LOG="$HOME/claude.log"
-  # The machine's own provider bridge must not answer a test that seeded none:
-  # the add menu reads its provider rows from cliproxyapi on PATH, so a real
-  # copy's longer login names widen the menu's label column and fail the same
-  # pins only where the bridge is installed (#414). Every PATH entry carrying
-  # one is dropped; a test that wants provider rows writes a stub in $HOME/bin.
-  local -a clean_path entry
-  for entry in "${(@s.:.)ORIGINAL_PATH}"; do
-    [[ -x "$entry/cliproxyapi" ]] && continue
-    clean_path+=("$entry")
-  done
-  export PATH="$HOME/bin:${(j.:.)clean_path}"
+  # The machine's provider bridge is hidden from the PATH every home gets:
+  # bridgeless_path replaces a bridge-carrying entry with a mirror of its
+  # other executables (#476). Called without $(...) on purpose — the mirrors
+  # it registers with the sweep must land in this shell, not a subshell's
+  # copy of the registry.
+  bridgeless_path "$ORIGINAL_PATH"
+  export PATH="$HOME/bin:$REPLY"
   # A launch's sizing path reaches past the curl stubs: the models.dev catalogue
   # fetch and the validation probes go through net/http, so a fresh home paid a
   # 3 s catalogue timeout plus an endpoint DNS roundtrip per launch -- and the
@@ -961,6 +1013,45 @@ test_a_test_home_hides_the_machines_bridge_issue_414() {
     print -u2 -- "a stub bridge in \$HOME/bin must be what the test's PATH finds"
     rc=1
   }
+  rm -rf "$test_home"
+  return $rc
+}
+
+# The hiding must take only the bridge, not its neighbours: a PATH entry that
+# carries cliproxyapi was dropped whole, so a machine keeping the bridge next
+# to its other tools starved the cleaned PATH of them — jq, even zsh (#476).
+# A crafted entry with the bridge and a second stub stands in for such a
+# machine; the cleaned PATH must resolve the second stub and not the bridge.
+test_a_bridged_path_entry_keeps_its_coresident_tools_issue_476() {
+  local test_home=$(mktemp -d)
+  local rc=0
+  local both="$test_home/bin"
+  mkdir -p "$both"
+  printf '%s\n' '#!/bin/sh' 'exit 0' > "$both/cliproxyapi"
+  printf '%s\n' '#!/bin/sh' 'exit 0' > "$both/jq"
+  chmod +x "$both/cliproxyapi" "$both/jq"
+  # The printed list, not REPLY: the print is the one contract every form of
+  # the helper keeps, so the pin reads the same on a tree that only drops. The
+  # mirror the helper makes inside the substitution is this test's to remove —
+  # the registration lands in the substitution's subshell and dies with it.
+  local cleaned
+  cleaned=$(bridgeless_path "$both")
+  # Save and restore: the assertions need the cleaned PATH alone, and the
+  # cleanup below needs rm back.
+  local saved_path="$PATH" found
+  PATH="$cleaned"
+  found="$(whence -p jq)"
+  [[ -n "$found" && "$found" -ef "$both/jq" ]] || {
+    print -u2 -- "the cleaned PATH must resolve a tool sharing the bridge's entry, got: ${found:-nothing}"
+    rc=1
+  }
+  found="$(whence -p cliproxyapi)"
+  [[ -z "$found" ]] || {
+    print -u2 -- "the cleaned PATH must not resolve the bridge: $found"
+    rc=1
+  }
+  PATH="$saved_path"
+  [[ -n "$cleaned" ]] && rm -rf -- "$cleaned"
   rm -rf "$test_home"
   return $rc
 }
@@ -11350,6 +11441,7 @@ run_test test_set_effort_interactively_offers_the_engine_levels
 run_test test_search_picker_on_an_old_fzf_never_hides_rows_silently_issue_278
 run_test test_the_picker_without_fzf_names_the_direct_command_and_the_choices
 run_test test_a_test_home_hides_the_machines_bridge_issue_414
+run_test test_a_bridged_path_entry_keeps_its_coresident_tools_issue_476
 run_test test_saved_default_model_beats_the_confs_bootstrap_model_at_launch
 run_test test_explicit_model_flag_beats_the_saved_default
 run_test test_effort_command_leaves_native_per_model_state_untouched
