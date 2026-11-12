@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -146,3 +147,53 @@ func findSessionAdapter(t map[int]psRow, launcher int) string {
 // SessionAdapter is the profile of the adapter the launcher pid started, read
 // from its argv; "" when there is none.
 func SessionAdapter(launcher int) string { return findSessionAdapter(processTable(), launcher) }
+
+// adapterProfile is the profile an adapter's argv names: the core runs
+// `ccmorph-core adapter <profile>`, the older build `ccmorph-adapter <profile>`,
+// either possibly behind the python host a wrapped install runs it through.
+func adapterProfile(a []string) (string, bool) {
+	i := execIndex(a)
+	if i < 0 || i+1 >= len(a) {
+		return "", false
+	}
+	if filepath.Base(a[i]) == "ccmorph-core" && a[i+1] == "adapter" {
+		if i+2 < len(a) {
+			return a[i+2], true
+		}
+		return "", false
+	}
+	if filepath.Base(a[i]) == "ccmorph-adapter" {
+		return a[i+1], true
+	}
+	return "", false
+}
+
+// findAdapter is the pid of the adapter serving profile, 0 when there is none.
+// The table's command lines are joined text — they cannot say where one
+// argument ends — so the match is the kernel's argv, read per pid: the joined
+// line only cuts the walk to the pids that can match. Pids ascend, the order
+// ps itself prints, so the earliest match is the one the table's own order
+// always gave.
+func findAdapter(t map[int]psRow, profile string) int {
+	for _, pid := range sortedPids(t) {
+		if adapterArgv.FindString(t[pid].args) == "" {
+			continue
+		}
+		if argv, ok := argvOf(pid); ok {
+			if name, ok := adapterProfile(argv); ok && name == profile {
+				return pid
+			}
+		}
+	}
+	return 0
+}
+
+// sortedPids is the table's pids ascending, the order ps itself prints them.
+func sortedPids(t map[int]psRow) []int {
+	pids := make([]int, 0, len(t))
+	for pid := range t {
+		pids = append(pids, pid)
+	}
+	sort.Ints(pids)
+	return pids
+}
