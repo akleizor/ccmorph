@@ -20,16 +20,16 @@ from support import CLAUDE_MISSING, FAKE_SERVER_NO_DNS, HANG_TIMEOUT
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_doctor(tmp_path, conf, curl=None, args=(), claude=None, home=True, env_extra=None):
+def run_doctor(tmp_path, conf, curl=None, args=(), claude=None, home=True, env_extra=None, profile="demo"):
     state = tmp_path / "state"
     home_dir = tmp_path / "home"
     bindir = tmp_path / "bin"
     if home:
-        (state / "profiles" / "demo").mkdir(parents=True, exist_ok=True)
+        (state / "profiles" / profile).mkdir(parents=True, exist_ok=True)
     state.mkdir(parents=True, exist_ok=True)
     bindir.mkdir(exist_ok=True)
-    if not (state / "demo.conf").exists():
-        (state / "demo.conf").write_text(conf)
+    if not (state / f"{profile}.conf").exists():
+        (state / f"{profile}.conf").write_text(conf)
     if not (state / "local.sh").exists():
         (state / "local.sh").write_text("printf marker > \"$DOCTOR_MARKER\"\n")
     (state / "local.sh").chmod(0o700)
@@ -61,9 +61,9 @@ def run_doctor(tmp_path, conf, curl=None, args=(), claude=None, home=True, env_e
            "DOCTOR_MARKER": str(bindir / "doctor.marker")}
     if env_extra:
         env.update(env_extra)
-    result = subprocess.run([str(ROOT / "bin/ccmorph"), "doctor", *args, "demo"], env=env,
+    result = subprocess.run([str(ROOT / "bin/ccmorph"), "doctor", *args, profile], env=env,
                             capture_output=True, text=True, timeout=HANG_TIMEOUT)
-    return result, state / "demo.conf", bindir
+    return result, state / f"{profile}.conf", bindir
 
 
 def test_doctor_auth_redaction_and_no_mutation(tmp_path):
@@ -340,73 +340,161 @@ def test_doctor_rejects_invalid_profile_settings_json(tmp_path):
 # The process shapes of a live session on today's architecture: the shim is
 # served inside the adapter process (GH-49, PR #40), so the supervisor has no
 # shim child. A translator route adds a cliproxyapi child, and only a profile's
-# own CCMORPH_SHIM_HOOKS build still gets a spawned hooks build. The /bin/echo
-# row is the decoy a substring match would mistake for the adapter.
-ADAPTER_PS_ROWS = {
-    "translator-route": (
-        "'4000 1 /bin/echo ccmorph-core adapter demo' "
-        "'4321 1 /usr/local/libexec/ccmorph-core adapter demo --auto --parent-pid 400' "
-        "'4322 4321 /usr/local/bin/cliproxyapi -config /tmp/config.yaml'"),
-    "native-route": (
-        "'4000 1 /bin/echo ccmorph-core adapter demo' "
-        "'4321 1 /usr/local/libexec/ccmorph-core adapter demo --auto --parent-pid 400'"),
-    "hooks-build": (
-        "'4000 1 /bin/echo ccmorph-core adapter demo' "
-        "'4321 1 /usr/local/libexec/ccmorph-core adapter demo --auto --parent-pid 400' "
-        "'4322 4321 /usr/local/bin/cliproxyapi -config /tmp/config.yaml' "
-        "'4323 4321 /usr/local/bin/hooks-shim 4568 http://127.0.0.1:4567'"),
+# own CCMORPH_SHIM_HOOKS build still gets a spawned hooks shim. The /bin/echo
+# process is the decoy a substring match would mistake for the adapter.
+_ADAPTER_SHAPE_CHILDREN = {
+    "translator-route": ("cliproxyapi",),
+    "native-route": (),
+    "hooks-build": ("cliproxyapi", "hooks-shim"),
 }
 
-# What doctor owes for each shape: every listener holder running-adapter names —
-# a spawned child, or the adapter process itself when the shim is in-process —
-# gets its port checked, exactly as a child's was.
-ADAPTER_LISTENERS = {
-    "translator-route": (("cliproxyapi child", "4322"), ("in-process shim", "4321")),
-    "native-route": (("in-process shim", "4321"),),
-    "hooks-build": (("cliproxyapi child", "4322"), ("hooks-shim child", "4323")),
-}
 
-# lsof's answer per pid: the shim (in-process or spawned) serves the session on
-# 4568, the translator on 4567.
-ADAPTER_LSOF_ROWS = (
-    ("4321", "ccmorph-core 4321 u 3u IPv4 0x 0t0 TCP 127.0.0.1:4568 (LISTEN)"),
-    ("4322", "cliproxyapi 4322 u 3u IPv4 0x 0t0 TCP 127.0.0.1:4567 (LISTEN)"),
-    ("4323", "hooks-shim 4323 u 3u IPv4 0x 0t0 TCP 127.0.0.1:4568 (LISTEN)"),
-)
+def _adapter_tree(tmp_path, profile, shape):
+    """A live session on profile, as real processes with the argv a launch
+    itself runs: `ccmorph-core adapter <profile> --auto --parent-pid 400` —
+    the parent a session keeps naming once adapter-start has exited — the
+    children behind the python host a wrapped install uses, and a decoy whose
+    joined command line names an adapter it is not. A process table's rows are
+    joined text and cannot say where an argument ends; the kernel's argv can,
+    so the session is the real thing, read through the real table. Returns the
+    decoy's pid, the listener holders doctor must check ((subject, pid), ...),
+    lsof's answer for each holder (pid -> (name, address)), and a stop() that
+    ends the session."""
+    fake = tmp_path / "fakebin"
+    ready = tmp_path / "ready"
+    fake.mkdir(parents=True, exist_ok=True)
+    ready.mkdir(parents=True, exist_ok=True)
+    # Each process is an executable script of ours under the real interpreter,
+    # so the kernel's argv is [<python>, <script>, args...]: the python-host
+    # shape a wrapped install runs. The interpreter is never run under a
+    # spoofed argv[0], which CPython uses to find its own library. A sleeper
+    # reports itself ready by naming its pid; the adapter's own host spawns the
+    # children and records their pids, so no caller races the kernel's argv.
+    sleeper = ("import os, time\n"
+               "open(os.path.join(os.environ['FAKE_READY_DIR'], str(os.getpid())), 'w').close()\n"
+               "time.sleep(600)\n")
+    host = ("import json, os, subprocess, time\n"
+            "kids = {}\n"
+            "for name, argv in json.loads(os.environ['FAKE_CHILDREN']):\n"
+            "    kids[name] = subprocess.Popen(\n"
+            "        argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).pid\n"
+            "tmp = os.environ['FAKE_PIDS'] + '.tmp'\n"
+            "with open(tmp, 'w') as f:\n"
+            "    json.dump(kids, f)\n"
+            "os.replace(tmp, os.environ['FAKE_PIDS'])\n"
+            "time.sleep(600)\n")
+    for name, body in (("ccmorph-core", host), ("cliproxyapi", sleeper),
+                       ("hooks-shim", sleeper), ("decoy", sleeper)):
+        (fake / name).write_text(f"#!{sys.executable}\n" + body)
+        (fake / name).chmod(0o755)
+    children = {
+        "cliproxyapi": [str(fake / "cliproxyapi"), "-config", "/tmp/config.yaml"],
+        "hooks-shim": [str(fake / "hooks-shim"), "4568", "http://127.0.0.1:4567"],
+    }
+    wanted = list(_ADAPTER_SHAPE_CHILDREN[shape])
+    pids_path = tmp_path / "adapter-pids.json"
+    env = dict(os.environ, FAKE_CHILDREN=json.dumps([[n, children[n]] for n in wanted]),
+               FAKE_READY_DIR=str(ready), FAKE_PIDS=str(pids_path))
+    started = {}
+
+    def stop():
+        # The adapter's session group holds it and its children; the decoy,
+        # parented here, is ended on its own.
+        adapter = started.get("adapter")
+        if adapter is not None:
+            try:
+                os.killpg(adapter.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            adapter.wait()
+        decoy = started.get("decoy")
+        if decoy is not None:
+            decoy.kill()
+            decoy.wait()
+
+    try:
+        started["adapter"] = subprocess.Popen(
+            [str(fake / "ccmorph-core"), "adapter", profile, "--auto", "--parent-pid", "400"],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+        started["decoy"] = subprocess.Popen(
+            [str(fake / "decoy"), "ccmorph-core", "adapter", profile],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+        adapter, decoy = started["adapter"], started["decoy"]
+        deadline = time.monotonic() + HANG_TIMEOUT
+        while True:
+            kids = {}
+            if pids_path.exists():
+                kids = json.loads(pids_path.read_text())
+            up = (set(kids) == set(wanted)
+                  and all((ready / str(pid)).exists()
+                          for pid in [decoy.pid, *kids.values()]))
+            if up:
+                break
+            if adapter.poll() is not None or decoy.poll() is not None:
+                raise AssertionError("the fake session exited before it came up")
+            if time.monotonic() > deadline:
+                raise AssertionError("the fake session never came up")
+            time.sleep(0.01)
+    except BaseException:
+        stop()
+        raise
+    if shape == "native-route":
+        listeners = (("in-process shim", adapter.pid),)
+        ports = {str(adapter.pid): ("ccmorph-core", "127.0.0.1:4568")}
+    elif shape == "hooks-build":
+        listeners = (("cliproxyapi child", kids["cliproxyapi"]),
+                     ("hooks-shim child", kids["hooks-shim"]))
+        ports = {str(kids["cliproxyapi"]): ("cliproxyapi", "127.0.0.1:4567"),
+                 str(kids["hooks-shim"]): ("hooks-shim", "127.0.0.1:4568")}
+    else:
+        listeners = (("cliproxyapi child", kids["cliproxyapi"]),
+                     ("in-process shim", adapter.pid))
+        ports = {str(kids["cliproxyapi"]): ("cliproxyapi", "127.0.0.1:4567"),
+                 str(adapter.pid): ("ccmorph-core", "127.0.0.1:4568")}
+    return decoy.pid, listeners, ports, stop
 
 
-def _adapter_stubs(bindir, slow, rows):
-    """Install the ps/lsof doubles doctor's read-only inspection consults.
-
-    `slow` names the inspection whose double outlives doctor's one-second bound
-    (GH-467): the deadline kills it, and doctor's designed answer is SKIP."""
+def _adapter_stubs(bindir, slow, ports):
+    """Install the PATH doubles doctor's read-only inspections consult: an lsof
+    that answers for the holders the session started, and — only where the
+    table's read is a ps, off darwin — a ps that outlives doctor's one-second
+    bound (GH-467): the deadline kills it, and doctor's designed answer is
+    SKIP. darwin's table is the kernel's own sysctl, which no PATH double
+    reaches, so there the session is always the real one."""
     bindir.mkdir(parents=True, exist_ok=True)
-    ps = "#!/bin/sh\n" + ("sleep 2\n" if slow == "ps" else "") + f"printf '%s\\n' {rows}\n"
-    (bindir / "ps").write_text(ps)
-    (bindir / "ps").chmod(0o755)
+    if slow == "ps":
+        (bindir / "ps").write_text("#!/bin/sh\nsleep 2\n")
+        (bindir / "ps").chmod(0o755)
     # lsof answers per pid, like the real one: a matching row and exit 0, or
     # nothing and exit 1.
-    lsof = ("#!/bin/sh\n" + ("sleep 2\n" if slow == "lsof" else "")
-            + "printf '%s\\n' 'COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME'\n"
-            + "case \"$4\" in\n")
-    for pid, row in ADAPTER_LSOF_ROWS:
-        lsof += f"  {pid}) printf '%s\\n' '{row}'; exit 0;;\n"
-    (bindir / "lsof").write_text(lsof + "esac\nexit 1\n")
+    rows = ["#!/bin/sh"]
+    if slow == "lsof":
+        rows.append("sleep 2")
+    rows.append("printf '%s\\n' 'COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME'")
+    rows.append("case \"$4\" in")
+    for pid, (name, addr) in sorted(ports.items()):
+        rows.append(f"  {pid}) printf '%s\\n' "
+                    f"'{name} {pid} u 3u IPv4 0x0 0t0 TCP {addr} (LISTEN)'; exit 0;;")
+    rows.append("esac")
+    rows.append("exit 1")
+    (bindir / "lsof").write_text("\n".join(rows) + "\n")
     (bindir / "lsof").chmod(0o755)
 
 
-def assert_adapter_report(out, shape):
+def assert_adapter_report(out, decoy, listeners):
     """Accept every answer doctor promises for the running-adapter report, and
-    only those: each read-only inspection (ps, then lsof per listener holder) is
-    bounded at one second, and a bound blown under load is answered SKIP (GH-467).
-    A dropped report, a WARN, or the decoy pid stays red in every outcome."""
-    assert "pid 4000" not in out  # the /bin/echo decoy row is never an adapter
+    only those: each read-only inspection (the process table, then lsof per
+    listener holder) is bounded at one second, and a bound blown under load is
+    answered SKIP (GH-467). A dropped report, a WARN, or the decoy pid stays
+    red in every outcome."""
+    assert f"pid {decoy}" not in out  # the /bin/echo decoy is never an adapter
     if "could not tell whether a translator is running" in out:
-        # ps blew its bound: one SKIP line is the whole answer — nothing
-        # half-reported, nothing started.
+        # the table read blew its bound: one SKIP line is the whole answer —
+        # nothing half-reported, nothing started.
         assert "listener" not in out, out
         return
-    for subject, pid in ADAPTER_LISTENERS[shape]:
+    for subject, pid in listeners:
         reported = (f"adapter: {subject} listener" in out
                     and f"(pid {pid}; read-only check)" in out)
         unknown = f"adapter: {subject} listener status unknown (pid {pid})" in out
@@ -419,10 +507,12 @@ TRANSLATOR_NOW = ("OK adapter: this profile needs a translator now: "
                   "an open session on it is running cliproxyapi")
 NO_TRANSLATOR_NOW = ("OK adapter: this profile needs no translator now: "
                      "its open session runs without one")
-UNTIL_A_MODEL = re.compile(
-    r"INFO adapter: this profile needs no translator until a model is chosen "
-    r"\(none is set, and the endpoint's model list names no protocol\); "
-    r"cliproxyapi is (not )?installed; choose one: ccmorph set demo model <model-id>")
+def _until_a_model(profile):
+    return re.compile(
+        r"INFO adapter: this profile needs no translator until a model is chosen "
+        r"\(none is set, and the endpoint's model list names no protocol\); "
+        r"cliproxyapi is (not )?installed; choose one: ccmorph set "
+        + profile + " model <model-id>")
 
 
 @pytest.mark.parametrize("slow", ["", "ps", "lsof"],
@@ -435,31 +525,42 @@ printf '%s\n' '{"data":[]}'
 printf '%s\n' '__CCMORPH_STATUS__200'
 """
     conf = "type=apikey\nbase_url=https://example.test\napi_key=k\nadapter=true\n"
-    # Stubs first: run_doctor only fills in what is missing, so doctor's single
-    # run already consults them (no separate unstubbed setup run).
-    _adapter_stubs(tmp_path / "bin", slow, ADAPTER_PS_ROWS[shape])
-    result, _, bindir = run_doctor(tmp_path, conf, curl)
-    assert result.returncode == 0, result.stderr
-    # One adapter line by default, in every case (also when ps blew its bound):
-    # whether this profile needs a translator now, never a pid or a
-    # process-inspection detail a first-time reader cannot act on. Nothing is
-    # classified and no model is set, so the answer is what the open session
-    # shows; with no session readable, that none starts until a model is chosen.
-    # A running adapter alone is not a translator: only a cliproxyapi child is.
-    adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
-    assert len(adapters) == 1, result.stdout
-    if slow == "ps":
-        assert UNTIL_A_MODEL.fullmatch(adapters[0]), result.stdout
-    elif shape == "native-route":
-        assert adapters == [NO_TRANSLATOR_NOW], result.stdout
-    else:
-        assert adapters == [TRANSLATOR_NOW], result.stdout
-    # Read-only: the profile's own hook never ran, so nothing was started.
-    assert not (bindir / "doctor.marker").exists()
-    verbose, _, _ = run_doctor(tmp_path, conf, curl, args=("--verbose",))
-    assert verbose.returncode == 0, verbose.stderr
-    assert_adapter_report(verbose.stdout, shape)
-    assert not (bindir / "doctor.marker").exists()
+    # A profile of this test's own, so the machine's real sessions never match.
+    profile = "demo" + str(os.getpid())
+    # The session first, then the PATH stubs: run_doctor only fills in what is
+    # missing, so doctor's single run already consults them (no separate
+    # unstubbed setup run).
+    decoy, listeners, ports, stop = _adapter_tree(tmp_path, profile, shape)
+    _adapter_stubs(tmp_path / "bin", slow, ports)
+    try:
+        result, _, bindir = run_doctor(tmp_path, conf, curl, profile=profile)
+        assert result.returncode == 0, result.stderr
+        # One adapter line by default, in every case (also when the table read
+        # blew its bound): whether this profile needs a translator now, never
+        # a pid or a process-inspection detail a first-time reader cannot act
+        # on. Nothing is classified and no model is set, so the answer is what
+        # the open session shows; with no session readable, that none starts
+        # until a model is chosen. A running adapter alone is not a
+        # translator: only a cliproxyapi child is.
+        adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
+        assert len(adapters) == 1, result.stdout
+        if slow == "ps" and sys.platform != "darwin":
+            # Off darwin the table's read is a ps, so this run can lose it to
+            # the bound; darwin's sysctl answers first, so the session shows.
+            assert _until_a_model(profile).fullmatch(adapters[0]), result.stdout
+        elif shape == "native-route":
+            assert adapters == [NO_TRANSLATOR_NOW], result.stdout
+        else:
+            assert adapters == [TRANSLATOR_NOW], result.stdout
+        # Read-only: the profile's own hook never ran, so nothing was started.
+        assert not (bindir / "doctor.marker").exists()
+        verbose, _, _ = run_doctor(tmp_path, conf, curl, args=("--verbose",),
+                                   profile=profile)
+        assert verbose.returncode == 0, verbose.stderr
+        assert_adapter_report(verbose.stdout, decoy, listeners)
+        assert not (bindir / "doctor.marker").exists()
+    finally:
+        stop()
 
 
 @pytest.mark.parametrize("shape,suffix", [
@@ -470,15 +571,21 @@ def test_doctor_adapter_line_names_a_running_translator_issue_272(tmp_path, shap
     """GH-272: with a classification cached, the line states the need, and an
     open session is added only when a cliproxyapi child is really running."""
     conf = "type=apikey\nbase_url=https://example.test\napi_key=k\n"
-    _adapter_stubs(tmp_path / "bin", "", ADAPTER_PS_ROWS[shape])
-    _seed_adapter_cache(tmp_path, "https://example.test", [("m-openai", "responses")])
-    stub = tmp_path / "bin" / "cliproxyapi"
-    stub.write_text("#!/bin/sh\nexit 0\n")
-    stub.chmod(0o755)
-    result, _, _ = run_doctor(tmp_path, conf, OK_CURL)
-    assert result.returncode == 0, result.stdout + result.stderr
-    adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
-    assert adapters == ["OK adapter: this endpoint needs a translator; cliproxyapi is installed" + suffix], result.stdout
+    # A profile of this test's own, so the machine's real sessions never match.
+    profile = "demo" + str(os.getpid())
+    _, _, ports, stop = _adapter_tree(tmp_path, profile, shape)
+    _adapter_stubs(tmp_path / "bin", "", ports)
+    try:
+        _seed_adapter_cache(tmp_path, "https://example.test", [("m-openai", "responses")])
+        stub = tmp_path / "bin" / "cliproxyapi"
+        stub.write_text("#!/bin/sh\nexit 0\n")
+        stub.chmod(0o755)
+        result, _, _ = run_doctor(tmp_path, conf, OK_CURL, profile=profile)
+        assert result.returncode == 0, result.stdout + result.stderr
+        adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
+        assert adapters == ["OK adapter: this endpoint needs a translator; cliproxyapi is installed" + suffix], result.stdout
+    finally:
+        stop()
 
 
 def _status_lines(stdout):
@@ -553,23 +660,34 @@ def test_doctor_lines_stay_plain_words_issue_272(tmp_path):
     line, --verbose included, names what was checked in plain words, and a
     non-OK line names the way out."""
     conf = "type=apikey\nbase_url=https://example.test\napi_key=k\n"
-    profile = tmp_path / "state" / "profiles" / "demo"
-    profile.mkdir(parents=True)
-    (profile / "settings.json").write_text('{"model":"glm-4.6"}')
-    # ps over its one-second bound: the whole running-adapter answer is one
-    # SKIP line in plain words (GH-467's nothing-half-reported, reworded).
-    _adapter_stubs(tmp_path / "bin", "ps", ADAPTER_PS_ROWS["translator-route"])
-    result, _, _ = run_doctor(tmp_path, conf, GW_LISTING, args=("--verbose",))
-    assert result.returncode == 0, result.stdout + result.stderr
-    for banned in ("layered JSON", "canonical settings", "process inspection"):
-        assert banned not in result.stdout, (banned, result.stdout)
-    assert "profile settings: valid JSON (" in result.stdout, result.stdout
-    assert "SKIP adapter: could not tell whether a translator is running" in result.stdout
-    # A broken settings file is told how to be dealt with, not just that it is broken.
-    (profile / "settings.json").write_text("{ invalid")
-    broken, _, _ = run_doctor(tmp_path, conf, GW_LISTING)
-    assert "invalid JSON" in broken.stdout
-    assert f"({profile / 'settings.json'}); fix that file" in broken.stdout, broken.stdout
+    session = "demo" + str(os.getpid())
+    settings = tmp_path / "state" / "profiles" / session
+    settings.mkdir(parents=True)
+    (settings / "settings.json").write_text('{"model":"glm-4.6"}')
+    # The running-adapter answer in plain words: off darwin the table's read is
+    # a ps this run loses to its one-second bound, and the whole answer is one
+    # SKIP line (GH-467's nothing-half-reported, reworded); darwin's sysctl
+    # answers first, so the wording is the session's own listener checks.
+    decoy, listeners, ports, stop = _adapter_tree(tmp_path, session, "translator-route")
+    _adapter_stubs(tmp_path / "bin", "ps", ports)
+    try:
+        result, _, _ = run_doctor(tmp_path, conf, GW_LISTING, args=("--verbose",),
+                                  profile=session)
+        assert result.returncode == 0, result.stdout + result.stderr
+        for banned in ("layered JSON", "canonical settings", "process inspection"):
+            assert banned not in result.stdout, (banned, result.stdout)
+        assert "profile settings: valid JSON (" in result.stdout, result.stdout
+        if sys.platform != "darwin":
+            assert "SKIP adapter: could not tell whether a translator is running" in result.stdout
+        else:
+            assert_adapter_report(result.stdout, decoy, listeners)
+        # A broken settings file is told how to be dealt with, not just that it is broken.
+        (settings / "settings.json").write_text("{ invalid")
+        broken, _, _ = run_doctor(tmp_path, conf, GW_LISTING, profile=session)
+        assert "invalid JSON" in broken.stdout
+        assert f"({settings / 'settings.json'}); fix that file" in broken.stdout, broken.stdout
+    finally:
+        stop()
 
 
 def test_doctor_names_the_settings_file_that_is_actually_broken_issue_272(tmp_path):
@@ -629,7 +747,7 @@ def test_doctor_adapter_line_states_the_need_issue_272(tmp_path, cache_rows, stu
     adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
     assert len(adapters) == 1, result.stdout
     if cache_rows is None:
-        assert UNTIL_A_MODEL.fullmatch(adapters[0]), result.stdout
+        assert _until_a_model("demo").fullmatch(adapters[0]), result.stdout
     else:
         assert adapters == [expected], result.stdout
 
@@ -658,24 +776,33 @@ def test_doctor_adapter_line_reads_declared_protocols_issue_272(tmp_path, path, 
     assert adapters == [expected], result.stdout
 
 
-@pytest.mark.parametrize("rows,expected", [
-    ("'1 0 /sbin/launchd'", None),
-    (ADAPTER_PS_ROWS["translator-route"], TRANSLATOR_NOW),
+@pytest.mark.parametrize("with_session,expected", [
+    (False, None),
+    (True, TRANSLATOR_NOW),
 ], ids=["no-session-line-omitted", "session-with-translator"])
-def test_doctor_omits_the_adapter_line_for_an_unclassified_saved_model_issue_272(tmp_path, rows, expected):
+def test_doctor_omits_the_adapter_line_for_an_unclassified_saved_model_issue_272(tmp_path, with_session, expected):
     """GH-272: a saved model nothing has classified can only be answered by a
     billed check, which doctor never sends: the line is left out rather than
     guessed. An open session that shows a translator still says so."""
     conf = "type=apikey\nbase_url=https://example.test\napi_key=k\nmodel=glm-4.6\n"
-    _adapter_stubs(tmp_path / "bin", "", rows)
-    result, _, _ = run_doctor(tmp_path, conf, GW_LISTING)
-    assert result.returncode == 0, result.stdout + result.stderr
-    adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
-    if expected is None:
-        assert adapters == [], result.stdout
-        assert "ready: start it with ccmorph run demo" in result.stdout, result.stdout
-    else:
-        assert adapters == [expected], result.stdout
+    # A profile of this test's own, so the machine's real sessions never match.
+    session = "demo" + str(os.getpid())
+    stop = None
+    if with_session:
+        _, _, ports, stop = _adapter_tree(tmp_path, session, "translator-route")
+        _adapter_stubs(tmp_path / "bin", "", ports)
+    try:
+        result, _, _ = run_doctor(tmp_path, conf, GW_LISTING, profile=session)
+        assert result.returncode == 0, result.stdout + result.stderr
+        adapters = [l for l in result.stdout.splitlines() if "adapter:" in l]
+        if expected is None:
+            assert adapters == [], result.stdout
+            assert f"ready: start it with ccmorph run {session}" in result.stdout, result.stdout
+        else:
+            assert adapters == [expected], result.stdout
+    finally:
+        if stop is not None:
+            stop()
 
 
 def test_doctor_tolerates_a_conf_that_still_declares_removed_keys(tmp_path):

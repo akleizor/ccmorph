@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -225,69 +224,6 @@ func modelsCountDoc(payload any) (int, bool) {
 	return len(list), ok
 }
 
-// shellSplit is shlex.split for a ps command column.
-func shellSplit(s string) ([]string, bool) {
-	var out []string
-	var cur strings.Builder
-	have := false
-	r := []rune(s)
-	for i := 0; i < len(r); i++ {
-		c := r[i]
-		switch {
-		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
-			if have {
-				out = append(out, cur.String())
-				cur.Reset()
-				have = false
-			}
-		case c == '\\':
-			if i+1 >= len(r) {
-				return nil, false
-			}
-			i++
-			cur.WriteRune(r[i])
-			have = true
-		case c == '\'':
-			j := i + 1
-			for j < len(r) && r[j] != '\'' {
-				j++
-			}
-			if j >= len(r) {
-				return nil, false
-			}
-			cur.WriteString(string(r[i+1 : j]))
-			i, have = j, true
-		case c == '"':
-			j := i + 1
-			closed := false
-			for j < len(r) {
-				if r[j] == '\\' && j+1 < len(r) && (r[j+1] == '"' || r[j+1] == '\\') {
-					cur.WriteRune(r[j+1])
-					j += 2
-					continue
-				}
-				if r[j] == '"' {
-					closed = true
-					break
-				}
-				cur.WriteRune(r[j])
-				j++
-			}
-			if !closed {
-				return nil, false
-			}
-			i, have = j, true
-		default:
-			cur.WriteRune(c)
-			have = true
-		}
-	}
-	if have {
-		out = append(out, cur.String())
-	}
-	return out, true
-}
-
 var pythonName = regexp.MustCompile(`(?i)^python(?:\d+(?:\.\d+)*)?$`)
 
 func execIndex(args []string) int {
@@ -310,80 +246,55 @@ func execIndex(args []string) int {
 // the adapter process itself as "shim": the stock shim is served in-process, so
 // its listener is the adapter's own.
 func runningAdapter(profile string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	raw, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,ppid=,command=").Output()
-	if err != nil {
+	// Bounded at a second (GH-467): the sysctl read is the kernel's own cost,
+	// but the ps it falls back to makes three passes — an answer past the bound
+	// is SKIP, never a hang and never a half report.
+	done := make(chan map[int]psRow, 1)
+	go func() { done <- processTable() }()
+	select {
+	case t := <-done:
+		if t == nil {
+			return "__UNKNOWN__"
+		}
+		return adapterSession(t, profile)
+	case <-time.After(time.Second):
 		return "__UNKNOWN__"
 	}
-	type proc struct {
-		pid, ppid int
-		args      []string
+}
+
+// adapterSession is runningAdapter's answer from a table already read: the
+// adapter's pid and the children worth a listener check, in the pid order the
+// table itself prints.
+func adapterSession(t map[int]psRow, profile string) string {
+	pid := findAdapter(t, profile)
+	if pid == 0 {
+		return ""
 	}
-	var procs []proc
-	for _, row := range strings.Split(string(raw), "\n") {
-		f := strings.Fields(row)
-		if len(f) < 3 {
+	var children []string
+	shimChild := false
+	for _, cpid := range sortedPids(t) {
+		if t[cpid].ppid != pid {
 			continue
 		}
-		pid, e1 := strconv.Atoi(f[0])
-		ppid, e2 := strconv.Atoi(f[1])
-		if e1 != nil || e2 != nil {
-			continue
-		}
-		rest := strings.TrimLeft(row, " \t")
-		for k := 0; k < 2; k++ {
-			rest = strings.TrimLeft(rest[strings.IndexAny(rest, " \t"):], " \t")
-		}
-		a, ok := shellSplit(rest)
+		argv, ok := argvOf(cpid)
 		if !ok {
 			continue
 		}
-		procs = append(procs, proc{pid, ppid, a})
-	}
-	adapterProfile := func(a []string) (string, bool) {
-		i := execIndex(a)
-		if i < 0 || i+1 >= len(a) {
-			return "", false
-		}
-		if filepath.Base(a[i]) == "ccmorph-core" && a[i+1] == "adapter" {
-			if i+2 < len(a) {
-				return a[i+2], true
-			}
-			return "", false
-		}
-		if filepath.Base(a[i]) == "ccmorph-adapter" {
-			return a[i+1], true
-		}
-		return "", false
-	}
-	for _, p := range procs {
-		if name, ok := adapterProfile(p.args); !ok || name != profile {
-			continue
-		}
-		var children []string
-		shimChild := false
-		for _, c := range procs {
-			if c.ppid != p.pid || len(c.args) == 0 {
-				continue
-			}
-			if ci := execIndex(c.args); ci >= 0 {
-				if base := filepath.Base(c.args[ci]); base != "ccmorph-core" {
-					children = append(children, fmt.Sprintf("%d:%s", c.pid, base))
-					shimChild = shimChild || base != "cliproxyapi"
-				}
+		if ci := execIndex(argv); ci >= 0 {
+			if base := filepath.Base(argv[ci]); base != "ccmorph-core" {
+				children = append(children, fmt.Sprintf("%d:%s", cpid, base))
+				shimChild = shimChild || base != "cliproxyapi"
 			}
 		}
-		// The stock shim is served inside the adapter process, not spawned (only
-		// a CCMORPH_SHIM_HOOKS build runs as a child): with no such
-		// child, the adapter's own pid is the listener doctor must be told to
-		// check — the port a live session's base_url points at.
-		if !shimChild {
-			children = append(children, fmt.Sprintf("%d:shim", p.pid))
-		}
-		return fmt.Sprintf("%d\t%s", p.pid, strings.Join(children, ","))
 	}
-	return ""
+	// The stock shim is served inside the adapter process, not spawned (only
+	// a CCMORPH_SHIM_HOOKS build runs as a child): with no such
+	// child, the adapter's own pid is the listener doctor must be told to
+	// check — the port a live session's base_url points at.
+	if !shimChild {
+		children = append(children, fmt.Sprintf("%d:shim", pid))
+	}
+	return fmt.Sprintf("%d\t%s", pid, strings.Join(children, ","))
 }
 
 // listenerOf is the first TCP listen address of a pid, __UNKNOWN__ when lsof cannot say.

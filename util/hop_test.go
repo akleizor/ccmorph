@@ -3,6 +3,7 @@ package util
 import (
 	"os"
 	"os/exec"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -98,6 +99,53 @@ func TestSessionAdapterFindsAReparentedProcessInTheRealTable(t *testing.T) {
 	}
 	if got := findSessionAdapter(tab, launcher); got != "gw" {
 		t.Fatalf("a reparented adapter must be found by its --parent-pid, got %q (row %+v)", got, r)
+	}
+}
+
+func TestAdapterProfileReadsTheArgvItIsGiven(t *testing.T) {
+	// The shapes an adapter's argv takes: the core's own `ccmorph-core adapter
+	// <profile>`, the older build's `ccmorph-adapter <profile>`, either behind
+	// the python host a wrapped install runs it through — and the lookalikes a
+	// joined command line cannot tell apart.
+	for _, c := range []struct {
+		argv    []string
+		profile string
+		found   bool
+	}{
+		{[]string{"/usr/local/libexec/ccmorph-core", "adapter", "gw"}, "gw", true},
+		{[]string{"ccmorph-adapter", "gw"}, "gw", true},
+		{[]string{"python3", "/x/libexec/ccmorph-core", "adapter", "gw", "--auto"}, "gw", true},
+		{[]string{"/x/my adapter/ccmorph-core", "adapter", "gw"}, "gw", true},
+		{[]string{"/bin/echo", "ccmorph-core", "adapter", "gw"}, "", false},
+		{[]string{"/x/libexec/ccmorph-core", "adapterx", "gw"}, "", false},
+		{[]string{"/x/libexec/ccmorph-core", "adapter"}, "", false},
+		{[]string{"python3"}, "", false},
+	} {
+		if name, ok := adapterProfile(c.argv); ok != c.found || name != c.profile {
+			t.Fatalf("argv %v: got (%q, %v), want (%q, %v)", c.argv, name, ok, c.profile, c.found)
+		}
+	}
+}
+
+func TestFindAdapterMatchesTheKernelArgvNotTheJoinedLine(t *testing.T) {
+	// A process table's command lines are joined text, so a space in the exec
+	// path would blur where the path ends and the arguments begin — and the
+	// decoy's joined line names an adapter it is not. findAdapter matches the
+	// kernel's argv, the boundaries a launch itself trusts, read back through
+	// the real table.
+	profile := "fw" + strconv.Itoa(os.Getpid())
+	holdProc(t, os.Args[0], BridgeFiles(t.TempDir(), "p")[2],
+		"/bin/echo", "ccmorph-core", "adapter", profile)
+	adapter := holdProc(t, os.Args[0], BridgeFiles(t.TempDir(), "p")[2],
+		"/x/my adapter/ccmorph-core", "adapter", profile)
+
+	tab := processTable()
+	if got := findAdapter(tab, profile); got != adapter.Process.Pid {
+		t.Fatalf("the adapter must be found by its argv, got %d want %d (row %+v)",
+			got, adapter.Process.Pid, tab[got])
+	}
+	if got := findAdapter(tab, "no-such-profile"); got != 0 {
+		t.Fatalf("a profile nothing serves must find nothing, got %d", got)
 	}
 }
 

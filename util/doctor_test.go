@@ -1,8 +1,10 @@
 package util
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -92,6 +94,23 @@ func TestDoctorRouteAdapterLine(t *testing.T) {
 				t.Fatalf("failed=%v, want %v", failed, c.kind == "FAIL")
 			}
 		})
+	}
+}
+
+// runningAdapter's answer for a live adapter whose exec path carries a space:
+// the joined command line cannot say where the path ends and the arguments
+// begin, the kernel's argv can. The session is reported with the adapter's own
+// pid as the in-process shim (GH-49, PR #40), exactly as a live session reads.
+func TestRunningAdapterMatchesArgvAcrossSpaces(t *testing.T) {
+	profile := "ra" + strconv.Itoa(os.Getpid())
+	cmd := holdProc(t, os.Args[0], BridgeFiles(t.TempDir(), "p")[2],
+		"/x/my adapter/ccmorph-core", "adapter", profile)
+	want := fmt.Sprintf("%d\t%d:shim", cmd.Process.Pid, cmd.Process.Pid)
+	if got := runningAdapter(profile); got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	if got := runningAdapter("no-such-profile"); got != "" {
+		t.Fatalf("a profile nothing serves must report nothing, got %q", got)
 	}
 }
 
