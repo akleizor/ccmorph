@@ -487,7 +487,28 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	settings := l.profileLayer(name)
 	// The effective model is named below and adjudicated by DoctorRoute when the
 	// listing answers (#267); read it once, read-only.
-	model := l.accountModel(name)
+	savedModel := l.accountModel(name)
+	model := savedModel
+	// A tier word is a valid saved model (#475), and a launch resolves it to a
+	// gateway id before it classifies one: the profile env's
+	// ANTHROPIC_DEFAULT_<TIER>_MODEL, else the saved tier alias — the order and
+	// sources of adapterModel (cli/run.go), which contextEnv (cli/context.go)
+	// reads the same way. The rows below ask about that id, the one launch
+	// classifies; asking about the tier word left a chat-dialect gateway behind
+	// an alias with no adapter row and a ready verdict (#412, one branch over).
+	tierMissing := ""
+	if bare := strings.SplitN(savedModel, "[", 2)[0]; isTier(bare) && typ == "apikey" && !util.NativeBase(base) {
+		if v, ok := f["env.ANTHROPIC_DEFAULT_"+strings.ToUpper(bare)+"_MODEL"]; ok {
+			model = v
+		}
+		if strings.SplitN(model, "[", 2)[0] == bare {
+			if v, ok := l.tierAlias(name, bare); ok {
+				model = v
+			} else {
+				tierMissing = bare
+			}
+		}
+	}
 	broken := ""
 	if paths.IsFile(settings) {
 		// Each file is judged on its own, so the line names the one that is
@@ -520,15 +541,24 @@ func (l *launcher) doctor(name string, verbose bool) int {
 			report("INFO", "effective model: "+unsavedModelWords(typ, base)+" (no saved model)")
 		}
 		// The level is the one a plain launch passes (#356): the override saved
-		// for the model above, else the profile's own default.
-		switch effort := l.savedEffort(name, model); effort {
+		// for the model it carries — the saved spelling, as launch asks it —
+		// else the profile's own default.
+		switch effort := l.savedEffort(name, savedModel); effort {
 		case "":
 			report("INFO", "effective effort: "+unsavedEffortWords+" (no saved effort)")
 		case top:
 			report("INFO", "effective effort: "+effort+" (profile default)")
 		default:
-			report("INFO", "effective effort: "+effort+" (profile override for "+model+")")
+			report("INFO", "effective effort: "+effort+" (profile override for "+savedModel+")")
 		}
+	}
+	if tierMissing != "" {
+		// Launch's own refusal (adapterModel): a gateway tier with nothing mapped
+		// to it stops at adapter start. The report says so instead of leaving the
+		// row to an unresolved model's silence (#475).
+		report("FAIL", "model: no gateway model is mapped to tier '"+tierMissing+"'; a launch would stop at adapter start",
+			"choose an explicit model: ccmorph set "+name+" model <model-id>")
+		failed = 1
 	}
 	// The route rows are computed before the api-key lines print, because the
 	// endpoint's own verdict decides whether Claude Code's locally stored answer
@@ -536,12 +566,13 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	// rejection below would contradict two lines later (GH-272). The translator
 	// verdict comes from what a launch itself reads without inference (the
 	// classification cache and the listing's declared protocols), so doctor
-	// reports what launch would actually do, never a guess. Launch cuts the
-	// spelling at its first '[' before the adapter sees it (util/adapterstart),
-	// translates that wire id through model_map, and classifies the target; so
-	// the verdict is asked about that id. A row decided for a model the launch
-	// never classifies would call a profile ready that dies at adapter start
-	// (#412). A map that does not parse is launch's to reject; doctor then asks
+	// reports what launch would actually do, never a guess. A tier word above is
+	// already the id a launch resolves it to; then launch cuts the spelling at
+	// its first '[' before the adapter sees it (util/adapterstart), translates
+	// that wire id through model_map, and classifies the target; so the verdict
+	// is asked about that id. A row decided for a model the launch never
+	// classifies would call a profile ready that dies at adapter start (#412,
+	// #475). A map that does not parse is launch's to reject; doctor then asks
 	// about the wire id rather than inventing a translation.
 	wire := strings.SplitN(model, "[", 2)[0]
 	var modelMap map[string]any
