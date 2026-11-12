@@ -77,86 +77,283 @@ func spendEntry(name, budgetRaw string) Entry {
 	today := now()
 	todayStart := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, time.Local)
 	monthStart := time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, time.Local)
-	// The receipts this month's spend can sit in: the flat store plus the day
-	// folders from the month's first UTC day to today's, compared by name —
-	// stepping local midnights as instants lands after now east of UTC and
-	// skips today's folder. A row always sits in a folder at or after its
-	// stamp's UTC day, so an earlier folder holds only rows the month window
-	// itself excludes; the stamp still decides.
-	usageDir := filepath.Join(paths.StateDir(), "usage")
-	first, last := monthStart.UTC().Format("2006-01-02"), today.UTC().Format("2006-01-02")
-	files, _ := filepath.Glob(filepath.Join(usageDir, "*.json"))
-	entries, _ := os.ReadDir(usageDir)
-	for _, e := range entries {
-		if !e.IsDir() || e.Name() < first || e.Name() > last {
-			continue
-		}
-		if _, err := time.Parse("2006-01-02", e.Name()); err != nil {
-			continue // a folder that is not a day shard
-		}
-		more, _ := filepath.Glob(filepath.Join(usageDir, e.Name(), "*.json"))
-		files = append(files, more...)
-	}
-	counted := map[string]bool{}
-	for _, p := range files {
-		raw, err := os.ReadFile(p)
-		if err != nil {
-			continue
-		}
-		var r receipt
-		if json.Unmarshal(raw, &r) != nil || !r.Complete || r.Profile != name {
-			continue
-		}
-		ts, err := time.Parse(time.RFC3339, r.Timestamp)
-		if err != nil || ts.Before(monthStart) {
-			continue
-		}
-		// A response the store holds under two names (a flat copy and its day
-		// folder's) is one turn: count it once, by the identity
-		// share/usage-export keys on (#298). A row with no id always counts.
-		if id, ok := r.ResponseID.(string); ok && id != "" {
-			key := id + "\x00" + r.Timestamp
-			if turn, ok := r.TurnID.(string); ok && turn != "" {
-				key += "\x00" + turn
-			}
-			if counted[key] {
-				continue
-			}
-			counted[key] = true
-		}
-		// Every completed response is a turn the profile served, and its tokens
-		// are use a missing price must not hide (#234).
-		tokens := r.Usage.tokens()
-		todayTurn := !ts.Before(todayStart)
-		s.MonthTurns++
-		s.MonthTokens += tokens
-		if todayTurn {
-			s.TodayTurns++
-			s.TodayTokens += tokens
-		}
-		var cost float64
-		priced := false
-		switch {
-		case billable(r.Usage.Cost):
-			cost, priced = *r.Usage.Cost, true
-		case billable(r.Usage.EstimatedCost):
-			cost, priced = *r.Usage.EstimatedCost, true
-			s.Estimated = true
-		}
-		if priced {
-			s.MonthUSD += cost
-			if todayTurn {
-				s.TodayUSD += cost
-			}
-		} else {
-			// No price was known for this turn: its cost is unknown, not zero.
-			s.UnpricedTurns++
-		}
-	}
+	t := monthTallies(filepath.Join(paths.StateDir(), "usage"), today, monthStart, todayStart)[name]
+	s.TodayUSD, s.MonthUSD, s.Estimated = t.TodayUSD, t.MonthUSD, t.Estimated
+	s.TodayTurns, s.MonthTurns, s.UnpricedTurns = t.TodayTurns, t.MonthTurns, t.UnpricedTurns
+	s.TodayTokens, s.MonthTokens = t.TodayTokens, t.MonthTokens
 	if budget != nil {
 		resets := time.Date(today.Year(), today.Month()+1, 1, 0, 0, 0, 0, time.Local).Unix()
 		used := s.MonthUSD / *budget
 		e.Windows = []Window{{ID: "month", Label: "month", Used: used, ResetsAt: &resets}}
 	}
 	return e
+}
+
+const dayLayout = "2006-01-02"
+
+// tally is the counts one profile's receipts add up to.
+type tally struct {
+	TodayUSD, MonthUSD                    float64
+	Estimated                             bool
+	TodayTurns, MonthTurns, UnpricedTurns int
+	TodayTokens, MonthTokens              int64
+}
+
+func (t *tally) add(o tally) {
+	t.TodayUSD += o.TodayUSD
+	t.MonthUSD += o.MonthUSD
+	t.Estimated = t.Estimated || o.Estimated
+	t.TodayTurns += o.TodayTurns
+	t.MonthTurns += o.MonthTurns
+	t.UnpricedTurns += o.UnpricedTurns
+	t.TodayTokens += o.TodayTokens
+	t.MonthTokens += o.MonthTokens
+}
+
+// spendRow is what one receipt adds to the month: nil for a receipt that never
+// counts (unreadable, incomplete, or with no stamp).
+type spendRow struct {
+	Profile   string  `json:"p"`
+	Stamp     string  `json:"t"`
+	Key       string  `json:"k,omitempty"`
+	Tokens    int64   `json:"n,omitempty"`
+	Cost      float64 `json:"c,omitempty"`
+	Priced    bool    `json:"pr,omitempty"`
+	Estimated bool    `json:"e,omitempty"`
+}
+
+func readRow(path string) *spendRow {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var r receipt
+	if json.Unmarshal(raw, &r) != nil || !r.Complete {
+		return nil
+	}
+	if _, err := time.Parse(time.RFC3339, r.Timestamp); err != nil {
+		return nil
+	}
+	out := &spendRow{Profile: r.Profile, Stamp: r.Timestamp, Tokens: r.Usage.tokens()}
+	// A response the store holds under two names (a flat copy and its day
+	// folder's) is one turn: it counts once, by the identity share/usage-export
+	// keys on (#298). A row with no id always counts.
+	if id, ok := r.ResponseID.(string); ok && id != "" {
+		out.Key = id + "\x00" + r.Timestamp
+		if turn, ok := r.TurnID.(string); ok && turn != "" {
+			out.Key += "\x00" + turn
+		}
+	}
+	switch {
+	case billable(r.Usage.Cost):
+		out.Cost, out.Priced = *r.Usage.Cost, true
+	case billable(r.Usage.EstimatedCost):
+		out.Cost, out.Priced, out.Estimated = *r.Usage.EstimatedCost, true, true
+	}
+	return out
+}
+
+// addRows adds every row stamped this month to its profile's tally, each
+// response once.
+func addRows(rows []*spendRow, monthStart, todayStart time.Time, counted map[string]bool, out map[string]tally) {
+	for _, r := range rows {
+		if r == nil {
+			continue
+		}
+		ts, _ := time.Parse(time.RFC3339, r.Stamp)
+		if ts.Before(monthStart) {
+			continue
+		}
+		if r.Key != "" {
+			if counted[r.Key] {
+				continue
+			}
+			counted[r.Key] = true
+		}
+		// Every completed response is a turn the profile served, and its tokens
+		// are use a missing price must not hide (#234).
+		t := out[r.Profile]
+		todayTurn := !ts.Before(todayStart)
+		t.MonthTurns++
+		t.MonthTokens += r.Tokens
+		if todayTurn {
+			t.TodayTurns++
+			t.TodayTokens += r.Tokens
+		}
+		if r.Priced {
+			t.Estimated = t.Estimated || r.Estimated
+			t.MonthUSD += r.Cost
+			if todayTurn {
+				t.TodayUSD += r.Cost
+			}
+		} else {
+			// No price was known for this turn: its cost is unknown, not zero.
+			t.UnpricedTurns++
+		}
+		out[r.Profile] = t
+	}
+}
+
+func readRows(files []string) []*spendRow {
+	rows := make([]*spendRow, 0, len(files))
+	for _, p := range files {
+		rows = append(rows, readRow(p))
+	}
+	return rows
+}
+
+// tallyMemo holds one scan per process: a quota call reads every gateway
+// profile, and each would otherwise re-read the whole month.
+var tallyMemo struct {
+	key string
+	by  map[string]tally
+}
+
+// monthTallies is every profile's tally for the month. The receipts sit in the
+// flat store and in day folders named by UTC day, compared by name — stepping
+// local midnights as instants lands after now east of UTC and skips today's
+// folder. A row always sits in a folder at or after its stamp's UTC day, so an
+// earlier folder holds only rows the month window itself excludes; the stamp
+// still decides. A folder whose whole UTC day ended before today's local start
+// can hold no turn of today, so its tally is kept and reused until the folder
+// changes (a late move links rows into it).
+func monthTallies(usageDir string, today, monthStart, todayStart time.Time) map[string]tally {
+	key := usageDir + "\x00" + monthStart.String() + "\x00" + todayStart.String()
+	if tallyMemo.key == key {
+		return tallyMemo.by
+	}
+	first, last := monthStart.UTC().Format(dayLayout), today.UTC().Format(dayLayout)
+	openFrom := todayStart.UTC().Format(dayLayout)
+	out := map[string]tally{}
+	var rows []*spendRow
+	closed := map[string]bool{}
+	entries, _ := os.ReadDir(usageDir)
+	for _, e := range entries {
+		name := e.Name()
+		if !e.IsDir() || name < first || name > last {
+			continue
+		}
+		if _, err := time.Parse(dayLayout, name); err != nil {
+			continue // a folder that is not a day shard
+		}
+		dir := filepath.Join(usageDir, name)
+		if name < openFrom {
+			closed[name] = true
+			for p, t := range closedDay(dir, name, monthStart, todayStart) {
+				sum := out[p]
+				sum.add(t)
+				out[p] = sum
+			}
+			continue
+		}
+		rows = append(rows, openDay(dir, name)...)
+	}
+	// A flat row a move already linked into a kept day folder is counted there.
+	flat, _ := filepath.Glob(filepath.Join(usageDir, "*.json"))
+	for _, p := range flat {
+		if info, err := os.Stat(p); err == nil {
+			day := info.ModTime().UTC().Format(dayLayout)
+			if closed[day] {
+				if _, err := os.Stat(filepath.Join(usageDir, day, filepath.Base(p))); err == nil {
+					continue
+				}
+			}
+		}
+		rows = append(rows, readRow(p))
+	}
+	addRows(rows, monthStart, todayStart, map[string]bool{}, out)
+	tallyMemo.key, tallyMemo.by = key, out
+	return out
+}
+
+// dayCache is a kept day folder's tallies and the folder state they were read at.
+type dayCache struct {
+	MTime int64            `json:"mtime"`
+	Month int64            `json:"month"`
+	By    map[string]tally `json:"by"`
+}
+
+// closedDay is a past day folder's tallies, read from its cache while the
+// folder's mtime is the one they were counted at. The mtime is taken before the
+// files are read, so a row linked in during the read changes it and the next
+// call counts again.
+func closedDay(dir, name string, monthStart, todayStart time.Time) map[string]tally {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return nil
+	}
+	cachePath := filepath.Join(cacheDir(), "spend", name+".json")
+	var c dayCache
+	if b, err := os.ReadFile(cachePath); err == nil && json.Unmarshal(b, &c) == nil &&
+		c.MTime == info.ModTime().UnixNano() && c.Month == monthStart.Unix() && c.By != nil {
+		return c.By
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	c = dayCache{MTime: info.ModTime().UnixNano(), Month: monthStart.Unix(), By: map[string]tally{}}
+	addRows(readRows(files), monthStart, todayStart, map[string]bool{}, c.By)
+	writeAtomic(cachePath, c)
+	return c.By
+}
+
+// seenFile is one receipt of an open day as it was last read.
+type seenFile struct {
+	Size  int64     `json:"s"`
+	MTime int64     `json:"m"`
+	Row   *spendRow `json:"r"`
+}
+
+// openDay is the rows of a day folder still being written. Each receipt is
+// read once and kept with its size and mtime; a later call reads only the
+// receipts that are new or changed since, and drops the ones that are gone.
+func openDay(dir, name string) []*spendRow {
+	cachePath := filepath.Join(cacheDir(), "spend", name+".open.json")
+	var old map[string]seenFile
+	if b, err := os.ReadFile(cachePath); err == nil {
+		_ = json.Unmarshal(b, &old)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	seen := make(map[string]seenFile, len(entries))
+	changed := false
+	rows := make([]*spendRow, 0, len(entries))
+	for _, e := range entries {
+		n := e.Name()
+		if e.IsDir() || filepath.Ext(n) != ".json" {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		f, ok := old[n]
+		if !ok || f.Size != info.Size() || f.MTime != info.ModTime().UnixNano() {
+			f = seenFile{Size: info.Size(), MTime: info.ModTime().UnixNano(), Row: readRow(filepath.Join(dir, n))}
+			changed = true
+		}
+		delete(old, n)
+		seen[n] = f
+		rows = append(rows, f.Row)
+	}
+	if changed || len(old) > 0 {
+		writeAtomic(cachePath, seen)
+	}
+	return rows
+}
+
+// writeAtomic replaces path with v's JSON, or leaves it as it was.
+func writeAtomic(path string, v any) {
+	b, err := json.Marshal(v)
+	if err != nil || os.MkdirAll(filepath.Dir(path), 0o700) != nil {
+		return
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	if err != nil {
+		return
+	}
+	_, werr := f.Write(b)
+	if cerr := f.Close(); werr != nil || cerr != nil || os.Rename(f.Name(), path) != nil {
+		os.Remove(f.Name())
+	}
 }

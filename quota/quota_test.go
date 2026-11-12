@@ -804,3 +804,57 @@ func TestDeepseekShowsEmptyWalletsOnlyWhenAllAreEmpty(t *testing.T) {
 		t.Fatal("an empty wallet list is unreadable, not zero")
 	}
 }
+
+// A past day folder's tally is kept and reused, and counted again once a row
+// lands in it; today's folder is always read.
+func TestQuotaSpendKeepsPastDaysUntilTheyChange(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	write := func(day, n, stamp string) {
+		dir := filepath.Join(usage, day)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		raw := `{"profile":"gw","timestamp":"` + stamp + `","usage":{"cost":1},"complete":true}`
+		if err := os.WriteFile(filepath.Join(dir, n+".json"), []byte(raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	read := func() *Spend { tallyMemo.key = ""; return spendEntry("gw", "").Spend }
+	write("2026-10-05", "a", "2026-10-05T01:00:00Z")
+	write("2026-10-20", "b", "2026-10-20T09:00:00Z")
+	if s := read(); s.MonthTurns != 2 || s.TodayTurns != 1 {
+		t.Fatalf("first read %+v", s)
+	}
+	cache := filepath.Join(state, "ccmorph", "quota", "spend", "2026-10-05.json")
+	if _, err := os.Stat(cache); err != nil {
+		t.Fatalf("past day not kept: %v", err)
+	}
+	// A kept tally is used as is: a row removed behind the folder's back
+	// (mtime restored) still counts, which proves the files were not read.
+	info, _ := os.Stat(filepath.Join(usage, "2026-10-05"))
+	os.Remove(filepath.Join(usage, "2026-10-05", "a.json"))
+	os.Chtimes(filepath.Join(usage, "2026-10-05"), info.ModTime(), info.ModTime())
+	if s := read(); s.MonthTurns != 2 {
+		t.Fatalf("kept tally not reused: %+v", s)
+	}
+	// A row linked into the past day changes the folder: it is counted again.
+	write("2026-10-05", "c", "2026-10-05T02:00:00Z")
+	write("2026-10-05", "d", "2026-10-05T03:00:00Z")
+	write("2026-10-20", "e", "2026-10-20T10:00:00Z")
+	if s := read(); s.MonthTurns != 4 || s.TodayTurns != 2 || s.MonthUSD != 4 {
+		t.Fatalf("changed day not recounted: %+v", s)
+	}
+	// Today's receipts are re-read when they change and dropped when gone.
+	today := filepath.Join(usage, "2026-10-20")
+	raw := `{"profile":"gw","timestamp":"2026-10-20T09:00:00Z","usage":{"cost":5.5},"complete":true}`
+	if err := os.WriteFile(filepath.Join(today, "b.json"), []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(filepath.Join(today, "e.json"))
+	if s := read(); s.TodayTurns != 1 || s.TodayUSD != 5.5 || s.MonthTurns != 3 {
+		t.Fatalf("today's change not seen: %+v", s)
+	}
+}
