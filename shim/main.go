@@ -173,6 +173,9 @@ func Main(h Hooks) {
 			}
 		}()
 	}
+	// Every adapter start finishes the pre-shard move, so it never waits on a manual report: 776k flat rows
+	// left in place made each quota read open every one of them and saturated the SSD (2026-11-12).
+	go moveFlatRows()
 	fmt.Printf("shim :%d -> %s\n", ln.Addr().(*net.TCPAddr).Port, args[1])
 	die(srv.Serve(ln).Error())
 }
