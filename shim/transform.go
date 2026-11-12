@@ -212,9 +212,9 @@ func errorJSON(kind, message string) []byte {
 
 // --- request side --------------------------------------------------------------
 
-// requestedModel is the body's model id, spelled as sent ([1m] and all).
-func requestedModel(body []byte) (string, bool) {
-	d := parseDoc(body)
+// requestedModel is the doc's model id, spelled as sent ([1m] and all); a nil
+// doc (the bytes are not a JSON object) has none.
+func requestedModel(d *doc) (string, bool) {
 	if d == nil {
 		return "", false
 	}
@@ -310,19 +310,20 @@ func (s *Server) deviceID(session string) string {
 }
 
 // cleanRequest runs the profile's repair hook (if any) and the device-id swap
-// (when swap) in one pass. Not a JSON object, too deep, or nothing changed means
-// the original bytes go upstream; changed bytes keep CJK as UTF-8 unless a lone
-// surrogate forces the ascii form.
-func (s *Server) cleanRequest(body []byte, swap bool, session *string) []byte {
-	orig := body
-	d := parseDoc(body)
+// (when swap) in one pass, over the doc the caller parsed. Not a JSON object,
+// too deep, or nothing changed means the original bytes go upstream; changed
+// bytes keep CJK as UTF-8 unless a lone surrogate forces the ascii form. The
+// doc that comes back belongs to the bytes that come back.
+func (s *Server) cleanRequest(body []byte, d *doc, swap bool, session *string) ([]byte, *doc) {
 	if d == nil {
-		return orig
+		return body, d
 	}
+	orig, origD := body, d
 	changed := false
 	if s.Hooks.RepairRequest != nil {
 		if nb, ok := s.callRepair(body); ok {
-			if nd := parseDoc(nb); nd != nil {
+			// The hook's answer is parsed here, once — unless it is the bytes it got.
+			if nd := reparse(nb, d); nd != nil {
 				body, d, changed = nb, nd, true
 			}
 		}
@@ -336,13 +337,13 @@ func (s *Server) cleanRequest(body []byte, swap bool, session *string) []byte {
 		rememberSession(d, session)
 	}
 	if !changed && len(edits) == 0 {
-		return orig
+		return orig, origD
 	}
 	out, ok := encodeBody(body, edits, false)
 	if !ok {
-		return orig
+		return orig, origD
 	}
-	return out
+	return out, reparse(out, d, origD)
 }
 
 // callRepair shields the request from a panicking hook: it leaves the bytes

@@ -301,7 +301,7 @@ func TestNativeCatalogueUsesTheFirstDuplicateRowEvenIfMalformed(t *testing.T) {
 		t.Run(tc.first+" then "+tc.second+" on "+tc.path, func(t *testing.T) {
 			_, url := newGateway(t, `{"data":[{"id":"m","supported_endpoints":`+tc.first+`},{"id":"m","supported_endpoints":`+tc.second+`}]}`)
 			routes := nativeRoutes(t, url, nil, map[string]string{"alias": "m"})
-			msg := routes.ensure([]byte(`{"model":"m"}`), "k", strp("alias"), tc.path)
+			msg := routes.ensure(parseDoc([]byte(`{"model":"m"}`)), "k", strp("alias"), tc.path)
 			if (msg != "") != tc.rejected {
 				t.Fatalf("rejected=%v: %q", msg != "", msg)
 			}
@@ -315,7 +315,7 @@ func TestNativeCatalogueUsesTheFirstDuplicateRowEvenIfMalformed(t *testing.T) {
 func TestNativeGuardUsesTheCurrentDeclarationForAKnownMappedTarget(t *testing.T) {
 	g, url := newGateway(t, `{"data":[{"id":"chat-only","supported_endpoints":["/v1/chat/completions"]}]}`)
 	routes := nativeRoutes(t, url, []string{"chat-only"}, map[string]string{"claude-sonnet-5": "chat-only"})
-	msg := routes.ensure([]byte(`{"model":"chat-only"}`), "k", strp("claude-sonnet-5"), pathMessages)
+	msg := routes.ensure(parseDoc([]byte(`{"model":"chat-only"}`)), "k", strp("claude-sonnet-5"), pathMessages)
 	if !strings.Contains(msg, "translation") || g.reads() != 1 {
 		t.Fatal(msg, g.reads())
 	}
@@ -327,7 +327,7 @@ func TestNativeGuardUsesTheCurrentDeclarationForAKnownMappedTarget(t *testing.T)
 func TestNativeGuardDoesNotTreatASuffixedKeyAsAMap(t *testing.T) {
 	g, url := newGateway(t, `{"data":[{"id":"chat-only","supported_endpoints":["/v1/chat/completions"]}]}`)
 	routes := nativeRoutes(t, url, nil, map[string]string{"claude-sonnet-5[1m]": "chat-only"})
-	if msg := routes.ensure([]byte(`{"model":"claude-sonnet-5"}`), "k", strp("claude-sonnet-5[1m]"), pathMessages); msg != "" || g.reads() != 0 {
+	if msg := routes.ensure(parseDoc([]byte(`{"model":"claude-sonnet-5"}`)), "k", strp("claude-sonnet-5[1m]"), pathMessages); msg != "" || g.reads() != 0 {
 		t.Fatal(msg, g.reads())
 	}
 }
@@ -339,7 +339,7 @@ func TestNativeExpiredDeclarationDoesNotVetoAfterAFailedRefresh(t *testing.T) {
 	c := routes.catalogue
 	c.ids, c.endpoints = map[string]bool{"m": true}, map[string][]string{"m": {pathChat}}
 	c.expire(catalogueTTL + time.Second)
-	if msg := routes.ensure([]byte(`{"model":"m"}`), "k", strp("alias"), pathMessages); msg != "" {
+	if msg := routes.ensure(parseDoc([]byte(`{"model":"m"}`)), "k", strp("alias"), pathMessages); msg != "" {
 		t.Fatal(msg)
 	}
 	if len(c.ids) != 0 || len(c.endpoints) != 0 {
@@ -352,7 +352,9 @@ func TestNativeExpiredDeclarationDoesNotVetoAfterAFailedRefresh(t *testing.T) {
 func TestNativeRefreshNeverShowsAnEmptyDeclarationSet(t *testing.T) {
 	g, url := newGateway(t, `{"data":[{"id":"m","supported_endpoints":["/v1/chat/completions"]}]}`)
 	routes := nativeRoutes(t, url, nil, map[string]string{"alias": "m"})
-	ask := func() string { return routes.ensure([]byte(`{"model":"m"}`), "k", strp("alias"), pathMessages) }
+	ask := func() string {
+		return routes.ensure(parseDoc([]byte(`{"model":"m"}`)), "k", strp("alias"), pathMessages)
+	}
 	if !strings.Contains(ask(), "translation") {
 		t.Fatal("setup")
 	}
@@ -396,7 +398,7 @@ func TestMissingAdapterNamesTheUpdateAndTheRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	msg := r.ensure([]byte(`{"model":"m"}`), "k", nil, pathMessages)
+	msg := r.ensure(parseDoc([]byte(`{"model":"m"}`)), "k", nil, pathMessages)
 	for _, want := range []string{"update", "restart"} {
 		if !strings.Contains(strings.ToLower(msg), want) {
 			t.Fatalf("refusal %q does not name the %s", msg, want)

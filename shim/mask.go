@@ -501,12 +501,13 @@ func (m *masker) fetches(command string) bool {
 
 // maskRequest is body with every secret in it replaced by its placeholder, and
 // how many distinct values of each kind it masked. ok is false when the body
-// cannot be read: the caller then sends nothing.
-func (m *masker) maskRequest(body []byte) (out []byte, masked map[string]int, ok bool) {
-	d := parseDoc(body)
+// cannot be read: the caller then sends nothing. d is the caller's parse of
+// the body; nil is an unreadable body.
+func (m *masker) maskRequest(d *doc) (out []byte, masked map[string]int, ok bool) {
 	if d == nil {
 		return nil, nil, false
 	}
+	body := d.b
 	t := &requestTargets{b: body, m: m, fetches: map[string]bool{}}
 	msgs, hasMsgs := d.last("messages")
 	var turns []Span

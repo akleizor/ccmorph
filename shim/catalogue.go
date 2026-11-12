@@ -357,9 +357,9 @@ func (r *ModelRoutes) mappingTarget(model string) (string, bool) {
 	return *t, true
 }
 
-// ensure prepares model; a non-empty result is the refusal message.
-func (r *ModelRoutes) ensure(body []byte, key string, requested *string, path string) string {
-	d := parseDoc(body)
+// ensure prepares model; a non-empty result is the refusal message. d is the
+// caller's parse of the request body (nil: not a JSON object, nothing to do).
+func (r *ModelRoutes) ensure(d *doc, key string, requested *string, path string) string {
 	if d == nil {
 		return ""
 	}

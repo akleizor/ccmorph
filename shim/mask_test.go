@@ -28,7 +28,7 @@ func testMasker(t *testing.T, commands string) *masker {
 
 func maskOne(t *testing.T, m *masker, text string) string {
 	t.Helper()
-	out, _, ok := m.maskRequest([]byte(`{"messages":[{"role":"user","content":` + string(Quote(text)) + `}]}`))
+	out, _, ok := m.maskRequest(parseDoc([]byte(`{"messages":[{"role":"user","content":` + string(Quote(text)) + `}]}`)))
 	if !ok {
 		t.Fatal("unreadable")
 	}
@@ -176,17 +176,17 @@ func TestMaskedRoundTrip(t *testing.T) {
 	// A password command in a pipeline prints something else: left alone.
 	piped := strings.Replace(history("x"), "op read op://Private/site/password", "op read op://x | wc -c", 1)
 	m2 := testMasker(t, "")
-	b, _, _ := m2.maskRequest([]byte(piped))
+	b, _, _ := m2.maskRequest(parseDoc([]byte(piped)))
 	if !strings.Contains(string(b), `"content":"hunter2pass\n"`) {
 		t.Fatalf("piped output masked: %s", b)
 	}
 	failed := strings.Replace(history("x"), `"tool_use_id":"`+opRead+`",`, `"tool_use_id":"`+opRead+`","is_error":true,`, 1)
-	if b, _, _ := testMasker(t, "").maskRequest([]byte(failed)); !strings.Contains(string(b), `"content":"hunter2pass\n"`) {
+	if b, _, _ := testMasker(t, "").maskRequest(parseDoc([]byte(failed))); !strings.Contains(string(b), `"content":"hunter2pass\n"`) {
 		t.Fatalf("a failed fetch's error was masked: %s", b)
 	}
 	// A profile names its own password command.
 	own := strings.Replace(history("x"), "op read op://Private/site/password", "secrets get site", 1)
-	b, masked, _ := testMasker(t, `^secrets get\b`).maskRequest([]byte(own))
+	b, masked, _ := testMasker(t, `^secrets get\b`).maskRequest(parseDoc([]byte(own)))
 	if strings.Contains(string(b), `"content":"hunter2pass\n"`) || masked["PASSWORD"] != 1 || maskedJSON(masked) != `{"PASSWORD":1}` {
 		t.Fatalf("own command: %s %v", b, masked)
 	}
@@ -255,7 +255,7 @@ func TestMaskFloorCountsCharacters(t *testing.T) {
 		t.Run(tc.value, func(t *testing.T) {
 			m := testMasker(t, "")
 			in := strings.ReplaceAll(history("x"), "hunter2pass", tc.value)
-			if _, _, ok := m.maskRequest([]byte(in)); !ok {
+			if _, _, ok := m.maskRequest(parseDoc([]byte(in))); !ok {
 				t.Fatal("unreadable")
 			}
 			prose := "我把" + tc.value + "记在纸上"

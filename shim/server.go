@@ -456,11 +456,24 @@ func (s *Server) relay(rq *request) {
 	var answerAs string
 	var requested *string
 	rq.session = rq.header.Get("x-claude-code-session-id")
+	// One parse per body version: d is the current version's doc, handed to
+	// each stage below instead of the bytes; resolve and cleanRequest, which
+	// rewrite the body, return the new version's doc with it. docOf parses a
+	// version the first time a stage asks for it and keeps the answer — nil
+	// included (not a JSON object) — so no version is scanned twice.
+	var d *doc
+	parsed := false
+	docOf := func() *doc {
+		if !parsed {
+			d, parsed = parseDoc(body), true
+		}
+		return d
+	}
 	isPost := rq.r.Method == "POST"
 	isMessagePost := isPost && rq.path == pathMessages
 	isModelPost := isMessagePost
 	if !isModelPost && isPost && rq.path == pathCount && s.Routes != nil && len(s.Routes.modelMap) > 0 {
-		if m, ok := requestedModel(body); ok {
+		if m, ok := requestedModel(docOf()); ok {
 			_, isModelPost = s.Routes.mappingTarget(m)
 		}
 	}
@@ -476,20 +489,20 @@ func (s *Server) relay(rq *request) {
 		}
 		// The client's choice, before any explicit map or family resolution.
 		if sidecar != nil || s.Routes.command == nil {
-			if m, ok := requestedModel(body); ok {
+			if m, ok := requestedModel(docOf()); ok {
 				requested = &m
 			}
 		}
 		if sidecar != nil {
 			sidecar = sidecar.tagged(tagsOf(rq.header))
 		}
-		body, answerAs = s.resolve(body, key)
+		body, d, answerAs = s.resolve(body, docOf(), key)
 		if sidecar != nil {
-			if m, ok := requestedModel(body); ok {
+			if m, ok := requestedModel(d); ok {
 				sidecar.served = &m
 			}
 		}
-		if msg := s.Routes.ensure(body, key, requested, rq.path); msg != "" {
+		if msg := s.Routes.ensure(d, key, requested, rq.path); msg != "" {
 			rq.errorBody(400, errorJSON("invalid_request_error", msg))
 			return
 		}
@@ -498,12 +511,12 @@ func (s *Server) relay(rq *request) {
 	// device-id swap only the two metadata endpoints.
 	swap := s.RandomDeviceID && isPost && (rq.path == pathMessages || rq.path == pathCount)
 	if len(body) > 0 && (swap || s.Hooks.RepairRequest != nil || s.Hooks.OutboundHeaders != nil) {
-		body = s.cleanRequest(body, swap, &rq.session)
+		body, d = s.cleanRequest(body, docOf(), swap, &rq.session)
 	}
 	// Last, so hooks and routing read what the session wrote; the 400 resend
 	// starts from these bytes too.
 	if s.mask != nil && len(body) > 0 && isPost && (rq.path == pathMessages || rq.path == pathCount) {
-		out, masked, ok := s.mask.maskRequest(body)
+		out, masked, ok := s.mask.maskRequest(docOf())
 		if !ok {
 			rq.errorBody(503, apiError("api_error", "ccmorph masking could not read this request, so it was not sent"))
 			return
@@ -792,15 +805,17 @@ func (s *Server) open(rq *request, body []byte) (*upstream, error) {
 	return up, nil
 }
 
-// resolve is (body to send, Anthropic id to answer as). It never fails.
-func (s *Server) resolve(body []byte, key string) ([]byte, string) {
-	d := parseDoc(body)
+// resolve is (body to send, its doc, Anthropic id to answer as). It never
+// fails. The doc in is the caller's parse of body; the doc out is the parse of
+// the body out — the caller's own doc again when the model was left alone or
+// the rewrite came back as the same bytes (an encoder that refused).
+func (s *Server) resolve(body []byte, d *doc, key string) ([]byte, *doc, string) {
 	if d == nil {
-		return body, ""
+		return body, d, ""
 	}
 	asked, ok := d.str("model")
 	if !ok {
-		return body, ""
+		return body, d, ""
 	}
 	base := strings.TrimSuffix(asked, "[1m]")
 	// One lookup, on the id this request will be routed by: the window marker is
@@ -809,10 +824,11 @@ func (s *Server) resolve(body []byte, key string) ([]byte, string) {
 	// could only pick a target nothing else resolved.
 	if mapped, ok := s.Routes.mappingTarget(asked); ok {
 		// Explicit maps are final: do not substitute even a newer Claude target.
-		return withModel(d, strings.TrimSuffix(mapped, "[1m]")), base
+		out := withModel(d, strings.TrimSuffix(mapped, "[1m]"))
+		return out, reparse(out, d), base
 	}
 	if _, _, ok := claudeVersion(base); !ok {
-		return body, ""
+		return body, d, ""
 	}
 	served := s.Routes.catalogue.served(key, base)
 	chosen := resolveModel(base, served)
@@ -821,8 +837,9 @@ func (s *Server) resolve(body []byte, key string) ([]byte, string) {
 			fmt.Fprintf(os.Stderr, "shim: %s is not served and no same-family model of "+
 				"that version or newer is; sending it unchanged\n", base)
 		}
-		return body, base
+		return body, d, base
 	}
 	fmt.Fprintf(os.Stderr, "shim: %s is not served; sending newest same-family %s\n", base, chosen)
-	return withModel(d, chosen+asked[len(base):]), chosen
+	out := withModel(d, chosen+asked[len(base):])
+	return out, reparse(out, d), chosen
 }
