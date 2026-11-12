@@ -399,7 +399,12 @@ func (l *launcher) projectSettings(name, saved string, acwArg, penv []string) in
 	argv := l.settingsArgv("materialize", name, append([]string{"--saved", saved}, projectionArgs(acwArg, penv)...)...)
 	cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), append([]string{"settings-compose"}, argv...)...)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	// The compose child writes the settings the store reads — for a profile
+	// never launched, the generated settings are its layer — so the memoized
+	// reads read them again (#478).
+	l.storeReads = nil
+	if err != nil {
 		l.err("could not generate settings for '" + name + "'")
 		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() > 0 {
 			return ee.ExitCode()

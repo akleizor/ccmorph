@@ -164,44 +164,54 @@ func ConfigStore(a StoreArgs, errw io.Writer) (string, int) {
 	return out.String(), 0
 }
 
-func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
-	op, key, sharedName, mappingKeys, materialize := a.Op, a.Key, a.Shared, a.Mapping, a.Materialize
-	conf, settings := a.Conf, a.Settings
+// storeState is one profile's store as one read of its files leaves it: the
+// bytes its conf and settings layer held, the conf's own lines, the settings
+// object parsed from the layer, and the model defaults and launch projection
+// parsed from them. Every store op — read or write — starts from this same
+// read, so a command parses the files once (#478).
+type storeState struct {
+	originals                [2][]byte
+	lines                    []string
+	doc, defaults, projected *ordjson.Obj
+}
+
+// readStoreState is the store's one read of a profile: its conf and settings
+// layer, and the shared canonical settings when the conf has not taken the
+// shared defaults yet. Its errors are the store's own, worded for the sentence
+// ConfigStore prints.
+func readStoreState(a StoreArgs) (*storeState, error) {
+	conf, settings, sharedName, mappingKeys := a.Conf, a.Settings, a.Shared, a.Mapping
 	confBytes, err := content(conf)
 	if err != nil {
-		return 0, "", err
+		return nil, err
 	}
 	settingsBytes, err := content(settings)
 	if err != nil {
-		return 0, "", err
+		return nil, err
 	}
 	originals := [2][]byte{confBytes, settingsBytes}
 	if originals[0] == nil {
-		return 0, "", fmt.Errorf("profile no longer exists")
-	}
-	if op == "snapshot" {
-		fmt.Fprintln(out, fingerprint(originals[0], originals[1]))
-		return 0, "", nil
+		return nil, fmt.Errorf("profile no longer exists")
 	}
 	doc := ordjson.New()
 	if originals[1] != nil {
 		v, err := ordjson.Parse(ordjson.StripBOM(originals[1]))
 		if err != nil {
-			return 0, "", err
+			return nil, err
 		}
 		d, ok := v.(*ordjson.Obj)
 		if !ok {
-			return 0, "", fmt.Errorf("settings.json and its env must be objects")
+			return nil, fmt.Errorf("settings.json and its env must be objects")
 		}
 		doc = d
 	}
 	if _, err := objField(doc, "env", "settings.json and its env must be objects"); err != nil {
-		return 0, "", err
+		return nil, err
 	}
 
 	confText, err := decodeUTF8(originals[0])
 	if err != nil {
-		return 0, "", err
+		return nil, err
 	}
 	lines := strings.Split(confText, "\n")
 	if len(lines) > 0 && lines[len(lines)-1] == "" {
@@ -233,26 +243,26 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 		shared := ordjson.New()
 		sb, err := content(sharedName)
 		if err != nil {
-			return 0, "", err
+			return nil, err
 		}
 		if len(sb) > 0 {
 			v, err := ordjson.Parse(ordjson.StripBOM(sb))
 			if err != nil {
-				return 0, "", err
+				return nil, err
 			}
 			s, ok := v.(*ordjson.Obj)
 			if !ok {
-				return 0, "", fmt.Errorf("shared settings and its env must be objects")
+				return nil, fmt.Errorf("shared settings and its env must be objects")
 			}
 			shared = s
 		}
 		if _, err := objField(shared, "env", "shared settings and its env must be objects"); err != nil {
-			return 0, "", err
+			return nil, err
 		}
 		native := dictMerge(shared, doc)
 		rows, err := objField(native, "modelSettings", "modelSettings must be an object")
 		if err != nil {
-			return 0, "", err
+			return nil, err
 		}
 		env := asObj(getKey(native, "env"))
 		if env == nil {
@@ -287,11 +297,11 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 		v, _ := defaults.Get(name)
 		value, isStr := v.(string)
 		if !isStr || strings.Contains(name, "=") || strings.ContainsAny(name+value, "\r\n") || hasSpace(name) {
-			return 0, "", fmt.Errorf("model defaults must be single-line strings with valid keys")
+			return nil, fmt.Errorf("model defaults must be single-line strings with valid keys")
 		}
 		if name == "effort" || strings.HasPrefix(name, "effort.") {
 			if !slices.Contains(profile.Efforts, value) || name == "effort." {
-				return 0, "", fmt.Errorf("invalid saved effort default")
+				return nil, fmt.Errorf("invalid saved effort default")
 			}
 		}
 		if strings.HasPrefix(name, "effort.") {
@@ -315,6 +325,61 @@ func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
 			projected.Set(f[1], v)
 		}
 	}
+	return &storeState{originals: originals, lines: lines, doc: doc, defaults: defaults, projected: projected}, nil
+}
+
+// StoreRead is every read answer the store gives over one parse of a profile's
+// files (#478): each model default by key, the settings a launch projects from
+// them, and the fingerprint of the files as this read saw them — the snapshot a
+// save must still match.
+type StoreRead struct {
+	Values     map[string]string
+	Projection string
+	Snapshot   string
+}
+
+// ConfigStoreRead is the store's read half in one parse: what the get,
+// model-settings and snapshot operations answer, held together for a caller
+// that serves a command's reads from one read of the files. Its error is the
+// store's own; ConfigStore's sentence wraps it for the person.
+func ConfigStoreRead(a StoreArgs) (StoreRead, error) {
+	s, err := readStoreState(a)
+	if err != nil {
+		return StoreRead{}, err
+	}
+	r := StoreRead{Values: map[string]string{}, Projection: jsonOut(s.projected), Snapshot: fingerprint(s.originals[0], s.originals[1])}
+	for _, k := range s.defaults.Keys() {
+		v, _ := s.defaults.Get(k)
+		r.Values[k] = fmt.Sprint(v)
+	}
+	return r, nil
+}
+
+func configStoreRun(a StoreArgs, out, errw io.Writer) (int, string, error) {
+	op, key, materialize, mappingKeys := a.Op, a.Key, a.Materialize, a.Mapping
+	conf, settings := a.Conf, a.Settings
+	if op == "snapshot" {
+		// The snapshot answers before any parse: broken settings still snapshot,
+		// the way a save still compares the bytes it started from.
+		confBytes, err := content(conf)
+		if err != nil {
+			return 0, "", err
+		}
+		settingsBytes, err := content(settings)
+		if err != nil {
+			return 0, "", err
+		}
+		if confBytes == nil {
+			return 0, "", fmt.Errorf("profile no longer exists")
+		}
+		fmt.Fprintln(out, fingerprint(confBytes, settingsBytes))
+		return 0, "", nil
+	}
+	s, err := readStoreState(a)
+	if err != nil {
+		return 0, "", err
+	}
+	doc, defaults, projected, originals, lines := s.doc, s.defaults, s.projected, s.originals, s.lines
 	if op == "get" {
 		v, _ := defaults.Get(key)
 		if v == nil {

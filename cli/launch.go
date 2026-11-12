@@ -39,6 +39,7 @@ type launcher struct {
 	red, yellow, bold, dim, accent, cyan, reset string
 
 	memo                map[string]string
+	storeReads          map[string]*storeMemo // one profile's store, parsed once per command (#478)
 	version, zshVersion string
 	migrated            bool
 
@@ -298,6 +299,9 @@ func (l *launcher) core(env []string, stdin string, args ...string) (string, str
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	err := cmd.Run()
+	// A core child can rewrite the store's files (a settings fold, a context
+	// migration, a probe's discoveries), so the memoized reads read them again (#478).
+	l.storeReads = nil
 	rc := 0
 	if err != nil {
 		var ee *exec.ExitError
@@ -557,25 +561,102 @@ func (l *launcher) storeArgs(verb, name, key string) util.StoreArgs {
 }
 
 // runStore is a store operation: its text without trailing newlines and its status;
-// reasons go to errw. A crash is status 2, as a crashed helper process gave.
+// reasons go to errw. A crash is status 2, as a crashed helper process gave. A save
+// drops every memoized read — what it wrote is not what they saw (#478).
 func (l *launcher) runStore(a util.StoreArgs, errw io.Writer) (string, int) {
 	type res struct {
 		out string
 		rc  int
 	}
 	r, ok := try(l, "config-store "+a.Op, func() res { out, rc := util.ConfigStore(a, errw); return res{out, rc} })
+	if storeSaves(a.Op) {
+		l.storeReads = nil
+	}
 	if !ok {
 		return "", 2
 	}
 	return strings.TrimRight(r.out, "\n"), r.rc
 }
 
+// storeSaves names the ops that write the store's files: set, configure,
+// seed-model-defaults, prepare-launch and migrate-native (util/store.go).
+func storeSaves(op string) bool {
+	return slices.Contains([]string{"set", "configure", "seed-model-defaults", "prepare-launch", "migrate-native"}, op)
+}
+
+// storeMemo is one profile's store as this command read it: every read answer,
+// or the refusal a broken profile gave, held until a write drops it. The verbs
+// stack three to six reads of one profile; all but the first are answered here (#478).
+type storeMemo struct {
+	read *util.StoreRead // nil when the read was refused
+	why  string          // the refusal, as the store words it
+}
+
+// storeRead is the read half of the store, memoized per profile: one read and
+// parse of the profile's files serves every get, model-settings and snapshot a
+// command asks for. A refusal is kept too — a broken profile refuses every read
+// the same way — and replayed worded as the store words it. A panic is not
+// kept; the next read tries again, as each store call once did.
+func (l *launcher) storeRead(name string, errw io.Writer) (util.StoreRead, int) {
+	if m, ok := l.storeReads[name]; ok {
+		if m.read == nil {
+			fmt.Fprint(errw, m.why)
+			return util.StoreRead{}, 1
+		}
+		return *m.read, 0
+	}
+	type answer struct {
+		r   util.StoreRead
+		err error
+	}
+	a, ok := try(l, "config-store read", func() answer { r, err := util.ConfigStoreRead(l.storeArgs("", name, "")); return answer{r, err} })
+	if !ok {
+		return util.StoreRead{}, 2
+	}
+	m := &storeMemo{}
+	if a.err != nil {
+		m.why = fmt.Sprintf("ccmorph: could not save/read configuration: %v\n", a.err)
+	} else {
+		m.read = &a.r
+	}
+	if l.storeReads == nil {
+		l.storeReads = map[string]*storeMemo{}
+	}
+	l.storeReads[name] = m
+	if m.read == nil {
+		fmt.Fprint(errw, m.why)
+		return util.StoreRead{}, 1
+	}
+	return a.r, 0
+}
+
+// storeCall is the one way the cli reaches the store: a read op is answered from
+// the per-profile memo, anything else runs the store — a save, which drops the
+// memo so the next read sees what it wrote (#478).
+func (l *launcher) storeCall(verb, name, key string, errw io.Writer) (string, int) {
+	switch verb {
+	case "get", "model-settings", "snapshot":
+		r, rc := l.storeRead(name, errw)
+		if rc != 0 {
+			return "", rc
+		}
+		switch verb {
+		case "get":
+			return r.Values[key], 0
+		case "model-settings":
+			return r.Projection, 0
+		}
+		return r.Snapshot, 0
+	}
+	return l.runStore(l.storeArgs(verb, name, key), errw)
+}
+
 func (l *launcher) configStore(verb, name, key string) (string, int) {
-	return l.runStore(l.storeArgs(verb, name, key), os.Stderr)
+	return l.storeCall(verb, name, key, os.Stderr)
 }
 
 func (l *launcher) configStoreQ(verb, name, key string) (string, int) {
-	return l.runStore(l.storeArgs(verb, name, key), io.Discard)
+	return l.storeCall(verb, name, key, io.Discard)
 }
 
 func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }

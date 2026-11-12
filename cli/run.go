@@ -848,6 +848,9 @@ func (l *launcher) migrateState() bool {
 		return true
 	}
 	l.migrated = l.migrateOnce()
+	// Migration can rewrite the confs — a keychain move rewrites them
+	// in-process — so the memoized reads read the store's files again (#478).
+	l.storeReads = nil
 	return l.migrated
 }
 

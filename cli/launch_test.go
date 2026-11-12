@@ -1507,6 +1507,115 @@ func TestProbeVerdictSortsEveryStatusIntoItsVerdict(t *testing.T) {
 	}
 }
 
+// storeTestLauncher is a launcher over one profile the store reads: its conf in
+// an isolated state dir, its settings layer in an isolated profile dir, and an
+// isolated HOME for the shared canonical settings (#478). settings "" writes no
+// layer, the state a profile that has none.
+func storeTestLauncher(t *testing.T, name, conf, settings string) *launcher {
+	t.Helper()
+	state, profiles := t.TempDir(), filepath.Join(t.TempDir(), "profiles")
+	if err := os.WriteFile(filepath.Join(state, name+".conf"), []byte(conf), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if settings != "" {
+		if err := os.MkdirAll(filepath.Join(profiles, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(profiles, name, "settings.profile.json"), []byte(settings), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("HOME", t.TempDir())
+	return &launcher{dir: state, profileDirs: profiles}
+}
+
+// TestOneCommandParsesAProfileStoreOnce is #478: one command stacks three to
+// six reads of the same profile's conf, settings layer and shared settings —
+// inspect reads its model, effort and projection; doctor adds each tier's
+// alias; launch seeds its defaults and reads the tiers and the saved effort —
+// and every one of them re-read and re-parsed the files. One command must
+// parse a profile's store once: the reads after the first are answered by that
+// parse, so a settings layer broken after it — by nothing this command wrote —
+// changes no answer.
+func TestOneCommandParsesAProfileStoreOnce(t *testing.T) {
+	name := "once"
+	l := storeTestLauncher(t, name,
+		"type=apikey\nbase_url=https://gw.test\napi_key=test-key\nmodel=m-first\nmodel_defaults=1\n",
+		"{\"env\":{}}\n")
+	if got, rc := l.configStoreQ("get", name, "model"); rc != 0 || got != "m-first" {
+		t.Fatalf("the first get: %q, rc %d", got, rc)
+	}
+	layer := filepath.Join(l.profileDirs, name, "settings.profile.json")
+	if err := os.WriteFile(layer, []byte("{ broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, rc := l.configStoreQ("get", name, "effort"); rc != 0 || got != "" {
+		t.Fatalf("get effort after the one parse: %q, rc %d", got, rc)
+	}
+	if got, rc := l.configStoreQ("model-settings", name, ""); rc != 0 || !strings.Contains(got, "m-first") {
+		t.Fatalf("model-settings after the one parse: %q, rc %d", got, rc)
+	}
+	if got, rc := l.configStoreQ("snapshot", name, ""); rc != 0 || got == "" {
+		t.Fatalf("snapshot after the one parse: %q, rc %d", got, rc)
+	}
+}
+
+// TestAReadAfterTheSameCommandsWriteSeesTheNewValue is #478's correctness
+// clause over caching: a command reads a profile, saves new defaults the way
+// getSet and launch do, and reads again — the second read must see what the
+// save wrote, never the view the first read memoized.
+func TestAReadAfterTheSameCommandsWriteSeesTheNewValue(t *testing.T) {
+	name := "saved"
+	l := storeTestLauncher(t, name,
+		"type=apikey\nbase_url=https://gw.test\napi_key=test-key\nmodel=m-first\nmodel_defaults=1\n",
+		"{\"env\":{}}\n")
+	if got, rc := l.configStoreQ("get", name, "model"); rc != 0 || got != "m-first" {
+		t.Fatalf("get before the save: %q, rc %d", got, rc)
+	}
+	set := l.storeArgs("set", name, "")
+	set.Change = util.StoreChange{Model: "m-second"}
+	if _, rc := l.runStore(set, io.Discard); rc != 0 {
+		t.Fatalf("set: rc %d", rc)
+	}
+	if got, rc := l.configStoreQ("get", name, "model"); rc != 0 || got != "m-second" {
+		t.Fatalf("get after the save: %q, rc %d — a save must drop the memoized read", got, rc)
+	}
+}
+
+// TestABrokenProfilesRefusalIsWordedTheSameOnEveryRead guards the memo's
+// refusal half (#478): a profile whose settings layer is broken refuses every
+// read, and one command that stacks reads must hear the store's one wording
+// from each of them — never a differently-worded replay of the first.
+func TestABrokenProfilesRefusalIsWordedTheSameOnEveryRead(t *testing.T) {
+	name := "broken"
+	l := storeTestLauncher(t, name,
+		"type=apikey\nbase_url=https://gw.test\napi_key=test-key\nmodel=m-first\nmodel_defaults=1\n",
+		"{ broken")
+	var refusals []string
+	for _, key := range []string{"model", "effort"} {
+		saved := os.Stderr
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Stderr = w
+		_, rc := l.configStore("get", name, key)
+		w.Close()
+		os.Stderr = saved
+		note, _ := io.ReadAll(r)
+		if rc != 1 {
+			t.Fatalf("get %s: rc %d, want the store's failed status 1", key, rc)
+		}
+		if len(note) == 0 {
+			t.Fatalf("get %s: the refusal must say why", key)
+		}
+		refusals = append(refusals, string(note))
+	}
+	if refusals[0] != refusals[1] {
+		t.Fatalf("the reads worded the refusal differently:\n%q\n%q", refusals[0], refusals[1])
+	}
+}
+
 // nativeBase owns Anthropic's own endpoint (#488): the URL an empty base_url
 // means, and the spellings that count as that endpoint — the bare URL and its
 // trailing-slash form — which run's and inspect's switches each spelled three
