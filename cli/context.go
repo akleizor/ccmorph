@@ -95,6 +95,13 @@ func withheld() string {
 	return "0"
 }
 
+// claudeID is the prefix test the window chain turns on (ARCHITECTURE.md §5):
+// a `claude-` id is one Claude Code resolves from its own catalogue, the one
+// kind CLAUDE_CODE_MAX_CONTEXT_TOKENS never binds. Launch's derivation blanks
+// it, and the context read and inspect's window row ask the same (#447), so
+// every reader of the var answers the window the session really runs at.
+func claudeID(model string) bool { return strings.HasPrefix(model, "claude-") }
+
 // contextEnv is the window, compaction and settings half of a launch: the env
 // it adds, the projection of the profile's settings, and its advisories.
 func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel, launchModel string,
@@ -146,7 +153,7 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 			pmodel = alias[bare]
 		}
 		pmodelEnv := pmodel
-		if strings.HasPrefix(pmodelEnv, "claude-") {
+		if claudeID(pmodelEnv) {
 			pmodelEnv = ""
 		}
 		plw = l.launchWindow(name, strings.SplitN(pmodel, "[", 2)[0])

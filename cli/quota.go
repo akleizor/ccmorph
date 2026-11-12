@@ -81,11 +81,13 @@ func (l *launcher) context(args []string) int {
 		l.err("no context window could be read for " + model)
 		return 1
 	}
-	// A ceiling set by hand in the profile's env is the cap every model
-	// launches under: launch keeps it instead of deriving the model window, so
-	// it is the count this read answers, whatever the resolver found.
+	// A ceiling set by hand in the profile's env is the cap a launch keeps
+	// instead of deriving the model window, so it is the count this read
+	// answers, whatever the resolver found — unless the id starts with
+	// `claude-`: Claude Code ignores the var for its own ids (#447), so there
+	// the resolver's own answer is the window the session really uses.
 	f, _ := l.readQuiet(name)
-	if v, ok := envCeiling(f); ok {
+	if v, ok := envCeiling(f, model); ok {
 		n, label, unprobed = v, "manual", false
 	}
 	// A model the route does not serve has nothing to discover, so the default
@@ -103,8 +105,14 @@ func (l *launcher) context(args []string) int {
 // envCeiling is the profile's hand-set env.CLAUDE_CODE_MAX_CONTEXT_TOKENS read
 // the way launch (contextEnv's engineInt) and Claude Code read it: the cap a
 // launch keeps instead of deriving the model window, so the count the session
-// runs at (#372). false when the key is absent or not a positive count.
-func envCeiling(f map[string]string) (int64, bool) {
+// runs at (#372) — for every id but a `claude-` one, which Claude Code
+// resolves from its own catalogue and ignores the var for (#447, the window
+// chain, ARCHITECTURE.md §5). false when the key is absent, not a positive
+// count, or the model is an id the var never binds.
+func envCeiling(f map[string]string, model string) (int64, bool) {
+	if claudeID(model) {
+		return 0, false
+	}
 	v, ok := f["env.CLAUDE_CODE_MAX_CONTEXT_TOKENS"]
 	if !ok {
 		return 0, false
