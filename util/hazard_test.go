@@ -118,6 +118,7 @@ func TestHazardSetNamesEverySiblingTheTriggerWouldOverrun(t *testing.T) {
 		{"[1m] listed before bare is named once", "roomy=1000000 claude-foo=300000", `["roomy","claude-foo[1m]","claude-foo"]`, "1000000", "1000000", "80", "", true, "1", "", "claude-foo"},
 		{"fatal at both ceilings is still one row", "roomy=400000 plain=250000", `["roomy","plain","plain[1m]"]`, "", "400000", "80", "", true, "1", "", "plain"},
 		{"a layer percentage sizes the set", "roomy=1000000 big-model=800000 small-model=500000", `["roomy","big-model","small-model"]`, "", "1000000", "", "", false, "", "big-model", "686000"},
+		{"a disguised id is sized by its claude- cover and walled by its real id", "small=131072 big=262144", `["claude-fable-5-dd-llams","claude-fable-5-dd-gib"]`, "", "1000000", "80", "", true, "1", "claude-fable", "small"},
 	} {
 		conf, set := hazardWorld(t, c.windows, `{"availableModels":`+c.models+`}`)
 		sources := []string{set}
@@ -204,5 +205,21 @@ func TestHazardSetParsesThePercentageAndBudgetLikeTheEngine(t *testing.T) {
 	}
 	if out := hazardNames(t, HazardIn{Profile: "gw", Budget: "400000", Ceiling: "400000", Sources: []string{set}, Conf: conf}); !strings.Contains(out, "mid") {
 		t.Errorf("control: without the pin the sibling is fatal, got %q", out)
+	}
+}
+
+// The withhold consumes the set's rows, so it names a model the way the set does:
+// a disguised offered entry is removed by the real id its row carries, and the
+// launched model is kept however it is spelled (#483).
+func TestWithholdFatalRemovesADisguisedEntryByItsRealID(t *testing.T) {
+	gen := filepath.Join(t.TempDir(), "settings.json")
+	os.WriteFile(gen, []byte(`{"availableModels":["claude-fable-5-dd-llams","claude-fable-5-dd-gib"]}`), 0o600)
+	WithholdFatal(gen, []string{"131072\tsmall"}, "claude-fable-5-dd-gib")
+	b, err := os.ReadFile(gen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(b); !strings.Contains(got, `"claude-fable-5-dd-gib"`) || strings.Contains(got, `"claude-fable-5-dd-llams"`) {
+		t.Fatalf("the disguised fatal entry must leave and the launched one stay, got %s", got)
 	}
 }

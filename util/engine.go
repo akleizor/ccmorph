@@ -208,6 +208,65 @@ func walls(profile, conf string) map[string]int64 {
 
 var oneMTag = regexp.MustCompile(`(?i)\[1m\]`)
 
+// bareID is the id the window registry knows an offered model by: the disguise
+// undone, the [1m] marker stripped. The registry holds real, bare ids (the
+// listing writes them undisguised), so every wall lookup — and every consumer of
+// the names those lookups produce — derives it this one way.
+func bareID(modelID string) string {
+	return strings.SplitN(ctxwindow.RealID(modelID), "[", 2)[0]
+}
+
+// modelSizing is the readings one offered model is sized from: the profile's
+// probed walls, the session budget and window, the percentage and output pin in
+// force, and the 1M kill switch.
+type modelSizing struct {
+	profile string
+	walls   map[string]int64
+	budget  int64
+	window  int64
+	pct     *float64
+	pinned  int64
+	no1m    bool
+}
+
+// engineModel is the engine's per-model answer for one offered id — the one walk
+// the unsafe warning and the hazard set both make. zE() resolves a window per
+// model on every call, so the family test reads the offered id exactly as the
+// engine does: a [1m] tag anywhere in it (dropped by the kill switch) wins first,
+// then a claude- prefix — which a disguised id wears, and which takes the
+// hardcoded 200,000 and ignores the session window — and everything else takes
+// the session window. The session budget caps every ceiling. The wall is the
+// profile's probe for the real, bare id, 0 when none is known. considered marks
+// the ids the engine sizes by its own family table; the rest it sizes at the
+// session window, which the launch's own derivation already bounds — so the
+// warning, which has no reading of the window, skips them while the advisory
+// sizes them at it.
+//
+// The boundary both surfaces compare at: a wall AT the trigger is safe. The
+// engine compacts at e >= trigger (YRt), so a model walled exactly there is
+// compacted in time; only a wall under the trigger dies uncompacted.
+func engineModel(sz modelSizing, entry string) (bare string, wall, trigger int64, considered bool) {
+	bare = bareID(entry)
+	wall = sz.walls[sz.profile+":"+bare]
+	if wall == 0 {
+		wall = sz.walls[bare]
+	}
+	var ceil int64
+	switch {
+	case !sz.no1m && oneMTag.MatchString(entry):
+		ceil, considered = 1_000_000, true
+	case strings.HasPrefix(entry, "claude-"):
+		ceil, considered = 200_000, true
+	default:
+		ceil = sz.window
+	}
+	if sz.budget != 0 {
+		ceil = min(ceil, sz.budget)
+	}
+	usable := ceil - min(ceil, engineReserve(entry, sz.pinned))
+	return bare, wall, engineTrigger(usable, sz.pct), considered
+}
+
 type HazardIn struct {
 	Profile, Budget, Ceiling string
 	Sources                  []string
@@ -267,10 +326,16 @@ func hazardRows(in HazardIn) ([]string, error) {
 		return nil, nil
 	}
 	w := walls(in.Profile, in.Conf)
+	sz := modelSizing{profile: in.Profile, walls: w, budget: budget, window: window, pct: pct, pinned: rawOut, no1m: in.No1m}
 	aliases := map[string]bool{"opus": true, "sonnet": true, "haiku": true, "fable": true}
+	// Deduped on (bare, trigger) rather than the ceiling it came from: the wall
+	// is a function of the bare id and the verdict of (wall, trigger), so two
+	// offered variants that agree on both — a bare/[1m] pair whose floors
+	// collide — share one verdict and one row, which is named once below
+	// regardless.
 	type seenKey struct {
-		bare string
-		ceil int64
+		bare    string
+		trigger int64
 	}
 	seen := map[seenKey]bool{}
 	named := map[string]bool{}
@@ -284,37 +349,18 @@ func hazardRows(in HazardIn) ([]string, error) {
 		if !ok {
 			continue
 		}
-		bare := strings.SplitN(m, "[", 2)[0]
+		bare, wall, triggerM, _ := engineModel(sz, m)
 		if aliases[bare] {
 			continue
 		}
-		wall := w[in.Profile+":"+bare]
-		if wall == 0 {
-			wall = w[bare]
-		}
 		if wall == 0 {
 			continue
 		}
-		var ceilM int64
-		switch {
-		case !in.No1m && oneMTag.MatchString(m):
-			ceilM = 1_000_000
-		case strings.HasPrefix(bare, "claude-"):
-			ceilM = 200_000
-		default:
-			ceilM = window
-		}
-		if budget != 0 {
-			ceilM = min(ceilM, budget)
-		}
-		reserveM := engineReserve(m, rawOut)
-		k := seenKey{bare, ceilM}
+		k := seenKey{bare, triggerM}
 		if seen[k] {
 			continue
 		}
 		seen[k] = true
-		usableM := ceilM - min(ceilM, reserveM)
-		triggerM := engineTrigger(usableM, pct)
 		if wall < triggerM && !named[bare] {
 			named[bare] = true
 			rows = append(rows, row{wall, bare})

@@ -5,7 +5,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/settingscompose"
 	"github.com/akleizor/ccmorph/util/paths"
@@ -65,38 +64,22 @@ func invariantRecords(settings, conf, profile, maxOut, budgetRaw string, no1m bo
 	}
 	var lines []string
 	{
-		ceilings := walls(profile, conf)
-		pinned := digitsInt(maxOut)
-		budget := digitsInt(strings.TrimSpace(budgetRaw))
-		pctP := pctPtr(pct)
+		sz := modelSizing{profile: profile, walls: walls(profile, conf),
+			budget: digitsInt(strings.TrimSpace(budgetRaw)), pct: pctPtr(pct),
+			pinned: digitsInt(maxOut), no1m: no1m}
 		for _, ev := range entries {
 			entry, ok := ev.(string)
 			if !ok {
 				continue
 			}
-			var w int64
-			switch {
-			case !no1m && oneMTag.MatchString(entry):
-				w = 1_000_000
-				if budget != 0 {
-					w = min(w, budget)
-				}
-			case strings.HasPrefix(entry, "claude-"):
-				w = 200_000
-				if budget != 0 {
-					w = min(w, budget)
-				}
-			default:
+			bare, ceiling, trigger, considered := engineModel(sz, entry)
+			// Only the family-sized ids: the rest take the session window, which
+			// the launch's own derivation bounds and this warning has no reading
+			// of; the hazard set, which knows the window, sizes them at it.
+			if !considered || ceiling == 0 {
 				continue
 			}
-			usable := w - min(w, engineReserve(entry, pinned))
-			trigger := engineTrigger(usable, pctP)
-			bare := strings.SplitN(ctxwindow.RealID(entry), "[", 2)[0]
-			ceiling := ceilings[profile+":"+bare]
-			if ceiling == 0 {
-				ceiling = ceilings[bare]
-			}
-			if ceiling != 0 && trigger >= ceiling {
+			if ceiling < trigger {
 				lines = append(lines, fmt.Sprintf("%s holds %d but compaction starts at %d", bare, ceiling, trigger))
 			}
 		}
@@ -247,7 +230,10 @@ func WithholdFatal(path string, rows []string, launched string) {
 	if len(fatal) == 0 {
 		return
 	}
-	launched = strings.SplitN(launched, "[", 2)[0]
+	// The rows name a model by its real, bare id, so the withhold derives the same
+	// base: a disguised offered entry is removed by the real id its row carries,
+	// and the launched model is kept however it is spelled.
+	launched = bareID(launched)
 	kept := []any{}
 	for _, m := range offered {
 		s, isStr := m.(string)
@@ -255,7 +241,7 @@ func WithholdFatal(path string, rows []string, launched string) {
 			kept = append(kept, m)
 			continue
 		}
-		base := strings.SplitN(s, "[", 2)[0]
+		base := bareID(s)
 		if base == launched || !fatal[base] {
 			kept = append(kept, m)
 		}
