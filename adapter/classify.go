@@ -86,6 +86,26 @@ func sortRows(rows []Row) {
 	})
 }
 
+// usableNative folds classified rows the way the one decision doctor and
+// launch share needs them: the usable rows (a row that speaks no known dialect
+// serves nothing), whether every usable row is plain Anthropic with no
+// workaround behavior (native), and whether any recycles tool_use ids. A Row
+// field that changes what a native launch can serve joins this fold once, in
+// the one place both callers read (#479) — the manual sync between
+// TranslatorVerdict and serve is what #412 and #475 paid for.
+func usableNative(rows []Row) (usable []Row, native, recyclesIDs bool) {
+	native = true
+	for _, r := range rows {
+		if r.Dialect == "unusable" {
+			continue
+		}
+		usable = append(usable, r)
+		native = native && r.Dialect == "anthropic" && !r.capped() && !r.Nothink && !r.IDRecycle
+		recyclesIDs = recyclesIDs || r.IDRecycle
+	}
+	return usable, native, recyclesIDs
+}
+
 // cachedRows is every well-formed cached row for this endpoint, or none. The
 // stored endpoint is re-checked on every read, so a moved base_url or a hash
 // collision falls through to a fresh probe.

@@ -238,36 +238,7 @@ func inventory(base, key string, c *http.Client) ([]string, error) {
 		return nil, err
 	}
 	data, _ := doc["data"].([]any)
-	out, unsafe := []string{}, []string{}
-	for _, item := range data {
-		m, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		// Exclude only an explicit denial; most endpoints publish no capabilities.
-		if caps, ok := m["capabilities"].(map[string]any); ok && !truthy(caps["chat_completion"]) {
-			continue
-		}
-		id, ok := m["id"].(string)
-		if !ok || id == "" {
-			continue
-		}
-		if !safeModelID.MatchString(id) {
-			unsafe = append(unsafe, id)
-			continue
-		}
-		out = append(out, id)
-	}
-	if len(unsafe) > 0 {
-		sort.Strings(unsafe)
-		reprs := make([]string, len(unsafe))
-		for i, u := range unsafe {
-			reprs[i] = shim.PyRepr(ordjson.TruncRunes(u, 60))
-		}
-		logf("skipping %d model id(s) with unsafe characters: %s", len(unsafe), strings.Join(reprs, ", "))
-	}
-	sort.Strings(out)
-	return out, nil
+	return listedModels(data, true), nil
 }
 
 // truthy is Python truthiness for decoded JSON. It is not ordjson.Truthy: this
@@ -289,6 +260,76 @@ func truthy(v any) bool {
 		return len(t) > 0
 	}
 	return true
+}
+
+// listingRow is one row of a /v1/models listing, decoded once for every
+// consumer: the id exactly as the row wrote it, the endpoints it declares, and
+// the two filters the model-id list applies.
+type listingRow struct {
+	// id is the row's "id" as written, so a model lookup compares what the
+	// gateway wrote: a row whose id is not a string never matches one.
+	id any
+	// name is the same id as a string, "" when it is not one.
+	name string
+	// endpoints is the row's supported_endpoints when that is an array; nil
+	// when the row declares none.
+	endpoints []any
+	// chat is false only when the row explicitly denies
+	// capabilities.chat_completion.
+	chat bool
+	// safe is true when name is a non-empty string of safe model-id
+	// characters.
+	safe bool
+}
+
+// endpointPrecedence is the order a model's supported_endpoints are asked for
+// its dialect: the one needing no translation first.
+var endpointPrecedence = [][2]string{
+	{"/v1/messages", "anthropic"},
+	{"/v1/responses", "responses"},
+	{"/v1/chat/completions", "chat"},
+}
+
+// walkListing walks a /v1/models listing's data rows in listing order,
+// decoding each row once into what every reader of the listing needs; the
+// filters live here, once, so the id list and the endpoint lookup cannot
+// drift apart. Only an explicit capabilities.chat_completion denial excludes
+// a row from the id list, and only a non-empty string id of safe characters
+// is a listable model id. logUnsafe logs the ids the safe filter skips, the
+// way inventory always has; quiet readers pass false.
+func walkListing(data []any, logUnsafe bool) []listingRow {
+	var rows []listingRow
+	var unsafe []string
+	for _, item := range data {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		r := listingRow{id: m["id"], chat: true}
+		// Exclude only an explicit denial; most endpoints publish no capabilities.
+		if caps, ok := m["capabilities"].(map[string]any); ok && !truthy(caps["chat_completion"]) {
+			r.chat = false
+		}
+		r.name, _ = m["id"].(string)
+		if r.name != "" {
+			if safeModelID.MatchString(r.name) {
+				r.safe = true
+			} else if r.chat {
+				unsafe = append(unsafe, r.name)
+			}
+		}
+		r.endpoints, _ = m["supported_endpoints"].([]any)
+		rows = append(rows, r)
+	}
+	if logUnsafe && len(unsafe) > 0 {
+		sort.Strings(unsafe)
+		reprs := make([]string, len(unsafe))
+		for i, u := range unsafe {
+			reprs[i] = shim.PyRepr(ordjson.TruncRunes(u, 60))
+		}
+		logf("skipping %d model id(s) with unsafe characters: %s", len(unsafe), strings.Join(reprs, ", "))
+	}
+	return rows
 }
 
 const noInference = "cannot determine protocol without inference"
@@ -313,23 +354,9 @@ func dialectAuto(base, key, model string) (string, string, int) {
 	if err != nil {
 		return "unusable", noInference + ": " + err.Error(), status
 	}
-	rows, _ := doc["data"].([]any)
-	for _, r := range rows {
-		row, ok := r.(map[string]any)
-		if !ok || row["id"] != model {
-			continue
-		}
-		endpoints, ok := row["supported_endpoints"].([]any)
-		if !ok {
-			break
-		}
-		for _, p := range [][2]string{{"/v1/messages", "anthropic"}, {"/v1/responses", "responses"}, {"/v1/chat/completions", "chat"}} {
-			for _, e := range endpoints {
-				if e == p[0] {
-					return p[1], "declared supported_endpoints", 200
-				}
-			}
-		}
+	data, _ := doc["data"].([]any)
+	if dialect := declaredDialect(data, model); dialect != "" {
+		return dialect, "declared supported_endpoints", 200
 	}
 	return "unusable", noInference + ": no per-model endpoint declaration or proven cache", 0
 }
@@ -338,17 +365,16 @@ func dialectAuto(base, key, model string) (string, string, int) {
 // listing: the dialect a model's own supported_endpoints declares, or "" when
 // it declares none. It sends nothing, so doctor can use it read-only.
 func declaredDialect(data []any, model string) string {
-	for _, r := range data {
-		row, ok := r.(map[string]any)
-		if !ok || row["id"] != model {
+	for _, r := range walkListing(data, false) {
+		if r.id != model {
 			continue
 		}
-		endpoints, ok := row["supported_endpoints"].([]any)
-		if !ok {
+		if r.endpoints == nil {
+			// The first row naming the model ends the search, declared or not.
 			return ""
 		}
-		for _, p := range [][2]string{{"/v1/messages", "anthropic"}, {"/v1/responses", "responses"}, {"/v1/chat/completions", "chat"}} {
-			for _, e := range endpoints {
+		for _, p := range endpointPrecedence {
+			for _, e := range r.endpoints {
 				if e == p[0] {
 					return p[1]
 				}
@@ -359,22 +385,14 @@ func declaredDialect(data []any, model string) string {
 }
 
 // listedModels is inventory's id list read from an already-fetched listing,
-// with the same filters and no logging.
-func listedModels(data []any) []string {
+// with the same filters. logUnsafe carries inventory's unsafe-id log; a quiet
+// reader of a listing it already holds passes false.
+func listedModels(data []any, logUnsafe bool) []string {
 	out := []string{}
-	for _, item := range data {
-		m, ok := item.(map[string]any)
-		if !ok {
-			continue
+	for _, r := range walkListing(data, logUnsafe) {
+		if r.chat && r.safe {
+			out = append(out, r.name)
 		}
-		if caps, ok := m["capabilities"].(map[string]any); ok && !truthy(caps["chat_completion"]) {
-			continue
-		}
-		id, ok := m["id"].(string)
-		if !ok || id == "" || !safeModelID.MatchString(id) {
-			continue
-		}
-		out = append(out, id)
 	}
 	sort.Strings(out)
 	return out
