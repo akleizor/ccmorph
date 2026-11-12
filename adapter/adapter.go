@@ -87,32 +87,17 @@ func selfPath() string {
 	return exe
 }
 
-func home() string {
-	if h := os.Getenv("HOME"); h != "" {
-		return h
-	}
-	h, _ := os.UserHomeDir()
-	return h
-}
-
 func defaultProfileDirs() string {
-	root := os.Getenv("CCMORPH_STATE_DIR")
-	if root == "" {
-		cfg := os.Getenv("XDG_CONFIG_HOME")
-		if cfg == "" {
-			cfg = filepath.Join(home(), ".config")
-		}
-		root = filepath.Join(cfg, "ccmorph")
-	}
-	return filepath.Join(root, "profiles")
+	return filepath.Join(paths.ProfileRoot(), "profiles")
 }
 
 func executable(p string) bool { return syscall.Access(p, 1) == nil }
 
 // findTranslator discovers cliproxyapi from PATH first because a hardcoded path
 // is only correct on one machine shape: /opt/homebrew is Apple-Silicon Homebrew,
-// while Intel Macs and Linux use other locations. $HOME is honored, not the
-// password database, so a per-user install is found where the caller says.
+// while Intel Macs and Linux use other locations. $HOME is honored — and with
+// HOME unset the account's own, as every path here is (#138) — so a per-user
+// install is found where the caller says.
 func findTranslator() string {
 	if p, err := exec.LookPath("cliproxyapi"); err == nil {
 		return p
@@ -121,7 +106,7 @@ func findTranslator() string {
 		"/usr/local/opt/cliproxyapi/bin/cliproxyapi",
 		"/usr/local/bin/cliproxyapi",
 		"/usr/bin/cliproxyapi",
-		filepath.Join(home(), ".local/bin/cliproxyapi")} {
+		filepath.Join(paths.Home(), ".local/bin/cliproxyapi")} {
 		if executable(c) {
 			return c
 		}

@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -13,8 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 func TestEnvHelpersReadTheLastValue(t *testing.T) {
@@ -371,9 +374,9 @@ func TestHomeUnsetReadsTheAccountHomeNotTheCwd(t *testing.T) {
 	t.Setenv("_CCMORPH_PROFILE_DIRS", "")
 	t.Setenv("_CCMORPH_CONTEXT_POLICY", "")
 	t.Chdir(cwd)
-	old := accountHome
-	accountHome = func() string { return acct }
-	t.Cleanup(func() { accountHome = old })
+	old := paths.AccountHome
+	paths.AccountHome = func() string { return acct }
+	t.Cleanup(func() { paths.AccountHome = old })
 
 	l := fromEnv()
 	if got := l.accountModel("p1"); got != "from-account-home" {
@@ -384,6 +387,36 @@ func TestHomeUnsetReadsTheAccountHomeNotTheCwd(t *testing.T) {
 	}
 	if want := filepath.Join(acct, ".agents", "runtime", "policies", "context.json"); l.policy != want {
 		t.Fatalf("policy = %q, want %q", l.policy, want)
+	}
+}
+
+// GH-523: the profile root is spelled once. With HOME unset and no env rung
+// handed over, the launcher and the context probe answer the account home's
+// .config/ccmorph — one absolute root, never the probe's old /-rooted
+// non-answer or a path relative to the cwd. The adapter's leg is pinned in
+// adapter, beside the defaultProfileDirs that answers it.
+func TestHomeUnsetOneProfileRootForLauncherAndProbe(t *testing.T) {
+	for _, k := range []string{"HOME", "CCMORPH_STATE_DIR", "XDG_CONFIG_HOME", "_CCMORPH_DIR", "_CCMORPH_PROFILE_DIRS"} {
+		t.Setenv(k, "")
+		os.Unsetenv(k)
+	}
+	u, err := user.Current()
+	if err != nil {
+		t.Skipf("no passwd entry to read the account home from: %v", err)
+	}
+	want := filepath.Join(u.HomeDir, ".config", "ccmorph")
+	l := fromEnv()
+	if l.dir != want {
+		t.Fatalf("launcher root = %q, want %q", l.dir, want)
+	}
+	if !filepath.IsAbs(l.dir) {
+		t.Fatalf("launcher root %q is relative to the cwd", l.dir)
+	}
+	// The probe answers through its own spelling: HOME unset again, because
+	// the launcher's resolution re-exported the account's (#138).
+	os.Unsetenv("HOME")
+	if got := ctxwindow.StateDir(); got != want {
+		t.Fatalf("probe root = %q, want the launcher's %q", got, want)
 	}
 }
 

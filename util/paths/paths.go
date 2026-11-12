@@ -1,13 +1,16 @@
 // Package paths holds the installed layout's durable contracts: where
-// machine-local state lives, where the driver script lives, and the file
-// predicates every package asks of a path. Each was a small helper
-// hand-written in every package that needed it, and copies drift (#303,
-// #422); each has this one definition instead. The zsh layer resolves the
-// same state and script paths in lib/ccmorph.sh and bin/ccmorph.
+// machine-local state lives, where profiles and the registry live, where the
+// driver script lives, and the file predicates every package asks of a path.
+// Each was a small helper hand-written in every package that needed it, and
+// copies drift (#303, #422, #523); each has this one definition instead. The
+// zsh layer resolves the same state and script paths in lib/ccmorph.sh and
+// bin/ccmorph.
 package paths
 
 import (
+	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 )
@@ -22,6 +25,56 @@ func StateDir() string {
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "state", "ccmorph")
+}
+
+// AccountHome is the passwd entry's home, for a process started with HOME
+// unset. A variable so a test can pin the account the way a real one cannot.
+var AccountHome = func() string {
+	if u, err := user.Current(); err == nil {
+		return u.HomeDir
+	}
+	return ""
+}
+
+// Home is the home directory the profile root is built on: $HOME, else the
+// account's own from the password database — and when it had to look, the
+// answer is re-exported as HOME for every later reader (#138: canonical
+// settings, the projects stores, doctor, rm, setup-profile, settings-compose
+// and Claude Code itself all read HOME), never a path relative to the cwd.
+// With neither HOME nor an account home nothing absolute can be built on, so
+// the process stops there with the one reason and the fix, as the launcher
+// always has.
+func Home() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		return home
+	}
+	home := AccountHome()
+	if home == "" {
+		fmt.Fprintln(os.Stderr, "ccmorph: HOME is unset and no home directory is known; set HOME")
+		os.Exit(1)
+	}
+	os.Setenv("HOME", home)
+	return home
+}
+
+// ProfileRoot is where profiles and the registry live, the ladder every
+// builder of that root answers: $CCMORPH_STATE_DIR, else
+// $XDG_CONFIG_HOME/ccmorph, else ~/.config/ccmorph over Home — the ladder
+// lib/ccmorph.sh spells as
+// _CCMORPH_DIR="${CCMORPH_STATE_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/ccmorph}".
+// bin/ccmorph keeps a deliberately-parallel derivation of its own: it must
+// find lib/ccmorph.sh from zsh before any Go code can run. The three Go
+// spellings this replaced (#523) agreed only under a launch, and answered
+// two different nonexistent roots when the core ran on its own with HOME
+// unset.
+func ProfileRoot() string {
+	if v := os.Getenv("CCMORPH_STATE_DIR"); v != "" {
+		return filepath.Clean(v)
+	}
+	if cfg := os.Getenv("XDG_CONFIG_HOME"); cfg != "" {
+		return filepath.Join(cfg, "ccmorph")
+	}
+	return filepath.Join(Home(), ".config", "ccmorph")
 }
 
 // LibDir is the installation's lib/ directory: $CCMORPH_LIB_DIR, else the
