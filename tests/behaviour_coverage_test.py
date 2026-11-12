@@ -207,6 +207,14 @@ def test_doctor_refuses_a_wrong_case_name_with_the_real_spelling_gh_259(box):
 def test_list_marks_the_default_and_labels_every_profile_type(box):
     seed(box)
     box.run('use', 'tok')
+    # #489: a provider profile with no saved model is described by the same
+    # walk as the profile menu — with its Browser login fallback, not a bare
+    # kind. One with a saved model joins it the way every other kind already
+    # did: kind, colon, detail.
+    box.conf('cx', 'type=provider\nprovider=codex\n')
+    box.conf('cxm', 'type=provider\nprovider=codex\n')
+    (box.state / 'profiles/cxm').mkdir()
+    (box.state / 'profiles/cxm/settings.json').write_text('{"model": "codex-model"}\n')
     box.conf('priv', 'type=token\ntoken=t\nprivate=1\n')
     out = box.run('list').stdout
     rows = {line.split()[1] if line.lstrip().startswith('*') else line.split()[0]: line
@@ -219,6 +227,8 @@ def test_list_marks_the_default_and_labels_every_profile_type(box):
         assert internal not in out, 'list must not show the file spelling'
     assert 'canary' not in out
     assert 'private' in rows['priv'] and 'private' not in rows['tok']
+    assert 'Codex: Browser login' in rows['cx'], rows['cx']
+    assert 'Codex: codex-model' in rows['cxm'], rows['cxm']
 
 
 def test_doctor_names_the_kind_and_the_endpoint(box):
