@@ -484,7 +484,7 @@ func supervise(a *cliArgs, shutdown func(int), watched ...supervised) {
 // alone: no translator and no rendered credential, since the shim relays the
 // client's own key. Same contract as the translator path.
 func frontDirectly(a *cliArgs, upstream, key, routeIdentity string, usable []Row,
-	extras map[string]string, privacyArgs []string, modelMap map[string]any) int {
+	extras map[string]string, randomDeviceID bool, modelMap map[string]any) int {
 	port := 0
 	if a.port != nil {
 		port = *a.port
@@ -498,7 +498,7 @@ func frontDirectly(a *cliArgs, upstream, key, routeIdentity string, usable []Row
 	// its request-retry does, and a second layer would multiply attempts.
 	hooksBin := strings.TrimSpace(extras["CCMORPH_SHIM_HOOKS"])
 	o := shim.Options{Port: port, Target: upstream, PreserveIDs: true, RetryTransport: true,
-		RandomDeviceID: slices.Contains(privacyArgs, "--random-device-id")}
+		RandomDeviceID: randomDeviceID}
 	if modelMap == nil {
 		modelMap = map[string]any{}
 	}
@@ -819,10 +819,7 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 	}
 	// Identifier handling is a per-profile opt-in; without it the shim forwards
 	// the client's metadata and headers as sent.
-	var privacyArgs []string
-	if env["CCMORPH_RANDOM_DEVICE_ID"] == "1" {
-		privacyArgs = []string{"--random-device-id"}
-	}
+	randomDeviceID := env["CCMORPH_RANDOM_DEVICE_ID"] == "1"
 	if stall := strings.TrimSpace(env["CCMORPH_STALL_TIMEOUT"]); stall != "" {
 		os.Setenv("CCMORPH_STALL_TIMEOUT", stall)
 	}
@@ -830,7 +827,7 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 	// ids in and out, a moving catalogue, readable errors, stall deadlines. A
 	// gateway that already speaks Anthropic needs no translator.
 	if a.auto && native && !a.printConfig {
-		return frontDirectlyFn(a, upstream, key, routeIdentity, usable, extras, privacyArgs, modelMap)
+		return frontDirectlyFn(a, upstream, key, routeIdentity, usable, extras, randomDeviceID, modelMap)
 	}
 
 	tmpRoot := os.Getenv("TMPDIR")
@@ -954,7 +951,7 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 		"key_sha256": hashHex(key)}
 	a.releasePort()
 	sp, err := startShim(shimBinary, shim.Options{Port: shimPort, Target: "http://127.0.0.1:" + strconv.Itoa(port),
-		PreserveIDs: !recyclesIDs, RandomDeviceID: slices.Contains(privacyArgs, "--random-device-id")},
+		PreserveIDs: !recyclesIDs, RandomDeviceID: randomDeviceID},
 		shimEnv(route, extras, a, key), logfile, logfile)
 	if err != nil {
 		logf("cannot start the gateway shim: %v", err)

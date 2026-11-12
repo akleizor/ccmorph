@@ -470,7 +470,7 @@ func TestSelectedModelMapIsClassifiedAndForwarded(t *testing.T) { // test_select
 		var required string
 		swap(t, &classifyFn, func(_, _, _, req string, _ bool) ([]Row, error) { required = req; return []Row{row("anthropic")}, nil })
 		var gotMap map[string]any
-		swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, m map[string]any) int {
+		swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ bool, m map[string]any) int {
 			gotMap = m
 			return 0
 		})
@@ -607,7 +607,7 @@ func TestCachedNativeMainNeedsNoTranslator(t *testing.T) { // test_cached_native
 	swap(t, &dialectAutoFn, func(_, _, _ string) (string, string, int) { panic("probe") })
 	swap(t, &freePortFn, func() (int, error) { panic("translator state") })
 	upstream := ""
-	swap(t, &frontDirectlyFn, func(_ *cliArgs, up, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
+	swap(t, &frontDirectlyFn, func(_ *cliArgs, up, _, _ string, _ []Row, _ map[string]string, _ bool, _ map[string]any) int {
 		upstream = up
 		return 0
 	})
@@ -628,7 +628,7 @@ func TestAModelMustBeNamedWhenTheGatewayOffersNoList(t *testing.T) { // issue #3
 		return nil, refusingStatus{404}
 	})
 	swap(t, &dialectAutoFn, func(_, _, _ string) (string, string, int) { panic("no probe can name a model") })
-	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
+	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ bool, _ map[string]any) int {
 		panic("nothing is served")
 	})
 	stdio := captureStdio(t)
@@ -680,7 +680,7 @@ func TestARefusedListingNamesItsTrueCause(t *testing.T) { // issues #357, #374
 			swap(t, &profileDirs, dir)
 			stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gateway"})
 			inferences := tc.setup(t)
-			swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
+			swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ bool, _ map[string]any) int {
 				panic("nothing is served")
 			})
 			stdio := captureStdio(t)
@@ -723,7 +723,7 @@ func TestAWarmCacheIsNotAModelChoice(t *testing.T) { // issue #357
 		return nil, refusingStatus{404}
 	})
 	served := false
-	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
+	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ bool, _ map[string]any) int {
 		served = true
 		return 0
 	})
@@ -777,7 +777,7 @@ func refuseMessages(t *testing.T, status int, body string) *refusingTransport {
 	t.Helper()
 	gw := &refusingTransport{status: status, body: body}
 	swap(t, &client, &http.Client{Transport: gw})
-	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
+	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ bool, _ map[string]any) int {
 		panic("a refused message must not front a session")
 	})
 	return gw
@@ -954,14 +954,24 @@ func TestAnUnimplementedPathIsNotARefusalOfEveryDialect(t *testing.T) { // issue
 
 func TestOnlyTheDirectRouteRetriesInTheShim(t *testing.T) { // test_only_the_direct_route_retries_in_the_shim
 	// The in-process shim takes the same Options; the spawned hooks build shows the argv.
-	cmd := spawnedDirect(t, map[string]string{"CCMORPH_SHIM_HOOKS": "/stable/hooks.py"})
+	cmd := spawnedDirect(t, map[string]string{"CCMORPH_SHIM_HOOKS": "/stable/hooks.py"}, false)
 	if !slices.Contains(cmd.Args, "--retry-transport") {
 		t.Fatalf("argv %v", cmd.Args)
 	}
 }
 
 func TestDirectRouteHandsProfileKeysToTheShimEnv(t *testing.T) { // test_the_direct_route_hands_profile_keys_to_the_shim_env
-	cmd := spawnedDirect(t, map[string]string{"CCMORPH_SHIM_HOOKS": "/stable/hooks.py", "CCMORPH_USER_AGENT": "ua/{version}"})
+	extras := map[string]string{"CCMORPH_SHIM_HOOKS": "/stable/hooks.py", "CCMORPH_USER_AGENT": "ua/{version}"}
+	// The identifier opt-in is a plain bool on the direct route (#480): on,
+	// the shim re-identifies the device; off, it forwards the client's
+	// metadata as sent.
+	var cmd *exec.Cmd
+	for _, randomDeviceID := range []bool{false, true} {
+		cmd = spawnedDirect(t, extras, randomDeviceID)
+		if slices.Contains(cmd.Args, "--random-device-id") != randomDeviceID {
+			t.Errorf("--random-device-id in argv = %v, want the opt-in %v", !randomDeviceID, randomDeviceID)
+		}
+	}
 	env := strings.Join(cmd.Env, "\n")
 	for _, want := range []string{"CCMORPH_SHIM_HOOKS=/stable/hooks.py", "CCMORPH_USER_AGENT=ua/{version}"} {
 		if !strings.Contains(env, want) {
@@ -999,7 +1009,7 @@ func TestDirectRouteReadinessNeedsNoModelList(t *testing.T) { // issue #357
 	stdio := captureStdio(t)
 	code, did := exits(t, func() {
 		frontDirectly(&cliArgs{profile: "demo", reserved: -1}, "https://gateway", "k", "id",
-			[]Row{row("anthropic")}, map[string]string{"CCMORPH_SHIM_HOOKS": "/stable/hooks.py"}, nil, nil)
+			[]Row{row("anthropic")}, map[string]string{"CCMORPH_SHIM_HOOKS": "/stable/hooks.py"}, false, nil)
 	})
 	if !did || code != 1 { // the fake shim's exit must be what stops the loop
 		t.Fatalf("frontDirectly = (%d, exited=%v); the fake shim's exit must end it", code, did)
@@ -1013,13 +1023,13 @@ func TestDirectRouteReadinessNeedsNoModelList(t *testing.T) { // issue #357
 }
 
 // spawnedDirect records the command frontDirectly would run, then abandons it.
-func spawnedDirect(t *testing.T, extras map[string]string) *exec.Cmd {
+func spawnedDirect(t *testing.T, extras map[string]string, randomDeviceID bool) *exec.Cmd {
 	t.Helper()
 	var got *exec.Cmd
 	swap(t, &spawnShim, func(c *exec.Cmd) (*proc, error) { got = c; return nil, fmt.Errorf("abandoned") })
 	swap(t, &freePortFn, func() (int, error) { return 45999, nil })
 	exits(t, func() {
-		frontDirectly(&cliArgs{profile: "demo", reserved: -1}, "https://gateway", "k", "id", []Row{row("anthropic")}, extras, nil, nil)
+		frontDirectly(&cliArgs{profile: "demo", reserved: -1}, "https://gateway", "k", "id", []Row{row("anthropic")}, extras, randomDeviceID, nil)
 	})
 	if got == nil {
 		t.Fatal("the shim was never spawned")
