@@ -2,8 +2,11 @@ package shim
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -48,6 +51,23 @@ func TestDeepBodyIsRefused(t *testing.T) {
 	out, changed := s.rewrite([]byte(deep), "", false)
 	if changed || string(out) != deep {
 		t.Fatal("deep payload must pass through byte-identical")
+	}
+}
+
+func TestReparseReusesTheDocOfTheSameBytes(t *testing.T) {
+	b := []byte(`{"model":"m"}`)
+	d := parseDoc(b)
+	if reparse(append([]byte(nil), b...), d) != d {
+		t.Fatal("equal bytes must reuse the held doc")
+	}
+	if reparse(b, nil, d) != d {
+		t.Fatal("a nil held doc is skipped")
+	}
+	if nd := reparse([]byte(`{"model":"n"}`), d); nd == nil || nd == d {
+		t.Fatal("different bytes must be parsed")
+	}
+	if reparse([]byte(`[1]`), d) != nil {
+		t.Fatal("bytes that are not an object have no doc")
 	}
 }
 
@@ -298,7 +318,7 @@ func TestDeviceIDSwap(t *testing.T) {
 	quoted, _ := jsontext.AppendQuote(nil, user)
 	body := []byte(`{"model":"m","metadata":{"user_id":` + string(quoted) + `},"x":"粵"}`)
 	var session string
-	out := s.cleanRequest(body, true, &session)
+	out, _ := s.cleanRequest(body, parseDoc(body), true, &session)
 	if session != "sess-1" || bytes.Equal(out, body) {
 		t.Fatalf("%q %s", session, out)
 	}
@@ -322,7 +342,7 @@ func TestDeviceIDSwap(t *testing.T) {
 	}
 	// no user_id, not an object, wrong types: bytes untouched
 	for _, in := range []string{`{"model":"m"}`, "not json \xff metadata", `{ "model": "m",  "messages": [] }`, `{"metadata":{"user_id":"device_abc_session_def"}}`, `{"metadata":{"user_id":"{\"session_id\":\"s\"}"}}`, `[1]`, `{"metadata":{"user_id":"x"}}`, `{"metadata":{"user_id":"{\"a\":1}"}}`, `nope`} {
-		if got := s.cleanRequest([]byte(in), true, new(string)); string(got) != in {
+		if got, _ := s.cleanRequest([]byte(in), parseDoc([]byte(in)), true, new(string)); string(got) != in {
 			t.Errorf("%s -> %s", in, got)
 		}
 	}
@@ -331,7 +351,8 @@ func TestDeviceIDSwap(t *testing.T) {
 func TestDeviceIDSwapLoneSurrogate(t *testing.T) {
 	s := NewServer("http://x")
 	body := []byte(`{"metadata":{"user_id":"{\"device_id\":\"d\",\"session_id\":\"s\\ud800\"}"},"x":"é"}`)
-	out := string(s.cleanRequest(body, true, new(string)))
+	swapped, _ := s.cleanRequest(body, parseDoc(body), true, new(string))
+	out := string(swapped)
 	// The outer body stays raw UTF-8 and valid; the inner surrogate stays an escape.
 	if !jsontext.Value(out).IsValid() || !strings.Contains(out, `\\ud800`) || !strings.Contains(out, `"x":"é"`) {
 		t.Fatal(out)
@@ -348,22 +369,155 @@ func TestHookRepairAndSession(t *testing.T) {
 		return nil, false
 	}
 	s.Hooks.OutboundHeaders = func(h http.Header, session string) { seen = session }
-	if got := s.cleanRequest([]byte(`{"hooks": "dirty"}`), false, new(string)); string(got) != `{"hooks":"clean"}` {
+	if got, _ := s.cleanRequest([]byte(`{"hooks": "dirty"}`), parseDoc([]byte(`{"hooks": "dirty"}`)), false, new(string)); string(got) != `{"hooks":"clean"}` {
 		t.Fatal(string(got))
 	}
 	raw := `{"hooks":"clean"}`
-	if got := s.cleanRequest([]byte(raw), false, new(string)); string(got) != raw {
+	if got, _ := s.cleanRequest([]byte(raw), parseDoc([]byte(raw)), false, new(string)); string(got) != raw {
 		t.Fatal(string(got))
 	}
 	s.Hooks.RepairRequest = func([]byte) ([]byte, bool) { panic("boom") }
 	raw = `{"hooks":"dirty"}`
-	if got := s.cleanRequest([]byte(raw), false, new(string)); string(got) != raw {
+	if got, _ := s.cleanRequest([]byte(raw), parseDoc([]byte(raw)), false, new(string)); string(got) != raw {
 		t.Fatal("a panicking hook must leave the bytes unchanged")
 	}
 	var session string
-	s.cleanRequest([]byte(`{"metadata":{"user_id":"{\"session_id\":\"sess-1\"}"}}`), false, &session)
+	s.cleanRequest([]byte(`{"metadata":{"user_id":"{\"session_id\":\"sess-1\"}"}}`), parseDoc([]byte(`{"metadata":{"user_id":"{\"session_id\":\"sess-1\"}"}}`)), false, &session)
 	if session != "sess-1" {
 		t.Fatal("hooks need the session id with no flag set", seen)
+	}
+}
+
+// One parse per body version on the relay path (issue #477): a routed,
+// device-swapped, masked POST re-serialises the body three times (model map,
+// device-id swap, masking), and every version is scanned by parseDoc exactly
+// once — the request as sent, the model-resolved body, the device-swapped
+// body. The masked body is never read as JSON again, so it is not parsed.
+func TestRelayParsesEachBodyVersionOnce(t *testing.T) {
+	stateHome(t)
+	s := NewServer("http://up.invalid")
+	// No listener: the upstream answers in-process, and the client request
+	// goes through the handler directly.
+	s.remote = &http.Client{Transport: roundTrip(func(*http.Request) *http.Response {
+		const body = `{"id":"msg_x","model":"m","usage":{"input_tokens":1}}`
+		return &http.Response{StatusCode: 200, Status: "200 OK",
+			Header:        http.Header{"Content-Type": []string{"application/json"}},
+			Body:          io.NopCloser(strings.NewReader(body)),
+			ContentLength: int64(len(body))}
+	})}
+	sum := sha256.Sum256([]byte("k"))
+	spec := `{"profile":"p","identity":"i","upstream":"http://up.invalid","timeout":1,"key_sha256":"` +
+		hex.EncodeToString(sum[:]) + `","model_map":{"m":"routed-target"}}`
+	routes, err := newModelRoutes(spec, s.remote)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes.usage.prices = nil // no price book: this test writes rows only
+	s.Routes = routes
+	s.RandomDeviceID = true
+	s.mask = testMasker(t, "")
+
+	// Count the parses of this request's bytes: every version carries the
+	// probe string, the canned response and the usage row never do.
+	needle := []byte("probe-477")
+	real := parseDoc
+	parses := 0
+	parseDoc = func(b []byte) *doc {
+		if bytes.Contains(b, needle) {
+			parses++
+		}
+		return real(b)
+	}
+	t.Cleanup(func() { parseDoc = real })
+
+	user := `{"device_id":"` + strings.Repeat("d", 64) + `","session_id":"sess-1"}`
+	quoted, _ := jsontext.AppendQuote(nil, user)
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(
+		`{"model":"m","metadata":{"user_id":`+string(quoted)+
+			`},"messages":[{"role":"user","content":"probe-477 sk-ant-api03-`+strings.Repeat("a1B2", 6)+`"}]}`))
+	req.Header.Set("x-api-key", "k")
+	rec := httptest.NewRecorder()
+	s.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	const want = 3 // as sent, model-resolved, device-swapped
+	if parses != want {
+		t.Fatalf("the request's body versions were parsed %d times, want %d", parses, want)
+	}
+}
+
+// --- SSE ------------------------------------------------------------------------------
+
+func TestRelayNeverRescansAnUnchangedVersion(t *testing.T) {
+	deep := strings.Repeat("[", 1500) + strings.Repeat("]", 1500)
+	tooDeep := `{"model":"m","deep":` + deep + `,"messages":[{"role":"user","content":"probe-477"}]}`
+	plain := `{"model":"m","messages":[{"role":"user","content":"probe-477"}]}`
+	repaired := `{"model":"m","messages":[{"role":"user","content":"probe-477 repaired"}]}`
+	for _, tc := range []struct {
+		name   string
+		sent   string
+		routed bool
+		repair func([]byte) ([]byte, bool)
+		parses int
+		up     string // the bytes the upstream must receive
+	}{
+		{"encoder refuses the routed rewrite", tooDeep, true, nil, 1, tooDeep},
+		{"repair hook returns the bytes it got", plain, false,
+			func(b []byte) ([]byte, bool) { return append([]byte(nil), b...), true }, 1, plain},
+		{"repair hook's compact answer re-encodes to itself", plain, false,
+			func([]byte) ([]byte, bool) { return []byte(repaired), true }, 2, repaired},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stateHome(t)
+			s := NewServer("http://up.invalid")
+			var got []byte
+			s.remote = &http.Client{Transport: roundTrip(func(r *http.Request) *http.Response {
+				if r.URL.Path == "/v1/messages" {
+					got, _ = io.ReadAll(r.Body)
+				}
+				const body = `{"id":"msg_x","model":"m","usage":{"input_tokens":1}}`
+				return &http.Response{StatusCode: 200, Status: "200 OK",
+					Header:        http.Header{"Content-Type": []string{"application/json"}},
+					Body:          io.NopCloser(strings.NewReader(body)),
+					ContentLength: int64(len(body))}
+			})}
+			if tc.routed {
+				sum := sha256.Sum256([]byte("k"))
+				spec := `{"profile":"p","identity":"i","upstream":"http://up.invalid","timeout":1,"key_sha256":"` +
+					hex.EncodeToString(sum[:]) + `","model_map":{"m":"routed-target"}}`
+				routes, err := newModelRoutes(spec, s.remote)
+				if err != nil {
+					t.Fatal(err)
+				}
+				routes.usage.prices = nil
+				s.Routes = routes
+			}
+			s.Hooks.RepairRequest = tc.repair
+			needle := []byte("probe-477")
+			real := parseDoc
+			parses := 0
+			parseDoc = func(b []byte) *doc {
+				if bytes.Contains(b, needle) {
+					parses++
+				}
+				return real(b)
+			}
+			t.Cleanup(func() { parseDoc = real })
+			req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(tc.sent))
+			req.Header.Set("x-api-key", "k")
+			rec := httptest.NewRecorder()
+			s.ServeHTTP(rec, req)
+			if rec.Code != 200 {
+				t.Fatalf("%d %s", rec.Code, rec.Body.String())
+			}
+			if parses != tc.parses {
+				t.Errorf("parsed %d times, want %d", parses, tc.parses)
+			}
+			if string(got) != tc.up {
+				t.Errorf("upstream got %.200q, want %.200q", got, tc.up)
+			}
+		})
 	}
 }
 

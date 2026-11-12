@@ -220,8 +220,9 @@ type doc struct {
 	ms []Member
 }
 
-// parseDoc is nil unless b is a valid JSON object.
-func parseDoc(b []byte) *doc {
+// parseDoc is nil unless b is a valid JSON object. A var so a test can wrap it
+// and count how many times the same bytes are scanned (issue #477).
+var parseDoc = func(b []byte) *doc {
 	if len(b) == 0 || !validJSON(b) {
 		return nil
 	}
@@ -231,6 +232,19 @@ func parseDoc(b []byte) *doc {
 	}
 	ms, _ := Object(b, i)
 	return &doc{b, ms}
+}
+
+// reparse is the doc of out, a rewrite of a body the caller already parsed:
+// the held doc whose bytes out repeats byte for byte (an encoder that refused,
+// a hook that answered with what it got, edits that changed nothing), else out
+// parsed. So a version relay already holds is never scanned twice (issue #477).
+func reparse(out []byte, held ...*doc) *doc {
+	for _, h := range held {
+		if h != nil && bytes.Equal(out, h.b) {
+			return h
+		}
+	}
+	return parseDoc(out)
 }
 
 // last is the value span of the last member named key (JSON's duplicate rule).
