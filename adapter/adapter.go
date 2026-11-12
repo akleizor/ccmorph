@@ -390,6 +390,96 @@ func watchSignals(shutdown func(int)) {
 	go func() { <-ch; shutdown(0) }()
 }
 
+// The shim launch ritual, spelled once for the two paths out of Main (#480):
+// the direct route and the translator route differ in what they probe and
+// what they watch, not in how a shim is launched, pronounced ready and kept.
+
+// modelNames is the usable rows' wire ids: the models the shim's route offers.
+func modelNames(usable []Row) []string {
+	models := make([]string, len(usable))
+	for i, r := range usable {
+		models[i] = r.Model
+	}
+	return models
+}
+
+// shimEnv is the environment the shim launches with: its model route, the
+// profile's request quirks folded over it — env, never new shim flags — and
+// the inbound credential that swaps a minted token for the endpoint key. The
+// route's own fields stay each path's: the direct route names the gateway's
+// model list, the translator route the adapter the shim calls back for a
+// model selected mid-session.
+func shimEnv(route map[string]any, extras map[string]string, a *cliArgs, key string) map[string]string {
+	env := map[string]string{"CCMORPH_MODEL_ROUTE": mustJSON(route)}
+	for k, v := range extras {
+		env[k] = v
+	}
+	if a.token != "" {
+		env["CCMORPH_INBOUND"] = mustJSON(map[string]any{"sha256": hashHex(a.token), "key": key})
+	}
+	return env
+}
+
+// waitReady is the readiness wait every shim launch runs: one deadline, the
+// parent check, the child's exit, a 400 ms probe cadence. The child is
+// checked before the probe, never after: a listener that may not be our own
+// must not be vouched for by this loop. probe asks only our own endpoint;
+// fail words the failure — exited distinguishes a child that died from a
+// deadline that passed — and the wait follows it with the shutdown, so
+// anything short of an answer ends the launch non-zero.
+func waitReady(a *cliArgs, shutdown func(int), p *proc, probe func() bool, fail func(exited bool)) {
+	deadline := time.Now().Add(readyTimeout)
+	for time.Now().Before(deadline) {
+		a.checkParent(shutdown)
+		if p.exited() {
+			fail(true)
+			shutdown(1)
+		}
+		if probe() {
+			return
+		}
+		time.Sleep(400 * time.Millisecond)
+	}
+	// Never served: a failure. Exiting 0 here made a timed-out launch look
+	// successful to ccmorph, which then ran Claude Code against a dead port.
+	fail(false)
+	shutdown(1)
+}
+
+// printContract prints the contract only after the health check passed: the
+// TOKEN a minted --inbound-token stands for — never a file token's, a
+// long-lived credential whose stdout may be redirected to a file — then the
+// PORT the client points at.
+func printContract(a *cliArgs, port int) {
+	if a.inboundToken {
+		fmt.Printf("TOKEN=%s\n", a.token)
+	}
+	fmt.Printf("PORT=%d\n", port)
+}
+
+// supervised is one process the launch keeps watching, by the name its exit
+// is reported as.
+type supervised struct {
+	p    *proc
+	name string
+}
+
+// supervise is the loop every shim launch ends in: supervise rather than
+// exec, so an orphan can notice its parent is gone — no trap fires when the
+// wrapper is SIGKILLed.
+func supervise(a *cliArgs, shutdown func(int), watched ...supervised) {
+	for {
+		for _, w := range watched {
+			if w.p.exited() {
+				logf("%s exited %d", w.name, w.p.code())
+				shutdown(1)
+			}
+		}
+		a.checkParent(shutdown)
+		time.Sleep(parentPoll)
+	}
+}
+
 // frontDirectly serves an Anthropic-native gateway through the shim
 // alone: no translator and no rendered credential, since the shim relays the
 // client's own key. Same contract as the translator path.
@@ -409,28 +499,16 @@ func frontDirectly(a *cliArgs, upstream, key, routeIdentity string, usable []Row
 	hooksBin := strings.TrimSpace(extras["CCMORPH_SHIM_HOOKS"])
 	o := shim.Options{Port: port, Target: upstream, PreserveIDs: true, RetryTransport: true,
 		RandomDeviceID: slices.Contains(privacyArgs, "--random-device-id")}
-	models := make([]string, len(usable))
-	for i, r := range usable {
-		models[i] = r.Model
-	}
 	if modelMap == nil {
 		modelMap = map[string]any{}
 	}
-	env := map[string]string{"CCMORPH_MODEL_ROUTE": mustJSON(map[string]any{
+	route := map[string]any{
 		"profile": a.profile, "identity": routeIdentity, "upstream": upstream,
-		"models_url": apiURL(upstream, "/v1/models"), "models": models,
+		"models_url": apiURL(upstream, "/v1/models"), "models": modelNames(usable),
 		"model_map": modelMap, "timeout": int(selectTimeout.Seconds()),
-		"key_sha256": hashHex(key)})}
-	// Profile request quirks ride as env for the shim's hooks module, never as
-	// new shim flags.
-	for k, v := range extras {
-		env[k] = v
-	}
-	if a.token != "" {
-		env["CCMORPH_INBOUND"] = mustJSON(map[string]any{"sha256": hashHex(a.token), "key": key})
-	}
+		"key_sha256": hashHex(key)}
 	a.releasePort()
-	shimProc, err := startShim(hooksBin, o, env, nil, os.Stderr)
+	shimProc, err := startShim(hooksBin, o, shimEnv(route, extras, a, key), nil, os.Stderr)
 	if err != nil {
 		die("cannot start the gateway shim: %v", err)
 	}
@@ -441,42 +519,19 @@ func frontDirectly(a *cliArgs, upstream, key, routeIdentity string, usable []Row
 	}
 	watchSignals(shutdown)
 
-	deadline := time.Now().Add(readyTimeout)
-	for {
-		a.checkParent(shutdown)
-		// The child is checked before the probe, never after: a listener that
-		// may not be our own shim must not be vouched for by this loop. The
-		// probe itself is bodiless and carries no credential, and asks only
-		// whether our shim answers — a gateway with no model list is ready too.
-		if shimProc.exited() || !time.Now().Before(deadline) {
-			logf("shim did not serve on :%d", port)
-			shutdown(1)
-		}
-		if answeredFn(port) {
-			break
-		}
-		time.Sleep(400 * time.Millisecond)
-	}
+	// The probe is bodiless and carries no credential, and asks only whether
+	// our shim answers — a gateway with no model list is ready too.
+	waitReady(a, shutdown, shimProc, func() bool { return answeredFn(port) },
+		func(bool) { logf("shim did not serve on :%d", port) })
 	hooks := ""
 	if extras["CCMORPH_SHIM_HOOKS"] != "" {
 		hooks = "; profile request hooks"
 	}
 	logf("shim interposed (Anthropic model ids; readable gateway errors%s)", hooks)
-	// Only a minted --inbound-token is printed; a file token is a long-lived
-	// credential whose stdout may be redirected to a file.
-	if a.inboundToken {
-		fmt.Printf("TOKEN=%s\n", a.token)
-	}
-	fmt.Printf("PORT=%d\n", port)
+	printContract(a, port)
 	logf("serving profile %s on :%d -> %s (no translator)", a.profile, port, upstream)
-	for {
-		if shimProc.exited() {
-			logf("shim exited %d", shimProc.code())
-			shutdown(1)
-		}
-		a.checkParent(shutdown)
-		time.Sleep(parentPoll)
-	}
+	supervise(a, shutdown, supervised{shimProc, "shim"})
+	return 0 // supervise never returns: the loop ends only through shutdown
 }
 
 func newToken() string {
@@ -863,28 +918,25 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 	}
 	watchSignals(shutdown)
 
-	waitReady := func(p *proc, port int, what, auth string) {
+	// waitEndpoint is this path's readiness wait: the shared skeleton (#480)
+	// with the translator route's failure wording — the exit code, the log —
+	// where the direct route has neither to name. Each endpoint is asked with
+	// the credential it will serve: the translator the profile's key, the shim
+	// the token the client holds (the key when none was minted).
+	waitEndpoint := func(p *proc, port int, what, auth string) {
 		if auth == "" {
 			auth = key
 		}
-		deadline := time.Now().Add(readyTimeout)
-		for time.Now().Before(deadline) {
-			a.checkParent(shutdown)
-			if p.exited() {
-				logf("%s exited %d; see %s", what, p.code(), logPath)
-				shutdown(1)
-			}
-			if servingFn(port, auth) {
-				return
-			}
-			time.Sleep(400 * time.Millisecond)
-		}
-		// Never served: a failure. Exiting 0 here made a timed-out launch look
-		// successful to ccmorph, which then ran Claude Code against a dead port.
-		logf("%s did not serve on :%d within %ds; see %s", what, port, int(readyTimeout.Seconds()), logPath)
-		shutdown(1)
+		waitReady(a, shutdown, p, func() bool { return servingFn(port, auth) },
+			func(exited bool) {
+				if exited {
+					logf("%s exited %d; see %s", what, p.code(), logPath)
+				} else {
+					logf("%s did not serve on :%d within %ds; see %s", what, port, int(readyTimeout.Seconds()), logPath)
+				}
+			})
 	}
-	waitReady(child, port, "translator", "")
+	waitEndpoint(child, port, "translator", "")
 
 	// The stable request shim prepares newly selected models before forwarding;
 	// response-id recycling and the profile's request hooks are gated in the
@@ -895,30 +947,21 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 	} else if shimPort, err = freePortFn(); err != nil {
 		die("no free port: %v", err)
 	}
-	models := make([]string, len(usable))
-	for i, r := range usable {
-		models[i] = r.Model
-	}
-	shimEnv := map[string]string{"CCMORPH_MODEL_ROUTE": mustJSON(map[string]any{
+	route := map[string]any{
 		"adapter": selfPath(), "adapter_args": []string{"adapter"},
 		"profile": a.profile, "config": conf, "port": port, "identity": routeIdentity, "upstream": upstream,
-		"models": models, "model_map": modelMap, "timeout": int(selectTimeout.Seconds()),
-		"key_sha256": hashHex(key)})}
-	for k, v := range extras {
-		shimEnv[k] = v
-	}
-	if a.token != "" {
-		shimEnv["CCMORPH_INBOUND"] = mustJSON(map[string]any{"sha256": hashHex(a.token), "key": key})
-	}
+		"models": modelNames(usable), "model_map": modelMap, "timeout": int(selectTimeout.Seconds()),
+		"key_sha256": hashHex(key)}
 	a.releasePort()
 	sp, err := startShim(shimBinary, shim.Options{Port: shimPort, Target: "http://127.0.0.1:" + strconv.Itoa(port),
-		PreserveIDs: !recyclesIDs, RandomDeviceID: slices.Contains(privacyArgs, "--random-device-id")}, shimEnv, logfile, logfile)
+		PreserveIDs: !recyclesIDs, RandomDeviceID: slices.Contains(privacyArgs, "--random-device-id")},
+		shimEnv(route, extras, a, key), logfile, logfile)
 	if err != nil {
 		logf("cannot start the gateway shim: %v", err)
 		shutdown(1)
 	}
 	shimProc.Store(sp)
-	waitReady(sp, shimPort, "shim", a.token)
+	waitEndpoint(sp, shimPort, "shim", a.token)
 	why := []string{"prepare models selected mid-session"}
 	if recyclesIDs {
 		why = append(why, "upstream recycles tool_use ids")
@@ -927,26 +970,9 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 		why = append(why, "profile request hooks")
 	}
 	logf("shim interposed (%s)", strings.Join(why, "; "))
-
-	// The one contract line, only after the health check passed.
-	if a.inboundToken {
-		fmt.Printf("TOKEN=%s\n", a.token)
-	}
-	fmt.Printf("PORT=%d\n", shimPort)
+	printContract(a, shimPort)
 	logf("serving %d model(s) for profile %s on :%d (translator :%d)", len(usable), a.profile, shimPort, port)
 
-	// Supervise rather than exec, so an orphan can notice its parent is gone --
-	// no trap fires when the wrapper is SIGKILLed.
-	for {
-		if child.exited() {
-			logf("translator exited %d", child.code())
-			shutdown(1)
-		}
-		if sp.exited() {
-			logf("shim exited %d", sp.code())
-			shutdown(1)
-		}
-		a.checkParent(shutdown)
-		time.Sleep(parentPoll)
-	}
+	supervise(a, shutdown, supervised{child, "translator"}, supervised{sp, "shim"})
+	return 0 // supervise never returns: the loop ends only through shutdown
 }

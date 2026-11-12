@@ -1027,6 +1027,88 @@ func spawnedDirect(t *testing.T, extras map[string]string) *exec.Cmd {
 	return got
 }
 
+// --- #480: the shim launch ritual, spelled once for both paths -------------------
+
+// The ritual frontDirectly and serve duplicated block for block is one
+// definition each now (#480); pinned at the helpers' own seams so the two
+// paths cannot drift apart again.
+func TestShimEnvAssemblesRouteQuirksAndInbound(t *testing.T) {
+	route := map[string]any{"profile": "demo", "models": []string{"m"}}
+	env := shimEnv(route, map[string]string{"CCMORPH_USER_AGENT": "ua/{version}"},
+		&cliArgs{token: "tok"}, "k")
+	if got := env["CCMORPH_MODEL_ROUTE"]; !strings.Contains(got, `"profile":"demo"`) || !strings.Contains(got, `"models":["m"]`) {
+		t.Errorf("the route did not reach the env as JSON: %s", got)
+	}
+	if env["CCMORPH_USER_AGENT"] != "ua/{version}" {
+		t.Error("the profile's quirks were not folded over the route")
+	}
+	if inbound := env["CCMORPH_INBOUND"]; !strings.Contains(inbound, hashHex("tok")) || !strings.Contains(inbound, `"key":"k"`) {
+		t.Errorf("a minted token must swap in the endpoint key: %s", inbound)
+	}
+	if _, ok := shimEnv(route, nil, &cliArgs{}, "k")["CCMORPH_INBOUND"]; ok {
+		t.Error("no token minted, yet CCMORPH_INBOUND appeared")
+	}
+}
+
+func TestWaitReadyEndsOnTheProbeTheChildOrTheDeadline(t *testing.T) {
+	// An answer on the first probe ends the wait: no failure, no shutdown.
+	probes := 0
+	waitReady(&cliArgs{}, func(int) { t.Error("an answered endpoint must not shut the launch down") },
+		&proc{}, func() bool { probes++; return true },
+		func(bool) { t.Error("an answered endpoint is not a failure") })
+	if probes != 1 {
+		t.Fatalf("the probe ran %d time(s); the first answer must end the wait", probes)
+	}
+
+	// A dead child is reported as such and ends the launch non-zero, before
+	// the probe can vouch for a listener that may not be our own.
+	dead := make(chan struct{})
+	close(dead)
+	var reported = true
+	code, did := exits(t, func() {
+		waitReady(&cliArgs{}, exit, &proc{done: dead},
+			func() bool { t.Error("the probe ran after the child had exited"); return true },
+			func(exited bool) { reported = exited })
+	})
+	if !did || code != 1 || !reported {
+		t.Fatalf("a dead child must be reported and exit 1: exit %d, exited %v, reported %v", code, did, reported)
+	}
+
+	// A deadline that passes without an answer is a failure too: never a
+	// launch that pretends to be healthy.
+	swap(t, &readyTimeout, time.Duration(0)) // the deadline is born passed; no clock is waited on
+	reported = true
+	code, did = exits(t, func() {
+		waitReady(&cliArgs{}, exit, &proc{},
+			func() bool { return false },
+			func(exited bool) { reported = exited })
+	})
+	if !did || code != 1 || reported {
+		t.Fatalf("a passed deadline must be reported as a timeout and exit 1: exit %d, exited %v, reported %v", code, did, reported)
+	}
+}
+
+func TestPrintContractPrintsOnlyAMintedTokenThenThePort(t *testing.T) {
+	minted := "tok"
+	for _, tc := range []struct {
+		name string
+		a    *cliArgs
+		want string
+	}{
+		{"a minted token", &cliArgs{inboundToken: true, token: minted}, "TOKEN=" + minted + "\nPORT=45999\n"},
+		{"a file token", &cliArgs{token: minted}, "PORT=45999\n"},
+		{"no token", &cliArgs{}, "PORT=45999\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stdio := captureStdio(t)
+			printContract(tc.a, 45999)
+			if got := stdio(); got != tc.want {
+				t.Fatalf("contract = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // --- ports of the white-box tests in tests/adapter_test.py -----------------------
 
 func TestCredentialIsNeverForwardedAcrossARedirect(t *testing.T) { // test_credential_is_never_forwarded_across_a_redirect
