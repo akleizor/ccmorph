@@ -7,6 +7,16 @@
 
 ## Unreleased
 
+## v0.5.12 — 2026-11-12
+
+### Fixed
+
+- **`ccmorph quota` reads every profile at once.** A call takes as long as its
+  slowest read instead of the sum of all of them.
+- A past day that changes (a hook re-reading an old transcript) is recounted
+  through the per-file index, reading only its new or changed receipts. The
+  spend scan went from 2.3 s to under 0.6 s on a store of ~330k receipts.
+
 ## v0.5.11 — 2026-11-12
 
 ### Fixed
