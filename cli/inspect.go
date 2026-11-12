@@ -150,10 +150,9 @@ func (l *launcher) inspect(args []string) int {
 		}
 	}
 
-	switch base {
-	case "", "https://api.anthropic.com", "https://api.anthropic.com/":
+	if _, native := nativeBase(base); native {
 		grid(10, "protocol", "native Anthropic")
-	default:
+	} else {
 		grid(10, "protocol", "automatic — cached compatibility or validation at launch")
 	}
 	// The one promise only this option makes, and no other row names: the

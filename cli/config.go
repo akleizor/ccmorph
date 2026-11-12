@@ -257,10 +257,7 @@ func (l *launcher) config(args []string) int {
 		}
 	}
 	if section != "defaults" && typ == "apikey" {
-		shown := endpoint
-		if shown == "" {
-			shown = "https://api.anthropic.com"
-		}
+		shown, _ := nativeBase(endpoint)
 		answer, rc := uiInput("Endpoint ["+shown+"]: ", false)
 		if rc != 0 {
 			return 1
@@ -321,10 +318,7 @@ func (l *launcher) config(args []string) int {
 	say("Profile: " + name)
 	if section != "defaults" {
 		if typ == "apikey" {
-			shown := endpoint
-			if shown == "" {
-				shown = "https://api.anthropic.com"
-			}
+			shown, _ := nativeBase(endpoint)
 			say("Endpoint: " + shown)
 		}
 		say("Credential: hidden")

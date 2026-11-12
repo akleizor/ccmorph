@@ -102,10 +102,7 @@ func (l *launcher) modelsJSON(name string, preview ...string) (string, bool) {
 	if len(preview) > 1 {
 		f["api_key"] = preview[1]
 	}
-	base := f["base_url"]
-	if base == "" {
-		base = "https://api.anthropic.com"
-	}
+	base, _ := nativeBase(f["base_url"])
 	if f["api_key"] == "" {
 		l.err("'" + name + "' has no api_key — model discovery needs one")
 		return "", false

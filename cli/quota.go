@@ -175,8 +175,10 @@ func (l *launcher) contextUnlisted(name, want string, f map[string]string) bool 
 		return false
 	}
 	base := f["base_url"]
-	if f["type"] == "apikey" && base == "" {
-		base = "https://api.anthropic.com"
+	if f["type"] == "apikey" {
+		// Only an apikey profile's empty base means Anthropic's own; a token
+		// profile carries no base to default.
+		base, _ = nativeBase(base)
 	}
 	return util.ContextServed(want, f["type"], base, f["model_map"], f["api_key"]) == util.ServedNo
 }

@@ -36,6 +36,51 @@ func runFlag(a string) bool {
 // answer a listing without a network.
 var probeListing = util.ProbeListing
 
+// probeStatus is what a probe's HTTP status says about the credential it
+// offered — the verdict, not the answer itself.
+type probeStatus int
+
+const (
+	probeAccepted probeStatus = iota // a 2xx: the credential was taken
+	probeRejected                    // 401 or 403: the credential was refused
+	probeSilent                      // "000" or "": nothing answered
+	probeOther                       // any other status: no verdict on the credential
+)
+
+// probeVerdict is the status switch every probe of a credential reads, spelled
+// once (#488): a 2xx accepts, 401/403 rejects, "000" or empty says nothing
+// answered, and anything else is an answer that is no verdict on the
+// credential — #255, #286 and #374 all landed in one of this switch's copies.
+// The probe that produces the code stays each caller's own, with the header
+// set its branch needs: a native endpoint is asked with the anthropic-version
+// header its route sends, a gateway with none, doctor's own request.
+func probeVerdict(code string) probeStatus {
+	switch {
+	case strings.HasPrefix(code, "2") && len(code) == 3:
+		return probeAccepted
+	case code == "401" || code == "403":
+		return probeRejected
+	case code == "000" || code == "":
+		return probeSilent
+	default:
+		return probeOther
+	}
+}
+
+// nativeBase is the one rule for Anthropic's own endpoint: the URL an empty
+// base_url means, and the spellings that count as that endpoint — the bare URL
+// and the trailing-slash form, util.NativeBase's list, which doctor and masking
+// already read — so the defaults launch, models, quota and config fill in and
+// the native tests run and inspect make cannot drift apart (#488). b is the
+// URL to talk to, a typed base untouched; native is whether base is
+// Anthropic's own.
+func nativeBase(base string) (b string, native bool) {
+	if base == "" {
+		return "https://api.anthropic.com", true
+	}
+	return base, util.NativeBase(base)
+}
+
 // launch is one pass of _ccm_launch: nil when the run is over (rc is its status),
 // or the relaunch a hop asked for. Resolving the pass and running it are different
 // jobs, so launch only joins them.
@@ -154,9 +199,7 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 		switch f["type"] {
 		case "apikey":
 			routed, tag = true, f["tag"]
-			switch f["base_url"] {
-			case "", "https://api.anthropic.com", "https://api.anthropic.com/":
-			default:
+			if _, native := nativeBase(f["base_url"]); !native {
 				needsAdapter = true
 			}
 		case "provider":
@@ -348,10 +391,8 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 				if !subcommand && !util.OpensNoSession(args, table) {
 					base, _ := envGet(penv, "ANTHROPIC_BASE_URL")
 					if !needsAdapter {
-						if base == "" {
-							base = "https://api.anthropic.com"
-						}
-						if _, code := probeListing(base, k, "anthropic-version: 2023-06-01"); code == "401" || code == "403" {
+						base, _ = nativeBase(base)
+						if _, code := probeListing(base, k, "anthropic-version: 2023-06-01"); probeVerdict(code) == probeRejected {
 							rejected, _ := strconv.Atoi(code)
 							l.err(listingFailure(name, profile.RedactURL(base), rejected))
 							return fail()
@@ -360,12 +401,12 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 						// Doctor's own request for a gateway — no anthropic-version
 						// header — so what doctor calls a rejection, launch does too.
 						body, code := probeListing(base, k)
-						if code == "401" || code == "403" {
+						switch probeVerdict(code) {
+						case probeRejected:
 							rejected, _ := strconv.Atoi(code)
 							l.err(listingFailure(name, profile.RedactURL(base), rejected))
 							return fail()
-						}
-						if strings.HasPrefix(code, "2") && len(code) == 3 {
+						case probeAccepted:
 							// The listing this pass was about to fetch anyway is
 							// already in hand, so the happy path still asks the
 							// route once.
@@ -1370,19 +1411,17 @@ func (l *launcher) routeRefusal(name string) string {
 		// before a session opens (#255), so the hop asks the same question, with
 		// the same header, before it ends one (#286). Only a rejection refuses:
 		// silence keeps out of the way, exactly as at launch.
-		if base == "" {
-			base = "https://api.anthropic.com"
-		}
-		if _, code := util.ProbeListing(base, authKey(env), "anthropic-version: 2023-06-01"); code == "401" || code == "403" {
+		base, _ = nativeBase(base)
+		if _, code := util.ProbeListing(base, authKey(env), "anthropic-version: 2023-06-01"); probeVerdict(code) == probeRejected {
 			return "Anthropic rejected the API key (HTTP " + code + ")"
 		}
 		return ""
 	}
 	_, code := util.ProbeListing(base, authKey(env))
-	switch {
-	case code == "" || code == "000":
+	switch probeVerdict(code) {
+	case probeSilent:
 		return "the endpoint " + profile.RedactURL(base) + " did not answer"
-	case code == "401" || code == "403":
+	case probeRejected:
 		return "the endpoint rejected the API key (HTTP " + code + ")"
 	}
 	return ""
@@ -1582,7 +1621,8 @@ func (l *launcher) modelKnown(name, want string) int {
 func (l *launcher) listingKnown(name, want string) int {
 	f, ok := l.readQuiet(name)
 	if ok && f["type"] == "apikey" && f["base_url"] == "" && profile.Validate(name, f) == nil {
-		return int(util.ModelServed(want, "apikey", "https://api.anthropic.com", "", f["api_key"]))
+		base, _ := nativeBase(f["base_url"])
+		return int(util.ModelServed(want, "apikey", base, "", f["api_key"]))
 	}
 	return l.modelKnown(name, want)
 }

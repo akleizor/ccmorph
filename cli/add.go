@@ -308,13 +308,13 @@ func (l *launcher) addToken(name string) int {
 			l.err("that is not a Claude token's shape — copy the whole token again")
 			continue
 		}
-		switch code := util.ProbeToken(token); {
-		case strings.HasPrefix(code, "2") && len(code) == 3:
+		switch code := util.ProbeToken(token); probeVerdict(code) {
+		case probeAccepted:
 			fmt.Println(l.dim + "Anthropic accepted the token (HTTP " + code + ")" + l.reset)
-		case code == "401" || code == "403":
+		case probeRejected:
 			l.err("Anthropic rejected the token (HTTP " + code + ") — paste it again")
 			continue
-		case code == "000" || code == "":
+		case probeSilent:
 			fmt.Println(l.dim + "Anthropic did not answer, so the token was not checked" + l.reset)
 		default:
 			fmt.Println(l.dim + "Anthropic answered HTTP " + code + ", so the token was not checked" + l.reset)
@@ -486,22 +486,25 @@ func (l *launcher) addAPIKey(name string) int {
 // key, so it is said as not-checked and the add continues. The key reaches curl
 // through its stdin config, never a command line.
 func (l *launcher) checkKey(url, key string) bool {
-	base, shown := url, url
-	if base == "" {
-		base, shown = "https://api.anthropic.com", "api.anthropic.com"
+	base, native := nativeBase(url)
+	shown := url
+	if url == "" {
+		// The defaulted endpoint is shown as its host, the way the add's own
+		// endpoint question spells it.
+		shown = "api.anthropic.com"
 	}
 	var headers []string
-	if util.NativeBase(base) {
+	if native {
 		headers = []string{"anthropic-version: 2023-06-01"}
 	}
 	_, code := util.ProbeListing(base, key, headers...)
-	switch {
-	case strings.HasPrefix(code, "2") && len(code) == 3:
+	switch probeVerdict(code) {
+	case probeAccepted:
 		fmt.Println(l.dim + shown + " accepted the API key (HTTP " + code + ")" + l.reset)
-	case code == "401" || code == "403":
+	case probeRejected:
 		l.err(shown + " rejected the API key (HTTP " + code + ") — paste it again")
 		return false
-	case code == "000" || code == "":
+	case probeSilent:
 		fmt.Println(l.dim + shown + " did not answer, so the API key was not checked" + l.reset)
 	default:
 		fmt.Println(l.dim + shown + " answered HTTP " + code + ", so the API key was not checked" + l.reset)
