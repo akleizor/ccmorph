@@ -328,6 +328,91 @@ func TestDialectAutoDuplicateRowsUseFirstMatch(t *testing.T) { // test_duplicate
 	}
 }
 
+// The listing walk is the one read of a /v1/models listing (#479): the id
+// list's filters and the per-model endpoint lookup were each spelled twice —
+// inventory/listedModels and dialectAuto/declaredDialect — and the pairs
+// could drift. Pinned here once, over one listing holding every row shape,
+// including the asymmetry the walk must keep: a capabilities denial drops a
+// row from the id list but hides nothing from the endpoint lookup, and an
+// unsafe id is still findable by its raw spelling.
+func TestTheListingWalkReadsEveryRowShapeOnceIssue479(t *testing.T) {
+	data := []any{
+		"not an object",
+		map[string]any{"id": 7},
+		map[string]any{"id": ""},
+		map[string]any{"id": "m-evil ok:"},
+		map[string]any{"id": "m-denied", "capabilities": map[string]any{"chat_completion": false},
+			"supported_endpoints": []any{"/v1/chat/completions"}},
+		map[string]any{"id": "m-a"},
+		map[string]any{"id": "m-dup"},
+		map[string]any{"id": "m-dup", "supported_endpoints": []any{"/v1/messages"}},
+		map[string]any{"id": "m-scan", "supported_endpoints": []any{}},
+		map[string]any{"id": "m-scan", "supported_endpoints": []any{"/v1/responses", "/v1/chat/completions"}},
+		map[string]any{"id": "m-notarray", "supported_endpoints": "no"},
+	}
+	want := []string{"m-a", "m-dup", "m-dup", "m-notarray", "m-scan", "m-scan"}
+	if got := listedModels(data, false); !reflect.DeepEqual(got, want) {
+		t.Fatalf("listedModels = %v, want %v", got, want)
+	}
+	for _, tc := range []struct{ model, want string }{
+		{"m-denied", "chat"},    // a capabilities denial hides no declaration
+		{"m-evil ok:", ""},      // an unsafe id is still matched as written
+		{"m-a", ""},             // no supported_endpoints: declares nothing
+		{"m-notarray", ""},      // supported_endpoints that is not an array declares nothing
+		{"m-dup", ""},           // the first row naming the model ends the search
+		{"m-scan", "responses"}, // an empty declaration is read past, and responses outranks chat
+	} {
+		if got := declaredDialect(data, tc.model); got != tc.want {
+			t.Errorf("declaredDialect(%q) = %q, want %q", tc.model, got, tc.want)
+		}
+	}
+	// The unsafe-id log is the walk's own, so inventory and the quiet readers
+	// share one filter chain.
+	output := captureStdio(t)
+	walkListing(data, true)
+	if text := output(); !strings.Contains(text, "unsafe characters") || !strings.Contains(text, "m-evil ok:") {
+		t.Fatalf("the walk did not log the unsafe id: %s", text)
+	}
+}
+
+// usableNative is the one fold over classified rows that doctor's verdict and
+// serve's fast path read (#479); it was spelled in both places before, and a
+// new Row field remembered in only one of them is how doctor and launch
+// disagreed in #412 and #475. Every term is pinned here once.
+func TestUsableNativeFoldsEveryRowTermOnceIssue479(t *testing.T) {
+	cap8192 := 8192
+	cases := []struct {
+		name        string
+		rows        []Row
+		usable      []string
+		native      bool
+		recyclesIDs bool
+	}{
+		{"no rows at all", nil, nil, true, false},
+		{"an unusable row serves nothing", []Row{row("unusable")}, nil, true, false},
+		{"an unusable row contributes nothing, even its flags", []Row{{Model: "m", Dialect: "unusable", IDRecycle: true}}, nil, true, false},
+		{"plain anthropic is native", []Row{row("anthropic")}, []string{"m"}, true, false},
+		{"another dialect needs the translator", []Row{row("responses")}, []string{"m"}, false, false},
+		{"a capped row needs the translator", []Row{{Model: "m", Dialect: "anthropic", Status: 200, Cap: &cap8192}}, []string{"m"}, false, false},
+		{"a reason-by-default row needs the translator", []Row{{Model: "m", Dialect: "anthropic", Status: 200, Nothink: true}}, []string{"m"}, false, false},
+		{"an id-recycling row needs the translator and fresh ids", []Row{{Model: "m", Dialect: "anthropic", Status: 200, IDRecycle: true}}, []string{"m"}, false, true},
+		{"one workaround row among native ones breaks native", []Row{{Model: "m-plain", Dialect: "anthropic", Status: 200}, {Model: "m-think", Dialect: "anthropic", Status: 200, Nothink: true}}, []string{"m-plain", "m-think"}, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			usable, native, recyclesIDs := usableNative(tc.rows)
+			var models []string
+			for _, r := range usable {
+				models = append(models, r.Model)
+			}
+			if !reflect.DeepEqual(models, tc.usable) || native != tc.native || recyclesIDs != tc.recyclesIDs {
+				t.Fatalf("usableNative = (%v, native=%v, recyclesIDs=%v), want (%v, %v, %v)",
+					models, native, recyclesIDs, tc.usable, tc.native, tc.recyclesIDs)
+			}
+		})
+	}
+}
+
 func TestClassifyProbesOnlySelectedModelOnce(t *testing.T) { // test_missing_declaration_probes_only_selected_model_once
 	cache := filepath.Join(t.TempDir(), "cache.json")
 	swap(t, &dialectAutoFn, func(_, _, _ string) (string, string, int) { return "unusable", noInference, 0 })

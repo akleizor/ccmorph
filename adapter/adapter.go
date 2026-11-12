@@ -142,9 +142,9 @@ func findTranslator() string {
 // that is neither is undecided, and the answer then rests on the cached rows
 // alone (known only when they already need the translator, since the undecided
 // model could only add to that). Without a model every listed, declared model
-// counts. needed mirrors serve()'s own native test over the usable rows. known
-// is false when no usable row decides it, in which case there is no honest
-// verdict.
+// counts. needed is serve()'s own native test over the usable rows, read from
+// the one fold both share (usableNative). known is false when no usable row
+// decides it, in which case there is no honest verdict.
 func TranslatorVerdict(base, cacheDir, model, listing string) (needed, known bool) {
 	upstream := strings.TrimRight(base, "/")
 	cache := filepath.Join(cacheDir, ".adapter-cache", hashHex(upstream)[:16]+".json")
@@ -171,7 +171,7 @@ func TranslatorVerdict(base, cacheDir, model, listing string) (needed, known boo
 			}
 		}
 	} else {
-		for _, id := range listedModels(data) {
+		for _, id := range listedModels(data, false) {
 			if cached(id) {
 				continue
 			}
@@ -180,18 +180,9 @@ func TranslatorVerdict(base, cacheDir, model, listing string) (needed, known boo
 			}
 		}
 	}
-	var usable []Row
-	for _, r := range rows {
-		if r.Dialect != "unusable" {
-			usable = append(usable, r)
-		}
-	}
+	usable, native, _ := usableNative(rows)
 	if len(usable) == 0 {
 		return false, false
-	}
-	native := true
-	for _, r := range usable {
-		native = native && r.Dialect == "anthropic" && !r.capped() && !r.Nothink && !r.IDRecycle
 	}
 	if undecided && native {
 		return false, false
@@ -740,12 +731,7 @@ func ensureConfig(a *cliArgs, required, upstream, key, routeIdentity, cacheFile,
 
 func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstreamProxy, shimBinary string,
 	extras map[string]string, env map[string]string, modelMap map[string]any) int {
-	var usable []Row
-	for _, r := range rows {
-		if r.Dialect != "unusable" {
-			usable = append(usable, r)
-		}
-	}
+	usable, native, recyclesIDs := usableNative(rows)
 	if len(usable) == 0 {
 		if a.auto && required == "" {
 			fmt.Printf("EXIT=no declared or cached model protocol; set a model with ccmorph set %s model <model-id> and retry (the compatibility check may incur a small charge)\n", a.profile)
@@ -754,14 +740,6 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 		die("no usable models on this endpoint; refusing to start")
 	}
 
-	// Native is a hard fast path: do not require cliproxyapi, create temp state,
-	// or probe workaround behavior when every usable row is plain Anthropic.
-	native := true
-	recyclesIDs := false
-	for _, r := range usable {
-		native = native && r.Dialect == "anthropic" && !r.capped() && !r.Nothink && !r.IDRecycle
-		recyclesIDs = recyclesIDs || r.IDRecycle
-	}
 	// Identifier handling is a per-profile opt-in; without it the shim forwards
 	// the client's metadata and headers as sent.
 	var privacyArgs []string
@@ -774,6 +752,8 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 	// Every route goes through the gateway edge (shim): Anthropic model
 	// ids in and out, a moving catalogue, readable errors, stall deadlines. A
 	// gateway that already speaks Anthropic needs no translator.
+	// Native is a hard fast path: do not require cliproxyapi, create temp state,
+	// or probe workaround behavior when every usable row is plain Anthropic.
 	if a.auto && native && !a.printConfig {
 		return frontDirectlyFn(a, upstream, key, routeIdentity, usable, extras, privacyArgs, modelMap)
 	}
