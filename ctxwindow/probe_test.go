@@ -1039,8 +1039,14 @@ func TestRoutedProfilesAreChosenByConfType(t *testing.T) {
 		put(t, filepath.Join(dir, n+".conf"), "type="+k+"\n")
 	}
 	put(t, filepath.Join(dir, "broken.conf"), "type=apikey\r\xff\n")
-	if got := strings.Join(routedProfiles(), ","); got != "codex,gw,old" {
+	names, snaps := routedProfiles()
+	if got := strings.Join(names, ","); got != "codex,gw,old" {
 		t.Fatal(got)
+	}
+	for _, n := range names {
+		if snaps[n] == nil {
+			t.Fatalf("no snapshot for %s", n)
+		}
 	}
 }
 
@@ -1415,8 +1421,6 @@ func TestMainArgumentsAndReporting(t *testing.T) {
 		func(string) ([]string, map[string]int64, []obj, error) {
 			return []string{"known", "gpt-5.6-sol"}, map[string]int64{"known": 922000}, nil, nil
 		})
-	priorValues = func([]string) map[string]int64 { return map[string]int64{"profile:known": 922000} }
-	priorCatalogueTags = func([]string) map[string]obj { return nil }
 	for _, args := range [][]string{
 		{"--profile", "gw", "--jobs", "0"}, {"--profile", "gw", "--jobs", "-1"}, {"--profile", "gw", "--bisect"},
 		{"--profile", "gw", "--probe-all"}, {"--profile", "gw", "--allow-inference"},
@@ -1453,6 +1457,10 @@ func TestMainArgumentsAndReporting(t *testing.T) {
 	}
 	out.Reset()
 	errb.Reset()
+	// The run above saved its sizes; a --check compares against what is stored
+	// (GH-485: the baseline is the run's own read of the profile), so clear the
+	// sidecar to give this run a drift to report.
+	os.Remove(DiscoveredPath(filepath.Join(dir, "gw.conf")))
 	code = ProbeMain([]string{"--profile", "gw", "--check"}, strings.NewReader(""), &out, &errb)
 	if code != 2 || out.String() != "DRIFT gw:known: None -> 922000\n" { // drift wins over the unresolved exit
 		t.Fatal(code, out.String())
@@ -1464,12 +1472,16 @@ func TestMainArgumentsAndReporting(t *testing.T) {
 // rather than leave stderr empty under an anonymous stdout line.
 func TestCheckSaysWhatItFoundWhenNothingChanged(t *testing.T) {
 	dir := state(t)
-	put(t, filepath.Join(dir, "gw.conf"), "type=apikey\napi_key=k\n")
+	conf := filepath.Join(dir, "gw.conf")
+	put(t, conf, "type=apikey\napi_key=k\n")
+	// The stored sizes are real: the run reads the profile and takes its
+	// baseline from that read (GH-485), so they live on disk, not in a stub.
+	_, fields, _ := ReadConf(conf)
+	route := RouteFingerprint(fields)
+	put(t, DiscoveredPath(conf), "{\"route\":\""+route+"\",\"models\":{\"a\":1000,\"b\":2000}}\n")
 	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
 		return []string{"a", "b"}, map[string]int64{"a": 1000, "b": 2000}, nil, nil
 	})
-	priorValues = func([]string) map[string]int64 { return map[string]int64{"gw:a": 1000, "gw:b": 2000} }
-	priorCatalogueTags = func([]string) map[string]obj { return nil }
 	var out, errb bytes.Buffer
 	if code := ProbeMain([]string{"--profile", "gw", "--check"}, strings.NewReader(""), &out, &errb); code != 0 {
 		t.Fatalf("exit %d\n%s", code, errb.String())
@@ -1479,6 +1491,46 @@ func TestCheckSaysWhatItFoundWhenNothingChanged(t *testing.T) {
 	}
 	if errb.String() != "gw: found context window sizes for 2 models; no changes.\n" {
 		t.Errorf("stderr = %q", errb.String())
+	}
+}
+
+// GH-485: the production probe pins identities, so each profile's baseline and
+// fields come from the one read that pins it; the whole-set sweeps before and
+// inside the loop never run on that path, and the selection's read is the same
+// one the loop reuses: a run reads each routed conf exactly once.
+func TestTheProductionProbeSkipsTheBaselineSweepIssue485(t *testing.T) {
+	dir := state(t)
+	for _, name := range []string{"gw", "other"} {
+		put(t, filepath.Join(dir, name+".conf"), "type=apikey\napi_key=k\n")
+	}
+	// No model carries a size, so the run reports and writes nothing: the only
+	// conf reads left are the probing ones this test counts.
+	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
+		return nil, nil, nil, nil
+	})
+	sweeps := 0
+	oe, ot := priorValues, priorCatalogueTags
+	t.Cleanup(func() { priorValues, priorCatalogueTags = oe, ot })
+	priorValues = func([]string) map[string]int64 { sweeps++; return nil }
+	priorCatalogueTags = func([]string) map[string]obj { sweeps++; return nil }
+	reads := map[string]int{}
+	ox := textOf
+	t.Cleanup(func() { textOf = ox })
+	textOf = func(b []byte, path string) (string, error) {
+		reads[path]++
+		return ox(b, path)
+	}
+	var out, errb bytes.Buffer
+	if code := ProbeMain(nil, strings.NewReader(""), &out, &errb); code != 0 {
+		t.Fatalf("exit %d\n%s", code, errb.String())
+	}
+	if sweeps != 0 {
+		t.Fatalf("the production path ran a baseline sweep %d time(s)", sweeps)
+	}
+	for _, name := range []string{"gw", "other"} {
+		if n := reads[filepath.Join(dir, name+".conf")]; n != 1 {
+			t.Fatalf("the production run read %s's conf %d time(s)", name, n)
+		}
 	}
 }
 

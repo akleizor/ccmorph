@@ -196,8 +196,9 @@ func run(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
 	// every valid option hears the same answer. `tried` is also what the
 	// empty-result report names, so a sweep never lists nothing.
 	tried := profiles
+	var snaps map[string]*Snapshot
 	if tried == nil {
-		tried = routedProfiles()
+		tried, snaps = routedProfiles()
 	}
 	if len(tried) == 0 {
 		if profiles == nil && len(confPaths(nil)) == 0 {
@@ -231,14 +232,17 @@ func run(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
 	// background context: an interrupted launch must not record misses.
 	sigctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
-	baseline := priorValues(profiles)
 	started := time.Now()
 	opts.Identities = map[string]*Identity{}
-	result := ProbeAll(sigctx, profiles, opts)
+	// The selection's read is the one the pinned loop reuses (GH-485).
+	opts.Snaps = snaps
+	result := ProbeAll(sigctx, tried, opts)
 	if sigctx.Err() != nil {
 		return 130
 	}
 	notes := result.Notes
+	// The pinned read inside the run already carried each profile's baseline.
+	baseline := result.Baseline
 
 	var unknown []string
 	seen := map[string]bool{}

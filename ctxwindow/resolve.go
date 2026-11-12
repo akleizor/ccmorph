@@ -141,6 +141,10 @@ type Inputs struct {
 	haveEndpoints bool
 	catalogue     obj
 	haveCatalogue bool
+	mapping       obj
+	haveMapping   bool
+	doc           obj
+	haveDoc       bool
 }
 
 // NewInputs is a resolver over conf fields its caller has already read.
@@ -156,15 +160,48 @@ func LoadInputs(path string) *Inputs {
 }
 
 // Preload reads and parses every input Resolve can consult: the endpoint env
-// JSON and, for a routed profile, the bundled catalogue. Afterwards Resolve
-// touches no file or environment variable, so a caller resolving many models
-// calls it once before its loop.
+// JSON, the model map and discovered record in the fields, and, for a routed
+// profile, the bundled catalogue. Afterwards Resolve touches no file,
+// environment variable or field text, so a caller resolving many models calls
+// it once before its loop.
 func (in *Inputs) Preload() {
 	in.endpointRows()
+	in.modelMap()
+	in.discoveredDoc()
 	if routed(in.fields) {
 		in.catalogueModels()
 	}
 }
+
+// modelMap is the conf's model_map parsed once, nil when it holds no mapping.
+func (in *Inputs) modelMap() obj {
+	if !in.haveMapping {
+		in.haveMapping = true
+		in.mapping = parseModelMap(in.fields)
+	}
+	return in.mapping
+}
+
+// mappedTarget is the id the shim serves for bare, from the cached model map.
+func (in *Inputs) mappedTarget(bare string) string {
+	return mappedTarget(in.fields, in.modelMap(), bare)
+}
+
+// discoveredDoc is the route-bound discovered record parsed once; nil when its
+// text is not a JSON object or the route changed.
+func (in *Inputs) discoveredDoc() obj {
+	if !in.haveDoc {
+		in.haveDoc = true
+		in.doc = discoveredDoc(in.fields)
+	}
+	return in.doc
+}
+
+// discoveredValues is the route-bound window table from the cached doc.
+func (in *Inputs) discoveredValues() map[string]int64 { return valuesOf(in.discoveredDoc()) }
+
+// discoveredSources is the provenance table from the cached doc.
+func (in *Inputs) discoveredSources() map[string]obj { return sourcesOf(in.discoveredDoc()) }
 
 func (in *Inputs) endpointRows() []any {
 	if !in.haveEndpoints {
@@ -283,7 +320,7 @@ func (in *Inputs) Resolve(model string) Record {
 	fields := in.fields
 	bare := strings.TrimSuffix(model, "[1m]")
 	// The served id sizes the session; the requested id stays what the client sees.
-	target := MappedTarget(fields, bare)
+	target := in.mappedTarget(bare)
 	manual := ManualValues(fields)
 	// An explicit pin wins, on the requested id first and then on the served id.
 	window, have := manual[bare]
@@ -292,7 +329,7 @@ func (in *Inputs) Resolve(model string) Record {
 	}
 	source := "conf-manual"
 	if !have {
-		discovered := DiscoveredValues(fields)
+		discovered := in.discoveredValues()
 		matched, found := "", false
 		if _, ok := discovered[target]; ok {
 			matched, found = target, true
@@ -307,7 +344,7 @@ func (in *Inputs) Resolve(model string) Record {
 		if found {
 			window, have = discovered[matched]
 			have = true
-			if tagged, ok := DiscoveredSources(fields)[matched]; ok {
+			if tagged, ok := in.discoveredSources()[matched]; ok {
 				s := tagged["source"]
 				source = "conf-discovered-" + s.(string)
 			} else {
