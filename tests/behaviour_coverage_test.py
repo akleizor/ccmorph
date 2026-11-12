@@ -899,6 +899,38 @@ def test_the_unsaved_state_reads_the_same_words_on_every_screen_gh_381(box, name
             assert old not in text, (screen, old)
 
 
+@pytest.mark.parametrize('saved', [True, False], ids=['saved', 'unsaved'])
+@pytest.mark.parametrize('conf,words', [
+    ('type=sub\nemail=a@example.com\n', 'Claude Code picks the model'),
+    ('type=token\ntoken=t\n', 'Claude Code picks the model'),
+    ('type=apikey\napi_key=k\n', 'Claude Code picks the model'),
+    ('type=apikey\napi_key=k\nbase_url=https://gw.example\n',
+     'ccmorph asks which model at each launch'),
+    ('type=provider\nprovider=codex\n', 'Claude Code picks the model'),
+], ids=['account', 'token', 'apikey', 'gateway', 'provider'])
+def test_the_launches_as_line_names_the_saved_model_on_every_kind_gh_389(box, conf, words, saved):
+    # GH-389: inspect named a saved model on its launches-as line only for an
+    # API key profile; a Claude account, token or provider profile with one
+    # saved read `claude (Claude Code picks the model)` under a model row naming
+    # it, though a plain launch starts that model (ANTHROPIC_MODEL). The two
+    # rows now name the same thing for every kind: the saved model, or with
+    # none saved the same unsaved words (#381).
+    box.conf('p', conf + ('model=claude-opus-5-5\n' if saved else ''))
+    out = box.run('inspect', 'p')
+    assert out.returncode == 0, out.stderr
+    lines = [line.strip() for line in out.stdout.splitlines()]
+    model_row = next(line for line in lines if line.startswith('model '))
+    launch_row = next(line for line in lines if line.startswith('launches as '))
+    if saved:
+        assert model_row.split()[1] == launch_row.split()[-1] == 'claude-opus-5-5'
+        assert launch_row == 'launches as  claude --model claude-opus-5-5'
+        for unsaved in ('Claude Code picks the model', 'ccmorph asks which model at each launch'):
+            assert unsaved not in out.stdout
+    else:
+        assert words in model_row
+        assert launch_row == f'launches as  claude ({words})'
+
+
 def test_context_answers_the_window_the_session_will_use_gh_372(box):
     # GH-372: `ccmorph context <profile> <model>` answered the pin alone --
     # `auto`, or a bare number once one was set -- while inspect showed the

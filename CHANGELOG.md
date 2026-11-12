@@ -46,6 +46,12 @@
 - **`ccmorph models` and `ccmorph probe` answer a Claude account or token
   profile alike** (#390): the same two lines say it has no model list from an
   endpoint and name `ccmorph set <name> model -i`, and both exit 1.
+- **`ccmorph inspect` names the saved model on the launches-as line for every
+  profile kind.** A Claude account, Claude token or provider profile with a
+  saved model read `launches as  claude (Claude Code picks the model)` under a
+  model row naming that model, though a plain launch starts it; the line now
+  reads `claude --model <id>`, as an API key profile's already did, and the
+  unsaved words show only when no model is saved (#389).
 - **The state of no saved model reads the same words everywhere, and the words
   say what a launch does.** A profile with nothing saved was worded five ways
   across four screens: `config` offered "Keep Claude default" and summarised

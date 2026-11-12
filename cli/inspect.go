@@ -170,7 +170,10 @@ func (l *launcher) inspect(args []string) int {
 		grid(10, "masking", "not available on this route")
 	}
 	fmt.Println()
-	if model != "" && typ == "apikey" {
+	// A saved model is what a plain launch of every kind starts (as
+	// ANTHROPIC_MODEL), so the line names it whatever the type, as the model
+	// row above does (#389).
+	if model != "" {
 		fmt.Println("  " + l.dim + "launches as" + l.reset + "  claude --model " + model)
 	} else {
 		// The same words the model row above reads (#381): what a launch of
