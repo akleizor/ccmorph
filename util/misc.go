@@ -248,16 +248,20 @@ func execIndex(args []string) int {
 func runningAdapter(profile string) string {
 	// Bounded at a second (GH-467): the sysctl read is the kernel's own cost,
 	// but the ps it falls back to makes three passes — an answer past the bound
-	// is SKIP, never a hang and never a half report.
+	// is SKIP, never a hang and never a half report. The goroutine cannot be
+	// joined, so the same deadline bounds the work itself (GH-515): the ps it is
+	// in is killed with the context, not left running behind the answer.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
 	done := make(chan map[int]psRow, 1)
-	go func() { done <- processTable() }()
+	go func() { done <- processTableWithin(ctx) }()
 	select {
 	case t := <-done:
 		if t == nil {
 			return "__UNKNOWN__"
 		}
 		return adapterSession(t, profile)
-	case <-time.After(time.Second):
+	case <-ctx.Done():
 		return "__UNKNOWN__"
 	}
 }

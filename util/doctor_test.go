@@ -1,12 +1,15 @@
 package util
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // stepPATH points PATH at a directory holding a brew stub, or one holding
@@ -111,6 +114,61 @@ func TestRunningAdapterMatchesArgvAcrossSpaces(t *testing.T) {
 	}
 	if got := runningAdapter("no-such-profile"); got != "" {
 		t.Fatalf("a profile nothing serves must report nothing, got %q", got)
+	}
+}
+
+// A ps that stalls past runningAdapter's one-second bound is work, not only an
+// unanswered question (GH-515): the read runs in a goroutine nothing can join,
+// so the ps that goroutine is in must end with the answer. The fake ps records
+// its pid and sleeps the bound out; __UNKNOWN__ comes at the bound, and the pid
+// must be gone shortly after.
+func TestRunningAdapterEndsAPsStalledPastItsBound(t *testing.T) {
+	// On darwin the table is the kernel's sysctl, which no PATH double reaches;
+	// the ps fallback is the reader this bound exists for, so force it.
+	orig := sysctlTable
+	sysctlTable = func() (map[int]psRow, bool) { return nil, false }
+	t.Cleanup(func() { sysctlTable = orig })
+
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "ps.pid")
+	script := "#!/bin/sh\necho $$ > '" + pidFile + "'\nexec /bin/sleep 30\n"
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	start := time.Now()
+	if got := runningAdapter("stall-" + strconv.Itoa(os.Getpid())); got != "__UNKNOWN__" {
+		t.Fatalf("a stalled ps must be answered __UNKNOWN__, got %q", got)
+	}
+	// The ps cannot finish inside the bound, so only the bound can answer: an
+	// answer sooner means the fake never stalled and the check below is empty.
+	if elapsed := time.Since(start); elapsed < 900*time.Millisecond || elapsed > 1500*time.Millisecond {
+		t.Fatalf("a ps stalled past the bound must be answered at it, took %v", elapsed)
+	}
+
+	// The fake names the process the read started; it must not outlive the
+	// answer. The kill and the read's Wait land a moment after the deadline.
+	limit := time.Now().Add(2 * time.Second)
+	var pid int
+	for pid == 0 {
+		b, err := os.ReadFile(pidFile)
+		if err == nil {
+			if n, perr := strconv.Atoi(strings.TrimSpace(string(b))); perr == nil && n > 0 {
+				pid = n
+			}
+		}
+		if pid == 0 && time.Now().After(limit) {
+			t.Fatalf("the fake ps never recorded its pid: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	limit = time.Now().Add(2 * time.Second)
+	for !errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+		if time.Now().After(limit) {
+			t.Fatalf("the stalled ps (pid %d) still runs after runningAdapter returned", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
