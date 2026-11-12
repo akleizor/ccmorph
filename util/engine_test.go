@@ -56,6 +56,20 @@ func TestTheWarningAndTheSetAgreeAModelWalledAtItsTriggerIsSafe(t *testing.T) {
 	}
 }
 
+// A zero output pin is unpinned: engineReserve reads 0 as "use the model
+// default", and the advisory's header trigger must make that same reserve. The
+// inlined copy hazardRows used to carry subtracted nothing for "0", so it sized
+// the advisory at a trigger the engine would never use.
+func TestHazardSetReadsAZeroOutputPinAsUnpinned(t *testing.T) {
+	conf, set := hazardWorld(t, "roomy=1000000 small=50000", `{"availableModels":["roomy","small"]}`)
+	read := func(maxOut string) string {
+		return hazardNames(t, HazardIn{Profile: "gw", Budget: "120000", Sources: []string{set}, RawOut: maxOut, Conf: conf, PctInEnv: true})
+	}
+	if zero, unset := read("0"), read(""); zero != unset {
+		t.Fatalf("a zero pin must read as unpinned: with \"0\" %q, unset %q", zero, unset)
+	}
+}
+
 // The engine's env boolean: ECMAScript trim (U+FEFF included, NEL not), then 1/true/yes/on.
 func TestEngineBoolReadsLikeTheEngine(t *testing.T) {
 	for _, v := range []string{"1", "true", "yes", "on", "TRUE", "On", " on ", "yes ", "\ufeffon", "\ufeff1"} {
