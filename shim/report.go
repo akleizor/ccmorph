@@ -309,6 +309,16 @@ func fmtG(f float64) string { return strconv.FormatFloat(f, 'g', 6, 64) }
 // report, which readers read.
 const moveSettle = time.Hour
 
+// MoveFlatRowsAsync starts the pre-shard move in the background. Every adapter
+// start finishes it, so a stock install never waits on a manual report: 776k
+// flat rows left in place made each quota read open every one of them and
+// saturated the SSD (2026-11-12). Both starts — the shim run as its own
+// executable and the adapter serving it in-process — call it, and moveLock
+// serializes their runs (#513).
+func MoveFlatRowsAsync() {
+	go moveFlatRows()
+}
+
 // moveFlatRows is the one-time move of a pre-shard store: each flat row goes
 // into the day folder of its mtime, so a windowed read stops opening it. The
 // mtime, not the row's own stamp, picks the folder — the move reads no

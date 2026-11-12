@@ -345,6 +345,9 @@ func startShim(hooksBin string, o shim.Options, env map[string]string, stdout, s
 	if err != nil {
 		return nil, err
 	}
+	// The stock adapter never enters shim.Main, so the pre-shard move starts
+	// here too; its lock serializes this start against a report's (#513).
+	shim.MoveFlatRowsAsync()
 	p := &proc{done: make(chan struct{}), stop: func() { srv.Close() }}
 	go func() { srv.Serve(ln); close(p.done) }()
 	return p, nil
