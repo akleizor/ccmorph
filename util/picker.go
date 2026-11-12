@@ -5,11 +5,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/settingscompose"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -34,18 +34,7 @@ func iterItems(v any) ([]any, bool) {
 	return nil, false
 }
 
-var cloaked = regexp.MustCompile(`^claude-.*-dd(?:-|\n?\z)`)
-
 var families = []string{"opus", "sonnet", "haiku", "fable"}
-
-func inList(list []any, s string) bool {
-	for _, e := range list {
-		if x, ok := e.(string); ok && x == s {
-			return true
-		}
-	}
-	return false
-}
 
 // rewriteJSON is the picker's single read, mutate, atomic replace of one settings file.
 // Any failure leaves the file as it was.
@@ -243,7 +232,7 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 			return !ordjson.Equal(am, beforeModels) || !ordjson.Equal(md, beforeModel)
 		}
 		stored, _ := doc.Get("model")
-		if s, ok := stored.(string); ok && cloaked.MatchString(s) {
+		if s, ok := stored.(string); ok && disguised.MatchString(s) {
 			undisguised := ctxwindow.RealID(s)
 			for _, v := range values {
 				if v == undisguised {
@@ -268,7 +257,7 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 		}
 		keepLaunch := mappedAlias(launch) && !isExcl(launch)
 		if !fresh {
-			if keepLaunch && !inList(current, launch) {
+			if keepLaunch && !hasString(current, launch) {
 				current = append(current, launch)
 			}
 			if current == nil {
@@ -300,7 +289,7 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 			for _, f := range fam {
 				isFam = isFam || m == f
 			}
-			if (isFam || (strings.HasPrefix(m, "claude-") && !covered(m))) && !cloaked.MatchString(m) {
+			if (isFam || (strings.HasPrefix(m, "claude-") && !covered(m))) && !disguised.MatchString(m) {
 				kept = append(kept, m)
 			}
 		}
@@ -355,7 +344,7 @@ func orDefault(s, d string) string {
 // state dir and MODEL_WINDOW_PROFILE_CONF, as the resolver does.
 func LaunchWindow(profile, model string, sources []string) []string {
 	fields := make([]string, 6)
-	doc := mergedView(sources)
+	doc := settingscompose.MergedView(sources)
 	if model != "" {
 		copy(fields[0:4], ctxwindow.Resolve(profile, model).Fields())
 	}
@@ -378,7 +367,7 @@ func LaunchWindow(profile, model string, sources []string) []string {
 	if best > 0 {
 		fields[4] = fmt.Sprint(best)
 	}
-	if v, has := doc.Get("autoCompactWindow"); has && acwValid(v) {
+	if v, has := doc.Get("autoCompactWindow"); has && settingscompose.ACWValid(v) {
 		fields[5] = acwString(v)
 	}
 	return fields

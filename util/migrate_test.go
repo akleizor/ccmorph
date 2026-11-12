@@ -7,6 +7,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 func mustWrite(t *testing.T, path, body string) {
@@ -347,7 +349,7 @@ func TestMigrateCarriedLinkAtARealStoreFileKeepsIt(t *testing.T) {
 		if err != nil || string(b) != "transcript\n" {
 			t.Fatalf("through=%v: real transcript lost: %v %q", through, err, b)
 		}
-		if isLink(real) {
+		if paths.IsSymlink(real) {
 			t.Fatalf("through=%v: the real file became a link", through)
 		}
 	}
@@ -633,7 +635,7 @@ func TestMergeParksClearsADeadStoreLink(t *testing.T) {
 			if b, err := os.ReadFile(store + "/" + c.file); err != nil || string(b) != "parked\n" {
 				t.Fatalf("the parked file must reach the store: %q %v (%v)", b, err, notes)
 			}
-			if isLink(link) {
+			if paths.IsSymlink(link) {
 				t.Errorf("the dead link must have given way: %s", link)
 			}
 			if len(notes) != 0 {
@@ -658,7 +660,7 @@ func TestMergeParksKeepsAFileTheStoreReachesThroughALink(t *testing.T) {
 		if b, err := os.ReadFile(store + "/proj/s.jsonl"); err != nil || string(b) != "parked\n" {
 			t.Fatalf("the store's link must become the transcript: %q %v", b, err)
 		}
-		if isLink(store + "/proj/s.jsonl") {
+		if paths.IsSymlink(store + "/proj/s.jsonl") {
 			t.Error("the store must hold the real file")
 		}
 	})

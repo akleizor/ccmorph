@@ -1638,3 +1638,67 @@ func TestNativeBaseOwnsTheDefaultAndItsSpellings(t *testing.T) {
 		}
 	}
 }
+
+// _env's answer is the env a script reads, and its stderr is part of that
+// contract: the removed-key notices the read raises stay off both. The launch
+// prints those notices where a person sees them; _env, sharing the one reader
+// through profileEnvironment, drops them.
+func TestEnvVerbKeepsTheRemovedKeyNoticesOffItsAnswer(t *testing.T) {
+	state := t.TempDir()
+	conf := "type=apikey\nbase_url=https://gw.test\napi_key={{SECRET_6h9t9hc7fw2m}}\nlean=1\n"
+	if err := os.WriteFile(filepath.Join(state, "demo.conf"), []byte(conf), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":/usr/bin:/bin")
+	t.Setenv("HOME", t.TempDir())
+	l := &launcher{dir: state, profileDirs: filepath.Join(t.TempDir(), "profiles")}
+	saved := os.Stderr
+	er, ew, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = ew
+	out, rc := captureStdout(t, func() int { return l.envVerb([]string{"demo"}) })
+	ew.Close()
+	os.Stderr = saved
+	note, _ := io.ReadAll(er)
+	if rc != 0 {
+		t.Fatalf("_env refused a profile that launches: rc=%d out=%q note=%q", rc, out, note)
+	}
+	if !strings.Contains(out, "ANTHROPIC_BASE_URL=https://gw.test") {
+		t.Fatalf("the env must be the answer:\n%s", out)
+	}
+	if len(note) != 0 {
+		t.Fatalf("a removed-key notice reached _env's stderr:\n%s", note)
+	}
+}
+
+// A default is rescued to its case twin only when the spelling is itself a
+// profile name: case folding maps the Kelvin sign (U+212A) onto k, but a word
+// that can never be a name is refused as written, never read as the profile
+// whose letters it folds to.
+func TestReadActiveRescuesOnlyAValidSpelling(t *testing.T) {
+	state := t.TempDir()
+	if err := os.WriteFile(filepath.Join(state, "k.conf"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "active"), []byte("\u212A\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", t.TempDir())
+	l := &launcher{dir: state, profileDirs: filepath.Join(t.TempDir(), "profiles")}
+	if name, ok := l.readActiveFile(); name != "\u212A" || !ok {
+		t.Fatalf("readActiveFile = %q, %v; the invalid spelling must come back as written", name, ok)
+	}
+	out, rc := captureStdout(t, func() int { return l.use(nil) })
+	if rc != 0 || !strings.Contains(out, "No default set. Profiles: k") {
+		t.Fatalf("use with an invalid default: rc=%d out=%q", rc, out)
+	}
+	if name, ok := l.readActive(); name != "" || ok {
+		t.Fatalf("readActive = %q, %v; an invalid default must be refused", name, ok)
+	}
+}

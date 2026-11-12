@@ -60,11 +60,8 @@ func StoredSignin(home string) string {
 // token sends none.
 func ProbeToken(token string) (code string) {
 	body, err := curlBearer(token, []string{"-sS", "--connect-timeout", "2", "--max-time", "5",
-		"-w", `\n__CCMORPH_STATUS__%{http_code}`, "-H", "anthropic-version: 2023-06-01",
+		"-w", `\n` + statusMarker + `%{http_code}`, "-H", "anthropic-version: 2023-06-01",
 		apiURL("https://api.anthropic.com", "/v1/models?limit=1000")}, io.Discard)
-	code = "000"
-	if i := strings.LastIndex(body, "__CCMORPH_STATUS__"); err == nil && i >= 0 {
-		_, code = strings.TrimSuffix(body[:i], "\n"), strings.TrimRight(body[i+len("__CCMORPH_STATUS__"):], "\n")
-	}
+	_, code, _ = probeStatus(body, err)
 	return code
 }

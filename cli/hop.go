@@ -66,13 +66,7 @@ func (l *launcher) hop(args []string) int {
 			current = util.SessionAdapter(n)
 		}
 		if current == "" {
-			if cfg := os.Getenv("CLAUDE_CONFIG_DIR"); cfg != "" {
-				// Like zsh's :A, resolve what exists: the profile dir itself may not yet.
-				parent, dirs := resolvePath(filepath.Dir(cfg)), resolvePath(l.profileDirs)
-				if parent != "" && parent == dirs {
-					current = filepath.Base(cfg)
-				}
-			}
+			current = l.configDirProfile()
 		}
 	}
 	if name == "" {
@@ -269,4 +263,18 @@ func resolvePath(p string) string {
 	}
 	abs, _ := filepath.Abs(p)
 	return abs
+}
+
+// configDirProfile is the profile a CLAUDE_CONFIG_DIR inside the profile store
+// spells: the dir's base name, "" when it points anywhere else or is unset.
+func (l *launcher) configDirProfile() string {
+	cfg := os.Getenv("CLAUDE_CONFIG_DIR")
+	if cfg == "" {
+		return ""
+	}
+	parent, dirs := resolvePath(filepath.Dir(cfg)), resolvePath(l.profileDirs)
+	if parent != "" && parent == dirs {
+		return filepath.Base(cfg)
+	}
+	return ""
 }

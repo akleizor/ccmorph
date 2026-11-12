@@ -34,11 +34,7 @@ func (l *launcher) models(args []string) int {
 		return l.extraArg("models", mode)
 	}
 	name := args[0]
-	if !profile.ValidName(name) {
-		return l.badName("models", name)
-	}
-	if !l.exists(name) {
-		l.noProfile(name)
+	if !l.judgeProfile(name, "models") {
 		return 1
 	}
 	if l.noModelList(name) {

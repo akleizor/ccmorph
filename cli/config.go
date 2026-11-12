@@ -45,21 +45,12 @@ func (l *launcher) getSet(verb string, args []string) int {
 		return ""
 	}
 	name := at(0)
-	if name == "" || interactive(name) {
-		picked, ok := l.menuProfile()
-		if !ok {
-			return 1
-		}
-		args = append([]string{picked}, args[min(1, len(args)):]...)
-		name = picked
-	}
-	if !profile.ValidName(name) {
-		return l.badName(verb, name)
-	}
-	if !l.exists(name) {
-		l.noProfile(name)
+	if !l.requireProfile(&name, verb) {
 		return 1
 	}
+	// The chooser's pick takes args[0]'s place whether the menu ran or not —
+	// name is args[0] when it did not.
+	args = append([]string{name}, args[min(1, len(args)):]...)
 	key := at(1)
 	pick := func(key string) (string, bool) {
 		if key == "model" {
@@ -201,18 +192,7 @@ func (l *launcher) config(args []string) int {
 	if len(args) == 1 {
 		name = args[0]
 	}
-	if name == "" || interactive(name) {
-		picked, ok := l.menuProfile()
-		if !ok {
-			return 1
-		}
-		name = picked
-	}
-	if !profile.ValidName(name) {
-		return l.badName("config", name)
-	}
-	if !l.exists(name) {
-		l.noProfile(name)
+	if !l.requireProfile(&name, "config") {
 		return 1
 	}
 	if rc, done := l.locked(name, []string{"config", name}); done {

@@ -39,6 +39,18 @@ name to ban, so the guard holds only the named ones. `cli/launch.go`'s
 `posInt` parses a digit string into an int, not a JSON number into a window,
 so it is a different function with the same name, not a copy — as #423's
 `adapter`/`truthy` is.
+
+Issue #486: the strays the util+cli batch carried. util's `isLink` was
+`paths.IsSymlink` spelled out — the #422 predicate sweep had missed it; cli's
+own `isLink` in `rm.go` is the same predicate and stays for its own change,
+so the name is not banned while the two packages differ. `inList` joined
+util's `hasString`; `mergedView` and `acwValid` became direct
+`settingscompose` calls (`settingscompose`'s own `acwValid` judges its
+internal `value`, not `any`, so it is a different function with the same
+name). The rest leave no name to ban: the twice-compiled regexp, the
+status-marker split, the home `.claude.json` fallback pair, and the ten verb
+preambles are inline duplicates, which `requireProfile`/`judgeProfile` now
+own.
 """
 import os
 import re
@@ -68,6 +80,9 @@ CONSOLIDATED = {
     "stemOf": "ctxwindow.stem",
     "globConf": "ctxwindow.confScan",
     "set": "profile.SetOf",
+    "inList": "util.hasString",
+    "mergedView": "settingscompose.MergedView",
+    "acwValid": "settingscompose.ACWValid",
 }
 # #422's predicates: the unexported spelling a new copy would take, mapped to
 # the exported definition that replaced it. Only that exported spelling, and
@@ -81,11 +96,13 @@ PREDICATES = {
 PATHS_PACKAGE = ROOT / "util" / "paths"
 # `adapter` decodes with encoding/json, so its `truthy` takes float64 and
 # map[string]any; `cli`'s `posInt` parses a digit string into an int, not a
-# JSON number into a window. Each is a different function with the same name,
-# not a copy (#423, #487). They are the only allowed unexported definitions of
-# a consolidated name.
+# JSON number into a window; `settingscompose`'s `acwValid` judges its
+# internal `value`, not `any` (#423, #487, #486). Each is a different function
+# with the same name, not a copy. They are the only allowed unexported
+# definitions of a consolidated name.
 NOT_COPIES = {(ROOT / "adapter" / "probe.go", "truthy"),
-              (ROOT / "cli" / "launch.go", "posInt")}
+              (ROOT / "cli" / "launch.go", "posInt"),
+              (ROOT / "settingscompose" / "compose.go", "acwValid")}
 DEFINITION = re.compile(r"^func (\w+)\(", re.MULTILINE)
 
 

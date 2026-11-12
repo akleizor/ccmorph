@@ -331,12 +331,14 @@ func credentialStorage(conf, field string) string {
 }
 
 func (l *launcher) doctor(name string, verbose bool) int {
-	active := filepath.Join(l.dir, "active")
-	fromDefault := false
-	if name == "" && paths.IsFile(active) && !isLink(active) {
-		b, _ := os.ReadFile(active)
-		name = strings.TrimRight(string(b), "\n")
-		fromDefault = true
+	if name == "" {
+		// readActiveFile, the read the launch's readActive stands on — not
+		// readActive itself: doctor keeps its own reading of the default. An
+		// empty or unreadable one is no profile selected, not a refusal, and
+		// doctor never writes, where readActive re-tightens the file to 0600.
+		if read, ok := l.readActiveFile(); ok {
+			name = read
+		}
 	}
 	if name == "" {
 		if len(l.confNames()) == 0 {
@@ -348,13 +350,6 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	}
 	if !profile.ValidName(name) {
 		return l.badName("doctor", name)
-	}
-	// A default written by an older ccmorph carries the spelling the person
-	// typed; read it as the profile that is really there, as use and list do.
-	if fromDefault && !l.exists(name) {
-		if twin := l.caseTwin(name); twin != "" {
-			name = twin
-		}
 	}
 	conf := filepath.Join(l.dir, name+".conf")
 	recreate := "edit " + conf + " to fix it, or re-create the profile: ccmorph rm " + name + " && ccmorph add " + name

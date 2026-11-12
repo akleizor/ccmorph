@@ -22,18 +22,7 @@ func (l *launcher) context(args []string) int {
 	if len(args) > 1 {
 		model = args[1]
 	}
-	if name == "" || name == "-i" || name == "--interactive" {
-		picked, ok := l.menuProfile()
-		if !ok {
-			return 1
-		}
-		name = picked
-	}
-	if !profile.ValidName(name) {
-		return l.badName("context", name)
-	}
-	if !l.exists(name) {
-		l.noProfile(name)
+	if !l.requireProfile(&name, "context") {
 		return 1
 	}
 	if model == "" || model == "-i" || model == "--interactive" {

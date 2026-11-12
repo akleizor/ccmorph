@@ -685,18 +685,7 @@ func (l *launcher) login(args []string) int {
 	if len(args) > 0 {
 		name = args[0]
 	}
-	if name == "" || interactive(name) {
-		picked, ok := l.menuProfile("sub", "provider", "apikey")
-		if !ok {
-			return 1
-		}
-		name = picked
-	}
-	if !profile.ValidName(name) {
-		return l.badName("login", name)
-	}
-	if !l.exists(name) {
-		l.noProfile(name)
+	if !l.requireProfile(&name, "login", "sub", "provider", "apikey") {
 		return 1
 	}
 	f, ok := l.readRaw(name)

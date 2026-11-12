@@ -424,11 +424,7 @@ func (l *launcher) probeVerb(args []string) int {
 		if !named {
 			continue
 		}
-		if !profile.ValidName(p) {
-			return l.badName("probe", p)
-		}
-		if !l.exists(p) {
-			l.noProfile(p)
+		if !l.judgeProfile(p, "probe") {
 			return 1
 		}
 		if l.noModelList(p) {
@@ -551,7 +547,10 @@ func (l *launcher) hasClaudeSubcommand(args []string) bool {
 	return false
 }
 
-// envVerb is `ccmorph _env <profile>`: provision the profile and print its launch env.
+// envVerb is `ccmorph _env <profile>`: provision the profile and print the
+// launch env profileEnvironment builds — the removed-key notices it raises
+// are dropped here, the env is the answer a script reads; the launch prints
+// them where a person sees them.
 func (l *launcher) envVerb(args []string) int {
 	name := ""
 	if len(args) > 0 {
@@ -564,19 +563,10 @@ func (l *launcher) envVerb(args []string) int {
 		fmt.Fprintln(os.Stderr, "ccmorph: unknown profile '"+name+"'")
 		return 1
 	}
-	typ, env, err := util.ProfileEnv(l.dir, l.profileDirs, name, func(string) {})
-	if err != nil {
-		msg := err.Error()
-		if msg == "" {
-			msg = "could not read profile '" + name + "'"
-		}
-		l.err(msg)
+	env, ok := l.profileEnvironment(name, func(string) {})
+	if !ok {
 		return 1
 	}
-	if !l.setupDir(name, typ, liveRefuse) {
-		return 1
-	}
-	l.prelaunch(name)
 	if len(env) > 0 {
 		fmt.Println(strings.Join(env, "\n"))
 	}

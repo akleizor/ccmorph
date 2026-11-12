@@ -36,18 +36,7 @@ func (l *launcher) inspect(args []string) int {
 	if len(args) > 0 {
 		name = args[0]
 	}
-	if name == "-i" || name == "--interactive" || name == "" {
-		picked, ok := l.menuProfile()
-		if !ok {
-			return 1
-		}
-		name = picked
-	}
-	if !profile.ValidName(name) {
-		return l.badName("inspect", name)
-	}
-	if !l.exists(name) {
-		l.noProfile(name)
+	if !l.requireProfile(&name, "inspect") {
 		return 1
 	}
 	// The zsh read the conf alone and validated nothing: inspect is the
