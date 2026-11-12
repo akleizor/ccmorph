@@ -1477,3 +1477,55 @@ func TestAnAdapterRefusalStandsAlone(t *testing.T) { // issue #374
 		})
 	}
 }
+
+// The probe verdict is the one status switch every probe of a credential reads
+// (#488): the branches #255, #286 and #374 each landed in, spelled four times
+// before. Pinned here once — including the three-digit guard, so a status a
+// probe can never answer still reads as no verdict — so the sites that call it
+// cannot drift apart.
+func TestProbeVerdictSortsEveryStatusIntoItsVerdict(t *testing.T) {
+	for _, tc := range []struct {
+		code string
+		want probeStatus
+	}{
+		{"200", probeAccepted},
+		{"204", probeAccepted},
+		{"299", probeAccepted},
+		{"401", probeRejected},
+		{"403", probeRejected},
+		{"000", probeSilent},
+		{"", probeSilent},
+		{"302", probeOther},
+		{"500", probeOther},
+		{"503", probeOther},
+		{"20", probeOther},
+		{"2000", probeOther},
+	} {
+		if got := probeVerdict(tc.code); got != tc.want {
+			t.Errorf("probeVerdict(%q) = %d, want %d", tc.code, got, tc.want)
+		}
+	}
+}
+
+// nativeBase owns Anthropic's own endpoint (#488): the URL an empty base_url
+// means, and the spellings that count as that endpoint — the bare URL and its
+// trailing-slash form — which run's and inspect's switches each spelled three
+// ways because no one place normalized them. A base that is not Anthropic's
+// own comes back untouched, so no message ever rewrites a typed endpoint.
+func TestNativeBaseOwnsTheDefaultAndItsSpellings(t *testing.T) {
+	for _, tc := range []struct {
+		base   string
+		wantB  string
+		native bool
+	}{
+		{"", "https://api.anthropic.com", true},
+		{"https://api.anthropic.com", "https://api.anthropic.com", true},
+		{"https://api.anthropic.com/", "https://api.anthropic.com/", true},
+		{"https://gateway.example", "https://gateway.example", false},
+		{"http://127.0.0.1:18081", "http://127.0.0.1:18081", false},
+	} {
+		if b, native := nativeBase(tc.base); b != tc.wantB || native != tc.native {
+			t.Errorf("nativeBase(%q) = (%q, %t), want (%q, %t)", tc.base, b, native, tc.wantB, tc.native)
+		}
+	}
+}
