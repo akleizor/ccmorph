@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/util/argparse"
 )
 
 const prog = "context-probe"
@@ -89,16 +89,7 @@ func parseArgs(argv []string) (*args, error) {
 			return nil, usageError{"unrecognized arguments: " + arg}
 		}
 		name, val, hasVal := strings.Cut(arg, "=")
-		var match []string
-		for _, f := range ProbeOptions {
-			if f == name {
-				match = []string{f}
-				break
-			}
-			if strings.HasPrefix(f, name) {
-				match = append(match, f)
-			}
-		}
+		match := argparse.Matches(name, ProbeOptions)
 		if len(match) > 1 {
 			return nil, usageError{fmt.Sprintf("ambiguous option: %s could match %s", name, strings.Join(match, ", "))}
 		}
@@ -108,7 +99,7 @@ func parseArgs(argv []string) (*args, error) {
 		name = match[0]
 		if takesValue[name] {
 			if !hasVal {
-				if i+1 >= len(argv) || (strings.HasPrefix(argv[i+1], "-") && len(argv[i+1]) > 1 && !ordjson.IsNumber(argv[i+1])) {
+				if i+1 >= len(argv) || argparse.OptionLike(argv[i+1]) {
 					return nil, usageError{fmt.Sprintf("argument %s: expected one argument", name)}
 				}
 				i++

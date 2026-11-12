@@ -99,9 +99,11 @@ var ProfileEnv = append(append([]string{}, MappingEnv...),
 	"CLAUDE_CODE_MODEL_CAPABILITIES")
 
 // Defaults are the allowlists Read checks a conf against.
-func Defaults() Lists { return Lists{ProfileEnv: set(ProfileEnv), MappingEnv: set(MappingEnv)} }
+func Defaults() Lists { return Lists{ProfileEnv: SetOf(ProfileEnv), MappingEnv: SetOf(MappingEnv)} }
 
-func set(v []string) map[string]bool {
+// SetOf is v as a membership set; settingscompose builds its strip and mapping
+// sets with it too (#487).
+func SetOf(v []string) map[string]bool {
 	m := make(map[string]bool, len(v))
 	for _, k := range v {
 		m[k] = true

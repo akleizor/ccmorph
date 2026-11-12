@@ -235,9 +235,11 @@ func (b *priceBook) load() {
 	if err != nil {
 		return // a stale table keeps serving; the next session retries
 	}
-	models := parsePrices(api, b.host)
+	var models map[string]price
 	if b.parse != nil {
 		models = b.parse(api)
+	} else {
+		models = parsePrices(api, b.host)
 	}
 	if models == nil {
 		return

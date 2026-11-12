@@ -64,7 +64,7 @@ func asStr(v val) (string, bool) { s, ok := v.(string); return s, ok }
 
 func asPosInt(v val) (int64, bool) {
 	i, ok := anyInt(v)
-	return i, ok && i > 0
+	return i, ok && i > 0 // shortcut: a window past int64 is dropped, none is real
 }
 
 // anyInt is `type(v) is int`.

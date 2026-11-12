@@ -165,15 +165,10 @@ func (u *UsageSidecar) tagged(t taskTags) *UsageSidecar {
 }
 
 func (u *UsageSidecar) start(id string, requested *string, model *string, usage usageRow) *record {
-	now := time.Now().UTC()
-	ts := now.Format("2006-01-02T15:04:05")
-	if us := now.Nanosecond() / 1000; us != 0 {
-		ts += fmt.Sprintf(".%06d", us)
-	}
 	return &record{
 		responseID: id, turnID: randHex(16), requested: requested, servedModel: u.served,
 		retries: u.retries, masked: u.masked, task: u.tags.task, session: u.tags.session, attempt: u.tags.attempt, responseModel: model,
-		timestamp: ts + "+00:00", usage: usage,
+		timestamp: utcStamp(time.Now().UTC()), usage: usage,
 	}
 }
 

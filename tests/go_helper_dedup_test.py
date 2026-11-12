@@ -27,6 +27,18 @@ repository: `git worktree list` registers it, and git run inside it finds its
 top level there. A `.git` entry alone marks nothing, and a tracked file is
 always read; every other .go file under the checkout, tracked, untracked or
 ignored, is still read, as before.
+
+Issue #487: the strays the earlier sweeps missed. The shim spelled its UTC
+stamp out three times (`isoNow`, the sidecar's start, `rowTime`); ctxwindow
+kept `objOf` beside `asObj`, `posInt` beside `asPosInt`, `stemOf` beside
+`stem`, and three hand-rolled conf-directory scans; profile and
+settingscompose each had a `set`. One definition each: `shim.utcStamp`,
+`ctxwindow.asObj`/`asPosInt`/`stem`/`confScan`, `profile.SetOf`. The inline
+duplicates (the session capture in `swapDevice`, the argparse loops) leave no
+name to ban, so the guard holds only the named ones. `cli/launch.go`'s
+`posInt` parses a digit string into an int, not a JSON number into a window,
+so it is a different function with the same name, not a copy — as #423's
+`adapter`/`truthy` is.
 """
 import os
 import re
@@ -39,8 +51,8 @@ import pytest
 from support import HANG_TIMEOUT
 
 ROOT = Path(__file__).resolve().parent.parent
-# Names whose hand-written copies #303 and #423 removed; the value says where
-# the one definition now lives, for the failure message.
+# Names whose hand-written copies #303, #423 and #487 removed; the value says
+# where the one definition now lives, for the failure message.
 CONSOLIDATED = {
     "contains": "the standard library's slices.Contains",
     "stateDir": "paths.StateDir",
@@ -50,6 +62,12 @@ CONSOLIDATED = {
     "stripBOM": "ordjson.StripBOM",
     "truthy": "ordjson.Truthy",
     "truncRunes": "ordjson.TruncRunes",
+    "isoNow": "shim.utcStamp",
+    "posInt": "ctxwindow.asPosInt",
+    "objOf": "ctxwindow.asObj",
+    "stemOf": "ctxwindow.stem",
+    "globConf": "ctxwindow.confScan",
+    "set": "profile.SetOf",
 }
 # #422's predicates: the unexported spelling a new copy would take, mapped to
 # the exported definition that replaced it. Only that exported spelling, and
@@ -62,9 +80,12 @@ PREDICATES = {
 }
 PATHS_PACKAGE = ROOT / "util" / "paths"
 # `adapter` decodes with encoding/json, so its `truthy` takes float64 and
-# map[string]any; it is a different function with the same name, not a copy
-# (#423). It is the only allowed unexported definition of a consolidated name.
-NOT_COPIES = {(ROOT / "adapter" / "probe.go", "truthy")}
+# map[string]any; `cli`'s `posInt` parses a digit string into an int, not a
+# JSON number into a window. Each is a different function with the same name,
+# not a copy (#423, #487). They are the only allowed unexported definitions of
+# a consolidated name.
+NOT_COPIES = {(ROOT / "adapter" / "probe.go", "truthy"),
+              (ROOT / "cli" / "launch.go", "posInt")}
 DEFINITION = re.compile(r"^func (\w+)\(", re.MULTILINE)
 
 

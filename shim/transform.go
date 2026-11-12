@@ -144,11 +144,6 @@ func falsy(b []byte, sp Span) bool {
 // rewrite returns b with the response edits applied, or b itself, byte for byte,
 // when there are none (or b is not JSON, or nests too deeply to be handled).
 func (s *Server) rewrite(b []byte, answerAs string, spaced bool) ([]byte, bool) {
-	out, changed := s.rewriteEdits(b, answerAs, spaced)
-	return out, changed
-}
-
-func (s *Server) rewriteEdits(b []byte, answerAs string, spaced bool) ([]byte, bool) {
 	if len(b) == 0 || !validJSON(b) {
 		return b, false
 	}
@@ -262,32 +257,30 @@ func userIDs(d *doc) (inner []byte, user Span, ok bool) {
 }
 
 // rememberSession captures the session id from metadata.user_id, keeping the
-// first non-empty one.
-func rememberSession(d *doc, session *string) {
-	inner, _, ok := userIDs(d)
+// first non-empty one. It also returns the object inside user_id, that
+// object's members, and the user_id span — the pieces a caller that edits
+// user_id needs — so swapDevice reads the same one pass instead of its own
+// copy of the capture. ok is false when the body has no such object.
+func rememberSession(d *doc, session *string) (inner []byte, ms []Member, user Span, ok bool) {
+	inner, user, ok = userIDs(d)
 	if !ok {
-		return
+		return nil, nil, Span{}, false
 	}
-	ms, _ := Object(inner, skipWS(inner, 0))
-	if sp, ok := lastMember(ms, "session_id"); ok {
+	ms, _ = Object(inner, skipWS(inner, 0))
+	if sp, found := lastMember(ms, "session_id"); found {
 		if sid, isStr := str(inner, sp); isStr && *session == "" {
 			*session = sid
 		}
 	}
+	return inner, ms, user, true
 }
 
 // swapDevice is the edit that replaces metadata.user_id.device_id (user_id is a
 // JSON string) with this session's random one; also remembers the session id.
 func (s *Server) swapDevice(d *doc, session *string) (Edit, bool) {
-	inner, user, ok := userIDs(d)
+	inner, ms, user, ok := rememberSession(d, session)
 	if !ok {
 		return Edit{}, false
-	}
-	ms, _ := Object(inner, skipWS(inner, 0))
-	if sp, ok := lastMember(ms, "session_id"); ok {
-		if sid, isStr := str(inner, sp); isStr && *session == "" {
-			*session = sid
-		}
 	}
 	dev, ok := lastMember(ms, "device_id")
 	if !ok || inner[dev.Start] != '"' {

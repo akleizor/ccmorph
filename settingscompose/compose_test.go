@@ -164,10 +164,28 @@ func TestMalformedTombstonesFailTheProjection(t *testing.T) {
 }
 
 func TestUsageErrorsExitTwo(t *testing.T) {
-	for _, args := range [][]string{{}, {"nope"}, {"materialize"}, {"fold", "p", "--bogus"}} {
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{nil, "the following arguments are required: command"},
+		{[]string{"nope"}, "invalid choice"},
+		{[]string{"materialize"}, "the following arguments are required: profile_dir"},
+		{[]string{"fold", "p", "--bogus"}, "unrecognized arguments: --bogus"},
+		// GH-487 pins the flag-spelling rules the shared argparse helper now
+		// owns, through Main's own errors: a unique prefix resolves (--mapp was
+		// accepted as --mapping and ate the positional, so the complaint is the
+		// missing profile_dir), and a value-taking option at the end of argv
+		// says "expected one argument".
+		{[]string{"fold", "--mapp", "x"}, "the following arguments are required: profile_dir"},
+		{[]string{"materialize", "p", "--saved"}, "argument --saved: expected one argument"},
+	} {
 		var stderr bytes.Buffer
-		if code := Main(args, &stderr); code != 2 {
-			t.Errorf("%v: exit %d", args, code)
+		if code := Main(tc.args, &stderr); code != 2 {
+			t.Errorf("%v: exit %d", tc.args, code)
+		}
+		if !strings.Contains(stderr.String(), tc.want) {
+			t.Errorf("%v: stderr %q does not contain %q", tc.args, stderr.String(), tc.want)
 		}
 	}
 }

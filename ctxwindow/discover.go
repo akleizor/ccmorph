@@ -5,9 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -147,26 +145,15 @@ func confPaths(profiles []string) []string {
 		}
 		return paths
 	}
-	dir := StateDir()
-	entries, _ := os.ReadDir(dir)
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".conf") {
-			paths = append(paths, filepath.Join(dir, e.Name()))
-		}
-	}
-	return paths
-}
-
-func stemOf(path string) string {
-	return strings.TrimSuffix(path[strings.LastIndex(path, "/")+1:], ".conf")
+	return confScan(StateDir())
 }
 
 // priorValues are the stored `profile:model` windows.
 var priorValues = func(profiles []string) map[string]int64 {
 	values := map[string]int64{}
 	for _, path := range confPaths(profiles) {
-		stem := stemOf(path)
-		if !ValidProfileName(stem) {
+		profile := stem(path)
+		if !ValidProfileName(profile) {
 			continue
 		}
 		fields, ok := confFields(path)
@@ -175,7 +162,7 @@ var priorValues = func(profiles []string) map[string]int64 {
 		}
 		d := DiscoveredValues(fields)
 		for _, m := range slices.Sorted(maps.Keys(d)) {
-			values[stem+":"+m], _ = d[m]
+			values[profile+":"+m], _ = d[m]
 		}
 	}
 	return values
@@ -188,8 +175,8 @@ var priorValues = func(profiles []string) map[string]int64 {
 var priorCatalogueTags = func(profiles []string) map[string]obj {
 	tags := map[string]obj{}
 	for _, path := range confPaths(profiles) {
-		stem := stemOf(path)
-		if !ValidProfileName(stem) {
+		profile := stem(path)
+		if !ValidProfileName(profile) {
 			continue
 		}
 		fields, ok := confFields(path)
@@ -198,7 +185,7 @@ var priorCatalogueTags = func(profiles []string) map[string]obj {
 		}
 		s := DiscoveredSources(fields)
 		for _, m := range slices.Sorted(maps.Keys(s)) {
-			tags[stem+":"+m], _ = s[m]
+			tags[profile+":"+m], _ = s[m]
 		}
 	}
 	return tags
@@ -208,22 +195,14 @@ var priorCatalogueTags = func(profiles []string) map[string]obj {
 func routedProfiles() []string {
 	var names []string
 	dir := StateDir()
-	entries, _ := os.ReadDir(dir)
-	var confs []string
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".conf") {
-			confs = append(confs, e.Name())
-		}
-	}
-	sort.Strings(confs)
-	for _, name := range confs {
-		fields, ok := confFields(filepath.Join(dir, name))
+	for _, path := range confScan(dir) {
+		fields, ok := confFields(path)
 		if !ok {
 			continue
 		}
 		switch fields["type"] {
 		case "apikey", "proxy", "provider":
-			names = append(names, strings.TrimSuffix(name, ".conf"))
+			names = append(names, stem(path))
 		}
 	}
 	return names

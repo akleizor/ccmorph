@@ -6,15 +6,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"syscall"
 
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
-// globConf lists state/*.conf (sorted), as paths.
-func globConf(dir string) []string {
+// confScan lists dir's *.conf files as paths; ReadDir returns them sorted by name.
+func confScan(dir string) []string {
 	entries, _ := os.ReadDir(dir)
 	var out []string
 	for _, e := range entries {
@@ -22,7 +21,6 @@ func globConf(dir string) []string {
 			out = append(out, filepath.Join(dir, e.Name()))
 		}
 	}
-	sort.Strings(out)
 	return out
 }
 
@@ -106,7 +104,7 @@ func MigrationPreview() (string, error) {
 	type counts struct{ scoped, cached int }
 	profiles := map[string]*counts{}
 	var names []string
-	for _, p := range globConf(state) {
+	for _, p := range confScan(state) {
 		if s := stem(p); !paths.IsSymlink(p) && ValidProfileName(s) {
 			profiles[s] = &counts{}
 			names = append(names, s)
@@ -195,7 +193,7 @@ func migrateLocked(state string, stderr io.Writer) (int, error) {
 		}
 	}
 	var profiles []string
-	for _, conf := range globConf(state) {
+	for _, conf := range confScan(state) {
 		if conf[strings.LastIndex(conf, "/")+1:] == "model-registry.conf" || paths.IsSymlink(conf) || !ValidProfileName(stem(conf)) {
 			continue
 		}
@@ -275,7 +273,7 @@ func migrateLocked(state string, stderr io.Writer) (int, error) {
 // RecoverCacheBackups is explicit recovery only: old backups never become an automatic live source.
 func RecoverCacheBackups(stderr io.Writer) (int, error) {
 	root := cacheRoot()
-	for _, conf := range globConf(StateDir()) {
+	for _, conf := range confScan(StateDir()) {
 		s := stem(conf)
 		if paths.IsSymlink(conf) || !ValidProfileName(s) {
 			continue
@@ -311,7 +309,7 @@ func RecoverCacheBackups(stderr io.Writer) (int, error) {
 // many profiles moved.
 func moveInlineDiscovered(state string) (int, error) {
 	moved := 0
-	for _, conf := range globConf(state) {
+	for _, conf := range confScan(state) {
 		s := stem(conf)
 		if paths.IsSymlink(conf) || !ValidProfileName(s) {
 			continue

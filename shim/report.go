@@ -28,22 +28,13 @@ func recordOutcome(task, result string) {
 	if err := os.Mkdir(dir, 0o700); err != nil && !os.IsExist(err) {
 		die(err.Error())
 	}
-	row := `{"task":` + string(jsonStr(task)) + `,"outcome":"` + result + `","timestamp":"` + isoNow() + `"}` + "\n"
+	row := `{"task":` + string(jsonStr(task)) + `,"outcome":"` + result + `","timestamp":"` + utcStamp(time.Now().UTC()) + `"}` + "\n"
 	f, err := os.OpenFile(filepath.Join(dir, "outcomes.jsonl"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
 		die(err.Error())
 	}
 	defer f.Close()
 	f.WriteString(row)
-}
-
-func isoNow() string {
-	now := time.Now().UTC()
-	ts := now.Format("2006-01-02T15:04:05")
-	if us := now.Nanosecond() / 1000; us != 0 {
-		ts += fmt.Sprintf(".%06d", us)
-	}
-	return ts + "+00:00"
 }
 
 var isoLayouts = []string{
