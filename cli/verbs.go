@@ -184,60 +184,47 @@ func (l *launcher) list(args []string) int {
 		l.err("list takes no arguments: '" + args[0] + "'")
 		return 2
 	}
-	active, found := l.active(), false
-	for _, n := range l.confNames() {
-		f, ok := l.readRaw(n)
-		if !ok {
-			fmt.Fprintf(os.Stderr, "ccmorph: skipping invalid profile '%s'\n", n)
-			continue
+	// The same description walk the profile menu renders from (#489): the
+	// kind, the detail under it and the marks are decided once, so a profile
+	// reads the same here as it does in the picker — a provider profile with
+	// no saved model says Browser login, and a private one carries the mark.
+	// What stays list's own is the paint, via kindColour below.
+	descs := l.describeProfiles(l.active(), nil)
+	for _, d := range descs {
+		marker, nameFmt := " ", d.name
+		if d.active {
+			marker, nameFmt = l.accent+"*"+l.reset, l.bold+d.name+l.reset
 		}
-		marker, nameFmt := " ", n
-		if n == active {
-			marker, nameFmt = l.accent+"*"+l.reset, l.bold+n+l.reset
+		label := l.kindColour(d) + d.kind + l.reset
+		if d.detail != "" {
+			label += l.dim + ": " + d.detail + l.reset
 		}
-		label := l.dim + profile.KindLabel(f["type"], f["provider"]) + l.reset
-		arrow := func(m string) string {
-			if m == "" {
-				return ""
-			}
-			return " → " + m
-		}
-		switch f["type"] {
-		case "sub":
-			if f["email"] != "" {
-				label = l.cyan + "Claude account" + l.reset + l.dim + ": " + f["email"] + l.reset
-			}
-		case "token":
-			label = l.yellow + "Claude token" + l.reset
-		case "apikey":
-			base := f["base_url"]
-			if base == "" {
-				base = "api.anthropic.com"
-			}
-			label = l.cyan + "API key" + l.reset + l.dim + ": " + base + arrow(l.accountModel(n)) + l.reset
-		case "provider":
-			m := l.accountModel(n)
-			p := f["provider"]
-			if p == "" {
-				p = "provider"
-			}
-			label = l.accent + providerLabel(p) + l.reset
-			if m != "" {
-				label += l.dim + arrow(m) + l.reset
-			}
-		}
-		if f["private"] == "1" {
+		if d.private {
 			// Marked where profiles are listed; inspect and doctor say what the
 			// mark means (#292).
 			label += " " + l.yellow + "· private" + l.reset
 		}
 		fmt.Printf(" %s %s (%s)\n", marker, nameFmt, label)
-		found = true
 	}
-	if !found {
+	if len(descs) == 0 {
 		fmt.Println(l.dim + noProfilesMsg + l.reset)
 	}
 	return 0
+}
+
+// kindColour is `list`'s per-kind paint — the one deliberate difference from
+// the profile menu (#489): the menu renders every kind in its single grey
+// theme, while `list`, a screen of its own, colours each kind so the types
+// read at a glance. The words come from the shared walk either way.
+func (l *launcher) kindColour(d profileDesc) string {
+	switch d.typ {
+	case "token":
+		return l.yellow
+	case "provider":
+		return l.accent
+	default:
+		return l.cyan
+	}
 }
 
 func (l *launcher) cred(args []string) int {

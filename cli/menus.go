@@ -11,9 +11,25 @@ import (
 	"github.com/akleizor/ccmorph/profile"
 )
 
-// profileRows is _ccm_profile_rows: ID<TAB>kind<TAB>detail<TAB>marker per profile.
-func (l *launcher) profileRows(active string, types []string) []string {
-	var rows []string
+// profileDesc is one profile as every surface that describes it shows it: the
+// name, the kind label, the detail under the kind, and the two marks — private
+// (#292) and the default. `list` and the profile menu render the same desc,
+// each in its own theme (#489).
+type profileDesc struct {
+	name            string
+	typ             string
+	kind, detail    string
+	private, active bool
+}
+
+// describeProfiles is the one walk that describes every profile: enumeration,
+// the skip wording for an invalid one, the type switch that builds the kind and
+// its detail, and the marks. Both engines that describe profiles — `list` and
+// the profile menu — render from it, so a fact settles here once and shows
+// wherever a profile is described (#489: the private mark had reached `list`
+// only, the Browser login fallback the menu only).
+func (l *launcher) describeProfiles(active string, types []string) []profileDesc {
+	var descs []profileDesc
 	for _, n := range l.confNames() {
 		f, ok := l.readRaw(n)
 		if !ok {
@@ -24,31 +40,54 @@ func (l *launcher) profileRows(active string, types []string) []string {
 		if len(types) > 0 && !slices.Contains(types, typ) {
 			continue
 		}
-		kind, detail := profile.KindLabel(typ, f["provider"]), ""
+		d := profileDesc{name: n, typ: typ, kind: profile.KindLabel(typ, f["provider"])}
 		switch typ {
 		case "sub":
-			detail = f["email"]
-		case "token":
+			d.detail = f["email"]
 		case "provider":
-			kind = providerLabel(f["provider"])
-			detail = l.accountModel(n)
-			if detail == "" {
-				detail = "Browser login"
+			// No saved model yet: the sign-in is the browser login `add`
+			// performed, and that is the detail worth showing.
+			d.detail = l.accountModel(n)
+			if d.detail == "" {
+				d.detail = "Browser login"
 			}
 		case "apikey":
-			detail = f["base_url"]
-			if detail == "" {
-				detail = "api.anthropic.com"
+			d.detail = f["base_url"]
+			if d.detail == "" {
+				d.detail = "api.anthropic.com"
 			}
 			if m := l.accountModel(n); m != "" {
-				detail += " → " + m
+				d.detail += " → " + m
+			}
+		}
+		d.private = f["private"] == "1"
+		d.active = n == active
+		descs = append(descs, d)
+	}
+	return descs
+}
+
+// profileRows is _ccm_profile_rows: ID<TAB>kind<TAB>detail<TAB>marker per
+// profile, rendered from the one description walk (#489).
+func (l *launcher) profileRows(active string, types []string) []string {
+	var rows []string
+	for _, d := range l.describeProfiles(active, types) {
+		detail := d.detail
+		if d.private {
+			// The mark #292 put on `list`, in the menu's single grey detail
+			// column: the menu has one theme and no per-kind colours, so the
+			// mark rides beside the other facts instead of `list`'s yellow.
+			if detail == "" {
+				detail = "· private"
+			} else {
+				detail += " · private"
 			}
 		}
 		marker := ""
-		if n == active {
+		if d.active {
 			marker = "default"
 		}
-		rows = append(rows, n+"\t"+kind+"\t"+strings.ReplaceAll(detail, "\t", " ")+"\t"+marker)
+		rows = append(rows, d.name+"\t"+d.kind+"\t"+strings.ReplaceAll(detail, "\t", " ")+"\t"+marker)
 	}
 	return rows
 }

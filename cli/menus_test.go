@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -33,6 +35,55 @@ func TestTheEffortPickerAndHelpNameTheConfLevels(t *testing.T) {
 	for _, lvl := range profile.Efforts {
 		if label := effortLabel(lvl); !strings.Contains(strings.ToLower(label), lvl) {
 			t.Errorf("the picker labels %q as %q, which does not name the value", lvl, label)
+		}
+	}
+}
+
+// #489: the profile menu and `list` describe the same profile, so the menu
+// carries the facts the listing does — the private mark #292 put on `list`
+// reached only one of the two engines. The row is the whole contract: the
+// kind, the detail under it (the saved model, or Browser login for a provider
+// profile with none), and the default mark.
+func TestTheProfileMenuRowsCarryTheListingsMarksIssue489(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	state, profiles := filepath.Join(root, "state"), filepath.Join(root, "profiles")
+	for _, d := range []string{state, filepath.Join(profiles, "gw"), filepath.Join(profiles, "cx")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conf := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(state, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conf("work.conf", "type=sub\nemail=demo@example.com\n")
+	conf("tok.conf", "type=token\ntoken={{SECRET_e695kwiyu4nm}}\nprivate=1\n")
+	conf("gw.conf", "type=apikey\napi_key={{SECRET_9wwp6b425rxn}}\nbase_url=https://gw.example\n")
+	conf("cx.conf", "type=provider\nprovider=codex\n")
+	if err := os.WriteFile(filepath.Join(profiles, "gw", "settings.json"), []byte(`{"model":"gw-model"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l := &launcher{dir: state, profileDirs: profiles}
+	rows := map[string]string{}
+	for _, r := range l.profileRows("tok", nil) {
+		name, _, _ := strings.Cut(r, "\t")
+		rows[name] = r
+	}
+	want := map[string]string{
+		"work": "work\tClaude account\tdemo@example.com\t",
+		"tok":  "tok\tClaude token\t· private\tdefault",
+		"gw":   "gw\tAPI key\thttps://gw.example → gw-model\t",
+		"cx":   "cx\tCodex\tBrowser login\t",
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("the menu offers rows for %q, want %q", rows, want)
+	}
+	for name, row := range want {
+		if rows[name] != row {
+			t.Errorf("the menu row for %s is %q, want %q", name, rows[name], row)
 		}
 	}
 }
