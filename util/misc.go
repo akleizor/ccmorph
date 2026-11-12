@@ -218,13 +218,10 @@ func SettingsValid(paths ...string) bool {
 	return true
 }
 
-// modelsCount is the length of data in a model listing; false when it has none.
-func modelsCount(body string) (int, bool) {
-	v, err := ordjson.Parse([]byte(body))
-	if err != nil {
-		return 0, false
-	}
-	list, ok := getKey(asObj(v), "data").([]any)
+// modelsCountDoc is the length of data in a decoded model listing; false when it
+// has none.
+func modelsCountDoc(payload any) (int, bool) {
+	list, ok := getKey(asObj(payload), "data").([]any)
 	return len(list), ok
 }
 
@@ -713,6 +710,11 @@ func GwModels(conf string, picker bool, body string) ([]ModelRow, bool) {
 	if err != nil {
 		return nil, false
 	}
+	return gwModelsDoc(payload, fields)
+}
+
+// gwModelsDoc is GwModels over a decoded listing and the conf fields it already read.
+func gwModelsDoc(payload any, fields map[string]string) ([]ModelRow, bool) {
 	entries, ok := listing(payload)
 	if !ok {
 		return nil, false
@@ -749,6 +751,11 @@ func modelInListing(listing, want, mapJSON string) int {
 	if err != nil {
 		return 2
 	}
+	return modelInListingDoc(payload, want, mapJSON)
+}
+
+// modelInListingDoc is modelInListing over a decoded listing.
+func modelInListingDoc(payload any, want, mapJSON string) int {
 	// A reply that is not the object a /v1/models listing is cannot be walked for
 	// the model either: ignorance, not absence, so the carried model survives.
 	if asObj(payload) == nil {
@@ -818,6 +825,15 @@ func modelIDShape(v string) bool {
 // served target, it is a tier alias, it is not shaped like a model id, or the
 // listing is unreadable or paged -- so the caller proceeds as before.
 func ServedRefusal(body, want, mapJSON, who string) (string, bool) {
+	payload, err := ordjson.Parse([]byte(body))
+	if err != nil {
+		return "", false
+	}
+	return servedRefusalDoc(payload, want, mapJSON, who)
+}
+
+// servedRefusalDoc is ServedRefusal over a listing the caller already decoded.
+func servedRefusalDoc(payload any, want, mapJSON, who string) (string, bool) {
 	if !modelIDShape(want) {
 		return "", false
 	}
@@ -831,13 +847,13 @@ func ServedRefusal(body, want, mapJSON, who string) (string, bool) {
 	}
 	// A readable, complete listing proves absence even when it serves nothing; a
 	// malformed or paged one cannot (modelInListing answers 2 for those).
-	if _, ok := modelsCount(body); !ok {
+	if _, ok := modelsCountDoc(payload); !ok {
 		return "", false
 	}
-	if modelInListing(body, want, mapJSON) != 1 {
+	if modelInListingDoc(payload, want, mapJSON) != 1 {
 		return "", false
 	}
-	rows, _ := GwModels("", false, body)
+	rows, _ := gwModelsDoc(payload, nil)
 	var ids []string
 	seen := map[string]bool{}
 	for _, r := range rows {

@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/profile"
 )
 
@@ -141,7 +142,12 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 		body, code := ProbeListing(base, key)
 		switch {
 		case strings.HasPrefix(code, "2") && len(code) == 3:
-			if n, ok := modelsCount(body); ok {
+			payload, perr := ordjson.Parse([]byte(body))
+			n, ok := 0, false
+			if perr == nil {
+				n, ok = modelsCountDoc(payload)
+			}
+			if ok {
 				listing = body
 				// The listing is all doctor asked: say so, so an OK here never
 				// reads as a passed message test (#375).
@@ -150,7 +156,7 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 				// default: ready would promise a launch that fails at its first
 				// message (#267).
 				if typ == "apikey" {
-					if msg, refuse := ServedRefusal(body, model, modelMap, "this gateway"); refuse {
+					if msg, refuse := servedRefusalDoc(payload, model, modelMap, "this gateway"); refuse {
 						// With nothing served there is no model to choose: the fix is on the
 						// gateway, or in the endpoint (#282).
 						fix := "choose a served model: ccmorph set " + name + " model <model-id>"
