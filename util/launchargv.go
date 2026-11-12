@@ -13,24 +13,11 @@ type LaunchedArgv struct {
 }
 
 // ParseLaunchArgv claims -a/--profile/--profile=/-i/--interactive and forwards
-// every other token, stepping over a native option's value (arity table: spelling
-// to flag, value or optional) so a value that looks like one of these flags stays
-// Claude Code's (#405). A misuse is an error carrying the message.
+// every other token with the launch flag grammar (stepLaunch): an option steps
+// over the value it owns — its own spellings by their rule, the rest by the
+// arity table — so a value that looks like one of these flags stays Claude
+// Code's (#405). A misuse is an error carrying the message.
 func ParseLaunchArgv(args []string, arity map[string]string) (LaunchedArgv, error) {
-	claims := func(a string) bool {
-		return a == "-a" || a == "--profile" || strings.HasPrefix(a, "--profile=") || a == "-i" || a == "--interactive"
-	}
-	flagAhead := func(rest []string) bool {
-		for _, a := range rest {
-			if a == "--" {
-				return false
-			}
-			if claims(a) {
-				return true
-			}
-		}
-		return false
-	}
 	fail := errors.New
 	profile, seen, interactive := "", false, false
 	var fwd []string
@@ -59,22 +46,10 @@ func ParseLaunchArgv(args []string, arity map[string]string) (LaunchedArgv, erro
 			seen = true
 		case a == "-i" || a == "--interactive":
 			interactive = true
-		case len(a) > 1 && a[0] == '-':
-			owns := 1
-			if flagAhead(args[i+1:]) && !strings.Contains(a, "=") && i+1 < len(args) {
-				switch arity[a] {
-				case "value":
-					owns = 2
-				case "optional":
-					if n := args[i+1]; n != "" && n[0] != '-' {
-						owns = 2
-					}
-				}
-			}
-			fwd = append(fwd, args[i:i+owns]...)
-			i += owns - 1
 		default:
-			fwd = append(fwd, a)
+			s := stepLaunch(args, arity, i)
+			fwd = append(fwd, args[i:i+s.wide]...)
+			i += s.wide - 1
 		}
 	}
 	return LaunchedArgv{profile, interactive, fwd}, nil
