@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // historyReadHook runs right after mergeHistory read the profile's file; a
@@ -35,7 +36,7 @@ func mergeHistory(from, to string) bool {
 		return false
 	}
 	src := from
-	if isLink(from) {
+	if paths.IsSymlink(from) {
 		r, err := filepath.EvalSymlinks(from)
 		if err != nil {
 			return false
@@ -55,7 +56,7 @@ func mergeHistory(from, to string) bool {
 	// was read is consumed; a changed one stays for the next launch, and the
 	// records already appended to the shared file dedup away then.
 	remove := func() bool {
-		if !isLink(from) {
+		if !paths.IsSymlink(from) {
 			if before == nil {
 				return false
 			}

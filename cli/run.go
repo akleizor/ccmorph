@@ -361,7 +361,7 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 				os.Unsetenv(k)
 			}
 		}
-		penv, ok := l.profileEnvironment(name)
+		penv, ok := l.profileEnvironment(name, func(line string) { fmt.Fprintln(os.Stderr, line) })
 		if !ok {
 			return fail()
 		}
@@ -976,9 +976,12 @@ func (l *launcher) projectPicker(name, base, key, own, tag, launch string) bool 
 }
 
 // profileEnvironment is `ccmorph _env`: the profile's launch env, after
-// provisioning its config dir and running the host's prelaunch step.
-func (l *launcher) profileEnvironment(name string) ([]string, bool) {
-	typ, env, err := util.ProfileEnv(l.dir, l.profileDirs, name, func(line string) { fmt.Fprintln(os.Stderr, line) })
+// provisioning its config dir and running the host's prelaunch step. notice
+// receives the removed-key lines the read raises: the launch prints them
+// where a person sees them, _env drops them — its output is the answer a
+// script reads.
+func (l *launcher) profileEnvironment(name string, notice func(string)) ([]string, bool) {
+	typ, env, err := util.ProfileEnv(l.dir, l.profileDirs, name, notice)
 	if err != nil {
 		msg := err.Error()
 		if msg == "" {

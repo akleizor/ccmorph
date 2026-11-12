@@ -142,7 +142,7 @@ func personDocs(profiles, name string) []personDoc {
 		}
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		for _, p := range []string{filepath.Join(home, ".claude.json"), filepath.Join(home, ".claude", ".claude.json")} {
+		for _, p := range baseClaudeJSONs(home) {
 			if d, ok := readPersonDoc(p); ok {
 				docs = append(docs, d)
 				break

@@ -53,18 +53,27 @@ func fetchModels(key string, errw io.Writer, curlArgs ...string) (string, bool) 
 // nothing answered. Each header is sent as a curl -H argument, so a native
 // Anthropic check can ask for a version the way the launch route does.
 func ProbeListing(base, key string, headers ...string) (body, code string) {
-	args := []string{"-sS", "--connect-timeout", "2", "--max-time", "5", "-w", `\n__CCMORPH_STATUS__%{http_code}`}
+	args := []string{"-sS", "--connect-timeout", "2", "--max-time", "5", "-w", `\n` + statusMarker + `%{http_code}`}
 	for _, h := range headers {
 		args = append(args, "-H", h)
 	}
-	body, err := curlKeyed(key, append(args, apiURL(base, "/v1/models?limit=1000")), io.Discard)
-	code = "000"
-	if i := strings.LastIndex(body, "__CCMORPH_STATUS__"); err == nil && i >= 0 {
-		body, code = strings.TrimSuffix(body[:i], "\n"), strings.TrimRight(body[i+len("__CCMORPH_STATUS__"):], "\n")
-	} else {
-		body = ""
-	}
+	raw, err := curlKeyed(key, append(args, apiURL(base, "/v1/models?limit=1000")), io.Discard)
+	body, code, _ = probeStatus(raw, err)
 	return undisguise(body), code
+}
+
+// statusMarker is the sentinel the never-failing probes ask curl to append to
+// an answer: everything before it is the body, after it the HTTP status.
+const statusMarker = "__CCMORPH_STATUS__"
+
+// probeStatus splits a probe's raw answer at the status marker: the body before
+// it with its trailing newline trimmed, the HTTP status after it, "000" when
+// nothing answered or no marker came back.
+func probeStatus(body string, err error) (payload, code string, ok bool) {
+	if i := strings.LastIndex(body, statusMarker); err == nil && i >= 0 {
+		return strings.TrimSuffix(body[:i], "\n"), strings.TrimRight(body[i+len(statusMarker):], "\n"), true
+	}
+	return "", "000", false
 }
 
 // curlFed runs curl with a credential fed through its stdin config (-K -), so

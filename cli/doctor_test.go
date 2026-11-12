@@ -118,3 +118,74 @@ func TestDoctorTranslatorVerdictUsesTheModelLaunchClassifies(t *testing.T) {
 		})
 	}
 }
+
+// A doctor that names no profile and finds none selected still reports the
+// environment a fresh install can check: an empty default is "no profile
+// selected" to doctor, its own reading of the shared read — never the
+// launch's refusal of an invalid active file.
+func TestDoctorReportsTheEnvironmentWhenTheDefaultIsEmpty(t *testing.T) {
+	state := t.TempDir()
+	if err := os.WriteFile(filepath.Join(state, "active"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":/usr/bin:/bin")
+	t.Setenv("HOME", t.TempDir())
+	l := &launcher{dir: state, profileDirs: filepath.Join(t.TempDir(), "profiles"), libDir: filepath.Join(t.TempDir(), "lib")}
+	out, rc := doctorOutput(t, l, "")
+	if rc != 0 {
+		t.Fatalf("an empty default with no profiles must report the environment, rc=%d:\n%s", rc, out)
+	}
+	if !strings.Contains(out, "claude executable") {
+		t.Fatalf("the environment report must still check claude:\n%s", out)
+	}
+	if strings.Contains(out, "invalid active profile") {
+		t.Fatalf("an empty default is no profile selected, never a refusal:\n%s", out)
+	}
+}
+
+// doctor is read-only: it reads the default through the same read the launch
+// stands on, but the re-tighten to 0600 is readActive's write, not its own —
+// a doctor that tightened what it only read would break the promise
+// ARCHITECTURE.md makes for it.
+func TestDoctorLeavesTheActiveFilesModeAlone(t *testing.T) {
+	state := t.TempDir()
+	active := filepath.Join(state, "active")
+	if err := os.WriteFile(active, []byte("ghost\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", t.TempDir())
+	l := &launcher{dir: state, profileDirs: filepath.Join(t.TempDir(), "profiles")}
+	out, rc := doctorOutput(t, l, "")
+	if rc == 0 || !strings.Contains(out, "ghost") {
+		t.Fatalf("a default naming no profile must keep its missing-profile diagnostic:\n%s", out)
+	}
+	fi, err := os.Lstat(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o644 {
+		t.Fatalf("doctor must leave the active file's mode alone, got %v", fi.Mode().Perm())
+	}
+}
+
+// An invalid default is refused as written by doctor's own badName: the case
+// twin rescue never reads the Kelvin sign (U+212A) as the profile k.
+func TestDoctorRefusesAnInvalidDefaultBeforeAnyCaseRescue(t *testing.T) {
+	state := t.TempDir()
+	if err := os.WriteFile(filepath.Join(state, "k.conf"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "active"), []byte("\u212A\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", t.TempDir())
+	l := &launcher{dir: state, profileDirs: filepath.Join(t.TempDir(), "profiles")}
+	out, rc := doctorOutput(t, l, "")
+	if rc != 1 || out != "" {
+		t.Fatalf("an invalid default must be refused before any check row, rc=%d:\n%s", rc, out)
+	}
+}

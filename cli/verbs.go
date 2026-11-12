@@ -177,6 +177,35 @@ func (l *launcher) badName(verb, name string) int {
 	return 1
 }
 
+// judgeProfile is the refusal pair a verb's preamble ends with: the word that
+// can never be a name, then the name no profile answers to. The chooser a verb
+// opens before it stays the verb's own — where the menu appears is each verb's
+// pinned behaviour — but the refusals are the same words from every verb.
+func (l *launcher) judgeProfile(name, verb string) bool {
+	if !profile.ValidName(name) {
+		l.badName(verb, name)
+		return false
+	}
+	if !l.exists(name) {
+		l.noProfile(name)
+		return false
+	}
+	return true
+}
+
+// requireProfile is the verb preamble: the profile chooser a left-out or -i
+// slot opens, limited to types when given, then judgeProfile's refusals.
+func (l *launcher) requireProfile(name *string, verb string, types ...string) bool {
+	if *name == "" || interactive(*name) {
+		picked, ok := l.menuProfile(types...)
+		if !ok {
+			return false
+		}
+		*name = picked
+	}
+	return l.judgeProfile(*name, verb)
+}
+
 func (l *launcher) list(args []string) int {
 	// `list` has no options, so a word after it (a --json that never existed,
 	// say) was silently ignored and read as success (#268). Name it instead.
@@ -242,11 +271,7 @@ func (l *launcher) cred(args []string) int {
 	if interactive(name) {
 		name = ""
 	}
-	if !profile.ValidName(name) {
-		return l.badName("cred", name)
-	}
-	if !l.exists(name) {
-		l.noProfile(name)
+	if !l.judgeProfile(name, "cred") {
 		return 1
 	}
 	f, ok := l.readRaw(name)
@@ -286,18 +311,7 @@ func (l *launcher) use(args []string) int {
 		return 0
 	}
 	name := args[0]
-	if name == "-i" || name == "--interactive" {
-		picked, ok := l.menuProfile()
-		if !ok {
-			return 1
-		}
-		name = picked
-	}
-	if !profile.ValidName(name) {
-		return l.badName("use", name)
-	}
-	if !l.exists(name) {
-		l.noProfile(name)
+	if !l.requireProfile(&name, "use") {
 		return 1
 	}
 	f, ok := l.read(name)
@@ -338,11 +352,7 @@ func (l *launcher) modelMenu(args []string) int {
 		}
 		name = picked
 	}
-	if !profile.ValidName(name) {
-		return l.badName("models", name)
-	}
-	if !l.exists(name) {
-		l.noProfile(name)
+	if !l.judgeProfile(name, "models") {
 		return 1
 	}
 	v, ok := l.pickValue("model", name)

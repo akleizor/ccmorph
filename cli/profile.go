@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/akleizor/ccmorph/profile"
 )
@@ -19,13 +18,7 @@ func (l *launcher) profileVerb(args []string) int {
 	}
 	name := os.Getenv("CCMORPH_PROFILE")
 	if name == "" {
-		if cfg := os.Getenv("CLAUDE_CONFIG_DIR"); cfg != "" {
-			// Like zsh's :A, resolve what exists: the profile dir itself may not yet.
-			parent, dirs := resolvePath(filepath.Dir(cfg)), resolvePath(l.profileDirs)
-			if parent != "" && parent == dirs {
-				name = filepath.Base(cfg)
-			}
-		}
+		name = l.configDirProfile()
 	}
 	if !profile.ValidName(name) {
 		l.err("not inside a ccmorph session")

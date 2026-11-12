@@ -430,6 +430,37 @@ func (l *launcher) caseTwin(name string) string {
 	return ""
 }
 
+// readActiveFile is the one read of the active file: the name a regular,
+// un-symlinked active file spells — trimmed, an older ccmorph's valid wrong-case
+// spelling rescued to the profile that is really there, "" when the file is
+// empty — and whether such a file answered at all: missing, a symlink, a
+// directory and an unreadable file all answer no. What the name is worth is
+// each reader's own judgment: readActive refuses the invalid spellings and
+// re-tightens the file to 0600; doctor reads an empty default as no profile
+// selected and never writes.
+func (l *launcher) readActiveFile() (string, bool) {
+	f := filepath.Join(l.dir, "active")
+	if fi, err := os.Lstat(f); err != nil || !fi.Mode().IsRegular() {
+		return "", false
+	}
+	b, err := os.ReadFile(f)
+	if err != nil {
+		return "", false
+	}
+	name := strings.TrimRight(string(b), "\n")
+	// An older ccmorph wrote the spelling the person typed; read it as the
+	// profile that is really there. The file is only rewritten by use or mv.
+	// Only a spelling that is itself a name is rescued: case folding maps
+	// invalid ones (the Kelvin sign, U+212A, folds to k) onto valid names, and
+	// each reader refuses an invalid spelling as written.
+	if profile.ValidName(name) && !l.exists(name) {
+		if twin := l.caseTwin(name); twin != "" {
+			name = twin
+		}
+	}
+	return name, true
+}
+
 // readActive is _ccm_read_active: the default profile, "" when none is set.
 func (l *launcher) readActive() (string, bool) {
 	f := filepath.Join(l.dir, "active")
@@ -444,21 +475,13 @@ func (l *launcher) readActive() (string, bool) {
 	if os.Chmod(f, 0o600) != nil {
 		return "", false
 	}
-	b, err := os.ReadFile(f)
-	if err != nil {
+	name, read := l.readActiveFile()
+	if !read {
 		return "", false
 	}
-	name := strings.TrimRight(string(b), "\n")
 	if !profile.ValidName(name) {
 		l.err("invalid active profile '" + name + "'")
 		return "", false
-	}
-	// An older ccmorph wrote the spelling the person typed; read it as the
-	// profile that is really there. The file is only rewritten by use or mv.
-	if !l.exists(name) {
-		if twin := l.caseTwin(name); twin != "" {
-			name = twin
-		}
 	}
 	return name, true
 }

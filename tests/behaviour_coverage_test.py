@@ -204,6 +204,21 @@ def test_doctor_refuses_a_wrong_case_name_with_the_real_spelling_gh_259(box):
     assert 'ready: start it with ccmorph run TOK' not in done.stdout
 
 
+def test_an_invalid_default_is_refused_as_written_never_rescued_to_a_case_twin(box):
+    # The Kelvin sign K (U+212A) is no profile name, but case folding reads it
+    # as k: only a spelling that is itself a name is rescued to its twin.
+    box.conf('k', 'type=sub\n')
+    (box.state / 'active').write_text('\u212a\n', encoding='utf-8')
+    bare = box.run('use')
+    assert bare.returncode == 0, bare.stderr
+    assert 'No default set. Profiles: k' in bare.stdout, bare.stdout
+    assert "invalid active profile '\u212a'" in bare.stderr, bare.stderr
+    doctor = box.run('doctor')
+    assert doctor.returncode == 1, doctor.stdout
+    assert doctor.stdout == '', doctor.stdout
+    assert 'invalid profile name' in doctor.stderr, doctor.stderr
+
+
 def test_list_marks_the_default_and_labels_every_profile_type(box):
     seed(box)
     box.run('use', 'tok')

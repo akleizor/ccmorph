@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // migrateProjects moves a profile-local sharable dir's files and links into the
@@ -63,7 +65,7 @@ func migrateProjects(from, to string, report func(string)) bool {
 			// It must give way before its children are walked: resolving through
 			// the link would make every file look like a duplicate of itself.
 			dest := to + "/" + strings.TrimPrefix(f, walk+"/")
-			if isLink(dest) && linkGivesWay(dest, f) {
+			if paths.IsSymlink(dest) && linkGivesWay(dest, f) {
 				if os.Remove(dest) != nil {
 					ok = false
 					return fs.SkipDir
@@ -396,7 +398,7 @@ func clearDanglingParents(root, rel string) {
 	parts := strings.Split(rel, "/")
 	for _, c := range parts[:len(parts)-1] {
 		p += "/" + c
-		if isLink(p) {
+		if paths.IsSymlink(p) {
 			if _, err := statTarget(p); namesNothing(err) {
 				_ = os.Remove(p)
 			}
@@ -406,7 +408,7 @@ func clearDanglingParents(root, rel string) {
 
 // linkGivesWay reports whether the link at dest names f or provably names nothing.
 func linkGivesWay(dest, f string) bool {
-	if !isLink(dest) {
+	if !paths.IsSymlink(dest) {
 		return false // a real file in the store never gives way
 	}
 	t, err := statTarget(dest)

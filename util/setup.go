@@ -49,11 +49,6 @@ func resolved(p string) string {
 	return a
 }
 
-func isLink(p string) bool {
-	fi, err := os.Lstat(p)
-	return err == nil && fi.Mode()&os.ModeSymlink != 0
-}
-
 func lexists(p string) bool { _, err := os.Lstat(p); return err == nil }
 
 // linkTargetIs reports whether the link at p spells path; a resolution would
@@ -78,12 +73,12 @@ func ProfileOK(profiles, name string) bool {
 	}
 	dir := filepath.Join(profiles, name)
 	canonical := filepath.Join(os.Getenv("HOME"), ".claude")
-	if !paths.IsDir(dir) || isLink(dir) || !paths.IsFile(dir+"/config.json") || !paths.IsFile(dir+"/.claude.json") {
+	if !paths.IsDir(dir) || paths.IsSymlink(dir) || !paths.IsFile(dir+"/config.json") || !paths.IsFile(dir+"/.claude.json") {
 		return false
 	}
 	for _, item := range sharedDirs {
 		link, src := dir+"/"+item, canonical+"/"+item
-		if !paths.IsDir(src) || !isLink(link) || resolved(link) != resolved(src) {
+		if !paths.IsDir(src) || !paths.IsSymlink(link) || resolved(link) != resolved(src) {
 			return false
 		}
 	}
@@ -92,7 +87,7 @@ func ProfileOK(profiles, name string) bool {
 		if !paths.Exists(src) {
 			continue
 		}
-		if !lexists(link) || (isLink(link) && resolved(link) != resolved(src)) {
+		if !lexists(link) || (paths.IsSymlink(link) && resolved(link) != resolved(src)) {
 			return false
 		}
 	}
@@ -101,7 +96,7 @@ func ProfileOK(profiles, name string) bool {
 	// shared file passes (#177, #185: a missing shared file is not provisioned
 	// either — setup creates it, and skipping the check left the history
 	// per-profile forever on a home claude only ever runs through ccmorph).
-	if h := canonical + "/history.jsonl"; !isLink(dir+"/history.jsonl") || resolved(dir+"/history.jsonl") != resolved(h) {
+	if h := canonical + "/history.jsonl"; !paths.IsSymlink(dir+"/history.jsonl") || resolved(dir+"/history.jsonl") != resolved(h) {
 		return false
 	}
 	return true
@@ -120,7 +115,7 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 	}
 	dir := filepath.Join(profiles, name)
 	canonical := filepath.Join(os.Getenv("HOME"), ".claude")
-	if isLink(dir) || isLink(canonical) {
+	if paths.IsSymlink(dir) || paths.IsSymlink(canonical) {
 		return fail("refusing symlinked profile state for '" + name + "'")
 	}
 	unlock, serialized := setupSerialize(profiles, name)
@@ -192,7 +187,7 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 		if unreachable[item] {
 			// #185: the store cannot be reached, so the profile keeps a real
 			// dir of its own; a link into the missing store is replaced.
-			if isLink(link) && linkTargetIs(link, src) {
+			if paths.IsSymlink(link) && linkTargetIs(link, src) {
 				if busy {
 					continue
 				}
@@ -209,7 +204,7 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 			continue
 		}
 		switch {
-		case isLink(link):
+		case paths.IsSymlink(link):
 			if resolved(link) == resolved(src) {
 				continue
 			}
@@ -243,7 +238,7 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 			_ = os.Remove(link + "/.DS_Store")
 			_ = os.Remove(link + "/.localized")
 			nested := link + "/" + item
-			if ents, _ := os.ReadDir(link); len(ents) == 1 && isLink(nested) && resolved(nested) == resolved(src) {
+			if ents, _ := os.ReadDir(link); len(ents) == 1 && paths.IsSymlink(nested) && resolved(nested) == resolved(src) {
 				if os.Remove(nested) != nil {
 					return fail("could not remove legacy nested '" + item + "' link for '" + name + "'")
 				}
@@ -299,7 +294,7 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 	}
 	if !busy && (paths.IsFile(hSrc) || (lexists(hLink) && !paths.IsDir(hLink))) {
 		switch {
-		case isLink(hLink) && resolved(hLink) == resolved(hSrc):
+		case paths.IsSymlink(hLink) && resolved(hLink) == resolved(hSrc):
 		case paths.IsDir(hLink):
 			errf("shared 'history.jsonl' collision at '" + hLink + "'; nothing moved — reconcile through its owning tool")
 			return fail("could not share history for '" + name + "'")
@@ -340,7 +335,7 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 		}
 	}
 
-	if isLink(dir + "/settings.json") {
+	if paths.IsSymlink(dir + "/settings.json") {
 		if os.Remove(dir+"/settings.json") != nil {
 			return fail("could not remove legacy settings link for '" + name + "'")
 		}

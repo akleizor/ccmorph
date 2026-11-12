@@ -8,13 +8,8 @@ import (
 	"path/filepath"
 
 	"github.com/akleizor/ccmorph/ordjson"
-	"github.com/akleizor/ccmorph/settingscompose"
 	"github.com/akleizor/ccmorph/util/paths"
 )
-
-func mergedView(paths []string) *ordjson.Obj { return settingscompose.MergedView(paths) }
-
-func acwValid(v any) bool { return settingscompose.ACWValid(v) }
 
 // acwString is the integer text of a valid autoCompactWindow, which may be an integer-valued float.
 func acwString(v any) string {
@@ -54,6 +49,13 @@ func atomicJSON(path string, data *ordjson.Obj) error {
 	return AtomicWrite(path, ".ccmorph.", append(ordjson.Marshal(data, false), '\n'), 0o600, true)
 }
 
+// baseClaudeJSONs is where the base install keeps its .claude.json: the home
+// dir, its .claude subdir the fallback. The pair, in order, is the seed a
+// fresh profile is provisioned from.
+func baseClaudeJSONs(home string) []string {
+	return []string{filepath.Join(home, ".claude.json"), filepath.Join(home, ".claude", ".claude.json")}
+}
+
 // provisionProfile establishes a profile's auth-scoped config.json and
 // .claude.json; nothing else is touched. The error carries the reason.
 func provisionProfile(pdir, kind string) error {
@@ -62,8 +64,7 @@ func provisionProfile(pdir, kind string) error {
 		home = ""
 	}
 	appCfg := filepath.Join(home, "Library/Application Support/Claude/config.json")
-	srcJSON := filepath.Join(home, ".claude.json")
-	fallbackJSON := filepath.Join(home, ".claude", ".claude.json")
+	seeds := baseClaudeJSONs(home)
 	if err := os.Chmod(pdir, 0o700); err != nil {
 		return err
 	}
@@ -126,11 +127,11 @@ func provisionProfile(pdir, kind string) error {
 	}
 	fresh := data == nil
 	if fresh {
-		if data, err = loadObj(srcJSON, nil); err != nil {
+		if data, err = loadObj(seeds[0], nil); err != nil {
 			return err
 		}
 		if data == nil {
-			if data, err = loadObj(fallbackJSON, ordjson.New()); err != nil {
+			if data, err = loadObj(seeds[1], ordjson.New()); err != nil {
 				return err
 			}
 		}
