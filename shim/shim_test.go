@@ -230,6 +230,21 @@ func TestTaskTags(t *testing.T) {
 	if g := tagsOf(h); g.task == nil || *g.task != "x" {
 		t.Fatal(g)
 	}
+	h.Set("x-claude-code-session-id", "0b9e5a52-1c7d-4f1e-9a43-2f6d3c8e7a10")
+	if g := tagsOf(h); g.session == nil || *g.session != "0b9e5a52-1c7d-4f1e-9a43-2f6d3c8e7a10" {
+		t.Fatal(g)
+	}
+	for _, bad := range []string{"", "a b", "a/b", strings.Repeat("s", 65)} {
+		h.Set("x-claude-code-session-id", bad)
+		if g := tagsOf(h); g.session != nil {
+			t.Errorf("%q: %v", bad, *g.session)
+		}
+	}
+	h.Set("x-api-key", "sk-key")
+	h.Set("x-claude-code-session-id", "sk-key")
+	if g := tagsOf(h); g.session != nil {
+		t.Errorf("the request's own key must never become a session: %v", *g.session)
+	}
 	if taskRE.MatchString("x\n") {
 		t.Fatal("$ must not match before a trailing newline")
 	}
@@ -698,7 +713,7 @@ func rowFilesOf(dir string) []string {
 
 func TestSidecarLifecycleAndModes(t *testing.T) {
 	dir := stateHome(t)
-	u := newSidecar("p", "identity").tagged(taskTags{nil, 1})
+	u := newSidecar("p", "identity").tagged(taskTags{nil, 1, nil})
 	req := "claude-x"
 	rec := u.observe(parseDoc([]byte(`{"type":"message_start","message":{"id":"msg_1","model":"served","usage":{"input_tokens":11,"service_tier":"standard"}}}`)), nil, &req)
 	if rec == nil {

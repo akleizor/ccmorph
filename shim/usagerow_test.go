@@ -1082,3 +1082,22 @@ func TestOwnedPriceBookAnyMeansEveryProvider(t *testing.T) {
 		t.Fatalf("a named provider priced another's model: %v", got)
 	}
 }
+
+func TestRecordTranscriptCarriesAValidSessionIDOnly(t *testing.T) {
+	dir := stateHome(t)
+	line := func(id, sess string) string {
+		return strings.Replace(transcriptLine("u-"+id, id, "m", "2026-11-05T10:00:00Z", `{"input_tokens":1}`),
+			`{"type":"assistant",`, `{"type":"assistant","sessionId":"`+sess+`",`, 1)
+	}
+	path := writeTranscript(t, line("msg_ok", "sess-1"), line("msg_bad", "a b/c"))
+	if n := RecordTranscript("sub", "", path); n != 2 {
+		t.Fatalf("rows written %d", n)
+	}
+	for _, raw := range rows(t, dir) {
+		row := decodeRow(t, raw)
+		sess, has := row["session"]
+		if (row["response_id"] == "msg_ok") != has || (has && sess != "sess-1") {
+			t.Fatalf("%v", row)
+		}
+	}
+}

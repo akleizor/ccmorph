@@ -2,7 +2,7 @@
 # Loaded by the `ccmorph` executable itself; not meant to be sourced
 # directly into an interactive shell.
 
-_CCMORPH_VERSION="0.5.8"
+_CCMORPH_VERSION="0.5.9"
 
 # TWO directories, deliberately. They were one, which worked only because a
 # git clone was also the install: the same path held ccmorph.sh and the helper
