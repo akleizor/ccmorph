@@ -32,25 +32,38 @@ func doctorOutput(t *testing.T, l *launcher, name string) (string, int) {
 }
 
 // TestDoctorTranslatorVerdictUsesTheModelLaunchClassifies is GH-412: a gateway
-// profile's saved model can be a spelling launch translates through model_map
-// before classifying it. Doctor asked the adapter about the saved spelling, so
-// the adapter row was decided for a model the launch never classifies: the
-// listing declared only the mapped id as needing the translator, doctor found
-// no verdict for the saved spelling, printed no adapter row, and called the
+// profile's saved model can be a spelling launch resolves or translates before
+// classifying it. Doctor asked the adapter about the saved spelling, so the
+// adapter row was decided for a model the launch never classifies: the listing
+// declared only the mapped id as needing the translator, doctor found no
+// verdict for the saved spelling, printed no adapter row, and called the
 // profile ready — then the run died at adapter start. The row must be decided
-// for the id launch classifies, for a bare saved model, for the `[1m]` spelling
-// the map is keyed without, and for a mapped id carrying a bracket launch keeps
-// (only the exact `[1m]` marker is ccmorph's own).
+// for the id launch classifies: a bare saved model, the `[1m]` spelling the map
+// is keyed without, a mapped id carrying a bracket launch keeps (only the exact
+// `[1m]` marker is ccmorph's own), and a tier word launch resolves through the
+// profile's alias (#475). A tier word with no mapping anywhere is launch's own
+// refusal, and must be a failing row, never an unresolved model's silence.
 func TestDoctorTranslatorVerdictUsesTheModelLaunchClassifies(t *testing.T) {
-	for _, tc := range []struct{ name, saved, mapped string }{
-		{"saved spelling", "m-spelled", "m-mapped"},
-		{"saved window marker", "m-spelled[1m]", "m-mapped"},
-		{"mapped id keeps another bracket", "m-spelled", "m-mapped[fast]"},
+	for _, tc := range []struct {
+		name, saved, mapped, mapping, alias string
+		tierMissing                         bool
+	}{
+		{"saved spelling", "m-spelled", "m-mapped", `"m-spelled":"m-mapped"`, "", false},
+		{"saved window marker", "m-spelled[1m]", "m-mapped", `"m-spelled":"m-mapped"`, "", false},
+		{"mapped id keeps another bracket", "m-spelled", "m-mapped[fast]", `"m-spelled":"m-mapped[fast]"`, "", false},
+		{"tier word resolved through the profile alias", "opus", "m-mapped", "", "m-mapped", false},
+		{"tier word with no mapping", "opus", "m-other", "", "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := t.TempDir()
 			conf := "type=apikey\nbase_url=https://gw.test\napi_key=test-key\n" +
-				"model=" + tc.saved + "\nmodel_map={\"m-spelled\":\"" + tc.mapped + "\"}\n"
+				"model=" + tc.saved + "\n"
+			if tc.mapping != "" {
+				conf += "model_map={" + tc.mapping + "}\n"
+			}
+			if tc.alias != "" {
+				conf += "env.ANTHROPIC_DEFAULT_OPUS_MODEL=" + tc.alias + "\n"
+			}
 			if err := os.WriteFile(filepath.Join(state, "gw412.conf"), []byte(conf), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -79,13 +92,25 @@ func TestDoctorTranslatorVerdictUsesTheModelLaunchClassifies(t *testing.T) {
 
 			l := &launcher{dir: state, profileDirs: filepath.Join(t.TempDir(), "profiles")}
 			out, rc := doctorOutput(t, l, "gw412")
+			if tc.alias != "" {
+				// The effective model is the id a launch resolves the tier word
+				// to, so the reader is told what the profile really runs (#475).
+				if want := "effective model: " + tc.alias + " (profile default)"; !strings.Contains(out, want) {
+					t.Fatalf("doctor did not name the resolved model\nwant row: %s\ngot:\n%s", want, out)
+				}
+			}
 			step := util.ClipInstallStep()
 			want := "FAIL adapter: this endpoint needs a translator; cliproxyapi is not installed; install it: " + step
-			if !strings.Contains(out, want) {
-				t.Fatalf("doctor did not report the adapter row for the mapped model\nwant row: %s\ngot:\n%s", want, out)
+			verdict := "FAIL not ready: install the translator: " + step
+			if tc.tierMissing {
+				want = "FAIL model: no gateway model is mapped to tier 'opus'; a launch would stop at adapter start"
+				verdict = "FAIL not ready: choose an explicit model: ccmorph set gw412 model <model-id>"
 			}
-			if verdict := "FAIL not ready: install the translator: " + step; !strings.HasSuffix(strings.TrimSpace(out), verdict) {
-				t.Fatalf("doctor's verdict does not name the translator\nwant ending: %s\ngot:\n%s", verdict, out)
+			if !strings.Contains(out, want) {
+				t.Fatalf("doctor did not report the verdict for the model launch runs\nwant row: %s\ngot:\n%s", want, out)
+			}
+			if !strings.HasSuffix(strings.TrimSpace(out), verdict) {
+				t.Fatalf("doctor's verdict does not name the model launch runs\nwant ending: %s\ngot:\n%s", verdict, out)
 			}
 			if rc == 0 {
 				t.Fatalf("doctor exited 0 with a failing adapter row:\n%s", out)
