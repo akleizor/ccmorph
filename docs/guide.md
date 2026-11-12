@@ -848,7 +848,7 @@ changing behavior — most of its sections exist because something was once a bu
 ## Tests
 
 ```sh
-make test                        # everything below
+make test                        # every suite, at once (about a minute)
 zsh tests/ccmorph_test.zsh      # profiles, launch, routing, model choosers
 zsh tests/install_test.zsh       # the installer against a throwaway $HOME
 go test ./...                   # Go units: adapter, shim, helpers

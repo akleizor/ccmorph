@@ -12,7 +12,7 @@ TAG := v$(VERSION)
 DIST := dist
 TARBALL := $(DIST)/ccmorph-$(TAG).tar.gz
 
-.PHONY: help shim test test-zsh test-py test-go gate gate-launch gate-install gate-configure gate-py check-version dist release clean
+.PHONY: help shim test test-go gate gate-launch gate-install gate-configure gate-py check-version dist release clean
 
 help:
 	@echo "ccmorph $(VERSION)"
@@ -25,21 +25,17 @@ help:
 shim:
 	go build -trimpath -o libexec/ccmorph-core ./cmd/ccmorph-core
 
-test: shim test-go test-zsh test-py
+test: gate
 
 test-go:
 	go vet ./...
 	go test ./...
 
-test-zsh:
-	zsh tests/ccmorph_test.zsh
-	zsh tests/install_test.zsh
-
-test-py:
-	python3 -m pytest tests/ -q
-
-# The Hive's gate on every landing. Each suite works in its own scratch homes and mostly
-# waits on process spawns, so they overlap: 185 s one after another, under a minute at once.
+# The Hive's gate on every landing, and what `make test` runs. Each suite works
+# in its own scratch homes and mostly waits on process spawns, so they overlap:
+# 185 s one after another, about a minute at once — bounded by the Python
+# suite, whose wall clock moves with what else the host runs
+# (docs/test-runtime.md).
 gate: shim
 	@$(MAKE) -j5 gate-launch gate-install gate-configure gate-py test-go
 

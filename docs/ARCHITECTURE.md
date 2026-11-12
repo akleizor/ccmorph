@@ -20,7 +20,9 @@ The repo suite: `tests/ccmorph_test.zsh` (112 zsh tests),
 `tests/install_test.zsh` (installer against a throwaway `$HOME`),
 `tests/adapter_test.py`, `tests/gateway_shim_test.py` (black-box, against the
 built binaries) and the Go unit tests in each package. Run them all with
-`make shim && go test ./... && zsh tests/ccmorph_test.zsh && zsh tests/install_test.zsh && python3 -m pytest tests/`.
+`make test`: the suites work in disjoint scratch homes and mostly wait on
+process spawns, so it runs them at once — minutes one after another, about a
+minute at once (where the time goes: `docs/test-runtime.md`).
 
 ## Scope and ownership
 

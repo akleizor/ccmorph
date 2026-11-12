@@ -7,6 +7,14 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`make test` runs every suite at once.** The documented full-set command
+  chained the suites one after another — 185 s on an idle machine, and minutes
+  on the shared mini a release runs on — while the at-once path (`make gate`)
+  already existed unmentioned. `make test` is now the gate, `make release`
+  verifies through it, and no doc prescribes the sequential chain.
+
 ## v0.5.10 — 2026-11-12
 
 ### Fixed
