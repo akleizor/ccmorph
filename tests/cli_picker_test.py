@@ -1929,11 +1929,12 @@ fi
             # Waiting for the child to finish is the case under test: a run_pty
             # that dropped its slave lets the child exit at once (~0.7 s) and
             # the drain below then reads nothing, while a correct one keeps the
-            # child waiting here. The wait takes a fraction of the bound so the
-            # drain keeps a share of it; a child still running when it expires
-            # is the correct case, not a hang.
+            # child waiting here. A held child never exits, so in the correct
+            # case this wait always runs out: it needs only to outlast the
+            # dropped-slave exit, and every second of cap past that is wall
+            # clock the whole suite pays on this one test.
             try:
-                process.wait(timeout=max(0.1, (deadline - time.monotonic()) / 10))
+                process.wait(timeout=min(3.0, max(0.1, (deadline - time.monotonic()) / 10)))
             except subprocess.TimeoutExpired:
                 pass
             return drain(master, out, deadline, process)
