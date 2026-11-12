@@ -8,8 +8,9 @@ package shim
 import (
 	"bytes"
 	"encoding/json/jsontext"
-	"strconv"
 	"unicode/utf8"
+
+	"github.com/akleizor/ccmorph/ordjson"
 )
 
 // maxDepth mirrors the nesting Python's json module survives (its recursion
@@ -126,66 +127,16 @@ func Array(b []byte, i int) ([]Span, int) {
 
 // Unquote decodes the JSON string literal in raw (quotes included). A lone
 // surrogate escape is kept as its 3-byte WTF-8 form, so no input is lost and
-// the caller can tell it from text (see canon).
+// the caller can tell it from text (see canon). The escape walker itself is
+// ordjson.Unescape — the one rule both rewriters share (#524), so what this
+// decodes and what canon quotes back cannot drift — and a literal cut off
+// inside an escape now decodes to what precedes it, ordjson's edge, instead
+// of panicking. Anything that does not start with a quote decodes to "".
 func Unquote(raw []byte) string {
 	if len(raw) < 2 || raw[0] != '"' {
 		return ""
 	}
-	s := raw[1 : len(raw)-1]
-	if bytes.IndexByte(s, '\\') < 0 {
-		return string(s)
-	}
-	out := make([]byte, 0, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c != '\\' {
-			out = append(out, c)
-			continue
-		}
-		i++
-		switch s[i] {
-		case 'b':
-			out = append(out, '\b')
-		case 'f':
-			out = append(out, '\f')
-		case 'n':
-			out = append(out, '\n')
-		case 'r':
-			out = append(out, '\r')
-		case 't':
-			out = append(out, '\t')
-		case 'u':
-			r, _ := hex4(s[i+1:])
-			i += 4
-			if r >= 0xD800 && r < 0xDC00 && i+6 < len(s)+0 && s[i+1] == '\\' && s[i+2] == 'u' {
-				if lo, ok := hex4(s[i+3:]); ok && lo >= 0xDC00 && lo < 0xE000 {
-					r = 0x10000 + (r-0xD800)<<10 + (lo - 0xDC00)
-					i += 6
-				}
-			}
-			out = appendRune(out, r)
-		default: // " \ /
-			out = append(out, s[i])
-		}
-	}
-	return string(out)
-}
-
-func hex4(s []byte) (rune, bool) {
-	if len(s) < 4 {
-		return 0, false
-	}
-	v, err := strconv.ParseUint(string(s[:4]), 16, 32)
-	return rune(v), err == nil
-}
-
-// appendRune is utf8.AppendRune except that a surrogate code unit is written
-// as its 3-byte (WTF-8) form instead of U+FFFD.
-func appendRune(out []byte, r rune) []byte {
-	if r >= 0xD800 && r < 0xE000 {
-		return append(out, 0xE0|byte(r>>12), 0x80|byte(r>>6)&0x3F, 0x80|byte(r)&0x3F)
-	}
-	return utf8.AppendRune(out, r)
+	return ordjson.Unescape(raw[1 : len(raw)-1])
 }
 
 // Quote is the JSON string literal for s, escaped minimally (UTF-8 kept).

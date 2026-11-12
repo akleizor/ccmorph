@@ -16,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/akleizor/ccmorph/ordjson"
 )
 
 func TestCanonMatchesPythonDumps(t *testing.T) {
@@ -39,6 +41,34 @@ func TestLoneSurrogateFallsBackToAscii(t *testing.T) {
 	got, ok := encodeBody([]byte(`{"a":"\ud800 é"}`), nil, false)
 	if !ok || string(got) != `{"a":"\ud800 \u00e9"}` {
 		t.Fatalf("got %s %v", got, ok)
+	}
+}
+
+// A literal that ends inside an escape decodes to what precedes it instead of
+// panicking: the guard ordjson's walker always had, which shim's private copy
+// lacked, rides along with the one walker both share (#524).
+func TestUnquoteOfATruncatedEscapeKeepsThePrefix(t *testing.T) {
+	if got := Unquote([]byte(`"ab\"`)); got != "ab" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+// One surrogate rule across both rewriters (#524): the escape canon's ascii
+// fallback writes for a lone surrogate is the escape ordjson decodes back to
+// the same WTF-8 bytes and writes as that escape again, so a body the shim
+// rewrote survives a rewrite by the other rewriter byte for byte.
+func TestLoneSurrogateRoundTripsThroughBothRewriters(t *testing.T) {
+	orig := []byte(`{"a":"\ud800 é"}`)
+	rewritten, ok := encodeBody(orig, nil, false)
+	if !ok {
+		t.Fatal("canon refused the body")
+	}
+	v, err := ordjson.Parse(rewritten)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if back := string(ordjson.Marshal(v, false)); back != string(orig) {
+		t.Fatalf("ordjson wrote back %s", back)
 	}
 }
 

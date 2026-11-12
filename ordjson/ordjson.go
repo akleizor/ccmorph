@@ -248,13 +248,14 @@ func value(dec *json.Decoder, data []byte) (any, error) {
 	return o, err
 }
 
-// unquote turns a string literal the decoder accepted back into a Go string,
-// keeping a lone surrogate as its WTF-8 bytes.
-func unquote(raw []byte) string {
-	if len(raw) < 2 {
-		return string(raw)
-	}
-	s := raw[1 : len(raw)-1]
+// Unescape decodes the escapes of the bytes between a JSON string literal's
+// quotes: s is the inside of the literal, not the literal itself. A lone
+// surrogate escape is kept as its 3-byte WTF-8 form, so no input is lost and
+// the caller can tell it from text; a surrogate pair decodes to one rune; an
+// escape without four hex digits decodes as U+0000; an escape cut off at the
+// very end decodes to what precedes it. Parse and the shim's canon share this
+// one walker (#524), so what one decodes the other quotes back.
+func Unescape(s []byte) string {
 	if bytes.IndexByte(s, '\\') < 0 {
 		return string(s)
 	}
@@ -302,6 +303,16 @@ func unquote(raw []byte) string {
 		}
 	}
 	return string(b)
+}
+
+// unquote turns a string literal the decoder accepted back into a Go string,
+// keeping a lone surrogate as its WTF-8 bytes. A token shorter than two bytes
+// has no quotes to strip, so it is returned as it is.
+func unquote(raw []byte) string {
+	if len(raw) < 2 {
+		return string(raw)
+	}
+	return Unescape(raw[1 : len(raw)-1])
 }
 
 func hex4(b []byte) rune {
