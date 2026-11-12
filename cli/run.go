@@ -37,8 +37,47 @@ func runFlag(a string) bool {
 var probeListing = util.ProbeListing
 
 // launch is one pass of _ccm_launch: nil when the run is over (rc is its status),
-// or the relaunch a hop asked for.
+// or the relaunch a hop asked for. Resolving the pass and running it are different
+// jobs, so launch only joins them.
 func (l *launcher) launch(name string, interactive, native bool, argv []string) (*relayNext, int) {
+	plan, rc := l.resolveLaunch(name, interactive, native, argv)
+	if plan == nil {
+		return nil, rc
+	}
+	return l.runLaunch(plan)
+}
+
+// launchPlan is what resolveLaunch settles before any helper or claude starts: the
+// profile this pass runs on, the argv claude receives, and every judgement the
+// process half would otherwise repeat. It crosses the seam between the two halves.
+type launchPlan struct {
+	name       string // the profile this pass runs on, "" for a bare launch
+	native     bool   // argv already came from a native re-entry
+	args       []string
+	arity      map[string]string // the option arity table, nil until something needs it
+	flags      util.LaunchFlags
+	subcommand bool
+
+	explicit      string // --model as the person typed it
+	resume        string // the session id --resume names
+	launchModel   string // the model this launch carries; "" when the argv names it
+	defaultModel  string // the profile's saved default
+	askedModel    string // what the person asked to run, before a send id replaced it
+	resumeCarried bool   // the resumed session's model became the default
+
+	needsAdapter bool // the route is a gateway the adapter fronts
+	isProvider   bool // the profile's route is a provider bridge
+	tag          string
+
+	relayFile string   // the hop relay this pass owns and must clean up
+	common    []string // env every pass carries
+	penv      []string // the profile's launch env
+}
+
+// resolveLaunch is the pre-flight half of one pass: it walks argv, settles the
+// profile, model and effort, and probes the route's key. A nil plan ends the pass
+// with rc; otherwise runLaunch consumes it.
+func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []string) (*launchPlan, int) {
 	// One /v1/models answer per pass: the zsh driver re-sourced ccmorph.sh between
 	// hops, which reset _ccm_models_memo, so a catalogue that changed since the
 	// previous pass reaches the next pass's picker and model checks.
@@ -172,7 +211,6 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 	}
 	explicit, resume, launchModel := flags.Model, flags.Resume, ""
 	userModel, skipModel, askMissing, resumeCarried := flags.UserModel, flags.SkipModel, flags.AskMissingModel, false
-	relayArgs := flags.Relay
 	interactive = interactive || flags.Interactive
 	for _, d := range flags.Drop {
 		if d >= 1 && d <= len(args) {
@@ -257,14 +295,21 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 	} else {
 		l.log("launch profile=<none> relay_id=" + relayID)
 	}
-	fail := func() (*relayNext, int) { os.Remove(relayFile); return nil, 1 }
+	fail := func() (*launchPlan, int) { os.Remove(relayFile); return nil, 1 }
 
 	common := []string{
 		"CCMORPH_RELAY_ID=" + relayID,
 		"CCMORPH_LIB_DIR=" + l.libDir,
 		"CLAUDE_CODE_PLUGIN_DIRS=" + prefixed(os.Getenv("CLAUDE_CODE_PLUGIN_DIRS")) + filepath.Join(filepath.Dir(l.libDir), "share", "claude-plugin"),
 	}
-	var rcClaude int
+	plan := &launchPlan{
+		name: name, native: native, args: args, arity: table,
+		flags: flags, subcommand: subcommand,
+		explicit: explicit, resume: resume, launchModel: launchModel,
+		defaultModel: defaultModel, askedModel: askedModel, resumeCarried: resumeCarried,
+		needsAdapter: needsAdapter, isProvider: isProvider, tag: tag,
+		relayFile: relayFile, common: common,
+	}
 	if name != "" {
 		// A named profile runs on its own route and credential: nothing the Remote
 		// Control edge set up for its own route reaches it, or its adapter, or claude.
@@ -330,6 +375,28 @@ func (l *launcher) launch(name string, interactive, native bool, argv []string) 
 				}
 			}
 		}
+		plan.penv = penv
+	}
+	return plan, 0
+}
+
+// runLaunch is the process half of one pass: it folds the profile's settings,
+// starts or stops the adapters and bridges the plan names, runs claude, and reads
+// the relay file a hop left behind.
+func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
+	name, args := p.name, p.args
+	table := p.arity
+	flags, subcommand := p.flags, p.subcommand
+	explicit, resume, launchModel := p.explicit, p.resume, p.launchModel
+	defaultModel, askedModel, resumeCarried := p.defaultModel, p.askedModel, p.resumeCarried
+	needsAdapter, isProvider, native := p.needsAdapter, p.isProvider, p.native
+	tag, common, relayFile := p.tag, p.common, p.relayFile
+	relayArgs := flags.Relay
+	fail := func() (*relayNext, int) { os.Remove(relayFile); return nil, 1 }
+	var rcClaude int
+	if name != "" {
+		penv := p.penv
+		var ok bool
 		l.foldSettings(name)
 		l.stopForeignBridge(name, isProvider)
 		if isProvider {
