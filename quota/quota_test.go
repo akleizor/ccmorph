@@ -554,6 +554,61 @@ func TestQuotaSpendCountsAResponseInBothStoresOnce(t *testing.T) {
 	}
 }
 
+// writeReceipt lays one completed response's receipt at path, its mtime forced
+// to when: the move picks a flat row's day folder by its mtime, never its
+// stamp, so a test chooses the folder a flat row points at.
+func writeReceipt(t *testing.T, path, responseID, turn, stamp string, cost float64, when time.Time) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	raw := fmt.Sprintf(`{"response_id":%q,"turn_id":%q,"profile":"gw",`+
+		`"timestamp":%q,"usage":{"cost":%g},"complete":true}`, responseID, turn, stamp, cost)
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, when, when); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A flat row the move leaves in place is still its turn: the day folder of its
+// mtime already holds another row under the same name — a recycled id whose
+// other row was sharded first — and the move's contract says the flat one
+// stays and a reader reads the top level too (#514, shim/report.go).
+func TestQuotaSpendCountsAFlatRowTheMoveLeavesInPlace(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	writeReceipt(t, filepath.Join(usage, "2026-10-18", "resp_1.json"),
+		"resp_1", "turn_a", "2026-10-18T09:00:00Z", 1.5, time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC))
+	writeReceipt(t, filepath.Join(usage, "resp_1.json"),
+		"resp_1", "turn_b", "2026-10-18T10:00:00Z", 0.5, time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC))
+	s := spendEntry("gw", "").Spend
+	if s.MonthUSD != 2 || s.MonthTurns != 2 || s.TodayUSD != 0 || s.TodayTurns != 0 {
+		t.Fatalf("a flat row left by a name collision was not counted: %+v", s)
+	}
+}
+
+// One response the store holds in two closed day folders — the move places a
+// row by its mtime day while the writers place it by its stamp day — is one
+// turn: the month counts it once (#514).
+func TestQuotaSpendCountsAResponseInTwoClosedDaysOnce(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	writeReceipt(t, filepath.Join(usage, "2026-10-16", "resp_9.json"),
+		"resp_9", "turn_c", "2026-10-16T09:00:00Z", 1.5, time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC))
+	writeReceipt(t, filepath.Join(usage, "2026-10-18", "resp_9.json"),
+		"resp_9", "turn_c", "2026-10-16T09:00:00Z", 1.5, time.Date(2026, 10, 18, 8, 0, 0, 0, time.UTC))
+	s := spendEntry("gw", "").Spend
+	if s.MonthUSD != 1.5 || s.MonthTurns != 1 || s.TodayUSD != 0 || s.TodayTurns != 0 {
+		t.Fatalf("a response in two closed days was not counted exactly once: %+v", s)
+	}
+}
+
 var ansi = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
 func checkWidth(t *testing.T, out string) {

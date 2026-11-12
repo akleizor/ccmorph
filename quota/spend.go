@@ -100,17 +100,6 @@ type tally struct {
 	TodayTokens, MonthTokens              int64
 }
 
-func (t *tally) add(o tally) {
-	t.TodayUSD += o.TodayUSD
-	t.MonthUSD += o.MonthUSD
-	t.Estimated = t.Estimated || o.Estimated
-	t.TodayTurns += o.TodayTurns
-	t.MonthTurns += o.MonthTurns
-	t.UnpricedTurns += o.UnpricedTurns
-	t.TodayTokens += o.TodayTokens
-	t.MonthTokens += o.MonthTokens
-}
-
 // spendRow is what one receipt adds to the month: nil for a receipt that never
 // counts (unreadable, incomplete, or with no stamp).
 type spendRow struct {
@@ -209,7 +198,7 @@ var tallyMemo struct {
 // folder. A row always sits in a folder at or after its stamp's UTC day, so an
 // earlier folder holds only rows the month window itself excludes; the stamp
 // still decides. A folder whose whole UTC day ended before today's local start
-// can hold no turn of today, so its tally is kept and reused until the folder
+// can hold no turn of today, so its rows are kept and reused until the folder
 // changes (a late move links rows into it).
 func monthTallies(usageDir string, today, monthStart, todayStart time.Time) map[string]tally {
 	key := usageDir + "\x00" + monthStart.String() + "\x00" + todayStart.String()
@@ -221,8 +210,18 @@ func monthTallies(usageDir string, today, monthStart, todayStart time.Time) map[
 	first, last := monthStart.UTC().Format(dayLayout), today.UTC().Format(dayLayout)
 	openFrom := todayStart.UTC().Format(dayLayout)
 	out := map[string]tally{}
+	// The flat receipts are read before any day folder is, and the order is the
+	// point: a move relocating a row links its day-folder name first and removes
+	// the flat name only after, so whichever moment between the two reads the
+	// move lands in, one of the reads holds the row. A day folder read first can
+	// serve rows cached from before the link while the flat name is already
+	// gone, and the row reaches no tally at all.
+	flat, _ := filepath.Glob(filepath.Join(usageDir, "*.json"))
+	flatRows := make([]*spendRow, 0, len(flat))
+	for _, p := range flat {
+		flatRows = append(flatRows, readRow(p))
+	}
 	var rows []*spendRow
-	closed := map[string]bool{}
 	entries, _ := os.ReadDir(usageDir)
 	for _, e := range entries {
 		name := e.Name()
@@ -234,46 +233,41 @@ func monthTallies(usageDir string, today, monthStart, todayStart time.Time) map[
 		}
 		dir := filepath.Join(usageDir, name)
 		if name < openFrom {
-			closed[name] = true
-			for p, t := range closedDay(dir, name, monthStart, todayStart) {
-				sum := out[p]
-				sum.add(t)
-				out[p] = sum
-			}
+			rows = append(rows, closedDay(dir, name, monthStart)...)
 			continue
 		}
 		rows = append(rows, openDay(dir, name)...)
 	}
-	// A flat row a move already linked into a kept day folder is counted there.
-	flat, _ := filepath.Glob(filepath.Join(usageDir, "*.json"))
-	for _, p := range flat {
-		if info, err := os.Stat(p); err == nil {
-			day := info.ModTime().UTC().Format(dayLayout)
-			if closed[day] {
-				if _, err := os.Stat(filepath.Join(usageDir, day, filepath.Base(p))); err == nil {
-					continue
-				}
-			}
-		}
-		rows = append(rows, readRow(p))
-	}
-	addRows(rows, monthStart, todayStart, map[string]bool{}, out)
+	// The day folders' copies come first and the flat ones last, and one
+	// identity spans them all: a response the store holds under two names — a
+	// flat copy and its day folder's, or copies in two day folders, the move
+	// placing by mtime day while the writers place by stamp day — is one turn,
+	// counted once (#298, #514). The top level is always read, as the move's
+	// contract says: it leaves a flat row in place when its mtime day's folder
+	// already holds another row under its name, and a filesystem without
+	// hardlinks keeps every row flat.
+	addRows(append(rows, flatRows...), monthStart, todayStart, map[string]bool{}, out)
 	tallyMemo.key, tallyMemo.by = key, out
 	return out
 }
 
-// dayCache is a kept day folder's tallies and the folder state they were read at.
+// dayCache is a kept day folder's rows of the month and the folder state they
+// were read at. The rows, not a tally, are what it keeps: a response can sit in
+// two day folders, so a day's numbers cannot be summed on their own — the month
+// merge counts each response once across every folder and the flat store
+// (#514). A cache from before that (a tally) carries no rows and is counted
+// again.
 type dayCache struct {
-	MTime int64            `json:"mtime"`
-	Month int64            `json:"month"`
-	By    map[string]tally `json:"by"`
+	MTime int64       `json:"mtime"`
+	Month int64       `json:"month"`
+	Rows  []*spendRow `json:"rows"`
 }
 
-// closedDay is a past day folder's tallies, read from its cache while the
-// folder's mtime is the one they were counted at. The mtime is taken before the
-// files are read, so a row linked in during the read changes it and the next
-// call counts again.
-func closedDay(dir, name string, monthStart, todayStart time.Time) map[string]tally {
+// closedDay is a past day folder's rows of the month, read from its cache while
+// the folder's mtime is the one they were read at. The mtime is taken before
+// the files are read, so a row linked in during the read changes it and the
+// next call counts again.
+func closedDay(dir, name string, monthStart time.Time) []*spendRow {
 	info, err := os.Stat(dir)
 	if err != nil {
 		return nil
@@ -281,16 +275,23 @@ func closedDay(dir, name string, monthStart, todayStart time.Time) map[string]ta
 	cachePath := filepath.Join(cacheDir(), "spend", name+".json")
 	var c dayCache
 	if b, err := os.ReadFile(cachePath); err == nil && json.Unmarshal(b, &c) == nil &&
-		c.MTime == info.ModTime().UnixNano() && c.Month == monthStart.Unix() && c.By != nil {
-		return c.By
+		c.MTime == info.ModTime().UnixNano() && c.Month == monthStart.Unix() && c.Rows != nil {
+		return c.Rows
 	}
 	// A past day still changes (a hook re-reading an old transcript writes into
 	// its stamp's day), so the recount goes through the per-file index: only the
 	// receipts that changed are read.
-	c = dayCache{MTime: info.ModTime().UnixNano(), Month: monthStart.Unix(), By: map[string]tally{}}
-	addRows(openDay(dir, name), monthStart, todayStart, map[string]bool{}, c.By)
+	c = dayCache{MTime: info.ModTime().UnixNano(), Month: monthStart.Unix(), Rows: []*spendRow{}}
+	for _, r := range openDay(dir, name) {
+		if r == nil {
+			continue
+		}
+		if ts, _ := time.Parse(time.RFC3339, r.Stamp); !ts.Before(monthStart) {
+			c.Rows = append(c.Rows, r)
+		}
+	}
 	writeAtomic(cachePath, c)
-	return c.By
+	return c.Rows
 }
 
 // seenFile is one receipt of an open day as it was last read.
