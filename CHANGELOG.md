@@ -7,6 +7,17 @@
 
 ## Unreleased
 
+## v0.5.11 — 2026-11-12
+
+### Fixed
+
+- **`ccmorph quota` no longer re-reads every receipt of the month.** One scan
+  serves every gateway profile; a past day keeps its tally until its folder
+  changes, and today's folder reads only receipts that are new or changed.
+  On a store of ~330k receipts a call went from 57 s to 2 s.
+- The adapter finishes moving pre-shard usage rows into their day folders at
+  every start, so a flat store left by an older build no longer grows.
+
 ## v0.5.10 — 2026-11-12
 
 ### Fixed
