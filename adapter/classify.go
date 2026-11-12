@@ -417,17 +417,10 @@ func classifyLocked(base, key, cache, required string, auto bool) ([]Row, error)
 	return rows, nil
 }
 
-// writeCache is atomic: a truncate-in-place write that dies midway leaves JSON
-// the next load cannot parse, silently discarding every classification.
 func writeCache(cache, base string, rows []Row) error {
 	if err := os.MkdirAll(filepath.Dir(cache), 0o777); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(cache), ".cls.")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
@@ -439,20 +432,7 @@ func writeCache(cache, base string, rows []Row) error {
 		RefusalVerdicts int    `json:"refusal_verdicts"`
 		Rows            []Row  `json:"rows"`
 	}{base, "/v1/messages", thinkingProbeVersion, refusalVerdicts, rows})
-	_, err = tmp.Write(bytes.TrimRight(buf.Bytes(), "\n"))
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err == nil {
-		err = os.Chmod(name, 0o600)
-	}
-	if err == nil {
-		err = os.Rename(name, cache)
-	}
-	if err != nil {
-		os.Remove(name)
-	}
-	return err
+	return shim.AtomicWrite(cache, bytes.TrimRight(buf.Bytes(), "\n"), 0o600, ".cls.")
 }
 
 // pyOSError spells an os error the way Python's OSError str does for the cases
