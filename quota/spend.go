@@ -1,6 +1,8 @@
 package quota
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"math"
 	"os"
@@ -125,22 +127,38 @@ func readRow(path string) *spendRow {
 		return nil
 	}
 	out := &spendRow{Profile: r.Profile, Stamp: r.Timestamp, Tokens: r.Usage.tokens()}
-	// A response the store holds under two names (a flat copy and its day
-	// folder's) is one turn: it counts once, by the identity share/usage-export
-	// keys on (#298). A row with no id always counts.
-	if id, ok := r.ResponseID.(string); ok && id != "" {
-		out.Key = id + "\x00" + r.Timestamp
-		if turn, ok := r.TurnID.(string); ok && turn != "" {
-			out.Key += "\x00" + turn
-		}
-	}
 	switch {
 	case billable(r.Usage.Cost):
 		out.Cost, out.Priced = *r.Usage.Cost, true
 	case billable(r.Usage.EstimatedCost):
 		out.Cost, out.Priced, out.Estimated = *r.Usage.EstimatedCost, true, true
 	}
+	// A response the store holds under two names (a flat copy and its day
+	// folder's) is one turn: it counts once, by the identity share/usage-export
+	// keys on (#298). A row with no id is named by its whole receipt — the
+	// move's two names are hardlinks to one file, so every field the reader
+	// counts matches under both, while two rows that differ in any of them,
+	// such as their turn or their token buckets, stay distinct (#536).
+	if id, ok := r.ResponseID.(string); ok && id != "" {
+		out.Key = id + "\x00" + r.Timestamp
+		if turn, ok := r.TurnID.(string); ok && turn != "" {
+			out.Key += "\x00" + turn
+		}
+	} else {
+		out.Key = r.contentKey()
+	}
 	return out
+}
+
+// contentKey names a row the store carries no usable response id for by the
+// receipt it wrote. Marshaling the decoded receipt gives one canonical
+// spelling of every field the reader counts, so the move's two names share a
+// key while any difference between two rows — turn, token bucket, price —
+// keeps them apart. The prefix keeps the name out of the id keys' namespace.
+func (r *receipt) contentKey() string {
+	b, _ := json.Marshal(r) // a decoded receipt is plain JSON values: no error
+	sum := sha256.Sum256(b)
+	return "row\x00" + hex.EncodeToString(sum[:])
 }
 
 // addRows adds every row stamped this month to its profile's tally, each
@@ -251,6 +269,11 @@ func monthTallies(usageDir string, today, monthStart, todayStart time.Time) map[
 	return out
 }
 
+// spendCacheV is the shape of the rows a cache holds. A cache written by an
+// older reader is read again: before #536 an id-less row was kept with no key,
+// and this reader's key is the row's whole receipt.
+const spendCacheV = 1
+
 // dayCache is a kept day folder's rows of the month and the folder state they
 // were read at. The rows, not a tally, are what it keeps: a response can sit in
 // two day folders, so a day's numbers cannot be summed on their own — the month
@@ -258,6 +281,7 @@ func monthTallies(usageDir string, today, monthStart, todayStart time.Time) map[
 // (#514). A cache from before that (a tally) carries no rows and is counted
 // again.
 type dayCache struct {
+	V     int         `json:"v"`
 	MTime int64       `json:"mtime"`
 	Month int64       `json:"month"`
 	Rows  []*spendRow `json:"rows"`
@@ -275,13 +299,13 @@ func closedDay(dir, name string, monthStart time.Time) []*spendRow {
 	cachePath := filepath.Join(cacheDir(), "spend", name+".json")
 	var c dayCache
 	if b, err := os.ReadFile(cachePath); err == nil && json.Unmarshal(b, &c) == nil &&
-		c.MTime == info.ModTime().UnixNano() && c.Month == monthStart.Unix() && c.Rows != nil {
+		c.V == spendCacheV && c.MTime == info.ModTime().UnixNano() && c.Month == monthStart.Unix() && c.Rows != nil {
 		return c.Rows
 	}
 	// A past day still changes (a hook re-reading an old transcript writes into
 	// its stamp's day), so the recount goes through the per-file index: only the
 	// receipts that changed are read.
-	c = dayCache{MTime: info.ModTime().UnixNano(), Month: monthStart.Unix(), Rows: []*spendRow{}}
+	c = dayCache{V: spendCacheV, MTime: info.ModTime().UnixNano(), Month: monthStart.Unix(), Rows: []*spendRow{}}
 	for _, r := range openDay(dir, name) {
 		if r == nil {
 			continue
@@ -296,6 +320,7 @@ func closedDay(dir, name string, monthStart time.Time) []*spendRow {
 
 // seenFile is one receipt of an open day as it was last read.
 type seenFile struct {
+	V     int       `json:"v"`
 	Size  int64     `json:"s"`
 	MTime int64     `json:"m"`
 	Row   *spendRow `json:"r"`
@@ -327,8 +352,8 @@ func openDay(dir, name string) []*spendRow {
 			continue
 		}
 		f, ok := old[n]
-		if !ok || f.Size != info.Size() || f.MTime != info.ModTime().UnixNano() {
-			f = seenFile{Size: info.Size(), MTime: info.ModTime().UnixNano(), Row: readRow(filepath.Join(dir, n))}
+		if !ok || f.V != spendCacheV || f.Size != info.Size() || f.MTime != info.ModTime().UnixNano() {
+			f = seenFile{V: spendCacheV, Size: info.Size(), MTime: info.ModTime().UnixNano(), Row: readRow(filepath.Join(dir, n))}
 			changed = true
 		}
 		delete(old, n)
