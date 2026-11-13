@@ -148,31 +148,16 @@ func confPaths(profiles []string) []string {
 	return confScan(StateDir())
 }
 
-// priorValues are the stored `profile:model` windows.
-var priorValues = func(profiles []string) map[string]int64 {
+// priorWalk is the one walk behind both prior maps: it walks the confs once,
+// reading and parsing each a single time, and yields the stored
+// `profile:model` windows together with their provenance tags — the same one
+// read the pinned path takes per profile (GH-485). The tags mark every
+// catalogue-derived (not verified) baseline entry; they double as the "is
+// this key catalogue-derived" test and as the exact tag to carry forward when
+// a run repeats a prior value, so an unverified guess never reads as
+// verified. A var so tests can pin the sweep's inputs by swapping it.
+var priorWalk = func(profiles []string) (map[string]int64, map[string]obj) {
 	values := map[string]int64{}
-	for _, path := range confPaths(profiles) {
-		profile := stem(path)
-		if !ValidProfileName(profile) {
-			continue
-		}
-		fields, ok := confFields(path)
-		if !ok {
-			continue
-		}
-		d := DiscoveredValues(fields)
-		for _, m := range slices.Sorted(maps.Keys(d)) {
-			values[profile+":"+m], _ = d[m]
-		}
-	}
-	return values
-}
-
-// priorCatalogueTags maps `profile:model` to its stored provenance tag for every
-// catalogue-derived (not verified) baseline entry. It doubles as the "is this
-// key catalogue-derived" test and as the exact tag to carry forward when a run
-// repeats a prior value, so an unverified guess never reads as verified.
-var priorCatalogueTags = func(profiles []string) map[string]obj {
 	tags := map[string]obj{}
 	for _, path := range confPaths(profiles) {
 		profile := stem(path)
@@ -183,12 +168,15 @@ var priorCatalogueTags = func(profiles []string) map[string]obj {
 		if !ok {
 			continue
 		}
-		s := DiscoveredSources(fields)
+		d, s := DiscoveredValues(fields), DiscoveredSources(fields)
+		for _, m := range slices.Sorted(maps.Keys(d)) {
+			values[profile+":"+m], _ = d[m]
+		}
 		for _, m := range slices.Sorted(maps.Keys(s)) {
 			tags[profile+":"+m], _ = s[m]
 		}
 	}
-	return tags
+	return values, tags
 }
 
 // routedProfiles are the profiles with a routed endpoint, each with the one
@@ -241,10 +229,6 @@ func DefaultOptions() Options {
 	return Options{Mode: "declared-only", ProbeTimeout: probeTimeout, Deadline: runTimeout}
 }
 
-func closeMatches(word string, models []string) string {
-	return ClosestMatch(word, models)
-}
-
 func pinnedValue(s string) bool { return ordjson.IsDigits(s) && strings.Trim(s, "0") != "" }
 
 // ProbeAll discovers windows for profiles (all routed ones when nil).
@@ -255,10 +239,10 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 	baseline := map[string]int64{}
 	catalogueTags := map[string]obj{}
 	if o.Identities == nil {
-		// The entry sweep reads every profile once up front. The pinned path
-		// below reads each profile once itself, so it skips this sweep (GH-485).
-		baseline = priorValues(profiles)
-		catalogueTags = priorCatalogueTags(profiles)
+		// The entry sweep reads every profile once up front, both prior maps
+		// from the one walk. The pinned path below reads each profile once
+		// itself, so it skips this sweep (GH-485).
+		baseline, catalogueTags = priorWalk(profiles)
 	}
 	cache := NewCache(false)
 	var blob string
@@ -371,7 +355,7 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 						}
 					}
 					if near == "" {
-						near = closeMatches(wanted, models)
+						near = ClosestMatch(wanted, models)
 					}
 					hint := ""
 					if near != "" {

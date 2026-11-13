@@ -137,3 +137,29 @@ func fetch(client *http.Client, req *http.Request) ([]byte, int, error) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	return body, resp.StatusCode, nil
 }
+
+// usageVerdict is the status ladder both usage readers walk: the row for a
+// read that did not come back as usage — unreachable, refused sign-in,
+// rate-limited, or an error status — with the cached reading standing in
+// where one exists (stale). ok is true only when the reply is usage the
+// caller goes on to parse; e carries the profile, kind and plan the row keeps
+// beside the verdict, so a reader whose plan comes from the reply passes an
+// entry without one.
+func usageVerdict(e Entry, status int, err error) (Entry, bool) {
+	switch {
+	case err != nil:
+		return stale(e.Profile, e.Kind, e.Plan, "unreachable", "not read yet: usage endpoint unreachable"), false
+	case status == 401 || status == 403:
+		e.Error = "sign-in refused; start a session on it to sign in"
+		return e, false
+	case status == 429:
+		return stale(e.Profile, e.Kind, e.Plan, "rate-limited", "not read yet: usage endpoint is rate-limiting"), false
+	case status != 200:
+		if status >= 500 {
+			return stale(e.Profile, e.Kind, e.Plan, "endpoint error", fmt.Sprintf("not read yet: usage endpoint answered %d", status)), false
+		}
+		e.Error = fmt.Sprintf("not read yet: usage endpoint answered %d", status)
+		return e, false
+	}
+	return e, true
+}

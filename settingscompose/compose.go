@@ -855,7 +855,8 @@ func fold(base, current, layerIn, canonical *obj, mapping map[string]bool) *obj 
 	return layer
 }
 
-func acwValid(v value) bool {
+// ACWValid reports whether v is an autoCompactWindow the engine's schema keeps.
+func ACWValid(v value) bool {
 	n, ok := v.(json.Number)
 	if !ok {
 		return false
@@ -939,7 +940,7 @@ func build(profileName string, canonical, layerIn, saved *obj, strip, mapping ma
 			data.Delete("env")
 		}
 	}
-	if acw != nil && !acwValid(getObj(data, "autoCompactWindow")) {
+	if acw != nil && !ACWValid(getObj(data, "autoCompactWindow")) {
 		data.Set("autoCompactWindow", json.Number(strconv.FormatInt(*acw, 10)))
 	}
 	// #275: name the profile in the one surface Claude Code renders on its own,
@@ -1152,7 +1153,7 @@ func materialize(profileDir, canonicalPath string, saved *obj, strip, mapping ma
 			var acw *int64
 			if acwArg == nil {
 				// Keep the budget derived last time; a set one in a layer wins anyway.
-				if prev := getObj(load(basePath), "autoCompactWindow"); acwValid(prev) {
+				if prev := getObj(load(basePath), "autoCompactWindow"); ACWValid(prev) {
 					f, _ := prev.(json.Number).Float64()
 					v := int64(f)
 					acw = &v
@@ -1374,6 +1375,3 @@ func MergedView(paths []string) *ordjson.Obj {
 	}
 	return data
 }
-
-// ACWValid reports whether v is an autoCompactWindow the engine's schema keeps.
-func ACWValid(v any) bool { return acwValid(v) }
