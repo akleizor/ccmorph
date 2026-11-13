@@ -3,6 +3,7 @@ package shim
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -68,6 +69,19 @@ type taskVerdict struct {
 	when    time.Time
 }
 
+// rowsListed is the moment between the report's listing of the flat rows and
+// its opens of them. A variable so a test can stand where a concurrent move
+// does — link a flat row into its day folder, then remove the flat name —
+// and watch the report still count it (#537).
+var rowsListed = func() {}
+
+// flatRowsRead is the moment between the report's reads of the flat rows and
+// its listing of the day folders' contents. A variable so a test can stand
+// where a concurrent move does — a row already read under its flat name,
+// linked into its day folder, the flat name then removed — and watch the
+// report count it once, not twice (#537).
+var flatRowsRead = func() {}
+
 // report is the spend window and verdict cohort; accepted costs span the whole
 // task. Its read writes nothing, and after it the flat rows of a pre-shard
 // store are moved into their day folders — a relocation, never a change to a
@@ -128,46 +142,45 @@ func report(days float64) {
 		lo = time.Time{} // a task's earlier usage has no lower bound
 	}
 	usageDir := filepath.Join(base, "usage")
-	paths := usageRowFiles(usageDir, lo, now)
-	sort.Strings(paths)
 	counted := map[string]bool{}
-	for _, path := range paths {
-		data, err := os.ReadFile(path)
+	readRow := func(path string) {
+		data, file, err := readRowFile(path)
 		if err != nil {
-			continue
+			return
 		}
 		d := parseDoc(data)
 		if d == nil {
 			d = parseDoc(nonFiniteToNull(data))
 		}
 		if d == nil {
-			continue
+			return
 		}
 		ts, ok := d.str("timestamp")
 		if !ok {
-			continue
+			return
 		}
 		when, ok := parseTime(ts)
 		us, hasUsage := d.last("usage")
 		if !ok || !hasUsage || d.b[us.Start] != '{' || when.After(now) {
-			continue
+			return
 		}
 		attempt := 1
 		if sp, ok := d.last("attempt"); ok {
 			n, err := strconv.Atoi(string(d.b[sp.Start:sp.End]))
 			if err != nil || n < 1 {
-				continue
+				return
 			}
 			attempt = n
 		}
-		// A row read under two names (a flat copy and its day folder's, left by
-		// a move that stopped halfway) is one response: count it once (#298).
-		if key, ok := rowIdentity(d, ts); ok {
-			if counted[key] {
-				continue
-			}
-			counted[key] = true
+		// A row read under two names — a flat copy and its day folder's, left
+		// by a move that stopped halfway, or held by both of this read's two
+		// listings while a move relocates it — is one response: count it once
+		// (#298, #537).
+		key := rowIdentity(d, ts, file)
+		if counted[key] {
+			return
 		}
+		counted[key] = true
 		var cost *float64
 		for _, kvp := range bucketsOf(d.b, us, true) {
 			if kvp.key == "cost" {
@@ -201,16 +214,16 @@ func report(days float64) {
 			}
 		}
 		if when.Before(since) {
-			continue
+			return
 		}
 		if cost == nil {
 			if estimate != nil {
 				estimatedTotal += *estimate
 				estimatedRows++
-				continue
+				return
 			}
 			unknown++
-			continue
+			return
 		}
 		// New rows record the actual outbound model. Older rows only recorded
 		// response_model; requested_model is never evidence of a served identity.
@@ -228,6 +241,26 @@ func report(days float64) {
 		}
 		total += *cost
 		byModel[model] += *cost
+	}
+	// The flat rows are listed and read before any day folder's contents are
+	// listed, and the order is the point: a move relocating a row links its
+	// day-folder name first and removes the flat name only after, so whichever
+	// moment between the two reads the move lands in, one of the reads holds
+	// the row — the quota reader's ordering (quota/spend.go). One listing of
+	// both stores cannot promise that: it opens a flat name a concurrent move
+	// has already removed — a day name created only after the listing — and
+	// the row reaches no total at all (#537).
+	flat := flatRowFiles(usageDir)
+	sort.Strings(flat)
+	rowsListed()
+	for _, path := range flat {
+		readRow(path)
+	}
+	flatRowsRead()
+	day := dayRowFiles(usageDir, lo, now)
+	sort.Strings(day)
+	for _, path := range day {
+		readRow(path)
 	}
 
 	// The window is read and the totals are in: put the flat rows this
@@ -415,54 +448,96 @@ func sameFile(a, b string) bool {
 // writer shards a row into it.
 var dayDirRE = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 
-// usageRowFiles is every row file a read of the window [since, now] touches — a
-// zero since reads every day folder, for a task read that has no lower bound:
-// the day folders whose day falls inside the window, plus the flat rows a
-// pre-shard build (or a move that could not rename) left at the top level. A
-// row always sits in a folder at or after its stamp's UTC day — the writer
-// places it there, and the move by an mtime no row's writer lets run before
-// its stamp — so no folder before the window's first day can hold a row the
-// window counts. Anything else in the store — a folder for another day, a
-// name that is not a day, the atomic writer's in-flight tmp — is not read.
-func usageRowFiles(base string, since, now time.Time) []string {
-	first, last := since.UTC().Format("2006-01-02"), now.UTC().Format("2006-01-02")
+// flatRowFiles is the rows a pre-shard build (or a move that could not
+// rename) left at the top level of the store: the move leaves a flat row in
+// place when its mtime day's folder already holds another row under its
+// name, and a filesystem without hardlinks keeps every row flat, so a reader
+// always reads the top level too. Anything else at the top level — a day
+// folder, the atomic writer's in-flight tmp — is not a row.
+func flatRowFiles(base string) []string {
 	entries, _ := os.ReadDir(base)
 	var out []string
 	for _, e := range entries {
-		if e.IsDir() {
-			name := e.Name()
-			if !dayDirRE.MatchString(name) || name < first || name > last {
-				continue
-			}
-			sub, _ := os.ReadDir(filepath.Join(base, name))
-			for _, f := range sub {
-				if !f.IsDir() && strings.HasSuffix(f.Name(), ".json") {
-					out = append(out, filepath.Join(base, name, f.Name()))
-				}
-			}
-			continue
-		}
-		if strings.HasSuffix(e.Name(), ".json") {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
 			out = append(out, filepath.Join(base, e.Name()))
 		}
 	}
 	return out
 }
 
+// dayRowFiles is every row file the day folders of the window [since, now]
+// hold — a zero since reads every day folder, for a task read that has no
+// lower bound. A row always sits in a folder at or after its stamp's UTC day
+// — the writer places it there, and the move by an mtime no row's writer
+// lets run before its stamp — so no folder before the window's first day can
+// hold a row the window counts. Anything else in the store — a folder for
+// another day, a name that is not a day, the atomic writer's in-flight tmp —
+// is not read.
+func dayRowFiles(base string, since, now time.Time) []string {
+	first, last := since.UTC().Format("2006-01-02"), now.UTC().Format("2006-01-02")
+	entries, _ := os.ReadDir(base)
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !dayDirRE.MatchString(name) || name < first || name > last {
+			continue
+		}
+		sub, _ := os.ReadDir(filepath.Join(base, name))
+		for _, f := range sub {
+			if !f.IsDir() && strings.HasSuffix(f.Name(), ".json") {
+				out = append(out, filepath.Join(base, name, f.Name()))
+			}
+		}
+	}
+	return out
+}
+
+// fileID is the file a row's bytes were read from. The move's two names for
+// one row — its flat name and its day folder's — are hardlinks and share it;
+// two row files never do, whatever bytes they hold.
+type fileID struct{ dev, ino uint64 }
+
+// readRowFile is a row file's bytes and the file they came from, read through
+// one open so the two cannot name different files.
+func readRowFile(path string) ([]byte, fileID, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fileID{}, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fileID{}, err
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return nil, fileID{}, errors.New("no file identity")
+	}
+	data, err := io.ReadAll(f)
+	return data, fileID{uint64(st.Dev), uint64(st.Ino)}, err
+}
+
 // rowIdentity is the response a row records: its id, its stamp as written and,
 // when it has one, its turn. It is the identity share/usage-export dedupes on,
-// so a response the store holds under two names counts once. A row with no id
-// has no identity and is always counted.
-func rowIdentity(d *doc, ts string) (string, bool) {
-	id, ok := d.str("response_id")
-	if !ok || id == "" {
-		return "", false
+// so a response the store holds under two names counts once (#298). A row with
+// no usable id — the writers record one, but the store accepts a row without —
+// is named by the file it was read from: the move's two names are hardlinks to
+// one file, so they count once, while two row files that hold the same bytes
+// stay two rows (the report suite writes such twins). The quota reader's
+// content key (#536) fits the quota reader, not this one.
+func rowIdentity(d *doc, ts string, file fileID) string {
+	if id, ok := d.str("response_id"); ok && id != "" {
+		key := id + "\x00" + ts
+		if turn, ok := d.str("turn_id"); ok && turn != "" {
+			key += "\x00" + turn
+		}
+		return key
 	}
-	key := id + "\x00" + ts
-	if turn, ok := d.str("turn_id"); ok && turn != "" {
-		key += "\x00" + turn
-	}
-	return key, true
+	// The prefix keeps the name out of the id keys' namespace.
+	return "file\x00" + strconv.FormatUint(file.dev, 10) + "\x00" + strconv.FormatUint(file.ino, 10)
 }
 
 // nonFiniteToNull rewrites the NaN/Infinity/-Infinity tokens Python's json.dump
