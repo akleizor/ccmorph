@@ -80,20 +80,8 @@ func readCodex(client *http.Client, name, dir string) Entry {
 		req.Header.Set("chatgpt-account-id", a.AccountID)
 	}
 	body, status, err := fetch(client, req)
-	switch {
-	case err != nil:
-		return stale(name, e.Kind, "", "unreachable", "not read yet: usage endpoint unreachable")
-	case status == 401 || status == 403:
-		e.Error = "sign-in refused; start a session on it to sign in"
-		return e
-	case status == 429:
-		return stale(name, e.Kind, "", "rate-limited", "not read yet: usage endpoint is rate-limiting")
-	case status != 200:
-		if status >= 500 {
-			return stale(name, e.Kind, "", "endpoint error", fmt.Sprintf("not read yet: usage endpoint answered %d", status))
-		}
-		e.Error = fmt.Sprintf("not read yet: usage endpoint answered %d", status)
-		return e
+	if v, ok := usageVerdict(e, status, err); !ok {
+		return v
 	}
 	plan, ws, perr := codexReading(body)
 	if perr != nil {

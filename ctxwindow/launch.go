@@ -92,18 +92,21 @@ func parseDay(s string) (time.Time, bool) {
 // design: the outcome goes to the log, never to the person launching.
 func SizeListing(ctx context.Context, profile, body, base, key string, op Opener) int {
 	var rows []obj
-	var fields map[string]string
 	doc, err := parseJSON([]byte(body))
 	top := asObj(doc)
-	path, perr := ProfilePath(profile)
-	if err != nil || top == nil || perr != nil {
+	if err != nil || top == nil {
 		return 0 // not a listing: nothing to size
 	}
-	rows = ListingRows(getv(top, "data"))
-	if _, fields, err = ReadConf(path); err != nil {
+	// One read of the profile carries both the fields and the identity the
+	// save pins, so the conf and its sidecar are each opened once — the
+	// snapshot form the probe and migrate readers already use (#485, GH-522).
+	snap, serr := profileSnapshot(profile)
+	if serr != nil || snap == nil {
 		return 0
 	}
-	expected := ProfileIdentity(profile)
+	rows = ListingRows(getv(top, "data"))
+	fields := snap.Fields
+	expected := snap.ID
 	known := DiscoveredValues(fields)
 	for m := range ManualValues(fields) {
 		known[m] = 0

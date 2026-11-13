@@ -89,8 +89,8 @@ func put(t *testing.T, path, text string) {
 // stubs replaces the discovery seams; restore is automatic.
 func stubs(t *testing.T, env func(string) (map[string]string, error), list func(base string) ([]string, map[string]int64, []obj, error)) {
 	t.Helper()
-	oe, ol, op, ot, os_ := ccmorphEnv, listModelsFn, priorValues, priorCatalogueTags, routeStop
-	t.Cleanup(func() { ccmorphEnv, listModelsFn, priorValues, priorCatalogueTags, routeStop = oe, ol, op, ot, os_ })
+	oe, ol, op, os_ := ccmorphEnv, listModelsFn, priorWalk, routeStop
+	t.Cleanup(func() { ccmorphEnv, listModelsFn, priorWalk, routeStop = oe, ol, op, os_ })
 	ccmorphEnv = func(ctx context.Context, p string) (map[string]string, error) { return env(p) }
 	listModelsFn = func(ctx context.Context, base, key string, timeout time.Duration, op Opener) ([]string, map[string]int64, []obj, error) {
 		ids, sizes, rows, err := list(base)
@@ -173,8 +173,7 @@ func TestProbeAllModes(t *testing.T) {
 	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
 		return []string{"a", "b", "c"}, map[string]int64{"a": 128000, "b": 1000000}, nil, nil
 	})
-	priorValues = func([]string) map[string]int64 { return map[string]int64{} }
-	priorCatalogueTags = func([]string) map[string]obj { return map[string]obj{} }
+	priorWalk = func([]string) (map[string]int64, map[string]obj) { return map[string]int64{}, map[string]obj{} }
 	var probed []string
 	oldProbe, oldPayload := probeFn, payloadFn
 	t.Cleanup(func() { probeFn, payloadFn = oldProbe, oldPayload })
@@ -206,8 +205,7 @@ func TestProbeFailureReasonIsPrinted(t *testing.T) {
 	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
 		return []string{"known", "failed"}, map[string]int64{"known": 300000}, nil, nil
 	})
-	priorValues = func([]string) map[string]int64 { return nil }
-	priorCatalogueTags = func([]string) map[string]obj { return nil }
+	priorWalk = func([]string) (map[string]int64, map[string]obj) { return nil, nil }
 	oldProbe := probeFn
 	t.Cleanup(func() { probeFn = oldProbe })
 	probeFn = func(ctx context.Context, base, key, model, blob string, timeout time.Duration, op Opener, bisect int) ProbeResult {
@@ -228,11 +226,10 @@ func TestBaselineIsScopedAndCachedReadingsSurvive(t *testing.T) {
 	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
 		return []string{"a"}, map[string]int64{"a": 200000}, nil, nil
 	})
-	priorValues = func([]string) map[string]int64 { return map[string]int64{"a": 1000000} }
-	priorCatalogueTags = func([]string) map[string]obj { return nil }
+	priorWalk = func([]string) (map[string]int64, map[string]obj) { return map[string]int64{"a": 1000000}, nil }
 	eq(t, vals(ProbeAll(context.Background(), []string{"other"}, DefaultOptions())), map[string]int64{"other:a": 200000})
 
-	priorValues = func([]string) map[string]int64 { return map[string]int64{"gw:a": 1000000} }
+	priorWalk = func([]string) (map[string]int64, map[string]obj) { return map[string]int64{"gw:a": 1000000}, nil }
 	probeFn = func(ctx context.Context, base, key, model, blob string, timeout time.Duration, op Opener, bisect int) ProbeResult {
 		t.Fatal("a cached reading was spent again")
 		return ProbeResult{}
@@ -254,8 +251,7 @@ func TestOneDeadlineCoversEveryPhase(t *testing.T) {
 			}, func(string) ([]string, map[string]int64, []obj, error) {
 				return []string{"a"}, map[string]int64{"a": 123000}, nil, nil
 			})
-			priorValues = func([]string) map[string]int64 { return nil }
-			priorCatalogueTags = func([]string) map[string]obj { return nil }
+			priorWalk = func([]string) (map[string]int64, map[string]obj) { return nil, nil }
 			ctxEnv, ctxList, ctxStop := ccmorphEnv, listModelsFn, routeStop
 			switch phase {
 			case "ccmorph_env":
@@ -292,8 +288,7 @@ func TestDeadlineDuringCleanupKeepsValuesAndTriesCleanup(t *testing.T) {
 	}, func(string) ([]string, map[string]int64, []obj, error) {
 		return []string{"a"}, map[string]int64{"a": 123000}, nil, nil
 	})
-	priorValues = func([]string) map[string]int64 { return nil }
-	priorCatalogueTags = func([]string) map[string]obj { return nil }
+	priorWalk = func([]string) (map[string]int64, map[string]obj) { return nil, nil }
 	var stops []string
 	routeStop = func(ctx context.Context, h string) { stops = append(stops, h); panic(runDeadline{}) }
 	captureStderr(t)
@@ -333,8 +328,7 @@ func TestCancelInsideRouteStopStillRetiresTheRoute(t *testing.T) {
 	}, func(string) ([]string, map[string]int64, []obj, error) {
 		return []string{"a"}, map[string]int64{"a": 123000}, nil, nil
 	})
-	priorValues = func([]string) map[string]int64 { return nil }
-	priorCatalogueTags = func([]string) map[string]obj { return nil }
+	priorWalk = func([]string) (map[string]int64, map[string]obj) { return nil, nil }
 	parent, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	routeStop = func(ctx context.Context, h string) { cancel(); realStop(ctx, h) }
@@ -356,8 +350,7 @@ func TestHeldProfileLockCannotOutliveTheDeadline(t *testing.T) {
 	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
 		return []string{"known"}, map[string]int64{"known": 922000}, nil, nil
 	})
-	priorValues = func([]string) map[string]int64 { return map[string]int64{} }
-	priorCatalogueTags = func([]string) map[string]obj { return nil }
+	priorWalk = func([]string) (map[string]int64, map[string]obj) { return map[string]int64{}, nil }
 	lockFile, err := lockPath(filepath.Join(dir, "gw.conf"))
 	if err != nil {
 		t.Fatal(err)
@@ -398,8 +391,7 @@ func TestScopeExclusionsAndNearMisses(t *testing.T) {
 		func(string) ([]string, map[string]int64, []obj, error) {
 			return []string{"kept", "hidden", "claude-opus-5-5", "gpt-5"}, nil, nil, nil
 		})
-	priorValues = func([]string) map[string]int64 { return nil }
-	priorCatalogueTags = func([]string) map[string]obj { return nil }
+	priorWalk = func([]string) (map[string]int64, map[string]obj) { return nil, nil }
 	captureStderr(t)
 	r := ProbeAll(context.Background(), []string{"gw"}, DefaultOptions())
 	for _, n := range r.Notes {
@@ -472,8 +464,9 @@ func TestCatalogueTagLifecycle(t *testing.T) {
 	}
 
 	// A second run with no declared size carries the value AND the tag, without refetching.
-	priorValues = func([]string) map[string]int64 { return map[string]int64{"gw:acme/solo": 100000} }
-	priorCatalogueTags = func([]string) map[string]obj { return map[string]obj{"gw:acme/solo": tag} }
+	priorWalk = func([]string) (map[string]int64, map[string]obj) {
+		return map[string]int64{"gw:acme/solo": 100000}, map[string]obj{"gw:acme/solo": tag}
+	}
 	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
 		t.Fatal("refetched")
 		return nil
@@ -919,8 +912,7 @@ func TestBisectNeverReadsATimeoutAsARefusal(t *testing.T) {
 func TestWarningPrecedesTheFirstPaidRequest(t *testing.T) {
 	state(t)
 	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) { return []string{"m"}, nil, nil, nil })
-	priorValues = func([]string) map[string]int64 { return nil }
-	priorCatalogueTags = func([]string) map[string]obj { return nil }
+	priorWalk = func([]string) (map[string]int64, map[string]obj) { return nil, nil }
 	out := captureStderr(t)
 	oldProbe := probeFn
 	t.Cleanup(func() { probeFn = oldProbe })
@@ -945,8 +937,7 @@ func TestPaidProbeWarningFitsEightyColumns(t *testing.T) {
 	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
 		return []string{model}, nil, nil, nil
 	})
-	priorValues = func([]string) map[string]int64 { return nil }
-	priorCatalogueTags = func([]string) map[string]obj { return nil }
+	priorWalk = func([]string) (map[string]int64, map[string]obj) { return nil, nil }
 	out := captureStderr(t)
 	oldProbe := probeFn
 	t.Cleanup(func() { probeFn = oldProbe })
@@ -990,7 +981,7 @@ func TestStaleResultIsRejectedAndOtherProfileSurvives(t *testing.T) {
 	if c, _ := Commit(context.Background(), v, nil, ids, nil); c != 1 {
 		t.Fatal("the stale profile must fail the commit")
 	}
-	prior := priorValues(nil)
+	prior, _ := priorWalk(nil)
 	if prior["a:m"] != 500000 || prior["b:m"] != 300000 {
 		t.Fatal(prior)
 	}
@@ -1011,7 +1002,7 @@ func TestNewModelWritePreservesExistingValuesAndManualPin(t *testing.T) {
 			t.Fatal(code)
 		}
 	}
-	prior := priorValues(nil)
+	prior, _ := priorWalk(nil)
 	if len(prior) != 2 || prior["a:one"] != 200000 || prior["a:two"] != 300000 || window("a", "manual").Window != 100000 {
 		t.Fatal(prior)
 	}
@@ -1324,6 +1315,39 @@ func TestLaunchSizesOnlyNewModelsAndRemembersMisses(t *testing.T) {
 	}
 }
 
+// GH-522: the launch's sizing read opens the conf once. It used to read the
+// fields with ReadConf and then re-open the conf, re-read the sidecar and
+// re-parse the text through ProfileIdentity, only to take the identity — the
+// two-read path #485 closed for the probe and migrate readers. One read of a
+// profile with nothing to size is all a launch may spend.
+func TestSizeListingReadsTheConfOnceIssue522(t *testing.T) {
+	dir := state(t)
+	conf := filepath.Join(dir, "gw.conf")
+	put(t, conf, "type=apikey\nbase_url=https://gw.invalid\napi_key=canary\nexcluded_models=hidden-new\n\n")
+	_, fields, _ := ReadConf(conf)
+	route := RouteFingerprint(fields)
+	f, _ := os.OpenFile(conf, os.O_APPEND|os.O_WRONLY, 0)
+	fmt.Fprintf(f, `context_discovered={"route":%q,"models":{"known-model":123456}}`+"\n", route)
+	f.Close()
+	reads := 0
+	ox := textOf
+	t.Cleanup(func() { textOf = ox })
+	textOf = func(b []byte, path string) (string, error) {
+		if path == conf {
+			reads++
+		}
+		return ox(b, path)
+	}
+	// The one listed model is already sized, so the run sizes nothing and the
+	// only conf reads left are the sizing read's own.
+	if c := SizeListing(context.Background(), "gw", `{"data":[{"id":"known-model"}]}`, "", "", nil); c != 0 {
+		t.Fatal(c)
+	}
+	if reads != 1 {
+		t.Fatalf("the launch's sizing read opened the conf %d time(s)", reads)
+	}
+}
+
 // Python: size_listing replaces the six-byte escape before matching; the
 // decoded ">" this port used to write matched itself and normalized nothing.
 func TestValidationNormalizesTheEscapedGT(t *testing.T) {
@@ -1509,10 +1533,9 @@ func TestTheProductionProbeSkipsTheBaselineSweepIssue485(t *testing.T) {
 		return nil, nil, nil, nil
 	})
 	sweeps := 0
-	oe, ot := priorValues, priorCatalogueTags
-	t.Cleanup(func() { priorValues, priorCatalogueTags = oe, ot })
-	priorValues = func([]string) map[string]int64 { sweeps++; return nil }
-	priorCatalogueTags = func([]string) map[string]obj { sweeps++; return nil }
+	ow := priorWalk
+	t.Cleanup(func() { priorWalk = ow })
+	priorWalk = func([]string) (map[string]int64, map[string]obj) { sweeps++; return nil, nil }
 	reads := map[string]int{}
 	ox := textOf
 	t.Cleanup(func() { textOf = ox })
@@ -1531,6 +1554,35 @@ func TestTheProductionProbeSkipsTheBaselineSweepIssue485(t *testing.T) {
 		if n := reads[filepath.Join(dir, name+".conf")]; n != 1 {
 			t.Fatalf("the production run read %s's conf %d time(s)", name, n)
 		}
+	}
+}
+
+// GH-522: the entry sweep takes both prior maps from one walk of the confs.
+// The values and the tags used to be two folds invoked back-to-back, so every
+// conf was read and parsed twice — the double walk the pinned path exists to
+// avoid (the production probe pins identities and skips this sweep; GH-485).
+// The listing fails, so the loop never reaches its own fields read: the only
+// conf reads left are the sweep's.
+func TestTheEntrySweepWalksEachConfOnceIssue522(t *testing.T) {
+	dir := state(t)
+	put(t, filepath.Join(dir, "gw.conf"), "type=apikey\napi_key=k\n")
+	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
+		return nil, nil, nil, errors.New("gateway unreachable")
+	})
+	conf := filepath.Join(dir, "gw.conf")
+	reads := 0
+	ox := textOf
+	t.Cleanup(func() { textOf = ox })
+	textOf = func(b []byte, path string) (string, error) {
+		if path == conf {
+			reads++
+		}
+		return ox(b, path)
+	}
+	captureStderr(t)
+	ProbeAll(context.Background(), []string{"gw"}, DefaultOptions())
+	if reads != 1 {
+		t.Fatalf("the entry sweep read the conf %d time(s)", reads)
 	}
 }
 
@@ -1564,8 +1616,7 @@ func TestProbeSaysWhatItLookedForWhenNoSizeIsPublished(t *testing.T) {
 	}, func(string) ([]string, map[string]int64, []obj, error) {
 		return []string{"alpha-haiku-1", "alpha-opus-1", "alpha-sonnet-1"}, nil, nil, nil
 	})
-	priorValues = func([]string) map[string]int64 { return nil }
-	priorCatalogueTags = func([]string) map[string]obj { return nil }
+	priorWalk = func([]string) (map[string]int64, map[string]obj) { return nil, nil }
 	var out, errb bytes.Buffer
 	code := ProbeMain([]string{"--profile", "work"}, strings.NewReader(""), &out, &errb)
 	if code != 0 {
@@ -1656,8 +1707,7 @@ func TestProbeOutputFitsEightyColumns(t *testing.T) {
 	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
 		return append(append([]string{}, ids...), "sized-model"), map[string]int64{"sized-model": 1000}, nil, nil
 	})
-	priorValues = func([]string) map[string]int64 { return nil }
-	priorCatalogueTags = func([]string) map[string]obj { return nil }
+	priorWalk = func([]string) (map[string]int64, map[string]obj) { return nil, nil }
 	var out, errb bytes.Buffer
 	// One model was sized, so the run keeps the old exit; its output is what
 	// this test is about.
@@ -1698,8 +1748,7 @@ func TestNotesNameTheirProfileAndWhetherTheyFailed(t *testing.T) {
 	}, func(string) ([]string, map[string]int64, []obj, error) {
 		return []string{"mystery"}, nil, nil, nil
 	})
-	priorValues = func([]string) map[string]int64 { return nil }
-	priorCatalogueTags = func([]string) map[string]obj { return nil }
+	priorWalk = func([]string) (map[string]int64, map[string]obj) { return nil, nil }
 	r := ProbeAll(context.Background(), []string{"nokey", "work"}, DefaultOptions())
 	var noKey, unresolved *Note
 	for i := range r.Notes {
