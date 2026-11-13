@@ -54,6 +54,17 @@ func TestModelServedMatchesTheShimsMappingScope(t *testing.T) {
 			}
 		}
 	}
+	// #539: a tier word answers ServedYes on every route in any case or
+	// spelling — the one answer every surface that names a model gives it —
+	// where the hand-spelled strip and the un-normalized tier test answered
+	// an uppercase word through the listing instead.
+	for _, req := range []string{"OPUS", "opus[1M]"} {
+		for _, base := range []string{"https://api.anthropic.com", "http://mapped.invalid"} {
+			if got := ModelServed(req, "apikey", base, mapJSON, "test-key"); got != ServedYes {
+				t.Errorf("%s %s: got %d, want ServedYes", base, req, got)
+			}
+		}
+	}
 }
 
 // ContextServed agrees with the listing `ccmorph models` prints, not with the
@@ -237,6 +248,13 @@ func TestServedRefusalNamesTheClosestAndServedIds(t *testing.T) {
 		{"a mapped id whose target is absent is refused", family, "alias", `{"alias":"absent-target"}`, true,
 			[]string{"'alias' is not served by gw"}},
 		{"a tier alias always resolves", family, "sonnet", "", false, nil},
+		// #539: the strip and the tier test are the one answers every surface
+		// gives a model id, so a tier word declines in any case or spelling
+		// and a mapped target's marker is read in either case too.
+		{"a tier word with its marker is a tier alias", family, "opus[1m]", "", false, nil},
+		{"a tier word's other marker case is a tier alias", family, "opus[1M]", "", false, nil},
+		{"an uppercase tier word is a tier alias", family, "OPUS", "", false, nil},
+		{"a mapped target's other marker case is judged stripped", family, "alias", `{"alias":"glm-4.6[1M]"}`, false, nil},
 		{"a flag-shaped value is not a model id", family, "--menu", "", false, nil},
 		{"a picker token is not a model id", family, "?", "", false, nil},
 		{"a spaced value is not a model id", family, "kimi k3", "", false, nil},

@@ -42,8 +42,9 @@ so it is a different function with the same name, not a copy — as #423's
 
 Issue #486: the strays the util+cli batch carried. util's `isLink` was
 `paths.IsSymlink` spelled out — the #422 predicate sweep had missed it; cli's
-own `isLink` in `rm.go` is the same predicate and stays for its own change,
-so the name is not banned while the two packages differ. `inList` joined
+own `isLink` in `rm.go` was the same predicate and stayed for its own change
+(#539): its ten call sites ask `paths.IsSymlink`, and the spelling is banned
+with the others. `inList` joined
 util's `hasString`; `mergedView` and `acwValid` became direct
 `settingscompose` calls (`settingscompose`'s own `acwValid` judges its
 internal `value`, not `any`, so it is a different function with the same
@@ -79,7 +80,8 @@ shim's exported signatures stayed as thin delegations. `replaceFields`'
 identity re-check rides along as the write's guard, run after the temp is
 written and before the rename. The writes that are not the dance (a key
 linked into place, a usage row's claim, configure's staged set, a streaming
-copy, a readiness file, the session env file) are named
+copy, a readiness file, the session env file, the history repair's verified
+copy) are named
 with their reasons in `NOT_THE_DANCE`.
 
 Issue #523: the profile-root ladder — `$CCMORPH_STATE_DIR`, else
@@ -99,6 +101,7 @@ import os
 import re
 import subprocess
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -139,6 +142,7 @@ PREDICATES = {
     "isdir": "IsDir",
     "isfile": "IsFile",
     "issymlink": "IsSymlink",
+    "islink": "IsSymlink",
     "lexists": "Lexists",
     "present": "Lexists",
     "fileexists": "Exists",
@@ -170,6 +174,13 @@ def git_output(where, *args):
     return done.stdout if done.returncode == 0 else None
 
 
+# The three walks are memoized per root (#539): every guard runs them, no
+# guard changes the tree it walks, and a test that pins ROOT builds its
+# fixture whole before its first guard call — so the second guard in a run
+# reuses the first's walk instead of re-running git and re-globbing the tree.
+# The key is always the root, never a global: a cache keyed on nothing would
+# serve one test's fixture to every other.
+@lru_cache(maxsize=None)
 def tree_tracked_files(root):
     """The paths this tree's repository tracks, as a set of absolute paths.
 
@@ -179,6 +190,7 @@ def tree_tracked_files(root):
     return {root / os.fsdecode(rel) for rel in listed.split(b"\0") if rel}
 
 
+@lru_cache(maxsize=None)
 def sibling_worktrees(root):
     """The roots of the other working trees of `root`'s repository below `root`.
 
@@ -207,13 +219,21 @@ def in_a_sibling_worktree(path, siblings, tracked):
 
 
 def go_sources():
-    """Every .go file of this tree, by the walk `go_definitions` documents."""
-    tracked = tree_tracked_files(ROOT)
-    siblings = sibling_worktrees(ROOT)
-    for path in sorted(ROOT.glob("**/*.go")):
-        if ".git" in path.parts or in_a_sibling_worktree(path, siblings, tracked):
-            continue
-        yield path
+    """Every .go file of this tree, by the walk `go_definitions` documents.
+
+    ROOT is read at call time, so a test that pins it to its own fixture walks
+    that fixture; the walk itself is `go_sources_of`'s, memoized per root."""
+    return go_sources_of(ROOT)
+
+
+@lru_cache(maxsize=None)
+def go_sources_of(root):
+    """The walk `go_sources` resolves ROOT into, as one list per root."""
+    tracked = tree_tracked_files(root)
+    siblings = sibling_worktrees(root)
+    return [path for path in sorted(root.glob("**/*.go"))
+            if ".git" not in path.parts
+            and not in_a_sibling_worktree(path, siblings, tracked)]
 
 
 def go_definitions():
@@ -325,21 +345,73 @@ def test_contextenv_does_not_spell_authkeys_precedence():
 # resolveTier, so no other file spells a word. This guard fails on the set's
 # return anywhere else (test fixtures may spell model names, so tests are not
 # walked).
+#
+# #539: the two spellings the count could not see. The picker's alias rows
+# spelled the words in a tab-separated literal, and the add wizard and the env
+# allowlists spelled the uppercase keys; both are built from the word list now
+# — the picker's rows and the wizard's env keys from util.TierWords and
+# util.TierEnvKey — so the guard counts those spellings too: a word
+# hand-spelled in either form fails it. profile and ctxwindow cannot import
+# util (#423), so their env-key allowlists stay hand-spelled and are the key
+# form's allowed homes beside the builder's own file.
 TIER_DEFINITION = ROOT / "util" / "tier.go"
+TIER_KEY_HOMES = {ROOT / "profile" / "envkeys.go", ROOT / "ctxwindow" / "conf.go"}
+# The picker-row spelling: a tier word and the tab that follows it.
+TIER_ROWS = ("fable\\t", "opus\\t", "sonnet\\t", "haiku\\t")
+# The env-key spelling: the prefix of every ANTHROPIC_DEFAULT_<word>_MODEL key,
+# spelled whole or built by hand-built concatenation.
+TIER_KEY = "ANTHROPIC_DEFAULT_"
 
 
 def test_the_tier_words_are_spelled_once():
-    counts = {path: path.read_text().count('"fable"')
-              for path in go_sources() if not path.name.endswith("_test.go")}
-    offenders = [f"{path.relative_to(ROOT)} spells it {n} times"
-                 for path, n in counts.items()
-                 if n > 0 and path != TIER_DEFINITION]
-    assert not offenders, (
-        "the tier-word set is hand-spelled outside util.IsTier (#520): "
-        + "; ".join(offenders))
-    assert counts.get(TIER_DEFINITION, 0) == 1, (
+    words, rows, keys = [], [], []
+    for path in go_sources():
+        if path.name.endswith("_test.go"):
+            continue
+        text = path.read_text()
+        if text.count('"fable"') > 0 and path != TIER_DEFINITION:
+            words.append(f"{path.relative_to(ROOT)} spells the word")
+        if any(row in text for row in TIER_ROWS):
+            rows.append(f"{path.relative_to(ROOT)} spells a picker row")
+        if TIER_KEY in text and path != TIER_DEFINITION and path not in TIER_KEY_HOMES:
+            keys.append(f"{path.relative_to(ROOT)} spells the env key")
+    assert not words, (
+        "the tier-word set is hand-spelled outside util/tier.go (#520): "
+        + "; ".join(words))
+    assert not rows, (
+        "a picker alias row is hand-spelled instead of built from "
+        "util.TierWords (#539): " + "; ".join(rows))
+    assert not keys, (
+        "the tier env key is hand-spelled outside util.TierEnvKey and the "
+        "allowlists that cannot import it (#539): " + "; ".join(keys))
+    text = TIER_DEFINITION.read_text()
+    assert text.count('"fable"') == 1, (
         "the tier-word set's one definition is no longer spelled once in "
         f"{TIER_DEFINITION.relative_to(ROOT)} (#520)")
+    assert TIER_KEY in text, (
+        f"the tier env key's builder is no longer in {TIER_DEFINITION.relative_to(ROOT)} (#539)")
+
+
+# #539: the response-identity Key — id, stamp and turn joined on NULs — was
+# spelled twice, writer and reader (shim's rowIdentity, quota's readRow),
+# both citing #298 and flagged in #514's handoff as belonging to that fix.
+# One builder, util.ResponseKey, owns the join; this guard fails on the
+# turn's append spelled anywhere else (tests may join other keys on NULs,
+# so they are not walked).
+IDENTITY_TURN = '"\\x00" + turn'
+IDENTITY_HOME = ROOT / "util" / "identity.go"
+
+
+def test_the_response_identity_key_is_spelled_once():
+    spelled = [path for path in go_sources()
+               if not path.name.endswith("_test.go") and IDENTITY_TURN in path.read_text()]
+    offenders = [str(path.relative_to(ROOT)) for path in spelled if path != IDENTITY_HOME]
+    assert not offenders, (
+        "the response-identity key is hand-spelled outside util.ResponseKey "
+        f"(#539): {'; '.join(offenders)}")
+    assert IDENTITY_HOME in spelled, (
+        f"the response-identity key's one definition (#539) is no longer in "
+        f"{IDENTITY_HOME.relative_to(ROOT)}")
 
 
 # #521: the write-temp-then-rename dance — a temp in the target's own
@@ -363,6 +435,13 @@ NOT_THE_DANCE = {
     "util/adapterstart.go": "the adapter's readiness file, written by the child process",
     "cli/run.go": "the session env file: the temp is the file, nothing is replaced",
     "adapter/adapter_test.go": "a test's own stdio capture",
+    # #539: the repair names itself here though the scanners cannot see its
+    # write — it spells no CreateTemp and no WriteFile, only copyVerified and
+    # a fixed-name temp — so the record, not the guard, carries its reason.
+    "util/setup.go": "the history repair's verified copy (#205): streamed, hashed and read "
+                     "back at a temp beside the store, then renamed over the store's link, so "
+                     "the shared path always names a file — semantics AtomicWrite cannot "
+                     "express, its guard never seeing the temp nor streaming the bytes",
 }
 
 

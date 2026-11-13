@@ -29,6 +29,13 @@ func TestATierWordResolvesThroughTheEnvThenTheSavedAlias(t *testing.T) {
 		{"an env mapping naming the same tier word leaves the alias its say", "opus", "opus[1m]", true, "m-store", true, "m-store", true},
 		{"an env mapping naming another tier word is that word", "opus", "sonnet", true, "", false, "sonnet", true},
 		{"an empty model is no tier and stays empty", "", "", false, "", false, "", true},
+		// #539: the word is util.TierWord's spelling — lowercased, marker
+		// stripped — so these three answer the same way the served adjudicator
+		// does, where the old split-at-the-first-bracket spelling answered
+		// "opus[foo]" as the tier word opus and never saw "OPUS" at all.
+		{"an uppercase word is the word", "OPUS", "", false, "m-alias", true, "m-alias", true},
+		{"the marker's other case resolves too", "opus[1M]", "", false, "m-alias", true, "m-alias", true},
+		{"a bracket that is not the marker is the id itself", "opus[foo]", "", false, "", false, "opus[foo]", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, ok := resolveTier(tc.model,

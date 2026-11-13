@@ -1586,6 +1586,36 @@ func TestTheEntrySweepWalksEachConfOnceIssue522(t *testing.T) {
 	}
 }
 
+// GH-539: the entry sweep parses each conf's sidecar once. The walk took its
+// two maps from DiscoveredValues and DiscoveredSources, each of which re-runs
+// discoveredDoc — parsing the sidecar JSON and checking its route twice over
+// the one read the walk's doc promises (#522 closed the read; this closes the
+// parse). The conf carries a route-bound sidecar so there is a parse to count.
+func TestTheEntrySweepParsesEachSidecarOnceIssue539(t *testing.T) {
+	dir := state(t)
+	conf := filepath.Join(dir, "gw.conf")
+	put(t, conf, "type=apikey\nbase_url=https://gw.invalid\napi_key=canary\nexcluded_models=hidden-new\n\n")
+	_, fields, _ := ReadConf(conf)
+	route := RouteFingerprint(fields)
+	f, _ := os.OpenFile(conf, os.O_APPEND|os.O_WRONLY, 0)
+	fmt.Fprintf(f, `context_discovered={"route":%q,"models":{"known-model":123456},"sources":{"known-model":{"source":"listing"}}}`+"\n", route)
+	f.Close()
+	parses := 0
+	od := discoveredDoc
+	t.Cleanup(func() { discoveredDoc = od })
+	discoveredDoc = func(fields map[string]string) obj {
+		parses++
+		return od(fields)
+	}
+	values, tags := priorWalk([]string{"gw"})
+	if parses != 1 {
+		t.Fatalf("the entry sweep parsed the sidecar %d time(s)", parses)
+	}
+	if values["gw:known-model"] != 123456 || tags["gw:known-model"]["source"] != "listing" {
+		t.Fatalf("the sweep's maps lost the sidecar's entry: %v %v", values, tags)
+	}
+}
+
 func TestReportUnresolvedOrdersTheFreeFixBeforeThePaidOne(t *testing.T) {
 	var b bytes.Buffer
 	ReportUnresolved(&b, "gateway", []string{"deepseek-v4.1-flash"})

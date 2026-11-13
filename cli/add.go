@@ -441,9 +441,17 @@ func (l *launcher) addAPIKey(name string) int {
 	if url != "" {
 		conf += "base_url=" + url + "\n"
 	}
+	// The presets' three tier columns are written as the env keys the store
+	// reads back, each key built from its word in util.TierWords — the words
+	// after fable, which no gateway column maps. A word the list gains beyond
+	// the columns stays unwritten here rather than hand-spelled (#539).
 	if len(tiers) == 3 && tiers[0] != "" {
-		conf += "env.ANTHROPIC_DEFAULT_OPUS_MODEL=" + tiers[0] + "\nenv.ANTHROPIC_DEFAULT_SONNET_MODEL=" + tiers[1] +
-			"\nenv.ANTHROPIC_DEFAULT_HAIKU_MODEL=" + tiers[2] + "\n"
+		for i, tier := range util.TierWords[1:] {
+			if i >= len(tiers) {
+				break
+			}
+			conf += "env." + util.TierEnvKey(tier) + "=" + tiers[i] + "\n"
+		}
 	}
 	if atomicWrite(l.conf(name), conf) != nil {
 		l.err("could not save profile '" + name + "'")
@@ -615,11 +623,11 @@ func (l *launcher) providerLogin(name, provider string) bool {
 	}
 	root := filepath.Join(l.dir, "auth")
 	auth := filepath.Join(root, name)
-	if isLink(root) {
+	if paths.IsSymlink(root) {
 		l.err("auth directory root is a symlink, refusing: " + root)
 		return false
 	}
-	if isLink(auth) {
+	if paths.IsSymlink(auth) {
 		l.err("auth directory for '" + name + "' is a symlink, refusing: " + auth)
 		return false
 	}

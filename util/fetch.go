@@ -236,13 +236,16 @@ func probeServed(want, typ, base, modelMap, key string) servedProbe {
 // any [1m], the tier aliases, and the provider and bare-route answers. decided
 // says the answer is final; otherwise the caller asks the route's listing.
 func servedBeforeListing(want, typ, base string) (spelled string, answer Served, decided bool) {
-	if strings.HasSuffix(strings.ToLower(want), "[1m]") {
-		want = want[:len(want)-4]
-	}
+	// The strip is TrimWindowMarker's and the word TierWord's — the one answer
+	// each gives everywhere a model is named — so a tier word in either case,
+	// with or without its marker, is served here exactly as it resolves
+	// elsewhere (#539).
+	want = TrimWindowMarker(want)
+	word := TierWord(want)
 	switch {
-	case want == "":
+	case word == "":
 		return want, ServedUnknown, true
-	case IsTier(want):
+	case IsTier(word):
 		return want, ServedYes, true
 	case typ == "provider":
 		if strings.HasPrefix(want, "claude-") {

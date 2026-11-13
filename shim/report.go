@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -62,7 +63,10 @@ func printable(s string) bool {
 	return true
 }
 
-func modelID(raw string) string { return strings.TrimSuffix(raw, "[1m]") }
+// modelID is the row's model for the report's by-model column: the served id
+// without its window marker — the one strip, util.TrimWindowMarker, every
+// surface that names a model gives it, in either marker case (#539).
+func modelID(raw string) string { return util.TrimWindowMarker(raw) }
 
 type taskVerdict struct {
 	outcome string
@@ -527,14 +531,12 @@ func readRowFile(path string) ([]byte, fileID, error) {
 // is named by the file it was read from: the move's two names are hardlinks to
 // one file, so they count once, while two row files that hold the same bytes
 // stay two rows (the report suite writes such twins). The quota reader's
-// content key (#536) fits the quota reader, not this one.
+// content key (#536) fits the quota reader, not this one. The id key itself is
+// util.ResponseKey's, the one spelling this writer and every reader build (#539).
 func rowIdentity(d *doc, ts string, file fileID) string {
 	if id, ok := d.str("response_id"); ok && id != "" {
-		key := id + "\x00" + ts
-		if turn, ok := d.str("turn_id"); ok && turn != "" {
-			key += "\x00" + turn
-		}
-		return key
+		turn, _ := d.str("turn_id")
+		return util.ResponseKey(id, ts, turn)
 	}
 	// The prefix keeps the name out of the id keys' namespace.
 	return "file\x00" + strconv.FormatUint(file.dev, 10) + "\x00" + strconv.FormatUint(file.ino, 10)
