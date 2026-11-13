@@ -1,17 +1,16 @@
 package cli
 
-import "strings"
+import (
+	"github.com/akleizor/ccmorph/util"
+	"strings"
+)
 
-// The tier words and their one resolution (#517). A saved model may be a tier
-// word — opus, sonnet, haiku, fable — which is not a gateway id: every reader
-// that classifies the model a launch runs resolves it first. The rule lived in
+// A saved model may be a tier word — opus, sonnet, haiku, fable — which is
+// not a gateway id: every reader that classifies the model a launch runs
+// resolves it first. The words are util.IsTier's, the one set across util and
+// cli (#520); the resolution is spelled here once (#517), where it lived in
 // three hand-maintained spellings (adapterModel, contextEnv, doctor) that had
-// already drifted on one edge; it is spelled here once.
-
-// isTier reports whether s is one of the tier words a saved model may be.
-// Adding a tier word touches this one place: the env key and the store key are
-// built from the word, and no caller lists the words itself.
-func isTier(s string) bool { return s == "opus" || s == "sonnet" || s == "haiku" || s == "fable" }
+// already drifted on one edge.
 
 // resolveTier is the one spelling of "a tier word resolves to a gateway id":
 // the profile env's ANTHROPIC_DEFAULT_<TIER>_MODEL, else the saved tier alias
@@ -27,7 +26,7 @@ func isTier(s string) bool { return s == "opus" || s == "sonnet" || s == "haiku"
 // notes the missing tier, contextEnv keeps the word.
 func resolveTier(model string, env func(key string) (string, bool), alias func(tier string) (string, bool)) (string, bool) {
 	bare := strings.SplitN(model, "[", 2)[0]
-	if !isTier(bare) {
+	if !util.IsTier(bare) {
 		return model, true
 	}
 	if v, ok := env("ANTHROPIC_DEFAULT_" + strings.ToUpper(bare) + "_MODEL"); ok && v != "" {

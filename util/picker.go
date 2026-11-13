@@ -34,8 +34,6 @@ func iterItems(v any) ([]any, bool) {
 	return nil, false
 }
 
-var families = []string{"opus", "sonnet", "haiku", "fable"}
-
 // rewriteJSON is the picker's single read, mutate, atomic replace of one settings file.
 // Any failure leaves the file as it was.
 func rewriteJSON(path string, mutate func(doc *ordjson.Obj) bool) {
@@ -267,11 +265,9 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 			return changed()
 		}
 		var fam []string
-		for _, m := range current {
-			for _, f := range families {
-				if m == f {
-					fam = append(fam, f)
-				}
+		for _, mv := range current {
+			if m, ok := mv.(string); ok && IsTier(m) {
+				fam = append(fam, m)
 			}
 		}
 		covered := func(model string) bool {
@@ -357,7 +353,7 @@ func LaunchWindow(profile, model string, sources []string) []string {
 			continue
 		}
 		m = strings.SplitN(m, "[", 2)[0]
-		if strings.HasPrefix(m, "claude-") || m == "opus" || m == "sonnet" || m == "haiku" || m == "fable" {
+		if strings.HasPrefix(m, "claude-") || IsTier(m) {
 			continue
 		}
 		if w := values[m]; w > best {

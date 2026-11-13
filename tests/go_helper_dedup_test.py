@@ -52,6 +52,24 @@ status-marker split, the home `.claude.json` fallback pair, and the ten verb
 preambles are inline duplicates, which `requireProfile`/`judgeProfile` now
 own.
 
+Issue #520: inspect's model row hand-scanned the conf for a `model=` line the
+readRaw above it had already parsed; the scan was a copy of the store's conf
+parse that could not see the merged default the store seeds, so the row reads
+the parsed copy first and asks the store only when the conf is silent.
+invariantRecords parsed the settings twice — once for its model record, once
+for the walk — and now holds one load. contextEnv spelled authKey's API-key
+precedence into a pkey it discarded; the walk reads no key. The Stat and
+Lstat existence predicates were spelled four ways more (`fileExists` in
+cli/launch.go, `present` in cli/rm.go, `lexists` in util/setup.go, and
+launch's profileLayer inlining its own Lstat) and the symlink resolver two
+(`resolveLink` in util/misc.go, `resolvePath` in cli/hop.go); paths.Lexists
+and paths.Resolve own them now. The tier-word set — opus, sonnet, haiku,
+fable — was spelled six ways (cli's isTier, engine's aliases map, picker's
+families slice and its inline check, and the served and refusal switches
+in fetch and misc); util.IsTier owns it. EndRouteHold was endHold's pure
+rename — one body, two names, the exported one for cli and the tests —
+and is the one name now.
+
 Issue #523: the profile-root ladder — `$CCMORPH_STATE_DIR`, else
 `$XDG_CONFIG_HOME/ccmorph`, else `~/.config/ccmorph` over the account home
 #138 made every reader use — was spelled three times: complete in the
@@ -96,15 +114,22 @@ CONSOLIDATED = {
     "inList": "util.hasString",
     "mergedView": "settingscompose.MergedView",
     "acwValid": "settingscompose.ACWValid",
+    "resolveLink": "paths.Resolve",
+    "resolvePath": "paths.Resolve",
+    "isTier": "util.IsTier",
+    "endHold": "util.EndRouteHold",
 }
-# #422's predicates: the unexported spelling a new copy would take, mapped to
-# the exported definition that replaced it. Only that exported spelling, and
-# only inside util/paths, may be defined.
+# #422's predicates, and #520's strays beside them: the unexported spelling a
+# new copy would take, mapped to the exported definition that replaced it.
+# Only that exported spelling, and only inside util/paths, may be defined.
 PREDICATES = {
     "exists": "Exists",
     "isdir": "IsDir",
     "isfile": "IsFile",
     "issymlink": "IsSymlink",
+    "lexists": "Lexists",
+    "present": "Lexists",
+    "fileexists": "Exists",
 }
 PATHS_PACKAGE = ROOT / "util" / "paths"
 # `adapter` decodes with encoding/json, so its `truthy` takes float64 and
@@ -232,6 +257,77 @@ def test_the_probe_verdict_switch_is_spelled_once():
         f"util.ProbeVerdict (#516): {'; '.join(offenders)}")
     assert home in spelled, (
         f"the probe verdict's status switch (#516) is no longer in {home.relative_to(ROOT)}")
+
+
+# #520: inspect's model row fell back to a hand scan of the conf for a `model=`
+# line — a second read of a file the readRaw at the top of inspect had already
+# parsed, and a copy of the store's own conf parse that cannot see the merged
+# default the store seeds from the shared settings. The row reads the parsed
+# copy first and asks the store only when the conf is silent; this guard fails
+# on the scan's return.
+MODEL_SCAN = 'HasPrefix(line, "model=")'
+
+
+def test_the_conf_is_not_hand_scanned_for_the_model_line():
+    offenders = [str(path.relative_to(ROOT)) for path in go_sources()
+                 if MODEL_SCAN in path.read_text()]
+    assert not offenders, (
+        "a conf is hand-scanned for its model= line beside the reads that "
+        f"already own it (#520): {'; '.join(offenders)}")
+
+
+# #520: invariantRecords parsed the settings twice — once for the model
+# record, once for the walk — two reads of one file that must agree. The
+# function holds one load now; this guard fails on a second.
+SETTINGS_LOAD = "loadJSON(settings)"
+
+
+def test_the_invariants_load_the_settings_once():
+    diag = ROOT / "util" / "diag.go"
+    loads = diag.read_text().count(SETTINGS_LOAD)
+    assert loads == 1, (
+        f"util/diag.go loads the settings {loads} times; the model record and "
+        "the walk read one load (#520)")
+
+
+# #520: contextEnv collected ANTHROPIC_API_KEY into pkey and let
+# ANTHROPIC_AUTH_TOKEN fill it when absent — authKey's precedence, spelled a
+# second time — and then discarded the value (`_ = pkey`): the walk wants the
+# base URL, the model and the tier aliases, never a key. This guard fails on
+# the precedence's return.
+AUTHKEY_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+
+
+def test_contextenv_does_not_spell_authkeys_precedence():
+    text = (ROOT / "cli" / "context.go").read_text()
+    offenders = [name for name in AUTHKEY_ENV if name in text]
+    assert not offenders, (
+        "cli/context.go spells the API-key precedence that cli/run.go's "
+        f"authKey owns (#520): {', '.join(offenders)}")
+
+
+# #520: the tier-word set — opus, sonnet, haiku, fable — was spelled six ways:
+# cli's isTier, engine's aliases map, picker's families slice and its inline
+# check, and the served and refusal switches in fetch and misc. One predicate,
+# util.IsTier, owns the set; the env walk's per-word case arms left with #517's
+# resolveTier, so no other file spells a word. This guard fails on the set's
+# return anywhere else (test fixtures may spell model names, so tests are not
+# walked).
+TIER_DEFINITION = ROOT / "util" / "tier.go"
+
+
+def test_the_tier_words_are_spelled_once():
+    counts = {path: path.read_text().count('"fable"')
+              for path in go_sources() if not path.name.endswith("_test.go")}
+    offenders = [f"{path.relative_to(ROOT)} spells it {n} times"
+                 for path, n in counts.items()
+                 if n > 0 and path != TIER_DEFINITION]
+    assert not offenders, (
+        "the tier-word set is hand-spelled outside util.IsTier (#520): "
+        + "; ".join(offenders))
+    assert counts.get(TIER_DEFINITION, 0) == 1, (
+        "the tier-word set's one definition is no longer spelled once in "
+        f"{TIER_DEFINITION.relative_to(ROOT)} (#520)")
 
 
 # #523: the profile-root ladder ($CCMORPH_STATE_DIR, else $XDG_CONFIG_HOME,

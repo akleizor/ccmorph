@@ -49,8 +49,6 @@ func resolved(p string) string {
 	return a
 }
 
-func lexists(p string) bool { _, err := os.Lstat(p); return err == nil }
-
 // linkTargetIs reports whether the link at p spells path; a resolution would
 // follow a dangling store link to nowhere, so the spelled target is compared
 // (#185).
@@ -87,7 +85,7 @@ func ProfileOK(profiles, name string) bool {
 		if !paths.Exists(src) {
 			continue
 		}
-		if !lexists(link) || (paths.IsSymlink(link) && resolved(link) != resolved(src)) {
+		if !paths.Lexists(link) || (paths.IsSymlink(link) && resolved(link) != resolved(src)) {
 			return false
 		}
 	}
@@ -195,12 +193,12 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 					return fail("could not unlink '" + item + "' for '" + name + "'")
 				}
 			}
-			if !lexists(link) && os.MkdirAll(link, 0o777) != nil {
+			if !paths.Lexists(link) && os.MkdirAll(link, 0o777) != nil {
 				return fail("cannot create profile '" + name + "'")
 			}
 			continue
 		}
-		if !lexists(src) {
+		if !paths.Lexists(src) {
 			continue
 		}
 		switch {
@@ -224,7 +222,7 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 			if os.Symlink(src, link) != nil {
 				return fail("could not migrate profile-local '" + item + "' for '" + name + "'")
 			}
-		case lexists(link):
+		case paths.Lexists(link):
 			if !paths.IsDir(link) {
 				// A real profile-local FILE (a per-profile CLAUDE.md) is a deliberate override.
 				log("OVERRIDE profile-local '" + item + "' kept for profile=" + name)
@@ -285,20 +283,20 @@ func SetupProfile(profiles, name, kind string, log, errf func(string)) bool {
 	// chronologically, and the profile links at it (#177). Never while a
 	// session lives — the file it appends to must not change under it.
 	hSrc, hLink := canonical+"/history.jsonl", dir+"/history.jsonl"
-	if !busy && !lexists(hSrc) {
+	if !busy && !paths.Lexists(hSrc) {
 		// #185: nothing creates the shared file on a home claude only ever runs
 		// through ccmorph, and the link below is only made when it exists.
 		if f, err := os.OpenFile(hSrc, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600); err == nil {
 			f.Close()
 		}
 	}
-	if !busy && (paths.IsFile(hSrc) || (lexists(hLink) && !paths.IsDir(hLink))) {
+	if !busy && (paths.IsFile(hSrc) || (paths.Lexists(hLink) && !paths.IsDir(hLink))) {
 		switch {
 		case paths.IsSymlink(hLink) && resolved(hLink) == resolved(hSrc):
 		case paths.IsDir(hLink):
 			errf("shared 'history.jsonl' collision at '" + hLink + "'; nothing moved — reconcile through its owning tool")
 			return fail("could not share history for '" + name + "'")
-		case !lexists(hLink):
+		case !paths.Lexists(hLink):
 			if os.Symlink(hSrc, hLink) != nil {
 				return fail("could not share history for '" + name + "'")
 			}

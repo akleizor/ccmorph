@@ -24,9 +24,12 @@ func reverse(s string) string {
 }
 
 // invariantRecords is the two warning blocks, each keeping its own failure rules.
+// The settings are loaded once, at the top: the model record and the walk read
+// the same file and must agree (#520).
 func invariantRecords(settings, conf, profile, maxOut, budgetRaw string, no1m bool, pct string) (records []record) {
+	v, err := loadJSON(settings)
 	var m any
-	if v, err := loadJSON(settings); err == nil {
+	if err == nil {
 		if o := asObj(v); o != nil {
 			m = getKey(o, "model")
 		}
@@ -39,7 +42,6 @@ func invariantRecords(settings, conf, profile, maxOut, budgetRaw string, no1m bo
 		records = append(records, record{"disguised", strings.TrimRight(dm, "\n")})
 	}
 
-	v, err := loadJSON(settings)
 	if err != nil {
 		return records
 	}

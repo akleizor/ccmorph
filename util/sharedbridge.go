@@ -253,7 +253,7 @@ func (b *SharedBridge) Release(authDir string) {
 // own, so a PID the system reused is never stopped (#408).
 func RetireRoute(authDir, pid, tmp, holder string) {
 	if authDir == "" { // a handle without an auth directory names no bridge files
-		endHold(holder, "")
+		EndRouteHold(holder, "")
 		if n, ok := retirable(pid, tmp); ok {
 			BridgeStop(n, tmp, "")
 		}
@@ -261,7 +261,7 @@ func RetireRoute(authDir, pid, tmp, holder string) {
 	}
 	root, name := filepath.Dir(authDir), filepath.Base(authDir)
 	files := BridgeFiles(root, name)
-	endHold(holder, files[2])
+	EndRouteHold(holder, files[2])
 	if mu, err := lockFile(files[1], syscall.LOCK_EX); err == nil {
 		defer mu.Close()
 	}
@@ -310,15 +310,17 @@ func routeHold(args []string, in io.Reader, out, errw io.Writer) int {
 	return 0
 }
 
-// endHold ends the holder a route's handle names and waits, briefly, for its
-// hold to lift: TERM, then poll until the holder is gone or the users lock it
-// held reads free. A holder this process has reaped stays a zombie until
-// Wait returns, so the lock, not the PID alone, must get the chance to say so.
-// The PID is signalled only while the process table shows it as the core
-// running `util route-hold` on users (holdsRoute): a number the system reused may be another
+// EndRouteHold ends a route's hold without retiring anything: a route whose
+// env could not be built owns no use of the bridge it started. It ends the
+// holder a route's handle names and waits, briefly, for its hold to lift:
+// TERM, then poll until the holder is gone or the users lock it held reads
+// free. A holder this process has reaped stays a zombie until Wait returns,
+// so the lock, not the PID alone, must get the chance to say so. The PID is
+// signalled only while the process table shows it as the core running
+// `util route-hold` on users (holdsRoute): a number the system reused may be another
 // session's process, and its hold — and the bridge that hold keeps alive —
 // would end with it (#408).
-func endHold(holder, users string) {
+func EndRouteHold(holder, users string) {
 	n, err := strconv.Atoi(holder)
 	if err != nil || n <= 0 || !holdsRoute(n, users) {
 		return
@@ -334,7 +336,3 @@ func endHold(holder, users string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
-
-// EndRouteHold ends a route's hold without retiring anything: a route whose
-// env could not be built owns no use of the bridge it started.
-func EndRouteHold(holder, users string) { endHold(holder, users) }

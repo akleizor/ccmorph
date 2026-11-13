@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"github.com/akleizor/ccmorph/util"
-	"os"
 	"strconv"
 	"strings"
 
@@ -62,24 +61,21 @@ func (l *launcher) inspect(args []string) int {
 		grid(10, "endpoint", strings.TrimPrefix(base, "https://"))
 	}
 
-	model, rc := l.configStore("get", name, "model")
-	if rc != 0 {
-		return 1
+	// The conf's own model= line, already read above, is the row's value. The
+	// store is asked only when the conf is silent, because its get reads a
+	// genuinely different value: the merged default, which the shared settings
+	// seed into a profile whose conf has no model of its own (#478).
+	model := f["model"]
+	if model == "" {
+		merged, rc := l.configStore("get", name, "model")
+		if rc != 0 {
+			return 1
+		}
+		model = merged
 	}
 	from := "profile default"
 	if model == "" {
 		from = ""
-		if b, err := os.ReadFile(l.conf(name)); err == nil {
-			for _, line := range strings.Split(string(b), "\n") {
-				if strings.HasPrefix(line, "model=") {
-					model = strings.TrimPrefix(line, "model=")
-					break
-				}
-			}
-		}
-		if model != "" {
-			from = "conf bootstrap"
-		}
 	}
 	if model != "" {
 		grid(10, "model", model+"  "+l.dim+from+l.reset)

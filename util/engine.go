@@ -323,7 +323,6 @@ func hazardRows(in HazardIn) ([]string, error) {
 	}
 	w := walls(in.Profile, in.Conf)
 	sz := modelSizing{profile: in.Profile, walls: w, budget: budget, window: window, pct: pct, pinned: rawOut, no1m: in.No1m}
-	aliases := map[string]bool{"opus": true, "sonnet": true, "haiku": true, "fable": true}
 	// Deduped on (bare, trigger) rather than the ceiling it came from: the wall
 	// is a function of the bare id and the verdict of (wall, trigger), so two
 	// offered variants that agree on both — a bare/[1m] pair whose floors
@@ -346,7 +345,7 @@ func hazardRows(in HazardIn) ([]string, error) {
 			continue
 		}
 		bare, wall, triggerM, _ := engineModel(sz, m)
-		if aliases[bare] {
+		if IsTier(bare) {
 			continue
 		}
 		if wall == 0 {
