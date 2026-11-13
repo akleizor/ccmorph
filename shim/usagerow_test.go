@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -222,7 +221,7 @@ func TestAnInterruptedMoveLeavesEveryRowInOnePlace(t *testing.T) {
 		return old(path)
 	}
 	moveFlatRows()
-	if got := usageRowFiles(dir, time.Time{}, time.Now()); len(got) != 2 {
+	if got := append(flatRowFiles(dir), dayRowFiles(dir, time.Time{}, time.Now())...); len(got) != 2 {
 		t.Fatalf("a row is read from two stores: %v", got)
 	}
 	if _, err := os.Stat(killed); !os.IsNotExist(err) {
@@ -240,7 +239,7 @@ func TestAnInterruptedMoveLeavesEveryRowInOnePlace(t *testing.T) {
 	if _, err := os.Stat(stuck); !os.IsNotExist(err) {
 		t.Fatalf("the re-run did not complete the move: %v", err)
 	}
-	if got := usageRowFiles(dir, time.Time{}, time.Now()); len(got) != 2 {
+	if got := append(flatRowFiles(dir), dayRowFiles(dir, time.Time{}, time.Now())...); len(got) != 2 {
 		t.Fatalf("after the re-run: %v", got)
 	}
 }
@@ -729,10 +728,111 @@ func TestAResponseInBothStoresIsCountedOnce(t *testing.T) {
 	}
 }
 
-// The store's row files for a window: the flat rows plus the day folders whose
-// day falls inside it, and nothing else — an older day folder, a newer one, a
-// folder that is no day shard, the atomic writer's in-flight tmp.
-func TestUsageRowFilesSelectsTheWindowsDayFolders(t *testing.T) {
+// A row a concurrent move relocates between the report's listing and its opens
+// — the link into the day folder, then the flat name's remove, as the
+// background move every adapter start runs does — still reaches the totals:
+// the flat rows are read before the day folders are listed, so one of the two
+// reads holds the row (#537).
+func TestAReportCountsARowAMoveRelocatesAfterItsListing(t *testing.T) {
+	dir := stateHome(t)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	stamp := now.Add(-30 * time.Minute).Format(time.RFC3339Nano)
+	flat := filepath.Join(dir, "resp_1.json")
+	body := `{"response_id":"resp_1","served_model":"sonnet-x","timestamp":"` + stamp +
+		`","usage":{"input_tokens":5,"cost":7},"complete":true}`
+	if err := os.WriteFile(flat, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The move's relocation lands between the listing and the opens: the
+	// day-folder name is linked, then the flat name removed.
+	day := filepath.Join(dir, now.Format("2006-01-02"), "resp_1.json")
+	old := rowsListed
+	rowsListed = func() {
+		if err := os.MkdirAll(filepath.Dir(day), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Link(flat, day); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(flat); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { rowsListed = old })
+	if out := reportOutput(t, 1); !strings.Contains(out, "total spend $7.00") {
+		t.Fatalf("a row a concurrent move relocated between the listing and the opens was lost: %s", out)
+	}
+}
+
+// A row a concurrent move relocates after the report has read it — the link
+// into the day folder, then the flat name's remove, landing between the flat
+// reads and the day folders' listing, as the background move every adapter
+// start runs does — is one response, not two: the flat read counted it and the
+// day listing holds it again, and a row with no response id is named by the
+// file it was read from, the move's two names being hardlinks to one file, so
+// the two reads count it once (#537).
+func TestAReportCountsOnceARowAMoveRelocatesAfterItsRead(t *testing.T) {
+	dir := stateHome(t)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	stamp := now.Add(-30 * time.Minute).Format(time.RFC3339Nano)
+	flat := filepath.Join(dir, "resp_1.json")
+	body := `{"served_model":"sonnet-x","timestamp":"` + stamp +
+		`","usage":{"input_tokens":5,"cost":7},"complete":true}`
+	if err := os.WriteFile(flat, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The move's relocation lands after the flat reads: the row was counted
+	// from its flat name, the day-folder name is linked, the flat name removed.
+	day := filepath.Join(dir, now.Format("2006-01-02"), "resp_1.json")
+	old := flatRowsRead
+	flatRowsRead = func() {
+		if err := os.MkdirAll(filepath.Dir(day), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Link(flat, day); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(flat); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { flatRowsRead = old })
+	if out := reportOutput(t, 1); !strings.Contains(out, "total spend $7.00") {
+		t.Fatalf("a row a concurrent move relocated after its read was not counted exactly once: %s", out)
+	}
+}
+
+// Two row files with no response id and byte-identical contents are two rows,
+// not one: the report names an id-less row by the file it read, and only the
+// move's two names for one row — hardlinks — share a file (#537).
+func TestAReportCountsIdlessTwinRowFilesApart(t *testing.T) {
+	dir := stateHome(t)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Now().UTC().Add(-30 * time.Minute).Format(time.RFC3339Nano)
+	body := `{"served_model":"sonnet-x","timestamp":"` + stamp +
+		`","usage":{"input_tokens":5,"cost":7},"complete":true}`
+	for _, name := range []string{"a.json", "b.json"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if out := reportOutput(t, 1); !strings.Contains(out, "total spend $14.00") {
+		t.Fatalf("two id-less row files with the same bytes were not counted apart: %s", out)
+	}
+}
+
+// The store's row files a windowed read takes: the flat rows plus the day
+// folders whose day falls inside it, and nothing else — an older day folder, a
+// newer one, a folder that is no day shard, the atomic writer's in-flight tmp.
+func TestAWindowedReadTakesTheFlatRowsAndTheDayFoldersItTouches(t *testing.T) {
 	base := t.TempDir()
 	write := func(name string) string {
 		t.Helper()
@@ -753,13 +853,11 @@ func TestUsageRowFilesSelectsTheWindowsDayFolders(t *testing.T) {
 	flat := write("e.json")
 	since := time.Date(2026, 11, 7, 18, 0, 0, 0, time.UTC)
 	now := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
-	got := usageRowFiles(base, since, now)
-	want := []string{flat, inWindow}
-	for _, list := range [][]string{got, want} {
-		sort.Strings(list)
+	if got := flatRowFiles(base); len(got) != 1 || got[0] != flat {
+		t.Fatalf("flatRowFiles = %v, want [%s]", got, flat)
 	}
-	if len(got) != 2 || strings.Join(got, "\x00") != strings.Join(want, "\x00") {
-		t.Fatalf("usageRowFiles = %v, want %v", got, want)
+	if got := dayRowFiles(base, since, now); len(got) != 1 || got[0] != inWindow {
+		t.Fatalf("dayRowFiles = %v, want [%s]", got, inWindow)
 	}
 }
 
