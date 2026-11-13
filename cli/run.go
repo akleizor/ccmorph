@@ -1455,7 +1455,7 @@ func (l *launcher) adapterStart(name, model string) bool {
 			}
 			fmt.Fprintln(os.Stderr, "  Check the route: ccmorph doctor "+name)
 		}
-		if l.logPath != "" && fileExists(l.logPath) {
+		if l.logPath != "" && paths.Exists(l.logPath) {
 			fmt.Fprintln(os.Stderr, "  Log: "+l.logPath)
 		}
 		return false

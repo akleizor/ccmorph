@@ -279,7 +279,7 @@ func (l *launcher) secureDirs() bool {
 	legacyHome := filepath.Join(home, ".claude-profiles")
 	if _, err := os.Lstat(legacyHome); err == nil {
 		same := isLink(legacyHome) && paths.IsDir(l.profileDirs) && !isLink(l.profileDirs) &&
-			resolvePath(legacyHome) == resolvePath(l.profileDirs)
+			paths.Resolve(legacyHome) == paths.Resolve(l.profileDirs)
 		if !same {
 			moved, err := util.MigrateProfileHome(legacyHome, l.profileDirs)
 			if moved {
@@ -658,7 +658,7 @@ func (l *launcher) runInstaller(verb string, rest []string) int {
 			return 1
 		}
 	}
-	if strings.Contains(resolvePath(root), "/Cellar/ccmorph/") {
+	if strings.Contains(paths.Resolve(root), "/Cellar/ccmorph/") {
 		brew := map[string]string{"update": "upgrade", "uninstall": "uninstall"}[verb]
 		l.err("ccmorph was installed with Homebrew; run: brew " + brew + " ccmorph")
 		return 1

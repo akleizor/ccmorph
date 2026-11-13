@@ -28,18 +28,6 @@ var (
 	symlink = os.Symlink
 )
 
-// resolveLink is Path.resolve(): symlinks followed, a missing tail kept.
-func resolveLink(p string) string {
-	if r, err := filepath.EvalSymlinks(p); err == nil {
-		return r
-	}
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return p
-	}
-	return abs
-}
-
 // MigrateProfileHome moves a legacy ~/.claude-profiles into the state root under a
 // lock. moved reports a move, which the caller announces; the error is the
 // message to show.
@@ -78,7 +66,7 @@ func MigrateProfileHome(legacy, target string) (moved bool, err error) {
 	}
 	switch {
 	case paths.IsSymlink(legacy):
-		if resolveLink(legacy) != resolveLink(target) || !paths.IsDir(target) || paths.IsSymlink(target) {
+		if paths.Resolve(legacy) != paths.Resolve(target) || !paths.IsDir(target) || paths.IsSymlink(target) {
 			return false, errors.New("legacy profile link points elsewhere; nothing moved")
 		}
 	case paths.Exists(legacy):
@@ -756,8 +744,7 @@ func servedRefusalDoc(payload any, want, mapJSON, who string) (string, bool) {
 	if strings.HasSuffix(strings.ToLower(want), "[1m]") {
 		want = want[:len(want)-4]
 	}
-	switch want {
-	case "", "opus", "sonnet", "haiku", "fable":
+	if want == "" || IsTier(want) {
 		return "", false
 	}
 	// A readable, complete listing proves absence even when it serves nothing; a

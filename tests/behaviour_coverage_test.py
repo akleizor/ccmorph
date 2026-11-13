@@ -899,6 +899,21 @@ def test_the_unsaved_state_reads_the_same_words_on_every_screen_gh_381(box, name
             assert old not in text, (screen, old)
 
 
+def test_inspect_names_the_model_the_settings_layer_seeds_gh_520(box):
+    # GH-520: inspect's model row read the conf twice — readRaw's parsed copy
+    # and a hand scan for model= — and asked the store only when the scan came
+    # up empty. The row reads the conf's own line first and asks the store only
+    # when the conf is silent, because the store's get is a genuinely different
+    # value: the merged default, which the profile's settings layer seeds into
+    # a conf that has no model of its own (#478). The row must still name it.
+    box.conf('gw', 'type=apikey\napi_key={{SECRET_4zo8c1xfyqjs}}\nbase_url=https://gw.example')
+    (box.state / 'profiles/gw').mkdir()
+    (box.state / 'profiles/gw/settings.json').write_text('{"model": "seeded-model"}')
+    out = box.run('inspect', 'gw')
+    assert out.returncode == 0, out.stderr
+    assert 'seeded-model' in out.stdout
+
+
 def test_context_answers_the_window_the_session_will_use_gh_372(box):
     # GH-372: `ccmorph context <profile> <model>` answered the pin alone --
     # `auto`, or a bare number once one was set -- while inspect showed the

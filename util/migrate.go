@@ -91,7 +91,7 @@ func migrateProjects(from, to string, report func(string)) bool {
 		// A dangling link where the store needs a directory names nothing, so it
 		// gives way like a dangling leaf does; left there it stops every later launch.
 		clearDanglingParents(to, rel)
-		if lexists(dest) {
+		if paths.Lexists(dest) {
 			switch {
 			case d.Type()&fs.ModeSymlink != 0 && sameTarget(f, dest):
 				// The profile's link already reaches this very entry in the store:
@@ -569,7 +569,7 @@ func mergeParks(dir, store string, report func(string)) {
 				return nil
 			}
 			clearDanglingParents(store, rel)
-			if lexists(dest) {
+			if paths.Lexists(dest) {
 				switch {
 				case d.Type()&fs.ModeSymlink != 0 && sameTarget(f, dest):
 					// The parked link already reaches this store entry: only it goes.

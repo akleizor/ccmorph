@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/paths"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -253,18 +254,6 @@ func (l *launcher) sessionState(id string) (string, string, bool) {
 	return util.SessionState(transcript)
 }
 
-// resolvePath is an absolute, symlink-resolved path, or "" when p is unset.
-func resolvePath(p string) string {
-	if p == "" {
-		return ""
-	}
-	if r, err := filepath.EvalSymlinks(p); err == nil {
-		return r
-	}
-	abs, _ := filepath.Abs(p)
-	return abs
-}
-
 // configDirProfile is the profile a CLAUDE_CONFIG_DIR inside the profile store
 // spells: the dir's base name, "" when it points anywhere else or is unset.
 func (l *launcher) configDirProfile() string {
@@ -272,7 +261,7 @@ func (l *launcher) configDirProfile() string {
 	if cfg == "" {
 		return ""
 	}
-	parent, dirs := resolvePath(filepath.Dir(cfg)), resolvePath(l.profileDirs)
+	parent, dirs := paths.Resolve(filepath.Dir(cfg)), paths.Resolve(l.profileDirs)
 	if parent != "" && parent == dirs {
 		return filepath.Base(cfg)
 	}

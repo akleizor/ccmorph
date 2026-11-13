@@ -1,9 +1,10 @@
 // Package paths holds the installed layout's durable contracts: where
 // machine-local state lives, where profiles and the registry live, where the
-// driver script lives, and the file predicates every package asks of a path.
-// Each was a small helper hand-written in every package that needed it, and
-// copies drift (#303, #422, #523); each has this one definition instead. The
-// zsh layer resolves the same state and script paths in lib/ccmorph.sh and
+// driver script lives, and the file predicates and the symlink resolver every
+// package asks of a path. Each was a small helper hand-written in every
+// package that needed it, and copies drift (#303, #422, #523, #520); each has
+// this one definition instead. The zsh layer resolves the same state and
+// script paths in lib/ccmorph.sh and
 // bin/ccmorph.
 package paths
 
@@ -117,4 +118,26 @@ func IsFile(path string) bool {
 func IsSymlink(path string) bool {
 	fi, err := os.Lstat(path)
 	return err == nil && fi.Mode()&os.ModeSymlink != 0
+}
+
+// Lexists reports whether path itself can be lstat'ed: a broken symlink
+// lexists, where Exists follows the link and answers no.
+func Lexists(path string) bool { _, err := os.Lstat(path); return err == nil }
+
+// Resolve is p with every symlink along it evaluated — Path.resolve() with a
+// missing tail kept: a path EvalSymlinks cannot follow (nothing is named, or
+// a link loops) resolves to its absolute form instead, and an empty p stays
+// empty, the callers' marker for an unset path.
+func Resolve(p string) string {
+	if p == "" {
+		return ""
+	}
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return p
+	}
+	return abs
 }

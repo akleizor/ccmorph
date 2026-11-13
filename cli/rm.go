@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/paths"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -24,8 +25,6 @@ func (l *launcher) locked(key string, args []string) (int, bool) {
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return runRC(cmd), true
 }
-
-func present(p string) bool { _, err := os.Lstat(p); return err == nil }
 
 func isLink(p string) bool {
 	fi, err := os.Lstat(p)
@@ -52,7 +51,7 @@ func (l *launcher) rm(args []string) int {
 	}
 	pdir, auth := filepath.Join(l.profileDirs, name), filepath.Join(l.dir, "auth", name)
 	if !l.exists(name) {
-		if !present(pdir) && !present(auth) {
+		if !paths.Lexists(pdir) && !paths.Lexists(auth) {
 			l.noProfile(name)
 			return 1
 		}
@@ -125,7 +124,7 @@ func (l *launcher) removeProfileDir(name string) bool {
 			}
 		}
 	}
-	if present(p) && os.RemoveAll(p) != nil {
+	if paths.Lexists(p) && os.RemoveAll(p) != nil {
 		return false
 	}
 	if auth, ok := l.authDirQuiet(name); ok {
@@ -135,7 +134,7 @@ func (l *launcher) removeProfileDir(name string) bool {
 	} else {
 		l.err("auth directory for '" + name + "' is a symlink, refusing: " + filepath.Join(l.dir, "auth", name))
 	}
-	return !present(p)
+	return !paths.Lexists(p)
 }
 
 // keepHistory is _ccm_keep_history: regular files move into native history; a
@@ -154,7 +153,7 @@ func keepHistory(from, to string) bool {
 		}
 		return nil
 	})
-	gives := func(dest, f string) bool { return isLink(dest) && (sameFile(dest, f) || !fileExists(dest)) }
+	gives := func(dest, f string) bool { return isLink(dest) && (sameFile(dest, f) || !paths.Exists(dest)) }
 	for _, f := range dirs {
 		dest := filepath.Join(to, strings.TrimPrefix(f, from+"/"))
 		if gives(dest, f) && os.Remove(dest) == nil {
@@ -166,7 +165,7 @@ func keepHistory(from, to string) bool {
 		if gives(dest, f) {
 			os.Remove(dest)
 		}
-		if present(dest) {
+		if paths.Lexists(dest) {
 			continue
 		}
 		if os.MkdirAll(filepath.Dir(dest), 0o755) == nil {
@@ -192,13 +191,13 @@ func keepHistory(from, to string) bool {
 func moveBridgeFiles(root, from, to string) bool {
 	src, dst := util.BridgeFiles(root, from), util.BridgeFiles(root, to)
 	for i := range src {
-		if !present(src[i]) {
+		if !paths.Lexists(src[i]) {
 			os.Remove(dst[i])
 			continue
 		}
 		if os.Rename(src[i], dst[i]) != nil {
 			for j := 0; j < i; j++ {
-				if present(dst[j]) {
+				if paths.Lexists(dst[j]) {
 					os.Rename(dst[j], src[j])
 				}
 			}
@@ -242,12 +241,12 @@ func (l *launcher) mv(args []string) int {
 		return 1
 	}
 	oldP, newP := filepath.Join(l.profileDirs, from), filepath.Join(l.profileDirs, to)
-	if present(newP) {
+	if paths.Lexists(newP) {
 		l.err("profile directory '" + to + "' already exists — remove it first")
 		return 1
 	}
 	movedP := false
-	if present(oldP) {
+	if paths.Lexists(oldP) {
 		if os.Rename(oldP, newP) != nil {
 			l.err("could not rename profile directory")
 			return 1
@@ -258,7 +257,7 @@ func (l *launcher) mv(args []string) int {
 	oldA, newA := filepath.Join(l.dir, "auth", from), filepath.Join(l.dir, "auth", to)
 	movedA := false
 	if fi, err := os.Stat(oldA); ok && err == nil && fi.IsDir() {
-		if present(newA) {
+		if paths.Lexists(newA) {
 			l.err("auth directory for '" + to + "' already exists: " + newA + " — remove it first")
 			ok = false
 		} else if ok = os.Rename(oldA, newA) == nil; ok {
@@ -276,7 +275,7 @@ func (l *launcher) mv(args []string) int {
 		ok = atomicWrite(filepath.Join(l.dir, "active"), to+"\n") == nil
 	}
 	if !ok {
-		if present(l.conf(to)) {
+		if paths.Lexists(l.conf(to)) {
 			os.Rename(l.conf(to), l.conf(from))
 		}
 		if movedB {

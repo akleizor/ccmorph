@@ -491,7 +491,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	// a chat-dialect gateway behind an alias with no adapter row and a ready
 	// verdict (#412, one branch over).
 	tierMissing := ""
-	if bare := strings.SplitN(savedModel, "[", 2)[0]; isTier(bare) && typ == "apikey" && !util.NativeBase(base) {
+	if bare := strings.SplitN(savedModel, "[", 2)[0]; util.IsTier(bare) && typ == "apikey" && !util.NativeBase(base) {
 		if resolved, ok := resolveTier(savedModel,
 			func(key string) (string, bool) { v, ok := f["env."+key]; return v, ok },
 			func(tier string) (string, bool) { return l.tierAlias(name, tier) }); ok {

@@ -502,7 +502,7 @@ func (l *launcher) read(name string) (map[string]string, bool) {
 func (l *launcher) profileLayer(name string) string {
 	d := filepath.Join(l.profileDirs, name)
 	for _, p := range []string{filepath.Join(d, "settings.profile.json"), filepath.Join(d, "cache", "settings.base.json")} {
-		if _, err := os.Lstat(p); err == nil {
+		if paths.Lexists(p) {
 			return filepath.Join(d, "settings.profile.json")
 		}
 	}
@@ -516,7 +516,7 @@ func (l *launcher) canonical() string {
 // settingsSources is _ccm_settings_sources: canon, policy when present, profile layer.
 func (l *launcher) settingsSources(name string) []string {
 	s := []string{l.canonical()}
-	if p := filepath.Join(l.profileDirs, name, "settings.policy.json"); fileExists(p) {
+	if p := filepath.Join(l.profileDirs, name, "settings.policy.json"); paths.Exists(p) {
 		s = append(s, p)
 	}
 	return append(s, l.profileLayer(name))
@@ -660,8 +660,6 @@ func (l *launcher) configStore(verb, name, key string) (string, int) {
 func (l *launcher) configStoreQ(verb, name, key string) (string, int) {
 	return l.storeCall(verb, name, key, io.Discard)
 }
-
-func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }
 
 var digits = regexp.MustCompile(`^[0-9]+$`)
 

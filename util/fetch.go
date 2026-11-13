@@ -242,7 +242,7 @@ func servedBeforeListing(want, typ, base string) (spelled string, answer Served,
 	switch {
 	case want == "":
 		return want, ServedUnknown, true
-	case want == "opus" || want == "sonnet" || want == "haiku" || want == "fable":
+	case IsTier(want):
 		return want, ServedYes, true
 	case typ == "provider":
 		if strings.HasPrefix(want, "claude-") {

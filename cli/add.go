@@ -51,7 +51,7 @@ func (l *launcher) add(args []string) int {
 		l.err(caseClashMsg(name, twin))
 		return 1
 	}
-	if present(filepath.Join(l.profileDirs, name)) || present(filepath.Join(l.dir, "auth", name)) {
+	if paths.Lexists(filepath.Join(l.profileDirs, name)) || paths.Lexists(filepath.Join(l.dir, "auth", name)) {
 		l.err("leftover private state for '" + name + "'; run ccmorph rm " + name + " to review and remove it, or choose another name")
 		return 1
 	}
@@ -110,7 +110,7 @@ func (l *launcher) add(args []string) int {
 	if rc != 0 {
 		return rc
 	}
-	if active := filepath.Join(l.dir, "active"); !present(active) {
+	if active := filepath.Join(l.dir, "active"); !paths.Lexists(active) {
 		if atomicWrite(active, name+"\n") == nil {
 			fmt.Println(l.dim + "Default profile: " + name + " (first profile)" + l.reset)
 		}
