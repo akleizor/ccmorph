@@ -767,6 +767,11 @@ func ReplaceFields(path string, fields []Field, expected *Identity) (bool, error
 	return replaceFields(path, text, fields, expected)
 }
 
+// errConfChanged is the sentinel replaceFields' guard returns when the conf
+// changed under the rewrite: the write gives up with no error, and the caller
+// learns the file was not its to replace.
+var errConfChanged = errors.New("conf changed since it was read")
+
 // replaceFields is ReplaceFields over conf text the caller already read; it
 // reads the conf's mode and re-checks its identity, nothing else.
 func replaceFields(path, text string, fields []Field, expected *Identity) (bool, error) {
@@ -799,39 +804,30 @@ func replaceFields(path, text string, fields []Field, expected *Identity) (bool,
 	if updated == text {
 		return true, nil
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".context-")
-	if err != nil {
-		return false, err
-	}
-	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(mode); err != nil {
-		tmp.Close()
-		return false, err
-	}
-	if _, err := tmp.WriteString(updated); err != nil {
-		tmp.Close()
-		return false, err
-	}
-	if err := tmp.Close(); err != nil {
-		return false, err
-	}
-	if expected != nil {
+	recheck := func() error {
+		if expected == nil {
+			return nil
+		}
 		// Also protects against non-locking editors before the atomic replace.
 		cur, err := os.Open(path)
 		if err != nil {
-			return false, err
+			return err
 		}
 		now, _, err := identityOf(cur)
 		cur.Close()
 		if err != nil {
-			return false, err
+			return err
 		}
 		now.models = expected.models // ReplaceFields guards the conf only
 		if *now != *expected {
+			return errConfChanged
+		}
+		return nil
+	}
+	if err := paths.AtomicWrite(paths.WriteIn{Path: path, Temp: ".context-", Data: []byte(updated), Mode: mode, Guard: recheck}); err != nil {
+		if errors.Is(err, errConfChanged) {
 			return false, nil
 		}
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -939,23 +935,9 @@ func writeDiscovered(conf, text string, record obj, expected *Identity) (bool, e
 		}
 	}
 	target := DiscoveredPath(conf)
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-		return false, err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(target), ".models-")
-	if err != nil {
-		return false, err
-	}
-	defer os.Remove(tmp.Name())
 	b, _ := json.MarshalIndent(record, "", "  ")
-	_, err = tmp.Write(append(b, '\n'))
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		return false, err
-	}
-	if err := os.Rename(tmp.Name(), target); err != nil {
+	// NoChmod: the record keeps the temp's own mode, as this write always did.
+	if err := paths.AtomicWrite(paths.WriteIn{Path: target, Temp: ".models-", Data: append(b, '\n'), NoChmod: true, Mkdir: 0o700}); err != nil {
 		return false, err
 	}
 	if !inline {
@@ -978,10 +960,8 @@ func Restamp(conf, old, new string) {
 	}
 	doc["route"] = new
 	b, _ := json.MarshalIndent(doc, "", "  ")
-	tmp := path + ".tmp"
-	if os.WriteFile(tmp, append(b, '\n'), 0o600) == nil {
-		os.Rename(tmp, path)
-	}
+	// NoChmod: the record keeps the temp's own mode, as this write always did.
+	_ = paths.AtomicWrite(paths.WriteIn{Path: path, Temp: ".models-", Data: append(b, '\n'), NoChmod: true})
 }
 
 // SetContext pins model's window, or clears the pin with "auto".

@@ -1,11 +1,11 @@
 // Package paths holds the installed layout's durable contracts: where
 // machine-local state lives, where profiles and the registry live, where the
-// driver script lives, and the file predicates and the symlink resolver every
-// package asks of a path. Each was a small helper hand-written in every
-// package that needed it, and copies drift (#303, #422, #523, #520); each has
-// this one definition instead. The zsh layer resolves the same state and
-// script paths in lib/ccmorph.sh and
-// bin/ccmorph.
+// driver script lives, the file predicates and the symlink resolver every
+// package asks of a path, and the atomic write every state file goes through.
+// Each was a small helper hand-written in every package that needed it, and
+// copies drift (#303, #422, #521, #523, #520); each has this one definition
+// instead. The zsh layer resolves the same state and script paths in
+// lib/ccmorph.sh and bin/ccmorph.
 package paths
 
 import (

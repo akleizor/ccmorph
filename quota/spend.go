@@ -344,15 +344,9 @@ func openDay(dir, name string) []*spendRow {
 // writeAtomic replaces path with v's JSON, or leaves it as it was.
 func writeAtomic(path string, v any) {
 	b, err := json.Marshal(v)
-	if err != nil || os.MkdirAll(filepath.Dir(path), 0o700) != nil {
-		return
-	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
 	if err != nil {
 		return
 	}
-	_, werr := f.Write(b)
-	if cerr := f.Close(); werr != nil || cerr != nil || os.Rename(f.Name(), path) != nil {
-		os.Remove(f.Name())
-	}
+	// NoChmod: the cache keeps the temp's own mode, as this write always did.
+	_ = paths.AtomicWrite(paths.WriteIn{Path: path, Temp: ".tmp-*", Data: b, NoChmod: true, Mkdir: 0o700})
 }

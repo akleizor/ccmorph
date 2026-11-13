@@ -8,9 +8,9 @@ import (
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"io"
 	"os"
-	"path/filepath"
 
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 type verb func(args []string, in io.Reader, out, errw io.Writer) int
@@ -52,35 +52,12 @@ func asObj(v any) *ordjson.Obj { o, _ := v.(*ordjson.Obj); return o }
 
 func str(v any) (string, bool) { s, ok := v.(string); return s, ok }
 
-// AtomicWrite replaces path through a same-dir temp file, renamed into place.
+// AtomicWrite replaces path through a same-dir temp file, renamed into place:
+// prefix is the temp's name prefix, mode the replaced file's mode, and sync
+// fsyncs the temp before the rename. The dance itself is paths.AtomicWrite's;
+// this is the shape util's callers keep.
 func AtomicWrite(path, prefix string, data []byte, mode os.FileMode, sync bool) error {
-	f, err := os.CreateTemp(filepath.Dir(path), prefix+"*")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	bad := func(err error) error { f.Close(); os.Remove(tmp); return err }
-	if _, err := f.Write(data); err != nil {
-		return bad(err)
-	}
-	if sync {
-		if err := f.Sync(); err != nil {
-			return bad(err)
-		}
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Chmod(tmp, mode); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return nil
+	return paths.AtomicWrite(paths.WriteIn{Path: path, Temp: prefix + "*", Data: data, Mode: mode, Sync: sync})
 }
 
 // loadJSON reads and decodes a file like json.load(open(path)).

@@ -233,33 +233,7 @@ func encode(doc *obj) []byte {
 }
 
 func writeBytes(path string, data []byte) {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o777); err != nil {
-		osFail(err)
-	}
-	f, err := os.CreateTemp(dir, ".settings.")
-	if err != nil {
-		osFail(err)
-	}
-	tmp := f.Name()
-	fail := func(err error) {
-		f.Close()
-		os.Remove(tmp)
-		osFail(err)
-	}
-	if _, err := f.Write(data); err != nil {
-		fail(err)
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		osFail(err)
-	}
-	if err := os.Chmod(tmp, 0o600); err != nil {
-		os.Remove(tmp)
-		osFail(err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+	if err := paths.AtomicWrite(paths.WriteIn{Path: path, Temp: ".settings.", Data: data, Mode: 0o600, Mkdir: 0o777}); err != nil {
 		osFail(err)
 	}
 }

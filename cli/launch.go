@@ -337,15 +337,14 @@ func (l *launcher) log(msg string) {
 		if len(lines) > 500 {
 			lines = lines[len(lines)-500:]
 		}
-		tmp, err := os.CreateTemp(filepath.Dir(l.logPath), filepath.Base(l.logPath)+".")
-		if err != nil {
-			return
-		}
-		tmp.WriteString(strings.Join(lines, ""))
-		tmp.Close()
-		if os.Rename(tmp.Name(), l.logPath) != nil {
-			os.Remove(tmp.Name())
-		}
+		// NoChmod: the rotated log keeps the temp's own mode, as this write
+		// always did. Best effort, like every step of log.
+		_ = paths.AtomicWrite(paths.WriteIn{
+			Path:    l.logPath,
+			Temp:    filepath.Base(l.logPath) + ".",
+			Data:    []byte(strings.Join(lines, "")),
+			NoChmod: true,
+		})
 	}
 }
 

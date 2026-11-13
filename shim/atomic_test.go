@@ -45,3 +45,17 @@ func TestAtomicWriteRemovesItsTempWhenTheRenameFails(t *testing.T) {
 		t.Fatalf("a failed write left its temp behind: %v", entries)
 	}
 }
+
+// An explicit mode 0 is a mode, not "none": the file lands 0000, as this write
+// always left it (#521).
+func TestAtomicWriteKeepsAnExplicitZeroMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "target.json")
+	if err := AtomicWrite(path, []byte("body"), 0, ".prefix."); err != nil {
+		t.Fatal(err)
+	}
+	// Not ReadFile: a 0000 file is unreadable unless the runner is root.
+	st, err := os.Stat(path)
+	if err != nil || st.Mode().Perm() != 0 || st.Size() != 4 {
+		t.Fatal(err, st)
+	}
+}

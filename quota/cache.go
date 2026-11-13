@@ -34,32 +34,12 @@ func save(name string, r Reading) {
 	if !validName(name) {
 		return
 	}
-	dir := cacheDir()
-	if os.MkdirAll(dir, 0o700) != nil {
-		return
-	}
 	b, err := json.Marshal(r)
 	if err != nil {
 		return
 	}
-	f, err := os.CreateTemp(dir, ".quota-*")
-	if err != nil {
-		return
-	}
-	tmp := f.Name()
-	if _, err := f.Write(b); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return
-	}
-	os.Chmod(tmp, 0o600)
-	if os.Rename(tmp, cachePath(name)) != nil {
-		os.Remove(tmp)
-	}
+	// A cache write that cannot happen just does not: the next read re-reads.
+	_ = paths.AtomicWrite(paths.WriteIn{Path: cachePath(name), Temp: ".quota-*", Data: b, Mode: 0o600, Mkdir: 0o700})
 }
 
 func load(name string) (Reading, bool) {
