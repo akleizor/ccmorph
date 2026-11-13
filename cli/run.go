@@ -917,7 +917,7 @@ func (l *launcher) launchWindow(name, model string) []string {
 }
 
 func (l *launcher) tierAlias(name, tier string) (string, bool) {
-	v, rc := l.configStore("get", name, "env.ANTHROPIC_DEFAULT_"+strings.ToUpper(tier)+"_MODEL")
+	v, rc := l.configStore("get", name, "env."+util.TierEnvKey(tier))
 	return v, rc == 0 && v != ""
 }
 
@@ -1427,7 +1427,7 @@ func (l *launcher) adapterModel(name string, penv []string, explicit, defaultMod
 		func(key string) (string, bool) { return envGet(penv, key) },
 		func(tier string) (string, bool) { return l.tierAlias(name, tier) })
 	if !ok {
-		l.err("no gateway model is mapped to tier '" + strings.SplitN(model, "[", 2)[0] + "'; choose an explicit --model id")
+		l.err("no gateway model is mapped to tier '" + util.TierWord(model) + "'; choose an explicit --model id")
 		return "", false
 	}
 	return resolved, true

@@ -829,6 +829,27 @@ func TestAReportCountsIdlessTwinRowFilesApart(t *testing.T) {
 	}
 }
 
+// The report's by-model column strips the window marker with the one strip
+// every surface gives a model id: a row served under the marker's other case
+// — which an exact TrimSuffix kept — is the bare id's line, so the same saved
+// model is one model wherever it is named (#539).
+func TestTheReportsModelColumnStripsTheMarkersOtherCase(t *testing.T) {
+	dir := stateHome(t)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Now().UTC().Add(-30 * time.Minute).Format(time.RFC3339Nano)
+	raw := `{"response_id":"m1","served_model":"claude-opus-5-5[1M]","timestamp":"` +
+		stamp + `","usage":{"input_tokens":5,"cost":2},"complete":true}`
+	if err := os.WriteFile(filepath.Join(dir, "m1.json"), []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := reportOutput(t, 1)
+	if !strings.Contains(out, "  claude-opus-5-5  $2.00") || strings.Contains(out, "[1M]") {
+		t.Fatalf("the by-model column did not strip the marker's other case: %s", out)
+	}
+}
+
 // The store's row files a windowed read takes: the flat rows plus the day
 // folders whose day falls inside it, and nothing else — an older day folder, a
 // newer one, a folder that is no day shard, the atomic writer's in-flight tmp.

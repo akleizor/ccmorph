@@ -68,7 +68,7 @@ func (l *launcher) doctorVerb(args []string) int {
 		return l.extraArg("doctor", args[1])
 	}
 	legacy := filepath.Join(os.Getenv("HOME"), ".claude-profiles")
-	if _, err := os.Lstat(l.profileDirs); err != nil && paths.IsDir(legacy) && !isLink(legacy) {
+	if _, err := os.Lstat(l.profileDirs); err != nil && paths.IsDir(legacy) && !paths.IsSymlink(legacy) {
 		l.profileDirs = legacy
 	}
 	name := ""
@@ -358,7 +358,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	// recommended `ccmorph run TOK`. Only a directory entry spelled as typed is
 	// this profile; every other verb decides the same way.
 	if !l.exists(name) {
-		if isLink(conf) {
+		if paths.IsSymlink(conf) {
 			l.status("FAIL", "profile: missing or symlinked config ("+conf+")")
 		} else {
 			l.status("FAIL", "profile: "+l.noProfileMsg(name))
@@ -491,7 +491,7 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	// a chat-dialect gateway behind an alias with no adapter row and a ready
 	// verdict (#412, one branch over).
 	tierMissing := ""
-	if bare := strings.SplitN(savedModel, "[", 2)[0]; util.IsTier(bare) && typ == "apikey" && !util.NativeBase(base) {
+	if bare := util.TierWord(savedModel); util.IsTier(bare) && typ == "apikey" && !util.NativeBase(base) {
 		if resolved, ok := resolveTier(savedModel,
 			func(key string) (string, bool) { v, ok := f["env."+key]; return v, ok },
 			func(tier string) (string, bool) { return l.tierAlias(name, tier) }); ok {

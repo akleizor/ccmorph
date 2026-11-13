@@ -168,7 +168,12 @@ var priorWalk = func(profiles []string) (map[string]int64, map[string]obj) {
 		if !ok {
 			continue
 		}
-		d, s := DiscoveredValues(fields), DiscoveredSources(fields)
+		// One parse, as the doc above promises: both maps read the already-
+		// parsed doc, where DiscoveredValues and DiscoveredSources would each
+		// re-run discoveredDoc — parsing the sidecar and checking its route
+		// twice (#539).
+		doc := discoveredDoc(fields)
+		d, s := valuesOf(doc), sourcesOf(doc)
 		for _, m := range slices.Sorted(maps.Keys(d)) {
 			values[profile+":"+m], _ = d[m]
 		}

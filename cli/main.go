@@ -270,7 +270,7 @@ func oneEdit(a, b string) bool {
 // tighten the state dirs (chmod is best effort), then migrate stored state.
 func (l *launcher) secureDirs() bool {
 	for _, root := range []string{l.dir, l.profileDirs} {
-		if isLink(root) {
+		if paths.IsSymlink(root) {
 			l.err("refusing symlinked state root '" + root + "'")
 			return false
 		}
@@ -278,7 +278,7 @@ func (l *launcher) secureDirs() bool {
 	home := os.Getenv("HOME")
 	legacyHome := filepath.Join(home, ".claude-profiles")
 	if _, err := os.Lstat(legacyHome); err == nil {
-		same := isLink(legacyHome) && paths.IsDir(l.profileDirs) && !isLink(l.profileDirs) &&
+		same := paths.IsSymlink(legacyHome) && paths.IsDir(l.profileDirs) && !paths.IsSymlink(l.profileDirs) &&
 			paths.Resolve(legacyHome) == paths.Resolve(l.profileDirs)
 		if !same {
 			moved, err := util.MigrateProfileHome(legacyHome, l.profileDirs)
@@ -299,14 +299,14 @@ func (l *launcher) secureDirs() bool {
 	os.Chmod(l.profileDirs, 0o700)
 	active := filepath.Join(l.dir, "active")
 	if _, err := os.Lstat(active); err == nil {
-		if isLink(active) {
+		if paths.IsSymlink(active) {
 			return false
 		}
 		os.Chmod(active, 0o600)
 	}
 	confs, _ := filepath.Glob(filepath.Join(globQuote(l.dir), "*.conf"))
 	for _, c := range confs {
-		if isLink(c) {
+		if paths.IsSymlink(c) {
 			return false
 		}
 		os.Chmod(c, 0o600)

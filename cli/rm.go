@@ -26,11 +26,6 @@ func (l *launcher) locked(key string, args []string) (int, bool) {
 	return runRC(cmd), true
 }
 
-func isLink(p string) bool {
-	fi, err := os.Lstat(p)
-	return err == nil && fi.Mode()&fs.ModeSymlink != 0
-}
-
 // rm is `ccmorph rm <profile>`: conf, private state, keychain item and lock.
 func (l *launcher) rm(args []string) int {
 	name := ""
@@ -94,7 +89,7 @@ func (l *launcher) rm(args []string) int {
 func (l *launcher) removeProfileDir(name string) bool {
 	p := filepath.Join(l.profileDirs, name)
 	projects := filepath.Join(p, "projects")
-	if fi, err := os.Lstat(projects); err == nil && fi.IsDir() && !isLink(p) {
+	if fi, err := os.Lstat(projects); err == nil && fi.IsDir() && !paths.IsSymlink(p) {
 		if !keepHistory(projects, filepath.Join(os.Getenv("HOME"), ".claude", "projects")) {
 			l.err("kept '" + name + "': a session in its history collides with native history")
 			return false
@@ -153,7 +148,7 @@ func keepHistory(from, to string) bool {
 		}
 		return nil
 	})
-	gives := func(dest, f string) bool { return isLink(dest) && (sameFile(dest, f) || !paths.Exists(dest)) }
+	gives := func(dest, f string) bool { return paths.IsSymlink(dest) && (sameFile(dest, f) || !paths.Exists(dest)) }
 	for _, f := range dirs {
 		dest := filepath.Join(to, strings.TrimPrefix(f, from+"/"))
 		if gives(dest, f) && os.Remove(dest) == nil {

@@ -416,7 +416,10 @@ func ValidModel(model string) bool {
 	return true
 }
 
-func discoveredDoc(fields map[string]string) obj {
+// discoveredDoc is the route-bound discovered record of a conf's fields: the
+// sidecar JSON parsed, its route checked. A var so tests can count the parses
+// a walk makes over one conf (#539).
+var discoveredDoc = func(fields map[string]string) obj {
 	text, ok := fields["context_discovered"]
 	if !ok {
 		text = "{}"

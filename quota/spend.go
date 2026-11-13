@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -138,12 +139,12 @@ func readRow(path string) *spendRow {
 	// keys on (#298). A row with no id is named by its whole receipt — the
 	// move's two names are hardlinks to one file, so every field the reader
 	// counts matches under both, while two rows that differ in any of them,
-	// such as their turn or their token buckets, stay distinct (#536).
+	// such as their turn or their token buckets, stay distinct (#536). The id
+	// key itself is util.ResponseKey's, the one spelling the writer and every
+	// reader build (#539).
 	if id, ok := r.ResponseID.(string); ok && id != "" {
-		out.Key = id + "\x00" + r.Timestamp
-		if turn, ok := r.TurnID.(string); ok && turn != "" {
-			out.Key += "\x00" + turn
-		}
+		turn, _ := r.TurnID.(string)
+		out.Key = util.ResponseKey(id, r.Timestamp, turn)
 	} else {
 		out.Key = r.contentKey()
 	}

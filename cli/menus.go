@@ -120,7 +120,17 @@ func modelRows(rows []util.ModelRow) string {
 	return strings.Join(lines, "\n")
 }
 
-const nativeAliases = "fable\tClaude Code Fable alias\nopus\tClaude Code Opus alias\nsonnet\tClaude Code Sonnet alias\nhaiku\tClaude Code Haiku alias"
+// nativeAliases is the picker's rows for a subscription route's native tiers:
+// one "<word>\tClaude Code <Word> alias" per tier word, in the list's order.
+// Built from util.TierWords, so the picker cannot offer a word the store does
+// not resolve and cannot miss one it does (#539).
+func nativeAliases() string {
+	rows := make([]string, len(util.TierWords))
+	for i, w := range util.TierWords {
+		rows[i] = w + "\tClaude Code " + title(w) + " alias"
+	}
+	return strings.Join(rows, "\n")
+}
 
 // effortRows mirrors profile.Efforts, lowest to highest, one "<level>\t<description>"
 // per line (#264).
@@ -147,7 +157,7 @@ func (l *launcher) valueRows(slot, name string, preview ...string) (string, bool
 			}
 			return modelRows(rows), true
 		case "sub", "token":
-			return nativeAliases, true
+			return nativeAliases(), true
 		case "provider":
 			var rows []string
 			for _, v := range util.SavedProviderModels(filepath.Join(l.profileDirs, name, ".claude.json")) {
