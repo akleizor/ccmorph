@@ -668,22 +668,14 @@ func TestQuotaSpendRereadsACacheFromBeforeTheContentKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache := dayCache{
-		MTime: info.ModTime().UnixNano(),
-		Month: time.Date(2026, 10, 1, 0, 0, 0, 0, time.Local).Unix(),
-		Rows: []*spendRow{{
-			Profile: "gw", Stamp: "2026-10-18T09:00:00Z", Tokens: 15, Cost: 1.5, Priced: true,
-		}},
-	}
-	b, err := json.Marshal(cache)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cache := fmt.Sprintf(`{"mtime":%d,"month":%d,"rows":[{"p":"gw",`+
+		`"t":"2026-10-18T09:00:00Z","n":15,"c":1.5,"pr":true}]}`,
+		info.ModTime().UnixNano(), time.Date(2026, 10, 1, 0, 0, 0, 0, time.Local).Unix())
 	cachePath := filepath.Join(state, "ccmorph", "quota", "spend", "2026-10-18.json")
 	if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(cachePath, b, 0o600); err != nil {
+	if err := os.WriteFile(cachePath, []byte(cache), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if s := spendEntry("gw", "").Spend; s.MonthTurns != 1 || s.MonthUSD != 1.5 || s.MonthTokens != 15 {
@@ -1058,5 +1050,538 @@ func TestQuotaSpendKeepsPastDaysUntilTheyChange(t *testing.T) {
 	os.Remove(filepath.Join(today, "e.json"))
 	if s := read(); s.TodayTurns != 1 || s.TodayUSD != 5.5 || s.MonthTurns != 3 {
 		t.Fatalf("today's change not seen: %+v", s)
+	}
+}
+
+// The invariants every spend read keeps (#538), written down before the cache
+// shape changed so the tests below could be checked against them:
+//
+//   - One response counts once wherever the store holds it: a flat copy and a
+//     day folder's, or copies in two day folders, are one turn (#298, #514).
+//   - A receipt is parsed only when its file or folder changed. An unchanged
+//     store is answered from what the last read kept.
+//   - A closed day is reused until its folder's mtime changes, the mtime is
+//     taken before the files are read, and only a closed read that read every
+//     receipt validates the snapshot: a row linked in during the read recounts
+//     on the next call, and a receipt rewritten in place while the day was open
+//     is read again once it closes.
+//   - Today's folder is statted per file, never by folder mtime alone: a
+//     writer's in-place rewrite changes a file and not the folder.
+//   - An unchanged store decodes no row: the memo check stats the flat
+//     receipts, then lists and stats the day folders, and loads no cache that
+//     keeps rows.
+//   - A rebuild reads the flat receipts before it lists the day folders and
+//     samples their mtimes: a move links the day name first (making the folder
+//     if it must) and removes the flat name after, so one of the two reads
+//     holds the row whatever moment the move lands in.
+//   - A receipt that could not be read is left out of every index and retried
+//     on the next read, never remembered as an absent row.
+//   - The day folders read are the month window's, and a read that touched
+//     only today reads only today's folder.
+
+// An unchanged store is answered from what the last read kept: no receipt is
+// parsed again (#538). Every receipt is rewritten in place with a different
+// cost, keeping each file's size and its mtime, so the store looks unchanged
+// and a read that opens any receipt charges the new price.
+func TestQuotaSpendAnUnchangedStoreParsesNoReceipt(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	closed := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	today := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	writeReceipt(t, filepath.Join(usage, "2026-10-18", "a.json"),
+		"resp_a", "turn_a", "2026-10-18T09:00:00Z", 1, closed)
+	writeReceipt(t, filepath.Join(usage, "2026-10-20", "b.json"),
+		"resp_b", "turn_b", "2026-10-20T09:00:00Z", 2, today)
+	writeReceipt(t, filepath.Join(usage, "c.json"),
+		"resp_c", "turn_c", "2026-10-18T10:00:00Z", 4, closed)
+	read := func() *Spend { tallyMemo.key = ""; return spendEntry("gw", "").Spend }
+	if s := read(); s.MonthUSD != 7 || s.MonthTurns != 3 || s.TodayUSD != 2 || s.TodayTurns != 1 {
+		t.Fatalf("cold read %+v", s)
+	}
+	// Same sizes, same mtimes, different numbers: only a read that parses a
+	// receipt can tell the difference.
+	for path, cost := range map[string][2]string{
+		filepath.Join(usage, "2026-10-18", "a.json"): {"1", "9"},
+		filepath.Join(usage, "2026-10-20", "b.json"): {"2", "8"},
+		filepath.Join(usage, "c.json"):               {"4", "6"},
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw = bytes.Replace(raw, []byte(`"cost":`+cost[0]), []byte(`"cost":`+cost[1]), 1)
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, info.ModTime(), info.ModTime()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s := read(); s.MonthUSD != 7 || s.MonthTurns != 3 || s.TodayUSD != 2 || s.TodayTurns != 1 {
+		t.Fatalf("an unchanged store was read again: %+v", s)
+	}
+	// A closed day keeps its rows in one cache: the per-file index that used to
+	// sit beside them as <day>.open.json is the same store now (#538).
+	if old, _ := filepath.Glob(filepath.Join(state, "ccmorph", "quota", "spend", "*.open.json")); len(old) != 0 {
+		t.Fatalf("redundant open-day index left behind: %v", old)
+	}
+}
+
+// A flat receipt is read once and kept with its size and mtime, like a day
+// folder's: an unchanged flat row is not parsed again when another day
+// changes (#538).
+func TestQuotaSpendAnUnchangedFlatRowIsNotParsedAgain(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	flat := filepath.Join(usage, "resp_flat.json")
+	writeReceipt(t, flat, "resp_flat", "turn_a", "2026-10-18T09:00:00Z", 1,
+		time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC))
+	read := func() *Spend { tallyMemo.key = ""; return spendEntry("gw", "").Spend }
+	if s := read(); s.MonthUSD != 1 {
+		t.Fatalf("cold read %+v", s)
+	}
+	info, err := os.Stat(flat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(flat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = bytes.Replace(raw, []byte(`"cost":1`), []byte(`"cost":9`), 1)
+	if err := os.WriteFile(flat, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(flat, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	// A new receipt in today's folder changes the store, so the read rebuilds;
+	// the flat row's file still looks unchanged and keeps its first price.
+	writeReceipt(t, filepath.Join(usage, "2026-10-20", "b.json"),
+		"resp_b", "turn_b", "2026-10-20T09:00:00Z", 2, time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC))
+	if s := read(); s.MonthUSD != 3 || s.MonthTurns != 2 {
+		t.Fatalf("an unchanged flat row was parsed again: %+v", s)
+	}
+}
+
+// The totals a cold store reports are the totals every later read reports:
+// the shapes #514 counts stay counted once, whether the read built its caches
+// or reused them (#538).
+func TestQuotaSpendColdAndSteadyReadsAgree(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	// One response in two closed folders, one response flat and in its day
+	// folder, a flat row a move left behind, an unpriced turn, a prior month.
+	writeReceipt(t, filepath.Join(usage, "2026-10-05", "resp_1.json"),
+		"resp_1", "turn_a", "2026-10-05T09:00:00Z", 1, time.Date(2026, 10, 5, 9, 0, 0, 0, time.UTC))
+	writeReceipt(t, filepath.Join(usage, "2026-10-06", "resp_1.json"),
+		"resp_1", "turn_a", "2026-10-05T09:00:00Z", 1, time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC))
+	writeReceipt(t, filepath.Join(usage, "resp_2.json"),
+		"resp_2", "turn_b", "2026-10-04T09:00:00Z", 2, time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC))
+	writeReceipt(t, filepath.Join(usage, "2026-10-20", "resp_3.json"),
+		"resp_3", "turn_c", "2026-10-20T09:00:00Z", 0.5, time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC))
+	writeReceipt(t, filepath.Join(usage, "2026-10-20", "resp_4.json"),
+		"resp_4", "turn_d", "2026-10-20T08:00:00Z", 4, time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC))
+	writeReceipt(t, filepath.Join(usage, "resp_4.json"),
+		"resp_4", "turn_d", "2026-10-20T08:00:00Z", 4, time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC))
+	unpriced := []byte(`{"response_id":"resp_5","turn_id":"turn_e","profile":"gw",` +
+		`"timestamp":"2026-10-20T10:00:00Z","usage":{"input_tokens":100},"complete":true}`)
+	if err := os.WriteFile(filepath.Join(usage, "2026-10-20", "resp_5.json"), unpriced, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeReceipt(t, filepath.Join(usage, "2026-09-15", "resp_6.json"),
+		"resp_6", "turn_f", "2026-09-15T09:00:00Z", 8, time.Date(2026, 9, 15, 9, 0, 0, 0, time.UTC))
+	read := func() *Spend { tallyMemo.key = ""; return spendEntry("gw", "").Spend }
+	cold := *read()
+	if cold.MonthUSD != 7.5 || cold.MonthTurns != 5 || cold.TodayUSD != 4.5 ||
+		cold.TodayTurns != 3 || cold.UnpricedTurns != 1 || cold.MonthTokens != 100 {
+		t.Fatalf("cold read %+v", cold)
+	}
+	// A process starting with no cache answers the same, and so does one that
+	// reuses the cache the first read left.
+	if err := os.RemoveAll(filepath.Join(state, "ccmorph", "quota", "spend")); err != nil {
+		t.Fatal(err)
+	}
+	if got := *read(); got != cold {
+		t.Fatalf("a cold read with no cache %+v, with a cache %+v", got, cold)
+	}
+	if got := *read(); got != cold {
+		t.Fatalf("steady read %+v, cold read %+v", got, cold)
+	}
+}
+
+// A folder that was open when an earlier build last read it left its per-file
+// index as <day>.open.json and no day cache: closing the day must not rescan
+// every receipt. The old index's rows are reused, and the old store retired
+// (#538).
+func TestQuotaSpendReusesTheOldOpenDayIndex(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	receiptPath := filepath.Join(usage, "2026-10-19", "a.json")
+	writeReceipt(t, receiptPath, "resp_a", "turn_a", "2026-10-19T09:00:00Z", 9,
+		time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC))
+	info, err := os.Stat(receiptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spend := filepath.Join(state, "ccmorph", "quota", "spend")
+	if err := os.MkdirAll(spend, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The index #536 kept while the folder was open: the row it read then cost
+	// 1, and the file is unchanged since.
+	row, err := json.Marshal(legacyRow{Profile: "gw", Stamp: "2026-10-19T09:00:00Z",
+		Key: "resp_a\x002026-10-19T09:00:00Z\x00turn_a", Cost: 1, Priced: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := fmt.Sprintf(`{"a.json":{"v":1,"s":%d,"m":%d,"r":%s}}`,
+		info.Size(), info.ModTime().UnixNano(), row)
+	if err := os.WriteFile(filepath.Join(spend, "2026-10-19.open.json"), []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := spendEntry("gw", "").Spend
+	if s.MonthUSD != 1 || s.MonthTurns != 1 {
+		t.Fatalf("the old per-file index was not reused: %+v", s)
+	}
+	if _, err := os.Stat(filepath.Join(spend, "2026-10-19.open.json")); !os.IsNotExist(err) {
+		t.Fatalf("the redundant per-file index is still on disk: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(spend, "2026-10-19.json")); err != nil {
+		t.Fatalf("the one day cache was not written: %v", err)
+	}
+}
+
+// The spend read opens only the day folders its month window touches: a folder
+// for a day this month has not reached, and one from an earlier month, are not
+// read even when they hold a row whose stamp would count — the window is the
+// month, and the folder names are its index (#227, #538).
+func TestQuotaSpendReadsOnlyItsWindow(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	// Outside the window by name, in it by stamp: only a reader that opened the
+	// folder could count either.
+	writeReceipt(t, filepath.Join(usage, "2026-10-21", "later.json"),
+		"resp_later", "turn_l", "2026-10-21T09:00:00Z", 5,
+		time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC))
+	writeReceipt(t, filepath.Join(usage, "2026-09-15", "before.json"),
+		"resp_before", "turn_b", "2026-10-05T09:00:00Z", 7,
+		time.Date(2026, 9, 15, 9, 0, 0, 0, time.UTC))
+	writeReceipt(t, filepath.Join(usage, "2026-10-05", "inside.json"),
+		"resp_inside", "turn_i", "2026-10-05T09:00:00Z", 1,
+		time.Date(2026, 10, 5, 9, 0, 0, 0, time.UTC))
+	if s := spendEntry("gw", "").Spend; s.MonthUSD != 1 || s.MonthTurns != 1 ||
+		s.TodayUSD != 0 || s.TodayTurns != 0 || s.UnpricedTurns != 0 {
+		t.Fatalf("a folder outside the month window was read: %+v", s)
+	}
+}
+
+// A new day moves yesterday's folder into the closed set and resets today's
+// counts — on the process that kept yesterday's answer, on a fresh one, and
+// with a row of the new day beside the old ones (#538).
+func TestQuotaSpendDoesNotKeepYesterdaysTodayCounts(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	writeReceipt(t, filepath.Join(usage, "2026-10-19", "old.json"),
+		"r_old", "t_old", "2026-10-19T09:00:00Z", 1, time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC))
+	writeReceipt(t, filepath.Join(usage, "2026-10-20", "today.json"),
+		"r_today", "t_today", "2026-10-20T09:00:00Z", 2, time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC))
+	read := func() *Spend { return spendEntry("gw", "").Spend }
+	if s := read(); s.MonthUSD != 3 || s.TodayUSD != 2 || s.TodayTurns != 1 || s.MonthTurns != 2 {
+		t.Fatalf("first day %+v", s)
+	}
+	// The next day both rows are the month's, neither is today's.
+	now = func() time.Time { return time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC) }
+	if s := read(); s.MonthUSD != 3 || s.TodayUSD != 0 || s.TodayTurns != 0 || s.MonthTurns != 2 {
+		t.Fatalf("a kept answer still called yesterday today: %+v", s)
+	}
+	// A process starting on the new day agrees.
+	tallyMemo.key = ""
+	if s := read(); s.MonthUSD != 3 || s.TodayUSD != 0 || s.TodayTurns != 0 || s.MonthTurns != 2 {
+		t.Fatalf("a fresh process kept yesterday's today: %+v", s)
+	}
+	// A row of the new day is today and counts once beside the old ones.
+	writeReceipt(t, filepath.Join(usage, "2026-10-21", "new.json"),
+		"r_new", "t_new", "2026-10-21T09:00:00Z", 4, time.Date(2026, 10, 21, 9, 0, 0, 0, time.UTC))
+	tallyMemo.key = ""
+	if s := read(); s.MonthUSD != 7 || s.TodayUSD != 4 || s.TodayTurns != 1 || s.MonthTurns != 3 {
+		t.Fatalf("the new day's row was not counted: %+v", s)
+	}
+}
+
+// The move links a row's day name before it removes the flat name, and the
+// read goes flat first: the row counts once at each step, never zero and never
+// twice (#298, #514).
+func TestQuotaSpendCountsARowOnceAcrossTheMovesSteps(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	flat := filepath.Join(usage, "r1.json")
+	dayDir := filepath.Join(usage, "2026-10-18")
+	writeReceipt(t, flat, "r1", "t1", "2026-10-18T09:00:00Z", 1.5,
+		time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC))
+	read := func() *Spend { tallyMemo.key = ""; return spendEntry("gw", "").Spend }
+	if s := read(); s.MonthUSD != 1.5 || s.MonthTurns != 1 {
+		t.Fatalf("flat only %+v", s)
+	}
+	if err := os.MkdirAll(dayDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(flat, filepath.Join(dayDir, "r1.json")); err != nil {
+		t.Skipf("the filesystem has no hardlinks: %v", err)
+	}
+	if s := read(); s.MonthUSD != 1.5 || s.MonthTurns != 1 {
+		t.Fatalf("linked, flat name still there %+v", s)
+	}
+	if err := os.Remove(flat); err != nil {
+		t.Fatal(err)
+	}
+	if s := read(); s.MonthUSD != 1.5 || s.MonthTurns != 1 {
+		t.Fatalf("moved %+v", s)
+	}
+}
+
+// A move lands while the store is read: it links the row's day name and removes
+// the flat name. The flat store is read before any closed day's mtime is
+// sampled, so a row the flat read no longer holds is still found through the
+// day folder the link changed — the base built before the move cannot answer
+// (#538).
+func TestQuotaSpendCountsARowMovedBeforeTheFlatRead(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	closed := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	today := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	writeReceipt(t, filepath.Join(usage, "2026-10-18", "a.json"),
+		"resp_a", "turn_a", "2026-10-18T09:00:00Z", 1, closed)
+	flat := filepath.Join(usage, "b.json")
+	writeReceipt(t, flat, "resp_b", "turn_b", "2026-10-18T10:00:00Z", 1, closed)
+	writeReceipt(t, filepath.Join(usage, "2026-10-20", "t.json"),
+		"resp_t", "turn_t", "2026-10-20T09:00:00Z", 1, today)
+	read := func() *Spend { tallyMemo.key = ""; return spendEntry("gw", "").Spend }
+	if s := read(); s.MonthUSD != 3 || s.MonthTurns != 3 {
+		t.Fatalf("cold read %+v", s)
+	}
+	// A new receipt today invalidates the month memo, so the next read rebuilds
+	// the closed days instead of answering from the last one.
+	writeReceipt(t, filepath.Join(usage, "2026-10-20", "t2.json"),
+		"resp_t2", "turn_t2", "2026-10-20T10:00:00Z", 1, today)
+	var hookErr error
+	beforeFlat = func() {
+		beforeFlat = nil
+		if hookErr = os.Link(flat, filepath.Join(usage, "2026-10-18", "b.json")); hookErr == nil {
+			hookErr = os.Remove(flat)
+		}
+	}
+	t.Cleanup(func() { beforeFlat = nil })
+	if s := read(); s.MonthUSD != 4 || s.MonthTurns != 4 || s.TodayUSD != 2 || s.TodayTurns != 2 {
+		t.Fatalf("a row moved before the flat read was lost: %+v", s)
+	}
+	if hookErr != nil {
+		t.Fatal(hookErr)
+	}
+}
+
+// A writer rewrites a receipt in place while its day is open: the file changes
+// and the folder does not, so the first closed read must stat the receipts
+// rather than trust the open read's snapshot (#538).
+func TestQuotaSpendRereadsAnOpenDayWhenItCloses(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	path := filepath.Join(usage, "2026-10-20", "a.json")
+	writeReceipt(t, path, "resp_a", "turn_a", "2026-10-20T09:00:00Z", 1,
+		time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC))
+	read := func() *Spend { tallyMemo.key = ""; return spendEntry("gw", "").Spend }
+	if s := read(); s.MonthUSD != 1 || s.TodayUSD != 1 || s.MonthTurns != 1 {
+		t.Fatalf("open day %+v", s)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = bytes.Replace(raw, []byte(`"cost":1`), []byte(`"cost":9`), 1)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rewritten := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(path, rewritten, rewritten); err != nil {
+		t.Fatal(err)
+	}
+	useClock(t, time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC))
+	if s := read(); s.MonthUSD != 9 || s.MonthTurns != 1 || s.TodayUSD != 0 || s.TodayTurns != 0 {
+		t.Fatalf("a closed day kept its open snapshot: %+v", s)
+	}
+}
+
+// A receipt the read cannot open is not an absent row: a permission error may
+// pass. The index leaves it out, and the next read — with the file readable
+// again at the same size and mtime — counts it (#538).
+func TestQuotaSpendRetriesAFlatReceiptItCouldNotRead(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a file with mode 0")
+	}
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	path := filepath.Join(usage, "a.json")
+	writeReceipt(t, path, "resp_a", "turn_a", "2026-10-18T09:00:00Z", 2,
+		time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC))
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+	read := func() *Spend { tallyMemo.key = ""; return spendEntry("gw", "").Spend }
+	if s := read(); s.MonthUSD != 0 || s.MonthTurns != 0 {
+		t.Fatalf("an unreadable receipt counted: %+v", s)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if s := read(); s.MonthUSD != 2 || s.MonthTurns != 1 {
+		t.Fatalf("a receipt that could not be read was remembered as absent: %+v", s)
+	}
+}
+
+// The same retry holds for a closed day: its cache is keyed by the folder's
+// mtime, which a permission change does not touch, so an incomplete read must
+// not be kept as the day's answer (#538).
+func TestQuotaSpendRetriesAClosedDayReceiptItCouldNotRead(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a file with mode 0")
+	}
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	path := filepath.Join(usage, "2026-10-18", "a.json")
+	writeReceipt(t, path, "resp_a", "turn_a", "2026-10-18T09:00:00Z", 2,
+		time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC))
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+	read := func() *Spend { tallyMemo.key = ""; return spendEntry("gw", "").Spend }
+	if s := read(); s.MonthUSD != 0 || s.MonthTurns != 0 {
+		t.Fatalf("an unreadable receipt counted: %+v", s)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if s := read(); s.MonthUSD != 2 || s.MonthTurns != 1 {
+		t.Fatalf("a closed day remembered an unreadable receipt as absent: %+v", s)
+	}
+}
+
+// An unchanged store's read decodes no row: not a receipt, and not a cache
+// that keeps rows — the flat index and the day caches are loaded only when the
+// month memo cannot answer. A new receipt today costs the flat index, today's
+// cache and the new receipt, never a closed day's rows (#538).
+func TestQuotaSpendAnUnchangedStoreDecodesNoRow(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	closed := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	today := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("resp_%d", i)
+		writeReceipt(t, filepath.Join(usage, "2026-10-18", id+".json"),
+			id, "turn_"+id, fmt.Sprintf("2026-10-18T09:0%d:00Z", i), 1, closed)
+	}
+	for i := 0; i < 3; i++ {
+		id := fmt.Sprintf("flat_%d", i)
+		writeReceipt(t, filepath.Join(usage, id+".json"),
+			id, "turn_"+id, fmt.Sprintf("2026-10-18T10:0%d:00Z", i), 1, closed)
+	}
+	writeReceipt(t, filepath.Join(usage, "2026-10-20", "t.json"),
+		"resp_t", "turn_t", "2026-10-20T09:00:00Z", 1, today)
+	decoded := 0
+	rowsDecoded = func(n int) { decoded += n }
+	t.Cleanup(func() { rowsDecoded = nil })
+	read := func() *Spend { tallyMemo.key = ""; return spendEntry("gw", "").Spend }
+	cold := *read()
+	if cold.MonthTurns != 9 || cold.MonthUSD != 9 || cold.TodayTurns != 1 || cold.TodayUSD != 1 {
+		t.Fatalf("cold read %+v", cold)
+	}
+	if decoded < 9 {
+		t.Fatalf("the cold read decoded %d rows: the counter is not wired", decoded)
+	}
+	decoded = 0
+	if got := *read(); got != cold {
+		t.Fatalf("steady read %+v, cold read %+v", got, cold)
+	}
+	if decoded != 0 {
+		t.Fatalf("an unchanged store decoded %d rows", decoded)
+	}
+	writeReceipt(t, filepath.Join(usage, "2026-10-20", "t2.json"),
+		"resp_t2", "turn_t2", "2026-10-20T10:00:00Z", 1, today)
+	decoded = 0
+	if s := read(); s.MonthTurns != 10 || s.TodayTurns != 2 || s.MonthUSD != 10 {
+		t.Fatalf("today's change %+v", s)
+	}
+	if decoded != 5 {
+		t.Fatalf("a new receipt today decoded %d rows, want 5: the flat index (3), today's cache (1), the new receipt (1)", decoded)
+	}
+}
+
+// A move whose day folder does not exist yet makes it, links the row in and
+// removes the flat name. A rebuild lists the day folders after it reads the
+// flat store, so a folder the move made during the read is found (#514, #538).
+func TestQuotaSpendCountsARowMovedIntoANewFolderBeforeTheFlatRead(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	closed := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	today := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	flat := filepath.Join(usage, "b.json")
+	writeReceipt(t, flat, "resp_b", "turn_b", "2026-10-18T10:00:00Z", 1, closed)
+	writeReceipt(t, filepath.Join(usage, "2026-10-20", "t.json"),
+		"resp_t", "turn_t", "2026-10-20T09:00:00Z", 1, today)
+	read := func() *Spend { tallyMemo.key = ""; return spendEntry("gw", "").Spend }
+	if s := read(); s.MonthUSD != 2 || s.MonthTurns != 2 {
+		t.Fatalf("cold read %+v", s)
+	}
+	// A new receipt today makes the next read a rebuild.
+	writeReceipt(t, filepath.Join(usage, "2026-10-20", "t2.json"),
+		"resp_t2", "turn_t2", "2026-10-20T10:00:00Z", 1, today)
+	dayDir := filepath.Join(usage, "2026-10-18")
+	var hookErr error
+	beforeFlat = func() {
+		beforeFlat = nil
+		if hookErr = os.MkdirAll(dayDir, 0o700); hookErr != nil {
+			return
+		}
+		if hookErr = os.Link(flat, filepath.Join(dayDir, "b.json")); hookErr == nil {
+			hookErr = os.Remove(flat)
+		}
+	}
+	t.Cleanup(func() { beforeFlat = nil })
+	if s := read(); s.MonthUSD != 3 || s.MonthTurns != 3 || s.TodayUSD != 2 || s.TodayTurns != 2 {
+		t.Fatalf("a row moved into a new folder before the flat read was lost: %+v", s)
+	}
+	if hookErr != nil {
+		t.Fatal(hookErr)
 	}
 }
