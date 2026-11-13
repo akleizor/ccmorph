@@ -276,3 +276,19 @@ func TestPickerRewriteLeavesInvalidUTF8Alone(t *testing.T) {
 		t.Fatalf("the rewrite changed the file:\n got %q\nwant %q", got, want)
 	}
 }
+
+// An explicit mode 0 is a mode, not "none": the file lands 0000, with or
+// without the fsync, as this write always left it (#521).
+func TestAtomicWriteKeepsAnExplicitZeroMode(t *testing.T) {
+	for _, sync := range []bool{false, true} {
+		path := filepath.Join(t.TempDir(), "target.json")
+		if err := AtomicWrite(path, ".x.", []byte("body"), 0, sync); err != nil {
+			t.Fatal(err)
+		}
+		// Not ReadFile: a 0000 file is unreadable unless the runner is root.
+		st, err := os.Stat(path)
+		if err != nil || st.Mode().Perm() != 0 || st.Size() != 4 {
+			t.Fatal(sync, err, st)
+		}
+	}
+}

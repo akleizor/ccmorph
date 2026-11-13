@@ -70,6 +70,18 @@ in fetch and misc); util.IsTier owns it. EndRouteHold was endHold's pure
 rename — one body, two names, the exported one for cli and the tests —
 and is the one name now.
 
+Issue #521: the write-temp-then-rename dance had two exported spellings
+(util's and shim's AtomicWrite) and five hand-rolled copies in the packages
+neither reaches — quota's two caches, settingscompose's projection, and
+ctxwindow's conf rewrite and discovered tables. Its one definition is
+`paths.AtomicWrite` in util/paths, the leaf every writer imports; util's and
+shim's exported signatures stayed as thin delegations. `replaceFields`'
+identity re-check rides along as the write's guard, run after the temp is
+written and before the rename. The writes that are not the dance (a key
+linked into place, a usage row's claim, configure's staged set, a streaming
+copy, a readiness file, the session env file) are named
+with their reasons in `NOT_THE_DANCE`.
+
 Issue #523: the profile-root ladder — `$CCMORPH_STATE_DIR`, else
 `$XDG_CONFIG_HOME/ccmorph`, else `~/.config/ccmorph` over the account home
 #138 made every reader use — was spelled three times: complete in the
@@ -328,6 +340,73 @@ def test_the_tier_words_are_spelled_once():
     assert counts.get(TIER_DEFINITION, 0) == 1, (
         "the tier-word set's one definition is no longer spelled once in "
         f"{TIER_DEFINITION.relative_to(ROOT)} (#520)")
+
+
+# #521: the write-temp-then-rename dance — a temp in the target's own
+# directory, written, closed, chmod'ed and renamed over the target, the temp
+# removed on every failure — was hand-rolled beside the two exported
+# AtomicWrites util and shim each kept: quota's reading and spend caches,
+# settingscompose's projection, ctxwindow's conf rewrite, discovered tables
+# and Restamp, and the launcher's log rotation. One definition,
+# paths.AtomicWrite, owns it; util/paths is the leaf every writer reaches,
+# since settingscompose and ctxwindow cannot import util (#423) and nothing
+# below cli imports shim. These guards fail on a new hand-rolled copy in
+# either spelling: a temp file belongs to that definition, or to the few
+# writes that are not the dance.
+TEMP_FILE = re.compile(r"os\.CreateTemp\(")
+# The temp files that are not the dance, each with its reason.
+NOT_THE_DANCE = {
+    "shim/mask.go": "a masking key linked into place: the name only ever holds a whole key",
+    "shim/sidecar.go": "a usage row's claim: hardlink or exclusive create, never a blind rename",
+    "util/store.go": "configure's staged set: temps staged, then committed as one transaction",
+    "util/migrate.go": "a streaming copy that verifies its hash before it renames",
+    "util/adapterstart.go": "the adapter's readiness file, written by the child process",
+    "cli/run.go": "the session env file: the temp is the file, nothing is replaced",
+    "adapter/adapter_test.go": "a test's own stdio capture",
+}
+
+
+def test_the_temp_then_rename_dance_is_spelled_once():
+    home = ROOT / "util" / "paths" / "atomic.go"
+    spelled = [path for path in go_sources() if TEMP_FILE.search(path.read_text())]
+    offenders = [str(path.relative_to(ROOT)) for path in spelled
+                 if path != home and path.relative_to(ROOT).as_posix() not in NOT_THE_DANCE]
+    assert not offenders, (
+        "a temp file is created outside paths.AtomicWrite (#521) and the writes "
+        "that are not the dance (each named with its reason in NOT_THE_DANCE): "
+        + "; ".join(offenders))
+    assert home in spelled, (
+        f"the temp-then-rename dance (#521) is no longer in {home.relative_to(ROOT)}")
+
+
+# The dance's other spelling, without CreateTemp: a fixed-name temp written
+# whole and renamed over its target — Restamp's, the last to move to
+# paths.AtomicWrite. A production file that both writes with os.WriteFile and
+# renames is either that dance or names itself here with its reason; a test
+# file is fixture setup, not a writer.
+WRITE_FILE = re.compile(r"os\.WriteFile\(")
+RENAME = re.compile(r"os\.Rename\(")
+# The writes and renames that are not the dance, each with its reason.
+WRITES_AND_RENAMES = {
+    "settingscompose/compose.go": "backup writes a unique stamped name directly and settle "
+                                  "moves the pending file: neither replaces a file through a temp",
+}
+
+
+def test_a_fixed_temp_write_then_rename_is_spelled_nowhere():
+    offenders = []
+    for path in go_sources():
+        if path.name.endswith("_test.go"):
+            continue
+        text = path.read_text()
+        if WRITE_FILE.search(text) and RENAME.search(text) \
+                and path.relative_to(ROOT).as_posix() not in WRITES_AND_RENAMES:
+            offenders.append(str(path.relative_to(ROOT)))
+    assert not offenders, (
+        "a production file both writes with os.WriteFile and renames (#521): "
+        "replacing a file through a fixed-name temp is the dance "
+        "paths.AtomicWrite owns — the files that are not it are named with "
+        "their reason in WRITES_AND_RENAMES: " + "; ".join(offenders))
 
 
 # #523: the profile-root ladder ($CCMORPH_STATE_DIR, else $XDG_CONFIG_HOME,
