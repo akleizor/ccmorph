@@ -554,6 +554,143 @@ func TestQuotaSpendCountsAResponseInBothStoresOnce(t *testing.T) {
 	}
 }
 
+// The same both-names state with no response id: the move's two names are
+// hardlinks to one file, so the row's own content is the identity the id would
+// have carried and the spend still counts it once (#536). With the day copy
+// gone the flat row's turn is still counted, and a different id-less response
+// is still a turn of its own.
+func TestQuotaSpendCountsAnIDLessResponseInBothStoresOnce(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	day := filepath.Join(usage, "2026-10-20")
+	if err := os.MkdirAll(day, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"profile":"gw","timestamp":"2026-10-20T09:00:00Z",` +
+		`"usage":{"cost":1.5,"input_tokens":10,"output_tokens":5},"complete":true}`)
+	flat, dup := filepath.Join(usage, "resp_1.json"), filepath.Join(day, "resp_1.json")
+	for _, path := range []string{flat, dup} {
+		if err := os.WriteFile(path, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	spend := func() *Spend { tallyMemo.key = ""; return spendEntry("gw", "").Spend }
+	if s := spend(); s.MonthUSD != 1.5 || s.MonthTurns != 1 || s.MonthTokens != 15 ||
+		s.TodayUSD != 1.5 || s.TodayTurns != 1 || s.TodayTokens != 15 {
+		t.Fatalf("an id-less response in both stores was not counted exactly once: %+v", s)
+	}
+	if err := os.Remove(dup); err != nil {
+		t.Fatal(err)
+	}
+	if s := spend(); s.MonthUSD != 1.5 || s.MonthTurns != 1 || s.MonthTokens != 15 ||
+		s.TodayUSD != 1.5 || s.TodayTurns != 1 || s.TodayTokens != 15 {
+		t.Fatalf("the flat copy alone was not counted exactly once: %+v", s)
+	}
+	// Another id-less response — a different stamp, cost and token count — is
+	// not the same row by content, so it adds its own turn.
+	distinct := []byte(`{"profile":"gw","timestamp":"2026-10-20T10:00:00Z",` +
+		`"usage":{"cost":0.5,"output_tokens":5},"complete":true}`)
+	if err := os.WriteFile(filepath.Join(usage, "resp_2.json"), distinct, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if s := spend(); s.MonthUSD != 2 || s.MonthTurns != 2 || s.MonthTokens != 20 ||
+		s.TodayUSD != 2 || s.TodayTurns != 2 || s.TodayTokens != 20 {
+		t.Fatalf("a different id-less response was not counted on its own: %+v", s)
+	}
+}
+
+// Two id-less receipts that share a stamp and a token total are still two
+// responses when their turn or their input/output split differs: the writer
+// records both, so the content key must not fold them into one turn (#536).
+func TestQuotaSpendCountsDifferentIDLessResponsesApart(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	cases := []struct{ name, a, b string }{
+		{
+			name: "different turns",
+			a: `{"response_id":"","turn_id":"turn_a","profile":"gw","timestamp":"2026-10-20T09:00:00Z",` +
+				`"usage":{"cost":1.5,"input_tokens":10,"output_tokens":5},"complete":true}`,
+			b: `{"response_id":"","turn_id":"turn_b","profile":"gw","timestamp":"2026-10-20T09:00:00Z",` +
+				`"usage":{"cost":1.5,"input_tokens":10,"output_tokens":5},"complete":true}`,
+		},
+		{
+			name: "different token split",
+			a: `{"response_id":"","profile":"gw","timestamp":"2026-10-20T09:00:00Z",` +
+				`"usage":{"cost":1.5,"input_tokens":10,"output_tokens":5},"complete":true}`,
+			b: `{"response_id":"","profile":"gw","timestamp":"2026-10-20T09:00:00Z",` +
+				`"usage":{"cost":1.5,"input_tokens":5,"output_tokens":10},"complete":true}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			state := t.TempDir()
+			t.Setenv("XDG_STATE_HOME", state)
+			usage := filepath.Join(state, "ccmorph", "usage")
+			if err := os.MkdirAll(usage, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			for name, body := range map[string]string{"a": tc.a, "b": tc.b} {
+				if err := os.WriteFile(filepath.Join(usage, name+".json"), []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s := spendEntry("gw", "").Spend
+			if s.MonthUSD != 3 || s.MonthTurns != 2 || s.MonthTokens != 30 {
+				t.Fatalf("two different id-less responses were not counted apart: %+v", s)
+			}
+		})
+	}
+}
+
+// A kept day's cache written before #536 holds an id-less row with no key; the
+// reader does not trust that shape, re-reads the folder, and the flat copy
+// beside it still counts as the same response.
+func TestQuotaSpendRereadsACacheFromBeforeTheContentKey(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	day := filepath.Join(usage, "2026-10-18")
+	if err := os.MkdirAll(day, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"profile":"gw","timestamp":"2026-10-18T09:00:00Z",` +
+		`"usage":{"cost":1.5,"input_tokens":10,"output_tokens":5},"complete":true}`)
+	for _, path := range []string{filepath.Join(usage, "resp_1.json"), filepath.Join(day, "resp_1.json")} {
+		if err := os.WriteFile(path, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// #514's reader kept this folder's row with the fields but no key: its
+	// receipt has no id to name it by.
+	info, err := os.Stat(day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := dayCache{
+		MTime: info.ModTime().UnixNano(),
+		Month: time.Date(2026, 10, 1, 0, 0, 0, 0, time.Local).Unix(),
+		Rows: []*spendRow{{
+			Profile: "gw", Stamp: "2026-10-18T09:00:00Z", Tokens: 15, Cost: 1.5, Priced: true,
+		}},
+	}
+	b, err := json.Marshal(cache)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cachePath := filepath.Join(state, "ccmorph", "quota", "spend", "2026-10-18.json")
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachePath, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if s := spendEntry("gw", "").Spend; s.MonthTurns != 1 || s.MonthUSD != 1.5 || s.MonthTokens != 15 {
+		t.Fatalf("an id-less row from a kept cache was not named by its content: %+v", s)
+	}
+}
+
 // writeReceipt lays one completed response's receipt at path, its mtime forced
 // to when: the move picks a flat row's day folder by its mtime, never its
 // stamp, so a test chooses the folder a flat row points at.
