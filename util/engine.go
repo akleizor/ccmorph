@@ -13,6 +13,7 @@ import (
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/settingscompose"
+	"github.com/akleizor/ccmorph/util/tier"
 )
 
 // jsWS is the ECMAScript WhiteSpace + LineTerminator set, one rune each.
@@ -345,7 +346,7 @@ func hazardRows(in HazardIn) ([]string, error) {
 			continue
 		}
 		bare, wall, triggerM, _ := engineModel(sz, m)
-		if IsTier(bare) {
+		if tier.IsTier(bare) {
 			continue
 		}
 		if wall == 0 {

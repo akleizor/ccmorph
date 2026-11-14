@@ -67,7 +67,7 @@ launch's profileLayer inlining its own Lstat) and the symlink resolver two
 and paths.Resolve own them now. The tier-word set — opus, sonnet, haiku,
 fable — was spelled six ways (cli's isTier, engine's aliases map, picker's
 families slice and its inline check, and the served and refusal switches
-in fetch and misc); util.IsTier owns it. EndRouteHold was endHold's pure
+in fetch and misc); tier.IsTier owns it. EndRouteHold was endHold's pure
 rename — one body, two names, the exported one for cli and the tests —
 and is the one name now.
 
@@ -131,7 +131,7 @@ CONSOLIDATED = {
     "acwValid": "settingscompose.ACWValid",
     "resolveLink": "paths.Resolve",
     "resolvePath": "paths.Resolve",
-    "isTier": "util.IsTier",
+    "isTier": "tier.IsTier",
     "endHold": "util.EndRouteHold",
 }
 # #422's predicates, and #520's strays beside them: the unexported spelling a
@@ -349,12 +349,12 @@ def test_contextenv_does_not_spell_authkeys_precedence():
 # #539: the two spellings the count could not see. The picker's alias rows
 # spelled the words in a tab-separated literal, and the add wizard and the env
 # allowlists spelled the uppercase keys; both are built from the word list now
-# — the picker's rows and the wizard's env keys from util.TierWords and
-# util.TierEnvKey — so the guard counts those spellings too: a word
+# — the picker's rows and the wizard's env keys from util/tier's TierWords
+# and TierEnvKey — so the guard counts those spellings too: a word
 # hand-spelled in either form fails it. profile and ctxwindow cannot import
 # util (#423), so their env-key allowlists stay hand-spelled and are the key
 # form's allowed homes beside the builder's own file.
-TIER_DEFINITION = ROOT / "util" / "tier.go"
+TIER_DEFINITION = ROOT / "util" / "tier" / "tier.go"
 TIER_KEY_HOMES = {ROOT / "profile" / "envkeys.go", ROOT / "ctxwindow" / "conf.go"}
 # The picker-row spelling: a tier word and the tab that follows it.
 TIER_ROWS = ("fable\\t", "opus\\t", "sonnet\\t", "haiku\\t")
@@ -376,7 +376,7 @@ def test_the_tier_words_are_spelled_once():
         if TIER_KEY in text and path != TIER_DEFINITION and path not in TIER_KEY_HOMES:
             keys.append(f"{path.relative_to(ROOT)} spells the env key")
     assert not words, (
-        "the tier-word set is hand-spelled outside util/tier.go (#520): "
+        "the tier-word set is hand-spelled outside util/tier/tier.go (#520): "
         + "; ".join(words))
     assert not rows, (
         "a picker alias row is hand-spelled instead of built from "

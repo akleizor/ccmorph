@@ -1,4 +1,8 @@
-package util
+// Package tier holds the tier words and the model-id spellings built from
+// them. It sits beside util the way util/paths does — a leaf every package
+// (util, cli, shim, adapter, profile, ctxwindow) can name without the cycle
+// util's own imports would close (#544).
+package tier
 
 import (
 	"slices"
@@ -11,9 +15,9 @@ import (
 // served probes answer yes for one, a refusal never names one, and the sizing
 // and picker walks skip them for the concrete ids they stand for. Adding or
 // renaming a word touches this one list: IsTier reads it, the picker's alias
-// rows and the add wizard's env keys are built from it, and no other file
-// spells a word — the dedup guard counts the quoted, tab-literal and
-// uppercase-key spellings alike.
+// rows, the add wizard's env keys and the env-key allowlists are built from
+// it, and no other file spells a word — the dedup guard counts the quoted,
+// tab-literal and uppercase-key spellings alike.
 var TierWords = []string{"fable", "opus", "sonnet", "haiku"}
 
 // IsTier is whether model is one of the tier words. The comparison is exact:
@@ -34,13 +38,13 @@ func TierWord(model string) string {
 
 // TrimWindowMarker is a model id without its trailing [1m] context-window
 // marker: opus[1m] and glm-4.6[1M] are their bare ids on every surface that
-// names a model — the alias resolver, the served adjudicator, the report's
-// model column (#539). The marker is matched case-insensitively (both
-// spellings have been served) and only at the end: an id's own brackets
-// (vendor[beta]) are part of the id, and a bracket that is not the marker
-// does not make a tier word of what precedes it. Nothing else about the id
-// changes — the case a listing compares (MiniMax-M3) is the case it arrived
-// with.
+// names a model — the resolver, the served adjudicator, the report's model
+// column, the launch's wire id and the adapter's own verdict (#539, #544).
+// The marker is matched case-insensitively (both spellings have been served)
+// and only at the end: an id's own brackets (vendor[beta]) are part of the
+// id, and a bracket that is not the marker does not make a tier word of what
+// precedes it. Nothing else about the id changes — the case a listing
+// compares (MiniMax-M3) is the case it arrived with.
 func TrimWindowMarker(model string) string {
 	if len(model) >= 4 && strings.EqualFold(model[len(model)-4:], "[1m]") {
 		return model[:len(model)-4]
@@ -49,9 +53,9 @@ func TrimWindowMarker(model string) string {
 }
 
 // TierEnvKey is the env key a tier word pins its default model through. The
-// alias resolver reads it, the add wizard writes it and the alias store keeps
-// it; profile and ctxwindow spell the key in their allowlists where they
-// cannot import this package (#423), and nowhere else may spell it.
+// alias resolver reads it, the add wizard writes it, the alias store keeps
+// it, and profile and ctxwindow build their env-key allowlists from it
+// through this leaf (#423, #544); nowhere else may spell it.
 func TierEnvKey(tier string) string {
 	return "ANTHROPIC_DEFAULT_" + strings.ToUpper(tier) + "_MODEL"
 }

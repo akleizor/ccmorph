@@ -29,7 +29,7 @@ func TestATierWordResolvesThroughTheEnvThenTheSavedAlias(t *testing.T) {
 		{"an env mapping naming the same tier word leaves the alias its say", "opus", "opus[1m]", true, "m-store", true, "m-store", true},
 		{"an env mapping naming another tier word is that word", "opus", "sonnet", true, "", false, "sonnet", true},
 		{"an empty model is no tier and stays empty", "", "", false, "", false, "", true},
-		// #539: the word is util.TierWord's spelling — lowercased, marker
+		// #539: the word is tier.TierWord's spelling — lowercased, marker
 		// stripped — so these three answer the same way the served adjudicator
 		// does, where the old split-at-the-first-bracket spelling answered
 		// "opus[foo]" as the tier word opus and never saw "OPUS" at all.

@@ -19,6 +19,7 @@ import (
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
+	"github.com/akleizor/ccmorph/util/tier"
 )
 
 // authStatusDeadline bounds doctor's `claude auth status`: Claude Code owns the
@@ -491,10 +492,10 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	// a chat-dialect gateway behind an alias with no adapter row and a ready
 	// verdict (#412, one branch over).
 	tierMissing := ""
-	if bare := util.TierWord(savedModel); util.IsTier(bare) && typ == "apikey" && !util.NativeBase(base) {
+	if bare := tier.TierWord(savedModel); tier.IsTier(bare) && typ == "apikey" && !util.NativeBase(base) {
 		if resolved, ok := resolveTier(savedModel,
 			func(key string) (string, bool) { v, ok := f["env."+key]; return v, ok },
-			func(tier string) (string, bool) { return l.tierAlias(name, tier) }); ok {
+			func(word string) (string, bool) { return l.tierAlias(name, word) }); ok {
 			model = resolved
 		} else {
 			tierMissing = bare

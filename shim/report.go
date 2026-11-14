@@ -17,6 +17,7 @@ import (
 
 	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
+	"github.com/akleizor/ccmorph/util/tier"
 )
 
 // recordOutcome appends one task outcome beside the usage rows; the join key is
@@ -64,9 +65,9 @@ func printable(s string) bool {
 }
 
 // modelID is the row's model for the report's by-model column: the served id
-// without its window marker — the one strip, util.TrimWindowMarker, every
+// without its window marker — the one strip, tier.TrimWindowMarker, every
 // surface that names a model gives it, in either marker case (#539).
-func modelID(raw string) string { return util.TrimWindowMarker(raw) }
+func modelID(raw string) string { return tier.TrimWindowMarker(raw) }
 
 type taskVerdict struct {
 	outcome string

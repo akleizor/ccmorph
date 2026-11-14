@@ -20,6 +20,7 @@ import (
 	"github.com/akleizor/ccmorph/shim"
 	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
+	"github.com/akleizor/ccmorph/util/tier"
 )
 
 var nativeModelFlags = map[string]bool{
@@ -916,8 +917,8 @@ func (l *launcher) launchWindow(name, model string) []string {
 	return fields
 }
 
-func (l *launcher) tierAlias(name, tier string) (string, bool) {
-	v, rc := l.configStore("get", name, "env."+util.TierEnvKey(tier))
+func (l *launcher) tierAlias(name, word string) (string, bool) {
+	v, rc := l.configStore("get", name, "env."+tier.TierEnvKey(word))
 	return v, rc == 0 && v != ""
 }
 
@@ -1425,9 +1426,9 @@ func (l *launcher) adapterModel(name string, penv []string, explicit, defaultMod
 	}
 	resolved, ok := resolveTier(model,
 		func(key string) (string, bool) { return envGet(penv, key) },
-		func(tier string) (string, bool) { return l.tierAlias(name, tier) })
+		func(word string) (string, bool) { return l.tierAlias(name, word) })
 	if !ok {
-		l.err("no gateway model is mapped to tier '" + util.TierWord(model) + "'; choose an explicit --model id")
+		l.err("no gateway model is mapped to tier '" + tier.TierWord(model) + "'; choose an explicit --model id")
 		return "", false
 	}
 	return resolved, true
