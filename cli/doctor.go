@@ -559,14 +559,14 @@ func (l *launcher) doctor(name string, verbose bool) int {
 	// verdict comes from what a launch itself reads without inference (the
 	// classification cache and the listing's declared protocols), so doctor
 	// reports what launch would actually do, never a guess. A tier word above is
-	// already the id a launch resolves it to; then launch cuts the spelling at
-	// its first '[' before the adapter sees it (util/adapterstart), translates
+	// already the id a launch resolves it to; then launch strips the trailing
+	// window marker before the adapter sees it (util/adapterstart), translates
 	// that wire id through model_map, and classifies the target; so the verdict
 	// is asked about that id. A row decided for a model the launch never
 	// classifies would call a profile ready that dies at adapter start (#412,
 	// #475). A map that does not parse is launch's to reject; doctor then asks
 	// about the wire id rather than inventing a translation.
-	wire := strings.SplitN(model, "[", 2)[0]
+	wire := tier.TrimWindowMarker(model)
 	var modelMap map[string]any
 	if raw := strings.TrimSpace(f["model_map"]); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &modelMap); err != nil {

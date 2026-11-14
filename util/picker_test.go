@@ -113,3 +113,24 @@ func TestThePickerKeepsAModelSavedUnderEitherMarkerSpellingIssue544(t *testing.T
 		t.Fatalf("the launch model saved under the uppercase marker must stay in the allowlist: %s", allow)
 	}
 }
+
+// GH-544: the route ceiling's walk must not cut an available model at its
+// first '[': a bracket-bearing id's window is the route's largest too.
+func TestTheRouteCeilingCountsABracketBearingAvailableModelIssue544(t *testing.T) {
+	root := t.TempDir()
+	conf := filepath.Join(root, "gw.conf")
+	if err := os.WriteFile(conf, []byte("type=apikey\nbase_url=http://gw.invalid\napi_key=k\n"+
+		"context_window.vendor[beta]=800000\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	layer := filepath.Join(root, "settings.json")
+	if err := os.WriteFile(layer, []byte(`{"availableModels":["vendor[beta]"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "")
+	t.Setenv("MODEL_WINDOW_PROFILE_CONF", conf)
+	fields := LaunchWindow("gw", "", []string{layer})
+	if fields[4] != "800000" {
+		t.Fatalf("route ceiling %q, want the bracket-bearing model's 800000", fields[4])
+	}
+}

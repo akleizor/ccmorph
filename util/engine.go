@@ -144,7 +144,7 @@ var modelOut = []struct {
 
 // engineReserve is RL(): min(effective max-output-tokens, 20000), resolved per model.
 func engineReserve(modelID string, pinned int64) int64 {
-	bare := strings.ToLower(strings.SplitN(modelID, "[", 2)[0])
+	bare := strings.ToLower(tier.TrimWindowMarker(modelID))
 	def, upper := int64(20_000), int64(20_000)
 	for _, e := range modelOut {
 		if strings.Contains(bare, e.key) {
@@ -210,11 +210,19 @@ func walls(profile, conf string) map[string]int64 {
 var oneMTag = regexp.MustCompile(`(?i)\[1m\]`)
 
 // bareID is the id the window registry knows an offered model by: the disguise
-// undone, the [1m] marker stripped. The registry holds real, bare ids (the
+// undone, the window marker stripped. The registry holds real, bare ids (the
 // listing writes them undisguised), so every wall lookup — and every consumer of
-// the names those lookups produce — derives it this one way.
+// the names those lookups produce — derives it this one way. An id's own
+// brackets (vendor[beta]) are part of the id and stay; a [1m] tag the gateway
+// spelled mid-id (claude-x[1m]-eu) is the marker in its kill-switch spelling —
+// the engine sizes it at 1M wherever it sits — so the tag and what follows it
+// are no more the registry's id than a trailing marker is (#544).
 func bareID(modelID string) string {
-	return strings.SplitN(ctxwindow.RealID(modelID), "[", 2)[0]
+	bare := tier.TrimWindowMarker(ctxwindow.RealID(modelID))
+	if oneMTag.MatchString(bare) {
+		return strings.SplitN(bare, "[", 2)[0]
+	}
+	return bare
 }
 
 // modelSizing is the readings one offered model is sized from: the profile's

@@ -6,6 +6,7 @@ import (
 
 	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
+	"github.com/akleizor/ccmorph/util/tier"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -124,7 +125,7 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 		// mapped keeps the word, and the probe answers for it as it did before.
 		if resolved, ok := resolveTier(pmodel,
 			func(key string) (string, bool) { return envGet(penv, key) },
-			func(tier string) (string, bool) { return l.tierAlias(name, tier) }); ok && resolved != pmodel {
+			func(word string) (string, bool) { return l.tierAlias(name, word) }); ok && resolved != pmodel {
 			l.log("alias resolved profile=" + name + " alias=" + pmodel + " model=" + resolved)
 			pmodel = resolved
 		}
@@ -132,7 +133,7 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 		if strings.HasPrefix(pmodelEnv, "claude-") {
 			pmodelEnv = ""
 		}
-		plw = l.launchWindow(name, strings.SplitN(pmodel, "[", 2)[0])
+		plw = l.launchWindow(name, tier.TrimWindowMarker(pmodel))
 		plwRan = true
 		pwin := ""
 		if pmodel != "" {
@@ -183,7 +184,7 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 			if fb == "" {
 				fb = "none"
 			}
-			l.log("window unknown profile=" + name + " model=" + strings.SplitN(pmodel, "[", 2)[0] + " fallback=" + fb)
+			l.log("window unknown profile=" + name + " model=" + tier.TrimWindowMarker(pmodel) + " fallback=" + fb)
 		}
 	}
 	if pceil == "" {

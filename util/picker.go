@@ -353,7 +353,9 @@ func LaunchWindow(profile, model string, sources []string) []string {
 		if !ok {
 			continue
 		}
-		m = strings.SplitN(m, "[", 2)[0]
+		// The marker alone comes off — an available model's own brackets are
+		// part of its id, and its window is the route's largest too (#544).
+		m = tier.TrimWindowMarker(m)
 		if strings.HasPrefix(m, "claude-") || tier.IsTier(m) {
 			continue
 		}
