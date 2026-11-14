@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/akleizor/ccmorph/util/tier"
 )
 
 // Limit is a context window derived from a models.dev `limit` object.
@@ -318,12 +320,18 @@ func Resolve(profile, model string) Record {
 // CLAUDE_CODE_MAX_CONTEXT_TOKENS pin: that belongs to Resolve's environment.
 func (in *Inputs) Resolve(model string) Record {
 	fields := in.fields
-	bare := strings.TrimSuffix(model, "[1m]")
+	bare := tier.TrimWindowMarker(model)
 	// The served id sizes the session; the requested id stays what the client sees.
 	target := in.mappedTarget(bare)
 	manual := ManualValues(fields)
-	// An explicit pin wins, on the requested id first and then on the served id.
-	window, have := manual[bare]
+	// An explicit pin wins, on the requested id first and then on the served id:
+	// the requested id probed as it was spelled and then bare, so a pin saved
+	// under the marked spelling is found under the spelling it was saved with
+	// in either marker case (#544).
+	window, have := manual[model]
+	if !have {
+		window, have = manual[bare]
+	}
 	if !have {
 		window, have = manual[target]
 	}
@@ -333,6 +341,10 @@ func (in *Inputs) Resolve(model string) Record {
 		matched, found := "", false
 		if _, ok := discovered[target]; ok {
 			matched, found = target, true
+		} else if _, ok := discovered[model]; ok {
+			// The discovered table is keyed by served ids, and a listing serves
+			// the marked spelling too (#544).
+			matched, found = model, true
 		} else {
 			for _, p := range slices.Sorted(maps.Keys(discovered)) {
 				if glob(target, p) {

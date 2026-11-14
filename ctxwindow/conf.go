@@ -31,6 +31,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/akleizor/ccmorph/util/paths"
+	"github.com/akleizor/ccmorph/util/tier"
 )
 
 const (
@@ -567,7 +568,7 @@ func mappedTarget(fields map[string]string, mapping obj, bare string) string {
 	if !ok || s == "" {
 		return bare
 	}
-	return strings.TrimSuffix(s, "[1m]")
+	return tier.TrimWindowMarker(s)
 }
 
 // RouteKnown is whether the route's discovered table carries model, as itself

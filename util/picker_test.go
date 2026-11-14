@@ -81,3 +81,35 @@ func TestProjectPickerReadsTheCatalogueOnceForEveryClaudeModel(t *testing.T) {
 		t.Fatalf("the non-claude row must stay: %s", state)
 	}
 }
+
+// GH-544: a saved launch model spelled with the uppercase marker — a spelling
+// a listing serves — is still the model its map entry names, so the picker
+// keeps it in the allowlist instead of dropping it for missing the map.
+func TestThePickerKeepsAModelSavedUnderEitherMarkerSpellingIssue544(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	conf := filepath.Join(root, "gw.conf")
+	if err := os.WriteFile(conf, []byte("type=apikey\nbase_url=http://gw.invalid\napi_key=k\n"+
+		"model_map={\"gw-model\":\"real-model\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	layer := filepath.Join(home, "settings.profile.json")
+	t.Setenv("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "")
+	t.Setenv("MODEL_WINDOW_ENDPOINT_JSON", "")
+
+	var errw bytes.Buffer
+	if !ProjectPicker(PickerIn{Home: home, Conf: conf, Tag: "Gateway", Profile: "gw",
+		Layer: layer, Launch: "gw-model[1M]", ModelsJSON: `{"data":[{"id":"real-model"}]}`}, &errw) {
+		t.Fatalf("picker failed: %s", errw.String())
+	}
+	allow, err := os.ReadFile(layer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(allow), `"gw-model[1M]"`) {
+		t.Fatalf("the launch model saved under the uppercase marker must stay in the allowlist: %s", allow)
+	}
+}

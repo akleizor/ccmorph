@@ -145,7 +145,7 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 		if id == "" {
 			return false
 		}
-		bare := strings.TrimSuffix(id, "[1m]")
+		bare := tier.TrimWindowMarker(id)
 		target, ok := getKey(modelMap, bare).(string)
 		return ok && target != "" && !isExcl(target)
 	}
