@@ -177,7 +177,7 @@ func NormalizePluginIndex(homeDir, profileDir string) bool {
 }
 
 // normalizePluginIndexVerb is `util normalize-plugin-index <home> <profiles dir>`,
-// the one verb install.sh runs.
+// a verb install.sh runs.
 func normalizePluginIndexVerb(args []string, _ io.Reader, _, _ io.Writer) int {
 	if len(args) != 2 {
 		return 2

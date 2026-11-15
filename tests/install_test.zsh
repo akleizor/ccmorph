@@ -44,7 +44,7 @@ typeset -gA _unit_cost=(
   windows    1   # 9
   hint       1   # 10
   pkgmgr     5   # 11
-  path       7   # 12
+  path       9   # 12
   footer     4   # 13
   selfupdate 17  # 14
 )
@@ -1256,6 +1256,74 @@ grep -qxF "  fpath=($d/home/.config/ccmorph/share/zsh/site-functions \$fpath)" "
 grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
   && fail "path: the compinit line is repeated" \
   || ok "path: a rc with compinit alone is not told the compinit line again"
+
+# The rc-shape table (#555): the installer's verdict must be doctor's verdict,
+# asked of the one parser that owns the rule — a zsh re-spelling of the scan
+# here once disagreed with cli/doctor.go on these shapes. A last line with no
+# trailing newline still runs: `read` answers nonzero there, so the old
+# while-read loop never ran its body and a .zshrc ending in compinit was
+# scanned as running nothing.
+d=$(fresh_env path_comp_last_line)
+print -rn -- 'autoload -Uz compinit && compinit' > "$d/home/.zshrc"
+d=$(path_run path_comp_last_line /bin/zsh Linux)
+grep -qxF "  fpath=($d/home/.config/ccmorph/share/zsh/site-functions \$fpath)" "$d/out" \
+  && ok "path: an unterminated last compinit line still counts" \
+  || { fail "path: unterminated last compinit line got no fpath advice"; cat "$d/out"; }
+grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
+  && fail "path: the unterminated last compinit line is told the compinit line again" \
+  || ok "path: the unterminated last compinit line is not told the compinit line again"
+
+d=$(fresh_env path_comp_omz_last_line)
+print -rn -- 'source $ZSH/oh-my-zsh.sh' > "$d/home/.zshrc"
+d=$(path_run path_comp_omz_last_line /bin/zsh Linux)
+grep -qxF "  fpath=($d/home/.config/ccmorph/share/zsh/site-functions \$fpath)" "$d/out" \
+  && ok "path: an unterminated last Oh My Zsh line still counts" \
+  || { fail "path: unterminated last Oh My Zsh line got no fpath advice"; cat "$d/out"; }
+grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
+  && fail "path: the unterminated last Oh My Zsh line is told the compinit line again" \
+  || ok "path: the unterminated last Oh My Zsh line is not told the compinit line again"
+
+# The installer runs under zsh, so the user's .zshenv applies to it: with
+# extendedglob set there, the old comment-cut's [[:space:]]# meant zero-or-more
+# whitespace and emptied every line, whatever the rc ran. A home with both
+# halves set up must hear nothing.
+d=$(fresh_env path_comp_extendedglob)
+print 'setopt extendedglob' > "$d/home/.zshenv"
+print 'fpath=($HOME/.config/ccmorph/share/zsh/site-functions $fpath)' > "$d/home/.zshrc"
+print 'autoload -Uz compinit && compinit' >> "$d/home/.zshrc"
+d=$(path_run path_comp_extendedglob /bin/zsh Linux)
+grep -qF 'fpath=' "$d/out" \
+  && fail "path: extendedglob from .zshenv still printed a completion hint" \
+  || ok "path: extendedglob from .zshenv prints no completion hint"
+grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
+  && fail "path: extendedglob from .zshenv is told the compinit line again" \
+  || ok "path: extendedglob from .zshenv is not told the compinit line again"
+
+# compinit inside a quoted string: doctor's parser keeps a quoted string as
+# code, so the word still counts as what the rc runs — the installer must
+# answer the same, not disagree through its own substring reading.
+d=$(fresh_env path_comp_quoted)
+print 'print -r -- "run compinit yourself"' > "$d/home/.zshrc"
+d=$(path_run path_comp_quoted /bin/zsh Linux)
+grep -qxF "  fpath=($d/home/.config/ccmorph/share/zsh/site-functions \$fpath)" "$d/out" \
+  && ok "path: compinit inside a quoted string counts, as doctor reads it" \
+  || { fail "path: compinit inside a quoted string got no fpath advice"; cat "$d/out"; }
+grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
+  && fail "path: the quoted compinit string is told the compinit line again" \
+  || ok "path: the quoted compinit string is not told the compinit line again"
+
+# A # inside quotes is not a comment: doctor's parser keeps the line whole, so
+# the compinit the quoted string carries still runs — the old cut here stopped
+# at the quoted # it could not see through and answered neither.
+d=$(fresh_env path_comp_quoted_hash)
+print 'print -r -- "run # compinit yourself"' > "$d/home/.zshrc"
+d=$(path_run path_comp_quoted_hash /bin/zsh Linux)
+grep -qxF "  fpath=($d/home/.config/ccmorph/share/zsh/site-functions \$fpath)" "$d/out" \
+  && ok "path: a quoted # is not a comment, so the compinit behind it counts" \
+  || { fail "path: a quoted # hid the compinit from the verdict"; cat "$d/out"; }
+grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
+  && fail "path: the compinit behind a quoted # is told the compinit line again" \
+  || ok "path: the compinit behind a quoted # is not told the compinit line again"
 
 # ZDOTDIR moves the zsh file; an unknown or unset SHELL gets the zsh advice, which
 # is what a bare `env -i` run (every test above this section) always printed.

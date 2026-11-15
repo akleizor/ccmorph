@@ -235,42 +235,6 @@ type zshCompletion struct {
 	bound    bool   // a new zsh answered with a completion bound to ccmorph
 }
 
-// compinitRuns reports whether the rc starts zsh's completion system: a line
-// that runs compinit, or the Oh My Zsh loader that runs it. A commented-out
-// compinit starts nothing, and naming the Oh My Zsh directory does not load
-// it, so neither counts (#449).
-func compinitRuns(rc []byte) bool {
-	for _, line := range strings.Split(string(rc), "\n") {
-		code := zshCode(line)
-		if strings.Contains(code, "compinit") || strings.Contains(code, "oh-my-zsh.sh") {
-			return true
-		}
-	}
-	return false
-}
-
-// zshCode is line with its trailing comment cut: zsh starts one at an unquoted
-// # that begins a word, so a # inside a word stays part of the code.
-func zshCode(line string) string {
-	var quote byte
-	for i := 0; i < len(line); i++ {
-		c := line[i]
-		switch {
-		case c == '\\' && quote != '\'':
-			i++ // the next byte is quoted, not syntax
-		case quote != 0:
-			if c == quote {
-				quote = 0
-			}
-		case c == '\'' || c == '"':
-			quote = c
-		case c == '#' && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t'):
-			return line[:i]
-		}
-	}
-	return line
-}
-
 // doctorCompletion reads what a new zsh would have and prints the fpath half
 // of the completion hint: the fpath line, when zsh does not reach the
 // directory, or where it belongs, when it sits below compinit. When zsh
@@ -315,7 +279,7 @@ func (l *launcher) doctorCompletion() zshCompletion {
 			}
 		}
 	}
-	c.compinit = compinitRuns(rc)
+	c.compinit = util.CompinitRuns(rc)
 	bound, answered := l.completionBound(zdot)
 	c.bound = answered && bound
 	if c.bound {

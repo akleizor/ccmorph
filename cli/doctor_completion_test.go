@@ -66,31 +66,6 @@ func secureForCompinit(t *testing.T, root string) {
 	}
 }
 
-// #449: the static read must follow what a startup file runs, not what it
-// mentions. A commented-out compinit starts nothing; naming the oh-my-zsh
-// directory does not load Oh My Zsh; only an uncommented compinit or the
-// loader that runs it (oh-my-zsh.sh) counts.
-func TestCompinitDetectionReadsOnlyLinesThatRun(t *testing.T) {
-	for _, c := range []struct {
-		rc   string
-		want bool
-	}{
-		{"autoload -Uz compinit && compinit\n", true},
-		{"autoload -Uz compinit && compinit -u\n", true},
-		{"source $ZSH/oh-my-zsh.sh\n", true},
-		{`. "$ZSH/oh-my-zsh.sh"` + "\n", true},
-		{"# autoload -Uz compinit && compinit\n", false},
-		{"  # source $ZSH/oh-my-zsh.sh\n", false},
-		{`export ZSH="$HOME/.oh-my-zsh"` + "\n", false},
-		{"fpath=(/x $fpath) # compinit comes later\n", false},
-		{"", false},
-	} {
-		if got := compinitRuns([]byte(c.rc)); got != c.want {
-			t.Errorf("compinitRuns(%q) = %v, want %v", c.rc, got, c.want)
-		}
-	}
-}
-
 // TestDoctorCompletionSaysOnlyWhatANewZshStillMisses holds every state of a
 // person's zsh startup the completion row has to answer for (#363): the row is
 // doctor's word that Tab completes in a new zsh, and zsh starts no completion
