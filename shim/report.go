@@ -276,7 +276,7 @@ func report(days float64) {
 		}
 		return fmt.Sprintf("%.1f%%", 100.0*float64(part)/float64(whole))
 	}
-	fmt.Printf("ccmorph routing report, last %s day(s)\n", fmtG(days))
+	fmt.Printf("ccmorph routing report, last %s day(s)\n", util.FormatG(days))
 	fmt.Printf("total spend $%.2f\n", total)
 	fmt.Printf("unknown spend %d rows (no cost reported, not estimated)\n", unknown)
 	fmt.Printf("estimated spend $%.2f over %d rows (models.dev list price, not billed)\n", estimatedTotal, estimatedRows)
@@ -332,9 +332,6 @@ func report(days float64) {
 	fmt.Printf("  accepted %d  %s/task  first-pass %s  escalated %s\n",
 		len(accepted), perTask+"", pct(len(first), len(tasks)), pct(len(esc), len(tasks)))
 }
-
-// fmtG is Python's "{:g}".
-func fmtG(f float64) string { return strconv.FormatFloat(f, 'g', 6, 64) }
 
 // moveSettle is how new a flat row may be and still be skipped by the move. A
 // writer of the build before the shards rewrites a row inside its live stream,

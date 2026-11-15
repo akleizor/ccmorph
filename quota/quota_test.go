@@ -990,6 +990,43 @@ func TestQuotaBalance(t *testing.T) {
 	}
 }
 
+// The shared reader must answer exactly as the hand-written struct decoders
+// did: json matches struct tags without case, skips fields the reader does not
+// name, and merges a repeated object key into the field already decoded.
+func TestBalanceFieldAnswersLikeTheStructReaders(t *testing.T) {
+	readers := map[string]func([]byte) (string, error){
+		"moonshot":    balanceField("data.available_balance", "USD"),
+		"siliconflow": balanceField("data.totalBalance", "CNY"),
+		"stepfun":     balanceField("balance", "USD"),
+	}
+	cases := []struct {
+		gateway, body, want string
+		unreadable          bool
+	}{
+		{"moonshot", `{"Data":{"Available_Balance":12.3}}`, "$12.30", false},
+		{"siliconflow", `{"DATA":{"TOTALBALANCE":"8.5"}}`, "¥8.50", false},
+		{"stepfun", `{"Balance":3}`, "$3.00", false},
+		{"stepfun", `{"balance":3,"unused":1e400}`, "$3.00", false},
+		{"moonshot", `{"data":{"available_balance":12.3},"data":{"unused":1}}`, "$12.30", false},
+		{"moonshot", `{"data":{"available_balance":12.3},"data":null}`, "$12.30", false},
+		{"moonshot", `{"data":[]}`, "", true},
+		{"siliconflow", `{"data":{"totalBalance":true}}`, "", true},
+		{"stepfun", `{}`, "", true},
+	}
+	for _, c := range cases {
+		got, err := readers[c.gateway]([]byte(c.body))
+		if c.unreadable {
+			if err == nil {
+				t.Errorf("%s %s: got %q, want unreadable", c.gateway, c.body, got)
+			}
+			continue
+		}
+		if err != nil || got != c.want {
+			t.Errorf("%s %s: got %q %v, want %q", c.gateway, c.body, got, err, c.want)
+		}
+	}
+}
+
 func TestDeepseekShowsEmptyWalletsOnlyWhenAllAreEmpty(t *testing.T) {
 	got, err := deepseekBalance([]byte(`{"balance_infos":[{"currency":"USD","total_balance":"0.00"},{"currency":"CNY","total_balance":0}]}`))
 	if err != nil || got != "$0.00 ¥0.00" {
