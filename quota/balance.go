@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 )
@@ -23,14 +24,14 @@ type balanceReader struct {
 var balanceReaders = []balanceReader{
 	{hosts: []string{"api.deepseek.com"}, url: path("/user/balance"), parse: deepseekBalance},
 	{hosts: []string{"openrouter.ai"}, url: path("/api/v1/credits"), parse: openrouterBalance},
-	{hosts: []string{"api.moonshot.ai"}, url: path("/v1/users/me/balance"), parse: moonshotBalance("USD")},
-	{hosts: []string{"api.moonshot.cn"}, url: path("/v1/users/me/balance"), parse: moonshotBalance("CNY")},
-	{hosts: []string{"api.siliconflow.cn"}, url: path("/v1/user/info"), parse: siliconflowBalance("CNY")},
-	{hosts: []string{"api.siliconflow.com"}, url: path("/v1/user/info"), parse: siliconflowBalance("USD")},
+	{hosts: []string{"api.moonshot.ai"}, url: path("/v1/users/me/balance"), parse: balanceField("data.available_balance", "USD")},
+	{hosts: []string{"api.moonshot.cn"}, url: path("/v1/users/me/balance"), parse: balanceField("data.available_balance", "CNY")},
+	{hosts: []string{"api.siliconflow.cn"}, url: path("/v1/user/info"), parse: balanceField("data.totalBalance", "CNY")},
+	{hosts: []string{"api.siliconflow.com"}, url: path("/v1/user/info"), parse: balanceField("data.totalBalance", "USD")},
 	{hosts: []string{"open.bigmodel.cn"}, url: path("/api/biz/account/query-customer-account-report"), bare: true, parse: zhipuBalance("CNY")},
 	{hosts: []string{"api.z.ai"}, url: path("/api/biz/account/query-customer-account-report"), bare: true, parse: zhipuBalance("USD")},
-	{hosts: []string{"api.stepfun.com"}, url: path("/v1/accounts"), parse: stepfunBalance("CNY")},
-	{hosts: []string{"api.stepfun.ai"}, url: path("/v1/accounts"), parse: stepfunBalance("USD")},
+	{hosts: []string{"api.stepfun.com"}, url: path("/v1/accounts"), parse: balanceField("balance", "CNY")},
+	{hosts: []string{"api.stepfun.ai"}, url: path("/v1/accounts"), parse: balanceField("balance", "USD")},
 }
 
 func path(p string) func(string) string {
@@ -152,39 +153,35 @@ func openrouterBalance(body []byte) (string, error) {
 	return money(c-u, "USD"), nil
 }
 
-func moonshotBalance(currency string) func([]byte) (string, error) {
-	return func(body []byte) (string, error) {
-		var b struct {
-			Data struct {
-				Available any `json:"available_balance"`
-			} `json:"data"`
-		}
-		if json.Unmarshal(body, &b) != nil {
-			return "", errUnreadable
-		}
-		v, ok := num(b.Data.Available)
-		if !ok {
-			return "", errUnreadable
-		}
-		return money(v, currency), nil
+// balanceField reads the number a simple gateway reports at a dotted JSON
+// path; moonshot, siliconflow and stepfun differ only in that path. The reply
+// is decoded through a struct shaped like the path, so json's rules stay as
+// they were: tags match without case, unnamed fields are skipped, and a
+// repeated object key merges into the field already decoded.
+func balanceField(field, currency string) func([]byte) (string, error) {
+	reply := reflect.TypeFor[any]()
+	keys := strings.Split(field, ".")
+	for i := len(keys) - 1; i >= 0; i-- {
+		reply = reflect.StructOf([]reflect.StructField{{
+			Name: "V",
+			Type: reply,
+			Tag:  reflect.StructTag(`json:"` + keys[i] + `"`),
+		}})
 	}
-}
-
-func siliconflowBalance(currency string) func([]byte) (string, error) {
 	return func(body []byte) (string, error) {
-		var b struct {
-			Data struct {
-				Total any `json:"totalBalance"`
-			} `json:"data"`
-		}
-		if json.Unmarshal(body, &b) != nil {
+		b := reflect.New(reply)
+		if json.Unmarshal(body, b.Interface()) != nil {
 			return "", errUnreadable
 		}
-		v, ok := num(b.Data.Total)
+		v := b.Elem()
+		for range keys {
+			v = v.Field(0)
+		}
+		f, ok := num(v.Interface())
 		if !ok {
 			return "", errUnreadable
 		}
-		return money(v, currency), nil
+		return money(f, currency), nil
 	}
 }
 
@@ -209,22 +206,6 @@ func zhipuBalance(currency string) func([]byte) (string, error) {
 		if !ok {
 			v, ok = num(b.Data.Balance)
 		}
-		if !ok {
-			return "", errUnreadable
-		}
-		return money(v, currency), nil
-	}
-}
-
-func stepfunBalance(currency string) func([]byte) (string, error) {
-	return func(body []byte) (string, error) {
-		var b struct {
-			Balance any `json:"balance"`
-		}
-		if json.Unmarshal(body, &b) != nil {
-			return "", errUnreadable
-		}
-		v, ok := num(b.Balance)
 		if !ok {
 			return "", errUnreadable
 		}
