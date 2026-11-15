@@ -139,18 +139,20 @@ func TestValidNameCapsTheLength(t *testing.T) {
 	}
 }
 
-// GH-449: rm must still address a profile made before #373's length limit. The
-// legacy range ends where the longest derived file (".<name>.bridge.users",
-// +14) reaches NAME_MAX, and nothing past it was ever addressable.
+// GH-449: rm must still address a profile made before #373's length limit.
+// Every profile makes "<name>.conf" and ".locks/<name>.lock" (+5), so 250 is
+// the last name inside NAME_MAX's 255. The bridge file (".<name>.bridge.users",
+// +14 → 241) bounds only a file a bridge-bearing provider makes: a name between
+// the two simply has no bridge file to remove (#551).
 func TestRemovableNameAcceptsTheLegacyRange(t *testing.T) {
 	if !RemovableName(strings.Repeat("y", MaxNameLen+1)) {
 		t.Fatal("a name inside the legacy range must be removable")
 	}
-	if !RemovableName(strings.Repeat("y", LegacyMaxNameLen)) {
-		t.Fatal("the last name whose bridge file fits NAME_MAX must be removable")
+	if !RemovableName(strings.Repeat("y", 250)) {
+		t.Fatal("the last name whose conf and lock fit NAME_MAX must be removable")
 	}
-	if RemovableName(strings.Repeat("y", LegacyMaxNameLen+1)) {
-		t.Fatal("a name whose bridge file would exceed NAME_MAX must stay refused")
+	if RemovableName(strings.Repeat("y", 251)) {
+		t.Fatal("a name whose conf would exceed NAME_MAX must stay refused")
 	}
 	for _, name := range []string{"Active", "ccmorph", "a-b", "a.b", ""} {
 		if RemovableName(name) {
