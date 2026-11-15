@@ -390,7 +390,9 @@ func (l *launcher) exists(name string) bool {
 }
 
 // caseTwin is the profile whose name differs from name only by letter case, or
-// "" when there is none. An exact match always wins.
+// "" when there is none. An exact match always wins. A candidate may carry the
+// legacy length too — a conf that long can still be on disk, and rm still
+// addresses it (#449, #551).
 func (l *launcher) caseTwin(name string) string {
 	entries, err := os.ReadDir(l.dir)
 	if err != nil {
@@ -401,7 +403,7 @@ func (l *launcher) caseTwin(name string) string {
 		if !ok || stem == name || !strings.EqualFold(stem, name) {
 			continue
 		}
-		if e.Type().IsRegular() && profile.ValidName(stem) {
+		if e.Type().IsRegular() && profile.RemovableName(stem) {
 			return stem
 		}
 	}
