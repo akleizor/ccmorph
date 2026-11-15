@@ -18,7 +18,10 @@ type WriteIn struct {
 	Data []byte
 	// Mode is the replaced file's mode. It is chmod'd onto the temp as soon as
 	// the temp is created, before any data is written, and always, 0 included:
-	// a mode-0000 file lands 0000, and the umask does not reach it. Chmod-
+	// a mode-0000 file lands 0000, and the umask does not reach it. The chmod
+	// is best-effort: a filesystem whose fchmod fails leaves the temp's own
+	// 0600, umask-filtered — never wider than the mode asked when that mode is
+	// 0600 or more — rather than refusing the write (#449, #553). Chmod-
 	// before-write is replaceFields' order; the other chmod'ing writes chmod'd
 	// after the close, but their modes carry no setuid/setgid bits, so the
 	// order changes nothing for them.
@@ -57,9 +60,11 @@ func AtomicWrite(in WriteIn) error {
 	tmp := f.Name()
 	bad := func(err error) error { f.Close(); os.Remove(tmp); return err }
 	if !in.NoChmod {
-		if err := f.Chmod(in.Mode); err != nil {
-			return bad(err)
-		}
+		// Best-effort, as the write-and-rename caches always treated it: a
+		// chmod the write does not need must not be able to refuse it (#449),
+		// while a mode a reader depends on must not be the umask's to filter
+		// (#553).
+		_ = f.Chmod(in.Mode)
 	}
 	if _, err := f.Write(in.Data); err != nil {
 		return bad(err)
