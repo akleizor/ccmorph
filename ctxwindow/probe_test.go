@@ -1801,6 +1801,44 @@ func TestProbeReportsEveryProfileInOneShape(t *testing.T) {
 	}
 }
 
+// GH-557: the report's wrapping and columns are measured in terminal cells,
+// and the width table behind them is being united with the menu's. This pins
+// the rendered bytes for a run whose model ids are wide enough to wrap the
+// model list, so the merged table keeps the report byte for byte where the
+// two old tables already agreed.
+func TestTheReportRendersWideModelIdsByteForByte(t *testing.T) {
+	dir := state(t)
+	put(t, filepath.Join(dir, "work.conf"), "type=apikey\napi_key=k\n")
+	models := []string{}
+	for i := 1; i <= 12; i++ {
+		models = append(models, fmt.Sprintf("モデル-%d", i))
+	}
+	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
+		return models, nil, nil, nil
+	})
+	priorWalk = func([]string) (map[string]int64, map[string]obj) { return nil, nil }
+	var out, errb bytes.Buffer
+	if code := ProbeMain([]string{"--profile", "work"}, strings.NewReader(""), &out, &errb); code != 0 {
+		t.Fatalf("exit %d, want 0 (an unsized model is not a failure):\n%s", code, errb.String())
+	}
+	want := "work: looked for context window sizes for 12 models and found none:\n" +
+		"  モデル-1, モデル-10, モデル-11, モデル-12, モデル-2, モデル-3, モデル-4,\n" +
+		"  モデル-5, モデル-6, モデル-7, モデル-8, モデル-9\n" +
+		"  Neither the gateway nor the model catalogue publishes a size.\n" +
+		"  The profile still works: Claude Code runs a model with no size at its\n" +
+		"  200,000-token default.\n" +
+		"  To set a size (free):\n" +
+		"    ccmorph context work <model> <tokens>\n" +
+		"  To measure a size (sends one large prompt, may be billed):\n" +
+		"    ccmorph probe work --model <model> --allow-inference\n"
+	if errb.String() != want {
+		t.Fatalf("the report printed:\n%q\nwant:\n%q", errb.String(), want)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("stdout output: %q", out.String())
+	}
+}
+
 // GH-449: a wrapped line is as wide as the terminal shows it, not as many
 // runes as it holds. Ten four-rune CJK words are 49 runes but 89 cells, and
 // the rune count kept all ten on one line twice the terminal's width.
@@ -1811,6 +1849,20 @@ func TestWrapLineCountsDisplayCells(t *testing.T) {
 	want := strings.TrimRight(strings.Repeat(word+" ", 9), " ") + "\n  " + word + "\n"
 	if b.String() != want {
 		t.Fatalf("wrapLine put the words on the wrong lines:\ngot  %q\nwant %q", b.String(), want)
+	}
+}
+
+// #557: a zero-width joiner joins, it does not add width — a sequence counts
+// the cells of its parts. The report's table gave the joiner a cell of its
+// own, so sixteen two-adult families (four cells each) wrapped a line their
+// parts fit on.
+func TestWrapLineCountsAZwjSequenceAsItsPartsIssue557(t *testing.T) {
+	family := "\U0001F468‍\U0001F469" // two adults, four cells
+	var b bytes.Buffer
+	wrapLine(&b, strings.TrimSpace(strings.Repeat(family+" ", 16)), "", "  ")
+	want := strings.TrimRight(strings.Repeat(family+" ", 16), " ") + "\n"
+	if b.String() != want {
+		t.Fatalf("wrapLine wrapped a line that fits:\ngot  %q\nwant %q", b.String(), want)
 	}
 }
 
