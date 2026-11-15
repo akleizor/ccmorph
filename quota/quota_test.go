@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -1838,5 +1839,87 @@ func TestQuotaSpendCountsARowMovedIntoANewFolderBeforeTheFlatRead(t *testing.T) 
 	}
 	if hookErr != nil {
 		t.Fatal(hookErr)
+	}
+}
+
+// A day cache's rows are answered in receipt-file name order, so a read cannot
+// change with the map's iteration order (#449).
+func TestQuotaSpendRowsAreInReceiptNameOrder(t *testing.T) {
+	files := map[string]seenFile{}
+	var want []string
+	for _, name := range []string{"d.json", "a.json", "e.json", "b.json", "c.json"} {
+		files[name] = seenFile{Row: &spendRow{Key: name}}
+		want = append(want, name)
+	}
+	sort.Strings(want)
+	rows := rowsOf(files)
+	if len(rows) != len(want) {
+		t.Fatalf("got %d rows, want %d", len(rows), len(want))
+	}
+	for i, r := range rows {
+		if r == nil || r.Key != want[i] {
+			t.Fatalf("row %d of %v, want %q: rows follow the map, not the file names", i, rows, want[i])
+		}
+	}
+}
+
+// A cache from a version this build does not know is discarded before its body
+// is decoded: a future version's shape is not this one's, so none of it is
+// read (#449).
+func TestQuotaSpendDoesNotDecodeAFutureCacheVersion(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	if err := os.MkdirAll(spendCacheDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	files := `"files": {"a.json": {"s": 1, "m": 1, "r": {"p": "gw", "w": 1}}}`
+	day := `{"v": 99, "mtime": 1, "valid": true, ` + files + `}`
+	if err := os.WriteFile(dayCachePath("2026-10-18"), []byte(day), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	flat := `{"v": 99, ` + files + `}`
+	if err := os.WriteFile(flatCachePath(), []byte(flat), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	decoded := 0
+	rowsDecoded = func(n int) { decoded += n }
+	t.Cleanup(func() { rowsDecoded = nil })
+	if got := loadDayFile("2026-10-18"); got.Files != nil {
+		t.Fatalf("a future day cache was kept: %+v", got)
+	}
+	if decoded != 0 {
+		t.Fatalf("a future day cache decoded %d rows", decoded)
+	}
+	if got := loadFlat(); got != nil {
+		t.Fatalf("a future flat cache was kept: %+v", got)
+	}
+	if decoded != 0 {
+		t.Fatalf("a future flat cache decoded %d rows", decoded)
+	}
+}
+
+// The cache write never fails on a chmod it does not need (#449): it keeps the
+// write-and-rename behaviour every cache write had, which left the temp's own
+// mode. A umask tells the two paths apart — a chmod to 0600 ignores it and
+// lands 0600, while the temp's own 0600 filtered by umask 0200 lands 0400. On a
+// filesystem whose fchmod fails, the chmod path would abort the write and leave
+// no cache at all.
+func TestQuotaCacheWriteKeepsTheTempsMode(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	if err := os.MkdirAll(cacheDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := syscall.Umask(0o200)
+	defer syscall.Umask(old)
+	save("gw", Reading{Plan: "Max", ReadAt: 1})
+	st, err := os.Stat(cachePath("gw"))
+	if err != nil {
+		t.Fatalf("a cache write that needs no chmod must still land: %v", err)
+	}
+	if got := st.Mode().Perm(); got != 0o400 {
+		t.Fatalf("the cache landed %o, want the temp's own 0400: the write chmod'd a mode it did not need", got)
+	}
+	if r, ok := load("gw"); !ok || r.Plan != "Max" {
+		t.Fatalf("the cache must read back what was saved, got %+v, %v", r, ok)
 	}
 }

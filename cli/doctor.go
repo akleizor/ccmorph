@@ -231,8 +231,44 @@ type zshCompletion struct {
 	dir      string // the install's share/zsh/site-functions
 	rcName   string // the .zshrc as a person writes it: ~/.zshrc under HOME
 	onFpath  bool   // the startup files or FPATH already reach a _ccmorph
-	compinit bool   // the .zshrc names compinit or Oh My Zsh
+	compinit bool   // the .zshrc runs compinit or the Oh My Zsh loader
 	bound    bool   // a new zsh answered with a completion bound to ccmorph
+}
+
+// compinitRuns reports whether the rc starts zsh's completion system: a line
+// that runs compinit, or the Oh My Zsh loader that runs it. A commented-out
+// compinit starts nothing, and naming the Oh My Zsh directory does not load
+// it, so neither counts (#449).
+func compinitRuns(rc []byte) bool {
+	for _, line := range strings.Split(string(rc), "\n") {
+		code := zshCode(line)
+		if strings.Contains(code, "compinit") || strings.Contains(code, "oh-my-zsh.sh") {
+			return true
+		}
+	}
+	return false
+}
+
+// zshCode is line with its trailing comment cut: zsh starts one at an unquoted
+// # that begins a word, so a # inside a word stays part of the code.
+func zshCode(line string) string {
+	var quote byte
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case c == '\\' && quote != '\'':
+			i++ // the next byte is quoted, not syntax
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '#' && (i == 0 || line[i-1] == ' ' || line[i-1] == '\t'):
+			return line[:i]
+		}
+	}
+	return line
 }
 
 // doctorCompletion reads what a new zsh would have and prints the fpath half
@@ -279,8 +315,7 @@ func (l *launcher) doctorCompletion() zshCompletion {
 			}
 		}
 	}
-	c.compinit = strings.Contains(string(rc), "compinit") ||
-		strings.Contains(string(rc), "oh-my-zsh")
+	c.compinit = compinitRuns(rc)
 	bound, answered := l.completionBound(zdot)
 	c.bound = answered && bound
 	if c.bound {
@@ -532,15 +567,24 @@ func (l *launcher) doctor(name string, verbose bool) int {
 			report("INFO", "effective model: "+unsavedModelWords(typ, base)+" (no saved model)")
 		}
 		// The level is the one a plain launch passes (#356): the override saved
-		// for the model it carries — the saved spelling, as launch asks it —
-		// else the profile's own default.
-		switch effort := l.savedEffort(name, savedModel); effort {
+		// for the model it carries — a 1M claude model is sent under its [1m]
+		// send id, and the launch keys this lookup by that id (runLaunch), so
+		// doctor asks the resolver's own rule for it in place, as the launch's
+		// model-window --fields does — else the profile's own default (#449).
+		effortModel := savedModel
+		if strings.HasPrefix(effortModel, "claude-") &&
+			(typ == "provider" || (typ == "apikey" && !util.NativeBase(base))) {
+			if send := ctxwindow.LoadInputs(l.conf(name)).Resolve(effortModel).SendID; send != "" {
+				effortModel = send
+			}
+		}
+		switch effort := l.savedEffort(name, effortModel); effort {
 		case "":
 			report("INFO", "effective effort: "+unsavedEffortWords+" (no saved effort)")
 		case top:
 			report("INFO", "effective effort: "+effort+" (profile default)")
 		default:
-			report("INFO", "effective effort: "+effort+" (profile override for "+savedModel+")")
+			report("INFO", "effective effort: "+effort+" (profile override for "+effortModel+")")
 		}
 	}
 	if tierMissing != "" {

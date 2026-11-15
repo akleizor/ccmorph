@@ -560,7 +560,17 @@ _comp_dir_in_rc=0
 _compinit_in_rc=0
 if [[ -f "$_zshrc" ]]; then
   grep -qF 'ccmorph/share/zsh/site-functions' "$_zshrc" && _comp_dir_in_rc=1
-  grep -qE 'compinit|oh-my-zsh' "$_zshrc" && _compinit_in_rc=1
+  # What the rc runs, not what it mentions (#449): a # that begins a word
+  # starts a comment, so a commented-out compinit starts nothing, and only the
+  # Oh My Zsh loader — not the directory's name — runs compinit for the rc.
+  while IFS= read -r _comp_line; do
+    _comp_code=${_comp_line%%[[:space:]]#*}
+    [[ "$_comp_code" == '#'* ]] && continue
+    if [[ "$_comp_code" == *compinit* || "$_comp_code" == *oh-my-zsh.sh* ]]; then
+      _compinit_in_rc=1
+      break
+    fi
+  done < "$_zshrc"
 fi
 (( _comp_dir_in_rc && _compinit_in_rc )) && _comp_wanted=0
 if (( _comp_wanted )); then

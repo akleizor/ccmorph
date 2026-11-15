@@ -39,7 +39,9 @@ func save(name string, r Reading) {
 		return
 	}
 	// A cache write that cannot happen just does not: the next read re-reads.
-	_ = paths.AtomicWrite(paths.WriteIn{Path: cachePath(name), Temp: ".quota-*", Data: b, Mode: 0o600, Mkdir: 0o700})
+	// NoChmod: the cache keeps the temp's own mode, as this write always did; a
+	// chmod it does not need must not be able to refuse the write (#449).
+	_ = paths.AtomicWrite(paths.WriteIn{Path: cachePath(name), Temp: ".quota-*", Data: b, NoChmod: true, Mkdir: 0o700})
 }
 
 func load(name string) (Reading, bool) {

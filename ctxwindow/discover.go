@@ -471,6 +471,7 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 				}
 				res := probeFn(ctx, base, key, model, blob, time.Duration(o.ProbeTimeout*float64(time.Second)), op, o.Bisect)
 				check(ctx)
+				noteInReport := false
 				if (strings.HasSuffix(res.Kind, ":declared") || strings.HasSuffix(res.Kind, ":truncated") || strings.HasSuffix(res.Kind, ":bisected")) && res.Value > 0 {
 					values[scoped] = res.Value
 				} else {
@@ -479,13 +480,18 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 						why = res.Kind
 					}
 					notes = append(notes, Note{Reason: why, Subject: model, Profile: profile, Failed: true})
+					noteInReport = true
 				}
 				shown := "-"
 				if res.Value != 0 {
 					shown = fmt.Sprint(res.Value)
 				}
 				fmt.Fprintf(stderr, "  %s %s %s\n", pad(model, 30), pad(res.Kind, 12), shown)
-				if res.Note != "" {
+				// A failure's note is reportProfiles' to print after the run; saying it
+				// here as well made one report carry the same sentence twice (#449). A
+				// sized probe's note — what a bisect or a declaration left open — is
+				// said only here.
+				if res.Note != "" && !noteInReport {
 					fmt.Fprintf(stderr, "    %s\n", res.Note)
 				}
 			}

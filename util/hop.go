@@ -39,13 +39,29 @@ func processTableWithin(ctx context.Context) map[int]psRow {
 	return psProcessTable(ctx)
 }
 
+// psPipeGrace is how long a ps pass may keep its output pipe after the pass
+// itself has exited: a subprocess that inherited the pipe must not hold the
+// read to its own end (#449). The pass exits with the kernel's table, so the
+// flush the grace pays for is the pipe's own.
+const psPipeGrace = 100 * time.Millisecond
+
+// psCmd is one ps pass under ctx. WaitDelay closes the pass's pipe at
+// psPipeGrace when the pass exits but something it started still holds the
+// other end, so an orphan cannot outlive the bound; a pass that pays the grace
+// returns ErrWaitDelay and its output is discarded with the error.
+func psCmd(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "ps", args...)
+	cmd.WaitDelay = psPipeGrace
+	return cmd
+}
+
 // psProcessTable is processTable through ps. The start times come from a read
 // of their own: a ps without lstart then costs the times and not the rows hop
 // needs, and a line that does not parse leaves its row at the cannot-tell zero.
 // Every pass runs under ctx, so a stalled ps is killed with the caller's
 // deadline rather than outliving the read.
 func psProcessTable(ctx context.Context) map[int]psRow {
-	raw, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,ppid=,comm=").Output()
+	raw, err := psCmd(ctx, "-axo", "pid=,ppid=,comm=").Output()
 	if err != nil {
 		return nil
 	}
@@ -61,7 +77,7 @@ func psProcessTable(ctx context.Context) map[int]psRow {
 			rows[pid] = psRow{ppid: ppid, comm: strings.Join(f[2:], " ")}
 		}
 	}
-	if raw, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,command=").Output(); err == nil {
+	if raw, err := psCmd(ctx, "-axo", "pid=,command=").Output(); err == nil {
 		for _, l := range strings.Split(string(raw), "\n") {
 			l = strings.TrimSpace(l)
 			p, rest, _ := strings.Cut(l, " ")
@@ -75,7 +91,7 @@ func psProcessTable(ctx context.Context) map[int]psRow {
 	// lstart is "Mon Jan _2 15:04:05 2006" in the locale's words, so the read
 	// pins LC_ALL and the fields are joined back for the one layout parsed. A
 	// ps that lacks lstart prints an error and exits non-zero: no times.
-	lstart := exec.CommandContext(ctx, "ps", "-axo", "pid=,lstart=")
+	lstart := psCmd(ctx, "-axo", "pid=,lstart=")
 	lstart.Env = append(os.Environ(), "LC_ALL=C")
 	if raw, err := lstart.Output(); err == nil {
 		for _, l := range strings.Split(string(raw), "\n") {

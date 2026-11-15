@@ -66,6 +66,31 @@ func secureForCompinit(t *testing.T, root string) {
 	}
 }
 
+// #449: the static read must follow what a startup file runs, not what it
+// mentions. A commented-out compinit starts nothing; naming the oh-my-zsh
+// directory does not load Oh My Zsh; only an uncommented compinit or the
+// loader that runs it (oh-my-zsh.sh) counts.
+func TestCompinitDetectionReadsOnlyLinesThatRun(t *testing.T) {
+	for _, c := range []struct {
+		rc   string
+		want bool
+	}{
+		{"autoload -Uz compinit && compinit\n", true},
+		{"autoload -Uz compinit && compinit -u\n", true},
+		{"source $ZSH/oh-my-zsh.sh\n", true},
+		{`. "$ZSH/oh-my-zsh.sh"` + "\n", true},
+		{"# autoload -Uz compinit && compinit\n", false},
+		{"  # source $ZSH/oh-my-zsh.sh\n", false},
+		{`export ZSH="$HOME/.oh-my-zsh"` + "\n", false},
+		{"fpath=(/x $fpath) # compinit comes later\n", false},
+		{"", false},
+	} {
+		if got := compinitRuns([]byte(c.rc)); got != c.want {
+			t.Errorf("compinitRuns(%q) = %v, want %v", c.rc, got, c.want)
+		}
+	}
+}
+
 // TestDoctorCompletionSaysOnlyWhatANewZshStillMisses holds every state of a
 // person's zsh startup the completion row has to answer for (#363): the row is
 // doctor's word that Tab completes in a new zsh, and zsh starts no completion
@@ -266,7 +291,7 @@ func TestDoctorCompletionQuotesADirectoryWithSpaces(t *testing.T) {
 }
 
 // TestDoctorCompletionSpeaksWhenTheProbeCannotAnswer is the landing gate's
-// repro: a .zshrc whose fpath line and a comment naming compinit satisfy the
+// repro: a .zshrc whose fpath line and an uncommented compinit satisfy the
 // static read while the shell it would start never answers — here a sleep that
 // outlasts a deadline the test shortens, standing in for the gate's hung zsh.
 // Silence there would read as "Tab completion works"; the row must still speak.
@@ -275,7 +300,7 @@ func TestDoctorCompletionSpeaksWhenTheProbeCannotAnswer(t *testing.T) {
 	l := completionInstall(t, root)
 	dir := filepath.Join(root, "share", "zsh", "site-functions")
 	home := t.TempDir()
-	rc := "fpath=(" + dir + " $fpath)\n# compinit has not been enabled yet\nsleep 6\n"
+	rc := "fpath=(" + dir + " $fpath)\nautoload -Uz compinit && compinit\nsleep 6\n"
 	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte(rc), 0o644); err != nil {
 		t.Fatal(err)
 	}

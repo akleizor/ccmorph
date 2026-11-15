@@ -4,7 +4,10 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -173,5 +176,41 @@ func TestPsProcessTableReadsStartTimes(t *testing.T) {
 	}
 	if r.start.Before(before) || r.start.After(time.Now().Add(time.Second)) {
 		t.Fatalf("the child must be read with the time it started, got %v, no earlier than %v", r.start, before)
+	}
+}
+
+// A ps pass that exits but whose stdout a subprocess still holds must not hold
+// the read until that subprocess ends (GH-449): the pass's pipes are the read's
+// own, and WaitDelay closes them at the grace instead of reading to EOF. The
+// fake ps hands its stdout to a background sleep and exits, so the pipe outlives
+// it by seconds; without the grace, Output waits for the sleep's own end.
+func TestPsProcessTableDoesNotWaitOnAGrandchildHoldingThePipe(t *testing.T) {
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "sleep.pid")
+	script := "#!/bin/sh\n/bin/sleep 5 &\necho $! > '" + pidFile + "'\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	t.Cleanup(func() {
+		b, err := os.ReadFile(pidFile)
+		if err != nil {
+			return
+		}
+		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil {
+			syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if got := psProcessTable(ctx); got != nil {
+		t.Fatalf("a pass whose pipe is closed at the grace must yield no table, got %d rows", len(got))
+	}
+	// The sleep outlives the bound by seconds: an answer at the bound can only
+	// come from the pipe's grace, not from the subprocess ending.
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("a grandchild holding the pipe kept the read for %v; WaitDelay must close it", elapsed)
 	}
 }

@@ -1207,6 +1207,28 @@ grep -qF 'fpath=' "$d/out" \
 [[ "$(<"$d/home/.zshrc")" == "$comp_rc" ]] \
   && ok "path: an already-configured .zshrc stays byte-identical" || fail "path: installer edited .zshrc"
 
+# A commented-out compinit, and an oh-my-zsh directory named but not loaded,
+# start nothing (#449): the installer must still say the missing compinit line.
+d=$(fresh_env path_comp_commented)
+print 'fpath=($HOME/.config/ccmorph/share/zsh/site-functions $fpath)' > "$d/home/.zshrc"
+print '# autoload -Uz compinit; compinit' >> "$d/home/.zshrc"
+print 'export ZSH="$HOME/.oh-my-zsh"' >> "$d/home/.zshrc"
+d=$(path_run path_comp_commented /bin/zsh Linux)
+grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
+  && ok "path: a commented-out compinit is still told the compinit line" \
+  || { fail "path: commented-out compinit got no compinit advice"; cat "$d/out"; }
+
+# Oh My Zsh's loader runs compinit, so only the fpath half is missing.
+d=$(fresh_env path_comp_omz)
+print '. "$HOME/.oh-my-zsh/oh-my-zsh.sh"' > "$d/home/.zshrc"
+d=$(path_run path_comp_omz /bin/zsh Linux)
+grep -qxF "  fpath=($d/home/.config/ccmorph/share/zsh/site-functions \$fpath)" "$d/out" \
+  && ok "path: the Oh My Zsh loader counts as compinit" \
+  || { fail "path: the Oh My Zsh loader got no fpath advice"; cat "$d/out"; }
+grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
+  && fail "path: the Oh My Zsh loader is told the compinit line again" \
+  || ok "path: the Oh My Zsh loader is not told the compinit line"
+
 # A .zshrc with only the fpath line — the old advice, followed (#363): zsh
 # runs no completion system by itself, so Tab still completes nothing. The
 # installer must say the missing half, not fall silent, and never write it.

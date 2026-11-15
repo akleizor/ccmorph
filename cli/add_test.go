@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -53,5 +54,26 @@ func TestProviderListSkipsABridgeFlagThatOnlyLooksLikeALogin(t *testing.T) {
 	}
 	if want := []string{"kimi", "codex"}; !slices.Equal(got, want) {
 		t.Errorf("providerList() = %q, want %q", got, want)
+	}
+}
+
+// #449: the preset's three tier columns are opus, sonnet and haiku by name.
+// The wizard zips them onto the words after fable, so reordering util.TierWords
+// would silently write a column under another tier's key; this pins the keys
+// the columns land on. Fable has no column: it is left to `ccmorph config set`.
+func TestAddWizardTierColumnsArePinnedByName(t *testing.T) {
+	got := tierColumns([]string{"m-opus", "m-sonnet", "m-haiku"})
+	want := []string{
+		"env.ANTHROPIC_DEFAULT_OPUS_MODEL=m-opus",
+		"env.ANTHROPIC_DEFAULT_SONNET_MODEL=m-sonnet",
+		"env.ANTHROPIC_DEFAULT_HAIKU_MODEL=m-haiku",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("tier columns = %q, want %q", got, want)
+	}
+	for _, line := range got {
+		if strings.Contains(line, "FABLE") {
+			t.Fatalf("a preset column wrote fable's key: %q", line)
+		}
 	}
 }

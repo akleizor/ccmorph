@@ -174,7 +174,7 @@ const (
 // native route needs a claude-* id; a provider's catalogue lives in its bridge, so
 // only a claude-* id is a definite no there.
 func ModelServed(want, typ, base, modelMap, key string) Served {
-	p := probeServed(want, typ, base, modelMap, key)
+	p := probeServed(want, typ, base, modelMap, key, modelsListingFetch)
 	if p.decided {
 		return p.answer
 	}
@@ -184,9 +184,11 @@ func ModelServed(want, typ, base, modelMap, key string) Served {
 // ContextServed reports whether the route's listing carries want the way
 // `ccmorph models` prints it: with the id as spelled, so a model the map
 // rewrites still counts through its target (#370). ModelServed stays the
-// launch judgement — the target is what a session runs.
+// launch judgement — the target is what a session runs. The listing is asked
+// with the probe's bounds, not the models verb's, because the caller is set's
+// post-save warning: a route that will not answer must not hold the save (#449).
 func ContextServed(want, typ, base, modelMap, key string) Served {
-	p := probeServed(want, typ, base, modelMap, key)
+	p := probeServed(want, typ, base, modelMap, key, boundedListingFetch)
 	if p.decided {
 		return p.answer
 	}
@@ -194,6 +196,29 @@ func ContextServed(want, typ, base, modelMap, key string) Served {
 		return ServedYes
 	}
 	return Served(modelInListing(p.listing, p.want, p.modelMap))
+}
+
+// listingFetch asks a route for the model listing a served judgement reads. ok
+// is false when no usable 2xx listing came back, which the judgement answers as
+// ServedUnknown.
+type listingFetch func(base, key string) (body string, ok bool)
+
+// modelsListingFetch is the full listing `ccmorph models` reads, with its 20 s
+// whole-transfer bound.
+func modelsListingFetch(base, key string) (string, bool) {
+	return ModelsListing(base, key, io.Discard)
+}
+
+// boundedListingFetch asks the listing the models verb reads — the same curl
+// arguments, so a route answers it with the body `ccmorph models` prints —
+// with the never-failing probe's bounds: 2 s to connect, 5 s whole, so a route
+// that will not answer cannot hold a caller past them (#449). Only a 2xx
+// carries a listing, as -f requires; anything else is no answer. The probe's
+// own marker shape is not used here: it asks for a status, and a status-only
+// answer is not a listing.
+func boundedListingFetch(base, key string) (string, bool) {
+	return fetchModels(key, io.Discard, "-sS", "-f", "--connect-timeout", "2", "--max-time", "5",
+		apiURL(base, "/v1/models?limit=1000"))
 }
 
 // servedProbe is the shared prologue of the two served judgements: the
@@ -208,7 +233,7 @@ type servedProbe struct {
 	decided        bool
 }
 
-func probeServed(want, typ, base, modelMap, key string) servedProbe {
+func probeServed(want, typ, base, modelMap, key string, fetch listingFetch) servedProbe {
 	p := servedProbe{}
 	p.want, p.answer, p.decided = servedBeforeListing(want, typ, base)
 	if p.decided {
@@ -223,7 +248,7 @@ func probeServed(want, typ, base, modelMap, key string) servedProbe {
 		p.answer, p.decided = ServedUnknown, true
 		return p
 	}
-	listing, ok := ModelsListing(base, key, io.Discard)
+	listing, ok := fetch(base, key)
 	if !ok {
 		p.answer, p.decided = ServedUnknown, true
 		return p
