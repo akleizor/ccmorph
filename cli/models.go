@@ -75,13 +75,15 @@ func printNonEmpty(s string) {
 // (#390): neither kind has a model list from an endpoint, and set's picker is
 // what chooses its model. It reports whether it answered; any other kind, or a
 // conf that does not read, goes on to the command's own checks and refusal.
+// The command its advice names is listingAdvice's — the one policy for which
+// command answers what a route carries (#562).
 func (l *launcher) noModelList(name string) bool {
 	f, ok := l.readQuiet(name)
 	if !ok || (f["type"] != "sub" && f["type"] != "token") {
 		return false
 	}
 	l.err("'" + name + "' is a " + profile.KindLabel(f["type"], f["provider"]) + " profile and has no model list from an endpoint")
-	l.err("choose its model: ccmorph set " + name + " model -i")
+	l.err("choose its model: " + listingAdvice(name, f["type"]))
 	return true
 }
 

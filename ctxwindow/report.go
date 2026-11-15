@@ -114,7 +114,7 @@ func ReportUnresolved(w io.Writer, profile string, models []string) {
 	wrapLine(w, strings.Join(models, ", "), "  ", "  ")
 	wrapLine(w, "Neither the gateway nor the model catalogue publishes a size.", "  ", "  ")
 	wrapLine(w, fmt.Sprintf("The profile still works: Claude Code runs a model with no size at its %s-token default.",
-		commas(CCDefaultWindow)), "  ", "  ")
+		Commas(CCDefaultWindow)), "  ", "  ")
 	wrapLine(w, "To set a size (free):", "  ", "  ")
 	// Name the one model when the whole command still fits; otherwise keep the
 	// placeholder, so the line teaches the shape without wrapping mid-command.

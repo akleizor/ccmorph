@@ -268,7 +268,7 @@ func Commit(ctx context.Context, values map[string]int64, baseline map[string]in
 			if _, tagged := groupedSources[profile][model]; tagged {
 				note = "  (catalogue estimate)"
 			}
-			row := fmt.Sprintf("  %s %s%s", pad(model, 30), padLeft(commas(changed[model]), 11), note)
+			row := fmt.Sprintf("  %s %s%s", pad(model, 30), padLeft(Commas(changed[model]), 11), note)
 			if cells(row) <= reportWidth {
 				fmt.Fprintln(stderr, row)
 				continue
@@ -276,7 +276,7 @@ func Commit(ctx context.Context, values map[string]int64, baseline map[string]in
 			// A model id too long for the row goes on its own line, with its
 			// size and provenance under it, so the id is never split.
 			fmt.Fprintln(stderr, "  "+model)
-			fmt.Fprintln(stderr, "    "+commas(changed[model])+note)
+			fmt.Fprintln(stderr, "    "+Commas(changed[model])+note)
 		}
 	}
 	if failed {

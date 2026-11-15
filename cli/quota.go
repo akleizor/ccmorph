@@ -132,7 +132,7 @@ func contextAnswer(name, model string, n int64, label string, unprobed bool) str
 	case label == "catalogue-estimate":
 		provenance = "estimated from the model catalogue"
 	}
-	return name + ": " + model + " context " + thousands(n) + " tokens · " + provenance
+	return name + ": " + model + " context " + ctxwindow.Commas(n) + " tokens · " + provenance
 }
 
 // unlistedWarning is what the set form says when the route does not carry the
@@ -191,6 +191,7 @@ func notServedAdvice(model, name, typ string) string {
 // `ccmorph probe` (#390): their model is chosen through set's picker.
 // A provider's listing is not readable with the profile's own credentials, so
 // its probe — which records what the route serves — is the command that answers.
+// noModelList's advice line reads it too (#562), so this policy lives here alone.
 func listingAdvice(name, typ string) string {
 	switch typ {
 	case "provider":

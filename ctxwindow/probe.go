@@ -191,7 +191,7 @@ func BisectCeiling(send Sender, blob string, floor int, tolerance float64, maxAc
 		return 0, fmt.Sprintf("search abandoned after %d step(s): %s", steps, outcome), accepts
 	}
 	if best == nil {
-		return 0, fmt.Sprintf("all %d requests were refused down to the estimated %s-token floor; no limit identified", steps, commas(int64(floor))), accepts
+		return 0, fmt.Sprintf("all %d requests were refused down to the estimated %s-token floor; no limit identified", steps, Commas(int64(floor))), accepts
 	}
 
 	// Phase 2: narrow, biased toward free refusals.
@@ -208,10 +208,10 @@ func BisectCeiling(send Sender, blob string, floor int, tolerance float64, maxAc
 	}
 	gap := ""
 	if !converged() {
-		gap = fmt.Sprintf("; search stopped within the estimated %s–%s range, so this understates the unconfirmed ceiling", commas(int64(lo)), commas(int64(hi)))
+		gap = fmt.Sprintf("; search stopped within the estimated %s–%s range, so this understates the unconfirmed ceiling", Commas(int64(lo)), Commas(int64(hi)))
 	}
 	if best.reported > 0 {
-		return best.reported, fmt.Sprintf("%d search steps, %d accepted request(s), potentially billed; reported %s input tokens%s", steps, accepts, commas(best.reported), gap), accepts
+		return best.reported, fmt.Sprintf("%d search steps, %d accepted request(s), potentially billed; reported %s input tokens%s", steps, accepts, Commas(best.reported), gap), accepts
 	}
 	return int64(best.size), fmt.Sprintf("%d search steps, %d accepted request(s), potentially billed; no token count reported, using a ~4 chars/token estimate%s", steps, accepts, gap), accepts
 }
@@ -233,9 +233,9 @@ func ClassifyAccepted(full reading, half *reading) (kind string, value int64, no
 	// Halving the input should roughly halve the count; close to unchanged means
 	// the model stopped reading at the same place both times.
 	if float64(half.reported) > float64(full.reported)*0.9 {
-		return "truncated", full.reported, fmt.Sprintf("token-count plateau near %s for full and half inputs; inferred limit", commas(full.reported))
+		return "truncated", full.reported, fmt.Sprintf("token-count plateau near %s for full and half inputs; inferred limit", Commas(full.reported))
 	}
-	return "intact", 0, fmt.Sprintf("accepted at least %s input tokens; upper limit not identified", commas(full.reported))
+	return "intact", 0, fmt.Sprintf("accepted at least %s input tokens; upper limit not identified", Commas(full.reported))
 }
 
 // ProbeResult is probe()'s answer: kind is prefixed with the shape that answered.

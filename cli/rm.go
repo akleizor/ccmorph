@@ -151,7 +151,9 @@ func keepHistory(from, to string) bool {
 		}
 		return nil
 	})
-	gives := func(dest, f string) bool { return paths.IsSymlink(dest) && (sameFile(dest, f) || !paths.Exists(dest)) }
+	gives := func(dest, f string) bool {
+		return paths.IsSymlink(dest) && (paths.SameFile(dest, f) || !paths.Exists(dest))
+	}
 	for _, f := range dirs {
 		dest := filepath.Join(to, strings.TrimPrefix(f, from+"/"))
 		if gives(dest, f) && os.Remove(dest) == nil {

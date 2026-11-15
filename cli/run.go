@@ -600,7 +600,7 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 	} else {
 		next.fresh = true
 	}
-	next.crossed = name == "" || !sameFile(l.conf(name), l.conf(to))
+	next.crossed = name == "" || !paths.SameFile(l.conf(name), l.conf(to))
 	return next, 0
 }
 
@@ -669,12 +669,6 @@ func tmpDir() string {
 		return t
 	}
 	return "/tmp"
-}
-
-func sameFile(a, b string) bool {
-	fa, err1 := os.Stat(a)
-	fb, err2 := os.Stat(b)
-	return err1 == nil && err2 == nil && os.SameFile(fa, fb)
 }
 
 func authKey(env []string) string {

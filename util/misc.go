@@ -325,16 +325,26 @@ func listing(payload any) ([]any, bool) {
 	return nil, false
 }
 
+// deniedForChat is whether a listing row's own capabilities deny it for chat —
+// the chat_completion: false a catalogue writes on an embed-only model (#562).
+// The models verb, the not-served refusal and the picker read this one rule.
+func deniedForChat(row *ordjson.Obj) bool {
+	if caps := asObj(getKey(row, "capabilities")); caps != nil {
+		if v, ok := caps.Get("chat_completion"); ok && v == false {
+			return true
+		}
+	}
+	return false
+}
+
 // chatModel reports the id of a listing row that the endpoint does not deny for chat.
 func chatModel(m any) (string, bool) {
 	row := asObj(m)
 	if row == nil {
 		return "", false
 	}
-	if caps := asObj(getKey(row, "capabilities")); caps != nil {
-		if v, ok := caps.Get("chat_completion"); ok && v == false {
-			return "", false
-		}
+	if deniedForChat(row) {
+		return "", false
 	}
 	id, ok := getKey(row, "id").(string)
 	return id, ok && id != ""
@@ -704,10 +714,8 @@ func modelInListingDoc(payload any, want, mapJSON string) int {
 		if id != want {
 			continue
 		}
-		if caps := asObj(getKey(row, "capabilities")); caps != nil {
-			if v, ok := caps.Get("chat_completion"); ok && v == false {
-				return 1
-			}
+		if deniedForChat(row) {
+			return 1
 		}
 		return 0
 	}

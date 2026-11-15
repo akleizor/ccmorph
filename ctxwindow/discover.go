@@ -439,7 +439,7 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 						sources[scoped] = priorTag
 					}
 					if d, ok := declared[model]; ok && d != known {
-						reason := fmt.Sprintf("kept saved limit %s; gateway now declares %s", commas(known), commas(d))
+						reason := fmt.Sprintf("kept saved limit %s; gateway now declares %s", Commas(known), Commas(d))
 						notes = append(notes, Note{Reason: reason, Subject: model, Profile: profile})
 					}
 					continue
@@ -463,7 +463,7 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 				// report, so a narrow terminal never breaks a word in it.
 				wrapLine(stderr, fmt.Sprintf("[%s] %s: paid probe enabled.", profile, model), "", "  ")
 				wrapLine(stderr, fmt.Sprintf("The first %s-character prompt may be billed in full.",
-					commas(OvershootChars)), "  ", "  ")
+					Commas(OvershootChars)), "  ", "  ")
 				wrapLine(stderr, "Confirmation and search requests add cost; rates and tokenization "+
 					"depend on the gateway. A timeout does not undo billing.", "  ", "  ")
 				if blob == "" {

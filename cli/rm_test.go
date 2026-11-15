@@ -52,3 +52,70 @@ func TestRmRemovesAProfileMadeBeforeTheNameLimit(t *testing.T) {
 		t.Fatalf("the refused profile's conf must stay: %v", err)
 	}
 }
+
+// #562, pinned before cli's sameFile and the shim's merged under util/paths:
+// keepHistory's "a native link to the same file (or a dangling one) gives way"
+// is the one caller that needs the follow — a symlink at the destination is
+// the file it points at. A link to another file, or a real file already there,
+// is not the same file: the history stays and the profile is kept.
+func TestKeepHistoryGivesWayOnlyToALinkToTheSameFile(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		at   string // what sits at the destination: a link to the same file, to another, to nothing, or a real file
+		want bool
+	}{
+		{"a native link to the same file gives way", "same", true},
+		{"a dangling native link gives way", "dangling", true},
+		{"a native link to another file does not", "other", false},
+		{"a real file at the destination does not", "file", false},
+	} {
+		home := t.TempDir()
+		from := filepath.Join(home, "from")
+		to := filepath.Join(home, "to")
+		for _, d := range []string{filepath.Join(from, "projects", "p"), filepath.Join(to, "projects", "p")} {
+			if err := os.MkdirAll(d, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		f := filepath.Join(from, "projects", "p", "s.jsonl")
+		if err := os.WriteFile(f, []byte("{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		at := filepath.Join(to, "projects", "p", "s.jsonl")
+		switch c.at {
+		case "same":
+			if err := os.Symlink(f, at); err != nil {
+				t.Fatal(err)
+			}
+		case "dangling":
+			if err := os.Symlink(filepath.Join(to, "nowhere"), at); err != nil {
+				t.Fatal(err)
+			}
+		case "other":
+			other := filepath.Join(to, "projects", "p", "other.jsonl")
+			if err := os.WriteFile(other, []byte("keep\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(other, at); err != nil {
+				t.Fatal(err)
+			}
+		case "file":
+			if err := os.WriteFile(at, []byte("keep\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := keepHistory(from, to); got != c.want {
+			t.Errorf("%s: keepHistory = %t, want %t", c.name, got, c.want)
+			continue
+		}
+		if c.want {
+			if fi, err := os.Lstat(at); err != nil || fi.Mode()&os.ModeSymlink != 0 {
+				t.Errorf("%s: the history file did not land on the link's name: %v", c.name, err)
+			}
+			continue
+		}
+		if _, err := os.Stat(f); err != nil {
+			t.Errorf("%s: a history file that cannot land must stay: %v", c.name, err)
+		}
+	}
+}
