@@ -75,6 +75,17 @@ func Main(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}()
 	}
 	wg.Wait()
+	// A spend entry that carries a reason and no spend is a store the run could
+	// not read whole (#545): the view says so, and the run fails rather than
+	// answer a healthy zero. Other reasons keep the run's exit — a refused
+	// sign-in or an unreachable endpoint is one profile's state, and the rest of
+	// the view still read.
+	unread := false
+	for _, e := range entries {
+		if e.Spend == nil && e.Error != "" && (e.Kind == "gateway" || e.Kind == "budget") {
+			unread = true
+		}
+	}
 	if len(entries) == 0 {
 		if jsonOut {
 			fmt.Fprintln(stdout, `{"profiles":[]}`)
@@ -92,9 +103,15 @@ func Main(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "ccmorph-core quota:", err)
 			return 1
 		}
+		if unread {
+			return 1
+		}
 		return 0
 	}
 	renderText(stdout, entries, color)
+	if unread {
+		return 1
+	}
 	return 0
 }
 
