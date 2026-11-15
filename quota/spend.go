@@ -209,15 +209,17 @@ func decodeKeyIndex(s string) keyIndex {
 }
 
 // readRow parses one receipt. A nil row is a receipt that never counts:
-// unreadable JSON, incomplete, or a stamp that does not parse. ok is false only
-// when the file could not be read at all; that may pass, so the caller must not
-// remember the miss (#538).
-func readRow(path string) (*spendRow, bool) {
+// unreadable JSON, incomplete, or a stamp that does not parse. A non-nil error
+// is the file's own read failing, and the caller classifies it: a path that is
+// gone is the move's relocation, not a receipt that could not be read, while
+// any other failure may pass, so the caller must not remember the miss (#538,
+// #552).
+func readRow(path string) (*spendRow, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
-	return decodeRow(raw), true
+	return decodeRow(raw), nil
 }
 
 func decodeRow(raw []byte) *spendRow {
@@ -327,6 +329,17 @@ var tallyMemo struct {
 // not be lost in. A test arms it to land a move there (#538); it is nil in
 // production.
 var beforeFlat func()
+
+// receiptsListed runs just after a folder's receipts were listed and before
+// the listing stats them: the earliest moment a move's remove can land between
+// the two. A test arms it to land a move there (#552); it is nil in production.
+var receiptsListed func(dir string)
+
+// receiptsMarked runs after a rebuild's listing took a folder's marks — every
+// receipt named and statted — and before it reads their rows: the moment a
+// move's remove lands between the listing and the reads. A test arms it to
+// land a move there (#552); it is nil in production.
+var receiptsMarked func(dir string)
 
 // rowsDecoded, when set, is told how many receipt rows a read decoded: one per
 // receipt parsed, and every row of a cache that keeps rows (a day cache, the
@@ -576,8 +589,11 @@ func dirEntries(dir string) ([]os.DirEntry, bool) {
 // not be listed is not a day this run can read (#545). A file the listing could
 // not stat or this run cannot read is left out and partial is true, so no cache
 // remembers the miss as absence: the next read tries it again (#538, #545). A
-// folder that is not there holds no receipts (marks nil, ok): a store nothing
-// has written yet is an empty store, not an unreadable one.
+// name that left between the listing and its stat is the move's remove — which
+// the writer's own side tolerates — not an unreadable file: it is skipped
+// whole, the way canRead skips a path that is gone (#552). A folder that is
+// not there holds no receipts (marks nil, ok): a store nothing has written yet
+// is an empty store, not an unreadable one.
 func receiptMarks(dir string) (marks []fileMark, partial, ok bool) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -589,6 +605,9 @@ func receiptMarks(dir string) (marks []fileMark, partial, ok bool) {
 	if !canRead(dir, accessRead|accessSearch) {
 		return nil, false, false
 	}
+	if receiptsListed != nil {
+		receiptsListed(dir)
+	}
 	marks = make([]fileMark, 0, len(entries))
 	for _, e := range entries {
 		n := e.Name()
@@ -597,6 +616,9 @@ func receiptMarks(dir string) (marks []fileMark, partial, ok bool) {
 		}
 		info, err := e.Info()
 		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue // the move took this name between the listing and the stat
+			}
 			partial = true
 			continue
 		}
@@ -614,7 +636,11 @@ func receiptMarks(dir string) (marks []fileMark, partial, ok bool) {
 // read or dropped, and whether a receipt could not be read. A file it could not
 // read is left out of the map and partial is true, so neither a closed day nor
 // the flat index remembers the miss as absence: the next read tries it again
-// (#538). ok is false when the folder itself could not be listed (#545): the
+// (#538). A receipt that left between the listing and this read is gone, not
+// unreadable — the move's link-then-remove, whose remove the writer's own side
+// tolerates — so it is skipped without partial and without a cached absence,
+// and the day name its link made is a later surface of this read's to count
+// (#552). ok is false when the folder itself could not be listed (#545): the
 // map is then no map at all, and the day's rows are not the day's whole truth.
 // It is the one index a day folder has now, open or closed: a closed
 // folder reuses it whole while its mtime and validity are unchanged, and an open
@@ -625,13 +651,22 @@ func indexDay(dir string, old map[string]seenFile) (map[string]seenFile, bool, b
 	if !ok {
 		return nil, false, true, false
 	}
+	if receiptsMarked != nil {
+		receiptsMarked(dir)
+	}
 	seen := make(map[string]seenFile, len(marks))
 	changed := partial // a file the listing could not stat or read is already a change
 	for _, m := range marks {
 		f, kept := old[m.Name]
 		if !kept || f.Size != m.Size || f.MTime != m.MTime {
-			row, read := readRow(filepath.Join(dir, m.Name))
-			if !read {
+			row, err := readRow(filepath.Join(dir, m.Name))
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					// The move took this name between the listing and the read:
+					// gone, not unreadable, and not remembered either — the
+					// name's return is read again.
+					continue
+				}
 				changed, partial = true, true
 				continue // not remembered: a read that failed may pass next time
 			}

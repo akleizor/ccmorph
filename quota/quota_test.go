@@ -1401,6 +1401,77 @@ func TestQuotaSpendCountsARowMovedBeforeTheFlatRead(t *testing.T) {
 	}
 }
 
+// A move lands between the flat read's listing and its reads — the link into
+// the day folder, then the flat name's remove, as the background move every
+// adapter start runs does. A name the listing saw but the reads cannot open is
+// gone, not unreadable: the read stays whole with no permission verdict, and
+// the row counts through the day name the link made, this same read's day
+// listing holding it (#552).
+func TestQuotaSpendCountsARowAMoveRelocatesBetweenItsListingAndReads(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	closed := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	today := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	writeReceipt(t, filepath.Join(usage, "2026-10-18", "a.json"),
+		"resp_a", "turn_a", "2026-10-18T09:00:00Z", 1, closed)
+	flat := filepath.Join(usage, "b.json")
+	writeReceipt(t, flat, "resp_b", "turn_b", "2026-10-18T10:00:00Z", 2, closed)
+	writeReceipt(t, filepath.Join(usage, "2026-10-20", "t.json"),
+		"resp_t", "turn_t", "2026-10-20T09:00:00Z", 1, today)
+	// The move's relocation lands between the flat listing and its reads: the
+	// day-folder name is linked, then the flat name removed.
+	var hookErr error
+	receiptsMarked = func(dir string) {
+		if dir != usage {
+			return
+		}
+		receiptsMarked = nil
+		if hookErr = os.Link(flat, filepath.Join(usage, "2026-10-18", "b.json")); hookErr == nil {
+			hookErr = os.Remove(flat)
+		}
+	}
+	t.Cleanup(func() { receiptsMarked = nil })
+	read := func() Entry { tallyMemo.key = ""; return spendEntry("gw", "") }
+	e := read()
+	if e.Error != "" || e.Spend == nil {
+		t.Fatalf("a receipt the move relocated mid-read was answered as an unreadable store: %+v", e)
+	}
+	if s := e.Spend; s.MonthUSD != 4 || s.MonthTurns != 3 || s.TodayUSD != 1 || s.TodayTurns != 1 {
+		t.Fatalf("a row a move relocated between the listing and the reads was lost: %+v", s)
+	}
+	if hookErr != nil {
+		t.Fatal(hookErr)
+	}
+}
+
+// A name that leaves between the listing and its own stat — the move's remove
+// landing inside the listing's step — is skipped the way canRead skips a path
+// that is gone: no partial, and the folder's read stays whole (#552).
+func TestQuotaSpendSkipsANameThatLeftBeforeItsStat(t *testing.T) {
+	dir := t.TempDir()
+	writeReceipt(t, filepath.Join(dir, "a.json"), "resp_a", "turn_a",
+		"2026-10-18T09:00:00Z", 1, time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC))
+	receiptsListed = func(dir string) {
+		receiptsListed = nil
+		if err := os.Remove(filepath.Join(dir, "a.json")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { receiptsListed = nil })
+	marks, partial, ok := receiptMarks(dir)
+	if !ok {
+		t.Fatal("a folder whose receipt left before its stat was not readable")
+	}
+	if partial {
+		t.Fatal("a name that left before its stat marked the read partial")
+	}
+	if len(marks) != 0 {
+		t.Fatalf("a name that left before its stat was kept: %+v", marks)
+	}
+}
+
 // A writer rewrites a receipt in place while its day is open: the file changes
 // and the folder does not, so the first closed read must stat the receipts
 // rather than trust the open read's snapshot (#538).
@@ -1461,6 +1532,44 @@ func TestQuotaSpendRetriesAFlatReceiptItCouldNotRead(t *testing.T) {
 	}
 	if s := read().Spend; s.MonthUSD != 2 || s.MonthTurns != 1 {
 		t.Fatalf("a receipt that could not be read was remembered as absent: %+v", s)
+	}
+}
+
+// The same retry holds for a name the move took between the listing and the
+// read: a vanished receipt is not remembered as absence either, so the name's
+// return — same bytes, same size, same mtime — is read again and counts, the
+// way a permission that returns is (#552, kin to #538).
+func TestQuotaSpendRetriesAFlatReceiptTheMoveTook(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	flat := filepath.Join(usage, "a.json")
+	when := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	writeReceipt(t, flat, "resp_a", "turn_a", "2026-10-18T09:00:00Z", 2, when)
+	// The move's remove lands between the flat listing and its reads; its link
+	// went to a folder outside this month's window, so nothing holds the row.
+	receiptsMarked = func(dir string) {
+		if dir != usage {
+			return
+		}
+		receiptsMarked = nil
+		if err := os.Remove(flat); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { receiptsMarked = nil })
+	read := func() Entry { tallyMemo.key = ""; return spendEntry("gw", "") }
+	if e := read(); e.Error != "" || e.Spend == nil {
+		t.Fatalf("a receipt the move took mid-read was answered as an unreadable store: %+v", e)
+	}
+	if s := read().Spend; s.MonthUSD != 0 || s.MonthTurns != 0 {
+		t.Fatalf("a store whose one receipt was moved out was not empty: %+v", s)
+	}
+	// The name returns with the very bytes and times it left with.
+	writeReceipt(t, flat, "resp_a", "turn_a", "2026-10-18T09:00:00Z", 2, when)
+	if s := read().Spend; s.MonthUSD != 2 || s.MonthTurns != 1 {
+		t.Fatalf("a receipt that returned after a mid-read move was remembered as absent: %+v", s)
 	}
 }
 
