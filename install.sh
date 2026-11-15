@@ -563,14 +563,15 @@ if [[ -f "$_zshrc" ]]; then
   # What the rc runs, not what it mentions (#449): a # that begins a word
   # starts a comment, so a commented-out compinit starts nothing, and only the
   # Oh My Zsh loader — not the directory's name — runs compinit for the rc.
-  while IFS= read -r _comp_line; do
-    _comp_code=${_comp_line%%[[:space:]]#*}
-    [[ "$_comp_code" == '#'* ]] && continue
-    if [[ "$_comp_code" == *compinit* || "$_comp_code" == *oh-my-zsh.sh* ]]; then
-      _compinit_in_rc=1
-      break
-    fi
-  done < "$_zshrc"
+  # Asked of the core that owns the rule, doctor's parser (#555): a zsh
+  # re-spelling of the scan here once disagreed with doctor on an rc whose
+  # last line has no trailing newline, on extendedglob from the user's .zshenv
+  # (this installer runs under zsh, so it applies here), and on a # inside
+  # quotes. The source core — the bytes just placed, so macOS does not
+  # revalidate a fresh copy's signature — answers by exit status.
+  if "$_core_src" util compinit-runs "$_zshrc"; then
+    _compinit_in_rc=1
+  fi
 fi
 (( _comp_dir_in_rc && _compinit_in_rc )) && _comp_wanted=0
 if (( _comp_wanted )); then
