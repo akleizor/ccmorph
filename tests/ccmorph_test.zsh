@@ -8296,13 +8296,13 @@ test_relay_relaunch_keeps_a_mapped_alias_allowed() {
   print -r -- '{}' > "$HOME/.config/ccmorph/profiles/gw/.claude.json"
   source "$CCMORPH_SOURCE"
 
-  # The window marker is stripped for the map lookup exactly as the shim strips
-  # it, which is case-sensitive, so a spelling the shim would not map is no
-  # mapped alias here either. An id that is neither a map key nor a served row
-  # stays out, as it does today.
+  # The window marker comes off for the map lookup through the one strip the
+  # shim also uses (#544), which reads either spelling, so a [1M]-spelled id is
+  # a mapped alias here exactly as it is there. An id that is neither a map key
+  # nor a served row stays out, as it does today.
   local spec model expect launched allowed
   for spec in 'sol-alias:allowed' 'claude-sonnet-5-5:allowed' \
-              'claude-sonnet-5-5[1m]:allowed' 'claude-sonnet-5-5[1M]:absent' \
+              'claude-sonnet-5-5[1m]:allowed' 'claude-sonnet-5-5[1M]:allowed' \
               'ghost-model:absent'; do
     model="${spec%%:*}"
     expect="${spec##*:}"
