@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/akleizor/ccmorph/textwidth"
 )
 
 const (
@@ -269,7 +271,7 @@ func Commit(ctx context.Context, values map[string]int64, baseline map[string]in
 				note = "  (catalogue estimate)"
 			}
 			row := fmt.Sprintf("  %s %s%s", pad(model, 30), padLeft(commas(changed[model]), 11), note)
-			if cells(row) <= reportWidth {
+			if textwidth.Cells(row) <= reportWidth {
 				fmt.Fprintln(stderr, row)
 				continue
 			}

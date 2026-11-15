@@ -17,6 +17,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/akleizor/ccmorph/textwidth"
 )
 
 const (
@@ -313,14 +315,14 @@ func payload(nChars int) string {
 }
 
 func pad(s string, width int) string {
-	if n := cells(s); n < width {
+	if n := textwidth.Cells(s); n < width {
 		return s + strings.Repeat(" ", width-n)
 	}
 	return s
 }
 
 func padLeft(s string, width int) string {
-	if n := cells(s); n < width {
+	if n := textwidth.Cells(s); n < width {
 		return strings.Repeat(" ", width-n) + s
 	}
 	return s

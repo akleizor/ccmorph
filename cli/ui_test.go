@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/akleizor/ccmorph/textwidth"
 )
 
 // fit cuts on whole characters (valid UTF-8) and marks the cut with an ellipsis.
@@ -19,6 +21,19 @@ func TestFitCutsWholeCharacters(t *testing.T) {
 	}
 	if got := fit("short", 18); got != "short" {
 		t.Fatalf("fit = %q", got)
+	}
+}
+
+// #557: fit measures in terminal cells, and two runes sat on the wrong side
+// of the old tables' shortcut. The watch ⌚ is East Asian Wide — two cells —
+// so a cut that kept it overspent the budget, and the ideographic half fill
+// space 〿 is narrow — one cell — so counting it two cut a line that fit whole.
+func TestFitCountsEastAsianWidthLikeTheTerminalIssue557(t *testing.T) {
+	if got := fit("⌚模型⌚模型", 8); got != "⌚模型…" {
+		t.Fatalf("the watch is two cells: fit = %q", got)
+	}
+	if got := fit("〿x", 2); got != "〿x" {
+		t.Fatalf("the half fill space is one cell: fit = %q", got)
 	}
 }
 
@@ -166,8 +181,8 @@ func TestReceiptNeverCutsTheChoiceIssue361(t *testing.T) {
 		t.Fatalf("narrow receiptLine = %q, want %q", got, want)
 	}
 	for _, line := range strings.Split(got, "\n") {
-		if cells(line) > 30 {
-			t.Fatalf("line %q is %d cells, want at most 30", line, cells(line))
+		if textwidth.Cells(line) > 30 {
+			t.Fatalf("line %q is %d cells, want at most 30", line, textwidth.Cells(line))
 		}
 	}
 	// A typed question ends in ": ": its space does not double the receipt's.
@@ -241,6 +256,27 @@ func TestReceiptHeightCountsTheFold(t *testing.T) {
 	}
 	if got := plain.receiptHeight(prompt, "", 80); got != 1 {
 		t.Fatalf("an empty answer leaves the question alone, want 1 row, got %d", got)
+	}
+}
+
+// #557: the receipt's layout is measured in terminal cells, and the width
+// table behind it is being united with the context report's (#449). This pins
+// the rendered bytes for a wide question and choice — on one line when they
+// fit, folded when they do not — so the merged table keeps the receipt
+// byte for byte where the two old tables already agreed.
+func TestTheReceiptRendersAWideChoiceByteForByte(t *testing.T) {
+	plain := uiTheme{}
+	if got, want := plain.receiptLine("値", "モデル", 40), "  値 › モデル"; got != want {
+		t.Fatalf("a wide question and choice that fit one line: got %q, want %q", got, want)
+	}
+	got := plain.receiptLine("プロバイダー — 端点", "カスタム・エンドポイント", 40)
+	if want := "  プロバイダー — 端点 ›\n  カスタム・エンドポイント"; got != want {
+		t.Fatalf("a wide choice that needs its own line: got %q, want %q", got, want)
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if textwidth.Cells(line) > 40 {
+			t.Fatalf("line %q is %d cells, want at most 40", line, textwidth.Cells(line))
+		}
 	}
 }
 
@@ -417,6 +453,40 @@ func TestNumberListCutsToTheScreenAndNamesTheFzfStepIssue387(t *testing.T) {
 	}
 	if !strings.Contains(out, "262) Enter a custom model ID…") || strings.Contains(out, "more\n") || strings.Contains(out, "fzf adds search") {
 		t.Fatalf("plain render must show every row and no cut or hint:\n%s", out[:2000])
+	}
+}
+
+// #557: the numbered menu's columns and padding are measured in terminal
+// cells, and the width table behind them is being united with the context
+// report's (#449). This pins the rendered bytes for wide rows — CJK, halfwidth
+// katakana, a decomposed combining mark — so the merged table keeps the menu
+// byte for byte where the two old tables already agreed.
+func TestTheNumberedMenuRendersWideRowsByteForByte(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	lines := uiTheme{}.numberList("デフォルト・モデル", []string{
+		"id1\tモデル\tA gateway model",
+		"id2\tｱﾙﾌｧ\tHalfwidth katakana",
+		"id3\tが\tDecomposed",
+	}, "labels", numberFold, "")
+	os.Stderr = old
+	w.Close()
+	b, _ := io.ReadAll(r)
+	r.Close()
+	want := "  デフォルト・モデル\n" +
+		"\n" +
+		"  1) モデル    A gateway model\n" +
+		"  2) ｱﾙﾌｧ      Halfwidth katakana\n" +
+		"  3) が        Decomposed\n"
+	if string(b) != want {
+		t.Fatalf("the menu painted:\n%q\nwant:\n%q", string(b), want)
+	}
+	if lines != 5 { // heading, blank, three rows
+		t.Fatalf("numberList reported %d lines, want 5", lines)
 	}
 }
 

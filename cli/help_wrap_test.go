@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
+	"github.com/akleizor/ccmorph/textwidth"
 )
 
 // helpPage is one help page as usage prints it wrapped to width columns. The
@@ -48,8 +49,8 @@ func TestEveryHelpPageFitsEightyColumnsWithoutCuttingAWord(t *testing.T) {
 	for _, topic := range topics {
 		wide, piped := helpPage(t, topic, 80), helpPage(t, topic, 0)
 		for _, line := range strings.Split(wide, "\n") {
-			if cells(line) > 80 {
-				t.Errorf("help %q at 80 columns: line of %d cells: %q", topic, cells(line), line)
+			if textwidth.Cells(line) > 80 {
+				t.Errorf("help %q at 80 columns: line of %d cells: %q", topic, textwidth.Cells(line), line)
 			}
 		}
 		if got, want := strings.Join(strings.Fields(wide), " "), strings.Join(strings.Fields(piped), " "); got != want {

@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/akleizor/ccmorph/profile"
+	"github.com/akleizor/ccmorph/textwidth"
 )
 
 // retiredVerb is the retired window verb, spelled without writing it: still
@@ -730,7 +731,7 @@ func wrapWords(text string, width int) []string {
 	}
 	lines, line := []string{}, words[0]
 	for _, word := range words[1:] {
-		if cells(line)+1+cells(word) <= width {
+		if textwidth.Cells(line)+1+textwidth.Cells(word) <= width {
 			line += " " + word
 			continue
 		}
@@ -750,11 +751,11 @@ func wrapBody(body string, width int) string {
 	for _, line := range strings.Split(body, "\n") {
 		text := strings.TrimLeft(line, " ")
 		indent := line[:len(line)-len(text)]
-		if cells(line) <= width {
+		if textwidth.Cells(line) <= width {
 			out = append(out, line)
 			continue
 		}
-		for _, wrapped := range wrapWords(text, width-cells(indent)) {
+		for _, wrapped := range wrapWords(text, width-textwidth.Cells(indent)) {
 			out = append(out, indent+wrapped)
 		}
 	}

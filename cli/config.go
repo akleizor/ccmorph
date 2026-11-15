@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/akleizor/ccmorph/profile"
+	"github.com/akleizor/ccmorph/textwidth"
 )
 
 func interactive(a string) bool { return a == "-i" || a == "--interactive" }
@@ -26,7 +27,7 @@ func sameTerminal(a, b *os.File) bool {
 // valueRows is how many terminal rows a value line took, columns wide: a line
 // that exactly fills a row does not wrap, and the newline moves on (#361).
 func valueRows(value string, columns int) int {
-	return (max(cells(value), 1)-1)/columns + 1
+	return (max(textwidth.Cells(value), 1)-1)/columns + 1
 }
 
 // getSet is `ccmorph get [profile] [model|effort]` and `ccmorph set [profile]
