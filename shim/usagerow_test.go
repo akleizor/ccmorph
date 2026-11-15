@@ -882,6 +882,34 @@ func TestAWindowedReadTakesTheFlatRowsAndTheDayFoldersItTouches(t *testing.T) {
 	}
 }
 
+// A folder named the way a day folder is named, but for no calendar date —
+// 2026 has no February 30th — is not the store's day. The window's real days
+// sit either side of such a name, and the report's walk rules it out the way
+// quota's does: one day-name rule answers both (#546).
+func TestAWindowedReadRulesOutAFolderThatIsNoCalendarDate(t *testing.T) {
+	base := t.TempDir()
+	write := func(name string) string {
+		t.Helper()
+		path := filepath.Join(base, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	first := write(filepath.Join("2026-02-28", "a.json"))
+	write(filepath.Join("2026-02-30", "c.json")) // a day's shape, but no day of any year
+	last := write(filepath.Join("2026-03-01", "b.json"))
+	since := time.Date(2026, 2, 28, 18, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 3, 1, 9, 0, 0, 0, time.UTC)
+	got := dayRowFiles(base, since, now)
+	if len(got) != 2 || got[0] != first || got[1] != last {
+		t.Fatalf("dayRowFiles = %v, want [%s %s]", got, first, last)
+	}
+}
+
 // When another turn holds the primary name, the relaying adapter's row for this
 // response lands in a spill — a name the hook cannot derive from the id. The
 // hook must still find it, or the response is counted twice and the report sums

@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -255,14 +254,12 @@ func report(days float64) {
 	// has already removed — a day name created only after the listing — and
 	// the row reaches no total at all (#537).
 	flat := flatRowFiles(usageDir)
-	sort.Strings(flat)
 	rowsListed()
 	for _, path := range flat {
 		readRow(path)
 	}
 	flatRowsRead()
 	day := dayRowFiles(usageDir, lo, now)
-	sort.Strings(day)
 	for _, path := range day {
 		readRow(path)
 	}
@@ -395,7 +392,7 @@ func moveFlatRows() {
 		if now.Sub(info.ModTime()) < moveSettle {
 			continue // a writer before the shards may still rewrite it
 		}
-		dir := filepath.Join(base, info.ModTime().UTC().Format("2006-01-02"))
+		dir := filepath.Join(base, info.ModTime().UTC().Format(paths.DayLayout))
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			continue
 		}
@@ -448,16 +445,14 @@ func sameFile(a, b string) bool {
 	return err == nil && os.SameFile(ia, ib)
 }
 
-// dayDirRE is a sharded day folder's name: one UTC date, spelled the way the
-// writer shards a row into it.
-var dayDirRE = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
-
 // flatRowFiles is the rows a pre-shard build (or a move that could not
 // rename) left at the top level of the store: the move leaves a flat row in
 // place when its mtime day's folder already holds another row under its
 // name, and a filesystem without hardlinks keeps every row flat, so a reader
 // always reads the top level too. Anything else at the top level — a day
-// folder, the atomic writer's in-flight tmp — is not a row.
+// folder, the atomic writer's in-flight tmp — is not a row. The rows come
+// back in name order: ReadDir's order is name order, and this listing passes
+// it on as it found it (#546).
 func flatRowFiles(base string) []string {
 	entries, _ := os.ReadDir(base)
 	var out []string
@@ -474,21 +469,16 @@ func flatRowFiles(base string) []string {
 // lower bound. A row always sits in a folder at or after its stamp's UTC day
 // — the writer places it there, and the move by an mtime no row's writer
 // lets run before its stamp — so no folder before the window's first day can
-// hold a row the window counts. Anything else in the store — a folder for
-// another day, a name that is not a day, the atomic writer's in-flight tmp —
-// is not read.
+// hold a row the window counts. The folders come from paths.DayNames, the
+// store's one day walk, which quota's month read takes too. Anything else in
+// the store — a folder for another day, a name that is not a day, the atomic
+// writer's in-flight tmp — is not read. The folders, then each folder's
+// files, keep ReadDir's name order, and a day name is fixed-width, so the
+// rows arrive in name order with no sort of the walk's own (#546).
 func dayRowFiles(base string, since, now time.Time) []string {
-	first, last := since.UTC().Format("2006-01-02"), now.UTC().Format("2006-01-02")
-	entries, _ := os.ReadDir(base)
+	first, last := since.UTC().Format(paths.DayLayout), now.UTC().Format(paths.DayLayout)
 	var out []string
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if !dayDirRE.MatchString(name) || name < first || name > last {
-			continue
-		}
+	for _, name := range paths.DayNames(base, first, last) {
 		sub, _ := os.ReadDir(filepath.Join(base, name))
 		for _, f := range sub {
 			if !f.IsDir() && strings.HasSuffix(f.Name(), ".json") {
