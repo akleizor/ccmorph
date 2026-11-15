@@ -574,8 +574,16 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		effortModel := savedModel
 		if strings.HasPrefix(effortModel, "claude-") &&
 			(typ == "provider" || (typ == "apikey" && !util.NativeBase(base))) {
-			if send := ctxwindow.LoadInputs(l.conf(name)).Resolve(effortModel).SendID; send != "" {
-				effortModel = send
+			// The launch's model-window read migrates legacy state first; doctor
+			// asks the resolver in place (#449), so it must move that state
+			// forward itself or key the lookup by an id the launch would have
+			// replaced (#556). The context half alone: doctor is otherwise
+			// read-only, so it never moves credentials. A failed migration leaves
+			// the saved spelling, as it leaves the launch's requested model.
+			if l.migrateContextState() {
+				if send := ctxwindow.LoadInputs(l.conf(name)).Resolve(effortModel).SendID; send != "" {
+					effortModel = send
+				}
 			}
 		}
 		switch effort := l.savedEffort(name, effortModel); effort {

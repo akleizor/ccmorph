@@ -533,11 +533,15 @@ func coreCopy(t *testing.T) string {
 	return core
 }
 
-// TestMain lets the route fixture run this test binary as the core's route
-// hold: started as `<core> util route-hold <users>` with
-// CCMORPH_TEST_HOLD_USERS set, it runs util's own route-hold, so the process
-// table shows the fixture's holder the way it shows the real one (#408).
+// TestMain lets a fixture run this test binary as the core: started as
+// `<core> model-window …` it runs the real resolver's migration and reads, and
+// started as `<core> util route-hold <users>` with CCMORPH_TEST_HOLD_USERS set
+// it runs util's own route-hold, so the process table shows the fixture's
+// holder the way it shows the real one (#408).
 func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == "model-window" {
+		os.Exit(ctxwindow.WindowMain(os.Args[2:], os.Stdout, os.Stderr))
+	}
 	if os.Getenv("CCMORPH_TEST_HOLD_USERS") != "" && len(os.Args) > 1 && os.Args[1] == "util" {
 		os.Exit(util.Main(os.Args[2:], os.Stdin, os.Stdout, io.Discard))
 	}

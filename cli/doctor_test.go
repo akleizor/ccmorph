@@ -167,6 +167,74 @@ func TestDoctorShowsTheEffortSavedForTheModelsSendID(t *testing.T) {
 	}
 }
 
+// GH-556: doctor answers the effort row from the state a launch would have
+// migrated first. A profile still carrying its discovered window in the legacy
+// cache read a bare send id, so doctor missed the [1m] override and reported
+// the profile default where `ccmorph context` — which migrates before it reads
+// — and the launch resolve the [1m] id. The row must name the same send id the
+// migrated state answers.
+func TestDoctorEffortRowMigratesLegacyCacheIssue556(t *testing.T) {
+	state := t.TempDir()
+	profiles := filepath.Join(state, "profiles")
+	cache := filepath.Join(profiles, "gw556", "cache")
+	if err := os.MkdirAll(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The pre-models.json layout kept the discovered window in this cache; only
+	// migration moves it to profiles/gw556/models.json, where the read sees it.
+	if err := os.WriteFile(filepath.Join(cache, "context-window"), []byte("claude-sonnet-4-5\t1000000\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	conf := "type=apikey\nbase_url=https://gw.test\napi_key=test-key\n" +
+		"model=claude-sonnet-4-5\n" +
+		"effort=low\n" +
+		"effort.claude-sonnet-4-5[1m]=high\n"
+	if err := os.WriteFile(filepath.Join(state, "gw556.conf"), []byte(conf), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	securityLog := filepath.Join(t.TempDir(), "security-calls")
+	for _, exe := range []struct{ name, body string }{
+		{"curl", "#!/bin/sh\nprintf '%s\\n' '{\"data\":[]}' '__CCMORPH_STATUS__200'\n"},
+		{"claude", "#!/bin/sh\nexit 0\n"},
+		// A working Keychain double: if doctor ran the credential migration, it
+		// would answer both calls and leave a trace here.
+		{"security", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$SECURITY_LOG\"\nexit 0\n"},
+	} {
+		if err := os.WriteFile(filepath.Join(bin, exe.name), []byte(exe.body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	core := coreCopy(t)
+	t.Setenv("PATH", bin+":/usr/bin:/bin")
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("SECURITY_LOG", securityLog)
+	t.Setenv("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "")
+	l := &launcher{dir: state, profileDirs: profiles, libexec: filepath.Dir(core)}
+	out, _ := doctorOutput(t, l, "gw556")
+	if want := "effective effort: high (profile override for claude-sonnet-4-5[1m])"; !strings.Contains(out, want) {
+		t.Fatalf("doctor did not migrate the legacy window before keying the effort row\nwant row: %s\ngot:\n%s", want, out)
+	}
+	// Doctor's only migration is the context one: the plaintext credential stays
+	// where it was, so no other profile's conf is rewritten and the Keychain is
+	// never touched (#556).
+	if confText, err := os.ReadFile(filepath.Join(state, "gw556.conf")); err != nil || !strings.Contains(string(confText), "api_key=test-key") {
+		t.Fatalf("doctor rewrote the conf outside the context migration: %q, %v", confText, err)
+	}
+	if _, err := os.Stat(securityLog); !os.IsNotExist(err) {
+		t.Fatalf("doctor ran the credential migration: %v", err)
+	}
+	// The state doctor answered from is the one ccmorph context reads: the same
+	// migrated send id the row above named.
+	record, errs, rc := l.core(l.windowEnv("gw556"), "", "model-window", "--context", "gw556", "claude-sonnet-4-5")
+	if rc != 0 {
+		t.Fatalf("context read failed (rc %d): %s", rc, errs)
+	}
+	if !strings.Contains(record, `"send_id":"claude-sonnet-4-5[1m]"`) {
+		t.Fatalf("context read %q, want the send id the doctor row named", record)
+	}
+}
+
 // A doctor that names no profile and finds none selected still reports the
 // environment a fresh install can check: an empty default is "no profile
 // selected" to doctor, its own reading of the shared read — never the
