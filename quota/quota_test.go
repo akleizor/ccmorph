@@ -1451,14 +1451,14 @@ func TestQuotaSpendRetriesAFlatReceiptItCouldNotRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
-	read := func() *Spend { tallyMemo.key = ""; return spendEntry("gw", "").Spend }
-	if s := read(); s.MonthUSD != 0 || s.MonthTurns != 0 {
-		t.Fatalf("an unreadable receipt counted: %+v", s)
+	read := func() Entry { tallyMemo.key = ""; return spendEntry("gw", "") }
+	if e := read(); e.Error == "" || e.Spend != nil {
+		t.Fatalf("an unreadable receipt was answered as money: %+v", e)
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if s := read(); s.MonthUSD != 2 || s.MonthTurns != 1 {
+	if s := read().Spend; s.MonthUSD != 2 || s.MonthTurns != 1 {
 		t.Fatalf("a receipt that could not be read was remembered as absent: %+v", s)
 	}
 }
@@ -1481,15 +1481,270 @@ func TestQuotaSpendRetriesAClosedDayReceiptItCouldNotRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
-	read := func() *Spend { tallyMemo.key = ""; return spendEntry("gw", "").Spend }
-	if s := read(); s.MonthUSD != 0 || s.MonthTurns != 0 {
-		t.Fatalf("an unreadable receipt counted: %+v", s)
+	read := func() Entry { tallyMemo.key = ""; return spendEntry("gw", "") }
+	if e := read(); e.Error == "" || e.Spend != nil {
+		t.Fatalf("an unreadable receipt was answered as money: %+v", e)
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if s := read(); s.MonthUSD != 2 || s.MonthTurns != 1 {
+	if s := read().Spend; s.MonthUSD != 2 || s.MonthTurns != 1 {
 		t.Fatalf("a closed day remembered an unreadable receipt as absent: %+v", s)
+	}
+}
+
+// A month whose store could not be read is not an empty month: the run says so
+// in one plain line and fails, never a healthy $0.00, and the day folder's
+// permissions returning is the only fix the next run needs (#545).
+func TestQuotaSpendNamesAMonthWhoseStoreItCouldNotRead(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a folder with mode 0")
+	}
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	day := filepath.Join(usage, "2026-10-18")
+	writeReceipt(t, filepath.Join(day, "a.json"), "resp_a", "turn_a", "2026-10-18T09:00:00Z", 2,
+		time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC))
+	if err := os.Chmod(day, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(day, 0o700) })
+	// A fresh process reads the store again: the tally memo is this process's.
+	read := func() (string, int) {
+		tallyMemo.key = ""
+		out, _, code := run(t, nil, "gw\tgateway\t\t\n")
+		return out, code
+	}
+	out, code := read()
+	if code == 0 {
+		t.Fatal("a run that could not read the store exited zero")
+	}
+	if !strings.Contains(out, "usage store not readable") {
+		t.Fatalf("the run did not say the store was unreadable: %q", out)
+	}
+	if strings.Contains(out, "$0.00") || strings.Contains(out, "not used this month") {
+		t.Fatalf("the run answered a store it could not read as a healthy zero: %q", out)
+	}
+	// The read recovers: nothing kept the empty month as the answer.
+	if err := os.Chmod(day, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	out, code = read()
+	if code != 0 {
+		t.Fatalf("exit %d after the store returned", code)
+	}
+	if !strings.Contains(out, "month $2.00") {
+		t.Fatalf("the recovered read did not report the receipt: %q", out)
+	}
+}
+
+// The whole store unreadable is the same never-a-zero rule at the listing's
+// own surface, and it is never remembered as absence: neither the month memo
+// nor the closed-days base is kept for a read that could not list the store,
+// so the next run retries it instead of serving the cached empty month (#545).
+func TestQuotaSpendDoesNotKeepAStoreItCouldNotReadAsTheMonth(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a folder with mode 0")
+	}
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	writeReceipt(t, filepath.Join(usage, "a.json"), "resp_a", "turn_a", "2026-10-18T09:00:00Z", 2,
+		time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC))
+	if err := os.Chmod(usage, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(usage, 0o700) })
+	read := func() (string, int) {
+		tallyMemo.key = ""
+		out, _, code := run(t, nil, "gw\tgateway\t\t\n")
+		return out, code
+	}
+	out, code := read()
+	if code == 0 || !strings.Contains(out, "usage store not readable") {
+		t.Fatalf("an unreadable store was answered as a healthy zero (exit %d): %q", code, out)
+	}
+	for _, cache := range []string{monthMemoPath(), monthBasePath()} {
+		if _, err := os.Stat(cache); err == nil {
+			t.Fatalf("%s kept a month it could not read as complete", cache)
+		}
+	}
+	// The permissions return and the next run counts the receipt: no cache
+	// survives to serve the empty month.
+	if err := os.Chmod(usage, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	out, code = read()
+	if code != 0 || !strings.Contains(out, "month $2.00") {
+		t.Fatalf("the recovered read (exit %d) did not report the receipt: %q", code, out)
+	}
+}
+
+// A month read in part writes no cache at all, and the closed days' base is a
+// cache: a flat receipt this run could not read leaves the month partial, and a
+// base kept for it would remember the unread part as absent (#545).
+func TestQuotaSpendDoesNotKeepABaseForAMonthItCouldNotReadWhole(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a file with mode 0")
+	}
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	receipt := filepath.Join(usage, "a.json")
+	writeReceipt(t, receipt, "resp_a", "turn_a", "2026-10-18T09:00:00Z", 2,
+		time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC))
+	if err := os.Chmod(receipt, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(receipt, 0o600) })
+	tallyMemo.key = ""
+	out, _, code := run(t, nil, "gw\tgateway\t\t\n")
+	if code == 0 || !strings.Contains(out, "usage store not readable") {
+		t.Fatalf("an unreadable receipt was answered as a healthy zero (exit %d): %q", code, out)
+	}
+	if _, err := os.Stat(monthBasePath()); err == nil {
+		t.Fatal("a base was kept for a month whose flat store could not be read")
+	}
+}
+
+// A day folder that goes unreadable without changing its mtime — permissions,
+// not content — is not still a day the caches may answer from: every path that
+// serves a closed day is reached through a listing that asks the folder to be
+// readable and searchable, so the run names the store instead of quoting the
+// cached month (#545).
+func TestQuotaSpendNamesADayWhoseFolderWentUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a folder with mode 0")
+	}
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	day := filepath.Join(usage, "2026-10-18")
+	writeReceipt(t, filepath.Join(day, "a.json"), "resp_a", "turn_a", "2026-10-18T09:00:00Z", 2,
+		time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC))
+	read := func() (string, int) {
+		tallyMemo.key = ""
+		out, _, code := run(t, nil, "gw\tgateway\t\t\n")
+		return out, code
+	}
+	// The store reads whole first, so the memo, the base and the day cache all
+	// hold the day: the next read is every cache-hit path, not a cold one.
+	if out, code := read(); code != 0 || !strings.Contains(out, "month $2.00") {
+		t.Fatalf("the readable store was not answered (exit %d): %q", code, out)
+	}
+	if err := os.Chmod(day, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(day, 0o700) })
+	out, code := read()
+	if code == 0 || !strings.Contains(out, "usage store not readable") {
+		t.Fatalf("a day this run cannot read was answered from cache (exit %d): %q", code, out)
+	}
+	if strings.Contains(out, "month $2.00") {
+		t.Fatalf("the caches answered a month whose day folder is unreadable: %q", out)
+	}
+	if err := os.Chmod(day, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := read(); code != 0 || !strings.Contains(out, "month $2.00") {
+		t.Fatalf("the recovered read (exit %d) did not report the receipt: %q", code, out)
+	}
+}
+
+// A permission change moves no size and no mtime, the only things the caches
+// compare: whichever cache would answer, a path the run cannot read now is a
+// store it could not read, named in one line with a nonzero exit, and nothing is
+// kept for it. Each case warms every cache on a readable store, drops the
+// caches the variant says are gone, changes one mode and reads again; restoring
+// the mode makes the next read the real spend (#545).
+func TestQuotaSpendNamesAPermissionChangeUnderEveryCache(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a path with mode 0")
+	}
+	closed := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	today := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name, receipt, stamp, target string
+		when                         time.Time
+		mode                         os.FileMode
+	}{
+		{"closed folder unsearchable", "2026-10-18/a.json", "2026-10-18T09:00:00Z", "2026-10-18", closed, 0o400},
+		{"closed folder unlistable", "2026-10-18/a.json", "2026-10-18T09:00:00Z", "2026-10-18", closed, 0o300},
+		{"closed folder shut", "2026-10-18/a.json", "2026-10-18T09:00:00Z", "2026-10-18", closed, 0},
+		{"store unsearchable", "2026-10-18/a.json", "2026-10-18T09:00:00Z", "", closed, 0o400},
+		{"today folder unsearchable", "2026-10-20/t.json", "2026-10-20T09:00:00Z", "2026-10-20", today, 0o400},
+		{"closed receipt shut", "2026-10-18/a.json", "2026-10-18T09:00:00Z", "2026-10-18/a.json", closed, 0},
+		{"flat receipt shut", "a.json", "2026-10-18T09:00:00Z", "a.json", closed, 0},
+		{"today receipt shut", "2026-10-20/t.json", "2026-10-20T09:00:00Z", "2026-10-20/t.json", today, 0},
+	}
+	// drop is what the variant removes before the read; gone is what must still
+	// not exist after it: a month the run could not read keeps no cache.
+	variants := []struct {
+		name       string
+		drop, gone func() []string
+	}{
+		{"memo", func() []string { return nil }, func() []string { return nil }},
+		{"base", func() []string { return []string{monthMemoPath()} }, func() []string { return []string{monthMemoPath()} }},
+		{"day cache", func() []string { return []string{monthMemoPath(), monthBasePath()} },
+			func() []string { return []string{monthMemoPath(), monthBasePath()} }},
+		{"cold", func() []string { return []string{spendCacheDir()} },
+			func() []string { return []string{monthMemoPath(), monthBasePath()} }},
+	}
+	for _, c := range cases {
+		for _, v := range variants {
+			t.Run(c.name+"/"+v.name, func(t *testing.T) {
+				useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+				state := t.TempDir()
+				t.Setenv("XDG_STATE_HOME", state)
+				usage := filepath.Join(state, "ccmorph", "usage")
+				writeReceipt(t, filepath.Join(usage, c.receipt), "resp_a", "turn_a", c.stamp, 2, c.when)
+				read := func() (string, int) {
+					tallyMemo.key = ""
+					out, _, code := run(t, nil, "gw\tgateway\t\t\n")
+					return out, code
+				}
+				if out, code := read(); code != 0 || !strings.Contains(out, "month $2.00") {
+					t.Fatalf("the readable store was not answered (exit %d): %q", code, out)
+				}
+				for _, p := range v.drop() {
+					if err := os.RemoveAll(p); err != nil {
+						t.Fatal(err)
+					}
+				}
+				target := filepath.Join(usage, c.target)
+				if err := os.Chmod(target, c.mode); err != nil {
+					t.Fatal(err)
+				}
+				back := os.FileMode(0o700)
+				if strings.HasSuffix(c.target, ".json") {
+					back = 0o600
+				}
+				t.Cleanup(func() { _ = os.Chmod(target, back) })
+				out, code := read()
+				if code == 0 || !strings.Contains(out, "usage store not readable") {
+					t.Fatalf("a path this run cannot read was answered (exit %d): %q", code, out)
+				}
+				if strings.Contains(out, "month $2.00") || strings.Contains(out, "$0.00") {
+					t.Fatalf("an unreadable store was answered as money: %q", out)
+				}
+				for _, cache := range v.gone() {
+					if _, err := os.Stat(cache); err == nil {
+						t.Fatalf("%s kept a month it could not read", cache)
+					}
+				}
+				if err := os.Chmod(target, back); err != nil {
+					t.Fatal(err)
+				}
+				if out, code := read(); code != 0 || !strings.Contains(out, "month $2.00") {
+					t.Fatalf("the recovered read (exit %d) did not report the receipt: %q", code, out)
+				}
+			})
+		}
 	}
 }
 
