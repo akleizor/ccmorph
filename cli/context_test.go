@@ -78,6 +78,50 @@ func TestTheNotServedAdviceNamesAVerbTheProfileAccepts(t *testing.T) {
 	}
 }
 
+// GH-561: the save and the read are one `model-window --context <profile>
+// <model>` call to the core — the save appends the value it pins, the read
+// appends nothing — so each form spells that one argument vector and neither
+// runs anything else. A pin of the shape the simplify kept (both forms behaved
+// this way before it): a stub core records every argument vector it is given.
+func TestBothContextFormsSpellOneCoreCallIssue561(t *testing.T) {
+	for _, row := range []struct {
+		what string
+		args []string
+		want string
+	}{
+		{"the save appends the pinned value", []string{"claude-opus-5", "auto"},
+			"model-window\n--context\nctx\nclaude-opus-5\nauto\n"},
+		{"the read appends nothing", []string{"claude-opus-5"},
+			"model-window\n--context\nctx\nclaude-opus-5\n"},
+	} {
+		t.Run(row.what, func(t *testing.T) {
+			dir := t.TempDir()
+			// The stub answers the read form's record — a window pinned by hand,
+			// whose label asks no listing — and appends every argument vector it
+			// is given, so a second core call in the verb would show here too.
+			body := "#!/bin/sh\n" +
+				"for a do printf '%s\\n' \"$a\"; done >> '" + filepath.Join(dir, "argv.log") + "'\n" +
+				"printf '{\"window\":200000,\"source\":\"conf-manual\"}'\n"
+			if err := os.WriteFile(filepath.Join(dir, "ccmorph-core"), []byte(body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			l := storeTestLauncher(t, "ctx",
+				"type=apikey\nbase_url=https://gw.test\napi_key={{SECRET_p9v3h8dqz2w4}}", "")
+			l.libexec = dir
+			// The locked child runs no migration, so the core is asked only what
+			// the verb itself asks.
+			t.Setenv("CCMORPH_CONTEXT_LOCKED", "ctx")
+			if rc := l.context(append([]string{"ctx"}, row.args...)); rc != 0 {
+				t.Fatalf("context %v: rc %d", row.args, rc)
+			}
+			got, err := os.ReadFile(filepath.Join(dir, "argv.log"))
+			if err != nil || string(got) != row.want {
+				t.Fatalf("the core was asked %q (%v); want %q", got, err, row.want)
+			}
+		})
+	}
+}
+
 // GH-370: the warning was one line of 140 cells, so an 80-column terminal broke
 // it inside "Check". Wrapped to 80, no line may be wider, and the words must be
 // exactly the single line's words: wrapping re-breaks lines, it never splits or

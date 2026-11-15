@@ -134,6 +134,7 @@ func (l *launcher) choose(title, rows string) (string, bool) {
 func (l *launcher) rollback(name string) {
 	l.removeProfileDir(name)
 	os.Remove(l.conf(name))
+	delete(l.confReads, name) // what was half-made must not be read back (GH-561)
 }
 
 func (l *launcher) claudeAuth(dir string, args ...string) *exec.Cmd {
@@ -187,7 +188,7 @@ func (l *launcher) subBrowserLogin(name string) (string, bool) {
 }
 
 func (l *launcher) addSub(name string) int {
-	if atomicWrite(l.conf(name), "type=sub\n") != nil {
+	if l.writeConf(name, "type=sub\n") != nil {
 		l.err("could not save profile '" + name + "'")
 		return 1
 	}
@@ -206,7 +207,7 @@ func (l *launcher) addSub(name string) int {
 		l.rollback(name)
 		return 1
 	}
-	if atomicWrite(l.conf(name), "type=sub\nemail="+email+"\n") != nil {
+	if l.writeConf(name, "type=sub\nemail="+email+"\n") != nil {
 		l.err("could not save profile '" + name + "'")
 		l.rollback(name)
 		return 1
@@ -286,7 +287,7 @@ func (l *launcher) setEmail(name, email string) error {
 	for i, line := range lines {
 		if strings.HasPrefix(line, "email=") {
 			lines[i] = "email=" + email
-			return atomicWrite(l.conf(name), strings.Join(lines, "\n"))
+			return l.writeConf(name, strings.Join(lines, "\n"))
 		}
 	}
 	return nil
@@ -319,7 +320,7 @@ func (l *launcher) addToken(name string) int {
 		default:
 			fmt.Println(l.dim + "Anthropic answered HTTP " + code + ", so the token was not checked" + l.reset)
 		}
-		if atomicWrite(l.conf(name), "type=token\ntoken="+token+"\n") != nil {
+		if l.writeConf(name, "type=token\ntoken="+token+"\n") != nil {
 			l.err("could not save profile '" + name + "'")
 			return 1
 		}
@@ -466,7 +467,7 @@ func (l *launcher) addAPIKey(name string) int {
 			conf += line + "\n"
 		}
 	}
-	if atomicWrite(l.conf(name), conf) != nil {
+	if l.writeConf(name, conf) != nil {
 		l.err("could not save profile '" + name + "'")
 		return 1
 	}
@@ -538,7 +539,7 @@ func (l *launcher) addProvider(name, provider string) int {
 		os.RemoveAll(filepath.Join(l.dir, "auth", name))
 		return 1
 	}
-	if atomicWrite(l.conf(name), "type=provider\nprovider="+provider+"\n") != nil {
+	if l.writeConf(name, "type=provider\nprovider="+provider+"\n") != nil {
 		l.err("could not save profile '" + name + "'")
 		os.RemoveAll(filepath.Join(l.dir, "auth", name))
 		return 1

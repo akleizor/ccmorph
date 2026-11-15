@@ -1653,6 +1653,155 @@ func TestABrokenProfilesRefusalIsWordedTheSameOnEveryRead(t *testing.T) {
 	}
 }
 
+// TestOneCommandParsesAProfileConfOnce is GH-561: a command stacks several reads
+// of one profile's conf — read, readQuiet, modelKnown, listingKnown — and every
+// one of them re-read and re-parsed the file. One command must parse a profile's
+// conf once: the reads after the first are answered by that parse, so a conf
+// broken after it — by nothing this command wrote — changes no answer.
+func TestOneCommandParsesAProfileConfOnceIssue561(t *testing.T) {
+	name := "once"
+	l := storeTestLauncher(t, name,
+		"type=apikey\nbase_url=https://gw.test\napi_key=test-key\nmodel=m-first\nmodel_defaults=1\n", "")
+	if f, ok := l.readQuiet(name); !ok || f["base_url"] != "https://gw.test" {
+		t.Fatalf("the first read: %v, ok %v", f, ok)
+	}
+	if err := os.WriteFile(filepath.Join(l.dir, name+".conf"), []byte("{ broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if f, ok := l.readQuiet(name); !ok || f["base_url"] != "https://gw.test" {
+		t.Fatalf("read after the one parse: %v, ok %v", f, ok)
+	}
+	if _, ok := l.readRaw(name); !ok {
+		t.Fatal("readRaw after the one parse must still answer")
+	}
+}
+
+// TestAReadAfterTheSameCommandsConfWriteSeesTheNewValue is GH-561's correctness
+// clause over the conf memo: a command reads a profile, rewrites its conf the
+// way a verb does, and reads again — the second read must see what the write
+// left, never the view the first read memoized. Every write path drops the
+// memo: the store's saves (what set and config run), the add flow's writeConf,
+// and rm and mv's removal and rename.
+func TestAReadAfterTheSameCommandsConfWriteSeesTheNewValueIssue561(t *testing.T) {
+	// rm and mv ask the keychain on macOS; a no-op security keeps the test off
+	// the real one.
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "security"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, row := range []struct {
+		write string
+		run   func(t *testing.T)
+	}{
+		{"the store's set", func(t *testing.T) {
+			name := "set"
+			l := storeTestLauncher(t, name,
+				"type=apikey\nbase_url=https://gw.test\napi_key=gw-key-1", "{\"env\":{}}\n")
+			if f, ok := l.readQuiet(name); !ok || f["model"] != "" {
+				t.Fatalf("read before the save: %v, ok %v", f, ok)
+			}
+			set := l.storeArgs("set", name, "")
+			set.Change = util.StoreChange{Model: "m-second"}
+			if _, rc := l.runStore(set, io.Discard); rc != 0 {
+				t.Fatalf("set: rc %d", rc)
+			}
+			if f, ok := l.readQuiet(name); !ok || f["model"] != "m-second" {
+				t.Fatalf("read after the save: %v, ok %v — a save must drop the memoized read", f, ok)
+			}
+		}},
+		{"add's conf write", func(t *testing.T) {
+			name := "added"
+			l := storeTestLauncher(t, name,
+				"type=apikey\nbase_url=https://gw.test\napi_key=gw-key-1", "")
+			if f, ok := l.readQuiet(name); !ok || f["type"] != "apikey" {
+				t.Fatalf("read before the write: %v, ok %v", f, ok)
+			}
+			if err := l.writeConf(name, "type=token\ntoken=sk-ant-oat01-plain\n"); err != nil {
+				t.Fatal(err)
+			}
+			if f, ok := l.readRaw(name); !ok || f["type"] != "token" {
+				t.Fatalf("read after the write: %v, ok %v — a write must drop the memoized read", f, ok)
+			}
+		}},
+		{"mv's rename", func(t *testing.T) {
+			from, to := "moved", "renamed"
+			l := storeTestLauncher(t, from, "type=apikey\nbase_url=https://gw.test\n", "")
+			// The lock re-exec would start ccmorph-core; being already the locked
+			// child is what a test of the rename itself needs.
+			t.Setenv("CCMORPH_CONTEXT_LOCKED", from+","+to)
+			if f, ok := l.readQuiet(from); !ok || f["base_url"] != "https://gw.test" {
+				t.Fatalf("read before the rename: %v, ok %v", f, ok)
+			}
+			if rc := l.mv([]string{from, to}); rc != 0 {
+				t.Fatalf("mv: rc %d", rc)
+			}
+			if f, ok := l.readQuiet(to); !ok || f["base_url"] != "https://gw.test" {
+				t.Fatalf("read after the rename: %v, ok %v — a rename must drop the memoized read", f, ok)
+			}
+			if _, ok := l.readQuiet(from); ok {
+				t.Fatal("the renamed-away name must refuse to read")
+			}
+		}},
+		{"rm's removal", func(t *testing.T) {
+			name := "gone"
+			l := storeTestLauncher(t, name, "type=apikey\nbase_url=https://gw.test\n", "")
+			t.Setenv("CCMORPH_CONTEXT_LOCKED", name)
+			if f, ok := l.readQuiet(name); !ok || f["base_url"] != "https://gw.test" {
+				t.Fatalf("read before the removal: %v, ok %v", f, ok)
+			}
+			if rc := l.rm([]string{name}); rc != 0 {
+				t.Fatalf("rm: rc %d", rc)
+			}
+			if _, ok := l.readQuiet(name); ok {
+				t.Fatal("the removed profile must refuse to read")
+			}
+		}},
+	} {
+		t.Run(row.write, row.run)
+	}
+}
+
+// TestConfReadsReplayTheirNoticesAndRefusals guards the memo's side channels
+// (GH-561): a read prints a removed key's notice, and a broken conf's refusal,
+// and one command that stacks reads must hear each of them from every read —
+// never only the first.
+func TestConfReadsReplayTheirNoticesAndRefusalsIssue561(t *testing.T) {
+	for _, row := range []struct {
+		name, conf string
+		ok         bool
+	}{
+		{"notices", "type=apikey\nbase_url=https://gw.test\nlean=1\n", true},
+		{"refusal", "type=sub\n", false},
+	} {
+		name := "heard"
+		l := storeTestLauncher(t, name, row.conf, "")
+		var heard []string
+		for i := 0; i < 2; i++ {
+			saved := os.Stderr
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			os.Stderr = w
+			_, ok := l.readRaw(name)
+			w.Close()
+			os.Stderr = saved
+			note, _ := io.ReadAll(r)
+			if ok != row.ok {
+				t.Fatalf("%s: read %d: ok %v, want %v", row.name, i, ok, row.ok)
+			}
+			if len(note) == 0 {
+				t.Fatalf("%s: read %d must say what a fresh read says", row.name, i)
+			}
+			heard = append(heard, string(note))
+		}
+		if heard[0] != heard[1] {
+			t.Fatalf("%s: the reads worded themselves differently:\n%q\n%q", row.name, heard[0], heard[1])
+		}
+	}
+}
+
 // nativeBase owns Anthropic's own endpoint (#488): the URL an empty base_url
 // means, and the spellings that count as that endpoint — the bare URL and its
 // trailing-slash form — which run's and inspect's switches each spelled three

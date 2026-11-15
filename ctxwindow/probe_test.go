@@ -1666,6 +1666,40 @@ func TestTheEntrySweepParsesEachSidecarOnceIssue539(t *testing.T) {
 	}
 }
 
+// GH-561: the save parses the sidecar once. SaveDiscoveredCtx took its merge
+// tables from DiscoveredValues, DiscoveredSources and DiscoveredMisses, each of
+// which re-runs discoveredDoc — three parses of the one record the save itself
+// read (#539 closed the sweep's parse; this closes the save's). The conf
+// carries a route-bound record with all three tables so each wrapper has a
+// parse to double.
+func TestTheSaveParsesTheSidecarOnceIssue561(t *testing.T) {
+	dir := state(t)
+	conf := filepath.Join(dir, "gw.conf")
+	put(t, conf, "type=apikey\nbase_url=https://gw.invalid\napi_key=canary\nexcluded_models=hidden-new\n\n")
+	_, fields, _ := ReadConf(conf)
+	route := RouteFingerprint(fields)
+	f, _ := os.OpenFile(conf, os.O_APPEND|os.O_WRONLY, 0)
+	fmt.Fprintf(f, `context_discovered={"route":%q,"models":{"known-model":123456},"sources":{"known-model":{"source":"listing"}},"misses":{"missed-model":"2026-01-01"}}`+"\n", route)
+	f.Close()
+	parses := 0
+	od := discoveredDoc
+	t.Cleanup(func() { discoveredDoc = od })
+	discoveredDoc = func(fields map[string]string) obj {
+		parses++
+		return od(fields)
+	}
+	v := map[string]int64{"fresh-model": 200000}
+	SaveDiscovered("gw", v, ProfileIdentity("gw"), true, nil, map[string]string{"missed-model": "2026-01-02"})
+	if parses != 1 {
+		t.Fatalf("the save parsed the sidecar %d time(s)", parses)
+	}
+	_, after, _ := ReadConf(conf)
+	if d := ParseDiscovered(after); d.Values["fresh-model"] != 200000 || d.Values["known-model"] != 123456 ||
+		d.Sources["known-model"]["source"] != "listing" || d.Misses["missed-model"] != "2026-01-02" {
+		t.Fatalf("the save's merge lost the record's entries: %+v", d)
+	}
+}
+
 // #449 (from #371): a --check run's per-profile result is the found/would-change
 // line. A note about one model — here a paid probe that failed — must not stand
 // in for it: the run that found sizes still says how many would change.
