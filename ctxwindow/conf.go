@@ -517,6 +517,21 @@ func missesOf(doc obj) map[string]string {
 	return out
 }
 
+// Discovered is a conf's discovered record as one parse reads it: the three
+// tables the Discovered* wrappers above would each parse the record again to
+// produce, for a caller outside this package that reads more than one (GH-561).
+type Discovered struct {
+	Values  map[string]int64
+	Sources map[string]obj
+	Misses  map[string]string
+}
+
+// ParseDiscovered is the three tables of one parse of fields' discovered record.
+func ParseDiscovered(fields map[string]string) Discovered {
+	doc := discoveredDoc(fields)
+	return Discovered{Values: valuesOf(doc), Sources: sourcesOf(doc), Misses: missesOf(doc)}
+}
+
 // ManualValues are the user's context_window.<model> pins.
 func ManualValues(fields map[string]string) map[string]int64 {
 	const prefix = "context_window."
@@ -869,8 +884,12 @@ func SaveDiscoveredCtx(ctx context.Context, profile string, values map[string]in
 			return err
 		}
 		fields := snap.Fields
-		merged := DiscoveredValues(fields)
-		mergedSources := DiscoveredSources(fields)
+		// One parse, as priorWalk's doc promises: all three tables read the
+		// already-parsed doc, where the Discovered* wrappers would each re-run
+		// discoveredDoc — three parses of the one read the save holds (#539, GH-561).
+		doc := discoveredDoc(fields)
+		merged := valuesOf(doc)
+		mergedSources := sourcesOf(doc)
 		valid := map[string]int64{}
 		for m, v := range values {
 			if ValidModel(m) && v > 0 {
@@ -908,7 +927,7 @@ func SaveDiscoveredCtx(ctx context.Context, profile string, values map[string]in
 			record["sources"] = kept
 		}
 		keptMisses := obj{}
-		allMisses := DiscoveredMisses(fields)
+		allMisses := missesOf(doc)
 		maps.Copy(allMisses, misses)
 		for m, d := range allMisses {
 			if _, ok := merged[m]; !ok { // any value for the model retires its miss

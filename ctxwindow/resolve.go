@@ -145,6 +145,10 @@ type Inputs struct {
 	haveMapping   bool
 	doc           obj
 	haveDoc       bool
+	values        map[string]int64
+	haveValues    bool
+	sources       map[string]obj
+	haveSources   bool
 }
 
 // NewInputs is a resolver over conf fields its caller has already read.
@@ -197,11 +201,26 @@ func (in *Inputs) discoveredDoc() obj {
 	return in.doc
 }
 
-// discoveredValues is the route-bound window table from the cached doc.
-func (in *Inputs) discoveredValues() map[string]int64 { return valuesOf(in.discoveredDoc()) }
+// discoveredValues is the route-bound window table, built once from the cached
+// doc: the doc was already one parse per Inputs (#424), but the table was still
+// rebuilt and re-sorted on every Resolve — a picker walk over N models did N
+// builds of the same table (GH-561).
+func (in *Inputs) discoveredValues() map[string]int64 {
+	if !in.haveValues {
+		in.haveValues = true
+		in.values = valuesOf(in.discoveredDoc())
+	}
+	return in.values
+}
 
-// discoveredSources is the provenance table from the cached doc.
-func (in *Inputs) discoveredSources() map[string]obj { return sourcesOf(in.discoveredDoc()) }
+// discoveredSources is the provenance table, built once from the cached doc.
+func (in *Inputs) discoveredSources() map[string]obj {
+	if !in.haveSources {
+		in.haveSources = true
+		in.sources = sourcesOf(in.discoveredDoc())
+	}
+	return in.sources
+}
 
 func (in *Inputs) endpointRows() []any {
 	if !in.haveEndpoints {

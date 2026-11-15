@@ -72,6 +72,7 @@ func (l *launcher) rm(args []string) int {
 		l.err("could not remove profile '" + name + "'")
 		return 1
 	}
+	delete(l.confReads, name) // what was removed must not be read back (GH-561)
 	util.KeychainDelete(name)
 	os.Remove(filepath.Join(l.profileDirs, "..", ".locks", name+".lock"))
 	for _, p := range util.BridgeFiles(filepath.Join(l.dir, "auth"), name) {
@@ -290,6 +291,10 @@ func (l *launcher) mv(args []string) int {
 	if util.KeychainRename(l.dir, from, to) != nil {
 		l.err("renamed, but '" + to + "' still reads its credential from the keychain item of '" + from + "'")
 	}
+	// The rename moved the conf and the keychain move may have rewritten it:
+	// a read of either name must see what mv left (GH-561).
+	delete(l.confReads, from)
+	delete(l.confReads, to)
 	fmt.Println(l.accent + "Renamed" + l.reset + " " + l.bold + from + l.reset + " → " + l.bold + to + l.reset)
 	return 0
 }

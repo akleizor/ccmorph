@@ -20,8 +20,10 @@ func ListingHasUnsized(conf, listing string) bool {
 		return true
 	}
 	data := top["data"]
-	known := ctxwindow.DiscoveredValues(fields)
-	misses := ctxwindow.DiscoveredMisses(fields)
+	// One parse of the record serves both tables, where the two wrappers would
+	// parse it twice (GH-561).
+	d := ctxwindow.ParseDiscovered(fields)
+	known, misses := d.Values, d.Misses
 	pins := ctxwindow.ManualValues(fields)
 	for _, row := range ctxwindow.ListingRows(data) {
 		s, _ := row["id"].(string)

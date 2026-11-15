@@ -460,6 +460,10 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 				l.logInit()
 				l.core([]string{"CCMORPH_STATE_DIR=" + l.dir, "ANTHROPIC_BASE_URL=" + base, "ANTHROPIC_API_KEY=" + key},
 					listing+"\n", "context-probe", "--listing-stdin", "--profile", name)
+				// The probe's save rewrites a conf that still carries its
+				// discovered record inline, so the next read must not be the
+				// memoized one (GH-561).
+				delete(l.confReads, name)
 			}
 		}
 		if !l.projectPicker(name, base, key, defaultModel, tag, explicit) {
@@ -832,8 +836,10 @@ func (l *launcher) migrateState() bool {
 	}
 	l.migrated = l.migrateOnce()
 	// Migration can rewrite the confs — a keychain move rewrites them
-	// in-process — so the memoized reads read the store's files again (#478).
+	// in-process — so the memoized reads read the store's files again (#478)
+	// and the conf's (GH-561).
 	l.storeReads = nil
+	l.confReads = nil
 	return l.migrated
 }
 
@@ -851,13 +857,16 @@ func (l *launcher) migrateOnce() bool {
 // must not also move credentials: doctor stays read-only outside the effort
 // row's context read (#556), so it runs the same model-window --migrate the
 // launch does and never util.KeychainMigrate, which rewrites every profile's
-// plain credentials.
+// plain credentials. The migrate can still rewrite a conf that carries its
+// discovered record inline, so the conf's memoized reads drop (GH-561).
 func (l *launcher) migrateContextState() bool {
 	if os.Getenv("CCMORPH_CONTEXT_LOCKED") != "" {
 		return true
 	}
 	legacy, _ := l.legacyContextState()
-	return l.migrateContextPaths(legacy)
+	ok := l.migrateContextPaths(legacy)
+	l.confReads = nil
+	return ok
 }
 
 // legacyContextState lists the paths whose presence means legacy context state

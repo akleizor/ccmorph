@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -40,6 +41,7 @@ type launcher struct {
 
 	memo                map[string]string
 	storeReads          map[string]*storeMemo // one profile's store, parsed once per command (#478)
+	confReads           map[string]*confMemo  // one profile's conf, parsed once per command (GH-561)
 	version, zshVersion string
 	migrated            bool
 
@@ -481,8 +483,50 @@ func (l *launcher) readQuiet(name string) (map[string]string, bool) {
 	return f, err == nil
 }
 
+// confMemo is one profile's conf as this command read it: its fields, the
+// refusal a broken conf gave, and the removed-key notices it printed — held
+// until a write drops it. A command stacks several reads of one profile —
+// read, readQuiet, modelKnown, listingKnown — and all but the first are
+// answered here (GH-561). The fields can sit beside an error: profile.Read
+// returns what it parsed before checkType refused.
+type confMemo struct {
+	fields  map[string]string
+	err     error
+	notices []string
+}
+
+// readProfile is the profile's conf, memoized per profile: one read and parse
+// serves every readRaw, readQuiet and read a command makes. The notices replay
+// on every replayed read, worded as profile.Read words them, and the fields are
+// returned as a copy — the fresh map profile.Read hands each caller, which some
+// of them then edit.
 func (l *launcher) readProfile(name string, warn func(string)) (map[string]string, error) {
-	return profile.Read(l.dir, name, true, profile.Defaults(), warn)
+	if m, ok := l.confReads[name]; ok {
+		for _, line := range m.notices {
+			warn(line)
+		}
+		return maps.Clone(m.fields), m.err
+	}
+	m := &confMemo{}
+	f, err := profile.Read(l.dir, name, true, profile.Defaults(), func(line string) {
+		m.notices = append(m.notices, line)
+		warn(line)
+	})
+	m.fields, m.err = f, err
+	if l.confReads == nil {
+		l.confReads = map[string]*confMemo{}
+	}
+	l.confReads[name] = m
+	return maps.Clone(f), err
+}
+
+// writeConf is one profile's conf written the way every verb writes it, and the
+// one place the read memo for that name drops: what a verb writes, its own next
+// read must see (GH-561).
+func (l *launcher) writeConf(name, content string) error {
+	err := atomicWrite(l.conf(name), content)
+	delete(l.confReads, name)
+	return err
 }
 
 // read is _ccm_read + _ccm_validate_loaded.
@@ -563,7 +607,8 @@ func (l *launcher) storeArgs(verb, name, key string) util.StoreArgs {
 
 // runStore is a store operation: its text without trailing newlines and its status;
 // reasons go to errw. A crash is status 2, as a crashed helper process gave. A save
-// drops every memoized read — what it wrote is not what they saw (#478).
+// drops every memoized read — what it wrote is not what they saw; the store's own
+// reads (#478) and the conf's (GH-561), since the save ops rewrite the conf.
 func (l *launcher) runStore(a util.StoreArgs, errw io.Writer) (string, int) {
 	type res struct {
 		out string
@@ -572,6 +617,7 @@ func (l *launcher) runStore(a util.StoreArgs, errw io.Writer) (string, int) {
 	r, ok := try(l, "config-store "+a.Op, func() res { out, rc := util.ConfigStore(a, errw); return res{out, rc} })
 	if storeSaves(a.Op) {
 		l.storeReads = nil
+		l.confReads = nil
 	}
 	if !ok {
 		return "", 2

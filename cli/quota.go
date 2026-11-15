@@ -40,13 +40,20 @@ func (l *launcher) context(args []string) int {
 		l.err("usage: ccmorph context <profile> <model> [tokens|auto]")
 		return 2
 	}
-	cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"),
-		append([]string{"model-window", "--context", name, model}, rest...)...)
-	cmd.Env = append(os.Environ(), "CCMORPH_STATE_DIR="+l.dir)
-	cmd.Stdin, cmd.Stderr = os.Stdin, os.Stderr
+	// One argv serves both forms (GH-561): the save appends the value's rest —
+	// a fresh slice each time, since argv is sized to what it holds — and the
+	// read runs it as it stands.
+	argv := []string{"model-window", "--context", name, model}
 	if len(rest) > 0 {
+		cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), append(argv, rest...)...)
+		cmd.Env = append(os.Environ(), "CCMORPH_STATE_DIR="+l.dir)
+		cmd.Stdin, cmd.Stderr = os.Stdin, os.Stderr
 		cmd.Stdout = os.Stdout
 		rc := runRC(cmd)
+		// The save rewrites a conf that still carries its discovered record
+		// inline, so the reads the warning makes must not be the memoized ones
+		// (GH-561).
+		delete(l.confReads, name)
 		// The save is done; a model the route does not carry — its listing for a
 		// gateway, the record its probe fills for a provider — is named after it
 		// (#370), the way the read form names a model it cannot answer auto for
@@ -65,7 +72,7 @@ func (l *launcher) context(args []string) int {
 	// inspect does, and the shell's exported ceiling is dropped so the
 	// profile's own state answers.
 	l.migrateState()
-	read := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), "model-window", "--context", name, model)
+	read := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), argv...)
 	read.Env = append(envDrop(os.Environ(), "CLAUDE_CODE_MAX_CONTEXT_TOKENS"), l.windowEnv(name)...)
 	read.Stderr = os.Stderr
 	out, err := read.Output()
