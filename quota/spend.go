@@ -414,18 +414,11 @@ func monthMemoPath() string { return filepath.Join(spendCacheDir(), "month.json"
 
 func monthBasePath() string { return filepath.Join(spendCacheDir(), "base.json") }
 
-// spendCache is the shape every cache file under quota/spend keeps: the shape
-// it was written as, and what decoding it cost.
+// spendCache is a cache file under quota/spend: what decoding it costs, in
+// receipt rows.
 type spendCache interface {
-	version() int
 	rows() int
 }
-
-func (c dayFile) version() int  { return c.V }
-func (c flatFile) version() int { return c.V }
-
-func (c monthBase) version() int { return c.V }
-func (c monthMemo) version() int { return c.V }
 
 func (c dayFile) rows() int  { return len(c.Files) }
 func (c flatFile) rows() int { return len(c.Files) }
@@ -435,26 +428,29 @@ func (c monthBase) rows() int { return 0 }
 func (c monthMemo) rows() int { return 0 }
 
 // loadCache is the one preamble every spend cache read goes through: read the
-// file, decode it, count the receipts a decoded cache keeps, and answer it only
-// when it carries this shape's version. Any miss — no file, bytes that do not
-// decode, a version this reader did not write — is the zero cache, never a
-// partial one. What else makes a decoded cache this reader's answer — a day's
-// marks, a month's window — is the caller's to check (#546).
+// file, read its version alone, and only for this shape's version decode the
+// body and count the receipts it keeps, so a future version's body is never
+// decoded (#449). Any miss — no file, bytes that do not decode, a version this
+// reader did not write — is the zero cache, never a partial one. What else makes
+// a decoded cache this reader's answer — a day's marks, a month's window — is
+// the caller's to check (#546).
 func loadCache[T spendCache](path string) (T, bool) {
-	var c T
+	var zero T
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return c, false
+		return zero, false
 	}
+	var head struct {
+		V int `json:"v"`
+	}
+	if json.Unmarshal(b, &head) != nil || head.V != spendCacheVersion {
+		return zero, false
+	}
+	var c T
 	if json.Unmarshal(b, &c) != nil {
-		var zero T
 		return zero, false
 	}
 	countRows(c.rows())
-	if c.version() != spendCacheVersion {
-		var zero T
-		return zero, false
-	}
 	return c, true
 }
 
@@ -650,10 +646,17 @@ func indexDay(dir string, old map[string]seenFile) (map[string]seenFile, bool, b
 	return seen, changed, partial, true
 }
 
+// rowsOf is a files map's rows in receipt-name order, the order the folder read
+// them in: a map range changes run to run, and the rows' order must not (#449).
 func rowsOf(files map[string]seenFile) []*spendRow {
-	rows := make([]*spendRow, 0, len(files))
-	for _, f := range files {
-		rows = append(rows, f.Row)
+	names := make([]string, 0, len(files))
+	for n := range files {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	rows := make([]*spendRow, 0, len(names))
+	for _, n := range names {
+		rows = append(rows, files[n].Row)
 	}
 	return rows
 }

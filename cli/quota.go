@@ -93,7 +93,7 @@ func (l *launcher) context(args []string) int {
 	// hand still reads back, and a route whose listing cannot be read keeps
 	// answering.
 	if label != "manual" && l.listingKnown(name, model) == 1 {
-		l.err(model + " is not served by " + name + ". Run: ccmorph models " + name)
+		l.err(notServedAdvice(model, name, f["type"]))
 		return 1
 	}
 	fmt.Println(contextAnswer(name, model, n, label, unprobed))
@@ -172,15 +172,33 @@ func (l *launcher) contextUnlisted(name, want string, f map[string]string) bool 
 	return util.ContextServed(want, f["type"], base, f["model_map"], f["api_key"]) == util.ServedNo
 }
 
+// notServedAdvice is the read form's refusal (#268): the model has no size to
+// answer because the route does not carry it, so the sentence names the command
+// that lists what the route does carry.
+func notServedAdvice(model, name, typ string) string {
+	return model + " is not served by " + name + ". Run: " + listingAdvice(name, typ)
+}
+
+// listingAdvice names the command that answers what a profile's route carries
+// (#449). `ccmorph models` refuses a sub or token profile, and so does
+// `ccmorph probe` (#390): their model is chosen through set's picker.
+// A provider's listing is not readable with the profile's own credentials, so
+// its probe — which records what the route serves — is the command that answers.
+func listingAdvice(name, typ string) string {
+	switch typ {
+	case "provider":
+		return "ccmorph probe " + name
+	case "sub", "token":
+		return "ccmorph set " + name + " model -i"
+	}
+	return "ccmorph models " + name
+}
+
 // unlistedWarningText is the sentence itself. A provider's listing is not
 // readable with the profile's own credentials, so its advice is the probe that
 // records what the route serves.
 func unlistedWarningText(model, name, typ string) string {
-	advice := "ccmorph models " + name
-	if typ == "provider" {
-		advice = "ccmorph probe " + name
-	}
-	return "'" + model + "' is not listed by " + name + "; the limit is saved for when it appears. Check the listing with: " + advice
+	return "'" + model + "' is not listed by " + name + "; the limit is saved for when it appears. Check the listing with: " + listingAdvice(name, typ)
 }
 
 // warnLines is a warning as it prints at width columns: prefixed and wrapped on

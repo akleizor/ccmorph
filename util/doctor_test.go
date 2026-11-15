@@ -136,6 +136,20 @@ func TestRunningAdapterEndsAPsStalledPastItsBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// A run that fails before the ESRCH check below must not leave the sleep
+	// behind: the cleanup reads the pid the script recorded and kills it
+	// (GH-449). The script writes the file before it execs the sleep, so a run
+	// that got as far as the read always has it; ESRCH means the check below
+	// got there first.
+	t.Cleanup(func() {
+		b, err := os.ReadFile(pidFile)
+		if err != nil {
+			return
+		}
+		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 {
+			syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
 
 	start := time.Now()
 	if got := runningAdapter("stall-" + strconv.Itoa(os.Getpid())); got != "__UNKNOWN__" {

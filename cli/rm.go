@@ -32,7 +32,9 @@ func (l *launcher) rm(args []string) int {
 	if len(args) > 0 {
 		name = args[0]
 	}
-	if !profile.ValidName(name) {
+	// rm is the one verb that accepts the pre-#373 length: a profile made before
+	// the limit can still be addressed and so must still be removable (#449).
+	if !profile.RemovableName(name) {
 		return l.badName("rm", name)
 	}
 	// A name that differs only by case is refused before the leftover branch:

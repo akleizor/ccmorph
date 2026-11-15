@@ -123,6 +123,50 @@ func TestDoctorTranslatorVerdictUsesTheModelLaunchClassifies(t *testing.T) {
 	}
 }
 
+// GH-449: the per-model effort a new session starts at is keyed by the model
+// Claude Code sees, and a 1M claude model is sent under its [1m] send id.
+// Doctor asked the store for the saved spelling, missed the override and
+// reported the profile's default instead, where the launch — which asks by the
+// send id — passes the override. A native route is sent without ccmorph's send
+// id, so the launch keys that lookup by the saved spelling and the override
+// must not apply there (#449).
+func TestDoctorShowsTheEffortSavedForTheModelsSendID(t *testing.T) {
+	for _, tc := range []struct {
+		name, base, want string
+	}{
+		{"gateway uses the send id", "https://gw.test", "effective effort: high (profile override for claude-sonnet-4-5[1m])"},
+		{"native route keeps the saved spelling", "https://api.anthropic.com", "effective effort: low (profile default)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := t.TempDir()
+			conf := "type=apikey\nbase_url=" + tc.base + "\napi_key=test-key\n" +
+				"model=claude-sonnet-4-5\n" +
+				"context_window.claude-sonnet-4-5=1000000\n" +
+				"effort=low\n" +
+				"effort.claude-sonnet-4-5[1m]=high\n"
+			if err := os.WriteFile(filepath.Join(state, "gw449.conf"), []byte(conf), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			bin := t.TempDir()
+			for _, exe := range []struct{ name, body string }{
+				{"curl", "#!/bin/sh\nprintf '%s\\n' '{\"data\":[]}' '__CCMORPH_STATUS__200'\n"},
+				{"claude", "#!/bin/sh\nexit 0\n"},
+			} {
+				if err := os.WriteFile(filepath.Join(bin, exe.name), []byte(exe.body), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("PATH", bin+":/usr/bin:/bin")
+			t.Setenv("HOME", t.TempDir())
+			l := &launcher{dir: state, profileDirs: filepath.Join(t.TempDir(), "profiles")}
+			out, _ := doctorOutput(t, l, "gw449")
+			if !strings.Contains(out, tc.want) {
+				t.Fatalf("doctor did not report the effort a launch passes\nwant row: %s\ngot:\n%s", tc.want, out)
+			}
+		})
+	}
+}
+
 // A doctor that names no profile and finds none selected still reports the
 // environment a fresh install can check: an empty default is "no profile
 // selected" to doctor, its own reading of the shared read — never the

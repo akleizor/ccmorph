@@ -269,7 +269,7 @@ func Commit(ctx context.Context, values map[string]int64, baseline map[string]in
 				note = "  (catalogue estimate)"
 			}
 			row := fmt.Sprintf("  %s %s%s", pad(model, 30), padLeft(commas(changed[model]), 11), note)
-			if runes(row) <= reportWidth {
+			if cells(row) <= reportWidth {
 				fmt.Fprintln(stderr, row)
 				continue
 			}

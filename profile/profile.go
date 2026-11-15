@@ -64,11 +64,30 @@ var (
 // NAME_MAX while staying past any name a person types.
 const MaxNameLen = 200
 
+// LegacyMaxNameLen is the longest name the rule before #373 could have stored:
+// that rule had no length bound, and the longest file a profile makes is
+// ".<name>.bridge.users" (+14), so 241 bytes is the last one inside NAME_MAX's
+// 255. RemovableName accepts this range so rm can remove a profile made before
+// the limit (#449); every other verb still requires ValidName.
+const LegacyMaxNameLen = 241
+
+// nameShape is the part of a name that never depended on its length.
+func nameShape(s string) bool {
+	l := strings.ToLower(s)
+	return nameRE.MatchString(s) && l != "active" && l != "ccmorph"
+}
+
 // ValidName mirrors _ccm_valid: [A-Za-z0-9_]+, at most MaxNameLen bytes, never
 // a reserved name in any case.
 func ValidName(s string) bool {
-	l := strings.ToLower(s)
-	return len(s) <= MaxNameLen && nameRE.MatchString(s) && l != "active" && l != "ccmorph"
+	return len(s) <= MaxNameLen && nameShape(s)
+}
+
+// RemovableName reports whether name is one rm can still address: a name
+// ValidName accepts, or one the pre-#373 rule accepted whose longest derived
+// file still fits NAME_MAX. Only removal takes the wider range (#449).
+func RemovableName(s string) bool {
+	return len(s) <= LegacyMaxNameLen && nameShape(s)
 }
 
 // BadNameMsg is the one refusal every command gives a word that can never be a

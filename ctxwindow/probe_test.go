@@ -200,8 +200,12 @@ func TestProbeAllModes(t *testing.T) {
 	}
 }
 
+// GH-371/#449: a probe failure is shown once. ProbeAll's progress row names the
+// model and the kind; the note itself is the report's, and printing it under
+// the row as well made one report carry the same sentence twice.
 func TestProbeFailureReasonIsPrinted(t *testing.T) {
-	state(t)
+	dir := state(t)
+	put(t, filepath.Join(dir, "gw.conf"), "type=apikey\napi_key=k\n")
 	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
 		return []string{"known", "failed"}, map[string]int64{"known": 300000}, nil, nil
 	})
@@ -214,9 +218,20 @@ func TestProbeFailureReasonIsPrinted(t *testing.T) {
 	out := captureStderr(t)
 	o := DefaultOptions()
 	o.Mode = "auto"
-	ProbeAll(context.Background(), []string{"gw"}, o)
-	if !strings.Contains(out.String(), "gateway timed out") || !strings.Contains(out.String(), "paid probe enabled") {
-		t.Fatal(out.String())
+	r := ProbeAll(context.Background(), []string{"gw"}, o)
+	var report bytes.Buffer
+	reportProfiles(&report, []string{"gw"}, r.Notes, nil, nil)
+	if n := strings.Count(out.String()+report.String(), "gateway timed out"); n != 1 {
+		t.Fatalf("the failure's note is printed %d times, want once:\n%s\n%s", n, out.String(), report.String())
+	}
+	if !strings.Contains(out.String(), "paid probe enabled") {
+		t.Errorf("the cost warning must still print:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "failed") || !strings.Contains(out.String(), "anthropic:error") {
+		t.Errorf("the progress row must still name the model and the kind:\n%s", out.String())
+	}
+	if !strings.Contains(report.String(), "gw: failed: gateway timed out") {
+		t.Errorf("the report must carry the failure's note:\n%s", report.String())
 	}
 }
 
@@ -1616,6 +1631,30 @@ func TestTheEntrySweepParsesEachSidecarOnceIssue539(t *testing.T) {
 	}
 }
 
+// #449 (from #371): a --check run's per-profile result is the found/would-change
+// line. A note about one model — here a paid probe that failed — must not stand
+// in for it: the run that found sizes still says how many would change.
+func TestCheckSummaryPrintsBesideANote(t *testing.T) {
+	notes := []Note{{Profile: "gw", Subject: "paid-model", Reason: "probe failed: connection refused"}}
+	var b bytes.Buffer
+	reportProfiles(&b, []string{"gw"}, notes, map[string]int{"gw": 3}, map[string]int{"gw": 1})
+	s := b.String()
+	if !strings.Contains(s, "probe failed: connection refused") {
+		t.Fatalf("the note must still print:\n%s", s)
+	}
+	if !strings.Contains(s, "gw: found context window sizes for 3 models; 1 would change.") {
+		t.Fatalf("a note must not hide the check's result:\n%s", s)
+	}
+
+	// The save path's summary is Commit's to print, note or no note: the report
+	// must not say it twice.
+	b.Reset()
+	reportProfiles(&b, []string{"gw"}, notes, map[string]int{"gw": 3}, nil)
+	if strings.Contains(b.String(), "found context window sizes") {
+		t.Fatalf("the save path must not repeat Commit's summary:\n%s", b.String())
+	}
+}
+
 func TestReportUnresolvedOrdersTheFreeFixBeforeThePaidOne(t *testing.T) {
 	var b bytes.Buffer
 	ReportUnresolved(&b, "gateway", []string{"deepseek-v4.1-flash"})
@@ -1724,6 +1763,28 @@ func TestProbeReportsEveryProfileInOneShape(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "gamma: found context window sizes for 3 models; all were already saved.") {
 		t.Errorf("second run does not say the sizes were already saved:\n%s", errb.String())
+	}
+}
+
+// GH-449: a wrapped line is as wide as the terminal shows it, not as many
+// runes as it holds. Ten four-rune CJK words are 49 runes but 89 cells, and
+// the rune count kept all ten on one line twice the terminal's width.
+func TestWrapLineCountsDisplayCells(t *testing.T) {
+	word := "中中中中" // four runes, eight cells
+	var b bytes.Buffer
+	wrapLine(&b, strings.TrimSpace(strings.Repeat(word+" ", 10)), "", "  ")
+	want := strings.TrimRight(strings.Repeat(word+" ", 9), " ") + "\n  " + word + "\n"
+	if b.String() != want {
+		t.Fatalf("wrapLine put the words on the wrong lines:\ngot  %q\nwant %q", b.String(), want)
+	}
+}
+
+// GH-449: the report's columns are display cells. pad gave a two-rune CJK
+// model id six cells of padding as if it were six wide, so the size column of
+// the next row sat four cells to the left.
+func TestProbeReportColumnsCountDisplayCells(t *testing.T) {
+	if got, want := pad("模型", 6), "模型  "; got != want {
+		t.Fatalf("pad(%q, 6) = %q, want %q (two runes, four cells)", "模型", got, want)
 	}
 }
 

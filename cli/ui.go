@@ -399,7 +399,16 @@ func (t uiTheme) numbered(prompt string, rows []string, display string) (string,
 	// line, so one line per round is what adds to the list.
 	for {
 		choice, rc := uiInput(numberPrompt(len(rows)), false)
-		lines++
+		// uiInput folded its round to the line it left: a cancel leaves the one
+		// Cancelled row, an answer the receipt — which is two rows when the
+		// question and the answer do not share a line. The erase below counts
+		// what is actually there (#449).
+		if rc != 0 {
+			lines++
+		} else {
+			_, columns := termSize()
+			lines += t.receiptHeight(prompt, choice, columns)
+		}
 		if rc != 0 || choice == "q" || choice == "Q" {
 			// A leave answers with the one Cancelled line, not the list above
 			// it: uiInput's own Cancelled is erased with the rest.
@@ -701,6 +710,18 @@ func (t uiTheme) moreLine(arrow string, cut int) string {
 func (t uiTheme) receipt(title, choice string) {
 	_, columns := termSize()
 	fmt.Fprintln(os.Stderr, t.receiptLine(title, choice, columns))
+}
+
+// receiptHeight is the rows an answered question leaves: the one receipt line,
+// or the two it folds to when the question and the choice cannot share a line.
+// An empty answer leaves the question's heading alone: one row. The numbered
+// menu erases a round before it redraws, and a two-row receipt counted as one
+// leaves the list's heading above the redrawn block (#449).
+func (t uiTheme) receiptHeight(title, choice string, columns int) int {
+	if choice == "" {
+		return 1
+	}
+	return 1 + strings.Count(t.receiptLine(title, choice, columns), "\n")
 }
 
 // receiptTitleFloor is the least of the question a one-line receipt keeps: an

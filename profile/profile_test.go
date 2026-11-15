@@ -139,6 +139,26 @@ func TestValidNameCapsTheLength(t *testing.T) {
 	}
 }
 
+// GH-449: rm must still address a profile made before #373's length limit. The
+// legacy range ends where the longest derived file (".<name>.bridge.users",
+// +14) reaches NAME_MAX, and nothing past it was ever addressable.
+func TestRemovableNameAcceptsTheLegacyRange(t *testing.T) {
+	if !RemovableName(strings.Repeat("y", MaxNameLen+1)) {
+		t.Fatal("a name inside the legacy range must be removable")
+	}
+	if !RemovableName(strings.Repeat("y", LegacyMaxNameLen)) {
+		t.Fatal("the last name whose bridge file fits NAME_MAX must be removable")
+	}
+	if RemovableName(strings.Repeat("y", LegacyMaxNameLen+1)) {
+		t.Fatal("a name whose bridge file would exceed NAME_MAX must stay refused")
+	}
+	for _, name := range []string{"Active", "ccmorph", "a-b", "a.b", ""} {
+		if RemovableName(name) {
+			t.Fatalf("%q must stay invalid", name)
+		}
+	}
+}
+
 // BadNameMsg is the one reply every command gives a name that can never be a
 // profile (#373): the reason, the name shown short, and never a second line.
 func TestBadNameMsg(t *testing.T) {

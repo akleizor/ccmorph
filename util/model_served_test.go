@@ -72,7 +72,6 @@ func TestModelServedMatchesTheShimsMappingScope(t *testing.T) {
 // and so is an id counted through its target, while ModelServed keeps judging
 // the target a session runs (issue #370).
 func TestContextServedAsksTheListingTheModelsVerbPrints(t *testing.T) {
-	fakeCurl(t, catalogue, 0)
 	const mapJSON = `{"literal-id":"absent-target","mapped-alias":"served-target"}`
 	rows, ok := GwModels("", false, catalogue)
 	if !ok {
@@ -85,6 +84,9 @@ func TestContextServedAsksTheListingTheModelsVerbPrints(t *testing.T) {
 	if !prints["literal-id"] {
 		t.Errorf("the premise fails: `ccmorph models` does not print literal-id: %v", rows)
 	}
+	// ContextServed bounds its asking (#449) but reads the same plain listing
+	// the models verb prints, so one catalogue answers both judgements.
+	fakeCurl(t, catalogue, 0)
 	for _, c := range []struct {
 		model                 string
 		contextServed, launch Served
@@ -106,6 +108,51 @@ func TestContextServedAsksTheListingTheModelsVerbPrints(t *testing.T) {
 	if got := ContextServed("literal-id", "apikey", "https://api.anthropic.com", mapJSON, "test-key"); got != ServedYes {
 		t.Errorf("native literal-id: got %d, want %d", got, ServedYes)
 	}
+}
+
+// #449: set's post-save warning must not hold the save on a route that will not
+// answer. It asks the listing the models verb reads with the probe's 2 s/5 s
+// bounds, not that verb's 20 s, and only a 2xx body is an answer: a route that
+// does not answer inside them, or refuses, is Unknown — the warning says
+// nothing — rather than a no. The asking keeps the models verb's own curl
+// shape, so a route answers it with the listing `ccmorph models` prints; the
+// probe's status-marker shape is a status probe's, and a status-only answer is
+// not a listing.
+func TestContextServedGivesUpOnARouteThatDoesNotAnswer(t *testing.T) {
+	t.Run("a timed-out route", func(t *testing.T) {
+		dir := fakeCurl(t, "", 28)
+		if got := ContextServed("absent-chat", "apikey", "http://proxy.invalid", "", "k"); got != ServedUnknown {
+			t.Fatalf("a route that timed out must be ServedUnknown, got %d", got)
+		}
+		req, _ := os.ReadFile(filepath.Join(dir, "request"))
+		for _, want := range []string{"ARG=--connect-timeout\nARG=2\n", "ARG=--max-time\nARG=5\n"} {
+			if !strings.Contains(string(req), want) {
+				t.Errorf("the warning's fetch is not bounded by %q:\n%s", want, req)
+			}
+		}
+	})
+	t.Run("a non-2xx answer", func(t *testing.T) {
+		// curl -f answers an HTTP error with no body and exit 22; the fetch
+		// must ask for exactly that, or a 404's error body would pose as a
+		// listing.
+		dir := fakeCurl(t, "", 22)
+		if got := ContextServed("absent-chat", "apikey", "http://proxy.invalid", "", "k"); got != ServedUnknown {
+			t.Fatalf("a refused request must be ServedUnknown, got %d", got)
+		}
+		req, _ := os.ReadFile(filepath.Join(dir, "request"))
+		if !strings.Contains(string(req), "ARG=-f\n") {
+			t.Errorf("the warning's fetch must let curl fail a non-2xx answer:\n%s", req)
+		}
+	})
+	t.Run("a listing that answers", func(t *testing.T) {
+		fakeCurl(t, `{"data":[{"id":"served-target"}]}`, 0)
+		if got := ContextServed("served-target", "apikey", "http://proxy.invalid", "", "k"); got != ServedYes {
+			t.Errorf("a listed id must be ServedYes, got %d", got)
+		}
+		if got := ContextServed("absent-chat", "apikey", "http://proxy.invalid", "", "k"); got != ServedNo {
+			t.Errorf("a complete listing that lacks the id must be ServedNo, got %d", got)
+		}
+	})
 }
 
 // A catalogue that cannot prove absence leaves a carried model alone (2); an
