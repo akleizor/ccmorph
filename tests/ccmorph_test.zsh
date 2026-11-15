@@ -11679,7 +11679,8 @@ run_test test_context_verb_reads_sets_and_clears_one_models_window
 # A model the profile does not list has nothing to discover, so the default it
 # would run at is all it can ever answer (#268): the read names the model
 # instead of answering, while a served unpinned model still answers and a pin
-# still reads back.
+# still reads back. A reply that is not a listing cannot rule a model out
+# either (#558): an error object or a 3xx body keeps the read answering.
 test_context_names_a_model_the_profile_does_not_list() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   fake_gateway
@@ -11703,6 +11704,23 @@ test_context_names_a_model_the_profile_does_not_list() {
   [[ "$out" == "gw: zeta-chat context 200,000 tokens · left at Claude Code's default" ]] || {
     print -u2 -- "a served model with no pin must answer the default it runs at: ${(qqq)out}"; rc=1
   }
+
+  # A reply that parses but lists nothing — a proxy's error object on a 200, or
+  # a 3xx body, which curl -f passes through because it fails only an HTTP
+  # error — says nothing about what the route serves (#558): the read keeps
+  # answering the default instead of refusing the model.
+  for body in '{"error":{"message":"rate limited","type":"upstream_error"}}' \
+              '{"message":"Moved Permanently","location":"https://other.invalid/v1/models"}'; do
+    printf '%s\n' '#!/bin/sh' "cat <<'JSON'" "$body" 'JSON' > "$HOME/bin/curl"
+    chmod +x "$HOME/bin/curl"
+    make_fake_curl_probe_aware
+    out=$(ccmorph context gw nosuch-model 2>/dev/null)
+    [[ "$out" == "gw: nosuch-model context 200,000 tokens · left at Claude Code's default" ]] || {
+      print -u2 -- "a reply without a data list must not refuse the model: ${(qqq)out}"
+      rc=1
+    }
+  done
+  fake_gateway
 
   write_profile_context gw nosuch-model=128000
   out=$(ccmorph context gw nosuch-model 2>/dev/null)
@@ -11875,6 +11893,32 @@ test_context_save_warns_only_for_models_the_listing_leaves_out_issue_370() {
     print -u2 -- 'the save itself must not depend on the listing'
     rc=1
   fi
+
+  # A reply that parses but lists nothing is the same ignorance (#558): a
+  # proxy's error object on a 200, or a 3xx body curl -f passes through — the
+  # save stays silent, and the models verb still refuses to print it as a list.
+  for body in '{"error":{"message":"rate limited","type":"upstream_error"}}' \
+              '{"message":"Moved Permanently","location":"https://other.invalid/v1/models"}'; do
+    printf '%s\n' '#!/bin/sh' "cat <<'JSON'" "$body" 'JSON' > "$HOME/bin/curl"
+    chmod +x "$HOME/bin/curl"
+    make_fake_curl_probe_aware
+    if err=$(ccmorph context gw nosuch-model 100000 2>&1 >/dev/null); then
+      [[ "$err" == '' ]] || {
+        print -u2 -- "a reply without a data list must not guess a warning: ${(qqq)err}"
+        rc=1
+      }
+    else
+      print -u2 -- 'the save itself must not depend on the listing'
+      rc=1
+    fi
+    assert_contains "$(<"$HOME/.config/ccmorph/gw.conf")" \
+      'context_window.nosuch-model=100000' \
+      'the pin still saves under a reply that lists nothing' || rc=1
+    ccmorph models gw >/dev/null 2>&1 && {
+      print -u2 -- 'the models verb must refuse a reply with no data list'
+      rc=1
+    }
+  done
 
   rm -rf "$test_home"
   return $rc

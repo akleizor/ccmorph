@@ -1059,7 +1059,10 @@ func TestCatalogueEndpointsAndTTL(t *testing.T) {
 }
 
 func TestCatalogueFailuresSendAsAsked(t *testing.T) {
-	for name, body := range map[string]string{"bad json": `{`, "not object": `[1]`, "data number": `{"data":1}`, "oversize": `{"data":"` + strings.Repeat("x", catalogueMaxBytes) + `"}`} {
+	// The data-less rows are #558's replies: a proxy's error object on a 200, a
+	// 3xx body curl -f passes through — no model ids either way, so the shim
+	// sends the model as asked instead of ruling it out.
+	for name, body := range map[string]string{"bad json": `{`, "not object": `[1]`, "data number": `{"data":1}`, "error object": `{"error":"rate limited"}`, "redirect body": `{"message":"Moved Permanently"}`, "oversize": `{"data":"` + strings.Repeat("x", catalogueMaxBytes) + `"}`} {
 		hits := 0
 		c := catalogueServer(t, body, &hits)
 		if got := c.served("k", "claude-opus-5"); len(got) != 0 {

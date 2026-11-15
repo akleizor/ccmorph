@@ -84,6 +84,14 @@ func TestContextServedAsksTheListingTheModelsVerbPrints(t *testing.T) {
 	if !prints["literal-id"] {
 		t.Errorf("the premise fails: `ccmorph models` does not print literal-id: %v", rows)
 	}
+	// #558: a reply that parses but carries no data list — a proxy's error
+	// object, a 3xx body — is no listing to print either: the models column
+	// refuses it rather than answering a confident nothing.
+	for _, body := range []string{`{"error":{"message":"rate limited"}}`, `{"message":"Moved Permanently"}`} {
+		if _, ok := GwModels("", false, body); ok {
+			t.Errorf("a reply with no data list must not print as the models column: %s", body)
+		}
+	}
 	// ContextServed bounds its asking (#449) but reads the same plain listing
 	// the models verb prints, so one catalogue answers both judgements.
 	fakeCurl(t, catalogue, 0)
@@ -112,12 +120,13 @@ func TestContextServedAsksTheListingTheModelsVerbPrints(t *testing.T) {
 
 // #449: set's post-save warning must not hold the save on a route that will not
 // answer. It asks the listing the models verb reads with the probe's 2 s/5 s
-// bounds, not that verb's 20 s, and only a 2xx body is an answer: a route that
-// does not answer inside them, or refuses, is Unknown — the warning says
-// nothing — rather than a no. The asking keeps the models verb's own curl
-// shape, so a route answers it with the listing `ccmorph models` prints; the
-// probe's status-marker shape is a status probe's, and a status-only answer is
-// not a listing.
+// bounds, not that verb's 20 s, and only a body that came back is an answer: a
+// route that does not answer inside them, or refuses, or answers with a body
+// that is not a listing (#558), is Unknown — the warning says nothing — rather
+// than a no. The asking keeps the models verb's own curl shape, so a route
+// answers it with the listing `ccmorph models` prints; the probe's
+// status-marker shape is a status probe's, and a status-only answer is not a
+// listing.
 func TestContextServedGivesUpOnARouteThatDoesNotAnswer(t *testing.T) {
 	t.Run("a timed-out route", func(t *testing.T) {
 		dir := fakeCurl(t, "", 28)
@@ -144,6 +153,21 @@ func TestContextServedGivesUpOnARouteThatDoesNotAnswer(t *testing.T) {
 			t.Errorf("the warning's fetch must let curl fail a non-2xx answer:\n%s", req)
 		}
 	})
+	t.Run("an answer that is not a listing", func(t *testing.T) {
+		// #558: a 200 error object — or a 3xx body, which curl -f passes
+		// through because it fails only an HTTP error — parses as JSON but
+		// carries no data list, so it cannot prove a model absent either: the
+		// warning says nothing, exactly like a route that did not answer.
+		for _, body := range []string{
+			`{"error":{"message":"rate limited"}}`,
+			`{"message":"Moved Permanently","location":"https://other.invalid/v1/models"}`,
+		} {
+			fakeCurl(t, body, 0)
+			if got := ContextServed("absent-chat", "apikey", "http://proxy.invalid", "", "k"); got != ServedUnknown {
+				t.Errorf("%s: a reply with no data list must be ServedUnknown, got %d", body, got)
+			}
+		}
+	})
 	t.Run("a listing that answers", func(t *testing.T) {
 		fakeCurl(t, `{"data":[{"id":"served-target"}]}`, 0)
 		if got := ContextServed("served-target", "apikey", "http://proxy.invalid", "", "k"); got != ServedYes {
@@ -151,6 +175,37 @@ func TestContextServedGivesUpOnARouteThatDoesNotAnswer(t *testing.T) {
 		}
 		if got := ContextServed("absent-chat", "apikey", "http://proxy.invalid", "", "k"); got != ServedNo {
 			t.Errorf("a complete listing that lacks the id must be ServedNo, got %d", got)
+		}
+	})
+	t.Run("the models verb's own curl line under the probe's bounds", func(t *testing.T) {
+		// #558: the bounded fetch once hand-copied the models verb's curl
+		// arguments, and a copy can drift. Both build the line from the one
+		// definition, so apart from the bounds each names, the warning's ask
+		// is the models verb's own.
+		full := fakeCurl(t, `{"data":[{"id":"served-target"}]}`, 0)
+		ModelsListing("http://proxy.invalid", "k", io.Discard)
+		modelsLine, _ := os.ReadFile(filepath.Join(full, "request"))
+		bounded := fakeCurl(t, `{"data":[{"id":"served-target"}]}`, 0)
+		if got := ContextServed("served-target", "apikey", "http://proxy.invalid", "", "k"); got != ServedYes {
+			t.Fatalf("a listed id must be ServedYes, got %d", got)
+		}
+		boundedLine, _ := os.ReadFile(filepath.Join(bounded, "request"))
+		stripBounds := func(log []byte) string {
+			var kept []string
+			lines := strings.Split(string(log), "\n")
+			for i := 0; i < len(lines); i++ {
+				if a, ok := strings.CutPrefix(lines[i], "ARG="); ok {
+					if a == "--connect-timeout" || a == "--max-time" {
+						i++ // each bound's value follows its flag
+						continue
+					}
+					kept = append(kept, a)
+				}
+			}
+			return strings.Join(kept, "\n")
+		}
+		if stripBounds(modelsLine) != stripBounds(boundedLine) {
+			t.Errorf("the warning's line must be the models verb's own apart from the bounds:\nmodels verb: %s\nbounded: %s", modelsLine, boundedLine)
 		}
 	})
 }
@@ -169,9 +224,16 @@ func TestModelServedWordsUncertaintyAndAbsence(t *testing.T) {
 		{"has_more still serves a listed id", `{"has_more":true,"data":[{"id":"alpha-chat"}]}`, 0, "alpha-chat", ServedYes},
 		{"non-string id", `{"data":[{"id":[]},{"id":"other-model"}]}`, 0, "absent-chat", ServedUnknown},
 		{"http error", `{"error":{"message":"rate limited"}}`, 22, "alpha-chat", ServedUnknown},
+		// #558: the same body on a 200 — or a 3xx body, which curl -f passes
+		// through because it fails only an HTTP error — parses but lists
+		// nothing, so it cannot prove a model absent either; only a data list,
+		// empty or not, is a route's own answer.
+		{"an error object on a 200", `{"error":{"message":"rate limited"}}`, 0, "alpha-chat", ServedUnknown},
+		{"a 3xx body curl -f passes through", `{"message":"Moved Permanently","location":"https://other.invalid/v1/models"}`, 0, "alpha-chat", ServedUnknown},
 		{"object data", `{"data":{"alpha-chat":{}}}`, 0, "alpha-chat", ServedUnknown},
 		{"string data", `{"data":"alpha-chat"}`, 0, "alpha-chat", ServedUnknown},
 		{"bare array", `[{"id":"alpha-chat"}]`, 0, "alpha-chat", ServedUnknown},
+		{"an empty listing", `{"data":[]}`, 0, "absent-chat", ServedNo},
 		{"explicit non-chat", `{"data":[{"id":[]},{"id":"image-only","capabilities":{"chat_completion":false}}]}`, 0, "image-only", ServedNo},
 		{"undeclared chat", `{"data":[{"id":"undeclared-chat","capabilities":{"embeddings":true}}]}`, 0, "undeclared-chat", ServedYes},
 		{"bracketed id intact", `{"data":[{"id":"vendor[beta]"}]}`, 0, "vendor[beta]", ServedYes},
