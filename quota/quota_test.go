@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -1898,28 +1899,42 @@ func TestQuotaSpendDoesNotDecodeAFutureCacheVersion(t *testing.T) {
 	}
 }
 
-// The cache write never fails on a chmod it does not need (#449): it keeps the
-// write-and-rename behaviour every cache write had, which left the temp's own
-// mode. A umask tells the two paths apart — a chmod to 0600 ignores it and
-// lands 0600, while the temp's own 0600 filtered by umask 0200 lands 0400. On a
-// filesystem whose fchmod fails, the chmod path would abort the write and leave
-// no cache at all.
-func TestQuotaCacheWriteKeepsTheTempsMode(t *testing.T) {
+// The Reading cache is mode 0600 whatever the process umask (#553): a umask
+// holding the owner-read bit leaves CreateTemp's 0600 at 0200, so the next
+// process cannot read the cache at all, every read re-reads the store whole and
+// nothing says why. The second process is the subject — a read never consults a
+// umask, only the mode the writer pinned. The chmod that pins it stays
+// best-effort, so the write still never refuses over a chmod it does not need
+// (#449).
+func TestQuotaCacheWritePinsItsModeUnderARestrictiveUmask(t *testing.T) {
+	// The fresh run the cache exists for, at the ordinary umask: it reads what
+	// the writer below left behind.
+	if os.Getenv("CCMORPH_QUOTA_CACHE_UMASK_CHILD") == "1" {
+		syscall.Umask(0o022)
+		if r, ok := load("gw"); !ok || r.Plan != "Max" {
+			t.Fatalf("a fresh process could not load the cache: %+v, %v", r, ok)
+		}
+		return
+	}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	if err := os.MkdirAll(cacheDir(), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	old := syscall.Umask(0o200)
-	defer syscall.Umask(old)
+	old := syscall.Umask(0o400)
 	save("gw", Reading{Plan: "Max", ReadAt: 1})
+	syscall.Umask(old)
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestQuotaCacheWritePinsItsModeUnderARestrictiveUmask$")
+	cmd.Env = append(os.Environ(), "CCMORPH_QUOTA_CACHE_UMASK_CHILD=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("a fresh process could not load the cache: %v\n%s", err, out)
+	}
+
 	st, err := os.Stat(cachePath("gw"))
 	if err != nil {
-		t.Fatalf("a cache write that needs no chmod must still land: %v", err)
+		t.Fatal(err)
 	}
-	if got := st.Mode().Perm(); got != 0o400 {
-		t.Fatalf("the cache landed %o, want the temp's own 0400: the write chmod'd a mode it did not need", got)
-	}
-	if r, ok := load("gw"); !ok || r.Plan != "Max" {
-		t.Fatalf("the cache must read back what was saved, got %+v, %v", r, ok)
+	if got := st.Mode().Perm(); got != 0o600 {
+		t.Fatalf("the cache landed %o, want 0600 whatever the umask", got)
 	}
 }
