@@ -384,7 +384,7 @@ func (in *Inputs) Resolve(model string) Record {
 		rec.Unprobed, rec.Budget = true, UnknownBudget
 	}
 	if strings.HasPrefix(bare, "claude-") && rec.Window >= oneM {
-		rec.SendID = bare + "[1m]"
+		rec.SendID = bare + tier.Marker
 	}
 	return rec
 }

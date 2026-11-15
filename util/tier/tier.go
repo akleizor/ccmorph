@@ -36,6 +36,12 @@ func TierWord(model string) string {
 	return strings.ToLower(TrimWindowMarker(model))
 }
 
+// Marker is the window marker's one spelling: the trailing [1m] that names a
+// context-window variant. TrimWindowMarker takes it off and the resolver puts
+// it back, so both read it here and nowhere else spells it — the dedup guard
+// counts the quoted literal outside this leaf (#544).
+const Marker = "[1m]"
+
 // TrimWindowMarker is a model id without its trailing [1m] context-window
 // marker: opus[1m] and glm-4.6[1M] are their bare ids on every surface that
 // names a model — the resolver, the served adjudicator, the report's model
@@ -46,8 +52,8 @@ func TierWord(model string) string {
 // precedes it. Nothing else about the id changes — the case a listing
 // compares (MiniMax-M3) is the case it arrived with.
 func TrimWindowMarker(model string) string {
-	if len(model) >= 4 && strings.EqualFold(model[len(model)-4:], "[1m]") {
-		return model[:len(model)-4]
+	if len(model) >= len(Marker) && strings.EqualFold(model[len(model)-len(Marker):], Marker) {
+		return model[:len(model)-len(Marker)]
 	}
 	return model
 }

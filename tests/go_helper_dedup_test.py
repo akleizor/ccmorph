@@ -96,6 +96,17 @@ fallback and the HOME re-export; the adapter's private `home()` is gone and
 deliberately-parallel derivation of its own — it must find `lib/ccmorph.sh`
 from zsh before any Go code can run — so the guard bans only the Go env
 reads, not the zsh spelling.
+
+Issue #544: the window marker — the trailing `[1m]` that names a
+context-window variant — was stripped by hand on fourteen surfaces, each
+reading only the lowercase spelling, so a `[1M]` id kept its marker and
+missed every lookup keyed on the bare id; four more sites cut a model id at
+its first bracket, so an id whose own brackets are part of it (`vendor[beta]`)
+reached the adapter as `vendor`. The marker's one spelling is `tier.Marker`
+(the strip and the resolver's append both read it) and the strip is
+`tier.TrimWindowMarker`, both in the leaf every package can import; this
+guard fails on the quoted literal spelled in code, and on the first-bracket
+cut, outside that leaf.
 """
 import os
 import re
@@ -394,6 +405,75 @@ def test_the_tier_words_are_spelled_once():
         f"the tier env key's builder is no longer in {TIER_DEFINITION.relative_to(ROOT)} (#539)")
 
 
+# #544: the window marker's [1m] spelling was stripped by hand on fourteen
+# surfaces, each reading only the lowercase one, so a [1M] id (a spelling
+# gateway listings serve) kept its marker and missed every lookup keyed on the
+# bare id — and four more sites cut a model id at its first bracket, so an id
+# whose own brackets are part of it (vendor[beta]) reached the adapter as
+# vendor. The marker's one spelling is tier.Marker — the strip and the
+# resolver's append both read it — so this guard fails on the quoted literal
+# spelled in code outside the leaf. A comment may still name the marker (the
+# fnmatch doc in ctxwindow/conf.go spells it quoted), so only code lines are
+# walked; the leaf is read at call time, as go_sources is, so a fixture ROOT
+# walks its own leaf. The first-bracket cut's one deliberate home is named
+# with its reason in BRACKET_CUT_HOMES; everywhere else the marker comes off
+# through tier.TrimWindowMarker, which removes only a trailing one.
+MARKER = '"[1m]"'
+MARKERS = ('"[1m]"', '"[1M]"')
+BRACKET_CUT = ', "[",'
+BRACKET_CUT_HOMES = {
+    "util/engine.go": "bareID's one deliberate cut: a [1m] tag the gateway spelled "
+                      "mid-id (claude-x[1m]-eu) is the marker in its kill-switch "
+                      "spelling, so the tag and what follows it are no more the "
+                      "registry's id than a trailing marker is (#544)",
+}
+
+
+def code_lines(text):
+    """The file's lines that are code, not // comments.
+
+    The tree holds no block comments, and a doc mention of the counted
+    literals goes on its own line (the fnmatch doc in ctxwindow/conf.go), so
+    a full-line comment is the one shape a comment gives them."""
+    return [line for line in text.splitlines()
+            if not line.lstrip().startswith("//")]
+
+
+def test_the_window_marker_is_spelled_once():
+    leaf = ROOT / "util" / "tier"
+    offenders = []
+    for path in go_sources():
+        if path.name.endswith("_test.go") or leaf in path.parents:
+            continue
+        if any(marker in line for line in code_lines(path.read_text())
+               for marker in MARKERS):
+            offenders.append(str(path.relative_to(ROOT)))
+    assert not offenders, (
+        "the window marker is hand-spelled in code outside util/tier (#544): "
+        "tier.Marker owns the spelling, and tier.TrimWindowMarker the strip: "
+        + "; ".join(offenders))
+    text = (leaf / "tier.go").read_text()
+    assert text.count(MARKER) == 1, (
+        "the window marker's one definition is no longer spelled once in "
+        f"{(leaf / 'tier.go').relative_to(ROOT)} (#544)")
+
+
+def test_a_model_id_is_not_cut_at_its_first_bracket():
+    offenders = []
+    for path in go_sources():
+        if path.name.endswith("_test.go"):
+            continue
+        if path.relative_to(ROOT).as_posix() in BRACKET_CUT_HOMES:
+            continue
+        if any(BRACKET_CUT in line for line in code_lines(path.read_text())):
+            offenders.append(str(path.relative_to(ROOT)))
+    assert not offenders, (
+        "a model id is cut at its first bracket outside util/engine.go's "
+        "kill-switch spelling (#544): tier.TrimWindowMarker removes only a "
+        "trailing marker, so an id's own brackets (vendor[beta]) pass whole: "
+        + "; ".join(offenders))
+
+
 # #539: the response-identity Key — id, stamp and turn joined on NULs — was
 # spelled twice, writer and reader (shim's rowIdentity, quota's readRow),
 # both citing #298 and flagged in #514's handoff as belonging to that fix.
@@ -639,3 +719,49 @@ def test_a_copy_in_a_worktree_git_cannot_open_still_fails_both_guards(
         (sibling / ".git").unlink()
     monkeypatch.setattr(sys.modules[__name__], "ROOT", repo)
     assert_both_guards_fail(".claude/worktrees/sibling/shim/sidecar.go")
+
+
+# The stray the #544 guards exist for: main's own spellings — the
+# case-sensitive strip and the first-bracket cut — planted as an untracked
+# file the walk still reads.
+STRAY_STRIP = ('package shim\n\n'
+               'import "strings"\n\n'
+               'func marked(m string) string { return strings.TrimSuffix(m, "[1m]") }\n'
+               'func cut(m string) string { return strings.SplitN(m, "[", 2)[0] }\n')
+
+# The comment spelling the guards walk past: the fnmatch doc's own shape.
+MARKER_DOC = ('package shim\n\n'
+              '// a model id may hold "/" and "[1m]", which are plain characters here.\n')
+
+
+def plant(repo, name, text):
+    """Write `text` at `name` in the fixture checkout `repo`, untracked."""
+    target = repo / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text)
+
+
+def plant_leaf(repo):
+    """The tier leaf, copied from the real one, so a fixture checkout passes
+    the marker guard's home check."""
+    plant(repo, "util/tier/tier.go", TIER_DEFINITION.read_text())
+
+
+def test_a_hand_spelled_marker_fails_both_guards(tmp_path, monkeypatch):
+    repo = checkout(tmp_path)
+    plant(repo, "shim/strip.go", STRAY_STRIP)
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", repo)
+    with pytest.raises(AssertionError, match=re.escape("shim/strip.go")):
+        test_the_window_marker_is_spelled_once()
+    with pytest.raises(AssertionError, match=re.escape("shim/strip.go")):
+        test_a_model_id_is_not_cut_at_its_first_bracket()
+
+
+def test_a_marker_spelled_only_in_a_comment_does_not_fail_the_guards(
+        tmp_path, monkeypatch):
+    repo = checkout(tmp_path)
+    plant(repo, "shim/doc.go", MARKER_DOC)
+    plant_leaf(repo)
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", repo)
+    test_the_window_marker_is_spelled_once()
+    test_a_model_id_is_not_cut_at_its_first_bracket()
