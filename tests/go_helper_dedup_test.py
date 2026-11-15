@@ -351,11 +351,13 @@ def test_contextenv_does_not_spell_authkeys_precedence():
 # allowlists spelled the uppercase keys; both are built from the word list now
 # — the picker's rows and the wizard's env keys from util/tier's TierWords
 # and TierEnvKey — so the guard counts those spellings too: a word
-# hand-spelled in either form fails it. profile and ctxwindow cannot import
-# util (#423), so their env-key allowlists stay hand-spelled and are the key
-# form's allowed homes beside the builder's own file.
+# hand-spelled in either form fails it.
+#
+# #544: the allowlists that stayed hand-spelled because profile and ctxwindow
+# cannot import util (#423) build from the leaf now — util/tier sits beside
+# util the way util/paths does, importable by both — so the key form's one
+# home is the builder's own file.
 TIER_DEFINITION = ROOT / "util" / "tier" / "tier.go"
-TIER_KEY_HOMES = {ROOT / "profile" / "envkeys.go", ROOT / "ctxwindow" / "conf.go"}
 # The picker-row spelling: a tier word and the tab that follows it.
 TIER_ROWS = ("fable\\t", "opus\\t", "sonnet\\t", "haiku\\t")
 # The env-key spelling: the prefix of every ANTHROPIC_DEFAULT_<word>_MODEL key,
@@ -373,7 +375,7 @@ def test_the_tier_words_are_spelled_once():
             words.append(f"{path.relative_to(ROOT)} spells the word")
         if any(row in text for row in TIER_ROWS):
             rows.append(f"{path.relative_to(ROOT)} spells a picker row")
-        if TIER_KEY in text and path != TIER_DEFINITION and path not in TIER_KEY_HOMES:
+        if TIER_KEY in text and path != TIER_DEFINITION:
             keys.append(f"{path.relative_to(ROOT)} spells the env key")
     assert not words, (
         "the tier-word set is hand-spelled outside util/tier/tier.go (#520): "
@@ -382,8 +384,8 @@ def test_the_tier_words_are_spelled_once():
         "a picker alias row is hand-spelled instead of built from "
         "util.TierWords (#539): " + "; ".join(rows))
     assert not keys, (
-        "the tier env key is hand-spelled outside util.TierEnvKey and the "
-        "allowlists that cannot import it (#539): " + "; ".join(keys))
+        "the tier env key is hand-spelled outside util/tier's TierEnvKey "
+        "(#539): " + "; ".join(keys))
     text = TIER_DEFINITION.read_text()
     assert text.count('"fable"') == 1, (
         "the tier-word set's one definition is no longer spelled once in "
