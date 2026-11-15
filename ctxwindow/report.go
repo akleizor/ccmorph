@@ -5,7 +5,8 @@ import (
 	"io"
 	"sort"
 	"strings"
-	"unicode"
+
+	"github.com/akleizor/ccmorph/textwidth"
 )
 
 // reportWidth is the width the probe's report wraps to. ccmorph-core has no
@@ -21,69 +22,6 @@ func plural(n int, word string) string {
 	return fmt.Sprintf("%d %ss", n, word)
 }
 
-// wideRanges are the East Asian Wide (W) and Fullwidth (F) code points, which
-// take two terminal cells each: the scripts and forms a model id, a profile
-// name or a report sentence can carry.
-var wideRanges = [][2]rune{
-	{0x1100, 0x115F},   // Hangul Jamo initial consonants
-	{0x2E80, 0x303E},   // CJK radicals, Kangxi, CJK symbols and punctuation
-	{0x3041, 0x33FF},   // Hiragana, Katakana, Bopomofo, CJK compatibility
-	{0x3400, 0x4DBF},   // CJK Unified Ideographs Extension A
-	{0x4E00, 0x9FFF},   // CJK Unified Ideographs
-	{0xA000, 0xA4CF},   // Yi
-	{0xA960, 0xA97F},   // Hangul Jamo Extended-A
-	{0xAC00, 0xD7A3},   // Hangul Syllables
-	{0xF900, 0xFAFF},   // CJK Compatibility Ideographs
-	{0xFE10, 0xFE19},   // Vertical forms
-	{0xFE30, 0xFE6F},   // CJK Compatibility Forms, Small Form Variants
-	{0xFF00, 0xFF60},   // Fullwidth Forms
-	{0xFFE0, 0xFFE6},   // Fullwidth signs
-	{0x16FE0, 0x16FE4}, // Ideographic symbols and punctuation
-	{0x17000, 0x18CFF}, // Tangut
-	{0x1B000, 0x1B2FF}, // Kana Supplement and Kana Extended-A
-	{0x1F004, 0x1F004}, // Mahjong tile red dragon
-	{0x1F0CF, 0x1F0CF}, // playing card black joker
-	{0x1F18E, 0x1F18E},
-	{0x1F191, 0x1F19A},
-	{0x1F200, 0x1F2FF}, // Enclosed Ideographic Supplement
-	{0x1F300, 0x1F64F}, // Misc Symbols and Pictographs, Emoticons
-	{0x1F680, 0x1F6FF}, // Transport and Map Symbols
-	{0x1F900, 0x1F9FF}, // Supplemental Symbols and Pictographs
-	{0x1FA70, 0x1FAFF},
-	{0x20000, 0x2FFFD}, // CJK Unified Ideographs Extension B-F
-	{0x30000, 0x3FFFD}, // CJK Unified Ideographs Extension G-H
-}
-
-func wide(r rune) bool {
-	for _, rg := range wideRanges {
-		if r < rg[0] {
-			return false
-		}
-		if r <= rg[1] {
-			return true
-		}
-	}
-	return false
-}
-
-// cells is how many terminal cells s takes: an East Asian wide or fullwidth
-// rune takes two, a combining mark none, every other rune one. The report's
-// wrapping and columns measure this, so a CJK model id keeps them aligned; a
-// rune count made such a line twice as wide as the terminal (#449).
-func cells(s string) int {
-	n := 0
-	for _, r := range s {
-		switch {
-		case unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r):
-		case wide(r):
-			n += 2
-		default:
-			n++
-		}
-	}
-	return n
-}
-
 // wrapLine writes text as lines no wider than reportWidth cells. It breaks
 // only at spaces, so no word is split, and starts continuations with cont. A
 // word longer than the line stays whole on a line of its own.
@@ -95,7 +33,7 @@ func wrapLine(w io.Writer, text, first, cont string) {
 	}
 	line := first + words[0]
 	for _, word := range words[1:] {
-		if cells(line)+1+cells(word) <= reportWidth {
+		if textwidth.Cells(line)+1+textwidth.Cells(word) <= reportWidth {
 			line += " " + word
 			continue
 		}
@@ -122,7 +60,7 @@ func ReportUnresolved(w io.Writer, profile string, models []string) {
 	if len(models) == 1 {
 		free := "    ccmorph context " + profile + " " + models[0] + " <tokens>"
 		paid := "    ccmorph probe " + profile + " --model " + models[0] + " --allow-inference"
-		if cells(free) <= reportWidth && cells(paid) <= reportWidth {
+		if textwidth.Cells(free) <= reportWidth && textwidth.Cells(paid) <= reportWidth {
 			model = models[0]
 		}
 	}

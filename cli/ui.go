@@ -15,6 +15,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/akleizor/ccmorph/textwidth"
 	"github.com/akleizor/ccmorph/util"
 )
 
@@ -45,24 +46,6 @@ func themeFor(fd int) uiTheme {
 
 func uiErr(t uiTheme, msg string) { fmt.Fprintf(os.Stderr, "%sccmorph:%s %s\n", t.red, t.reset, msg) }
 
-// cells is the terminal width of s.
-// shortcut: wide ranges are CJK/Hangul/fullwidth/emoji only, no full East Asian Width table; add one if a picker misaligns.
-func cells(s string) int {
-	n := 0
-	for _, r := range s {
-		switch {
-		case unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) || r == 0x200d:
-		case r >= 0x1100 && r <= 0x115f, r >= 0x2e80 && r <= 0xa4cf, r >= 0xac00 && r <= 0xd7a3,
-			r >= 0xf900 && r <= 0xfaff, r >= 0xfe30 && r <= 0xfe4f, r >= 0xff00 && r <= 0xff60,
-			r >= 0xffe0 && r <= 0xffe6, r >= 0x1f300 && r <= 0x1faff, r >= 0x20000 && r <= 0x3fffd:
-			n += 2
-		default:
-			n++
-		}
-	}
-	return n
-}
-
 func noCntrl(s string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
@@ -81,10 +64,10 @@ func fit(s string, width int) string {
 	if width < 1 {
 		return ""
 	}
-	if cells(s) <= width {
+	if textwidth.Cells(s) <= width {
 		return s
 	}
-	for cells(s) >= width {
+	for textwidth.Cells(s) >= width {
 		_, n := utf8.DecodeLastRuneInString(s)
 		s = s[:len(s)-n]
 	}
@@ -113,7 +96,7 @@ func rowID(row string) string {
 func labelWidth(rows []string, display string) int {
 	w := 0
 	for _, r := range rows {
-		if c := cells(noCntrl(rowID(visible(r, display)))); c > w {
+		if c := textwidth.Cells(noCntrl(rowID(visible(r, display)))); c > w {
 			w = c
 		}
 	}
@@ -157,7 +140,7 @@ func (t uiTheme) label(row string, width int, focused bool, rowWidth int) string
 			detail = fit(detail, rowWidth-width-uiGap)
 		}
 		if detail != "" {
-			pad = strings.Repeat(" ", max(0, width-cells(lab)+uiGap))
+			pad = strings.Repeat(" ", max(0, width-textwidth.Cells(lab)+uiGap))
 		}
 	}
 	out := lab
@@ -740,9 +723,9 @@ const receiptTitleFloor = 12
 func (t uiTheme) receiptLine(title, choice string, columns int) string {
 	choice = noCntrl(choice)
 	title = strings.TrimRight(title, " ")
-	w := columns - cells(choice) - 3
+	w := columns - textwidth.Cells(choice) - 3
 	if w-len(uiMargin) < receiptTitleFloor {
-		if len(uiMargin)+cells(choice) <= columns {
+		if len(uiMargin)+textwidth.Cells(choice) <= columns {
 			// The choice fits a line of its own: the line breaks before it, so
 			// no line outgrows the terminal and the choice is still whole.
 			return t.heading(title, columns-2) + " " + t.focus + "›" + t.reset + "\n" + uiMargin + t.gray + choice + t.reset
@@ -916,7 +899,7 @@ func uiInput(prompt string, secret bool) (string, int) {
 		if !secret {
 			echoed = value
 		}
-		eraseLines(2 + typedLines(cells(echoed), columns))
+		eraseLines(2 + typedLines(textwidth.Cells(echoed), columns))
 	}
 	if rc != 0 {
 		t.cancelled()
@@ -955,7 +938,7 @@ func readKeyLine(k *keys, sigs <-chan os.Signal, secret bool, w *os.File) (strin
 	var value []byte
 	erase := func(removed []byte) {
 		if !secret {
-			fmt.Fprint(w, strings.Repeat("\b \b", cells(string(removed))))
+			fmt.Fprint(w, strings.Repeat("\b \b", textwidth.Cells(string(removed))))
 		}
 	}
 	for {
