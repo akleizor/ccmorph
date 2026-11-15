@@ -8297,13 +8297,20 @@ test_relay_relaunch_keeps_a_mapped_alias_allowed() {
   source "$CCMORPH_SOURCE"
 
   # The window marker comes off for the map lookup through the one strip the
-  # shim also uses (#544), which reads either spelling, so a [1M]-spelled id is
-  # a mapped alias here exactly as it is there. An id that is neither a map key
-  # nor a served row stays out, as it does today.
+  # shim also uses (tier.TrimWindowMarker, #544): it removes a trailing [1m] in
+  # either case and nothing else. So claude-sonnet-5-5[1M] is a mapped alias
+  # here exactly as the shim maps it -- before #544 both read only the
+  # lowercase marker and this leg expected it absent. What that leg caught, a
+  # launched spelling the shim's strip would not reduce to a map key being let
+  # in anyway, the last three legs still catch: a bracketed tag on a map key
+  # that is not the marker (sol-alias[2M], sol-alias[beta]) and the marker on
+  # an id no map names (ghost-model[1M]). An id that is neither a map key nor a
+  # served row stays out, as it does today.
   local spec model expect launched allowed
   for spec in 'sol-alias:allowed' 'claude-sonnet-5-5:allowed' \
               'claude-sonnet-5-5[1m]:allowed' 'claude-sonnet-5-5[1M]:allowed' \
-              'ghost-model:absent'; do
+              'ghost-model:absent' 'sol-alias[2M]:absent' \
+              'sol-alias[beta]:absent' 'ghost-model[1M]:absent'; do
     model="${spec%%:*}"
     expect="${spec##*:}"
     print -r -- '{}' > "$HOME/.config/ccmorph/profiles/gw/settings.json"
@@ -8340,6 +8347,10 @@ test_relay_relaunch_keeps_a_mapped_alias_allowed() {
       assert_contains ",$allowed," ",$launched," \
         "the relaunch on '$model' carries it as --model, so the projected list must keep it" || rc=1
     else
+      [[ "$launched" == "$model" ]] || {
+        print -u2 -- "the relaunch on '$model' must reach Claude Code as spelled, or its exclusion proves nothing: got '$launched'"
+        rc=1
+      }
       assert_not_contains ",$allowed," ",$launched," \
         "'$model' is no mapped alias and no served id, so it stays out of the list as it does today" || rc=1
     fi
