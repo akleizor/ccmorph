@@ -161,6 +161,24 @@ func TestRemovableNameAcceptsTheLegacyRange(t *testing.T) {
 	}
 }
 
+// RemovableBadNameMsg is the refusal rm gives: the same one line, with the
+// length reason naming the bound rm applies, not ValidName's (#551).
+func TestRemovableBadNameMsgNamesRmsOwnBound(t *testing.T) {
+	long := strings.Repeat("y", 300)
+	got := RemovableBadNameMsg(long)
+	want := "invalid profile name '" + strings.Repeat("y", 32) +
+		"…': too long; at most 250 of A-Z, a-z, 0-9 and _"
+	if got != want {
+		t.Fatalf("RemovableBadNameMsg = %q, want %q", got, want)
+	}
+	if got == BadNameMsg(long) {
+		t.Fatal("the removable refusal must name rm's own bound, not ValidName's 200")
+	}
+	if RemovableBadNameMsg("my-work") != BadNameMsg("my-work") {
+		t.Fatal("a name refused for its shape hears the same reason either way")
+	}
+}
+
 // BadNameMsg is the one reply every command gives a name that can never be a
 // profile (#373): the reason, the name shown short, and never a second line.
 func TestBadNameMsg(t *testing.T) {
