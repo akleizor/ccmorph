@@ -838,12 +838,38 @@ func (l *launcher) migrateState() bool {
 }
 
 func (l *launcher) migrateOnce() bool {
-	legacy := []string{filepath.Join(l.dir, "model-registry"), filepath.Join(l.dir, "model-registry.conf")}
+	legacy, plain := l.legacyContextState()
+	if plain && isDarwin() {
+		if err := util.KeychainMigrate(l.dir); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+	}
+	return l.migrateContextPaths(legacy)
+}
+
+// migrateContextState is the context half of migrateState, for a caller that
+// must not also move credentials: doctor stays read-only outside the effort
+// row's context read (#556), so it runs the same model-window --migrate the
+// launch does and never util.KeychainMigrate, which rewrites every profile's
+// plain credentials.
+func (l *launcher) migrateContextState() bool {
+	if os.Getenv("CCMORPH_CONTEXT_LOCKED") != "" {
+		return true
+	}
+	legacy, _ := l.legacyContextState()
+	return l.migrateContextPaths(legacy)
+}
+
+// legacyContextState lists the paths whose presence means legacy context state
+// still needs migration, and reports whether a conf also holds a plaintext
+// credential that secureDirs moves to the Keychain.
+func (l *launcher) legacyContextState() (legacy []string, plain bool) {
+	legacy = []string{filepath.Join(l.dir, "model-registry"), filepath.Join(l.dir, "model-registry.conf")}
 	g1, _ := filepath.Glob(filepath.Join(globQuote(l.profileDirs), "*", "cache", "context-window"))
 	g2, _ := filepath.Glob(filepath.Join(globQuote(l.dir), "*.conf.lock"))
 	legacy = append(append(legacy, g1...), g2...)
 	confs, _ := filepath.Glob(filepath.Join(globQuote(l.dir), "*.conf"))
-	inline, plain := false, false
+	inline := false
 	for _, c := range confs {
 		b, err := os.ReadFile(c)
 		if err != nil {
@@ -862,11 +888,11 @@ func (l *launcher) migrateOnce() bool {
 	if inline {
 		legacy = append(legacy, l.dir)
 	}
-	if plain && isDarwin() {
-		if err := util.KeychainMigrate(l.dir); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-		}
-	}
+	return legacy, plain
+}
+
+// migrateContextPaths runs the context migration when any legacy path remains.
+func (l *launcher) migrateContextPaths(legacy []string) bool {
 	for _, p := range legacy {
 		if _, err := os.Lstat(p); err == nil {
 			if _, _, rc := l.core([]string{"CCMORPH_STATE_DIR=" + l.dir}, "", "model-window", "--migrate"); rc != 0 {
