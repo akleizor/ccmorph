@@ -341,11 +341,17 @@ func (in *Inputs) Resolve(model string) Record {
 		matched, found := "", false
 		if _, ok := discovered[target]; ok {
 			matched, found = target, true
-		} else if _, ok := discovered[model]; ok {
+		} else if model != bare && target == bare {
 			// The discovered table is keyed by served ids, and a listing serves
-			// the marked spelling too (#544).
-			matched, found = model, true
-		} else {
+			// the marked spelling too, so an unmapped id's marked spelling is
+			// probed as written — but only unmapped: a mapped id's own row is
+			// the mapping source's, and the shim serves the target, so it never
+			// sizes the session (#544).
+			if _, ok := discovered[model]; ok {
+				matched, found = model, true
+			}
+		}
+		if !found {
 			for _, p := range slices.Sorted(maps.Keys(discovered)) {
 				if glob(target, p) {
 					matched, found = p, true
