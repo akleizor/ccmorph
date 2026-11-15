@@ -114,6 +114,42 @@ func TestThePickerKeepsAModelSavedUnderEitherMarkerSpellingIssue544(t *testing.T
 	}
 }
 
+// GH-544: the picker's allowlist admits a launch only through the map key the
+// shared strip reduces it to: a bracketed tag that is not the marker, or the
+// marker on an id no map names, stays out.
+func TestThePickerAdmitsNoSpellingTheMapDoesNotNameIssue544(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "")
+	t.Setenv("MODEL_WINDOW_ENDPOINT_JSON", "")
+	for _, launch := range []string{"gw-model[2M]", "gw-model[beta]", "ghost[1M]"} {
+		root := t.TempDir()
+		home := filepath.Join(root, "home")
+		if err := os.MkdirAll(home, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		conf := filepath.Join(root, "gw.conf")
+		if err := os.WriteFile(conf, []byte("type=apikey\nbase_url=http://gw.invalid\napi_key=k\n"+
+			"model_map={\"gw-model\":\"real-model\"}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		layer := filepath.Join(home, "settings.profile.json")
+		var errw bytes.Buffer
+		if !ProjectPicker(PickerIn{Home: home, Conf: conf, Tag: "Gateway", Profile: "gw",
+			Layer: layer, Launch: launch, ModelsJSON: `{"data":[{"id":"real-model"}]}`}, &errw) {
+			t.Fatalf("picker failed for %q: %s", launch, errw.String())
+		}
+		allow, err := os.ReadFile(layer)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(allow), `"`+launch+`"`) {
+			t.Fatalf("%q is no spelling the map names and must stay out of the allowlist: %s", launch, allow)
+		}
+	}
+}
+
 // GH-544: the route ceiling's walk must not cut an available model at its
 // first '[': a bracket-bearing id's window is the route's largest too.
 func TestTheRouteCeilingCountsABracketBearingAvailableModelIssue544(t *testing.T) {
