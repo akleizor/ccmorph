@@ -34,8 +34,9 @@ func (l *launcher) rm(args []string) int {
 	}
 	// rm is the one verb that accepts the pre-#373 length: a profile made before
 	// the limit can still be addressed and so must still be removable (#449).
+	// Its refusal names its own, wider bound, not ValidName's (#551).
 	if !profile.RemovableName(name) {
-		return l.badName("rm", name)
+		return l.rmBadName("rm", name)
 	}
 	// A name that differs only by case is refused before the leftover branch:
 	// on a volume that ignores letter case, profiles/GW2 is the real gw2.
@@ -77,7 +78,10 @@ func (l *launcher) rm(args []string) int {
 	for _, p := range util.BridgeFiles(filepath.Join(l.dir, "auth"), name) {
 		os.Remove(p)
 	}
-	if l.active() == name {
+	// The clear reads the active file's own content, not l.active(): that read
+	// refuses the legacy-length name a pre-#373 default can spell, and a refused
+	// read is an active file left naming a profile that no longer exists (#551).
+	if active, _ := l.readActiveFile(); active == name {
 		if err := os.Remove(filepath.Join(l.dir, "active")); err != nil && !os.IsNotExist(err) {
 			l.err("could not clear default profile")
 			return 1
