@@ -131,6 +131,66 @@ func ReportUnresolved(w io.Writer, profile string, models []string) {
 	wrapLine(w, "ccmorph probe "+profile+" --model "+model+" --allow-inference", "    ", "      ")
 }
 
+// reportNotes prints the notes every tried profile collected, in the report's
+// per-profile words. It is for an exit that never reaches reportProfiles: a
+// cancelled or timed-out run still names what it had found so far (#554). A
+// note about the whole run was printed as it happened and is not repeated.
+func reportNotes(w io.Writer, tried []string, notes []Note) {
+	for _, profile := range tried {
+		printProfileNotes(w, profile, notes)
+	}
+}
+
+// printProfileNotes prints one profile's notes, grouped by reason, then the
+// models it could not size and how to size them. It reports whether it printed
+// anything.
+func printProfileNotes(w io.Writer, profile string, notes []Note) bool {
+	printed := false
+	var order []string
+	subjects := map[string][]string{}
+	for _, n := range notes {
+		if n.Profile != profile || n.Reason == Unresolved {
+			continue
+		}
+		if _, ok := subjects[n.Reason]; !ok {
+			order = append(order, n.Reason)
+		}
+		subjects[n.Reason] = append(subjects[n.Reason], n.Subject)
+	}
+	for _, reason := range order {
+		names := subjects[reason]
+		switch {
+		case len(names) > 1:
+			sorted := append([]string(nil), names...)
+			sort.Strings(sorted)
+			shown := strings.Join(sorted[:min(4, len(sorted))], ", ")
+			if len(sorted) > 4 {
+				shown += fmt.Sprintf(", and %d more", len(sorted)-4)
+			}
+			wrapLine(w, fmt.Sprintf("%s: %s (%d): %s", profile, reason, len(sorted), shown), "", "  ")
+		case names[0] == profile:
+			wrapLine(w, profile+": "+reason, "", "  ")
+		default:
+			wrapLine(w, profile+": "+names[0]+": "+reason, "", "  ")
+		}
+		printed = true
+	}
+	var unknown []string
+	seen := map[string]bool{}
+	for _, n := range notes {
+		if n.Profile == profile && n.Reason == Unresolved && !seen[n.Subject] {
+			seen[n.Subject] = true
+			unknown = append(unknown, n.Subject)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		ReportUnresolved(w, profile, unknown)
+		printed = true
+	}
+	return printed
+}
+
 // reportProfiles prints one result group per profile, in the order the run
 // tried them, each starting with the profile's name. Notes about the whole run
 // (no profile) were printed as they happened and are not repeated here.
@@ -141,49 +201,7 @@ func ReportUnresolved(w io.Writer, profile string, models []string) {
 // nothing and so must say its own result.
 func reportProfiles(w io.Writer, tried []string, notes []Note, sized, checked map[string]int) {
 	for _, profile := range tried {
-		printed := false
-		var order []string
-		subjects := map[string][]string{}
-		for _, n := range notes {
-			if n.Profile != profile || n.Reason == Unresolved {
-				continue
-			}
-			if _, ok := subjects[n.Reason]; !ok {
-				order = append(order, n.Reason)
-			}
-			subjects[n.Reason] = append(subjects[n.Reason], n.Subject)
-		}
-		for _, reason := range order {
-			names := subjects[reason]
-			switch {
-			case len(names) > 1:
-				sorted := append([]string(nil), names...)
-				sort.Strings(sorted)
-				shown := strings.Join(sorted[:min(4, len(sorted))], ", ")
-				if len(sorted) > 4 {
-					shown += fmt.Sprintf(", and %d more", len(sorted)-4)
-				}
-				wrapLine(w, fmt.Sprintf("%s: %s (%d): %s", profile, reason, len(sorted), shown), "", "  ")
-			case names[0] == profile:
-				wrapLine(w, profile+": "+reason, "", "  ")
-			default:
-				wrapLine(w, profile+": "+names[0]+": "+reason, "", "  ")
-			}
-			printed = true
-		}
-		var unknown []string
-		seen := map[string]bool{}
-		for _, n := range notes {
-			if n.Profile == profile && n.Reason == Unresolved && !seen[n.Subject] {
-				seen[n.Subject] = true
-				unknown = append(unknown, n.Subject)
-			}
-		}
-		if len(unknown) > 0 {
-			sort.Strings(unknown)
-			ReportUnresolved(w, profile, unknown)
-			printed = true
-		}
+		printed := printProfileNotes(w, profile, notes)
 		if n := sized[profile]; n > 0 {
 			// --check writes nothing, so its per-profile result is this line,
 			// printed even beside a note; the save path has already said the

@@ -355,6 +355,41 @@ func TestCancelInsideRouteStopStillRetiresTheRoute(t *testing.T) {
 	}
 }
 
+// GH-554: #449 moved a failed probe's note from the inline print into the
+// report, but a Ctrl-C leaves before the report: every note the run had
+// collected was lost, with only "interrupted" left. The probe fails first; the
+// route stop then sends the Ctrl-C the probe catches, and waits until the run
+// has seen it, so the exit is the one a person's Ctrl-C takes.
+func TestCancelAfterAFailedProbeStillPrintsItsNote(t *testing.T) {
+	dir := state(t)
+	put(t, filepath.Join(dir, "gw.conf"), "type=apikey\napi_key=k\n")
+	stubs(t, okEnv, func(string) ([]string, map[string]int64, []obj, error) {
+		return []string{"failed"}, nil, nil, nil
+	})
+	priorWalk = func([]string) (map[string]int64, map[string]obj) { return nil, nil }
+	oldProbe, oldPayload := probeFn, payloadFn
+	t.Cleanup(func() { probeFn, payloadFn = oldProbe, oldPayload })
+	payloadFn = func(int) string { return "blob" }
+	probeFn = func(context.Context, string, string, string, string, time.Duration, Opener, int) ProbeResult {
+		return ProbeResult{"anthropic:error", 0, "gateway timed out"}
+	}
+	routeStop = func(ctx context.Context, h string) {
+		if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+			t.Fatal(err)
+		}
+		<-ctx.Done()
+	}
+	var out, errb bytes.Buffer
+	code := ProbeMain([]string{"--profile", "gw", "--model", "failed", "--allow-inference"},
+		strings.NewReader(""), &out, &errb)
+	if code != 130 {
+		t.Fatalf("exit %d, want 130:\n%s", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "gw: failed: gateway timed out") {
+		t.Fatalf("a cancelled run lost the note it had collected:\n%s", errb.String())
+	}
+}
+
 // Python: ProbeOutputStaysOnPoint + ModelScope + catalogue-on-listing-failure.
 // A profile lock held by `ccmorph config` used to sit in a blocking Flock the
 // deadline never saw: measured 20.0s against --deadline 4. The save now waits
