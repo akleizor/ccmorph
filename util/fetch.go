@@ -19,11 +19,21 @@ func LaunchListing(base, key string, maxSeconds int) (body string, ok bool) {
 		apiURL(base, "/v1/models?limit=1000"), "-H", "anthropic-version: 2023-06-01")
 }
 
+// listingArgs is the one curl line every listing fetch asks with: silent, failing
+// an HTTP error, the largest page, no anthropic-version (proxies disguise
+// non-Claude ids when they see it) — the shape `ccmorph models` reads, so a
+// route answers every reader of its listing with the same body. bounds are the
+// caller's own and sit before the URL.
+func listingArgs(base string, bounds ...string) []string {
+	args := append([]string{"-sS", "-f"}, bounds...)
+	return append(args, apiURL(base, "/v1/models?limit=1000"))
+}
+
 // ModelsListing is the listing `ccmorph models` and model-known read: no
 // anthropic-version (proxies disguise non-Claude ids when they see it). curl's
 // complaint goes to errw.
 func ModelsListing(base, key string, errw io.Writer) (body string, ok bool) {
-	return fetchModels(key, errw, "-sS", "-f", "--max-time", "20", apiURL(base, "/v1/models?limit=1000"))
+	return fetchModels(key, errw, listingArgs(base, "--max-time", "20")...)
 }
 
 // ModelsAnswer is ModelsListing for a person: curl's complaint is read, never
@@ -199,8 +209,9 @@ func ContextServed(want, typ, base, modelMap, key string) Served {
 }
 
 // listingFetch asks a route for the model listing a served judgement reads. ok
-// is false when no usable 2xx listing came back, which the judgement answers as
-// ServedUnknown.
+// is false when no body came back — nothing answered, or an HTTP error curl -f
+// failed — which the judgement answers as ServedUnknown; a body that did come
+// back is the listing reader's to judge.
 type listingFetch func(base, key string) (body string, ok bool)
 
 // modelsListingFetch is the full listing `ccmorph models` reads, with its 20 s
@@ -209,16 +220,15 @@ func modelsListingFetch(base, key string) (string, bool) {
 	return ModelsListing(base, key, io.Discard)
 }
 
-// boundedListingFetch asks the listing the models verb reads — the same curl
-// arguments, so a route answers it with the body `ccmorph models` prints —
-// with the never-failing probe's bounds: 2 s to connect, 5 s whole, so a route
-// that will not answer cannot hold a caller past them (#449). Only a 2xx
-// carries a listing, as -f requires; anything else is no answer. The probe's
-// own marker shape is not used here: it asks for a status, and a status-only
-// answer is not a listing.
+// boundedListingFetch asks the listing the models verb reads — the one curl
+// line listingArgs builds, so a route answers it with the body `ccmorph models`
+// prints — under the never-failing probe's bounds: 2 s to connect, 5 s whole,
+// so a route that will not answer cannot hold a caller past them (#449). curl
+// -f fails an HTTP error and passes anything else through for the listing's
+// reader to judge; the probe's own marker shape is not used here: it asks for a
+// status, and a status-only answer is not a listing.
 func boundedListingFetch(base, key string) (string, bool) {
-	return fetchModels(key, io.Discard, "-sS", "-f", "--connect-timeout", "2", "--max-time", "5",
-		apiURL(base, "/v1/models?limit=1000"))
+	return fetchModels(key, io.Discard, listingArgs(base, "--connect-timeout", "2", "--max-time", "5")...)
 }
 
 // servedProbe is the shared prologue of the two served judgements: the
