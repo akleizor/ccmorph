@@ -108,6 +108,11 @@ def convert(row):
         return stamp, None
     # A turn token distinguishes recycled ids even when timestamps collide.
     # Keep the historical identity unchanged for receipts without a token.
+    # The join itself is util.ResponseKey's spelling (util/identity.go),
+    # mirrored here in Python: id, stamp as written, and turn only when it has
+    # one, joined by NUL. The Go side owns the definition — a change there is
+    # a change here — so this export counts a response the store holds under
+    # two names once, the way the Go readers do.
     identity = row["response_id"] + "\0" + row["timestamp"]
     if isinstance(row.get("turn_id"), str) and row["turn_id"]:
         identity += "\0" + row["turn_id"]

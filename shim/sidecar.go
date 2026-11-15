@@ -248,13 +248,14 @@ func usageBase() string { return filepath.Join(paths.StateDir(), "usage") }
 
 // usageDay is the UTC day folder a row stamped ts belongs to. A stamp that
 // will not parse is today: the sidecar stamps what it writes now, and a row
-// carries its own timestamp for a reader to filter on.
+// carries its own timestamp for a reader to filter on. The name is
+// paths.DayLayout's, the one spelling the store's writer and readers share.
 func usageDay(ts string) string {
 	t, err := time.Parse(time.RFC3339Nano, ts)
 	if err != nil {
 		t = time.Now()
 	}
-	return t.UTC().Format("2006-01-02")
+	return t.UTC().Format(paths.DayLayout)
 }
 
 // rowDirs is where the row of a response stamped ts can be found, and the
@@ -270,9 +271,9 @@ func rowDirs(ts string) []string {
 	t = t.UTC()
 	base := usageBase()
 	return []string{
-		filepath.Join(base, t.Format("2006-01-02")),
-		filepath.Join(base, t.AddDate(0, 0, -1).Format("2006-01-02")),
-		filepath.Join(base, t.AddDate(0, 0, 1).Format("2006-01-02")),
+		filepath.Join(base, t.Format(paths.DayLayout)),
+		filepath.Join(base, t.AddDate(0, 0, -1).Format(paths.DayLayout)),
+		filepath.Join(base, t.AddDate(0, 0, 1).Format(paths.DayLayout)),
 		base,
 	}
 }
