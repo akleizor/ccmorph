@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/tier"
 )
 
 // --- model identity -----------------------------------------------------------
@@ -350,7 +352,7 @@ func adapterCommand(adapter string) []string {
 
 // mappingTarget is the explicit map target for a request's wire id.
 func (r *ModelRoutes) mappingTarget(model string) (string, bool) {
-	t := r.modelMap[strings.TrimSuffix(model, "[1m]")]
+	t := r.modelMap[tier.TrimWindowMarker(model)]
 	if t == nil { // a null target maps nothing, though its key still marks a mapped request
 		return "", false
 	}
@@ -367,13 +369,13 @@ func (r *ModelRoutes) ensure(d *doc, key string, requested *string, path string)
 	if !ok {
 		return ""
 	}
-	model = strings.TrimSuffix(model, "[1m]")
+	model = tier.TrimWindowMarker(model)
 	if r.command == nil {
 		// Same rule as resolve: one key, the wire id. A suffixed key decides
 		// nothing, so this request must not count as mapped either.
 		base := ""
 		if requested != nil {
-			base = strings.TrimSuffix(*requested, "[1m]")
+			base = tier.TrimWindowMarker(*requested)
 		}
 		if _, mapped := r.modelMap[base]; requested != nil && mapped {
 			r.catalogue.served(key, model)

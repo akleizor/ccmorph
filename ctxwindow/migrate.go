@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/akleizor/ccmorph/util/paths"
+	"github.com/akleizor/ccmorph/util/tier"
 )
 
 // confScan lists dir's *.conf files as paths; ReadDir returns them sorted by name.
@@ -62,7 +63,7 @@ func cacheEntries(lines []string) []cacheEntry {
 			continue
 		}
 		if n, ok := Positive(value); ok {
-			out = append(out, cacheEntry{strings.TrimSuffix(model, "[1m]"), n})
+			out = append(out, cacheEntry{tier.TrimWindowMarker(model), n})
 		}
 	}
 	return out

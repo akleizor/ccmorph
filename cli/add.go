@@ -15,6 +15,7 @@ import (
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
+	"github.com/akleizor/ccmorph/util/tier"
 )
 
 // add is `ccmorph add [name]`: a sign-in method, its credential, and a saved
@@ -442,15 +443,15 @@ func (l *launcher) addAPIKey(name string) int {
 		conf += "base_url=" + url + "\n"
 	}
 	// The presets' three tier columns are written as the env keys the store
-	// reads back, each key built from its word in util.TierWords — the words
+	// reads back, each key built from its word in tier.TierWords — the words
 	// after fable, which no gateway column maps. A word the list gains beyond
 	// the columns stays unwritten here rather than hand-spelled (#539).
 	if len(tiers) == 3 && tiers[0] != "" {
-		for i, tier := range util.TierWords[1:] {
+		for i, word := range tier.TierWords[1:] {
 			if i >= len(tiers) {
 				break
 			}
-			conf += "env." + util.TierEnvKey(tier) + "=" + tiers[i] + "\n"
+			conf += "env." + tier.TierEnvKey(word) + "=" + tiers[i] + "\n"
 		}
 	}
 	if atomicWrite(l.conf(name), conf) != nil {

@@ -1,17 +1,23 @@
 package profile
 
+import "github.com/akleizor/ccmorph/util/tier"
+
 // The env-key lists every launch, read and sweep uses. One copy, here.
 
-var MappingEnv = []string{
-	"ANTHROPIC_DEFAULT_FABLE_MODEL",
-	"ANTHROPIC_DEFAULT_OPUS_MODEL",
-	"ANTHROPIC_DEFAULT_OPUS_MODEL_NAME",
-	"ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION",
-	"ANTHROPIC_DEFAULT_SONNET_MODEL",
-	"ANTHROPIC_DEFAULT_HAIKU_MODEL",
-	"ANTHROPIC_SMALL_FAST_MODEL",
-	"CLAUDE_CODE_SUBAGENT_MODEL",
-}
+// MappingEnv is the env keys that remap a tier word to a gateway model, in the
+// order the allowlists print them: one per tier word, built from the word
+// through the leaf (#544), opus's name and description rows behind its model
+// row, then the two Claude Code aliases.
+var MappingEnv = func() []string {
+	var out []string
+	for _, w := range tier.TierWords {
+		out = append(out, tier.TierEnvKey(w))
+		if w == "opus" {
+			out = append(out, tier.TierEnvKey(w)+"_NAME", tier.TierEnvKey(w)+"_DESCRIPTION")
+		}
+	}
+	return append(out, "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL")
+}()
 
 var TuningEnv = []string{
 	"CLAUDE_CODE_SIMPLE",
