@@ -11,6 +11,7 @@ import (
 	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/settingscompose"
 	"github.com/akleizor/ccmorph/util/paths"
+	"github.com/akleizor/ccmorph/util/tier"
 )
 
 // iterItems is what Python's `for x in value` yields for a decoded JSON value.
@@ -144,7 +145,7 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 		if id == "" {
 			return false
 		}
-		bare := strings.TrimSuffix(id, "[1m]")
+		bare := tier.TrimWindowMarker(id)
 		target, ok := getKey(modelMap, bare).(string)
 		return ok && target != "" && !isExcl(target)
 	}
@@ -266,7 +267,7 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 		}
 		var fam []string
 		for _, mv := range current {
-			if m, ok := mv.(string); ok && IsTier(m) {
+			if m, ok := mv.(string); ok && tier.IsTier(m) {
 				fam = append(fam, m)
 			}
 		}
@@ -352,8 +353,10 @@ func LaunchWindow(profile, model string, sources []string) []string {
 		if !ok {
 			continue
 		}
-		m = strings.SplitN(m, "[", 2)[0]
-		if strings.HasPrefix(m, "claude-") || IsTier(m) {
+		// The marker alone comes off — an available model's own brackets are
+		// part of its id, and its window is the route's largest too (#544).
+		m = tier.TrimWindowMarker(m)
+		if strings.HasPrefix(m, "claude-") || tier.IsTier(m) {
 			continue
 		}
 		if w := values[m]; w > best {

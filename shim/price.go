@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/util/paths"
+	"github.com/akleizor/ccmorph/util/tier"
 )
 
 // --- estimated cost for upstreams that bill outside the response -----------------
@@ -312,7 +313,7 @@ func (b *priceBook) lookup(model string) (price, bool) {
 // (claude-opus-4-5-20251101) for a model models.dev lists undated too; the date
 // is spelling, not another model.
 func lookupIn(table map[string]price, model string) (price, bool) {
-	name := strings.TrimSuffix(model, "[1m]")
+	name := tier.TrimWindowMarker(model)
 	if p, ok := table[name]; ok {
 		return p, true
 	}

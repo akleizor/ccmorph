@@ -34,6 +34,20 @@ func TestAdapterStartHandsBackPortAndNeverTheTTY(t *testing.T) {
 	}
 }
 
+// GH-544: an id's own brackets are part of the id — the launch hands the
+// adapter the picked model whole, its trailing window marker alone removed.
+func TestAdapterStartHandsTheAdapterABracketBearingModelWholeIssue544(t *testing.T) {
+	saw := filepath.Join(t.TempDir(), "model")
+	core := fakeCore(t, `printf '%s\n' "$5" > '`+saw+`'; echo PORT=4242`)
+	var out, errw bytes.Buffer
+	if rc := adapterStart([]string{core, "p", "vendor[beta]", "1", os.DevNull}, nil, &out, &errw); rc != 0 {
+		t.Fatalf("rc %d: %s", rc, errw.String())
+	}
+	if b, _ := os.ReadFile(saw); strings.TrimSpace(string(b)) != "vendor[beta]" {
+		t.Fatalf("the adapter saw %q", b)
+	}
+}
+
 func TestAdapterStartSaysWhyItFailed(t *testing.T) {
 	// Every failure exits 1, a refusal included: the Refused line on stdout is
 	// what tells the launcher the adapter worded the whole message itself, so

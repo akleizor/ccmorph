@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/akleizor/ccmorph/profile"
+	"github.com/akleizor/ccmorph/util/tier"
 )
 
 // profileDesc is one profile as every surface that describes it shows it: the
@@ -122,11 +123,11 @@ func modelRows(rows []util.ModelRow) string {
 
 // nativeAliases is the picker's rows for a subscription route's native tiers:
 // one "<word>\tClaude Code <Word> alias" per tier word, in the list's order.
-// Built from util.TierWords, so the picker cannot offer a word the store does
+// Built from tier.TierWords, so the picker cannot offer a word the store does
 // not resolve and cannot miss one it does (#539).
 func nativeAliases() string {
-	rows := make([]string, len(util.TierWords))
-	for i, w := range util.TierWords {
+	rows := make([]string, len(tier.TierWords))
+	for i, w := range tier.TierWords {
 		rows[i] = w + "\tClaude Code " + title(w) + " alias"
 	}
 	return strings.Join(rows, "\n")

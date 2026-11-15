@@ -140,6 +140,18 @@ func TestHazardSetNamesEverySiblingTheTriggerWouldOverrun(t *testing.T) {
 	}
 }
 
+// GH-544: an id's own brackets are part of the id — the wall lookup must not
+// cut a bracket-bearing offered model at its first '[': its wall is found
+// under the id it is spelled with, so the advisory names it.
+func TestTheAdvisoryWallsABracketBearingModelByItsWholeIdIssue544(t *testing.T) {
+	conf, set := hazardWorld(t, "roomy=1000000 vendor[beta]=20000", `{"availableModels":["roomy","vendor[beta]"]}`)
+	out := hazardNames(t, HazardIn{Profile: "gw", Budget: "1000000", Ceiling: "1000000",
+		Sources: []string{set}, PctRaw: "80", Conf: conf, PctInEnv: true})
+	if !strings.Contains(out, "vendor[beta]") {
+		t.Fatalf("the bracket-bearing model's wall must be named, got %q", out)
+	}
+}
+
 // A profile that deletes availableModels offers no models, so none is a hazard.
 func TestHazardSetHonoursAProfileTombstoneOfAvailableModels(t *testing.T) {
 	conf, canon := hazardWorld(t, "m-small=150000", `{"availableModels":["m-small","m-big"]}`)
