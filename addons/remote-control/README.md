@@ -120,16 +120,18 @@ always signs in with the account profile's own claude.ai login.
 
 ## Switch inference live
 
-`inference=account` in `rc-hosts` sends every host's model calls to Anthropic on the
-account the phone signs in with; `inference=route` (the default, also when the line is
-absent) sends them to the route profile. Each proxy reads the switch on every turn, so
+`inference=<account profile>` in `rc-hosts` (e.g. `inference=alex`) sends every host's
+model calls to Anthropic on the account the phone signs in with; `inference=<route>`
+(e.g. `inference=llmgate`, the default when the line is absent) sends them to the route
+profile. Any other profile is refused with a log line: it has no live edge, so it takes
+`route=` and a restart. Each proxy reads the switch on every turn, so
 a change takes effect on the next message: no host restarts and no session is
 interrupted. The switch is the file `profiles/.rc-bridge/inference`, which the
 supervisor writes from that line. A host started before this feature existed needs one
 restart to load it.
 
 A tier pinned with `tier.<alias>=` still names the route's model on that bare alias, so
-under `inference=account` pick that model by its full id instead.
+under the account pick that model by its full id instead.
 
 ## How it works
 

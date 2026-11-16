@@ -207,13 +207,20 @@ def permission_mode(text: str) -> str | None:
     return m.group(1) if m and m.group(1) in PERMISSION_MODES else None
 
 
-def inference(text: str) -> str:
-    """`inference=account|route` -- where every host's model calls go. "account" sends
-    them to Anthropic on the account the phone signs in with; "route" (the default)
-    to the route profile. Each proxy reads it on every turn, so a change restarts
-    nothing and no session is interrupted."""
-    m = re.search(r"^\s*inference=(account|route)\s*(?:#.*)?$", text, re.M)
-    return m.group(1) if m else "route"
+def inference(text: str, routes: set[str], account: str) -> str:
+    """`inference=<profile>` -- where every host's model calls go: the account profile
+    the phone signs in with sends them to Anthropic on that login; a route the config
+    names (or no line) sends them to the route. Each proxy reads the result on every
+    turn, so a change restarts nothing. Any other profile has no live edge to serve
+    it: that takes `route=` and a restart, so it is refused and the route kept."""
+    m = re.search(r"^\s*inference=(\S+)", text, re.M)
+    name = m.group(1) if m else None
+    if name == account:
+        return "account"
+    if name is not None and name not in routes:
+        log(f"inference={name}: not the account ({account}) or a route ({', '.join(sorted(routes))}); "
+            "kept on the route. Another profile needs route= and a restart")
+    return "route"
 
 
 def write_inference(value: str) -> None:
@@ -1494,7 +1501,9 @@ def main(argv: list[str]) -> int:
                 # `tier.<alias>=` line changes what no host runs and must restart nothing.
                 tiers = {a: m for a, m in tier_map(text).items() if a in ALIAS_ENV}
                 perm = permission_mode(text)
-                write_inference(inference(text))   # live in every proxy: no host restarts for it
+                # live in every proxy: no host restarts for it
+                write_inference(inference(text, {r for r, _ in want.values()},
+                                          rc_module().default_account() if "inference=" in text else ""))
                 routes = {r for r, _ in want.values()}
                 # --permission-mode and the ANTHROPIC_DEFAULT_*_MODEL pins are fixed when
                 # a host's process starts, so a host whose permission or tiers changed has
