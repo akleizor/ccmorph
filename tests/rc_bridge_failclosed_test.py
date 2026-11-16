@@ -131,9 +131,17 @@ def test_launcher_proxy_never_falls_back_to_anthropic(tmp_path):
         # A broken addon, as a failed hot reload leaves it: the proxy stays up with
         # no addon, and the guard alone must stop the call.
         script.write_text("raise RuntimeError('reload failed')\n")
-        time.sleep(3)
-        assert proxy.poll() is None
-        assert post() == 502, "without the addon, inference must fail, never reach Anthropic"
+        # mitmproxy notices the rewritten script on its own timer. Poll the one
+        # thing the reload changes — the call's status — instead of holding the
+        # clock for the slowest host, and stop early if the proxy goes down, so a
+        # real breakage fails here at once rather than at the bound.
+        deadline = time.monotonic() + HANG_TIMEOUT
+        status = post()
+        while status != 502 and proxy.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.1)
+            status = post()
+        assert proxy.poll() is None, "a failed hot reload must not take the proxy down"
+        assert status == 502, "without the addon, inference must fail, never reach Anthropic"
     finally:
         proxy.terminate()
         proxy.wait(timeout=HANG_TIMEOUT)
