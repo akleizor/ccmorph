@@ -24,7 +24,6 @@ const (
 	OvershootChars = 6_000_000
 	probeTimeout   = 10
 	listTimeout    = 5
-	userAgent      = "ccmorph-context-probe"
 	runTimeout     = 30
 )
 

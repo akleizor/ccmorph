@@ -1,6 +1,7 @@
 package shim
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -148,6 +149,44 @@ func TestOwnedPricesPreferTheVendorOverAReseller(t *testing.T) {
 	m := parseOwnedPrices([]byte(ownedDoc), "")
 	if m["claude-opus-5-5"].Input != 4 || m["gpt-5.6-sol"].Input != 2 {
 		t.Fatalf("a vendor's own entry must win its model: %v", m)
+	}
+}
+
+// TestPriceTablesAreGolden pins the full parse of the fixture documents
+// byte-for-byte (#564): whatever walk serves both price tables must keep the
+// shared-model first-wins, the vendor-over-reseller preference and the
+// named-provider slice exactly as the two walks before it produced them.
+func TestPriceTablesAreGolden(t *testing.T) {
+	table := func(m map[string]price) string {
+		b, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	for _, tc := range []struct{ name, got, want string }{
+		{"host table, first sorted provider wins a shared id",
+			table(parsePrices([]byte(apiDoc), "api.deepseek.com")),
+			`{"deepseek-flash":{"input":0.15,"output":0.6,"cache_read":0.003,"cache_write":null},"deepseek-v4-pro":{"input":0.66,"output":1.98,"cache_read":0.022,"cache_write":null}}`},
+		{"host table of the other host",
+			table(parsePrices([]byte(apiDoc), "api.openai.com")),
+			`{"gpt":{"input":2,"output":10,"cache_read":0.1,"cache_write":2.5}}`},
+		{"host table of a reseller the vendors share ids with",
+			table(parsePrices([]byte(ownedDoc), "api.example.com")),
+			`{"claude-opus-5-5":{"input":9,"output":9,"cache_read":null,"cache_write":null},"gpt-5.6-sol":{"input":9,"output":9,"cache_read":null,"cache_write":null}}`},
+		{"any provider, no vendor nesting in the document",
+			table(parseOwnedPrices([]byte(apiDoc), "")),
+			`{"deepseek-flash":{"input":0.15,"output":0.6,"cache_read":0.003,"cache_write":null},"deepseek-v4-pro":{"input":0.66,"output":1.98,"cache_read":0.022,"cache_write":null},"gpt":{"input":2,"output":10,"cache_read":0.1,"cache_write":2.5}}`},
+		{"one named provider",
+			table(parseOwnedPrices([]byte(ownedDoc), "anthropic")),
+			`{"claude-haiku-5-5":{"input":1,"output":5,"cache_read":null,"cache_write":null},"claude-opus-5-5":{"input":4,"output":20,"cache_read":0.2,"cache_write":5}}`},
+		{"any provider, the vendor's own entry beats a reseller's",
+			table(parseOwnedPrices([]byte(ownedDoc), "")),
+			`{"claude-haiku-5-5":{"input":1,"output":5,"cache_read":null,"cache_write":null},"claude-opus-5-5":{"input":4,"output":20,"cache_read":0.2,"cache_write":5},"gpt-5.6-sol":{"input":2,"output":10,"cache_read":null,"cache_write":null}}`},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s:\n got %s\nwant %s", tc.name, tc.got, tc.want)
+		}
 	}
 }
 
