@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/akleizor/ccmorph/util/modelsdev"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -26,7 +27,6 @@ type (
 )
 
 const (
-	catalogueURL          = "https://models.dev/api.json"
 	canonicalCatalogueURL = "https://models.dev/models.json"
 	catalogueTimeout      = listTimeout
 	sourceRetrySeconds    = 600
@@ -210,11 +210,17 @@ func pyType(v val) string {
 	return "dict"
 }
 
-// fetchJSONDict is a var so tests run offline. It never fails: unreachable,
-// slow or malformed all mean "no catalogue fallback available". It sends an
-// explicit User-Agent because models.dev answers 403 to a bare default one.
-var fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
-	body, err := pick(nil).Open(ctx, Request{Method: "GET", URL: url, Header: [][2]string{{"User-Agent", userAgent}}}, timeout)
+// openURL is the windows' transport for a catalogue GET: each wait on the
+// socket gets the budget, so a flowing transfer over a slow link finishes
+// while a stalled one times out (TestTimeoutBoundsEachWaitNotTheWholeTransfer)
+// — a launch must not lose the 5.9 MB api.json to a 3 s whole-exchange cap.
+func openURL(ctx context.Context, url string, header [][2]string, timeout time.Duration) ([]byte, error) {
+	return pick(nil).Open(ctx, Request{Method: "GET", URL: url, Header: header}, timeout)
+}
+
+// dictOrEmpty parses a fetched document; unreachable, slow or malformed all
+// mean "no catalogue fallback available".
+func dictOrEmpty(body []byte, err error) obj {
 	if err != nil {
 		return obj{}
 	}
@@ -224,9 +230,18 @@ var fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration)
 	return obj{}
 }
 
-// FetchCatalogue is the models.dev provider/model catalogue, or {} on any failure.
+// fetchJSONDict is a var so tests run offline. It never fails. It sends
+// modelsdev's User-Agent: models.json is a models.dev document too, and the
+// window sources just see who is asking.
+var fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
+	return dictOrEmpty(openURL(ctx, url, [][2]string{{"User-Agent", modelsdev.UserAgent}}, timeout))
+}
+
+// FetchCatalogue is the models.dev provider/model catalogue, or {} on any
+// failure. Always fresh, never the price book's state-dir cache: the choice
+// and its reason are modelsdev.Get's to own.
 var FetchCatalogue = func(ctx context.Context, timeout time.Duration) obj {
-	return fetchJSONDict(ctx, catalogueURL, timeout)
+	return dictOrEmpty(modelsdev.Get(ctx, timeout, openURL))
 }
 
 // FetchCanonicalCatalogue is the flat canonical-id catalogue; offline it falls

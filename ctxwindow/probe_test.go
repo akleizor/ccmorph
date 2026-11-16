@@ -23,6 +23,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/akleizor/ccmorph/util/modelsdev"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -74,6 +75,12 @@ func state(t *testing.T) string {
 	old := fetchJSONDict
 	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj { return obj{} }
 	t.Cleanup(func() { fetchJSONDict = old })
+	// api.json's fetch is stubbed at its var (it does not flow through
+	// fetchJSONDict); the flat catalogue stays production so its bundled-snapshot
+	// fallback keeps running, its wire blocked by the stub above.
+	api := FetchCatalogue
+	FetchCatalogue = func(context.Context, time.Duration) obj { return obj{} }
+	t.Cleanup(func() { FetchCatalogue = api })
 	probeShareDir = func() string { return filepath.Join(dir, "share") }
 	t.Cleanup(func() { probeShareDir = func() string { return filepath.Join(paths.LibDir(), "..", "share") } })
 	return dir
@@ -486,11 +493,8 @@ func TestCatalogueTagLifecycle(t *testing.T) {
 		func(string) ([]string, map[string]int64, []obj, error) {
 			return []string{"acme/solo"}, nil, rows, nil
 		})
-	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
-		if url == catalogueURL {
-			return parse(t, `{"acme":{"models":{"acme/solo":{"limit":{"context":128000,"input":100000}}}}}`)
-		}
-		return obj{}
+	FetchCatalogue = func(context.Context, time.Duration) obj {
+		return parse(t, `{"acme":{"models":{"acme/solo":{"limit":{"context":128000,"input":100000}}}}}`)
 	}
 	captureStderr(t)
 	r := ProbeAll(context.Background(), []string{"gw"}, DefaultOptions())
@@ -518,10 +522,8 @@ func TestCatalogueTagLifecycle(t *testing.T) {
 	priorWalk = func([]string) (map[string]int64, map[string]obj) {
 		return map[string]int64{"gw:acme/solo": 100000}, map[string]obj{"gw:acme/solo": tag}
 	}
-	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
-		t.Fatal("refetched")
-		return nil
-	}
+	fetchJSONDict = func(context.Context, string, time.Duration) obj { t.Fatal("refetched"); return nil }
+	FetchCatalogue = func(context.Context, time.Duration) obj { t.Fatal("refetched"); return nil }
 	r = ProbeAll(context.Background(), []string{"gw"}, DefaultOptions())
 	eq(t, vals(r), map[string]int64{"gw:acme/solo": 100000})
 	if !reflect.DeepEqual(r.Sources["gw:acme/solo"], tag) {
@@ -543,17 +545,15 @@ func TestCatalogueTagLifecycle(t *testing.T) {
 
 func TestCatalogueFetchedAtMostOncePerRun(t *testing.T) {
 	state(t)
-	n := 0
-	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
-		n++
-		return obj{}
-	}
+	api, flat := 0, 0
+	FetchCatalogue = func(context.Context, time.Duration) obj { api++; return obj{} }
+	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj { flat++; return obj{} }
 	cache := NewCache(false)
 	for _, m := range []string{"x", "y", "z"} {
 		CatalogueLookup(context.Background(), m, "", cache, time.Second)
 	}
-	if n != 2 || cache.apiFetches != 1 || cache.flatFetches != 1 { // one api.json + one models.json, fetched once each
-		t.Fatalf("fetches %d %d %d", n, cache.apiFetches, cache.flatFetches)
+	if api != 1 || flat != 1 || cache.apiFetches != 1 || cache.flatFetches != 1 { // one api.json + one models.json, fetched once each
+		t.Fatalf("fetches %d %d %d %d", api, flat, cache.apiFetches, cache.flatFetches)
 	}
 }
 
@@ -629,11 +629,12 @@ func TestBlockedCatalogueUsesTheBundledSnapshot(t *testing.T) {
 
 // Python: test_catalogue_fetch_sends_a_user_agent.
 func TestCatalogueFetchSendsAUserAgent(t *testing.T) {
-	old := fetchJSONDict
-	t.Cleanup(func() { fetchJSONDict = old })
 	f := &fake{reply: func(r Request) ([]byte, error) {
+		if r.URL != modelsdev.URL {
+			return nil, httpErr(404, "")
+		}
 		for _, h := range r.Header {
-			if h[0] == "User-Agent" && h[1] == userAgent {
+			if h[0] == "User-Agent" && h[1] == modelsdev.UserAgent {
 				return []byte(`{"ok":1}`), nil
 			}
 		}
@@ -641,14 +642,7 @@ func TestCatalogueFetchSendsAUserAgent(t *testing.T) {
 	}}
 	defaultOpener = f
 	t.Cleanup(func() { defaultOpener = BuildOpener() })
-	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
-		body, err := pick(nil).Open(ctx, Request{Method: "GET", URL: url, Header: [][2]string{{"User-Agent", userAgent}}}, timeout)
-		if err != nil {
-			return obj{}
-		}
-		return parseDict(body)
-	}
-	if got := fetchJSONDict(context.Background(), "http://x/models.json", time.Second); len(got) != 1 {
+	if got := dictOrEmpty(modelsdev.Get(context.Background(), time.Second, openURL)); len(got) != 1 {
 		t.Fatal("the fetch was rejected")
 	}
 }
@@ -1311,12 +1305,9 @@ func TestLaunchSizesOnlyNewModelsAndRemembersMisses(t *testing.T) {
 	fmt.Fprintf(f, `context_discovered={"route":%q,"models":{"known-model":123456}}`+"\n", route)
 	f.Close()
 	fetches := 0
-	fetchJSONDict = func(ctx context.Context, url string, timeout time.Duration) obj {
+	FetchCatalogue = func(context.Context, time.Duration) obj {
 		fetches++
-		if url == catalogueURL {
-			return parse(t, `{"openai":{"models":{"gpt-5":{"limit":{"context":400000,"input":272000}}}}}`)
-		}
-		return obj{}
+		return parse(t, `{"openai":{"models":{"gpt-5":{"limit":{"context":400000,"input":272000}}}}}`)
 	}
 	oldV := validationWindowFn
 	t.Cleanup(func() { validationWindowFn = oldV })
@@ -1346,6 +1337,7 @@ func TestLaunchSizesOnlyNewModelsAndRemembersMisses(t *testing.T) {
 	}
 	// Next launch inside the retry window asks nobody.
 	fetchJSONDict = func(context.Context, string, time.Duration) obj { t.Fatal("fetched again"); return nil }
+	FetchCatalogue = func(context.Context, time.Duration) obj { t.Fatal("fetched again"); return nil }
 	validationWindowFn = func(context.Context, string, string, string, Opener, time.Duration) int64 {
 		t.Fatal("asked again")
 		return 0
@@ -1435,6 +1427,10 @@ func TestProviderProfileKeepsWindowsSizedThroughItsBridge(t *testing.T) {
 	dir := state(t)
 	put(t, filepath.Join(dir, "codex.conf"), "type=provider\nprovider=codex\n")
 	fetchJSONDict = func(context.Context, string, time.Duration) obj {
+		t.Fatal("declared size needs no catalogue")
+		return nil
+	}
+	FetchCatalogue = func(context.Context, time.Duration) obj {
 		t.Fatal("declared size needs no catalogue")
 		return nil
 	}
@@ -2147,7 +2143,7 @@ func TestProviderBridgeIsNeverValidatedWithARequest(t *testing.T) {
 
 // Ported from tests/product_defaults_test.py: the catalogue URLs are fixed.
 func TestCatalogueURLsAreFixed(t *testing.T) {
-	if catalogueURL != "https://models.dev/api.json" || canonicalCatalogueURL != "https://models.dev/models.json" {
-		t.Fatal(catalogueURL, canonicalCatalogueURL)
+	if modelsdev.URL != "https://models.dev/api.json" || canonicalCatalogueURL != "https://models.dev/models.json" {
+		t.Fatal(modelsdev.URL, canonicalCatalogueURL)
 	}
 }
