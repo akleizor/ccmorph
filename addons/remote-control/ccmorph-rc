@@ -463,7 +463,9 @@ def switch(profile: str, account: str) -> None:
         route_env = resolve_route(profile)
         retire_route_with(owner, route_env.get("CCMORPH_ROUTE_HANDLE", ""))
         key = route_env.get("ANTHROPIC_API_KEY") or die(f"profile '{profile}' has no key")
-        upstream = start_adapter(profile, owner, adapter_env())
+        # a provider's bridge already speaks the Anthropic API; a key profile goes through the adapter
+        upstream = (route_env.get("ANTHROPIC_BASE_URL") or die(f"profile '{profile}' has no endpoint")
+                    if profile_type(profile) == "provider" else start_adapter(profile, owner, adapter_env()))
         tiers = {k.split("_")[2].lower(): v for k, v in route_env.items()
                  if k in MODEL_ENV and k.startswith("ANTHROPIC_DEFAULT_") and v}
         hand = STATE / f"switch-{profile}.json"
