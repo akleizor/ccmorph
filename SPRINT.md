@@ -129,8 +129,24 @@ name exactly where the wall lives now:
 
 ## What was NOT done, and why
 
-- No clean quiet-machine median: the rig cpu lane (load <18) never admitted a job
-  tonight and no sub-load-80 window appeared on the mini from 01:25 to 05:40.
-  The three-run median under `rig run cpu` should be taken in the morning on a
-  quiet machine; everything needed to run it is in the table above's command.
-- <!-- TODO: M1 Pro supplement, filled when those pairs finish -->
+- No clean quiet-machine median. The rig cpu lane (load <18) never admitted a job
+  tonight. The quietest official-form pair caught the start of a wave (load 83):
+  branch 46.92 s, baseline 39.80 s, branch 39.07 s — both rc≠0.
+- That pair exposed the reason no median was obtainable at any load tonight, and
+  it is not this branch: **two python tests fail on untouched origin/main on this
+  machine even run serially and alone** (`test_print_config_…` and
+  `test_every_example_…`, reproduced on baseline at 05:05). The official
+  `make gate` therefore exits non-zero on main before the last suites finish,
+  whatever wall it reports. The repo already tracks this: GitHub issue GH-592,
+  "CI on main has been red since afb477d" (seen on this machine's Symphony
+  dispatch queue at 06:26). A reviewer reproducing before/after numbers should
+  first expect rc≠0 from `gate-py` on main and either fix or account for those
+  two, or read the per-lane `-k` logs, which is what this file does.
+- Take the three-run median in the morning on a quiet machine with:
+  `cd <worktree> && unset PYTEST_XDIST_AUTO_NUM_WORKERS && /usr/bin/time -p /usr/bin/make gate`
+  (pin `/usr/bin/make`: PATH's shim re-routes a bare `make gate` into a rig lane).
+- A supplement on the M1 Pro (the rig cpu lane's spill node) was started and
+  abandoned: its keychain refuses writes in an ssh session (`util`'s
+  `TestKeychainMigrate…` fails with -25308, both sides' environment, not the
+  repo) and its `cli` package took 537 s there — the spill machine is not a
+  usable stand-in for "on the Mac mini".
