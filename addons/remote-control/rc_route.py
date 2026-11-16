@@ -111,7 +111,10 @@ def pinned_model(model: object, tiers: dict[str, str]) -> str | None:
     if not isinstance(model, str):
         return None
     m = CLAUDE_FAMILY.match(model)
-    return tiers.get(m.group(1) if m else model)
+    pinned = tiers.get(m.group(1) if m else model)
+    # `[1m]` is Claude Code's own context marker, stripped before a request is sent;
+    # a profile's tier carries it (claude-opus-5-5[1m]) and the backend 404s on it.
+    return pinned.removesuffix("[1m]") if pinned else pinned
 
 
 def normalize_body(payload: object, tiers: dict[str, str] | None = None) -> bool:

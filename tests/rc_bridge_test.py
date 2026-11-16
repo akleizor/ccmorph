@@ -510,3 +510,14 @@ def test_inference_switch_is_read_live_and_defaults_to_the_route(tmp_path):
     assert inference_target(str(switch)) == "oli"            # a profile --switch brought up
     switch.write_text("../etc/x\n")
     assert inference_target(str(switch)) == "route"          # not a profile name: the route
+
+
+def test_a_pinned_tier_reaches_the_backend_without_the_context_marker():
+    """oli pins opus to claude-opus-5-5[1m]; its backend 404s on the marker (2026-11-16)."""
+    from rc_route import normalize_body
+    body = {"model": "claude-opus-5-5"}
+    normalize_body(body, {"opus": "claude-opus-5-5[1m]"})
+    assert body["model"] == "claude-opus-5-5"
+    body = {"model": "claude-opus-5-5[1m]"}
+    assert normalize_body(body, {"opus": "claude-opus-5-5[1m]"})
+    assert body["model"] == "claude-opus-5-5"
