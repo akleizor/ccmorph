@@ -2,6 +2,12 @@
 
 setopt nounset pipefail
 zmodload zsh/datetime
+# The stub store makes one link per fixture per home, so its own file operations
+# run as builtins: forking this shell to link a file costs more than the link.
+# mapfile is the store guard's reader for the same reason — it reads a file's
+# bytes without a subshell, and the guard reads every stub after every test.
+zmodload zsh/files
+zmodload zsh/mapfile
 
 # The suite often runs from inside a ccmorph-launched Claude session, whose
 # exports (ANTHROPIC_*, CLAUDE*, CCMORPH_*) reach every fixture through the
@@ -405,13 +411,18 @@ ccm_stub() {
   else
     src="$_ccm_test_stub_store/${dest:t}.${#_ccm_test_stub_src}"
     print -r -- "$text" > "$src" || return 1
-    chmod 0555 "$src"
+    zf_chmod 0555 "$src"
     _ccm_test_stub_src[$text]="$src"
     _ccm_test_stub_text[$src]="$text"
   fi
-  mkdir -p -- "$dest:h"
+  zf_mkdir -p -- "$dest:h"
   # The name is replaced, never written: it may already be a link into the store.
-  rm -f -- "$dest" && ln -- "$src" "$dest"
+  # A fresh home has no name to clear, and that is the common case, so the unlink
+  # is asked for only when something is there.  zf_ln, unlike /bin/ln, replaces a
+  # name it is given rather than failing on it; the unlink above keeps that rule
+  # visible here instead of hidden in a builtin's difference.
+  [[ -e $dest || -L $dest ]] && zf_rm -f -- "$dest"
+  zf_ln -- "$src" "$dest"
 }
 
 # The store's other half: a shared stub that no longer holds its own bytes means a
@@ -423,8 +434,11 @@ _ccm_test_check_stubs() {
     # is the suite's own bookkeeping, not a rewritten stub; the next ccm_stub
     # finds the store gone and builds a new one.
     [[ -d ${src:h} ]] || continue
-    [[ $(<"$src") == "${_ccm_test_stub_text[$src]}" ]] || {
-      print -u2 -- "the shared stub ${src:t} was rewritten in place: a test pointed > at a linked stub; write a temp and rename over the name"
+    # mapfile, not $(<"$src"): a command substitution forks, and this loop runs
+    # over every stub the shard has made after every test.  The file holds the
+    # recorded bytes plus the newline print -r wrote.
+    [[ -f $src && ${mapfile[$src]-} == "${_ccm_test_stub_text[$src]}"$'\n' ]] || {
+      print -u2 -- "the shared stub ${src:t} no longer holds the bytes it was written with: a test wrote through its link or removed it; write a temp and rename over the name"
       rc=1
       continue
     }
@@ -3533,7 +3547,8 @@ test_hop_refuses_to_end_the_session_when_the_target_cannot_start() {
         'exit 1'
       ;;
     esac
-    chmod +x "$HOME/bin/curl"
+    # No chmod here: ccm_stub made each of those a 0555 store link, and a chmod
+    # on the linked name would change the mode every later home inherits.
     export CLAUDE_CODE_SESSION_ID='dead-session' CCMORPH_RELAY_ID="$relay_id"
 
     out=$(hop_as_claude "$target" 2>&1); st=$?
