@@ -12349,9 +12349,15 @@ test_private_session_keeps_exit_status_after_stop_and_continue() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   local prof="$test_home/prof" rc=0 pid st info cpid fifo fd crutch
   mkdir -p "$prof" && print '{}' > "$prof/.claude.json"
-  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'printf "%s\n" "$PPID $$ $CLAUDE_CONFIG_DIR" >&3 || exit 9' 'sleep 1' 'exit 7'
+  # No fixed lifetime for the fake claude: it stops on $CCM_STOP_GO, so the test
+  # always catches it alive (a `sleep 1` here lost the race under load and made
+  # the STOP land on a dead pid, testing nothing). The counter is its leash: a
+  # launcher killed before it says GO must not leave this stub polling forever.
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'printf "%s\n" "$PPID $$ $CLAUDE_CONFIG_DIR" >&3 || exit 9' \
+    'n=0; while [ ! -e "$CCM_STOP_GO" ] && [ $n -lt 600 ]; do sleep 0.1; n=$((n + 1)); done' 'exit 7'
   zmodload zsh/zselect || { rm -rf "$test_home"; return 1; }
   local -i hang=$(( CCMORPH_TEST_HANG_TIMEOUT * 100 ))
+  export CCM_STOP_GO="$test_home/go.stop"
   fifo="$test_home/started.STOP"
   mkfifo "$fifo"
   # Opened RDWR before the fork (GH-434): neither open can block on a launcher
@@ -12382,6 +12388,9 @@ test_private_session_keeps_exit_status_after_stop_and_continue() {
   exec {crutch}>&-
   cpid=${${info#* }%% *}
   kill -STOP $cpid; sleep 0.3; kill -CONT $cpid
+  # Released only now: the stopped 0.3 s is what is being tested, and the child
+  # cannot have run out before it.
+  touch "$CCM_STOP_GO"
   wait $pid; st=$?
   (( st == 7 )) || { print -u2 -- "STOP/CONT: status $st, want claude's 7"; rc=1; }
   [[ ! -e "${${info#* * }:h}" ]] || { print -u2 -- "STOP/CONT: private dir left behind"; rc=1; }
@@ -12506,10 +12515,15 @@ test_private_session_keeps_exit_status_after_interrupt() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   local prof="$test_home/prof" rc=0 pid st info fifo fd crutch
   mkdir -p "$prof" && print '{}' > "$prof/.claude.json"
-  # The fake claude survives SIGINT (as Claude Code does), then exits 0 on its own.
-  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'trap "" INT' 'printf "%s\n" "$PPID $$ $CLAUDE_CONFIG_DIR" >&3 || exit 9' 'sleep 1' 'exit 0'
+  # The fake claude survives SIGINT (as Claude Code does) and ends only when the
+  # test releases it: a `sleep 1` lifetime was a guess at when the signal would
+  # land, and under load a guess is how this test would pass without the signal
+  # ever reaching a running launcher.
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'trap "" INT' 'printf "%s\n" "$PPID $$ $CLAUDE_CONFIG_DIR" >&3 || exit 9' \
+    'n=0; while [ ! -e "$CCM_INT_GO" ] && [ $n -lt 600 ]; do sleep 0.1; n=$((n + 1)); done' 'exit 0'
   zmodload zsh/zselect || { rm -rf "$test_home"; return 1; }
   local -i hang=$(( CCMORPH_TEST_HANG_TIMEOUT * 100 ))
+  export CCM_INT_GO="$test_home/go.int"
   fifo="$test_home/started.INT"
   mkfifo "$fifo"
   # Opened RDWR before the fork (GH-434): neither open can block on a launcher
@@ -12539,6 +12553,10 @@ test_private_session_keeps_exit_status_after_interrupt() {
   exec {fd}<&-
   exec {crutch}>&-
   kill -INT ${info%% *}
+  # A beat for the signal to reach the launcher before its child may end, so the
+  # 0 below can only come from a claude that was interrupted and stayed up.
+  sleep 0.2
+  touch "$CCM_INT_GO"
   wait $pid; st=$?
   (( st == 0 )) || { print -u2 -- "INT: status $st, want 0"; rc=1; }
   [[ ! -e "${${info#* * }:h}" ]] || { print -u2 -- "INT: private dir left behind"; rc=1; }
