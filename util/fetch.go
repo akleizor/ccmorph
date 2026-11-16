@@ -16,7 +16,7 @@ import (
 // is honoured: it is how a bridge reaches a private endpoint.
 func LaunchListing(base, key string, maxSeconds int) (body string, ok bool) {
 	return fetchModels(key, io.Discard, "-sS", "-f", "--connect-timeout", "2", "--max-time", strconv.Itoa(maxSeconds),
-		apiURL(base, "/v1/models?limit=1000"), "-H", "anthropic-version: 2023-06-01")
+		ctxwindow.APIURL(base, "/v1/models?limit=1000"), "-H", "anthropic-version: 2023-06-01")
 }
 
 // listingArgs is the one curl line every listing fetch asks with: silent, failing
@@ -26,7 +26,7 @@ func LaunchListing(base, key string, maxSeconds int) (body string, ok bool) {
 // caller's own and sit before the URL.
 func listingArgs(base string, bounds ...string) []string {
 	args := append([]string{"-sS", "-f"}, bounds...)
-	return append(args, apiURL(base, "/v1/models?limit=1000"))
+	return append(args, ctxwindow.APIURL(base, "/v1/models?limit=1000"))
 }
 
 // ModelsListing is the listing `ccmorph models` and model-known read: no
@@ -67,7 +67,7 @@ func ProbeListing(base, key string, headers ...string) (body, code string) {
 	for _, h := range headers {
 		args = append(args, "-H", h)
 	}
-	raw, err := curlKeyed(key, append(args, apiURL(base, "/v1/models?limit=1000")), io.Discard)
+	raw, err := curlKeyed(key, append(args, ctxwindow.APIURL(base, "/v1/models?limit=1000")), io.Discard)
 	body, code = splitProbeAnswer(raw, err)
 	return undisguise(body), code
 }
@@ -149,17 +149,7 @@ func curlBearer(token string, args []string, errw io.Writer) (string, error) {
 	return curlFed("header = \"Authorization: Bearer "+escCred(token)+"\"\n", args, errw)
 }
 
-// apiURL joins an API root or a versioned SDK base (".../v1") with a /v1 path.
-func apiURL(base, path string) string {
-	base = strings.TrimSuffix(base, "/")
-	if versioned.MatchString(strings.ToLower(base)) {
-		path = strings.TrimPrefix(path, "/v1")
-	}
-	return base + path
-}
-
 var (
-	versioned      = regexp.MustCompile(`/v[0-9]+$`)
 	quotedDisguise = regexp.MustCompile(`"(claude-[^"]*-dd-[^"]+)"`)
 	refused        = regexp.MustCompile(`returned error: ([0-9]{3})`)
 )

@@ -279,9 +279,15 @@ func unhex(c byte) byte {
 	return c - '0'
 }
 
-// APIURL joins a path onto a base the way the native Anthropic client does:
-// /v1/messages is never stripped, other /v1 paths are when the base already
-// ends in a version.
+// APIURL is the one join of a base with a /v1 path (#563 — util's and the
+// adapter's spellings of it are gone): a base whose path ends in a version
+// segment (the OpenAI SDK convention, ".../v1" in either case, after every
+// trailing slash) absorbs a /v1 prefix — except /v1/messages, which is
+// appended verbatim, because Claude Code and cliproxyapi's Anthropic client
+// append it verbatim too, doubled version and all. The base is a profile's
+// validated endpoint — scheme://netloc, userinfo kept — so the shapes on
+// which the old spellings differed (a query on the base, an uppercase or
+// missing scheme) cannot reach this join.
 func APIURL(base, path string) string {
 	trimmed := strings.TrimRight(base, "/")
 	u, err := url.Parse(trimmed)

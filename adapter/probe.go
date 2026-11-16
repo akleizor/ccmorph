@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/ordjson"
-	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/shim"
 )
 
@@ -24,8 +24,7 @@ const (
 )
 
 var (
-	outCap    = regexp.MustCompile(`(?i)supports at most (\d+) completion tokens`)
-	versionRE = regexp.MustCompile(`(?i)/v[0-9]+$`)
+	outCap = regexp.MustCompile(`(?i)supports at most (\d+) completion tokens`)
 	// Every id rendered into the config is a YAML scalar and a cliproxyapi model
 	// name; ids outside this set are skipped, not escaped-and-hoped.
 	safeModelID = regexp.MustCompile(`^[A-Za-z0-9._:\[\]()@/-]+$`)
@@ -171,23 +170,6 @@ func postJSON(u string, body map[string]any, headers map[string]string) map[stri
 	return out
 }
 
-// apiURL matches the serving client's URL: only OpenAI bases include the version.
-func apiURL(base, path string) string {
-	scheme, netloc, p := profile.SplitURL(strings.TrimRight(base, "/"))
-	prefix := strings.TrimRight(p, "/")
-	// Claude Code and cliproxyapi's Anthropic client append /v1/messages verbatim.
-	if path != "/v1/messages" && versionRE.MatchString(prefix) {
-		path = strings.TrimPrefix(path, "/v1")
-	}
-	switch {
-	case netloc != "":
-		return scheme + "://" + netloc + prefix + path
-	case scheme != "":
-		return scheme + ":" + prefix + path
-	}
-	return prefix + path
-}
-
 func keyHeaders(key string) map[string]string {
 	return map[string]string{"x-api-key": key, "Authorization": "Bearer " + key}
 }
@@ -225,7 +207,7 @@ func inventory(base, key string, c *http.Client) ([]string, error) {
 	if c == nil {
 		c = client
 	}
-	resp, err := do(c, "GET", apiURL(base, "/v1/models"), nil, keyHeaders(key), 60*time.Second)
+	resp, err := do(c, "GET", ctxwindow.APIURL(base, "/v1/models"), nil, keyHeaders(key), 60*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -339,7 +321,7 @@ const noInference = "cannot determine protocol without inference"
 // a rejected key's 401, so the caller can refuse without inference — and 0
 // only when nothing answered (#374).
 func dialectAuto(base, key, model string) (string, string, int) {
-	resp, err := do(client, "GET", apiURL(base, "/v1/models"), nil, keyHeaders(key), probeTimeout)
+	resp, err := do(client, "GET", ctxwindow.APIURL(base, "/v1/models"), nil, keyHeaders(key), probeTimeout)
 	var doc map[string]any
 	status := 0
 	if err == nil {
@@ -416,7 +398,7 @@ func hi() []any { return []any{map[string]any{"role": "user", "content": "hi"}} 
 func dialectOf(base, key, model string, bounded bool) (string, string, int) {
 	var seen []int
 	var notes []string
-	status, first := post(apiURL(base, "/v1/messages"),
+	status, first := post(ctxwindow.APIURL(base, "/v1/messages"),
 		map[string]any{"model": model, "max_tokens": 8, "tools": toolAnthropic, "messages": hi()},
 		anthropicHeaders(key))
 	seen, notes = append(seen, status), append(notes, first)
@@ -432,7 +414,7 @@ func dialectOf(base, key, model string, bounded bool) (string, string, int) {
 	if bounded {
 		resp["max_output_tokens"] = 16
 	}
-	status, note := post(apiURL(base, "/v1/responses"), resp, bearer(key))
+	status, note := post(ctxwindow.APIURL(base, "/v1/responses"), resp, bearer(key))
 	seen, notes = append(seen, status), append(notes, note)
 	if status == 200 {
 		return "responses", "", 200
@@ -441,7 +423,7 @@ func dialectOf(base, key, model string, bounded bool) (string, string, int) {
 		return "unusable", ordjson.TruncRunes(note, 150), status
 	}
 
-	status, note = post(apiURL(base, "/v1/chat/completions"),
+	status, note = post(ctxwindow.APIURL(base, "/v1/chat/completions"),
 		map[string]any{"model": model, "max_tokens": 8, "tools": toolChat,
 			"reasoning_effort": "low", "messages": hi()}, bearer(key))
 	seen, notes = append(seen, status), append(notes, note)
@@ -454,7 +436,7 @@ func dialectOf(base, key, model string, bounded bool) (string, string, int) {
 
 	// Rejecting reasoning_effort is not a reason to drop a model: the translator
 	// can strip it.
-	status, noteNR := post(apiURL(base, "/v1/chat/completions"),
+	status, noteNR := post(ctxwindow.APIURL(base, "/v1/chat/completions"),
 		map[string]any{"model": model, "max_tokens": 8, "tools": toolChat, "messages": hi()}, bearer(key))
 	seen, notes = append(seen, status), append(notes, noteNR)
 	if status == 200 {
@@ -499,7 +481,7 @@ func outputCap(base, key, model, dialect string) *int {
 	}
 	body := map[string]any{"model": model, "max_tokens": ccMaxTokens, "messages": hi(),
 		stopKey: []any{"\n\n"}}
-	status, note := post(apiURL(base, path), body, hdr)
+	status, note := post(ctxwindow.APIURL(base, path), body, hdr)
 	if status == 200 {
 		return nil
 	}
@@ -517,7 +499,7 @@ func outputCap(base, key, model, dialect string) *int {
 func reasonsByDefault(base, key, model string) bool {
 	headers := anthropicHeaders(key)
 	request := map[string]any{"model": model, "max_tokens": 512, "messages": hi()}
-	body := postJSON(apiURL(base, "/v1/messages"), request, headers)
+	body := postJSON(ctxwindow.APIURL(base, "/v1/messages"), request, headers)
 	if body == nil {
 		return false
 	}
@@ -533,7 +515,7 @@ func reasonsByDefault(base, key, model string) bool {
 		return false
 	}
 	request["thinking"] = map[string]any{"type": "disabled"}
-	return postJSON(apiURL(base, "/v1/messages"), request, headers) != nil
+	return postJSON(ctxwindow.APIURL(base, "/v1/messages"), request, headers) != nil
 }
 
 // recyclesToolIDs is true when the upstream mints deterministic tool_use ids
@@ -543,7 +525,7 @@ func reasonsByDefault(base, key, model string) bool {
 func recyclesToolIDs(base, key, model string) bool {
 	var seen [2]string
 	for i := range seen {
-		body := postJSON(apiURL(base, "/v1/messages"),
+		body := postJSON(ctxwindow.APIURL(base, "/v1/messages"),
 			map[string]any{"model": model, "max_tokens": 64, "tools": toolProbe,
 				"messages": []any{map[string]any{"role": "user", "content": "Call probe_tool with x=1. No prose."}}},
 			anthropicHeaders(key))

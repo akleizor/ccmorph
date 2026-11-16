@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/akleizor/ccmorph/ctxwindow"
 )
 
 // TokenShaped reports whether s has the shape every Claude OAuth token has:
@@ -61,7 +63,7 @@ func StoredSignin(home string) string {
 func ProbeToken(token string) (code string) {
 	body, err := curlBearer(token, []string{"-sS", "--connect-timeout", "2", "--max-time", "5",
 		"-w", `\n` + statusMarker + `%{http_code}`, "-H", "anthropic-version: 2023-06-01",
-		apiURL("https://api.anthropic.com", "/v1/models?limit=1000")}, io.Discard)
+		ctxwindow.APIURL("https://api.anthropic.com", "/v1/models?limit=1000")}, io.Discard)
 	_, code = splitProbeAnswer(body, err)
 	return code
 }

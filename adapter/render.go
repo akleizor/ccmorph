@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/quirks"
 	"github.com/akleizor/ccmorph/shim"
@@ -128,7 +129,7 @@ func render(rows []Row, key string, port int, upstream, authdir, proxy, shimPath
 		claudeHdr = "    headers:\n      User-Agent: " + q(ua) + "\n"
 	}
 	chat, noreason := ids("chat", "chat-noreason"), ids("chat-noreason")
-	openaiBase := apiURL(upstream, "/v1")
+	openaiBase := ctxwindow.APIURL(upstream, "/v1")
 	caps := map[string]int{}
 	for _, r := range rows {
 		if r.capped() {

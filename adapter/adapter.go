@@ -43,6 +43,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/shim"
 	"github.com/akleizor/ccmorph/util"
@@ -394,7 +395,7 @@ func frontDirectly(a *cliArgs, upstream, key, routeIdentity string, usable []Row
 	}
 	env := map[string]string{"CCMORPH_MODEL_ROUTE": mustJSON(map[string]any{
 		"profile": a.profile, "identity": routeIdentity, "upstream": upstream,
-		"models_url": apiURL(upstream, "/v1/models"), "models": models,
+		"models_url": ctxwindow.APIURL(upstream, "/v1/models"), "models": models,
 		"model_map": modelMap, "timeout": int(selectTimeout.Seconds()),
 		"key_sha256": hashHex(key)})}
 	// Profile request quirks ride as env for the shim's hooks module, never as

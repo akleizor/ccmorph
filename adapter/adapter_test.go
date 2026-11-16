@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -147,14 +148,17 @@ func decoy(t *testing.T) (url string, hits func() int) {
 
 // --- ports of tests/adapter_auto_test.py ----------------------------------------
 
+// #563: the join this pin exercised is the one home now — these rows are
+// what the adapter's probes rely on: a versioned base in either case gets
+// no second /v1, a bare base gains its first.
 func TestAPIURLVersionedBaseGetsNoSecondV1(t *testing.T) { // test_versioned_base_url_is_not_given_a_second_v1
 	for base, want := range map[string]string{
 		"https://provider.example/api/v4": "https://provider.example/api/v4/models",
 		"https://provider.example/api/V4": "https://provider.example/api/V4/models",
 		"https://provider.example":        "https://provider.example/v1/models",
 	} {
-		if got := apiURL(base, "/v1/models"); got != want {
-			t.Errorf("apiURL(%q) = %q, want %q", base, got, want)
+		if got := ctxwindow.APIURL(base, "/v1/models"); got != want {
+			t.Errorf("ctxwindow.APIURL(%q) = %q, want %q", base, got, want)
 		}
 	}
 }
