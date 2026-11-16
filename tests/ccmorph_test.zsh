@@ -548,15 +548,25 @@ setup_home() {
 # Fake the gateway. ccmorph must ask the endpoint what it serves rather than
 # carry any per-model knowledge, so the fixture is the only source of truth
 # about which models exist.
+# The installed curl is a link into the stub store, which is mode 0555, so the
+# name is replaced through ccm_stub — never written or renamed over.  BSD `mv`
+# asks before overwriting a write-protected destination: under a terminal it
+# waits for an answer nobody gives, and at EOF it leaves the old file in place.
+# The result is a shared stub again, so the bytes are assessed once, not again.
+_ccm_prepend_curl_probe() {  # <probe line>...
+  local -a body
+  [[ -r $HOME/bin/curl ]] || return 1
+  body=( ${(f)"$(<$HOME/bin/curl)"} )
+  ccm_stub "$HOME/bin/curl" "$@" "${body[@]:1}"
+}
+
 # The route probe asks curl for -w %{http_code}; any fake that only cats a body
 # must answer with the __CCMORPH_STATUS__ marker the probe reads, or a hop's
 # pre-close check sees a route that never answered.
 make_fake_curl_probe_aware() {
-  local f="$HOME/bin/curl"
-  { print -r -- '#!/bin/sh'
-    print -r -- 'for a do case "$a" in *http_code*) printf "__CCMORPH_STATUS__200"; exit 0 ;; esac; done'
-    tail -n +2 "$f"; } > "$f.new" && mv "$f.new" "$f"
-  chmod +x "$f"
+  _ccm_prepend_curl_probe \
+    '#!/bin/sh' \
+    'for a do case "$a" in *http_code*) printf "__CCMORPH_STATUS__200"; exit 0 ;; esac; done'
 }
 
 # Answers the keyed status probe (-w %{http_code}, the shape doctor and the
@@ -565,11 +575,9 @@ make_fake_curl_probe_aware() {
 # the __CCMORPH_STATUS__ marker. The latest status wins: each call prepends its
 # case, and the first match exits.
 make_fake_curl_status() {
-  local f="$HOME/bin/curl"
-  { print -r -- '#!/bin/sh'
-    print -r -- 'for a do case "$a" in *http_code*) printf "\n__CCMORPH_STATUS__'"$1"'"; exit 0 ;; esac; done'
-    tail -n +2 "$f"; } > "$f.new" && mv "$f.new" "$f"
-  chmod +x "$f"
+  _ccm_prepend_curl_probe \
+    '#!/bin/sh' \
+    'for a do case "$a" in *http_code*) printf "\n__CCMORPH_STATUS__'"$1"'"; exit 0 ;; esac; done'
 }
 
 write_curl_mock() {
