@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -49,9 +50,21 @@ var (
 // loopback never uses a proxy, whatever http_proxy says: a proxy cannot reach
 // this machine's 127.0.0.1.
 var (
-	client   = &http.Client{CheckRedirect: shim.CheckRedirect, Transport: &http.Transport{Proxy: http.ProxyFromEnvironment, DisableKeepAlives: true}}
+	client   = &http.Client{CheckRedirect: shim.CheckRedirect, Transport: &http.Transport{Proxy: probeProxy, DisableKeepAlives: true}}
 	loopback = &http.Client{CheckRedirect: shim.CheckRedirect, Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true}}
 )
+
+// probeVia is the profile's CCMORPH_UPSTREAM_PROXY: compatibility probes
+// must take the same route as the translator, or a LAN gateway the process
+// cannot dial reads every new model as unusable.
+var probeVia *url.URL
+
+func probeProxy(r *http.Request) (*url.URL, error) {
+	if probeVia != nil {
+		return probeVia, nil
+	}
+	return http.ProxyFromEnvironment(r)
+}
 
 // Swappable in unit tests, as the Python tests patched the module.
 var (

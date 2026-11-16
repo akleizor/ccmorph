@@ -32,6 +32,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -545,6 +546,11 @@ func Main(argv []string) int {
 		die("profile %s has no base_url to front", a.profile)
 	}
 	upstreamProxy := strings.TrimSpace(env["CCMORPH_UPSTREAM_PROXY"])
+	// An unparsable proxy leaves probes on the environment's proxy, as before;
+	// never echo it here, it may carry a password.
+	if u, err := url.Parse(upstreamProxy); upstreamProxy != "" && err == nil && u.Host != "" {
+		probeVia = u
+	}
 	// Profile request quirks ride as CCMORPH_* env to the shim, not as shim flags.
 	// CCMORPH_SHIM_HOOKS names a shim binary built with the profile's own hooks,
 	// run in place of the stock one; validated before anything is spawned, so a
