@@ -6,7 +6,14 @@ zmodload zsh/datetime
 # run as builtins: forking this shell to link a file costs more than the link.
 # mapfile is the store guard's reader for the same reason — it reads a file's
 # bytes without a subshell, and the guard reads every stub after every test.
-zmodload zsh/files
+#
+# By name, and only the four: loading zsh/files bare also takes over the plain
+# names, and its chmod builtin rejects the `chmod +x` form 24 fixtures here still
+# write. Under the shadow those stubs and the copied core were left unrunnable,
+# the launcher fell through to the host's real claude, and 40-odd tests failed on
+# a machine that had nothing to do with them. One name per builtin keeps the
+# speed and leaves /bin/chmod, /bin/mv and /bin/rm to the fixtures.
+zmodload -F zsh/files b:zf_ln b:zf_rm b:zf_mkdir b:zf_chmod
 zmodload zsh/mapfile
 
 # The suite often runs from inside a ccmorph-launched Claude session, whose
