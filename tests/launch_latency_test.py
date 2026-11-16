@@ -56,7 +56,12 @@ def test_adapter_receives_the_wire_model_id(selected, wire):
 
 def test_adapter_start_reports_the_wait():
     with tempfile.TemporaryDirectory() as tmp:
-        result, elapsed, _ = _adapter_start_run(tmp, 'gpt-6-astra', 2.2)
+        # 1.4 s, not a longer guess: the core says "Starting adapter for ..." once
+        # the whole-second wait crosses 1 (util/adapterstart.go), on a 200 ms tick,
+        # so any delay past ~1.2 s proves the line was printed while the adapter
+        # was still starting. The bound below still allows the launcher ~3.8 s of
+        # its own overhead, which is what `elapsed < 6` always meant.
+        result, elapsed, _ = _adapter_start_run(tmp, 'gpt-6-astra', 1.4)
         assert result.returncode == 0, result.stderr
         assert elapsed < 6
         assert 'Starting' in result.stderr and 'gw' in result.stderr
