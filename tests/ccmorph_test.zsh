@@ -257,6 +257,10 @@ _ccm_test_remove_homes() {
   for home in $_ccm_test_homes; do
     [[ $home == ${TMPDIR:-/tmp}* || $home == /tmp/* || $home == /private/* ]] && rm -rf -- "$home"
   done
+  # The stub store sits beside the homes, on whatever volume this shard's TMPDIR
+  # named at the time. This one path the shard made itself, so it is removed
+  # without the guard above, which would skip it when TMPDIR has since moved.
+  [[ -n ${_ccm_test_stub_store:-} ]] && rm -rf -- "$_ccm_test_stub_store"
 }
 trap _ccm_test_sweep_on_exit EXIT
 trap '_ccm_test_sweep_on_signal 1' HUP
@@ -334,13 +338,110 @@ bridgeless_path() {
   print -r -- "$REPLY"
 }
 
+# The fixture stubs: one file per distinct text, per shard, linked into each home.
+#
+# macOS assesses a never-run executable at its first exec — 55-62 ms for a stub
+# like these, 134-153 ms for a 14 MB binary, against 4-17 ms for a file it has
+# seen — and the assessment is keyed to the inode: writing the same bytes again is
+# a new inode and is assessed again, while a second name for the same file is not.
+# Every home writes the same default stubs, so the first home to need a text writes
+# it once into this store and every home after it links that file. This is the cost
+# the shard comment above already names; it is now paid once per shard.
+#
+# Two properties keep the sharing honest:
+#   * a process started from a link carries its own home path in argv, so GH-434's
+#     leak sweep still matches it to the home that ran it;
+#   * a store file is mode 0555, so a test that points `>` at a linked stub gets
+#     "permission denied" instead of quietly rewriting bytes the next home links.
+#     _ccm_test_check_stubs is the backstop: it compares every store file with the
+#     bytes it was written with after each test and fails the test that changed one.
+# A test that must write its own stub over a shared name writes it through ccm_stub
+# (or a temp renamed over the name), which is how write_fake_adapter and
+# install_model_window stay safe.
+typeset -g _ccm_test_stub_store=''
+typeset -gA _ccm_test_stub_src=()    # stub text -> its file in the store
+typeset -gA _ccm_test_stub_text=()   # store file -> the bytes it was written with
+
+# Makes the shard's store and leaves its path in $_ccm_test_stub_store. It lives
+# beside the homes it serves, because a hard link cannot cross a device and TMPDIR
+# is not one place here: a rig lane, a CI runner and a test that points TMPDIR into
+# its own scratch each land the homes somewhere new — a mirror dir on one volume and
+# a home on another is normal, which is why the mirrors are symlinks and these are
+# not. So the base is the homes' own parent, and a home under a new base rebuilds
+# the store once. Never called through $(...): a subshell would keep the path, and
+# the next home would build a second store and pay the assessment all over again —
+# the reason bridgeless_path answers in REPLY.
+_ccm_test_make_stub_store() {
+  local base=$1 new
+  # The store lives beside the homes, so a test that removes its own home removes
+  # the store with it: a store that is gone is rebuilt, not trusted.
+  [[ -n $_ccm_test_stub_store && $_ccm_test_stub_store == "$base"/* ]] \
+    && [[ -d $_ccm_test_stub_store ]] && return 0
+  new=$(mktemp -d "$base/ccmorph-stub.XXXXXX") || return 1
+  # A store the shard made for another base is ours to release.
+  [[ -z $_ccm_test_stub_store ]] || rm -rf -- "$_ccm_test_stub_store"
+  _ccm_test_stub_store=$new
+  _ccm_test_stub_src=()
+  _ccm_test_stub_text=()
+  # Registered like a mirror dir, for a suite killed before its own cleanup.
+  _ccm_test_homes+=("$new")
+  return 0
+}
+
+# ccm_stub <path> <line>...: make <path> an executable holding those lines,
+# sharing one inode with every other home whose stub carries the same bytes.
+# One argument holding newlines is the same call, which is how the fixtures that
+# build their body in an array stay written.
+ccm_stub() {
+  local dest=$1; shift
+  local text="${(F)@}" src
+  # Every home here is a `mktemp -d` in one directory, so the home's parent is that
+  # directory: one base for every home until TMPDIR moves under the shard. The
+  # cache is asked only after the base is settled, so a cached file on a volume
+  # this home is not on can never be the answer.
+  _ccm_test_make_stub_store "${${HOME:-/}%/*}" || return 1
+  if [[ -n ${_ccm_test_stub_src[$text]:-} ]]; then
+    src=${_ccm_test_stub_src[$text]}
+  else
+    src="$_ccm_test_stub_store/${dest:t}.${#_ccm_test_stub_src}"
+    print -r -- "$text" > "$src" || return 1
+    chmod 0555 "$src"
+    _ccm_test_stub_src[$text]="$src"
+    _ccm_test_stub_text[$src]="$text"
+  fi
+  mkdir -p -- "$dest:h"
+  # The name is replaced, never written: it may already be a link into the store.
+  rm -f -- "$dest" && ln -- "$src" "$dest"
+}
+
+# The store's other half: a shared stub that no longer holds its own bytes means a
+# test wrote through its link, so every home after it would run the wrong stub.
+_ccm_test_check_stubs() {
+  local src rc=0
+  for src in ${(k)_ccm_test_stub_text}; do
+    # A test that deletes its own home deletes the store inside it with it. That
+    # is the suite's own bookkeeping, not a rewritten stub; the next ccm_stub
+    # finds the store gone and builds a new one.
+    [[ -d ${src:h} ]] || continue
+    [[ $(<"$src") == "${_ccm_test_stub_text[$src]}" ]] || {
+      print -u2 -- "the shared stub ${src:t} was rewritten in place: a test pointed > at a linked stub; write a temp and rename over the name"
+      rc=1
+      continue
+    }
+    # A chmod +x on a link opens the store file to the next write-through, so the
+    # mode is part of what the store promises, not just the bytes.
+    [[ -w "$src" ]] || continue
+    print -u2 -- "the shared stub ${src:t} is writable again: a test chmodded a linked stub; drop the chmod, ccm_stub sets the mode"
+    rc=1
+  done
+  return $rc
+}
+
 # Installs a fake ccmorph-adapter: the given lines, then the shared serve loop,
 # which exits once the launch that passed --parent-pid is gone (#373).
 write_fake_adapter() {
-  local adapter="$HOME/.config/ccmorph/libexec/ccmorph-adapter"
-  printf '%s\n' '#!/bin/sh' "$@" > "$adapter"
-  print -r -- "$(<"$SCRIPT_DIR/fake_adapter_serve.sh")" >> "$adapter"
-  chmod +x "$adapter"
+  local -a body=( '#!/bin/sh' "$@" "${(f)"$(<"$SCRIPT_DIR/fake_adapter_serve.sh")"}" )
+  ccm_stub "$HOME/.config/ccmorph/libexec/ccmorph-adapter" "${(F)body}"
 }
 
 setup_home() {
@@ -390,7 +491,7 @@ setup_home() {
   # of its registry parser. The fixture must install that runtime dependency.
   install_model_window
 
-  printf '%s\n' \
+  local -a claude_stub=( \
     '#!/bin/sh' \
     '{' \
     '  printf "ARG"' \
@@ -415,20 +516,19 @@ setup_home() {
     '  if [ -n "$CLAUDE_CONFIG_DIR" ] && [ -f "$CLAUDE_CONFIG_DIR/settings.json" ]; then' \
     '    printf "SETTINGS=%s\\n" "$(python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1])), separators=(chr(44), chr(58))))" "$CLAUDE_CONFIG_DIR/settings.json")"' \
     '  fi' \
-    '} >> "$CCMORPH_TEST_LOG"' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+    '} >> "$CCMORPH_TEST_LOG"' )
+  ccm_stub "$HOME/bin/claude" "${(F)claude_stub}"
 
   # Default launcher probes are hermetically reachable. Tests for discovery,
   # published metadata, and transport failure replace this stub explicitly. The
   # route probe (-w) answers with the __CCMORPH_STATUS__ marker doctor's probe
   # reads, so a hop's pre-close check sees a healthy route.
-  printf '%s\n' \
+  local -a curl_stub=( \
     '#!/bin/sh' \
     'for arg do [ "$arg" = "-w" ] && { printf "__CCMORPH_STATUS__200"; exit 0; }; done' \
     'for arg do case "$arg" in *messages*) printf "200"; exit 0 ;; esac; done' \
-    'exit 1' \
-    > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'exit 1' )
+  ccm_stub "$HOME/bin/curl" "${(F)curl_stub}"
 
   # Automatic adapters are part of the launch path for custom endpoints. Keep the
   # hermetic fixture native-compatible; tests that exercise adapter behavior replace it.
@@ -473,12 +573,11 @@ make_fake_curl_status() {
 }
 
 write_curl_mock() {
-  printf '%s\n' '#!/bin/zsh' "$1" > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+  ccm_stub "$HOME/bin/curl" '#!/bin/zsh' "$1"
 }
 
 fake_gateway() {
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' \
     '# record the invocation so tests can assert on url and auth' \
     'for a do printf "%s\n" "$a" >> "$HOME/curl.args"; done' \
@@ -489,8 +588,7 @@ fake_gateway() {
     '{"id":"alpha-chat","owned_by":"vendor-a","capabilities":{"chat_completion":true}},' \
     '{"id":"embed-only","owned_by":"vendor-c","capabilities":{"chat_completion":false,"embeddings":true}}' \
     ']}' \
-    'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'JSON'
   make_fake_curl_probe_aware
 }
 
@@ -587,7 +685,7 @@ test_models_second_column_shows_display_name_or_owner() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' \
     'for a do case "$a" in *http_code*) echo 200; exit 0 ;; esac; done' \
     'cat <<JSON' \
@@ -596,8 +694,7 @@ test_models_second_column_shows_display_name_or_owner() {
     '{"id":"glm-fake-9","object":"model","owned_by":"fakeco"},' \
     '{"id":"bare-fake-2"}' \
     ']}' \
-    'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'JSON'
   write_apikey_conf gw \
     'api_key=sk_prod_test' \
     'base_url=https://gateway.invalid'
@@ -624,7 +721,7 @@ test_models_second_column_shows_display_name_or_owner() {
 # A gateway records the HTTPS_PROXY it was invoked with, so a test can prove
 # discovery went through the connect proxy.
 fake_gateway_records_proxy() {
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' \
     'for arg do' \
     '  if [ "$arg" = "-w" ]; then printf "000"; exit 28; fi' \
@@ -632,8 +729,7 @@ fake_gateway_records_proxy() {
     'printf "HTTPS_PROXY=%s\n" "${HTTPS_PROXY-<unset>}" >> "$HOME/curl.env"' \
     'cat <<JSON' \
     '{"object":"list","data":[{"id":"a-chat","owned_by":"v","capabilities":{"chat_completion":true}}]}' \
-    'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'JSON'
 }
 
 # Regression: every launch path used to hand its network consumers
@@ -668,15 +764,14 @@ test_models_keeps_entries_that_declare_no_capabilities() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' \
     'cat <<JSON' \
     '{"data":[' \
     '{"id":"plain-a","object":"model","owned_by":"vendor-a"},' \
     '{"id":"plain-b","object":"model","owned_by":"vendor-b"}' \
     ']}' \
-    'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'JSON'
   make_fake_curl_probe_aware
   write_apikey_conf native 'api_key=sk-test-native'
   source "$CCMORPH_SOURCE"
@@ -1606,7 +1701,7 @@ test_claude_subcommands_are_asked_for_never_hardcoded() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/claude" \
     '#!/bin/sh' \
     'cat <<EOF' \
     'Usage: claude [options] [command]' \
@@ -1620,9 +1715,7 @@ test_claude_subcommands_are_asked_for_never_hardcoded() {
     '  invented-verb   a subcommand no real release has' \
     '  mcp             configure MCP servers' \
     '  stop|kill <id>  an aliased subcommand' \
-    'EOF' \
-    > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+    'EOF'
   source "$CCMORPH_SOURCE"
 
   local rc=0
@@ -1647,15 +1740,13 @@ test_claude_subcommands_are_asked_for_never_hardcoded() {
 
   # ccmorph's own verbs win over anything the binary also names, so a future Claude
   # Code `list` or `use` cannot steal a ccmorph command.
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/claude" \
     '#!/bin/sh' \
     'cat <<EOF' \
     'Commands:' \
     '  list            claude also has a list now' \
     '  rm              and an rm' \
-    'EOF' \
-    > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+    'EOF'
   _CCMORPH_CLAUDE_VERBS=""
   local verb
   for verb in list rm; do
@@ -2136,12 +2227,11 @@ test_launch_sizes_without_waiting_on_the_network() {
   fake_gateway
   fake_fzf
   write_apikey_conf alpha 'api_key=sk-test-alpha' 'base_url=https://gateway.invalid'
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/claude" \
     '#!/bin/sh' \
     '{' \
     '  printf "PROXY=%s\\n" "${HTTPS_PROXY-<unset>}"' \
-    '} >> "$CCMORPH_TEST_LOG"' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+    '} >> "$CCMORPH_TEST_LOG"'
   source "$CCMORPH_SOURCE"
 
   _ccm_launch -a alpha prompt || {
@@ -2575,7 +2665,7 @@ test_add_apikey_native_endpoint_skips_adapter() {
 # Helper: stub curl so the /v1/messages probe answers with a chosen status and
 # body, in the `-o - -w '\n%{http_code}'` shape the probe actually requests.
 _stub_probe_response() {  # $1 = status, $2 = body
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' \
     'for arg do' \
     "  case \"\$arg\" in *messages*) printf '%s\\n%s' '$2' '$1'; exit 0 ;; esac" \
@@ -2583,9 +2673,7 @@ _stub_probe_response() {  # $1 = status, $2 = body
     'for arg do' \
     '  if [ "$arg" = "-w" ]; then printf "200"; exit 0; fi' \
     'done' \
-    'exit 1' \
-    > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'exit 1'
 }
 
 test_add_apikey_model_level_404_is_native() {
@@ -2674,12 +2762,10 @@ test_direct_resume_derives_the_carried_claude_send_id() {
   local test_home session_id='resume-1m' transcript
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' \
     'for a do case "$a" in *http_code*) echo 200; exit 0 ;; esac; done' \
-    'printf '\''{"data":[{"id":"claude-opus-5","max_input_tokens":1000000}]}\n'\''' \
-    > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'printf '\''{"data":[{"id":"claude-opus-5","max_input_tokens":1000000}]}\n'\'''
   printf '%s\n' 'type=proxy' 'base_url=http://gw.invalid' 'api_key=test-key' \
     'model=fallback-model' > "$HOME/.config/ccmorph/resume1m.conf"
   write_profile_context resume1m claude-opus-5=1000000
@@ -2978,19 +3064,17 @@ test_a_hop_reads_the_catalogue_afresh() {
     > "$HOME/catalogue.json"
   print -r -- '{"object":"list","data":[{"id":"beta-chat","capabilities":{"chat_completion":true}}]}' \
     > "$HOME/catalogue.next"
-  printf '%s\n' '#!/bin/sh' \
+  ccm_stub "$HOME/bin/curl" '#!/bin/sh' \
     'for a do case "$a" in *http_code*) printf 200; exit 0 ;; esac; done' \
-    'cat "$HOME/catalogue.json"' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'cat "$HOME/catalogue.json"'
   # Claude Code stands in as a script: it swaps the catalogue, queues the switch
   # to next, and exits so the launcher resumes the session.
-  printf '%s\n' '#!/bin/sh' \
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' \
     'if [ ! -f "$HOME/hopped" ]; then' \
     '  : > "$HOME/hopped"' \
     '  cp "$HOME/catalogue.next" "$HOME/catalogue.json"' \
     '  printf "profile=next\nsession=catalogue-session\n" > "$HOME/.config/ccmorph/.reswitch.$CCMORPH_RELAY_ID"' \
-    'fi' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+    'fi'
   source "$CCMORPH_SOURCE"
 
   _ccm_launch -a gw >/dev/null 2>&1 || rc=1
@@ -3028,7 +3112,7 @@ install_hopping_claude() {
   export CCMORPH_TEST_SOURCE="$CCMORPH_SOURCE"
   export CCMORPH_TEST_HOP_ARGS="$*"
   export CCMORPH_TEST_TESTS_DIR="$REPO_ROOT/tests"
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/claude" \
     '#!/usr/bin/env python3' \
     'import os, signal, subprocess, sys, time' \
     'sys.path.insert(0, os.environ["CCMORPH_TEST_TESTS_DIR"])' \
@@ -3065,9 +3149,7 @@ install_hopping_claude() {
     'time.sleep(HANG_TIMEOUT)' \
     'with open(os.environ["CCMORPH_TEST_LOG"], "a") as log:' \
     '    log.write("NO-TERM\n")' \
-    'sys.exit(ran.returncode or 0)' \
-    > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+    'sys.exit(ran.returncode or 0)'
 }
 
 # The record Claude Code writes with a session's first message: the identity a
@@ -3195,7 +3277,7 @@ test_an_ended_session_prints_the_command_that_resumes_it() {
   # The stand-in Claude Code ends an attended session the way ccmorph's
   # SessionEnd hook does: the session id in a pid-keyed TMPDIR file. A print
   # run records nothing, so captured output carries no resume line.
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/claude" \
     '#!/bin/sh' \
     '{' \
     '  printf "ARG"' \
@@ -3207,8 +3289,7 @@ test_an_ended_session_prints_the_command_that_resumes_it() {
     '    printf %s ended-session > "${TMPDIR:-/tmp}/ccmorph-session-end.$$"' \
     '  fi' \
     '} >> "$CCMORPH_TEST_LOG"' \
-    'exit 0' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+    'exit 0'
   source "$CCMORPH_SOURCE"
 
   out=$(_ccm_launch -a proxy 2>&1) || rc=1
@@ -3235,7 +3316,7 @@ test_a_session_with_no_conversation_ends_without_a_resume_command_issue_359() {
   # JSON input beside it -- and answers --resume the way Claude Code does: the
   # conversation comes back when a transcript holds it, its own error and exit
   # 1 when none does, and the hook still records that id.
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/claude" \
     '#!/bin/sh' \
     'attended=1 resume= prev=' \
     'for arg do' \
@@ -3261,8 +3342,7 @@ test_a_session_with_no_conversation_ends_without_a_resume_command_issue_359() {
     '  printf "{\"session_id\":\"%s\",\"transcript_path\":\"%s\",\"hook_event_name\":\"SessionEnd\"}" "$sid" "$HOME/.claude/projects/p/$sid.jsonl" > "$f.json"' \
     '  printf %s "$sid" > "$f"' \
     'fi' \
-    'exit ${st:-0}' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+    'exit ${st:-0}'
   source "$CCMORPH_SOURCE"
 
   # A session that spoke keeps its line, and the command it names resumes it.
@@ -3436,13 +3516,13 @@ test_hop_refuses_to_end_the_session_when_the_target_cannot_start() {
     target=dead
     case "$cause" in
     no-answer)
-      printf '%s\n' '#!/bin/sh' 'exit 1' > "$HOME/bin/curl"
+      ccm_stub "$HOME/bin/curl" '#!/bin/sh' 'exit 1'
       ;;
     *)
       if [[ "$cause" == native-rejected ]]; then target=anth; fi
-      printf '%s\n' '#!/bin/sh' \
+      ccm_stub "$HOME/bin/curl" '#!/bin/sh' \
         'for arg do [ "$arg" = "-w" ] && { printf "__CCMORPH_STATUS__401"; exit 0; }; done' \
-        'exit 1' > "$HOME/bin/curl"
+        'exit 1'
       ;;
     esac
     chmod +x "$HOME/bin/curl"
@@ -3606,8 +3686,7 @@ test_launch_failure_names_the_cause_and_the_doctor_command() {
     '[ "$1" = dead ] && exit 1' \
     'echo "NATIVE=1"' \
     'trap "exit 0" TERM INT'
-  printf '%s\n' '#!/bin/sh' 'exit 1' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+  ccm_stub "$HOME/bin/curl" '#!/bin/sh' 'exit 1'
   source "$CCMORPH_SOURCE"
 
   out=$(_ccm_launch -a dead 2>&1); st=$?
@@ -3867,7 +3946,7 @@ test_relay_resume_preserves_dangerous_permission_mode() {
     'api_key=target-key' \
     'model=target-model' \
     > "$HOME/.config/ccmorph/target.conf"
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' \
     'formatted=0; code=200' \
     'for arg do' \
@@ -3876,12 +3955,10 @@ test_relay_resume_preserves_dangerous_permission_mode() {
     'done' \
     '[ "$formatted" = 1 ] || exit 1' \
     'printf "%s" "$code"' \
-    '[ "$code" != 000 ]' \
-    > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    '[ "$code" != 000 ]'
   # The relay resumes relay-session: seed its conversation so the resume holds (#288).
   seed_session_transcript relay-session 'spoken before the switch'
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/claude" \
     '#!/bin/sh' \
     'printf "ARG" >> "$CCMORPH_TEST_LOG"' \
     'for arg do printf "\\t%s" "$arg" >> "$CCMORPH_TEST_LOG"; done' \
@@ -3889,9 +3966,7 @@ test_relay_resume_preserves_dangerous_permission_mode() {
     'if [ ! -f "$HOME/relay-triggered" ]; then' \
     '  : > "$HOME/relay-triggered"' \
     '  printf "profile=target\\nsession=relay-session\\nmodel=source-model\\neffort=high\\n" > "$HOME/.config/ccmorph/.reswitch.$CCMORPH_RELAY_ID"' \
-    'fi' \
-    > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+    'fi'
   source "$CCMORPH_SOURCE"
   cp "$REPO_ROOT/lib/ccmorph.sh" "$HOME/.config/ccmorph/lib/ccmorph.sh"
   cp "$REPO_ROOT"/lib/ccmorph-*.zsh "$HOME/.config/ccmorph/lib/"
@@ -3965,15 +4040,13 @@ check_relay_cache_notice_absent() {
       ;;
   esac
   export CCMORPH_TEST_RELAY_TARGET="$target"
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/claude" \
     '#!/bin/sh' \
     'printf "STARTED\n" >> "$CCMORPH_TEST_LOG"' \
     'if [ ! -f "$HOME/relay-triggered" ]; then' \
     '  : > "$HOME/relay-triggered"' \
     '  printf "profile=%s\nsession=relay-session\n" "$CCMORPH_TEST_RELAY_TARGET" > "$HOME/.config/ccmorph/.reswitch.$CCMORPH_RELAY_ID"' \
-    'fi' \
-    > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+    'fi'
   source "$CCMORPH_SOURCE"
 
   local output actual_rc=0 rc=0
@@ -4539,9 +4612,8 @@ test_one_models_listing_per_launch_is_shared() {
 
   setup_home "$test_home"
   mkdir -p "$HOME/bin"
-  printf '%s\n' '#!/bin/sh' "printf x >> '$tally'" \
-    'echo "{\"data\":[{\"id\":\"m1\",\"context_length\":123456}]}"' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+  ccm_stub "$HOME/bin/curl" '#!/bin/sh' "printf x >> '$tally'" \
+    'echo "{\"data\":[{\"id\":\"m1\",\"context_length\":123456}]}"'
 
   source "$CCMORPH_SOURCE"
 
@@ -5644,9 +5716,8 @@ fake_adapter() {
 
 # An adapter that fails before announcing a port: the launch must abort.
 fake_adapter_broken() {
-  printf '%s\n' '#!/bin/sh' 'echo "boom" >&2' 'exit 1' \
-    > "$HOME/.config/ccmorph/libexec/ccmorph-adapter"
-  chmod +x "$HOME/.config/ccmorph/libexec/ccmorph-adapter"
+  ccm_stub "$HOME/.config/ccmorph/libexec/ccmorph-adapter" \
+    '#!/bin/sh' 'echo "boom" >&2' 'exit 1'
 }
 
 # The port the picker test's launch reads, named like its siblings so
@@ -5804,12 +5875,11 @@ test_adapter_redirect_under_a_terminal_never_reaches_the_operators_picker() {
 # for the gateway shim, only through the adapter, only in shapes the shim accepts, and
 # never lets the variables reach the session's own children.
 task_stub_claude() {
-  printf '%s\n' '#!/bin/sh' \
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' \
     '{ printf "HDRS=<%s>\n" "${ANTHROPIC_CUSTOM_HEADERS-unset}"' \
     '  printf "TASK=<%s> ATTEMPT=<%s>\n" "${CCMORPH_TASK-unset}" "${CCMORPH_ATTEMPT-unset}"' \
     '  printf "PCT=<%s>\n" "${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE-unset}"' \
-    '} >> "$CCMORPH_TEST_LOG"' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+    '} >> "$CCMORPH_TEST_LOG"'
 }
 
 test_task_env_becomes_request_headers_on_an_adapter_launch() {
@@ -6119,13 +6189,11 @@ test_an_ambient_proxy_reaches_the_child_and_the_adapter() {
   setup_home "$test_home"
   fake_gateway_records_proxy
   fake_adapter_records_proxy
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/claude" \
     '#!/bin/sh' \
     'printf "HTTPS_PROXY=%s\n" "${HTTPS_PROXY-<unset>}" >> "$HOME/claude.env"' \
     'printf "https_proxy=%s\n" "${https_proxy-<unset>}" >> "$HOME/claude.env"' \
-    'printf "NO_PROXY=%s\n" "${NO_PROXY-<unset>}" >> "$HOME/claude.env"' \
-    > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+    'printf "NO_PROXY=%s\n" "${NO_PROXY-<unset>}" >> "$HOME/claude.env"'
   write_apikey_conf gw \
     'api_key=sk_prod_test' 'base_url=https://gateway.invalid' 'adapter=true'
   source "$CCMORPH_SOURCE"
@@ -6287,7 +6355,7 @@ test_shell_env_does_not_leak_into_a_profile() {
 # max_input_tokens is only returned on the Anthropic-shaped route, and only when
 # anthropic-version is sent -- without it the same endpoint answers four bare fields.
 fake_gateway_with_windows() {
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' \
     'for a do printf "%s\n" "$a" >> "$HOME/curl.args"; done' \
     '[ "${1-}" = -K ] && cat >> "$HOME/curl.args"' \
@@ -6297,8 +6365,7 @@ fake_gateway_with_windows() {
     '{"id":"plain-model","display_name":"Plain","max_input_tokens":131072},' \
     '{"id":"claude-fable-5-dd-2-egami-tpg","display_name":"GPT Image 2","max_input_tokens":200000}' \
     ']}' \
-    'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'JSON'
   make_fake_curl_probe_aware
 }
 
@@ -6405,14 +6472,12 @@ test_registry_supplies_window_when_endpoint_probe_has_none() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' \
     'for arg do' \
     '  if [ "$arg" = "-w" ]; then printf "200"; exit 0; fi' \
     'done' \
-    'exit 22' \
-    > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'exit 22'
   printf '%s\n' \
     'type=proxy' \
     'base_url=http://gw.invalid' \
@@ -6464,14 +6529,12 @@ test_launch_reads_its_arrays_under_a_callers_ksh_arrays() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' \
     'for arg do' \
     '  if [ "$arg" = "-w" ]; then printf "200"; exit 0; fi' \
     'done' \
-    'exit 22' \
-    > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'exit 22'
   printf '%s\n' \
     'type=proxy' \
     'base_url=http://gw.invalid' \
@@ -7020,12 +7083,10 @@ test_launch_model_flag_drives_the_window_not_the_conf_default() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' \
     'for arg do if [ "$arg" = "-w" ]; then printf "200"; exit 0; fi; done' \
-    'exit 22' \
-    > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'exit 22'
   # Conf default is a claude id, exactly like the real gateway profiles.
   printf '%s\n' \
     'type=apikey' \
@@ -7063,14 +7124,13 @@ test_a_flat_endpoint_declaration_yields_to_probe_at_launch() {
   # it is a default, not a probe, so the endpoint probe must return nothing
   # and let the registry answer per model. Mirror of the picker's flat-default
   # handling, which lived only in _ccm_project_picker until this path grew it too.
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' 'cat <<JSON' \
     '{"data":[' \
     '{"id":"routed-xl","max_input_tokens":200000},' \
     '{"id":"qwen3.8-max","max_input_tokens":200000},' \
     '{"id":"glm-5.2","max_input_tokens":200000}' \
-    ']}' 'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    ']}' 'JSON'
   make_fake_curl_probe_aware
   printf '%s\n' \
     'type=proxy' \
@@ -7104,13 +7164,12 @@ test_a_genuine_shared_window_is_not_mistaken_for_flat() {
   # default, and a single-model endpoint has nothing to compare against. Flatness
   # requires more than one distinct id AND every declared value identical. Here the
   # target's value differs from its sibling, so the endpoint's own number stands.
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' 'cat <<JSON' \
     '{"data":[' \
     '{"id":"routed-xl","max_input_tokens":1048576},' \
     '{"id":"qwen3.8-max","max_input_tokens":983616}' \
-    ']}' 'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    ']}' 'JSON'
   make_fake_curl_probe_aware
   printf '%s\n' \
     'type=proxy' \
@@ -7141,12 +7200,11 @@ test_a_claude_id_keeps_claude_codes_own_window() {
   # probed at 935,511 through that same gateway. Claude Code reaches 1M for a
   # claude- id via the [1m] suffix, so honouring the declaration would have cut the
   # window by five times -- derivation must not overrule a path Claude Code owns.
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' \
     'cat <<JSON' \
     '{"data":[{"id":"claude-opus-4-8","display_name":"claude-opus-4-8","max_input_tokens":200000}]}' \
-    'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'JSON'
   make_fake_curl_probe_aware
   printf '%s\n' \
     'type=apikey' \
@@ -7192,8 +7250,7 @@ test_a_derived_window_survives_an_endpoint_blip() {
   # 153,000 -- a session that silently loses two fifths of its context because one
   # request timed out, with nothing said. A ceiling does not change between launches;
   # reachability does.
-  printf '%s\n' '#!/bin/sh' 'exit 7' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+  ccm_stub "$HOME/bin/curl" '#!/bin/sh' 'exit 7'
   : > "$CCMORPH_TEST_LOG"
   _ccm_launch -a blip prompt >/dev/null 2>&1 || { rm -rf "$test_home"; return 1; }
 
@@ -7210,8 +7267,7 @@ test_launch_warns_when_a_model_refuses_before_compacting() {
   # An endpoint with nothing projectable, so the hand-written allowlist below survives
   # to be checked. A profile the projection does own cannot reach this state: it filters
   # a sub-trigger model out before the check runs.
-  printf '%s\n' '#!/bin/sh' 'cat <<JSON' '{"data":[]}' 'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+  ccm_stub "$HOME/bin/curl" '#!/bin/sh' 'cat <<JSON' '{"data":[]}' 'JSON'
   make_fake_curl_probe_aware
   mkdir -p "$HOME/.config/ccmorph/profiles/mixed"
   # A cloaked id gets Claude Code's 200,000 window, so its trigger is 153,000. The
@@ -7254,8 +7310,7 @@ test_launch_names_switch_targets_the_trigger_would_overrun() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  printf '%s\n' '#!/bin/sh' 'cat <<JSON' '{"data":[]}' 'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+  ccm_stub "$HOME/bin/curl" '#!/bin/sh' 'cat <<JSON' '{"data":[]}' 'JSON'
   make_fake_curl_probe_aware
   # Launch on the 1M model: trigger = 80% of 1000000 = 800000. `narrow` (700k)
   # and `tiny` (262k) sit under it; `wide` does not.
@@ -7696,8 +7751,7 @@ test_no_launch_advisory_relies_on_pre_exec_stderr() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  printf '%s\n' '#!/bin/sh' 'cat <<JSON' '{"data":[]}' 'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+  ccm_stub "$HOME/bin/curl" '#!/bin/sh' 'cat <<JSON' '{"data":[]}' 'JSON'
   make_fake_curl_probe_aware
   mkdir -p "$HOME/.config/ccmorph/profiles/spread"
   print -r -- '{"availableModels":["roomy","tiny"]}' \
@@ -7731,8 +7785,7 @@ test_the_unprobed_model_advisory_persists_in_the_tui() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  printf '%s\n' '#!/bin/sh' 'cat <<JSON' '{"data":[]}' 'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+  ccm_stub "$HOME/bin/curl" '#!/bin/sh' 'cat <<JSON' '{"data":[]}' 'JSON'
   make_fake_curl_probe_aware
   : > "$HOME/registry.conf"
   printf '%s\n' \
@@ -7762,8 +7815,7 @@ test_the_switch_warning_caps_the_names_it_lists() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  printf '%s\n' '#!/bin/sh' 'cat <<JSON' '{"data":[]}' 'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+  ccm_stub "$HOME/bin/curl" '#!/bin/sh' 'cat <<JSON' '{"data":[]}' 'JSON'
   make_fake_curl_probe_aware
   printf '%s\n' 'roomy=1000000' 'n1=300000' 'n2=310000' 'n3=320000' 'n4=330000' \
     'n5=340000' > "$HOME/registry.conf"
@@ -7810,8 +7862,7 @@ test_the_launch_hazard_advisory_matches_switch_hazard_warn() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  printf '%s\n' '#!/bin/sh' 'cat <<JSON' '{"data":[]}' 'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+  ccm_stub "$HOME/bin/curl" '#!/bin/sh' 'cat <<JSON' '{"data":[]}' 'JSON'
   make_fake_curl_probe_aware
   mkdir -p "$HOME/.config/ccmorph/profiles/gw"
   print -r -- '{"availableModels":["roomy","kimi-k3"]}' \
@@ -7867,8 +7918,7 @@ test_the_hazard_record_sizes_from_the_percentage_the_launch_injects() {
   for case in policy73 absent conf60 layer70 malformed; do
     test_home=$(mktemp -d)
     setup_home "$test_home"
-    printf '%s\n' '#!/bin/sh' 'cat <<JSON' '{"data":[]}' 'JSON' > "$HOME/bin/curl"
-    chmod +x "$HOME/bin/curl"
+    ccm_stub "$HOME/bin/curl" '#!/bin/sh' 'cat <<JSON' '{"data":[]}' 'JSON'
     make_fake_curl_probe_aware
     mkdir -p "$HOME/.config/ccmorph/profiles/gw"
     print -r -- '{"availableModels":["roomy","kimi-k3"]}' \
@@ -7974,8 +8024,7 @@ test_no_switch_warning_when_the_whole_route_clears_the_trigger() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  printf '%s\n' '#!/bin/sh' 'cat <<JSON' '{"data":[]}' 'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+  ccm_stub "$HOME/bin/curl" '#!/bin/sh' 'cat <<JSON' '{"data":[]}' 'JSON'
   make_fake_curl_probe_aware
   mkdir -p "$HOME/.config/ccmorph/profiles/safe"
   print -r -- '{"availableModels":["roomy","wide"]}' \
@@ -8028,7 +8077,7 @@ test_launch_projects_picker_rows_with_our_own_tag() {
   setup_home "$test_home"
   # The endpoint answers with disguised ids, which is what discovery does to anything
   # not called claude-*. The projection has to undo that to find each model's ceiling.
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' \
     'cat <<JSON' \
     '{"data":[' \
@@ -8037,8 +8086,7 @@ test_launch_projects_picker_rows_with_our_own_tag() {
     '{"id":"claude-fable-5-dd-wen","display_name":"unprobed"},' \
     '{"id":"claude-opus-4-8","display_name":"claude-opus-4-8"}' \
     ']}' \
-    'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'JSON'
   mkdir -p "$HOME/.config/ccmorph/profiles/gw"
   print -r -- '{"additionalModelOptionsCache":[{"value":"stale","label":"Stale","description":"x"}]}' \
     > "$HOME/.config/ccmorph/profiles/gw/.claude.json"
@@ -8095,12 +8143,11 @@ test_projected_row_carries_the_profiles_own_tag() {
   setup_home "$test_home"
   # Two profiles, two routes, two tags. The description on a projected row must name
   # where the model came from, not a single string stamped on every route's rows.
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' \
     'cat <<JSON' \
     '{"data":[{"id":"claude-fable-5-dd-2.5-mlg","display_name":"glm-5.2"}]}' \
-    'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'JSON'
   write_profile_context gw glm-5.2=700000
   mkdir -p "$HOME/.config/ccmorph/profiles/gw"
   print -r -- '{}' > "$HOME/.config/ccmorph/profiles/gw/.claude.json"
@@ -8130,8 +8177,7 @@ test_projection_leaves_everything_alone_when_the_endpoint_is_down() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  printf '%s\n' '#!/bin/sh' 'exit 7' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+  ccm_stub "$HOME/bin/curl" '#!/bin/sh' 'exit 7'
   mkdir -p "$HOME/.config/ccmorph/profiles/gw"
   print -r -- '{"additionalModelOptionsCache":[{"value":"keep","label":"Keep","description":"Gateway"}]}' \
     > "$HOME/.config/ccmorph/profiles/gw/.claude.json"
@@ -8164,7 +8210,7 @@ test_projection_undisguises_ids_and_labels_every_row_with_the_id() {
   # fixture keeps its mix of declared/undeclared/alias-only models because that mix is
   # what a real listing looks like -- it no longer decides whether a row exists, since
   # the picker offers every served model.
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' \
     'cat <<JSON' \
     '{"data":[' \
@@ -8173,8 +8219,7 @@ test_projection_undisguises_ids_and_labels_every_row_with_the_id() {
     '{"id":"claude-fable-5-dd-o4-tpg","display_name":"gpt-4o","max_input_tokens":200000},' \
     '{"id":"claude-fable-5-dd-2.5-mlg","display_name":"glm-5.2"}' \
     ']}' \
-    'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'JSON'
   mkdir -p "$HOME/.config/ccmorph/profiles/gw"
   print -r -- '{}' > "$HOME/.config/ccmorph/profiles/gw/.claude.json"
   print -r -- '{}' > "$HOME/.config/ccmorph/profiles/gw/settings.json"
@@ -8217,12 +8262,11 @@ test_projection_never_drops_the_profiles_own_model() {
   # the allowlist from the projection alone removes it, and a model outside the allowlist
   # is not refused but remapped -- onto Claude Code's own catalogue, which this endpoint
   # has never heard of. The session then dies on "unknown provider".
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' \
     'cat <<JSON' \
     '{"data":[{"id":"claude-fable-5-dd-los-6.5-tpg","display_name":"GPT 5.6 Sol","max_input_tokens":372000}]}' \
-    'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'JSON'
   mkdir -p "$HOME/.config/ccmorph/profiles/gw"
   print -r -- '{}' > "$HOME/.config/ccmorph/profiles/gw/.claude.json"
   print -r -- '{"availableModels":["claude-fable-5-dd","gpt-5.6-sol","claude-opus-4-8"]}' \
@@ -8390,11 +8434,10 @@ test_projected_rows_use_the_real_model_id() {
   # skip CLAUDE_CODE_MAX_CONTEXT_TOKENS and hand the session 200,000 however the profile
   # is configured. Selecting a row labelled 372k then gave 200k. Both endpoints route the
   # real name, so that is what the row carries.
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' 'cat <<JSON' \
     '{"data":[{"id":"claude-fable-5-dd-hgihx-los-6.5-tpg","display_name":"GPT 5.6 Sol (xhigh)","max_input_tokens":372000}]}' \
-    'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'JSON'
   mkdir -p "$HOME/.config/ccmorph/profiles/gw"
   print -r -- '{}' > "$HOME/.config/ccmorph/profiles/gw/.claude.json"
   # A live session already picked something. Replacing the allowlist without keeping it
@@ -8433,11 +8476,10 @@ test_projection_undisguises_a_stored_model() {
   # disguised name, and a disguised name is what caps the session at 200,000. Leaving it
   # means the profile keeps the reduced window until the user happens to re-pick. The two
   # ids address the same model, so rewriting it changes nothing except the window.
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' 'cat <<JSON' \
     '{"data":[{"id":"claude-fable-5-dd-hgihx-los-6.5-tpg","display_name":"GPT 5.6 Sol (xhigh)","max_input_tokens":372000}]}' \
-    'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'JSON'
   mkdir -p "$HOME/.config/ccmorph/profiles/gw"
   print -r -- '{}' > "$HOME/.config/ccmorph/profiles/gw/.claude.json"
   print -r -- '{"model":"claude-fable-5-dd-hgihx-los-6.5-tpg"}' \
@@ -8473,14 +8515,13 @@ test_the_picker_offers_a_model_whatever_its_siblings_declare() {
   #
   # What the picker owes now is simpler and is what this asserts: every chat-capable
   # model the endpoint serves is offered, whatever it or its siblings declare.
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' 'cat <<JSON' \
     '{"data":[' \
     '{"id":"a","context_length":200000},' \
     '{"id":"b","context_length":200000},' \
     '{"id":"c"}' \
-    ']}' 'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    ']}' 'JSON'
   write_profile_context gw unrelated=1
   mkdir -p "$HOME/.config/ccmorph/profiles/gw"
   print -r -- '{}' > "$HOME/.config/ccmorph/profiles/gw/.claude.json"
@@ -8505,7 +8546,7 @@ test_picker_follows_gateway_chat_capabilities() {
   test_home=$(mktemp -d)
   setup_home "$test_home"
   # Gateway capability declarations decide visibility, not model-name guesses.
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' 'cat <<JSON' \
     '{"data":[' \
     '{"id":"gpt-5.6-sol","capabilities":{"inference":true,"completion":false,"embeddings":true,"chat_completion":true,"image_generation":false}},' \
@@ -8513,8 +8554,7 @@ test_picker_follows_gateway_chat_capabilities() {
     '{"id":"text-embedding-3-small","capabilities":{"inference":true,"completion":false,"embeddings":true,"chat_completion":true,"image_generation":false}},' \
     '{"id":"bge-m3","capabilities":{"inference":true,"completion":false,"embeddings":true,"chat_completion":false,"image_generation":false}},' \
     '{"id":"gpt-image-2"}' \
-    ']}' 'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    ']}' 'JSON'
   # No registry file on purpose: this test's models are all unprobed, and the picker
   # no longer requires a registry to exist. An absent registry costs rows nothing.
   mkdir -p "$HOME/.config/ccmorph/profiles/gw"
@@ -8543,14 +8583,13 @@ test_picker_skips_a_malformed_non_string_model_id() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' 'cat <<JSON' \
     '{"data":[' \
     '{"id":{"bad":true},"context_length":300000},' \
     '{"id":"valid","context_length":400000},' \
     '{"id":[],"context_length":500000}' \
-    ']}' 'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    ']}' 'JSON'
   write_profile_context gw unrelated=1
   mkdir -p "$HOME/.config/ccmorph/profiles/gw"
   print -r -- '{}' > "$HOME/.config/ccmorph/profiles/gw/.claude.json"
@@ -8569,10 +8608,9 @@ test_picker_uses_a_route_scoped_registry_probe() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' 'cat <<JSON' \
-    '{"data":[{"id":"route-only"}]}' 'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    '{"data":[{"id":"route-only"}]}' 'JSON'
   printf '%s\n' 'gw:route-*=700000' > "$HOME/registry.conf"
   mkdir -p "$HOME/.config/ccmorph/profiles/gw"
   print -r -- '{}' > "$HOME/.config/ccmorph/profiles/gw/.claude.json"
@@ -8620,9 +8658,7 @@ test_the_launch_sweep_clears_every_allowlisted_env_key() {
 
   # Export the whole list, enter the launch path with a stub `claude` that reports
   # what survived, and require the report to be empty.
-  printf '%s\n' '#!/bin/sh' 'env | grep -E "^(CLAUDE_|ANTHROPIC_|CCMORPH_|MAX_THINKING)" | cut -d= -f1 | sort' \
-    > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'env | grep -E "^(CLAUDE_|ANTHROPIC_|CCMORPH_|MAX_THINKING)" | cut -d= -f1 | sort'
 
   local survived
   survived=$(
@@ -8685,13 +8721,12 @@ test_projection_omits_models_that_cannot_serve_a_session() {
   # "only supported on /v1/images/generations", so selecting its row 503s on the first
   # turn. Nothing in its /v1/models record says so -- the shape is identical to a chat
   # model's -- which is why this is a name list and why it is worth a test.
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' 'cat <<JSON' \
     '{"data":[' \
     '{"id":"claude-fable-5-dd-2-egami-tpg","display_name":"GPT Image 2","max_input_tokens":200000},' \
     '{"id":"claude-fable-5-dd-los-6.5-tpg","display_name":"GPT 5.6 Sol","max_input_tokens":372000}' \
-    ']}' 'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    ']}' 'JSON'
   mkdir -p "$HOME/.config/ccmorph/profiles/gw"
   print -r -- '{}' > "$HOME/.config/ccmorph/profiles/gw/.claude.json"
   print -r -- '{}' > "$HOME/.config/ccmorph/profiles/gw/settings.json"
@@ -9574,16 +9609,14 @@ test_launch_names_the_safe_answer_when_a_question_remains() {
   export CCMORPH_TEST_RELAY_TARGET=to
   printf '%s\n' 'type=proxy' 'base_url=http://to.invalid' 'api_key=to-key' 'model=alpha-chat' \
     > "$HOME/.config/ccmorph/to.conf"
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/claude" \
     '#!/bin/sh' \
     'printf "STARTED\n" >> "$CCMORPH_TEST_LOG"' \
     'printf "CFG=%s\n" "${CLAUDE_CONFIG_DIR##*/}" >> "$CCMORPH_TEST_LOG"' \
     'if [ ! -f "$HOME/relay-triggered" ]; then' \
     '  : > "$HOME/relay-triggered"' \
     '  printf "profile=%s\nsession=relay-session\n" "$CCMORPH_TEST_RELAY_TARGET" > "$HOME/.config/ccmorph/.reswitch.$CCMORPH_RELAY_ID"' \
-    'fi' \
-    > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+    'fi'
   export _CCMORPH_PROFILE_DIRS="$profiles"
   source "$CCMORPH_SOURCE"
   out=$(cd "$HOME/work" && _ccm_launch -a gw prompt 2>&1); st=$?
@@ -9634,12 +9667,11 @@ test_an_unprobed_launch_is_not_given_a_siblings_ceiling() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' \
     'cat <<JSON' \
     '{"object":"list","data":[{"id":"unprobed-model"},{"id":"big-sibling"}]}' \
-    'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'JSON'
   make_fake_curl_probe_aware
   # The clamp asks model-window for the unprobed default rather than hardcoding one,
   # so the resolver has to be present for it to fire at all.
@@ -9817,12 +9849,11 @@ test_launch_hints_when_a_routed_window_is_unprobed() {
   test_home=$(mktemp -d)
   setup_home "$test_home"
   # Endpoint lists the model but states no sizes (and none in any registry).
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' \
     'cat <<JSON' \
     '{"object":"list","data":[{"id":"opaque-model"},{"id":"other-model"}]}' \
-    'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'JSON'
   make_fake_curl_probe_aware
   printf '%s\n' \
     'type=proxy' 'base_url=http://gw.invalid' 'api_key=test-key' \
@@ -10368,16 +10399,15 @@ install_model_window() {
   # ccmorph-core is a dispatcher here: a stub placed beside it under the helper's
   # old name (libexec/model-window, libexec/ccmorph-adapter ...) overrides that
   # subcommand; anything unstubbed runs in the real compiled core.
-  printf '%s\n' '#!/bin/sh' \
+  local -a dispatch=( '#!/bin/sh' \
     'sub=$1; shift; here=$(dirname "$0"); stub=$sub' \
     '[ "$sub" = adapter ] && stub=ccmorph-adapter' \
     '[ -x "$here/$stub" ] && exec "$here/$stub" "$@"' \
-    "exec '$REPO_ROOT/libexec/ccmorph-core' \"\$sub\" \"\$@\"" \
-    > "$HOME/.config/ccmorph/libexec/ccmorph-core"
+    "exec '$REPO_ROOT/libexec/ccmorph-core' \"\$sub\" \"\$@\"" )
+  ccm_stub "$HOME/.config/ccmorph/libexec/ccmorph-core" "${(F)dispatch}"
   # A test stub named libexec/model-window shadows the dispatch, so tests that stub it do so after.
   cp "$REPO_ROOT/lib/ccmorph.sh" "$HOME/.config/ccmorph/lib/ccmorph.sh"
   cp "$REPO_ROOT"/lib/ccmorph-*.zsh "$HOME/.config/ccmorph/lib/"
-  chmod +x "$HOME/.config/ccmorph/libexec/ccmorph-core"
 }
 
 test_picker_without_a_registry_offers_rows_and_spawns_nothing() {
@@ -10393,11 +10423,10 @@ test_picker_without_a_registry_offers_rows_and_spawns_nothing() {
   #     registry it can only answer `unprobed`, which derived_send_id discards --
   #     ~50ms of interpreter startup each, for nothing.
   # The resolver is replaced by a counting stub, so the spawn count is observable.
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' 'cat <<JSON' \
     '{"data":[{"id":"glm-5.3"},{"id":"claude-opus-5"},{"id":"claude-sonnet-5"}]}' \
-    'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'JSON'
   install_model_window
   # Count every invocation, then behave as the real resolver would with no registry.
   printf '%s\n' '#!/bin/sh' 'echo x >> "$HOME/mw-calls"' \
@@ -10437,11 +10466,10 @@ test_picker_projects_a_derived_1m_row_for_a_probed_claude() {
   # claude- id budgets 200,000 behind a foreign base URL, so a probed 1M model
   # must be offered as its [1m] id -- the suffix is what lifts the window, and
   # only a projected row can carry it (discovery never produces one).
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' 'cat <<JSON' \
     '{"data":[{"id":"claude-opus-5"},{"id":"claude-haiku-4-5"},{"id":"claude-new-9"}]}' \
-    'JSON' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+    'JSON'
   install_model_window
   mkdir -p "$HOME/.config/ccmorph/profiles/gw"
   print -r -- '{}' > "$HOME/.config/ccmorph/profiles/gw/.claude.json"
@@ -10842,16 +10870,14 @@ test_add_sub_completes_the_browser_login() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/claude" \
     '#!/bin/sh' \
     'case "$1 $2" in' \
     '  "auth login") : > "$HOME/login.ran"; exit 0 ;;' \
     '  "auth logout") exit 0 ;;' \
     '  "auth status") printf '"'"'{"loggedIn": true, "authMethod": "claude.ai", "email": "a@example.com"}\n'"'"'; exit 0 ;;' \
     'esac' \
-    'exit 0' \
-    > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+    'exit 0'
   source "$CCMORPH_SOURCE"
 
   local rc=0 out
@@ -10875,7 +10901,7 @@ test_login_signs_a_signed_out_account_profile_in_again() {
   setup_home "$test_home"
   # Status flips only once login ran, so the readback proves the fresh sign-in
   # was seen, not a stale one. Signed-out status is what real claude prints.
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/claude" \
     '#!/bin/sh' \
     'case "$1 $2" in' \
     '  "auth login") : > "$HOME/login.ran"; exit 0 ;;' \
@@ -10888,9 +10914,7 @@ test_login_signs_a_signed_out_account_profile_in_again() {
     '    fi' \
     '    exit 0 ;;' \
     'esac' \
-    'exit 0' \
-    > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+    'exit 0'
   printf '%s\n' 'type=sub' 'email=old@example.com' > "$HOME/.config/ccmorph/s.conf"
   mkdir -p "$HOME/.config/ccmorph/profiles/s"
   source "$CCMORPH_SOURCE"
@@ -10922,15 +10946,13 @@ test_add_sub_auth_calls_scrub_securestorage_dir() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/claude" \
     '#!/bin/sh' \
     'echo "$1 $2 [${CLAUDE_SECURESTORAGE_CONFIG_DIR-unset}]" >> "$HOME/auth_calls"' \
     'case "$1 $2" in' \
     '  "auth status") printf '"'"'{"loggedIn": true, "authMethod": "claude.ai", "email": "a@example.com"}\n'"'"' ;;' \
     'esac' \
-    'exit 0' \
-    > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+    'exit 0'
   source "$CCMORPH_SOURCE"
 
   local rc=0 out
@@ -11058,6 +11080,9 @@ run_test() {
   # GH-434: fail a test whose child outlives it -- the leak that stranded the
   # landing batch -- and reap the child so nothing escapes the suite.
   _ccm_test_sweep_homes $(( _ccm_test_homes_mark + 1 )) || rc=1
+  # And fail the test that wrote through a link into the stub store, rather than
+  # let the next home run its bytes.
+  _ccm_test_check_stubs || rc=1
   _ccm_test_homes_mark=$#_ccm_test_homes
   if (( rc == 0 )); then
     print -- "PASS: $name"
@@ -11600,17 +11625,14 @@ test_picker_projection_is_complete_before_claude_entry() {
   printf '%s\n' 'type=proxy' 'base_url=http://gw.invalid' 'api_key=test-key' 'model=opaque-model' > "$HOME/.config/ccmorph/gw.conf"
   mkdir -p "$HOME/.config/ccmorph/profiles/gw"
   printf '%s\n' '{"additionalModelOptionsCache":[{"value":"opaque-model","label":"Cosmetic","description":"stale"}]}' > "$HOME/.config/ccmorph/profiles/gw/.claude.json"
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/curl" \
     '#!/bin/sh' \
     'for a do case "$a" in *http_code*) printf 200; exit 0 ;; esac; done' \
     'sleep 1' \
     'cat <<JSON' \
     '{"object":"list","data":[{"id":"opaque-model","display_name":"Cosmetic","capabilities":{"chat_completion":true}}]}' \
-    'JSON' \
-    > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
-  printf '%s\n' '#!/bin/sh' 'python3 -c '\''import json,os,sys; d=json.load(open(os.environ["CLAUDE_CONFIG_DIR"]+"/.claude.json")); assert all(r["label"] == r["value"] for r in d["additionalModelOptionsCache"])'\'' ' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+    'JSON'
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'python3 -c '\''import json,os,sys; d=json.load(open(os.environ["CLAUDE_CONFIG_DIR"]+"/.claude.json")); assert all(r["label"] == r["value"] for r in d["additionalModelOptionsCache"])'\'' '
   source "$CCMORPH_SOURCE"
   _ccm_launch -a gw prompt
   local rc=$?
@@ -11621,7 +11643,7 @@ run_test test_picker_projection_is_complete_before_claude_entry
 
 test_claude_inherits_callers_tmux_environment() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
-  printf '%s\n' '#!/bin/sh' 'printf "%s\n" "${TMUX-<unset>}"' > "$HOME/bin/claude"
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'printf "%s\n" "${TMUX-<unset>}"'
   source "$CCMORPH_SOURCE"
   local rc=0 actual
   actual=$(TMUX='/tmp/test-tmux/default,123,0' _ccm_run_claude --)
@@ -11711,8 +11733,7 @@ test_context_names_a_model_the_profile_does_not_list() {
   # answering the default instead of refusing the model.
   for body in '{"error":{"message":"rate limited","type":"upstream_error"}}' \
               '{"message":"Moved Permanently","location":"https://other.invalid/v1/models"}'; do
-    printf '%s\n' '#!/bin/sh' "cat <<'JSON'" "$body" 'JSON' > "$HOME/bin/curl"
-    chmod +x "$HOME/bin/curl"
+    ccm_stub "$HOME/bin/curl" '#!/bin/sh' "cat <<'JSON'" "$body" 'JSON'
     make_fake_curl_probe_aware
     out=$(ccmorph context gw nosuch-model 2>/dev/null)
     [[ "$out" == "gw: nosuch-model context 200,000 tokens · left at Claude Code's default" ]] || {
@@ -11882,8 +11903,7 @@ test_context_save_warns_only_for_models_the_listing_leaves_out_issue_370() {
   fi
 
   # A listing that cannot be read is not a refusal: the save stays silent.
-  printf '%s\n' '#!/bin/sh' 'exit 1' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+  ccm_stub "$HOME/bin/curl" '#!/bin/sh' 'exit 1'
   if err=$(ccmorph context gw zeta-chat 100000 2>&1 >/dev/null); then
     [[ "$err" == '' ]] || {
       print -u2 -- "an unreadable listing must not guess a warning: ${(qqq)err}"
@@ -11899,8 +11919,7 @@ test_context_save_warns_only_for_models_the_listing_leaves_out_issue_370() {
   # save stays silent, and the models verb still refuses to print it as a list.
   for body in '{"error":{"message":"rate limited","type":"upstream_error"}}' \
               '{"message":"Moved Permanently","location":"https://other.invalid/v1/models"}'; do
-    printf '%s\n' '#!/bin/sh' "cat <<'JSON'" "$body" 'JSON' > "$HOME/bin/curl"
-    chmod +x "$HOME/bin/curl"
+    ccm_stub "$HOME/bin/curl" '#!/bin/sh' "cat <<'JSON'" "$body" 'JSON'
     make_fake_curl_probe_aware
     if err=$(ccmorph context gw nosuch-model 100000 2>&1 >/dev/null); then
       [[ "$err" == '' ]] || {
@@ -11928,8 +11947,8 @@ run_test test_context_save_warns_only_for_models_the_listing_leaves_out_issue_37
 test_picker_uses_gateway_before_adapter_and_settings_overlay() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   write_apikey_conf gw 'api_key=canary' 'base_url=http://gateway.invalid' 'model=first' 'adapter=true'
-  printf '%s\n' '#!/bin/sh' \
-    'case "$*" in *127.0.0.1*) printf '\''{"data":[{"id":"first"}]}'\'' ;; *http_code*) printf 200 ;; *) printf '\''{"data":[{"id":"first"},{"id":"new-chat","capabilities":{"chat_completion":true}},{"id":"claude-new-9","capabilities":{"chat_completion":true}},{"id":"embedding","capabilities":{"chat_completion":false}}]}'\'' ;; esac' > "$HOME/bin/curl"
+  ccm_stub "$HOME/bin/curl" '#!/bin/sh' \
+    'case "$*" in *127.0.0.1*) printf '\''{"data":[{"id":"first"}]}'\'' ;; *http_code*) printf 200 ;; *) printf '\''{"data":[{"id":"first"},{"id":"new-chat","capabilities":{"chat_completion":true}},{"id":"claude-new-9","capabilities":{"chat_completion":true}},{"id":"embedding","capabilities":{"chat_completion":false}}]}'\'' ;; esac'
   fake_adapter_picker_port
   source "$CCMORPH_SOURCE"
   _ccm_launch -a gw prompt >/dev/null 2>&1
@@ -12012,7 +12031,7 @@ run_test test_launch_refuses_a_model_map_key_no_request_can_carry
 test_adapter_controls_do_not_reach_claude_or_overlay() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   source "$CCMORPH_SOURCE"
-  printf '%s\n' '#!/bin/sh' 'printf "%s|%s|%s|%s|%s|%s|%s|%s" "${CCMORPH_USER_AGENT-unset}" "${CCMORPH_STALL_TIMEOUT-unset}" "${CCMORPH_UPSTREAM_PROXY-unset}" "${CCMORPH_RANDOM_DEVICE_ID-unset}" "${CCMORPH_AFFINITY_HEADER-unset}" "${CCMORPH_SHIM_HOOKS-unset}" "${CCMORPH_MASK-unset}" "${CCMORPH_MASK_COMMANDS-unset}"' > "$HOME/bin/claude"
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'printf "%s|%s|%s|%s|%s|%s|%s|%s" "${CCMORPH_USER_AGENT-unset}" "${CCMORPH_STALL_TIMEOUT-unset}" "${CCMORPH_UPSTREAM_PROXY-unset}" "${CCMORPH_RANDOM_DEVICE_ID-unset}" "${CCMORPH_AFFINITY_HEADER-unset}" "${CCMORPH_SHIM_HOOKS-unset}" "${CCMORPH_MASK-unset}" "${CCMORPH_MASK_COMMANDS-unset}"'
   local actual rc=0
   actual=$(CCMORPH_USER_AGENT=ua/{version} CCMORPH_STALL_TIMEOUT=1 CCMORPH_UPSTREAM_PROXY=http://127.0.0.1:1 CCMORPH_RANDOM_DEVICE_ID=1 CCMORPH_AFFINITY_HEADER=X-A CCMORPH_SHIM_HOOKS=/tmp/hooks.py CCMORPH_MASK=1 CCMORPH_MASK_COMMANDS=x _ccm_run_claude CCMORPH_USER_AGENT=ua/{version} CCMORPH_STALL_TIMEOUT=1 CCMORPH_UPSTREAM_PROXY=http://127.0.0.1:1 CCMORPH_RANDOM_DEVICE_ID=1 CCMORPH_AFFINITY_HEADER=X-A CCMORPH_SHIM_HOOKS=/tmp/hooks.py CCMORPH_MASK=1 CCMORPH_MASK_COMMANDS=x --)
   [[ "$actual" == 'unset|unset|unset|unset|unset|unset|unset|unset' ]] || rc=1
@@ -12027,8 +12046,7 @@ test_private_session_leaves_no_transcript_behind() {
   local prof="$test_home/prof" rc=0 seen end
   mkdir -p "$prof/projects" && print '{}' > "$prof/.claude.json"
   # The fake claude writes a transcript and reports where its config dir was.
-  printf '%s\n' '#!/bin/sh' 'mkdir -p "$CLAUDE_CONFIG_DIR/projects/p" && echo t > "$CLAUDE_CONFIG_DIR/projects/p/s.jsonl"; test -L "$CLAUDE_CONFIG_DIR/.claude.json" && echo "$CLAUDE_CONFIG_DIR"' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'mkdir -p "$CLAUDE_CONFIG_DIR/projects/p" && echo t > "$CLAUDE_CONFIG_DIR/projects/p/s.jsonl"; test -L "$CLAUDE_CONFIG_DIR/.claude.json" && echo "$CLAUDE_CONFIG_DIR"'
   seen=$(_ccm_run_claude "CLAUDE_CONFIG_DIR=$prof" CCMORPH_PRIVATE=1 -- 2>"$test_home/private-end")
   [[ -n "$seen" && "$seen" != "$prof" && "${seen:t}" == "${prof:t}" ]] || rc=1
   [[ ! -e "${seen:h}" ]] || rc=1
@@ -12071,8 +12089,7 @@ test_private_session_key_stays_the_profiles_own() {
   mkdir -p "$prof" && print '{}' > "$prof/.claude.json"
   # Fields: storage key, config dir, state dir, the helper's run-dir key. The last
   # two are the launcher's own: claude and its children must never inherit them (#140).
-  printf '%s\n' '#!/bin/sh' 'echo "${CLAUDE_SECURESTORAGE_CONFIG_DIR-unset}|$CLAUDE_CONFIG_DIR|${CCMORPH_STATE_DIR-unset}|${_CCMORPH_RUN_DIR-unset}"' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'echo "${CLAUDE_SECURESTORAGE_CONFIG_DIR-unset}|$CLAUDE_CONFIG_DIR|${CCMORPH_STATE_DIR-unset}|${_CCMORPH_RUN_DIR-unset}"'
   seen=$(_ccm_run_claude "CLAUDE_CONFIG_DIR=$prof" CCMORPH_PRIVATE=1 --)
   f=("${(@s:|:)seen}")
   [[ "$f[1]" == "$prof" && "$f[2]" != "$prof" && "$f[3]" == unset && "$f[4]" == unset ]] || { print -u2 -- "private: $seen"; rc=1; }
@@ -12088,8 +12105,7 @@ test_private_session_is_removed_when_terminated() {
   local prof="$test_home/prof" rc=0 sig pid st info cpid fifo fd crutch
   mkdir -p "$prof" && print '{}' > "$prof/.claude.json"
   # The fake claude records the launcher's pid and config dir, writes a transcript, waits.
-  printf '%s\n' '#!/bin/sh' 'mkdir -p "$CLAUDE_CONFIG_DIR/projects/p" && echo t > "$CLAUDE_CONFIG_DIR/projects/p/s.jsonl"' 'printf "%s\n" "$PPID $$ $CLAUDE_CONFIG_DIR" >&3 || exit 9' 'exec sleep 30' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'mkdir -p "$CLAUDE_CONFIG_DIR/projects/p" && echo t > "$CLAUDE_CONFIG_DIR/projects/p/s.jsonl"' 'printf "%s\n" "$PPID $$ $CLAUDE_CONFIG_DIR" >&3 || exit 9' 'exec sleep 30'
   zmodload zsh/zselect || { rm -rf "$test_home"; return 1; }
   local -i hang=$(( CCMORPH_TEST_HANG_TIMEOUT * 100 ))
   for sig in TERM HUP; do
@@ -12149,8 +12165,7 @@ test_private_session_is_removed_when_hop_notice_hits_closed_stdout() {
   local prof="$test_home/prof" rc=0 st=0 r w
   local TMPDIR="$test_home/tmp"
   mkdir -p "$prof" "$TMPDIR" && print '{}' > "$prof/.claude.json"
-  printf '%s\n' '#!/bin/sh' ': > "$HOME/claude-started"' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' ': > "$HOME/claude-started"'
   # A pipe whose only reader is already closed: the first write raises SIGPIPE.
   mkfifo "$test_home/out"
   exec {r}<>"$test_home/out" {w}>"$test_home/out"
@@ -12177,8 +12192,7 @@ test_private_session_is_removed_when_the_end_notice_hits_closed_stderr() {
   local prof="$test_home/prof" rc=0 st=0 r w
   local TMPDIR="$test_home/tmp"
   mkdir -p "$prof" "$TMPDIR" && print '{}' > "$prof/.claude.json"
-  printf '%s\n' '#!/bin/sh' ': > "$HOME/claude-started"' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' ': > "$HOME/claude-started"'
   # A pipe whose only reader is already closed: the first write raises SIGPIPE.
   mkfifo "$test_home/err"
   exec {r}<>"$test_home/err" {w}>"$test_home/err"
@@ -12201,8 +12215,7 @@ test_private_session_is_removed_on_group_quit() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   local prof="$test_home/prof" rc=0 pid st info fifo fd crutch
   mkdir -p "$prof" && print '{}' > "$prof/.claude.json"
-  printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$PPID $$ $CLAUDE_CONFIG_DIR" >&3 || exit 9' 'exec sleep 30' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'printf "%s\n" "$PPID $$ $CLAUDE_CONFIG_DIR" >&3 || exit 9' 'exec sleep 30'
   zmodload zsh/zselect || { rm -rf "$test_home"; return 1; }
   local -i hang=$(( CCMORPH_TEST_HANG_TIMEOUT * 100 ))
   fifo="$test_home/started.QUIT"
@@ -12255,8 +12268,7 @@ test_private_session_forwards_term_and_keeps_claudes_status() {
   mkdir -p "$prof" && print '{}' > "$prof/.claude.json"
   # The fake claude shuts down cleanly on TERM/HUP, noting whether its config was
   # still there at that moment (the launcher must not remove it under claude).
-  printf '%s\n' '#!/bin/sh' 'trap '\''test -e "$CLAUDE_CONFIG_DIR/.claude.json" && echo kept > "$SEEN"; exit 0'\'' TERM HUP' 'printf "%s\n" "$PPID $$ $CLAUDE_CONFIG_DIR" >&3 || exit 9' 'while :; do sleep 0.1; done' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'trap '\''test -e "$CLAUDE_CONFIG_DIR/.claude.json" && echo kept > "$SEEN"; exit 0'\'' TERM HUP' 'printf "%s\n" "$PPID $$ $CLAUDE_CONFIG_DIR" >&3 || exit 9' 'while :; do sleep 0.1; done'
   zmodload zsh/zselect || { rm -rf "$test_home"; return 1; }
   local -i hang=$(( CCMORPH_TEST_HANG_TIMEOUT * 100 ))
   for sig in TERM HUP; do
@@ -12314,8 +12326,7 @@ test_private_session_keeps_exit_status_after_stop_and_continue() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   local prof="$test_home/prof" rc=0 pid st info cpid fifo fd crutch
   mkdir -p "$prof" && print '{}' > "$prof/.claude.json"
-  printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$PPID $$ $CLAUDE_CONFIG_DIR" >&3 || exit 9' 'sleep 1' 'exit 7' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'printf "%s\n" "$PPID $$ $CLAUDE_CONFIG_DIR" >&3 || exit 9' 'sleep 1' 'exit 7'
   zmodload zsh/zselect || { rm -rf "$test_home"; return 1; }
   local -i hang=$(( CCMORPH_TEST_HANG_TIMEOUT * 100 ))
   fifo="$test_home/started.STOP"
@@ -12363,8 +12374,7 @@ test_private_session_launcher_ends_with_claude() {
   local prof="$test_home/prof" rc=0 mode pid st info cpid fifo fd crutch
   mkdir -p "$prof" && print '{}' > "$prof/.claude.json"
   # The fake claude waits for $GO, then exits 6.
-  printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$PPID $$ $CLAUDE_CONFIG_DIR" >&3 || exit 9' 'while [ ! -e "$GO" ]; do sleep 0.1; done' 'exit 6' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'printf "%s\n" "$PPID $$ $CLAUDE_CONFIG_DIR" >&3 || exit 9' 'while [ ! -e "$GO" ]; do sleep 0.1; done' 'exit 6'
   zmodload zsh/zselect || { rm -rf "$test_home"; return 1; }
   local -i hang=$(( CCMORPH_TEST_HANG_TIMEOUT * 100 ))
   for mode in noclobber deleted; do
@@ -12421,8 +12431,7 @@ test_private_session_keeps_the_terminal_as_stdin() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   local prof="$test_home/prof" rc=0 mode
   mkdir -p "$prof" && print '{}' > "$prof/.claude.json"
-  printf '%s\n' '#!/bin/sh' 'if [ -t 0 ]; then echo tty; else echo notty; fi > "$OUT"' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'if [ -t 0 ]; then echo tty; else echo notty; fi > "$OUT"'
   # Run the launcher with a pty as stdin/stdout/stderr, as a terminal does,
   # through run_under_a_terminal, so its load-aware deadline, drain and group
   # kill apply (#421).
@@ -12446,8 +12455,7 @@ test_private_session_claude_does_not_inherit_ignored_int_quit() {
   local prof="$test_home/prof" rc=0 mask
   mkdir -p "$prof" && print '{}' > "$prof/.claude.json"
   # Linux-only probe: SigIgn bit 1 = INT, bit 2 = QUIT.
-  printf '%s\n' '#!/bin/sh' 'sed -n "s/^SigIgn:[[:space:]]*//p" /proc/self/status' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'sed -n "s/^SigIgn:[[:space:]]*//p" /proc/self/status'
   if [[ -r /proc/self/status ]]; then
     mask=$(_ccm_run_claude "CLAUDE_CONFIG_DIR=$prof" CCMORPH_PRIVATE=1 --)
     (( (16#${mask:-0} & 6) == 0 )) || { print -u2 -- "SigIgn=$mask: INT/QUIT ignored"; rc=1; }
@@ -12476,8 +12484,7 @@ test_private_session_keeps_exit_status_after_interrupt() {
   local prof="$test_home/prof" rc=0 pid st info fifo fd crutch
   mkdir -p "$prof" && print '{}' > "$prof/.claude.json"
   # The fake claude survives SIGINT (as Claude Code does), then exits 0 on its own.
-  printf '%s\n' '#!/bin/sh' 'trap "" INT' 'printf "%s\n" "$PPID $$ $CLAUDE_CONFIG_DIR" >&3 || exit 9' 'sleep 1' 'exit 0' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'trap "" INT' 'printf "%s\n" "$PPID $$ $CLAUDE_CONFIG_DIR" >&3 || exit 9' 'sleep 1' 'exit 0'
   zmodload zsh/zselect || { rm -rf "$test_home"; return 1; }
   local -i hang=$(( CCMORPH_TEST_HANG_TIMEOUT * 100 ))
   fifo="$test_home/started.INT"
@@ -12545,8 +12552,7 @@ test_launcher_forwards_term_and_hup_to_claude() {
   # Counted, never slept: a wait that polls the clock must fail this test on an
   # idle machine too, where before it could only fail under load - how #398 hid.
   sleep() { (( ++clock_waits )); }
-  printf '%s\n' '#!/bin/sh' 'trap '\''echo got > "$SEEN"; exit 7'\'' TERM HUP' 'printf "%s\n" "$$" >&3' 'while :; do sleep 0.1; done' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'trap '\''echo got > "$SEEN"; exit 7'\'' TERM HUP' 'printf "%s\n" "$$" >&3' 'while :; do sleep 0.1; done'
   for sig in TERM HUP; do
     export SEEN="$test_home/seen.$sig"
     fifo="$test_home/started.$sig"
@@ -12600,8 +12606,7 @@ run_test test_launcher_forwards_term_and_hup_to_claude
 test_launcher_keeps_stdin_and_exit_status() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   local rc=0 st
-  printf '%s\n' '#!/bin/sh' 'read -r line; echo "$line" > "$OUT"; exit 5' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'read -r line; echo "$line" > "$OUT"; exit 5'
   export OUT="$test_home/out"
   print hello | zsh -c 'source "$1"; _ccm_launch -a proxy prompt' _ "$CCMORPH_SOURCE"; st=$?
   [[ -s "$OUT" && "$(<"$OUT")" == hello ]] || { print -u2 -- "claude did not get the caller's stdin"; rc=1; }
@@ -12615,8 +12620,7 @@ test_launch_runs_claude_when_tmpdir_is_unwritable() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   local rc=0 st
   mkdir -p "$test_home/ro" && chmod 555 "$test_home/ro"
-  printf '%s\n' '#!/bin/sh' 'echo ran > "$OUT"' 'exit 5' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'echo ran > "$OUT"' 'exit 5'
   export OUT="$test_home/out"
   TMPDIR="$test_home/ro" zsh -c 'source "$1"; _ccm_run_claude --' _ "$CCMORPH_SOURCE" 2>/dev/null; st=$?
   [[ -s "$OUT" ]] || { print -u2 -- "claude did not start with an unwritable TMPDIR"; rc=1; }
@@ -12629,8 +12633,7 @@ run_test test_launch_runs_claude_when_tmpdir_is_unwritable
 test_launch_keeps_claudes_niceness() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   local rc=0 mine
-  printf '%s\n' '#!/bin/sh' 'ps -o ni= -p $$ | tr -d " " > "$OUT"' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'ps -o ni= -p $$ | tr -d " " > "$OUT"'
   export OUT="$test_home/out"
   zsh -c 'source "$1"; ps -o ni= -p $$ | tr -d " " > "$OUT.me"; _ccm_launch -a proxy prompt' _ "$CCMORPH_SOURCE"
   mine=$(<"$OUT.me")
@@ -12651,14 +12654,13 @@ test_signal_with_a_queued_hop_ends_the_launch() {
   sleep() { (( ++clock_waits )); command sleep "$@"; }
   export READY="$test_home/ready"
   mkfifo "$test_home/started" "$READY.hold"
-  printf '%s\n' '#!/bin/sh' 'trap "exit 9" TERM' \
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'trap "exit 9" TERM' \
     'exec 4<> "$READY.hold"' \
     'printf "profile=proxy\nsession=sess-1\n" > "$HOME/.config/ccmorph/.reswitch.$CCMORPH_RELAY_ID"' \
     'if [ -s "$READY" ]; then echo "$CCMORPH_RELAY_ID" >> "$READY"; exit 6; fi' \
     'echo "$CCMORPH_RELAY_ID" >> "$READY"' \
     'printf "%s %s\n" "$CCMORPH_RELAY_ID" "$$" >&3 || exit 6' \
-    'read -r line <&4' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+    'read -r line <&4'
   # Claude publishes readiness only after its trap and queued relay exist.
   # Opened RDWR before the fork (GH-434): neither open can block on a peer
   # that never comes, and holding the handle across the readiness read keeps
@@ -12705,8 +12707,7 @@ test_private_session_runs_the_binary_not_a_shell_function() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   local prof="$test_home/prof" rc=0
   mkdir -p "$prof" && print '{}' > "$prof/.claude.json"
-  printf '%s\n' '#!/bin/sh' 'echo BINARY-RAN > "$OUT"' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'echo BINARY-RAN > "$OUT"'
   export OUT="$test_home/out"
   zsh -c 'claude() { print FUNCTION-RAN > "$OUT"; }; source "$1"; _ccm_run_claude "CLAUDE_CONFIG_DIR=$2" CCMORPH_PRIVATE=1 --' _ "$CCMORPH_SOURCE" "$prof"
   [[ -s "$OUT" && "$(<"$OUT")" == BINARY-RAN ]] || { print -u2 -- "ran: $(<"$OUT")"; rc=1; }
@@ -13092,8 +13093,7 @@ test_native_resume_carries_into_native_history_even_inside_a_profile() {
   local rc=0 P="$HOME/.config/ccmorph/profiles"
   mkdir -p "$P/c/projects/p"
   print -r -- t > "$P/c/projects/p/T.jsonl"
-  printf '%s\n' '#!/bin/sh' 'test -f "$HOME/.claude/projects/p/T.jsonl" && echo FOUND >> "$CCMORPH_TEST_LOG"' > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+  ccm_stub "$HOME/bin/claude" '#!/bin/sh' 'test -f "$HOME/.claude/projects/p/T.jsonl" && echo FOUND >> "$CCMORPH_TEST_LOG"'
   CLAUDE_CONFIG_DIR="$P/c" _ccm_launch --resume T >/dev/null 2>&1
   [[ -f "$CCMORPH_TEST_LOG" && "$(<"$CCMORPH_TEST_LOG")" == *FOUND* ]] ||
     { print -u2 'a native resume must find the session in native history'; rc=1; }
@@ -13105,8 +13105,7 @@ test_hop_carries_the_one_session_into_the_target_history() {
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
   printf '%s\n' 'type=proxy' 'base_url=http://target.invalid' 'api_key=target-key' 'model=target-model' \
     > "$HOME/.config/ccmorph/target.conf"
-  printf '%s\n' '#!/bin/sh' 'printf 200' > "$HOME/bin/curl"
-  chmod +x "$HOME/bin/curl"
+  ccm_stub "$HOME/bin/curl" '#!/bin/sh' 'printf 200'
   # The record a session's first message writes: the identity a resume needs
   # (#288). A bare line would start a new conversation instead of carrying this
   # one. Handed to the stub through the environment, so the assertion below
@@ -13115,7 +13114,7 @@ test_hop_carries_the_one_session_into_the_target_history() {
   export CCMORPH_TEST_RECORD="$record"
   # First run (proxy) writes the session and asks for a hop; the second (target)
   # appends to whatever its own history holds under that id.
-  printf '%s\n' \
+  ccm_stub "$HOME/bin/claude" \
     '#!/bin/sh' \
     'h="$CLAUDE_CONFIG_DIR/projects/p"' \
     'if [ ! -f "$HOME/relay-triggered" ]; then' \
@@ -13124,9 +13123,7 @@ test_hop_carries_the_one_session_into_the_target_history() {
     '  printf "%s\n" "$CCMORPH_TEST_RECORD" > "$h/hop-session.jsonl"' \
     '  printf "profile=target\nsession=hop-session\n" > "$HOME/.config/ccmorph/.reswitch.$CCMORPH_RELAY_ID"' \
     'elif [ -f "$h/hop-session.jsonl" ]; then echo second >> "$h/hop-session.jsonl"' \
-    'else echo MISSING >> "$CCMORPH_TEST_LOG"; fi' \
-    > "$HOME/bin/claude"
-  chmod +x "$HOME/bin/claude"
+    'else echo MISSING >> "$CCMORPH_TEST_LOG"; fi'
   source "$CCMORPH_SOURCE"
   local rc=0 store="$HOME/.claude/projects/p"
   ccmorph run proxy >/dev/null 2>&1 || { print -u2 'the hop must succeed'; rc=1; }
