@@ -169,10 +169,26 @@ _EXEC_CLAIMED = {}
 
 
 def _exec_store() -> Path:
+    """The one exec-store directory, shared by workers, runs and suites.
+
+    A session-scoped TMPDIR (agent shells and rig lanes hand out
+    <stable root>/<session>) dies with its run, and a store inside it starts
+    cold every time: every linked core and stub would be a fresh inode and be
+    assessed again. So the store is the sibling of TMPDIR when that parent is
+    usable — the shared scratch root the session dir lives under — and TMPDIR
+    itself otherwise (/tmp steps up to "/", which is why the rule skips it).
+    Nothing deletes the directory: a concurrent run may be exec'ing these very
+    inodes, and the OS ages untouched files out of TMPDIR on its own. A test
+    that runs a suite inside a private TMPDIR takes the store with its own
+    scratch parent, so the hygiene witnesses still see an empty temp dir."""
     global _EXEC_STORE
     if _EXEC_STORE is None:
-        target = Path(tempfile.mkdtemp(prefix="ccmorph-exec-"))
-        atexit.register(shutil.rmtree, str(target), True)
+        root = Path(tempfile.gettempdir())
+        parent = root.parent
+        if str(parent) != "/" and os.access(parent, os.W_OK):
+            root = parent
+        target = root / f"ccmorph-exec-store-{os.getuid()}"
+        target.mkdir(mode=0o700, exist_ok=True)
         _EXEC_STORE = target
     return _EXEC_STORE
 
@@ -228,17 +244,34 @@ def shared_exec(dest, text):
 CORE = Path(__file__).resolve().parent.parent / "libexec/ccmorph-core"
 
 
-def shared_core(dest):
-    """Put the compiled core at `dest`, linked to one pristine copy per process.
+_CORE_TAG = None
 
-    The tag reads the built file's size and mtime, so a `make shim` that rewrites
-    the binary is a different tag and a fresh store file."""
-    stat = CORE.stat()
-    key = ("ccmorph-core", stat.st_size, stat.st_mtime_ns)
+
+def _core_tag() -> str:
+    """A digest of the built core's bytes, hashed once per process.
+
+    `make shim` rewrites libexec/ccmorph-core on every run even when the build
+    is unchanged, so size and mtime name a new store file per gate — a fresh
+    inode, a fresh assessment and a fresh 13 MB copy each time. The digest of
+    the bytes is what the store claims: unchanged bytes keep the warm inode
+    across runs, and a rebuild that changes any byte claims a new name."""
+    global _CORE_TAG
+    if _CORE_TAG is None:
+        h = hashlib.sha256()
+        with open(CORE, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        _CORE_TAG = h.hexdigest()[:16]
+    return _CORE_TAG
+
+
+def shared_core(dest):
+    """Put the compiled core at `dest`, linked to the store's copy of these bytes."""
+    tag = _core_tag()
+    key = ("ccmorph-core", tag)
     src = _EXEC_CLAIMED.get(key)
     if src is None:
-        src = _claimed("ccmorph-core", f"{stat.st_size}-{stat.st_mtime_ns}",
-                       lambda p: shutil.copyfile(CORE, p))
+        src = _claimed("ccmorph-core", tag, lambda p: shutil.copyfile(CORE, p))
         _EXEC_CLAIMED[key] = src
     return _link_in(src, dest)
 
