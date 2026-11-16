@@ -62,7 +62,7 @@ STATE = STATE_ROOT / "profiles" / ".rc-bridge"
 # starting their own. Its port is fixed per route so a restarted edge keeps every
 # bridge's HTTPS_PROXY valid; while it is down, bridges fail closed (refused).
 EDGES = STATE / "edges"
-# "account" or "route": where every host's inference goes, read by the proxy on each turn (rc-hosts `inference=`).
+# "account", "route" or a profile: where every host's inference goes, read by the proxy on each turn (--switch).
 INFERENCE = STATE / "inference"
 
 
@@ -446,6 +446,37 @@ def edge_record(me: int, port: int, ca, upstream: str, route_env: dict, env) -> 
                           for k in (*MODEL_ENV, *ROUTE_ENV) if k in route_env}}
 
 
+def switch(profile: str, account: str) -> None:
+    """Send every host's inference to `profile` from the next turn, with no restart:
+    the account profile (Anthropic on the phone's own login), a profile that has a live
+    edge (that edge's route), or any other route or provider profile, which is brought
+    up beside the edge and handed to its proxy."""
+    word = "account" if profile == account else "route" if live_edge(profile) else profile
+    if word == profile:
+        if profile_type(profile) == "sub":
+            die(f"'{profile}' is a Claude account profile, but the hosts sign in as '{account}'")
+        live = [e for f in (EDGES.glob("*.json") if EDGES.exists() else ()) if (e := live_edge(f.stem))]
+        # shortcut: one shared edge (rc-hosts runs one route); a second edge would need its own handoff.
+        if len(live) != 1:
+            die(f"--switch needs exactly one live shared edge, found {len(live)}")
+        owner = int(live[0]["pid"])          # the profile lives as long as the edge that serves it
+        route_env = resolve_route(profile)
+        retire_route_with(owner, route_env.get("CCMORPH_ROUTE_HANDLE", ""))
+        key = route_env.get("ANTHROPIC_API_KEY") or die(f"profile '{profile}' has no key")
+        upstream = start_adapter(profile, owner, adapter_env())
+        tiers = {k.split("_")[2].lower(): v for k, v in route_env.items()
+                 if k in MODEL_ENV and k.startswith("ANTHROPIC_DEFAULT_") and v}
+        hand = STATE / f"switch-{profile}.json"
+        fd = os.open(hand.with_suffix(".tmp"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.write(fd, json.dumps({"upstream": upstream, "key": key, "tiers": tiers}).encode())
+        os.close(fd)
+        hand.with_suffix(".tmp").replace(hand)
+    tmp = INFERENCE.with_suffix(".tmp")
+    tmp.write_text(word + "\n")
+    tmp.replace(INFERENCE)
+    print(f"ccmorph-rc: inference now goes to '{profile}' from the next turn", file=sys.stderr)
+
+
 def main(argv: list[str]) -> None:
     raise_nofile()
     rc_args: list[str] = []
@@ -460,12 +491,16 @@ def main(argv: list[str]) -> None:
                     help="use the route profile's model aliases instead of real Claude ids")
     ap.add_argument("--edge", action="store_true",
                     help="run the route's shared adapter+proxy for other bridges to use, and stay up")
+    ap.add_argument("--switch", action="store_true",
+                    help="send every host's inference to this profile from the next turn, with no restart")
     ap.add_argument("--probe", action="store_true",
                     help="send one prompt through the same wiring (claude -p) instead of Remote Control")
     args = ap.parse_args(argv)
 
     claude = shutil.which("claude") or die("claude not found on PATH")
     account = args.account or default_account()
+    if args.switch:
+        return switch(args.route, account)
     if profile_type(account) != "sub":
         die(f"'{account}' is not a Claude account profile")
     if (route_type := profile_type(route := args.route)) == "sub":

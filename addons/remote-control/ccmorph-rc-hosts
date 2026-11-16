@@ -208,19 +208,13 @@ def permission_mode(text: str) -> str | None:
 
 
 def inference(text: str, routes: set[str], account: str) -> str:
-    """`inference=<profile>` -- where every host's model calls go: the account profile
-    the phone signs in with sends them to Anthropic on that login; a route the config
-    names (or no line) sends them to the route. Each proxy reads the result on every
-    turn, so a change restarts nothing. Any other profile has no live edge to serve
-    it: that takes `route=` and a restart, so it is refused and the route kept."""
+    """`inference=<profile>` -- where every host's model calls go: "account" for the
+    account profile the phone signs in with, "route" for a route the config names (or
+    no line), else the profile itself, which `ccmorph-rc <profile> --switch` brings up
+    beside the edge. Each proxy reads the result on every turn: nothing restarts."""
     m = re.search(r"^\s*inference=(\S+)", text, re.M)
     name = m.group(1) if m else None
-    if name == account:
-        return "account"
-    if name is not None and name not in routes:
-        log(f"inference={name}: not the account ({account}) or a route ({', '.join(sorted(routes))}); "
-            "kept on the route. Another profile needs route= and a restart")
-    return "route"
+    return "account" if name == account else "route" if name is None or name in routes else name
 
 
 def write_inference(value: str) -> None:
@@ -1480,6 +1474,7 @@ def main(argv: list[str]) -> int:
     unrecorded: set[str] = set()   # retired here, marker not in the file yet (#355)
     seen = None
     text = ""
+    switched = None
     clock = Clock()
     stopping = []
     signal.signal(signal.SIGTERM, lambda *_: stopping.append(1))
@@ -1502,8 +1497,16 @@ def main(argv: list[str]) -> int:
                 tiers = {a: m for a, m in tier_map(text).items() if a in ALIAS_ENV}
                 perm = permission_mode(text)
                 # live in every proxy: no host restarts for it
-                write_inference(inference(text, {r for r, _ in want.values()},
-                                          rc_module().default_account() if "inference=" in text else ""))
+                target = inference(text, {r for r, _ in want.values()},
+                                   rc_module().default_account() if "inference=" in text else "")
+                if target in ("account", "route"):
+                    write_inference(target)
+                elif target != switched:   # a profile is brought up once per change, not on every reload
+                    subprocess.Popen([str(HERE / "ccmorph-rc"), target, "--switch"], stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.DEVNULL, stderr=open(LOGS / "switch.log", "a"),
+                                     start_new_session=True)
+                    log(f"inference: bringing up {target}")
+                switched = target
                 routes = {r for r, _ in want.values()}
                 # --permission-mode and the ANTHROPIC_DEFAULT_*_MODEL pins are fixed when
                 # a host's process starts, so a host whose permission or tiers changed has

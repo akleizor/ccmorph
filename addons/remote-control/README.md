@@ -120,18 +120,23 @@ always signs in with the account profile's own claude.ai login.
 
 ## Switch inference live
 
-`inference=<account profile>` in `rc-hosts` (e.g. `inference=alex`) sends every host's
-model calls to Anthropic on the account the phone signs in with; `inference=<route>`
-(e.g. `inference=llmgate`, the default when the line is absent) sends them to the route
-profile. Any other profile is refused with a log line: it has no live edge, so it takes
-`route=` and a restart. Each proxy reads the switch on every turn, so
-a change takes effect on the next message: no host restarts and no session is
-interrupted. The switch is the file `profiles/.rc-bridge/inference`, which the
-supervisor writes from that line. A host started before this feature existed needs one
+```sh
+ccmorph-rc oli --switch       # every host's next turn goes to oli
+ccmorph-rc alex --switch      # the account the phone signs in with (Anthropic, its own quota)
+ccmorph-rc llmgate --switch   # back to the edge's route
+```
+
+No host restarts and no session is interrupted: each proxy reads the switch on every
+turn. The account profile sends calls to Anthropic untouched; the edge's route uses the
+edge as before; any other route or provider profile is brought up beside the edge
+(its adapter, and a provider's bridge, live as long as the edge does) and handed to the
+proxy through a 0600 file it deletes on read, so its key stays in memory only. Its model
+map is applied, so a provider such as codex receives its own models. `inference=<profile>`
+in `rc-hosts` does the same from the config. A proxy started before this feature needs one
 restart to load it.
 
-A tier pinned with `tier.<alias>=` still names the route's model on that bare alias, so
-under the account pick that model by its full id instead.
+A tier pinned with `tier.<alias>=` names the route's model on that bare alias, so under
+another target pick that model by its full id instead.
 
 ## How it works
 

@@ -19,15 +19,20 @@ INFERENCE_PREFIX = "/v1/messages"          # also covers /v1/messages/count_toke
 AUTH_HEADERS = ("authorization", "x-api-key", "cookie", "proxy-authorization")
 
 
+SWITCH_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+
+
 def inference_target(switch: str | None) -> str:
     """Where inference goes for this request: "account" sends it to Anthropic on the
-    session's own claude.ai login, untouched; anything else ("route", a missing or
-    unreadable file) moves it to the route profile. Read on every inference request,
-    so a switch takes effect on the next turn with no restart."""
+    session's own claude.ai login, untouched; "route" (also a missing, unreadable or
+    malformed file) to the edge's own route; any other word is a ccmorph profile that
+    `ccmorph-rc <profile> --switch` brought up beside it. Read on every inference
+    request, so a switch takes effect on the next turn with no restart."""
     try:
-        return "account" if switch and open(switch).read().strip() == "account" else "route"
+        word = open(switch).read().strip() if switch else ""
     except OSError:
         return "route"
+    return word if SWITCH_WORD.fullmatch(word) else "route"
 
 
 def is_inference(host: str, path: str) -> bool:

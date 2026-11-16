@@ -502,5 +502,7 @@ def test_inference_switch_is_read_live_and_defaults_to_the_route(tmp_path):
     assert inference_target(str(switch)) == "account"        # the next turn sees it, no restart
     switch.write_text("route\n")
     assert inference_target(str(switch)) == "route"
-    switch.write_text("acount\n")
-    assert inference_target(str(switch)) == "route"          # anything else stays on the route
+    switch.write_text("oli\n")
+    assert inference_target(str(switch)) == "oli"            # a profile --switch brought up
+    switch.write_text("../etc/x\n")
+    assert inference_target(str(switch)) == "route"          # not a profile name: the route

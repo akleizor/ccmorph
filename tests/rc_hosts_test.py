@@ -3257,14 +3257,14 @@ def test_a_kept_worktree_is_reported_once_per_run(capsys):
     assert capsys.readouterr().out.count("worktree kept") == 1
 
 
-def test_inference_names_a_profile_and_defaults_to_route(tmp_path, monkeypatch):
+def test_inference_names_any_profile_and_defaults_to_route(tmp_path, monkeypatch):
     mod = load()
     monkeypatch.setattr(mod, "INFERENCE", tmp_path / "inference")
     routes = {"llmgate"}
     assert mod.inference("route=llmgate\n~/x\n", routes, "alex") == "route"
     assert mod.inference("inference=alex  # subscription first\n", routes, "alex") == "account"
     assert mod.inference("inference=llmgate\n", routes, "alex") == "route"
-    assert mod.inference("inference=ds\n", routes, "alex") == "route"     # no live edge for it: refused
+    assert mod.inference("inference=oli\n", routes, "alex") == "oli"     # brought up beside the edge
     assert mod.inference("# inference=alex\n", routes, "alex") == "route"
     mod.write_inference(mod.inference("inference=alex\n", routes, "alex"))
     assert (tmp_path / "inference").read_text() == "account\n"

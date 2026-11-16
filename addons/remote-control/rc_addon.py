@@ -8,7 +8,8 @@ table nor any environment:
   RC_PARENT_PID   pid to follow; the proxy shuts down when it disappears
   RC_LOG          optional path; one line per request, method and path only
   RC_TIERS        optional JSON {alias: model}: tiers the config pinned (rc-hosts)
-  RC_INFERENCE    optional path; "account" in it sends inference to the account, read live
+  RC_INFERENCE    optional path; "account", "route" or a profile name, read on every turn.
+                  A profile's endpoint arrives as <dir>/switch-<profile>.json (0600), deleted on read
 """
 import json
 import os
@@ -36,6 +37,19 @@ LOG = os.environ.get("RC_LOG")
 PARENT = int(os.environ.get("RC_PARENT_PID") or 0)
 TIERS = json.loads(os.environ.get("RC_TIERS") or "{}")
 INFERENCE = os.environ.get("RC_INFERENCE")
+SWITCHED: dict[str, tuple[str, str, dict]] = {}   # profile -> (upstream, key, tiers), handed over by --switch
+
+
+def _switched(profile: str) -> tuple[str, str, dict] | None:
+    """A profile's endpoint: a new handoff file replaces the one in memory (it was brought up again)."""
+    hand = Path(INFERENCE).parent / f"switch-{profile}.json"
+    try:
+        h = json.loads(hand.read_text())
+        hand.unlink()
+        SWITCHED[profile] = (h["upstream"], h["key"], h.get("tiers") or {})
+    except (OSError, ValueError, KeyError):
+        pass
+    return SWITCHED.get(profile)
 
 
 _LOG = open(LOG, "a", buffering=1) if LOG else None   # line-buffered: one write per request
@@ -84,18 +98,27 @@ def requestheaders(flow: http.HTTPFlow) -> None:
         flow.metadata["rc_events"] = is_event_upload(req.pretty_host, req.path)
         _log(f"anthropic {req.method} {req.pretty_host}{route}")
         return
-    if inference_target(INFERENCE) == "account":
+    target = inference_target(INFERENCE)
+    if target == "account":
         # shortcut: a tier pinned in the session's env (tier.fable=...) still names the route's model on
         # the bare alias, which the account cannot serve; the phone's full ids are fine.
         _log(f"account   {req.method} {route}")
         return
-    headers, (scheme, host, port) = reroute(dict(req.headers.items()), UPSTREAM, KEY)
+    upstream, key, tiers = UPSTREAM, KEY, TIERS
+    if target != "route":
+        if alt := _switched(target):
+            upstream, key, tiers = alt
+        else:
+            _log(f"switch    {target} was never brought up (ccmorph-rc {target} --switch); on the route")
+            target = "route"
+    headers, (scheme, host, port) = reroute(dict(req.headers.items()), upstream, key)
+    flow.metadata["rc_tiers"] = tiers
     req.headers.clear()
     for k, v in headers.items():
         req.headers[k] = v
     req.scheme, req.host, req.port = scheme, host, port
     flow.metadata["rc_route"] = True
-    _log(f"route     {req.method} {route}")
+    _log(f"route     {req.method} {route}" + ("" if target == "route" else f" via {target}"))
 
 
 def _shrink(data: str, media_type: str | None) -> tuple[str, str] | None:
@@ -118,7 +141,7 @@ def request(flow: http.HTTPFlow) -> None:
         payload = json.loads(flow.request.content)
     except ValueError:
         return
-    if normalize_body(payload, TIERS) if routed else slim_events(payload, _shrink):
+    if normalize_body(payload, flow.metadata.get("rc_tiers", TIERS)) if routed else slim_events(payload, _shrink):
         before = len(flow.request.content)
         flow.request.content = encode_json(payload)
         if events:
