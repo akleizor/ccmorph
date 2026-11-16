@@ -217,13 +217,6 @@ def inference(text: str, routes: set[str], account: str) -> str:
     return "account" if name == account else "route" if name is None or name in routes else name
 
 
-def write_inference(value: str) -> None:
-    INFERENCE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = INFERENCE.with_suffix(".tmp")
-    tmp.write_text(value + "\n")
-    tmp.replace(INFERENCE)   # atomic: a proxy never reads half a word
-
-
 def tier_map(text: str) -> dict[str, str]:
     """{alias: model} from `tier.<alias>=<model>` lines.
 
@@ -1500,7 +1493,7 @@ def main(argv: list[str]) -> int:
                 target = inference(text, {r for r, _ in want.values()},
                                    rc_module().default_account() if "inference=" in text else "")
                 if target in ("account", "route"):
-                    write_inference(target)
+                    rc_module().write_inference(target, INFERENCE)
                 elif target != switched:   # a profile is brought up once per change, not on every reload
                     subprocess.Popen([str(HERE / "ccmorph-rc"), target, "--switch"], stdin=subprocess.DEVNULL,
                                      stdout=subprocess.DEVNULL, stderr=open(LOGS / "switch.log", "a"),

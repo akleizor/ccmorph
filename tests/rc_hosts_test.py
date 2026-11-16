@@ -3266,5 +3266,5 @@ def test_inference_names_any_profile_and_defaults_to_route(tmp_path, monkeypatch
     assert mod.inference("inference=llmgate\n", routes, "alex") == "route"
     assert mod.inference("inference=oli\n", routes, "alex") == "oli"     # brought up beside the edge
     assert mod.inference("# inference=alex\n", routes, "alex") == "route"
-    mod.write_inference(mod.inference("inference=alex\n", routes, "alex"))
+    mod.rc_module().write_inference(mod.inference("inference=alex\n", routes, "alex"), mod.INFERENCE)
     assert (tmp_path / "inference").read_text() == "account\n"
