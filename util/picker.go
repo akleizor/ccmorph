@@ -187,10 +187,8 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 		if !ok || mid == "" || isExcl(mid) {
 			continue
 		}
-		if caps := asObj(getKey(o, "capabilities")); caps != nil {
-			if v, has := caps.Get("chat_completion"); has && v == false {
-				continue
-			}
+		if deniedForChat(o) {
+			continue
 		}
 		real := ctxwindow.RealID(mid)
 		if real == mid && strings.HasPrefix(mid, "claude-") {

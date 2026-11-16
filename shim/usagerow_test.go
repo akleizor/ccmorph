@@ -1248,3 +1248,34 @@ func TestRecordTranscriptCarriesAValidSessionIDOnly(t *testing.T) {
 		}
 	}
 }
+
+// #562, pinned before cli's sameFile and the shim's merged under util/paths:
+// the move's claim — a name already held in a day folder that is this very
+// row — is a hardlink pair, and a link sitting at that name is another row's
+// file, never the claim. Following it instead would remove the flat name and
+// leave the row readable only through a link that no longer resolves.
+func TestALinkAtTheDayNameIsNotTheClaimAMoveLeft(t *testing.T) {
+	dir := stateHome(t)
+	yday := time.Now().UTC().AddDate(0, 0, -1)
+	folder := filepath.Join(dir, yday.Format("2006-01-02"))
+	if err := os.MkdirAll(folder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	flat := filepath.Join(dir, "a.json")
+	if err := os.WriteFile(flat, []byte(`{"response_id":"a"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(flat, yday, yday); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(flat, filepath.Join(folder, "a.json")); err != nil {
+		t.Fatal(err)
+	}
+	moveFlatRows()
+	if _, err := os.Stat(flat); err != nil {
+		t.Fatalf("the flat row must stay: a link is not the claim a move left: %v", err)
+	}
+	if !paths.Lexists(filepath.Join(folder, "a.json")) {
+		t.Fatal("the move took the day name a link held")
+	}
+}

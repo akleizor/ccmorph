@@ -399,7 +399,7 @@ func moveFlatRows() {
 			// A taken name is this very row only when it is a second name for
 			// the flat file: an earlier move linked it and stopped before its
 			// remove. Any other file there is another row's; the flat one stays.
-			if !errors.Is(err, fs.ErrExist) || !sameFile(from, to) {
+			if !errors.Is(err, fs.ErrExist) || !paths.SameInode(from, to) {
 				continue
 			}
 		}
@@ -408,7 +408,7 @@ func moveFlatRows() {
 			// read from one place until a later run can finish the move — only
 			// while the flat name still holds this very file, never a row's
 			// last name.
-			if sameFile(from, to) {
+			if paths.SameInode(from, to) {
 				remove(to)
 			}
 		}
@@ -430,16 +430,6 @@ func moveLock(base string) (*os.File, bool) {
 		return nil, false
 	}
 	return f, true
-}
-
-// sameFile is true only when both names hold one file: the claim a move left.
-func sameFile(a, b string) bool {
-	ia, err := os.Lstat(a)
-	if err != nil {
-		return false
-	}
-	ib, err := os.Lstat(b)
-	return err == nil && os.SameFile(ia, ib)
 }
 
 // flatRowFiles is the rows a pre-shard build (or a move that could not

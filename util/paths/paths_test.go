@@ -84,3 +84,44 @@ func TestResolve(t *testing.T) { // #520: symlinks followed, a missing tail kept
 		t.Errorf("an unset path: %q, want empty", got)
 	}
 }
+
+// #562: cli and shim each spelled a same-file rule and drifted apart on
+// symlinks. The two semantics are both wanted, so they are split and named:
+// SameFile follows a link — a native link to the same file gives way — and
+// SameInode reads the name's own file, the claim a move's hardlink pair
+// leaves. Hardlinks, where the two rules agree, are pinned too.
+func TestSameFileFollowsLinksAndSameInodeReadsTheName(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "row")
+	if err := os.WriteFile(file, []byte("a row\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(dir, "other")
+	if err := os.WriteFile(other, []byte("another row\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(file, link); err != nil {
+		t.Fatal(err)
+	}
+	hard := filepath.Join(dir, "hard")
+	if err := os.Link(file, hard); err != nil {
+		t.Fatal(err)
+	}
+	if !SameFile(link, file) {
+		t.Error("SameFile must follow a link to the file it names")
+	}
+	if SameInode(link, file) {
+		t.Error("SameInode must read the link's own file, not the one it points at")
+	}
+	if !SameFile(hard, file) || !SameInode(hard, file) {
+		t.Error("a hardlink pair is one file under both rules")
+	}
+	if SameFile(file, other) || SameInode(file, other) {
+		t.Error("two files are never one file")
+	}
+	missing := filepath.Join(dir, "missing")
+	if SameFile(file, missing) || SameInode(file, missing) {
+		t.Error("a missing path is never one file with one that exists")
+	}
+}

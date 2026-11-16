@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1951,8 +1952,20 @@ func TestPayloadAndFormatting(t *testing.T) {
 	if len(p) < 200 || !strings.HasPrefix(p, "The quick brown fox jumps over the lazy dog number 0. The quick brown fox jumps over the lazy dog number 1. ") {
 		t.Fatal(p)
 	}
-	if commas(1234567) != "1,234,567" || commas(12) != "12" || gFormat(30) != "30" || gFormat(0.2) != "0.2" {
-		t.Fatal(commas(1234567), gFormat(30))
+	// #562: the negative half the cli spelling of the rule dropped (-,123) —
+	// no count a caller prints is negative today, but the one helper every
+	// count goes through keeps the minus before the digits.
+	if got := Commas(-1234567); got != "-1,234,567" {
+		t.Fatalf("a negative count keeps its minus before the digits: %s", got)
+	}
+	// The int64 boundary: the minus cannot be negated out of the value
+	// (-MinInt64 overflows), so it is split off the formatted string; a
+	// negation instead prints it twice (--9,223,372,036,854,775,808).
+	if got := Commas(math.MinInt64); got != "-9,223,372,036,854,775,808" {
+		t.Fatalf("the int64 boundary keeps one minus before its groups: %s", got)
+	}
+	if Commas(1234567) != "1,234,567" || Commas(12) != "12" || gFormat(30) != "30" || gFormat(0.2) != "0.2" {
+		t.Fatal(Commas(1234567), gFormat(30))
 	}
 }
 

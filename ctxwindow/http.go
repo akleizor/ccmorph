@@ -326,17 +326,18 @@ func padLeft(s string, width int) string {
 	return s
 }
 
-func commas(n int64) string {
-	neg := n < 0
-	if neg {
-		n = -n
-	}
+// Commas is printf "%'d" in an en_US-style locale: the digits grouped in
+// threes, a negative count keeping its minus before them (#562). The minus is
+// split off the formatted string, never negated out of the value: -n overflows
+// at math.MinInt64 and would print two minuses.
+func Commas(n int64) string {
 	s := fmt.Sprint(n)
+	minus := ""
+	if strings.HasPrefix(s, "-") {
+		minus, s = "-", s[1:]
+	}
 	for i := len(s) - 3; i > 0; i -= 3 {
 		s = s[:i] + "," + s[i:]
 	}
-	if neg {
-		return "-" + s
-	}
-	return s
+	return minus + s
 }

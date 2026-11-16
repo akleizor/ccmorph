@@ -21,6 +21,11 @@ func TestContextAnswerNamesTheCountItsUnitAndWhereItCameFromIssue372(t *testing.
 			"gw: claude-opus-5 context 1,000,000 tokens · estimated from the model catalogue"},
 		{"brand-new", 200000, "probed", true,
 			"gw: brand-new context 200,000 tokens · left at Claude Code's default"},
+		// #562: no window a caller prints is negative, but the line's count
+		// keeps its minus before the digits — the cli spelling this replaced
+		// printed -,123.
+		{"claude-opus-5", -123, "probed", false,
+			"gw: claude-opus-5 context -123 tokens · found by ccmorph"},
 	}
 	for _, c := range cases {
 		if got := contextAnswer("gw", c.model, c.n, c.label, c.unprobed); got != c.want {

@@ -92,6 +92,11 @@ func TestContextServedAsksTheListingTheModelsVerbPrints(t *testing.T) {
 			t.Errorf("a reply with no data list must not print as the models column: %s", body)
 		}
 	}
+	// #562, pinned before the chat-denial rule merged: the catalogue lists
+	// embed-only, and the models verb prints nothing for it.
+	if prints["embed-only"] {
+		t.Errorf("the premise fails: `ccmorph models` prints the chat-denied embed-only: %v", rows)
+	}
 	// ContextServed bounds its asking (#449) but reads the same plain listing
 	// the models verb prints, so one catalogue answers both judgements.
 	fakeCurl(t, catalogue, 0)

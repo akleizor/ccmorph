@@ -118,7 +118,7 @@ func windowRun(args []string, stdout, stderr io.Writer) (int, error) {
 	rec := Resolve(args[0], args[1])
 	if rec.Unprobed {
 		fmt.Fprintf(stderr, "model-window: no known context limit for %s on %s; using %s-token fallback. Run: ccmorph probe %s\n",
-			args[1], args[0], commas(CCDefaultWindow), args[0])
+			args[1], args[0], Commas(CCDefaultWindow), args[0])
 	}
 	fmt.Fprintln(stdout, rec.JSON())
 	return 0, nil
