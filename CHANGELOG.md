@@ -7,6 +7,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- **A `uv run` without memorized flags can no longer run the pytest suite
+  serially.** The pytest packages ride in pyproject.toml's default `test`
+  group, so the command a session types from memory — without
+  `--with pytest-xdist` — still gets xdist and conftest.py's every-core
+  default: about 35 s instead of the four-minute serial crawl of 1300+
+  spawn-bound cases, which the 60 s ceiling pytest.ini states exists to
+  prevent. CI's pip installs keep running the suite serially on purpose.
+
 ## v0.5.12 — 2026-11-12
 
 ### Fixed

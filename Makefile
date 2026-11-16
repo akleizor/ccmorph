@@ -36,7 +36,7 @@ test-zsh:
 	zsh tests/install_test.zsh
 
 test-py:
-	python3 -m pytest tests/ -q
+	CCMORPH_LIB_DIR="$$PWD/lib" uv run python -m pytest tests/ -q
 
 # The Hive's gate on every landing. Each suite works in its own scratch homes and mostly
 # waits on process spawns, so they overlap: 185 s one after another, under a minute at once.
@@ -53,7 +53,7 @@ gate-configure:
 	@zsh tests/cli_configure_test.zsh
 
 gate-py:
-	@CCMORPH_LIB_DIR="$$PWD/lib" uv run --with pytest --with pytest-xdist --with pytest-timeout python -m pytest tests/ -q
+	@CCMORPH_LIB_DIR="$$PWD/lib" uv run python -m pytest tests/ -q
 
 # Three places state the version and nothing checked they agree: the assignment
 # the installer greps, the changelog a reader trusts, and the tag a package
