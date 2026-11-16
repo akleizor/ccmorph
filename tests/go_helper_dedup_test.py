@@ -97,6 +97,15 @@ fallback and the HOME re-export; the adapter's private `home()` is gone and
 deliberately-parallel derivation of its own — it must find `lib/ccmorph.sh`
 from zsh before any Go code can run — so the guard bans only the Go env
 reads, not the zsh spelling.
+
+Issue #563: joining a base with a /v1 path — does a versioned SDK base
+absorb the prefix, and is /v1/messages special? — was spelled three times.
+util's `apiURL` stripped /v1 from every path, /v1/messages included; the
+adapter's appended /v1/messages verbatim, the URL the serving client sends;
+ctxwindow's `APIURL` agreed with the adapter's on every base a validated
+profile can take and kept userinfo besides. Its one definition is
+`ctxwindow.APIURL`; util's listings and the adapter's probes call it
+directly, and `versioned` and `versionRE` went out with their spellings.
 """
 import os
 import re
@@ -133,6 +142,7 @@ CONSOLIDATED = {
     "resolvePath": "paths.Resolve",
     "isTier": "util.IsTier",
     "endHold": "util.EndRouteHold",
+    "apiURL": "ctxwindow.APIURL",
 }
 # #422's predicates, and #520's strays beside them: the unexported spelling a
 # new copy would take, mapped to the exported definition that replaced it.

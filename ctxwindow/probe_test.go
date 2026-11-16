@@ -718,12 +718,21 @@ func TestListModelsOllamaAndDisguisedIDs(t *testing.T) {
 
 // Python: test_probe_urls_match_each_protocols_serving_client.
 func TestAPIURL(t *testing.T) {
-	base := "https://gateway/api/v4"
+	// The GH-563 parity table: the one join's answers on the rows that once
+	// split util's, adapter's and this package's spellings of it.
 	for _, tc := range [][3]string{
-		{base, "/v1/messages", base + "/v1/messages"},
-		{base, "/v1/chat/completions", base + "/chat/completions"},
+		{"https://gw", "/v1/models", "https://gw/v1/models"},
 		{"https://gw/", "/v1/models", "https://gw/v1/models"},
+		{"https://gw//", "/v1/models", "https://gw/v1/models"},
 		{"https://gw/api/v1", "/v1/models", "https://gw/api/v1/models"},
+		{"https://gw/V1", "/v1/models", "https://gw/V1/models"},
+		{"https://gw/api/v4", "/v1/models", "https://gw/api/v4/models"},
+		{"https://alice:tok3n@gw/v1", "/v1/models", "https://alice:tok3n@gw/v1/models"},
+		{"https://gw/v1", "/v1/messages", "https://gw/v1/v1/messages"}, // appended verbatim: the serving client's spelling
+		{"https://gw", "/v1/messages", "https://gw/v1/messages"},
+		{"https://gw/v1", "/v1/models?limit=1000", "https://gw/v1/models?limit=1000"},
+		{"https://gw/v1", "/v1", "https://gw/v1"},
+		{"https://gw/api/v4", "/v1/chat/completions", "https://gw/api/v4/chat/completions"},
 		{"http://127.0.0.1:8080", "/v1/models", "http://127.0.0.1:8080/v1/models"},
 	} {
 		if got := APIURL(tc[0], tc[1]); got != tc[2] {
