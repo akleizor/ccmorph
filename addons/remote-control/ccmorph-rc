@@ -62,6 +62,8 @@ STATE = STATE_ROOT / "profiles" / ".rc-bridge"
 # starting their own. Its port is fixed per route so a restarted edge keeps every
 # bridge's HTTPS_PROXY valid; while it is down, bridges fail closed (refused).
 EDGES = STATE / "edges"
+# "account" or "route": where every host's inference goes, read by the proxy on each turn (rc-hosts `inference=`).
+INFERENCE = STATE / "inference"
 
 
 def edge_port(route: str) -> int:
@@ -388,7 +390,7 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
     mitmdump = shutil.which("mitmdump") or die("mitmdump not found: brew install mitmproxy")
     proxy_env = {k: v for k, v in os.environ.items() if k not in strip_env()}
     proxy_env.update(RC_UPSTREAM=upstream, RC_KEY_FILE=key_file, RC_PARENT_PID=str(me),
-                     RC_TIERS=json.dumps(pinned_tiers(os.environ)))
+                     RC_TIERS=json.dumps(pinned_tiers(os.environ)), RC_INFERENCE=str(INFERENCE))
     if args.debug:
         proxy_env["RC_LOG"] = str(STATE / "debug.log")
     proxy = subprocess.Popen(

@@ -118,6 +118,19 @@ Credentials inherited from the calling shell (`CLAUDE_CODE_OAUTH_TOKEN`,
 `ANTHROPIC_API_KEY`, ...) are dropped, as in every ccmorph launch: the session
 always signs in with the account profile's own claude.ai login.
 
+## Switch inference live
+
+`inference=account` in `rc-hosts` sends every host's model calls to Anthropic on the
+account the phone signs in with; `inference=route` (the default, also when the line is
+absent) sends them to the route profile. Each proxy reads the switch on every turn, so
+a change takes effect on the next message: no host restarts and no session is
+interrupted. The switch is the file `profiles/.rc-bridge/inference`, which the
+supervisor writes from that line. A host started before this feature existed needs one
+restart to load it.
+
+A tier pinned with `tier.<alias>=` still names the route's model on that bare alias, so
+under `inference=account` pick that model by its full id instead.
+
 ## How it works
 
 Remote Control is offered only to a claude.ai-authenticated process talking to

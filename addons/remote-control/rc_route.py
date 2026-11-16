@@ -19,6 +19,17 @@ INFERENCE_PREFIX = "/v1/messages"          # also covers /v1/messages/count_toke
 AUTH_HEADERS = ("authorization", "x-api-key", "cookie", "proxy-authorization")
 
 
+def inference_target(switch: str | None) -> str:
+    """Where inference goes for this request: "account" sends it to Anthropic on the
+    session's own claude.ai login, untouched; anything else ("route", a missing or
+    unreadable file) moves it to the route profile. Read on every inference request,
+    so a switch takes effect on the next turn with no restart."""
+    try:
+        return "account" if switch and open(switch).read().strip() == "account" else "route"
+    except OSError:
+        return "route"
+
+
 def is_inference(host: str, path: str) -> bool:
     if host.lower().rstrip(".") != FIRST_PARTY_HOST:
         return False

@@ -8,6 +8,7 @@ table nor any environment:
   RC_PARENT_PID   pid to follow; the proxy shuts down when it disappears
   RC_LOG          optional path; one line per request, method and path only
   RC_TIERS        optional JSON {alias: model}: tiers the config pinned (rc-hosts)
+  RC_INFERENCE    optional path; "account" in it sends inference to the account, read live
 """
 import json
 import os
@@ -24,7 +25,8 @@ from pathlib import Path
 from mitmproxy import http
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rc_route import encode_json, is_event_upload, is_inference, normalize_body, reroute, slim_events  # noqa: E402
+from rc_route import (encode_json, inference_target, is_event_upload, is_inference, normalize_body,  # noqa: E402
+                      reroute, slim_events)
 
 UPSTREAM = os.environ["RC_UPSTREAM"]
 _key_file = os.environ.pop("RC_KEY_FILE")
@@ -33,6 +35,7 @@ os.unlink(_key_file)
 LOG = os.environ.get("RC_LOG")
 PARENT = int(os.environ.get("RC_PARENT_PID") or 0)
 TIERS = json.loads(os.environ.get("RC_TIERS") or "{}")
+INFERENCE = os.environ.get("RC_INFERENCE")
 
 
 _LOG = open(LOG, "a", buffering=1) if LOG else None   # line-buffered: one write per request
@@ -80,6 +83,11 @@ def requestheaders(flow: http.HTTPFlow) -> None:
     if not is_inference(req.pretty_host, req.path):
         flow.metadata["rc_events"] = is_event_upload(req.pretty_host, req.path)
         _log(f"anthropic {req.method} {req.pretty_host}{route}")
+        return
+    if inference_target(INFERENCE) == "account":
+        # shortcut: a tier pinned in the session's env (tier.fable=...) still names the route's model on
+        # the bare alias, which the account cannot serve; the phone's full ids are fine.
+        _log(f"account   {req.method} {route}")
         return
     headers, (scheme, host, port) = reroute(dict(req.headers.items()), UPSTREAM, KEY)
     req.headers.clear()

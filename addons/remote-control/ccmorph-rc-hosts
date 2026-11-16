@@ -92,6 +92,7 @@ STATE_ROOT = Path(os.environ.get("CCMORPH_STATE_DIR") or
                   Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ccmorph")
 LOGS = STATE_ROOT / "profiles" / ".rc-bridge" / "logs"
 EDGES = STATE_ROOT / "profiles" / ".rc-bridge" / "edges"
+INFERENCE = STATE_ROOT / "profiles" / ".rc-bridge" / "inference"   # ccmorph-rc reads the same file
 
 
 def edge_ready(route: str) -> dict | None:
@@ -204,6 +205,22 @@ def permission_mode(text: str) -> str | None:
     """
     m = re.search(r"^\s*permission=(\S+)", text, re.M)
     return m.group(1) if m and m.group(1) in PERMISSION_MODES else None
+
+
+def inference(text: str) -> str:
+    """`inference=account|route` -- where every host's model calls go. "account" sends
+    them to Anthropic on the account the phone signs in with; "route" (the default)
+    to the route profile. Each proxy reads it on every turn, so a change restarts
+    nothing and no session is interrupted."""
+    m = re.search(r"^\s*inference=(account|route)\s*(?:#.*)?$", text, re.M)
+    return m.group(1) if m else "route"
+
+
+def write_inference(value: str) -> None:
+    INFERENCE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = INFERENCE.with_suffix(".tmp")
+    tmp.write_text(value + "\n")
+    tmp.replace(INFERENCE)   # atomic: a proxy never reads half a word
 
 
 def tier_map(text: str) -> dict[str, str]:
@@ -1477,6 +1494,7 @@ def main(argv: list[str]) -> int:
                 # `tier.<alias>=` line changes what no host runs and must restart nothing.
                 tiers = {a: m for a, m in tier_map(text).items() if a in ALIAS_ENV}
                 perm = permission_mode(text)
+                write_inference(inference(text))   # live in every proxy: no host restarts for it
                 routes = {r for r, _ in want.values()}
                 # --permission-mode and the ANTHROPIC_DEFAULT_*_MODEL pins are fixed when
                 # a host's process starts, so a host whose permission or tiers changed has

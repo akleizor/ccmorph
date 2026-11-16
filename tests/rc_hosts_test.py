@@ -3255,3 +3255,13 @@ def test_a_kept_worktree_is_reported_once_per_run(capsys):
     for _ in range(3):
         m.kept_once("/r: cse_1 archived; worktree kept: its branch is missing")
     assert capsys.readouterr().out.count("worktree kept") == 1
+
+
+def test_inference_line_is_written_for_the_proxies_and_defaults_to_route(tmp_path, monkeypatch):
+    mod = load()
+    monkeypatch.setattr(mod, "INFERENCE", tmp_path / "inference")
+    assert mod.inference("route=llmgate\n~/x\n") == "route"
+    assert mod.inference("route=llmgate\ninference=account  # subscription first\n") == "account"
+    assert mod.inference("# inference=account\n") == "route"
+    mod.write_inference(mod.inference("inference=account\n"))
+    assert (tmp_path / "inference").read_text() == "account\n"

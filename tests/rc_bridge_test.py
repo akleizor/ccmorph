@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "addons" / "remote-control"))
-from rc_route import is_inference, reroute  # noqa: E402
+from rc_route import inference_target, is_inference, reroute  # noqa: E402
 
 OAUTH = "sk-ant-oat01-ACCOUNT-SECRET"
 
@@ -492,3 +492,15 @@ def test_default_account_names_claude_account_profiles(tmp_path, monkeypatch, ca
     err = capsys.readouterr().err
     assert "Claude account profiles found" in err
     assert "subscription" not in err
+
+
+def test_inference_switch_is_read_live_and_defaults_to_the_route(tmp_path):
+    switch = tmp_path / "inference"
+    assert inference_target(None) == "route"
+    assert inference_target(str(switch)) == "route"          # no file: the route, as before
+    switch.write_text("account\n")
+    assert inference_target(str(switch)) == "account"        # the next turn sees it, no restart
+    switch.write_text("route\n")
+    assert inference_target(str(switch)) == "route"
+    switch.write_text("acount\n")
+    assert inference_target(str(switch)) == "route"          # anything else stays on the route
