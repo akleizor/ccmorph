@@ -270,10 +270,9 @@ _ccm_test_remove_homes() {
   for home in $_ccm_test_homes; do
     [[ $home == ${TMPDIR:-/tmp}* || $home == /tmp/* || $home == /private/* ]] && rm -rf -- "$home"
   done
-  # The stub store sits beside the homes, on whatever volume this shard's TMPDIR
-  # named at the time. This one path the shard made itself, so it is removed
-  # without the guard above, which would skip it when TMPDIR has since moved.
-  [[ -n ${_ccm_test_stub_store:-} ]] && rm -rf -- "$_ccm_test_stub_store"
+  # The stub cache is deliberately absent here: concurrent suites — a second
+  # worktree, the gate on CI — may be exec'ing those very inodes, and TMPDIR
+  # ages the cache out on its own. See the store comment above.
 }
 trap _ccm_test_sweep_on_exit EXIT
 trap '_ccm_test_sweep_on_signal 1' HUP
@@ -351,85 +350,116 @@ bridgeless_path() {
   print -r -- "$REPLY"
 }
 
-# The fixture stubs: one file per distinct text, per shard, linked into each home.
+# The fixture stubs: one file per distinct text, for the machine, linked into
+# every home of every shard and of every later run.
 #
 # macOS assesses a never-run executable at its first exec — 55-62 ms for a stub
 # like these, 134-153 ms for a 14 MB binary, against 4-17 ms for a file it has
-# seen — and the assessment is keyed to the inode: writing the same bytes again is
-# a new inode and is assessed again, while a second name for the same file is not.
-# Every home writes the same default stubs, so the first home to need a text writes
-# it once into this store and every home after it links that file. This is the cost
-# the shard comment above already names; it is now paid once per shard.
+# seen — and the assessment is keyed to the inode: writing the same bytes again
+# is a new inode and is assessed again, while a second name for the same file is
+# not. Every home writes the same default stubs, and every run writes the same
+# run: so the store belongs neither to a home nor to a shard nor to a run. It is
+# one directory in TMPDIR named by UID; a file enters it under a name holding
+# the length and cksum of its bytes. The first writer of a text writes it once
+# and every home, shard and suite after it links that inode and execs warm.
+# The gate repeats every run with byte-identical stubs, and the run after a
+# boot pays the assessment only for texts the machine has not run in days.
 #
-# Two properties keep the sharing honest:
-#   * a process started from a link carries its own home path in argv, so GH-434's
-#     leak sweep still matches it to the home that ran it;
-#   * a store file is mode 0555, so a test that points `>` at a linked stub gets
-#     "permission denied" instead of quietly rewriting bytes the next home links.
-#     _ccm_test_check_stubs is the backstop: it compares every store file with the
-#     bytes it was written with after each test and fails the test that changed one.
-# A test that must write its own stub over a shared name writes it through ccm_stub
-# (or a temp renamed over the name), which is how write_fake_adapter and
-# install_model_window stay safe.
-typeset -g _ccm_test_stub_store=''
+# Three properties keep the sharing honest:
+#   * claiming a name is a hard link, which lands where the name is free and
+#     refuses where it is not: two shards racing for a text end at one inode,
+#     and the one that loses reads the winner's bytes back before linking them,
+#     so a name collision between different texts fails loudly instead of
+#     hiding;
+#   * a process started from a link carries its own home path in argv, so
+#     GH-434's leak sweep still matches it to the home that ran it;
+#   * a store file is mode 0555, so a test that points `>` at a linked stub
+#     gets "permission denied" instead of quietly rewriting bytes another shard
+#     is running. _ccm_test_check_stubs is the backstop: it compares every file
+#     this shard wrote with the bytes it wrote them with, after each test, and
+#     fails the test that changed one.
+# A test that must write its own stub over a shared name writes it through
+# ccm_stub (or a temp renamed over the name), which is how write_fake_adapter
+# and install_model_window stay safe.
+#
+# Nothing here removes the store: it is a cache, and the lease is the OS one —
+# files that no run touches for three days age out of TMPDIR on their own, and
+# a text edited between runs simply claims a new name. A run may never rm -rf
+# it: a concurrent suite — the gate on CI, a second worktree — may be exec'ing
+# those very inodes.
+# A home's TMPDIR can move off the cache's volume (a rig lane, a test pointing
+# TMPDIR into its own scratch), where a hard link cannot reach; ccm_stub then
+# writes the bytes at the destination instead and that home pays the
+# assessment alone, as it did before any sharing existed.
+typeset -g _ccm_test_stub_base="${ORIGINAL_TMPDIR%/}"
+# A session-scoped TMPDIR — rig lanes and agent shells hand out <stable root>/
+# <session> — dies with the suite, and a cache inside it starts cold every run.
+# Step up to the parent when it exists, is writable, and is not "/": that is
+# the shared scratch root the session dir lives under, and the same volume the
+# homes will be on. A plain TMPDIR=/tmp steps up to "/", which is why the rule
+# skips it and keeps /tmp itself.
+if [[ $_ccm_test_stub_base:h != / && -w $_ccm_test_stub_base:h ]]; then
+  _ccm_test_stub_base=${_ccm_test_stub_base:h}
+fi
+typeset -g _ccm_test_stub_cache="$_ccm_test_stub_base/ccmorph-stub-store.$UID"
+typeset -gi _ccm_test_stub_cache_ok=-1  # -1 not tried, 1 usable, 0 unusable
 typeset -gA _ccm_test_stub_src=()    # stub text -> its file in the store
 typeset -gA _ccm_test_stub_text=()   # store file -> the bytes it was written with
 
-# Makes the shard's store and leaves its path in $_ccm_test_stub_store. It lives
-# beside the homes it serves, because a hard link cannot cross a device and TMPDIR
-# is not one place here: a rig lane, a CI runner and a test that points TMPDIR into
-# its own scratch each land the homes somewhere new — a mirror dir on one volume and
-# a home on another is normal, which is why the mirrors are symlinks and these are
-# not. So the base is the homes' own parent, and a home under a new base rebuilds
-# the store once. Never called through $(...): a subshell would keep the path, and
-# the next home would build a second store and pay the assessment all over again —
-# the reason bridgeless_path answers in REPLY.
-_ccm_test_make_stub_store() {
-  local base=$1 new
-  # The store lives beside the homes, so a test that removes its own home removes
-  # the store with it: a store that is gone is rebuilt, not trusted.
-  [[ -n $_ccm_test_stub_store && $_ccm_test_stub_store == "$base"/* ]] \
-    && [[ -d $_ccm_test_stub_store ]] && return 0
-  new=$(mktemp -d "$base/ccmorph-stub.XXXXXX") || return 1
-  # A store the shard made for another base is ours to release.
-  [[ -z $_ccm_test_stub_store ]] || rm -rf -- "$_ccm_test_stub_store"
-  _ccm_test_stub_store=$new
-  _ccm_test_stub_src=()
-  _ccm_test_stub_text=()
-  # Registered like a mirror dir, for a suite killed before its own cleanup.
-  _ccm_test_homes+=("$new")
-  return 0
-}
-
 # ccm_stub <path> <line>...: make <path> an executable holding those lines,
-# sharing one inode with every other home whose stub carries the same bytes.
+# sharing one inode with every other home, shard and run whose stub carries the
+# same bytes.
 # One argument holding newlines is the same call, which is how the fixtures that
 # build their body in an array stay written.
 ccm_stub() {
   local dest=$1; shift
-  local text="${(F)@}" src
-  # Every home here is a `mktemp -d` in one directory, so the home's parent is that
-  # directory: one base for every home until TMPDIR moves under the shard. The
-  # cache is asked only after the base is settled, so a cached file on a volume
-  # this home is not on can never be the answer.
-  _ccm_test_make_stub_store "${${HOME:-/}%/*}" || return 1
+  local text="${(F)@}" src tmp
+  local -i claimed=0
   if [[ -n ${_ccm_test_stub_src[$text]:-} ]]; then
     src=${_ccm_test_stub_src[$text]}
   else
-    src="$_ccm_test_stub_store/${dest:t}.${#_ccm_test_stub_src}"
-    print -r -- "$text" > "$src" || return 1
-    zf_chmod 0555 "$src"
-    _ccm_test_stub_src[$text]="$src"
-    _ccm_test_stub_text[$src]="$text"
+    src=''
+    if (( _ccm_test_stub_cache_ok < 0 )); then
+      zf_mkdir -p -- "$_ccm_test_stub_cache" 2>/dev/null \
+        && zf_chmod 0700 "$_ccm_test_stub_cache" 2>/dev/null \
+        && _ccm_test_stub_cache_ok=1 || _ccm_test_stub_cache_ok=0
+    fi
+    if (( _ccm_test_stub_cache_ok )); then
+      # One fork per distinct text per shard — cksum names the bytes; the
+      # per-home cost stays the map lookup above.
+      src="$_ccm_test_stub_cache/${#text}.${$(cksum <<<"$text")%% *}"
+      if [[ ! -e $src ]]; then
+        tmp="$src.$$.$RANDOM"
+        if print -r -- "$text" > "$tmp" 2>/dev/null && zf_chmod 0555 "$tmp" \
+            && zf_ln -- "$tmp" "$src" 2>/dev/null; then
+          claimed=1
+        fi
+        zf_rm -f -- "$tmp"
+      fi
+      if (( claimed )); then
+        _ccm_test_stub_text[$src]=$text
+      elif [[ -f $src ]]; then
+        if [[ ${mapfile[$src]-} != "$text"$'\n' ]]; then
+          print -u2 -- "the stub cache name ${src:t} holds bytes that are not this stub's: refusing to link it"
+          src=''
+        fi
+      else
+        src=''
+      fi
+    fi
+    [[ -n $src ]] && _ccm_test_stub_src[$text]=$src
   fi
   zf_mkdir -p -- "$dest:h"
-  # The name is replaced, never written: it may already be a link into the store.
-  # A fresh home has no name to clear, and that is the common case, so the unlink
-  # is asked for only when something is there.  zf_ln, unlike /bin/ln, replaces a
-  # name it is given rather than failing on it; the unlink above keeps that rule
-  # visible here instead of hidden in a builtin's difference.
+  # The name is replaced, never written: it may already be a link into the
+  # store, and a write through that link would change bytes every other home
+  # links. The unlink first is also what lets zf_ln take a free name.
   [[ -e $dest || -L $dest ]] && zf_rm -f -- "$dest"
-  zf_ln -- "$src" "$dest"
+  if [[ -z $src ]] || ! zf_ln -- "$src" "$dest" 2>/dev/null; then
+    # No cache, an off-volume home, or a wiped cache dir: this home keeps its
+    # own bytes and pays its own assessment.
+    print -r -- "$text" > "$dest" || return 1
+    zf_chmod 0555 "$dest"
+  fi
 }
 
 # The store's other half: a shared stub that no longer holds its own bytes means a
@@ -437,9 +467,9 @@ ccm_stub() {
 _ccm_test_check_stubs() {
   local src rc=0
   for src in ${(k)_ccm_test_stub_text}; do
-    # A test that deletes its own home deletes the store inside it with it. That
-    # is the suite's own bookkeeping, not a rewritten stub; the next ccm_stub
-    # finds the store gone and builds a new one.
+    # The cache dir itself gone means TMPDIR was wiped under the run — an OS
+    # cleanup, not a test writing through its link. The next ccm_stub makes the
+    # dir and the stub again; this run's remaining checks stop making sense.
     [[ -d ${src:h} ]] || continue
     # mapfile, not $(<"$src"): a command substitution forks, and this loop runs
     # over every stub the shard has made after every test.  The file holds the
