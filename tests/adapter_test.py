@@ -876,7 +876,13 @@ class AdapterTest(unittest.TestCase):
         stub.write_text("#!/bin/sh\nexec sleep 300\n")  # alive, never serves
         stub.chmod(0o755)
         self._install_fake_translator(stub)
-        out = self.run_adapter(_constants={"READY_TIMEOUT": 3})
+        # The ready window opens after the adapter has started the translator, so
+        # 2 s is long past any fork of `exec sleep` — the timeout still fires on a
+        # translator that started and never serves, the case the contract names.
+        # A shorter window trims the wall without touching either assertion: the
+        # stub serves nothing at any length, so PORT= cannot appear and the exit
+        # stays non-zero at 2 s exactly as at 3.
+        out = self.run_adapter(_constants={"READY_TIMEOUT": 2})
         self.assertNotEqual(out.returncode, 0,
                             "a ready-timeout must not look like success")
         self.assertNotIn("PORT=", out.stdout)
