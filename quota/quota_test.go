@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -1895,6 +1896,94 @@ func TestQuotaSpendNamesAPermissionChangeUnderEveryCache(t *testing.T) {
 	}
 }
 
+// A permission change that lands after the memo check and before the flat read
+// is still seen, whichever cache would answer the closed day — the base, a
+// valid day cache, or none. The memo check takes only the closed days' mtimes,
+// and a mode moves none: the rebuild's own listing, taken after the flat read,
+// is what asks every closed day whether it can be read now, so the run names
+// the store instead of quoting the month (#545, #559).
+func TestQuotaSpendNamesAPermissionChangeDuringARebuild(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a path with mode 0")
+	}
+	closed := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	today := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name, target string
+		mode         os.FileMode
+	}{
+		{"closed receipt shut", "2026-10-18/a.json", 0},
+		{"closed folder unsearchable", "2026-10-18", 0o400},
+	}
+	// drop is what the variant removes after the warm read; a new receipt today
+	// then makes every variant's next read a rebuild.
+	variants := []struct {
+		name string
+		drop func() []string
+	}{
+		{"changed today", func() []string { return nil }},
+		{"base", func() []string { return []string{monthMemoPath()} }},
+		{"day cache", func() []string { return []string{monthMemoPath(), monthBasePath()} }},
+		{"cold", func() []string { return []string{spendCacheDir()} }},
+	}
+	for _, c := range cases {
+		for _, v := range variants {
+			t.Run(c.name+"/"+v.name, func(t *testing.T) {
+				useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+				state := t.TempDir()
+				t.Setenv("XDG_STATE_HOME", state)
+				usage := filepath.Join(state, "ccmorph", "usage")
+				writeReceipt(t, filepath.Join(usage, "2026-10-18", "a.json"),
+					"resp_a", "turn_a", "2026-10-18T09:00:00Z", 1, closed)
+				writeReceipt(t, filepath.Join(usage, "2026-10-20", "t.json"),
+					"resp_t", "turn_t", "2026-10-20T09:00:00Z", 1, today)
+				read := func() (string, int) {
+					tallyMemo.key = ""
+					out, _, code := run(t, nil, "gw\tgateway\t\t\n")
+					return out, code
+				}
+				if out, code := read(); code != 0 || !strings.Contains(out, "month $2.00") {
+					t.Fatalf("the readable store was not answered (exit %d): %q", code, out)
+				}
+				for _, p := range v.drop() {
+					if err := os.RemoveAll(p); err != nil {
+						t.Fatal(err)
+					}
+				}
+				writeReceipt(t, filepath.Join(usage, "2026-10-20", "t2.json"),
+					"resp_t2", "turn_t2", "2026-10-20T10:00:00Z", 1, today)
+				target := filepath.Join(usage, c.target)
+				back := os.FileMode(0o700)
+				if strings.HasSuffix(c.target, ".json") {
+					back = 0o600
+				}
+				var hookErr error
+				beforeFlat = func() {
+					beforeFlat = nil
+					hookErr = os.Chmod(target, c.mode)
+				}
+				t.Cleanup(func() { beforeFlat = nil; _ = os.Chmod(target, back) })
+				out, code := read()
+				if hookErr != nil {
+					t.Fatal(hookErr)
+				}
+				if code == 0 || !strings.Contains(out, "usage store not readable") {
+					t.Fatalf("a permission change during the rebuild was answered (exit %d): %q", code, out)
+				}
+				if strings.Contains(out, "month $3.00") {
+					t.Fatalf("the caches answered a month whose closed day went unreadable: %q", out)
+				}
+				if err := os.Chmod(target, back); err != nil {
+					t.Fatal(err)
+				}
+				if out, code := read(); code != 0 || !strings.Contains(out, "month $3.00") {
+					t.Fatalf("the recovered read (exit %d) did not report the receipts: %q", code, out)
+				}
+			})
+		}
+	}
+}
+
 // An unchanged store's read decodes no row: not a receipt, and not a cache
 // that keeps rows — the flat index and the day caches are loaded only when the
 // month memo cannot answer. A new receipt today costs the flat index, today's
@@ -1944,6 +2033,48 @@ func TestQuotaSpendAnUnchangedStoreDecodesNoRow(t *testing.T) {
 	}
 	if decoded != 5 {
 		t.Fatalf("a new receipt today decoded %d rows, want 5: the flat index (3), today's cache (1), the new receipt (1)", decoded)
+	}
+}
+
+// A read sweeps the month window's closed days — lists each folder and asks
+// every receipt in it for its readability — once: the unchanged store's memo
+// hit pays its one sweep after its marks match, and a store that changed today
+// pays its one in the rebuild's listing after the flat read, the memo check
+// having taken only the closed days' mtimes (#559).
+func TestQuotaSpendSweepsTheClosedDaysOnce(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	closed := time.Date(2026, 10, 18, 9, 0, 0, 0, time.UTC)
+	today := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	writeReceipt(t, filepath.Join(usage, "2026-10-18", "a.json"),
+		"resp_a", "turn_a", "2026-10-18T09:00:00Z", 1, closed)
+	writeReceipt(t, filepath.Join(usage, "2026-10-20", "t.json"),
+		"resp_t", "turn_t", "2026-10-20T09:00:00Z", 1, today)
+	read := func() *Spend { tallyMemo.key = ""; return spendEntry("gw", "").Spend }
+	if s := read(); s.MonthUSD != 2 || s.MonthTurns != 2 {
+		t.Fatalf("cold read %+v", s)
+	}
+	swept := 0
+	daysSwept = func() { swept++ }
+	t.Cleanup(func() { daysSwept = nil })
+	if s := read(); s.MonthUSD != 2 || s.MonthTurns != 2 {
+		t.Fatalf("steady read %+v", s)
+	}
+	if swept != 1 {
+		t.Fatalf("an unchanged store swept the closed days %d times, want 1", swept)
+	}
+	// One new receipt today makes the next read a rebuild: the check's marks
+	// miss, so it sweeps nothing, and the rebuild's listing pays the one sweep.
+	writeReceipt(t, filepath.Join(usage, "2026-10-20", "t2.json"),
+		"resp_t2", "turn_t2", "2026-10-20T10:00:00Z", 1, today)
+	swept = 0
+	if s := read(); s.MonthUSD != 3 || s.MonthTurns != 3 || s.TodayUSD != 2 || s.TodayTurns != 2 {
+		t.Fatalf("changed read %+v", s)
+	}
+	if swept != 1 {
+		t.Fatalf("a changed store swept the closed days %d times, want 1", swept)
 	}
 }
 
@@ -2011,7 +2142,9 @@ func TestQuotaSpendRowsAreInReceiptNameOrder(t *testing.T) {
 
 // A cache from a version this build does not know is discarded before its body
 // is decoded: a future version's shape is not this one's, so none of it is
-// read (#449).
+// read (#449). The version is found wherever the writer spelled it, after the
+// body as well as before it: the head's peek walks the body to reach it
+// without decoding it (#559).
 func TestQuotaSpendDoesNotDecodeAFutureCacheVersion(t *testing.T) {
 	state := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", state)
@@ -2041,6 +2174,28 @@ func TestQuotaSpendDoesNotDecodeAFutureCacheVersion(t *testing.T) {
 	}
 	if decoded != 0 {
 		t.Fatalf("a future flat cache decoded %d rows", decoded)
+	}
+	// The version spelled after the body is still the version: a peek that
+	// stopped at the head's first key would take this cache for versionless.
+	late := `{` + files + `, "v": 99}`
+	if err := os.WriteFile(dayCachePath("2026-10-19"), []byte(late), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadDayFile("2026-10-19"); got.Files != nil {
+		t.Fatalf("a future day cache was kept: %+v", got)
+	}
+	if decoded != 0 {
+		t.Fatalf("a future day cache decoded %d rows", decoded)
+	}
+	current := `{` + files + `, "v": ` + strconv.Itoa(spendCacheVersion) + `}`
+	if err := os.WriteFile(dayCachePath("2026-10-20"), []byte(current), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadDayFile("2026-10-20"); len(got.Files) != 1 {
+		t.Fatalf("a current day cache was not kept: %+v", got)
+	}
+	if decoded != 1 {
+		t.Fatalf("a current day cache decoded %d rows, want 1", decoded)
 	}
 }
 
