@@ -822,11 +822,15 @@ class AdapterTest(unittest.TestCase):
                 try:
                     deadline = time.monotonic() + HANG_TIMEOUT
                     while True:
-                        # PORT= follows both children's readiness, so every pid
-                        # has reached the tether by then.
-                        seen |= self._tethers(proc.pid)
                         ready = (tpid.exists() and (not hooks or spid.exists())
                                  and "PORT=" in out.read_text())
+                        # PORT= follows both children's readiness, so every pid has
+                        # reached the tether by then. That makes one process-table
+                        # sweep, the one after readiness, all the test needs: a
+                        # `ps -A` per 0.1 s poll is the most expensive thing in the
+                        # loop and was paying for nothing while the adapter started.
+                        if ready:
+                            seen |= self._tethers(proc.pid)
                         if ready and seen:
                             break
                         if proc.poll() is not None:
