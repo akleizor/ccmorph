@@ -441,7 +441,7 @@ ccm_stub() {
       elif [[ -f $src ]]; then
         if [[ ${mapfile[$src]-} != "$text"$'\n' ]]; then
           print -u2 -- "the stub cache name ${src:t} holds bytes that are not this stub's: refusing to link it"
-          src=''
+          return 1
         fi
       else
         src=''
