@@ -46,7 +46,9 @@ typeset -gA _unit_cost=(
   pkgmgr     5   # 11
   path       9   # 12
   footer     4   # 13
-  selfupdate 17  # 14
+  upd_ship   1   # 14: the shipped installer, and a release tree's per-platform binaries
+  upd_fetch  5   # 14.1-14.3: what `update` downloads, and what it refuses before one
+  upd_state  2   # 14.4-14.7: a git checkout, a missing installer, uninstall, help
 )
 _own() {  # true when this process runs the unit; records it for the parent's check
   (( ${+_unit_cost[$1]} )) || { print -u2 -- "FAIL: unit '$1' is not in _unit_cost"; exit 1 }
@@ -1388,25 +1390,57 @@ last=$(grep -v '^$' "$d/out" | tail -1)
 [[ "$last" == "Check:  "* ]] && ok "end: the check is the last line of an update" || fail "end: last line of an update is '$last'"
 fi
 
+# What §14's three units share. They sit outside every `if _own` block because
+# the units land on different shards, and a shard needs them in whatever order
+# its deal hands them out.
+_ccm_stage99() {  # prints the 9.9.9 tarball, staging it the first time this shard asks
+  # The downloaded code is RUN here (update, --version, uninstall), so the 9.9.9
+  # tree carries the real binary, not the stub the section-8 tarball staged, and
+  # its version is what proves the downloaded code is the code that ran. Asked
+  # through $(...) on purpose: the staged file is the answer, and the work is
+  # paid once per shard, not once per case.
+  if [[ ! -f $TMP/src99.tar.gz ]]; then
+    mkdir -p "$TMP/stage99"
+    cp -R "$TMP/stage/ccmorph-v1.2.3" "$TMP/stage99/ccmorph-main"
+    cp "$REPO/libexec/ccmorph-core" "$TMP/stage99/ccmorph-main/libexec/ccmorph-core"
+    sed 's/^_CCMORPH_VERSION=.*/_CCMORPH_VERSION="9.9.9"/' "$REPO/lib/ccmorph.sh" > "$TMP/stage99/ccmorph-main/lib/ccmorph.sh"
+    grep -qxF '_CCMORPH_VERSION="9.9.9"' "$TMP/stage99/ccmorph-main/lib/ccmorph.sh" || return 1
+    tar -czf "$TMP/src99.tar.gz" -C "$TMP/stage99" ccmorph-main || return 1
+  fi
+  print -r -- "$TMP/src99.tar.gz"
+}
+upd_env() {  # $1 = case; an installed tree, a stub curl serving 9.9.9, and user state
+  local d; d=$(remote_env "$1" "$(_ccm_stage99)")
+  run_installer "$d" >/dev/null
+  print 'type=token\ntoken=canary' > "$d/home/.config/ccmorph/work.conf"
+  print 'export CCMORPH_TEST_LOCAL=1' > "$d/home/.config/ccmorph/local.sh"
+  cp "$d/home/.config/ccmorph/work.conf" "$d/work.conf.before"
+  cp "$d/home/.config/ccmorph/local.sh" "$d/local.sh.before"
+  print -r -- "$d"
+}
+cmd_run() {  # $1 = case dir, rest = ccmorph arguments; the installed command, hermetic
+  local d="$1"; shift
+  rm -f "$d/curl.argv"
+  env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" \
+    "$d/home/.local/bin/ccmorph" "$@" >"$d/out" 2>"$d/err" </dev/null
+}
+
 # --- 14. `ccmorph update` and `ccmorph uninstall` run the INSTALLED installer ------
 # The installer ships as a component, so the command can update itself with no clone
-if _own selfupdate; then
 # and no URL to remember: `update` hands the installed install.sh to remote mode
 # (--remote), which downloads, unpacks and runs the downloaded installer. The same
 # stub-curl harness as section 8; the tarball carries a different version, so the
 # command's own --version proves the new code is the code that runs.
+#
+# Three units, where this section was one: at 17 s it was the suite's longest
+# unit, so no number of shards could end the suite faster than one update
+# scenario takes. What separates cleanly is what each case needs — a shipped
+# tree, the paths a download can take, the state each verb leaves — and the
+# 9.9.9 tree they all serve is staged once per shard, not once per unit.
+if _own upd_ship; then
 d=$(fresh_env shipped); run_installer "$d" >/dev/null
 [[ -x "$d/home/.config/ccmorph/install.sh" ]] \
   && ok "update: a fresh install ships an executable install.sh" || fail "update: install.sh is not an executable component"
-
-mkdir -p "$TMP/stage99"
-cp -R "$TMP/stage/ccmorph-v1.2.3" "$TMP/stage99/ccmorph-main"
-# The downloaded code is RUN here (update, --version, uninstall), so the 9.9.9
-# tree carries the real binary, not the stub the section-8 tarball staged.
-cp "$REPO/libexec/ccmorph-core" "$TMP/stage99/ccmorph-main/libexec/ccmorph-core"
-sed 's/^_CCMORPH_VERSION=.*/_CCMORPH_VERSION="9.9.9"/' "$REPO/lib/ccmorph.sh" > "$TMP/stage99/ccmorph-main/lib/ccmorph.sh"
-grep -qxF '_CCMORPH_VERSION="9.9.9"' "$TMP/stage99/ccmorph-main/lib/ccmorph.sh" || fail "update: could not stage the 9.9.9 tree"
-tar -czf "$TMP/src99.tar.gz" -C "$TMP/stage99" ccmorph-main
 
 # A release tree names its binary per platform, so no plain libexec/ccmorph-core
 # sits beside the source lib; the install must still finish (#180 broke this).
@@ -1424,21 +1458,12 @@ else
   fail "remote: a tree with only per-platform binaries did not install"
 fi
 
-upd_env() {  # $1 = case; an installed tree, a stub curl serving 9.9.9, and user state
-  local d; d=$(remote_env "$1" "$TMP/src99.tar.gz")
-  run_installer "$d" >/dev/null
-  print 'type=token\ntoken=canary' > "$d/home/.config/ccmorph/work.conf"
-  print 'export CCMORPH_TEST_LOCAL=1' > "$d/home/.config/ccmorph/local.sh"
-  cp "$d/home/.config/ccmorph/work.conf" "$d/work.conf.before"
-  cp "$d/home/.config/ccmorph/local.sh" "$d/local.sh.before"
-  print -r -- "$d"
-}
-cmd_run() {  # $1 = case dir, rest = ccmorph arguments; the installed command, hermetic
-  local d="$1"; shift
-  rm -f "$d/curl.argv"
-  env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" \
-    "$d/home/.local/bin/ccmorph" "$@" >"$d/out" 2>"$d/err" </dev/null
-}
+fi
+
+if _own upd_fetch; then
+# A stage that will not build is the suite's own fault, and it must be said in
+# the shard that hit it, not swallowed by the $(...) a case calls upd_env in.
+_ccm_stage99 >/dev/null || fail "update: could not stage the 9.9.9 tree"
 
 # 14.1 update: no ref is the latest release (the one-liner's default), new code
 # live, user state byte-identical.
@@ -1493,6 +1518,11 @@ cmd_run "$d" update main extra; rc=$?
 cmd_run "$d" uninstall now; rc=$?
 (( rc != 0 )) && [[ -x "$d/home/.local/bin/ccmorph" ]] \
   && ok "uninstall: an argument is refused and nothing is removed" || fail "uninstall: accepted an argument (rc=$rc)"
+
+fi
+
+if _own upd_state; then
+_ccm_stage99 >/dev/null || fail "update: could not stage the 9.9.9 tree"
 
 # 14.4 a git checkout is updated with git: a download copied over it would dirty it.
 d=$(upd_env upd_git); mkdir -p "$d/home/.config/ccmorph/.git"
