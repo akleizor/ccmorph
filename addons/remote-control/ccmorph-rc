@@ -317,10 +317,14 @@ def start_adapter(route: str, parent: int, env: dict[str, str]) -> str:
     # (cached) model. Without it every launch re-probes the whole gateway inventory,
     # which overruns the adapter's 30s budget as soon as a few bridges start at once.
     model = profile_field(route, "model")
-    proc = subprocess.Popen([str(ADAPTER), "adapter", route, "--auto", "--parent-pid", str(parent),
-                             *(["--model", model] if model else [])],
-                            env=env, stdin=subprocess.DEVNULL, stdout=ready,
-                            start_new_session=True)
+    # The adapter outlives this command; an inherited stderr would hold the caller's
+    # pipe open (`ccmorph-rc X --switch 2>&1 | tail` never returned), so it gets a log.
+    (STATE / "logs").mkdir(parents=True, exist_ok=True)
+    with open(STATE / "logs" / f"adapter-{route}.log", "ab") as log:
+        proc = subprocess.Popen([str(ADAPTER), "adapter", route, "--auto", "--parent-pid", str(parent),
+                                 *(["--model", model] if model else [])],
+                                env=env, stdin=subprocess.DEVNULL, stdout=ready, stderr=log,
+                                start_new_session=True)
     deadline = time.monotonic() + 120
     try:
         while time.monotonic() < deadline:
