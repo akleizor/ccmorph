@@ -1,5 +1,6 @@
 """The suite's shared hang-detection bound; imported by the tests that wait on a real process."""
 import atexit
+import hashlib
 import os
 import random
 import shlex
@@ -149,8 +150,99 @@ def port_outside_the_ephemeral_pool() -> int:
     raise RuntimeError("no port below the ephemeral ranges is free on 127.0.0.1")
 
 
+# One shared inode per distinct executable a test hands to a home.
+#
+# macOS assesses a never-run executable at its first exec: about 55 ms for a stub
+# script, about 140 ms for the compiled core, and the assessment is cached against
+# the inode — a re-exec of the same file costs about 5 ms, while a byte-identical
+# copy is a fresh inode and pays it again. The suite copies the 13 MB core into a
+# test home on every launch-style test, so the same bytes are assessed hundreds
+# of times a run. One store file per distinct content, hard-linked into each home,
+# assesses once: the link runs the same bytes, and linking, renaming and exec'ing
+# it stay cheap.
+#
+# A store file is mode 0555: a test that truncates a linked path in place gets
+# EACCES rather than quietly rewriting bytes another home is running. A test that
+# rewrites, chmods or replaces the bytes of its own copy takes a real copy.
+_EXEC_STORE = None
+_EXEC_CLAIMED = {}
+
+
+def _exec_store() -> Path:
+    global _EXEC_STORE
+    if _EXEC_STORE is None:
+        target = Path(tempfile.mkdtemp(prefix="ccmorph-exec-"))
+        atexit.register(shutil.rmtree, str(target), True)
+        _EXEC_STORE = target
+    return _EXEC_STORE
+
+
+def _claimed(name, tag, write):
+    """The store file holding `tag`-identified bytes, made once per distinct content.
+
+    `tag` names the content (a digest of the bytes, or of a source file's size and
+    mtime), and `write(path)` produces those bytes. Workers race for the name, and
+    `os.link` is the claim: the loser drops its own bytes and uses the winner's,
+    which hold the same content because the tag named it."""
+    store = _exec_store()
+    cand = store / f"{name}.{tag}"
+    if not cand.exists():
+        mine = store / f".{name}.{tag}.{os.getpid()}"
+        write(mine)
+        mine.chmod(0o555)
+        try:
+            os.link(mine, cand)
+        except FileExistsError:
+            pass
+        finally:
+            mine.unlink(missing_ok=True)
+    return cand
+
+
+def _link_in(src, dest):
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    # A hard link cannot replace a name in place, and the store must stay pristine:
+    # unlink first, the same shape as a copy that refuses to follow an existing link.
+    dest.unlink(missing_ok=True)
+    try:
+        os.link(src, dest)
+    except OSError:
+        shutil.copyfile(src, dest)     # a home on another filesystem cannot link
+        os.chmod(dest, 0o555)
+    return dest
+
+
+def shared_exec(dest, text):
+    """Put `text` at `dest` as an executable, shared with every identical stub in the run."""
+    key = (dest.name, text)
+    src = _EXEC_CLAIMED.get(key)
+    if src is None:
+        tag = hashlib.sha1(text.encode()).hexdigest()[:12]
+        src = _claimed(dest.name, tag, lambda p: p.write_text(text))
+        _EXEC_CLAIMED[key] = src
+    return _link_in(src, dest)
+
+
 # The compiled core (`make shim`): adapter, shim and helper verbs are its subcommands.
 CORE = Path(__file__).resolve().parent.parent / "libexec/ccmorph-core"
+
+
+def shared_core(dest):
+    """Put the compiled core at `dest`, linked to one pristine copy per process.
+
+    The tag reads the built file's size and mtime, so a `make shim` that rewrites
+    the binary is a different tag and a fresh store file."""
+    stat = CORE.stat()
+    key = ("ccmorph-core", stat.st_size, stat.st_mtime_ns)
+    src = _EXEC_CLAIMED.get(key)
+    if src is None:
+        src = _claimed("ccmorph-core", f"{stat.st_size}-{stat.st_mtime_ns}",
+                       lambda p: shutil.copyfile(CORE, p))
+        _EXEC_CLAIMED[key] = src
+    return _link_in(src, dest)
+
+
 # argv prefix of the stock shim.
 SHIM = [str(CORE), "shim"]
 # Module-level `pytestmark = needs_shim` skips a file that spawns the compiled shim.

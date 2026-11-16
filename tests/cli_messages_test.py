@@ -8,7 +8,8 @@ import tempfile
 
 import pytest
 
-from support import CLAUDE_MISSING, HANG_TIMEOUT, anthropic_accepts_the_key
+from support import (CLAUDE_MISSING, HANG_TIMEOUT, anthropic_accepts_the_key,
+                     shared_core)
 from fake_adapter import CORE_DISPATCH
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -280,8 +281,9 @@ def test_update_and_uninstall_under_homebrew_name_the_brew_command(tmp_path):
     for f in (ROOT / 'lib').iterdir():
         (root / 'lib' / f.name).write_bytes(f.read_bytes())
     # A brew install ships the core beside the library, as every install does.
-    (root / 'libexec').mkdir()
-    shutil.copy2(ROOT / 'libexec/ccmorph-core', root / 'libexec/ccmorph-core')
+    # support.shared_core links it instead of copying 13 MB: the test runs the
+    # binary, it never changes it.
+    shared_core(root / 'libexec/ccmorph-core')
     env = {**os.environ, 'HOME': str(tmp_path / 'home'),
            'CCMORPH_LIB_DIR': str(root / 'lib'), 'CCMORPH_STATE_DIR': str(tmp_path / 'state')}
     for verb, brew in (('update', 'brew upgrade ccmorph'), ('uninstall', 'brew uninstall ccmorph')):

@@ -23,8 +23,8 @@ import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from support import (CORE, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, adapter_cmd,
-                     port_outside_the_ephemeral_pool)
+from support import (FAKE_SERVER_NO_DNS, HANG_TIMEOUT, adapter_cmd,
+                     port_outside_the_ephemeral_pool, shared_core)
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -290,9 +290,10 @@ class AdapterTest(unittest.TestCase):
             fixture = self.home / "adapter-fixture"
             fixture.mkdir(exist_ok=True)
             # The adapter takes its two timings from the environment.
-            binary = fixture / "ccmorph-core"
-            binary.unlink(missing_ok=True)  # a new inode: macOS kills a signed binary rewritten in place
-            shutil.copy2(CORE, binary)
+            # support.shared_core links a pristine copy instead of copying 13 MB per
+            # call: the link is a fresh name for bytes macOS has already assessed, and
+            # the store file is read-only, so a signed binary is never rewritten in place.
+            binary = shared_core(fixture / "ccmorph-core")
             env.update({f"CCMORPH_ADAPTER_{name}": str(value) for name, value in constants.items()})
             cmd = adapter_cmd(binary)
         env.update(kw.pop("env", {}))

@@ -9,7 +9,7 @@ import subprocess
 
 import pytest
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, shared_core
 
 ROOT = Path(__file__).resolve().parents[1]
 FZF = '#!/usr/bin/env python3\nimport sys\nsys.stdout.write(sys.stdin.read())\n'
@@ -49,7 +49,12 @@ def copied_lib(tmp_path):
         if built.is_file():
             dst = inst / 'libexec' / built.name
             dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(built, dst)
+            if built.name == 'ccmorph-core':
+                # 13 MB the test only runs (stub_sizer renames it, which a link
+                # survives): link the pristine core instead of copying it (#220).
+                shared_core(dst)
+            else:
+                shutil.copy2(built, dst)
     return inst / 'lib'
 
 

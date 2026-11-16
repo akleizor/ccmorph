@@ -28,7 +28,7 @@ from unittest.mock import patch
 
 import pytest
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, shared_core
 
 ROOT = Path(__file__).resolve().parents[1]
 FULL = "claude-sonnet-5-5[1m]"
@@ -140,6 +140,11 @@ def launch(tmp_path):
     temp_dir = tmp_path / "tmp"
     temp_dir.mkdir()
     for name in LIB_FILES:
+        if name == "libexec/ccmorph-core":
+            # The one big file in the list: link the pristine core instead of
+            # copying 13 MB into every launch (support.shared_core).
+            shared_core(state / name)
+            continue
         (state / name).parent.mkdir(exist_ok=True)
         shutil.copy2(ROOT / name, state / name)
     # Use the pytest interpreter for shipped Python helpers as well as the stub;
