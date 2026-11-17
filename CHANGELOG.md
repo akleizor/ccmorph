@@ -7,6 +7,18 @@
 
 ## Unreleased
 
+## v0.5.13 — 2026-11-17
+
+### Fixed
+
+- **Claude Code sessions on an Antigravity profile no longer get 429 on
+  every turn.** Antigravity answers RESOURCE_EXHAUSTED to a request whose
+  system prompt carries any of four Claude Code lines: the two identity
+  lines, the security-testing line and the pasted-content line. The bridge
+  now uses cliproxyapi's own `antigravity.sensitive-patterns-replace` to
+  rewrite each of them to a neutral line wherever it sits, replacing the
+  exact-match payload overrides, which missed lines inside a longer block.
+
 ## v0.5.12 — 2026-11-12
 
 ### Fixed
