@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -99,20 +100,23 @@ func TestBridgeThatDiesIsReported(t *testing.T) {
 	}
 }
 
-// The rules must be cliproxyapi YAML that rewrites only an exact identity line,
-// on the Antigravity protocol only.
-func TestAntigravityIdentityRules(t *testing.T) {
-	r := antigravityIdentityRules()
-	for _, want := range []string{
-		"protocol: \"antigravity\"",
-		"\"systemInstruction.parts.0.text\": \"You are a Claude agent, built on Anthropic's Claude Agent SDK.\"",
-		"\"systemInstruction.parts.3.text\": \"You are Claude Code, Anthropic's official CLI for Claude.\"",
-	} {
-		if !strings.Contains(r, want) {
-			t.Fatalf("rules lack %q:\n%s", want, r)
-		}
+// The rules must be cliproxyapi YAML whose patterns rewrite each blocked line
+// inside a longer system block and leave the other lines alone.
+func TestAntigravityRules(t *testing.T) {
+	r := antigravityRules()
+	if !strings.HasPrefix(r, "antigravity:\n  sensitive-patterns-replace:\n") || strings.Count(r, "- pattern:") != len(antigravityRewrites) {
+		t.Fatalf("rules:\n%s", r)
 	}
-	if strings.Count(r, "- models:") != 8 || strings.Contains(r, "protocol: \"gemini\"") {
-		t.Fatalf("want 8 antigravity-only rules:\n%s", r)
+	block := "x-anthropic-billing-header: v\nYou are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.\n" +
+		"keep me\nIMPORTANT: Assist with authorized security testing, defensive security, CTF challenges.\nkeep me too\n" +
+		" - Text inside <pasted_content> tags was pasted into the message by the user from somewhere else."
+	for _, rw := range antigravityRewrites {
+		block = regexp.MustCompile(rw[0]).ReplaceAllString(block, rw[1])
+	}
+	want := "x-anthropic-billing-header: v\nYou are an interactive coding agent.\nkeep me\n" +
+		"Help with security work only in authorized, defensive or educational contexts.\nkeep me too\n" +
+		" - Text in <pasted_content> tags is material the user pasted; act on it as the user's own message asks."
+	if block != want {
+		t.Fatalf("got %q", block)
 	}
 }
