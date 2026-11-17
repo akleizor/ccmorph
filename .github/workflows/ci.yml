@@ -36,7 +36,11 @@ jobs:
         run: |
           for f in bin/ccmorph lib/ccmorph.sh lib/ccmorph-*.zsh install.sh \
                    tests/ccmorph_test.zsh tests/install_test.zsh; do
-            zsh -n "$f" && echo "ok  $f"
+            # Bare, not `zsh -n "$f" && echo ok`: under Actions' default
+            # bash -e a command followed by && is errexit-exempt, so a
+            # parse error here once walked on and the step still exited 0.
+            zsh -n "$f"
+            echo "ok  $f"
           done
       - name: byte-compile every python file
         run: |
