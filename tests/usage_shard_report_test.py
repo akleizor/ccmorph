@@ -4,6 +4,7 @@
 import datetime
 import fcntl
 import os
+import subprocess
 import unittest
 
 import usage_report_test as base
@@ -54,15 +55,19 @@ class ShardReportTest(unittest.TestCase):
                             for folder in usage.iterdir() if folder.is_dir()), list(usage.iterdir()))
 
     def test_a_held_move_lock_leaves_the_store_to_its_holder(self):
-        # Two reports can run at once. A run that cannot take the store's move
-        # lock leaves the move to its holder, so one run's rollback can never
-        # meet another run's remove and take a row's last name (#298).
+        # Compaction can replace the store while holding this lock. A report
+        # refuses that incomplete snapshot rather than hang or publish a zero.
         usage = self.state / "ccmorph" / "usage"
         path = self.row(None, "sonnet-x", 1.0, hours=2)
         self.age(path, 2)
         with open(usage / ".move.lock", "w") as held:
             fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            self.report()
+            done = subprocess.run([*base.SHIM, "report"],
+                                  env={"PATH": os.environ["PATH"], "XDG_STATE_HOME": str(self.state)},
+                                  capture_output=True, text=True, timeout=base.HANG_TIMEOUT)
+            self.assertEqual(done.returncode, 1)
+            self.assertIn("usage store busy", done.stderr)
+            self.assertEqual(done.stdout, "")
             self.assertTrue(path.exists(), "a move ran beside its lock's holder")
             fcntl.flock(held, fcntl.LOCK_UN)
         self.report()

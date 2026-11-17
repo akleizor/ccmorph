@@ -694,9 +694,25 @@ model). A shim holding that spec writes one metadata-only row for every
 
 ```
 ${XDG_STATE_HOME:-~/.local/state}/ccmorph/usage/<YYYY-MM-DD>/<sha256(response_id)>.json
+${XDG_STATE_HOME:-~/.local/state}/ccmorph/usage/<YYYY-MM-DD>.jsonl
+${XDG_STATE_HOME:-~/.local/state}/ccmorph/usage/<YYYY-MM-DD>.jsonl.idx
 ```
 
-the day folder of the row's own UTC stamp, so a response id quoted in a Claude
+Live rows use the day folder; a closed UTC day older than yesterday is compacted
+into JSONL, one byte-identical row per line in original filename order. Its
+hash-bound `.idx` keeps each original filename and modification time, so spill
+names and incremental spend cursors survive. During replacement it also keeps
+one `previous` index; a reader uses the generation matching the JSONL digest,
+so a process killed between the two renames still has a readable archive. Every reader merges the archive
+with any recreated day folder; a later file replaces its archived filename only
+when it carries the same response and turn. A conflicting identity, multiline
+receipt, or failed verification leaves the source files untouched.
+Compaction uses the existing store move lock, writes atomically, and re-reads
+and verifies the full content, row count and response/turn identities before
+removing any source file. A quota read compacts at most one closed day;
+`ccmorph-core usage-compact` drains the backlog. No daemon is added.
+
+The row is initially written in the day folder of the row's own UTC stamp, so a response id quoted in a Claude
 Code transcript joins to what that turn
 cost by computing that filename directly. The day folders are an index a
 time-window read uses: it opens only the folders its window touches — a row
@@ -705,11 +721,11 @@ build (or a move that could not rename) still holds flat at the top level.
 If a gateway recycles an id, the
 earlier row is never overwritten: when that file already holds a row with a
 different `turn_id` (or one that cannot be parsed), the later turn is written
-to `<sha256(response_id.turn_id)>.json` instead, and a consumer that needs
-every turn for an id globs the day folders and the flat store, matching the
-`response_id` field.
+to `<sha256(response_id)>.<16-hex spill key>.json` instead, and a consumer that
+needs every turn for an id reads the day folders, archives and flat store,
+matching the `response_id` field. The spill key hashes `response_id.turn_id`.
 If that name too holds another turn's row, the later turn takes the first free
-`<sha256(response_id.turn_id.N)>.json`, N = 1–3; a write only takes a name that
+spill keyed by `response_id.turn_id.N`, N = 1–3; a write only takes a name that
 is free or already holds its own turn's row — the claim is a hardlink where the
 filesystem has them and an exclusive create where it does not, atomic either
 way — so a turn whose every name is taken loses its own row rather than destroy
@@ -811,9 +827,10 @@ Outcomes are appended with `ccmorph-core shim outcome <task>
 accepted|rejected|escalated|parked` to `<state>/ccmorph/outcomes.jsonl`
 (`{task, outcome, timestamp}`), joined to rows by task.
 
-**Ownership.** The shim owns the write, ccmorph owns the format and the
-retention, and the consumer — Helm, or anything joining response ids — reads
-these files and nothing else. Nothing reads them back into a launch, they never
+**Ownership.** The shim owns the write, ccmorph owns the format and retention.
+Compaction changes storage only; no retention pruning deletes rows or days.
+The consumer — Helm, or anything joining response ids — reads the live rows and
+closed-day archives, with their index metadata, and nothing else. Nothing reads them back into a launch, they never
 travel to a remote host, and they sit under the XDG *state* root rather than the
 profile root because they are derived state: deleting the directory loses no
 configuration, no profile and no credential, and the state root keeps containing

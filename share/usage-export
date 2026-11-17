@@ -14,7 +14,10 @@ owned daily file no receipt supports any more is removed, while earlier days and
 files stay; the receipts themselves are never touched. No transcript or credential is read.
 """
 import argparse
+from contextlib import nullcontext
 import datetime as dt
+import errno
+import fcntl
 import hashlib
 import json
 import math
@@ -205,25 +208,95 @@ def owned_days(projects):
     return days
 
 
-def receipt_paths(root, since):
-    """Every receipt file to parse, sorted: the flat files still at the top level, and
-    the day folders at or after the first day the range can read — a receipt always
-    sits in a folder at or after its stamp's UTC day, so an earlier folder holds only
-    receipts the range itself excludes. Without since, every folder."""
-    # The first folder a receipt in range can sit in: the UTC day of the range's
-    # first instant (a local midnight is the previous UTC day east of UTC, and
-    # the same day west of it).
+def archive_rows(path):
+    """Raw rows and original filenames from one hash-bound archive generation."""
+    try:
+        data = path.read_bytes()
+        index = json.loads(Path(str(path) + ".idx").read_text())
+        lines = data.split(b"\n") if data else []
+        if data:
+            if lines[-1] != b"":
+                raise ValueError("missing final newline")
+            lines.pop()
+        if index["v"] != 1:
+            raise ValueError("unsupported index version")
+        digest = hashlib.sha256(data).hexdigest()
+        generation = index if index["sha256"] == digest else index.get("previous", {})
+        if generation.get("sha256") != digest:
+            raise ValueError("index does not match content")
+        files = generation["files"]
+        if len(files) != len(lines):
+            raise ValueError("index does not match row count")
+        names = [f["name"] for f in files]
+        if any(not isinstance(n, str) or Path(n).name != n or not n.endswith(".json") for n in names) or names != sorted(set(names)):
+            raise ValueError("invalid receipt names")
+        if any(not isinstance(f["mtime_ns"], int) or isinstance(f["mtime_ns"], bool) for f in files):
+            raise ValueError("invalid receipt modification times")
+        return {name: (line, f["mtime_ns"]) for name, line, f in zip(names, lines, files)}
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ValueError(f"archive {path.name}: {exc}") from exc
+
+
+def receipt_rows(root, since):
+    """Folder and archived receipts in original path order, under the store move lock."""
     first = since.astimezone(dt.timezone.utc).strftime("%Y-%m-%d") if since else ""
-    paths = []
-    for entry in os.scandir(root):
-        if DAY_DIR.fullmatch(entry.name) and entry.is_dir(follow_symlinks=False):
-            if entry.name < first:
+    try:
+        lock = open(root / ".move.lock", "rb")
+    except FileNotFoundError:
+        try:
+            lock = os.fdopen(os.open(root / ".move.lock", os.O_CREAT | os.O_RDWR, 0o600), "rb")
+        except OSError as exc:
+            if exc.errno not in (errno.EACCES, errno.EROFS):
+                raise
+            lock = None  # A read-only legacy store cannot start a compactor either.
+    with lock if lock is not None else nullcontext():
+        if lock is not None:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
+        days, flat = set(), []
+        with os.scandir(root) as entries:
+            for entry in entries:
+                name = entry.name
+                if entry.is_dir(follow_symlinks=False) and DAY_DIR.fullmatch(name):
+                    if name >= first:
+                        days.add(name)
+                elif entry.is_file(follow_symlinks=False):
+                    if (DAY_FILE.fullmatch(name) or (name.endswith(".jsonl.idx") and DAY_FILE.fullmatch(name[:-4]))) and name[:10] >= first:
+                        days.add(name[:10])
+                    elif name.endswith(".json"):
+                        flat.append(Path(entry.path))
+        sources = [(day, True) for day in days] + [(p.name, False) for p in flat]
+        for name, is_day in sorted(sources):
+            if not is_day:
+                path = root / name
+                yield path, path.read_bytes()
                 continue
-            paths += [e.path for e in os.scandir(entry.path)
-                      if e.name.endswith(".json") and e.is_file(follow_symlinks=False)]
-        elif entry.name.endswith(".json") and entry.is_file(follow_symlinks=False):
-            paths.append(entry.path)
-    return sorted(paths)
+            path = root / (name + ".jsonl")
+            rows = archive_rows(path) if path.exists() or Path(str(path) + ".idx").exists() else {}
+            folder = root / name
+            conflicts = []
+            if folder.is_dir():
+                with os.scandir(folder) as entries:
+                    for entry in entries:
+                        if entry.name.endswith(".json") and entry.is_file(follow_symlinks=False):
+                            data = Path(entry.path).read_bytes()
+                            mtime = entry.stat().st_mtime_ns
+                            previous = rows.get(entry.name)
+                            if previous is not None:
+                                old_data, old_mtime = previous
+                                same = old_data == data
+                                if not same:
+                                    old, new = json.loads(old_data), json.loads(data)
+                                    rid, turn = old.get("response_id"), old.get("turn_id", "")
+                                    same = (isinstance(rid, str) and bool(rid) and rid == new.get("response_id")
+                                            and isinstance(turn, str) and turn == new.get("turn_id", "")
+                                            and (turn or old.get("timestamp") == new.get("timestamp")))
+                                if not same:
+                                    conflicts.append((entry.name, previous))
+                                elif old_mtime > mtime:
+                                    continue
+                            rows[entry.name] = (data, mtime)
+            for receipt_name, (data, _) in sorted(list(rows.items()) + conflicts):
+                yield folder / receipt_name, data
 
 
 def export(root, output, since=None):
@@ -234,9 +307,9 @@ def export(root, output, since=None):
     # that run's snapshot, so it is not this run's to remove.
     projects = output / "projects"
     marked = owned_days(projects)
-    for path in receipt_paths(root, since):
+    for path, data in receipt_rows(root, since):
         try:  # every receipt in range is parsed: its own stamp decides the range
-            row = json.loads(Path(path).read_text())
+            row = json.loads(data)
             converted = convert(row)
         except (ValueError, KeyError, TypeError) as exc:
             raise ValueError(f"{os.path.relpath(path, root)}: {exc}") from exc

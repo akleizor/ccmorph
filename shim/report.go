@@ -146,11 +146,7 @@ func report(days float64) {
 	}
 	usageDir := filepath.Join(base, "usage")
 	counted := map[string]bool{}
-	readRow := func(path string) {
-		data, file, err := readRowFile(path)
-		if err != nil {
-			return
-		}
+	readRow := func(data []byte, file fileID) {
 		d := parseDoc(data)
 		if d == nil {
 			d = parseDoc(nonFiniteToNull(data))
@@ -253,15 +249,35 @@ func report(days float64) {
 	// both stores cannot promise that: it opens a flat name a concurrent move
 	// has already removed — a day name created only after the listing — and
 	// the row reaches no total at all (#537).
+	lock, err := paths.TryUsageStoreReadLock(usageDir)
+	if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+		die("usage store busy; retry report after compaction or relocation finishes")
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		die("usage report: " + err.Error())
+	}
+	if lock != nil {
+		defer lock.Close()
+	}
 	flat := flatRowFiles(usageDir)
 	rowsListed()
 	for _, path := range flat {
-		readRow(path)
+		if data, file, err := readRowFile(path); err == nil {
+			readRow(data, file)
+		}
 	}
 	flatRowsRead()
-	day := dayRowFiles(usageDir, lo, now)
-	for _, path := range day {
-		readRow(path)
+	for _, name := range paths.DayNames(usageDir, lo.UTC().Format(paths.DayLayout), now.Format(paths.DayLayout)) {
+		rows, err := readUsageDay(filepath.Join(usageDir, name))
+		if err != nil {
+			die("usage report: " + err.Error())
+		}
+		for _, row := range rows {
+			readRow(row.Data, row.file)
+		}
+	}
+	if lock != nil {
+		lock.Close() // moveFlatRows takes the exclusive lock itself.
 	}
 
 	// The window is read and the totals are in: put the flat rows this
@@ -378,6 +394,7 @@ func moveFlatRows() {
 	if err != nil {
 		return
 	}
+	archiveNames := map[string]map[string]bool{}
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue // a day folder, or the atomic writer's in-flight tmp
@@ -390,6 +407,21 @@ func moveFlatRows() {
 			continue // a writer before the shards may still rewrite it
 		}
 		dir := filepath.Join(base, info.ModTime().UTC().Format(paths.DayLayout))
+		names, checked := archiveNames[dir]
+		if !checked {
+			rows, err := paths.ReadUsageArchive(dir + ".jsonl")
+			if err != nil {
+				continue
+			}
+			names = map[string]bool{}
+			for _, row := range rows {
+				names[row.Name] = true
+			}
+			archiveNames[dir] = names
+		}
+		if names[e.Name()] {
+			continue
+		} // Archived filenames remain occupied, even by equal no-id bytes.
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			continue
 		}
@@ -479,7 +511,12 @@ func dayRowFiles(base string, since, now time.Time) []string {
 // fileID is the file a row's bytes were read from. The move's two names for
 // one row — its flat name and its day folder's — are hardlinks and share it;
 // two row files never do, whatever bytes they hold.
-type fileID struct{ dev, ino uint64 }
+type fileID struct {
+	dev, ino uint64
+	archive  string
+	line     int
+	mtimeNS  int64
+}
 
 // readRowFile is a row file's bytes and the file they came from, read through
 // one open so the two cannot name different files.
@@ -498,7 +535,7 @@ func readRowFile(path string) ([]byte, fileID, error) {
 		return nil, fileID{}, errors.New("no file identity")
 	}
 	data, err := io.ReadAll(f)
-	return data, fileID{uint64(st.Dev), uint64(st.Ino)}, err
+	return data, fileID{dev: uint64(st.Dev), ino: uint64(st.Ino), mtimeNS: info.ModTime().UnixNano()}, err
 }
 
 // rowIdentity is the response a row records: its id, its stamp as written and,
@@ -516,6 +553,9 @@ func rowIdentity(d *doc, ts string, file fileID) string {
 		return util.ResponseKey(id, ts, turn)
 	}
 	// The prefix keeps the name out of the id keys' namespace.
+	if file.archive != "" {
+		return "archive\x00" + file.archive + "\x00" + strconv.Itoa(file.line)
+	}
 	return "file\x00" + strconv.FormatUint(file.dev, 10) + "\x00" + strconv.FormatUint(file.ino, 10)
 }
 
