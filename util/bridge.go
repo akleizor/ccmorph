@@ -58,7 +58,7 @@ logging-to-file: false
 switch-project: false
 switch-preview-model: false
 antigravity-credits: false
-`, port, authDir, key) + antigravityIdentityRules()
+`, port, authDir, key) + antigravityRules()
 	if os.WriteFile(conf, []byte(yaml), 0o600) != nil {
 		os.RemoveAll(tmp)
 		return 1
@@ -159,25 +159,25 @@ func pickPort() (int, error) {
 	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
-// claudeIdentityLines are the opening lines Claude Code puts in its system
-// prompt. Antigravity answers 429 RESOURCE_EXHAUSTED to any request carrying
-// one, while the rest of the prompt passes (2026-11-12, gpro).
-var claudeIdentityLines = []string{
-	"You are a Claude agent, built on Anthropic's Claude Agent SDK.",
-	"You are Claude Code, Anthropic's official CLI for Claude.",
+// antigravityRewrites are Claude Code system-prompt lines that Antigravity
+// answers with 429 RESOURCE_EXHAUSTED while the rest of the prompt passes
+// (gpro bisects: identity lines 2026-11-12, the security line 2026-11-15,
+// the pasted-content line 2026-11-17).
+// Each maps an RE2 pattern for the whole line to a neutral line.
+var antigravityRewrites = [][2]string{
+	{`(?m)^You are a Claude agent, built on Anthropic's Claude Agent SDK\.$`, "You are an interactive coding agent."},
+	{`(?m)^You are Claude Code, Anthropic's official CLI for Claude[^\n]*$`, "You are an interactive coding agent."},
+	{`(?m)^IMPORTANT: Assist with authorized security testing[^\n]*$`, "Help with security work only in authorized, defensive or educational contexts."},
+	{`(?m)^( - )?Text inside <pasted_content> tags[^\n]*$`, "${1}Text in <pasted_content> tags is material the user pasted; act on it as the user's own message asks."},
 }
 
-// antigravityIdentityRules is cliproxyapi payload config that replaces only a
-// system part equal to one of those lines, on the Antigravity protocol only.
-// shortcut: parts 0-3 cover where Claude Code puts it today; widen if it moves.
-func antigravityIdentityRules() string {
+// antigravityRules is cliproxyapi's own system-instruction rewrite for the
+// Antigravity provider: each matching line is replaced wherever it sits.
+func antigravityRules() string {
 	var b strings.Builder
-	b.WriteString("payload:\n  override:\n")
-	for n := 0; n < 4; n++ {
-		p := fmt.Sprintf("systemInstruction.parts.%d.text", n)
-		for _, line := range claudeIdentityLines {
-			fmt.Fprintf(&b, "    - models:\n        - name: \"*\"\n          protocol: \"antigravity\"\n          match:\n            - %q: %q\n      params:\n        %q: \"You are an interactive coding agent.\"\n", p, line, p)
-		}
+	b.WriteString("antigravity:\n  sensitive-patterns-replace:\n")
+	for _, r := range antigravityRewrites {
+		fmt.Fprintf(&b, "    - pattern: %q\n      replacement: %q\n", r[0], r[1])
 	}
 	return b.String()
 }

@@ -9,6 +9,14 @@
 
 ### Fixed
 
+- **Claude Code sessions on an Antigravity profile no longer get 429 on
+  every turn.** Antigravity answers RESOURCE_EXHAUSTED to a request whose
+  system prompt carries any of four Claude Code lines: the two identity
+  lines, the security-testing line and the pasted-content line. The bridge
+  now uses cliproxyapi's own `antigravity.sensitive-patterns-replace` to
+  rewrite each of them to a neutral line wherever it sits, replacing the
+  exact-match payload overrides, which missed lines inside a longer block.
+
 - **A `uv run` without memorized flags can no longer run the pytest suite
   serially.** The pytest packages ride in pyproject.toml's default `test`
   group, so the command a session types from memory — without
