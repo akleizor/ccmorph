@@ -166,15 +166,23 @@ func RecordTranscript(profile, pricing, path string) int {
 	// The cursor only passes lines whose row is on disk. A failed write holds it
 	// at that response's first line, so the next Stop retries it; a name every
 	// spill already holds is permanent and must not stall the read.
+	// The cursor moves after each row, not once at the end: a pass the hook's
+	// timeout kills keeps what it wrote, so a long backlog drains across Stops
+	// instead of rereading from the same offset forever.
 	at := next
-	for _, key := range order {
+	held := false
+	for i, key := range order {
 		r := responses[key]
-		ok, err := WriteUsageRow(profile, pricing, r.id, r.model, r.timestamp, r.session, responseToken(r.id, r.request), r.usage)
+		ok, err := writeRow(profile, pricing, r.id, r.model, r.timestamp, r.session, responseToken(r.id, r.request), r.usage)
 		if ok && err == nil {
 			written++
 		}
 		if err != nil && !errors.Is(err, errRowNameTaken) && r.start < at {
 			at = r.start
+			held = true
+		}
+		if !held && i+1 < len(order) {
+			writeCursor(cursorPath, cursor{Offset: responses[order[i+1]].start, Since: c.Since})
 		}
 	}
 	writeCursor(cursorPath, cursor{Offset: at, Since: c.Since})
@@ -219,6 +227,9 @@ func parseLine(line []byte) (transcriptEntry, usageRow, bool) {
 // the same row, so a re-read replaces it instead of spilling a duplicate.
 // It reports false when the row was deliberately not written: no profile or id,
 // or a row another ccmorph writer already holds for that response.
+// writeRow is the hook's row writer; a test swaps it to stop a pass mid-backlog.
+var writeRow = WriteUsageRow
+
 func WriteUsageRow(profile, pricing, responseID, model, timestamp, session, turnID string, usage usageRow) (bool, error) {
 	if profile == "" || responseID == "" {
 		return false, nil
