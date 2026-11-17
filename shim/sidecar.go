@@ -402,12 +402,11 @@ func retireEarlierCopies(dirs []string, responseID, turnID string) {
 // gateway recycled that id. A writer and a reader of these rows share this one
 // definition, so neither can disagree with the other about the store.
 func rowNames(dir, responseID, turnID string) (primary string, spills []string) {
-	named := func(key string) string { return filepath.Join(dir, rowFileName(key)) }
-	primary = named(responseID)
+	primary = filepath.Join(dir, rowFileName(responseID))
 	key := responseID + "." + turnID
-	spills = []string{named(key)}
+	spills = []string{filepath.Join(dir, spillFileName(responseID, key))}
 	for n := 1; n <= 3; n++ {
-		spills = append(spills, named(key+"."+strconv.Itoa(n)))
+		spills = append(spills, filepath.Join(dir, spillFileName(responseID, key+"."+strconv.Itoa(n))))
 	}
 	return primary, spills
 }

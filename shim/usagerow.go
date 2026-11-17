@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -313,23 +314,12 @@ func recordedElsewhere(responseID, routeID, turnID, timestamp string, usage usag
 	// reply under the same id). The relay spills under <id>.<its own random turn>,
 	// a name no reader can derive, so the row is found by the response id it
 	// carries. Only this case pays for the scan: a new response reads one file.
-	needle := append([]byte(`"response_id":`), jsonStr(responseID)...)
+	// A spill's name starts with its response id's hash, so the spills of one
+	// response are a glob, not a read of every row in the day.
 	for _, dir := range dirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		primary := filepath.Join(dir, primaryName)
-		for _, e := range entries {
-			if !strings.HasSuffix(e.Name(), ".json") {
-				continue
-			}
-			path := filepath.Join(dir, e.Name())
-			if path == primary {
-				continue
-			}
+		for _, path := range spillsIn(dir, strings.TrimSuffix(primaryName, ".json")+".") {
 			data, err := os.ReadFile(path)
-			if err != nil || !bytes.Contains(data, needle) {
+			if err != nil {
 				continue
 			}
 			if sameResponse(data, responseID, routeID, timestamp, usage) {
@@ -526,6 +516,35 @@ func rowTime(ts string) string {
 // rowFileName is the file a response's row lives in, inside its stamp's day
 // folder, by response id, so a transcript or a gateway error quoting that id
 // joins to it.
+// dirNames holds each day folder's file names, listed once per process: a hook
+// pass checks thousands of responses against folders of ~20,000 rows.
+// shortcut: a spill another writer adds mid-pass is missed until the next pass.
+var dirNames = map[string][]string{}
+
+// spillsIn is every file in dir whose name starts with prefix.
+func spillsIn(dir, prefix string) []string {
+	names, ok := dirNames[dir]
+	if !ok {
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		dirNames[dir] = names // sorted by ReadDir
+	}
+	var out []string
+	for i := sort.SearchStrings(names, prefix); i < len(names) && strings.HasPrefix(names[i], prefix); i++ {
+		out = append(out, filepath.Join(dir, names[i]))
+	}
+	return out
+}
+
+// spillFileName is a spill's name: the response id's hash, then the spill key's,
+// so every spill of one response matches <rowFileName stem>.*.json.
+func spillFileName(responseID, key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return strings.TrimSuffix(rowFileName(responseID), ".json") + "." + hex.EncodeToString(sum[:8]) + ".json"
+}
+
 func rowFileName(responseID string) string {
 	sum := sha256.Sum256([]byte(responseID))
 	return hex.EncodeToString(sum[:]) + ".json"
