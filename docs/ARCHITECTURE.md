@@ -709,8 +709,10 @@ when it carries the same response and turn. A conflicting identity, multiline
 receipt, or failed verification leaves the source files untouched.
 Compaction uses the existing store move lock, writes atomically, and re-reads
 and verifies the full content, row count and response/turn identities before
-removing any source file. A quota read compacts at most one closed day;
-`ccmorph-core usage-compact` drains the backlog. No daemon is added.
+removing any source file. Multiply-linked receipts remain in their folder until
+the legacy move resolves their aliases. A quota call compacts at most one closed
+day; `ccmorph-core usage-compact` drains the backlog. A report refuses a busy
+store with a plain error rather than printing a partial total. No daemon is added.
 
 The row is initially written in the day folder of the row's own UTC stamp, so a response id quoted in a Claude
 Code transcript joins to what that turn
