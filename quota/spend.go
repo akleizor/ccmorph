@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"math"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/akleizor/ccmorph/shim"
 	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
 )
@@ -115,8 +117,12 @@ func spendEntry(name, budgetRaw string) Entry {
 // that carries no content key for an id-less row, so it is read again. Version
 // 3 added the closed snapshot's validity and the retryable read: a version 2
 // file may have remembered an unreadable receipt, or an open day's rewrite, as
-// the day's answer, so it is rebuilt (#538).
-const spendCacheVersion = 3
+// the day's answer, so it is rebuilt (#538). Version 4 binds archived days to
+// their contents and metadata, including any live overlay.
+const spendCacheVersion = 4
+
+// Tests of the live-folder cache disable maintenance; archive tests use the real compactor.
+var compactUsage = shim.CompactUsage
 
 // tally is the counts one profile's receipts add up to.
 type tally struct {
@@ -319,9 +325,10 @@ func mergeRows(rows []*spendRow, monthUnix, todayUnix int64, base keyIndex, seen
 // verdict: false when any surface of the store could not be read (#545).
 var tallyMemo struct {
 	sync.Mutex
-	key string
-	by  map[string]tally
-	ok  bool
+	key   string
+	by    map[string]tally
+	ok    bool
+	state *monthMemo
 }
 
 // beforeFlat runs just before a rebuild reads the flat receipts' rows, after
@@ -362,9 +369,10 @@ func countRows(n int) {
 
 // seenFile is one receipt as it was last read, with the file state it had then.
 type seenFile struct {
-	Size  int64     `json:"s"`
-	MTime int64     `json:"m"`
-	Row   *spendRow `json:"r"`
+	Size    int64     `json:"s"`
+	MTime   int64     `json:"m"`
+	Content string    `json:"d,omitempty"`
+	Row     *spendRow `json:"r"`
 }
 
 // dayFile is one day folder's receipts by name: the one store a day keeps. The
@@ -376,23 +384,26 @@ type seenFile struct {
 // snapshot is not trusted when the folder closes, because a writer can rewrite
 // a receipt in place without changing the folder's mtime (#538).
 type dayFile struct {
-	V     int                 `json:"v"`
-	MTime int64               `json:"mtime"`
-	Valid bool                `json:"valid,omitempty"`
-	Files map[string]seenFile `json:"files"`
+	V       int                 `json:"v"`
+	MTime   int64               `json:"mtime"`
+	Archive string              `json:"archive,omitempty"`
+	Valid   bool                `json:"valid,omitempty"`
+	Files   map[string]seenFile `json:"files"`
 }
 
-// dayMark is one closed day as a read saw it.
+// dayMark binds a closed day to its folder mtime and verified archive/overlay content.
 type dayMark struct {
-	Name  string `json:"n"`
-	MTime int64  `json:"m"`
+	Name    string `json:"n"`
+	MTime   int64  `json:"m"`
+	Archive string `json:"a,omitempty"`
 }
 
 // fileMark is one receipt file's state, for deciding an unchanged store.
 type fileMark struct {
-	Name  string `json:"n"`
-	Size  int64  `json:"s"`
-	MTime int64  `json:"m"`
+	Name    string `json:"n"`
+	Size    int64  `json:"s"`
+	MTime   int64  `json:"m"`
+	Content string `json:"d,omitempty"`
 }
 
 // monthMemo is the answer the last read of this store left, with the state that
@@ -699,11 +710,130 @@ func receiptMarks(dir string) (marks []fileMark, partial, ok bool) {
 // and the day name its link made is a later surface of this read's to count
 // (#552). ok is false when the folder itself could not be listed (#545): the
 // map is then no map at all, and the day's rows are not the day's whole truth.
+// Archives are verified and indexed under their original receipt names; their
+// content keys detect rewrites even when size and mtime stay unchanged.
 // It is the one index a day folder has now, open or closed: a closed
 // folder reuses it whole while its mtime and validity are unchanged, and an open
 // folder consults it file by file so an in-place rewrite is a change even though
 // the folder's mtime is not.
 func indexDay(dir string, old map[string]seenFile) (map[string]seenFile, bool, bool, bool) {
+	rows, err := archivedDayRows(dir)
+	if err != nil {
+		return nil, false, true, false
+	}
+	if rows == nil {
+		return indexFolder(dir, old)
+	}
+	files := make(map[string]seenFile, len(rows))
+	for _, r := range rows {
+		content := hashKey(string(r.Data))
+		f, kept := old[r.Name]
+		if !kept || f.Size != int64(len(r.Data)) || f.MTime != r.MTimeNS || f.Content != content {
+			f = seenFile{Size: int64(len(r.Data)), MTime: r.MTimeNS, Content: content, Row: decodeRow(r.Data)}
+		}
+		files[r.Name] = f
+	}
+	return files, !sameFileMarks(marksOf(files), marksOf(old)), false, true
+}
+
+// archivedDayRows validates the archive even on cache hits, then merges live overlays.
+func archivedDayRows(dir string) ([]paths.UsageArchiveRow, error) {
+	archived, err := paths.ReadUsageArchive(dir + ".jsonl")
+	if err != nil || archived == nil {
+		return nil, err
+	}
+	marks, partial, ok := receiptMarks(dir)
+	if !ok || partial {
+		return nil, fmt.Errorf("%s: live receipts not readable", dir)
+	}
+	if len(marks) == 0 {
+		return archived, nil
+	}
+	rows := make(map[string]paths.UsageArchiveRow, len(archived)+len(marks))
+	for _, r := range archived {
+		rows[r.Name] = r
+	}
+	for _, m := range marks {
+		data, err := os.ReadFile(filepath.Join(dir, m.Name))
+		if err != nil {
+			return nil, err
+		}
+		if old, kept := rows[m.Name]; kept {
+			if !sameNamedReceipt(old.Data, data) {
+				// The archive name is internal; conflicting identities remain two turns.
+				rows[m.Name+"\x00archive"] = old
+			} else if old.MTimeNS > m.MTime {
+				continue
+			}
+		}
+		rows[m.Name] = paths.UsageArchiveRow{Name: m.Name, MTimeNS: m.MTime, Data: data}
+	}
+	names := make([]string, 0, len(rows))
+	for name := range rows {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]paths.UsageArchiveRow, 0, len(names))
+	for _, name := range names {
+		r := rows[name]
+		r.Name = name
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+func sameNamedReceipt(a, b []byte) bool {
+	if bytes.Equal(a, b) {
+		return true
+	}
+	type identity struct {
+		ID    string          `json:"response_id"`
+		Turn  json.RawMessage `json:"turn_id"`
+		Stamp *string         `json:"timestamp"`
+	}
+	var ra, rb identity
+	if json.Unmarshal(a, &ra) != nil || json.Unmarshal(b, &rb) != nil || ra.ID == "" || ra.ID != rb.ID {
+		return false
+	}
+	var ta, tb string
+	if len(ra.Turn) > 0 && (ra.Turn[0] != '"' || json.Unmarshal(ra.Turn, &ta) != nil) ||
+		len(rb.Turn) > 0 && (rb.Turn[0] != '"' || json.Unmarshal(rb.Turn, &tb) != nil) {
+		return false
+	}
+	return ta == tb && (ta != "" || ra.Stamp != nil && rb.Stamp != nil && *ra.Stamp == *rb.Stamp)
+}
+
+func archiveFileMarks(rows []paths.UsageArchiveRow) []fileMark {
+	marks := make([]fileMark, 0, len(rows))
+	for _, r := range rows {
+		marks = append(marks, fileMark{Name: r.Name, Size: int64(len(r.Data)), MTime: r.MTimeNS, Content: hashKey(string(r.Data))})
+	}
+	return marks
+}
+
+func dayState(dir, name string) (dayMark, bool) {
+	mark := dayMark{Name: name}
+	info, err := os.Stat(dir)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return mark, false
+	}
+	if info != nil {
+		mark.MTime = info.ModTime().UnixNano()
+	}
+	rows, err := archivedDayRows(dir)
+	if err != nil {
+		return mark, false
+	}
+	if rows != nil {
+		b, _ := json.Marshal(archiveFileMarks(rows))
+		mark.Archive = hashKey(string(b))
+	} else if info == nil {
+		return mark, false
+	}
+	return mark, true
+}
+
+func indexFolder(dir string, old map[string]seenFile) (map[string]seenFile, bool, bool, bool) {
 	marks, partial, ok := receiptMarks(dir)
 	if !ok {
 		return nil, false, true, false
@@ -715,7 +845,7 @@ func indexDay(dir string, old map[string]seenFile) (map[string]seenFile, bool, b
 	changed := partial // a file the listing could not stat or read is already a change
 	for _, m := range marks {
 		f, kept := old[m.Name]
-		if !kept || f.Size != m.Size || f.MTime != m.MTime {
+		if !kept || f.Size != m.Size || f.MTime != m.MTime || f.Content != "" {
 			row, err := readRow(filepath.Join(dir, m.Name))
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
@@ -763,7 +893,7 @@ func marksOf(files map[string]seenFile) []fileMark {
 	marks := make([]fileMark, 0, len(names))
 	for _, n := range names {
 		f := files[n]
-		marks = append(marks, fileMark{Name: n, Size: f.Size, MTime: f.MTime})
+		marks = append(marks, fileMark{Name: n, Size: f.Size, MTime: f.MTime, Content: f.Content})
 	}
 	return marks
 }
@@ -778,14 +908,13 @@ func marksOf(files map[string]seenFile) []fileMark {
 // (.open.json) seeds the one index this day keeps now.
 func closedDay(usageDir, name string) ([]*spendRow, dayMark, bool) {
 	dir := filepath.Join(usageDir, name)
-	info, err := os.Stat(dir)
-	if err != nil {
-		return nil, dayMark{Name: name}, false
+	mark, ok := dayState(dir, name)
+	if !ok {
+		return nil, mark, false
 	}
-	mtime := info.ModTime().UnixNano()
-	mark := dayMark{Name: name, MTime: mtime}
+	mtime := mark.MTime
 	c := loadDayFile(name)
-	if c.Files != nil && c.Valid && c.MTime == mtime {
+	if c.Files != nil && c.Valid && c.MTime == mtime && c.Archive == mark.Archive {
 		return rowsOf(c.Files), mark, true
 	}
 	files := c.Files
@@ -798,7 +927,7 @@ func closedDay(usageDir, name string) ([]*spendRow, dayMark, bool) {
 	}
 	// A read that failed one receipt leaves the snapshot unvalidated, so the
 	// next closed read stats the files again instead of trusting it.
-	writeAtomic(dayCachePath(name), dayFile{V: spendCacheVersion, MTime: mtime, Valid: !partial, Files: files})
+	writeAtomic(dayCachePath(name), dayFile{V: spendCacheVersion, MTime: mtime, Archive: mark.Archive, Valid: !partial, Files: files})
 	os.Remove(oldOpenPath(name))
 	return rowsOf(files), mark, !partial
 }
@@ -852,7 +981,7 @@ func loadFlat() map[string]seenFile {
 // could not be read (#545).
 func flatDay(usageDir string) ([]*spendRow, []fileMark, bool) {
 	old := loadFlat()
-	files, changed, partial, ok := indexDay(usageDir, old)
+	files, changed, partial, ok := indexFolder(usageDir, old)
 	if !ok {
 		return nil, nil, false
 	}
@@ -870,6 +999,15 @@ func flatDay(usageDir string) ([]*spendRow, []fileMark, bool) {
 // never validates a store that is not there at all (#545). ReadDir returns its
 // entries in name order, so the marks need no sort.
 func dayFileMarks(dir string) ([]fileMark, bool) {
+	if paths.IsDayName(filepath.Base(dir)) {
+		rows, err := archivedDayRows(dir)
+		if err != nil {
+			return nil, false
+		}
+		if rows != nil {
+			return archiveFileMarks(rows), true
+		}
+	}
 	marks, partial, ok := receiptMarks(dir)
 	if !ok || partial || marks == nil {
 		return nil, false
@@ -882,6 +1020,13 @@ func dayFileMarks(dir string) ([]fileMark, bool) {
 // permission change moves no mtime: without this, the memo, the base and the
 // day cache would keep answering a day the run cannot read (#545).
 func receiptsReadable(dir string) bool {
+	rows, err := archivedDayRows(dir)
+	if err != nil {
+		return false
+	}
+	if rows != nil {
+		return true
+	}
 	entries, ok := dirEntries(dir)
 	if !ok {
 		return false
@@ -898,37 +1043,50 @@ func receiptsReadable(dir string) bool {
 	return true
 }
 
-// dayMarks is the month window's day folders as they are now: the closed ones
-// with their folder mtime, in name order, and the open ones by name. Only a
-// folder named for a day in [first, last] is a day shard, ruled by the one
-// day-name rule the report's window walk takes too (#546). It asks no receipt
-// anything — one listing of the store and one stat per closed day — so the memo
-// check takes the marks it compares without paying the readability sweep a
-// changed store pays in its rebuild (#559). ok is false when the store's
-// listing itself could not be read, or a day folder the listing saw could not
-// be stat'd: the days returned are then not the month's whole surface (#545).
+// dayMarks lists the month's folder and archive days once, in name order.
+// Folder-only days retain the mtime-only check and deferred readability sweep;
+// archive days validate their generation and overlay content before any cache hit.
+// An idx-only day is included so an incomplete archive cannot look like absence.
+// ok is false when the listing or a listed day's state could not be read whole.
 func dayMarks(usageDir, first, last, openFrom string) ([]dayMark, []string, bool) {
 	entries, ok := dirEntries(usageDir)
 	if !ok {
 		return nil, nil, false
 	}
-	var days []dayMark
-	var open []string
+	names := map[string]struct{}{}
 	for _, e := range entries {
 		name := e.Name()
-		if !e.IsDir() || name < first || name > last || !paths.IsDayName(name) {
-			continue // outside the window, or a folder that is not a day shard
+		if !e.IsDir() {
+			switch {
+			case strings.HasSuffix(name, ".jsonl.idx"):
+				name = strings.TrimSuffix(name, ".jsonl.idx")
+			case strings.HasSuffix(name, ".jsonl"):
+				name = strings.TrimSuffix(name, ".jsonl")
+			default:
+				continue
+			}
 		}
+		if name >= first && name <= last && paths.IsDayName(name) {
+			names[name] = struct{}{}
+		}
+	}
+	ordered := make([]string, 0, len(names))
+	for name := range names {
+		ordered = append(ordered, name)
+	}
+	sort.Strings(ordered)
+	var days []dayMark
+	var open []string
+	for _, name := range ordered {
 		if name >= openFrom {
 			open = append(open, name)
 			continue
 		}
-		info, err := os.Stat(filepath.Join(usageDir, name))
-		if err != nil {
-			ok = false // a folder this listing saw but could not stat is not absent
-			continue
+		mark, readable := dayState(filepath.Join(usageDir, name), name)
+		if !readable {
+			ok = false
 		}
-		days = append(days, dayMark{Name: name, MTime: info.ModTime().UnixNano()})
+		days = append(days, mark)
 	}
 	return days, open, ok
 }
@@ -1092,7 +1250,7 @@ func sweepSpendCache(first, last string) {
 }
 
 // monthTallies is every profile's tally for the month. The receipts sit in the
-// flat store and in day folders named by UTC day, compared by name — stepping
+// flat store and in day folders or archives named by UTC day, compared by name — stepping
 // local midnights as instants lands after now east of UTC and skips today's
 // folder. A row always sits in a folder at or after its stamp's UTC day, so an
 // earlier folder holds only rows the month window itself excludes; the stamp
@@ -1138,8 +1296,15 @@ func monthTallies(usageDir string, today, monthStart, todayStart time.Time) (map
 	key := usageDir + "\x00" + monthStart.String() + "\x00" + todayStart.String()
 	tallyMemo.Lock()
 	defer tallyMemo.Unlock()
-	if tallyMemo.key == key {
-		return tallyMemo.by, tallyMemo.ok
+	if tallyMemo.key != key {
+		_, _ = compactUsage(usageDir, today, 1)
+	}
+	lock, err := paths.UsageStoreLock(usageDir, false)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return nil, false
+	}
+	if lock != nil {
+		defer lock.Close()
 	}
 	first, last := monthStart.UTC().Format(paths.DayLayout), today.UTC().Format(paths.DayLayout)
 	openFrom := todayStart.UTC().Format(paths.DayLayout)
@@ -1154,11 +1319,16 @@ func monthTallies(usageDir string, today, monthStart, todayStart time.Time) (map
 	days, openNames, daysOK := dayMarks(usageDir, first, last, openFrom)
 	openState, openOK := openMarks(usageDir, openNames)
 	if flatOK && openOK && daysOK {
+		if tallyMemo.key == key && tallyMemo.ok && tallyMemo.state != nil &&
+			memoMatches(tallyMemo.state, usageDir, monthUnix, todayUnix, days, openState, flatMarks) &&
+			daysReadable(usageDir, days) {
+			return tallyMemo.by, true
+		}
 		if m, ok := loadCache[monthMemo](monthMemoPath()); ok &&
 			memoMatches(&m, usageDir, monthUnix, todayUnix, days, openState, flatMarks) &&
 			daysReadable(usageDir, days) {
 			sweepSpendCache(first, last)
-			tallyMemo.key, tallyMemo.by, tallyMemo.ok = key, m.Tally, true
+			tallyMemo.key, tallyMemo.by, tallyMemo.ok, tallyMemo.state = key, m.Tally, true, &m
 			return m.Tally, true
 		}
 	}
@@ -1201,11 +1371,12 @@ func monthTallies(usageDir string, today, monthStart, todayStart time.Time) (map
 	// folder, the flat index, today's folder (#545). It is still the answer to
 	// this call, but neither cache is kept, so the next read retries what
 	// failed instead of remembering it absent.
+	memo := &monthMemo{V: spendCacheVersion, Dir: usageDir, Month: monthUnix,
+		Today: todayUnix, Days: baseDays, Open: openState, Flat: flatState, Tally: out}
 	if complete {
-		writeAtomic(monthMemoPath(), monthMemo{V: spendCacheVersion, Dir: usageDir, Month: monthUnix,
-			Today: todayUnix, Days: baseDays, Open: openState, Flat: flatState, Tally: out})
+		writeAtomic(monthMemoPath(), memo)
 	}
-	tallyMemo.key, tallyMemo.by, tallyMemo.ok = key, out, complete
+	tallyMemo.key, tallyMemo.by, tallyMemo.ok, tallyMemo.state = key, out, complete, memo
 	sweepSpendCache(first, last)
 	return out, complete
 }
