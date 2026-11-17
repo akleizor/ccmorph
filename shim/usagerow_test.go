@@ -1280,25 +1280,29 @@ func TestALinkAtTheDayNameIsNotTheClaimAMoveLeft(t *testing.T) {
 	}
 }
 
-// A pass the Stop hook's timeout kills mid-backlog must keep the rows it wrote:
-// the cursor sits past them, so the next pass starts there instead of rereading
-// the whole transcript and dying at the same place every Stop.
-func TestRecordTranscriptCursorAdvancesPerRow(t *testing.T) {
+// A pass the Stop hook's timeout stops mid-backlog keeps the rows it wrote: the
+// checkpoint onStop writes sits before the row in flight, so the next pass
+// starts there instead of rereading the whole transcript.
+func TestRecordTranscriptCheckpointSkipsWrittenRows(t *testing.T) {
 	stateHome(t)
 	path := writeTranscript(t,
 		transcriptLine("u1", "msg_1", "claude-opus-5-5", "2026-11-05T10:00:00Z", `{"input_tokens":1,"output_tokens":2}`),
 		transcriptLine("u2", "msg_2", "claude-opus-5-5", "2026-11-05T10:00:01Z", `{"input_tokens":1,"output_tokens":2}`),
 	)
+	first, _ := os.ReadFile(path)
+	firstLen := int64(strings.IndexByte(string(first), '\n') + 1)
 	calls := 0
 	writeRow = func(p, pr, id, m, ts, s, turn string, u usageRow) (bool, error) {
-		if calls++; calls == 2 {
-			panic("killed") // the hook timeout, mid-pass
+		if calls++; calls == 2 { // the hook is stopped while the second row is written
+			cp := progress.Load()
+			writeCursor(cp.path, cp.c)
+			panic("stopped")
 		}
 		return WriteUsageRow(p, pr, id, m, ts, s, turn, u)
 	}
-	t.Cleanup(func() { writeRow = WriteUsageRow })
+	t.Cleanup(func() { writeRow = WriteUsageRow; progress.Store(nil) })
 	func() { defer func() { _ = recover() }(); RecordTranscript("sub", "anthropic", path) }()
-	if c := readCursor(cursorFile(path)); c.Offset == 0 {
-		t.Fatal("a killed pass left the cursor at 0; every Stop rereads the transcript")
+	if c := readCursor(cursorFile(path)); c.Offset != firstLen {
+		t.Fatalf("checkpoint %d, want %d (just past the written row)", c.Offset, firstLen)
 	}
 }
