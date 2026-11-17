@@ -2,8 +2,6 @@ package shim
 
 import (
 	"bufio"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"io"
 	"io/fs"
@@ -25,9 +23,13 @@ func turn(u *UsageSidecar, id string, cost int) *record {
 	return u.start(id, strp("m"), strp("m"), usageRow{{"cost", []byte(strconv.Itoa(cost))}})
 }
 
+// nameOf is the file a row key lands in: a bare response id is a primary, an
+// "<id>.<turn>[.<n>]" key is that id's spill.
 func nameOf(key string) string {
-	sum := sha256.Sum256([]byte(key))
-	return hex.EncodeToString(sum[:]) + ".json"
+	if id, _, ok := strings.Cut(key, "."); ok {
+		return spillFileName(id, key)
+	}
+	return rowFileName(key)
 }
 
 // byName is every row in dir, keyed by file name, as written.
@@ -40,6 +42,15 @@ func byName(t *testing.T, dir string) map[string]string {
 		out[filepath.Base(f)] = string(b)
 	}
 	return out
+}
+
+func firstRowPath(t *testing.T, dir string) string {
+	t.Helper()
+	files := rowFilesOf(dir)
+	if len(files) == 0 {
+		t.Fatal("no row on disk")
+	}
+	return files[0]
 }
 
 func hasTurn(row string, r *record) bool { return strings.Contains(row, `"turn_id":"`+r.turnID+`"`) }
@@ -290,7 +301,12 @@ func TestSpillAliasingAnotherPrimaryKeepsEveryRow(t *testing.T) {
 		blocked := turn(u, "msg_a", 4)
 		key := "msg_a." + blocked.turnID
 		for _, k := range []string{key, key + ".1", key + ".2", key + ".3"} {
-			u.write(turn(u, k, 5))
+			// Another turn's row sits at each of this turn's spill names.
+			holder := turn(u, "msg_a", 5)
+			day := filepath.Dir(firstRowPath(t, dir))
+			if err := os.WriteFile(filepath.Join(day, nameOf(k)), u.row(holder), 0o600); err != nil {
+				t.Fatal(err)
+			}
 		}
 		before := byName(t, dir)
 		if len(before) != 7 {

@@ -970,7 +970,7 @@ func TestANewResponseReadsOnlyItsPrimary(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The name the sidecar gives a spill, with no primary beside it.
-	spill := filepath.Join(dir, rowFileName("resp_1."+rec.turnID))
+	spill := filepath.Join(dir, spillFileName("resp_1", "resp_1."+rec.turnID))
 	if err := os.WriteFile(spill, other.row(rec), 0o600); err != nil {
 		t.Fatal(err)
 	}
