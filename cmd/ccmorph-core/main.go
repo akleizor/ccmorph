@@ -38,6 +38,8 @@ func main() {
 		os.Exit(util.Main(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
 	case "usage-row": // the Stop hook: rows from the client's own transcript
 		os.Exit(shim.UsageRowMain(os.Args[2:], os.Stdin))
+	case "usage-compact":
+		os.Exit(shim.UsageCompactMain(os.Args[2:], os.Stdout, os.Stderr))
 	case "shim": // the stock shim; argv shifts so shim.Main sees `<port> <target>` or report|outcome
 		os.Args = append([]string{os.Args[0] + " shim"}, os.Args[2:]...)
 		h, err := quirks.FromEnv()

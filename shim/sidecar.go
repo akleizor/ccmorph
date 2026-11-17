@@ -324,6 +324,17 @@ func claim(tmp, candidate, turn string) (bool, error) {
 }
 
 func (u *UsageSidecar) write(r *record) error {
+	lock, err := lockClosedUsage(rowDirs(r.timestamp)[:1])
+	if err != nil {
+		return err
+	}
+	if lock != nil {
+		defer lock.Close()
+	}
+	return u.writeLocked(r)
+}
+
+func (u *UsageSidecar) writeLocked(r *record) error {
 	base := usageBase()
 	dir := filepath.Join(base, usageDay(r.timestamp))
 	if err := os.MkdirAll(filepath.Dir(base), 0o777); err != nil {
@@ -340,6 +351,14 @@ func (u *UsageSidecar) write(r *record) error {
 		}
 	}
 	primary, spills := rowNames(dir, r.responseID, r.turnID)
+	archived, err := paths.ReadUsageArchive(dir + ".jsonl")
+	if err != nil {
+		return err
+	}
+	archiveNames := map[string][]byte{}
+	for _, row := range archived {
+		archiveNames[row.Name] = row.Data
+	}
 	f, err := os.CreateTemp(dir, "tmp*.tmp")
 	if err != nil {
 		return err
@@ -357,13 +376,16 @@ func (u *UsageSidecar) write(r *record) error {
 	// earlier spill) was removed; ownership comes from the disk row.
 	var candidates []string
 	for _, s := range spills {
-		if owns(s, r.turnID) {
+		if owns(s, r.turnID) || usageOwned(archiveNames[filepath.Base(s)], r.responseID, r.turnID) {
 			candidates = append(candidates, s)
 			break
 		}
 	}
 	candidates = append(append(candidates, primary), spills...)
 	for _, c := range candidates {
+		if data, ok := archiveNames[filepath.Base(c)]; ok && !usageOwned(data, r.responseID, r.turnID) {
+			continue
+		}
 		ok, err := claim(tmp, c, r.turnID)
 		if err != nil {
 			return fail(err)

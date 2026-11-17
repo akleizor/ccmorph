@@ -54,6 +54,9 @@ func reply(status int, body string) *http.Response {
 func useClock(t *testing.T, at time.Time) {
 	t.Helper()
 	old := now
+	oldCompact := compactUsage
+	compactUsage = func(string, time.Time, int) (int, error) { return 0, nil }
+	t.Cleanup(func() { compactUsage = oldCompact })
 	now = func() time.Time { return at }
 	local := time.Local
 	time.Local = time.UTC
