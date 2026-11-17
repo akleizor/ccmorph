@@ -9,9 +9,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/akleizor/ccmorph/util/paths"
@@ -66,6 +69,7 @@ func UsageRowMain(args []string, stdin io.Reader) int {
 		TranscriptPath string `json:"transcript_path"`
 		HookEventName  string `json:"hook_event_name"`
 	}
+	onStop()
 	raw, _ := io.ReadAll(io.LimitReader(stdin, 1<<20))
 	if json.Unmarshal(raw, &in) != nil || in.TranscriptPath == "" {
 		return 0
@@ -167,13 +171,16 @@ func RecordTranscript(profile, pricing, path string) int {
 	// The cursor only passes lines whose row is on disk. A failed write holds it
 	// at that response's first line, so the next Stop retries it; a name every
 	// spill already holds is permanent and must not stall the read.
-	// The cursor moves after each row, not once at the end: a pass the hook's
-	// timeout kills keeps what it wrote, so a long backlog drains across Stops
-	// instead of rereading from the same offset forever.
+	// The cursor is written once, at the end. A pass the hook's timeout stops
+	// writes it from the signal handler instead (see onStop), so a long backlog
+	// drains across Stops rather than rereading from the same offset forever.
 	at := next
 	held := false
-	for i, key := range order {
+	for _, key := range order {
 		r := responses[key]
+		if !held {
+			progress.Store(&checkpoint{path: cursorPath, c: cursor{Offset: r.start, Since: c.Since}})
+		}
 		ok, err := writeRow(profile, pricing, r.id, r.model, r.timestamp, r.session, responseToken(r.id, r.request), r.usage)
 		if ok && err == nil {
 			written++
@@ -182,10 +189,8 @@ func RecordTranscript(profile, pricing, path string) int {
 			at = r.start
 			held = true
 		}
-		if !held && i+1 < len(order) {
-			writeCursor(cursorPath, cursor{Offset: responses[order[i+1]].start, Since: c.Since})
-		}
 	}
+	progress.Store(nil)
 	writeCursor(cursorPath, cursor{Offset: at, Since: c.Since})
 	return written
 }
@@ -228,6 +233,31 @@ func parseLine(line []byte) (transcriptEntry, usageRow, bool) {
 // the same row, so a re-read replaces it instead of spilling a duplicate.
 // It reports false when the row was deliberately not written: no profile or id,
 // or a row another ccmorph writer already holds for that response.
+// checkpoint is the cursor a stopped pass leaves: before the response being
+// written, so a kill mid-row retries that row and skips the ones already on disk.
+type checkpoint struct {
+	path string
+	c    cursor
+}
+
+// progress is the running pass's checkpoint, read by onStop from the signal
+// goroutine. A plain store per row costs nothing next to the row's own write.
+var progress atomic.Pointer[checkpoint]
+
+// onStop writes the running pass's checkpoint when the hook is stopped. A
+// SIGKILL skips it; the next pass then rereads, which is idempotent.
+func onStop() {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	go func() {
+		<-ch
+		if cp := progress.Load(); cp != nil {
+			writeCursor(cp.path, cp.c)
+		}
+		os.Exit(1)
+	}()
+}
+
 // writeRow is the hook's row writer; a test swaps it to stop a pass mid-backlog.
 var writeRow = WriteUsageRow
 
