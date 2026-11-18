@@ -659,7 +659,7 @@ func ensureConfig(a *cliArgs, required, upstream, key, routeIdentity, cacheFile,
 	conf := a.ensureConfig
 	stop := abortAfter(selectTimeout, "selected model routing timed out")
 	defer stop()
-	advertised, err := inventoryFn(upstream, key, nil)
+	_, advertised, err := inventoryFn(upstream, key, nil)
 	if err != nil {
 		die("%v", err)
 	}
@@ -687,7 +687,7 @@ func ensureConfig(a *cliArgs, required, upstream, key, routeIdentity, cacheFile,
 	atExit(restore)
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		ids, err := inventoryFn("http://127.0.0.1:"+strconv.Itoa(a.ensurePort), key, loopback)
+		_, ids, err := inventoryFn("http://127.0.0.1:"+strconv.Itoa(a.ensurePort), key, loopback)
 		if err != nil {
 			die("%v", err)
 		}
