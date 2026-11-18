@@ -1,22 +1,16 @@
 """ccmorph-rc-hosts: config parsing and the relaunch policy."""
-import importlib.machinery
-import importlib.util
 import os
 from pathlib import Path
 
 import pytest
 
-from support import HANG_TIMEOUT, needs_loopback, port_outside_the_ephemeral_pool
+from support import HANG_TIMEOUT, load_script, needs_loopback, port_outside_the_ephemeral_pool
 
 SCRIPT = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccmorph-rc-hosts"
 
 
 def load():
-    loader = importlib.machinery.SourceFileLoader("rc_hosts", str(SCRIPT))
-    spec = importlib.util.spec_from_loader("rc_hosts", loader)
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
-    return mod
+    return load_script(SCRIPT, "rc_hosts")
 
 
 @pytest.fixture(autouse=True)
@@ -1492,7 +1486,7 @@ def test_a_retired_conversation_has_its_host_deleted(tmp_path, monkeypatch):
         @staticmethod
         def profile_env(p): return {"CLAUDE_CONFIG_DIR": "/x/acct"}
 
-    monkeypatch.setattr(m.importlib.machinery.SourceFileLoader, "load_module", lambda self: FakeRc)
+    monkeypatch.setattr(m, "rc_module", lambda: FakeRc)
     monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: type(
         "R", (), {"stdout": '{"claudeAiOauth": {"accessToken": "tok"}}'})())
 

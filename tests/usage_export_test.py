@@ -1,7 +1,5 @@
 """The metadata-only ccusage export: one record per receipt, one folder per profile, damaged costs reported."""
 import datetime as dt
-import importlib.machinery
-import importlib.util
 import json
 import os
 import pathlib
@@ -13,16 +11,14 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from rc_hosts_test import is_python_helper  # noqa: E402
-from support import HANG_TIMEOUT  # noqa: E402
+from support import HANG_TIMEOUT, load_script  # noqa: E402
 
 # The shim's own bound (costLimit in shim/sidecar.go, 2**53/100); shim/sidecar_test.go
 # asserts the Go constant equals this literal, and the test below that the exporter's matches.
 SHIM_COST_LIMIT = 2 ** 53 / 100
 
-SPEC = importlib.util.spec_from_loader("usage_export", importlib.machinery.SourceFileLoader(
-    "usage_export", str(pathlib.Path(__file__).parent.parent / "share/usage-export")))
-ue = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(ue)
+EXPORTER = pathlib.Path(__file__).parent.parent / "share/usage-export"
+ue = load_script(EXPORTER, "usage_export")
 
 ABSENT = object()
 
@@ -669,7 +665,7 @@ def test_the_exported_timestamp_is_utc_with_milliseconds_and_z(tmp_path):
 
 def test_the_python_floor_scan_covers_the_exporter():
     """Issue #248: the exporter stays in the Python floor scan."""
-    assert is_python_helper(SPEC.origin, pathlib.Path(SPEC.origin).read_text())
+    assert is_python_helper(str(EXPORTER), EXPORTER.read_text())
 
 
 @pytest.mark.parametrize("via", ["path", "symlink"], ids=["direct-issue-261", "through-a-symlink-issue-416"])
@@ -683,7 +679,7 @@ def test_the_checkout_launcher_runs_the_shipped_exporter(tmp_path, via):
     zero-row count it stands on."""
     (tmp_path / "rows").mkdir()
     output = tmp_path / "out"
-    script = pathlib.Path(SPEC.origin).parent.parent / "scripts/usage-export"
+    script = pathlib.Path(str(EXPORTER)).parent.parent / "scripts/usage-export"
     launcher = script
     if via == "symlink":
         launcher = tmp_path / "usage-export"
@@ -724,7 +720,7 @@ def test_the_summary_names_where_the_files_went_and_the_command_to_run_next_issu
     write(rows, "e.json", receipt("e", "claude-opus-5-5", "2026-10-16T05:00:00+00:00", cost=1e14))
 
     ran = subprocess.run(
-        [sys.executable, SPEC.origin, "--output", str(output), "--source", str(rows),
+        [sys.executable, str(EXPORTER), "--output", str(output), "--source", str(rows),
          "--since", "20261016"],
         capture_output=True, text=True, timeout=HANG_TIMEOUT)
 
@@ -759,7 +755,7 @@ def test_the_printed_command_runs_as_printed_for_a_folder_with_spaces_issue_382(
     write(rows, "a.json", receipt("a", "claude-opus-5-5", "2026-10-16T01:00:00+00:00", cost=0.1))
 
     ran = subprocess.run(
-        [sys.executable, SPEC.origin, "--output", str(output), "--source", str(rows)],
+        [sys.executable, str(EXPORTER), "--output", str(output), "--source", str(rows)],
         capture_output=True, text=True, timeout=HANG_TIMEOUT)
     assert ran.returncode == 0, ran.stderr
     command = next(l for l in ran.stdout.splitlines() if l.startswith("CLAUDE_CONFIG_DIR="))
@@ -789,7 +785,7 @@ def test_help_prints_the_ccusage_command_that_reads_the_export():
     parser reflowed the description into one paragraph, gluing the command to
     the sentence after it so it could not be copied as one line, and --output
     and --source were bare — a flag and a placeholder, nothing else."""
-    ran = subprocess.run([sys.executable, SPEC.origin, "--help"],
+    ran = subprocess.run([sys.executable, str(EXPORTER), "--help"],
                          capture_output=True, text=True, timeout=HANG_TIMEOUT)
     assert ran.returncode == 0, ran.stderr
     assert ("CLAUDE_CONFIG_DIR=ROOT ccusage claude daily --instances --config "
@@ -810,7 +806,7 @@ def test_a_date_in_the_wrong_format_names_the_format_and_an_example_issue_382(tm
     rows, output = tmp_path / "rows", tmp_path / "out"
     rows.mkdir()
     ran = subprocess.run(
-        [sys.executable, SPEC.origin, "--output", str(output), "--source", str(rows),
+        [sys.executable, str(EXPORTER), "--output", str(output), "--source", str(rows),
          "--since", since],
         capture_output=True, text=True, timeout=HANG_TIMEOUT)
 

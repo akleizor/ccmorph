@@ -12,7 +12,7 @@ import fcntl, json, os, pty, re, select, shutil, signal, struct, subprocess, sys
 from pathlib import Path
 from unittest.mock import patch
 
-from support import HANG_TIMEOUT, path_without
+from support import HANG_TIMEOUT, path_without, wait_until
 
 ROOT = Path(__file__).resolve().parents[1]
 CCMORPH = ROOT / 'lib/ccmorph.sh'
@@ -1969,14 +1969,14 @@ fi
             # per-test cap: a platform that never refuses meets the assertion
             # below, not a capped-out test with a thread dump, while a caller who
             # set a shorter bound keeps the bound it asked for.
-            stop = time.monotonic() + min(deadline - time.monotonic(), 30)
-            while time.monotonic() < stop:
+            def refused():
                 try:
                     os.killpg(process.pid, 0)
                 except PermissionError:
-                    return
-                time.sleep(0.02)
-            raise AssertionError('the platform never refused the exited leader its group')
+                    return True
+                return False
+            if not wait_until(refused, min(deadline - time.monotonic(), 30), interval=0.02):
+                raise AssertionError('the platform never refused the exited leader its group')
 
         with patch(__name__ + '._drain', side_effect=drain_until_the_leader_is_a_zombie), \
                 patch.object(subprocess.Popen, 'wait', _wait_that_times_out_once()):

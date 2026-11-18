@@ -11,7 +11,7 @@ import time
 import unittest
 from pathlib import Path
 
-from support import HANG_TIMEOUT, needs_loopback
+from support import HANG_TIMEOUT, needs_loopback, wait_until
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -62,12 +62,15 @@ class CredentialArgv(unittest.TestCase):
                 proc = subprocess.Popen([str(ROOT / "bin/ccmorph"), *verb], env=env,
                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 seen = False
-                deadline = time.monotonic() + HANG_TIMEOUT
-                while proc.poll() is None and time.monotonic() < deadline:
+
+                def finished():
+                    nonlocal seen
+                    if proc.poll() is not None:
+                        return True
                     ps = subprocess.run(["ps", "-axo", "args="], capture_output=True, text=True, timeout=HANG_TIMEOUT).stdout
                     seen = seen or key in ps
-                    time.sleep(0.1)
-                if proc.poll() is None:
+                    return False
+                if not wait_until(finished, HANG_TIMEOUT):
                     proc.kill()
                     proc.wait(timeout=HANG_TIMEOUT)
                     self.fail(f"`ccmorph {verb[0]}` did not exit within the hang bound")

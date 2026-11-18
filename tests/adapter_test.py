@@ -18,13 +18,12 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 from support import (CORE, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, adapter_cmd,
-                     needs_loopback, port_outside_the_ephemeral_pool)
+                     needs_loopback, port_outside_the_ephemeral_pool, wait_until)
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -820,22 +819,21 @@ class AdapterTest(unittest.TestCase):
                                  PATH=f"{self.path_bin}:{os.environ.get('PATH', '')}"))
                 child_pids, seen = [], set()
                 try:
-                    deadline = time.monotonic() + HANG_TIMEOUT
-                    while True:
+                    def served():
                         # PORT= follows both children's readiness, so every pid
                         # has reached the tether by then.
-                        seen |= self._tethers(proc.pid)
+                        seen.update(self._tethers(proc.pid))
                         ready = (tpid.exists() and (not hooks or spid.exists())
                                  and "PORT=" in out.read_text())
                         if ready and seen:
-                            break
+                            return True
                         if proc.poll() is not None:
                             self.fail(f"hooks={hooks}: adapter exited "
                                       f"{proc.returncode}: {out.read_text()}")
-                        self.assertLess(time.monotonic(), deadline,
-                                        f"hooks={hooks}: adapter never served: "
-                                        f"{out.read_text()}")
-                        time.sleep(0.1)
+                        return False
+                    self.assertTrue(wait_until(served, HANG_TIMEOUT),
+                                    f"hooks={hooks}: adapter never served: "
+                                    f"{out.read_text()}")
                     child_pids = [int(tpid.read_text())]
                     if hooks:
                         child_pids.append(int(spid.read_text()))
@@ -843,18 +841,18 @@ class AdapterTest(unittest.TestCase):
                                      f"one tether per adapter, saw {sorted(seen)}")
                     proc.kill()
                     proc.wait(timeout=HANG_TIMEOUT)
-                    deadline = time.monotonic() + HANG_TIMEOUT
-                    while True:
-                        seen |= self._tethers(proc.pid)
+                    survivors, tethers, state = [], [], []
+
+                    def cleaned():
+                        nonlocal survivors, tethers, state
+                        seen.update(self._tethers(proc.pid))
                         survivors = [p for p in child_pids if self._pid_alive(p)]
                         tethers = [p for p in seen if self._pid_alive(p)]
                         state = list(tmp.glob("ccmorph-adapter-*"))
-                        if not survivors and not tethers and not state:
-                            break
-                        self.assertLess(time.monotonic(), deadline,
-                                        f"hooks={hooks}: children alive {survivors}, "
-                                        f"tethers alive {tethers}, state left {state}")
-                        time.sleep(0.2)
+                        return not survivors and not tethers and not state
+                    self.assertTrue(wait_until(cleaned, HANG_TIMEOUT),
+                                    f"hooks={hooks}: children alive {survivors}, "
+                                    f"tethers alive {tethers}, state left {state}")
                 finally:
                     if proc.poll() is None:
                         proc.kill()

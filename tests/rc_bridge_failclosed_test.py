@@ -7,13 +7,12 @@ import os
 import shutil
 import socket
 import subprocess
-import time
 import urllib.request
 from pathlib import Path
 
 import pytest
 
-from support import HANG_TIMEOUT, needs_loopback, port_outside_the_ephemeral_pool
+from support import HANG_TIMEOUT, load_script, needs_loopback, port_outside_the_ephemeral_pool, wait_until
 
 ADDON = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "rc_addon.py"
 MITMDUMP = shutil.which("mitmdump")
@@ -38,16 +37,12 @@ def test_dead_route_fails_closed_and_key_file_is_consumed(tmp_path):
         env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         # A listening socket alone does not mean mitmproxy has loaded the addon.
-        deadline = time.monotonic() + HANG_TIMEOUT
-        while time.monotonic() < deadline:
+        def loaded():
             assert proxy.poll() is None, "proxy exited before loading the addon"
             with socket.socket() as s:
-                if not key_file.exists() and s.connect_ex(("127.0.0.1", port)) == 0:
-                    break
-            time.sleep(0.1)
-        else:
-            pytest.fail(
-                f"proxy did not load the addon and listen within {HANG_TIMEOUT:.0f} seconds")
+                return not key_file.exists() and s.connect_ex(("127.0.0.1", port)) == 0
+        assert wait_until(loaded, HANG_TIMEOUT), (
+            f"proxy did not load the addon and listen within {HANG_TIMEOUT:.0f} seconds")
         assert not key_file.exists(), "addon must delete the key file once read"
 
         # Plain-HTTP absolute-form request through the proxy: exercises the same
@@ -67,14 +62,7 @@ def test_dead_route_fails_closed_and_key_file_is_consumed(tmp_path):
 
 
 def _launcher():
-    import importlib.machinery
-    import importlib.util
-    path = ADDON.parent / "ccmorph-rc"
-    loader = importlib.machinery.SourceFileLoader("ccmorph_rc_fc", str(path))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
-    return mod
+    return load_script(ADDON.parent / "ccmorph-rc", "ccmorph_rc_fc")
 
 
 @needs_loopback  # the proxy and upstream are real listeners: #611
@@ -123,19 +111,20 @@ def test_launcher_proxy_never_falls_back_to_anthropic(tmp_path):
             return e.code
 
     try:
-        deadline = time.monotonic() + HANG_TIMEOUT
-        while time.monotonic() < deadline:
+        def listening():
             with socket.socket() as s:
-                if s.connect_ex(("127.0.0.1", port)) == 0:
-                    break
-            time.sleep(0.1)
+                return s.connect_ex(("127.0.0.1", port)) == 0
+        assert wait_until(listening, HANG_TIMEOUT), "the proxy never listened"
         assert post() == 200, "a rerouted call must not match the fail-closed guard"
         # A broken addon, as a failed hot reload leaves it: the proxy stays up with
         # no addon, and the guard alone must stop the call.
         script.write_text("raise RuntimeError('reload failed')\n")
-        time.sleep(3)
-        assert proxy.poll() is None
-        assert post() == 502, "without the addon, inference must fail, never reach Anthropic"
+
+        def failing_closed():
+            assert proxy.poll() is None, "the proxy exited instead of failing closed"
+            return post() == 502
+        assert wait_until(failing_closed, HANG_TIMEOUT), (
+            "without the addon, inference must fail, never reach Anthropic")
     finally:
         proxy.terminate()
         proxy.wait(timeout=HANG_TIMEOUT)
@@ -169,10 +158,8 @@ def test_addon_dated_epoch_still_loads(tmp_path):
     try:
         # Not a boot-speed assertion: mitmdump takes as long as the host gives
         # it, and a key file still there after HANG_TIMEOUT is a real hang.
-        deadline = time.monotonic() + HANG_TIMEOUT
-        while key_file.exists() and time.monotonic() < deadline:
-            time.sleep(0.1)
-        assert not key_file.exists(), "addon never loaded: route key not consumed"
+        assert wait_until(lambda: not key_file.exists(), HANG_TIMEOUT), (
+            "addon never loaded: route key not consumed")
     finally:
         proxy.terminate()
         proxy.wait(timeout=HANG_TIMEOUT)

@@ -32,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from support import HANG_TIMEOUT, SHIM, needs_loopback, needs_shim
+from support import HANG_TIMEOUT, SHIM, needs_loopback, needs_shim, wait_until
 
 pytestmark = needs_shim
 
@@ -811,16 +811,17 @@ class UsageSidecarTest(unittest.TestCase):
         """Find the single row file for a response id, regardless of the
         turn-id suffix in the filename or the day folder it landed in. Polls
         until the row appears."""
-        deadline = time.monotonic() + HANG_TIMEOUT
         rows = []
-        while time.monotonic() < deadline:
+
+        def landed():
+            nonlocal rows
             store = self.state / "ccmorph" / "usage"
             rows = [p for pattern in ("*.json", "*/*.json") for p in store.glob(pattern)
                     if json.loads(p.read_text()).get("response_id") == response_id]
-            if len(rows) == 1:
-                return rows[0]
-            time.sleep(0.05)
-        self.fail(f"expected 1 row for {response_id}, got {len(rows)}")
+            return len(rows) == 1
+        if not wait_until(landed, HANG_TIMEOUT):
+            self.fail(f"expected 1 row for {response_id}, got {len(rows)}")
+        return rows[0]
 
     def rows(self):
         store = self.state / "ccmorph" / "usage"
@@ -835,14 +836,18 @@ class UsageSidecarTest(unittest.TestCase):
     def wait_for(self, path, predicate=bool):
         """The shim writes the row after the client has its bytes, so every row
         assertion polls rather than racing the client's last read."""
-        deadline = time.monotonic() + HANG_TIMEOUT
-        while time.monotonic() < deadline:
+        matched = []
+
+        def ready():
             if path.exists():
                 row = json.loads(path.read_text())
                 if predicate(row):
-                    return row
-            time.sleep(0.05)
-        self.fail(f"no row at {path} within 5s")
+                    matched.append(row)
+                    return True
+            return False
+        if not wait_until(ready, HANG_TIMEOUT):
+            self.fail(f"no row at {path}")
+        return matched[0]
 
     def post(self, port, path="/v1/messages", body=REQUEST_BODY, headers=None):
         request = urllib.request.Request(
@@ -1051,9 +1056,8 @@ class UsageSidecarTest(unittest.TestCase):
                 r.read()
             self.assertEqual(self.seen[0], REQUEST_BODY, task)
         # Every request answers with the same response id, so each spills to its own row.
-        deadline = time.monotonic() + HANG_TIMEOUT
-        while len(self.rows()) < 3 and time.monotonic() < deadline:
-            time.sleep(0.05)
+        self.assertTrue(wait_until(lambda: len(self.rows()) >= 3, HANG_TIMEOUT),
+                        "each of the three requests must land its own row")
         self.assertEqual(sorted(str(r["task"]) for r in self.rows().values()), ["None", "None", "ok"])
 
 
