@@ -124,11 +124,21 @@ var shellComm = regexp.MustCompile(`^-?(zsh|bash|sh|dash)$`)
 // forwarded, which discards the queued switch.
 const launcherComm = "ccmorph-core"
 
+// ProcTable is one read of the process table, for a command that asks more
+// than one question of the same machine: a hop asks which profile this session
+// runs on and which Claude Code process to end, moments apart, and one read
+// answers both. The zero value is an empty table.
+type ProcTable map[int]psRow
+
+// ProcessTable is one read of the process table.
+func ProcessTable() ProcTable { return processTable() }
+
 // HopTarget is the Claude Code process to end for a hop: the first process below
 // the relay in pid's ancestry that is neither a shell nor the core launcher (the
 // shells between are the relay's forwarding subshells and the one Claude Code runs
-// the command in). 0 when there is none.
-func HopTarget(relay, pid int) int { return findHopTarget(processTable(), relay, pid) }
+// the command in). 0 when there is none. t is the read the command already made
+// for its first question.
+func HopTarget(t ProcTable, relay, pid int) int { return findHopTarget(t, relay, pid) }
 
 func findHopTarget(t map[int]psRow, relay, pid int) int {
 	var chain []int
@@ -192,8 +202,8 @@ func findSessionAdapter(t map[int]psRow, launcher int) string {
 }
 
 // SessionAdapter is the profile of the adapter the launcher pid started, read
-// from its argv; "" when there is none.
-func SessionAdapter(launcher int) string { return findSessionAdapter(processTable(), launcher) }
+// from its argv in t; "" when there is none.
+func SessionAdapter(t ProcTable, launcher int) string { return findSessionAdapter(t, launcher) }
 
 // adapterProfile is the profile an adapter's argv names: the core runs
 // `ccmorph-core adapter <profile>`, the older build `ccmorph-adapter <profile>`,
