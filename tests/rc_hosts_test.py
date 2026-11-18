@@ -2627,6 +2627,9 @@ def test_purge_days_is_a_setting_not_a_folder():
     assert m.purge_days(text) == 7.0
 
 
+PEP585_GENERICS = ("list", "dict", "set", "frozenset", "tuple", "type")
+
+
 def is_python_helper(name, text):
     """A python shebang, a uv inline script (its shebang need not name python),
     or any module under addons/, which ships on the add-on's 3.8 floor without a
@@ -2637,11 +2640,29 @@ def is_python_helper(name, text):
     return "python" in shebang or ("uv run --script" in shebang and "# /// script" in text)
 
 
+def annotation_nodes(tree):
+    """Every annotation expression in the tree: parameters, returns, declared names."""
+    import ast
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            a = node.args
+            for arg in [a.vararg, a.kwarg, *a.posonlyargs, *a.args, *a.kwonlyargs]:
+                if arg is not None and arg.annotation is not None:
+                    yield arg.annotation
+            if node.returns is not None:
+                yield node.returns
+        elif isinstance(node, ast.AnnAssign) and node.annotation is not None:
+            yield node.annotation
+
+
 def test_every_shipped_python_helper_uses_nothing_newer_than_the_python_38_floor():
     """The add-on declares 3.8 (CI python-floor); str.removeprefix/removesuffix, functools.cache
     and dict | dict are 3.9+ and broke imports there (2026-10). Static, so it fails on any
     interpreter. One rule set over every shipped Python file: a python shebang,
-    a uv inline script, or any .py under addons/."""
+    a uv inline script, or any .py under addons/. And on that floor the add-on's
+    PEP 585 builtins and PEP 604 | in an annotation need "from __future__ import
+    annotations" or the import itself evaluates them (rc_addon's tuple | None
+    raised TypeError on <= 3.9, 2026-11-16)."""
     import ast
     import subprocess
     root = SCRIPT.parent.parent.parent
@@ -2657,7 +2678,8 @@ def test_every_shipped_python_helper_uses_nothing_newer_than_the_python_38_floor
         if not is_python_helper(name, text):
             continue
         seen.add(name)
-        for node in ast.walk(ast.parse(text)):
+        tree = ast.parse(text)
+        for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and node.attr in ("removesuffix", "removeprefix"):
                 bad.append(f"{name} line {node.lineno}: str.{node.attr}")
             if isinstance(node, ast.Attribute) and node.attr == "cache" \
@@ -2667,6 +2689,20 @@ def test_every_shipped_python_helper_uses_nothing_newer_than_the_python_38_floor
                     getattr(node.left, "attr", "") == "environ"
                     or isinstance(node.right, (ast.Dict, ast.DictComp))):
                 bad.append(f"{name} line {node.lineno}: dict | dict")
+        if name.startswith("addons/"):
+            defers = any(isinstance(n, ast.ImportFrom) and n.module == "__future__"
+                         and any(a.name == "annotations" for a in n.names)
+                         for n in ast.walk(tree))
+            if not defers:
+                for ann in annotation_nodes(tree):
+                    for node in ast.walk(ann):
+                        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) \
+                                and node.value.id in PEP585_GENERICS:
+                            bad.append(f"{name} line {node.lineno}: PEP 585 {node.value.id}[...] "
+                                       f"without the annotations future import")
+                        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+                            bad.append(f"{name} line {node.lineno}: PEP 604 | annotation "
+                                       f"without the annotations future import")
     assert len(seen) >= 8, seen
     assert not bad, bad
 

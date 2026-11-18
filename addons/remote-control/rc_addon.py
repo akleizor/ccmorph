@@ -11,6 +11,8 @@ table nor any environment:
   RC_INFERENCE    optional path; "account", "route" or a profile name, read on every turn.
                   A profile's endpoint arrives as <dir>/switch-<profile>.json (0600), deleted on read
 """
+from __future__ import annotations
+
 import json
 import os
 import base64
