@@ -153,6 +153,24 @@ func findHopTarget(t map[int]psRow, relay, pid int) int {
 	return 0
 }
 
+// underClaude says whether a Claude Code process is an ancestor of pid.
+func underClaude(t map[int]psRow, pid int) bool {
+	for n := 0; pid > 1 && n < 64; n++ {
+		r, ok := t[pid]
+		if !ok {
+			return false
+		}
+		argv := append(strings.Fields(r.args), "", "")
+		// native binary, a versioned install, an interpreted script, or npm's cli.js
+		if filepath.Base(r.comm) == "claude" || filepath.Base(argv[0]) == "claude" || filepath.Base(argv[1]) == "claude" ||
+			strings.Contains(r.args, "/claude/versions/") || strings.Contains(r.args, "@anthropic-ai/claude-code/") {
+			return true
+		}
+		pid = r.ppid
+	}
+	return false
+}
+
 var adapterArgv = regexp.MustCompile(`ccmorph-(?:core )?adapter\s+(\S+)`)
 
 // findSessionAdapter is the profile of the adapter <launcher> started. A session
