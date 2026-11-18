@@ -852,7 +852,7 @@ make test                        # every suite, at once
 zsh tests/ccmorph_test.zsh      # profiles, launch, routing, model choosers
 zsh tests/install_test.zsh       # the installer against a throwaway $HOME
 go test ./...                   # Go units: adapter, shim, helpers
-python3 -m pytest tests/         # black-box suite against the built binaries
+CCMORPH_LIB_DIR="$PWD/lib" uv run python -m pytest tests/ -q  # black-box suite against the built binaries
 ```
 
 TDD is the convention here: a behavior worth keeping gets a test that fails

@@ -21,6 +21,12 @@
   scratch homes and mostly wait on process spawns, so the parallel gate runs
   them in about a minute on a quiet host. The docs no longer send a
   contributor down the sequential path.
+- **The pytest Checks in INTENT.md and the test command in the guide run as
+  written again.** They still taught a pytest command outside `uv run`, which
+  ends in "No module named pytest" now that the pytest packages come from
+  pyproject.toml's default uv `test` group; they now say
+  `CCMORPH_LIB_DIR="$PWD/lib" uv run python -m pytest`, the form the Makefile
+  and CONTRIBUTING use. A docs test pins it.
 
 ## v0.5.13 — 2026-11-17
 
