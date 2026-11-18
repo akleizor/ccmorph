@@ -121,9 +121,9 @@ always signs in with the account profile's own claude.ai login.
 ## Switch inference live
 
 ```sh
-ccmorph-rc oli --switch       # every host's next turn goes to oli
-ccmorph-rc alex --switch      # the account the phone signs in with (Anthropic, its own quota)
-ccmorph-rc llmgate --switch   # back to the edge's route
+ccmorph-rc <route-profile> --switch  # every host's next turn goes to that profile
+ccmorph-rc <route-profile> --switch  # an account profile the phone signs in with (Anthropic, its own quota)
+ccmorph-rc <route-profile> --switch  # back to the edge's route
 ```
 
 No host restarts and no session is interrupted: each proxy reads the switch on every
