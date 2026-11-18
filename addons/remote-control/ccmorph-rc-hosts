@@ -207,11 +207,13 @@ def permission_mode(text: str) -> str | None:
     return m.group(1) if m and m.group(1) in PERMISSION_MODES else None
 
 
-def inference(text: str, routes: set[str], account: str) -> str:
+def inference(text: str, routes: set[str] = frozenset(), account: str = "") -> str:
     """`inference=<profile>` -- where every host's model calls go: "account" for the
     account profile the phone signs in with, "route" for a route the config names (or
     no line), else the profile itself, which `ccmorph-rc <profile> --switch` brings up
-    beside the edge. Each proxy reads the result on every turn: nothing restarts."""
+    beside the edge. Each proxy reads the result on every turn: nothing restarts.
+    The defaults read the line on its own; main() passes the routes it hosts and the
+    signed-in account so a name that is either resolves to that target."""
     m = re.search(r"^\s*inference=(\S+)", text, re.M)
     name = m.group(1) if m else None
     return "account" if name == account else "route" if name is None or name in routes else name
@@ -270,7 +272,7 @@ def parse(text: str) -> dict[str, tuple[str, tuple[str, ...]]]:
         if line.startswith("route="):
             route = line[6:].strip()
             continue
-        if line.startswith(("idle_days=", "purge_days=", "permission=", "retire=", "archived=")) or line.startswith(TIER_PREFIX):
+        if line.startswith(SETTINGS_PREFIXES):
             continue                         # settings, not folders
         head, _, args = line.partition(" -- ")
         path, _, rest = head.partition(" ")
@@ -622,6 +624,23 @@ def archived_set(text: str) -> set[str]:
     """Folders archived in the app, kept until idle cleanup comments their line
     out. An unresolvable marker is dropped: it can match no folder."""
     return {f for f in map(resolve, ARCHIVED_RE.findall(text)) if f}
+
+
+# The one settings registry: a settings line (anything but `route=`, which
+# parse() reads itself) is skipped as "settings, not folders" exactly when a
+# reader here consumes it, and SETTINGS_PREFIXES -- the skip tuple parse() uses
+# -- is derived from this dict. One list, so the two sides cannot drift again in
+# either direction: `inference=` was read but not skipped, so a documented line
+# became a ghost host, and `retire=` was skipped but no parser read it (GH-655).
+SETTINGS_READERS = {
+    "idle_days=": idle_days,
+    "purge_days=": purge_days,
+    "permission=": permission_mode,
+    "inference=": inference,
+    "archived=": archived_set,
+    TIER_PREFIX: tier_map,
+}
+SETTINGS_PREFIXES = tuple(SETTINGS_READERS)
 
 
 def session_entries(text: str):
