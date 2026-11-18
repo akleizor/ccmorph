@@ -1393,12 +1393,39 @@ def test_settings_lines_are_not_read_as_folders(tmp_path):
     """Every `key=value` setting must be skipped by parse(); a stray one becomes
     "<home>/<setting>" -- a phantom folder the supervisor then waits on forever."""
     m = load()
-    text = (f"route=gateway\nidle_days=3\nretire=archived\narchived=/a\n"
-            f"permission=bypassPermissions\ntier.fable=gpt-6-astra\n{tmp_path}\n")
+    text = (f"route=gateway\nidle_days=3\narchived=/a\npermission=bypassPermissions\n"
+            f"inference=oli\ntier.fable=gpt-6-astra\n{tmp_path}\n")
     got = m.parse(text)
     assert len(got) == 1, f"settings leaked into folders: {sorted(got)}"
     assert list(got.values()) == [("gateway", ())]
     assert list(got)[0].endswith(str(tmp_path).split("/")[-1])
+
+
+def test_an_inference_line_is_a_setting_not_a_ghost_folder(tmp_path):
+    """GH-655: `inference=` is documented and read by main(), but parse() decided
+    "settings, not folders" from its own tuple, which omitted it. With a global
+    route, a config following the README made `<cwd>/inference=oli` a folder the
+    supervisor hosted on every reload -- a host that could never launch."""
+    m = load()
+    assert m.parse(f"route=gw\ninference=oli\n{tmp_path}\n") == {str(tmp_path): ("gw", ())}
+
+
+def test_every_settings_prefix_has_a_reader_and_is_skipped(tmp_path):
+    """GH-655: the skip tuple and the per-key readers are one registry now, so
+    neither can drift: a reader cannot exist without its line being skipped
+    (`inference=`, which became a ghost host) and a skipped prefix cannot be
+    inert (`retire=`, which no parser read)."""
+    m = load()
+    samples = {"idle_days=": "3", "purge_days=": "3", "permission=": "plan",
+               "inference=": "oli", "archived=": str(tmp_path / "archived"),
+               m.TIER_PREFIX: "opus=m"}
+    assert set(samples) == set(m.SETTINGS_READERS)
+    assert tuple(m.SETTINGS_READERS) == m.SETTINGS_PREFIXES
+    for prefix, reader in m.SETTINGS_READERS.items():
+        assert callable(reader), prefix
+        text = f"route=gw\n{prefix}{samples[prefix]}\n{tmp_path}\n"
+        assert list(m.parse(text)) == [str(tmp_path)], f"{prefix} leaked into folders"
+        assert reader(text) != reader(f"route=gw\n{tmp_path}\n"), f"{prefix} has no reader"
 
 
 def test_a_folder_listed_for_hosting_is_made_a_repo_before_worktree_mode(tmp_path):
