@@ -1,9 +1,13 @@
 package util
 
 import (
+	"encoding/json"
+	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
@@ -26,33 +30,32 @@ func TokenShaped(s string) bool {
 	return true
 }
 
-// StoredSignin is the Claude-account sign-in a profile home keeps in
-// .credentials.json, "" when the home holds none there. Claude Code's own
-// secure storage is the other place a sign-in can live (macOS keeps it in the
-// login keychain), and a sign-in it does not hand over is not doctor's to guess
-// at. It never writes, so doctor can call it.
-func StoredSignin(home string) string {
-	path := filepath.Join(home, ".credentials.json")
-	// Anything but a regular file — missing, symlinked, a directory — holds no
-	// sign-in to read.
-	if fi, err := os.Lstat(path); err != nil || !fi.Mode().IsRegular() {
-		return ""
+var readSigninKeychain = ReadSigninKeychain
+
+// StoredSignin reads the Claude-account sign-in without changing it.
+func StoredSignin(home string) (access, refresh string, known bool) {
+	if runtime.GOOS != "darwin" {
+		if fi, err := os.Lstat(filepath.Join(home, ".credentials.json")); err != nil {
+			return "", "", os.IsNotExist(err)
+		} else if !fi.Mode().IsRegular() {
+			return "", "", false
+		}
 	}
-	doc, err := loadObj(path, nil)
-	if err != nil || doc == nil {
-		return ""
+	raw, err := ReadSigninCredentials(home, readSigninKeychain)
+	if err != nil {
+		var exitErr *exec.ExitError
+		return "", "", os.IsNotExist(err) || (runtime.GOOS == "darwin" && errors.As(err, &exitErr) && exitErr.ExitCode() == 44)
 	}
-	v, ok := doc.Get("claudeAiOauth")
-	if !ok {
-		return ""
+	var doc struct {
+		OAuth struct {
+			AccessToken  string `json:"accessToken"`
+			RefreshToken string `json:"refreshToken"`
+		} `json:"claudeAiOauth"`
 	}
-	oauth := asObj(v)
-	if oauth == nil {
-		return ""
+	if json.Unmarshal(raw, &doc) != nil {
+		return "", "", false
 	}
-	av, _ := oauth.Get("accessToken")
-	s, _ := str(av)
-	return s
+	return doc.OAuth.AccessToken, doc.OAuth.RefreshToken, true
 }
 
 // ProbeToken is the never-failing check of a Claude OAuth token: the HTTP

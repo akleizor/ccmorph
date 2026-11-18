@@ -3078,7 +3078,7 @@ def _login_refresh(monkeypatch):
 
     def login():
         reads.append(1)
-        return {"expiresAt": (1000.0 + left[0]) * 1000}
+        return {"expiresAt": (1000.0 + left[0]) * 1000, "refreshToken": "refresh"}
     monkeypatch.setattr(m, "account_login", login)
 
     class RC:
@@ -3153,6 +3153,35 @@ def test_the_account_login_is_refreshed_before_it_expires(monkeypatch):
     assert len(runs) == 1
     m.keep_login_fresh(clock, 3002.0 + m.LOGIN_REFRESH_RETRY)
     assert len(runs) == 2
+
+
+def test_signed_out_login_does_not_refresh_and_reports_once_per_episode(monkeypatch, capsys):
+    m, left, reads, runs = _login_refresh(monkeypatch)
+    login = {"expiresAt": 0, "accessToken": "expired"}
+    monkeypatch.setattr(m, "account_login", lambda: login)
+    monkeypatch.setattr(m, "host_envs", lambda folders: {"env": "repo"})
+
+    def unauthorized(token, status):
+        raise m.urllib.error.HTTPError("url", 401, "Unauthorized", None, None)
+    monkeypatch.setattr(m, "sessions", unauthorized)
+    clock = m.Clock()
+    for now in (0.0, 20.0):
+        m.keep_login_fresh(clock, now)
+        m.host_sessions(["repo"], "active")
+    output = capsys.readouterr().out
+    assert runs == []
+    assert output.count("account acct is signed out; fix: ccmorph login acct") == 1
+    assert output.count("active session check failed:") == 1
+    assert "active session check failed: HTTP Error 401: Unauthorized; fix: ccmorph login acct" in output
+    login.update(refreshToken="refresh", expiresAt=4_600_000)
+    m.keep_login_fresh(clock, 40.0)
+    del login["refreshToken"]
+    m.keep_login_fresh(clock, clock.next_login_check)
+    m.host_sessions(["repo"], "active")
+    output = capsys.readouterr().out
+    assert output.count("account acct is signed out; fix: ccmorph login acct") == 1
+    assert output.count("active session check failed:") == 1
+    assert runs == []
 
 
 def test_a_refresh_turn_that_never_exits_is_killed_and_replaced(monkeypatch):
