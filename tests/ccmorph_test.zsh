@@ -4082,12 +4082,13 @@ test_absent_local_sh_is_a_clean_noop() {
   setup_home "$test_home"
 
   # Vanilla install: no local.sh. Sourcing must succeed, run to completion, and
-  # leave the opt-in unset. Drop the driver first so its presence afterward proves
-  # THIS source reached the end (it is defined on the last lines of ccmorph.sh),
-  # not a stale definition left by an earlier test in this shell.
+  # leave the opt-in unset. Clear the completion marker first so its presence
+  # afterward proves THIS source reached the end (it is set on the last line of
+  # the launcher library), not a stale assignment left by an earlier test in
+  # this shell.
   rm -f "$HOME/.config/ccmorph/local.sh"
   unset CCMORPH_PRELAUNCH
-  unfunction _ccm_launch_driver 2>/dev/null
+  unset _CCMORPH_LAUNCH_SOURCED
   source "$CCMORPH_SOURCE" || {
     print -u2 -- 'sourcing must succeed with no local.sh present'
     rm -rf "$test_home"; return 1
@@ -4097,12 +4098,8 @@ test_absent_local_sh_is_a_clean_noop() {
     'a vanilla install leaves the prelaunch opt-in unset' || {
     rm -rf "$test_home"; return 1
   }
-  # typeset -f, not whence -w: the noglob alias shadows the name in whence's precedence
-  # order while the function is still defined and still what runs.
-  assert_contains \
-    "$(typeset -f _ccm_launch_driver >/dev/null && print function || print missing)" \
-    "function" \
-    'a vanilla source must run to completion, defining the final launcher'
+  assert_contains "[${_CCMORPH_LAUNCH_SOURCED:-<missing>}]" "[1]" \
+    'a vanilla source must run to completion, setting the launcher marker'
   local rc=$?
   rm -rf "$test_home"
   return $rc
@@ -4115,32 +4112,32 @@ test_broken_local_sh_does_not_abort_the_source() {
 
   # local.sh is trusted host config, but a parse error in it must not brick the
   # rest of ccmorph: the failed nested `source` (line ~16) must not abort the
-  # outer source, so the driver on the LAST lines of ccmorph.sh must still be
-  # defined. Drop it first, and run in a subshell with default zsh
-  # options (no inherited ERR_EXIT) — the documented guarantee holds under
-  # ordinary interactive options, which is what a fresh user runs.
+  # outer source, so the completion marker on the LAST line of the launcher
+  # library must still be set. Clear it first, and run in a subshell with
+  # default zsh options (no inherited ERR_EXIT) — the documented guarantee
+  # holds under ordinary interactive options, which is what a fresh user runs.
   printf '%s\n' 'this is (not valid zsh' \
     > "$HOME/.config/ccmorph/local.sh"
 
   unset CCMORPH_PRELAUNCH
   local result
-  # -f: no startup files, so no inherited definition or option (e.g. ERR_EXIT) can
-  # taint the result — fully hermetic, the source under test is the only thing that
-  # can define the driver.
+  # -f: no startup files, so no inherited assignment or option (e.g. ERR_EXIT)
+  # can taint the result — fully hermetic, the source under test is the only
+  # thing that can set the marker.
   result=$(zsh -fc "
     CCMORPH_SOURCE=${(q)CCMORPH_SOURCE}
-    unfunction _ccm_launch_driver 2>/dev/null
+    unset _CCMORPH_LAUNCH_SOURCED
     source \"\$CCMORPH_SOURCE\" 2>/dev/null
     print -r -- \"src_rc=\$?\"
-    print -r -- \"launcher=\$(typeset -f _ccm_launch_driver >/dev/null && print function || print missing)\"
+    print -r -- \"launcher=\${_CCMORPH_LAUNCH_SOURCED:-missing}\"
   ")
 
   assert_contains "$result" "src_rc=0" \
     'a parse error in local.sh must not fail the outer source of ccmorph' || {
     rm -rf "$test_home"; return 1
   }
-  assert_contains "$result" "launcher=function" \
-    'a broken local.sh must not prevent ccmorph from reaching its final launcher'
+  assert_contains "$result" "launcher=1" \
+    'a broken local.sh must not prevent ccmorph from reaching the end of its launcher library'
   local rc=$?
   rm -rf "$test_home"
   return $rc
@@ -4186,8 +4183,8 @@ test_shipped_surface_never_names_the_transport_product() {
 
 test_no_context_window_is_written_into_the_source() {
   local rc=0 f hits
-  # Any 6+ digit run in executable code, minus the two named schema bounds and
-  # minus the log-rotation size. Comments and blank lines are stripped first.
+  # Any 6+ digit run in executable code. Comments and blank lines are stripped
+  # first.
   # One file at a time, never the concatenation: a hit is reported against the
   # file that holds it and carries that file's own line number. Joined, a hit in
   # a module would be reported at an offset that exists in no file — the same
@@ -4195,7 +4192,6 @@ test_no_context_window_is_written_into_the_source() {
   for f in "${CCMORPH_LIBRARY[@]}"; do
     hits=$(sed -e 's/#.*$//' "$f" \
            | grep -nE '\b[0-9]{6,}\b' \
-           | grep -vE '_CCMORPH_(ACW_(MIN|MAX)|LOG_MAX)=' \
            || true)
     [[ -z "$hits" ]] && continue
     print -u2 -- "FAIL: a context window is written into ${f:t}; probe it into the registry instead:"

@@ -104,8 +104,6 @@ _ccm_main_exec() {
   exec env "${reply[@]}" "$_CCMORPH_LIBEXEC_DIR/ccmorph-core" cli main "$@"
 }
 
-_ccm_launch_driver() { _ccm_launch "$@"; }
-
 # One stage of the launch each, for callers that need only that stage: Claude Code
 # through the session setup with TERM/HUP forwarded, and the gateway picker projection.
 _ccm_run_claude() { _ccm_fork_forward _ccm_launch_core --run-claude "$@"; }
@@ -135,3 +133,9 @@ ccmorph() {
     unset CLAUDE_CODE_OAUTH_TOKEN
   return $rc
 }
+
+# Completion marker, and the last line of the shipped library. The sourcing
+# tests clear it beforehand and assert it afterward, so its presence proves
+# THIS source reached the end — the guarantee the one-line alias retired in
+# #613 existed to feed. Nothing in the product reads it.
+_CCMORPH_LAUNCH_SOURCED=1
