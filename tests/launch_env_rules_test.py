@@ -5,8 +5,6 @@ through when the profile does not declare them; a nested launch clears the tunin
 keys an outer ccmorph session set. Real `ccmorph` against an isolated HOME with a
 stub `claude` that prints its environment.
 """
-import importlib.machinery
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -15,7 +13,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from behaviour_coverage_test import Box, ROOT  # noqa: E402
-from support import HANG_TIMEOUT, anthropic_accepts_the_key  # noqa: E402
+from support import HANG_TIMEOUT, anthropic_accepts_the_key, load_script  # noqa: E402
 
 TUNING = ("MAX_THINKING_TOKENS", "CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
 # Pinned literally (#106): deriving this from the launcher would let a name dropped from
@@ -195,10 +193,7 @@ def test_the_launcher_lists_every_pinned_backend_name(tmp_path):
 
 
 def _rc():
-    loader = importlib.machinery.SourceFileLoader("rc_env_rules", str(ROOT / "addons/remote-control/ccmorph-rc"))
-    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
-    loader.exec_module(mod)
-    return mod
+    return load_script(ROOT / "addons/remote-control/ccmorph-rc", "rc_env_rules")
 
 
 def test_the_addon_strips_exactly_the_launchers_backend_list_plus_proxies(tmp_path, monkeypatch):

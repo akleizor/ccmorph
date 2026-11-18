@@ -13,8 +13,6 @@ re-applies under a loopback proxy. These tests build that environment with the
 add-on's real `resolve_route` and `session_env`, then run the real `ccmorph`
 against an isolated HOME with a stub `claude`. Nothing touches the network.
 """
-import importlib.machinery
-import importlib.util
 import json
 import os
 import stat
@@ -24,17 +22,13 @@ from pathlib import Path
 import pytest
 
 import fake_adapter
-from support import HANG_TIMEOUT, anthropic_accepts_the_key
+from support import HANG_TIMEOUT, anthropic_accepts_the_key, load_script
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load_rc():
-    loader = importlib.machinery.SourceFileLoader("ccmorph_rc_nested", str(ROOT / "addons/remote-control/ccmorph-rc"))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
-    return mod
+    return load_script(ROOT / "addons/remote-control/ccmorph-rc", "ccmorph_rc_nested")
 
 
 class Box:

@@ -1,11 +1,15 @@
-"""The suite's shared hang-detection bound; imported by the tests that wait on a real process."""
+"""The suite's shared helpers: one hang-detection bound, one poll loop, one script
+loader; imported by the tests that wait on a real process."""
 import atexit
+import importlib.machinery
+import importlib.util
 import os
 import random
 import shlex
 import shutil
 import socket
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -17,6 +21,38 @@ from pathlib import Path
 # over, where the cap would fire in the middle of the polling.
 # Override with CCMORPH_TEST_HANG_TIMEOUT.
 HANG_TIMEOUT = float(os.environ.get("CCMORPH_TEST_HANG_TIMEOUT", "120"))
+
+
+def wait_until(pred, timeout, interval=0.05):
+    """Poll `pred` until it answers true, giving up after `timeout` seconds.
+
+    Returns whether it was seen true, so the caller names its own failure. The
+    give-up semantics live here once: a monotonic deadline, a short sleep between
+    looks, and one last look past the bound. `timeout` is the suite's shared hang
+    bound, never a literal a test picked (hang_bound_test.py holds that line)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        if pred():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(interval)
+
+
+def load_script(path, name):
+    """Load an extensionless script as a module under `name`, without importing it
+    through sys.path or keeping it in sys.modules.
+
+    The add-ons and the usage exporter ship as scripts, not as importable .py
+    modules, so a test that exercises one runs it by path. Each call returns a
+    fresh module, so a test may change the environment before loading."""
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
 # The one sentence, with the one link, for a claude no PATH search can find
 # (#282). The installer, `ccmorph run` and `ccmorph doctor` print these same
 # bytes, so a missing Claude Code meets a person with one answer wherever it

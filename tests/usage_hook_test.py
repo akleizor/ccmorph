@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from support import (FAKE_SERVER_NO_DNS, HANG_TIMEOUT, anthropic_accepts_the_key,
-                     needs_loopback, needs_shim)
+                     needs_loopback, needs_shim, wait_until)
 
 pytestmark = needs_shim
 
@@ -200,11 +200,7 @@ class Box:
         return sorted(p for pattern in ("*.json", "*/*.json") for p in self.usage.glob(pattern))
 
     def wait_rows(self, count, timeout=HANG_TIMEOUT):
-        end = time.time() + timeout
-        while time.time() < end:
-            if len(self.rows()) >= count:
-                return self.rows()
-            time.sleep(0.05)
+        wait_until(lambda: len(self.rows()) >= count, timeout)
         return self.rows()
 
 

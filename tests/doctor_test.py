@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from support import CLAUDE_MISSING, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, needs_loopback
+from support import CLAUDE_MISSING, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, needs_loopback, wait_until
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -421,21 +421,20 @@ def _adapter_tree(tmp_path, profile, shape):
             [str(fake / "decoy"), "ccmorph-core", "adapter", profile],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
         adapter, decoy = started["adapter"], started["decoy"]
-        deadline = time.monotonic() + HANG_TIMEOUT
-        while True:
-            kids = {}
-            if pids_path.exists():
-                kids = json.loads(pids_path.read_text())
-            up = (set(kids) == set(wanted)
-                  and all((ready / str(pid)).exists()
-                          for pid in [decoy.pid, *kids.values()]))
-            if up:
-                break
+        kids = {}
+
+        def came_up():
+            nonlocal kids
+            kids = json.loads(pids_path.read_text()) if pids_path.exists() else {}
+            if (set(kids) == set(wanted)
+                    and all((ready / str(pid)).exists()
+                            for pid in [decoy.pid, *kids.values()])):
+                return True
             if adapter.poll() is not None or decoy.poll() is not None:
                 raise AssertionError("the fake session exited before it came up")
-            if time.monotonic() > deadline:
-                raise AssertionError("the fake session never came up")
-            time.sleep(0.01)
+            return False
+        if not wait_until(came_up, HANG_TIMEOUT):
+            raise AssertionError("the fake session never came up")
     except BaseException:
         stop()
         raise
@@ -1312,13 +1311,14 @@ def test_run_doctor_cleanup_reports_the_bound_not_a_refused_killpg_issue_5(tmp_p
         # per-test cap.
         if not spent:
             spent.append(True)
-            stop = time.monotonic() + min(timeout, 30)
-            while time.monotonic() < stop:
+
+            def refusing():
                 try:
                     os.killpg(process.pid, 0)
-                    time.sleep(0.02)
                 except PermissionError:
-                    break
+                    return True
+                return False
+            wait_until(refusing, min(timeout, 30), interval=0.02)
             raise subprocess.TimeoutExpired(process.args, timeout)
         return communicate(process, timeout=timeout)
 

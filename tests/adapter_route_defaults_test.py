@@ -21,12 +21,11 @@ import shutil
 import signal
 import subprocess
 import tempfile
-import time
 
 import fake_adapter
 import pytest
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, wait_until
 
 ROOT = Path(__file__).resolve().parents[1]
 LIB_FILES = ('lib/ccmorph.sh',
@@ -411,15 +410,14 @@ def test_a_killed_launch_leaves_no_adapter_stub_behind(launch):
     stub_pid = 0
     try:
         stub = launch.state / 'libexec/ccmorph-core'
-        deadline = time.monotonic() + HANG_TIMEOUT
         pids = []
-        while time.monotonic() < deadline:
+
+        def started():
+            nonlocal pids
             pids = subprocess.run(['pgrep', '-f', f'{stub} adapter gw '],
                                   capture_output=True, text=True, timeout=HANG_TIMEOUT).stdout.split()
-            if pids:
-                break
-            time.sleep(0.1)
-        assert pids, 'the launch never started the adapter stub'
+            return bool(pids)
+        assert wait_until(started, HANG_TIMEOUT), 'the launch never started the adapter stub'
         stub_pid = int(pids[0])
         argv = subprocess.run(['ps', '-ww', '-o', 'args=', '-p', str(stub_pid)],
                               capture_output=True, text=True, timeout=HANG_TIMEOUT).stdout
@@ -428,14 +426,15 @@ def test_a_killed_launch_leaves_no_adapter_stub_behind(launch):
         assert f'--parent-pid {proc.pid}' in argv, 'the stub must watch the launch process'
         proc.kill()  # SIGKILL skips the EXIT trap that normally stops the stub
         proc.wait(timeout=HANG_TIMEOUT)
-        deadline = time.monotonic() + HANG_TIMEOUT
-        while time.monotonic() < deadline:
+
+        def stub_is_gone():
             try:
                 os.kill(stub_pid, 0)
             except ProcessLookupError:
-                return
-            time.sleep(0.2)
-        raise AssertionError('the adapter stub outlived its killed launcher')
+                return True
+            return False
+        assert wait_until(stub_is_gone, HANG_TIMEOUT), (
+            'the adapter stub outlived its killed launcher')
     finally:
         # A red run must not leak the very stub this test guards against.
         proc.kill()

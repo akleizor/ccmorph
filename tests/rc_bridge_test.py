@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from support import load_script
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "addons" / "remote-control"))
 from rc_route import inference_target, is_inference, reroute  # noqa: E402
 
@@ -157,14 +159,8 @@ def test_pinned_tier_covers_full_ids(model, sent):
 
 
 def _launcher():
-    import importlib.machinery
-    import importlib.util
-    path = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccmorph-rc"
-    loader = importlib.machinery.SourceFileLoader("ccmorph_rc", str(path))
-    spec = importlib.util.spec_from_loader("ccmorph_rc", loader)
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
-    return mod
+    return load_script(Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccmorph-rc",
+                       "ccmorph_rc")
 
 
 def test_a_folder_is_trusted_before_the_host_starts(tmp_path):
@@ -317,10 +313,22 @@ def test_a_network_outage_does_not_take_the_shared_edge_down(monkeypatch):
 def test_shared_edge_carries_route_flags_for_later_hosts():
     # A host that reuses a live edge takes model ids AND route flags from the edge's
     # record, not from a fresh resolve — so an edge whose record omits a flag serves
-    # every later host without it.
+    # every later host without it. The record carries every key MODEL_ENV and ROUTE_ENV
+    # name, and no unrelated environment entry rides along.
     rc = _launcher()
-    src = Path(rc.__file__).read_text() if hasattr(rc, "__file__") else ""
-    assert 'for k in (*MODEL_ENV, *ROUTE_ENV)' in src
+    pinned = {
+        "ANTHROPIC_DEFAULT_FABLE_MODEL": "fable-x",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": "opus-x",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "sonnet-x",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "haiku-x",
+        "ANTHROPIC_SMALL_FAST_MODEL": "small-x",
+        "CLAUDE_CODE_SUBAGENT_MODEL": "subagent-x",
+        "CLAUDE_CODE_DISABLE_ADVISOR_TOOL": "0",
+        "CLAUDE_CODE_MODEL_CAPABILITIES": "-mid_conv_effort",
+    }
+    unrelated = {"PATH": "/bin", "ANTHROPIC_BASE_URL": "http://u", "HOME": "/home/u"}
+    record = rc.edge_record(1, 47100, "/ca.pem", "http://u", {**pinned, **unrelated}, {})
+    assert record["route_env"] == pinned
 
 
 def test_the_edge_record_names_the_tiers_its_proxy_pins():

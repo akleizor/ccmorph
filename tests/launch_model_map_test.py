@@ -23,12 +23,11 @@ import signal
 import subprocess
 import sys
 import threading
-import time
 from unittest.mock import patch
 
 import pytest
 
-from support import HANG_TIMEOUT, needs_loopback
+from support import HANG_TIMEOUT, needs_loopback, wait_until
 
 # every launch reaches a fake gateway on a real listener: #611
 pytestmark = needs_loopback
@@ -278,13 +277,14 @@ def test_launch_cleanup_tolerates_a_leader_that_exited_between_bound_and_killpg_
         # the failure would be the launch's own report, not a capped-out test.
         if not spent:
             spent.append(True)
-            stop = time.monotonic() + min(timeout, 30)
-            while time.monotonic() < stop:
+
+            def refusing():
                 try:
                     os.killpg(process.pid, 0)
-                    time.sleep(0.02)
                 except PermissionError:
-                    break
+                    return True
+                return False
+            wait_until(refusing, min(timeout, 30), interval=0.02)
             raise subprocess.TimeoutExpired(process.args, timeout)
         return communicate(process, timeout=timeout)
 
