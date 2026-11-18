@@ -73,6 +73,10 @@ readonly REAL_HOME="$HOME"
 typeset -gi tests_run=0
 typeset -gi tests_failed=0
 typeset -gi tests_seen=0
+# Tests the filter passed, before the shard decides who runs them: the
+# summary-time guard distinguishes 'matched no test anywhere' from 'this
+# shard holds no copy of a test the filter matched elsewhere'.
+typeset -gi _ccm_test_filter_hits=0
 
 # A wait ends on an event, never on a deadline: a bound that competes with the
 # other lanes' CPU fails a healthy run whatever number it picks (#398 saw 8.9 s
@@ -95,8 +99,12 @@ _ccm_test_jobs() {
 if [[ -z "${CCMORPH_TEST_SHARD:-}" ]] && (( ${CCMORPH_TEST_JOBS:-$(_ccm_test_jobs)} > 1 )); then
   typeset -i jobs=${CCMORPH_TEST_JOBS:-$(_ccm_test_jobs)} shard rc=0
   typeset -a pids
+  # CCMORPH_TEST_SHARD_AUTO marks this suite's own workers: an empty shard is
+  # a product of the fan-out, not a selection the operator requested, so the
+  # summary guard exempts these workers from the shard arm only. It is set
+  # nowhere else; scrub_runner_env keeps CCMORPH_TEST* through to each worker.
   for (( shard = 0; shard < jobs; shard++ )); do
-    CCMORPH_TEST_SHARD="$shard/$jobs" zsh "$0" "$@" & pids+=($!)
+    CCMORPH_TEST_SHARD="$shard/$jobs" CCMORPH_TEST_SHARD_AUTO=1 zsh "$0" "$@" & pids+=($!)
   done
   for pid in $pids; do wait $pid || rc=1; done
   exit $rc
@@ -11050,6 +11058,7 @@ test_every_credential_type_states_how_it_authenticates() {
 run_test() {
   local name="$1" rc=0
   [[ -z "${CCMORPH_TEST_FILTER:-}" || "$name" == *"$CCMORPH_TEST_FILTER"* ]] || return 0
+  (( ++_ccm_test_filter_hits ))
   [[ -z "${CCMORPH_TEST_SHARD:-}" ]] ||
     (( tests_seen++ % ${CCMORPH_TEST_SHARD#*/} == ${CCMORPH_TEST_SHARD%/*} )) || return 0
   (( ++tests_run ))
@@ -13276,9 +13285,75 @@ test_the_suite_refuses_an_empty_env_key_list() {
 }
 run_test test_the_suite_refuses_an_empty_env_key_list
 
+# GH-614: a filter or shard that matched no test ended the run exactly like a
+# green one -- nothing printed, exit 0 -- so the documented per-iteration unit
+# (.github/CONTRIBUTING.md) read as a pass for a typo'd, renamed or deleted
+# test name. The refusal must name the offending value, and it must cover
+# every zero-test selection an operator asked for: a filter matching nothing
+# anywhere, and any explicitly-requested shard that selects no test -- not
+# just a degenerate numerator, since 999999/1000000 also runs nothing. The
+# dispatcher's own workers are exempt from the shard arm only: INTENT.md
+# promise 4 runs CCMORPH_TEST_FILTER=hop across every shard, and most workers
+# legitimately own no hop test -- refused, that Check turns red. The children
+# select one test at most, so this stays a few source passes, not a second
+# suite; each clears CCMORPH_TEST_SHARD_AUTO so its result does not depend on
+# whether the pin itself runs inside a dispatcher worker.
+test_the_suite_refuses_a_selection_that_matched_no_test() {
+  local rc=0 out st
+  out=$(CCMORPH_TEST_FILTER=gh614_no_such_test CCMORPH_TEST_SHARD=0/1 \
+    CCMORPH_TEST_SHARD_AUTO= zsh "$SCRIPT_DIR/ccmorph_test.zsh" 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'the zero-test filtered run exited 0'; rc=1 }
+  assert_contains "$out" 'gh614_no_such_test' \
+    'the refusal must name the filter value that matched no test' || rc=1
+  # The shard arm: an explicit shard selecting no test in this file, yet
+  # used to exit 0. 999999/1000000 is a well-formed expression whose class
+  # this file cannot fill -- exactly the miss a typed shard number is.
+  out=$(CCMORPH_TEST_SHARD=999999/1000000 CCMORPH_TEST_SHARD_AUTO= \
+    zsh "$SCRIPT_DIR/ccmorph_test.zsh" 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'the never-selecting shard exited 0'; rc=1 }
+  assert_contains "$out" "CCMORPH_TEST_SHARD='999999/1000000'" \
+    'the refusal must name the shard value that selects no test' || rc=1
+  # The green arm: a dispatcher worker that holds no copy of a matched test.
+  # AUTO=1 says the fan-out, not an operator, asked for this shard.
+  out=$(CCMORPH_TEST_FILTER=test_the_launcher_fifo_reads_are_bounded \
+    CCMORPH_TEST_SHARD=1/2 CCMORPH_TEST_SHARD_AUTO=1 \
+    zsh "$SCRIPT_DIR/ccmorph_test.zsh" 2>&1)
+  st=$?
+  (( st == 0 )) || { print -u2 -- 'a dispatcher worker holding no copy of a matched test failed'; rc=1 }
+  assert_not_contains "$out" 'not a green run' \
+    'an empty auto worker for a matched filter must stay green' || rc=1
+  return $rc
+}
+run_test test_the_suite_refuses_a_selection_that_matched_no_test
+
 if (( tests_failed > 0 )); then
   print -u2 -- "$tests_failed of $tests_run tests failed"
   exit 1
+fi
+
+# GH-614: a selection that matched nothing used to end exactly like a green
+# run -- nothing printed, exit 0 -- so the documented per-iteration unit
+# (.github/CONTRIBUTING.md) laundered a typo'd, renamed or deleted test name
+# into a pass. Refuse, naming the value. The two arms share tests_run == 0 but
+# not a cause: the filter matched no name in the file -- a typo'd name is a
+# typo in every process, dispatcher workers included -- or the operator asked
+# for a shard that selects no test here, whatever the expression (999999/1000000
+# runs nothing just as 1/1 does). Only the shard arm spares the dispatcher's
+# own workers (CCMORPH_TEST_SHARD_AUTO, set at the fan-out above): an empty
+# shard is a product of the fan-out, and every filtered parallel run --
+# INTENT.md promise 4's CCMORPH_TEST_FILTER=hop -- has workers with nothing of
+# theirs to run. The unfiltered zero-test exit 0 is left alone: that is the
+# door checks' own regression signal, not a missed test.
+if (( tests_run == 0 )); then
+  if [[ -n "${CCMORPH_TEST_FILTER:-}" ]] && (( _ccm_test_filter_hits == 0 )); then
+    print -u2 -- "no test matched CCMORPH_TEST_FILTER='$CCMORPH_TEST_FILTER' — a typo'd, renamed or deleted test name is not a green run"
+    exit 1
+  elif [[ -n "${CCMORPH_TEST_SHARD:-}" ]] && [[ -z "${CCMORPH_TEST_SHARD_AUTO:-}" ]]; then
+    print -u2 -- "CCMORPH_TEST_SHARD='$CCMORPH_TEST_SHARD' selected no test to run — this is not a green run"
+    exit 1
+  fi
 fi
 
 (( tests_run == 0 )) || print -- "All $tests_run tests passed"
