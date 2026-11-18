@@ -362,7 +362,7 @@ def parse(text: str) -> dict[str, tuple[str, tuple[str, ...]]]:
         if line.startswith("route="):
             route = line[6:].strip()
             continue
-        if line.startswith(("idle_days=", "purge_days=", "park_hours=", "permission=", "retire=", "archived=")) or line.startswith(TIER_PREFIX):
+        if line.startswith(SETTINGS_PREFIXES):
             continue                         # settings, not folders
         head, _, args = line.partition(" -- ")
         path, _, rest = head.partition(" ")
@@ -718,6 +718,26 @@ def archived_set(text: str) -> set[str]:
     """Folders archived in the app, kept until idle cleanup comments their line
     out. An unresolvable marker is dropped: it can match no folder."""
     return {f for f in map(resolve, ARCHIVED_RE.findall(text)) if f}
+
+
+# The one settings registry: a settings line (anything but `route=`, which
+# parse() reads itself) is skipped as "settings, not folders" exactly when a
+# reader here consumes it, and SETTINGS_PREFIXES -- the skip tuple parse() uses
+# -- is derived from this dict. Each value reads its own key; `inference=` maps
+# to inference_name(), the one line rule inference() resolves, so the skip and
+# the resolver cannot disagree. One list, so the two sides cannot drift again in
+# either direction: `inference=` was read but not skipped, so a documented line
+# became a ghost host, and `retire=` was skipped but no parser read it (GH-655).
+SETTINGS_READERS = {
+    "idle_days=": idle_days,
+    "purge_days=": purge_days,
+    "park_hours=": park_hours,
+    "permission=": permission_mode,
+    "inference=": inference_name,
+    "archived=": archived_set,
+    TIER_PREFIX: tier_map,
+}
+SETTINGS_PREFIXES = tuple(SETTINGS_READERS)
 
 
 def session_entries(text: str):
