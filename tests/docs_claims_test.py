@@ -12,6 +12,9 @@ under a feature that never appeared in any release.
 Issue #69: ARCHITECTURE.md described `scripts/usage-summary` — its flags, its
 two output files, its run report and day schema — but that script was never
 committed to the repo, so every `scripts/` path the document names must exist.
+Issue #609: f6210cf moved pytest into pyproject.toml's default uv test group,
+and INTENT.md's Checks, the guide and ARCHITECTURE.md still taught
+`python3 -m pytest`, which no longer finds pytest.
 """
 import re
 from pathlib import Path
@@ -21,12 +24,19 @@ CHANGELOG = ROOT / "CHANGELOG.md"
 GUIDE = ROOT / "docs/guide.md"
 ARCHITECTURE = ROOT / "docs/ARCHITECTURE.md"
 SECURITY = ROOT / ".github/SECURITY.md"
+INTENT = ROOT / "INTENT.md"
+CONTRIBUTING = ROOT / ".github/CONTRIBUTING.md"
 
 # A `scripts/<name>` the architecture document names, backticked or bare, at a
 # path boundary: `scripts/usage-export` matches in a code span and in prose.
 # `lib/scripts/x` or `foo-scripts/x` is another directory's path and a name
 # boundary keeps it out; a trailing sentence dot is not part of a name.
 NAMED_SCRIPT = re.compile(r"(?<![\w/.-])scripts/([\w-]+(?:\.[\w-]+)*)")
+
+# #609: a pytest command the docs teach. The optional `uv run ` prefix is part
+# of the match, so `uv run python -m pytest` is one whole match rather than a
+# bare `python -m pytest` inside it; only matches without the prefix are stale.
+PYTEST_COMMAND = re.compile(r"(?:uv run )?python3? -m pytest")
 
 
 def _flatten(text):
@@ -198,3 +208,34 @@ def test_the_full_set_is_one_parallel_command():
     for doc in (GUIDE, ARCHITECTURE, ROOT / ".github/CONTRIBUTING.md", ROOT / "README.md"):
         assert not chained.search(doc.read_text(encoding="utf-8")), (
             f"{doc} chains the suites one after another; the full set is `make test`")
+
+
+def test_docs_teach_the_uv_pytest_command_issue_609():
+    """#609: f6210cf moved pytest into pyproject.toml's default uv test group,
+    so a bare `python3 -m pytest` ends in "No module named pytest" — but
+    INTENT.md's Checks and the guide still taught it, and the Checks are what a
+    reader runs to verify a promise. Every pytest command a reader is meant to
+    type carries `uv run`, and the documents that carry one also carry the lib
+    dir beside it, because a Check run without `CCMORPH_LIB_DIR` tests a tree
+    the reader's binaries are not in. ARCHITECTURE is scanned but names no
+    pytest command: it sends the reader to `make test`. docs/test-runtime.md is
+    left out on purpose: it records the commands its measurements ran, not a
+    command to type today."""
+    for doc in (INTENT, ROOT / "README.md", GUIDE, ARCHITECTURE, CONTRIBUTING):
+        flat = _flatten(doc.read_text(encoding="utf-8"))
+        bare = [m for m in PYTEST_COMMAND.findall(flat)
+                if not m.startswith("uv run python ")]
+        assert not bare, (
+            f"{doc.relative_to(ROOT)} teaches a pytest command outside uv run: {bare}")
+    for doc in (INTENT, GUIDE):
+        flat = _flatten(doc.read_text(encoding="utf-8"))
+        assert 'CCMORPH_LIB_DIR="$PWD/lib" uv run python -m pytest' in flat, (
+            f"{doc.relative_to(ROOT)} no longer names the lib dir beside the pytest command")
+    # Every Check line that runs pytest runs it with the lib dir in front, so a
+    # reader who copies one command gets the whole command.
+    unprefixed = [line for line in INTENT.read_text(encoding="utf-8").splitlines()
+                  if "uv run python -m pytest" in line
+                  and not all(f'CCMORPH_LIB_DIR="$PWD/lib" {m}'
+                              in line for m in PYTEST_COMMAND.findall(line))]
+    assert not unprefixed, (
+        f"INTENT.md Check lines run pytest without CCMORPH_LIB_DIR: {unprefixed}")

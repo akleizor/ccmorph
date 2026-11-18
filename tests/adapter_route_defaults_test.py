@@ -391,7 +391,7 @@ def test_a_launch_writes_what_it_wrote_before_gh433(launch, case):
         golden = json.loads(GH433_SNAPSHOT.read_text()) if GH433_SNAPSHOT.exists() else {}
         golden[case] = got
         GH433_SNAPSHOT.write_text(json.dumps(golden, indent=2, sort_keys=True) + '\n')
-    assert GH433_SNAPSHOT.exists(), f'generate the golden first: {GH433_REGEN}=1 python -m pytest -k gh433'
+    assert GH433_SNAPSHOT.exists(), f'generate the golden first: {GH433_REGEN}=1 uv run python -m pytest -k gh433'
     assert got == json.loads(GH433_SNAPSHOT.read_text())[case]
 
 
