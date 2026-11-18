@@ -183,3 +183,18 @@ def test_docs_name_the_setting_effort_alone_issue_367():
     for phrase in ("model and reasoning", "reasoning levels"):
         assert phrase not in guide, (
             f"docs/guide.md still calls the effort setting reasoning ('{phrase}')")
+
+
+def test_the_full_set_is_one_parallel_command():
+    """The one-minute ceiling is a user order (pytest.ini states it). The suites
+    work in disjoint scratch homes and mostly wait on process spawns, so `make
+    test` runs them at once; chained one after another they take about three
+    minutes. A `test` target that lists them, or a doc that chains them with
+    `&&`, sends every later change back down the sequential path."""
+    rule = re.search(r"^test:(.*)$", (ROOT / "Makefile").read_text(encoding="utf-8"), re.M)
+    assert rule and rule.group(1).split() == ["gate"], (
+        "Makefile's `test` target must be the parallel gate, not a chain of suites")
+    chained = re.compile(r"zsh tests/[\w./]+ &&")
+    for doc in (GUIDE, ARCHITECTURE, ROOT / ".github/CONTRIBUTING.md", ROOT / "README.md"):
+        assert not chained.search(doc.read_text(encoding="utf-8")), (
+            f"{doc} chains the suites one after another; the full set is `make test`")
