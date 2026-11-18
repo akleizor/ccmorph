@@ -741,7 +741,7 @@ and a timestamp was therefore not a usable ownership key. Rows written before
 `turn_id` existed carry no token and stay readable:
 
 ```
-{schema: 1, response_id, turn_id, route_id, profile, requested_model, task, session?, attempt,
+{schema: 1, response_id, turn_id, route_id, profile, requested_model, task, session?, parent?, attempt,
  served_model, retries, masked?, response_model, timestamp, usage, complete}
 ```
 
@@ -755,7 +755,8 @@ carries the whole history, so it counts what that request kept back, not new fin
 header (the usage hook reads `sessionId` from the transcript line), written only when it
 matches the task tag's shape (`[A-Za-z0-9._-]{1,64}`) and is not the request's own
 key (`x-api-key` or bearer token), and absent otherwise **[test]**. It is an opaque
-grouping key, never a credential.
+grouping key, never a credential. `parent` is the launching session's id, subject to
+the same validation and key exclusion, and is absent when unavailable or invalid.
 `retries` is how many times the shim re-sent the request before the response this row
 describes: up to two transport retries under `--retry-transport`, otherwise the single
 unexpected-EOF replay, so `0` when it re-sent nothing **[test]**.
@@ -782,13 +783,15 @@ refreshed after a day. A billed cost is never replaced, and rows written before 
 are not recomputed; rows written by builds that carried #34 before `estimated_cost` existed
 hold that computed amount in `cost`, and nothing marks them as estimates. A string (`service_tier`), an unknown key or
 a bool never enters the file, and neither does a prompt, a header or a credential
-**[test]**; the only session identifier is the optional `session` above. `route_id` is a domain-separated digest
+**[test]**; session identifiers are limited to `session` and `parent` above. `route_id` is a domain-separated digest
 of the profile and the adapter's route identity; that identity is itself a
 digest of `upstream + key`, so it, the key, its hash, the rendered config path
 and the token are never written anywhere in the row.
 
 **Task tags.** A launch through the adapter may carry `CCMORPH_TASK` (opaque
-id, `[A-Za-z0-9._-]{1,64}`) and `CCMORPH_ATTEMPT` (digits). The launcher turns the
+id, `[A-Za-z0-9._-]{1,64}`) and `CCMORPH_ATTEMPT` (digits). The launcher's
+`CLAUDE_CODE_SESSION_ID` supplies `x-ccmorph-parent`; the child does not inherit it.
+The launcher turns the
 well-formed ones into Claude Code's `ANTHROPIC_CUSTOM_HEADERS` (`x-ccmorph-task`,
 `-attempt`) and clears the variables so the session's children never inherit
 them; a direct (no-adapter) launch carries none. Because the generated settings
@@ -797,7 +800,7 @@ one diagnostics interpreter that answers the launch's other settings-layer
 questions also brings back the user's own `env.ANTHROPIC_CUSTOM_HEADERS`, and
 the launcher sends their lines in front of the tags, so a tagged launch no
 longer drops a header such as a tenant id. After verifying the key the shim tags
-the row and drops both headers before the upstream. **Task tags never
+the row and drops the internal headers before the upstream. **Task tags never
 change the requested model**: the caller picks the model once per task with `--model`,
 because a gateway rewrite would also override subagents.
 `requested_model` is the exact client ID, `served_model` is the ID sent upstream after

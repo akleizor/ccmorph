@@ -14,6 +14,7 @@ func TestLaunchEnvRoutesThroughTheLocalHop(t *testing.T) {
 		got := strings.Split(strings.TrimSuffix(b.String(), "."), "\x00")
 		return got[:len(got)-1]
 	}
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "") // the suite may itself run inside a Claude Code session
 	// Bridge: base and key replaced, or added when the profile had none. The key
 	// comes from the environment, never an operand.
 	t.Setenv("_CCM_BRIDGE_KEY", "k")
@@ -25,6 +26,16 @@ func TestLaunchEnvRoutesThroughTheLocalHop(t *testing.T) {
 	if got[0] != "ANTHROPIC_BASE_URL=http://127.0.0.1:7" || got[1] != "ANTHROPIC_CUSTOM_HEADERS=x-ccmorph-task: fix-1\nx-ccmorph-attempt: 2" {
 		t.Errorf("adapter: %q", got)
 	}
+	// The launcher's own session id rides along as the parent tag; a bad shape is dropped.
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "test-parent-1")
+	if got := run("", "", "1", "7", "", ""); got[0] != "ANTHROPIC_CUSTOM_HEADERS=x-ccmorph-parent: test-parent-1" {
+		t.Errorf("parent: %q", got)
+	}
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "a b/c")
+	if got := run("", "", "1", "7", "", ""); len(got) != 0 {
+		t.Errorf("bad parent: %q", got)
+	}
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
 	// Bad shapes are dropped, and a native adapter answer (no port) keeps the base.
 	if got := run("ANTHROPIC_BASE_URL=https://x\n", "", "1", "", "bad tag", "1234"); len(got) != 1 || got[0] != "ANTHROPIC_BASE_URL=https://x" {
 		t.Errorf("drop: %q", got)

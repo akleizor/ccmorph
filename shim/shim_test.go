@@ -897,7 +897,7 @@ func rowFilesOf(dir string) []string {
 
 func TestSidecarLifecycleAndModes(t *testing.T) {
 	dir := stateHome(t)
-	u := newSidecar("p", "identity").tagged(taskTags{nil, 1, nil})
+	u := newSidecar("p", "identity").tagged(noTags)
 	req := "claude-x"
 	rec := u.observe(parseDoc([]byte(`{"type":"message_start","message":{"id":"msg_1","model":"served","usage":{"input_tokens":11,"service_tier":"standard"}}}`)), nil, &req)
 	if rec == nil {

@@ -1004,13 +1004,13 @@ class UsageSidecarTest(unittest.TestCase):
 
     def test_task_tags_the_row_and_never_changes_the_model(self):
         h = {"x-ccmorph-task": "issue-42", "x-ccmorph-attempt": "2",
-             "x-claude-code-session-id": "sess-1"}
+             "x-claude-code-session-id": "sess-1", "x-ccmorph-parent": "test-parent-1"}
         port = self.tag_shim()
         with self.post(port, headers=h) as r:
             r.read()
         self.assertEqual(self.seen[0], REQUEST_BODY)
         row = self.row()
-        self.assertEqual((row["task"], row["attempt"], row["session"]), ("issue-42", 2, "sess-1"))
+        self.assertEqual((row["task"], row["attempt"], row["session"], row["parent"]), ("issue-42", 2, "sess-1", "test-parent-1"))
         self.assertNotIn("role", row)
         self.assertEqual((row["requested_model"], row["response_model"]), ("m", "m-served"))
 
@@ -1025,9 +1025,10 @@ class UsageSidecarTest(unittest.TestCase):
 
     def test_a_malformed_session_id_is_left_out_of_the_row(self):
         port = self.tag_shim()
-        with self.post(port, headers={"x-claude-code-session-id": "a b/c"}) as r:
+        with self.post(port, headers={"x-claude-code-session-id": "a b/c", "x-ccmorph-parent": "a b/c"}) as r:
             r.read()
         self.assertNotIn("session", self.row())
+        self.assertNotIn("parent", self.row())
 
     def test_malformed_values_are_not_trusted(self):
         port = self.tag_shim()

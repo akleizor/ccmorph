@@ -76,7 +76,7 @@ func claudeSession(args []string, _ io.Reader, out, errw io.Writer) int {
 		entries = args[4:sep] // #137: a v0.4.4-or-earlier launcher sends them inline
 	}
 	tuning, profileKeys := strings.Fields(args[0]), strings.Fields(args[1])
-	clear := append(append([]string{"CLAUDE_CODE_EFFORT_LEVEL", "CLAUDE_CONFIG_DIR",
+	clear := append(append([]string{"CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDE_CONFIG_DIR",
 		"CLAUDE_SECURESTORAGE_CONFIG_DIR", "CLAUDE_CODE_SUBAGENT_MODEL"}, maskedKeys...),
 		append(strings.Fields(args[2]), strings.Fields(args[3])...)...)
 	for _, k := range strings.Fields(os.Getenv("CCMORPH_SET_ENV")) {

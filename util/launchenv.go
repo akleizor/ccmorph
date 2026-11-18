@@ -20,7 +20,7 @@ var (
 //
 // The bridge key is never an operand of anything: a credential on a command line
 // is visible to anything running as this user (.github/SECURITY.md).
-func LaunchEnv(env []string, bridgePort, bridgeKey string, adapter bool, adapterPort, task, attempt string) []string {
+func LaunchEnv(env []string, bridgePort, bridgeKey string, adapter bool, adapterPort, task, attempt, parent string) []string {
 	env = append([]string{}, env...)
 	set := func(key, val string, add bool) {
 		for i, e := range env {
@@ -47,6 +47,9 @@ func LaunchEnv(env []string, bridgePort, bridgeKey string, adapter bool, adapter
 	}
 	if attemptTag.MatchString(attempt) {
 		hdrs = append(hdrs, "x-ccmorph-attempt: "+attempt)
+	}
+	if taskTag.MatchString(parent) {
+		hdrs = append(hdrs, "x-ccmorph-parent: "+parent)
 	}
 	if adapter && len(hdrs) > 0 {
 		env = append(env, "ANTHROPIC_CUSTOM_HEADERS="+strings.Join(hdrs, "\n"))
@@ -76,7 +79,7 @@ func launchEnv(args []string, in io.Reader, out, _ io.Writer) int {
 			env = append(env, sc.Text())
 		}
 	}
-	for _, e := range LaunchEnv(env, args[0], bridgeKey, args[1] == "1", args[2], args[3], args[4]) {
+	for _, e := range LaunchEnv(env, args[0], bridgeKey, args[1] == "1", args[2], args[3], args[4], os.Getenv("CLAUDE_CODE_SESSION_ID")) {
 		io.WriteString(out, e+"\x00")
 	}
 	io.WriteString(out, ".")

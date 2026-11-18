@@ -350,7 +350,7 @@ setup_home() {
   export HOME="$1"
   # The runner may export tuning keys (or be a Claude Code session itself);
   # the launcher passes them through, so scrub them for a hermetic fixture.
-  unset CLAUDE_CODE_SIMPLE MAX_THINKING_TOKENS CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CCMORPH_SET_ENV CLAUDECODE CLAUDE_CODE_CHILD_SESSION
+  unset CLAUDE_CODE_SIMPLE MAX_THINKING_TOKENS CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC CCMORPH_SET_ENV CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_SESSION_ID
   export CCMORPH_TEST_LOG="$HOME/claude.log"
   # The machine's provider bridge is hidden from the PATH every home gets:
   # bridgeless_path replaces a bridge-carrying entry with a mirror of its
@@ -5807,6 +5807,7 @@ task_stub_claude() {
   printf '%s\n' '#!/bin/sh' \
     '{ printf "HDRS=<%s>\n" "${ANTHROPIC_CUSTOM_HEADERS-unset}"' \
     '  printf "TASK=<%s> ATTEMPT=<%s>\n" "${CCMORPH_TASK-unset}" "${CCMORPH_ATTEMPT-unset}"' \
+    '  printf "PARENT_ENV=<%s>\n" "${CLAUDE_CODE_SESSION_ID-unset}"' \
     '  printf "PCT=<%s>\n" "${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE-unset}"' \
     '} >> "$CCMORPH_TEST_LOG"' > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
@@ -5821,10 +5822,12 @@ test_task_env_becomes_request_headers_on_an_adapter_launch() {
   task_stub_claude
   write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://gateway.invalid' 'adapter=true'
   source "$CCMORPH_SOURCE"
-  CCMORPH_TASK=issue-42 CCMORPH_ATTEMPT=2 _ccm_launch -a gw prompt || rc=1
+  CLAUDE_CODE_SESSION_ID=test-parent-1 CCMORPH_TASK=issue-42 CCMORPH_ATTEMPT=2 _ccm_launch -a gw prompt || rc=1
   local actual="$(<"$CCMORPH_TEST_LOG")"
   assert_contains "$actual" 'x-ccmorph-task: issue-42' 'the task header' || rc=1
-  assert_contains "$actual" 'x-ccmorph-attempt: 2>' 'the attempt header' || rc=1
+  assert_contains "$actual" 'x-ccmorph-attempt: 2' 'the attempt header' || rc=1
+  assert_contains "$actual" 'x-ccmorph-parent: test-parent-1' 'the parent header' || rc=1
+  assert_contains "$actual" 'PARENT_ENV=<unset>' 'the child must not inherit the parent session id' || rc=1
   assert_contains "$actual" 'TASK=<unset> ATTEMPT=<unset>' 'the session must not inherit the variables' || rc=1
   rm -rf "$test_home"
   return $rc
@@ -5895,7 +5898,7 @@ test_no_task_means_no_headers_and_bad_shapes_are_dropped() {
   write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://gateway.invalid' 'adapter=true'
   source "$CCMORPH_SOURCE"
   _ccm_launch -a gw prompt || rc=1
-  CCMORPH_TASK=/etc/passwd CCMORPH_ATTEMPT=x _ccm_launch -a gw prompt || rc=1
+  CLAUDE_CODE_SESSION_ID='bad/session' CCMORPH_TASK=/etc/passwd CCMORPH_ATTEMPT=x _ccm_launch -a gw prompt || rc=1
   [[ "$(grep -c '^HDRS=<unset>$' "$CCMORPH_TEST_LOG")" == 2 ]] || {
     print -u2 -- 'no task, or only malformed values, must leave the headers unset'; rc=1; }
   rm -rf "$test_home"

@@ -1165,7 +1165,7 @@ func (l *launcher) settingsArgv(verb, name string, rest ...string) []string {
 }
 
 func (l *launcher) route(penv []string, port, key string, adapter bool) ([]string, bool) {
-	return util.LaunchEnv(penv, port, key, adapter, l.adapterPort, os.Getenv("CCMORPH_TASK"), os.Getenv("CCMORPH_ATTEMPT")), true
+	return util.LaunchEnv(penv, port, key, adapter, l.adapterPort, os.Getenv("CCMORPH_TASK"), os.Getenv("CCMORPH_ATTEMPT"), os.Getenv("CLAUDE_CODE_SESSION_ID")), true
 }
 
 // usageHookFor is the Stop hook a launch installs to record its own usage. A

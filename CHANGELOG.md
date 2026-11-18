@@ -7,6 +7,10 @@
 
 ## Unreleased
 
+### Added
+
+- Adapter usage rows record the launching session as `parent` when available.
+
 ### Fixed
 
 - **A `uv run` without memorized flags can no longer run the pytest suite
