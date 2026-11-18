@@ -7,6 +7,17 @@
 
 ## Unreleased
 
+## v0.5.14 — 2026-11-18
+
+Cut from v0.5.13 plus this fix only.
+
+### Fixed
+
+- **A signed-out Claude account now names its fix.** `ccmorph doctor` reads the
+  macOS keychain sign-in and fails with `ccmorph login <profile>` when it is
+  empty. `ccmorph-rc-hosts` stops retrying a refresh that cannot work and logs
+  the same command once.
+
 ## v0.5.13 — 2026-11-17
 
 ### Fixed
