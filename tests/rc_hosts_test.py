@@ -1481,6 +1481,62 @@ def test_settings_lines_are_not_read_as_folders(tmp_path):
     assert list(got)[0].endswith(str(tmp_path).split("/")[-1])
 
 
+def test_an_inference_line_is_a_setting_not_a_ghost_folder(tmp_path):
+    """GH-655: `inference=` is documented and read by main(), but parse() decided
+    "settings, not folders" from its own tuple, which omitted it. With a global
+    route, a config following the README made `<cwd>/inference=oli` a folder the
+    supervisor hosted on every reload -- a host that could never launch."""
+    m = load()
+    assert m.parse(f"route=gw\ninference=oli\n{tmp_path}\n") == {str(tmp_path): ("gw", ())}
+
+
+def test_a_retired_folder_is_not_hosted(tmp_path):
+    """`retire=<folder>` names a folder the operator retires from hosting: its
+    line stays in the config, but no host starts for it."""
+    m = load()
+    other = tmp_path / "other"
+    assert m.parse(f"route=gw\nretire={tmp_path}\n{tmp_path}\n") == {}
+    assert m.parse(f"route=gw\nretire={tmp_path}\n{other}\n") == {str(other): ("gw", ())}
+
+
+def settings_samples(m, tmp_path):
+    return {"idle_days=": "3", "purge_days=": "3", "park_hours=": "3",
+            "permission=": "plan", "inference=": "oli",
+            "archived=": str(tmp_path / "archived"),
+            "retire=": str(tmp_path / "retired"), m.TIER_PREFIX: "opus=m"}
+
+
+def test_every_settings_prefix_has_a_reader_and_is_skipped(tmp_path):
+    """GH-655: the skip tuple and the per-key readers are one registry now, so
+    neither can drift: a reader cannot exist without its line being skipped
+    (`inference=`, which became a ghost host) and a skipped prefix cannot be
+    inert (`retire=`, which had no parser before this)."""
+    m = load()
+    samples = settings_samples(m, tmp_path)
+    assert set(samples) == set(m.SETTINGS_READERS)
+    assert tuple(m.SETTINGS_READERS) == m.SETTINGS_PREFIXES
+    for prefix, reader in m.SETTINGS_READERS.items():
+        assert callable(reader), prefix
+        text = f"route=gw\n{prefix}{samples[prefix]}\n{tmp_path}\n"
+        assert list(m.parse(text)) == [str(tmp_path)], f"{prefix} leaked into folders"
+        assert reader(text) != reader(f"route=gw\n{tmp_path}\n"), f"{prefix} has no reader"
+
+
+def test_no_reader_reads_without_its_registry_entry(tmp_path, monkeypatch):
+    """GH-655 review: SETTINGS_READERS is the source of truth for the readers
+    too, not only for parse()'s skip. Each reader finds its own prefix there, so
+    deleting an entry silences that reader in the same edit that stops the skip;
+    a reader left alive would consume a line parse() now hosts as a folder --
+    the `inference=` ghost host."""
+    m = load()
+    samples = settings_samples(m, tmp_path)
+    baseline = f"route=gw\n{tmp_path}\n"
+    for prefix, reader in list(m.SETTINGS_READERS.items()):
+        with monkeypatch.context() as patch:
+            patch.delitem(m.SETTINGS_READERS, prefix)
+            assert reader(baseline + f"{prefix}{samples[prefix]}\n") == reader(baseline), prefix
+
+
 def test_a_folder_listed_for_hosting_is_made_a_repo_before_worktree_mode(tmp_path):
     """Worktree spawn mode is the only mode (capacity 1 reads as a dead host from
     the phone), and it needs a git repo with a HEAD to branch worktrees from."""
