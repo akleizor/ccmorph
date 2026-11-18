@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from support import CLAUDE_MISSING, FAKE_SERVER_NO_DNS, HANG_TIMEOUT
+from support import CLAUDE_MISSING, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, needs_loopback
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -1233,6 +1233,7 @@ def test_doctor_healthy_profile_has_no_skip_lines(tmp_path, case):
         assert not line.startswith("SKIP"), result.stdout
 
 
+@needs_loopback  # the provider stub binds a port: #611
 def test_run_doctor_remains_native_passthrough(tmp_path):
     state = tmp_path / "state"
     home = tmp_path / "home"
@@ -1291,6 +1292,7 @@ def test_run_doctor_remains_native_passthrough(tmp_path):
         process.wait(timeout=HANG_TIMEOUT)
 
 
+@needs_loopback  # the passthrough act it guards needs a bound port: #611
 @pytest.mark.skipif(sys.platform != "darwin",
                     reason="only macOS refuses to signal a group whose only member has exited")
 def test_run_doctor_cleanup_reports_the_bound_not_a_refused_killpg_issue_5(tmp_path):

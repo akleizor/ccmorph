@@ -32,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
-from support import HANG_TIMEOUT, SHIM, needs_shim
+from support import HANG_TIMEOUT, SHIM, needs_loopback, needs_shim
 
 pytestmark = needs_shim
 
@@ -111,6 +111,7 @@ def dead_port():
     return s.getsockname()[1]
 
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class ShimParentDeathTest(unittest.TestCase):
     def test_shim_dies_with_the_process_that_launched_it(self):
         """--parent-pid must hold when the launcher is killed outright: six
@@ -131,6 +132,7 @@ class ShimParentDeathTest(unittest.TestCase):
             self.fail("the shim outlived the process that launched it")
 
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class ShimStartupTest(unittest.TestCase):
     def test_startup_prints_its_banner_with_the_bound_port(self):
         """The shim binds loopback only and resolves no name for it (a reverse
@@ -190,6 +192,7 @@ def serve(handler):
     return srv
 
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class ShimTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -241,6 +244,7 @@ class ShimTest(unittest.TestCase):
         self.assertIsNone(Upstream.seen_xff[-1],
                           "the shim added an X-Forwarded-For header on its own")
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class ProcessRestartTest(unittest.TestCase):
     """FIX 1 (CRITICAL) — the counter restarts at 1 in every process, but a
     Claude Code transcript OUTLIVES the shim: every relaunch, profile hop or
@@ -313,6 +317,7 @@ class BlockedUpstream(BaseHTTPRequestHandler):
              "content": [], "usage": {"input_tokens": 1, "output_tokens": 1}}).encode())
 
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class TransportRetryTest(unittest.TestCase):
     """--retry-transport end to end. The Go suite (shim/retry_test.go) pins the
     jitter bounds, the breaker clock and the stall rule with injected time; here
@@ -368,6 +373,7 @@ class SlowUpstream(BaseHTTPRequestHandler):
         time.sleep(30)   # hold the connection open like cliproxyapi does
 
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class KeepAliveHangTest(unittest.TestCase):
     def test_stream_completes_at_message_stop_under_keepalive(self):
         body, elapsed = read_stream(self, SlowUpstream)
@@ -450,6 +456,7 @@ def read_stream(case, upstream_cls):
     return body, time.monotonic() - start
 
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class StreamTerminationTest(unittest.TestCase):
     def test_upstream_eof_midstream_closes_the_client(self):
         """FIX 4 — the bare `return` on upstream EOF left close_connection
@@ -508,10 +515,12 @@ class ShimFlagTest(unittest.TestCase):
         with urllib.request.urlopen(req, timeout=HANG_TIMEOUT) as r:
             return body, r.read()
 
+    @needs_loopback  # echoes through a live shim listener: #611
     def test_request_body_is_byte_identical_when_nothing_dangles(self):
         body, got = self.echoed("Bash")
         self.assertEqual(got, body)
 
+    @needs_loopback  # echoes through a live shim listener: #611
     def test_a_dangling_tool_reference_goes_upstream_as_text(self):
         _, got = self.echoed("Monitor")
         inner = json.loads(got)["messages"][0]["content"][0]["content"]
@@ -529,6 +538,7 @@ class ShimFlagTest(unittest.TestCase):
                 self.assertNotEqual(out.returncode, 0)
                 self.assertIn("usage", out.stdout + out.stderr)
 
+    @needs_loopback  # the preserved ids ride a live shim listener: #611
     def test_preserve_tool_ids_stops_response_id_rewriting(self):
         srv = serve(Upstream)
         self.addCleanup(srv.shutdown)
@@ -601,6 +611,7 @@ class RecordingUpstream(BaseHTTPRequestHandler):
         self.wfile.write(b"{}")
 
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class InboundTokenTest(unittest.TestCase):
     """With CCMORPH_INBOUND the client holds only a token; the real key goes upstream."""
 
@@ -625,6 +636,7 @@ class InboundTokenTest(unittest.TestCase):
         self.assertEqual(got["x-api-key"], "real")
         self.assertEqual(got["authorization"], "Bearer real")
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class IdentifierTest(unittest.TestCase):
     """The client's schema goes upstream as sent; identifiers change only on a
     profile's opt-in (--random-device-id)."""
@@ -764,6 +776,7 @@ def upstream_bytes(case, body):
     return body.replace(minted[0].encode(), b"Bash_0")
 
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class UsageSidecarTest(unittest.TestCase):
     def setUp(self):
         CaptureUpstream.mode = "json"
@@ -1110,6 +1123,7 @@ class GatewayEdgeUpstream(BaseHTTPRequestHandler):
         self._send(200, "application/json", json.dumps(message).encode())
 
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class GatewayEdgeTest(unittest.TestCase):
     """Anthropic ids in and out, whatever the gateway calls its models."""
 
@@ -1200,6 +1214,7 @@ class StallUpstream(BaseHTTPRequestHandler):
         time.sleep(20)
 
 
+@needs_loopback  # the shim and its upstream really listen: #611
 class StallDeadlineTest(unittest.TestCase):
     """A silent gateway ends the turn with an error Claude Code can read and retry,
     never a reply that never comes."""

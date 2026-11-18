@@ -13,12 +13,13 @@ from pathlib import Path
 
 import pytest
 
-from support import HANG_TIMEOUT, port_outside_the_ephemeral_pool
+from support import HANG_TIMEOUT, needs_loopback, port_outside_the_ephemeral_pool
 
 ADDON = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "rc_addon.py"
 MITMDUMP = shutil.which("mitmdump")
 
 
+@needs_loopback  # the proxy and upstream are real listeners: #611
 @pytest.mark.skipif(not MITMDUMP, reason="mitmdump not installed")
 def test_dead_route_fails_closed_and_key_file_is_consumed(tmp_path):
     key_file = tmp_path / "route-key"
@@ -76,6 +77,7 @@ def _launcher():
     return mod
 
 
+@needs_loopback  # the proxy and upstream are real listeners: #611
 @pytest.mark.skipif(not MITMDUMP, reason="mitmdump not installed")
 def test_launcher_proxy_never_falls_back_to_anthropic(tmp_path):
     """The launcher's own proxy: a routed call works, edits to the source addon
@@ -140,6 +142,7 @@ def test_launcher_proxy_never_falls_back_to_anthropic(tmp_path):
         upstream.shutdown()
 
 
+@needs_loopback  # the proxy and upstream are real listeners: #611
 @pytest.mark.skipif(not MITMDUMP, reason="mitmdump not installed")
 def test_addon_dated_epoch_still_loads(tmp_path):
     """mitmproxy loads a -s script only when its mtime is newer than its last load

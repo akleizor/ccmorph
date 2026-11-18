@@ -16,9 +16,10 @@ from pathlib import Path
 
 import pytest
 
-from support import HANG_TIMEOUT, SHIM, needs_shim
+from support import HANG_TIMEOUT, SHIM, needs_loopback, needs_shim
 
-pytestmark = needs_shim
+# every rig is a fake gateway on a real listener: #611
+pytestmark = [needs_shim, needs_loopback]
 
 # The shim runs `<adapter> <profile> --ensure-config ... --model <id>`; this one
 # logs <id> and succeeds only for the model named in $FAKE_ADAPTER_OK.

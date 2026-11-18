@@ -2,7 +2,9 @@ package util
 
 import (
 	"bytes"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -13,6 +15,25 @@ import (
 	"syscall"
 	"testing"
 )
+
+// requireLoopback skips a test whose subject must bind a loopback port, but only
+// on the sandbox's permission refusal (issue #611): EPERM or EACCES at bind is a
+// stable environment fact and gets the one loud skip. Every other listen error
+// stays a visible failure — a transient resource problem must not silently
+// disable the bridge tests on an otherwise-capable runner. CI carries no sandbox
+// and runs every caller.
+func requireLoopback(t *testing.T) {
+	t.Helper()
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		var errno syscall.Errno
+		if errors.As(err, &errno) && (errno == syscall.EPERM || errno == syscall.EACCES) {
+			t.Skip("SKIP: loopback bind denied in this sandbox (runs in CI)")
+		}
+		t.Fatalf("loopback probe failed: %v", err)
+	}
+	l.Close()
+}
 
 // A fake cliproxyapi: python serving /v1/models on the config's port, checking the
 // key. Like a fresh antigravity login, its first two answers are 200 with no models.
@@ -33,6 +54,7 @@ http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
 `
 
 func TestBridgeStartsServesAndStops(t *testing.T) {
+	requireLoopback(t) // the fake bridge answers on a bound port
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 needed for the fake bridge")
 	}
@@ -89,6 +111,7 @@ func TestBridgeStartsServesAndStops(t *testing.T) {
 }
 
 func TestBridgeThatDiesIsReported(t *testing.T) {
+	requireLoopback(t) // bridgeStart picks its port by binding one
 	dir := t.TempDir()
 	t.Setenv("TMPDIR", dir)
 	bin := filepath.Join(dir, "cliproxyapi")
