@@ -24,6 +24,8 @@ help:
 # The compiled helpers. Tests and a checkout's install.sh use these binaries.
 shim:
 	go build -trimpath -o libexec/ccmorph-core ./cmd/ccmorph-core
+	@# macOS keys privacy grants to an ad-hoc binary's hash, so each build asks again; a real identity keeps them
+	@if [ -n "$(CCMORPH_CODESIGN_IDENTITY)" ]; then codesign -f -s "$(CCMORPH_CODESIGN_IDENTITY)" -i ccmorph-core libexec/ccmorph-core; fi
 
 test: gate
 
