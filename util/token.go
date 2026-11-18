@@ -2,10 +2,8 @@ package util
 
 import (
 	"encoding/json"
-	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -34,17 +32,20 @@ var readSigninKeychain = ReadSigninKeychain
 
 // StoredSignin reads the Claude-account sign-in without changing it.
 func StoredSignin(home string) (access, refresh string, known bool) {
-	if runtime.GOOS != "darwin" {
-		if fi, err := os.Lstat(filepath.Join(home, ".credentials.json")); err != nil {
-			return "", "", os.IsNotExist(err)
-		} else if !fi.Mode().IsRegular() {
+	raw, err := []byte(nil), error(nil)
+	if runtime.GOOS == "darwin" {
+		raw, err = ReadSigninCredentials(home, readSigninKeychain)
+	}
+	if runtime.GOOS != "darwin" || err != nil {
+		// Claude Code falls back to the profile home's file where it has no keychain;
+		// anything but a regular file there holds no sign-in to read.
+		path := filepath.Join(home, ".credentials.json")
+		if fi, e := os.Lstat(path); e != nil || !fi.Mode().IsRegular() {
+			return "", "", false // never signed in, or kept elsewhere: only an emptied sign-in is known
+		}
+		if raw, err = os.ReadFile(path); err != nil {
 			return "", "", false
 		}
-	}
-	raw, err := ReadSigninCredentials(home, readSigninKeychain)
-	if err != nil {
-		var exitErr *exec.ExitError
-		return "", "", os.IsNotExist(err) || (runtime.GOOS == "darwin" && errors.As(err, &exitErr) && exitErr.ExitCode() == 44)
 	}
 	var doc struct {
 		OAuth struct {
