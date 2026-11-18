@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 from support import (CORE, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, adapter_cmd,
-                     port_outside_the_ephemeral_pool)
+                     needs_loopback, port_outside_the_ephemeral_pool)
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -204,6 +204,7 @@ def listener_outside_the_ephemeral_pool(addr: str) -> tuple[socket.socket, int]:
     raise RuntimeError(f"no port below the ephemeral ranges is free on {addr}")
 
 
+@needs_loopback  # the stub gateway is a real listener: #611
 class AdapterTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

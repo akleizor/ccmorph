@@ -16,7 +16,6 @@ write its row — no adapter holds one for it.
 """
 import json
 import os
-import socket
 import stat
 import subprocess
 import time
@@ -24,26 +23,17 @@ from pathlib import Path
 
 import pytest
 
-from support import FAKE_SERVER_NO_DNS, HANG_TIMEOUT, anthropic_accepts_the_key, needs_shim
+from support import (FAKE_SERVER_NO_DNS, HANG_TIMEOUT, anthropic_accepts_the_key,
+                     needs_loopback, needs_shim)
 
 pytestmark = needs_shim
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def can_bind() -> bool:
-    """A provider launch starts a bridge on a loopback port; a sandbox may refuse."""
-    try:
-        with socket.socket() as s:
-            s.bind(("127.0.0.1", 0))
-        return True
-    except OSError:
-        return False
-
-
-provider_only = pytest.mark.skipif(
-    not can_bind(), reason="a provider launch needs a loopback port and this sandbox refuses binds"
-)
+# A provider launch starts a bridge on a loopback port; a sandbox may refuse
+# the bind, and the suite's one probe answers that once per process: #611.
+provider_only = needs_loopback
 
 # The stub stands in for Claude Code: it records the environment and the Stop
 # hooks the launch generated, then plays one turn — one API response, written

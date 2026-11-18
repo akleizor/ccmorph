@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from support import HANG_TIMEOUT, port_outside_the_ephemeral_pool
+from support import HANG_TIMEOUT, needs_loopback, port_outside_the_ephemeral_pool
 
 SCRIPT = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccmorph-rc-hosts"
 
@@ -1574,6 +1574,7 @@ def test_days_settings_fall_back_to_the_documented_default_when_absent_or_malfor
         assert f"{name}={bad} is not a number" in capsys.readouterr().out
 
 
+@needs_loopback  # this live edge really listens on loopback: #611
 def test_a_live_edge_is_the_record_its_own_file_holds(tmp_path, monkeypatch):
     """The record is what the adoption decision compares, so the reader returns it,
     and only for an edge that is both alive and answering."""
@@ -2589,6 +2590,7 @@ def test_a_session_the_server_will_not_resume_is_not_asked_again(tmp_path, monke
     assert _posts_per_cycle(m, repo, posts, clock, 2, done, failed) == [0, 0]
 
 
+@needs_loopback  # the half-written reply comes off a real listener: #611
 def test_a_truncated_api_reply_does_not_stop_the_supervisor(tmp_path, monkeypatch):
     """A reply cut off mid-body raised http.client.IncompleteRead (not an OSError)
     out of api() and exited main(); launchd then restarted every host (2026-10-14)."""

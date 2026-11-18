@@ -9,7 +9,8 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-from support import HANG_TIMEOUT, SHIM, needs_shim, port_outside_the_ephemeral_pool
+from support import (HANG_TIMEOUT, SHIM, needs_loopback, needs_shim,
+                     port_outside_the_ephemeral_pool)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -38,6 +39,7 @@ def wait_port(port):
         time.sleep(0.1)
 
 
+@needs_loopback  # the origin and sink are real listeners: #611
 class CredentialRedirect(unittest.TestCase):
     def _redirect_fixture(self):
         seen = []

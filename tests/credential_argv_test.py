@@ -11,7 +11,7 @@ import time
 import unittest
 from pathlib import Path
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, needs_loopback
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -48,6 +48,7 @@ def home_env(tmp, **extra):
     return env, state
 
 
+@needs_loopback  # the fake gateway is a real listener: #611
 class CredentialArgv(unittest.TestCase):
     def test_key_never_on_a_command_line(self):
         """.github/SECURITY.md: 'No credential on a command line ... not in ps output.'"""

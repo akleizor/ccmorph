@@ -149,6 +149,46 @@ def port_outside_the_ephemeral_pool() -> int:
     raise RuntimeError("no port below the ephemeral ranges is free on 127.0.0.1")
 
 
+# Issue #611: a hive sandbox refuses loopback binds at the syscall, so every
+# listener-based test errors inside its own fixture and a Handoff spends its
+# lines re-discovering the same environment fact. The probe below answers that
+# fact once per process, and the `needs_loopback` marker turns the refusal
+# into one loud SKIP line per test instead of a wall of identical failures.
+# Only the sandbox's own permission refusal (EPERM/EACCES) is a capability
+# fact: every other bind error — an exhausted fd table, a full backlog — is a
+# transient resource failure and must stay the visible failure it was, never
+# a skipped suite. Where binds are allowed — every CI job, and any session
+# with sandbox.network.allowLocalBinding — the probe answers True and nothing
+# skips.
+LOOPBACK_SKIP = "SKIP: loopback bind denied in this sandbox (runs in CI)"
+
+_LOOPBACK_BIND = None  # None until the probe's one answer; then True/False.
+
+
+def can_bind_loopback():
+    """Whether a test may bind a loopback port here. Draws port 0, releases
+    it, and remembers the answer — one bind per process, because a permission
+    refusal is stable for the life of the process (the sandbox's policy, or
+    its absence) and a bind that once succeeded on the machine keeps working.
+    A permission refusal (EPERM/EACCES, which Python both map to
+    PermissionError) is the only thing cached as False: any other error
+    propagates with its own face and caches nothing, so a transient resource
+    failure retries and surfaces instead of quietly skipping a suite."""
+    global _LOOPBACK_BIND
+    if _LOOPBACK_BIND is None:
+        try:
+            s = socket.socket()
+            try:
+                s.bind(("127.0.0.1", 0))
+            finally:
+                s.close()
+        except PermissionError:
+            _LOOPBACK_BIND = False
+        else:
+            _LOOPBACK_BIND = True
+    return _LOOPBACK_BIND
+
+
 # The compiled core (`make shim`): adapter, shim and helper verbs are its subcommands.
 CORE = Path(__file__).resolve().parent.parent / "libexec/ccmorph-core"
 # argv prefix of the stock shim.
@@ -170,4 +210,7 @@ def __getattr__(name):
     if name == "needs_shim":
         import pytest
         return pytest.mark.skipif(not CORE.exists(), reason=f"{CORE} is not built: run `make shim` first")
+    if name == "needs_loopback":
+        import pytest
+        return pytest.mark.skipif(not can_bind_loopback(), reason=LOOPBACK_SKIP)
     raise AttributeError(name)

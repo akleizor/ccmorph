@@ -14,7 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from support import (FAKE_SERVER_NO_DNS, HANG_TIMEOUT, helper_cmd,  # noqa: F401
+from support import (FAKE_SERVER_NO_DNS, HANG_TIMEOUT, LOOPBACK_SKIP,  # noqa: F401
+                     can_bind_loopback, helper_cmd,
                      port_outside_the_ephemeral_pool)
 
 
@@ -86,6 +87,8 @@ class Fixture:
 
 @pytest.fixture
 def gateway(tmp_path):
+    if not can_bind_loopback():  # every gateway here is a real listener: #611
+        pytest.skip(LOOPBACK_SKIP)
     made = []
 
     def make(listing, post=None):

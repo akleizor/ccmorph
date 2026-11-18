@@ -10,29 +10,15 @@ gone once the run has ended, which is what a full run's temp dir says.
 from __future__ import annotations
 
 import os
-import socket
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from support import HANG_TIMEOUT, needs_shim
+from support import HANG_TIMEOUT, LOOPBACK_SKIP, can_bind_loopback, needs_shim
 
 REPO = Path(__file__).resolve().parent.parent
-
-
-def _can_bind_loopback() -> bool:
-    """The suite witnesses run tests that bind loopback servers; a runner that
-    refuses the bind (a sandbox) cannot run them. The landing gate runs this
-    file outside any sandbox."""
-    s = socket.socket()
-    try:
-        s.bind(("127.0.0.1", 0))
-    except OSError:
-        return False
-    s.close()
-    return True
 
 
 @pytest.mark.parametrize(("ending", "expected_rc"), [
@@ -82,9 +68,8 @@ def test_a_suite_run_removes_the_temp_state_it_makes(file, one_test, tmp_path):
     """The witness run happens inside a private TMPDIR — Python's tempfile
     honours the variable on every platform — and must leave it exactly as it
     found it."""
-    if not _can_bind_loopback():
-        pytest.skip("this runner refuses loopback binds; the landing gate "
-                    "runs this witness outside any sandbox")
+    if not can_bind_loopback():  # the witness runs a file that binds: #611
+        pytest.skip(LOOPBACK_SKIP)
     scratch = tmp_path / "tmpdir"
     scratch.mkdir()
     env = dict(os.environ, TMPDIR=str(scratch))
