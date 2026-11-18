@@ -1002,7 +1002,7 @@ printf '%s\\n' '__CCMORPH_STATUS__{code}'
     result, _, bindir = run_doctor(tmp_path, "type=sub\nemail=test@example.test\n", curl)
     if code == "401":
         assert ("WARN credentials: Anthropic rejected the stored sign-in (HTTP 401); "
-                "the next session refreshes it if it can, else it opens the login menu") in result.stdout
+                "the next session refreshes it if it can, else sign in again: ccmorph login demo") in result.stdout
         assert not result.stdout.splitlines()[-1].startswith("OK ready"), result.stdout
     elif code == "200":
         assert result.returncode == 0, result.stdout
@@ -1032,8 +1032,8 @@ def test_doctor_on_a_sub_profile_without_a_readable_sign_in_does_not_vouch(tmp_p
     status word."""
     curl = "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CURL_ARGS\"\n[ \"$1\" = -K ] && cat >> \"$CURL_ARGS\"\nexit 1\n"
     result, _, bindir = run_doctor(tmp_path, "type=sub\nemail=test@example.test\n", curl)
-    assert ("WARN credentials: the sign-in was not checked (Claude Code keeps it "
-            "outside the profile home; the next session refreshes it if it can)") in result.stdout
+    assert ("WARN credentials: the sign-in was not checked (no stored sign-in could be read; "
+            "the next session refreshes it if it can)") in result.stdout
     assert result.stdout.splitlines()[-1].startswith("WARN may not start"), result.stdout
     assert result.returncode == 0, result.stdout
     # The report keeps its shape with no sign-in to read: the endpoint is

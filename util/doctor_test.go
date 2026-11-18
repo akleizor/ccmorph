@@ -1,13 +1,72 @@
 package util
 
 import (
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+func TestDoctorEmptySubscriptionFromKeychain(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("keychain storage is macOS only")
+	}
+	old := readSigninKeychain
+	t.Cleanup(func() { readSigninKeychain = old })
+	readSigninKeychain = func(string, string) ([]byte, error) {
+		return []byte(`{"claudeAiOauth":{"accessToken":"","refreshToken":""}}`), nil
+	}
+	rows, failed, _ := DoctorRoute("test", "sub", "", "", "", nil, "", t.TempDir(), false)
+	if !failed || len(rows) != 1 || rows[0].Kind != "FAIL" || rows[0].Msg != "credentials: signed out of Claude; sign in again: ccmorph login test" || rows[0].Fix != "sign in again: ccmorph login test" {
+		t.Fatalf("unexpected doctor result: failed=%v rows=%+v", failed, rows)
+	}
+}
+
+func TestDoctorRefreshOnlySubscriptionFromKeychain(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("keychain storage is macOS only")
+	}
+	old := readSigninKeychain
+	t.Cleanup(func() { readSigninKeychain = old })
+	readSigninKeychain = func(string, string) ([]byte, error) {
+		return []byte(`{"claudeAiOauth":{"accessToken":"","refreshToken":"refresh"}}`), nil
+	}
+	rows, failed, _ := DoctorRoute("test", "sub", "", "", "", nil, "", t.TempDir(), false)
+	if failed || len(rows) != 1 || rows[0].Kind != "WARN" || !strings.Contains(rows[0].Msg, "not checked") {
+		t.Fatalf("unexpected doctor result: failed=%v rows=%+v", failed, rows)
+	}
+}
+
+func TestDoctorReadsSubscriptionFromKeychain(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("keychain storage is macOS only")
+	}
+	home := t.TempDir()
+	t.Setenv("LOGNAME", "doctor-test")
+	old := readSigninKeychain
+	t.Cleanup(func() { readSigninKeychain = old })
+	readSigninKeychain = func(service, account string) ([]byte, error) {
+		if account != "doctor-test" || service != "Claude Code-credentials-"+fmt.Sprintf("%x", sha256.Sum256([]byte(home)))[:8] {
+			return nil, errors.New("wrong keychain item")
+		}
+		return []byte(`{"claudeAiOauth":{"accessToken":"test-token"}}`), nil
+	}
+	dir := t.TempDir()
+	curl := "#!/bin/sh\ncase \"$(/bin/cat)\" in *test-token*) printf '__CCMORPH_STATUS__200';; *) exit 1;; esac\n"
+	if err := os.WriteFile(filepath.Join(dir, "curl"), []byte(curl), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	rows, failed, _ := DoctorRoute("test", "sub", "", "", "", nil, "", home, false)
+	if failed || len(rows) != 1 || rows[0].Kind != "OK" || !strings.Contains(rows[0].Msg, "accepted the stored sign-in") {
+		t.Fatalf("unexpected doctor result: failed=%v rows=%+v", failed, rows)
+	}
+}
 
 // stepPATH points PATH at a directory holding a brew stub, or one holding
 // nothing: the install step the adapter wording names comes from the machine's

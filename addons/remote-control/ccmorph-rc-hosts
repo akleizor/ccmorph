@@ -54,7 +54,7 @@ a login failure there, with the account login still valid, restarts that folder'
 host (stop, then the usual relaunch), so the row and the sessions' ids survive and
 their processes are handed back as above. One restart per host per
 LOGIN_RESTART_AFTER; each event is one log line naming the folder. A logged-out
-account is left alone: /login fixes that, a restart loop does not.
+account is left alone: ccmorph login fixes that, a restart loop does not.
 
 An archived session is retired in two steps. After idle_days (default 1) its kept
 worktree is removed, with its branch; unarchiving still resumes it, in a fresh
@@ -687,6 +687,10 @@ def account_token() -> str:
     return account_login()["accessToken"]
 
 
+signed_out_reported = False
+signed_out_session_reported = False
+
+
 def keep_login_fresh(clock: "Clock", now: float) -> None:
     """Have Claude Code refresh the account login before its access token expires.
 
@@ -701,6 +705,7 @@ def keep_login_fresh(clock: "Clock", now: float) -> None:
     A turn that runs past LOGIN_REFRESH_DEADLINE is killed, so one stuck
     claude never blocks every later refresh.
     """
+    global signed_out_reported, signed_out_session_reported
     p = clock.refresher
     if p is not None:
         if p.poll() is None:
@@ -722,7 +727,15 @@ def keep_login_fresh(clock: "Clock", now: float) -> None:
     if now < clock.next_login_check or now - clock.last_refresh < LOGIN_REFRESH_RETRY:
         return
     try:
-        left = account_login()["expiresAt"] / 1000 - time.time()
+        login = account_login()
+        if not login.get("refreshToken"):
+            if not signed_out_reported:
+                profile = rc_module().default_account()
+                log(f"account {profile} is signed out; fix: ccmorph login {profile}")
+                signed_out_reported = True
+            return
+        signed_out_reported = signed_out_session_reported = False
+        left = login["expiresAt"] / 1000 - time.time()
         if left > LOGIN_REFRESH_BEFORE:
             # Fresh: nothing to do until the refresh-before window opens, so the
             # keychain is not queried again on every 20 s recovery cycle.
@@ -736,7 +749,7 @@ def keep_login_fresh(clock: "Clock", now: float) -> None:
         # needs it to reach the account endpoint.
         backend = set(rc.strip_env()) - set(rc.PROXY_ENV)
     except LOGIN_ERRORS:
-        return                     # logged out or unreadable: /login fixes that
+        return                     # login unreadable: try again next cycle
     clock.last_refresh = now
     env = {k: v for k, v in os.environ.items()
            if k not in backend and not k.startswith("ANTHROPIC_")}
@@ -803,6 +816,7 @@ def host_sessions(folders: list[str], status: str) -> tuple[str, list[tuple[str,
 
     Nothing is fetched, not even the login, when no repo host has registered.
     """
+    global signed_out_session_reported
     envs = host_envs(folders)
     if not envs:
         return "", []
@@ -810,6 +824,17 @@ def host_sessions(folders: list[str], status: str) -> tuple[str, list[tuple[str,
         token = account_token()
         found = sessions(token, status)
     except LOGIN_ERRORS as e:
+        if status == "active" and isinstance(e, urllib.error.HTTPError) and e.code == 401:
+            try:
+                signed_out = not account_login().get("refreshToken")
+            except LOGIN_ERRORS:
+                signed_out = False
+            if signed_out:
+                if not signed_out_session_reported:
+                    profile = rc_module().default_account()
+                    log(f"{status} session check failed: {e}; fix: ccmorph login {profile}")
+                    signed_out_session_reported = True
+                return "", []
         log(f"{status} session check failed: {e}")
         return "", []
     return token, [(envs[s["environment_id"]], s) for s in found
@@ -916,7 +941,7 @@ def restart_logged_out(hosts: "dict[str, Host]", now: float) -> list[str]:
 
     Only a running host whose current run printed the failure is restarted, and
     only while the account login itself reads valid: a logged-out account is
-    fixed by /login, never by a restart loop. One restart per host per
+    fixed by ccmorph login, never by a restart loop. One restart per host per
     LOGIN_RESTART_AFTER, so a host the restart did not fix is retried slowly.
     Every event is one log line naming the folder. Returns the folders restarted;
     the loop's one-start-per-tick rule spaces their relaunches. A host an

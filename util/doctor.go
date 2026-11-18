@@ -97,22 +97,23 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 		case typ == "sub":
 			// The sign-in is a sub profile's whole credential, and launch sends
 			// no request first: this is the only place it can be asked about.
-			// Where Claude Code keeps it in the profile home it is read and
-			// probed; where it does not (macOS keeps it in the login keychain),
-			// the report says it was not checked instead of vouching for it.
+			// Read and probe Claude Code's stored sign-in without changing it.
 			// A rejection is a warning, not a failure: a sign-in is refreshable
 			// by design, and the next session refreshes it if it can.
-			token := StoredSignin(home)
+			token, refresh, known := StoredSignin(home)
 			switch {
+			case known && token == "" && refresh == "":
+				row("FAIL", "credentials: signed out of Claude; sign in again: ccmorph login "+name,
+					"sign in again: ccmorph login "+name)
 			case token == "":
-				row("WARN", "credentials: the sign-in was not checked (Claude Code keeps it outside the profile home; the next session refreshes it if it can)")
+				row("WARN", "credentials: the sign-in was not checked (no stored sign-in could be read; the next session refreshes it if it can)")
 			default:
 				code := ProbeToken(token)
 				switch {
 				case strings.HasPrefix(code, "2") && len(code) == 3:
 					row("OK", "credentials: Anthropic accepted the stored sign-in (HTTP "+code+")")
 				case code == "401" || code == "403":
-					row("WARN", "credentials: Anthropic rejected the stored sign-in (HTTP "+code+"); the next session refreshes it if it can, else it opens the login menu")
+					row("WARN", "credentials: Anthropic rejected the stored sign-in (HTTP "+code+"); the next session refreshes it if it can, else sign in again: ccmorph login "+name)
 				case code == "000" || code == "":
 					row("WARN", "endpoint: Anthropic did not answer, so the sign-in was not checked (check your network)")
 				default:
