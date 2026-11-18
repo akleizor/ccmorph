@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -60,6 +61,11 @@ var (
 var probeVia *url.URL
 
 func probeProxy(r *http.Request) (*url.URL, error) {
+	// A proxy cannot reach this machine's own loopback, where every test-home
+	// gateway lives; the comment above client states the rule.
+	if host := r.URL.Hostname(); host == "localhost" || (net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback()) {
+		return nil, nil
+	}
 	if probeVia != nil {
 		return probeVia, nil
 	}

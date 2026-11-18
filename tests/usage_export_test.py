@@ -669,7 +669,7 @@ def test_the_exported_timestamp_is_utc_with_milliseconds_and_z(tmp_path):
 
 def test_the_python_floor_scan_covers_the_exporter():
     """Issue #248: the exporter stays in the Python floor scan."""
-    assert is_python_helper(pathlib.Path(SPEC.origin).read_text())
+    assert is_python_helper(SPEC.origin, pathlib.Path(SPEC.origin).read_text())
 
 
 @pytest.mark.parametrize("via", ["path", "symlink"], ids=["direct-issue-261", "through-a-symlink-issue-416"])

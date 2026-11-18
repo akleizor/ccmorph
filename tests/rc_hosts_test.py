@@ -2631,8 +2631,12 @@ def test_purge_days_is_a_setting_not_a_folder():
     assert m.purge_days(text) == 7.0
 
 
-def is_python_helper(text):
-    """A python shebang, or a uv inline script (its shebang need not name python)."""
+def is_python_helper(name, text):
+    """A python shebang, a uv inline script (its shebang need not name python),
+    or any module under addons/, which ships on the add-on's 3.8 floor without a
+    shebang of its own."""
+    if name.startswith("addons/") and name.endswith(".py"):
+        return True
     shebang = text.splitlines()[0] if text.startswith("#!") else ""
     return "python" in shebang or ("uv run --script" in shebang and "# /// script" in text)
 
@@ -2640,7 +2644,8 @@ def is_python_helper(text):
 def test_every_shipped_python_helper_uses_nothing_newer_than_the_python_38_floor():
     """The add-on declares 3.8 (CI python-floor); str.removeprefix/removesuffix, functools.cache
     and dict | dict are 3.9+ and broke imports there (2026-10). Static, so it fails on any
-    interpreter. One rule set over every tracked file with a python shebang."""
+    interpreter. One rule set over every shipped Python file: a python shebang,
+    a uv inline script, or any .py under addons/."""
     import ast
     import subprocess
     root = SCRIPT.parent.parent.parent
@@ -2653,7 +2658,7 @@ def test_every_shipped_python_helper_uses_nothing_newer_than_the_python_38_floor
         if not path.is_file() or path.is_symlink():
             continue
         text = path.read_text(errors="replace")
-        if not is_python_helper(text):
+        if not is_python_helper(name, text):
             continue
         seen.add(name)
         for node in ast.walk(ast.parse(text)):

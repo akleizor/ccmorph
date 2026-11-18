@@ -16,6 +16,11 @@
   default: about 35 s instead of the four-minute serial crawl of 1300+
   spawn-bound cases, which the 60 s ceiling pytest.ini states exists to
   prevent. CI's pip installs keep running the suite serially on purpose.
+- **`make test` runs every suite at once.** One after another the suites take
+  about three minutes, over the one-minute ceiling; they work in disjoint
+  scratch homes and mostly wait on process spawns, so the parallel gate runs
+  them in about a minute on a quiet host. The docs no longer send a
+  contributor down the sequential path.
 
 ## v0.5.13 — 2026-11-17
 
