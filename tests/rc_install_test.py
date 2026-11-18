@@ -7,6 +7,8 @@ import plistlib
 import subprocess
 import tempfile
 
+import pytest
+
 from support import HANG_TIMEOUT
 
 INSTALL = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "install.sh"
@@ -41,19 +43,45 @@ def test_supervisor_plist_is_interactive_and_kept_alive():
         assert plist["ThrottleInterval"] == 2
 
 
+def unprofiled_invocations(text):
+    """The page's `ccmorph-rc` example lines that name no profile placeholder.
+    Only the `--switch` form may spell its argument `<profile>` (#593): that
+    argument is the target profile — the edge's route, the session's own account,
+    a profile brought up beside the edge — and an account is not a route. Every
+    other form keeps #276's `<route-profile>`; no form carries a real name."""
+    bad = []
+    for line in text.splitlines():
+        m = INVOCATION.search(line)
+        if not m:
+            continue
+        arg = m.group(1)
+        if arg == "<route-profile>" or (arg == "<profile>" and "--switch" in line):
+            continue
+        bad.append(line.strip())
+    return bad
+
+
 def test_every_example_writes_the_profile_where_a_profile_goes():
     """Issue #276: the page's first examples read `ccmorph-rc gateway` as though
     `gateway` were a subcommand, when it is the operator's profile name — the
     script's own usage line spells the argument `<route-profile>`, and so must
-    every invocation on the page."""
+    every invocation on the page (the `--switch` form dials a target, not a route,
+    and spells it `<profile>`; #593)."""
     text = README.read_text(encoding="utf-8")
-    bad = []
-    for line in text.splitlines():
-        m = INVOCATION.search(line)
-        if m and m.group(1) != "<route-profile>":
-            bad.append(line.strip())
+    bad = unprofiled_invocations(text)
     assert not bad, f"ccmorph-rc examples not naming the route as a profile: {bad}"
     assert "ccmorph-rc <route-profile>" in text, "the page no longer shows the invocation"
+
+
+@pytest.mark.parametrize("line,names_a_profile", [
+    pytest.param("ccmorph-rc <route-profile> --probe", True, id="route-form-276"),
+    pytest.param("ccmorph-rc <profile> --switch", True, id="switch-form-593"),
+    pytest.param("ccmorph-rc <profile> --probe", False, id="placeholder-off-switch-593"),
+    pytest.param("ccmorph-rc oli --switch", False, id="real-name-on-switch-593"),
+    pytest.param("ccmorph-rc gateway", False, id="bare-subcommand-276"),
+])
+def test_only_the_switch_form_may_name_a_bare_profile(line, names_a_profile):
+    assert (line not in unprofiled_invocations(line)) is names_a_profile
 
 
 def test_the_page_opens_with_requirements_and_reach_before_the_first_command():
