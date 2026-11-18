@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -39,10 +40,14 @@ func startTime(rec []byte) time.Time {
 	return time.Unix(sec, int64(usec)*1000)
 }
 
-// sysctlRaw reads one sysctl into buf, sizing it first when buf is nil: the
+// sysctlRaw is sysctlRead. A variable so a test can count the reads a launch or
+// a sweep makes, as with sysctlTable.
+var sysctlRaw = sysctlRead
+
+// sysctlRead reads one sysctl into buf, sizing it first when buf is nil: the
 // table, or false. The size pass and the read are two calls, so a table that
 // grew in between is retried on a fresh size rather than read short.
-func sysctlRaw(mib []int32, buf []byte) ([]byte, bool) {
+func sysctlRead(mib []int32, buf []byte) ([]byte, bool) {
 	if buf != nil {
 		n := uintptr(len(buf))
 		if _, _, e := syscall.Syscall6(syscall.SYS___SYSCTL,
@@ -59,27 +64,29 @@ func sysctlRaw(mib []int32, buf []byte) ([]byte, bool) {
 			0, uintptr(unsafe.Pointer(&n)), 0, 0); e != 0 || n == 0 {
 			return nil, false
 		}
-		if out, ok := sysctlRaw(mib, make([]byte, n+n/8)); ok {
+		if out, ok := sysctlRead(mib, make([]byte, n+n/8)); ok {
 			return out, true
 		}
 	}
 	return nil, false
 }
 
-// procArgv is a process's argv from kern.procargs2, one element per argument as
-// the process was started with them; nil when it cannot be read (another
+// procImage is pid's executable path and argv from one kern.procargs2 read: the
+// record carries argc, the path of the image the kernel ran, then the arguments
+// as the process was started with them. False when it cannot be read (another
 // user's process, a process that left between the two reads).
-func procArgv(pid int, buf []byte) []string {
+func procImage(pid int, buf []byte) (exe string, argv []string, ok bool) {
 	b, ok := sysctlRaw([]int32{1, 49, int32(pid)}, buf)
 	if !ok || len(b) < 4 {
-		return nil
+		return "", nil, false
 	}
 	argc := int(binary.LittleEndian.Uint32(b))
 	rest := b[4:]
 	i := bytes.IndexByte(rest, 0) // the exec path, then NUL padding
 	if i < 0 {
-		return nil
+		return "", nil, false
 	}
+	exe = string(rest[:i])
 	rest = bytes.TrimLeft(rest[i:], "\x00")
 	args := make([]string, 0, argc)
 	for len(args) < argc && len(rest) > 0 {
@@ -87,8 +94,21 @@ func procArgv(pid int, buf []byte) []string {
 		args = append(args, string(a))
 		rest = r
 	}
-	return args
+	return exe, args, true
 }
+
+// procArgv is a process's argv from kern.procargs2, one element per argument as
+// the process was started with them; nil when it cannot be read (another
+// user's process, a process that left between the two reads).
+func procArgv(pid int, buf []byte) []string {
+	_, argv, _ := procImage(pid, buf)
+	return argv
+}
+
+// imageOf is pid's executable path and argv, from one read of the kernel's own
+// record: the executable is what pid ran, not argv[0], which the program
+// itself chooses.
+func imageOf(pid int) (string, []string, bool) { return procImage(pid, nil) }
 
 // procArgs is procArgv space-joined the way ps's command= column reads; ""
 // when it cannot be read.
@@ -137,20 +157,30 @@ func sysctlProcessTable() (map[int]psRow, bool) {
 	return rows, true
 }
 
-// procStartToken is the kernel's own mark of when pid started: p_starttime as
-// seconds.microseconds, from kern.proc.pid. The kernel stores it at fork and no
-// wall-clock step moves it, so the same mark read twice is the same process.
-// False when the pid is gone, or when this kernel's kinfo_proc is not the
-// layout these offsets describe: this process must read under its real parent
-// with a start in the past.
-func procStartToken(pid int) (string, bool) {
+// kinfoLayoutOK answers once per process whether this kernel's kinfo_proc is
+// the layout these offsets describe: this process must read under its real
+// parent with a start in the past. Its own record cannot move while it lives —
+// a reparented process's ppid changes, but the layout the answer is about does
+// not — so a sweep that reads many marks pays for the check once, not once per
+// mark.
+var kinfoLayoutOK = sync.OnceValue(func() bool {
 	self, ok := sysctlRaw([]int32{1, 14, 1, int32(os.Getpid())}, nil)
 	if !ok || len(self) != kinfoSize ||
 		int(int32(binary.LittleEndian.Uint32(self[kinfoPID:]))) != os.Getpid() ||
 		int(int32(binary.LittleEndian.Uint32(self[kinfoPPID:]))) != os.Getppid() {
-		return "", false
+		return false
 	}
-	if s := startTime(self); s.IsZero() || s.After(time.Now()) {
+	s := startTime(self)
+	return !s.IsZero() && !s.After(time.Now())
+})
+
+// procStartToken is the kernel's own mark of when pid started: p_starttime as
+// seconds.microseconds, from kern.proc.pid. The kernel stores it at fork and no
+// wall-clock step moves it, so the same mark read twice is the same process.
+// False when the pid is gone, or when this kernel's kinfo_proc is not the
+// layout these offsets describe (kinfoLayoutOK).
+func procStartToken(pid int) (string, bool) {
+	if !kinfoLayoutOK() {
 		return "", false
 	}
 	rec, ok := sysctlRaw([]int32{1, 14, 1, int32(pid)}, nil)

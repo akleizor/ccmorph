@@ -138,29 +138,32 @@ func AcquireBridge(root, name string, start func() (pid, port, key, tmp string, 
 }
 
 // ours is whether pid still runs the bridge whose config lives in tmp, read
-// from the process table, never a reused PID.
+// from that pid's own argv, never a reused PID: one read of one process, not
+// a walk of every process on the machine.
 func ours(pid int, tmp string) bool {
 	if pid <= 0 || tmp == "" {
 		return false
 	}
-	return strings.Contains(processTable()[pid].args, filepath.Join(tmp, "config.yaml"))
+	argv, ok := argvOf(pid)
+	return ok && strings.Contains(strings.Join(argv, " "), filepath.Join(tmp, "config.yaml"))
 }
 
 // holdsRoute is whether pid still runs the core's route hold on users, read
-// from the process table, never a reused PID: the kernel names its executable
-// ccmorph-core and its argv, argument by argument, is <dir>/ccmorph-core util
-// route-hold <users>, as the launch spawned it. The executable is the proof,
-// and the argument boundaries are kept: the joined command line ps prints can
-// not tell one operand reading "/x/ccmorph-core util route-hold <users>" from
-// the three words it spells, so a hold on some other file would pass for this
-// route's. comm goes through Base because the ps fallback on darwin prints a
-// path. No users file, no readable argv, no proof (#408).
+// from one record of that pid, never a reused PID: the kernel names its
+// executable ccmorph-core and its argv, argument by argument, is
+// <dir>/ccmorph-core util route-hold <users>, as the launch spawned it. The
+// executable is the proof — not argv[0], which the program chooses — and the
+// argument boundaries are kept: the joined command line ps prints can not tell
+// one operand reading "/x/ccmorph-core util route-hold <users>" from the three
+// words it spells, so a hold on some other file would pass for this route's.
+// No users file, no readable record, no proof (#408).
 func holdsRoute(pid int, users string) bool {
-	if pid <= 0 || users == "" || filepath.Base(processTable()[pid].comm) != launcherComm {
+	if pid <= 0 || users == "" {
 		return false
 	}
-	argv, ok := argvOf(pid)
-	return ok && len(argv) == 4 && filepath.Base(argv[0]) == launcherComm &&
+	exe, argv, ok := imageOf(pid)
+	return ok && len(argv) == 4 && filepath.Base(exe) == launcherComm &&
+		filepath.Base(argv[0]) == launcherComm &&
 		argv[1] == "util" && argv[2] == "route-hold" && argv[3] == users
 }
 

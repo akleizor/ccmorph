@@ -12,6 +12,25 @@ import (
 	"time"
 )
 
+// A hop asks two questions of one machine — the profile this session runs on
+// and the Claude Code process to end — moments apart, and one read of the
+// process table answers both: walking every process once each is the whole
+// machine paid for twice. A helper that reads its own table again shows up as
+// a second walk.
+func TestOneHopReadsTheProcessTableOnce(t *testing.T) {
+	orig := sysctlTable
+	walks := 0
+	sysctlTable = func() (map[int]psRow, bool) { walks++; return orig() }
+	t.Cleanup(func() { sysctlTable = orig })
+
+	tab := ProcessTable()
+	_ = SessionAdapter(tab, os.Getppid())
+	_ = HopTarget(tab, os.Getppid(), os.Getpid())
+	if walks != 1 {
+		t.Fatalf("one hop read the process table %d times, want 1", walks)
+	}
+}
+
 func TestHopTargetIsTheFirstNonShellBelowTheRelay(t *testing.T) {
 	// relay 100 -> zsh 101 (forwarder) -> claude 102 -> zsh 103 (command shell) -> zsh 104 ($$)
 	tab := map[int]psRow{

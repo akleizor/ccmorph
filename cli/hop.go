@@ -62,9 +62,11 @@ func (l *launcher) hop(args []string) int {
 	// the destination — GH-257: a hop without a profile used to fill this in and
 	// restart the session on the profile it was already on.
 	current := ""
+	var table util.ProcTable // one read, when the first question needs it
 	if relay != "" {
 		if n, err := strconv.Atoi(relayPID); err == nil {
-			current = util.SessionAdapter(n)
+			table = util.ProcessTable()
+			current = util.SessionAdapter(table, n)
 		}
 		if current == "" {
 			current = l.configDirProfile()
@@ -126,7 +128,7 @@ func (l *launcher) hop(args []string) int {
 	relayN, err := strconv.Atoi(relayPID)
 	pid := 0
 	if err == nil {
-		pid = util.HopTarget(relayN, os.Getppid())
+		pid = util.HopTarget(table, relayN, os.Getppid())
 	}
 	if pid <= 0 {
 		l.err("cannot find the Claude Code process to end. Run hop from the Claude Code prompt (/ccmorph:hop or ! ccmorph hop)")

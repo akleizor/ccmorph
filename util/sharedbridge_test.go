@@ -93,6 +93,41 @@ func TestTwoSessionsShareOneBridge(t *testing.T) {
 	}
 }
 
+// A launch's probe is a question about one pid, so it must not pay for every
+// process on the machine: answers() asks ours() once per try, and a bridge that
+// never answers must not buy three whole-table walks before it is called dead.
+func TestAnswersDoesNotWalkTheWholeProcessTable(t *testing.T) {
+	root := t.TempDir()
+	tmp := filepath.Join(root, "ccmorph-bridge-1")
+	if err := os.MkdirAll(tmp, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sleep", "60")
+	cmd.Args[0] = filepath.Join(tmp, "config.yaml")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	go cmd.Wait()
+	t.Cleanup(func() { cmd.Process.Kill() })
+
+	probes := 0
+	stubProbe(t, func(port, key string) bool { probes++; return false })
+	orig := sysctlTable
+	walks := 0
+	sysctlTable = func() (map[int]psRow, bool) { walks++; return orig() }
+	t.Cleanup(func() { sysctlTable = orig })
+
+	if answers(strconv.Itoa(cmd.Process.Pid), "4100", "k", tmp, false) {
+		t.Fatal("a bridge that never answers must not read as serving")
+	}
+	if probes != bridgeProbeTries {
+		t.Fatalf("the read must see the bounded retry run: %d probes, want %d", probes, bridgeProbeTries)
+	}
+	if walks != 0 {
+		t.Fatalf("one probe of one pid walked the whole process table %d times, want 0", walks)
+	}
+}
+
 // A recorded bridge that does not answer the probe while another session holds
 // it is joined, not killed and doubled (#294).
 func TestASlowBridgeAnotherSessionHoldsIsJoinedNotKilled(t *testing.T) {
