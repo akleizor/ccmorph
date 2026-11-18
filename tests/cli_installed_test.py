@@ -19,7 +19,7 @@ import subprocess
 import tempfile
 import unittest
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, path_without
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -38,8 +38,12 @@ def _fake_native(home):
 def _isolated_env(home):
     native = home / 'native'
     env = {k: v for k, v in os.environ.items() if not k.startswith(('CCMORPH_', '_CCMORPH_', 'CLAUDE_', 'ANTHROPIC_'))}
+    # The host's own fzf and cliproxyapi must not answer the add and config
+    # flows below, which seed neither: a real bridge feeds the add menu its
+    # provider rows, and a real fzf backs the picker (#414). The stub
+    # directories stay first, so the seeded claude still wins.
     env.update(HOME=str(home), ZDOTDIR=str(home), XDG_CONFIG_HOME=str(home / '.config'),
-               PATH=f'{home}/.local/bin:{native}:/opt/homebrew/bin:/usr/bin:/bin')
+               PATH=os.pathsep.join(p for p in (f'{home}/.local/bin', str(native), path_without()) if p))
     # `add` offers a pasted credential to its endpoint before saving it; point
     # that fetch at a port nothing owns so the home stays offline and the answer
     # is always "not checked" (setup_home does the same for the zsh suite).
