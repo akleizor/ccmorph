@@ -7,6 +7,18 @@
 
 ## Unreleased
 
+## v0.5.15 — 2026-11-18
+
+Cut from v0.5.14 plus this fix only.
+
+### Fixed
+
+- **Sessions started from a terminal that a Claude Code shell opened save
+  their transcript again.** Such a terminal hands `CLAUDE_CODE_CHILD_SESSION=1`
+  to every tab, and Claude Code then saved nothing, so the session could not be
+  resumed and a hop started a new conversation after ending the old one. The
+  launch keeps the marker only when a Claude Code process is an ancestor.
+
 ## v0.5.14 — 2026-11-18
 
 Cut from v0.5.13 plus this fix only.
