@@ -47,7 +47,8 @@ ccmorph add <route-profile>     # choose "API key": the endpoint that serves eve
 ```
 
 Then, in the folder to serve — the route argument is that endpoint profile,
-`<route-profile>` in every example below:
+`<route-profile>` in every example below (the live switch further down dials a
+target, not a route, and so spells its argument `<profile>`):
 
 ```sh
 ccmorph-rc <route-profile>                 # serve the current folder to the Claude app
@@ -121,17 +122,17 @@ always signs in with the account profile's own claude.ai login.
 ## Switch inference live
 
 ```sh
-ccmorph-rc oli --switch       # every host's next turn goes to oli
-ccmorph-rc alex --switch      # the account the phone signs in with (Anthropic, its own quota)
-ccmorph-rc llmgate --switch   # back to the edge's route
+ccmorph-rc <profile> --switch   # every host's next turn goes to <profile>
 ```
 
 No host restarts and no session is interrupted: each proxy reads the switch on every
-turn. The account profile sends calls to Anthropic untouched; the edge's route uses the
-edge as before; any other route or provider profile is brought up beside the edge
-(its adapter, and a provider's bridge, live as long as the edge does) and handed to the
-proxy through a 0600 file it deletes on read, so its key stays in memory only. Its model
-map is applied, so a provider such as codex receives its own models. `inference=<profile>`
+turn. `<profile>` is any profile: the edge's own route (`llmgate --switch`) uses the
+edge as before, the account the phone signs in with (`alex --switch`) sends calls to
+Anthropic untouched, on its own quota, and any other route or provider profile
+(`oli --switch`) is brought up beside the edge (its adapter, and a provider's bridge,
+live as long as the edge does) and handed to the proxy through a 0600 file it deletes
+on read, so its key stays in memory only. Its model map is
+applied, so a provider such as codex receives its own models. `inference=<profile>`
 in `rc-hosts` does the same from the config. A proxy started before this feature needs one
 restart to load it.
 
