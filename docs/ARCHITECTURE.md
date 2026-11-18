@@ -1374,10 +1374,10 @@ exact manual override in the profile `.conf`. That same `.conf` also holds
 `context_discovered`, a JSON blob keyed by the profile's current route
 fingerprint that `ccmorph probe` writes. A tier alias (`opus`, `fable`) resolves
 through the profile's own `ANTHROPIC_DEFAULT_<TIER>_MODEL` to the model that
-actually answers. The only numbers in `ccmorph.sh` are `_CCMORPH_ACW_MIN` /
-`_CCMORPH_ACW_MAX`, which are Claude Code's own schema bounds on the setting
-(`.int().min(1e5).max(1e6)`) — a value outside them is dropped silently, which
-would put the session back on the default budget.
+actually answers. No schema bound, budget or window lives in `ccmorph.sh`
+either — a value outside Claude Code's own bounds on the setting
+(`.int().min(1e5).max(1e6)`) is dropped silently, so a clamped constant would
+only pretend to guard it.
 `test_no_context_window_is_written_into_the_source` fails the build if a window
 literal reappears.
 

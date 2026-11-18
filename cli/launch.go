@@ -1,6 +1,5 @@
 // Package cli is the `ccmorph` command in the core. `ccmorph-core launch` is the
-// run loop that was zsh's
-// _ccm_launch_driver and _ccm_launch. It resolves the profile and model, starts
+// run loop that was zsh's _ccm_launch. It resolves the profile and model, starts
 // the provider bridge or adapter, projects settings, runs Claude Code as a child
 // with TERM/HUP forwarded, and relaunches on a hop's relay request. Each step it
 // owns calls the same core verbs the zsh did, so their behaviour is unchanged.
