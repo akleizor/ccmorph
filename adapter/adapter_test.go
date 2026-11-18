@@ -453,7 +453,7 @@ func TestClassifyProbesOnlySelectedModelOnce(t *testing.T) { // test_missing_dec
 		calls++
 		return "chat", "", 200
 	})
-	swap(t, &inventoryFn, func(string, string, *http.Client) ([]string, error) { panic("unrelated model scan") })
+	swap(t, &inventoryFn, func(string, string, *http.Client) ([]any, []string, error) { panic("unrelated model scan") })
 	for range 2 {
 		if _, err := classify("https://gateway", "k", cache, "m", true); err != nil {
 			t.Fatal(err)
@@ -477,7 +477,9 @@ func seededCache(t *testing.T, endpoint string, withPath bool, rows ...map[strin
 
 func TestClassifyLockedSkipsInventoryWhenSelectedModelCached(t *testing.T) { // test_selected_model_cached_while_waiting_on_lock_skips_inventory
 	cache := seededCache(t, "https://gateway", true, rowJSON(row("anthropic")))
-	swap(t, &inventoryFn, func(string, string, *http.Client) ([]string, error) { return []string{"m", "uncached"}, nil })
+	swap(t, &inventoryFn, func(string, string, *http.Client) ([]any, []string, error) {
+		return nil, []string{"m", "uncached"}, nil
+	})
 	swap(t, &dialectAutoFn, func(_, _, _ string) (string, string, int) { panic("probe") })
 	swap(t, &dialectOfFn, func(_, _, _ string, _ bool) (string, string, int) { panic("probe") })
 	rows, err := classifyLocked("https://gateway", "k", cache, "m", true)
@@ -535,7 +537,7 @@ func TestOldDefaultChatCacheRowIsReclassified(t *testing.T) { // test_old_defaul
 	chat := rowJSON(row("chat"))
 	chat["note"] = "default OpenAI-compatible protocol"
 	cache := seededCache(t, "https://gateway", false, chat)
-	swap(t, &inventoryFn, func(string, string, *http.Client) ([]string, error) { panic("inventory") })
+	swap(t, &inventoryFn, func(string, string, *http.Client) ([]any, []string, error) { panic("inventory") })
 	swap(t, &dialectAutoFn, func(_, _, _ string) (string, string, int) { return "unusable", "no metadata", 0 })
 	calls := 0
 	swap(t, &dialectOfFn, func(_, _, _ string, bounded bool) (string, string, int) {
@@ -717,7 +719,7 @@ func TestCachedNativeMainNeedsNoTranslator(t *testing.T) { // test_cached_native
 		"thinking_probe": thinkingProbeVersion, "rows": []any{rowJSON(row("anthropic"))}})
 	swap(t, &profileDirs, dir)
 	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gateway"})
-	swap(t, &inventoryFn, func(string, string, *http.Client) ([]string, error) { panic("network") })
+	swap(t, &inventoryFn, func(string, string, *http.Client) ([]any, []string, error) { panic("network") })
 	swap(t, &dialectAutoFn, func(_, _, _ string) (string, string, int) { panic("probe") })
 	swap(t, &freePortFn, func() (int, error) { panic("translator state") })
 	upstream := ""
@@ -738,8 +740,8 @@ func TestAModelMustBeNamedWhenTheGatewayOffersNoList(t *testing.T) { // issue #3
 	os.MkdirAll(filepath.Join(dir, ".adapter-cache"), 0o755)
 	swap(t, &profileDirs, dir)
 	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gateway"})
-	swap(t, &inventoryFn, func(string, string, *http.Client) ([]string, error) {
-		return nil, refusingStatus{404}
+	swap(t, &inventoryFn, func(string, string, *http.Client) ([]any, []string, error) {
+		return nil, nil, refusingStatus{404}
 	})
 	swap(t, &dialectAutoFn, func(_, _, _ string) (string, string, int) { panic("no probe can name a model") })
 	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
@@ -771,8 +773,8 @@ func TestARefusedListingNamesItsTrueCause(t *testing.T) { // issues #357, #374
 		setup func(t *testing.T) func() int
 	}{
 		{"no model named", []string{"demo", "--auto"}, func(t *testing.T) func() int {
-			swap(t, &inventoryFn, func(string, string, *http.Client) ([]string, error) {
-				return nil, refusingStatus{401}
+			swap(t, &inventoryFn, func(string, string, *http.Client) ([]any, []string, error) {
+				return nil, nil, refusingStatus{401}
 			})
 			return func() int { return 0 }
 		}},
@@ -833,8 +835,8 @@ func TestAWarmCacheIsNotAModelChoice(t *testing.T) { // issue #357
 	cache := filepath.Join(dir, ".adapter-cache", hashHex("https://gateway")[:16]+".json")
 	os.WriteFile(cache, []byte(`{"endpoint":"https://gateway","anthropic_path":"/v1/messages","thinking_probe":2,`+
 		`"rows":[{"model":"delta-1","dialect":"anthropic","note":"","cap":null,"nothink":false,"id_recycle":false,"status":200}]}`), 0o600)
-	swap(t, &inventoryFn, func(string, string, *http.Client) ([]string, error) {
-		return nil, refusingStatus{404}
+	swap(t, &inventoryFn, func(string, string, *http.Client) ([]any, []string, error) {
+		return nil, nil, refusingStatus{404}
 	})
 	served := false
 	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
@@ -1358,11 +1360,12 @@ func TestEnsureConfigPollBypassesAmbientProxy(t *testing.T) { // InventoryLoopba
 	writeFile(t, conf, "old", 0o600)
 	up, key := "http://gateway.invalid", "k"
 	realInventory := inventory
-	swap(t, &inventoryFn, func(b, k string, c *http.Client) ([]string, error) {
+	swap(t, &inventoryFn, func(b, k string, c *http.Client) ([]any, []string, error) {
 		if b == up {
-			return []string{"m1"}, nil
+			return nil, []string{"m1"}, nil
 		}
-		return realInventory(b, k, c)
+		ids, err := realInventory(b, k, c)
+		return nil, ids, err
 	})
 	swap(t, &classifyFn, func(_, _, _, _ string, _ bool) ([]Row, error) { return nil, nil })
 	port, _ := strconv.Atoi(translator[strings.LastIndex(translator, ":")+1:])

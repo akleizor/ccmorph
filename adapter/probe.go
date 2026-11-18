@@ -77,7 +77,7 @@ var (
 	post          = postImpl
 	dialectAutoFn = dialectAuto
 	dialectOfFn   = dialectOf
-	inventoryFn   = inventory
+	inventoryFn   = inventoryListing
 	outputCapFn   = outputCap
 	reasonsFn     = reasonsByDefault
 	recyclesFn    = recyclesToolIDs
@@ -220,26 +220,35 @@ func (e messageRefusal) Error() string {
 	return fmt.Sprintf("the gateway refused the message for model %s (HTTP %d)", shim.PyRepr(e.model), e.status)
 }
 
-// inventory lists the usable chat model ids. No anthropic-version header:
-// proxies rewrite non-claude ids into claude-<junk>-<reversed-id> when they see it.
-func inventory(base, key string, c *http.Client) ([]string, error) {
+// inventoryListing GETs the model listing once and returns both its decoded
+// data rows and inventory's id list, so a classify pass that goes on to answer
+// fresh models from this listing pays for the GET once (#598). No
+// anthropic-version header: proxies rewrite non-claude ids into
+// claude-<junk>-<reversed-id> when they see it.
+func inventoryListing(base, key string, c *http.Client) ([]any, []string, error) {
 	if c == nil {
 		c = client
 	}
 	resp, err := do(c, "GET", ctxwindow.APIURL(base, "/v1/models"), nil, keyHeaders(key), 60*time.Second)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return nil, refusingStatus{resp.StatusCode}
+		return nil, nil, refusingStatus{resp.StatusCode}
 	}
 	var doc map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	data, _ := doc["data"].([]any)
-	return listedModels(data, true), nil
+	return data, listedModels(data, true), nil
+}
+
+// inventory lists the usable chat model ids.
+func inventory(base, key string, c *http.Client) ([]string, error) {
+	_, ids, err := inventoryListing(base, key, c)
+	return ids, err
 }
 
 // truthy is Python truthiness for decoded JSON. It is not ordjson.Truthy: this
@@ -356,6 +365,15 @@ func dialectAuto(base, key, model string) (string, string, int) {
 		return "unusable", noInference + ": " + err.Error(), status
 	}
 	data, _ := doc["data"].([]any)
+	return declaredVerdict(data, model)
+}
+
+// declaredVerdict is the auto verdict a model's own row in an already-fetched
+// listing gives: the dialect it declares, or the no-inference verdict when it
+// declares none. It is what dialectAuto reads after its GET, so a classify pass
+// holding inventory's listing answers its fresh models without a second GET
+// (#598).
+func declaredVerdict(data []any, model string) (string, string, int) {
 	if dialect := declaredDialect(data, model); dialect != "" {
 		return dialect, "declared supported_endpoints", 200
 	}
