@@ -2147,7 +2147,10 @@ func TestQuotaSpendRowsAreInReceiptNameOrder(t *testing.T) {
 // is decoded: a future version's shape is not this one's, so none of it is
 // read (#449). The version is found wherever the writer spelled it, after the
 // body as well as before it: the head's peek walks the body to reach it
-// without decoding it (#559).
+// without decoding it (#559). The peek may fast-reject, but a byte shape it
+// answers differently than the decoder — a duplicated key, a capital "V" —
+// is decided by the version the body decoded as, which contributes nothing
+// when it is not this one's (#581).
 func TestQuotaSpendDoesNotDecodeAFutureCacheVersion(t *testing.T) {
 	state := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", state)
@@ -2190,6 +2193,43 @@ func TestQuotaSpendDoesNotDecodeAFutureCacheVersion(t *testing.T) {
 	if decoded != 0 {
 		t.Fatalf("a future day cache decoded %d rows", decoded)
 	}
+	// #581: the peek answers the first top-level "v" and the decoder the last,
+	// so a file spelling the version twice is decided by what decoded — a
+	// future version hiding behind a current first key contributes nothing,
+	// whichever case the second key was spelled in.
+	dup := `{"v": ` + strconv.Itoa(spendCacheVersion) + `, "mtime": 1, "valid": true, ` + files + `, "v": 99}`
+	if err := os.WriteFile(dayCachePath("2026-10-21"), []byte(dup), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadDayFile("2026-10-21"); got.Files != nil {
+		t.Fatalf("a day cache decoding as version 99 was kept: %+v", got)
+	}
+	if decoded != 0 {
+		t.Fatalf("a future version hiding behind a current first key decoded %d rows", decoded)
+	}
+	dupCase := `{"v": ` + strconv.Itoa(spendCacheVersion) + `, "mtime": 1, "valid": true, ` + files + `, "V": 99}`
+	if err := os.WriteFile(dayCachePath("2026-10-22"), []byte(dupCase), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadDayFile("2026-10-22"); got.Files != nil {
+		t.Fatalf("a day cache decoding as version 99 through the tag's case fold was kept: %+v", got)
+	}
+	if decoded != 0 {
+		t.Fatalf("a future capital version behind a current first key decoded %d rows", decoded)
+	}
+	// The cut the other way: a capital "V" the peek does not read marks a file
+	// this reader's writer did not write — the peek fast-rejects it, and the
+	// miss decodes nothing.
+	capital := `{"V": ` + strconv.Itoa(spendCacheVersion) + `, "mtime": 1, "valid": true, ` + files + `}`
+	if err := os.WriteFile(dayCachePath("2026-10-23"), []byte(capital), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadDayFile("2026-10-23"); got.Files != nil {
+		t.Fatalf("a capital-V day cache was kept: %+v", got)
+	}
+	if decoded != 0 {
+		t.Fatalf("a capital-V day cache decoded %d rows", decoded)
+	}
 	current := `{` + files + `, "v": ` + strconv.Itoa(spendCacheVersion) + `}`
 	if err := os.WriteFile(dayCachePath("2026-10-20"), []byte(current), 0o600); err != nil {
 		t.Fatal(err)
@@ -2199,6 +2239,18 @@ func TestQuotaSpendDoesNotDecodeAFutureCacheVersion(t *testing.T) {
 	}
 	if decoded != 1 {
 		t.Fatalf("a current day cache decoded %d rows, want 1", decoded)
+	}
+	// The writer's own shape still fast-path-decodes: the recheck asks the
+	// version the writer itself wrote (#581).
+	written := `{"v": ` + strconv.Itoa(spendCacheVersion) + `, "mtime": 1, "valid": true, ` + files + `}`
+	if err := os.WriteFile(dayCachePath("2026-10-24"), []byte(written), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadDayFile("2026-10-24"); len(got.Files) != 1 {
+		t.Fatalf("the writer's own shape was not kept: %+v", got)
+	}
+	if decoded != 2 {
+		t.Fatalf("the current caches decoded %d rows, want 2", decoded)
 	}
 }
 
