@@ -660,14 +660,32 @@ func yesNo(b bool) string {
 }
 
 // pluginDirs is the session's plugin path: ccmorph's own plugin, and the
-// router's hooks and delegate tool only while it is on and never in its own workers.
+// router's hooks and delegate tool only while it is on and never in its own
+// workers. A worker inherits the parent session's value, which names the
+// router plugin there, so the inherited entries are filtered first: the guard
+// below owns that entry alone.
 func pluginDirs(libDir string) string {
 	share := filepath.Join(filepath.Dir(libDir), "share")
-	dirs := prefixed(os.Getenv("CLAUDE_CODE_PLUGIN_DIRS")) + filepath.Join(share, "claude-plugin")
+	dirs := prefixed(withoutRouter(os.Getenv("CLAUDE_CODE_PLUGIN_DIRS"), share)) + filepath.Join(share, "claude-plugin")
 	if os.Getenv(router.WorkerEnv) != "1" && router.Enabled() {
 		dirs += ":" + filepath.Join(share, "claude-plugin-router")
 	}
 	return dirs
+}
+
+// withoutRouter drops the router plugin's entry from an inherited plugin path,
+// keeping every other entry, so an inherited copy never re-adds the router
+// through the back door or duplicates it in a nested session.
+func withoutRouter(value, share string) string {
+	routerDir := filepath.Join(share, "claude-plugin-router")
+	dirs := strings.Split(value, ":")
+	kept := dirs[:0]
+	for _, d := range dirs {
+		if d != routerDir {
+			kept = append(kept, d)
+		}
+	}
+	return strings.Join(kept, ":")
 }
 
 func prefixed(s string) string {
