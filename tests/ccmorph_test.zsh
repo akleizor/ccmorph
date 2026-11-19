@@ -2490,6 +2490,39 @@ test_add_never_asks_how_to_reach_the_endpoint() {
   return $rc
 }
 
+test_add_without_a_terminal_ends_with_a_working_path() {
+  # GH-653: `ccmorph add work <&-` (no terminal: script, CI) printed the sign-in
+  # menu to stderr, a bare >, and exited 1 in silence — the first scripted
+  # contact looked like a crash, though piping the menu number is supported.
+  # The menu is the answer sheet, so it and the closing line ride stdout, and
+  # an unanswered question names both working paths before the non-zero exit.
+  local test_home rc=0 out err add_rc
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  source "$CCMORPH_SOURCE"
+  command cp "$REPO_ROOT/share/provider-presets.tsv" "$HOME/.config/ccmorph/share/"
+  add_rc=0
+  out=$(ccmorph add work <&- 2>"$test_home/add.err") || add_rc=$?
+  (( add_rc != 0 )) || { print -u2 -- 'add with no terminal must exit non-zero'; rc=1; }
+  err="$(<"$test_home/add.err")"
+  assert_contains "$out" 'Sign-in method — work' 'the menu is the answer sheet: it belongs on stdout' || rc=1
+  assert_not_contains "$err" 'Sign-in method — work' 'the menu must not be painted as an error on stderr' || rc=1
+  assert_contains "$out" 'cancelled — no terminal to ask on. Run this in a terminal, or pipe the menu number of a sign-in method.' 'the run must end by naming both working paths' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/work.conf" ]] || { print -u2 -- 'a cancelled add must save nothing'; rc=1; }
+  # The same closing at the next menu of the same flow: a piped run that
+  # answers the sign-in question and runs out at the provider list — the
+  # walker's working path — still ends with the line, not with silence. (The
+  # herestring supplies its own newline, so nothing after the "3" is EOF.)
+  add_rc=0
+  out=$(ccmorph add piped <<< $'3' 2>/dev/null) || add_rc=$?
+  (( add_rc != 0 )) || { print -u2 -- 'a run that runs out of input must exit non-zero'; rc=1; }
+  assert_contains "$out" 'Provider — piped' 'the provider list is an answer sheet too' || rc=1
+  assert_contains "$out" 'cancelled — no terminal to ask on. Run this in a terminal, or pipe the menu number of a provider.' 'the provider list must not end in silence either' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/piped.conf" ]] || { print -u2 -- 'a cancelled add must save nothing'; rc=1; }
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_add_apikey_preset_fills_endpoint_and_tiers() {
   # A preset is picked by id (or number) and fills the endpoint and the tier
   # models; only the key is asked. Every preset row names six fields.
@@ -11379,6 +11412,7 @@ run_test test_proxy_model_is_bootstrap_fallback
 run_test test_proxy_context_limit_reaches_claude
 # Adapter choice is automatic at launch; add only persists profile credentials.
 run_test test_add_never_asks_how_to_reach_the_endpoint
+run_test test_add_without_a_terminal_ends_with_a_working_path
 run_test test_add_apikey_preset_fills_endpoint_and_tiers
 run_test test_add_apikey_lists_anthropic_first
 run_test test_add_apikey_native_endpoint_skips_adapter

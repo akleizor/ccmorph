@@ -228,14 +228,22 @@ func uiSelect(mode, title, rows, display string) (string, int) {
 // list is ccm_ui_list: the numbered rows, painted on stderr. It returns the
 // lines it printed, the count a fold over it erases.
 func (t uiTheme) list(prompt string, rows []string, display string) int {
+	return t.listTo(os.Stderr, prompt, rows, display)
+}
+
+// listTo paints the numbered rows on w. Every picker paints on stderr, where
+// its terminal lives; a menu asked through a pipe answers on stdout, because
+// with no terminal painting anywhere the rows are the answer sheet, not an
+// error (GH-653).
+func (t uiTheme) listTo(w io.Writer, prompt string, rows []string, display string) int {
 	_, columns := termSize()
 	index := len(strconv.Itoa(len(rows)))
 	rowWidth := columns - len(uiMargin) - index - 2
 	width := min(labelWidth(rows, display), rowWidth)
-	fmt.Fprintln(os.Stderr, t.heading(prompt, columns))
-	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(w, t.heading(prompt, columns))
+	fmt.Fprintln(w)
 	for i, r := range rows {
-		fmt.Fprintf(os.Stderr, "%s%*d) %s\n", uiMargin, index, i+1, t.label(visible(r, display), width, false, rowWidth))
+		fmt.Fprintf(w, "%s%*d) %s\n", uiMargin, index, i+1, t.label(visible(r, display), width, false, rowWidth))
 	}
 	return len(rows) + 2 // heading, blank, rows
 }

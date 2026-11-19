@@ -125,9 +125,22 @@ func (l *launcher) choose(title, rows string) (string, bool) {
 		v, rc := uiSelect("native", title, rows, "")
 		return v, rc == 0
 	}
-	themeFor(2).list(title, splitRows(rows), "labels")
+	return l.pipeMenu(title, splitRows(rows), "a sign-in method")
+}
+
+// pipeMenu is the menu of a run with no terminal to ask on: the rows answer on
+// stdout, where the scripted caller reads them, and an unanswered question —
+// closed stdin, or a pipe that ran dry — ends with the one line that names
+// both working paths, so the run never ends in silence (GH-653). `what` is
+// what the rows offer, as the line's last clause reads it.
+func (l *launcher) pipeMenu(title string, rows []string, what string) (string, bool) {
+	themeFor(1).listTo(os.Stdout, title, rows, "labels")
 	v, rc := uiInput("> ", false)
-	return v, rc == 0
+	if rc != 0 {
+		fmt.Fprintln(os.Stdout, "cancelled — no terminal to ask on. Run this in a terminal, or pipe the menu number of "+what+".")
+		return "", false
+	}
+	return v, true
 }
 
 // rollback removes a half-made profile: private state and conf.
@@ -387,9 +400,8 @@ func (l *launcher) addAPIKey(name string) int {
 		}
 		pick = v
 	} else {
-		themeFor(2).list("Provider — "+name, rows, "labels")
-		v, rc := uiInput("> ", false)
-		if rc != 0 {
+		v, ok := l.pipeMenu("Provider — "+name, rows, "a provider")
+		if !ok {
 			return 1
 		}
 		pick = v
