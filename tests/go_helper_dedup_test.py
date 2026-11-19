@@ -242,7 +242,8 @@ def go_sources_of(root):
     tracked = tree_tracked_files(root)
     siblings = sibling_worktrees(root)
     return [path for path in sorted(root.glob("**/*.go"))
-            if ".git" not in path.parts and ".claude" not in path.parts
+            # parts below root only: a checkout that itself sits under .claude/worktrees is still source
+            if ".git" not in path.relative_to(root).parts and ".claude" not in path.relative_to(root).parts
             and not in_a_sibling_worktree(path, siblings, tracked)]
 
 
