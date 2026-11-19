@@ -620,6 +620,11 @@ else
   c_ok "Done. ccmorph is installed (no profiles — fresh install)."
 fi
 
+# The installer copies the plugin that provides /ccmorph:hop, but only a session
+# this launcher starts loads it: an installer that only said "Done" left a
+# first-timer to find that out by absence in plain `claude` (#651).
+c_dim "Sessions you start with ccmorph run automatically get /ccmorph:hop and a status line naming the profile; plain claude does not."
+
 # One closing block for every run, so the end of the output answers "did it work,
 # what now". Only a fresh install has no profile to add yet; an update has its own.
 # Off PATH the Check line carries the absolute path (it works right here), while
