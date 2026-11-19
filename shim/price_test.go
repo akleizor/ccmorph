@@ -25,6 +25,18 @@ func usageOf(s string) usageRow {
 	return bucketsOf(in, Span{0, len(in)}, true)
 }
 
+func TestCachedOwnedPriceLookup(t *testing.T) {
+	dir := stateHome(t)
+	seedOwnedPrices(t, dir, "any", map[string]price{"example": {Input: 0.15, Output: 0.6}})
+	book := CachedOwnedPriceBook("")
+	if in, out, ok := book.Lookup("example-FP8"); !ok || in != 0.15 || out != 0.6 {
+		t.Fatalf("got %v, %v, %v", in, out, ok)
+	}
+	if _, _, ok := book.Lookup("missing"); ok {
+		t.Fatal("missing model must be unpriced")
+	}
+}
+
 func TestEstimateIsTokenClassesTimesPrice(t *testing.T) {
 	flash := parsePrices([]byte(apiDoc), "api.deepseek.com")["deepseek-flash"]
 	// The row from a real ds turn: 2659 input + 9 output + 30336 cached tokens.

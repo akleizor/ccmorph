@@ -282,6 +282,12 @@ func CachedOwnedPriceBook(only string) *priceBook {
 	return b
 }
 
+// Lookup returns the input and output list prices per million tokens for model.
+func (b *priceBook) Lookup(model string) (input, output float64, ok bool) {
+	p, ok := b.lookup(model)
+	return p.Input, p.Output, ok
+}
+
 // RefreshOwnedPrices fetches the models.dev slice and caches it, so a later
 // hook can price a turn. The launcher calls it in the background at launch.
 func RefreshOwnedPrices(only string) { newOwnedPriceBook(only).load() }
