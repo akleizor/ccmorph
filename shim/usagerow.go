@@ -376,14 +376,53 @@ func recordedElsewhere(responseID, routeID, turnID, timestamp string, usage usag
 	// A spill's name starts with its response id's hash, so the spills of one
 	// response are a glob, not a read of every row in the day.
 	for _, dir := range dirs {
-		rows, err := usageRowsFor(dir, responseID, turnID, true)
+		hit, err := spillHolds(dir, responseID, routeID, turnID, timestamp, usage)
 		if err != nil {
 			return false, err
 		}
-		for _, row := range rows {
-			if sameResponse(row.Data, responseID, routeID, timestamp, usage) {
-				return true, nil
-			}
+		if hit {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// spillHolds reports whether any spill of this response under dir is this
+// response. The scan may run on names the process cached earlier, and a cached
+// listing is trusted for a yes only: a row it shows is a row that is there.
+// A no cannot come from it — the relay lands spills beside a running pass, and
+// a pass that finds no match writes its own row and moves the cursor past the
+// response, so a miss is a permanent double count (dirNames). A miss on cached
+// names is therefore re-checked against a listing taken for this answer; the
+// re-check also heals a folder whose last listing failed, since refreshNames
+// dropped the bad entry and lists again (the caller must not remember the
+// miss, #538).
+func spillHolds(dir, responseID, routeID, turnID, timestamp string, usage usageRow) (bool, error) {
+	_, cached := dirNames[dir]
+	rows, err := usageRowsFor(dir, responseID, turnID, true)
+	if err != nil {
+		return false, err
+	}
+	for _, row := range rows {
+		if sameResponse(row.Data, responseID, routeID, timestamp, usage) {
+			return true, nil
+		}
+	}
+	if !cached {
+		// The listing behind these names was taken for this very scan: a miss
+		// against it is a miss as of now.
+		return false, nil
+	}
+	if _, ok := refreshNames(dir); !ok {
+		return false, nil
+	}
+	rows, err = usageRowsFor(dir, responseID, turnID, true)
+	if err != nil {
+		return false, err
+	}
+	for _, row := range rows {
+		if sameResponse(row.Data, responseID, routeID, timestamp, usage) {
+			return true, nil
 		}
 	}
 	return false, nil
@@ -574,24 +613,70 @@ func rowTime(ts string) string {
 // rowFileName is the file a response's row lives in, inside its stamp's day
 // folder, by response id, so a transcript or a gateway error quoting that id
 // joins to it.
-// dirNames holds each day folder's file names, listed once per process: a hook
-// pass checks thousands of responses against folders of ~20,000 rows.
-// shortcut: a spill another writer adds mid-pass is missed until the next pass.
+// dirNames holds each day folder's file names, from a listing that succeeded:
+// a hook pass checks thousands of responses against folders of ~20,000 rows.
+// A failed listing is never kept — the caller must not remember the miss
+// (#538) — and a kept one is trusted for a yes only: a scan that finds no
+// matching row re-checks against a listing taken for that answer (spillHolds),
+// because a pass that misses a spill writes its own row and moves the cursor
+// past the response: no later pass re-reads it, so a miss is a permanent
+// double count. The window no listing closes is a spill the relay lands
+// between this response's last listing and the hook's own write: that
+// stays a duplicate candidate, not a clobber, because every writer claims the
+// names it writes and drops its own row rather than overwrite another's
+// (claim, sidecar.go), so a miss leaves two rows beside each other, never a
+// lost relay row.
 var dirNames = map[string][]string{}
 
-// spillsIn is every file in dir whose name starts with prefix.
-func spillsIn(dir, prefix string) []string {
-	names, ok := dirNames[dir]
-	if !ok {
-		entries, _ := os.ReadDir(dir)
-		for _, e := range entries {
-			names = append(names, e.Name())
-		}
-		dirNames[dir] = names // sorted by ReadDir
+// listDir is the folder listing spillsIn caches; a test swaps it to fail a
+// listing (the writeRow pattern).
+var listDir = os.ReadDir
+
+// refreshNames lists dir and caches its names only on success; a failed
+// listing drops any listing cached before it, so the next call retries
+// instead of trusting a folder the process can no longer read.
+func refreshNames(dir string) ([]string, bool) {
+	entries, err := listDir(dir)
+	if err != nil {
+		delete(dirNames, dir)
+		return nil, false
 	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	dirNames[dir] = names // sorted by ReadDir
+	return names, true
+}
+
+// spillsIn is every file in dir whose name starts with prefix except
+// primaryName: the prefix is the primary's stem plus a dot, so it holds the
+// primary's own name too, while this scan is for spills and its caller reads
+// the primary itself. A cached listing whose glob comes up empty is checked
+// against a fresh one before the empty answer goes out — relays add spills to
+// these folders beside a running pass — and the fuller rule, that a cached
+// listing may answer yes but never no, is spillHolds (dirNames).
+func spillsIn(dir, prefix, primaryName string) []string {
+	if names, ok := dirNames[dir]; ok {
+		if out := globSpills(dir, names, prefix, primaryName); len(out) > 0 {
+			return out
+		}
+	}
+	names, ok := refreshNames(dir)
+	if !ok {
+		return nil
+	}
+	return globSpills(dir, names, prefix, primaryName)
+}
+
+// globSpills is the paths under dir whose names carry this response's spills;
+// the primary's own name is not one of them.
+func globSpills(dir string, names []string, prefix, primaryName string) []string {
 	var out []string
 	for i := sort.SearchStrings(names, prefix); i < len(names) && strings.HasPrefix(names[i], prefix); i++ {
-		out = append(out, filepath.Join(dir, names[i]))
+		if names[i] != primaryName {
+			out = append(out, filepath.Join(dir, names[i]))
+		}
 	}
 	return out
 }

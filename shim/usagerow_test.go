@@ -2,6 +2,7 @@ package shim
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -27,6 +28,25 @@ func seedOwnedPrices(t *testing.T, usageDir, provider string, models map[string]
 	if err := os.WriteFile(filepath.Join(root, "prices-owned-"+provider+".json"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// seedSpillDay builds a day folder holding resp_1's primary row and one of its
+// spills, and names the folder and the two files.
+func seedSpillDay(t *testing.T) (day, primaryName, spillName string) {
+	t.Helper()
+	day = filepath.Join(t.TempDir(), "2026-11-05")
+	if err := os.MkdirAll(day, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	primaryName = rowFileName("resp_1")
+	spillName = spillFileName("resp_1", "resp_1.turn_x")
+	if err := os.WriteFile(filepath.Join(day, primaryName), []byte(`{"response_id":"resp_1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(day, spillName), []byte(`{"response_id":"resp_1","turn_id":"turn_x"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return day, primaryName, spillName
 }
 
 func transcriptLine(uuid, id, model, ts string, usage string) string {
@@ -982,6 +1002,156 @@ func TestANewResponseReadsOnlyItsPrimary(t *testing.T) {
 	if got := len(rows(t, dir)); got != 2 {
 		t.Fatalf("rows = %d, want 2: %v", got, rows(t, dir))
 	}
+}
+
+// #635: the spill scan cached each folder's names for the life of the process,
+// so a spill the relay adds while a pass runs cannot be found, and the miss is
+// permanent: the pass that misses a spill writes its own row and moves the
+// cursor past the response, and no later pass re-reads it.
+func TestASpillAddedBetweenTwoScansIsFound(t *testing.T) {
+	dir := stateHome(t)
+	seedOwnedPrices(t, dir, "anthropic", map[string]price{"claude-opus-5-5": {Input: 4, Output: 20}})
+	model := "claude-opus-5-5"
+	hook := newSidecar("codex", "transcript")
+	usage := usageRow{{"input_tokens", []byte("10")}}
+	timestamp := "2026-11-05T10:00:00+00:00"
+	// Another route holds this id's primary, so the scan for our row runs.
+	other := newSidecar("gw", "adapter")
+	other.prices = CachedOwnedPriceBook("anthropic")
+	rec := other.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("7")}})
+	rec.timestamp = "2026-11-05T09:00:00+00:00"
+	rec.complete = true
+	if err := other.write(rec); err != nil {
+		t.Fatal(err)
+	}
+	// The first scan: the relay has not spilled this response yet.
+	if held, err := recordedElsewhere("resp_1", hook.routeID, "turn_hook", timestamp, usage); held || err != nil {
+		t.Fatalf("first scan = %v, %v: want false, the spill has not landed", held, err)
+	}
+	// The relay spills this response mid-pass: its primary is held, so the
+	// write claims a spill name beside it.
+	relay := newSidecar("gw", "adapter")
+	relay.prices = CachedOwnedPriceBook("anthropic")
+	rec = relay.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("10")}})
+	rec.timestamp = "2026-11-05T09:50:00+00:00"
+	rec.complete = true
+	if err := relay.write(rec); err != nil {
+		t.Fatal(err)
+	}
+	// The second scan lists the same folder again. The first scan's listing
+	// predates the spill; if the pass answers from it, the hook writes a
+	// second row for this response and the cursor moves on.
+	if held, err := recordedElsewhere("resp_1", hook.routeID, "turn_hook", timestamp, usage); !held || err != nil {
+		t.Fatalf("second scan = %v, %v: want true, the spill landed between the scans", held, err)
+	}
+}
+
+// #635 (the merge gate's reproduction): the first scan's cached listing already
+// holds a spill — the relay's row for a different request under this id, whose
+// input counts differ, so it never matches. The glob is not empty, so a scan
+// that re-lists only an empty glob reads just that stale row again: when the
+// relay lands our own spill in between, the second scan still answers no
+// spill, and the hook writes a duplicate whose cursor never comes back. A
+// cached listing may answer yes; a no must come from a listing taken now.
+func TestACachedSpillThatIsNotOursIsCheckedAgainstAFreshListing(t *testing.T) {
+	dir := stateHome(t)
+	seedOwnedPrices(t, dir, "anthropic", map[string]price{"claude-opus-5-5": {Input: 4, Output: 20}})
+	model := "claude-opus-5-5"
+	hook := newSidecar("codex", "transcript")
+	usage := usageRow{{"input_tokens", []byte("10")}}
+	timestamp := "2026-11-05T10:00:00+00:00"
+	// Another route holds this id's primary, so the scan for our row runs.
+	other := newSidecar("gw", "adapter")
+	other.prices = CachedOwnedPriceBook("anthropic")
+	rec := other.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("7")}})
+	rec.timestamp = "2026-11-05T09:00:00+00:00"
+	rec.complete = true
+	if err := other.write(rec); err != nil {
+		t.Fatal(err)
+	}
+	// The relay has already spilled another request under this id: same
+	// response id, different input counts, so it is a candidate that will not
+	// match and the first scan's cached glob is not empty.
+	older := newSidecar("gw", "adapter")
+	older.prices = CachedOwnedPriceBook("anthropic")
+	rec = older.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("8")}})
+	rec.timestamp = "2026-11-05T09:00:00+00:00"
+	rec.complete = true
+	if err := older.write(rec); err != nil {
+		t.Fatal(err)
+	}
+	// The first scan: the other request's spill is there, ours is not.
+	if held, err := recordedElsewhere("resp_1", hook.routeID, "turn_hook", timestamp, usage); held || err != nil {
+		t.Fatalf("first scan = %v, %v: want false, only the other row is there", held, err)
+	}
+	// The relay spills this response mid-pass, beside the stale spill.
+	relay := newSidecar("gw", "adapter")
+	relay.prices = CachedOwnedPriceBook("anthropic")
+	rec = relay.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("10")}})
+	rec.timestamp = "2026-11-05T09:50:00+00:00"
+	rec.complete = true
+	if err := relay.write(rec); err != nil {
+		t.Fatal(err)
+	}
+	// The second scan's cached listing predates this spill and holds only the
+	// non-matching one; answering from it leaves the hook writing a second row.
+	if held, err := recordedElsewhere("resp_1", hook.routeID, "turn_hook", timestamp, usage); !held || err != nil {
+		t.Fatalf("second scan = %v, %v: want true, the spill landed while the cache held only the other row", held, err)
+	}
+}
+
+// #635: the spill prefix is the primary's stem plus a dot, which the primary's
+// own name also starts with. The scan the glob replaced skipped the primary by
+// name, and its caller reads the primary itself: a scan that returns it too
+// re-reads the primary once per scanned response.
+func TestTheSpillScanNeverReReadsThePrimary(t *testing.T) {
+	day, primaryName, spillName := seedSpillDay(t)
+	rows, err := usageRowsFor(day, "resp_1", "turn_hook", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	seen := 0
+	for _, row := range rows {
+		names = append(names, row.Name)
+		if row.Name == primaryName {
+			seen++
+		}
+	}
+	if seen != 1 {
+		t.Fatalf("the spill scan read the primary %d times, want once: %v", seen, names)
+	}
+	if len(names) != 2 {
+		t.Fatalf("the scan = %v, want the primary and %s", names, spillName)
+	}
+}
+
+// #635: one transient listing failure used to be stored as the folder's
+// contents for the life of the process — the failed ReadDir's empty answer was
+// cached — so every spill in that folder was invisible for the rest of the
+// pass: the caller must not remember the miss (#538).
+func TestAFailedListingIsNotRemembered(t *testing.T) {
+	day, primaryName, spillName := seedSpillDay(t)
+	failing := true
+	orig := listDir
+	t.Cleanup(func() { listDir = orig })
+	listDir = func(name string) ([]os.DirEntry, error) {
+		if failing {
+			failing = false
+			return nil, errors.New("emfile: too many open files")
+		}
+		return os.ReadDir(name)
+	}
+	prefix := strings.TrimSuffix(primaryName, ".json") + "."
+	if got := spillsIn(day, prefix, primaryName); len(got) != 0 {
+		t.Fatalf("the failed listing reported %v: it saw nothing", got)
+	}
+	for _, path := range spillsIn(day, prefix, primaryName) {
+		if filepath.Base(path) == spillName {
+			return
+		}
+	}
+	t.Fatalf("the failed first listing hid the spill from the second call")
 }
 
 func TestMaxUsageKeepsTheLargerNumberPerKey(t *testing.T) {

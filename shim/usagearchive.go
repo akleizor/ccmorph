@@ -97,7 +97,8 @@ func usageRowsFor(dir, responseID, turnID string, allSpills bool) ([]storedUsage
 	}
 	primary, spills := rowNames(dir, responseID, turnID)
 	if allSpills {
-		spills = spillsIn(dir, strings.TrimSuffix(rowFileName(responseID), ".json")+".")
+		name := rowFileName(responseID)
+		spills = spillsIn(dir, strings.TrimSuffix(name, ".json")+".", name)
 	}
 	var rows []storedUsageRow
 	for _, path := range append([]string{primary}, spills...) {
