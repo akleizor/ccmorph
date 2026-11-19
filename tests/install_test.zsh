@@ -1370,6 +1370,11 @@ d=$(fresh_env end_fresh_on); end_run "$d" onpath; rc=$?
 (( rc == 0 )) && ok "end: fresh install on PATH exits 0" || { fail "end: fresh on-PATH rc=$rc"; cat "$d/out"; }
 grep -qxF 'Check:  ccmorph doctor' "$d/out" && ok "end: fresh install ends with 'Check:  ccmorph doctor'" || { fail "end: fresh install has no check line"; cat "$d/out"; }
 grep -qxF 'Next:   ccmorph add <name>' "$d/out" && ok "end: fresh install says 'Next:   ccmorph add <name>'" || fail "end: fresh install has no next-step line"
+# /ccmorph:hop only exists in a session the launcher starts, and the likeliest
+# first move after install is plain `claude`, where it is silently absent: every
+# run's footer has to name the launch requirement (#651).
+grep -qF 'plain claude does not' "$d/out" \
+  && ok "end: fresh install footer names the /ccmorph:hop launch requirement" || { fail "end: fresh footer omits the launch requirement"; cat "$d/out"; }
 grep -qE 'ccmorph (use|list)|Start here' "$d/out" && fail "end: the old Start here block is still printed" || ok "end: the old use/list block is gone"
 grep -qF 'not on your PATH' "$d/out" && fail "end: on-PATH run still warns about PATH" || ok "end: no PATH warning when the bin dir is on PATH"
 # On PATH the bare Next line runs in the terminal the person is already in, so
@@ -1394,6 +1399,9 @@ grep -qxF 'Check:  ccmorph doctor' "$d/out" && ok "end: an update ends with the 
 grep -qF 'ccmorph add' "$d/out" && fail "end: an update suggests adding a profile" || ok "end: an update does not say 'ccmorph add'"
 grep -qE '^Next:' "$d/out" && fail "end: an update prints a Next line" || ok "end: an update prints no Next line"
 grep -qE 'ccmorph (use|list)|Start here' "$d/out" && fail "end: an update prints the old block" || ok "end: an update prints no use/list block"
+# The footer states it on every run, not only fresh ones: the closing block is
+# what a reader actually reads last (#651).
+grep -qF 'plain claude does not' "$d/out" && ok "end: an update footer names the launch requirement too" || fail "end: update footer omits the launch requirement"
 
 d=$(fresh_env end_update_off); end_run "$d" offpath; end_run "$d" offpath
 grep -qxF "Check:  $d/home/.local/bin/ccmorph doctor" "$d/out" && ! grep -qF 'ccmorph add' "$d/out" \
