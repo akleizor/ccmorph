@@ -24,7 +24,7 @@ const retiredVerb = "mea" + "sure"
 var ownVerbs = map[string]bool{"list": true, "inspect": true, "show": true, "add": true, "config": true,
 	"login": true, "default": true, "use": true, "rm": true, "mv": true, "get": true, "set": true,
 	"context": true, "cred": true, "secret": true, "creds": true, "probe": true, "hop": true, "profile": true,
-	"help": true, "version": true, "run": true, "start": true, retiredVerb: true}
+	"help": true, "version": true, "run": true, "start": true, "price": true, retiredVerb: true}
 
 // helpAsked reports whether any word asks for help.
 func helpAsked(words []string) bool {
@@ -63,7 +63,7 @@ func (l *launcher) extraArg(verb, word string) int {
 // realVerbs is every verb `ccmorph <verb>` answers to, in one list for the typo
 // hint: a word one edit away from exactly one of these is told to run it.
 var realVerbs = []string{"add", "config", "context", "cred", "doctor", "get", "help", "hop",
-	"inspect", "list", "login", "models", "mv", "probe", "profile", "quota", "rm", "run", "set",
+	"inspect", "list", "login", "models", "mv", "price", "probe", "profile", "quota", "rm", "run", "set",
 	"uninstall", "update", "use", "version"}
 
 // topFlags are the flags ccmorph itself takes before the verb.
@@ -124,6 +124,10 @@ func (l *launcher) dispatch(args []string) int {
 		if len(rest) > 0 && (rest[0] == "-h" || rest[0] == "--help") {
 			return l.usage("run")
 		}
+	} else if first == "price" {
+		if helpAsked(rest) {
+			return l.usage(first)
+		}
 	} else if first == "probe" || first == retiredVerb {
 		// The page is the cli's, as every command's is; answer it before
 		// secureDirs, so no picker opens and no state is provisioned.
@@ -175,7 +179,7 @@ func (l *launcher) dispatch(args []string) int {
 	case "_env":
 		return l.envVerb(args[1:])
 	case "list", "use", "cred", "inspect", "context", "models", "_models", "rm", "mv", "get", "set",
-		"_menu", "_ui", "config", "add", "login", "hop", "profile", "quota":
+		"_menu", "_ui", "config", "add", "login", "hop", "profile", "quota", "price":
 		return l.verb(args)
 	}
 	return l.unknown(first, args)
@@ -865,6 +869,7 @@ func (l *launcher) usageAt(topic string, width int) int {
 		if all {
 			head("More commands:")
 			help("ccmorph models <profile>", "List models from an API-key endpoint")
+			help("ccmorph price <model>...", "Read cached model list prices")
 			help("ccmorph get <profile> <model|effort>", "Read a saved default")
 			help("ccmorph set <profile> <model|effort> [value]", "Save a default; omit value to choose")
 			help("ccmorph login <profile>", "Sign in again to a provider account")
@@ -974,6 +979,8 @@ Masking is a line in the profile's conf file, not a menu item: on an API-key
 gateway profile, env.CCMORPH_MASK=1 in ~/.config/ccmorph/<profile>.conf sends
 secrets as placeholders; ccmorph inspect shows whether it is on.`},
 	"list": {"ccmorph list", "List saved profiles. * marks the default used by ccmorph run; private marks one whose history is deleted when the session ends."},
+	"price": {"ccmorph price <model>... [--json]", `Read cached model list prices in US dollars per million tokens.
+Missing prices are unpriced; --json omits them. The cache is never fetched.`},
 	"quota": {"ccmorph quota [profile] [--json]", `Every profile in one view, grouped by kind: Claude accounts and tokens,
 Codex subscriptions, budget accounts, and API key or provider profiles. Each
 plan window is a bar with the percent used and when it resets; a plan tier

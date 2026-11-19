@@ -25,6 +25,18 @@ func usageOf(s string) usageRow {
 	return bucketsOf(in, Span{0, len(in)}, true)
 }
 
+func TestCachedOwnedPriceLookup(t *testing.T) {
+	dir := stateHome(t)
+	seedOwnedPrices(t, dir, "any", map[string]price{"example": {Input: 0.15, Output: 0.6}})
+	book := CachedOwnedPriceBook("")
+	if in, out, ok := book.Lookup("example-FP8"); !ok || in != 0.15 || out != 0.6 {
+		t.Fatalf("got %v, %v, %v", in, out, ok)
+	}
+	if _, _, ok := book.Lookup("missing"); ok {
+		t.Fatal("missing model must be unpriced")
+	}
+}
+
 func TestEstimateIsTokenClassesTimesPrice(t *testing.T) {
 	flash := parsePrices([]byte(apiDoc), "api.deepseek.com")["deepseek-flash"]
 	// The row from a real ds turn: 2659 input + 9 output + 30336 cached tokens.
@@ -216,6 +228,18 @@ func TestLookupIgnoresADateSuffix(t *testing.T) {
 	}
 	if _, ok := b.lookup("claude-opus-5-5-notadate"); ok {
 		t.Fatal("a suffix that is not a date must not be stripped")
+	}
+}
+
+func TestLookupIgnoresAServedPrecisionSuffix(t *testing.T) {
+	table := map[string]price{"Qwen3.8-Flash-Next": {Input: 0, Output: 0}, "glm-5.3": {Input: 1, Output: 3}}
+	for _, m := range []string{"Qwen3.8-Flash-Next-FP8", "glm-5.3-NVFP4", "glm-5.3_awq"} {
+		if _, ok := lookupIn(table, m); !ok {
+			t.Fatalf("%s must price as its base model", m)
+		}
+	}
+	if _, ok := lookupIn(table, "glm-5.3-air"); ok {
+		t.Fatal("a suffix that is not a precision must not be stripped")
 	}
 }
 

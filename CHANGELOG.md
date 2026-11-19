@@ -9,6 +9,7 @@
 
 ### Added
 
+- **`ccmorph price <model>... [--json]`** reads cached list prices per million tokens, using the same model lookup as usage pricing.
 - Adapter usage rows record the launching session as `parent` when available.
 
 ### Fixed

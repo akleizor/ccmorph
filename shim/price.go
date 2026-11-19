@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -281,6 +282,12 @@ func CachedOwnedPriceBook(only string) *priceBook {
 	return b
 }
 
+// Lookup returns the input and output list prices per million tokens for model.
+func (b *priceBook) Lookup(model string) (input, output float64, ok bool) {
+	p, ok := b.lookup(model)
+	return p.Input, p.Output, ok
+}
+
 // RefreshOwnedPrices fetches the models.dev slice and caches it, so a later
 // hook can price a turn. The launcher calls it in the background at launch.
 func RefreshOwnedPrices(only string) { newOwnedPriceBook(only).load() }
@@ -334,8 +341,9 @@ func (b *priceBook) lookup(model string) (price, bool) {
 }
 
 // lookupIn finds model in one price table. Claude Code can name a dated id
-// (claude-opus-4-5-20251101) for a model models.dev lists undated too; the date
-// is spelling, not another model.
+// (claude-opus-4-5-20251101) for a model models.dev lists undated too, and a
+// gateway names the weights it serves (Qwen3.8-Flash-Next-FP8); the date and the
+// precision are spelling, not another model.
 func lookupIn(table map[string]price, model string) (price, bool) {
 	name := strings.TrimSuffix(model, "[1m]")
 	if p, ok := table[name]; ok {
@@ -345,5 +353,12 @@ func lookupIn(table map[string]price, model string) (price, bool) {
 		p, ok := table[name[:i]]
 		return p, ok
 	}
+	if base := precision.ReplaceAllString(name, ""); base != name {
+		p, ok := table[base]
+		return p, ok
+	}
 	return price{}, false
 }
+
+// precision is a served-weights suffix: -FP8, -NVFP4, -BF16, -INT4, -AWQ, -GPTQ.
+var precision = regexp.MustCompile(`(?i)[-_](?:(?:nv|mx)?fp\d+|bf16|int\d+|awq|gptq)$`)

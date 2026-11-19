@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
+	"github.com/akleizor/ccmorph/shim"
 	"github.com/akleizor/ccmorph/util"
 	"os"
 	"path/filepath"
@@ -61,9 +63,52 @@ func (l *launcher) verb(args []string) int {
 		return l.profileVerb(args[1:])
 	case "quota":
 		return l.quota(args[1:])
+	case "price":
+		return l.price(args[1:])
 	}
 	fmt.Fprintln(os.Stderr, "usage: ccmorph-core cli <verb>")
 	return 2
+}
+
+func (l *launcher) price(args []string) int {
+	models := make([]string, 0, len(args))
+	asJSON := false
+	for _, arg := range args {
+		if arg == "--json" {
+			asJSON = true
+		} else {
+			models = append(models, arg)
+		}
+	}
+	if len(models) == 0 {
+		l.err("usage: " + usageLine("price"))
+		return 2
+	}
+	book := shim.CachedOwnedPriceBook("")
+	type listPrice struct {
+		Input  float64 `json:"input"`
+		Output float64 `json:"output"`
+	}
+	prices := map[string]listPrice{}
+	for _, model := range models {
+		input, output, ok := book.Lookup(model)
+		if asJSON {
+			if ok {
+				prices[model] = listPrice{input, output}
+			}
+		} else if ok {
+			fmt.Printf("%s  $%v/$%v per 1M tokens\n", model, input, output)
+		} else {
+			fmt.Printf("%s  unpriced\n", model)
+		}
+	}
+	if asJSON {
+		if err := json.NewEncoder(os.Stdout).Encode(prices); err != nil {
+			l.err(err.Error())
+			return 1
+		}
+	}
+	return 0
 }
 
 // globQuote quotes a literal path for use in front of a glob pattern. The zsh
