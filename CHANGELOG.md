@@ -7,6 +7,16 @@
 
 ## Unreleased
 
+## v0.5.17 — 2026-11-19
+
+Cut from v0.5.16 plus these changes only.
+
+### Added
+
+- **`ccmorph quota` reads Google AI plans.** An `antigravity` profile shows each
+  quota pool (Gemini, and the weekly pool the Claude and gpt-oss models share)
+  with its reset; `--json` windows carry the `models` that draw on them.
+
 ## v0.5.16 — 2026-11-19
 
 Cut from v0.5.15 plus these changes only.
