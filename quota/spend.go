@@ -446,9 +446,10 @@ func monthMemoPath() string { return filepath.Join(spendCacheDir(), "month.json"
 func monthBasePath() string { return filepath.Join(spendCacheDir(), "base.json") }
 
 // spendCache is a cache file under quota/spend: what decoding it costs, in
-// receipt rows.
+// receipt rows, and the version its decoded body carries.
 type spendCache interface {
 	rows() int
+	version() int
 }
 
 func (c dayFile) rows() int  { return len(c.Files) }
@@ -458,13 +459,20 @@ func (c flatFile) rows() int { return len(c.Files) }
 func (c monthBase) rows() int { return 0 }
 func (c monthMemo) rows() int { return 0 }
 
+func (c dayFile) version() int   { return c.V }
+func (c flatFile) version() int  { return c.V }
+func (c monthBase) version() int { return c.V }
+func (c monthMemo) version() int { return c.V }
+
 // cacheVersion is the head's "v" alone. The scan reads the tokens one object
 // key at a time and skips each value it does not ask about whole, so it stops
 // at the version — the first key every cache this writer produces — and never
 // approaches the body's cost: an accepted cache is walked once, by the full
 // decode that follows, where the head's own decode used to walk it a second
-// time (#559), and a future version's body is walked never (#449). ok is false
-// for anything but a whole number under "v" at the object's top level.
+// time (#559), and a whole file of a future version's body is walked never
+// (#449). Its answer fast-rejects only: what it accepts, loadCache still
+// decides by the version the body decoded as (#581). ok is false for anything
+// but a whole number under "v" at the object's top level.
 func cacheVersion(b []byte) (int, bool) {
 	dec := json.NewDecoder(bytes.NewReader(b))
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
@@ -513,11 +521,17 @@ func cacheVersion(b []byte) (int, bool) {
 
 // loadCache is the one preamble every spend cache read goes through: read the
 // file, read its version alone, and only for this shape's version decode the
-// body and count the receipts it keeps, so a future version's body is never
-// decoded (#449). Any miss — no file, bytes that do not decode, a version this
-// reader did not write — is the zero cache, never a partial one. What else makes
-// a decoded cache this reader's answer — a day's marks, a month's window — is
-// the caller's to check (#546).
+// body and count the receipts it keeps, so a whole file of a future version
+// never reaches the decode (#449). The peek may only fast-reject: it answers
+// the first top-level "v" and the decoder the last, and the decoder does not
+// care which case spelled the key, so bytes the two read differently are
+// decided by the version that decoded — a body that decoded as another
+// version's is refused as if it had never decoded, and contributes nothing
+// (#581, restoring #449's guarantee the peek alone could not hold). Any miss —
+// no file, bytes that do not decode, a version this reader did not write — is
+// the zero cache, never a partial one. What else makes a decoded cache this
+// reader's answer — a day's marks, a month's window — is the caller's to check
+// (#546).
 func loadCache[T spendCache](path string) (T, bool) {
 	var zero T
 	b, err := os.ReadFile(path)
@@ -529,6 +543,9 @@ func loadCache[T spendCache](path string) (T, bool) {
 	}
 	var c T
 	if json.Unmarshal(b, &c) != nil {
+		return zero, false
+	}
+	if c.version() != spendCacheVersion {
 		return zero, false
 	}
 	countRows(c.rows())
