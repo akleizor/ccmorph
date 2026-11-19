@@ -7,6 +7,23 @@
 
 ## Unreleased
 
+## v0.5.16 — 2026-11-19
+
+Cut from v0.5.15 plus these changes only.
+
+### Added
+
+- **`ccmorph price <model>... [--json]`** reads cached list prices per million
+  tokens, using the same model lookup as usage pricing, so other tools ask
+  ccmorph instead of copying its name rules.
+
+### Fixed
+
+- **A gateway model served under a precision name is priced.** A name such as
+  `Qwen3.8-Flash-Next-FP8` (also -NVFP4, -BF16, -INT4, -AWQ, -GPTQ) now prices
+  as its base model, the way a dated id already did; such usage rows were left
+  unpriced on every gateway profile.
+
 ## v0.5.15 — 2026-11-18
 
 Cut from v0.5.14 plus this fix only.
