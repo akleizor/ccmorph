@@ -209,12 +209,33 @@ func TestHomeUnsetDefaultProfileDirsAnswerTheAccountHomesRoot(t *testing.T) {
 	}
 }
 
-func TestRenderUpstreamProxyOnlyWhenSet(t *testing.T) { // test_upstream_proxy_is_rendered_only_when_set
-	cfg := render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "http://127.0.0.1:18480", "", nil, false)
-	if !strings.Contains(cfg, "\nproxy-url: \"http://127.0.0.1:18480\"\n") {
-		t.Fatal("proxy-url missing")
+func TestRenderUpstreamProxyScopedToUpstreamEntries(t *testing.T) { // test_upstream_proxy_is_rendered_only_when_set
+	// GH-585: a top-level proxy-url is cliproxyapi's GLOBAL proxy, so the
+	// translator's own update and auth checks (api.github.com, registry.npmjs.org,
+	// cpamc.router-for.me) dial the bridge too, and its allowlist -- the gateway
+	// host only -- refuses them every cycle, forever. The proxy belongs on each
+	// credential that dials the gateway: that is the only traffic
+	// env.CCMORPH_UPSTREAM_PROXY exists for (the LAN gateway a launchd session
+	// has no route to without the bridge's Local Network grant).
+	rows := []Row{
+		{Model: "m-anthropic", Dialect: "anthropic", Status: 200},
+		{Model: "m-responses", Dialect: "responses", Status: 200},
+		{Model: "m-chat", Dialect: "chat", Status: 200},
 	}
-	if strings.Contains(render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "", "", nil, false), "proxy-url") {
+	cfg := render(rows, "k", 1234, "https://gw", "/unused", "http://127.0.0.1:18480", "", nil, false)
+	if strings.Contains(cfg, "\nproxy-url:") {
+		t.Fatal("proxy rendered at top level: the translator's own update traffic joins the bridge (#585)")
+	}
+	for _, want := range []string{
+		"    base-url: \"https://gw\"\n    proxy-url: \"http://127.0.0.1:18480\"\n",
+		"    base-url: \"https://gw/v1\"\n    proxy-url: \"http://127.0.0.1:18480\"\n",
+		"    api-key-entries:\n      - api-key: \"k\"\n        proxy-url: \"http://127.0.0.1:18480\"\n",
+	} {
+		if !strings.Contains(cfg, want) {
+			t.Errorf("proxy-url not scoped into an upstream entry, want:\n%s", want)
+		}
+	}
+	if strings.Contains(render(rows, "k", 1234, "https://gw", "/unused", "", "", nil, false), "proxy-url") {
 		t.Fatal("proxy-url rendered without a proxy")
 	}
 }
