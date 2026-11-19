@@ -29,8 +29,8 @@ var (
 
 // Main reads one profile per stdin line,
 // "name<TAB>kind<TAB>arg<TAB>extra", and prints one entry each. kind is "sub"
-// (arg is the config dir), "token" (extra is the token), "codex" (arg is the
-// cliproxyapi auth dir) or "gateway" (arg is the base URL, extra is
+// (arg is the config dir), "token" (extra is the token), "codex" or
+// "antigravity" (arg is the cliproxyapi auth dir) or "gateway" (arg is the base URL, extra is
 // monthly_budget_usd; either may be empty, and a fifth field carries an API key).
 func Main(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	jsonOut, color := false, false
@@ -139,6 +139,8 @@ func read(client *http.Client, name, kind, arg, extra string) Entry {
 		return readClaude(client, name, extra, "", true)
 	case "codex":
 		return readCodex(client, name, arg)
+	case "antigravity":
+		return readAntigravity(client, name, arg)
 	default:
 		return spendEntry(name, extra)
 	}

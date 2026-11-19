@@ -19,6 +19,7 @@ const barCells = 16
 var groups = []struct{ kind, title string }{
 	{"claude", "Claude accounts and tokens"},
 	{"codex", "Codex subscriptions"},
+	{"antigravity", "Google AI plans"},
 	{"budget", "Budget accounts"},
 	{"gateway", "API key and provider profiles"},
 }

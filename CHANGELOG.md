@@ -11,6 +11,7 @@
 
 - **`ccmorph price <model>... [--json]`** reads cached list prices per million tokens, using the same model lookup as usage pricing.
 - Adapter usage rows record the launching session as `parent` when available.
+- **`ccmorph quota` reads Google AI plans.** An `antigravity` profile shows each quota pool (Gemini, and the weekly pool the Claude and gpt-oss models share) with its reset; `--json` windows carry the `models` that draw on them.
 
 ### Fixed
 
