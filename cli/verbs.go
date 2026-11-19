@@ -323,10 +323,7 @@ func (l *launcher) cred(args []string) int {
 	if !ok {
 		return 1
 	}
-	c := f["api_key"]
-	if c == "" {
-		c = f["token"]
-	}
+	c := credOf(f)
 	if c == "" {
 		l.err("'" + name + "' is a " + profile.KindLabel(f["type"], f["provider"]) + " profile and stores no credential here")
 		l.err("sign in again: ccmorph login " + name)
@@ -338,6 +335,14 @@ func (l *launcher) cred(args []string) int {
 		fmt.Print(c)
 	}
 	return 0
+}
+
+// credOf is the profile's resolved API key, or its token.
+func credOf(f map[string]string) string {
+	if f["api_key"] != "" {
+		return f["api_key"]
+	}
+	return f["token"]
 }
 
 func (l *launcher) use(args []string) int {

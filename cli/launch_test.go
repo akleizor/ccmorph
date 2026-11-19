@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -1889,13 +1890,29 @@ func TestReadActiveRescuesOnlyAValidSpelling(t *testing.T) {
 	}
 }
 
-// Scripts that call a profile's gateway read its endpoint here, with `cred` for
-// the key, instead of parsing the private .conf format by hand.
-func TestGetBaseURLPrintsTheProfileEndpoint(t *testing.T) {
+// get is the one public read of a profile: every field by name, or all of
+// them as JSON, so scripts never parse the private .conf format by hand.
+func TestGetReadsEveryProfileField(t *testing.T) {
 	name := "gw"
-	l := storeTestLauncher(t, name,
-		"type=apikey\nbase_url=https://gw.test\napi_key=test-key\nmodel=m-first\nmodel_defaults=1\n", "{\"env\":{}}\n")
-	if out, rc := captureStdout(t, func() int { return l.getSet("get", []string{name, "base_url"}) }); rc != 0 || out != "https://gw.test\n" {
-		t.Fatalf("get base_url: %q, rc %d", out, rc)
+	l := storeTestLauncher(t, name, "type=apikey\nbase_url=https://gw.test\napi_key=k-plain-123\nmodel=m-first", "{\"env\":{}}\n")
+	get := func(key string) string {
+		out, rc := captureStdout(t, func() int { return l.getSet("get", []string{name, key}) })
+		if rc != 0 {
+			t.Fatalf("get %s: rc %d", key, rc)
+		}
+		return out
+	}
+	if out := get("base_url"); out != "https://gw.test\n" {
+		t.Errorf("get base_url: %q", out)
+	}
+	if out := strings.TrimSpace(get("api_key")); out != "k-plain-123" {
+		t.Errorf("get api_key: %q", out)
+	}
+	var all map[string]string
+	if err := json.Unmarshal([]byte(get("--json")), &all); err != nil {
+		t.Fatal(err)
+	}
+	if all["base_url"] != "https://gw.test" || all["api_key"] != "k-plain-123" || all["model"] != "m-first" || all["type"] != "apikey" {
+		t.Errorf("get --json: %v", all)
 	}
 }

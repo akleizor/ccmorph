@@ -293,7 +293,8 @@ session on it. `get` reads one setting; `set` writes one:
 
 ```sh
 ccmorph get <profile> model             # or effort
-ccmorph get <profile> base_url          # the endpoint; with `cred`, scripts never read the .conf
+ccmorph get <profile> base_url          # or api_key (a secret); scripts never read the .conf
+ccmorph get <profile> --json            # every field above in one JSON object
 ccmorph set <profile> model kimi-k3
 ccmorph set <profile> effort xhigh      # low | medium | high | xhigh | max
 ccmorph set <profile> model -i          # choose from what the endpoint serves

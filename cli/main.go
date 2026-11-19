@@ -47,7 +47,7 @@ func usageLine(topic string) string {
 		if topic == "set" {
 			return "ccmorph set [profile] [model|effort] [value]"
 		}
-		return "ccmorph get [profile] [model|effort|base_url]"
+		return "ccmorph get [profile] [model|effort|base_url|api_key|--json]"
 	}
 	return usageTopics[topic][0]
 }
@@ -869,7 +869,7 @@ func (l *launcher) usageAt(topic string, width int) int {
 			head("More commands:")
 			help("ccmorph models <profile>", "List models from an API-key endpoint")
 			help("ccmorph price <model>...", "Read cached model list prices")
-			help("ccmorph get <profile> <model|effort|base_url>", "Read a saved default or the endpoint")
+			help("ccmorph get <profile> <field|--json>", "Read one profile field, or all as JSON")
 			help("ccmorph set <profile> <model|effort> [value]", "Save a default; omit value to choose")
 			help("ccmorph login <profile>", "Sign in again to a provider account")
 			help("ccmorph mv <old> <new>", "Rename a profile")
@@ -1009,8 +1009,9 @@ Omit the profile to check the default. Does not repair or launch a session.`},
 Omit the profile or the setting to choose it in a picker.
 The value is printed to stdout; name both in scripts.
 Effort: ` + strings.Join(profile.Efforts, ", ") + `. Available models come from the profile.
-base_url prints the endpoint an API-key profile calls; with ccmorph cred
-for its key, scripts reach the gateway without reading profile files.`},
+base_url prints the endpoint; api_key prints the key or token (a secret,
+the same as ccmorph cred). --json prints every field in one object.
+Scripts read a profile only through get, never from its files.`},
 	"set": {"", `Save a default for new sessions: the model or the effort level.
 Omit the profile, the setting or the value to choose it in a picker.
 The saved value goes to stdout for a script to capture; a terminal shows

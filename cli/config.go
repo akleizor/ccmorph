@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/akleizor/ccmorph/util"
 	"io"
@@ -29,7 +30,7 @@ func valueRows(value string, columns int) int {
 	return (max(cells(value), 1)-1)/columns + 1
 }
 
-// getSet is `ccmorph get [profile] [model|effort|base_url]` and `ccmorph set [profile]
+// getSet is `ccmorph get [profile] [model|effort|base_url|api_key|--json]` and `ccmorph set [profile]
 // [model|effort] [value]`. A missing profile, key or value opens its chooser.
 func (l *launcher) getSet(verb string, args []string) int {
 	if verb == "get" && len(args) > 2 {
@@ -89,12 +90,22 @@ func (l *launcher) getSet(verb string, args []string) int {
 			args = append(args, v)
 		}
 	}
-	if verb == "get" && key == "base_url" {
-		// The public read of a profile's endpoint, with `ccmorph cred` for its key:
-		// scripts call these instead of parsing the private .conf format.
+	// get is the one public read of a profile, so scripts never parse its .conf.
+	if verb == "get" && key == "api_key" {
+		return l.cred([]string{name})
+	}
+	if verb == "get" && (key == "base_url" || key == "--json") {
 		f, ok := l.readRaw(name)
 		if !ok {
 			return 1
+		}
+		if key == "--json" {
+			out := map[string]string{"profile": name, "type": f["type"], "base_url": f["base_url"], "api_key": credOf(f)}
+			out["model"], _ = l.configStoreQ("get", name, "model")
+			out["effort"], _ = l.configStoreQ("get", name, "effort")
+			b, _ := json.Marshal(out)
+			fmt.Println(string(b))
+			return 0
 		}
 		if f["base_url"] == "" {
 			say(name + ": no base_url — it connects to the provider directly")
