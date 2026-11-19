@@ -219,6 +219,18 @@ func TestLookupIgnoresADateSuffix(t *testing.T) {
 	}
 }
 
+func TestLookupIgnoresAServedPrecisionSuffix(t *testing.T) {
+	table := map[string]price{"Qwen3.8-Flash-Next": {Input: 0, Output: 0}, "glm-5.3": {Input: 1, Output: 3}}
+	for _, m := range []string{"Qwen3.8-Flash-Next-FP8", "glm-5.3-NVFP4", "glm-5.3_awq"} {
+		if _, ok := lookupIn(table, m); !ok {
+			t.Fatalf("%s must price as its base model", m)
+		}
+	}
+	if _, ok := lookupIn(table, "glm-5.3-air"); ok {
+		t.Fatal("a suffix that is not a precision must not be stripped")
+	}
+}
+
 func TestGatewayRowWithNoBilledCostIsPricedFromTheVendor(t *testing.T) {
 	stateHome(t)
 	b := newPriceBook("https://llmgate.example.com")
