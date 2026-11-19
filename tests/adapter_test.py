@@ -19,7 +19,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 
 from support import (CORE, FAKE_SERVER_NO_DNS, HANG_TIMEOUT, adapter_cmd,
@@ -43,9 +43,9 @@ class Gateway(BaseHTTPRequestHandler):
     # True when /v1/messages answers 501 while the chat paths still work: a
     # chat-only gateway, for the dialect-fallback half of #375.
     messages_not_implemented = False
-    # Set when a stalled probe's client goes away, freeing this single-threaded
-    # server for the next request. `test_selected_launch_has_its_own_global_deadline`
-    # reads it instead of racing the stall with a client timeout.
+    # Set when a stalled probe's client goes away.
+    # `test_selected_launch_has_its_own_global_deadline` reads it instead of
+    # racing the stall with a client timeout.
     stall_released = threading.Event()
 
     def log_message(self, format, *args):  # noqa: A002
@@ -207,7 +207,10 @@ def listener_outside_the_ephemeral_pool(addr: str) -> tuple[socket.socket, int]:
 class AdapterTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.srv = HTTPServer(("127.0.0.1", 0), Gateway)
+        # Threaded: on a single-threaded server a stalled probe queued the
+        # next requests, and a dead client's queued probe then landed in a
+        # later test's PROBES (seen as six stray /v1/messages on macOS CI).
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), Gateway)
         cls.port = cls.srv.server_address[1]
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
         cls.base = f"http://127.0.0.1:{cls.port}"
