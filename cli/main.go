@@ -44,11 +44,10 @@ var verbArity = map[string]int{"list": 0, "use": 1, "cred": 1, "inspect": 1, "co
 // so the two cannot drift apart.
 func usageLine(topic string) string {
 	if topic == "get" || topic == "set" {
-		line := "ccmorph " + topic + " [profile] [model|effort]"
 		if topic == "set" {
-			line += " [value]"
+			return "ccmorph set [profile] [model|effort] [value]"
 		}
-		return line
+		return "ccmorph get [profile] [model|effort|base_url]"
 	}
 	return usageTopics[topic][0]
 }
@@ -870,7 +869,7 @@ func (l *launcher) usageAt(topic string, width int) int {
 			head("More commands:")
 			help("ccmorph models <profile>", "List models from an API-key endpoint")
 			help("ccmorph price <model>...", "Read cached model list prices")
-			help("ccmorph get <profile> <model|effort>", "Read a saved default")
+			help("ccmorph get <profile> <model|effort|base_url>", "Read a saved default or the endpoint")
 			help("ccmorph set <profile> <model|effort> [value]", "Save a default; omit value to choose")
 			help("ccmorph login <profile>", "Sign in again to a provider account")
 			help("ccmorph mv <old> <new>", "Rename a profile")
@@ -1009,7 +1008,9 @@ Omit the profile to check the default. Does not repair or launch a session.`},
 	"get": {"", `Read the default model or effort level that new sessions use; nothing changes.
 Omit the profile or the setting to choose it in a picker.
 The value is printed to stdout; name both in scripts.
-Effort: ` + strings.Join(profile.Efforts, ", ") + `. Available models come from the profile.`},
+Effort: ` + strings.Join(profile.Efforts, ", ") + `. Available models come from the profile.
+base_url prints the endpoint an API-key profile calls; with ccmorph cred
+for its key, scripts reach the gateway without reading profile files.`},
 	"set": {"", `Save a default for new sessions: the model or the effort level.
 Omit the profile, the setting or the value to choose it in a picker.
 The saved value goes to stdout for a script to capture; a terminal shows

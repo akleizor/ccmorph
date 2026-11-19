@@ -29,7 +29,7 @@ func valueRows(value string, columns int) int {
 	return (max(cells(value), 1)-1)/columns + 1
 }
 
-// getSet is `ccmorph get [profile] [model|effort]` and `ccmorph set [profile]
+// getSet is `ccmorph get [profile] [model|effort|base_url]` and `ccmorph set [profile]
 // [model|effort] [value]`. A missing profile, key or value opens its chooser.
 func (l *launcher) getSet(verb string, args []string) int {
 	if verb == "get" && len(args) > 2 {
@@ -88,6 +88,20 @@ func (l *launcher) getSet(verb string, args []string) int {
 			}
 			args = append(args, v)
 		}
+	}
+	if verb == "get" && key == "base_url" {
+		// The public read of a profile's endpoint, with `ccmorph cred` for its key:
+		// scripts call these instead of parsing the private .conf format.
+		f, ok := l.readRaw(name)
+		if !ok {
+			return 1
+		}
+		if f["base_url"] == "" {
+			say(name + ": no base_url — it connects to the provider directly")
+			return 0
+		}
+		fmt.Println(f["base_url"])
+		return 0
 	}
 	if key != "model" && key != "effort" {
 		if strings.EqualFold(key, "reasoning") {

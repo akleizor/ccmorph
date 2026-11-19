@@ -1888,3 +1888,14 @@ func TestReadActiveRescuesOnlyAValidSpelling(t *testing.T) {
 		t.Fatalf("readActive = %q, %v; an invalid default must be refused", name, ok)
 	}
 }
+
+// Scripts that call a profile's gateway read its endpoint here, with `cred` for
+// the key, instead of parsing the private .conf format by hand.
+func TestGetBaseURLPrintsTheProfileEndpoint(t *testing.T) {
+	name := "gw"
+	l := storeTestLauncher(t, name,
+		"type=apikey\nbase_url=https://gw.test\napi_key=test-key\nmodel=m-first\nmodel_defaults=1\n", "{\"env\":{}}\n")
+	if out, rc := captureStdout(t, func() int { return l.getSet("get", []string{name, "base_url"}) }); rc != 0 || out != "https://gw.test\n" {
+		t.Fatalf("get base_url: %q, rc %d", out, rc)
+	}
+}
