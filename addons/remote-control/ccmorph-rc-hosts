@@ -549,8 +549,8 @@ class Host:
         self.proc = None
 
     def bound_logs(self) -> None:
-        """Cap the debug logs of a running repo host: claude appends to them for the
-        life of the process. Copy then truncate in place; the writer's O_APPEND
+        """Cap a running host's own log and its debug logs: claude appends to them for
+        the life of the process, and LOG_CAP at start alone let one reach 300 MB. Copy then truncate in place; the writer's O_APPEND
         position follows the new end.
 
         Truncating gives the file a new head, and fresh output can regrow it past
@@ -560,7 +560,7 @@ class Host:
         (#417). So the moment a log is truncated, the whole file is marked as
         this run's: the reader starts over at its new head.
         """
-        for f in self.debug_logs():
+        for f in (self.logfile, *self.debug_logs()):
             try:
                 if f.stat().st_size > LOG_CAP:
                     shutil.copyfile(f, f.with_suffix(".log.1"))
@@ -1457,7 +1457,7 @@ def cycle(hosts: "dict[str, Host]", repos: list[str], now: float, clock: Clock) 
     if now - clock.last_idle_check < IDLE_CHECK:
         return False
     for h in hosts.values():
-        if h.proc and not h.edge and not h.session_id:
+        if h.proc:
             h.bound_logs()     # archived and unused: drop its line
     clock.last_idle_check = now
     return True

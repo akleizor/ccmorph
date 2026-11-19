@@ -2245,12 +2245,13 @@ def test_a_running_repo_host_log_is_truncated_in_place_past_the_cap(tmp_path, mo
     monkeypatch.setattr(m, "LOGS", logs)
     h = m.Host(str(tmp_path / "repo"), "gw")
     child = logs / f"{h.debugfile.stem}-cse_01A.log"
-    for f in (h.debugfile, child):
+    for f in (h.logfile, h.debugfile, child):
         f.write_bytes(b"x" * (m.LOG_CAP + 1))
     ino = h.debugfile.stat().st_ino
     h.bound_logs()
     assert h.debugfile.stat().st_size == 0 and h.debugfile.stat().st_ino == ino
     assert child.stat().st_size == 0
+    assert h.logfile.stat().st_size == 0     # the host's own log reached 300 MB uncapped
     assert h.debugfile.with_suffix(".log.1").stat().st_size == m.LOG_CAP + 1
 
 
