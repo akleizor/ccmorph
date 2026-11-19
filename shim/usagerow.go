@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -175,10 +176,9 @@ func RecordTranscript(profile, pricing, path string) int {
 	// writes it from the signal handler instead (see onStop), so a long backlog
 	// drains across Stops rather than rereading from the same offset forever.
 	at := next
-	held := false
 	for _, key := range order {
 		r := responses[key]
-		if !held {
+		if at == next { // no row has failed yet, so the pass is not held back
 			progress.Store(&checkpoint{path: cursorPath, c: cursor{Offset: r.start, Since: c.Since}})
 		}
 		ok, err := writeRow(profile, pricing, r.id, r.model, r.timestamp, r.session, responseToken(r.id, r.request), r.usage)
@@ -187,11 +187,14 @@ func RecordTranscript(profile, pricing, path string) int {
 		}
 		if err != nil && !errors.Is(err, errRowNameTaken) && r.start < at {
 			at = r.start
-			held = true
 		}
 	}
+	// The final cursor goes first: a stop that lands before progress is cleared
+	// then finds the cursor already at or past the checkpoint and leaves it.
+	withCursorLock(cursorPath, func() {
+		writeCursor(cursorPath, cursor{Offset: at, Since: c.Since})
+	})
 	progress.Store(nil)
-	writeCursor(cursorPath, cursor{Offset: at, Since: c.Since})
 	return written
 }
 
@@ -228,11 +231,6 @@ func parseLine(line []byte) (transcriptEntry, usageRow, bool) {
 	return e, usage, true
 }
 
-// WriteUsageRow writes one complete row for a response the client itself
-// recorded. turnID makes the write idempotent: the same response always owns
-// the same row, so a re-read replaces it instead of spilling a duplicate.
-// It reports false when the row was deliberately not written: no profile or id,
-// or a row another ccmorph writer already holds for that response.
 // checkpoint is the cursor a stopped pass leaves: before the response being
 // written, so a kill mid-row retries that row and skips the ones already on disk.
 type checkpoint struct {
@@ -252,15 +250,82 @@ func onStop() {
 	go func() {
 		<-ch
 		if cp := progress.Load(); cp != nil {
-			writeCursor(cp.path, cp.c)
+			checkpointCursor(cp)
 		}
 		os.Exit(1)
 	}()
 }
 
+// cursorMu orders cursor updates within this process; cursorLock extends that
+// order to other processes.
+var cursorMu sync.Mutex
+
+// withCursorLock runs fn holding both: the mutex orders a stopped pass's
+// checkpoint against the pass's own final write here, and the flock orders
+// them against another process's pass, so a handler that read an older
+// position cannot rename it over a newer one. A lock that cannot be taken
+// still runs fn: losing the checkpoint is worse than the ordering it misses.
+func withCursorLock(path string, fn func()) {
+	cursorMu.Lock()
+	defer cursorMu.Unlock()
+	if lock := cursorLock(path); lock != nil {
+		defer lock.Close()
+	}
+	fn()
+}
+
+// cursorLock takes the exclusive flock that serializes a cursor's read and
+// write across processes. The kernel drops it when the process exits, so a
+// stopped or killed hook leaves no lock behind.
+func cursorLock(path string) *os.File {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil
+	}
+	f, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil
+	}
+	for {
+		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+		if !errors.Is(err, syscall.EINTR) {
+			break
+		}
+	}
+	if err != nil {
+		f.Close()
+		return nil
+	}
+	return f
+}
+
+// cursorHeld, when a test sets it, runs after a stopped pass's checkpoint has
+// read the cursor and before it writes, so two processes can be held in the
+// window the cursor's lock closes.
+var cursorHeld func()
+
+// checkpointCursor records a stopped pass's checkpoint, unless the cursor on
+// disk already sits at or past it: the pass's final write, or a newer pass,
+// may have moved it first.
+func checkpointCursor(cp *checkpoint) {
+	withCursorLock(cp.path, func() {
+		cur := readCursor(cp.path)
+		if cursorHeld != nil {
+			cursorHeld()
+		}
+		if cur.Offset < cp.c.Offset {
+			writeCursor(cp.path, cp.c)
+		}
+	})
+}
+
 // writeRow is the hook's row writer; a test swaps it to stop a pass mid-backlog.
 var writeRow = WriteUsageRow
 
+// WriteUsageRow writes one complete row for a response the client itself
+// recorded. turnID makes the write idempotent: the same response always owns
+// the same row, so a re-read replaces it instead of spilling a duplicate.
+// It reports false when the row was deliberately not written: no profile or id,
+// or a row another ccmorph writer already holds for that response.
 func WriteUsageRow(profile, pricing, responseID, model, timestamp, session, turnID string, usage usageRow) (bool, error) {
 	if profile == "" || responseID == "" {
 		return false, nil

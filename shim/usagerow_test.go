@@ -1285,12 +1285,11 @@ func TestALinkAtTheDayNameIsNotTheClaimAMoveLeft(t *testing.T) {
 // starts there instead of rereading the whole transcript.
 func TestRecordTranscriptCheckpointSkipsWrittenRows(t *testing.T) {
 	stateHome(t)
-	path := writeTranscript(t,
-		transcriptLine("u1", "msg_1", "claude-opus-5-5", "2026-11-05T10:00:00Z", `{"input_tokens":1,"output_tokens":2}`),
+	line1 := transcriptLine("u1", "msg_1", "claude-opus-5-5", "2026-11-05T10:00:00Z", `{"input_tokens":1,"output_tokens":2}`)
+	path := writeTranscript(t, line1,
 		transcriptLine("u2", "msg_2", "claude-opus-5-5", "2026-11-05T10:00:01Z", `{"input_tokens":1,"output_tokens":2}`),
 	)
-	first, _ := os.ReadFile(path)
-	firstLen := int64(strings.IndexByte(string(first), '\n') + 1)
+	firstLen := int64(len(line1))
 	calls := 0
 	writeRow = func(p, pr, id, m, ts, s, turn string, u usageRow) (bool, error) {
 		if calls++; calls == 2 { // the hook is stopped while the second row is written
@@ -1304,5 +1303,21 @@ func TestRecordTranscriptCheckpointSkipsWrittenRows(t *testing.T) {
 	func() { defer func() { _ = recover() }(); RecordTranscript("sub", "anthropic", path) }()
 	if c := readCursor(cursorFile(path)); c.Offset != firstLen {
 		t.Fatalf("checkpoint %d, want %d (just past the written row)", c.Offset, firstLen)
+	}
+}
+
+// A handler that loaded its checkpoint before the pass's final cursor write
+// must not move the cursor back over it: the checkpoint is written only when
+// it sits ahead of what is on disk, and the pass's final position stays.
+func TestCheckpointCursorNeverMovesBackward(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cursor.json")
+	writeCursor(path, cursor{Offset: 40, Since: "since-1"})
+	checkpointCursor(&checkpoint{path: path, c: cursor{Offset: 25, Since: "since-1"}})
+	if c := readCursor(path); c.Offset != 40 {
+		t.Fatalf("cursor %d after an older checkpoint, want 40", c.Offset)
+	}
+	checkpointCursor(&checkpoint{path: path, c: cursor{Offset: 60, Since: "since-1"}})
+	if c := readCursor(path); c.Offset != 60 {
+		t.Fatalf("cursor %d after a newer checkpoint, want 60", c.Offset)
 	}
 }
