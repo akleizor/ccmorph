@@ -23,6 +23,8 @@ type codexAuth struct {
 	Expired     string `json:"expired"`
 }
 
+var errSignInExpired = errors.New("sign-in expired; start a session on it to refresh")
+
 // codexAuthFile finds the cliproxyapi Codex sign-in under the profile's auth
 // dir. Symlinks are not followed: a credential outside the 0700 auth root is
 // not this profile's.
@@ -52,7 +54,7 @@ func codexAuthFile(dir string) (codexAuth, error) {
 	}
 	if found.Expired != "" {
 		if t, err := time.Parse(time.RFC3339, found.Expired); err == nil && now().After(t) {
-			return found, errors.New("sign-in expired; start a session on it to refresh")
+			return found, errSignInExpired
 		}
 	}
 	return found, nil
@@ -69,6 +71,9 @@ type codexWindow struct {
 func readCodex(client *http.Client, name, dir string) Entry {
 	e := Entry{Profile: name, Kind: "codex", Windows: []Window{}}
 	a, err := codexAuthFile(dir)
+	if errors.Is(err, errSignInExpired) && refreshAuthDir(dir) == nil {
+		a, err = codexAuthFile(dir)
+	}
 	if err != nil {
 		e.Error = err.Error()
 		return e
