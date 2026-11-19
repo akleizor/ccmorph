@@ -1325,6 +1325,21 @@ grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
   && fail "path: the compinit behind a quoted # is told the compinit line again" \
   || ok "path: the compinit behind a quoted # is not told the compinit line again"
 
+# The fpath half is doctor's rule, asked of the core (#638): a .zshenv that
+# exports FPATH with the installed directory puts it on fpath for every zsh the
+# user starts, without the .zshrc naming the literal. The old grep of .zshrc
+# could not see that and told the user to add a line already in effect.
+d=$(fresh_env path_comp_live_fpath)
+print 'autoload -Uz compinit; compinit' > "$d/home/.zshrc"
+print "export FPATH=$d/home/.config/ccmorph/share/zsh/site-functions" > "$d/home/.zshenv"
+d=$(path_run path_comp_live_fpath /bin/zsh Linux)
+grep -qF 'fpath=(' "$d/out" \
+  && fail "path: a live FPATH from .zshenv is told the fpath line again" \
+  || ok "path: a live FPATH from .zshenv needs no fpath hint"
+grep -qxF "  autoload -Uz compinit && compinit" "$d/out" \
+  && fail "path: a live FPATH from .zshenv is told the compinit line again" \
+  || ok "path: a live FPATH from .zshenv is not told the compinit line again"
+
 # ZDOTDIR moves the zsh file; an unknown or unset SHELL gets the zsh advice, which
 # is what a bare `env -i` run (every test above this section) always printed.
 d=$(path_run path_zdot /bin/zsh Linux "$TMP/path_zdot_zd")

@@ -67,3 +67,67 @@ func TestCompinitRunsVerbAnswersByExitStatus(t *testing.T) {
 		t.Errorf("compinit-runs with no operand = %d, want 2", got)
 	}
 }
+
+// #638: the fpath question is one rule. doctor asks FpathBound in-process and
+// install.sh asks `util fpath-bound`; these are the shapes both answers cover.
+func TestFpathBoundIsDoctorRule(t *testing.T) {
+	dir := t.TempDir()
+	site := filepath.Join(dir, "site-functions")
+	withFile := filepath.Join(dir, "other")
+	bare := filepath.Join(dir, "bare")
+	for _, d := range []string{site, withFile, bare} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(withFile, "_ccmorph"), []byte("#compdef ccmorph\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name  string
+		rc    string
+		fpath string
+		want  bool
+	}{
+		{"rc names the directory", "fpath=(" + site + " $fpath)\n", "", true},
+		{"rc names ccmorph's site-functions", "fpath=($HOME/.config/ccmorph/share/zsh/site-functions $fpath)\n", "", true},
+		{"live fpath holds the directory", "autoload -Uz compinit\n", bare + string(os.PathListSeparator) + site, true},
+		{"live fpath holds a directory with _ccmorph", "autoload -Uz compinit\n", withFile, true},
+		{"rc names neither and fpath is elsewhere", "autoload -Uz compinit\n", bare, false},
+		{"no rc and no fpath", "", "", false},
+	} {
+		if got := FpathBound([]byte(c.rc), site, c.fpath); got != c.want {
+			t.Errorf("%s: FpathBound = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestFpathBoundVerbAnswersByExitStatus pins the contract install.sh reads: the
+// status alone is the verdict, an absent rc is empty as doctor reads it, and
+// the live FPATH in the environment counts.
+func TestFpathBoundVerbAnswersByExitStatus(t *testing.T) {
+	t.Setenv("FPATH", "")
+	dir := t.TempDir()
+	site := filepath.Join(dir, "site-functions")
+	if err := os.MkdirAll(site, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rc := filepath.Join(dir, "rc")
+	if err := os.WriteFile(rc, []byte("fpath=("+site+" $fpath)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := Main([]string{"fpath-bound", rc, site}, nil, nil, nil); got != 0 {
+		t.Errorf("fpath-bound on an rc naming the dir = %d, want 0", got)
+	}
+	t.Setenv("FPATH", site)
+	if got := Main([]string{"fpath-bound", filepath.Join(dir, "absent"), site}, nil, nil, nil); got != 0 {
+		t.Errorf("fpath-bound with the dir on FPATH = %d, want 0", got)
+	}
+	t.Setenv("FPATH", "")
+	if got := Main([]string{"fpath-bound", filepath.Join(dir, "absent"), site}, nil, nil, nil); got != 1 {
+		t.Errorf("fpath-bound with no rc and empty FPATH = %d, want 1", got)
+	}
+	if got := Main([]string{"fpath-bound", rc}, nil, nil, nil); got != 2 {
+		t.Errorf("fpath-bound with one operand = %d, want 2", got)
+	}
+}

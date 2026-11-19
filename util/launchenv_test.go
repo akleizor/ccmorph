@@ -5,6 +5,34 @@ import (
 	"testing"
 )
 
+func TestTagValidatorsAreTheOnesTheShimAsks(t *testing.T) {
+	// The launcher and the gateway shim share these two rules (#638): a tag one
+	// side writes the other must accept, and a tag one side refuses is refused by
+	// both. The boundaries are where the two spellings could drift.
+	for _, task := range []string{"issue-42", "fix-1", "a.b_c", strings.Repeat("a", 64)} {
+		if !ValidTaskTag(task) {
+			t.Errorf("ValidTaskTag(%q) = false, want true", task)
+		}
+	}
+	for _, task := range []string{"", "a b", "a/b", "x\n", strings.Repeat("a", 65)} {
+		if ValidTaskTag(task) {
+			t.Errorf("ValidTaskTag(%q) = true, want false", task)
+		}
+	}
+	for _, attempt := range []string{"0", "1", "42", "999"} {
+		if !ValidAttemptTag(attempt) {
+			t.Errorf("ValidAttemptTag(%q) = false, want true", attempt)
+		}
+	}
+	// The shape admits 0 and the shim's own 1..999 range check is separate; the
+	// validator only owns the shape the launcher also applies.
+	for _, attempt := range []string{"", "1000", "-1", "1a"} {
+		if ValidAttemptTag(attempt) {
+			t.Errorf("ValidAttemptTag(%q) = true, want false", attempt)
+		}
+	}
+}
+
 func TestLaunchEnvRoutesThroughTheLocalHop(t *testing.T) {
 	run := func(stdin string, args ...string) []string {
 		var b strings.Builder

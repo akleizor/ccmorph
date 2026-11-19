@@ -1571,20 +1571,30 @@ def test_days_settings_fall_back_to_the_documented_default_when_absent_or_malfor
 @needs_loopback  # this live edge really listens on loopback: #611
 def test_a_live_edge_is_the_record_its_own_file_holds(tmp_path, monkeypatch):
     """The record is what the adoption decision compares, so the reader returns it,
-    and only for an edge that is both alive and answering."""
+    and only for an edge that is alive, answering, and still holds its TLS
+    material. Liveness is ccmorph-rc's live_edge (#638): the supervisor must not
+    adopt an edge whose CA file is gone, because ccmorph-rc refuses to serve from
+    one and every bridge under it would fail closed."""
     import json, os, socket
     m = load()
+    rc = m.rc_module()
     monkeypatch.setattr(m, "EDGES", tmp_path)
+    monkeypatch.setattr(rc, "EDGES", tmp_path)    # live_edge reads its own module's
     # Below the ephemeral floors: the record's port must read dead the moment
     # srv closes it, and a number drawn from the ephemeral pool is free for
     # any parallel process to take in that gap.
     port = port_outside_the_ephemeral_pool()
+    ca = tmp_path / "edge-ca.pem"
+    ca.write_text("")
     with socket.socket() as srv:
         srv.bind(("127.0.0.1", port))
         srv.listen()
-        record = {"pid": os.getpid(), "port": port, "ca": "x",
+        record = {"pid": os.getpid(), "port": port, "ca": str(ca),
                   "upstream": "u", "tiers": {"fable": "m"}}
         (tmp_path / "gw.json").write_text(json.dumps(record))
+        ca.unlink()
+        assert m.edge_ready("gw") is None         # the CA file is gone: refused
+        ca.write_text("")
         assert m.edge_ready("gw") == record
     assert m.edge_ready("gw") is None             # its proxy stopped answering
     (tmp_path / "gw.json").write_text(json.dumps({**record, "pid": 5_000_000}))

@@ -393,6 +393,26 @@ func TestIsUsageCommandMatchesOnlyTheLaunchersCommand(t *testing.T) {
 	}
 }
 
+// GH-638: the matcher is built from the builder's word shapes, so every command
+// the builder writes is ccmorph's own — including a core path, profile or
+// pricing value that has to be quoted. A table that edits either spelling alone
+// fails here.
+func TestUsageHookCommandRoundTripsThroughTheMatcher(t *testing.T) {
+	for _, c := range []struct{ core, profile, pricing string }{
+		{"/opt/cc/libexec/ccmorph-core", "work", "anthropic"},
+		{"/opt/cc/libexec/ccmorph-core", "work", "any"},
+		{"/Users/a b/libexec/ccmorph-core", "work", "anthropic"},
+		{"/Users/o'brien/libexec/ccmorph-core", "work", "any"},
+		{"$HOME/bin/ccmorph-core", "sub", "provider slice"},
+		{"~/bin/ccmorph-core", "sub", "o'brien"},
+	} {
+		command := UsageHookCommand(c.core, c.profile, c.pricing)
+		if !isUsageCommand(command) {
+			t.Errorf("the builder wrote a command the matcher refuses: %q", command)
+		}
+	}
+}
+
 // A user's hook that wraps the usage verb is theirs: a launch must keep running
 // it, and a fold must not save it away.
 func TestAUsersHookEmbeddingTheUsageVerbSurvives(t *testing.T) {

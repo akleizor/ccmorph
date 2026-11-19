@@ -269,16 +269,7 @@ func (l *launcher) doctorCompletion() zshCompletion {
 		}
 	}
 	rc, _ := os.ReadFile(rcFile)
-	c.onFpath = strings.Contains(string(rc), c.dir) ||
-		strings.Contains(string(rc), "ccmorph/share/zsh/site-functions")
-	if !c.onFpath {
-		for _, d := range filepath.SplitList(os.Getenv("FPATH")) {
-			if d == c.dir || paths.IsFile(filepath.Join(d, "_ccmorph")) {
-				c.onFpath = true
-				break
-			}
-		}
-	}
+	c.onFpath = util.FpathBound(rc, c.dir, os.Getenv("FPATH"))
 	c.compinit = util.CompinitRuns(rc)
 	bound, answered := l.completionBound(zdot)
 	c.bound = answered && bound

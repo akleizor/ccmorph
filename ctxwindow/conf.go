@@ -30,6 +30,7 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
+	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -49,13 +50,13 @@ var DeclaredFields = []string{"max_input_tokens", "max_context_length", "context
 var routeFields = []string{"type", "base_url", "provider", "adapter", "api_key", "token"}
 
 var (
-	profileName = regexp.MustCompile(`^[A-Za-z0-9_]+$`)
 	// Env keys that choose which model answers, not where requests go.
 	modelChoiceEnv = regexp.MustCompile(`^(?:env\.ANTHROPIC_(?:DEFAULT_[A-Z]+_MODEL(?:_NAME|_DESCRIPTION)?|SMALL_FAST_MODEL|MODEL))$`)
 )
 
-// ValidProfileName reports whether s may name a profile.
-func ValidProfileName(s string) bool { return profileName.MatchString(s) }
+// ValidProfileName reports whether s may name a profile. The rule is profile's
+// one gate (#638): a name the launcher refuses is refused here too.
+func ValidProfileName(s string) bool { return profile.ValidProfileName(s) }
 
 // StateDir is where ccmorph keeps profiles and the registry.
 func StateDir() string {

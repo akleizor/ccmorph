@@ -556,10 +556,16 @@ _login_shell="${SHELL:-}"
 case "${_login_shell:t}" in
   bash|fish) _comp_wanted=0 ;;
 esac
-_comp_dir_in_rc=0
+_comp_dir_bound=0
 _compinit_in_rc=0
+# Doctor's one fpath rule, asked of the core that owns it (#638): the rc names
+# the directory (or ccmorph's site-functions), or the live FPATH already holds
+# it or a directory with a _ccmorph file. An absent rc reads as empty, as
+# doctor reads it, so an FPATH exported from .zshenv still counts.
+if "$_core_src" util fpath-bound "$_zshrc" "$_comp_dir"; then
+  _comp_dir_bound=1
+fi
 if [[ -f "$_zshrc" ]]; then
-  grep -qF 'ccmorph/share/zsh/site-functions' "$_zshrc" && _comp_dir_in_rc=1
   # What the rc runs, not what it mentions (#449): a # that begins a word
   # starts a comment, so a commented-out compinit starts nothing, and only the
   # Oh My Zsh loader — not the directory's name — runs compinit for the rc.
@@ -573,14 +579,14 @@ if [[ -f "$_zshrc" ]]; then
     _compinit_in_rc=1
   fi
 fi
-(( _comp_dir_in_rc && _compinit_in_rc )) && _comp_wanted=0
+(( _comp_dir_bound && _compinit_in_rc )) && _comp_wanted=0
 if (( _comp_wanted )); then
   print ""
   if (( _compinit_in_rc )); then
     c_y "Tab completion for ccmorph is in $_comp_dir, which zsh does not search yet."
     c_dim "  Add this line to $_zshrc yourself, above the line that runs compinit (or loads Oh My Zsh); Tab completes in the next zsh you start:"
     print -r -- "  fpath=(${(q)_comp_dir} \$fpath)"
-  elif (( _comp_dir_in_rc )); then
+  elif (( _comp_dir_bound )); then
     c_y "$_zshrc puts $_comp_dir on fpath, but nothing in it starts zsh's completion system."
     c_dim "  Add this line to $_zshrc yourself, under the fpath line; Tab completes in the next zsh you start:"
     print -r -- "  autoload -Uz compinit && compinit"
