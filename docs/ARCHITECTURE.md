@@ -1001,13 +1001,20 @@ cached price keeps its tokens and carries no estimate. `route_id` is a digest of
 the profile and the `transcript` source, and the row holds no header, body,
 token or cookie **[test]**.
 
-Non-failures: the hook swallows every error and exits 0, so a missing or
-unreadable transcript can never fail a turn. The ways a launch declines are an
-`apikey` profile, no profile, and the profile's `usage_route=direct`; all three
-compose no hook, and `settings-compose` strips the owned Stop entry first, so a
-direct launch also removes one an earlier launch installed. A user's own Stop
-hooks are kept, and the owned entry is never folded into the profile layer
-**[test]**.
+Non-failures: the hook swallows every error on its ordinary path and exits 0,
+so a missing or unreadable transcript can never fail a turn. A stop is the one
+exception: SIGTERM, SIGINT or SIGHUP writes the running pass's cursor
+checkpoint and then exits 1, so the next Stop starts at that row instead of
+rereading the backlog. Draining a long backlog across Stops therefore depends
+on Claude Code's stop timing: its hook timeout sends SIGTERM to the process
+group and follows it with SIGKILL after about 1.5 s (verified against the
+installed Claude Code 2.1.326 binary on 2026-11-17), and a SIGKILL that arrives
+before the handler writes merely rereads the remainder, which is idempotent.
+The ways a launch declines are an `apikey` profile, no profile, and the
+profile's `usage_route=direct`; all three compose no hook, and
+`settings-compose` strips the owned Stop entry first, so a direct launch also
+removes one an earlier launch installed. A user's own Stop hooks are kept, and
+the owned entry is never folded into the profile layer **[test]**.
 
 What is not covered: rows appear when a turn ends, not while it streams; a
 session killed mid-turn records nothing for that turn; and an entry with no
