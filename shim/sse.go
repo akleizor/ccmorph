@@ -45,15 +45,20 @@ func dataPayload(line []byte) (prefix, payload, eol []byte, ok bool) {
 // healthy block that starts empty). Its own content_block_stop drops both events,
 // and later blocks' indexes shift down so the client still sees 0..n-1. Anything
 // else releases it as is. event:/id:/comment lines wait for their data line, so a
-// dropped event leaves no orphan header. Nothing is read past a data line except
-// while one block is held.
+// dropped event leaves no orphan header; an event with no data payload yet (an
+// event: line, an empty or bare data line) waits for the blank line, which
+// decides whether the whole event is empty and goes with it. Nothing is read
+// past a data line except while one block is held or such an event awaits its
+// blank.
 type thinkingStream struct {
 	r            *bufio.Reader
 	out          [][]byte // lines ready for the relay loop
-	pending      [][]byte // non-data lines awaiting their data line
+	pending      [][]byte // lines awaiting the event's data line or decision
 	held         *heldStart
 	dropped      []int // upstream indexes of dropped blocks
 	swallowBlank bool  // the blank line closing a dropped stop
+	hadData      bool  // this event already relayed a data line with a payload
+	emptyData    bool  // this event names a type or has an empty data field, and no payload yet: undecided
 	err          error
 }
 
@@ -65,20 +70,52 @@ type heldStart struct {
 	index int
 }
 
+// readSSELine returns one line including its terminator. SSE allows CRLF, LF
+// and a bare CR; splitting only on LF would hand feed a whole CR-delimited
+// stream as one chunk, where an event: line would look like an empty event and
+// its payload lines would never be seen. The bytes are kept exactly, so the
+// relay stays byte-exact.
+func (t *thinkingStream) readSSELine() ([]byte, error) {
+	var line []byte
+	for {
+		b, err := t.r.ReadByte()
+		if err != nil {
+			return line, err
+		}
+		line = append(line, b)
+		if b == '\n' {
+			return line, nil
+		}
+		if b == '\r' {
+			// The spec reads CRLF as one terminator, so keep the pair together.
+			if next, err := t.r.Peek(1); err == nil && next[0] == '\n' {
+				t.r.Discard(1)
+				line = append(line, '\n')
+			}
+			return line, nil
+		}
+	}
+}
+
 // readline returns the next line; at the end of the stream or a read error it
 // returns what is left first, then the error (io.EOF for a clean end).
 func (t *thinkingStream) readline() ([]byte, error) {
 	for len(t.out) == 0 {
 		if t.err != nil {
 			t.release()
-			t.out = append(t.out, t.pending...)
+			if !t.emptyData {
+				// A stream cut mid empty-event dies with it: relaying its
+				// header and empty data line without the deciding blank
+				// would hand the client the unparsable event anyway.
+				t.out = append(t.out, t.pending...)
+			}
 			t.pending = nil
 			if len(t.out) == 0 {
 				return nil, t.err
 			}
 			break
 		}
-		line, err := t.r.ReadBytes('\n')
+		line, err := t.readSSELine()
 		if err != nil {
 			t.err = err
 		}
@@ -108,6 +145,21 @@ func (t *thinkingStream) feed(line []byte) {
 	stripped := bytes.TrimRight(line, "\r\n")
 	if len(stripped) == 0 {
 		switch {
+		case t.emptyData:
+			// The event ended with no data payload (only empty data lines, or
+			// none at all). No client
+			// can parse "" as JSON (issue #689: llmgate heartbeats arrived as
+			// "event: content_block_delta" + "data:" and Claude Code died on
+			// the unparsable chunk), so the event carries nothing and the
+			// relay drops it whole: pending holds its header lines and its
+			// empty data line, and this blank line goes with them, so the
+			// bytes read exactly as a stream that never emitted it. The
+			// filter authors no empty data line itself — its one self-written
+			// event carries JSON — so it is the upstream gateway's, and the
+			// verbatim relay is what delivered it. Empty events are never
+			// terminal (a terminal event's data is JSON), and a held thinking
+			// start keeps waiting for its next real data event.
+			t.pending = nil
 		case t.swallowBlank:
 			t.swallowBlank = false
 			t.pending = nil
@@ -118,13 +170,44 @@ func (t *thinkingStream) feed(line []byte) {
 			t.out = append(append(t.out, t.pending...), line)
 			t.pending = nil
 		}
+		t.hadData, t.emptyData = false, false
 		return
 	}
-	if !bytes.HasPrefix(stripped, []byte("data:")) {
+	if t.swallowBlank {
+		// Every line up to the blank belongs to the dropped stop event: an
+		// empty data: continuation relayed here would land, orphaned, at the
+		// head of the next event.
+		return
+	}
+	bareData := bytes.Equal(stripped, []byte("data")) // SSE: a field with no colon has an empty value
+	if !bareData && !bytes.HasPrefix(stripped, []byte("data:")) {
+		if !t.hadData && (bytes.HasPrefix(stripped, []byte("event:")) || bytes.Equal(stripped, []byte("event"))) {
+			// A named event is empty until a payload line arrives: Claude
+			// Code's SDK dispatches "event: X" with no data line as data ""
+			// and fails the same JSON parse.
+			t.emptyData = true
+		}
 		t.pending = append(t.pending, line)
 		return
 	}
-	_, payload, _, _ := dataPayload(line)
+	var payload []byte
+	if !bareData {
+		_, payload, _, _ = dataPayload(line)
+	}
+	if len(payload) == 0 && !t.hadData {
+		// Possibly an empty event: the blank line decides, so buffer this
+		// line with the header lines instead of relaying it. If a data line
+		// with a payload follows before the blank, the event is not empty —
+		// SSE joins data lines with newlines, so this line only adds JSON
+		// whitespace around the payload — and everything releases in order.
+		t.pending = append(t.pending, line)
+		t.emptyData = true
+		return
+	}
+	// A payload line makes the event real; an empty line after one is just a
+	// continuation of it (valid trailing whitespace) and relays as any data
+	// line below — swallowing either would merge the event into the next.
+	t.hadData, t.emptyData = true, false
 	var obj *doc
 	if t.held != nil || (len(t.dropped) > 0 && bytes.Contains(payload, []byte(`"index"`))) ||
 		(bytes.Contains(payload, []byte(`"content_block_start"`)) && bytes.Contains(payload, []byte(`"thinking"`))) {

@@ -648,6 +648,121 @@ func TestEmptyThinkingStream(t *testing.T) {
 	}
 }
 
+// sseClientEvents reads an SSE byte stream as Claude Code's SDK does: an event
+// ends at a blank line; its data lines, minus "data:" and one optional space
+// (a bare "data" is an empty one), join with "\n". Any event with an event: or
+// data field must carry JSON or [DONE]; comment, id: and retry: lines carry
+// nothing. It returns each event's joined data in order.
+func sseClientEvents(t *testing.T, stream string) []string {
+	t.Helper()
+	var events, data []string
+	named, hasData := false, false
+	flush := func() {
+		if named || hasData {
+			joined := strings.Join(data, "\n")
+			if joined != "[DONE]" && !jsontext.Value(joined).IsValid() {
+				t.Fatalf("client event with unparsable data %q in %q", joined, stream)
+			}
+			events = append(events, joined)
+		}
+		data, named, hasData = nil, false, false
+	}
+	// SSE allows CRLF, LF and a bare CR as line terminators.
+	for _, line := range strings.Split(strings.ReplaceAll(strings.ReplaceAll(stream, "\r\n", "\n"), "\r", "\n"), "\n") {
+		switch {
+		case line == "":
+			flush()
+		case line == "data" || strings.HasPrefix(line, "data:"):
+			v := strings.TrimPrefix(strings.TrimPrefix(line, "data"), ":")
+			data = append(data, strings.TrimPrefix(v, " "))
+			hasData = true
+		case line == "event" || strings.HasPrefix(line, "event:"):
+			named = true
+		}
+	}
+	flush()
+	return events
+}
+
+// A gateway heartbeat arrives as an SSE event with an empty data: field
+// (llmgate, issue #689: "event:content_block_delta" then "data:"). No client can
+// parse "" as JSON, so the relay drops the whole event — header lines, data line
+// and the blank line closing it — and the bytes the CLI reads stay parseable.
+// The terminal event survives untouched. The empty event is the gateway's: the
+// shim's only self-authored event ("event: error") always carries JSON.
+func TestEmptyDataEventNeverReachesTheClient(t *testing.T) {
+	s := NewServer("")
+	empty := "event: content_block_delta\ndata:\n\n" + "event: content_block_delta\ndata:  \n\n"
+	delta := "event: content_block_delta\ndata:{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n"
+	stop := "event: message_stop\ndata:{\"type\":\"message_stop\"}\n\n"
+	got := streamThrough(t, s, empty+delta+stop, nil, "")
+	if got != delta+stop {
+		t.Fatalf("got %q\nwant %q", got, delta+stop)
+	}
+	// Read it as a client would: every event carries JSON or [DONE].
+	sseClientEvents(t, got)
+	// An empty data: line inside an event that has a real payload belongs to
+	// that event: SSE joins data lines with newlines, so it only adds trailing
+	// whitespace to the JSON. The event must stay byte-exact — dropping the
+	// line or the blank line closing it merges this event into the next one.
+	up := "event: content_block_delta\ndata:{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\ndata:\n\n" + stop
+	got = streamThrough(t, s, up, nil, "")
+	if got != up {
+		t.Fatalf("multi-line data event mangled: got %q\nwant %q", got, up)
+	}
+	sseClientEvents(t, got)
+	// Same the other way round: empty line first, payload after. The joined
+	// data is valid JSON with a leading newline, so the event survives whole.
+	up = "event: content_block_delta\ndata:\ndata:{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n" + stop
+	got = streamThrough(t, s, up, nil, "")
+	if got != up {
+		t.Fatalf("empty-first data event mangled: got %q\nwant %q", got, up)
+	}
+	sseClientEvents(t, got)
+	// An empty event between a held empty-thinking start and its stop is not
+	// the "next data event": it neither releases nor rescues the block, so the
+	// malformed pair is still dropped as a unit.
+	up = `event: content_block_start` + "\n" +
+		`data:{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}` + "\n\n" +
+		empty + "event: content_block_stop\ndata:{\"type\":\"content_block_stop\",\"index\":0}\n\n"
+	if got := streamThrough(t, s, up, nil, ""); got != "" {
+		t.Fatalf("malformed thinking pair survived the heartbeat: %q", got)
+	}
+	// An event with no data payload at all is the same unparsable chunk to the
+	// SDK: it reads "event: X" with no data line as data "". Drop it whole and
+	// leave the rest byte-exact. A comment-only keepalive carries no data
+	// field, and the SDK ignores it, so it is relayed unchanged.
+	deltaCont := strings.TrimSuffix(delta, "\n") + "data:\n\n"
+	thinkingStart := "event: content_block_start\ndata:{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n"
+	crDelta := "event: content_block_delta\rdata:{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\r\r"
+	crStop := "event: message_stop\rdata:{\"type\":\"message_stop\"}\r\r"
+	for _, tc := range []struct{ name, up, want string }{
+		{"llmgate chunk", "event:content_block_delta\ndata:\n\n" + delta + stop, delta + stop},
+		{"no data field", "event: content_block_delta\n\n" + delta + stop, delta + stop},
+		{"bare data field", "event: content_block_delta\ndata\n\n" + delta + stop, delta + stop},
+		{"crlf", "event:content_block_delta\r\ndata:\r\n\r\n" + delta + stop, delta + stop},
+		{"two empty data lines", "event: content_block_delta\ndata:\ndata:\n\n" + delta + stop, delta + stop},
+		{"empty data then comment", "event: content_block_delta\ndata:\n: x\n\n" + delta + stop, delta + stop},
+		{"comment keepalive kept", ": ping\n\n" + delta + stop, ": ping\n\n" + delta + stop},
+		{"continuation then empty event", deltaCont + "event: content_block_delta\ndata:\n\n" + stop, deltaCont + stop},
+		{"dropped thinking stop with empty continuation", thinkingStart + "event: content_block_stop\ndata:{\"type\":\"content_block_stop\",\"index\":0}\ndata:\n\n" + delta + stop, delta + stop},
+		{"terminal with empty continuation", delta + "event: message_stop\ndata:{\"type\":\"message_stop\"}\ndata:\n\n", delta + stop},
+		{"stream cut inside an empty event", delta + "event: content_block_delta\ndata:\n", delta},
+		{"bare cr framing", crDelta + crStop, crDelta + crStop},
+		{"bare cr empty event", "event: content_block_delta\rdata:\r\r" + crDelta + crStop, crDelta + crStop},
+	} {
+		got := streamThrough(t, s, tc.up, nil, "")
+		if got != tc.want {
+			t.Errorf("%s: got %q\nwant %q", tc.name, got, tc.want)
+			continue
+		}
+		sseClientEvents(t, got)
+	}
+	if ev := sseClientEvents(t, deltaCont+stop); len(ev) != 2 {
+		t.Fatalf("delta with continuation and stop must read as 2 events, got %d", len(ev))
+	}
+}
+
 func TestStallEndsStreamWithErrorEvent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
