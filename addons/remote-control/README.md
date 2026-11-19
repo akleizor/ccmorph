@@ -68,7 +68,9 @@ their login`. A logged-out account is not restarted: signing in fixes it. A phon
 turn a host restart cut off is handed back to its host once that host is up again,
 so it carries on without being opened on the phone. Any active phone
 session left without a process (unarchived, exited while idle, crashed) is handed
-back to its folder's host within ~20s, so a message never waits on a dead session; an archived session's kept worktree is removed
+back to its folder's host within ~20s, so a message never waits on a dead session. An idle session with no
+event for `park_hours` (default 6, `park_hours=0` keeps every process) is parked: its process ends to free
+memory, and its next message wakes it within ~20s. An archived session's kept worktree is removed
 after `idle_days` (unarchiving still resumes it), and the session itself is deleted
 after `purge_days` (default 7); either step skips a worktree holding uncommitted or
 unmerged work. A days value that is not a valid number falls back to its default,

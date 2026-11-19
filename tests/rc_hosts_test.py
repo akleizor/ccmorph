@@ -1749,6 +1749,54 @@ def test_every_processless_session_is_handed_back_and_retried_slowly(tmp_path, m
     assert sorted(posts[3:]) == ["cse_01PARKED", "cse_01UNARCH"]   # still dead: retried slowly
 
 
+def test_an_idle_session_parks_and_wakes_only_on_input(tmp_path, monkeypatch):
+    """21 idle phone sessions held 3.2 GB, some 2.5 days old (2026-11-19): an idle
+    session's process ends after park_hours and comes back on its next message."""
+    import json
+    m = load()
+    repo = tmp_path / "repo"
+    (repo / ".claude").mkdir(parents=True)
+    (repo / ".claude" / "rc-host.json").write_text(json.dumps({"environmentId": "env_01R"}))
+    now = 100_000.0
+    old, fresh = "1970-01-01T00:00:00Z", "1970-01-02T03:46:30Z"   # 0 s and 99,990 s
+    active = [{"id": "cse_01OLD", "environment_id": "env_01R", "connection_status": "connected",
+               "worker_status": "idle", "last_event_at": old, "user_message_count": 4},
+              {"id": "cse_01BUSY", "environment_id": "env_01R", "connection_status": "connected",
+               "worker_status": "running", "last_event_at": old},
+              {"id": "cse_01NEW", "environment_id": "env_01R", "connection_status": "connected",
+               "worker_status": "idle", "last_event_at": fresh}]
+    posts, killed = [], []
+
+    def api(method, path, token, body=None):
+        if method == "POST":
+            posts.append(body["session_id"])
+            return {}
+        return {"data": active}
+    monkeypatch.setattr(m, "api", api)
+    monkeypatch.setattr(m, "account_token", lambda: "tok")
+    monkeypatch.setattr(m.time, "time", lambda: now)
+    monkeypatch.setattr(m, "session_pid", lambda sid: {"cse_01OLD": 41, "cse_01BUSY": 42, "cse_01NEW": 43}[sid])
+    monkeypatch.setattr(m.os, "kill", lambda pid, sig: killed.append(pid))
+    monkeypatch.setattr(m, "gone_within", lambda pid, s: True)
+    parked = {}
+    assert m.park_idle([str(repo)], now, parked, m.park_hours("") * 3600) == ["cse_01OLD"]
+    assert killed == [41]                       # not the running one, not the recent one
+    active[0]["connection_status"] = "disconnected"
+    done = {}
+    m.recover_processless([str(repo)], done, {str(repo)}, None, parked)
+    assert posts == []                          # parked, no input: left processless
+    active[0]["user_message_count"] = 5         # Alex sent a message
+    m.recover_processless([str(repo)], done, {str(repo)}, None, parked)
+    assert posts == ["cse_01OLD"] and parked == {}   # handed back: it wakes
+
+
+def test_park_hours_zero_keeps_every_process(monkeypatch):
+    m = load()
+    assert m.park_hours("park_hours=0\n") == 0
+    assert m.park_idle([], 0.0, {}, 0) == []
+    assert m.parse("park_hours=6\n") == {}     # a setting, not a folder
+
+
 def test_no_hand_back_before_the_host_that_serves_it_is_up(tmp_path, monkeypatch):
     """A supervisor restart handed every session back to a host still starting
     (2026-10-14).

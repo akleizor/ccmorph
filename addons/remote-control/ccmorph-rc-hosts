@@ -34,7 +34,10 @@ and never restarts it (a restart would un-archive it). After idle_days (default
 from the app. Unarchived conversations are never retired: idle only means "not
 used lately".
 
-Every active phone session keeps a process, so a message never waits. A session's
+An active phone session keeps a process until it has had no event for
+park_hours (default 6, 0 = never): then an idle one's process is ended and the
+session is parked, so it holds no memory; its next message wakes it in about
+RECOVER_EVERY seconds (below). A session's
 process can end while it stays active (archive then unarchive, an idle exit, a
 crash), and neither Claude Code nor the server reliably restarts it, so the app
 would show it working forever. Every RECOVER_EVERY seconds the supervisor lists
@@ -266,7 +269,7 @@ def parse(text: str) -> dict[str, tuple[str, tuple[str, ...]]]:
         if line.startswith("route="):
             route = line[6:].strip()
             continue
-        if line.startswith(("idle_days=", "purge_days=", "permission=", "retire=", "archived=")) or line.startswith(TIER_PREFIX):
+        if line.startswith(("idle_days=", "purge_days=", "park_hours=", "permission=", "retire=", "archived=")) or line.startswith(TIER_PREFIX):
             continue                         # settings, not folders
         head, _, args = line.partition(" -- ")
         path, _, rest = head.partition(" ")
@@ -609,6 +612,10 @@ def idle_days(text: str) -> float:
 
 def purge_days(text: str) -> float:
     return days_setting(text, "purge_days", 7.0)
+
+
+def park_hours(text: str) -> float:
+    return days_setting(text, "park_hours", 6.0)   # 0 keeps every idle session's process
 
 
 ARCHIVED_RE = re.compile(r"^\s*archived=(\S+)", re.M)
@@ -1001,9 +1008,69 @@ def restart_logged_out(hosts: "dict[str, Host]", now: float) -> list[str]:
     return restarted
 
 
+def session_pid(sid: str) -> int | None:
+    """The pid of the host child serving session `sid` (`--session-id <sid>` in its argv)."""
+    try:
+        out = subprocess.run(["ps", "-Ao", "pid=,command="], capture_output=True, text=True,
+                             errors="replace", timeout=10).stdout
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    for line in out.splitlines():
+        pid, _, cmd = line.strip().partition(" ")
+        words = cmd.split()
+        if "--session-id" in words and words[words.index("--session-id") + 1:][:1] == [sid] \
+                and "--sdk-url" in words:
+            return int(pid)
+    return None
+
+
+def woke(s: dict, mark: tuple) -> bool:
+    """Whether a parked session got input since it was parked: a new user message
+    (count) or any new event on the server (a phone message reaches the server
+    even with no process to read it)."""
+    count, last = mark
+    return (s.get("user_message_count") or 0) > count or (stamp(s.get("last_event_at")) or 0) > last
+
+
+def park_idle(folders: list[str], now: float, parked: dict[str, tuple], limit: float) -> list[str]:
+    """End the process of every idle repo-host session with no event for `limit`
+    seconds and remember it in `parked` ({session id: (user messages, last event)}),
+    so recover_processless leaves it processless until it gets input. Only an idle
+    worker is parked: one running or waiting on a permission prompt keeps its process.
+
+    shortcut: `parked` lives in memory, so a supervisor restart respawns parked
+    sessions once and they park again after `limit`; persist it if restarts get frequent.
+    """
+    out: list[str] = []
+    if limit <= 0:
+        return out
+    _, found = host_sessions(folders, "active")
+    for folder, s in found:
+        sid, last = s.get("id", ""), stamp(s.get("last_event_at"))
+        if (sid in parked or s.get("connection_status") != "connected"
+                or s.get("worker_status") != "idle" or last is None or now - last < limit):
+            continue
+        pid = session_pid(sid)
+        if pid is None:
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            continue
+        if not gone_within(pid, GRACE_TERM):
+            continue
+        parked[sid] = (s.get("user_message_count") or 0, last)
+        out.append(sid)
+        log(f"{folder}: {sid} idle {(now - last) / 3600:.0f}h; process ended, parked until its next message")
+    return out
+
+
 def recover_processless(folders: list[str], done: dict[tuple[str, int], float],
                         up: set[str],
-                        failed: "set[tuple[str, int]] | None" = None) -> dict[str, bool]:
+                        failed: "set[tuple[str, int]] | None" = None,
+                        parked: "dict[str, tuple] | None" = None) -> dict[str, bool]:
     """Hand every active, processless session of a repo host back to it.
 
     A phone session must answer whenever it is opened. Its process can end while
@@ -1042,9 +1109,16 @@ def recover_processless(folders: list[str], done: dict[tuple[str, int], float],
         return sent
     token, found = host_sessions(folders, "active")
     now = time.time()
+    parked = {} if parked is None else parked
     for folder, s in found:
         if s.get("connection_status") == "connected":
+            parked.pop(s.get("id", ""), None)      # woken some other way: no longer parked
             continue
+        if s.get("id") in parked:
+            if not woke(s, parked[s["id"]]):
+                continue                           # parked and nothing new: stay processless
+            parked.pop(s["id"])
+            log(f"{folder}: {s['id']} got input; waking it")
         key = (s.get("id", ""), (s.get("external_metadata") or {}).get("unarchived_epoch") or 0)
         if now - done.get(key, float("-inf")) < REWAKE_AFTER:
             if key in failed:
@@ -1438,6 +1512,7 @@ class Clock:
         self.last_recover = self.last_idle_check  # ditto: hosts start one per tick, so nothing is up yet
         self.recovered: dict = {}
         self.hand_back_failed: set = set()   # keys in `recovered` whose last hand-back failed
+        self.parked: dict = {}               # session id -> (user messages, last event) when parked
         self.refresher: subprocess.Popen | None = None   # the running account login refresh
         self.last_refresh = float("-inf")
         self.refresher_started = 0.0   # when the running refresh turn was started
@@ -1452,7 +1527,8 @@ def cycle(hosts: "dict[str, Host]", repos: list[str], now: float, clock: Clock) 
         keep_login_fresh(clock, now)     # nothing else refreshes the account login (route sessions)
         restart_logged_out(hosts, now)   # a host that cannot log its sessions in: replace it
         up = {h.folder for h in hosts.values() if h.proc and now - h.started >= RECOVER_EVERY}
-        handed_back = recover_processless(repos, clock.recovered, up, clock.hand_back_failed)
+        handed_back = recover_processless(repos, clock.recovered, up, clock.hand_back_failed,
+                                          clock.parked)
         recover_interrupted(repos, up, handed_back)
     if now - clock.last_idle_check < IDLE_CHECK:
         return False
@@ -1581,6 +1657,8 @@ def main(argv: list[str]) -> int:
         # cannot be undone. The pass waits for a reload to commit the file's
         # mtime (indefinitely, while the file stays unreadable: fail closed)
         # and retries on its next interval once one does.
+        if idle_due:
+            park_idle(repos, now, clock.parked, park_hours(text) * 3600)
         if idle_due and mtime_of(config) == seen:
             limit = idle_days(text) * 86400
             clean_archived(repos, now, limit, purge_days(text) * 86400,
