@@ -7,6 +7,14 @@
 
 ## Unreleased
 
+## v0.5.18 — 2026-11-19
+
+Cut from v0.5.17 plus these changes only.
+
+### Added
+
+- `ccmorph quota` refreshes an expired Antigravity (Google AI plan) sign-in with `cliproxyapi -antigravity-refresh` before reading it, so the reading stays live with no session running. Needs cliproxyapi 8.0.76-akleizor.5 or later. (#680)
+
 ## v0.5.17 — 2026-11-19
 
 Cut from v0.5.16 plus these changes only.
