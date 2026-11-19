@@ -7,6 +7,14 @@
 
 ## Unreleased
 
+## v0.5.21 — 2026-11-19
+
+Cut from v0.5.20 plus these changes only.
+
+### Changed
+
+- `ccmorph quota` refreshes any expired cliproxyapi sign-in (Codex as well as Antigravity) with `cliproxyapi -refresh` before reading it. Needs cliproxyapi 8.0.76-akleizor.7 or later. (#682)
+
 ## v0.5.20 — 2026-11-19
 
 ### Added
