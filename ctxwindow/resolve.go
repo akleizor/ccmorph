@@ -22,10 +22,10 @@ func posIntPtr(v any) *int64 {
 	return nil
 }
 
-// LimitWindow derives {value, input, context} from a models.dev `limit` object.
+// limitWindow derives {value, input, context} from a models.dev `limit` object.
 // The operational budget is the tighter of input and context: an input
 // sub-limit below the combined context still refuses a larger send.
-func LimitWindow(limit any) *Limit {
+func limitWindow(limit any) *Limit {
 	o, ok := limit.(map[string]any)
 	if !ok {
 		return nil
@@ -52,7 +52,7 @@ func LimitWindow(limit any) *Limit {
 
 func windowOf(entry obj) *Limit {
 	v := entry["limit"]
-	return LimitWindow(v)
+	return limitWindow(v)
 }
 
 // CanonicalCatalogueWindow is an exact canonical-leaf match in the flat

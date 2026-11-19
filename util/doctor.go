@@ -100,7 +100,7 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 			// Read and probe Claude Code's stored sign-in without changing it.
 			// A rejection is a warning, not a failure: a sign-in is refreshable
 			// by design, and the next session refreshes it if it can.
-			token, refresh, known := StoredSignin(home)
+			token, refresh, known := storedSignin(home)
 			switch {
 			case known && token == "" && refresh == "":
 				row("FAIL", "credentials: signed out of Claude; sign in again: ccmorph login "+name,

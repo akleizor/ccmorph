@@ -30,8 +30,8 @@ func TokenShaped(s string) bool {
 
 var readSigninKeychain = ReadSigninKeychain
 
-// StoredSignin reads the Claude-account sign-in without changing it.
-func StoredSignin(home string) (access, refresh string, known bool) {
+// storedSignin reads the Claude-account sign-in without changing it.
+func storedSignin(home string) (access, refresh string, known bool) {
 	raw, err := []byte(nil), error(nil)
 	if runtime.GOOS == "darwin" {
 		raw, err = ReadSigninCredentials(home, readSigninKeychain)

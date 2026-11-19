@@ -453,7 +453,7 @@ func ProbeAll(parent context.Context, profiles []string, o Options) Run {
 					check(ctx)
 					if found != nil {
 						values[scoped] = found.Value
-						sources[scoped] = CatalogueTag(found)
+						sources[scoped] = catalogueTag(found)
 					} else {
 						notes = append(notes, Note{Reason: Unresolved, Subject: model, Profile: profile})
 					}

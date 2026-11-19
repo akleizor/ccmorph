@@ -1468,9 +1468,9 @@ func TestRecordTranscriptCheckpointSkipsWrittenRows(t *testing.T) {
 			writeCursor(cp.path, cp.c)
 			panic("stopped")
 		}
-		return WriteUsageRow(p, pr, id, m, ts, s, turn, u)
+		return writeUsageRow(p, pr, id, m, ts, s, turn, u)
 	}
-	t.Cleanup(func() { writeRow = WriteUsageRow; progress.Store(nil) })
+	t.Cleanup(func() { writeRow = writeUsageRow; progress.Store(nil) })
 	func() { defer func() { _ = recover() }(); RecordTranscript("sub", "anthropic", path) }()
 	if c := readCursor(cursorFile(path)); c.Offset != firstLen {
 		t.Fatalf("checkpoint %d, want %d (just past the written row)", c.Offset, firstLen)

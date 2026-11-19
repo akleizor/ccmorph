@@ -548,9 +548,9 @@ func ManualValues(fields map[string]string) map[string]int64 {
 	return out
 }
 
-// MappedTarget is the id the shim serves for bare, or bare when nothing rewrites
+// mappedTargetFromFields is the id the shim serves for bare, or bare when nothing rewrites
 // it: the map's target is final, so it sizes the session.
-func MappedTarget(fields map[string]string, bare string) string {
+func mappedTargetFromFields(fields map[string]string, bare string) string {
 	return mappedTarget(fields, parseModelMap(fields), bare)
 }
 
@@ -569,7 +569,7 @@ func parseModelMap(fields map[string]string) obj {
 	return mapping
 }
 
-// mappedTarget is MappedTarget over an already-parsed mapping.
+// mappedTarget is mappedTargetFromFields over an already-parsed mapping.
 func mappedTarget(fields map[string]string, mapping obj, bare string) string {
 	base := strings.TrimRight(fields["base_url"], "/")
 	if base == "" || base == "https://api.anthropic.com" {
@@ -592,7 +592,7 @@ func mappedTarget(fields map[string]string, mapping obj, bare string) string {
 // readable with the profile's own credentials — the probe that fills this
 // table is the evidence the route offers.
 func RouteKnown(fields map[string]string, model string) bool {
-	target := MappedTarget(fields, model)
+	target := mappedTargetFromFields(fields, model)
 	discovered := DiscoveredValues(fields)
 	if _, ok := discovered[target]; ok {
 		return true
@@ -620,14 +620,14 @@ func ProfileWindows(profile string) (map[string]int64, error) {
 	return out, nil
 }
 
-// ProfileLock runs fn holding the profile's lock; a caller that already holds
+// profileLock runs fn holding the profile's lock; a caller that already holds
 // it (CCMORPH_PROFILE_LOCK_HELD) passes straight through.
-func ProfileLock(profile string, fn func() error) error {
+func profileLock(profile string, fn func() error) error {
 	_, err := ProfileLockCtx(context.Background(), profile, fn)
 	return err
 }
 
-// ProfileLockCtx is ProfileLock for a caller with a deadline: it stops waiting
+// ProfileLockCtx is profileLock for a caller with a deadline: it stops waiting
 // at ctx.Done and reports whether fn ran. A lock held by another ccmorph must
 // not make a run outlive the deadline that asked it to write.
 func ProfileLockCtx(ctx context.Context, profile string, fn func() error) (bool, error) {
@@ -996,7 +996,7 @@ func SetContext(profile, model, value string) error {
 	if value != "auto" && !ok {
 		return errors.New("context tokens must be a positive integer of at most 10 digits, with an optional k or m suffix (for example 100000, 100k or 2m), or auto")
 	}
-	return ProfileLock(profile, func() error {
+	return profileLock(profile, func() error {
 		expected := ProfileIdentity(profile)
 		path, err := ProfilePath(profile)
 		if err != nil {

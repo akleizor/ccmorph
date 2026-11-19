@@ -315,7 +315,7 @@ func moveInlineDiscovered(state string) (int, error) {
 			continue
 		}
 		os.Remove(conf + ".lock")
-		err := ProfileLock(s, func() error {
+		err := profileLock(s, func() error {
 			// One read inside the lock carries the identity to check, the
 			// fields to move and the text to rewrite: text read before the
 			// lock can be older than a writer that held it meanwhile, and

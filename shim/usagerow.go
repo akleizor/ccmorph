@@ -78,7 +78,7 @@ func UsageRowMain(args []string, stdin io.Reader) int {
 	// SessionStart writes no row: it marks where this launch begins reading, so
 	// a transcript it resumes does not charge its history to this profile.
 	if in.HookEventName == "SessionStart" {
-		StartTranscript(in.TranscriptPath, time.Now())
+		startTranscript(in.TranscriptPath, time.Now())
 		return 0
 	}
 	RecordTranscript(profile, pricing, in.TranscriptPath)
@@ -229,7 +229,7 @@ func parseLine(line []byte) (transcriptEntry, usageRow, bool) {
 	return e, usage, true
 }
 
-// WriteUsageRow writes one complete row for a response the client itself
+// writeUsageRow writes one complete row for a response the client itself
 // recorded. turnID makes the write idempotent: the same response always owns
 // the same row, so a re-read replaces it instead of spilling a duplicate.
 // It reports false when the row was deliberately not written: no profile or id,
@@ -260,9 +260,9 @@ func onStop() {
 }
 
 // writeRow is the hook's row writer; a test swaps it to stop a pass mid-backlog.
-var writeRow = WriteUsageRow
+var writeRow = writeUsageRow
 
-func WriteUsageRow(profile, pricing, responseID, model, timestamp, session, turnID string, usage usageRow) (bool, error) {
+func writeUsageRow(profile, pricing, responseID, model, timestamp, session, turnID string, usage usageRow) (bool, error) {
 	if profile == "" || responseID == "" {
 		return false, nil
 	}
@@ -729,13 +729,13 @@ func writeCursor(path string, c cursor) {
 	AtomicWrite(path, data, 0o600, filepath.Base(path)+".*.tmp")
 }
 
-// StartTranscript marks where this launch begins reading path, for a transcript
+// startTranscript marks where this launch begins reading path, for a transcript
 // that has no cursor yet: everything the file already holds was served before
 // this launch — by a pre-release ccmorph, by native claude, or under a route
 // that writes no rows — and none of it is this profile's spend. An existing
 // cursor is left alone: a compact, a clear or a second start resumes the same
 // read position, and moving it would lose the pass that had not written yet.
-func StartTranscript(path string, now time.Time) {
+func startTranscript(path string, now time.Time) {
 	cursorPath := cursorFile(path)
 	if _, err := os.Stat(cursorPath); err == nil {
 		return
