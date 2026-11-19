@@ -10,12 +10,18 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/akleizor/ccmorph/netroute"
 )
 
 func die(msg string) {
 	fmt.Fprintln(os.Stderr, msg)
 	os.Exit(1)
 }
+
+// listenFn binds the shim's loopback port; a test may replace it to build a
+// server without a socket.
+var listenFn = net.Listen
 
 func envSeconds(getenv func(string) string, name string, def float64) (time.Duration, error) {
 	v := getenv(name)
@@ -49,6 +55,7 @@ func Listen(h Hooks, o Options, getenv func(string) string) (*http.Server, net.L
 	if s.RetryBase, err = envSeconds(getenv, "CCMORPH_RETRY_BASE", 0.5); err != nil {
 		return nil, nil, err
 	}
+	s.Upstream = netroute.Parse(getenv("CCMORPH_UPSTREAM_PROXY"))
 	s.setClients()
 	if spec := getenv("CCMORPH_MODEL_ROUTE"); spec != "" {
 		if s.Routes, err = newModelRoutes(spec, s.remote); err != nil {
@@ -80,7 +87,7 @@ func Listen(h Hooks, o Options, getenv func(string) string) (*http.Server, net.L
 		s.Breaker = NewBreaker()
 	}
 	// Loopback only; no reverse lookup of the name (it can stall startup on macOS).
-	ln, err := net.Listen("tcp4", "127.0.0.1:"+strconv.Itoa(o.Port))
+	ln, err := listenFn("tcp4", "127.0.0.1:"+strconv.Itoa(o.Port))
 	if err != nil {
 		return nil, nil, fmt.Errorf("shim: %w", err)
 	}

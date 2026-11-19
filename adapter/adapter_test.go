@@ -210,12 +210,35 @@ func TestHomeUnsetDefaultProfileDirsAnswerTheAccountHomesRoot(t *testing.T) {
 }
 
 func TestRenderUpstreamProxyOnlyWhenSet(t *testing.T) { // test_upstream_proxy_is_rendered_only_when_set
+	// The route's exemptions read NO_PROXY, so the test's own answer must not
+	// depend on whichever one this machine carries.
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
 	cfg := render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "http://127.0.0.1:18480", "", nil, false)
 	if !strings.Contains(cfg, "\nproxy-url: \"http://127.0.0.1:18480\"\n") {
 		t.Fatal("proxy-url missing")
 	}
 	if strings.Contains(render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "", "", nil, false), "proxy-url") {
 		t.Fatal("proxy-url rendered without a proxy")
+	}
+}
+
+// The knob is the session's route, not a licence to hand this machine's own
+// loopback — or a NO_PROXY-listed gateway — to a remote proxy. The translator
+// reads the same promise the shim and the probes do (GH-580).
+func TestRenderNeverProxiesAnExemptUpstream(t *testing.T) {
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
+	for _, upstream := range []string{"http://127.0.0.1:4000", "http://localhost:4000", "http://[::1]:4000"} {
+		cfg := render([]Row{row("anthropic")}, "k", 1234, upstream, "/unused", "http://bridge.invalid:3128", "", nil, false)
+		if strings.Contains(cfg, "proxy-url") {
+			t.Fatalf("%s rendered proxy-url; a loopback upstream is dialed directly", upstream)
+		}
+	}
+	t.Setenv("NO_PROXY", "gateway.lan")
+	cfg := render([]Row{row("anthropic")}, "k", 1234, "http://gateway.lan:8443", "/unused", "http://bridge.invalid:3128", "", nil, false)
+	if strings.Contains(cfg, "proxy-url") {
+		t.Fatal("a NO_PROXY-listed gateway rendered proxy-url; it is dialed directly")
 	}
 }
 
@@ -1535,11 +1558,15 @@ func TestPrintConfigNeverPrintsTheProxyPassword(t *testing.T) {
 	// password's head would print as the host.
 	// A digit or empty head before the first /?# reads as a port, so url.Parse
 	// accepts the URL and the success path must not print the secret either.
+	// The knob also carries a query token: redaction must drop it, and a key
+	// that itself spells part of the proxy must not cut the spelling first.
 	for name, secret := range map[string]string{"caret": "p^ss", "percent": "50%off", "space": "p ss", "slash": "pa/ss", "question": "pa?ss", "hash": "pa#ss",
 		"digit-slash": "12/ss", "digit-question": "12?ss", "empty-head-slash": "/ss"} {
 		t.Run(name, func(t *testing.T) {
+			t.Setenv("NO_PROXY", "")
+			t.Setenv("no_proxy", "")
 			stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gateway",
-				"CCMORPH_UPSTREAM_PROXY": "http://alice:" + secret + "@proxy:3128"})
+				"CCMORPH_UPSTREAM_PROXY": "http://alice:" + secret + "@proxy:3128?token=qq"})
 			swap(t, &profileDirs, t.TempDir())
 			// Neutral state dir: t.TempDir() puts the subtest name in the path,
 			// and a secret spelled "p^ss" must not be excused for that.
@@ -1556,8 +1583,8 @@ func TestPrintConfigNeverPrintsTheProxyPassword(t *testing.T) {
 				t.Fatalf("Main = %d", got)
 			}
 			text := output()
-			if strings.Contains(text, secret) || strings.Contains(text, "alice") {
-				t.Fatalf("--print-config printed the proxy credentials: %q", text)
+			if strings.Contains(text, secret) || strings.Contains(text, "alice") || strings.Contains(text, "token=qq") {
+				t.Fatalf("--print-config printed the proxy credentials or its query: %q", text)
 			}
 			if !strings.Contains(text, `proxy-url: "http://proxy:3128"`) {
 				t.Fatalf("proxy-url not redacted to its host: %q", text)
