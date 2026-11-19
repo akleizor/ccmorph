@@ -94,7 +94,7 @@ func TestAntigravityExpiredSignInIsRefreshedThenRead(t *testing.T) {
 }
 
 func useRefresh(t *testing.T, f func(string) error) {
-	prev := refreshAntigravity
-	refreshAntigravity = f
-	t.Cleanup(func() { refreshAntigravity = prev })
+	prev := refreshAuthDir
+	refreshAuthDir = f
+	t.Cleanup(func() { refreshAuthDir = prev })
 }

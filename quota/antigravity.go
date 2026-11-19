@@ -2,14 +2,9 @@ package quota
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -19,80 +14,16 @@ import (
 // cliproxyapi call; it carries each model's quota. A var so tests can watch it.
 var antigravityModelsURL = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
 
-type antigravityAuth struct {
-	Type        string `json:"type"`
-	AccessToken string `json:"access_token"`
-	ProjectID   string `json:"project_id"`
-	Expired     string `json:"expired"`
-	Disabled    bool   `json:"disabled"`
-}
-
-// antigravityAuthFile finds the profile's one cliproxyapi Antigravity sign-in.
-// Symlinks are not followed, as for Codex.
-func antigravityAuthFile(dir string) (antigravityAuth, error) {
-	paths := []string{}
-	for _, pattern := range []string{filepath.Join(dir, "*.json"), filepath.Join(dir, "*", "*.json")} {
-		m, _ := filepath.Glob(pattern)
-		paths = append(paths, m...)
-	}
-	for _, p := range paths {
-		if fi, err := os.Lstat(p); err != nil || !fi.Mode().IsRegular() {
-			continue
-		}
-		raw, err := os.ReadFile(p)
-		if err != nil {
-			continue
-		}
-		var a antigravityAuth
-		if json.Unmarshal(raw, &a) == nil && a.Type == "antigravity" && !a.Disabled && a.AccessToken != "" {
-			return a, nil
-		}
-	}
-	return antigravityAuth{}, errors.New("not signed in")
-}
-
-func antigravityExpired(a antigravityAuth) bool {
-	t, err := time.Parse(time.RFC3339, a.Expired)
-	return err == nil && now().After(t)
-}
-
-// refreshAntigravity runs cliproxyapi's one-shot refresh on the auth dir. A var
-// so tests never start a process.
-var refreshAntigravity = func(dir string) error {
-	bin, err := exec.LookPath("cliproxyapi")
-	if err != nil {
-		return err
-	}
-	tmp, err := os.MkdirTemp("", "ccmorph-agrefresh-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(tmp)
-	conf := filepath.Join(tmp, "config.yaml")
-	yaml := fmt.Sprintf("host: \"127.0.0.1\"\nport: 0\nauth-dir: %q\napi-keys:\n  - \"unused\"\n", dir)
-	if err := os.WriteFile(conf, []byte(yaml), 0o600); err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-	return exec.CommandContext(ctx, bin, "-antigravity-refresh", "-config", conf).Run()
-}
-
 // readAntigravity reads one Antigravity (Google AI plan) profile's quota pools.
 func readAntigravity(client *http.Client, name, dir string) Entry {
 	e := Entry{Profile: name, Kind: "antigravity", Windows: []Window{}}
-	a, err := antigravityAuthFile(dir)
+	a, err := clipAuthFile(dir, "antigravity")
+	if errors.Is(err, errSignInExpired) {
+		return stale(name, e.Kind, "", "sign-in expired", "sign-in expired; run `ccmorph login "+name+"` to sign in again")
+	}
 	if err != nil {
 		e.Error = err.Error()
 		return e
-	}
-	// An expired sign-in is refreshed by cliproxyapi, which owns the OAuth
-	// client and the file; ccmorph only reads the saved token.
-	if antigravityExpired(a) && refreshAntigravity(dir) == nil {
-		a, err = antigravityAuthFile(dir)
-	}
-	if err != nil || antigravityExpired(a) {
-		return stale(name, e.Kind, "", "sign-in expired", "sign-in expired; run `ccmorph login "+name+"` to sign in again")
 	}
 	payload, _ := json.Marshal(map[string]string{"project": a.ProjectID})
 	req, _ := http.NewRequest("POST", antigravityModelsURL, bytes.NewReader(payload))
