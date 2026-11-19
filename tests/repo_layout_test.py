@@ -16,9 +16,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 LAUNCH_SURFACE = {
     "AGENTS.md", "CHANGELOG.md", "INTENT.md", "LICENSE", "Makefile", "README.md",
-    "install.sh", "pytest.ini", "pyproject.toml", "go.mod",
+    "install.sh", "pytest.ini", "pyproject.toml", "go.mod", "go.sum",
     "adapter", "addons", "ordjson", "profile", "cli", "ctxwindow", "settingscompose", "assets", "bin", "cmd", "docs", "lib", "libexec", "scripts",
-    "quirks", "quota", "shim", "share", "tests", "util",
+    "netroute", "quirks", "quota", "shim", "share", "tests", "util",
 }
 
 

@@ -52,6 +52,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/akleizor/ccmorph/netroute"
 )
 
 func parseInbound(raw string) (*inbound, error) {
@@ -199,6 +201,10 @@ type Server struct {
 	RetryBase      time.Duration
 	Sleep          func(time.Duration) // injected in tests: the retry waits must not cost real time
 	mask           *masker             // CCMORPH_MASK: secrets go upstream as placeholders
+	// Upstream is the profile's CCMORPH_UPSTREAM_PROXY, parsed once at Listen:
+	// the remote client dials through it, so a native gateway the process
+	// cannot reach still serves. nil: the environment resolves each call.
+	Upstream *url.URL
 
 	loopback, remote *http.Client
 	devicesMu        sync.Mutex
@@ -228,9 +234,10 @@ func (s *Server) setClients() {
 	}
 	// Loopback target (the translator): no proxy, whatever http_proxy says (same
 	// reason as --noproxy '*' in ccmorph.sh). A remote target and the catalogue
-	// honour the environment.
+	// take the profile's upstream route when it names one, the environment's
+	// otherwise; netroute keeps NO_PROXY and the loopback exemption either way.
 	s.loopback = mk(nil)
-	s.remote = mk(http.ProxyFromEnvironment)
+	s.remote = mk(func(r *http.Request) (*url.URL, error) { return netroute.Proxy(s.Upstream, r) })
 }
 
 // checkRedirect never carries the credential to another origin: Go, like urllib,
