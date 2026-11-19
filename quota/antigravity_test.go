@@ -2,6 +2,7 @@ package quota
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -62,7 +63,38 @@ func TestAntigravityExpiredSignInIsReportedWithoutACall(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "a.json"), []byte(cred), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	useRefresh(t, func(string) error { return errors.New("no cliproxyapi") })
 	if e := readAntigravity(httpClient(), "gp", dir); !strings.Contains(e.Error, "sign-in expired") {
 		t.Fatalf("error %q", e.Error)
 	}
+}
+
+func TestAntigravityExpiredSignInIsRefreshedThenRead(t *testing.T) {
+	useClock(t, time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC))
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	useTransport(t, func(r *http.Request) (*http.Response, error) {
+		if r.Header.Get("Authorization") != "Bearer new" {
+			t.Fatalf("sent the stale token: %s", r.Header.Get("Authorization"))
+		}
+		return reply(200, antigravityReply), nil
+	})
+	dir := t.TempDir()
+	file := filepath.Join(dir, "a.json")
+	old := `{"type":"antigravity","access_token":"old","project_id":"p-1","expired":"2026-11-19T08:00:00Z"}`
+	if err := os.WriteFile(file, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	useRefresh(t, func(d string) error {
+		fresh := `{"type":"antigravity","access_token":"new","project_id":"p-1","expired":"2026-11-19T10:00:00Z"}`
+		return os.WriteFile(filepath.Join(d, "a.json"), []byte(fresh), 0o600)
+	})
+	if e := readAntigravity(httpClient(), "gp", dir); e.Error != "" || len(e.Windows) != 2 {
+		t.Fatalf("entry %+v", e)
+	}
+}
+
+func useRefresh(t *testing.T, f func(string) error) {
+	prev := refreshAntigravity
+	refreshAntigravity = f
+	t.Cleanup(func() { refreshAntigravity = prev })
 }
