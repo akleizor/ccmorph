@@ -250,6 +250,22 @@ func (l *launcher) quota(args []string) int {
 		fmt.Println(noProfilesMsg)
 		return 0
 	}
+	input := l.quotaInput(names)
+	flags := []string{}
+	if asJSON {
+		flags = append(flags, "--json")
+	} else if isTTY(1) && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb" {
+		flags = append(flags, "--color")
+	}
+	cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), append([]string{"quota"}, flags...)...)
+	cmd.Stdin = strings.NewReader(input)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	return runRC(cmd)
+}
+
+// quotaInput is the quota core's stdin for these profiles: one line each, the
+// secret a read needs on stdin, never in argv.
+func (l *launcher) quotaInput(names []string) string {
 	var in strings.Builder
 	row := func(f ...string) { in.WriteString(strings.Join(f, "\t") + "\n") }
 	for _, n := range names {
@@ -276,16 +292,7 @@ func (l *launcher) quota(args []string) int {
 			row(n, "gateway", "", budget)
 		}
 	}
-	flags := []string{}
-	if asJSON {
-		flags = append(flags, "--json")
-	} else if isTTY(1) && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb" {
-		flags = append(flags, "--color")
-	}
-	cmd := exec.Command(filepath.Join(l.libexec, "ccmorph-core"), append([]string{"quota"}, flags...)...)
-	cmd.Stdin = strings.NewReader(in.String())
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	return runRC(cmd)
+	return in.String()
 }
 
 // authDirQuiet is `_ccm_provider_auth_dir 2>/dev/null`: no symlinked root or dir.

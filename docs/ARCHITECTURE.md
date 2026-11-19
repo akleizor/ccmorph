@@ -1920,6 +1920,47 @@ and 178 output tokens over five trials each — a null result regardless of the
 truth. Capture the outbound request instead: put a recorder between cliproxyapi
 and the upstream and read the `reasoning` object.
 
+## 6b. Subagent router
+
+`ccmorph router on` turns on an optional module, off by default, that decides
+where a session's subagent work runs. `router/` holds it; `router.json` beside
+the profiles holds its settings, and `enabled` is the switch. Off, a launch is
+unchanged: `pluginDirs` (cli/run.go) adds `share/claude-plugin-router` to
+`CLAUDE_CODE_PLUGIN_DIRS` only while it is on, so no hook, no MCP server and no
+ledger exist without it. A delegated worker (`CCMORPH_ROUTER_WORKER=1`) never
+loads it, so a worker cannot delegate again.
+
+The plugin gives a session two things. The `delegate` MCP tool
+(`ccmorph router mcp`) runs a brief through `ccmorph run <profile> --model <id>
+-- --effort <e> -p` and returns the final answer. The Agent hooks (`ccmorph
+router hook pre|post|stop`) fill a same-profile pick into the call's model and
+effort, deny any other pick with one instruction to call `delegate`, and join
+outcomes to the ledger. An Agent call with an explicit model, or a fork, is
+never touched (promise 2).
+
+One route, in order:
+
+1. Kind and tier: the caller's, else the optional decider endpoint's typed
+   answer, else keyword rules. `tier_cap` stops writing at mid.
+2. Profiles: every ccmorph profile; reserved, disabled and unavailable ones drop.
+   Class comes from the profile (Claude, Codex and Google AI plans are
+   subscriptions; a `monthly_budget_usd` is a budget; other keys are API) unless
+   `router.json` sets it (`free` for a gateway that costs nothing).
+3. Pace: windows from `ccmorph quota`'s own readers, kept five minutes; slack is
+   elapsed share minus used share of the tightest window the model draws on. A
+   hook takes the last stored reading so it never waits on a usage endpoint.
+4. Order: the user's `order` list, then free, subscriptions behind pace, ahead
+   of pace, paid; then largest slack; inside the profile the cheapest model by
+   `ccmorph price` (3 input : 1 output); the kind's family rank breaks ties.
+   Top tier keeps the kind's first two families; `only` limits a tier to named
+   models with no fallback.
+
+A refused account (quota, auth) waits until its tightest window resets; any
+other failure backs off that one model for 15 minutes. `delegate` retries once
+at the same tier. `ccmorph router report` checks real traffic: reserved profiles
+take no calls, subscriptions stay within 20 points of slack of each other, and
+at most a fifth of routes fail.
+
 ## 7. Known gaps
 
 ### Optional server-side tools are route capabilities

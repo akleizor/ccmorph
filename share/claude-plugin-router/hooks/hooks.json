@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "PreToolUse": [{"matcher": "Agent|Task", "hooks": [{"type": "command", "command": "ccmorph router hook pre", "timeout": 20}]}],
+    "PostToolUse": [{"matcher": "Agent|Task", "hooks": [{"type": "command", "command": "ccmorph router hook post", "timeout": 10}]}],
+    "SubagentStop": [{"hooks": [{"type": "command", "command": "ccmorph router hook stop", "timeout": 10}]}]
+  }
+}

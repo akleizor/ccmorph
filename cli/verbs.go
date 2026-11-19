@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/akleizor/ccmorph/router"
 	"github.com/akleizor/ccmorph/shim"
 	"github.com/akleizor/ccmorph/util"
 	"os"
@@ -65,6 +66,9 @@ func (l *launcher) verb(args []string) int {
 		return l.quota(args[1:])
 	case "price":
 		return l.price(args[1:])
+	case "router":
+		router.QuotaInput = l.quotaInput
+		return router.Main(args[1:], os.Stdin, os.Stdout, os.Stderr)
 	}
 	fmt.Fprintln(os.Stderr, "usage: ccmorph-core cli <verb>")
 	return 2
