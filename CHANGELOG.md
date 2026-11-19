@@ -7,7 +7,11 @@
 
 ## Unreleased
 
+## v0.5.19 — 2026-11-19
+
 ### Added
+
+- **`ccmorph get <profile> base_url`** prints a profile's endpoint; with `ccmorph cred`, scripts reach a gateway without reading profile files.
 
 - **`ccmorph price <model>... [--json]`** reads cached list prices per million tokens, using the same model lookup as usage pricing.
 - Adapter usage rows record the launching session as `parent` when available.
