@@ -265,8 +265,8 @@ func (l *launcher) quota(args []string) int {
 		case "token":
 			row(n, "token", dir, f["token"])
 		case "provider":
-			if auth, ok := l.authDirQuiet(n); ok && f["provider"] == "codex" {
-				row(n, "codex", auth, "")
+			if auth, ok := l.authDirQuiet(n); ok && (f["provider"] == "codex" || f["provider"] == "antigravity") {
+				row(n, f["provider"], auth, "")
 			} else {
 				row(n, "gateway", "", budget)
 			}

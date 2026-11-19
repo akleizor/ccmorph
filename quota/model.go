@@ -8,6 +8,9 @@ type Window struct {
 	Label    string  `json:"label"`
 	Used     float64 `json:"used"`
 	ResetsAt *int64  `json:"resets_at"`
+	// Models names the models that draw on this window when the plan keeps
+	// separate pools (Antigravity); empty means every model on the profile.
+	Models []string `json:"models,omitempty"`
 }
 
 // Reading is what one usage endpoint answered, and when. It is also what the
@@ -46,7 +49,7 @@ func (s *Spend) allUnpriced() bool {
 	return s != nil && s.MonthTurns > 0 && s.UnpricedTurns == s.MonthTurns
 }
 
-// Entry is one profile's row. Kind is "claude", "codex", "budget" or "gateway";
+// Entry is one profile's row. Kind is "claude", "codex", "antigravity", "budget" or "gateway";
 // budget and gateway entries carry Spend and never a network reading.
 type Entry struct {
 	Profile    string   `json:"profile"`

@@ -626,6 +626,11 @@ Codex subscriptions
 cx  Plus
   5h       ██████░░░░░░░░░░  35%  in 2h 14m
 
+Google AI plans
+gpro
+  5h gemini ░░░░░░░░░░░░░░░░   0%  in 4h 59m
+  7d claude █████████░░░░░░░  59%  Tue 14:29
+
 Budget accounts
 main
   month    ███░░░░░░░░░░░░░  20%  Nov 1
@@ -649,8 +654,11 @@ spare
 A plan tier (Pro, Max 5x, Max 20x, Team, Plus, Pro for Codex) is read from the
 provider's own account data, never guessed. Claude account usage is read from
 claude.ai's usage endpoint (the one `/usage` shows) with the profile's own sign-in,
-Codex subscriptions from Codex's own usage endpoint; no inference, nothing billed. An
-expired sign-in is reported, not refreshed; the next session on that profile refreshes
+Codex subscriptions from Codex's own usage endpoint, and Google AI plans (an
+`antigravity` provider profile) from Antigravity's own model list; no inference, nothing
+billed. A Google plan keeps separate pools (Gemini models, and a weekly pool the Claude
+and gpt-oss models share); each pool is one window, and `--json` lists its `models`.
+An expired sign-in is reported, not refreshed; the next session on that profile refreshes
 it. A missing sign-in is reported with the command that restores it, and a
 Claude token is not allowed to read plan usage.
 
