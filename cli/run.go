@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/akleizor/ccmorph/router"
 	"io"
 	"math/rand/v2"
 	"os"
@@ -329,7 +330,7 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 	common := []string{
 		"CCMORPH_RELAY_ID=" + relayID,
 		"CCMORPH_LIB_DIR=" + l.libDir,
-		"CLAUDE_CODE_PLUGIN_DIRS=" + prefixed(os.Getenv("CLAUDE_CODE_PLUGIN_DIRS")) + filepath.Join(filepath.Dir(l.libDir), "share", "claude-plugin"),
+		"CLAUDE_CODE_PLUGIN_DIRS=" + pluginDirs(l.libDir),
 	}
 	plan := &launchPlan{
 		name: name, native: native, args: args, arity: table,
@@ -656,6 +657,17 @@ func yesNo(b bool) string {
 		return "yes"
 	}
 	return "no"
+}
+
+// pluginDirs is the session's plugin path: ccmorph's own plugin, and the
+// router's hooks and delegate tool only while it is on and never in its own workers.
+func pluginDirs(libDir string) string {
+	share := filepath.Join(filepath.Dir(libDir), "share")
+	dirs := prefixed(os.Getenv("CLAUDE_CODE_PLUGIN_DIRS")) + filepath.Join(share, "claude-plugin")
+	if os.Getenv(router.WorkerEnv) != "1" && router.Enabled() {
+		dirs += ":" + filepath.Join(share, "claude-plugin-router")
+	}
+	return dirs
 }
 
 func prefixed(s string) string {

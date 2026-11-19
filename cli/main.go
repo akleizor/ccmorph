@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"github.com/akleizor/ccmorph/router"
 	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
 	"os"
@@ -24,7 +25,7 @@ const retiredVerb = "mea" + "sure"
 var ownVerbs = map[string]bool{"list": true, "inspect": true, "show": true, "add": true, "config": true,
 	"login": true, "default": true, "use": true, "rm": true, "mv": true, "get": true, "set": true,
 	"context": true, "cred": true, "secret": true, "creds": true, "probe": true, "hop": true, "profile": true,
-	"help": true, "version": true, "run": true, "start": true, "price": true, retiredVerb: true}
+	"help": true, "version": true, "run": true, "start": true, "price": true, "router": true, retiredVerb: true}
 
 // helpAsked reports whether any word asks for help.
 func helpAsked(words []string) bool {
@@ -62,7 +63,7 @@ func (l *launcher) extraArg(verb, word string) int {
 // realVerbs is every verb `ccmorph <verb>` answers to, in one list for the typo
 // hint: a word one edit away from exactly one of these is told to run it.
 var realVerbs = []string{"add", "config", "context", "cred", "doctor", "get", "help", "hop",
-	"inspect", "list", "login", "models", "mv", "price", "probe", "profile", "quota", "rm", "run", "set",
+	"inspect", "list", "login", "models", "mv", "price", "probe", "profile", "quota", "rm", "router", "run", "set",
 	"uninstall", "update", "use", "version"}
 
 // topFlags are the flags ccmorph itself takes before the verb.
@@ -178,7 +179,7 @@ func (l *launcher) dispatch(args []string) int {
 	case "_env":
 		return l.envVerb(args[1:])
 	case "list", "use", "cred", "inspect", "context", "models", "_models", "rm", "mv", "get", "set",
-		"_menu", "_ui", "config", "add", "login", "hop", "profile", "quota", "price":
+		"_menu", "_ui", "config", "add", "login", "hop", "profile", "quota", "price", "router":
 		return l.verb(args)
 	}
 	return l.unknown(first, args)
@@ -869,6 +870,7 @@ func (l *launcher) usageAt(topic string, width int) int {
 			head("More commands:")
 			help("ccmorph models <profile>", "List models from an API-key endpoint")
 			help("ccmorph price <model>...", "Read cached model list prices")
+			help("ccmorph router [on|off]", "Spread subagents across profiles; off by default")
 			help("ccmorph get <profile> <field|--json>", "Read one profile field, or all as JSON")
 			help("ccmorph set <profile> <model|effort> [value]", "Save a default; omit value to choose")
 			help("ccmorph login <profile>", "Sign in again to a provider account")
@@ -991,6 +993,14 @@ receipts, and the account balance where the provider publishes one (DeepSeek,
 Kimi, GLM, OpenRouter, SiliconFlow, StepFun). --json prints the same data for
 tools. No inference, nothing billed.
 Omit the profile to list every profile.`},
+	"router": {router.Usage, `Route subagent work across your profiles. Off by default.
+on and off take effect for sessions started afterwards. With the router on,
+each session gets a delegate tool and Agent hooks: free profiles first, then
+the subscription furthest behind its pace, then paid API keys; inside a
+profile, the cheapest model that fits the task's kind and tier.
+status lists each profile's class and pace. route "<task>" shows where a
+task would run without running it; dispatch "<task>" runs it there. report
+checks the last day's routes. Settings: ` + "`~/.config/ccmorph/router.json`" + `.`},
 	"use": {"ccmorph use [profile|-i]", "Set the default without launching. No argument shows the current default."},
 	"inspect": {"ccmorph inspect [profile|-i]", `Show effective settings and their sources, never the stored credential.
 Omit the profile to inspect the default; -i opens the profile picker.

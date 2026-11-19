@@ -121,6 +121,7 @@ ccmorph set <profile> model -i     # save a default model, chosen from the endpo
 ccmorph inspect [<profile>]        # effective settings and where each came from
 ccmorph doctor [<profile>]         # check why a profile is not working
 ccmorph quota [<profile>] [--json] # every profile's plan usage, spend and API balance
+ccmorph router on                  # spread subagents across your profiles (off by default)
 ```
 
 To switch a running session, type in the Claude Code prompt:

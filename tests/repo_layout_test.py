@@ -18,7 +18,7 @@ LAUNCH_SURFACE = {
     "AGENTS.md", "CHANGELOG.md", "INTENT.md", "LICENSE", "Makefile", "README.md",
     "install.sh", "pytest.ini", "pyproject.toml", "go.mod",
     "adapter", "addons", "ordjson", "profile", "cli", "ctxwindow", "settingscompose", "assets", "bin", "cmd", "docs", "lib", "libexec", "scripts",
-    "quirks", "quota", "shim", "share", "tests", "util",
+    "quirks", "quota", "router", "shim", "share", "tests", "util",
 }
 
 

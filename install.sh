@@ -144,6 +144,8 @@ DATA_FILES=(share/model-catalogue.json share/window-sources.json share/provider-
   share/claude-plugin/.claude-plugin/plugin.json
   share/claude-plugin/commands/hop.md share/claude-plugin/commands/profile.md
   share/claude-plugin/hooks/hooks.json
+  share/claude-plugin-router/.claude-plugin/plugin.json share/claude-plugin-router/.mcp.json
+  share/claude-plugin-router/hooks/hooks.json share/claude-plugin-router/skills/router/SKILL.md
   share/zsh/site-functions/_ccmorph)
 COMPONENTS=($LIBS $EXECUTABLES $DATA_FILES)
 
@@ -440,7 +442,7 @@ CONFIG_REAL="${CONFIG_DIR:A}"
 
 # If running from inside the target dir, files are already home; otherwise copy.
 if [[ "$SRC" != "$CONFIG_REAL" ]]; then
-  mkdir -p "$CONFIG_DIR"/{bin,lib,libexec,share/claude-plugin/{.claude-plugin,commands,hooks},share/zsh/site-functions}
+  mkdir -p "$CONFIG_DIR"/{bin,lib,libexec,share/claude-plugin/{.claude-plugin,commands,hooks},share/claude-plugin-router/{.claude-plugin,hooks,skills/router},share/zsh/site-functions}
   for _f in "${COMPONENTS[@]}"; do cp "$SRC/$_f" "$CONFIG_DIR/$_f"; done
 fi
 cp "$SRC/bin/ccmorph" "$BIN_DIR/ccmorph"

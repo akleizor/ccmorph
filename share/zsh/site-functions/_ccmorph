@@ -4,7 +4,7 @@
 # (tests/completion_test.py keeps the two equal). Profile names are the .conf
 # files in the state directory, found as lib/ccmorph.sh finds it. Pure zsh, so
 # a Tab starts no process.
-local -a commands=(run add list quota price use config inspect doctor models get set
+local -a commands=(run add list quota price router use config inspect doctor models get set
   login mv rm hop cred update uninstall probe context profile help)
 local -a profile_verbs=(run use rm mv config doctor inspect quota set get models
   login cred hop probe context)
@@ -28,6 +28,9 @@ case "${words[2]}" in
     ;;
   get|set)
     (( CURRENT == 4 )) && { compadd -- model effort; return }
+    ;;
+  router)
+    (( CURRENT == 3 )) && { compadd -- on off status route dispatch report; return }
     ;;
 esac
 if (( CURRENT == 3 && ${profile_verbs[(Ie)${words[2]}]} )); then

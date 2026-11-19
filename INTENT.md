@@ -44,4 +44,4 @@ Run every Check from the repository root after `make shim`. The suites use isola
 
 Written from this repository: `README.md`, `AGENTS.md`, `docs/ARCHITECTURE.md`, `docs/guide.md`, `.github/SECURITY.md`, `.github/CONTRIBUTING.md`, the test suites named in each Check, and the earlier maintainer decisions on scope and direction (any model in any Claude Code profile, no silent model change, one binary, secrets kept private).
 
-It leaves out features that serve one provider only, the planned model router, a graphical interface, other runtimes than Claude Code, and the look of the README and demo. Checks were verified to exist but were not all run when this file was written.
+It leaves out features that serve one provider only, a graphical interface, other runtimes than Claude Code, and the look of the README and demo. Checks were verified to exist but were not all run when this file was written. The subagent router (`ccmorph router`) is an opt-in module, off by default; promise 2 binds it, so it chooses a model only where the agent left the model unset.
