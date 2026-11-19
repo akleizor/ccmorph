@@ -286,6 +286,8 @@ leftover runtime or auth state for that name, lists the exact paths, and asks
 **No / Yes** (or `[y/N]` with piped input) before touching them — no manual filesystem surgery needed, and nothing
 is removed without that confirmation.
 
+`ccmorph price <model>... [--json]` shows cached list prices per million tokens; models without a cached price are unpriced.
+
 Each profile can carry its own default model and effort, used by every new
 session on it. `get` reads one setting; `set` writes one:
 

@@ -4,7 +4,7 @@
 # (tests/completion_test.py keeps the two equal). Profile names are the .conf
 # files in the state directory, found as lib/ccmorph.sh finds it. Pure zsh, so
 # a Tab starts no process.
-local -a commands=(run add list quota use config inspect doctor models get set
+local -a commands=(run add list quota price use config inspect doctor models get set
   login mv rm hop cred update uninstall probe context profile help)
 local -a profile_verbs=(run use rm mv config doctor inspect quota set get models
   login cred hop probe context)

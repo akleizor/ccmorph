@@ -1,4 +1,5 @@
 """Human output stays concise without changing machine-readable command output."""
+import json
 import os
 import re
 import shutil
@@ -13,7 +14,7 @@ from fake_adapter import CORE_DISPATCH
 
 ROOT = Path(__file__).resolve().parents[1]
 # Commands that never open a picker: their help pages say nothing about one (#263).
-PICKERLESS = ('list', 'quota', 'mv', 'rm', 'hop', 'profile', 'update', 'uninstall')
+PICKERLESS = ('list', 'quota', 'price', 'mv', 'rm', 'hop', 'profile', 'update', 'uninstall')
 PICKER_WORDS = r'picker|arrow|\besc\b|fzf|search|↑|↓'
 
 
@@ -129,7 +130,7 @@ def test_help_is_concise_truthful_and_read_only(tmp_path):
                             text=True, timeout=HANG_TIMEOUT)
     for verb in ('run', 'add', 'list', 'use', 'config', 'inspect', 'doctor', 'models',
                  'get', 'set', 'login', 'mv', 'rm', 'hop', 'cred', 'probe', 'context',
-                 'update', 'uninstall', 'quota', 'profile'):
+                 'update', 'uninstall', 'quota', 'price', 'profile'):
         assert 'ccmorph ' + verb in result.stdout
         detail = subprocess.run([cli, 'help', verb], env=env, capture_output=True,
                                 text=True, timeout=HANG_TIMEOUT)
@@ -194,6 +195,36 @@ def test_help_is_concise_truthful_and_read_only(tmp_path):
     assert 'Change model, effort, or connection' in pages['short']
     assert 'model and effort' in pages['config']
     assert not marker.exists()
+
+
+def test_price_reads_cached_list_prices(tmp_path):
+    state = tmp_path / 'xdg' / 'ccmorph'
+    state.mkdir(parents=True)
+    (state / 'prices-owned-any.json').write_text(json.dumps({
+        'host': 'owned:any', 'fetched': 0,
+        'models': {'example': {'input': 0.15, 'output': 0.6},
+                   'free': {'input': 0, 'output': 0}},
+    }))
+    env = {**os.environ, 'HOME': str(tmp_path / 'home'),
+           'XDG_STATE_HOME': str(tmp_path / 'xdg'),
+           'CCMORPH_LIB_DIR': str(ROOT / 'lib'), 'CCMORPH_STATE_DIR': str(tmp_path / 'config')}
+    cli = str(ROOT / 'bin/ccmorph')
+    for args, expected in [
+        (['price', '--json', 'example-FP8', 'missing', 'free'],
+         {'example-FP8': {'input': 0.15, 'output': 0.6}, 'free': {'input': 0, 'output': 0}}),
+        (['price', 'missing', '--json'], {}),
+    ]:
+        result = subprocess.run([cli, *args], env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == expected
+    result = subprocess.run([cli, 'price', 'example-FP8', 'missing'], env=env,
+                            capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == 'example-FP8  $0.15/$0.6 per 1M tokens\nmissing  unpriced\n'
+    for args in (['price'], ['price', '--json']):
+        result = subprocess.run([cli, *args], env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
+        assert result.returncode == 2
+        assert 'usage: ccmorph price <model>... [--json]' in result.stderr
 
 
 def test_hop_help_needs_no_exit_and_names_both_forms_gh_289(tmp_path):
