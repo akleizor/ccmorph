@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/profile"
+	"github.com/akleizor/ccmorph/settingscompose"
 	"github.com/akleizor/ccmorph/shim"
 	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
@@ -1178,13 +1179,15 @@ func (l *launcher) route(penv []string, port, key string, adapter bool) ([]strin
 // command is frozen into the profile's settings for the sessions that outlive
 // this launch, so under Homebrew it names brew's stable opt path, not the
 // versioned Cellar dir this process runs from (stableCore, #287); the next
-// launch's materialize replaces whatever hook it finds with this one.
+// launch's materialize replaces whatever hook it finds with this one. The
+// command is built by settingscompose's one builder, which also matches it, so
+// the spelling and the recognition cannot drift (#638).
 func (l *launcher) usageHookFor(name, typ, usageRoute string) string {
 	pricing := usagePricing(typ, usageRoute)
 	if pricing == "" {
 		return ""
 	}
-	return shQuote(stableCore(l.libexec)) + " usage-row --profile " + shQuote(name) + " --pricing " + shQuote(pricing)
+	return settingscompose.UsageHookCommand(stableCore(l.libexec), name, pricing)
 }
 
 // brewCellarRE is Homebrew's versioned install prefix, <prefix>/Cellar/ccmorph/

@@ -45,13 +45,14 @@ import (
 	"net/http/httptrace"
 	"net/url"
 	"os"
-	"regexp"
 	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/akleizor/ccmorph/util"
 )
 
 func parseInbound(raw string) (*inbound, error) {
@@ -108,11 +109,7 @@ const bigBody = 1 << 20
 
 const internalPrefix = "x-ccmorph-"
 
-var (
-	taskRE    = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
-	attemptRE = regexp.MustCompile(`^[0-9]{1,3}$`)
-	outcomes  = []string{"accepted", "rejected", "escalated", "parked"}
-)
+var outcomes = []string{"accepted", "rejected", "escalated", "parked"}
 
 type taskTags struct {
 	task    *string
@@ -127,16 +124,16 @@ var noTags = taskTags{attempt: 1}
 // request headers; the session id is held to the task tag's shape and is dropped if it equals the request's own key.
 func tagsOf(h http.Header) taskTags {
 	t := noTags
-	if task := strings.TrimSpace(h.Get("x-ccmorph-task")); taskRE.MatchString(task) {
+	if task := strings.TrimSpace(h.Get("x-ccmorph-task")); util.ValidTaskTag(task) {
 		t.task = &task
 	}
-	if sess := strings.TrimSpace(h.Get("x-claude-code-session-id")); taskRE.MatchString(sess) && sess != bearerKey(h) {
+	if sess := strings.TrimSpace(h.Get("x-claude-code-session-id")); util.ValidTaskTag(sess) && sess != bearerKey(h) {
 		t.session = &sess
 	}
-	if parent := strings.TrimSpace(h.Get("x-ccmorph-parent")); taskRE.MatchString(parent) && parent != bearerKey(h) {
+	if parent := strings.TrimSpace(h.Get("x-ccmorph-parent")); util.ValidTaskTag(parent) && parent != bearerKey(h) {
 		t.parent = &parent
 	}
-	if a := strings.TrimSpace(h.Get("x-ccmorph-attempt")); attemptRE.MatchString(a) {
+	if a := strings.TrimSpace(h.Get("x-ccmorph-attempt")); util.ValidAttemptTag(a) {
 		if n, _ := strconv.Atoi(a); n > 0 && n < 1000 {
 			t.attempt = n
 		}

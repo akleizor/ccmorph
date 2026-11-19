@@ -21,7 +21,7 @@ import (
 // recordOutcome appends one task outcome beside the usage rows; the join key is
 // the task id.
 func recordOutcome(task, result string) {
-	if !taskRE.MatchString(task) || !slices.Contains(outcomes, result) {
+	if !util.ValidTaskTag(task) || !slices.Contains(outcomes, result) {
 		die(fmt.Sprintf("usage: %s outcome <task> %s", os.Args[0], strings.Join(outcomes, "|")))
 	}
 	dir := paths.StateDir()
@@ -125,7 +125,7 @@ func report(days float64) {
 			outcome, ok2 := d.str("outcome")
 			ts, ok3 := d.str("timestamp")
 			when, ok4 := parseTime(ts)
-			if !ok1 || !ok2 || !ok3 || !ok4 || !taskRE.MatchString(task) || !slices.Contains(outcomes, outcome) || when.After(now) {
+			if !ok1 || !ok2 || !ok3 || !ok4 || !util.ValidTaskTag(task) || !slices.Contains(outcomes, outcome) || when.After(now) {
 				continue
 			}
 			if _, seen := history[task]; !seen {
@@ -199,7 +199,7 @@ func report(days float64) {
 				}
 			}
 		}
-		if t, ok := d.str("task"); ok && taskRE.MatchString(t) {
+		if t, ok := d.str("task"); ok && util.ValidTaskTag(t) {
 			// Whole-task accounting is independent of the spend window. Equal
 			// attempts are ordered by response time, never response-hash filenames.
 			if o, seen := final[t]; !seen || attempt > o.attempt || (attempt == o.attempt && when.After(o.when)) {

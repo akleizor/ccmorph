@@ -77,11 +77,16 @@ func nameShape(s string) bool {
 	return nameRE.MatchString(s) && l != "active" && l != "ccmorph"
 }
 
-// ValidName mirrors _ccm_valid: [A-Za-z0-9_]+, at most MaxNameLen bytes, never
-// a reserved name in any case.
-func ValidName(s string) bool {
+// ValidProfileName is the one gate for a profile name: [A-Za-z0-9_]+, at most
+// MaxNameLen bytes, never a reserved name in any case. Both names the packages
+// publish — ValidName here and ctxwindow.ValidProfileName — call it (#638), so
+// the shape the launcher writes and the shape the core reads cannot drift.
+func ValidProfileName(s string) bool {
 	return len(s) <= MaxNameLen && nameShape(s)
 }
+
+// ValidName is the name profile's own callers use for the gate.
+func ValidName(s string) bool { return ValidProfileName(s) }
 
 // RemovableName reports whether name is one rm can still address: a name
 // ValidName accepts, or one the pre-#373 rule accepted whose longest derived

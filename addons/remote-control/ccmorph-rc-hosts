@@ -96,18 +96,14 @@ INFERENCE = STATE_ROOT / "profiles" / ".rc-bridge" / "inference"   # ccmorph-rc 
 
 
 def edge_ready(route: str) -> dict | None:
-    """The route's shared edge (ccmorph-rc --edge) is up: alive and its proxy answers.
+    """The route's shared edge (ccmorph-rc --edge) is up and usable: alive, its proxy
+    answers, and its TLS material is still there.
 
-    Its record is the only account of what an edge started before this run serves,
-    so the caller gets that record, not just a verdict.
+    The rule is ccmorph-rc's live_edge, which is also what refuses to serve from an
+    edge (#638): a supervisor that adopted a record the launcher rejects would keep
+    every host on an edge whose CA is gone, and a phone pointed at it fails closed.
     """
-    try:
-        edge = json.loads((EDGES / f"{route}.json").read_text())
-        os.kill(int(edge["pid"]), 0)
-        with socket.create_connection(("127.0.0.1", int(edge["port"])), timeout=1):
-            return edge
-    except (OSError, ValueError, KeyError, TypeError):
-        return None
+    return rc_module().live_edge(route)
 
 
 def is_our_edge(pid: int, route: str) -> bool:

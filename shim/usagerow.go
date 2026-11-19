@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -290,7 +291,7 @@ func WriteUsageRow(profile, pricing, responseID, model, timestamp, session, turn
 		}
 	}
 	s := newSidecar(profile, "transcript")
-	if taskRE.MatchString(session) {
+	if util.ValidTaskTag(session) {
 		s.tags.session = &session
 	}
 	// A session whose traffic a ccmorph adapter already relays (a Remote Control
