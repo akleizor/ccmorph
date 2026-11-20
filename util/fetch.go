@@ -1,6 +1,7 @@
 package util
 
 import (
+	"errors"
 	"io"
 	"os/exec"
 	"regexp"
@@ -48,6 +49,49 @@ func ModelsAnswer(base, key string) (body string, status int, ok bool) {
 		}
 	}
 	return body, status, ok
+}
+
+// ListingReply is the one listing request set's model check reads (gh728),
+// with what that request met kept instead of asked again: body is the
+// undisguised listing, empty when none came back; status is the HTTP status
+// the endpoint refused the request with, 0 when the answer was not a refusal;
+// answered is whether any HTTP answer arrived. The status curl writes out is
+// the response's own word and is kept even when the transfer breaks after the
+// status line (exit 18, 56) or curl -f fails an HTTP error (exit 22), so a
+// body that did not arrive never turns an answer into silence. The flag is
+// the long --write-out with %{response_code}, not -w with %{http_code}: the
+// test stubs answer that shape as a status probe, and this is a listing.
+func ListingReply(base, key string) (body string, status int, answered bool) {
+	var complaint strings.Builder
+	args := append(listingArgs(base, "--max-time", "20"), "--write-out", "\n"+statusMarker+"%{response_code}")
+	raw, err := curlKeyed(key, args, &complaint)
+	payload, code := splitListingReply(raw)
+	if err == nil {
+		return undisguise(payload), 0, true
+	}
+	if n, conv := strconv.Atoi(code); conv == nil && n != 0 {
+		// Something answered before curl gave up: a refused status is named,
+		// anything else is an answer whose listing did not arrive.
+		if n >= 400 {
+			status = n
+		}
+		return "", status, true
+	}
+	if m := refused.FindStringSubmatch(complaint.String()); m != nil {
+		status, _ = strconv.Atoi(m[1])
+	}
+	var exit *exec.ExitError
+	return "", status, status != 0 || (errors.As(err, &exit) && exit.ExitCode() == 22)
+}
+
+// splitListingReply splits the listing answer at the status marker curl writes
+// out: the body before it, the HTTP status after it, "" when no marker came
+// back — a stub that never answered that shape, or a curl too old for it.
+func splitListingReply(raw string) (payload, code string) {
+	if i := strings.LastIndex(raw, statusMarker); i >= 0 {
+		return strings.TrimSuffix(raw[:i], "\n"), strings.TrimRight(raw[i+len(statusMarker):], "\n")
+	}
+	return raw, ""
 }
 
 func fetchModels(key string, errw io.Writer, curlArgs ...string) (string, bool) {
@@ -196,6 +240,16 @@ func ContextServed(want, typ, base, modelMap, key string) Served {
 		return ServedYes
 	}
 	return Served(modelInListing(p.listing, p.want, p.modelMap))
+}
+
+// ServedByListing is ModelServed's last step over a listing the caller already
+// fetched: ServedYes when the listing carries want, ServedNo when a readable,
+// complete one proves it absent, and ServedUnknown when the body is no listing
+// the judgement can read at all — a {} answer, a paged page, a malformed body.
+// That third state is the one that saves unchecked (gh728): an endpoint that
+// answered is not one that checked.
+func ServedByListing(listing, want, mapJSON string) Served {
+	return Served(modelInListing(listing, want, mapJSON))
 }
 
 // listingFetch asks a route for the model listing a served judgement reads. ok

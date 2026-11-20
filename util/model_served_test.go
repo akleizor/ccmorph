@@ -334,6 +334,59 @@ func TestModelsAnswerReadsTheRefusedStatus(t *testing.T) {
 	}
 }
 
+// ListingReply keeps what set's one listing request met (gh728): an empty 2xx
+// is an answer, a refused status is an answer with that status, and only a
+// request no HTTP answer reached is silence. The merge gate's fixture -- an
+// empty 204, then silence for any later request -- was misread by a second
+// request, so the reply is what the first and only request met.
+func TestListingReplyKeepsWhatItsOneRequestMet(t *testing.T) {
+	for _, c := range []struct {
+		name, body, stderr string
+		rc                 int
+		wantBody           string
+		wantStatus         int
+		wantAnswered       bool
+	}{
+		{"an empty 204", "", "", 0, "", 0, true},
+		{"a body that is no listing", "{}", "", 0, "{}", 0, true},
+		{"a served listing", catalogue, "", 0, catalogue, 0, true},
+		{"a refused request", catalogue, "curl: (22) The requested URL returned error: 404", 22, "", 404, true},
+		{"an HTTP error curl did not number", catalogue, "curl: (22) The requested URL returned error", 22, "", 0, true},
+		{"an unresolvable host", "", "curl: (6) Could not resolve host: api.example.invalid", 6, "", 0, false},
+		{"a refused connection", "", "curl: (7) Failed to connect to 127.0.0.1 port 1: Connection refused", 7, "", 0, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fakeCurl(t, c.body, c.rc, c.stderr)
+			body, status, answered := ListingReply("http://proxy.invalid", "test-key")
+			if body != c.wantBody || status != c.wantStatus || answered != c.wantAnswered {
+				t.Fatalf("got body=%q status=%d answered=%v, want body=%q status=%d answered=%v",
+					body, status, answered, c.wantBody, c.wantStatus, c.wantAnswered)
+			}
+		})
+	}
+}
+
+// A body cut short after the status line is an answer, not silence (gh728):
+// curl exits 18 when the transfer breaks after writing out the status, and a
+// reply that called that "did not answer" would blame the network for an
+// endpoint that spoke. The status curl wrote out is the answer, kept even
+// though no listing arrived.
+func TestListingReplyKeepsTheStatusOfATruncatedTransfer(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"printf '%s' '{\"data\":['\n" +
+		"printf '%s\\n' '__CCMORPH_STATUS__200'\n" +
+		"printf '%s\\n' 'curl: (18) transfer closed with 42 bytes remaining to read' >&2\n" +
+		"exit 18\n"
+	os.WriteFile(filepath.Join(dir, "curl"), []byte(script), 0o755)
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+
+	body, status, answered := ListingReply("http://proxy.invalid", "test-key")
+	if body != "" || status != 0 || !answered {
+		t.Fatalf("got body=%q status=%d answered=%v, want an empty body, status 0 and answered", body, status, answered)
+	}
+}
+
 // ServedRefusal is the one message set, run and doctor print for an id a
 // reachable listing does not serve (#267): the id as the person spelled it, the
 // closest listed ids, and every chat-capable id the listing serves. Everything
