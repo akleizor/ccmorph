@@ -311,7 +311,7 @@ grep -qF '1000000' "$d/home/.config/ccmorph/profiles/work/models.json" \
 # Re-running install again (nothing left to migrate) must not error or re-migrate.
 run_installer "$d"; rc=$?
 (( rc == 0 )) || { fail "second install after migration rc=$rc"; cat "$d/out" }
-[[ ! -e "$d/home/.config/ccmorph/model-registry" ]] \
+[[ ! -e "$d/home/.config/ccmorph/model-registry" && ! -e "$d/home/.config/ccmorph/model-registry.conf" ]] \
   && ok "a second install does not resurrect the legacy registry" \
   || fail "a second install re-created the legacy registry"
 fi
@@ -349,14 +349,16 @@ print 'export KEEP=1' > "$d/dotfiles/zshrc"
 print '# >>> ccmorph >>>' >> "$d/dotfiles/zshrc"
 ln -s "$d/dotfiles/zshrc" "$d/home/.zshrc"
 original=$(<"$d/dotfiles/zshrc")
-run_installer "$d"
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "symlink-case install rc=$rc"; cat "$d/out" }
 [[ -L "$d/home/.zshrc" && "$(<"$d/dotfiles/zshrc")" == "$original" ]] && ok "symlinked rc stays byte-identical" || fail "installer edited symlinked rc"
 fi
 
 # --- 4. uninstall also leaves startup files untouched ------------------------
 if _own uninstall; then
 d=$(fresh_env uninstall)
-run_installer "$d" >/dev/null
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "uninstall-case install rc=$rc"; cat "$d/out" }
 print '# >>> ccmorph >>>' >> "$d/home/.zshrc"
 print 'export TAIL=1' >> "$d/home/.zshrc"
 original=$(<"$d/home/.zshrc")
@@ -373,7 +375,8 @@ if _own residue; then
 d=$(fresh_env uninstall_residue)
 mkdir -p "$d/home/.local/bin"
 printf '#!/bin/sh\necho mine\n' > "$d/home/.local/bin/ccrelay"   # a neighbour, not ours
-run_installer "$d" >/dev/null
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "residue-case install rc=$rc"; cat "$d/out" }
 cfg="$d/home/.config/ccmorph"
 [[ "$(<"$d/home/.local/bin/ccrelay")" == *mine* ]] && ok "install: a neighbour ccrelay in ~/.local/bin survives" || fail "install: deleted ~/.local/bin/ccrelay"
 printf 'type=apikey\napi_key=keychain:work.api_key\nbase_url=https://example.invalid\n' > "$cfg/work.conf"
@@ -402,7 +405,8 @@ grep -qxF "  security delete-generic-password -s ccmorph -a work.api_key" "$d/ou
 # No usage dir and a Linux uname: neither line appears, and the rm names one path.
 # The uname is stubbed, not assumed: on a macOS runner the real one says Darwin.
 d=$(fresh_env uninstall_bare)
-run_installer "$d" >/dev/null
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "bare-uninstall install rc=$rc"; cat "$d/out" }
 printf 'type=apikey\napi_key=keychain:work.api_key\n' > "$d/home/.config/ccmorph/work.conf"
 printf '#!/bin/sh\necho Linux\n' > "$d/bin/uname"; chmod +x "$d/bin/uname"
 env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
@@ -412,7 +416,8 @@ grep -qxF "  rm -rf $d/home/.config/ccmorph" "$d/out" && ! grep -q 'usage receip
 # macOS with no keychain reference in any conf: the grep finds nothing, and that
 # must not end the uninstall mid-report (it did, under set -e).
 d=$(fresh_env uninstall_darwin_plain)
-run_installer "$d" >/dev/null
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "darwin-plain install rc=$rc"; cat "$d/out" }
 printf 'type=token\ntoken=canary\n' > "$d/home/.config/ccmorph/work.conf"
 printf '#!/bin/sh\necho Darwin\n' > "$d/bin/uname"; chmod +x "$d/bin/uname"
 env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
@@ -431,7 +436,8 @@ if _own statedir; then
 # it), the code dir as code — never as the profiles' home — and the plugin
 # repair walks the redirected profile homes (#143).
 d=$(fresh_env uninstall_state_dir)
-run_installer "$d" >/dev/null
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "state-dir install rc=$rc"; cat "$d/out" }
 cfg="$d/home/.config/ccmorph"          # what the install wrote: the code
 state="$d/moved-state"                 # where the runtime keeps the profiles
 mkdir -p "$state"
@@ -470,7 +476,8 @@ grep -qF "\"$d/home/.claude/plugins/marketplaces/example\"" "$d/home/.claude/plu
 # repair must walk those pre-override profile homes too, or the index still
 # names plugin files the printed rm deletes (#187).
 d=$(fresh_env uninstall_prior_profiles)
-run_installer "$d" >/dev/null
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "prior-profiles install rc=$rc"; cat "$d/out" }
 cfg="$d/home/.config/ccmorph"          # the code, and the pre-override profiles
 state="$d/moved-state"                 # where the runtime looks now
 printf 'type=apikey\napi_key=keychain:team.api_key\n' > "$cfg/team.conf"
@@ -516,7 +523,8 @@ if _own linkspell; then
 # spelling the printed cleanup carries.
 for spell in slash link leaf; do
   d=$(fresh_env "uninstall_equiv_$spell")
-  run_installer "$d" >/dev/null
+  run_installer "$d"; rc=$?
+  (( rc == 0 )) || { fail "equiv-$spell install rc=$rc"; cat "$d/out" }
   cfg="$d/home/.config/ccmorph"
   state="$cfg/"                        # slash: the same directory, trailing /
   if [[ "$spell" == link ]]; then      # link: the same directory via a symlinked parent
@@ -574,7 +582,8 @@ done
 # a state root that links at a symlinked config dir, and the usage receipts.
 for spell in state slash chain config equiv usage; do
   d=$(fresh_env "uninstall_rm_$spell")
-  run_installer "$d" >/dev/null
+  run_installer "$d"; rc=$?
+  (( rc == 0 )) || { fail "rm-$spell install rc=$rc"; cat "$d/out" }
   cfg="$d/home/.config/ccmorph"
   target="$d/elsewhere/data"           # where the link leads: the data under test
   mkdir -p "$target"
@@ -634,7 +643,8 @@ done
 # that fails must not end the uninstall before the report (#219).
 for dspell in plain slash broken; do
   d=$(fresh_env "uninstall_rm_dangling_$dspell")
-  run_installer "$d" >/dev/null
+  run_installer "$d"; rc=$?
+  (( rc == 0 )) || { fail "dangling-$dspell install rc=$rc"; cat "$d/out" }
   ln -s "$d/unmounted/state" "$d/state-link"
   dstate="$d/state-link"
   [[ "$dspell" == slash ]] && dstate="$dstate/"
@@ -664,7 +674,8 @@ done
 # printed cleanup like a dangling state root: a path that tests as a symlink and
 # not as a directory is still one the uninstall must name (#219).
 d=$(fresh_env uninstall_usage_dangling)
-run_installer "$d" >/dev/null
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "dangling-usage install rc=$rc"; cat "$d/out" }
 link="$d/home/.local/state/ccmorph"
 mkdir -p "${link:h}"
 ln -s "$d/unmounted/usage" "$link"
@@ -687,7 +698,8 @@ eval "$rm_line"
 # it could be read. The report must say so, count no profiles as fact, name the
 # target unread on the rm line, and leave the link (#219).
 d=$(fresh_env uninstall_rm_unreached)
-run_installer "$d" >/dev/null
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "unreached-link install rc=$rc"; cat "$d/out" }
 data="$d/locked/state"
 mkdir -p "$data/profiles/team"
 print -r -- 'type=apikey' > "$data/team.conf"
@@ -734,7 +746,8 @@ if _own rerun; then
 # construction" is exactly the kind of property that a later refactor breaks
 # silently, and a re-run that looks destructive is one nobody runs twice.
 d=$(fresh_env update)
-run_installer "$d" >/dev/null
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "rerun-case install rc=$rc"; cat "$d/out" }
 cfg="$d/home/.config/ccmorph"
 
 # User state, as a real install would hold it. Probed/manual context now lives
@@ -1410,7 +1423,9 @@ if _own selfupdate; then
 # (--remote), which downloads, unpacks and runs the downloaded installer. The same
 # stub-curl harness as section 8; the tarball carries a different version, so the
 # command's own --version proves the new code is the code that runs.
-d=$(fresh_env shipped); run_installer "$d" >/dev/null
+d=$(fresh_env shipped)
+run_installer "$d"; rc=$?
+(( rc == 0 )) || { fail "shipped install rc=$rc"; cat "$d/out" }
 [[ -x "$d/home/.config/ccmorph/install.sh" ]] \
   && ok "update: a fresh install ships an executable install.sh" || fail "update: install.sh is not an executable component"
 
@@ -1440,8 +1455,13 @@ else
 fi
 
 upd_env() {  # $1 = case; an installed tree, a stub curl serving 9.9.9, and user state
+  # Its stdout is the case path, so a fail() here would be swallowed with it:
+  # a dead install reports on stderr and returns 1 for the caller's || fail,
+  # yet still prints the path, so the case's later checks fail inside its own
+  # scratch dir instead of writing to /out, /curl.argv or /home (fail() does not return).
   local d; d=$(remote_env "$1" "$TMP/src99.tar.gz")
-  run_installer "$d" >/dev/null
+  run_installer "$d"; local rc=$?
+  (( rc == 0 )) || { print -u2 -- "FAIL: $1: setup install rc=$rc"; cat "$d/out" >&2; print -r -- "$d"; return 1 }
   print 'type=token\ntoken=canary' > "$d/home/.config/ccmorph/work.conf"
   print 'export CCMORPH_TEST_LOCAL=1' > "$d/home/.config/ccmorph/local.sh"
   cp "$d/home/.config/ccmorph/work.conf" "$d/work.conf.before"
@@ -1457,7 +1477,7 @@ cmd_run() {  # $1 = case dir, rest = ccmorph arguments; the installed command, h
 
 # 14.1 update: no ref is the latest release (the one-liner's default), new code
 # live, user state byte-identical.
-d=$(upd_env upd_main); cmd_run "$d" update; rc=$?
+d=$(upd_env upd_main) || fail "upd_main setup install rc!=0 (output above)"; cmd_run "$d" update; rc=$?
 (( rc == 0 )) && ok "update: exits 0" || { fail "update rc=$rc"; cat "$d/out" "$d/err" }
 grep -qxF "$url_release" "$d/curl.argv" 2>/dev/null \
   && ok "update: no ref downloads the latest release" || { fail "update: curl argv lacks the latest release"; cat "$d/curl.argv" 2>&1 }
@@ -1486,7 +1506,7 @@ cmd_run "$d" update
 grep -qF 'Preserved:' "$d/out" && ok "update: says what it preserved" || { fail "update: no 'Preserved:' line"; cat "$d/out" "$d/err" }
 
 # 14.2 update <ref>: a tag or a branch picks the archive.
-d=$(upd_env upd_tag); cmd_run "$d" update v1.2.3; rc=$?
+d=$(upd_env upd_tag) || fail "upd_tag setup install rc!=0 (output above)"; cmd_run "$d" update v1.2.3; rc=$?
 (( rc == 0 )) && ok "update v1.2.3: exits 0" || { fail "update v1.2.3 rc=$rc"; cat "$d/out" "$d/err" }
 grep -qxF 'https://github.com/akleizor/ccmorph/archive/v1.2.3.tar.gz' "$d/curl.argv" 2>/dev/null \
   && ok "update v1.2.3: curl argv has archive/v1.2.3.tar.gz" || { fail "update v1.2.3: wrong archive"; cat "$d/curl.argv" 2>&1 }
@@ -1495,7 +1515,7 @@ grep -qxF 'https://github.com/akleizor/ccmorph/archive/feature/x-1.y_z.tar.gz' "
   && ok "update: a branch name with a slash is accepted" || { fail "update: branch with slash refused"; cat "$d/out" "$d/err" }
 
 # 14.3 a ref that is not a plain name is refused before anything is downloaded.
-d=$(upd_env upd_badref)
+d=$(upd_env upd_badref) || fail "upd_badref setup install rc!=0 (output above)"
 for bad in 'x;rm' '../evil' 'a..b' '-rf' '/abs' 'a b' '$(id)' ''; do
   cmd_run "$d" update "$bad"; rc=$?
   (( rc != 0 )) && [[ ! -e "$d/curl.argv" ]] \
@@ -1510,7 +1530,7 @@ cmd_run "$d" uninstall now; rc=$?
   && ok "uninstall: an argument is refused and nothing is removed" || fail "uninstall: accepted an argument (rc=$rc)"
 
 # 14.4 a git checkout is updated with git: a download copied over it would dirty it.
-d=$(upd_env upd_git); mkdir -p "$d/home/.config/ccmorph/.git"
+d=$(upd_env upd_git) || fail "upd_git setup install rc!=0 (output above)"; mkdir -p "$d/home/.config/ccmorph/.git"
 cmd_run "$d" update; rc=$?
 (( rc != 0 )) && [[ ! -e "$d/curl.argv" ]] \
   && ok "update: a git checkout is refused, curl never called" || { fail "update: ran on a git checkout (rc=$rc)"; cat "$d/curl.argv" 2>&1 }
@@ -1519,7 +1539,7 @@ cmd_run "$d" --version
 [[ "$(<"$d/out")" != 'ccmorph 9.9.9' ]] && ok "update: a refused update left the code alone" || fail "update: replaced a git checkout"
 
 # 14.5 no installer beside the library (a packaged or older install): name the one-liner.
-d=$(upd_env upd_noinst); rm -f "$d/home/.config/ccmorph/install.sh"
+d=$(upd_env upd_noinst) || fail "upd_noinst setup install rc!=0 (output above)"; rm -f "$d/home/.config/ccmorph/install.sh"
 for verb in update uninstall; do
   cmd_run "$d" $verb; rc=$?
   (( rc == 1 )) && [[ ! -e "$d/curl.argv" ]] \
@@ -1530,7 +1550,7 @@ done
 [[ -x "$d/home/.local/bin/ccmorph" ]] && ok "uninstall: a missing installer removes nothing" || fail "uninstall: removed the command without an installer"
 
 # 14.6 uninstall: the command goes, the profiles stay, and it says so.
-d=$(upd_env upd_rm); cmd_run "$d" uninstall; rc=$?
+d=$(upd_env upd_rm) || fail "upd_rm setup install rc!=0 (output above)"; cmd_run "$d" uninstall; rc=$?
 (( rc == 0 )) && ok "uninstall: exits 0" || { fail "uninstall rc=$rc"; cat "$d/out" "$d/err" }
 [[ ! -e "$d/home/.local/bin/ccmorph" ]] && ok "uninstall: the command is gone from ~/.local/bin" || fail "uninstall: the command is still on PATH"
 cmp -s "$d/work.conf.before" "$d/home/.config/ccmorph/work.conf" \
@@ -1539,7 +1559,7 @@ grep -qF 'profiles' "$d/out" && ok "uninstall: says the profiles were kept" || {
 [[ ! -e "$d/curl.argv" ]] && ok "uninstall: never downloads" || fail "uninstall: called curl"
 
 # 14.7 help: both verbs have their own entry, in the long list only.
-d=$(upd_env upd_help)
+d=$(upd_env upd_help) || fail "upd_help setup install rc!=0 (output above)"
 cmd_run "$d" help all
 grep -qE '^  ccmorph update \[ref\] +Update to the latest version, or to a branch or tag$' "$d/out" \
   && grep -qE '^  ccmorph uninstall +Remove the command; profiles stay$' "$d/out" \
