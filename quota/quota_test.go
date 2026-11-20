@@ -395,7 +395,14 @@ func TestQuotaSpend(t *testing.T) {
 	// steps local midnights as instants stops before today's folder. HKT is the
 	// machine ccmorph is measured on.
 	time.Local = time.FixedZone("HKT", 8*3600)
-	state := t.TempDir()
+	// #731: a short non-default root under HOME, so the receipts footer is the
+	// ~/… spelling the docs carry and fits the 60 columns checkWidth holds
+	// every line to — and so a reader that ignored XDG_STATE_HOME and used the
+	// ~/.local/state fallback would find no receipts, failing the budget
+	// lines below.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	state := filepath.Join(home, "xdg")
 	t.Setenv("XDG_STATE_HOME", state)
 	useTransport(t, func(r *http.Request) (*http.Response, error) {
 		t.Errorf("a gateway or budget entry must not reach the network: %s", r.URL)
@@ -472,6 +479,8 @@ func TestQuotaSpend(t *testing.T) {
 		"work",
 		"  not used this month",
 		"",
+		"receipts: ~/xdg/ccmorph/usage",
+		"",
 	}, "\n")
 	if out != want {
 		t.Fatalf("\n got %q\nwant %q", out, want)
@@ -525,6 +534,104 @@ func TestQuotaSpend(t *testing.T) {
 	work := doc.Profiles[5]
 	if work.Spend == nil || work.Spend.MonthTurns != 0 || work.Spend.MonthTokens != 0 || work.Spend.UnpricedTurns != 0 {
 		t.Fatalf("work entry %+v", work.Spend)
+	}
+}
+
+// #731: debugging cost starts by finding the receipts, and no command printed
+// where they live — the README's path is a default install's, because a
+// CCMORPH_STATE_DIR run keeps profiles under its root while the receipts stay
+// under the XDG state root. A text view that read receipts names the folder the
+// read actually used; a view that read none names nothing (TestQuota's exact
+// view, all accounts and tokens, is that case), and --json keeps its machine
+// shape. The folder is spelled ~/… under the home, as the help pages spell the
+// state root, and moves to its own line rather than pass the 60 columns, so
+// checkWidth holds every line as on main.
+func TestQuotaTextNamesTheReceiptsFolder(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	useTransport(t, func(r *http.Request) (*http.Response, error) {
+		t.Errorf("a gateway entry must not reach the network: %s", r.URL)
+		return nil, nil
+	})
+	view := func(argv ...string) string {
+		t.Helper()
+		out, errOut, code := run(t, argv, "gw\tgateway\t\t\n")
+		if code != 0 {
+			t.Fatalf("exit %d: %s", code, errOut)
+		}
+		return out
+	}
+	// seed lays one priced turn in root's receipts, so the spend line proves
+	// the reader opened that root — not the fallback, not CCMORPH_STATE_DIR.
+	seed := func(root, id string) {
+		t.Helper()
+		usage := filepath.Join(root, "ccmorph", "usage")
+		if err := os.MkdirAll(usage, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := json.Marshal(map[string]any{
+			"complete": true, "profile": "gw", "timestamp": "2026-10-20T09:00:00Z",
+			"usage": map[string]any{"cost": 2.5},
+		})
+		if err := os.WriteFile(filepath.Join(usage, id+".json"), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A default install: the folder is under the home, spelled as README and
+	// guide spell it (tests/docs_claims_test.py RECEIPTS_DEFAULT), the reader
+	// opens it rather than the CCMORPH_STATE_DIR profile root set here, and
+	// CCMORPH_STATE_DIR does not move the footer.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("CCMORPH_STATE_DIR", t.TempDir())
+	seed(filepath.Join(home, ".local", "state"), "1")
+	out := view()
+	if !strings.Contains(out, "  today $2.50 · month $2.50\n") {
+		t.Fatalf("the default root's receipt was not read:\n%s", out)
+	}
+	if !strings.HasSuffix(out, "\n\nreceipts: ~/.local/state/ccmorph/usage\n") {
+		t.Fatalf("default folder not named as the docs spell it:\n%s", out)
+	}
+	checkWidth(t, out)
+	colored := view("--color")
+	if !strings.HasSuffix(colored, "\x1b[2mreceipts: ~/.local/state/ccmorph/usage\x1b[0m\n") {
+		t.Fatalf("colour footer %q", colored)
+	}
+	checkWidth(t, colored)
+
+	// Drop the fallback tree: from here only the XDG override holds receipts,
+	// so a reader that ignores it reads none.
+	if err := os.RemoveAll(filepath.Join(home, ".local")); err != nil {
+		t.Fatal(err)
+	}
+
+	// An XDG root under the home whose one-line form passes 60 columns: the
+	// folder takes its own line, whole, and every line still fits. A reader
+	// that ignored XDG_STATE_HOME would read no receipt here.
+	long := strings.Repeat("s", 39) // ~/ + 39 + /ccmorph/usage = 55 runes; with "receipts: " 65
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, long))
+	seed(filepath.Join(home, long), "1")
+	out = view()
+	if !strings.Contains(out, "  today $2.50 · month $2.50\n") {
+		t.Fatalf("the XDG root's receipt was not read:\n%s", out)
+	}
+	if want := "\n\nreceipts:\n~/" + long + "/ccmorph/usage\n"; !strings.HasSuffix(out, want) {
+		t.Fatalf("want suffix %q in:\n%s", want, out)
+	}
+	checkWidth(t, out)
+
+	// An XDG root outside the home is the absolute path it is.
+	state := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", state)
+	out = view()
+	if !strings.Contains(out, "\nreceipts:") || !strings.HasSuffix(out, filepath.Join(state, "ccmorph", "usage")+"\n") {
+		t.Fatalf("absolute folder not named:\n%s", out)
+	}
+
+	if jout := view("--json"); strings.Contains(jout, "receipts:") {
+		t.Fatalf("--json carries the person's footer: %s", jout)
 	}
 }
 
@@ -758,7 +865,9 @@ func checkWidth(t *testing.T, out string) {
 func TestQuotaFixtureHomes(t *testing.T) {
 	at := time.Date(2026, 10, 29, 15, 0, 0, 0, time.UTC)
 	useClock(t, at)
-	state := t.TempDir()
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	state := filepath.Join(userHome, "xdg") // #731: short, non-default, under HOME
 	t.Setenv("XDG_STATE_HOME", state)
 	var seen []string
 	useTransport(t, func(r *http.Request) (*http.Response, error) {
@@ -830,6 +939,7 @@ func TestQuotaFixtureHomes(t *testing.T) {
 		"cx  Plus", row("5h", 6, "35%", "in 2h 14m"), row("7d", 10, "60%", "Sun 15:00"),
 		"  today $2.50 · month $2.50",
 		string([]rune(long)[:maxWidth-1]) + "…",
+		"receipts: ~/xdg/ccmorph/usage",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in\n%s", want, out)
@@ -925,7 +1035,12 @@ func TestSubscriptionTokenNamesTheKeychainAccount(t *testing.T) {
 
 func TestQuotaBalance(t *testing.T) {
 	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// #731: a short non-default root under HOME — not the ~/.local/state
+	// fallback — so the footer can spell it ~/… and a reader that ignored
+	// XDG_STATE_HOME would read no receipts at all.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, "xdg"))
 	replies := map[string]string{
 		"api.deepseek.com/user/balance":                                  `{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"0.00"},{"currency":"CNY","total_balance":"40.75"}]}`,
 		"openrouter.ai/api/v1/credits":                                   `{"data":{"total_credits":100,"total_usage":25.5}}`,
@@ -989,7 +1104,8 @@ func TestQuotaBalance(t *testing.T) {
 		t.Fatalf("sent %v", sent)
 	}
 	out, _, _ := run(t, nil, "ds\tgateway\thttps://api.deepseek.com/anthropic\t\tsk-ds\n")
-	if want := "API key and provider profiles\nds\n  not used this month\n  balance ¥40.75\n"; out != want {
+	if want := "API key and provider profiles\nds\n  not used this month\n  balance ¥40.75\n\n" +
+		"receipts: ~/xdg/ccmorph/usage\n"; out != want {
 		t.Fatalf("\n got %q\nwant %q", out, want)
 	}
 }

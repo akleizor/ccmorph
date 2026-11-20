@@ -667,8 +667,10 @@ Claude token is not allowed to read plan usage.
 When a read is rate-limited or unreachable, the last good reading stays on screen,
 dimmed, with its age ("12 min old"); only a profile never read shows the error. Gateways
 and API keys show today's and this month's billed spend from the receipts at
-`~/.local/state/ccmorph/usage/<YYYY-MM-DD>/` (the day folder of each receipt's
-UTC stamp, so a time-window read opens only the folders its window touches),
+`~/.local/state/ccmorph/usage/<YYYY-MM-DD>/` — under
+`$XDG_STATE_HOME/ccmorph/usage` when `XDG_STATE_HOME` is set, and the view's
+last line prints the receipts folder it read — the day folder of each receipt's
+UTC stamp, so a time-window read opens only the folders its window touches,
 marked `(est.)` when a row carried only a list-price
 estimate, and a profile with `monthly_budget_usd` adds a bar against that budget.
 A turn whose model had no price is never read as free: when no turn of the month carried
@@ -707,12 +709,23 @@ people. `ARCHITECTURE.md` §2 has the reasoning and the full table.
 
 ### Where state lives
 
-Everything ccmorph stores is under one root: profile `.conf` files sit in it,
-and profile runtime state sits in `profiles/<name>` beneath it. The root is
+Everything ccmorph configures is under one root: profile `.conf` files sit in
+it, and profile runtime state sits in `profiles/<name>` beneath it, with the
+registry and router settings beside them. The root is
 `$CCMORPH_STATE_DIR` if you set it, otherwise `$XDG_CONFIG_HOME/ccmorph`,
 otherwise `~/.config/ccmorph`. The launcher, adapter, and context migration derive the profile directory from
 that root. These variables select a location; changing them after migration does
 not automatically move an existing state tree.
+
+Derived state lives under a second root, and a different variable moves it:
+the usage receipts and `ccmorph quota`'s spend cache resolve against the XDG
+state root — `$XDG_STATE_HOME/ccmorph`, else `~/.local/state/ccmorph`.
+`CCMORPH_STATE_DIR` does not move them, so setting both keeps your settings in
+one tree and your receipts in the other; `ccmorph quota` prints the receipts
+folder it read, and `usage-export --help` prints the folder it reads. The
+receipts and the spend cache are derived: deleting that tree loses no
+configuration, no profile and no credential, and the spend cache rebuilds from
+whatever receipts remain.
 
 Profile state used to live in `~/.claude-profiles`. Upgrading moves it for you,
 once:

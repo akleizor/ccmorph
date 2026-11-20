@@ -239,3 +239,40 @@ def test_docs_teach_the_uv_pytest_command_issue_609():
                               in line for m in PYTEST_COMMAND.findall(line))]
     assert not unprefixed, (
         f"INTENT.md Check lines run pytest without CCMORPH_LIB_DIR: {unprefixed}")
+
+
+# The receipts folder under both roots, as quota prints and reads it:
+# paths.StateDir() is $XDG_STATE_HOME/ccmorph (else ~/.local/state/ccmorph) and
+# quota joins "usage" to it (quota/spend.go), so the folder is ccmorph/usage and
+# never the XDG root's own usage/. quota/quota_test.go
+# TestQuotaTextNamesTheReceiptsFolder pins the printed default footer to
+# "receipts: " + RECEIPTS_DEFAULT verbatim (the folder spelled ~/… under the
+# home) and the XDG footer to <XDG_STATE_HOME>/ccmorph/usage; these two literals
+# are what the docs must carry for the documented and printed paths to be the
+# same folder.
+RECEIPTS_DEFAULT = "~/.local/state/ccmorph/usage"
+RECEIPTS_XDG = "$XDG_STATE_HOME/ccmorph/usage"
+
+
+def test_docs_name_both_state_roots_issue_731():
+    """#731: README called the receipts folder ~/.local/state/ccmorph/usage and
+    the state root $CCMORPH_STATE_DIR. Each half was true; read together they
+    were one root's promise, so a CCMORPH_STATE_DIR user took receipts to a
+    path the tool never writes — the receipts and the quota spend cache resolve
+    against the XDG state root ($XDG_STATE_HOME, default ~/.local/state), which
+    CCMORPH_STATE_DIR does not move. The documents and the printed paths must
+    agree, so each doc names the folder under both roots as the reader builds
+    it — `ccmorph/usage` under the XDG root, the same segment the printed
+    footer carries — not the XDG root alone, and names the boundary."""
+    readme = _flatten((ROOT / "README.md").read_text(encoding="utf-8"))
+    guide = _flatten(GUIDE.read_text(encoding="utf-8"))
+    for name, flat in (("README.md", readme), ("docs/guide.md", guide)):
+        assert RECEIPTS_DEFAULT in flat, (
+            f"{name} no longer names the default receipts folder {RECEIPTS_DEFAULT}")
+        assert RECEIPTS_XDG in flat, (
+            f"{name} does not name the receipts folder under the XDG root as "
+            f"{RECEIPTS_XDG} — the folder quota prints and reads")
+        assert "CCMORPH_STATE_DIR" in flat, (
+            f"{name} no longer names the profile root's variable")
+        assert re.search(r"CCMORPH_STATE_DIR[^.]*\bdoes not move\b", flat), (
+            f"{name} does not say CCMORPH_STATE_DIR leaves the receipts where they are")

@@ -453,13 +453,23 @@ def main():
     # RawDescriptionHelpFormatter keeps the authored lines: the ccusage command
     # stays on its own line, ready to copy, instead of reflowing into one
     # paragraph (#382).
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    # #731: the default resolves against the XDG state root — the same root
+    # paths.StateDir() gives the Go reader — which CCMORPH_STATE_DIR does not
+    # move, so --help prints the folder a run would actually read instead of
+    # naming "the state root", a phrase a CCMORPH_STATE_DIR user read as their
+    # own root and found no receipts under. The path rides the description,
+    # which the formatter keeps as authored: in option help argparse breaks a
+    # long path mid-word, and a path that cannot be copied names no folder —
+    # #382's lesson for the ccusage command line, applied to this one.
+    default_source = (Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
+                      / "ccmorph" / "usage")
+    parser = argparse.ArgumentParser(
+        description=__doc__ + f"\nDefault --source: {default_source}",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--output", type=Path, required=True, metavar="ROOT",
                         help="directory the export lands in")
-    parser.add_argument("--source", type=Path, metavar="ROOT",
-                        default=Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / "ccmorph/usage",
-                        help="ccmorph receipt store to read; default the state root's usage/")
+    parser.add_argument("--source", type=Path, metavar="ROOT", default=default_source,
+                        help="ccmorph receipt store to read; the default folder is named above")
     parser.add_argument("--since", metavar="YYYYMMDD",
                         help="first local date to export; default all history")
     args = parser.parse_args()
