@@ -7,10 +7,71 @@
 
 ## Unreleased
 
+## v0.5.26 — 2026-11-21
+
+Cut from main, so it carries every change merged after v0.5.25.
+
+### Fixed
+
+- **The adapter reuses its upstream connections.** Each adapter config now gives its API-key upstreams a `connection-pool` entry, so cliproxyapi keeps one transport per credential and a finished request no longer leaves an idle socket open for 90 s. Adapters started before this release keep their old config until they restart. (#720)
+- **`ccmorph rm` asks before it destroys a profile** in a terminal, names the paths it removes, and says when the default left with the profile. Piped input keeps its unattended behaviour. (#652)
+- **`ccmorph export` on a fresh install prints the zero report** instead of a raw `[Errno 2]`; a missing archive file is named. (#647)
+- A shared provider bridge no longer exits with the job that launched it.
+
+### Changed
+
+- `ccmorph router route` is gone: `ccmorph router dispatch --dry-run` shows the pick without running a job.
+
+## v0.5.25 — 2026-11-20
+
+Cut from v0.5.24 plus these changes only.
+
+### Fixed
+
+- **A named profile and model run as named.** `delegate` with both set skips the routing filters (disabled profile, advisor-only model) instead of failing with "no next available profile"; an unknown profile fails loudly. (#710)
+
+## v0.5.24 — 2026-11-20
+
+Cut from v0.5.23 plus this change only.
+
+### Fixed
+
+- **The router never refuses a call.** The Agent hook no longer denies a call when no profile can take it, when its pick is on another profile, or when a delegated worker starts its own subagent; the call runs as written and is logged as unrouted. The `delegate` tool also runs inside a delegated worker.
+
+## v0.5.23 — 2026-11-20
+
+Cut from v0.5.22 plus these changes only.
+
+### Fixed
+
+- **The router no longer pauses a whole gateway over one model.** A 403 or 429 from one model on a gateway backs off that model for 15 minutes; only a subscription's refusal pauses the profile. (#709)
+- **Remote Control sessions load the router** (`delegate` tool and Agent hooks) while it is on, and ccmorph's own plugin. (#707)
+- A session started inside another no longer repeats ccmorph's plugin directories. (#708)
+
+## v0.5.22 — 2026-11-20
+
 ### Added
 
-- **`ccmorph router on` routes subagent work across your profiles.** Off by default. With it on, sessions get a `delegate` tool and Agent hooks: free gateways first, then the subscription furthest behind its pace, then paid keys, and inside a profile the cheapest model that fits the task's kind and tier. `ccmorph router status`, `route`, `dispatch` and `report` show and check it. The hooks never deny an Agent call: when no pick fits the session, the call runs as written.
+- **`ccmorph router on` routes subagent work across your profiles.** Off by default. With it on, sessions get a `delegate` tool and Agent hooks: free gateways first, then the subscription furthest behind its pace, then paid keys, and inside a profile the cheapest model that fits the task's kind and tier. `ccmorph router status`, `route`, `dispatch` and `report` show and check it. (#687)
+
+## v0.5.21 — 2026-11-19
+
+Cut from v0.5.20 plus these changes only.
+
+### Changed
+
+- `ccmorph quota` refreshes any expired cliproxyapi sign-in (Codex as well as Antigravity) with `cliproxyapi -refresh` before reading it. Needs cliproxyapi 8.0.76-akleizor.7 or later. (#682)
+
+## v0.5.20 — 2026-11-19
+
+### Added
+
 - **`ccmorph get <profile> <field|--json>` is the one public read of a profile.** `api_key` prints the key or token (the same as `cred`, which stays), and `--json` prints profile, type, base_url, api_key, model and effort in one object.
+
+## v0.5.19 — 2026-11-19
+
+### Added
+
 - **`ccmorph price <model>... [--json]`** reads cached list prices per million tokens, using the same model lookup as usage pricing.
 - Adapter usage rows record the launching session as `parent` when available.
 - **`ccmorph quota` reads Google AI plans.** An `antigravity` profile shows each quota pool (Gemini, and the weekly pool the Claude and gpt-oss models share) with its reset; `--json` windows carry the `models` that draw on them.
