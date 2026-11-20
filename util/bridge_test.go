@@ -38,7 +38,7 @@ func requireLoopback(t *testing.T) {
 // A fake cliproxyapi: python serving /v1/models on the config's port, checking the
 // key. Like a fresh antigravity login, its first two answers are 200 with no models.
 const fakeBridge = `#!/usr/bin/env python3
-import sys, re, http.server
+import os, sys, re, http.server
 conf = open(sys.argv[2]).read()
 port = int(re.search(r'port: (\d+)', conf).group(1))
 key = re.search(r'api-keys:\n  - "([^"]+)"', conf).group(1)
@@ -47,7 +47,10 @@ class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         ok = self.headers.get('Authorization') == 'Bearer ' + key
         seen[0] += 1
-        self.send_response(200 if ok else 401); self.end_headers()
+        self.send_response(200 if ok else 401)
+        if 'AGENT_DISPATCH_JOB' in os.environ:
+            self.send_header('X-Job-Tagged', 'yes')
+        self.end_headers()
         self.wfile.write(b'{"data":[{"id":"m"}]}' if seen[0] > 2 else b'{"data":[]}')
     def log_message(self, *a): pass
 http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
@@ -60,6 +63,7 @@ func TestBridgeStartsServesAndStops(t *testing.T) {
 	}
 	dir := t.TempDir()
 	t.Setenv("TMPDIR", dir)
+	t.Setenv("AGENT_DISPATCH_JOB", "starter-job")
 	bin := filepath.Join(dir, "cliproxyapi")
 	os.WriteFile(bin, []byte(fakeBridge), 0o755)
 	auth := filepath.Join(dir, "auth")
@@ -93,11 +97,14 @@ func TestBridgeStartsServesAndStops(t *testing.T) {
 	if fi, _ := os.Stat(filepath.Join(got["TMPDIR"], "config.yaml")); fi.Mode().Perm() != 0o600 {
 		t.Fatalf("rendered config must be 0600")
 	}
-	pidN, _ := strconv.Atoi(got["PID"])
-	BridgeStop(pidN, got["TMPDIR"], auth)
-	var pid int
-	for _, c := range got["PID"] {
-		pid = pid*10 + int(c-'0')
+	pid, _ := strconv.Atoi(got["PID"])
+	pgid, groupErr := syscall.Getpgid(pid)
+	BridgeStop(pid, got["TMPDIR"], auth)
+	if resp.Header.Get("X-Job-Tagged") != "" {
+		t.Error("a shared bridge must not carry the starter's dispatch cleanup tag")
+	}
+	if groupErr != nil || pgid == syscall.Getpgrp() {
+		t.Errorf("shared bridge must survive signals to its starter's process group: bridge group=%d, starter group=%d, err=%v", pgid, syscall.Getpgrp(), groupErr)
 	}
 	if syscall.Kill(pid, 0) == nil {
 		t.Fatal("bridge must be gone after stop")
