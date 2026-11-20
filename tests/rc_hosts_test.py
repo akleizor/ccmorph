@@ -1,5 +1,7 @@
 """ccmorph-rc-hosts: config parsing and the relaunch policy."""
+import json
 import os
+import types
 from pathlib import Path
 
 import pytest
@@ -3382,14 +3384,361 @@ def test_a_kept_worktree_is_reported_once_per_run(capsys):
     assert capsys.readouterr().out.count("worktree kept") == 1
 
 
-def test_inference_names_any_profile_and_defaults_to_route(tmp_path, monkeypatch):
-    mod = load()
-    monkeypatch.setattr(mod, "INFERENCE", tmp_path / "inference")
-    routes = {"llmgate"}
-    assert mod.inference("route=llmgate\n~/x\n", routes, "alex") == "route"
-    assert mod.inference("inference=alex  # subscription first\n", routes, "alex") == "account"
-    assert mod.inference("inference=llmgate\n", routes, "alex") == "route"
-    assert mod.inference("inference=oli\n", routes, "alex") == "oli"     # brought up beside the edge
-    assert mod.inference("# inference=alex\n", routes, "alex") == "route"
-    mod.rc_module().write_inference(mod.inference("inference=alex\n", routes, "alex"), mod.INFERENCE)
-    assert (tmp_path / "inference").read_text() == "account\n"
+def test_inference_reads_the_literal_value_and_no_line_is_empty():
+    m = load()
+    assert m.inference("route=llmgate\n~/x\n") == ""
+    assert m.inference("inference=alex  # subscription first\n") == "alex"
+    assert m.inference("inference=llmgate\n") == "llmgate"
+    assert m.inference("# inference=alex\n") == ""
+
+
+def _switcher(m, monkeypatch, tmp_path):
+    rc = m.rc_module()
+    live, alive, children = {}, set(), []
+    started, gen = {}, [0]            # pid -> the start identity the fake edge process has
+    m.EDGES.mkdir(parents=True, exist_ok=True)
+    m.INFERENCE.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(m, "LOGS", tmp_path / "logs")
+    monkeypatch.setattr(m, "edge_ready", lambda r: {"pid": live[r]} if r in live else None)
+    monkeypatch.setattr(rc, "live_edge", lambda r: {"pid": live[r]} if r in live else None)
+    monkeypatch.setattr(rc, "edge_started", lambda pid: started.get(pid))
+    monkeypatch.setattr(m, "pid_alive", lambda pid: pid in live.values() or pid in alive, raising=False)
+    def edge(route, pid):
+        if pid is None:
+            live.pop(route, None)
+            return
+        live[route] = pid
+        gen[0] += 1
+        started[pid] = f"start-{gen[0]}"   # a new process, even when the OS reuses the number
+        (m.EDGES / f"{route}.json").write_text(json.dumps({"pid": pid, "port": 8080}))
+    def popen(cmd, **kw):
+        child = FakeProc()
+        child.word, child.edge = cmd[-2], next(iter(live.values()), None)
+        child.started = started.get(child.edge)   # what --switch would record at this moment
+        children.append(child)
+        return child
+    monkeypatch.setattr(m.subprocess, "Popen", popen)
+    def finish(child, rc_=0):
+        if rc_ == 0:
+            word = "route" if child.word in live else child.word
+            if word != "route":
+                (m.INFERENCE.parent / f"switch-{word}.json").write_text(json.dumps(
+                    {"upstream": "http://127.0.0.1:45111", "key": "sk-test", "tiers": {},
+                     "edge": child.edge, "edge_started": child.started}))
+            m.INFERENCE.write_text(word + "\n")
+        child.rc = rc_
+    return types.SimpleNamespace(live=live, alive=alive, edge=edge, children=children, finish=finish,
+                                 started=started)
+
+
+@pytest.mark.parametrize("edge_live, word", [
+    pytest.param(True, "route", id="a-profile-with-its-own-live-edge-spells-route-issue-595"),
+    pytest.param(False, "gateway", id="a-profile-without-one-stays-a-profile-issue-595"),
+])
+def test_one_rule_decides_the_route_word_at_both_entry_points(tmp_path, monkeypatch, edge_live, word):
+    m = load()
+    rc = m.rc_module()
+    w = _switcher(m, monkeypatch, tmp_path)
+    w.edge("gateway" if edge_live else "other", 500)
+    sw = m.Switcher()
+    sw.reload("gateway", "alex")
+    sw.tend(0)
+    if edge_live:
+        assert w.children == [] and m.INFERENCE.read_text() == "route\n"
+    else:
+        assert [c.word for c in w.children] == ["gateway"]
+    monkeypatch.setattr(rc, "profile_type", lambda p: "apikey")
+    monkeypatch.setattr(rc, "resolve_route", lambda p: {"ANTHROPIC_API_KEY": "sk-g"})
+    monkeypatch.setattr(rc, "retire_route_with", lambda *a: None)
+    monkeypatch.setattr(rc, "sidecar", lambda p, owner: ("http://127.0.0.1:45111", 4321))
+    rc.switch("gateway", "alex")
+    assert m.INFERENCE.read_text() == word + "\n"
+
+
+def test_a_comment_reload_keeps_a_manual_switch_whatever_the_edge_says(tmp_path, monkeypatch):
+    m = load()
+    w = _switcher(m, monkeypatch, tmp_path)
+    sw = m.Switcher()
+    sw.reload("gateway", "alex")
+    sw.tend(0)
+    assert w.children == []
+    w.edge("gateway", 500)
+    sw.tend(1)
+    assert m.INFERENCE.read_text() == "route\n" and m.WANTED.read_text() == "gateway\n"
+    (m.INFERENCE.parent / "switch-oli.json").write_text(json.dumps(
+        {"edge": 500, "edge_started": w.started[500]}))
+    m.INFERENCE.write_text("oli\n")
+    sw.reload("gateway", "alex")
+    sw.tend(2)
+    sw.tend(3)
+    assert m.INFERENCE.read_text() == "oli\n" and w.children == []
+
+
+def test_boot_with_the_ask_already_applied_keeps_a_manual_choice(tmp_path, monkeypatch):
+    m = load()
+    w = _switcher(m, monkeypatch, tmp_path)
+    m.WANTED.write_text("oli\n")
+    m.INFERENCE.write_text("account\n")
+    w.edge("gateway", 500)
+    sw = m.Switcher()
+    sw.reload("oli", "alex")
+    for t in range(3):
+        sw.tend(t)
+    assert w.children == [] and m.INFERENCE.read_text() == "account\n"
+
+
+def test_a_reload_during_a_bring_up_waits_for_it_and_then_wins(tmp_path, monkeypatch, capsys):
+    m = load()
+    w = _switcher(m, monkeypatch, tmp_path)
+    w.edge("gateway", 500)
+    sw = m.Switcher()
+    sw.reload("oli", "alex")
+    sw.tend(0)
+    assert [c.word for c in w.children] == ["oli"]
+    sw.reload("alex", "alex")
+    sw.tend(1)
+    assert not m.INFERENCE.exists()
+    w.finish(w.children[0])
+    sw.tend(2)
+    out = capsys.readouterr().out
+    assert "inference: oli live" in out
+    assert m.INFERENCE.read_text() == "account\n" and m.WANTED.read_text() == "alex\n"
+    assert len(w.children) == 1
+
+
+def test_switching_away_and_back_brings_the_profile_up_again(tmp_path, monkeypatch):
+    m = load()
+    w = _switcher(m, monkeypatch, tmp_path)
+    w.edge("gateway", 500)
+    sw = m.Switcher()
+    sw.reload("oli", "alex")
+    sw.tend(0)
+    w.finish(w.children[0])
+    sw.tend(1)
+    assert m.INFERENCE.read_text() == "oli\n"
+    sw.reload("alex", "alex")
+    sw.tend(2)
+    assert m.INFERENCE.read_text() == "account\n"
+    sw.reload("oli", "alex")
+    sw.tend(3)
+    assert [c.word for c in w.children] == ["oli", "oli"]
+    w.finish(w.children[1])
+    sw.tend(4)
+    assert m.INFERENCE.read_text() == "oli\n"
+
+
+def test_a_manual_switch_while_the_ask_waits_is_not_overruled(tmp_path, monkeypatch, capsys):
+    m = load()
+    w = _switcher(m, monkeypatch, tmp_path)
+    sw = m.Switcher()
+    sw.reload("oli", "alex")
+    sw.tend(0)
+    m.INFERENCE.write_text("account\n")
+    w.edge("gateway", 500)
+    sw.tend(1)
+    assert w.children == [] and m.INFERENCE.read_text() == "account\n"
+    assert m.WANTED.read_text() == "oli\n"
+    assert "set to account by hand" in capsys.readouterr().out
+
+
+def _live_edge(m, route, pid):
+    """The trace of a live edge the switcher can see: its record file, naming its pid."""
+    m.EDGES.mkdir(parents=True, exist_ok=True)
+    (m.EDGES / f"{route}.json").write_text(f'{{"pid": {pid}, "port": 8080}}')
+
+
+def _account(m, monkeypatch, name="alex"):
+    """default_account() shells around the state dir; a test names its account directly."""
+    monkeypatch.setattr(m.rc_module(), "default_account", lambda: name)
+
+
+def test_a_profile_is_brought_up_once_its_edge_is_live_and_the_outcome_is_logged(tmp_path, monkeypatch, capsys):
+    """issue #595: the reload branch Popen-fired `--switch` before any edge was up.
+    The child died on "needs exactly one live shared edge, found 0", nothing retried,
+    and the intent was already recorded as done: the phone stayed on the route with
+    one dead child's note as the only trace. Bring-up now waits for a live edge and
+    the supervisor log names the one outcome of each attempt."""
+    m = load()
+    cfg = tmp_path / "rc-hosts"
+    (tmp_path / "a").mkdir()
+    cfg.write_text(f"route=gateway\ninference=oli\n{tmp_path}/a\n")
+    _account(m, monkeypatch)
+    order, fires = [], []
+    def popen(cmd, **kw):
+        fires.append(cmd[-2])
+        return FakeProc(rc=0)
+    monkeypatch.setattr(m.subprocess, "Popen", popen)
+    def start(self):
+        self.proc, self.started = FakeProc(), 0.0
+        order.append("edge" if self.edge else self.folder)
+        if self.edge:
+            _live_edge(m, self.route, 500)
+    run_main(m, monkeypatch, tmp_path, cfg, start,
+             edge_ready=lambda route: (m.EDGES / f"{route}.json").exists())
+    out = capsys.readouterr().out
+    assert order[0] == "edge"
+    assert fires == ["oli"]                                    # once, and only after the edge had its record
+    assert out.count("inference: bringing up oli") == 1
+    assert out.count("inference: oli live") == 1               # the one outcome, named once
+
+
+def test_a_failed_bring_up_retries_until_it_lands(tmp_path, monkeypatch, capsys):
+    """issue #595: a bring-up that died (edge flapping, profile unreadable) left the
+    word pointing at a profile nothing serves, forever. Each failed attempt logs its
+    own outcome and the target comes back within the module's backoff."""
+    m = load()
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text("route=gateway\ninference=oli\n")
+    _account(m, monkeypatch)
+    _live_edge(m, "gateway", 500)
+    children = iter([FakeProc(rc=1), FakeProc(rc=0)])          # first attempt dies, the retry lands
+    fires = []
+    def popen(cmd, **kw):
+        fires.append(cmd[-2])
+        return next(children)
+    monkeypatch.setattr(m.subprocess, "Popen", popen)
+    def start(self):
+        self.proc, self.started = FakeProc(), 0.0
+    clock, ticks = [0.0], [0]
+    def sleep(_):
+        ticks[0] += 1
+        clock[0] += m.BACKOFF_MIN
+        if ticks[0] > 4:
+            raise SystemExit
+    run_main(m, monkeypatch, tmp_path, cfg, start, sleep, clock=clock)
+    out = capsys.readouterr().out
+    assert fires == ["oli", "oli"]
+    assert out.count("inference: oli bring-up failed (rc=1); retrying") == 1
+    assert out.count("inference: oli live") == 1
+
+
+@pytest.mark.parametrize("manual, change, writes, word_after", [
+    pytest.param("oli", "# reloaded\nroute=gateway\n", [], "oli",
+                 id="manual-switch-survives-an-unchanged-reload-issue-595"),
+    pytest.param("route", "# reloaded\nroute=gateway\n", [], "route",
+                 id="unchanged-reload-writes-nothing-issue-595"),
+    pytest.param("oli", "route=gateway\ninference=alex\n", ["account"], "account",
+                 id="manual-switch-yields-to-a-moved-target-issue-595"),
+    pytest.param("route", "route=gateway\ninference=alex\n", ["account"], "account",
+                 id="moved-target-rewrites-the-word-issue-595"),
+])
+def test_a_reload_overrules_a_manual_switch_only_when_its_own_target_moved(
+        tmp_path, monkeypatch, manual, change, writes, word_after):
+    """issue #595: every reload wrote "route" over a live `--switch`, so switching
+    to a provider held only until someone edited the config. The word is written
+    when the config target moved from what this supervisor last recorded AND the
+    word a proxy answers is not already it."""
+    m = load()
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text("route=gateway\n")
+    _account(m, monkeypatch)
+    words = []
+    real_write = m.rc_module().write_inference
+    def spy(word, path):
+        words.append(word)
+        real_write(word, path)
+    monkeypatch.setattr(m.rc_module(), "write_inference", spy)
+    def start(self):
+        self.proc, self.started = FakeProc(), 0.0
+    ticks = [0]
+    def sleep(_):
+        ticks[0] += 1
+        if ticks[0] == 3:                    # the person switches by hand, then edits the config
+            m.INFERENCE.write_text(manual + "\n")
+            cfg.write_text(change)
+            m.os.utime(cfg, (cfg.stat().st_mtime + 2,) * 2)
+        if ticks[0] > 4:
+            raise SystemExit
+    run_main(m, monkeypatch, tmp_path, cfg, start, sleep)
+    assert words == writes                                   # boot imposed the config once, then the gate held
+    assert m.INFERENCE.read_text().strip() == word_after
+
+
+@pytest.mark.parametrize("case", ["edge-restarted", "down-tick-with-completion", "manual-word",
+                                  "proxy-restarted-behind-the-same-edge"])
+def test_a_restart_rehands_the_live_word_without_manual_repair(tmp_path, monkeypatch, case):
+    m = load()
+    w = _switcher(m, monkeypatch, tmp_path)
+    hand = m.INFERENCE.parent / "switch-oli.json"
+    if case == "manual-word":
+        m.WANTED.write_text("\n")
+        m.INFERENCE.write_text("kimi\n")
+        (m.INFERENCE.parent / "switch-kimi.json").write_text(json.dumps({"edge": 500}))
+        w.edge("gateway", 600)
+        sw = m.Switcher()
+        sw.reload("", "alex")
+        sw.tend(0)
+        assert [c.word for c in w.children] == ["kimi"]
+        assert m.INFERENCE.read_text() == "kimi\n"
+        return
+    sw = m.Switcher()
+    w.edge("gateway", 500)
+    sw.reload("oli", "alex")
+    sw.tend(0)
+    if case == "down-tick-with-completion":
+        w.edge("gateway", None)
+        w.finish(w.children[0])
+        sw.tend(1)
+        assert len(w.children) == 1
+        w.edge("gateway", 500)
+        sw.tend(2)
+        assert [c.word for c in w.children] == ["oli", "oli"]
+        return
+    w.finish(w.children[0])
+    sw.tend(1)
+    if case == "proxy-restarted-behind-the-same-edge":
+        for t in range(2, 6):
+            sw.tend(t)
+        assert len(w.children) == 1 and hand.exists()
+        return
+    w.edge("gateway", 600)
+    sw.tend(2)
+    assert [c.word for c in w.children] == ["oli", "oli"]
+    assert not hand.exists()
+    w.finish(w.children[1])
+    sw.tend(3)
+    assert json.loads(hand.read_text())["edge"] == 600
+    assert m.INFERENCE.read_text() == "oli\n"
+
+
+def test_a_recycled_edge_pid_is_not_the_edge_the_handoff_names(tmp_path, monkeypatch):
+    """The OS reused the old edge's pid for its replacement before the supervisor
+    observed the gap. The handoff's pid was still in the live set, so the old
+    endpoint was kept and the live word never re-handed (issue #595). The edge's
+    start identity tells the two processes apart."""
+    m = load()
+    w = _switcher(m, monkeypatch, tmp_path)
+    hand = m.INFERENCE.parent / "switch-oli.json"
+    sw = m.Switcher()
+    w.edge("gateway", 500)
+    sw.reload("oli", "alex")
+    sw.tend(0)
+    w.finish(w.children[0])
+    sw.tend(1)
+    old = json.loads(hand.read_text())["edge_started"]
+    w.edge("gateway", 500)              # a replacement process, same number
+    assert w.started[500] != old
+    sw.tend(2)
+    assert [c.word for c in w.children] == ["oli", "oli"]
+    w.finish(w.children[1])
+    sw.tend(3)
+    assert json.loads(hand.read_text())["edge_started"] == w.started[500]
+
+
+def test_a_handoff_lives_as_long_as_its_edge(tmp_path, monkeypatch):
+    m = load()
+    w = _switcher(m, monkeypatch, tmp_path)
+    bridge = m.INFERENCE.parent
+    w.edge("gateway", 500)
+    for name, edge in (("oli", 500), ("kimi", 700)):
+        (bridge / f"switch-{name}.json").write_text(json.dumps({"edge": edge}))
+    m.WANTED.write_text("\n")
+    m.INFERENCE.write_text("route\n")
+    sw = m.Switcher()
+    sw.reload("", "alex")
+    sw.tend(0)
+    assert (bridge / "switch-oli.json").exists() and not (bridge / "switch-kimi.json").exists()
+    w.alive.add(800)
+    (bridge / "switch-gpt.json").write_text(json.dumps({"edge": 800}))
+    sw.tend(1)
+    assert (bridge / "switch-gpt.json").exists()
