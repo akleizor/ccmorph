@@ -7,10 +7,40 @@
 
 ## Unreleased
 
+## v0.5.23 — 2026-11-20
+
+Cut from v0.5.22 plus these changes only.
+
+### Fixed
+
+- **The router no longer pauses a whole gateway over one model.** A 403 or 429 from one model on a gateway backs off that model for 15 minutes; only a subscription's refusal pauses the profile. (#709)
+- **Remote Control sessions load the router** (`delegate` tool and Agent hooks) while it is on, and ccmorph's own plugin. (#707)
+- A session started inside another no longer repeats ccmorph's plugin directories. (#708)
+
+## v0.5.22 — 2026-11-20
+
 ### Added
 
-- **`ccmorph router on` routes subagent work across your profiles.** Off by default. With it on, sessions get a `delegate` tool and Agent hooks: free gateways first, then the subscription furthest behind its pace, then paid keys, and inside a profile the cheapest model that fits the task's kind and tier. `ccmorph router status`, `route`, `dispatch` and `report` show and check it.
+- **`ccmorph router on` routes subagent work across your profiles.** Off by default. With it on, sessions get a `delegate` tool and Agent hooks: free gateways first, then the subscription furthest behind its pace, then paid keys, and inside a profile the cheapest model that fits the task's kind and tier. `ccmorph router status`, `route`, `dispatch` and `report` show and check it. (#687)
+
+## v0.5.21 — 2026-11-19
+
+Cut from v0.5.20 plus these changes only.
+
+### Changed
+
+- `ccmorph quota` refreshes any expired cliproxyapi sign-in (Codex as well as Antigravity) with `cliproxyapi -refresh` before reading it. Needs cliproxyapi 8.0.76-akleizor.7 or later. (#682)
+
+## v0.5.20 — 2026-11-19
+
+### Added
+
 - **`ccmorph get <profile> <field|--json>` is the one public read of a profile.** `api_key` prints the key or token (the same as `cred`, which stays), and `--json` prints profile, type, base_url, api_key, model and effort in one object.
+
+## v0.5.19 — 2026-11-19
+
+### Added
+
 - **`ccmorph price <model>... [--json]`** reads cached list prices per million tokens, using the same model lookup as usage pricing.
 - Adapter usage rows record the launching session as `parent` when available.
 - **`ccmorph quota` reads Google AI plans.** An `antigravity` profile shows each quota pool (Gemini, and the weekly pool the Claude and gpt-oss models share) with its reset; `--json` windows carry the `models` that draw on them.
