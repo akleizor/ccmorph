@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/akleizor/ccmorph/util"
-	"io"
 	"os"
 	"strings"
 
@@ -159,19 +158,36 @@ func (l *launcher) getSet(verb string, args []string) int {
 		return rc
 	}
 	value := args[2]
+	// unchecked is a save no listing vouched for, in the sentence that says so
+	// after the save stands; empty when the save was checked or none was asked
+	// for (the saved model kept, a native route, no key to ask with).
+	unchecked := ""
 	if key == "model" {
 		// A gateway that answers its listing knows what it serves: an id it does
 		// not serve is saved only when the person confirms it, because the
 		// alternative is a session that fails at its first message (#267). A
-		// listing that cannot be read adjudicates nothing, so the save proceeds. The
-		// model already saved is not judged again: keeping it changes nothing (#279).
+		// listing that cannot be read adjudicates nothing, so the save proceeds —
+		// but says it went unchecked, the way the add says a key it could not ask
+		// about was not checked (gh728). The model already saved is not judged
+		// again: keeping it changes nothing (#279).
 		if f, ok := l.read(name); ok && value != l.accountModel(name) && f["type"] == "apikey" && !util.NativeBase(f["base_url"]) && strings.TrimSpace(f["api_key"]) != "" {
-			if listing, ok := util.ModelsListing(f["base_url"], f["api_key"], io.Discard); ok {
+			listing, status, answered := util.ListingReply(f["base_url"], f["api_key"])
+			shown := profile.RedactURL(f["base_url"])
+			switch {
+			case !answered:
+				unchecked = shown + " did not answer, so the model was not checked"
+			case status != 0:
+				unchecked = fmt.Sprintf("%s answered HTTP %d, so the model was not checked", shown, status)
+			default:
+				// An answer that is no listing (an empty 204, {}, a page, a
+				// malformed body) judged nothing: the save proceeds and says so (gh728).
 				if msg, refuse := util.ServedRefusal(listing, value, f["model_map"], name); refuse {
 					l.err(msg)
 					if uiConfirm("save '"+value+"' anyway?") != 0 {
 						return 1
 					}
+				} else if util.ServedByListing(listing, value, f["model_map"]) == util.ServedUnknown {
+					unchecked = shown + " answered without a usable model listing, so the model was not checked"
 				}
 			}
 		}
@@ -203,6 +219,12 @@ func (l *launcher) getSet(verb string, args []string) int {
 	if isTTY(2) {
 		fmt.Fprintf(os.Stderr, "%sSaved%s %s %s = %s%s%s %s(new sessions)%s\n",
 			l.accent, l.reset, name, key, l.bold, value, l.reset, l.dim, l.reset)
+	}
+	if unchecked != "" {
+		// The save stands — custom ids stay allowed — but it says what nobody
+		// could check, on the channel a person reads: stdout kept carrying the
+		// value alone, for the script that captured it (gh728).
+		say(name + ": saved unchecked — " + unchecked)
 	}
 	return 0
 }

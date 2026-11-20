@@ -1330,6 +1330,115 @@ test_set_model_refuses_an_unserved_id_and_saves_only_on_confirm_issue_267() {
   return $rc
 }
 
+# GH-728: `set gw effort bananas` was refused while `set gw model bogus-id-xyz-42`
+# saved blindly, and the typo surfaced only at launch. When the endpoint answers
+# its listing, #267 adjudicates; when it cannot, the save still stands (custom
+# ids stay allowed) but must say so, the way the add says an unchecked key was
+# not checked — and the note must tell the three states apart: nothing answered,
+# answered in a shape that is no listing (an empty 204, a {} body), or answered
+# with a refused status. stdout keeps carrying the value alone, for scripts.
+test_set_model_says_saved_unchecked_when_the_endpoint_cannot_answer_issue_728() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://api.example.invalid'
+  mkdir -p "$HOME/.config/ccmorph/profiles/gw"
+  print -r -- '{"model":"kept-model"}' > "$HOME/.config/ccmorph/profiles/gw/settings.json"
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 out err still
+  # Nothing answers: the id saves, exit 0, stdout the value alone -- and the
+  # save names what nobody could do.
+  write_curl_mock 'exit 7'
+  out=$(ccmorph set gw model bogus-id-xyz-42 </dev/null 2>/dev/null) || {
+    print -u2 -- 'an unchecked save must still succeed'
+    rc=1
+  }
+  [[ "$out" == bogus-id-xyz-42 ]] || {
+    print -u2 -- "stdout must carry the saved value alone (got: $out)"
+    rc=1
+  }
+  err=$(ccmorph set gw model another-typo </dev/null 2>&1 >/dev/null)
+  assert_contains "$err" 'saved unchecked' \
+    'a save no endpoint could check must be named as unchecked (got: '"$err"')' || rc=1
+  assert_contains "$err" 'https://api.example.invalid did not answer, so the model was not checked' \
+    'the note must blame the silent endpoint, like the add blames it for a key (got: '"$err"')' || rc=1
+  still=$(ccmorph get gw model 2>/dev/null)
+  [[ "$still" == another-typo ]] || {
+    print -u2 -- "an unchecked save must still save (got: $still)"
+    rc=1
+  }
+  # An endpoint that answered without a listing is not a silent one: the note
+  # says what answered.
+  write_curl_mock 'print -u2 -- "curl: (22) The requested URL returned error: 404"; exit 22'
+  err=$(ccmorph set gw model third-try </dev/null 2>&1 >/dev/null)
+  assert_contains "$err" 'answered HTTP 404, so the model was not checked' \
+    'an answered refusal must be reported as answered, not as silence (got: '"$err"')' || rc=1
+  # Keeping the saved id changes nothing, so nothing new goes unchecked: no
+  # note on a save that is not a save (#279).
+  err=$(ccmorph set gw model third-try </dev/null 2>&1 >/dev/null)
+  assert_not_contains "$err" 'saved unchecked' \
+    'keeping the saved model must not claim an unchecked save (got: '"$err"')' || rc=1
+  # A 200 whose body is no listing judged nothing either: it answered, it did
+  # not check. The save stands and says what could not be read.
+  write_curl_mock '[ "${1-}" = -K ] && cat >/dev/null; print -r -- "{}"'
+  err=$(ccmorph set gw model curly-brace </dev/null 2>&1 >/dev/null) || {
+    print -u2 -- 'an unusable listing answer must not block the save'
+    rc=1
+  }
+  assert_contains "$err" 'answered without a usable model listing, so the model was not checked' \
+    'a body that is no listing must be named as uncheckable (got: '"$err"')' || rc=1
+  assert_not_contains "$err" 'did not answer' \
+    'an endpoint that answered must never be called silent (got: '"$err"')' || rc=1
+  # An empty 204 exits curl -f 0 with no body and no word of its own: that
+  # exit is the answer. This is the merge gate's fixture: the listing request
+  # answers empty and any request after it finds nothing, so a note built from
+  # a second request would blame silence on an endpoint that answered.
+  rm -f "$HOME/curl.calls"
+  write_curl_mock '[ "${1-}" = -K ] && cat >/dev/null
+print -r -- call >> "$HOME/curl.calls"
+[[ $(wc -l < "$HOME/curl.calls") -gt 1 ]] && exit 7
+exit 0'
+  err=$(ccmorph set gw model empty-answer </dev/null 2>&1 >/dev/null) || {
+    print -u2 -- 'an empty 204 answer must not block the save'
+    rc=1
+  }
+  assert_contains "$err" 'answered without a usable model listing, so the model was not checked' \
+    'a 204 must be reported as an empty answer, not silence (got: '"$err"')' || rc=1
+  assert_not_contains "$err" 'did not answer' \
+    'a 204 is an answer: the note must not blame silence (got: '"$err"')' || rc=1
+  local calls=$(wc -l < "$HOME/curl.calls")
+  (( calls == 1 )) || {
+    print -u2 -- "set must judge the save on its one listing request, never a second (curl ran $calls times)"
+    rc=1
+  }
+  # A body cut short after the status line is still an answer: curl exits 18
+  # when the transfer breaks, after writing out the status it met. Calling
+  # that silence would blame the network for an endpoint that spoke, so the
+  # note names the answer whose listing did not arrive.
+  write_curl_mock '[ "${1-}" = -K ] && cat >/dev/null
+print -r -- "{\"data\":["
+print -r -- "__CCMORPH_STATUS__200"
+print -u2 -- "curl: (18) transfer closed with 42 bytes remaining to read"
+exit 18'
+  err=$(ccmorph set gw model cut-short </dev/null 2>&1 >/dev/null) || {
+    print -u2 -- 'a truncated answer must not block the save'
+    rc=1
+  }
+  assert_contains "$err" 'answered without a usable model listing, so the model was not checked' \
+    'a truncated 200 is an answer: the note must say so (got: '"$err"')' || rc=1
+  assert_not_contains "$err" 'did not answer' \
+    'a truncated transfer answered: the note must not blame silence (got: '"$err"')' || rc=1
+  # And real silence is still called silence.
+  write_curl_mock 'exit 7'
+  err=$(ccmorph set gw model quiet-again </dev/null 2>&1 >/dev/null)
+  assert_contains "$err" 'did not answer, so the model was not checked' \
+    'silence must still be called silence (got: '"$err"')' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
 # GH-267: an unserved --model id must stop the launch before Claude Code opens.
 # Claude Code's own answer to a model it cannot reach is the wrong explanation
 # ("restricted by your organization's settings") plus a silent swap to another
@@ -11457,6 +11566,7 @@ run_test test_effort_command_sets_the_profiles_default_effort
 run_test test_effort_command_refuses_a_level_claude_code_would_drop
 run_test test_set_model_refuses_a_flag_shaped_value
 run_test test_set_model_refuses_an_unserved_id_and_saves_only_on_confirm_issue_267
+run_test test_set_model_says_saved_unchecked_when_the_endpoint_cannot_answer_issue_728
 run_test test_run_model_flag_refuses_an_unserved_id_before_claude_opens_issue_267
 run_test test_set_adapter_is_rejected_as_automatic
 run_test test_effort_interactive_still_requires_a_real_profile
