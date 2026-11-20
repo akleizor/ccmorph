@@ -1400,6 +1400,185 @@ func TestSizeListingReadsTheConfOnceIssue522(t *testing.T) {
 	}
 }
 
+// unknownListing is a gateway listing of n models neither the profile nor the
+// catalogue knows.
+func unknownListing(n int) string {
+	var b strings.Builder
+	b.WriteString(`{"data":[`)
+	for i := range n {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"id":"new-model-%02d"}`, i)
+	}
+	b.WriteString(`]}`)
+	return b.String()
+}
+
+// GH-603: the models left after the declared pre-pass are independent, so they
+// are sized a few at a time. Serial, every one of them waited out a shared
+// catalogue lookup and up to two validation POSTs before the next started.
+func TestSizeListingSizesUnknownModelsConcurrentlyIssue603(t *testing.T) {
+	dir := state(t)
+	put(t, filepath.Join(dir, "gw.conf"), "type=apikey\nbase_url=https://gw.invalid\napi_key={{SECRET_q7t2w9dxk4}}\n")
+	oldV := validationWindowFn
+	t.Cleanup(func() { validationWindowFn = oldV })
+	var mu sync.Mutex
+	inflight, peak := 0, 0
+	var release chan struct{}
+	validationWindowFn = func(_ context.Context, _, _, model string, _ Opener, _ time.Duration) int64 {
+		mu.Lock()
+		inflight++
+		if inflight > peak {
+			peak = inflight
+		}
+		mu.Unlock()
+		<-release
+		mu.Lock()
+		inflight--
+		mu.Unlock()
+		if last := model[len(model)-1]; last%2 == 0 {
+			return 131072
+		}
+		return 0
+	}
+	captureStderr(t)
+	synctest.Test(t, func(t *testing.T) {
+		release = make(chan struct{})
+		done := make(chan int, 1)
+		go func() {
+			done <- SizeListing(context.Background(), "gw", unknownListing(16), "https://gw.invalid", "canary", nil)
+		}()
+		// Every worker is now at its validation call; one model at a time would
+		// leave exactly one there.
+		synctest.Wait()
+		mu.Lock()
+		got := peak
+		mu.Unlock()
+		close(release)
+		if c := <-done; c != 0 {
+			t.Fatal(c)
+		}
+		if got <= 1 || got > 8 {
+			t.Fatalf("in-flight validation calls peaked at %d; want more than 1 and at most 8", got)
+		}
+	})
+	w := windowsOf("gw")
+	_, fields, _ := ReadConf(filepath.Join(dir, "gw.conf"))
+	if len(w) != 8 || len(DiscoveredMisses(fields)) != 8 {
+		t.Fatalf("values %v, misses %v", w, DiscoveredMisses(fields))
+	}
+	for i := range 16 {
+		model := fmt.Sprintf("new-model-%02d", i)
+		if got, ok := w[model]; i%2 == 0 && (!ok || got != 131072) {
+			t.Errorf("%s: %d (present %v), want 131072", model, got, ok)
+		} else if i%2 == 1 && ok {
+			t.Errorf("%s: sized %d, want a miss", model, got)
+		}
+	}
+}
+
+// GH-603: concurrency must not reorder a listing that names one model twice.
+// The serial loop let the later row win; applied in completion order, a slow
+// first row's validation answer overwrote the later row's catalogue one and
+// left the later row's provenance on it.
+func TestSizeListingDuplicateIDsKeepListingOrderIssue603(t *testing.T) {
+	dir := state(t)
+	put(t, filepath.Join(dir, "gw.conf"), "type=apikey\nbase_url=https://gw.invalid\napi_key={{SECRET_q7t2w9dxk4}}\n")
+	oldV, oldA, oldF := validationWindowFn, FetchCatalogue, FetchCanonicalCatalogue
+	t.Cleanup(func() { validationWindowFn, FetchCatalogue, FetchCanonicalCatalogue = oldV, oldA, oldF })
+	// Under acme the id is unique; with gamma as owner the bare-id scan sees it
+	// under two providers and refuses to pick, so the first row falls through
+	// to the slow validation probe.
+	FetchCatalogue = func(context.Context, time.Duration) obj {
+		return parse(t, `{"acme":{"models":{"same":{"limit":{"input":32768}}}},"beta":{"models":{"same":{"limit":{"input":16384}}}}}`)
+	}
+	FetchCanonicalCatalogue = func(context.Context, time.Duration) obj { return obj{} }
+	var release chan struct{}
+	validationWindowFn = func(context.Context, string, string, string, Opener, time.Duration) int64 {
+		<-release
+		return 16384
+	}
+	captureStderr(t)
+	synctest.Test(t, func(t *testing.T) {
+		release = make(chan struct{}) // made in the bubble, as synctest requires
+		done := make(chan int, 1)
+		go func() {
+			done <- SizeListing(context.Background(), "gw",
+				`{"data":[{"id":"same","owned_by":"gamma"},{"id":"same","owned_by":"acme"}]}`,
+				"https://gw.invalid", "canary", nil)
+		}()
+		synctest.Wait() // the second row has its catalogue answer; the first waits in validation
+		close(release)
+		if c := <-done; c != 0 {
+			t.Fatal(c)
+		}
+	})
+	if w := windowsOf("gw"); w["same"] != 32768 {
+		t.Fatalf("saved %d for a model listed twice; the later row's catalogue 32768 must win", w["same"])
+	}
+	_, fields, _ := ReadConf(filepath.Join(dir, "gw.conf"))
+	if s := DiscoveredSources(fields)["same"]; getv(s, "source") != "catalogue" {
+		t.Fatalf("provenance %v, want the later row's catalogue tag", s)
+	}
+}
+
+// sleepingGateway is a gateway that answers neither API shape and spends a
+// second on each POST: the slow endpoint #603 is about.
+type sleepingGateway struct {
+	mu       sync.Mutex
+	posts    int
+	inflight int
+	peak     int
+}
+
+func (g *sleepingGateway) Open(context.Context, Request, time.Duration) ([]byte, error) {
+	g.mu.Lock()
+	g.posts++
+	g.inflight++
+	if g.inflight > g.peak {
+		g.peak = g.inflight
+	}
+	g.mu.Unlock()
+	time.Sleep(time.Second)
+	g.mu.Lock()
+	g.inflight--
+	g.mu.Unlock()
+	return nil, errors.New("gateway did not answer")
+}
+
+// GH-603: sixteen unknown models cost two validation POSTs each. A gateway
+// spending a second on every POST made the serial launch spend 32 s before
+// Claude started; sized a few at a time the same gateway answers in about
+// four. synctest virtualizes the gateway's sleep, so the launch's wall time is
+// measured exactly and costs the suite nothing.
+func TestSizeListingUnknownModelsDoNotSerializeTheLaunchIssue603(t *testing.T) {
+	dir := state(t)
+	put(t, filepath.Join(dir, "gw.conf"), "type=apikey\nbase_url=https://gw.invalid\napi_key={{SECRET_q7t2w9dxk4}}\n")
+	captureStderr(t)
+	gw := &sleepingGateway{}
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		if c := SizeListing(context.Background(), "gw", unknownListing(16), "https://gw.invalid", "canary", gw); c != 0 {
+			t.Fatal(c)
+		}
+		elapsed := time.Since(start)
+		gw.mu.Lock()
+		posts, peak := gw.posts, gw.peak
+		gw.mu.Unlock()
+		if posts != 32 {
+			t.Fatalf("gateway saw %d validation POSTs; want two per unknown model", posts)
+		}
+		if peak <= 1 || peak > 8 {
+			t.Fatalf("validation POSTs in flight peaked at %d; want more than 1 and at most 8", peak)
+		}
+		if elapsed >= 8*time.Second {
+			t.Fatalf("16 unknown models took %v; the 32 serial POSTs alone are 32s", elapsed)
+		}
+		t.Logf("16 unknown models took %v; %d POSTs, %d in flight at peak", elapsed, posts, peak)
+	})
+}
+
 // Python: size_listing replaces the six-byte escape before matching; the
 // decoded ">" this port used to write matched itself and normalized nothing.
 func TestValidationNormalizesTheEscapedGT(t *testing.T) {

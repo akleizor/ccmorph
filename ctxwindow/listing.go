@@ -15,6 +15,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/akleizor/ccmorph/util/modelsdev"
@@ -345,6 +346,8 @@ func numOrNil(p *int64) val {
 // CatalogueLookup is the models.dev window for one id; cache memoizes each
 // catalogue for the caller's run.
 func CatalogueLookup(ctx context.Context, model, ownedBy string, cache *Cache, timeout time.Duration) *Limit {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
 	if cache.api == nil {
 		cache.api = FetchCatalogue(ctx, timeout)
 		cache.apiFetches++
@@ -364,6 +367,7 @@ func CatalogueLookup(ctx context.Context, model, ownedBy string, cache *Cache, t
 
 // Cache holds what one run fetched once: the catalogues and window sources.
 type Cache struct {
+	mu                      sync.Mutex // the launch sizes models concurrently (#603); one lazy fetch per run still
 	api, flat               obj
 	apiFetches, flatFetches int
 	sources                 []val
