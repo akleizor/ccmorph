@@ -907,7 +907,10 @@ anything, naming the receipt **[test]**. Each run is a snapshot of its range: a 
 usable receipt supports any more is removed, earlier days and every file the exporter does
 not own stay — a `ccmorph-<profile>` folder an export before #383 wrote is still ours,
 so a full rerun clears its days — two overlapping runs never undo each other's days, and
-the receipts themselves are never touched **[test]**. The run ends with a summary for the person who
+the receipts themselves are never touched **[test]**. A receipt the listing named and the store
+moved before its read — the pre-shard move or compaction relocating it — is skipped and
+counted in the summary, never fatal, while one still there that cannot be read fails the
+run **[test]**. The run ends with a summary for the person who
 ran it, not a machine's JSON line: where the files went, every count by a name — the
 three priced kinds, gateway, estimate and list, add up to the whole — money at cents,
 and the exact ccusage command for that output folder, both paths shell-quoted so a
