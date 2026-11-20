@@ -208,6 +208,20 @@ def owned_days(projects):
     return days
 
 
+def plain(exc):
+    """An OSError as a person reads it: the path and what is wrong with it, never
+    Python's own "[Errno N] ..." spelling (#647). A move names both paths, and
+    the destination is the one that blocked the write, so it is kept last (#647)."""
+    what = exc.strerror or "cannot be read"
+    where = exc.filename if exc.filename is not None else "a receipt file"
+    destination = getattr(exc, "filename2", None)
+    if destination is not None:
+        return f"{where} -> {destination}: {what}"
+    if isinstance(exc, FileNotFoundError):
+        return f"{where} is missing"
+    return f"{where}: {what}"
+
+
 def archive_rows(path):
     """Raw rows and original filenames from one hash-bound archive generation."""
     try:
@@ -233,7 +247,9 @@ def archive_rows(path):
         if any(not isinstance(f["mtime_ns"], int) or isinstance(f["mtime_ns"], bool) for f in files):
             raise ValueError("invalid receipt modification times")
         return {name: (line, f["mtime_ns"]) for name, line, f in zip(names, lines, files)}
-    except (OSError, ValueError, KeyError, TypeError) as exc:
+    except OSError as exc:
+        raise ValueError(f"archive {path.name}: {plain(exc)}") from exc
+    except (ValueError, KeyError, TypeError) as exc:
         raise ValueError(f"archive {path.name}: {exc}") from exc
 
 
@@ -246,6 +262,10 @@ def receipt_rows(root, since):
     except FileNotFoundError:
         try:
             lock = os.fdopen(os.open(root / ".move.lock", os.O_CREAT | os.O_RDWR, 0o600), "rb")
+        except FileNotFoundError:
+            # Before the first session the store folder itself does not exist (#647):
+            # nothing to read, and a reader leaves no trace, so this is an empty store.
+            return
         except OSError as exc:
             if exc.errno not in (errno.EACCES, errno.EROFS):
                 raise
@@ -458,7 +478,9 @@ def main():
                            "YYYYMMDD, for example 20261110\n")
     try:
         stats = export(args.source, args.output, since)
-    except (OSError, ValueError) as exc:
+    except OSError as exc:
+        parser.exit(1, f"usage-export: {plain(exc)}\n")
+    except ValueError as exc:
         parser.exit(1, f"usage-export: {exc}\n")
     print(report(stats, args.output))
 
