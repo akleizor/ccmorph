@@ -176,3 +176,21 @@ func TestDecideSendsWorkToTheSubscriptionFurthestBehindItsPace(t *testing.T) {
 		t.Fatalf("free first: %+v", d.Pick)
 	}
 }
+
+func TestANamedProfileAndModelRunAsNamedPastEveryRoutingFilter(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("CCMORPH_STATE_DIR", root)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	if err := os.WriteFile(filepath.Join(root, "boss.conf"), []byte("type=sub\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := Config{Enabled: true, AdvisorOnly: []string{"fable"}, Kinds: defaultKinds,
+		Profiles: map[string]ProfileConfig{"boss": {Disabled: true}}}
+	d, err := Decide(c, Request{Prompt: "review", Kind: "design", Tier: "top", Profile: "boss", Model: "claude-fable-5-2"})
+	if err != nil || d.Pick == nil || d.Pick.Profile != "boss" || d.Pick.Model != "claude-fable-5-2" {
+		t.Fatalf("an explicit choice must run as named: %+v %v", d.Pick, err)
+	}
+	if _, err := Decide(c, Request{Prompt: "x", Kind: "code", Tier: "mid", Profile: "nope", Model: "m"}); err == nil {
+		t.Fatal("an unknown named profile must fail loudly")
+	}
+}
