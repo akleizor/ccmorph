@@ -666,22 +666,21 @@ func yesNo(b bool) string {
 // below owns that entry alone.
 func pluginDirs(libDir string) string {
 	share := filepath.Join(filepath.Dir(libDir), "share")
-	dirs := prefixed(withoutRouter(os.Getenv("CLAUDE_CODE_PLUGIN_DIRS"), share)) + filepath.Join(share, "claude-plugin")
+	dirs := prefixed(withoutOwn(os.Getenv("CLAUDE_CODE_PLUGIN_DIRS"), share)) + filepath.Join(share, "claude-plugin")
 	if os.Getenv(router.WorkerEnv) != "1" && router.Enabled() {
 		dirs += ":" + filepath.Join(share, "claude-plugin-router")
 	}
 	return dirs
 }
 
-// withoutRouter drops the router plugin's entry from an inherited plugin path,
-// keeping every other entry, so an inherited copy never re-adds the router
-// through the back door or duplicates it in a nested session.
-func withoutRouter(value, share string) string {
-	routerDir := filepath.Join(share, "claude-plugin-router")
-	dirs := strings.Split(value, ":")
-	kept := dirs[:0]
-	for _, d := range dirs {
-		if d != routerDir {
+// withoutOwn drops ccmorph's own plugin entries from an inherited plugin path,
+// keeping every other entry: a nested session re-adds them below, so they are
+// never duplicated, and the router's entry is the guard's alone.
+func withoutOwn(value, share string) string {
+	own := map[string]bool{filepath.Join(share, "claude-plugin"): true, filepath.Join(share, "claude-plugin-router"): true}
+	kept := []string{}
+	for _, d := range strings.Split(value, ":") {
+		if d != "" && !own[d] {
 			kept = append(kept, d)
 		}
 	}
