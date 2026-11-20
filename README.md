@@ -21,6 +21,10 @@
   and `ccmorph profile` answers from the prompt.
 - **Any endpoint.** Gateways that do not speak Anthropic's API are translated
   automatically through a per-launch adapter.
+- **Model router.** `ccmorph router on` spreads subagent work across your
+  profiles: free gateways first, then the subscription furthest behind its
+  pace, then paid keys. Off by default; `ccmorph router status` shows each
+  profile's standing.
 - **Cost per profile.** Every gateway turn leaves a receipt with the billed cost;
   [ccusage](https://github.com/ccusage/ccusage) turns them into daily reports.
 - **Leaves `claude` alone.** No wrapper, no patch: native arguments pass through.
