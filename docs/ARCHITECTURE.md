@@ -1937,8 +1937,8 @@ The plugin gives a session two things. The `delegate` MCP tool
 (`ccmorph router mcp`) runs a brief through `ccmorph run <profile> --model <id>
 -- --effort <e> -p` and returns the final answer. The Agent hooks (`ccmorph
 router hook pre|post|stop`) fill a same-profile pick into the call's model and
-effort, deny any other pick with one instruction to call `delegate`, and join
-outcomes to the ledger. An Agent call with an explicit model, or a fork, is
+effort and join outcomes to the ledger. The hooks never deny a call: another
+profile's pick, no pick, or a delegated worker's own Agent call runs as written. An Agent call with an explicit model, or a fork, is
 never touched (promise 2).
 
 One route, in order:

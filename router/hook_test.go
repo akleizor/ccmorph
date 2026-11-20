@@ -91,8 +91,8 @@ func TestPreToolUseRunsASameProfilePickNativelyAndSendsAnotherToDelegate(t *test
 	quotaSnapshot(t, map[string]float64{"here": 0.9, "there": 0.1})
 	out.Reset()
 	PreToolUse(strings.NewReader(agentCall), &out)
-	if !strings.Contains(out.String(), `"permissionDecision":"deny"`) || !strings.Contains(out.String(), "delegate tool") {
-		t.Fatalf("another profile's pick goes through delegate: %s", out.String())
+	if out.Len() != 0 {
+		t.Fatalf("another profile's pick never denies the call: %s", out.String())
 	}
 }
 
@@ -110,5 +110,33 @@ func TestHooksStayQuietWhileTheRouterIsOffOrTheModelIsPinned(t *testing.T) {
 	PreToolUse(strings.NewReader(`{"tool_name":"Agent","tool_input":{"prompt":"x","model":"opus"}}`), &out)
 	if out.Len() != 0 {
 		t.Fatalf("an explicit model is the caller's: %s", out.String())
+	}
+}
+
+func TestAGatewayRefusalBacksOffTheModelAndASubscriptionRefusalTheAccount(t *testing.T) {
+	root := hookEnv(t, true)
+	if err := os.WriteFile(filepath.Join(root, "gw.conf"), []byte("type=apikey\nbase_url=http://127.0.0.1:9\nmodel=gemini-4-carbon\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := LoadConfig()
+	ledgerAppend(Row{"id": "g", "profile": "gw", "model": "gemini-4-carbon"})
+	complete(c, "g", "", "auth")
+	if unavailableUntil("gw") != 0 || unavailableUntil("gw/gemini-4-carbon") == 0 {
+		t.Fatal("a gateway's 403 must back off that model only, never the whole gateway")
+	}
+	ledgerAppend(Row{"id": "s", "profile": "there", "model": "claude-opus-5-5"})
+	complete(c, "s", "", "quota")
+	if unavailableUntil("there") == 0 {
+		t.Fatal("a subscription's quota refusal is the account's")
+	}
+}
+
+func TestPreToolUseNeverBlocksWhenNoProfileCanTakeTheCall(t *testing.T) {
+	hookEnv(t, true) // "worker" is defined nowhere in this profile, so only the session profile may take it
+	quotaSnapshot(t, map[string]float64{"here": 1, "there": 0.1})
+	var out bytes.Buffer
+	PreToolUse(strings.NewReader(`{"tool_name":"Agent","tool_use_id":"tu2","tool_input":{"prompt":"Fix the bug in parse()","subagent_type":"worker"}}`), &out)
+	if strings.Contains(out.String(), `"deny"`) {
+		t.Fatalf("an unplaceable call runs as asked, never denied: %s", out.String())
 	}
 }

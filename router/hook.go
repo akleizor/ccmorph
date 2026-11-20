@@ -21,11 +21,6 @@ import (
 
 func hookOut(w io.Writer, v any) { _ = json.NewEncoder(w).Encode(v) }
 
-func preDeny(w io.Writer, reason string) {
-	hookOut(w, map[string]any{"hookSpecificOutput": map[string]any{
-		"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}})
-}
-
 // portableAgent: an agent defined outside this session's profile cannot run on another profile.
 func portableAgent(agent string) bool {
 	if agent == "" || agent == "general-purpose" || strings.Contains(agent, ":") {
@@ -56,8 +51,8 @@ func aliasFor(model string) string {
 }
 
 // PreToolUse routes an Agent call: a same-profile pick runs natively with the
-// model and effort filled in; any other pick is denied with one instruction to
-// use the delegate tool. An explicit model or a fork stays the caller's.
+// model and effort filled in; any other pick, or no pick, leaves the call as
+// written. The hook never denies a call. An explicit model or a fork stays the caller's.
 func PreToolUse(in io.Reader, w io.Writer) {
 	var ev struct {
 		ToolName  string         `json:"tool_name"`
@@ -67,8 +62,7 @@ func PreToolUse(in io.Reader, w io.Writer) {
 	if json.NewDecoder(in).Decode(&ev) != nil || ev.ToolName != "Agent" && ev.ToolName != "Task" {
 		return
 	}
-	if os.Getenv(WorkerEnv) == "1" {
-		preDeny(w, "Delegated worker: do the work yourself, not another delegation.")
+	if os.Getenv(WorkerEnv) == "1" { // a worker's own subagents run as it asked
 		return
 	}
 	str := func(k string) string { s, _ := ev.ToolInput[k].(string); return s }
@@ -89,13 +83,12 @@ func PreToolUse(in io.Reader, w io.Writer) {
 		only = []string{session}
 	}
 	d, err := Decide(c, Request{Prompt: str("prompt"), Effort: str("effort"), Only: only, Deadline: time.Now().Add(16 * time.Second)})
-	if err != nil || d.Pick == nil {
-		reason := "router: no enabled, non-reserved, available profile serves this agent's kind and tier."
+	if err != nil || d.Pick == nil { // the router picks a model; it never blocks the call
+		reason := "no profile serves this agent's kind and tier"
 		if err != nil {
-			unrouted(err.Error())
-			return
+			reason = err.Error()
 		}
-		preDeny(w, reason)
+		unrouted(reason)
 		return
 	}
 	alias := ""
@@ -104,10 +97,10 @@ func PreToolUse(in io.Reader, w io.Writer) {
 	}
 	switch {
 	case alias == "" && only != nil:
-		preDeny(w, "router: this session-only agent has no eligible native alias.")
+		unrouted("session-only agent has no native alias")
 		return
-	case alias == "":
-		preDeny(w, "call the ccmorph-router delegate tool with the same prompt, and set its kind and tier")
+	case alias == "": // another profile's pick needs the delegate tool; never deny the call to force it
+		unrouted("pick is on profile " + d.Pick.Profile)
 		return
 	}
 	reserve(newID("native"), d, str("prompt"), Row{"tool_use_id": ev.ToolUseID, "native": true})

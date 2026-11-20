@@ -33,7 +33,7 @@ func TestProjectPickerReadsTheCatalogueOnceForEveryClaudeModel(t *testing.T) {
 		models["anthropic/"+id] = map[string]any{"limit": map[string]any{"context": 1000000}}
 	}
 	data = append(data, map[string]any{"id": "glm-5"})
-	// #562: pinned before the picker's chat-denial check read deniedForChat —
+	// #562: pinned before the picker's chat-denial check read DeniedForChat —
 	// a row the endpoint denies for chat is never offered.
 	data = append(data, map[string]any{"id": "embed-only", "capabilities": map[string]any{"chat_completion": false}})
 	catalogue, err := json.Marshal(map[string]any{"models": models})

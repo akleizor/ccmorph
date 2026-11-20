@@ -18,7 +18,7 @@ import (
 
 const abortedAnswer = "Error: aborted"
 
-// WorkerEnv marks a delegated worker: it does its own work, never another delegation.
+// WorkerEnv marks a delegated worker; the hooks leave its own Agent calls unrouted.
 const WorkerEnv = "CCMORPH_ROUTER_WORKER"
 
 type Request struct {
@@ -68,6 +68,20 @@ func Decide(c Config, r Request) (Decision, error) {
 	if r.Tier == "" {
 		d.Task = Capped(d.Task, c.TierCap)
 	}
+	if r.Profile != "" && r.Model != "" {
+		// A named profile and model is the caller's choice: run it as named, past
+		// every routing filter (disabled, reserved, advisor-only), or fail loudly.
+		if !slices.Contains(profileNames(), r.Profile) {
+			return d, fmt.Errorf("no ccmorph profile %q", r.Profile)
+		}
+		effort := r.Effort
+		if effort == "" {
+			effort = Efforts[d.Task.Tier]
+		}
+		d.Pick = &Option{Profile: r.Profile, Model: r.Model, Effort: effort}
+		d.Shortlist = []Option{*d.Pick}
+		return d, nil
+	}
 	profiles, notes := Profiles(c, r.Refresh, !r.Deadline.IsZero(), r.Only)
 	if len(profiles) == 0 {
 		return d, errors.New("no ccmorph profiles")
@@ -113,9 +127,6 @@ func reserve(id string, d Decision, brief string, extra Row) {
 // answer. A hard failure is retried once at the same tier; a pinned profile or
 // model is retried as named, never swapped. Cancelling ctx kills the worker.
 func Delegate(ctx context.Context, prompt, kind, tier, profile, model, cwd string) string {
-	if os.Getenv(WorkerEnv) == "1" {
-		return "Error: you are a delegated worker; do the work yourself, not another delegation"
-	}
 	if strings.TrimSpace(prompt) == "" {
 		return "Error: the router needs a non-empty prompt"
 	}
@@ -253,7 +264,13 @@ func complete(c Config, id, text, hard string) string {
 	}
 	profile, model := fmt.Sprint(row["profile"]), fmt.Sprint(row["model"])
 	now := nowSec()
-	if hard != "" && hard != "quota" && hard != "auth" {
+	var ps []Profile
+	if hard == "quota" || hard == "auth" {
+		ps, _ = Profiles(c, false, true, []string{profile})
+	}
+	// Only a subscription's refusal is the account's: a gateway's 403 or 429 names
+	// the one upstream behind that model, and its other models still answer.
+	if hard != "" && !(len(ps) == 1 && ps[0].Class == "subscription") {
 		// One broken model must not pause its siblings; an error is retried, not a verdict.
 		markUnavailable(profile+"/"+model, now+modelBackoff)
 		ledgerUpdate(id, Row{"outcome": hard})
@@ -261,7 +278,6 @@ func complete(c Config, id, text, hard string) string {
 	}
 	if hard != "" {
 		until := now + windowLength["5h"]
-		ps, _ := Profiles(c, false, true, []string{profile})
 		tightest := math.Inf(1)
 		for _, p := range ps {
 			for _, w := range p.Windows {

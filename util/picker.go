@@ -187,7 +187,7 @@ func ProjectPicker(in PickerIn, errw io.Writer) bool {
 		if !ok || mid == "" || isExcl(mid) {
 			continue
 		}
-		if deniedForChat(o) {
+		if DeniedForChat(o) {
 			continue
 		}
 		real := ctxwindow.RealID(mid)
