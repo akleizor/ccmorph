@@ -790,23 +790,12 @@ func (l *launcher) usage(topic string) int {
 	return l.usageAt(topic, helpWidth())
 }
 
-// spelledFromHome is path cleaned and spelled ~/… under the home directory.
-func spelledFromHome(path string) string {
-	root := filepath.Clean(path)
-	if home, err := os.UserHomeDir(); err == nil {
-		if rel, ok := strings.CutPrefix(root, home+string(filepath.Separator)); ok {
-			return "~/" + rel
-		}
-	}
-	return root
-}
-
 // confDirSpelling is the state root as a help page spells a conf file's
 // directory: the root this launcher resolved, cleaned, spelled ~/… under the
 // home directory — so the default root spells itself ~/.config/ccmorph and
 // only a redirected one changes a page.
 func (l *launcher) confDirSpelling() string {
-	return spelledFromHome(l.dir)
+	return paths.SpelledFromHome(l.dir)
 }
 
 // profileTemplate is the profile.conf.example this install holds, spelled for a
@@ -824,7 +813,7 @@ func (l *launcher) profileTemplate() string {
 		filepath.Join(root, "share", "profile.conf.example"),
 	} {
 		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
-			return spelledFromHome(p)
+			return paths.SpelledFromHome(p)
 		}
 	}
 	return ""

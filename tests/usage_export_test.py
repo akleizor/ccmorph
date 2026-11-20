@@ -978,6 +978,34 @@ def test_help_prints_the_ccusage_command_that_reads_the_export():
         assert len(line.split()) > 2, f"{flag} is missing or says nothing: {line!r}"
 
 
+@pytest.mark.parametrize("state", ["home", "xdg"],
+                         ids=["default-state-home-issue-731", "xdg-state-home-issue-731"])
+def test_help_shows_the_source_default_as_a_real_path_issue_731(tmp_path, state):
+    """#731: --help described the --source default as "the state root's usage/"
+    — a sentence naming no folder, which read as the CCMORPH_STATE_DIR root and
+    sent that reader to a path the exporter never reads. The default is an XDG
+    state path, so --help prints the folder it resolves to under both roots."""
+    home = tmp_path / "home"
+    home.mkdir()
+    env = {k: v for k, v in os.environ.items() if k != "XDG_STATE_HOME"}
+    env["HOME"] = str(home)
+    default = home / ".local/state/ccmorph/usage"
+    if state == "xdg":
+        default = tmp_path / "state/ccmorph/usage"
+        env["XDG_STATE_HOME"] = str(tmp_path / "state")
+
+    ran = subprocess.run([sys.executable, str(EXPORTER), "--help"], env=env,
+                         capture_output=True, text=True, timeout=HANG_TIMEOUT)
+
+    assert ran.returncode == 0, ran.stderr
+    # The path sits on its own line, the way the ccusage command does (#382):
+    # in wrapped option help argparse breaks a long path mid-word, and a path
+    # that cannot be copied names no folder.
+    assert f"Default --source: {default}" in ran.stdout.splitlines(), (
+        f"--help never names the default store as one copyable line: {ran.stdout}")
+    assert "state root's" not in ran.stdout, "--help still points at a root it does not print"
+
+
 @pytest.mark.parametrize("since", ["2026-11-10", "2026111", ""])
 def test_a_date_in_the_wrong_format_names_the_format_and_an_example_issue_382(tmp_path, since):
     """#382: --since 2026-11-10 answered with Python's own parse error — time

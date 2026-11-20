@@ -28,6 +28,21 @@ func StateDir() string {
 	return filepath.Join(home, ".local", "state", "ccmorph")
 }
 
+// SpelledFromHome is path cleaned and spelled ~/… under the home directory, the
+// way a page names a path a person will type: the default roots spell
+// themselves ~/.config/ccmorph and ~/.local/state/ccmorph, and only a
+// redirected root changes the page. Elsewhere, and the home itself, it is the
+// cleaned path.
+func SpelledFromHome(path string) string {
+	root := filepath.Clean(path)
+	if home, err := os.UserHomeDir(); err == nil {
+		if rel, ok := strings.CutPrefix(root, home+string(filepath.Separator)); ok {
+			return "~/" + rel
+		}
+	}
+	return root
+}
+
 // AccountHome is the passwd entry's home, for a process started with HOME
 // unset. A variable so a test can pin the account the way a real one cannot.
 var AccountHome = func() string {

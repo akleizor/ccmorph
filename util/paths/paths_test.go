@@ -125,3 +125,18 @@ func TestSameFileFollowsLinksAndSameInodeReadsTheName(t *testing.T) {
 		t.Error("a missing path is never one file with one that exists")
 	}
 }
+
+func TestSpelledFromHome(t *testing.T) { // #731: one ~/ spelling for the help pages and quota's receipts footer
+	t.Setenv("HOME", "/home/u")
+	for in, want := range map[string]string{
+		"/home/u/.local/state/ccmorph/usage": "~/.local/state/ccmorph/usage",
+		"/home/u/a/../b/":                    "~/b",
+		"/home/user2/x":                      "/home/user2/x",
+		"/srv/state/ccmorph/usage":           "/srv/state/ccmorph/usage",
+		"/home/u":                            "/home/u",
+	} {
+		if got := SpelledFromHome(in); got != want {
+			t.Errorf("SpelledFromHome(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

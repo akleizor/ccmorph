@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // maxWidth is a phone-width terminal: 60 columns, so no line wraps.
@@ -46,6 +49,43 @@ func renderText(w io.Writer, entries []Entry, color bool) {
 		for _, e := range rows {
 			renderEntry(w, e, color)
 		}
+	}
+	receiptsFooter(w, entries, color)
+}
+
+// receiptsFooter is the view's last line once any row was read from the
+// receipts: the folder this run read, resolved (#731). Debugging cost starts by
+// finding the receipts, and only the tool knows which folder its reader used —
+// the profile root moves with CCMORPH_STATE_DIR while the receipts resolve
+// against the XDG state root (paths.StateDir) — so the view names the path it
+// actually read instead of one a document remembered. A view that read no
+// receipts says nothing. The folder is spelled ~/… under the home, as the help
+// pages spell the state root, so a default install prints the README's own
+// ~/.local/state/ccmorph/usage within the 60 columns; when
+// "receipts: <folder>" would pass the width, the folder takes its own line.
+// The folder is never cut — a cut name leads to no folder — so only a folder
+// whose own path is wider than 60 columns can wrap.
+func receiptsFooter(w io.Writer, entries []Entry, color bool) {
+	read := false
+	for _, e := range entries {
+		if e.Kind == "gateway" || e.Kind == "budget" {
+			read = true
+		}
+	}
+	if !read {
+		return
+	}
+	fmt.Fprintln(w)
+	folder := paths.SpelledFromHome(filepath.Join(paths.StateDir(), "usage"))
+	lines := []string{"receipts: " + folder}
+	if len([]rune(lines[0])) > maxWidth {
+		lines = []string{"receipts:", folder}
+	}
+	for _, line := range lines {
+		if color {
+			line = "\033[2m" + line + "\033[0m"
+		}
+		fmt.Fprintln(w, line)
 	}
 }
 
