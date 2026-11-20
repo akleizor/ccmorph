@@ -1693,3 +1693,149 @@ func TestRenderPoolsUpstreamConnections(t *testing.T) { // test_upstream_credent
 		}
 	}
 }
+
+// --- GH-592: --print-config against an unreachable profile proxy --------------
+
+// deadProxyPW is the dead proxy's password in the GH-592 tests: no output may
+// carry it.
+const deadProxyPW = "pw592dead"
+
+func TestPrintConfigPrintsDespiteAProbeFailure(t *testing.T) { // test_print_config_redacts_upstream_proxy_credentials, offline half (GH-592)
+	// --print-config is the offline way to confirm masking (#47, #65, #139,
+	// #164), so when the profile's proxy is not listening the probe failure is
+	// a note, never a preemption of the print: exit 0, the redacted config on
+	// stdout, the refused dial named on stderr.
+	swap(t, &probeVia, nil) // Main sets it from the profile and never resets it
+	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "abc123", "ANTHROPIC_BASE_URL": "https://gateway",
+		"CCMORPH_UPSTREAM_PROXY": "http://alice:" + deadProxyPW + "@127.0.0.1:8118"})
+	swap(t, &profileDirs, t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	swap(t, &classifyFn, func(_, _, _, _ string, _ bool) ([]Row, error) {
+		return nil, fmt.Errorf("Get %q: proxyconnect tcp: dial tcp 127.0.0.1:8118: connect: connection refused", "https://gateway/v1/models")
+	})
+	swap(t, &freePortFn, func() (int, error) { return 1234, nil })
+	output := captureStdio(t)
+	var got int
+	code, died := exits(t, func() { got = Main([]string{"demo", "--print-config"}) })
+	text := output()
+	if died || got != 0 {
+		t.Fatalf("the dead proxy preempted the print: died=%v code=%d exit=%d, output %q", died, code, got, text)
+	}
+	for _, want := range []string{`proxy-url: "http://127.0.0.1:8118"`, "<redacted>",
+		"compatibility probes failed", "dial tcp 127.0.0.1:8118: connect: connection refused"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("--print-config output lacks %q: %q", want, text)
+		}
+	}
+	for _, secret := range []string{"alice", deadProxyPW, "abc123"} {
+		if strings.Contains(text, secret) {
+			t.Errorf("--print-config leaked %q after a probe failure: %q", secret, text)
+		}
+	}
+}
+
+func TestPrintConfigPrintsThroughADeadProfileProxy(t *testing.T) { // test_print_config_prints_through_a_dead_profile_proxy (GH-592)
+	// No classify stub: the real probe dials the profile's proxy, where nothing
+	// listens. --print-config prints with the failure named; a launch on the
+	// same profile still dies on it, naming the same dial.
+	swap(t, &probeVia, nil)
+	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "abc123", "ANTHROPIC_BASE_URL": "http://gateway.invalid",
+		"CCMORPH_UPSTREAM_PROXY": "http://alice:" + deadProxyPW + "@127.0.0.1:1/p?token=qq"})
+	swap(t, &profileDirs, t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	swap(t, &freePortFn, func() (int, error) { return 1234, nil })
+
+	output := captureStdio(t)
+	var got int
+	code, died := exits(t, func() { got = Main([]string{"demo", "--print-config"}) })
+	text := output()
+	if died || got != 0 {
+		t.Fatalf("the dead proxy preempted the print: died=%v code=%d exit=%d, output %q", died, code, got, text)
+	}
+	for _, want := range []string{`proxy-url: "http://127.0.0.1:1/p"`, "<redacted>",
+		"compatibility probes failed", "proxyconnect tcp: dial tcp 127.0.0.1:1"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("--print-config output lacks %q: %q", want, text)
+		}
+	}
+	for _, secret := range []string{"alice", deadProxyPW, "token=qq", "abc123"} {
+		if strings.Contains(text, secret) {
+			t.Errorf("--print-config leaked %q through a dead proxy: %q", secret, text)
+		}
+	}
+
+	// A launch is not a print: it dies on the same refused dial. No --auto and
+	// no --model: either arms abortAfter, whose timer outlives exits.
+	output = captureStdio(t)
+	code, died = exits(t, func() { Main([]string{"demo"}) })
+	text = output()
+	if !died || code != 1 {
+		t.Fatalf("a launch through the dead proxy did not die with 1: died=%v code=%d, output %q", died, code, text)
+	}
+	if !strings.Contains(text, "proxyconnect tcp: dial tcp 127.0.0.1:1") || strings.Contains(text, "compatibility probes failed") {
+		t.Fatalf("the launch's refusal does not name the dead proxy plainly: %q", text)
+	}
+}
+
+func TestPrintConfigStillRefusesAnEndpointWithNothingUsable(t *testing.T) { // GH-592: only a failed probe degrades the print
+	swap(t, &probeVia, nil)
+	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "abc123", "ANTHROPIC_BASE_URL": "https://gateway"})
+	swap(t, &profileDirs, t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	swap(t, &classifyFn, func(_, _, _, _ string, _ bool) ([]Row, error) { return []Row{row("unusable")}, nil })
+	swap(t, &freePortFn, func() (int, error) { return 1234, nil })
+	output := captureStdio(t)
+	code, died := exits(t, func() { Main([]string{"demo", "--print-config"}) })
+	if text := output(); !died || code != 1 || !strings.Contains(text, "no usable models on this endpoint") {
+		t.Fatalf("a reachable endpoint with nothing usable printed instead of refusing: died=%v code=%d, output %q", died, code, text)
+	}
+}
+
+func TestPrintConfigPrintsWhenTheInventoryFallsBackToAnUnusableCache(t *testing.T) { // GH-592: a fallback keeps the failed-inventory signal
+	// With the proxy dead and only a settled unusable row on disk, classify
+	// logs the inventory failure, falls back to that cache and returns no
+	// error. The print must still survive, carrying the failure as its note --
+	// and a launch on the same profile must still refuse to serve nothing.
+	swap(t, &probeVia, nil)
+	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "abc123", "ANTHROPIC_BASE_URL": "http://gateway.invalid",
+		"CCMORPH_UPSTREAM_PROXY": "http://alice:" + deadProxyPW + "@127.0.0.1:1"})
+	dirs := t.TempDir()
+	swap(t, &profileDirs, dirs)
+	t.Setenv("TMPDIR", t.TempDir())
+	cache := filepath.Join(dirs, ".adapter-cache", hashHex("http://gateway.invalid")[:16]+".json")
+	if err := os.MkdirAll(filepath.Dir(cache), 0o777); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, cache, `{"endpoint":"http://gateway.invalid","anthropic_path":"/v1/messages","thinking_probe":2,"refusal_verdicts":1,`+
+		`"rows":[{"model":"m-dead","dialect":"unusable","note":"HTTP 404","cap":null,"nothink":false,"id_recycle":false,"status":404}]}`, 0o600)
+	swap(t, &freePortFn, func() (int, error) { return 1234, nil })
+
+	output := captureStdio(t)
+	var got int
+	code, died := exits(t, func() { got = Main([]string{"demo", "--print-config"}) })
+	text := output()
+	if died || got != 0 {
+		t.Fatalf("the failed inventory preempted the print: died=%v code=%d exit=%d, output %q", died, code, got, text)
+	}
+	for _, want := range []string{"<redacted>", "compatibility probes failed",
+		"proxyconnect tcp: dial tcp 127.0.0.1:1", "falling back to 1 cached model(s)"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("--print-config output lacks %q: %q", want, text)
+		}
+	}
+	for _, secret := range []string{"alice", deadProxyPW} {
+		if strings.Contains(text, secret) {
+			t.Errorf("--print-config leaked %q: %q", secret, text)
+		}
+	}
+
+	output = captureStdio(t)
+	code, died = exits(t, func() { Main([]string{"demo"}) })
+	text = output()
+	if !died || code != 1 || !strings.Contains(text, "no usable models on this endpoint") {
+		t.Fatalf("a launch served, or died unnamed, on an unusable cache: died=%v code=%d, output %q", died, code, text)
+	}
+	if strings.Contains(text, "compatibility probes failed") {
+		t.Fatalf("a launch printed the --print-config note: %q", text)
+	}
+}

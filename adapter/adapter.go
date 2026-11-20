@@ -256,8 +256,9 @@ type cliArgs struct {
 	port           *int
 
 	// resolved during startup
-	token    string
-	reserved int // fd of the held --port, or -1
+	token       string
+	reserved    int  // fd of the held --port, or -1
+	probeFailed bool // --print-config only: classify failed, rows are the cache's (GH-592)
 }
 
 const usage = "usage: ccmorph-adapter [-h] [--parent-pid PARENT_PID] [--print-config] [--auto]\n" +
@@ -589,8 +590,34 @@ func Main(argv []string) int {
 		stop = abortAfter(selectTimeout, fmt.Sprintf("classifying %s on %s exceeded %ds",
 			shim.PyRepr(required), upstream, int(selectTimeout.Seconds())))
 	}
+	classifyFallback = nil // a stale fallback from an earlier pass never reaches this print
 	rows, err := classifyFn(upstream, key, cacheFile, required, a.auto)
 	stop()
+	// The --print-config contract (GH-592): --print-config is how a person
+	// confirms masking without a live session (#47, #65, #139, #164), so a
+	// failed compatibility probe -- the profile's upstream proxy not
+	// listening, the endpoint unreachable -- never preempts the print. The
+	// probe still takes the profile's proxy exactly as a launch's does (#580);
+	// only the consequence differs: the redacted config is printed from the
+	// classification cache, empty or not, the failure is named on stderr, and
+	// the exit is 0. A failed inventory that fell back to a cache of settled
+	// unusable rows is the same failure arriving with no error, so its cause
+	// is read from classifyFallback and treated identically. Every launch still
+	// fails on the error below, and a reachable endpoint where nothing is
+	// usable still refuses.
+	probeErr, fellBack := err, false
+	if probeErr == nil && classifyFallback != nil {
+		probeErr, fellBack = classifyFallback, true
+	}
+	classifyFallback = nil
+	if probeErr != nil && a.printConfig {
+		if !fellBack { // a fallback already holds the cache's rows, fresh probes included
+			rows = cachedRows(upstream, cacheFile)
+		}
+		logf("--print-config: compatibility probes failed (%v); printing the redacted config with %d cached model(s) instead", probeErr, len(rows))
+		a.probeFailed = true
+		err = nil
+	}
 	if err != nil {
 		// A launch with no model can discover one only from a listing; a
 		// refusal the endpoint answered must reach the ready-file reader as
@@ -710,7 +737,11 @@ func ensureConfig(a *cliArgs, required, upstream, key, routeIdentity, cacheFile,
 func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstreamProxy, shimBinary string,
 	extras map[string]string, env map[string]string, modelMap map[string]any) int {
 	usable, native, recyclesIDs := usableNative(rows)
-	if len(usable) == 0 {
+	// A degraded --print-config (Main's GH-592 branch: the probe failed and
+	// stderr named it) prints even an empty classification. A reachable
+	// endpoint with nothing usable still refuses, --print-config or not, and
+	// so does every launch.
+	if len(usable) == 0 && !a.probeFailed {
 		if a.auto && required == "" {
 			fmt.Printf("EXIT=no declared or cached model protocol; set a model with ccmorph set %s model <model-id> and retry (the compatibility check may incur a small charge)\n", a.profile)
 			return 1
