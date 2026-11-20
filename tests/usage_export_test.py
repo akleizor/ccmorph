@@ -1,6 +1,7 @@
 """The metadata-only ccusage export: one record per receipt, one folder per profile, damaged costs reported."""
 import contextlib
 import datetime as dt
+import errno
 import json
 import os
 import pathlib
@@ -789,6 +790,99 @@ def test_the_checkout_launcher_runs_the_shipped_exporter(tmp_path, via):
         f"--config {root}/ccusage.json",
     ]) + "\n"
     assert (tmp_path / "out/ccusage.json").is_file()
+
+
+@pytest.mark.parametrize("state", ["home", "xdg"],
+                         ids=["default-state-home-issue-647", "xdg-state-home-issue-647"])
+def test_a_fresh_install_exports_zeroes_before_the_first_session_issue_647(tmp_path, state):
+    """#647: right after an install, before any launched session, the receipt
+    store folder does not exist at all. The README's command died with
+    "usage-export: [Errno 2] No such file or directory: .../usage/.move.lock" and
+    exit 1. A never-created store is an empty one: the zero report, exit 0, and
+    the reader still creates no store folder."""
+    home, output = tmp_path / "home", tmp_path / "out"
+    home.mkdir()
+    env = {k: v for k, v in os.environ.items() if k != "XDG_STATE_HOME"}
+    env["HOME"] = str(home)
+    state_root = home / ".local/state"
+    if state == "xdg":
+        state_root = tmp_path / "state"
+        env["XDG_STATE_HOME"] = str(state_root)
+
+    ran = subprocess.run([sys.executable, str(EXPORTER), "--output", str(output)],
+                         capture_output=True, text=True, timeout=HANG_TIMEOUT, env=env)
+
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout.splitlines()[0] == f"Exported 0 turns over 0 days to {os.path.abspath(output)}"
+    assert "[Errno" not in ran.stdout + ran.stderr
+    assert ".move.lock" not in ran.stdout + ran.stderr
+    assert not (state_root / "ccmorph").exists()
+    assert (output / "projects").is_dir() and (output / "ccusage.json").is_file()
+
+
+@pytest.mark.parametrize("missing", [".jsonl", ".jsonl.idx"],
+                         ids=["archive-data-missing-issue-647", "archive-index-missing-issue-647"])
+def test_an_archive_missing_a_piece_names_the_file_not_an_errno_issue_647(tmp_path, missing):
+    """#647: no missing-state path may reach the person as a raw Python error
+    string. A day archive whose data or index file is not there refuses the
+    export naming the file that is missing, never "[Errno 2] No such file or
+    directory"."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    rows.mkdir()
+    present = ".jsonl.idx" if missing == ".jsonl" else ".jsonl"
+    (rows / f"2026-10-16{present}").write_text("{}\n")
+
+    ran = subprocess.run(
+        [sys.executable, str(EXPORTER), "--output", str(output), "--source", str(rows)],
+        capture_output=True, text=True, timeout=HANG_TIMEOUT)
+
+    assert ran.returncode == 1
+    assert f"2026-10-16{missing} is missing" in ran.stderr
+    assert "[Errno" not in ran.stderr and "Traceback" not in ran.stderr
+
+
+@pytest.mark.parametrize("error, told", [
+    (errno.ENOENT, "{path} is missing"),
+    (errno.EACCES, "{path}: Permission denied"),
+], ids=["missing-issue-647", "unreadable-issue-647"])
+def test_an_os_error_reaching_the_command_is_told_without_an_errno_issue_647(
+        tmp_path, monkeypatch, capsys, error, told):
+    """#647: whatever file a run finds missing or unreadable — a day folder the
+    store compacted away mid-run, an output folder it may not write — the
+    command's last word names the path and what is wrong with it, never Python's
+    own "[Errno N] ..." spelling."""
+    path = tmp_path / "rows/2026-10-16"
+
+    def failing(*_args):
+        raise OSError(error, os.strerror(error), str(path))
+
+    monkeypatch.setattr(ue, "export", failing)
+    monkeypatch.setattr(sys, "argv", ["usage-export", "--output", str(tmp_path / "out")])
+    with pytest.raises(SystemExit) as stopped:
+        ue.main()
+
+    assert stopped.value.code == 1
+    assert capsys.readouterr().err == "usage-export: " + told.format(path=path) + "\n"
+
+
+def test_a_blocked_destination_is_named_not_the_temporary_file_issue_647(tmp_path):
+    """#647: an OSError carrying two paths — the writer's temporary file and the
+    destination it was moving onto — must name the destination, the one the
+    person can act on. A ccusage.json that is a directory made the export say a
+    .usage-* temporary file "Is a directory" and then delete that file, which
+    names nothing the reader owns; the blocking destination is the answer."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    rows.mkdir()
+    (output / "ccusage.json").mkdir(parents=True)
+
+    ran = subprocess.run(
+        [sys.executable, str(EXPORTER), "--output", str(output), "--source", str(rows)],
+        capture_output=True, text=True, timeout=HANG_TIMEOUT)
+
+    assert ran.returncode == 1
+    assert str(output / "ccusage.json") in ran.stderr
+    assert "Is a directory" in ran.stderr
+    assert "[Errno" not in ran.stderr and "Traceback" not in ran.stderr
 
 
 def test_the_summary_names_where_the_files_went_and_the_command_to_run_next_issue_382(tmp_path):
