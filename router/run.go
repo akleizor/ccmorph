@@ -18,7 +18,7 @@ import (
 
 const abortedAnswer = "Error: aborted"
 
-// WorkerEnv marks a delegated worker: it does its own work, never another delegation.
+// WorkerEnv marks a delegated worker; the hooks leave its own Agent calls unrouted.
 const WorkerEnv = "CCMORPH_ROUTER_WORKER"
 
 type Request struct {
@@ -113,9 +113,6 @@ func reserve(id string, d Decision, brief string, extra Row) {
 // answer. A hard failure is retried once at the same tier; a pinned profile or
 // model is retried as named, never swapped. Cancelling ctx kills the worker.
 func Delegate(ctx context.Context, prompt, kind, tier, profile, model, cwd string) string {
-	if os.Getenv(WorkerEnv) == "1" {
-		return "Error: you are a delegated worker; do the work yourself, not another delegation"
-	}
 	if strings.TrimSpace(prompt) == "" {
 		return "Error: the router needs a non-empty prompt"
 	}

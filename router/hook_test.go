@@ -91,8 +91,8 @@ func TestPreToolUseRunsASameProfilePickNativelyAndSendsAnotherToDelegate(t *test
 	quotaSnapshot(t, map[string]float64{"here": 0.9, "there": 0.1})
 	out.Reset()
 	PreToolUse(strings.NewReader(agentCall), &out)
-	if !strings.Contains(out.String(), `"permissionDecision":"deny"`) || !strings.Contains(out.String(), "delegate tool") {
-		t.Fatalf("another profile's pick goes through delegate: %s", out.String())
+	if out.Len() != 0 {
+		t.Fatalf("another profile's pick never denies the call: %s", out.String())
 	}
 }
 
@@ -128,5 +128,15 @@ func TestAGatewayRefusalBacksOffTheModelAndASubscriptionRefusalTheAccount(t *tes
 	complete(c, "s", "", "quota")
 	if unavailableUntil("there") == 0 {
 		t.Fatal("a subscription's quota refusal is the account's")
+	}
+}
+
+func TestPreToolUseNeverBlocksWhenNoProfileCanTakeTheCall(t *testing.T) {
+	hookEnv(t, true) // "worker" is defined nowhere in this profile, so only the session profile may take it
+	quotaSnapshot(t, map[string]float64{"here": 1, "there": 0.1})
+	var out bytes.Buffer
+	PreToolUse(strings.NewReader(`{"tool_name":"Agent","tool_use_id":"tu2","tool_input":{"prompt":"Fix the bug in parse()","subagent_type":"worker"}}`), &out)
+	if strings.Contains(out.String(), `"deny"`) {
+		t.Fatalf("an unplaceable call runs as asked, never denied: %s", out.String())
 	}
 }
