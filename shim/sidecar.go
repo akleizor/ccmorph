@@ -412,10 +412,13 @@ func (u *UsageSidecar) writeLocked(r *record) error {
 // otherwise sit in two places, and a reader would count the response twice.
 // Ownership is the turn_id the row on disk carries; another turn's row is
 // never touched. Only the hook's rows move days (a relay's record keeps the
-// stamp it was started with), so only the hook calls this.
+// stamp it was started with), so only the hook calls this. A spill a build
+// before #633 spelled under the joined key's own hash is one of those copies
+// too: it still carries this turn, so it is retired with the new-shape ones.
 func retireEarlierCopies(dirs []string, responseID, turnID string) {
 	for _, dir := range dirs[1:] {
 		primary, spills := rowNames(dir, responseID, turnID)
+		spills = append(spills, legacySpillNames(dir, responseID, turnID)...)
 		for _, path := range append([]string{primary}, spills...) {
 			if owns(path, turnID) {
 				remove(path)
@@ -436,6 +439,20 @@ func rowNames(dir, responseID, turnID string) (primary string, spills []string) 
 		spills = append(spills, filepath.Join(dir, spillFileName(responseID, key+"."+strconv.Itoa(n))))
 	}
 	return primary, spills
+}
+
+// legacySpillNames is where a build before #633 put a spill: the joined key's
+// own hash, with the .N names the old claim tried after it. The new shape is
+// the response id's hash followed by the key's, so the two are unrelated
+// strings; only a reader that holds the row's own turn can name one, and
+// migrateOldSpills re-files them under the new shape when it scans a directory.
+func legacySpillNames(dir, responseID, turnID string) []string {
+	key := responseID + "." + turnID
+	names := []string{filepath.Join(dir, rowFileName(key))}
+	for n := 1; n <= 3; n++ {
+		names = append(names, filepath.Join(dir, rowFileName(key+"."+strconv.Itoa(n))))
+	}
+	return names
 }
 
 // errRowNameTaken is a row no name on disk can hold: every candidate belongs to

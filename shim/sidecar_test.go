@@ -433,3 +433,32 @@ func TestStreamExitsEachLeaveTheirOwnIncompleteRow(t *testing.T) {
 		}
 	}
 }
+
+// A copy of the hook's own row in another day that a build before #633 named
+// under the joined key's hash is retired with the new-shape copies; another
+// turn's old-name row in the same folder stays (2026-11-17).
+func TestAnOldSpillInAnotherDayIsRetired(t *testing.T) {
+	dir := stateHome(t)
+	u := newSidecar("p", "identity")
+	mine, theirs := turn(u, "msg_old", 1), turn(u, "msg_old", 2)
+	mine.timestamp = "2026-11-04T23:00:00+00:00"
+	day := filepath.Join(dir, usageDay(mine.timestamp))
+	if err := os.MkdirAll(day, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(day, rowFileName("msg_old."+mine.turnID))
+	if err := os.WriteFile(old, u.row(mine), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(day, rowFileName("msg_old."+theirs.turnID))
+	if err := os.WriteFile(other, u.row(theirs), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	retireEarlierCopies(rowDirs("2026-11-05T00:10:00Z"), "msg_old", mine.turnID)
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatalf("the old-name copy of this turn's row is still there: %v", err)
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Fatalf("another turn's old-name row was removed: %v", err)
+	}
+}

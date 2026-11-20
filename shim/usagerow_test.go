@@ -973,6 +973,246 @@ func TestAReplyTheAdapterSpilledIsNotWrittenAgain(t *testing.T) {
 	}
 }
 
+// A build before #633 named a spill by the hash of the joined <response
+// id>.<turn id> key, a name no reader of the new shape can derive. A re-read of
+// that response must still find the row the old build spilled, or the hook
+// writes its own and every report and quota sums the response twice (2026-11-17).
+func TestAReplySpilledBeforeTheRenameIsStillFound(t *testing.T) {
+	dir := stateHome(t)
+	seedOwnedPrices(t, dir, "anthropic", map[string]price{"claude-opus-5-5": {Input: 4, Output: 20}})
+	model := "claude-opus-5-5"
+	// Another turn holds the primary name in the day folder the reply falls in.
+	held := newSidecar("gw", "adapter")
+	held.prices = CachedOwnedPriceBook("anthropic")
+	primary := held.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("7")}})
+	primary.timestamp = "2026-11-05T08:00:00+00:00"
+	primary.complete = true
+	if err := held.write(primary); err != nil {
+		t.Fatal(err)
+	}
+	// The relaying adapter spilled this session's reply, as the old build did.
+	relay := newSidecar("gw", "adapter")
+	relay.prices = CachedOwnedPriceBook("anthropic")
+	rec := relay.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("10")}})
+	rec.timestamp = "2026-11-05T09:50:00+00:00"
+	rec.complete = true
+	old := filepath.Join(dir, "2026-11-05", rowFileName("resp_1."+rec.turnID))
+	if err := os.WriteFile(old, relay.row(rec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTranscript(t, transcriptLine("u1", "resp_1", model, "2026-11-05T10:00:00Z",
+		`{"input_tokens":10,"output_tokens":25}`))
+	if n := RecordTranscript("codex", "anthropic", path); n != 0 {
+		t.Fatalf("the hook rewrote a reply spilled before the rename: %d", n)
+	}
+	if got := len(rows(t, dir)); got != 2 {
+		t.Fatalf("rows = %d, want 2: %v", got, rows(t, dir))
+	}
+	if out := reportOutput(t, 3650); !strings.Contains(out, "over 2 rows") {
+		t.Fatalf("the report does not sum the response once: %s", out)
+	}
+}
+
+// #642's compaction copies a row's name into the day's archive, and an archived
+// row cannot be re-filed by migrateOldSpills: a spill a build before #633 wrote
+// is still spelled under the joined key's hash there, and the relay's turn is
+// not the reader's to name. The held+miss scan must still find it by the
+// response id the row carries, or a re-read writes a second row and every
+// report sums the response twice (2026-11-17).
+func TestAnOldSpillInAnArchivedDayIsStillFound(t *testing.T) {
+	dir := stateHome(t)
+	seedOwnedPrices(t, dir, "anthropic", map[string]price{"claude-opus-5-5": {Input: 4, Output: 20}})
+	model := "claude-opus-5-5"
+	day := time.Now().UTC().AddDate(0, 0, -3).Format(paths.DayLayout)
+	stamp := day + "T08:00:00+00:00"
+	// Another turn holds the primary when the day is compacted.
+	held := newSidecar("gw", "adapter")
+	held.prices = CachedOwnedPriceBook("anthropic")
+	primary := held.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("7")}})
+	primary.timestamp = stamp
+	primary.complete = true
+	if err := held.write(primary); err != nil {
+		t.Fatal(err)
+	}
+	// The relaying adapter spilled this session's reply, as the old build did.
+	relay := newSidecar("gw", "adapter")
+	relay.prices = CachedOwnedPriceBook("anthropic")
+	rec := relay.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("10")}})
+	rec.timestamp = stamp
+	rec.complete = true
+	old := filepath.Join(dir, day, rowFileName("resp_1."+rec.turnID))
+	if err := os.WriteFile(old, relay.row(rec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := CompactUsage(dir, time.Now(), 1); err != nil || n != 1 {
+		t.Fatalf("compaction = %d, %v", n, err)
+	}
+	archive := filepath.Join(dir, day+".jsonl")
+	before, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := writeTranscript(t, transcriptLine("u1", "resp_1", model, day+"T10:00:00Z",
+		`{"input_tokens":10,"output_tokens":25}`))
+	if n := RecordTranscript("codex", "anthropic", path); n != 0 {
+		t.Fatalf("the hook rewrote a reply spilled before the rename: %d", n)
+	}
+	if got := len(rowFilesOf(dir)); got != 0 {
+		t.Fatalf("the hook wrote %d row files beside the archive", got)
+	}
+	if after, err := os.ReadFile(archive); err != nil || string(before) != string(after) {
+		t.Fatalf("the hook touched the archive: %v", err)
+	}
+	if out := reportOutput(t, 3650); !strings.Contains(out, "over 2 rows") {
+		t.Fatalf("the report does not sum the response once: %s", out)
+	}
+}
+
+// A hook pass folds what its own row already holds, whichever name a build
+// before #633 gave that spill: reading only the #633 names would replace the
+// row with this pass's lines and shrink it (2026-11-17).
+func TestAnOldSpillStillFoldsIntoTheHooksRow(t *testing.T) {
+	dir := stateHome(t)
+	s := newSidecar("sub", "transcript")
+	rec := s.start("resp_1", nil, nil, usageRow{
+		{"input_tokens", []byte("10")}, {"output_tokens", []byte("40")},
+	})
+	rec.turnID = "turn_1"
+	rec.timestamp = "2026-11-05T09:00:00+00:00"
+	rec.complete = true
+	folder := filepath.Join(dir, "2026-11-05")
+	if err := os.MkdirAll(folder, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(folder, rowFileName("resp_1.turn_1"))
+	if err := os.WriteFile(old, s.row(rec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := mergeExisting(s, "resp_1", "turn_1", "2026-11-05T10:00:00Z", usageRow{
+		{"input_tokens", []byte("10")}, {"output_tokens", []byte("25")},
+	})
+	if v, _ := finiteNumber(valueOf(got, "output_tokens")); v != 40 {
+		t.Fatalf("an old-name spill was not folded: output_tokens = %v, want 40", v)
+	}
+}
+
+// The one-time rename finds a spill a build before #633 wrote by the content it
+// carries, re-files it under the #633 name in a day folder and in the flat
+// store, and leaves every row it cannot re-file where it is (2026-11-17).
+func TestPreUpdateSpillNamesAreRenamedByContent(t *testing.T) {
+	dir := stateHome(t)
+	day := filepath.Join(dir, "2026-11-05")
+	if err := os.MkdirAll(day, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := func(id, turn string) []byte {
+		return []byte(`{"schema":1,"response_id":"` + id + `","turn_id":"` + turn +
+			`","timestamp":"2026-11-05T09:00:00+00:00","usage":{"input_tokens":10},"complete":true}`)
+	}
+	write := func(path string, data []byte) {
+		t.Helper()
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A day folder's old-name spill is re-filed.
+	old := filepath.Join(day, rowFileName("resp_1.turn_1"))
+	write(old, body("resp_1", "turn_1"))
+	// A row that does not parse, and one whose new name another row holds, stay.
+	broken := filepath.Join(day, rowFileName("resp_2.turn_2"))
+	write(broken, []byte("{not json"))
+	taken := filepath.Join(day, rowFileName("resp_3.turn_3"))
+	write(taken, body("resp_3", "turn_3"))
+	target := filepath.Join(day, spillFileName("resp_3", "resp_3.turn_3"))
+	keptBytes := body("resp_3", "another_turn")
+	write(target, keptBytes)
+	// A primary and a #633 spill name are already where they belong.
+	primary := filepath.Join(day, rowFileName("resp_4"))
+	write(primary, body("resp_4", "turn_4"))
+	current := filepath.Join(day, spillFileName("resp_5", "resp_5.turn_5"))
+	write(current, body("resp_5", "turn_5"))
+	// The flat store holds an old-name spill too.
+	flat := filepath.Join(dir, rowFileName("resp_6.turn_6"))
+	write(flat, body("resp_6", "turn_6"))
+
+	migrateOldSpills(day)
+	migrateOldSpills(dir)
+
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatalf("the old-name spill is still there: %v", err)
+	}
+	if _, err := os.ReadFile(filepath.Join(day, spillFileName("resp_1", "resp_1.turn_1"))); err != nil {
+		t.Fatalf("the old-name spill was not re-filed under the #633 name: %v", err)
+	}
+	for _, kept := range []string{broken, taken, target, primary, current} {
+		if _, err := os.Stat(kept); err != nil {
+			t.Fatalf("a row the sweep must leave alone moved: %s: %v", filepath.Base(kept), err)
+		}
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != string(keptBytes) {
+		t.Fatalf("the sweep replaced a row whose new name was taken: %v", err)
+	}
+	if _, err := os.Stat(flat); !os.IsNotExist(err) {
+		t.Fatalf("the flat store's old-name spill is still there: %v", err)
+	}
+	if _, err := os.ReadFile(filepath.Join(dir, spillFileName("resp_6", "resp_6.turn_6"))); err != nil {
+		t.Fatalf("the flat store's old-name spill was not re-filed: %v", err)
+	}
+	// The marker keeps the sweep to one scan per directory per store.
+	late := filepath.Join(day, rowFileName("resp_7.turn_7"))
+	write(late, body("resp_7", "turn_7"))
+	migrateOldSpills(day)
+	if _, err := os.Stat(late); err != nil {
+		t.Fatalf("the marker did not stop a second scan: %v", err)
+	}
+}
+
+// The held+miss scan re-files old-name spills, and that rename meets the
+// pre-shard move: the move links a flat row into its day folder and only then
+// removes the flat name, so a rename landing between the two leaves one row
+// under two names and every reader counts it twice. The sweep waits for the
+// store's one lock, as compaction and the move do (2026-11-17).
+func TestTheSpillRenameWaitsForTheMoveLock(t *testing.T) {
+	dir := stateHome(t)
+	seedOwnedPrices(t, dir, "anthropic", map[string]price{"claude-opus-5-5": {Input: 4, Output: 20}})
+	model := "claude-opus-5-5"
+	hook := newSidecar("codex", "transcript")
+	usage := usageRow{{"input_tokens", []byte("10")}}
+	timestamp := "2026-11-05T10:00:00+00:00"
+	// Another route holds the id's primary, so the spill scan runs.
+	other := newSidecar("gw", "adapter")
+	other.prices = CachedOwnedPriceBook("anthropic")
+	rec := other.start("resp_1", nil, &model, usageRow{{"input_tokens", []byte("7")}})
+	rec.timestamp = "2026-11-05T09:00:00+00:00"
+	rec.complete = true
+	if err := other.write(rec); err != nil {
+		t.Fatal(err)
+	}
+	held, ok := moveLock(dir)
+	if !ok {
+		t.Fatal("the move lock was free")
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := recordedElsewhere("resp_1", hook.routeID, "turn_hook", timestamp, usage, false)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("the scan ran beside the move lock's holder: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	held.Close()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the scan did not resume once the move lock was free")
+	}
+}
+
 // A spill exists only while its primary is held: the sidecar claims the primary
 // first, and nothing removes a primary. With no primary there is no row to
 // match, so the hook must read that one name and move on — an orphan spill
@@ -1025,7 +1265,7 @@ func TestASpillAddedBetweenTwoScansIsFound(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The first scan: the relay has not spilled this response yet.
-	if held, err := recordedElsewhere("resp_1", hook.routeID, "turn_hook", timestamp, usage); held || err != nil {
+	if held, err := recordedElsewhere("resp_1", hook.routeID, "turn_hook", timestamp, usage, false); held || err != nil {
 		t.Fatalf("first scan = %v, %v: want false, the spill has not landed", held, err)
 	}
 	// The relay spills this response mid-pass: its primary is held, so the
@@ -1041,7 +1281,7 @@ func TestASpillAddedBetweenTwoScansIsFound(t *testing.T) {
 	// The second scan lists the same folder again. The first scan's listing
 	// predates the spill; if the pass answers from it, the hook writes a
 	// second row for this response and the cursor moves on.
-	if held, err := recordedElsewhere("resp_1", hook.routeID, "turn_hook", timestamp, usage); !held || err != nil {
+	if held, err := recordedElsewhere("resp_1", hook.routeID, "turn_hook", timestamp, usage, false); !held || err != nil {
 		t.Fatalf("second scan = %v, %v: want true, the spill landed between the scans", held, err)
 	}
 }
@@ -1081,7 +1321,7 @@ func TestACachedSpillThatIsNotOursIsCheckedAgainstAFreshListing(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The first scan: the other request's spill is there, ours is not.
-	if held, err := recordedElsewhere("resp_1", hook.routeID, "turn_hook", timestamp, usage); held || err != nil {
+	if held, err := recordedElsewhere("resp_1", hook.routeID, "turn_hook", timestamp, usage, false); held || err != nil {
 		t.Fatalf("first scan = %v, %v: want false, only the other row is there", held, err)
 	}
 	// The relay spills this response mid-pass, beside the stale spill.
@@ -1095,7 +1335,7 @@ func TestACachedSpillThatIsNotOursIsCheckedAgainstAFreshListing(t *testing.T) {
 	}
 	// The second scan's cached listing predates this spill and holds only the
 	// non-matching one; answering from it leaves the hook writing a second row.
-	if held, err := recordedElsewhere("resp_1", hook.routeID, "turn_hook", timestamp, usage); !held || err != nil {
+	if held, err := recordedElsewhere("resp_1", hook.routeID, "turn_hook", timestamp, usage, false); !held || err != nil {
 		t.Fatalf("second scan = %v, %v: want true, the spill landed while the cache held only the other row", held, err)
 	}
 }
@@ -1106,7 +1346,7 @@ func TestACachedSpillThatIsNotOursIsCheckedAgainstAFreshListing(t *testing.T) {
 // re-reads the primary once per scanned response.
 func TestTheSpillScanNeverReReadsThePrimary(t *testing.T) {
 	day, primaryName, spillName := seedSpillDay(t)
-	rows, err := usageRowsFor(day, "resp_1", "turn_hook", true)
+	rows, err := usageRowsFor(day, "resp_1", "turn_hook", true, false)
 	if err != nil {
 		t.Fatal(err)
 	}

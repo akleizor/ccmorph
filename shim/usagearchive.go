@@ -1,6 +1,7 @@
 package shim
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -65,9 +66,21 @@ func readUsageDay(dir string) ([]storedUsageRow, error) {
 	return out, nil
 }
 
+// namesResponse is the archive scan's cheap filter: the row's bytes carry this
+// response id. A #633 spill is found by its name; a spill a build before it
+// wrote is found by the id the row carries, and sameResponse still decides
+// whether the row is this response.
+func namesResponse(data []byte, responseID string) bool {
+	return bytes.Contains(data, []byte(responseID))
+}
+
 // usageRowsFor reads only the names one response can own, plus relay spills.
 // Live days keep their one-file lookup; only a day with an archive pays its scan.
-func usageRowsFor(dir, responseID, turnID string, allSpills bool) ([]storedUsageRow, error) {
+// legacy adds the spill names a build before #633 spelled under the joined
+// key's hash, which only a reader holding the row's own turn can name: a pass
+// that folds or retires its own earlier row asks for them, and the hook's
+// held-primary check — the one lookup every response pays for — does not.
+func usageRowsFor(dir, responseID, turnID string, allSpills, legacy bool) ([]storedUsageRow, error) {
 	if paths.IsDayName(filepath.Base(dir)) {
 		_, dataErr := os.Stat(dir + ".jsonl")
 		_, metaErr := os.Stat(dir + ".jsonl.idx")
@@ -77,12 +90,21 @@ func usageRowsFor(dir, responseID, turnID string, allSpills bool) ([]storedUsage
 				return nil, err
 			}
 			primary, spills := rowNames(dir, responseID, turnID)
+			if legacy {
+				spills = append(spills, legacySpillNames(dir, responseID, turnID)...)
+			}
 			prefix := strings.TrimSuffix(filepath.Base(primary), ".json") + "."
 			var out []storedUsageRow
 			for _, row := range rows {
 				match := row.Name == filepath.Base(primary)
 				if allSpills {
-					match = match || strings.HasPrefix(row.Name, prefix)
+					// A spill a build before #633 wrote is still under the
+					// joined key's hash inside the archive: compaction copies
+					// the name and migrateOldSpills cannot re-file an archived
+					// row, and the relay's turn is not the reader's to name.
+					// The day is read whole either way, so the row is found by
+					// the response id it carries (sameResponse decides).
+					match = match || strings.HasPrefix(row.Name, prefix) || namesResponse(row.Data, responseID)
 				} else {
 					for _, spill := range spills {
 						match = match || row.Name == filepath.Base(spill)
@@ -99,6 +121,9 @@ func usageRowsFor(dir, responseID, turnID string, allSpills bool) ([]storedUsage
 	if allSpills {
 		name := rowFileName(responseID)
 		spills = spillsIn(dir, strings.TrimSuffix(name, ".json")+".", name)
+	}
+	if legacy {
+		spills = append(spills, legacySpillNames(dir, responseID, turnID)...)
 	}
 	var rows []storedUsageRow
 	for _, path := range append([]string{primary}, spills...) {

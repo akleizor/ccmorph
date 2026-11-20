@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -297,7 +298,7 @@ func writeUsageRow(profile, pricing, responseID, model, timestamp, session, turn
 	// A session whose traffic a ccmorph adapter already relays (a Remote Control
 	// session, or a launch nested inside one) writes its own row for the same
 	// response. One turn, one row: the writer that saw the traffic keeps it.
-	if recorded, err := recordedElsewhere(responseID, s.routeID, turnID, timestamp, usage); err != nil || recorded {
+	if recorded, err := recordedElsewhere(responseID, s.routeID, turnID, timestamp, usage, lock != nil); err != nil || recorded {
 		return false, err
 	}
 	// A response's lines can span hook passes — a Stop may read the transcript
@@ -334,13 +335,14 @@ func writeUsageRow(profile, pricing, responseID, model, timestamp, session, turn
 // ownership rules; a row another route holds for a different response — a
 // gateway that recycled the id — must not swallow ours, so the hook writes its
 // own into a spill. The names are looked up in every directory the row can
-// live in: its stamp's day and its neighbours, and the flat store.
-func recordedElsewhere(responseID, routeID, turnID, timestamp string, usage usageRow) (bool, error) {
+// live in: its stamp's day and its neighbours, and the flat store. moveLocked
+// says the caller already holds the store's move lock.
+func recordedElsewhere(responseID, routeID, turnID, timestamp string, usage usageRow, moveLocked bool) (bool, error) {
 	dirs := rowDirs(timestamp)
 	primaryName := rowFileName(responseID)
 	held := false
 	for _, dir := range dirs {
-		rows, err := usageRowsFor(dir, responseID, turnID, false)
+		rows, err := usageRowsFor(dir, responseID, turnID, false, false)
 		if err != nil {
 			return false, err
 		}
@@ -374,8 +376,25 @@ func recordedElsewhere(responseID, routeID, turnID, timestamp string, usage usag
 	// a name no reader can derive, so the row is found by the response id it
 	// carries. Only this case pays for the scan: a new response reads one file.
 	// A spill's name starts with its response id's hash, so the spills of one
-	// response are a glob, not a read of every row in the day.
+	// response are a glob, not a read of every row in the day. A spill a build
+	// before #633 wrote is re-filed under that shape first, once per directory:
+	// its old name hashes the joined key, so no glob of the new shape can find
+	// it and no reader holding only the hook's turn could name it.
+	//
+	// The sweep renames rows the pre-shard move may be carrying, and the move
+	// links a flat row into its day folder only then removing the flat name: a
+	// rename landing between the two would leave one row under two names and a
+	// reader counting both. Both run under the store's one lock — the caller's
+	// own when it already holds it, as a closed day's write does, else a shared
+	// claim that waits out a running move. A store whose lock cannot be opened
+	// has no move or compaction either: they take the same file or run not at all.
+	if !moveLocked {
+		if lock, err := paths.UsageStoreLock(usageBase(), false); err == nil && lock != nil {
+			defer lock.Close()
+		}
+	}
 	for _, dir := range dirs {
+		migrateOldSpills(dir)
 		hit, err := spillHolds(dir, responseID, routeID, turnID, timestamp, usage)
 		if err != nil {
 			return false, err
@@ -399,7 +418,7 @@ func recordedElsewhere(responseID, routeID, turnID, timestamp string, usage usag
 // miss, #538).
 func spillHolds(dir, responseID, routeID, turnID, timestamp string, usage usageRow) (bool, error) {
 	_, cached := dirNames[dir]
-	rows, err := usageRowsFor(dir, responseID, turnID, true)
+	rows, err := usageRowsFor(dir, responseID, turnID, true, false)
 	if err != nil {
 		return false, err
 	}
@@ -416,7 +435,7 @@ func spillHolds(dir, responseID, routeID, turnID, timestamp string, usage usageR
 	if _, ok := refreshNames(dir); !ok {
 		return false, nil
 	}
-	rows, err = usageRowsFor(dir, responseID, turnID, true)
+	rows, err = usageRowsFor(dir, responseID, turnID, true, false)
 	if err != nil {
 		return false, err
 	}
@@ -513,13 +532,15 @@ func stampedAfter(theirs, ours string) bool {
 // primary, then the spills a recycled id's turn owns — in every directory the
 // row can live in, because that row is not always the primary: when another
 // turn holds <sha(id)>.json, the writer put ours in a spill, and reading the
-// primary alone would replace the row with this pass's lines and shrink it. A
-// row another writer owns for this response never reaches here
+// primary alone would replace the row with this pass's lines and shrink it.
+// A spill a build before #633 wrote is read too: its name hashes this turn's
+// joined key, so a pass that holds the turn can still name it. A row another
+// writer owns for this response never reaches here
 // (recordedElsewhere), and a row carrying a different response's token — a
 // recycled id — keeps its own numbers.
 func mergeExisting(s *UsageSidecar, responseID, turnID, timestamp string, usage usageRow) usageRow {
 	for _, dir := range rowDirs(timestamp) {
-		rows, err := usageRowsFor(dir, responseID, turnID, false)
+		rows, err := usageRowsFor(dir, responseID, turnID, false, true)
 		if err != nil {
 			continue
 		}
@@ -691,6 +712,131 @@ func spillFileName(responseID, key string) string {
 func rowFileName(responseID string) string {
 	sum := sha256.Sum256([]byte(responseID))
 	return hex.EncodeToString(sum[:]) + ".json"
+}
+
+// legacySpillMarker is the file that marks a directory's one-time rename of the
+// spill names a build before #633 wrote. The sweep reads every row in a day
+// folder — ~20,000 on a busy store — and a store pays for that once per
+// directory, not on every pass. The name does not end in .json, so no reader
+// takes it for a row.
+const legacySpillMarker = ".spill-names-renamed"
+
+// migrateOldSpills re-files the spill rows a build before #633 wrote. The old
+// name is the hash of the joined <response id>.<turn id> key and the new one is
+// the response id's hash followed by the key's, so no name of one shape names a
+// row of the other: only the row's own content tells one apart. A row whose
+// content says it is a spill — it carries a response id, and its name is
+// neither that id's primary name nor a #633 spill name — is renamed from the
+// response and turn it carries. Nothing else is touched: a row whose content
+// does not parse stays where it is, and a new name another row already holds is
+// never replaced. The scan runs once per directory per store (the marker), and
+// only the rare held+miss spill scan calls it, so a normal pass never pays.
+func migrateOldSpills(dir string) {
+	marker := filepath.Join(dir, legacySpillMarker)
+	if _, err := os.Stat(marker); err == nil {
+		return
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return // no such directory (a compacted day), or none this pass can read
+	}
+	renamed, complete := false, true
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			complete = false
+			continue
+		}
+		responseID, turnID, legacy := legacySpillOf(data, name)
+		if !legacy || turnID == "" {
+			continue // not a spill, or no key to spell the #633 name from
+		}
+		target := filepath.Join(dir, spillFileName(responseID, responseID+"."+turnID))
+		if err := renameRow(path, target); err != nil {
+			if !errors.Is(err, fs.ErrExist) && !errors.Is(err, fs.ErrNotExist) {
+				complete = false
+			}
+			continue
+		}
+		renamed = true
+	}
+	if renamed {
+		delete(dirNames, dir) // a listing this process cached names the old shape
+	}
+	if complete {
+		// The marker is empty: its existence is the whole answer, so it is
+		// created rather than written.
+		if f, err := os.OpenFile(marker, os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+			f.Close()
+		}
+	}
+}
+
+// legacySpillOf is the response and turn a row carries when the name it sits
+// under is a spill a build before #633 wrote: a row whose name is neither its
+// own primary name nor a #633 spill shape, identified by the content it holds.
+func legacySpillOf(data []byte, name string) (responseID, turnID string, ok bool) {
+	d := parseDoc(data)
+	if d == nil {
+		return "", "", false
+	}
+	id, hasID := d.str("response_id")
+	if !hasID || id == "" {
+		return "", "", false
+	}
+	primary := rowFileName(id)
+	if name == primary {
+		return "", "", false
+	}
+	if stem := strings.TrimSuffix(primary, ".json") + "."; strings.HasPrefix(name, stem) {
+		if sum := strings.TrimSuffix(strings.TrimPrefix(name, stem), ".json"); len(sum) == 16 && isLowerHex(sum) {
+			return "", "", false // the name #633 already gives a spill
+		}
+	}
+	turn, _ := d.str("turn_id")
+	return id, turn, true
+}
+
+func isLowerHex(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// renameRow gives a row its new name only when that name is free: the link (or,
+// where the filesystem has no hardlinks, an exclusive create) is the claim, so a
+// row another name already holds is never replaced. A failed unlink puts the
+// new name back, leaving the row where it was.
+func renameRow(old, target string) error {
+	err := link(old, target)
+	if err == nil {
+		if rerr := remove(old); rerr != nil {
+			remove(target)
+			return rerr
+		}
+		return nil
+	}
+	if errors.Is(err, fs.ErrExist) {
+		return err
+	}
+	f, cerr := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if cerr != nil {
+		return cerr
+	}
+	f.Close()
+	if rerr := os.Rename(old, target); rerr != nil {
+		remove(target)
+		return rerr
+	}
+	return nil
 }
 
 // cursorFile is where this session's read position is kept, keyed by the
