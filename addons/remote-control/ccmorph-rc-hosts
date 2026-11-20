@@ -1693,23 +1693,23 @@ class Switcher:
         """A handoff lives as long as the edge it was brought up beside: its endpoint
         died with that edge, and its key has no reason to stay on disk. The edge is
         the process the handoff names by pid and start; a pid the OS gave to another
-        process is not that edge."""
-        for hand in INFERENCE.parent.glob("switch-*.json"):
-            try:
-                rec = json.loads(hand.read_text())
-                pid, started = int(rec["edge"]), rec.get("edge_started")
-            except (OSError, ValueError, KeyError, TypeError, AttributeError):
-                continue
+        process is not that edge. Each record is judged as read under the lock
+        --switch publishes it under, so a replacement published meanwhile stays."""
+        rc = rc_module()
+
+        def stale(rec: dict) -> str | None:
+            pid, started = int(rec["edge"]), rec.get("edge_started")
             if not pid_alive(pid):
-                why = "is gone"
-            elif not isinstance(started, str) or not started:
-                why = "is not named by its start"
-            elif (now := rc_module().edge_started(pid)) is not None and now != started:
-                why = "is gone; another process holds its pid"
-            else:
-                continue                     # the same edge, or a live pid whose start cannot be read
-            hand.unlink(missing_ok=True)
-            log(f"inference: {hand.name} removed: edge {pid} {why}")
+                return f"edge {pid} is gone"
+            if not isinstance(started, str) or not started:
+                return f"edge {pid} is not named by its start"
+            now = rc.edge_started(pid)
+            if now is not None and now != started:
+                return f"edge {pid} is gone; another process holds its pid"
+            return None                      # the same edge, or a live pid whose start cannot be read
+        for hand in INFERENCE.parent.glob("switch-*.json"):
+            if why := rc.forget_handoff(hand, stale):
+                log(f"inference: {hand.name} removed: {why}")
 
     def rehand(self) -> None:
         """Keep the LIVE word's endpoint in a live edge: re-run --switch for whatever

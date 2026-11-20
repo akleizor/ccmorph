@@ -35,8 +35,8 @@ from mitmproxy import http
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rc_route import (ACCOUNT_METADATA, encode_json, inference_target, is_event_upload,  # noqa: E402
-                      is_inference, lost_endpoint_note, normalize_body, proc_started, reroute,
-                      slim_events)
+                      forget_handoff, is_inference, lost_endpoint_note, normalize_body, proc_started,
+                      reroute, slim_events)
 
 UPSTREAM = os.environ["RC_UPSTREAM"]
 _key_file = os.environ.pop("RC_KEY_FILE")
@@ -78,13 +78,12 @@ def _forget_handoffs() -> None:
     now = proc_started(PARENT) if alive else None
     if alive and now is None:
         return                               # a live parent whose start cannot be read: keep
+    def stale(h: dict) -> str | None:
+        if int(h["edge"]) == PARENT and (now is None or h.get("edge_started") != now):
+            return "its edge is gone"
+        return None
     for hand in Path(INFERENCE).parent.glob("switch-*.json"):
-        try:
-            h = json.loads(hand.read_text())
-            if int(h["edge"]) == PARENT and (now is None or h.get("edge_started") != now):
-                hand.unlink()
-        except (OSError, ValueError, KeyError, TypeError, AttributeError):
-            pass
+        forget_handoff(hand, stale)          # re-read under the lock --switch publishes under
 
 
 _LOG = open(LOG, "a", buffering=1) if LOG else None   # line-buffered: one write per request

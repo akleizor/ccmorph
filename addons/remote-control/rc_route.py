@@ -10,6 +10,8 @@ header is dropped before the route key is set, and OAuth-only beta flags go with
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -94,19 +96,65 @@ def edge_serves(record: Path) -> dict | None:
         return None
 
 
+def switch_edge(edges: Path, serves=None) -> tuple[int, dict | None]:
+    """The shared edge `ccmorph-rc <profile> --switch` hands a profile to: (how many
+    edges under `edges` serve by edge_serves, that edge's record with its "started"
+    added -- or None unless exactly one serves and its start can be read). --switch
+    and the fallback note both ask this, so the note names the command only where
+    it lands (issue #595). `serves` stands in for edge_serves (ccmorph-rc passes
+    its live_edge, which is edge_serves)."""
+    serves = serves or edge_serves
+    live = [e for f in (sorted(edges.glob("*.json")) if edges.is_dir() else ()) if (e := serves(f))]
+    if len(live) != 1:
+        return len(live), None
+    started = proc_started(int(live[0]["pid"]))
+    return 1, (dict(live[0], started=started) if started else None)
+
+
+@contextlib.contextmanager
+def handoff_lock(hand: Path):
+    """The lock `ccmorph-rc --switch` publishes handoff `hand` under and every
+    remover of it takes, so a remover never unlinks a replacement published after
+    it looked (issue #595). Released when the block ends, or with its process."""
+    with open(hand.with_suffix(".lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def forget_handoff(hand: Path, stale) -> str | None:
+    """Remove handoff `hand` if `stale(record)` -- a reason, or None -- holds for
+    the record on disk now, read under handoff_lock; the reason when it was
+    removed. A record `stale` cannot judge is kept."""
+    try:
+        with handoff_lock(hand):
+            try:
+                rec = json.loads(hand.read_text())
+                why = stale(rec) if isinstance(rec, dict) else None
+            except (OSError, ValueError, KeyError, TypeError):
+                return None
+            if why:
+                hand.unlink()
+            return why
+    except OSError:
+        return None
+
+
 def lost_endpoint_note(target: str, bridge_dir: Path) -> str:
     """The per-turn line when the word names <profile> and no handoff for it can be
     read. It names `ccmorph-rc <profile> --switch` only where that command lands:
-    exactly one shared edge serves by edge_serves, the same rule --switch counts
-    with (issue #595)."""
+    switch_edge finds the one shared edge, the same rule --switch hands over with
+    (issue #595)."""
     edges = bridge_dir / "edges"
     if edge_serves(edges / f"{target}.json"):
         return (f"switch    {target} has no endpoint in this proxy but its own edge is live: "
                 f"ccmorph-rc {target} --switch sets the route word; the route answers meanwhile")
-    n = sum(1 for f in (sorted(edges.glob("*.json")) if edges.is_dir() else ()) if edge_serves(f))
-    if n == 1:
+    n, edge = switch_edge(edges)
+    if edge:
         return (f"switch    {target} has no endpoint in this proxy; "
                 f"ccmorph-rc {target} --switch hands it over; the route answers meanwhile")
+    if n == 1:
+        return (f"switch    {target} has no endpoint in this proxy, and the start of the one live "
+                f"shared edge cannot be read here, so nothing can be handed to it; the route answers")
     return (f"switch    {target} has no endpoint in this proxy and no single live shared edge "
             f"to hand it to ({n} live); the route answers meanwhile")
 

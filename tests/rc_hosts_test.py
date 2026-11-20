@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from support import HANG_TIMEOUT, load_script, needs_loopback, port_outside_the_ephemeral_pool
+from support import HANG_TIMEOUT, load_script, needs_loopback, port_outside_the_ephemeral_pool, publish_when_read
 
 SCRIPT = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccmorph-rc-hosts"
 
@@ -3392,6 +3392,27 @@ def test_inference_reads_the_literal_value_and_no_line_is_empty():
     assert m.inference("# inference=alex\n") == ""
 
 
+@pytest.mark.parametrize("removed", [
+    pytest.param("route=llmgate\n~/x\n", id="line-removed-restores-the-route"),
+    pytest.param("# inference=alex\n", id="line-commented-out-restores-the-route"),
+])
+def test_removing_an_applied_inference_line_restores_the_route(tmp_path, monkeypatch, removed):
+    """The literal is "" with no line, and a config that drops an applied
+    `inference=` still means the route: the account that line chose is not left
+    serving every proxy."""
+    m = load()
+    w = _switcher(m, monkeypatch, tmp_path)
+    w.edge("gateway", 500)
+    sw = m.Switcher()
+    sw.reload(m.inference("inference=alex  # subscription first\n"), "alex")
+    sw.tend(0)
+    assert m.INFERENCE.read_text() == "account\n"
+    sw.reload(m.inference(removed), "alex")
+    sw.tend(1)
+    assert m.INFERENCE.read_text() == "route\n"
+    assert w.children == []
+
+
 def _switcher(m, monkeypatch, tmp_path):
     rc = m.rc_module()
     live, alive, children = {}, set(), []
@@ -3401,7 +3422,7 @@ def _switcher(m, monkeypatch, tmp_path):
     monkeypatch.setattr(m, "LOGS", tmp_path / "logs")
     monkeypatch.setattr(m, "edge_ready", lambda r: {"pid": live[r]} if r in live else None)
     monkeypatch.setattr(rc, "live_edge", lambda r: {"pid": live[r]} if r in live else None)
-    monkeypatch.setattr(rc, "edge_started", lambda pid: started.get(pid))
+    monkeypatch.setattr(rc.rc_route, "proc_started", lambda pid: started.get(pid))
     monkeypatch.setattr(m, "pid_alive", lambda pid: pid in live.values() or pid in alive, raising=False)
     def edge(route, pid):
         if pid is None:
@@ -3743,6 +3764,28 @@ def test_a_handoff_lives_as_long_as_its_edge(tmp_path, monkeypatch):
     (bridge / "switch-gpt.json").write_text(json.dumps({"edge": 800, "edge_started": "start-800"}))
     sw.tend(1)
     assert (bridge / "switch-gpt.json").exists()
+
+
+def test_the_sweep_never_removes_a_handoff_published_after_it_looked(tmp_path, monkeypatch):
+    """issue #595 review: sweep read a record naming a dead edge, then unlinked the
+    path after --switch had published a valid replacement there. The removal
+    re-reads under the lock --switch publishes under."""
+    m = load()
+    w = _switcher(m, monkeypatch, tmp_path)
+    w.edge("gateway", 500)
+    hand = m.INFERENCE.parent / "switch-gpt.json"
+    hand.write_text(json.dumps({"upstream": "u", "key": "k", "edge": 700, "edge_started": "old"}))
+    fresh = {"upstream": "v", "key": "k2", "edge": 500, "edge_started": w.started[500]}
+    m.WANTED.write_text("\n")
+    m.INFERENCE.write_text("route\n")
+    sw = m.Switcher()
+    sw.reload("", "alex")
+    seen = publish_when_read(monkeypatch, hand, fresh)
+    sw.tend(0)
+    if "waited" in seen:
+        hand.write_text(json.dumps(fresh))            # --switch publishes once the lock is free
+    assert "waited" in seen
+    assert json.loads(hand.read_text()) == fresh
 
 
 @pytest.mark.parametrize("recorded, now, kept", [

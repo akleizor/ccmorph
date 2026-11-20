@@ -56,7 +56,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 # the routing decision beside this script, however it was loaded (test, install, exec)
 sys.path.insert(0, str(HERE))
-from rc_route import ACCOUNT_METADATA, edge_serves, proc_started  # noqa: E402  (edge_serves: the one live-edge rule)
+from rc_route import ACCOUNT_METADATA, edge_serves, forget_handoff, handoff_lock, switch_edge  # noqa: E402  (edge_serves: the one live-edge rule)
+import rc_route  # noqa: E402  (rc_route.proc_started: the one start identity, looked up per call)
 LIB_DIR = Path(os.environ.get("CCMORPH_LIB_DIR") or HERE.parent.parent / "lib")
 CCMORPH = LIB_DIR / "ccmorph.sh"
 ADAPTER = LIB_DIR.parent / "libexec" / "ccmorph-core"
@@ -376,7 +377,7 @@ def edge_started(pid: int) -> str | None:
     whatever process the OS gives the number next starts at another moment, so a
     handoff or sidecar naming only a pid does not outlive the edge it was made
     beside once the number is recycled (issue #595)."""
-    return proc_started(pid)
+    return rc_route.proc_started(pid)
 
 
 def _listening(upstream: str) -> bool:
@@ -426,6 +427,9 @@ def sidecar(profile: str, owner: int, started: str) -> tuple[str, int]:
     hand = STATE / f"sidecar-{profile}.json"
     with open(STATE / f"sidecar-{profile}.lock", "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)          # released when the file closes
+        if edge_started(owner) != started:        # the edge may have been replaced while we waited
+            die(f"edge {owner} was replaced while this switch waited; nothing was changed -- run "
+                f"`ccmorph-rc {profile} --switch` again to hand {profile} to the edge live now (issue #595)")
         try:
             rec = json.loads(hand.read_text())
             old, edge, url = int(rec["pid"]), int(rec["edge"]), str(rec["upstream"])
@@ -605,14 +609,15 @@ def switch(profile: str, account: str) -> None:
     if word == profile:
         if profile_type(profile) == "sub":
             die(f"'{profile}' is a Claude account profile, but the hosts sign in as '{account}'")
-        live = [e for f in (EDGES.glob("*.json") if EDGES.exists() else ()) if (e := live_edge(f.stem))]
         # shortcut: one shared edge (rc-hosts runs one route); a second edge would need its own handoff.
-        if len(live) != 1:
-            die(f"--switch needs exactly one live shared edge, found {len(live)}")
-        owner = int(live[0]["pid"])          # the profile lives as long as the edge that serves it
-        started = edge_started(owner) or die(
-            f"cannot read when edge {owner} started, so a handoff could outlive it; nothing was "
-            f"switched -- retry `ccmorph-rc {profile} --switch` (issue #595)")
+        # switch_edge is also what the fallback note names this command by.
+        n, edge = switch_edge(EDGES, lambda f: live_edge(f.stem))
+        if n != 1:
+            die(f"--switch needs exactly one live shared edge, found {n}")
+        if edge is None:
+            die("the start of the live shared edge cannot be read on this system, so a handoff "
+                "could outlive it; nothing was switched (issue #595)")
+        owner, started = int(edge["pid"]), str(edge["started"])   # the profile lives as long as that edge
         route_env = resolve_route(profile)
         retire_route_with(owner, route_env.get("CCMORPH_ROUTE_HANDLE", ""))
         key = route_env.get("ANTHROPIC_API_KEY") or die(f"profile '{profile}' has no key")
@@ -621,11 +626,12 @@ def switch(profile: str, account: str) -> None:
                     if profile_type(profile) == "provider" else sidecar(profile, owner, started)[0])
         tiers = pinned_tiers(route_env)
         hand = STATE / f"switch-{profile}.json"
-        fd = os.open(hand.with_suffix(".tmp"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        os.write(fd, json.dumps({"upstream": upstream, "key": key, "tiers": tiers,
-                                 "edge": owner, "edge_started": started}).encode())
-        os.close(fd)
-        hand.with_suffix(".tmp").replace(hand)
+        with handoff_lock(hand):             # its removers re-read under it before they unlink
+            fd = os.open(hand.with_suffix(".tmp"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            os.write(fd, json.dumps({"upstream": upstream, "key": key, "tiers": tiers,
+                                     "edge": owner, "edge_started": started}).encode())
+            os.close(fd)
+            hand.with_suffix(".tmp").replace(hand)
     write_inference(word, INFERENCE)
     print(f"ccmorph-rc: inference now goes to '{profile}' from the next turn", file=sys.stderr)
 

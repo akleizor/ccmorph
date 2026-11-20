@@ -242,6 +242,33 @@ def helper_cmd(name, binary=None):
     return [str(binary or CORE), name]
 
 
+def publish_when_read(monkeypatch, hand, record):
+    """Stand in for a `ccmorph-rc --switch` that publishes `record` at handoff `hand`
+    the moment a remover has read the old one. Like --switch it publishes under the
+    handoff's lock, so a remover holding that lock makes it wait: then it is left to
+    the caller to publish once the remover is done. Returns the list that records
+    "waited" in that case."""
+    import fcntl
+    import json
+    real = Path.read_text
+    seen = []
+
+    def read_text(self, *a, **k):
+        text = real(self, *a, **k)
+        if self == hand and not seen:
+            seen.append("read")
+            with open(hand.with_suffix(".lock"), "a") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    seen.append("waited")
+                    return text
+                hand.write_text(json.dumps(record))
+        return text
+    monkeypatch.setattr(Path, "read_text", read_text)
+    return seen
+
+
 def __getattr__(name):
     if name == "needs_shim":
         import pytest

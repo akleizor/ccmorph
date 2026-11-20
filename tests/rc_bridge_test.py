@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from support import HANG_TIMEOUT, load_script
+from support import HANG_TIMEOUT, load_script, publish_when_read
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "addons" / "remote-control"))
 from rc_route import inference_target, is_inference, reroute  # noqa: E402
@@ -685,7 +685,7 @@ def _switch_rig(rc, monkeypatch, tmp_path, alive=None, serving=None):
     monkeypatch.setattr(rc, "INFERENCE", state / "inference")
     monkeypatch.setattr(rc, "profile_type", lambda p: "apikey")
     monkeypatch.setattr(rc, "live_edge", lambda r: {"pid": 500} if r == "gateway" else None)
-    monkeypatch.setattr(rc, "edge_started", lambda pid: f"start-{pid}")
+    monkeypatch.setattr(rc.rc_route, "proc_started", lambda pid: f"start-{pid}")
     monkeypatch.setattr(rc, "resolve_route", lambda p: {"ANTHROPIC_API_KEY": "sk-oli"})
     monkeypatch.setattr(rc, "retire_route_with", lambda *a: None)
     monkeypatch.setattr(rc, "adapter_env", lambda: {})
@@ -754,7 +754,7 @@ def test_a_sidecar_is_reused_only_beside_the_edge_process_it_was_made_for(tmp_pa
     if recorded is not None:
         rec["edge_started"] = recorded
     (state / "sidecar-oli.json").write_text(json.dumps(rec))
-    monkeypatch.setattr(rc, "edge_started", lambda pid: now)
+    monkeypatch.setattr(rc.rc_route, "proc_started", lambda pid: now)
     rc.switch("oli", "alex")
     assert signals == ["SIGTERM"]
     assert [(s[0], s[1]) for s in started] == [("oli", 500)]
@@ -764,24 +764,63 @@ def test_a_sidecar_is_reused_only_beside_the_edge_process_it_was_made_for(tmp_pa
     assert (hand["upstream"], hand["edge_started"]) == ("http://127.0.0.1:45111", now)
 
 
+def test_a_stalled_switch_never_retires_the_sidecar_of_the_edge_that_replaced_its_own(tmp_path, monkeypatch):
+    """issue #595 review: a switch read its edge's start, then stalled; the edge's
+    pid went to a replacement and a second switch installed that edge's sidecar.
+    The stalled switch took the ledger lock next, read the newer start as stale and
+    retired the healthy adapter. Under the lock it checks its edge is still the one
+    live, and refuses without touching the ledger when it is not."""
+    rc = _launcher()
+    state, started, signals = _switch_rig(rc, monkeypatch, tmp_path, alive=True, serving=True)
+    ledger = {"pid": 7321, "upstream": "http://127.0.0.1:45110", "edge": 500, "edge_started": "later-500"}
+    (state / "sidecar-oli.json").write_text(json.dumps(ledger))
+    monkeypatch.setattr(rc.rc_route, "proc_started", lambda pid: "later-500")   # the edge live now
+    with pytest.raises(SystemExit):
+        rc.sidecar("oli", 500, "start-500")                                     # what it read before
+    assert signals == [] and started == []
+    assert json.loads((state / "sidecar-oli.json").read_text()) == ledger
+
+
+def test_a_switch_publishes_its_handoff_under_the_lock_its_removers_take(tmp_path, monkeypatch):
+    import fcntl
+    rc = _launcher()
+    state, started, signals = _switch_rig(rc, monkeypatch, tmp_path)
+    hand, held, real = state / "switch-oli.json", [], Path.replace
+    def replace(self, target):
+        if Path(target) == hand:
+            with open(hand.with_suffix(".lock"), "a") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    held.append(True)
+        return real(self, target)
+    monkeypatch.setattr(Path, "replace", replace)
+    rc.switch("oli", "alex")
+    assert held == [True]
+    assert json.loads(hand.read_text())["edge_started"] == "start-500"
+
+
 def test_a_switch_that_cannot_read_its_edges_start_changes_nothing(tmp_path, monkeypatch):
     rc = _launcher()
     state, started, signals = _switch_rig(rc, monkeypatch, tmp_path)
-    monkeypatch.setattr(rc, "edge_started", lambda pid: None)
+    monkeypatch.setattr(rc.rc_route, "proc_started", lambda pid: None)
     with pytest.raises(SystemExit):
         rc.switch("oli", "alex")
     assert started == [] and signals == []
     assert not (state / "switch-oli.json").exists() and not (state / "inference").exists()
 
 
-@pytest.mark.parametrize("edges, ca, lands", [
-    pytest.param(1, True, True, id="one-live-edge-names-the-switch-that-lands"),
-    pytest.param(1, False, False, id="ca-gone-names-no-switch-that-refuses-issue-595"),
-    pytest.param(2, True, False, id="two-live-edges-name-no-switch-that-refuses-issue-595"),
+@pytest.mark.parametrize("edges, ca, start, lands", [
+    pytest.param(1, True, True, True, id="one-live-edge-names-the-switch-that-lands"),
+    pytest.param(1, False, True, False, id="ca-gone-names-no-switch-that-refuses-issue-595"),
+    pytest.param(2, True, True, False, id="two-live-edges-name-no-switch-that-refuses-issue-595"),
+    pytest.param(1, True, False, False, id="unreadable-edge-start-names-no-switch-that-refuses-issue-595"),
 ])
-def test_the_note_names_switch_only_where_switch_lands(tmp_path, monkeypatch, edges, ca, lands):
+def test_the_note_names_switch_only_where_switch_lands(tmp_path, monkeypatch, edges, ca, start, lands):
     import rc_route
     rc = _launcher()
+    if not start:
+        monkeypatch.setattr(rc_route, "proc_started", lambda pid: None)
     bridge = tmp_path / "bridge"
     (bridge / "edges").mkdir(parents=True)
     pem = tmp_path / "ca.pem"
@@ -936,6 +975,24 @@ def test_a_handoff_goes_with_the_edge_it_serves(tmp_path, monkeypatch):
         {"upstream": "u", "key": "k", "edge": os.getpid(), "edge_started": live.proc_started(os.getpid())}))
     live.done()
     assert (bridge / "switch-oli.json").exists()
+
+
+def test_a_proxy_never_removes_a_handoff_published_after_it_looked(tmp_path, monkeypatch):
+    """issue #595 review: the proxy read a stale record, then unlinked the path, by
+    which time --switch had published a valid replacement there; the next turn fell
+    back to the route. The removal re-reads under the lock --switch publishes under."""
+    gone = subprocess.Popen(["true"])
+    gone.wait()
+    mod, bridge = _proxy_addon(monkeypatch, tmp_path, gone.pid)
+    hand = bridge / "switch-oli.json"
+    hand.write_text(json.dumps({"upstream": "u", "key": "k", "edge": gone.pid, "edge_started": "old"}))
+    fresh = {"upstream": "v", "key": "k2", "edge": os.getpid(), "edge_started": "new"}
+    seen = publish_when_read(monkeypatch, hand, fresh)
+    mod.done()
+    if "waited" in seen:
+        hand.write_text(json.dumps(fresh))            # --switch publishes once the lock is free
+    assert "waited" in seen
+    assert json.loads(hand.read_text()) == fresh
 
 
 @pytest.mark.parametrize("recorded, now, kept", [
