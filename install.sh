@@ -603,6 +603,7 @@ _compinit_in_rc=0
 if "$_core_src" util fpath-bound "$_zshrc" "$_comp_dir"; then
   _comp_dir_bound=1
 fi
+_compinit_known=1
 if [[ -f "$_zshrc" ]]; then
   # What the rc runs, not what it mentions (#449): a # that begins a word
   # starts a comment, so a commented-out compinit starts nothing, and only the
@@ -612,10 +613,17 @@ if [[ -f "$_zshrc" ]]; then
   # last line has no trailing newline, on extendedglob from the user's .zshenv
   # (this installer runs under zsh, so it applies here), and on a # inside
   # quotes. The source core — the bytes just placed, so macOS does not
-  # revalidate a fresh copy's signature — answers by exit status.
-  if "$_core_src" util compinit-runs "$_zshrc"; then
-    _compinit_in_rc=1
-  fi
+  # revalidate a fresh copy's signature — answers by exit status: 0 runs, 1
+  # does not. Anything above 1 is not a verdict — the scan itself could not
+  # run — and a failed scan is never read as "already started", which would
+  # suppress the line that makes Tab work (#582).
+  _compinit_status=0
+  "$_core_src" util compinit-runs "$_zshrc" || _compinit_status=$?
+  case $_compinit_status in
+    0) _compinit_in_rc=1 ;;
+    1) ;;
+    *) _compinit_known=0 ;;
+  esac
 fi
 (( _comp_dir_bound && _compinit_in_rc )) && _comp_wanted=0
 if (( _comp_wanted )); then
@@ -625,11 +633,19 @@ if (( _comp_wanted )); then
     c_dim "  Add this line to $_zshrc yourself, above the line that runs compinit (or loads Oh My Zsh); Tab completes in the next zsh you start:"
     print -r -- "  fpath=(${(q)_comp_dir} \$fpath)"
   elif (( _comp_dir_bound )); then
-    c_y "$_zshrc puts $_comp_dir on fpath, but nothing in it starts zsh's completion system."
+    if (( _compinit_known )); then
+      c_y "$_zshrc puts $_comp_dir on fpath, but nothing in it starts zsh's completion system."
+    else
+      c_y "$_zshrc puts $_comp_dir on fpath, but whether it starts zsh's completion system could not be checked."
+    fi
     c_dim "  Add this line to $_zshrc yourself, under the fpath line; Tab completes in the next zsh you start:"
     print -r -- "  autoload -Uz compinit && compinit"
   else
-    c_y "Tab completion for ccmorph is in $_comp_dir, which zsh does not search — and nothing starts zsh's completion system."
+    if (( _compinit_known )); then
+      c_y "Tab completion for ccmorph is in $_comp_dir, which zsh does not search — and nothing starts zsh's completion system."
+    else
+      c_y "Tab completion for ccmorph is in $_comp_dir, which zsh does not search — and whether zsh's completion system starts could not be checked."
+    fi
     c_dim "  Add these two lines to $_zshrc yourself; Tab completes in the next zsh you start:"
     print -r -- "  fpath=(${(q)_comp_dir} \$fpath)"
     print -r -- "  autoload -Uz compinit && compinit"
