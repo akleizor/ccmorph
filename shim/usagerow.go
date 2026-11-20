@@ -191,7 +191,10 @@ func RecordTranscript(profile, pricing, path string) int {
 	}
 	// The final cursor goes first: a stop that lands before progress is cleared
 	// then finds the cursor already at or past the checkpoint and leaves it.
-	withCursorLock(cursorPath, func() {
+	// It is written even without the flock, because it is this pass's own
+	// result: skipping it would make a filesystem without flock reread the
+	// same backlog on every Stop.
+	withCursorLock(cursorPath, func(bool) {
 		writeCursor(cursorPath, cursor{Offset: at, Since: c.Since})
 	})
 	progress.Store(nil)
@@ -260,18 +263,18 @@ func onStop() {
 // order to other processes.
 var cursorMu sync.Mutex
 
-// withCursorLock runs fn holding both: the mutex orders a stopped pass's
-// checkpoint against the pass's own final write here, and the flock orders
-// them against another process's pass, so a handler that read an older
-// position cannot rename it over a newer one. A lock that cannot be taken
-// still runs fn: losing the checkpoint is worse than the ordering it misses.
-func withCursorLock(path string, fn func()) {
+// withCursorLock runs fn holding cursorMu and, when it can be taken, the
+// cursor's flock; locked reports whether the flock is held. The mutex orders
+// this process's checkpoint against the pass's own final write, and the flock
+// orders both against another process's pass.
+func withCursorLock(path string, fn func(locked bool)) {
 	cursorMu.Lock()
 	defer cursorMu.Unlock()
-	if lock := cursorLock(path); lock != nil {
+	lock := cursorLock(path)
+	if lock != nil {
 		defer lock.Close()
 	}
-	fn()
+	fn(lock != nil)
 }
 
 // cursorLock takes the exclusive flock that serializes a cursor's read and
@@ -305,9 +308,15 @@ var cursorHeld func()
 
 // checkpointCursor records a stopped pass's checkpoint, unless the cursor on
 // disk already sits at or past it: the pass's final write, or a newer pass,
-// may have moved it first.
+// may have moved it first. Without the flock the read and the write are not
+// one step against another process, so the checkpoint is skipped: an older
+// pass could otherwise overwrite a newer pass's cursor, and a skipped
+// checkpoint only costs a reread, which is idempotent.
 func checkpointCursor(cp *checkpoint) {
-	withCursorLock(cp.path, func() {
+	withCursorLock(cp.path, func(locked bool) {
+		if !locked {
+			return
+		}
 		cur := readCursor(cp.path)
 		if cursorHeld != nil {
 			cursorHeld()

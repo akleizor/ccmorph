@@ -1321,3 +1321,34 @@ func TestCheckpointCursorNeverMovesBackward(t *testing.T) {
 		t.Fatalf("cursor %d after a newer checkpoint, want 60", c.Offset)
 	}
 }
+
+// #645: without the flock the checkpoint's read and write are not one step
+// against another process, so it writes nothing: an older pass could otherwise
+// overwrite a newer pass's cursor. A skipped checkpoint costs only a reread.
+func TestCheckpointCursorSkipsWhenTheLockFails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cursor.json")
+	writeCursor(path, cursor{Offset: 10})
+	if err := os.Mkdir(path+".lock", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	checkpointCursor(&checkpoint{path: path, c: cursor{Offset: 25}})
+	if c := readCursor(path); c.Offset != 10 {
+		t.Fatalf("cursor %d after a checkpoint without the lock, want 10", c.Offset)
+	}
+}
+
+// #645: the pass's own final cursor still lands when the lock cannot be taken:
+// it is not a read-then-write, and skipping it would make a filesystem without
+// flock reread the same backlog on every Stop.
+func TestRecordTranscriptWritesItsCursorWhenTheLockFails(t *testing.T) {
+	stateHome(t)
+	line1 := transcriptLine("u1", "msg_1", "claude-opus-5-5", "2026-11-05T10:00:00Z", `{"input_tokens":1,"output_tokens":2}`)
+	path := writeTranscript(t, line1)
+	if err := os.MkdirAll(cursorFile(path)+".lock", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	RecordTranscript("sub", "anthropic", path)
+	if c := readCursor(cursorFile(path)); c.Offset != int64(len(line1)) {
+		t.Fatalf("cursor %d after the pass without the lock, want %d", c.Offset, len(line1))
+	}
+}
