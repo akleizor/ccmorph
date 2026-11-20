@@ -344,8 +344,10 @@ func walkListing(data []any, logUnsafe bool) []listingRow {
 		}
 		r := listingRow{id: m["id"], chat: true}
 		// Exclude only an explicit denial; most endpoints publish no capabilities.
-		if caps, ok := m["capabilities"].(map[string]any); ok && !truthy(caps["chat_completion"]) {
-			r.chat = false
+		if caps, ok := m["capabilities"].(map[string]any); ok {
+			if b, ok := caps["chat_completion"].(bool); ok && !b {
+				r.chat = false
+			}
 		}
 		r.name, _ = m["id"].(string)
 		if r.name != "" {
