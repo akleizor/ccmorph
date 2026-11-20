@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -68,6 +69,11 @@ antigravity-credits: false
 		logf, _ = os.Open(os.DevNull)
 	}
 	cmd := exec.Command(bin, "-config", conf)
+	// SharedBridge owns this process, not the job whose launch happened to start it.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Env = slices.DeleteFunc(os.Environ(), func(entry string) bool {
+		return strings.HasPrefix(entry, "AGENT_DISPATCH_JOB=")
+	})
 	cmd.Stdout, cmd.Stderr = logf, logf
 	if err := cmd.Start(); err != nil {
 		os.RemoveAll(tmp)

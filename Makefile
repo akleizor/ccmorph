@@ -29,9 +29,14 @@ shim:
 
 test: gate
 
+# The suite runs a second time under umask 077, which catches mode-vs-umask
+# fixture tests by name: os.WriteFile filters the mode it asks for through the
+# host umask, so a test that writes 0644 and asserts it is born 0600 on a 077
+# host. -count=1 keeps the cached 022 result from answering for it (#704).
 test-go:
 	go vet ./...
 	go test ./...
+	umask 077 && go test -count=1 ./...
 
 # The Hive's gate on every landing, and what `make test` runs. Each suite works in
 # its own scratch homes and mostly waits on process spawns, so they overlap: 185 s

@@ -262,7 +262,7 @@ func report(args []string, stdout, stderr io.Writer) int {
 		}
 		if r["outcome"] != nil {
 			finished++
-			if r["outcome"] == "quality_fail" || r["outcome"] == "error" {
+			if r["outcome"] != "completed" {
 				failed++
 			}
 		}

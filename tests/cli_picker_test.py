@@ -1344,6 +1344,37 @@ class PickerTTYTest(unittest.TestCase):
         self.assertEqual(result.stderr.count('cancelled; nothing removed'), 1, result.stderr)
         self.assertTrue(leftover.is_dir())
 
+    def test_rm_confirms_before_destroying_a_profile_in_a_terminal_issue_652(self):
+        # The removal the help page caps with "This cannot be undone" asked of
+        # nobody: a terminal now gets the same confirmation the leftover branch
+        # already gives, naming the paths it will destroy, and its default No
+        # — answered here by Enter — keeps every piece of the profile.
+        env = self.env()
+        self.profile()
+        rc, out, missed = run_pty('ccmorph rm demo', env, [(b'Remove this profile?', b'\r')],
+                                  size=(24, 200))
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 1, out)
+        self.assertIn('cancelled; nothing removed', out)
+        self.assertIn('This cannot be undone', out)
+        self.assertIn(str(self.state / 'demo.conf'), out)
+        self.assertIn(str(self.state / 'profiles' / 'demo'), out)
+        self.assertTrue((self.state / 'demo.conf').is_file())
+        self.assertTrue((self.state / 'profiles' / 'demo').is_dir())
+
+    def test_rm_removes_the_profile_after_yes_in_a_terminal_issue_652(self):
+        env = self.env()
+        self.profile()
+        rc, out, missed = run_pty('ccmorph rm demo', env, [(b'Remove this profile?', b'\x1b[B\r')])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        # On a terminal the summary is colored — the escape ends inside the line,
+        # so only the screen a person reads holds "Removed demo" whole.
+        self.assertIn('Removed demo', '\n'.join(screen(out)), out)
+        self.assertNotIn('cancelled; nothing removed', out)
+        self.assertFalse((self.state / 'demo.conf').exists())
+        self.assertFalse((self.state / 'profiles' / 'demo').exists())
+
     def test_current_value_is_not_offered_twice(self):
         env = self.env(fzf=True)
         self.profile()

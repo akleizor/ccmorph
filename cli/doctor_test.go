@@ -273,6 +273,12 @@ func TestDoctorLeavesTheActiveFilesModeAlone(t *testing.T) {
 	if err := os.WriteFile(active, []byte("ghost\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// WriteFile filters its mode through the process umask, so a 077 host
+	// would create this 0600 and the assertion below could never pass. Chmod
+	// pins the mode the fixture means to start from, whatever the host's umask.
+	if err := os.Chmod(active, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("HOME", t.TempDir())
 	l := &launcher{dir: state, profileDirs: filepath.Join(t.TempDir(), "profiles")}
 	out, rc := doctorOutput(t, l, "")

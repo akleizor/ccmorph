@@ -1034,7 +1034,9 @@ instead: ccmorph config <profile>`},
 	"mv": {"ccmorph mv <old> <new>", "Rename a profile and its private state. Existing destinations are refused."},
 	"rm": {"ccmorph rm <profile>", `Delete this profile, its saved credential and private sign-in state.
 Shared conversation history is kept. This cannot be undone.
-Leftover private state from a missing profile requires confirmation.`},
+In a terminal this is confirmed first, defaulting to No; piped input
+removes at once. Leftover private state from a missing profile
+requires confirmation.`},
 	"hop": {"ccmorph hop [profile]", `Inside a running Claude Code session, type one of:
   /ccmorph:hop <profile>
   ! ccmorph hop <profile>

@@ -3,6 +3,7 @@ package router
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -93,6 +94,41 @@ func TestPreToolUseRunsASameProfilePickNativelyAndSendsAnotherToDelegate(t *test
 	PreToolUse(strings.NewReader(agentCall), &out)
 	if out.Len() != 0 {
 		t.Fatalf("another profile's pick never denies the call: %s", out.String())
+	}
+}
+
+// A failed run whose text names no quota, auth or timeout is still not an
+// answer: it must be ledgered as an error and back its model off, exactly as
+// Delegate's status != 0 fallback does.
+func TestAHookFailureWithUnmatchedTextIsLedgeredErrorAndBacksTheModelOff(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		event string
+		hook  func(io.Reader, io.Writer)
+	}{
+		{"post tool use", `{"tool_name":"Agent","tool_use_id":"tu1","tool_response":{"content":[{"type":"text","text":"the model stopped halfway"}],"is_error":true}}`, PostToolUse},
+		{"subagent stop", `{"agent_type":"general-purpose","agent_id":"tu1","last_assistant_message":"the model stopped halfway","status":"failed"}`, SubagentStop},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hookEnv(t, true)
+			ledgerAppend(Row{"id": "route-1", "tool_use_id": "tu1", "profile": "here", "model": "sonnet",
+				"brief": "fix the bug", "kind": "code", "tier": "mid", "outcome": nil})
+			var out bytes.Buffer
+			tc.hook(strings.NewReader(tc.event), &out)
+			rows := readRows(ledgerPath())
+			if len(rows) != 1 {
+				t.Fatalf("ledger rows: %v", rows)
+			}
+			if got := rows[0]["outcome"]; got != "error" {
+				t.Fatalf("outcome %v, want error: a failure is not a real answer", got)
+			}
+			if rows[0]["quality"] != nil {
+				t.Fatalf("the failure verdict reached the decider: %v", rows[0])
+			}
+			if unavailableUntil("here/sonnet") <= nowSec() {
+				t.Fatal("the failed model is still routable")
+			}
+		})
 	}
 }
 

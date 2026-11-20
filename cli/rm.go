@@ -63,6 +63,29 @@ func (l *launcher) rm(args []string) int {
 			}
 			return 1
 		}
+	} else if isTTY(0) && isTTY(2) {
+		// The removal the help page caps with "This cannot be undone" must ask
+		// the terminal that reads that cap (#652), the same way the leftover
+		// branch above already asks about its leftovers. Piped input keeps its
+		// line-based, unattended behavior for scripts (docs/guide.md): it is the
+		// terminal that carries the promise.
+		detail := "  " + l.conf(name)
+		if paths.Lexists(pdir) {
+			detail += "\n  " + pdir
+		}
+		if paths.Lexists(auth) {
+			detail += "\n  " + auth
+		}
+		fmt.Fprintf(os.Stderr, "Remove profile '%s', its saved credential and private sign-in state?\n%s\nShared conversation history will be kept. This cannot be undone.\n", name, detail)
+		if rc := uiConfirm("Remove this profile?"); rc != 0 {
+			// A leave (rc 2) is already answered by the picker's own Cancelled
+			// line, as in the leftover branch; there is no second way to reach
+			// here with rc 2 without a terminal to show it on.
+			if rc != 2 {
+				l.err("cancelled; nothing removed")
+			}
+			return 1
+		}
 	}
 	if !l.removeProfileDir(name) {
 		l.err("could not remove credential directory for '" + name + "'")
@@ -78,13 +101,19 @@ func (l *launcher) rm(args []string) int {
 	for _, p := range util.BridgeFiles(filepath.Join(l.dir, "auth"), name) {
 		os.Remove(p)
 	}
-	if l.active() == name {
+	clearedDefault := l.active() == name
+	if clearedDefault {
 		if err := os.Remove(filepath.Join(l.dir, "active")); err != nil && !os.IsNotExist(err) {
 			l.err("could not clear default profile")
 			return 1
 		}
 	}
 	fmt.Println(l.accent + "Removed" + l.reset + " " + name)
+	if clearedDefault {
+		// The default left with the profile; the removal summary is where that
+		// belongs, not two steps downstream at the next failed run (#652).
+		l.err("default profile removed — set one: ccmorph use <profile>")
+	}
 	return 0
 }
 

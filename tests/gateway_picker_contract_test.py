@@ -155,7 +155,7 @@ def test_probe_model_interactive_honours_exclusions(tmp_path):
     assert '--model blocked' in (tmp_path / 'probe.args').read_text()
 
 
-def test_copied_lib_copies_source_not_the_checkouts_incidental_contents_issue_220(tmp_path):
+def test_copied_lib_copies_source_not_the_checkouts_incidental_contents_issue_220(tmp_path, monkeypatch):
     """`copied_lib` copies the repository's own source, never the checkout's
     incidental contents: local tooling leaves data git ignores in the root — on
     this machine codegraph's `.codegraph/` — and its Unix socket cannot be
@@ -164,10 +164,17 @@ def test_copied_lib_copies_source_not_the_checkouts_incidental_contents_issue_22
     shutil.rmtree(planted, ignore_errors=True)
     planted.mkdir()
     (planted / 'tool.db').write_text('untracked tool data, not source')
+    # Bind the relative name from inside the planted dir: the absolute one is
+    # len(ROOT)+39 bytes and macOS refuses an AF_UNIX path of 104 or more, so a
+    # checkout root longer than 64 bytes failed the gate on this bind itself,
+    # not on the regression (#715). Eleven bytes answers the limit on every
+    # checkout, and the socket still lands inside the checkout, where the
+    # copy must not reach it.
+    monkeypatch.chdir(planted)
     sock = socket.socket(socket.AF_UNIX)
     try:
         try:
-            sock.bind(str(planted / 'daemon.sock'))
+            sock.bind('daemon.sock')
         except PermissionError:
             # A sandboxed runner refuses the bind — the same refusal that skips
             # temp_hygiene's witnesses there; the landing gate runs outside any
