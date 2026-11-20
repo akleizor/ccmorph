@@ -870,7 +870,9 @@ func (l *launcher) usageAt(topic string, width int) int {
 			head("More commands:")
 			help("ccmorph models <profile>", "List models from an API-key endpoint")
 			help("ccmorph price <model>...", "Read cached model list prices")
-			help("ccmorph router [on|off]", "Spread subagents across profiles; off by default")
+			// The line is the command's own synopsis, so the list and the
+			// command's page cannot drift apart again (GH-730).
+			help(router.Usage, "Spread subagents across profiles; off by default")
 			help("ccmorph get <profile> <field|--json>", "Read one profile field, or all as JSON")
 			help("ccmorph set <profile> <model|effort> [value]", "Save a default; omit value to choose")
 			help("ccmorph login <profile>", "Sign in again to a provider account")
@@ -920,8 +922,25 @@ func (l *launcher) usageAt(topic string, width int) int {
 	// A page that names a conf file names the one this launcher reads: the
 	// state root follows CCMORPH_STATE_DIR and XDG_CONFIG_HOME, so a redirected
 	// root — not the default spelling — is where the advice takes effect.
+	// The settings path is copied, not read: it leaves the body here and is
+	// printed after the wrap below, so no terminal width can break it across
+	// lines or collapse the spaces inside it (GH-730).
+	settings := ""
 	if l.dir != "" {
-		body = strings.ReplaceAll(body, "~/.config/ccmorph/", l.confDirSpelling()+"/")
+		if topic == "router" {
+			// The router page names the settings file "router status" names,
+			// joined exactly as the router joins it — filepath.Join over the
+			// resolved root, the way router.ConfigPath builds its own path —
+			// so both screens print the same characters for any spelling of
+			// the root, "." among them (GH-730).
+			if before, _, found := strings.Cut(body, "\n  ~/.config/ccmorph/router.json"); found {
+				body = before
+				settings = "  " + filepath.Join(filepath.Clean(l.dir), "router.json")
+			}
+		} else {
+			// Every other page keeps spelling a root under home ~/… (GH-384).
+			body = strings.ReplaceAll(body, "~/.config/ccmorph/", l.confDirSpelling()+"/")
+		}
 	}
 	// The template's path is the code's, not the state root's: added after the
 	// conf-dir rewrite, so a redirected root never rewrites it (#392).
@@ -929,6 +948,9 @@ func (l *launcher) usageAt(topic string, width int) int {
 		body += "\n\n" + l.templateNote()
 	}
 	fmt.Println(wrapBody(body, width))
+	if settings != "" {
+		fmt.Println(settings)
+	}
 	if pickerTopics[topic] {
 		fmt.Println("\n" + wrapBody(pickerNote, width))
 	}
@@ -993,14 +1015,18 @@ receipts, and the account balance where the provider publishes one (DeepSeek,
 Kimi, GLM, OpenRouter, SiliconFlow, StepFun). --json prints the same data for
 tools. No inference, nothing billed.
 Omit the profile to list every profile.`},
-	"router": {router.Usage, `Route subagent work across your profiles. Off by default.
-on and off take effect for sessions started afterwards. With the router on,
-each session gets a delegate tool and Agent hooks: free profiles first, then
-the subscription furthest behind its pace, then paid API keys; inside a
-profile, the cheapest model that fits the task's kind and tier.
-status lists each profile's class and pace. dispatch "<task>" runs a task
-where the router picks; with --dry-run it only shows that pick. report
-checks the last day's routes. Settings: ` + "`~/.config/ccmorph/router.json`" + `.`},
+	// The router page is an interpreted string, not a raw one: no backtick
+	// appears anywhere in this entry, so the path line visibly ends at
+	// router.json here exactly as it does on the page (GH-730).
+	"router": {router.Usage, "Route subagent work across your profiles. Off by default.\n" +
+		"on and off take effect for sessions started afterwards. With the router on,\n" +
+		"each session gets a delegate tool and Agent hooks: free profiles first, then\n" +
+		"the subscription furthest behind its pace, then paid API keys; inside a\n" +
+		"profile, the cheapest model that fits the task's kind and tier.\n" +
+		"status lists each profile's class and pace. dispatch \"<task>\" runs a task\n" +
+		"where the router picks; with --dry-run it only shows that pick. report\n" +
+		"checks the last day's routes. Its settings live in:\n" +
+		"  ~/.config/ccmorph/router.json"},
 	"use": {"ccmorph use [profile|-i]", "Set the default without launching. No argument shows the current default."},
 	"inspect": {"ccmorph inspect [profile|-i]", `Show effective settings and their sources, never the stored credential.
 Omit the profile to inspect the default; -i opens the profile picker.
