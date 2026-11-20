@@ -9,7 +9,12 @@ table nor any environment:
   RC_LOG          optional path; one line per request, method and path only
   RC_TIERS        optional JSON {alias: model}: tiers the config pinned (rc-hosts)
   RC_INFERENCE    optional path; "account", "route" or a profile name, read on every turn.
-                  A profile's endpoint arrives as <dir>/switch-<profile>.json (0600), deleted on read
+                  A profile's endpoint is <dir>/switch-<profile>.json (0600), written by
+                  `ccmorph-rc <profile> --switch` and read on every turn, never consumed: a
+                  restarted proxy or a reloaded addon finds it again (issue #595). It lives as
+                  long as the edge it was brought up beside: done() removes the ones naming
+                  this proxy's edge once that edge has exited, and ccmorph-rc-hosts removes
+                  any whose edge is gone
 """
 from __future__ import annotations
 
@@ -30,7 +35,7 @@ from mitmproxy import http
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rc_route import (ACCOUNT_METADATA, encode_json, inference_target, is_event_upload,  # noqa: E402
-                      is_inference, normalize_body, reroute, slim_events)
+                      is_inference, lost_endpoint_note, normalize_body, reroute, slim_events)
 
 UPSTREAM = os.environ["RC_UPSTREAM"]
 _key_file = os.environ.pop("RC_KEY_FILE")
@@ -40,19 +45,40 @@ LOG = os.environ.get("RC_LOG")
 PARENT = int(os.environ.get("RC_PARENT_PID") or 0)
 TIERS = json.loads(os.environ.get("RC_TIERS") or "{}")
 INFERENCE = os.environ.get("RC_INFERENCE")
-SWITCHED: dict[str, tuple[str, str, dict]] = {}   # profile -> (upstream, key, tiers), handed over by --switch
 
 
 def _switched(profile: str) -> tuple[str, str, dict] | None:
-    """A profile's endpoint: a new handoff file replaces the one in memory (it was brought up again)."""
+    """A profile's endpoint, read from its handoff on every turn and never consumed:
+    a restarted proxy or a reloaded addon finds it again (issue #595)."""
     hand = Path(INFERENCE).parent / f"switch-{profile}.json"
     try:
         h = json.loads(hand.read_text())
-        hand.unlink()
-        SWITCHED[profile] = (h["upstream"], h["key"], h.get("tiers") or {})
-    except (OSError, ValueError, KeyError):
-        pass
-    return SWITCHED.get(profile)
+        return h["upstream"], h["key"], h.get("tiers") or {}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _forget_handoffs() -> None:
+    """A handoff lives as long as the edge it serves: once this proxy's edge has
+    exited, every endpoint brought up beside it is gone, and so is its key."""
+    if not (INFERENCE and PARENT) or _alive(PARENT):
+        return
+    for hand in Path(INFERENCE).parent.glob("switch-*.json"):
+        try:
+            if int(json.loads(hand.read_text())["edge"]) == PARENT:
+                hand.unlink()
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
 
 
 _LOG = open(LOG, "a", buffering=1) if LOG else None   # line-buffered: one write per request
@@ -87,6 +113,7 @@ def done() -> None:
     here = Path(__file__).resolve().parent
     if here.name.startswith("addon."):
         shutil.rmtree(here, ignore_errors=True)
+    _forget_handoffs()
 
 
 # Destination is decided in requestheaders, the earliest hook: if request bodies
@@ -115,7 +142,9 @@ def requestheaders(flow: http.HTTPFlow) -> None:
         if alt := _switched(target):
             upstream, key, tiers = alt
         else:
-            _log(f"switch    {target} was never brought up (ccmorph-rc {target} --switch); on the route")
+            # issue #595: the truth of this line is case-dependent -- which case holds
+            # is what the state dir proves, so rc_route's note decides what may be named.
+            _log(lost_endpoint_note(target, Path(INFERENCE).parent))
             target = "route"
     headers, (scheme, host, port) = reroute(dict(req.headers.items()), upstream, key)
     flow.metadata["rc_tiers"] = tiers

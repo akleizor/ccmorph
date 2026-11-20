@@ -131,11 +131,19 @@ ccmorph-rc <route-profile> --switch  # back to the edge's route
 No host restarts and no session is interrupted: each proxy reads the switch on every
 turn. The account profile sends calls to Anthropic untouched; the edge's route uses the
 edge as before; any other route or provider profile is brought up beside the edge
-(its adapter, and a provider's bridge, live as long as the edge does) and handed to the
-proxy through a 0600 file it deletes on read, so its key stays in memory only. Its model
-map is applied, so a provider such as codex receives its own models. `inference=<profile>`
-in `rc-hosts` does the same from the config. A proxy started before this feature needs one
-restart to load it.
+(its adapter, and a provider's bridge, live as long as the edge does) and
+handed to every proxy through a 0600 file, profiles/.rc-bridge/switch-<profile>.json,
+which each proxy reads on every turn, so a restarted proxy finds it again. The file
+lives as long as the edge it was brought up beside: that edge's proxy removes it when
+the edge exits, and ccmorph-rc-hosts removes one whose edge is gone. It names the
+edge process's start as well as its pid, so a number the OS recycles is not taken for
+the edge it was made beside. On macOS it is a copy of a key the keychain otherwise
+holds. Its model map is applied, so a provider such as codex receives its own models.
+`inference=<profile>` in `rc-hosts` does the same from the config: the supervisor
+brings the profile up once an edge is live, retries until it lands, re-hands it when
+the edge is replaced, and writes the switch only when the `inference=` value itself
+changes, so a manual `--switch` stays until that line is edited. A proxy started
+before this feature needs one restart to load it.
 
 A tier pinned with `tier.<alias>=` names the route's model on that bare alias, so under
 another target pick that model by its full id instead.
