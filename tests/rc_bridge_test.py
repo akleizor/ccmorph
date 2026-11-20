@@ -2,6 +2,7 @@
 import contextlib
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -346,19 +347,26 @@ def test_the_edge_record_names_the_tiers_its_proxy_pins():
     assert (record["pid"], record["port"], record["ca"]) == (1, 47100, "/ca.pem")
 
 
-def test_an_edge_is_identified_by_its_start_not_just_its_pid():
+def test_an_edge_is_identified_by_its_start_not_just_its_pid(monkeypatch):
     """issue #595: a handoff naming only a pid reads as live when the OS gives that
     pid to the edge's replacement. The start cannot change for a living process, so
-    the supervisor can tell the newcomer from the edge the hand was made beside."""
+    the supervisor can tell the newcomer from the edge the hand was made beside. It
+    is the kernel's own start -- Linux ticks with the boot id, macOS microseconds --
+    never `ps`, whose whole second a pid reused within it shares; a pid with no
+    process has no start."""
     rc = _launcher()
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("the start was read from ps"))
     ident = rc.edge_started(os.getpid())
     assert ident and rc.edge_started(os.getpid()) == ident
+    if sys.platform == "darwin":
+        assert re.fullmatch(r"darwin:\d+\.\d{6}", ident)
     other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     try:
         assert rc.edge_started(other.pid) not in (None, ident)
     finally:
         other.kill()
         other.wait()
+    assert rc.edge_started(other.pid) is None
 
 
 def test_a_tier_pinned_by_the_caller_survives_into_the_session():
@@ -685,7 +693,7 @@ def _switch_rig(rc, monkeypatch, tmp_path, alive=None, serving=None):
     monkeypatch.setattr(rc, "_listening", lambda upstream: bool(serving))
     if alive is not None:
         (state / "sidecar-oli.json").write_text(json.dumps(
-            {"pid": 7321, "upstream": "http://127.0.0.1:45110", "edge": 500}))
+            {"pid": 7321, "upstream": "http://127.0.0.1:45110", "edge": 500, "edge_started": "start-500"}))
     started, signals = [], []
     ports, pids = iter([45111, 45112, 45113]), iter([4321, 4322, 4323])
     def start(route, parent, env):
@@ -730,6 +738,42 @@ def test_one_sidecar_adapter_per_edge_and_profile(tmp_path, monkeypatch, alive, 
         assert json.loads((state / "sidecar-oli.json").read_text())["pid"] == started[0][3]
 
 
+@pytest.mark.parametrize("recorded, now", [
+    pytest.param("start-500", "later-500", id="recycled-edge-pid-retires-the-old-sidecar-issue-595"),
+    pytest.param(None, "start-500", id="ledger-without-an-edge-start-is-not-reused-issue-595"),
+])
+def test_a_sidecar_is_reused_only_beside_the_edge_process_it_was_made_for(tmp_path, monkeypatch,
+                                                                          recorded, now):
+    """issue #595 review: the ledger named only the edge's pid, so an adapter made
+    beside an edge that exited was reused beside the next edge the OS gave that
+    number. The ledger records the edge's start; another start (or none) retires the
+    old adapter and starts one for the edge that is live now."""
+    rc = _launcher()
+    state, started, signals = _switch_rig(rc, monkeypatch, tmp_path, alive=True, serving=True)
+    rec = {"pid": 7321, "upstream": "http://127.0.0.1:45110", "edge": 500}
+    if recorded is not None:
+        rec["edge_started"] = recorded
+    (state / "sidecar-oli.json").write_text(json.dumps(rec))
+    monkeypatch.setattr(rc, "edge_started", lambda pid: now)
+    rc.switch("oli", "alex")
+    assert signals == ["SIGTERM"]
+    assert [(s[0], s[1]) for s in started] == [("oli", 500)]
+    ledger = json.loads((state / "sidecar-oli.json").read_text())
+    assert (ledger["pid"], ledger["edge"], ledger["edge_started"]) == (4321, 500, now)
+    hand = json.loads((state / "switch-oli.json").read_text())
+    assert (hand["upstream"], hand["edge_started"]) == ("http://127.0.0.1:45111", now)
+
+
+def test_a_switch_that_cannot_read_its_edges_start_changes_nothing(tmp_path, monkeypatch):
+    rc = _launcher()
+    state, started, signals = _switch_rig(rc, monkeypatch, tmp_path)
+    monkeypatch.setattr(rc, "edge_started", lambda pid: None)
+    with pytest.raises(SystemExit):
+        rc.switch("oli", "alex")
+    assert started == [] and signals == []
+    assert not (state / "switch-oli.json").exists() and not (state / "inference").exists()
+
+
 @pytest.mark.parametrize("edges, ca, lands", [
     pytest.param(1, True, True, id="one-live-edge-names-the-switch-that-lands"),
     pytest.param(1, False, False, id="ca-gone-names-no-switch-that-refuses-issue-595"),
@@ -754,7 +798,7 @@ def test_the_note_names_switch_only_where_switch_lands(tmp_path, monkeypatch, ed
     monkeypatch.setattr(rc, "profile_type", lambda p: "apikey")
     monkeypatch.setattr(rc, "resolve_route", lambda p: {"ANTHROPIC_API_KEY": "sk-oli"})
     monkeypatch.setattr(rc, "retire_route_with", lambda *a: None)
-    monkeypatch.setattr(rc, "sidecar", lambda p, owner: ("http://127.0.0.1:45111", 4321))
+    monkeypatch.setattr(rc, "sidecar", lambda p, owner, started: ("http://127.0.0.1:45111", 4321))
     note = rc_route.lost_endpoint_note("oli", bridge)
     assert ("ccmorph-rc oli --switch" in note) is lands
     if lands:
@@ -827,7 +871,7 @@ def test_overlapping_switches_start_one_sidecar(tmp_path, monkeypatch):
         return rigged(route, parent, env)
     monkeypatch.setattr(rc, "start_adapter", slow)
     got = []
-    threads = [threading.Thread(target=lambda: got.append(rc.sidecar("oli", 500))) for _ in range(2)]
+    threads = [threading.Thread(target=lambda: got.append(rc.sidecar("oli", 500, "start-500"))) for _ in range(2)]
     for t in threads:
         t.start()
     for t in threads:
@@ -842,7 +886,7 @@ def test_a_sidecar_whose_record_cannot_be_written_is_stopped(tmp_path, monkeypat
     state, started, signals = _switch_rig(rc, monkeypatch, tmp_path)
     (state / "sidecar-oli.tmp").mkdir()
     with pytest.raises(SystemExit):
-        rc.sidecar("oli", 500)
+        rc.sidecar("oli", 500, "start-500")
     assert len(started) == 1
     assert signals == ["SIGTERM"]
     assert not (state / "sidecar-oli.json").exists()
@@ -888,6 +932,27 @@ def test_a_handoff_goes_with_the_edge_it_serves(tmp_path, monkeypatch):
     assert not (bridge / "switch-oli.json").exists()
     assert (bridge / "switch-kimi.json").exists()
     live, _ = _proxy_addon(monkeypatch, tmp_path, os.getpid())
-    (bridge / "switch-oli.json").write_text(json.dumps({"upstream": "u", "key": "k", "edge": os.getpid()}))
+    (bridge / "switch-oli.json").write_text(json.dumps(
+        {"upstream": "u", "key": "k", "edge": os.getpid(), "edge_started": live.proc_started(os.getpid())}))
     live.done()
     assert (bridge / "switch-oli.json").exists()
+
+
+@pytest.mark.parametrize("recorded, now, kept", [
+    pytest.param("start-now", "start-now", True, id="proxy-restart-behind-the-same-edge-keeps-it"),
+    pytest.param("start-old", "start-now", False, id="recycled-edge-pid-drops-it-issue-595"),
+    pytest.param(None, "start-now", False, id="no-recorded-edge-start-drops-it-issue-595"),
+    pytest.param("start-old", None, True, id="live-edge-whose-start-cannot-be-read-keeps-it"),
+])
+def test_a_proxy_forgets_a_handoff_once_its_edge_process_is_gone(tmp_path, monkeypatch, recorded, now, kept):
+    """issue #595 review: the proxy forgot its edge's handoffs only once the edge's
+    pid stopped answering, so a pid the OS handed to another process kept the old
+    endpoint and key on disk. The start the handoff records decides."""
+    mod, bridge = _proxy_addon(monkeypatch, tmp_path, os.getpid())
+    monkeypatch.setattr(mod, "proc_started", lambda pid: now)
+    hand = {"upstream": "u", "key": "k", "edge": os.getpid()}
+    if recorded is not None:
+        hand["edge_started"] = recorded
+    (bridge / "switch-oli.json").write_text(json.dumps(hand))
+    mod.done()
+    assert (bridge / "switch-oli.json").exists() is kept

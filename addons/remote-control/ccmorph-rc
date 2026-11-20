@@ -56,7 +56,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 # the routing decision beside this script, however it was loaded (test, install, exec)
 sys.path.insert(0, str(HERE))
-from rc_route import ACCOUNT_METADATA, edge_serves  # noqa: E402  (edge_serves: the one live-edge rule)
+from rc_route import ACCOUNT_METADATA, edge_serves, proc_started  # noqa: E402  (edge_serves: the one live-edge rule)
 LIB_DIR = Path(os.environ.get("CCMORPH_LIB_DIR") or HERE.parent.parent / "lib")
 CCMORPH = LIB_DIR / "ccmorph.sh"
 ADAPTER = LIB_DIR.parent / "libexec" / "ccmorph-core"
@@ -371,27 +371,12 @@ def our_adapter(pid: int, profile: str, edge: int) -> bool:
 
 
 def edge_started(pid: int) -> str | None:
-    """The identity of the process at `pid`, beyond its number: the moment it
-    started. That cannot change while the process lives, and whatever process the OS
-    gives the number next starts at another moment, so a handoff naming only a pid
-    does not outlive the edge it was made beside once the number is recycled
-    (issue #595). Linux reads the start tick and the boot id -- sub-second, and
-    distinct across a reboot; elsewhere `ps` prints the start second with LC_ALL and
-    TZ pinned, so the shell that switched and the launchd supervisor compare bytes."""
-    try:
-        stat = Path(f"/proc/{pid}/stat").read_bytes()
-        ticks = stat[stat.rindex(b")") + 1:].split()[19].decode()   # field 22: starttime
-        boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-        return f"{boot}:{ticks}"
-    except (OSError, ValueError, IndexError, UnicodeDecodeError):
-        pass
-    try:
-        ps = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="], capture_output=True,
-                            text=True, errors="replace", timeout=10,
-                            env={**os.environ, "LC_ALL": "C", "TZ": "UTC"}).stdout.strip()
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None
-    return f"ps:{ps}" if ps else None
+    """The identity of the edge process at `pid`, beyond its number: the moment it
+    started (rc_route.proc_started). That cannot change while the process lives, and
+    whatever process the OS gives the number next starts at another moment, so a
+    handoff or sidecar naming only a pid does not outlive the edge it was made
+    beside once the number is recycled (issue #595)."""
+    return proc_started(pid)
 
 
 def _listening(upstream: str) -> bool:
@@ -425,7 +410,7 @@ def _retire(pid: int) -> None:
     die(f"sidecar adapter {pid} will not exit; the switch is refused rather than doubled (issue #595)")
 
 
-def sidecar(profile: str, owner: int) -> tuple[str, int]:
+def sidecar(profile: str, owner: int, started: str) -> tuple[str, int]:
     """The (upstream, pid) of the ONE adapter serving `profile` beside edge `owner`.
 
     Every `--switch` used to start another adapter and orphan the last beside the
@@ -434,7 +419,9 @@ def sidecar(profile: str, owner: int) -> tuple[str, int]:
     retire it -- confirmed gone -- and start exactly one replacement. The read, the
     start and the record are one step under a per-profile lock, so two overlapping
     switches cannot both start one; a record that cannot be written stops the new
-    adapter rather than leave it running unrecorded."""
+    adapter rather than leave it running unrecorded. The ledger names the edge's
+    start as well as its pid, so an adapter made beside an edge that exited is never
+    reused beside the next edge the OS gives that number."""
     STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
     hand = STATE / f"sidecar-{profile}.json"
     with open(STATE / f"sidecar-{profile}.lock", "a") as lock:
@@ -442,17 +429,20 @@ def sidecar(profile: str, owner: int) -> tuple[str, int]:
         try:
             rec = json.loads(hand.read_text())
             old, edge, url = int(rec["pid"]), int(rec["edge"]), str(rec["upstream"])
+            was = rec.get("edge_started")
         except (OSError, ValueError, KeyError, TypeError):
             old = edge = -1
-            url = ""
-        if old >= 0 and edge == owner and our_adapter(old, profile, edge) and _listening(url):
+            url, was = "", None
+        if (old >= 0 and edge == owner and was == started
+                and our_adapter(old, profile, edge) and _listening(url)):
             return url, old
         if old >= 0 and our_adapter(old, profile, edge):
             _retire(old)
         upstream, pid = start_adapter(profile, owner, adapter_env())
         try:
             tmp = hand.with_suffix(".tmp")
-            tmp.write_text(json.dumps({"pid": pid, "upstream": upstream, "edge": owner}))
+            tmp.write_text(json.dumps({"pid": pid, "upstream": upstream, "edge": owner,
+                                        "edge_started": started}))
             tmp.replace(hand)
         except OSError as e:
             _retire(pid)
@@ -620,17 +610,20 @@ def switch(profile: str, account: str) -> None:
         if len(live) != 1:
             die(f"--switch needs exactly one live shared edge, found {len(live)}")
         owner = int(live[0]["pid"])          # the profile lives as long as the edge that serves it
+        started = edge_started(owner) or die(
+            f"cannot read when edge {owner} started, so a handoff could outlive it; nothing was "
+            f"switched -- retry `ccmorph-rc {profile} --switch` (issue #595)")
         route_env = resolve_route(profile)
         retire_route_with(owner, route_env.get("CCMORPH_ROUTE_HANDLE", ""))
         key = route_env.get("ANTHROPIC_API_KEY") or die(f"profile '{profile}' has no key")
         # a provider's bridge already speaks the Anthropic API; a key profile goes through the adapter
         upstream = (route_env.get("ANTHROPIC_BASE_URL") or die(f"profile '{profile}' has no endpoint")
-                    if profile_type(profile) == "provider" else sidecar(profile, owner)[0])
+                    if profile_type(profile) == "provider" else sidecar(profile, owner, started)[0])
         tiers = pinned_tiers(route_env)
         hand = STATE / f"switch-{profile}.json"
         fd = os.open(hand.with_suffix(".tmp"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         os.write(fd, json.dumps({"upstream": upstream, "key": key, "tiers": tiers,
-                                 "edge": owner, "edge_started": edge_started(owner)}).encode())
+                                 "edge": owner, "edge_started": started}).encode())
         os.close(fd)
         hand.with_suffix(".tmp").replace(hand)
     write_inference(word, INFERENCE)

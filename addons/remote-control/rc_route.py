@@ -14,6 +14,7 @@ import json
 import os
 import re
 import socket
+import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -42,6 +43,39 @@ def inference_target(switch: str | None) -> str:
     except OSError:
         return "route"
     return word if SWITCH_WORD.fullmatch(word) else "route"
+
+
+def proc_started(pid: int) -> str | None:
+    """When the process at `pid` started, exactly enough that no later process the
+    OS gives the same number can share it (issue #595); None when no process runs
+    there or this OS has no exact start. Linux: the boot id and the start tick
+    (/proc/<pid>/stat field 22). macOS: the kernel's p_starttime to the microsecond
+    (sysctl kern.proc.pid). Never `ps`: it prints whole seconds."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_bytes()
+        ticks = stat[stat.rindex(b")") + 1:].split()[19].decode()   # field 22: starttime
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        return f"{boot}:{ticks}"
+    except (OSError, ValueError, IndexError, UnicodeDecodeError):
+        pass
+    if sys.platform != "darwin" or pid <= 0:
+        return None
+    import ctypes
+    import struct
+    try:
+        sysctl = ctypes.CDLL(None, use_errno=True).sysctl
+    except (OSError, AttributeError):
+        return None
+    sysctl.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_uint, ctypes.c_void_p,
+                       ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
+    sysctl.restype = ctypes.c_int
+    mib = (ctypes.c_int * 4)(1, 14, 1, pid)         # CTL_KERN, KERN_PROC, KERN_PROC_PID
+    buf = ctypes.create_string_buffer(1024)         # struct kinfo_proc: 648 bytes on 64-bit macOS
+    size = ctypes.c_size_t(len(buf))
+    if sysctl(mib, 4, buf, ctypes.byref(size), None, 0) != 0 or size.value < 16:
+        return None                                  # size 0: no process holds the pid
+    sec, usec = struct.unpack_from("=qi", buf.raw, 0)   # kp_proc.p_starttime (struct timeval)
+    return f"darwin:{sec}.{usec:06d}"
 
 
 def edge_serves(record: Path) -> dict | None:

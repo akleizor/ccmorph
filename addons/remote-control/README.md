@@ -136,9 +136,11 @@ handed to every proxy through a 0600 file, profiles/.rc-bridge/switch-<profile>.
 which each proxy reads on every turn, so a restarted proxy finds it again. The file
 lives as long as the edge it was brought up beside: that edge's proxy removes it when
 the edge exits, and ccmorph-rc-hosts removes one whose edge is gone. It names the
-edge process's start as well as its pid, so a number the OS recycles is not taken for
-the edge it was made beside. On macOS it is a copy of a key the keychain otherwise
-holds. Its model map is applied, so a provider such as codex receives its own models.
+edge process's start as well as its pid (the kernel's own start mark, never `ps`'s
+whole second), so a number the OS recycles is not taken for the edge it was made
+beside, and neither this file nor the sidecar adapter outlives that edge process.
+On macOS it is a copy of a key the keychain otherwise holds. Its model map is
+applied, so a provider such as codex receives its own models.
 `inference=<profile>` in `rc-hosts` does the same from the config: the supervisor
 brings the profile up once an edge is live, retries until it lands, re-hands it when
 the edge is replaced, and writes the switch only when the `inference=` value itself

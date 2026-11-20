@@ -3450,7 +3450,7 @@ def test_one_rule_decides_the_route_word_at_both_entry_points(tmp_path, monkeypa
     monkeypatch.setattr(rc, "profile_type", lambda p: "apikey")
     monkeypatch.setattr(rc, "resolve_route", lambda p: {"ANTHROPIC_API_KEY": "sk-g"})
     monkeypatch.setattr(rc, "retire_route_with", lambda *a: None)
-    monkeypatch.setattr(rc, "sidecar", lambda p, owner: ("http://127.0.0.1:45111", 4321))
+    monkeypatch.setattr(rc, "sidecar", lambda p, owner, started: ("http://127.0.0.1:45111", 4321))
     rc.switch("gateway", "alex")
     assert m.INFERENCE.read_text() == word + "\n"
 
@@ -3731,7 +3731,7 @@ def test_a_handoff_lives_as_long_as_its_edge(tmp_path, monkeypatch):
     bridge = m.INFERENCE.parent
     w.edge("gateway", 500)
     for name, edge in (("oli", 500), ("kimi", 700)):
-        (bridge / f"switch-{name}.json").write_text(json.dumps({"edge": edge}))
+        (bridge / f"switch-{name}.json").write_text(json.dumps({"edge": edge, "edge_started": w.started[500]}))
     m.WANTED.write_text("\n")
     m.INFERENCE.write_text("route\n")
     sw = m.Switcher()
@@ -3739,6 +3739,37 @@ def test_a_handoff_lives_as_long_as_its_edge(tmp_path, monkeypatch):
     sw.tend(0)
     assert (bridge / "switch-oli.json").exists() and not (bridge / "switch-kimi.json").exists()
     w.alive.add(800)
-    (bridge / "switch-gpt.json").write_text(json.dumps({"edge": 800}))
+    w.started[800] = "start-800"
+    (bridge / "switch-gpt.json").write_text(json.dumps({"edge": 800, "edge_started": "start-800"}))
     sw.tend(1)
     assert (bridge / "switch-gpt.json").exists()
+
+
+@pytest.mark.parametrize("recorded, now, kept", [
+    pytest.param("start-800", "start-800", True, id="the-same-edge-keeps-its-handoff"),
+    pytest.param("start-800", "later-800", False, id="recycled-edge-pid-drops-the-handoff-issue-595"),
+    pytest.param(None, "start-800", False, id="handoff-without-an-edge-start-is-dropped-issue-595"),
+    pytest.param("start-800", None, True, id="live-pid-whose-start-cannot-be-read-is-kept"),
+])
+def test_a_handoff_goes_with_its_edge_process_not_its_pid(tmp_path, monkeypatch, recorded, now, kept):
+    """issue #595 review: sweep asked only whether the handoff's pid answered, so an
+    edge whose pid the OS gave to another process left its endpoint and key on disk.
+    The start recorded at switch time decides; a live pid whose start cannot be read
+    is left for a later tick."""
+    m = load()
+    w = _switcher(m, monkeypatch, tmp_path)
+    bridge = m.INFERENCE.parent
+    w.edge("gateway", 500)
+    w.alive.add(800)
+    if now is not None:
+        w.started[800] = now
+    hand = {"upstream": "u", "key": "k", "edge": 800}
+    if recorded is not None:
+        hand["edge_started"] = recorded
+    (bridge / "switch-gpt.json").write_text(json.dumps(hand))
+    m.WANTED.write_text("\n")
+    m.INFERENCE.write_text("route\n")
+    sw = m.Switcher()
+    sw.reload("", "alex")
+    sw.tend(0)
+    assert (bridge / "switch-gpt.json").exists() is kept

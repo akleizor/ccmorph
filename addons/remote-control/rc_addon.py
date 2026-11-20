@@ -35,7 +35,8 @@ from mitmproxy import http
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from rc_route import (ACCOUNT_METADATA, encode_json, inference_target, is_event_upload,  # noqa: E402
-                      is_inference, lost_endpoint_note, normalize_body, reroute, slim_events)
+                      is_inference, lost_endpoint_note, normalize_body, proc_started, reroute,
+                      slim_events)
 
 UPSTREAM = os.environ["RC_UPSTREAM"]
 _key_file = os.environ.pop("RC_KEY_FILE")
@@ -71,13 +72,18 @@ def _alive(pid: int) -> bool:
 def _forget_handoffs() -> None:
     """A handoff lives as long as the edge it serves: once this proxy's edge has
     exited, every endpoint brought up beside it is gone, and so is its key."""
-    if not (INFERENCE and PARENT) or _alive(PARENT):
+    if not (INFERENCE and PARENT):
         return
+    alive = _alive(PARENT)
+    now = proc_started(PARENT) if alive else None
+    if alive and now is None:
+        return                               # a live parent whose start cannot be read: keep
     for hand in Path(INFERENCE).parent.glob("switch-*.json"):
         try:
-            if int(json.loads(hand.read_text())["edge"]) == PARENT:
+            h = json.loads(hand.read_text())
+            if int(h["edge"]) == PARENT and (now is None or h.get("edge_started") != now):
                 hand.unlink()
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
             pass
 
 
