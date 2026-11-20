@@ -520,6 +520,75 @@ def test_inference_switch_is_read_live_and_defaults_to_the_route(tmp_path):
     assert inference_target(str(switch)) == "route"          # not a profile name: the route
 
 
+ADDON = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "rc_addon.py"
+
+
+def _addon(monkeypatch, tmp_path, word):
+    """The addon loaded with a stub mitmproxy: its decision, not the proxy, is
+    what these tests read. The end-to-end path is rc_bridge_failclosed_test.py,
+    which needs a real mitmdump; this table runs wherever the suite does."""
+    import types
+    http = types.ModuleType("mitmproxy.http")
+    http.HTTPFlow = type("HTTPFlow", (), {})
+    package = types.ModuleType("mitmproxy")
+    package.http = http
+    monkeypatch.setitem(sys.modules, "mitmproxy", package)
+    monkeypatch.setitem(sys.modules, "mitmproxy.http", http)
+    key = tmp_path / "route-key"
+    key.write_text("route-key")
+    switch = tmp_path / "inference"
+    switch.write_text(word + "\n")
+    monkeypatch.setenv("RC_UPSTREAM", "http://127.0.0.1:5000")
+    monkeypatch.setenv("RC_KEY_FILE", str(key))
+    monkeypatch.setenv("RC_INFERENCE", str(switch))
+    for name in ("RC_TIERS", "RC_LOG"):
+        monkeypatch.delenv(name, raising=False)
+    return load_script(ADDON, "rc_addon_decision")
+
+
+class _Flow:
+    """What requestheaders touches: the request and the flow's metadata."""
+
+    class Request:
+        pretty_host = "api.anthropic.com"
+        path = "/v1/messages"
+        method = "POST"
+        scheme, host, port = "https", "api.anthropic.com", 443
+
+        def __init__(self):
+            self.headers = {"authorization": "Bearer ACCOUNT"}
+
+    def __init__(self):
+        self.request = self.Request()
+        self.metadata = {}
+
+
+@pytest.mark.parametrize("word, first_party", [("account", True), ("route", False)])
+def test_the_account_word_marks_what_it_leaves_first_party(word, first_party, tmp_path, monkeypatch):
+    """GH-594: the account word hands the call to Anthropic untouched, on the
+    destination the fail-closed guard closes. It must mark that flow, and the
+    route word must not: only the addon's mark tells a legitimate account call
+    from one no addon ever saw."""
+    addon = _addon(monkeypatch, tmp_path, word)
+    flow = _Flow()
+    addon.requestheaders(flow)
+    assert (flow.metadata.get(addon.ACCOUNT_METADATA) is True) == first_party
+    if first_party:
+        assert (flow.request.scheme, flow.request.host) == ("https", "api.anthropic.com")
+        assert flow.request.headers == {"authorization": "Bearer ACCOUNT"}
+    else:
+        assert flow.metadata["rc_route"] is True
+        assert flow.request.headers["x-api-key"] == "route-key"
+
+
+def test_the_guard_exempts_the_mark_the_account_branch_sets(tmp_path, monkeypatch):
+    """The launcher's block_list and the addon name one metadata key: the guard
+    closes the account destination for every flow without it, and the account
+    branch is the only code that sets it."""
+    addon = _addon(monkeypatch, tmp_path, "account")
+    assert f"!~meta {addon.ACCOUNT_METADATA}" in _launcher().FAIL_CLOSED
+
+
 def test_a_pinned_tier_reaches_the_backend_without_the_context_marker():
     """oli pins opus to claude-opus-5-5[1m]; its backend 404s on the marker (2026-11-16)."""
     from rc_route import normalize_body

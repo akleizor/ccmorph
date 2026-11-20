@@ -28,8 +28,8 @@ from pathlib import Path
 from mitmproxy import http
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rc_route import (encode_json, inference_target, is_event_upload, is_inference, normalize_body,  # noqa: E402
-                      reroute, slim_events)
+from rc_route import (ACCOUNT_METADATA, encode_json, inference_target, is_event_upload,  # noqa: E402
+                      is_inference, normalize_body, reroute, slim_events)
 
 UPSTREAM = os.environ["RC_UPSTREAM"]
 _key_file = os.environ.pop("RC_KEY_FILE")
@@ -102,8 +102,11 @@ def requestheaders(flow: http.HTTPFlow) -> None:
         return
     target = inference_target(INFERENCE)
     if target == "account":
+        # A legitimate first-party call: leave it untouched, but mark it so the
+        # launcher's fail-closed block_list tells it from one no addon ever saw.
         # shortcut: a tier pinned in the session's env (tier.fable=...) still names the route's model on
         # the bare alias, which the account cannot serve; the phone's full ids are fine.
+        flow.metadata[ACCOUNT_METADATA] = True
         _log(f"account   {req.method} {route}")
         return
     upstream, key, tiers = UPSTREAM, KEY, TIERS

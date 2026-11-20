@@ -17,6 +17,12 @@ from urllib.parse import urlsplit
 FIRST_PARTY_HOST = "api.anthropic.com"
 INFERENCE_PREFIX = "/v1/messages"          # also covers /v1/messages/count_tokens
 AUTH_HEADERS = ("authorization", "x-api-key", "cookie", "proxy-authorization")
+# The addon marks every inference request it handed to Anthropic on the session's own
+# claude.ai login. The launcher's fail-closed block_list matches api.anthropic.com by
+# destination, which is also where an untouched account request goes, so the guard
+# exempts a flow carrying this mark: only the addon can set it, and without an addon
+# no flow has it.
+ACCOUNT_METADATA = "rc_account"
 
 
 SWITCH_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")

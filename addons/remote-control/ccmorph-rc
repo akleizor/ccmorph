@@ -50,6 +50,9 @@ import zlib
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+# the routing decision beside this script, however it was loaded (test, install, exec)
+sys.path.insert(0, str(HERE))
+from rc_route import ACCOUNT_METADATA  # noqa: E402
 LIB_DIR = Path(os.environ.get("CCMORPH_LIB_DIR") or HERE.parent.parent / "lib")
 CCMORPH = LIB_DIR / "ccmorph.sh"
 ADAPTER = LIB_DIR.parent / "libexec" / "ccmorph-core"
@@ -351,8 +354,11 @@ def start_adapter(route: str, parent: int, env: dict[str, str]) -> str:
 # credential. So the proxy runs a private copy that nothing else writes, and a
 # built-in block_list answers 502 to any /v1/messages still addressed to
 # api.anthropic.com. A rerouted request carries the route's host, so it never
-# matches; only a request the addon did not handle does.
-FAIL_CLOSED = r"|~d ^api\.anthropic\.com$ & ~u /v1/messages|502"
+# matches. The account word is a legitimate first-party call on that very
+# destination: the addon marks the flow it leaves untouched, and the guard exempts
+# that mark. Only the addon sets it, so a missing addon still matches and closes.
+FAIL_CLOSED = (rf"|(~d ^api\.anthropic\.com$ & ~u /v1/messages & !~meta {ACCOUNT_METADATA})"
+               "|502")
 
 
 def private_addon(parent: Path) -> Path:
