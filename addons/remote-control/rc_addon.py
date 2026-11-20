@@ -13,6 +13,7 @@ table nor any environment:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import base64
@@ -135,19 +136,30 @@ def _shrink(data: str, media_type: str | None) -> tuple[str, str] | None:
         return base64.b64encode(dst.read_bytes()).decode(), "image/jpeg"
 
 
-def request(flow: http.HTTPFlow) -> None:
+def _slim_body(content: bytes, routed: bool, tiers: dict) -> bytes | None:
+    """Parse, lighten and re-encode a request body; None if nothing changed."""
+    try:
+        payload = json.loads(content)
+    except ValueError:
+        return None
+    if not (normalize_body(payload, tiers) if routed else slim_events(payload, _shrink)):
+        return None
+    return encode_json(payload)
+
+
+async def request(flow: http.HTTPFlow) -> None:
     routed, events = flow.metadata.get("rc_route"), flow.metadata.get("rc_events")
     if not (routed or events) or not flow.request.content:
         return
-    try:
-        payload = json.loads(flow.request.content)
-    except ValueError:
-        return
-    if normalize_body(payload, flow.metadata.get("rc_tiers", TIERS)) if routed else slim_events(payload, _shrink):
-        before = len(flow.request.content)
-        flow.request.content = encode_json(payload)
+    content = flow.request.content
+    # sips and multi-MB JSON would stall every other flow served by the loop:
+    # parse, slim and encode on a worker thread and wait for it here.
+    slim = await asyncio.get_running_loop().run_in_executor(
+        None, _slim_body, content, routed, flow.metadata.get("rc_tiers", TIERS))
+    if slim is not None:
+        flow.request.content = slim
         if events:
-            _log(f"events    {before} -> {len(flow.request.content)} bytes")
+            _log(f"events    {len(content)} -> {len(slim)} bytes")
 
 
 def responseheaders(flow: http.HTTPFlow) -> None:

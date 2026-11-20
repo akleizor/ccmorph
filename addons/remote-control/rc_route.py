@@ -162,51 +162,72 @@ def _cut(text: object) -> object:
     return text[:TEXT_MAX] + CUT if isinstance(text, str) and len(text) > TEXT_MAX + len(CUT) else text
 
 
-def _slim_result(node: object, shrink) -> object:
-    """A tool result's content with long text cut and big screenshots shrunk."""
+def _slim_result(node: object, shrink) -> tuple[object, bool]:
+    """A tool result's content with long text cut and big screenshots shrunk; (content, changed)."""
     if isinstance(node, str):
-        return _cut(node)
+        cut = _cut(node)
+        return cut, cut != node
     if isinstance(node, list):
-        return [_slim_result(item, shrink) for item in node]
+        slimmed = [_slim_result(item, shrink) for item in node]
+        return [item for item, _ in slimmed], any(changed for _, changed in slimmed)
     if not isinstance(node, dict):
-        return node
+        return node, False
     src = node.get("source")
     if (node.get("type") == "image" and isinstance(src, dict) and src.get("type") == "base64"
             and len(src.get("data") or "") > IMAGE_MIN):
         small = shrink(src["data"], src.get("media_type"))
         if small and len(small[0]) < len(src["data"]):
-            return {**node, "source": {**src, "data": small[0], "media_type": small[1]}}
-        return node
+            return {**node, "source": {**src, "data": small[0], "media_type": small[1]}}, True
+        return node, False
     if node.get("type") == "text":
-        return {**node, "text": _cut(node.get("text"))}
-    return node
+        updated = {**node, "text": _cut(node.get("text"))}
+        return updated, updated != node
+    return node, False
 
 
-def _slim(payload: dict, shrink) -> None:
+_MISSING = object()
+
+
+def _slim(payload: dict, shrink) -> bool:
+    """Lighten one event payload in place; True if it changed."""
+    changed = False
     kind = payload.get("type")
     listing = (payload.get("response") or {}).get("response")
     if kind == "control_response" and isinstance(listing, dict):
         for key in ("commands", "agents"):
             for item in listing.get(key) or []:
-                if isinstance(item, dict):
-                    item.pop("description", None)
+                if isinstance(item, dict) and item.pop("description", _MISSING) is not _MISSING:
+                    changed = True
     message = payload.get("message")
     content = message.get("content") if isinstance(message, dict) else None
     if kind == "assistant":
-        payload.pop("wire_tool_inputs", None)
+        if payload.pop("wire_tool_inputs", _MISSING) is not _MISSING:
+            changed = True
         for block in content if isinstance(content, list) else ():
             if isinstance(block, dict) and block.get("signature"):
                 block["signature"] = ""
+                changed = True
     if kind == "user":
         for block in content if isinstance(content, list) else ():
             if isinstance(block, dict) and block.get("type") == "tool_result":
-                block["content"] = _slim_result(block.get("content"), shrink)
+                # A tool_result written without `content` has always gained it (as
+                # null); a present one is rewritten only when slimming changed it.
+                missing = "content" not in block
+                slimmed, slim_changed = _slim_result(block.get("content"), shrink)
+                if missing or slim_changed:
+                    block["content"] = slimmed
+                    changed = True
         result = payload.get("tool_use_result")
         if isinstance(result, dict):
             for key in DUPLICATE_OUTPUT:
-                result.pop(key, None)
+                if result.pop(key, _MISSING) is not _MISSING:
+                    changed = True
         elif isinstance(result, str):
-            payload["tool_use_result"] = _cut(result)
+            cut = _cut(result)
+            if cut != result:
+                payload["tool_use_result"] = cut
+                changed = True
+    return changed
 
 
 def encode_json(obj: object, ensure_ascii: bool = False) -> bytes:
@@ -221,15 +242,17 @@ def slim_events(body: object, shrink) -> bool:
     """Lighten a worker/events upload in place; True if anything changed.
 
     `shrink(base64, media_type)` returns a smaller (base64, media_type) or None.
+    The change flag comes from the walk itself: encoding the multi-MB body a second
+    time just to diff it against the first doubled the cost of every session open.
     """
     events = body.get("events") if isinstance(body, dict) else None
     if not isinstance(events, list):
         return False
-    before = encode_json(events, ensure_ascii=True)
+    changed = False
     for event in events:
         if isinstance(event, dict) and isinstance(event.get("payload"), dict):
-            _slim(event["payload"], shrink)
-    return encode_json(events, ensure_ascii=True) != before
+            changed |= _slim(event["payload"], shrink)
+    return changed
 
 
 def reroute(headers: dict[str, str], upstream: str, key: str) -> tuple[dict[str, str], tuple[str, str, int]]:
