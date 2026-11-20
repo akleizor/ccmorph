@@ -1329,6 +1329,48 @@ func TestServingBypassesAmbientProxy(t *testing.T) { // ServingNoProxyTest.test_
 	}
 }
 
+// A 200 that parses is still not a listing when "data" is absent or not a
+// JSON list — a proxy's error object on a 200, a wrapped reply whose data is
+// an object — and the reader must say so instead of answering "serves
+// nothing" (#695, the guard #558 added to util's reader four days before this
+// one shipped). Only a real data list, empty or not, is the endpoint's answer.
+func TestInventoryListingRejectsRepliesThatAreNotListings(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		wantErr    bool
+		wantIDs    []string
+	}{
+		{"absent data — proxy error object", `{"error":"upstream down"}`, true, nil},
+		{"object data — wrapped reply", `{"data":{"id":"m"}}`, true, nil},
+		{"null data", `{"data":null}`, true, nil},
+		{"string data", `{"data":"none"}`, true, nil},
+		{"number data", `{"data":7}`, true, nil},
+		{"empty list — the endpoint's own answer", `{"data":[]}`, false, []string{}},
+		{"normal list", `{"data":[{"id":"m1"}]}`, false, []string{"m1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("content-type", "application/json")
+				io.WriteString(w, tc.body)
+			}))
+			defer srv.Close()
+			data, ids, err := inventoryListing(srv.URL, "k", nil)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("reply %s read as a listing: data %v, ids %v, want an error", tc.body, data, ids)
+				}
+				return
+			}
+			if err != nil || !reflect.DeepEqual(ids, tc.wantIDs) {
+				t.Fatalf("reply %s: ids %v err %v, want %v with no error", tc.body, ids, err, tc.wantIDs)
+			}
+			if data == nil {
+				t.Errorf("reply %s: data rows nil for a real list", tc.body)
+			}
+		})
+	}
+}
+
 func inventoryFixture(t *testing.T) string {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("x-api-key") != "k" {
