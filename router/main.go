@@ -14,10 +14,10 @@ import (
 	"syscall"
 )
 
-const Usage = "ccmorph router [on|off|status|route|dispatch|report]"
+const Usage = "ccmorph router [on|off|status|dispatch [--dry-run]|report]"
 
-// Main is `ccmorph router ...`. stdin carries the prompt for route and dispatch
-// when no words do, and the event for the hooks.
+// Main is `ccmorph router ...`. stdin carries the prompt for dispatch when no
+// words do, and the event for the hooks.
 func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	verb := "status"
 	if len(args) > 0 {
@@ -37,8 +37,8 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 0
 	case "status":
 		return status(stdout, stderr)
-	case "route", "dispatch":
-		return task(verb, args, stdin, stdout, stderr)
+	case "dispatch":
+		return task(args, stdin, stdout, stderr)
 	case "report":
 		return report(args, stdout, stderr)
 	case "mcp":
@@ -97,10 +97,10 @@ func status(stdout, stderr io.Writer) int {
 	return 0
 }
 
-func task(verb string, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+func task(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var r Request
 	var words []string
-	asJSON, explain, cwd := false, false, ""
+	asJSON, explain, dryRun, cwd := false, false, false, ""
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		val := func() string {
@@ -111,6 +111,8 @@ func task(verb string, args []string, stdin io.Reader, stdout, stderr io.Writer)
 			return ""
 		}
 		switch a {
+		case "--dry-run": // pick only, run nothing
+			dryRun = true
 		case "--json":
 			asJSON = true
 		case "--explain":
@@ -144,7 +146,7 @@ func task(verb string, args []string, stdin io.Reader, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, "ccmorph: router: --kind is one of", strings.Join(Kinds, ", "), "and --tier one of", strings.Join(Tiers, ", "))
 		return 2
 	}
-	if verb == "dispatch" {
+	if !dryRun {
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 		defer stop()
 		answer := Delegate(ctx, r.Prompt, r.Kind, r.Tier, r.Profile, r.Model, cwd)

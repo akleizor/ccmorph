@@ -998,8 +998,8 @@ on and off take effect for sessions started afterwards. With the router on,
 each session gets a delegate tool and Agent hooks: free profiles first, then
 the subscription furthest behind its pace, then paid API keys; inside a
 profile, the cheapest model that fits the task's kind and tier.
-status lists each profile's class and pace. route "<task>" shows where a
-task would run without running it; dispatch "<task>" runs it there. report
+status lists each profile's class and pace. dispatch "<task>" runs a task
+where the router picks; with --dry-run it only shows that pick. report
 checks the last day's routes. Settings: ` + "`~/.config/ccmorph/router.json`" + `.`},
 	"use": {"ccmorph use [profile|-i]", "Set the default without launching. No argument shows the current default."},
 	"inspect": {"ccmorph inspect [profile|-i]", `Show effective settings and their sources, never the stored credential.
