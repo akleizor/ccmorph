@@ -777,6 +777,7 @@ func maskedJSON(masked map[string]int) string {
 
 type lineSource interface {
 	readline() ([]byte, error)
+	ready() bool // readline returns without reading the upstream
 }
 
 // unmaskStream is an SSE reply with its placeholders put back in text and tool
@@ -801,6 +802,8 @@ type heldDelta struct {
 	field, text string
 	quoted      bool
 }
+
+func (u *unmaskStream) ready() bool { return len(u.out) > 0 || u.err != nil }
 
 func (u *unmaskStream) readline() ([]byte, error) {
 	for len(u.out) == 0 {

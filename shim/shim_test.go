@@ -748,6 +748,7 @@ func TestEmptyDataEventNeverReachesTheClient(t *testing.T) {
 		{"continuation then empty event", deltaCont + "event: content_block_delta\ndata:\n\n" + stop, deltaCont + stop},
 		{"dropped thinking stop with empty continuation", thinkingStart + "event: content_block_stop\ndata:{\"type\":\"content_block_stop\",\"index\":0}\ndata:\n\n" + delta + stop, delta + stop},
 		{"terminal with empty continuation", delta + "event: message_stop\ndata:{\"type\":\"message_stop\"}\ndata:\n\n", delta + stop},
+		{"bare cr terminal data before its event line", crDelta + "data:{\"type\":\"message_stop\"}\revent: message_stop\r\r", crDelta + "data:{\"type\":\"message_stop\"}\revent: message_stop\r\r"},
 		{"stream cut inside an empty event", delta + "event: content_block_delta\ndata:\n", delta},
 		{"bare cr framing", crDelta + crStop, crDelta + crStop},
 		{"bare cr empty event", "event: content_block_delta\rdata:\r\r" + crDelta + crStop, crDelta + crStop},
@@ -761,6 +762,44 @@ func TestEmptyDataEventNeverReachesTheClient(t *testing.T) {
 	}
 	if ev := sseClientEvents(t, deltaCont+stop); len(ev) != 2 {
 		t.Fatalf("delta with continuation and stop must read as 2 events, got %d", len(ev))
+	}
+}
+
+// An upstream that sends a terminal data line and then nothing, no closing
+// blank line and the socket held open, still has its reply ended at once: the
+// relay forwards only the part of the terminal event it already holds and
+// never waits on the upstream for the rest.
+func TestTerminalEventEndsTheReplyWithoutWaiting(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte("event: message_stop\ndata:{\"type\":\"message_stop\"}\n"))
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+	s := NewServer(srv.URL)
+	s.Stall = 5 * time.Second
+	s.setClients()
+	front := httptest.NewServer(s)
+	defer front.Close()
+	start := time.Now()
+	resp, err := http.Post(front.URL+"/v1/messages", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b bytes.Buffer
+	b.ReadFrom(resp.Body)
+	resp.Body.Close()
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("reply ended after %v, waiting on the upstream past message_stop", took)
+	}
+	if want := "event: message_stop\ndata:{\"type\":\"message_stop\"}\n\n"; b.String() != want {
+		t.Fatalf("got %q\nwant %q", b.String(), want)
 	}
 }
 

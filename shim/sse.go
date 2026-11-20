@@ -128,6 +128,10 @@ func (t *thinkingStream) readline() ([]byte, error) {
 	return line, nil
 }
 
+// ready reports whether readline returns without reading the upstream: lines
+// already split and decided, or a read error that ends the stream.
+func (t *thinkingStream) ready() bool { return len(t.out) > 0 || t.err != nil }
+
 func intField(d *doc, key string) (int, bool) {
 	sp, ok := d.last(key)
 	if !ok {
@@ -337,11 +341,26 @@ func (s *Server) relayStream(rq *request, t lineSource, sidecar *UsageSidecar, r
 			rec = sidecar.observe(d, rec, requested)
 		}
 		// message_stop, and an error event, are terminal: upstreams keep the
-		// connection alive and send NOTHING after them. Emit the blank line that
-		// closes the event first, since returning means the client never sees
-		// the upstream's own.
+		// connection alive and send NOTHING after them, so the reply ends here
+		// and never waits on the upstream. The rest of this event that is
+		// already in hand (a bare-CR chunk arrives whole) relays as is, up to
+		// the blank line that closes it, so a field after the data line (an
+		// event: or id: line) still reaches the client; otherwise the closing
+		// blank line is written for it.
 		if d != nil {
 			if kind, _ := d.str("type"); terminalEvent(kind) {
+				for t.ready() {
+					rest, err := t.readline()
+					if err != nil {
+						return nil, write(eol)
+					}
+					if err := write(rest); err != nil {
+						return nil, err
+					}
+					if len(bytes.TrimRight(rest, "\r\n")) == 0 {
+						return nil, nil
+					}
+				}
 				return nil, write(eol)
 			}
 		}
