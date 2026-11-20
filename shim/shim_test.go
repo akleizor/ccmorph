@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json/jsontext"
 	jsonv2 "encoding/json/v2"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -760,6 +761,38 @@ func TestEmptyDataEventNeverReachesTheClient(t *testing.T) {
 	}
 	if ev := sseClientEvents(t, deltaCont+stop); len(ev) != 2 {
 		t.Fatalf("delta with continuation and stop must read as 2 events, got %d", len(ev))
+	}
+}
+
+// errOnceReader returns err once where r ends, then r's own io.EOF: a read
+// error the relay must report even when a clean end follows it.
+type errOnceReader struct {
+	r     io.Reader
+	err   error
+	fired bool
+}
+
+func (e *errOnceReader) Read(p []byte) (int, error) {
+	n, err := e.r.Read(p)
+	if err == io.EOF && !e.fired {
+		e.fired = true
+		return n, e.err
+	}
+	return n, err
+}
+
+// A stall right after a bare-CR line is still a stall: the relay returns it, so
+// streamSSE ends the reply with an error event instead of a silent clean end.
+func TestStallAfterBareCRLineIsReported(t *testing.T) {
+	for _, up := range []string{": ping\r\r", "event: ping\rdata: {\"type\":\"ping\"}\r\r", ": ping\r\n\r\n", ": ping\n\n"} {
+		w := httptest.NewRecorder()
+		readErr, writeErr := relay(t, w, &errOnceReader{r: strings.NewReader(up), err: errStall}, nil)
+		if !errors.Is(readErr, errStall) || writeErr != nil {
+			t.Errorf("%q: readErr %v writeErr %v, want errStall", up, readErr, writeErr)
+		}
+		if w.Body.String() != up {
+			t.Errorf("%q: client got %q", up, w.Body.String())
+		}
 	}
 }
 

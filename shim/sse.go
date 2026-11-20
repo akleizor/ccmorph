@@ -70,31 +70,31 @@ type heldStart struct {
 	index int
 }
 
-// readSSELine returns one line including its terminator. SSE allows CRLF, LF
-// and a bare CR; splitting only on LF would hand feed a whole CR-delimited
-// stream as one chunk, where an event: line would look like an empty event and
-// its payload lines would never be seen. The bytes are kept exactly, so the
-// relay stays byte-exact.
-func (t *thinkingStream) readSSELine() ([]byte, error) {
-	var line []byte
+// sseLines splits one read into SSE lines, every byte kept. SSE ends a line
+// at CRLF, LF or a bare CR, but the reader stops only at LF (as it always
+// has: it never waits on the byte after a CR, and a read error stays with the
+// bytes before it), so a bare-CR-framed stream arrives as one chunk. A CR
+// right before the chunk's closing LF stays with it: CRLF is one terminator.
+// Each line is capped at its own length, so appending to one never writes
+// over the next.
+func sseLines(chunk []byte) [][]byte {
+	var lines [][]byte
 	for {
-		b, err := t.r.ReadByte()
-		if err != nil {
-			return line, err
+		i := bytes.IndexByte(chunk, '\r')
+		if i < 0 {
+			break
 		}
-		line = append(line, b)
-		if b == '\n' {
-			return line, nil
+		end := i + 1
+		if end < len(chunk) && chunk[end] == '\n' {
+			end++
 		}
-		if b == '\r' {
-			// The spec reads CRLF as one terminator, so keep the pair together.
-			if next, err := t.r.Peek(1); err == nil && next[0] == '\n' {
-				t.r.Discard(1)
-				line = append(line, '\n')
-			}
-			return line, nil
-		}
+		lines = append(lines, chunk[:end:end])
+		chunk = chunk[end:]
 	}
+	if len(chunk) > 0 {
+		lines = append(lines, chunk)
+	}
+	return lines
 }
 
 // readline returns the next line; at the end of the stream or a read error it
@@ -115,11 +115,11 @@ func (t *thinkingStream) readline() ([]byte, error) {
 			}
 			break
 		}
-		line, err := t.readSSELine()
+		chunk, err := t.r.ReadBytes('\n')
 		if err != nil {
 			t.err = err
 		}
-		if len(line) > 0 {
+		for _, line := range sseLines(chunk) {
 			t.feed(line)
 		}
 	}
