@@ -33,4 +33,9 @@ func TestTheRouterPluginLoadsOnlyWhileTheRouterIsOn(t *testing.T) {
 	if _, err := os.Stat(router.ConfigPath()); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv(router.WorkerEnv, "")
+	t.Setenv("CLAUDE_CODE_PLUGIN_DIRS", "/x:"+own)
+	if got := pluginDirs(lib); got != "/x:"+own {
+		t.Fatalf("an inherited own entry must not repeat: got %q", got)
+	}
 }
