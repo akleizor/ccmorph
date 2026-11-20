@@ -22,10 +22,19 @@ help:
 	@echo "  make release        verify, then build $(TARBALL) + the stable ccmorph.tar.gz"
 
 # The compiled helpers. Tests and a checkout's install.sh use these binaries.
+# macOS keys privacy grants to an ad-hoc binary's hash, so each build asks again;
+# a real identity (CCMORPH_CODESIGN_IDENTITY) keeps them.
+# The core is built and signed in a private directory inside libexec/, then
+# renamed into place only after both steps succeed, so libexec/ccmorph-core only
+# ever names a finished, signed build: a build that fails, is killed or times out
+# leaves the published core as it was, and nothing reads a half-written or
+# unsigned file (#714). Same directory, so the rename is atomic; it also gives
+# the new core its own inode, never the bytes of a copy still running.
 shim:
-	go build -trimpath -o libexec/ccmorph-core ./cmd/ccmorph-core
-	@# macOS keys privacy grants to an ad-hoc binary's hash, so each build asks again; a real identity keeps them
-	@if [ -n "$(CCMORPH_CODESIGN_IDENTITY)" ]; then codesign -f -s "$(CCMORPH_CODESIGN_IDENTITY)" -i ccmorph-core libexec/ccmorph-core; fi
+	@tmp=libexec/.shim-build.$$$$; rm -rf "$$tmp"; mkdir -p "$$tmp" && \
+	go build -trimpath -o "$$tmp/ccmorph-core" ./cmd/ccmorph-core && \
+	if [ -n "$(CCMORPH_CODESIGN_IDENTITY)" ]; then codesign -f -s "$(CCMORPH_CODESIGN_IDENTITY)" -i ccmorph-core "$$tmp/ccmorph-core"; fi && \
+	mv -f "$$tmp/ccmorph-core" libexec/ccmorph-core; rc=$$?; rm -rf "$$tmp"; exit $$rc
 
 test: gate
 
