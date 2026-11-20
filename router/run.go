@@ -68,6 +68,20 @@ func Decide(c Config, r Request) (Decision, error) {
 	if r.Tier == "" {
 		d.Task = Capped(d.Task, c.TierCap)
 	}
+	if r.Profile != "" && r.Model != "" {
+		// A named profile and model is the caller's choice: run it as named, past
+		// every routing filter (disabled, reserved, advisor-only), or fail loudly.
+		if !slices.Contains(profileNames(), r.Profile) {
+			return d, fmt.Errorf("no ccmorph profile %q", r.Profile)
+		}
+		effort := r.Effort
+		if effort == "" {
+			effort = Efforts[d.Task.Tier]
+		}
+		d.Pick = &Option{Profile: r.Profile, Model: r.Model, Effort: effort}
+		d.Shortlist = []Option{*d.Pick}
+		return d, nil
+	}
 	profiles, notes := Profiles(c, r.Refresh, !r.Deadline.IsZero(), r.Only)
 	if len(profiles) == 0 {
 		return d, errors.New("no ccmorph profiles")
