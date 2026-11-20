@@ -2,10 +2,10 @@ package adapter
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"net/http"
 	"strings"
 	"testing"
 )
@@ -110,5 +110,79 @@ func TestPreparingAModelMidSessionRewritesTheChatList(t *testing.T) {
 	}
 	if string(b) != "gemini-4-carbon\n" {
 		t.Fatalf("chat list %q", b)
+	}
+}
+
+// prepareFailing runs a mid-session prepare of gemini-4-carbon (a chat row) on
+// conf; translatorUp false makes the poll of the running translator fail.
+func prepareFailing(t *testing.T, conf string, translatorUp bool) (int, bool) {
+	t.Helper()
+	swap(t, &inventoryFn, func(base, _ string, _ *http.Client) ([]any, []string, error) {
+		if base != "https://gw" && !translatorUp {
+			return nil, nil, fmt.Errorf("translator unreachable")
+		}
+		return nil, []string{"gemini-4-carbon"}, nil
+	})
+	swap(t, &classifyFn, func(_, _, _, req string, _ bool) ([]Row, error) {
+		return []Row{{Model: "claude-opus-4-5", Dialect: "anthropic", Status: 200},
+			{Model: req, Dialect: "chat", Status: 200}}, nil
+	})
+	captureStdio(t)
+	return exits(t, func() {
+		ensureConfig(&cliArgs{ensureConfig: conf, ensurePort: 45999, ensureIdentity: "id"},
+			"gemini-4-carbon", "https://gw", "k", "id", "", "", "", nil)
+	})
+}
+
+// A prepare whose chat model list cannot be written fails, and the running
+// translator keeps the previous config: the rollback is armed before the list
+// is written (#646).
+func TestAFailedChatListWriteLeavesThePreviousRoute(t *testing.T) {
+	conf := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, conf, "port: 1\n", 0o600)
+	// A directory where the list goes: the config's write succeeds, the list's fails.
+	if err := os.Mkdir(chatModelsFile(conf), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if code, did := prepareFailing(t, conf, true); !did || code != 1 {
+		t.Fatalf("prepare exited %d (exited %v), want 1", code, did)
+	}
+	if b, _ := os.ReadFile(conf); string(b) != "port: 1\n" {
+		t.Fatalf("a failed prepare left the new config (%d bytes, want the previous 8)", len(b))
+	}
+	if st, err := os.Stat(chatModelsFile(conf)); err != nil || !st.IsDir() {
+		t.Fatalf("the restore touched what it could not read: %v %v", st, err)
+	}
+}
+
+// A prepare that fails after both writes puts back the previous config and the
+// previous chat model list.
+func TestAFailedPrepareRestoresThePreviousChatList(t *testing.T) {
+	conf := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, conf, "port: 1\n", 0o600)
+	writeFile(t, chatModelsFile(conf), "gpt-x\n", 0o600)
+	if code, did := prepareFailing(t, conf, false); !did || code != 1 {
+		t.Fatalf("prepare exited %d (exited %v), want 1", code, did)
+	}
+	if b, _ := os.ReadFile(conf); string(b) != "port: 1\n" {
+		t.Fatalf("config %q, want the previous one", b)
+	}
+	if b, _ := os.ReadFile(chatModelsFile(conf)); string(b) != "gpt-x\n" {
+		t.Fatalf("chat list %q, want the previous one", b)
+	}
+}
+
+// With no chat model list before the prepare, a failed prepare leaves none.
+func TestAFailedPrepareRemovesTheChatListItWrote(t *testing.T) {
+	conf := filepath.Join(t.TempDir(), "config.yaml")
+	writeFile(t, conf, "port: 1\n", 0o600)
+	if code, did := prepareFailing(t, conf, false); !did || code != 1 {
+		t.Fatalf("prepare exited %d (exited %v), want 1", code, did)
+	}
+	if b, _ := os.ReadFile(conf); string(b) != "port: 1\n" {
+		t.Fatalf("config %q, want the previous one", b)
+	}
+	if _, err := os.Stat(chatModelsFile(conf)); !os.IsNotExist(err) {
+		t.Fatalf("a failed prepare left a chat list it wrote: %v", err)
 	}
 }

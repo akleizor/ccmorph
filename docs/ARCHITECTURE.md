@@ -1108,9 +1108,11 @@ native Anthropic route rejects that signature: that is what lets a conversation
 continue there after a hop or a `/model` switch. When the resend is refused with
 a non-retryable 4xx too, the client gets the upstream's first 400, never the
 refusal the repair provoked; a retryable 429 is passed through, so the breaker
-counts it. Known limit: `ccmorph add` and doctor still name `brew install
-cliproxyapi`, the upstream build without the fix, because the fork's package
-exists only for macOS arm64.
+counts it. A mid-session prepare that fails, a failed write of the list itself
+included, puts the previous config and list back before it exits, so the running
+translator keeps its route **[test]**. Known limit: `ccmorph add` and doctor still
+name `brew install cliproxyapi`, the upstream build without the fix, because the
+fork's package exists only for macOS arm64.
 
 ## 5. Context window
 

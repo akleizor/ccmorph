@@ -711,21 +711,27 @@ func ensureConfig(a *cliArgs, required, upstream, key, routeIdentity, cacheFile,
 	replace := func(data []byte) error {
 		return shim.AtomicWrite(conf, data, 0o600, ".route-")
 	}
+	// Any failure or timeout from here, the chat model list's own write among
+	// them, restores the previous config and chat model list. It is armed before
+	// either write, so no exit leaves the running translator on the new config
+	// (#646). A list that was absent is removed; one that could not be read is
+	// left alone.
+	restore := func() {
+		replace(previous)
+		switch {
+		case chatErr == nil:
+			shim.AtomicWrite(chatModelsFile(conf), prevChat, 0o600, ".chat-")
+		case errors.Is(chatErr, os.ErrNotExist):
+			os.Remove(chatModelsFile(conf))
+		}
+	}
+	atExit(restore)
 	if err := replace([]byte(rendered)); err != nil {
 		die("%v", err)
 	}
 	if err := writeChatModels(conf, rows); err != nil {
-		die("%v", err)
+		die("cannot write the translator's chat model list: %v", err)
 	}
-	// Any failure or timeout from here restores the previous config and chat
-	// model list.
-	restore := func() {
-		replace(previous)
-		if chatErr == nil {
-			shim.AtomicWrite(chatModelsFile(conf), prevChat, 0o600, ".chat-")
-		}
-	}
-	atExit(restore)
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		_, ids, err := inventoryFn("http://127.0.0.1:"+strconv.Itoa(a.ensurePort), key, loopback)
