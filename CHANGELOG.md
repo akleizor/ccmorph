@@ -17,6 +17,13 @@
 
 ### Fixed
 
+- **`ccmorph doctor` names a check it ran out of time for.** Listing running
+  programs is bounded at one second and the new-zsh completion check at five,
+  and on a busy machine either can run out. The report used to drop the
+  open-session row, or tell you to move an fpath line that was already right.
+  It now prints `SKIP adapter: could not tell whether a translator is running
+  (… within 1 second); check again: ccmorph doctor <name>` or `INFO completion:
+  not checked (a new zsh did not answer within 5 seconds)` (#518).
 - **A `uv run` without memorized flags can no longer run the pytest suite
   serially.** The pytest packages ride in pyproject.toml's default `test`
   group, so the command a session types from memory — without
