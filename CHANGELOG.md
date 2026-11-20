@@ -7,6 +7,14 @@
 
 ## Unreleased
 
+## v0.5.24 — 2026-11-20
+
+Cut from v0.5.23 plus this change only.
+
+### Fixed
+
+- **The router never refuses a call.** The Agent hook no longer denies a call when no profile can take it, when its pick is on another profile, or when a delegated worker starts its own subagent; the call runs as written and is logged as unrouted. The `delegate` tool also runs inside a delegated worker.
+
 ## v0.5.23 — 2026-11-20
 
 Cut from v0.5.22 plus these changes only.
