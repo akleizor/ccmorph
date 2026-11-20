@@ -1007,6 +1007,10 @@ on Claude Code's stop timing: its hook timeout sends SIGTERM to the process
 group and follows it with SIGKILL after about 1.5 s (verified against the
 installed Claude Code 2.1.326 binary on 2026-11-17), and a SIGKILL that arrives
 before the handler writes merely rereads the remainder, which is idempotent.
+The checkpoint is written only while the hook holds an exclusive lock on the
+cursor and only when it sits ahead of the cursor on disk, so an older pass
+never moves a newer pass's cursor back; where that lock cannot be taken the
+checkpoint is skipped, which also costs only a reread.
 The ways a launch declines are an `apikey` profile, no profile, and the
 profile's `usage_route=direct`; all three compose no hook, and
 `settings-compose` strips the owned Stop entry first, so a direct launch also
