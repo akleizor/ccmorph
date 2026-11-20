@@ -23,6 +23,8 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
+	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/util"
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
@@ -401,6 +403,56 @@ func TestTheListingWalkReadsEveryRowShapeOnceIssue479(t *testing.T) {
 	walkListing(data, true)
 	if text := output(); !strings.Contains(text, "unsafe characters") || !strings.Contains(text, "m-evil ok:") {
 		t.Fatalf("the walk did not log the unsafe id: %s", text)
+	}
+}
+
+// The #562 chat denial is one rule with two remaining spellings, each shaped
+// for its package's JSON decoder: util.DeniedForChat over ordjson rows and
+// this walk over encoding/json rows. Pinned into equality here — every
+// capabilities shape takes the same verdict through both, and only an
+// explicit chat_completion: false denies. The walk once denied on a mere
+// absence (a truthy test, so a row publishing any other capability dropped
+// out of the adapter's inventory while every other surface still served it).
+func TestTheListingWalkAndDeniedForChatDenyTheSameRowsIssue617(t *testing.T) {
+	for _, c := range []struct {
+		caps string // the row's capabilities value as written; "" means no key
+		chat bool   // the one rule's verdict: the row is chat-capable
+	}{
+		{"", true},
+		{"{}", true},
+		{"null", true},
+		{`{"vision":true}`, true},
+		{`{"chat_completion":true}`, true},
+		{`{"chat_completion":0}`, true},
+		{`{"chat_completion":false}`, false},
+	} {
+		row := `{"id":"m"}`
+		if c.caps != "" {
+			row = `{"id":"m","capabilities":` + c.caps + `}`
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(row), &decoded); err != nil {
+			t.Fatalf("capabilities %s: %v", c.caps, err)
+		}
+		parsed, err := ordjson.Parse([]byte(row))
+		if err != nil {
+			t.Fatalf("capabilities %s: %v", c.caps, err)
+		}
+		obj, ok := parsed.(*ordjson.Obj)
+		if !ok {
+			t.Fatalf("capabilities %s: the row parsed as %T, not an object", c.caps, parsed)
+		}
+		if denied := util.DeniedForChat(obj); denied != !c.chat {
+			t.Errorf("capabilities %s: DeniedForChat = %v, want chat=%v", c.caps, denied, c.chat)
+		}
+		rows := walkListing([]any{decoded}, false)
+		if len(rows) != 1 {
+			t.Fatalf("capabilities %s: the walk returned %d rows, want 1", c.caps, len(rows))
+		}
+		if rows[0].chat != c.chat {
+			t.Errorf("capabilities %s: the walk said chat=%v, want %v — DeniedForChat's verdict",
+				c.caps, rows[0].chat, c.chat)
+		}
 	}
 }
 
