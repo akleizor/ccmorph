@@ -66,6 +66,10 @@ func (l *launcher) verb(args []string) int {
 		return l.quota(args[1:])
 	case "price":
 		return l.price(args[1:])
+	case "_plugin_dirs":
+		// Launchers that exec claude themselves (ccmorph-rc) take the session's plugin path from here.
+		fmt.Println(pluginDirs(l.libDir))
+		return 0
 	case "router":
 		router.QuotaInput = l.quotaInput
 		return router.Main(args[1:], os.Stdin, os.Stdout, os.Stderr)

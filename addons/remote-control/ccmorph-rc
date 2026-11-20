@@ -171,6 +171,15 @@ def adapter_env() -> dict[str, str]:
             if k not in strip_env() or k in PROXY_ENV}
 
 
+def plugin_dirs(env) -> str:
+    """The session's plugin path, as `ccmorph run` would set it."""
+    out = subprocess.run([str(ADAPTER), "cli", "_plugin_dirs"], env=env,
+                         capture_output=True, text=True)
+    if out.returncode != 0 or not out.stdout.strip():
+        die(f"ccmorph-core cli _plugin_dirs failed: {out.stderr.strip() or out.returncode}")
+    return out.stdout.strip()
+
+
 def session_env(base, route_env: dict, route_models: bool) -> dict:
     """The session's env: no inherited credentials, model aliases left to Claude Code
     (1:1 real Claude ids) unless --route-models asks for the route's map, and the
@@ -549,6 +558,8 @@ def main(argv: list[str]) -> None:
                HTTPS_PROXY=f"http://127.0.0.1:{port}",
                NO_PROXY="localhost,127.0.0.1,::1",
                NODE_EXTRA_CA_CERTS=str(ca))
+    # ccmorph's own plugin and, while it is on, the router's: the core owns the rule.
+    env["CLAUDE_CODE_PLUGIN_DIRS"] = plugin_dirs(env)
     seed_trust(account_dir, os.getcwd())
     print(f"ccmorph-rc: Remote Control as '{account}', inference via '{route}' ({upstream})",
           file=sys.stderr)

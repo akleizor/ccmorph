@@ -631,3 +631,17 @@ def test_a_pinned_tier_reaches_the_backend_without_the_context_marker():
     body = {"model": "claude-opus-5-5[1m]"}
     assert normalize_body(body, {"opus": "claude-opus-5-5[1m]"})
     assert body["model"] == "claude-opus-5-5"
+
+
+def test_an_rc_session_loads_the_router_plugin_while_the_router_is_on(tmp_path, monkeypatch):
+    """`claude remote-control` is exec'd directly, not through `ccmorph run`, so
+    the session took no plugin path and never saw the router's delegate tool."""
+    rc = _launcher()
+    if not rc.ADAPTER.exists():
+        pytest.skip(f"{rc.ADAPTER} is not built: run `make shim` first")
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "CCMORPH_STATE_DIR": str(tmp_path),
+           "CCMORPH_LIB_DIR": str(rc.LIB_DIR)}
+    share = rc.LIB_DIR.parent / "share"
+    assert rc.plugin_dirs(env) == str(share / "claude-plugin")
+    (tmp_path / "router.json").write_text('{"enabled": true}')
+    assert rc.plugin_dirs(env) == f"{share / 'claude-plugin'}:{share / 'claude-plugin-router'}"
