@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
+	"github.com/akleizor/ccmorph/router"
+	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // helpPage is one help page as usage prints it wrapped to width columns. The
@@ -37,8 +39,10 @@ func helpPageFrom(t *testing.T, l *launcher, topic string, width int) string {
 
 // GH-364: help pages were fixed lines with no regard for the terminal's
 // width, so an 80-column terminal cut them inside words. Wrapped to 80, no
-// line may be wider, and the words must be exactly the piped page's words:
-// wrapping re-breaks lines, it never splits or drops a word.
+// prose line may be wider, and the words must be exactly the piped page's
+// words: wrapping re-breaks lines, it never splits or drops a word. The router
+// page's settings path is copied, not read, so it is printed outside the wrap
+// (GH-730); the router test measures it at 80 columns.
 func TestEveryHelpPageFitsEightyColumnsWithoutCuttingAWord(t *testing.T) {
 	t.Setenv("PATH", t.TempDir()) // no bridge on PATH: the plain add page
 	topics := []string{"", "all"}
@@ -47,7 +51,13 @@ func TestEveryHelpPageFitsEightyColumnsWithoutCuttingAWord(t *testing.T) {
 	}
 	for _, topic := range topics {
 		wide, piped := helpPage(t, topic, 80), helpPage(t, topic, 0)
-		for _, line := range strings.Split(wide, "\n") {
+		lines := strings.Split(wide, "\n")
+		for i, line := range lines {
+			// The router page's last line is its settings path, which the
+			// page prints unwrapped so it stays one copyable piece (GH-730).
+			if topic == "router" && i == len(lines)-1 {
+				continue
+			}
 			if cells(line) > 80 {
 				t.Errorf("help %q at 80 columns: line of %d cells: %q", topic, cells(line), line)
 			}
@@ -165,10 +175,12 @@ func TestHelpNamesMaskingAndHowToTurnItOn(t *testing.T) {
 // there left inspect reporting masking off. The pages name the root this
 // launcher resolved; the default root keeps its tilde spelling.
 func TestHelpNamesTheConfFileAtTheResolvedStateRoot(t *testing.T) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip("no home directory:", err)
-	}
+	// The fixture names the home its roots are read against: a host whose
+	// temporary directory sits under the real home would otherwise put the
+	// "redirected" root there too, and the page would spell it ~/… while the
+	// test still demanded the absolute spelling (#730 verification).
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	redirected := filepath.Join(t.TempDir(), "elsewhere", "ccmorph")
 	underHome := filepath.Join(home, "moved-ccmorph")
 	defaultRoot := filepath.Join(home, ".config", "ccmorph")
@@ -222,6 +234,80 @@ func TestHelpConfigNamesTheProfileTemplateThisInstallHolds(t *testing.T) {
 	}
 	if strings.Contains(page, root) {
 		t.Errorf("help config with no template names a path under %s:\n%s", root, page)
+	}
+}
+
+// GH-730: help router ended with Settings: `~/state-verify/router.json`. —
+// the resolved state root rewritten to a ~/ spelling that pastes to a file
+// that is not there, wrapped in markdown backticks this plain-text page
+// prints raw — while `ccmorph router status` named the real file two screens
+// away. The page names the file as the command names it, in plain text:
+// a line of the page IS router.ConfigPath() — nothing glued before it,
+// nothing glued after it — so selecting the line copies the exact file the
+// router reads, for any spelling of the root, "." among them (a substring
+// check let both a joined-on period and a "./" the router never prints pass).
+func TestHelpRouterNamesTheSettingsFileAsTheRouterDoes(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // no bridge on PATH: the plain pages
+	// The third root is longer than a terminal is wide and holds two spaces in
+	// a row: a page that wrapped it as prose broke it across lines and
+	// collapsed the spaces, so the path must be printed outside the wrap
+	// (GH-730).
+	roots := []string{
+		filepath.Join(t.TempDir(), "state-verify"),
+		".",
+		filepath.Join(t.TempDir(), "a home directory with two  spaces in its name", "state-verify"),
+	}
+	for _, root := range roots {
+		t.Setenv("CCMORPH_STATE_DIR", root)
+		want := "  " + router.ConfigPath()
+		for _, width := range []int{0, 80} {
+			page := helpPageFrom(t, &launcher{dir: paths.ProfileRoot()}, "router", width)
+			lines := strings.Split(strings.TrimRight(page, "\n"), "\n")
+			if last := lines[len(lines)-1]; last != want {
+				t.Errorf("state root %q at %d columns: the page's last line is %q, want exactly %q:\n%s", root, width, last, want, page)
+			}
+			if n := strings.Count(page, "router.json"); n != 1 {
+				t.Errorf("state root %q at %d columns: the page names router.json %d times, want once:\n%s", root, width, n, page)
+			}
+		}
+	}
+	l := &launcher{dir: t.TempDir()}
+	topics := []string{"", "all"}
+	for topic := range usageTopics {
+		topics = append(topics, topic)
+	}
+	for _, topic := range topics {
+		if page := helpPageFrom(t, l, topic, 0); strings.Contains(page, "`") {
+			t.Errorf("help %q prints markdown backticks on a plain-text page:\n%s", topic, page)
+		}
+	}
+}
+
+// GH-730, second refusal: a reader took the closing delimiter of the router
+// page's raw string for a backtick printed after the path. The template
+// itself holds no backtick at all, and ends with the settings path alone on
+// its own indented line: nothing follows router.json in the source either.
+func TestHelpRouterTemplateHoldsNoBacktick(t *testing.T) {
+	body := usageTopics["router"][1]
+	if strings.Contains(body, "`") {
+		t.Errorf("the router page template holds a backtick:\n%s", body)
+	}
+	if !strings.HasSuffix(body, "\n  ~/.config/ccmorph/router.json") {
+		t.Errorf("the router page template does not end with the settings path alone on its line:\n%q", body)
+	}
+}
+
+// GH-730, same screen: help all sold the router as `ccmorph router [on|off]`
+// while its own page, and the command, teach status, dispatch and report.
+// The list line is the page's synopsis, so the two cannot drift apart.
+func TestHelpAllCarriesTheRouterSynopsis(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	all := helpPageFrom(t, &launcher{dir: t.TempDir()}, "all", 0)
+	if !strings.Contains(all, router.Usage) {
+		t.Errorf("help all does not carry the router page's synopsis (%s):\n%s", router.Usage, all)
+	}
+	if strings.Contains(all, "router [on|off]") {
+		t.Errorf("help all still carries the stale two-verb synopsis:\n%s", all)
 	}
 }
 
