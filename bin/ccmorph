@@ -47,13 +47,23 @@ done
 here="${self:h:A}"
 
 # An explicit CCMORPH_LIB_DIR is authoritative and FAILS when wrong, rather than
-# quietly running a different library than the caller named. This is also the seam
-# a running Claude Code session inherits, so `! ccmorph hop <account>` from inside
-# a session reaches the same library that launched it.
+# quietly running a different library than the caller named.
 if [[ -n "${CCMORPH_LIB_DIR:-}" ]]; then
   lib="$CCMORPH_LIB_DIR/ccmorph.sh"
   [[ -r "$lib" ]] || {
     print -u2 -- "ccmorph: CCMORPH_LIB_DIR is set but has no readable ccmorph.sh"
+    print -u2 -- "  looked for: $lib"
+    exit 1
+  }
+elif [[ "${1:-}" == hop && -n "${CCMORPH_SESSION_LIB_DIR:-}" ]]; then
+  # The seam a running session inherits, under its own name: `! ccmorph hop
+  # <account>` from inside a session reaches the same library that launched it,
+  # and ONLY hop does. Carrying the seam under the public override's name made
+  # every verb of every other install answer from the launching install's tree
+  # — its doctor fix-lines and help pages named another install's files (#648).
+  lib="$CCMORPH_SESSION_LIB_DIR/ccmorph.sh"
+  [[ -r "$lib" ]] || {
+    print -u2 -- "ccmorph: CCMORPH_SESSION_LIB_DIR is set but has no readable ccmorph.sh"
     print -u2 -- "  looked for: $lib"
     exit 1
   }
@@ -78,10 +88,12 @@ else
   }
 fi
 
-# Hand the library its own directory explicitly, so a child session's `hop`
-# reaches the same library that launched it.
-CCMORPH_LIB_DIR="${lib:h}"
-export CCMORPH_LIB_DIR
+# Hand the library its own directory to a child session under the session seam,
+# so a `hop` run inside that session reaches the library that launched it. This
+# is NOT the public CCMORPH_LIB_DIR: a session that also has another install on
+# PATH must answer every other verb about that install, not this one (#648).
+CCMORPH_SESSION_LIB_DIR="${lib:h}"
+export CCMORPH_SESSION_LIB_DIR
 
 # `set -eu` belongs to this preamble only: the library and the launch it runs are
 # long-lived interactive code with their own error handling, and inheriting -e

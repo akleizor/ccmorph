@@ -10089,14 +10089,17 @@ test_the_command_resolves_its_library_and_forwards_every_argument() {
   }
 
   # The library must receive its own directory, not derive it, so a child
-  # session's `hop` reaches the same library.
+  # session's `hop` reaches the same library. It travels as the session's own
+  # seam, CCMORPH_SESSION_LIB_DIR, not the public override: the exported public
+  # override made every other verb of every other install answer from the
+  # launching install's tree (#648).
   printf '%s\n' \
-    'ccmorph() { printf "%s\\n" "$CCMORPH_LIB_DIR" > "$HOME/libdir.log" }' \
+    'ccmorph() { printf "%s\\n" "${CCMORPH_SESSION_LIB_DIR-<unset>}" > "$HOME/libdir.log" }' \
     > "$test_home/lib/ccmorph.sh"
   HOME="$test_home" CCMORPH_LIB_DIR="$test_home/lib" \
     zsh "$REPO_ROOT/bin/ccmorph" list >/dev/null
   [[ "$(<"$test_home/libdir.log")" == "$test_home/lib" ]] || {
-    print -u2 -- 'the launcher must export the library directory it resolved'
+    print -u2 -- 'the launcher must hand its resolved library to the session as CCMORPH_SESSION_LIB_DIR'
     rc=1
   }
 
@@ -10137,6 +10140,137 @@ test_the_command_reports_a_library_it_cannot_load() {
   }
   assert_contains "$output" 'CCMORPH_LIB_DIR is set but has no readable ccmorph.sh' \
     'a wrong CCMORPH_LIB_DIR must say so by name' || rc=1
+
+  rm -rf "$test_home"
+  return $rc
+}
+
+
+test_a_session_adopts_its_launcher_for_the_hop_only() {
+  # #648: a session exported CCMORPH_LIB_DIR — the public override — into every
+  # shell it spawned, so a second install's `ccmorph doctor` / `ccmorph help config`
+  # in that environment answered from the LAUNCHING install's tree: the brew copy's
+  # template path, the brew copy's fpath fix-line, while the person's PATH ran the
+  # other install's command. The session seam now travels as CCMORPH_SESSION_LIB_DIR
+  # and only `hop` reads it: the switch must still reach the library that launched
+  # the session, every other verb answers about the install whose command ran.
+  local test_home rc=0 output exit_status
+  test_home=$(mktemp -d)
+  mkdir -p "$test_home/launcher/lib" "$test_home/second/bin" "$test_home/second/lib"
+  # Two installs, each library a stub that names itself when loaded. The second
+  # one is the command on PATH; only the launcher's environment points at it.
+  printf '%s\n' 'ccmorph() { printf "LOADED=launcher\\n" }' > "$test_home/launcher/lib/ccmorph.sh"
+  printf '%s\n' 'ccmorph() { printf "LOADED=second\\n" }'   > "$test_home/second/lib/ccmorph.sh"
+  cp "$REPO_ROOT/bin/ccmorph" "$test_home/second/bin/ccmorph"
+
+  # case: <install whose lib/ is the seam>:<argv...>:<library that must load>
+  local case seam argv want
+  for case in \
+    'launcher:doctor:second' \
+    'launcher:help config:second' \
+    'launcher:hop work:launcher'
+  do
+    seam="${case%%:*}"; case="${case#*:}"; argv="${case%%:*}"; want="${case##*:}"
+    output=$(env -u CCMORPH_LIB_DIR -u XDG_CONFIG_HOME HOME="$test_home" \
+      CCMORPH_SESSION_LIB_DIR="$test_home/$seam/lib" \
+      zsh "$test_home/second/bin/ccmorph" ${=argv} 2>&1)
+    [[ "$output" == "LOADED=$want" ]] || {
+      print -u2 -- "with the seam at $seam, '$argv' must load $want, loaded:
+  ${(qqq)output}"
+      rc=1
+    }
+  done
+
+  # A seam that names a library no longer on disk fails loudly by name, the way
+  # the public override does: a hop must never quietly switch from another install.
+  output=$(env -u CCMORPH_LIB_DIR -u XDG_CONFIG_HOME HOME="$test_home" \
+    CCMORPH_SESSION_LIB_DIR="$test_home/nowhere" \
+    zsh "$test_home/second/bin/ccmorph" hop work 2>&1)
+  exit_status=$?
+  [[ $exit_status -ne 0 ]] || {
+    print -u2 -- 'a hop whose session seam is unreadable must not fall back silently'
+    rc=1
+  }
+  assert_contains "$output" 'CCMORPH_SESSION_LIB_DIR is set but has no readable ccmorph.sh' \
+    'a wrong CCMORPH_SESSION_LIB_DIR must say so by name' || rc=1
+
+  rm -rf "$test_home"
+  return $rc
+}
+
+
+test_a_second_installs_doctor_and_help_config_answer_about_themselves() {
+  # #648 as the person sees it: the machine also has a Homebrew ccmorph, a
+  # session was launched by THAT install, and inside it the PATH runs a clone
+  # install's command. `ccmorph doctor` printed the Cellar fpath fix-line and
+  # `ccmorph help config` the Cellar template, so a newcomer following the
+  # printed path edits another install's file. Both must answer about the
+  # install whose command ran, while a `hop` still reaches the launcher.
+  local test_home rc=0
+  test_home=$(mktemp -d)
+  local home="$test_home/home"
+  local clone="$home/.config/ccmorph"
+  local cellar="$test_home/brew/Cellar/ccmorph/0.5.13/libexec"
+  mkdir -p "$home/.local/bin" "$clone/bin" "$clone/profiles" "$test_home/bin" "$test_home/brew/bin" "$cellar"
+
+  # A clone install exactly as install.sh lays it out: the command in
+  # ~/.local/bin and beside the library in ~/.config/ccmorph/bin, the rest of
+  # the runtime (library, core, share, template) in ~/.config/ccmorph.
+  cp "$REPO_ROOT/bin/ccmorph" "$home/.local/bin/ccmorph"
+  cp "$REPO_ROOT/bin/ccmorph" "$clone/bin/ccmorph"
+  cp -R "$REPO_ROOT/lib" "$REPO_ROOT/libexec" "$REPO_ROOT/share" "$clone/"
+  cp "$REPO_ROOT/share/profile.conf.example" "$clone/"
+  printf '%s\n' 'type=apikey' 'api_key=k' > "$clone/plain.conf"
+  printf 'plain\n' > "$clone/active"
+
+  # The machine's Homebrew copy: the same tree in a Cellar, its command linked
+  # onto PATH. Its template differs, so a wrong answer is visible, not a
+  # coincidentally identical file.
+  cp -R "$clone/." "$cellar/"
+  rm -rf "$cellar/profiles"
+  printf 'BREW COPY of the template\n' > "$cellar/profile.conf.example"
+  ln -s "$cellar/bin/ccmorph" "$test_home/brew/bin/ccmorph"
+
+  # The session is launched by the BREW install. Inside it PATH runs the
+  # clone's command first, and this stub records the seam the launch handed
+  # over plus what doctor and help config print.
+  printf '%s\n' '#!/bin/sh' \
+    '[ "$1" = --help ] && exit 0' \
+    'printf "SEAM=%s\nPUBLIC=%s\n" "${CCMORPH_SESSION_LIB_DIR-<unset>}" "${CCMORPH_LIB_DIR-<unset>}" > "$HOME/seam.txt"' \
+    'ccmorph help config > "$HOME/helpconfig.txt" 2>&1' \
+    'ccmorph doctor > "$HOME/doctor.txt" 2>&1' \
+    'exit 0' > "$test_home/bin/claude"
+  chmod +x "$test_home/bin/claude"
+
+  env -i HOME="$home" ZDOTDIR="$home" TERM=dumb NO_COLOR=1 \
+    HTTP_PROXY=http://127.0.0.1:1 HTTPS_PROXY=http://127.0.0.1:1 \
+    PATH="$test_home/bin:$home/.local/bin:$test_home/brew/bin:/usr/bin:/bin" \
+    zsh "$test_home/brew/bin/ccmorph" run plain >"$test_home/launch.txt" 2>&1 </dev/null
+
+  if [[ ! -s "$home/helpconfig.txt" || ! -s "$home/doctor.txt" || ! -s "$home/seam.txt" ]]; then
+    print -u2 -- "the session launched by the Cellar install did not record its answers:
+  ${(qqq)$(<"$test_home/launch.txt")}"
+    rm -rf "$test_home"
+    return 1
+  fi
+  local seam="$(<"$home/seam.txt")" help_out="$(<"$home/helpconfig.txt")" doctor_out="$(<"$home/doctor.txt")"
+
+  # The launch carries the launching library under the session's own name and
+  # NOT under the public override that every other install would obey.
+  assert_contains "$seam" "SEAM=$cellar/lib" \
+    'the session must receive the launching library as CCMORPH_SESSION_LIB_DIR' || rc=1
+  assert_contains "$seam" 'PUBLIC=<unset>' \
+    'the session must not carry the public CCMORPH_LIB_DIR override' || rc=1
+
+  # help config: this install's template, spelled the README's documented way.
+  assert_contains "$help_out" '  ~/.config/ccmorph/profile.conf.example' \
+    "help config must name the running install's template" || rc=1
+  # doctor: the fpath fix-line for this install's completion directory.
+  assert_contains "$doctor_out" "fpath=($clone/share/zsh/site-functions \$fpath)" \
+    "doctor must name the running install's completion directory" || rc=1
+  # Neither may name the other install's tree.
+  assert_not_contains "$help_out$doctor_out" "$test_home/brew" \
+    "the other install's paths must not appear" || rc=1
 
   rm -rf "$test_home"
   return $rc
@@ -11323,6 +11457,8 @@ run_test test_the_advisory_is_valid_json
 run_test test_the_installer_wires_no_shell_and_installs_managed_commands
 run_test test_the_command_resolves_its_library_and_forwards_every_argument
 run_test test_the_command_reports_a_library_it_cannot_load
+run_test test_a_session_adopts_its_launcher_for_the_hop_only
+run_test test_a_second_installs_doctor_and_help_config_answer_about_themselves
 run_test test_a_bare_invocation_prints_usage_and_launches_nothing
 run_test test_run_keeps_native_command_delimiters
 run_test test_the_launcher_adds_nothing_unrequested

@@ -325,9 +325,13 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 	}
 	fail := func() (*launchPlan, int) { os.Remove(relayFile); return nil, 1 }
 
+	// The session seam (#648): the library that launched this session, under its
+	// own name. The session's `hop` reads it; every other verb of every install
+	// on the session's PATH answers about itself. Exporting it as the public
+	// CCMORPH_LIB_DIR made a second install's doctor and help name THIS tree.
 	common := []string{
 		"CCMORPH_RELAY_ID=" + relayID,
-		"CCMORPH_LIB_DIR=" + l.libDir,
+		"CCMORPH_SESSION_LIB_DIR=" + l.libDir,
 		"CLAUDE_CODE_PLUGIN_DIRS=" + prefixed(os.Getenv("CLAUDE_CODE_PLUGIN_DIRS")) + filepath.Join(filepath.Dir(l.libDir), "share", "claude-plugin"),
 	}
 	plan := &launchPlan{

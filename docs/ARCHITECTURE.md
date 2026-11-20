@@ -79,7 +79,12 @@ is the one binary every launch, install and zsh caller runs;
 `ccmorph-core shim` is the standalone stock shim, for a script that runs it directly.
 No Python runs in the core: `python3` is needed only by the Remote Control add-on in `addons/remote-control/`) and `share/` (data:
 `model-catalogue.json`, `window-sources.json`). `lib/` finds `libexec/` and `share/`
-beside itself. `CCMORPH_LIB_DIR` names the `lib/` directory.
+beside itself. `CCMORPH_LIB_DIR` names the `lib/` directory: a public override,
+authoritative for whoever sets it (a person, a package wrapper, `install.sh`).
+A running session instead receives the launching library as `CCMORPH_SESSION_LIB_DIR`,
+which the loader consults for `hop` alone — so switching sessions continues on the
+install that launched them, while every other verb answers about the install whose
+command ran (#648).
 
 | Part | Purpose |
 |---|---|

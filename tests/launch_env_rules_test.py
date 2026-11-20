@@ -133,6 +133,23 @@ def test_a_nested_launch_still_sets_bare_mode_a_profile_declares(box):
     assert seen(box)[0].strip() == 'SIMPLE=1'
 
 
+def test_a_session_gets_its_launchers_library_under_its_own_name(box):
+    # #648: the launch exported the public CCMORPH_LIB_DIR override, so a second
+    # install's command run inside the session answered from the launching
+    # install's tree — its help config template path, its doctor fpath fix-line.
+    # The seam travels as CCMORPH_SESSION_LIB_DIR now, which only a session's
+    # hop reads; the public name stays what a person or a package wrapper sets.
+    (box.home / 'bin/claude').write_text(
+        '#!/bin/sh\n[ "$1" = --help ] && exit 0\n'
+        'echo "SEAM=${CCMORPH_SESSION_LIB_DIR-<unset>} PUBLIC=${CCMORPH_LIB_DIR-<unset>}" >> "$HOME/env.log"\n'
+        'echo "--" >> "$HOME/env.log"\n')
+    # Nothing names a library here, so a clean launch must export only its own
+    # seam — and not the public override at all.
+    del box.env['CCMORPH_LIB_DIR']
+    assert box.run('run', 'plain').returncode == 0
+    assert seen(box)[0].strip() == f'SEAM={ROOT / "lib"} PUBLIC=<unset>'
+
+
 def test_a_top_level_shell_keeps_its_own_bare_mode(box):
     box.env['CLAUDE_CODE_SIMPLE'] = '1'
     assert 'CLAUDE_CODE_CHILD_SESSION' not in box.env
