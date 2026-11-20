@@ -11,7 +11,10 @@ header is dropped before the route key is set, and OAuth-only beta flags go with
 from __future__ import annotations
 
 import json
+import os
 import re
+import socket
+from pathlib import Path
 from urllib.parse import urlsplit
 
 FIRST_PARTY_HOST = "api.anthropic.com"
@@ -39,6 +42,39 @@ def inference_target(switch: str | None) -> str:
     except OSError:
         return "route"
     return word if SWITCH_WORD.fullmatch(word) else "route"
+
+
+def edge_serves(record: Path) -> dict | None:
+    """The shared edge `record` describes if it can serve right now: its process is
+    alive, its proxy answers on loopback and its CA file is still there. The one
+    rule: ccmorph-rc's live_edge (the count --switch refuses on, and rc-hosts'
+    edge_ready) and the fallback note below both call it, so the note can never
+    count an edge --switch would refuse (issue #595: the note skipped the CA)."""
+    try:
+        edge = json.loads(record.read_text())
+        os.kill(int(edge["pid"]), 0)
+        with socket.create_connection(("127.0.0.1", int(edge["port"])), timeout=1):
+            pass
+        return edge if Path(edge["ca"]).exists() else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def lost_endpoint_note(target: str, bridge_dir: Path) -> str:
+    """The per-turn line when the word names <profile> and no handoff for it can be
+    read. It names `ccmorph-rc <profile> --switch` only where that command lands:
+    exactly one shared edge serves by edge_serves, the same rule --switch counts
+    with (issue #595)."""
+    edges = bridge_dir / "edges"
+    if edge_serves(edges / f"{target}.json"):
+        return (f"switch    {target} has no endpoint in this proxy but its own edge is live: "
+                f"ccmorph-rc {target} --switch sets the route word; the route answers meanwhile")
+    n = sum(1 for f in (sorted(edges.glob("*.json")) if edges.is_dir() else ()) if edge_serves(f))
+    if n == 1:
+        return (f"switch    {target} has no endpoint in this proxy; "
+                f"ccmorph-rc {target} --switch hands it over; the route answers meanwhile")
+    return (f"switch    {target} has no endpoint in this proxy and no single live shared edge "
+            f"to hand it to ({n} live); the route answers meanwhile")
 
 
 def is_inference(host: str, path: str) -> bool:
