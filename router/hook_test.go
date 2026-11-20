@@ -112,3 +112,21 @@ func TestHooksStayQuietWhileTheRouterIsOffOrTheModelIsPinned(t *testing.T) {
 		t.Fatalf("an explicit model is the caller's: %s", out.String())
 	}
 }
+
+func TestAGatewayRefusalBacksOffTheModelAndASubscriptionRefusalTheAccount(t *testing.T) {
+	root := hookEnv(t, true)
+	if err := os.WriteFile(filepath.Join(root, "gw.conf"), []byte("type=apikey\nbase_url=http://127.0.0.1:9\nmodel=gemini-4-carbon\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := LoadConfig()
+	ledgerAppend(Row{"id": "g", "profile": "gw", "model": "gemini-4-carbon"})
+	complete(c, "g", "", "auth")
+	if unavailableUntil("gw") != 0 || unavailableUntil("gw/gemini-4-carbon") == 0 {
+		t.Fatal("a gateway's 403 must back off that model only, never the whole gateway")
+	}
+	ledgerAppend(Row{"id": "s", "profile": "there", "model": "claude-opus-5-5"})
+	complete(c, "s", "", "quota")
+	if unavailableUntil("there") == 0 {
+		t.Fatal("a subscription's quota refusal is the account's")
+	}
+}
