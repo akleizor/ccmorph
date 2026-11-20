@@ -241,8 +241,35 @@ func inventoryListing(base, key string, c *http.Client) ([]any, []string, error)
 	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
 		return nil, nil, err
 	}
-	data, _ := doc["data"].([]any)
+	data, isList := doc["data"].([]any)
+	if !isList {
+		// A 200 that parses is not a listing when "data" is absent or not a
+		// JSON list — a proxy's error object, a wrapped reply — and reading it
+		// as an empty one is the confident "serves nothing" the auto sweep
+		// then retires the cache's servable models on (#695, the guard #558
+		// added to util's reader). Cannot tell, never "serves nothing": only
+		// a real data list, empty or not, is an endpoint's own answer.
+		return nil, nil, fmt.Errorf("the /v1/models reply is not a listing: data is %s", listingShape(doc["data"]))
+	}
 	return data, listedModels(data, true), nil
+}
+
+// listingShape names what a parsed /v1/models reply carries in "data", for the
+// error that refuses to read a non-list as an empty listing (#695).
+func listingShape(v any) string {
+	switch v.(type) {
+	case nil:
+		return "absent"
+	case map[string]any:
+		return "an object"
+	case string:
+		return "a string"
+	case bool:
+		return "a bool"
+	case float64:
+		return "a number"
+	}
+	return "not a list"
 }
 
 // inventory lists the usable chat model ids.

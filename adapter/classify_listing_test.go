@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -75,5 +76,37 @@ func TestClassifyAutoFetchesTheListingOnceIssue598(t *testing.T) {
 	}
 	if gets, calls := gw.listingGets(); gets != 1 {
 		t.Fatalf("GET /v1/models %d times for %d fresh models, want 1 (calls: %v)", gets, len(ids), calls)
+	}
+}
+
+// A 200 reply that is not a listing — a proxy's error object, a wrapped reply
+// whose data is an object — says nothing about what the endpoint serves. The
+// auto sweep keeps the verdicts its cache holds, exactly as it does when the
+// listing fetch itself fails, instead of reading the broken reply as "serves
+// nothing" and leaving the launch with no usable model (#695).
+func TestClassifySweepKeepsCachedVerdictsUnderANonListingReply(t *testing.T) {
+	for _, body := range []string{`{"error":"upstream down"}`, `{"data":{"id":"m"}}`} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("content-type", "application/json")
+			io.WriteString(w, body)
+		}))
+		cache := seededCache(t, srv.URL, true, rowJSON(row("chat")))
+		rows, err := classify(srv.URL, "k", cache, "", true)
+		srv.Close()
+		if err != nil {
+			t.Fatalf("%s: classify: %v", body, err)
+		}
+		kept := false
+		for _, r := range rows {
+			if r.Model == "m" && r.Dialect != "unusable" {
+				kept = true
+			}
+		}
+		if !kept {
+			t.Errorf("reply %s: the sweep gave servable model m no usable verdict (rows %v), want its cached chat verdict kept", body, rows)
+		}
+		if cached := cachedRows(srv.URL, cache); len(cached) != 1 || cached[0].Dialect != "chat" {
+			t.Errorf("reply %s: cache after the sweep %v, want m kept as chat", body, cached)
+		}
 	}
 }
