@@ -947,6 +947,31 @@ env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/t
 (( rc == 0 )) && [[ ! -e "$d/curl.argv" ]] \
   && ok "remote: a local sh install exits 0 and never calls curl" || { fail "local sh install rc=$rc or it called curl"; cat "$d/out" }
 
+release_clone() {  # $1 = source repo, $2 = clone dir, $3 = tag
+  # 8.8's scratch clone as one named setup step (GH-712, the #615 shape): a
+  # failure must say which step died and with what stderr, here, instead of
+  # surfacing downstream. `git clone` exits 0 on an EMPTY source — the
+  # condition is only a stderr warning — so an exit status alone cannot tell a
+  # good clone from an empty one; HEAD resolving is the clone's own proof of
+  # life, and the tag is verified the same way before anything runs against it.
+  local src="$1" dest="$2" tag="$3" err rc
+  err=$(git clone -q "$src" "$dest" 2>&1); rc=$?
+  (( rc == 0 )) || { print -r -- "git clone $src failed rc=$rc: $err"; return 1; }
+  # -q makes rev-parse itself silent, so on failure its output is empty: it
+  # must not be captured into $err, or the empty-clone message would say
+  # "git clone said:" followed by nothing and drop the warning that names the
+  # cause. $err stays the clone's own stderr.
+  git -C "$dest" rev-parse --verify -q HEAD >/dev/null 2>&1; rc=$?
+  (( rc == 0 )) || { print -r -- "empty clone of $src at $dest: HEAD does not resolve rc=$rc; git clone said: $err"; return 1; }
+  err=$(cp "$src/Makefile" "$dest/Makefile" 2>&1) \
+    || { print -r -- "copying $src/Makefile into $dest failed: $err"; return 1; }
+  err=$(git -C "$dest" tag "$tag" 2>&1); rc=$?
+  (( rc == 0 )) || { print -r -- "git tag $tag in $dest failed rc=$rc: $err"; return 1; }
+  git -C "$dest" rev-parse --verify -q "refs/tags/$tag" >/dev/null 2>&1 \
+    || { print -r -- "tag $tag absent in $dest after git tag rc=$rc"; return 1; }
+  return 0
+}
+
 # 8.8 the default URL names a release asset, so make must build one: dist/
 # ccmorph.tar.gz, a stable-name copy of the tag tarball. A release that attaches
 # only dist/ccmorph-<tag>.tar.gz leaves the one-liner's default download a 404.
@@ -956,18 +981,38 @@ env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/t
 # suite, while the archive content still comes from the tagged commit alone.
 # `make release` itself would recurse into this suite (its `test` prerequisite),
 # so this exercises the `dist` step release runs after verifying.
-git clone -q "$REPO" "$TMP/relrepo"
-cp "$REPO/Makefile" "$TMP/relrepo/Makefile"
 reltag=v0.0.0-install-test
-git -C "$TMP/relrepo" tag "$reltag"
-make -C "$TMP/relrepo" dist TAG="$reltag" DIST="$TMP/reldist" >"$TMP/relmake.out" 2>&1; rc=$?
-(( rc == 0 )) && ok "release: make dist exits 0 on a throwaway tag" \
-  || { fail "release: make dist rc=$rc"; cat "$TMP/relmake.out" }
-[[ -s "$TMP/reldist/ccmorph-$reltag.tar.gz" ]] \
-  && ok "release: the tag-named tarball is built" || fail "release: dist/ccmorph-$reltag.tar.gz was not built"
-cmp -s "$TMP/reldist/ccmorph-$reltag.tar.gz" "$TMP/reldist/ccmorph.tar.gz" \
-  && ok "release: dist/ccmorph.tar.gz is byte-identical to the tag-named tarball" \
-  || fail "release: dist/ccmorph.tar.gz is missing or differs from dist/ccmorph-$reltag.tar.gz"
+if relsetup=$(release_clone "$REPO" "$TMP/relrepo" "$reltag" 2>&1); then
+  make -C "$TMP/relrepo" dist TAG="$reltag" DIST="$TMP/reldist" >"$TMP/relmake.out" 2>&1; rc=$?
+  (( rc == 0 )) && ok "release: make dist exits 0 on a throwaway tag" \
+    || { fail "release: make dist rc=$rc"; cat "$TMP/relmake.out" }
+  [[ -s "$TMP/reldist/ccmorph-$reltag.tar.gz" ]] \
+    && ok "release: the tag-named tarball is built" || fail "release: dist/ccmorph-$reltag.tar.gz was not built"
+  cmp -s "$TMP/reldist/ccmorph-$reltag.tar.gz" "$TMP/reldist/ccmorph.tar.gz" \
+    && ok "release: dist/ccmorph.tar.gz is byte-identical to the tag-named tarball" \
+    || fail "release: dist/ccmorph.tar.gz is missing or differs from dist/ccmorph-$reltag.tar.gz"
+else
+  # One failure naming the setup step, not the three downstream assertions
+  # an empty clone used to produce (GH-712: make dist rc=2 and two missing
+  # tarball FAILs, cause one warning line in the log).
+  fail "release: clone setup: $relsetup"
+fi
+
+# The empty-source case the HEAD verification exists for, pinned directly:
+# a committed-empty repo clones "successfully" (git only warns), which is
+# exactly the state that once reached `make dist` and failed there three
+# times over. release_clone must refuse it, name the empty clone, and carry
+# the clone's own warning line — the message that names the cause is the
+# whole point of the helper. The call above, against $REPO, is its rc=0 proof.
+git init -q "$TMP/relsrc-empty"
+# LC_ALL=C (LANGUAGE emptied too) pins git to its untranslated messages for this
+# one call: the match below reads git's own English warning, and a caller's
+# translated locale must not turn a correct refusal into a false FAIL.
+relsetup=$(export LC_ALL=C LANGUAGE=; release_clone "$TMP/relsrc-empty" "$TMP/relrepo-empty" v0.0.0-empty-clone-test 2>&1); rc=$?
+(( rc != 0 )) && [[ "$relsetup" == *'empty clone'* ]] \
+  && [[ "$relsetup" == *'cloned an empty repository'* ]] \
+  && ok "release: an empty clone fails release_clone, naming the empty clone" \
+  || { fail "release_clone accepted an empty source rc=$rc: $relsetup"; }
 fi
 
 # --- 9. Windows shells are named and sent to WSL before anything else ----------
