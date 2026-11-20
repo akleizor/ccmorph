@@ -1683,3 +1683,13 @@ func TestRecyclesToolIDsNonStringIDsAnswerFalse(t *testing.T) {
 		})
 	}
 }
+
+func TestRenderPoolsUpstreamConnections(t *testing.T) { // test_upstream_credentials_reuse_connections
+	cfg := render([]Row{row("anthropic"), row("responses")}, "k", 1234, "https://gw", "/unused", "http://127.0.0.1:18480", "", nil, false)
+	for _, entry := range []string{"claude-api-key:", "codex-api-key:"} {
+		block := strings.SplitN(strings.SplitN(cfg, "\n"+entry+"\n", 2)[1], "    models:", 2)[0]
+		if !strings.Contains(block, "    connection-pool: {}\n") {
+			t.Fatalf("%s has no connection-pool, so each request orphans an idle upstream connection:\n%s", entry, block)
+		}
+	}
+}

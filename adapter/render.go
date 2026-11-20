@@ -191,6 +191,11 @@ api-keys:
 # rebuild-mid-system-message: Claude Code sends mid-conversation system content as
 # a messages entry with role "system", which vLLM-backed upstreams reject with a
 # literal_error on the role.
+# connection-pool: without it the translator builds a fresh transport per request
+# and never closes it, so every finished request leaves its upstream connection
+# idle for 90 s. Under a busy fleet those orphans outnumbered live streams and
+# exhausted the iPhone VPN relay (2026-11-21). The pool reuses one connection per
+# credential and multiplexes streams over HTTP/2 where the upstream offers it.
 # Cloaking: before 8.0.34 a client whose User-Agent is not claude-cli is cloaked by
 # default (billing header rewritten to a frozen cc_version, extra system reminder,
 # fake session ids), so "never" is written there. From 8.0.34 "never" instead
@@ -202,6 +207,7 @@ claude-api-key:
     base-url: %s
     disable-cooling: true
     rebuild-mid-system-message: true
+    connection-pool: {}
 %s%s    models:
 %s`, q(key), q(upstream), cloakLine, claudeHdr, block(passthrough))
 	}
@@ -214,6 +220,7 @@ codex-api-key:
   - api-key: %s
     base-url: %s
     disable-cooling: true
+    connection-pool: {}
     models:
 %s`, q(key), q(openaiBase), block(responses))
 	}
