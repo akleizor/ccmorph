@@ -1,4 +1,5 @@
 """The metadata-only ccusage export: one record per receipt, one folder per profile, damaged costs reported."""
+import contextlib
 import datetime as dt
 import json
 import os
@@ -318,6 +319,92 @@ def test_another_run_touching_a_stale_day_is_never_undone(tmp_path, monkeypatch,
     assert stats["rows"] == 1
     assert stale.read_text() == "the other run's export\n" if overlap == "rewritten" else not stale.exists()
     assert (output / "ccusage.json").exists()  # the run finished either way
+
+
+def test_a_listed_receipt_the_move_took_mid_read_is_skipped_issue_583(tmp_path, monkeypatch):
+    """The pre-shard move links each flat receipt into its day folder and then removes
+    the flat name (#513), and this export lists first and opens later, so the mover can
+    empty a listed path between the two. A vanished path is the move's relocation, not a
+    damaged store: the run skips it whole, finishes, and its summary names the count —
+    the skip #552 installed in the Go readers, and the one owned_days here already
+    makes two functions away (#583)."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    rows.mkdir()
+    write(rows, "a.json", receipt("a", "claude-opus-5-5", "2026-10-16T01:00:00+00:00", cost=1))
+    write(rows, "b.json", receipt("b", "claude-opus-5-5", "2026-10-16T02:00:00+00:00", cost=2))
+    gone = rows / "b.json"
+
+    reader = ue.receipt_rows
+    raced = []
+
+    def mover(root, since):
+        # receipt_rows lists the whole store before it yields its first row, so a
+        # name removed after that first row is one the listing already holds.
+        listed = reader(root, since)
+        first = next(listed)
+        raced.append(first[0].name)
+        gone.unlink()  # the move removes the flat name after the listing, before its read
+        yield first
+        yield from listed
+
+    monkeypatch.setattr(ue, "receipt_rows", mover)
+
+    stats = ue.export(rows, output)
+
+    assert raced == ["a.json"], "the move must land between the listing and the read of b.json"
+    assert stats["rows"] == 1 and stats["moved"] == 1 and stats["usd"] == 1
+    assert [r["costUSD"] for r in read_day(output, "2026-10-16")] == [1]
+    assert "1 receipt moved by the store mid-run, skipped" in ue.report(stats, output).splitlines()
+
+
+def test_a_day_folder_receipt_gone_between_listing_and_read_is_skipped_issue_583(tmp_path, monkeypatch):
+    """A day folder is listed whole before its receipts are read, and compaction (#642)
+    removes a folder's names once their archive is published, so the same race reaches
+    a day folder: a name its listing holds and its read cannot open is skipped and
+    counted, the way the Go readers' receiptMarks skips it (#552, #583)."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    day = rows / "2026-10-16"
+    day.mkdir(parents=True)
+    write(day, "a.json", receipt("a", "claude-opus-5-5", "2026-10-16T01:00:00+00:00", cost=1))
+    write(day, "b.json", receipt("b", "claude-opus-5-5", "2026-10-16T02:00:00+00:00", cost=2))
+    gone = day / "b.json"
+    real_scandir = os.scandir
+    raced = []
+
+    def scandir(path):
+        if os.fspath(path) != os.fspath(day):
+            return real_scandir(path)
+        with real_scandir(path) as entries:
+            listed = sorted(entries, key=lambda e: e.name)
+        for entry in listed:
+            entry.is_file(follow_symlinks=False)  # the listing's own view, taken before the race
+        raced.append([e.name for e in listed])
+        gone.unlink()  # the name leaves after the folder's listing, before its read
+        return contextlib.nullcontext(iter(listed))
+
+    monkeypatch.setattr(ue.os, "scandir", scandir)
+
+    stats = ue.export(rows, output)
+
+    assert raced == [["a.json", "b.json"]], "the folder must be listed before b.json goes"
+    assert stats["rows"] == 1 and stats["moved"] == 1 and stats["usd"] == 1
+    assert [r["costUSD"] for r in read_day(output, "2026-10-16")] == [1]
+
+
+def test_a_receipt_still_there_but_unreadable_still_fails_the_export_issue_583(tmp_path):
+    """The moved-by-the-mover skip reads only a path that is gone: a receipt that is
+    still there and cannot be read is damage or permissions, and keeps today's verdict
+    — the export refuses — so the race skip never quiets a real unreadable store (#583)."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    if os.geteuid() == 0:
+        pytest.skip("root reads a mode-000 file")
+    rows.mkdir()
+    write(rows, "a.json", receipt("a", "claude-opus-5-5", "2026-10-16T01:00:00+00:00", cost=1))
+    write(rows, "b.json", receipt("b", "claude-opus-5-5", "2026-10-16T02:00:00+00:00", cost=2))
+    (rows / "b.json").chmod(0o000)
+
+    with pytest.raises(PermissionError):
+        ue.export(rows, output)
 
 
 def test_a_since_rerun_reconciles_only_its_range(tmp_path):
@@ -696,6 +783,7 @@ def test_the_checkout_launcher_runs_the_shipped_exporter(tmp_path, via):
         "0 turns ccmorph estimated, $0.00",
         "0 turns left for ccusage to price at its list price",
         "0 turns unpriced (a damaged cost, not exported)",
+        "0 receipts moved by the store mid-run, skipped",
         "Then, with ccusage installed:",
         f"CLAUDE_CONFIG_DIR={root} ccusage claude daily --instances "
         f"--config {root}/ccusage.json",
@@ -738,6 +826,7 @@ def test_the_summary_names_where_the_files_went_and_the_command_to_run_next_issu
         "1 turn ccmorph estimated, $0.05",
         "1 turn left for ccusage to price at its list price",
         "1 turn unpriced (a damaged cost, not exported)",
+        "0 receipts moved by the store mid-run, skipped",
         "Then, with ccusage installed:",
         f"CLAUDE_CONFIG_DIR={root} ccusage claude daily --instances "
         f"--config {root}/ccusage.json",
