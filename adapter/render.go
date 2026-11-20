@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
+	"github.com/akleizor/ccmorph/netroute"
 	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/quirks"
 	"github.com/akleizor/ccmorph/shim"
@@ -149,10 +151,20 @@ func render(rows []Row, key string, port int, upstream, authdir, proxy, shimPath
 	// env.CCMORPH_UPSTREAM_PROXY sends the translator's upstream calls through an
 	// HTTP CONNECT proxy. macOS denies a LAN gateway to a translator started under
 	// a launchd-owned tmux server ("connect: no route to host"); a loopback proxy
-	// holding a Local Network grant dials it instead.
+	// holding a Local Network grant dials it instead. The translator takes the
+	// route the resolver names, exactly as the probes and the shim do:
+	// netroute.Parse decides whether the knob is usable and returns the spelling
+	// every reader can parse -- a password pasted with a space, '/', '?', '#',
+	// '^', '%' or a brace is re-encoded -- and an unusable knob renders no
+	// proxy-url at all, so cliproxyapi keeps the environment's own resolution
+	// instead of a route the probes would never dial (GH-580). The exemptions
+	// come first: a gateway on this machine or under NO_PROXY is dialed
+	// directly, never sent to a remote proxy.
 	proxyLine := ""
-	if proxy != "" {
-		proxyLine = "proxy-url: " + q(proxy) + "\n"
+	if u := netroute.Parse(proxy); u != nil {
+		if up, err := url.Parse(upstream); err != nil || !netroute.Exempt(up) {
+			proxyLine = "proxy-url: " + q(u.String()) + "\n"
+		}
 	}
 	var out strings.Builder
 	fmt.Fprintf(&out, `host: "127.0.0.1"
