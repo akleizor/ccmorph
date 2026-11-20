@@ -144,12 +144,12 @@ func Delegate(ctx context.Context, prompt, kind, tier, profile, model, cwd strin
 		return "Error: cwd is not a directory: " + cwd
 	}
 	r := Request{Prompt: prompt, Kind: kind, Tier: tier, Profile: profile, Model: model}
-	var attempts []string
+	var attempts, hints []string
 	source := ""
 	for range 2 {
 		d, err := Decide(c, r)
 		if err != nil {
-			return "Error: " + strings.Join(append(attempts, err.Error()), "; ")
+			return withHints("Error: "+strings.Join(append(attempts, err.Error()), "; "), hints)
 		}
 		r.Kind, r.Tier = d.Task.Kind, d.Task.Tier
 		if source == "" {
@@ -157,14 +157,14 @@ func Delegate(ctx context.Context, prompt, kind, tier, profile, model, cwd strin
 		}
 		d.Task.Source = source // a retry keeps who chose the tier
 		if d.Pick == nil {
-			return "Error: " + strings.Join(append(attempts, "no next available profile at the same tier"), "; ")
+			return withHints("Error: "+strings.Join(append(attempts, "no next available profile at the same tier"), "; "), hints)
 		}
 		job := newID("delegate")
 		reserve(job, d, prompt, nil)
 		out, errText, status := runWorker(ctx, c, d.Pick, prompt, cwd, job)
 		if ctx.Err() != nil {
 			ledgerUpdate(job, Row{"outcome": "error", "failure": "aborted"})
-			return abortedAnswer
+			return abortedAnswer // the MCP caller expects this exact string, with no note
 		}
 		hard := ""
 		switch {
@@ -177,16 +177,30 @@ func Delegate(ctx context.Context, prompt, kind, tier, profile, model, cwd strin
 			hard = "error"
 		}
 		if hard != "" {
-			complete(c, job, "", hard)
+			if hint := complete(c, job, "", hard); hint != "" {
+				hints = append(hints, hint)
+			}
 			ledgerUpdate(job, Row{"outcome": "error", "failure": hard, "exit_code": status})
 			attempts = append(attempts, fmt.Sprintf("%s/%s: %s (exit %d)", d.Pick.Profile, d.Pick.Model, hard, status))
 			continue
 		}
-		complete(c, job, out, "")
+		if hint := complete(c, job, out, ""); hint != "" {
+			hints = append(hints, hint)
+		}
 		ledgerUpdate(job, Row{"exit_code": status})
-		return out
+		return withHints(out, hints)
 	}
-	return "Error: " + strings.Join(attempts, "; ")
+	return withHints("Error: "+strings.Join(attempts, "; "), hints)
+}
+
+// withHints appends complete()'s notes to an answer: a dispatch or MCP caller
+// has no PostToolUse additionalContext, so the verdict rides on the answer.
+// Without a note the answer stays byte-identical.
+func withHints(answer string, hints []string) string {
+	if len(hints) == 0 {
+		return answer
+	}
+	return answer + "\n" + strings.Join(hints, "\n")
 }
 
 // runWorker runs one attempt in its own process group, killed whole on timeout,

@@ -159,6 +159,9 @@ func PostToolUse(in io.Reader, w io.Writer) {
 	if !failed {
 		hard = hardFailure(text, false, status)
 	}
+	if hard == "" && failed {
+		hard = "error" // Delegate's status != 0 fallback: a failed run is never a real answer
+	}
 	if hint := complete(c, ev.ToolUseID, text, hard); hint != "" {
 		hookOut(w, map[string]any{"hookSpecificOutput": map[string]any{"hookEventName": "PostToolUse", "additionalContext": hint}})
 	}
@@ -190,7 +193,12 @@ func SubagentStop(in io.Reader, w io.Writer) {
 	if id == "" {
 		id = ev.ToolUseID
 	}
-	if hint := complete(c, id, text, hardFailure(text, ordjson.Truthy(ev.Error), ev.Status)); hint != "" {
+	failed := ordjson.Truthy(ev.Error) || ev.Status == "failed" || ev.Status == "error"
+	hard := hardFailure(text, failed, ev.Status)
+	if hard == "" && failed {
+		hard = "error"
+	}
+	if hint := complete(c, id, text, hard); hint != "" {
 		hookOut(w, map[string]any{"systemMessage": hint})
 	}
 }
