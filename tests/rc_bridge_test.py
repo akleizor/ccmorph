@@ -417,6 +417,39 @@ def test_event_uploads_keep_only_what_the_phone_shows():
     assert len(second["content"]) < TEXT_MAX + 100
     assert result["tool_use_result"] == {"structuredPatch": [{"lines": ["-a", "+b"]}]}   # the diff stays
     assert not slim_events(body, lambda data, kind: None)   # already slim: nothing to do
+    # A tool_result without `content` has always gained `content: null`; that key
+    # insertion is a change the flag has to carry, like any rewrite of its value.
+    bare = {"events": [{"payload": {"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "v"}]}}}]}
+    assert slim_events(bare, lambda data, kind: None)
+    assert bare["events"][0]["payload"]["message"]["content"][0]["content"] is None
+    assert not slim_events(bare, lambda data, kind: None)
+
+
+def test_one_event_upload_is_serialized_at_most_once(monkeypatch):
+    """slim_events knows what it changed while it walks the body; re-encoding a
+    multi-MB upload to diff it against itself doubled every session open."""
+    import rc_route
+    serialized = []
+    real_encode = rc_route.encode_json
+
+    def counting(obj, ensure_ascii=False):
+        serialized.append(1)
+        return real_encode(obj, ensure_ascii=ensure_ascii)
+
+    monkeypatch.setattr(rc_route, "encode_json", counting)
+    body = {"events": [
+        {"payload": {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                             "data": "A" * 200_000}},
+                {"type": "text", "text": "x" * 10_000}]}]},
+         "tool_use_result": {"stdout": "y" * 10_000}}}]}
+    assert rc_route.slim_events(body, lambda data, kind: ("C" * 9, "image/jpeg"))
+    assert len(serialized) <= 1, f"one upload serialized the body {len(serialized)} times"
+    serialized.clear()
+    assert not rc_route.slim_events(body, lambda data, kind: ("C" * 9, "image/jpeg"))
+    assert len(serialized) <= 1, f"an already-slim upload serialized the body {len(serialized)} times"
 
 
 def test_the_proxy_inherits_a_raised_open_file_limit(monkeypatch):
