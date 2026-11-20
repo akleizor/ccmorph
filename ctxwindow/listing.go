@@ -326,11 +326,11 @@ func CatalogueWindow(catalogue obj, modelID, ownedBy string) *Limit {
 			return nil // absent, or present under 2+ providers: no confident pick
 		}
 	}
-	return LimitWindow(getv(entries[0], "limit"))
+	return limitWindow(getv(entries[0], "limit"))
 }
 
-// CatalogueTag is the provenance record stored beside a catalogue-derived window.
-func CatalogueTag(found *Limit) obj {
+// catalogueTag is the provenance record stored beside a catalogue-derived window.
+func catalogueTag(found *Limit) obj {
 	return obj{"source": "catalogue", "value": found.Value, "input": numOrNil(found.Input),
 		"context": numOrNil(found.Context), "fetched": time.Now().UTC().Format("2006-01-02")}
 }

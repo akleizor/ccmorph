@@ -161,7 +161,7 @@ func SizeListing(ctx context.Context, profile, body, base, key string, op Opener
 		ownedBy, _ := asStr(getv(row, "owned_by"))
 		if found := CatalogueLookup(ctx, model, ownedBy, cache, to); found != nil {
 			values[model] = found.Value
-			sources[model] = CatalogueTag(found)
+			sources[model] = catalogueTag(found)
 			continue
 		}
 		// A provider bridge answers from the user's subscription, and a probe it

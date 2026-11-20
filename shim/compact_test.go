@@ -349,7 +349,7 @@ func TestArchivedTranscriptUpdateKeepsOriginalDayAndSpill(t *testing.T) {
 	if err := relay.write(primary); err != nil {
 		t.Fatal(err)
 	}
-	if ok, err := WriteUsageRow("sub", "", responseID, "m", stamp, "", turnID, usageRow{{"input_tokens", []byte("2")}, {"output_tokens", []byte("40")}}); !ok || err != nil {
+	if ok, err := writeUsageRow("sub", "", responseID, "m", stamp, "", turnID, usageRow{{"input_tokens", []byte("2")}, {"output_tokens", []byte("40")}}); !ok || err != nil {
 		t.Fatalf("initial %v %v", ok, err)
 	}
 	if _, err := CompactUsage(base, time.Now(), 1); err != nil {
@@ -358,7 +358,7 @@ func TestArchivedTranscriptUpdateKeepsOriginalDayAndSpill(t *testing.T) {
 	path := filepath.Join(base, day+".jsonl")
 	before, _ := os.ReadFile(path)
 	nextDay := time.Now().UTC().AddDate(0, 0, -2).Format(paths.DayLayout)
-	if ok, err := WriteUsageRow("sub", "", responseID, "m", nextDay+"T00:00:01+00:00", "", turnID, usageRow{{"input_tokens", []byte("2")}, {"output_tokens", []byte("5")}}); !ok || err != nil {
+	if ok, err := writeUsageRow("sub", "", responseID, "m", nextDay+"T00:00:01+00:00", "", turnID, usageRow{{"input_tokens", []byte("2")}, {"output_tokens", []byte("5")}}); !ok || err != nil {
 		t.Fatalf("update %v %v", ok, err)
 	}
 	after, _ := os.ReadFile(path)
