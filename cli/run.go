@@ -478,8 +478,13 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 			if listing, ok := l.listing(base, key); ok {
 				if unsized, ok := try(l, "listing-has-unsized", func() bool { return util.ListingHasUnsized(l.conf(name), listing) }); !ok || unsized {
 					l.logInit()
+					// The sizing save waits on the profile lock, which a person at
+					// `ccmorph rm`'s confirm can hold for as long as they think:
+					// the deadline keeps that wait from holding the launch with no
+					// output (#757). It matches the probe's own default, so the
+					// launch ceiling holds even if the verb forgets it.
 					l.core([]string{"CCMORPH_STATE_DIR=" + l.dir, "ANTHROPIC_BASE_URL=" + base, "ANTHROPIC_API_KEY=" + key},
-						listing+"\n", "context-probe", "--listing-stdin", "--profile", name)
+						listing+"\n", "context-probe", "--listing-stdin", "--profile", name, "--deadline", "30")
 					// The probe's save rewrites a conf that still carries its
 					// discovered record inline, so the next read must not be the
 					// memoized one (GH-561).

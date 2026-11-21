@@ -248,8 +248,10 @@ def test_launch_projects_filtered_rows_and_keeps_discovery_off(tmp_path):
     assert r.returncode == 0, r.stderr
     # The copied lib's sizer stub writes this; the real one would size the synthetic
     # ids against models.dev and the live endpoint on every launch. A missing marker
-    # means the real, networked sizer ran again.
-    assert (tmp_path / 'sizer.ran').read_text().split() == ['--listing-stdin', '--profile', 'demo']
+    # means the real, networked sizer ran again. The deadline is the launch's bound
+    # on the pass (#757): its save waits on the profile lock, which `ccmorph rm`
+    # parked at its confirm holds for as long as the person thinks.
+    assert (tmp_path / 'sizer.ran').read_text().split() == ['--listing-stdin', '--profile', 'demo', '--deadline', '30']
     assert '-p hi' in claude_calls(tmp_path)
     assert 'GATEWAY_MODEL_DISCOVERY' not in (tmp_path / 'claude.env').read_text()
     home = state / 'profiles/demo'
