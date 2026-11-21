@@ -374,16 +374,20 @@ func (l *launcher) runVerb(args []string) int {
 		return 1
 	}
 	// `--` is run's own separator only in prefix position; later ones are Claude Code's.
-	if i := runSeparator(args); i >= 0 {
-		args = append(args[:i:i], args[i+1:]...)
+	sep := runSeparator(args)
+	hadSeparator := sep >= 0
+	if hadSeparator {
+		args = append(args[:sep:sep], args[sep+1:]...)
 	}
 	// #650: `ccmorph run <profile> version` must answer while the endpoint is
 	// down. Claude Code has no `version` command, so on this public verb alone
 	// the lone word is read as its version request and asked with --version,
 	// which prints and exits and opens no session. Only `ccmorph run` does
 	// this: `_ccm_launch -a <profile> version` (agent dispatch) and a hop's
-	// relaunch keep the word as the prompt it is (INTENT promise 6).
-	if len(args) == 1 && args[0] == "version" {
+	// relaunch keep the word as the prompt it is (INTENT promise 6). And only
+	// the BARE lone word: a word behind run's `--` is on the user's side of
+	// that promise, so it stays the prompt it is (#751).
+	if !hadSeparator && len(args) == 1 && args[0] == "version" {
 		args = []string{"--version"}
 	}
 	sub := "0"

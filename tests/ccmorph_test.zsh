@@ -1684,7 +1684,12 @@ fake_claude_help() {
   # looked right and tested nothing.
   {
     print -r -- '#!/bin/sh'
-    print -r -- 'if [ "$1" = "--help" ]; then'
+    # A help probe is argv EXACTLY ["--help"] -- that is how the launcher probe
+    # calls it. --help with any other word tacked on is a launch, not a probe,
+    # so it falls through to the logging stub and the exact argv is recorded.
+    # Answering usage for a mutated argv is how the probe would swallow words
+    # the matrix exists to pin.
+    print -r -- 'if [ "$1" = "--help" ] && [ "$#" = 1 ]; then'
     print -r -- '  echo "Usage: claude [options] [command]"'
     print -r -- '  echo ""'
     # The Options section is what the arity reader parses: one value-taking
@@ -1865,6 +1870,94 @@ test_arguments_reach_claude_exactly_as_given() {
     assert_contains "$actual" 'BASE_URL=https://gateway.invalid' \
       "'$argv' must still carry the profile's endpoint" || rc=1
   done
+
+  # The run-recognized shapes belong to Claude Code once they sit behind run's
+  # own `--`: #751 shipped when the #650 lone-word rewrite read `version` after
+  # the separator had been stripped. Every such shape must reach Claude Code
+  # untouched, so a future rewrite on this verb that crosses the separator --
+  # or forwards the separator itself -- fails this matrix.
+  local out2 words2 tab=$'\t'
+  for argv in '-- version' '-- --help' '-- -v'; do
+    : > "$CCMORPH_TEST_LOG"
+    out2=$(ccmorph run gw ${=argv} 2>&1) || {
+      print -u2 -- "FAIL: ccmorph run gw $argv must succeed"
+      rc=1; continue
+    }
+    words2=${argv#-- }
+    if [[ "$words2" == '--help' ]]; then
+      # The fake answers a BARE --help probe (argv exactly ["--help"]) with
+      # Claude's own usage and exits WITHOUT opening a session. So the exact
+      # argv is pinned two ways: the usage must print, and the launch log must
+      # stay empty. If run forwarded --help with a tacked-on word, the fake
+      # would treat it as a launch -- no usage, a logged ARG row -- and both
+      # halves below fail. This is the check that catches a rewrite or an
+      # extra word slipping past the separator.
+      assert_contains "$out2" 'Usage: claude [options] [command]' \
+        "'$argv' must reach Claude Code as its own bare --help" || rc=1
+      [[ ! -s "$CCMORPH_TEST_LOG" ]] || {
+        print -u2 -- "FAIL: '$argv' did not reach Claude Code as a bare --help (a session opened on: $(<"$CCMORPH_TEST_LOG"))"
+        rc=1
+      }
+    else
+      assert_contains "$(<"$CCMORPH_TEST_LOG")" "ARG${tab}${words2}"$'\nSUBAGENT' \
+        "'$argv' must reach Claude Code as '$words2', untouched" || rc=1
+    fi
+    if grep -qxF -- "ARG${tab}--version" "$CCMORPH_TEST_LOG" ||
+       grep -qxF -- "ARG${tab}--" "$CCMORPH_TEST_LOG"; then
+      print -u2 -- "FAIL: a word behind run's -- was rewritten: $(<"$CCMORPH_TEST_LOG")"
+      rc=1
+    fi
+  done
+
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_a_word_behind_runs_own_separator_is_never_rewritten_issue_751() {
+  # #751: the #650 lone-word `version` rewrite ran AFTER run stripped its own
+  # `--`, so `ccmorph run gw -- version` rewrote the user's word and printed
+  # Claude Code's version instead of opening a session on the prompt
+  # `version` (INTENT promise 6). What sits behind run's separator belongs to
+  # Claude Code; the rewrite reads the BARE lone word, and only there.
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  write_apikey_conf gw 'api_key=k' 'base_url=https://gateway.invalid' 'model=gw-model'
+  fake_claude_help
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 out st actual tab=$'\t'
+  : > "$CCMORPH_TEST_LOG"; st=0
+  out=$(ccmorph run gw -- version 2>&1) || st=$?
+  [[ "$st" == 0 ]] || {
+    print -u2 -- "FAIL: 'ccmorph run gw -- version' opens a session and must succeed, status $st: $out"
+    rc=1
+  }
+  actual="$(<"$CCMORPH_TEST_LOG")"
+  assert_contains "$actual" "ARG${tab}version"$'\nSUBAGENT' \
+    "'-- version' must reach Claude Code as the prompt 'version'" || rc=1
+  if grep -qxF -- "ARG${tab}--version" "$CCMORPH_TEST_LOG"; then
+    print -u2 -- "FAIL: the word behind run's -- was rewritten into --version: $actual"
+    rc=1
+  fi
+  assert_contains "$actual" 'MODEL_ENV=gw-model' \
+    "the session behind -- must still carry the profile's model" || rc=1
+
+  # The control: the BARE lone word keeps its #650 answer — Claude Code's own
+  # --version, printed and exited, not a prompt.
+  : > "$CCMORPH_TEST_LOG"; st=0
+  out=$(ccmorph run gw version 2>&1) || st=$?
+  [[ "$st" == 0 ]] || {
+    print -u2 -- "FAIL: bare 'ccmorph run gw version' must answer with the version, status $st: $out"
+    rc=1
+  }
+  assert_contains "$out" '2.1.329 (Claude Code)' \
+    "a bare version request must print Claude Code's version" || rc=1
+  grep -qxF -- "ARG${tab}--version" "$CCMORPH_TEST_LOG" || {
+    print -u2 -- "FAIL: the bare version request did not reach claude as --version: $(<"$CCMORPH_TEST_LOG")"
+    rc=1
+  }
 
   rm -rf "$test_home"
   return $rc
@@ -11965,6 +12058,7 @@ run_test test_menu_returns_a_bare_model_id
 run_test test_the_former_pick_name_still_works
 run_test test_claude_subcommands_are_asked_for_never_hardcoded
 run_test test_arguments_reach_claude_exactly_as_given
+run_test test_a_word_behind_runs_own_separator_is_never_rewritten_issue_751
 run_test test_run_with_a_profile_keeps_claudes_native_help
 run_test test_a_launch_that_opens_no_session_answers_while_the_endpoint_is_down_issue_650
 run_test test_a_missing_argument_prints_usage_under_nounset
