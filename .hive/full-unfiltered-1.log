@@ -1,0 +1,1431 @@
+cmd: uv run --with pytest --with pytest-xdist --with pytest-timeout python -m pytest tests/ -q
+PYTEST_ADDOPTS: -rfEp -p no:cacheprovider
+cwd: /var/lib/nomad/alloc/a1f2fb7f-f354-67fb-3b6f-aea9c19d4139/run/local/hive-turn.QomgdF/repo
+tree: 5b06a6a2737cc6de99268221e0532b739a739742
+umask: 0022
+started: 2026-11-21T01:37:18Z
+
+warning: No `requires-python` value found in the workspace. Defaulting to `>=3.13`.
+bringing up nodes...
+bringing up nodes...
+
+.........................................s....................uuu....... [  4%]
+.....................................................uu.............uu.. [  9%]
+.....................uu.u..u............................................ [ 14%]
+........................................................................ [ 19%]
+........................................................................ [ 24%]
+........................................................................ [ 30%]
+........................................................................ [ 35%]
+.......................s................................................ [ 40%]
+........................................................................ [ 45%]
+.................uu.uu.....................uuuuuuuuuu....u.uuuu.uuuuu.uu [ 48%]
+uu.....................................................................s [ 53%]
+sss..................................................................... [ 58%]
+........................................................................ [ 64%]
+........................................................................ [ 69%]
+........................................................................ [ 74%]
+.................................uuu..uuu............................... [ 79%]
+............................u.........uuu...........................u.u. [ 83%]
+u.s.............uuuuuuu..............uu........................u.u.u.uuu [ 87%]
+uuuuuuuuuuuuu.............................................uuu....s..u.u. [ 91%]
+.u.u.s.........uuuuuu.uu....uuuu.uu...uuuuuu..uuu....s.................. [ 95%]
+......................................................................   [100%]
+=============================== warnings summary ===============================
+tests/rc_hosts_test.py: 54 warnings
+  <frozen importlib._bootstrap>:530: DeprecationWarning: the load_module() method is deprecated and slated for removal in Python 3.15; use exec_module() instead
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+PASSED tests/doctor_test.py::test_doctor_warns_when_masking_is_on_for_a_route_that_cannot_mask[no-base-url]
+PASSED tests/doctor_test.py::test_doctor_warns_when_masking_is_on_for_a_route_that_cannot_mask[anthropic-base-url]
+PASSED tests/doctor_test.py::test_doctor_warns_when_masking_is_on_for_a_route_that_cannot_mask[provider-bridge]
+PASSED tests/doctor_test.py::test_doctor_stays_quiet_when_masking_covers_the_route
+PASSED tests/doctor_test.py::test_doctor_fails_a_mask_value_the_shim_refuses_issue_411
+PASSED tests/adapter_route_defaults_test.py::test_empty_caps_in_the_canon_layer_still_gets_the_route_default
+PASSED tests/doctor_test.py::test_doctor_ends_with_a_verdict[gateway-ok]
+PASSED tests/doctor_test.py::test_doctor_ends_with_a_verdict[missing-credential]
+PASSED tests/adapter_route_defaults_test.py::test_empty_caps_in_the_profile_layer_still_gets_the_route_default
+PASSED tests/doctor_test.py::test_doctor_ends_with_a_verdict[malformed-listing]
+PASSED tests/adapter_route_defaults_test.py::test_a_declared_caps_value_still_wins_over_the_default
+PASSED tests/doctor_test.py::test_doctor_verdict_names_the_fix_for_every_failed_check_issue_282[no-credential-type=apikey\nbase_url=https://example.test\n-None-set the API key: ccmorph config demo]
+PASSED tests/doctor_test.py::test_doctor_verdict_names_the_fix_for_every_failed_check_issue_282[bad-endpoint-type=apikey\nbase_url=https://example.test/v1?x=1\napi_key=k\n-#!/bin/sh\nprintf '%s\n' '{"data":[]}'\nprintf '%s\n' '__CCMORPH_STATUS__200'\n-set an http(s) endpoint: ccmorph config demo]
+PASSED tests/adapter_route_defaults_test.py::test_one_blanked_key_does_not_withhold_the_other_defaults
+PASSED tests/doctor_test.py::test_doctor_verdict_names_the_fix_for_every_failed_check_issue_282[gateway-rejects-key-type=apikey\nbase_url=https://example.test\napi_key=k\n-#!/bin/sh\nprintf '%s\\n' '{}'\nprintf '%s\\n' '__CCMORPH_STATUS__401'\n-replace the API key: ccmorph config demo]
+PASSED tests/adapter_route_defaults_test.py::test_a_profile_tombstone_removes_a_canon_key_so_the_default_applies
+PASSED tests/doctor_test.py::test_doctor_verdict_names_the_fix_for_every_failed_check_issue_282[gateway-down-type=apikey\nbase_url=https://example.test\napi_key=k\n-#!/bin/sh\nprintf '%s\\n' '{}'\nprintf '%s\\n' '__CCMORPH_STATUS__500'\n-check the endpoint, or change it: ccmorph config demo]
+PASSED tests/doctor_test.py::test_doctor_verdict_names_the_fix_for_every_failed_check_issue_282[malformed-listing-type=apikey\nbase_url=https://example.test\napi_key=k\n-#!/bin/sh\nprintf '%s\n' '{"data":"not-a-list"}'\nprintf '%s\n' '__CCMORPH_STATUS__200'\n-check the endpoint (it must list models at /v1/models): ccmorph config demo]
+PASSED tests/adapter_route_defaults_test.py::test_a_whole_env_tombstone_removes_every_canon_key
+PASSED tests/doctor_test.py::test_doctor_verdict_names_the_fix_for_every_failed_check_issue_282[model-not-served-type=apikey\nbase_url=https://example.test\napi_key=k\nmodel=glm-4.6-air\n-curl5-choose a served model: ccmorph set demo model <model-id>]
+PASSED tests/doctor_test.py::test_doctor_verdict_names_the_fix_for_every_failed_check_issue_282[native-key-rejected-type=apikey\napi_key=k\n-#!/bin/sh\nprintf '%s\\n' '{}'\nprintf '%s\\n' '__CCMORPH_STATUS__401'\n-replace the API key: ccmorph config demo]
+PASSED tests/doctor_test.py::test_doctor_verdict_names_the_fix_for_every_failed_check_issue_282[token-rejected-type=token\ntoken=sk-ant-oat01-issue-282\n-#!/bin/sh\nprintf '%s\\n' '{}'\nprintf '%s\\n' '__CCMORPH_STATUS__401'\n-replace the token: ccmorph config demo]
+PASSED tests/doctor_test.py::test_doctor_verdict_names_the_fix_for_every_failed_check_issue_282[signed-out-type=sub\nemail=demo@example.test\n-#!/bin/sh\nprintf '%s\n' '{"data":[]}'\nprintf '%s\n' '__CCMORPH_STATUS__200'\n-sign in again: ccmorph login demo]
+PASSED tests/doctor_test.py::test_doctor_verdict_names_the_fix_for_every_failed_check_issue_282[key-refused-by-claude-type=apikey\napi_key=sk-issue-282-doctor-key\n-#!/bin/sh\nprintf '%s\n' '{"data":[]}'\nprintf '%s\n' '__CCMORPH_STATUS__200'\n-let Claude Code use the key again: ccmorph login demo]
+PASSED tests/adapter_route_defaults_test.py::test_a_tombstoned_canon_compaction_percent_gets_the_default
+PASSED tests/doctor_test.py::test_doctor_verdict_names_the_fix_for_every_failed_check_issue_282[settings-invalid-type=apikey\nbase_url=https://example.test\napi_key=k\n-#!/bin/sh\nprintf '%s\n' '{"data":[]}'\nprintf '%s\n' '__CCMORPH_STATUS__200'\n-fix the JSON in {settings}]
+PASSED tests/doctor_test.py::test_doctor_verdict_names_the_fix_for_every_failed_check_issue_282[schema-invalid-type=token\nbase_url=https://example.test\n-None-edit {conf} to fix it, or re-create the profile: ccmorph rm demo && ccmorph add demo]
+PASSED tests/doctor_test.py::test_doctor_verdict_names_the_fix_for_every_failed_check_issue_282[missing-type-api_key=k\n-None-edit {conf} to fix it, or re-create the profile: ccmorph rm demo && ccmorph add demo]
+PASSED tests/doctor_test.py::test_doctor_verdict_names_the_fix_for_every_failed_check_issue_282[claude-missing-type=apikey\napi_key=k\n-#!/bin/sh\nprintf '%s\n' '{"data":[]}'\nprintf '%s\n' '__CCMORPH_STATUS__200'\n-expected13]
+PASSED tests/doctor_test.py::test_doctor_tells_absence_from_a_blocked_home_issue_291[absent-0-INFO profile home: not created yet ({home}); the first launch makes it: ccmorph run demo-OK ready: start it with ccmorph run demo]
+PASSED tests/adapter_route_defaults_test.py::test_a_malformed_tombstone_is_ignored_so_the_canon_percent_is_kept
+PASSED tests/doctor_test.py::test_doctor_tells_absence_from_a_blocked_home_issue_291[home-occupied-1-FAIL profile home: cannot be created \u2014 {home} is not a directory-FAIL not ready: remove {home} so the first launch can create the profile home: ccmorph run demo]
+PASSED tests/doctor_test.py::test_doctor_tells_absence_from_a_blocked_home_issue_291[profiles-occupied-1-FAIL profile home: cannot be created \u2014 {profiles} is not a directory-FAIL not ready: remove {profiles} so the first launch can create the profile home: ccmorph run demo]
+PASSED tests/doctor_test.py::test_doctor_tells_absence_from_a_blocked_home_issue_291[unreadable-1-FAIL profile home: cannot be created \u2014 lstat {home}-FAIL not ready: check the permissions on {home}]
+PASSED tests/doctor_test.py::test_doctor_healthy_profile_has_no_skip_lines[gateway]
+PASSED tests/adapter_route_defaults_test.py::test_a_malformed_tombstone_does_not_crash_the_advisor_reader
+PASSED tests/doctor_test.py::test_doctor_healthy_profile_has_no_skip_lines[native]
+PASSED tests/doctor_test.py::test_doctor_healthy_profile_has_no_skip_lines[sub]
+PASSED tests/adapter_route_defaults_test.py::test_a_nonempty_caps_in_canon_survives_an_empty_profile_value
+PASSED tests/adapter_route_defaults_test.py::test_a_routed_launch_starts_no_python[gateway]
+PASSED tests/doctor_test.py::test_run_doctor_remains_native_passthrough
+PASSED tests/adapter_route_defaults_test.py::test_a_routed_launch_starts_no_python[gateway-no-model]
+PASSED tests/doctor_test.py::test_doctor_terminal_statuses
+PASSED tests/adapter_route_defaults_test.py::test_a_routed_launch_starts_no_python[token]
+PASSED tests/adapter_route_defaults_test.py::test_a_routed_launch_starts_no_python[hazard]
+PASSED tests/doctor_test.py::test_doctor_on_a_fresh_install_reports_the_environment
+PASSED tests/adapter_route_defaults_test.py::test_a_launch_writes_what_it_wrote_before_gh433[token]
+PASSED tests/adapter_route_defaults_test.py::test_a_launch_writes_what_it_wrote_before_gh433[gateway]
+PASSED tests/doctor_test.py::test_bare_doctor_names_both_completion_lines_gh363
+PASSED tests/doctor_test.py::test_doctor_on_a_fresh_install_fails_without_claude
+PASSED tests/adapter_route_defaults_test.py::test_a_launch_writes_what_it_wrote_before_gh433[gateway-no-model]
+PASSED tests/doctor_test.py::test_doctor_with_profiles_but_no_default_names_them
+PASSED tests/adapter_route_defaults_test.py::test_a_launch_writes_what_it_wrote_before_gh433[hazard]
+PASSED tests/adapter_route_defaults_test.py::test_a_launch_writes_what_it_wrote_before_gh433[hazard-withheld]
+PASSED tests/adapter_route_defaults_test.py::test_a_killed_launch_leaves_no_adapter_stub_behind
+PASSED tests/adapter_test.py::AdapterTest::test_a_finished_tests_gateway_records_nothing_issue_518
+PASSED tests/adapter_test.py::AdapterTest::test_a_gateway_with_no_model_list_still_starts
+PASSED tests/adapter_test.py::AdapterTest::test_a_listener_on_another_address_does_not_block_the_endpoint
+PASSED tests/doctor_test.py::test_doctor_checks_python_only_where_remote_control_is_in_use
+PASSED tests/adapter_test.py::AdapterTest::test_a_model_must_be_named_when_the_gateway_offers_no_list
+PASSED tests/adapter_test.py::AdapterTest::test_a_profile_pointing_at_missing_hooks_refuses_to_start
+PASSED tests/adapter_test.py::AdapterTest::test_a_refusing_gateway_ends_the_launch_with_its_own_answer_issue_375
+PASSED tests/adapter_test.py::AdapterTest::test_a_refusing_gateway_is_not_cached_against_the_next_launch_issue_375
+PASSED tests/adapter_test.py::AdapterTest::test_a_stopped_fixed_port_restarts_over_time_wait
+PASSED tests/adapter_test.py::AdapterTest::test_a_warm_cache_cannot_stand_in_for_a_model_choice
+PASSED tests/adapter_test.py::AdapterTest::test_an_unimplemented_messages_path_is_not_a_refusal_issue_375
+PASSED tests/adapter_test.py::AdapterTest::test_an_unwritable_cache_dir_degrades_instead_of_killing_the_launch
+PASSED tests/doctor_test.py::test_doctor_completion_row_lasts_until_a_new_zsh_completes
+PASSED tests/adapter_test.py::AdapterTest::test_cached_rows_from_an_older_schema_are_dropped_not_read
+PASSED tests/adapter_test.py::AdapterTest::test_claude_code_faces_the_gateway_shim_not_the_translator
+PASSED tests/adapter_test.py::AdapterTest::test_each_dialect_is_identified_by_probing
+PASSED tests/doctor_test.py::test_doctor_names_a_completion_check_a_new_zsh_did_not_answer_issue_518
+PASSED tests/duplicate_definitions_test.py::test_a_name_bound_twice_in_a_class_body_is_reported
+PASSED tests/adapter_test.py::AdapterTest::test_fixed_port_and_token_file_serve_the_translator_path
+PASSED tests/duplicate_definitions_test.py::test_no_test_file_binds_a_name_twice
+PASSED tests/adapter_test.py::AdapterTest::test_hermes_request_through_the_native_endpoint_reaches_upstream_filtered
+PASSED tests/fake_adapter_contract_test.py::test_the_fake_exits_when_the_launch_that_started_it_is_killed[separate-argument]
+PASSED tests/fake_adapter_contract_test.py::test_the_fake_exits_when_the_launch_that_started_it_is_killed[equals-argument]
+PASSED tests/fake_adapter_contract_test.py::test_the_fake_still_serves_when_it_was_started_without_a_parent
+PASSED tests/fake_adapter_contract_test.py::test_the_fake_records_the_pid_its_teardown_reaps
+PASSED tests/adapter_test.py::AdapterTest::test_id_recycling_upstream_is_classified_for_the_shim_addon
+PASSED tests/fake_adapter_contract_test.py::test_reap_ends_a_fake_whose_parent_never_dies_issue_347
+PASSED tests/fake_adapter_contract_test.py::test_reap_never_signals_a_pid_it_did_not_start_issue_347
+PASSED tests/fake_adapter_contract_test.py::test_reap_without_a_record_does_nothing
+PASSED tests/adapter_test.py::AdapterTest::test_indeterminate_verdict_does_not_block_caching_the_rest
+PASSED tests/adapter_test.py::AdapterTest::test_legacy_thinking_verdict_is_reprobed_once
+PASSED tests/adapter_test.py::AdapterTest::test_next_launch_reprobes_only_the_shaky_model
+PASSED tests/fake_adapter_contract_test.py::test_the_fake_ends_when_its_own_launcher_is_gone_gh_434
+PASSED tests/fake_adapter_contract_test.py::test_no_test_file_ships_its_own_unbounded_adapter_fake
+PASSED tests/gateway_picker_contract_test.py::test_set_model_interactive_honours_exclusions
+PASSED tests/adapter_test.py::AdapterTest::test_no_model_flag_keeps_the_full_diagnostic_sweep
+PASSED tests/gateway_picker_contract_test.py::test_set_model_interactive_offers_everything_not_excluded
+PASSED tests/gateway_picker_contract_test.py::test_launch_stops_when_exclusions_leave_no_rows
+PASSED tests/adapter_test.py::AdapterTest::test_no_x_forwarded_for_header_is_ever_added
+PASSED tests/gateway_picker_contract_test.py::test_run_on_a_silent_gateway_waits_then_exits_the_gateway_class
+PASSED tests/gateway_picker_contract_test.py::test_launch_projects_filtered_rows_and_keeps_discovery_off
+PASSED tests/gateway_picker_contract_test.py::test_probe_model_interactive_honours_exclusions
+PASSED tests/gateway_picker_contract_test.py::test_a_fresh_checkout_builds_the_core_the_tests_drive
+PASSED tests/gateway_picker_contract_test.py::test_a_failed_core_build_is_never_used_as_the_core
+PASSED tests/adapter_test.py::AdapterTest::test_parent_death_stops_the_translator_and_removes_the_config
+PASSED tests/adapter_test.py::AdapterTest::test_print_config_prints_through_a_dead_profile_proxy
+PASSED tests/adapter_test.py::AdapterTest::test_print_config_redacts_upstream_proxy_credentials
+PASSED tests/adapter_test.py::AdapterTest::test_profile_keys_ferry_into_the_shim_env_not_new_flags
+PASSED tests/gateway_picker_contract_test.py::test_a_timed_out_core_build_leaves_no_process_to_write_the_core
+PASSED tests/gateway_picker_contract_test.py::test_make_shim_publishes_the_core_only_after_signing_it
+PASSED tests/gateway_picker_contract_test.py::test_a_failed_make_shim_leaves_the_published_core_as_it_was
+PASSED tests/adapter_test.py::AdapterTest::test_profile_name_is_not_executed_as_shell
+PASSED tests/gateway_picker_contract_test.py::test_copied_lib_copies_source_not_the_checkouts_incidental_contents_issue_220
+PASSED tests/gateway_shim_test.py::ShimParentDeathTest::test_shim_dies_with_the_process_that_launched_it
+PASSED tests/gateway_shim_test.py::ShimStartupTest::test_startup_prints_its_banner_with_the_bound_port
+PASSED tests/gateway_shim_test.py::ShimTest::test_404_passthrough
+PASSED tests/gateway_shim_test.py::ShimTest::test_error_status_and_body_relayed
+PASSED tests/gateway_shim_test.py::ShimTest::test_no_x_forwarded_for_header_is_ever_added
+PASSED tests/gateway_shim_test.py::ProcessRestartTest::test_sequential_processes_mint_disjoint_ids
+PASSED tests/gateway_shim_test.py::TransportRetryTest::test_blocked_provider_is_retried_twice_on_the_same_bytes
+PASSED tests/gateway_shim_test.py::TransportRetryTest::test_without_the_flag_nothing_is_retried
+PASSED tests/gateway_shim_test.py::KeepAliveHangTest::test_stream_completes_at_message_stop_under_keepalive
+PASSED tests/gateway_shim_test.py::StreamTerminationTest::test_error_event_stream_terminates
+PASSED tests/gateway_shim_test.py::StreamTerminationTest::test_upstream_eof_midstream_closes_the_client
+PASSED tests/gateway_shim_test.py::ShimFlagTest::test_a_dangling_tool_reference_goes_upstream_as_text
+PASSED tests/gateway_shim_test.py::ShimFlagTest::test_preserve_tool_ids_stops_response_id_rewriting
+PASSED tests/gateway_shim_test.py::ShimFlagTest::test_removed_repair_and_affinity_flags_are_rejected
+PASSED tests/gateway_shim_test.py::ShimFlagTest::test_request_body_is_byte_identical_when_nothing_dangles
+PASSED tests/gateway_shim_test.py::ShimFlagTest::test_unknown_flag_is_rejected
+PASSED tests/gateway_shim_test.py::InboundTokenTest::test_token_swapped_for_real_key
+PASSED tests/adapter_test.py::AdapterTest::test_ready_timeout_exits_non_zero
+PASSED tests/gateway_shim_test.py::IdentifierTest::test_count_tokens_body_gets_the_random_device_id_too
+PASSED tests/gateway_shim_test.py::IdentifierTest::test_flags_off_body_and_identifier_headers_pass_as_sent
+PASSED tests/adapter_test.py::AdapterTest::test_real_5xx_body_is_indeterminate_by_status_not_by_prose
+PASSED tests/gateway_shim_test.py::IdentifierTest::test_random_device_id_changes_only_the_device_id
+PASSED tests/adapter_test.py::AdapterTest::test_reason_by_default_model_gets_thinking_disabled
+PASSED tests/gateway_shim_test.py::UsageSidecarTest::test_a_malformed_session_id_is_left_out_of_the_row
+PASSED tests/adapter_test.py::AdapterTest::test_runtime_state_uses_temp_but_classification_cache_persists
+PASSED tests/gateway_shim_test.py::UsageSidecarTest::test_count_tokens_uses_the_same_explicit_map_without_a_usage_row
+PASSED tests/adapter_test.py::AdapterTest::test_second_start_probes_only_models_it_has_not_seen
+PASSED tests/gateway_shim_test.py::UsageSidecarTest::test_explicit_model_map_records_request_and_target_but_keeps_picker_identity
+PASSED tests/gateway_shim_test.py::UsageSidecarTest::test_malformed_values_are_not_trusted
+PASSED tests/gateway_shim_test.py::UsageSidecarTest::test_mapping_does_not_leak_to_another_profile_and_absent_is_byte_identical
+PASSED tests/gateway_shim_test.py::UsageSidecarTest::test_model_map_is_exact_single_hop_and_unknown_ids_pass_through
+PASSED tests/gateway_shim_test.py::UsageSidecarTest::test_no_route_spec_writes_nothing
+PASSED tests/adapter_test.py::AdapterTest::test_selected_launch_has_its_own_global_deadline
+PASSED tests/gateway_shim_test.py::UsageSidecarTest::test_no_tags_leave_the_request_unchanged
+PASSED tests/adapter_test.py::AdapterTest::test_selected_model_absent_from_cache_probes_only_itself
+PASSED tests/gateway_shim_test.py::UsageSidecarTest::test_nonstream_message_is_one_complete_row
+PASSED tests/adapter_test.py::AdapterTest::test_selected_model_already_cached_bypasses_inventory_and_probing
+PASSED tests/gateway_shim_test.py::UsageSidecarTest::test_outcome_appends_a_row_keyed_by_task
+PASSED tests/adapter_test.py::AdapterTest::test_selected_model_cached_unusable_raises_a_precise_failure
+PASSED tests/gateway_shim_test.py::UsageSidecarTest::test_route_id_is_stable_across_processes_and_never_the_identity
+PASSED tests/gateway_shim_test.py::UsageSidecarTest::test_task_tags_the_row_and_never_changes_the_model
+PASSED tests/adapter_test.py::AdapterTest::test_selected_model_probe_preserves_other_cached_rows
+PASSED tests/gateway_shim_test.py::UsageSidecarTest::test_the_unexpected_eof_replay_is_counted_in_the_row_too
+PASSED tests/adapter_test.py::AdapterTest::test_selected_model_that_probes_unusable_raises_not_silently_starts
+PASSED tests/gateway_shim_test.py::UsageSidecarTest::test_transport_retries_are_counted_in_the_row
+PASSED tests/gateway_shim_test.py::UsageSidecarTest::test_unrelated_endpoints_are_never_captured
+PASSED tests/gateway_shim_test.py::UsageSidecarTest::test_unwritable_state_directory_never_changes_the_response
+PASSED tests/adapter_test.py::AdapterTest::test_shim_readiness_failure_stops_the_translator
+PASSED tests/gateway_shim_test.py::GatewayEdgeTest::test_gateway_error_reaches_the_client_readable
+PASSED tests/gateway_shim_test.py::GatewayEdgeTest::test_native_edge_rejects_declared_chat_map_before_forwarding
+PASSED tests/gateway_shim_test.py::GatewayEdgeTest::test_native_unmapped_target_is_not_subject_to_map_guard
+PASSED tests/gateway_shim_test.py::GatewayEdgeTest::test_never_falls_back_to_an_older_model
+PASSED tests/adapter_test.py::AdapterTest::test_sigkilled_adapter_does_not_leak_its_children
+PASSED tests/adapter_test.py::AdapterTest::test_the_fixed_port_stays_reserved_while_models_are_probed
+PASSED tests/gateway_shim_test.py::GatewayEdgeTest::test_non_claude_model_is_left_alone
+PASSED tests/adapter_test.py::AdapterTest::test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375
+PASSED tests/behaviour_coverage_test.py::test_box_hides_the_hosts_picker_and_bridge
+PASSED tests/behaviour_coverage_test.py::test_hiding_a_tool_keeps_its_directorys_other_executables
+PASSED tests/behaviour_coverage_test.py::test_use_sets_the_default_and_bare_use_reports_it
+PASSED tests/behaviour_coverage_test.py::test_use_refuses_an_unknown_or_invalid_profile_and_keeps_the_default
+PASSED tests/behaviour_coverage_test.py::test_a_wrong_case_name_is_refused_with_the_real_spelling_gh_259[use]
+PASSED tests/behaviour_coverage_test.py::test_a_wrong_case_name_is_refused_with_the_real_spelling_gh_259[rm]
+PASSED tests/behaviour_coverage_test.py::test_a_wrong_case_name_is_refused_with_the_real_spelling_gh_259[run]
+PASSED tests/behaviour_coverage_test.py::test_a_default_saved_with_the_wrong_case_still_marks_the_real_profile_gh_259
+PASSED tests/behaviour_coverage_test.py::test_doctor_refuses_a_wrong_case_name_with_the_real_spelling_gh_259
+PASSED tests/behaviour_coverage_test.py::test_an_invalid_default_is_refused_as_written_never_rescued_to_a_case_twin
+PASSED tests/gateway_shim_test.py::GatewayEdgeTest::test_retired_opus_is_sent_as_newest_opus_and_answers_under_it
+PASSED tests/behaviour_coverage_test.py::test_list_marks_the_default_and_labels_every_profile_type
+PASSED tests/behaviour_coverage_test.py::test_doctor_names_the_kind_and_the_endpoint
+PASSED tests/behaviour_coverage_test.py::test_add_done_messages_use_display_names
+PASSED tests/behaviour_coverage_test.py::test_add_menu_names_each_kind_and_explains_a_provider_login
+PASSED tests/behaviour_coverage_test.py::test_kimi_sign_ins_and_provider_list_share_one_name_per_service_gh_366
+PASSED tests/behaviour_coverage_test.py::test_list_with_no_profiles_points_at_add
+PASSED tests/gateway_shim_test.py::StallDeadlineTest::test_silent_before_reply_is_a_504_error
+PASSED tests/behaviour_coverage_test.py::test_list_tolerates_glob_metacharacters_in_the_state_dir_gh_113[brackets-gh-113]
+PASSED tests/go_helper_dedup_test.py::test_the_consolidated_helpers_are_not_hand_written_again
+PASSED tests/behaviour_coverage_test.py::test_list_tolerates_glob_metacharacters_in_the_state_dir_gh_113[star-gh-113]
+PASSED tests/go_helper_dedup_test.py::test_the_file_predicates_are_defined_only_in_paths
+PASSED tests/go_helper_dedup_test.py::test_the_probe_verdict_switch_is_spelled_once
+PASSED tests/behaviour_coverage_test.py::test_list_tolerates_glob_metacharacters_in_the_state_dir_gh_113[question-gh-113]
+PASSED tests/go_helper_dedup_test.py::test_the_conf_is_not_hand_scanned_for_the_model_line
+PASSED tests/go_helper_dedup_test.py::test_the_invariants_load_the_settings_once
+PASSED tests/go_helper_dedup_test.py::test_contextenv_does_not_spell_authkeys_precedence
+PASSED tests/behaviour_coverage_test.py::test_add_refuses_a_name_that_differs_only_by_case_and_names_the_clash_gh_259
+PASSED tests/go_helper_dedup_test.py::test_the_tier_words_are_spelled_once
+PASSED tests/behaviour_coverage_test.py::test_add_on_an_existing_name_names_config_and_rm_only_as_starting_over_gh_391[work-ccmorph login work]
+PASSED tests/go_helper_dedup_test.py::test_the_response_identity_key_is_spelled_once
+PASSED tests/behaviour_coverage_test.py::test_add_on_an_existing_name_names_config_and_rm_only_as_starting_over_gh_391[cx-ccmorph login cx]
+PASSED tests/go_helper_dedup_test.py::test_the_temp_then_rename_dance_is_spelled_once
+PASSED tests/behaviour_coverage_test.py::test_add_on_an_existing_name_names_config_and_rm_only_as_starting_over_gh_391[gw-None]
+PASSED tests/go_helper_dedup_test.py::test_a_fixed_temp_write_then_rename_is_spelled_nowhere
+PASSED tests/behaviour_coverage_test.py::test_add_on_an_existing_name_names_config_and_rm_only_as_starting_over_gh_391[tok-None]
+PASSED tests/go_helper_dedup_test.py::test_the_profile_root_ladder_is_spelled_once
+PASSED tests/behaviour_coverage_test.py::test_mv_carries_conf_profile_dir_auth_and_default_to_the_new_name
+PASSED tests/behaviour_coverage_test.py::test_mv_refuses_a_case_only_rename_gh_259
+PASSED tests/go_helper_dedup_test.py::test_a_sibling_worktree_copy_does_not_fail_the_guard[unlocked-.claude/worktrees]
+PASSED tests/behaviour_coverage_test.py::test_mv_refuses_a_target_that_differs_only_by_case_from_another_profile_gh_259
+PASSED tests/go_helper_dedup_test.py::test_a_sibling_worktree_copy_does_not_fail_the_guard[unlocked-vendor/worktrees]
+PASSED tests/go_helper_dedup_test.py::test_a_sibling_worktree_copy_does_not_fail_the_guard[locked-.claude/worktrees]
+PASSED tests/behaviour_coverage_test.py::test_mv_refuses_an_existing_target_and_changes_nothing
+PASSED tests/behaviour_coverage_test.py::test_mv_onto_a_leftover_directory_is_refused_not_nested
+PASSED tests/go_helper_dedup_test.py::test_a_sibling_worktree_copy_does_not_fail_the_guard[locked-vendor/worktrees]
+PASSED tests/go_helper_dedup_test.py::test_a_copy_this_tree_holds_still_fails_both_guards[tracked]
+PASSED tests/behaviour_coverage_test.py::test_rm_deletes_the_profile_and_clears_it_as_the_default
+PASSED tests/go_helper_dedup_test.py::test_a_copy_this_tree_holds_still_fails_both_guards[untracked]
+PASSED tests/behaviour_coverage_test.py::test_rm_of_a_non_default_profile_keeps_the_default
+PASSED tests/go_helper_dedup_test.py::test_a_copy_this_tree_holds_still_fails_both_guards[excluded]
+PASSED tests/behaviour_coverage_test.py::test_rm_unknown_profile_is_an_error
+PASSED tests/go_helper_dedup_test.py::test_a_copy_this_tree_holds_still_fails_both_guards[gitignored]
+PASSED tests/behaviour_coverage_test.py::test_login_for_an_api_key_profile_records_the_approval_again
+PASSED tests/go_helper_dedup_test.py::test_a_copy_beside_a_stray_git_entry_still_fails_both_guards[file-tracked]
+PASSED tests/behaviour_coverage_test.py::test_login_signs_a_signed_out_account_profile_in_again
+PASSED tests/go_helper_dedup_test.py::test_a_copy_beside_a_stray_git_entry_still_fails_both_guards[file-untracked]
+PASSED tests/behaviour_coverage_test.py::test_run_with_no_default_and_no_profile_launches_nothing
+PASSED tests/behaviour_coverage_test.py::test_run_with_no_profiles_points_at_add
+PASSED tests/go_helper_dedup_test.py::test_a_copy_beside_a_stray_git_entry_still_fails_both_guards[dir-tracked]
+PASSED tests/go_helper_dedup_test.py::test_a_copy_beside_a_stray_git_entry_still_fails_both_guards[dir-untracked]
+PASSED tests/behaviour_coverage_test.py::test_the_first_added_profile_becomes_the_default
+PASSED tests/behaviour_coverage_test.py::test_add_token_prompt_names_where_a_token_comes_from_issue_290
+PASSED tests/go_helper_dedup_test.py::test_a_copy_beside_a_stray_git_entry_still_fails_both_guards[gitfile-tracked]
+PASSED tests/behaviour_coverage_test.py::test_adding_a_subscription_profile_and_the_default[an-existing-default-is-kept-gh-17]
+PASSED tests/go_helper_dedup_test.py::test_a_copy_beside_a_stray_git_entry_still_fails_both_guards[gitfile-untracked]
+PASSED tests/behaviour_coverage_test.py::test_adding_a_subscription_profile_and_the_default[a-first-subscription-profile-becomes-the-default]
+PASSED tests/go_helper_dedup_test.py::test_a_copy_beside_a_stray_git_entry_still_fails_both_guards[repo-tracked]
+PASSED tests/behaviour_coverage_test.py::test_run_names_an_unknown_profile_instead_of_launching_the_default
+PASSED tests/behaviour_coverage_test.py::test_run_rejects_the_retired_dash_a_profile_flag
+PASSED tests/go_helper_dedup_test.py::test_a_copy_beside_a_stray_git_entry_still_fails_both_guards[repo-untracked]
+PASSED tests/go_helper_dedup_test.py::test_a_copy_in_a_worktree_git_cannot_open_still_fails_both_guards[emptied]
+PASSED tests/behaviour_coverage_test.py::test_a_profile_with_a_missing_credential_is_refused_at_launch
+PASSED tests/go_helper_dedup_test.py::test_a_copy_in_a_worktree_git_cannot_open_still_fails_both_guards[removed]
+PASSED tests/behaviour_coverage_test.py::test_a_key_foreign_to_the_profile_type_is_rejected
+PASSED tests/go_helper_dedup_test.py::test_a_claude_tree_copy_does_not_fail_the_guard
+PASSED tests/behaviour_coverage_test.py::test_models_and_probe_answer_an_account_or_token_profile_alike_gh_390[work-Claude account]
+PASSED tests/go_helper_dedup_test.py::test_a_go_file_created_after_a_walk_is_seen
+PASSED tests/behaviour_coverage_test.py::test_models_and_probe_answer_an_account_or_token_profile_alike_gh_390[tok-Claude token]
+PASSED tests/behaviour_coverage_test.py::test_a_token_profile_launches_with_its_token_and_no_api_key
+PASSED tests/behaviour_coverage_test.py::test_a_subscription_profile_launches_with_no_injected_credential
+PASSED tests/behaviour_coverage_test.py::test_a_running_session_names_its_profile_in_env_and_status_line
+PASSED tests/behaviour_coverage_test.py::test_profile_answers_from_inside_a_session
+PASSED tests/behaviour_coverage_test.py::test_profile_names_the_config_dir_of_an_older_launch
+PASSED tests/behaviour_coverage_test.py::test_profile_outside_a_session_names_nothing
+PASSED tests/behaviour_coverage_test.py::test_profile_refuses_arguments
+PASSED tests/behaviour_coverage_test.py::test_run_forwards_claude_arguments_and_swallows_its_own_separator[argv0-ARGS [--continue] [-p] [hi]]
+PASSED tests/behaviour_coverage_test.py::test_run_forwards_claude_arguments_and_swallows_its_own_separator[argv1-ARGS [--system-prompt] [-a]]
+PASSED tests/behaviour_coverage_test.py::test_run_uses_the_default_profile_when_none_is_named
+PASSED tests/behaviour_coverage_test.py::test_retired_verbs_point_at_their_replacement_and_launch_nothing
+PASSED tests/behaviour_coverage_test.py::test_a_guessed_command_names_the_real_one_and_prints_no_profile_list[ls-issue-266]
+PASSED tests/behaviour_coverage_test.py::test_a_guessed_command_names_the_real_one_and_prints_no_profile_list[lst-issue-266]
+PASSED tests/behaviour_coverage_test.py::test_a_guessed_command_names_the_real_one_and_prints_no_profile_list[remove-issue-266]
+PASSED tests/behaviour_coverage_test.py::test_a_guessed_command_names_the_real_one_and_prints_no_profile_list[delete-issue-266]
+PASSED tests/behaviour_coverage_test.py::test_a_guessed_command_names_the_real_one_and_prints_no_profile_list[rename-issue-266]
+PASSED tests/behaviour_coverage_test.py::test_a_guessed_command_names_the_real_one_and_prints_no_profile_list[switch-issue-266]
+PASSED tests/behaviour_coverage_test.py::test_a_guessed_command_names_the_real_one_and_prints_no_profile_list[profil-issue-413]
+PASSED tests/behaviour_coverage_test.py::test_a_mistyped_flag_is_an_unknown_option_not_a_command[versoin-issue-266]
+PASSED tests/behaviour_coverage_test.py::test_a_mistyped_flag_is_an_unknown_option_not_a_command[helpp-issue-266]
+PASSED tests/behaviour_coverage_test.py::test_a_misplaced_launch_flag_keeps_the_pointer_behind_run
+PASSED tests/hang_bound_test.py::test_no_literal_process_bound_in_the_suite
+PASSED tests/hang_bound_test.py::test_every_spawned_process_is_bounded_by_the_shared_bound
+PASSED tests/hang_bound_test.py::test_no_zsh_embedded_python_bounds_a_wait_with_a_number
+PASSED tests/hang_bound_test.py::test_no_zsh_deadline_written_on_another_clock
+PASSED tests/behaviour_coverage_test.py::test_the_profile_list_appears_only_under_a_word_that_could_be_a_profile
+PASSED tests/hang_bound_test.py::test_no_zsh_counted_sleep_loop
+PASSED tests/hang_bound_test.py::test_the_zsh_scanner_reads_the_language_it_polices
+PASSED tests/hang_bound_test.py::test_the_ast_deadline_check_names_every_clock
+PASSED tests/behaviour_coverage_test.py::test_cred_prints_the_stored_secret_bare_and_refuses_when_there_is_none
+PASSED tests/hang_bound_test.py::test_hang_bound_reads_its_environment_override
+PASSED tests/behaviour_coverage_test.py::test_inspect_never_prints_the_stored_credential
+PASSED tests/launch_env_rules_test.py::test_an_ambient_thinking_budget_reaches_a_profile_that_does_not_set_one
+PASSED tests/behaviour_coverage_test.py::test_inspect_shows_a_profile_whose_conf_fails_validation_gh_113
+PASSED tests/behaviour_coverage_test.py::test_inspect_names_the_history_a_private_profile_deletes_gh_292
+PASSED tests/launch_env_rules_test.py::test_a_profile_that_declares_a_tuning_key_wins_over_the_shell
+PASSED tests/behaviour_coverage_test.py::test_the_unsaved_state_reads_the_same_words_on_every_screen_gh_381[nat--Claude Code picks the model-settings]
+PASSED tests/launch_env_rules_test.py::test_a_nested_launch_does_not_inherit_the_outer_sessions_tuning
+PASSED tests/behaviour_coverage_test.py::test_the_unsaved_state_reads_the_same_words_on_every_screen_gh_381[nat--Claude Code picks the model-no-settings]
+PASSED tests/launch_env_rules_test.py::test_a_nested_launch_does_not_inherit_bare_mode
+PASSED tests/behaviour_coverage_test.py::test_the_unsaved_state_reads_the_same_words_on_every_screen_gh_381[gw-https://gw.example-ccmorph asks which model at each launch-settings]
+PASSED tests/launch_env_rules_test.py::test_a_nested_launch_still_sets_bare_mode_a_profile_declares
+PASSED tests/launch_env_rules_test.py::test_a_top_level_shell_keeps_its_own_bare_mode
+PASSED tests/behaviour_coverage_test.py::test_the_unsaved_state_reads_the_same_words_on_every_screen_gh_381[gw-https://gw.example-ccmorph asks which model at each launch-no-settings]
+PASSED tests/behaviour_coverage_test.py::test_inspect_names_the_model_the_settings_layer_seeds_gh_520
+PASSED tests/launch_env_rules_test.py::test_claudecode_alone_keeps_the_shells_bare_mode
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[CLAUDE_CODE_OAUTH_TOKEN]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[CLAUDE_CODE_OAUTH_REFRESH_TOKEN]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[ANTHROPIC_API_KEY]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[ANTHROPIC_AUTH_TOKEN]
+PASSED tests/behaviour_coverage_test.py::test_context_answers_the_window_the_session_will_use_gh_372
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[ANTHROPIC_BASE_URL]
+PASSED tests/behaviour_coverage_test.py::test_an_unknown_profile_reads_the_same_in_every_command[run zzz]
+PASSED tests/behaviour_coverage_test.py::test_an_unknown_profile_reads_the_same_in_every_command[use zzz]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[ANTHROPIC_UNIX_SOCKET]
+PASSED tests/behaviour_coverage_test.py::test_an_unknown_profile_reads_the_same_in_every_command[quota zzz]
+PASSED tests/behaviour_coverage_test.py::test_an_unknown_profile_reads_the_same_in_every_command[models zzz]
+PASSED tests/behaviour_coverage_test.py::test_an_unknown_profile_reads_the_same_in_every_command[hop zzz]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[ANTHROPIC_CUSTOM_HEADERS]
+PASSED tests/behaviour_coverage_test.py::test_an_unknown_profile_reads_the_same_in_every_command[context zzz m]
+PASSED tests/behaviour_coverage_test.py::test_an_unknown_profile_reads_the_same_in_every_command[config zzz]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[CLAUDE_CODE_USE_BEDROCK]
+PASSED tests/behaviour_coverage_test.py::test_an_unknown_profile_reads_the_same_in_every_command[get zzz model]
+PASSED tests/behaviour_coverage_test.py::test_an_unknown_profile_reads_the_same_in_every_command[set zzz model x]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[CLAUDE_CODE_USE_VERTEX]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[CLAUDE_CODE_USE_FOUNDRY]
+PASSED tests/behaviour_coverage_test.py::test_an_unknown_profile_reads_the_same_in_every_command[mv zzz yyy]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[CLAUDE_CODE_USE_GATEWAY]
+PASSED tests/behaviour_coverage_test.py::test_an_unknown_profile_reads_the_same_in_every_command[rm zzz]
+PASSED tests/behaviour_coverage_test.py::test_an_unknown_profile_reads_the_same_in_every_command[inspect zzz]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[CLAUDE_CODE_USE_MANTLE]
+PASSED tests/behaviour_coverage_test.py::test_an_unknown_profile_reads_the_same_in_every_command[login zzz]
+PASSED tests/behaviour_coverage_test.py::test_an_unknown_profile_reads_the_same_in_every_command[cred zzz]
+PASSED tests/behaviour_coverage_test.py::test_an_unknown_profile_reads_the_same_in_every_command[doctor zzz]
+PASSED tests/behaviour_coverage_test.py::test_an_unknown_profile_reads_the_same_in_every_command[probe zzz]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[CLAUDE_CODE_USE_ANTHROPIC_AWS]
+PASSED tests/behaviour_coverage_test.py::test_an_unknown_profile_with_none_saved_points_to_add[use zzz]
+PASSED tests/behaviour_coverage_test.py::test_an_unknown_profile_with_none_saved_points_to_add[inspect zzz]
+PASSED tests/behaviour_coverage_test.py::test_an_unknown_profile_with_none_saved_points_to_add[doctor zzz]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD]
+PASSED tests/behaviour_coverage_test.py::test_a_fresh_install_hears_one_sentence_from_every_command_gh_269[list]
+PASSED tests/behaviour_coverage_test.py::test_a_fresh_install_hears_one_sentence_from_every_command_gh_269[quota]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[AWS_BEARER_TOKEN_BEDROCK]
+PASSED tests/behaviour_coverage_test.py::test_a_fresh_install_hears_one_sentence_from_every_command_gh_269[probe]
+PASSED tests/behaviour_coverage_test.py::test_a_fresh_install_hears_one_sentence_from_every_command_gh_269[probe --check]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[ANTHROPIC_AWS_API_KEY]
+PASSED tests/behaviour_coverage_test.py::test_a_fresh_install_hears_one_sentence_from_every_command_gh_269[probe --declared-only]
+PASSED tests/behaviour_coverage_test.py::test_a_fresh_install_hears_one_sentence_from_every_command_gh_269[probe --model m]
+PASSED tests/behaviour_coverage_test.py::test_a_fresh_install_hears_one_sentence_from_every_command_gh_269[use]
+PASSED tests/behaviour_coverage_test.py::test_a_fresh_install_hears_one_sentence_from_every_command_gh_269[run]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[ANTHROPIC_FOUNDRY_API_KEY]
+PASSED tests/behaviour_coverage_test.py::test_a_fresh_install_hears_one_sentence_from_every_command_gh_269[inspect]
+PASSED tests/behaviour_coverage_test.py::test_a_fresh_install_hears_one_sentence_from_every_command_gh_269[config]
+PASSED tests/behaviour_coverage_test.py::test_a_fresh_install_hears_one_sentence_from_every_command_gh_269[models]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[ANTHROPIC_FOUNDRY_AUTH_TOKEN]
+PASSED tests/behaviour_coverage_test.py::test_a_fresh_install_hears_one_sentence_from_every_command_gh_269[context]
+PASSED tests/behaviour_coverage_test.py::test_a_fresh_install_hears_one_sentence_from_every_command_gh_269[doctor nosuch]
+PASSED tests/behaviour_coverage_test.py::test_add_and_rm_without_a_name_print_usage
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[ANTHROPIC_AWS_BASE_URL]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[add {n}-slash]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[ANTHROPIC_BEDROCK_BASE_URL]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[add {n}-space]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[add {n}-dot]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[ANTHROPIC_BEDROCK_MANTLE_BASE_URL]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[add {n}-hyphen]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[ANTHROPIC_VERTEX_BASE_URL]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[CLAUDE_CODE_API_BASE_URL]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[add {n}-cjk]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[ANTHROPIC_ORGANIZATION_ID]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[add {n}-too long]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[add {n}-reserved]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[ANTHROPIC_WORKSPACE_ID]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[use {n}-slash]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[ANTHROPIC_PROFILE]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[use {n}-space]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[ANTHROPIC_FEDERATION_RULE_ID]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[use {n}-dot]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[use {n}-hyphen]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[CLAUDE_CODE_ACCOUNT_UUID]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[use {n}-cjk]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[CLAUDE_CODE_ORGANIZATION_UUID]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[use {n}-too long]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[use {n}-reserved]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[login {n}-slash]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[CLAUDE_CODE_GATEWAY_TOKEN_FILE_DESCRIPTOR]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[login {n}-space]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[CLAUDE_CODE_SESSION_ACCESS_TOKEN]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[login {n}-dot]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[login {n}-hyphen]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[login {n}-cjk]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[ANTHROPIC_FOUNDRY_BASE_URL]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[login {n}-too long]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[ANTHROPIC_GOOGLE_CLOUD_BASE_URL]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[login {n}-reserved]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[inspect {n}-slash]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[ANTHROPIC_IDENTITY_TOKEN]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[inspect {n}-space]
+PASSED tests/launch_env_rules_test.py::test_launch_does_not_inherit_other_backends_credentials[ANTHROPIC_IDENTITY_TOKEN_FILE]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[inspect {n}-dot]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[inspect {n}-hyphen]
+PASSED tests/launch_env_rules_test.py::test_no_launch_helper_carries_the_credential_on_its_command_line[]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[inspect {n}-cjk]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[inspect {n}-too long]
+PASSED tests/launch_env_rules_test.py::test_no_launch_helper_carries_the_credential_on_its_command_line[private=1\n]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[inspect {n}-reserved]
+PASSED tests/launch_env_rules_test.py::test_the_launcher_lists_every_pinned_backend_name
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[rm {n}-slash]
+PASSED tests/launch_env_rules_test.py::test_the_addon_strips_exactly_the_launchers_backend_list_plus_proxies
+PASSED tests/launch_env_rules_test.py::test_the_seam_leaves_home_alone_and_ignores_local_sh_output
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[rm {n}-space]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[rm {n}-dot]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[rm {n}-hyphen]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[rm {n}-cjk]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[rm {n}-too long]
+PASSED tests/launch_env_rules_test.py::test_a_tuning_key_from_the_outer_profiles_settings_layer_is_not_inherited
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[rm {n}-reserved]
+PASSED tests/launch_env_rules_test.py::test_an_inherited_set_env_only_unsets_tuning_keys[PATH]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[mv {n} zzz-slash]
+PASSED tests/launch_env_rules_test.py::test_an_inherited_set_env_only_unsets_tuning_keys[bad-name]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[mv {n} zzz-space]
+PASSED tests/launch_env_rules_test.py::test_an_inherited_set_env_only_unsets_tuning_keys[PATH MAX_THINKING_TOKENS]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[mv {n} zzz-dot]
+PASSED tests/launch_latency_test.py::test_adapter_receives_the_wire_model_id[bare-id]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[mv {n} zzz-hyphen]
+PASSED tests/launch_latency_test.py::test_adapter_receives_the_wire_model_id[window-marker-stripped-issue-232]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[mv {n} zzz-cjk]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[mv {n} zzz-too long]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[mv {n} zzz-reserved]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[mv gw {n}-slash]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[mv gw {n}-space]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[mv gw {n}-dot]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[mv gw {n}-hyphen]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[mv gw {n}-cjk]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[mv gw {n}-too long]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[mv gw {n}-reserved]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[cred {n}-slash]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[cred {n}-space]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[cred {n}-dot]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[cred {n}-hyphen]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[cred {n}-cjk]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[cred {n}-too long]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[cred {n}-reserved]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[run {n}-slash]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[run {n}-space]
+PASSED tests/launch_latency_test.py::test_adapter_start_reports_the_wait
+PASSED tests/launch_latency_test.py::test_adapter_alias_uses_profile_settings_before_startup
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[run {n}-dot]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[run {n}-hyphen]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[run {n}-cjk]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[run {n}-too long]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[run {n}-reserved]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[config {n}-slash]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[config {n}-space]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[config {n}-dot]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[config {n}-hyphen]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[config {n}-cjk]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[config {n}-too long]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[config {n}-reserved]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[get {n} model-slash]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[get {n} model-space]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[get {n} model-dot]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[get {n} model-hyphen]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[get {n} model-cjk]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[get {n} model-too long]
+PASSED tests/launch_model_map_test.py::test_launch_prepares_the_same_model_map_target_as_inference[suffixed-launch-mapped-wire-key-issue-232]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[get {n} model-reserved]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[set {n} model x-slash]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[set {n} model x-space]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[set {n} model x-dot]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[set {n} model x-hyphen]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[set {n} model x-cjk]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[set {n} model x-too long]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[set {n} model x-reserved]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[context {n} m-slash]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[context {n} m-space]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[context {n} m-dot]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[context {n} m-hyphen]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[context {n} m-cjk]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[context {n} m-too long]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[context {n} m-reserved]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[context {n}-slash]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[context {n}-space]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[context {n}-dot]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[context {n}-hyphen]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[context {n}-cjk]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[context {n}-too long]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[context {n}-reserved]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[probe {n}-slash]
+PASSED tests/launch_model_map_test.py::test_launch_prepares_the_same_model_map_target_as_inference[bare-launch-mapped-wire-key]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[probe {n}-space]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[probe {n}-dot]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[probe {n}-hyphen]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[probe {n}-cjk]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[probe {n}-too long]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[probe {n}-reserved]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[probe --profile {n}-slash]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[probe --profile {n}-space]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[probe --profile {n}-dot]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[probe --profile {n}-hyphen]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[probe --profile {n}-cjk]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[probe --profile {n}-too long]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[probe --profile {n}-reserved]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[probe --profile={n}-slash]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[probe --profile={n}-space]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[probe --profile={n}-dot]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[probe --profile={n}-hyphen]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[probe --profile={n}-cjk]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[probe --profile={n}-too long]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[probe --profile={n}-reserved]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[quota {n}-slash]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[quota {n}-space]
+PASSED tests/launch_model_map_test.py::test_launch_prepares_the_same_model_map_target_as_inference[mapped-target-window-marker-issue-232]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[quota {n}-dot]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[quota {n}-hyphen]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[quota {n}-cjk]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[quota {n}-too long]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[quota {n}-reserved]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[quota --json {n}-slash]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[quota --json {n}-space]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[quota --json {n}-dot]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[quota --json {n}-hyphen]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[quota --json {n}-cjk]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[quota --json {n}-too long]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[quota --json {n}-reserved]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[models {n}-slash]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[models {n}-space]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[models {n}-dot]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[models {n}-hyphen]
+PASSED tests/launch_model_map_test.py::test_launch_prepares_the_same_model_map_target_as_inference[suffixed-launch-unmapped-control]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[models {n}-cjk]
+PASSED tests/lazy_model_test.py::test_explicit_map_prepares_its_target_once_without_family_substitution
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[models {n}-too long]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[models {n}-reserved]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[doctor {n}-slash]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[doctor {n}-space]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[doctor {n}-dot]
+PASSED tests/lazy_model_test.py::test_count_tokens_only_prepares_explicit_map_hits[{ "model": "claude-opus-5", "messages": [] }-key-200-None]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[doctor {n}-hyphen]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[doctor {n}-cjk]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[doctor {n}-too long]
+PASSED tests/lazy_model_test.py::test_count_tokens_only_prepares_explicit_map_hits[{ "model": "no-map", "messages": [] }-key-200-None]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[doctor {n}-reserved]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[hop {n}-slash]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[hop {n}-space]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[hop {n}-dot]
+PASSED tests/lazy_model_test.py::test_count_tokens_only_prepares_explicit_map_hits[{ "model": "claude-opus-5[1m]" }-wrong-200-None]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[hop {n}-hyphen]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[hop {n}-cjk]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[hop {n}-too long]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[hop {n}-reserved]
+PASSED tests/lazy_model_test.py::test_count_tokens_only_prepares_explicit_map_hits[{"model":"unrelated"}-key-200-None]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[_menu {n}-slash]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[_menu {n}-space]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[_menu {n}-dot]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[_menu {n}-hyphen]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[_menu {n}-cjk]
+PASSED tests/lazy_model_test.py::test_count_tokens_only_prepares_explicit_map_hits[{"model":"null-map"}-key-200-None]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[_menu {n}-too long]
+PASSED tests/behaviour_coverage_test.py::test_a_bad_name_gets_the_one_reply_from_every_command_gh_373[_menu {n}-reserved]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[add {n}]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[use {n}]
+PASSED tests/lazy_model_test.py::test_count_tokens_only_prepares_explicit_map_hits[{broken-wrong-200-None]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[login {n}]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[inspect {n}]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[rm {n}]
+PASSED tests/lazy_model_test.py::test_count_tokens_only_prepares_explicit_map_hits[{"messages":[]}-wrong-200-None]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[mv {n} zzz]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[mv gw {n}]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[cred {n}]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[run {n}]
+PASSED tests/lazy_model_test.py::test_count_tokens_only_prepares_explicit_map_hits[{"model":null}-wrong-200-None]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[config {n}]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[get {n} model]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[set {n} model x]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[context {n} m]
+PASSED tests/lazy_model_test.py::test_count_tokens_only_prepares_explicit_map_hits[[]-wrong-200-None]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[context {n}]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[probe {n}]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[probe --profile {n}]
+PASSED tests/lazy_model_test.py::test_count_tokens_only_prepares_explicit_map_hits[{"model":"claude-sonnet-5-5"}-key-200-gpt-6.1-sol]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[probe --profile={n}]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[quota {n}]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[quota --json {n}]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[models {n}]
+PASSED tests/lazy_model_test.py::test_count_tokens_only_prepares_explicit_map_hits[{"model":"claude-sonnet-5-5[1m]"}-key-200-gpt-6.1-sol]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[doctor {n}]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[hop {n}]
+PASSED tests/behaviour_coverage_test.py::test_a_leading_hyphen_word_gets_the_one_reply_gh_373[_menu {n}]
+PASSED tests/lazy_model_test.py::test_count_tokens_only_prepares_explicit_map_hits[{"model":"bare-only[1m]"}-key-200-bare-target]
+PASSED tests/behaviour_coverage_test.py::test_a_native_short_option_with_more_attached_still_launches_gh_373[attached value]
+PASSED tests/behaviour_coverage_test.py::test_a_native_short_option_with_more_attached_still_launches_gh_373[attached value after a profile]
+PASSED tests/behaviour_coverage_test.py::test_a_native_short_option_with_more_attached_still_launches_gh_373[attached optional value]
+PASSED tests/lazy_model_test.py::test_count_tokens_only_prepares_explicit_map_hits[{"model":"claude-sonnet-5-5"}-wrong-401-None]
+PASSED tests/behaviour_coverage_test.py::test_a_native_short_option_with_more_attached_still_launches_gh_373[combined flags]
+PASSED tests/behaviour_coverage_test.py::test_a_native_short_option_with_more_attached_still_launches_gh_373[lone dash]
+PASSED tests/lazy_model_test.py::test_unknown_model_prepared_once_before_forwarding
+PASSED tests/behaviour_coverage_test.py::test_a_short_option_from_claudes_help_still_launches_gh_373
+PASSED tests/behaviour_coverage_test.py::test_a_left_out_name_keeps_the_usage_line_gh_373[['rm', '']]
+PASSED tests/behaviour_coverage_test.py::test_a_left_out_name_keeps_the_usage_line_gh_373[['mv', '']]
+PASSED tests/behaviour_coverage_test.py::test_a_left_out_name_keeps_the_usage_line_gh_373[['mv', '', 'x']]
+PASSED tests/behaviour_coverage_test.py::test_a_left_out_name_keeps_the_usage_line_gh_373[['mv', 'x', '']]
+PASSED tests/behaviour_coverage_test.py::test_a_left_out_name_keeps_the_usage_line_gh_373[['cred', '']]
+PASSED tests/behaviour_coverage_test.py::test_a_left_out_name_keeps_the_usage_line_gh_373[['cred', '-i']]
+PASSED tests/behaviour_coverage_test.py::test_a_left_out_name_keeps_the_usage_line_gh_373[['models', '']]
+PASSED tests/behaviour_coverage_test.py::test_a_left_out_name_keeps_the_usage_line_gh_373[['probe', '']]
+PASSED tests/behaviour_coverage_test.py::test_models_with_only_a_mode_flag_is_a_left_out_profile_gh_373[--filtered]
+PASSED tests/behaviour_coverage_test.py::test_models_with_only_a_mode_flag_is_a_left_out_profile_gh_373[--filtered-json]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[rm gw --help]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[rm gw -h]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[use tok -h]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[login gw --help]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[cred gw --help]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[inspect gw -h]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[context gw m --help]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[models gw --help]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[doctor gw --help]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[quota gw --help]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[config gw --help]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[get gw --help]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[set gw model --help]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[mv gw new --help]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[hop gw --help]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[add new --help]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[list --help]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[update v1 --help]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[uninstall --help]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[version --help]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[help rm --help]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[run --help]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[run -h]
+PASSED tests/live_lock_verbs_test.py::test_use_sets_the_default_while_another_launch_holds_the_live_lock
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[profile-help-issue-413]
+PASSED tests/behaviour_coverage_test.py::test_a_help_flag_anywhere_prints_help_and_changes_nothing[profile-short-help-issue-413]
+PASSED tests/behaviour_coverage_test.py::test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage[list-0]
+PASSED tests/behaviour_coverage_test.py::test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage[use-1]
+PASSED tests/behaviour_coverage_test.py::test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage[cred-1]
+PASSED tests/behaviour_coverage_test.py::test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage[inspect-1]
+PASSED tests/behaviour_coverage_test.py::test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage[context-3]
+PASSED tests/behaviour_coverage_test.py::test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage[models-2]
+PASSED tests/behaviour_coverage_test.py::test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage[rm-1]
+PASSED tests/behaviour_coverage_test.py::test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage[mv-2]
+PASSED tests/behaviour_coverage_test.py::test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage[get-2]
+PASSED tests/behaviour_coverage_test.py::test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage[set-3]
+PASSED tests/behaviour_coverage_test.py::test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage[config-1]
+PASSED tests/behaviour_coverage_test.py::test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage[add-1]
+PASSED tests/behaviour_coverage_test.py::test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage[login-1]
+PASSED tests/behaviour_coverage_test.py::test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage[hop-1]
+PASSED tests/behaviour_coverage_test.py::test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage[quota-2]
+PASSED tests/behaviour_coverage_test.py::test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage[doctor-2]
+PASSED tests/behaviour_coverage_test.py::test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage[update-1]
+PASSED tests/behaviour_coverage_test.py::test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage[uninstall-0]
+PASSED tests/behaviour_coverage_test.py::test_a_word_after_the_arguments_is_refused_with_the_help_pages_usage[profile-0]
+PASSED tests/behaviour_coverage_test.py::test_a_wrong_argument_names_the_help_pages_usage[models gw --bogus]
+PASSED tests/behaviour_coverage_test.py::test_a_wrong_argument_names_the_help_pages_usage[doctor gw tok]
+PASSED tests/behaviour_coverage_test.py::test_a_wrong_argument_names_the_help_pages_usage[quota gw tok]
+PASSED tests/behaviour_coverage_test.py::test_a_wrong_argument_names_the_help_pages_usage[get gw bogus]
+PASSED tests/behaviour_coverage_test.py::test_a_wrong_argument_names_the_help_pages_usage[set gw bogus]
+PASSED tests/behaviour_coverage_test.py::test_a_wrong_argument_names_the_help_pages_usage[config gw extra9]
+PASSED tests/live_lock_verbs_test.py::test_add_keeps_its_conf_while_another_launch_holds_the_live_lock
+PASSED tests/behaviour_coverage_test.py::test_a_wrong_argument_names_the_help_pages_usage[login gw extra9]
+PASSED tests/live_lock_verbs_test.py::test_add_keeps_its_conf_when_the_lock_dir_cannot_be_made
+PASSED tests/behaviour_coverage_test.py::test_a_wrong_argument_names_the_help_pages_usage[inspect gw extra9]
+PASSED tests/behaviour_coverage_test.py::test_a_wrong_argument_names_the_help_pages_usage[hop gw extra9]
+PASSED tests/behaviour_coverage_test.py::test_a_wrong_argument_names_the_help_pages_usage[cred gw extra9]
+PASSED tests/behaviour_coverage_test.py::test_a_wrong_argument_names_the_help_pages_usage[mv gw]
+PASSED tests/behaviour_coverage_test.py::test_a_wrong_argument_names_the_help_pages_usage[context gw m x extra9]
+PASSED tests/behaviour_coverage_test.py::test_a_wrong_argument_names_the_help_pages_usage[rm]
+PASSED tests/cli_config_store_test.py::ConfigurationSaveTest::test_a_bom_prefixed_settings_json_still_prepares_a_launch
+PASSED tests/cli_config_store_test.py::ConfigurationSaveTest::test_a_projection_crash_with_a_linked_policy_refuses_through_the_folded_path
+PASSED tests/live_lock_verbs_test.py::test_a_launch_still_refuses_without_its_live_lock
+PASSED tests/cli_config_store_test.py::ConfigurationSaveTest::test_blank_endpoint_can_keep_defaults
+PASSED tests/live_lock_verbs_test.py::test_a_launch_refusal_names_a_lock_file_that_cannot_be_made
+PASSED tests/loopback_guard_test.py::test_a_permission_refusal_stands_for_the_whole_process
+PASSED tests/loopback_guard_test.py::test_the_probe_reports_true_where_bind_is_allowed
+PASSED tests/loopback_guard_test.py::test_a_allowed_bind_costs_one_socket_per_process
+PASSED tests/loopback_guard_test.py::test_a_transient_error_stays_visible_and_caches_nothing[socket-creation]
+PASSED tests/loopback_guard_test.py::test_a_transient_error_stays_visible_and_caches_nothing[bind]
+PASSED tests/loopback_guard_test.py::test_the_marker_carries_the_one_loud_skip_line
+PASSED tests/cli_config_store_test.py::ConfigurationSaveTest::test_configure_saves_defaults_without_writing_settings
+PASSED tests/model_exclusions_test.py::test_exclusions_remove_saved_model_alias_and_derived_id
+PASSED tests/cli_config_store_test.py::ConfigurationSaveTest::test_generated_settings_ignore_inline_defaults_but_preserve_other_settings
+PASSED tests/model_exclusions_test.py::test_new_gateway_model_appears_without_editing_exclusions
+PASSED tests/model_exclusions_test.py::test_offline_refresh_filters_cached_rows_and_preserves_other_choices
+PASSED tests/cli_config_store_test.py::ConfigurationSaveTest::test_invalid_effort_never_changes_the_conf
+PASSED tests/model_exclusions_test.py::test_empty_result_refuses_instead_of_enabling_native_defaults
+PASSED tests/cli_config_store_test.py::ConfigurationSaveTest::test_invalid_model_never_changes_endpoint_or_defaults
+PASSED tests/model_exclusions_test.py::test_unreachable_gateway_with_an_empty_cache_exits_the_gateway_class
+PASSED tests/model_exclusions_test.py::test_exclusions_are_exact_case_sensitive_ids
+PASSED tests/cli_config_store_test.py::ConfigurationSaveTest::test_model_map_is_profile_scoped_and_survives_a_config_save
+PASSED tests/cli_config_store_test.py::ConfigurationSaveTest::test_model_map_rejects_malformed_values_duplicate_ids_and_wrong_profile_types
+PASSED tests/cli_config_store_test.py::ConfigurationSaveTest::test_native_launch_reuses_seeded_model_without_a_second_reader_gh327
+PASSED tests/model_exclusions_test.py::test_cli_pickers_filter_but_catalogue_stays_unfiltered
+PASSED tests/model_exclusions_test.py::test_malformed_exclusion_list_is_rejected
+PASSED tests/model_window_test.py::Resolver::test_bundled_family_alias_resolves_when_all_variants_share_a_window
+PASSED tests/model_window_test.py::Resolver::test_claude_at_1m_gets_suffix_but_haiku_below_does_not
+PASSED tests/cli_config_store_test.py::ConfigurationSaveTest::test_prepare_and_project_maps_a_failed_projection
+PASSED tests/model_window_test.py::Resolver::test_declared_field_spellings_and_invalid_values
+PASSED tests/model_window_test.py::Resolver::test_equal_gateway_declarations_are_valid_when_no_stored_value
+PASSED tests/model_window_test.py::Resolver::test_existing_suffix_is_not_doubled
+PASSED tests/cli_config_store_test.py::ConfigurationSaveTest::test_prepare_and_project_newline_argument_uses_two_runs
+PASSED tests/model_window_test.py::Resolver::test_legacy_launch_pin_is_still_authoritative
+PASSED tests/cli_config_store_test.py::ConfigurationSaveTest::test_prepare_and_project_store_failure_aborts_with_store_message
+PASSED tests/model_window_test.py::Resolver::test_locked_interrupt_cancels_without_traceback_and_releases_lock
+PASSED tests/cli_config_store_test.py::ConfigurationSaveTest::test_prepare_and_project_writes_what_two_runs_wrote
+PASSED tests/model_window_test.py::Resolver::test_manual_keys_are_exact_and_colon_model_ids_survive
+PASSED tests/model_window_test.py::Resolver::test_manual_pin_beats_discovery_and_uses_common_suffix_finalization
+PASSED tests/model_window_test.py::Resolver::test_stored_value_beats_supplied_metadata
+PASSED tests/model_window_test.py::Resolver::test_unknown_is_explicit_and_never_silent
+PASSED tests/model_window_test.py::MappedTarget::test_a_1m_source_mapped_to_a_128k_target_budgets_the_target
+PASSED tests/model_window_test.py::MappedTarget::test_a_1m_suffixed_request_maps_like_its_bare_id
+PASSED tests/model_window_test.py::MappedTarget::test_a_1m_target_keeps_the_1m_send_id
+PASSED tests/model_window_test.py::MappedTarget::test_a_manual_source_pin_beats_the_target
+PASSED tests/model_window_test.py::MappedTarget::test_a_manual_target_pin_beats_target_discovery
+PASSED tests/model_window_test.py::MappedTarget::test_a_native_route_ignores_the_map
+PASSED tests/model_window_test.py::MappedTarget::test_an_unknown_target_falls_back_to_the_unknown_budget
+PASSED tests/model_window_test.py::MappedTarget::test_an_unmapped_model_resolves_as_before
+PASSED tests/model_window_test.py::MappedTarget::test_the_env_pin_still_wins
+PASSED tests/model_window_test.py::MappedTarget::test_the_targets_own_1m_suffix_is_stripped_before_sizing
+PASSED tests/no_python_test.py::test_the_core_files_exist
+PASSED tests/no_python_test.py::test_no_core_file_mentions_python3
+PASSED tests/no_python_test.py::test_no_core_file_runs_a_python_helper
+PASSED tests/old_launcher_contract_test.py::test_a_launcher_from_an_earlier_release_still_starts_claude_on_its_route
+PASSED tests/cli_config_store_test.py::ConfigurationSaveTest::test_specialized_commands_refuse_without_changing_anything
+PASSED tests/cli_config_store_test.py::ConfigurationSaveTest::test_symlinked_settings_refuse_the_launch_gh327
+PASSED tests/old_launcher_contract_test.py::test_a_v046_launcher_still_saves_its_settings_and_stops_its_bridge
+PASSED tests/old_launcher_contract_test.py::test_a_v046_launcher_still_lists_models_and_projects_the_picker
+PASSED tests/old_launcher_contract_test.py::test_a_v046_launcher_still_gets_its_launch_diagnostics_and_advisories
+PASSED tests/old_launcher_contract_test.py::test_a_hidden_stage_without_its_operands_refuses_with_usage[--model-known]
+PASSED tests/old_launcher_contract_test.py::test_a_hidden_stage_without_its_operands_refuses_with_usage[--carry-session]
+PASSED tests/old_launcher_contract_test.py::test_a_hidden_stage_without_its_operands_refuses_with_usage[--config-store]
+PASSED tests/old_launcher_contract_test.py::test_a_hidden_stage_without_its_operands_refuses_with_usage[--gw-models]
+PASSED tests/old_launcher_contract_test.py::test_a_hidden_stage_without_its_operands_refuses_with_usage[--listing-has-unsized]
+PASSED tests/old_launcher_contract_test.py::test_a_hidden_stage_without_its_operands_refuses_with_usage[--fold]
+PASSED tests/old_launcher_contract_test.py::test_a_hidden_stage_without_its_operands_refuses_with_usage[--prelaunch]
+PASSED tests/old_launcher_contract_test.py::test_a_hidden_stage_without_its_operands_refuses_with_usage[--remove-profile]
+PASSED tests/old_launcher_contract_test.py::test_a_hidden_stage_without_its_operands_refuses_with_usage[--models-json]
+PASSED tests/old_launcher_contract_test.py::test_a_hidden_stage_without_its_operands_refuses_with_usage[--profile-ok]
+PASSED tests/old_launcher_contract_test.py::test_a_hidden_stage_without_its_operands_refuses_with_usage[--claude-subcommand]
+PASSED tests/old_launcher_contract_test.py::test_a_hidden_stage_without_its_operands_refuses_with_usage[--resume-model]
+PASSED tests/old_launcher_contract_test.py::test_a_hidden_stage_without_its_operands_refuses_with_usage[--probe-nudge]
+PASSED tests/product_defaults_test.py::test_provider_uses_path_not_private_override
+PASSED tests/cli_installed_test.py::InstalledCliTest::test_configured_profile_reports_model_without_token
+PASSED tests/cli_installed_test.py::InstalledCliTest::test_install_and_help_preserve_native_claude
+PASSED tests/cli_installed_test.py::InstalledCliTest::test_run_forwards_arguments
+PASSED tests/cli_installed_test.py::InstalledCliTest::test_run_launches_default_profile
+PASSED tests/cli_installed_test.py::InstalledCliTest::test_run_launches_named_profile
+PASSED tests/cli_installed_test.py::InstalledCliTest::test_run_launches_other_profile
+PASSED tests/profile_context_lifecycle_test.py::ProfileCommands::test_real_cli_removes_and_renames_scoped_context_without_touching_history
+PASSED tests/cli_installed_test.py::InstalledCliTest::test_run_refuses_two_profiles_and_passes_flag_arguments
+PASSED tests/profile_directory_test.py::test_migration_preserves_inodes_symlinks_and_old_session_access
+PASSED tests/profile_directory_test.py::test_plugin_index_paths_follow_shared_plugin_topology
+PASSED tests/profile_directory_test.py::test_malformed_plugin_index_does_not_block_profile_setup
+PASSED tests/cli_installed_test.py::InstalledCliTest::test_uninstall_preserves_native_claude
+PASSED tests/cli_messages_test.py::test_probe_help_has_no_progress_banner_and_remains_actionable[probe --help]
+PASSED tests/profile_directory_test.py::test_doctor_does_not_normalize_plugin_indexes
+PASSED tests/profile_directory_test.py::test_fresh_install_uses_state_profiles_without_legacy_alias
+PASSED tests/cli_messages_test.py::test_probe_help_has_no_progress_banner_and_remains_actionable[probe gw --help]
+PASSED tests/cli_messages_test.py::test_probe_help_has_no_progress_banner_and_remains_actionable[probe -i -h]
+PASSED tests/cli_messages_test.py::test_probe_help_has_no_progress_banner_and_remains_actionable[measure --help]
+PASSED tests/cli_messages_test.py::test_probe_refuses_an_unknown_option_with_its_usage
+PASSED tests/profile_directory_test.py::test_doctor_observes_legacy_home_without_migrating
+PASSED tests/profile_directory_test.py::test_collision_refuses_without_merging_or_overwriting
+PASSED tests/cli_messages_test.py::test_adapter_decline_surfaces_actionable_reason
+PASSED tests/profile_directory_test.py::test_concurrent_migration_converges_on_one_directory
+PASSED tests/profile_directory_test.py::test_unrelated_legacy_symlink_refused
+PASSED tests/cli_messages_test.py::test_adapter_failure_reports_observation_not_guessed_cause
+PASSED tests/rc_bridge_nested_launch_test.py::test_the_route_conf_declares_no_flag_itself
+PASSED tests/rc_bridge_nested_launch_test.py::test_a_named_profile_is_not_carried_to_the_session_route
+PASSED tests/rc_bridge_nested_launch_test.py::test_a_users_own_loopback_proxy_is_kept
+PASSED tests/rc_bridge_nested_launch_test.py::test_a_profileless_launch_honours_a_route_that_serves_the_advisor
+PASSED tests/rc_bridge_nested_launch_test.py::test_a_plain_launch_still_clears_an_inherited_flag
+PASSED tests/rc_bridge_nested_launch_test.py::test_a_remote_proxy_is_not_a_local_bridge
+PASSED tests/rc_bridge_nested_launch_test.py::test_a_profile_with_its_own_endpoint_is_left_alone
+PASSED tests/rc_bridge_nested_launch_test.py::test_a_profile_with_the_native_anthropic_url_skips_the_edge[https://api.anthropic.com]
+PASSED tests/rc_bridge_nested_launch_test.py::test_a_profile_with_the_native_anthropic_url_skips_the_edge[https://api.anthropic.com/]
+PASSED tests/rc_bridge_nested_launch_test.py::test_a_profileless_nested_launch_keeps_the_route_flags
+PASSED tests/rc_bridge_test.py::test_inference_is_rerouted[api.anthropic.com-/v1/messages]
+PASSED tests/rc_bridge_test.py::test_inference_is_rerouted[api.anthropic.com-/v1/messages?beta=true]
+PASSED tests/rc_bridge_test.py::test_inference_is_rerouted[API.anthropic.com.-/v1/messages/count_tokens]
+PASSED tests/rc_bridge_test.py::test_everything_else_passes_through[api.anthropic.com-/v1/code/sessions/abc/worker/heartbeat]
+PASSED tests/rc_bridge_test.py::test_everything_else_passes_through[api.anthropic.com-/v1/environments/bridge]
+PASSED tests/rc_bridge_test.py::test_everything_else_passes_through[api.anthropic.com-/api/oauth/validate]
+PASSED tests/rc_bridge_test.py::test_everything_else_passes_through[api.anthropic.com-/v1/messagesX]
+PASSED tests/rc_bridge_test.py::test_everything_else_passes_through[evil.example-/v1/messages]
+PASSED tests/rc_bridge_test.py::test_everything_else_passes_through[api.anthropic.com.evil.example-/v1/messages]
+PASSED tests/rc_bridge_test.py::test_account_credential_never_reaches_the_route
+PASSED tests/rc_bridge_test.py::test_only_oauth_beta_means_no_beta_header
+PASSED tests/rc_bridge_test.py::test_loopback_adapter_target
+PASSED tests/rc_bridge_test.py::test_non_http_upstream_is_refused
+PASSED tests/rc_bridge_test.py::test_first_party_only_thinking_display_is_made_portable
+PASSED tests/rc_bridge_test.py::test_first_party_cache_scope_is_dropped_but_the_breakpoint_kept
+PASSED tests/rc_bridge_test.py::test_consecutive_first_party_turns_share_a_cacheable_prefix
+PASSED tests/rc_bridge_test.py::test_a_turn_field_never_takes_its_neighbour_with_it[ cch=abc cc_workload=cron;- cc_workload=cron;]
+PASSED tests/rc_bridge_test.py::test_a_turn_field_never_takes_its_neighbour_with_it[\tcch=abc;\ncc_workload=cron;-\ncc_workload=cron;]
+PASSED tests/rc_bridge_test.py::test_portable_bodies_are_left_alone[body0]
+PASSED tests/rc_bridge_test.py::test_portable_bodies_are_left_alone[body1]
+PASSED tests/rc_bridge_test.py::test_portable_bodies_are_left_alone[body2]
+PASSED tests/rc_bridge_test.py::test_portable_bodies_are_left_alone[body3]
+PASSED tests/rc_bridge_test.py::test_portable_bodies_are_left_alone[body4]
+PASSED tests/rc_bridge_test.py::test_portable_bodies_are_left_alone[body5]
+PASSED tests/rc_bridge_test.py::test_portable_bodies_are_left_alone[body6]
+PASSED tests/rc_bridge_test.py::test_pinned_tier_covers_full_ids[claude-fable-5-1-gpt-6-astra]
+PASSED tests/rc_bridge_test.py::test_pinned_tier_covers_full_ids[claude-fable-5-gpt-6-astra]
+PASSED tests/rc_bridge_test.py::test_pinned_tier_covers_full_ids[fable-gpt-6-astra]
+PASSED tests/rc_bridge_test.py::test_pinned_tier_covers_full_ids[claude-opus-5-5-claude-opus-5-5]
+PASSED tests/rc_bridge_test.py::test_pinned_tier_covers_full_ids[gpt-6-astra-gpt-6-astra]
+PASSED tests/rc_bridge_test.py::test_a_folder_is_trusted_before_the_host_starts
+PASSED tests/rc_bridge_test.py::test_inherited_credentials_never_reach_the_session
+PASSED tests/rc_bridge_test.py::test_session_models_are_real_claude_one_to_one
+PASSED tests/rc_bridge_test.py::test_route_profile_is_resolved_through_route_env
+PASSED tests/rc_bridge_test.py::test_adapter_keeps_the_ambient_proxy_but_no_inherited_credential
+PASSED tests/rc_bridge_test.py::test_adapter_is_told_the_route_model
+PASSED tests/rc_bridge_test.py::test_route_behaviour_flags_reach_the_session_either_way
+PASSED tests/rc_bridge_test.py::test_a_shared_edge_whose_adapter_died_reports_itself_down
+PASSED tests/rc_bridge_test.py::test_a_network_outage_does_not_take_the_shared_edge_down
+PASSED tests/rc_bridge_test.py::test_shared_edge_carries_route_flags_for_later_hosts
+PASSED tests/rc_bridge_test.py::test_the_edge_record_names_the_tiers_its_proxy_pins
+PASSED tests/rc_bridge_test.py::test_a_tier_pinned_by_the_caller_survives_into_the_session
+PASSED tests/rc_bridge_test.py::test_a_folder_keeps_one_host_across_restarts
+PASSED tests/cli_messages_test.py::test_help_is_concise_truthful_and_read_only
+PASSED tests/rc_bridge_test.py::test_sessions_send_the_whole_conversation_never_a_server_thread
+PASSED tests/rc_bridge_test.py::test_event_uploads_keep_only_what_the_phone_shows
+PASSED tests/rc_bridge_test.py::test_one_event_upload_is_serialized_at_most_once
+PASSED tests/rc_bridge_test.py::test_the_proxy_inherits_a_raised_open_file_limit
+PASSED tests/rc_bridge_test.py::test_session_keeps_claude_prompt_prefix_stable_behind_the_adapter
+PASSED tests/rc_bridge_test.py::test_the_account_refusal_names_a_step_that_can_be_taken[none-names-add-issue-276]
+PASSED tests/rc_bridge_test.py::test_the_account_refusal_names_a_step_that_can_be_taken[two-still-ask-for-as]
+PASSED tests/rc_bridge_test.py::test_a_route_declared_model_mask_reaches_the_session
+PASSED tests/rc_bridge_test.py::test_default_account_names_claude_account_profiles
+PASSED tests/cli_messages_test.py::test_price_reads_cached_list_prices
+PASSED tests/rc_bridge_test.py::test_inference_switch_is_read_live_and_defaults_to_the_route
+PASSED tests/rc_bridge_test.py::test_the_account_word_marks_what_it_leaves_first_party[account-True]
+PASSED tests/rc_bridge_test.py::test_the_account_word_marks_what_it_leaves_first_party[route-False]
+PASSED tests/rc_bridge_test.py::test_the_guard_exempts_the_mark_the_account_branch_sets
+PASSED tests/rc_bridge_test.py::test_a_pinned_tier_reaches_the_backend_without_the_context_marker
+PASSED tests/rc_bridge_test.py::test_an_rc_session_loads_the_router_plugin_while_the_router_is_on
+PASSED tests/rc_hosts_test.py::test_one_route_line_serves_every_folder_and_a_folder_may_override
+PASSED tests/cli_messages_test.py::test_hop_help_needs_no_exit_and_names_both_forms_gh_289
+PASSED tests/rc_hosts_test.py::test_only_a_pin_that_names_a_conversation_is_hosted[bare-folder]
+PASSED tests/rc_hosts_test.py::test_only_a_pin_that_names_a_conversation_is_hosted[valued-pin]
+PASSED tests/rc_hosts_test.py::test_only_a_pin_that_names_a_conversation_is_hosted[known-passthrough]
+PASSED tests/rc_hosts_test.py::test_only_a_pin_that_names_a_conversation_is_hosted[unknown-passthrough]
+PASSED tests/rc_hosts_test.py::test_only_a_pin_that_names_a_conversation_is_hosted[valueless-pin-issue-342]
+PASSED tests/rc_hosts_test.py::test_only_a_pin_that_names_a_conversation_is_hosted[valueless-pin-trailing-space-issue-342]
+PASSED tests/rc_hosts_test.py::test_only_a_pin_that_names_a_conversation_is_hosted[valueless-pin-with-comment-issue-342]
+PASSED tests/rc_hosts_test.py::test_session_entries_lists_only_pins_that_name_a_conversation[valued-pin]
+PASSED tests/cli_messages_test.py::test_hop_usage_line_agrees_across_help_and_the_slash_command
+PASSED tests/rc_hosts_test.py::test_session_entries_lists_only_pins_that_name_a_conversation[pin-without-separator]
+PASSED tests/cli_messages_test.py::test_run_help_names_the_plain_run_question_and_its_keep_command_gh_360
+PASSED tests/rc_hosts_test.py::test_session_entries_lists_only_pins_that_name_a_conversation[valueless-pin]
+PASSED tests/rc_hosts_test.py::test_session_entries_lists_only_pins_that_name_a_conversation[not-a-pin]
+PASSED tests/rc_hosts_test.py::test_session_entries_lists_only_pins_that_name_a_conversation[worktree-pin]
+PASSED tests/rc_hosts_test.py::test_a_valueless_pin_does_not_take_the_supervisor_down
+PASSED tests/cli_messages_test.py::test_update_and_uninstall_under_homebrew_name_the_brew_command
+PASSED tests/rc_hosts_test.py::test_a_pin_without_a_separator_does_not_take_the_supervisor_down
+PASSED tests/rc_hosts_test.py::test_an_unreadable_config_does_not_take_the_supervisor_down[permissions-pulled]
+PASSED tests/rc_hosts_test.py::test_an_unreadable_config_does_not_take_the_supervisor_down[undecodable-bytes]
+PASSED tests/rc_hosts_test.py::test_our_own_retire_edit_is_not_read_as_a_config_change[readable]
+PASSED tests/cli_messages_test.py::test_add_help_names_provider_logins_only_when_the_bridge_is_installed
+PASSED tests/rc_hosts_test.py::test_our_own_retire_edit_is_not_read_as_a_config_change[unreadable-after-our-write]
+PASSED tests/rc_hosts_test.py::test_a_failed_retire_edit_neither_stops_the_supervisor_nor_unarchives[permissions-pulled]
+PASSED tests/cli_messages_test.py::test_add_help_names_both_kimi_sign_ins_by_region_gh_366
+PASSED tests/rc_hosts_test.py::test_a_failed_retire_edit_neither_stops_the_supervisor_nor_unarchives[undecodable-bytes]
+PASSED tests/rc_hosts_test.py::test_a_failed_retire_edit_neither_stops_the_supervisor_nor_unarchives[write-refused]
+PASSED tests/cli_messages_test.py::test_add_help_indents_every_sign_in_method_the_same_way_gh_364
+PASSED tests/rc_hosts_test.py::test_a_config_rewrite_that_fails_mid_replace_leaves_the_file_it_had
+PASSED tests/rc_hosts_test.py::test_the_rewrite_keeps_a_symlinked_config_its_link_and_its_mode
+PASSED tests/cli_messages_test.py::test_add_more_signins_names_the_machines_own_install_step_gh_369
+PASSED tests/rc_hosts_test.py::test_a_retire_edit_does_not_acknowledge_a_config_it_never_loaded
+PASSED tests/rc_hosts_test.py::test_the_idle_purge_does_not_run_under_a_config_it_never_loaded
+PASSED tests/rc_hosts_test.py::test_an_operator_edit_saved_with_a_self_edit_is_still_loaded[archived-bridge]
+PASSED tests/rc_hosts_test.py::test_an_operator_edit_saved_with_a_self_edit_is_still_loaded[idle-retired]
+PASSED tests/rc_hosts_test.py::test_a_worktree_session_is_never_pinned
+PASSED tests/rc_hosts_test.py::test_a_line_whose_path_cannot_be_resolved_is_skipped_not_fatal[nul-pin-issue-414]
+PASSED tests/rc_hosts_test.py::test_a_line_whose_path_cannot_be_resolved_is_skipped_not_fatal[nul-archived-issue-414]
+PASSED tests/rc_hosts_test.py::test_resolve_answers_none_for_what_path_resolve_raises[symlink-loop-issue-414]
+PASSED tests/rc_hosts_test.py::test_resolve_answers_none_for_what_path_resolve_raises[oserror-issue-414]
+PASSED tests/rc_hosts_test.py::test_an_archived_worktree_pin_is_not_retired_by_idle_cleanup
+PASSED tests/rc_hosts_test.py::test_the_attached_config_spelling_names_the_file_watched
+PASSED tests/rc_hosts_test.py::test_a_config_argument_without_a_path_is_a_usage_error[valueless-issue-417]
+PASSED tests/rc_hosts_test.py::test_a_config_argument_without_a_path_is_a_usage_error[flag-valued-issue-417]
+PASSED tests/rc_hosts_test.py::test_a_config_argument_without_a_path_is_a_usage_error[empty-attached-issue-417]
+PASSED tests/rc_hosts_test.py::test_a_config_argument_without_a_path_is_a_usage_error[flag-valued-attached-issue-417]
+PASSED tests/rc_hosts_test.py::test_the_usage_line_survives_an_interpreter_without_docstrings
+PASSED tests/rc_hosts_test.py::test_a_dead_host_is_relaunched_with_growing_backoff_reset_when_healthy
+PASSED tests/rc_hosts_test.py::test_a_bridge_that_quits_cleanly_after_an_outage_is_relaunched_at_once
+PASSED tests/rc_hosts_test.py::test_host_stdin_stays_open
+PASSED tests/cli_messages_test.py::test_run_without_claude_names_the_problem_and_the_path_it_searched
+PASSED tests/rc_hosts_test.py::test_a_started_host_logs_nowhere_under_the_users_config
+PASSED tests/rc_hosts_test.py::test_session_args_reach_ccmorph_rc_after_a_separator
+PASSED tests/rc_hosts_test.py::test_hosts_start_one_at_a_time
+PASSED tests/rc_hosts_test.py::test_tend_on_a_running_host_returns_false_not_none
+PASSED tests/rc_hosts_test.py::test_a_session_that_is_gone_server_side_retires_instead_of_retrying
+PASSED tests/rc_hosts_test.py::test_a_dead_repo_host_reattaches_nothing_and_an_archived_conversation_stays_down
+PASSED tests/rc_hosts_test.py::test_a_transcript_that_vanishes_mid_idle_check_keeps_the_supervisor_up
+PASSED tests/rc_hosts_test.py::test_a_transient_listing_failure_defers_the_retire_instead_of_losing_the_row
+PASSED tests/rc_hosts_test.py::test_the_idle_pass_retires_one_pin_of_a_folder_and_keeps_the_sibling_hosted
+PASSED tests/rc_hosts_test.py::test_archived_line_is_dormant_and_cleaned_only_after_idle_limit
+PASSED tests/rc_hosts_test.py::test_an_edit_that_cannot_be_statd_back_comes_back_without_a_stamp
+PASSED tests/rc_hosts_test.py::test_edit_config_leaves_an_unresolvable_marker_alone_and_retires_the_rest
+PASSED tests/rc_hosts_test.py::test_the_shared_edge_starts_first_and_bridges_wait_for_it
+PASSED tests/rc_hosts_test.py::test_a_down_edge_is_probed_once_per_tick_not_once_per_folder
+PASSED tests/rc_hosts_test.py::test_permission_and_tier_changes_restart_the_hosts_that_carry_them[permission-changed-issue-339]
+PASSED tests/rc_hosts_test.py::test_permission_and_tier_changes_restart_the_hosts_that_carry_them[permission-removed-issue-339]
+PASSED tests/rc_hosts_test.py::test_permission_and_tier_changes_restart_the_hosts_that_carry_them[permission-added-issue-339]
+PASSED tests/rc_hosts_test.py::test_permission_and_tier_changes_restart_the_hosts_that_carry_them[permission-kept-issue-339]
+PASSED tests/rc_hosts_test.py::test_permission_and_tier_changes_restart_the_hosts_that_carry_them[tier-changed-issue-339]
+PASSED tests/rc_hosts_test.py::test_permission_and_tier_changes_restart_the_hosts_that_carry_them[tier-removed-issue-339]
+PASSED tests/rc_hosts_test.py::test_permission_and_tier_changes_restart_the_hosts_that_carry_them[tier-added-issue-339]
+PASSED tests/rc_hosts_test.py::test_permission_and_tier_changes_restart_the_hosts_that_carry_them[tier-kept-issue-339]
+PASSED tests/rc_hosts_test.py::test_permission_and_tier_changes_restart_the_hosts_that_carry_them[alias-no-launch-reads-issue-339]
+PASSED tests/rc_hosts_test.py::test_a_folder_with_a_live_host_is_not_duplicated
+PASSED tests/rc_hosts_test.py::test_a_host_running_as_a_profile_is_found_in_that_profiles_history
+PASSED tests/rc_hosts_test.py::test_a_host_that_released_its_environment_is_reported
+PASSED tests/rc_hosts_test.py::test_tier_alias_points_one_alias_at_the_route_model
+PASSED tests/rc_hosts_test.py::test_a_host_carries_its_tier_into_the_child_environment[absent]
+PASSED tests/rc_hosts_test.py::test_a_host_carries_its_tier_into_the_child_environment[parent-opus-issue-256]
+PASSED tests/rc_hosts_test.py::test_permission_mode_reaches_spawned_sessions
+PASSED tests/rc_hosts_test.py::test_settings_lines_are_not_read_as_folders
+PASSED tests/rc_hosts_test.py::test_a_folder_listed_for_hosting_is_made_a_repo_before_worktree_mode
+PASSED tests/rc_hosts_test.py::test_the_permission_flag_goes_after_the_separator
+PASSED tests/rc_hosts_test.py::test_a_worktree_host_keeps_a_debug_log
+PASSED tests/rc_hosts_test.py::test_a_retired_conversation_has_its_host_deleted
+PASSED tests/rc_hosts_test.py::test_retiring_a_pin_that_never_ran_deletes_no_host_row
+PASSED tests/rc_hosts_test.py::test_purging_keeps_a_session_whose_conversation_is_still_pinned
+PASSED tests/rc_hosts_test.py::test_days_settings_fall_back_to_the_documented_default_when_absent_or_malformed[idle_days-1.0]
+PASSED tests/rc_hosts_test.py::test_days_settings_fall_back_to_the_documented_default_when_absent_or_malformed[purge_days-7.0]
+PASSED tests/rc_hosts_test.py::test_a_live_edge_is_the_record_its_own_file_holds
+PASSED tests/rc_hosts_test.py::test_a_live_edge_from_a_previous_supervisor_is_reused[same-tiers]
+PASSED tests/rc_hosts_test.py::test_a_live_edge_from_a_previous_supervisor_is_reused[changed-tier-issue-356]
+PASSED tests/rc_hosts_test.py::test_a_live_edge_from_a_previous_supervisor_is_reused[record-without-tiers-issue-356]
+PASSED tests/rc_hosts_test.py::test_a_record_naming_a_pid_that_is_not_an_edge_is_left_alone
+PASSED tests/rc_hosts_test.py::test_an_edge_on_a_fresh_state_dir_makes_the_bridge_dir_and_starts
+PASSED tests/rc_hosts_test.py::test_only_this_routes_own_edge_process_is_signalled[this-routes-edge]
+PASSED tests/cli_model_selection_test.py::ModelSelection::test_a_200k_id_is_never_suffixed
+PASSED tests/rc_hosts_test.py::test_only_this_routes_own_edge_process_is_signalled[another-routes-edge]
+PASSED tests/rc_hosts_test.py::test_only_this_routes_own_edge_process_is_signalled[a-bridge-of-the-same-route]
+PASSED tests/rc_hosts_test.py::test_only_this_routes_own_edge_process_is_signalled[something-that-merely-mentions-it]
+PASSED tests/rc_hosts_test.py::test_a_created_edge_leaves_no_git_repo_in_the_state_dir
+PASSED tests/rc_hosts_test.py::test_every_processless_session_is_handed_back_and_retried_slowly
+PASSED tests/rc_hosts_test.py::test_an_idle_session_parks_and_wakes_only_on_input
+PASSED tests/rc_hosts_test.py::test_park_hours_zero_keeps_every_process
+PASSED tests/rc_hosts_test.py::test_no_hand_back_before_the_host_that_serves_it_is_up
+PASSED tests/rc_hosts_test.py::test_a_malformed_days_setting_falls_back_to_the_documented_default[idle-dot-issue-341]
+PASSED tests/rc_hosts_test.py::test_a_malformed_days_setting_falls_back_to_the_documented_default[idle-dots-issue-341]
+PASSED tests/rc_hosts_test.py::test_a_malformed_days_setting_falls_back_to_the_documented_default[purge-dot-issue-341]
+PASSED tests/rc_hosts_test.py::test_a_malformed_days_setting_falls_back_to_the_documented_default[purge-dots-issue-341]
+PASSED tests/rc_hosts_test.py::test_a_malformed_days_setting_falls_back_to_the_documented_default[valid-passes-through]
+PASSED tests/rc_hosts_test.py::test_an_unresolvable_folder_does_not_take_the_supervisor_down_past_the_idle_check
+PASSED tests/rc_hosts_test.py::test_a_config_flag_without_a_path_is_a_usage_error_not_a_crash
+PASSED tests/rc_hosts_test.py::test_an_archived_sessions_worktree_is_removed_after_the_limit_unless_it_holds_work
+PASSED tests/rc_hosts_test.py::test_a_lagging_host_head_does_not_keep_an_empty_archived_worktree
+PASSED tests/rc_hosts_test.py::test_a_file_named_head_does_not_make_the_work_check_ambiguous
+PASSED tests/rc_hosts_test.py::test_a_detached_head_commit_or_a_missing_branch_keeps_the_worktree
+PASSED tests/cli_model_selection_test.py::ModelSelection::test_a_launch_pick_is_session_only_and_the_screen_says_how_to_keep_it
+PASSED tests/rc_hosts_test.py::test_work_a_worktree_holds_but_head_does_not_survives_clean_and_purge
+PASSED tests/rc_hosts_test.py::test_a_record_with_no_usable_timestamp_is_skipped_not_fatal
+PASSED tests/rc_hosts_test.py::test_the_busy_state_write_survives_a_missing_state_dir
+PASSED tests/rc_hosts_test.py::test_a_session_cut_off_mid_turn_is_handed_back_once
+PASSED tests/rc_hosts_test.py::test_a_repo_host_restart_keeps_its_session_debug_logs
+PASSED tests/rc_hosts_test.py::test_a_repo_host_rotates_an_oversized_debug_log_at_start
+PASSED tests/rc_hosts_test.py::test_a_running_repo_host_log_is_truncated_in_place_past_the_cap
+PASSED tests/rc_hosts_test.py::test_a_pinned_host_does_not_rotate_its_debug_log_into_a_leftover
+PASSED tests/rc_hosts_test.py::test_purging_a_session_removes_its_debug_log
+PASSED tests/rc_hosts_test.py::test_purging_a_session_removes_its_rotated_debug_log
+PASSED tests/rc_hosts_test.py::test_purging_a_session_removes_its_bridge_transcript
+PASSED tests/rc_hosts_test.py::test_a_pinned_host_start_removes_its_stale_bridge_transcript
+PASSED tests/rc_hosts_test.py::test_a_failing_hand_back_is_retried_at_most_once_per_rewake_after
+PASSED tests/rc_hosts_test.py::test_one_session_gets_one_hand_back_per_cycle[busy]
+PASSED tests/rc_hosts_test.py::test_one_session_gets_one_hand_back_per_cycle[lost]
+PASSED tests/rc_hosts_test.py::test_a_failed_hand_back_is_not_retried_by_the_other_function[409]
+PASSED tests/rc_hosts_test.py::test_a_failed_hand_back_is_not_retried_by_the_other_function[503]
+PASSED tests/rc_hosts_test.py::test_a_new_turn_cut_off_soon_after_a_hand_back_is_requeued_once
+PASSED tests/rc_hosts_test.py::test_a_transient_hand_back_failure_gets_one_post_per_check
+PASSED tests/rc_hosts_test.py::test_a_failed_hand_back_is_not_recorded_as_requeued
+PASSED tests/rc_hosts_test.py::test_a_dns_outage_leaves_hosts_running_and_hands_back_once_it_ends
+PASSED tests/cli_model_selection_test.py::ModelSelection::test_a_non_claude_id_passes_through
+PASSED tests/rc_hosts_test.py::test_a_session_the_server_will_not_resume_is_not_asked_again[400]
+PASSED tests/rc_hosts_test.py::test_a_session_the_server_will_not_resume_is_not_asked_again[404]
+PASSED tests/rc_hosts_test.py::test_a_truncated_api_reply_does_not_stop_the_supervisor
+PASSED tests/rc_hosts_test.py::test_purge_days_is_a_setting_not_a_folder
+PASSED tests/cli_model_selection_test.py::ModelSelection::test_explicit_flag_beats_the_profile_default
+PASSED tests/rc_hosts_test.py::test_every_shipped_python_helper_uses_nothing_newer_than_the_python_38_floor
+PASSED tests/rc_hosts_test.py::test_main_loop_cycle_hands_back_once_per_rewake_after_on_a_503
+PASSED tests/rc_hosts_test.py::test_main_loop_cycle_caps_an_oversized_running_log
+PASSED tests/rc_hosts_test.py::test_a_lost_login_counts_only_when_this_run_of_the_host_wrote_it[host-log-no-access-token]
+PASSED tests/rc_hosts_test.py::test_a_lost_login_counts_only_when_this_run_of_the_host_wrote_it[host-debug-resolve-auth]
+PASSED tests/cli_model_selection_test.py::ModelSelection::test_launch_writes_the_window_and_default_for_the_session_to_switch_within
+PASSED tests/rc_hosts_test.py::test_a_lost_login_counts_only_when_this_run_of_the_host_wrote_it[session-bootstrap]
+PASSED tests/rc_hosts_test.py::test_a_failure_line_is_detected_however_much_output_follows_it[host-log]
+PASSED tests/rc_hosts_test.py::test_a_failure_line_is_detected_however_much_output_follows_it[host-debug]
+PASSED tests/rc_hosts_test.py::test_a_failure_line_is_detected_however_much_output_follows_it[session-log]
+PASSED tests/rc_hosts_test.py::test_a_failure_line_the_writer_had_not_finished_is_still_detected
+PASSED tests/rc_hosts_test.py::test_a_rejected_route_key_is_not_a_lost_account_login[stop-failure]
+PASSED tests/rc_hosts_test.py::test_a_rejected_route_key_is_not_a_lost_account_login[route-401]
+PASSED tests/rc_hosts_test.py::test_a_debug_log_truncated_after_start_is_read_from_its_start
+PASSED tests/rc_hosts_test.py::test_a_capped_log_regrown_past_its_old_position_is_read_from_its_head_issue_417
+PASSED tests/rc_hosts_test.py::test_a_host_that_lost_its_login_is_restarted_and_its_sessions_keep_their_ids
+PASSED tests/rc_hosts_test.py::test_a_lost_login_does_not_restart_a_host_while_the_account_login_is_unreadable
+PASSED tests/rc_hosts_test.py::test_a_host_that_loses_its_login_again_is_restarted_at_most_once_per_window[a-new-line-arrives]
+PASSED tests/rc_hosts_test.py::test_a_host_that_loses_its_login_again_is_restarted_at_most_once_per_window[only-the-line-inside-the-window]
+PASSED tests/rc_hosts_test.py::test_a_host_that_loses_its_login_after_a_cap_truncation_is_restarted_issue_417
+PASSED tests/rc_hosts_test.py::test_the_account_login_is_refreshed_before_it_expires
+PASSED tests/rc_hosts_test.py::test_signed_out_login_does_not_refresh_and_reports_once_per_episode
+PASSED tests/rc_hosts_test.py::test_a_refresh_turn_that_never_exits_is_killed_and_replaced
+PASSED tests/rc_hosts_test.py::test_a_host_an_earlier_supervisor_left_running_is_restarted_when_it_lost_its_login
+PASSED tests/cli_model_selection_test.py::ModelSelection::test_model_dash_i_without_a_terminal_falls_back_to_the_default
+PASSED tests/rc_hosts_test.py::test_an_orphan_that_ignores_sigint_is_escalated_and_only_a_confirmed_stop_is_a_restart[ignores-sigint-issue-297]
+PASSED tests/rc_hosts_test.py::test_an_orphan_that_ignores_sigint_is_escalated_and_only_a_confirmed_stop_is_a_restart[outlives-sigkill-issue-297]
+PASSED tests/rc_hosts_test.py::test_a_ps_that_cannot_show_the_live_orphan_does_not_record_a_stop[ps-failed-issue-297]
+PASSED tests/rc_hosts_test.py::test_a_ps_that_cannot_show_the_live_orphan_does_not_record_a_stop[ps-blind-issue-297]
+PASSED tests/rc_hosts_test.py::test_a_pid_reused_after_the_interrupt_is_never_signalled_issue_297
+PASSED tests/rc_hosts_test.py::test_a_folder_with_no_host_at_all_is_not_checked_for_its_login
+PASSED tests/rc_hosts_test.py::test_a_kept_worktree_is_reported_once_per_run
+PASSED tests/rc_hosts_test.py::test_inference_names_any_profile_and_defaults_to_route
+PASSED tests/rc_install_test.py::test_supervisor_plist_is_interactive_and_kept_alive
+PASSED tests/rc_install_test.py::test_every_example_writes_the_profile_where_a_profile_goes
+PASSED tests/rc_install_test.py::test_the_page_opens_with_requirements_and_reach_before_the_first_command
+PASSED tests/cli_model_selection_test.py::ModelSelection::test_model_flag_equals_form_reaches_claude_verbatim
+PASSED tests/readme_install_test.py::ReadmeInstallTest::test_a_ccusage_command_is_reported_though_the_requirements_name_it
+PASSED tests/cli_model_selection_test.py::ModelSelection::test_model_flag_needs_a_value
+PASSED tests/cli_model_selection_test.py::ModelSelection::test_model_flag_space_form_reaches_claude_verbatim
+PASSED tests/cli_model_selection_test.py::ModelSelection::test_one_m_suffix_goes_on_the_default
+PASSED tests/readme_install_test.py::ReadmeInstallTest::test_every_command_the_readme_names_is_found_by_a_fresh_install
+PASSED tests/readme_install_test.py::ReadmeInstallTest::test_the_check_rejects_what_a_fresh_install_lacks
+PASSED tests/readme_install_test.py::ReadmeInstallTest::test_the_readme_and_help_config_name_the_profile_template_issue_392
+PASSED tests/cli_model_selection_test.py::ModelSelection::test_one_m_suffix_never_on_an_explicit_flag
+PASSED tests/refresh_probe_test.py::MetadataCompatibility::test_real_route_subprocess_is_killed_on_deadline
+PASSED tests/cli_model_selection_test.py::ModelSelection::test_profile_default_reaches_claude_without_a_flag
+PASSED tests/cli_model_selection_test.py::ModelSelection::test_resolved_window_for_each_source
+PASSED tests/refresh_probe_test.py::DiscoveryHTTP::test_ctrl_c_mid_run_retires_the_provider_bridge
+PASSED tests/cli_model_selection_test.py::ModelSelection::test_set_model_persists_and_run_uses_it_without_a_flag
+PASSED tests/refresh_probe_test.py::DiscoveryHTTP::test_issue_259_route_deadline_can_expire_before_any_get
+PASSED tests/refresh_probe_test.py::DiscoveryHTTP::test_real_cli_gets_metadata_without_post_and_persists_it
+PASSED tests/repo_layout_test.py::test_root_holds_exactly_the_launch_surface_issue_21
+PASSED tests/repo_layout_test.py::test_the_pytest_dependencies_travel_with_the_repo
+PASSED tests/repo_layout_test.py::test_claude_project_memory_include_resolves_issue_21
+PASSED tests/repo_layout_test.py::test_libexec_tracks_no_build_output
+PASSED tests/session_end_hook_test.py::test_the_hook_records_attended_profile_sessions[1-/profiles/work-sid-285]
+PASSED tests/session_end_hook_test.py::test_the_hook_records_attended_profile_sessions[0-/profiles/work-None]
+PASSED tests/session_end_hook_test.py::test_the_hook_records_attended_profile_sessions[1--None]
+PASSED tests/session_end_hook_test.py::test_the_hook_keeps_claude_codes_input_beside_the_record[1]
+PASSED tests/session_end_hook_test.py::test_the_hook_keeps_claude_codes_input_beside_the_record[0]
+PASSED tests/settings_compose_test.py::test_first_run_turns_the_old_settings_into_the_layer
+PASSED tests/settings_compose_test.py::test_fold_makes_pending_edits_visible_before_the_next_projection
+PASSED tests/shared_recovery_test.py::test_sharable_content_collision_is_merged_into_the_shared_store[agents]
+PASSED tests/shared_recovery_test.py::test_sharable_content_collision_is_merged_into_the_shared_store[session-env]
+PASSED tests/shared_recovery_test.py::test_sharable_content_collision_is_merged_into_the_shared_store[file-history]
+PASSED tests/shared_recovery_test.py::test_managed_content_collision_is_preserved[skills]
+PASSED tests/shared_recovery_test.py::test_managed_content_collision_is_preserved[plugins]
+PASSED tests/shared_recovery_test.py::test_managed_content_collision_is_preserved[hooks]
+PASSED tests/shared_recovery_test.py::test_managed_content_collision_is_preserved[commands]
+PASSED tests/shared_recovery_test.py::test_managed_content_collision_is_preserved[output-styles]
+PASSED tests/shared_recovery_test.py::test_history_migration_keeps_collisions_in_backup[session-env]
+PASSED tests/shared_recovery_test.py::test_history_migration_keeps_collisions_in_backup[file-history]
+PASSED tests/shared_recovery_test.py::test_a_profile_with_its_own_agents_directory_launches
+PASSED tests/shared_recovery_test.py::test_env_output_stays_clean_while_relative_agent_links_migrate
+PASSED tests/shared_recovery_test.py::test_relative_agent_link_outside_the_tree_becomes_absolute_physical
+PASSED tests/shared_recovery_test.py::test_relative_agent_link_inside_the_tree_points_into_the_shared_store
+PASSED tests/shared_recovery_test.py::test_relative_link_through_a_symlinked_dir_follows_the_kernel_not_dotdot_text
+PASSED tests/shared_recovery_test.py::test_relative_link_through_a_dir_link_keeps_its_literal_dir_name[plain]
+PASSED tests/shared_recovery_test.py::test_relative_link_through_a_dir_link_keeps_its_literal_dir_name[trailing-newline]
+PASSED tests/shared_recovery_test.py::test_absolute_agent_links_and_dir_links_move_as_links_without_overwriting
+PASSED tests/shared_recovery_test.py::test_failed_link_creation_keeps_the_backup_entry
+PASSED tests/shared_recovery_test.py::test_architecture_lists_agents_as_merged_and_links_moving_as_links
+PASSED tests/cli_model_selection_test.py::ModelSelection::test_the_keep_command_quotes_an_id_the_shell_would_glob
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_a_test_env_hides_the_hosts_fzf_and_bridge
+PASSED tests/shell_snapshot_test.py::test_public_function_survives_without_private_helpers[--help]
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_add_apikey_lists_anthropic_first_and_asks_only_for_the_key
+PASSED tests/shell_snapshot_test.py::test_public_function_survives_without_private_helpers[hop demo]
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_add_command_entrypoint_styles_descriptions
+PASSED tests/shell_snapshot_test.py::test_public_function_survives_without_private_helpers[hop missing]
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_add_finishes_without_optional_setup_questions
+PASSED tests/shell_snapshot_test.py::test_the_slash_command_answers_on_stdout_gh_257[missing-no profile 'missing'. Profiles: demo]
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_add_more_signins_row_ends_on_a_whole_word_at_80_columns_gh_369
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_add_uses_native_fixed_menu_even_when_fzf_is_installed
+PASSED tests/shell_snapshot_test.py::test_the_slash_command_answers_on_stdout_gh_257[-Name a profile to hop to: demo]
+PASSED tests/shell_snapshot_test.py::test_sourced_function_restores_options_without_changing_callers
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_add_without_brew_answers_with_the_project_page_gh_369
+PASSED tests/shell_snapshot_test.py::test_state_path_ignores_user_utility_functions_and_aliases
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_add_without_cliproxyapi_names_the_browser_logins_and_the_install_step
+PASSED tests/temp_hygiene_test.py::test_the_demo_sandbox_home_dies_with_the_shell[natural-end-issue-196]
+PASSED tests/temp_hygiene_test.py::test_the_demo_sandbox_home_dies_with_the_shell[term-killed-issue-196]
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_answered_input_folds_to_one_summary_line_issue_361
+PASSED tests/temp_hygiene_test.py::test_a_suite_run_removes_the_temp_state_it_makes[adapter-home-issue-196]
+PASSED tests/temp_hygiene_test.py::test_a_suite_run_removes_the_temp_state_it_makes[gateway-edge-state-issue-196]
+PASSED tests/under_a_terminal_test.py::test_a_busy_machine_does_not_spend_the_deadline[busy-throughout-issue-365]
+PASSED tests/under_a_terminal_test.py::test_a_busy_machine_does_not_spend_the_deadline[busy-after-20s-issue-365]
+PASSED tests/under_a_terminal_test.py::test_a_hung_child_on_an_idle_machine_is_still_stopped
+PASSED tests/under_a_terminal_test.py::test_the_load_reading_is_runnable_processes_per_core[idle-machine-issue-365]
+PASSED tests/under_a_terminal_test.py::test_the_load_reading_is_runnable_processes_per_core[one-runnable-per-core-issue-365]
+PASSED tests/under_a_terminal_test.py::test_the_load_reading_is_runnable_processes_per_core[a-loaded-fleet-issue-365]
+PASSED tests/under_a_terminal_test.py::test_the_load_reading_is_runnable_processes_per_core[a-host-that-cannot-count-cores-issue-365]
+PASSED tests/under_a_terminal_test.py::test_an_unreadable_load_keeps_the_strict_deadline
+PASSED tests/under_a_terminal_test.py::test_the_launcher_suite_has_one_pty_runner
+PASSED tests/usage_export_test.py::test_a_receipt_with_a_damaged_cost_is_counted_not_fatal[float-overflowing-cost-issue-368]
+PASSED tests/usage_export_test.py::test_a_receipt_with_a_damaged_cost_is_counted_not_fatal[over-limit-gateway-cost-issue-413]
+PASSED tests/usage_export_test.py::test_a_receipt_with_a_damaged_cost_is_counted_not_fatal[float-overflowing-estimate-issue-68]
+PASSED tests/usage_export_test.py::test_a_receipt_with_a_damaged_cost_is_counted_not_fatal[over-limit-estimate-issue-68]
+PASSED tests/usage_export_test.py::test_a_receipt_with_a_damaged_cost_is_counted_not_fatal[non-numeric-cost-issue-68]
+PASSED tests/usage_export_test.py::test_a_receipt_with_a_damaged_cost_is_counted_not_fatal[non-numeric-estimate-issue-68]
+PASSED tests/usage_export_test.py::test_a_receipt_with_a_damaged_cost_is_counted_not_fatal[negative-cost-issue-68]
+PASSED tests/usage_export_test.py::test_a_receipt_with_a_damaged_cost_is_counted_not_fatal[negative-estimate-issue-68]
+PASSED tests/usage_export_test.py::test_two_over_limit_costs_total_a_finite_number_not_infinity
+PASSED tests/usage_export_test.py::test_the_exporter_refuses_exactly_the_costs_the_shim_refuses
+PASSED tests/usage_export_test.py::test_a_billed_and_an_estimated_cost_are_told_apart
+PASSED tests/usage_export_test.py::test_unpriced_model_with_a_gateway_cost_still_exports
+PASSED tests/usage_export_test.py::test_export_deduplicates_turns_not_timestamps[distinct-turns-issue-311]
+PASSED tests/usage_export_test.py::test_export_deduplicates_turns_not_timestamps[duplicate-turn]
+PASSED tests/usage_export_test.py::test_export_deduplicates_turns_not_timestamps[legacy-duplicate]
+PASSED tests/usage_export_test.py::test_a_malformed_receipt_still_fails_the_export[full-issue-246-schema]
+PASSED tests/usage_export_test.py::test_a_malformed_receipt_still_fails_the_export[full-issue-246-huge-token-count-issue-368]
+PASSED tests/usage_export_test.py::test_a_malformed_receipt_still_fails_the_export[since-midnight-issue-246-schema]
+PASSED tests/usage_export_test.py::test_a_malformed_receipt_still_fails_the_export[since-midnight-issue-246-huge-token-count-issue-368]
+PASSED tests/usage_export_test.py::test_a_rerun_drops_days_whose_last_usable_receipt_is_gone[receipt-removed-issue-246]
+PASSED tests/usage_export_test.py::test_a_rerun_drops_days_whose_last_usable_receipt_is_gone[receipt-unpriced-issue-246]
+PASSED tests/usage_export_test.py::test_a_rerun_drops_days_whose_last_usable_receipt_is_gone[receipt-incomplete-issue-246]
+PASSED tests/usage_export_test.py::test_another_run_touching_a_stale_day_is_never_undone[rewritten-issue-246]
+PASSED tests/usage_export_test.py::test_another_run_touching_a_stale_day_is_never_undone[removed-issue-246]
+PASSED tests/usage_export_test.py::test_a_listed_receipt_the_move_took_mid_read_is_skipped_issue_583
+PASSED tests/usage_export_test.py::test_a_day_folder_receipt_gone_between_listing_and_read_is_skipped_issue_583
+PASSED tests/usage_export_test.py::test_a_receipt_still_there_but_unreadable_still_fails_the_export_issue_583
+PASSED tests/usage_export_test.py::test_a_since_rerun_reconciles_only_its_range
+PASSED tests/usage_export_test.py::test_since_exports_an_in_range_receipt_with_an_old_file_mtime
+PASSED tests/usage_export_test.py::test_since_filters_by_local_day[historical-boundaries-issue-248]
+PASSED tests/usage_export_test.py::test_since_filters_by_local_day[since-midnight-issue-248]
+PASSED tests/usage_export_test.py::test_a_mapped_receipt_is_grouped_by_the_served_model
+PASSED tests/usage_export_test.py::test_a_doubled_marker_is_stripped_only_once
+PASSED tests/usage_export_test.py::test_a_mapped_gateway_cost_stays_authoritative
+PASSED tests/usage_export_test.py::test_a_served_marker_is_stripped_once_for_grouping_and_kept_in_metadata
+PASSED tests/usage_export_test.py::test_an_unmapped_1m_row_keeps_its_response_identity
+PASSED tests/usage_export_test.py::test_an_unmapped_row_keeps_the_response_identity_when_it_differs_from_served
+PASSED tests/usage_export_test.py::test_a_non_claude_row_asked_for_and_served_the_same_keeps_the_response_identity
+PASSED tests/usage_export_test.py::test_a_served_id_without_a_requested_id_is_not_treated_as_a_map
+PASSED tests/usage_export_test.py::test_a_legacy_row_without_served_model_exports_unchanged
+PASSED tests/usage_export_test.py::test_receipts_of_two_profiles_land_in_two_profile_folders
+PASSED tests/usage_export_test.py::test_a_rerun_reconciles_an_export_from_before_the_profile_named_folders
+PASSED tests/usage_export_test.py::test_a_folder_the_exporter_does_not_own_is_never_taken_over
+PASSED tests/usage_export_test.py::test_a_profile_that_is_not_a_name_fails_the_export_cleanly
+PASSED tests/usage_export_test.py::test_an_empty_range_still_gives_ccusage_a_projects_dir
+PASSED tests/usage_export_test.py::test_the_exported_timestamp_is_utc_with_milliseconds_and_z
+PASSED tests/usage_export_test.py::test_the_python_floor_scan_covers_the_exporter
+PASSED tests/usage_export_test.py::test_the_checkout_launcher_runs_the_shipped_exporter[direct-issue-261]
+PASSED tests/usage_export_test.py::test_the_checkout_launcher_runs_the_shipped_exporter[through-a-symlink-issue-416]
+PASSED tests/usage_export_test.py::test_a_fresh_install_exports_zeroes_before_the_first_session_issue_647[default-state-home-issue-647]
+PASSED tests/usage_export_test.py::test_a_fresh_install_exports_zeroes_before_the_first_session_issue_647[xdg-state-home-issue-647]
+PASSED tests/usage_export_test.py::test_an_archive_missing_a_piece_names_the_file_not_an_errno_issue_647[archive-data-missing-issue-647]
+PASSED tests/usage_export_test.py::test_an_archive_missing_a_piece_names_the_file_not_an_errno_issue_647[archive-index-missing-issue-647]
+PASSED tests/usage_export_test.py::test_an_os_error_reaching_the_command_is_told_without_an_errno_issue_647[missing-issue-647]
+PASSED tests/usage_export_test.py::test_an_os_error_reaching_the_command_is_told_without_an_errno_issue_647[unreadable-issue-647]
+PASSED tests/usage_export_test.py::test_a_blocked_destination_is_named_not_the_temporary_file_issue_647
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_automatic_picker_preserves_explicit_saved_and_headless_choices
+PASSED tests/usage_export_test.py::test_the_summary_names_where_the_files_went_and_the_command_to_run_next_issue_382
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_cancelled_pickers_answer_with_one_line_and_status_one_issue_280
+PASSED tests/usage_export_test.py::test_the_printed_command_runs_as_printed_for_a_folder_with_spaces_issue_382
+PASSED tests/usage_export_test.py::test_help_prints_the_ccusage_command_that_reads_the_export
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_cancelling_configure_saves_nothing
+PASSED tests/usage_export_test.py::test_help_shows_the_source_default_as_a_real_path_issue_731[default-state-home-issue-731]
+PASSED tests/usage_export_test.py::test_help_shows_the_source_default_as_a_real_path_issue_731[xdg-state-home-issue-731]
+PASSED tests/usage_export_test.py::test_a_date_in_the_wrong_format_names_the_format_and_an_example_issue_382[2026-11-10]
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_cancelling_unfinished_edits_preserves_defaults_and_connection
+PASSED tests/usage_export_test.py::test_a_date_in_the_wrong_format_names_the_format_and_an_example_issue_382[2026111]
+PASSED tests/usage_export_test.py::test_a_date_in_the_wrong_format_names_the_format_and_an_example_issue_382[]
+PASSED tests/usage_hook_test.py::test_one_turn_writes_one_row_with_profile_model_tokens_and_cost[sub-type=sub\nemail=me@example.invalid\n-anthropic]
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_claude_palette_is_shared_by_native_and_search
+PASSED tests/usage_hook_test.py::test_one_turn_writes_one_row_with_profile_model_tokens_and_cost[token-type=token\ntoken=oauth-token-xyz\n-anthropic]
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_cold_launch_selects_a_model_before_starting_the_adapter
+PASSED tests/usage_hook_test.py::test_one_turn_writes_one_row_with_profile_model_tokens_and_cost[codex-type=provider\nprovider=codex\n-any]
+PASSED tests/usage_hook_test.py::test_a_split_response_is_counted_once
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_command_entrypoint_accepts_real_arrow_and_enter_without_extra_questions
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_command_entrypoint_configures_only_the_selected_task
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_config_names_a_rejected_key_before_the_fallback_picker
+PASSED tests/usage_hook_test.py::test_a_remote_control_host_on_a_sub_profile_with_no_route_writes_one_row
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_configure_picker_offers_endpoint_models_and_saves_the_pick
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_confirmation_uses_native_menu_with_safe_default
+PASSED tests/usage_hook_test.py::test_the_session_keeps_its_own_network_path
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_connection_edit_skips_models_and_next_picker_uses_new_connection
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_current_value_is_not_offered_twice
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_default_picker_hides_internal_action_values
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_headless_picker_answer_stays_clean_when_local_sh_prints
+PASSED tests/usage_hook_test.py::test_a_provider_session_still_reaches_its_bridge
+PASSED tests/usage_hook_test.py::test_an_ambient_proxy_reaches_the_session_unchanged
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_installed_connection_input_cancel_preserves_profile
+PASSED tests/usage_hook_test.py::test_no_hook_and_no_row_for_an_apikey_or_direct_launch
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_installed_resume_status_uses_brand_not_green
+PASSED tests/usage_hook_test.py::test_a_later_direct_launch_removes_the_hook_it_found
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_labeled_menu_and_help_remain_plain_when_color_is_disabled
+PASSED tests/usage_hook_test.py::test_a_launch_repoints_a_stale_cellar_hook_onto_the_stable_path
+PASSED tests/usage_report_test.py::ReportTest::test_accepted_task_cost_includes_earlier_usage
+PASSED tests/usage_report_test.py::ReportTest::test_atomic_writer_temporary_is_not_a_second_response
+PASSED tests/usage_report_test.py::ReportTest::test_days_widens_window
+PASSED tests/usage_report_test.py::ReportTest::test_empty_state
+PASSED tests/usage_report_test.py::ReportTest::test_estimated_cost_is_named_apart_from_billed_spend
+PASSED tests/usage_report_test.py::ReportTest::test_huge_costs_are_unknown_not_fatal
+PASSED tests/usage_report_test.py::ReportTest::test_incomplete_producer_receipt_keeps_spend_but_not_complete_task_cost
+PASSED tests/usage_report_test.py::ReportTest::test_invalid_billed_costs_are_unknown_not_spend
+PASSED tests/usage_report_test.py::ReportTest::test_invalid_days_are_bounded_cli_errors
+PASSED tests/usage_report_test.py::ReportTest::test_invalid_utf8_outcome_line_does_not_hide_valid_verdicts
+PASSED tests/usage_report_test.py::ReportTest::test_last_valid_outcome_wins_and_invalid_rows_are_ignored
+PASSED tests/usage_report_test.py::ReportTest::test_malformed_outcome_does_not_create_empty_history
+PASSED tests/usage_report_test.py::ReportTest::test_missing_served_identity_is_not_invented_from_request
+PASSED tests/usage_report_test.py::ReportTest::test_model_label_cannot_forge_report_lines
+PASSED tests/usage_report_test.py::ReportTest::test_non_object_usage_is_ignored
+PASSED tests/usage_report_test.py::ReportTest::test_outcome_window_selects_new_verdicts_not_new_usage
+PASSED tests/usage_report_test.py::ReportTest::test_outcome_without_usage_has_unknown_cost
+PASSED tests/usage_report_test.py::ReportTest::test_report
+PASSED tests/usage_report_test.py::ReportTest::test_retry_or_parked_task_is_not_first_pass
+PASSED tests/usage_report_test.py::ReportTest::test_running_total_overflow_is_unknown_not_inf
+PASSED tests/usage_report_test.py::ReportTest::test_same_timestamp_turns_keep_summed_usage_issue_311
+PASSED tests/usage_report_test.py::ReportTest::test_scheduled_daily_report_publishes_only_aggregates_issue_268
+PASSED tests/usage_report_test.py::ReportTest::test_unknown_accepted_cost_is_not_zero_or_a_known_subtotal
+PASSED tests/usage_shard_export_test.py::test_receipts_sharded_by_day_folders_are_read_and_old_folders_skipped
+PASSED tests/usage_shard_export_test.py::test_a_ranged_export_opens_no_folder_before_its_first_utc_day
+PASSED tests/usage_shard_export_test.py::test_mixed_archive_and_live_rows_keep_export_totals
+PASSED tests/usage_shard_export_test.py::test_late_live_row_replaces_only_its_archived_identity[a-0-expected0]
+PASSED tests/usage_shard_export_test.py::test_late_live_row_replaces_only_its_archived_identity[b-0-expected1]
+PASSED tests/usage_shard_export_test.py::test_late_live_row_replaces_only_its_archived_identity[a-4102444800000000000-expected2]
+PASSED tests/usage_shard_export_test.py::test_missing_and_empty_legacy_turn_select_newest_receipt
+PASSED tests/usage_shard_export_test.py::test_interrupted_index_publication_keeps_prior_archive_readable
+PASSED tests/usage_shard_export_test.py::test_invalid_archive_preserves_existing_export[hash]
+PASSED tests/usage_shard_export_test.py::test_invalid_archive_preserves_existing_export[missing-jsonl]
+PASSED tests/usage_shard_report_test.py::ShardReportTest::test_a_held_move_lock_leaves_the_store_to_its_holder
+PASSED tests/usage_shard_report_test.py::ShardReportTest::test_totals_survive_the_move_into_day_folders
+PASSED tests/context_probe_cli_test.py::test_listing_stdin_sizes_only_what_the_listing_declares
+PASSED tests/context_probe_cli_test.py::test_listing_stdin_remembers_a_miss_and_asks_the_gateway_only_once
+PASSED tests/context_probe_cli_test.py::test_listing_stdin_garbage_is_ignored
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_launch_picker_opens_on_the_saved_model_issue_377
+PASSED tests/context_probe_cli_test.py::test_a_cross_origin_redirect_never_carries_the_key
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_launch_picker_without_a_saved_model_says_so_issue_377
+PASSED tests/context_probe_cli_test.py::test_the_ambient_proxy_is_used_not_blanked
+PASSED tests/context_probe_cli_test.py::test_a_route_that_fails_is_a_note_not_a_crash
+PASSED tests/context_probe_cli_test.py::test_a_route_without_a_key_is_skipped
+PASSED tests/context_probe_cli_test.py::test_every_routed_profile_is_swept_when_none_is_named
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_local_sh_output_and_side_effects_stay_out_of_pickers
+PASSED tests/context_probe_cli_test.py::test_nothing_to_probe_is_not_a_failure_gh_269[no-profiles]
+PASSED tests/context_probe_cli_test.py::test_nothing_to_probe_is_not_a_failure_gh_269[subscription-only]
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_models_names_a_rejected_key_and_keeps_the_network_for_silence
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_native_fixed_keys_restore_terminal_and_never_spawn_fzf
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_native_fixed_menu_in_a_tiny_terminal_still_says_the_list_is_cut
+PASSED tests/credential_argv_test.py::CredentialArgv::test_key_never_on_a_command_line
+PASSED tests/credential_log_mode_test.py::LogMode::test_diagnostic_log_is_created_private
+PASSED tests/credential_log_mode_test.py::LogMode::test_existing_loose_log_is_tightened
+PASSED tests/credential_log_mode_test.py::LogMode::test_symlinked_log_is_not_chmodded_through
+PASSED tests/credential_rc_trust_test.py::RemoteControlTrustSeed::test_remote_control_trust_seed_keeps_claude_json_private
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_native_fixed_menu_preserves_no_color_and_aligns_descriptions
+PASSED tests/credential_redirect_test.py::CredentialRedirect::test_shim_refuses_cross_origin_redirect_with_key
+PASSED tests/credential_url_redact_test.py::UrlRedaction::test_unreachable_endpoint_error_hides_url_userinfo_and_query
+PASSED tests/docs_anchor_test.py::test_architecture_anchors_resolve
+PASSED tests/docs_anchor_test.py::test_architecture_cites_code_the_reader_can_land_on_issue_396
+PASSED tests/docs_anchor_test.py::test_repo_markdown_links_resolve_issue_21
+PASSED tests/docs_claims_test.py::test_unreleased_has_at_most_one_changed_heading
+PASSED tests/docs_claims_test.py::test_unreleased_offers_the_formula_only_where_it_is_removed
+PASSED tests/docs_claims_test.py::test_unreleased_never_names_the_retired_role_feature
+PASSED tests/docs_claims_test.py::test_guide_states_the_model_fallback_and_where_a_token_comes_from
+PASSED tests/docs_claims_test.py::test_architecture_names_only_scripts_that_exist_issue_69
+PASSED tests/docs_claims_test.py::test_security_tells_one_credential_storage_story_issue_262
+PASSED tests/docs_claims_test.py::test_docs_name_the_provider_type_and_its_dependency_issue_283
+PASSED tests/docs_claims_test.py::test_docs_name_the_setting_effort_alone_issue_367
+PASSED tests/docs_claims_test.py::test_the_full_set_is_one_parallel_command
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_native_fixed_menu_scrolls_in_a_small_terminal
+PASSED tests/docs_claims_test.py::test_docs_teach_the_uv_pytest_command_issue_609
+PASSED tests/docs_claims_test.py::test_docs_name_both_state_roots_issue_731
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_native_menu_fits_every_line_to_a_narrow_terminal
+PASSED tests/doctor_test.py::test_doctor_auth_redaction_and_no_mutation
+PASSED tests/doctor_test.py::test_doctor_reports_a_refused_api_key
+PASSED tests/doctor_test.py::test_doctor_rejects_malformed_listing
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_native_sigterm_mid_sequence_ends_the_menu
+PASSED tests/doctor_test.py::test_doctor_never_echoes_userinfo_of_an_invalid_endpoint[ https://user:secret@gw.example/v1]
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_numbered_add_folds_each_answered_step_to_one_line_issue_361
+PASSED tests/doctor_test.py::test_doctor_never_echoes_userinfo_of_an_invalid_endpoint[user:secret@gw.example/v1]
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_numbered_fallback_cuts_the_list_on_a_dumb_terminal_issue_387
+PASSED tests/doctor_test.py::test_doctor_never_echoes_userinfo_of_an_invalid_endpoint[https:user:secret@gw.example/v1]
+PASSED tests/doctor_test.py::test_doctor_names_the_history_a_private_profile_deletes_gh_292[private]
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_numbered_fallback_fits_the_screen_and_names_the_fzf_step_issue_387
+PASSED tests/doctor_test.py::test_doctor_names_the_history_a_private_profile_deletes_gh_292[keeps-history]
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_numbered_fallback_keeps_the_screen_across_a_retry_issue_387
+PASSED tests/doctor_test.py::test_doctor_names_where_the_credential_is_stored_issue_262[plain-in-the-conf]
+PASSED tests/doctor_test.py::test_doctor_names_where_the_credential_is_stored_issue_262[keychain-reference]
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_numbered_fallback_keeps_the_screen_across_retries_on_a_dumb_terminal_issue_387
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_numbered_fallback_narrows_a_typed_part_issue_387
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_numbered_fallback_reprompts_until_the_choice_is_valid
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_numbered_fallback_takes_a_typed_id_or_part_issue_387
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_picker_profiles_match_the_commands_capabilities
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_plain_terminal_output_and_explicit_cancel
+PASSED tests/doctor_test.py::test_doctor_reports_the_profile_default_model_whatever_its_origin
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_provider_labels_are_cased_without_changing_selected_ids
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_pty_cleanup_still_kills_a_child_that_did_not_exit_issue_430
+PASSED tests/doctor_test.py::test_doctor_fails_while_the_saved_model_is_not_served_issue_267
+PASSED tests/doctor_test.py::test_doctor_fails_when_the_gateway_serves_no_chat_model_issue_267[empty-catalogue]
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_pty_cleanup_survives_a_refused_kill_without_macos_issue_430
+PASSED tests/doctor_test.py::test_doctor_fails_when_the_gateway_serves_no_chat_model_issue_267[only-chat-denied]
+PASSED tests/doctor_test.py::test_doctor_stays_ready_when_the_saved_model_is_served
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_pty_preserves_output_when_reader_starts_after_child
+PASSED tests/doctor_test.py::test_doctor_says_no_message_was_sent_issue_375
+PASSED tests/doctor_test.py::test_doctor_does_not_call_a_listless_gateway_unreachable_issue_357
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_rm_confirms_before_destroying_a_profile_in_a_terminal_issue_652
+PASSED tests/doctor_test.py::test_doctor_stays_ready_when_a_listless_gateway_has_a_saved_model_issue_357
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_rm_leftover_confirmation_answers_a_leave_with_one_line_issue_280
+PASSED tests/doctor_test.py::test_doctor_rejects_invalid_profile_settings_json
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_rm_leftover_confirmation_without_a_terminal_still_says_nothing_was_removed
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_rm_removes_the_profile_after_yes_in_a_terminal_issue_652
+PASSED tests/doctor_test.py::test_doctor_reports_existing_adapter_without_starting_it[translator-route-prompt]
+PASSED tests/doctor_test.py::test_doctor_reports_existing_adapter_without_starting_it[translator-route-ps-over-deadline-issue-467]
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_set_confirms_once_in_a_terminal_and_pipes_the_value_alone_issue_358
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_set_dash_i_chains_profile_then_value_without_losing_the_slot
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_set_model_picker_opens_the_config_model_step_issue_279
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_set_without_slot_picks_slot_then_value
+PASSED tests/doctor_test.py::test_doctor_reports_existing_adapter_without_starting_it[translator-route-lsof-over-deadline-issue-467]
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_shared_input_escape_cancels_text_and_secret
+PASSED tests/doctor_test.py::test_doctor_reports_existing_adapter_without_starting_it[native-route-prompt]
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_shared_input_fits_its_heading_under_a_callers_ksh_arrays
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_shared_input_preserves_entry_and_editing
+PASSED tests/doctor_test.py::test_doctor_reports_existing_adapter_without_starting_it[native-route-ps-over-deadline-issue-467]
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_standalone_confirmation_defaults_to_no_and_cancels
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_standalone_helpers_survive_caller_state
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_standalone_ui_contract_and_unicode_alignment
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_subscription_model_picker_uses_fzf
+PASSED tests/doctor_test.py::test_doctor_reports_existing_adapter_without_starting_it[native-route-lsof-over-deadline-issue-467]
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_ui_rejects_control_characters_in_ids
+PASSED tests/doctor_test.py::test_doctor_reports_existing_adapter_without_starting_it[hooks-build-prompt]
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_unavailable_catalogue_still_allows_keep_or_custom
+PASSED tests/doctor_test.py::test_doctor_reports_existing_adapter_without_starting_it[hooks-build-ps-over-deadline-issue-467]
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_unexported_prelaunch_in_local_sh_runs_the_hook
+PASSED tests/cli_picker_test.py::PickerTTYTest::test_value_rows_follow_the_profile_type
+PASSED tests/completion_test.py::test_tab_after_ccmorph_offers_every_command_help_all_lists
+PASSED tests/completion_test.py::test_tab_after_a_profile_verb_offers_the_profile_names[run]
+PASSED tests/completion_test.py::test_tab_after_a_profile_verb_offers_the_profile_names[use]
+PASSED tests/completion_test.py::test_tab_after_a_profile_verb_offers_the_profile_names[rm]
+PASSED tests/completion_test.py::test_tab_after_a_profile_verb_offers_the_profile_names[mv]
+PASSED tests/completion_test.py::test_tab_after_a_profile_verb_offers_the_profile_names[config]
+PASSED tests/completion_test.py::test_tab_after_a_profile_verb_offers_the_profile_names[inspect]
+PASSED tests/completion_test.py::test_tab_after_a_profile_verb_offers_the_profile_names[quota]
+PASSED tests/completion_test.py::test_tab_after_a_profile_verb_offers_the_profile_names[set]
+PASSED tests/completion_test.py::test_tab_after_a_profile_verb_offers_the_profile_names[get]
+PASSED tests/completion_test.py::test_tab_after_a_profile_verb_offers_the_profile_names[models]
+PASSED tests/completion_test.py::test_tab_after_a_profile_verb_offers_the_profile_names[login]
+PASSED tests/completion_test.py::test_tab_after_a_profile_verb_offers_the_profile_names[cred]
+PASSED tests/completion_test.py::test_tab_after_a_profile_verb_offers_the_profile_names[hop]
+PASSED tests/completion_test.py::test_tab_after_a_profile_verb_offers_the_profile_names[probe]
+PASSED tests/completion_test.py::test_tab_after_a_profile_verb_offers_the_profile_names[context]
+PASSED tests/completion_test.py::test_tab_completes_the_later_words[ccmorph doctor -want0]
+PASSED tests/completion_test.py::test_tab_completes_the_later_words[ccmorph doctor --verbose -want1]
+PASSED tests/completion_test.py::test_tab_completes_the_later_words[ccmorph set work -want2]
+PASSED tests/completion_test.py::test_tab_completes_the_later_words[ccmorph run work --add-dir -want3]
+PASSED tests/completion_test.py::test_profile_names_come_from_the_redirected_state_dir
+PASSED tests/completion_test.py::test_compinit_binds_the_function_to_the_ccmorph_command
+PASSED tests/context_override_test.py::ContextOverride::test_exact_set_get_reset_and_validation_preserve_other_state
+PASSED tests/context_override_test.py::ContextOverride::test_set_answers_range_suffixes_prefix_and_unknown_models
+PASSED tests/context_probe_cli_test.py::test_default_run_writes_declared_limits_and_says_what_changed
+PASSED tests/context_probe_cli_test.py::test_check_reports_drift_without_writing
+PASSED tests/doctor_test.py::test_doctor_reports_existing_adapter_without_starting_it[hooks-build-lsof-over-deadline-issue-467]
+PASSED tests/doctor_test.py::test_doctor_adapter_line_names_a_running_translator_issue_272[translator-running]
+PASSED tests/context_probe_cli_test.py::test_a_saved_limit_is_kept_when_the_gateway_changes_its_mind
+PASSED tests/doctor_test.py::test_doctor_adapter_line_names_a_running_translator_issue_272[shim-only]
+PASSED tests/doctor_test.py::test_doctor_never_calls_a_rejected_key_fine_issue_272[native]
+PASSED tests/doctor_test.py::test_doctor_never_calls_a_rejected_key_fine_issue_272[gateway]
+PASSED tests/doctor_test.py::test_doctor_never_calls_a_rejected_key_fine_issue_272[token]
+PASSED tests/context_probe_cli_test.py::test_a_manual_pin_is_not_probed_or_overwritten
+PASSED tests/context_probe_cli_test.py::test_a_missing_model_suggests_the_real_id_and_the_free_fix
+PASSED tests/context_probe_cli_test.py::test_an_unsized_model_names_the_remedies_and_exits_one
+PASSED tests/context_probe_cli_test.py::test_a_gateway_with_no_sizes_says_what_it_looked_for_gh_371
+PASSED tests/doctor_test.py::test_doctor_lines_stay_plain_words_issue_272
+PASSED tests/context_probe_cli_test.py::test_excluded_models_are_not_reported_unresolved
+PASSED tests/doctor_test.py::test_doctor_names_the_settings_file_that_is_actually_broken_issue_272
+PASSED tests/doctor_test.py::test_doctor_names_the_command_not_the_script_path_issue_272
+PASSED tests/context_probe_cli_test.py::test_a_gateway_that_is_down_is_explained
+PASSED tests/doctor_test.py::test_doctor_adapter_line_states_the_need_issue_272[no-cache-no-model]
+PASSED tests/doctor_test.py::test_doctor_adapter_line_states_the_need_issue_272[native-endpoint]
+PASSED tests/doctor_test.py::test_doctor_adapter_line_states_the_need_issue_272[translator-endpoint]
+PASSED tests/context_probe_cli_test.py::test_paid_probe_reads_the_ceiling_from_the_refusal_and_warns_first
+PASSED tests/doctor_test.py::test_doctor_adapter_line_reads_declared_protocols_issue_272[declared-messages]
+PASSED tests/doctor_test.py::test_doctor_adapter_line_reads_declared_protocols_issue_272[declared-chat]
+PASSED tests/context_probe_cli_test.py::test_argument_errors_exit_two_and_never_reach_a_route[args0---jobs]
+PASSED tests/doctor_test.py::test_doctor_omits_the_adapter_line_for_an_unclassified_saved_model_issue_272[no-session-line-omitted]
+PASSED tests/context_probe_cli_test.py::test_argument_errors_exit_two_and_never_reach_a_route[args1---allow-inference]
+PASSED tests/doctor_test.py::test_doctor_omits_the_adapter_line_for_an_unclassified_saved_model_issue_272[session-with-translator]
+PASSED tests/doctor_test.py::test_doctor_tolerates_a_conf_that_still_declares_removed_keys
+PASSED tests/doctor_test.py::test_doctor_invalid_url_skips_request
+PASSED tests/context_probe_cli_test.py::test_argument_errors_exit_two_and_never_reach_a_route[args2---allow-inference]
+PASSED tests/doctor_test.py::test_doctor_missing_credential_fails_without_request[apikey]
+PASSED tests/doctor_test.py::test_doctor_missing_credential_fails_without_request[token]
+PASSED tests/doctor_test.py::test_doctor_native_profile_without_base_url_is_clear
+PASSED tests/doctor_test.py::test_doctor_names_the_fix_for_a_signed_out_account_profile
+PASSED tests/doctor_test.py::test_doctor_admits_when_it_cannot_read_the_sign_in_state
+PASSED tests/doctor_test.py::test_doctor_reports_a_rejected_native_key[401-no-base-url]
+PASSED tests/doctor_test.py::test_doctor_reports_a_rejected_native_key[401-anthropic-base-url]
+PASSED tests/context_probe_cli_test.py::test_argument_errors_exit_two_and_never_reach_a_route[args3-exactly one --profile and one --model]
+PASSED tests/doctor_test.py::test_doctor_reports_a_rejected_native_key[200-no-base-url]
+PASSED tests/doctor_test.py::test_doctor_reports_a_rejected_native_key[200-anthropic-base-url]
+PASSED tests/doctor_test.py::test_doctor_on_a_token_profile_probes_the_token[401]
+PASSED tests/doctor_test.py::test_doctor_on_a_token_profile_probes_the_token[200]
+PASSED tests/doctor_test.py::test_doctor_on_a_token_profile_probes_the_token[none]
+PASSED tests/doctor_test.py::test_doctor_on_a_sub_profile_probes_the_stored_sign_in[401]
+PASSED tests/doctor_test.py::test_doctor_on_a_sub_profile_probes_the_stored_sign_in[200]
+PASSED tests/context_probe_cli_test.py::test_argument_errors_exit_two_and_never_reach_a_route[args4-exactly one --profile and one --model]
+PASSED tests/doctor_test.py::test_doctor_on_a_sub_profile_probes_the_stored_sign_in[none]
+PASSED tests/doctor_test.py::test_doctor_on_a_sub_profile_without_a_readable_sign_in_does_not_vouch
+PASSED tests/context_probe_cli_test.py::test_argument_errors_exit_two_and_never_reach_a_route[args9-argument --jobs: must be > 0]
+PASSED tests/context_probe_cli_test.py::test_argument_errors_exit_two_and_never_reach_a_route[args5-not allowed with argument]
+PASSED tests/context_probe_cli_test.py::test_argument_errors_exit_two_and_never_reach_a_route[args10-argument --deadline: must be finite and > 0]
+PASSED tests/context_probe_cli_test.py::test_argument_errors_exit_two_and_never_reach_a_route[args6---deadline]
+PASSED tests/context_probe_cli_test.py::test_argument_errors_exit_two_and_never_reach_a_route[args11-argument --profile: expected one argument]
+PASSED tests/context_probe_cli_test.py::test_argument_errors_exit_two_and_never_reach_a_route[args7-requires exactly one --profile]
+PASSED tests/context_probe_cli_test.py::test_argument_errors_exit_two_and_never_reach_a_route[args12-argument --profile: expected one argument]
+PASSED tests/context_probe_cli_test.py::test_argument_errors_exit_two_and_never_reach_a_route[args8-ambiguous option: --pro could match --profile, --probe-timeout, --probe-all]
+1390 passed, 10 skipped, 54 warnings, 110 subtests passed in 234.48s (0:03:54)
+
+SUMMARY rc=0 secs=237 cpu=4 factor=2 target_load=8 spinners=8 load_min=12.7 load_max=14.8 samples=49 host=gcp-us1 os=linux
