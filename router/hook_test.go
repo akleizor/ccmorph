@@ -102,6 +102,9 @@ func hookEnv(t *testing.T, enabled bool) string {
 		t.Fatal(err)
 	}
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(root, "profiles", "here"))
+	// Decide arms the process-wide ledger budget from a hook's deadline; the
+	// next test starts unarmed.
+	t.Cleanup(func() { armLock(time.Time{}) })
 	return root
 }
 
@@ -169,6 +172,31 @@ func TestAHookFailureWithUnmatchedTextIsLedgeredErrorAndBacksTheModelOff(t *test
 				t.Fatal("the failed model is still routable")
 			}
 		})
+	}
+}
+
+func TestAHookPathQuotaReadNeverRunsTheLiveSweep(t *testing.T) {
+	hookEnv(t, true) // a fresh state dir: no stored quota snapshot
+	calls := 0
+	old := QuotaInput
+	QuotaInput = func(names []string) string {
+		calls++
+		return ""
+	}
+	defer func() { QuotaInput = old }()
+	c, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := Decide(c, Request{Prompt: "Fix the bug in parse()", Deadline: time.Now().Add(16 * time.Second)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("the hook started the live quota sweep %d time(s)", calls)
+	}
+	if notes := strings.Join(d.Notes, "\n"); !strings.Contains(notes, "no stored quota reading") {
+		t.Fatalf("the missing reading is not named in the notes: %v", d.Notes)
 	}
 }
 

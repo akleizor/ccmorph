@@ -97,13 +97,21 @@ type snapshot struct {
 }
 
 // readQuota is every profile's windows and spend as `ccmorph quota --json` reads
-// them, kept for quotaTTL seconds. cachedOnly takes any stored reading, however
-// old, so a hook never waits on a usage endpoint it read before.
+// them, kept for quotaTTL seconds. cachedOnly never starts a live sweep: it
+// takes any stored reading, however old, so a hook never waits on a usage
+// endpoint, and a fresh state dir answers with the missing-reading note.
 func readQuota(names []string, refresh, cachedOnly bool) map[string]quota.Entry {
 	path := filepath.Join(routerDir(), "quota.json")
 	var snap snapshot
 	have := readJSON(path, &snap)
-	if !(have && (cachedOnly || !refresh && nowSec()-snap.ReadAt < quotaTTL)) && QuotaInput != nil {
+	if cachedOnly && !have {
+		byName := make(map[string]quota.Entry, len(names))
+		for _, n := range names {
+			byName[n] = quota.Entry{Profile: n, Error: "not read yet: no stored quota reading"}
+		}
+		return byName
+	}
+	if !cachedOnly && (refresh || !have || nowSec()-snap.ReadAt >= quotaTTL) && QuotaInput != nil {
 		var out bytes.Buffer
 		quota.Main([]string{"--json"}, strings.NewReader(QuotaInput(names)), &out, io.Discard)
 		var got struct{ Profiles []quota.Entry }

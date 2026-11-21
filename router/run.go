@@ -43,6 +43,9 @@ type Decision struct {
 
 // Decide picks where one task runs.
 func Decide(c Config, r Request) (Decision, error) {
+	// The ledger writes that follow share the route's budget: a hook's own
+	// deadline, else the bounded default.
+	armLock(r.Deadline)
 	var d Decision
 	decider := c.Decider
 	if r.NoDecider {

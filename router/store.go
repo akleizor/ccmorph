@@ -6,9 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -147,15 +149,62 @@ type Row map[string]any
 
 func ledgerPath() string { return filepath.Join(routerDir(), "ledger.jsonl") }
 
-// withLock serializes ledger changes across the hooks and delegates of every session.
-func withLock(fn func()) {
-	_ = os.MkdirAll(routerDir(), 0o700)
-	f, err := os.OpenFile(filepath.Join(routerDir(), "ledger.lock"), os.O_CREATE|os.O_RDWR, 0o600)
-	if err == nil {
-		defer f.Close()
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+const (
+	// lockPoll is how often a writer retries ledger.lock.
+	lockPoll = 10 * time.Millisecond
+	// lockWait bounds the wait when no hook deadline owns the process.
+	lockWait = 2 * time.Second
+)
+
+// ledgerDeadline is the process's budget for taking ledger.lock, as UnixNano;
+// zero means lockWait from each call. armLock sets it once at the routing entry:
+// a hook hands its own deadline, so every later write shares the time the hook
+// has left; a dispatch hands none, so each write gets the bounded default.
+var ledgerDeadline atomic.Int64
+
+func armLock(deadline time.Time) {
+	var d int64
+	if !deadline.IsZero() {
+		d = deadline.UnixNano()
 	}
-	fn()
+	ledgerDeadline.Store(d)
+}
+
+// withLock serializes ledger changes across the hooks and delegates of every
+// session. The lock is taken without blocking and polled until this process's
+// budget runs out; a write it cannot protect is refused rather than parked past
+// the hook's deadline. A lock file that cannot be opened is the same refusal,
+// never an unlocked write.
+func withLock(fn func()) bool {
+	if err := os.MkdirAll(routerDir(), 0o700); err != nil {
+		return false
+	}
+	f, err := os.OpenFile(filepath.Join(routerDir(), "ledger.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	deadline := time.Now().Add(lockWait)
+	if d := ledgerDeadline.Load(); d != 0 {
+		deadline = time.Unix(0, d)
+	}
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err != nil && !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+			return false
+		}
+		// The budget is checked after every attempt, taken or not: a spent
+		// budget refuses even a free lock, and the deferred Close drops it.
+		left := time.Until(deadline)
+		if left <= 0 {
+			return false
+		}
+		if err == nil {
+			fn()
+			return true
+		}
+		time.Sleep(min(lockPoll, left))
+	}
 }
 
 func appendLine(path string, row Row) {
