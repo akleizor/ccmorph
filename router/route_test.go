@@ -4,6 +4,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -103,6 +104,52 @@ func TestOnlyLimitsATierWithNoFallback(t *testing.T) {
 	opts, _, _ = Options(Task{Kind: "code", Tier: "small"}, ps, labels, nil, 0, Pin{Only: []string{}})
 	if len(opts) != 0 {
 		t.Fatalf("an empty only allows none: %+v", opts)
+	}
+}
+
+// The tier's effort is the pick's, not a filter on the call, and inside a
+// family the earlier entry of the user's order wins even when both served
+// models are in it (GH-693).
+func TestOptionsEffortFollowsTierAndOrderBeatsNewer(t *testing.T) {
+	labels := func(_, m string) (Label, bool) { return HeuristicLabel(m), true }
+	ps := []Profile{{Name: "gw", Class: "api", Models: []string{"claude-opus-5", "claude-opus-4", "gpt-6-sol"}, Enabled: true}}
+	kinds := map[string][]string{"code": {"claude", "gpt"}}
+	task := Task{Kind: "code", Tier: "top"}
+	base, baseDropped, err := Options(task, ps, labels, kinds, 0, Pin{})
+	if err != nil {
+		t.Fatalf("no effort: %v", err)
+	}
+	if len(base) == 0 {
+		t.Fatalf("no effort: no options at all, dropped %v", baseDropped)
+	}
+	for _, c := range []struct {
+		name string
+		pin  Pin
+		want string // models in order
+		same bool   // the whole option list must equal the no-effort call's
+	}{
+		{"an explicit effort low routes exactly as no effort", Pin{Effort: "low"}, "claude-opus-5,gpt-6-sol", true},
+		{"an explicit effort medium routes exactly as no effort", Pin{Effort: "medium"}, "claude-opus-5,gpt-6-sol", true},
+		{"the older of two ordered models is the family's pick", Pin{Order: []string{"claude-opus-4", "claude-opus-5"}}, "claude-opus-4,gpt-6-sol", false},
+		{"the newer of two ordered models is the family's pick", Pin{Order: []string{"claude-opus-5", "claude-opus-4"}}, "claude-opus-5,gpt-6-sol", false},
+	} {
+		opts, dropped, err := Options(task, ps, labels, kinds, 0, c.pin)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		var got []string
+		for _, o := range opts {
+			got = append(got, o.Model)
+			if o.Effort != Efforts["top"] { // the tier picks the effort, never the caller
+				t.Errorf("%s: option %s carries effort %q, want %q", c.name, o.Model, o.Effort, Efforts["top"])
+			}
+		}
+		if strings.Join(got, ",") != c.want {
+			t.Errorf("%s: options %v, want %s; dropped %v", c.name, got, c.want, dropped)
+		}
+		if c.same && !reflect.DeepEqual(opts, base) {
+			t.Errorf("%s: whole outcome differs from the no-effort call's %v", c.name, base)
+		}
 	}
 }
 
