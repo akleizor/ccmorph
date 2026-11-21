@@ -2,6 +2,7 @@ package router
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -15,7 +16,59 @@ import (
 
 const delegateDoc = `Run delegated work and return only its final answer. Use this instead of the Agent tool for delegated work; send independent briefs as parallel calls. Keep the Agent tool for work that needs this session.
 
-Set kind and tier yourself: you know the task. tier small = search, read, list, summarise or a mechanical edit; mid = ordinary coding or investigation; top = research, design or hard multi-step debugging. Omit them only when unsure; the router then guesses from the prompt. Leave profile and model unset unless the user pinned them.`
+Set kind and tier yourself: you know the task. tier small = search, read, list, summarise or a mechanical edit; mid = ordinary coding or investigation; top = research, design or hard multi-step debugging. Omit them only when unsure; the router then guesses from the prompt. Leave profile and model unset unless the user pinned them.
+
+family, no_decider and refresh do on this tool exactly what --family, --no-decider and --refresh do on ccmorph router dispatch: family restricts the shortlist to one model family and the call errors when none qualifies or when profile and model are both set; no_decider never asks the decider while picking (kind and tier come from the keyword rules, an unlabeled model is labeled by its name), though a configured decider still scores the finished answer; refresh reads quota live instead of the snapshot cached up to 5 minutes, also when profile and model are both set.`
+
+// delegateArgs decodes a tools/call payload by type, so a value of the wrong
+// type (profile: 42, no_decider: "yes") fails the unmarshal and the call is
+// refused as bad arguments before routing, never routed with the pin silently
+// dropped.
+type delegateArgs struct {
+	Prompt    string `json:"prompt"`
+	Kind      string `json:"kind"`
+	Tier      string `json:"tier"`
+	Profile   string `json:"profile"`
+	Model     string `json:"model"`
+	Cwd       string `json:"cwd"`
+	Family    string `json:"family"`
+	NoDecider bool   `json:"no_decider"`
+	Refresh   bool   `json:"refresh"`
+}
+
+// decodeDelegateArgs fills a by the keys it declares, exactly: encoding/json
+// would match "PROFILE" to the profile field case-insensitively and let an
+// undeclared spelling replace a caller's pin, which the CLI never does. A
+// declared key of the wrong type refuses the call; an undeclared key is read
+// as the string the old map[string]string took, so no value type widens.
+func decodeDelegateArgs(js json.RawMessage) (delegateArgs, bool) {
+	var a delegateArgs
+	if len(js) == 0 || string(js) == "null" {
+		return a, true
+	}
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(js, &raw) != nil {
+		return a, false
+	}
+	declared := map[string]any{"prompt": &a.Prompt, "kind": &a.Kind, "tier": &a.Tier,
+		"profile": &a.Profile, "model": &a.Model, "cwd": &a.Cwd, "family": &a.Family,
+		"no_decider": &a.NoDecider, "refresh": &a.Refresh}
+	for k, v := range raw {
+		if dst, ok := declared[k]; ok {
+			// encoding/json takes null into a string or bool as "no value": refuse
+			// it, or {"profile": null} would route with the pin silently dropped.
+			if bytes.Equal(bytes.TrimSpace(v), []byte("null")) || json.Unmarshal(v, dst) != nil {
+				return delegateArgs{}, false
+			}
+			continue
+		}
+		var s string
+		if json.Unmarshal(v, &s) != nil {
+			return delegateArgs{}, false
+		}
+	}
+	return a, true
+}
 
 // heartbeat: Claude Code aborts a tool call that sends no progress for 1800 s.
 var heartbeat = 60 * time.Second
@@ -27,6 +80,7 @@ func delegateSchema() map[string]any {
 		"inputSchema": map[string]any{"type": "object", "required": []string{"prompt"}, "properties": map[string]any{
 			"prompt": str, "kind": map[string]any{"type": "string", "enum": Kinds},
 			"tier": map[string]any{"type": "string", "enum": Tiers}, "profile": str, "model": str, "cwd": str,
+			"family": str, "no_decider": map[string]any{"type": "boolean"}, "refresh": map[string]any{"type": "boolean"},
 		}},
 	}
 }
@@ -89,13 +143,20 @@ func ServeMCP(in io.Reader, out io.Writer) {
 			callsMu.Unlock()
 		case "tools/call":
 			var p struct {
-				Name      string            `json:"name"`
-				Arguments map[string]string `json:"arguments"`
-				Meta      struct {
+				Name string `json:"name"`
+				Meta struct {
 					ProgressToken json.RawMessage `json:"progressToken"`
 				} `json:"_meta"`
 			}
-			if json.Unmarshal(m.Params, &p) != nil || p.Name != "delegate" {
+			// arguments by its exact key: a struct field would also take
+			// "Arguments" and let that spelling replace the caller's pins.
+			var params map[string]json.RawMessage
+			if json.Unmarshal(m.Params, &p) != nil || json.Unmarshal(m.Params, &params) != nil || p.Name != "delegate" {
+				send(rpc{ID: m.ID, Error: map[string]any{"code": -32602, "message": "unknown tool or bad arguments"}})
+				continue
+			}
+			a, ok := decodeDelegateArgs(params["arguments"])
+			if !ok {
 				send(rpc{ID: m.ID, Error: map[string]any{"code": -32602, "message": "unknown tool or bad arguments"}})
 				continue
 			}
@@ -121,8 +182,9 @@ func ServeMCP(in io.Reader, out io.Writer) {
 						}
 					}()
 				}
-				a := p.Arguments
-				answer := Delegate(ctx, a["prompt"], a["kind"], a["tier"], a["profile"], a["model"], a["cwd"])
+				answer := Delegate(ctx, Request{Prompt: a.Prompt, Kind: a.Kind, Tier: a.Tier,
+					Profile: a.Profile, Model: a.Model, Family: a.Family,
+					NoDecider: a.NoDecider, Refresh: a.Refresh}, a.Cwd)
 				result := "ok"
 				switch {
 				case answer == abortedAnswer:

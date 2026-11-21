@@ -11,4 +11,6 @@ Call the `delegate` tool of the ccmorph-router server for delegated work; its an
 
 Set `kind` and `tier` yourself: `small` for search, read, list, summarise or a mechanical edit; `mid` for ordinary coding or investigation; `top` for research, design or hard multi-step debugging. Leave `profile` and `model` unset unless the user pinned them. Pass `cwd` when the task's directory differs from the session's starting directory.
 
+Three more controls mean the same here as the flags of `ccmorph router dispatch --help`: `family` restricts the shortlist to one model family and the call errors when none qualifies or when `profile` and `model` are both set; `no_decider` never asks the decider while picking (kind and tier come from the keyword rules, an unlabeled model is labeled by its name), though a configured decider still scores the finished answer; `refresh` reads quota live instead of using the snapshot cached up to 5 minutes, also when `profile` and `model` are both set. Leave them unset unless the user asked for one.
+
 A refused account waits until its window resets; a failed model waits 15 minutes. Either way the delegate retries once at the same tier, and a pinned profile or model is retried as named. Check the returned work cheaply before you rely on it.

@@ -39,9 +39,49 @@ func TestTheMCPServerListsDelegateAndRefusesAnEmptyPrompt(t *testing.T) {
 	if !strings.Contains(out.String(), `"name":"delegate"`) {
 		t.Fatalf("tools/list: %s", out.String())
 	}
+	for _, p := range []string{`"family"`, `"no_decider"`, `"refresh"`, "never asks the decider while picking",
+		"still scores the finished answer", "also when profile and model are both set"} {
+		if !strings.Contains(out.String(), p) {
+			t.Fatalf("delegate schema lacks %s: %s", p, out.String())
+		}
+	}
 	res := replies["3"]["result"].(map[string]any)
 	if res["isError"] != true || !strings.Contains(out.String(), "non-empty prompt") {
 		t.Fatalf("empty prompt: %v", res)
+	}
+}
+
+func TestTheMCPServerRefusesArgumentsOfTheWrongTypeBeforeRouting(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	in := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"delegate","arguments":{"prompt":"hi","profile":42}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"delegate","arguments":{"prompt":"hi","no_decider":"yes"}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"delegate","arguments":{"prompt":"hi","family":["sonnet"]}}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"delegate","arguments":{"prompt":"hi","profile":null}}}`,
+		`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"delegate","arguments":{"prompt":"hi","no_decider":null}}}`,
+		`{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"delegate","arguments":{"prompt":"hi","refresh":null}}}`,
+	}, "\n") + "\n"
+	var out bytes.Buffer
+	ServeMCP(strings.NewReader(in), &out)
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 6 {
+		t.Fatalf("want 6 refusals, got %s", out.String())
+	}
+	for _, line := range lines {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("not JSON: %q", line)
+		}
+		if m["result"] != nil {
+			t.Fatalf("a mistyped argument reached routing: %s", line)
+		}
+		e, ok := m["error"].(map[string]any)
+		if !ok || e["code"] != float64(-32602) {
+			t.Fatalf("want -32602 invalid arguments, got %s", line)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(routerDir(), "outcomes.jsonl")); !os.IsNotExist(err) {
+		t.Fatal("a refused call must never reach routing")
 	}
 }
 
@@ -174,5 +214,32 @@ func TestPreToolUseNeverBlocksWhenNoProfileCanTakeTheCall(t *testing.T) {
 	PreToolUse(strings.NewReader(`{"tool_name":"Agent","tool_use_id":"tu2","tool_input":{"prompt":"Fix the bug in parse()","subagent_type":"worker"}}`), &out)
 	if strings.Contains(out.String(), `"deny"`) {
 		t.Fatalf("an unplaceable call runs as asked, never denied: %s", out.String())
+	}
+}
+
+// An undeclared spelling of a key never replaces the declared one: the tool
+// takes the keys it declares, exactly, as the cli does.
+func TestAnUndeclaredKeyNeverReplacesACallerSPin(t *testing.T) {
+	dispatchEnv(t)
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"delegate","arguments":{"prompt":"fix the parser","kind":"code","tier":"mid","profile":"gw","PROFILE":"missing-profile"}}}` + "\n"
+	var out bytes.Buffer
+	ServeMCP(strings.NewReader(in), &out)
+	if strings.Contains(out.String(), "no ccmorph profile") {
+		t.Fatalf("an undeclared key replaced the pin: %s", out.String())
+	}
+	if row := lastLedgerRow(t); row["profile"] != "gw" {
+		t.Fatalf("the call must route on the pinned profile, ledgered %+v", row)
+	}
+}
+
+// The arguments object is read by its exact key too: an "Arguments" spelling
+// after the real one never replaces the caller's pins.
+func TestAnUndeclaredArgumentsSpellingNeverReplacesTheArguments(t *testing.T) {
+	dispatchEnv(t)
+	in := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"delegate","arguments":{"prompt":"fix the parser","kind":"code","tier":"mid","profile":"sub"},"Arguments":{"prompt":"fix the parser"}}}` + "\n"
+	var out bytes.Buffer
+	ServeMCP(strings.NewReader(in), &out)
+	if row := lastLedgerRow(t); row["profile"] != "sub" {
+		t.Fatalf("the call must route on the pinned profile, ledgered %+v: %s", row, out.String())
 	}
 }
