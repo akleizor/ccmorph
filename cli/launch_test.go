@@ -1883,6 +1883,7 @@ func TestAReadAfterTheSameCommandsConfWriteSeesTheNewValueIssue561(t *testing.T)
 			if f, ok := l.readQuiet(name); !ok || f["base_url"] != "https://gw.test" {
 				t.Fatalf("read before the removal: %v, ok %v", f, ok)
 			}
+			answerRmPrompt(t, "y\n") // removal asks whoever runs it (#724)
 			if rc := l.rm([]string{name}); rc != 0 {
 				t.Fatalf("rm: rc %d", rc)
 			}

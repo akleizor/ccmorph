@@ -1,10 +1,11 @@
 """Picker UX under a real TTY: endpoint-driven choices, cancellation, pending
 endpoint discovery, numbered fallback, and the keep/custom escapes.
 
-Each child gets its own HOME, state dir, TMPDIR and a fake `curl`/`fzf` on PATH,
-so no real profile, credential, or network is reached; every child runs under an
-explicit deadline. Rows are selected by value or by the menu header, never by a
-numbered count, so these tests do not pin a list length the picker may change.
+Each child gets its own HOME, state dir, TMPDIR and fake `curl`/`fzf`/`security`
+stubs on PATH, so no real profile, credential, Keychain item, or network is
+reached; every child runs under an explicit deadline. Rows are selected by value
+or by the menu header, never by a numbered count, so these tests do not pin a
+list length the picker may change.
 """
 from __future__ import annotations
 
@@ -71,6 +72,19 @@ if [ -n "$pick" ]; then
 else
   printf '%s\\n' "$rows" | head -1
 fi
+'''
+
+# macOS reaches the login Keychain through `security`, and an isolated HOME
+# does not isolate it: on a machine with a working default keychain a public
+# command migrates the fixture's plain api_key out of the conf before rm even
+# prompts, and a removal deletes that item — so the refusal tests would see
+# `keychain:demo.api_key` instead of the secret they assert (#724 gate). This
+# stub answers the way a scratch $HOME does, "no default keychain":
+# KeychainMigrate skips every conf, KeychainDelete is a no-op, and the
+# credential stays in the conf where the assertions read it.
+FAKE_SECURITY = '''#!/bin/sh
+printf 'security: SecKeychainCopyDefault: A default keychain could not be found.\\n' >&2
+exit 1
 '''
 
 
@@ -287,7 +301,7 @@ class PickerTTYTest(unittest.TestCase):
             path.mkdir(parents=True, exist_ok=True)
 
     def env(self, *, fzf=False, curl='ok'):
-        for name, body in (('curl', FAKE_CURL), ('fzf', FAKE_FZF)):
+        for name, body in (('curl', FAKE_CURL), ('fzf', FAKE_FZF), ('security', FAKE_SECURITY)):
             if name == 'fzf' and not fzf:
                 continue
             path = self.tmp / 'bin' / name
@@ -1374,6 +1388,51 @@ class PickerTTYTest(unittest.TestCase):
         self.assertNotIn('cancelled; nothing removed', out)
         self.assertFalse((self.state / 'demo.conf').exists())
         self.assertFalse((self.state / 'profiles' / 'demo').exists())
+
+    def test_rm_honors_a_piped_no_answer_issue_724(self):
+        # The issue's transcript: `printf 'n' | ccmorph rm demo`, answer without
+        # a trailing newline as the issue pipes it. The refusal is an answer, so
+        # the profile, its conf and its saved credential must all survive it.
+        env = self.env()
+        self.profile()
+        result = subprocess.run(
+            ['zsh', '-fc', 'source "$1"\nccmorph rm demo', 'test', str(CCMORPH)],
+            env=env, input='n', capture_output=True, text=True, timeout=HANG_TIMEOUT)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertNotIn('Removed', result.stdout)
+        self.assertIn('cancelled; nothing removed', result.stderr)
+        self.assertTrue((self.state / 'demo.conf').is_file())
+        self.assertEqual(self.field('demo', 'api_key'), 'old-secret')
+        self.assertTrue((self.state / 'profiles' / 'demo').is_dir())
+
+    def test_rm_piped_yes_removes_the_profile_issue_724(self):
+        # The other half of honoring the piped answer: a yes-word proceeds.
+        env = self.env()
+        self.profile()
+        result = subprocess.run(
+            ['zsh', '-fc', 'source "$1"\nccmorph rm demo', 'test', str(CCMORPH)],
+            env=env, input='y\n', capture_output=True, text=True, timeout=HANG_TIMEOUT)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('Removed demo', result.stdout)
+        self.assertFalse((self.state / 'demo.conf').exists())
+        self.assertFalse((self.state / 'profiles' / 'demo').exists())
+
+    def test_rm_closed_stdin_removes_nothing_and_names_the_confirmation_issue_724(self):
+        # `ccmorph rm demo </dev/null`: no terminal showed the prompt and the
+        # stdin holds no answer, so rm must keep the profile and print the
+        # command that confirms it.
+        env = self.env()
+        self.profile()
+        result = subprocess.run(
+            ['zsh', '-fc', 'source "$1"\nccmorph rm demo', 'test', str(CCMORPH)],
+            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+            timeout=HANG_TIMEOUT)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertNotIn('Removed', result.stdout)
+        self.assertIn("printf 'y' | ccmorph rm demo", result.stderr)
+        self.assertTrue((self.state / 'demo.conf').is_file())
+        self.assertEqual(self.field('demo', 'api_key'), 'old-secret')
+        self.assertTrue((self.state / 'profiles' / 'demo').is_dir())
 
     def test_current_value_is_not_offered_twice(self):
         env = self.env(fzf=True)

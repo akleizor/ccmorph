@@ -467,7 +467,7 @@ def test_rm_deletes_the_profile_and_clears_it_as_the_default(box):
     auth.mkdir(exist_ok=True)
     for f in ('.gw.bridge', '.gw.bridge.lock', '.gw.bridge.users', '.tok.bridge'):
         (auth / f).write_text('x')
-    done = box.run('rm', 'gw')
+    done = box.run('rm', 'gw', answer='y\n')
     assert done.returncode == 0, done.stderr
     assert not (box.state / 'gw.conf').exists()
     assert not (box.state / 'profiles/gw').exists()
@@ -481,7 +481,7 @@ def test_rm_deletes_the_profile_and_clears_it_as_the_default(box):
 def test_rm_of_a_non_default_profile_keeps_the_default(box):
     seed(box)
     box.run('use', 'work')
-    assert box.run('rm', 'tok').returncode == 0
+    assert box.run('rm', 'tok', answer='y\n').returncode == 0
     assert box.active == 'work'
 
 

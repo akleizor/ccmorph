@@ -105,7 +105,7 @@ alias sed='false'
 alias tr='false'
 source "$CCMORPH_LIB_DIR/ccmorph.sh"
 ccmorph help all
-ccmorph rm demo
+printf 'y\n' | ccmorph rm demo
 ''', env)
     assert result.returncode == 0, result.stderr
     assert 'probe' in result.stdout
