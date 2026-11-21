@@ -842,22 +842,24 @@ def test_no_failed_start_ever_leaves_the_route_key_behind(tmp_path, monkeypatch,
     assert list(rc.STATE.glob("route-key.*")) == []
 
 
+@pytest.mark.parametrize("spawn_mode", ["child", "object"], ids=["spawned-child", "handle-with-no-stop-api"])
 @pytest.mark.parametrize("sig,expected", [
     (signal.SIGTERM, str(128 + signal.SIGTERM)),
     (signal.SIGHUP, str(128 + signal.SIGHUP)),
     (signal.SIGQUIT, str(128 + signal.SIGQUIT)),
     (signal.SIGINT, "KeyboardInterrupt"),
 ], ids=["sigterm", "sighup", "sigquit", "sigint"])
-def test_termination_during_proxy_startup_removes_the_route_key(tmp_path, sig, expected):
+def test_termination_during_proxy_startup_removes_the_route_key(tmp_path, sig, expected, spawn_mode):
     """A normal termination signal bypasses Python's finally unless startup
-    temporarily handles it. A separate process exercises the real disposition,
-    and the proxy that start spawned is stopped, not left running."""
+    temporarily handles it. A separate process exercises the real disposition.
+    A real spawned proxy is stopped; a Popen handle with no stop API — the shape
+    the issue's reproduction stubs — must not replace the signal's exit."""
     import os
     import subprocess
 
     state = tmp_path / "state"
     child = r"""import argparse, importlib.machinery, importlib.util, os, signal, sys
-path, sig, expected = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+path, sig, expected, mode = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
 for s in (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
     signal.signal(s, signal.SIG_DFL)          # a plain launch, whatever the test runner ignores
 signal.signal(signal.SIGINT, signal.default_int_handler)
@@ -873,11 +875,14 @@ rc.strip_env = lambda: ()
 rc.shutil.which = lambda name: "/test/" + name
 real_popen = rc.subprocess.Popen
 spawned = []
-def spawn(cmd, **kw):
-    spawned.append(real_popen([sys.executable, "-c", "import time; time.sleep(600)"],
-                              stdin=rc.subprocess.DEVNULL, start_new_session=True))
-    return spawned[-1]
-rc.subprocess.Popen = spawn
+if mode == "object":
+    rc.subprocess.Popen = lambda *a, **k: object()    # a handle with no terminate/wait at all
+else:
+    def spawn(cmd, **kw):
+        spawned.append(real_popen([sys.executable, "-c", "import time; time.sleep(600)"],
+                                  stdin=rc.subprocess.DEVNULL, start_new_session=True))
+        return spawned[-1]
+    rc.subprocess.Popen = spawn
 rc.wait_listening = lambda *a, **k: os.kill(os.getpid(), sig)
 try:
     rc.own_edge("test", os.getpid(), argparse.Namespace(debug=False), None)
@@ -888,7 +893,8 @@ except BaseException as stopped:
         if p.poll() is None:
             p.kill()
     code = str(stopped.code) if isinstance(stopped, SystemExit) else type(stopped).__name__
-    if code == expected and spawned and not keys and not alive:
+    stopped_ok = mode == "object" or (spawned and not alive)
+    if code == expected and not keys and stopped_ok:
         raise SystemExit(0)
     print(f"unexpected exit={code} key_files={keys} live_proxies={alive}", file=sys.stderr)
     raise SystemExit(2)
@@ -897,7 +903,7 @@ raise SystemExit(3)
     env = {**os.environ, "CCMORPH_STATE_DIR": str(state)}
     result = subprocess.run([sys.executable, "-c", child,
                              str(Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccmorph-rc"),
-                             str(int(sig)), expected],
+                             str(int(sig)), expected, spawn_mode],
                             env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
     assert result.returncode == 0, f"child exit={result.returncode}; stderr={result.stderr}"
     assert list(state.rglob("route-key.*")) == []
