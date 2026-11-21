@@ -779,6 +779,8 @@ func TestTerminalEventEndsTheReplyWithoutWaiting(t *testing.T) {
 		{"crlf", "event: message_stop\r\n" + stop + "\r\n", "event: message_stop\r\n" + stop + "\r\n\r\n"},
 		{"bare cr", "event: message_stop\r" + stop + "\r", "event: message_stop\r" + stop + "\r\r"},
 		{"bare cr with its blank line", "event: message_stop\r" + stop + "\r\r", "event: message_stop\r" + stop + "\r\r"},
+		{"bare cr event line after data", stop + "\revent: message_stop\r", stop + "\revent: message_stop\r\r"},
+		{"crlf event line after data", stop + "\r\nevent: message_stop\r\n", stop + "\r\nevent: message_stop\r\n\r\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			release := make(chan struct{})

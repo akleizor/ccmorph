@@ -777,7 +777,7 @@ func maskedJSON(masked map[string]int) string {
 
 type lineSource interface {
 	readline() ([]byte, error)
-	ready() bool // readline returns without reading the upstream
+	inHand() [][]byte // takes the whole lines already read, never reading
 }
 
 // unmaskStream is an SSE reply with its placeholders put back in text and tool
@@ -803,7 +803,13 @@ type heldDelta struct {
 	quoted      bool
 }
 
-func (u *unmaskStream) ready() bool { return len(u.out) > 0 || u.err != nil }
+// inHand takes the lines already restored, the event still gathering, then
+// the lines its source has read and not yet handed on. It never reads.
+func (u *unmaskStream) inHand() [][]byte {
+	lines := append(append(u.out, u.event...), u.src.inHand()...)
+	u.out, u.event = nil, nil
+	return lines
+}
 
 func (u *unmaskStream) readline() ([]byte, error) {
 	for len(u.out) == 0 {
