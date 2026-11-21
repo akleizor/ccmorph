@@ -694,13 +694,13 @@ func modelInListingDoc(payload any, want, mapJSON string) int {
 	}
 	uncertain := false
 	// A listing that does not list cannot prove a model absent: keep the carried
-	// one. A reply with no data key at all — a proxy's error object, a wrapped
+	// one. A reply with no usable data list — a proxy's error object, a wrapped
 	// reply, a 3xx body curl -f passes through, since it fails only an HTTP
 	// error — is the same ignorance (#558); only a data list, empty or not, is
-	// a route's own answer.
-	data, _ := asObj(payload).Get("data")
-	entries, isList := data.([]any)
-	if !isList {
+	// a route's own answer. The picker and the adapter inventory read the same
+	// verdict for the same body (#747).
+	entries, verdict := ctxwindow.ListingShape(payload)
+	if verdict == ctxwindow.ListingNotAListing {
 		return 2
 	}
 	for _, m := range entries {

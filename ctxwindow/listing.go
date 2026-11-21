@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/util/modelsdev"
 	"github.com/akleizor/ccmorph/util/paths"
 )
@@ -85,6 +86,60 @@ func parseDict(b []byte) obj {
 		return nil
 	}
 	return asObj(v)
+}
+
+// ListingVerdict is what one /v1/models reply says about the endpoint's model
+// list. Only a data list — empty or not — is the endpoint's own answer;
+// anything else is no listing at all, never a confident "serves nothing".
+// Every reader of the reply shape answers from this one verdict (#558, #695,
+// #747).
+type ListingVerdict int
+
+const (
+	// ListingNotAListing: the reply is not a JSON object, or its data is
+	// absent, null or not a JSON list. It cannot tell a reader what the
+	// route serves — a proxy's 200 error object, a wrapped reply, a 3xx body
+	// curl -f passes through.
+	ListingNotAListing ListingVerdict = iota
+	// ListingConfidentlyEmpty: {"data":[]} — the endpoint's own "serves
+	// nothing".
+	ListingConfidentlyEmpty
+	// ListingServed: a non-empty data list arrived.
+	ListingServed
+)
+
+// ListingShape reads the shared reply shape from a decoded /v1/models reply.
+// top is an *ordjson.Obj (that decoder) or a map[string]any (encoding/json's);
+// every other top level, and any data value that is not a JSON list, is
+// ListingNotAListing. rows is the data list on the two listing verdicts.
+func ListingShape(top val) (rows []any, verdict ListingVerdict) {
+	var data val
+	switch t := top.(type) {
+	case *ordjson.Obj:
+		data, _ = t.Get("data")
+	case map[string]any:
+		data = t["data"]
+	default:
+		return nil, ListingNotAListing
+	}
+	rows, ok := data.([]any)
+	if !ok {
+		return nil, ListingNotAListing
+	}
+	if len(rows) == 0 {
+		return rows, ListingConfidentlyEmpty
+	}
+	return rows, ListingServed
+}
+
+// ListingShapeBody is ListingShape over a reply body, parsed the picker's way:
+// a body that does not parse is no listing.
+func ListingShapeBody(body string) (rows []any, verdict ListingVerdict) {
+	v, err := ordjson.Parse([]byte(body))
+	if err != nil {
+		return nil, ListingNotAListing
+	}
+	return ListingShape(v)
 }
 
 // ListingRows are the chat-capable /v1/models rows under their true ids.
