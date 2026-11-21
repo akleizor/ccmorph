@@ -2407,6 +2407,40 @@ def test_a_start_removes_session_records_past_retention(tmp_path, monkeypatch):
     assert kept.exists()
 
 
+def test_a_running_supervisor_removes_session_records_past_retention(tmp_path, monkeypatch):
+    """#758: a sweep only at supervisor start let the log dir refill between
+    restarts -- launchd KeepAlive never restarts a healthy supervisor. The age
+    cap must ride the same idle-check path as the size cap (bound_logs), so the
+    test drives cycle(), not sweep_logs().
+    And the sweep must spare a quiet but running host's files: the child holds
+    append descriptors on its stdout log and debug logs (start passes one, the
+    --debug-file appends for the life of the run), so unlinking one leaves the
+    writer on an orphaned inode bound_logs() can no longer cap by path."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    old = logs / "bridge-transcript-cse_01OLD.jsonl"
+    kept = logs / "bridge-transcript-cse_01NEW.jsonl"
+    old.write_text("x")
+    kept.write_text("x")
+    clock = [time.time()]
+    hosts = _running_host(m, tmp_path / "repo", clock)
+    h = next(iter(hosts.values()))
+    live = [h.logfile, h.debugfile.with_name(f"{h.debugfile.stem}-session_01S.log"),
+            logs / "bridge-transcript-session_01S.jsonl"]
+    for f in live:
+        f.write_text("x")
+    stale = time.time() - (m.LOG_KEEP_DAYS + 1) * 86400
+    for f in [old, *live]:
+        os.utime(f, (stale, stale))
+    state = m.Clock()
+    m.cycle(hosts, [], state.last_idle_check + m.IDLE_CHECK + 1, state)
+    assert not old.exists()                       # dead past the week: gone
+    assert kept.exists()                          # fresh: kept
+    assert all(f.exists() for f in live)          # live host's open files: kept
+
+
 def test_a_pinned_host_start_removes_its_stale_bridge_transcript(tmp_path, monkeypatch):
     m = load()
     logs = tmp_path / "logs"

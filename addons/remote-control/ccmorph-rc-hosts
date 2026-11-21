@@ -160,7 +160,7 @@ def log(msg: str) -> None:
     print(time.strftime("%F %T"), msg, flush=True)
 
 
-def sweep_logs(now: float | None = None) -> None:
+def sweep_logs(now: float | None = None, keep: "frozenset | set" = frozenset()) -> None:
     """Delete this bridge's session records older than LOG_KEEP_DAYS.
 
     Every Remote Control session leaves a transcript and, through --debug-file, a
@@ -168,13 +168,19 @@ def sweep_logs(now: float | None = None) -> None:
     one: a session that resumes has its own record unlinked when its host starts.
     Without a retention rule the directory only grows -- on 2026-11-21 it held 239
     files and 2.8 GB, the largest written on 11-20, and the internal disk was under
-    its swap floor."""
+    its swap floor.
+
+    `keep` names the files a running process still has open (Host.live_logs): a
+    quiet run's files age past the week too, and unlinking one leaves its writer
+    appending to an orphaned inode that bound_logs() can no longer reach by path."""
     cutoff = (time.time() if now is None else now) - LOG_KEEP_DAYS * 86400
     try:
         files = [f for f in LOGS.glob("*") if f.is_file()]
     except OSError:
         return
     for f in files:
+        if f in keep:
+            continue
         try:
             if f.stat().st_mtime < cutoff:
                 f.unlink()
@@ -374,6 +380,22 @@ class Host:
     def debug_logs(self) -> list[Path]:
         """The bridge's debug log and its session child's (<name>.debug-<id>.log)."""
         return [self.debugfile, *LOGS.glob(f"{self.debugfile.stem}-*.log")]
+
+    def live_logs(self) -> list[Path]:
+        """Files this host's running process tree is still writing: the stdout/stderr
+        log (start() hands the child the append descriptor) and the debug logs
+        passed as --debug-file, plus each debug-logging session's transcript -- the
+        `<name>.debug-<id>.log` name is the session-id map the codebase already
+        uses. A quiet run's files age past LOG_KEEP_DAYS too, so the retention
+        sweep must be told to spare these (#758)."""
+        files = [self.logfile, *self.debug_logs()]
+        if self.session_id:
+            files.append(LOGS / f"bridge-transcript-{self.session_id}.jsonl")
+        stem = self.debugfile.stem          # debug file "<name>.debug-<id>.log" ->
+        for f in self.debug_logs():         # transcript "bridge-transcript-<id>.jsonl"
+            if f.name.startswith(f"{stem}-") and f.name.endswith(".log"):
+                files.append(LOGS / f"bridge-transcript-{f.name[len(stem) + 1:-4]}.jsonl")
+        return files
 
     def archived(self) -> bool:
         """Whether this conversation is gone from the app side: archived (409) or
@@ -1591,6 +1613,10 @@ def cycle(hosts: "dict[str, Host]", repos: list[str], now: float, clock: Clock) 
     for h in hosts.values():
         if h.proc:
             h.bound_logs()     # archived and unused: drop its line
+    # #755's age cap rides this same tick: KeepAlive never restarts a healthy
+    # supervisor, so start-only let the dir refill. A running host's open files
+    # ride along in `keep`: their age is the run's quiet, not the record's end.
+    sweep_logs(keep={f for h in hosts.values() if h.proc for f in h.live_logs()})
     clock.last_idle_check = now
     return True
 
@@ -1626,7 +1652,7 @@ def main(argv: list[str]) -> int:
     signal.signal(signal.SIGTERM, lambda *_: stopping.append(1))
     signal.signal(signal.SIGINT, lambda *_: stopping.append(1))
     log(f"watching {config}")
-    sweep_logs()   # once per supervisor start; the hosts it starts only append
+    sweep_logs()   # boot sweep; cycle() repeats it every idle check (#758)
     while not stopping:
         stamp = mtime_of(config)
         if stamp != seen:
