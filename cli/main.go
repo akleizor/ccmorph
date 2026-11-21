@@ -125,7 +125,13 @@ func (l *launcher) dispatch(args []string) int {
 			return l.usage("run")
 		}
 	} else if first == "price" {
-		if helpAsked(rest) {
+		// Words after the -- are model names, so a --help there is looked up,
+		// not answered (#785), as a worker flag after a dispatch -- is (#784).
+		own := rest
+		if i := slices.Index(rest, "--"); i >= 0 {
+			own = rest[:i]
+		}
+		if helpAsked(own) {
 			return l.usage(first)
 		}
 	} else if first == "probe" || first == retiredVerb {
