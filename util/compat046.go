@@ -120,14 +120,19 @@ func v046ProjectPicker(args []string, _ io.Reader, _, errw io.Writer) int {
 	if len(args) != 7 {
 		return 2
 	}
-	ok := ProjectPicker(PickerIn{
+	switch ProjectPicker(PickerIn{
 		Home: args[0], Conf: args[1], Own: args[2], Tag: args[3], Profile: args[4],
 		Layer: args[5], Launch: args[6], ModelsJSON: os.Getenv("_CCM_MODELS_JSON"),
-	}, errw)
-	if !ok {
-		return 1
+	}, errw) {
+	case PickerDone:
+		return 0
+	case PickerUnreached:
+		// The launcher's fetch never answered; the route, not the profile, is
+		// what to look at (#723).
+		fmt.Fprintf(errw, "ccmorph: '%s': could not reach the model listing — check the route: ccmorph doctor %s\n", args[4], args[4])
+		return RCGatewayDown
 	}
-	return 0
+	return 1
 }
 
 // v046HazardSet is 6860fb5's util hazard-set: its operands all in the _CCM_ env.

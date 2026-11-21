@@ -414,7 +414,10 @@ chat-capable gateway catalogue, including models excluded from selection.
 Matching is exact and case-sensitive; derived `[1m]` variants and configured tier
 aliases targeting an excluded ID are excluded too. Cached rows are filtered even
 when discovery is offline. An exclusion that leaves no rows stops launch rather
-than accidentally restoring Claude's unrestricted picker.
+than accidentally restoring Claude's unrestricted picker. That refusal is for a
+gateway that answered; a gateway that answers nothing gets the wait and the
+retry-later exit status (75) that names the unreachable route instead — its
+silence is never reported as a picker to revise.
 
 This is picker configuration, not gateway access control. It does not delete model
 metadata or silently change the saved default. Remove the `.conf` field to stop
