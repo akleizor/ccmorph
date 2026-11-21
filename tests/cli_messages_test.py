@@ -430,6 +430,58 @@ def test_add_more_signins_names_the_machines_own_install_step_gh_369(tmp_path):
     assert 'router-for-me' not in result.stdout, result.stdout
 
 
+def test_add_claude_account_without_claude_names_the_missing_cli_gh_789(tmp_path):
+    """#789: Enter on the highlighted "Claude account" row on a machine whose
+    PATH holds no claude exited 1 with only "logout failed" — it named neither
+    the missing program nor the fix, and left no next step. The account
+    sign-in now asks the question `ccmorph run` asks first (#282): the one
+    sentence with the install link answers, for `add` and for `login`, and
+    saves nothing. Methods that exec no claude keep working with it absent,
+    and a PATH that holds one keeps the account flow reaching its own login."""
+    state, home, bindir, tmp = (tmp_path / d for d in ('state', 'home', 'bin', 'tmp'))
+    for d in (state, home, bindir, tmp):
+        d.mkdir()
+    env = {**os.environ, 'HOME': str(home), 'PATH': f'{bindir}:/usr/bin:/bin',
+           'TMPDIR': str(tmp), 'CCMORPH_STATE_DIR': str(state),
+           'CCMORPH_LIB_DIR': str(ROOT / 'lib')}
+    assert shutil.which('claude', path=env['PATH']) is None, 'the test PATH must not hold a claude'
+    result = subprocess.run([str(ROOT / 'bin/ccmorph'), 'add', 'demo'], env=env,
+                            input='sub\n', capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert CLAUDE_MISSING in result.stderr, result.stderr
+    assert 'logout failed' not in result.stderr, result.stderr
+    assert not (state / 'demo.conf').exists()
+    # login signs the same flow: a signed-out Claude account profile on the
+    # same PATH gets the same sentence, never the bare "login failed".
+    (state / 'demo.conf').write_text('type=sub\nemail=a@b.c\n')
+    result = subprocess.run([str(ROOT / 'bin/ccmorph'), 'login', 'demo'], env=env,
+                            input='', capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert CLAUDE_MISSING in result.stderr, result.stderr
+    assert 'login failed' not in result.stderr, result.stderr
+    assert (state / 'demo.conf').read_text() == 'type=sub\nemail=a@b.c\n'
+    # A method that execs no claude still adds with it absent.
+    (state / 'demo.conf').unlink()
+    anthropic_accepts_the_key(bindir)
+    result = subprocess.run([str(ROOT / 'bin/ccmorph'), 'add', 'demo'], env=env,
+                            input='token\nsk-ant-oat01-abcdefghij0123456789ABCD\n',
+                            capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'Added' in result.stdout, result.stdout
+    # The same sign-in on a PATH that does hold claude reaches its login:
+    # the answer above refuses only a machine with no claude to run. (The
+    # fake signs in no one, so the add still ends 1 — past the refusal.)
+    (bindir / 'claude').write_text('#!/bin/sh\nexit 0\n')
+    (bindir / 'claude').chmod(0o755)
+    (state / 'demo.conf').unlink()
+    shutil.rmtree(state / 'profiles' / 'demo', ignore_errors=True)
+    result = subprocess.run([str(ROOT / 'bin/ccmorph'), 'add', 'demo'], env=env,
+                            input='sub\n', capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert CLAUDE_MISSING not in result.stderr, result.stderr
+    assert 'no Claude account profile found after login' in result.stderr, result.stderr
+
+
 def test_run_without_claude_names_the_problem_and_the_path_it_searched(tmp_path):
     """#282: a launch that cannot find claude says what is missing, links its
     setup page and shows the PATH it searched (the sentence doctor and the
