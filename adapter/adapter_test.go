@@ -337,6 +337,33 @@ func TestDialectAutoFollowsMetadata(t *testing.T) { // test_protocol_uses_metada
 	}
 }
 
+// bodyTransport answers every request with one 200 body, no socket involved.
+type bodyTransport string
+
+func (b bodyTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: 200, Status: "200 OK",
+		Body:   io.NopCloser(strings.NewReader(string(b))),
+		Header: http.Header{"Content-Type": []string{"application/json"}}, Request: r}, nil
+}
+
+// #767: a 200 that is not a listing is no endpoint's empty one. dialectAuto
+// read data raw, so a proxy's error envelope declared "no per-model endpoint
+// declaration" — a confident verdict from a body that said nothing. It now
+// names the reply and stays cannot-tell; an empty data list keeps its own note.
+func TestDialectAutoRefusesANonListingReply(t *testing.T) {
+	for _, body := range []string{`{"error":"upstream down"}`, `{"data":{"id":"m"}}`} {
+		swap(t, &client, &http.Client{Transport: bodyTransport(body)})
+		dialect, note, status := dialectAuto("https://gw.invalid", "k", "m")
+		if dialect != "unusable" || !strings.Contains(note, "not a listing") || status != 0 {
+			t.Errorf("%s: got (%q, %q, %d), want cannot-tell naming the reply", body, dialect, note, status)
+		}
+	}
+	swap(t, &client, &http.Client{Transport: bodyTransport(`{"data":[]}`)})
+	if dialect, note, _ := dialectAuto("https://gw.invalid", "k", "m"); dialect != "unusable" || strings.Contains(note, "not a listing") {
+		t.Errorf("an empty data list: got (%q, %q), want the declaration note", dialect, note)
+	}
+}
+
 func TestDialectAutoDuplicateRowsUseFirstMatch(t *testing.T) { // test_duplicate_endpoint_declarations_use_first_matching_row
 	for _, c := range []struct {
 		first, second any

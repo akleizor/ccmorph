@@ -1680,6 +1680,10 @@ func TestListingStdinIgnoresGarbage(t *testing.T) {
 		{"[]", 0},
 		{`{"data": 5}`, 0},
 		{"", 0},
+		// #767: a 200 that is not a listing — a proxy's error envelope — is no
+		// endpoint's empty listing. It sizes nothing, as before, through the
+		// shared shape verdict rather than a raw data read.
+		{`{"error":{"type":"upstream_error"}}`, 0},
 		// The reading side: the same call sizes a well-formed listing, so the
 		// zeros above prove the garbage was parsed and refused, not ignored
 		// along with the body by a SizeListing that never reads its argument.

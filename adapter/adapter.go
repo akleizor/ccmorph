@@ -138,7 +138,12 @@ func TranslatorVerdict(base, cacheDir, model, listing string) (needed, known boo
 	rows := cachedRows(upstream, cache)
 	var doc map[string]any
 	_ = json.Unmarshal([]byte(listing), &doc)
-	data, _ := doc["data"].([]any)
+	data, verdict := ctxwindow.ListingShape(doc)
+	if verdict == ctxwindow.ListingNotAListing {
+		// A 200 that is not a listing declares nothing; only the cached rows
+		// decide the answer, and an uncached model stays undecided (#767).
+		data = nil
+	}
 	cached := func(m string) bool {
 		for _, r := range rows {
 			if r.Model == m {

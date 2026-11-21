@@ -96,11 +96,16 @@ func parseDay(s string) (time.Time, bool) {
 // else a dated miss that stops the lookup repeating for a week. Silent by
 // design: the outcome goes to the log, never to the person launching.
 func SizeListing(ctx context.Context, profile, body, base, key string, op Opener) int {
-	var rows []obj
 	doc, err := parseJSON([]byte(body))
-	top := asObj(doc)
-	if err != nil || top == nil {
+	if err != nil {
 		return 0 // not a listing: nothing to size
+	}
+	data, verdict := ListingShape(doc)
+	if verdict == ListingNotAListing {
+		// A 200 error envelope is no endpoint's empty listing, and reading it
+		// as one is the confident verdict #767's guard forbids. Nothing to
+		// size, and no profile read is spent on it.
+		return 0
 	}
 	// One read of the profile carries both the fields and the identity the
 	// save pins, so the conf and its sidecar are each opened once — the
@@ -109,7 +114,7 @@ func SizeListing(ctx context.Context, profile, body, base, key string, op Opener
 	if serr != nil || snap == nil {
 		return 0
 	}
-	rows = ListingRows(getv(top, "data"))
+	rows := ListingRows(data)
 	fields := snap.Fields
 	expected := snap.ID
 	known := DiscoveredValues(fields)

@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/akleizor/ccmorph/ctxwindow"
 )
 
 // --- model identity -----------------------------------------------------------
@@ -162,15 +164,12 @@ func (c *Catalogue) read(key string) (map[string][]string, bool) {
 	if !ok {
 		return nil, false
 	}
-	var rows []any
-	switch data := obj["data"].(type) {
-	case []any:
-		rows = data
-	case map[string]any, string:
-	default:
-		if _, present := obj["data"]; present {
-			return nil, false // not iterable
-		}
+	rows, verdict := ctxwindow.ListingShape(obj)
+	if verdict == ctxwindow.ListingNotAListing {
+		// A 200 that is not a listing — a proxy's error object, a wrapped
+		// reply — says nothing about what the gateway serves; reading it as an
+		// empty catalogue tells the caller it serves nothing (#767).
+		return nil, false
 	}
 	declarations := map[string][]string{}
 	countTokens := map[string]bool{}

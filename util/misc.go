@@ -205,11 +205,12 @@ func SettingsValid(paths ...string) bool {
 	return true
 }
 
-// modelsCountDoc is the length of data in a decoded model listing; false when it
-// has none.
+// modelsCountDoc is the length of data in a decoded model listing; false when
+// the reply is not a listing — a 200 error envelope, data absent or not a list
+// — which is no endpoint's empty one (#767).
 func modelsCountDoc(payload any) (int, bool) {
-	list, ok := getKey(asObj(payload), "data").([]any)
-	return len(list), ok
+	rows, verdict := ctxwindow.ListingShape(payload)
+	return len(rows), verdict != ctxwindow.ListingNotAListing
 }
 
 var pythonName = regexp.MustCompile(`(?i)^python(?:\d+(?:\.\d+)*)?$`)
@@ -306,23 +307,15 @@ func listenerOf(pid string) string {
 	return ""
 }
 
-// listing returns the entries of payload["data"], ok=false when the payload cannot be read like Python would.
+// listing returns the data list of a /v1/models payload, ok=false when the
+// reply is not a listing — a 200 error envelope, data absent or not a list —
+// which says nothing rather than serving an empty listing (#767).
 func listing(payload any) ([]any, bool) {
-	o := asObj(payload)
-	if o == nil {
+	rows, verdict := ctxwindow.ListingShape(payload)
+	if verdict == ctxwindow.ListingNotAListing {
 		return nil, false
 	}
-	d, has := o.Get("data")
-	if !has {
-		return nil, true
-	}
-	switch t := d.(type) {
-	case []any:
-		return t, true
-	case string, *ordjson.Obj:
-		return nil, true
-	}
-	return nil, false
+	return rows, true
 }
 
 // DeniedForChat is whether a listing row's own capabilities deny it for chat —

@@ -30,6 +30,10 @@ func TestTranslatorVerdict(t *testing.T) {
 		needed, ok bool
 	}{
 		{"no cache, no listing", nil, "", "", false, false},
+		// #767: a 200 that is not a listing declares nothing, exactly as no
+		// listing does — it must not read as an endpoint's empty one.
+		{"no cache, an error envelope", nil, `{"error":"upstream down"}`, "", false, false},
+		{"cached anthropic plus an error envelope", []Row{cached("m-a", "anthropic")}, `{"error":"upstream down"}`, "", false, true},
 		{"cached anthropic", []Row{cached("m-a", "anthropic")}, "", "", false, true},
 		{"cached responses", []Row{cached("m-o", "responses")}, "", "", true, true},
 		{"declared messages", nil, declares("m-a", "/v1/messages"), "", false, true},
