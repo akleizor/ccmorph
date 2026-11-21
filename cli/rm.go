@@ -63,12 +63,14 @@ func (l *launcher) rm(args []string) int {
 			}
 			return 1
 		}
-	} else if isTTY(0) && isTTY(2) {
+	} else {
 		// The removal the help page caps with "This cannot be undone" must ask
-		// the terminal that reads that cap (#652), the same way the leftover
-		// branch above already asks about its leftovers. Piped input keeps its
-		// line-based, unattended behavior for scripts (docs/guide.md): it is the
-		// terminal that carries the promise.
+		// whoever runs rm, not only a terminal (#652): the same question the
+		// leftover branch above asks, answered off a terminal by one line of
+		// stdin exactly as every other [y/N] prompt is, defaulting to No like
+		// the guide says (docs/guide.md). Deleting on an unanswered prompt is
+		// not reachable (#724): a piped "n" is an answer of No, and a stdin
+		// that closes without one names the ways through instead of removing.
 		detail := "  " + l.conf(name)
 		if paths.Lexists(pdir) {
 			detail += "\n  " + pdir
@@ -78,10 +80,15 @@ func (l *launcher) rm(args []string) int {
 		}
 		fmt.Fprintf(os.Stderr, "Remove profile '%s', its saved credential and private sign-in state?\n%s\nShared conversation history will be kept. This cannot be undone.\n", name, detail)
 		if rc := uiConfirm("Remove this profile?"); rc != 0 {
-			// A leave (rc 2) is already answered by the picker's own Cancelled
-			// line, as in the leftover branch; there is no second way to reach
-			// here with rc 2 without a terminal to show it on.
-			if rc != 2 {
+			switch {
+			case rc == 2 && !isTTY(0):
+				// The stdin closed without an answer and no terminal was
+				// there to show the prompt on: name both ways through (#724).
+				l.err("no answer to confirm; nothing removed — confirm in a terminal, or pipe the answer: printf 'y' | ccmorph rm " + name)
+			case rc != 2:
+				// A leave (rc 2) is already answered by the picker's own
+				// Cancelled line, as in the leftover branch; there is no
+				// second way to reach here with rc 2 on a terminal.
 				l.err("cancelled; nothing removed")
 			}
 			return 1

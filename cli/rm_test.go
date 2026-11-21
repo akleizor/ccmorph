@@ -9,6 +9,25 @@ import (
 	"github.com/akleizor/ccmorph/profile"
 )
 
+// answerRmPrompt holds os.Stdin at a pipe carrying `answer` for a whole rm:
+// removal asks whoever runs it, not only a terminal (#724), so an in-process
+// rm must come with its answer. One line is all the [y/N] prompt reads; a
+// second call overwrites the pipe with its own answer.
+func answerRmPrompt(t *testing.T, answer string) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.WriteString(answer); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	old := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = old; r.Close() })
+}
+
 // GH-449: names over MaxNameLen became invalid in #373, and rm used the same
 // gate, so a profile made before the limit could only be deleted by hand. rm
 // now accepts the legacy range; a name past it is still refused untouched.
@@ -32,6 +51,7 @@ func TestRmRemovesAProfileMadeBeforeTheNameLimit(t *testing.T) {
 		// The lock re-exec would start ccmorph-core; being already the locked
 		// child is what a test of the removal itself needs.
 		t.Setenv("CCMORPH_CONTEXT_LOCKED", name)
+		answerRmPrompt(t, "y\n")
 		if rc := l.rm([]string{name}); rc != 0 {
 			t.Fatalf("rm refused a %d-byte legacy name: rc %d", length, rc)
 		}
@@ -45,6 +65,11 @@ func TestRmRemovesAProfileMadeBeforeTheNameLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("CCMORPH_CONTEXT_LOCKED", name)
+	// The answer is held for the name gate too: with no stdin the prompt's
+	// own EOF refusal could stand in for the validation refusal, and a
+	// validator widened by one would pass for the wrong reason (#724 gate).
+	// With the Yes held, only the name gate itself can refuse this rm.
+	answerRmPrompt(t, "y\n")
 	if rc := l.rm([]string{name}); rc == 0 {
 		t.Fatal("rm must still refuse a name whose bridge file would exceed NAME_MAX")
 	}

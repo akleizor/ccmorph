@@ -278,7 +278,10 @@ API-key profiles.
 Use `rm` and `mv` instead of deleting or renaming `.conf` files by hand. Both
 manual context overrides and discovered context data live in the one `.conf`, so
 these commands move or remove them along with everything else — no separate
-registry file, no prefix bookkeeping. The profile's conversation
+registry file, no prefix bookkeeping. `rm` always confirms first, defaulting to
+**No**: a terminal is asked **No / Yes**, a pipe answers the `[y/N]` prompt with
+one line (`printf 'y' | ccmorph rm <profile>`), and a stdin holding no answer
+removes nothing, naming the command that confirms. The profile's conversation
 history is not deleted: shared sessions already live in `~/.claude/projects`,
 and a profile still on its own history moves into it, where any profile can
 still resume a session by id. If a `.conf` was removed manually, `rm` recognizes any
