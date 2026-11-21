@@ -140,10 +140,13 @@ func commandStart(code string, at int) int {
 // it going on. Nothing inside a word starts a token: an escaped byte (x\;#,
 // x\ #) is a word byte, and so is everything zsh reads as text, not commands:
 // a quoted string (', ", $'...'), ${...}, a word's own parentheses ((#i), a
-// (#qN) qualifier, $(( )) arithmetic), a case pattern and a here-document
-// body. Text runs nothing, so a mention of compinit in it is answered as the
-// scan before #582 answered it (#555): a line's text from an unquoted # at the
-// line's start or after a blank is cut, the rest of the text counts.
+// (#qN) qualifier, $(( )) arithmetic) and a case pattern. Text runs nothing,
+// so a mention of compinit in it is answered as the scan before #582 answered
+// it (#555): a line's text from an unquoted # at the line's start or after a
+// blank is cut, the rest of the text counts. A here-document body is not rc
+// commands at all, so it is cut, all but the $( ) and ` ` an unquoted one
+// expands, which run (heredocBody). A case statement ends at esac or }, as
+// zsh's does, whether it opened with in or {.
 func zshCode(rc string) string {
 	l := newLexer(rc)
 	l.run()
@@ -196,6 +199,9 @@ type lexFrame struct {
 	phase      casePhase // a case frame's place in its statement
 	seen       bool      // a case frame has read its subject word
 	lead       bool      // the case pattern began with (
+	braced     bool      // a case frame opened with { rather than in: } ends it
+	groups     int       // { } groups open in a braced case's commands
+	here       bool      // a dquote frame holding an unquoted here-document body: " does not close it
 	depth      int       // ( or { open inside a word, brace or pattern frame
 }
 
@@ -205,8 +211,9 @@ func newCode(sub bool) *lexFrame {
 
 // heredoc is a here-document whose body begins after the next newline.
 type heredoc struct {
-	term  string // the line that ends the body, its quotes removed
-	strip bool   // <<- : leading tabs do not count against term
+	term   string // the line that ends the body, its quotes removed
+	strip  bool   // <<- : leading tabs do not count against term
+	quoted bool   // the delimiter is quoted, so the body is data zsh never expands
 }
 
 type lexer struct {
@@ -259,14 +266,16 @@ func (l *lexer) cut() []bool {
 // parses reports whether, after run, src closed everything it opened that
 // zsh needs closed: an unclosed quote, ${ }, substitution, subshell, array or
 // case statement is a parse error. A word's own ( ) may stay open, as zsh
-// reads it on as a pattern.
+// ends that word where it ends any other and fails it later as a bad
+// pattern; the lexer reads on past it as text instead, so a frame it opened
+// after an open ( proves nothing, and src is taken to parse.
 func (l *lexer) parses() bool {
 	for _, f := range l.stack[1:] {
-		if f.kind != wordFrame {
-			return false
+		if f.kind == wordFrame {
+			return true
 		}
 	}
-	return true
+	return len(l.stack) == 1
 }
 
 func (l *lexer) push(f *lexFrame) { l.stack = append(l.stack, f) }
@@ -333,6 +342,10 @@ func (l *lexer) step(i int) int {
 // array, or a case frame's subject and bodies.
 func (l *lexer) code(f *lexFrame, i int) int {
 	c := l.src[i]
+	if c == '{' && f.kind == caseFrame && f.phase == caseSubject && f.seen && f.tokenStart {
+		f.phase, f.braced = casePatterns, true // case WORD { ... }
+		return i
+	}
 	switch c {
 	case ' ', '\t', '\n', ';', '&', '|', ')':
 		if l.endWord(f, i) {
@@ -436,7 +449,16 @@ func (l *lexer) endWord(f *lexFrame, i int) bool {
 			f.phase = casePatterns
 		}
 		f.seen = true
+	case f.kind == caseFrame && f.braced && w == "}":
+		if f.groups == 0 {
+			l.pop()
+			return true
+		}
+		f.groups--
 	case f.kind == arrayFrame || !f.wordCmd:
+	case f.kind == caseFrame && w == "{":
+		f.groups++
+		f.cmdPos = true
 	case f.kind == caseFrame && w == "esac":
 		l.pop()
 		return true
@@ -516,7 +538,7 @@ func (l *lexer) inWord(f *lexFrame, i int) int {
 	case c == '`':
 		return l.backquote(i, f.kind == dquoteFrame || f.dquoted)
 	case f.kind == dquoteFrame:
-		if c == '"' {
+		if c == '"' && !f.here {
 			l.pop()
 		}
 	case c == '"':
@@ -599,7 +621,7 @@ func (l *lexer) patterns(f *lexFrame, i int) int {
 // esac where a pattern would begin ends the statement.
 func (l *lexer) pattern(f *lexFrame, i int) int {
 	c := l.src[i]
-	if f.depth == 0 && strings.IndexByte(" \t\n;&|)", c) >= 0 && l.src[f.word:i] == "esac" {
+	if w := l.src[f.word:i]; f.depth == 0 && strings.IndexByte(" \t\n;&|)<>", c) >= 0 && (w == "esac" || w == "}") {
 		l.pop()
 		return i - 1
 	}
@@ -644,10 +666,21 @@ func (l *lexer) heredoc(f *lexFrame, i int) int {
 	}
 	var term strings.Builder
 	quoted := false
-	for j < len(l.src) && strings.IndexByte(" \t\n;&|<>()`$", l.src[j]) < 0 {
+	for j < len(l.src) && strings.IndexByte(" \t\n;&|<>()`", l.src[j]) < 0 {
+		if l.src[j] == '$' && l.src[j+1] == '\'' {
+			end := ansiEnd(l.src, j+2)
+			if end < 0 {
+				return i
+			}
+			term.WriteString(ansiDecode(l.src[j+2 : end]))
+			quoted = true
+			j = end + 1
+			continue
+		}
 		switch c := l.src[j]; c {
 		case '\\':
 			term.WriteByte(l.src[j+1])
+			quoted = true
 			j += 2
 		case '\'', '"':
 			end := strings.IndexByte(l.src[j+1:], c)
@@ -665,9 +698,94 @@ func (l *lexer) heredoc(f *lexFrame, i int) int {
 	if term.Len() == 0 && !quoted {
 		return i // no delimiter word; <<'' is an empty one and does count
 	}
-	l.heredocs = append(l.heredocs, heredoc{term: term.String(), strip: strip})
+	l.heredocs = append(l.heredocs, heredoc{term: term.String(), strip: strip, quoted: quoted})
 	f.word, f.tokenStart = -1, false
 	return j - 1
+}
+
+// ansiEnd returns the index of the ' that closes the $'...' whose text begins
+// at from, where a backslash escapes the byte after it, or -1 when none does.
+func ansiEnd(src string, from int) int {
+	for k := from; k < len(src); k++ {
+		switch src[k] {
+		case '\\':
+			k++
+		case '\'':
+			return k
+		}
+	}
+	return -1
+}
+
+// ansiDecode returns the text of a $'...' with its escapes decoded as zsh
+// decodes them (\n, \t, \', \\, \xHH, an octal \NNN and kin), so a
+// here-document delimiter spelled $'E\x46' ends at a line reading EF. An
+// escape it does not know keeps its backslash.
+func ansiDecode(s string) string {
+	var b strings.Builder
+	for k := 0; k < len(s); k++ {
+		if s[k] != '\\' || k+1 == len(s) {
+			b.WriteByte(s[k])
+			continue
+		}
+		k++
+		switch c := s[k]; c {
+		case 'a':
+			b.WriteByte('\a')
+		case 'b':
+			b.WriteByte('\b')
+		case 'e', 'E':
+			b.WriteByte(0x1b)
+		case 'f':
+			b.WriteByte('\f')
+		case 'n':
+			b.WriteByte('\n')
+		case 'r':
+			b.WriteByte('\r')
+		case 't':
+			b.WriteByte('\t')
+		case 'v':
+			b.WriteByte('\v')
+		case '\\', '\'', '"':
+			b.WriteByte(c)
+		case 'x':
+			n, used := 0, 0
+			for used < 2 && k+1 < len(s) && hexDigit(s[k+1]) >= 0 {
+				n = n*16 + hexDigit(s[k+1])
+				k++
+				used++
+			}
+			if used == 0 {
+				b.WriteString(`\x`)
+				continue
+			}
+			b.WriteByte(byte(n))
+		case '0', '1', '2', '3', '4', '5', '6', '7':
+			n := int(c - '0')
+			for used := 1; used < 3 && k+1 < len(s) && '0' <= s[k+1] && s[k+1] <= '7'; used++ {
+				n = n*8 + int(s[k+1]-'0')
+				k++
+			}
+			b.WriteByte(byte(n))
+		default:
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+// hexDigit is the value of the hex digit c, or -1 when c is not one.
+func hexDigit(c byte) int {
+	switch {
+	case '0' <= c && c <= '9':
+		return int(c - '0')
+	case 'a' <= c && c <= 'f':
+		return int(c-'a') + 10
+	case 'A' <= c && c <= 'F':
+		return int(c-'A') + 10
+	}
+	return -1
 }
 
 // newline reads the bodies of the here-documents queued on the line the
@@ -676,24 +794,51 @@ func (l *lexer) heredoc(f *lexFrame, i int) int {
 func (l *lexer) newline(i int) int {
 	j := i + 1
 	for _, h := range l.heredocs {
+		body, end := j, len(l.src) // the body ends at its delimiter line, or with the rc
 		for j < len(l.src) {
 			start := j
-			end := strings.IndexByte(l.src[j:], '\n') + j
-			for k := start; k <= end; k++ {
-				l.text[k] = true
-			}
-			j = end + 1
-			line := l.src[start:end]
+			stop := strings.IndexByte(l.src[j:], '\n') + j
+			j = stop + 1
+			line := l.src[start:stop]
 			if h.strip {
 				line = strings.TrimLeft(line, "\t")
 			}
 			if line == h.term {
+				end = start
+				for k := start; k < stop; k++ {
+					l.drop[k] = true // the delimiter line
+				}
 				break
 			}
 		}
+		l.heredocBody(body, end, h.quoted)
 	}
 	l.heredocs = nil
 	return j - 1
+}
+
+// heredocBody cuts the here-document body src[from:to], which zsh never runs
+// as commands: a quoted delimiter's body is data, and an unquoted one's is
+// expanded as a double-quoted string is, so only the commands of a $( ) or
+// ` ` inside it run. Those are lexed as they are anywhere else; the rest is
+// cut, its newlines kept so the lines stay apart.
+func (l *lexer) heredocBody(from, to int, quoted bool) {
+	if quoted {
+		for k := from; k < to; k++ {
+			if l.src[k] != '\n' {
+				l.drop[k] = true
+			}
+		}
+		return
+	}
+	inner := newLexer(l.src[from:to])
+	inner.push(&lexFrame{kind: dquoteFrame, here: true})
+	inner.run()
+	for k := from; k < to; k++ {
+		if inner.drop[k-from] || inner.text[k-from] && l.src[k] != '\n' {
+			l.drop[k] = true
+		}
+	}
 }
 
 // textComment is where the scan before #582 cut a line: at an unquoted # at

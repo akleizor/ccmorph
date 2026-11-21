@@ -158,6 +158,22 @@ func TestCompinitDetectionReadsOnlyLinesThatRun(t *testing.T) {
 		{"x=`print -r -- $'a\\\\';# autoload -Uz compinit && compinit`; print -r -- $x\n", false},
 		{"x=`print -r -- $'a\\\\\\\\'; autoload -Uz compinit && compinit`; print -r -- $x\n", true},
 		{"x=`<<<'x'(;autoload -Uz compinit && compinit`; print -r -- $x\n", true},
+		// #582 review: a body that only looked unclosed to the lexer is not cut.
+		// case WORD { ... } closes at }, and esac or } ends either case form.
+		{"x=`case x { x) autoload -Uz compinit && compinit ;; }`; print -r -- \"$x\"\n", true},
+		{"x=`case x { x) { print -r -- a; } }; autoload -Uz compinit && compinit`; print -r -- \"$x\"\n", true},
+		{"case x { y) : ;; };# autoload -Uz compinit && compinit\n", false},
+		{"case a in }; autoload -Uz compinit && compinit\n", true},
+		// A here-document delimiter is quote-removed, never expanded, and its
+		// body runs nothing but the $( ) and ` ` an unquoted one expands.
+		{"x=`cat <<$'EOF'\ndon't\nEOF\nautoload -Uz compinit && compinit`; print -r -- \"$x\"\n", true},
+		{"x=`cat <<$x\ndon't\n$x\nautoload -Uz compinit && compinit`; print -r -- \"$x\"\n", true},
+		{"cat <<$\"EOF\" >/dev/null\ndon't\nEOF\nautoload -Uz compinit && compinit\n", false},
+		{"cat <<$'E\\x46' >/dev/null\nit's\nEF\nautoload -Uz compinit && compinit\n", true},
+		{"cat <<'EOF' >/dev/null\nautoload -Uz compinit && compinit\nEOF\n", false},
+		{"cat <<EOF >/dev/null\nautoload -Uz compinit && compinit\nEOF\n", false},
+		{"cat <<EOF\n$(autoload -Uz compinit && compinit)\nEOF\n", true},
+		{"cat <<\\EOF\n$(autoload -Uz compinit && compinit)\nEOF\n", false},
 	} {
 		if got := CompinitRuns([]byte(c.rc)); got != c.want {
 			t.Errorf("CompinitRuns(%q) = %v, want %v", c.rc, got, c.want)
@@ -395,15 +411,47 @@ func TestCompinitDetectionMatchesZshOnWordStartsAndCRs(t *testing.T) {
 		"eval `dircolors -b 2>/dev/null`\nautoload -Uz compinit;# compinit\n",
 		"export GPG_TTY=`tty` # for gpg\nautoload -Uz compinit && compinit\n",
 		"[[ `uname` == Darwin ]] && export CLICOLOR=1 # mac\n# autoload -Uz compinit && compinit\n",
+		// #582 review: case WORD { ... } is zsh's other case form, and esac or }
+		// ends either form, so a body holding one closes and runs.
+		"x=`case x { x) autoload -Uz compinit && compinit ;; }`; print -r -- \"$x\"\n",
+		"x=`case x { x) { print -r -- a; } }; autoload -Uz compinit && compinit`; print -r -- \"$x\"\n",
+		"x=`case x {x) autoload -Uz compinit && compinit;; }`; print -r -- \"$x\"\n",
+		"case x { y) : ;; };# autoload -Uz compinit && compinit\n",
+		"case x { x) print -r -- a }; autoload -Uz compinit && compinit\n",
+		"case x { x) print -r -- a };# autoload -Uz compinit && compinit\n",
+		"case a in }; autoload -Uz compinit && compinit\n",
+		"case a { a) : ;; esac;# autoload -Uz compinit && compinit\n",
+		// A here-document delimiter is quote-removed, never expanded: $'EOF'
+		// is EOF, $"EOF" is $EOF and $x is $x. A quoted delimiter's body is data;
+		// an unquoted one runs only the $( ) and ` ` it expands.
+		"x=`cat <<$'EOF'\ndon't\nEOF\nautoload -Uz compinit && compinit`; print -r -- \"$x\"\n",
+		"x=`cat <<$x\ndon't\n$x\nautoload -Uz compinit && compinit`; print -r -- \"$x\"\n",
+		"cat <<$\"EOF\" >/dev/null\ndon't\nEOF\nautoload -Uz compinit && compinit\n",
+		"cat <<$x >/dev/null\ndon't\n$x\nautoload -Uz compinit && compinit\n",
+		"cat <<$'E\\x46' >/dev/null\nit's\nEF\nautoload -Uz compinit && compinit\n",
+		"cat <<'EOF' >/dev/null\nautoload -Uz compinit && compinit\nEOF\n",
+		"cat <<EOF >/dev/null\nautoload -Uz compinit && compinit\nEOF\n",
+		"cat <<EOF\n$(autoload -Uz compinit && compinit)\nEOF\n",
+		"cat <<EOF\n`autoload -Uz compinit && compinit`\nEOF\n",
+		"cat <<\\EOF\n$(autoload -Uz compinit && compinit)\nEOF\n",
+		"cat <<\"EOF\"\n`autoload -Uz compinit && compinit`\nEOF\n",
+		"cat <<EOF\n$(print -r -- a # autoload -Uz compinit && compinit\n)\nEOF\n",
+		"<<$E\n;#compinit\n",
 	} {
 		if err := os.WriteFile(rcFile, []byte(rc), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		// -f: the operator's own startup files take no part. The temp
 		// functions dir is first on fpath, so `autoload -Uz compinit` finds
-		// the marker function, and ZSH names the loader the rc sources.
-		out, _ := exec.Command(zsh, "-f", "-c",
-			`fpath=("$1" $fpath); ZSH=$2; source "$3"`, "compinit-oracle", fnDir, omzDir, rcFile).Output()
+		// the marker function, and ZSH names the loader the rc sources. The
+		// environment is the test's own, not the caller's: a fixture such as
+		// ${y:-`...`} would otherwise run or skip its backquote by whether the
+		// caller happened to set y.
+		cmd := exec.Command(zsh, "-f", "-c",
+			`fpath=("$1" $fpath); ZSH=$2; source "$3"`, "compinit-oracle", fnDir, omzDir, rcFile)
+		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + dir, "LC_ALL=C"}
+		cmd.Dir = dir
+		out, _ := cmd.Output()
 		ran := strings.Contains(string(out), marker)
 		if got := CompinitRuns([]byte(rc)); got != ran {
 			t.Errorf("CompinitRuns(%q) = %v, zsh ran compinit = %v", rc, got, ran)
