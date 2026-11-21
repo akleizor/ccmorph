@@ -1050,8 +1050,27 @@ func TestQuotaBalance(t *testing.T) {
 		"api.z.ai/api/biz/account/query-customer-account-report":         `{"success":true,"data":{"availableBalance":7}}`,
 		"open.bigmodel.cn/api/biz/account/query-customer-account-report": `{"success":false,"msg":"token expired or incorrect"}`,
 	}
-	var sent []string
+	// #726: each gateway line's own endpoint is also asked for its model
+	// listing. Those probes are named here host by host and logged apart, so
+	// sent below still holds the balance requests alone and every check made
+	// on it reads a balance request, never a probe.
+	probes := map[string]bool{
+		"api.deepseek.com/anthropic/v1/models":     true,
+		"openrouter.ai/api/v1/models":              true,
+		"api.moonshot.ai/anthropic/v1/models":      true,
+		"api.siliconflow.cn/v1/models":             true,
+		"api.z.ai/api/anthropic/v1/models":         true,
+		"open.bigmodel.cn/api/anthropic/v1/models": true,
+		"api.stepfun.ai/step_plan/v1/models":       true,
+		"api.deepseek.com/v1/models":               true,
+		"gateway.example/v1/models":                true,
+	}
+	var sent, probed []string
 	useTransport(t, func(r *http.Request) (*http.Response, error) {
+		if probes[r.URL.Host+r.URL.Path] {
+			probed = append(probed, r.URL.Host+r.URL.Path+" "+r.Header.Get("Authorization"))
+			return reply(200, `{"data":[]}`), nil
+		}
 		sent = append(sent, r.URL.Host+" "+r.Header.Get("Authorization"))
 		if strings.HasSuffix(r.Header.Get("Authorization"), "bad") {
 			return reply(401, ""), nil
@@ -1103,10 +1122,120 @@ func TestQuotaBalance(t *testing.T) {
 	if strings.Contains(joined, "sk-gw") || !strings.Contains(joined, "api.z.ai zk") || !strings.Contains(joined, "Bearer sk-ds") {
 		t.Fatalf("sent %v", sent)
 	}
+	// #726: each profile's listing probe went once to its own base URL's host,
+	// carrying that profile's own key, and nowhere else.
+	wantProbes := []string{
+		"api.deepseek.com/anthropic/v1/models Bearer sk-ds",
+		"openrouter.ai/api/v1/models Bearer sk-or",
+		"api.moonshot.ai/anthropic/v1/models Bearer sk-k",
+		"api.siliconflow.cn/v1/models Bearer sk-sf",
+		"api.z.ai/api/anthropic/v1/models Bearer zk",
+		"open.bigmodel.cn/api/anthropic/v1/models Bearer refused",
+		"api.stepfun.ai/step_plan/v1/models Bearer sk-st",
+		"api.deepseek.com/v1/models Bearer bad",
+		"gateway.example/v1/models Bearer sk-gw",
+	}
+	sort.Strings(probed)
+	sort.Strings(wantProbes)
+	if strings.Join(probed, ",") != strings.Join(wantProbes, ",") {
+		t.Fatalf("probes\n got %v\nwant %v", probed, wantProbes)
+	}
 	out, _, _ := run(t, nil, "ds\tgateway\thttps://api.deepseek.com/anthropic\t\tsk-ds\n")
 	if want := "API key and provider profiles\nds\n  not used this month\n  balance ¥40.75\n\n" +
 		"receipts: ~/xdg/ccmorph/usage\n"; out != want {
 		t.Fatalf("\n got %q\nwant %q", out, want)
+	}
+}
+
+// #726: an endpoint that answered nothing must not print as a month with no
+// spend. A gateway whose endpoint is silent says its spend is from local
+// receipts only and names the command that checks the endpoint; a reachable
+// gateway with no spend keeps the bare row. In JSON the two rows carry the
+// same difference through one field: checked.
+func TestQuotaUnreachableGatewayIsNotAZeroMonth(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	useTransport(t, func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "gw-down.example" {
+			return nil, fmt.Errorf("dial gw-down.example: no answer")
+		}
+		return reply(200, `{"data":[]}`), nil
+	})
+	in := "gw-down\tgateway\thttps://gw-down.example\t\tk1\n" +
+		"gw-up\tgateway\thttps://gw-up.example\t\tk2"
+	out, errOut, code := run(t, nil, in)
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut)
+	}
+	down := "gw-down\n  not used this month\n" +
+		"  gateway not reachable — spend from local receipts only\n" +
+		"  check it: ccmorph doctor gw-down\n"
+	up := "gw-up\n  not used this month\n"
+	if !strings.Contains(out, down) || !strings.Contains(out, up) {
+		t.Fatalf("the two rows do not differ as promised:\n%q", out)
+	}
+	jout, _, code := run(t, []string{"--json"}, in)
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	var doc struct {
+		Profiles []struct {
+			Profile string `json:"profile"`
+			Checked *bool  `json:"checked"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal([]byte(jout), &doc); err != nil {
+		t.Fatalf("%v: %s", err, jout)
+	}
+	checked := map[string]*bool{}
+	for _, p := range doc.Profiles {
+		checked[p.Profile] = p.Checked
+	}
+	if c := checked["gw-down"]; c == nil || *c {
+		t.Fatalf("gw-down checked %v, want false: %s", c, jout)
+	}
+	if c := checked["gw-up"]; c == nil || !*c {
+		t.Fatalf("gw-up checked %v, want true: %s", c, jout)
+	}
+}
+
+// #726: the reachability probe answers once and goes nowhere else. Go drops
+// Authorization across a cross-host redirect but not a custom x-api-key, so
+// following a gateway's redirect would hand the profile's credential to the
+// host the endpoint names. The key stays on the host the profile's own base URL
+// names, and the redirect still counts as the answer it is: the row is not
+// marked unchecked.
+func TestQuotaProbeCarriesTheKeyOnlyToItsOwnHost(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	var hosts []string
+	useTransport(t, func(r *http.Request) (*http.Response, error) {
+		hosts = append(hosts, r.URL.Host+" "+r.Header.Get("x-api-key"))
+		if r.URL.Host != "gw-302.example" {
+			return reply(200, `{"data":[]}`), nil
+		}
+		moved := reply(302, "")
+		moved.Header.Set("Location", "https://elsewhere.example/v1/models")
+		return moved, nil
+	})
+	jout, _, code := run(t, []string{"--json"}, "gw\tgateway\thttps://gw-302.example\t\tsk-secret\n")
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if strings.Join(hosts, ",") != "gw-302.example sk-secret" {
+		t.Fatalf("the probe left its own host: %v", hosts)
+	}
+	var doc struct {
+		Profiles []struct {
+			Profile string `json:"profile"`
+			Checked *bool  `json:"checked"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal([]byte(jout), &doc); err != nil {
+		t.Fatalf("%v: %s", err, jout)
+	}
+	if len(doc.Profiles) != 1 || doc.Profiles[0].Checked == nil || !*doc.Profiles[0].Checked {
+		t.Fatalf("a redirect is an answer, so the row is not unchecked: %s", jout)
 	}
 }
 

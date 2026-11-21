@@ -693,7 +693,11 @@ A turn whose model had no price is never read as free: when no turn of the month
 a cost, the profile shows the turns and tokens it served and `cost unknown`, and its
 budget bar says `cost unknown` in place of a percent — never the 0% of a month with no
 spend; when only some did, a second line says how many turns had no price; and a profile
-with no receipts this month says `not used this month`.
+with no receipts this month says `not used this month`. An API-key gateway's own endpoint
+is also asked whether it answers (its model list, a free GET, the way doctor asks it):
+when it answers nothing, the row adds `gateway not reachable — spend from local receipts
+only` and names `ccmorph doctor`, so the zero of a dead gateway never reads as a free
+month.
 A Claude account, Claude token or provider profile writes the same receipts: a Claude account is not
 billed per token, so its row carries `estimated_cost` at the models.dev list price and
 the screen marks it `(est.)`. `usage_route=direct` turns that off for one profile.
@@ -704,7 +708,8 @@ never sent to any other host.
 
 `ccmorph quota --json` prints the same data for tools (profile, kind, plan, windows with
 `used` as a fraction and `resets_at` as a Unix second, `read_at`, `age_seconds`, `stale`,
-`error`, `spend`, and `balance`).
+`error`, `spend`, `balance`, and, on a gateway row, `checked`: `false` when the endpoint
+answered nothing this run, so the spend beside it is local receipts only).
 
 ## What is isolated, and what is shared
 

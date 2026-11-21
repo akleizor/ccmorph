@@ -1010,8 +1010,11 @@ account and Codex profiles; a pasted Claude token cannot read it. A
 rate-limited or unreachable read shows the last good reading and its age.
 Gateways and API keys show today's and this month's billed spend from their
 receipts, and the account balance where the provider publishes one (DeepSeek,
-Kimi, GLM, OpenRouter, SiliconFlow, StepFun). --json prints the same data for
-tools. No inference, nothing billed.
+Kimi, GLM, OpenRouter, SiliconFlow, StepFun). An API-key gateway's endpoint is
+also asked whether it answers: when it answers nothing, the row says its spend
+is from local receipts only and names ccmorph doctor, and --json carries that
+as checked:false. --json prints the same data for tools. No inference, nothing
+billed.
 Omit the profile to list every profile.`},
 	// The router page is an interpreted string, not a raw one: no backtick
 	// appears anywhere in this entry, so the path line visibly ends at
