@@ -427,7 +427,10 @@ old tool result whose tool is no longer declared in the request (the gateway's
 `Tool reference '…' not found in available tools`) is sent as text naming the tool;
 declared references and saved transcripts are untouched. A `400` on a message
 request that carries `thinking` blocks is retried once without them (one line on the
-shim's stderr each time); whatever the second answer is, you get it.
+shim's stderr each time); if the retry is refused with another 4xx, you get the first
+refusal. On
+a model the translator serves on its chat path, the retry keeps the block that
+carries Gemini's thought signatures.
 
 Three optional profile keys, relaunch to apply:
 

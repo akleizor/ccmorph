@@ -17,6 +17,16 @@
 
 ### Fixed
 
+- **A Gemini 4 tool call keeps its thought signature when the shim retries
+  it, and a refusal for a missing one says so in one line.** On a model the
+  translator serves on its chat path, the retry after a 400 keeps the block
+  that carries Gemini's signatures; a direct route and Anthropic models still
+  get the full strip. Only Gemini's own missing-signature 400 is rewritten,
+  into one line that names the translator upgrade (or, on a direct route, the
+  gateway). Only that refusal is rewritten: one that merely quotes the sentence
+  passes through. A retry refused with a non-retryable 4xx delivers the
+  upstream's first 400; a 429 passes through and counts against the breaker
+  (#646).
 - **A `uv run` without memorized flags can no longer run the pytest suite
   serially.** The pytest packages ride in pyproject.toml's default `test`
   group, so the command a session types from memory — without

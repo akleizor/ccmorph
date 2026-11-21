@@ -8,6 +8,8 @@
 //
 //	CCMORPH_AFFINITY_HEADER=<name>   header that carries the Claude Code session id
 //	CCMORPH_USER_AGENT=<template>    outbound User-Agent; {version} is the client's claude-cli version
+//	CCMORPH_TRANSLATOR_CHAT_MODELS=<ids>        comma-separated chat-path model ids
+//	CCMORPH_TRANSLATOR_CHAT_MODELS_FILE=<path>  the same ids in a file, reread on each resend
 //	CCMORPH_QUIRKS=off               no hooks at all: the shim passes requests through untouched
 //
 // On by default: dangling tool_reference repair, and one resend without thinking
@@ -43,7 +45,48 @@ func FromGetenv(getenv func(string) string) (shim.Hooks, error) {
 	if strings.TrimSpace(getenv("CCMORPH_QUIRKS")) == "off" {
 		return shim.Hooks{}, nil
 	}
-	return build(getenv("CCMORPH_AFFINITY_HEADER"), getenv("CCMORPH_USER_AGENT"))
+	h, err := build(getenv("CCMORPH_AFFINITY_HEADER"), getenv("CCMORPH_USER_AGENT"))
+	if err != nil {
+		return shim.Hooks{}, err
+	}
+	chat := modelSet(getenv("CCMORPH_TRANSLATOR_CHAT_MODELS"))
+	file := strings.TrimSpace(getenv("CCMORPH_TRANSLATOR_CHAT_MODELS_FILE"))
+	if len(chat) > 0 || file != "" {
+		h.ResendBody = func(request, _ []byte) []byte { return stripThinking(request, chatNow(chat, file)) }
+	}
+	return h, nil
+}
+
+// chatNow is the translator's chat-path model set: the launch-time list plus the
+// ids in file, which the adapter rewrites whenever it renders its config or
+// prepares a model mid-session, so a shim that started before that model was
+// classified still keeps its carrier.
+func chatNow(static map[string]bool, file string) map[string]bool {
+	if file == "" {
+		return static
+	}
+	b, err := os.ReadFile(file)
+	if err != nil {
+		return static
+	}
+	set := modelSet(string(b))
+	for m := range static {
+		set[m] = true
+	}
+	return set
+}
+
+// modelSet is a comma-, space- or newline-separated list of model ids as a set.
+func modelSet(list string) map[string]bool {
+	set := map[string]bool{}
+	for _, m := range strings.FieldsFunc(list, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	}) {
+		if m != "" {
+			set[m] = true
+		}
+	}
+	return set
 }
 
 func build(affinity, uaTemplate string) (shim.Hooks, error) {
@@ -227,12 +270,25 @@ func repairToolReferences(body []byte) ([]byte, bool) {
 
 // --- thinking resend ---------------------------------------------------------
 
+// carrierPrefix starts the signature of the thinking block in which the
+// translator (akleizor/CLIProxyAPI from v8.0.76-akleizor.4) hands Claude Code a
+// chat gateway's reasoning_details, Gemini's thought signatures among them, and
+// reads them back from on the next request (#646).
+const carrierPrefix = "cliproxy-reasoning-details:"
+
 // resendWithoutThinking is the body to send once more after a 400: the request
 // without thinking and redacted_thinking blocks in assistant turns (a gateway
 // that spreads a conversation over backends cannot verify another's signatures).
 // nil when the request carries none. The status code alone triggers it, so the
 // response is not read.
-func resendWithoutThinking(request, _ []byte) []byte {
+func resendWithoutThinking(request, _ []byte) []byte { return stripThinking(request, nil) }
+
+// stripThinking is resendWithoutThinking, except that when the request's model
+// is in chat (the models the translator serves on its chat path, from
+// CCMORPH_TRANSLATOR_CHAT_MODELS) the translator's carrier blocks stay: that
+// route needs them back, and Gemini refuses a tool turn without them. Any other
+// route strips them with the rest: a native Anthropic route rejects them.
+func stripThinking(request []byte, chat map[string]bool) []byte {
 	top, ok := topObject(request)
 	if !ok {
 		return nil
@@ -240,6 +296,12 @@ func resendWithoutThinking(request, _ []byte) []byte {
 	msgs, ok := member(top, "messages")
 	if !ok {
 		return nil
+	}
+	keepCarrier := false
+	if sp, ok := member(top, "model"); ok {
+		if m, isString := strOf(request, sp); isString {
+			keepCarrier = chat[strings.TrimSuffix(m, "[1m]")]
+		}
 	}
 	var edits []shim.Edit
 	for _, m := range arrayAt(request, msgs) {
@@ -254,8 +316,10 @@ func resendWithoutThinking(request, _ []byte) []byte {
 		blocks := arrayAt(request, content)
 		var kept [][]byte
 		for _, b := range blocks {
-			if sp, ok := member(objectAt(request, b), "type"); ok {
-				if t, _ := strOf(request, sp); t == "thinking" || t == "redacted_thinking" {
+			bm := objectAt(request, b)
+			if sp, ok := member(bm, "type"); ok {
+				t, _ := strOf(request, sp)
+				if t == "redacted_thinking" || (t == "thinking" && !(keepCarrier && isCarrier(request, bm))) {
 					continue
 				}
 			}
@@ -275,4 +339,14 @@ func resendWithoutThinking(request, _ []byte) []byte {
 	}
 	fmt.Fprintln(os.Stderr, "shim: upstream answered 400; resending once without thinking blocks")
 	return shim.Apply(request, edits)
+}
+
+// isCarrier is a block whose signature is the translator's carrier.
+func isCarrier(b []byte, block []shim.Member) bool {
+	sp, ok := member(block, "signature")
+	if !ok {
+		return false
+	}
+	s, isString := strOf(b, sp)
+	return isString && strings.HasPrefix(s, carrierPrefix)
 }

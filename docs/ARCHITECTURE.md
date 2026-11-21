@@ -653,8 +653,9 @@ error text. Always on: a `tool_reference` inside a `tool_result` whose `tool_nam
 request does not declare in `tools` becomes a text block (declared references and every
 other byte stay), and a 400 on `POST /v1/messages` with nothing yet sent downstream is
 resent once with `thinking` and `redacted_thinking` blocks removed from assistant turns
-(`Hooks.ResendBody`; not a transport retry, not counted by the breaker, the second answer
-is final) **[test]**. Profile keys, ferried as `CCMORPH_*` env: `env.CCMORPH_AFFINITY_HEADER=<name>`
+(`Hooks.ResendBody`; not a transport retry, not counted by the breaker; when the resend
+is refused with a non-retryable 4xx too, the client gets the first 400, and a retryable
+429 is passed through and counted by the breaker) **[test]**. Profile keys, ferried as `CCMORPH_*` env: `env.CCMORPH_AFFINITY_HEADER=<name>`
 sends the session id in that header, `env.CCMORPH_USER_AGENT=<template>` sets the outbound
 `User-Agent` from the client's `claude-cli` version, and the adapter's passthrough entries
 take theirs from the shim's `translator-user-agent` subcommand **[test]**. `env.CCMORPH_QUIRKS=off` gives the shim no hooks at all (no repair, no resend, no affinity header, no User-Agent rewrite) **[test]**. Anything beyond
@@ -1063,6 +1064,58 @@ a black-box run (real binary, loopback fake upstream) **[src][wire]**:
 | `thinking.block_binding` filter | `claude_executor_request.go` `applyClaudePreservedThinkingBinding` runs before `ApplyPayloadConfigWithTrackedPaths` (`claude_executor_execute.go:246-249`) | keep. Sonnet 5.5 with a signed thinking replay: field and `thinking-binding-controls-2026-08-01` beta header present without the filter, absent with it |
 | never put `system` in `payload.override` | payload override | keep. `override: system` replaces the whole field |
 | `display-name` on `oauth-model-alias` | `internal/config/config_types.go` `OAuthModelAlias.DisplayName` | keep. Not written by the adapter; only the root-owned `:<translator-port>` config uses it |
+
+### Gemini thought signatures on the chat path (#646)
+
+Gemini 3 and later reject a tool turn unless each `functionCall` comes back with
+the `thought_signature` the model issued for it (Vertex answers `400 ... missing a
+thought_signature in functionCall parts`). Behind a chat-completions gateway the
+signature arrives in `choices[].delta.reasoning_details[]`. Each hop, checked
+for `gemini-4-carbon` (wire capture 2026-11-18, tests 2026-11-20):
+
+| Hop | Verdict |
+|---|---|
+| Gateway | carries it, as `{"type":"tool","text":"Bash","signature":"..."}` entries **[wire]** |
+| cliproxyapi up to 8.0.76 (upstream) | **drops it**: the next request's assistant message has `tool_calls` but no `reasoning_details`. It also merges parallel tool calls that share `index: 0` into one call with two JSON objects as arguments **[wire]** |
+| akleizor/CLIProxyAPI from `v8.0.76-akleizor.4` (the carrier landed in `.1`, the final-text fixes around it in `.2` to `.4`) | keeps it: the reply ends with a thinking block whose signature is `cliproxy-reasoning-details:` plus the base64 of the gateway's array, and the next request turns that block back into `reasoning_details`; a new `id` at a used index starts a new tool call. Its tests `TestReasoningDetails_StreamReplayIssue646` and `TestStreaming_ReusedToolIndexIssue646` (package `internal/translator/openai/claude`) fail on `9adde20a47^` and pass on the tag **[test]** |
+| Claude Code, unrecognized model | replays the signed block on the next request **[test]** |
+| ccmorph shim | passes it through: `malformedThinking` (`shim/transform.go`) keeps the block (text `.`, signed); `resendWithoutThinking` (`quirks/quirks.go`) runs only after a 400, and on a model the translator serves on its chat path it drops every other thinking block but keeps the carrier **[test]** |
+
+Install the fork with `brew install akleizor/tap/cliproxyapi` (macOS arm64 only);
+`findTranslator` finds it unchanged. `make shim && python3 tests/native_gemini_signature_smoke.py`
+runs one Bash turn through the real Claude Code, `ccmorph-core adapter`, the
+translator on PATH and a loopback fake of the gateway that answers Vertex's 400
+when the signature is missing. It prints `ASSERTION PASS` on the fork;
+`--translator <path>` with an upstream build fails the turn and prints one line
+that names `thought_signature` and the upgrade, never the raw Vertex paragraph.
+
+Only Gemini's own refusal is rewritten to one line, by `thoughtSignatureRefusal`
+(`shim/transform.go`): a 400 whose error message, read from the JSON rather than
+the whole body, starts with `Function call is missing a thought_signature in
+functionCall parts` (Vertex relays it behind `Google Vertex bad request: `). A
+400 that only names the field, a 400 that merely quotes the sentence, and every
+other status pass through unchanged.
+Behind the translator the line names the cliproxyapi build that sends the
+signature back and the command that installs it; on a direct route it names the
+gateway, because there the shim relays the history unchanged.
+
+The 400 resend keeps the carrier where the route needs it. The adapter writes the
+ids of its chat-path rows (`chat` and `chat-noreason`) to a file beside the
+translator config and names it in `CCMORPH_TRANSLATOR_CHAT_MODELS_FILE`; the shim
+rereads that file on each resend, so a model selected mid-session is already on
+the side of the adapter that wrote it. For a request to a listed model the resend
+drops every other thinking block but keeps the carrier, and sends nothing when
+the carrier is all it could drop. Everywhere else (a direct route, and the
+translator's Anthropic passthrough) the carrier goes with the rest, because a
+native Anthropic route rejects that signature: that is what lets a conversation
+continue there after a hop or a `/model` switch. When the resend is refused with
+a non-retryable 4xx too, the client gets the upstream's first 400, never the
+refusal the repair provoked; a retryable 429 is passed through, so the breaker
+counts it. A mid-session prepare that fails, a failed write of the list itself
+included, puts the previous config and list back before it exits, so the running
+translator keeps its route **[test]**. Known limit: `ccmorph add` and doctor still
+name `brew install cliproxyapi`, the upstream build without the fix, because the
+fork's package exists only for macOS arm64.
 
 ## 5. Context window
 
