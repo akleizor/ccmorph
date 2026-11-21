@@ -67,45 +67,33 @@ func (l *launcher) add(args []string) int {
 		// names the machine's own install step.
 		rows += "\nmore\tMore sign-ins\t" + browserLogins + " (cliproxyapi)"
 	}
-	choice, ok := l.choose("Sign-in method — "+name, rows)
+	choice, ok := l.menu("native", "Sign-in method — "+name, rows, func(v string) (string, string, bool) {
+		if _, _, ok := methodAction(v, providers, haveBridge); !ok {
+			return "", "not a sign-in method — enter a number from the list or a name", false
+		}
+		if !haveBridge && v == "4" {
+			v = "more"
+		}
+		return v, "", true
+	})
 	if !ok {
 		return 1
 	}
-	if !haveBridge && choice == "4" {
-		choice = "more"
-	}
+	kind, provider, _ := methodAction(choice, providers, haveBridge) // the menu guaranteed an answer
 	var rc int
-	switch choice {
-	case "1", "sub", "subscription":
+	switch kind {
+	case "sub":
 		rc = l.addSub(name)
-	case "2", "token", "oauth_token", "oauth-token":
+	case "token":
 		rc = l.addToken(name)
-	case "3", "apikey", "api_key", "api-key":
+	case "apikey":
 		rc = l.addAPIKey(name)
 	case "more":
 		fmt.Println("Browser sign-in to " + browserLogins + " needs cliproxyapi.")
 		fmt.Println("Install it: " + util.ClipInstallStep() + ", then run: ccmorph add " + name)
 		return 1
 	default:
-		matched := ""
-		if n, err := strconv.Atoi(choice); err == nil && n >= 4 && n < 4+len(providers) {
-			matched = providers[n-4]
-		} else {
-			for _, p := range providers {
-				if strings.EqualFold(choice, p) {
-					matched = p
-				}
-			}
-		}
-		if matched == "" && strings.HasPrefix(choice, "sub") {
-			rc = l.addSub(name)
-			break
-		}
-		if matched == "" {
-			l.err("cancelled")
-			return 1
-		}
-		rc = l.addProvider(name, matched)
+		rc = l.addProvider(name, provider)
 	}
 	if rc != 0 {
 		return rc
@@ -119,15 +107,95 @@ func (l *launcher) add(args []string) int {
 	return 0
 }
 
-// choose is a native menu on a terminal; piped input picks by number or ID.
-func (l *launcher) choose(title, rows string) (string, bool) {
+// menuTryLimit is how many wrong answers a piped menu re-asks for before it
+// gives up as cancelled: enough to recover from one answer typed from instinct,
+// few enough that a stream of wrong lines still ends the wizard.
+const menuTryLimit = 3
+
+// menu is a wizard menu: a native picker on a terminal, which cannot be
+// answered wrongly; on a pipe, the list and a loop (#727). Before, the piped
+// menu read one line and shared its exit with cancel, so the issue's typed
+// gateway URL ended the whole wizard. Now an answer that matches no row re-asks
+// — naming the limit it states — so every answer already given stands; the
+// deliberate ways out stay: EOF, and q, the word the numbered menu names.
+func (l *launcher) menu(mode, title, rows string, match func(string) (string, string, bool)) (string, bool) {
 	if isTTY(0) {
-		v, rc := uiSelect("native", title, rows, "")
+		v, rc := uiSelect(mode, title, rows, "")
 		return v, rc == 0
 	}
 	themeFor(2).list(title, splitRows(rows), "labels")
-	v, rc := uiInput("> ", false)
-	return v, rc == 0
+	for wrong := 1; ; wrong++ {
+		v, rc := uiInput("> ", false)
+		if rc != 0 {
+			return "", false
+		}
+		if v == "q" || v == "Q" {
+			l.err("cancelled")
+			return "", false
+		}
+		answer, hint, ok := match(v)
+		if ok {
+			return answer, true
+		}
+		if wrong >= menuTryLimit {
+			l.err(fmt.Sprintf("too many wrong answers at the menu (%d) — cancelled", menuTryLimit))
+			return "", false
+		}
+		if hint == "" {
+			hint = "not a menu answer — enter a number from the list or a name"
+		}
+		l.err(fmt.Sprintf("%s (try %d of %d)", hint, wrong, menuTryLimit))
+	}
+}
+
+// methodAction is what a sign-in menu answer chooses: the row's kind and, for
+// a browser login, its provider. The old inline switch's order is kept whole —
+// the fixed rows answer first, then a provider number, then a provider name,
+// then a "sub…" prefix — so a name a provider could also answer with keeps
+// resolving to the row it always did. Only the rows the menu prints are
+// answers: the More sign-ins row exists without the bridge alone, so `more`
+// with the bridge on PATH re-asks like any unlisted word (#727).
+func methodAction(choice string, providers []string, haveBridge bool) (kind, provider string, ok bool) {
+	if !haveBridge && choice == "4" {
+		choice = "more"
+	}
+	switch choice {
+	case "1", "sub", "subscription":
+		return "sub", "", true
+	case "2", "token", "oauth_token", "oauth-token":
+		return "token", "", true
+	case "3", "apikey", "api_key", "api-key":
+		return "apikey", "", true
+	case "more":
+		if haveBridge {
+			return "", "", false
+		}
+		return "more", "", true
+	}
+	if n, err := strconv.Atoi(choice); err == nil && n >= 4 && n < 4+len(providers) {
+		return "provider", providers[n-4], true
+	}
+	for _, p := range providers {
+		if strings.EqualFold(choice, p) {
+			return "provider", p, true
+		}
+	}
+	if strings.HasPrefix(choice, "sub") {
+		return "sub", "", true
+	}
+	return "", "", false
+}
+
+// urlHostShape is an address typed without its scheme: a dotted host, an
+// optional port and path — the way a gateway reads on a first read of the
+// question (#727). A preset id has no dot, so nothing a row answers with
+// carries this shape.
+var urlHostShape = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+(:[0-9]{1,5})?(/\S*)?$`)
+
+// looksLikeURL reports an answer shaped like an endpoint a person meant to
+// give: it carries a scheme, or it reads as a dotted host (#727).
+func looksLikeURL(s string) bool {
+	return strings.Contains(s, "://") || urlHostShape.MatchString(s)
 }
 
 // rollback removes a half-made profile: private state and conf.
@@ -379,23 +447,29 @@ func (l *launcher) addAPIKey(name string) int {
 		}
 	}
 	rows = append(rows, "custom\tCustom endpoint\tAnthropic or any gateway URL")
-	var pick string
-	if isTTY(0) {
-		v, rc := uiSelect("search", "Provider — "+name, strings.Join(rows, "\n"), "")
-		if rc != 0 {
-			return 1
-		}
-		pick = v
-	} else {
-		themeFor(2).list("Provider — "+name, rows, "labels")
-		v, rc := uiInput("> ", false)
-		if rc != 0 {
-			return 1
-		}
-		pick = v
+	pick, ok := l.menu("search", "Provider — "+name, strings.Join(rows, "\n"), func(v string) (string, string, bool) {
+		p := v
 		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= len(rows) {
-			pick = rowID(rows[n-1])
+			p = rowID(rows[n-1])
 		}
+		if p == "anthropic" || p == "custom" {
+			return p, "", true
+		}
+		for _, pr := range presets {
+			if pr[0] == p {
+				return p, "", true
+			}
+		}
+		hint := "not a provider — enter a number from the list or a provider id"
+		if looksLikeURL(v) {
+			// The question's own wording invites the URL; the row that takes
+			// one is pointed at by the number it is printed under (#727).
+			hint = fmt.Sprintf("unknown provider '%s' — for your own URL pick %d) Custom endpoint", v, len(rows))
+		}
+		return "", hint, false
+	})
+	if !ok {
+		return 1
 	}
 	label, url := "", ""
 	var tiers []string
@@ -404,17 +478,13 @@ func (l *launcher) addAPIKey(name string) int {
 		label = "Anthropic"
 	case "custom":
 	default:
-		found := false
+		// Reached with an id the list carries: the terminal picker answers with
+		// row IDs, and the pipe's loop only returns a matched one (#727).
 		for _, p := range presets {
 			if p[0] == pick {
-				found = true
 				p = append(p, "", "", "", "", "")
 				label, url, tiers = p[1], p[2], p[3:6]
 			}
-		}
-		if !found {
-			l.err("unknown provider '" + pick + "'")
-			return 1
 		}
 	}
 	prompt := "API key for " + name
