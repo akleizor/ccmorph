@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -19,7 +20,7 @@ const Usage = "ccmorph router [on|off|status|dispatch [--dry-run]|report]"
 // taskHelp is `ccmorph router dispatch --help`: every flag stated with the
 // effect it has, on a run and on --dry-run, because a flag that is parsed and
 // then means nothing reads like a bug (GH-694).
-const taskHelp = `usage: ccmorph router dispatch [--dry-run] [flags] [brief]
+const taskHelp = `usage: ccmorph router dispatch [--dry-run] [flags] [brief] [-- claude flags]
 
 The brief is the words, or stdin when there are none. dispatch routes it,
 runs it on the picked profile through ccmorph run and prints only the
@@ -38,7 +39,15 @@ the ledger without running anything.
                 a configured decider still scores the finished answer
   --refresh     read quota live now instead of the stored snapshot, which is
                 served up to 5 minutes old; a named --profile and --model too
+  --effort E    run at effort E instead of the tier's
+  --timeout S   kill the worker after S seconds, a retry included (default:
+                router.json's timeout); the worker reads its end, in epoch
+                seconds, from CCMORPH_DEADLINE
   --cwd DIR     run the worker in DIR (default: this directory)
+  -- FLAGS      pass FLAGS to the worker's claude; --model, --effort and -p
+                belong to the dispatch and are refused there
+A failed run is retried once, on the next profile, only when the account
+refused it (quota or auth). A caller's CCMORPH_TASK tags the worker's spend.
   --dry-run     print the pick and reserve it in the ledger; run nothing
   --json        with --dry-run: the decision as JSON
   --explain     with --dry-run: print the shortlist and every dropped model
@@ -139,6 +148,24 @@ func task(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return ""
 		}
 		switch a {
+		case "--": // the rest go to the worker's claude
+			r.ClaudeArgs = args[i+1:]
+			i = len(args)
+			for _, f := range r.ClaudeArgs {
+				if k, _, _ := strings.Cut(f, "="); slices.Contains([]string{"--model", "--effort", "-p", "--print"}, k) {
+					fmt.Fprintln(stderr, "ccmorph: router: "+k+" belongs to the dispatch, not to the claude flags")
+					return 2
+				}
+			}
+		case "--timeout":
+			v, err := strconv.ParseFloat(val(), 64)
+			if err != nil || !(v > 0) || math.IsInf(v, 0) {
+				fmt.Fprintln(stderr, "ccmorph: router: --timeout takes a positive number of seconds")
+				return 2
+			}
+			r.Timeout = v
+		case "--effort":
+			r.Effort = val()
 		case "-h", "--help":
 			fmt.Fprint(stdout, taskHelp)
 			return 0

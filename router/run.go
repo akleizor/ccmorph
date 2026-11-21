@@ -27,6 +27,8 @@ type Request struct {
 	Profile, Model, Effort string
 	Family                 string
 	NoDecider, Refresh     bool
+	Timeout                float64   // seconds for the whole dispatch, retry included; 0 keeps router.json's
+	ClaudeArgs             []string  // passed to the worker's claude before -p
 	Only                   []string  // profiles this route may use; nil for any
 	Deadline               time.Time // the hook's budget: cached quota, no decider past it
 }
@@ -147,6 +149,13 @@ func Delegate(ctx context.Context, r Request, cwd string) string {
 	if err != nil {
 		return "Error: " + ConfigPath() + ": " + err.Error()
 	}
+	if r.Timeout > 0 {
+		c.Timeout = r.Timeout
+	}
+	// One deadline for the dispatch: a retry runs in what the first attempt left.
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(c.Timeout*float64(time.Second)))
+	defer cancel()
+	deadline, _ := ctx.Deadline()
 	if cwd == "" {
 		cwd, _ = os.Getwd()
 	}
@@ -154,6 +163,7 @@ func Delegate(ctx context.Context, r Request, cwd string) string {
 		return "Error: cwd is not a directory: " + cwd
 	}
 	var attempts, hints []string
+	last := "" // the last worker's own words: a failed run still says why
 	source := ""
 	for range 2 {
 		d, err := Decide(c, r)
@@ -174,8 +184,10 @@ func Delegate(ctx context.Context, r Request, cwd string) string {
 		}
 		job := newID("delegate")
 		reserve(job, d, prompt, nil)
-		out, errText, status := runWorker(ctx, c, d.Pick, prompt, cwd, job)
-		if ctx.Err() != nil {
+		out, errText, status := runWorker(ctx, d.Pick, prompt, cwd, job, deadline, r.ClaudeArgs)
+		if ctx.Err() == context.DeadlineExceeded {
+			status = 124
+		} else if ctx.Err() != nil {
 			ledgerUpdate(job, Row{"outcome": "error", "failure": "aborted"})
 			return abortedAnswer // the MCP caller expects this exact string, with no note
 		}
@@ -194,7 +206,11 @@ func Delegate(ctx context.Context, r Request, cwd string) string {
 				hints = append(hints, hint)
 			}
 			ledgerUpdate(job, Row{"outcome": "error", "failure": hard, "exit_code": status})
+			last = strings.TrimSpace(out + "\n" + errText)
 			attempts = append(attempts, fmt.Sprintf("%s/%s: %s (exit %d)", d.Pick.Profile, d.Pick.Model, hard, status))
+			if hard != "quota" && hard != "auth" {
+				break // the model answered or ran out of time: a second run would pay twice for one verdict
+			}
 			continue
 		}
 		if hint := complete(c, job, out, ""); hint != "" {
@@ -202,6 +218,9 @@ func Delegate(ctx context.Context, r Request, cwd string) string {
 		}
 		ledgerUpdate(job, Row{"exit_code": status})
 		return withHints(out, hints)
+	}
+	if last != "" {
+		attempts = append(attempts, "worker said:\n"+last)
 	}
 	return withHints("Error: "+strings.Join(attempts, "; "), hints)
 }
@@ -217,13 +236,18 @@ func withHints(answer string, hints []string) string {
 }
 
 // runWorker runs one attempt in its own process group, killed whole on timeout,
-// cancel or exit: ccmorph can leave children behind.
-func runWorker(ctx context.Context, c Config, pick *Option, prompt, cwd, job string) (string, string, int) {
-	ctx, cancel := context.WithTimeout(ctx, time.Duration(c.Timeout*float64(time.Second)))
-	defer cancel()
-	cmd := exec.Command("ccmorph", "run", pick.Profile, "--model", pick.Model, "--", "--effort", pick.Effort, "-p", prompt)
+// cancel or exit: ccmorph can leave children behind. A caller's CCMORPH_TASK
+// stays the worker's, so its spend lands on the caller's tag; CCMORPH_DEADLINE
+// tells the worker when it is killed, in epoch seconds.
+func runWorker(ctx context.Context, pick *Option, prompt, cwd, job string, deadline time.Time, claudeArgs []string) (string, string, int) {
+	argv := append([]string{"run", pick.Profile, "--model", pick.Model, "--", "--effort", pick.Effort}, claudeArgs...)
+	cmd := exec.Command("ccmorph", append(argv, "-p", prompt)...)
 	cmd.Dir = cwd
-	cmd.Env = append(os.Environ(), "CCMORPH_TASK="+job, WorkerEnv+"=1")
+	task := os.Getenv("CCMORPH_TASK")
+	if task == "" {
+		task = job
+	}
+	cmd.Env = append(os.Environ(), "CCMORPH_TASK="+task, WorkerEnv+"=1", fmt.Sprintf("CCMORPH_DEADLINE=%d", deadline.Unix()))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
