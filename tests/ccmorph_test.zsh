@@ -1775,8 +1775,14 @@ test_claude_subcommands_are_asked_for_never_hardcoded() {
 
   # Option arity (#334) is TestOptionStep in util/launchflags_test.go.
 
-  # ccmorph's own verbs win over anything the binary also names, so a future Claude
-  # Code `list` or `use` cannot steal a ccmorph command.
+  # A word ccmorph ALSO owns is still Claude Code's once it sits after
+  # `run <profile>` (INTENT promise 6): this lookup answers from the installed
+  # binary alone (#768 -- excluding `rm` here sent `run <p> rm <id>` down the
+  # session path, refusing Claude's own session pruning while the endpoint was
+  # down). A future Claude Code `list` or `rm` still cannot steal a ccmorph
+  # command, because the TOP-LEVEL dispatch consumes ccmorph's own verbs
+  # before the run entry is ever reached -- guarded further below, where
+  # `ccmorph rm <profile>` must stay ccmorph's own verb.
   printf '%s\n' \
     '#!/bin/sh' \
     'cat <<EOF' \
@@ -1789,8 +1795,8 @@ test_claude_subcommands_are_asked_for_never_hardcoded() {
   _CCMORPH_CLAUDE_VERBS=""
   local verb
   for verb in list rm; do
-    if _ccm_is_claude_subcommand "$verb"; then
-      print -u2 -- "FAIL: ccmorph's own '$verb' must win over Claude Code's"
+    if ! _ccm_is_claude_subcommand "$verb"; then
+      print -u2 -- "FAIL: '$verb' listed by the installed binary must be a Claude subcommand for the run entry"
       rc=1
     fi
   done

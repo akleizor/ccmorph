@@ -520,8 +520,15 @@ func runSeparator(args []string) int {
 	return -1
 }
 
+// isClaudeSubcommand answers the run entry's question only: after `run
+// <profile>` every word is Claude Code's argv (INTENT promise 6), so the
+// answer comes from the installed binary alone. ccmorph's own verb table is
+// NOT consulted here — its precedence lives in the top-level dispatch, which
+// consumes `ccmorph rm <profile>` before the run entry is ever reached (#768:
+// excluding `rm` here sent `run <p> rm <id>` down the session path, so Claude's
+// own session pruning was refused exactly when the endpoint was down).
 func (l *launcher) isClaudeSubcommand(word string) bool {
-	if word == "" || ownVerbs[word] {
+	if word == "" {
 		return false
 	}
 	return slices.Contains(util.ClaudeVerbs(l.claudeHelp()), word)
