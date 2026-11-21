@@ -16,15 +16,16 @@ import (
 // Parse returns the proxy a profile's CCMORPH_UPSTREAM_PROXY names, or nil when
 // the knob is empty or unusable: the environment's resolution then stands, as
 // it always did for the translator. A value without a scheme and host is
-// unusable, and so is one whose authority Go refuses for a reason no reading
-// recovers.
+// unusable, and so is one whose authority names only a port -- http://user:pw@:3128
+// would dial this machine, password riding with it, never a proxy -- or whose
+// authority Go refuses for a reason no reading recovers.
 func Parse(knob string) *url.URL {
 	knob = strings.TrimSpace(knob)
 	if knob == "" {
 		return nil
 	}
 	u, err := url.Parse(knob)
-	if err == nil && u.Host != "" {
+	if err == nil && u.Hostname() != "" {
 		return u
 	}
 	return parseSpelledUserinfo(knob)
@@ -59,15 +60,27 @@ func parseSpelledUserinfo(knob string) *url.URL {
 	}
 	userinfo, authority := rest[:at], rest[at+1:]
 	u, err := url.Parse(scheme + "://" + authority)
-	if err != nil || u.Host == "" {
+	if err != nil || u.Hostname() == "" {
 		return nil
 	}
 	if user, pass, ok := strings.Cut(userinfo, ":"); ok {
-		u.User = url.UserPassword(user, pass)
+		u.User = url.UserPassword(decodeSpelling(user), decodeSpelling(pass))
 	} else if userinfo != "" {
-		u.User = url.User(userinfo)
+		u.User = url.User(decodeSpelling(userinfo))
 	}
 	return u
+}
+
+// decodeSpelling decodes the %HH escapes a pasted userinfo already carries, so
+// re-encoding it through url.User/url.UserPassword keeps them as one escape
+// rather than handing the probes and the translator %25HH for a credential
+// url.Parse spells %HH (GH-773). A '%' no reading decodes (50%off) is left
+// literal, the spelling url.Parse would refuse too.
+func decodeSpelling(s string) string {
+	if v, err := url.PathUnescape(s); err == nil {
+		return v
+	}
+	return s
 }
 
 // Proxy is an http.Transport Proxy selector for calls to one profile's
@@ -113,8 +126,9 @@ func Exempt(u *url.URL) bool {
 	cfg := &httpproxy.Config{
 		HTTPProxy:  exemptConfig,
 		HTTPSProxy: exemptConfig,
-		// net/http reads no_proxy before NO_PROXY when both are set.
-		NoProxy: envAny("no_proxy", "NO_PROXY"),
+		// The shipped toolchain's reader (net/http's httpproxy, Go 1.27.4)
+		// takes NO_PROXY before no_proxy: the first non-empty spelling decides.
+		NoProxy: envAny("NO_PROXY", "no_proxy"),
 	}
 	proxy, err := cfg.ProxyFunc()(u)
 	return err == nil && proxy == nil

@@ -1,8 +1,12 @@
 package netroute
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -32,8 +36,11 @@ func TestParse(t *testing.T) {
 		{" http://bridge.test:3128 ", "http://bridge.test:3128"}, // the conf's trailing space is no proxy it names
 		{"127.0.0.1:3128", ""}, // no scheme: unparsable, as it always was
 		{"://bad", ""},
-		{"http://proxy:bad-port", ""}, // a port Go refuses and no reading recovers
-		{"http://[::1", ""},           // an unclosed host
+		{"http://proxy:bad-port", ""},  // a port Go refuses and no reading recovers
+		{"http://[::1", ""},            // an unclosed host
+		{"http://:3128", ""},           // a port with no host dials this machine, not a proxy
+		{"http://user:pw@:3128", ""},   // nor does userinfo make a hostless authority usable
+		{"http://user:p^ss@:3128", ""}, // recovery must not invent a host either
 		{"not a url", ""},
 	} {
 		got := Parse(c.knob)
@@ -150,6 +157,149 @@ func TestProxyTakesTheProfilesRouteUnlessExempt(t *testing.T) {
 				t.Fatalf("Proxy = %v, want a direct dial", got)
 			}
 		})
+	}
+}
+
+// TestStdlibProxyChild answers, for the URL its environment names, whether the
+// shipped toolchain's own resolution would dial it directly. stdlibExempt runs
+// it as a fresh test binary because net/http caches the first environment it
+// reads process-wide, and the comparison table needs one answer per
+// environment. Run on its own it does nothing.
+func TestStdlibProxyChild(t *testing.T) {
+	target := os.Getenv("CCMORPH_NETROUTE_STDLIB_URL")
+	if target == "" {
+		return
+	}
+	u, err := url.Parse(target)
+	if err != nil {
+		fmt.Printf("ccmorph-netroute-stdlib: bad URL: %v\n", err)
+		return
+	}
+	proxy, err := http.ProxyFromEnvironment(&http.Request{URL: u})
+	switch {
+	case err != nil:
+		fmt.Printf("ccmorph-netroute-stdlib: %v\n", err)
+	case proxy == nil:
+		fmt.Println("ccmorph-netroute-stdlib: direct")
+	default:
+		fmt.Println("ccmorph-netroute-stdlib: proxy")
+	}
+}
+
+// stdlibExempt asks http.ProxyFromEnvironment -- the code the shipped toolchain
+// runs -- whether target is dialed directly under env. A fresh process answers
+// each row: net/http reads its proxy environment once per process, so a table
+// cannot call it in-process. Both schemes name a proxy there, so "direct" is
+// distinguishable from "nothing configured"; that is the same question Exempt
+// asks.
+func stdlibExempt(t *testing.T, target string, env map[string]string) bool {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestStdlibProxyChild$")
+	var child []string
+	for _, kv := range os.Environ() {
+		k, _, _ := strings.Cut(kv, "=")
+		switch k {
+		case "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy",
+			"REQUEST_METHOD", "CCMORPH_NETROUTE_STDLIB_URL":
+			continue // the row decides these; REQUEST_METHOD would arm the CGI refusal
+		}
+		child = append(child, kv)
+	}
+	child = append(child, "CCMORPH_NETROUTE_STDLIB_URL="+target,
+		"HTTP_PROXY="+exemptConfig, "HTTPS_PROXY="+exemptConfig)
+	for k, v := range env {
+		child = append(child, k+"="+v)
+	}
+	cmd.Env = child
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the stdlib comparison child failed: %v (output %q)", err, out)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		got, ok := strings.CutPrefix(line, "ccmorph-netroute-stdlib: ")
+		if !ok {
+			continue
+		}
+		switch got {
+		case "direct":
+			return true
+		case "proxy":
+			return false
+		}
+		t.Fatalf("the stdlib comparison child answered %q", got)
+	}
+	t.Fatalf("the stdlib comparison child printed no answer: %q", out)
+	return false
+}
+
+// Exempt is the resolver's answer to the environment's exemption question, so
+// it must match the shipped net/http for every spelling of NO_PROXY -- above
+// all when both are set: net/http reads NO_PROXY first, and reading no_proxy
+// first turns that host's one answer into two (GH-773).
+func TestExemptMatchesTheShippedProxyFromEnvironment(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		env  map[string]string
+	}{
+		{"neither spelling", nil},
+		{"NO_PROXY alone", map[string]string{"NO_PROXY": "gateway.lan"}},
+		{"no_proxy alone", map[string]string{"no_proxy": "gateway.lan"}},
+		{"both name different hosts", map[string]string{"NO_PROXY": "gateway.lan", "no_proxy": "lan.internal"}},
+		{"both name different hosts, reversed", map[string]string{"NO_PROXY": "lan.internal", "no_proxy": "gateway.lan"}},
+		{"NO_PROXY empty, no_proxy set", map[string]string{"NO_PROXY": "", "no_proxy": "gateway.lan"}},
+		{"NO_PROXY set, no_proxy empty", map[string]string{"NO_PROXY": "gateway.lan", "no_proxy": ""}},
+		{"both empty", map[string]string{"NO_PROXY": "", "no_proxy": ""}},
+		{"NO_PROXY star, no_proxy a host", map[string]string{"NO_PROXY": "*", "no_proxy": "gateway.lan"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			for _, k := range []string{"NO_PROXY", "no_proxy"} {
+				t.Setenv(k, c.env[k])
+			}
+			for _, target := range []string{
+				"http://gateway.lan/v1/models",
+				"https://lan.internal/v1/models",
+				"https://other.lan/v1/models",
+			} {
+				want := stdlibExempt(t, target, c.env)
+				if got := Exempt(urlOf(t, target)); got != want {
+					t.Errorf("%s: Exempt = %v but http.ProxyFromEnvironment = %v (direct); NO_PROXY=%q no_proxy=%q. "+
+						"The exemption reader must take NO_PROXY before no_proxy, as the shipped net/http does (GH-773)",
+						target, got, want, c.env["NO_PROXY"], c.env["no_proxy"])
+				}
+			}
+		})
+	}
+}
+
+// A pasted password may already be spelled with %HH and still need recovery for
+// one unparseable character (a space). Recovery decodes the raw userinfo before
+// re-encoding it, exactly as url.Parse treats a knob it accepts, so the same
+// credential keeps one spelling on every reader (GH-773).
+func TestParseRecoveryKeepsASpelledEscape(t *testing.T) {
+	parseable := Parse("http://alice:svc%2Bteam@proxy:3128")
+	if parseable == nil {
+		t.Fatal("the parseable knob named no proxy")
+	}
+	recovered := Parse("http://alice:svc%2Bteam cert@proxy:3128")
+	if recovered == nil {
+		t.Fatal("the knob's unparseable character is inside the authority: recovery still names proxy:3128")
+	}
+	if got, want := parseable.User.String(), url.UserPassword("alice", "svc+team").String(); got != want {
+		t.Fatalf("the parseable knob's userinfo = %q, want Go's own spelling %q", got, want)
+	}
+	// The same credential plus the space, encoded exactly as Go encodes it: the
+	// %2B is one escape, never the %252B a raw re-encode would hand on.
+	want := url.UserPassword("alice", "svc+team cert").String()
+	if got := recovered.User.String(); got != want {
+		t.Fatalf("recovered userinfo = %q, want %q (the spelling Go gives the same credential); "+
+			"unescape the raw userinfo before url.UserPassword re-encodes it (GH-773)", got, want)
+	}
+	back, err := url.Parse(recovered.String())
+	if err != nil {
+		t.Fatalf("the recovered spelling does not parse back: %v", err)
+	}
+	if pass, _ := back.User.Password(); pass != "svc+team cert" {
+		t.Fatalf("the recovered spelling parses back to password %q, want %q", pass, "svc+team cert")
 	}
 }
 
