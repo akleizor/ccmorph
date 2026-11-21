@@ -156,15 +156,14 @@ func (t *thinkingStream) readline() ([]byte, error) {
 	return line, nil
 }
 
-// inHand takes every line already read that readline has not returned, in
-// stream order: the decided lines, those still waiting on their event's data
-// line or blank line, then the start of a line whose end has not arrived (it
-// has no terminator). It never reads the upstream.
+// inHand takes every whole line already read that readline has not returned,
+// in stream order: the decided lines, then those still waiting on their
+// event's data line or blank line. It never reads the upstream. The start of a
+// line whose terminator has not arrived is dropped, not relayed: SSE ignores
+// an unterminated line, and ending it would make a cut-off field ("event:
+// message_st") a complete, wrong one.
 func (t *thinkingStream) inHand() [][]byte {
 	lines := append(t.out, t.pending...)
-	if len(t.buf) > 0 {
-		lines = append(lines, t.buf)
-	}
 	t.out, t.pending, t.buf = nil, nil, nil
 	return lines
 }
@@ -385,20 +384,12 @@ func (s *Server) relayStream(rq *request, t lineSource, sidecar *UsageSidecar, r
 		// line has not arrived, it is written for it.
 		if d != nil {
 			if kind, _ := d.str("type"); terminalEvent(kind) {
-				var last []byte
 				for _, rest := range t.inHand() {
 					if err := write(rest); err != nil {
 						return nil, err
 					}
 					if len(bytes.TrimRight(rest, "\r\n")) == 0 {
 						return nil, nil
-					}
-					last = rest
-				}
-				if len(last) > 0 && len(bytes.TrimRight(last, "\r\n")) == len(last) {
-					// The last line read has no terminator yet: end it first.
-					if err := write(eol); err != nil {
-						return nil, err
 					}
 				}
 				return nil, write(eol)

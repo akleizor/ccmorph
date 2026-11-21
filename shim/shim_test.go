@@ -781,9 +781,10 @@ func TestTerminalEventEndsTheReplyWithoutWaiting(t *testing.T) {
 		{"bare cr with its blank line", "event: message_stop\r" + stop + "\r\r", "event: message_stop\r" + stop + "\r\r"},
 		{"bare cr event line after data", stop + "\revent: message_stop\r", stop + "\revent: message_stop\r\r"},
 		{"crlf event line after data", stop + "\r\nevent: message_stop\r\n", stop + "\r\nevent: message_stop\r\n\r\n"},
-		{"bare cr unterminated event line after data", stop + "\revent: message_stop", stop + "\revent: message_stop\r\r"},
-		{"lf unterminated event line after data", stop + "\nevent: message_stop", stop + "\nevent: message_stop\n\n"},
-		{"crlf unterminated event line after data", stop + "\r\nevent: message_stop", stop + "\r\nevent: message_stop\r\n\r\n"},
+		{"bare cr unterminated field after data is dropped", stop + "\revent: message_stop", stop + "\r\r"},
+		{"lf unterminated field after data is dropped", stop + "\nevent: message_stop", stop + "\n\n"},
+		{"crlf unterminated field after data is dropped", stop + "\r\nevent: message_stop", stop + "\r\n\r\n"},
+		{"cut field after both event lines", "event: message_stop\n" + stop + "\nevent: message_st", "event: message_stop\n" + stop + "\n\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			release := make(chan struct{})
@@ -878,8 +879,9 @@ func TestTerminalEventEndsTheMaskedReplyWithoutWaiting(t *testing.T) {
 		{"lf", "event: message_stop\n" + stop + "\n", "event: message_stop\n" + stop + "\n\n"},
 		{"bare cr", "event: message_stop\r" + stop + "\r", "event: message_stop\r" + stop + "\r\r"},
 		{"bare cr event line after data", stop + "\revent: message_stop\r", stop + "\revent: message_stop\r\r"},
-		{"bare cr unterminated event line after data", stop + "\revent: message_stop", stop + "\revent: message_stop\r\r"},
-		{"lf unterminated event line after data", stop + "\nevent: message_stop", stop + "\nevent: message_stop\n\n"},
+		{"bare cr unterminated field after data is dropped", stop + "\revent: message_stop", stop + "\r\r"},
+		{"lf unterminated field after data is dropped", stop + "\nevent: message_stop", stop + "\n\n"},
+		{"cut field after both event lines", "event: message_stop\n" + stop + "\nevent: message_st", "event: message_stop\n" + stop + "\n\n"},
 		{"crlf with its blank line", "event: message_stop\r\n" + stop + "\r\n\r\n", "event: message_stop\r\n" + stop + "\r\n\r\n"},
 	} {
 		done := make(chan struct{})
