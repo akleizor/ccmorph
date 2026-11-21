@@ -408,6 +408,43 @@ class AdapterTest(unittest.TestCase):
             self.assertNotIn(leak, out.stdout)
         self.assertIn("proxy-url:", out.stdout)
         self.assertIn("127.0.0.1:8118/p", out.stdout)
+        # The stub gateway is loopback, which a probe never sends through the
+        # profile's proxy (dfc8aac3), so this run probes and prints normally;
+        # the print surviving a dead proxy is pinned by the next test and by
+        # TestPrintConfigPrintsThroughADeadProfileProxy (GH-592). The proxy's
+        # credentials stay off stderr as well as stdout.
+        password = proxy.split("user:", 1)[1].split("@", 1)[0]
+        for leak in (password, "user:", "token=qq"):
+            self.assertNotIn(leak, out.stderr)
+
+    def test_print_config_prints_through_a_dead_profile_proxy(self):
+        # GH-592's contract: with the profile's proxy unreachable, --print-config
+        # still prints the redacted config and names the failed probe on stderr,
+        # exit 0; a launch on the same profile still refuses, naming the same
+        # dial. The endpoint is not loopback, so the probe takes the proxy
+        # (#580), and nothing listens on 127.0.0.1:1.
+        password = "pw592dead"
+        proxy = f"http://user:{password}@127.0.0.1:1/p?token=qq"
+        (self.home / ".config/ccmorph/lib/ccmorph.sh").write_text(
+            "ccmorph() {\n"
+            '  [[ "$1" == _env ]] || return 1\n'
+            '  print "ANTHROPIC_BASE_URL=http://gateway.invalid"\n'
+            '  print "ANTHROPIC_API_KEY=stub-key"\n'
+            f"  print 'CCMORPH_UPSTREAM_PROXY={proxy}'\n"
+            "}\n")
+        out = self.run_adapter("--print-config")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn('proxy-url: "http://127.0.0.1:1/p"', out.stdout)
+        self.assertIn("<redacted>", out.stdout)
+        self.assertIn("compatibility probes failed", out.stderr)
+        self.assertIn("proxyconnect tcp: dial tcp 127.0.0.1:1", out.stderr)
+        for leak in (password, "user:", "token=qq", "stub-key"):
+            self.assertNotIn(leak, out.stdout)
+            self.assertNotIn(leak, out.stderr)
+        launch = self.run_adapter()
+        self.assertEqual(launch.returncode, 1, launch.stderr)
+        self.assertIn("proxyconnect tcp: dial tcp 127.0.0.1:1", launch.stderr)
+        self.assertNotIn("compatibility probes failed", launch.stderr)
 
     def test_reason_by_default_model_gets_thinking_disabled(self):
         # kimi-k3 pathology (2026-08-16): the gateway reasons even when

@@ -49,6 +49,15 @@ func (r Row) capped() bool { return r.Cap != nil && *r.Cap != 0 }
 // truncated write) is dropped at load, which re-probes exactly that model.
 var rowKeys = []string{"model", "dialect", "note", "cap", "nothink", "id_recycle", "status"}
 
+// classifyFallback is the inventory failure the last classification pass fell
+// back to its cache from; nil when the pass reached the endpoint, or had no
+// cache to fall back on and returned the error itself. A fallback returns the
+// cached rows with no error, so the failure is invisible to the caller unless
+// it reads this. Main clears it before each pass and reads it after for
+// --print-config (GH-592): a print that fell back cannot know the endpoint
+// answered, and must carry the failure as the note a failed probe carries.
+var classifyFallback error
+
 // usableRow converts a cached row, or reports it unusable.
 func usableRow(v any) (Row, bool) {
 	m, ok := v.(map[string]any)
@@ -301,6 +310,9 @@ func classifyLocked(base, key, cache, required string, auto bool) ([]Row, error)
 			if len(known) == 0 {
 				return nil, err // no cache to fall back on
 			}
+			// The cache answers with no error from here on, so record why: a
+			// --print-config pass must still know its probes failed (GH-592).
+			classifyFallback = err
 			logf("inventory failed (%v); falling back to %d cached model(s) for %s", err, len(known), base)
 			models = knownNames()
 		}
