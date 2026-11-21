@@ -174,6 +174,24 @@ func TestCompinitDetectionReadsOnlyLinesThatRun(t *testing.T) {
 		{"cat <<EOF >/dev/null\nautoload -Uz compinit && compinit\nEOF\n", false},
 		{"cat <<EOF\n$(autoload -Uz compinit && compinit)\nEOF\n", true},
 		{"cat <<\\EOF\n$(autoload -Uz compinit && compinit)\nEOF\n", false},
+		// #582 review: a here-document delimiter is quote-removed as zsh removes
+		// quotes: $'...' decodes \u, \U, \C-, \M- and drops the backslash of an
+		// escape it does not know; "..." keeps a backslash only before what it
+		// does not quote. The body ends where zsh ends it, so what follows runs.
+		{"cat <<$'\\u0045OF' >/dev/null\nhello\nEOF\nautoload -Uz compinit && compinit\n", true},
+		{"cat <<$'\\U00000045OF' >/dev/null\nhello\nEOF\nautoload -Uz compinit && compinit\n", true},
+		{"cat <<$'\\u0045OF' >/dev/null\nautoload -Uz compinit && compinit\nEOF\n", false},
+		{"x=`cat <<$'\\\\u0045OF'\nhello\nEOF\nautoload -Uz compinit && compinit`; print -r -- \"$x\"\n", true},
+		{"cat <<$'E\\qF' >/dev/null\nhello\nEqF\nautoload -Uz compinit && compinit\n", true},
+		{"cat <<$'\\C-aEOF' >/dev/null\nhello\n\x01EOF\nautoload -Uz compinit && compinit\n", true},
+		{"cat <<$'\\M-aEOF' >/dev/null\nhello\n\xe1EOF\nautoload -Uz compinit && compinit\n", true},
+		{"cat <<$'\\x45OF' >/dev/null\nhello\nEOF\nautoload -Uz compinit && compinit\n", true},
+		{"cat <<$'\\105OF' >/dev/null\nhello\nEOF\nautoload -Uz compinit && compinit\n", true},
+		{"cat <<\"E\\$F\" >/dev/null\nhello\nE$F\nautoload -Uz compinit && compinit\n", true},
+		{"cat <<\"E\\\"F\" >/dev/null\nhello\nE\"F\nautoload -Uz compinit && compinit\n", true},
+		{"cat <<\"E\\qF\" >/dev/null\nhello\nE\\qF\nautoload -Uz compinit && compinit\n", true},
+		{"cat <<E\\OF >/dev/null\nhello\nEOF\nautoload -Uz compinit && compinit\n", true},
+		{"cat <<E\\OF >/dev/null\nautoload -Uz compinit && compinit\nEOF\n", false},
 	} {
 		if got := CompinitRuns([]byte(c.rc)); got != c.want {
 			t.Errorf("CompinitRuns(%q) = %v, want %v", c.rc, got, c.want)
@@ -437,6 +455,21 @@ func TestCompinitDetectionMatchesZshOnWordStartsAndCRs(t *testing.T) {
 		"cat <<\"EOF\"\n`autoload -Uz compinit && compinit`\nEOF\n",
 		"cat <<EOF\n$(print -r -- a # autoload -Uz compinit && compinit\n)\nEOF\n",
 		"<<$E\n;#compinit\n",
+		// #582 review: here-document delimiters decoded as zsh decodes them.
+		"cat <<$'\\u0045OF' >/dev/null\nhello\nEOF\nautoload -Uz compinit && compinit\n",
+		"cat <<$'\\U00000045OF' >/dev/null\nhello\nEOF\nautoload -Uz compinit && compinit\n",
+		"cat <<$'\\u0045OF' >/dev/null\nautoload -Uz compinit && compinit\nEOF\n",
+		"x=`cat <<$'\\\\u0045OF'\nhello\nEOF\nautoload -Uz compinit && compinit`; print -r -- \"$x\"\n",
+		"cat <<$'E\\qF' >/dev/null\nhello\nEqF\nautoload -Uz compinit && compinit\n",
+		"cat <<$'\\C-aEOF' >/dev/null\nhello\n\x01EOF\nautoload -Uz compinit && compinit\n",
+		"cat <<$'\\M-aEOF' >/dev/null\nhello\n\xe1EOF\nautoload -Uz compinit && compinit\n",
+		"cat <<$'\\x45OF' >/dev/null\nhello\nEOF\nautoload -Uz compinit && compinit\n",
+		"cat <<$'\\105OF' >/dev/null\nhello\nEOF\nautoload -Uz compinit && compinit\n",
+		"cat <<\"E\\$F\" >/dev/null\nhello\nE$F\nautoload -Uz compinit && compinit\n",
+		"cat <<\"E\\\"F\" >/dev/null\nhello\nE\"F\nautoload -Uz compinit && compinit\n",
+		"cat <<\"E\\qF\" >/dev/null\nhello\nE\\qF\nautoload -Uz compinit && compinit\n",
+		"cat <<E\\OF >/dev/null\nhello\nEOF\nautoload -Uz compinit && compinit\n",
+		"cat <<E\\OF >/dev/null\nautoload -Uz compinit && compinit\nEOF\n",
 	} {
 		if err := os.WriteFile(rcFile, []byte(rc), 0o644); err != nil {
 			t.Fatal(err)
@@ -446,10 +479,15 @@ func TestCompinitDetectionMatchesZshOnWordStartsAndCRs(t *testing.T) {
 		// the marker function, and ZSH names the loader the rc sources. The
 		// environment is the test's own, not the caller's: a fixture such as
 		// ${y:-`...`} would otherwise run or skip its backquote by whether the
-		// caller happened to set y.
+		// caller happened to set y. zsh writes each here-document's body to a
+		// file named from TMPPREFIX (default /tmp/zsh), so that points into the
+		// test's temp dir too: a sandbox that forbids /tmp does not turn a
+		// here-document fixture into a failure that reads as compinit not
+		// running.
 		cmd := exec.Command(zsh, "-f", "-c",
 			`fpath=("$1" $fpath); ZSH=$2; source "$3"`, "compinit-oracle", fnDir, omzDir, rcFile)
-		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + dir, "LC_ALL=C"}
+		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + dir, "TMPDIR=" + dir,
+			"TMPPREFIX=" + filepath.Join(dir, "zsh"), "LC_ALL=C"}
 		cmd.Dir = dir
 		out, _ := cmd.Output()
 		ran := strings.Contains(string(out), marker)

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/akleizor/ccmorph/util/paths"
 )
@@ -652,9 +653,13 @@ func (l *lexer) pattern(f *lexFrame, i int) int {
 }
 
 // heredoc reads the << or <<- at i and its delimiter word, and queues the body
-// for the next newline. The word ends at a blank, an operator or a byte that
-// opens a substitution or group, which the lexer then reads as usual. A <<
-// with no word after it is left as it is.
+// for the next newline. zsh ends that word at a blank or an operator and only
+// takes its quotes off, never expanding it: \X is X, '...' is its text, "..."
+// is its text with the backslash taken off \$ \` \" and \\ (dquoteText),
+// $'...' is decoded as zsh decodes it (ansiDecode), and any other $ is a
+// literal byte, so $x and $"EOF" end at lines reading $x and $EOF. A word
+// quoted anywhere makes the body data (heredocBody). A << with no word after
+// it is left as it is.
 func (l *lexer) heredoc(f *lexFrame, i int) int {
 	j := i + 2
 	strip := l.src[j] == '-'
@@ -667,29 +672,33 @@ func (l *lexer) heredoc(f *lexFrame, i int) int {
 	var term strings.Builder
 	quoted := false
 	for j < len(l.src) && strings.IndexByte(" \t\n;&|<>()`", l.src[j]) < 0 {
-		if l.src[j] == '$' && l.src[j+1] == '\'' {
+		switch c := l.src[j]; {
+		case c == '$' && l.src[j+1] == '\'':
 			end := ansiEnd(l.src, j+2)
 			if end < 0 {
 				return i
 			}
 			term.WriteString(ansiDecode(l.src[j+2 : end]))
-			quoted = true
-			j = end + 1
-			continue
-		}
-		switch c := l.src[j]; c {
-		case '\\':
+			quoted, j = true, end+1
+		case c == '\\' && l.src[j+1] == '\n':
+			j += 2 // a backslash-newline joins the lines
+		case c == '\\':
 			term.WriteByte(l.src[j+1])
-			quoted = true
-			j += 2
-		case '\'', '"':
-			end := strings.IndexByte(l.src[j+1:], c)
+			quoted, j = true, j+2
+		case c == '\'':
+			end := strings.IndexByte(l.src[j+1:], '\'')
 			if end < 0 {
 				return i
 			}
 			term.WriteString(l.src[j+1 : j+1+end])
-			quoted = true
-			j += end + 2
+			quoted, j = true, j+end+2
+		case c == '"':
+			end := dquoteEnd(l.src, j+1)
+			if end < 0 {
+				return i
+			}
+			term.WriteString(dquoteText(l.src[j+1 : end]))
+			quoted, j = true, end+1
 		default:
 			term.WriteByte(c)
 			j++
@@ -717,62 +726,138 @@ func ansiEnd(src string, from int) int {
 	return -1
 }
 
-// ansiDecode returns the text of a $'...' with its escapes decoded as zsh
-// decodes them (\n, \t, \', \\, \xHH, an octal \NNN and kin), so a
-// here-document delimiter spelled $'E\x46' ends at a line reading EF. An
-// escape it does not know keeps its backslash.
-func ansiDecode(s string) string {
-	var b strings.Builder
-	for k := 0; k < len(s); k++ {
-		if s[k] != '\\' || k+1 == len(s) {
-			b.WriteByte(s[k])
-			continue
-		}
-		k++
-		switch c := s[k]; c {
-		case 'a':
-			b.WriteByte('\a')
-		case 'b':
-			b.WriteByte('\b')
-		case 'e', 'E':
-			b.WriteByte(0x1b)
-		case 'f':
-			b.WriteByte('\f')
-		case 'n':
-			b.WriteByte('\n')
-		case 'r':
-			b.WriteByte('\r')
-		case 't':
-			b.WriteByte('\t')
-		case 'v':
-			b.WriteByte('\v')
-		case '\\', '\'', '"':
-			b.WriteByte(c)
-		case 'x':
-			n, used := 0, 0
-			for used < 2 && k+1 < len(s) && hexDigit(s[k+1]) >= 0 {
-				n = n*16 + hexDigit(s[k+1])
-				k++
-				used++
-			}
-			if used == 0 {
-				b.WriteString(`\x`)
-				continue
-			}
-			b.WriteByte(byte(n))
-		case '0', '1', '2', '3', '4', '5', '6', '7':
-			n := int(c - '0')
-			for used := 1; used < 3 && k+1 < len(s) && '0' <= s[k+1] && s[k+1] <= '7'; used++ {
-				n = n*8 + int(s[k+1]-'0')
-				k++
-			}
-			b.WriteByte(byte(n))
-		default:
-			b.WriteByte('\\')
-			b.WriteByte(c)
+// dquoteEnd returns the index of the " that closes the "..." whose text begins
+// at from, where a backslash escapes the byte after it, or -1 when none does.
+func dquoteEnd(src string, from int) int {
+	for k := from; k < len(src); k++ {
+		switch src[k] {
+		case '\\':
+			k++
+		case '"':
+			return k
 		}
 	}
+	return -1
+}
+
+// dquoteText is the text of a "..." once zsh takes its quotes off: the
+// backslash goes from \$ \` \" \\ and a backslash-newline goes whole; any
+// other backslash stays.
+func dquoteText(s string) string {
+	var b strings.Builder
+	for k := 0; k < len(s); k++ {
+		if s[k] == '\\' && k+1 < len(s) && strings.IndexByte("$`\"\\\n", s[k+1]) >= 0 {
+			k++
+			if s[k] != '\n' {
+				b.WriteByte(s[k])
+			}
+			continue
+		}
+		b.WriteByte(s[k])
+	}
 	return b.String()
+}
+
+// ansiDecode returns the text of a $'...' decoded as zsh decodes it: \a \b
+// \e \E \f \n \r \t \v, an octal \NNN (up to three digits), \xHH (up to two),
+// \uHHHH and \UHHHHHHHH (written as UTF-8), \C-x for a control byte and \M-x
+// for a meta byte (the - is optional; a \M- after a \C- applies first, and
+// both wait past a \u or \U for the next byte), and any other \X is X. An escape with
+// no digits after it (\x, \u) is a NUL byte, as it is to zsh, so a
+// here-document delimiter spelled $'E\x46' or $'\u0045OF' ends where zsh ends
+// it.
+func ansiDecode(s string) string {
+	var b []byte
+	control, meta := false, 0 // meta: 1 applies after control, 2 before it
+	for k := 0; k < len(s); k++ {
+		c := s[k]
+		if c == '\\' && k+1 < len(s) {
+			k++
+			switch e := s[k]; e {
+			case 'a':
+				c = '\a'
+			case 'b':
+				c = '\b'
+			case 'e', 'E':
+				c = 0x1b
+			case 'f':
+				c = '\f'
+			case 'n':
+				c = '\n'
+			case 'r':
+				c = '\r'
+			case 't':
+				c = '\t'
+			case 'v':
+				c = '\v'
+			case 'C', 'M':
+				if k+1 < len(s) && s[k+1] == '-' {
+					k++
+				}
+				switch {
+				case e == 'C':
+					control = true
+				case control:
+					meta = 2
+				default:
+					meta = 1
+				}
+				continue
+			case 'u', 'U':
+				digits := 4
+				if e == 'U' {
+					digits = 8
+				}
+				var n rune
+				for used := 0; used < digits && k+1 < len(s) && hexDigit(s[k+1]) >= 0; used++ {
+					n = n*16 + rune(hexDigit(s[k+1]))
+					k++
+				}
+				b = utf8.AppendRune(b, n)
+				continue
+			case 'x':
+				n := 0
+				for used := 0; used < 2 && k+1 < len(s) && hexDigit(s[k+1]) >= 0; used++ {
+					n = n*16 + hexDigit(s[k+1])
+					k++
+				}
+				c = byte(n)
+			case '0', '1', '2', '3', '4', '5', '6', '7':
+				n := int(e - '0')
+				for used := 1; used < 3 && k+1 < len(s) && '0' <= s[k+1] && s[k+1] <= '7'; used++ {
+					n = n*8 + int(s[k+1]-'0')
+					k++
+				}
+				c = byte(n)
+			default:
+				c = e
+			}
+		}
+		b = append(b, c)
+		b, control, meta = controlMeta(b, control, meta)
+	}
+	return string(b)
+}
+
+// controlMeta applies a pending \C- and \M- to the byte just written, as zsh
+// does: control keeps the low five bits (\C-? is DEL), meta sets the high bit,
+// first when it was asked for after the control.
+func controlMeta(b []byte, control bool, meta int) ([]byte, bool, int) {
+	last := len(b) - 1
+	if meta == 2 {
+		b[last] |= 0x80
+	}
+	if control {
+		if b[last] == '?' {
+			b[last] = 0x7f
+		} else {
+			b[last] &= 0x9f
+		}
+	}
+	if meta == 1 {
+		b[last] |= 0x80
+	}
+	return b, false, 0
 }
 
 // hexDigit is the value of the hex digit c, or -1 when c is not one.
