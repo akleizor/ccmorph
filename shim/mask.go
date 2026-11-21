@@ -42,6 +42,10 @@ type maskRule struct {
 	kind string
 	re   *regexp.Regexp // the value is group 1 when the pattern has one
 	ok   func(string) bool
+	// edge judges the value in its surroundings, which a pattern cannot
+	// see: Go's regexp has no lookaround. The CARD rule drops a digit run
+	// that a number holds, at discovery and again at replacement (#756).
+	edge func(s string, a, b int) bool
 }
 
 var (
@@ -123,30 +127,35 @@ func notTemplate(v string) bool {
 	return !strings.ContainsAny(v[:1], "${<*%") && !strings.Contains(v, "{{")
 }
 
+// cardKind marks the learned values whose replacement cannot be context-free:
+// a strings.Replacer would rewrite a learned card's digits inside a decimal,
+// so once a card is known the pass scans by hand instead (#756).
+const cardKind = "CARD"
+
 var maskRules = []maskRule{
-	{"PRIVATE_KEY", regexp.MustCompile(`-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----`), nil},
+	{"PRIVATE_KEY", regexp.MustCompile(`-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----`), nil, nil},
 	{"API_KEY", regexp.MustCompile(`\b(?:sk-ant-[A-Za-z0-9_-]{20,}|sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{32,}|` +
 		`gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{40,}|glpat-[A-Za-z0-9_-]{20,}|` +
 		`(?:AKIA|ASIA)[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|xox[abposr]-[A-Za-z0-9-]{10,}|` +
-		`(?:sk|rk)_live_[A-Za-z0-9]{20,}|hf_[A-Za-z0-9]{30,}|npm_[A-Za-z0-9]{36}|ops_[A-Za-z0-9_-]{40,})`), nil},
-	{"TOKEN", regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`), nil},
-	{"TOKEN", regexp.MustCompile(`(?i)\bbearer\s+([A-Za-z0-9._~+/=-]{20,})`), notTemplate},
+		`(?:sk|rk)_live_[A-Za-z0-9]{20,}|hf_[A-Za-z0-9]{30,}|npm_[A-Za-z0-9]{36}|ops_[A-Za-z0-9_-]{40,})`), nil, nil},
+	{"TOKEN", regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`), nil, nil},
+	{"TOKEN", regexp.MustCompile(`(?i)\bbearer\s+([A-Za-z0-9._~+/=-]{20,})`), notTemplate, nil},
 	// user:password@ in a URL or connection string
-	{"PASSWORD", regexp.MustCompile(`\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@'"]+:([^\s@/'"]+)@`), notTemplate},
-	{"PASSWORD", regexp.MustCompile(`(?i)[A-Za-z0-9_.-]*(?:password|passwd|pwd)[A-Za-z0-9_.-]*["']?\s*[:=]\s*["']?([^\s"'` + "`" + `,;]{6,})`), assigned},
-	{"SECRET", regexp.MustCompile(`(?i)[A-Za-z0-9_.-]*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_.-]*["']?\s*[:=]\s*["']?([^\s"'` + "`" + `,;]{12,})`), assigned},
+	{"PASSWORD", regexp.MustCompile(`\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s:/@'"]+:([^\s@/'"]+)@`), notTemplate, nil},
+	{"PASSWORD", regexp.MustCompile(`(?i)[A-Za-z0-9_.-]*(?:password|passwd|pwd)[A-Za-z0-9_.-]*["']?\s*[:=]\s*["']?([^\s"'` + "`" + `,;]{6,})`), assigned, nil},
+	{"SECRET", regexp.MustCompile(`(?i)[A-Za-z0-9_.-]*(?:secret|token|api[_-]?key|access[_-]?key|private[_-]?key)[A-Za-z0-9_.-]*["']?\s*[:=]\s*["']?([^\s"'` + "`" + `,;]{12,})`), assigned, nil},
 	// Personal data. Each pattern is narrow on purpose: a learned value is masked
 	// everywhere, so a loose one hides ordinary numbers from the model.
 	// shortcut: only the written form with the check digit in brackets, A123456(7);
 	// unbracketed, a letter and seven digits is as often a product or order code.
-	{"HKID", regexp.MustCompile(`\b[A-Z]{1,2}[0-9]{6}\([0-9A]\)`), hkidValid},
+	{"HKID", regexp.MustCompile(`\b[A-Z]{1,2}[0-9]{6}\([0-9A]\)`), hkidValid, nil},
 	// shortcut: 16-digit cards only (Visa, Mastercard, UnionPay, JCB, Discover), grouped
 	// in fours or written whole; add 15-digit Amex if it is needed.
-	{"CARD", regexp.MustCompile(`\b(?:4[0-9]{3}|5[1-5][0-9]{2}|2(?:2[2-9][0-9]|[3-6][0-9]{2}|7[01][0-9]|720)|62[0-9]{2}|35[0-9]{2}|6011|65[0-9]{2})(?:[ -]?[0-9]{4}){3}\b`), luhnValid},
+	{cardKind, regexp.MustCompile(`\b(?:4[0-9]{3}|5[1-5][0-9]{2}|2(?:2[2-9][0-9]|[3-6][0-9]{2}|7[01][0-9]|720)|62[0-9]{2}|35[0-9]{2}|6011|65[0-9]{2})(?:[ -]?[0-9]{4}){3}\b`), luhnValid, notInNumber},
 	// shortcut: written with a country code only, +852 (HK) and +86 (mainland mobile);
 	// a bare 8-digit number is too often not a phone number.
-	{"PHONE", regexp.MustCompile(`\+852[ -]?[2-9][0-9]{3}[ -]?[0-9]{4}\b|\+86[ -]?1[3-9][0-9][ -]?[0-9]{4}[ -]?[0-9]{4}\b`), nil},
-	{"EMAIL", regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}\b`), personalEmail},
+	{"PHONE", regexp.MustCompile(`\+852[ -]?[2-9][0-9]{3}[ -]?[0-9]{4}\b|\+86[ -]?1[3-9][0-9][ -]?[0-9]{4}[ -]?[0-9]{4}\b`), nil, nil},
+	{"EMAIL", regexp.MustCompile(`\b[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}\b`), personalEmail, nil},
 }
 
 // hkidValid checks an HKID's check digit: letters count 10-35, a missing
@@ -201,6 +210,31 @@ func luhnValid(v string) bool {
 		sum, n = sum+d, n+1
 	}
 	return n == 16 && sum%10 == 0
+}
+
+// notInNumber is the CARD rule's edge: a 16-digit run is a card only where no
+// number holds it (#756) — \b fires at the ".", so a long decimal's fraction
+// carries a BIN+Luhn candidate about one time in ten, and rewriting the run
+// corrupts the number the model reads. A card stands alone: no digit or dot
+// touches its front, no digit its back, and a dot behind it may not carry a
+// digit. A dot with nothing behind it is a period, and the card is still a
+// card. Discovery and replacement share this one rule, so the digits of a
+// learned card pass through untouched inside a number too.
+func notInNumber(s string, a, b int) bool {
+	if a > 0 {
+		if c := s[a-1]; c == '.' || (c >= '0' && c <= '9') {
+			return false
+		}
+	}
+	if b < len(s) {
+		switch c := s[b]; {
+		case c >= '0' && c <= '9':
+			return false
+		case c == '.' && b+1 < len(s) && s[b+1] >= '0' && s[b+1] <= '9':
+			return false
+		}
+	}
+	return true
 }
 
 // personalEmail drops addresses that name no person: placeholders, no-reply
@@ -349,6 +383,9 @@ func (m *masker) find(s string) {
 			if a > loc[0] && unsure(s[loc[0]:a], v) {
 				continue
 			}
+			if r.edge != nil && !r.edge(s, a, b) {
+				continue
+			}
 			if (r.ok == nil || r.ok(v)) && !(wordsRE.MatchString(v) && proseRE.MatchString(s[b:]) && !(a > loc[0] && s[a-1] == '=')) {
 				m.learn(v, r.kind)
 			}
@@ -356,9 +393,61 @@ func (m *masker) find(s string) {
 	}
 }
 
-// replacer swaps every known value for its placeholder, longest value first so
-// a value inside a longer one never splits it.
-func (m *masker) replacer() *strings.Replacer {
+// maskPass is one request's masking pass, built once. Every learned value is
+// replaced as strings.Replacer does it: the leftmost value first, and at one
+// position the longest, so a value inside a longer one never splits it. A
+// learned card is the one value the Replacer cannot place (#756): its digits
+// inside a number are a number. So once a card is known the pass scans by
+// hand, and a card is taken only where notInNumber still sees one. The card
+// competes with every other value at the same position, so a shorter secret
+// inside a card never splits it either.
+type maskPass struct {
+	r     *strings.Replacer // every learned value: the pass while no card is known
+	first [][]learned       // nil while no card is known; else 256 lists, every value by its first byte, longest first
+}
+
+type learned struct {
+	v, ph string
+	card  bool
+}
+
+func (p *maskPass) replace(s string) string {
+	if p.first == nil {
+		return p.r.Replace(s)
+	}
+	var b strings.Builder
+	last := 0
+	for i := 0; i < len(s); {
+		l, ok := p.at(s, i)
+		if !ok {
+			i++
+			continue
+		}
+		b.WriteString(s[last:i])
+		b.WriteString(l.ph)
+		i += len(l.v)
+		last = i
+	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// at is the value the pass replaces at s[i]: the longest learned value that
+// starts there, and a card only where no number holds it.
+func (p *maskPass) at(s string, i int) (learned, bool) {
+	for _, l := range p.first[s[i]] {
+		if strings.HasPrefix(s[i:], l.v) && (!l.card || notInNumber(s, i, i+len(l.v))) {
+			return l, true
+		}
+	}
+	return learned{}, false
+}
+
+// pass builds this request's masking pass.
+func (m *masker) pass() *maskPass {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	vals := make([]string, 0, len(m.known))
@@ -366,11 +455,23 @@ func (m *masker) replacer() *strings.Replacer {
 		vals = append(vals, v)
 	}
 	sort.Slice(vals, func(i, j int) bool { return len(vals[i]) > len(vals[j]) })
+	card := "{{" + cardKind + "_"
 	pairs := make([]string, 0, 2*len(vals))
+	anyCard := false
 	for _, v := range vals {
-		pairs = append(pairs, v, m.known[v])
+		ph := m.known[v]
+		pairs = append(pairs, v, ph)
+		anyCard = anyCard || strings.HasPrefix(ph, card)
 	}
-	return strings.NewReplacer(pairs...)
+	p := &maskPass{r: strings.NewReplacer(pairs...)}
+	if anyCard {
+		p.first = make([][]learned, 256)
+		for _, v := range vals {
+			ph := m.known[v]
+			p.first[v[0]] = append(p.first[v[0]], learned{v, ph, strings.HasPrefix(ph, card)})
+		}
+	}
+	return p
 }
 
 // target is one string of a request that goes through masking; fetched is the
@@ -551,11 +652,11 @@ func (m *masker) maskRequest(d *doc) (out []byte, masked map[string]int, ok bool
 		}
 		m.find(tg.s)
 	}
-	r := m.replacer()
+	p := m.pass()
 	var edits []Edit
 	seen := map[string]string{}
 	for _, tg := range t.out {
-		ns := r.Replace(tg.s)
+		ns := p.replace(tg.s)
 		if ns == tg.s {
 			continue
 		}
