@@ -347,3 +347,31 @@ FAIL
 control, unmutated:
 --- PASS: TestPsProcessTableReadsStartTimes (0.08s)
 ok  	github.com/akleizor/ccmorph/util	0.083s
+
+mutation H (landing refusal S4, tree ef896e4 + working changes): for a live session with a :hooks-shim child, a successful listing and no saved model, DoctorRoute hands adapterLine __UNKNOWN__ and prints the named SKIP row in the default report; every other shape untouched
+    doctor_test.go:259: adapter rows ["INFO adapter: this profile needs no translator until a model is chosen (none is set, and the endpoint's model list names no protocol); cliproxyapi is installed; choose one: ccmorph set dr1191735translatorandhooksshimlisted model <model-id>" "SKIP adapter: could not tell whether a translator is running (running programs could not be listed within 30 seconds); check again: ccmorph doctor dr1191735translatorandhooksshimlisted"], want ["OK adapter: this profile needs a translator now: an open session on it is running cliproxyapi"]
+--- FAIL: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable (2.87s)
+    --- PASS: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable/shim-only (0.27s)
+    --- PASS: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable/translator-running (0.29s)
+    --- PASS: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable/translator-running-classified (0.42s)
+    --- PASS: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable/translator-and-hooks-shim (0.47s)
+    --- PASS: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable/translator-and-hooks-shim-classified (0.36s)
+    --- PASS: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable/shim-only-listed (0.28s)
+    --- PASS: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable/translator-running-listed (0.40s)
+    --- FAIL: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable/translator-and-hooks-shim-listed (0.38s)
+FAIL
+FAIL	github.com/akleizor/ccmorph/util	2.894s
+FAIL
+
+mutation C' (a wrong decisive parse): adapterSession names the in-process shim :cliproxyapi (util/misc.go)
+    doctor_test.go:357: got "1192126\t1192126:cliproxyapi", want "1192126\t1192126:shim"
+--- FAIL: TestRunningAdapterMatchesArgvAcrossSpaces (0.24s)
+FAIL
+FAIL	github.com/akleizor/ccmorph/util	0.251s
+FAIL
+
+mutation J (every bounded read loses its bound): sessionReadBound = time.Nanosecond (util/misc.go); the argv test's answer has no deadline, so it still tests argv and passes
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.54s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.48s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.41s)
+ok  	github.com/akleizor/ccmorph/util	1.441s
