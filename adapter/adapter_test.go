@@ -1786,6 +1786,7 @@ func TestPrintConfigPrintsDespiteAProbeFailure(t *testing.T) { // test_print_con
 	// #164), so when the profile's proxy is not listening the probe failure is
 	// a note, never a preemption of the print: exit 0, the redacted config on
 	// stdout, the refused dial named on stderr.
+	noAmbientProxy(t)       // this machine's own exemptions would route past the dead proxy (GH-774)
 	swap(t, &probeVia, nil) // Main sets it from the profile and never resets it
 	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "abc123", "ANTHROPIC_BASE_URL": "https://gateway",
 		"CCMORPH_UPSTREAM_PROXY": "http://alice:" + deadProxyPW + "@127.0.0.1:8118"})
@@ -1819,6 +1820,7 @@ func TestPrintConfigPrintsThroughADeadProfileProxy(t *testing.T) { // test_print
 	// No classify stub: the real probe dials the profile's proxy, where nothing
 	// listens. --print-config prints with the failure named; a launch on the
 	// same profile still dies on it, naming the same dial.
+	noAmbientProxy(t) // a NO_PROXY from this machine exempts the gateway and the probe never dials the proxy (GH-774)
 	swap(t, &probeVia, nil)
 	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "abc123", "ANTHROPIC_BASE_URL": "http://gateway.invalid",
 		"CCMORPH_UPSTREAM_PROXY": "http://alice:" + deadProxyPW + "@127.0.0.1:1/p?token=qq"})
@@ -1877,6 +1879,7 @@ func TestPrintConfigPrintsWhenTheInventoryFallsBackToAnUnusableCache(t *testing.
 	// logs the inventory failure, falls back to that cache and returns no
 	// error. The print must still survive, carrying the failure as its note --
 	// and a launch on the same profile must still refuse to serve nothing.
+	noAmbientProxy(t) // this machine's own exemptions would route the inventory past the dead proxy (GH-774)
 	swap(t, &probeVia, nil)
 	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "abc123", "ANTHROPIC_BASE_URL": "http://gateway.invalid",
 		"CCMORPH_UPSTREAM_PROXY": "http://alice:" + deadProxyPW + "@127.0.0.1:1"})
