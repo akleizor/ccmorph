@@ -123,7 +123,7 @@ func TestDispatchTimeoutKillsTheWorkerAndNeverRetries(t *testing.T) {
 	fakeWorker(t, `echo run >> `+dir+`/runs; exec sleep 30`)
 	start := time.Now()
 	var errOut bytes.Buffer
-	code := Main([]string{"dispatch", "--kind", "code", "--tier", "small", "--timeout", "0.3", "brief"}, strings.NewReader(""), io.Discard, &errOut)
+	code := Main([]string{"dispatch", "--kind", "code", "--tier", "small", "--timeout", "1", "brief"}, strings.NewReader(""), io.Discard, &errOut)
 	if code != 124 || time.Since(start) > 5*time.Second || !strings.Contains(errOut.String(), "timeout (exit 124)") {
 		t.Fatalf("exit %d after %s: %q", code, time.Since(start), errOut.String())
 	}
