@@ -287,11 +287,37 @@ func TestDoctorCompletionSpeaksWhenTheProbeCannotAnswer(t *testing.T) {
 	completionProbeDeadline = 300 * time.Millisecond
 	t.Cleanup(func() { completionProbeDeadline = deadline })
 	got := completionHint(t, l)
-	if got == "" {
-		t.Fatal("doctor row is empty, want it to speak: a probe that cannot answer is not a working completion")
+	want := "INFO completion: not checked (a new zsh did not answer within 300ms)\n"
+	if got != want {
+		t.Fatalf("doctor row = %q, want exactly %q: both halves are right, so the row may only name the check the probe could not make (#518)", got, want)
 	}
-	if want := "fpath=(" + dir + " $fpath)"; !strings.Contains(got, want) {
-		t.Errorf("doctor row = %q, want it to carry %q", got, want)
+}
+
+// A probe that runs out of time while the startup files still miss a half
+// keeps that half's hint: the timeout takes nothing true away, and only the
+// case where both halves are already right stops claiming them as missing
+// (#518).
+func TestDoctorCompletionKeepsTheMissingHalfWhenTheProbeRunsOutOfTime(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "libexec")
+	l := completionInstall(t, root)
+	dir := filepath.Join(root, "share", "zsh", "site-functions")
+	home := t.TempDir()
+	rc := "fpath=(" + dir + " $fpath)\nsleep 6\n"
+	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte(rc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("ZDOTDIR", "")
+	t.Setenv("SHELL", "/bin/zsh")
+	t.Setenv("FPATH", "")
+	deadline := completionProbeDeadline
+	completionProbeDeadline = 300 * time.Millisecond
+	t.Cleanup(func() { completionProbeDeadline = deadline })
+	got := completionHint(t, l)
+	want := "INFO completion: nothing in ~/.zshrc runs compinit — add:\n" +
+		"INFO   autoload -Uz compinit && compinit\n"
+	if got != want {
+		t.Fatalf("doctor row = %q, want exactly %q: the compinit half is missing whatever the probe says", got, want)
 	}
 }
 

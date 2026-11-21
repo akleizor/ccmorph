@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -94,6 +95,13 @@ func stepPATH(t *testing.T, brew bool) {
 // FAIL wording names is the machine's own (#369): brew's command where brew is
 // on PATH, the project page the installer gives where it is not.
 func TestDoctorRouteAdapterLine(t *testing.T) {
+	// The table is pinned readable and empty: PATH here holds only the brew
+	// stub, so the real ps is missing and every case would otherwise read
+	// __UNKNOWN__, whose own SKIP row this test is not about (#518).
+	orig := sysctlTable
+	sysctlTable = func() (map[int]psRow, bool) { return map[int]psRow{}, true }
+	t.Cleanup(func() { sysctlTable = orig })
+
 	cases := []struct {
 		name string
 		need TranslatorNeed
@@ -158,21 +166,151 @@ func TestDoctorRouteAdapterLine(t *testing.T) {
 	}
 }
 
+// Doctor's adapter report reads a live session through the real process
+// table, with no injected answer: the row a saved, unclassified model depends
+// on comes from the kernel's own argv, so a report that drops the live session
+// fails here even when a loaded machine would hide it end to end (#518).
+func TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable(t *testing.T) {
+	// This is about the wiring, not about winning a race with a loaded
+	// machine: the read gets room to answer.
+	orig := sessionReadBound
+	sessionReadBound = 30 * time.Second
+	t.Cleanup(func() { sessionReadBound = orig })
+
+	profile := "dr" + strconv.Itoa(os.Getpid())
+	holdProc(t, os.Args[0], BridgeFiles(t.TempDir(), "p")[2], "/x/my adapter/ccmorph-core", "adapter", profile)
+	rows, _, _ := DoctorRoute(profile, "apikey", "https://example.test", "glm-4.6", "",
+		func(string) TranslatorNeed { return TranslatorNeed{Installed: true} }, "", "", false)
+	var got []string
+	for _, r := range rows {
+		if strings.HasPrefix(r.Msg, "adapter:") {
+			got = append(got, r.Kind+" "+r.Msg)
+		}
+	}
+	want := []string{"OK adapter: this profile needs no translator now: its open session runs without one"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("adapter rows %q, want %q", got, want)
+	}
+}
+
+// A session read that lost its bound names the check it could not make, in
+// the default report, instead of leaving the saved model's line out or
+// calling the session absent (#518). The ps is forced to stall and the bound
+// is shrunk, so the answer is deterministic in serial CI rather than a race
+// with a loaded machine.
+func TestDoctorRouteNamesASessionReadThatLostItsBound(t *testing.T) {
+	origSysctl, origBound := sysctlTable, sessionReadBound
+	sysctlTable = func() (map[int]psRow, bool) { return nil, false }
+	sessionReadBound = 200 * time.Millisecond
+	t.Cleanup(func() { sysctlTable, sessionReadBound = origSysctl, origBound })
+
+	profile := "dr" + strconv.Itoa(os.Getpid())
+	skip := "SKIP adapter: could not tell whether a translator is running (running programs could not be listed within 200ms); check again: ccmorph doctor " + profile
+	for _, c := range []struct {
+		name, model string
+		need        TranslatorNeed
+		want        []string
+	}{
+		{"saved model, session unreadable", "glm-4.6", TranslatorNeed{Installed: true}, []string{skip}},
+		{"known need, session unreadable", "", TranslatorNeed{Known: true, Needed: true, Installed: true},
+			[]string{"OK adapter: this endpoint needs a translator; cliproxyapi is installed", skip}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			pidFile := filepath.Join(dir, "ps.pid")
+			script := "#!/bin/sh\necho $$ > '" + pidFile + "'\nexec /bin/sleep 30\n"
+			if err := os.WriteFile(filepath.Join(dir, "ps"), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+			// The stalled ps must not outlive the test, even when an
+			// assertion fails first (the cleanup pattern GH-449 added).
+			t.Cleanup(func() {
+				b, err := os.ReadFile(pidFile)
+				if err != nil {
+					return
+				}
+				if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 {
+					syscall.Kill(pid, syscall.SIGKILL)
+				}
+			})
+			for _, verbose := range []bool{false, true} {
+				rows, _, _ := DoctorRoute(profile, "apikey", "https://example.test", c.model, "",
+					func(string) TranslatorNeed { return c.need }, "", "", verbose)
+				var got []string
+				for _, r := range rows {
+					if strings.HasPrefix(r.Msg, "adapter:") {
+						got = append(got, r.Kind+" "+r.Msg)
+					}
+				}
+				if !reflect.DeepEqual(got, c.want) {
+					t.Fatalf("verbose=%v: adapter rows %q, want %q", verbose, got, c.want)
+				}
+			}
+		})
+	}
+}
+
+// DurationWords is the budget's spelling in a row: whole seconds in words,
+// anything else in Go's own form, so a shortened test bound reads honestly.
+func TestDurationWords(t *testing.T) {
+	for _, c := range []struct {
+		d    time.Duration
+		want string
+	}{
+		{time.Second, "1 second"},
+		{5 * time.Second, "5 seconds"},
+		{10 * time.Second, "10 seconds"},
+		{300 * time.Millisecond, "300ms"},
+		{1500 * time.Millisecond, "1.5s"},
+	} {
+		if got := DurationWords(c.d); got != c.want {
+			t.Errorf("DurationWords(%v) = %q, want %q", c.d, got, c.want)
+		}
+	}
+}
+
 // runningAdapter's answer for a live adapter whose exec path carries a space:
 // the joined command line cannot say where the path ends and the arguments
 // begin, the kernel's argv can. The session is reported with the adapter's own
 // pid as the in-process shim (GH-49, PR #40), exactly as a live session reads.
+// This test is about argv, not about the one-second bound, which
+// TestRunningAdapterEndsAPsStalledPastItsBound pins; so it races no clock
+// (#518). The bound is lengthened, because under process churn every ps pass
+// can take longer than a second, and a read that still cannot answer is asked
+// again; the first decisive answer is the one asserted.
 func TestRunningAdapterMatchesArgvAcrossSpaces(t *testing.T) {
+	orig := sessionReadBound
+	sessionReadBound = 30 * time.Second
+	t.Cleanup(func() { sessionReadBound = orig })
+
 	profile := "ra" + strconv.Itoa(os.Getpid())
 	cmd := holdProc(t, os.Args[0], BridgeFiles(t.TempDir(), "p")[2],
 		"/x/my adapter/ccmorph-core", "adapter", profile)
 	want := fmt.Sprintf("%d\t%d:shim", cmd.Process.Pid, cmd.Process.Pid)
-	if got := runningAdapter(profile); got != want {
+	if got := decisiveRunningAdapter(t, profile); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
-	if got := runningAdapter("no-such-profile"); got != "" {
+	if got := decisiveRunningAdapter(t, "no-such-profile"); got != "" {
 		t.Fatalf("a profile nothing serves must report nothing, got %q", got)
 	}
+}
+
+// decisiveRunningAdapter is runningAdapter's first answer that is not
+// __UNKNOWN__. Under process churn the table read can lose its bound or fail
+// (#518): that is the designed cannot-tell answer, not a verdict on what runs,
+// so it is asked again; any decisive answer, right or wrong, is returned at
+// once. Every read is bounded, so the tries bound the wait.
+func decisiveRunningAdapter(t *testing.T, profile string) string {
+	t.Helper()
+	const tries = 5
+	for i := 0; i < tries; i++ {
+		if got := runningAdapter(profile); got != "__UNKNOWN__" {
+			return got
+		}
+	}
+	t.Fatalf("runningAdapter(%q) answered __UNKNOWN__ %d times in a row", profile, tries)
+	return ""
 }
 
 // A ps that stalls past runningAdapter's one-second bound is work, not only an
@@ -277,6 +415,9 @@ func TestAdapterLine(t *testing.T) {
 			"adapter: this profile needs no translator until a model is chosen (none is set, and the endpoint's model list names no protocol); cliproxyapi is not installed; choose one: ccmorph set demo model <model-id>"},
 		{"no model, process listing unreadable", "", list, "__UNKNOWN__", TranslatorNeed{}, false, "INFO",
 			"adapter: this profile needs no translator until a model is chosen (none is set, and the endpoint's model list names no protocol); cliproxyapi is not installed; choose one: ccmorph set demo model <model-id>"},
+		{"needed, installed, session unreadable", "", "", "__UNKNOWN__", TranslatorNeed{Known: true, Needed: true, Installed: true}, true, "OK",
+			"adapter: this endpoint needs a translator; cliproxyapi is installed"},
+		{"saved model, process listing unreadable", "glm-4.6", list, "__UNKNOWN__", TranslatorNeed{Installed: true}, true, "", ""},
 		{"saved model nothing classified", "glm-4.6", list, "", TranslatorNeed{Installed: true}, true, "", ""},
 		{"no model, no listing", "", "", "", TranslatorNeed{}, false, "", ""},
 	}

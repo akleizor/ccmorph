@@ -4,10 +4,23 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/profile"
 )
+
+// DurationWords spells a bound the way doctor's rows do: "1 second",
+// "5 seconds", and Go's own spelling ("300ms") for one a test shortened.
+func DurationWords(d time.Duration) string {
+	if d <= 0 || d%time.Second != 0 {
+		return d.String()
+	}
+	if n := int64(d / time.Second); n != 1 {
+		return fmt.Sprintf("%d seconds", n)
+	}
+	return "1 second"
+}
 
 var httpURL = regexp.MustCompile(`^https?://[^?#]*$`)
 
@@ -198,8 +211,9 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 
 	// One adapter line answers the reader's question — does this profile need a
 	// translator now, and can launch find one — or is left out when only a billed
-	// check could answer. Pids, listeners and a failed ps are
-	// internal detail: --verbose only.
+	// check could answer. Pids and listeners are internal detail: --verbose
+	// only. A session read that could not answer is not: whether a translator
+	// runs went unchecked, and the default report says so (#518).
 	running := runningAdapter(name)
 	if kind, msg := adapterLine(name, model, listing, running, need(listing)); kind != "" {
 		fix := ""
@@ -208,10 +222,14 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 		}
 		row(kind, msg, fix)
 	}
+	if running == "__UNKNOWN__" {
+		row("SKIP", "adapter: could not tell whether a translator is running (running programs could not be listed within "+
+			DurationWords(sessionReadBound)+"); check again: ccmorph doctor "+name)
+	}
 	if verbose {
 		switch {
 		case running == "__UNKNOWN__":
-			row("SKIP", "adapter: could not tell whether a translator is running")
+			// Named above, in the default report (#518).
 		case running != "":
 			pid, children, _ := strings.Cut(running, "\t")
 			for _, spec := range strings.Split(children, ",") {
