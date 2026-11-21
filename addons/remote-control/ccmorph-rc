@@ -39,6 +39,7 @@ import os
 import re
 import resource
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -413,13 +414,32 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
     confdir = STATE / "mitm"
     confdir.mkdir(exist_ok=True)
     confdir.chmod(0o700)
-    fd, key_file = tempfile.mkstemp(prefix="route-key.", dir=STATE)
-    # README: the route key is in no lingering file. The addon unlinks it on the
-    # happy path; from this write on, every way out — the dies below included —
-    # goes through the finally, so no failed start leaves the profile's key behind.
+    # finally handles Python exceptions, but the default TERM/HUP/QUIT disposition
+    # exits without unwinding. Block them across mkstemp + assignment, install cleanup
+    # handlers, then unblock: even a pending signal cannot land in the tiny window
+    # between the file being created and key_file receiving its name.
+    startup_signals = (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
+    old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, startup_signals)
+    old_handlers = {sig: signal.getsignal(sig) for sig in startup_signals}
+    key_file = None
+    fd = None
+
+    def interrupted(signum, _frame):
+        if key_file is not None:
+            with suppress(OSError):
+                os.unlink(key_file)
+        raise SystemExit(128 + signum)
+
     try:
+        for sig in startup_signals:
+            signal.signal(sig, interrupted)
+        fd, key_file = tempfile.mkstemp(prefix="route-key.", dir=STATE)
+        # README: the route key is in no argv, environment, or lingering file.
+        # Exceptions use finally; TERM/HUP use interrupted and then finally.
+        signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
         os.write(fd, key.encode())
         os.close(fd)
+        fd = None
         port = fixed_port or free_port()
         proxy_env = {k: v for k, v in os.environ.items() if k not in strip_env()}
         proxy_env.update(RC_UPSTREAM=upstream, RC_KEY_FILE=key_file, RC_PARENT_PID=str(me),
@@ -437,8 +457,20 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
             die("proxy did not consume the route key; refusing to continue")
         return port, ca, upstream, route_env
     finally:
-        with suppress(OSError):
-            os.unlink(key_file)      # already gone when the addon consumed the key
+        # Close the cleanup window too: a TERM/HUP during unlink must not re-enter
+        # interrupted while this finally block is already unwinding.
+        signal.pthread_sigmask(signal.SIG_BLOCK, startup_signals)
+        if fd is not None:
+            with suppress(OSError):
+                os.close(fd)
+        if key_file is not None:
+            with suppress(OSError):
+                os.unlink(key_file)      # already gone when the addon consumed the key
+        # Restore dispositions only while blocked. A signal pending at this point
+        # sees the key already removed and the caller's normal disposition restored.
+        for sig, handler in old_handlers.items():
+            signal.signal(sig, handler)
+        signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
 
 
 def edge_down(port: int, upstream: str) -> str | None:
