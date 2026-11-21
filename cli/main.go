@@ -134,6 +134,21 @@ func (l *launcher) dispatch(args []string) int {
 		if helpAsked(rest) {
 			return l.usage("probe")
 		}
+	} else if first == "router" {
+		// Help wins before any router action, so router on --help never turns
+		// the router on (#784). Words after dispatch's -- are the worker's
+		// claude flags, as words after a run profile are Claude Code's.
+		own := rest
+		if i := slices.Index(rest, "--"); i >= 0 {
+			own = rest[:i]
+		}
+		if helpAsked(own) {
+			if len(rest) > 0 && rest[0] == "dispatch" {
+				fmt.Print(router.TaskHelp)
+				return 0
+			}
+			return l.usage("router")
+		}
 	} else if n, public := verbArity[first]; public {
 		if helpAsked(rest) {
 			return l.usage(first)
