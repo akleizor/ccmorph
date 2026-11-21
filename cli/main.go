@@ -194,7 +194,13 @@ func (l *launcher) unknown(first string, args []string) int {
 		if now := oneEditFrom(first, topFlags); now != "" {
 			l.err("unknown option '" + first + "'. Run: ccmorph " + now)
 		} else {
-			l.err("unknown option '" + first + "'. Launch flags go after the verb: ccmorph run " + first)
+			// A flag ccmorph does not know may still be one of Claude Code's,
+			// so the run pointer stays — ccmorph --resume really does belong
+			// behind run. But `ccmorph --bogus` was only ever pointed at
+			// `ccmorph run --bogus`, which repeats the same failure: this was
+			// the one error path with no --help fallback (#636).
+			l.err("unknown option '" + first + "'. Run: ccmorph --help")
+			fmt.Fprintln(os.Stderr, "  Launch flags go after the verb: ccmorph run "+first)
 		}
 		return 1 // a flag is never a profile name
 	}

@@ -769,6 +769,20 @@ def test_a_mistyped_flag_is_an_unknown_option_not_a_command(box, flag, near):
     assert 'profiles:' not in out.stderr
 
 
+def test_a_long_unknown_option_gets_the_help_fallback_and_the_pointer(box):
+    """#636: `ccmorph --bogus` was pointed only at `ccmorph run --bogus`,
+    which repeats the same failure. The run pointer stays (a launch flag may
+    live behind it) and the help fallback joins it, as every other usage
+    error gives."""
+    seed(box)
+    out = box.run('--bogus')
+    assert out.returncode == 1, out.stderr
+    assert "unknown option '--bogus'" in out.stderr
+    assert 'Run: ccmorph --help' in out.stderr
+    assert 'Launch flags go after the verb: ccmorph run --bogus' in out.stderr
+    assert 'profiles:' not in out.stderr
+
+
 def test_a_misplaced_launch_flag_keeps_the_pointer_behind_run(box):
     seed(box)
     out = box.run('-p', 'hi')
