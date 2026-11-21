@@ -78,6 +78,8 @@ func (l *launcher) verb(args []string) int {
 	return 2
 }
 
+const priceCacheHint = "Run a `provider` profile with `ccmorph run PROFILE`; its launch refreshes this cache in the background."
+
 func (l *launcher) price(args []string) int {
 	models := make([]string, 0, len(args))
 	asJSON := false
@@ -97,7 +99,27 @@ func (l *launcher) price(args []string) int {
 		Input  float64 `json:"input"`
 		Output float64 `json:"output"`
 	}
+	type jsonPriceResult struct {
+		Cache  string               `json:"cache"`
+		Hint   string               `json:"hint"`
+		Prices map[string]listPrice `json:"prices"`
+	}
 	prices := map[string]listPrice{}
+	if !book.HasCachedPrices() {
+		if asJSON {
+			result := jsonPriceResult{Cache: "empty", Hint: priceCacheHint, Prices: prices}
+			if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+				l.err(err.Error())
+				return 1
+			}
+		} else {
+			fmt.Printf("No cached model prices. %s\n", priceCacheHint)
+			for _, model := range models {
+				fmt.Printf("%s  no cached price\n", model)
+			}
+		}
+		return 0
+	}
 	for _, model := range models {
 		input, output, ok := book.Lookup(model)
 		if asJSON {

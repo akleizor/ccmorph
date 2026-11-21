@@ -282,6 +282,12 @@ func CachedOwnedPriceBook(only string) *priceBook {
 	return b
 }
 
+// HasCachedPrices reports whether this provider slice has any cached model
+// prices. It never fetches the catalogue.
+func (b *priceBook) HasCachedPrices() bool {
+	return len(b.readCache()) > 0
+}
+
 // Lookup returns the input and output list prices per million tokens for model.
 func (b *priceBook) Lookup(model string) (input, output float64, ok bool) {
 	p, ok := b.lookup(model)
