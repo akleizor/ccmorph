@@ -3,8 +3,10 @@ package util
 import (
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -15,6 +17,25 @@ import (
 // nothing to it, where a bare death or a timeout still gets the route checks
 // (#374). The exit status stays 1 either way; only this line says "refused".
 const Refused = "REFUSED"
+
+// maxEnvSeconds is the largest count of seconds a time.Duration holds: one
+// more multiplies past MaxInt64 ns and wraps negative, which would arm a
+// deadline already past. An out-of-range count is refused before the
+// multiplication, like any other unusable value.
+const maxEnvSeconds = math.MaxInt64 / int64(time.Second)
+
+// adapterReadyLimit is the readiness wait adapterStart keeps: the same six
+// hundred seconds for either scope. The model-scoped 45 s bound only held on
+// a quiet machine — on a loaded host the translator was not ready in it and
+// the run died before it started (#766). A caller that must wait longer sets
+// CCMORPH_ADAPTER_START_TIMEOUT to a positive number of seconds that fits a
+// duration; anything else keeps the default.
+func adapterReadyLimit() time.Duration {
+	if n, err := strconv.Atoi(os.Getenv("CCMORPH_ADAPTER_START_TIMEOUT")); err == nil && n > 0 && int64(n) <= maxEnvSeconds {
+		return time.Duration(n) * time.Second
+	}
+	return 600 * time.Second
+}
 
 // adapterStart is `util adapter-start <core> <profile> <model or ""> <parent pid> <log>`:
 // start `<core> adapter` for a launch and wait for its first readiness line. Prints
@@ -60,11 +81,7 @@ func adapterStart(args []string, _ io.Reader, out, errw io.Writer) int {
 		line, _, _ := strings.Cut(string(b), "\n")
 		return line
 	}
-	// A selected launch has a bounded compatibility check, never a fleet sweep.
-	limit := 600 * time.Second
-	if model != "" {
-		limit = 45 * time.Second
-	}
+	limit := adapterReadyLimit()
 	label := profile
 	if model != "" {
 		label += " (" + model + ")"
@@ -104,7 +121,7 @@ func adapterStart(args []string, _ io.Reader, out, errw io.Writer) int {
 		}
 		waited := int(time.Since(start) / time.Second)
 		if time.Since(start) >= limit {
-			return fail(fmt.Sprintf("'%s': adapter timed out after %ds; session not started.", profile, int(limit.Seconds())))
+			return fail(fmt.Sprintf("'%s': adapter timed out after %ds; session not started.", profile, waited))
 		}
 		if waited > said && waited == 1 {
 			fmt.Fprintf(errw, "ccmorph: Starting adapter for '%s'…\n", label)
