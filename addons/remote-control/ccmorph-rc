@@ -397,6 +397,18 @@ def proxy_command(mitmdump: str, port: int, confdir: Path, script: Path) -> list
             "--allow-hosts", r"^api\.anthropic\.com(:443)?$", "-s", str(script)]
 
 
+def stop_proxy(proc) -> None:
+    """Stop the proxy a failed start spawned. The addon is what follows our pid, and
+    it reads the route key on load: once the key is gone it never loads, so nothing
+    else would stop this proxy (on --edge it would hold the fixed port for good)."""
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
 def own_edge(route: str, me: int, args, fixed_port: int | None):
     """Route + adapter + proxy for one bridge (or, with fixed_port, the shared edge)."""
     route_env = resolve_route(route)
@@ -426,6 +438,8 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
     taken = [sig for sig in startup_signals if old_handlers[sig] == signal.SIG_DFL]
     key_file = None
     fd = None
+    proxy = None
+    started = False
 
     def interrupted(signum, _frame):
         if key_file is not None:
@@ -458,22 +472,30 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
             die(f"proxy CA not generated at {ca}")
         if os.path.exists(key_file):
             die("proxy did not consume the route key; refusing to continue")
+        started = True
         return port, ca, upstream, route_env
     finally:
         # Close the cleanup window too: a TERM/HUP during unlink must not re-enter
         # interrupted while this finally block is already unwinding.
         signal.pthread_sigmask(signal.SIG_BLOCK, startup_signals)
-        if fd is not None:
-            with suppress(OSError):
-                os.close(fd)
-        if key_file is not None:
-            with suppress(OSError):
-                os.unlink(key_file)      # already gone when the addon consumed the key
-        # Restore dispositions only while blocked. A signal pending at this point
-        # sees the key already removed and the caller's normal disposition restored.
-        for sig in taken:
-            signal.signal(sig, old_handlers[sig])
-        signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+        try:
+            if fd is not None:
+                with suppress(OSError):
+                    os.close(fd)
+            if key_file is not None:
+                with suppress(OSError):
+                    os.unlink(key_file)      # already gone when the addon consumed the key
+            if proxy is not None and not started:
+                # Best effort: nothing raised while stopping it may replace the error
+                # (or the 128+signal exit) that ended this start.
+                with suppress(Exception):
+                    stop_proxy(proxy)
+        finally:
+            # Restore dispositions only while blocked. A signal pending at this point
+            # sees the key already removed and the caller's normal disposition restored.
+            for sig in taken:
+                signal.signal(sig, old_handlers[sig])
+            signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
 
 
 def edge_down(port: int, upstream: str) -> str | None:
