@@ -1,9 +1,12 @@
 package util
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -172,7 +175,9 @@ func TestDoctorRouteAdapterLine(t *testing.T) {
 // kernel's own argv, so a report that drops the live session — shim-only, with
 // a running cliproxyapi child, or with that child beside a hooks build's
 // separate shim — fails here even when a loaded machine would hide it end to
-// end (#518).
+// end (#518). The -listed cases are the end-to-end shape exactly: no saved
+// model, and a real listing request answered {"data":[]}, which classifies
+// nothing, so the open session alone decides the row.
 func TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable(t *testing.T) {
 	// This is about the wiring, not about winning a race with a loaded
 	// machine: the read gets room to answer.
@@ -180,23 +185,42 @@ func TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable(t *testing.T) {
 	sessionReadBound = 30 * time.Second
 	t.Cleanup(func() { sessionReadBound = orig })
 
+	// A gateway whose model list answers and names nothing: the listing the
+	// -listed cases request, as the end-to-end tests' curl stub gives it.
+	const emptyListing = `{"data":[]}`
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(emptyListing))
+	}))
+	t.Cleanup(gateway.Close)
+
 	saved := TranslatorNeed{Installed: true}
+	unclassified := TranslatorNeed{Installed: true}
 	needed := TranslatorNeed{Known: true, Needed: true, Installed: true}
+	const (
+		noTranslatorNow = "OK adapter: this profile needs no translator now: its open session runs without one"
+		translatorNow   = "OK adapter: this profile needs a translator now: an open session on it is running cliproxyapi"
+	)
 	for _, c := range []struct {
 		name, child, model string
+		listed             bool
 		need               TranslatorNeed
 		want               string
 	}{
-		{"shim-only", "", "glm-4.6", saved,
-			"OK adapter: this profile needs no translator now: its open session runs without one"},
-		{"translator-running", "/opt/bin/cliproxyapi", "glm-4.6", saved,
-			"OK adapter: this profile needs a translator now: an open session on it is running cliproxyapi"},
-		{"translator-running-classified", "/opt/bin/cliproxyapi", "", needed,
+		{"shim-only", "", "glm-4.6", false, saved, noTranslatorNow},
+		{"translator-running", "/opt/bin/cliproxyapi", "glm-4.6", false, saved, translatorNow},
+		{"translator-running-classified", "/opt/bin/cliproxyapi", "", false, needed,
 			"OK adapter: this endpoint needs a translator; cliproxyapi is installed; an open session on this profile is using one now"},
-		{"translator-and-hooks-shim", "/opt/bin/cliproxyapi,/opt/bin/hooks-shim", "glm-4.6", saved,
-			"OK adapter: this profile needs a translator now: an open session on it is running cliproxyapi"},
-		{"translator-and-hooks-shim-classified", "/opt/bin/cliproxyapi,/opt/bin/hooks-shim", "", needed,
+		{"translator-and-hooks-shim", "/opt/bin/cliproxyapi,/opt/bin/hooks-shim", "glm-4.6", false, saved, translatorNow},
+		{"translator-and-hooks-shim-classified", "/opt/bin/cliproxyapi,/opt/bin/hooks-shim", "", false, needed,
 			"OK adapter: this endpoint needs a translator; cliproxyapi is installed; an open session on this profile is using one now"},
+		{"shim-only-listed", "", "", true, unclassified, noTranslatorNow},
+		{"translator-running-listed", "/opt/bin/cliproxyapi", "", true, unclassified, translatorNow},
+		{"translator-and-hooks-shim-listed", "/opt/bin/cliproxyapi,/opt/bin/hooks-shim", "", true, unclassified, translatorNow},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Setenv("CCMORPH_TEST_HOLD_CHILD", c.child)
@@ -206,15 +230,25 @@ func TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable(t *testing.T) {
 			// is in the session the table reads, so a case cannot pass on a
 			// child that never came up.
 			if c.child != "" {
-				session := decisiveRunningAdapter(t, profile)
+				session := sessionNow(t, profile)
 				for _, name := range strings.Split(c.child, ",") {
 					if !strings.Contains(session, ":"+filepath.Base(name)) {
 						t.Fatalf("the hold's session %q lacks its %s child", session, filepath.Base(name))
 					}
 				}
 			}
-			rows, _, _ := DoctorRoute(profile, "apikey", "https://example.test", c.model, "",
-				func(string) TranslatorNeed { return c.need }, "", "", false)
+			base, key := "https://example.test", ""
+			if c.listed {
+				base, key = gateway.URL, "k"
+			}
+			listing := "unasked"
+			rows, _, _ := DoctorRoute(profile, "apikey", base, c.model, "",
+				func(l string) TranslatorNeed { listing = l; return c.need }, key, "", false)
+			// A -listed case is only the end-to-end shape when the request
+			// really succeeded: the need was decided from the listing it got.
+			if want := map[bool]string{false: "", true: emptyListing}[c.listed]; listing != want {
+				t.Fatalf("need was asked with listing %q, want %q (rows %+v)", listing, want, rows)
+			}
 			var got []string
 			for _, r := range rows {
 				if strings.HasPrefix(r.Msg, "adapter:") {
@@ -310,42 +344,37 @@ func TestDurationWords(t *testing.T) {
 // begin, the kernel's argv can. The session is reported with the adapter's own
 // pid as the in-process shim (GH-49, PR #40), exactly as a live session reads.
 // This test is about argv, not about the one-second bound, which
-// TestRunningAdapterEndsAPsStalledPastItsBound pins; so it races no clock
-// (#518). The bound is lengthened, because under process churn every ps pass
-// can take longer than a second, and a read that still cannot answer is asked
-// again; the first decisive answer is the one asserted.
+// TestRunningAdapterEndsAPsStalledPastItsBound pins: the answer is read through
+// sessionNow, which has no deadline to lose, so a loaded machine slows it but
+// cannot turn it into __UNKNOWN__ (#518). The bounded runningAdapter is checked
+// beside it: the same answer, or the designed cannot-tell one, never another.
 func TestRunningAdapterMatchesArgvAcrossSpaces(t *testing.T) {
-	orig := sessionReadBound
-	sessionReadBound = 30 * time.Second
-	t.Cleanup(func() { sessionReadBound = orig })
-
 	profile := "ra" + strconv.Itoa(os.Getpid())
 	cmd := holdProc(t, os.Args[0], BridgeFiles(t.TempDir(), "p")[2],
 		"/x/my adapter/ccmorph-core", "adapter", profile)
 	want := fmt.Sprintf("%d\t%d:shim", cmd.Process.Pid, cmd.Process.Pid)
-	if got := decisiveRunningAdapter(t, profile); got != want {
+	if got := sessionNow(t, profile); got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
-	if got := decisiveRunningAdapter(t, "no-such-profile"); got != "" {
+	if got := sessionNow(t, "no-such-profile"); got != "" {
 		t.Fatalf("a profile nothing serves must report nothing, got %q", got)
+	}
+	if got := runningAdapter(profile); got != want && got != "__UNKNOWN__" {
+		t.Fatalf("runningAdapter must give the session or __UNKNOWN__, got %q, want %q", got, want)
 	}
 }
 
-// decisiveRunningAdapter is runningAdapter's first answer that is not
-// __UNKNOWN__. Under process churn the table read can lose its bound or fail
-// (#518): that is the designed cannot-tell answer, not a verdict on what runs,
-// so it is asked again; any decisive answer, right or wrong, is returned at
-// once. Every read is bounded, so the tries bound the wait.
-func decisiveRunningAdapter(t *testing.T, profile string) string {
+// sessionNow is runningAdapter's answer with no bound: the process table read
+// under no deadline, then parsed by adapterSession, the code runningAdapter
+// hands its table to. Nothing in it can time out, so its only answers are a
+// right one or a wrong one (#518).
+func sessionNow(t *testing.T, profile string) string {
 	t.Helper()
-	const tries = 5
-	for i := 0; i < tries; i++ {
-		if got := runningAdapter(profile); got != "__UNKNOWN__" {
-			return got
-		}
+	tab := processTableWithin(context.Background())
+	if tab == nil {
+		t.Fatal("the process table could not be read")
 	}
-	t.Fatalf("runningAdapter(%q) answered __UNKNOWN__ %d times in a row", profile, tries)
-	return ""
+	return adapterSession(tab, profile)
 }
 
 // A ps that stalls past runningAdapter's one-second bound is work, not only an
