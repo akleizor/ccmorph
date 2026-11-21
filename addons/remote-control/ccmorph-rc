@@ -579,11 +579,29 @@ def switch(profile: str, account: str) -> None:
                     if profile_type(profile) == "provider" else start_adapter(profile, owner, adapter_env()))
         tiers = pinned_tiers(route_env)
         hand = STATE / f"switch-{profile}.json"
-        fd = os.open(hand.with_suffix(".tmp"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        os.write(fd, json.dumps({"upstream": upstream, "key": key, "tiers": tiers}).encode())
-        os.close(fd)
-        hand.with_suffix(".tmp").replace(hand)
-    write_inference(word)
+        tmp = hand.with_suffix(".tmp")
+        payload = json.dumps({"upstream": upstream, "key": key, "tiers": tiers}).encode()
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, payload)
+        except BaseException:
+            with suppress(OSError):
+                os.unlink(tmp)        # a half-written handoff still holds the route key
+            raise
+        finally:
+            os.close(fd)
+        tmp.replace(hand)
+    try:
+        write_inference(word)
+    except BaseException:
+        if word == profile:
+            # The word never landed, so no request reads this handoff: leaving it would
+            # keep the route key on disk for good (README: no lingering file). Only this
+            # write's own payload goes, never a newer handoff another switch left.
+            with suppress(OSError):
+                if hand.read_bytes() == payload:
+                    hand.unlink()
+        raise
     print(f"ccmorph-rc: inference now goes to '{profile}' from the next turn", file=sys.stderr)
 
 
