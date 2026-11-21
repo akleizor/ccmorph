@@ -118,6 +118,14 @@ func renderEntry(w io.Writer, e Entry, color bool) {
 	if e.Balance != "" {
 		emit(w, "  balance "+e.Balance, color, style)
 	}
+	// A gateway whose endpoint answered nothing says what its numbers are made
+	// of before the reason line: the zero above is local receipts, not a
+	// reading that found no spend, and doctor is the command that checks the
+	// endpoint (#726). Two lines so neither is cut at the width.
+	if e.Checked != nil && !*e.Checked {
+		emit(w, "  gateway not reachable — spend from local receipts only", color, style)
+		emit(w, "  check it: ccmorph doctor "+e.Profile, color, style)
+	}
 	if reason != "" {
 		emit(w, "  "+reason, color, style)
 	}

@@ -64,4 +64,14 @@ type Entry struct {
 	// Balance is what is left on the account behind an API key, "¥40.75", where
 	// the provider publishes it (balance.go); empty otherwise.
 	Balance string `json:"balance,omitempty"`
+	// Checked answers, for a gateway or budget row, whether the endpoint
+	// answered this run. false says it answered nothing: the spend beside it
+	// comes from local receipts alone, the text row says so, and `--json`
+	// carries the same honesty as checked:false — the row's zero is not a
+	// reading that found no spend (#726). true says the endpoint answered (any
+	// answer, even a refusal, proves it is there) while the receipts stay the
+	// only spend. nil, and absent from the JSON, says the row has no endpoint
+	// to ask: no base URL, no key, Anthropic's own base, or a plan row, which
+	// carries its own reading and its own Stale.
+	Checked *bool `json:"checked,omitempty"`
 }
