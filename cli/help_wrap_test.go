@@ -311,6 +311,23 @@ func TestHelpAllCarriesTheRouterSynopsis(t *testing.T) {
 	}
 }
 
+// GH-636: help all listed get and set with required-looking angle brackets,
+// contradicting their own pages and the picker: every argument may be omitted.
+// Both rows carry usageLine's spelling, so the two pages cannot drift.
+func TestHelpAllSpellsGetAndSetAsOptional(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	page := helpPage(t, "all", 0)
+	for _, topic := range []string{"get", "set"} {
+		want := usageLine(topic)
+		if !strings.Contains(page, "\n  "+want+"\n") {
+			t.Errorf("help all does not carry %q:\n%s", want, page)
+		}
+		if own := helpPage(t, topic, 0); !strings.Contains(own, "Usage: "+want+"\n") {
+			t.Errorf("help %s does not carry %q:\n%s", topic, want, own)
+		}
+	}
+}
+
 // GH-364: a description longer than the width left after its label column
 // wraps under that column, the way the doctor row's description already sits
 // under the column its long usage line opens.

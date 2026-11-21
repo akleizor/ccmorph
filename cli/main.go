@@ -875,8 +875,8 @@ func (l *launcher) usageAt(topic string, width int) int {
 			// The line is the command's own synopsis, so the list and the
 			// command's page cannot drift apart again (GH-730).
 			help(router.Usage, "Spread subagents across profiles; off by default")
-			help("ccmorph get <profile> <field|--json>", "Read one profile field, or all as JSON")
-			help("ccmorph set <profile> <model|effort> [value]", "Save a default; omit value to choose")
+			help(usageLine("get"), "Read one profile field, or all as JSON")
+			help(usageLine("set"), "Save a default; omit value to choose")
 			help("ccmorph login <profile>", "Sign in again to a provider account")
 			help("ccmorph mv <old> <new>", "Rename a profile")
 			help("ccmorph rm <profile>", "Delete a profile and its private sign-in state")

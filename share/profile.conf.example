@@ -3,7 +3,7 @@
 # Prefer `ccmorph add <name>` and `ccmorph config <name>`; they write this file.
 # Edit by hand only for the advanced keys below, then run `ccmorph inspect <name>`.
 #
-# Rules (enforced when the profile is read, by _ccm_read in lib/ccmorph-store.zsh):
+# Rules (enforced when the profile is read; see docs/guide.md):
 #   - one key=value per line; `#` starts a comment line; no blank or `null` values
 #   - each key appears once; an unknown key, or a key not valid for the profile's
 #     type, refuses the profile

@@ -12,7 +12,7 @@ prefix; profiles still live in `~/.config/ccmorph`. Prebuilt bottles cover Apple
 silicon on the newest macOS and Linux x86_64; elsewhere Homebrew builds from
 source with Go. The rest of this section is about the clone and one-liner.
 
-From a clone: `git clone https://github.com/akleizor/ccmorph && cd ccmorph && ./install.sh`.
+From a clone: `git clone https://github.com/akleizor/ccmorph && cd ccmorph && make shim && ./install.sh` (a clone has no prebuilt `ccmorph-core`, so `make shim` builds it first).
 
 Or the one-liner:
 
@@ -167,7 +167,11 @@ maps Claude Code's opus, sonnet and haiku tiers to its models; *Custom endpoint*
 asks for the endpoint first (blank = api.anthropic.com), so the key prompt can
 name the service it belongs to. The endpoint is then asked
 whether it accepts the pasted key — in this step, not at first launch — and a
-refused key is asked for again rather than saved. A pasted Claude token is
+refused key is asked for again rather than saved. An endpoint that does not
+answer, or answers with anything but an acceptance or a refusal (a 5xx, say),
+cannot vouch for the key: the profile is saved with the key and a dim line
+saying `<endpoint> did not answer, so the API key was not checked` (or the
+status it did answer with), and `ccmorph doctor <profile>` asks again later. A pasted Claude token is
 judged the same way: a paste without a token's shape is refused at the prompt,
 and a shaped one is offered to Anthropic — Bearer-only, like the launch that
 will spend it — before it is saved. Nothing is written outside
@@ -710,6 +714,12 @@ never sent to any other host.
 `used` as a fraction and `resets_at` as a Unix second, `read_at`, `age_seconds`, `stale`,
 `error`, `spend`, `balance`, and, on a gateway row, `checked`: `false` when the endpoint
 answered nothing this run, so the spend beside it is local receipts only).
+
+To read the receipts as a daily report, export them with
+`~/.config/ccmorph/share/usage-export --output ~/.cache/ccmorph-usage` and run
+ccusage over that directory. ccusage is not installed by ccmorph: install it with
+`npm install -g ccusage`. The exporter's last line and its `--help` print the exact
+ccusage command with both paths filled in, ready to copy.
 
 ## What is isolated, and what is shared
 

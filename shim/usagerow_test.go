@@ -1704,8 +1704,7 @@ func TestRecordTranscriptCheckpointSkipsWrittenRows(t *testing.T) {
 	calls := 0
 	writeRow = func(p, pr, id, m, ts, s, turn string, u usageRow) (bool, error) {
 		if calls++; calls == 2 { // the hook is stopped while the second row is written
-			cp := progress.Load()
-			writeCursor(cp.path, cp.c)
+			progress.Load().commit() // exactly what onStop does with it
 			panic("stopped")
 		}
 		return writeUsageRow(p, pr, id, m, ts, s, turn, u)
