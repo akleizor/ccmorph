@@ -970,7 +970,9 @@ func TestWarningPrecedesTheFirstPaidRequest(t *testing.T) {
 	out := captureStderr(t)
 	oldProbe := probeFn
 	t.Cleanup(func() { probeFn = oldProbe })
+	probeCalls := 0
 	probeFn = func(ctx context.Context, base, key, model, blob string, timeout time.Duration, op Opener, bisect int) ProbeResult {
+		probeCalls++
 		if !strings.Contains(out.String(), "may be billed in full") {
 			t.Fatal("the cost warning must come first")
 		}
@@ -979,6 +981,15 @@ func TestWarningPrecedesTheFirstPaidRequest(t *testing.T) {
 	o := DefaultOptions()
 	o.Mode = "auto"
 	ProbeAll(context.Background(), []string{"gw"}, o)
+	// The stub above can only assert anything if the run reaches it; without
+	// this witness a path that never probes passes the test having checked
+	// nothing.
+	if probeCalls == 0 {
+		t.Fatal("the auto path never reached the paid probe")
+	}
+	if !strings.Contains(out.String(), "may be billed in full") {
+		t.Fatalf("the cost warning was not printed:\n%s", out.String())
+	}
 }
 
 // GH-371: the paid-probe warning is probe output, so it wraps at 80 too; a
@@ -1660,10 +1671,29 @@ func TestOpenRouterShapedListingNeedsNoManualNumber(t *testing.T) {
 func TestListingStdinIgnoresGarbage(t *testing.T) {
 	dir := state(t)
 	put(t, filepath.Join(dir, "gw.conf"), "type=apikey\napi_key=k\n")
-	for _, body := range []string{"not json", "[]", `{"data": 5}`, ""} {
-		if c := SizeListing(context.Background(), "gw", body, "", "", nil); c != 0 {
-			t.Errorf("%q: %d", body, c)
+	out := captureStderr(t)
+	for _, tc := range []struct {
+		body string
+		want int64 // window stored for "new": 0 unless the body is a listing
+	}{
+		{"not json", 0},
+		{"[]", 0},
+		{`{"data": 5}`, 0},
+		{"", 0},
+		// The reading side: the same call sizes a well-formed listing, so the
+		// zeros above prove the garbage was parsed and refused, not ignored
+		// along with the body by a SizeListing that never reads its argument.
+		{`{"data":[{"id":"new","max_input_tokens":500000}]}`, 500000},
+	} {
+		if c := SizeListing(context.Background(), "gw", tc.body, "", "", nil); c != 0 {
+			t.Errorf("%q: %d", tc.body, c)
 		}
+		if got := windowsOf("gw")["new"]; got != tc.want {
+			t.Errorf("%q: stored window %d, want %d", tc.body, got, tc.want)
+		}
+	}
+	if !strings.Contains(out.String(), "sized gw:new 500000") {
+		t.Fatalf("the size was not reported:\n%s", out.String())
 	}
 }
 
@@ -2320,12 +2350,27 @@ func TestProviderBridgeIsNeverValidatedWithARequest(t *testing.T) {
 	put(t, filepath.Join(dir, "codex.conf"), "type=provider\nprovider=codex\n")
 	oldV := validationWindowFn
 	t.Cleanup(func() { validationWindowFn = oldV })
+	validationCalls := 0
 	validationWindowFn = func(context.Context, string, string, string, Opener, time.Duration) int64 {
+		validationCalls++
 		t.Fatal("quota spent")
 		return 0
 	}
 	if c := SizeListing(context.Background(), "codex", `{"data":[{"id":"gpt-unknown","owned_by":"openai"}]}`, "http://127.0.0.1:1", "k", nil); c != 0 {
 		t.Fatal(c)
+	}
+	if validationCalls != 0 {
+		t.Fatalf("the provider bridge was validated %d time(s)", validationCalls)
+	}
+	// The listing must have been read: the unknown model became a recorded
+	// miss. A SizeListing that skipped the body would satisfy the checks above
+	// without ever reaching the decision not to validate.
+	_, fields, err := ReadConf(filepath.Join(dir, "codex.conf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, missed := DiscoveredMisses(fields)["gpt-unknown"]; !missed {
+		t.Fatalf("the provider listing was not processed: misses %v", DiscoveredMisses(fields))
 	}
 }
 
