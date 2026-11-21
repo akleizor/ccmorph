@@ -2588,7 +2588,7 @@ def test_the_periodic_sweep_leaves_a_log_while_its_writer_names_it(tmp_path, mon
     orphans its descriptor. They are held while a writer may run: a host the
     config still lists (running or adopted -- no Popen here), an edge Host, the
     adapter of a configured route or of a ps row that starts with the adapter
-    ccmorph-rc launches (a --switch profile's), and the one switch.log. What no
+    ccmorph-rc launches (a --switch profile's). What no
     writer names any more -- an adapter no row runs and no route names, or one
     an unrelated command merely mentions -- ages out."""
     m = load()
@@ -2605,9 +2605,10 @@ def test_the_periodic_sweep_leaves_a_log_while_its_writer_names_it(tmp_path, mon
     hosts = {h.folder: h, "edge:gw": edge}
     stem = h.debugfile.stem
     held = [h.logfile, h.debugfile, h.logfile.with_suffix(".log.1"), h.debugfile.with_suffix(".log.1"),
-            logs / "edge-gw.log", logs / "adapter-gw.log", logs / "adapter-ds.log", logs / "switch.log"]
+            logs / "edge-gw.log", logs / "adapter-gw.log", logs / "adapter-ds.log"]
     dead = [logs / f"{stem}-cse_01DEAD.log", logs / f"{stem}-cse_01DEAD.log.1",
-            logs / "bridge-transcript-cse_01DEAD.jsonl", logs / "adapter-old.log"]
+            logs / "bridge-transcript-cse_01DEAD.jsonl", logs / "adapter-old.log",
+            logs / "switch.log"]      # no --switch child runs: not held
     for f in (*held, *dead):
         f.write_text("x")
     _age_past_retention(m, *held, *dead)
@@ -2615,6 +2616,32 @@ def test_the_periodic_sweep_leaves_a_log_while_its_writer_names_it(tmp_path, mon
     assert m.cycle(hosts, [], now, state) is True
     assert [f.name for f in held if not f.exists()] == []
     assert [f.name for f in dead if f.exists()] == []
+
+
+@pytest.mark.parametrize("row,kept", [
+    ("python3 {rc} ds --switch", True),
+    ("/usr/bin/python3 {rc} ds --switch", True),
+    ("{rc} ds --switch", True),
+    ("python3 {rc} ds --edge", False),
+    ("/bin/echo {rc} ds --switch", False),
+    ("", False),
+], ids=["env-python", "abs-python", "direct", "edge-row", "echo-row", "no-child"])
+def test_the_periodic_sweep_holds_switch_log_only_while_a_switch_child_runs(tmp_path, monkeypatch, row, kept):
+    """#758: main() hands switch.log to a `ccmorph-rc <profile> --switch` child,
+    so it is held while that child's row is in ps. Held for good, an aged file
+    would never be removed after the child exited, however many bring-ups
+    appended to it (the gate's refusal)."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    _ps_table(monkeypatch, m, row.format(rc=m.rc_module().HERE / "ccmorph-rc") + "\n/usr/bin/vim x\n")
+    switch = logs / "switch.log"
+    switch.write_text("x")
+    _age_past_retention(m, switch)
+    state, now = _idle_check_due(m)
+    assert m.cycle({}, [], now, state) is True
+    assert switch.exists() is kept
 
 
 def test_a_bare_session_id_in_an_unrelated_command_does_not_keep_a_dead_record(tmp_path, monkeypatch):

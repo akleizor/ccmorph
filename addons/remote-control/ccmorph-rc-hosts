@@ -1663,10 +1663,11 @@ def held_logs(hosts: "dict[str, Host]") -> "set[Path] | None":
     descriptors, and bound_logs() must still reach them by path); the
     adapter-<route>.log of every configured route and of every adapter ps shows
     running (its row starts with the adapter ccmorph-rc launches, a --switch
-    profile's included); and the one switch.log, which main() hands to a
-    --switch bring-up in the same tick as this sweep, before it has written a
-    line. A folder or route removed from the config takes its files off this
-    list, so a retired one's logs age out like any other record. Every path
+    profile's included); and switch.log while a `ccmorph-rc <profile> --switch`
+    row is running (main() hands it to that child, which may not have written
+    a line yet) -- once the child is gone the file ages out like any other. A
+    folder or route removed from the config takes its files off this list, so
+    a retired one's logs age out like any other record. Every path
     here comes from the config or from a whole-row match, never from a split
     word, so an install path with spaces hides nothing. None when the process
     table cannot be read: the sweep then waits for the next check rather than
@@ -1676,7 +1677,7 @@ def held_logs(hosts: "dict[str, Host]") -> "set[Path] | None":
         return None
     live = live_sessions(table)
     live |= {h.session_id.split("_", 1)[-1] for h in hosts.values() if h.session_id}
-    held: set = {LOGS / "switch.log"}
+    held: set = set()
     routes = {h.route for h in hosts.values()}
     for h in hosts.values():
         held |= {h.logfile, h.debugfile, h.logfile.with_suffix(".log.1"),
@@ -1686,6 +1687,16 @@ def held_logs(hosts: "dict[str, Host]") -> "set[Path] | None":
         if row.startswith(adapter) and row[len(adapter):].split():
             routes.add(row[len(adapter):].split()[0])
     held |= {LOGS / f"adapter-{r}.log" for r in routes}
+    rc = f"{rc_module().HERE / 'ccmorph-rc'} "
+    for row in table:
+        # the child's row is `<python> <add-on>/ccmorph-rc <profile> --switch`
+        # (env shebang), or the script itself when it is exec'd directly
+        head, _, tail = row.partition(" ")
+        if Path(head).name.startswith("python"):
+            row = tail
+        if row.startswith(rc) and row[len(rc):].split()[1:] == ["--switch"]:
+            held.add(LOGS / "switch.log")
+            break
     try:
         files = list(LOGS.glob("*"))
     except OSError:
