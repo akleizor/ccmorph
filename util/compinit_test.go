@@ -108,6 +108,27 @@ func TestCompinitDetectionReadsOnlyLinesThatRun(t *testing.T) {
 		{"builtin autoload -Uz compinit\ncompinit -u\n", true},
 		{"autoload -Uz compinit\r\nbuiltin autoload -Uz compinit # intact autoload\ncompinit -u\n", true},
 		{"autoload -Uz compinit\r\nnoglob autoload -Uz compinit\ncompinit -u\n", true},
+		// #582 review: the scan reads the whole file as zsh does, not one line
+		// at a time, so a substitution, quote or case opened on one line is
+		// still open on the next, and a # right after its closing ) or quote is
+		// a word byte.
+		{"x=$(print a\n)#; autoload -Uz compinit && compinit\n", true},
+		{"x=`print a\n`#; autoload -Uz compinit && compinit\n", true},
+		{"x=$(case a in a) print hi;; esac)#; autoload -Uz compinit && compinit\n", true},
+		{"print 'a\nb;# x'; autoload -Uz compinit && compinit\n", true},
+		{"print \"a\nb\";# autoload -Uz compinit && compinit\n", false},
+		{"print -r -- $'it\\'s;# x'; autoload -Uz compinit && compinit\n", true},
+		{"print -r -- ${x:-a;#b}; autoload -Uz compinit && compinit\n", true},
+		{"print -r -- x\\\n#; autoload -Uz compinit && compinit\n", true},
+		{"autoload -Uz \\\n  compinit\n", false},
+		// Text zsh does not run (a string, a word's own ( ), a here-document
+		// body) keeps the old line reading: a # at a text line's start or after
+		// a blank still cuts it, and the code after the text reads on.
+		{"print -r -- 'a\n# autoload -Uz compinit && compinit\nb'\n", false},
+		{"print -r -- x(a # compinit)(N)\n", false},
+		{"print -r -- x(a # b)(N); autoload -Uz compinit && compinit\n", true},
+		{"cat <<EOF >/dev/null\ndon't\nEOF\n# autoload -Uz compinit && compinit\n", false},
+		{"cat <<EOF >/dev/null\ndon't\nEOF\nautoload -Uz compinit && compinit\n", true},
 	} {
 		if got := CompinitRuns([]byte(c.rc)); got != c.want {
 			t.Errorf("CompinitRuns(%q) = %v, want %v", c.rc, got, c.want)
@@ -250,6 +271,64 @@ func TestCompinitDetectionMatchesZshOnWordStartsAndCRs(t *testing.T) {
 		"builtin autoload -Uz compinit\ncompinit -u\n",
 		"autoload -Uz compinit\r\nbuiltin autoload -Uz compinit # intact autoload\ncompinit -u\n",
 		"autoload -Uz compinit\r\nnoglob autoload -Uz compinit\ncompinit -u\n",
+		// #582 review: the scan reads the whole file as zsh does, so what a line
+		// opens is still open on the next. A command substitution's ) on a later
+		// line returns to its word, and a # after it is that word's byte.
+		"x=$(print a\n)#; autoload -Uz compinit && compinit\n",
+		"x=$(print a\n)# autoload -Uz compinit && compinit\n",
+		"x=$(\n  print a # )\n)#; autoload -Uz compinit && compinit\n",
+		"x=$(print ')'\n)#; autoload -Uz compinit && compinit\n",
+		"x=$(print a; print b\n)#; autoload -Uz compinit && compinit\n",
+		"x=$(\n(print a)\n)#; autoload -Uz compinit && compinit\n",
+		"x=\"$(print a\n)\"#; autoload -Uz compinit && compinit\n",
+		"x=`print a\n`#; autoload -Uz compinit && compinit\n",
+		"print -r -- <(print a\n)#x >/dev/null; autoload -Uz compinit && compinit\n",
+		"x=$(print a\n)\n# autoload -Uz compinit && compinit\n",
+		"x=$(print a\n  # compinit\n)\n",
+		// A case pattern's ) closes the pattern, not the substitution around it.
+		"x=$(case a in a) print hi;; esac)#; autoload -Uz compinit && compinit\n",
+		"x=$(case a in (a) print hi;; esac)#; autoload -Uz compinit && compinit\n",
+		"x=$(case a in (a|b)) print hi;; esac)#; autoload -Uz compinit && compinit\n",
+		"x=$(case a in\n  # c )\n  a) print hi;;\nesac)#; autoload -Uz compinit && compinit\n",
+		"x=$(case a in a) print hi\nesac)#; autoload -Uz compinit && compinit\n",
+		"case a in\n  a) autoload -Uz compinit && compinit ;;\nesac\n",
+		"case a in a)# autoload -Uz compinit && compinit\n;; esac\n",
+		"case a in\n  # a) autoload -Uz compinit && compinit ;;\n  a) : ;;\nesac\n",
+		// A quoted string spans lines: its ; or ) is text, and the line after
+		// it closes reads on as code.
+		"print 'a\nb;# x'; autoload -Uz compinit && compinit\n",
+		"print \"a\nb)# x\"; autoload -Uz compinit && compinit\n",
+		"print 'a\nb';# autoload -Uz compinit && compinit\n",
+		"print \"a\nb\";# autoload -Uz compinit && compinit\n",
+		"print -r -- 'a\n# autoload -Uz compinit && compinit\nb'\n",
+		"print -r -- $'it\\'s;# x'; autoload -Uz compinit && compinit\n",
+		"print -r -- $'a\\'\nb';# autoload -Uz compinit && compinit\n",
+		// ${...}, $(( )) and a word's own ( ) are text: their ; and # do not cut.
+		"print -r -- ${x:-a;#b}; autoload -Uz compinit && compinit\n",
+		"print -r -- ${x:-a # b}; autoload -Uz compinit && compinit\n",
+		"print -r -- ${x:-a # compinit}\n",
+		"print -r -- \"${x:-'}\";# autoload -Uz compinit && compinit\n",
+		"print -r -- ${x:-'}'};# autoload -Uz compinit && compinit\n",
+		"print -r -- $(( 16#ff )) $(( ##a )); autoload -Uz compinit && compinit\n",
+		"(( x = 1 ))# autoload -Uz compinit && compinit\n",
+		"for (( i = 0; i < 1; i++ )); do autoload -Uz compinit && compinit; done\n",
+		"print -r -- x(a # b)(N); autoload -Uz compinit && compinit\n",
+		"print -r -- (a|# b)(N); autoload -Uz compinit && compinit\n",
+		"print -r -- x(a # compinit)(N)\n",
+		// A here-document's body opens nothing, and its ) is not code.
+		"cat <<EOF >/dev/null\ndon't\nEOF\n# autoload -Uz compinit && compinit\n",
+		"cat <<EOF >/dev/null\ndon't\nEOF\nautoload -Uz compinit && compinit\n",
+		"cat <<-EOF >/dev/null\n\tit's\n\tEOF\nautoload -Uz compinit && compinit\n",
+		"cat <<\"E F\" >/dev/null\nit's\nE F\nautoload -Uz compinit && compinit\n",
+		"x=$(cat <<EOF\n)\nEOF\n)#; autoload -Uz compinit && compinit\n",
+		"print -r -- <<<'x' >/dev/null;# autoload -Uz compinit && compinit\n",
+		// A backslash-newline joins two lines into one.
+		"print -r -- x\\\n#; autoload -Uz compinit && compinit\n",
+		"print -r -- x \\\n# autoload -Uz compinit && compinit\n",
+		"autoload -Uz \\\n  compinit\n",
+		"# a comment \\\nautoload -Uz compinit && compinit\n",
+		// A function body's subshell is in command position.
+		"f() { (# autoload -Uz compinit && compinit\n:) }; f\n",
 	} {
 		if err := os.WriteFile(rcFile, []byte(rc), 0o644); err != nil {
 			t.Fatal(err)
