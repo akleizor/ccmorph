@@ -7,6 +7,21 @@
 
 ## Unreleased
 
+## v0.5.28 — 2026-11-21
+
+Cut from main, so it carries every change merged after v0.5.27.
+
+### Changed
+
+- **`ccmorph router dispatch` keeps the worker's output as its own.** stdout is the worker's, unchanged (its final answer, or the output format it was given); the router's notes and failure account go to stderr; the exit status is the worker's, 124 past the deadline. Routing runs under the dispatch deadline. A quota or auth refusal is retried only when the worker ran no tool, and a second `--` or a `-p` bundle after `--` is refused (#759).
+
+### Fixed
+
+- A canonical allow or ask list survives a tombstone (#750)
+- The hook's ledger lock is bounded and its quota read stays cached (#691)
+- A 16-digit run inside a decimal is a number, not a card (#756)
+- The lone-word version rewrite stops at run's own -- (#751)
+
 ### Added
 
 - **`ccmorph router on` routes subagent work across your profiles.** Off by default. With it on, sessions get a `delegate` tool and Agent hooks: free gateways first, then the subscription furthest behind its pace, then paid keys, and inside a profile the cheapest model that fits the task's kind and tier. `ccmorph router status`, `dispatch` (`--dry-run` to see the pick only) and `report` show and check it. `dispatch` also serves scripts and services: `--timeout` bounds the whole run, flags after `--` reach the worker's claude, and the caller's `CCMORPH_TASK` tags its spend. The hooks never deny an Agent call: when no pick fits the session, the call runs as written.
