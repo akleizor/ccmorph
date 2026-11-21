@@ -161,7 +161,7 @@ the Mac is never touched.
 |---|---|
 | The claude.ai credential never reaches the route | `rc_route.reroute`; `tests/rc_bridge_test.py` |
 | A dead route is an error, never a fallback to the subscription | `tests/rc_bridge_failclosed_test.py` |
-| The route key is in no argv, environment, or lingering file | 0600 file deleted on read; `mitmdump` is resolved before it is written, and every later exit including TERM/HUP/QUIT/INT unlinks it (a signal the caller ignores stays ignored); `tests/rc_bridge_test.py` (`-k 'no_failed_start or termination_during_proxy_startup'`) |
+| The route key is in no argv, environment, or lingering file | 0600 file deleted on read; `mitmdump` is resolved before it is written, and every later exit including TERM/HUP/QUIT/INT unlinks it (a signal the caller ignores stays ignored); a `--switch` handoff holding the key is written with TERM/HUP/QUIT/INT deferred until it is live or gone; `tests/rc_bridge_test.py` (`-k 'no_failed_start or termination_during_proxy_startup or as_the_route_key_file or termination_during_a_switch'`) |
 | Routed responses are verified, not assumed | `served-by=` in the debug log flags any response carrying Anthropic's organization header |
 | No system trust change | CA lives in `profiles/.rc-bridge/mitm` (0700); only `NODE_EXTRA_CA_CERTS` of this process |
 | No orphans | proxy and adapter follow the Claude pid and exit with it; a start that fails stops the proxy it spawned (`tests/rc_bridge_test.py -k failed_start_stops`) |
