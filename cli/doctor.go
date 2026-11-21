@@ -355,10 +355,18 @@ func (l *launcher) doctor(name string, verbose bool) int {
 		}
 		return 1
 	}
-	f, ok := l.readRaw(name)
-	if !ok {
+	f, readErr := l.readProfile(name, func(line string) { fmt.Fprintln(os.Stderr, line) })
+	if readErr != nil {
+		l.err(readErr.Error())
 		l.status("FAIL", "config: invalid profile schema (launch would reject it)")
-		l.status("FAIL", "not ready: "+recreate)
+		if f["type"] == "sub" && f["email"] == "" {
+			// GH-649: a sign-in interrupted before its email line is this
+			// conf's whole story, and `login` is the one repair every other
+			// verb already names for it — doctor may not point elsewhere.
+			l.status("FAIL", "not ready: sign in again: ccmorph login "+name)
+		} else {
+			l.status("FAIL", "not ready: "+recreate)
+		}
 		return 1
 	}
 	typ, base := f["type"], f["base_url"]

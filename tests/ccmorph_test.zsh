@@ -11262,6 +11262,234 @@ test_add_sub_auth_calls_scrub_securestorage_dir() {
   return $rc
 }
 
+# GH-649: closing the terminal mid Claude-account sign-in left a `type=sub`
+# stub behind -- the conf `add` wrote the moment the method was chosen, before
+# the browser ever opened. A killed parent never reaches the rollback, so the
+# next `list` answered with a wall of three contradictory lines and `add`
+# refused the name with a different repair than `list` had given. The stub was
+# never needed: add now saves the conf only once the sign-in has completed, so
+# even a parent that gets no cleanup at all cannot leave a half-made profile.
+test_add_sub_sigkilled_mid_login_leaves_no_profile() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  # The fake signs in only once $HOME/go exists, so the test controls when the
+  # wait ends; it records its own pid and the core's so both can be reaped.
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'case "$1 $2" in' \
+    '  "auth logout") exit 0 ;;' \
+    '  "auth login")' \
+    '    echo $$ > "$HOME/claude.pid"; echo $PPID > "$HOME/core.pid"' \
+    '    : > "$HOME/login.ran"' \
+    '    i=0' \
+    '    while [ ! -e "$HOME/go" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done' \
+    '    [ -e "$HOME/go" ] || exit 1' \
+    '    exit 0 ;;' \
+    '  "auth status") printf '"'"'{"loggedIn": true, "authMethod": "claude.ai", "email": "a@example.com"}\n'"'"' ;;' \
+    'esac' \
+    'exit 0' \
+    > "$HOME/bin/claude"
+  chmod +x "$HOME/bin/claude"
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 i=0 corepid claudpid out
+  ( print 1 | ccmorph add demo >"$HOME/add.out" 2>&1 ) &
+  local job=$!
+  while (( ++i <= CCMORPH_TEST_HANG_TIMEOUT * 10 )); do [[ -s "$HOME/core.pid" ]] && break; command sleep 0.1; done
+  if [[ ! -s "$HOME/core.pid" ]]; then
+    kill -TERM $job 2>/dev/null; touch "$HOME/go"; wait $job 2>/dev/null
+    print -u2 -- 'the browser sign-in never started'
+    rm -rf "$test_home"
+    return 1
+  fi
+  corepid=$(<"$HOME/core.pid")
+  kill -9 "$corepid"
+  touch "$HOME/go"
+  wait $job 2>/dev/null
+  claudpid=$(<"$HOME/claude.pid")
+  i=0
+  while (( ++i <= 30 )); do kill -0 $claudpid 2>/dev/null || break; command sleep 0.1; done
+
+  [[ ! -e "$HOME/.config/ccmorph/demo.conf" ]] || {
+    print -u2 -- 'a killed sign-in must not leave a profile conf'
+    rc=1
+  }
+  out=$(ccmorph list 2>&1)
+  assert_not_contains "$out" 'has no email' \
+    'list must not mourn a profile that was never saved' || rc=1
+  assert_not_contains "$out" 'demo' \
+    'a killed sign-in leaves no profile for list to show' || rc=1
+  # The one repair the messages name must close the loop: review the private
+  # state away, and the same name adds cleanly.
+  out=$(print y | ccmorph rm demo 2>&1) || { print -u2 -- "$out"; rc=1; }
+  out=$(print 1 | ccmorph add demo 2>&1) || { print -u2 -- "$out"; rc=1; }
+  assert_not_contains "$out" 'already exists' \
+    'a killed sign-in must not hold the name' || rc=1
+  command grep -qx 'email=a@example.com' "$HOME/.config/ccmorph/demo.conf" ||
+    { print -u2 -- 'the retried add must save the signed-in account'; rc=1; }
+  rm -rf "$test_home"
+  return $rc
+}
+
+# GH-649, second half: even without a conf to strand, SIGHUP/SIGTERM used to
+# kill `add` mid sign-in before its rollback — the failure path that Ctrl-C
+# reaches only survives because a raw-mode terminal hands Ctrl-C to Claude
+# Code, not to us. Closing a window sends real signals instead, so add hands
+# HUP and TERM to the sign-in child and stays alive to clean up: the child
+# dies, the failure path runs, and the outcome matches a cancelled login.
+test_add_sub_terminal_signal_mid_login_cleans_up() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'case "$1 $2" in' \
+    '  "auth logout") exit 0 ;;' \
+    '  "auth login")' \
+    '    echo $$ > "$HOME/claude.pid"; echo $PPID > "$HOME/core.pid"' \
+    '    : > "$HOME/login.ran"' \
+    '    i=0' \
+    '    while [ ! -e "$HOME/go" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done' \
+    '    exit 0 ;;' \
+    'esac' \
+    'exit 0' \
+    > "$HOME/bin/claude"
+  chmod +x "$HOME/bin/claude"
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 i=0 corepid claudpid out
+  ( print 1 | ccmorph add demo >"$HOME/add.out" 2>&1 ) &
+  local job=$!
+  while (( ++i <= CCMORPH_TEST_HANG_TIMEOUT * 10 )); do [[ -s "$HOME/core.pid" ]] && break; command sleep 0.1; done
+  if [[ ! -s "$HOME/core.pid" ]]; then
+    kill -TERM $job 2>/dev/null; touch "$HOME/go"; wait $job 2>/dev/null
+    print -u2 -- 'the browser sign-in never started'
+    rm -rf "$test_home"
+    return 1
+  fi
+  corepid=$(<"$HOME/core.pid")
+  kill -TERM "$corepid"
+  i=0
+  while (( ++i <= CCMORPH_TEST_HANG_TIMEOUT * 10 )); do kill -0 $job 2>/dev/null || break; command sleep 0.1; done
+  wait $job 2>/dev/null
+  touch "$HOME/go"
+  claudpid=$(<"$HOME/claude.pid")
+  i=0
+  while (( ++i <= 30 )); do kill -0 $claudpid 2>/dev/null || break; command sleep 0.1; done
+  kill -TERM $claudpid 2>/dev/null
+
+  out=$(<"$HOME/add.out")
+  assert_contains "$out" 'login failed' \
+    'a SIGTERM mid sign-in must end as a failed login, not as a dead process' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/demo.conf" ]] || {
+    print -u2 -- 'the rollback must still run after SIGTERM'
+    rc=1
+  }
+  [[ ! -e "$HOME/.config/ccmorph/profiles/demo" ]] || {
+    print -u2 -- 'the profile home must not survive the rolled-back sign-in'
+    rc=1
+  }
+  # The next command must be the healthy one, not the wall of contradictions
+  # the stranded stub used to produce: list succeeds, shows the profile the
+  # home already had, and never mourns a sign-in that was rolled back.
+  out=$(ccmorph list 2>&1) || {
+    print -u2 -- "list must succeed after the rollback: $out"
+    rc=1
+  }
+  assert_not_contains "$out" 'has no email' \
+    'list must not mourn a profile the SIGTERM rollback removed' || rc=1
+  assert_not_contains "$out" 'skipping invalid profile' \
+    'list must not skip a profile the SIGTERM rollback removed' || rc=1
+  assert_not_contains "$out" 'demo' \
+    'a rolled-back sign-in leaves no profile for list to show' || rc=1
+  assert_contains "$out" 'proxy (API key: http://proxy.invalid' \
+    'list must still show the profiles the home already had' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
+# GH-649's wall pointed at two repairs for one conf: list said "re-create it:
+# ccmorph rm && ccmorph add", add said "sign in to it again: ccmorph login" —
+# and login was the lie, because setEmail could only replace an email line the
+# stub conf never had, so it rewrote nothing and still claimed success. The
+# repair that keeps the profile must be both the only one named and a real
+# one: login now appends the missing line, and the validator names login too
+# (the same verdict `doctor` already gives a signed-out account profile).
+test_login_repairs_a_sub_profile_that_never_got_an_email() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  printf '%s\n' \
+    '#!/bin/sh' \
+    'case "$1 $2" in' \
+    '  "auth login") : > "$HOME/login.ran"; exit 0 ;;' \
+    '  "auth status") printf '"'"'{"loggedIn": true, "authMethod": "claude.ai", "email": "new@example.com"}\n'"'"'; exit 0 ;;' \
+    'esac' \
+    'exit 0' \
+    > "$HOME/bin/claude"
+  chmod +x "$HOME/bin/claude"
+  printf '%s\n' 'type=sub' > "$HOME/.config/ccmorph/s.conf"
+  mkdir -p "$HOME/.config/ccmorph/profiles/s"
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 out
+  # One conf, one repair: the refusal names login, not a re-create.
+  out=$(ccmorph run s 2>&1) && {
+    print -u2 -- 'a sub profile with no email must not launch'
+    rc=1
+  }
+  assert_contains "$out" 'has no email' 'the refusal must say what is missing' || rc=1
+  assert_contains "$out" 'Claude account profile' \
+    'the refusal must name what is half-made in plain words' || rc=1
+  assert_not_contains "$out" 'sub profile' \
+    'the refusal must not use internal jargon a first-timer cannot read' || rc=1
+  assert_contains "$out" 'ccmorph login s' \
+    'the refusal must name the same repair add names' || rc=1
+  assert_not_contains "$out" 'ccmorph rm s' \
+    'one conf must not be pointed at two different repairs' || rc=1
+  # doctor is the third voice about this conf (#649): the invalid-schema row
+  # it shares with broken confs must still name login, not a re-create.
+  out=$(ccmorph doctor s 2>&1) && {
+    print -u2 -- 'a sub profile with no email must not pass doctor'
+    rc=1
+  }
+  assert_contains "$out" 'sign in again: ccmorph login s' \
+    'doctor must name the repair every other verb names' || rc=1
+  assert_not_contains "$out" 'ccmorph rm s' \
+    'doctor must not point a half-made sign-in at a re-create' || rc=1
+  # list and add are the two voices the issue caught disagreeing (#649): on
+  # the same half-made conf both must name login, in plain words.
+  out=$(ccmorph list 2>&1)
+  assert_contains "$out" "Claude account profile 's' has no email" \
+    'list must say what is half-made in plain words' || rc=1
+  assert_contains "$out" 'ccmorph login s' \
+    'list must name the one repair' || rc=1
+  assert_not_contains "$out" 'sub profile' \
+    'list must not use internal jargon' || rc=1
+  assert_not_contains "$out" 'ccmorph rm s' \
+    'list must not point a half-made sign-in at a re-create' || rc=1
+  out=$(ccmorph add s </dev/null 2>&1) && {
+    print -u2 -- 'add must refuse a name a half-made profile holds'
+    rc=1
+  }
+  assert_contains "$out" 'Sign in to it again: ccmorph login s' \
+    'add must name the same repair list names' || rc=1
+  assert_not_contains "$out" 'ccmorph rm s' \
+    'add must not point a half-made sign-in at a re-create' || rc=1
+  # And that repair must close the loop on a conf that never had the line.
+  out=$(ccmorph login s 2>&1) || { print -u2 -- "$out"; rc=1; }
+  assert_contains "$out" 'Signed in to Claude as new@example.com' \
+    'login must complete the sign-in it was pointed at' || rc=1
+  [[ -e "$HOME/login.ran" ]] || { print -u2 -- 'the browser login never ran'; rc=1; }
+  command grep -qx 'email=new@example.com' "$HOME/.config/ccmorph/s.conf" ||
+    { print -u2 -- 'login must add the email line a stub profile never had'; rc=1; }
+  command grep -qx 'type=sub' "$HOME/.config/ccmorph/s.conf" ||
+    { print -u2 -- 'the repair must not rewrite the profile type'; rc=1; }
+  rm -rf "$test_home"
+  return $rc
+}
+
 # One spelling of "ask me", everywhere, with the retired ones deleted rather than
 # left accepted-but-undocumented -- two vocabularies for one idea is how a user ends
 # up guessing which one this version wants.
@@ -11908,6 +12136,9 @@ run_test test_add_sub_completes_the_browser_login
 run_test test_login_signs_a_signed_out_account_profile_in_again
 run_test test_launch_skips_the_sizer_when_nothing_is_new
 run_test test_add_sub_auth_calls_scrub_securestorage_dir
+run_test test_add_sub_sigkilled_mid_login_leaves_no_profile
+run_test test_add_sub_terminal_signal_mid_login_cleans_up
+run_test test_login_repairs_a_sub_profile_that_never_got_an_email
 run_test test_one_interactive_flag_is_the_only_way_to_ask
 run_test test_every_credential_type_states_how_it_authenticates
 

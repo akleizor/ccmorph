@@ -1139,6 +1139,9 @@ SIGNED_OUT = ('#!/bin/sh\n[ "$1 $2" = "auth status" ] && '
     ("token-rejected", "type=token\ntoken=sk-ant-oat01-issue-282\n", status_curl(401),
      "replace the token: ccmorph config demo"),
     ("signed-out", "type=sub\nemail=demo@example.test\n", OK_CURL, "sign in again: ccmorph login demo"),
+    # #649: a sign-in interrupted before its email line is half-made, and the
+    # repair named here must be the one `add`, `run` and `login` already name.
+    ("half-made-sub", "type=sub\n", None, "sign in again: ccmorph login demo"),
     ("key-refused-by-claude", f"type=apikey\napi_key={REFUSED_KEY}\n", OK_CURL,
      "let Claude Code use the key again: ccmorph login demo"),
     ("settings-invalid", GW, OK_CURL, "fix the JSON in {settings}"),

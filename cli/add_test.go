@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -75,5 +78,40 @@ func TestAddWizardTierColumnsArePinnedByName(t *testing.T) {
 		if strings.Contains(line, "FABLE") {
 			t.Fatalf("a preset column wrote fable's key: %q", line)
 		}
+	}
+}
+
+// GH-649: closing the terminal sends SIGHUP/SIGTERM to the whole foreground
+// process group. The sign-in child must be the one that dies — the parent has
+// to survive long enough to run the caller's rollback. Before the handoff the
+// default disposition killed this process outright, which here took the whole
+// test binary down with it: reaching the assertions is half the assertion.
+func TestHandSignInSignalsReachTheChildNotTheParent(t *testing.T) {
+	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP} {
+		t.Run(sig.String(), func(t *testing.T) {
+			// Bounded on its own: if the handoff ever stops delivering, the
+			// child still leaves in a few seconds and the test fails on its
+			// assertions instead of hanging the suite.
+			cmd := exec.Command("sh", "-c",
+				"i=0; while [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done")
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			release := handSignInSignals(cmd.Process)
+			if err := syscall.Kill(os.Getpid(), sig); err != nil {
+				release()
+				t.Fatal(err)
+			}
+			err := cmd.Wait()
+			release()
+			var ee *exec.ExitError
+			if !errors.As(err, &ee) {
+				t.Fatalf("the child outlived the forwarded %v: %v", sig, err)
+			}
+			ws, ok := ee.ProcessState.Sys().(syscall.WaitStatus)
+			if !ok || !ws.Signaled() || ws.Signal() != sig {
+				t.Fatalf("the child did not die of the forwarded %v: %v", sig, err)
+			}
+		})
 	}
 }
