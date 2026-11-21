@@ -1105,53 +1105,15 @@ def session_pid(sid: str) -> int | None:
     return None
 
 
-def wrapper_command(words: "list[str]") -> "list[str]":
-    """The command a `script` wrapper was asked to run, or [] when this row is
-    not that wrapper.
-
-    start() runs every host as `/usr/bin/script -q /dev/null <dir>/ccmorph-rc
-    <route> -- ...`, so the launched command is what follows the typescript file
-    operand -- never a later word. A `script` row running `/bin/sh` that merely
-    carries `/x/ccmorph-rc --session-id x` as arguments is a shell, not a host.
-    """
-    if not words or Path(words[0]).name != "script":
-        return []
-    i = 1
-    while i < len(words) and words[i].startswith("-"):
-        i += 1                    # -q (start() passes no option that takes a value)
-    if i < len(words) and words[i] == "/dev/null":
-        i += 1                    # the typescript file operand
-    return words[i:]
-
-
-def serves_session(words: "list[str]") -> bool:
-    """Whether ps's words for one process are a Remote Control process whose
-    `--session-id` names the session it serves. Three shapes are: a repo host's
-    session child (`--sdk-url` beside it, as session_pid() reads one); a pinned
-    host, `claude remote-control --session-id <id>`, read as host_at() reads a
-    host; and the pty start() runs every host in, whose launched command is
-    `<dir>/ccmorph-rc <route> -- --session-id <id>`, with the pin in that
-    command's own arguments. The last two are a pin, whoever started it -- an
-    earlier supervisor's pin outlives that supervisor, and this one holds no
-    Popen for it. Any other command proves nothing: a bare `--session-id`
-    (`printf %s --session-id cse_01OLD`), and a `script` row running another
-    command that merely carries one (`/bin/sh /x/ccmorph-rc --session-id x`)."""
-    if "--session-id" not in words:
-        return False
-    launched = wrapper_command(words)
-    if launched:
-        return (launched[0].endswith("/ccmorph-rc") and len(launched) > 4
-                and not launched[1].startswith("-")
-                and launched[2:4] == ["--", "--session-id"])
-    if "--sdk-url" in words:
-        return True
-    return words[1:2] == ["remote-control"] and Path(words[0]).name == "claude"
-
-
-def process_table() -> "list[list[str]] | None":
-    """ps's words for every process -- or None when the table cannot be read. A
-    nonzero exit is unread even when rows were printed, and ps lists at least
-    itself, so an empty table is an unread one."""
+def process_table() -> "list[str] | None":
+    """ps's row for every process, each kept whole as one command line -- or
+    None when the table cannot be read. A row is not split into words here: ps
+    joins argv with spaces, so an install path with spaces splits into several
+    words and a reader that looked for a path at a word position missed the
+    process (#758). A reader that knows the exact command it looks for matches
+    the row's start instead (served_session(), held_logs()). A nonzero exit is
+    unread even when rows were printed, and ps lists at least itself, so an
+    empty table is an unread one."""
     try:
         done = subprocess.run(["ps", "-Ao", "command="], capture_output=True, text=True,
                               errors="replace", timeout=10)
@@ -1162,24 +1124,50 @@ def process_table() -> "list[list[str]] | None":
     out = done.stdout or ""
     if not out.strip():
         return None
-    return [line.split() for line in out.splitlines() if line.strip()]
+    return [line.strip() for line in out.splitlines() if line.strip()]
 
 
-def live_sessions() -> "set[str] | None":
-    """The id body of every session a process serves right now (serves_session())
-    -- or None when the process table cannot be read. The body is what
-    record_session() returns."""
-    table = process_table()
-    if table is None:
+def served_session(row: str, wrapper: str, claude: "str | None") -> "str | None":
+    """The id body of the session one ps row serves (as record_session() names
+    it), or None when the row proves no session.
+
+    Three rows do. The pty start() runs every host in, recognised by the exact
+    start of the command start() builds (`wrapper`: /usr/bin/script -q /dev/null
+    <this add-on>/ccmorph-rc ), then `<route> -- ... --session-id <id>`: a pin,
+    whichever supervisor started it. A pinned host's own process, `claude
+    remote-control ... --session-id <id>`: argv[0] named claude, as host_at()
+    reads a host, or the row starting with the very claude this supervisor's
+    hosts run (`claude`, from shutil.which). And a repo host's session child:
+    `--session-id` beside `--sdk-url`, as session_pid() reads one. The prefixes
+    are matched on the whole row, so a path with spaces still matches. Any other
+    row proves nothing: a bare --session-id (`printf %s --session-id cse_01OLD`),
+    and a `script` row whose launched command is not this add-on's ccmorph-rc
+    (`/usr/bin/script -q /dev/null /bin/sh /x/ccmorph-rc --session-id x`)."""
+    words = row.split()
+    if "--session-id" not in words:
         return None
-    ids: set[str] = set()
-    for words in table:
-        if not serves_session(words):
-            continue
-        i = words.index("--session-id") + 1
-        if i < len(words):
-            ids.add(words[i].split("_", 1)[-1])
-    return ids
+    if Path(words[0]).name == "script":
+        if not row.startswith(wrapper):
+            return None
+        words = row[len(wrapper):].split()        # <route> -- <claude args>
+        if not words or words[0].startswith("-") or words[1:2] != ["--"] \
+                or "--session-id" not in words[2:]:
+            return None
+    elif not ("--sdk-url" in words
+              or (Path(words[0]).name == "claude" and words[1:2] == ["remote-control"])
+              or (claude and row.startswith(f"{claude} remote-control "))):
+        return None
+    i = words.index("--session-id") + 1
+    if i >= len(words):
+        return None
+    return words[i].split("_", 1)[-1] or None
+
+
+def live_sessions(table: "list[str]") -> "set[str]":
+    """The id body of every session a row of `table` (process_table()) serves."""
+    wrapper = f"/usr/bin/script -q /dev/null {HERE / 'ccmorph-rc'} "
+    claude = shutil.which("claude")
+    return {sid for sid in (served_session(row, wrapper, claude) for row in table) if sid}
 
 
 def woke(s: dict, mark: tuple) -> bool:
@@ -1662,61 +1650,47 @@ def edit_config(config: Path, folder: str, sid: str | None = None, *,
         log(f"config not edited: {e}")
 
 
-def helper_logs(words: "list[str]") -> "set[Path]":
-    """The logs in LOGS this process's argv says it writes, for the helpers that
-    are no Host: a route's adapter and the inference switch. Their argv names
-    the route they serve, which is all the log name needs."""
-    out: set = set()
-    if Path(words[0]).name == "ccmorph-core" and words[1:2] == ["adapter"] and len(words) > 2:
-        out.add(LOGS / f"adapter-{words[2]}.log")
-    launched = wrapper_command(words)
-    if "--switch" in words and (Path(words[0]).name == "ccmorph-rc"
-                                or (launched and launched[0].endswith("/ccmorph-rc"))):
-        out.add(LOGS / "switch.log")
-    return out
-
-
 def held_logs(hosts: "dict[str, Host]") -> "set[Path] | None":
     """The files in LOGS the periodic sweep must leave however old (#758).
 
-    A session record is held while a process serves its session (live_sessions(),
-    plus each running pinned host's own); a dead session's go, whichever host
-    they belong to: a host outlives its sessions. Every other file is one per
-    folder or route rather than one per session, so only those a live writer
-    still has are held: each configured host's own stdout log and --debug-file
-    (and their .log.1), running or adopted -- start() hands the child those
-    descriptors and bound_logs() must still reach them by path -- plus a running
-    adapter's or the switch's log. A folder removed from the config takes its
-    host's files off this list, so a retired folder's logs age out like any
-    other record instead of accumulating for the life of the supervisor. None
-    when the process table cannot be read: the sweep then waits for the next
-    check rather than guess -- a week's cap loses nothing to ten minutes."""
+    A session record is held while its session is live: a configured pin's own
+    session (the config names it, so no ps row is needed -- a pin an earlier
+    supervisor started runs with no Popen here), or a session a ps row serves
+    (live_sessions()). A dead session's records go, whichever host they belong
+    to: a host outlives its sessions. Every other file is one per folder or
+    route, held while its writer may run: each configured host's own stdout log
+    and --debug-file and their .log.1 (start() hands the child those
+    descriptors, and bound_logs() must still reach them by path); the
+    adapter-<route>.log of every configured route and of every adapter ps shows
+    running (its row starts with the adapter ccmorph-rc launches, a --switch
+    profile's included); and the one switch.log, which main() hands to a
+    --switch bring-up in the same tick as this sweep, before it has written a
+    line. A folder or route removed from the config takes its files off this
+    list, so a retired one's logs age out like any other record. Every path
+    here comes from the config or from a whole-row match, never from a split
+    word, so an install path with spaces hides nothing. None when the process
+    table cannot be read: the sweep then waits for the next check rather than
+    guess -- a week's cap loses nothing to ten minutes."""
     table = process_table()
     if table is None:
         return None
-    live: set = set()
-    for words in table:
-        if serves_session(words):
-            i = words.index("--session-id") + 1
-            if i < len(words):
-                live.add(words[i].split("_", 1)[-1])
-    live |= {h.session_id.split("_", 1)[-1] for h in hosts.values() if h.proc and h.session_id}
-    held: set = set()
+    live = live_sessions(table)
+    live |= {h.session_id.split("_", 1)[-1] for h in hosts.values() if h.session_id}
+    held: set = {LOGS / "switch.log"}
+    routes = {h.route for h in hosts.values()}
     for h in hosts.values():
-        # Configured, not merely running: a host between launches, or one an
-        # earlier supervisor left (no Popen here), still holds its descriptors.
         held |= {h.logfile, h.debugfile, h.logfile.with_suffix(".log.1"),
                  h.debugfile.with_suffix(".log.1")}
-    for words in table:
-        held |= helper_logs(words)
+    adapter = f"{rc_module().ADAPTER} adapter "
+    for row in table:
+        if row.startswith(adapter) and row[len(adapter):].split():
+            routes.add(row[len(adapter):].split()[0])
+    held |= {LOGS / f"adapter-{r}.log" for r in routes}
     try:
         files = list(LOGS.glob("*"))
     except OSError:
         return None
-    for f in files:
-        sid = record_session(f.name)
-        if sid is not None and sid in live:
-            held.add(f)
+    held |= {f for f in files if record_session(f.name) in live}
     return held
 
 
