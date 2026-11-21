@@ -645,3 +645,111 @@ def test_an_rc_session_loads_the_router_plugin_while_the_router_is_on(tmp_path, 
     assert rc.plugin_dirs(env) == str(share / "claude-plugin")
     (tmp_path / "router.json").write_text('{"enabled": true}')
     assert rc.plugin_dirs(env) == f"{share / 'claude-plugin'}:{share / 'claude-plugin-router'}"
+
+
+def _switch_state(tmp_path, monkeypatch):
+    """The launcher set up for `switch()` to bring the route profile "gw" up beside the
+    one live shared edge: edge liveness, the route resolve and the adapter spawn are the
+    outside world here, so each answers exactly what a healthy host would. A conf that
+    pins sonnet through the window marker is the #584 shape: the marker is ccmorph's own
+    and belongs to no model id the proxy may pin."""
+    monkeypatch.setenv("CCMORPH_STATE_DIR", str(tmp_path))
+    rc = _launcher()
+    (tmp_path / "gw.conf").write_text("type=apikey\n")
+    (rc.STATE / "edges").mkdir(parents=True)
+    (rc.STATE / "edges" / "main.json").write_text("{}")     # the one shared edge switch() demands
+    monkeypatch.setattr(rc, "live_edge", lambda r: {"pid": 4242} if r == "main" else None)
+    route_env = {"ANTHROPIC_BASE_URL": "https://gw", "ANTHROPIC_API_KEY": "route-key",
+                 "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-5-5[1m]",
+                 "CCMORPH_ROUTE_HANDLE": "provider|1|/t|/a"}
+    monkeypatch.setattr(rc, "resolve_route", lambda profile: route_env)
+    monkeypatch.setattr(rc, "retire_route_with", lambda pid, handle: None)
+    monkeypatch.setattr(rc, "adapter_env", lambda: {})
+    monkeypatch.setattr(rc, "start_adapter", lambda profile, owner, env: "http://127.0.0.1:54505")
+    return rc, route_env
+
+
+# The edge's own route map, as ccmorph-rc hands it to the proxy at start (RC_TIERS). It differs
+# from every handoff below, so a test can tell which of the two maps a turn used.
+_BOOT_TIERS = {"sonnet": "boot-route-sonnet"}
+
+
+def _switch_addon(monkeypatch, state):
+    """rc_addon loaded the way ccmorph-rc loads it: a private copy configured through
+    the environment alone. mitmproxy only ever appears in the hook signatures, and the
+    suite runs without it, so where it is not installed the name resolves to a stub;
+    neither the handoff read nor the routing decision reaches past it."""
+    from types import ModuleType, SimpleNamespace
+    key = state / "route-key"
+    key.parent.mkdir(parents=True, exist_ok=True)
+    key.write_text("route-key\n")
+    monkeypatch.setenv("RC_UPSTREAM", "http://127.0.0.1:60111")
+    monkeypatch.setenv("RC_KEY_FILE", str(key))
+    monkeypatch.setenv("RC_INFERENCE", str(state / "inference"))
+    monkeypatch.setenv("RC_LOG", str(state / "addon.log"))
+    # Every RC_* the add-on reads at import is pinned here, never inherited from the
+    # suite's environment (REVIEW.md: a test that cannot fail).
+    monkeypatch.setenv("RC_TIERS", json.dumps(_BOOT_TIERS))
+    monkeypatch.delenv("RC_PARENT_PID", raising=False)
+    try:
+        import mitmproxy  # noqa: F401
+    except ImportError:
+        mitm = ModuleType("mitmproxy")
+        mitm.http = SimpleNamespace(HTTPFlow=object)
+        monkeypatch.setitem(sys.modules, "mitmproxy", mitm)
+    path = Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "rc_addon.py"
+    return load_script(path, "rc_addon_switch")
+
+
+def test_a_switch_handoff_pins_its_tiers_through_pinned_tiers(tmp_path, monkeypatch):
+    """issue #584: switch() spelled the tier map inline — pinned_tiers() minus that
+    function's [1m] strip — so a profile whose conf pinned claude-…[1m] carried the
+    marker verbatim into switch-<profile>.json, and the switched phone's bare `sonnet`
+    came back rewritten to a model id wearing ccmorph's own window marker."""
+    rc, route_env = _switch_state(tmp_path, monkeypatch)
+    rc.switch("gw", "me")
+    hand = rc.STATE / "switch-gw.json"
+    assert json.loads(hand.read_text())["tiers"] == rc.pinned_tiers(route_env) == {"sonnet": "claude-sonnet-5-5"}
+    assert hand.stat().st_mode & 0o777 == 0o600
+    assert "[1m]" not in hand.read_text()
+    assert (rc.STATE / "inference").read_text() == "gw\n"   # the word every host follows next turn
+
+
+def test_the_addon_reads_a_handoff_once_and_keeps_it_thereafter(tmp_path, monkeypatch):
+    """The handoff is the whole of a bring-up: read once, deleted with the read, then
+    remembered for every later turn — and its tiers are exactly what pinned_tiers says."""
+    rc, route_env = _switch_state(tmp_path, monkeypatch)
+    rc.switch("gw", "me")
+    addon = _switch_addon(monkeypatch, rc.STATE)
+    got = addon._switched("gw")
+    assert got == ("http://127.0.0.1:54505", "route-key", rc.pinned_tiers(route_env))
+    assert not (rc.STATE / "switch-gw.json").exists()      # the key lived one hop, never on disk
+    assert addon._switched("gw") == got                    # brought up once; every turn follows
+
+
+@pytest.mark.parametrize("handoff,port,log", [
+    pytest.param(None, 60111, "was never brought up", id="never-brought-up-keeps-the-route"),
+    pytest.param({"upstream": "http://127.0.0.1:54505", "key": "route-key",
+                  "tiers": {"sonnet": "claude-sonnet-5-5"}}, 54505, "via gw",
+                 id="brought-up-moves-the-turn"),
+])
+def test_a_switch_word_moves_the_turn_only_where_a_profile_was_brought_up(tmp_path, monkeypatch,
+                                                                          handoff, port, log):
+    """A word file can name a profile `--switch` never raised; the turn then stays on
+    the edge's route with a named reason — never guessed at, never failed."""
+    from types import SimpleNamespace
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "inference").write_text("gw\n")
+    if handoff:
+        (state / "switch-gw.json").write_text(json.dumps(handoff))
+    addon = _switch_addon(monkeypatch, state)
+    flow = SimpleNamespace(metadata={}, request=SimpleNamespace(
+        pretty_host="api.anthropic.com", path="/v1/messages", method="POST",
+        headers={"authorization": "Bearer ACCOUNT-SECRET"},
+        scheme="https", host="api.anthropic.com", port=443))
+    addon.requestheaders(flow)
+    assert flow.request.port == port                        # the handoff's adapter, or the route
+    assert log in (state / "addon.log").read_text()
+    assert flow.metadata["rc_route"] is True
+    assert flow.metadata["rc_tiers"] == (handoff["tiers"] if handoff else _BOOT_TIERS)
