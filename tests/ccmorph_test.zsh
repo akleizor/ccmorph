@@ -1854,8 +1854,11 @@ test_arguments_reach_claude_exactly_as_given() {
   # The last case is the #334 value-looks-like-a-flag spelling: `--effort`
   # there is the system prompt's VALUE, so no effort flag was given and the
   # arguments must pass through untouched either way.
-  for argv in 'mcp list' 'remote-control --name x' 'prompt' '-p hello --output-format json' \
-              '--system-prompt --effort -p x'; do
+  # 'rm sess-1' is #768: Claude's own rm removes a background session and needs
+  # no endpoint -- the dead gateway is exactly when a person prunes a bad
+  # session -- so ccmorph's verb table must not claim it after `run <profile>`.
+  for argv in 'mcp list' 'rm sess-1' 'remote-control --name x' 'prompt' \
+              '-p hello --output-format json' '--system-prompt --effort -p x'; do
     : > "$CCMORPH_TEST_LOG"
     ccmorph run gw ${=argv} || {
       print -u2 -- "FAIL: ccmorph run gw $argv must succeed"
@@ -1907,6 +1910,27 @@ test_arguments_reach_claude_exactly_as_given() {
       print -u2 -- "FAIL: a word behind run's -- was rewritten: $(<"$CCMORPH_TEST_LOG")"
       rc=1
     fi
+  done
+
+  # The matrix above answers with a HEALTHY stub adapter, so it pins argv but
+  # cannot show that a no-session launch leaves the route alone. #768 is that
+  # half: Claude's `rm <id>` prunes a background session and needs no endpoint
+  # -- the moment a person reaches for it is exactly when the endpoint is down
+  # -- so with the adapter dying the way an endpoint-down start does, only a
+  # launch that opens no session still reaches Claude Code. A session-path rm
+  # is refused here, which is the bug: ccmorph's verb table claimed the word.
+  local adapter="$HOME/.config/ccmorph/libexec/ccmorph-adapter"
+  printf '%s\n' '#!/bin/sh' \
+    'echo "ccmorph: adapter exited before readiness; session not started." >&2' \
+    'exit 1' > "$adapter"
+  for argv in 'mcp list' 'rm sess-1'; do
+    : > "$CCMORPH_TEST_LOG"
+    ccmorph run gw ${=argv} || {
+      print -u2 -- "FAIL: with the endpoint down 'ccmorph run gw $argv' opens no session and must still pass through"
+      rc=1; continue
+    }
+    assert_contains "$(<"$CCMORPH_TEST_LOG")" "ARG${tab}${argv// /$tab}"$'\nSUBAGENT' \
+      "'$argv' must reach Claude Code untouched while the endpoint is down" || rc=1
   done
 
   rm -rf "$test_home"
