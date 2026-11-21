@@ -69,11 +69,18 @@ gate-py:
 # the installer greps, the changelog a reader trusts, and the tag a package
 # manager resolves. A release that disagrees with itself is how v1.5.1 came to
 # have a changelog entry and no tag, invisible to anything resolving by tag.
+# "Newest entry" is a fact about content, not about line numbers: the live
+# Unreleased block sits above every release heading and grows with every
+# landing, so the gate skips the first heading only when it is exactly
+# `## Unreleased`; the next one must be TAG's. The
+# `head -20` window this replaced held zero slack once v0.5.13 landed, and the
+# next Unreleased bullet would have blocked `make release` (#610).
 check-version:
 	@test -n "$(VERSION)" || { echo "no _CCMORPH_VERSION in lib/ccmorph.sh"; exit 1; }
 	@grep -q '^## $(TAG) ' CHANGELOG.md || { \
 	  echo "CHANGELOG.md has no '## $(TAG)' section"; exit 1; }
-	@head -20 CHANGELOG.md | grep -q '^## $(TAG) ' || { \
+	@awk '/^## /{ if (!n++ && $$0 == "## Unreleased") next; print; exit }' CHANGELOG.md | \
+	  grep -q '^## $(TAG) ' || { \
 	  echo "'## $(TAG)' is not the newest CHANGELOG entry"; exit 1; }
 	@git rev-parse -q --verify "refs/tags/$(TAG)" >/dev/null || { \
 	  echo "tag $(TAG) does not exist — create it before releasing:"; \
