@@ -6,10 +6,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -488,5 +490,126 @@ func TestMaskPersonalData(t *testing.T) {
 		if got := maskOne(t, m, plain); got != plain {
 			t.Errorf("masked a non-secret: %q -> %q", plain, got)
 		}
+	}
+}
+
+// The CARD rule must not reach into a decimal number (#756): \b fires at the
+// ".", so a 16-digit fraction carries a BIN+Luhn candidate about one time in
+// ten, and the model read corrupted floats as {{CARD_*}} placeholders. The
+// digits are written in four-digit pieces on purpose: a whole card number is
+// a secret, and a masked profile reads this file back with one rewritten.
+func TestMaskCardNotInsideDecimal(t *testing.T) {
+	card := "4571" + "2345" + "6789" + "0120" // Visa BIN, passes Luhn
+	grouped := card[:4] + " " + card[4:8] + " " + card[8:12] + " " + card[12:]
+	for _, as := range []string{card, grouped} {
+		// fresh masker: a learned value is masked everywhere, decimals too
+		m := testMasker(t, "")
+		if got := maskOne(t, m, "pay with "+as+" now"); got == "pay with "+as+" now" || !placeholderRE.MatchString(got) {
+			t.Errorf("card no longer masked: %q -> %q", as, got)
+		}
+	}
+	m := testMasker(t, "")
+	for _, plain := range []string{
+		"0." + card,                       // the fraction itself: a run after "."
+		`{"p95_seconds": 0.` + card + `}`, // the triage shape: JSON tool output
+		card + ".5",                       // integer part of a decimal
+		"0." + card + "5",                 // part of a longer digit run
+		"1" + card,                        // ditto, before the run
+	} {
+		if got := maskOne(t, m, plain); got != plain {
+			t.Errorf("masked a decimal: %q -> %q", plain, got)
+		}
+	}
+	// The replacement pass has the same duty as discovery: after the bare run
+	// is learned as a card, a request carrying that card and the same digits
+	// inside numbers must mask only the standalone occurrence.
+	learned := testMasker(t, "")
+	if got := maskOne(t, learned, "pay with "+card+" now"); got == "pay with "+card+" now" {
+		t.Fatal("card never learned")
+	}
+	for _, plain := range []string{"0." + card, card + ".5", "0." + card + "5", "1" + card} {
+		if got := maskOne(t, learned, plain); got != plain {
+			t.Errorf("replaced a learned card inside a number: %q -> %q", plain, got)
+		}
+	}
+	line := "charge " + card + ", ratio 0." + card + " now"
+	if got := maskOne(t, learned, line); !strings.Contains(got, "ratio 0."+card) || strings.Contains(got, "charge "+card) || !placeholderRE.MatchString(got) {
+		t.Errorf("mixed line: %q -> %q", line, got)
+	}
+}
+
+// A shorter secret must not split a learned card (#756 review): after a URL
+// password that is six of the card's digits is learned, the card alone in
+// text still masks whole as one CARD, as on main, in a later request and in
+// the same one. Inside a decimal the card stays digits; only the password in
+// it masks, as any learned value does. Digits go in four-digit pieces: a
+// masked profile reads this file back.
+func TestMaskCardWholeBesideShorterSecret(t *testing.T) {
+	card := "4571" + "2345" + "6789" + "0120" // Visa BIN, passes Luhn
+	pw := card[4:10]
+	m := testMasker(t, "")
+	if got := maskOne(t, m, "db at postgres://app:"+pw+"@db/x"); strings.Contains(got, pw) {
+		t.Fatalf("password never learned: %q", got)
+	}
+	in := "pay with " + card + " now"
+	got := maskOne(t, m, in)
+	if g := placeholderRE.FindAllStringSubmatch(got, -1); len(g) != 1 || g[0][1] != "CARD" || got != "pay with "+g[0][0]+" now" {
+		t.Errorf("card split by a shorter secret: %q -> %q", in, got)
+	}
+	fresh := testMasker(t, "")
+	both := "postgres://app:" + pw + "@db/x and " + card
+	got = maskOne(t, fresh, both)
+	if want := "postgres://app:" + fresh.known[pw] + "@db/x and " + fresh.known[card]; got != want || fresh.known[card] == "" {
+		t.Errorf("one request: %q -> %q, want %q", both, got, want)
+	}
+	dec := "0." + card
+	if want := "0." + card[:4] + m.known[pw] + card[10:]; maskOne(t, m, dec) != want {
+		t.Errorf("decimal: %q -> %q, want %q", dec, maskOne(t, m, dec), want)
+	}
+}
+
+// Once a card is known the pass scans by hand; everywhere else it must place
+// values exactly as strings.Replacer does — leftmost first, longest at one
+// position — and a longer secret holding a card's digits masks whole.
+func TestMaskPassKeepsReplacerOrder(t *testing.T) {
+	card := "4571" + "2345" + "6789" + "0120"
+	m := testMasker(t, "")
+	vals := []string{"abcdef", "bcdefgh", "abcdefghij", "xyzxyz", "cdefgh"}
+	for _, v := range vals {
+		m.learn(v, "PASSWORD")
+	}
+	before := m.pass()
+	sort.Slice(vals, func(i, j int) bool { return len(vals[i]) > len(vals[j]) })
+	pairs := make([]string, 0, 2*len(vals))
+	for _, v := range vals {
+		pairs = append(pairs, v, m.known[v])
+	}
+	ref := strings.NewReplacer(pairs...)
+	m.learn(card, "CARD")
+	after := m.pass()
+	r := rand.New(rand.NewSource(1))
+	const alpha = "abcdefghijxyz "
+	for n := 0; n < 20000; n++ {
+		b := make([]byte, r.Intn(40))
+		for i := range b {
+			b[i] = alpha[r.Intn(len(alpha))]
+		}
+		s := string(b)
+		if before.replace(s) != ref.Replace(s) || after.replace(s) != ref.Replace(s) {
+			t.Fatalf("%q: replacer %q, no card %q, card %q", s, ref.Replace(s), before.replace(s), after.replace(s))
+		}
+	}
+	// The scan steps bytes where the Replacer steps runes: a value never starts
+	// inside a multi-byte rune, so both must leave UTF-8 text alike.
+	for _, s := range []string{"密码 abcdef", "x😀abcdefghij😀", "abcdef密xyzxyz", "前缀 cdefgh 后缀"} {
+		if before.replace(s) != ref.Replace(s) || after.replace(s) != ref.Replace(s) {
+			t.Errorf("utf-8 %q: replacer %q, no card %q, card %q", s, ref.Replace(s), before.replace(s), after.replace(s))
+		}
+	}
+	sec := "zq" + card + "xy"
+	m.learn(sec, "SECRET")
+	in := "k " + sec + " and " + card + " end"
+	if got, want := maskOne(t, m, in), "k "+m.known[sec]+" and "+m.known[card]+" end"; got != want {
+		t.Errorf("longer secret split by its card: %q -> %q, want %q", in, got, want)
 	}
 }
