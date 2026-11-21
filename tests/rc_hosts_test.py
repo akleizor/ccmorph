@@ -2425,17 +2425,24 @@ def test_a_start_removes_session_records_past_retention(tmp_path, monkeypatch):
     assert kept.exists()
 
 
-def test_live_sessions_reads_every_session_id_in_the_process_table(monkeypatch):
+def test_live_sessions_reads_only_session_child_argv_and_refuses_a_failed_ps(monkeypatch):
     import subprocess
     m = load()
-    table = ("/usr/bin/script -q /dev/null /x/ccmorph-rc gw -- --session-id session_01PIN\n"
-             "/x/claude --print --session-id cse_01KID --sdk-url wss://x\n"
+    table = ("/x/claude --print --session-id cse_01KID --sdk-url wss://x\n"
+             "/usr/bin/script -q /dev/null /x/ccmorph-rc gw -- --session-id session_01PIN\n"
+             "/bin/printf %s --session-id cse_01OLD\n"
              "/usr/bin/vim notes.txt\n")
     monkeypatch.setattr(m.subprocess, "run",
                         lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=table, stderr=""))
-    assert m.live_sessions() == {"01PIN", "01KID"}
+    # only the session child's argv (--session-id beside --sdk-url, as
+    # session_pid reads it) proves a session: a pinned host's own line and a
+    # bare --session-id in an unrelated command do not
+    assert m.live_sessions() == {"01KID"}
+    monkeypatch.setattr(m.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
+        cmd, 1, stdout="/x/claude --session-id cse_01KID --sdk-url wss://x\n", stderr="ps: denied"))
+    assert m.live_sessions() is None          # a nonzero exit is unread, partial rows or not
     monkeypatch.setattr(m.subprocess, "run",
-                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="ps: denied"))
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""))
     assert m.live_sessions() is None
     monkeypatch.setattr(m.subprocess, "run", lambda cmd, **kw: (_ for _ in ()).throw(OSError("no ps")))
     assert m.live_sessions() is None
@@ -2517,6 +2524,50 @@ def test_the_periodic_sweep_holds_only_what_a_running_process_still_writes(tmp_p
     assert [f.name for f in held if not f.exists()] == []    # still written: kept
     assert [f.name for f in dead if f.exists()] == []        # same host, session over: gone
     assert fresh.exists()                                    # inside the week: kept
+
+
+def test_a_bare_session_id_in_an_unrelated_command_does_not_keep_a_dead_record(tmp_path, monkeypatch):
+    """#758: a `--session-id` token alone proves nothing -- `printf %s
+    --session-id cse_01OLD` is not a session child. Only the argv session_pid()
+    reads as one (--session-id beside --sdk-url) keeps a record."""
+    import subprocess
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    table = "/bin/printf %s --session-id cse_01OLD\n"
+    monkeypatch.setattr(m.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=table, stderr=""))
+    hosts = _running_host(m, tmp_path / "repo", [time.time()])
+    h = next(iter(hosts.values()))
+    dead = [logs / f"{h.debugfile.stem}-cse_01OLD.log",
+            logs / "bridge-transcript-cse_01OLD.jsonl"]
+    for f in dead:
+        f.write_text("x")
+    _age_past_retention(m, *dead)
+    state, now = _idle_check_due(m)
+    m.cycle(hosts, [], now, state)
+    assert [f.name for f in dead if f.exists()] == []
+
+
+def test_a_failed_ps_leaves_the_records_for_the_next_check(tmp_path, monkeypatch):
+    """#758: a nonzero ps exit is an unread table even when it printed rows, so
+    that idle check unlinks nothing; the next check sweeps."""
+    import subprocess
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    table = "/x/claude --session-id cse_01LIVE --sdk-url wss://x\n"
+    monkeypatch.setattr(m.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
+        cmd, 1, stdout=table, stderr="ps: partial"))
+    hosts = _running_host(m, tmp_path / "repo", [time.time()])
+    old = logs / "bridge-transcript-cse_01OLD.jsonl"
+    old.write_text("x")
+    _age_past_retention(m, old)
+    state, now = _idle_check_due(m)
+    assert m.cycle(hosts, [], now, state) is True
+    assert old.exists()
 
 
 def test_the_periodic_sweep_waits_when_the_process_table_is_unread(tmp_path, monkeypatch):
