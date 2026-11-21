@@ -1,5 +1,6 @@
 """ccmorph-rc-hosts: config parsing and the relaunch policy."""
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -2386,6 +2387,23 @@ def test_purging_a_session_removes_its_bridge_transcript(tmp_path, monkeypatch):
     monkeypatch.setattr(m, "host_envs", lambda folders: {})
     m.purge_archived([], m.stamp("2026-10-10T12:00:00Z"), 86400)
     assert not gone.exists()
+    assert kept.exists()
+
+
+def test_a_start_removes_session_records_past_retention(tmp_path, monkeypatch):
+    """Unbounded session logs filled the internal disk (239 files, 2.8 GB on 2026-11-21)."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    old = logs / "bridge-transcript-cse_01OLD.jsonl"
+    kept = logs / "bridge-transcript-cse_01NEW.jsonl"
+    old.write_text("x")
+    kept.write_text("x")
+    stale = time.time() - (m.LOG_KEEP_DAYS + 1) * 86400
+    os.utime(old, (stale, stale))
+    m.sweep_logs()
+    assert not old.exists()
     assert kept.exists()
 
 
