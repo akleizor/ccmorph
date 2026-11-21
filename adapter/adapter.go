@@ -458,6 +458,37 @@ func frontDirectly(a *cliArgs, upstream, key, routeIdentity string, usable []Row
 	}
 }
 
+// translatorChatModels is the ids of the rows the translator serves on its
+// chat-completions path ("chat" and "chat-noreason", as render lists them), in
+// row order: the routes on which the translator hands Claude Code a reasoning
+// carrier and reads it back (#646).
+func translatorChatModels(rows []Row) []string {
+	var ids []string
+	for _, r := range rows {
+		if r.Dialect == "chat" || r.Dialect == "chat-noreason" {
+			ids = append(ids, r.Model)
+		}
+	}
+	return ids
+}
+
+// chatModelsFile is the file beside the rendered translator config that names
+// the models its chat path serves, so the shim can read the list when a 400
+// needs the carrier decision (#646).
+func chatModelsFile(conf string) string { return conf + ".chat-models" }
+
+// writeChatModels records that list beside the config. It is rewritten on every
+// render and every mid-session prepare, so a model selected after the shim
+// started is seen by it.
+func writeChatModels(conf string, rows []Row) error {
+	ids := translatorChatModels(rows)
+	data := []byte(strings.Join(ids, "\n"))
+	if len(data) > 0 {
+		data = append(data, '\n')
+	}
+	return shim.AtomicWrite(chatModelsFile(conf), data, 0o600, ".chat-")
+}
+
 func newToken() string {
 	b := make([]byte, 32)
 	rand.Read(b)
@@ -701,17 +732,33 @@ func ensureConfig(a *cliArgs, required, upstream, key, routeIdentity, cacheFile,
 	if err != nil {
 		die("%v", err)
 	}
+	prevChat, chatErr := os.ReadFile(chatModelsFile(conf))
 	rendered := render(rows, key, a.ensurePort, upstream, filepath.Join(filepath.Dir(conf), "auth"),
 		upstreamProxy, shimBinary, environWith(extras), cloakNeverFn())
 	replace := func(data []byte) error {
 		return shim.AtomicWrite(conf, data, 0o600, ".route-")
 	}
+	// Any failure or timeout from here, the chat model list's own write among
+	// them, restores the previous config and chat model list. It is armed before
+	// either write, so no exit leaves the running translator on the new config
+	// (#646). A list that was absent is removed; one that could not be read is
+	// left alone.
+	restore := func() {
+		replace(previous)
+		switch {
+		case chatErr == nil:
+			shim.AtomicWrite(chatModelsFile(conf), prevChat, 0o600, ".chat-")
+		case errors.Is(chatErr, os.ErrNotExist):
+			os.Remove(chatModelsFile(conf))
+		}
+	}
+	atExit(restore)
 	if err := replace([]byte(rendered)); err != nil {
 		die("%v", err)
 	}
-	// Any failure or timeout from here restores the previous config.
-	restore := func() { replace(previous) }
-	atExit(restore)
+	if err := writeChatModels(conf, rows); err != nil {
+		die("cannot write the translator's chat model list: %v", err)
+	}
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		_, ids, err := inventoryFn("http://127.0.0.1:"+strconv.Itoa(a.ensurePort), key, loopback)
@@ -795,6 +842,10 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 		die("%v", err)
 	}
 	os.Chmod(conf, 0o600)
+	if err := writeChatModels(conf, rows); err != nil {
+		os.Remove(conf)
+		die("cannot write the translator's chat model list: %v", err)
+	}
 
 	if a.printConfig {
 		// Redact both spellings: the key is on disk as a YAML scalar, so one with a
@@ -896,6 +947,11 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 	for k, v := range extras {
 		shimEnv[k] = v
 	}
+	// The 400 resend keeps the translator's reasoning carrier on the models its
+	// chat path serves: their next request needs it back (#646). The list is a
+	// file the adapter rewrites whenever it prepares a model, so one selected
+	// mid-session is seen by this shim too. A direct route never sets it.
+	shimEnv["CCMORPH_TRANSLATOR_CHAT_MODELS_FILE"] = chatModelsFile(conf)
 	if a.token != "" {
 		shimEnv["CCMORPH_INBOUND"] = mustJSON(map[string]any{"sha256": hashHex(a.token), "key": key})
 	}

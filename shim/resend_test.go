@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -118,5 +119,36 @@ func TestPanickingResendHookSendsNothingMore(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != 400 || len(up.bodies) != 1 {
 		t.Fatalf("status %d bodies %d", resp.StatusCode, len(up.bodies))
+	}
+}
+
+// #646: a resend refused with any 4xx, not only a 400, leaves the client the
+// upstream's first refusal: the repair never replaces the real error.
+func TestAResendRefusedWithA422KeepsTheFirstRefusal(t *testing.T) {
+	first := `{"type":"error","error":{"type":"invalid_request_error","message":"first refusal"}}`
+	var calls atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		n := calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			w.WriteHeader(400)
+			w.Write([]byte(first))
+			return
+		}
+		w.WriteHeader(422)
+		w.Write([]byte(`{"type":"error","error":{"type":"invalid_request_error","message":"the repair's own refusal"}}`))
+	}))
+	defer up.Close()
+	s := NewServer(up.URL)
+	s.Hooks = Hooks{ResendBody: func(_, _ []byte) []byte { return []byte(`{"messages":[]}`) }}
+	resp := post(t, front(t, s), "/v1/messages", resendOriginal)
+	got, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if calls.Load() != 2 {
+		t.Fatalf("upstream saw %d requests, want the first and one resend", calls.Load())
+	}
+	if resp.StatusCode != 400 || string(got) != first {
+		t.Fatalf("the client got %d %s, want the first 400", resp.StatusCode, got)
 	}
 }
