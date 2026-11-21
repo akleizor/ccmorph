@@ -782,6 +782,16 @@ class _SpawnedProxy:
     def poll(self):
         return self.returncode
 
+    def terminate(self):
+        if self.returncode is None:
+            self.returncode = -15
+
+    def kill(self):
+        self.terminate()
+
+    def wait(self, timeout=None):
+        return self.returncode
+
 
 def _stub_proxy_spawn(rc, monkeypatch, exit_code):
     """Only the proxy spawn is stubbed: strip_env() still runs `ccmorph
@@ -832,17 +842,25 @@ def test_no_failed_start_ever_leaves_the_route_key_behind(tmp_path, monkeypatch,
     assert list(rc.STATE.glob("route-key.*")) == []
 
 
-@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT],
-                         ids=["sigterm", "sighup", "sigquit"])
-def test_termination_during_proxy_startup_removes_the_route_key(tmp_path, sig):
+@pytest.mark.parametrize("sig,expected", [
+    (signal.SIGTERM, str(128 + signal.SIGTERM)),
+    (signal.SIGHUP, str(128 + signal.SIGHUP)),
+    (signal.SIGQUIT, str(128 + signal.SIGQUIT)),
+    (signal.SIGINT, "KeyboardInterrupt"),
+], ids=["sigterm", "sighup", "sigquit", "sigint"])
+def test_termination_during_proxy_startup_removes_the_route_key(tmp_path, sig, expected):
     """A normal termination signal bypasses Python's finally unless startup
-    temporarily handles it. A separate process exercises the real disposition."""
+    temporarily handles it. A separate process exercises the real disposition,
+    and the proxy that start spawned is stopped, not left running."""
     import os
     import subprocess
 
     state = tmp_path / "state"
-    child = r'''import argparse, importlib.machinery, importlib.util, os, signal, sys
-path, sig = sys.argv[1], int(sys.argv[2])
+    child = r"""import argparse, importlib.machinery, importlib.util, os, signal, sys
+path, sig, expected = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+for s in (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+    signal.signal(s, signal.SIG_DFL)          # a plain launch, whatever the test runner ignores
+signal.signal(signal.SIGINT, signal.default_int_handler)
 loader = importlib.machinery.SourceFileLoader("ccmorph_rc_signal", path)
 spec = importlib.util.spec_from_loader(loader.name, loader)
 rc = importlib.util.module_from_spec(spec)
@@ -853,23 +871,34 @@ rc.adapter_env = lambda: {}
 rc.start_adapter = lambda *a: "http://127.0.0.1:1"
 rc.strip_env = lambda: ()
 rc.shutil.which = lambda name: "/test/" + name
-rc.subprocess.Popen = lambda *a, **k: object()
+real_popen = rc.subprocess.Popen
+spawned = []
+def spawn(cmd, **kw):
+    spawned.append(real_popen([sys.executable, "-c", "import time; time.sleep(600)"],
+                              stdin=rc.subprocess.DEVNULL, start_new_session=True))
+    return spawned[-1]
+rc.subprocess.Popen = spawn
 rc.wait_listening = lambda *a, **k: os.kill(os.getpid(), sig)
 try:
     rc.own_edge("test", os.getpid(), argparse.Namespace(debug=False), None)
-except SystemExit as stopped:
+except BaseException as stopped:
     keys = list(rc.STATE.glob("route-key.*"))
-    if stopped.code == 128 + sig and not keys:
+    alive = [p.pid for p in spawned if p.poll() is None]
+    for p in spawned:
+        if p.poll() is None:
+            p.kill()
+    code = str(stopped.code) if isinstance(stopped, SystemExit) else type(stopped).__name__
+    if code == expected and spawned and not keys and not alive:
         raise SystemExit(0)
-    print(f"unexpected exit={stopped.code} key_files={keys}", file=sys.stderr)
+    print(f"unexpected exit={code} key_files={keys} live_proxies={alive}", file=sys.stderr)
     raise SystemExit(2)
 raise SystemExit(3)
-'''
+"""
     env = {**os.environ, "CCMORPH_STATE_DIR": str(state)}
     result = subprocess.run([sys.executable, "-c", child,
                              str(Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccmorph-rc"),
-                             str(sig)], env=env, capture_output=True, text=True,
-                            timeout=HANG_TIMEOUT)
+                             str(int(sig)), expected],
+                            env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
     assert result.returncode == 0, f"child exit={result.returncode}; stderr={result.stderr}"
     assert list(state.rglob("route-key.*")) == []
 
@@ -922,3 +951,62 @@ raise SystemExit(2)
                             env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
     assert result.returncode == 0, f"child exit={result.returncode}; stderr={result.stderr}"
     assert list(state.rglob("route-key.*")) == []
+
+
+@pytest.mark.parametrize("shape,message", [
+    pytest.param("never-listens", "did not start listening", id="proxy-never-listens"),
+    pytest.param("no-ca", "proxy CA not generated", id="ca-never-generated"),
+    pytest.param("key-unconsumed", "did not consume the route key", id="addon-never-loads"),
+    pytest.param("healthy", None, id="healthy-start-keeps-its-proxy"),
+])
+def test_a_failed_start_stops_the_proxy_it_spawned(tmp_path, monkeypatch, capsys, shape, message):
+    """issue #777: a failed start removes the route key, and the addon reads that key
+    on load and is what follows our pid. A proxy left behind would never load it, so
+    it would outlive us holding its port (on --edge, the fixed one every restart
+    needs). The start that gives up stops the proxy it spawned; a healthy one keeps it."""
+    import argparse
+    import os
+    import subprocess
+
+    rc = _edge_spawn_state(tmp_path, monkeypatch)
+    stub = tmp_path / "bin" / "mitmdump"
+    stub.parent.mkdir()
+    stub.write_text("#!/bin/sh\nexit 0\n")
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", str(stub.parent) + os.pathsep + os.environ["PATH"])
+    real = rc.subprocess.Popen
+    spawned = []
+
+    def spawn(cmd, env=None, **kw):
+        if cmd[0] == "zsh":
+            return real(cmd, env=env, **kw)
+        if shape == "healthy":
+            os.unlink(env["RC_KEY_FILE"])                            # the addon consumed it
+        spawned.append(real([sys.executable, "-c", "import time; time.sleep(600)"],
+                            stdin=subprocess.DEVNULL, start_new_session=True))
+        return spawned[-1]
+    monkeypatch.setattr(rc.subprocess, "Popen", spawn)
+    if shape == "never-listens":
+        monkeypatch.setattr(rc, "wait_listening",
+                            lambda *a, **k: rc.die("proxy did not start listening within 20s"))
+    else:
+        monkeypatch.setattr(rc, "wait_listening", lambda *a, **k: None)
+    if shape in ("key-unconsumed", "healthy"):
+        ca = rc.STATE / "mitm" / "mitmproxy-ca-cert.pem"
+        ca.parent.mkdir(parents=True, exist_ok=True)
+        ca.write_text("stub ca")
+    try:
+        if shape == "healthy":
+            rc.own_edge("gw", 4242, argparse.Namespace(debug=False), None)
+            assert spawned and spawned[0].poll() is None, "a healthy start stopped its own proxy"
+        else:
+            with pytest.raises(SystemExit):
+                rc.own_edge("gw", 4242, argparse.Namespace(debug=False), None)
+            assert message in capsys.readouterr().err
+            assert spawned and spawned[0].poll() is not None, "the failed start left its proxy running"
+        assert list(rc.STATE.glob("route-key.*")) == []
+    finally:
+        for proc in spawned:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=HANG_TIMEOUT)
