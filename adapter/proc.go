@@ -311,6 +311,24 @@ func shimArgv(o shim.Options) []string {
 	return args
 }
 
+// shimGetenv is the shim's view of its settings: the values the adapter hands
+// it first, then the process environment for the knobs that configure the shim
+// rather than a profile's route. CCMORPH_UPSTREAM_PROXY is the profile conf's
+// alone (GH-773): a spelling the launcher's shell exported must not steer the
+// shim while the probes and the translator read the profile conf and ignore
+// it -- the split GH-580 ended, mirrored.
+func shimGetenv(env map[string]string) func(string) string {
+	return func(k string) string {
+		if v, ok := env[k]; ok {
+			return v
+		}
+		if k == "CCMORPH_UPSTREAM_PROXY" {
+			return ""
+		}
+		return os.Getenv(k)
+	}
+}
+
 // startShim runs the gateway shim. By default it is served inside this process:
 // one helper per session, no child to leak. A profile that names its own hooks
 // build (CCMORPH_SHIM_HOOKS) still gets that executable, spawned. env holds the
@@ -331,12 +349,7 @@ func startShim(hooksBin string, o shim.Options, env map[string]string, stdout, s
 		}
 		return p, err
 	}
-	getenv := func(k string) string {
-		if v, ok := env[k]; ok {
-			return v
-		}
-		return os.Getenv(k)
-	}
+	getenv := shimGetenv(env)
 	h, err := quirks.FromGetenv(getenv)
 	if err != nil {
 		return nil, err
