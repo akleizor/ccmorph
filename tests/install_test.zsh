@@ -1483,6 +1483,33 @@ sed 's/^_CCMORPH_VERSION=.*/_CCMORPH_VERSION="9.9.9"/' "$REPO/lib/ccmorph.sh" > 
 grep -qxF '_CCMORPH_VERSION="9.9.9"' "$TMP/stage99/ccmorph-main/lib/ccmorph.sh" || fail "update: could not stage the 9.9.9 tree"
 tar -czf "$TMP/src99.tar.gz" -C "$TMP/stage99" ccmorph-main
 
+# The GitHub archive shape of a tag: a source tree whose libexec/ carries only
+# .gitkeep, no binary at all. Its library says a different version, and its
+# install.sh stands in for the older installer a tag like v0.5.26 carries —
+# one that copied lib/ before looking for the core. If the updater hands off
+# to it, the canary line lands in the installed lib and the case fails.
+# Its --uninstall answers like a real one, with no core needed (14.2c).
+mkdir -p "$TMP/stage-nocore"
+cp -R "$TMP/stage/ccmorph-v1.2.3" "$TMP/stage-nocore/ccmorph-v9.8.7"
+rm -f "$TMP/stage-nocore/ccmorph-v9.8.7/libexec/ccmorph-core"
+sed 's/^_CCMORPH_VERSION=.*/_CCMORPH_VERSION="9.8.7"/' "$REPO/lib/ccmorph.sh" > "$TMP/stage-nocore/ccmorph-v9.8.7/lib/ccmorph.sh"
+grep -qxF '_CCMORPH_VERSION="9.8.7"' "$TMP/stage-nocore/ccmorph-v9.8.7/lib/ccmorph.sh" || fail "update: could not stage the no-core tree"
+cat > "$TMP/stage-nocore/ccmorph-v9.8.7/install.sh" <<'STUB'
+#!/bin/sh
+# An older release's installer. Its uninstall needs no core: it removes the command.
+if [ "${1:-}" = "--uninstall" ]; then
+  rm -f "$HOME/.local/bin/ccmorph"
+  echo "Removed $HOME/.local/bin/ccmorph."
+  exit 0
+fi
+# Its install writes before it checks, as v0.5.26 did.
+printf '\n# the downloaded installer ran\n' >> "$HOME/.config/ccmorph/lib/ccmorph.sh"
+echo "No ccmorph-core binary for test in the tree." >&2
+exit 1
+STUB
+chmod +x "$TMP/stage-nocore/ccmorph-v9.8.7/install.sh"
+tar -czf "$TMP/src-nocore.tar.gz" -C "$TMP/stage-nocore" ccmorph-v9.8.7
+
 # A release tree names its binary per platform, so no plain libexec/ccmorph-core
 # sits beside the source lib; the install must still finish (#180 broke this).
 mkdir -p "$TMP/stage-rel"
@@ -1499,12 +1526,12 @@ else
   fail "remote: a tree with only per-platform binaries did not install"
 fi
 
-upd_env() {  # $1 = case; an installed tree, a stub curl serving 9.9.9, and user state
+upd_env() {  # $1 = case; $2 = tarball served by the stub curl (default: 9.9.9)
   # Its stdout is the case path, so a fail() here would be swallowed with it:
   # a dead install reports on stderr and returns 1 for the caller's || fail,
   # yet still prints the path, so the case's later checks fail inside its own
   # scratch dir instead of writing to /out, /curl.argv or /home (fail() does not return).
-  local d; d=$(remote_env "$1" "$TMP/src99.tar.gz")
+  local d; d=$(remote_env "$1" "${2:-$TMP/src99.tar.gz}")
   run_installer "$d"; local rc=$?
   (( rc == 0 )) || { print -u2 -- "FAIL: $1: setup install rc=$rc"; cat "$d/out" >&2; print -r -- "$d"; return 1 }
   print 'type=token\ntoken=canary' > "$d/home/.config/ccmorph/work.conf"
@@ -1558,6 +1585,39 @@ grep -qxF 'https://github.com/akleizor/ccmorph/archive/v1.2.3.tar.gz' "$d/curl.a
 cmd_run "$d" update feature/x-1.y_z
 grep -qxF 'https://github.com/akleizor/ccmorph/archive/feature/x-1.y_z.tar.gz' "$d/curl.argv" 2>/dev/null \
   && ok "update: a branch name with a slash is accepted" || { fail "update: branch with slash refused"; cat "$d/out" "$d/err" }
+
+# 14.2b update <tag> against the GitHub archive shape (no libexec/ccmorph-core):
+# the updater validates the download BEFORE handing it to that tree's own
+# installer, which may be an older release's; the failure leaves lib and core
+# the old pair — not a new library beside the old core (#721).
+d=$(upd_env upd_nocore "$TMP/src-nocore.tar.gz") || fail "upd_nocore setup install rc!=0 (output above)"
+cp -R "$d/home/.config/ccmorph/lib" "$d/lib.before"
+cp "$d/home/.config/ccmorph/libexec/ccmorph-core" "$d/core.before"
+cmd_run "$d" update v9.8.7; rc=$?
+(( rc != 0 )) && ok "update no-core: exits non-zero" || fail "update no-core: exited 0 without a binary to install"
+diff -rq "$d/lib.before" "$d/home/.config/ccmorph/lib" >/dev/null 2>&1 \
+  && ok "update no-core: the installed lib is byte-identical" \
+  || { fail "update no-core: lib changed before the failure"; diff -r "$d/lib.before" "$d/home/.config/ccmorph/lib"; }
+cmp -s "$d/core.before" "$d/home/.config/ccmorph/libexec/ccmorph-core" \
+  && ok "update no-core: the core is the one that was there" || fail "update no-core: the core changed"
+grep -qF 'No ccmorph-core binary for' "$d/err" "$d/out" \
+  && ok "update no-core: names the missing binary" || { fail "update no-core: no missing-binary message"; cat "$d/out" "$d/err"; }
+
+# 14.2c the core check is for installs only: a standalone `install.sh --uninstall`
+# (remote mode, no library beside it) with CCMORPH_REF on a coreless tag archive
+# still hands off to that archive's installer, which removes the command
+# without a core, as main did before #721.
+d=$(upd_env upd_nocore_rm "$TMP/src-nocore.tar.gz") || fail "upd_nocore_rm setup install rc!=0 (output above)"
+rm -f "$d/curl.argv"
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" TMPDIR="$d/tmp" CCMORPH_REF=v9.8.7 \
+  sh -c "$(cat "$REPO/install.sh")" sh --uninstall >"$d/out" 2>"$d/err" </dev/null; rc=$?
+(( rc == 0 )) && ok "standalone uninstall no-core: exits 0" || { fail "standalone uninstall no-core: rc=$rc"; cat "$d/out" "$d/err"; }
+grep -qxF 'https://github.com/akleizor/ccmorph/archive/v9.8.7.tar.gz' "$d/curl.argv" 2>/dev/null \
+  && ok "standalone uninstall no-core: downloads the tag archive" || { fail "standalone uninstall no-core: wrong or no download"; cat "$d/curl.argv" 2>&1; }
+[[ ! -e "$d/home/.local/bin/ccmorph" ]] \
+  && ok "standalone uninstall no-core: the command is gone" || fail "standalone uninstall no-core: the command is still there"
+cmp -s "$d/work.conf.before" "$d/home/.config/ccmorph/work.conf" \
+  && ok "standalone uninstall no-core: the profile is byte-identical" || fail "standalone uninstall no-core: work.conf changed"
 
 # 14.3 a ref that is not a plain name is refused before anything is downloaded.
 d=$(upd_env upd_badref) || fail "upd_badref setup install rc!=0 (output above)"
