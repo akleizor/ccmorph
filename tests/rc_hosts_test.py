@@ -2458,8 +2458,9 @@ def test_record_session_names_the_session_a_log_file_records():
     assert m.record_session("bridge-transcript-cse_01A.jsonl") == "01A"
     assert m.record_session("bridge-transcript-session_01A.jsonl") == "01A"
     assert m.record_session("Users-me-repo.debug-cse_01A.log") == "01A"
+    assert m.record_session("Users-me-repo.debug-cse_01A.log.1") == "01A"   # bound_logs()'s copy
     for name in ("Users-me-repo.log", "Users-me-repo.debug.log", "Users-me-repo.log.1",
-                 "Users-me-repo.debug-cse_01A.log.1"):
+                 "Users-me-repo.debug.log.1", "edge-gw.log", "adapter-gw.log", "switch.log"):
         assert m.record_session(name) is None
 
 
@@ -2491,18 +2492,20 @@ def test_a_running_supervisor_removes_session_records_past_retention(tmp_path, m
     old.write_text("x")
     kept.write_text("x")
     _age_past_retention(m, old)
+    _ps_table(monkeypatch, m, "/usr/bin/vim notes.txt\n")   # ps answers; no session runs
     state, now = _idle_check_due(m)
     assert m.cycle({}, [], now, state) is True
     assert not old.exists()
     assert kept.exists()
 
 
-def test_the_periodic_sweep_holds_only_what_a_running_process_still_writes(tmp_path, monkeypatch):
+def test_on_a_running_host_the_periodic_sweep_removes_only_dead_sessions_records(tmp_path, monkeypatch):
     """#758: a running host's own stdout log and --debug-file, and the records of
     a session some process still serves, survive the sweep however quiet: the
     writer holds them open and bound_logs() must still cap them by path. A dead
-    session's records go, even on a host that is still up -- a host outlives
-    its sessions, and holding them by host let a healthy host refill the dir."""
+    session's records go, its .log.1 copy too, even on a host that is still up
+    -- a host outlives its sessions, and holding them by host let a healthy host
+    refill the dir."""
     m = load()
     logs = tmp_path / "logs"
     logs.mkdir()
@@ -2514,21 +2517,77 @@ def test_the_periodic_sweep_holds_only_what_a_running_process_still_writes(tmp_p
     pin.proc = FakeProc()
     hosts[pin.folder] = pin
     stem = h.debugfile.stem
-    held = [h.logfile, h.debugfile, logs / f"{stem}-cse_01LIVE.log",
-            logs / "bridge-transcript-cse_01LIVE.jsonl",
+    held = [h.logfile, h.debugfile, h.logfile.with_suffix(".log.1"),
+            logs / f"{stem}-cse_01LIVE.log", logs / "bridge-transcript-cse_01LIVE.jsonl",
             pin.logfile, logs / "bridge-transcript-session_01PIN.jsonl",
             logs / f"{pin.debugfile.stem}-cse_01PIN.log"]
-    dead = [logs / f"{stem}-cse_01DEAD.log", logs / "bridge-transcript-cse_01DEAD.jsonl",
-            h.logfile.with_suffix(".log.1")]
+    dead = [logs / f"{stem}-cse_01DEAD.log", logs / f"{stem}-cse_01DEAD.log.1",
+            logs / "bridge-transcript-cse_01DEAD.jsonl"]
     fresh = logs / f"{stem}-cse_01DONE.log"
     for f in (*held, *dead, fresh):
         f.write_text("x")
     _age_past_retention(m, *held, *dead)
     state, now = _idle_check_due(m)
     m.cycle(hosts, [], now, state)
-    assert [f.name for f in held if not f.exists()] == []    # still written: kept
+    assert [f.name for f in held if not f.exists()] == []    # still written, or a host's: kept
     assert [f.name for f in dead if f.exists()] == []        # same host, session over: gone
     assert fresh.exists()                                    # inside the week: kept
+
+
+@pytest.mark.parametrize("managed", [True, False], ids=["beside-a-managed-host", "alone"])
+@pytest.mark.parametrize("row", [
+    "/Users/me/.local/bin/claude remote-control --session-id session_01PIN --debug-file={debug}",
+    "/usr/bin/script -q /dev/null /x/ccmorph-rc gw -- --session-id session_01PIN --debug-file={debug}",
+], ids=["claude-row", "pty-row"])
+def test_the_periodic_sweep_keeps_a_pin_an_earlier_supervisor_started(tmp_path, monkeypatch, row, managed):
+    """#758: a pinned host outlives the supervisor that started it, and the one
+    after holds no Popen for it -- start() only waits on its live pointer. Its
+    records are a live session's all the same: the sweep keeps them as long as
+    ps shows the pin, while a dead session's records still go."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    pin = m.Host(str(tmp_path / "pin"), "gw", ("--session-id", "session_01PIN"))   # proc None
+    hosts = {pin.folder: pin}
+    if managed:
+        hosts.update(_running_host(m, tmp_path / "repo", [time.time()]))
+    _ps_table(monkeypatch, m, row.format(debug=pin.debugfile) + "\n/bin/printf %s --session-id cse_01DEAD\n")
+    held = [logs / "bridge-transcript-session_01PIN.jsonl",
+            logs / f"{pin.debugfile.stem}-cse_01PIN.log", pin.logfile, pin.debugfile]
+    dead = logs / "bridge-transcript-cse_01DEAD.jsonl"
+    for f in (*held, dead):
+        f.write_text("x")
+    _age_past_retention(m, *held, dead)
+    state, now = _idle_check_due(m)
+    assert m.cycle(hosts, [], now, state) is True
+    assert [f.name for f in held if not f.exists()] == []
+    assert not dead.exists()
+
+
+def test_the_periodic_sweep_leaves_every_file_no_single_session_writes(tmp_path, monkeypatch):
+    """#758: a host's own logs, an edge's and an adapter's are one per folder or
+    route and capped by LOG_CAP, and their writer may run with no Popen here --
+    a host or edge an earlier supervisor started. The periodic sweep never
+    unlinks them, whoever runs; only a dead session's records go."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    _ps_table(monkeypatch, m, "/usr/bin/vim notes.txt\n")
+    h = m.Host(str(tmp_path / "repo"), "gw")      # served by an earlier supervisor's host: proc None
+    stem = h.debugfile.stem
+    held = [h.logfile, h.debugfile, h.logfile.with_suffix(".log.1"), h.debugfile.with_suffix(".log.1"),
+            logs / "edge-gw.log", logs / "adapter-gw.log", logs / "switch.log"]
+    dead = [logs / f"{stem}-cse_01DEAD.log", logs / f"{stem}-cse_01DEAD.log.1",
+            logs / "bridge-transcript-cse_01DEAD.jsonl"]
+    for f in (*held, *dead):
+        f.write_text("x")
+    _age_past_retention(m, *held, *dead)
+    state, now = _idle_check_due(m)
+    assert m.cycle({h.folder: h}, [], now, state) is True
+    assert [f.name for f in held if not f.exists()] == []
+    assert [f.name for f in dead if f.exists()] == []
 
 
 def test_a_bare_session_id_in_an_unrelated_command_does_not_keep_a_dead_record(tmp_path, monkeypatch):

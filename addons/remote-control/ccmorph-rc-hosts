@@ -170,9 +170,10 @@ def sweep_logs(now: float | None = None, keep: "frozenset | set" = frozenset()) 
     files and 2.8 GB, the largest written on 11-20, and the internal disk was under
     its swap floor.
 
-    `keep` names the files a running process still writes (held_logs): a quiet
-    run's files age past the week too, and unlinking one leaves its writer
-    appending to an orphaned inode that bound_logs() can no longer reach by path."""
+    `keep` names the files the periodic sweep must leave (held_logs): a quiet
+    file is not a dead one, and unlinking one a process still writes leaves its
+    writer appending to an orphaned inode that bound_logs() can no longer reach
+    by path."""
     cutoff = (time.time() if now is None else now) - LOG_KEEP_DAYS * 86400
     try:
         files = [f for f in LOGS.glob("*") if f.is_file()]
@@ -190,14 +191,17 @@ def sweep_logs(now: float | None = None, keep: "frozenset | set" = frozenset()) 
 
 def record_session(name: str) -> str | None:
     """The id body of the session a file in LOGS records -- its transcript
-    `bridge-transcript-<id>.jsonl` or a session child's `<name>.debug-<id>.log` --
-    or None for a file no single session writes (a host's own log, a .log.1 copy).
+    `bridge-transcript-<id>.jsonl`, a session child's `<name>.debug-<id>.log` or
+    the `.log.1` copy bound_logs() keeps of one -- or None for a file no single
+    session writes (a host's own log and its .log.1, an edge's or adapter's log).
     The body follows the id's prefix, as in same_session(): one conversation is
     session_... in a pin and cse_... on the server."""
     if name.startswith("bridge-transcript-") and name.endswith(".jsonl"):
         sid = name[len("bridge-transcript-"):-len(".jsonl")]
     elif ".debug-" in name and name.endswith(".log"):
         sid = name.rsplit(".debug-", 1)[1][:-len(".log")]
+    elif ".debug-" in name and name.endswith(".log.1"):
+        sid = name.rsplit(".debug-", 1)[1][:-len(".log.1")]
     else:
         return None
     return sid.split("_", 1)[-1] or None
@@ -1627,28 +1631,34 @@ def edit_config(config: Path, folder: str, sid: str | None = None, *,
 
 
 def held_logs(hosts: "dict[str, Host]") -> "set[Path] | None":
-    """The files in LOGS a running process still writes, which the periodic sweep
-    must leave however old (#758): a quiet file is not a dead one, and unlinking
-    one leaves its writer on an inode bound_logs() can no longer cap by path.
-    That is each running host's own stdout log (start() hands the child the
-    descriptor) and --debug-file, and the records of every session a process
-    still serves (live_sessions(), plus each running pinned host's own). A dead
-    session's records are not held, whichever host they belong to: a host
-    outlives its sessions. None when the process table cannot be read: the sweep
-    then waits for the next check rather than guess -- a week's cap loses
-    nothing to ten minutes."""
-    running = [h for h in hosts.values() if h.proc]
-    if not running:
-        return set()          # a host's sessions die with it: nothing here is written
+    """The files in LOGS the periodic sweep must leave however old (#758): all
+    but the records of sessions no process serves.
+
+    What grows without bound is session records -- each session leaves its own
+    (record_session()). Every other file is one per folder or route and capped
+    by LOG_CAP: a host's own stdout log and --debug-file, their .log.1, an edge's
+    or an adapter's log. Those are held whole, because their writer cannot be
+    named for sure -- a host or edge an earlier supervisor left runs with no
+    Popen here -- and unlinking a live one leaves its writer on an inode
+    bound_logs() can no longer cap by path. A record is held while a process
+    serves its session (live_sessions(), plus each running pinned host's own); a
+    dead session's go, whichever host they belong to: a host outlives its
+    sessions. None when the process table cannot be read: the sweep then waits
+    for the next check rather than guess -- a week's cap loses nothing to ten
+    minutes."""
     live = live_sessions()
     if live is None:
         return None
-    live = live | {h.session_id.split("_", 1)[-1] for h in running if h.session_id}
-    held = {f for h in running for f in (h.logfile, h.debugfile)}
+    live |= {h.session_id.split("_", 1)[-1] for h in hosts.values() if h.proc and h.session_id}
     try:
-        held |= {f for f in LOGS.glob("*") if record_session(f.name) in live}
+        files = list(LOGS.glob("*"))
     except OSError:
         return None
+    held = set()
+    for f in files:
+        sid = record_session(f.name)
+        if sid is None or sid in live:
+            held.add(f)
     return held
 
 
@@ -1684,8 +1694,8 @@ def cycle(hosts: "dict[str, Host]", repos: list[str], now: float, clock: Clock) 
         if h.proc:
             h.bound_logs()     # archived and unused: drop its line
     # #755's age cap rides this same tick: KeepAlive never restarts a healthy
-    # supervisor, so start-only let the dir refill (#758). What a running process
-    # still writes is held back: its age is the run's quiet, not the record's end.
+    # supervisor, so start-only let the dir refill (#758). Only the records of
+    # sessions no process serves go: held_logs() holds everything else.
     held = held_logs(hosts)
     if held is not None:      # the process table unread: the next check sweeps
         sweep_logs(keep=held)
