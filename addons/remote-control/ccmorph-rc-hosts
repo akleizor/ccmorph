@@ -133,6 +133,7 @@ GRACE_TERM = 5         # seconds more before SIGKILL, if the interrupt was ignor
 STOP_POLL = 0.1        # seconds between liveness probes while a stop waits for its pid
 IDLE_CHECK = 600
 LOG_CAP = 5_000_000   # a log past this is rotated to .log.1 (at start, and while running)
+LOG_KEEP_DAYS = 7     # session records stay a week: enough to debug a turn, and nothing reads an older file
 # Terminal from the app side: archived (409) or the session itself is gone (404).
 # A network outage says "Could not reach the server" and must not match.
 ARCHIVED_SIGNAL = re.compile(
@@ -157,6 +158,28 @@ TAIL = 64_000          # bytes of a log worth reading: what a bridge printed las
 
 def log(msg: str) -> None:
     print(time.strftime("%F %T"), msg, flush=True)
+
+
+def sweep_logs(now: float | None = None) -> None:
+    """Delete this bridge's session records older than LOG_KEEP_DAYS.
+
+    Every Remote Control session leaves a transcript and, through --debug-file, a
+    debug log here, and a repo host keeps its sessions' logs. Nothing reads an old
+    one: a session that resumes has its own record unlinked when its host starts.
+    Without a retention rule the directory only grows -- on 2026-11-21 it held 239
+    files and 2.8 GB, the largest written on 11-20, and the internal disk was under
+    its swap floor."""
+    cutoff = (time.time() if now is None else now) - LOG_KEEP_DAYS * 86400
+    try:
+        files = [f for f in LOGS.glob("*") if f.is_file()]
+    except OSError:
+        return
+    for f in files:
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+        except OSError:
+            pass
 
 
 def resolve(path: str) -> str | None:
@@ -1603,6 +1626,7 @@ def main(argv: list[str]) -> int:
     signal.signal(signal.SIGTERM, lambda *_: stopping.append(1))
     signal.signal(signal.SIGINT, lambda *_: stopping.append(1))
     log(f"watching {config}")
+    sweep_logs()   # once per supervisor start; the hosts it starts only append
     while not stopping:
         stamp = mtime_of(config)
         if stamp != seen:
