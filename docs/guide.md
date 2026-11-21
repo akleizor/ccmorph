@@ -496,9 +496,14 @@ Code's own recovery can run. A gateway silent for `env.CCMORPH_STALL_TIMEOUT`
 seconds (default 300), before its reply or mid-stream, ends the turn with an error
 Claude Code can retry instead of a reply that never comes. A gateway that already
 speaks Anthropic is fronted by the shim alone, with no translator.
-Set `env.CCMORPH_UPSTREAM_PROXY` (an `http://` CONNECT proxy) to send the
-translator's upstream calls through a proxy, e.g. a loopback bridge holding the
-macOS Local Network grant for a gateway on the LAN.
+Set `env.CCMORPH_UPSTREAM_PROXY` (an `http://` CONNECT proxy) to route the
+profile's session through a proxy, e.g. a loopback bridge holding the macOS
+Local Network grant for a gateway on the LAN. It covers the compatibility
+probes that admit a launch, the translator, and the request shim on either
+serve path — one resolver for all of them. It never overrides `NO_PROXY`
+or sends a loopback gateway through the proxy. Reads that are not the session's
+requests — a context window, quota, a listing, the price book — keep the
+ambient `HTTPS_PROXY`/`NO_PROXY` contract under "Reaching a private endpoint".
 
 ### Gateway startup
 
@@ -883,6 +888,11 @@ every network consumer — the Claude child, the adapter, model listing and
 metadata discovery. Its own loopback health checks never go through a proxy.
 No launch sets or clears them: a usage receipt is read from the session's own
 transcript instead. `ARCHITECTURE.md` has the detail.
+
+`env.CCMORPH_UPSTREAM_PROXY` is narrower than this ambient contract: it names
+the route for one profile's session only, and its exemptions are part of it.
+The model-window read, quota, listings and the price book do not read it; they
+resolve through `HTTPS_PROXY`/`NO_PROXY` as above.
 
 ## Evidence markers in ARCHITECTURE.md
 

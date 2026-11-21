@@ -255,12 +255,12 @@ class AdapterTest(unittest.TestCase):
         target.chmod(0o755)
         return target
 
-    def cache_file(self):
+    def cache_file(self, base=None):
         """The shared endpoint-keyed classification cache the adapter writes —
         keyed by base_url hash, not per-profile, so profiles on one gateway share
         one classification. Mirrors the keying in ccmorph-adapter main()."""
         import hashlib
-        key = hashlib.sha256(self.base.encode()).hexdigest()[:16]
+        key = hashlib.sha256((base or self.base).encode()).hexdigest()[:16]
         return self.profiles / ".adapter-cache" / f"{key}.json"
 
     def write_ccmorph(self, key: str) -> None:
@@ -397,22 +397,52 @@ class AdapterTest(unittest.TestCase):
                         f"a probe carried an unexpected X-Forwarded-For: {XFF_SEEN}")
         self.assertNotIn("X-Forwarded-For", out.stdout)
 
-    def test_print_config_redacts_upstream_proxy_credentials(self):
+    def test_print_config_never_prints_the_upstream_proxy_credentials(self):
+        # A rendered proxy: the gateway is remote, so the knob reaches the
+        # config and GH-65's redaction must cut its userinfo and its query
+        # before either can print (GH-580).
+        base = "https://gateway.example"
+        proxy = "http://user:s3cretpw@127.0.0.1:8118/p?token=qq"
+        (self.home / ".config/ccmorph/lib/ccmorph.sh").write_text(
+            "ccmorph() {\n"
+            '  [[ "$1" == _env ]] || return 1\n'
+            f'  print "ANTHROPIC_BASE_URL={base}"\n'
+            '  print "ANTHROPIC_API_KEY=stub-key"\n'
+            f'  print "CCMORPH_UPSTREAM_PROXY={proxy}"\n'
+            "}\n")
+        # m-anthropic is known from the cache, so --print-config renders without
+        # contacting the remote gateway.
+        cache = self.cache_file(base)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps({
+            "endpoint": base, "anthropic_path": "/v1/messages",
+            "thinking_probe": 2,
+            "rows": [{"model": "m-anthropic", "dialect": "anthropic",
+                      "note": "", "status": 200, "cap": None,
+                      "nothink": False, "id_recycle": False}]}))
+        out = self.run_adapter("--print-config", "--model", "m-anthropic",
+                               env={"NO_PROXY": "", "no_proxy": ""})
+        self.assertEqual(out.returncode, 0, out.stderr)
+        for leak in ("s3cretpw", "user:", "token=qq"):
+            self.assertNotIn(leak, out.stdout)
+        self.assertIn("proxy-url:", out.stdout)
+        self.assertIn("127.0.0.1:8118/p", out.stdout)
+
+    def test_print_config_never_renders_the_upstream_proxy_for_a_loopback_gateway(self):
+        # The stub gateway is on 127.0.0.1, which no proxy may be asked to
+        # reach (GH-580): the profile's knob is not rendered at all, so no part
+        # of it — password placeholder, user or query token — can print.
         proxy = "http://user:s3cretpw@127.0.0.1:8118/p?token=qq"
         stub = self.home / ".config/ccmorph/lib/ccmorph.sh"
         stub.write_text(stub.read_text().rstrip().rstrip("}")
                         + f"  print 'CCMORPH_UPSTREAM_PROXY={proxy}'\n}}\n")
         out = self.run_adapter("--print-config")
         self.assertEqual(out.returncode, 0, out.stderr)
-        for leak in ("s3cretpw", "user:", "token=qq"):
+        for leak in ("s3cretpw", "user:", "token=qq", "8118"):
             self.assertNotIn(leak, out.stdout)
-        self.assertIn("proxy-url:", out.stdout)
-        self.assertIn("127.0.0.1:8118/p", out.stdout)
-        # The stub gateway is loopback, which a probe never sends through the
-        # profile's proxy (dfc8aac3), so this run probes and prints normally;
-        # the print surviving a dead proxy is pinned by the next test and by
-        # TestPrintConfigPrintsThroughADeadProfileProxy (GH-592). The proxy's
-        # credentials stay off stderr as well as stdout.
+        self.assertNotIn("proxy-url:", out.stdout)
+        # GH-592's promise holds here too: the proxy's credentials stay off
+        # stderr as well as stdout, rendered or not.
         password = proxy.split("user:", 1)[1].split("@", 1)[0]
         for leak in (password, "user:", "token=qq"):
             self.assertNotIn(leak, out.stderr)

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
+	"github.com/akleizor/ccmorph/netroute"
 	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/shim"
 )
@@ -56,20 +56,13 @@ var (
 )
 
 // probeVia is the profile's CCMORPH_UPSTREAM_PROXY: compatibility probes
-// must take the same route as the translator, or a LAN gateway the process
-// cannot dial reads every new model as unusable.
+// must take the same route as the serve path, or a LAN gateway the process
+// cannot dial reads every new model as unusable. netroute keeps the
+// exemptions (NO_PROXY, loopback) the environment's own transport had.
 var probeVia *url.URL
 
 func probeProxy(r *http.Request) (*url.URL, error) {
-	// A proxy cannot reach this machine's own loopback, where every test-home
-	// gateway lives; the comment above client states the rule.
-	if host := r.URL.Hostname(); host == "localhost" || (net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback()) {
-		return nil, nil
-	}
-	if probeVia != nil {
-		return probeVia, nil
-	}
-	return http.ProxyFromEnvironment(r)
+	return netroute.Proxy(probeVia, r)
 }
 
 // Swappable in unit tests, as the Python tests patched the module.
