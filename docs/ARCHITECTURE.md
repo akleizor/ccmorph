@@ -1052,18 +1052,21 @@ injects an image_generation tool and the upstream rejects the call with
 `imagegen deployment must be provided through header
 x-ms-oai-image-generation-deployment` **[wire]**.
 
-### Translator config workarounds, verified on cliproxyapi 8.0.45
+### Translator config workarounds
 
 Each workaround `adapter/render.go` writes was re-checked against 8.0.45 source and
-a black-box run (real binary, loopback fake upstream) **[src][wire]**:
+a black-box run (real binary, loopback fake upstream) **[src][wire]**. The
+Antigravity rewrite is the one row `util/bridge.go` writes, and it carries its own
+floor:
 
-| Setting | 8.0.45 source | Verdict |
+| Setting | source | Verdict |
 |---|---|---|
 | `request-retry: 3` | `sdk/cliproxy/auth/conductor_selection.go` `isCredentialRetryRoundStatus`: 403, 408, 429, 500, 502, 503, 504 plus transport EOF | keep. **429 and 403 are now retried too**, immediately and without backoff; one 502, 429 or EOF then 200 reached the upstream twice, `request-retry: 0` did not retry |
 | `disable-image-generation: "chat"` | `internal/config/disable_image_generation_mode.go` | keep. Without it a Responses call carries `tools:[{"type":"image_generation"}]` upstream |
 | `disable-cooling: true` | `internal/watcher/synthesizer/config.go` (`disable_cooling` metadata) | keep. Without it the call after one 500 returns 503 `auth_unavailable` with no upstream hit |
 | `rebuild-mid-system-message: true` | `internal/runtime/executor/claude_signing.go` `rebuildMidSystemMessageEnabled` | keep. Off: a `role:"system"` message reaches the upstream; on: it is folded into `system` |
 | `cloak: mode never` | `internal/runtime/executor/claude_executor_cloaking.go` `resolveClaudeWirePolicy` (`Uncloak`); 7.2.110 `helps/cloak_utils.go:41` `ShouldCloak` | **version-gated**. On 7.2.110 no block means `auto`, which cloaks any client whose User-Agent is not `claude-cli` (frozen cc_version billing header), so `never` is written for translators < 8.0.34. Since 8.0.34 `never` strips Claude Code's billing header, identity system block, `metadata.user_id` and `diagnostics` and rewrites the User-Agent, while no block forwards the caller verbatim, so it is omitted. The version comes from `cliproxyapi -h` (banner, exit 0); an unparseable version counts as new |
+| `antigravity: sensitive-patterns-replace` | upstream 905e70c48 (2026-11-14), first released in 8.0.70 | **version-gated, floor 8.0.70**. Rewrites the Claude Code system-prompt lines Antigravity answers with 429 RESOURCE_EXHAUSTED (identity, security and pasted-content lines). Below the floor the section does not exist: the bridge's plain `yaml.Unmarshal` (no `KnownFields`) drops it without a word, so the bridge starts, lists models, and every turn answers 429. The bridge reads the same binary's `-h` banner once before rendering; below the floor it writes no section and prints the repair (`upgrade cliproxyapi`). At or above the floor, and on an unparseable banner, the section is written. |
 | `thinking.block_binding` filter | `claude_executor_request.go` `applyClaudePreservedThinkingBinding` runs before `ApplyPayloadConfigWithTrackedPaths` (`claude_executor_execute.go:246-249`) | keep. Sonnet 5.5 with a signed thinking replay: field and `thinking-binding-controls-2026-08-01` beta header present without the filter, absent with it |
 | never put `system` in `payload.override` | payload override | keep. `override: system` replaces the whole field |
 | `display-name` on `oauth-model-alias` | `internal/config/config_types.go` `OAuthModelAlias.DisplayName` | keep. Not written by the adapter; only the root-owned `:<translator-port>` config uses it |

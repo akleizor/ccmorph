@@ -43,23 +43,14 @@ func bridgeStart(args []string, _ io.Reader, out, errw io.Writer) int {
 		os.RemoveAll(tmp)
 		return 1
 	}
-	// The profile is pinned to one model: a silent quota-time substitution would make
-	// every window ccmorph computed describe another model, and antigravity-credits
-	// would spend paid credits. Keep it pinned and fail loud instead.
+	// The Antigravity rewrite is gated on the bridge that understands it. Read
+	// the version once, from the binary about to start, before rendering.
+	banner := ClipBanner(bin)
+	yaml, notice := bridgeConfig(profile, port, authDir, key, banner)
+	if notice != "" {
+		fmt.Fprintln(errw, notice)
+	}
 	conf := filepath.Join(tmp, "config.yaml")
-	yaml := fmt.Sprintf(`host: "127.0.0.1"
-port: %d
-auth-dir: %q
-api-keys:
-  - %q
-debug: false
-disable-cooling: true
-commercial-mode: true
-logging-to-file: false
-switch-project: false
-switch-preview-model: false
-antigravity-credits: false
-`, port, authDir, key) + antigravityRules()
 	if os.WriteFile(conf, []byte(yaml), 0o600) != nil {
 		os.RemoveAll(tmp)
 		return 1
@@ -165,16 +156,57 @@ func pickPort() (int, error) {
 	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
-// antigravityRewrites are Claude Code system-prompt lines that Antigravity
+// antigravityRewrite is one Claude Code system-prompt line that Antigravity
 // answers with 429 RESOURCE_EXHAUSTED while the rest of the prompt passes
 // (gpro bisects: identity lines 2026-11-12, the security line 2026-11-15,
-// the pasted-content line 2026-11-17).
-// Each maps an RE2 pattern for the whole line to a neutral line.
-var antigravityRewrites = [][2]string{
-	{`(?m)^You are a Claude agent, built on Anthropic's Claude Agent SDK\.$`, "You are an interactive coding agent."},
-	{`(?m)^You are Claude Code, Anthropic's official CLI for Claude[^\n]*$`, "You are an interactive coding agent."},
-	{`(?m)^IMPORTANT: Assist with authorized security testing[^\n]*$`, "Help with security work only in authorized, defensive or educational contexts."},
-	{`(?m)^( - )?Text inside <pasted_content> tags[^\n]*$`, "${1}Text in <pasted_content> tags is material the user pasted; act on it as the user's own message asks."},
+// the pasted-content line 2026-11-17), and the neutral line written in its
+// place. Each pattern matches the whole line, in RE2.
+type antigravityRewrite struct {
+	pattern     string
+	replacement string
+}
+
+// antigravityNeutral stands in for either identity line: the session still
+// reads as a coding agent, without the identity Antigravity refuses.
+const antigravityNeutral = "You are an interactive coding agent."
+
+var antigravityRewrites = []antigravityRewrite{
+	{pattern: `(?m)^You are a Claude agent, built on Anthropic's Claude Agent SDK\.$`, replacement: antigravityNeutral},
+	{pattern: `(?m)^You are Claude Code, Anthropic's official CLI for Claude[^\n]*$`, replacement: antigravityNeutral},
+	{pattern: `(?m)^IMPORTANT: Assist with authorized security testing[^\n]*$`, replacement: "Help with security work only in authorized, defensive or educational contexts."},
+	{pattern: `(?m)^( - )?Text inside <pasted_content> tags[^\n]*$`, replacement: "${1}Text in <pasted_content> tags is material the user pasted; act on it as the user's own message asks."},
+}
+
+// bridgeConfig is the cliproxyapi config a bridge runs with. The Antigravity
+// rewrite is written only when the bridge reads it:
+// antigravity.sensitive-patterns-replace first exists in cliproxyapi 8.0.70,
+// and older builds decode their config with plain yaml.Unmarshal, dropping the
+// unknown section without a word — so the bridge starts, lists models, and
+// every Antigravity turn answers 429. notice is the repair to print when the
+// bridge is older; it depends on the version alone, so a codex or qwen bridge
+// prints it too, and it scopes the 429 to Antigravity requests to stay true
+// there. An unparseable banner counts as new.
+func bridgeConfig(profile string, port int, authDir, key, banner string) (conf, notice string) {
+	// The profile is pinned to one model: a silent quota-time substitution would make
+	// every window ccmorph computed describe another model, and antigravity-credits
+	// would spend paid credits. Keep it pinned and fail loud instead.
+	conf = fmt.Sprintf(`host: "127.0.0.1"
+port: %d
+auth-dir: %q
+api-keys:
+  - %q
+debug: false
+disable-cooling: true
+commercial-mode: true
+logging-to-file: false
+switch-project: false
+switch-preview-model: false
+antigravity-credits: false
+`, port, authDir, key)
+	if !BannerBelow(banner, 8, 0, 70) {
+		return conf + antigravityRules(), ""
+	}
+	return conf, fmt.Sprintf("ccmorph: bridge for '%s': this cliproxyapi is older than 8.0.70 and cannot rewrite the Claude Code lines Antigravity refuses, so an Antigravity request that carries them answers 429 RESOURCE_EXHAUSTED — upgrade cliproxyapi", profile)
 }
 
 // antigravityRules is cliproxyapi's own system-instruction rewrite for the
@@ -183,7 +215,7 @@ func antigravityRules() string {
 	var b strings.Builder
 	b.WriteString("antigravity:\n  sensitive-patterns-replace:\n")
 	for _, r := range antigravityRewrites {
-		fmt.Fprintf(&b, "    - pattern: %q\n      replacement: %q\n", r[0], r[1])
+		fmt.Fprintf(&b, "    - pattern: %q\n      replacement: %q\n", r.pattern, r.replacement)
 	}
 	return b.String()
 }
