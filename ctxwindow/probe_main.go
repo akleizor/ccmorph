@@ -174,7 +174,13 @@ func run(argv []string, stdin io.Reader, stdout, errw io.Writer) int {
 			fmt.Fprintf(errw, "%s: %s\n", prog, rerr)
 			return 1
 		}
-		return SizeListing(context.Background(), a.profiles[0], string(body),
+		// The save at the end of sizing waits on the profile lock, which another
+		// ccmorph can hold while a person thinks (`ccmorph rm` at its confirm);
+		// the launch already passes a deadline so this wait, like every network
+		// call in SizeListing, ends when it does (#757).
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(a.deadline*float64(time.Second)))
+		defer cancel()
+		return SizeListing(ctx, a.profiles[0], string(body),
 			os.Getenv("ANTHROPIC_BASE_URL"), os.Getenv("ANTHROPIC_API_KEY"), BuildOpener())
 	}
 	if (a.bisect || a.probeAll) && !a.allowInference {

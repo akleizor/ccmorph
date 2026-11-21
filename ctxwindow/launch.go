@@ -218,7 +218,10 @@ func SizeListing(ctx context.Context, profile, body, base, key string, op Opener
 			missed[r.model] = today
 		}
 	}
-	if saved, err := SaveDiscovered(profile, values, expected, false, sources, missed); err != nil {
+	// SaveDiscoveredCtx, not SaveDiscovered: the profile lock this save takes
+	// may be held by a person at `ccmorph rm`'s prompt, and the caller's
+	// deadline — the launch's --deadline — bounds that wait (#757).
+	if saved, err := SaveDiscoveredCtx(ctx, profile, values, expected, false, sources, missed); err != nil {
 		fmt.Fprintf(stderr, "%s: %s\n", prog, err)
 		return 1
 	} else if !saved {

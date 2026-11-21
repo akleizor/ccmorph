@@ -1697,6 +1697,72 @@ func TestListingStdinIgnoresGarbage(t *testing.T) {
 	}
 }
 
+// GH-757: a listing's save takes the profile lock, which another process can
+// hold while a person thinks — `ccmorph rm` at its confirm does. The launch
+// runs the sizer with a deadline, so the pass gives up inside it, writes
+// nothing, and leaves the model unsized for the next launch to retry. A flock
+// belongs to an open file description, so a second fd is a second holder even
+// inside this process, exactly as another process's fd is.
+func TestListingStdinGivesUpOnAHeldProfileLockIssue757(t *testing.T) {
+	dir := state(t)
+	conf := filepath.Join(dir, "gw.conf")
+	put(t, conf, "type=apikey\napi_key=k\n")
+	lock, err := lockPath(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	held, err := os.OpenFile(lock, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	if err := syscall.Flock(int(held.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listing := `{"data":[{"id":"new","max_input_tokens":500000}]}`
+	done := make(chan int, 1)
+	go func() {
+		done <- ProbeMain([]string{"--listing-stdin", "--profile", "gw", "--deadline", "2"},
+			strings.NewReader(listing), io.Discard, io.Discard)
+	}()
+	start := time.Now()
+	var code int
+	select {
+	case code = <-done:
+	case <-time.After(3 * time.Second):
+		// Release the holder so the pass can finish instead of leaking a
+		// goroutine parked in flock, then fail: the deadline was ignored.
+		held.Close()
+		<-done
+		t.Fatal("still waiting on a held profile lock after 3s; the sizing pass ignored its --deadline")
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("the pass took %v; its --deadline was 2s", elapsed)
+	}
+	if code != 1 {
+		t.Fatalf("exit %d, want 1: a save that timed out writes nothing", code)
+	}
+	after, err := os.ReadFile(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("a timed-out save rewrote the conf:\nbefore: %q\nafter:  %q", before, after)
+	}
+	if _, err := os.Stat(DiscoveredPath(conf)); !os.IsNotExist(err) {
+		t.Fatalf("a timed-out save wrote a discovered record: %v", err)
+	}
+	// The model the save would have sized is still unknown, which is what
+	// makes the next launch's ListingHasUnsized pass the listing to the sizer.
+	if _, sized := windowsOf("gw")["new"]; sized {
+		t.Fatal("the model must stay unsized, so the next launch retries the sizing pass")
+	}
+}
+
 // Python: ArgumentValidation + SafeDiscovery.test_paid_modes_require_explicit_consent_and_one_model +
 // PartialDiscoveryStatus (the exit codes and the reporting).
 func TestMainArgumentsAndReporting(t *testing.T) {
