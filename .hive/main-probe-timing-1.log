@@ -1,0 +1,36 @@
+cmd: sh /tmp/t518/h518/concurrent.sh /tmp/t518/main518 /tmp/t518/h518
+PYTEST_ADDOPTS: 
+cwd: /tmp/t518/main518
+tree: origin/main d82151229d2bdbb4cc7a933368613f47780003f5 (git archive)
+umask: 0022
+started: 2026-11-20T15:09:46Z
+
+zshrc-compinit="autoload -Uz compinit && compinit -u"
+completion 9.548 budget=5 answered=true bound=true
+completion 10.238 budget=5 answered=true bound=true
+completion 11.568 budget=5 answered=true bound=true
+completion 11.753 budget=5 answered=true bound=true
+completion 12.445 budget=5 answered=true bound=true
+completion 11.295 budget=5 answered=true bound=true
+completion 10.479 budget=5 answered=true bound=true
+completion 10.399 budget=5 answered=true bound=true
+completion 10.267 budget=5 answered=true bound=true
+completion 10.180 budget=5 answered=true bound=true
+session-read 0.948 budget=1 rows=272 os=linux
+session-read 0.907 budget=1 rows=263 os=linux
+session-read 0.855 budget=1 rows=254 os=linux
+session-read 0.675 budget=1 rows=256 os=linux
+session-read 0.700 budget=1 rows=256 os=linux
+session-read 0.804 budget=1 rows=256 os=linux
+session-read 0.639 budget=1 rows=254 os=linux
+session-read 0.631 budget=1 rows=254 os=linux
+session-read 0.645 budget=1 rows=254 os=linux
+session-read 0.563 budget=1 rows=254 os=linux
+--- main's doctor suite, run alongside (rc=1) ---
+FAILED tests/doctor_test.py::test_doctor_reports_existing_adapter_without_starting_it[hooks-build-prompt]
+FAILED tests/doctor_test.py::test_doctor_reports_existing_adapter_without_starting_it[hooks-build-lsof-over-deadline-issue-467]
+FAILED tests/doctor_test.py::test_doctor_adapter_line_names_a_running_translator_issue_272[translator-running]
+FAILED tests/doctor_test.py::test_doctor_completion_row_lasts_until_a_new_zsh_completes
+4 failed, 94 passed, 1 skipped in 75.68s (0:01:15)
+
+SUMMARY rc=0 secs=124 cpu=8 factor=6 target_load=48 spinners=48 load_min=48.2 load_max=51.8 samples=26 host=gcp-us1 os=linux

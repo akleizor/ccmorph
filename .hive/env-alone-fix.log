@@ -1,0 +1,56 @@
+Using CPython 3.13.18
+Creating virtual environment at: /tmp/t518/venv518
+warning: No `requires-python` value found in the workspace. Defaulting to `>=3.13`.
+Installed 8 packages in 10ms
+.FF                                                                      [100%]
+=================================== FAILURES ===================================
+_ test_copied_lib_copies_source_not_the_checkouts_incidental_contents_issue_220 _
+
+tmp_path = PosixPath('/tmp/t518/pytest-of-ubuntu/pytest-6/test_copied_lib_copies_source_0')
+
+    def test_copied_lib_copies_source_not_the_checkouts_incidental_contents_issue_220(tmp_path):
+        """`copied_lib` copies the repository's own source, never the checkout's
+        incidental contents: local tooling leaves data git ignores in the root — on
+        this machine codegraph's `.codegraph/` — and its Unix socket cannot be
+        copied at all, which failed every test that used the scaffold (#220)."""
+        planted = ROOT / '.copied-lib-regression-220'
+        shutil.rmtree(planted, ignore_errors=True)
+        planted.mkdir()
+        (planted / 'tool.db').write_text('untracked tool data, not source')
+        sock = socket.socket(socket.AF_UNIX)
+        try:
+            try:
+>               sock.bind(str(planted / 'daemon.sock'))
+E               OSError: AF_UNIX path too long
+
+tests/gateway_picker_contract_test.py:170: OSError
+_ ReadmeInstallTest.test_every_command_the_readme_names_is_found_by_a_fresh_install _
+
+self = <readme_install_test.ReadmeInstallTest testMethod=test_every_command_the_readme_names_is_found_by_a_fresh_install>
+
+    def test_every_command_the_readme_names_is_found_by_a_fresh_install(self):
+        problems = self._problems(README.read_text(encoding="utf-8"))
+>       self.assertEqual(problems, [], "README names commands a fresh install "
+                         "cannot run:\n  " + "\n  ".join(problems))
+E       AssertionError: Lists differ: ["line 62: 'brew' — not found on a reader'[265 chars] it"] != []
+E       
+E       First list contains 3 additional elements.
+E       First extra element 0:
+E       "line 62: 'brew' — not found on a reader's PATH: neither the fresh install nor the system provides it"
+E       
+E       + []
+E       - ["line 62: 'brew' — not found on a reader's PATH: neither the fresh install "
+E       -  'nor the system provides it',
+E       -  "line 69: 'brew' — not found on a reader's PATH: neither the fresh install "
+E       -  'nor the system provides it',
+E       -  "line 70: 'brew' — not found on a reader's PATH: neither the fresh install "
+E       -  'nor the system provides it'] : README names commands a fresh install cannot run:
+E         line 62: 'brew' — not found on a reader's PATH: neither the fresh install nor the system provides it
+E         line 69: 'brew' — not found on a reader's PATH: neither the fresh install nor the system provides it
+E         line 70: 'brew' — not found on a reader's PATH: neither the fresh install nor the system provides it
+
+tests/readme_install_test.py:179: AssertionError
+=========================== short test summary info ============================
+FAILED tests/gateway_picker_contract_test.py::test_copied_lib_copies_source_not_the_checkouts_incidental_contents_issue_220
+FAILED tests/readme_install_test.py::ReadmeInstallTest::test_every_command_the_readme_names_is_found_by_a_fresh_install
+2 failed, 1 passed in 1.15s

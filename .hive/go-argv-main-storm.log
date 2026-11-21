@@ -1,0 +1,30 @@
+host Linux x86_64 4 cores; main 9a0dceb759d682924365219fa9c5bbaea2e7c614 (git archive)
+cmd: sh .hive/storm.sh.txt 64 go test ./util/ -run 'TestRunningAdapterMatchesArgvAcrossSpaces$' -count=20 -v  (64 loops forking /bin/true: the scout's churn scaled to this host; 32 and 48 loops failed 5/20 and 4-8/20)
+loadavg before: 44.82 26.12 13.99 2/490 2377096
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.89s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.86s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (1.24s)
+    doctor_test.go:174: a profile nothing serves must report nothing, got "__UNKNOWN__"
+--- FAIL: TestRunningAdapterMatchesArgvAcrossSpaces (1.84s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (1.12s)
+    doctor_test.go:171: got "__UNKNOWN__", want "2407835\t2407835:shim"
+--- FAIL: TestRunningAdapterMatchesArgvAcrossSpaces (1.04s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.50s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (1.22s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (1.38s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.64s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.49s)
+    doctor_test.go:171: got "__UNKNOWN__", want "2421729\t2421729:shim"
+--- FAIL: TestRunningAdapterMatchesArgvAcrossSpaces (1.04s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.54s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.73s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (1.09s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.94s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (1.05s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.63s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.55s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (1.05s)
+FAIL
+FAIL	github.com/akleizor/ccmorph/util	18.941s
+FAIL
+loadavg after: 51.53 28.86 15.15 3/489 2443436

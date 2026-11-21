@@ -1,0 +1,141 @@
+warning: No `requires-python` value found in the workspace. Defaulting to `>=3.13`.
+.FF                                                                      [100%]
+=================================== FAILURES ===================================
+_ test_copied_lib_copies_source_not_the_checkouts_incidental_contents_issue_220 _
+
+tmp_path = PosixPath('/tmp/t518/pytest-of-ubuntu/pytest-7/test_copied_lib_copies_source_0')
+
+    def test_copied_lib_copies_source_not_the_checkouts_incidental_contents_issue_220(tmp_path):
+        """`copied_lib` copies the repository's own source, never the checkout's
+        incidental contents: local tooling leaves data git ignores in the root — on
+        this machine codegraph's `.codegraph/` — and its Unix socket cannot be
+        copied at all, which failed every test that used the scaffold (#220)."""
+        planted = ROOT / '.copied-lib-regression-220'
+        shutil.rmtree(planted, ignore_errors=True)
+        planted.mkdir()
+        (planted / 'tool.db').write_text('untracked tool data, not source')
+        sock = socket.socket(socket.AF_UNIX)
+        try:
+            try:
+                sock.bind(str(planted / 'daemon.sock'))
+            except PermissionError:
+                # A sandboxed runner refuses the bind — the same refusal that skips
+                # temp_hygiene's witnesses there; the landing gate runs outside any
+                # sandbox.
+                pytest.skip("this runner refuses unix-socket binds; the landing gate "
+                            "runs this test outside any sandbox")
+>           lib = copied_lib(tmp_path)
+                  ^^^^^^^^^^^^^^^^^^^^
+
+tests/gateway_picker_contract_test.py:177: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/gateway_picker_contract_test.py:34: in copied_lib
+    tracked = subprocess.run(['git', '-C', str(ROOT), 'ls-files', '-z'],
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+input = None, capture_output = False, timeout = 120.0, check = True
+popenargs = (['git', '-C', '/tmp/t518/main518', 'ls-files', '-z'],)
+kwargs = {'stdout': -1}
+
+    def run(*popenargs,
+            input=None, capture_output=False, timeout=None, check=False, **kwargs):
+        """Run command with arguments and return a CompletedProcess instance.
+    
+        The returned instance will have attributes args, returncode, stdout and
+        stderr. By default, stdout and stderr are not captured, and those attributes
+        will be None. Pass stdout=PIPE and/or stderr=PIPE in order to capture them,
+        or pass capture_output=True to capture both.
+    
+        If check is True and the exit code was non-zero, it raises a
+        CalledProcessError. The CalledProcessError object will have the return code
+        in the returncode attribute, and output & stderr attributes if those streams
+        were captured.
+    
+        If timeout (seconds) is given and the process takes too long,
+         a TimeoutExpired exception will be raised.
+    
+        There is an optional argument "input", allowing you to
+        pass bytes or a string to the subprocess's stdin.  If you use this argument
+        you may not also use the Popen constructor's "stdin" argument, as
+        it will be used internally.
+    
+        By default, all communication is in bytes, and therefore any "input" should
+        be bytes, and the stdout and stderr will be bytes. If in text mode, any
+        "input" should be a string, and stdout and stderr will be strings decoded
+        according to locale encoding, or by "encoding" if set. Text mode is
+        triggered by setting any of text, encoding, errors or universal_newlines.
+    
+        The other arguments are the same as for the Popen constructor.
+        """
+        if input is not None:
+            if kwargs.get('stdin') is not None:
+                raise ValueError('stdin and input arguments may not both be used.')
+            kwargs['stdin'] = PIPE
+    
+        if capture_output:
+            if kwargs.get('stdout') is not None or kwargs.get('stderr') is not None:
+                raise ValueError('stdout and stderr arguments may not be used '
+                                 'with capture_output.')
+            kwargs['stdout'] = PIPE
+            kwargs['stderr'] = PIPE
+    
+        with Popen(*popenargs, **kwargs) as process:
+            try:
+                stdout, stderr = process.communicate(input, timeout=timeout)
+            except TimeoutExpired as exc:
+                process.kill()
+                if _mswindows:
+                    # Windows accumulates the output in a single blocking
+                    # read() call run on child threads, with the timeout
+                    # being done in a join() on those threads.  communicate()
+                    # _after_ kill() is required to collect that and add it
+                    # to the exception.
+                    exc.stdout, exc.stderr = process.communicate()
+                else:
+                    # POSIX _communicate already populated the output so
+                    # far into the TimeoutExpired exception.
+                    process.wait()
+                raise
+            except:  # Including KeyboardInterrupt, communicate handled that.
+                process.kill()
+                # We don't call process.wait() as .__exit__ does that for us.
+                raise
+            retcode = process.poll()
+            if check and retcode:
+>               raise CalledProcessError(retcode, process.args,
+                                         output=stdout, stderr=stderr)
+E               subprocess.CalledProcessError: Command '['git', '-C', '/tmp/t518/main518', 'ls-files', '-z']' returned non-zero exit status 128.
+
+/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/subprocess.py:578: CalledProcessError
+----------------------------- Captured stderr call -----------------------------
+fatal: not a git repository (or any of the parent directories): .git
+_ ReadmeInstallTest.test_every_command_the_readme_names_is_found_by_a_fresh_install _
+
+self = <readme_install_test.ReadmeInstallTest testMethod=test_every_command_the_readme_names_is_found_by_a_fresh_install>
+
+    def test_every_command_the_readme_names_is_found_by_a_fresh_install(self):
+        problems = self._problems(README.read_text(encoding="utf-8"))
+>       self.assertEqual(problems, [], "README names commands a fresh install "
+                         "cannot run:\n  " + "\n  ".join(problems))
+E       AssertionError: Lists differ: ["line 62: 'brew' — not found on a reader'[265 chars] it"] != []
+E       
+E       First list contains 3 additional elements.
+E       First extra element 0:
+E       "line 62: 'brew' — not found on a reader's PATH: neither the fresh install nor the system provides it"
+E       
+E       + []
+E       - ["line 62: 'brew' — not found on a reader's PATH: neither the fresh install "
+E       -  'nor the system provides it',
+E       -  "line 69: 'brew' — not found on a reader's PATH: neither the fresh install "
+E       -  'nor the system provides it',
+E       -  "line 70: 'brew' — not found on a reader's PATH: neither the fresh install "
+E       -  'nor the system provides it'] : README names commands a fresh install cannot run:
+E         line 62: 'brew' — not found on a reader's PATH: neither the fresh install nor the system provides it
+E         line 69: 'brew' — not found on a reader's PATH: neither the fresh install nor the system provides it
+E         line 70: 'brew' — not found on a reader's PATH: neither the fresh install nor the system provides it
+
+tests/readme_install_test.py:179: AssertionError
+=========================== short test summary info ============================
+FAILED tests/gateway_picker_contract_test.py::test_copied_lib_copies_source_not_the_checkouts_incidental_contents_issue_220
+FAILED tests/readme_install_test.py::ReadmeInstallTest::test_every_command_the_readme_names_is_found_by_a_fresh_install
+2 failed, 1 passed in 1.21s

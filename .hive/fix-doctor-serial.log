@@ -1,0 +1,4 @@
+warning: No `requires-python` value found in the workspace. Defaulting to `>=3.13`.
+........................................................................ [ 72%]
+...................s........                                             [100%]
+99 passed, 1 skipped in 34.70s

@@ -1,0 +1,338 @@
+cmd: uv run --with pytest --with pytest-xdist --with pytest-timeout python -m pytest tests/ -q
+PYTEST_ADDOPTS: -rfE -p no:cacheprovider
+cwd: /var/lib/nomad/alloc/5076028e-b57f-82e2-52ab-1814736ec670/run/local/hive-turn.vw6NJb/repo
+tree: 33d415eacff0dea809487ce4361817afb5fda020
+umask: 0022
+started: 2026-11-20T23:57:49Z
+
+Using CPython 3.13.18
+Creating virtual environment at: /tmp/t518b/venv518
+warning: No `requires-python` value found in the workspace. Defaulting to `>=3.13`.
+Installed 8 packages in 46ms
+bringing up nodes...
+bringing up nodes...
+
+.........................................s...................uuu........ [  4%]
+.............................................................uu........u [  9%]
+..uu...u.----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 40312)
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 40302)
+.----------------------------------------
+F.......................................................uu.... [ 14%]
+........................................................................ [ 19%]
+........................................................................ [ 25%]
+........................................................................ [ 30%]
+........................................................................ [ 35%]
+........................................................................ [ 40%]
+........................................................s............... [ 45%]
+uu..u.u.........uuuuu.uuuuu..uu.u....................................... [ 49%]
+...........................uuu.uuuuuuuu................................. [ 53%]
+.......................ssss............................................. [ 59%]
+.............................u...............u.........u................ [ 64%]
+...................................................................u..u. [ 69%]
+.........u................u...................................uuu....F.. [ 73%]
+.......................................................uuu..s........... [ 78%]
+.......................................................................u [ 83%]
+.uu.u.uuu.uuuuuu.u.uu.uu.u..........uu.uuuuu...............uu........... [ 87%]
+...................uuu...s.uu.uu.s.........................u..u.u..u.u.. [ 91%]
+.u.uu........u..u..u.uu.u..uuuuu.u.uuu....s............................. [ 95%]
+..................................................................       [100%]
+=================================== FAILURES ===================================
+_ AdapterTest.test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375 _
+[gw0] linux -- Python 3.13.18 /tmp/t518b/venv518/bin/python
+
+self = <adapter_test.AdapterTest testMethod=test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375>
+
+    def test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375(self):
+        # The merge gate's finding: a profile that already ran the pre-#375
+        # core holds a settled unusable row — and the row that version
+        # actually wrote carried the LAST probe's 404 and its "no route"
+        # note, with status 404, because the refusal's own 402 was
+        # overwritten by the later probes. Upgrading must not leave that row
+        # between the person and the gateway's fresh answer.
+        cache = self.cache_file()
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps({
+            "endpoint": self.base, "anthropic_path": "/v1/messages",
+            "thinking_probe": 2,
+            "rows": [{"model": "m-anthropic", "dialect": "unusable",
+                      "note": '{"error":"no route"}', "status": 404,
+                      "cap": None, "nothink": False, "id_recycle": False}]}))
+        Gateway.message_refusal = (402, {"error": {"message":
+            "Insufficient balance: top up your account to continue"}})
+        out = self.run_adapter("--auto", "--model", "m-anthropic")
+        self.assertNotEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertTrue(out.stdout.startswith("EXIT="), out.stdout)
+        self.assertIn("HTTP 402", out.stdout)
+        self.assertIn("Insufficient balance: top up your account to continue",
+                      out.stdout)
+        self.assertNotIn("cached as unusable", out.stdout + out.stderr)
+        self.assertNotIn("no route", out.stdout + out.stderr)
+        # The stale row was re-asked, not served.
+>       self.assertEqual([p for p, _m in PROBES], ["/v1/messages"])
+E       AssertionError: Lists differ: ['/v1/messages', '/v1/messages', '/v1/messages', '/v1/me[35 chars]ges'] != ['/v1/messages']
+E       
+E       First list contains 5 additional elements.
+E       First extra element 1:
+E       '/v1/messages'
+E       
+E       - ['/v1/messages',
+E       ?                ^
+E       
+E       + ['/v1/messages']
+E       ?                ^
+E       
+E       -  '/v1/messages',
+E       -  '/v1/messages',
+E       -  '/v1/messages',
+E       -  '/v1/messages',
+E       -  '/v1/messages']
+
+tests/adapter_test.py:1361: AssertionError
+----------------------------- Captured stderr call -----------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 40322)
+Traceback (most recent call last):
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 451, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 439, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "/var/lib/nomad/alloc/5076028e-b57f-82e2-52ab-1814736ec670/run/local/hive-turn.vw6NJb/repo/tests/adapter_test.py", line 159, in do_POST
+    ok() if model == "m-anthropic" else self._json(
+                                        ~~~~~~~~~~^
+        400, {"error": {"message": "MESSAGES_API not supported"}})
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/var/lib/nomad/alloc/5076028e-b57f-82e2-52ab-1814736ec670/run/local/hive-turn.vw6NJb/repo/tests/adapter_test.py", line 60, in _json
+    self.wfile.write(payload)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+Traceback (most recent call last):
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 451, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 439, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "/var/lib/nomad/alloc/5076028e-b57f-82e2-52ab-1814736ec670/run/local/hive-turn.vw6NJb/repo/tests/adapter_test.py", line 122, in do_POST
+    self._json(503, {"error_message": "no healthy upstream"})
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/var/lib/nomad/alloc/5076028e-b57f-82e2-52ab-1814736ec670/run/local/hive-turn.vw6NJb/repo/tests/adapter_test.py", line 60, in _json
+    self.wfile.write(payload)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+Traceback (most recent call last):
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 451, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 439, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "/var/lib/nomad/alloc/5076028e-b57f-82e2-52ab-1814736ec670/run/local/hive-turn.vw6NJb/repo/tests/adapter_test.py", line 152, in do_POST
+    self._json(200, {"type": "message", "role": "assistant",
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                     "model": model,
+                     ^^^^^^^^^^^^^^^
+    ...<2 lines>...
+                                 {"type": "text", "text": "hi"}],
+                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                     "usage": {}})
+                     ^^^^^^^^^^^^^
+  File "/var/lib/nomad/alloc/5076028e-b57f-82e2-52ab-1814736ec670/run/local/hive-turn.vw6NJb/repo/tests/adapter_test.py", line 60, in _json
+    self.wfile.write(payload)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 40334)
+Traceback (most recent call last):
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 451, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 439, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "/var/lib/nomad/alloc/5076028e-b57f-82e2-52ab-1814736ec670/run/local/hive-turn.vw6NJb/repo/tests/adapter_test.py", line 80, in do_POST
+    self._json(code, refusal)
+    ~~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/var/lib/nomad/alloc/5076028e-b57f-82e2-52ab-1814736ec670/run/local/hive-turn.vw6NJb/repo/tests/adapter_test.py", line 60, in _json
+    self.wfile.write(payload)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 40346)
+Traceback (most recent call last):
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+----------------------------------------  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 451, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 439, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "/var/lib/nomad/alloc/5076028e-b57f-82e2-52ab-1814736ec670/run/local/hive-turn.vw6NJb/repo/tests/adapter_test.py", line 80, in do_POST
+    self._json(code, refusal)
+    ~~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/var/lib/nomad/alloc/5076028e-b57f-82e2-52ab-1814736ec670/run/local/hive-turn.vw6NJb/repo/tests/adapter_test.py", line 60, in _json
+    self.wfile.write(payload)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+
+Exception occurred during processing of request from ('127.0.0.1', 40348)
+Traceback (most recent call last):
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 451, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 439, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "/var/lib/nomad/alloc/5076028e-b57f-82e2-52ab-1814736ec670/run/local/hive-turn.vw6NJb/repo/tests/adapter_test.py", line 80, in do_POST
+    self._json(code, refusal)
+    ~~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/var/lib/nomad/alloc/5076028e-b57f-82e2-52ab-1814736ec670/run/local/hive-turn.vw6NJb/repo/tests/adapter_test.py", line 60, in _json
+    self.wfile.write(payload)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 40352)
+Traceback (most recent call last):
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 451, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 439, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "/var/lib/nomad/alloc/5076028e-b57f-82e2-52ab-1814736ec670/run/local/hive-turn.vw6NJb/repo/tests/adapter_test.py", line 80, in do_POST
+    self._json(code, refusal)
+    ~~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/var/lib/nomad/alloc/5076028e-b57f-82e2-52ab-1814736ec670/run/local/hive-turn.vw6NJb/repo/tests/adapter_test.py", line 60, in _json
+    self.wfile.write(payload)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+BrokenPipeError: [Errno 32] Broken pipe
+_ ReadmeInstallTest.test_every_command_the_readme_names_is_found_by_a_fresh_install _
+[gw1] linux -- Python 3.13.18 /tmp/t518b/venv518/bin/python
+
+self = <readme_install_test.ReadmeInstallTest testMethod=test_every_command_the_readme_names_is_found_by_a_fresh_install>
+
+    def test_every_command_the_readme_names_is_found_by_a_fresh_install(self):
+        problems = self._problems(README.read_text(encoding="utf-8"))
+>       self.assertEqual(problems, [], "README names commands a fresh install "
+                         "cannot run:\n  " + "\n  ".join(problems))
+E       AssertionError: Lists differ: ["line 62: 'brew' — not found on a reader'[265 chars] it"] != []
+E       
+E       First list contains 3 additional elements.
+E       First extra element 0:
+E       "line 62: 'brew' — not found on a reader's PATH: neither the fresh install nor the system provides it"
+E       
+E       + []
+E       - ["line 62: 'brew' — not found on a reader's PATH: neither the fresh install "
+E       -  'nor the system provides it',
+E       -  "line 69: 'brew' — not found on a reader's PATH: neither the fresh install "
+E       -  'nor the system provides it',
+E       -  "line 70: 'brew' — not found on a reader's PATH: neither the fresh install "
+E       -  'nor the system provides it'] : README names commands a fresh install cannot run:
+E         line 62: 'brew' — not found on a reader's PATH: neither the fresh install nor the system provides it
+E         line 69: 'brew' — not found on a reader's PATH: neither the fresh install nor the system provides it
+E         line 70: 'brew' — not found on a reader's PATH: neither the fresh install nor the system provides it
+
+tests/readme_install_test.py:179: AssertionError
+=============================== warnings summary ===============================
+tests/rc_hosts_test.py: 54 warnings
+  <frozen importlib._bootstrap>:530: DeprecationWarning: the load_module() method is deprecated and slated for removal in Python 3.15; use exec_module() instead
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/adapter_test.py::AdapterTest::test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375
+FAILED tests/readme_install_test.py::ReadmeInstallTest::test_every_command_the_readme_names_is_found_by_a_fresh_install
+2 failed, 1384 passed, 10 skipped, 54 warnings, 110 subtests passed in 220.09s (0:03:40)
+
+SUMMARY rc=1 secs=224 cpu=4 factor=2 target_load=8 spinners=8 load_min=12.7 load_max=18.5 samples=46 host=gcp-us2 os=linux

@@ -1,0 +1,47 @@
+[
+  {
+    "criterion": "The cause is proven, not assumed: on main, a run reproduces a named test failing under load and passing alone, and the diagnosis names which probe budget overruns and by how much under the load used.",
+    "pass": true,
+    "evidence": "Host gcp-us1, Linux x86_64, 8 cores, umask 0022. Main d821512 (.hive/main-sha.txt). In .hive/main-load-1.log, at load 48.9-60.5 (6x, 48 busy loops; SUMMARY line), tests/doctor_test.py::test_doctor_completion_row_lasts_until_a_new_zsh_completes FAILED with AssertionError \"assert 'INFO completion:' not in ...\": doctor printed 'INFO completion: put the fpath line above compinit' for a .zshrc that was already right. Three adapter live-session cases failed in the same run. Under the issue's exact command at 2x load, main again failed the completion test (.hive/main-full-run-1.log, load 16.0+). Alone: '2 passed' in each of .hive/main-alone-1..3.log. The completion probe (5 s completionProbeDeadline) took 9.55-12.45 s, median 10.44 s, over budget 10/10, max overrun +7.45 s (.hive/main-probe-timing-1.log, load 48.2-51.8). The session read (1 s) took median 0.79 s, max 1.10 s, over budget 2/60, +0.10 s (.hive/main-session-timing-1.log, load 48.0-51.4). Summaries in .hive/main-probe-summary.txt and .hive/main-session-summary.txt; full diagnosis in .hive/diagnosis.txt."
+  },
+  {
+    "criterion": "`uv run --with pytest --with pytest-xdist --with pytest-timeout python -m pytest tests/ -q` passes three consecutive runs on a machine carrying other work at >=2x cores load, both named tests included (tests/doctor_test.py::test_doctor_omits_the_adapter_line_for_an_unclassified_saved_model_issue_272[session-with-translator] and tests/doctor_test.py::test_doctor_completion_row_lasts_until_a_new_zsh_completes).",
+    "pass": true,
+    "evidence": "Three consecutive passes of the exact command at 2x load on gcp-us2 (Linux x86_64, 4 cores, other work from 8 busy loops; branch rebased on main 9a0dceb): .hive/full-run-1.log, -2.log and -3.log. Each has SUMMARY rc=0 and load_min 8.2 / 9.8 / 9.5 against target_load 8. Each reads '1386 passed, 10 skipped', with 'PASSED tests/doctor_test.py::test_doctor_omits_the_adapter_line_for_an_unclassified_saved_model_issue_272[session-with-translator]' and 'PASSED tests/doctor_test.py::test_doctor_completion_row_lasts_until_a_new_zsh_completes'. One test was deselected: the README install test, which fails alone on main and on the fix because this host has no brew (.hive/env-failures.txt, env-failures-why.txt, env-alone-fix-2.log, env-alone-main-2.log). CI runs it. The failure that blocked the last host's streak was traced with an instrumented copy (.hive/diag375-trace.log, diag375-summary.txt): adapter_test's #375 re-ask test got 7 late probes from the previous test's stopped adapter via the shared stub gateway. Each test now serves its own gateway, and test_a_finished_tests_gateway_records_nothing_issue_518 pins that (mutation D in .hive/mutation.log turns it red). The raw run before that fix is .hive/full-raw-2.log; the earlier host's runs are in .hive/prev-host/. make gate: .hive/gate.log, every suite green except that same brew test."
+  },
+  {
+    "criterion": "The doctor contract holds after the fix: when a probe exhausts its budget, doctor's output names what was not checked instead of silently dropping the line/row, and the tests assert healthy-line or the named not-checked answer, never a silent absence.",
+    "pass": true,
+    "evidence": "util/doctor.go:225-226: a session read past its bound prints 'SKIP adapter: could not tell whether a translator is running (running programs could not be listed within 1 second); check again: ccmorph doctor <name>'. cli/doctor.go:283-287: a probe past its bound, with both halves present, prints 'INFO completion: not checked (a new zsh did not answer within 5 seconds)'. In tests/doctor_test.py, _session_unchecked (517) and assert_adapter_lines (525) accept only the healthy rows or that named row; a missing row fails. COMPLETION_UNCHECKED (1516); 'assert hints in ([], [COMPLETION_UNCHECKED])' (1563). Under 6x load the fix passes: .hive/fix-doctor-load-1..3.log, 99 passed and 1 skipped each, load_min 48.1-53.7."
+  },
+  {
+    "criterion": "A deterministic regression test forces the budget exhaustion (injected delay or shrunk budget) and asserts the named not-checked answer; it is green in serial CI and fails if the silent-missing path returns.",
+    "pass": true,
+    "evidence": "Each test forces the budget to run out. util/doctor_test.go:201 TestDoctorRouteNamesASessionReadThatLostItsBound uses a stalled ps and a 200 ms sessionReadBound. cli/doctor_completion_test.go:273 TestDoctorCompletionSpeaksWhenTheProbeCannotAnswer uses a 300 ms deadline. tests/doctor_test.py test_doctor_names_a_completion_check_a_new_zsh_did_not_answer_issue_518 runs a .zshrc that sleeps 30 s against the 5 s bound and asserts 'hints == [COMPLETION_UNCHECKED]'. Also the three ps-over-deadline-issue-467 cases. All green serially: .hive/go-tests.log rc=0, .hive/fix-doctor-serial.log 99 passed; .hive/mutation-control.log '4 passed', ok/ok. With the named rows disabled (mutation A) all fail: .hive/mutation.log shows both Go '--- FAIL' and '4 failed'."
+  },
+  {
+    "criterion": "Scout: two full-suite runs under load at >=2x cores with zero doctor failures, or the two failing tests changed to accept the degrade answer.",
+    "pass": true,
+    "evidence": "Zero doctor failures in .hive/full-run-1..3.log (2x load, 4 cores; both named tests PASSED in each) and in .hive/fix-doctor-load-1..3.log (6x load, 8 cores, 99 passed 1 skipped). The tests accept only the healthy row or the named not-checked row (see criterion 3). Serial: .hive/fix-doctor-serial.log, 99 passed 1 skipped."
+  },
+  {
+    "criterion": "Scout: whichever of the two it is, the budget the test waits on is named where the assertion is.",
+    "pass": true,
+    "evidence": "Each assertion names its budget: tests/doctor_test.py lines 519, 561, 606, 704, 775, 801 and 826 name 'sessionReadBound, util/misc.go' (one second) beside the adapter assertions, including [session-with-translator] at 826. Lines 1558 and 1568 name 'completionProbeDeadline, cli/doctor.go' (five seconds) beside the completion assertions at 1563 and 1590."
+  },
+  {
+    "criterion": "From the landing refusals: the end-to-end doctor tests still fail when a probe that answered in time is dropped. The live-session and new-zsh checks run through the real process-table read and a real zsh (no injected seam in tests/doctor_test.py), and the only accepted alternative to the healthy answer is the named not-checked row.",
+    "pass": true,
+    "evidence": "Mutation B in .hive/mutation.log: cutting the real session read ('running := \"__UNKNOWN__\"') fails util/doctor_test.go:173 TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable, which uses a held process and the real process-table read. Dropping the real zsh's answer ('c.bound = answered && bound && false') fails cli/doctor_completion_test.go:77 TestDoctorCompletionSaysOnlyWhatANewZshStillMisses, which uses a real zsh with a 60 s deadline. Both pass unmutated (.hive/mutation-control.log). No seam: grepping the tests/doctor_test.py diff for monkeypatch or CCMORPH_*BOUND/DEADLINE/TIMEOUT/FAKE finds nothing, and 'git grep doctorSessionRead|doctorCompletionProbe' finds nothing."
+  },
+  {
+    "criterion": "Scout addendum: `go test ./util/ -run TestRunningAdapterMatchesArgvAcrossSpaces -count=1` passes under the fork-storm repro: runningAdapter is polled while it answers __UNKNOWN__ and the first decisive answer is asserted, so a wrong-but-decisive answer fails at once and the GH-49 argv-with-spaces parse stays pinned.",
+    "pass": true,
+    "evidence": "The storm is .hive/storm.sh.txt, N loops forking /bin/true, the scout's churn scaled to 4 cores. On main 9a0dceb at 64 loops it fails 3/20, e.g. 'a profile nothing serves must report nothing, got \"__UNKNOWN__\"'; the same test passes 20/20 with no storm (.hive/go-argv-main-storm.log, go-argv-main-alone.log). Earlier tries failed 18/20 and 20/20 at 64 loops, and 5/20 at 32. The fix is util/doctor_test.go:282 TestRunningAdapterMatchesArgvAcrossSpaces plus decisiveRunningAdapter (304). It asks again on __UNKNOWN__, up to 5 times, with a 30 s bound, and returns the first decisive answer. Under the same 64-loop storm it passes 20/20, and the scout's exact command prints 'ok' (.hive/go-argv-fix-storm.log). Bounding at 1 s and polling 30 times was tried first and failed 3/20: under that storm no ps finished inside 1 s. A wrong but decisive answer fails at once: mutation C in .hive/mutation.log rewrites ':shim' to ':cliproxyapi' and gets '--- FAIL' in 0.05 s."
+  },
+  {
+    "criterion": "Scout addendum: the deterministic deadline pin stays where it is: the fake-stall ps test forces the ps path and asserts __UNKNOWN__ at the bound; the exact-answer test stops racing the wall clock.",
+    "pass": true,
+    "evidence": "util/doctor_test.go:321 TestRunningAdapterEndsAPsStalledPastItsBound is unchanged by this branch: it forces the ps path with sysctlTable, uses a fake ps that sleeps 30 s, asserts __UNKNOWN__ inside 0.9-1.5 s, and checks the ps is killed. It passes in .hive/go-tests.log ('--- PASS ... (1.01s)'). The exact-answer test no longer races the 1 s bound: it raises sessionReadBound to 30 s and asks again on __UNKNOWN__ (criterion above)."
+  }
+]

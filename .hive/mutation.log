@@ -1,0 +1,317 @@
+mutation A: the SKIP row (util/doctor.go) and the timedOut case (cli/doctor.go) disabled with "false &&"
+--- FAIL: TestDoctorRouteNamesASessionReadThatLostItsBound (0.40s)
+    --- FAIL: TestDoctorRouteNamesASessionReadThatLostItsBound/saved_model,_session_unreadable (0.20s)
+        doctor_test.go:247: verbose=false: adapter rows [], want ["SKIP adapter: could not tell whether a translator is running (running programs could not be listed within 200ms); check again: ccmorph doctor dr933078"]
+    --- FAIL: TestDoctorRouteNamesASessionReadThatLostItsBound/known_need,_session_unreadable (0.20s)
+        doctor_test.go:247: verbose=false: adapter rows ["OK adapter: this endpoint needs a translator; cliproxyapi is installed"], want ["OK adapter: this endpoint needs a translator; cliproxyapi is installed" "SKIP adapter: could not tell whether a translator is running (running programs could not be listed within 200ms); check again: ccmorph doctor dr933078"]
+FAIL
+FAIL	github.com/akleizor/ccmorph/util	0.414s
+--- FAIL: TestDoctorCompletionSpeaksWhenTheProbeCannotAnswer (0.30s)
+    doctor_completion_test.go:292: doctor row = "INFO completion: put the fpath line above compinit in ~/.zshrc:\nINFO   fpath=(/tmp/t518/TestDoctorCompletionSpeaksWhenTheProbeCannotAnswer2243071181/001/libexec/share/zsh/site-functions $fpath)\n", want exactly "INFO completion: not checked (a new zsh did not answer within 300ms)\n": both halves are right, so the row may only name the check the probe could not make (#518)
+FAIL
+FAIL	github.com/akleizor/ccmorph/cli	0.312s
+FAIL
+Using CPython 3.13.18
+Creating virtual environment at: .venv
+warning: No `requires-python` value found in the workspace. Defaulting to `>=3.13`.
+Installed 8 packages in 9ms
+FFFF                                                                     [100%]
+=================================== FAILURES ===================================
+_ test_doctor_reports_existing_adapter_without_starting_it[translator-route-ps-over-deadline-issue-467] _
+
+tmp_path = PosixPath('/tmp/t518/pytest-of-ubuntu/pytest-18/test_doctor_reports_existing_a0')
+shape = 'translator-route', slow = 'ps'
+
+    @pytest.mark.parametrize("slow", ["", "ps", "lsof"],
+                             ids=["prompt", "ps-over-deadline-issue-467",
+                                  "lsof-over-deadline-issue-467"])
+    @pytest.mark.parametrize("shape", ["translator-route", "native-route", "hooks-build"])
+    def test_doctor_reports_existing_adapter_without_starting_it(tmp_path, shape, slow):
+        curl = """#!/bin/sh
+    printf '%s\n' '{"data":[]}'
+    printf '%s\n' '__CCMORPH_STATUS__200'
+    """
+        conf = "type=apikey\nbase_url=https://example.test\napi_key=k\nadapter=true\n"
+        # A profile of this test's own, so the machine's real sessions never match.
+        profile = "demo" + str(os.getpid())
+        # The session first, then the PATH stubs: run_doctor only fills in what is
+        # missing, so doctor's single run already consults them (no separate
+        # unstubbed setup run).
+        decoy, listeners, ports, stop = _adapter_tree(tmp_path, profile, shape)
+        _adapter_stubs(tmp_path / "bin", slow, ports)
+        try:
+            result, _, bindir = run_doctor(tmp_path, conf, curl, profile=profile)
+            assert result.returncode == 0, result.stderr
+            # The default report's adapter rows, never a pid or a
+            # process-inspection detail a first-time reader cannot act on. Nothing
+            # is classified and no model is set, so the answer is what the open
+            # session shows; a table read that loses its one-second bound
+            # (sessionReadBound, util/misc.go) gives the no-session row plus the
+            # row naming the check, never a silent absence (#518). A running
+            # adapter alone is not a translator: only a cliproxyapi child is.
+            unread = [_until_a_model(profile), _session_unchecked(profile)]
+            if slow == "ps" and sys.platform != "darwin":
+                # Off darwin the table's read is a ps, so this run loses it to the
+                # bound: the named not-checked row is the whole answer, and the
+                # live-session row must not appear.
+>               assert_adapter_lines(result.stdout, unread)
+
+tests/doctor_test.py:569: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+stdout = 'OK profile: demo933490 (API key)\nOK ccmorph: 0.5.13 (command: ccmorph)\nOK claude executable: /tmp/t518/pytest-of-ub...pi is installed; choose one: ccmorph set demo933490 model <model-id>\nOK ready: start it with ccmorph run demo933490\n'
+answers = ([re.compile("INFO adapter: this profile needs no translator until a model is chosen \\(none is set, and the endpoint'...ranslator is running (running programs could not be listed within 1 second); check again: ccmorph doctor demo933490'],)
+
+    def assert_adapter_lines(stdout, *answers):
+        """The default report's adapter rows are exactly one of answers: each a list
+        whose items are compared whole (str) or must fullmatch (re.Pattern). A
+        missing row or a third answer fails (#518)."""
+        got = [l for l in stdout.splitlines() if "adapter:" in l]
+        def same(want):
+            return len(got) == len(want) and all(
+                w.fullmatch(g) if isinstance(w, re.Pattern) else g == w
+                for g, w in zip(got, want))
+>       assert any(same(a) for a in answers), stdout
+E       AssertionError: OK profile: demo933490 (API key)
+E         OK ccmorph: 0.5.13 (command: ccmorph)
+E         OK claude executable: /tmp/t518/pytest-of-ubuntu/pytest-18/test_doctor_reports_existing_a0/bin/claude
+E         OK profile home: /tmp/t518/pytest-of-ubuntu/pytest-18/test_doctor_reports_existing_a0/state/profiles/demo933490
+E         INFO profile settings: none yet (a launch writes them)
+E         INFO effective model: ccmorph asks which model at each launch (no saved model)
+E         INFO effective effort: Claude Code's own default (no saved effort)
+E         OK credentials: present in the conf file, unencrypted (value hidden)
+E         OK api key: Claude Code will use it without asking
+E         INFO endpoint: https://example.test
+E         OK gateway: reachable (HTTP 200); models: 0; no message was sent (the model list only)
+E         INFO adapter: this profile needs no translator until a model is chosen (none is set, and the endpoint's model list names no protocol); cliproxyapi is installed; choose one: ccmorph set demo933490 model <model-id>
+E         OK ready: start it with ccmorph run demo933490
+E         
+E       assert False
+E        +  where False = any(<generator object assert_adapter_lines.<locals>.<genexpr> at 0x757c19f03e60>)
+
+tests/doctor_test.py:534: AssertionError
+_ test_doctor_reports_existing_adapter_without_starting_it[native-route-ps-over-deadline-issue-467] _
+
+tmp_path = PosixPath('/tmp/t518/pytest-of-ubuntu/pytest-18/test_doctor_reports_existing_a1')
+shape = 'native-route', slow = 'ps'
+
+    @pytest.mark.parametrize("slow", ["", "ps", "lsof"],
+                             ids=["prompt", "ps-over-deadline-issue-467",
+                                  "lsof-over-deadline-issue-467"])
+    @pytest.mark.parametrize("shape", ["translator-route", "native-route", "hooks-build"])
+    def test_doctor_reports_existing_adapter_without_starting_it(tmp_path, shape, slow):
+        curl = """#!/bin/sh
+    printf '%s\n' '{"data":[]}'
+    printf '%s\n' '__CCMORPH_STATUS__200'
+    """
+        conf = "type=apikey\nbase_url=https://example.test\napi_key=k\nadapter=true\n"
+        # A profile of this test's own, so the machine's real sessions never match.
+        profile = "demo" + str(os.getpid())
+        # The session first, then the PATH stubs: run_doctor only fills in what is
+        # missing, so doctor's single run already consults them (no separate
+        # unstubbed setup run).
+        decoy, listeners, ports, stop = _adapter_tree(tmp_path, profile, shape)
+        _adapter_stubs(tmp_path / "bin", slow, ports)
+        try:
+            result, _, bindir = run_doctor(tmp_path, conf, curl, profile=profile)
+            assert result.returncode == 0, result.stderr
+            # The default report's adapter rows, never a pid or a
+            # process-inspection detail a first-time reader cannot act on. Nothing
+            # is classified and no model is set, so the answer is what the open
+            # session shows; a table read that loses its one-second bound
+            # (sessionReadBound, util/misc.go) gives the no-session row plus the
+            # row naming the check, never a silent absence (#518). A running
+            # adapter alone is not a translator: only a cliproxyapi child is.
+            unread = [_until_a_model(profile), _session_unchecked(profile)]
+            if slow == "ps" and sys.platform != "darwin":
+                # Off darwin the table's read is a ps, so this run loses it to the
+                # bound: the named not-checked row is the whole answer, and the
+                # live-session row must not appear.
+>               assert_adapter_lines(result.stdout, unread)
+
+tests/doctor_test.py:569: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+stdout = 'OK profile: demo933490 (API key)\nOK ccmorph: 0.5.13 (command: ccmorph)\nOK claude executable: /tmp/t518/pytest-of-ub...pi is installed; choose one: ccmorph set demo933490 model <model-id>\nOK ready: start it with ccmorph run demo933490\n'
+answers = ([re.compile("INFO adapter: this profile needs no translator until a model is chosen \\(none is set, and the endpoint'...ranslator is running (running programs could not be listed within 1 second); check again: ccmorph doctor demo933490'],)
+
+    def assert_adapter_lines(stdout, *answers):
+        """The default report's adapter rows are exactly one of answers: each a list
+        whose items are compared whole (str) or must fullmatch (re.Pattern). A
+        missing row or a third answer fails (#518)."""
+        got = [l for l in stdout.splitlines() if "adapter:" in l]
+        def same(want):
+            return len(got) == len(want) and all(
+                w.fullmatch(g) if isinstance(w, re.Pattern) else g == w
+                for g, w in zip(got, want))
+>       assert any(same(a) for a in answers), stdout
+E       AssertionError: OK profile: demo933490 (API key)
+E         OK ccmorph: 0.5.13 (command: ccmorph)
+E         OK claude executable: /tmp/t518/pytest-of-ubuntu/pytest-18/test_doctor_reports_existing_a1/bin/claude
+E         OK profile home: /tmp/t518/pytest-of-ubuntu/pytest-18/test_doctor_reports_existing_a1/state/profiles/demo933490
+E         INFO profile settings: none yet (a launch writes them)
+E         INFO effective model: ccmorph asks which model at each launch (no saved model)
+E         INFO effective effort: Claude Code's own default (no saved effort)
+E         OK credentials: present in the conf file, unencrypted (value hidden)
+E         OK api key: Claude Code will use it without asking
+E         INFO endpoint: https://example.test
+E         OK gateway: reachable (HTTP 200); models: 0; no message was sent (the model list only)
+E         INFO adapter: this profile needs no translator until a model is chosen (none is set, and the endpoint's model list names no protocol); cliproxyapi is installed; choose one: ccmorph set demo933490 model <model-id>
+E         OK ready: start it with ccmorph run demo933490
+E         
+E       assert False
+E        +  where False = any(<generator object assert_adapter_lines.<locals>.<genexpr> at 0x757c19eddb60>)
+
+tests/doctor_test.py:534: AssertionError
+_ test_doctor_reports_existing_adapter_without_starting_it[hooks-build-ps-over-deadline-issue-467] _
+
+tmp_path = PosixPath('/tmp/t518/pytest-of-ubuntu/pytest-18/test_doctor_reports_existing_a2')
+shape = 'hooks-build', slow = 'ps'
+
+    @pytest.mark.parametrize("slow", ["", "ps", "lsof"],
+                             ids=["prompt", "ps-over-deadline-issue-467",
+                                  "lsof-over-deadline-issue-467"])
+    @pytest.mark.parametrize("shape", ["translator-route", "native-route", "hooks-build"])
+    def test_doctor_reports_existing_adapter_without_starting_it(tmp_path, shape, slow):
+        curl = """#!/bin/sh
+    printf '%s\n' '{"data":[]}'
+    printf '%s\n' '__CCMORPH_STATUS__200'
+    """
+        conf = "type=apikey\nbase_url=https://example.test\napi_key=k\nadapter=true\n"
+        # A profile of this test's own, so the machine's real sessions never match.
+        profile = "demo" + str(os.getpid())
+        # The session first, then the PATH stubs: run_doctor only fills in what is
+        # missing, so doctor's single run already consults them (no separate
+        # unstubbed setup run).
+        decoy, listeners, ports, stop = _adapter_tree(tmp_path, profile, shape)
+        _adapter_stubs(tmp_path / "bin", slow, ports)
+        try:
+            result, _, bindir = run_doctor(tmp_path, conf, curl, profile=profile)
+            assert result.returncode == 0, result.stderr
+            # The default report's adapter rows, never a pid or a
+            # process-inspection detail a first-time reader cannot act on. Nothing
+            # is classified and no model is set, so the answer is what the open
+            # session shows; a table read that loses its one-second bound
+            # (sessionReadBound, util/misc.go) gives the no-session row plus the
+            # row naming the check, never a silent absence (#518). A running
+            # adapter alone is not a translator: only a cliproxyapi child is.
+            unread = [_until_a_model(profile), _session_unchecked(profile)]
+            if slow == "ps" and sys.platform != "darwin":
+                # Off darwin the table's read is a ps, so this run loses it to the
+                # bound: the named not-checked row is the whole answer, and the
+                # live-session row must not appear.
+>               assert_adapter_lines(result.stdout, unread)
+
+tests/doctor_test.py:569: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+stdout = 'OK profile: demo933490 (API key)\nOK ccmorph: 0.5.13 (command: ccmorph)\nOK claude executable: /tmp/t518/pytest-of-ub...pi is installed; choose one: ccmorph set demo933490 model <model-id>\nOK ready: start it with ccmorph run demo933490\n'
+answers = ([re.compile("INFO adapter: this profile needs no translator until a model is chosen \\(none is set, and the endpoint'...ranslator is running (running programs could not be listed within 1 second); check again: ccmorph doctor demo933490'],)
+
+    def assert_adapter_lines(stdout, *answers):
+        """The default report's adapter rows are exactly one of answers: each a list
+        whose items are compared whole (str) or must fullmatch (re.Pattern). A
+        missing row or a third answer fails (#518)."""
+        got = [l for l in stdout.splitlines() if "adapter:" in l]
+        def same(want):
+            return len(got) == len(want) and all(
+                w.fullmatch(g) if isinstance(w, re.Pattern) else g == w
+                for g, w in zip(got, want))
+>       assert any(same(a) for a in answers), stdout
+E       AssertionError: OK profile: demo933490 (API key)
+E         OK ccmorph: 0.5.13 (command: ccmorph)
+E         OK claude executable: /tmp/t518/pytest-of-ubuntu/pytest-18/test_doctor_reports_existing_a2/bin/claude
+E         OK profile home: /tmp/t518/pytest-of-ubuntu/pytest-18/test_doctor_reports_existing_a2/state/profiles/demo933490
+E         INFO profile settings: none yet (a launch writes them)
+E         INFO effective model: ccmorph asks which model at each launch (no saved model)
+E         INFO effective effort: Claude Code's own default (no saved effort)
+E         OK credentials: present in the conf file, unencrypted (value hidden)
+E         OK api key: Claude Code will use it without asking
+E         INFO endpoint: https://example.test
+E         OK gateway: reachable (HTTP 200); models: 0; no message was sent (the model list only)
+E         INFO adapter: this profile needs no translator until a model is chosen (none is set, and the endpoint's model list names no protocol); cliproxyapi is installed; choose one: ccmorph set demo933490 model <model-id>
+E         OK ready: start it with ccmorph run demo933490
+E         
+E       assert False
+E        +  where False = any(<generator object assert_adapter_lines.<locals>.<genexpr> at 0x757c19edcd60>)
+
+tests/doctor_test.py:534: AssertionError
+___ test_doctor_names_a_completion_check_a_new_zsh_did_not_answer_issue_518 ____
+
+tmp_path = PosixPath('/tmp/t518/pytest-of-ubuntu/pytest-18/test_doctor_names_a_completion0')
+
+    def test_doctor_names_a_completion_check_a_new_zsh_did_not_answer_issue_518(tmp_path):
+        # Both halves are in the .zshrc, and the new zsh doctor starts cannot
+        # answer inside completionProbeDeadline (five seconds, cli/doctor.go): its
+        # .zshrc sleeps past it. The row names the check it could not make — not a
+        # line to move, which nothing here justifies, and not silence, which reads
+        # as working completion (#518).
+        conf = "type=apikey\napi_key=k\n"
+        home = tmp_path / "home"
+        home.mkdir()
+        install = tmp_path / "install"
+        install.mkdir(mode=0o755)
+        (install / "lib").symlink_to(ROOT / "lib")
+        (install / "libexec").symlink_to(ROOT / "libexec")
+        site = install / "share/zsh/site-functions"
+        shutil.copytree(ROOT / "share/zsh/site-functions", site)
+        shell = shutil.which("zsh") or "/bin/zsh"
+        (home / ".zshrc").write_text(
+            f"fpath=({site} $fpath)\nautoload -Uz compinit && compinit\nsleep 30\n")
+        started = time.monotonic()
+        result, _, _ = run_doctor(tmp_path, conf, claude=False,
+                                  env_extra={"SHELL": shell, "ZDOTDIR": str(home),
+                                             "CCMORPH_LIB_DIR": str(install / "lib")})
+        hints = [l for l in result.stdout.splitlines()
+                 if "completion:" in l or "fpath=(" in l or "compinit" in l]
+>       assert hints == [COMPLETION_UNCHECKED], result.stdout
+E       AssertionError: OK profile: demo (API key)
+E         OK ccmorph: 0.5.13 (command: ccmorph)
+E         FAIL claude executable: Claude Code is not installed or not on the PATH — install it: https://docs.anthropic.com/en/docs/claude-code/setup
+E         OK profile home: /tmp/t518/pytest-of-ubuntu/pytest-18/test_doctor_names_a_completion0/state/profiles/demo
+E         INFO profile settings: none yet (a launch writes them)
+E         INFO effective model: Claude Code picks the model (no saved model)
+E         INFO effective effort: Claude Code's own default (no saved effort)
+E         OK credentials: present in the conf file, unencrypted (value hidden)
+E         OK api key: Claude Code will use it without asking
+E         WARN endpoint: Anthropic did not answer, so the key was not checked (check your network)
+E         INFO completion: put the fpath line above compinit in ~/.zshrc:
+E         INFO   fpath=(/tmp/t518/pytest-of-ubuntu/pytest-18/test_doctor_names_a_completion0/install/share/zsh/site-functions $fpath)
+E         FAIL not ready: Claude Code is not installed or not on the PATH — install it: https://docs.anthropic.com/en/docs/claude-code/setup
+E         
+E       assert ['INFO comple...ions $fpath)'] == ['INFO comple...n 5 seconds)']
+E         
+E         At index 0 diff: 'INFO completion: put the fpath line above compinit in ~/.zshrc:' != 'INFO completion: not checked (a new zsh did not answer within 5 seconds)'
+E         Left contains one more item: 'INFO   fpath=(/tmp/t518/pytest-of-ubuntu/pytest-18/test_doctor_names_a_completion0/install/share/zsh/site-functions $fpath)'
+E         Use -v to get more diff
+
+tests/doctor_test.py:1590: AssertionError
+=========================== short test summary info ============================
+FAILED tests/doctor_test.py::test_doctor_reports_existing_adapter_without_starting_it[translator-route-ps-over-deadline-issue-467]
+FAILED tests/doctor_test.py::test_doctor_reports_existing_adapter_without_starting_it[native-route-ps-over-deadline-issue-467]
+FAILED tests/doctor_test.py::test_doctor_reports_existing_adapter_without_starting_it[hooks-build-ps-over-deadline-issue-467]
+FAILED tests/doctor_test.py::test_doctor_names_a_completion_check_a_new_zsh_did_not_answer_issue_518
+4 failed, 96 deselected in 9.47s
+mutation B: the session read cut (running := "__UNKNOWN__" in util/doctor.go) and the probe answer dropped (c.bound = answered && bound && false in cli/doctor.go)
+--- FAIL: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable (0.00s)
+    doctor_test.go:192: adapter rows ["SKIP adapter: could not tell whether a translator is running (running programs could not be listed within 30 seconds); check again: ccmorph doctor dr934090"], want ["OK adapter: this profile needs no translator now: its open session runs without one"]
+FAIL
+FAIL	github.com/akleizor/ccmorph/util	0.016s
+--- FAIL: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses (6.62s)
+    --- FAIL: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/fpath-and-compinit (1.20s)
+        doctor_completion_test.go:228: doctor row = "INFO completion: put the fpath line above compinit in ~/.zshrc:\nINFO   fpath=(/tmp/t518/TestDoctorCompletionSaysOnlyWhatANewZshStillMisses141157302/001/libexec/share/zsh/site-functions $fpath)\n", want silence: a new zsh completes ccmorph
+    --- FAIL: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/brew-rc-compinit (1.13s)
+        doctor_completion_test.go:228: doctor row = "INFO completion: add to ~/.zshrc, above compinit (or Oh My Zsh):\nINFO   fpath=(/tmp/t518/TestDoctorCompletionSaysOnlyWhatANewZshStillMisses141157302/001/libexec/share/zsh/site-functions $fpath)\n", want silence: a new zsh completes ccmorph
+FAIL
+FAIL	github.com/akleizor/ccmorph/cli	6.630s
+FAIL
+mutation C: runningAdapter's decisive answer made wrong (util/misc.go: return strings.Replace(adapterSession(t, profile), ":shim", ":cliproxyapi", 1)); the polling test must fail at the first decisive answer
+    doctor_test.go:292: got "3581045\t3581045:cliproxyapi", want "3581045\t3581045:shim"
+--- FAIL: TestRunningAdapterMatchesArgvAcrossSpaces (0.05s)
+FAIL
+FAIL	github.com/akleizor/ccmorph/util	0.056s
+FAIL
+mutation D: Gateway._stale always False (tests/adapter_test.py), so a finished test's gateway records again
+E       AssertionError: HTTPError not raised
+FAILED tests/adapter_test.py::AdapterTest::test_a_finished_tests_gateway_records_nothing_issue_518
+1 failed in 0.59s

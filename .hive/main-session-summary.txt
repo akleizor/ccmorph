@@ -1,0 +1,1 @@
+session-read: budget=1s n=60 min=0.14s median=0.79s max=1.10s over_budget=2/60 max_overrun=+0.10s

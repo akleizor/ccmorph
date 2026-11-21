@@ -1,0 +1,5 @@
+tests/adapter_test.py::AdapterTest::test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375 | AssertionError: Lists differ: ['/v1/messages' x7] != ['/v1/messages'] | under load in full-raw-1.log (load 16.0+, 2x); alone: passed 2/2 (1 passed in 0.54s each); not a doctor test, not deselected, not edited
+tests/adapter_test.py::AdapterTest::test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375 | full-run-2.log | load_min=17.7 load_max=18.7
+tests/adapter_test.py::AdapterTest::test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375 | full-run-3.log | load_min=17.6 load_max=18.8
+tests/adapter_test.py::AdapterTest::test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375 | full-run-4.log | load_min=17.9 load_max=18.8
+tests/adapter_test.py::AdapterTest::test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375 | full-run-6.log | load_min=17.6 load_max=18.7

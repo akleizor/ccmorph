@@ -1,0 +1,97 @@
+cmd: uv run --with pytest --with pytest-xdist --with pytest-timeout python -m pytest tests/ -q
+PYTEST_ADDOPTS: -rfE -p no:cacheprovider --deselect=tests/gateway_picker_contract_test.py::test_copied_lib_copies_source_not_the_checkouts_incidental_contents_issue_220 --deselect=tests/readme_install_test.py::ReadmeInstallTest::test_every_command_the_readme_names_is_found_by_a_fresh_install 
+cwd: /tmp/t518/m/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+tree: origin/main d82151229d2bdbb4cc7a933368613f47780003f5 (git clone at /tmp/t518/m/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx)
+umask: 0022
+started: 2026-11-20T15:48:46Z
+
+warning: No `requires-python` value found in the workspace. Defaulting to `>=3.13`.
+bringing up nodes...
+bringing up nodes...
+
+..............................................s..................uuu.... [  4%]
+................F.....................................uu...............u [ 10%]
+u...u......u....................uu...................................... [ 14%]
+........................................................................ [ 20%]
+........................................................................ [ 25%]
+........................................................................ [ 30%]
+........................................................................ [ 35%]
+........................................................................ [ 40%]
+......................s................................................. [ 45%]
+..........uu.uu.........uuuuuuuuuu..uu........u..............uuu.uuuuuuu [ 49%]
+u.................................................................ssss.. [ 54%]
+........................................................................ [ 59%]
+........................................................................ [ 64%]
+........................................................................ [ 69%]
+........................................................................ [ 75%]
+.................uu.u......uu...u.u.uuu................................. [ 79%]
+.......................................................uuu.s............ [ 84%]
+uuu.u.uu...u......uuuuuuuu......u......u..uu........u......uu.u.u.uuuu.. [ 87%]
+...................uuu...s..u...u......u........u..s..........u.u.u.u..u [ 92%]
+.uuu....uuu.u..u.u...u.uu.uu.u.u.uu.....s............................... [ 96%]
+.......................................................                  [100%]
+=================================== FAILURES ===================================
+__________ test_doctor_completion_row_lasts_until_a_new_zsh_completes __________
+[gw0] linux -- Python 3.13.18 /tmp/t518/venv-mc/bin/python
+
+tmp_path = PosixPath('/tmp/t518/pytest-of-ubuntu/pytest-16/popen-gw0/test_doctor_completion_row_las0')
+
+    def test_doctor_completion_row_lasts_until_a_new_zsh_completes(tmp_path):
+        # Issue #363: the row used to vanish once the .zshrc carried the fpath
+        # line, though zsh runs no completion system by itself — Tab completed
+        # nothing. The row must stay until a new zsh completes the ccmorph
+        # command, and say only the half the startup files still miss.
+        conf = "type=apikey\napi_key=k\n"
+        home = tmp_path / "home"
+        home.mkdir()
+        # A copy no group can write: compinit refuses a group-writable fpath
+        # directory (a checkout made under umask 002, as on CI, is one) and would
+        # leave a new zsh with no completion, which is not the case under test.
+        install = tmp_path / "install"
+        install.mkdir(mode=0o755)
+        (install / "lib").symlink_to(ROOT / "lib")
+        (install / "libexec").symlink_to(ROOT / "libexec")
+        site = install / "share/zsh/site-functions"
+        shutil.copytree(ROOT / "share/zsh/site-functions", site)
+        for d in (install / "share", install / "share/zsh", site):
+            d.chmod(0o755)
+        for f in site.iterdir():
+            f.chmod(0o644)
+        shell = shutil.which("zsh") or "/bin/zsh"
+        (home / ".zshrc").write_text(f"fpath=({site} $fpath)\n")
+        result, _, _ = run_doctor(tmp_path, conf, claude=False,
+                                  env_extra={"SHELL": shell, "ZDOTDIR": str(home),
+                                             "CCMORPH_LIB_DIR": str(install / "lib")})
+        assert "INFO completion:" in result.stdout
+        assert "autoload -Uz compinit && compinit" in result.stdout
+        assert f"fpath=({site} $fpath)" not in result.stdout
+        # The fpath line followed by the missing half: a new zsh now completes
+        # ccmorph, so doctor stops reporting a completion problem.
+        compinit = "autoload -Uz compinit && compinit"
+        if zsh_fpath_fails_compaudit(shell):
+            compinit += " -u"  # the host's own fpath, not the hint, fails there
+        (home / ".zshrc").write_text(f"fpath=({site} $fpath)\n{compinit}\n")
+        result, _, _ = run_doctor(tmp_path, conf, claude=False,
+                                  env_extra={"SHELL": shell, "ZDOTDIR": str(home),
+                                             "CCMORPH_LIB_DIR": str(install / "lib")})
+>       assert "INFO completion:" not in result.stdout
+E       AssertionError: assert 'INFO completion:' not in 'OK profile:...code/setup\n'
+E         
+E         'INFO completion:' is contained here:
+E            network)
+E           INFO completion: put the fpath line above compinit in ~/.zshrc:
+E         ? ++++++++++++++++
+E           INFO   fpath=(/tmp/t518/pytest-of-ubuntu/pytest-16/popen-gw0/test_doctor_completion_row_las0/install/share/zsh/site-functions $fpath)
+E           FAIL not ready: Claude Code is not installed or not on the PATH — install it: https://docs.anthropic.com/en/docs/claude-code/setup
+
+tests/doctor_test.py:1517: AssertionError
+=============================== warnings summary ===============================
+tests/rc_hosts_test.py: 54 warnings
+  <frozen importlib._bootstrap>:530: DeprecationWarning: the load_module() method is deprecated and slated for removal in Python 3.15; use exec_module() instead
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/doctor_test.py::test_doctor_completion_row_lasts_until_a_new_zsh_completes
+1 failed, 1374 passed, 10 skipped, 54 warnings, 110 subtests passed in 333.69s (0:05:33)
+
+SUMMARY rc=1 secs=337 cpu=8 factor=2 target_load=16 spinners=16 load_min=16.0 load_max=31.6 samples=69 host=gcp-us1 os=linux

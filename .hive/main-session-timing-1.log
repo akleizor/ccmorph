@@ -1,0 +1,73 @@
+cmd: sh /tmp/t518/h518/concurrent-session.sh /tmp/t518/main518 /tmp/t518/h518
+PYTEST_ADDOPTS: 
+cwd: /tmp/t518/main518
+tree: origin/main d82151229d2bdbb4cc7a933368613f47780003f5 (git archive)
+umask: 0022
+started: 2026-11-20T15:13:47Z
+
+session-read 0.909 budget=1 rows=264 os=linux
+session-read 0.143 budget=1 rows=268 os=linux
+session-read 0.606 budget=1 rows=266 os=linux
+session-read 0.750 budget=1 rows=268 os=linux
+session-read 0.761 budget=1 rows=263 os=linux
+session-read 0.794 budget=1 rows=263 os=linux
+session-read 0.688 budget=1 rows=263 os=linux
+session-read 0.822 budget=1 rows=262 os=linux
+session-read 0.708 budget=1 rows=264 os=linux
+session-read 0.788 budget=1 rows=260 os=linux
+session-read 0.513 budget=1 rows=264 os=linux
+session-read 0.888 budget=1 rows=262 os=linux
+session-read 0.666 budget=1 rows=262 os=linux
+session-read 0.538 budget=1 rows=263 os=linux
+session-read 0.784 budget=1 rows=262 os=linux
+session-read 0.838 budget=1 rows=262 os=linux
+session-read 0.571 budget=1 rows=262 os=linux
+session-read 0.786 budget=1 rows=261 os=linux
+session-read 0.579 budget=1 rows=260 os=linux
+session-read 0.556 budget=1 rows=263 os=linux
+session-read 0.879 budget=1 rows=263 os=linux
+session-read 0.820 budget=1 rows=265 os=linux
+session-read 0.886 budget=1 rows=264 os=linux
+session-read 0.807 budget=1 rows=264 os=linux
+session-read 0.821 budget=1 rows=265 os=linux
+session-read 0.816 budget=1 rows=264 os=linux
+session-read 0.969 budget=1 rows=264 os=linux
+session-read 0.759 budget=1 rows=263 os=linux
+session-read 0.914 budget=1 rows=260 os=linux
+session-read 0.660 budget=1 rows=263 os=linux
+session-read 0.692 budget=1 rows=265 os=linux
+session-read 0.887 budget=1 rows=263 os=linux
+session-read 0.869 budget=1 rows=263 os=linux
+session-read 0.947 budget=1 rows=266 os=linux
+session-read 1.099 budget=1 rows=266 os=linux
+session-read 0.852 budget=1 rows=266 os=linux
+session-read 0.796 budget=1 rows=270 os=linux
+session-read 0.630 budget=1 rows=270 os=linux
+session-read 0.757 budget=1 rows=275 os=linux
+session-read 0.994 budget=1 rows=270 os=linux
+session-read 0.801 budget=1 rows=267 os=linux
+session-read 1.008 budget=1 rows=268 os=linux
+session-read 0.764 budget=1 rows=268 os=linux
+session-read 0.478 budget=1 rows=267 os=linux
+session-read 0.489 budget=1 rows=267 os=linux
+session-read 0.611 budget=1 rows=267 os=linux
+session-read 0.756 budget=1 rows=266 os=linux
+session-read 0.625 budget=1 rows=263 os=linux
+session-read 0.614 budget=1 rows=267 os=linux
+session-read 0.553 budget=1 rows=269 os=linux
+session-read 0.891 budget=1 rows=270 os=linux
+session-read 0.809 budget=1 rows=269 os=linux
+session-read 0.934 budget=1 rows=273 os=linux
+session-read 0.641 budget=1 rows=277 os=linux
+session-read 0.362 budget=1 rows=277 os=linux
+session-read 0.859 budget=1 rows=275 os=linux
+session-read 0.971 budget=1 rows=277 os=linux
+session-read 0.787 budget=1 rows=273 os=linux
+session-read 0.817 budget=1 rows=277 os=linux
+session-read 0.958 budget=1 rows=277 os=linux
+--- main's doctor suite, run alongside (rc=1) ---
+FAILED tests/doctor_test.py::test_doctor_reports_existing_adapter_without_starting_it[native-route-lsof-over-deadline-issue-467]
+FAILED tests/doctor_test.py::test_doctor_completion_row_lasts_until_a_new_zsh_completes
+2 failed, 96 passed, 1 skipped in 73.20s (0:01:13)
+
+SUMMARY rc=0 secs=77 cpu=8 factor=6 target_load=48 spinners=48 load_min=48.0 load_max=51.4 samples=17 host=gcp-us1 os=linux

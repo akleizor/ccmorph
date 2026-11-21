@@ -1,0 +1,2 @@
+completion: budget=5s n=10 min=9.55s median=10.44s max=12.45s over_budget=10/10 max_overrun=+7.45s answered_but_unbound=0
+session-read: budget=1s n=10 min=0.56s median=0.69s max=0.95s over_budget=0/10 max_overrun=-0.05s

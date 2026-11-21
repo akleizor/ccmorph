@@ -1,0 +1,401 @@
+cmd: uv run --directory /tmp/t518b/mut518 --with pytest --with pytest-xdist --with pytest-timeout python -m pytest tests/ -q
+PYTEST_ADDOPTS: -rfE -p no:cacheprovider
+cwd: /tmp/t518b/mut518
+tree: 33d415eacff0dea809487ce4361817afb5fda020
+umask: 0022
+started: 2026-11-21T00:13:03Z
+
+warning: No `requires-python` value found in the workspace. Defaulting to `>=3.13`.
+bringing up nodes...
+bringing up nodes...
+
+........................................s....................uuu........ [  4%]
+.......................................................uu............... [  9%]
+.uu...u.....u.Traceback (most recent call last):
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 451, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 439, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "/tmp/t518b/mut518/tests/adapter_test.py", line 123, in do_POST
+    self._json(503, {"error_message": "no healthy upstream"})
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.F....................................uu.................. [ 14%]
+........................................................................ [ 19%]
+........................................................................ [ 25%]
+........................................................................ [ 30%]
+........................................................................ [ 35%]
+........................................................................ [ 40%]
+.........................................................s.............u [ 45%]
+u..uu.........uuuuuuuu.uu..uuu.......................................... [ 49%]
+..................................uuu.uuuuuuuu.......................... [ 53%]
+......................u..u...u....ssss.................................. [ 58%]
+.................u........................u............................. [ 63%]
+.........................u...........................................u.. [ 68%]
+...uuu................................................................F. [ 73%]
+....................................................u...uu.s............ [ 78%]
+......................................................................uu [ 83%]
+u.uuu.u.uu.uu.uuuuuu.u.u...............uuuuuuu...............uu......... [ 87%]
+..................uuu...s.uu.uu.s.............u............u...u..u..u.. [ 91%]
+.uuu............u.u.uuuu..u.uuuuu.uuu....s.............................. [ 95%]
+..................................................................       [100%]
+=================================== FAILURES ===================================
+_ AdapterTest.test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375 _
+[gw0] linux -- Python 3.13.18 /tmp/t518b/mut518/.venv/bin/python
+
+self = <adapter_test.AdapterTest testMethod=test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375>
+
+    def test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375(self):
+        # The merge gate's finding: a profile that already ran the pre-#375
+        # core holds a settled unusable row — and the row that version
+        # actually wrote carried the LAST probe's 404 and its "no route"
+        # note, with status 404, because the refusal's own 402 was
+        # overwritten by the later probes. Upgrading must not leave that row
+        # between the person and the gateway's fresh answer.
+        cache = self.cache_file()
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps({
+            "endpoint": self.base, "anthropic_path": "/v1/messages",
+            "thinking_probe": 2,
+            "rows": [{"model": "m-anthropic", "dialect": "unusable",
+                      "note": '{"error":"no route"}', "status": 404,
+                      "cap": None, "nothink": False, "id_recycle": False}]}))
+        Gateway.message_refusal = (402, {"error": {"message":
+            "Insufficient balance: top up your account to continue"}})
+        out = self.run_adapter("--auto", "--model", "m-anthropic")
+        self.assertNotEqual(out.returncode, 0, out.stdout + out.stderr)
+        self.assertTrue(out.stdout.startswith("EXIT="), out.stdout)
+        self.assertIn("HTTP 402", out.stdout)
+        self.assertIn("Insufficient balance: top up your account to continue",
+                      out.stdout)
+        self.assertNotIn("cached as unusable", out.stdout + out.stderr)
+        self.assertNotIn("no route", out.stdout + out.stderr)
+        # The stale row was re-asked, not served.
+        if [p for p, _m in PROBES] != ["/v1/messages"]:
+            print("DIAG375 PROBES", PROBES)
+            for d in DIAG[-60:]: print("DIAG375", d)
+            print("DIAG375 stdout", out.stdout[-2000:]); print("DIAG375 stderr", out.stderr[-4000:])
+>       self.assertEqual([p for p, _m in PROBES], ["/v1/messages"])
+E       AssertionError: Lists differ: ['/v1/messages', '/v1/messages', '/v1/messages', '/v1/me[51 chars]ges'] != ['/v1/messages']
+E       
+E       First list contains 6 additional elements.
+E       First extra element 1:
+E       '/v1/messages'
+E       
+E       - ['/v1/messages',
+E       ?                ^
+E       
+E       + ['/v1/messages']
+E       ?                ^
+E       
+E       -  '/v1/messages',
+E       -  '/v1/messages',
+E       -  '/v1/messages',
+E       -  '/v1/messages',
+E       -  '/v1/messages',
+E       -  '/v1/messages']
+
+tests/adapter_test.py:1370: AssertionError
+----------------------------- Captured stdout call -----------------------------
+DIAG375 PROBES [('/v1/messages', 'm-dead'), ('/v1/messages', 'm-responses'), ('/v1/messages', 'm-always-reasoner'), ('/v1/messages', 'm-reasoner'), ('/v1/messages', 'm-anthropic'), ('/v1/messages', 'm-noreason'), ('/v1/messages', 'm-anthropic')]
+DIAG375 (27708.178728646, '/v1/messages', 'm-reasoner', 'test_shim_readiness_failure_stops_the_translator', 47736, 'Thread-688 (process_request_thread)')
+DIAG375 (27708.179666255, '/v1/responses', 'm-dead', 'test_shim_readiness_failure_stops_the_translator', 47750, 'Thread-691 (process_request_thread)')
+DIAG375 (27708.181278335, '/v1/messages', 'm-always-reasoner', 'test_shim_readiness_failure_stops_the_translator', 47756, 'Thread-692 (process_request_thread)')
+DIAG375 (27708.184349393, '/v1/messages', 'm-anthropic', 'test_shim_readiness_failure_stops_the_translator', 47760, 'Thread-693 (process_request_thread)')
+DIAG375 (27708.186229993, '/v1/responses', 'm-noreason', 'test_shim_readiness_failure_stops_the_translator', 47766, 'Thread-694 (process_request_thread)')
+DIAG375 (27708.187296352, '/v1/responses', 'm-responses', 'test_shim_readiness_failure_stops_the_translator', 47770, 'Thread-695 (process_request_thread)')
+DIAG375 (27708.187976302, '/v1/messages', 'm-reasoner', 'test_shim_readiness_failure_stops_the_translator', 47778, 'Thread-696 (process_request_thread)')
+DIAG375 (27708.189555431, '/v1/chat/completions', 'm-dead', 'test_shim_readiness_failure_stops_the_translator', 47794, 'Thread-697 (process_request_thread)')
+DIAG375 (27708.190304021, '/v1/messages', 'm-always-reasoner', 'test_shim_readiness_failure_stops_the_translator', 47798, 'Thread-698 (process_request_thread)')
+DIAG375 (27708.196242588, '/v1/messages', 'm-anthropic', 'test_shim_readiness_failure_stops_the_translator', 47808, 'Thread-699 (process_request_thread)')
+DIAG375 (27708.197654478, '/v1/chat/completions', 'm-noreason', 'test_shim_readiness_failure_stops_the_translator', 47818, 'Thread-700 (process_request_thread)')
+DIAG375 (27708.198201497, '/v1/messages', 'm-reasoner', 'test_shim_readiness_failure_stops_the_translator', 47832, 'Thread-701 (process_request_thread)')
+DIAG375 (27708.198854257, '/v1/chat/completions', 'm-dead', 'test_shim_readiness_failure_stops_the_translator', 47838, 'Thread-702 (process_request_thread)')
+DIAG375 (27708.199378397, '/v1/messages', 'm-always-reasoner', 'test_shim_readiness_failure_stops_the_translator', 47846, 'Thread-703 (process_request_thread)')
+DIAG375 (27708.199858197, '/v1/messages', 'm-anthropic', 'test_shim_readiness_failure_stops_the_translator', 47854, 'Thread-704 (process_request_thread)')
+DIAG375 (27708.200458496, '/v1/chat/completions', 'm-noreason', 'test_shim_readiness_failure_stops_the_translator', 47886, 'Thread-706 (process_request_thread)')
+DIAG375 (27708.200741326, '/v1/messages', 'm-reasoner', 'test_shim_readiness_failure_stops_the_translator', 47870, 'Thread-705 (process_request_thread)')
+DIAG375 (27708.201063786, '/v1/messages', 'm-always-reasoner', 'test_shim_readiness_failure_stops_the_translator', 47888, 'Thread-707 (process_request_thread)')
+DIAG375 (27708.202675925, '/v1/chat/completions', 'm-noreason', 'test_shim_readiness_failure_stops_the_translator', 47914, 'Thread-709 (process_request_thread)')
+DIAG375 (27708.203364605, '/v1/messages', 'm-anthropic', 'test_shim_readiness_failure_stops_the_translator', 47898, 'Thread-708 (process_request_thread)')
+DIAG375 (27708.206484534, '/v1/messages', 'm-reasoner', 'test_shim_readiness_failure_stops_the_translator', 47926, 'Thread-710 (process_request_thread)')
+DIAG375 (27709.249451497, 'setUp', 'test_sigkilled_adapter_does_not_leak_its_children')
+DIAG375 (27709.293597558, '/v1/messages', 'm-shaky', 'test_sigkilled_adapter_does_not_leak_its_children', 47942, 'Thread-712 (process_request_thread)')
+DIAG375 (27709.294567567, '/v1/messages', 'm-anthropic', 'test_sigkilled_adapter_does_not_leak_its_children', 47968, 'Thread-714 (process_request_thread)')
+DIAG375 (27709.297284546, '/v1/messages', 'm-always-reasoner', 'test_sigkilled_adapter_does_not_leak_its_children', 47958, 'Thread-713 (process_request_thread)')
+DIAG375 (27709.298427346, '/v1/messages', 'm-dead', 'test_sigkilled_adapter_does_not_leak_its_children', 47976, 'Thread-715 (process_request_thread)')
+DIAG375 (27709.298890156, '/v1/messages', 'm-noreason', 'test_sigkilled_adapter_does_not_leak_its_children', 47988, 'Thread-716 (process_request_thread)')
+DIAG375 (27709.304181523, '/v1/messages', 'm-reasoner', 'test_sigkilled_adapter_does_not_leak_its_children', 47996, 'Thread-717 (process_request_thread)')
+DIAG375 (27709.305309183, '/v1/messages', 'm-responses', 'test_sigkilled_adapter_does_not_leak_its_children', 48006, 'Thread-718 (process_request_thread)')
+DIAG375 (27709.305800492, '/v1/messages', 'm-always-reasoner', 'test_sigkilled_adapter_does_not_leak_its_children', 48016, 'Thread-719 (process_request_thread)')
+DIAG375 (27709.306523972, '/v1/messages', 'm-anthropic', 'test_sigkilled_adapter_does_not_leak_its_children', 48032, 'Thread-720 (process_request_thread)')
+DIAG375 (27709.307230512, '/v1/responses', 'm-dead', 'test_sigkilled_adapter_does_not_leak_its_children', 48040, 'Thread-721 (process_request_thread)')
+DIAG375 (27709.307696792, '/v1/responses', 'm-noreason', 'test_sigkilled_adapter_does_not_leak_its_children', 48044, 'Thread-722 (process_request_thread)')
+DIAG375 (27709.308969571, '/v1/messages', 'm-reasoner', 'test_sigkilled_adapter_does_not_leak_its_children', 48052, 'Thread-723 (process_request_thread)')
+DIAG375 (27709.313189839, '/v1/messages', 'm-always-reasoner', 'test_sigkilled_adapter_does_not_leak_its_children', 48058, 'Thread-724 (process_request_thread)')
+DIAG375 (27709.314646649, '/v1/responses', 'm-responses', 'test_sigkilled_adapter_does_not_leak_its_children', 48072, 'Thread-725 (process_request_thread)')
+DIAG375 (27709.315200858, '/v1/messages', 'm-anthropic', 'test_sigkilled_adapter_does_not_leak_its_children', 48088, 'Thread-726 (process_request_thread)')
+DIAG375 (27709.317359977, '/v1/chat/completions', 'm-noreason', 'test_sigkilled_adapter_does_not_leak_its_children', 48100, 'Thread-727 (process_request_thread)')
+DIAG375 (27709.321257036, '/v1/chat/completions', 'm-dead', 'test_sigkilled_adapter_does_not_leak_its_children', 48112, 'Thread-728 (process_request_thread)')
+DIAG375 (27709.323383495, '/v1/messages', 'm-reasoner', 'test_sigkilled_adapter_does_not_leak_its_children', 48124, 'Thread-729 (process_request_thread)')
+DIAG375 (27709.323697524, '/v1/messages', 'm-always-reasoner', 'test_sigkilled_adapter_does_not_leak_its_children', 48136, 'Thread-730 (process_request_thread)')
+DIAG375 (27709.324415004, '/v1/chat/completions', 'm-noreason', 'test_sigkilled_adapter_does_not_leak_its_children', 48162, 'Thread-732 (process_request_thread)')
+DIAG375 (27709.324726624, '/v1/messages', 'm-anthropic', 'test_sigkilled_adapter_does_not_leak_its_children', 48150, 'Thread-731 (process_request_thread)')
+DIAG375 (27709.330166872, '/v1/messages', 'm-always-reasoner', 'test_sigkilled_adapter_does_not_leak_its_children', 48178, 'Thread-734 (process_request_thread)')
+DIAG375 (27709.330780282, '/v1/messages', 'm-reasoner', 'test_sigkilled_adapter_does_not_leak_its_children', 48192, 'Thread-735 (process_request_thread)')
+DIAG375 (27709.331168172, '/v1/chat/completions', 'm-dead', 'test_sigkilled_adapter_does_not_leak_its_children', 48172, 'Thread-733 (process_request_thread)')
+DIAG375 (27709.33459448, '/v1/chat/completions', 'm-noreason', 'test_sigkilled_adapter_does_not_leak_its_children', 48206, 'Thread-736 (process_request_thread)')
+DIAG375 (27709.336192289, '/v1/messages', 'm-anthropic', 'test_sigkilled_adapter_does_not_leak_its_children', 48212, 'Thread-737 (process_request_thread)')
+DIAG375 (27709.339284498, '/v1/messages', 'm-reasoner', 'test_sigkilled_adapter_does_not_leak_its_children', 48214, 'Thread-738 (process_request_thread)')
+DIAG375 (27711.793186674, '/v1/messages', 'm-shaky', 'test_sigkilled_adapter_does_not_leak_its_children', 48224, 'Thread-740 (process_request_thread)')
+DIAG375 (27714.338863039, 'setUp', 'test_the_fixed_port_stays_reserved_while_models_are_probed')
+DIAG375 (27714.376915433, '/v1/messages', 'm-shaky', 'test_the_fixed_port_stays_reserved_while_models_are_probed', 36074, 'Thread-742 (process_request_thread)')
+DIAG375 (27714.395341805, 'setUp', 'test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375')
+DIAG375 (27714.397333604, '/v1/messages', 'm-dead', 'test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375', 36086, 'Thread-743 (process_request_thread)')
+DIAG375 (27714.399474433, '/v1/messages', 'm-responses', 'test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375', 36098, 'Thread-744 (process_request_thread)')
+DIAG375 (27714.400843312, '/v1/messages', 'm-always-reasoner', 'test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375', 36102, 'Thread-745 (process_request_thread)')
+DIAG375 (27714.409205999, '/v1/messages', 'm-reasoner', 'test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375', 36108, 'Thread-746 (process_request_thread)')
+DIAG375 (27714.410791988, '/v1/messages', 'm-anthropic', 'test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375', 36120, 'Thread-747 (process_request_thread)')
+DIAG375 (27714.418442554, '/v1/messages', 'm-noreason', 'test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375', 36136, 'Thread-748 (process_request_thread)')
+DIAG375 (27714.441439915, '/v1/messages', 'm-anthropic', 'test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375', 36144, 'Thread-750 (process_request_thread)')
+DIAG375 stdout EXIT=the gateway refused the message for model 'm-anthropic' (HTTP 402): Insufficient balance: top up your account to continue; top up the provider account, then retry; or change the route: ccmorph config p
+
+DIAG375 stderr ccmorph-adapter: classifying only the requested model 'm-anthropic' on http://127.0.0.1:41833 (0 cached row(s) kept, no inventory scan)
+ccmorph-adapter: probing 1 new model(s) of 1 on http://127.0.0.1:41833
+ccmorph-adapter: automatic compatibility checks prefer endpoint metadata; only the selected model may need bounded inference
+ccmorph-adapter: Cache: /tmp/t518b/tmp5blgqcg4/profiles/.adapter-cache/73f8804a108dee70.json
+ccmorph-adapter: Checking compatibility for 'm-anthropic': up to four small inference requests (8/16 output tokens each); charges may apply.
+ccmorph-adapter: not caching indeterminate verdict(s) for m-anthropic; caching 0 settled
+ccmorph-adapter: the gateway refused the message for model 'm-anthropic' (HTTP 402): Insufficient balance: top up your account to continue
+
+----------------------------- Captured stderr call -----------------------------
+  File "/tmp/t518b/mut518/tests/adapter_test.py", line 60, in _json
+    self.wfile.write(payload)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+ConnectionResetError: [Errno 104] Connection reset by peer
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 36086)
+Traceback (most recent call last):
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 451, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 439, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "/tmp/t518b/mut518/tests/adapter_test.py", line 81, in do_POST
+    self._json(code, refusal)
+    ~~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/tmp/t518b/mut518/tests/adapter_test.py", line 60, in _json
+    self.wfile.write(payload)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 36098)
+Traceback (most recent call last):
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 451, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 439, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "/tmp/t518b/mut518/tests/adapter_test.py", line 81, in do_POST
+    self._json(code, refusal)
+    ~~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/tmp/t518b/mut518/tests/adapter_test.py", line 60, in _json
+    self.wfile.write(payload)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 36102)
+Traceback (most recent call last):
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 451, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 439, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "/tmp/t518b/mut518/tests/adapter_test.py", line 81, in do_POST
+    self._json(code, refusal)
+    ~~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/tmp/t518b/mut518/tests/adapter_test.py", line 60, in _json
+    self.wfile.write(payload)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 36108)
+Traceback (most recent call last):
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 451, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 439, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "/tmp/t518b/mut518/tests/adapter_test.py", line 81, in do_POST
+    self._json(code, refusal)
+    ~~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/tmp/t518b/mut518/tests/adapter_test.py", line 60, in _json
+    self.wfile.write(payload)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 36120)
+Traceback (most recent call last):
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 36136)
+Traceback (most recent call last):
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 451, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 439, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "/tmp/t518b/mut518/tests/adapter_test.py", line 81, in do_POST
+    self._json(code, refusal)
+    ~~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/tmp/t518b/mut518/tests/adapter_test.py", line 60, in _json
+    self.wfile.write(payload)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 451, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/http/server.py", line 439, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "/tmp/t518b/mut518/tests/adapter_test.py", line 81, in do_POST
+    self._json(code, refusal)
+    ~~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/tmp/t518b/mut518/tests/adapter_test.py", line 60, in _json
+    self.wfile.write(payload)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/home/ubuntu/.local/share/uv/python/cpython-3.13.18-linux-x86_64-gnu/lib/python3.13/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------
+_ ReadmeInstallTest.test_every_command_the_readme_names_is_found_by_a_fresh_install _
+[gw1] linux -- Python 3.13.18 /tmp/t518b/mut518/.venv/bin/python
+
+self = <readme_install_test.ReadmeInstallTest testMethod=test_every_command_the_readme_names_is_found_by_a_fresh_install>
+
+    def test_every_command_the_readme_names_is_found_by_a_fresh_install(self):
+        problems = self._problems(README.read_text(encoding="utf-8"))
+>       self.assertEqual(problems, [], "README names commands a fresh install "
+                         "cannot run:\n  " + "\n  ".join(problems))
+E       AssertionError: Lists differ: ["line 62: 'brew' — not found on a reader'[265 chars] it"] != []
+E       
+E       First list contains 3 additional elements.
+E       First extra element 0:
+E       "line 62: 'brew' — not found on a reader's PATH: neither the fresh install nor the system provides it"
+E       
+E       + []
+E       - ["line 62: 'brew' — not found on a reader's PATH: neither the fresh install "
+E       -  'nor the system provides it',
+E       -  "line 69: 'brew' — not found on a reader's PATH: neither the fresh install "
+E       -  'nor the system provides it',
+E       -  "line 70: 'brew' — not found on a reader's PATH: neither the fresh install "
+E       -  'nor the system provides it'] : README names commands a fresh install cannot run:
+E         line 62: 'brew' — not found on a reader's PATH: neither the fresh install nor the system provides it
+E         line 69: 'brew' — not found on a reader's PATH: neither the fresh install nor the system provides it
+E         line 70: 'brew' — not found on a reader's PATH: neither the fresh install nor the system provides it
+
+tests/readme_install_test.py:179: AssertionError
+=============================== warnings summary ===============================
+tests/rc_hosts_test.py: 54 warnings
+  <frozen importlib._bootstrap>:530: DeprecationWarning: the load_module() method is deprecated and slated for removal in Python 3.15; use exec_module() instead
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/adapter_test.py::AdapterTest::test_the_pre_fix_cache_row_is_reasked_with_the_fresh_answer_issue_375
+FAILED tests/readme_install_test.py::ReadmeInstallTest::test_every_command_the_readme_names_is_found_by_a_fresh_install
+2 failed, 1384 passed, 10 skipped, 54 warnings, 110 subtests passed in 181.69s (0:03:01)
+
+SUMMARY rc=1 secs=183 cpu=4 factor=2 target_load=8 spinners=8 load_min=9.2 load_max=10.7 samples=38 host=gcp-us2 os=linux

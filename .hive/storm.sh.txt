@@ -1,0 +1,8 @@
+#!/bin/sh
+# storm.sh N CMD...: process churn (N loops, each forking /bin/true as fast as it can) while CMD runs; the loops always stop.
+n=$1; shift
+pids=
+i=0; while [ $i -lt $n ]; do perl -e 'while(1){ my $p=fork; if($p){wait} else { exec("/bin/true") } }' & pids="$pids $!"; i=$((i+1)); done
+trap 'kill $pids 2>/dev/null' EXIT INT TERM
+sleep 2
+"$@"

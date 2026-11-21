@@ -1,0 +1,27 @@
+host Linux x86_64 4 cores; branch ceeb5f1 + TestRunningAdapterMatchesArgvAcrossSpaces (30 s bound, asked again on __UNKNOWN__)
+cmd: sh .hive/storm.sh.txt 64 go test ./util/ -run 'TestRunningAdapterMatchesArgvAcrossSpaces$' -count=20 -v
+loadavg before: 36.21 49.63 31.46 1/399 3503682
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (1.10s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.46s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.90s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.41s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.93s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (1.31s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (1.14s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.42s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.46s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.71s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.60s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.56s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.53s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.49s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.53s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.52s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.87s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.97s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.98s)
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (1.32s)
+ok  	github.com/akleizor/ccmorph/util	15.274s
+loadavg after: 47.52 51.22 32.47 3/406 3567457
+the scout's command, under the same storm:
+ok  	github.com/akleizor/ccmorph/util	0.571s

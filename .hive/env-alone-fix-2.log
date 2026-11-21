@@ -1,0 +1,32 @@
+warning: No `requires-python` value found in the workspace. Defaulting to `>=3.13`.
+F.                                                                       [100%]
+=================================== FAILURES ===================================
+_ ReadmeInstallTest.test_every_command_the_readme_names_is_found_by_a_fresh_install _
+
+self = <readme_install_test.ReadmeInstallTest testMethod=test_every_command_the_readme_names_is_found_by_a_fresh_install>
+
+    def test_every_command_the_readme_names_is_found_by_a_fresh_install(self):
+        problems = self._problems(README.read_text(encoding="utf-8"))
+>       self.assertEqual(problems, [], "README names commands a fresh install "
+                         "cannot run:\n  " + "\n  ".join(problems))
+E       AssertionError: Lists differ: ["line 62: 'brew' — not found on a reader'[265 chars] it"] != []
+E       
+E       First list contains 3 additional elements.
+E       First extra element 0:
+E       "line 62: 'brew' — not found on a reader's PATH: neither the fresh install nor the system provides it"
+E       
+E       + []
+E       - ["line 62: 'brew' — not found on a reader's PATH: neither the fresh install "
+E       -  'nor the system provides it',
+E       -  "line 69: 'brew' — not found on a reader's PATH: neither the fresh install "
+E       -  'nor the system provides it',
+E       -  "line 70: 'brew' — not found on a reader's PATH: neither the fresh install "
+E       -  'nor the system provides it'] : README names commands a fresh install cannot run:
+E         line 62: 'brew' — not found on a reader's PATH: neither the fresh install nor the system provides it
+E         line 69: 'brew' — not found on a reader's PATH: neither the fresh install nor the system provides it
+E         line 70: 'brew' — not found on a reader's PATH: neither the fresh install nor the system provides it
+
+tests/readme_install_test.py:179: AssertionError
+=========================== short test summary info ============================
+FAILED tests/readme_install_test.py::ReadmeInstallTest::test_every_command_the_readme_names_is_found_by_a_fresh_install
+1 failed, 1 passed in 2.51s

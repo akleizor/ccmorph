@@ -1,0 +1,6 @@
+loadavg before: 39.64 32.22 23.10 4/761 706185
+warning: No `requires-python` value found in the workspace. Defaulting to `>=3.13`.
+..                                                                       [100%]
+2 passed in 2.28s
+rc=0
+loadavg after: 39.64 32.22 23.10 12/838 706463
