@@ -416,6 +416,8 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
     key = route_env.get("ANTHROPIC_API_KEY") or die(f"route profile '{route}' has no key")
     route_env.get("ANTHROPIC_BASE_URL") or die(f"route profile '{route}' has no endpoint")
 
+    mitmdump = shutil.which("mitmdump") or die("mitmdump not found: brew install mitmproxy")
+
     upstream = start_adapter(route, me, adapter_env())
 
     STATE.mkdir(parents=True, exist_ok=True)
@@ -424,26 +426,31 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
     confdir.mkdir(exist_ok=True)
     confdir.chmod(0o700)
     fd, key_file = tempfile.mkstemp(prefix="route-key.", dir=STATE)
-    os.write(fd, key.encode())
-    os.close(fd)
-
-    port = fixed_port or free_port()
-    mitmdump = shutil.which("mitmdump") or die("mitmdump not found: brew install mitmproxy")
-    proxy_env = {k: v for k, v in os.environ.items() if k not in strip_env()}
-    proxy_env.update(RC_UPSTREAM=upstream, RC_KEY_FILE=key_file, RC_PARENT_PID=str(me),
-                     RC_TIERS=json.dumps(pinned_tiers(os.environ)), RC_INFERENCE=str(INFERENCE))
-    if args.debug:
-        proxy_env["RC_LOG"] = str(STATE / "debug.log")
-    proxy = subprocess.Popen(
-        proxy_command(mitmdump, port, confdir, private_addon(STATE)),
-        env=proxy_env, stdin=subprocess.DEVNULL, start_new_session=True)
-    wait_listening(port, proxy, "proxy")
-    ca = confdir / "mitmproxy-ca-cert.pem"
-    if not ca.exists():
-        die(f"proxy CA not generated at {ca}")
-    if os.path.exists(key_file):
-        die("proxy did not consume the route key; refusing to continue")
-    return port, ca, upstream, route_env
+    # README: the route key is in no lingering file. The addon unlinks it on the
+    # happy path; from this write on, every way out — the dies below included —
+    # goes through the finally, so no failed start leaves the profile's key behind.
+    try:
+        os.write(fd, key.encode())
+        os.close(fd)
+        port = fixed_port or free_port()
+        proxy_env = {k: v for k, v in os.environ.items() if k not in strip_env()}
+        proxy_env.update(RC_UPSTREAM=upstream, RC_KEY_FILE=key_file, RC_PARENT_PID=str(me),
+                         RC_TIERS=json.dumps(pinned_tiers(os.environ)), RC_INFERENCE=str(INFERENCE))
+        if args.debug:
+            proxy_env["RC_LOG"] = str(STATE / "debug.log")
+        proxy = subprocess.Popen(
+            proxy_command(mitmdump, port, confdir, private_addon(STATE)),
+            env=proxy_env, stdin=subprocess.DEVNULL, start_new_session=True)
+        wait_listening(port, proxy, "proxy")
+        ca = confdir / "mitmproxy-ca-cert.pem"
+        if not ca.exists():
+            die(f"proxy CA not generated at {ca}")
+        if os.path.exists(key_file):
+            die("proxy did not consume the route key; refusing to continue")
+        return port, ca, upstream, route_env
+    finally:
+        with suppress(OSError):
+            os.unlink(key_file)      # already gone when the addon consumed the key
 
 
 def edge_down(port: int, upstream: str) -> str | None:
