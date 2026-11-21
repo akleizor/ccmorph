@@ -851,6 +851,53 @@ func TestSSEReadsOneByteAtATime(t *testing.T) {
 	}
 }
 
+// heldOpenReader hands over its bytes, then blocks like an upstream that keeps
+// the connection open and sends nothing more, until done is closed.
+type heldOpenReader struct {
+	r    io.Reader
+	done chan struct{}
+}
+
+func (h *heldOpenReader) Read(p []byte) (int, error) {
+	if n, err := h.r.Read(p); n > 0 || err != io.EOF {
+		return n, err
+	}
+	<-h.done
+	return 0, io.EOF
+}
+
+// With masking on, the reply still ends at its terminal event without waiting
+// for the blank line closing it: the restore pass hands the event on at its
+// terminal data line, and the fields already read follow it.
+func TestTerminalEventEndsTheMaskedReplyWithoutWaiting(t *testing.T) {
+	const stop = "data:{\"type\":\"message_stop\"}"
+	for _, tc := range []struct{ name, up, want string }{
+		{"lf", "event: message_stop\n" + stop + "\n", "event: message_stop\n" + stop + "\n\n"},
+		{"bare cr", "event: message_stop\r" + stop + "\r", "event: message_stop\r" + stop + "\r\r"},
+		{"bare cr event line after data", stop + "\revent: message_stop\r", stop + "\revent: message_stop\r\r"},
+		{"crlf with its blank line", "event: message_stop\r\n" + stop + "\r\n\r\n", "event: message_stop\r\n" + stop + "\r\n\r\n"},
+	} {
+		done := make(chan struct{})
+		src := &unmaskStream{src: &thinkingStream{r: bufio.NewReader(&heldOpenReader{r: strings.NewReader(tc.up), done: done})}, m: testMasker(t, "")}
+		w := httptest.NewRecorder()
+		rq := &request{w: w, rc: http.NewResponseController(w)}
+		ended := make(chan error, 1)
+		go func() {
+			readErr, writeErr := NewServer("").relayStream(rq, src, nil, strp("m"), "")
+			ended <- errors.Join(readErr, writeErr)
+		}()
+		select {
+		case err := <-ended:
+			if err != nil || w.Body.String() != tc.want {
+				t.Errorf("%s: err %v, got %q\nwant %q", tc.name, err, w.Body.String(), tc.want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Errorf("%s: the masked reply waits on the upstream past message_stop", tc.name)
+		}
+		close(done)
+	}
+}
+
 // A CRLF cut by the size of one read, its LF already buffered, stays whole:
 // the reader takes the LF while it costs no read, so the bytes relay exact.
 func TestBufferedCRLFAcrossOneReadStaysWhole(t *testing.T) {

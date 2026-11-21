@@ -811,6 +811,25 @@ func (u *unmaskStream) inHand() [][]byte {
 	return lines
 }
 
+// terminalData reports a data line that carries a terminal event. The reply
+// ends at it, so its event is restored and handed on at once instead of
+// waiting for the blank line that closes it, which the upstream may never
+// send; the relay takes the rest of the event already read through inHand.
+func terminalData(line []byte) bool {
+	_, payload, _, isData := dataPayload(line)
+	if !isData || !containsAny(payload, terminalNeedles) {
+		return false
+	}
+	d := parseDoc(payload)
+	if d == nil {
+		return false
+	}
+	kind, _ := d.str("type")
+	return terminalEvent(kind)
+}
+
+var terminalNeedles = [][]byte{[]byte(`"message_stop"`), []byte(`"error"`)}
+
 func (u *unmaskStream) readline() ([]byte, error) {
 	for len(u.out) == 0 {
 		if u.err != nil {
@@ -832,7 +851,7 @@ func (u *unmaskStream) readline() ([]byte, error) {
 			continue
 		}
 		u.event = append(u.event, line)
-		if len(bytes.TrimRight(line, "\r\n")) == 0 {
+		if len(bytes.TrimRight(line, "\r\n")) == 0 || terminalData(line) {
 			ev := u.event
 			u.event = nil
 			u.process(ev)
