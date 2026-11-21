@@ -266,7 +266,10 @@ MCP credentials (through capsules), settings, history, and tooling are **global 
 exactly as given. Nothing is inserted, removed or rewritten, so no subcommand —
 listed, hidden or released tomorrow — meets a flag ccmorph invented, and ccmorph
 never needs Claude Code's command grammar. (The additions are a hop's resume,
-which is ccmorph's own relaunch.) Launch state reaches Claude Code through the
+which is ccmorph's own relaunch. The one rewrite is `ccmorph run <profile>
+version`: Claude Code has no `version` command, so that lone word becomes its
+`--version` request (#650); `_ccm_launch -a` passes the word through as a
+prompt.) Launch state reaches Claude Code through the
 two channels it reads at
 every entry point — a session, any subcommand, the sessions Remote Control spawns:
 

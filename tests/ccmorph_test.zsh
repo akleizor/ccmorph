@@ -1705,6 +1705,14 @@ fake_claude_help() {
     done
     print -r -- '  exit 0'
     print -r -- 'fi'
+    # Claude Code answers a version request with its version and exits; without
+    # this the pass-through answer is silent and the test proves only the status.
+    # The logging stub still sees the argv, so a test can pin what reached claude.
+    print -r -- 'if [ "$1" = "--version" ] || [ "$1" = "-v" ]; then'
+    print -r -- "  \"$logged\" \"\$@\""
+    print -r -- '  echo "2.1.329 (Claude Code)"'
+    print -r -- '  exit 0'
+    print -r -- 'fi'
     print -r -- "exec \"$logged\" \"\$@\""
   } > "$real"
   chmod +x "$real"
@@ -1887,6 +1895,99 @@ test_run_with_a_profile_keeps_claudes_native_help() {
   assert_not_contains "$output" 'Usage: ccmorph run' \
     'run gw --help must not print ccmorph page instead of forwarding' || rc=1
 
+  rm -rf "$test_home"
+  return $rc
+}
+
+test_a_launch_that_opens_no_session_answers_while_the_endpoint_is_down_issue_650() {
+  # See #650: a Claude subcommand or a print-and-exit printout opens no session,
+  # so it must not start the adapter or wait for the route's readiness. With the
+  # endpoint down and an adapter that dies at once, every such launch still
+  # answers, passes its argv to claude untouched, and prints no session refusal.
+  # The lone word `version` is the version request the issue names: ccmorph
+  # answers it as Claude Code's own --version, which prints and exits, so it
+  # needs no session and no route either.
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  write_apikey_conf gw650 'api_key=k' 'base_url=http://127.0.0.1:9'
+  write_fake_adapter ': > "$HOME/adapter.ran"' 'exit 1'
+  fake_claude_help
+  printf '%s\n' '#!/bin/sh' 'exit 7' > "$HOME/bin/curl"
+  chmod +x "$HOME/bin/curl"
+  source "$CCMORPH_SOURCE"
+
+  local rc=0 out st c w want
+  for c in 'mcp list' 'doctor' '--help' '-- --help' '--version' '-v'; do
+    : > "$CCMORPH_TEST_LOG"; rm -f "$HOME/adapter.ran"; st=0
+    out=$(ccmorph run gw650 ${=c} 2>&1) || st=$?
+    [[ "$st" == 0 ]] || {
+      print -u2 -- "FAIL: 'ccmorph run gw650 $c' opens no session and must answer with the endpoint down, status $st: $out"
+      rc=1
+    }
+    [[ ! -e "$HOME/adapter.ran" ]] || {
+      print -u2 -- "FAIL: 'ccmorph run gw650 $c' started the adapter, yet it opens no session"
+      rc=1
+    }
+    assert_not_contains "$out" 'adapter exited before readiness' \
+      "'ccmorph run gw650 $c' must not wait on the route's readiness" || rc=1
+    assert_not_contains "$out" 'session not started' \
+      "'ccmorph run gw650 $c' opens no session, so none can fail to start" || rc=1
+    if [[ "$c" == *--help ]]; then
+      assert_contains "$out" 'Usage: claude [options] [command]' \
+        "'ccmorph run gw650 $c' must print Claude Code's own usage" || rc=1
+    else
+      want=ARG
+      for w in ${=c}; do want+=$'\t'"$w"; done
+      grep -qxF -- "$want" "$CCMORPH_TEST_LOG" || {
+        print -u2 -- "FAIL: claude did not receive '$c' untouched: $(<"$CCMORPH_TEST_LOG")"
+        rc=1
+      }
+    fi
+  done
+
+  : > "$CCMORPH_TEST_LOG"; rm -f "$HOME/adapter.ran"; st=0
+  out=$(ccmorph run gw650 version 2>&1) || st=$?
+  [[ "$st" == 0 ]] || {
+    print -u2 -- "FAIL: 'ccmorph run gw650 version' must answer with the endpoint down, status $st: $out"
+    rc=1
+  }
+  [[ ! -e "$HOME/adapter.ran" ]] || {
+    print -u2 -- 'FAIL: a bare version request opens no session, so it must start no adapter'
+    rc=1
+  }
+  assert_not_contains "$out" 'adapter exited before readiness' \
+    'a bare version request must not wait on the route' || rc=1
+  assert_not_contains "$out" 'session not started' \
+    'a bare version request opens no session, so none can fail to start' || rc=1
+  assert_contains "$out" '2.1.329 (Claude Code)' \
+    "a bare version request must print Claude Code's version" || rc=1
+  grep -qxF -- $'ARG\t--version' "$CCMORPH_TEST_LOG" || {
+    print -u2 -- "FAIL: the version request did not reach claude: $(<"$CCMORPH_TEST_LOG")"
+    rc=1
+  }
+
+  # Only the public `ccmorph run` verb reads the lone word as the version
+  # request. Agent dispatch, `_ccm_launch -a <profile> <args>`, hands Claude
+  # Code its arguments exactly as given (INTENT promise 6): there `version` is
+  # a one-word prompt, so it opens a session, takes the route path, and keeps
+  # the true refusal on a dead route.
+  : > "$CCMORPH_TEST_LOG"; rm -f "$HOME/adapter.ran"; st=0
+  out=$(_ccm_launch -a gw650 version 2>&1) || st=$?
+  (( st != 0 )) || {
+    print -u2 -- "FAIL: '_ccm_launch -a gw650 version' is a prompt; its session cannot start on a dead route: $out"
+    rc=1
+  }
+  [[ -e "$HOME/adapter.ran" ]] || {
+    print -u2 -- "FAIL: '_ccm_launch -a gw650 version' opens a session, so it must take the route path"
+    rc=1
+  }
+  assert_contains "$out" 'adapter exited before readiness; session not started.' \
+    'a session launch on a dead route keeps its refusal' || rc=1
+  if grep -q -- '--version' "$CCMORPH_TEST_LOG"; then
+    print -u2 -- "FAIL: agent dispatch rewrote the prompt 'version' into --version: $(<"$CCMORPH_TEST_LOG")"
+    rc=1
+  fi
   rm -rf "$test_home"
   return $rc
 }
@@ -11637,6 +11738,7 @@ run_test test_the_former_pick_name_still_works
 run_test test_claude_subcommands_are_asked_for_never_hardcoded
 run_test test_arguments_reach_claude_exactly_as_given
 run_test test_run_with_a_profile_keeps_claudes_native_help
+run_test test_a_launch_that_opens_no_session_answers_while_the_endpoint_is_down_issue_650
 run_test test_a_missing_argument_prints_usage_under_nounset
 run_test test_claude_subcommands_reach_claude_through_the_launch_pipeline
 run_test test_a_retired_verb_is_rejected_not_merely_undocumented
