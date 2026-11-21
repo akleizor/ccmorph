@@ -1005,7 +1005,9 @@ gateway profile, env.CCMORPH_MASK=1 in ~/.config/ccmorph/<profile>.conf sends
 secrets as placeholders; ccmorph inspect shows whether it is on.`},
 	"list": {"ccmorph list", "List saved profiles. * marks the default used by ccmorph run; private marks one whose history is deleted when the session ends."},
 	"price": {"ccmorph price <model>... [--json]", `Read cached model list prices in US dollars per million tokens.
-Missing prices are unpriced; --json omits them. The cache is never fetched.`},
+A missing model in a populated cache is unpriced; --json omits it. The cache is never fetched.
+An empty cache is reported explicitly. Run a provider profile with ccmorph run <profile> to refresh it.`},
+
 	"quota": {"ccmorph quota [profile] [--json]", `Every profile in one view, grouped by kind: Claude accounts and tokens,
 Codex subscriptions, budget accounts, and API key or provider profiles. Each
 plan window is a bar with the percent used and when it resets; a plan tier
