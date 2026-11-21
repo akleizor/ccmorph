@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeCore writes a stub `core adapter` script answering with body.
@@ -31,6 +32,59 @@ func TestAdapterStartHandsBackPortAndNeverTheTTY(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(stdin); strings.TrimSpace(string(b)) != "not-a-tty" {
 		t.Fatalf("adapter fd0: %q", b)
+	}
+}
+
+func TestAdapterReadyLimit(t *testing.T) {
+	// One bound for either scope (#766): the model-scoped 45 s only held on a
+	// quiet machine, and a loaded host killed every --model run with it. The
+	// env is emptied first so the default never reads the caller's own value.
+	t.Setenv("CCMORPH_ADAPTER_START_TIMEOUT", "")
+	if got := adapterReadyLimit(); got != 600*time.Second {
+		t.Errorf("default limit %v, want 600s", got)
+	}
+	// A caller on a loaded host may wait longer; anything unusable keeps the
+	// default rather than arming a zero or negative deadline — including a
+	// count whose nanoseconds would not fit a duration (#9223372036 = 292
+	// years), which would wrap negative and abort the very first poll.
+	for _, tc := range []struct {
+		env  string
+		want time.Duration
+	}{
+		{"900", 900 * time.Second},
+		{"9223372036", 9223372036 * time.Second},
+		{"9223372037", 600 * time.Second},
+		{"99999999999999999999999", 600 * time.Second},
+		{"0", 600 * time.Second},
+		{"-5", 600 * time.Second},
+		{"soon", 600 * time.Second},
+		{"", 600 * time.Second},
+	} {
+		t.Setenv("CCMORPH_ADAPTER_START_TIMEOUT", tc.env)
+		if got := adapterReadyLimit(); got != tc.want {
+			t.Errorf("env %q: limit %v, want %v", tc.env, got, tc.want)
+		}
+	}
+}
+
+func TestAdapterStartModelScopeHonorsTheEnvBoundAndSaysTheWait(t *testing.T) {
+	// #766: a --model-scoped start ignored any bound the caller passed and
+	// died at a fixed 45 s; it now waits the bound and the failure line says
+	// how long it actually waited.
+	t.Setenv("CCMORPH_ADAPTER_START_TIMEOUT", "1")
+	core := fakeCore(t, "exec sleep 30") // never answers; exec keeps it killable
+	var out, errw bytes.Buffer
+	started := time.Now()
+	rc := adapterStart([]string{core, "p", "llmgate/claude-opus-5-5", "1", os.DevNull}, nil, &out, &errw)
+	waited := time.Since(started)
+	if rc != 1 {
+		t.Fatalf("rc %d, stderr %q", rc, errw.String())
+	}
+	if !strings.Contains(errw.String(), "timed out after 1s") {
+		t.Errorf("stderr %q, want the waited seconds (1s)", errw.String())
+	}
+	if waited > 10*time.Second {
+		t.Errorf("env bound ignored: waited %v for a 1s bound", waited)
 	}
 }
 
