@@ -137,7 +137,7 @@ func renderEntry(w io.Writer, e Entry, color bool) {
 // the cost is unknown — never 0%, the picture of a month with no spend (#301).
 func windowLine(win Window, s *Spend) string {
 	share := percent(win.Used)
-	if s.allUnpriced() {
+	if s.AllUnpriced() {
 		share = "cost unknown"
 	}
 	return fmt.Sprintf("  %-8s %s %4s  %s", win.Label, bar(win.Used), share, resetText(win.ResetsAt))
@@ -150,7 +150,7 @@ func spendLine(s *Spend) string {
 	if s.MonthTurns == 0 {
 		return "  not used this month"
 	}
-	if s.allUnpriced() {
+	if s.AllUnpriced() {
 		return fmt.Sprintf("  %d %s · %d %s this month · cost unknown",
 			s.MonthTurns, plural(int64(s.MonthTurns), "turn"), s.MonthTokens, plural(s.MonthTokens, "token"))
 	}

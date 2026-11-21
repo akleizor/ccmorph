@@ -41,11 +41,13 @@ type Spend struct {
 	UnpricedTurns int   `json:"unpriced_turns"`
 }
 
-// allUnpriced reports whether the profile served turns this month and not one
+// AllUnpriced reports whether the profile served turns this month and not one
 // of them carried a price: the money lines then say the cost is unknown (#234),
 // and a budget bar has no share to show, so it says so too instead of 0% (#301).
+// It is the exported owner of that answer: quota's own lines and the router's
+// month bar consult it, and no reader re-derives it from the counts (#776).
 // A nil spend — a plan window's entry, never a spend's — is never all-unpriced.
-func (s *Spend) allUnpriced() bool {
+func (s *Spend) AllUnpriced() bool {
 	return s != nil && s.MonthTurns > 0 && s.UnpricedTurns == s.MonthTurns
 }
 

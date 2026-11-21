@@ -26,8 +26,6 @@ var QuotaInput func(names []string) string
 
 const quotaTTL = 300
 
-var tierKeys = []string{"OPUS", "SONNET", "HAIKU", "FABLE"}
-
 // subscriptionModels: what a Claude subscription serves through Claude Code's aliases.
 var subscriptionModels = []string{"opus", "sonnet", "haiku"}
 
@@ -74,7 +72,7 @@ func readServed(name string) (served, bool) {
 	for m := range ctxwindow.DiscoveredValues(f) {
 		set[m] = true
 	}
-	for _, k := range tierKeys {
+	for _, k := range util.TierWords {
 		set[f["env."+util.TierEnvKey(k)]] = true
 	}
 	set[f["model"]] = true
@@ -149,7 +147,11 @@ func windows(e quota.Entry, now float64) []Window {
 		}
 		out = append(out, x)
 	}
-	if s := e.Spend; s != nil && s.BudgetUSD != nil && *s.BudgetUSD > 0 {
+	// A budget is the month's priced spend over the budget. When no turn this
+	// month carried a price there is no share to show, so the bar carries no
+	// number: the profile answers like one with no reading, quota-unknown,
+	// never a 0% picture of a month with unknown spend (#301, #776).
+	if s := e.Spend; s != nil && s.BudgetUSD != nil && *s.BudgetUSD > 0 && !s.AllUnpriced() {
 		t := time.Unix(int64(now), 0)
 		start := time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location())
 		end := start.AddDate(0, 1, 0)
