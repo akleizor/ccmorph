@@ -1517,6 +1517,137 @@ func TestAnAdapterRefusalStandsAlone(t *testing.T) { // issue #374
 	}
 }
 
+// A launch whose arguments open no session — a Claude subcommand, or a
+// print-and-exit --help/-v — has no session for a gateway to serve: it starts
+// neither the adapter nor the bridge, asks the route nothing, and execs claude
+// with the arguments passed through even while the endpoint is unreachable
+// (#650, INTENT promise 6). The stub core dies on adapter-start the way the
+// real adapter dies against an endpoint that does not answer, so a launch
+// that waits on readiness cannot reach claude.
+func TestALaunchThatOpensNoSessionPassesThroughADeadGateway(t *testing.T) {
+	for _, tc := range []struct {
+		id   string
+		sub  string
+		argv []string
+	}{
+		{"a-claude-subcommand-passes-through-issue-650", "1", []string{"mcp", "list"}},
+		{"the-help-flag-passes-through-issue-650", "0", []string{"--help"}},
+		{"the-version-flag-passes-through-issue-650", "0", []string{"-v"}},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("CCMORPH_SUBCOMMAND_LAUNCH", tc.sub)
+			state, profiles := t.TempDir(), t.TempDir()
+			os.MkdirAll(filepath.Join(profiles, "gw650"), 0o755)
+			os.WriteFile(filepath.Join(state, "gw650.conf"), []byte(
+				"type=apikey\nbase_url=http://127.0.0.1:9\napi_key=k"), 0o600)
+			argv := tc.argv
+			libexec := t.TempDir()
+			log := filepath.Join(libexec, "calls.log")
+			os.WriteFile(filepath.Join(libexec, "ccmorph-core"), []byte(
+				"#!/bin/sh\n{ for a do printf '%s\\n' \"$a\"; done; printf '.\\n'; } >> '"+log+"'\n"+
+					"if [ \"$1\" = util ] && [ \"$2\" = adapter-start ]; then\n"+
+					"  echo \"ccmorph: 'gw650': adapter exited before readiness; session not started.\" >&2\n"+
+					"  exit 1\nfi\nexit 0\n"), 0o755)
+
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			saved := os.Stderr
+			os.Stderr = w
+			l := &launcher{dir: state, profileDirs: profiles, libexec: libexec, launchEnv: profile.LaunchEnv, memo: map[string]string{}}
+			_, rc := l.launch("gw650", false, false, argv)
+			w.Close()
+			os.Stderr = saved
+			outB, _ := io.ReadAll(r)
+			out := string(outB)
+
+			if rc != 0 {
+				t.Fatalf("rc %d, want 0: a launch that opens no session must not wait on the gateway: %s", rc, out)
+			}
+			if strings.Contains(out, "session not started") {
+				t.Fatalf("a launch that opens no session must not be told its session failed to start: %s", out)
+			}
+			b, _ := os.ReadFile(log)
+			calls := string(b)
+			if strings.Contains(calls, "adapter-start") {
+				t.Fatalf("the adapter started for a launch that opens no session:\n%s", calls)
+			}
+			if !strings.Contains(calls, "--\n"+strings.Join(argv, "\n")+"\n.") {
+				t.Fatalf("claude never received the arguments untouched:\n%s", calls)
+			}
+		})
+	}
+}
+
+// `_ccm_launch -a <profile> <args>` is the agent-dispatch contract, and a hop's
+// relaunch re-enters the launch with native arguments: both hand Claude Code
+// the arguments exactly as given (INTENT promise 6). There the lone word
+// `version` is a one-word prompt, so it opens a session and takes the route
+// path; only the public `ccmorph run` verb reads it as the version request
+// (#650, cli/main.go runVerb). The stub core dies on adapter-start the way the
+// real adapter dies against an endpoint that does not answer, so the readiness
+// refusal proves the session path ran, and claude never receives --version.
+func TestALoneVersionStaysAPromptOffTheRunVerb(t *testing.T) {
+	for _, tc := range []struct {
+		id     string
+		name   string
+		native bool
+		argv   []string
+	}{
+		{"agent-dispatch-keeps-the-word-issue-650", "", false, []string{"-a", "gw650", "version"}},
+		{"a-relaunch-pass-keeps-the-word-issue-650", "gw650", true, []string{"version"}},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("CCMORPH_SUBCOMMAND_LAUNCH", "0")
+			saved := probeListing
+			probeListing = func(string, string, ...string) (string, string) { return "", "000" }
+			t.Cleanup(func() { probeListing = saved })
+			state, profiles := t.TempDir(), t.TempDir()
+			os.MkdirAll(filepath.Join(profiles, "gw650"), 0o755)
+			os.WriteFile(filepath.Join(state, "gw650.conf"), []byte(
+				"type=apikey\nbase_url=http://127.0.0.1:9\napi_key=k"), 0o600)
+			libexec := t.TempDir()
+			log := filepath.Join(libexec, "calls.log")
+			os.WriteFile(filepath.Join(libexec, "ccmorph-core"), []byte(
+				"#!/bin/sh\n{ for a do printf '%s\\n' \"$a\"; done; printf '.\\n'; } >> '"+log+"'\n"+
+					"if [ \"$1\" = util ] && [ \"$2\" = adapter-start ]; then\n"+
+					"  echo \"ccmorph: 'gw650': adapter exited before readiness; session not started.\" >&2\n"+
+					"  exit 1\nfi\nexit 0\n"), 0o755)
+
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			savedErr := os.Stderr
+			os.Stderr = w
+			l := &launcher{dir: state, profileDirs: profiles, libexec: libexec, launchEnv: profile.LaunchEnv, memo: map[string]string{}}
+			_, rc := l.launch(tc.name, false, tc.native, tc.argv)
+			w.Close()
+			os.Stderr = savedErr
+			outB, _ := io.ReadAll(r)
+			out := string(outB)
+
+			b, _ := os.ReadFile(log)
+			calls := string(b)
+			if rc == 0 {
+				t.Fatalf("rc 0: a lone `version` off the run verb is a prompt, and its session cannot start on a dead route:\n%s\n%s", out, calls)
+			}
+			if !strings.Contains(calls, "adapter-start") {
+				t.Fatalf("a lone `version` off the run verb opens a session, so it must take the route path:\n%s", calls)
+			}
+			if !strings.Contains(out, "adapter exited before readiness; session not started.") {
+				t.Fatalf("the session refusal must stand on a session path, got: %s", out)
+			}
+			if strings.Contains(calls, "--version") {
+				t.Fatalf("the launch rewrote the prompt `version` into --version; only `ccmorph run` may:\n%s", calls)
+			}
+		})
+	}
+}
+
 // The probe verdict is the one status switch every probe of a credential reads
 // (#488): the branches #255, #286 and #374 each landed in, spelled four times
 // before. Pinned here once — including the three-digit guard, so a status a

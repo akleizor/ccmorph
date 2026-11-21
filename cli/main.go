@@ -377,6 +377,15 @@ func (l *launcher) runVerb(args []string) int {
 	if i := runSeparator(args); i >= 0 {
 		args = append(args[:i:i], args[i+1:]...)
 	}
+	// #650: `ccmorph run <profile> version` must answer while the endpoint is
+	// down. Claude Code has no `version` command, so on this public verb alone
+	// the lone word is read as its version request and asked with --version,
+	// which prints and exits and opens no session. Only `ccmorph run` does
+	// this: `_ccm_launch -a <profile> version` (agent dispatch) and a hop's
+	// relaunch keep the word as the prompt it is (INTENT promise 6).
+	if len(args) == 1 && args[0] == "version" {
+		args = []string{"--version"}
+	}
 	sub := "0"
 	if l.hasClaudeSubcommand(args) {
 		sub = "1"

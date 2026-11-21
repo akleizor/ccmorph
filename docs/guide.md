@@ -573,6 +573,13 @@ ccmorph run work mcp list    # the work profile's
 ccmorph run doctor           # diagnose the default profile's install
 ```
 
+None of these opens a session, so none asks the route for anything: a Claude
+subcommand, `--help`, or a version request starts no adapter and waits on no
+readiness, and answers while the profile's endpoint is down. `ccmorph run work
+version`, `ccmorph run work --version` and `ccmorph run work -v` all print Claude
+Code's version the same way: Claude Code has no `version` command of its own, so
+ccmorph reads the lone word as the version request.
+
 An *unrecognised* top-level word is an error. If it matches a profile, ccmorph
 prints the explicit replacement: `ccmorph run <profile>`.
 

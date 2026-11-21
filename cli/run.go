@@ -101,6 +101,8 @@ type launchPlan struct {
 	isProvider   bool // the profile's route is a provider bridge
 	tag          string
 
+	opensSession bool // the argv opens a session: neither a Claude subcommand nor a print-and-exit printout
+
 	relayFile string   // the hop relay this pass owns and must clean up
 	common    []string // env every pass carries
 	penv      []string // the profile's launch env
@@ -248,6 +250,12 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 			args = append(args[:d-1:d-1], args[end:]...)
 		}
 	}
+	// The one decision every route-facing step reads: does this argv open a
+	// session at all? A Claude subcommand or a print-and-exit printout opens
+	// none, so it judges no route, starts no route process, and passes its
+	// arguments through untouched (INTENT promise 6, #650); the arity-aware
+	// walk (#334) tells both from a flag-shaped option value.
+	opensSession := !subcommand && !util.OpensNoSession(args, table)
 
 	if needsAdapter && askMissing && !subcommand && explicit == "" && defaultModel == "" && isTTY(0) && isTTY(2) {
 		interactive = true
@@ -338,7 +346,8 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 		explicit: explicit, resume: resume, launchModel: launchModel,
 		defaultModel: defaultModel, askedModel: askedModel, resumeCarried: resumeCarried,
 		needsAdapter: needsAdapter, isProvider: isProvider, tag: tag,
-		relayFile: relayFile, common: common,
+		opensSession: opensSession,
+		relayFile:    relayFile, common: common,
 	}
 	if name != "" {
 		// A named profile runs on its own route and credential: nothing the Remote
@@ -375,7 +384,7 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 				// the same arity-aware walk the flags get (#334) — passes its
 				// arguments through untouched (INTENT promise 6) and has no first
 				// message for a rejected key to kill, so it keeps out of the way too.
-				if !subcommand && !util.OpensNoSession(args, table) {
+				if opensSession {
 					base, _ := envGet(penv, "ANTHROPIC_BASE_URL")
 					if !needsAdapter {
 						base, _ = nativeBase(base)
@@ -418,6 +427,7 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 	explicit, resume, launchModel := p.explicit, p.resume, p.launchModel
 	defaultModel, askedModel, resumeCarried := p.defaultModel, p.askedModel, p.resumeCarried
 	needsAdapter, isProvider, native := p.needsAdapter, p.isProvider, p.native
+	opensSession := p.opensSession
 	tag, common, relayFile := p.tag, p.common, p.relayFile
 	relayArgs := flags.Relay
 	fail := func() (*relayNext, int) { os.Remove(relayFile); return nil, 1 }
@@ -427,7 +437,10 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 		var ok bool
 		l.foldSettings(name)
 		l.stopForeignBridge(name, isProvider)
-		if isProvider {
+		// A launch that opens no session starts no route process: the bridge and
+		// the adapter exist to serve the session, and there is none (#650). Its
+		// arguments reach claude on the profile's own environment.
+		if isProvider && opensSession {
 			if l.providerActive != name {
 				if !l.providerStart(name) {
 					return fail()
@@ -446,8 +459,8 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 		// --resume. `_ccm_launch -a ... --resume` is the relaunch entry point other
 		// tools call, whose unserved id still starts Claude Code, and an in-process
 		// hop already judged its model in cli/hop.go. A subcommand's --model belongs
-		// to claude's own verb.
-		if askedModel != "" && needsAdapter && !subcommand && (resume == "" || native) {
+		// to claude's own verb, as does a printout's (#650).
+		if askedModel != "" && needsAdapter && opensSession && (resume == "" || native) {
 			if cf, ok := l.readQuiet(name); ok {
 				if listing, ok := l.listing(base, key); ok {
 					if msg, refuse := util.ServedRefusal(listing, askedModel, cf["model_map"], name); refuse {
@@ -457,35 +470,40 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 				}
 			}
 		}
-		if listing, ok := l.listing(base, key); ok {
-			if unsized, ok := try(l, "listing-has-unsized", func() bool { return util.ListingHasUnsized(l.conf(name), listing) }); !ok || unsized {
-				l.logInit()
-				l.core([]string{"CCMORPH_STATE_DIR=" + l.dir, "ANTHROPIC_BASE_URL=" + base, "ANTHROPIC_API_KEY=" + key},
-					listing+"\n", "context-probe", "--listing-stdin", "--profile", name)
-				// The probe's save rewrites a conf that still carries its
-				// discovered record inline, so the next read must not be the
-				// memoized one (GH-561).
-				delete(l.confReads, name)
+		// The listing fetch, its unsized probe and the picker all speak to the
+		// session about to open: a launch that opens none asks the route nothing,
+		// so a dead endpoint cannot stall or refuse it (#650).
+		if opensSession {
+			if listing, ok := l.listing(base, key); ok {
+				if unsized, ok := try(l, "listing-has-unsized", func() bool { return util.ListingHasUnsized(l.conf(name), listing) }); !ok || unsized {
+					l.logInit()
+					l.core([]string{"CCMORPH_STATE_DIR=" + l.dir, "ANTHROPIC_BASE_URL=" + base, "ANTHROPIC_API_KEY=" + key},
+						listing+"\n", "context-probe", "--listing-stdin", "--profile", name)
+					// The probe's save rewrites a conf that still carries its
+					// discovered record inline, so the next read must not be the
+					// memoized one (GH-561).
+					delete(l.confReads, name)
+				}
 			}
-		}
-		switch l.projectPicker(name, base, key, defaultModel, tag, explicit) {
-		case pickerUnreached:
-			// A gateway that answers nothing empties the picker only for the
-			// length of its silence (#723): the listing is waited on, and if the
-			// route never speaks the pass ends naming it, in the class a caller
-			// can tell from a crash — never with the picker's config message.
-			if !l.awaitListing(name, base, key) {
-				l.err(listingFailure(name, profile.RedactURL(base), 0))
-				fmt.Fprintf(os.Stderr, "  Check the route: ccmorph doctor %s\n", name)
-				return nil, util.RCGatewayDown
-			}
-			if l.projectPicker(name, base, key, defaultModel, tag, explicit) != pickerDone {
+			switch l.projectPicker(name, base, key, defaultModel, tag, explicit) {
+			case pickerUnreached:
+				// A gateway that answers nothing empties the picker only for the
+				// length of its silence (#723): the listing is waited on, and if the
+				// route never speaks the pass ends naming it, in the class a caller
+				// can tell from a crash — never with the picker's config message.
+				if !l.awaitListing(name, base, key) {
+					l.err(listingFailure(name, profile.RedactURL(base), 0))
+					fmt.Fprintf(os.Stderr, "  Check the route: ccmorph doctor %s\n", name)
+					return nil, util.RCGatewayDown
+				}
+				if l.projectPicker(name, base, key, defaultModel, tag, explicit) != pickerDone {
+					return nil, 1
+				}
+			case pickerRefused:
 				return nil, 1
 			}
-		case pickerRefused:
-			return nil, 1
 		}
-		if needsAdapter {
+		if needsAdapter && opensSession {
 			if l.adapterProfile != name {
 				l.adapterStop()
 				model, ok := l.adapterModel(name, penv, explicit, defaultModel)
@@ -499,7 +517,7 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 			if penv, ok = l.route(penv, "", "", true); !ok {
 				return fail()
 			}
-		} else {
+		} else if !needsAdapter {
 			l.adapterStop()
 		}
 		if len(penv) == 0 {
@@ -509,6 +527,11 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 		var ok2 bool
 		if penv, ok2 = l.contextEnv(name, penv, explicit, defaultModel, launchModel, resumeCarried, needsAdapter, isProvider, subcommand); !ok2 {
 			return nil, 1
+		}
+		// The route stands up beside the session, so only a launch that opens one
+		// may say it is ready (#650).
+		if opensSession && (needsAdapter || isProvider) && isTTY(2) {
+			os.Stderr.WriteString("ccmorph: Gateway ready; starting Claude Code…\n")
 		}
 		if resume != "" {
 			l.carrySession(resume, filepath.Join(l.profileDirs, name, "projects"))
@@ -545,7 +568,7 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 		if effortModel == "" {
 			effortModel = launchModel
 		}
-		if !flags.UserEffort && !flags.Resuming && !subcommand && !util.OpensNoSession(args, table) {
+		if !flags.UserEffort && !flags.Resuming && opensSession {
 			if lvl := l.savedEffort(name, effortModel); lvl != "" {
 				if table == nil {
 					table = l.claudeArity()
