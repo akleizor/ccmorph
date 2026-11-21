@@ -1031,3 +1031,138 @@ def test_a_failed_start_stops_the_proxy_it_spawned(tmp_path, monkeypatch, capsys
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=HANG_TIMEOUT)
+
+
+_SWITCH_SIGNAL_CHILD = r"""import importlib.machinery, importlib.util, os, resource, signal, sys
+path, sig, point, lands = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4] == "1"
+resource.setrlimit(resource.RLIMIT_CORE, (0, 0))      # SIGQUIT's default action dumps core
+for s in (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+    signal.signal(s, signal.SIG_DFL)                  # a plain launch, whatever the test runner ignores
+signal.signal(signal.SIGINT, signal.default_int_handler)
+loader = importlib.machinery.SourceFileLoader("ccmorph_rc_switch_signal", path)
+spec = importlib.util.spec_from_loader(loader.name, loader)
+rc = importlib.util.module_from_spec(spec)
+loader.exec_module(rc)
+(rc.EDGES).mkdir(parents=True)
+(rc.EDGES / "main.json").write_text("{}")            # the one shared edge switch() demands
+rc.live_edge = lambda r: {"pid": 4242} if r == "main" else None
+rc.profile_type = lambda p: "apikey"
+rc.resolve_route = lambda p: {"ANTHROPIC_BASE_URL": "https://gw", "ANTHROPIC_API_KEY": "test-only-key",
+                              "CCMORPH_ROUTE_HANDLE": ""}
+rc.retire_route_with = lambda *a: None
+rc.adapter_env = lambda: {}
+rc.start_adapter = lambda *a: "http://127.0.0.1:1"
+real_write = os.write
+def write(fd, data):
+    n = real_write(fd, data)
+    if point == "handoff-temp" and b"test-only-key" in bytes(data):
+        os.kill(os.getpid(), sig)                     # the temp now holds the key
+    return n
+os.write = write
+real_word = rc.write_inference
+def word(w, path=rc.INFERENCE):
+    if point == "handoff-written":
+        os.kill(os.getpid(), sig)                     # switch-<profile>.json now holds the key
+    if not lands:
+        raise OSError("inference is read-only")
+    real_word(w, path)
+rc.write_inference = word
+try:
+    rc.switch("gw", "me")
+except BaseException as stopped:
+    print(type(stopped).__name__, file=sys.stderr)
+    raise SystemExit(4)
+raise SystemExit(0)
+"""
+
+
+@pytest.mark.parametrize("point,lands", [
+    ("handoff-temp", False),
+    ("handoff-written", False),
+    ("handoff-written", True),
+], ids=["key-in-temp-word-fails", "key-in-handoff-word-fails", "key-in-handoff-word-lands"])
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT, signal.SIGINT],
+                         ids=["sigterm", "sighup", "sigquit", "sigint"])
+def test_termination_during_a_switch_leaves_no_handoff_holding_the_key(tmp_path, sig, point, lands):
+    """issue #777, the --switch path: the handoff is the route key in a file from its
+    temp's first byte until the word that makes the next request read it. Its cleanup
+    ran only when Python unwound, so a TERM/HUP/QUIT at its default disposition in that
+    window killed the launcher and left the key on disk for good. The signal still ends
+    the switch, after the window: the handoff is then either live (the word landed) or
+    gone, and no other file ever held the key."""
+    import os
+    import subprocess
+
+    root = tmp_path / "state"
+    result = subprocess.run([sys.executable, "-c", _SWITCH_SIGNAL_CHILD,
+                             str(Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccmorph-rc"),
+                             str(int(sig)), point, "1" if lands else "0"],
+                            env={**os.environ, "CCMORPH_STATE_DIR": str(root)}, cwd=tmp_path,
+                            capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    if sig == signal.SIGINT:
+        assert (result.returncode, result.stderr.strip()) == (4, "KeyboardInterrupt")
+    else:
+        assert result.returncode == -sig, f"exit={result.returncode}; stderr={result.stderr}"
+    bridge = root / "profiles" / ".rc-bridge"
+    holding = sorted(p.name for p in root.rglob("*") if p.is_file() and b"test-only-key" in p.read_bytes())
+    if lands:
+        assert holding == ["switch-gw.json"]               # the live handoff the next turn reads
+        assert (bridge / "inference").read_text() == "gw\n"
+    else:
+        assert holding == []
+        assert list(bridge.glob("switch-*")) == []
+
+
+@pytest.mark.parametrize("sig,expected", [
+    (signal.SIGTERM, str(128 + signal.SIGTERM)),
+    (signal.SIGINT, "KeyboardInterrupt"),
+], ids=["sigterm", "sigint"])
+def test_a_signal_as_the_route_key_file_is_created_leaves_no_file(tmp_path, sig, expected):
+    """The key file exists from inside mkstemp, before own_edge holds its name. A
+    signal landing there must wait until cleanup can see the file: Ctrl-C as much as
+    TERM, or an empty route-key.* outlives the start (README: no lingering file)."""
+    import os
+    import subprocess
+
+    child = r"""import argparse, importlib.machinery, importlib.util, os, signal, sys
+path, sig, expected = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+for s in (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+    signal.signal(s, signal.SIG_DFL)
+signal.signal(signal.SIGINT, signal.default_int_handler)
+loader = importlib.machinery.SourceFileLoader("ccmorph_rc_mkstemp", path)
+spec = importlib.util.spec_from_loader(loader.name, loader)
+rc = importlib.util.module_from_spec(spec)
+loader.exec_module(rc)
+rc.resolve_route = lambda route: {"ANTHROPIC_API_KEY": "test-only-key", "ANTHROPIC_BASE_URL": "https://example.invalid"}
+rc.retire_route_with = lambda *a: None
+rc.adapter_env = lambda: {}
+rc.start_adapter = lambda *a: "http://127.0.0.1:1"
+rc.strip_env = lambda: ()
+rc.shutil.which = lambda name: "/test/" + name
+real_mkstemp = rc.tempfile.mkstemp
+def mkstemp(*a, **k):
+    made = real_mkstemp(*a, **k)
+    if k.get("prefix") == "route-key.":
+        os.kill(os.getpid(), sig)                 # the file exists; own_edge has not got its name yet
+    return made
+rc.tempfile.mkstemp = mkstemp
+rc.subprocess.Popen = lambda *a, **k: object()
+try:
+    rc.own_edge("test", os.getpid(), argparse.Namespace(debug=False), None)
+except BaseException as stopped:
+    code = str(stopped.code) if isinstance(stopped, SystemExit) else type(stopped).__name__
+    keys = list(rc.STATE.glob("route-key.*"))
+    if code == expected and not keys:
+        raise SystemExit(0)
+    print(f"unexpected exit={code} key_files={keys}", file=sys.stderr)
+    raise SystemExit(2)
+raise SystemExit(3)
+"""
+    state = tmp_path / "state"
+    result = subprocess.run([sys.executable, "-c", child,
+                             str(Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccmorph-rc"),
+                             str(int(sig)), expected],
+                            env={**os.environ, "CCMORPH_STATE_DIR": str(state)},
+                            capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert result.returncode == 0, f"child exit={result.returncode}; stderr={result.stderr}"
+    assert list(state.rglob("route-key.*")) == []
