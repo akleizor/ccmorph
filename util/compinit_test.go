@@ -136,6 +136,28 @@ func TestCompinitDetectionReadsOnlyLinesThatRun(t *testing.T) {
 		{": <<\"\"\ndon't\n\nautoload -Uz compinit && compinit\n", true},
 		{"cat <<EOF >/dev/null\ndon't\nEOF\n# autoload -Uz compinit && compinit\n", false},
 		{"cat <<EOF >/dev/null\ndon't\nEOF\nautoload -Uz compinit && compinit\n", true},
+		// #582 review: zsh finds a backquote's end without reading quotes, takes
+		// the backslash off \` \\ \$ (and \" inside double quotes), then runs the
+		// body as commands, so the body is lexed as an rc of its own: $'it\'s'
+		// closes after the escaped quote and the ;# after it is a comment.
+		{"x=`print -r -- $'it\\'s';# autoload -Uz compinit && compinit`; print -r -- $x\n", false},
+		{"x=\"`print -r -- $'it\\'s';# autoload -Uz compinit && compinit`\"; print -r -- $x\n", false},
+		{"x=`print -r -- \\$'it\\\\'s';# autoload -Uz compinit && compinit`; print -r -- $x\n", false},
+		{"x=`print -r -- 'a\\`b';# autoload -Uz compinit && compinit`; print -r -- $x\n", false},
+		{"x=`print -r -- \\\"a;# b\\\"; autoload -Uz compinit && compinit`; print -r -- $x\n", false},
+		{"x=\"`print -r -- \\\"a;# b\\\"; autoload -Uz compinit && compinit`\"; print -r -- $x\n", true},
+		{"x=`print -r -- a\\\\;# b; autoload -Uz compinit && compinit`; print -r -- $x\n", true},
+		{"x=`print -r -- \\`print a;# b\\`; autoload -Uz compinit && compinit`; print -r -- $x\n", true},
+		{"x=`print -r -- a\\ #;autoload -Uz compinit && compinit`; print -r -- $x\n", true},
+		{"x=`print -r -- a\\\n#; autoload -Uz compinit && compinit`; print -r -- $x\n", true},
+		{"x=`print -r -- ${x:-a;#b}; autoload -Uz compinit && compinit`; print -r -- $x\n", true},
+		{"x=${y:-`print -r -- a\\ #;autoload -Uz compinit && compinit`}; print -r -- $x\n", true},
+		{"x=\"`print -r -- a\\\\\\ #;autoload -Uz compinit && compinit`\"; print -r -- $x\n", false},
+		// A body zsh cannot parse runs nothing: once \\ is unescaped, $'a\' never
+		// closes. A word's own ( ) left open is not a parse error.
+		{"x=`print -r -- $'a\\\\';# autoload -Uz compinit && compinit`; print -r -- $x\n", false},
+		{"x=`print -r -- $'a\\\\\\\\'; autoload -Uz compinit && compinit`; print -r -- $x\n", true},
+		{"x=`<<<'x'(;autoload -Uz compinit && compinit`; print -r -- $x\n", true},
 	} {
 		if got := CompinitRuns([]byte(c.rc)); got != c.want {
 			t.Errorf("CompinitRuns(%q) = %v, want %v", c.rc, got, c.want)

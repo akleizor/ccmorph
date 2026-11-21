@@ -145,28 +145,12 @@ func commandStart(code string, at int) int {
 // scan before #582 answered it (#555): a line's text from an unquoted # at the
 // line's start or after a blank is cut, the rest of the text counts.
 func zshCode(rc string) string {
-	l := lexer{src: rc + "\n", drop: make([]bool, len(rc)+1), text: make([]bool, len(rc)+1)}
-	l.stack = []*lexFrame{newCode(false)}
-	for i := 0; i < len(l.src); i++ {
-		inText := l.inText()
-		j := l.step(i)
-		for k := i; inText && k <= j; k++ {
-			l.text[k] = true
-		}
-		i = j
-	}
-	for start := 0; start < len(rc); {
-		end := strings.IndexByte(l.src[start:], '\n') + start
-		if k := textComment(rc[start:end]); k >= 0 {
-			for i := start + k; i < end; i++ {
-				l.drop[i] = l.drop[i] || l.text[i]
-			}
-		}
-		start = end + 1
-	}
+	l := newLexer(rc)
+	l.run()
+	cut := l.cut()
 	var code strings.Builder
 	for i := 0; i < len(rc); i++ {
-		if !l.drop[i] {
+		if !cut[i] {
 			code.WriteByte(rc[i])
 		}
 	}
@@ -177,15 +161,14 @@ func zshCode(rc string) string {
 type frameKind uint8
 
 const (
-	codeFrame     frameKind = iota // commands: the file, a subshell, $( ), <( ), >( ), =( )
-	arrayFrame                     // name=( ... ): words, blanks, newlines and comments
-	caseFrame                      // case ... esac
-	backtickFrame                  // ` ... `: commands zsh finds the end of as text, so both
-	wordFrame                      // text: a word's own ( ), $(( )) or (( ))
-	braceFrame                     // text: ${ ... }
-	dquoteFrame                    // text: " ... "
-	squoteFrame                    // text: ' ... '
-	ansiFrame                      // text: $' ... ', where a backslash escapes the next byte
+	codeFrame   frameKind = iota // commands: the file, a subshell, $( ), <( ), >( ), =( )
+	arrayFrame                   // name=( ... ): words, blanks, newlines and comments
+	caseFrame                    // case ... esac
+	wordFrame                    // text: a word's own ( ), $(( )) or (( ))
+	braceFrame                   // text: ${ ... }
+	dquoteFrame                  // text: " ... "
+	squoteFrame                  // text: ' ... '
+	ansiFrame                    // text: $' ... ', where a backslash escapes the next byte
 )
 
 // casePhase is where a case frame is in its statement.
@@ -234,6 +217,58 @@ type lexer struct {
 	heredocs []heredoc
 }
 
+// newLexer starts a lexer on src, read as an rc of its own.
+func newLexer(src string) *lexer {
+	l := &lexer{src: src + "\n", drop: make([]bool, len(src)+1), text: make([]bool, len(src)+1)}
+	l.stack = []*lexFrame{newCode(false)}
+	return l
+}
+
+// run reads src to its end, marking the comments it drops and the bytes that
+// are text. A ` ` met inside text is not text itself: backquote reads its body
+// as commands.
+func (l *lexer) run() {
+	for i := 0; i < len(l.src); i++ {
+		f := l.stack[len(l.stack)-1]
+		inText := l.inText() && !(l.src[i] == '`' && f.kind != squoteFrame && f.kind != ansiFrame)
+		j := l.step(i)
+		for k := i; inText && k <= j; k++ {
+			l.text[k] = true
+		}
+		i = j
+	}
+}
+
+// cut returns, after run, every byte zshCode leaves out: the comments run
+// dropped, and in each line's text the part the scan before #582 cut, from an
+// unquoted # at the line's start or after a blank.
+func (l *lexer) cut() []bool {
+	rc := l.src[:len(l.src)-1]
+	for start := 0; start < len(rc); {
+		end := strings.IndexByte(l.src[start:], '\n') + start
+		if k := textComment(rc[start:end]); k >= 0 {
+			for i := start + k; i < end; i++ {
+				l.drop[i] = l.drop[i] || l.text[i]
+			}
+		}
+		start = end + 1
+	}
+	return l.drop
+}
+
+// parses reports whether, after run, src closed everything it opened that
+// zsh needs closed: an unclosed quote, ${ }, substitution, subshell, array or
+// case statement is a parse error. A word's own ( ) may stay open, as zsh
+// reads it on as a pattern.
+func (l *lexer) parses() bool {
+	for _, f := range l.stack[1:] {
+		if f.kind != wordFrame {
+			return false
+		}
+	}
+	return true
+}
+
 func (l *lexer) push(f *lexFrame) { l.stack = append(l.stack, f) }
 
 // pop closes the innermost frame. A subshell, an array and (( )) end a token,
@@ -252,10 +287,10 @@ func (l *lexer) pop() {
 }
 
 // inText reports whether the next byte is text: inside a quote, ${ }, a
-// word's own ( ), a case pattern or ` `.
+// word's own ( ) or a case pattern.
 func (l *lexer) inText() bool {
 	f := l.stack[len(l.stack)-1]
-	return f.kind >= backtickFrame || f.kind == caseFrame && f.phase == casePattern
+	return f.kind >= wordFrame || f.kind == caseFrame && f.phase == casePattern
 }
 
 // step reads the byte at i and returns the index of the last byte it used,
@@ -281,8 +316,6 @@ func (l *lexer) step(i int) int {
 			l.pop()
 		}
 		return i
-	case backtickFrame:
-		return l.backtick(f, i)
 	case dquoteFrame, braceFrame, wordFrame:
 		return l.inWord(f, i)
 	case caseFrame:
@@ -366,7 +399,7 @@ func (l *lexer) code(f *lexFrame, i int) int {
 		l.push(&lexFrame{kind: dquoteFrame})
 	case '`':
 		l.wordByte(f, i)
-		l.push(&lexFrame{kind: backtickFrame, tokenStart: true})
+		return l.backquote(i, false)
 	default:
 		l.wordByte(f, i)
 	}
@@ -481,7 +514,7 @@ func (l *lexer) inWord(f *lexFrame, i int) int {
 	case c == '$':
 		return l.dollar(i, f.kind == dquoteFrame || f.dquoted)
 	case c == '`':
-		l.push(&lexFrame{kind: backtickFrame, tokenStart: true})
+		return l.backquote(i, f.kind == dquoteFrame || f.dquoted)
 	case f.kind == dquoteFrame:
 		if c == '"' {
 			l.pop()
@@ -502,45 +535,50 @@ func (l *lexer) inWord(f *lexFrame, i int) int {
 	return i
 }
 
-// backtick reads a byte inside ` `. zsh finds the closing ` without reading
-// quotes, then runs what is inside as commands, so a # that begins a token
-// there is a comment up to the line's end or the closing `. Its bytes are text
-// as well, read as the old line reading read them, since zsh found their end
-// as text.
-func (l *lexer) backtick(f *lexFrame, i int) int {
-	c := l.src[i]
-	switch {
-	case c == '`':
-		l.pop()
-	case f.depth != 0:
-		// Inside a quote of the body: a # is a quoted byte. The closing `
-		// above still ends the frame, as zsh finds it without reading quotes.
-		switch {
-		case c == '\\' && f.depth == '"':
-			return i + 1
-		case int(c) == f.depth:
-			f.depth = 0
-		}
-	case c == '\'' || c == '"':
-		f.depth, f.tokenStart = int(c), false
-	case c == '#' && f.tokenStart:
-		j := i
-		for j < len(l.src) && l.src[j] != '\n' && l.src[j] != '`' {
-			if l.src[j] == '\\' {
+// backquote reads the ` ` that opens at i and returns the index of its closing
+// `. zsh finds that ` without reading quotes, a backslash keeping the byte
+// after it, and then runs the body as commands once it has taken the backslash
+// off \`, \\ and \$ (and \" inside double quotes) and joined each
+// backslash-newline. So the body is read here as zsh reads it: unescaped the
+// same way, then lexed as an rc of its own, its quotes ($'...' among them),
+// substitutions and comments read as they read anywhere, and what that cuts
+// from the body is cut from the rc. A body whose own quote, substitution,
+// array or case statement does not close is one zsh cannot parse, so it runs
+// nothing and all of it is cut.
+func (l *lexer) backquote(i int, dquoted bool) int {
+	var body strings.Builder
+	var at []int // at[k] is where the source of the body's byte k begins in src
+	j := i + 1
+	for ; j < len(l.src) && l.src[j] != '`'; j++ {
+		if l.src[j] == '\\' && j+1 < len(l.src) {
+			switch c := l.src[j+1]; {
+			case c == '\n':
+				l.drop[j], l.drop[j+1] = true, true
 				j++
+				continue
+			case c == '`', c == '\\', c == '$', c == '"' && dquoted:
+				at = append(at, j)
+				body.WriteByte(c)
+				j++
+				continue
 			}
-			j++
 		}
-		return l.comment(i, j)
-	case c == ' ' || c == '\t' || c == '\n' || c == ';' || c == '&' || c == '|':
-		f.tokenStart = true
-	case c == '\\':
-		f.tokenStart = false
-		return i + 1
-	default:
-		f.tokenStart = false
+		at = append(at, j)
+		body.WriteByte(l.src[j])
 	}
-	return i
+	inner := newLexer(body.String())
+	inner.run()
+	cut, closed := inner.cut(), inner.parses()
+	at = append(at, j)
+	for k := 0; k+1 < len(at); k++ {
+		for s := at[k]; (cut[k] || !closed) && s < at[k+1]; s++ {
+			l.drop[s] = true
+		}
+	}
+	if j == len(l.src) {
+		j-- // no closing `: the body runs to the end of the rc
+	}
+	return j
 }
 
 // patterns reads a byte between a case's in (or ;;) and its next pattern.
@@ -575,7 +613,7 @@ func (l *lexer) pattern(f *lexFrame, i int) int {
 	case '"':
 		l.push(&lexFrame{kind: dquoteFrame})
 	case '`':
-		l.push(&lexFrame{kind: backtickFrame, tokenStart: true})
+		return l.backquote(i, false)
 	case '(':
 		f.depth++
 	case ')':
