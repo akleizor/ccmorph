@@ -156,9 +156,9 @@ func TestACrashWhileDecidingTheFallbackRefuses(t *testing.T) {
 
 func TestMalformedTombstonesFailTheProjection(t *testing.T) {
 	f := newFixture(t)
-	write(t, filepath.Join(f.profile, layerFile), `{"$ccmorphUnset": null}`)
+	write(t, filepath.Join(f.profile, layerFile), readFixture(t, "layer-null-tombstones.json"))
 	code, stderr := f.run("materialize")
-	if code != 1 || !strings.Contains(stderr, unsetKey) {
+	if code != 1 || !strings.Contains(stderr, establishedTombstoneKey(t)) {
 		t.Fatalf("got %d %q", code, stderr)
 	}
 }
@@ -203,7 +203,7 @@ func TestFoldKeepsClaudeEditsInTheLayer(t *testing.T) {
 	layer, _ := os.ReadFile(filepath.Join(f.profile, layerFile))
 	// The rewritten settings lost the projection's status line (#275), so the
 	// fold records that deletion too: the next projection leaves it out.
-	want := "{\n  \"verbose\": true,\n  \"$ccmorphUnset\": [\n    [\n      \"statusLine\"\n    ]\n  ]\n}\n"
+	want := readFixture(t, "fold-layer.json")
 	if got := string(layer); got != want {
 		t.Fatalf("layer = %q, want %q", layer, want)
 	}
