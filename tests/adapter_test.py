@@ -807,8 +807,11 @@ class AdapterTest(unittest.TestCase):
         return True
 
     def _tethers(self, adapter_pid):
-        """The `ccmorph-core tether <adapter_pid> ...` processes running now."""
-        out = subprocess.run(["ps", "-A", "-o", "pid=,command="],
+        """The `ccmorph-core tether <adapter_pid> ...` processes running now.
+        -ww: ps cuts the command at $COLUMNS or the terminal's width, which an
+        xdist worker sets to 80, and a cut line loses the tether's own words
+        (#518)."""
+        out = subprocess.run(["ps", "-ww", "-A", "-o", "pid=,command="],
                              capture_output=True, text=True, check=True,
                              timeout=HANG_TIMEOUT).stdout
         pattern = re.compile(rf"\stether {adapter_pid}(\s|$)")
