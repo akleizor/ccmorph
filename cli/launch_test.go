@@ -1581,6 +1581,37 @@ func TestALaunchThatOpensNoSessionPassesThroughADeadGateway(t *testing.T) {
 	}
 }
 
+// GH-768: after `run <profile>` every word is Claude Code's argv (INTENT
+// promise 6), so the run entry's subcommand lookup answers from the installed
+// binary alone — ccmorph's own verb table has no claim there. `rm` names both
+// ccmorph's profile removal and Claude's session removal; only the second can
+// follow `run <profile>`, and pruning a bad session is exactly when the
+// endpoint is down, so `rm <id>` must be marked a subcommand launch and skip
+// the route. Own-verb precedence lives where it belongs: the top-level
+// dispatch consumes `ccmorph rm <profile>` before the run entry is ever
+// reached (pinned by the zsh suite's ccmorph-rm precedence guard).
+func TestTheRunEntryReadsRmAsClaudesOwnSubcommand(t *testing.T) {
+	if !ownVerbs["rm"] {
+		t.Fatal("this test exists because ccmorph ALSO owns rm; if that changed, " +
+			"the reason for the predicate's exclusion is back and this test must change with it")
+	}
+	help := "Usage: claude [options] [command]\n\nCommands:\n  rm <id>   remove a background session\n  mcp       configure MCP servers\n"
+	l := &launcher{memo: map[string]string{"claude --help": help}}
+	if !l.isClaudeSubcommand("rm") {
+		t.Fatal("rm, listed by the installed claude, is a Claude subcommand for the run entry — the verb table must not exclude it")
+	}
+	if !l.hasClaudeSubcommand([]string{"rm", "sess-1"}) {
+		t.Fatal("`run <profile> rm <id>` must be marked a subcommand launch: no session, no adapter, no route decision")
+	}
+	// The table answers neither way from memory: a word the installed binary
+	// does not list stays not-a-subcommand, whatever ccmorph's own list holds.
+	absent := &launcher{memo: map[string]string{"claude --help":
+		"Usage: claude [options] [command]\n\nCommands:\n  mcp   configure MCP servers\n"}}
+	if absent.isClaudeSubcommand("rm") || absent.isClaudeSubcommand("list") {
+		t.Fatal("a word the installed binary does not list is not a Claude subcommand")
+	}
+}
+
 // `_ccm_launch -a <profile> <args>` is the agent-dispatch contract, and a hop's
 // relaunch re-enters the launch with native arguments: both hand Claude Code
 // the arguments exactly as given (INTENT promise 6). There the lone word
