@@ -272,34 +272,44 @@ func TestExemptMatchesTheShippedProxyFromEnvironment(t *testing.T) {
 }
 
 // A pasted password may already be spelled with %HH and still need recovery for
-// one unparseable character (a space). Recovery decodes the raw userinfo before
-// re-encoding it, exactly as url.Parse treats a knob it accepts, so the same
-// credential keeps one spelling on every reader (GH-773).
+// one unparseable character (a space). Recovery decodes every well-formed escape
+// and leaves a literal percent to be re-encoded, exactly as url.Parse treats a
+// knob it accepts, so the same credential keeps one spelling on every reader
+// (GH-773).
 func TestParseRecoveryKeepsASpelledEscape(t *testing.T) {
+	for _, c := range []struct{ name, knob, wantPass string }{
+		{"spelled escape and a space", "http://alice:svc%2Bteam cert@proxy:3128", "svc+team cert"},
+		{"spelled escape beside a literal percent", "http://alice:svc%2Bteam%off cert@proxy:3128", "svc+team%off cert"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			recovered := Parse(c.knob)
+			if recovered == nil {
+				t.Fatalf("Parse(%q) = nil; the unparseable character is inside the authority, so recovery still names proxy:3128", c.knob)
+			}
+			// Go's own spelling for the same credential: each escape decoded
+			// once and the literal '%' re-encoded as %25, never a double escape.
+			want := url.UserPassword("alice", c.wantPass).String()
+			if got := recovered.User.String(); got != want {
+				t.Fatalf("Parse(%q) userinfo = %q, want %q; decode each well-formed escape and leave a literal '%%' to be re-encoded (GH-773)",
+					c.knob, got, want)
+			}
+			back, err := url.Parse(recovered.String())
+			if err != nil {
+				t.Fatalf("the recovered spelling does not parse back: %v", err)
+			}
+			if pass, _ := back.User.Password(); pass != c.wantPass {
+				t.Fatalf("the recovered spelling parses back to password %q, want %q", pass, c.wantPass)
+			}
+		})
+	}
+	// The fully encoded twin of the first case: the parseable knob and the
+	// recovered one spell the shared credential the same way.
 	parseable := Parse("http://alice:svc%2Bteam@proxy:3128")
 	if parseable == nil {
 		t.Fatal("the parseable knob named no proxy")
 	}
-	recovered := Parse("http://alice:svc%2Bteam cert@proxy:3128")
-	if recovered == nil {
-		t.Fatal("the knob's unparseable character is inside the authority: recovery still names proxy:3128")
-	}
 	if got, want := parseable.User.String(), url.UserPassword("alice", "svc+team").String(); got != want {
 		t.Fatalf("the parseable knob's userinfo = %q, want Go's own spelling %q", got, want)
-	}
-	// The same credential plus the space, encoded exactly as Go encodes it: the
-	// %2B is one escape, never the %252B a raw re-encode would hand on.
-	want := url.UserPassword("alice", "svc+team cert").String()
-	if got := recovered.User.String(); got != want {
-		t.Fatalf("recovered userinfo = %q, want %q (the spelling Go gives the same credential); "+
-			"unescape the raw userinfo before url.UserPassword re-encodes it (GH-773)", got, want)
-	}
-	back, err := url.Parse(recovered.String())
-	if err != nil {
-		t.Fatalf("the recovered spelling does not parse back: %v", err)
-	}
-	if pass, _ := back.User.Password(); pass != "svc+team cert" {
-		t.Fatalf("the recovered spelling parses back to password %q, want %q", pass, "svc+team cert")
 	}
 }
 

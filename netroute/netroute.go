@@ -71,16 +71,39 @@ func parseSpelledUserinfo(knob string) *url.URL {
 	return u
 }
 
-// decodeSpelling decodes the %HH escapes a pasted userinfo already carries, so
-// re-encoding it through url.User/url.UserPassword keeps them as one escape
-// rather than handing the probes and the translator %25HH for a credential
-// url.Parse spells %HH (GH-773). A '%' no reading decodes (50%off) is left
-// literal, the spelling url.Parse would refuse too.
+// decodeSpelling decodes the well-formed %HH escapes a pasted userinfo already
+// carries, one at a time, and leaves every other '%' literal: a password may
+// hold both a valid escape and a literal percent (50%off), and re-encoding the
+// result through url.User/url.UserPassword must spell the escape once and the
+// literal '%' as %25 -- the spelling Go gives the same credential when the knob
+// is parseable (GH-773).
 func decodeSpelling(s string) string {
-	if v, err := url.PathUnescape(s); err == nil {
-		return v
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) && isHex(s[i+1]) && isHex(s[i+2]) {
+			b.WriteByte(unhex(s[i+1])<<4 | unhex(s[i+2]))
+			i += 2
+			continue
+		}
+		b.WriteByte(s[i])
 	}
-	return s
+	return b.String()
+}
+
+func isHex(c byte) bool {
+	return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
+}
+
+func unhex(c byte) byte {
+	switch {
+	case '0' <= c && c <= '9':
+		return c - '0'
+	case 'a' <= c && c <= 'f':
+		return c - 'a' + 10
+	default:
+		return c - 'A' + 10
+	}
 }
 
 // Proxy is an http.Transport Proxy selector for calls to one profile's
