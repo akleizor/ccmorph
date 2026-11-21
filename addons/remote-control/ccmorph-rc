@@ -39,6 +39,7 @@ import os
 import re
 import resource
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -396,6 +397,18 @@ def proxy_command(mitmdump: str, port: int, confdir: Path, script: Path) -> list
             "--allow-hosts", r"^api\.anthropic\.com(:443)?$", "-s", str(script)]
 
 
+def stop_proxy(proc) -> None:
+    """Stop the proxy a failed start spawned. The addon is what follows our pid, and
+    it reads the route key on load: once the key is gone it never loads, so nothing
+    else would stop this proxy (on --edge it would hold the fixed port for good)."""
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
 def own_edge(route: str, me: int, args, fixed_port: int | None):
     """Route + adapter + proxy for one bridge (or, with fixed_port, the shared edge)."""
     route_env = resolve_route(route)
@@ -404,6 +417,8 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
     key = route_env.get("ANTHROPIC_API_KEY") or die(f"route profile '{route}' has no key")
     route_env.get("ANTHROPIC_BASE_URL") or die(f"route profile '{route}' has no endpoint")
 
+    mitmdump = shutil.which("mitmdump") or die("mitmdump not found: brew install mitmproxy")
+
     upstream = start_adapter(route, me, adapter_env())
 
     STATE.mkdir(parents=True, exist_ok=True)
@@ -411,27 +426,76 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
     confdir = STATE / "mitm"
     confdir.mkdir(exist_ok=True)
     confdir.chmod(0o700)
-    fd, key_file = tempfile.mkstemp(prefix="route-key.", dir=STATE)
-    os.write(fd, key.encode())
-    os.close(fd)
+    # finally handles Python exceptions, but the default TERM/HUP/QUIT disposition
+    # exits without unwinding. Block them across mkstemp + assignment, install cleanup
+    # handlers, then unblock: even a pending signal cannot land in the tiny window
+    # between the file being created and key_file receiving its name.
+    startup_signals = (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
+    old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, startup_signals)
+    old_handlers = {sig: signal.getsignal(sig) for sig in startup_signals}
+    # Only a signal left at SIG_DFL ends the process without unwinding. One the
+    # caller ignores (nohup ignores HUP) stays ignored: it cannot leave the key behind.
+    taken = [sig for sig in startup_signals if old_handlers[sig] == signal.SIG_DFL]
+    key_file = None
+    fd = None
+    proxy = None
+    started = False
 
-    port = fixed_port or free_port()
-    mitmdump = shutil.which("mitmdump") or die("mitmdump not found: brew install mitmproxy")
-    proxy_env = {k: v for k, v in os.environ.items() if k not in strip_env()}
-    proxy_env.update(RC_UPSTREAM=upstream, RC_KEY_FILE=key_file, RC_PARENT_PID=str(me),
-                     RC_TIERS=json.dumps(pinned_tiers(os.environ)), RC_INFERENCE=str(INFERENCE))
-    if args.debug:
-        proxy_env["RC_LOG"] = str(STATE / "debug.log")
-    proxy = subprocess.Popen(
-        proxy_command(mitmdump, port, confdir, private_addon(STATE)),
-        env=proxy_env, stdin=subprocess.DEVNULL, start_new_session=True)
-    wait_listening(port, proxy, "proxy")
-    ca = confdir / "mitmproxy-ca-cert.pem"
-    if not ca.exists():
-        die(f"proxy CA not generated at {ca}")
-    if os.path.exists(key_file):
-        die("proxy did not consume the route key; refusing to continue")
-    return port, ca, upstream, route_env
+    def interrupted(signum, _frame):
+        if key_file is not None:
+            with suppress(OSError):
+                os.unlink(key_file)
+        raise SystemExit(128 + signum)
+
+    try:
+        for sig in taken:
+            signal.signal(sig, interrupted)
+        fd, key_file = tempfile.mkstemp(prefix="route-key.", dir=STATE)
+        # README: the route key is in no argv, environment, or lingering file.
+        # Exceptions use finally; TERM/HUP use interrupted and then finally.
+        signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+        os.write(fd, key.encode())
+        os.close(fd)
+        fd = None
+        port = fixed_port or free_port()
+        proxy_env = {k: v for k, v in os.environ.items() if k not in strip_env()}
+        proxy_env.update(RC_UPSTREAM=upstream, RC_KEY_FILE=key_file, RC_PARENT_PID=str(me),
+                         RC_TIERS=json.dumps(pinned_tiers(os.environ)), RC_INFERENCE=str(INFERENCE))
+        if args.debug:
+            proxy_env["RC_LOG"] = str(STATE / "debug.log")
+        proxy = subprocess.Popen(
+            proxy_command(mitmdump, port, confdir, private_addon(STATE)),
+            env=proxy_env, stdin=subprocess.DEVNULL, start_new_session=True)
+        wait_listening(port, proxy, "proxy")
+        ca = confdir / "mitmproxy-ca-cert.pem"
+        if not ca.exists():
+            die(f"proxy CA not generated at {ca}")
+        if os.path.exists(key_file):
+            die("proxy did not consume the route key; refusing to continue")
+        started = True
+        return port, ca, upstream, route_env
+    finally:
+        # Close the cleanup window too: a TERM/HUP during unlink must not re-enter
+        # interrupted while this finally block is already unwinding.
+        signal.pthread_sigmask(signal.SIG_BLOCK, startup_signals)
+        try:
+            if fd is not None:
+                with suppress(OSError):
+                    os.close(fd)
+            if key_file is not None:
+                with suppress(OSError):
+                    os.unlink(key_file)      # already gone when the addon consumed the key
+            if proxy is not None and not started:
+                # Best effort: nothing raised while stopping it may replace the error
+                # (or the 128+signal exit) that ended this start.
+                with suppress(Exception):
+                    stop_proxy(proxy)
+        finally:
+            # Restore dispositions only while blocked. A signal pending at this point
+            # sees the key already removed and the caller's normal disposition restored.
+            for sig in taken:
+                signal.signal(sig, old_handlers[sig])
+            signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
 
 
 def edge_down(port: int, upstream: str) -> str | None:
@@ -515,11 +579,29 @@ def switch(profile: str, account: str) -> None:
                     if profile_type(profile) == "provider" else start_adapter(profile, owner, adapter_env()))
         tiers = pinned_tiers(route_env)
         hand = STATE / f"switch-{profile}.json"
-        fd = os.open(hand.with_suffix(".tmp"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        os.write(fd, json.dumps({"upstream": upstream, "key": key, "tiers": tiers}).encode())
-        os.close(fd)
-        hand.with_suffix(".tmp").replace(hand)
-    write_inference(word)
+        tmp = hand.with_suffix(".tmp")
+        payload = json.dumps({"upstream": upstream, "key": key, "tiers": tiers}).encode()
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.write(fd, payload)
+        except BaseException:
+            with suppress(OSError):
+                os.unlink(tmp)        # a half-written handoff still holds the route key
+            raise
+        finally:
+            os.close(fd)
+        tmp.replace(hand)
+    try:
+        write_inference(word)
+    except BaseException:
+        if word == profile:
+            # The word never landed, so no request reads this handoff: leaving it would
+            # keep the route key on disk for good (README: no lingering file). Only this
+            # write's own payload goes, never a newer handoff another switch left.
+            with suppress(OSError):
+                if hand.read_bytes() == payload:
+                    hand.unlink()
+        raise
     print(f"ccmorph-rc: inference now goes to '{profile}' from the next turn", file=sys.stderr)
 
 

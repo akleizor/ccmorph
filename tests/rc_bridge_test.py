@@ -1,6 +1,7 @@
 """Remote Control bridge add-on: routing decision and credential isolation."""
 import contextlib
 import json
+import signal
 import socket
 import sys
 import time
@@ -8,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from support import load_script
+from support import HANG_TIMEOUT, load_script
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "addons" / "remote-control"))
 from rc_route import inference_target, is_inference, reroute  # noqa: E402
@@ -727,6 +728,21 @@ def test_the_addon_reads_a_handoff_once_and_keeps_it_thereafter(tmp_path, monkey
     assert addon._switched("gw") == got                    # brought up once; every turn follows
 
 
+def test_a_switch_whose_word_never_lands_leaves_no_handoff_holding_the_key(tmp_path, monkeypatch):
+    """A handoff is the route key in a 0600 file until the next request reads it. A
+    switch whose word never lands leaves that file for good — no request would ever
+    read it — so the failed switch takes its own handoff back. Same guarantee as the
+    route-key file, on the --switch path (issue #777)."""
+    rc, _ = _switch_state(tmp_path, monkeypatch)
+
+    def refuse(word, path=rc.INFERENCE):
+        raise OSError("inference is read-only")
+    monkeypatch.setattr(rc, "write_inference", refuse)
+    with pytest.raises(OSError):
+        rc.switch("gw", "me")
+    assert list(rc.STATE.glob("switch-*")) == []
+
+
 @pytest.mark.parametrize("handoff,port,log", [
     pytest.param(None, 60111, "was never brought up", id="never-brought-up-keeps-the-route"),
     pytest.param({"upstream": "http://127.0.0.1:54505", "key": "route-key",
@@ -753,3 +769,265 @@ def test_a_switch_word_moves_the_turn_only_where_a_profile_was_brought_up(tmp_pa
     assert log in (state / "addon.log").read_text()
     assert flow.metadata["rc_route"] is True
     assert flow.metadata["rc_tiers"] == (handoff["tiers"] if handoff else _BOOT_TIERS)
+
+
+def _edge_spawn_state(tmp_path, monkeypatch):
+    """The launcher set up so `own_edge` runs its start path with everything except
+    the proxy spawn stubbed to what a healthy host gives it; the caller decides what
+    the spawn does. The route key file is written on this path, so these tests read
+    the README's "no lingering file" guarantee from `own_edge` itself."""
+    monkeypatch.setenv("CCMORPH_STATE_DIR", str(tmp_path))
+    rc = _launcher()
+    monkeypatch.setattr(rc, "resolve_route", lambda route: {
+        "ANTHROPIC_API_KEY": "route-key", "ANTHROPIC_BASE_URL": "https://gw",
+        "CCMORPH_ROUTE_HANDLE": ""})
+    monkeypatch.setattr(rc, "retire_route_with", lambda pid, handle: None)
+    monkeypatch.setattr(rc, "adapter_env", lambda: {})
+    monkeypatch.setattr(rc, "start_adapter", lambda route, owner, env: "http://127.0.0.1:54505")
+    monkeypatch.setattr(rc, "strip_env", lambda: ())     # ccmorph _backend_env wants the built shim
+    return rc
+
+
+class _SpawnedProxy:
+    """The mitmdump the launcher watches at startup: dead at once, or alive."""
+
+    def __init__(self, exit_code=None):
+        self.returncode = exit_code
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        if self.returncode is None:
+            self.returncode = -15
+
+    def kill(self):
+        self.terminate()
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+def _stub_proxy_spawn(rc, monkeypatch, exit_code):
+    """Only the proxy spawn is stubbed: strip_env() still runs `ccmorph
+    _backend_env` through subprocess.run, which shares the Popen entry."""
+    real = rc.subprocess.Popen
+
+    def spawn(cmd, **kw):
+        if cmd[0] == "zsh":           # not the proxy: whatever else the launcher shells out for
+            return real(cmd, **kw)
+        return _SpawnedProxy(exit_code)
+    monkeypatch.setattr(rc.subprocess, "Popen", spawn)
+
+
+@pytest.mark.parametrize("shape,message", [
+    pytest.param("no-mitmdump", "mitmdump not found", id="mitmdump-not-on-path"),
+    pytest.param("proxy-exits", "proxy exited during startup", id="stub-mitmdump-dies-at-once"),
+    pytest.param("no-ca", "proxy CA not generated", id="ca-never-generated"),
+    pytest.param("key-unconsumed", "did not consume the route key", id="addon-never-loads"),
+])
+def test_no_failed_start_ever_leaves_the_route_key_behind(tmp_path, monkeypatch, capsys, shape, message):
+    """issue #777: the key file's only unlink lived in the addon, so every start
+    that died after `mkstemp` — missing mitmdump, dead proxy, missing CA, and the
+    very path that prints "refusing to continue" — left the profile's real API key
+    in STATE. This is the sweep: after any failing start, no route-key.* survives."""
+    import argparse
+    import os
+    rc = _edge_spawn_state(tmp_path, monkeypatch)
+    if shape == "no-mitmdump":
+        monkeypatch.setenv("PATH", str(tmp_path / "no-bin"))         # PATH without mitmdump
+    else:
+        stub = tmp_path / "bin" / "mitmdump"                         # a mitmdump that never really runs
+        stub.parent.mkdir()
+        stub.write_text("#!/bin/sh\nexit 0\n")
+        stub.chmod(0o755)
+        monkeypatch.setenv("PATH", str(stub.parent) + os.pathsep + os.environ["PATH"])
+        if shape == "proxy-exits":                                   # wait_listening stays real
+            _stub_proxy_spawn(rc, monkeypatch, 1)
+        else:                                                        # listens; addon is the question
+            _stub_proxy_spawn(rc, monkeypatch, None)
+            monkeypatch.setattr(rc, "wait_listening", lambda *a, **k: None)
+            if shape == "key-unconsumed":
+                ca = rc.STATE / "mitm" / "mitmproxy-ca-cert.pem"     # a proxy that did come up
+                ca.parent.mkdir(parents=True, exist_ok=True)
+                ca.write_text("stub ca")
+    with pytest.raises(SystemExit):
+        rc.own_edge("gw", 4242, argparse.Namespace(debug=False), None)
+    assert message in capsys.readouterr().err
+    assert list(rc.STATE.glob("route-key.*")) == []
+
+
+@pytest.mark.parametrize("spawn_mode", ["child", "object"], ids=["spawned-child", "handle-with-no-stop-api"])
+@pytest.mark.parametrize("sig,expected", [
+    (signal.SIGTERM, str(128 + signal.SIGTERM)),
+    (signal.SIGHUP, str(128 + signal.SIGHUP)),
+    (signal.SIGQUIT, str(128 + signal.SIGQUIT)),
+    (signal.SIGINT, "KeyboardInterrupt"),
+], ids=["sigterm", "sighup", "sigquit", "sigint"])
+def test_termination_during_proxy_startup_removes_the_route_key(tmp_path, sig, expected, spawn_mode):
+    """A normal termination signal bypasses Python's finally unless startup
+    temporarily handles it. A separate process exercises the real disposition.
+    A real spawned proxy is stopped; a Popen handle with no stop API — the shape
+    the issue's reproduction stubs — must not replace the signal's exit."""
+    import os
+    import subprocess
+
+    state = tmp_path / "state"
+    child = r"""import argparse, importlib.machinery, importlib.util, os, signal, sys
+path, sig, expected, mode = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+for s in (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+    signal.signal(s, signal.SIG_DFL)          # a plain launch, whatever the test runner ignores
+signal.signal(signal.SIGINT, signal.default_int_handler)
+loader = importlib.machinery.SourceFileLoader("ccmorph_rc_signal", path)
+spec = importlib.util.spec_from_loader(loader.name, loader)
+rc = importlib.util.module_from_spec(spec)
+loader.exec_module(rc)
+rc.resolve_route = lambda route: {"ANTHROPIC_API_KEY": "test-only-key", "ANTHROPIC_BASE_URL": "https://example.invalid"}
+rc.retire_route_with = lambda *a: None
+rc.adapter_env = lambda: {}
+rc.start_adapter = lambda *a: "http://127.0.0.1:1"
+rc.strip_env = lambda: ()
+rc.shutil.which = lambda name: "/test/" + name
+real_popen = rc.subprocess.Popen
+spawned = []
+if mode == "object":
+    rc.subprocess.Popen = lambda *a, **k: object()    # a handle with no terminate/wait at all
+else:
+    def spawn(cmd, **kw):
+        spawned.append(real_popen([sys.executable, "-c", "import time; time.sleep(600)"],
+                                  stdin=rc.subprocess.DEVNULL, start_new_session=True))
+        return spawned[-1]
+    rc.subprocess.Popen = spawn
+rc.wait_listening = lambda *a, **k: os.kill(os.getpid(), sig)
+try:
+    rc.own_edge("test", os.getpid(), argparse.Namespace(debug=False), None)
+except BaseException as stopped:
+    keys = list(rc.STATE.glob("route-key.*"))
+    alive = [p.pid for p in spawned if p.poll() is None]
+    for p in spawned:
+        if p.poll() is None:
+            p.kill()
+    code = str(stopped.code) if isinstance(stopped, SystemExit) else type(stopped).__name__
+    stopped_ok = mode == "object" or (spawned and not alive)
+    if code == expected and not keys and stopped_ok:
+        raise SystemExit(0)
+    print(f"unexpected exit={code} key_files={keys} live_proxies={alive}", file=sys.stderr)
+    raise SystemExit(2)
+raise SystemExit(3)
+"""
+    env = {**os.environ, "CCMORPH_STATE_DIR": str(state)}
+    result = subprocess.run([sys.executable, "-c", child,
+                             str(Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccmorph-rc"),
+                             str(int(sig)), expected, spawn_mode],
+                            env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert result.returncode == 0, f"child exit={result.returncode}; stderr={result.stderr}"
+    assert list(state.rglob("route-key.*")) == []
+
+
+def test_an_ignored_hangup_stays_ignored_during_startup(tmp_path):
+    """nohup hands the launcher SIGHUP ignored. Startup takes over only signals left
+    at their default, so a hang-up in the startup window neither aborts the start
+    nor turns the ignored signal back on afterwards."""
+    import os
+    import subprocess
+
+    state = tmp_path / "state"
+    child = r"""import argparse, importlib.machinery, importlib.util, os, signal, sys
+path = sys.argv[1]
+signal.signal(signal.SIGHUP, signal.SIG_IGN)          # what nohup gives the launcher
+loader = importlib.machinery.SourceFileLoader("ccmorph_rc_nohup", path)
+spec = importlib.util.spec_from_loader(loader.name, loader)
+rc = importlib.util.module_from_spec(spec)
+loader.exec_module(rc)
+rc.resolve_route = lambda route: {"ANTHROPIC_API_KEY": "test-only-key", "ANTHROPIC_BASE_URL": "https://example.invalid"}
+rc.retire_route_with = lambda *a: None
+rc.adapter_env = lambda: {}
+rc.start_adapter = lambda *a: "http://127.0.0.1:1"
+rc.strip_env = lambda: ()
+rc.shutil.which = lambda name: "/test/" + name
+class Proxy:
+    returncode = None
+    def poll(self): return self.returncode
+    def terminate(self): self.returncode = -15
+    def kill(self): self.returncode = -9
+    def wait(self, timeout=None): return self.returncode
+proxy = Proxy()
+def spawn(cmd, env=None, **kw):
+    os.unlink(env["RC_KEY_FILE"])                     # the addon loaded and consumed the key
+    (rc.STATE / "mitm" / "mitmproxy-ca-cert.pem").write_text("ca")
+    return proxy
+rc.subprocess.Popen = spawn
+rc.wait_listening = lambda *a, **k: os.kill(os.getpid(), signal.SIGHUP)
+rc.own_edge("test", os.getpid(), argparse.Namespace(debug=False), None)
+keys = list(rc.STATE.glob("route-key.*"))
+ignored = signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
+if ignored and not keys and proxy.returncode is None:
+    raise SystemExit(0)
+print(f"ignored_after={ignored} key_files={keys} proxy_rc={proxy.returncode}", file=sys.stderr)
+raise SystemExit(2)
+"""
+    env = {**os.environ, "CCMORPH_STATE_DIR": str(state)}
+    result = subprocess.run([sys.executable, "-c", child,
+                             str(Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccmorph-rc")],
+                            env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert result.returncode == 0, f"child exit={result.returncode}; stderr={result.stderr}"
+    assert list(state.rglob("route-key.*")) == []
+
+
+@pytest.mark.parametrize("shape,message", [
+    pytest.param("never-listens", "did not start listening", id="proxy-never-listens"),
+    pytest.param("no-ca", "proxy CA not generated", id="ca-never-generated"),
+    pytest.param("key-unconsumed", "did not consume the route key", id="addon-never-loads"),
+    pytest.param("healthy", None, id="healthy-start-keeps-its-proxy"),
+])
+def test_a_failed_start_stops_the_proxy_it_spawned(tmp_path, monkeypatch, capsys, shape, message):
+    """issue #777: a failed start removes the route key, and the addon reads that key
+    on load and is what follows our pid. A proxy left behind would never load it, so
+    it would outlive us holding its port (on --edge, the fixed one every restart
+    needs). The start that gives up stops the proxy it spawned; a healthy one keeps it."""
+    import argparse
+    import os
+    import subprocess
+
+    rc = _edge_spawn_state(tmp_path, monkeypatch)
+    stub = tmp_path / "bin" / "mitmdump"
+    stub.parent.mkdir()
+    stub.write_text("#!/bin/sh\nexit 0\n")
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", str(stub.parent) + os.pathsep + os.environ["PATH"])
+    real = rc.subprocess.Popen
+    spawned = []
+
+    def spawn(cmd, env=None, **kw):
+        if cmd[0] == "zsh":
+            return real(cmd, env=env, **kw)
+        if shape == "healthy":
+            os.unlink(env["RC_KEY_FILE"])                            # the addon consumed it
+        spawned.append(real([sys.executable, "-c", "import time; time.sleep(600)"],
+                            stdin=subprocess.DEVNULL, start_new_session=True))
+        return spawned[-1]
+    monkeypatch.setattr(rc.subprocess, "Popen", spawn)
+    if shape == "never-listens":
+        monkeypatch.setattr(rc, "wait_listening",
+                            lambda *a, **k: rc.die("proxy did not start listening within 20s"))
+    else:
+        monkeypatch.setattr(rc, "wait_listening", lambda *a, **k: None)
+    if shape in ("key-unconsumed", "healthy"):
+        ca = rc.STATE / "mitm" / "mitmproxy-ca-cert.pem"
+        ca.parent.mkdir(parents=True, exist_ok=True)
+        ca.write_text("stub ca")
+    try:
+        if shape == "healthy":
+            rc.own_edge("gw", 4242, argparse.Namespace(debug=False), None)
+            assert spawned and spawned[0].poll() is None, "a healthy start stopped its own proxy"
+        else:
+            with pytest.raises(SystemExit):
+                rc.own_edge("gw", 4242, argparse.Namespace(debug=False), None)
+            assert message in capsys.readouterr().err
+            assert spawned and spawned[0].poll() is not None, "the failed start left its proxy running"
+        assert list(rc.STATE.glob("route-key.*")) == []
+    finally:
+        for proc in spawned:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=HANG_TIMEOUT)
