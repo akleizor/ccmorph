@@ -753,3 +753,79 @@ def test_a_switch_word_moves_the_turn_only_where_a_profile_was_brought_up(tmp_pa
     assert log in (state / "addon.log").read_text()
     assert flow.metadata["rc_route"] is True
     assert flow.metadata["rc_tiers"] == (handoff["tiers"] if handoff else _BOOT_TIERS)
+
+
+def _edge_spawn_state(tmp_path, monkeypatch):
+    """The launcher set up so `own_edge` runs its start path with everything except
+    the proxy spawn stubbed to what a healthy host gives it; the caller decides what
+    the spawn does. The route key file is written on this path, so these tests read
+    the README's "no lingering file" guarantee from `own_edge` itself."""
+    monkeypatch.setenv("CCMORPH_STATE_DIR", str(tmp_path))
+    rc = _launcher()
+    monkeypatch.setattr(rc, "resolve_route", lambda route: {
+        "ANTHROPIC_API_KEY": "route-key", "ANTHROPIC_BASE_URL": "https://gw",
+        "CCMORPH_ROUTE_HANDLE": ""})
+    monkeypatch.setattr(rc, "retire_route_with", lambda pid, handle: None)
+    monkeypatch.setattr(rc, "adapter_env", lambda: {})
+    monkeypatch.setattr(rc, "start_adapter", lambda route, owner, env: "http://127.0.0.1:54505")
+    monkeypatch.setattr(rc, "strip_env", lambda: ())     # ccmorph _backend_env wants the built shim
+    return rc
+
+
+class _SpawnedProxy:
+    """The mitmdump the launcher watches at startup: dead at once, or alive."""
+
+    def __init__(self, exit_code=None):
+        self.returncode = exit_code
+
+    def poll(self):
+        return self.returncode
+
+
+def _stub_proxy_spawn(rc, monkeypatch, exit_code):
+    """Only the proxy spawn is stubbed: strip_env() still runs `ccmorph
+    _backend_env` through subprocess.run, which shares the Popen entry."""
+    real = rc.subprocess.Popen
+
+    def spawn(cmd, **kw):
+        if cmd[0] == "zsh":           # not the proxy: whatever else the launcher shells out for
+            return real(cmd, **kw)
+        return _SpawnedProxy(exit_code)
+    monkeypatch.setattr(rc.subprocess, "Popen", spawn)
+
+
+@pytest.mark.parametrize("shape,message", [
+    pytest.param("no-mitmdump", "mitmdump not found", id="mitmdump-not-on-path"),
+    pytest.param("proxy-exits", "proxy exited during startup", id="stub-mitmdump-dies-at-once"),
+    pytest.param("no-ca", "proxy CA not generated", id="ca-never-generated"),
+    pytest.param("key-unconsumed", "did not consume the route key", id="addon-never-loads"),
+])
+def test_no_failed_start_ever_leaves_the_route_key_behind(tmp_path, monkeypatch, capsys, shape, message):
+    """issue #777: the key file's only unlink lived in the addon, so every start
+    that died after `mkstemp` — missing mitmdump, dead proxy, missing CA, and the
+    very path that prints "refusing to continue" — left the profile's real API key
+    in STATE. This is the sweep: after any failing start, no route-key.* survives."""
+    import argparse
+    import os
+    rc = _edge_spawn_state(tmp_path, monkeypatch)
+    if shape == "no-mitmdump":
+        monkeypatch.setenv("PATH", str(tmp_path / "no-bin"))         # PATH without mitmdump
+    else:
+        stub = tmp_path / "bin" / "mitmdump"                         # a mitmdump that never really runs
+        stub.parent.mkdir()
+        stub.write_text("#!/bin/sh\nexit 0\n")
+        stub.chmod(0o755)
+        monkeypatch.setenv("PATH", str(stub.parent) + os.pathsep + os.environ["PATH"])
+        if shape == "proxy-exits":                                   # wait_listening stays real
+            _stub_proxy_spawn(rc, monkeypatch, 1)
+        else:                                                        # listens; addon is the question
+            _stub_proxy_spawn(rc, monkeypatch, None)
+            monkeypatch.setattr(rc, "wait_listening", lambda *a, **k: None)
+            if shape == "key-unconsumed":
+                ca = rc.STATE / "mitm" / "mitmproxy-ca-cert.pem"     # a proxy that did come up
+                ca.parent.mkdir(parents=True, exist_ok=True)
+                ca.write_text("stub ca")
+    with pytest.raises(SystemExit):
+        rc.own_edge("gw", 4242, argparse.Namespace(debug=False), None)
+    assert message in capsys.readouterr().err
+    assert list(rc.STATE.glob("route-key.*")) == []
