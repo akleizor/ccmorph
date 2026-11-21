@@ -32,7 +32,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -45,6 +44,7 @@ import (
 	"time"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
+	"github.com/akleizor/ccmorph/netroute"
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/shim"
 	"github.com/akleizor/ccmorph/util"
@@ -580,9 +580,7 @@ func Main(argv []string) int {
 	upstreamProxy := strings.TrimSpace(env["CCMORPH_UPSTREAM_PROXY"])
 	// An unparsable proxy leaves probes on the environment's proxy, as before;
 	// never echo it here, it may carry a password.
-	if u, err := url.Parse(upstreamProxy); upstreamProxy != "" && err == nil && u.Host != "" {
-		probeVia = u
-	}
+	probeVia = netroute.Parse(upstreamProxy)
 	// Profile request quirks ride as CCMORPH_* env to the shim, not as shim flags.
 	// CCMORPH_SHIM_HOOKS names a shim binary built with the profile's own hooks,
 	// run in place of the stock one; validated before anything is spawned, so a
@@ -848,15 +846,26 @@ func serve(a *cliArgs, rows []Row, required, upstream, key, routeIdentity, upstr
 	}
 
 	if a.printConfig {
+		// The proxy goes first: its raw spelling can hold a character the key
+		// replace would rewrite (a key of "k" inside "token=qq"), and a spelling
+		// already cut in two no longer matches, leaving the proxy's own secret in
+		// the text. Redact the whole URL while it is still whole.
+		if upstreamProxy != "" {
+			// The translator is rendered the resolver's spelling, not the raw
+			// knob (a pasted password arrives re-encoded), so the whole URL the
+			// file holds is replaced while it is still whole.
+			spelled := upstreamProxy
+			if u := netroute.Parse(upstreamProxy); u != nil {
+				spelled = u.String()
+			}
+			text = strings.ReplaceAll(text, q(spelled), q(profile.RedactURL(spelled)))
+		}
 		// Redact both spellings: the key is on disk as a YAML scalar, so one with a
 		// quote or backslash is in its escaped form and a raw replace alone would
 		// walk straight past it.
 		quoted := q(key)
 		for _, spelling := range []string{quoted[1 : len(quoted)-1], key} {
 			text = strings.ReplaceAll(text, spelling, "<redacted>")
-		}
-		if upstreamProxy != "" {
-			text = strings.ReplaceAll(text, q(upstreamProxy), q(profile.RedactURL(upstreamProxy)))
 		}
 		os.Remove(conf)
 		fmt.Println(text)

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/user"
@@ -212,12 +213,73 @@ func TestHomeUnsetDefaultProfileDirsAnswerTheAccountHomesRoot(t *testing.T) {
 }
 
 func TestRenderUpstreamProxyOnlyWhenSet(t *testing.T) { // test_upstream_proxy_is_rendered_only_when_set
+	// The route's exemptions read NO_PROXY, so the test's own answer must not
+	// depend on whichever one this machine carries.
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
 	cfg := render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "http://127.0.0.1:18480", "", nil, false)
 	if !strings.Contains(cfg, "\nproxy-url: \"http://127.0.0.1:18480\"\n") {
 		t.Fatal("proxy-url missing")
 	}
 	if strings.Contains(render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "", "", nil, false), "proxy-url") {
 		t.Fatal("proxy-url rendered without a proxy")
+	}
+	// An unusable knob names no route: the translator keeps the environment's
+	// resolution, the same decision the probes and the shim take (GH-580
+	// review). Before, cliproxyapi was handed an invalid proxy-url while the
+	// probes had already fallen back.
+	for _, knob := range []string{"http://proxy:bad-port", "not a url", "http://[::1"} {
+		if strings.Contains(render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", knob, "", nil, false), "proxy-url") {
+			t.Fatalf("%q rendered proxy-url; the resolver leaves that call to the environment", knob)
+		}
+	}
+	// A pasted userinfo inside the authority still names the proxy: the
+	// translator is rendered the resolver's spelling -- parseable by
+	// cliproxyapi and the one the probes dial -- not the raw knob, which would
+	// be a different route.
+	pasted := "http://alice:p^ss@proxy:3128?token=qq"
+	cfg = render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", pasted, "", nil, false)
+	if want := "\nproxy-url: \""; !strings.Contains(cfg, want) {
+		t.Fatalf("proxy-url missing; a pasted userinfo inside the authority still names the proxy")
+	}
+	start := strings.Index(cfg, "proxy-url: \"") + len("proxy-url: \"")
+	end := strings.Index(cfg[start:], "\"")
+	if end < 0 {
+		t.Fatalf("unterminated proxy-url: %q", cfg)
+	}
+	rendered := cfg[start : start+end]
+	if u, err := url.Parse(rendered); err != nil || u.Host != "proxy:3128" {
+		t.Fatalf("proxy-url %q is not a parseable route to proxy:3128: %v", rendered, err)
+	}
+	if strings.Contains(cfg, "\""+pasted+"\"") {
+		t.Fatalf("the translator was handed the knob's raw spelling, which Go cannot parse: %q", cfg)
+	}
+	// An '@' after a path or query is ambiguous -- it may belong to that path
+	// or query value -- and the resolver refuses to guess a host from it, so
+	// the translator gets no proxy-url and keeps the environment's resolution
+	// (GH-580 review).
+	queryAt := "http://proxy.invalid:bad-port/?tag=" + "someone" + "@" + "other.invalid:3128"
+	if strings.Contains(render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", queryAt, "", nil, false), "proxy-url") {
+		t.Fatalf("%q rendered proxy-url; the resolver leaves an ambiguous '@' to the environment", queryAt)
+	}
+}
+
+// The knob is the session's route, not a licence to hand this machine's own
+// loopback — or a NO_PROXY-listed gateway — to a remote proxy. The translator
+// reads the same promise the shim and the probes do (GH-580).
+func TestRenderNeverProxiesAnExemptUpstream(t *testing.T) {
+	t.Setenv("NO_PROXY", "")
+	t.Setenv("no_proxy", "")
+	for _, upstream := range []string{"http://127.0.0.1:4000", "http://localhost:4000", "http://[::1]:4000"} {
+		cfg := render([]Row{row("anthropic")}, "k", 1234, upstream, "/unused", "http://bridge.invalid:3128", "", nil, false)
+		if strings.Contains(cfg, "proxy-url") {
+			t.Fatalf("%s rendered proxy-url; a loopback upstream is dialed directly", upstream)
+		}
+	}
+	t.Setenv("NO_PROXY", "gateway.lan")
+	cfg := render([]Row{row("anthropic")}, "k", 1234, "http://gateway.lan:8443", "/unused", "http://bridge.invalid:3128", "", nil, false)
+	if strings.Contains(cfg, "proxy-url") {
+		t.Fatal("a NO_PROXY-listed gateway rendered proxy-url; it is dialed directly")
 	}
 }
 
@@ -1624,16 +1686,29 @@ func TestAutoLaunchWithoutModelIsBoundedBySelectDeadline(t *testing.T) {
 func TestPrintConfigNeverPrintsTheProxyPassword(t *testing.T) {
 	// Go's url.Parse refuses these passwords where Python's urlsplit took them;
 	// the fallback must still cut the userinfo rather than echo the raw URL.
-	// A /, ? or # inside the password ends the authority mid-password (GH-65),
-	// so the @ that closes the userinfo sits past the split's netloc and the
-	// password's head would print as the host.
+	// A space, '^', '%' or a brace inside the password is re-encoded inside the
+	// authority, so the proxy is rendered and redaction must cut it to its host
+	// (GH-65). A /, ? or # before the '@' is ambiguous -- the '@' may belong to
+	// a path or query value -- so the resolver refuses to guess and the
+	// translator gets no proxy-url; no part of the knob may print either way
+	// (GH-580 review).
 	// A digit or empty head before the first /?# reads as a port, so url.Parse
 	// accepts the URL and the success path must not print the secret either.
-	for name, secret := range map[string]string{"caret": "p^ss", "percent": "50%off", "space": "p ss", "slash": "pa/ss", "question": "pa?ss", "hash": "pa#ss",
-		"digit-slash": "12/ss", "digit-question": "12?ss", "empty-head-slash": "/ss"} {
+	// The knob also carries a query token: redaction must drop it, and a key
+	// that itself spells part of the proxy must not cut the spelling first.
+	for name, c := range map[string]struct {
+		secret   string
+		rendered bool
+	}{
+		"caret": {"p^ss", true}, "percent": {"50%off", true}, "space": {"p ss", true},
+		"digit-slash": {"12/ss", true}, "digit-question": {"12?ss", true}, "empty-head-slash": {"/ss", true},
+		"slash": {"pa/ss", false}, "question": {"pa?ss", false}, "hash": {"pa#ss", false},
+	} {
 		t.Run(name, func(t *testing.T) {
+			t.Setenv("NO_PROXY", "")
+			t.Setenv("no_proxy", "")
 			stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "k", "ANTHROPIC_BASE_URL": "https://gateway",
-				"CCMORPH_UPSTREAM_PROXY": "http://alice:" + secret + "@proxy:3128"})
+				"CCMORPH_UPSTREAM_PROXY": "http://alice:" + c.secret + "@proxy:3128?token=qq"})
 			swap(t, &profileDirs, t.TempDir())
 			// Neutral state dir: t.TempDir() puts the subtest name in the path,
 			// and a secret spelled "p^ss" must not be excused for that.
@@ -1650,11 +1725,17 @@ func TestPrintConfigNeverPrintsTheProxyPassword(t *testing.T) {
 				t.Fatalf("Main = %d", got)
 			}
 			text := output()
-			if strings.Contains(text, secret) || strings.Contains(text, "alice") {
-				t.Fatalf("--print-config printed the proxy credentials: %q", text)
+			if strings.Contains(text, c.secret) || strings.Contains(text, "alice") || strings.Contains(text, "token=qq") {
+				t.Fatalf("--print-config printed the proxy credentials or its query: %q", text)
 			}
-			if !strings.Contains(text, `proxy-url: "http://proxy:3128"`) {
-				t.Fatalf("proxy-url not redacted to its host: %q", text)
+			if c.rendered {
+				if !strings.Contains(text, `proxy-url: "http://proxy:3128"`) {
+					t.Fatalf("proxy-url not redacted to its host: %q", text)
+				}
+				return
+			}
+			if strings.Contains(text, "proxy-url") {
+				t.Fatalf("an ambiguous '@' rendered proxy-url; the resolver leaves that call to the environment: %q", text)
 			}
 		})
 	}
