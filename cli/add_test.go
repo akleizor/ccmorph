@@ -115,3 +115,27 @@ func TestHandSignInSignalsReachTheChildNotTheParent(t *testing.T) {
 		})
 	}
 }
+
+// #636: Ctrl-C during a browser sign-in is the cancel the prompt itself
+// advertises — the picker's Cancelled line, not "login failed". The helper
+// must tell the two endings apart at the child's exit.
+func TestLoginCancelledIsTheCancelNotAFailure(t *testing.T) {
+	run := func(script string) error {
+		return exec.Command("sh", "-c", script).Run()
+	}
+	if err := run("exit 130"); !loginCancelled(err) {
+		t.Errorf("exit 130 (the shell's Ctrl-C code) is not read as a cancel: %v", err)
+	}
+	if err := run("kill -INT $$; wait"); !loginCancelled(err) {
+		t.Errorf("a child killed by SIGINT is not read as a cancel: %v", err)
+	}
+	if err := run("exit 1"); loginCancelled(err) {
+		t.Errorf("a real failure (exit 1) is read as a cancel: %v", err)
+	}
+	if loginCancelled(nil) {
+		t.Error("no error at all is read as a cancel")
+	}
+	if loginCancelled(errors.New("not an exit error")) {
+		t.Error("an error that is not an exit status is read as a cancel")
+	}
+}

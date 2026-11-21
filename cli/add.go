@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -227,6 +228,22 @@ func (l *launcher) claudeAuthCtx(ctx context.Context, dir string, args ...string
 	return cmd
 }
 
+// loginCancelled reports whether a sign-in ended because the person pressed
+// Ctrl-C rather than because it failed. The sign-in owns the terminal in raw
+// mode, so a Ctrl-C reaches the child as a byte rather than a signal to
+// ccmorph: the child exits 130, or dies of SIGINT. Both are the picker's
+// Cancelled line, not "login failed" (#636).
+func loginCancelled(err error) bool {
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		return false
+	}
+	if ws, ok := exit.Sys().(syscall.WaitStatus); ok && ws.Signaled() && ws.Signal() == syscall.SIGINT {
+		return true
+	}
+	return exit.ExitCode() == 130
+}
+
 var emailRE = regexp.MustCompile(`"email": "([^"]*)"`)
 
 // claudeStatusRE reads `claude auth status`'s JSON: whether Claude Code holds
@@ -273,6 +290,10 @@ func (l *launcher) subBrowserLogin(name string) (string, bool) {
 	err := login.Wait()
 	release()
 	if err != nil {
+		if loginCancelled(err) {
+			themeFor(2).cancelled()
+			return "", false
+		}
 		l.err("login failed")
 		return "", false
 	}
@@ -786,7 +807,11 @@ func (l *launcher) providerLogin(name, provider string) bool {
 	}
 	cmd := exec.Command(bin, "-"+provider+"-login", "-config", conf)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if cmd.Run() != nil {
+	if err := cmd.Run(); err != nil {
+		if loginCancelled(err) {
+			themeFor(2).cancelled()
+			return false
+		}
 		l.err(providerLabel(provider) + " login failed")
 		return false
 	}
