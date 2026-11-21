@@ -728,6 +728,21 @@ def test_the_addon_reads_a_handoff_once_and_keeps_it_thereafter(tmp_path, monkey
     assert addon._switched("gw") == got                    # brought up once; every turn follows
 
 
+def test_a_switch_whose_word_never_lands_leaves_no_handoff_holding_the_key(tmp_path, monkeypatch):
+    """A handoff is the route key in a 0600 file until the next request reads it. A
+    switch whose word never lands leaves that file for good — no request would ever
+    read it — so the failed switch takes its own handoff back. Same guarantee as the
+    route-key file, on the --switch path (issue #777)."""
+    rc, _ = _switch_state(tmp_path, monkeypatch)
+
+    def refuse(word, path=rc.INFERENCE):
+        raise OSError("inference is read-only")
+    monkeypatch.setattr(rc, "write_inference", refuse)
+    with pytest.raises(OSError):
+        rc.switch("gw", "me")
+    assert list(rc.STATE.glob("switch-*")) == []
+
+
 @pytest.mark.parametrize("handoff,port,log", [
     pytest.param(None, 60111, "was never brought up", id="never-brought-up-keeps-the-route"),
     pytest.param({"upstream": "http://127.0.0.1:54505", "key": "route-key",
