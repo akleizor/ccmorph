@@ -862,12 +862,17 @@ func SaveDiscovered(profile string, values map[string]int64, expected *Identity,
 	return SaveDiscoveredCtx(context.Background(), profile, values, expected, overwrite, sources, misses)
 }
 
-// SaveDiscoveredCtx is SaveDiscovered under a caller's deadline: when the
-// profile lock is still held elsewhere at ctx.Done it writes nothing and
-// returns false.
+// SaveDiscoveredCtx is SaveDiscovered under a caller's deadline: a context
+// already done writes nothing, and when the profile lock is still held
+// elsewhere at ctx.Done it writes nothing either. A pass cut short by its
+// deadline therefore leaves the profile as it was, to retry next time (#757,
+// #775).
 func SaveDiscoveredCtx(ctx context.Context, profile string, values map[string]int64, expected *Identity, overwrite bool,
 	sources map[string]obj, misses map[string]string) (saved bool, err error) {
 	if expected == nil {
+		return false, nil
+	}
+	if ctx.Err() != nil {
 		return false, nil
 	}
 	ran, err := ProfileLockCtx(ctx, profile, func() error {

@@ -1763,6 +1763,147 @@ func TestListingStdinGivesUpOnAHeldProfileLockIssue757(t *testing.T) {
 	}
 }
 
+// GH-775: the launch's --deadline cancels a slow model's lookup, and a
+// cancelled lookup produced no verdict — it must not become a dated miss, or
+// the next launches skip the model for a week while the sizer gate stays shut.
+// A model the probe did answer "no size" for keeps its miss: that is a verdict.
+func TestDeadlineLeavesUnprobedModelsForTheNextLaunchIssue775(t *testing.T) {
+	dir := state(t)
+	conf := filepath.Join(dir, "gw.conf")
+	put(t, conf, "type=apikey\nbase_url=https://gw.invalid\napi_key={{SECRET_q7t2w9dxk4}}\n")
+	listing := `{"data":[{"id":"slow-model"},{"id":"refused-model"}]}`
+	oldV := validationWindowFn
+	t.Cleanup(func() { validationWindowFn = oldV })
+
+	// The deadline: the slow model's probe waits for it and is cancelled; the
+	// refused model's probe answers before it. No clock is involved.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var slowOnce, refusedOnce sync.Once
+	slowStarted := make(chan struct{})
+	refusedAnswered := make(chan struct{})
+	validationWindowFn = func(ctx context.Context, _, _, model string, _ Opener, _ time.Duration) int64 {
+		switch model {
+		case "slow-model":
+			slowOnce.Do(func() { close(slowStarted) })
+			<-ctx.Done()
+		case "refused-model":
+			refusedOnce.Do(func() { close(refusedAnswered) })
+		}
+		return 0
+	}
+	captureStderr(t)
+	done := make(chan int, 1)
+	go func() { done <- SizeListing(ctx, "gw", listing, "https://gw.invalid", "canary", nil) }()
+	<-slowStarted
+	<-refusedAnswered
+	cancel()
+	if c := <-done; c != 1 {
+		t.Errorf("the timed-out launch exited %d, want 1: its save had to give up", c)
+	}
+
+	// A timeout is not a verdict: the cancelled model was never answered for,
+	// so it must stay out of the profile's record.
+	_, fields, err := ReadConf(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, missed := DiscoveredMisses(fields)["slow-model"]; missed {
+		t.Errorf("the timed-out launch recorded a miss for a model whose probe was cancelled: %v", DiscoveredMisses(fields))
+	}
+
+	// A following healthy launch: the slow model answers now, the refused one
+	// still names no size. The cancelled model is sized; the answered one is
+	// kept out of the sizes and keeps its miss.
+	validationWindowFn = func(_ context.Context, _, _, model string, _ Opener, _ time.Duration) int64 {
+		if model == "slow-model" {
+			return 131072
+		}
+		return 0
+	}
+	if c := SizeListing(context.Background(), "gw", listing, "https://gw.invalid", "canary", nil); c != 0 {
+		t.Fatalf("the healthy launch exited %d", c)
+	}
+	w := windowsOf("gw")
+	if got := w["slow-model"]; got != 131072 {
+		t.Fatalf("the healthy launch did not re-size the cancelled model: %v", w)
+	}
+	if got, sized := w["refused-model"]; sized {
+		t.Fatalf("the answered-unsizeable model was sized %d instead of kept out: %v", got, w)
+	}
+	_, fields, err = ReadConf(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, missed := DiscoveredMisses(fields)["refused-model"]; !missed {
+		t.Fatalf("the answered-unsizeable model's miss was not recorded: %v", DiscoveredMisses(fields))
+	}
+	// The answered miss now keeps the model out of the pass; only the model
+	// with a size remains, and nobody is asked again.
+	validationWindowFn = func(context.Context, string, string, string, Opener, time.Duration) int64 {
+		t.Fatal("a sized or recently missed model was asked again")
+		return 0
+	}
+	if c := SizeListing(context.Background(), "gw", listing, "https://gw.invalid", "canary", nil); c != 0 {
+		t.Fatalf("the third launch exited %d", c)
+	}
+	if w := windowsOf("gw"); len(w) != 1 || w["slow-model"] != 131072 {
+		t.Fatalf("the recorded state changed on a launch with nothing to size: %v", w)
+	}
+}
+
+// GH-775: a save whose deadline has passed writes nothing even when the
+// profile lock is free. The cancelled probes' zero results are not verdicts.
+func TestSaveAfterTheDeadlineWritesNothingIssue775(t *testing.T) {
+	dir := state(t)
+	conf := filepath.Join(dir, "gw.conf")
+	put(t, conf, "type=apikey\napi_key=k\n")
+	before, err := os.ReadFile(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	saved, err := SaveDiscoveredCtx(ctx, "gw", map[string]int64{"sized-model": 65536}, ProfileIdentity("gw"), true,
+		nil, map[string]string{"timed-out-model": "2026-11-22"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved {
+		t.Fatal("a save past its deadline wrote to the profile")
+	}
+	after, err := os.ReadFile(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("a save past its deadline rewrote the conf:\nbefore: %q\nafter:  %q", before, after)
+	}
+	if _, err := os.Stat(DiscoveredPath(conf)); !os.IsNotExist(err) {
+		t.Fatalf("a save past its deadline wrote a discovered record: %v", err)
+	}
+}
+
+// GH-775: a saved miss must cite an answer. The collection loop receives one
+// result whose lookup the deadline cancelled (no value, no answer) and one the
+// probe answered "no size" for. Only the answered result may become a miss.
+func TestASavedMissMustCiteAnAnswerIssue775(t *testing.T) {
+	today := "2026-11-22"
+	values, sources, missed := collectSizes([]sized{
+		{model: "timed-out-model"},               // cancelled: no verdict
+		{model: "refused-model", answered: true}, // the probe answered "no size"
+	}, today)
+	if len(missed) != 1 || missed["refused-model"] != today {
+		t.Fatalf("a timeout was recorded as a verdict: misses %v, want only refused-model", missed)
+	}
+	if _, ok := missed["timed-out-model"]; ok {
+		t.Fatalf("a timeout was recorded as a verdict: misses %v", missed)
+	}
+	if len(values) != 0 || len(sources) != 0 {
+		t.Fatalf("a cancelled lookup produced a value: values %v, sources %v", values, sources)
+	}
+}
+
 // Python: ArgumentValidation + SafeDiscovery.test_paid_modes_require_explicit_consent_and_one_model +
 // PartialDiscoveryStatus (the exit codes and the reporting).
 func TestMainArgumentsAndReporting(t *testing.T) {

@@ -89,12 +89,51 @@ func parseDay(s string) (time.Time, bool) {
 	return t, err == nil
 }
 
+// sized is one model's outcome from the sizing pass. answered says the pass
+// reached a verdict for it — a size, an answer naming none, or a mode where no
+// probe may ask (a provider bridge). A lookup the caller's deadline cut short
+// has answered false and must not become a dated miss (#775).
+type sized struct {
+	model         string
+	value         int64
+	stated        int64
+	source        obj
+	declared      bool
+	fromCatalogue bool
+	answered      bool
+}
+
+// collectSizes turns the workers' outcomes into the save's tables. A model
+// without a size becomes a dated miss only when the pass reached a verdict for
+// it; a cancelled lookup stays unsized and unrecorded, so the next launch asks
+// again (#775).
+func collectSizes(results []sized, today string) (values map[string]int64, sources map[string]obj, missed map[string]string) {
+	values = map[string]int64{}
+	sources = map[string]obj{}
+	missed = map[string]string{}
+	for _, r := range results {
+		switch {
+		case r.declared:
+			values[r.model] = r.value
+		case r.fromCatalogue:
+			values[r.model] = r.value
+			sources[r.model] = r.source
+		case r.stated > 0:
+			values[r.model] = r.stated
+		case r.answered:
+			missed[r.model] = today
+		}
+	}
+	return values, sources, missed
+}
+
 // SizeListing sizes, before launch, every listed model this profile has no
 // limit for yet. The listing is the one launch already fetched, so a launch
 // where every model is known costs a local comparison and nothing else. A model
 // the gateway added since gets its declared size, else a models.dev estimate,
-// else a dated miss that stops the lookup repeating for a week. Silent by
-// design: the outcome goes to the log, never to the person launching.
+// else — when the pass reached a verdict — a dated miss that stops the lookup
+// repeating for a week. Silent by design: the outcome goes to the log, never to
+// the person launching.
 func SizeListing(ctx context.Context, profile, body, base, key string, op Opener) int {
 	var rows []obj
 	doc, err := parseJSON([]byte(body))
@@ -145,9 +184,6 @@ func SizeListing(ctx context.Context, profile, body, base, key string, op Opener
 	if len(todo) == 0 {
 		return 0
 	}
-	values := map[string]int64{}
-	sources := map[string]obj{}
-	missed := map[string]string{}
 	cache := NewCache(true)
 	to := launchCatalogueTimeout * time.Second
 	declared, pending := ProviderWindows(ctx, DeclaredSizes(todo), todo, fields, to, cache)
@@ -163,14 +199,6 @@ func SizeListing(ctx context.Context, profile, body, base, key string, op Opener
 	// Claude started (#603). Each row keeps its own outcome, applied in listing
 	// order afterwards: a listing can name one model twice, and the serial loop
 	// let the later row's answer win.
-	type sized struct {
-		model         string
-		value         int64
-		stated        int64
-		source        obj
-		declared      bool
-		fromCatalogue bool
-	}
 	results := make([]sized, len(rest))
 	work := make(chan int, len(rest))
 	var wg sync.WaitGroup
@@ -183,12 +211,12 @@ func SizeListing(ctx context.Context, profile, body, base, key string, op Opener
 				r := &results[i]
 				r.model, _ = asStr(getv(row, "id"))
 				if v, ok := declared[r.model]; ok {
-					r.declared, r.value = true, v
+					r.declared, r.value, r.answered = true, v, true
 					continue
 				}
 				ownedBy, _ := asStr(getv(row, "owned_by"))
 				if found := CatalogueLookup(ctx, r.model, ownedBy, cache, to); found != nil {
-					r.fromCatalogue, r.value, r.source = true, found.Value, catalogueTag(found)
+					r.fromCatalogue, r.value, r.source, r.answered = true, found.Value, catalogueTag(found), true
 					continue
 				}
 				// A provider bridge answers from the user's subscription, and a probe it
@@ -197,6 +225,9 @@ func SizeListing(ctx context.Context, profile, body, base, key string, op Opener
 				if base != "" && key != "" && !paid {
 					r.stated = validationWindowFn(ctx, base, key, r.model, op, to)
 				}
+				// A deadline that cancelled the lookup answered nothing; only a
+				// lookup that ran to its end is a verdict (#775).
+				r.answered = ctx.Err() == nil
 			}
 		}()
 	}
@@ -205,19 +236,7 @@ func SizeListing(ctx context.Context, profile, body, base, key string, op Opener
 	}
 	close(work)
 	wg.Wait()
-	for _, r := range results {
-		switch {
-		case r.declared:
-			values[r.model] = r.value
-		case r.fromCatalogue:
-			values[r.model] = r.value
-			sources[r.model] = r.source
-		case r.stated > 0:
-			values[r.model] = r.stated
-		default:
-			missed[r.model] = today
-		}
-	}
+	values, sources, missed := collectSizes(results, today)
 	// SaveDiscoveredCtx, not SaveDiscovered: the profile lock this save takes
 	// may be held by a person at `ccmorph rm`'s prompt, and the caller's
 	// deadline — the launch's --deadline — bounds that wait (#757).
