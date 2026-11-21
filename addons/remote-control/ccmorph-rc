@@ -421,6 +421,9 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
     startup_signals = (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
     old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, startup_signals)
     old_handlers = {sig: signal.getsignal(sig) for sig in startup_signals}
+    # Only a signal left at SIG_DFL ends the process without unwinding. One the
+    # caller ignores (nohup ignores HUP) stays ignored: it cannot leave the key behind.
+    taken = [sig for sig in startup_signals if old_handlers[sig] == signal.SIG_DFL]
     key_file = None
     fd = None
 
@@ -431,7 +434,7 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
         raise SystemExit(128 + signum)
 
     try:
-        for sig in startup_signals:
+        for sig in taken:
             signal.signal(sig, interrupted)
         fd, key_file = tempfile.mkstemp(prefix="route-key.", dir=STATE)
         # README: the route key is in no argv, environment, or lingering file.
@@ -468,8 +471,8 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
                 os.unlink(key_file)      # already gone when the addon consumed the key
         # Restore dispositions only while blocked. A signal pending at this point
         # sees the key already removed and the caller's normal disposition restored.
-        for sig, handler in old_handlers.items():
-            signal.signal(sig, handler)
+        for sig in taken:
+            signal.signal(sig, old_handlers[sig])
         signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
 
 
