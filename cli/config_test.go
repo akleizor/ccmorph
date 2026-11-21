@@ -25,3 +25,25 @@ func TestValueRowsCountsEveryRowTheValueTook(t *testing.T) {
 		}
 	}
 }
+
+// #788: --json reads the same before or after the profile. A leading flag moves
+// behind the profile slot; every other shape is left exactly as it came.
+func TestJSONLastMovesTheFlagBehindTheProfile(t *testing.T) {
+	for _, c := range []struct {
+		args  []string
+		want  []string
+		moved bool
+	}{
+		{nil, nil, false},
+		{[]string{"work"}, []string{"work"}, false},
+		{[]string{"work", "--json"}, []string{"work", "--json"}, false},
+		{[]string{"model", "base_url"}, []string{"model", "base_url"}, false},
+		{[]string{"--json"}, []string{"", "--json"}, true},
+		{[]string{"--json", "work"}, []string{"work", "--json"}, true},
+	} {
+		got, moved := jsonLast(c.args)
+		if moved != c.moved || strings.Join(got, "\x00") != strings.Join(c.want, "\x00") {
+			t.Errorf("jsonLast(%q) = %q, %v; want %q, %v", c.args, got, moved, c.want, c.moved)
+		}
+	}
+}
