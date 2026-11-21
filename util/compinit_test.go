@@ -363,6 +363,38 @@ func TestCompinitDetectionMatchesZshOnWordStartsAndCRs(t *testing.T) {
 		"# a comment \\\nautoload -Uz compinit && compinit\n",
 		// A function body's subshell is in command position.
 		"f() { (# autoload -Uz compinit && compinit\n:) }; f\n",
+		// #582 review: a backquote body is unescaped as zsh unescapes it, then
+		// lexed as an rc of its own.
+		"x=`print -r -- $'it\\'s';# autoload -Uz compinit && compinit`; print -r -- $x\n",
+		"x=\"`print -r -- $'it\\'s';# autoload -Uz compinit && compinit`\"; print -r -- $x\n",
+		"x=`print -r -- \\$'it\\\\'s';# autoload -Uz compinit && compinit`; print -r -- $x\n",
+		"x=`print -r -- 'a\\`b';# autoload -Uz compinit && compinit`; print -r -- $x\n",
+		"x=`print -r -- \\\"a;# b\\\"; autoload -Uz compinit && compinit`; print -r -- $x\n",
+		"x=\"`print -r -- \\\"a;# b\\\"; autoload -Uz compinit && compinit`\"; print -r -- $x\n",
+		"x=`print -r -- a\\\\;# b; autoload -Uz compinit && compinit`; print -r -- $x\n",
+		"x=`print -r -- \\`print a;# b\\`; autoload -Uz compinit && compinit`; print -r -- $x\n",
+		"x=`print -r -- \\`print a\\`;# autoload -Uz compinit && compinit`; print -r -- $x\n",
+		"x=`print -r -- a\\ #;autoload -Uz compinit && compinit`; print -r -- $x\n",
+		"x=`print -r -- a\\\n#; autoload -Uz compinit && compinit`; print -r -- $x\n",
+		"x=`print -r -- ${x:-a;#b}; autoload -Uz compinit && compinit`; print -r -- $x\n",
+		"x=${y:-`print -r -- a\\ #;autoload -Uz compinit && compinit`}; print -r -- $x\n",
+		"x=\"`print -r -- a\\\\\\ #;autoload -Uz compinit && compinit`\"; print -r -- $x\n",
+		"x=`case a in a) print hi;; esac;# autoload -Uz compinit && compinit`; print -r -- $x\n",
+		"x=`print -r -- 'a\nb;# c'; autoload -Uz compinit && compinit`; print -r -- $x\n",
+		"x=`print -r -- \"a\nb\";# autoload -Uz compinit && compinit`; print -r -- $x\n",
+		"x=`cat <<EOF\n;# \nEOF\n`; autoload -Uz compinit && compinit\n",
+		"x=$(print -r -- `print a;# )`; autoload -Uz compinit && compinit\n); print -r -- $x\n",
+		"x=${y:-`print a;# }`}; autoload -Uz compinit && compinit\n",
+		"case a in `print a;# )`) autoload -Uz compinit && compinit;; esac\n",
+		// A body zsh cannot parse runs nothing; a word's ( ) left open parses.
+		"x=`print -r -- $'a\\\\';# autoload -Uz compinit && compinit`; print -r -- $x\n",
+		"x=`print -r -- $'a\\\\\\\\';# autoload -Uz compinit && compinit`; print -r -- $x\n",
+		"x=`print -r -- $'a\\\\\\\\'; autoload -Uz compinit && compinit`; print -r -- $x\n",
+		"x=`<<<'x'(;autoload -Uz compinit && compinit`; print -r -- $x\n",
+		// Realistic backquote lines keep their verdicts.
+		"eval `dircolors -b 2>/dev/null`\nautoload -Uz compinit;# compinit\n",
+		"export GPG_TTY=`tty` # for gpg\nautoload -Uz compinit && compinit\n",
+		"[[ `uname` == Darwin ]] && export CLICOLOR=1 # mac\n# autoload -Uz compinit && compinit\n",
 	} {
 		if err := os.WriteFile(rcFile, []byte(rc), 0o644); err != nil {
 			t.Fatal(err)
