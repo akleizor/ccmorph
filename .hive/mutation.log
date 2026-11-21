@@ -315,3 +315,13 @@ mutation D: Gateway._stale always False (tests/adapter_test.py), so a finished t
 E       AssertionError: HTTPError not raised
 FAILED tests/adapter_test.py::AdapterTest::test_a_finished_tests_gateway_records_nothing_issue_518
 1 failed in 0.59s
+mutation E (landing refusal S3): DoctorRoute hands adapterLine __UNKNOWN__ for a successfully read cliproxyapi session in the default report, verbose path untouched (util/doctor.go: reported := running; if strings.Contains(running, ":cliproxyapi") { reported = "__UNKNOWN__" })
+    doctor_test.go:209: adapter rows [], want ["OK adapter: this profile needs a translator now: an open session on it is running cliproxyapi"]
+    doctor_test.go:209: adapter rows ["OK adapter: this endpoint needs a translator; cliproxyapi is installed"], want ["OK adapter: this endpoint needs a translator; cliproxyapi is installed; an open session on this profile is using one now"]
+--- FAIL: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable (0.45s)
+    --- PASS: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable/shim-only (0.15s)
+    --- FAIL: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable/translator-running (0.14s)
+    --- FAIL: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable/translator-running-classified (0.16s)
+FAIL
+FAIL	github.com/akleizor/ccmorph/util	0.463s
+FAIL
