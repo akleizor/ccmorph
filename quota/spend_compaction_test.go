@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -126,7 +128,7 @@ func TestQuotaSpendArchiveMixedStoreTotals(t *testing.T) {
 
 func TestQuotaSpendAutomaticallyCompactsOneClosedDay(t *testing.T) {
 	useClock(t, time.Date(2026, 10, 21, 0, 30, 0, 0, time.FixedZone("east", 8*60*60)))
-	compactUsage = shim.CompactUsage
+	compactUsage = autoCompact
 	state := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", state)
 	usage := filepath.Join(state, "ccmorph", "usage")
@@ -155,7 +157,9 @@ func TestQuotaSpendAutomaticallyCompactsOneClosedDay(t *testing.T) {
 	}
 }
 
-func TestQuotaSpendArchiveRefusalKeepsReadableRows(t *testing.T) {
+// A same-name identity conflict is the keep-both every reader applies, never a
+// refusal: the month counts both turns, and both survive the compaction.
+func TestQuotaSpendArchiveKeepBothCompactsConflictingNames(t *testing.T) {
 	for _, collision := range []struct {
 		name, archivedID, liveID, archivedTurn, liveTurn string
 	}{
@@ -176,13 +180,11 @@ func TestQuotaSpendArchiveRefusalKeepsReadableRows(t *testing.T) {
 			writeSpendFixture(t, filepath.Join(usage, day, "a.json"), spendArchiveReceipt(collision.liveID, collision.liveTurn, day+"T09:00:00Z", 2, 20))
 			e := spendEntry("gw", "")
 			if e.Error != "" || e.Spend == nil || e.Spend.MonthUSD != 3 || e.Spend.MonthTurns != 2 || e.Spend.MonthTokens != 30 {
-				t.Fatalf("compaction refusal dropped distinct readable receipts: %+v", e)
+				t.Fatalf("conflicting same-name receipts collapsed to one turn: %+v", e)
 			}
-			if _, err := os.Stat(filepath.Join(usage, day, "a.json")); err != nil {
-				t.Fatalf("conflicting live receipt removed: %v", err)
-			}
-			if _, err := os.Stat(path); err != nil {
-				t.Fatalf("conflicting archive removed: %v", err)
+			rows, err := paths.ReadUsageArchive(path)
+			if err != nil || len(rows) != 2 {
+				t.Fatalf("conflicting same-name receipts did not both survive maintenance: %v %v", rows, err)
 			}
 		})
 	}
@@ -393,6 +395,157 @@ func TestQuotaSpendArchiveReadOnlyStoreIsReadable(t *testing.T) {
 	}
 }
 
+// A first publication killed between its index and its content leaves an index
+// over no content; the folder holds that day whole, so quota reads the folder
+// instead of failing the month on an error no data backs.
+func TestQuotaSpendIndexOnlyOrphanAnswersFromFolder(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	day := "2026-10-18"
+	path := writeSpendArchive(t, usage, day, map[string]string{"a.json": spendArchiveReceipt("a", "turn", day+"T09:00:00Z", 1, 10)})
+	writeSpendFixture(t, filepath.Join(usage, day, "a.json"), spendArchiveReceipt("a", "turn", day+"T09:00:00Z", 2, 20))
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if e := spendEntry("gw", ""); e.Error != "" || e.Spend == nil || e.Spend.MonthUSD != 2 {
+		t.Fatalf("orphan index bricked the month: %+v", e)
+	}
+}
+
+// The hash-verified archive answers a closed day on its own: a leftover
+// folder this run cannot list — the compaction's unlink meeting foreign
+// ownership — may not fail the month while report and export still answer.
+func TestQuotaSpendUnreadableLeftoverFolderAnswersFromArchive(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads folders with mode 0")
+	}
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	day := "2026-10-18"
+	writeSpendArchive(t, usage, day, map[string]string{"a.json": spendArchiveReceipt("a", "turn", day+"T09:00:00Z", 1, 10)})
+	dir := filepath.Join(usage, day)
+	writeSpendFixture(t, filepath.Join(dir, "a.json"), spendArchiveReceipt("a", "turn", day+"T09:00:00Z", 2, 20))
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	e := spendEntry("gw", "")
+	if e.Error != "" || e.Spend == nil || e.Spend.MonthUSD != 1 {
+		t.Fatalf("unreadable leftover folder failed the month the archive answers: %+v", e)
+	}
+}
+
+// Auto-compaction is not invisible: a day the compactor refuses is logged, the
+// month still answers, and the refusal does not block the days after it.
+func TestQuotaSpendAutoCompactionLogsFailure(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	compactUsage = autoCompact
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	stale := writeSpendArchive(t, usage, "2026-09-15", map[string]string{"a.json": spendArchiveReceipt("a", "turn", "2026-09-15T09:00:00Z", 1, 10)})
+	if err := os.WriteFile(stale, []byte("corrupt\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeSpendFixture(t, filepath.Join(usage, "2026-09-15", "b.json"), spendArchiveReceipt("b", "turn", "2026-09-15T10:00:00Z", 3, 30))
+	writeSpendFixture(t, filepath.Join(usage, "2026-10-18", "b.json"), spendArchiveReceipt("b", "turn", "2026-10-18T09:00:00Z", 2, 20))
+	var logged []string
+	oldLog := logf
+	logf = func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }
+	t.Cleanup(func() { logf = oldLog })
+	e := spendEntry("gw", "")
+	if e.Error != "" || e.Spend == nil || e.Spend.MonthUSD != 2 {
+		t.Fatalf("a September store wedge failed the October read: %+v", e)
+	}
+	joined := strings.Join(logged, "\n")
+	if !strings.Contains(joined, "usage maintenance") || !strings.Contains(joined, "2026-09-15") {
+		t.Fatalf("swallowed maintenance failure: %v", logged)
+	}
+	if _, err := os.Stat(filepath.Join(usage, "2026-10-18.jsonl")); err != nil {
+		t.Fatalf("the bad day blocked the newer one: %v", err)
+	}
+}
+
+// The read path's compaction is the statusline's: a day too large for its
+// budget is left whole for usage-compact, a smaller day still compacts, and a
+// spent deadline compacts nothing — while the month answers whole every time.
+// The one day a pass may compact never holds the read past its budget (#654).
+func TestQuotaSpendAutoCompactionStaysWithinItsBudget(t *testing.T) {
+	t.Run("a day over the cap", func(t *testing.T) {
+		useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+		compactUsage = autoCompact
+		old := autoCompactMaxFiles
+		autoCompactMaxFiles = 3
+		t.Cleanup(func() { autoCompactMaxFiles = old })
+		state := t.TempDir()
+		t.Setenv("XDG_STATE_HOME", state)
+		usage := filepath.Join(state, "ccmorph", "usage")
+		for _, id := range []string{"a", "b", "c", "d"} {
+			writeSpendFixture(t, filepath.Join(usage, "2026-10-16", id+".json"), spendArchiveReceipt(id, "turn", "2026-10-16T09:00:00Z", 1, 10))
+		}
+		writeSpendFixture(t, filepath.Join(usage, "2026-10-17", "e.json"), spendArchiveReceipt("e", "turn", "2026-10-17T09:00:00Z", 1, 10))
+		if e := spendEntry("gw", ""); e.Error != "" || e.Spend == nil || e.Spend.MonthUSD != 5 {
+			t.Fatalf("budgeted maintenance changed the month: %+v", e)
+		}
+		if _, err := os.Stat(filepath.Join(usage, "2026-10-16.jsonl")); !os.IsNotExist(err) {
+			t.Fatalf("the read compacted a day over its cap: %v", err)
+		}
+		if entries, err := os.ReadDir(filepath.Join(usage, "2026-10-16")); err != nil || len(entries) != 4 {
+			t.Fatalf("the read touched a day over its cap: %v %v", entries, err)
+		}
+		if _, err := os.Stat(filepath.Join(usage, "2026-10-17.jsonl")); err != nil {
+			t.Fatalf("the day under the cap did not compact: %v", err)
+		}
+	})
+	t.Run("a day over the byte cap", func(t *testing.T) {
+		useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+		compactUsage = autoCompact
+		old := autoCompactMaxBytes
+		autoCompactMaxBytes = 300
+		t.Cleanup(func() { autoCompactMaxBytes = old })
+		state := t.TempDir()
+		t.Setenv("XDG_STATE_HOME", state)
+		usage := filepath.Join(state, "ccmorph", "usage")
+		for _, id := range []string{"a", "b", "c"} {
+			writeSpendFixture(t, filepath.Join(usage, "2026-10-16", id+".json"), spendArchiveReceipt(id, "turn", "2026-10-16T09:00:00Z", 1, 10))
+		}
+		writeSpendFixture(t, filepath.Join(usage, "2026-10-17", "e.json"), spendArchiveReceipt("e", "turn", "2026-10-17T09:00:00Z", 1, 10))
+		if e := spendEntry("gw", ""); e.Error != "" || e.Spend == nil || e.Spend.MonthUSD != 4 {
+			t.Fatalf("budgeted maintenance changed the month: %+v", e)
+		}
+		if _, err := os.Stat(filepath.Join(usage, "2026-10-16.jsonl")); !os.IsNotExist(err) {
+			t.Fatalf("the read compacted a day over its byte cap: %v", err)
+		}
+		if entries, err := os.ReadDir(filepath.Join(usage, "2026-10-16")); err != nil || len(entries) != 3 {
+			t.Fatalf("the read touched a day over its byte cap: %v %v", entries, err)
+		}
+		if _, err := os.Stat(filepath.Join(usage, "2026-10-17.jsonl")); err != nil {
+			t.Fatalf("the day under the byte cap did not compact: %v", err)
+		}
+	})
+	t.Run("a spent deadline", func(t *testing.T) {
+		useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+		compactUsage = autoCompact
+		old := autoCompactWait
+		autoCompactWait = 0
+		t.Cleanup(func() { autoCompactWait = old })
+		state := t.TempDir()
+		t.Setenv("XDG_STATE_HOME", state)
+		usage := filepath.Join(state, "ccmorph", "usage")
+		writeSpendFixture(t, filepath.Join(usage, "2026-10-17", "e.json"), spendArchiveReceipt("e", "turn", "2026-10-17T09:00:00Z", 2, 10))
+		if e := spendEntry("gw", ""); e.Error != "" || e.Spend == nil || e.Spend.MonthUSD != 2 {
+			t.Fatalf("a spent budget changed the month: %+v", e)
+		}
+		if _, err := os.Stat(filepath.Join(usage, "2026-10-17.jsonl")); !os.IsNotExist(err) {
+			t.Fatalf("compacted after the deadline: %v", err)
+		}
+	})
+}
+
 func TestQuotaSpendArchiveRewritesInvalidateCaches(t *testing.T) {
 	for _, day := range []string{"2026-10-18", "2026-10-20"} {
 		t.Run(day, func(t *testing.T) {
@@ -426,5 +579,263 @@ func TestQuotaSpendArchiveRewritesInvalidateCaches(t *testing.T) {
 				t.Fatalf("archive rewrite served stale totals: %+v", e)
 			}
 		})
+	}
+}
+
+// A cost Python wrote as a NaN token is damage in the price, not a second
+// turn: the live row carrying it overwrites its priced archived sibling under
+// the one merge rule every reader shares, and the month keeps the turn
+// unpriced — the turn report counts as unknown spend and the export counts
+// unpriced. This reader used to decode the pair with encoding/json directly,
+// which refuses the token outright: it kept both rows, then decoded the
+// damaged one to nil, so the same store answered three readers with three
+// month totals (#654).
+func TestQuotaSpendNonFiniteOverlayUnpricesNotOmits(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	compactUsage = shim.CompactUsage
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	day := "2026-10-18"
+	path := writeSpendArchive(t, usage, day, map[string]string{
+		"a.json": spendArchiveReceipt("r", "t", day+"T09:00:00Z", 1, 10),
+	})
+	live := filepath.Join(usage, day, "a.json")
+	writeSpendFixture(t, live, `{"response_id":"r","turn_id":"t","profile":"gw","timestamp":"`+day+`T09:00:00Z","usage":{"cost":NaN,"input_tokens":10},"complete":true}`)
+	stamp := now().Add(time.Second)
+	if err := os.Chtimes(live, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	e := spendEntry("gw", "")
+	if e.Error != "" || e.Spend == nil || e.Spend.MonthUSD != 0 || e.Spend.MonthTurns != 1 || e.Spend.UnpricedTurns != 1 {
+		t.Fatalf("a damaged price changed the month instead of only the price: %+v", e)
+	}
+	rows, err := paths.ReadUsageArchive(path)
+	if err != nil || len(rows) != 1 || !strings.Contains(string(rows[0].Data), "NaN") {
+		t.Fatalf("maintenance did not merge the damaged row into its twin: %v %v", rows, err)
+	}
+}
+
+// A forward NTP step lets maintenance fold a day; the correction back makes
+// that day open again with its folder gone. One boundary helper at the
+// pass's instant means the reader asks the archive the same day it would have
+// asked the folder, so the month stays whole instead of losing the day between
+// two readings of "open" (#654).
+func TestQuotaSpendClockStepForwardThenBackKeepsTheMonthWhole(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	compactUsage = shim.CompactUsage
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	day := "2026-10-18"
+	writeSpendFixture(t, filepath.Join(usage, day, "a.json"),
+		spendArchiveReceipt("r", "t", day+"T09:00:00Z", 5, 50))
+	read := func(at time.Time) *Spend {
+		now = func() time.Time { return at }
+		tallyMemo.key = ""
+		e := spendEntry("gw", "")
+		if e.Error != "" || e.Spend == nil {
+			t.Fatalf("a clock step bricked the read: %+v", e)
+		}
+		return e.Spend
+	}
+	if s := read(time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)); s.MonthUSD != 5 || s.MonthTurns != 1 {
+		t.Fatalf("before the step %+v", s)
+	}
+	// The step forward folds the day into its archive.
+	if rows, err := paths.ReadUsageArchive(filepath.Join(usage, day+".jsonl")); err != nil || len(rows) != 1 {
+		t.Fatalf("maintenance did not archive the closed day: %v %v", rows, err)
+	}
+	if s := read(time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)); s.MonthUSD != 5 || s.MonthTurns != 1 {
+		t.Fatalf("after the step forward %+v", s)
+	}
+	// The correction back reopens the day; its folder is already gone.
+	if s := read(time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)); s.MonthUSD != 5 || s.MonthTurns != 1 {
+		t.Fatalf("the step back lost an archived day classified open: %+v", s)
+	}
+	if _, err := os.Stat(filepath.Join(usage, day)); !os.IsNotExist(err) {
+		t.Fatalf("the day folder came back: %v", err)
+	}
+}
+
+// A statusline queued behind a compaction's exclusive hold is the hang INTENT 8
+// forbids: the read refuses with a named busy error inside the lock's bound and
+// the view carries no spend, never an unbounded wait.
+func TestQuotaSpendBusyStoreRefusesWithinTheBound(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	writeSpendFixture(t, filepath.Join(usage, "2026-10-18", "a.json"),
+		spendArchiveReceipt("a", "turn", "2026-10-18T09:00:00Z", 1, 10))
+	tallyMemo.key = ""
+	held, err := paths.UsageStoreLock(usage, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	start := time.Now()
+	e := spendEntry("gw", "")
+	if e.Spend != nil || !strings.Contains(e.Error, "usage store busy") {
+		t.Fatalf("a busy store answered %+v", e)
+	}
+	if elapsed := time.Since(start); elapsed > 3*paths.UsageLockWait {
+		t.Fatalf("the refusal took %v, past the lock's bound", elapsed)
+	}
+}
+
+// The memo's mutex guards the memo, never the store's I/O: a read that holds it
+// across a scan makes every second reader — and every refusal — queue behind
+// the first (INTENT 8, #654).
+func TestQuotaSpendMemoMutexIsFreeDuringTheRead(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	writeSpendFixture(t, filepath.Join(usage, "2026-10-18", "a.json"),
+		spendArchiveReceipt("a", "turn", "2026-10-18T09:00:00Z", 1, 10))
+	tallyMemo.key = ""
+	beforeFlat = func() {
+		if !tallyMemo.TryLock() {
+			t.Error("the memo mutex was held across the store read")
+			return
+		}
+		tallyMemo.Unlock()
+	}
+	t.Cleanup(func() { beforeFlat = nil })
+	if e := spendEntry("gw", ""); e.Error != "" || e.Spend == nil {
+		t.Fatalf("read failed: %+v", e)
+	}
+}
+
+// The profiles of one quota call share a month read: a statusline pays one
+// scan, not one per profile.
+func TestQuotaSpendConcurrentProfilesShareOneRead(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	writeSpendFixture(t, filepath.Join(usage, "2026-10-18", "a.json"),
+		spendArchiveReceipt("a", "turn", "2026-10-18T09:00:00Z", 1, 10))
+	tallyMemo.key = ""
+	var reads int32
+	beforeFlat = func() { atomic.AddInt32(&reads, 1) }
+	t.Cleanup(func() { beforeFlat = nil })
+	var wg sync.WaitGroup
+	for _, name := range []string{"gw", "other"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if e := spendEntry(name, ""); e.Error != "" || e.Spend == nil {
+				t.Errorf("profile %s: %+v", name, e)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := atomic.LoadInt32(&reads); got != 1 {
+		t.Fatalf("two profiles read the month %d times, want one shared scan", got)
+	}
+}
+
+// An unchanged store costs what its marks cost: a cold pass loads each
+// archived day once, and a pass whose marks still match loads none (#559,
+// #654). A pass that re-hashes every archive on every statusline call is the
+// regression this counts.
+func TestQuotaSpendReadsEachArchiveOncePerPass(t *testing.T) {
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	for _, day := range []string{"2026-10-17", "2026-10-18"} {
+		writeSpendArchive(t, usage, day, map[string]string{
+			"a.json": spendArchiveReceipt("a"+day, "turn"+day, day+"T09:00:00Z", 1, 10),
+		})
+	}
+	var loads int32
+	archiveReads = func() { atomic.AddInt32(&loads, 1) }
+	t.Cleanup(func() { archiveReads = nil })
+	tallyMemo.key = ""
+	if e := spendEntry("gw", ""); e.Error != "" || e.Spend == nil || e.Spend.MonthUSD != 2 {
+		t.Fatalf("cold read: %+v", e)
+	}
+	if got := atomic.LoadInt32(&loads); got > 2 {
+		t.Fatalf("a cold pass loaded %d archive generations for two days, want at most one per day", got)
+	}
+	atomic.StoreInt32(&loads, 0)
+	if e := spendEntry("gw", ""); e.Error != "" || e.Spend == nil || e.Spend.MonthUSD != 2 {
+		t.Fatalf("unchanged read: %+v", e)
+	}
+	if got := atomic.LoadInt32(&loads); got != 0 {
+		t.Fatalf("an unchanged pass loaded %d archive generations, want none", got)
+	}
+}
+
+// An overlay this run cannot read beside an archived day is one receipt the
+// month leaves out, never the whole day: the archive and every readable
+// overlay still count, the reason names the one skipped, and the run still
+// fails — the total report and the export give the same store (#654). The
+// skip is not remembered: restoring the mode counts the receipt again (#538).
+func TestQuotaSpendSkipsAnUnreadableOverlayAndNamesIt(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads files with mode 0")
+	}
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	writeSpendArchive(t, usage, "2026-10-18", map[string]string{"a.json": spendArchiveReceipt("a", "turn", "2026-10-18T09:00:00Z", 1, 10)})
+	writeSpendFixture(t, filepath.Join(usage, "2026-10-18", "b.json"), spendArchiveReceipt("b", "turn", "2026-10-18T10:00:00Z", 2, 10))
+	locked := filepath.Join(usage, "2026-10-18", "c.json")
+	writeSpendFixture(t, locked, spendArchiveReceipt("c", "turn", "2026-10-18T11:00:00Z", 4, 10))
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o600) })
+	tallyMemo.key = ""
+	e := spendEntry("gw", "")
+	if e.Spend == nil || e.Spend.MonthUSD != 3 || e.Spend.MonthTurns != 2 || e.Spend.UnreadableReceipts != 1 {
+		t.Fatalf("the archived day was not answered without its unreadable overlay: %+v %+v", e, e.Spend)
+	}
+	if !strings.Contains(e.Error, "not readable") || !strings.Contains(e.Error, "c.json") {
+		t.Fatalf("the skipped receipt was not named: %q", e.Error)
+	}
+	if err := os.Chmod(locked, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tallyMemo.key = ""
+	if e := spendEntry("gw", ""); e.Error != "" || e.Spend == nil || e.Spend.MonthUSD != 7 || e.Spend.UnreadableReceipts != 0 {
+		t.Fatalf("a receipt readable again was not counted: %+v %+v", e, e.Spend)
+	}
+}
+
+// A response the store holds under two names — a flat copy and its day
+// folder's — counts once, by the day folder's copy, on both of quota's reads:
+// skipping an unrelated receipt this run cannot read sends the month through
+// the report's reader (shim.ReadUsageWindow), and that must not change which
+// copy counts, so the total of the readable receipts stays what it was (#654).
+func TestQuotaSpendSkippingAReceiptKeepsTheDayFolderCopy(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads files with mode 0")
+	}
+	useClock(t, time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC))
+	state := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", state)
+	usage := filepath.Join(state, "ccmorph", "usage")
+	writeSpendFixture(t, filepath.Join(usage, "0flat.json"), spendArchiveReceipt("a", "turn", "2026-10-18T09:00:00Z", 1, 10))
+	writeSpendFixture(t, filepath.Join(usage, "2026-10-18", "a.json"), spendArchiveReceipt("a", "turn", "2026-10-18T09:00:00Z", 9, 10))
+	tallyMemo.key = ""
+	if e := spendEntry("gw", ""); e.Error != "" || e.Spend == nil || e.Spend.MonthUSD != 9 || e.Spend.MonthTurns != 1 {
+		t.Fatalf("the day folder's copy did not count: %+v %+v", e, e.Spend)
+	}
+	locked := filepath.Join(usage, "2026-10-19", "other.json")
+	writeSpendFixture(t, locked, spendArchiveReceipt("other", "turn", "2026-10-19T09:00:00Z", 4, 10))
+	if err := os.Chmod(locked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o600) })
+	tallyMemo.key = ""
+	e := spendEntry("gw", "")
+	if e.Spend == nil || e.Spend.MonthUSD != 9 || e.Spend.MonthTurns != 1 || e.Spend.UnreadableReceipts != 1 {
+		t.Fatalf("skipping an unrelated receipt changed which copy counts: %+v %+v", e, e.Spend)
 	}
 }

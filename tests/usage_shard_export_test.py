@@ -1,7 +1,9 @@
 """The ccusage export over a store sharded by UTC day folder (#227): a ranged run
 opens only the folders its range can reach, beside the flat rows still at the top."""
+import fcntl
 import hashlib
 import json
+import os
 import pathlib
 import sys
 import time
@@ -156,3 +158,116 @@ def test_invalid_archive_preserves_existing_export(tmp_path, damage):
 
     assert canary.read_text() == "unchanged"
     assert not (output / "projects").exists()
+
+
+def test_index_only_orphan_answers_from_the_folder(tmp_path):
+    """A first publication killed between its index and its content leaves an
+    index over no content; the folder holds that day whole, so the export reads
+    the folder — the same heal the Go readers apply — instead of raising."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    day = "2026-10-16"
+    (rows / day).mkdir(parents=True)
+    write(rows / day, "a.json", receipt("a", "claude-opus-5-5", day + "T01:00:00Z", cost=2))
+    archive(rows, day, [("a.json", receipt("a", "claude-opus-5-5", day + "T01:00:00Z", cost=1))])
+    (rows / (day + ".jsonl")).unlink()
+
+    stats = ue.export(rows, output)
+
+    assert (stats["rows"], stats["usd"]) == (1, 2)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root opens mode-0 files")
+def test_export_reads_past_an_unopenable_move_lock_and_keeps_it(tmp_path):
+    """A root-owned .move.lock left by a sudo'd compaction must not poison
+    every export forever, and is never unlinked: a live compactor may hold that
+    inode, and a replacement would stop the store's lock excluding anyone."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    day = "2026-10-16"
+    (rows / day).mkdir(parents=True)
+    write(rows / day, "a.json", receipt("a", "claude-opus-5-5", day + "T01:00:00Z", cost=1))
+    lock = rows / ".move.lock"
+    lock.write_bytes(b"")
+    lock.chmod(0)
+    before = lock.stat()
+    stats = ue.export(rows, output)
+    assert stats["rows"] == 1
+    assert os.path.samestat(before, lock.stat())
+    lock.chmod(0o600)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root opens mode-0 files")
+def test_export_reads_without_a_lock_when_the_lock_is_stuck(tmp_path):
+    """With the store directory read-only as well, the export still answers
+    without a lock rather than failing every run forever."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    day = "2026-10-16"
+    (rows / day).mkdir(parents=True)
+    write(rows / day, "a.json", receipt("a", "claude-opus-5-5", day + "T01:00:00Z", cost=1))
+    lock = rows / ".move.lock"
+    lock.write_bytes(b"")
+    lock.chmod(0)
+    rows.chmod(0o500)
+    try:
+        stats = ue.export(rows, output)
+    finally:
+        rows.chmod(0o700)
+    assert stats["rows"] == 1
+
+
+def test_nonfinite_overlay_is_one_turn_priced_as_written(tmp_path):
+    """One merge rule for all three readers (#654): a live row whose cost
+    Python wrote as the NaN token is the same turn as its archived priced
+    sibling — the newer row wins, and every reader gives that turn what its
+    damaged-price rows already get: no dollars, counted unpriced. A reader
+    that refuses to parse the token kept the pair as two rows and then
+    dropped the damaged one, which is how one store came to answer three
+    readers with three month totals."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    day = "2026-10-16"
+    (rows / day).mkdir(parents=True)
+    archive(rows, day, [("a.json", receipt("r", "claude-opus-5-5", f"{day}T01:00:00Z", cost=1, input_tokens=10))], mtime_ns=1)
+    write(rows / day, "a.json", receipt("r", "claude-opus-5-5", f"{day}T01:00:00Z", cost=float("nan"), input_tokens=10))
+
+    stats = ue.export(rows, output)
+
+    assert (stats["rows"], stats["usd"], stats["unpriced"]) == (0, 0, 1)
+    assert not (output / "projects" / "ledger" / f"{day}.jsonl").exists()
+
+
+def test_a_truncated_overlay_skips_and_the_rest_of_the_year_exports(tmp_path):
+    """One damaged row is not a gate on the export (#654): a live overlay whose
+    JSON stops mid-token must skip — its archived sibling still answers, the
+    next day's receipts still export — where the merge's unguarded pair of
+    json.loads runs inside receipt_rows, so it raised at the consumer's `for`,
+    outside the per-receipt handler, and a full-year run emitted nothing."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    day, next_day = "2026-10-16", "2026-10-17"
+    (rows / day).mkdir(parents=True)
+    good = receipt("a", "claude-opus-5-5", f"{day}T01:00:00Z", cost=1)
+    archive(rows, day, [("a.json", good)])
+    (rows / day / "a.json").write_text('{"response_id":"a","turn_id":')
+    (rows / next_day).mkdir()
+    write(rows / next_day, "b.json", receipt("b", "claude-opus-5-5", f"{next_day}T01:00:00Z", cost=2))
+
+    stats = ue.export(rows, output)
+
+    assert (stats["rows"], stats["usd"]) == (2, 3)
+    assert read_day(output, day)[0]["costUSD"] == 1
+    assert read_day(output, next_day)[0]["costUSD"] == 2
+
+
+def test_a_held_move_lock_refuses_the_export_instead_of_waiting(tmp_path):
+    """An export queued behind compaction's exclusive hold is the hang INTENT 8
+    forbids (#654): the shared lock is taken with LOCK_NB and a bounded retry,
+    so a busy store is a named refusal inside the bound, never a wait. The
+    pytest cap stands in for the bound here: an unbounded flock holds the test
+    until it is killed."""
+    rows, output = tmp_path / "rows", tmp_path / "out"
+    day = "2026-10-16"
+    (rows / day).mkdir(parents=True)
+    write(rows / day, "a.json", receipt("a", "claude-opus-5-5", day + "T01:00:00Z", cost=1))
+    with open(rows / ".move.lock", "w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(ValueError, match="usage store busy"):
+            ue.export(rows, output)
+    assert ue.export(rows, output)["rows"] == 1

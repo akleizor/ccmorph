@@ -286,7 +286,7 @@ func rowDirs(ts string) []string {
 // owns is true only when the row on disk at path carries turn: the one thing
 // that makes replacing that name safe.
 func owns(path, turn string) bool {
-	data, err := os.ReadFile(path)
+	data, err := paths.ReadRegularFile(path)
 	if err != nil {
 		return false
 	}
@@ -329,7 +329,7 @@ func claim(tmp, candidate, turn string) (bool, error) {
 }
 
 func (u *UsageSidecar) write(r *record) error {
-	lock, err := lockClosedUsage(rowDirs(r.timestamp)[:1])
+	lock, err := lockClosedUsage(time.Now(), rowDirs(r.timestamp)[:1])
 	if err != nil {
 		return err
 	}
@@ -358,7 +358,11 @@ func (u *UsageSidecar) writeLocked(r *record) error {
 	primary, spills := rowNames(dir, r.responseID, r.turnID)
 	archived, err := paths.ReadUsageArchive(dir + ".jsonl")
 	if err != nil {
-		return err
+		// A damaged archive this run cannot read no longer holds every write
+		// of the day: recorded once, the claim proceeds on the folder alone.
+		// Readers merge the original filename once, so no row is double-counted.
+		logScanOnce(err)
+		archived = nil
 	}
 	archiveNames := map[string][]byte{}
 	for _, row := range archived {

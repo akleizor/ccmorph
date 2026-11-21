@@ -92,7 +92,10 @@ func Main(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// the view still read.
 	unread := false
 	for _, e := range entries {
-		if e.Spend == nil && e.Error != "" && (e.Kind == "gateway" || e.Kind == "budget") {
+		// A spend that skipped receipts it could not read is still a store
+		// not read whole: it carries the rest's total, and the run fails (#654).
+		gap := e.Spend == nil || e.Spend.UnreadableReceipts > 0
+		if gap && e.Error != "" && (e.Kind == "gateway" || e.Kind == "budget") {
 			unread = true
 		}
 	}

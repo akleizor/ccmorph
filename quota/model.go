@@ -39,6 +39,10 @@ type Spend struct {
 	TodayTokens   int64 `json:"today_tokens"`
 	MonthTokens   int64 `json:"month_tokens"`
 	UnpricedTurns int   `json:"unpriced_turns"`
+	// UnreadableReceipts is how many receipts the store still holds that this
+	// run could not read: their cost and profile are unknown, so every total
+	// above leaves them out, and the entry's error names them (#654).
+	UnreadableReceipts int `json:"unreadable_receipts,omitempty"`
 }
 
 // allUnpriced reports whether the profile served turns this month and not one

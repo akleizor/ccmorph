@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -263,11 +264,25 @@ func onStop() {
 // writeRow is the hook's row writer; a test swaps it to stop a pass mid-backlog.
 var writeRow = writeUsageRow
 
+// logScanOnce records a third-party read failure once per process: an
+// unreadable file in an archived neighbor (a root-owned row from a past
+// sudo'd compaction) must stop this row's redirect or ownership lookups, not
+// usage recording forever. The cursor pins only on this row's own write or
+// lock failure; a scan that could not see is treated as nothing found.
+var scanNote sync.Once
+
+func logScanOnce(err error) {
+	scanNote.Do(func() { fmt.Fprintln(os.Stderr, "ccmorph usage hook:", err) })
+}
+
 func writeUsageRow(profile, pricing, responseID, model, timestamp, session, turnID string, usage usageRow) (bool, error) {
 	if profile == "" || responseID == "" {
 		return false, nil
 	}
-	lock, err := lockClosedUsage(rowDirs(timestamp))
+	// One instant for the pass: the original stamp's boundary and, after a
+	// redirect, the target's are the same rule at the same moment.
+	now := time.Now()
+	lock, err := lockClosedUsage(now, rowDirs(timestamp))
 	if err != nil {
 		return false, err
 	}
@@ -275,11 +290,15 @@ func writeUsageRow(profile, pricing, responseID, model, timestamp, session, turn
 		defer lock.Close()
 	}
 	// An archived turn stays in its original day: writers never mutate JSONL,
-	// and a second day copy would charge the same response twice.
+	// and a second day copy would charge the same response twice. An archive
+	// this run cannot read is recorded once and treated as no redirect: a
+	// foreign damaged file must not stop usage recording forever.
+	original := timestamp
 	for _, dir := range rowDirs(timestamp)[:3] {
 		archived, err := paths.ReadUsageArchive(dir + ".jsonl")
 		if err != nil {
-			return false, err
+			logScanOnce(err)
+			continue
 		}
 		for _, row := range archived {
 			if usageOwned(row.Data, responseID, turnID) {
@@ -289,6 +308,21 @@ func writeUsageRow(profile, pricing, responseID, model, timestamp, session, turn
 					}
 				}
 			}
+		}
+	}
+	// A redirect re-stamps the write into an older day — possibly into the one
+	// compaction is folding right now, since the original stamp may have been
+	// yesterday's, which takes no lock. Re-take the target's closed lock before
+	// any write or retirement reaches it: a fresh row renamed onto a name the
+	// compactor is about to unlink is usage destroyed with a stale archive left
+	// behind. A lock already held is the store's one exclusive lock and covers
+	// every day; only the open-to-closed straddle needs it taken now.
+	if lock == nil && timestamp != original {
+		if l, err := lockClosedUsage(now, rowDirs(timestamp)); err != nil {
+			return false, err
+		} else if l != nil {
+			lock = l
+			defer l.Close()
 		}
 	}
 	s := newSidecar(profile, "transcript")
@@ -336,7 +370,10 @@ func writeUsageRow(profile, pricing, responseID, model, timestamp, session, turn
 // gateway that recycled the id — must not swallow ours, so the hook writes its
 // own into a spill. The names are looked up in every directory the row can
 // live in: its stamp's day and its neighbours, and the flat store. moveLocked
-// says the caller already holds the store's move lock.
+// says the caller already holds the store's move lock. A directory this run
+// cannot scan is recorded once and skipped: a foreign damaged file stops this
+// lookup, never the write — the cursor pins only on this row's own write or
+// lock failure.
 func recordedElsewhere(responseID, routeID, turnID, timestamp string, usage usageRow, moveLocked bool) (bool, error) {
 	dirs := rowDirs(timestamp)
 	primaryName := rowFileName(responseID)
@@ -344,7 +381,8 @@ func recordedElsewhere(responseID, routeID, turnID, timestamp string, usage usag
 	for _, dir := range dirs {
 		rows, err := usageRowsFor(dir, responseID, turnID, false, false)
 		if err != nil {
-			return false, err
+			logScanOnce(err)
+			continue
 		}
 		for _, row := range rows {
 			if row.Name != primaryName {
@@ -388,16 +426,24 @@ func recordedElsewhere(responseID, routeID, turnID, timestamp string, usage usag
 	// own when it already holds it, as a closed day's write does, else a shared
 	// claim that waits out a running move. A store whose lock cannot be opened
 	// has no move or compaction either: they take the same file or run not at all.
+	sweep := moveLocked
 	if !moveLocked {
-		if lock, err := paths.UsageStoreLock(usageBase(), false); err == nil && lock != nil {
+		// Bounded, never a hang: a busy store means the move or compaction this
+		// re-file orders against is running now, so this pass skips it — the
+		// status quo of a pass before it — and the next one tries (INTENT 8).
+		if lock, err := paths.UsageStoreLockWithin(usageBase(), false, paths.UsageLockWait); err == nil && lock != nil {
 			defer lock.Close()
+			sweep = true
 		}
 	}
 	for _, dir := range dirs {
-		migrateOldSpills(dir)
+		if sweep {
+			migrateOldSpills(dir)
+		}
 		hit, err := spillHolds(dir, responseID, routeID, turnID, timestamp, usage)
 		if err != nil {
-			return false, err
+			logScanOnce(err)
+			continue
 		}
 		if hit {
 			return true, nil
@@ -747,7 +793,7 @@ func migrateOldSpills(dir string) {
 			continue
 		}
 		path := filepath.Join(dir, name)
-		data, err := os.ReadFile(path)
+		data, err := paths.ReadRegularFile(path)
 		if err != nil {
 			complete = false
 			continue

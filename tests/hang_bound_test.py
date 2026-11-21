@@ -10,6 +10,9 @@ every test file that spawns a process; the zsh suites' embedded python obeys
 the same rule through PYTHONPATH, and these checks hold that line.
 """
 import ast
+import datetime as dt
+import fcntl
+import json
 import os
 import re
 import subprocess
@@ -17,7 +20,9 @@ import sys
 import textwrap
 from pathlib import Path
 
-from support import HANG_TIMEOUT
+import pytest
+
+from support import CORE, HANG_TIMEOUT
 
 TESTS = Path(__file__).resolve().parent
 
@@ -453,3 +458,128 @@ def test_hang_bound_reads_its_environment_override():
 
     assert read_bound("7") == "7.0"
     assert read_bound(None) == "120.0"
+
+EXPORTER = Path(__file__).resolve().parent.parent / "share/usage-export"
+
+
+@pytest.mark.skipif(not CORE.exists(), reason=f"{CORE} is not built: run `make shim` first")
+def test_a_held_store_lock_bounds_quota_and_export(tmp_path):
+    """A compaction's exclusive hold over a real-sized day is a wait no hot
+    path may outlive (INTENT 8, #654): the statusline's quota read and an
+    export each answer or refuse under the store's lock bound. The holders here
+    are the test's own locks, so a reader without that bound blocks until this
+    test's own cap kills it."""
+    store = tmp_path / "ccmorph" / "usage"
+    day = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=3)).strftime("%Y-%m-%d")
+    folder = store / day
+    folder.mkdir(parents=True)
+    for i in range(2000):
+        (folder / f"row_{i}.json").write_text(json.dumps({
+            "schema": 1, "response_id": f"held_{i}", "timestamp": f"{day}T09:00:00Z",
+            "profile": "ledger", "complete": True,
+            "usage": {"input_tokens": 10, "cost": 0.01}}))
+    env = {**os.environ, "XDG_STATE_HOME": str(tmp_path)}
+    with open(store / ".move.lock", "w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        quota_run = subprocess.run([str(CORE), "quota", "--json"],
+                                   input="ledger\tgateway\t\t\n", env=env,
+                                   capture_output=True, text=True, timeout=HANG_TIMEOUT)
+        export_run = subprocess.run([sys.executable, str(EXPORTER), "--source", str(store),
+                                     "--output", str(tmp_path / "out")], env=env,
+                                    capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert quota_run.returncode == 1, (quota_run.returncode, quota_run.stderr)
+    assert "usage store busy" in quota_run.stdout + quota_run.stderr, quota_run.stdout
+    assert export_run.returncode == 1, (export_run.returncode, export_run.stdout)
+    assert "usage store busy" in export_run.stderr, export_run.stderr
+
+
+@pytest.mark.skipif(not CORE.exists(), reason=f"{CORE} is not built: run `make shim` first")
+def test_quota_leaves_a_day_too_large_for_the_statusline_to_usage_compact(tmp_path):
+    """The quota read that wins the store lock itself compacts at most one
+    closed day, and only one its hot-path budget covers (INTENT 8, #654): a
+    day folder over quota's autoCompactMaxFiles (2000) is left whole, so the
+    statusline never pays for a real-sized day's rewrite, and
+    `ccmorph-core usage-compact` still drains it."""
+    store = tmp_path / "ccmorph" / "usage"
+    day = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=3)).strftime("%Y-%m-%d")
+    folder = store / day
+    folder.mkdir(parents=True)
+    for i in range(2100):
+        (folder / f"row_{i}.json").write_text(json.dumps({
+            "schema": 1, "response_id": f"big_{i}", "turn_id": f"t_{i}",
+            "timestamp": f"{day}T09:00:00Z", "profile": "ledger", "complete": True,
+            "usage": {"input_tokens": 10, "cost": 0.01}}))
+    env = {**os.environ, "XDG_STATE_HOME": str(tmp_path)}
+    quota_run = subprocess.run([str(CORE), "quota", "--json"],
+                               input="ledger\tgateway\t\t\n", env=env,
+                               capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert quota_run.returncode == 0, (quota_run.stdout, quota_run.stderr)
+    assert not (store / f"{day}.jsonl").exists(), "the statusline's read compacted a day over its budget"
+    assert len(list(folder.iterdir())) == 2100
+    compact_run = subprocess.run([str(CORE), "usage-compact"], env=env,
+                                 capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert compact_run.returncode == 0, compact_run.stderr
+    assert "compacted 1 usage day(s)" in compact_run.stdout, compact_run.stdout
+    assert (store / f"{day}.jsonl").exists() and not folder.exists()
+
+
+@pytest.mark.skipif(not CORE.exists(), reason=f"{CORE} is not built: run `make shim` first")
+def test_quota_leaves_a_day_of_large_receipts_to_usage_compact(tmp_path):
+    """The statusline's budget bounds the bytes a day costs, not only its entry
+    count (INTENT 8, #654): three receipts of a megabyte each are far under
+    quota's autoCompactMaxFiles but over its 2 MiB autoCompactMaxBytes, so the
+    quota read leaves the day whole, and `ccmorph-core usage-compact` still
+    drains it."""
+    store = tmp_path / "ccmorph" / "usage"
+    day = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=3)).strftime("%Y-%m-%d")
+    folder = store / day
+    folder.mkdir(parents=True)
+    for i in range(3):
+        (folder / f"row_{i}.json").write_text(json.dumps({
+            "schema": 1, "response_id": f"large_{i}", "turn_id": f"t_{i}",
+            "timestamp": f"{day}T09:00:00Z", "profile": "ledger", "complete": True,
+            "usage": {"input_tokens": 10, "cost": 0.01}, "note": "x" * (1 << 20)}))
+    env = {**os.environ, "XDG_STATE_HOME": str(tmp_path)}
+    quota_run = subprocess.run([str(CORE), "quota", "--json"],
+                               input="ledger\tgateway\t\t\n", env=env,
+                               capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert quota_run.returncode == 0, (quota_run.stdout, quota_run.stderr)
+    assert not (store / f"{day}.jsonl").exists(), "the statusline's read compacted a day over its byte budget"
+    assert len(list(folder.iterdir())) == 3
+    compact_run = subprocess.run([str(CORE), "usage-compact"], env=env,
+                                 capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert compact_run.returncode == 0, compact_run.stderr
+    assert "compacted 1 usage day(s)" in compact_run.stdout, compact_run.stdout
+    assert (store / f"{day}.jsonl").exists() and not folder.exists()
+
+
+@pytest.mark.skipif(not CORE.exists(), reason=f"{CORE} is not built: run `make shim` first")
+def test_quota_never_waits_on_a_fifo_in_a_closed_day(tmp_path):
+    """A FIFO left under a receipt's name in a closed day never holds the quota
+    read that wins the store lock and compacts that day itself (INTENT 8,
+    #654): the open does not wait, the day is named and left, the read answers
+    the rest of the month and names the FIFO, and no process is left holding
+    the store lock."""
+    store = tmp_path / "ccmorph" / "usage"
+    day = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=3)).strftime("%Y-%m-%d")
+    folder = store / day
+    folder.mkdir(parents=True)
+    (folder / "row.json").write_text(json.dumps({
+        "schema": 1, "response_id": "r", "turn_id": "t",
+        "timestamp": f"{day}T09:00:00Z", "profile": "ledger", "complete": True,
+        "usage": {"input_tokens": 10, "cost": 0.01}}))
+    os.mkfifo(folder / "unusable.json", 0o600)
+    env = {**os.environ, "XDG_STATE_HOME": str(tmp_path)}
+    quota_run = subprocess.run([str(CORE), "quota", "--json"],
+                               input="ledger\tgateway\t\t\n", env=env,
+                               capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    entry = json.loads(quota_run.stdout)["profiles"][0]
+    if dt.datetime.now(dt.timezone.utc).day >= 5:
+        # The day is inside this month's window, whatever the local zone: the
+        # FIFO is skipped and named, and the readable row is still the month (#654).
+        assert entry["spend"]["month_turns"] == 1 and entry["spend"]["unreadable_receipts"] == 1, entry
+        assert "not readable" in entry["error"] and "unusable.json" in entry["error"], entry
+    assert "not a regular file" in quota_run.stderr, quota_run.stderr
+    assert not (store / f"{day}.jsonl").exists()
+    with open(store / ".move.lock", "a+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # nobody still holds it

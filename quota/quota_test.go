@@ -1810,8 +1810,12 @@ func TestQuotaSpendRetriesAFlatReceiptItCouldNotRead(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
 	read := func() Entry { tallyMemo.key = ""; return spendEntry("gw", "") }
-	if e := read(); e.Error == "" || e.Spend != nil {
-		t.Fatalf("an unreadable receipt was answered as money: %+v", e)
+	// The receipt is skipped and named, never counted and never a healthy zero:
+	// the spend is every other receipt's (none here), the total report and the
+	// export give the same store (#654).
+	if e := read(); !strings.Contains(e.Error, "a.json") || e.Spend == nil ||
+		e.Spend.MonthTurns != 0 || e.Spend.UnreadableReceipts != 1 {
+		t.Fatalf("an unreadable receipt was not skipped and named: %+v %+v", e, e.Spend)
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatal(err)
@@ -1878,8 +1882,12 @@ func TestQuotaSpendRetriesAClosedDayReceiptItCouldNotRead(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
 	read := func() Entry { tallyMemo.key = ""; return spendEntry("gw", "") }
-	if e := read(); e.Error == "" || e.Spend != nil {
-		t.Fatalf("an unreadable receipt was answered as money: %+v", e)
+	// The receipt is skipped and named, never counted and never a healthy zero:
+	// the spend is every other receipt's (none here), the total report and the
+	// export give the same store (#654).
+	if e := read(); !strings.Contains(e.Error, "a.json") || e.Spend == nil ||
+		e.Spend.MonthTurns != 0 || e.Spend.UnreadableReceipts != 1 {
+		t.Fatalf("an unreadable receipt was not skipped and named: %+v %+v", e, e.Spend)
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatal(err)

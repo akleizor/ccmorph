@@ -1716,3 +1716,80 @@ func TestRecordTranscriptCheckpointSkipsWrittenRows(t *testing.T) {
 		t.Fatalf("checkpoint %d, want %d (just past the written row)", c.Offset, firstLen)
 	}
 }
+
+// A clock rewind can leave an archive on a day that is open again: when the
+// hook re-stamps its write into the older day that archive's row carries, the
+// target is compaction-eligible and the write must wait for the store's
+// exclusive lock. Taken only for the original stamp, which the rewind made
+// look open, the row is written and its earlier copies retired while a
+// compaction may be unlinking that very name — fresh usage destroyed, stale
+// archive left (#654).
+func TestAClockRewindRedirectWaitsForTheTargetDaysLock(t *testing.T) {
+	base := stateHome(t)
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	today := now.Format(paths.DayLayout)
+	old := now.AddDate(0, 0, -3)
+	oldStamp := old.Format(paths.DayLayout) + "T10:00:00+00:00"
+	responseID, turnID := "recycled", "same-turn"
+	if err := writeUsageArchiveWithPrevious(filepath.Join(base, today+".jsonl"), []paths.UsageArchiveRow{{
+		Name: rowFileName(responseID), MTimeNS: 10,
+		Data: []byte(`{"response_id":"` + responseID + `","turn_id":"` + turnID + `","timestamp":"` + oldStamp + `","usage":{"cost":1}}`),
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	held, err := paths.UsageStoreLock(base, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		writeUsageRow("sub", "", responseID, "m", today+"T00:00:01+00:00", "", turnID,
+			usageRow{{"input_tokens", []byte("2")}})
+	}()
+	select {
+	case <-done:
+		t.Fatal("the re-stamped write ran into a closed day beside the lock's holder")
+	case <-time.After(200 * time.Millisecond):
+	}
+	held.Close()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the re-stamped write did not resume once the lock was free")
+	}
+}
+
+// A Stop pass that meets a store another process holds answers with its
+// cursor still on the unwritten row: the hook's write is a wait with a bound,
+// never the unbounded queue behind a compaction (INTENT 8, #654). The next
+// Stop writes the row once the store is free instead of skipping it.
+func TestTranscriptRecordHoldsTheCursorWhileTheStoreIsBusy(t *testing.T) {
+	base := stateHome(t)
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	held, err := paths.UsageStoreLock(base, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	when := time.Now().UTC().AddDate(0, 0, -2).Format(time.RFC3339)
+	path := writeTranscript(t, transcriptLine("u1", "msg_busy", "claude-opus-5-5", when, `{"input_tokens":1,"output_tokens":2}`))
+	if got := RecordTranscript("sub", "anthropic", path); got != 0 {
+		t.Fatalf("wrote %d rows into a store another process held", got)
+	}
+	if c := readCursor(cursorFile(path)); c.Offset != 0 {
+		t.Fatalf("cursor %d moved past the unwritten row", c.Offset)
+	}
+	held.Close()
+	if got := RecordTranscript("sub", "anthropic", path); got != 1 {
+		t.Fatalf("wrote %d rows after the store was free, want 1", got)
+	}
+	if got := len(rows(t, base)); got != 1 {
+		t.Fatalf("the held-back row did not land: %d rows", got)
+	}
+}
