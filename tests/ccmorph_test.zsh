@@ -941,6 +941,80 @@ test_search_picker_on_an_old_fzf_never_hides_rows_silently_issue_278() {
   return $rc
 }
 
+# #725: a call with no terminal anywhere to answer must get its answer from
+# the picker or from the refusal, never wait. The fzf here is the face of a
+# real fzf on a terminal no one is attending: it starts, then waits for keys
+# that no script can send. The verb is launched detached from any controlling
+# terminal (a session of its own, exactly the state a script, pipe or CI job
+# is in): the suite itself may run on a developer's terminal, and there a
+# real picker may lawfully wait for that developer's keys -- what this guards
+# is the state where no keys can ever arrive. `run -i`, `config`, `inspect`
+# and `inspect -i` under a closed stdin must each exit within their bound
+# with the missing terminal named -- not hang, and not print the picker's
+# Cancelled and hang anyway. (A TERM that allows fzf is forced: the refusal
+# must be the picker's, not a dumb-terminal detour around it.)
+test_pickers_refuse_by_name_without_a_terminal_issue_725() {
+  local test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://gateway.invalid'
+  printf '%s\n' \
+    '#!/bin/sh' \
+    '[ "$1" = --version ] && { echo "0.75.0 (fake)"; exit 0; }' \
+    'echo $$ > "$HOME/fzf.pid"' \
+    'exec sleep 120' \
+    > "$HOME/bin/fzf"
+  chmod +x "$HOME/bin/fzf"
+  source "$CCMORPH_SOURCE"
+
+  # Detach launcher: fork, give the child a session (and so no controlling
+  # terminal), exec the verb there, forward its exit code. The child's pid
+  # goes to a file so a timeout can end the whole chain. python3 is already
+  # the suite's fixture interpreter (write_profile_context).
+  local detach='import os, sys
+pid = os.fork()
+if pid == 0:
+    os.setsid()
+    os.execvp(sys.argv[1], sys.argv[1:])
+    os._exit(127)
+open(os.environ["HOME"] + "/verb.pid", "w").write(str(pid))
+_, status = os.waitpid(pid, 0)
+sys.exit(status >> 8 if os.WIFEXITED(status) else 1)'
+
+  local -a verbs=('run -i' 'config' 'inspect' 'inspect -i')
+  local v out job i code rc=0
+  for v in $verbs; do
+    out="$HOME/refusal.out"
+    : > "$out"; : > "$HOME/verb.pid"; : > "$HOME/fzf.pid"
+    # v stays one scalar here on purpose: ${=v} inside double quotes would
+    # split the "-i" into a separate argument to python, and the picker's
+    # flag would die silently before the detached shell ever saw it.
+    ( TERM=xterm-256color python3 -c "$detach" zsh -c \
+        "source ${(q)CCMORPH_SOURCE} && ccmorph $v" </dev/null >"$out" 2>&1 ) &
+    job=$!
+    i=0
+    while (( ++i <= 200 )); do kill -0 $job 2>/dev/null || break; command sleep 0.1; done
+    if kill -0 $job 2>/dev/null; then
+      # The picker's own wait is still running: end it, fail the verb, and
+      # say nothing about its output -- there will be none to read.
+      [[ ! -s "$HOME/fzf.pid" ]] || kill -KILL $(<$HOME/fzf.pid) 2>/dev/null
+      [[ ! -s "$HOME/verb.pid" ]] || kill -KILL $(<$HOME/verb.pid) 2>/dev/null
+      kill -KILL $job 2>/dev/null; wait $job 2>/dev/null
+      print -u2 -- "ccmorph $v with no terminal waited forever instead of refusing"
+      rc=1
+      continue
+    fi
+    wait $job; code=$?
+    (( code != 0 )) || { print -u2 -- "ccmorph $v with no terminal must exit non-zero (got 0)"; rc=1; }
+    assert_contains "$(<"$out")" 'needs a terminal' \
+      "ccmorph $v must name the missing terminal as the cause" || rc=1
+    assert_not_contains "$(<"$out")" 'Cancelled' \
+      "ccmorph $v with no picker run must not answer with Cancelled" || rc=1
+  done
+  rm -rf "$test_home"
+  return $rc
+}
+
 # The five levels are Claude Code's own fixed enum, so this picker needs no
 # endpoint call -- and must not make one.
 test_set_effort_interactively_offers_the_engine_levels() {
@@ -12077,6 +12151,7 @@ run_test test_model_command_sets_the_profiles_default_model
 run_test test_set_model_interactively_saves_the_chosen_id
 run_test test_set_effort_interactively_offers_the_engine_levels
 run_test test_search_picker_on_an_old_fzf_never_hides_rows_silently_issue_278
+run_test test_pickers_refuse_by_name_without_a_terminal_issue_725
 run_test test_the_picker_without_fzf_names_the_direct_command_and_the_choices
 run_test test_a_test_home_hides_the_machines_bridge_issue_414
 run_test test_a_bridged_path_entry_keeps_its_coresident_tools_issue_476
