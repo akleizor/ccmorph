@@ -300,6 +300,30 @@ func TestComposePermissions(t *testing.T) {
 		same(t, "settings", h.run()["permissions"],
 			`{"deny":["Bash(rm *)"],"allow":["Read"],"ask":["Bash(git push)"]}`)
 	})
+	t.Run("an exact-path tombstone cannot remove any canonical permission rule list", func(t *testing.T) {
+		const canon = `{"deny":["Bash(rm *)"],"allow":["Read"],"ask":["Bash(git push)"]}`
+		for _, list := range []string{"deny", "allow", "ask"} {
+			t.Run(list, func(t *testing.T) {
+				h := newHome(t)
+				h.put(h.canonical, `{"permissions":`+canon+`}`)
+				h.put(h.p("settings.profile.json"), `{"`+unsetKey+`":[["permissions",`+quote(list)+`]]}`)
+				same(t, "settings", h.run()["permissions"], canon)
+			})
+		}
+	})
+	t.Run("deleting the materialized allow block keeps the canonical allow rules", func(t *testing.T) {
+		h := newHome(t)
+		h.put(h.canonical, `{"permissions":{"deny":["Bash(rm *)"],"allow":["Read"],"ask":["Bash(git push)"]}}`)
+		same(t, "first projection", h.run()["permissions"],
+			`{"deny":["Bash(rm *)"],"allow":["Read"],"ask":["Bash(git push)"]}`)
+		// The person deletes the allow list from the file they were shown.
+		h.edit(h.p("settings.json"), func(m map[string]any) {
+			delete(m["permissions"].(map[string]any), "allow")
+		})
+		h.fold()
+		same(t, "after the edit", h.run()["permissions"],
+			`{"deny":["Bash(rm *)"],"allow":["Read"],"ask":["Bash(git push)"]}`)
+	})
 	t.Run("deleting one of the profile's own deny rules keeps only it out", func(t *testing.T) {
 		h := newHome(t)
 		h.put(h.canonical, `{"permissions":{"deny":["Bash(rm *)"]}}`)

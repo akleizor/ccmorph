@@ -60,6 +60,10 @@ var (
 	ownedEnv = []string{"ANTHROPIC_MODEL", "CLAUDE_CODE_EFFORT_LEVEL"}
 	// Deny rules only ever accumulate.
 	permissionLists = [][]string{{"permissions", "deny"}}
+	// Every canonical rule list survives a tombstone: the person's guard rails
+	// are not the profile's, so deleting a materialized block may not delete
+	// them (#750).
+	permissionRuleLists = [][]string{{"permissions", "deny"}, {"permissions", "allow"}, {"permissions", "ask"}}
 )
 
 // failure is a panic carrying why a projection failed; Main recovers it. A policy
@@ -736,15 +740,17 @@ func withoutTombstones(layer *obj) *obj {
 	return out
 }
 
-// accumulates reports whether path names a list that only ever grows: hooks, or
-// a permissionLists path (permissions.deny). merge() appends to those lists, so
-// a tombstone on one — or on a path above or below it — must not delete what it
-// combined; that would take the canonical entries with the profile's.
+// accumulates reports whether path names a list a tombstone must never delete:
+// hooks, or a canonical permission rule list (permissions.deny, .allow or .ask).
+// merge() appends to hooks and deny, so a tombstone on those — or on a path
+// above or below them — would delete what it combined; allow and ask replace
+// layer by layer, but their canonical entries are the person's guard rails and
+// must survive a tombstone too (#750).
 func accumulates(path []string) bool {
 	if path[0] == "hooks" {
 		return true
 	}
-	for _, list := range permissionLists {
+	for _, list := range permissionRuleLists {
 		if hasPrefix(path, list) || hasPrefix(list, path) {
 			return true
 		}
@@ -753,8 +759,8 @@ func accumulates(path []string) bool {
 }
 
 // applyTombstones deletes what the layer tombstones. Two guards are exempt:
-// hooks and permissionLists paths both only accumulate, so a tombstone there
-// would delete the canonical entries merge() added back.
+// hooks and permissionRuleLists paths, whose canonical entries merge() adds
+// back and a tombstone would delete.
 func applyTombstones(doc, layer *obj) {
 	for _, p := range tombstones(layer) {
 		if !accumulates(p) {
