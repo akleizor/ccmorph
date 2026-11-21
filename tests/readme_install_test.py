@@ -49,9 +49,9 @@ BREW_LIBEXEC = "$(brew --prefix ccmorph)/libexec/"
 # those directories hold whatever a host installed, which must not pass. A
 # brew found here or in the system dirs only proves the `brew` command
 # itself is runnable: the check never executes a brew it did not plant or
-# write — neither a system brew nor Homebrew's — so a Mac with Homebrew is
-# checked exactly as on main: brew found at /opt/homebrew/bin, never run, and
-# `$(brew --prefix ccmorph)/libexec/` judged by the fresh install's tree (#717).
+# write — neither a system brew nor Homebrew's. Where Homebrew installed
+# ccmorph, its real formula prefix is read from the disk instead, never asked:
+# `brew --prefix ccmorph` is `<Homebrew's prefix>/opt/ccmorph` (#717).
 SYSTEM_PATH = ("/usr/bin", "/bin")
 HOMEBREW_BIN = ("/opt/homebrew/bin", "/usr/local/bin", "/home/linuxbrew/.linuxbrew/bin")
 
@@ -192,6 +192,21 @@ class ReadmeInstallTest(unittest.TestCase):
             return None
         return Path(out)
 
+    def _homebrew_formula_prefix(self):
+        """The real prefix `brew --prefix ccmorph` prints on a host whose
+        Homebrew installed ccmorph, or None. Homebrew's prefix is the parent
+        of the first HOMEBREW_BIN dir holding an executable brew, and it
+        keeps the formula's stable prefix at `<prefix>/opt/ccmorph` — the
+        link cli/run.go's stableCore already names. Read from the disk, so
+        that brew is never executed; a Homebrew with no ccmorph formula
+        installed has no real prefix to verify (#717)."""
+        for bin_dir in HOMEBREW_BIN:
+            brew = Path(bin_dir) / "brew"
+            if brew.is_file() and os.access(brew, os.X_OK):
+                formula = Path(bin_dir).parent / "opt" / "ccmorph"
+                return formula if formula.is_dir() else None
+        return None
+
     def _problems(self, text):
         problems = []
         for number, command, args in _readme_commands(text):
@@ -231,6 +246,15 @@ class ReadmeInstallTest(unittest.TestCase):
                     if not (brew_found.is_file() and os.access(brew_found, os.X_OK)):
                         return (f"'{command}' — the prefix brew reports "
                                 f"({prefix}) has no executable at libexec/{rest}")
+                # Where Homebrew installed ccmorph, the real formula prefix
+                # is a third place the command must be — also additive.
+                formula = self._homebrew_formula_prefix()
+                if formula is not None:
+                    real = formula / "libexec" / rest
+                    if not (real.is_file() and os.access(real, os.X_OK)):
+                        return (f"'{command}' — Homebrew's ccmorph prefix "
+                                f"({formula}) has no executable at "
+                                f"libexec/{rest}")
             elif command.startswith(("/", "$")):
                 return f"'{command}' — a path this check cannot place"
             else:
@@ -357,17 +381,20 @@ class ReadmeInstallTest(unittest.TestCase):
         for needle in ("nosuchtool-717", "share/usage-export", "share/only-in-planted-prefix"):
             self.assertTrue(any(needle in p for p in problems), (needle, problems))
 
-    def test_a_brew_in_homebrews_prefix_is_found_there_and_never_run(self):
+    def test_homebrews_formula_prefix_is_verified_and_its_brew_never_run(self):
         """#717, a Mac with Homebrew: its installer puts brew at
-        /opt/homebrew/bin, HOMEBREW_BIN's first entry. As on main, the check
-        finds that brew there — never its own stub — and never runs it, so
-        `$(brew --prefix ccmorph)/libexec/` is still judged by the fresh
-        install's tree and the whole README passes. A scratch dir stands in
-        for /opt/homebrew/bin, holding a brew that records any run and
-        reports an unrelated prefix, so this runs on every host."""
+        /opt/homebrew/bin, HOMEBREW_BIN's first entry, and `brew --prefix
+        ccmorph` there is /opt/homebrew/opt/ccmorph. The check finds that
+        brew — never its own stub — and never runs it; where the formula is
+        installed it verifies the README's `$(brew --prefix ccmorph)/libexec/`
+        commands in that real prefix as well as in the fresh install's tree.
+        A scratch Homebrew stands in for /opt/homebrew, its brew recording any
+        run, and the system dirs are swapped for an empty one wherever the
+        lookup's answer is asserted, so this runs alike on every host."""
         self.assertEqual(HOMEBREW_BIN[0], "/opt/homebrew/bin")
-        homebrew_bin = self.home / "opt-homebrew-bin"
-        homebrew_bin.mkdir(exist_ok=True)
+        homebrew = self.home / "homebrew-717"
+        homebrew_bin = homebrew / "bin"
+        homebrew_bin.mkdir(parents=True, exist_ok=True)
         ran = self.home / "homebrew-brew-ran"
         unrelated = self.home / "unrelated-homebrew-prefix"
         brew = homebrew_bin / "brew"
@@ -376,6 +403,17 @@ class ReadmeInstallTest(unittest.TestCase):
                         f'echo "{unrelated}"\n'
                         "exit 0\n")
         brew.chmod(0o755)
+        no_system = self.home / "no-system-dirs"
+        no_system.mkdir(exist_ok=True)
+        formula = homebrew / "opt" / "ccmorph"
+        readme = README.read_text(encoding="utf-8")
+        fence = "`" * 3
+        only = "only-in-formula-717"
+        sample = "\n".join([
+            f"{fence}sh", "brew install akleizor/tap/ccmorph", fence,
+            f'Run `"{BREW_LIBEXEC}share/usage-export" --output x`, and',
+            f'`"{BREW_LIBEXEC}share/{only}" --output x`.',
+        ])
         # A Mac never writes the stub; an earlier test on a brew-less host
         # may have, and _brew_stub writes it again whenever a later test
         # needs it.
@@ -383,9 +421,33 @@ class ReadmeInstallTest(unittest.TestCase):
         consulted = AssertionError("the check consulted its stub on a host with brew")
         with mock.patch.dict(globals(), {"HOMEBREW_BIN": (str(homebrew_bin),)}), \
                 mock.patch.object(self, "_brew_stub", side_effect=consulted):
-            self.assertEqual(self._resolve_tool("brew"), str(brew))
-            problems = self._problems(README.read_text(encoding="utf-8"))
-        self.assertEqual(problems, [], problems)
+            # The lookup finds Homebrew's brew, whatever the host's own
+            # /usr/bin or /bin carry: those are swapped out for this answer.
+            with mock.patch.dict(globals(), {"SYSTEM_PATH": (str(no_system),)}):
+                self.assertEqual(self._resolve_tool("brew"), str(brew))
+            # Homebrew without the ccmorph formula: no real prefix to verify,
+            # so the fresh install's tree judges, as on main.
+            self.assertIsNone(self._homebrew_formula_prefix())
+            self.assertEqual(self._problems(readme), [])
+            # The formula installed with the repository's tree: verified there.
+            formula.mkdir(parents=True)
+            (formula / "libexec").symlink_to(self.config)
+            self.assertEqual(self._homebrew_formula_prefix(), formula)
+            self.assertEqual(self._problems(readme), [])
+            # The real prefix lacks the exporter: reported, naming that prefix.
+            (formula / "libexec").unlink()
+            (formula / "libexec" / "share").mkdir(parents=True)
+            extra = formula / "libexec" / "share" / only
+            extra.write_text(STUB)
+            extra.chmod(0o755)
+            problems = self._problems(sample)
+        # The prefix adds, it never substitutes: what only the formula holds
+        # is still missing from the fresh install.
+        self.assertEqual(len(problems), 2, problems)
+        self.assertIn("share/usage-export", problems[0])
+        self.assertIn(str(formula), problems[0])
+        self.assertIn(only, problems[1])
+        self.assertIn("a fresh install has no executable", problems[1])
         self.assertFalse(ran.exists(), "the check ran the host's brew")
         self.assertFalse((self.home / "brew-stub").exists())
 
