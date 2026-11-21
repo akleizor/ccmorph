@@ -58,16 +58,11 @@ func TestDispatchCarriesTheQualityFailEscalationAndLeavesAPassingAnswerAlone(t *
 			if code := Main([]string{"dispatch", "--kind", "code", "--tier", "mid", "fix the bug"}, strings.NewReader(""), &out, &errOut); code != 0 {
 				t.Fatalf("dispatch exit %d: %s", code, errOut.String())
 			}
-			got := out.String()
-			if !strings.Contains(got, "a decent answer") {
-				t.Fatalf("the answer is missing: %q", got)
+			if got := out.String(); got != "a decent answer" {
+				t.Fatalf("the worker's answer changed: %q", got)
 			}
-			if tc.escalates {
-				if !strings.Contains(got, "Escalate once") {
-					t.Fatalf("the dispatch caller never learns the run failed quality: %q", got)
-				}
-			} else if got != "a decent answer" {
-				t.Fatalf("a passing answer changed: %q", got)
+			if strings.Contains(errOut.String(), "Escalate once") != tc.escalates {
+				t.Fatalf("escalation note on stderr is %q, want it only on a quality fail", errOut.String())
 			}
 		})
 	}
@@ -84,9 +79,8 @@ if [ -f "$HERE/ran" ]; then printf '%s' 'a decent answer'; exit 0; fi
 	if code := Main([]string{"dispatch", "--kind", "code", "--tier", "mid", "fix the bug"}, strings.NewReader(""), &out, &errOut); code != 0 {
 		t.Fatalf("dispatch exit %d: %s", code, errOut.String())
 	}
-	got := out.String()
-	if !strings.Contains(got, "a decent answer") || !strings.Contains(got, "retry the same brief at the same tier") {
-		t.Fatalf("the caller never learns the route backed off: %q", got)
+	if out.String() != "a decent answer" || !strings.Contains(errOut.String(), "retry the same brief at the same tier") {
+		t.Fatalf("the caller never learns the route backed off: out %q err %q", out.String(), errOut.String())
 	}
 }
 
@@ -128,10 +122,10 @@ func TestDispatchTimeoutKillsTheWorkerAndNeverRetries(t *testing.T) {
 	dir := t.TempDir()
 	fakeWorker(t, `echo run >> `+dir+`/runs; exec sleep 30`)
 	start := time.Now()
-	var out bytes.Buffer
-	code := Main([]string{"dispatch", "--kind", "code", "--tier", "small", "--timeout", "0.3", "brief"}, strings.NewReader(""), &out, io.Discard)
-	if code != 1 || time.Since(start) > 5*time.Second || !strings.Contains(out.String(), "timeout (exit 124)") {
-		t.Fatalf("exit %d after %s: %q", code, time.Since(start), out.String())
+	var errOut bytes.Buffer
+	code := Main([]string{"dispatch", "--kind", "code", "--tier", "small", "--timeout", "0.3", "brief"}, strings.NewReader(""), io.Discard, &errOut)
+	if code != 124 || time.Since(start) > 5*time.Second || !strings.Contains(errOut.String(), "timeout (exit 124)") {
+		t.Fatalf("exit %d after %s: %q", code, time.Since(start), errOut.String())
 	}
 	if runs, _ := os.ReadFile(filepath.Join(dir, "runs")); strings.Count(string(runs), "run") != 1 {
 		t.Fatalf("a timed-out run was run again: %q", runs)
@@ -151,7 +145,53 @@ func TestDispatchRetriesOnlyAnAccountRefusalAndKeepsTheWorkersWords(t *testing.T
 	if runs, _ := os.ReadFile(filepath.Join(dir, "runs")); strings.Count(string(runs), "run") != 1 {
 		t.Fatalf("a model's own failure was paid for twice: %q", runs)
 	}
-	if !strings.Contains(out.String(), `"session_id":"s1"`) {
-		t.Fatalf("the worker's own output is gone: %q", out.String())
+	if out.String() != `{"is_error":true,"session_id":"s1"}`+"\n" {
+		t.Fatalf("a failed worker's stdout must reach the caller unchanged: %q", out.String())
+	}
+}
+
+// A quota refusal after the worker ran a tool is not retried: the second run
+// would repeat what the first already did (#759).
+func TestDispatchNeverRetriesAWorkerThatRanATool(t *testing.T) {
+	hookEnv(t, true)
+	dir := t.TempDir()
+	fakeWorker(t, `echo run >> `+dir+`/runs
+echo '{"type":"assistant","message":{"content":[{"type":"tool_use"}]}}'
+echo '{"type":"result","is_error":true,"result":"quota exceeded"}'; exit 1`)
+	var out bytes.Buffer
+	if code := Main([]string{"dispatch", "--kind", "code", "--tier", "small", "brief"}, strings.NewReader(""), &out, io.Discard); code != 1 {
+		t.Fatalf("exit %d", code)
+	}
+	if runs, _ := os.ReadFile(filepath.Join(dir, "runs")); strings.Count(string(runs), "run") != 1 {
+		t.Fatalf("a worker that acted was run again: %q", runs)
+	}
+	if out.String() != "quota exceeded" {
+		t.Fatalf("the caller gets the result text as plain -p prints it: %q", out.String())
+	}
+}
+
+// A decider that never answers cannot hold a dispatch past its deadline (#759).
+func TestDispatchDeadlineBoundsRouting(t *testing.T) {
+	hookEnv(t, true)
+	fakeWorker(t, `echo ran`)
+	block := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-block }))
+	t.Cleanup(func() { close(block); srv.Close() })
+	if err := writeJSON(ConfigPath(), Config{Enabled: true, Decider: &Decider{URL: srv.URL}}); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	var out bytes.Buffer
+	code := Main([]string{"dispatch", "--timeout", "0.3", "fix the bug"}, strings.NewReader(""), &out, io.Discard)
+	if code != 124 || time.Since(start) > 3*time.Second || out.String() != "" {
+		t.Fatalf("exit %d after %s, out %q", code, time.Since(start), out.String())
+	}
+}
+
+func TestDispatchRefusesASecondSeparatorAndAPrintBundle(t *testing.T) {
+	for _, bad := range []string{"--", "-cp", "-pc"} {
+		if Main([]string{"dispatch", "x", "--", "--tools", "Read", bad}, strings.NewReader(""), io.Discard, io.Discard) != 2 {
+			t.Errorf("%q after -- must be refused", bad)
+		}
 	}
 }

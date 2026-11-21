@@ -23,8 +23,10 @@ const Usage = "ccmorph router [on|off|status|dispatch [--dry-run]|report]"
 const taskHelp = `usage: ccmorph router dispatch [--dry-run] [flags] [brief] [-- claude flags]
 
 The brief is the words, or stdin when there are none. dispatch routes it,
-runs it on the picked profile through ccmorph run and prints only the
-worker's final answer. With --dry-run it prints the pick and reserves it in
+runs it on the picked profile through ccmorph run and prints the worker's
+stdout unchanged: its final answer, or the output format it was given. The
+router's own notes go to stderr; the exit status is the worker's, 124 past
+the deadline. With --dry-run it prints the pick and reserves it in
 the ledger without running anything.
 
   --kind K      writing, search, x, mechanical, code, design, image_gen or vision; with --tier it skips classification
@@ -44,10 +46,10 @@ the ledger without running anything.
                 router.json's timeout); the worker reads its end, in epoch
                 seconds, from CCMORPH_DEADLINE
   --cwd DIR     run the worker in DIR (default: this directory)
-  -- FLAGS      pass FLAGS to the worker's claude; --model, --effort and -p
-                belong to the dispatch and are refused there
+  -- FLAGS      pass FLAGS to the worker's claude; --model, --effort, -p
+                and a second -- belong to the dispatch and are refused there
 A failed run is retried once, on the next profile, only when the account
-refused it (quota or auth). A caller's CCMORPH_TASK tags the worker's spend.
+refused it (quota or auth) before the worker ran any tool. A caller's CCMORPH_TASK tags the worker's spend.
   --dry-run     print the pick and reserve it in the ledger; run nothing
   --json        with --dry-run: the decision as JSON
   --explain     with --dry-run: print the shortlist and every dropped model
@@ -152,8 +154,11 @@ func task(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			r.ClaudeArgs = args[i+1:]
 			i = len(args)
 			for _, f := range r.ClaudeArgs {
-				if k, _, _ := strings.Cut(f, "="); slices.Contains([]string{"--model", "--effort", "-p", "--print"}, k) {
-					fmt.Fprintln(stderr, "ccmorph: router: "+k+" belongs to the dispatch, not to the claude flags")
+				k, _, _ := strings.Cut(f, "=")
+				// A second -- would end claude's options and turn the router's -p and prompt into words.
+				bundle := len(f) > 2 && f[0] == '-' && f[1] != '-' && strings.ContainsRune(f[1:], 'p')
+				if f == "--" || bundle || slices.Contains([]string{"--model", "--effort", "-p", "--print"}, k) {
+					fmt.Fprintln(stderr, "ccmorph: router: "+f+" belongs to the dispatch, not to the claude flags")
 					return 2
 				}
 			}
@@ -207,12 +212,19 @@ func task(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if !dryRun {
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 		defer stop()
-		answer := Delegate(ctx, r, cwd)
-		fmt.Fprint(stdout, answer)
-		if strings.HasPrefix(answer, "Error: ") {
-			return 1
+		// The worker's stdout is the caller's to parse, so the router's own words go to stderr.
+		o := Dispatch(ctx, r, cwd)
+		fmt.Fprint(stdout, o.Out)
+		for _, h := range o.Hints {
+			fmt.Fprintln(stderr, "ccmorph: router: "+h)
 		}
-		return 0
+		if o.Err != "" {
+			fmt.Fprintln(stderr, "ccmorph: router: "+o.Err)
+		}
+		if o.Aborted {
+			return 130
+		}
+		return o.Status
 	}
 	c, err := LoadConfig()
 	if err != nil {

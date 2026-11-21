@@ -101,8 +101,8 @@ func TestDispatchHonorsFamilyAndRefresh(t *testing.T) {
 	// A family no served model belongs to fails cleanly, and says which.
 	var out, errb bytes.Buffer
 	if code := Main([]string{"dispatch", "--kind", "code", "--tier", "mid", "--family", "gemini", "fix the parser"},
-		strings.NewReader(""), &out, &errb); code != 1 || !strings.Contains(out.String(), "gemini") {
-		t.Fatalf("a family none serves must fail by name: exit %d out %q", code, out.String())
+		strings.NewReader(""), &out, &errb); code != 1 || !strings.Contains(errb.String(), "gemini") {
+		t.Fatalf("a family none serves must fail by name: exit %d err %q", code, errb.String())
 	}
 }
 
@@ -154,8 +154,8 @@ func TestFamilyBesideANamedProfileAndModelIsRefusedByName(t *testing.T) {
 	dispatchEnv(t)
 	args := []string{"--kind", "code", "--tier", "mid", "--profile", "gw", "--model", "gpt-6-terra", "--family", "claude", "fix the parser"}
 	var out, errb bytes.Buffer
-	if code := Main(append([]string{"dispatch"}, args...), strings.NewReader(""), &out, &errb); code != 1 || !strings.Contains(out.String(), `family "claude"`) {
-		t.Fatalf("dispatch must refuse the family by name: exit %d out %q", code, out.String())
+	if code := Main(append([]string{"dispatch"}, args...), strings.NewReader(""), &out, &errb); code != 1 || !strings.Contains(errb.String(), `family "claude"`) {
+		t.Fatalf("dispatch must refuse the family by name: exit %d err %q", code, errb.String())
 	}
 	out.Reset()
 	errb.Reset()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -134,28 +135,53 @@ func reserve(id string, d Decision, brief string, extra Row) {
 	ledgerAppend(row)
 }
 
-// Delegate runs delegated work through `ccmorph run` and returns only its final
-// answer. The request carries the caller's whole say — kind, tier, pins, family,
-// decider and refresh included — and every one of them routes this dispatch as
-// surely as it routes `dispatch --dry-run`. A hard failure is retried once at the same
-// tier; a pinned profile or model is retried as named, never swapped.
-// Cancelling ctx kills the worker.
+// Outcome is one dispatch as its caller sees it: the worker's stdout unchanged,
+// the router's own account of a failure, complete()'s notes, and the exit
+// status (the worker's, 124 past the deadline, 1 when no worker ran).
+type Outcome struct {
+	Out     string
+	Err     string // "" on success
+	Hints   []string
+	Status  int
+	Aborted bool // the caller cancelled
+}
+
+// Delegate is Dispatch as one answer string, the shape the MCP tool returns:
+// the worker's answer, or "Error: ..." with the worker's words, plus the notes.
 func Delegate(ctx context.Context, r Request, cwd string) string {
+	o := Dispatch(ctx, r, cwd)
+	switch {
+	case o.Aborted:
+		return abortedAnswer // the MCP caller expects this exact string, with no note
+	case o.Err != "":
+		return withHints("Error: "+o.Err, o.Hints)
+	}
+	return withHints(o.Out, o.Hints)
+}
+
+// Dispatch runs delegated work through `ccmorph run`. The request carries the
+// caller's whole say — kind, tier, pins, family, decider and refresh included —
+// and every one of them routes this dispatch as surely as it routes
+// `dispatch --dry-run`. One deadline bounds routing and every attempt. An
+// account refusal (quota, auth) is retried once at the same tier, and only when
+// the worker ran no tool: a retry never repeats a side effect. A pinned profile
+// or model is retried as named, never swapped. Cancelling ctx kills the worker.
+func Dispatch(ctx context.Context, r Request, cwd string) Outcome {
+	fail := func(msg string) Outcome { return Outcome{Err: msg, Status: 1} }
 	if strings.TrimSpace(r.Prompt) == "" {
-		return "Error: the router needs a non-empty prompt"
+		return fail("the router needs a non-empty prompt")
 	}
 	if r.Kind != "" && !slices.Contains(Kinds, r.Kind) || r.Tier != "" && Efforts[r.Tier] == "" {
-		return "Error: the router needs a valid kind and tier"
+		return fail("the router needs a valid kind and tier")
 	}
 	prompt := r.Prompt
 	c, err := LoadConfig()
 	if err != nil {
-		return "Error: " + ConfigPath() + ": " + err.Error()
+		return fail(ConfigPath() + ": " + err.Error())
 	}
 	if r.Timeout > 0 {
 		c.Timeout = r.Timeout
 	}
-	// One deadline for the dispatch: a retry runs in what the first attempt left.
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(c.Timeout*float64(time.Second)))
 	defer cancel()
 	deadline, _ := ctx.Deadline()
@@ -163,15 +189,27 @@ func Delegate(ctx context.Context, r Request, cwd string) string {
 		cwd, _ = os.Getwd()
 	}
 	if fi, err := os.Stat(cwd); err != nil || !fi.IsDir() {
-		return "Error: cwd is not a directory: " + cwd
+		return fail("cwd is not a directory: " + cwd)
 	}
-	var attempts, hints []string
-	last := "" // the last worker's own words: a failed run still says why
+	var o Outcome
+	var attempts []string
 	source := ""
 	for range 2 {
-		d, err := Decide(c, r)
+		if ctx.Err() == context.DeadlineExceeded { // checked again before a retry's worker starts
+			o.Status = 124
+			attempts = append(attempts, "the deadline passed before a worker could start")
+			break
+		}
+		d, err := decideBy(deadline, c, r)
+		if err == errStopped {
+			o.Status = 124
+			attempts = append(attempts, "routing ran past the deadline")
+			break
+		}
 		if err != nil {
-			return withHints("Error: "+strings.Join(append(attempts, err.Error()), "; "), hints)
+			attempts = append(attempts, err.Error())
+			o.Status = 1
+			break
 		}
 		r.Kind, r.Tier = d.Task.Kind, d.Task.Tier
 		if source == "" {
@@ -183,49 +221,82 @@ func Delegate(ctx context.Context, r Request, cwd string) string {
 			if r.Family != "" {
 				miss = "no next available profile serves family " + r.Family + " at the same tier"
 			}
-			return withHints("Error: "+strings.Join(append(attempts, miss), "; "), hints)
+			attempts = append(attempts, miss)
+			if o.Status == 0 {
+				o.Status = 1
+			}
+			break
 		}
 		job := newID("delegate")
 		reserve(job, d, prompt, nil)
-		out, errText, status := runWorker(ctx, d.Pick, prompt, cwd, job, deadline, r.ClaudeArgs)
+		w := runWorker(ctx, d.Pick, prompt, cwd, job, deadline, r.ClaudeArgs)
 		if ctx.Err() == context.DeadlineExceeded {
-			status = 124
+			w.status = 124
 		} else if ctx.Err() != nil {
 			ledgerUpdate(job, Row{"outcome": "error", "failure": "aborted"})
-			return abortedAnswer // the MCP caller expects this exact string, with no note
+			return Outcome{Aborted: true, Out: w.out, Status: 130}
 		}
 		hard := ""
 		switch {
-		case status == 124 || status == 137:
+		case w.status == 124 || w.status == 137:
 			hard = "timeout"
 		default:
-			hard = hardFailure(out+errText, status != 0, "")
+			hard = hardFailure(w.answer+"\n"+w.errText, w.status != 0, "")
 		}
-		if hard == "" && status != 0 {
+		if hard == "" && w.status != 0 {
 			hard = "error"
 		}
+		o.Out, o.Status = w.out, w.status
 		if hard != "" {
 			if hint := complete(c, job, "", hard); hint != "" {
-				hints = append(hints, hint)
+				o.Hints = append(o.Hints, hint)
 			}
-			ledgerUpdate(job, Row{"outcome": "error", "failure": hard, "exit_code": status})
-			last = strings.TrimSpace(out + "\n" + errText)
-			attempts = append(attempts, fmt.Sprintf("%s/%s: %s (exit %d)", d.Pick.Profile, d.Pick.Model, hard, status))
-			if hard != "quota" && hard != "auth" {
-				break // the model answered or ran out of time: a second run would pay twice for one verdict
+			ledgerUpdate(job, Row{"outcome": "error", "failure": hard, "exit_code": w.status})
+			attempts = append(attempts, fmt.Sprintf("%s/%s: %s (exit %d)", d.Pick.Profile, d.Pick.Model, hard, w.status))
+			if last := strings.TrimSpace(w.answer + "\n" + w.errText); last != "" {
+				attempts = append(attempts, "worker said:\n"+last)
+			}
+			if o.Status == 0 {
+				o.Status = 1
+			}
+			if hard != "quota" && hard != "auth" || w.toolRan {
+				break // the model answered, ran out of time, or acted: a second run would pay twice or repeat it
 			}
 			continue
 		}
-		if hint := complete(c, job, out, ""); hint != "" {
-			hints = append(hints, hint)
+		if hint := complete(c, job, w.answer, ""); hint != "" {
+			o.Hints = append(o.Hints, hint)
 		}
-		ledgerUpdate(job, Row{"exit_code": status})
-		return withHints(out, hints)
+		ledgerUpdate(job, Row{"exit_code": w.status})
+		return o
 	}
-	if last != "" {
-		attempts = append(attempts, "worker said:\n"+last)
+	if !o.Aborted {
+		o.Err = strings.Join(attempts, "; ")
 	}
-	return withHints("Error: "+strings.Join(attempts, "; "), hints)
+	return o
+}
+
+var errStopped = errors.New("stopped")
+
+// decideBy is Decide bounded by the dispatch deadline: a slow quota refresh or
+// decider call never holds a dispatch past it. A caller's cancel lets routing
+// finish, so the ledger records the pick the aborted worker would have run.
+// Decide itself runs on past the deadline; its result is dropped.
+func decideBy(deadline time.Time, c Config, r Request) (Decision, error) {
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	type result struct {
+		d   Decision
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() { d, err := Decide(c, r); ch <- result{d, err} }()
+	select {
+	case x := <-ch:
+		return x.d, x.err
+	case <-ctx.Done():
+		return Decision{}, errStopped
+	}
 }
 
 // withHints appends complete()'s notes to an answer: a dispatch or MCP caller
@@ -238,13 +309,28 @@ func withHints(answer string, hints []string) string {
 	return answer + "\n" + strings.Join(hints, "\n")
 }
 
+// workerRun is one attempt: its stdout as the caller asked for it, the final
+// answer within it, its stderr, its exit status, and whether it ran a tool.
+type workerRun struct {
+	out, answer, errText string
+	status               int
+	toolRan              bool
+}
+
 // runWorker runs one attempt in its own process group, killed whole on timeout,
 // cancel or exit: ccmorph can leave children behind. A caller's CCMORPH_TASK
 // stays the worker's, so its spend lands on the caller's tag; CCMORPH_DEADLINE
-// tells the worker when it is killed, in epoch seconds.
-func runWorker(ctx context.Context, pick *Option, prompt, cwd, job string, deadline time.Time, claudeArgs []string) (string, string, int) {
-	argv := append([]string{"run", pick.Profile, "--model", pick.Model, "--", "--effort", pick.Effort}, claudeArgs...)
-	cmd := exec.Command("ccmorph", append(argv, "-p", prompt)...)
+// tells the worker when it is killed, in epoch seconds. Unless the caller chose
+// an output format, the worker streams JSON so the router sees every tool call,
+// and the caller gets the final answer alone, as plain -p prints it.
+func runWorker(ctx context.Context, pick *Option, prompt, cwd, job string, deadline time.Time, claudeArgs []string) workerRun {
+	argv := []string{"run", pick.Profile, "--model", pick.Model, "--", "--effort", pick.Effort}
+	stream := !slices.ContainsFunc(claudeArgs, func(a string) bool { return a == "--output-format" || strings.HasPrefix(a, "--output-format=") })
+	if stream {
+		argv = append(argv, "--output-format", "stream-json", "--verbose")
+	}
+	argv = append(append(argv, claudeArgs...), "-p", prompt)
+	cmd := exec.Command("ccmorph", argv...)
 	cmd.Dir = cwd
 	task := os.Getenv("CCMORPH_TASK")
 	if task == "" {
@@ -255,25 +341,63 @@ func runWorker(ctx context.Context, pick *Option, prompt, cwd, job string, deadl
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Start(); err != nil {
-		return "", err.Error(), 1
+		return workerRun{errText: err.Error(), status: 1}
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	status := 0
+	w := workerRun{}
 	select {
 	case err := <-done:
 		if ee, ok := err.(*exec.ExitError); ok {
-			status = ee.ExitCode()
+			w.status = ee.ExitCode()
 		} else if err != nil {
-			status = 1
+			w.status = 1
 		}
 	case <-ctx.Done():
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		<-done
-		status = 124
+		w.status = 124
 	}
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	return out.String(), errb.String(), status
+	w.out, w.answer, w.errText = out.String(), out.String(), errb.String()
+	if !stream {
+		w.toolRan = true // a format the caller chose hides the tool calls: never assume none ran
+		return w
+	}
+	if answer, toolRan, ok := readStream(w.out); ok {
+		w.out, w.answer, w.toolRan = answer, answer, toolRan
+	}
+	return w
+}
+
+// readStream reads Claude Code's stream-json output: the result event's text,
+// and whether any assistant turn called a tool. ok is false when the output is
+// not a stream (a worker that died before claude started, or another program).
+func readStream(raw string) (answer string, toolRan, ok bool) {
+	for _, line := range strings.Split(raw, "\n") {
+		var ev struct {
+			Type    string `json:"type"`
+			Result  string `json:"result"`
+			Message struct {
+				Content []struct {
+					Type string `json:"type"`
+				} `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(line), &ev) != nil || ev.Type == "" {
+			continue
+		}
+		ok = true
+		switch ev.Type {
+		case "assistant":
+			for _, b := range ev.Message.Content {
+				toolRan = toolRan || b.Type == "tool_use"
+			}
+		case "result":
+			answer = ev.Result
+		}
+	}
+	return answer, toolRan, ok
 }
 
 var (
