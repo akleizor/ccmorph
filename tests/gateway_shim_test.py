@@ -321,8 +321,8 @@ class BlockedUpstream(BaseHTTPRequestHandler):
 class TransportRetryTest(unittest.TestCase):
     """--retry-transport end to end. The Go suite (shim/retry_test.go) pins the
     jitter bounds, the breaker clock and the stall rule with injected time; here
-    the binary's own flags and CCMORPH_RETRY_BASE=0 (no waits) show what a
-    provider and a client see."""
+    the binary's own flags and CCMORPH_RETRY_BASE=0.001 (no measurable waits;
+    zero is refused, #770) show what a provider and a client see."""
 
     def setUp(self):
         BlockedUpstream.failures_left = 0
@@ -333,7 +333,7 @@ class TransportRetryTest(unittest.TestCase):
 
     def shim(self, target=None, flags=("--retry-transport",)):
         _, port = start_shim(self, target or f"http://127.0.0.1:{self.upstream.server_address[1]}",
-                             env={"CCMORPH_RETRY_BASE": "0"}, flags=flags)
+                             env={"CCMORPH_RETRY_BASE": "0.001"}, flags=flags)
         return port
 
     def post(self, port):
@@ -894,7 +894,7 @@ class UsageSidecarTest(unittest.TestCase):
         # Two upstream 503s, then the real message: the row records both retries,
         # and `attempt` is still the launcher's tag, not the shim's count.
         CaptureUpstream.fail_first = 2
-        port = self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC, "CCMORPH_RETRY_BASE": "0"},
+        port = self.shim(env={"CCMORPH_MODEL_ROUTE": ROUTE_SPEC, "CCMORPH_RETRY_BASE": "0.001"},
                          flags=("--retry-transport",))
         with self.post(port) as r:
             self.assertEqual(upstream_bytes(self, r.read()), CAPTURE_JSON)

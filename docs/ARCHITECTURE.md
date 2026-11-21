@@ -674,7 +674,8 @@ behind cliproxyapi a shim retry would multiply its own `request-retry` (which on
 also retries 403 and 429). On a 429, 5xx or
 refused connection — and only before the client has any byte — the shim resends the same
 body to the same target twice, waiting a random interval each time (full jitter, up to
-0.5 s then 1 s; `CCMORPH_RETRY_BASE` sets the base and the tests set it to 0). A stall is
+0.5 s then 1 s; `CCMORPH_RETRY_BASE` sets the base and the tests set it to a
+near-zero value). A stall is
 not retried: it already waited the stall timeout and Claude Code retries it itself
 **[test]**. Each retry is the same bytes to the same target, so no retry can move a call
 to another model or provider, and the tier cannot change under load **[test]**.
