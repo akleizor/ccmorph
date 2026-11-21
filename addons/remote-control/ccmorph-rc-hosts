@@ -188,6 +188,21 @@ def sweep_logs(now: float | None = None, keep: "frozenset | set" = frozenset()) 
             pass
 
 
+def record_session(name: str) -> str | None:
+    """The id body of the session a file in LOGS records -- its transcript
+    `bridge-transcript-<id>.jsonl` or a session child's `<name>.debug-<id>.log` --
+    or None for a file no single session writes (a host's own log, a .log.1 copy).
+    The body follows the id's prefix, as in same_session(): one conversation is
+    session_... in a pin and cse_... on the server."""
+    if name.startswith("bridge-transcript-") and name.endswith(".jsonl"):
+        sid = name[len("bridge-transcript-"):-len(".jsonl")]
+    elif ".debug-" in name and name.endswith(".log"):
+        sid = name.rsplit(".debug-", 1)[1][:-len(".log")]
+    else:
+        return None
+    return sid.split("_", 1)[-1] or None
+
+
 def resolve(path: str) -> str | None:
     """A config path as the one absolute form every comparison uses, or None
     when the path cannot be canonicalised at all (a symlink loop, an embedded
@@ -1100,6 +1115,27 @@ def session_pid(sid: str) -> int | None:
                 and "--sdk-url" in words:
             return int(pid)
     return None
+
+
+def live_sessions() -> "set[str] | None":
+    """The id body of every session a process serves right now -- a `--session-id
+    <id>` in its argv: a repo host's session child, a pinned host -- or None when
+    the process table cannot be read. The body is what record_session() returns.
+    ps lists at least itself, so an empty table is an unread one."""
+    try:
+        out = subprocess.run(["ps", "-Ao", "command="], capture_output=True, text=True,
+                             errors="replace", timeout=10).stdout
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if not out.strip():
+        return None
+    ids: set[str] = set()
+    for line in out.splitlines():
+        words = line.split()
+        for i, w in enumerate(words[:-1]):
+            if w == "--session-id":
+                ids.add(words[i + 1].split("_", 1)[-1])
+    return ids
 
 
 def woke(s: dict, mark: tuple) -> bool:

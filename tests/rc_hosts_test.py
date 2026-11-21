@@ -2407,6 +2407,32 @@ def test_a_start_removes_session_records_past_retention(tmp_path, monkeypatch):
     assert kept.exists()
 
 
+def test_live_sessions_reads_every_session_id_in_the_process_table(monkeypatch):
+    import subprocess
+    m = load()
+    table = ("/usr/bin/script -q /dev/null /x/ccmorph-rc gw -- --session-id session_01PIN\n"
+             "/x/claude --print --session-id cse_01KID --sdk-url wss://x\n"
+             "/usr/bin/vim notes.txt\n")
+    monkeypatch.setattr(m.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=table, stderr=""))
+    assert m.live_sessions() == {"01PIN", "01KID"}
+    monkeypatch.setattr(m.subprocess, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="ps: denied"))
+    assert m.live_sessions() is None
+    monkeypatch.setattr(m.subprocess, "run", lambda cmd, **kw: (_ for _ in ()).throw(OSError("no ps")))
+    assert m.live_sessions() is None
+
+
+def test_record_session_names_the_session_a_log_file_records():
+    m = load()
+    assert m.record_session("bridge-transcript-cse_01A.jsonl") == "01A"
+    assert m.record_session("bridge-transcript-session_01A.jsonl") == "01A"
+    assert m.record_session("Users-me-repo.debug-cse_01A.log") == "01A"
+    for name in ("Users-me-repo.log", "Users-me-repo.debug.log", "Users-me-repo.log.1",
+                 "Users-me-repo.debug-cse_01A.log.1"):
+        assert m.record_session(name) is None
+
+
 def test_a_running_supervisor_removes_session_records_past_retention(tmp_path, monkeypatch):
     """#758: a sweep only at supervisor start let the log dir refill between
     restarts -- launchd KeepAlive never restarts a healthy supervisor. The age
