@@ -12,6 +12,39 @@ import (
 	"github.com/akleizor/ccmorph/quota"
 )
 
+// The month bar borrows quota's all-unpriced answer (#301): a month whose every
+// turn carried no price has no share to show, so the router carries no month
+// number at all — the profile then answers like one with no reading,
+// quota-unknown — never a 0% picture of a month with no spend (#776). One
+// priced turn makes the share numeric as before.
+func TestTheMonthWindowCarriesNoShareWhenNoTurnWasPriced(t *testing.T) {
+	budget := 10.0
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC).Unix()
+	entry := func(monthUSD float64, turns, unpriced int) quota.Entry {
+		return quota.Entry{Profile: "budget", Kind: "budget", Spend: &quota.Spend{
+			MonthUSD: monthUSD, BudgetUSD: &budget, MonthTurns: turns, UnpricedTurns: unpriced}}
+	}
+	for _, c := range []struct {
+		name  string
+		entry quota.Entry
+		want  []float64 // the month window's share; none is the unknown answer
+	}{
+		{"all turns unpriced: the bar says unknown, never 0%", entry(0, 3, 3), nil},
+		{"one priced turn: the numeric share", entry(2.5, 3, 2), []float64{0.25}},
+	} {
+		got := windows(c.entry, float64(now))
+		if len(got) != len(c.want) {
+			t.Errorf("%s: windows %+v, want %v", c.name, got, c.want)
+			continue
+		}
+		for i, w := range got {
+			if w.Name != "month" || math.Abs(w.Used-c.want[i]) > 1e-9 {
+				t.Errorf("%s: window %+v, want month at %v", c.name, w, c.want[i])
+			}
+		}
+	}
+}
+
 func TestSlackIsElapsedMinusUsedOfTheTightestWindow(t *testing.T) {
 	now := 1000.0
 	p := Profile{Windows: []Window{
