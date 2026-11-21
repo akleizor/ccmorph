@@ -47,6 +47,10 @@ class Gateway(BaseHTTPRequestHandler):
     # `test_selected_launch_has_its_own_global_deadline` reads it instead of
     # racing the stall with a client timeout.
     stall_released = threading.Event()
+    # The running test's own server. Each test serves on a fresh one, and a
+    # request reaching any other is a finished test's: answered, never
+    # recorded (#518).
+    live: HTTPServer | None = None
 
     def log_message(self, format, *args):  # noqa: A002
         pass
@@ -59,14 +63,27 @@ class Gateway(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _stale(self):
+        """A request to a finished test's server: a probe its adapter sent
+        before it was stopped, handled late on a loaded machine. Recording it
+        would land in the running test's PROBES (#518)."""
+        if self.server is Gateway.live:
+            return False
+        self._json(503, {"error": {"message": "this test's gateway is gone"}})
+        return True
+
     def do_GET(self):
+        if self._stale():
+            return
         XFF_SEEN.append(self.headers.get("X-Forwarded-For"))
         ids = list(MODELS) + list(Gateway.extra_models)
         self._json(200, {"data": [{"id": i, "object": "model"} for i in ids]})
 
     def do_POST(self):
-        XFF_SEEN.append(self.headers.get("X-Forwarded-For"))
         raw = self.rfile.read(int(self.headers.get("content-length") or 0))
+        if self._stale():
+            return
+        XFF_SEEN.append(self.headers.get("X-Forwarded-For"))
         # What the upstream really received — path, headers (lowercased), raw
         # body — so a test can assert on the wire the shim produced.
         UPSTREAM.append((self.path, {k.lower(): v for k, v in self.headers.items()}, raw))
@@ -205,21 +222,25 @@ def listener_outside_the_ephemeral_pool(addr: str) -> tuple[socket.socket, int]:
 
 @needs_loopback  # the stub gateway is a real listener: #611
 class AdapterTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        # Threaded: on a single-threaded server a stalled probe queued the
-        # next requests, and a dead client's queued probe then landed in a
-        # later test's PROBES (seen as six stray /v1/messages on macOS CI).
-        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), Gateway)
-        cls.port = cls.srv.server_address[1]
-        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
-        cls.base = f"http://127.0.0.1:{cls.port}"
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.srv.shutdown()
+    def serve_gateway(self):
+        """A fresh stub gateway for this test, made the live one. Threaded: on
+        a single-threaded server a stalled probe queued the next requests (#688).
+        Fresh per test: a probe a stopped adapter had already sent could still
+        be handled after the next test's setUp on a loaded machine and land in
+        its PROBES (#518: seven stray /v1/messages in the #375 re-ask test).
+        The server is closed with its test, and Gateway.live points elsewhere
+        by then, so a late request records nothing."""
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), Gateway)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        Gateway.live = srv
+        return srv
 
     def setUp(self):
+        self.srv = self.serve_gateway()
+        self.port = self.srv.server_address[1]
+        self.base = f"http://127.0.0.1:{self.port}"
         PROBES.clear()
         XFF_SEEN.clear()
         UPSTREAM.clear()
@@ -1255,6 +1276,7 @@ class AdapterTest(unittest.TestCase):
                 self._json(404, {"error": "no model list"})
 
         srv = HTTPServer(("127.0.0.1", 0), NoList)
+        Gateway.live = srv  # this test's gateway now; the setUp one is idle
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.addCleanup(srv.shutdown)
         self.addCleanup(srv.server_close)
@@ -1396,6 +1418,27 @@ class AdapterTest(unittest.TestCase):
         self.assertNotIn("no route", out.stdout + out.stderr)
         # The stale row was re-asked, not served.
         self.assertEqual([p for p, _m in PROBES], ["/v1/messages"])
+
+    def test_a_finished_tests_gateway_records_nothing_issue_518(self):
+        # The probe count above is exact, and on a loaded machine the test
+        # before it could still have probes in flight: its adapter sent them
+        # before it was stopped, and the shared server handled them after this
+        # test's setUp. A request to any gateway but the running test's own is
+        # answered and never recorded.
+        import urllib.error
+        import urllib.request
+        finished = self.srv
+        self.serve_gateway()    # the next test's gateway is the live one now
+        late = urllib.request.Request(
+            f"{self.base}/v1/messages", method="POST",
+            data=json.dumps({"model": "m-anthropic"}).encode(),
+            headers={"content-type": "application/json"})
+        with self.assertRaises(urllib.error.HTTPError) as refused:
+            urllib.request.urlopen(late, timeout=HANG_TIMEOUT)
+        self.assertEqual(refused.exception.code, 503)
+        self.assertEqual(PROBES, [])
+        self.assertEqual(XFF_SEEN, [])
+        self.assertIsNot(finished, Gateway.live)
 
     def test_an_unimplemented_messages_path_is_not_a_refusal_issue_375(self):
         # The merge gate's finding: a 501 answers "this gateway does not
