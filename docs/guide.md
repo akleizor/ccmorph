@@ -303,6 +303,16 @@ ccmorph set <profile> effort xhigh      # low | medium | high | xhigh | max
 ccmorph set <profile> model -i          # choose from what the endpoint serves
 ccmorph set <profile> model             # a missing value asks the same way
 ccmorph set -i                          # choose the profile too
+ccmorph get model                       # the profile can be omitted too: with
+ccmorph set effort xhigh                # one profile it is chosen, with more its
+                                        # picker is opened
+ccmorph get model effort                # a profile named after a setting stays
+ccmorph set model effort xhigh          # reachable: name both words, the profile
+                                        # first
+ccmorph get model base_url              # ... and its other fields read the same
+                                        # way
+ccmorph get --json                      # --json may stand before or after the
+                                        # profile; omitted, it is chosen the same way
 ```
 
 `-i` — or simply omitting the value — asks instead of failing. A model id cannot
