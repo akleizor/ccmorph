@@ -9482,6 +9482,102 @@ esac'
   return $rc
 }
 
+test_add_wrong_menu_answer_reasks_instead_of_exiting_issue_727() {
+  # Issue #727: typing the gateway URL at the Provider menu printed
+  # "unknown provider" and exited, losing every answer already given; the same
+  # class — free text at the sign-in-method menu — printed "cancelled". A
+  # wrong menu answer now re-asks with a stated try limit, a URL-shaped
+  # provider answer additionally points at Custom endpoint, and the wizard
+  # carries on with the answers it has. The deliberate cancels (EOF, q) still
+  # cancel, and a stream of wrong answers still ends at the stated limit.
+  local test_home rc=0 out st
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  source "$CCMORPH_SOURCE"
+  command cp "$REPO_ROOT/share/provider-presets.tsv" "$HOME/.config/ccmorph/share/"
+  # The issue's gateway answers nothing: the key is said not-checked and the
+  # add saves.
+  write_curl_mock 'exit 1'
+  # The issue's exact opening — '3' then the URL typed where a menu number
+  # goes — then the answer its hint teaches: the wizard must re-ask with the
+  # pointer, keep the earlier answers, and complete.
+  out=$(print -l 3 'https://api.example.invalid' custom https://api.example.invalid sk-gw-not-real \
+    | ccmorph add t1 2>&1) \
+    || { print -u2 -- 'a URL at the provider menu must re-ask, not exit: '"$out"; rc=1; }
+  assert_contains "$out" "unknown provider 'https://api.example.invalid'" \
+    'the answer that matched no row must still be named back' || rc=1
+  assert_contains "$out" 'for your own URL pick' \
+    'a URL-shaped provider answer must point at the row that takes a URL' || rc=1
+  assert_contains "$out" ') Custom endpoint' \
+    'the pointer must name the Custom endpoint row' || rc=1
+  assert_contains "$out" 'try 1 of 3' \
+    'the re-ask must state its try limit' || rc=1
+  assert_contains "$out" 'Added t1' \
+    'the wizard must finish after the re-ask — a wrong menu answer loses no progress' || rc=1
+  [[ -e "$HOME/.config/ccmorph/t1.conf" ]] \
+    || { print -u2 -- 'the re-asked wizard must save the profile'; rc=1; }
+  # The same class at the sign-in-method menu: free text re-asks, and the
+  # answer that follows completes the wizard.
+  out=$(print -l gateway 3 anthropic sk-m-not-real | ccmorph add m1 2>&1) \
+    || { print -u2 -- 'free text at the method menu must re-ask, not exit: '"$out"; rc=1; }
+  assert_contains "$out" 'not a sign-in method' \
+    'a wrong method answer must name what the menu takes' || rc=1
+  assert_contains "$out" 'try 1 of 3' \
+    'the method re-ask must state its try limit' || rc=1
+  assert_contains "$out" 'Added m1' 'the method menu must carry on after a wrong answer' || rc=1
+  # A stream of wrong answers still ends — at the stated limit, not before:
+  # the second miss is still a re-ask, and nothing saves.
+  out=$(print -l nope nope nope nope | ccmorph add exhaust 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'wrong answers past the try limit must end the add'; rc=1; }
+  assert_contains "$out" 'try 2 of 3' \
+    'every answer up to the limit must be re-asked, not the first exit' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/exhaust.conf" ]] \
+    || { print -u2 -- 'an exhausted menu must save nothing'; rc=1; }
+  # The deliberate cancel paths still cancel: q — the word the numbered menu
+  # names — leaves with nothing saved, as EOF always did.
+  out=$(print -l apikey q | ccmorph add quit 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'q at the provider menu must cancel'; rc=1; }
+  assert_contains "$out" 'cancelled' 'the deliberate cancel still says cancelled' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/quit.conf" ]] \
+    || { print -u2 -- 'a cancelled provider menu must save nothing'; rc=1; }
+  out=$(print -l apikey custom | ccmorph add eof 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'EOF at the endpoint question must cancel'; rc=1; }
+  [[ ! -e "$HOME/.config/ccmorph/eof.conf" ]] \
+    || { print -u2 -- 'a cancelled add must save nothing'; rc=1; }
+  # Without the bridge the fourth row is More sign-ins, and choosing it still
+  # names the install step and saves nothing — the gate follows the printed
+  # row, not the word.
+  out=$(print -l 4 | ccmorph add more 2>&1)
+  st=$?
+  (( st != 0 )) || { print -u2 -- 'the printed More row must stop before any login'; rc=1; }
+  assert_contains "$out" 'needs cliproxyapi' \
+    'choosing the printed More row must still name the bridge' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/more.conf" ]] \
+    || { print -u2 -- 'the More row must save nothing'; rc=1; }
+  # With the bridge on PATH the More sign-ins row is not printed — every
+  # browser login is a row of its own — so `more` is not a menu answer there:
+  # it must re-ask like any other unlisted word, not exit with the install step
+  # that would throw away the answers already given.
+  printf '%s\n' '#!/bin/sh' \
+    'if [ "$1" = --help ]; then print -- "  -codex-login"; exit 0; fi' \
+    'exit 1' > "$HOME/bin/cliproxyapi"
+  chmod +x "$HOME/bin/cliproxyapi"
+  out=$(print -l more 3 anthropic sk-bridge-not-real | ccmorph add bridged 2>&1) \
+    || { print -u2 -- 'with the bridge present, "more" must re-ask, not exit: '"$out"; rc=1; }
+  assert_contains "$out" 'try 1 of 3' \
+    'an answer whose row the menu does not print must re-ask' || rc=1
+  assert_not_contains "$out" 'needs cliproxyapi' \
+    'the unprinted More row must not send a bridged machine to an install step' || rc=1
+  assert_contains "$out" 'Added bridged' \
+    'the method menu must carry on after the unprinted answer' || rc=1
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_launch_refuses_a_key_claude_code_was_told_to_refuse() {
   # A profile made before #236 (or one whose question was answered No) has its
   # key stored as refused; Claude Code would open its login menu and never use
@@ -11461,6 +11557,7 @@ run_test test_add_apikey_profile_approves_its_key
 run_test test_add_cleans_a_pasted_credential_issue_254
 run_test test_add_reports_a_rejected_key_in_the_same_step_issue_254
 run_test test_add_flags_a_malformed_token_and_checks_a_shaped_one_issue_254
+run_test test_add_wrong_menu_answer_reasks_instead_of_exiting_issue_727
 run_test test_launch_refuses_a_key_claude_code_was_told_to_refuse
 run_test test_launch_carries_the_persons_answers_to_the_next_profile
 run_test test_hop_lands_on_the_resumed_conversation_not_the_questions
