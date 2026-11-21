@@ -211,6 +211,29 @@ func (l *launcher) claudeAuth(dir string, args ...string) *exec.Cmd {
 	return l.claudeAuthCtx(context.Background(), dir, args...)
 }
 
+// claudeInstallStep is the one command that installs Claude Code where none
+// is: the native installer the setup page the refusal sentence links opens
+// with as its first step, needing no package manager of its own.
+const claudeInstallStep = "Install Claude Code with: curl -fsSL https://claude.ai/install.sh | bash"
+
+// requireClaude is the look the account sign-in does before it starts (#789):
+// every step it takes execs `claude`, so on a machine without one each step
+// answered only "logout failed" or "login failed" — naming neither the
+// missing program nor the fix. The refusal is the one sentence run and doctor
+// already give for a missing claude, and recovery names the install step a
+// person can run from it, or the sign-in method that needs no claude at all:
+// a first-time user meets a blocked default with a way on, never one line
+// that names nothing. The methods that exec no claude (token, apikey) are
+// untouched: it guards the account flow, which is all it can fail.
+func (l *launcher) requireClaude(recovery string) bool {
+	if _, err := exec.LookPath("claude"); err != nil {
+		l.err(util.ClaudeMissing)
+		l.err(recovery)
+		return false
+	}
+	return true
+}
+
 // claudeAuthCtx is claudeAuth bound to ctx, for the one caller that must not
 // wait forever (doctor's sign-in check); a browser login keeps no deadline.
 func (l *launcher) claudeAuthCtx(ctx context.Context, dir string, args ...string) *exec.Cmd {
@@ -296,6 +319,12 @@ func (l *launcher) subBrowserLogin(name string) (string, bool) {
 // login. A profile that was never signed in is not a profile, and no cleanup
 // can promise what a save that comes last simply never owes.
 func (l *launcher) addSub(name string) int {
+	if !l.requireClaude(claudeInstallStep +
+		" — or pick another sign-in method: 2) Claude token, 3) API key") {
+		// Before setupDir: a machine with no claude can complete no part of
+		// this flow, so it leaves nothing that needs the rollback below.
+		return 1
+	}
 	if !l.setupDir(name, "sub", liveNote) {
 		l.rollback(name)
 		return 1
@@ -363,6 +392,9 @@ func (l *launcher) askCredential(prompt, what string) (string, bool) {
 // signs in again without being re-created. Only the email line changes; the
 // sign-in itself lives in the profile home, where Claude Code keeps it.
 func (l *launcher) subLogin(name string, f map[string]string) int {
+	if !l.requireClaude(claudeInstallStep + ", then run: ccmorph login " + name) {
+		return 1
+	}
 	if !l.setupDir(name, "sub", liveSilent) {
 		return 1
 	}
