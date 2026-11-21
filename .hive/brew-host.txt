@@ -1,0 +1,2 @@
+host=gcp-us1 brew=/home/linuxbrew/.linuxbrew/bin/brew homebrew_commit=e40c695f619441e4c13b6cf51f8f0484ea091dd5
+installed by this turn at the prefix GitHub ubuntu-latest runners use (CI runs this test there); never executed: tests/readme_install_test.py only looks it up with command -v (HOMEBREW_BIN). Before this the host had no Homebrew: .hive/superseded/env-failures-why.txt

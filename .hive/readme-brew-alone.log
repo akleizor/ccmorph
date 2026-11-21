@@ -1,0 +1,11 @@
+Using CPython 3.13.18
+Creating virtual environment at: /home/ubuntu/offload/2691cfea661b-1588146.tmp/venv518
+warning: No `requires-python` value found in the workspace. Defaulting to `>=3.13`.
+Downloading pygments (1.2MiB)
+ Downloaded pygments
+Installed 8 packages in 10ms
+.                                                                        [100%]
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED tests/readme_install_test.py::ReadmeInstallTest::test_every_command_the_readme_names_is_found_by_a_fresh_install
+1 passed in 0.54s

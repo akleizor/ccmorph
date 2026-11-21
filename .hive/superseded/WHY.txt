@@ -1,0 +1,1 @@
+Loaded runs from before Homebrew was on the host: they deselected the README install test. Not evidence for criterion 2; see .hive/full-unfiltered-*.log (#518).
