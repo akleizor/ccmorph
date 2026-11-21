@@ -1,8 +1,10 @@
 package adapter
 
 import (
+	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -62,7 +64,6 @@ func TestStartShimMovesSettledFlatRowsGH513(t *testing.T) {
 // profile conf alone; a shim that falls back to the process env routes the
 // session through a proxy they never saw -- GH-580's split, mirrored.
 func TestShimTakesTheUpstreamProxyFromTheProfileConfAlone(t *testing.T) { // GH-773
-	noAmbientProxy(t)
 	t.Setenv("CCMORPH_UPSTREAM_PROXY", "http://shell.invalid:3128")
 	profile := map[string]string{} // the profile conf names no knob
 
@@ -71,17 +72,11 @@ func TestShimTakesTheUpstreamProxyFromTheProfileConfAlone(t *testing.T) { // GH-
 		t.Fatalf("the shim read CCMORPH_UPSTREAM_PROXY from the process env, not the profile conf: %q "+
 			"(fix: answer CCMORPH_UPSTREAM_PROXY from the adapter's profile env map alone, adapter/proc.go)", got)
 	}
-	req, err := http.NewRequest("POST", "https://gateway.lan/v1/messages", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	probe, err := netroute.Proxy(netroute.Parse(profile["CCMORPH_UPSTREAM_PROXY"]), req)
-	if err != nil || probe != nil {
-		t.Fatalf("the probe's route = (%v, %v), want a direct dial", probe, err)
-	}
-	viaShim, err := netroute.Proxy(netroute.Parse(getenv("CCMORPH_UPSTREAM_PROXY")), req)
-	if err != nil || viaShim != nil {
-		t.Fatalf("the shim's route = (%v, %v), want the probe's direct dial", viaShim, err)
+	probe, shim := freshRoute(t, "", "http://shell.invalid:3128")
+	if probe != "direct" || shim != "direct" {
+		t.Fatalf("with the profile conf silent and the shell exporting the knob, the probe routed %s and the shim %s; "+
+			"want both direct -- the shim read CCMORPH_UPSTREAM_PROXY from the process env, not the profile conf (GH-773)",
+			probe, shim)
 	}
 
 	// A knob the profile conf does name still reaches the shim.
@@ -89,11 +84,92 @@ func TestShimTakesTheUpstreamProxyFromTheProfileConfAlone(t *testing.T) { // GH-
 	if got := shimGetenv(profile)("CCMORPH_UPSTREAM_PROXY"); got != "http://bridge.invalid:3128" {
 		t.Fatalf("the profile conf's own knob does not reach the shim: %q", got)
 	}
+	probe, shim = freshRoute(t, "http://bridge.invalid:3128", "http://shell.invalid:3128")
+	want := "proxy:http://bridge.invalid:3128"
+	if probe != want || shim != want {
+		t.Fatalf("with the profile conf naming %s, the probe routed %s and the shim %s; want both %s",
+			profile["CCMORPH_UPSTREAM_PROXY"], probe, shim, want)
+	}
 	// Every other setting keeps the process env fallback the shim always had.
 	t.Setenv("CCMORPH_STALL_TIMEOUT", "7")
 	if got := shimGetenv(map[string]string{})("CCMORPH_STALL_TIMEOUT"); got != "7" {
 		t.Fatalf("the shim lost the process env fallback for CCMORPH_STALL_TIMEOUT: %q", got)
 	}
+}
+
+// TestShimRouteChild answers, in a fresh process with no ambient proxy, what
+// route the probe and the shim take for the profile knob its environment
+// carries (none when CCMORPH_TEST_PROFILE_KNOB is unset) while
+// CCMORPH_UPSTREAM_PROXY is the launcher's shell export. Run on its own it
+// does nothing.
+func TestShimRouteChild(t *testing.T) {
+	if os.Getenv("CCMORPH_TEST_ROUTE_CHILD") != "1" {
+		return
+	}
+	profile := map[string]string{}
+	if v, ok := os.LookupEnv("CCMORPH_TEST_PROFILE_KNOB"); ok {
+		profile["CCMORPH_UPSTREAM_PROXY"] = v
+	}
+	req, err := http.NewRequest("POST", "https://gateway.lan/v1/messages", nil)
+	if err != nil {
+		fmt.Printf("ccmorph-adapter-route: bad request: %v\n", err)
+		return
+	}
+	route := func(knob string) string {
+		u, err := netroute.Proxy(netroute.Parse(knob), req)
+		switch {
+		case err != nil:
+			return "error:" + err.Error()
+		case u == nil:
+			return "direct"
+		default:
+			return "proxy:" + u.String()
+		}
+	}
+	fmt.Printf("ccmorph-adapter-route: probe=%s shim=%s\n",
+		route(profile["CCMORPH_UPSTREAM_PROXY"]), route(shimGetenv(profile)("CCMORPH_UPSTREAM_PROXY")))
+}
+
+// freshRoute asks a fresh test binary -- whose http.ProxyFromEnvironment cache
+// has read no proxy of its own -- what routes the probe and the shim take. The
+// process-wide cache is why this cannot be asked in-process: a test that ran
+// earlier may have primed it with an ambient proxy, and t.Setenv cannot undo
+// that (GH-773 review).
+func freshRoute(t *testing.T, profile, shellProxy string) (probe, shim string) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestShimRouteChild$")
+	var env []string
+	for _, kv := range os.Environ() {
+		k, _, _ := strings.Cut(kv, "=")
+		switch k {
+		case "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy",
+			"CCMORPH_UPSTREAM_PROXY", "CCMORPH_TEST_PROFILE_KNOB", "CCMORPH_TEST_ROUTE_CHILD":
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env, "CCMORPH_TEST_ROUTE_CHILD=1", "CCMORPH_UPSTREAM_PROXY="+shellProxy)
+	if profile != "" {
+		env = append(env, "CCMORPH_TEST_PROFILE_KNOB="+profile)
+	}
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the route child failed: %v (output %q)", err, out)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		rest, ok := strings.CutPrefix(line, "ccmorph-adapter-route: ")
+		if !ok {
+			continue
+		}
+		var p, s string
+		if _, err := fmt.Sscanf(rest, "probe=%s shim=%s", &p, &s); err != nil {
+			t.Fatalf("the route child answered %q: %v", rest, err)
+		}
+		return p, s
+	}
+	t.Fatalf("the route child printed no answer: %q", out)
+	return "", ""
 }
 
 // GH-773: the spawned shim inherits the adapter's environment; a routing knob
