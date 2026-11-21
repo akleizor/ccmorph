@@ -52,6 +52,8 @@ func dataPayload(line []byte) (prefix, payload, eol []byte, ok bool) {
 // blank.
 type thinkingStream struct {
 	r            *bufio.Reader
+	buf          []byte   // the start of a line whose end has not arrived yet
+	cr           bool     // the last read ended on a bare CR whose line already went on
 	out          [][]byte // lines ready for the relay loop
 	pending      [][]byte // lines awaiting the event's data line or decision
 	held         *heldStart
@@ -70,31 +72,58 @@ type heldStart struct {
 	index int
 }
 
-// sseLines splits one read into SSE lines, every byte kept. SSE ends a line
-// at CRLF, LF or a bare CR, but the reader stops only at LF (as it always
-// has: it never waits on the byte after a CR, and a read error stays with the
-// bytes before it), so a bare-CR-framed stream arrives as one chunk. A CR
-// right before the chunk's closing LF stays with it: CRLF is one terminator.
-// Each line is capped at its own length, so appending to one never writes
-// over the next.
-func sseLines(chunk []byte) [][]byte {
-	var lines [][]byte
+// fill takes one read: whatever the upstream has sent so far, never waiting
+// past it, and feeds every whole line in it. SSE ends a line at CRLF, LF or
+// a bare CR. A line whose CR is the last byte the upstream has sent goes on
+// at once, so a bare-CR terminal event ends the reply without waiting for
+// the next byte. An LF opening the next read is then the second half of that
+// CRLF: SSE reads the CR alone as the same line end, so the LF is dropped,
+// never fed as a blank line that would end the event early; every event the
+// client reads is unchanged. The start of a line whose end has not arrived
+// waits in buf. A read error is kept and ends the stream after the bytes
+// read with it.
+func (t *thinkingStream) fill() {
+	start := len(t.buf)
+	buf := make([]byte, start+max(4096, start))
+	copy(buf, t.buf)
+	n, err := t.r.Read(buf[start:])
+	if err != nil {
+		t.err = err
+	}
+	buf = buf[:start+n]
+	// A CR that ends the read may be the first half of a CRLF whose LF the
+	// reader already holds: take the next byte while it costs no read.
+	for n > 0 && buf[len(buf)-1] == '\r' && t.r.Buffered() > 0 {
+		c, _ := t.r.ReadByte()
+		buf = append(buf, c)
+	}
+	if t.cr && n > 0 {
+		// cr is set only when its line ended the read, so buf held nothing
+		// before this read: buf[0] is the read's first byte.
+		t.cr = false
+		if buf[0] == '\n' {
+			buf = buf[1:]
+		}
+	}
 	for {
-		i := bytes.IndexByte(chunk, '\r')
+		i := bytes.IndexAny(buf, "\r\n")
 		if i < 0 {
 			break
 		}
 		end := i + 1
-		if end < len(chunk) && chunk[end] == '\n' {
-			end++
+		if buf[i] == '\r' {
+			if end == len(buf) {
+				t.cr = true
+			} else if buf[end] == '\n' {
+				end++
+			}
 		}
-		lines = append(lines, chunk[:end:end])
-		chunk = chunk[end:]
+		// Capped at its own length, so appending to a line never writes
+		// over the next.
+		t.feed(buf[:end:end])
+		buf = buf[end:]
 	}
-	if len(chunk) > 0 {
-		lines = append(lines, chunk)
-	}
-	return lines
+	t.buf = buf
 }
 
 // readline returns the next line; at the end of the stream or a read error it
@@ -102,6 +131,11 @@ func sseLines(chunk []byte) [][]byte {
 func (t *thinkingStream) readline() ([]byte, error) {
 	for len(t.out) == 0 {
 		if t.err != nil {
+			if len(t.buf) > 0 {
+				// The stream's last line, ended by the stream itself.
+				t.feed(t.buf)
+				t.buf = nil
+			}
 			t.release()
 			if !t.emptyData {
 				// A stream cut mid empty-event dies with it: relaying its
@@ -115,13 +149,7 @@ func (t *thinkingStream) readline() ([]byte, error) {
 			}
 			break
 		}
-		chunk, err := t.r.ReadBytes('\n')
-		if err != nil {
-			t.err = err
-		}
-		for _, line := range sseLines(chunk) {
-			t.feed(line)
-		}
+		t.fill()
 	}
 	line := t.out[0]
 	t.out = t.out[1:]
