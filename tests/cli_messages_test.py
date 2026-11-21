@@ -227,6 +227,32 @@ def test_price_reads_cached_list_prices(tmp_path):
         assert 'usage: ccmorph price <model>... [--json]' in result.stderr
 
 
+def test_price_empty_cache_message_and_json(tmp_path):
+    env = {**os.environ, 'HOME': str(tmp_path / 'home'),
+           'XDG_STATE_HOME': str(tmp_path / 'xdg'),
+           'CCMORPH_LIB_DIR': str(ROOT / 'lib'), 'CCMORPH_STATE_DIR': str(tmp_path / 'config')}
+    cli = str(ROOT / 'bin/ccmorph')
+    hint = 'Run a `provider` profile with `ccmorph run PROFILE`; its launch refreshes this cache in the background.'
+    (tmp_path / 'xdg' / 'ccmorph').mkdir(parents=True)
+    for cache in (None, {'host': 'owned:any', 'fetched': 0, 'models': {}}):
+        cache_path = tmp_path / 'xdg' / 'ccmorph' / 'prices-owned-any.json'
+        if cache is None:
+            cache_path.unlink(missing_ok=True)
+        else:
+            cache_path.write_text(json.dumps(cache))
+        result = subprocess.run([cli, 'price', 'claude-sonnet-4-5', 'nosuchmodel'], env=env,
+                                capture_output=True, text=True, timeout=HANG_TIMEOUT)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == (
+            f'No cached model prices. {hint}\n'
+            'claude-sonnet-4-5  no cached price\nnosuchmodel  no cached price\n'
+        )
+        result = subprocess.run([cli, 'price', '--json', 'claude-sonnet-4-5'], env=env,
+                                capture_output=True, text=True, timeout=HANG_TIMEOUT)
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {'cache': 'empty', 'hint': hint, 'prices': {}}
+
+
 def test_hop_help_needs_no_exit_and_names_both_forms_gh_289(tmp_path):
     # GH-289: the page said "Then exit Claude to complete the switch" although
     # hop switches the session at once, and taught only the ! form.
