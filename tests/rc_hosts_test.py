@@ -724,13 +724,16 @@ class FakeProc:
 
 
 def run_main(m, monkeypatch, tmp_path, cfg, start, sleep=None,
-             edge_ready=lambda route: True, clock=None, args=None):
+             edge_ready=lambda route: True, clock=None, args=None, logs=True):
     """Drive m.main() over cfg until the scripted sleep raises SystemExit: logs
     under tmp_path, Host.start faked by `start`, the clock read from `clock`
     when given. `args` replaces the `--config` argument list main() gets.
-    Without a `sleep`, main() stops on its fifth sleep."""
+    Without a `sleep`, main() stops on its fifth sleep. `logs=False` leaves
+    tmp_path/logs absent: a fresh state dir whose first reload reaches the
+    switch bring-up before any Host.start created LOGS (issue #596)."""
     monkeypatch.setattr(m, "LOGS", tmp_path / "logs")
-    (tmp_path / "logs").mkdir(exist_ok=True)
+    if logs:
+        (tmp_path / "logs").mkdir(exist_ok=True)
     monkeypatch.setattr(m, "edge_ready", edge_ready)
     monkeypatch.setattr(m.Host, "start", start)
     if clock is not None:
@@ -3393,3 +3396,128 @@ def test_inference_names_any_profile_and_defaults_to_route(tmp_path, monkeypatch
     assert mod.inference("# inference=alex\n", routes, "alex") == "route"
     mod.rc_module().write_inference(mod.inference("inference=alex\n", routes, "alex"), mod.INFERENCE)
     assert (tmp_path / "inference").read_text() == "account\n"
+
+
+def _two_account_profiles(state_dir: Path) -> None:
+    """Two Claude account profiles on the machine: the state under which the
+    one-shot `default_account()` refuses, and a refusal there is SystemExit."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("acct1", "acct2"):
+        (state_dir / f"{name}.conf").write_text("type=sub\n")
+
+
+@pytest.mark.parametrize("mapping, named, hosted", [
+    pytest.param("inference=acct1", True, True, id="ambiguous-account-issue-596"),
+    pytest.param("# inference=acct1", False, False, id="comment-mentions-inference-issue-596"),
+])
+def test_a_config_reload_never_dies_on_account_resolution(tmp_path, monkeypatch, capsys,
+                                                          mapping, named, hosted):
+    """Two Claude account profiles made every config reload kill the supervisor:
+    the reload branch called `default_account()`, a one-shot CLI helper whose
+    refusal prints for a human holding a terminal and exits the process, and
+    launchd's next start only deferred the same crash to the next edit (GH-596,
+    a5b5339's branch). The old trigger was the substring `inference=` anywhere
+    in the text, so a comment merely mentioning it resolved accounts too. Now
+    resolution happens only for a real mapping and never by dying: an ambiguous
+    account is no account match, so the word is brought up as a profile -- where
+    `ccmorph-rc --switch` refuses into switch.log, not into the supervisor --
+    and the ambiguity itself is named once in the supervisor's log."""
+    m = load()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _two_account_profiles(tmp_path / "state")
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=gateway\n{repo}\n{mapping}\n")
+    popens = []
+    monkeypatch.setattr(m.subprocess, "Popen", lambda cmd, **kw: popens.append(cmd) or FakeProc())
+
+    def start(self):
+        self.proc, self.started = FakeProc(), m.time.time()
+
+    run_main(m, monkeypatch, tmp_path, cfg, start)
+    out = capsys.readouterr().out
+    assert ("2 Claude account profiles (acct1, acct2)" in out) is named
+    assert (len(popens) == 1) is hosted
+    if hosted:
+        assert popens[0] == [str(m.HERE / "ccmorph-rc"), "acct1", "--switch"]
+    else:     # a comment is no mapping: nothing resolved, the route word stands
+        assert (tmp_path / "state" / "profiles" / ".rc-bridge" / "inference").read_text() == "route\n"
+
+
+def test_a_first_config_with_inference_creates_its_switch_log(tmp_path, monkeypatch):
+    """A fresh state dir whose first config carries `inference=<profile>` died
+    FileNotFoundError on its first reload: the bring-up Popen's stderr opened
+    LOGS/switch.log, but LOGS is created only inside Host.start, which runs
+    later in the same tick -- the #419 comment already warns the mkdir sits
+    past the early returns, and the reload branch walked into the same hole
+    (GH-596). The supervisor must live, and the log it wants must be created
+    on demand, mkdir first."""
+    m = load()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=gateway\n{repo}\ninference=oli\n")
+    popens = []
+    monkeypatch.setattr(m.subprocess, "Popen", lambda cmd, **kw: popens.append(cmd) or FakeProc())
+
+    def start(self):
+        self.proc, self.started = FakeProc(), m.time.time()
+
+    run_main(m, monkeypatch, tmp_path, cfg, start, logs=False)   # no host ever started: no LOGS
+    assert popens == [[str(m.HERE / "ccmorph-rc"), "oli", "--switch"]]
+    assert (tmp_path / "logs" / "switch.log").exists()
+
+
+def test_two_concurrent_write_inference_callers_each_land_a_whole_word(tmp_path):
+    """write_inference used one shared `<target>.tmp`, and both the supervisor
+    and a manual `--switch` write STATE/inference: one writer's replace() could
+    rename the other's half-written temp away (FileNotFoundError, the same
+    uncaught path as the reload-death), or the two O_TRUNC writes could
+    interleave into a torn word that inference_target silently reads as "route"
+    (GH-596). Two writers through the real seam must each land a whole word and
+    leave no temp behind. The loop count manufactures contention, not a timing
+    bound: with unique temps every interleave satisfies these assertions."""
+    from concurrent.futures import ThreadPoolExecutor
+    mod = load()
+    rc = mod.rc_module()
+    path = tmp_path / "inference"
+    errors = []
+
+    def writer(word):
+        for _ in range(200):
+            try:
+                rc.write_inference(word, path)
+            except OSError as e:
+                errors.append(e)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(writer, ("firstword", "secondword")))
+    assert errors == []
+    assert path.read_text() in ("firstword\n", "secondword\n")
+    assert [p.name for p in tmp_path.iterdir() if p != path] == []
+
+
+def test_a_failed_write_inference_raises_its_own_error_and_leaves_no_temp(tmp_path, monkeypatch):
+    """write_inference cleans a failed write up under `suppress(OSError)`, and
+    ccmorph-rc never imported suppress: when os.replace failed, the cleanup
+    itself raised NameError, which masked the real write failure and left
+    `inference.<unique>.tmp` beside the switch file (GH-596, merge-gate
+    finding). A failed write must re-raise its own OSError, remove its temp,
+    and leave the previous word in place, so every proxy keeps reading the
+    last whole word."""
+    rc = load().rc_module()
+    path = tmp_path / "bridge" / "inference"
+    path.parent.mkdir()
+    path.write_text("route\n")
+    injected = OSError("injected: the disk is full")
+
+    def refuse(src, dst):
+        raise injected
+
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "replace", refuse)
+        with pytest.raises(OSError) as raised:
+            rc.write_inference("account", path)
+    assert raised.value is injected
+    assert path.read_text() == "route\n"
+    assert sorted(p.name for p in path.parent.iterdir()) == ["inference"]

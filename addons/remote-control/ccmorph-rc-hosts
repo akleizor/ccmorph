@@ -206,13 +206,46 @@ def permission_mode(text: str) -> str | None:
     return m.group(1) if m and m.group(1) in PERMISSION_MODES else None
 
 
+INFERENCE_LINE = re.compile(r"^\s*inference=(\S+)", re.M)
+
+
+def inference_name(text: str) -> str | None:
+    """The profile a real `inference=<profile>` line names, or None when the
+    config carries none. The line-start anchor is the whole rule: a comment
+    that merely mentions `inference=` is not a mapping and may not reach
+    account resolution (issue #596)."""
+    m = INFERENCE_LINE.search(text)
+    return m.group(1) if m else None
+
+
+def inference_account(text: str) -> str:
+    """The account name `inference=<account>` compares against, or "" when no
+    single account can be named. Resolved only when the config actually maps
+    inference, and never by dying: default_account() is a one-shot CLI helper
+    whose refusal exits the process -- addressed to a human holding a terminal
+    -- and two Claude account profiles took this supervisor down at every
+    config reload (#596). With none or several there is no account match: the
+    word is taken as a profile name, a bring-up of one refuses in its own
+    switch.log beside the edge, and several get the operator one line naming
+    them (once per config change: the caller runs once per reload)."""
+    if inference_name(text) is None:
+        return ""
+    accounts = rc_module().account_candidates()
+    if len(accounts) == 1:
+        return accounts[0]
+    if accounts:
+        log(f"inference: {len(accounts)} Claude account profiles ({', '.join(accounts)}) "
+            "and no default to compare against; the inference= word resolves as a profile name")
+    return ""
+
+
 def inference(text: str, routes: set[str], account: str) -> str:
     """`inference=<profile>` -- where every host's model calls go: "account" for the
     account profile the phone signs in with, "route" for a route the config names (or
     no line), else the profile itself, which `ccmorph-rc <profile> --switch` brings up
-    beside the edge. Each proxy reads the result on every turn: nothing restarts."""
-    m = re.search(r"^\s*inference=(\S+)", text, re.M)
-    name = m.group(1) if m else None
+    beside the edge. Each proxy reads the result on every turn: nothing restarts.
+    A "" account (none, or an ambiguous set: see inference_account) matches no word."""
+    name = inference_name(text)
     return "account" if name == account else "route" if name is None or name in routes else name
 
 
@@ -1587,11 +1620,15 @@ def main(argv: list[str]) -> int:
                 tiers = {a: m for a, m in tier_map(text).items() if a in ALIAS_ENV}
                 perm = permission_mode(text)
                 # live in every proxy: no host restarts for it
-                target = inference(text, {r for r, _ in want.values()},
-                                   rc_module().default_account() if "inference=" in text else "")
+                target = inference(text, {r for r, _ in want.values()}, inference_account(text))
                 if target in ("account", "route"):
                     rc_module().write_inference(target, INFERENCE)
                 elif target != switched:   # a profile is brought up once per change, not on every reload
+                    # LOGS is created by the first Host.start, later in this same tick:
+                    # a fresh state dir whose first config carries inference=<profile>
+                    # died FileNotFoundError on this open, before any edge had started
+                    # -- the same past-the-early-returns hole the #419 comment names (#596).
+                    LOGS.mkdir(parents=True, exist_ok=True)
                     subprocess.Popen([str(HERE / "ccmorph-rc"), target, "--switch"], stdin=subprocess.DEVNULL,
                                      stdout=subprocess.DEVNULL, stderr=open(LOGS / "switch.log", "a"),
                                      start_new_session=True)
