@@ -7,6 +7,38 @@
 
 ## Unreleased
 
+## v0.5.27 — 2026-11-21
+
+Cut from main, so it carries every change merged after v0.5.26.
+
+### Added
+
+- **`ccmorph router dispatch` serves scripts and services.** `--timeout S` bounds the whole dispatch, a retry included, and the worker reads its end from `CCMORPH_DEADLINE`; flags after `--` reach the worker's claude (`--model`, `--effort` and `-p` are refused there); `--effort` sets the effort; a caller's `CCMORPH_TASK` tags the worker's spend.
+
+### Fixed
+
+- An explicit effort never unroutes a call; order beats newer inside a family (#693)
+- Prune bridge session records older than a week (#755)
+- An unreachable gateway says so — receipts-only zero is not a free month (#726)
+- One shape verdict for a /v1/models reply (#747)
+- Validate a downloaded ccmorph-core before running its installer (#721)
+- A config reload resolves the account without dying (#596)
+- A piped answer is read and honored; an unanswered prompt removes nothing (#724)
+- Save a Claude account profile only once the sign-in completes (#649)
+- Let launches that open no session pass a dead gateway through (#650)
+- Keep canonical permission lists through layer tombstones (#740)
+- Dispatch honors --family, --no-decider and --refresh (#694)
+- A wrong menu answer re-asks; a typed URL points at Custom endpoint (#727)
+- A gateway that answered nothing is not a picker to revise (#723)
+- Print where the receipts live, and docs name both state roots (#731)
+- Set model names what its one listing reply met (#728)
+- Help router names the file the router reads, in plain text (#730)
+- A spill a build before #633 named is still found (#634)
+
+### Changed
+
+- A failed dispatch is retried on the next profile only when the account refused it (quota or auth); a model that answered is never run twice. A failed dispatch prints the worker's own words.
+
 ### Added
 
 - **`ccmorph router on` routes subagent work across your profiles.** Off by default. With it on, sessions get a `delegate` tool and Agent hooks: free gateways first, then the subscription furthest behind its pace, then paid keys, and inside a profile the cheapest model that fits the task's kind and tier. `ccmorph router status`, `dispatch` (`--dry-run` to see the pick only) and `report` show and check it. `dispatch` also serves scripts and services: `--timeout` bounds the whole run, flags after `--` reach the worker's claude, and the caller's `CCMORPH_TASK` tags its spend. The hooks never deny an Agent call: when no pick fits the session, the call runs as written.
