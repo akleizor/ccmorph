@@ -29,6 +29,12 @@ func valueRows(value string, columns int) int {
 	return (max(cells(value), 1)-1)/columns + 1
 }
 
+// settingWord reports whether word is the model or effort setting, the two the
+// shorthand lets lead a command when the profile is left out (#788).
+func settingWord(word string) bool {
+	return word == "model" || word == "effort"
+}
+
 // getSet is `ccmorph get [profile] [model|effort|base_url|api_key|--json]` and `ccmorph set [profile]
 // [model|effort] [value]`. A missing profile, key or value opens its chooser.
 func (l *launcher) getSet(verb string, args []string) int {
@@ -45,6 +51,20 @@ func (l *launcher) getSet(verb string, args []string) int {
 		return ""
 	}
 	name := at(0)
+	if settingWord(name) && !settingWord(at(1)) {
+		// The documented shorthand: the usage line marks the profile optional
+		// (`set [profile] [model|effort] [value]`), so a leading model or effort
+		// is the setting and the profile is chosen, not required (#788). Naming
+		// both words keeps a profile named after a setting reachable: with a
+		// second setting word behind it the first is the profile again
+		// (`get model model`).
+		args = append([]string{""}, args...)
+		name = ""
+		if names := l.confNames(); len(names) == 1 {
+			// One saved profile is the choice the picker would make; more ask it.
+			name = names[0]
+		}
+	}
 	if !l.requireProfile(&name, verb) {
 		return 1
 	}
