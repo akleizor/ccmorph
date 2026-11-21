@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/akleizor/ccmorph/ctxwindow"
@@ -1915,4 +1916,56 @@ func TestGetReadsEveryProfileField(t *testing.T) {
 	if all["base_url"] != "https://gw.test" || all["api_key"] != "k-plain-123" || all["model"] != "m-first" || all["type"] != "apikey" {
 		t.Errorf("get --json: %v", all)
 	}
+}
+
+// The 2026-11-20 outage (#723): a gateway that answers nothing leaves the
+// picker's exclusions undecidable when the cache holds nothing. That silence
+// must end as the gateway class naming the route — after the launch has waited
+// on the listing — never exit 1 with the picker's "revise the list" message,
+// which a caller reads as a build crash. synctest runs the launch's real
+// one-second retries on a virtual clock, so the wait costs the suite nothing.
+func TestARunOnAGatewayThatNeverAnswersExitsTheGatewayClass(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		state, profiles, libexec := t.TempDir(), t.TempDir(), t.TempDir()
+		os.MkdirAll(filepath.Join(profiles, "gw723"), 0o755)
+		// The exclusion is what makes the picker judge rows at all; with the
+		// cache empty, nothing can be judged until the listing answers.
+		os.WriteFile(filepath.Join(state, "gw723.conf"), []byte(
+			"type=apikey\nbase_url=http://127.0.0.1:9\nexcluded_models=blocked\napi_key=k"), 0o600)
+		os.WriteFile(filepath.Join(profiles, "gw723", ".claude.json"),
+			[]byte(`{"additionalModelOptionsCache":[]}`), 0o600)
+		log := filepath.Join(libexec, "calls.log")
+		os.WriteFile(filepath.Join(libexec, "ccmorph-core"), []byte(
+			"#!/bin/sh\n{ for a do printf '%s\\n' \"$a\"; done; printf '.\\n'; } >> '"+log+"'\nexit 0\n"), 0o755)
+
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		saved := os.Stderr
+		os.Stderr = w
+		l := &launcher{dir: state, profileDirs: profiles, libexec: libexec, launchEnv: profile.LaunchEnv, memo: map[string]string{}}
+		_, rc := l.launch("gw723", false, false, nil)
+		w.Close()
+		os.Stderr = saved
+		outB, _ := io.ReadAll(r)
+		out := string(outB)
+
+		if rc != 75 { // util.RCGatewayDown: EX_TEMPFAIL, the class a caller retries
+			t.Fatalf("rc %d, want 75: a silent gateway must not end as the crash class: %s", rc, out)
+		}
+		if strings.Contains(out, "no cached or served picker models remain") {
+			t.Fatalf("the outage was reported as the profile's config to revise: %s", out)
+		}
+		if !strings.Contains(out, "could not reach") || !strings.Contains(out, "ccmorph doctor gw723") {
+			t.Fatalf("the failure must name the unreachable route and its check: %s", out)
+		}
+		if !strings.Contains(out, "Waiting for 'gw723' gateway") {
+			t.Fatalf("the pass must wait on the listing before giving up on it: %s", out)
+		}
+		if b, _ := os.ReadFile(log); strings.Contains(string(b), "adapter-start") || strings.Contains(string(b), "--\n") {
+			t.Fatalf("the launch reached the route or claude despite the outage:\n%s", b)
+		}
+	})
 }

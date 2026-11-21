@@ -67,6 +67,16 @@ def test_empty_result_refuses_instead_of_enabling_native_defaults(tmp_path):
     assert settings['availableModels'] == ['blocked', 'allowed', 'opus']
 
 
+def test_unreachable_gateway_with_an_empty_cache_exits_the_gateway_class(tmp_path):
+    # The 2026-11-20 outage (#723): the endpoint answered nothing and the picker
+    # cache was empty, so the exclusion pruning had nothing to judge. That is the
+    # gateway's state, not the profile's config — it must not leave 1 with the
+    # "revise the list" message a caller reads as a build crash.
+    result, _, _ = project(tmp_path, [], offline=True, cached=[])
+    assert result.returncode == 75, result.stderr
+    assert 'no cached or served picker models remain' not in result.stderr
+
+
 def test_exclusions_are_exact_case_sensitive_ids(tmp_path):
     result, _, settings = project(tmp_path, ['blocked', 'blocked-new', 'Blocked'])
     assert result.returncode == 0

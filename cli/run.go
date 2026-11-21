@@ -468,7 +468,21 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 				delete(l.confReads, name)
 			}
 		}
-		if !l.projectPicker(name, base, key, defaultModel, tag, explicit) {
+		switch l.projectPicker(name, base, key, defaultModel, tag, explicit) {
+		case pickerUnreached:
+			// A gateway that answers nothing empties the picker only for the
+			// length of its silence (#723): the listing is waited on, and if the
+			// route never speaks the pass ends naming it, in the class a caller
+			// can tell from a crash — never with the picker's config message.
+			if !l.awaitListing(name, base, key) {
+				l.err(listingFailure(name, profile.RedactURL(base), 0))
+				fmt.Fprintf(os.Stderr, "  Check the route: ccmorph doctor %s\n", name)
+				return nil, util.RCGatewayDown
+			}
+			if l.projectPicker(name, base, key, defaultModel, tag, explicit) != pickerDone {
+				return nil, 1
+			}
+		case pickerRefused:
 			return nil, 1
 		}
 		if needsAdapter {
@@ -998,23 +1012,67 @@ func (l *launcher) listing(base, key string) (string, bool) {
 	return v, true
 }
 
-func (l *launcher) projectPicker(name, base, key, own, tag, launch string) bool {
+// pickerOutcome is one project-picker pass as the launch reads it: done, refused
+// (the picker said why), or unreached — the listing the pruning needs never
+// arrived and the cache judged nothing, which is the gateway's state and not the
+// profile's config error (#723).
+type pickerOutcome int
+
+const (
+	pickerDone pickerOutcome = iota
+	pickerRefused
+	pickerUnreached
+)
+
+// gatewayListingRetries and gatewayListingPause bound the wait in front of the
+// outage class: a gateway that has not answered yet may answer in a moment, and
+// the launch waits that long — no longer, because a hang is exactly what a
+// session may never be (INTENT promise 8).
+const (
+	gatewayListingRetries = 2
+	gatewayListingPause   = time.Second
+)
+
+// awaitListing is the wait the picker's silence earns: the model listing is
+// asked again a few seconds apart, and the first answer ends it — the memo then
+// carries it to the picker and every later reader.
+func (l *launcher) awaitListing(name, base, key string) bool {
+	for i := 1; i <= gatewayListingRetries; i++ {
+		fmt.Fprintf(os.Stderr, "ccmorph: Waiting for '%s' gateway (%ds)…\n", name, int(time.Duration(i)*gatewayListingPause/time.Second))
+		time.Sleep(gatewayListingPause)
+		if _, ok := l.listing(base, key); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (l *launcher) projectPicker(name, base, key, own, tag, launch string) pickerOutcome {
 	home := filepath.Join(l.profileDirs, name)
 	if fi, err := os.Lstat(filepath.Join(home, ".claude.json")); err != nil || !fi.Mode().IsRegular() {
-		return true
+		return pickerDone
 	}
 	if base == "" || key == "" {
-		return true
+		return pickerDone
 	}
 	body, _ := l.listing(base, key)
 	if tag == "" {
 		tag = "Gateway"
 	}
-	done, ok := try(l, "project-picker", func() bool {
-		return util.ProjectPicker(util.PickerIn{Home: home, Conf: l.conf(name), Own: own, Tag: tag, Profile: name,
-			Layer: l.profileLayer(name), Launch: launch, ModelsJSON: body}, os.Stderr)
+	out, ok := try(l, "project-picker", func() pickerOutcome {
+		switch util.ProjectPicker(util.PickerIn{Home: home, Conf: l.conf(name), Own: own, Tag: tag, Profile: name,
+			Layer: l.profileLayer(name), Launch: launch, ModelsJSON: body}, os.Stderr) {
+		case util.PickerDone:
+			return pickerDone
+		case util.PickerUnreached:
+			return pickerUnreached
+		}
+		return pickerRefused
 	})
-	return ok && done
+	if !ok {
+		return pickerRefused
+	}
+	return out
 }
 
 // profileEnvironment is `ccmorph _env`: the profile's launch env, after

@@ -66,8 +66,8 @@ func TestProjectPickerReadsTheCatalogueOnceForEveryClaudeModel(t *testing.T) {
 	t.Setenv("MODEL_WINDOW_ENDPOINT_JSON", "")
 
 	var errw bytes.Buffer
-	if !ProjectPicker(PickerIn{Home: home, Conf: conf, Tag: "Gateway", Profile: "gw",
-		Layer: filepath.Join(home, "settings.profile.json"), ModelsJSON: string(listing)}, &errw) {
+	if ProjectPicker(PickerIn{Home: home, Conf: conf, Tag: "Gateway", Profile: "gw",
+		Layer: filepath.Join(home, "settings.profile.json"), ModelsJSON: string(listing)}, &errw) != PickerDone {
 		t.Fatalf("picker failed: %s", errw.String())
 	}
 	if reads != 1 {

@@ -194,6 +194,29 @@ def test_launch_stops_when_exclusions_leave_no_rows(tmp_path):
         or json.loads(settings.read_text())['availableModels']
 
 
+def test_run_on_a_silent_gateway_waits_then_exits_the_gateway_class(tmp_path):
+    # The 2026-11-20 outage (#723): a gateway answering nothing emptied the
+    # picker (cache empty, excluded_models set) and the run died as a generic
+    # crash — exit 1 with the "revise the list" message. A caller must be able
+    # to tell the outage from a build crash: the run waits on the listing, and
+    # if the gateway never answers, exits the retry-later class naming the route.
+    state, env = setup(tmp_path, 'blocked')
+    (state / 'profiles/demo/.claude.json').write_text(
+        json.dumps({'additionalModelOptionsCache': []}))
+    dead = r'''mkdir -p "$HOME/fakebin"
+printf '%s\n' '#!/bin/sh' 'exit 7' > "$HOME/fakebin/curl"
+chmod +x "$HOME/fakebin/curl"
+export PATH="$HOME/fakebin:$PATH"
+'''
+    r = zsh(dead + 'ccmorph run demo -p hi', env)
+    assert 'no cached or served picker models remain' not in r.stderr
+    assert "Waiting for 'demo' gateway" in r.stderr
+    assert 'could not reach' in r.stderr
+    assert 'ccmorph doctor demo' in r.stderr
+    assert r.returncode == 75, r.stderr
+    assert '-p hi' not in claude_calls(tmp_path)
+
+
 def test_launch_projects_filtered_rows_and_keeps_discovery_off(tmp_path):
     lib = copied_lib(tmp_path)
     stub_sizer(lib, tmp_path / 'sizer.ran')
