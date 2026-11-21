@@ -258,10 +258,15 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 	// walk (#334) tells both from a flag-shaped option value.
 	opensSession := !subcommand && !util.OpensNoSession(args, table)
 
-	if needsAdapter && askMissing && !subcommand && explicit == "" && defaultModel == "" && isTTY(0) && isTTY(2) {
+	// A model question is asked only of a launch that opens a session: a
+	// subcommand or a print-and-exit printout has no model to pick, and it
+	// must reach Claude Code with its arguments untouched — not behind a
+	// picker (#650, #768: only the subcommand mark used to be consulted here,
+	// so a printout still opened the picker).
+	if needsAdapter && askMissing && opensSession && explicit == "" && defaultModel == "" && isTTY(0) && isTTY(2) {
 		interactive = true
 	}
-	if interactive && explicit == "" && routed {
+	if interactive && explicit == "" && routed && opensSession {
 		if name == "" {
 			l.err("-i needs an profile: name one, or set a default with ccmorph use <profile>")
 			return nil, 2
@@ -303,7 +308,11 @@ func (l *launcher) resolveLaunch(name string, interactive, native bool, argv []s
 	if explicit != "" {
 		target = explicit
 	}
-	if strings.HasPrefix(target, "claude-") && (needsAdapter || isProvider) {
+	// The send id is a decision about the session's model, so it belongs to a
+	// launch that opens one: #768 — deriving it for a no-session launch rewrote
+	// ANTHROPIC_MODEL (claude-sonnet-4-5 became its [1m] send id) before Claude
+	// Code ever removed a session or listed its servers.
+	if strings.HasPrefix(target, "claude-") && (needsAdapter || isProvider) && opensSession {
 		rec := strings.Split(l.modelWindowFields(name, target), "\t")
 		if send := field(rec, 4); send != "" && send != target {
 			l.log("send_id derived profile=" + name + " from=" + target + " to=" + send)
@@ -526,7 +535,7 @@ func (l *launcher) runLaunch(p *launchPlan) (*relayNext, int) {
 			return fail()
 		}
 		var ok2 bool
-		if penv, ok2 = l.contextEnv(name, penv, explicit, defaultModel, launchModel, resumeCarried, needsAdapter, isProvider, subcommand); !ok2 {
+		if penv, ok2 = l.contextEnv(name, penv, explicit, defaultModel, launchModel, resumeCarried, needsAdapter, isProvider, subcommand, opensSession); !ok2 {
 			return nil, 1
 		}
 		// The route stands up beside the session, so only a launch that opens one
