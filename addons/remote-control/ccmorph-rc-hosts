@@ -1689,12 +1689,17 @@ def held_logs(hosts: "dict[str, Host]") -> "set[Path] | None":
     held |= {LOGS / f"adapter-{r}.log" for r in routes}
     rc = f"{rc_module().HERE / 'ccmorph-rc'} "
     for row in table:
-        # the child's row is `<python> <add-on>/ccmorph-rc <profile> --switch`
-        # (env shebang), or the script itself when it is exec'd directly
-        head, _, tail = row.partition(" ")
-        if Path(head).name.startswith("python"):
-            row = tail
-        if row.startswith(rc) and row[len(rc):].split()[1:] == ["--switch"]:
+        # The child's row is `<interpreter> <add-on>/ccmorph-rc <profile> --switch`
+        # (env shebang), or the script itself when it is exec'd directly. The
+        # interpreter is whatever precedes the add-on path -- python3, or Apple's
+        # `.../Python.app/Contents/MacOS/Python` (capital P, a path that may hold
+        # spaces) -- so it is judged whole, by its basename, never by a split word.
+        i = row.find(rc)
+        words = row[i + len(rc):].split() if i >= 0 else []
+        if len(words) != 2 or words[1] != "--switch":
+            continue
+        before = row[:i].strip()
+        if before == "" or Path(before).name.lower().startswith("python"):
             held.add(LOGS / "switch.log")
             break
     try:

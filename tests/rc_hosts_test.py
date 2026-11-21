@@ -2622,10 +2622,12 @@ def test_the_periodic_sweep_leaves_a_log_while_its_writer_names_it(tmp_path, mon
     ("python3 {rc} ds --switch", True),
     ("/usr/bin/python3 {rc} ds --switch", True),
     ("{rc} ds --switch", True),
+    ("/Library/Frameworks/Python.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python {rc} ds --switch", True),
+    ("/Applications/Xcode App/Python.app/Contents/MacOS/Python {rc} ds --switch", True),
     ("python3 {rc} ds --edge", False),
     ("/bin/echo {rc} ds --switch", False),
     ("", False),
-], ids=["env-python", "abs-python", "direct", "edge-row", "echo-row", "no-child"])
+], ids=["env-python", "abs-python", "direct", "apple-python", "spaced-apple-python", "edge-row", "echo-row", "no-child"])
 def test_the_periodic_sweep_holds_switch_log_only_while_a_switch_child_runs(tmp_path, monkeypatch, row, kept):
     """#758: main() hands switch.log to a `ccmorph-rc <profile> --switch` child,
     so it is held while that child's row is in ps. Held for good, an aged file
