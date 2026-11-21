@@ -736,10 +736,28 @@ func withoutTombstones(layer *obj) *obj {
 	return out
 }
 
-// applyTombstones deletes what the layer tombstones. Hooks are exempt: they only accumulate.
+// accumulates reports whether path names a list that only ever grows: hooks, or
+// a permissionLists path (permissions.deny). merge() appends to those lists, so
+// a tombstone on one — or on a path above or below it — must not delete what it
+// combined; that would take the canonical entries with the profile's.
+func accumulates(path []string) bool {
+	if path[0] == "hooks" {
+		return true
+	}
+	for _, list := range permissionLists {
+		if hasPrefix(path, list) || hasPrefix(list, path) {
+			return true
+		}
+	}
+	return false
+}
+
+// applyTombstones deletes what the layer tombstones. Two guards are exempt:
+// hooks and permissionLists paths both only accumulate, so a tombstone there
+// would delete the canonical entries merge() added back.
 func applyTombstones(doc, layer *obj) {
 	for _, p := range tombstones(layer) {
-		if p[0] != "hooks" {
+		if !accumulates(p) {
 			deletePath(doc, p)
 		}
 	}
