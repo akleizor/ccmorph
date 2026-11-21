@@ -1101,14 +1101,30 @@ def session_pid(sid: str) -> int | None:
     return None
 
 
+def serves_session(words: "list[str]") -> bool:
+    """Whether ps's words for one process are a Remote Control process whose
+    `--session-id` names the session it serves. Three shapes are: a repo host's
+    session child (`--sdk-url` beside it, as session_pid() reads one); a pinned
+    host, `claude remote-control --session-id <id>`, read as host_at() reads a
+    host; and the pty start() runs every host in, `/usr/bin/script ...
+    <dir>/ccmorph-rc <route> -- --session-id <id>`. The last two are a pin, whoever
+    started it -- an earlier supervisor's pin outlives that supervisor, and this
+    one holds no Popen for it. Any other command proves nothing (`printf %s
+    --session-id cse_01OLD`)."""
+    if "--session-id" not in words:
+        return False
+    if "--sdk-url" in words:
+        return True
+    if words[1:2] == ["remote-control"] and Path(words[0]).name == "claude":
+        return True
+    return Path(words[0]).name == "script" and any(w.endswith("/ccmorph-rc") for w in words)
+
+
 def live_sessions() -> "set[str] | None":
-    """The id body of every session a process serves right now -- a session
-    child's argv, as session_pid() reads it: `--session-id <id>` beside
-    `--sdk-url` -- or None when the process table cannot be read. A bare
-    `--session-id` in any other command proves nothing (`printf %s --session-id
-    cse_01OLD`), and a nonzero ps exit is unread even when it printed partial
-    rows. The body is what record_session() returns. ps lists at least itself,
-    so an empty table is an unread one."""
+    """The id body of every session a process serves right now (serves_session())
+    -- or None when the process table cannot be read. A nonzero ps exit is
+    unread even when it printed partial rows. The body is what record_session()
+    returns. ps lists at least itself, so an empty table is an unread one."""
     try:
         done = subprocess.run(["ps", "-Ao", "command="], capture_output=True, text=True,
                               errors="replace", timeout=10)
@@ -1122,7 +1138,7 @@ def live_sessions() -> "set[str] | None":
     ids: set[str] = set()
     for line in out.splitlines():
         words = line.split()
-        if "--sdk-url" not in words or "--session-id" not in words:
+        if not serves_session(words):
             continue
         i = words.index("--session-id") + 1
         if i < len(words):

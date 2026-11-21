@@ -2425,24 +2425,29 @@ def test_a_start_removes_session_records_past_retention(tmp_path, monkeypatch):
     assert kept.exists()
 
 
-def test_live_sessions_reads_only_session_child_argv_and_refuses_a_failed_ps(monkeypatch):
+def _ps_table(monkeypatch, m, table, code=0):
+    """ps -Ao command= answers `table` with exit `code`, for every subprocess.run in m."""
     import subprocess
-    m = load()
-    table = ("/x/claude --print --session-id cse_01KID --sdk-url wss://x\n"
-             "/usr/bin/script -q /dev/null /x/ccmorph-rc gw -- --session-id session_01PIN\n"
-             "/bin/printf %s --session-id cse_01OLD\n"
-             "/usr/bin/vim notes.txt\n")
-    monkeypatch.setattr(m.subprocess, "run",
-                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout=table, stderr=""))
-    # only the session child's argv (--session-id beside --sdk-url, as
-    # session_pid reads it) proves a session: a pinned host's own line and a
-    # bare --session-id in an unrelated command do not
-    assert m.live_sessions() == {"01KID"}
     monkeypatch.setattr(m.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(
-        cmd, 1, stdout="/x/claude --session-id cse_01KID --sdk-url wss://x\n", stderr="ps: denied"))
+        cmd, code, stdout=table, stderr=""))
+
+
+def test_live_sessions_reads_session_children_and_pins_and_refuses_a_failed_ps(monkeypatch):
+    m = load()
+    _ps_table(monkeypatch, m,
+              "/x/claude --print --session-id cse_01KID --sdk-url wss://x\n"
+              "/Users/me/.local/bin/claude remote-control --session-id session_01PIN --debug-file=/x/p.debug.log\n"
+              "/usr/bin/script -q /dev/null /x/ccmorph-rc gw -- --session-id session_01WRAP\n"
+              "/bin/printf %s --session-id cse_01OLD\n"
+              "/bin/echo remote-control --session-id cse_01ECHO\n"
+              "/usr/bin/vim notes.txt\n")
+    # a session child (--sdk-url, as session_pid reads it), a pinned host (as
+    # host_at reads one) and the pty start() runs a host in prove a session; a
+    # bare --session-id in any other command does not
+    assert m.live_sessions() == {"01KID", "01PIN", "01WRAP"}
+    _ps_table(monkeypatch, m, "/x/claude --session-id cse_01KID --sdk-url wss://x\n", code=1)
     assert m.live_sessions() is None          # a nonzero exit is unread, partial rows or not
-    monkeypatch.setattr(m.subprocess, "run",
-                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""))
+    _ps_table(monkeypatch, m, "")
     assert m.live_sessions() is None
     monkeypatch.setattr(m.subprocess, "run", lambda cmd, **kw: (_ for _ in ()).throw(OSError("no ps")))
     assert m.live_sessions() is None
