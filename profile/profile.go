@@ -237,7 +237,10 @@ func checkType(name string, f map[string]string, lists Lists) error {
 	switch f["type"] {
 	case "sub":
 		if f["email"] == "" {
-			return fail("sub profile '%s' has no email — re-create it: ccmorph rm %s && ccmorph add %s", name, name, name)
+			// The same repair `add` gives for a taken name and `doctor` gives
+			// for a signed-out account (GH-649): the sign-in completes the
+			// conf, so nothing else has to be thrown away first.
+			return fail("Claude account profile '%s' has no email — sign in again: ccmorph login %s", name, name)
 		}
 	case "token":
 		if f["token"] == "" {

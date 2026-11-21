@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"unicode"
 
 	"github.com/akleizor/ccmorph/profile"
@@ -227,6 +229,30 @@ var emailRE = regexp.MustCompile(`"email": "([^"]*)"`)
 // a sign-in for the config dir it was pointed at.
 var claudeStatusRE = regexp.MustCompile(`"loggedIn":\s*(true|false)`)
 
+// handSignInSignals keeps SIGHUP and SIGTERM from killing this process while a
+// browser sign-in waits (GH-649). Closing a terminal or dropping SSH sends
+// those signals to the whole foreground process group, and a parent that dies
+// mid-wait never reaches the rollback that makes an interrupted sign-in clean
+// up the way a cancelled one does. While the returned release is pending, both
+// signals go on to the sign-in child — the child owns the wait and the terminal
+// sends it the signals too — so the child exits, the caller's failure path
+// runs, and a closed window ends like the Ctrl-C Claude Code handles itself.
+func handSignInSignals(child *os.Process) (release func()) {
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGHUP, syscall.SIGTERM)
+	go func() {
+		for s := range sigs {
+			if sig, ok := s.(syscall.Signal); ok {
+				_ = child.Signal(sig) // the child may already be gone
+			}
+		}
+	}()
+	return func() {
+		signal.Stop(sigs) // returns once no more signals can arrive
+		close(sigs)
+	}
+}
+
 // subBrowserLogin runs Claude Code's browser sign-in against the profile's
 // config dir and returns the signed-in email. add and login both put a Claude
 // account profile through it; the readback is what names the profile.
@@ -235,7 +261,14 @@ func (l *launcher) subBrowserLogin(name string) (string, bool) {
 	fmt.Println(l.dim + "Opening your browser to sign in — Ctrl-C to cancel." + l.reset)
 	login := l.claudeAuth(dir, "login")
 	login.Stdin, login.Stdout, login.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if login.Run() != nil {
+	if login.Start() != nil {
+		l.err("login failed")
+		return "", false
+	}
+	release := handSignInSignals(login.Process)
+	err := login.Wait()
+	release()
+	if err != nil {
 		l.err("login failed")
 		return "", false
 	}
@@ -255,11 +288,14 @@ func (l *launcher) subBrowserLogin(name string) (string, bool) {
 	return email, true
 }
 
+// addSub signs in before it saves (GH-649): the conf appears only with its
+// email, the way addProvider signs in before writing type=provider. An early
+// `type=sub` stub made every abnormal exit — a closed terminal, a dropped SSH —
+// a self-contradictory wall: list read the stub as a broken profile and told
+// the user to re-create it while add called the same name taken and pointed at
+// login. A profile that was never signed in is not a profile, and no cleanup
+// can promise what a save that comes last simply never owes.
 func (l *launcher) addSub(name string) int {
-	if l.writeConf(name, "type=sub\n") != nil {
-		l.err("could not save profile '" + name + "'")
-		return 1
-	}
 	if !l.setupDir(name, "sub", liveNote) {
 		l.rollback(name)
 		return 1
@@ -358,7 +394,11 @@ func (l *launcher) setEmail(name, email string) error {
 			return l.writeConf(name, strings.Join(lines, "\n"))
 		}
 	}
-	return nil
+	// GH-649: the line can be absent, not just stale — that is what an
+	// interrupted sign-in used to leave behind, and silently reporting success
+	// over a conf it never repaired is the lie this verb may not tell. What a
+	// completed sign-in knows and the conf lacks, the conf gets.
+	return l.writeConf(name, strings.TrimSuffix(string(raw), "\n")+"\nemail="+email+"\n")
 }
 
 func (l *launcher) addToken(name string) int {
@@ -780,9 +820,21 @@ func (l *launcher) login(args []string) int {
 	if !l.requireProfile(&name, "login", "sub", "provider", "apikey") {
 		return 1
 	}
-	f, ok := l.readRaw(name)
-	if !ok {
-		return 1
+	// readRaw's reading, printed exactly as it prints it — with one exception
+	// (GH-649): the sub conf missing its email is login's own patient. A
+	// sign-in interrupted before that line left a refusal here that pointed
+	// away from this command, while `add` pointed at it — two repairs for one
+	// conf, and the profile was one sign-in from whole.
+	f, err := l.readProfile(name, func(line string) { fmt.Fprintln(os.Stderr, line) })
+	if err != nil {
+		if f["type"] != "sub" {
+			l.err(err.Error())
+			return 1
+		}
+		if rc, done := l.locked(name, []string{"login", name}); done {
+			return rc
+		}
+		return l.subLogin(name, f)
 	}
 	if f["type"] == "sub" {
 		// The sign-in rewrites the conf's email line, so it takes the profile

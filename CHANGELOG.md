@@ -45,6 +45,16 @@
   pyproject.toml's default uv `test` group; they now say
   `CCMORPH_LIB_DIR="$PWD/lib" uv run python -m pytest`, the form the Makefile
   and CONTRIBUTING use. A docs test pins it.
+- **Closing the terminal mid Claude-account sign-in no longer strands a
+  half-made profile.** `add` wrote the profile's conf the moment the sign-in
+  method was chosen, so a closed window or dropped SSH — signals Ctrl-C never
+  sends — left a profile with no email and no sign-in, and `list` and `add`
+  disagreed about the repair. The conf is now written only once the sign-in
+  has completed, and a closed terminal's SIGHUP/SIGTERM reach the sign-in
+  child so the rollback runs: an interrupted sign-in leaves nothing, like a
+  cancelled one. A half-made profile left by an older version hears one
+  repair everywhere — `ccmorph login <profile>` — and that command now really
+  completes such a conf.
 
 ## v0.5.13 — 2026-11-17
 
