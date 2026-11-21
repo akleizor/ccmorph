@@ -69,7 +69,7 @@ func (l *launcher) add(args []string) int {
 		// names the machine's own install step.
 		rows += "\nmore\tMore sign-ins\t" + browserLogins + " (cliproxyapi)"
 	}
-	choice, ok := l.menu("native", "Sign-in method — "+name, rows, func(v string) (string, string, bool) {
+	choice, ok := l.menu("native", "Sign-in method — "+name, rows, "ccmorph add "+name, func(v string) (string, string, bool) {
 		if _, _, ok := methodAction(v, providers, haveBridge); !ok {
 			return "", "not a sign-in method — enter a number from the list or a name", false
 		}
@@ -120,7 +120,7 @@ const menuTryLimit = 3
 // gateway URL ended the whole wizard. Now an answer that matches no row re-asks
 // — naming the limit it states — so every answer already given stands; the
 // deliberate ways out stay: EOF, and q, the word the numbered menu names.
-func (l *launcher) menu(mode, title, rows string, match func(string) (string, string, bool)) (string, bool) {
+func (l *launcher) menu(mode, title, rows, example string, match func(string) (string, string, bool)) (string, bool) {
 	if isTTY(0) {
 		v, rc := uiSelect(mode, title, rows, "")
 		return v, rc == 0
@@ -129,6 +129,10 @@ func (l *launcher) menu(mode, title, rows string, match func(string) (string, st
 	for wrong := 1; ; wrong++ {
 		v, rc := uiInput("> ", false)
 		if rc != 0 {
+			// The stream ended with no answer: the menu printed rows to
+			// stderr and showed a bare prompt, so the last line names the
+			// piped way that does answer (#636).
+			l.err("no answer on stdin. Without a terminal, pipe each answer on its own line, e.g.: echo 1 | " + example)
 			return "", false
 		}
 		if v == "q" || v == "Q" {
@@ -487,7 +491,7 @@ func (l *launcher) addAPIKey(name string) int {
 		}
 	}
 	rows = append(rows, "custom\tCustom endpoint\tAnthropic or any gateway URL")
-	pick, ok := l.menu("search", "Provider — "+name, strings.Join(rows, "\n"), func(v string) (string, string, bool) {
+	pick, ok := l.menu("search", "Provider — "+name, strings.Join(rows, "\n"), "ccmorph add "+name, func(v string) (string, string, bool) {
 		p := v
 		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= len(rows) {
 			p = rowID(rows[n-1])

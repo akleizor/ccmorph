@@ -285,6 +285,29 @@ def test_add_done_messages_use_display_names(box):
     assert 'Each launch asks which model' not in out.stdout + out.stderr
 
 
+def test_a_blank_answer_at_a_piped_menu_reasks_and_keeps_progress(box):
+    """#636: a blank line at a piped add picker used to exit 1 with
+    "unknown provider ''" and lose every answer already given. The piped
+    menu now re-asks (#727): a blank line is a wrong answer, not the end."""
+    out = box.run('add', 'p3', answer='3\n\n')
+    assert out.returncode == 1, out.stderr
+    asked = out.stdout + out.stderr
+    assert 'Provider — p3' in asked
+    assert 'not a provider' in asked
+    assert 'try 1 of' in asked
+    assert "unknown provider ''" not in asked
+
+
+def test_a_piped_add_with_no_answer_names_the_piped_way(box):
+    """#636: without a terminal and with no answer on stdin, add printed the
+    menu to stderr, showed a bare '>' and exited 1 in silence — piped mode
+    worked, but nothing on screen said so. The last line now names it."""
+    out = box.run('add', 'p4', answer='')
+    assert out.returncode == 1, out.stderr
+    assert 'no answer on stdin' in out.stderr
+    assert out.stderr.strip().splitlines()[-1].endswith('echo 1 | ccmorph add p4')
+
+
 def test_add_menu_names_each_kind_and_explains_a_provider_login(box):
     fake = box.home / 'bin/cliproxyapi'
     fake.write_text('#!/bin/sh\n'
