@@ -127,6 +127,13 @@ func TestCompinitDetectionReadsOnlyLinesThatRun(t *testing.T) {
 		{"print -r -- 'a\n# autoload -Uz compinit && compinit\nb'\n", false},
 		{"print -r -- x(a # compinit)(N)\n", false},
 		{"print -r -- x(a # b)(N); autoload -Uz compinit && compinit\n", true},
+		// #582 review: a quote inside a backquote body hides its #, and an empty
+		// quoted here-document delimiter (<<'') still opens a body.
+		{"x=`print -r -- 'x;# y'; autoload -Uz compinit && compinit`; print -r -- $x\n", true},
+		{"x=`print -r -- \"a # b\"; autoload -Uz compinit && compinit`; print -r -- $x\n", true},
+		{"x=`print a # autoload -Uz compinit && compinit`; print -r -- $x\n", false},
+		{": <<''\ndon't\n\n:;# autoload -Uz compinit && compinit\n", false},
+		{": <<\"\"\ndon't\n\nautoload -Uz compinit && compinit\n", true},
 		{"cat <<EOF >/dev/null\ndon't\nEOF\n# autoload -Uz compinit && compinit\n", false},
 		{"cat <<EOF >/dev/null\ndon't\nEOF\nautoload -Uz compinit && compinit\n", true},
 	} {
@@ -315,6 +322,11 @@ func TestCompinitDetectionMatchesZshOnWordStartsAndCRs(t *testing.T) {
 		"print -r -- x(a # b)(N); autoload -Uz compinit && compinit\n",
 		"print -r -- (a|# b)(N); autoload -Uz compinit && compinit\n",
 		"print -r -- x(a # compinit)(N)\n",
+		"x=`print -r -- 'x;# y'; autoload -Uz compinit && compinit`; print -r -- $x\n",
+		"x=`print -r -- \"a # b\"; autoload -Uz compinit && compinit`; print -r -- $x\n",
+		"x=`print a # autoload -Uz compinit && compinit`; print -r -- $x\n",
+		": <<''\ndon't\n\n:;# autoload -Uz compinit && compinit\n",
+		": <<\"\"\ndon't\n\nautoload -Uz compinit && compinit\n",
 		// A here-document's body opens nothing, and its ) is not code.
 		"cat <<EOF >/dev/null\ndon't\nEOF\n# autoload -Uz compinit && compinit\n",
 		"cat <<EOF >/dev/null\ndon't\nEOF\nautoload -Uz compinit && compinit\n",

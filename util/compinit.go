@@ -512,6 +512,17 @@ func (l *lexer) backtick(f *lexFrame, i int) int {
 	switch {
 	case c == '`':
 		l.pop()
+	case f.depth != 0:
+		// Inside a quote of the body: a # is a quoted byte. The closing `
+		// above still ends the frame, as zsh finds it without reading quotes.
+		switch {
+		case c == '\\' && f.depth == '"':
+			return i + 1
+		case int(c) == f.depth:
+			f.depth = 0
+		}
+	case c == '\'' || c == '"':
+		f.depth, f.tokenStart = int(c), false
 	case c == '#' && f.tokenStart:
 		j := i
 		for j < len(l.src) && l.src[j] != '\n' && l.src[j] != '`' {
@@ -594,6 +605,7 @@ func (l *lexer) heredoc(f *lexFrame, i int) int {
 		j++
 	}
 	var term strings.Builder
+	quoted := false
 	for j < len(l.src) && strings.IndexByte(" \t\n;&|<>()`$", l.src[j]) < 0 {
 		switch c := l.src[j]; c {
 		case '\\':
@@ -605,14 +617,15 @@ func (l *lexer) heredoc(f *lexFrame, i int) int {
 				return i
 			}
 			term.WriteString(l.src[j+1 : j+1+end])
+			quoted = true
 			j += end + 2
 		default:
 			term.WriteByte(c)
 			j++
 		}
 	}
-	if term.Len() == 0 {
-		return i
+	if term.Len() == 0 && !quoted {
+		return i // no delimiter word; <<'' is an empty one and does count
 	}
 	l.heredocs = append(l.heredocs, heredoc{term: term.String(), strip: strip})
 	f.word, f.tokenStart = -1, false
