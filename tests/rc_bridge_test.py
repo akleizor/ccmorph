@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from support import load_script
+from support import HANG_TIMEOUT, load_script
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "addons" / "remote-control"))
 from rc_route import inference_target, is_inference, reroute  # noqa: E402
@@ -868,6 +868,7 @@ raise SystemExit(3)
     env = {**os.environ, "CCMORPH_STATE_DIR": str(state)}
     result = subprocess.run([sys.executable, "-c", child,
                              str(Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccmorph-rc"),
-                             str(sig)], env=env, capture_output=True, text=True)
+                             str(sig)], env=env, capture_output=True, text=True,
+                            timeout=HANG_TIMEOUT)
     assert result.returncode == 0, f"child exit={result.returncode}; stderr={result.stderr}"
     assert list(state.rglob("route-key.*")) == []
