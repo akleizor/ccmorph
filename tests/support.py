@@ -1,9 +1,11 @@
 """The suite's shared helpers: one hang-detection bound, one poll loop, one script
 loader; imported by the tests that wait on a real process."""
 import atexit
+import contextlib
 import importlib.machinery
 import importlib.util
 import os
+import pty
 import random
 import shlex
 import shutil
@@ -11,6 +13,24 @@ import socket
 import tempfile
 import time
 from pathlib import Path
+
+
+@contextlib.contextmanager
+def stdin_a_terminal():
+    """A pty to hand a child as stdin: the state an answered picker needs (#725).
+
+    Since GH-725 a picker is only opened where a terminal can carry it — stdin's
+    own or the controlling one — and without one the command refuses by name. A
+    test that drives a pick must therefore give stdin a terminal; stdout and
+    stderr may stay pipes, so what the command printed is still separable. The
+    child does not become a session leader: it needs `isatty(0)`, not a
+    controlling terminal, and tests that need the latter use run_pty."""
+    master, slave = pty.openpty()
+    try:
+        yield slave
+    finally:
+        os.close(slave)
+        os.close(master)
 
 
 # A hang detector, not a performance bound: the longest any test waits on a

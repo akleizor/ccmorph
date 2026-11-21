@@ -25,7 +25,7 @@ import tempfile
 import unittest
 
 import fake_adapter
-from support import HANG_TIMEOUT, helper_cmd
+from support import HANG_TIMEOUT, helper_cmd, stdin_a_terminal
 
 ROOT = Path(__file__).resolve().parents[1]
 LIB_FILES = ('lib/ccmorph.sh',
@@ -106,10 +106,10 @@ class ModelSelection(unittest.TestCase):
         return subprocess.run([*cmd, *args], env=self.env, stdin=stdin,
                               capture_output=True, text=True, timeout=HANG_TIMEOUT)
 
-    def launch(self, *args):
+    def launch(self, *args, stdin=subprocess.DEVNULL):
         log = self.home / 'launches.jsonl'
         log.unlink(missing_ok=True)
-        result = self.cli('run', *args)
+        result = self.cli('run', *args, stdin=stdin)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         rows = [json.loads(line) for line in log.read_text().splitlines()]
         self.assertEqual(len(rows), 1, rows)
@@ -166,7 +166,9 @@ class ModelSelection(unittest.TestCase):
         # none, so a cold gateway is built — the profile the question meets at
         # every launch.
         self.cold_gateway('picker-beta', 'picker-alpha', 'picker-beta')
-        row = self.launch('cold', '-i')
+        # A pick needs a terminal (#725): stdin is one, stdout/stderr stay pipes.
+        with stdin_a_terminal() as tty:
+            row = self.launch('cold', '-i', stdin=tty)
         self.assertEqual(row['env']['ANTHROPIC_MODEL'], 'picker-beta')
         self.assertIn('this session only', row['stderr'])
         self.assertIn('ccmorph set cold model picker-beta', row['stderr'])
@@ -177,7 +179,8 @@ class ModelSelection(unittest.TestCase):
         """A gateway listing can serve an id like vendor[beta]; the keep
         command must survive the zsh it is pasted into (#360)."""
         self.cold_gateway('vendor[beta]', 'picker-alpha', 'vendor[beta]')
-        row = self.launch('cold', '-i')
+        with stdin_a_terminal() as tty:
+            row = self.launch('cold', '-i', stdin=tty)
         self.assertEqual(row['env']['ANTHROPIC_MODEL'], 'vendor[beta]')
         self.assertIn("ccmorph set cold model 'vendor[beta]'", row['stderr'])
 

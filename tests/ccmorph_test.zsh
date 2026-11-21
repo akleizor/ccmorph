@@ -941,18 +941,18 @@ test_search_picker_on_an_old_fzf_never_hides_rows_silently_issue_278() {
   return $rc
 }
 
-# #725: a call with no terminal anywhere to answer must get its answer from
-# the picker or from the refusal, never wait. The fzf here is the face of a
-# real fzf on a terminal no one is attending: it starts, then waits for keys
-# that no script can send. The verb is launched detached from any controlling
-# terminal (a session of its own, exactly the state a script, pipe or CI job
-# is in): the suite itself may run on a developer's terminal, and there a
-# real picker may lawfully wait for that developer's keys -- what this guards
-# is the state where no keys can ever arrive. `run -i`, `config`, `inspect`
-# and `inspect -i` under a closed stdin must each exit within their bound
-# with the missing terminal named -- not hang, and not print the picker's
-# Cancelled and hang anyway. (A TERM that allows fzf is forced: the refusal
-# must be the picker's, not a dumb-terminal detour around it.)
+# #725: a call with no terminal anywhere to answer must refuse by name, never
+# wait and never take an answer it could not have shown anyone. The fzf here
+# marks its own launch: were it started, the test fails even if it somehow
+# answered. The verb is launched detached from any controlling terminal (a
+# session of its own, exactly the state a script, pipe or CI job is in): the
+# suite itself may run on a developer's terminal, and there a real picker may
+# lawfully wait for that developer's keys -- what this guards is the state
+# where no keys can ever arrive. `run -i`, `config`, `inspect` and `inspect -i`
+# under a closed stdin must each exit at once, non-zero, with the missing
+# terminal named -- not hang, not print the picker's Cancelled, and not launch
+# the picker at all. (A TERM that allows fzf is forced: the refusal must be
+# the picker's own condition, not a dumb-terminal detour around it.)
 test_pickers_refuse_by_name_without_a_terminal_issue_725() {
   local test_home=$(mktemp -d)
   setup_home "$test_home"
@@ -1010,6 +1010,12 @@ sys.exit(status >> 8 if os.WIFEXITED(status) else 1)'
       "ccmorph $v must name the missing terminal as the cause" || rc=1
     assert_not_contains "$(<"$out")" 'Cancelled' \
       "ccmorph $v with no picker run must not answer with Cancelled" || rc=1
+    # The fzf here would have printed a choice had it run: the answer is not
+    # taken without a terminal, so the picker must not be launched at all.
+    [[ ! -s "$HOME/fzf.pid" ]] || {
+      print -u2 -- "ccmorph $v launched a picker with no terminal to answer it"
+      rc=1
+    }
   done
   rm -rf "$test_home"
   return $rc
@@ -11756,6 +11762,49 @@ test_every_credential_type_states_how_it_authenticates() {
   return $rc
 }
 
+# Tests whose picker a person answers. Since GH-725 a picker is opened only
+# where a terminal can carry it; without one the command refuses by name. This
+# suite runs headless in CI, so each of these tests re-enters the suite in a
+# pty child -- stdin a terminal, exactly the state they describe -- and the
+# child's own assertions are the test, not a copy. A test that also passes
+# headless stays in the list harmlessly: with a terminal on stdin it runs in
+# place. The list is data, not a second copy of any test.
+_ccm_terminal_tests=(
+  test_interactive_asks_no_model_where_ccmorph_owns_no_list
+  test_launch_interactive_opens_on_the_saved_model_issue_377
+  test_launch_interactive_resolves_a_real_model
+  test_launch_interactive_resolves_the_account
+  test_launch_interactive_with_an_account_asks_only_the_model
+  test_menu_keeps_a_catalogue_value_spelled_at_keep
+  test_menu_returns_a_bare_model_id
+  test_menu_with_no_account_chains_from_the_account_chooser
+  test_profile_pick_precedes_model_pick
+  test_profile_picker_does_not_change_default
+  test_public_model_picker_flag_asks_only_for_model
+  test_search_picker_on_an_old_fzf_never_hides_rows_silently_issue_278
+  test_set_model_interactively_saves_the_chosen_id
+  test_the_former_pick_name_still_works
+)
+
+# _ccm_run_test_under_a_terminal NAME: run one test in its own suite process
+# with a pty on stdin. The child is the same suite, filtered to the one name
+# and pinned to one shard, so its PASS/FAIL is the test's own verdict; a child
+# that dies, hangs (the pty helper's deadline) or passes zero tests fails here
+# instead of passing on an empty run.
+_ccm_run_test_under_a_terminal() {
+  local name="$1" log rc=0
+  log=$(mktemp)
+  run_under_a_terminal "$log" env CCMORPH_TEST_FILTER="$name" \
+    CCMORPH_TEST_SHARD=0/1 CCMORPH_TEST_JOBS=1 zsh "$SCRIPT_DIR/ccmorph_test.zsh" || rc=1
+  grep -q "All 1 tests passed" "$log" || rc=1
+  if (( rc != 0 )); then
+    print -u2 -- "$name did not pass under a terminal; its output was:"
+    print -u2 -- "$(<"$log")"
+  fi
+  rm -f "$log"
+  return $rc
+}
+
 run_test() {
   local name="$1" rc=0
   [[ -z "${CCMORPH_TEST_FILTER:-}" || "$name" == *"$CCMORPH_TEST_FILTER"* ]] || return 0
@@ -11763,7 +11812,11 @@ run_test() {
   [[ -z "${CCMORPH_TEST_SHARD:-}" ]] ||
     (( tests_seen++ % ${CCMORPH_TEST_SHARD#*/} == ${CCMORPH_TEST_SHARD%/*} )) || return 0
   (( ++tests_run ))
-  "$name" || rc=1
+  if (( ${_ccm_terminal_tests[(I)$name]} )) && [[ ! -t 0 ]]; then
+    _ccm_run_test_under_a_terminal "$name" || rc=1
+  else
+    "$name" || rc=1
+  fi
   # GH-434: fail a test whose child outlives it -- the leak that stranded the
   # landing batch -- and reap the child so nothing escapes the suite.
   _ccm_test_sweep_homes $(( _ccm_test_homes_mark + 1 )) || rc=1
