@@ -168,8 +168,10 @@ func TestDoctorRouteAdapterLine(t *testing.T) {
 
 // Doctor's adapter report reads a live session through the real process
 // table, with no injected answer: the row a saved, unclassified model depends
-// on comes from the kernel's own argv, so a report that drops the live session
-// fails here even when a loaded machine would hide it end to end (#518).
+// on, and the in-use suffix a classified endpoint carries, come from the
+// kernel's own argv, so a report that drops the live session — shim-only or
+// with a running cliproxyapi child — fails here even when a loaded machine
+// would hide it end to end (#518).
 func TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable(t *testing.T) {
 	// This is about the wiring, not about winning a race with a loaded
 	// machine: the read gets room to answer.
@@ -177,19 +179,36 @@ func TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable(t *testing.T) {
 	sessionReadBound = 30 * time.Second
 	t.Cleanup(func() { sessionReadBound = orig })
 
-	profile := "dr" + strconv.Itoa(os.Getpid())
-	holdProc(t, os.Args[0], BridgeFiles(t.TempDir(), "p")[2], "/x/my adapter/ccmorph-core", "adapter", profile)
-	rows, _, _ := DoctorRoute(profile, "apikey", "https://example.test", "glm-4.6", "",
-		func(string) TranslatorNeed { return TranslatorNeed{Installed: true} }, "", "", false)
-	var got []string
-	for _, r := range rows {
-		if strings.HasPrefix(r.Msg, "adapter:") {
-			got = append(got, r.Kind+" "+r.Msg)
-		}
-	}
-	want := []string{"OK adapter: this profile needs no translator now: its open session runs without one"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("adapter rows %q, want %q", got, want)
+	saved := TranslatorNeed{Installed: true}
+	needed := TranslatorNeed{Known: true, Needed: true, Installed: true}
+	for _, c := range []struct {
+		name, child, model string
+		need               TranslatorNeed
+		want               string
+	}{
+		{"shim-only", "", "glm-4.6", saved,
+			"OK adapter: this profile needs no translator now: its open session runs without one"},
+		{"translator-running", "/opt/bin/cliproxyapi", "glm-4.6", saved,
+			"OK adapter: this profile needs a translator now: an open session on it is running cliproxyapi"},
+		{"translator-running-classified", "/opt/bin/cliproxyapi", "", needed,
+			"OK adapter: this endpoint needs a translator; cliproxyapi is installed; an open session on this profile is using one now"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("CCMORPH_TEST_HOLD_CHILD", c.child)
+			profile := "dr" + strconv.Itoa(os.Getpid()) + strings.ReplaceAll(c.name, "-", "")
+			holdProc(t, os.Args[0], BridgeFiles(t.TempDir(), "p")[2], "/x/my adapter/ccmorph-core", "adapter", profile)
+			rows, _, _ := DoctorRoute(profile, "apikey", "https://example.test", c.model, "",
+				func(string) TranslatorNeed { return c.need }, "", "", false)
+			var got []string
+			for _, r := range rows {
+				if strings.HasPrefix(r.Msg, "adapter:") {
+					got = append(got, r.Kind+" "+r.Msg)
+				}
+			}
+			if want := []string{c.want}; !reflect.DeepEqual(got, want) {
+				t.Fatalf("adapter rows %q, want %q", got, want)
+			}
+		})
 	}
 }
 
