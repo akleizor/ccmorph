@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -540,10 +541,11 @@ func (t uiTheme) native(prompt string, rows []string, display string) (string, i
 		return "", 1
 	}
 	if !isTTY(0) || !isTTY(2) {
-		uiErr(t, "selection needs a terminal; pass the value directly")
-		fmt.Fprintln(os.Stderr, strings.Join(rows, "\n"))
-		// rc 2, not a cancel: no picker ran, so the caller needs the direct
-		// command, not a Cancelled line.
+		// The inline menu draws on stderr and reads stdin, so those two must
+		// be the terminal; the shared refusal answers with rc 2, not a cancel:
+		// no picker ran, so the caller needs the direct command (#725).
+		_, fzfErr := exec.LookPath("fzf")
+		t.refuseNoTerminal(rows, fzfErr == nil)
 		return "", 2
 	}
 	if os.Getenv("TERM") == "dumb" {
@@ -810,6 +812,92 @@ func fzfAtLeast(version string, minor int) bool {
 	return major > 0 || min >= minor
 }
 
+// pickerNoTerminalBound bounds the one picker launch a call with no terminal
+// anywhere gets (#725). A picker that can answer without a terminal — a
+// headless suite's fake fzf reading its rows on stdin — answers in well under
+// a second, so the bound only ever stops one waiting for a key no script can
+// send: a ceiling on the hang, never a deadline on a healthy answer. The
+// internal _CCMORPH_PICKER_BOUND seam lets a test size the bound down instead
+// of waiting on the real clock.
+const pickerNoTerminalBound = 5 * time.Second
+
+func pickerBound() time.Duration {
+	if d, err := time.ParseDuration(os.Getenv("_CCMORPH_PICKER_BOUND")); err == nil && d > 0 {
+		return d
+	}
+	return pickerNoTerminalBound
+}
+
+// ttyUsable reports whether a controlling terminal answers for this process:
+// /dev/tty opens exactly when one is there. fzf draws and reads its keys on
+// /dev/tty, not on the candidate stream stdin carries, so this open — not
+// isTTY(0) — is the test: a foreground call with piped stdin still has the
+// person's screen to answer on, and only a script, pipe or CI job with no
+// controlling terminal at all gets an error here. The open reads and writes
+// nothing, so it can neither block nor steal a key (#725).
+func ttyUsable() bool {
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return false
+	}
+	tty.Close()
+	return true
+}
+
+// isPickerCancel reports fzf's own Esc answer: a leave, from a person or a
+// suite's cancel stub, read the same wherever it arrives (#725).
+func isPickerCancel(err error) bool {
+	var ee *exec.ExitError
+	return errors.As(err, &ee) && ee.ExitCode() == 130
+}
+
+// runPickerAnswerOnly runs the picker command exactly as the caller built it,
+// but answer-only — stdout captured, stderr to the null device, its own
+// session — and under the bound. This is the launch itself bounded, not a
+// probe of it, so whatever would hang the caller hangs here and is killed,
+// its process group with it. Only a picker that answers without a terminal
+// gets to choose; its answer, its Esc cancel and its exit codes then mean
+// exactly what they mean on a person's path (#725).
+func runPickerAnswerOnly(cmd *exec.Cmd, bound time.Duration) ([]byte, error) {
+	devnull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer devnull.Close()
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = devnull
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		return stdout.Bytes(), err
+	case <-time.After(bound):
+		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) // the session started above
+		<-done
+		return stdout.Bytes(), fmt.Errorf("the picker waited past %s for a key that was never coming", bound)
+	}
+}
+
+// refuseNoTerminal is the one answer every picker gives when no terminal can
+// answer it (#725): the named cause, then what there was to choose from, and
+// rc 2 — not a cancel, because no picker ever ran, so the caller needs the
+// direct command, not a Cancelled line. fzfThere says whether an fzf is
+// installed, so the cause names the missing terminal and never sends a caller
+// after a tool they already hold.
+func (t uiTheme) refuseNoTerminal(rows []string, fzfThere bool) {
+	if fzfThere {
+		uiErr(t, "selection needs a terminal; pass the value directly")
+	} else {
+		uiErr(t, "selection needs a terminal or fzf; pass the value directly")
+	}
+	fmt.Fprintln(os.Stderr, strings.Join(rows, "\n"))
+}
+
 // search is _ccm_ui_search: fzf when present, else the numbered list.
 func (t uiTheme) search(prompt string, rows []string) (string, int) {
 	if len(rows) == 0 {
@@ -833,12 +921,42 @@ func (t uiTheme) search(prompt string, rows []string) (string, int) {
 		// grows to the list itself, so a list that fits the terminal is never
 		// cut at all (#278).
 		lines, _ := termSize()
-		args := fzfArgs(fzfVersion(fzf), len(rows), lines, prompt, theme)
+		// Whether a terminal answers is decided before anything is spawned:
+		// it picks the launch mode below, and in the no-terminal mode the
+		// version probe is skipped too — it only sizes a window no terminal
+		// will ever draw, and a fzf that cannot answer cannot be asked for its
+		// version without waiting on it (#725).
+		haveTTY := isTTY(0) || ttyUsable()
+		version := ""
+		if haveTTY {
+			version = fzfVersion(fzf)
+		}
+		args := fzfArgs(version, len(rows), lines, prompt, theme)
 		cmd := exec.Command(fzf, args...)
 		cmd.Env = append(os.Environ(), "FZF_DEFAULT_OPTS=", "FZF_DEFAULT_OPTS_FILE=")
 		cmd.Stdin = strings.NewReader(strings.Join(rendered, "\n") + "\n")
-		cmd.Stderr = os.Stderr
-		out, err := cmd.Output()
+		var out []byte
+		var err error
+		if haveTTY {
+			// A terminal answers this call — stdin's own, or the controlling
+			// one a redirected stdin still leaves — so the person's picker
+			// runs exactly as ever, bound by no clock: a key may take as long
+			// as the hand reading the list takes (#725).
+			cmd.Stderr = os.Stderr
+			out, err = cmd.Output()
+		} else {
+			// No terminal anywhere answers — a script, a pipe or a CI job
+			// (#725) — so the picker gets one answer-only launch under the
+			// bound, and whatever cannot answer in it is refused by name:
+			// never a wait forever, and never the Cancelled of a picker no
+			// terminal could have answered.
+			out, err = runPickerAnswerOnly(cmd, pickerBound())
+			choice := strings.TrimRight(string(out), "\n")
+			if (err != nil && !isPickerCancel(err)) || (err == nil && choice == "") {
+				t.refuseNoTerminal(rows, true)
+				return "", 2
+			}
+		}
 		choice := strings.TrimRight(string(out), "\n")
 		if err != nil || choice == "" {
 			// fzf answers Esc with exit 130 and no choice: a leave, like any picker.
@@ -864,10 +982,9 @@ func (t uiTheme) search(prompt string, rows []string) (string, int) {
 	if isTTY(0) {
 		return t.numbered(prompt, rows, "labels")
 	}
-	uiErr(t, "selection needs a terminal or fzf; pass the value directly")
-	fmt.Fprintln(os.Stderr, strings.Join(rows, "\n"))
-	// rc 2, not a cancel: no picker ran, so the caller needs the direct
-	// command, not a Cancelled line.
+	// Neither stdin nor a controlling terminal answers, and no fzf (or a dumb
+	// terminal) offered the list: the shared no-terminal refusal, rc 2 (#725).
+	t.refuseNoTerminal(rows, false)
 	return "", 2
 }
 
