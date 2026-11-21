@@ -325,3 +325,15 @@ mutation E (landing refusal S3): DoctorRoute hands adapterLine __UNKNOWN__ for a
 FAIL
 FAIL	github.com/akleizor/ccmorph/util	0.463s
 FAIL
+mutation F (landing refusal S3, a translator beside a hooks shim): DoctorRoute hands adapterLine __UNKNOWN__ when the session it read has a :hooks-shim child, in the default report only; running, the SKIP row and verbose untouched
+    doctor_test.go:225: adapter rows [], want ["OK adapter: this profile needs a translator now: an open session on it is running cliproxyapi"]
+    doctor_test.go:225: adapter rows ["OK adapter: this endpoint needs a translator; cliproxyapi is installed"], want ["OK adapter: this endpoint needs a translator; cliproxyapi is installed; an open session on this profile is using one now"]
+--- FAIL: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable (2.34s)
+    --- PASS: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable/shim-only (0.30s)
+    --- PASS: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable/translator-running (0.57s)
+    --- PASS: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable/translator-running-classified (0.57s)
+    --- FAIL: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable/translator-and-hooks-shim (0.54s)
+    --- FAIL: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable/translator-and-hooks-shim-classified (0.36s)
+FAIL
+FAIL	github.com/akleizor/ccmorph/util	2.379s
+FAIL
