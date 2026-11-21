@@ -1,6 +1,7 @@
 """Remote Control bridge add-on: routing decision and credential isolation."""
 import contextlib
 import json
+import signal
 import socket
 import sys
 import time
@@ -829,3 +830,44 @@ def test_no_failed_start_ever_leaves_the_route_key_behind(tmp_path, monkeypatch,
         rc.own_edge("gw", 4242, argparse.Namespace(debug=False), None)
     assert message in capsys.readouterr().err
     assert list(rc.STATE.glob("route-key.*")) == []
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT],
+                         ids=["sigterm", "sighup", "sigquit"])
+def test_termination_during_proxy_startup_removes_the_route_key(tmp_path, sig):
+    """A normal termination signal bypasses Python's finally unless startup
+    temporarily handles it. A separate process exercises the real disposition."""
+    import os
+    import subprocess
+
+    state = tmp_path / "state"
+    child = r'''import argparse, importlib.machinery, importlib.util, os, signal, sys
+path, sig = sys.argv[1], int(sys.argv[2])
+loader = importlib.machinery.SourceFileLoader("ccmorph_rc_signal", path)
+spec = importlib.util.spec_from_loader(loader.name, loader)
+rc = importlib.util.module_from_spec(spec)
+loader.exec_module(rc)
+rc.resolve_route = lambda route: {"ANTHROPIC_API_KEY": "test-only-key", "ANTHROPIC_BASE_URL": "https://example.invalid"}
+rc.retire_route_with = lambda *a: None
+rc.adapter_env = lambda: {}
+rc.start_adapter = lambda *a: "http://127.0.0.1:1"
+rc.strip_env = lambda: ()
+rc.shutil.which = lambda name: "/test/" + name
+rc.subprocess.Popen = lambda *a, **k: object()
+rc.wait_listening = lambda *a, **k: os.kill(os.getpid(), sig)
+try:
+    rc.own_edge("test", os.getpid(), argparse.Namespace(debug=False), None)
+except SystemExit as stopped:
+    keys = list(rc.STATE.glob("route-key.*"))
+    if stopped.code == 128 + sig and not keys:
+        raise SystemExit(0)
+    print(f"unexpected exit={stopped.code} key_files={keys}", file=sys.stderr)
+    raise SystemExit(2)
+raise SystemExit(3)
+'''
+    env = {**os.environ, "CCMORPH_STATE_DIR": str(state)}
+    result = subprocess.run([sys.executable, "-c", child,
+                             str(Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccmorph-rc"),
+                             str(sig)], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, f"child exit={result.returncode}; stderr={result.stderr}"
+    assert list(state.rglob("route-key.*")) == []
