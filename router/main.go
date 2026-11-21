@@ -17,12 +17,13 @@ import (
 
 const Usage = "ccmorph router [on|off|status|dispatch [--dry-run]|report]"
 
-// taskHelp is `ccmorph router dispatch --help`: every flag stated with the
+// TaskHelp is `ccmorph router dispatch --help`: every flag stated with the
 // effect it has, on a run and on --dry-run, because a flag that is parsed and
 // then means nothing reads like a bug (GH-694).
-const taskHelp = `usage: ccmorph router dispatch [--dry-run] [flags] [brief] [-- claude flags]
+const TaskHelp = `usage: ccmorph router dispatch [--dry-run] [flags] [brief] [-- claude flags]
 
-The brief is the words, or stdin when there are none. dispatch routes it,
+The brief is the words, or stdin when there are none; a word that starts
+with - is read as a flag, so give such a brief on stdin. dispatch routes it,
 runs it on the picked profile through ccmorph run and prints the worker's
 stdout unchanged: its final answer, or the output format it was given. The
 router's own notes go to stderr; the exit status is the worker's, 124 past
@@ -64,6 +65,9 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	switch verb {
 	case "on", "off":
+		if len(args) > 0 {
+			return refuse(stderr, args[0])
+		}
 		if err := SetEnabled(verb == "on"); err != nil {
 			fmt.Fprintln(stderr, "ccmorph: router:", err)
 			return 1
@@ -75,6 +79,9 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		return 0
 	case "status":
+		if len(args) > 0 {
+			return refuse(stderr, args[0])
+		}
 		return status(stdout, stderr)
 	case "dispatch":
 		return task(args, stdin, stdout, stderr)
@@ -97,6 +104,34 @@ func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		return 0 // a hook never fails the tool call
 	}
+	return refuse(stderr, verb)
+}
+
+// refuse names the word the router did not expect, with its usage line, before
+// anything runs: a typo must never act or pass as success (#784).
+func refuse(stderr io.Writer, word string) int {
+	if strings.HasPrefix(word, "-") {
+		fmt.Fprintf(stderr, "ccmorph: router: unknown option '%s'\n", word)
+	} else {
+		fmt.Fprintf(stderr, "ccmorph: router: unexpected argument '%s'\n", word)
+	}
+	fmt.Fprintln(stderr, "usage: "+Usage)
+	return 2
+}
+
+// needsValue refuses a flag given without its value, or with another flag in
+// the value's place, naming the flag.
+func needsValue(stderr io.Writer, flag string) int {
+	fmt.Fprintf(stderr, "ccmorph: router: %s needs a value\n", flag)
+	fmt.Fprintln(stderr, "usage: "+Usage)
+	return 2
+}
+
+// needsValueNotOption refuses a value flag with another flag where its value
+// belongs, naming both: the value flag that lost its value, and the option a
+// caller probably mistyped (#784).
+func needsValueNotOption(stderr io.Writer, flag, other string) int {
+	fmt.Fprintf(stderr, "ccmorph: router: %s needs a value, not the option '%s'\n", flag, other)
 	fmt.Fprintln(stderr, "usage: "+Usage)
 	return 2
 }
@@ -140,14 +175,22 @@ func task(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var r Request
 	var words []string
 	asJSON, explain, dryRun, cwd := false, false, false, ""
+	// The flags that take a value. Nothing, or another flag, in the value's
+	// place is refused: --profile --dry-run would otherwise run for real (#784).
+	values := map[string]*string{"--effort": &r.Effort, "--kind": &r.Kind, "--tier": &r.Tier,
+		"--profile": &r.Profile, "--model": &r.Model, "--family": &r.Family, "--cwd": &cwd}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
-		val := func() string {
-			if i+1 < len(args) {
-				i++
-				return args[i]
+		if dst, ok := values[a]; ok {
+			if i+1 >= len(args) || args[i+1] == "--" {
+				return needsValue(stderr, a)
 			}
-			return ""
+			if strings.HasPrefix(args[i+1], "-") {
+				return needsValueNotOption(stderr, a, args[i+1])
+			}
+			i++
+			*dst = args[i]
+			continue
 		}
 		switch a {
 		case "--": // the rest go to the worker's claude
@@ -163,16 +206,26 @@ func task(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 				}
 			}
 		case "--timeout":
-			v, err := strconv.ParseFloat(val(), 64)
+			if i+1 >= len(args) || args[i+1] == "--" {
+				return needsValue(stderr, "--timeout")
+			}
+			arg := args[i+1]
+			v, err := strconv.ParseFloat(arg, 64)
+			// A flag where the number belongs is named as the option it is, not
+			// swallowed as an invalid duration (#784). -1 still parses, so a
+			// negative number keeps the invalid-value answer that names it.
+			if err != nil && strings.HasPrefix(arg, "-") {
+				return needsValueNotOption(stderr, "--timeout", arg)
+			}
 			if err != nil || !(v > 0) || math.IsInf(v, 0) {
-				fmt.Fprintln(stderr, "ccmorph: router: --timeout takes a positive number of seconds")
+				fmt.Fprintf(stderr, "ccmorph: router: --timeout has invalid value %q; it takes a positive number of seconds\n", arg)
+				fmt.Fprintln(stderr, "usage: "+Usage)
 				return 2
 			}
+			i++
 			r.Timeout = v
-		case "--effort":
-			r.Effort = val()
 		case "-h", "--help":
-			fmt.Fprint(stdout, taskHelp)
+			fmt.Fprint(stdout, TaskHelp)
 			return 0
 		case "--dry-run": // pick only, run nothing
 			dryRun = true
@@ -184,19 +237,10 @@ func task(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			r.NoDecider = true
 		case "--refresh":
 			r.Refresh = true
-		case "--kind":
-			r.Kind = val()
-		case "--tier":
-			r.Tier = val()
-		case "--profile":
-			r.Profile = val()
-		case "--model":
-			r.Model = val()
-		case "--family":
-			r.Family = val()
-		case "--cwd":
-			cwd = val()
 		default:
+			if strings.HasPrefix(a, "-") {
+				return refuse(stderr, a)
+			}
 			words = append(words, a)
 		}
 	}
@@ -275,10 +319,17 @@ func show(w io.Writer, d Decision, explain bool) {
 func report(args []string, stdout, stderr io.Writer) int {
 	since := "24h"
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--since" && i+1 < len(args) {
-			i++
-			since = args[i]
+		if args[i] != "--since" {
+			return refuse(stderr, args[i])
 		}
+		if i+1 >= len(args) || args[i+1] == "--" {
+			return needsValue(stderr, "--since")
+		}
+		if strings.HasPrefix(args[i+1], "-") {
+			return needsValueNotOption(stderr, "--since", args[i+1])
+		}
+		i++
+		since = args[i]
 	}
 	m := sinceRe.FindStringSubmatch(since)
 	if m == nil {
