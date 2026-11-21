@@ -190,8 +190,6 @@ func Options(t Task, profiles []Profile, labels func(profile, model string) (Lab
 				reason = "cannot read images"
 			case t.Tier == "top" && len(order) > 0 && !slices.Contains(order[:min(2, len(order))], l.Family):
 				reason = "outside the kind's top two families"
-			case pin.Effort != "" && pin.Effort != Efforts[t.Tier]:
-				reason = "effort follows task tier"
 			case poolSpent(p, m, now):
 				reason = "its quota pool is used up"
 			}
@@ -200,9 +198,13 @@ func Options(t Task, profiles []Profile, labels func(profile, model string) (Lab
 				continue
 			}
 			prev, seen := newest[l.Family]
-			// The user's order outranks a newer version of the same family.
-			better := !seen || preferred(m, pin.Order) && !preferred(prev.model, pin.Order) ||
-				preferred(m, pin.Order) == preferred(prev.model, pin.Order) && newer(m, prev.model)
+			// The user's order outranks a newer version of the same family:
+			// when both are ordered, the earlier entry wins; a newer model
+			// only decides between two the order says nothing about.
+			mPref, pPref := preferred(m, pin.Order), preferred(prev.model, pin.Order)
+			better := !seen || mPref && !pPref ||
+				mPref && pPref && slices.Index(pin.Order, m) < slices.Index(pin.Order, prev.model) ||
+				!mPref && !pPref && newer(m, prev.model)
 			if !better {
 				dropped = append(dropped, p.Name+"/"+m+": older served model")
 				continue
