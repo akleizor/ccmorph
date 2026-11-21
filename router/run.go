@@ -71,8 +71,14 @@ func Decide(c Config, r Request) (Decision, error) {
 	if r.Profile != "" && r.Model != "" {
 		// A named profile and model is the caller's choice: run it as named, past
 		// every routing filter (disabled, reserved, advisor-only), or fail loudly.
+		if r.Family != "" { // a family cannot narrow a pair already named; never drop it silently
+			return d, fmt.Errorf("family %q cannot narrow a named profile and model; name the family or the model, not both", r.Family)
+		}
 		if !slices.Contains(profileNames(), r.Profile) {
 			return d, fmt.Errorf("no ccmorph profile %q", r.Profile)
+		}
+		if r.Refresh { // the pair runs as named; the caller still asked for a live reading now
+			readQuota(profileNames(), true, false)
 		}
 		effort := r.Effort
 		if effort == "" {
@@ -124,15 +130,19 @@ func reserve(id string, d Decision, brief string, extra Row) {
 }
 
 // Delegate runs delegated work through `ccmorph run` and returns only its final
-// answer. A hard failure is retried once at the same tier; a pinned profile or
-// model is retried as named, never swapped. Cancelling ctx kills the worker.
-func Delegate(ctx context.Context, prompt, kind, tier, profile, model, cwd string) string {
-	if strings.TrimSpace(prompt) == "" {
+// answer. The request carries the caller's whole say — kind, tier, pins, family,
+// decider and refresh included — and every one of them routes this dispatch as
+// surely as it routes `dispatch --dry-run`. A hard failure is retried once at the same
+// tier; a pinned profile or model is retried as named, never swapped.
+// Cancelling ctx kills the worker.
+func Delegate(ctx context.Context, r Request, cwd string) string {
+	if strings.TrimSpace(r.Prompt) == "" {
 		return "Error: the router needs a non-empty prompt"
 	}
-	if kind != "" && !slices.Contains(Kinds, kind) || tier != "" && Efforts[tier] == "" {
+	if r.Kind != "" && !slices.Contains(Kinds, r.Kind) || r.Tier != "" && Efforts[r.Tier] == "" {
 		return "Error: the router needs a valid kind and tier"
 	}
+	prompt := r.Prompt
 	c, err := LoadConfig()
 	if err != nil {
 		return "Error: " + ConfigPath() + ": " + err.Error()
@@ -143,7 +153,6 @@ func Delegate(ctx context.Context, prompt, kind, tier, profile, model, cwd strin
 	if fi, err := os.Stat(cwd); err != nil || !fi.IsDir() {
 		return "Error: cwd is not a directory: " + cwd
 	}
-	r := Request{Prompt: prompt, Kind: kind, Tier: tier, Profile: profile, Model: model}
 	var attempts, hints []string
 	source := ""
 	for range 2 {
@@ -157,7 +166,11 @@ func Delegate(ctx context.Context, prompt, kind, tier, profile, model, cwd strin
 		}
 		d.Task.Source = source // a retry keeps who chose the tier
 		if d.Pick == nil {
-			return withHints("Error: "+strings.Join(append(attempts, "no next available profile at the same tier"), "; "), hints)
+			miss := "no next available profile at the same tier"
+			if r.Family != "" {
+				miss = "no next available profile serves family " + r.Family + " at the same tier"
+			}
+			return withHints("Error: "+strings.Join(append(attempts, miss), "; "), hints)
 		}
 		job := newID("delegate")
 		reserve(job, d, prompt, nil)

@@ -16,6 +16,34 @@ import (
 
 const Usage = "ccmorph router [on|off|status|dispatch [--dry-run]|report]"
 
+// taskHelp is `ccmorph router dispatch --help`: every flag stated with the
+// effect it has, on a run and on --dry-run, because a flag that is parsed and
+// then means nothing reads like a bug (GH-694).
+const taskHelp = `usage: ccmorph router dispatch [--dry-run] [flags] [brief]
+
+The brief is the words, or stdin when there are none. dispatch routes it,
+runs it on the picked profile through ccmorph run and prints only the
+worker's final answer. With --dry-run it prints the pick and reserves it in
+the ledger without running anything.
+
+  --kind K      writing, search, x, mechanical, code, design, image_gen or vision; with --tier it skips classification
+  --tier T      small, mid or top; the effort follows the tier
+  --profile P   route only on profile P, never another
+  --model M     route only on served model M, never another
+  --family F    restrict the shortlist to models of family F; when none
+                qualifies dispatch fails naming F, --dry-run exits 3; refused
+                when --profile and --model are both named
+  --no-decider  never ask the decider while picking: kind and tier come from
+                the keyword rules, an unlabeled model is labeled by its name;
+                a configured decider still scores the finished answer
+  --refresh     read quota live now instead of the stored snapshot, which is
+                served up to 5 minutes old; a named --profile and --model too
+  --cwd DIR     run the worker in DIR (default: this directory)
+  --dry-run     print the pick and reserve it in the ledger; run nothing
+  --json        with --dry-run: the decision as JSON
+  --explain     with --dry-run: print the shortlist and every dropped model
+`
+
 // Main is `ccmorph router ...`. stdin carries the prompt for dispatch when no
 // words do, and the event for the hooks.
 func Main(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -111,6 +139,9 @@ func task(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			return ""
 		}
 		switch a {
+		case "-h", "--help":
+			fmt.Fprint(stdout, taskHelp)
+			return 0
 		case "--dry-run": // pick only, run nothing
 			dryRun = true
 		case "--json":
@@ -149,7 +180,7 @@ func task(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if !dryRun {
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 		defer stop()
-		answer := Delegate(ctx, r.Prompt, r.Kind, r.Tier, r.Profile, r.Model, cwd)
+		answer := Delegate(ctx, r, cwd)
 		fmt.Fprint(stdout, answer)
 		if strings.HasPrefix(answer, "Error: ") {
 			return 1
