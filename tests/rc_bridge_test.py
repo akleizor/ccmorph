@@ -872,3 +872,53 @@ raise SystemExit(3)
                             timeout=HANG_TIMEOUT)
     assert result.returncode == 0, f"child exit={result.returncode}; stderr={result.stderr}"
     assert list(state.rglob("route-key.*")) == []
+
+
+def test_an_ignored_hangup_stays_ignored_during_startup(tmp_path):
+    """nohup hands the launcher SIGHUP ignored. Startup takes over only signals left
+    at their default, so a hang-up in the startup window neither aborts the start
+    nor turns the ignored signal back on afterwards."""
+    import os
+    import subprocess
+
+    state = tmp_path / "state"
+    child = r"""import argparse, importlib.machinery, importlib.util, os, signal, sys
+path = sys.argv[1]
+signal.signal(signal.SIGHUP, signal.SIG_IGN)          # what nohup gives the launcher
+loader = importlib.machinery.SourceFileLoader("ccmorph_rc_nohup", path)
+spec = importlib.util.spec_from_loader(loader.name, loader)
+rc = importlib.util.module_from_spec(spec)
+loader.exec_module(rc)
+rc.resolve_route = lambda route: {"ANTHROPIC_API_KEY": "test-only-key", "ANTHROPIC_BASE_URL": "https://example.invalid"}
+rc.retire_route_with = lambda *a: None
+rc.adapter_env = lambda: {}
+rc.start_adapter = lambda *a: "http://127.0.0.1:1"
+rc.strip_env = lambda: ()
+rc.shutil.which = lambda name: "/test/" + name
+class Proxy:
+    returncode = None
+    def poll(self): return self.returncode
+    def terminate(self): self.returncode = -15
+    def kill(self): self.returncode = -9
+    def wait(self, timeout=None): return self.returncode
+proxy = Proxy()
+def spawn(cmd, env=None, **kw):
+    os.unlink(env["RC_KEY_FILE"])                     # the addon loaded and consumed the key
+    (rc.STATE / "mitm" / "mitmproxy-ca-cert.pem").write_text("ca")
+    return proxy
+rc.subprocess.Popen = spawn
+rc.wait_listening = lambda *a, **k: os.kill(os.getpid(), signal.SIGHUP)
+rc.own_edge("test", os.getpid(), argparse.Namespace(debug=False), None)
+keys = list(rc.STATE.glob("route-key.*"))
+ignored = signal.getsignal(signal.SIGHUP) == signal.SIG_IGN
+if ignored and not keys and proxy.returncode is None:
+    raise SystemExit(0)
+print(f"ignored_after={ignored} key_files={keys} proxy_rc={proxy.returncode}", file=sys.stderr)
+raise SystemExit(2)
+"""
+    env = {**os.environ, "CCMORPH_STATE_DIR": str(state)}
+    result = subprocess.run([sys.executable, "-c", child,
+                             str(Path(__file__).resolve().parent.parent / "addons" / "remote-control" / "ccmorph-rc")],
+                            env=env, capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert result.returncode == 0, f"child exit={result.returncode}; stderr={result.stderr}"
+    assert list(state.rglob("route-key.*")) == []
