@@ -98,7 +98,7 @@ func withheld() string {
 // contextEnv is the window, compaction and settings half of a launch: the env
 // it adds, the projection of the profile's settings, and its advisories.
 func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel, launchModel string,
-	resumeCarried, needsAdapter, isProvider, subcommand bool) ([]string, bool) {
+	resumeCarried, needsAdapter, isProvider, subcommand, opensSession bool) ([]string, bool) {
 	derived, pceil, pmodel := "", "", ""
 	refresh, plwRan := false, false
 	var plw []string
@@ -333,7 +333,10 @@ func (l *launcher) contextEnv(name string, penv []string, explicit, defaultModel
 			}
 		}
 	}
-	if refresh {
+	// The sizing probe exists to size a session's model: a launch that opens
+	// none spawns nothing (#650, #768 — every subcommand used to schedule a
+	// background probe against a route it never used).
+	if refresh && opensSession {
 		l.probeNudge(name)
 	}
 	return penv, true
