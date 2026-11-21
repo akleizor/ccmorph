@@ -2101,3 +2101,45 @@ func TestARunOnAGatewayThatNeverAnswersExitsTheGatewayClass(t *testing.T) {
 		}
 	})
 }
+
+// #747: a 200 whose body is not a listing is no answer, so the wait must ask
+// the gateway again rather than re-read the memoized error object. A route that
+// answered wrongly once and then serves a listing has to recover in the wait
+// window exactly as silence that clears does; before this, both retries
+// reparsed the stored error body and the launch exited 75.
+func TestAWrongAnswerIsRetriedInsteadOfReadFromTheListingMemo(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		asks := filepath.Join(dir, "asks")
+		script := "#!/bin/sh\n" +
+			"n=$(cat '" + asks + "' 2>/dev/null || echo 0)\n" +
+			"n=$((n+1))\n" +
+			"echo $n > '" + asks + "'\n" +
+			"if [ $n -le 2 ]; then\n" +
+			"  printf '%s' '{\"error\":{\"message\":\"upstream is unwell\"}}'\n" +
+			"else\n" +
+			"  printf '%s' '{\"data\":[{\"id\":\"wanted\"}]}'\n" +
+			"fi\n"
+		if err := os.WriteFile(filepath.Join(dir, "curl"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+
+		l := &launcher{memo: map[string]string{}}
+		base, key := "http://gw.invalid", "k"
+		// The picker's ask, which the pass memoizes before it finds the body
+		// is not a listing.
+		if body, ok := l.listing(base, key); !ok || !strings.Contains(body, `"error"`) {
+			t.Fatalf("the first ask must answer the malformed body: %q %v", body, ok)
+		}
+		if !l.awaitListing("gw", base, key) {
+			t.Fatal("a listing that arrived on a retry must end the wait, not exit the gateway class")
+		}
+		if n, _ := os.ReadFile(asks); strings.TrimSpace(string(n)) != "3" {
+			t.Fatalf("the gateway was asked %s time(s), want 3 (the picker's ask and one per retry): a malformed answer must not be memoized across the wait", n)
+		}
+		if body, ok := l.listing(base, key); !ok || !strings.Contains(body, "wanted") {
+			t.Fatalf("the recovered listing must be the memo's answer, got %q %v", body, ok)
+		}
+	})
+}

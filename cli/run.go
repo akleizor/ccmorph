@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/profile"
 	"github.com/akleizor/ccmorph/settingscompose"
 	"github.com/akleizor/ccmorph/shim"
@@ -1017,12 +1018,15 @@ func (l *launcher) tierAlias(name, tier string) (string, bool) {
 	return v, rc == 0 && v != ""
 }
 
+// listingKey is the memo's one key for a route's listing.
+func listingKey(base, key string) string { return base + "\x1f" + key }
+
 // listing is _ccm_models_listing: one /v1/models answer per (base, key) per run.
 func (l *launcher) listing(base, key string) (string, bool) {
 	if base == "" || key == "" {
 		return "", false
 	}
-	mk := base + "\x1f" + key
+	mk := listingKey(base, key)
 	if v, ok := l.memo[mk]; ok && v != "" {
 		return v, true
 	}
@@ -1033,6 +1037,13 @@ func (l *launcher) listing(base, key string) (string, bool) {
 	}
 	l.memo[mk] = v
 	return v, true
+}
+
+// forgetListing drops the memoized listing for (base, key). A 200 that is not a
+// listing is no answer, so a retry must reach the gateway again instead of
+// re-reading the malformed body the first ask stored (#747).
+func (l *launcher) forgetListing(base, key string) {
+	delete(l.memo, listingKey(base, key))
 }
 
 // pickerOutcome is one project-picker pass as the launch reads it: done, refused
@@ -1057,14 +1068,24 @@ const (
 )
 
 // awaitListing is the wait the picker's silence earns: the model listing is
-// asked again a few seconds apart, and the first answer ends it — the memo then
-// carries it to the picker and every later reader.
+// asked again a few seconds apart, and the first answer that is a listing ends
+// it — the memo then carries it to the picker and every later reader. A 200
+// whose body is not a listing (a proxy's error object) is no more an answer
+// than silence is, so each attempt drops the memoized body and asks the
+// gateway again: a route that answered wrongly once and then serves a listing
+// recovers in the window, and one that never serves walks the same path as
+// silence to the gateway class (#747).
 func (l *launcher) awaitListing(name, base, key string) bool {
 	for i := 1; i <= gatewayListingRetries; i++ {
+		// What the picker's ask memoized is the body that made the pass
+		// unreached; a retry's own malformed answer would be just as useless.
+		l.forgetListing(base, key)
 		fmt.Fprintf(os.Stderr, "ccmorph: Waiting for '%s' gateway (%ds)…\n", name, int(time.Duration(i)*gatewayListingPause/time.Second))
 		time.Sleep(gatewayListingPause)
-		if _, ok := l.listing(base, key); ok {
-			return true
+		if body, ok := l.listing(base, key); ok {
+			if _, verdict := ctxwindow.ListingShapeBody(body); verdict != ctxwindow.ListingNotAListing {
+				return true
+			}
 		}
 	}
 	return false

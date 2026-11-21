@@ -217,6 +217,28 @@ export PATH="$HOME/fakebin:$PATH"
     assert '-p hi' not in claude_calls(tmp_path)
 
 
+def test_run_on_a_200_error_body_exits_the_gateway_class(tmp_path):
+    # #747: a gateway that answers 200 with an error object has answered no
+    # listing, exactly as silence is no listing. The picker once read the
+    # missing data as an authoritative empty one, skipped the cache and died
+    # with the "revise the list" config message. It must take the silence
+    # route: the cache is judged, then the run exits 75 naming the route.
+    state, env = setup(tmp_path, 'blocked')
+    (state / 'profiles/demo/.claude.json').write_text(
+        json.dumps({'additionalModelOptionsCache': []}))
+    erroring = r'''mkdir -p "$HOME/fakebin"
+printf '%s\n' '#!/bin/sh' 'printf "%s" "{\"error\":{\"message\":\"upstream is unwell\"}}"' > "$HOME/fakebin/curl"
+chmod +x "$HOME/fakebin/curl"
+export PATH="$HOME/fakebin:$PATH"
+'''
+    r = zsh(erroring + 'ccmorph run demo -p hi', env)
+    assert 'no cached or served picker models remain' not in r.stderr
+    assert 'could not reach' in r.stderr
+    assert 'ccmorph doctor demo' in r.stderr
+    assert r.returncode == 75, r.stderr
+    assert '-p hi' not in claude_calls(tmp_path)
+
+
 def test_launch_projects_filtered_rows_and_keeps_discovery_off(tmp_path):
     lib = copied_lib(tmp_path)
     stub_sizer(lib, tmp_path / 'sizer.ran')

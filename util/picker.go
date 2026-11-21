@@ -109,20 +109,17 @@ func ProjectPicker(in PickerIn, errw io.Writer) PickerResult {
 		}
 	}
 
+	// A reply body that is not a listing — a 200 error object, data absent,
+	// null or not a list, a body that does not parse — is no listing arrived,
+	// exactly as silence is: the cache is judged and the caller words the
+	// route. Only a real data list, empty or not, is the endpoint's own answer
+	// (#747, the shared shape rule of #558 and #695).
 	var served []any
-	fresh := true
-	if pv, err := ordjson.Parse([]byte(in.ModelsJSON)); err == nil && asObj(pv) != nil {
-		data := getKey(asObj(pv), "data")
-		if !ordjson.Truthy(data) {
-			data = []any{}
-		}
-		items, ok := iterItems(data)
-		if !ok {
-			fmt.Fprintln(errw, "TypeError: object is not iterable")
-			return PickerRefused
-		}
-		served = items
-	} else {
+	fresh := false
+	if rows, verdict := ctxwindow.ListingShapeBody(in.ModelsJSON); verdict != ctxwindow.ListingNotAListing {
+		served, fresh = rows, true
+	}
+	if !fresh {
 		if len(excluded) == 0 {
 			return PickerDone
 		}
@@ -152,7 +149,6 @@ func ProjectPicker(in PickerIn, errw io.Writer) PickerResult {
 				served = append(served, row)
 			}
 		}
-		fresh = false
 	}
 
 	isExcl := func(id string) bool { return ctxwindow.IsExcluded(fields, id) }

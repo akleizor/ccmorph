@@ -241,14 +241,15 @@ func inventoryListing(base, key string, c *http.Client) ([]any, []string, error)
 	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
 		return nil, nil, err
 	}
-	data, isList := doc["data"].([]any)
-	if !isList {
+	data, verdict := ctxwindow.ListingShape(doc)
+	if verdict == ctxwindow.ListingNotAListing {
 		// A 200 that parses is not a listing when "data" is absent or not a
 		// JSON list — a proxy's error object, a wrapped reply — and reading it
 		// as an empty one is the confident "serves nothing" the auto sweep
 		// then retires the cache's servable models on (#695, the guard #558
 		// added to util's reader). Cannot tell, never "serves nothing": only
-		// a real data list, empty or not, is an endpoint's own answer.
+		// a real data list, empty or not, is an endpoint's own answer — the
+		// one shape verdict the picker reads too (#747).
 		return nil, nil, fmt.Errorf("the /v1/models reply is not a listing: data is %s", listingShape(doc["data"]))
 	}
 	return data, listedModels(data, true), nil
