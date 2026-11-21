@@ -1,0 +1,32 @@
+tree: git archive of origin/main c73247ec3ce85ba17c3a8326601d9a120d4bc49f
+host: gcp-us2 4 cores, loadavg 3.83 8.86 12.24 5/956 1353245
+TMPDIR=/home/ubuntu/offload/0a54bb464893-1029686.tmp
+
+== pytest -n 2 (adapter-tree doctor tests)
+8 failed, 5 passed in 6.72s
+E                 At index 0 diff: "INFO adapter: this profile needs no translator until a model is chosen (none is set, and the endpoint's model list names no protocol); cliproxyapi is installed; choose one: ccmorph set demo1353339 model <model-id>" != 'OK adapter: this profile needs a translator now: an open session on it is running cliproxyapi'
+E                 At index 0 diff: "INFO adapter: this profile needs no translator until a model is chosen (none is set, and the endpoint's model list names no protocol); cliproxyapi is installed; choose one: ccmorph set demo1353339 model <model-id>" != 'OK adapter: this profile needs no translator now: its open session runs without one'
+E                 At index 0 diff: "INFO adapter: this profile needs no translator until a model is chosen (none is set, and the endpoint's model list names no protocol); cliproxyapi is installed; choose one: ccmorph set demo1353357 model <model-id>" != 'OK adapter: this profile needs a translator now: an open session on it is running cliproxyapi'
+E                 At index 0 diff: "INFO adapter: this profile needs no translator until a model is chosen (none is set, and the endpoint's model list names no protocol); cliproxyapi is installed; choose one: ccmorph set demo1353357 model <model-id>" != 'OK adapter: this profile needs no translator now: its open session runs without one'
+E                 INFO adapter: this profile needs no translator until a model is chosen (none is set, and the endpoint's model list names no protocol); cliproxyapi is installed; choose one: ccmorph set demo1353339 model <model-id>
+E                 INFO adapter: this profile needs no translator until a model is chosen (none is set, and the endpoint's model list names no protocol); cliproxyapi is installed; choose one: ccmorph set demo1353357 model <model-id>
+FAILED tests/doctor_test.py::test_doctor_adapter_line_names_a_running_translator_issue_272[translator-running]
+FAILED tests/doctor_test.py::test_doctor_omits_the_adapter_line_for_an_unclassified_saved_model_issue_272[session-with-translator]
+FAILED tests/doctor_test.py::test_doctor_reports_existing_adapter_without_starting_it[hooks-build-lsof-over-deadline-issue-467]
+FAILED tests/doctor_test.py::test_doctor_reports_existing_adapter_without_starting_it[hooks-build-prompt]
+FAILED tests/doctor_test.py::test_doctor_reports_existing_adapter_without_starting_it[native-route-lsof-over-deadline-issue-467]
+FAILED tests/doctor_test.py::test_doctor_reports_existing_adapter_without_starting_it[native-route-prompt]
+FAILED tests/doctor_test.py::test_doctor_reports_existing_adapter_without_starting_it[translator-route-lsof-over-deadline-issue-467]
+FAILED tests/doctor_test.py::test_doctor_reports_existing_adapter_without_starting_it[translator-route-prompt]
+
+== pytest -n 0 (adapter-tree doctor tests)
+13 passed, 87 deselected in 21.63s
+
+== what an xdist worker exports (pytest -n 1, one-line probe test)
+warning: No `requires-python` value found in the workspace. Defaulting to `>=3.12`.
+worker gw0 COLUMNS='80' LINES='24'
+ps     : '/home/ubuntu/offload/0a54bb464893-1029686.tmp/main518/.venv/bin/python -u -c imp'
+ps -ww : '/home/ubuntu/offload/0a54bb464893-1029686.tmp/main518/.venv/bin/python -u -c import sys;exec(eval(sys.stdin.readline()))'
+worker none COLUMNS=None LINES=None
+ps     : '/home/ubuntu/offload/0a54bb464893-1029686.tmp/main518/.venv/bin/python -m pytest'
+ps -ww : '/home/ubuntu/offload/0a54bb464893-1029686.tmp/main518/.venv/bin/python -m pytest /home/ubuntu/offload/0a54bb464893-1029686.tmp/probe518/test_probe.py -q -p no:cacheprovider -n 0'

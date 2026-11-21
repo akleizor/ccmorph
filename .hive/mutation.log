@@ -337,3 +337,13 @@ mutation F (landing refusal S3, a translator beside a hooks shim): DoctorRoute h
 FAIL
 FAIL	github.com/akleizor/ccmorph/util	2.379s
 FAIL
+
+mutation G (#518 COLUMNS cause): psCmd without -ww (util/hop.go), the tree at 3f389ea
+    hop_test.go:199: the child must be read with its parent and argv, got {ppid:1648800 comm:slee args:/bin/sleep 3 start:{wall:0 ext:63930843806 loc:0xcaa8e0}}
+--- FAIL: TestPsProcessTableReadsStartTimes (0.07s)
+FAIL
+FAIL	github.com/akleizor/ccmorph/util	0.079s
+FAIL
+control, unmutated:
+--- PASS: TestPsProcessTableReadsStartTimes (0.08s)
+ok  	github.com/akleizor/ccmorph/util	0.083s

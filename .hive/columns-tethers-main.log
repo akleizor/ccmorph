@@ -1,0 +1,12 @@
+== main, -n 2
+                                    f"hooks={hooks}: adapter never served: "
+2 failed, 1 passed in 181.14s (0:03:01)
+E                                   AssertionError: False is not true : hooks=True: adapter never served: PORT=44189
+SUBFAILED(hooks='False') tests/adapter_test.py::AdapterTest::test_sigkilled_adapter_does_not_leak_its_children
+SUBFAILED(hooks='True') tests/adapter_test.py::AdapterTest::test_sigkilled_adapter_does_not_leak_its_children
+== main, -n 0
+                                    f"hooks={hooks}: adapter never served: "
+2 failed, 1 passed, 40 deselected in 180.62s (0:03:00)
+E                                   AssertionError: False is not true : hooks=True: adapter never served: PORT=45201
+SUBFAILED(hooks=False) tests/adapter_test.py::AdapterTest::test_sigkilled_adapter_does_not_leak_its_children
+SUBFAILED(hooks=True) tests/adapter_test.py::AdapterTest::test_sigkilled_adapter_does_not_leak_its_children

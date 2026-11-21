@@ -1,11 +1,4 @@
-host Linux x86_64 4 cores; umask 0022; HEAD 57beb61 on main 9a0dceb
-=== RUN   TestDoctorRouteAdapterLine
-=== RUN   TestDoctorRouteAdapterLine/needed_and_installed
-=== RUN   TestDoctorRouteAdapterLine/needed_and_not_installed,_brew_on_PATH
-=== RUN   TestDoctorRouteAdapterLine/needed_and_not_installed,_no_brew
-=== RUN   TestDoctorRouteAdapterLine/not_needed
-=== RUN   TestDoctorRouteAdapterLine/unknown,_translator_installed
-=== RUN   TestDoctorRouteAdapterLine/unknown,_translator_not_installed
+tree 3f389ea host gcp-us2 loadavg 6.31 13.88 13.74 1/410 1649117
 --- PASS: TestDoctorRouteAdapterLine (0.00s)
     --- PASS: TestDoctorRouteAdapterLine/needed_and_installed (0.00s)
     --- PASS: TestDoctorRouteAdapterLine/needed_and_not_installed,_brew_on_PATH (0.00s)
@@ -13,36 +6,18 @@ host Linux x86_64 4 cores; umask 0022; HEAD 57beb61 on main 9a0dceb
     --- PASS: TestDoctorRouteAdapterLine/not_needed (0.00s)
     --- PASS: TestDoctorRouteAdapterLine/unknown,_translator_installed (0.00s)
     --- PASS: TestDoctorRouteAdapterLine/unknown,_translator_not_installed (0.00s)
-=== RUN   TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable
---- PASS: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable (0.07s)
-=== RUN   TestDoctorRouteNamesASessionReadThatLostItsBound
-=== RUN   TestDoctorRouteNamesASessionReadThatLostItsBound/saved_model,_session_unreadable
-=== RUN   TestDoctorRouteNamesASessionReadThatLostItsBound/known_need,_session_unreadable
+--- PASS: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable (0.44s)
+    --- PASS: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable/shim-only (0.05s)
+    --- PASS: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable/translator-running (0.11s)
+    --- PASS: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable/translator-running-classified (0.09s)
+    --- PASS: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable/translator-and-hooks-shim (0.10s)
+    --- PASS: TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable/translator-and-hooks-shim-classified (0.09s)
 --- PASS: TestDoctorRouteNamesASessionReadThatLostItsBound (0.80s)
     --- PASS: TestDoctorRouteNamesASessionReadThatLostItsBound/saved_model,_session_unreadable (0.40s)
     --- PASS: TestDoctorRouteNamesASessionReadThatLostItsBound/known_need,_session_unreadable (0.40s)
-=== RUN   TestDurationWords
 --- PASS: TestDurationWords (0.00s)
-=== RUN   TestRunningAdapterMatchesArgvAcrossSpaces
---- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.14s)
-=== RUN   TestRunningAdapterEndsAPsStalledPastItsBound
+--- PASS: TestRunningAdapterMatchesArgvAcrossSpaces (0.09s)
 --- PASS: TestRunningAdapterEndsAPsStalledPastItsBound (1.01s)
-=== RUN   TestAdapterLine
-=== RUN   TestAdapterLine/needed,_installed
-=== RUN   TestAdapterLine/needed,_not_installed,_brew_on_PATH
-=== RUN   TestAdapterLine/needed,_not_installed,_no_brew
-=== RUN   TestAdapterLine/needed,_installed,_in_use
-=== RUN   TestAdapterLine/not_needed
-=== RUN   TestAdapterLine/session_running_a_translator
-=== RUN   TestAdapterLine/session_with_the_hooks_shim_and_a_translator
-=== RUN   TestAdapterLine/session_without_a_translator
-=== RUN   TestAdapterLine/no_model,_installed
-=== RUN   TestAdapterLine/no_model,_not_installed
-=== RUN   TestAdapterLine/no_model,_process_listing_unreadable
-=== RUN   TestAdapterLine/needed,_installed,_session_unreadable
-=== RUN   TestAdapterLine/saved_model,_process_listing_unreadable
-=== RUN   TestAdapterLine/saved_model_nothing_classified
-=== RUN   TestAdapterLine/no_model,_no_listing
 --- PASS: TestAdapterLine (0.01s)
     --- PASS: TestAdapterLine/needed,_installed (0.00s)
     --- PASS: TestAdapterLine/needed,_not_installed,_brew_on_PATH (0.00s)
@@ -59,46 +34,28 @@ host Linux x86_64 4 cores; umask 0022; HEAD 57beb61 on main 9a0dceb
     --- PASS: TestAdapterLine/saved_model,_process_listing_unreadable (0.00s)
     --- PASS: TestAdapterLine/saved_model_nothing_classified (0.00s)
     --- PASS: TestAdapterLine/no_model,_no_listing (0.00s)
-PASS
-ok  	github.com/akleizor/ccmorph/util	2.041s
-=== RUN   TestDoctorCompletionSaysOnlyWhatANewZshStillMisses
-=== RUN   TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/empty-home-gh363
-=== RUN   TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/fpath-line-only-gh363
-=== RUN   TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/fpath-and-compinit
-=== RUN   TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/compinit-only
-=== RUN   TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/fpath-below-compinit-gh363
-=== RUN   TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/fpath-from-env-only-gh363
-=== RUN   TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/brew-fpath-no-compinit-gh363
-=== RUN   TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/brew-rc-compinit
-=== RUN   TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/fish-login-shell
-=== RUN   TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/no-shell-both-halves
-=== RUN   TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/no-shell-fpath-only-gh363
---- PASS: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses (4.17s)
-    --- PASS: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/empty-home-gh363 (0.45s)
-    --- PASS: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/fpath-line-only-gh363 (0.44s)
-    --- PASS: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/fpath-and-compinit (0.73s)
-    --- PASS: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/compinit-only (0.47s)
-    --- PASS: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/fpath-below-compinit-gh363 (0.46s)
-    --- PASS: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/fpath-from-env-only-gh363 (0.45s)
-    --- PASS: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/brew-fpath-no-compinit-gh363 (0.44s)
-    --- PASS: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/brew-rc-compinit (0.73s)
+--- PASS: TestPsProcessTableReadsStartTimes (0.06s)
+--- PASS: TestPsProcessTableDoesNotWaitOnAGrandchildHoldingThePipe (0.10s)
+ok  	github.com/akleizor/ccmorph/util	2.525s
+--- PASS: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses (4.41s)
+    --- PASS: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/empty-home-gh363 (0.52s)
+    --- PASS: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/fpath-line-only-gh363 (0.46s)
+    --- PASS: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/fpath-and-compinit (0.74s)
+    --- PASS: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/compinit-only (0.46s)
+    --- PASS: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/fpath-below-compinit-gh363 (0.49s)
+    --- PASS: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/fpath-from-env-only-gh363 (0.47s)
+    --- PASS: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/brew-fpath-no-compinit-gh363 (0.47s)
+    --- PASS: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/brew-rc-compinit (0.80s)
     --- PASS: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/fish-login-shell (0.00s)
     --- PASS: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/no-shell-both-halves (0.00s)
     --- PASS: TestDoctorCompletionSaysOnlyWhatANewZshStillMisses/no-shell-fpath-only-gh363 (0.00s)
-=== RUN   TestDoctorCompletionQuotesADirectoryWithSpaces
 --- PASS: TestDoctorCompletionQuotesADirectoryWithSpaces (0.46s)
-=== RUN   TestDoctorCompletionSpeaksWhenTheProbeCannotAnswer
 --- PASS: TestDoctorCompletionSpeaksWhenTheProbeCannotAnswer (0.30s)
-=== RUN   TestDoctorCompletionKeepsTheMissingHalfWhenTheProbeRunsOutOfTime
 --- PASS: TestDoctorCompletionKeepsTheMissingHalfWhenTheProbeRunsOutOfTime (0.30s)
-=== RUN   TestDoctorCompletionHintFitsInTwoShortLines
---- PASS: TestDoctorCompletionHintFitsInTwoShortLines (1.82s)
-=== RUN   TestDoctorCompletionPrintsTheLineForAnInstallZshDoesNotSearch
---- PASS: TestDoctorCompletionPrintsTheLineForAnInstallZshDoesNotSearch (0.46s)
-=== RUN   TestDoctorCompletionStaysSilentWhenZshAlreadyFindsIt
---- PASS: TestDoctorCompletionStaysSilentWhenZshAlreadyFindsIt (0.51s)
-PASS
-ok  	github.com/akleizor/ccmorph/cli	8.030s
-ok  	github.com/akleizor/ccmorph/util	10.870s
-ok  	github.com/akleizor/ccmorph/cli	10.564s
+--- PASS: TestDoctorCompletionHintFitsInTwoShortLines (1.84s)
+--- PASS: TestDoctorCompletionPrintsTheLineForAnInstallZshDoesNotSearch (0.45s)
+--- PASS: TestDoctorCompletionStaysSilentWhenZshAlreadyFindsIt (0.53s)
+ok  	github.com/akleizor/ccmorph/cli	8.299s
+ok  	github.com/akleizor/ccmorph/util	11.050s
+ok  	github.com/akleizor/ccmorph/cli	10.618s
 rc=0
