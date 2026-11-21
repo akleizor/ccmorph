@@ -42,10 +42,15 @@ test: gate
 # fixture tests by name: os.WriteFile filters the mode it asks for through the
 # host umask, so a test that writes 0644 and asserts it is born 0600 on a 077
 # host. -count=1 keeps the cached 022 result from answering for it (#704).
+# Env is a tool too, so the suite runs once more under NO_PROXY='*', the
+# hostile shell of every machine that carries proxy exemptions: a test whose
+# subject routes by env must not quietly assert what a scrubbed shell produced
+# (#774, REVIEW.md). -count=1 for the same reason as above.
 test-go:
 	go vet ./...
 	go test ./...
 	umask 077 && go test -count=1 ./...
+	NO_PROXY='*' no_proxy='*' go test -count=1 ./... || { echo "red under a hostile proxy env (NO_PROXY='*'): env is a tool too — a test that reads the operator's proxy env is the same failure as a test that sees the operator's bridge binary; fix it with t.Setenv in the test, not by scrubbing this line (#774, .github/REVIEW.md)"; exit 1; }
 
 # The Hive's gate on every landing, and what `make test` runs. Each suite works in
 # its own scratch homes and mostly waits on process spawns, so they overlap: 185 s
