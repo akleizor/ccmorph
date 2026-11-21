@@ -17,6 +17,13 @@
 
 ### Fixed
 
+- **`ccmorph update <tag>` no longer leaves a new library beside the old
+  core.** A GitHub tag archive carries no `ccmorph-core`. The updater now
+  checks the download for the binary before it runs that tag's installer,
+  and the installer resolves it before its first copy, so the update is
+  refused and the install stays as it was. `ccmorph update` with no ref
+  (the release tarball) is unchanged, and a standalone
+  `install.sh --uninstall` still works from a tag archive (#721).
 - **A Gemini 4 tool call keeps its thought signature when the shim retries
   it, and a refusal for a missing one says so in one line.** On a model the
   translator serves on its chat path, the retry after a 400 keeps the block

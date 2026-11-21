@@ -64,6 +64,29 @@ if [ "$_ccm_local" = 0 ] || [ "${1:-}" = "--remote" ]; then
     [ -r "${_ccm_d}lib/ccmorph.sh" ] && [ -r "${_ccm_d}install.sh" ] && _ccm_src="$_ccm_d"
   done
   [ -n "$_ccm_src" ] || _ccm_fail "the download is not a ccmorph source tree: $_ccm_url"
+  # The download must carry the core binary its own installer will place. A
+  # GitHub tag archive carries only libexec/.gitkeep, and a tag's installer may
+  # be an older release that copies lib/ before it looks for the binary — the
+  # failure then leaves a new library beside the old core (#721). Validated
+  # HERE, before that installer runs, so a failed update changes nothing. A
+  # release tarball names the binary per platform (<name>-<os>-<arch>, from
+  # `make dist`); a checkout's archive carries the plain one.
+  # Only an install needs it: `--uninstall` places nothing, so a standalone
+  # install.sh --uninstall still hands a coreless tag archive to its own
+  # installer, which removes the command without a core.
+  if [ "${1:-}" != "--uninstall" ]; then
+    _ccm_os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    _ccm_arch="$(uname -m)"
+    case "$_ccm_arch" in
+      x86_64) _ccm_arch=amd64 ;;
+      aarch64) _ccm_arch=arm64 ;;
+    esac
+    _ccm_core=0
+    for _ccm_f in "${_ccm_src}libexec/ccmorph-core-${_ccm_os}-${_ccm_arch}" "${_ccm_src}libexec/ccmorph-core"; do
+      if [ -f "$_ccm_f" ] && [ -x "$_ccm_f" ]; then _ccm_core=1; break; fi
+    done
+    [ "$_ccm_core" = 1 ] || _ccm_fail "No ccmorph-core binary for ${_ccm_os}-${_ccm_arch} in the download: $_ccm_url — nothing was changed; install a release, which ships the binary for your platform."
+  fi
   echo "ccmorph: installing from $_ccm_url"
   sh "${_ccm_src}install.sh" "$@"
   _ccm_rc=$?
@@ -428,6 +451,37 @@ if ! command -v fzf >/dev/null 2>&1; then
   if (( ${#reply} )); then _offer "${reply[@]}" || true; fi
 fi
 
+# ccmorph-core is compiled Go, so it is the component that is not a tracked
+# file. A release tarball carries one prebuilt binary per
+# platform (<name>-<os>-<arch>, from `make dist`); a checkout carries the ones
+# `make shim` built. Nothing is compiled here: an installer that needs a Go
+# toolchain on a user's machine is a second dependency for one helper.
+#
+# Resolved BEFORE the first copy. A tree without it (a GitHub tag archive
+# carries only libexec/.gitkeep) is refused with the install it found still
+# whole — lib and core the old pair — not after the copy loop swapped lib/ and
+# then died on the missing binary (#721). The remote block above makes the same
+# check on a download before handing it to its own installer, which may be an
+# older release's.
+_shim_os="${$(uname -s):l}"
+_shim_arch="$(uname -m)"
+case "$_shim_arch" in x86_64) _shim_arch=amd64 ;; aarch64) _shim_arch=arm64 ;; esac
+_core_src=""   # the resolved ccmorph-core the copy below came from
+for _name in ccmorph-core; do
+  _shim=""
+  for _f in "$SRC/libexec/$_name-$_shim_os-$_shim_arch" "$SRC/libexec/$_name"; do
+    [[ -f "$_f" && -x "$_f" ]] && { _shim="$_f"; break }
+  done
+  [[ "$_name" == ccmorph-core ]] && _core_src="$_shim"
+  if [[ -z "$_shim" ]]; then
+    c_r "No $_name binary for $_shim_os-$_shim_arch beside this installer."
+    c_dim "  From a checkout: run 'make shim' (needs Go), then re-run ./install.sh."
+    c_dim "  Otherwise install a release: it ships the binary for your platform."
+    c_dim "  Nothing was changed."
+    exit 1
+  fi
+done
+
 # ---- copy infrastructure --------------------------------------------------
 mkdir -p "$CONFIG_DIR" "$BIN_DIR"
 
@@ -454,27 +508,9 @@ if [[ "$SRC" != "$CONFIG_REAL" ]]; then
   cp "$SRC/share/profile.conf.example" "$CONFIG_DIR/profile.conf.example"
 fi
 chmod +x "${EXECUTABLES[@]/#/$CONFIG_DIR/}"
-# ccmorph-core is compiled Go, so it is the component that is not a tracked
-# file. A release tarball carries one prebuilt binary per
-# platform (<name>-<os>-<arch>, from `make dist`); a checkout carries the ones
-# `make shim` built. Nothing is compiled here: an installer that needs a Go
-# toolchain on a user's machine is a second dependency for one helper.
-_shim_os="${$(uname -s):l}"
-_shim_arch="$(uname -m)"
-case "$_shim_arch" in x86_64) _shim_arch=amd64 ;; aarch64) _shim_arch=arm64 ;; esac
-_core_src=""   # the resolved ccmorph-core the copy below came from
+# Place the core resolved above, once its directory exists.
 for _name in ccmorph-core; do
-  _shim=""
-  for _f in "$SRC/libexec/$_name-$_shim_os-$_shim_arch" "$SRC/libexec/$_name"; do
-    [[ -f "$_f" && -x "$_f" ]] && { _shim="$_f"; break }
-  done
-  [[ "$_name" == ccmorph-core ]] && _core_src="$_shim"
-  if [[ -z "$_shim" ]]; then
-    c_r "No $_name binary for $_shim_os-$_shim_arch beside this installer."
-    c_dim "  From a checkout: run 'make shim' (needs Go), then re-run ./install.sh."
-    c_dim "  Otherwise install a release: it ships the binary for your platform."
-    exit 1
-  fi
+  _shim="$_core_src"
   # Remove first: copying over a running-signed Mach-O in place keeps the kernel's stale
   # code-signature cache for the old bytes, and macOS then kills the new binary (exit 137).
   [[ "${_shim:A}" == "${CONFIG_REAL}/libexec/$_name" ]] \
