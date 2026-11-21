@@ -17,6 +17,10 @@
 
 ### Fixed
 
+- **`ccmorph doctor <profile>` no longer calls a provider profile ready when
+  its bridge cannot start.** Doctor now asks the launch's own check: with
+  `cliproxyapi` missing it fails and names the install step, and a missing or
+  symlinked auth directory fails with the launch's own words (#787).
 - **`ccmorph update <tag>` no longer leaves a new library beside the old
   core.** A GitHub tag archive carries no `ccmorph-core`. The updater now
   checks the download for the binary before it runs that tag's installer,
