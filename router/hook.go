@@ -50,6 +50,10 @@ func aliasFor(model string) string {
 	return ""
 }
 
+// hookBudget is PreToolUse's deadline for the route and its ledger write, under
+// the 20 s hooks.json timeout. A variable so a test can shorten it.
+var hookBudget = 16 * time.Second
+
 // PreToolUse routes an Agent call: a same-profile pick runs natively with the
 // model and effort filled in; any other pick, or no pick, leaves the call as
 // written. The hook never denies a call. An explicit model or a fork stays the caller's.
@@ -82,7 +86,7 @@ func PreToolUse(in io.Reader, w io.Writer) {
 	if !portableAgent(str("subagent_type")) {
 		only = []string{session}
 	}
-	d, err := Decide(c, Request{Prompt: str("prompt"), Effort: str("effort"), Only: only, Deadline: time.Now().Add(16 * time.Second)})
+	d, err := Decide(c, Request{Prompt: str("prompt"), Effort: str("effort"), Only: only, Deadline: time.Now().Add(hookBudget)})
 	if err != nil || d.Pick == nil { // the router picks a model; it never blocks the call
 		reason := "no profile serves this agent's kind and tier"
 		if err != nil {
