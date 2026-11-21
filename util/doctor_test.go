@@ -169,9 +169,10 @@ func TestDoctorRouteAdapterLine(t *testing.T) {
 // Doctor's adapter report reads a live session through the real process
 // table, with no injected answer: the row a saved, unclassified model depends
 // on, and the in-use suffix a classified endpoint carries, come from the
-// kernel's own argv, so a report that drops the live session — shim-only or
-// with a running cliproxyapi child — fails here even when a loaded machine
-// would hide it end to end (#518).
+// kernel's own argv, so a report that drops the live session — shim-only, with
+// a running cliproxyapi child, or with that child beside a hooks build's
+// separate shim — fails here even when a loaded machine would hide it end to
+// end (#518).
 func TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable(t *testing.T) {
 	// This is about the wiring, not about winning a race with a loaded
 	// machine: the read gets room to answer.
@@ -192,11 +193,26 @@ func TestDoctorRouteReadsAnOpenSessionThroughTheProcessTable(t *testing.T) {
 			"OK adapter: this profile needs a translator now: an open session on it is running cliproxyapi"},
 		{"translator-running-classified", "/opt/bin/cliproxyapi", "", needed,
 			"OK adapter: this endpoint needs a translator; cliproxyapi is installed; an open session on this profile is using one now"},
+		{"translator-and-hooks-shim", "/opt/bin/cliproxyapi,/opt/bin/hooks-shim", "glm-4.6", saved,
+			"OK adapter: this profile needs a translator now: an open session on it is running cliproxyapi"},
+		{"translator-and-hooks-shim-classified", "/opt/bin/cliproxyapi,/opt/bin/hooks-shim", "", needed,
+			"OK adapter: this endpoint needs a translator; cliproxyapi is installed; an open session on this profile is using one now"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Setenv("CCMORPH_TEST_HOLD_CHILD", c.child)
 			profile := "dr" + strconv.Itoa(os.Getpid()) + strings.ReplaceAll(c.name, "-", "")
 			holdProc(t, os.Args[0], BridgeFiles(t.TempDir(), "p")[2], "/x/my adapter/ccmorph-core", "adapter", profile)
+			// The fixture is the shape it names: every child the hold started
+			// is in the session the table reads, so a case cannot pass on a
+			// child that never came up.
+			if c.child != "" {
+				session := decisiveRunningAdapter(t, profile)
+				for _, name := range strings.Split(c.child, ",") {
+					if !strings.Contains(session, ":"+filepath.Base(name)) {
+						t.Fatalf("the hold's session %q lacks its %s child", session, filepath.Base(name))
+					}
+				}
+			}
 			rows, _, _ := DoctorRoute(profile, "apikey", "https://example.test", c.model, "",
 				func(string) TranslatorNeed { return c.need }, "", "", false)
 			var got []string
