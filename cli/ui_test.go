@@ -259,8 +259,8 @@ func TestSearchPickerWithoutTerminalIssue725(t *testing.T) {
 			}, keeps: []string{"Cancelled"},
 		},
 		{
-			name: "refuses a picker that waits past the bound, without waiting on it",
-			body: mark + "\nexec sleep 30\n",
+			name:  "refuses a picker that waits past the bound, without waiting on it",
+			body:  mark + "\nexec sleep 30\n",
 			bound: "200ms",
 			code:  2, wants: []string{
 				"ccmorph: selection needs a terminal; pass the value directly",
