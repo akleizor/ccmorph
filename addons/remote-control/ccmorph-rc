@@ -47,6 +47,7 @@ import tempfile
 import time
 import urllib.parse
 import zlib
+from contextlib import suppress
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -235,8 +236,17 @@ def profile_type(profile: str) -> str:
     return profile_field(profile, "type")
 
 
+def account_candidates() -> list[str]:
+    """The Claude account profiles on the machine, listed without refusing.
+    The rc-hosts supervisor resolves `inference=<account>` from its reload
+    branch, where default_account()'s refusal would exit a long-lived process
+    over a config edit (issue #596); a CLI caller that ends anyway still uses
+    default_account()."""
+    return sorted(p.stem for p in STATE_ROOT.glob("*.conf") if profile_type(p.stem) == "sub")
+
+
 def default_account() -> str:
-    subs = sorted(p.stem for p in STATE_ROOT.glob("*.conf") if profile_type(p.stem) == "sub")
+    subs = account_candidates()
     if not subs:
         # There is nothing to pass --as yet, so the refusal names the command that
         # creates the profile instead (issue #276).
@@ -466,11 +476,21 @@ def edge_record(me: int, port: int, ca, upstream: str, route_env: dict, env) -> 
 
 
 def write_inference(word: str, path: Path = INFERENCE) -> None:
-    """The one writer of the switch file; rc-hosts calls it too."""
+    """The one writer of the switch file; rc-hosts calls it too. The temp name
+    is unique per write because the supervisor and a manual `--switch` both
+    land here: one shared `<target>.tmp` let each writer's replace() rename the
+    other's half-written temp away, or the two O_TRUNC opens interleave into a
+    torn word that inference_target silently reads as "route" (issue #596)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(word + "\n")
-    tmp.replace(path)   # atomic: a proxy never reads half a word
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:    # mkstemp's 0600: unique names, no umask race
+            fh.write(word + "\n")
+        os.replace(tmp, path)   # atomic: a proxy never reads half a word
+    except OSError:
+        with suppress(OSError):
+            os.unlink(tmp)      # a failed write leaves no temp beside the switch file
+        raise
 
 
 def switch(profile: str, account: str) -> None:
