@@ -1453,6 +1453,10 @@ def test_bare_doctor_names_both_completion_lines_gh363(tmp_path):
     # doctor must still name the compinit line the user has to add.
     "fpath=($HOME/.config/ccmorph/share/zsh/site-functions $fpath)\r\n"
     "autoload -Uz compinit && compinit\r\n",
+    # #582 review: zsh reads the whole file, so a string opened on one line is
+    # still open on the next; once it closes, ;# begins a comment there too.
+    "fpath=($HOME/.config/ccmorph/share/zsh/site-functions $fpath)\n"
+    ": 'a\nb';# autoload -Uz compinit && compinit\n",
 ])
 def test_bare_doctor_completion_row_follows_zsh_on_word_starts_and_crs_gh582(tmp_path, rc):
     result, _ = run_bare_doctor(tmp_path, rc=rc)
