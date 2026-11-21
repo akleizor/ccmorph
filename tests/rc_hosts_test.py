@@ -724,6 +724,26 @@ class FakeProc:
         return self.rc
 
 
+class _ScriptedTime:
+    """`time` as main() sees it: time() from the test's clock and sleep() the
+    scripted tick, while every other module keeps the real `time`. Patching the
+    real module's sleep made a subprocess.run(timeout=...) poll -- one short
+    internal time.sleep -- advance the script's ticks, so a ps call inside
+    cycle() ran the script to its SystemExit."""
+
+    def __init__(self, real, clock, sleep):
+        self._real, self._clock, self._sleep = real, clock, sleep
+
+    def time(self):
+        return self._clock[0] if self._clock is not None else self._real.time()
+
+    def sleep(self, seconds):
+        self._sleep(seconds)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
 def run_main(m, monkeypatch, tmp_path, cfg, start, sleep=None,
              edge_ready=lambda route: True, clock=None, args=None, logs=True):
     """Drive m.main() over cfg until the scripted sleep raises SystemExit: logs
@@ -737,15 +757,13 @@ def run_main(m, monkeypatch, tmp_path, cfg, start, sleep=None,
         (tmp_path / "logs").mkdir(exist_ok=True)
     monkeypatch.setattr(m, "edge_ready", edge_ready)
     monkeypatch.setattr(m.Host, "start", start)
-    if clock is not None:
-        monkeypatch.setattr(m.time, "time", lambda: clock[0])
     if sleep is None:
         ticks = [0]
         def sleep(_):
             ticks[0] += 1
             if ticks[0] > 4:
                 raise SystemExit
-    monkeypatch.setattr(m.time, "sleep", sleep)
+    monkeypatch.setattr(m, "time", _ScriptedTime(m.time, clock, sleep))
     with pytest.raises(SystemExit):
         m.main(args if args is not None else ["--config", str(cfg)])
 
@@ -2433,15 +2451,25 @@ def test_record_session_names_the_session_a_log_file_records():
         assert m.record_session(name) is None
 
 
+def _idle_check_due(m):
+    """A Clock whose idle check is due now and whose recovery step is not."""
+    state = m.Clock()
+    now = state.last_idle_check + m.IDLE_CHECK + 1
+    state.last_recover = now
+    return state, now
+
+
+def _age_past_retention(m, *files):
+    stale = time.time() - (m.LOG_KEEP_DAYS + 1) * 86400
+    for f in files:
+        os.utime(f, (stale, stale))
+
+
 def test_a_running_supervisor_removes_session_records_past_retention(tmp_path, monkeypatch):
     """#758: a sweep only at supervisor start let the log dir refill between
     restarts -- launchd KeepAlive never restarts a healthy supervisor. The age
     cap must ride the same idle-check path as the size cap (bound_logs), so the
-    test drives cycle(), not sweep_logs().
-    And the sweep must spare a quiet but running host's files: the child holds
-    append descriptors on its stdout log and debug logs (start passes one, the
-    --debug-file appends for the life of the run), so unlinking one leaves the
-    writer on an orphaned inode bound_logs() can no longer cap by path."""
+    test drives cycle(), not sweep_logs()."""
     m = load()
     logs = tmp_path / "logs"
     logs.mkdir()
@@ -2450,21 +2478,62 @@ def test_a_running_supervisor_removes_session_records_past_retention(tmp_path, m
     kept = logs / "bridge-transcript-cse_01NEW.jsonl"
     old.write_text("x")
     kept.write_text("x")
-    clock = [time.time()]
-    hosts = _running_host(m, tmp_path / "repo", clock)
+    _age_past_retention(m, old)
+    state, now = _idle_check_due(m)
+    assert m.cycle({}, [], now, state) is True
+    assert not old.exists()
+    assert kept.exists()
+
+
+def test_the_periodic_sweep_holds_only_what_a_running_process_still_writes(tmp_path, monkeypatch):
+    """#758: a running host's own stdout log and --debug-file, and the records of
+    a session some process still serves, survive the sweep however quiet: the
+    writer holds them open and bound_logs() must still cap them by path. A dead
+    session's records go, even on a host that is still up -- a host outlives
+    its sessions, and holding them by host let a healthy host refill the dir."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    monkeypatch.setattr(m, "live_sessions", lambda: {"01LIVE"})
+    hosts = _running_host(m, tmp_path / "repo", [time.time()])
     h = next(iter(hosts.values()))
-    live = [h.logfile, h.debugfile.with_name(f"{h.debugfile.stem}-session_01S.log"),
-            logs / "bridge-transcript-session_01S.jsonl"]
-    for f in live:
+    pin = m.Host(str(tmp_path / "pin"), "gw", ("--session-id", "session_01PIN"))
+    pin.proc = FakeProc()
+    hosts[pin.folder] = pin
+    stem = h.debugfile.stem
+    held = [h.logfile, h.debugfile, logs / f"{stem}-cse_01LIVE.log",
+            logs / "bridge-transcript-cse_01LIVE.jsonl",
+            pin.logfile, logs / "bridge-transcript-session_01PIN.jsonl",
+            logs / f"{pin.debugfile.stem}-cse_01PIN.log"]
+    dead = [logs / f"{stem}-cse_01DEAD.log", logs / "bridge-transcript-cse_01DEAD.jsonl",
+            h.logfile.with_suffix(".log.1")]
+    fresh = logs / f"{stem}-cse_01DONE.log"
+    for f in (*held, *dead, fresh):
         f.write_text("x")
-    stale = time.time() - (m.LOG_KEEP_DAYS + 1) * 86400
-    for f in [old, *live]:
-        os.utime(f, (stale, stale))
-    state = m.Clock()
-    m.cycle(hosts, [], state.last_idle_check + m.IDLE_CHECK + 1, state)
-    assert not old.exists()                       # dead past the week: gone
-    assert kept.exists()                          # fresh: kept
-    assert all(f.exists() for f in live)          # live host's open files: kept
+    _age_past_retention(m, *held, *dead)
+    state, now = _idle_check_due(m)
+    m.cycle(hosts, [], now, state)
+    assert [f.name for f in held if not f.exists()] == []    # still written: kept
+    assert [f.name for f in dead if f.exists()] == []        # same host, session over: gone
+    assert fresh.exists()                                    # inside the week: kept
+
+
+def test_the_periodic_sweep_waits_when_the_process_table_is_unread(tmp_path, monkeypatch):
+    """#758: with no process table nothing proves a session dead, so that idle
+    check unlinks nothing; the next one sweeps."""
+    m = load()
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(m, "LOGS", logs)
+    monkeypatch.setattr(m, "live_sessions", lambda: None)
+    hosts = _running_host(m, tmp_path / "repo", [time.time()])
+    old = logs / "bridge-transcript-cse_01OLD.jsonl"
+    old.write_text("x")
+    _age_past_retention(m, old)
+    state, now = _idle_check_due(m)
+    assert m.cycle(hosts, [], now, state) is True
+    assert old.exists()
 
 
 def test_a_pinned_host_start_removes_its_stale_bridge_transcript(tmp_path, monkeypatch):

@@ -170,8 +170,8 @@ def sweep_logs(now: float | None = None, keep: "frozenset | set" = frozenset()) 
     files and 2.8 GB, the largest written on 11-20, and the internal disk was under
     its swap floor.
 
-    `keep` names the files a running process still has open (Host.live_logs): a
-    quiet run's files age past the week too, and unlinking one leaves its writer
+    `keep` names the files a running process still writes (held_logs): a quiet
+    run's files age past the week too, and unlinking one leaves its writer
     appending to an orphaned inode that bound_logs() can no longer reach by path."""
     cutoff = (time.time() if now is None else now) - LOG_KEEP_DAYS * 86400
     try:
@@ -395,22 +395,6 @@ class Host:
     def debug_logs(self) -> list[Path]:
         """The bridge's debug log and its session child's (<name>.debug-<id>.log)."""
         return [self.debugfile, *LOGS.glob(f"{self.debugfile.stem}-*.log")]
-
-    def live_logs(self) -> list[Path]:
-        """Files this host's running process tree is still writing: the stdout/stderr
-        log (start() hands the child the append descriptor) and the debug logs
-        passed as --debug-file, plus each debug-logging session's transcript -- the
-        `<name>.debug-<id>.log` name is the session-id map the codebase already
-        uses. A quiet run's files age past LOG_KEEP_DAYS too, so the retention
-        sweep must be told to spare these (#758)."""
-        files = [self.logfile, *self.debug_logs()]
-        if self.session_id:
-            files.append(LOGS / f"bridge-transcript-{self.session_id}.jsonl")
-        stem = self.debugfile.stem          # debug file "<name>.debug-<id>.log" ->
-        for f in self.debug_logs():         # transcript "bridge-transcript-<id>.jsonl"
-            if f.name.startswith(f"{stem}-") and f.name.endswith(".log"):
-                files.append(LOGS / f"bridge-transcript-{f.name[len(stem) + 1:-4]}.jsonl")
-        return files
 
     def archived(self) -> bool:
         """Whether this conversation is gone from the app side: archived (409) or
@@ -1618,6 +1602,32 @@ def edit_config(config: Path, folder: str, sid: str | None = None, *,
         log(f"config not edited: {e}")
 
 
+def held_logs(hosts: "dict[str, Host]") -> "set[Path] | None":
+    """The files in LOGS a running process still writes, which the periodic sweep
+    must leave however old (#758): a quiet file is not a dead one, and unlinking
+    one leaves its writer on an inode bound_logs() can no longer cap by path.
+    That is each running host's own stdout log (start() hands the child the
+    descriptor) and --debug-file, and the records of every session a process
+    still serves (live_sessions(), plus each running pinned host's own). A dead
+    session's records are not held, whichever host they belong to: a host
+    outlives its sessions. None when the process table cannot be read: the sweep
+    then waits for the next check rather than guess -- a week's cap loses
+    nothing to ten minutes."""
+    running = [h for h in hosts.values() if h.proc]
+    if not running:
+        return set()          # a host's sessions die with it: nothing here is written
+    live = live_sessions()
+    if live is None:
+        return None
+    live = live | {h.session_id.split("_", 1)[-1] for h in running if h.session_id}
+    held = {f for h in running for f in (h.logfile, h.debugfile)}
+    try:
+        held |= {f for f in LOGS.glob("*") if record_session(f.name) in live}
+    except OSError:
+        return None
+    return held
+
+
 class Clock:
     """What main() carries between cycles for the recovery and log-cap steps."""
 
@@ -1650,9 +1660,11 @@ def cycle(hosts: "dict[str, Host]", repos: list[str], now: float, clock: Clock) 
         if h.proc:
             h.bound_logs()     # archived and unused: drop its line
     # #755's age cap rides this same tick: KeepAlive never restarts a healthy
-    # supervisor, so start-only let the dir refill. A running host's open files
-    # ride along in `keep`: their age is the run's quiet, not the record's end.
-    sweep_logs(keep={f for h in hosts.values() if h.proc for f in h.live_logs()})
+    # supervisor, so start-only let the dir refill (#758). What a running process
+    # still writes is held back: its age is the run's quiet, not the record's end.
+    held = held_logs(hosts)
+    if held is not None:      # the process table unread: the next check sweeps
+        sweep_logs(keep=held)
     clock.last_idle_check = now
     return True
 
