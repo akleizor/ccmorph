@@ -443,7 +443,10 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
     # handlers, then unblock: even a pending signal cannot land in the tiny window
     # between the file being created and key_file receiving its name.
     startup_signals = (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
-    old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, startup_signals)
+    # Ctrl-C is blocked across the same windows (it is only deferred, never handled
+    # here): a KeyboardInterrupt raised inside mkstemp leaves the file with no name.
+    blocked = (*startup_signals, signal.SIGINT)
+    old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, blocked)
     old_handlers = {sig: signal.getsignal(sig) for sig in startup_signals}
     # Only a signal left at SIG_DFL ends the process without unwinding. One the
     # caller ignores (nohup ignores HUP) stays ignored: it cannot leave the key behind.
@@ -489,7 +492,7 @@ def own_edge(route: str, me: int, args, fixed_port: int | None):
     finally:
         # Close the cleanup window too: a TERM/HUP during unlink must not re-enter
         # interrupted while this finally block is already unwinding.
-        signal.pthread_sigmask(signal.SIG_BLOCK, startup_signals)
+        signal.pthread_sigmask(signal.SIG_BLOCK, blocked)
         try:
             if fd is not None:
                 with suppress(OSError):
@@ -575,6 +578,7 @@ def switch(profile: str, account: str) -> None:
     edge (that edge's route), or any other route or provider profile, which is brought
     up beside the edge and handed to its proxy."""
     word = "account" if profile == account else "route" if live_edge(profile) else profile
+    hand = payload = None
     if word == profile:
         if profile_type(profile) == "sub":
             die(f"'{profile}' is a Claude account profile, but the hosts sign in as '{account}'")
@@ -591,29 +595,42 @@ def switch(profile: str, account: str) -> None:
                     if profile_type(profile) == "provider" else start_adapter(profile, owner, adapter_env()))
         tiers = pinned_tiers(route_env)
         hand = STATE / f"switch-{profile}.json"
-        tmp = hand.with_suffix(".tmp")
         payload = json.dumps({"upstream": upstream, "key": key, "tiers": tiers}).encode()
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            os.write(fd, payload)
-        except BaseException:
-            with suppress(OSError):
-                os.unlink(tmp)        # a half-written handoff still holds the route key
-            raise
-        finally:
-            os.close(fd)
-        tmp.replace(hand)
+    # From the temp's first byte to the word that makes the next request read it, the
+    # handoff is the route key on disk with nothing else to remove it. The cleanup
+    # below runs only when Python unwinds: TERM/HUP/QUIT at their default kill without
+    # unwinding, and Ctrl-C can land between two statements. So the window runs with
+    # them blocked (deferred, not handled: dispositions stay the caller's), and one
+    # that arrives is delivered once the handoff is live or gone. Only local file
+    # writes happen in here; the adapter start that can take long is above.
+    old_mask = signal.pthread_sigmask(
+        signal.SIG_BLOCK, (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT, signal.SIGINT))
     try:
-        write_inference(word)
-    except BaseException:
-        if word == profile:
-            # The word never landed, so no request reads this handoff: leaving it would
-            # keep the route key on disk for good (README: no lingering file). Only this
-            # write's own payload goes, never a newer handoff another switch left.
-            with suppress(OSError):
-                if hand.read_bytes() == payload:
-                    hand.unlink()
-        raise
+        if hand is not None:
+            tmp = hand.with_suffix(".tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                os.write(fd, payload)
+            except BaseException:
+                with suppress(OSError):
+                    os.unlink(tmp)    # a half-written handoff still holds the route key
+                raise
+            finally:
+                os.close(fd)
+            tmp.replace(hand)
+        try:
+            write_inference(word)
+        except BaseException:
+            if hand is not None:
+                # The word never landed, so no request reads this handoff: leaving it would
+                # keep the route key on disk for good (README: no lingering file). Only this
+                # write's own payload goes, never a newer handoff another switch left.
+                with suppress(OSError):
+                    if hand.read_bytes() == payload:
+                        hand.unlink()
+            raise
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
     print(f"ccmorph-rc: inference now goes to '{profile}' from the next turn", file=sys.stderr)
 
 
