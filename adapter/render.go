@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"github.com/akleizor/ccmorph/ordjson"
 	"github.com/akleizor/ccmorph/quirks"
 	"github.com/akleizor/ccmorph/shim"
+	"github.com/akleizor/ccmorph/util"
 )
 
 // q is a value as a YAML double-quoted scalar: Python's json.dumps escaping
@@ -315,21 +315,9 @@ openai-compatibility:
 // 8.0.x alike. A missing or unparseable version counts as new: omitting the block
 // is the safe shape there.
 func cloakNeverFor(path string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	out, _ := exec.CommandContext(ctx, path, "-h").CombinedOutput()
-	return cloakNeverForBanner(string(out))
+	return cloakNeverForBanner(util.ClipBanner(path))
 }
 
-var bannerVersion = regexp.MustCompile(`CLIProxyAPI Version: v?(\d+)\.(\d+)\.(\d+)`)
-
 func cloakNeverForBanner(out string) bool {
-	m := bannerVersion.FindStringSubmatch(out)
-	if m == nil {
-		return false
-	}
-	maj, _ := strconv.Atoi(m[1])
-	min, _ := strconv.Atoi(m[2])
-	pat, _ := strconv.Atoi(m[3])
-	return maj < 8 || (maj == 8 && (min == 0 && pat < 34))
+	return util.BannerBelow(out, 8, 0, 34)
 }
