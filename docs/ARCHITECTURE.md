@@ -712,14 +712,32 @@ names and incremental spend cursors survive. During replacement it also keeps
 one `previous` index; a reader uses the generation matching the JSONL digest,
 so a process killed between the two renames still has a readable archive. Every reader merges the archive
 with any recreated day folder; a later file replaces its archived filename only
-when it carries the same response and turn. A conflicting identity, multiline
-receipt, or failed verification leaves the source files untouched.
+when it carries the same response and turn. A conflicting identity keeps both
+rows, the archived one under a spill-style name. A multiline receipt, which
+readers count but one archive line cannot hold, stays in its folder. A row no
+reader counts (zero bytes, truncated, not one JSON object) is moved to
+`ccmorph/usage-dropped/<day>/<mtime_ns>-<name>` with one stderr line, so the
+day can close and its bytes stay as the record. A failed verification leaves
+the source files untouched.
 Compaction uses the existing store move lock, writes atomically, and re-reads
 and verifies the full content, row count and response/turn identities before
 removing any source file. Multiply-linked receipts remain in their folder until
 the legacy move resolves their aliases. A quota call compacts at most one closed
-day; `ccmorph-core usage-compact` drains the backlog. A report refuses a busy
+day, held to a statusline's budget: a day folder over 2000 entries or 2 MiB of
+receipts, or an archive and index over 2 MiB, is left whole after reading at
+most that much, and no step starts after half a second.
+`ccmorph-core usage-compact` drains the backlog and those larger days. A report refuses a busy
 store with a plain error rather than printing a partial total. No daemon is added.
+Every store read opens a receipt or archive without waiting on the open and
+refuses anything but a regular file, so a FIFO or device left under a
+receipt's name is named, never waited on. A receipt still there that a run
+cannot read is skipped and named by quota, the report and the export alike,
+and each still totals every other receipt, so the three agree: the report
+goes on; quota carries that total beside its reason and fails the run; the
+export writes nothing over the export already there and fails the run. A
+receipt gone between listing and read is the store's own relocation, which
+all three skip. A response held under both a flat name and a day folder's
+counts once in every reader, by the day folder's copy.
 
 The row is initially written in the day folder of the row's own UTC stamp, so a response id quoted in a Claude
 Code transcript joins to what that turn

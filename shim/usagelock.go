@@ -8,22 +8,27 @@ import (
 	"github.com/akleizor/ccmorph/util/paths"
 )
 
-// Closed-day writes and adjacent-copy retirement exclude compaction. Today's
-// ordinary stream does no locking: neither today nor yesterday can be compacted.
-func lockClosedUsage(dirs []string) (*os.File, error) {
-	now := time.Now().UTC()
-	before := now.AddDate(0, 0, -1).Format(paths.DayLayout)
-	today := now.Format(paths.DayLayout)
-	for i, dir := range dirs {
+// lockClosedUsage takes the store lock when a write can reach a day the
+// compactor may fold into its archive. now is the instant the pass acts on:
+// its closed-day boundary is paths.UsageOpenFrom's, the one readers and the
+// compactor compute from the same instant, so no day is both compactable and
+// still being written. An open day's ordinary stream does no locking.
+func lockClosedUsage(now time.Time, dirs []string) (*os.File, error) {
+	openFrom := paths.UsageOpenFrom(now)
+	for _, dir := range dirs {
 		day := filepath.Base(dir)
-		if !paths.IsDayName(day) || (day >= before && (i != 0 || day >= today)) {
+		if !paths.IsDayName(day) || day >= openFrom {
 			continue
 		}
 		base := usageBase()
 		if err := os.MkdirAll(base, 0o700); err != nil {
 			return nil, err
 		}
-		return paths.UsageStoreLock(base, true)
+		// A hook that queues behind a compaction's exclusive hold across its
+		// I/O can freeze a Stop for minutes with no message; the store's own
+		// bound refuses instead, and the cursor stays on the unwritten row
+		// (INTENT 8, #654).
+		return paths.UsageStoreLockWithin(base, true, paths.UsageLockWait)
 	}
 	return nil, nil
 }
