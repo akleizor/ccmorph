@@ -2793,6 +2793,36 @@ def test_every_shipped_python_helper_uses_nothing_newer_than_the_python_38_floor
     assert not bad, bad
 
 
+def test_no_shipped_python_helper_loads_a_module_with_load_module():
+    """Loader.load_module() is deprecated in 3.12 and gone in 3.15: a shipped script
+    that loads through it starts raising AttributeError the day python3 bumps, and
+    the rc-hosts supervisor would crash-loop every start with no edge maintained
+    (GH-812). The floor test above catches APIs newer than 3.8; this is its ceiling
+    twin over the same selection walk: newer APIs that are already removed.
+    This file itself is not in the walk (no python shebang), so the message below
+    cannot match its own rule."""
+    import subprocess
+    root = SCRIPT.parent.parent.parent
+    names = subprocess.run(["git", "ls-files"], cwd=root, capture_output=True, text=True,
+                           check=True, timeout=HANG_TIMEOUT).stdout.split()
+    bad = []
+    for name in names:
+        path = root / name
+        if not path.is_file() or path.is_symlink():
+            continue
+        text = path.read_text(errors="replace")
+        if not is_python_helper(name, text):
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if ".load_module(" in line:
+                bad.append(f"{name} line {lineno}: {line.strip()}")
+    assert not bad, (
+        "load_module() was removed in Python 3.15 (deprecated in 3.12), so this "
+        "launcher load breaks the day python3 bumps; use importlib.util."
+        "spec_from_loader + module_from_spec + exec_module instead "
+        "(see tests/support.py load_script): " + "; ".join(bad))
+
+
 def _running_host(m, repo, clock):
     """A repo host with a live process, up long enough to be hand-back eligible."""
     h = m.Host(str(repo), "gw")
