@@ -1395,3 +1395,16 @@ def test_router_report_with_profile_rows_prints_no_empty_message(box):
     result = box.run('router', 'report')
     assert 'No profiles to report' not in result.stdout, result.stdout
     assert 'calls slack (points)' in result.stdout, result.stdout
+
+
+def test_help_uninstall_names_the_state_root_the_command_reads(box):
+    # #791: help uninstall always said profiles stay in ~/.config/ccmorph,
+    # even with CCMORPH_STATE_DIR elsewhere — the rewrite only replaced the
+    # trailing-slash spelling, so the bare one survived. The page now names
+    # the root this command actually reads.
+    moved = box.home / 'elsewhere'
+    box.env['CCMORPH_STATE_DIR'] = str(moved)
+    page = box.run('help', 'uninstall')
+    assert page.returncode == 0, page.stderr
+    assert 'in ~/elsewhere' in page.stdout, page.stdout
+    assert '~/.config/ccmorph' not in page.stdout, page.stdout

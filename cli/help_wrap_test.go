@@ -352,3 +352,32 @@ func TestPickerNotePromisesArrowKeysOnlyWhereTheyMove(t *testing.T) {
 		}
 	}
 }
+
+// GH-791: the conf-dir rewrite replaced only the "~/.config/ccmorph/" spelling
+// with a trailing slash, so help uninstall still promised "profiles and
+// credentials stay in ~/.config/ccmorph" on a host whose state root
+// CCMORPH_STATE_DIR selects is elsewhere — advice pointing at a directory the
+// state never touched. The rewrite covers the bare spelling too: the page
+// names the root this launcher resolved, whatever a page spells it inside of.
+func TestHelpUninstallNamesTheResolvedStateRoot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	redirected := filepath.Join(t.TempDir(), "elsewhere", "ccmorph")
+	underHome := filepath.Join(home, "moved-ccmorph")
+	defaultRoot := filepath.Join(home, ".config", "ccmorph")
+	spellings := map[string]string{
+		redirected:  redirected,
+		underHome:   "~/moved-ccmorph",
+		defaultRoot: "~/.config/ccmorph",
+	}
+	for root, spelled := range spellings {
+		page := helpPageFrom(t, &launcher{dir: root}, "uninstall", 0)
+		if !strings.Contains(page, "in "+spelled) {
+			t.Errorf("help uninstall with the state root at %s does not name it as %s:\n%s", root, spelled, page)
+		}
+	}
+	// A redirected page must not keep pointing at the default root.
+	if page := helpPageFrom(t, &launcher{dir: redirected}, "uninstall", 0); strings.Contains(page, "~/.config/ccmorph") {
+		t.Errorf("help uninstall with the state root at %s still names the default root:\n%s", redirected, page)
+	}
+}

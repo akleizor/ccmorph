@@ -956,7 +956,11 @@ func (l *launcher) usageAt(topic string, width int) int {
 			}
 		} else {
 			// Every other page keeps spelling a root under home ~/… (GH-384).
-			body = strings.ReplaceAll(body, "~/.config/ccmorph/", l.confDirSpelling()+"/")
+			// The root itself is replaced, not only paths under it: help
+			// uninstall names the bare root profiles stay in (#791), and the
+			// same replacement still rewrites every path that followed the
+			// trailing slash before.
+			body = strings.ReplaceAll(body, "~/.config/ccmorph", l.confDirSpelling())
 		}
 	}
 	// The template's path is the code's, not the state root's: added after the
