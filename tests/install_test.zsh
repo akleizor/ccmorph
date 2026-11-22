@@ -484,6 +484,21 @@ grep -qF "$d/home/.claude/projects is a symlink to" "$d/out.dang" \
   && grep -qF "$d/home/.claude/projects" "$d/out.dang" \
   && ok "uninstall: a dangling shared store is named and its link is on the rm" \
   || { fail "uninstall: dangling shared store not named"; cat "$d/out.dang"; }
+# A store link that resolves INTO ~/.claude (here: `.`): following it would
+# label the whole harness layer as history and hand rm native claude's
+# settings and the plugin store this report promises keeps working. The rm
+# must carry the link only, and the layer must survive (#810 gate).
+rm "$d/home/.claude/projects"
+ln -s . "$d/home/.claude/projects"
+touch "$d/home/.claude/settings.json"
+mkdir -p "$d/home/.claude/plugins"
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
+  zsh "$REPO/install.sh" --uninstall >"$d/out.selflink" 2>&1
+! grep -F '  rm -rf ' "$d/out.selflink" | grep -Eq 'home/[.]claude/?([[:space:]]|$)' \
+  && [[ -f "$d/home/.claude/settings.json" && -d "$d/home/.claude/plugins" ]] \
+  && grep -qF "$d/home/.claude/projects is a symlink to $d/home/.claude, which sits inside" "$d/out.selflink" \
+  && ok "uninstall: a store link resolving into ~/.claude is named as the link, never the layer" \
+  || { fail "uninstall: the rm would delete the ~/.claude layer through a self-referential store link"; cat "$d/out.selflink"; }
 fi
 
 # --- 5. uninstall removes ONLY the command, repairs the plugin index, and names
@@ -591,6 +606,13 @@ grep -qxF "  $cfg  (the installed code)" "$d/out" \
   && ok "state-dir uninstall: names the code dir as code, not as the profiles' home" || { fail "state-dir uninstall: code dir line wrong"; cat "$d/out" }
 grep -qxF "  rm -rf $state $cfg" "$d/out" \
   && ok "state-dir uninstall: the rm names both roots" || { fail "state-dir uninstall: rm line wrong"; cat "$d/out" }
+# Every printed entry is promised: the guide's uninstall sentence must cover the
+# separate installed-code line this redirect report just printed (#810).
+if sed -n '/^## Updating/,/^## /p' "$REPO/docs/guide.md" | grep -qF 'installed code'; then
+  ok "the guide promises the installed-code entry the redirect report prints"
+else
+  fail "the guide omits the installed-code entry printed above"
+fi
 grep -qxF "  security delete-generic-password -s ccmorph -a team.api_key" "$d/out" \
   && ok "state-dir uninstall: keychain refs are read off the redirected confs" || { fail "state-dir uninstall: keychain line missing"; cat "$d/out" }
 grep -qF "\"$d/home/.claude/plugins/marketplaces/example\"" "$d/home/.claude/plugins/known_marketplaces.json" \
