@@ -114,10 +114,13 @@ as a `.migrated` backup — your profile gains its own context data, nothing in 
 is removed. There is no shell to re-source: the
 new code is live on the next run. `ccmorph uninstall` removes the command
 and leaves your profiles alone: it lists what stays, wherever one of these
-exists — the state root with its profiles and credentials, the shared session
-history under `~/.claude` (transcripts, prompt history and pasted text), the
-usage receipts, and on macOS the keychain items your profiles reference —
-with the commands that remove them. It first repairs the plugin
+exists — the state root with its profiles and credentials, and when a
+`CCMORPH_STATE_DIR` redirect moved that root elsewhere, the old install
+directory as the installed code (and any profiles a later redirect left in
+it) it still holds; the shared session history under `~/.claude`
+(transcripts, prompt history and pasted text); the usage receipts; and on
+macOS the keychain items your profiles reference — with the commands that
+remove them. It first repairs the plugin
 index paths a profile session left in `~/.claude/plugins`, so a plugin installed
 from a profile keeps loading in native `claude` after the state root is gone.
 

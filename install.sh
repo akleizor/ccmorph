@@ -260,13 +260,33 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   # `$ERRNO`/`$errnos` name the stat failure; without the module they stay empty,
   # which counts as "could not be asked", never as proof of a dangling link.
   zmodload zsh/system 2>/dev/null || :
+  # The resolved ~/.claude, the one layer this report must never hand to rm:
+  # native claude's files and the plugin store live there and the report below
+  # promises the plugins keep working (#810 gate).
+  _un_claude="${HOME:A}/.claude"
   _un_unlinked() {
+    # $1 = the path to name; $2, when set, = that path spelled with its own
+    # last component kept — a history store's canonical position, the one
+    # target under ~/.claude a history link may legitimately resolve to.
     local p="${1:a}" t n first="" e=""
     REPLY="$1"
     [[ -L "$p" ]] || return 0
     ERRNO=0
     if [[ -e "$p" ]]; then
-      REPLY="${p:A}"
+      t="${p:A}"
+      # A target that contains ~/.claude (the layer itself via `.`, the home
+      # via `..`) or, for a history store, sits inside it (a link spelling
+      # plugins/ or settings.json) is not removable history: naming it would
+      # label the whole harness layer as session history and delete native
+      # claude's files with it. Name the link — its removal removes only
+      # itself — and leave the target for its owner (#810 gate).
+      if [[ "$t" == "$_un_claude" || "$_un_claude" == "$t"/* ||
+            ( -n "${2:-}" && "$t" == "$_un_claude"/* && "$t" != "$2" ) ]]; then
+        REPLY="$p"
+        _un_links+=("$p is a symlink to $t, which sits inside ~/.claude or contains it: naming it would remove native claude's own files, so the rm removes only the link; $t stays: it is yours to resolve.")
+        return 0
+      fi
+      REPLY="$t"
       _un_links+=("$p is a symlink to $REPLY and stays: it is yours to remove.")
       return 0
     fi
@@ -325,7 +345,7 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   _un_hist=()
   for _un_h in "$HOME/.claude/history.jsonl" "$HOME/.claude/projects" "$HOME/.claude/paste-cache"; do
     [[ -e "$_un_h" || -L "$_un_h" ]] || continue
-    _un_unlinked "$_un_h"
+    _un_unlinked "$_un_h" "${_un_h:a}"
     _un_hist+=("$REPLY")
   done
   (( ${#_un_hist} )) && _un_rm+=("${_un_hist[@]}")
