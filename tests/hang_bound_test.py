@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from support import CORE, HANG_TIMEOUT
+from support import CORE, HANG_TIMEOUT, store_month_first
 
 TESTS = Path(__file__).resolve().parent
 
@@ -561,7 +561,9 @@ def test_quota_never_waits_on_a_fifo_in_a_closed_day(tmp_path):
     the rest of the month and names the FIFO, and no process is left holding
     the store lock."""
     store = tmp_path / "ccmorph" / "usage"
-    day = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=3)).strftime("%Y-%m-%d")
+    now = dt.datetime.now(dt.timezone.utc)
+    day_date = now - dt.timedelta(days=3)
+    day = day_date.strftime("%Y-%m-%d")
     folder = store / day
     folder.mkdir(parents=True)
     (folder / "row.json").write_text(json.dumps({
@@ -574,9 +576,11 @@ def test_quota_never_waits_on_a_fifo_in_a_closed_day(tmp_path):
                                input="ledger\tgateway\t\t\n", env=env,
                                capture_output=True, text=True, timeout=HANG_TIMEOUT)
     entry = json.loads(quota_run.stdout)["profiles"][0]
-    if dt.datetime.now(dt.timezone.utc).day >= 5:
-        # The day is inside this month's window, whatever the local zone: the
-        # FIFO is skipped and named, and the readable row is still the month (#654).
+    if store_month_first(now) <= day_date.date() <= now.date():
+        # The day is inside quota's own window — the month stepped from a local
+        # midnight as an instant, which is not the UTC calendar's month east or
+        # west of UTC: the FIFO is skipped and named, and the readable row is
+        # still the month (#654, #804). Outside it, quota never opens the day.
         assert entry["spend"]["month_turns"] == 1 and entry["spend"]["unreadable_receipts"] == 1, entry
         assert "not readable" in entry["error"] and "unusable.json" in entry["error"], entry
     assert "not a regular file" in quota_run.stderr, quota_run.stderr

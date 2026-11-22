@@ -42,7 +42,7 @@ import sys
 
 import pytest
 
-from support import CORE, HANG_TIMEOUT, needs_shim
+from support import CORE, HANG_TIMEOUT, needs_shim, store_month_first
 
 pytestmark = needs_shim
 
@@ -163,18 +163,18 @@ def compact(root):
 
 def add_fifo_archive_index(usage):
     """A closed day named only by a FIFO at `<day>.jsonl.idx`: the folder is
-    there and empty, no `<day>.jsonl` beside it. The day is
-    min(this month's first - 2, today - 8): quota names its month window from
-    a local midnight stepped as a UTC day (east of UTC that is the previous
-    month's last day) and the report opens its window's first day too, so the
-    day stands one clear day outside each; the compactor still folds it, as it
-    folds every closed day, and the export — which owns every day — answers
-    rows={} from its empty folder without opening the index. Every guarded
-    store read answers `not a regular file` for it; the recovery read 8b74a030
-    kept raw opens the name directly, which is the hang (#804). Returns the
-    day's name."""
-    today = NOW.date()
-    day = min(today.replace(day=1) - dt.timedelta(days=2), today - dt.timedelta(days=8))
+    there and empty, no `<day>.jsonl` beside it. The day is the day before
+    min(quota's own month first, the report window's first): quota names its
+    window from a local midnight stepped as an instant, so the bound comes
+    from support.store_month_first — a UTC-calendar month is a different
+    window east or west of UTC — and the report opens its window's first day
+    too, so the day stands one clear day below each; the compactor still
+    folds it, as it folds every closed day, and the export — which owns
+    every day — answers rows={} from its empty folder without opening the
+    index. Every guarded store read answers `not a regular file` for it; the
+    recovery read 8b74a030 kept raw opens the name directly, which is the
+    hang (#804). Returns the day's name."""
+    day = min(store_month_first(NOW), (NOW - dt.timedelta(days=7)).date()) - dt.timedelta(days=1)
     (usage / day.isoformat()).mkdir()
     os.mkfifo(usage / (day.isoformat() + ".jsonl.idx"), 0o600)
     return day.isoformat()
@@ -333,7 +333,8 @@ def test_all_four_readers_agree_on_a_fifo_archive_index(tmp_path):
     assert not (usage / f"{day}.jsonl").exists(), "a damaged day was published over"
     done = report(roots["compact"])
     assert done.returncode == 0, done.stdout + done.stderr
-    assert "total spend $9.00" in done.stdout, done.stdout  # no row lost to the walk
+    assert "total spend $9.00" in done.stdout, done.stdout  # no priced row lost to the walk...
+    assert "unknown spend 1 rows" in done.stdout, done.stdout  # ...and no unpriced row either
 
 
 def test_all_four_readers_agree_on_a_scalar_archived_row(tmp_path):
@@ -341,8 +342,12 @@ def test_all_four_readers_agree_on_a_scalar_archived_row(tmp_path):
     JSON `true` while its archive names it: the Go readers answer the pair "not
     one turn — keep both", count the archived row, and file the unreadable one
     under usage-dropped/; the export mirrored the merge by hand and called
-    `.get()` on the scalar (#804). All four readers answer the one archived
-    turn — $4.00 — with no traceback, whether or not a compaction ran first."""
+    `.get()` on the scalar (#804). The report, the export and the compactor
+    all own the closed day and answer its one archived turn — $4.00 — with no
+    traceback, whether or not a compaction ran first; quota answers its own
+    month, which covers the day or not by the same local-midnight step its
+    reader takes (support.store_month_first), so both sides of the boundary
+    are asserted rather than skipped."""
     day = (NOW - dt.timedelta(days=3)).strftime("%Y-%m-%d")
     roots = {name: tmp_path / name for name in ("quota", "report", "export", "compact")}
     for root in roots.values():
@@ -352,15 +357,20 @@ def test_all_four_readers_agree_on_a_scalar_archived_row(tmp_path):
         write(folder / "scalar.json", "true")
         archive(usage, day, [("scalar.json", receipt("good2", "t-good2", 4))])
 
-    if NOW.day >= 4:  # else the closed day is last month's and quota's month never reads it
-        done, entry = quota(roots["quota"])
-        assert done.returncode == 0, done.stdout + done.stderr
-        assert (entry["spend"]["month_usd"], entry["spend"]["month_turns"],
-                entry["spend"]["unpriced_turns"]) == (4, 1, 0), entry
+    done, entry = quota(roots["quota"])
+    assert done.returncode == 0, done.stdout + done.stderr
+    # The day is in quota's window iff the reader's month — stepped from a
+    # local midnight as an instant, not the UTC calendar — starts at or
+    # before it: near a month boundary under an offset zone the same fixture
+    # legitimately answers $0.00, not $4.00 (#804).
+    in_month = store_month_first(NOW) <= (NOW - dt.timedelta(days=3)).date() <= NOW.date()
+    assert (entry["spend"]["month_usd"], entry["spend"]["month_turns"],
+            entry["spend"]["unpriced_turns"]) == ((4, 1, 0) if in_month else (0, 0, 0)), (entry, in_month)
 
     done = report(roots["report"])
     assert done.returncode == 0, done.stdout + done.stderr
     assert "total spend $4.00" in done.stdout, done.stdout
+    assert "unknown spend 0 rows" in done.stdout, done.stdout  # the scalar is no unknown-spend row
 
     done = export(tmp_path, roots["export"])
     assert done.returncode == 0, done.stdout + done.stderr
@@ -376,3 +386,4 @@ def test_all_four_readers_agree_on_a_scalar_archived_row(tmp_path):
     done = report(roots["compact"])
     assert done.returncode == 0, done.stdout + done.stderr
     assert "total spend $4.00" in done.stdout, done.stdout  # the archived row survived its day
+    assert "unknown spend 0 rows" in done.stdout, done.stdout  # the filed scalar stayed out of every count

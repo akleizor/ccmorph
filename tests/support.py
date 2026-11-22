@@ -1,6 +1,7 @@
 """The suite's shared helpers: one hang-detection bound, one poll loop, one script
 loader; imported by the tests that wait on a real process."""
 import atexit
+import datetime as dt
 import importlib.machinery
 import importlib.util
 import os
@@ -223,6 +224,26 @@ def can_bind_loopback():
         else:
             _LOOPBACK_BIND = True
     return _LOOPBACK_BIND
+
+
+def store_month_first(instant):
+    """The first UTC-named day quota's month reader opens at `instant`.
+    quota/spend.go steps the month's start as a LOCAL midnight turned into an
+    instant and names its window in UTC day names, so a fixture that places a
+    day by the UTC calendar does not know the window a reader east or west of
+    UTC actually opens: the first day is the UTC date of the instant's local
+    month start, not of its UTC month start (#804).
+
+    The local zone is the one a reader answers from: every reader here is a
+    fresh process that reads TZ from the environment at its start, while this
+    interpreter froze its C copy at startup and rereads it only on tzset().
+    Rereading first keeps the fixture and the binary on the same zone even
+    when a test sets TZ after startup; tzset is Unix-only, and so is this
+    suite (flock, mkfifo)."""
+    time.tzset()
+    local = instant.astimezone()
+    midnight = local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return midnight.astimezone(dt.timezone.utc).date()
 
 
 # The compiled core (`make shim`): adapter, shim and helper verbs are its subcommands.
