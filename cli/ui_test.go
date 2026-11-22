@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -274,6 +276,157 @@ func TestSearchCancelPrintsTheOneCancelledLineIssue280(t *testing.T) {
 	if line := strings.TrimRight(string(b), "\n"); line != "  Cancelled" {
 		t.Fatalf("stderr = %q, want the one line \"  Cancelled\"", b)
 	}
+}
+
+// The no-terminal picker path (#725) is a state a `go test` process is not in
+// by itself: its stdin is the null device, yet on a developer's machine a real
+// fzf on PATH would still find the controlling terminal to draw on. So every
+// case runs uiSelect in a child with no controlling terminal at all (Setsid:
+// the exact state a script, pipe or CI job is in) and only the fixture fzf at
+// the front of its PATH, and each fixture records its own invocation in a
+// marker file — a pass can only come from the fixture being asked to pick,
+// never from an fzf missing on the host. The bound seam sizes the waiting case
+// down, so the test proves the bound instead of waiting on the real clock.
+func TestSearchPickerWithoutTerminalIssue725(t *testing.T) {
+	type pickerCase struct {
+		name  string
+		body  string // the fixture fzf; the marker line records the pick itself
+		bound string // _CCMORPH_PICKER_BOUND for the child, empty for the real bound
+		code  int    // the child's exit status: uiSelect's rc
+		wants []string
+		keeps []string
+	}
+	// A real fzf answers --version before anything else; a fixture that slept
+	// there would fail for a reason other than the one under test. With no
+	// terminal the version probe is skipped entirely, so any invocation the
+	// marker sees is the pick itself.
+	mark := "[ -n \"${_CCM725_MARKER:-}\" ] && printf invoked > \"$_CCM725_MARKER\"\n"
+	cases := []pickerCase{
+		{
+			name: "refuses an fzf that fails the way fzf fails with no terminal",
+			body: mark + "exit 2\n",
+			code: 2,
+			wants: []string{
+				"ccmorph: selection needs a terminal; pass the value directly",
+				"demo\tDemo profile",
+			},
+			keeps: []string{"Cancelled"},
+		},
+		{
+			name:  "refuses a picker that waits past the bound, without waiting on it",
+			body:  mark + "exec sleep 30\n",
+			bound: "3s",
+			code:  2,
+			wants: []string{
+				"ccmorph: selection needs a terminal; pass the value directly",
+				"demo\tDemo profile",
+			},
+			keeps: []string{"Cancelled"},
+		},
+		{
+			name:  "refuses an answer the picker never gives: exit 0 with no line",
+			body:  mark + "exit 0\n",
+			code:  2,
+			wants: []string{"ccmorph: selection needs a terminal; pass the value directly"},
+			keeps: []string{"Cancelled"},
+		},
+		{
+			name:  "takes the answer of a picker that answers without a terminal",
+			body:  mark + "IFS= read -r line\nprintf '%s\\n' \"$line\"\n",
+			code:  0,
+			wants: []string{"choice=demo rc=0"},
+		},
+		{
+			name:  "reads a picker's Esc exit as the cancel it is",
+			body:  mark + "exit 130\n",
+			code:  1,
+			wants: []string{"Cancelled"},
+			keeps: []string{"needs a terminal"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			marker := filepath.Join(dir, "invoked")
+			fixture := "#!/bin/sh\n" + tc.body
+			if err := os.WriteFile(filepath.Join(dir, "fzf"), []byte(fixture), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			start := time.Now()
+			out, stderr, code := runPickerChild(t, dir, marker, tc.bound)
+			elapsed := time.Since(start)
+			if code != tc.code {
+				t.Fatalf("uiSelect rc = %d, want %d\nstdout: %s\nstderr: %s", code, tc.code, out, stderr)
+			}
+			if _, err := os.Stat(marker); err != nil {
+				t.Fatalf("the picker never ran the fixture at the front of the child's PATH — the pass proves nothing: %v", err)
+			}
+			for _, want := range tc.wants {
+				if !strings.Contains(out+stderr, want) {
+					t.Fatalf("want %q in the output\nstdout: %s\nstderr: %s", want, out, stderr)
+				}
+			}
+			for _, keep := range tc.keeps {
+				if strings.Contains(out+stderr, keep) {
+					t.Fatalf("must not contain %q\nstdout: %s\nstderr: %s", keep, out, stderr)
+				}
+			}
+			// The fixture waits 30 s, so a run that ignored the bound would
+			// sit on it for 30 s; the bound is 3 s, so anything between 2 s
+			// and 15 s proves the picker was started and then cut at the
+			// bound — not left waiting, and not never started at all.
+			if tc.bound != "" && (elapsed < 2*time.Second || elapsed > 15*time.Second) {
+				t.Fatalf("the picker was not run under the bound: the run took %s, want ~3 s", elapsed)
+			}
+		})
+	}
+}
+
+// runPickerChild drives one uiSelect("search") in a child that has no
+// controlling terminal (Setsid) and the fixture directory at the front of its
+// PATH, and returns the child's stdout, stderr and exit status — which is the
+// rc uiSelect returned.
+func runPickerChild(t *testing.T, pathDir, marker, bound string) (string, string, int) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=TestSearchPickerWithoutTerminalChildHelper")
+	env := append(os.Environ(),
+		"_CCM725_CHILD=1",
+		"PATH="+pathDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"_CCM725_MARKER="+marker,
+		"TERM=xterm",
+	)
+	if bound != "" {
+		env = append(env, "_CCMORPH_PICKER_BOUND="+bound)
+	}
+	cmd.Env = env
+	devnull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devnull.Close()
+	cmd.Stdin = devnull
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return stdout.String(), stderr.String(), ee.ExitCode()
+		}
+		t.Fatalf("child: %v", err)
+	}
+	return stdout.String(), stderr.String(), 0
+}
+
+// TestSearchPickerWithoutTerminalChildHelper is runPickerChild's child: one
+// uiSelect, its answer on stdout, its exit status the picker's rc.
+func TestSearchPickerWithoutTerminalChildHelper(t *testing.T) {
+	if os.Getenv("_CCM725_CHILD") != "1" {
+		t.Skip("helper child: run by TestSearchPickerWithoutTerminalIssue725")
+	}
+	v, rc := uiSelect("search", "Profile", "demo\tDemo profile", "labels")
+	fmt.Printf("choice=%s rc=%d\n", v, rc)
+	os.Exit(rc)
 }
 
 // numberWindow is how the numbered menu fits the screen (#387): the whole

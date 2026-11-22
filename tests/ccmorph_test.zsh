@@ -941,6 +941,96 @@ test_search_picker_on_an_old_fzf_never_hides_rows_silently_issue_278() {
   return $rc
 }
 
+# #725: with no terminal anywhere to answer, the pickers behind `run -i`,
+# `config` and `inspect` must refuse by name and exit non-zero -- never wait
+# forever, and never print Cancelled and hang anyway. Each verb runs under
+# </dev/null in a session of its own (setsid: no controlling terminal), which
+# is exactly the state a script, a pipe or a CI job is in, with an fzf that
+# starts and then waits for keys no script can send; the loop's 20 s timeout
+# ends the whole chain, so on unfixed code this fails with "waited forever"
+# instead of hanging the suite. A TERM that allows fzf is forced, so the
+# refusal is the picker's and not a dumb-terminal detour around it. The pty
+# leg at the end pins the other face: with a terminal present, the same picker
+# still runs and answers.
+test_pickers_refuse_by_name_without_a_terminal_issue_725() {
+  local test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://gateway.invalid'
+  # The face of a real fzf on an unattended terminal: --version answers at
+  # once, then the picker waits for keys that never arrive.
+  printf '%s\n' \
+    '#!/bin/sh' \
+    '[ "$1" = --version ] && { echo "0.75.0 (fake)"; exit 0; }' \
+    'echo $$ > "$HOME/fzf.pid"' \
+    'exec sleep 120' \
+    > "$HOME/bin/fzf"
+  chmod +x "$HOME/bin/fzf"
+  source "$CCMORPH_SOURCE"
+
+  # Detach launcher: fork, give the child its own session (and so no
+  # controlling terminal), exec the verb there, forward its exit code; the
+  # child's pid lands in a file so the timeout below can end the whole chain.
+  # python3 is already this suite's fixture interpreter (write_profile_context).
+  local detach='import os, sys
+pid = os.fork()
+if pid == 0:
+    os.setsid()
+    os.execvp(sys.argv[1], sys.argv[1:])
+    os._exit(127)
+open(os.environ["HOME"] + "/verb.pid", "w").write(str(pid))
+_, status = os.waitpid(pid, 0)
+sys.exit(status >> 8 if os.WIFEXITED(status) else 1)'
+
+  local -a verbs=('run -i' 'config' 'inspect' 'inspect -i')
+  local v out job i code rc=0
+  for v in $verbs; do
+    out="$HOME/refusal.out"
+    : > "$out"; : > "$HOME/verb.pid"; : > "$HOME/fzf.pid"
+    # v stays one scalar here on purpose: ${=v} inside double quotes would
+    # split the "-i" into a separate argument to python, and the picker's
+    # flag would die silently before the detached shell ever saw it.
+    ( TERM=xterm-256color python3 -c "$detach" zsh -c \
+        "source ${(q)CCMORPH_SOURCE} && ccmorph $v" </dev/null >"$out" 2>&1 ) &
+    job=$!
+    i=0
+    while (( ++i <= 200 )); do kill -0 $job 2>/dev/null || break; command sleep 0.1; done
+    if kill -0 $job 2>/dev/null; then
+      # The picker's own wait is still running: end it, fail the verb, and
+      # read nothing -- there is no output to read yet.
+      [[ ! -s "$HOME/fzf.pid" ]] || kill -KILL $(<$HOME/fzf.pid) 2>/dev/null
+      [[ ! -s "$HOME/verb.pid" ]] || kill -KILL $(<$HOME/verb.pid) 2>/dev/null
+      kill -KILL $job 2>/dev/null; wait $job 2>/dev/null
+      print -u2 -- "ccmorph $v with no terminal waited forever instead of refusing"
+      rc=1
+      continue
+    fi
+    wait $job; code=$?
+    (( code != 0 )) || { print -u2 -- "ccmorph $v with no terminal must exit non-zero (got 0)"; rc=1; }
+    assert_contains "$(<"$out")" 'needs a terminal' \
+      "ccmorph $v must name the missing terminal as the cause" || rc=1
+    assert_not_contains "$(<"$out")" 'Cancelled' \
+      "ccmorph $v with no terminal to answer must not print Cancelled" || rc=1
+  done
+
+  # The other face: under a real pty a picker that answers still proceeds --
+  # the terminal case is unchanged, only the terminal-less one refuses.
+  printf '%s\n' \
+    '#!/bin/sh' \
+    '[ "$1" = --version ] && { echo "0.75.0 (fake)"; exit 0; }' \
+    'IFS= read -r line' \
+    'printf "%s\\n" "$line"' \
+    > "$HOME/bin/fzf"
+  chmod +x "$HOME/bin/fzf"
+  run_under_a_terminal "$HOME/pty.out" \
+    env TERM=xterm-256color "$REPO_ROOT/bin/ccmorph" _ui select search Profile $'demo\tDemo profile'
+  assert_contains "$(<"$HOME/pty.out")" 'demo' \
+    'under a terminal the picker still runs and its answer comes back' || rc=1
+
+  rm -rf "$test_home"
+  return $rc
+}
+
 # The five levels are Claude Code's own fixed enum, so this picker needs no
 # endpoint call -- and must not make one.
 test_set_effort_interactively_offers_the_engine_levels() {
@@ -12077,6 +12167,7 @@ run_test test_model_command_sets_the_profiles_default_model
 run_test test_set_model_interactively_saves_the_chosen_id
 run_test test_set_effort_interactively_offers_the_engine_levels
 run_test test_search_picker_on_an_old_fzf_never_hides_rows_silently_issue_278
+run_test test_pickers_refuse_by_name_without_a_terminal_issue_725
 run_test test_the_picker_without_fzf_names_the_direct_command_and_the_choices
 run_test test_a_test_home_hides_the_machines_bridge_issue_414
 run_test test_a_bridged_path_entry_keeps_its_coresident_tools_issue_476
