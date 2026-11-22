@@ -901,8 +901,16 @@ def host_sessions(folders: list[str], status: str) -> tuple[str, list[tuple[str,
                 signed_out = False
             if signed_out:
                 if not signed_out_session_reported:
-                    profile = rc_module().default_account()
-                    log(f"{status} session check failed: {e}; fix: ccmorph login {profile}")
+                    try:
+                        fix = f"fix: ccmorph login {rc_module().default_account()}"
+                    except LOGIN_ERRORS:
+                        # default_account() is a one-shot CLI helper whose refusal
+                        # is a SystemExit, and this sits inside the handler that
+                        # caught the 401, so the same handler never sees it: with
+                        # several account profiles the line must still land,
+                        # naming no account (GH-805, the #596 shape).
+                        fix = "fix: ccmorph login"
+                    log(f"{status} session check failed: {e}; {fix}")
                     signed_out_session_reported = True
                 return "", []
         log(f"{status} session check failed: {e}")
