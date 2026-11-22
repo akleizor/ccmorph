@@ -83,12 +83,22 @@ const priceCacheHint = "Run a `provider` profile with `ccmorph run PROFILE`; its
 func (l *launcher) price(args []string) int {
 	models := make([]string, 0, len(args))
 	asJSON := false
+	positional := false
 	for _, arg := range args {
-		if arg == "--json" {
-			asJSON = true
-		} else {
-			models = append(models, arg)
+		if !positional && arg == "--" {
+			positional = true
+			continue
 		}
+		if !positional && arg == "--json" {
+			asJSON = true
+			continue
+		}
+		if !positional && strings.HasPrefix(arg, "-") {
+			l.err("unknown option '" + arg + "'. Use -- before a model name that begins with a dash.")
+			l.err("usage: " + usageLine("price"))
+			return 2
+		}
+		models = append(models, arg)
 	}
 	if len(models) == 0 {
 		l.err("usage: " + usageLine("price"))

@@ -1,10 +1,54 @@
 package cli
 
 import (
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestPriceRejectsUnknownOptions(t *testing.T) {
+	for _, option := range []string{"--jsoon", "-j"} {
+		t.Run(option, func(t *testing.T) {
+			stderr, rc := capturePriceStderr(t, func() int {
+				return (&launcher{}).verb([]string{"price", option, "claude-sonnet-4-5"})
+			})
+			if rc == 0 || !strings.Contains(stderr, option) || !strings.Contains(stderr, "usage:") || !strings.Contains(stderr, "--") {
+				t.Fatalf("rc %d, stderr %q; want non-zero usage error naming %q and explaining --", rc, stderr, option)
+			}
+		})
+	}
+}
+
+func TestPriceDoubleDashPassesDashPrefixedModel(t *testing.T) {
+	out, rc := captureStdout(t, func() int {
+		return (&launcher{}).verb([]string{"price", "--", "-claude-model"})
+	})
+	if rc != 0 || out != "-claude-model  unpriced\n" {
+		t.Fatalf("rc %d, output %q", rc, out)
+	}
+}
+
+func capturePriceStderr(t *testing.T, f func() int) (string, int) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	rc := f()
+	os.Stderr = old
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b), rc
+}
 
 func TestPriceJSON(t *testing.T) {
 	root := t.TempDir()
