@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One damaged store, three readers, one answer (#654).
+"""One damaged store, four readers, one answer (#654, #804).
 
 The store's rules — which rows merge, which rows are skipped, which damage is
 a refusal — were hand-spelled per reader, and the #642 landing let them
@@ -23,6 +23,13 @@ exit: the report is a reading and goes on (exit 0, the pre-#537 reading); quota
 the rest beside its reason and the export writing nothing over the export
 already there. A receipt gone between listing and read is the store's own
 relocation, which all three skip.
+
+The compactor is the fourth reader of the same fixture (#804): it reaches the
+store through its own paths — a recovery read wrapped around the archive
+reader — so it gains damage under the archive names, a FIFO at a closed day's
+`<day>.jsonl.idx` that no windowed reader's window holds, and a closed archived
+day whose folder holds a receipt as a bare JSON scalar. It must not hang, must
+not lose a row, and every reader must still answer the fixture's one answer.
 """
 import datetime as dt
 import hashlib
@@ -150,6 +157,29 @@ def export(tmp_path, root):
                 "--output", str(tmp_path / "out")], root)
 
 
+def compact(root):
+    return run([str(CORE), "usage-compact"], root)
+
+
+def add_fifo_archive_index(usage):
+    """A closed day named only by a FIFO at `<day>.jsonl.idx`: the folder is
+    there and empty, no `<day>.jsonl` beside it. The day is
+    min(this month's first - 2, today - 8): quota names its month window from
+    a local midnight stepped as a UTC day (east of UTC that is the previous
+    month's last day) and the report opens its window's first day too, so the
+    day stands one clear day outside each; the compactor still folds it, as it
+    folds every closed day, and the export — which owns every day — answers
+    rows={} from its empty folder without opening the index. Every guarded
+    store read answers `not a regular file` for it; the recovery read 8b74a030
+    kept raw opens the name directly, which is the hang (#804). Returns the
+    day's name."""
+    today = NOW.date()
+    day = min(today.replace(day=1) - dt.timedelta(days=2), today - dt.timedelta(days=8))
+    (usage / day.isoformat()).mkdir()
+    os.mkfifo(usage / (day.isoformat() + ".jsonl.idx"), 0o600)
+    return day.isoformat()
+
+
 def test_all_three_readers_agree_on_a_damaged_store(tmp_path):
     """Zero-byte and truncated rows are skipped, the NaN overlay is the one turn
     its archived twin names (unpriced, not two turns), the orphan index answers
@@ -254,3 +284,95 @@ def test_a_response_under_two_names_counts_by_its_day_copy_in_every_reader(tmp_p
     assert done.returncode == failed, done.stdout + done.stderr
     assert "the gateway billed, $9.00" in done.stdout, done.stdout
     assert "1 turn unpriced" in done.stdout, done.stdout
+
+
+def test_all_four_readers_agree_on_a_fifo_archive_index(tmp_path):
+    """The same damaged store plus a damage under the archive names: a FIFO at a
+    closed day's `<day>.jsonl.idx`, no archive, an empty folder. The day is
+    outside every reader's window, so quota, the report and the export answer
+    the fixture's $9.00 and one unpriced turn exactly as without it; the
+    compactor — the store reader this fixture has never run — reaches it on its
+    every-closed-day walk, and must name it as damage and leave it whole rather
+    than block in the recovery read while it holds the store's exclusive lock
+    (#804). The compacted store still answers $9.00: the compaction lost no row.
+    """
+    roots = {name: tmp_path / name for name in ("quota", "report", "export", "compact")}
+    for name, root in roots.items():
+        usage = build_store(root)
+        day = add_fifo_archive_index(usage)  # same instant for every copy: same day
+        if name == "compact":
+            # usage-compact is the store's exclusive writer: a lock it cannot
+            # open ends its run before its walk starts (the no-lock reading
+            # that lets the three readers go on is not a compaction), so the
+            # compactor's copy is the one whose lock it can open. Every other
+            # byte of the fixture stands.
+            (usage / ".move.lock").chmod(0o600)
+
+    done, entry = quota(roots["quota"])
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert (entry["spend"]["month_usd"], entry["spend"]["month_turns"],
+            entry["spend"]["unpriced_turns"]) == (9, 3, 1), entry
+
+    done = report(roots["report"])
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "total spend $9.00" in done.stdout, done.stdout
+    assert "unknown spend 1 rows" in done.stdout, done.stdout
+
+    done = export(tmp_path, roots["export"])
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "the gateway billed, $9.00" in done.stdout, done.stdout
+    assert "1 turn unpriced" in done.stdout, done.stdout
+
+    usage = roots["compact"] / "ccmorph" / "usage"
+    done = compact(roots["compact"])
+    assert done.returncode == 1, (done.stdout, done.stderr)
+    assert f"day {day}" in done.stderr, done.stderr  # the damage is named as every other day's is
+    assert "not a regular file" in done.stderr, done.stderr
+    assert "compacted 0 usage day(s)" in done.stdout, done.stdout
+    assert (usage / str(day)).is_dir() and (usage / f"{day}.jsonl.idx").exists(), "the day was not left whole"
+    assert not (usage / f"{day}.jsonl").exists(), "a damaged day was published over"
+    done = report(roots["compact"])
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "total spend $9.00" in done.stdout, done.stdout  # no row lost to the walk
+
+
+def test_all_four_readers_agree_on_a_scalar_archived_row(tmp_path):
+    """A closed archived day whose folder still holds `scalar.json` as a bare
+    JSON `true` while its archive names it: the Go readers answer the pair "not
+    one turn — keep both", count the archived row, and file the unreadable one
+    under usage-dropped/; the export mirrored the merge by hand and called
+    `.get()` on the scalar (#804). All four readers answer the one archived
+    turn — $4.00 — with no traceback, whether or not a compaction ran first."""
+    day = (NOW - dt.timedelta(days=3)).strftime("%Y-%m-%d")
+    roots = {name: tmp_path / name for name in ("quota", "report", "export", "compact")}
+    for root in roots.values():
+        usage = root / "ccmorph" / "usage"
+        folder = usage / day
+        folder.mkdir(parents=True)
+        write(folder / "scalar.json", "true")
+        archive(usage, day, [("scalar.json", receipt("good2", "t-good2", 4))])
+
+    if NOW.day >= 4:  # else the closed day is last month's and quota's month never reads it
+        done, entry = quota(roots["quota"])
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert (entry["spend"]["month_usd"], entry["spend"]["month_turns"],
+                entry["spend"]["unpriced_turns"]) == (4, 1, 0), entry
+
+    done = report(roots["report"])
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "total spend $4.00" in done.stdout, done.stdout
+
+    done = export(tmp_path, roots["export"])
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "the gateway billed, $4.00" in done.stdout, done.stdout
+    assert "0 turns unpriced" in done.stdout, done.stdout
+
+    usage = roots["compact"] / "ccmorph" / "usage"
+    done = compact(roots["compact"])
+    assert done.returncode == 0, (done.stdout, done.stderr)
+    assert "compacted 1 usage day(s)" in done.stdout, done.stdout
+    kept = list((roots["compact"] / "ccmorph" / "usage-dropped" / day).glob("*-scalar.json"))
+    assert kept and kept[0].read_text().strip() == "true", "the unreadable row's bytes were not kept"
+    done = report(roots["compact"])
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "total spend $4.00" in done.stdout, done.stdout  # the archived row survived its day

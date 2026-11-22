@@ -583,3 +583,41 @@ def test_quota_never_waits_on_a_fifo_in_a_closed_day(tmp_path):
     assert not (store / f"{day}.jsonl").exists()
     with open(store / ".move.lock", "a+") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # nobody still holds it
+
+
+@pytest.mark.skipif(not CORE.exists(), reason=f"{CORE} is not built: run `make shim` first")
+def test_usage_compact_never_waits_on_a_fifo_archive_index(tmp_path):
+    """A FIFO left under a closed day's archive-index name, with the day's folder
+    beside it and no archive, is the one store name the #654 landing left
+    unguarded (INTENT 8, #804): the orphan-index recovery wrapped around the
+    guarded archive read opens the raw name, so `usage-compact` blocks there
+    while it holds the store's exclusive lock — and every later closed-day write
+    answers `usage store busy` forever. The compaction names the day as damage
+    and leaves it whole, the quota read that follows answers, and no process is
+    left holding the store lock."""
+    store = tmp_path / "ccmorph" / "usage"
+    day = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=3)).strftime("%Y-%m-%d")
+    folder = store / day
+    folder.mkdir(parents=True)
+    (folder / "row.json").write_text(json.dumps({
+        "schema": 1, "response_id": "r", "turn_id": "t",
+        "timestamp": f"{day}T09:00:00Z", "profile": "ledger", "complete": True,
+        "usage": {"input_tokens": 10, "cost": 0.01}}))
+    os.mkfifo(store / f"{day}.jsonl.idx", 0o600)
+    env = {**os.environ, "XDG_STATE_HOME": str(tmp_path)}
+    compact_run = subprocess.run([str(CORE), "usage-compact"], env=env,
+                                 capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert compact_run.returncode == 1, (compact_run.returncode, compact_run.stderr)
+    assert f"day {day}" in compact_run.stderr, compact_run.stderr
+    assert "not a regular file" in compact_run.stderr, compact_run.stderr
+    assert "compacted 0 usage day(s)" in compact_run.stdout, compact_run.stdout
+    assert (folder / "row.json").exists(), "the compaction took the damaged day's row"
+    assert not (store / f"{day}.jsonl").exists(), "the compaction published over damaged bytes"
+    quota_run = subprocess.run([str(CORE), "quota", "--json"],
+                               input="ledger\tgateway\t\t\n", env=env,
+                               capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert quota_run.returncode in (0, 1), quota_run.stderr  # an answer, never a wait
+    assert "not a regular file" in quota_run.stderr, quota_run.stderr  # its own pass names it too
+    assert not (store / f"{day}.jsonl").exists()
+    with open(store / ".move.lock", "a+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # nobody still holds it
