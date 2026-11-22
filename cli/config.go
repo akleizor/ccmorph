@@ -169,8 +169,14 @@ func (l *launcher) getSet(verb string, args []string) int {
 		// listing that cannot be read adjudicates nothing, so the save proceeds —
 		// but says it went unchecked, the way the add says a key it could not ask
 		// about was not checked (gh728). The model already saved is not judged
-		// again: keeping it changes nothing (#279).
-		if f, ok := l.read(name); ok && value != l.accountModel(name) && f["type"] == "apikey" && !util.NativeBase(f["base_url"]) && strings.TrimSpace(f["api_key"]) != "" {
+		// again: keeping it changes nothing (#279). The guard itself prints
+		// nothing: it is one input to a save that stands whatever it decides, so
+		// a keyless profile's successful save emits no error for its stored key
+		// (#791), and profile.Validate here — silently — is what keeps a key the
+		// profile must not carry (whitespace, no key at all) from the endpoint.
+		if f, ok := l.readQuiet(name); ok && profile.Validate(name, f) == nil &&
+			value != l.accountModel(name) && f["type"] == "apikey" && !util.NativeBase(f["base_url"]) &&
+			strings.TrimSpace(f["api_key"]) != "" {
 			listing, status, answered := util.ListingReply(f["base_url"], f["api_key"])
 			shown := profile.RedactURL(f["base_url"])
 			switch {

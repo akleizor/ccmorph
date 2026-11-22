@@ -1408,3 +1408,18 @@ def test_help_uninstall_names_the_state_root_the_command_reads(box):
     assert page.returncode == 0, page.stderr
     assert 'in ~/elsewhere' in page.stdout, page.stdout
     assert '~/.config/ccmorph' not in page.stdout, page.stdout
+
+
+def test_set_saves_a_model_on_a_keyless_profile_without_an_error(box):
+    # #791: `set` consulted the endpoint listing through the validating read,
+    # so the successful save beside exit 0 also printed
+    # "API key profile 'keyless' has no api_key" on stderr. The save was real;
+    # the error was not. The launch still refuses the profile (see the run
+    # cases above): a saved model does not make a keyless profile runnable.
+    box.conf('keyless', 'type=apikey\nbase_url=https://gw.test\n')
+    out = box.run('set', 'keyless', 'model', 'sonnet')
+    assert out.returncode == 0, out.stderr
+    assert out.stdout == 'sonnet\n', out.stdout
+    assert 'has no api_key' not in out.stderr, out.stderr
+    got = box.run('get', 'keyless', 'model')
+    assert got.returncode == 0 and got.stdout == 'sonnet\n', (got.stdout, got.stderr)
