@@ -244,22 +244,16 @@ def inference_name(text: str) -> str | None:
 def inference_account(text: str) -> str:
     """The account name `inference=<account>` compares against, or "" when no
     single account can be named. Resolved only when the config actually maps
-    inference, and never by dying: default_account() is a one-shot CLI helper
-    whose refusal exits the process -- addressed to a human holding a terminal
-    -- and two Claude account profiles took this supervisor down at every
-    config reload (#596). With none or several there is no account match: the
-    word is taken as a profile name, a bring-up of one refuses in its own
-    switch.log beside the edge, and several get the operator one line naming
-    them (once per config change: the caller runs once per reload)."""
+    inference, through account_name() -- the supervisor's one account
+    resolution, whose ambiguity notice it shares (one line per episode) -- and
+    never by dying: the one-shot account helper exits the process with its
+    refusal, addressed to a human holding a terminal, and two Claude account
+    profiles took this supervisor down at every config reload (#596). With none
+    or several there is no account match: the word is taken as a profile name,
+    and a bring-up of one refuses in its own switch.log beside the edge."""
     if inference_name(text) is None:
         return ""
-    accounts = rc_module().account_candidates()
-    if len(accounts) == 1:
-        return accounts[0]
-    if accounts:
-        log(f"inference: {len(accounts)} Claude account profiles ({', '.join(accounts)}) "
-            "and no default to compare against; the inference= word resolves as a profile name")
-    return ""
+    return account_name()
 
 
 def inference(text: str, routes: set[str], account: str) -> str:
@@ -732,11 +726,54 @@ def rc_module():
     return loader.load_module()
 
 
+_ambiguous_accounts: tuple[str, ...] | None = None
+
+
+def account_name() -> str:
+    """The one Claude account profile this run resolves against, or "" when no
+    single account can be named.
+
+    Resolved through account_candidates(), never through the one-shot account
+    helper: that helper refuses by exiting the process, addressed to a human at a
+    terminal, and a long-lived supervisor's guard around it only swallows the
+    refusal -- deleting both the message and the work after it (#596, GH-807).
+    One profile names the account. Zero is a silent no-op: nothing is signed in
+    yet. Several get ONE operator-facing line naming them per episode (the same
+    candidate set) -- shared with inference_account(), so a config reload and
+    the recovery loop resolving the same set name the cause once, however often
+    either runs -- so the line reaches the operator instead of burying them.
+    """
+    global _ambiguous_accounts
+    accounts = rc_module().account_candidates()
+    if len(accounts) == 1:
+        _ambiguous_accounts = None
+        return accounts[0]
+    if not accounts:
+        _ambiguous_accounts = None
+        return ""
+    if tuple(accounts) != _ambiguous_accounts:
+        log(f"no unique Claude account profile ({', '.join(accounts)}); "
+            "account login checks, the login refresh and inference= need exactly one")
+        _ambiguous_accounts = tuple(accounts)
+    return ""
+
+
 @functools.lru_cache(maxsize=None)
 def keychain_service() -> str:
-    """Claude Code's keychain entry for the account profile (fixed for this run)."""
+    """Claude Code's keychain entry for the account profile (fixed for this run).
+
+    No unique account profile is a ValueError naming the candidates, not the
+    helper's die(): every caller reads this from a channel that reaches the
+    operator, and a SystemExit's str is a bare `1` (#807). A raise caches
+    nothing, so a run that becomes unambiguous later resolves on its next read.
+    """
     rc = rc_module()
-    account_dir = rc.profile_env(rc.default_account())["CLAUDE_CONFIG_DIR"]
+    name = account_name()
+    if not name:
+        candidates = rc.account_candidates()
+        raise ValueError(f"no unique Claude account profile ({', '.join(candidates)})" if candidates
+                         else "no Claude account profile found — create one with 'ccmorph add <name>'")
+    account_dir = rc.profile_env(name)["CLAUDE_CONFIG_DIR"]
     return "Claude Code-credentials-" + hashlib.sha256(account_dir.encode()).hexdigest()[:8]
 
 
@@ -800,8 +837,9 @@ def keep_login_fresh(clock: "Clock", now: float) -> None:
         login = account_login()
         if not login.get("refreshToken"):
             if not signed_out_reported:
-                profile = rc_module().default_account()
-                log(f"account {profile} is signed out; fix: ccmorph login {profile}")
+                profile = account_name()
+                log(f"account {profile} is signed out; fix: ccmorph login {profile}" if profile
+                    else "account is signed out; fix: ccmorph login")
                 signed_out_reported = True
             return
         signed_out_reported = signed_out_session_reported = False
@@ -811,8 +849,14 @@ def keep_login_fresh(clock: "Clock", now: float) -> None:
             # keychain is not queried again on every 20 s recovery cycle.
             clock.next_login_check = now + left - LOGIN_REFRESH_BEFORE
             return
+        profile = account_name()
+        if not profile:
+            # The shared resolution already named why (once per episode). Refuse
+            # before Popen and leave last_refresh unset, so the next recovery
+            # cycle tries again instead of starving the refresh forever (#807).
+            return
         rc = rc_module()
-        account = rc.profile_env(rc.default_account())
+        account = rc.profile_env(profile)
         # The one backend/credential list (`ccmorph _backend_env`), read through
         # ccmorph-rc's strip_env(): a Bedrock- or Vertex-routed profile must not send
         # this turn to that backend. The proxy half stays -- a host behind a proxy
@@ -901,15 +945,9 @@ def host_sessions(folders: list[str], status: str) -> tuple[str, list[tuple[str,
                 signed_out = False
             if signed_out:
                 if not signed_out_session_reported:
-                    try:
-                        fix = f"fix: ccmorph login {rc_module().default_account()}"
-                    except LOGIN_ERRORS:
-                        # default_account() is a one-shot CLI helper whose refusal
-                        # is a SystemExit, and this sits inside the handler that
-                        # caught the 401, so the same handler never sees it: with
-                        # several account profiles the line must still land,
-                        # naming no account (GH-805, the #596 shape).
-                        fix = "fix: ccmorph login"
+                    profile = account_name()
+                    fix = (f"fix: ccmorph login {profile}" if profile
+                           else "fix: ccmorph login")
                     log(f"{status} session check failed: {e}; {fix}")
                     signed_out_session_reported = True
                 return "", []

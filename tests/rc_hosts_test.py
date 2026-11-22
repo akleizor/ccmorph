@@ -2,6 +2,7 @@
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1486,7 +1487,7 @@ def test_a_retired_conversation_has_its_host_deleted(tmp_path, monkeypatch):
 
     class FakeRc:
         @staticmethod
-        def default_account(): return "acct"
+        def account_candidates(): return ["acct"]
         @staticmethod
         def profile_env(p): return {"CLAUDE_CONFIG_DIR": "/x/acct"}
 
@@ -3207,8 +3208,8 @@ def _login_refresh(monkeypatch):
         PROXY_ENV = ("HTTPS_PROXY",)
 
         @staticmethod
-        def default_account():
-            return "acct"
+        def account_candidates():
+            return ["acct"]
 
         @staticmethod
         def profile_env(name):
@@ -3459,7 +3460,7 @@ def test_a_config_reload_never_dies_on_account_resolution(tmp_path, monkeypatch,
 
     run_main(m, monkeypatch, tmp_path, cfg, start)
     out = capsys.readouterr().out
-    assert ("2 Claude account profiles (acct1, acct2)" in out) is named
+    assert ("no unique Claude account profile (acct1, acct2)" in out) is named
     assert (len(popens) == 1) is hosted
     if hosted:
         assert popens[0] == [str(m.HERE / "ccmorph-rc"), "acct1", "--switch"]
@@ -3492,6 +3493,152 @@ def test_a_signed_out_session_report_never_dies_on_account_resolution(tmp_path, 
     assert "active session check failed: HTTP Error 401: Unauthorized; fix: ccmorph login" in out
     assert m.host_sessions(["repo"], "active") == ("", [])   # once per episode
     assert "session check failed" not in capsys.readouterr().out
+
+
+def test_account_name_resolves_one_profile_and_degrades_on_zero_or_several(monkeypatch, capsys):
+    """GH-807: the supervisor's one account-name resolution, in inference_account's
+    shape. One candidate names the account; zero is a silent no-op; several are no
+    account at all, and the operator gets ONE line naming them per episode -- the
+    hot paths that resolve this run every recovery cycle, so a line per call would
+    bury the log it exists to reach."""
+    m = load()
+    candidates = [["acct"]]
+    monkeypatch.setattr(m, "rc_module",
+                        lambda: SimpleNamespace(account_candidates=lambda: candidates[0]))
+    assert m.account_name() == "acct"
+    assert capsys.readouterr().out == ""
+    candidates[0] = []                     # nothing to pass --as yet: no line either
+    assert m.account_name() == ""
+    assert capsys.readouterr().out == ""
+    candidates[0] = ["acct1", "acct2"]
+    assert m.account_name() == ""
+    out = capsys.readouterr().out
+    assert out.count("no unique Claude account profile (acct1, acct2)") == 1
+    assert m.account_name() == ""          # the same episode: one line, no more
+    assert capsys.readouterr().out == ""
+    candidates[0] = ["acct1", "acct2", "acct3"]   # a new set is a new episode
+    assert m.account_name() == ""
+    assert "no unique Claude account profile (acct1, acct2, acct3)" in capsys.readouterr().out
+
+
+def test_inference_and_the_login_resolution_share_one_ambiguity_notice(tmp_path, capsys):
+    """GH-807 merge-gate finding: inference_account() enumerated the candidates
+    and logged its own ambiguity line, while account_name() did it again with a
+    separate episode state -- so one episode that resolved an `inference=`
+    mapping and then the login account produced two ambiguity notices. The
+    reload's resolution now goes through account_name(), sharing both the
+    resolution and the once-per-episode line, in either order."""
+    _two_account_profiles(tmp_path / "state")
+    m = load()
+    assert m.inference_account("inference=acct1\n") == ""
+    assert m.account_name() == ""
+    notices = [line for line in capsys.readouterr().out.splitlines() if "acct1, acct2" in line]
+    assert len(notices) == 1, notices
+    m = load()                              # the other order shares the same episode too
+    assert m.account_name() == ""
+    assert m.inference_account("inference=acct1\n") == ""
+    notices = [line for line in capsys.readouterr().out.splitlines() if "acct1, acct2" in line]
+    assert len(notices) == 1, notices
+
+
+def test_two_account_profiles_still_report_a_signed_out_login(tmp_path, monkeypatch, capsys):
+    """GH-807, first #805 sibling: with two Claude account profiles the signed-out
+    report called the one-shot account helper under `except LOGIN_ERRORS`, which
+    swallowed its SystemExit -- no line, no flag, every retry silent forever. The
+    fix must log the signed-out line (naming no account, since none can be named),
+    set signed_out_reported, and still name the candidates once through the shared
+    resolution."""
+    m = load()
+    _two_account_profiles(tmp_path / "state")
+    login = {"expiresAt": 0, "accessToken": "expired"}   # signed out: no refreshToken
+    monkeypatch.setattr(m, "account_login", lambda: login)
+    clock = m.Clock()
+    m.keep_login_fresh(clock, 0.0)
+    out = capsys.readouterr().out
+    assert out.count("no unique Claude account profile (acct1, acct2)") == 1
+    assert "is signed out; fix: ccmorph login" in out
+    assert m.signed_out_reported is True
+    m.keep_login_fresh(clock, m.RECOVER_EVERY)     # the episode is reported once
+    assert "signed out" not in capsys.readouterr().out
+
+
+def test_two_account_profiles_still_retry_the_login_refresh(tmp_path, monkeypatch, capsys):
+    """GH-807, second #805 sibling: with two Claude account profiles the refresh
+    target's resolve raised the one-shot helper's SystemExit before Popen, and the
+    guard swallowed it -- no line, no refresh, and nothing said why. Inside the
+    refresh window the refusal must land once naming the candidates, no turn may
+    start, and the next recovery cycle must read the login again rather than
+    starve forever."""
+    m = load()
+    _two_account_profiles(tmp_path / "state")
+    reads = []
+    monkeypatch.setattr(m.time, "time", lambda: 1000.0)
+
+    def login():
+        reads.append(1)
+        return {"expiresAt": 1_300_000.0, "refreshToken": "refresh"}   # 300 s left
+    monkeypatch.setattr(m, "account_login", login)
+    runs = []
+    monkeypatch.setattr(m.subprocess, "Popen", lambda *a, **kw: runs.append(a) or pytest.fail(
+        "no refresh turn can run without a nameable account"))
+    clock = m.Clock()
+    m.keep_login_fresh(clock, 0.0)
+    out = capsys.readouterr().out
+    assert out.count("no unique Claude account profile (acct1, acct2)") == 1
+    assert runs == []
+    assert clock.last_refresh == float("-inf")     # no refresh was marked as attempted
+    m.keep_login_fresh(clock, m.RECOVER_EVERY)
+    assert len(reads) == 2                         # retried on the next cycle
+    assert capsys.readouterr().out == ""           # one refusal line per episode
+
+
+def test_no_unique_account_profile_is_a_readable_cause_at_every_keychain_reader(
+        tmp_path, monkeypatch, capsys):
+    """GH-807: keychain_service() resolved through the one-shot helper, so with two
+    account profiles its refusal surfaced at four sites as the bare `1` of
+    SystemExit's str. The cause must name the candidates, and each site must print
+    it instead of `failed: 1`."""
+    m = load()
+    _two_account_profiles(tmp_path / "state")
+    with pytest.raises(ValueError) as raised:
+        m.keychain_service()
+    assert "no unique Claude account profile (acct1, acct2)" in str(raised.value)
+    monkeypatch.setattr(m, "host_envs", lambda folders: {"env": "repo"})
+
+    class Host:
+        edge = False
+        proc = object()                # running here, so restart_logged_out checks it
+        folder = "repo"
+
+        def lost_login(self):
+            return "No access token for session fetch"
+
+        def mark_logs(self):
+            pass
+
+    m.host_sessions(["repo"], "active")
+    m.restart_logged_out({"repo": Host()}, 0.0)
+    m.purge_archived(["repo"], 0.0, 1.0)
+    assert m.delete_host(Host()) is False
+    out = capsys.readouterr().out
+    cause = "no unique Claude account profile (acct1, acct2)"
+    for prefix in ("active session check failed: ", "archived session purge failed: ",
+                   "host not deleted: ", "account login is unreadable too ("):
+        assert any(prefix in line and cause in line for line in out.splitlines()), prefix
+    assert "failed: 1" not in out and "unreadable too (1)" not in out
+
+
+def test_the_supervisor_never_calls_the_one_shot_account_helper():
+    """GH-807 kind-level guard (#596's shape): ccmorph-rc-hosts is a long-lived
+    supervisor, and the one-shot account helper refuses by exiting the process.
+    A guard around such a call prevents the crash only -- it swallows the refusal's
+    message and whatever work the caller was about to do. Every site resolves
+    through account_name(), fed by account_candidates()."""
+    source = SCRIPT.read_text()
+    assert "default_account(" not in source, (
+        "ccmorph-rc-hosts must not call default_account(): its refusal is a SystemExit "
+        "that a surrounding guard swallows (GH-807). Resolve through account_name(), "
+        "fed by rc_module().account_candidates().")
 
 
 def test_a_first_config_with_inference_creates_its_switch_log(tmp_path, monkeypatch):
