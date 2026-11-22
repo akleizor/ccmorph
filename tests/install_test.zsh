@@ -457,6 +457,33 @@ env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
   zsh "$REPO/install.sh" --uninstall >/dev/null 2>&1
 [[ "$(<"$d/home/.zshrc")" == "$original" ]] && ok "uninstall leaves rc byte-identical" || fail "uninstall edited rc"
 [[ ! -e "$d/home/.local/bin/ccmorph" ]] && ok "uninstall removes the command" || fail "uninstall left the command on PATH"
+# The shared history as a symlinked store: `~/.claude/projects` spelling a real
+# directory elsewhere on the machine. rm on a link removes only the link, so the
+# printed cleanup must carry the target the transcripts live in, never the link
+# (#187/#207 rule, applied to the shared history, #810).
+mkdir -p "$d/claude-projects-target" "$d/home/.claude"
+ln -s "$d/claude-projects-target" "$d/home/.claude/projects"
+printf '{"type":"user"}\n' > "$d/claude-projects-target/session.jsonl"
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
+  zsh "$REPO/install.sh" --uninstall >"$d/out.hist" 2>&1
+grep -qF "$d/claude-projects-target" "$d/out.hist" \
+  && ok "uninstall: a symlinked shared store is named by its target" \
+  || { fail "uninstall: symlinked shared store not named by target"; cat "$d/out.hist"; }
+grep -F '  rm -rf ' "$d/out.hist" | grep -qF "$d/claude-projects-target" \
+  && ! grep -F '  rm -rf ' "$d/out.hist" | grep -q 'home/.claude/projects' \
+  && ok "uninstall: the rm names the target, never the link" \
+  || { fail "uninstall: rm line names the link, the transcripts would survive it"; cat "$d/out.hist"; }
+# A store link that dangles is residue too: it is named beside the cleanup and
+# the rm carries the LINK — its own removal — while still removing nothing.
+rm "$d/home/.claude/projects"
+ln -s "$d/claude-projects-target" "$d/home/.claude/projects"
+rm -rf "$d/claude-projects-target"
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
+  zsh "$REPO/install.sh" --uninstall >"$d/out.dang" 2>&1
+grep -qF "$d/home/.claude/projects is a symlink to" "$d/out.dang" \
+  && grep -qF "$d/home/.claude/projects" "$d/out.dang" \
+  && ok "uninstall: a dangling shared store is named and its link is on the rm" \
+  || { fail "uninstall: dangling shared store not named"; cat "$d/out.dang"; }
 fi
 
 # --- 5. uninstall removes ONLY the command, repairs the plugin index, and names
@@ -477,6 +504,13 @@ mkdir -p "$d/home/.local/state/ccmorph/usage" "$d/home/.claude/plugins/marketpla
 # spelling of the shared store, which dangles once the state root is deleted.
 print -r -- '{"example": {"source": {"source": "github", "repo": "owner/repo"}, "installLocation": "'"$cfg"'/profiles/work/plugins/marketplaces/example"}}' \
   > "$d/home/.claude/plugins/known_marketplaces.json"
+# The shared session history (#177): claude's transcripts, prompt history and
+# paste cache live here for every profile — residue the report must name with a
+# removal command, or cleanup as told leaves conversations behind (#810).
+mkdir -p "$d/home/.claude/projects/-tmp-demo" "$d/home/.claude/paste-cache"
+printf '{"type":"user","message":"seeded"}\n' > "$d/home/.claude/projects/-tmp-demo/session.jsonl"
+printf '{"display":"seeded prompt"}\n' > "$d/home/.claude/history.jsonl"
+printf 'seeded paste' > "$d/home/.claude/paste-cache/abcd1234"
 printf '#!/bin/sh\necho Darwin\n' > "$d/bin/uname"; chmod +x "$d/bin/uname"
 env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
   zsh "$REPO/install.sh" --uninstall >"$d/out" 2>&1; rc=$?
@@ -487,9 +521,15 @@ grep -qF "\"$d/home/.claude/plugins/marketplaces/example\"" "$d/home/.claude/plu
   && ok "uninstall: the plugin index points at ~/.claude/plugins again" || { fail "uninstall: plugin index still spelled through the profile"; cat "$d/home/.claude/plugins/known_marketplaces.json" }
 [[ -f "$cfg/work.conf" && -f "$cfg/home.conf" && -d "$d/home/.local/state/ccmorph" ]] \
   && ok "uninstall: state root and usage receipts are left in place" || fail "uninstall: deleted user state"
+[[ -f "$d/home/.claude/history.jsonl" && -f "$d/home/.claude/projects/-tmp-demo/session.jsonl" \
+   && -f "$d/home/.claude/paste-cache/abcd1234" ]] \
+  && ok "uninstall: names the shared history but removes none of it" || fail "uninstall: deleted shared session history"
 grep -qF "$cfg  (2 profiles," "$d/out" && ok "uninstall: names the state root and counts its profiles" || { fail "uninstall: state root not named"; cat "$d/out" }
+grep -qF "$d/home/.claude/history.jsonl, $d/home/.claude/projects, $d/home/.claude/paste-cache  (shared session history" "$d/out" \
+  && ok "uninstall: names the shared session history under ~/.claude" || { fail "uninstall: shared session history not named"; cat "$d/out" }
 grep -qF "$d/home/.local/state/ccmorph  (usage receipts)" "$d/out" && ok "uninstall: names the usage receipts" || { fail "uninstall: usage dir not named"; cat "$d/out" }
-grep -qxF "  rm -rf $cfg $d/home/.local/state/ccmorph" "$d/out" && ok "uninstall: prints the rm for both" || { fail "uninstall: rm line wrong"; cat "$d/out" }
+grep -qxF "  rm -rf $cfg $d/home/.local/state/ccmorph $d/home/.claude/history.jsonl $d/home/.claude/projects $d/home/.claude/paste-cache" "$d/out" \
+  && ok "uninstall: prints the rm covering state, receipts and shared history" || { fail "uninstall: rm line wrong"; cat "$d/out" }
 grep -qxF "  security delete-generic-password -s ccmorph -a work.api_key" "$d/out" \
   && ok "uninstall: prints the keychain delete for each ref in the confs" || { fail "uninstall: keychain line missing"; cat "$d/out" }
 (( $(grep -c 'security delete-generic-password' "$d/out") == 1 )) && ok "uninstall: one keychain line per ref, none for a plain conf" || fail "uninstall: keychain line count"
@@ -502,8 +542,8 @@ printf 'type=apikey\napi_key=keychain:work.api_key\n' > "$d/home/.config/ccmorph
 printf '#!/bin/sh\necho Linux\n' > "$d/bin/uname"; chmod +x "$d/bin/uname"
 env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
   zsh "$REPO/install.sh" --uninstall >"$d/out" 2>&1
-grep -qxF "  rm -rf $d/home/.config/ccmorph" "$d/out" && ! grep -q 'usage receipts\|keychain' "$d/out" \
-  && ok "uninstall: lists only what exists (no usage dir, no keychain off macOS)" || { fail "uninstall: listed residue that is not there"; cat "$d/out" }
+grep -qxF "  rm -rf $d/home/.config/ccmorph" "$d/out" && ! grep -q 'usage receipts\|keychain\|shared session history' "$d/out" \
+  && ok "uninstall: lists only what exists (no usage dir, no shared history, no keychain off macOS)" || { fail "uninstall: listed residue that is not there"; cat "$d/out" }
 # macOS with no keychain reference in any conf: the grep finds nothing, and that
 # must not end the uninstall mid-report (it did, under set -e).
 d=$(fresh_env uninstall_darwin_plain)
