@@ -187,9 +187,10 @@ COMPONENTS=($LIBS $EXECUTABLES $DATA_FILES)
 #
 # Only the command goes; nothing else in ~/.local/bin is ours to touch. Everything
 # else ccmorph wrote is the user's — the state root (profiles, credentials and
-# each profile's session history), the usage receipts, and on macOS the keychain
-# items the confs point at — so it is NAMED, with the command that removes it,
-# rather than deleted here or left for them to discover later.
+# each profile's session history), the shared session history under ~/.claude,
+# the usage receipts, and on macOS the keychain items the confs point at — so it
+# is NAMED, with the command that removes it, rather than deleted here or left
+# for them to discover later (#810).
 if [[ "${1:-}" == "--uninstall" ]]; then
   # The state root the RUNTIME uses, derived exactly as lib/ccmorph.sh derives
   # it: CCMORPH_STATE_DIR, else XDG_CONFIG_HOME/ccmorph, else ~/.config/ccmorph.
@@ -314,6 +315,20 @@ if [[ "${1:-}" == "--uninstall" ]]; then
     _un_unlinked "$_un_state"; _un_state_named="$REPLY"
     _un_rm+=("$_un_state_named")
   fi
+  # The shared session history lives on the shared side of the profile links
+  # (#177): transcripts, prompt history and pasted text under ~/.claude, which
+  # native claude reads and writes too. It outlives the rm above, and until #810
+  # named nothing of it: the guide promised the entry, and cleanup as told left
+  # conversations behind unmentioned. Like the receipts, only what exists is
+  # named, and every path goes through the same unlinked resolution as the
+  # roots, so the printed rm never carries a symlink (#187, #207).
+  _un_hist=()
+  for _un_h in "$HOME/.claude/history.jsonl" "$HOME/.claude/projects" "$HOME/.claude/paste-cache"; do
+    [[ -e "$_un_h" || -L "$_un_h" ]] || continue
+    _un_unlinked "$_un_h"
+    _un_hist+=("$REPLY")
+  done
+  (( ${#_un_hist} )) && _un_rm+=("${_un_hist[@]}")
   # The keychain items are read off the confs, never by scanning the keychain
   # (which prompts): a conf is the only thing that names them, so every conf
   # counted above is read — a redirect that came later must not hide the items
@@ -339,6 +354,7 @@ if [[ "${1:-}" == "--uninstall" ]]; then
   _un_code="the installed code"
   (( ${#_un_prior} )) && _un_code="the installed code, and ${#_un_prior} profile(s), their credentials and session history, from before the state root was redirected"
   [[ -d "$CONFIG_DIR" ]] && (( _un_redirected )) && print -r -- "  $_un_code_dir  ($_un_code)"
+  (( ${#_un_hist} )) && print -r -- "  ${(j:, :)_un_hist}  (shared session history, shared with claude)"
   (( _un_has_state )) && print -r -- "  $_un_state_named  (usage receipts)"
   (( ${#_un_keychain} )) && print -r -- "  login keychain  (${#_un_keychain} ccmorph item(s))"
   print -r -- "To remove those too:"
