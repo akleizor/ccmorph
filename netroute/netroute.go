@@ -16,15 +16,16 @@ import (
 // Parse returns the proxy a profile's CCMORPH_UPSTREAM_PROXY names, or nil when
 // the knob is empty or unusable: the environment's resolution then stands, as
 // it always did for the translator. A value without a scheme and host is
-// unusable, and so is one whose authority Go refuses for a reason no reading
-// recovers.
+// unusable, and so is one whose authority names only a port -- http://user:pw@:3128
+// would dial this machine, password riding with it, never a proxy -- or whose
+// authority Go refuses for a reason no reading recovers.
 func Parse(knob string) *url.URL {
 	knob = strings.TrimSpace(knob)
 	if knob == "" {
 		return nil
 	}
 	u, err := url.Parse(knob)
-	if err == nil && u.Host != "" {
+	if err == nil && u.Hostname() != "" {
 		return u
 	}
 	return parseSpelledUserinfo(knob)
@@ -59,15 +60,50 @@ func parseSpelledUserinfo(knob string) *url.URL {
 	}
 	userinfo, authority := rest[:at], rest[at+1:]
 	u, err := url.Parse(scheme + "://" + authority)
-	if err != nil || u.Host == "" {
+	if err != nil || u.Hostname() == "" {
 		return nil
 	}
 	if user, pass, ok := strings.Cut(userinfo, ":"); ok {
-		u.User = url.UserPassword(user, pass)
+		u.User = url.UserPassword(decodeSpelling(user), decodeSpelling(pass))
 	} else if userinfo != "" {
-		u.User = url.User(userinfo)
+		u.User = url.User(decodeSpelling(userinfo))
 	}
 	return u
+}
+
+// decodeSpelling decodes the well-formed %HH escapes a pasted userinfo already
+// carries, one at a time, and leaves every other '%' literal: a password may
+// hold both a valid escape and a literal percent (50%off), and re-encoding the
+// result through url.User/url.UserPassword must spell the escape once and the
+// literal '%' as %25 -- the spelling Go gives the same credential when the knob
+// is parseable (GH-773).
+func decodeSpelling(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) && isHex(s[i+1]) && isHex(s[i+2]) {
+			b.WriteByte(unhex(s[i+1])<<4 | unhex(s[i+2]))
+			i += 2
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+func isHex(c byte) bool {
+	return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
+}
+
+func unhex(c byte) byte {
+	switch {
+	case '0' <= c && c <= '9':
+		return c - '0'
+	case 'a' <= c && c <= 'f':
+		return c - 'a' + 10
+	default:
+		return c - 'A' + 10
+	}
 }
 
 // Proxy is an http.Transport Proxy selector for calls to one profile's
@@ -113,8 +149,9 @@ func Exempt(u *url.URL) bool {
 	cfg := &httpproxy.Config{
 		HTTPProxy:  exemptConfig,
 		HTTPSProxy: exemptConfig,
-		// net/http reads no_proxy before NO_PROXY when both are set.
-		NoProxy: envAny("no_proxy", "NO_PROXY"),
+		// The shipped toolchain's reader (net/http's httpproxy, Go 1.27.4)
+		// takes NO_PROXY before no_proxy: the first non-empty spelling decides.
+		NoProxy: envAny("NO_PROXY", "no_proxy"),
 	}
 	proxy, err := cfg.ProxyFunc()(u)
 	return err == nil && proxy == nil
