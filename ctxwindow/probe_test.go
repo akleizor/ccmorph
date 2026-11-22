@@ -1331,7 +1331,7 @@ func TestLaunchSizesOnlyNewModelsAndRemembersMisses(t *testing.T) {
 	}
 	oldV := validationWindowFn
 	t.Cleanup(func() { validationWindowFn = oldV })
-	validationWindowFn = func(context.Context, string, string, string, Opener, time.Duration) int64 { return 0 }
+	validationWindowFn = func(context.Context, string, string, string, Opener, time.Duration) (int64, bool) { return 0, true }
 	out := captureStderr(t)
 	if c := SizeListing(context.Background(), "gw", listing, "https://gw.invalid", "canary", nil); c != 0 {
 		t.Fatal(c)
@@ -1358,9 +1358,9 @@ func TestLaunchSizesOnlyNewModelsAndRemembersMisses(t *testing.T) {
 	// Next launch inside the retry window asks nobody.
 	fetchJSONDict = func(context.Context, string, time.Duration) obj { t.Fatal("fetched again"); return nil }
 	FetchCatalogue = func(context.Context, time.Duration) obj { t.Fatal("fetched again"); return nil }
-	validationWindowFn = func(context.Context, string, string, string, Opener, time.Duration) int64 {
+	validationWindowFn = func(context.Context, string, string, string, Opener, time.Duration) (int64, bool) {
 		t.Fatal("asked again")
-		return 0
+		return 0, true
 	}
 	if c := SizeListing(context.Background(), "gw", listing, "https://gw.invalid", "canary", nil); c != 0 {
 		t.Fatal(c)
@@ -1437,7 +1437,7 @@ func TestSizeListingSizesUnknownModelsConcurrentlyIssue603(t *testing.T) {
 	var mu sync.Mutex
 	inflight, peak := 0, 0
 	var release chan struct{}
-	validationWindowFn = func(_ context.Context, _, _, model string, _ Opener, _ time.Duration) int64 {
+	validationWindowFn = func(_ context.Context, _, _, model string, _ Opener, _ time.Duration) (int64, bool) {
 		mu.Lock()
 		inflight++
 		if inflight > peak {
@@ -1449,9 +1449,9 @@ func TestSizeListingSizesUnknownModelsConcurrentlyIssue603(t *testing.T) {
 		inflight--
 		mu.Unlock()
 		if last := model[len(model)-1]; last%2 == 0 {
-			return 131072
+			return 131072, true
 		}
-		return 0
+		return 0, true
 	}
 	captureStderr(t)
 	synctest.Test(t, func(t *testing.T) {
@@ -1506,9 +1506,9 @@ func TestSizeListingDuplicateIDsKeepListingOrderIssue603(t *testing.T) {
 	}
 	FetchCanonicalCatalogue = func(context.Context, time.Duration) obj { return obj{} }
 	var release chan struct{}
-	validationWindowFn = func(context.Context, string, string, string, Opener, time.Duration) int64 {
+	validationWindowFn = func(context.Context, string, string, string, Opener, time.Duration) (int64, bool) {
 		<-release
-		return 16384
+		return 16384, true
 	}
 	captureStderr(t)
 	synctest.Test(t, func(t *testing.T) {
@@ -1608,17 +1608,23 @@ func TestInternalModelIsSizedFromItsValidationRefusal(t *testing.T) {
 		}}
 	}
 	vllm := "max_tokens=100000000 cannot be greater than max_model_len=max_total_tokens=1000000."
-	if got := ValidationWindow(ctx, "https://gw.invalid", "k", "m", seq([2]any{429, "rate limited"}, [2]any{400, vllm}), time.Second); got != 1_000_000 {
-		t.Fatal(got)
+	if got, answered := ValidationWindow(ctx, "https://gw.invalid", "k", "m", seq([2]any{429, "rate limited"}, [2]any{400, vllm}), time.Second); got != 1_000_000 || !answered {
+		t.Fatal(got, answered)
 	}
 	capped := "The max_tokens parameter is illegal: range [1,131072]"
-	if got := ValidationWindow(ctx, "https://gw.invalid", "k", "m", seq([2]any{400, capped}, [2]any{400, capped}), time.Second); got != 0 {
-		t.Fatal("an output cap is not a window", got)
+	if got, answered := ValidationWindow(ctx, "https://gw.invalid", "k", "m", seq([2]any{400, capped}, [2]any{400, capped}), time.Second); got != 0 || !answered {
+		t.Fatal("an output cap is not a window", got, answered)
 	}
-	// An accepting gateway states nothing.
+	// An accepting gateway states nothing, and that is an answer.
 	acc := &fake{reply: func(Request) ([]byte, error) { return []byte(`{}`), nil }}
-	if ValidationWindow(ctx, "https://gw", "k", "m", acc, time.Second) != 0 {
-		t.Fatal()
+	if got, answered := ValidationWindow(ctx, "https://gw", "k", "m", acc, time.Second); got != 0 || !answered {
+		t.Fatal(got, answered)
+	}
+	// A request that never got a response — its own deadline, or the caller's
+	// cancellation — states nothing and is not an answer (#775).
+	timedOut := &fake{reply: func(Request) ([]byte, error) { return nil, &URLError{Reason: context.DeadlineExceeded} }}
+	if got, answered := ValidationWindow(ctx, "https://gw", "k", "m", timedOut, time.Second); got != 0 || answered {
+		t.Fatal("a timeout was recorded as an answer", got, answered)
 	}
 }
 
@@ -1760,6 +1766,176 @@ func TestListingStdinGivesUpOnAHeldProfileLockIssue757(t *testing.T) {
 	// makes the next launch's ListingHasUnsized pass the listing to the sizer.
 	if _, sized := windowsOf("gw")["new"]; sized {
 		t.Fatal("the model must stay unsized, so the next launch retries the sizing pass")
+	}
+}
+
+// timeoutGateway answers one model with a stated window when healthy, and
+// otherwise lets its validation requests die on their own deadline; the other
+// model is always answered "no size stated". A live launch context must not
+// turn the former's timeout into a verdict.
+type timeoutGateway struct{ healthy bool }
+
+func (g timeoutGateway) Open(_ context.Context, r Request, _ time.Duration) ([]byte, error) {
+	if strings.Contains(string(r.Body), "slow-model") {
+		if g.healthy {
+			return nil, &HTTPError{400, []byte("maximum context length is 131072")}
+		}
+		return nil, &URLError{Reason: context.DeadlineExceeded}
+	}
+	return nil, &HTTPError{400, []byte("no window stated")}
+}
+
+// probeMustNotRun fails the test if the sizing pass reaches a probe.
+type probeMustNotRun struct{ t *testing.T }
+
+func (p probeMustNotRun) Open(context.Context, Request, time.Duration) ([]byte, error) {
+	p.t.Fatal("a sized or recently missed model was asked again")
+	return nil, nil
+}
+
+// GH-775: a probe that died on its own deadline was never answered for, so it
+// must not become a dated miss — even though the launch's context is alive and
+// the save runs. A model the gateway answered "no size" for keeps its miss.
+func TestDeadlineLeavesUnprobedModelsForTheNextLaunchIssue775(t *testing.T) {
+	dir := state(t)
+	conf := filepath.Join(dir, "gw.conf")
+	put(t, conf, "type=apikey\nbase_url=https://gw.invalid\napi_key={{SECRET_q7t2w9dxk4}}\n")
+	listing := `{"data":[{"id":"slow-model"},{"id":"refused-model"}]}`
+	captureStderr(t)
+
+	// First launch: slow-model's validation requests time out while the launch
+	// context is still live, so the save runs. No clock: the fake opener reports
+	// the probe's own deadline, exactly as sameOriginClient does.
+	if c := SizeListing(context.Background(), "gw", listing, "https://gw.invalid", "canary", timeoutGateway{}); c != 0 {
+		t.Fatalf("the timed-out launch exited %d", c)
+	}
+	_, fields, err := ReadConf(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, missed := DiscoveredMisses(fields)["slow-model"]; missed {
+		t.Errorf("the launch recorded a miss for a model whose probe never answered: %v", DiscoveredMisses(fields))
+	}
+	if _, missed := DiscoveredMisses(fields)["refused-model"]; !missed {
+		t.Fatalf("the answered-unsizeable model's miss was not recorded: %v", DiscoveredMisses(fields))
+	}
+
+	// The next launch is healthy: the timed-out model is sized; the answered
+	// one stays out on its dated miss.
+	if c := SizeListing(context.Background(), "gw", listing, "https://gw.invalid", "canary", timeoutGateway{healthy: true}); c != 0 {
+		t.Fatalf("the healthy launch exited %d", c)
+	}
+	w := windowsOf("gw")
+	if got := w["slow-model"]; got != 131072 {
+		t.Fatalf("the healthy launch did not re-size the timed-out model: %v", w)
+	}
+	if got, sized := w["refused-model"]; sized {
+		t.Fatalf("the answered-unsizeable model was sized %d instead of kept out: %v", got, w)
+	}
+	// Nothing is left to ask: one size, one recent miss.
+	if c := SizeListing(context.Background(), "gw", listing, "https://gw.invalid", "canary", probeMustNotRun{t}); c != 0 {
+		t.Fatalf("the third launch exited %d", c)
+	}
+	if w := windowsOf("gw"); len(w) != 1 || w["slow-model"] != 131072 {
+		t.Fatalf("the recorded state changed on a launch with nothing to size: %v", w)
+	}
+}
+
+// GH-775: a save whose deadline has passed writes nothing even when the
+// profile lock is free. The cancelled probes' zero results are not verdicts.
+func TestSaveAfterTheDeadlineWritesNothingIssue775(t *testing.T) {
+	dir := state(t)
+	conf := filepath.Join(dir, "gw.conf")
+	put(t, conf, "type=apikey\napi_key=k\n")
+	before, err := os.ReadFile(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	saved, err := SaveDiscoveredCtx(ctx, "gw", map[string]int64{"sized-model": 65536}, ProfileIdentity("gw"), true,
+		nil, map[string]string{"timed-out-model": "2026-11-22"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved {
+		t.Fatal("a save past its deadline wrote to the profile")
+	}
+	after, err := os.ReadFile(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("a save past its deadline rewrote the conf:\nbefore: %q\nafter:  %q", before, after)
+	}
+	if _, err := os.Stat(DiscoveredPath(conf)); !os.IsNotExist(err) {
+		t.Fatalf("a save past its deadline wrote a discovered record: %v", err)
+	}
+}
+
+// cancelOnDone cancels its context the first time Done is read, modelling a
+// deadline that lands as the free profile lock is being taken. Err still reports
+// the cancellation, so a check after the lock sees it.
+type cancelOnDone struct {
+	context.Context
+	cancel context.CancelFunc
+}
+
+func (c cancelOnDone) Done() <-chan struct{} {
+	c.cancel()
+	return c.Context.Done()
+}
+
+// GH-775: a deadline that lands while the free profile lock is being taken must
+// stop the save too. flockCtx can succeed after ctx.Done, and ProfileLockCtx
+// used to run the callback anyway, writing the record.
+func TestSaveStopsWhenTheDeadlineLandsAtLockAcquisitionIssue775(t *testing.T) {
+	dir := state(t)
+	conf := filepath.Join(dir, "gw.conf")
+	put(t, conf, "type=apikey\napi_key=k\n")
+	before, err := os.ReadFile(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	saved, err := SaveDiscoveredCtx(cancelOnDone{ctx, cancel}, "gw", map[string]int64{"sized-model": 65536},
+		ProfileIdentity("gw"), true, nil, map[string]string{"timed-out-model": "2026-11-22"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved {
+		t.Fatal("a save whose deadline landed at lock acquisition wrote to the profile")
+	}
+	after, err := os.ReadFile(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("a save whose deadline landed at lock acquisition rewrote the conf:\nbefore: %q\nafter:  %q", before, after)
+	}
+	if _, err := os.Stat(DiscoveredPath(conf)); !os.IsNotExist(err) {
+		t.Fatalf("a save whose deadline landed at lock acquisition wrote a discovered record: %v", err)
+	}
+}
+
+// GH-775: a saved miss must cite an answer. The collection loop receives one
+// result whose lookup the deadline cancelled (no value, no answer) and one the
+// probe answered "no size" for. Only the answered result may become a miss.
+func TestASavedMissMustCiteAnAnswerIssue775(t *testing.T) {
+	today := "2026-11-22"
+	values, sources, missed := collectSizes([]sized{
+		{model: "timed-out-model"},               // cancelled: no verdict
+		{model: "refused-model", answered: true}, // the probe answered "no size"
+	}, today)
+	if len(missed) != 1 || missed["refused-model"] != today {
+		t.Fatalf("a timeout was recorded as a verdict: misses %v, want only refused-model", missed)
+	}
+	if _, ok := missed["timed-out-model"]; ok {
+		t.Fatalf("a timeout was recorded as a verdict: misses %v", missed)
+	}
+	if len(values) != 0 || len(sources) != 0 {
+		t.Fatalf("a cancelled lookup produced a value: values %v, sources %v", values, sources)
 	}
 }
 
@@ -2390,9 +2566,9 @@ func TestUnreachableSourceIsFetchedOncePerRetryWindow(t *testing.T) {
 	}
 	oldV := validationWindowFn
 	t.Cleanup(func() { validationWindowFn = oldV })
-	validationWindowFn = func(context.Context, string, string, string, Opener, time.Duration) int64 {
+	validationWindowFn = func(context.Context, string, string, string, Opener, time.Duration) (int64, bool) {
 		t.Fatal("quota spent")
-		return 0
+		return 0, true
 	}
 	SizeListing(context.Background(), "codex", codexListing(), "http://127.0.0.1:1", "k", nil)
 	SizeListing(context.Background(), "codex", codexListing(), "http://127.0.0.1:1", "k", nil)
@@ -2417,10 +2593,10 @@ func TestProviderBridgeIsNeverValidatedWithARequest(t *testing.T) {
 	oldV := validationWindowFn
 	t.Cleanup(func() { validationWindowFn = oldV })
 	validationCalls := 0
-	validationWindowFn = func(context.Context, string, string, string, Opener, time.Duration) int64 {
+	validationWindowFn = func(context.Context, string, string, string, Opener, time.Duration) (int64, bool) {
 		validationCalls++
 		t.Fatal("quota spent")
-		return 0
+		return 0, true
 	}
 	if c := SizeListing(context.Background(), "codex", `{"data":[{"id":"gpt-unknown","owned_by":"openai"}]}`, "http://127.0.0.1:1", "k", nil); c != 0 {
 		t.Fatal(c)
