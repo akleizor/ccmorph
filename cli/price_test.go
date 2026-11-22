@@ -9,13 +9,28 @@ import (
 )
 
 func TestPriceRejectsUnknownOptions(t *testing.T) {
-	for _, option := range []string{"--jsoon", "-j"} {
-		t.Run(option, func(t *testing.T) {
-			stderr, rc := capturePriceStderr(t, func() int {
-				return (&launcher{}).verb([]string{"price", option, "claude-sonnet-4-5"})
+	for _, c := range []struct {
+		args   []string
+		option string
+	}{
+		{[]string{"--jsoon", "claude-sonnet-4-5"}, "--jsoon"},
+		{[]string{"-j", "claude-sonnet-4-5"}, "-j"},
+		{[]string{"claude-sonnet-4-5", "--jsoon"}, "--jsoon"},
+		{[]string{"-", "claude-sonnet-4-5"}, "-"},
+	} {
+		t.Run(strings.Join(c.args, " "), func(t *testing.T) {
+			var stderr string
+			stdout, rc := captureStdout(t, func() int {
+				var code int
+				stderr, code = capturePriceStderr(t, func() int {
+					return (&launcher{}).verb(append([]string{"price"}, c.args...))
+				})
+				return code
 			})
-			if rc == 0 || !strings.Contains(stderr, option) || !strings.Contains(stderr, "usage:") || !strings.Contains(stderr, "--") {
-				t.Fatalf("rc %d, stderr %q; want non-zero usage error naming %q and explaining --", rc, stderr, option)
+			if rc != 2 || stdout != "" || !strings.Contains(stderr, "'"+c.option+"'") ||
+				!strings.Contains(stderr, "usage:") ||
+				!strings.Contains(stderr, "Use -- before a model name that begins with a dash.") {
+				t.Fatalf("args %v: rc %d, stdout %q, stderr %q; want exit 2, no stdout, a usage error naming %q and explaining --", c.args, rc, stdout, stderr, c.option)
 			}
 		})
 	}
@@ -38,6 +53,12 @@ func TestPriceDoubleDashPassesDashPrefixedModel(t *testing.T) {
 	if rc != 0 || out != "-claude-model  $0.15/$0.6 per 1M tokens\n" {
 		t.Fatalf("rc %d, output %q", rc, out)
 	}
+	out, rc = captureStdout(t, func() int {
+		return (&launcher{}).verb([]string{"price", "--json", "--", "-claude-model"})
+	})
+	if rc != 0 || out != "{\"-claude-model\":{\"input\":0.15,\"output\":0.6}}\n" {
+		t.Fatalf("--json: rc %d, output %q", rc, out)
+	}
 }
 
 func TestPriceHelpFlagStopsAtTheDelimiter(t *testing.T) {
@@ -48,6 +69,8 @@ func TestPriceHelpFlagStopsAtTheDelimiter(t *testing.T) {
 	}{
 		{"before", []string{"price", "--help"}, "Usage: ccmorph price "},
 		{"after", []string{"price", "--", "--help"}, "--help  no cached price\n"},
+		{"before-short", []string{"price", "-h"}, "Usage: ccmorph price "},
+		{"after-short", []string{"price", "--", "-h"}, "-h  no cached price\n"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
@@ -56,6 +79,17 @@ func TestPriceHelpFlagStopsAtTheDelimiter(t *testing.T) {
 			out, code := captureStdout(t, func() int { return fromEnv().dispatch(c.args) })
 			if code != 0 || !strings.Contains(out, c.want) {
 				t.Fatalf("args %v: exit %d, stdout %q; want it to contain %q", c.args, code, out, c.want)
+			}
+		})
+	}
+}
+
+func TestPriceDelimiterWithNoModelIsAUsageError(t *testing.T) {
+	for _, args := range [][]string{{"price", "--"}, {"price", "--json", "--"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			stderr, rc := capturePriceStderr(t, func() int { return (&launcher{}).verb(args) })
+			if rc != 2 || !strings.Contains(stderr, "usage:") {
+				t.Fatalf("args %v: rc %d, stderr %q; want exit 2 and a usage line", args, rc, stderr)
 			}
 		})
 	}
