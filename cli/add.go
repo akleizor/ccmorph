@@ -864,7 +864,7 @@ func (l *launcher) login(args []string) int {
 	if f["type"] != "provider" {
 		// Only a token profile is left, and its credential is replaced, not
 		// renewed: name the command that does that.
-		l.err("'" + name + "' is a " + profile.KindLabel(f["type"], f["provider"]) + " profile — replace its credential: ccmorph config " + name)
+		l.err("'" + name + "' is " + profile.KindPhrase(f["type"], f["provider"]) + " profile — replace its credential: ccmorph config " + name)
 		return 1
 	}
 	if !l.providerLogin(name, f["provider"]) {

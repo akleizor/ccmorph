@@ -799,6 +799,13 @@ def test_cred_prints_the_stored_secret_bare_and_refuses_when_there_is_none(box):
     assert box.run('cred', 'gw').stdout == 'canary-key'
     out = box.run('cred', 'work')
     assert out.returncode == 1 and out.stdout == '' and 'stores no credential' in out.stderr
+    # GH-790: the refusal puts an article before the kind label, so it must
+    # read "an API key profile", not "a API key profile"; the kinds that took
+    # "a" before still do (work above).
+    box.conf('bare', 'type=apikey\n')
+    out = box.run('cred', 'bare')
+    assert out.returncode == 1 and 'is an API key profile and stores no credential' in out.stderr
+    assert 'is a Claude account profile' in box.run('cred', 'work').stderr
     out = box.run('cred', 'ghost')
     assert out.returncode == 1 and "no profile 'ghost'" in out.stderr
 

@@ -379,6 +379,44 @@ class PickerTTYTest(unittest.TestCase):
             else:
                 self.assertIsNone(shutil.which('fzf', path=env['PATH']), env['PATH'])
 
+    def seed_cred_profiles(self, keyless_only=False):
+        """The credential picker's seeds: a keyless API key profile that must
+        not be offered, one with a key and one token profile with a token."""
+        bodies = {'work': 'type=apikey\n'}
+        if not keyless_only:
+            bodies['gw'] = 'type=apikey\napi_key=picker-canary-key'
+            bodies['tok'] = 'type=token\ntoken=picker-canary-token'
+        for name, body in bodies.items():
+            (self.state / f'{name}.conf').write_text(body)
+
+    def test_the_credential_picker_offers_only_profiles_with_a_stored_secret(self):
+        # GH-790: cred listed the keyless profile anyway, and choosing it could
+        # only end in the refusal. The help has offered "only profiles with a
+        # stored key or token" all along; the picker now keeps that promise.
+        env = self.env(fzf=True)
+        self.seed_cred_profiles()
+        self.spec('Profile=gw')
+        rc, out, missed = run_pty(
+            'picked=$(ccmorph cred); rc=$?; print -r -- "CRED=$picked RC=$rc"', env)
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        _, rows = self.first_menu()
+        ids = [line.split('\t')[0] for line in rows]
+        self.assertEqual(ids, ['gw', 'tok'])  # keyless 'work' is not offered
+        self.assertIn('CRED=picker-canary-key RC=0', out)
+
+    def test_the_credential_picker_names_the_way_to_add_a_credential_when_none_qualifies(self):
+        # GH-790: filtering must not leave a person facing an empty menu. When
+        # no profile stores a secret, the answer names the command that adds
+        # one, and no picker opens.
+        env = self.env(fzf=True)
+        self.seed_cred_profiles(keyless_only=True)
+        rc, out, missed = run_pty('ccmorph cred; print -r -- "RC=$?"', env)
+        self.assertIsNone(missed, out)
+        self.assertIn('RC=1', out)
+        self.assertIn('Add one: ccmorph config <profile>', out)
+        self.assertFalse((self.tmp / 'fzf.log').exists())
+
     def test_cold_launch_selects_a_model_before_starting_the_adapter(self):
         env = self.env(fzf=True)
         self.profile()
