@@ -1,13 +1,15 @@
 package quota
 
 // Window is one plan window as both the text view and `--json` carry it: Used
-// is the fraction of the window spent (0.12 is 12%), ResetsAt the Unix second
-// the provider says it resets, nil when the provider did not say.
+// is the fraction of the window spent (0.12 is 12%), nil when there is no share
+// to show — a budget month whose turns all carried no price, so its cost is
+// unknown, never 0 — and ResetsAt the Unix second the provider says it resets,
+// nil when the provider did not say.
 type Window struct {
-	ID       string  `json:"id"`
-	Label    string  `json:"label"`
-	Used     float64 `json:"used"`
-	ResetsAt *int64  `json:"resets_at"`
+	ID       string   `json:"id"`
+	Label    string   `json:"label"`
+	Used     *float64 `json:"used"`
+	ResetsAt *int64   `json:"resets_at"`
 	// Models names the models that draw on this window when the plan keeps
 	// separate pools (Antigravity); empty means every model on the profile.
 	Models []string `json:"models,omitempty"`

@@ -105,8 +105,16 @@ func spendEntry(name, budgetRaw string) Entry {
 	s.TodayTokens, s.MonthTokens = t.TodayTokens, t.MonthTokens
 	if budget != nil {
 		resets := time.Date(today.Year(), today.Month()+1, 1, 0, 0, 0, 0, time.Local).Unix()
-		used := s.MonthUSD / *budget
-		e.Windows = []Window{{ID: "month", Label: "month", Used: used, ResetsAt: &resets}}
+		win := Window{ID: "month", Label: "month", ResetsAt: &resets}
+		// Every turn this month unpriced means the month's cost is unknown, so
+		// the window carries no share — nil, not 0, the picture of no spend
+		// (#301). The decision lives here, where the spend is known, and every
+		// reader of the window gets the same answer (#795).
+		if !s.AllUnpriced() {
+			used := s.MonthUSD / *budget
+			win.Used = &used
+		}
+		e.Windows = []Window{win}
 	}
 	return e
 }

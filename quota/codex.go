@@ -80,7 +80,8 @@ func codexReading(body []byte) (string, []Window, error) {
 		if resets > 0 {
 			at = &resets
 		}
-		ws = append(ws, Window{ID: id, Label: windowLabel(id), Used: *w.UsedPercent / 100, ResetsAt: at})
+		used := *w.UsedPercent / 100
+		ws = append(ws, Window{ID: id, Label: windowLabel(id), Used: &used, ResetsAt: at})
 	}
 	if u.RateLimit != nil {
 		add(u.RateLimit.PrimaryWindow)

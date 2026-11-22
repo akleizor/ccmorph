@@ -133,10 +133,12 @@ func windows(e quota.Entry, now float64) []Window {
 	var out []Window
 	for _, w := range e.Windows {
 		length := windowLength[w.ID[:min(2, len(w.ID))]]
-		if length == 0 || w.ResetsAt == nil {
+		// A window with no share is not a reading to pace on: a budget month
+		// whose cost is unknown carries none (#795).
+		if length == 0 || w.ResetsAt == nil || w.Used == nil {
 			continue
 		}
-		x := Window{Name: w.ID, Used: math.Max(0, math.Min(1, w.Used)), ResetsAt: float64(*w.ResetsAt), Length: length, Models: w.Models}
+		x := Window{Name: w.ID, Used: math.Max(0, math.Min(1, *w.Used)), ResetsAt: float64(*w.ResetsAt), Length: length, Models: w.Models}
 		// Claude's per-model weekly windows ("7d_opus") pace only that alias.
 		if _, model, ok := strings.Cut(w.ID, "_"); ok && len(x.Models) == 0 {
 			x.Models = []string{model}

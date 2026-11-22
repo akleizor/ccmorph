@@ -233,7 +233,7 @@ func TestDecideSendsWorkToTheSubscriptionFurthestBehindItsPace(t *testing.T) {
 	}
 	reset := time.Now().Add(150 * time.Minute).Unix() // half of a 5h window elapsed
 	entry := func(name string, used float64) quota.Entry {
-		return quota.Entry{Profile: name, Kind: "claude", Windows: []quota.Window{{ID: "5h", Used: used, ResetsAt: &reset}}}
+		return quota.Entry{Profile: name, Kind: "claude", Windows: []quota.Window{{ID: "5h", Used: &used, ResetsAt: &reset}}}
 	}
 	if err := writeJSON(filepath.Join(routerDir(), "quota.json"), snapshot{ReadAt: nowSec(),
 		Entries: []quota.Entry{entry("busy", 0.8), entry("idle", 0.1), entry("main", 0)}}); err != nil {

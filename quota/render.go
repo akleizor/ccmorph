@@ -133,14 +133,19 @@ func renderEntry(w io.Writer, e Entry, color bool) {
 
 // windowLine is "  5h       ██░░░░░░░░░░░░░░  12%  in 4h 10m". A budget window
 // is the month's priced spend over the budget; when no turn this month was
-// priced there is no share to show, so the bar stays empty and its label says
-// the cost is unknown — never 0%, the picture of a month with no spend (#301).
+// priced there is no share to show, so the window carries none (Used nil) and
+// the bar stays empty and says the cost is unknown — never 0%, the picture of a
+// month with no spend (#301).
 func windowLine(win Window, s *Spend) string {
-	share := percent(win.Used)
-	if s.AllUnpriced() {
+	used := 0.0
+	if win.Used != nil {
+		used = *win.Used
+	}
+	share := percent(used)
+	if win.Used == nil || s.AllUnpriced() {
 		share = "cost unknown"
 	}
-	return fmt.Sprintf("  %-8s %s %4s  %s", win.Label, bar(win.Used), share, resetText(win.ResetsAt))
+	return fmt.Sprintf("  %-8s %s %4s  %s", win.Label, bar(used), share, resetText(win.ResetsAt))
 }
 
 // spendLine is a gateway or budget profile's use. A price turns into money;

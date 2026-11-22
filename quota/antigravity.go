@@ -90,7 +90,8 @@ func antigravityReading(body []byte) ([]Window, error) {
 		// The label names the pool by its first model's family ("7d claude"), so
 		// the text view tells the pools apart.
 		family, _, _ := strings.Cut(models[0], "-")
-		ws = append(ws, Window{ID: id, Label: id + " " + family, Used: 1 - p.left, ResetsAt: &resets, Models: models})
+		used := 1 - p.left
+		ws = append(ws, Window{ID: id, Label: id + " " + family, Used: &used, ResetsAt: &resets, Models: models})
 	}
 	if len(ws) == 0 {
 		return nil, errors.New("no plan windows reported")

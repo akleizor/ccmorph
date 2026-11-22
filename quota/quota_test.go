@@ -234,7 +234,7 @@ func TestQuota(t *testing.T) {
 	if live.Profile != "live" || live.Kind != "claude" || live.Plan != "Max 20x" {
 		t.Fatalf("live entry %+v", live)
 	}
-	if len(live.Windows) != 3 || live.Windows[0].ID != "5h" || live.Windows[0].Used != 0.12 {
+	if len(live.Windows) != 3 || live.Windows[0].ID != "5h" || live.Windows[0].Used == nil || *live.Windows[0].Used != 0.12 {
 		t.Fatalf("windows %+v", live.Windows)
 	}
 	if live.Windows[1].ID != "7d" || live.Windows[2].ID != "7d_opus" {
@@ -339,7 +339,7 @@ func TestQuotaStale(t *testing.T) {
 	})
 	save("slow", Reading{
 		Plan:    "Pro",
-		Windows: []Window{{ID: "5h", Label: "5h", Used: 0.2, ResetsAt: ptr(at.Add(time.Hour).Unix())}},
+		Windows: []Window{{ID: "5h", Label: "5h", Used: ptr(0.2), ResetsAt: ptr(at.Add(time.Hour).Unix())}},
 		ReadAt:  at.Add(-12 * time.Minute).Unix(),
 	})
 	in := "slow\tsub\t" + slow + "\nfresh\tsub\t" + fresh + "\n"
@@ -379,11 +379,25 @@ func TestQuotaStale(t *testing.T) {
 	if !s.Stale || s.Error != "rate-limited" || s.AgeSeconds == nil || *s.AgeSeconds != 720 {
 		t.Fatalf("stale entry %+v", s)
 	}
-	if s.Plan != "Pro" || len(s.Windows) != 1 || s.Windows[0].Used != 0.2 {
+	if s.Plan != "Pro" || len(s.Windows) != 1 || s.Windows[0].Used == nil || *s.Windows[0].Used != 0.2 {
 		t.Fatalf("cached reading %+v", s)
 	}
 	if doc.Profiles[1].Stale || doc.Profiles[1].Error == "" {
 		t.Fatalf("never-read entry %+v", doc.Profiles[1])
+	}
+
+	// A cache written before Window.Used could say "no share" carries the share
+	// as a plain JSON number; it still decodes to the same 0.2, so a stored
+	// reading keeps answering across the shape change (#795).
+	old := `{"plan":"Pro","windows":[{"id":"5h","label":"5h","used":0.2,` +
+		`"resets_at":` + strconv.FormatInt(at.Add(time.Hour).Unix(), 10) + `}],` +
+		`"read_at":` + strconv.FormatInt(at.Add(-12*time.Minute).Unix(), 10) + `}`
+	if err := os.WriteFile(cachePath("old"), []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r, ok := load("old"); !ok || len(r.Windows) != 1 || r.Windows[0].ID != "5h" ||
+		r.Windows[0].Used == nil || *r.Windows[0].Used != 0.2 {
+		t.Fatalf("old numeric cache reading %+v, ok=%v", r, ok)
 	}
 }
 
@@ -443,6 +457,10 @@ func TestQuotaSpend(t *testing.T) {
 	// must say the cost is unknown, never 0% — the picture of no spend.
 	receipt("15", "capu", "2026-10-20T09:00:00Z", map[string]any{"input_tokens": 200, "output_tokens": 30}, true)
 	receipt("16", "capu", "2026-10-06T09:00:00Z", map[string]any{"input_tokens": 50}, true)
+	// A budget with some priced and some unpriced turns keeps the share of the
+	// money it could price: only an all-unpriced month has none (#795).
+	receipt("17", "capm", "2026-10-08T00:00:00Z", map[string]any{"cost": 20.0}, true)
+	receipt("18", "capm", "2026-10-09T00:00:00Z", map[string]any{"input_tokens": 40}, true)
 	// The same store sharded by day: a row lands in the day folder of its UTC
 	// stamp, and the spend still reads it beside the flat rows (#227).
 	receipt("11", "gw", "2026-10-20T08:00:00Z", map[string]any{"cost": 0.25}, true, "2026-10-20")           // today, sharded
@@ -450,7 +468,7 @@ func TestQuotaSpend(t *testing.T) {
 	receipt("13", "gw", "2026-09-15T00:00:00Z", map[string]any{"cost": 50.0}, true, "2026-09-15")           // last month
 	receipt("14", "other", "2026-10-20T07:00:00Z", map[string]any{"cost": 6.0}, true, "2026-10-20")         // another profile
 
-	in := "gw\tgateway\t\t\ncap\tgateway\t\t500\ncapu\tgateway\t\t40\ncap0\tgateway\t\t40\ngw2\tgateway\t\t\nwork\tgateway\t\t\n"
+	in := "gw\tgateway\t\t\ncap\tgateway\t\t500\ncapu\tgateway\t\t40\ncap0\tgateway\t\t40\ncapm\tgateway\t\t40\ngw2\tgateway\t\t\nwork\tgateway\t\t\n"
 	out, _, code := run(t, nil, in)
 	if code != 0 {
 		t.Fatalf("exit %d", code)
@@ -469,6 +487,10 @@ func TestQuotaSpend(t *testing.T) {
 		"cap0",
 		row("month", 0, "0%", "Nov 1"),
 		"  not used this month",
+		"capm",
+		row("month", 8, "50%", "Nov 1"),
+		"  today $0.00 · month $20.00 of $40",
+		"  1 turn with no price · cost unknown",
 		"",
 		"API key and provider profiles",
 		"gw",
@@ -507,31 +529,63 @@ func TestQuotaSpend(t *testing.T) {
 	if cap.Kind != "budget" || cap.Spend == nil || cap.Spend.BudgetUSD == nil || *cap.Spend.BudgetUSD != 500 {
 		t.Fatalf("cap entry %+v", cap)
 	}
-	if len(cap.Windows) != 1 || cap.Windows[0].ID != "month" || cap.Windows[0].Used != 0.2 {
+	if len(cap.Windows) != 1 || cap.Windows[0].ID != "month" || cap.Windows[0].Used == nil || *cap.Windows[0].Used != 0.2 {
 		t.Fatalf("budget window %+v", cap.Windows)
 	}
-	// The all-unpriced budget keeps its --json shape: the window's used stays 0
-	// beside the spend counts that say why, and the text view carries the
-	// unknown (#301).
+	// The all-unpriced budget carries no share on the tool surface: the month
+	// window is there, `used` is null — never the confident 0% of a month whose
+	// cost is unknown (#301, #795) — beside the spend counts that say why, and
+	// the text view carries the unknown.
 	capu := doc.Profiles[2]
 	if capu.Kind != "budget" || capu.Spend == nil || capu.Spend.BudgetUSD == nil || *capu.Spend.BudgetUSD != 40 {
 		t.Fatalf("capu entry %+v", capu)
 	}
-	if len(capu.Windows) != 1 || capu.Windows[0].Used != 0 ||
+	if len(capu.Windows) != 1 || capu.Windows[0].Used != nil ||
 		capu.Spend.MonthTurns != 2 || capu.Spend.MonthTokens != 280 || capu.Spend.UnpricedTurns != 2 {
 		t.Fatalf("capu unknown-cost entry %+v", capu)
+	}
+	// The raw tool surface: no numeric share may be encoded for a month whose
+	// cost is unknown. `used` absent or null both say "no share"; a number —
+	// 0 above all — is the picture #301 forbids (#795).
+	var rawDoc struct {
+		Profiles []struct {
+			Profile string           `json:"profile"`
+			Windows []map[string]any `json:"windows"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal([]byte(jout), &rawDoc); err != nil {
+		t.Fatal(err)
+	}
+	if len(rawDoc.Profiles) != 7 || len(rawDoc.Profiles[2].Windows) != 1 {
+		t.Fatalf("raw profiles %+v", rawDoc.Profiles)
+	}
+	if used, ok := rawDoc.Profiles[2].Windows[0]["used"]; ok && used != nil {
+		t.Fatalf("all-unpriced month window used = %v, want null or absent", used)
 	}
 	cap0 := doc.Profiles[3]
 	if cap0.Kind != "budget" || cap0.Spend == nil || cap0.Spend.MonthTurns != 0 || len(cap0.Windows) != 1 {
 		t.Fatalf("cap0 entry %+v", cap0)
 	}
-	gw2 := doc.Profiles[4]
+	// A month with no turns at all is a month with no spend: its share stays the
+	// numeric 0, unlike the unknown cost above (#301).
+	if cap0.Windows[0].Used == nil || *cap0.Windows[0].Used != 0 {
+		t.Fatalf("cap0 month window %+v", cap0.Windows[0])
+	}
+	// Some unpriced turns beside priced ones still price the month: the share is
+	// the priced money over the budget (#795).
+	capm := doc.Profiles[4]
+	if capm.Kind != "budget" || capm.Spend == nil || capm.Spend.MonthUSD != 20 ||
+		capm.Spend.MonthTurns != 2 || capm.Spend.UnpricedTurns != 1 ||
+		len(capm.Windows) != 1 || capm.Windows[0].Used == nil || *capm.Windows[0].Used != 0.5 {
+		t.Fatalf("capm mixed-cost entry %+v", capm)
+	}
+	gw2 := doc.Profiles[5]
 	if gw2.Spend == nil || gw2.Spend.TodayUSD != 0 || gw2.Spend.MonthUSD != 0 ||
 		gw2.Spend.TodayTurns != 1 || gw2.Spend.MonthTurns != 2 ||
 		gw2.Spend.TodayTokens != 134 || gw2.Spend.MonthTokens != 254 || gw2.Spend.UnpricedTurns != 2 {
 		t.Fatalf("gw2 entry %+v", gw2.Spend)
 	}
-	work := doc.Profiles[5]
+	work := doc.Profiles[6]
 	if work.Spend == nil || work.Spend.MonthTurns != 0 || work.Spend.MonthTokens != 0 || work.Spend.UnpricedTurns != 0 {
 		t.Fatalf("work entry %+v", work.Spend)
 	}
@@ -904,8 +958,8 @@ func TestQuotaFixtureHomes(t *testing.T) {
 	save("max", Reading{
 		Plan: "Max 5x",
 		Windows: []Window{
-			{ID: "5h", Label: "5h", Used: 0.55, ResetsAt: ptr(at.Add(90 * time.Minute).Unix())},
-			{ID: "7d", Label: "7d", Used: 0.7, ResetsAt: ptr(at.Add(48 * time.Hour).Unix())},
+			{ID: "5h", Label: "5h", Used: ptr(0.55), ResetsAt: ptr(at.Add(90 * time.Minute).Unix())},
+			{ID: "7d", Label: "7d", Used: ptr(0.7), ResetsAt: ptr(at.Add(48 * time.Hour).Unix())},
 		},
 		ReadAt: at.Add(-12 * time.Minute).Unix(),
 	})
@@ -962,10 +1016,10 @@ func TestQuotaFixtureHomes(t *testing.T) {
 	if len(doc.Profiles) != 4 {
 		t.Fatalf("%d entries", len(doc.Profiles))
 	}
-	if p := doc.Profiles[1]; !p.Stale || p.AgeSeconds == nil || *p.AgeSeconds != 720 || len(p.Windows) != 2 || p.Windows[0].Used != 0.55 {
+	if p := doc.Profiles[1]; !p.Stale || p.AgeSeconds == nil || *p.AgeSeconds != 720 || len(p.Windows) != 2 || p.Windows[0].Used == nil || *p.Windows[0].Used != 0.55 {
 		t.Fatalf("stale fixture %+v", p)
 	}
-	if c := doc.Profiles[2]; c.Plan != "Plus" || len(c.Windows) != 2 || c.Windows[0].Used != 0.35 || c.Windows[1].ID != "7d" {
+	if c := doc.Profiles[2]; c.Plan != "Plus" || len(c.Windows) != 2 || c.Windows[0].Used == nil || *c.Windows[0].Used != 0.35 || c.Windows[1].ID != "7d" {
 		t.Fatalf("codex fixture %+v", c)
 	}
 	if g := doc.Profiles[3]; g.Profile != long || g.Spend == nil || g.Spend.MonthUSD != 2.5 || g.Spend.BudgetUSD != nil {
