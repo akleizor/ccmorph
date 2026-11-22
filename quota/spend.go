@@ -79,6 +79,9 @@ func billable(v *float64) bool {
 // store the read could not see whole is not an empty month: the entry carries
 // the reason and no spend — a row that names the store instead of answering a
 // healthy zero, the truthful reason of INTENT 8 — and the run fails (#545).
+// When only receipts could not be read, the entry carries the reason naming
+// them beside the spend of every other receipt, the total the report and the
+// export give the same store, and the run still fails (#654).
 func spendEntry(name, budgetRaw string) Entry {
 	e := Entry{Profile: name, Kind: "gateway", Windows: []Window{}}
 	s := &Spend{}
@@ -93,10 +96,23 @@ func spendEntry(name, budgetRaw string) Entry {
 	today := now()
 	todayStart := time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, time.Local)
 	monthStart := time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, time.Local)
-	tallies, read := monthTallies(filepath.Join(paths.StateDir(), "usage"), today, monthStart, todayStart)
-	if !read {
+	tallies, err := monthTallies(filepath.Join(paths.StateDir(), "usage"), today, monthStart, todayStart)
+	var gaps *unreadableReceipts
+	if errors.As(err, &gaps) {
+		// Only receipts could not be read: the spend is every other receipt's,
+		// the total report and the export give, and the reason names the
+		// receipts it leaves out, so it never reads as the whole month (#654).
+		e.Error = err.Error()
+		s.UnreadableReceipts = len(gaps.paths)
+	} else if err != nil {
 		e.Spend = nil
-		e.Error = "usage store not readable — cost unknown; check permissions"
+		if errors.Is(err, paths.ErrUsageStoreBusy) {
+			// The store is held by a compaction or a relocation: refusing names
+			// the reason instead of freezing the statusline behind it (INTENT 8).
+			e.Error = "usage store busy — retry after compaction finishes"
+		} else {
+			e.Error = err.Error()
+		}
 		return e
 	}
 	t := tallies[name]
@@ -126,11 +142,42 @@ func spendEntry(name, budgetRaw string) Entry {
 // 3 added the closed snapshot's validity and the retryable read: a version 2
 // file may have remembered an unreadable receipt, or an open day's rewrite, as
 // the day's answer, so it is rebuilt (#538). Version 4 binds archived days to
-// their contents and metadata, including any live overlay.
-const spendCacheVersion = 4
+// their contents and metadata, including any live overlay. Version 5 marks an
+// archived day by the archive pair's stat identity plus its leftover folder's
+// receipt marks, so an unchanged pass hashes no row (#559, #654).
+const spendCacheVersion = 5
+
+// A quota read is a statusline's hot path, so the one closed day it may compact
+// is held to a budget (INTENT 8, #654): a day folder holding more than
+// autoCompactMaxFiles receipts, or more than autoCompactMaxBytes of them, or an
+// archive and index larger than autoCompactMaxBytes, is left whole for
+// `ccmorph-core usage-compact`, having cost at most the cap to find out; and no
+// step of the compaction starts once autoCompactWait has passed. The read
+// itself still answers.
+var (
+	autoCompactWait           = 500 * time.Millisecond
+	autoCompactMaxFiles       = 2000
+	autoCompactMaxBytes int64 = 2 << 20
+)
+
+// autoCompact is the read path's maintenance: shim.CompactUsage held to the
+// budget above, with its deadline on the wall clock, never the fake one.
+func autoCompact(base string, at time.Time, limit int) (int, error) {
+	return shim.CompactUsageWithin(base, at, limit, shim.CompactBudget{
+		Deadline: time.Now().Add(autoCompactWait),
+		MaxFiles: autoCompactMaxFiles,
+		MaxBytes: autoCompactMaxBytes,
+	})
+}
 
 // Tests of the live-folder cache disable maintenance; archive tests use the real compactor.
-var compactUsage = shim.CompactUsage
+var compactUsage = autoCompact
+
+// logf is the package's one diagnostic line sink: stderr, where a statusline
+// read never prints it but a person running the CLI sees it. Tests swap it.
+var logf = func(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "ccmorph quota: "+format+"\n", args...)
+}
 
 // tally is the counts one profile's receipts add up to.
 type tally struct {
@@ -229,7 +276,7 @@ func decodeKeyIndex(s string) keyIndex {
 // any other failure may pass, so the caller must not remember the miss (#538,
 // #552).
 func readRow(path string) (*spendRow, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := paths.ReadRegularFile(path) // never waits on a FIFO under a receipt's name (#654)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +286,11 @@ func readRow(path string) (*spendRow, error) {
 func decodeRow(raw []byte) *spendRow {
 	countRows(1)
 	var r receipt
-	if json.Unmarshal(raw, &r) != nil || !r.Complete {
+	// A NaN/Infinity token is a price no writer stores, but the row around it
+	// is a real turn: the token reads as null, the row counts unpriced, and
+	// billable still refuses it — the reading report gives the same row
+	// ("unknown spend", never a skip) and the export gives it ("unpriced") (#654).
+	if json.Unmarshal(paths.NonFiniteToNull(raw), &r) != nil || !r.Complete {
 		return nil
 	}
 	ts, err := time.Parse(time.RFC3339, r.Timestamp)
@@ -328,15 +379,67 @@ func mergeRows(rows []*spendRow, monthUnix, todayUnix int64, base keyIndex, seen
 	}
 }
 
+// errUsageStoreUnreadable is the month's refusal when a surface of the store
+// could not be read whole (#545): the view says so and carries no spend,
+// rather than answering a healthy zero.
+var errUsageStoreUnreadable = errors.New("usage store not readable — cost unknown; check permissions")
+
+// unreadableReceipts is a month whose every surface could be read and only
+// some receipts could not: the tallies beside it are every other receipt's,
+// the total the report and the export give the same store (#654), and paths
+// names each receipt the read skipped. The run still fails (#545).
+type unreadableReceipts struct{ paths []string }
+
+func (u *unreadableReceipts) Error() string {
+	n := len(u.paths)
+	more := ""
+	if n > 1 {
+		more = fmt.Sprintf(" and %d more", n-1)
+	}
+	return fmt.Sprintf("usage store not readable — %d %s skipped, cost unknown; check permissions: %s%s",
+		n, plural(int64(n), "receipt"), u.paths[0], more)
+}
+
+// receiptGapMonth reads a month the cached read could not see whole through the
+// report's own reader (shim.ReadUsageWindow), so the receipts it skips and the
+// total of the rest are the ones report and share/usage-export give (#654):
+// skipped names each receipt still there that could not be read. ok is false
+// when a surface could not be read, which stays the refusal (#545). Nothing it
+// reads is cached: the next read tries the skipped receipts again (#538).
+func receiptGapMonth(usageDir, first, last string, monthUnix, todayUnix int64) (out map[string]tally, skipped []string, ok bool) {
+	raw, err := shim.ReadUsageWindow(usageDir, first, last, func(path string, _ error) {
+		skipped = append(skipped, path)
+	})
+	if err != nil {
+		return nil, nil, false
+	}
+	rows := make([]*spendRow, 0, len(raw))
+	for _, data := range raw {
+		rows = append(rows, decodeRow(data))
+	}
+	out = map[string]tally{}
+	mergeRows(rows, monthUnix, todayUnix, nil, map[keyID]struct{}{}, out)
+	return out, skipped, true
+}
+
+// monthFlight is one in-flight month read the profiles of a quota call share:
+// every caller waits on done and reads the leader's verdict, so a statusline
+// pays one scan and the memo's mutex is held for no I/O (INTENT 8).
+type monthFlight struct {
+	done chan struct{}
+	by   map[string]tally
+	err  error
+}
+
 // tallyMemo holds one scan per process: a quota call reads every gateway
 // profile, and each would otherwise re-read the whole month. ok is the read's
 // verdict: false when any surface of the store could not be read (#545).
 var tallyMemo struct {
 	sync.Mutex
-	key   string
-	by    map[string]tally
-	ok    bool
-	state *monthMemo
+	key      string
+	ok       bool
+	state    *monthMemo
+	inflight map[string]*monthFlight
 }
 
 // beforeFlat runs just before a rebuild reads the flat receipts' rows, after
@@ -375,10 +478,19 @@ func countRows(n int) {
 	}
 }
 
+// archiveReads, when set, counts the archive generations this pass loaded from
+// disk — never a memo hit. A test arms it to bound what a pass pays: at most
+// one load per archived day on a cold pass, none on an unchanged one (#559,
+// #654). It is nil in production, where paths.UsageArchiveLoaded stays nil.
+var archiveReads func()
+
 // seenFile is one receipt as it was last read, with the file state it had then.
 type seenFile struct {
 	Size    int64     `json:"s"`
 	MTime   int64     `json:"m"`
+	Dev     uint64    `json:"dv,omitempty"`
+	Ino     uint64    `json:"i,omitempty"`
+	CTime   int64     `json:"c,omitempty"`
 	Content string    `json:"d,omitempty"`
 	Row     *spendRow `json:"r"`
 }
@@ -768,7 +880,18 @@ func archivedDayRows(dir string) ([]paths.UsageArchiveRow, error) {
 		return nil, err
 	}
 	marks, partial, ok := receiptMarks(dir)
-	if !ok || partial {
+	if !ok {
+		// The hash-verified archive answers the day on its own. A leftover
+		// folder this run cannot list is the compaction's unfinished unlink
+		// meeting foreign ownership — a state the writers create — and the
+		// archive holds every row it ever published. One reader answering
+		// while another fails the month is the split-brain this store must
+		// not have: report and export answer from the archive, so quota does
+		// too. A partially readable folder is different: an unreadable overlay
+		// row may be newer than any generation, and stays a named refusal.
+		return archived, nil
+	}
+	if partial {
 		return nil, fmt.Errorf("%s: live receipts not readable", dir)
 	}
 	if len(marks) == 0 {
@@ -779,14 +902,14 @@ func archivedDayRows(dir string) ([]paths.UsageArchiveRow, error) {
 		rows[r.Name] = r
 	}
 	for _, m := range marks {
-		data, err := os.ReadFile(filepath.Join(dir, m.Name))
+		data, err := paths.ReadRegularFile(filepath.Join(dir, m.Name))
 		if err != nil {
 			return nil, err
 		}
 		if old, kept := rows[m.Name]; kept {
 			if !sameNamedReceipt(old.Data, data) {
 				// The archive name is internal; conflicting identities remain two turns.
-				rows[m.Name+"\x00archive"] = old
+				rows[m.Name+paths.ArchiveCopySuffix] = old
 			} else if old.MTimeNS > m.MTime {
 				continue
 			}
@@ -807,25 +930,13 @@ func archivedDayRows(dir string) ([]paths.UsageArchiveRow, error) {
 	return out, nil
 }
 
+// sameNamedReceipt is util/paths.SameNamedRows — the one merge rule every
+// reader of the store shares. This reader used to decode the pair with
+// encoding/json directly, which refuses the NaN/Infinity tokens outright: the
+// same damaged row merged to newest by report and the export was kept as two
+// turns here, then decoded to nil, so the month quietly lost the turn (#654).
 func sameNamedReceipt(a, b []byte) bool {
-	if bytes.Equal(a, b) {
-		return true
-	}
-	type identity struct {
-		ID    string          `json:"response_id"`
-		Turn  json.RawMessage `json:"turn_id"`
-		Stamp *string         `json:"timestamp"`
-	}
-	var ra, rb identity
-	if json.Unmarshal(a, &ra) != nil || json.Unmarshal(b, &rb) != nil || ra.ID == "" || ra.ID != rb.ID {
-		return false
-	}
-	var ta, tb string
-	if len(ra.Turn) > 0 && (ra.Turn[0] != '"' || json.Unmarshal(ra.Turn, &ta) != nil) ||
-		len(rb.Turn) > 0 && (rb.Turn[0] != '"' || json.Unmarshal(rb.Turn, &tb) != nil) {
-		return false
-	}
-	return ta == tb && (ta != "" || ra.Stamp != nil && rb.Stamp != nil && *ra.Stamp == *rb.Stamp)
+	return paths.SameNamedRows(a, b)
 }
 
 func archiveFileMarks(rows []paths.UsageArchiveRow) []fileMark {
@@ -836,6 +947,13 @@ func archiveFileMarks(rows []paths.UsageArchiveRow) []fileMark {
 	return marks
 }
 
+// dayState is a day's state as an unchanged pass pays it: the archive pair's
+// stat identity plus its leftover folder's receipt marks, with no row read and
+// no hash. The archive's identity moves on any rewrite (its inode or ctime),
+// and an overlay that appears or grows moves the folder's marks, so a memo
+// built at these marks is the answer while the day is unchanged (#559, #654).
+// A partially readable leftover folder is a named refusal, as in the read; one
+// that cannot be listed at all is answered from the hash-verified archive.
 func dayState(dir, name string) (dayMark, bool) {
 	mark := dayMark{Name: name}
 	info, err := os.Stat(dir)
@@ -845,17 +963,71 @@ func dayState(dir, name string) (dayMark, bool) {
 	if info != nil {
 		mark.MTime = info.ModTime().UnixNano()
 	}
-	rows, err := archivedDayRows(dir)
-	if err != nil {
-		return mark, false
-	}
-	if rows != nil {
-		b, _ := json.Marshal(archiveFileMarks(rows))
-		mark.Archive = hashKey(string(b))
+	if stamp, ok := paths.UsageArchiveStamp(dir + ".jsonl"); ok {
+		fingerprint, partial, folderOK := folderMarks(dir)
+		if folderOK && partial {
+			return mark, false
+		}
+		mark.Archive = stamp.String()
+		if folderOK {
+			mark.Archive += "+" + fingerprint
+		} else {
+			mark.Archive += "+unlisted"
+		}
 	} else if info == nil {
 		return mark, false
 	}
 	return mark, true
+}
+
+// folderMarks fingerprints a leftover folder's receipts for an archived day's
+// mark: name, size, mtime and the inode's identity. The identity is what the
+// day's own mark needs and the shared fileMark deliberately is not: a folder
+// removed and recreated with the same names, sizes and mtimes must move the
+// mark, or the memo serves the old totals (#635). partial is a receipt this
+// run cannot see; ok is false only when the folder cannot be listed, the state
+// the archive alone answers (#654).
+func folderMarks(dir string) (fingerprint string, partial, ok bool) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return marksFingerprint(nil), false, true
+		}
+		return "", false, false
+	}
+	if !canRead(dir, accessRead|accessSearch) {
+		return "", false, false
+	}
+	marks := make([]string, 0, len(entries))
+	for _, e := range entries {
+		n := e.Name()
+		if e.IsDir() || filepath.Ext(n) != ".json" {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			partial = true
+			continue
+		}
+		if !canRead(filepath.Join(dir, n), accessRead) {
+			partial = true
+			continue
+		}
+		stamp, _ := paths.UsageFileStamp(info)
+		marks = append(marks, fmt.Sprintf("%s\x00%d\x00%d\x00%x\x00%x\x00%d",
+			n, info.Size(), info.ModTime().UnixNano(), stamp.Dev, stamp.Ino, stamp.CTime))
+	}
+	return hashKey(strings.Join(marks, "\n")), partial, true
+}
+
+// marksFingerprint is a folder's receipt marks as one cache token: names and
+// the size and mtime a writer moves, never a receipt's bytes.
+func marksFingerprint(marks []fileMark) string {
+	b, _ := json.Marshal(marks)
+	return hashKey(string(b))
 }
 
 func indexFolder(dir string, old map[string]seenFile) (map[string]seenFile, bool, bool, bool) {
@@ -1044,13 +1216,21 @@ func dayFileMarks(dir string) ([]fileMark, bool) {
 // can be read now. A closed day is validated by its folder's mtime alone, and a
 // permission change moves no mtime: without this, the memo, the base and the
 // day cache would keep answering a day the run cannot read (#545).
+//
+// An archived day is checked without loading it: its archive pair's identity is
+// a stat, and the leftover folder's receipts are checked for reachability with
+// the same marks the read takes. An unlistable leftover folder is answered from
+// the hash-verified archive (the compaction's unfinished unlink); a partially
+// readable one is a named refusal, as in the read (#654).
 func receiptsReadable(dir string) bool {
-	rows, err := archivedDayRows(dir)
-	if err != nil {
-		return false
-	}
-	if rows != nil {
-		return true
+	if paths.IsDayName(filepath.Base(dir)) {
+		if _, ok := paths.UsageArchiveStamp(dir + ".jsonl"); ok {
+			_, partial, folderOK := receiptMarks(dir)
+			if !folderOK {
+				return true
+			}
+			return !partial
+		}
 	}
 	entries, ok := dirEntries(dir)
 	if !ok {
@@ -1313,26 +1493,74 @@ func sweepSpendCache(first, last string) {
 //     unchanged store costs what its marks cost, not the month's size.
 //
 // The day folders read are the month window's; nothing outside it is opened.
-// The second return is the read's verdict: false when any surface of the store
-// — its listing, a day folder, the flat index, today's folder — could not be
-// read (#545). The tallies returned are still the answer to this call; the
-// caller is the one that must not answer them as a healthy zero.
-func monthTallies(usageDir string, today, monthStart, todayStart time.Time) (map[string]tally, bool) {
+// The error is the read's verdict: non-nil when any surface of the store — its
+// listing, a day folder, the flat index, today's folder — could not be read
+// (#545), and paths.ErrUsageStoreBusy when a compaction's exclusive hold
+// outlasted the lock's bound. The tallies returned are still the answer to
+// this call; the caller is the one that must not answer them as a healthy zero.
+func monthTallies(usageDir string, today, monthStart, todayStart time.Time) (map[string]tally, error) {
 	key := usageDir + "\x00" + monthStart.String() + "\x00" + todayStart.String()
+	// One scan per month at a time, shared by every profile of a quota call:
+	// the memo's mutex guards this struct and the in-flight map only, never the
+	// store's I/O, so a read waiting on the lock can still refuse a busy store
+	// (INTENT 8, #654).
 	tallyMemo.Lock()
-	defer tallyMemo.Unlock()
-	if tallyMemo.key != key {
-		_, _ = compactUsage(usageDir, today, 1)
+	if f := tallyMemo.inflight[key]; f != nil {
+		tallyMemo.Unlock()
+		<-f.done
+		return f.by, f.err
 	}
-	lock, err := paths.UsageStoreLock(usageDir, false)
+	f := &monthFlight{done: make(chan struct{})}
+	if tallyMemo.inflight == nil {
+		tallyMemo.inflight = map[string]*monthFlight{}
+	}
+	tallyMemo.inflight[key] = f
+	maintain := tallyMemo.key != key
+	tallyMemo.Unlock()
+	by, err := monthRead(key, maintain, usageDir, today, monthStart, todayStart)
+	tallyMemo.Lock()
+	f.by, f.err = by, err
+	delete(tallyMemo.inflight, key)
+	close(f.done)
+	tallyMemo.Unlock()
+	return by, err
+}
+
+// monthRead is the one scan a month's callers share, from maintenance to the
+// memo it leaves for the next pass.
+func monthRead(key string, maintain bool, usageDir string, today, monthStart, todayStart time.Time) (map[string]tally, error) {
+	// A test counter observes every disk load this pass makes, and nothing
+	// when it is not armed: production leaves util/paths' hook nil.
+	if archiveReads != nil {
+		loaded := paths.UsageArchiveLoaded
+		paths.UsageArchiveLoaded = func(string) { archiveReads() }
+		defer func() { paths.UsageArchiveLoaded = loaded }()
+	}
+	if maintain {
+		// Maintenance is not silent: a day the compactor refused is logged once
+		// per pass rather than swallowed with the count.
+		if _, cerr := compactUsage(usageDir, today, 1); cerr != nil {
+			logf("usage maintenance: %v", cerr)
+		}
+	}
+	// A statusline that queued behind a compaction's multi-minute exclusive
+	// hold would be the hang INTENT 8 forbids: the store's bound answers with
+	// a named refusal instead.
+	lock, err := paths.UsageStoreLockWithin(usageDir, false, paths.UsageLockWait)
+	if errors.Is(err, paths.ErrUsageStoreBusy) {
+		return nil, err
+	}
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return nil, false
+		return nil, errUsageStoreUnreadable
 	}
 	if lock != nil {
 		defer lock.Close()
 	}
 	first, last := monthStart.UTC().Format(paths.DayLayout), today.UTC().Format(paths.DayLayout)
-	openFrom := todayStart.UTC().Format(paths.DayLayout)
+	// The open/closed boundary is util/paths.UsageOpenFrom's, computed from the
+	// same instant handed to the compactor above: a day this read calls open is
+	// a day the walk will not fold, whatever the local calendar says.
+	openFrom := paths.UsageOpenFrom(today)
 	monthUnix, todayUnix := monthStart.Unix(), todayStart.Unix()
 
 	// The memo check decodes no row and sweeps nothing it may not need: the
@@ -1343,18 +1571,23 @@ func monthTallies(usageDir string, today, monthStart, todayStart time.Time) (map
 	flatMarks, flatOK := dayFileMarks(usageDir)
 	days, openNames, daysOK := dayMarks(usageDir, first, last, openFrom)
 	openState, openOK := openMarks(usageDir, openNames)
+	tallyMemo.Lock()
+	cachedKey, cachedOK, cached := tallyMemo.key, tallyMemo.ok, tallyMemo.state
+	tallyMemo.Unlock()
 	if flatOK && openOK && daysOK {
-		if tallyMemo.key == key && tallyMemo.ok && tallyMemo.state != nil &&
-			memoMatches(tallyMemo.state, usageDir, monthUnix, todayUnix, days, openState, flatMarks) &&
+		if cachedKey == key && cachedOK && cached != nil &&
+			memoMatches(cached, usageDir, monthUnix, todayUnix, days, openState, flatMarks) &&
 			daysReadable(usageDir, days) {
-			return tallyMemo.by, true
+			return cached.Tally, nil
 		}
 		if m, ok := loadCache[monthMemo](monthMemoPath()); ok &&
 			memoMatches(&m, usageDir, monthUnix, todayUnix, days, openState, flatMarks) &&
 			daysReadable(usageDir, days) {
 			sweepSpendCache(first, last)
-			tallyMemo.key, tallyMemo.by, tallyMemo.ok, tallyMemo.state = key, m.Tally, true, &m
-			return m.Tally, true
+			tallyMemo.Lock()
+			tallyMemo.key, tallyMemo.ok, tallyMemo.state = key, true, &m
+			tallyMemo.Unlock()
+			return m.Tally, nil
 		}
 	}
 
@@ -1401,9 +1634,25 @@ func monthTallies(usageDir string, today, monthStart, todayStart time.Time) (map
 	if complete {
 		writeAtomic(monthMemoPath(), memo)
 	}
-	tallyMemo.key, tallyMemo.by, tallyMemo.ok, tallyMemo.state = key, out, complete, memo
+	tallyMemo.Lock()
+	tallyMemo.key, tallyMemo.ok, tallyMemo.state = key, complete, memo
+	tallyMemo.Unlock()
 	sweepSpendCache(first, last)
-	return out, complete
+	if !complete {
+		// The cached read could not see the month whole. When every surface of
+		// the store reads and only receipts do not, the month is the total the
+		// report and the export give it — those receipts skipped and named,
+		// every other one counted (#654); a surface that cannot be read stays
+		// the refusal (#545).
+		if by, skipped, ok := receiptGapMonth(usageDir, first, last, monthUnix, todayUnix); ok {
+			if len(skipped) > 0 {
+				return by, &unreadableReceipts{paths: skipped}
+			}
+			return by, nil
+		}
+		return out, errUsageStoreUnreadable
+	}
+	return out, nil
 }
 
 // writeAtomic replaces path with v's JSON, or leaves it as it was.

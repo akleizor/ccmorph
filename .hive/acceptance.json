@@ -1,0 +1,88 @@
+{
+  "criteria": [
+    {
+      "criterion": "Compactor tolerates what readers bless: a zero-byte or unparseable folder row (not one JSON object) is dropped from the closed day's folder with a record (moved to ccmorph/usage-dropped/<day>/<mtime_ns>-<name> plus one stderr line), so the day still compacts and its folder closes; a multiline receipt, which readers count, stays in the folder; identity conflicts keep both rows as readers do; CompactUsage skips a failing day and continues; an orphan idx is healed on first sight. Check: `go test ./shim -run 'TestCompactUsageToleratesReaderBlessedStates|TestCompactUsageBadDayDoesNotBlockNewerDays|TestCompactUsageKilledPublicationHealsOnNextRead'` (the subtest 'uncountable row is dropped with a record' asserts the folder is gone and usage-dropped/2026-11-14/20-bad.json holds the exact bytes), `go test ./quota -run TestQuotaSpendIndexOnlyOrphanAnswersFromFolder`, and tests/usage_shard_export_test.py::test_index_only_orphan_answers_from_the_folder. A same-name multiline overlay over an existing archive leaves the archive and index bytes and the live bytes untouched (subtest 'multiline overlay keeps its archived twin').",
+      "pass": true,
+      "evidence": "go test ./shim -run 'TestCompactUsageToleratesReaderBlessedStates|TestCompactUsageBadDayDoesNotBlockNewerDays|TestCompactUsageKilledPublicationHealsOnNextRead' -v: 3 --- PASS, ok; go test ./quota -run TestQuotaSpendIndexOnlyOrphanAnswersFromFolder ok; tests/usage_shard_export_test.py::test_index_only_orphan_answers_from_the_folder passed.",
+      "edge_cases": []
+    },
+    {
+      "criterion": "Auto-compaction stops being invisible: a failed day in quota's maintenance is logged (one line), and the auto path has un-stubbed end-to-end tests that run quota's production default compactor (autoCompact), not a stub. Check: `go test ./quota -run 'TestQuotaSpendAutoCompactionLogsFailure|TestQuotaSpendAutomaticallyCompactsOneClosedDay'`, and both tests assign `compactUsage = autoCompact`.",
+      "pass": true,
+      "evidence": "TestQuotaSpendAutoCompactionLogsFailure and TestQuotaSpendAutomaticallyCompactsOneClosedDay: 2 --- PASS, ok; both assign `compactUsage = autoCompact` (quota/spend_compaction_test.go:131, :446).",
+      "edge_cases": []
+    },
+    {
+      "criterion": "Transient/foreign damage degrades, never bricks, and never hangs: the report skips an unreadable file and continues (the pre-#537 reading): with a receipt still there but unreadable (mode 0, or a FIFO under a receipt's name) `ccmorph-core shim report` exits 0, prints the total of every other row and a line `not readable N receipt(s), skipped: cost unknown; check their permissions`, and names each skipped receipt on stderr; a receipt gone between listing and read is skipped by report, quota and export alike; every store read opens through paths.OpenRegular / the export's read_regular, so no reader or compactor waits on a FIFO; archivedDayRows falls back to the hash-verified archive when the leftover folder is unreadable; the hook cursor pins only on the row's own write/lock failure; an unopenable store lock is read past, never unlinked, in Go and in share/usage-export. Check: `go test ./util/paths ./shim ./quota -run 'TestReadRegularFileRefusesAFIFOWithoutWaiting|TestReportNamesAnUnreadableRowFile|TestCompactUsageNeverWaitsOnAFIFO|TestQuotaSpendUnreadableLeftoverFolderAnswersFromArchive|TestTranscriptRecordIgnoresForeignArchiveDamage|Lock' -v` all PASS (TestReportNamesAnUnreadableRowFile asserts exit 0, `total spend $7.00`, `not readable 2 receipt(s), skipped`, and both names on stderr), plus tests/usage_shard_export_test.py's two lock tests (test_export_reads_past_an_unopenable_move_lock_and_keeps_it, test_export_reads_without_a_lock_when_the_lock_is_stuck).",
+      "pass": true,
+      "evidence": "The criterion's go test run: util/paths, shim and quota ok, 14 --- PASS, no FAIL. TestReportNamesAnUnreadableRowFile now asserts exit 0, `total spend $7.00`, `not readable 2 receipt(s), skipped` and both names on stderr. Both usage_shard_export lock tests passed. The report reads flat rows first (move ordering, #537) but counts them after the day folders, so a response under both names counts by its day copy, as quota and the export do.",
+      "edge_cases": []
+    },
+    {
+      "criterion": "One merge rule for all three readers: the same-name/non-finite identity decision is one Go helper shared by quota and shim (paths.SameNamedRows, the archive sentinel named once as paths.ArchiveCopySuffix), the export normalizes non-finite the same way, and a NaN-cost row later rewritten in the live folder yields identical totals in quota, report and export. Check: `go test ./quota ./shim -run 'TestQuotaSpendNonFiniteOverlayUnpricesNotOmits|TestReportNonFiniteOverlayCountsUnknownNotDollars'` and tests/usage_shard_export_test.py::test_nonfinite_overlay_is_one_turn_priced_as_written.",
+      "pass": true,
+      "evidence": "TestQuotaSpendNonFiniteOverlayUnpricesNotOmits and TestReportNonFiniteOverlayCountsUnknownNotDollars: 2 --- PASS, ok; test_nonfinite_overlay_is_one_turn_priced_as_written passed.",
+      "edge_cases": []
+    },
+    {
+      "criterion": "share/usage-export parses each receipt inside export()'s loop: one truncated overlay row is skipped and the rest of the year still exports. Check: tests/usage_shard_export_test.py::test_a_truncated_overlay_skips_and_the_rest_of_the_year_exports.",
+      "pass": true,
+      "evidence": "tests/usage_shard_export_test.py::test_a_truncated_overlay_skips_and_the_rest_of_the_year_exports passed.",
+      "edge_cases": []
+    },
+    {
+      "criterion": "Clock-window fixes: the open/closed boundary is computed once per pass from the same instant readers and the compactor share (paths.UsageOpenFrom); openMarks consults the archive for days >= openFrom; auto-compaction never compacts a day any reader can still classify open; and the redirect re-stamp re-takes the target day's closed lock. Check: `go test ./quota ./shim -run 'TestQuotaSpendClockStepForwardThenBackKeepsTheMonthWhole|TestAClockRewindRedirectWaitsForTheTargetDaysLock'`.",
+      "pass": true,
+      "evidence": "TestQuotaSpendClockStepForwardThenBackKeepsTheMonthWhole and TestAClockRewindRedirectWaitsForTheTargetDaysLock: 2 --- PASS, ok.",
+      "edge_cases": []
+    },
+    {
+      "criterion": "No unbounded blocks on hot paths (INTENT 8): quota reads, hook writes and the export take bounded locks or refuse with 'usage store busy'; the memo Mutex is not held across archive I/O; quota's own maintenance is shim.CompactUsageWithin with a 500 ms deadline, a 2000-entry cap and a 2 MiB byte cap (archive+index by stat, folder receipts as read, each open non-blocking), so a read that wins the store lock never reads or rewrites a day without a bound. Check: `go test ./util/paths ./shim ./quota -run 'TestUsageStoreLockWithin|TestTranscriptRecordHoldsTheCursorWhileTheStoreIsBusy|TestQuotaSpendBusyStoreRefusesWithinTheBound|TestQuotaSpendMemoMutexIsFreeDuringTheRead|TestQuotaSpendConcurrentProfilesShareOneRead|TestCompactUsageWithinLeavesADayOverTheCap|TestCompactUsageWithinLeavesADayOverItsByteCap|TestReadUsageFolderReadsNoMoreThanItsBudget|TestCompactUsageWithinStopsAtItsDeadline|TestQuotaSpendAutoCompactionStaysWithinItsBudget|TestCompactUsageNeverWaitsOnAFIFO'` all PASS; tests/usage_shard_export_test.py::test_a_held_move_lock_refuses_the_export_instead_of_waiting passes; `pytest tests/hang_bound_test.py -q` passes whole (12 tests, including test_a_held_store_lock_bounds_quota_and_export, both statusline-budget tests and test_quota_never_waits_on_a_fifo_in_a_closed_day). A Stop pass writing rows stamped on an archived day pays for its own rows, never the day's size: each lookup merges only the names the response can own (usageRowsNamed), and the claim and the redirect scan look up only this response's rows (shim TestTranscriptRecordIntoAnArchivedDayReadsOnlyItsOwnNames).",
+      "pass": true,
+      "evidence": "The criterion's go test run passes (util/paths, shim, quota ok); test_a_held_move_lock_refuses_the_export_instead_of_waiting passed; pytest tests/hang_bound_test.py: 12 passed. TestTranscriptRecordIntoAnArchivedDayReadsOnlyItsOwnNames PASS; before the lookup fix it fails with 'writing 20 rows opened 8000 leftover receipts'. Measured with built binaries on a 20-day compacted store (60k rows): the Stop hook writing 300 rows stamped on an archived day took 274.7 s on main, 20.5 s on the previous branch head and 3.7 s now; 2000 rows take 10.6 s (linear). BenchmarkRecordTranscript archives arm: 13.1 s/op before, 1.45 s/op after. This is the stuck spend child reported on 2026-11-22 (on CPU, holding .move.lock with a receipt open). Quota memo hit on the same store: 2.4-3.0 s on main, 0.07 s on the branch.",
+      "edge_cases": []
+    },
+    {
+      "criterion": "Restore the #559 memo contract: an identity-keyed, success-only memo inside util/paths for ReadUsageArchive; memo-hit path back to stat-only; an archive arm in BenchmarkRecordTranscript; and a quota archiveReads counter asserting <=1 archive read per day per pass. Check: `go test ./util/paths -run TestReadUsageArchive`, `go test ./quota -run TestQuotaSpendReadsEachArchiveOncePerPass`, and `go test ./shim -run '^$' -bench BenchmarkRecordTranscript -benchtime 3x` runs both the folders and archives arms.",
+      "pass": true,
+      "evidence": "TestReadUsageArchive* and TestQuotaSpendReadsEachArchiveOncePerPass: 6 --- PASS, ok; `go test ./shim -run '^$' -bench BenchmarkRecordTranscript -benchtime 3x` runs folders (138603462 ns/op) and archives (22270617872 ns/op), both 0 archive-loads/op.",
+      "edge_cases": []
+    },
+    {
+      "criterion": "Kind-catch, lowest layer: tests/usage_store_conformance_test.py (collected by gate-py, so `make gate` runs it) builds one store with a zero-byte row, a truncated row, a NaN overlay pair, an idx-only orphan and unreadable files, and runs it through quota, `shim report` and share/usage-export. test_all_three_readers_agree_on_a_damaged_store: all three give $9.00 and one unpriced turn. test_all_three_readers_agree_on_an_unreadable_receipt[mode-0|fifo] adds a receipt still there that the run cannot read: all three skip it, name unreadable.json, and give the same $9.00 and one unpriced turn — report exit 0; quota exit 1 with spend.month_usd 9, month_turns 3, unpriced_turns 1, unreadable_receipts 1 and the receipt named in error; the export exit 1, `the gateway billed, $9.00`, `1 turn unpriced`, `Nothing written`. No traceback, no hang. Check: `pytest tests/usage_store_conformance_test.py -q` gives 3 passed as a non-root user; `go test ./quota -run 'TestQuotaSpendSkipsAnUnreadableOverlayAndNamesIt|TestQuotaSpendRetriesAFlatReceiptItCouldNotRead|TestQuotaSpendRetriesAClosedDayReceiptItCouldNotRead' -v` all PASS; tests/usage_export_test.py::test_a_receipt_still_there_but_unreadable_still_fails_the_export_issue_583 passes (exit 1, b.json named, the export already there unchanged). test_a_response_under_two_names_counts_by_its_day_copy_in_every_reader[none|mode-0] adds a flat copy (0flat.json, $1) of the day folder's good1 ($5): every reader counts the day folder's copy, with or without an unrelated unreadable receipt, so quota, report and export all stay at $9.00 and one unpriced turn; go test ./quota -run TestQuotaSpendSkippingAReceiptKeepsTheDayFolderCopy passes.",
+      "pass": true,
+      "evidence": "pytest tests/usage_store_conformance_test.py -q: 5 passed (non-root). With the build from cc5c6b7 both two-names cases fail (clean store: report $5.00 against quota $9.00; with the unreadable receipt: quota $5). TestQuotaSpendSkippingAReceiptKeepsTheDayFolderCopy PASS, and fails with MonthUSD 1 when shim.ReadUsageWindow returns flat rows first (the gate's finding). The three earlier quota tests: 3 --- PASS; the #583 export test passed.",
+      "edge_cases": []
+    },
+    {
+      "criterion": "Dead weight removed: equalUsageRows, storedUsageRow.archived, test-only writeUsageArchive, the duplicate nonFiniteToNull eval, and tallyMemo.by are gone; `go test ./shim ./quota` is green. Check: `git grep -n 'equalUsageRows\\|func writeUsageArchive(\\|archived bool\\|tallyMemo.by' -- shim quota` prints nothing, and `go vet ./shim ./quota` is clean.",
+      "pass": true,
+      "evidence": "The git grep prints nothing; go vet ./... clean; go test ./... every package ok.",
+      "edge_cases": []
+    },
+    {
+      "criterion": "Scope: no change outside the issue's usage-store work. The router's `dispatch --dry-run` timeout feature is gone: `git diff --name-only origin/main HEAD -- router` prints nothing, `git grep -n 'dryRunBound\\|TestDryRunDeadlineBoundsRouting'` prints nothing, and CHANGELOG.md's #654 entry does not mention `dispatch --dry-run`.",
+      "pass": true,
+      "evidence": "git diff --name-only origin/main HEAD -- router prints nothing; git grep for dryRunBound/TestDryRunDeadlineBoundsRouting matches only this file's own criterion text; CHANGELOG.md has no `dispatch --dry-run` sentence in the #654 entry.",
+      "edge_cases": []
+    },
+    {
+      "criterion": "The branch lands on current main as one commit: its parent is the current origin/main tip (356108e or newer), `git rev-list --count origin/main..HEAD` is 1, `git merge-tree --write-tree origin/main HEAD` reports no conflict, `git ls-files .venv` is empty, `git log -1 --format=%B | grep -c Co-Authored-By` is 1, .hive/acceptance.json is tracked in the commit and no other .hive file is, and origin/hive/654-symphony points at that commit.",
+      "pass": true,
+      "evidence": "Rebased onto origin/main 0a324a3 (one CHANGELOG conflict, both entries kept) and squashed to one commit ending in Closes #654 (rev-list count 1, merge-tree clean, no .venv, one Co-Authored-By, only .hive/acceptance.json tracked from .hive); pushed to origin/hive/654-symphony with --force-with-lease.",
+      "edge_cases": []
+    },
+    {
+      "criterion": "Whole suites on the landing commit, every remaining failure shown to be environment-only by failing identically on origin/main in the same sandbox. Check: `go build ./...` and `go vet ./...` clean; `go test ./...` and `pytest tests/ -q` failure sets equal to origin/main's.",
+      "pass": true,
+      "evidence": "make gate: test-go every package ok; ccmorph_test.zsh and cli_configure 84/84; install 361 passed. gate-py: 1493 passed, 10 failed: 8 doctor adapter-line tests that fail the same on a git archive of origin/main here, and adapter_test sigkill (2 subtests), which fails only in this worktree's directory: git archives of HEAD and of the working tree both pass it in 5-6 s (worktree path length).",
+      "edge_cases": []
+    },
+    {
+      "criterion": "Checks not run",
+      "pass": true,
+      "evidence": "Not run: xcodebuild, simulators and the iPhone 13, since ccmorph is a Go/Python CLI with no app target. The production spend child itself was not observed here; its shape was reproduced with built binaries (see the hot-path criterion).",
+      "edge_cases": []
+    }
+  ]
+}

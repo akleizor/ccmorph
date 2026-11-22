@@ -259,25 +259,65 @@ func report(days float64) {
 	if lock != nil {
 		defer lock.Close()
 	}
+	// A receipt still there that this run cannot read is collected, and the
+	// report still reads every other row and day; a receipt that vanished
+	// between listing and read is the store's own relocation, skipped (#537).
+	var unreadable []string
+	noteUnreadable := func(path string, err error) {
+		var pe *os.PathError
+		if errors.As(err, &pe) {
+			err = pe.Err
+		}
+		unreadable = append(unreadable, path+": "+err.Error())
+	}
 	flat := flatRowFiles(usageDir)
 	rowsListed()
+	// The flat rows are read first (the move's ordering above) but counted
+	// last: a response the store holds under both names counts by its day
+	// folder's copy, the copy quota's month read and share/usage-export count,
+	// so the three readers give one total whatever else this run skips (#654).
+	type flatRow struct {
+		data []byte
+		file fileID
+	}
+	var flatRows []flatRow
 	for _, path := range flat {
-		if data, file, err := readRowFile(path); err == nil {
-			readRow(data, file)
+		data, file, err := readRowFile(path)
+		if err == nil {
+			flatRows = append(flatRows, flatRow{data, file})
+		} else if !errors.Is(err, os.ErrNotExist) {
+			noteUnreadable(path, err)
 		}
 	}
 	flatRowsRead()
 	for _, name := range paths.DayNames(usageDir, lo.UTC().Format(paths.DayLayout), now.Format(paths.DayLayout)) {
-		rows, err := readUsageDay(filepath.Join(usageDir, name))
+		rows, err := readUsageDayNoting(filepath.Join(usageDir, name), noteUnreadable)
 		if err != nil {
-			die("usage report: " + err.Error())
+			// A day this run cannot read whole is named on stderr and skipped,
+			// the pre-#537 behavior: the store's own writers leave windows
+			// (yesterday's twin retires unlocked, a Stop hook crosses UTC
+			// midnight), and a report is never a gate on what cannot be read.
+			fmt.Fprintln(os.Stderr, "usage report: skipping day", name+":", err)
+			continue
 		}
 		for _, row := range rows {
 			readRow(row.Data, row.file)
 		}
 	}
+	for _, row := range flatRows {
+		readRow(row.data, row.file)
+	}
 	if lock != nil {
 		lock.Close() // moveFlatRows takes the exclusive lock itself.
+	}
+	// A receipt still there that this run cannot read is skipped and the
+	// report goes on, the reading every build before #537 gave (#654): each
+	// name is told on stderr and the totals below say how many receipts they
+	// leave out, so the total never looks whole (INTENT 8). quota and
+	// share/usage-export skip and name the same receipt and answer the same
+	// total of the rest.
+	for _, u := range unreadable {
+		fmt.Fprintln(os.Stderr, "usage report: skipped", u)
 	}
 
 	// The window is read and the totals are in: put the flat rows this
@@ -295,6 +335,9 @@ func report(days float64) {
 	fmt.Printf("ccmorph routing report, last %s day(s)\n", util.FormatG(days))
 	fmt.Printf("total spend $%.2f\n", total)
 	fmt.Printf("unknown spend %d rows (no cost reported, not estimated)\n", unknown)
+	if len(unreadable) > 0 {
+		fmt.Printf("not readable %d receipt(s), skipped: cost unknown; check their permissions\n", len(unreadable))
+	}
 	fmt.Printf("estimated spend $%.2f over %d rows (models.dev list price, not billed)\n", estimatedTotal, estimatedRows)
 	fmt.Println("spend by served model")
 	models := make([]string, 0, len(byModel))
@@ -518,18 +561,23 @@ type fileID struct {
 	mtimeNS  int64
 }
 
+// rowFileRead observes every row file a read opens; a test arms it to bound
+// what one Stop pass reads (#654). It is nil in production.
+var rowFileRead func(path string)
+
 // readRowFile is a row file's bytes and the file they came from, read through
 // one open so the two cannot name different files.
+// A name that is not a regular file is refused without waiting on its open
+// (paths.OpenRegular, #654).
 func readRowFile(path string) ([]byte, fileID, error) {
-	f, err := os.Open(path)
+	if rowFileRead != nil {
+		rowFileRead(path)
+	}
+	f, info, err := paths.OpenRegular(path)
 	if err != nil {
 		return nil, fileID{}, err
 	}
 	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return nil, fileID{}, err
-	}
 	st, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
 		return nil, fileID{}, errors.New("no file identity")
