@@ -39,6 +39,7 @@ typeset -gA _unit_cost=(
   residue    4   # 5
   statedir   3   # 5b + 5c: the CCMORPH_STATE_DIR redirect report
   linkspell  9   # 5d + 5e: equivalent spellings, links and the rm line
+  histlink   2   # 5f: shared-history store links and the rm line (#810)
   rerun      1   # 6
   optdeps    2   # 7
   remote    12   # 8, incl. the make-dist release build
@@ -457,6 +458,64 @@ env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
   zsh "$REPO/install.sh" --uninstall >/dev/null 2>&1
 [[ "$(<"$d/home/.zshrc")" == "$original" ]] && ok "uninstall leaves rc byte-identical" || fail "uninstall edited rc"
 [[ ! -e "$d/home/.local/bin/ccmorph" ]] && ok "uninstall removes the command" || fail "uninstall left the command on PATH"
+# The shared history as a symlinked store: `~/.claude/projects` spelling a real
+# directory elsewhere on the machine. rm on a link removes only the link, so the
+# printed cleanup must carry the target the transcripts live in, never the link
+# (#187/#207 rule, applied to the shared history, #810).
+mkdir -p "$d/moved-store/projects" "$d/home/.claude"
+ln -s "$d/moved-store/projects" "$d/home/.claude/projects"
+printf '{"type":"user"}\n' > "$d/moved-store/projects/session.jsonl"
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
+  zsh "$REPO/install.sh" --uninstall >"$d/out.hist" 2>&1
+grep -qF "${d:A}/moved-store/projects" "$d/out.hist" \
+  && ok "uninstall: a symlinked shared store is named by its target" \
+  || { fail "uninstall: symlinked shared store not named by target"; cat "$d/out.hist"; }
+grep -F '  rm -rf ' "$d/out.hist" | grep -qF "${d:A}/moved-store/projects" \
+  && ! grep -F '  rm -rf ' "$d/out.hist" | grep -q 'home/.claude/projects' \
+  && ok "uninstall: the rm names the target, never the link" \
+  || { fail "uninstall: rm line names the link, the transcripts would survive it"; cat "$d/out.hist"; }
+# A store link that dangles is residue too: it is named beside the cleanup and
+# the rm carries the LINK — its own removal — while still removing nothing.
+rm "$d/home/.claude/projects"
+ln -s "$d/moved-store/projects" "$d/home/.claude/projects"
+rm -rf "$d/moved-store/projects"
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
+  zsh "$REPO/install.sh" --uninstall >"$d/out.dang" 2>&1
+grep -qF "$d/home/.claude/projects is a symlink to" "$d/out.dang" \
+  && grep -qF "$d/home/.claude/projects" "$d/out.dang" \
+  && ok "uninstall: a dangling shared store is named and its link is on the rm" \
+  || { fail "uninstall: dangling shared store not named"; cat "$d/out.dang"; }
+# A store link that resolves INTO ~/.claude (here: `.`): following it would
+# label the whole harness layer as history and hand rm native claude's
+# settings and the plugin store this report promises keeps working. The rm
+# must carry the link only, and the layer must survive (#810 gate).
+rm "$d/home/.claude/projects"
+ln -s . "$d/home/.claude/projects"
+touch "$d/home/.claude/settings.json"
+mkdir -p "$d/home/.claude/plugins"
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
+  zsh "$REPO/install.sh" --uninstall >"$d/out.selflink" 2>&1
+! grep -F '  rm -rf ' "$d/out.selflink" | grep -Eq 'home/[.]claude/?([[:space:]]|$)' \
+  && [[ -f "$d/home/.claude/settings.json" && -d "$d/home/.claude/plugins" ]] \
+  && grep -qF "$d/home/.claude/projects is a symlink to ${d:A}/home/.claude, which this report cannot vouch for as session history" "$d/out.selflink" \
+  && ok "uninstall: a store link resolving into ~/.claude is named as the link, never the layer" \
+  || { fail "uninstall: the rm would delete the ~/.claude layer through a self-referential store link"; cat "$d/out.selflink"; }
+# ~/.claude spelled as a symlink to a native directory elsewhere: the guard must
+# compare the RESOLVED layer, and the rm must name only the link under its own
+# spelled path — naming anything under the linked directory (its `projects` or
+# anything else) hands rm files inside the native layer (#810 gate).
+rm -rf "$d/home/.claude"
+mkdir -p "$d/home/native-claude/plugins"
+touch "$d/home/native-claude/settings.json"
+ln -s "$d/home/native-claude" "$d/home/.claude"
+ln -s . "$d/home/.claude/projects"
+env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
+  zsh "$REPO/install.sh" --uninstall >"$d/out.clink" 2>&1
+! grep -F '  rm -rf ' "$d/out.clink" | grep -qF "$d/home/native-claude" \
+  && [[ -f "$d/home/native-claude/settings.json" && -d "$d/home/native-claude/plugins" ]] \
+  && grep -qF "$d/home/.claude/projects is a symlink to ${d:A}/home/native-claude, which this report cannot vouch for as session history" "$d/out.clink" \
+  && ok "uninstall: with ~/.claude itself a symlink, the rm names only the spelled link, never the linked directory" \
+  || { fail "uninstall: the rm names the linked native ~/.claude"; cat "$d/out.clink"; }
 fi
 
 # --- 5. uninstall removes ONLY the command, repairs the plugin index, and names
@@ -477,6 +536,13 @@ mkdir -p "$d/home/.local/state/ccmorph/usage" "$d/home/.claude/plugins/marketpla
 # spelling of the shared store, which dangles once the state root is deleted.
 print -r -- '{"example": {"source": {"source": "github", "repo": "owner/repo"}, "installLocation": "'"$cfg"'/profiles/work/plugins/marketplaces/example"}}' \
   > "$d/home/.claude/plugins/known_marketplaces.json"
+# The shared session history (#177): claude's transcripts, prompt history and
+# paste cache live here for every profile — residue the report must name with a
+# removal command, or cleanup as told leaves conversations behind (#810).
+mkdir -p "$d/home/.claude/projects/-tmp-demo" "$d/home/.claude/paste-cache"
+printf '{"type":"user","message":"seeded"}\n' > "$d/home/.claude/projects/-tmp-demo/session.jsonl"
+printf '{"display":"seeded prompt"}\n' > "$d/home/.claude/history.jsonl"
+printf 'seeded paste' > "$d/home/.claude/paste-cache/abcd1234"
 printf '#!/bin/sh\necho Darwin\n' > "$d/bin/uname"; chmod +x "$d/bin/uname"
 env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
   zsh "$REPO/install.sh" --uninstall >"$d/out" 2>&1; rc=$?
@@ -487,9 +553,15 @@ grep -qF "\"$d/home/.claude/plugins/marketplaces/example\"" "$d/home/.claude/plu
   && ok "uninstall: the plugin index points at ~/.claude/plugins again" || { fail "uninstall: plugin index still spelled through the profile"; cat "$d/home/.claude/plugins/known_marketplaces.json" }
 [[ -f "$cfg/work.conf" && -f "$cfg/home.conf" && -d "$d/home/.local/state/ccmorph" ]] \
   && ok "uninstall: state root and usage receipts are left in place" || fail "uninstall: deleted user state"
+[[ -f "$d/home/.claude/history.jsonl" && -f "$d/home/.claude/projects/-tmp-demo/session.jsonl" \
+   && -f "$d/home/.claude/paste-cache/abcd1234" ]] \
+  && ok "uninstall: names the shared history but removes none of it" || fail "uninstall: deleted shared session history"
 grep -qF "$cfg  (2 profiles," "$d/out" && ok "uninstall: names the state root and counts its profiles" || { fail "uninstall: state root not named"; cat "$d/out" }
+grep -qF "$d/home/.claude/history.jsonl, $d/home/.claude/projects, $d/home/.claude/paste-cache  (shared session history" "$d/out" \
+  && ok "uninstall: names the shared session history under ~/.claude" || { fail "uninstall: shared session history not named"; cat "$d/out" }
 grep -qF "$d/home/.local/state/ccmorph  (usage receipts)" "$d/out" && ok "uninstall: names the usage receipts" || { fail "uninstall: usage dir not named"; cat "$d/out" }
-grep -qxF "  rm -rf $cfg $d/home/.local/state/ccmorph" "$d/out" && ok "uninstall: prints the rm for both" || { fail "uninstall: rm line wrong"; cat "$d/out" }
+grep -qxF "  rm -rf $cfg $d/home/.local/state/ccmorph $d/home/.claude/history.jsonl $d/home/.claude/projects $d/home/.claude/paste-cache" "$d/out" \
+  && ok "uninstall: prints the rm covering state, receipts and shared history" || { fail "uninstall: rm line wrong"; cat "$d/out" }
 grep -qxF "  security delete-generic-password -s ccmorph -a work.api_key" "$d/out" \
   && ok "uninstall: prints the keychain delete for each ref in the confs" || { fail "uninstall: keychain line missing"; cat "$d/out" }
 (( $(grep -c 'security delete-generic-password' "$d/out") == 1 )) && ok "uninstall: one keychain line per ref, none for a plain conf" || fail "uninstall: keychain line count"
@@ -502,8 +574,8 @@ printf 'type=apikey\napi_key=keychain:work.api_key\n' > "$d/home/.config/ccmorph
 printf '#!/bin/sh\necho Linux\n' > "$d/bin/uname"; chmod +x "$d/bin/uname"
 env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin" \
   zsh "$REPO/install.sh" --uninstall >"$d/out" 2>&1
-grep -qxF "  rm -rf $d/home/.config/ccmorph" "$d/out" && ! grep -q 'usage receipts\|keychain' "$d/out" \
-  && ok "uninstall: lists only what exists (no usage dir, no keychain off macOS)" || { fail "uninstall: listed residue that is not there"; cat "$d/out" }
+grep -qxF "  rm -rf $d/home/.config/ccmorph" "$d/out" && ! grep -q 'usage receipts\|keychain\|shared session history' "$d/out" \
+  && ok "uninstall: lists only what exists (no usage dir, no shared history, no keychain off macOS)" || { fail "uninstall: listed residue that is not there"; cat "$d/out" }
 # macOS with no keychain reference in any conf: the grep finds nothing, and that
 # must not end the uninstall mid-report (it did, under set -e).
 d=$(fresh_env uninstall_darwin_plain)
@@ -551,6 +623,13 @@ grep -qxF "  $cfg  (the installed code)" "$d/out" \
   && ok "state-dir uninstall: names the code dir as code, not as the profiles' home" || { fail "state-dir uninstall: code dir line wrong"; cat "$d/out" }
 grep -qxF "  rm -rf $state $cfg" "$d/out" \
   && ok "state-dir uninstall: the rm names both roots" || { fail "state-dir uninstall: rm line wrong"; cat "$d/out" }
+# Every printed entry is promised: the guide's uninstall sentence must cover the
+# separate installed-code line this redirect report just printed (#810).
+if sed -n '/^## Updating/,/^## /p' "$REPO/docs/guide.md" | grep -qF 'installed code'; then
+  ok "the guide promises the installed-code entry the redirect report prints"
+else
+  fail "the guide omits the installed-code entry printed above"
+fi
 grep -qxF "  security delete-generic-password -s ccmorph -a team.api_key" "$d/out" \
   && ok "state-dir uninstall: keychain refs are read off the redirected confs" || { fail "state-dir uninstall: keychain line missing"; cat "$d/out" }
 grep -qF "\"$d/home/.claude/plugins/marketplaces/example\"" "$d/home/.claude/plugins/known_marketplaces.json" \
@@ -827,6 +906,116 @@ else
     || fail "unreached-link uninstall: the printed rm left $data behind"
 fi
 
+fi
+
+# --- 5f. a shared-history store link hands rm nothing but history (#810) -----
+# ~/.claude/history.jsonl, projects and paste-cache may each be a symlink. The
+# rm names where one leads only when that target is the store moved elsewhere:
+# the store's own name and kind, outside ~/.claude, and not /, the home,
+# ~/.claude or the plugin store, nor above any of them. Every other target —
+# and a link that cannot be followed — leaves only the link on the rm, the
+# target named on its own line and left intact. No install needed: the
+# uninstall report runs on a bare home.
+if _own histlink; then
+hl_case() {  # $1 = case name; prints a fresh case dir holding home/.claude
+  local c="$TMP/histlink/$1"; mkdir -p "$c/home/.claude"; print -r -- "$c"
+}
+hl_run() {  # $1 = case dir: uninstall on its home; report in $1/out, rm line in $1/rm
+  local rc
+  env -i HOME="$1/home" ZDOTDIR="$1/home" PATH=/usr/bin:/bin \
+    zsh "$REPO/install.sh" --uninstall >"$1/out" 2>&1; rc=$?
+  (( rc == 0 )) || { fail "histlink: ${1:t}: uninstall rc=$rc"; cat "$1/out" }
+  grep -F '  rm -rf ' "$1/out" >"$1/rm" || :
+}
+hl_link_only() {  # $1 = case dir, $2 = store, $3 = the resolved target
+  local rm=" $(<"$1/rm") "
+  [[ "$rm" == *" $1/home/.claude/$2 "* && "$rm" != *" $3 "* ]] \
+    && grep -qF "$1/home/.claude/$2 is a symlink to $3, which this report cannot vouch for as session history" "$1/out" \
+    && [[ -e "$3" ]] \
+    && ok "histlink: ${1:t}: the rm names only the link; the target is named beside it and kept" \
+    || { fail "histlink: ${1:t}: the rm reaches a target that is not provably history"; cat "$1/out" }
+}
+hl_follow() {  # $1 = case dir: runs the printed rm, only when every operand lies inside the case dir
+  local -a ops; local o
+  ops=(${(z)"$(<"$1/rm")"}); ops=(${(Q)ops[3,-1]})
+  for o in "${ops[@]}"; do [[ "$o" == "$1"/* || "$o" == "${1:A}"/* ]] || return 1; done
+  rm -rf -- "${ops[@]}"
+}
+
+# Targets that are not the store moved elsewhere: the layer itself, /, the
+# home, the plugin store, a same-name dir inside ~/.claude, a renamed dir, a
+# native file, the wrong kind, and a directory above a relocated plugin store.
+c=$(hl_case dot); mkdir -p "$c/home/.claude/plugins"; touch "$c/home/.claude/settings.json"
+ln -s . "$c/home/.claude/projects"; hl_run "$c"; hl_link_only "$c" projects "${c:A}/home/.claude"
+hl_follow "$c" && [[ -f "$c/home/.claude/settings.json" && -d "$c/home/.claude/plugins" && ! -L "$c/home/.claude/projects" ]] \
+  && ok "histlink: dot: following the printed rm keeps native settings and plugins" \
+  || { fail "histlink: dot: following the printed rm deleted native claude files"; cat "$c/out" }
+c=$(hl_case root); ln -s / "$c/home/.claude/projects"; hl_run "$c"; hl_link_only "$c" projects /
+c=$(hl_case home); ln -s .. "$c/home/.claude/projects"; hl_run "$c"; hl_link_only "$c" projects "${c:A}/home"
+c=$(hl_case plugins); mkdir -p "$c/home/.claude/plugins"; ln -s plugins "$c/home/.claude/projects"
+hl_run "$c"; hl_link_only "$c" projects "${c:A}/home/.claude/plugins"
+c=$(hl_case inside); mkdir -p "$c/home/.claude/sub/projects"; ln -s sub/projects "$c/home/.claude/projects"
+hl_run "$c"; hl_link_only "$c" projects "${c:A}/home/.claude/sub/projects"
+c=$(hl_case config); mkdir -p "$c/home/.config/other"; ln -s "$c/home/.config" "$c/home/.claude/projects"
+hl_run "$c"; hl_link_only "$c" projects "${c:A}/home/.config"
+c=$(hl_case renamed); mkdir -p "$c/claude-projects-target/-tmp-demo"; ln -s "$c/claude-projects-target" "$c/home/.claude/projects"
+hl_run "$c"; hl_link_only "$c" projects "${c:A}/claude-projects-target"
+c=$(hl_case claudejson); print -r -- '{}' >"$c/home/.claude.json"; ln -s ../.claude.json "$c/home/.claude/history.jsonl"
+hl_run "$c"; hl_link_only "$c" history.jsonl "${c:A}/home/.claude.json"
+c=$(hl_case kind); mkdir -p "$c/ext/history.jsonl"; ln -s "$c/ext/history.jsonl" "$c/home/.claude/history.jsonl"
+hl_run "$c"; hl_link_only "$c" history.jsonl "${c:A}/ext/history.jsonl"
+c=$(hl_case above); mkdir -p "$c/x/projects/plugins"
+ln -s "$c/x/projects/plugins" "$c/home/.claude/plugins"; ln -s "$c/x/projects" "$c/home/.claude/projects"
+hl_run "$c"; hl_link_only "$c" projects "${c:A}/x/projects"
+
+# A link that cannot be followed: the rm carries only the link, never the
+# lexical spelling of where it leads (here `locked/..`, which is ~/.claude).
+if (( EUID != 0 )); then
+  c=$(hl_case unread); mkdir -p "$c/home/.claude/locked" "$c/home/.claude/plugins"
+  ln -s locked/.. "$c/home/.claude/projects"; chmod 000 "$c/home/.claude/locked"
+  hl_run "$c"; chmod 755 "$c/home/.claude/locked"
+  rm_line=" $(<"$c/rm") "
+  [[ "$rm_line" == *" $c/home/.claude/projects "* && "$rm_line" != *"/.claude "* ]] \
+    && grep -qF "$c/home/.claude/projects is a symlink to locked/.., which could not be followed" "$c/out" \
+    && ok "histlink: unread: the rm names only the link, never where it would lead" \
+    || { fail "histlink: unread: the rm names an unread target"; cat "$c/out" }
+fi
+
+# The store moved elsewhere, under its own name: the rm names the target, the
+# link is named beside it — on another disk, inside the home, and as a file.
+c=$(hl_case moved); mkdir -p "$c/ext/projects/-tmp-demo"; print x >"$c/ext/projects/-tmp-demo/session.jsonl"
+ln -s "$c/ext/projects" "$c/home/.claude/projects"; hl_run "$c"
+rm_line=" $(<"$c/rm") "
+[[ "$rm_line" == *" ${c:A}/ext/projects "* && "$rm_line" != *" $c/home/.claude/projects "* ]] \
+  && grep -qF "  ${c:A}/ext/projects  (shared session history" "$c/out" \
+  && grep -qxF "$c/home/.claude/projects is a symlink to ${c:A}/ext/projects and stays: it is yours to remove." "$c/out" \
+  && ok "histlink: moved: a store moved elsewhere is named and removed by its target" \
+  || { fail "histlink: moved: the moved store is not on the rm"; cat "$c/out" }
+hl_follow "$c" && [[ ! -e "$c/ext/projects" ]] \
+  && ok "histlink: moved: following the printed rm removes the moved transcripts" \
+  || { fail "histlink: moved: following the printed rm left the transcripts"; cat "$c/out" }
+c=$(hl_case movedhome); mkdir -p "$c/home/claude-store/projects/-x"; ln -s ../claude-store/projects "$c/home/.claude/projects"
+hl_run "$c"; rm_line=" $(<"$c/rm") "
+[[ "$rm_line" == *" ${c:A}/home/claude-store/projects "* ]] \
+  && ok "histlink: movedhome: a store moved elsewhere inside the home is named by its target" \
+  || { fail "histlink: movedhome: a store moved inside the home is not on the rm"; cat "$c/out" }
+c=$(hl_case movedfile); mkdir -p "$c/ext"; print x >"$c/ext/history.jsonl"; ln -s "$c/ext/history.jsonl" "$c/home/.claude/history.jsonl"
+hl_run "$c"; rm_line=" $(<"$c/rm") "
+[[ "$rm_line" == *" ${c:A}/ext/history.jsonl "* ]] \
+  && ok "histlink: movedfile: a prompt history moved elsewhere is named by its target" \
+  || { fail "histlink: movedfile: the moved prompt history is not on the rm"; cat "$c/out" }
+
+# ~/.claude itself a symlink, with real stores in it: they are named as
+# spelled — rm reaches through the parent link to the stores alone.
+c=$(hl_case layerlink); rmdir "$c/home/.claude"; mkdir -p "$c/native/projects/-x" "$c/native/plugins"
+print x >"$c/native/history.jsonl"; touch "$c/native/settings.json"; ln -s "$c/native" "$c/home/.claude"
+hl_run "$c"; rm_line=" $(<"$c/rm") "
+[[ "$rm_line" == *" $c/home/.claude/history.jsonl $c/home/.claude/projects "* && "$rm_line" != *"$c/native"* ]] \
+  && ok "histlink: layerlink: stores in a linked ~/.claude are named as spelled" \
+  || { fail "histlink: layerlink: rm line wrong"; cat "$c/out" }
+hl_follow "$c" && [[ ! -e "$c/native/projects" && ! -e "$c/native/history.jsonl" && -f "$c/native/settings.json" && -d "$c/native/plugins" ]] \
+  && ok "histlink: layerlink: following the printed rm removes the history and keeps the rest" \
+  || { fail "histlink: layerlink: following the printed rm removed the wrong files"; cat "$c/out" }
 fi
 
 # --- 6. a RE-RUN is an update: user state survives, and it says so ----------
