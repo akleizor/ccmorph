@@ -17,6 +17,13 @@
 
 ### Fixed
 
+- **`ccmorph uninstall` names the shared session history it leaves.** The list
+  of what stays now includes the transcripts, prompt history and pasted text
+  under `~/.claude`, with the command that removes them, as the guide promised.
+  A history store that is a symlink is followed only to a store of its own name
+  outside `~/.claude`; any other target is named and left alone, so following
+  the printed `rm -rf` never reaches native `claude`'s settings or plugins (#810).
+
 - **The installer no longer breaks under options set in `~/.zshenv`.** zsh reads
   that file before any script, so `unsetopt bareglobqual` or `setopt
   ignorebraces` there stopped `./install.sh`, `ccmorph update` and the one-line
