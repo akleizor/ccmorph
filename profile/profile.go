@@ -440,6 +440,22 @@ func KindLabel(typ, provider string) string {
 	return typ
 }
 
+// KindPhrase is KindLabel with the article a sentence puts before it: "an API
+// key", never "a API key" (GH-790). A label whose first letter is a vowel
+// takes "an"; every other kind keeps "a". The sentences that name a profile's
+// kind — cred's refusal, login's, the model list's — read the article from
+// here, so it agrees with the label wherever a kind is named.
+func KindPhrase(typ, provider string) string {
+	label := KindLabel(typ, provider)
+	if label == "" {
+		return label
+	}
+	if strings.ContainsRune("AEIOUaeiou", rune(label[0])) {
+		return "an " + label
+	}
+	return "a " + label
+}
+
 // Env is the launch environment a profile's fields produce, in the order `ccmorph
 // _env` prints it: the profile's own CLAUDE_CONFIG_DIR, the profile's name for the
 // session to see (#275), the credential its type carries, the model map, then every

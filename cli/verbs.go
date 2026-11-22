@@ -293,7 +293,7 @@ func (l *launcher) list(args []string) int {
 	// reads the same here as it does in the picker — a provider profile with
 	// no saved model says Browser login, and a private one carries the mark.
 	// What stays list's own is the paint, via kindColour below.
-	descs := l.describeProfiles(l.active(), nil)
+	descs := l.describeProfiles(l.active(), nil, nil)
 	for _, d := range descs {
 		marker, nameFmt := " ", d.name
 		if d.active {
@@ -337,7 +337,7 @@ func (l *launcher) cred(args []string) int {
 		name = args[0]
 	}
 	if (name == "" || name == "-i" || name == "--interactive") && isTTY(0) {
-		picked, ok := l.menuProfile("apikey", "token")
+		picked, ok := l.menuProfileCred()
 		if !ok {
 			return 1
 		}
@@ -355,7 +355,7 @@ func (l *launcher) cred(args []string) int {
 	}
 	c := credOf(f)
 	if c == "" {
-		l.err("'" + name + "' is a " + profile.KindLabel(f["type"], f["provider"]) + " profile and stores no credential here")
+		l.err("'" + name + "' is " + profile.KindPhrase(f["type"], f["provider"]) + " profile and stores no credential here")
 		l.err("sign in again: ccmorph login " + name)
 		return 1
 	}

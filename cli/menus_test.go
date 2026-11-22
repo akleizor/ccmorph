@@ -68,7 +68,7 @@ func TestTheProfileMenuRowsCarryTheListingsMarksIssue489(t *testing.T) {
 	}
 	l := &launcher{dir: state, profileDirs: profiles}
 	rows := map[string]string{}
-	for _, r := range l.profileRows("tok", nil) {
+	for _, r := range l.profileRows("tok", nil, nil) {
 		name, _, _ := strings.Cut(r, "\t")
 		rows[name] = r
 	}
@@ -85,6 +85,59 @@ func TestTheProfileMenuRowsCarryTheListingsMarksIssue489(t *testing.T) {
 		if rows[name] != row {
 			t.Errorf("the menu row for %s is %q, want %q", name, rows[name], row)
 		}
+	}
+}
+
+// GH-790: the credential picker offered keyless profiles anyway, so selecting
+// one could only fail after it was made, contradicting the help's "Only
+// profiles with a stored key or token are offered". The chooser now filters
+// the one description walk by what the command reads — and only the
+// credential chooser passes that filter; every other picker keeps its rows.
+func TestTheCredentialPickerOffersOnlyProfilesWithAStoredCredentialIssue790(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	state, profiles := filepath.Join(root, "state"), filepath.Join(root, "profiles")
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(profiles, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	conf := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(state, name+".conf"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	conf("work", "type=apikey\n")                              // no key at all
+	conf("blank", "type=apikey\napi_key=\n")                   // empty key
+	conf("gw", "type=apikey\napi_key={{SECRET_9wwp6b425rxn}}") // key stored
+	conf("notok", "type=token\ntoken=\n")                      // empty token
+	conf("tok", "type=token\ntoken={{SECRET_e695kwiyu4nm}}")   // token stored
+	conf("sub", "type=sub\nemail=demo@example.com")            // other kind, never offered
+	l := &launcher{dir: state, profileDirs: profiles}
+
+	names := func(rows []string) []string {
+		var out []string
+		for _, r := range rows {
+			name, _, _ := strings.Cut(r, "\t")
+			out = append(out, name)
+		}
+		return out
+	}
+	got := names(l.profileRows("", []string{"apikey", "token"}, hasStoredCredential))
+	if want := []string{"gw", "tok"}; !slices.Equal(got, want) {
+		t.Errorf("the credential picker offers %q, want %q", got, want)
+	}
+	// The filter belongs to the credential chooser alone: the plain
+	// type-limited menu, as `set model` opens it, still lists keyless profiles.
+	// 'notok' is in neither list: a token profile whose read fails — the empty
+	// token is refused by the reader — is skipped from every menu, as it was
+	// before the chooser filter existed.
+	got = names(l.profileRows("", []string{"apikey", "token"}, nil))
+	want := []string{"blank", "gw", "tok", "work"}
+	if !slices.Equal(got, want) {
+		t.Errorf("the plain type-limited menu offers %q, want %q", got, want)
 	}
 }
 
