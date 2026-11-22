@@ -3,10 +3,8 @@ package util
 import (
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -18,21 +16,16 @@ import (
 // (#374). The exit status stays 1 either way; only this line says "refused".
 const Refused = "REFUSED"
 
-// maxEnvSeconds is the largest count of seconds a time.Duration holds: one
-// more multiplies past MaxInt64 ns and wraps negative, which would arm a
-// deadline already past. An out-of-range count is refused before the
-// multiplication, like any other unusable value.
-const maxEnvSeconds = math.MaxInt64 / int64(time.Second)
-
 // adapterReadyLimit is the readiness wait adapterStart keeps: the same six
 // hundred seconds for either scope. The model-scoped 45 s bound only held on
 // a quiet machine — on a loaded host the translator was not ready in it and
 // the run died before it started (#766). A caller that must wait longer sets
 // CCMORPH_ADAPTER_START_TIMEOUT to a positive number of seconds that fits a
-// duration; anything else keeps the default.
+// duration; anything else keeps the default. Parsing and the range check are
+// EnvSeconds' (#770).
 func adapterReadyLimit() time.Duration {
-	if n, err := strconv.Atoi(os.Getenv("CCMORPH_ADAPTER_START_TIMEOUT")); err == nil && n > 0 && int64(n) <= maxEnvSeconds {
-		return time.Duration(n) * time.Second
+	if limit, err := EnvSeconds(os.Getenv, "CCMORPH_ADAPTER_START_TIMEOUT", 600); err == nil {
+		return limit
 	}
 	return 600 * time.Second
 }

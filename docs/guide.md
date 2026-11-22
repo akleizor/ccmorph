@@ -494,7 +494,11 @@ version or newer — never an older one, and through unchanged when none exists 
 replies carry that Anthropic id, and hex-wrapped gateway errors are unwrapped so
 Code's own recovery can run. A gateway silent for `env.CCMORPH_STALL_TIMEOUT`
 seconds (default 300), before its reply or mid-stream, ends the turn with an error
-Claude Code can retry instead of a reply that never comes. A gateway that already
+Claude Code can retry instead of a reply that never comes; launch waits up to
+`env.CCMORPH_ADAPTER_START_TIMEOUT` seconds (default 600) for the translator to
+become ready. Both take a whole or fractional number of seconds from 0.000000001 to
+9223372036; any other value stops what reads it — the shim refuses to start and
+names the knob, while the launcher keeps its default. A gateway that already
 speaks Anthropic is fronted by the shim alone, with no translator.
 Set `env.CCMORPH_UPSTREAM_PROXY` (an `http://` CONNECT proxy) to route the
 profile's session through a proxy, e.g. a loopback bridge holding the macOS

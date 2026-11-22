@@ -54,16 +54,19 @@ import (
 // Timings, overridable for tests (the Python tests rewrote the constants in a
 // copy of the script).
 var (
-	readyTimeout  = envSeconds("CCMORPH_ADAPTER_READY_TIMEOUT", 90)
-	selectTimeout = envSeconds("CCMORPH_ADAPTER_SELECT_DEADLINE", 30)
+	readyTimeout  = timeoutEnv("CCMORPH_ADAPTER_READY_TIMEOUT", 90)
+	selectTimeout = timeoutEnv("CCMORPH_ADAPTER_SELECT_DEADLINE", 30)
 	parentPoll    = 2 * time.Second
 )
 
-func envSeconds(name string, def int) time.Duration {
-	if n, err := strconv.Atoi(os.Getenv(name)); err == nil && n > 0 {
-		return time.Duration(n) * time.Second
+// timeoutEnv applies the adapter's error policy to util.EnvSeconds: an
+// unusable timeout keeps the documented default rather than stopping a launch.
+// Parsing and the range check belong to that owner (#770).
+func timeoutEnv(name string, def float64) time.Duration {
+	if d, err := util.EnvSeconds(os.Getenv, name, def); err == nil {
+		return d
 	}
-	return time.Duration(def) * time.Second
+	return time.Duration(def * float64(time.Second))
 }
 
 // Seams for the unit tests.
