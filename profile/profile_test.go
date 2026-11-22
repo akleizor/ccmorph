@@ -264,3 +264,23 @@ func TestKindLabelNamesEveryProfileKindForPeople(t *testing.T) {
 		}
 	}
 }
+
+// GH-790: three sentences read "is a API key profile" because the article was
+// hardcoded before KindLabel. The article now belongs with the label: the
+// refusal says "an API key profile", and the kinds that took "a" still do.
+func TestKindPhraseGivesEveryKindLabelItsArticle(t *testing.T) {
+	for _, c := range []struct{ typ, provider, want string }{
+		{"sub", "", "a Claude account"},
+		{"token", "", "a Claude token"},
+		{"apikey", "", "an API key"},
+		{"proxy", "", "an API key"},
+		{"provider", "codex", "a Codex"},
+		{"provider", "xai", "a xAI"},
+		{"provider", "", "a Provider"},
+		{"quantum", "", "a quantum"},
+	} {
+		if got := KindPhrase(c.typ, c.provider); got != c.want {
+			t.Errorf("KindPhrase(%q, %q) = %q, want %q", c.typ, c.provider, got, c.want)
+		}
+	}
+}

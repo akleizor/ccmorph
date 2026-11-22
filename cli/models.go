@@ -82,7 +82,7 @@ func (l *launcher) noModelList(name string) bool {
 	if !ok || (f["type"] != "sub" && f["type"] != "token") {
 		return false
 	}
-	l.err("'" + name + "' is a " + profile.KindLabel(f["type"], f["provider"]) + " profile and has no model list from an endpoint")
+	l.err("'" + name + "' is " + profile.KindPhrase(f["type"], f["provider"]) + " profile and has no model list from an endpoint")
 	l.err("choose its model: " + listingAdvice(name, f["type"]))
 	return true
 }
