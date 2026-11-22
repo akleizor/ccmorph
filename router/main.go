@@ -355,7 +355,14 @@ func report(args []string, stdout, stderr io.Writer) int {
 	var slacks []float64
 	var failures []string
 	now := nowSec()
-	fmt.Fprintln(stdout, "profile      calls slack (points)")
+	if len(ps) == 0 {
+		// GH-791: the report printed the header alone, and header-only output
+		// reads as missing output. The table is one row per profile, so with no
+		// profiles the report names its empty state instead of printing it.
+		fmt.Fprintln(stdout, "No profiles to report. Add one with ccmorph add; calls from sessions started with the router on land here.")
+	} else {
+		fmt.Fprintln(stdout, "profile      calls slack (points)")
+	}
 	for _, p := range ps {
 		slack := "unknown"
 		if len(p.Windows) > 0 {

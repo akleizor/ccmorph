@@ -1375,3 +1375,23 @@ def test_router_on_off_and_status_still_act(box):
     assert off.returncode == 0, off.stderr
     assert json.loads((box.state / 'router.json').read_text())['enabled'] is False
     assert box.run('router').stdout.startswith('Router off (')
+
+
+# --- router: the empty report names itself (#791) ------------------------------
+
+def test_router_report_names_an_empty_report(box):
+    # #791: with no profiles and nothing routed, report printed only the table
+    # header and exited 0 — a blank screen a reader mistook for missing output.
+    result = box.run('router', 'report')
+    assert result.returncode == 0, result.stderr
+    assert 'No profiles to report' in result.stdout, result.stdout
+    assert 'calls slack' not in result.stdout, result.stdout
+
+
+def test_router_report_with_profile_rows_prints_no_empty_message(box):
+    # The message belongs to the empty table alone: with profiles the table
+    # and its header print as they did.
+    seed(box)
+    result = box.run('router', 'report')
+    assert 'No profiles to report' not in result.stdout, result.stdout
+    assert 'calls slack (points)' in result.stdout, result.stdout

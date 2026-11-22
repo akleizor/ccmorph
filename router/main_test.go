@@ -182,3 +182,34 @@ func TestDispatchRefusesAnUnknownFlagBeforeRouting(t *testing.T) {
 		})
 	}
 }
+
+// GH-791: with no profiles and nothing routed, report printed only the table
+// header and exited 0 — a blank screen a reader could mistake for missing
+// output. The empty report names itself; a report with rows is unchanged.
+func TestReportNamesAnEmptyReport(t *testing.T) {
+	t.Setenv("CCMORPH_STATE_DIR", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	var out, errOut bytes.Buffer
+	if code := report([]string{"--since", "24h"}, &out, &errOut); code != 0 || errOut.Len() != 0 {
+		t.Fatalf("exit %d, stderr %q; an empty report is a state, not a failure", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "No profiles to report") {
+		t.Fatalf("the empty report printed %q, with no empty-state message", out.String())
+	}
+
+	// A profile that took no calls is its own explicit answer: rows, no
+	// message. It is an api profile on purpose: a subscription that took no
+	// calls fails the report by design, which is not this empty-state case.
+	root := t.TempDir()
+	t.Setenv("CCMORPH_STATE_DIR", root)
+	if err := os.WriteFile(filepath.Join(root, "gw.conf"), []byte("type=apikey\nbase_url=https://gw.test\napi_key=k\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if code := report([]string{"--since", "24h"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, errOut.String())
+	}
+	if strings.Contains(out.String(), "No profiles to report") || !strings.Contains(out.String(), "profile      calls slack (points)") || !strings.Contains(out.String(), "gw") {
+		t.Fatalf("a profile row is not an empty report, yet printed: %q", out.String())
+	}
+}
