@@ -140,7 +140,9 @@ def test_help_is_concise_truthful_and_read_only(tmp_path):
         if verb in PICKERLESS:
             assert not re.search(PICKER_WORDS, detail.stdout, re.I), verb
         else:
-            for phrase in ('arrow keys', 'type to search', 'Esc to cancel'):
+            # #791: the page must also name what the numbered fallback takes,
+            # so the arrow-key words can only be a promise about fzf and menus.
+            for phrase in ('arrow keys', 'type to search', 'Esc to cancel', 'Without fzf'):
                 assert phrase in detail.stdout, verb
     # The page someone asked every command of is one list: no command row twice,
     # no line sending them back to `help all`, and the details/version footer

@@ -332,3 +332,23 @@ func TestHelpAllWrapsALongDescriptionUnderItsOwnColumn(t *testing.T) {
 		t.Errorf("rm row continues with %q, want %q", lines[row+1], want)
 	}
 }
+
+// GH-791: the note taught "move with the arrow keys" for every picker, but
+// the numbered menu — the profile and model fallback when fzf is absent —
+// takes typed input by design (#387) and swallows an arrow key as a failed
+// answer. The arrow promise must name the picker that takes them, and the
+// page must say what the numbered list takes when fzf is not installed.
+func TestPickerNotePromisesArrowKeysOnlyWhereTheyMove(t *testing.T) {
+	for _, line := range strings.Split(pickerNote, "\n") {
+		low := strings.ToLower(line)
+		if strings.Contains(low, "arrow") && !strings.Contains(low, "fzf") && !strings.Contains(low, "menu") {
+			t.Errorf("the note promises arrow keys without naming a picker that takes them: %q", line)
+		}
+	}
+	low := strings.ToLower(pickerNote)
+	for _, phrase := range []string{"arrow keys", "type to search", "esc to cancel", "without fzf", "number"} {
+		if !strings.Contains(low, phrase) {
+			t.Errorf("the note no longer says %q: %s", phrase, pickerNote)
+		}
+	}
+}
