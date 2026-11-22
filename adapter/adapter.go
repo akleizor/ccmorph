@@ -232,7 +232,23 @@ func kvs(m map[string]string) []string {
 	return out
 }
 
-func environWith(extra map[string]string) []string { return append(os.Environ(), kvs(extra)...) }
+// environWith is a spawned process's environment: the adapter's own plus extra.
+// CCMORPH_UPSTREAM_PROXY is the profile conf's route knob, so an inherited
+// spelling -- the launcher's shell exporting one -- is dropped unless extra
+// carries the profile's own: the probes and the translator read the profile
+// conf alone, and a child fed the shell's spelling would take a route they
+// ignored, the split GH-580 ended, mirrored (GH-773).
+func environWith(extra map[string]string) []string {
+	env := os.Environ()
+	out := make([]string, 0, len(env)+len(extra))
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "CCMORPH_UPSTREAM_PROXY=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, kvs(extra)...)
+}
 
 func mustJSON(v any) string {
 	raw, err := json.Marshal(v)
