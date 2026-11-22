@@ -153,6 +153,9 @@ func windowLine(win Window, s *Spend) string {
 // never $0.00; no receipts at all say the profile was not used.
 func spendLine(s *Spend) string {
 	if s.MonthTurns == 0 {
+		if s.UnreadableReceipts > 0 {
+			return "  no readable turn this month" // the reason line names what could not be read
+		}
 		return "  not used this month"
 	}
 	if s.AllUnpriced() {

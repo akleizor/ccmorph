@@ -3,6 +3,7 @@ package shim
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -1714,5 +1715,129 @@ func TestRecordTranscriptCheckpointSkipsWrittenRows(t *testing.T) {
 	func() { defer func() { _ = recover() }(); RecordTranscript("sub", "anthropic", path) }()
 	if c := readCursor(cursorFile(path)); c.Offset != firstLen {
 		t.Fatalf("checkpoint %d, want %d (just past the written row)", c.Offset, firstLen)
+	}
+}
+
+// A clock rewind can leave an archive on a day that is open again: when the
+// hook re-stamps its write into the older day that archive's row carries, the
+// target is compaction-eligible and the write must wait for the store's
+// exclusive lock. Taken only for the original stamp, which the rewind made
+// look open, the row is written and its earlier copies retired while a
+// compaction may be unlinking that very name — fresh usage destroyed, stale
+// archive left (#654).
+func TestAClockRewindRedirectWaitsForTheTargetDaysLock(t *testing.T) {
+	base := stateHome(t)
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	today := now.Format(paths.DayLayout)
+	old := now.AddDate(0, 0, -3)
+	oldStamp := old.Format(paths.DayLayout) + "T10:00:00+00:00"
+	responseID, turnID := "recycled", "same-turn"
+	if err := writeUsageArchiveWithPrevious(filepath.Join(base, today+".jsonl"), []paths.UsageArchiveRow{{
+		Name: rowFileName(responseID), MTimeNS: 10,
+		Data: []byte(`{"response_id":"` + responseID + `","turn_id":"` + turnID + `","timestamp":"` + oldStamp + `","usage":{"cost":1}}`),
+	}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	held, err := paths.UsageStoreLock(base, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		writeUsageRow("sub", "", responseID, "m", today+"T00:00:01+00:00", "", turnID,
+			usageRow{{"input_tokens", []byte("2")}})
+	}()
+	select {
+	case <-done:
+		t.Fatal("the re-stamped write ran into a closed day beside the lock's holder")
+	case <-time.After(200 * time.Millisecond):
+	}
+	held.Close()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the re-stamped write did not resume once the lock was free")
+	}
+}
+
+// A Stop pass writing rows stamped on an archived day reads the names those
+// rows can own, never the whole day. Each of a row's lookups used to merge
+// every archived row and read every leftover live file of the day, several
+// lookups a row, so a long transcript held the store's exclusive lock for
+// minutes on a busy store (#654). The rows still land, and the leftover
+// receipts no written row can own are never opened.
+func TestTranscriptRecordIntoAnArchivedDayReadsOnlyItsOwnNames(t *testing.T) {
+	base := stateHome(t)
+	day := time.Now().UTC().AddDate(0, 0, -5).Format(paths.DayLayout)
+	archived := []paths.UsageArchiveRow{{Name: rowFileName("msg_archived"), MTimeNS: 1,
+		Data: []byte(`{"schema":1,"response_id":"msg_archived","turn_id":"t"}`)}}
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeUsageArchiveWithPrevious(filepath.Join(base, day+".jsonl"), archived, nil); err != nil {
+		t.Fatal(err)
+	}
+	leftover := map[string]bool{}
+	for i := 0; i < 200; i++ {
+		name := rowFileName(fmt.Sprintf("msg_leftover_%d", i))
+		seedCompactRow(t, base, day, name, `{"schema":1,"response_id":"other"}`, 10)
+		leftover[filepath.Join(base, day, name)] = true
+	}
+	var lines []string
+	for i := 0; i < 20; i++ {
+		lines = append(lines, transcriptLine(fmt.Sprintf("u%d", i), fmt.Sprintf("msg_new_%d", i), "claude-opus-5-5",
+			day+"T10:00:00Z", `{"input_tokens":10,"output_tokens":25}`))
+	}
+	path := writeTranscript(t, lines...)
+	opened := 0
+	rowFileRead = func(p string) {
+		if leftover[p] {
+			opened++
+		}
+	}
+	t.Cleanup(func() { rowFileRead = nil })
+	if got := RecordTranscript("sub", "anthropic", path); got != 20 {
+		t.Fatalf("wrote %d rows into the archived day, want 20", got)
+	}
+	if opened != 0 {
+		t.Fatalf("writing 20 rows opened %d leftover receipts no written row can own", opened)
+	}
+	if got := len(rowFilesOf(filepath.Join(base, day))); got != 220 {
+		t.Fatalf("the archived day's folder holds %d rows, want 220", got)
+	}
+}
+
+// A Stop pass that meets a store another process holds answers with its
+// cursor still on the unwritten row: the hook's write is a wait with a bound,
+// never the unbounded queue behind a compaction (INTENT 8, #654). The next
+// Stop writes the row once the store is free instead of skipping it.
+func TestTranscriptRecordHoldsTheCursorWhileTheStoreIsBusy(t *testing.T) {
+	base := stateHome(t)
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	held, err := paths.UsageStoreLock(base, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	when := time.Now().UTC().AddDate(0, 0, -2).Format(time.RFC3339)
+	path := writeTranscript(t, transcriptLine("u1", "msg_busy", "claude-opus-5-5", when, `{"input_tokens":1,"output_tokens":2}`))
+	if got := RecordTranscript("sub", "anthropic", path); got != 0 {
+		t.Fatalf("wrote %d rows into a store another process held", got)
+	}
+	if c := readCursor(cursorFile(path)); c.Offset != 0 {
+		t.Fatalf("cursor %d moved past the unwritten row", c.Offset)
+	}
+	held.Close()
+	if got := RecordTranscript("sub", "anthropic", path); got != 1 {
+		t.Fatalf("wrote %d rows after the store was free, want 1", got)
+	}
+	if got := len(rows(t, base)); got != 1 {
+		t.Fatalf("the held-back row did not land: %d rows", got)
 	}
 }

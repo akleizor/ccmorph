@@ -22,6 +22,15 @@
   ignorebraces` there stopped `./install.sh`, `ccmorph update` and the one-line
   install before anything was copied. The installer now resets zsh's options
   before its first zsh line, as `ccmorph` itself does (#778).
+- **One damaged day no longer wedges, splits or hangs the usage store.**
+  Compaction passes over a day it cannot rebuild instead of stopping, and
+  moves a row no reader counts to `usage-dropped/` with its bytes kept.
+  Quota, the report and the export now share one merge rule, so they give the
+  same totals. A receipt that is there but cannot be read (wrong permissions,
+  or a FIFO under its name) is skipped and named by all three, which still
+  total every other receipt. The statusline's quota read waits at most a
+  second for the store lock, and its own compaction is capped in time,
+  entries and bytes (#654).
 - **`ccmorph update <tag>` no longer leaves a new library beside the old
   core.** A GitHub tag archive carries no `ccmorph-core`. The updater now
   checks the download for the binary before it runs that tag's installer,

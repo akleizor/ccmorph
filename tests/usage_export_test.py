@@ -394,18 +394,35 @@ def test_a_day_folder_receipt_gone_between_listing_and_read_is_skipped_issue_583
 
 def test_a_receipt_still_there_but_unreadable_still_fails_the_export_issue_583(tmp_path):
     """The moved-by-the-mover skip reads only a path that is gone: a receipt that is
-    still there and cannot be read is damage or permissions, and keeps today's verdict
-    — the export refuses — so the race skip never quiets a real unreadable store (#583)."""
+    still there and cannot be read is damage or permissions, and the run still fails
+    — so the race skip never quiets a real unreadable store (#583). It fails naming
+    the receipt after counting every other one, the total quota and the report give
+    the same store (#654), and it writes nothing: a day file is rewritten whole, so
+    a partial run would drop the unread turn from the export already there."""
     rows, output = tmp_path / "rows", tmp_path / "out"
     if os.geteuid() == 0:
         pytest.skip("root reads a mode-000 file")
     rows.mkdir()
     write(rows, "a.json", receipt("a", "claude-opus-5-5", "2026-10-16T01:00:00+00:00", cost=1))
     write(rows, "b.json", receipt("b", "claude-opus-5-5", "2026-10-16T02:00:00+00:00", cost=2))
+    ue.export(rows, output)
+    day = output / "projects" / "ledger" / "2026-10-16.jsonl"
+    before = day.read_bytes()
     (rows / "b.json").chmod(0o000)
 
-    with pytest.raises(PermissionError):
-        ue.export(rows, output)
+    stats = ue.export(rows, output)
+    assert stats["unreadable"] == [f"{rows / 'b.json'}: Permission denied"]
+    assert (stats["rows"], stats["gateway_rows"], stats["usd"]) == (1, 1, 1)
+    assert day.read_bytes() == before, "a run that could not read every receipt rewrote the export"
+
+    ran = subprocess.run(
+        [sys.executable, str(EXPORTER), "--output", str(output), "--source", str(rows)],
+        capture_output=True, text=True, timeout=HANG_TIMEOUT)
+    assert ran.returncode == 1, ran.stdout + ran.stderr
+    assert f"usage-export: {rows / 'b.json'}: Permission denied" in ran.stderr
+    assert "Nothing written" in ran.stdout and "the gateway billed, $1.00" in ran.stdout
+    assert "[Errno" not in ran.stderr and "Traceback" not in ran.stderr
+    assert day.read_bytes() == before
 
 
 def test_a_since_rerun_reconciles_only_its_range(tmp_path):

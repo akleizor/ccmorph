@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strconv"
 	"time"
 
@@ -286,7 +287,7 @@ func rowDirs(ts string) []string {
 // owns is true only when the row on disk at path carries turn: the one thing
 // that makes replacing that name safe.
 func owns(path, turn string) bool {
-	data, err := os.ReadFile(path)
+	data, err := paths.ReadRegularFile(path)
 	if err != nil {
 		return false
 	}
@@ -329,7 +330,7 @@ func claim(tmp, candidate, turn string) (bool, error) {
 }
 
 func (u *UsageSidecar) write(r *record) error {
-	lock, err := lockClosedUsage(rowDirs(r.timestamp)[:1])
+	lock, err := lockClosedUsage(time.Now(), rowDirs(r.timestamp)[:1])
 	if err != nil {
 		return err
 	}
@@ -358,11 +359,23 @@ func (u *UsageSidecar) writeLocked(r *record) error {
 	primary, spills := rowNames(dir, r.responseID, r.turnID)
 	archived, err := paths.ReadUsageArchive(dir + ".jsonl")
 	if err != nil {
-		return err
+		// A damaged archive this run cannot read no longer holds every write
+		// of the day: recorded once, the claim proceeds on the folder alone.
+		// Readers merge the original filename once, so no row is double-counted.
+		logScanOnce(err)
+		archived = nil
 	}
-	archiveNames := map[string][]byte{}
-	for _, row := range archived {
-		archiveNames[row.Name] = row.Data
+	// The claim asks the archive about this response's own names only: a map of
+	// the whole day per written row made every row of a long transcript pay for
+	// the day's size under the store's exclusive lock (#654). The archive's
+	// names are strictly ordered (ReadUsageArchive verifies it).
+	archivedRow := func(path string) ([]byte, bool) {
+		name := filepath.Base(path)
+		i := sort.Search(len(archived), func(i int) bool { return archived[i].Name >= name })
+		if i < len(archived) && archived[i].Name == name {
+			return archived[i].Data, true
+		}
+		return nil, false
 	}
 	f, err := os.CreateTemp(dir, "tmp*.tmp")
 	if err != nil {
@@ -381,14 +394,14 @@ func (u *UsageSidecar) writeLocked(r *record) error {
 	// earlier spill) was removed; ownership comes from the disk row.
 	var candidates []string
 	for _, s := range spills {
-		if owns(s, r.turnID) || usageOwned(archiveNames[filepath.Base(s)], r.responseID, r.turnID) {
+		if data, _ := archivedRow(s); owns(s, r.turnID) || usageOwned(data, r.responseID, r.turnID) {
 			candidates = append(candidates, s)
 			break
 		}
 	}
 	candidates = append(append(candidates, primary), spills...)
 	for _, c := range candidates {
-		if data, ok := archiveNames[filepath.Base(c)]; ok && !usageOwned(data, r.responseID, r.turnID) {
+		if data, ok := archivedRow(c); ok && !usageOwned(data, r.responseID, r.turnID) {
 			continue
 		}
 		ok, err := claim(tmp, c, r.turnID)
