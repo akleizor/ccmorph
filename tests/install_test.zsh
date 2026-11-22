@@ -30,6 +30,7 @@ module_files=("$REPO"/lib/ccmorph-*.zsh(N:t))   # not `modules`: a readonly zsh 
 readonly _jobs_default=4
 typeset -gA _unit_cost=(
   basics     3   # 1 + 1b + 2: the legacy check reuses 1b's case dir
+  options    4   # 1c: hostile .zshenv options, clean and flipped runs
   inplace    1   # 2b
   migrate    1   # 2c
   module     1   # 2d
@@ -250,6 +251,96 @@ run_installer "$d"; rc=$?
 (( rc == 0 )) && ok "legacy startup block does not fail install" || fail "legacy block install rc=$rc"
 [[ "$(<"$d/home/.zshrc")" == "$original" ]] && ok "installer leaves partial rc byte-identical" || fail "installer edited partial rc"
 grep -qiF 'legacy ccmorph block' "$d/out" && ok "legacy rc ownership is reported" || fail "legacy rc was not reported"
+fi
+
+# --- 1c. the user's .zshenv options cannot reshape the install (#778) --------
+if _own options; then
+# zsh reads ~/.zshenv before the first line of any script, this installer's
+# included, so the options set there reach its own globs and braces: `unsetopt
+# bareglobqual` made the (N:t) module glob fatal before anything was copied,
+# and `setopt ignorebraces` broke `{ ...; break }` and the layout's brace list.
+# Each hostile .zshenv drives the same three runs as a clean home — a fresh
+# install, an update over a profile and a legacy helper, and --uninstall — and
+# every run must exit 0, leave the clean run's tree and print the clean run's
+# report, so a glob or brace install.sh gains later is swept by these same runs.
+opt_stage() {  # $1 = case dir, $2 = stage name, rest = installer args
+  local d="$1" st="$2"; shift 2
+  env -i HOME="$d/home" ZDOTDIR="$d/home" PATH="$d/bin:/usr/bin:/bin:/opt/homebrew/bin" \
+    zsh "$REPO/install.sh" "$@" >"$d/out.$st" 2>&1 </dev/null
+  print -r -- $? > "$d/rc.$st"
+  (cd "$d/home" && find . -mindepth 1 ! -path ./.zshenv | LC_ALL=C sort) > "$d/tree.$st"
+}
+opt_cycle() {  # $1 = case dir: the three runs, in order
+  opt_stage "$1" fresh
+  mkdir -p "$1/home/.config/ccmorph/libexec"
+  print -r -- 'type=apikey' > "$1/home/.config/ccmorph/work.conf"
+  print -r -- '#!/bin/sh' > "$1/home/.config/ccmorph/libexec/model-window"
+  opt_stage "$1" update
+  opt_stage "$1" uninstall --uninstall
+}
+opt_layout=(bin lib libexec share/claude-plugin/.claude-plugin share/claude-plugin/commands
+  share/claude-plugin/hooks share/claude-plugin-router/.claude-plugin share/claude-plugin-router/hooks
+  share/claude-plugin-router/skills/router share/zsh/site-functions)
+# The reference must be whole itself, or two equally broken runs would agree.
+clean=$(fresh_env opt_clean)
+opt_cycle "$clean"
+for st in fresh update uninstall; do
+  [[ "$(<"$clean/rc.$st")" == 0 ]] || { fail "options: the clean $st run rc=$(<"$clean/rc.$st")"; cat "$clean/out.$st" }
+done
+for layout in $opt_layout; do
+  grep -qxF "./.config/ccmorph/$layout" "$clean/tree.fresh" || fail "options: the clean install has no $layout"
+done
+grep -qxF 'Preserved: 1 profile(s)' "$clean/out.update" && ! grep -qxF './.config/ccmorph/libexec/model-window' "$clean/tree.update" \
+  && grep -qF '(1 profiles,' "$clean/out.uninstall" \
+  && ok "options: the clean runs count the profile and sweep the legacy helper" \
+  || { fail "options: the clean runs did not reach the profile and helper globs"; cat "$clean/out.update" "$clean/out.uninstall" }
+for opt_case opt_line in \
+  ignorebraces 'setopt ignorebraces' \
+  bareglobqual 'unsetopt bareglobqual' \
+  every 'setopt ignorebraces extendedglob ksharrays noglob shwordsplit globdots nullglob; unsetopt bareglobqual'; do
+  d=$(fresh_env "opt_$opt_case")
+  print -r -- "$opt_line" > "$d/home/.zshenv"
+  opt_cycle "$d"
+  for st in fresh update uninstall; do
+    [[ "$(<"$d/rc.$st")" == 0 ]] \
+      && ok "options $opt_case: the $st run exits 0" \
+      || { fail "options $opt_case: the $st run rc=$(<"$d/rc.$st")"; cat "$d/out.$st" }
+    [[ "$(<"$d/tree.$st")" == "$(<"$clean/tree.$st")" ]] \
+      && ok "options $opt_case: the $st run leaves the clean run's tree" \
+      || { fail "options $opt_case: the $st run's tree differs from the clean run's"; diff "$clean/tree.$st" "$d/tree.$st" }
+    opt_got="$(<"$d/out.$st")"; opt_want="$(<"$clean/out.$st")"
+    [[ "${opt_got//"$d"/@}" == "${opt_want//"$clean"/@}" ]] \
+      && ok "options $opt_case: the $st run prints the clean run's report" \
+      || { fail "options $opt_case: the $st run's output differs from the clean run's"; cat "$d/out.$st" }
+    grep -q '[{}]' "$d/tree.$st" \
+      && fail "options $opt_case: the $st run left a literal brace path: $(grep '[{}]' "$d/tree.$st")" \
+      || ok "options $opt_case: the $st run leaves no literal brace path"
+  done
+  opt_missing=()
+  for layout in $opt_layout; do
+    grep -qxF "./.config/ccmorph/$layout" "$d/tree.fresh" || opt_missing+=("$layout")
+  done
+  (( ${#opt_missing} == 0 )) && ok "options $opt_case: every layout directory is installed" \
+    || fail "options $opt_case: missing installed directories: ${opt_missing[*]}"
+  [[ "$(<"$d/home/.zshenv")" == "$opt_line" ]] \
+    && ok "options $opt_case: .zshenv is left as it was" || fail "options $opt_case: the installer edited .zshenv"
+done
+# Remote mode hands over to the DOWNLOADED installer through `sh`, which
+# re-execs zsh, and that zsh reads the same .zshenv.
+for opt_case opt_line in ignorebraces 'setopt ignorebraces' bareglobqual 'unsetopt bareglobqual'; do
+  d=$(remote_env "opt_remote_$opt_case" "$TMP/src.tar.gz")
+  print -r -- "$opt_line" > "$d/home/.zshenv"
+  remote_run "$d" cmd; rc=$?
+  (cd "$d/home" && find . -mindepth 1 | LC_ALL=C sort) > "$d/tree"
+  opt_missing=()
+  for layout in $opt_layout; do
+    [[ -d "$d/home/.config/ccmorph/$layout" ]] || opt_missing+=("$layout")
+  done
+  (( rc == 0 )) && [[ -f "$d/home/.config/ccmorph/lib/ccmorph.sh" && -x "$d/home/.local/bin/ccmorph" ]] \
+    && (( ${#opt_missing} == 0 )) && ! grep -q '[{}]' "$d/tree" \
+    && ok "options remote $opt_case: the downloaded installer installs the whole layout" \
+    || { fail "options remote $opt_case: rc=$rc, missing: ${opt_missing[*]:-none}"; cat "$d/out" "$d/err" }
+done
 fi
 
 # --- 2b. an IN-PLACE install (clone already at the target) succeeds -----------
