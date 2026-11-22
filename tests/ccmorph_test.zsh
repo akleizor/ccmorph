@@ -13159,6 +13159,19 @@ test_private_session_keeps_exit_status_after_interrupt() {
 }
 run_test test_private_session_keeps_exit_status_after_interrupt
 
+# GH-779: the counter and the counted code must share a process. zsh passes no
+# plain functions to a `zsh -c` child (only `functions -x` exports ride the
+# environment), so a `sleep` override defined in the test's shell never reaches
+# the launcher and a parent-side count is structurally pinned at 0. This stub
+# runs in the same child shape the launch tests use -- source, define the
+# override, call it -- and writes the marker once, proving the witness can fire.
+_ccm_test_sleep_witness() {
+  local marker="$1"
+  zsh -c 'source "$1"; marker="$2"; sleep() { print -r -- stub >> "$marker"; }; sleep 0.1' \
+    _ "$CCMORPH_SOURCE" "$marker"
+  [[ -s "$marker" ]] && (( $(wc -l < "$marker") == 1 ))
+}
+
 test_launcher_forwards_term_and_hup_to_claude() {
   # A foreground child defers the launcher's traps until it exits, so a TERM/HUP
   # sent to the top-level launcher pid (agent-dispatch, a user's kill) never
@@ -13181,17 +13194,25 @@ test_launcher_forwards_term_and_hup_to_claude() {
   # fix: reproduced at load 153-283, that shape lost both signals to "claude
   # did not start"; this shape passed TERM and HUP twice at load 339-353.
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
-  local rc=0 sig pid st cpid fifo fd crutch clock_waits=0
+  local rc=0 sig pid st cpid fifo fd crutch marker
   zmodload zsh/zselect || { rm -rf "$test_home"; return 1; }
   local -i hang=$(( CCMORPH_TEST_HANG_TIMEOUT * 100 ))
-  # Counted, never slept: a wait that polls the clock must fail this test on an
-  # idle machine too, where before it could only fail under load - how #398 hid.
-  sleep() { (( ++clock_waits )); }
+  # GH-398: the waits are events, never deadlines. The witness is written by a
+  # `sleep` function inside the launcher's own `zsh -c` child, the only process
+  # whose sleeps are the launcher's: a real-clock poll there must leave a line
+  # and fail this test on an idle machine too, where before it could only fail
+  # under load - how #398 hid. The stub proves the marker mechanism fires before
+  # an empty marker is allowed to mean "no polling".
+  _ccm_test_sleep_witness "$test_home/sleep-witness" || {
+    print -u2 -- "GH-779: the sleep witness did not fire in a zsh -c child, so the GH-398 guard cannot fail"
+    rc=1
+  }
   printf '%s\n' '#!/bin/sh' 'trap '\''echo got > "$SEEN"; exit 7'\'' TERM HUP' 'printf "%s\n" "$$" >&3' 'while :; do sleep 0.1; done' > "$HOME/bin/claude"
   chmod +x "$HOME/bin/claude"
   for sig in TERM HUP; do
     export SEEN="$test_home/seen.$sig"
     fifo="$test_home/started.$sig"
+    marker="$test_home/launcher-sleeps.$sig"
     mkfifo "$fifo"
     # Opened RDWR before the fork (GH-434): neither open can block on a peer
     # that never comes, and holding the handle across the readiness read keeps
@@ -13201,7 +13222,7 @@ test_launcher_forwards_term_and_hup_to_claude() {
     # the auto-started adapter that inherited fd 3.
     exec {crutch}<>"$fifo"
     exec {fd}<"$fifo"
-    zsh -c 'source "$1"; _ccm_launch -a proxy prompt' _ "$CCMORPH_SOURCE" 3>"$fifo" &
+    zsh -c 'source "$1"; marker="$2"; sleep() { print -r -- . >> "$marker"; }; _ccm_launch -a proxy prompt' _ "$CCMORPH_SOURCE" "$marker" 3>"$fifo" &
     pid=$!
     # No budget, a backstop: claude's pid line, or a launcher that never
     # produced one - dead or wedged, killed and reported either way.
@@ -13231,9 +13252,8 @@ test_launcher_forwards_term_and_hup_to_claude() {
     kill -0 $cpid 2>/dev/null && { print -u2 -- "$sig: claude still running after the launcher exited"; rc=1; kill -KILL $cpid 2>/dev/null; }
     [[ -s "$SEEN" ]] || { print -u2 -- "$sig: claude never got the signal"; rc=1; }
     (( st == 7 )) || { print -u2 -- "$sig: status $st, want claude's 7"; rc=1; }
+    [[ ! -s "$marker" ]] || { print -u2 -- "$sig: GH-398: the launcher's wait used real-clock polling"; rc=1; }
   done
-  (( clock_waits == 0 )) || { print -u2 -- "GH-398: the waits used real-clock polling"; rc=1; }
-  unfunction sleep
   rm -rf "$test_home"
   return $rc
 }
@@ -13286,11 +13306,17 @@ test_signal_with_a_queued_hop_ends_the_launch() {
   # A TERM/HUP is the user ending the session: a hop queued before it must not
   # relaunch claude, and its relay file must not be left behind.
   local test_home; test_home=$(mktemp -d); setup_home "$test_home"
-  local rc=0 st pid cpid relay started crutch clock_waits=0
+  local rc=0 st pid cpid relay started crutch marker="$test_home/launcher-sleeps"
   local -i hang=$(( CCMORPH_TEST_HANG_TIMEOUT * 100 ))
   zmodload zsh/zselect || { rm -rf "$test_home"; return 1; }
   # GH-303: scheduling must not decide whether the signal contract passes.
-  sleep() { (( ++clock_waits )); command sleep "$@"; }
+  # GH-779: the counter and the counted code share a process - the override is
+  # defined inside the launcher's `zsh -c` child below, and this stub proves it
+  # writes the marker before an empty marker is allowed to mean "no polling".
+  _ccm_test_sleep_witness "$test_home/sleep-witness" || {
+    print -u2 -- "GH-779: the sleep witness did not fire in a zsh -c child, so the GH-303 guard cannot fail"
+    rc=1
+  }
   export READY="$test_home/ready"
   mkfifo "$test_home/started" "$READY.hold"
   printf '%s\n' '#!/bin/sh' 'trap "exit 9" TERM' \
@@ -13309,7 +13335,7 @@ test_signal_with_a_queued_hop_ends_the_launch() {
   # EOF still means everyone holding the write end is gone.
   exec {crutch}<>"$test_home/started"
   exec {started}< "$test_home/started"
-  zsh -c 'source "$1"; _ccm_launch -a proxy prompt' _ "$CCMORPH_SOURCE" 3>"$test_home/started" 2>/dev/null &
+  zsh -c 'source "$1"; marker="$2"; sleep() { print -r -- . >> "$marker"; }; _ccm_launch -a proxy prompt' _ "$CCMORPH_SOURCE" "$marker" 3>"$test_home/started" 2>/dev/null &
   pid=$!
   # The hang bound as a backstop (GH-434), not a readiness deadline: the pid
   # line, or a launcher that never produced one, killed either way.
@@ -13318,7 +13344,6 @@ test_signal_with_a_queued_hop_ends_the_launch() {
     kill -KILL $pid 2>/dev/null
     wait $pid 2>/dev/null
     exec {started}<&-; exec {crutch}>&-
-    unfunction sleep
     rm -rf "$test_home"
     return 1
   fi
@@ -13336,8 +13361,7 @@ test_signal_with_a_queued_hop_ends_the_launch() {
   (( st == 9 )) || { print -u2 -- "status $st, want claude's 9"; rc=1; }
   [[ -s "$READY" ]] && (( $(wc -l < "$READY") == 1 )) || { print -u2 -- "claude was relaunched or did not start"; rc=1; }
   [[ -n $relay && ! -e "$HOME/.config/ccmorph/.reswitch.$relay" ]] || { print -u2 -- "relay file left behind"; rc=1; }
-  (( clock_waits == 0 )) || { print -u2 -- "GH-303: signal synchronization used real-clock polling"; rc=1; }
-  unfunction sleep
+  [[ ! -s "$marker" ]] || { print -u2 -- "GH-303: signal synchronization used real-clock polling"; rc=1; }
   rm -rf "$test_home"
   return $rc
 }
