@@ -1423,3 +1423,21 @@ def test_set_saves_a_model_on_a_keyless_profile_without_an_error(box):
     assert 'has no api_key' not in out.stderr, out.stderr
     got = box.run('get', 'keyless', 'model')
     assert got.returncode == 0 and got.stdout == 'sonnet\n', (got.stdout, got.stderr)
+
+
+def test_doctor_names_an_option_it_does_not_take(box):
+    # #791: doctor collected an unknown option into its positional list, so
+    # `doctor --bogus alpha` refused the word after it ("unexpected argument
+    # 'alpha'") and a lone `--bogus` was refused as a profile name. The
+    # option names itself now; a word too many still names itself as the
+    # argument it is.
+    seed(box)
+    result = box.run('doctor', '--bogus', 'alpha')
+    assert result.returncode == 2, (result.stdout, result.stderr)
+    assert "unknown option '--bogus'" in result.stderr, result.stderr
+    assert 'unexpected argument' not in result.stderr, result.stderr
+    assert box.log() == ''
+    lone = box.run('doctor', '--bogus')
+    assert lone.returncode == 2 and "unknown option '--bogus'" in lone.stderr, lone.stderr
+    extra = box.run('doctor', 'work', 'alpha')
+    assert extra.returncode == 2 and "unexpected argument 'alpha'" in extra.stderr, extra.stderr

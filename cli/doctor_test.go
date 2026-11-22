@@ -311,3 +311,41 @@ func TestDoctorRefusesAnInvalidDefaultBeforeAnyCaseRescue(t *testing.T) {
 		t.Fatalf("an invalid default must be refused before any check row, rc=%d:\n%s", rc, out)
 	}
 }
+
+// GH-791: doctorVerb collected unknown options into the positional list, so
+// `doctor --bogus alpha` refused the word after the option ("unexpected
+// argument 'alpha'") instead of naming the option, and a lone `--bogus` was
+// refused as a profile name. A word typed as a long option is refused as one,
+// naming itself — the refusal family #784 opened for the router.
+func TestDoctorNamesAnOptionItDoesNotTake(t *testing.T) {
+	state := t.TempDir()
+	l := &launcher{dir: state, profileDirs: filepath.Join(t.TempDir(), "profiles")}
+	usage := "usage: ccmorph doctor [--verbose] [profile|-i]"
+	for _, args := range [][]string{{"--bogus", "alpha"}, {"--bogus"}, {"alpha", "--bogus"}, {"-v", "--bogus"}} {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			out, errOut, rc := runCaptured(t, func() int { return l.doctorVerb(args) })
+			if rc != 2 {
+				t.Fatalf("%q: rc %d, want 2; stdout %q stderr %q", args, rc, out, errOut)
+			}
+			if !strings.Contains(errOut, "unknown option '--bogus'") || !strings.Contains(errOut, usage) {
+				t.Fatalf("%q: stderr %q does not name the option with the usage line", args, errOut)
+			}
+			if out != "" {
+				t.Fatalf("%q: a refused option must run no checks, stdout %q", args, out)
+			}
+		})
+	}
+	// The words doctor does take stay taken: -v/--verbose reach the verbose
+	// report, an extra positional still names itself as an argument, and the
+	// picker token never reads as an option.
+	t.Setenv("HOME", t.TempDir())
+	if _, errOut, rc := runCaptured(t, func() int { return l.doctorVerb([]string{"--bogus", "-v"}) }); rc != 2 || !strings.Contains(errOut, "unknown option '--bogus'") {
+		t.Fatalf("--bogus must be named even beside a real flag: rc %d, stderr %q", rc, errOut)
+	}
+	if _, errOut, rc := runCaptured(t, func() int { return l.doctorVerb([]string{"alpha", "beta"}) }); rc != 2 || !strings.Contains(errOut, "unexpected argument 'beta'") {
+		t.Fatalf("a second positional must still name itself: rc %d, stderr %q", rc, errOut)
+	}
+	if _, errOut, _ := runCaptured(t, func() int { return l.doctorVerb([]string{"-i"}) }); strings.Contains(errOut, "unknown option") {
+		t.Fatalf("the picker token -i is never an unknown option: stderr %q", errOut)
+	}
+}

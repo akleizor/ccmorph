@@ -712,6 +712,23 @@ func (fx *routeFixture) sessionBridge(t *testing.T) (pid int, handle string, rel
 		}
 }
 
+// runCaptured runs f with os.Stdout and os.Stderr swapped for pipes and
+// returns what each printed, with f's exit status.
+func runCaptured(t *testing.T, f func() int) (string, string, int) {
+	t.Helper()
+	or, ow, _ := os.Pipe()
+	er, ew, _ := os.Pipe()
+	oldOut, oldErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = ow, ew
+	rc := f()
+	os.Stdout, os.Stderr = oldOut, oldErr
+	ow.Close()
+	ew.Close()
+	ob, _ := io.ReadAll(or)
+	eb, _ := io.ReadAll(er)
+	return string(ob), string(eb), rc
+}
+
 // captureStdout runs f with os.Stdout swapped for a pipe and returns what it
 // printed, with f's exit status.
 func captureStdout(t *testing.T, f func() int) (string, int) {

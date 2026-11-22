@@ -60,6 +60,16 @@ func (l *launcher) extraArg(verb, word string) int {
 	return 2
 }
 
+// badOption refuses a word given as an option the verb does not take, naming
+// the option itself: a collected unknown flag must never be reported through
+// the next word instead (GH-791, the refusal family #784 opened for the
+// router, whose refusal words these are).
+func (l *launcher) badOption(verb, word string) int {
+	l.err("unknown option '" + word + "'")
+	l.err("usage: " + usageLine(verb))
+	return 2
+}
+
 // realVerbs is every verb `ccmorph <verb>` answers to, in one list for the typo
 // hint: a word one edit away from exactly one of these is told to run it.
 var realVerbs = []string{"add", "config", "context", "cred", "doctor", "get", "help", "hop",

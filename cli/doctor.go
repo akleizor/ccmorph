@@ -61,6 +61,14 @@ func (l *launcher) doctorVerb(args []string) int {
 			verbose = true
 			continue
 		}
+		// A word typed as a long option is refused as one, naming itself:
+		// collected into the positional list, the extra-argument check then
+		// blamed the next word (GH-791). A single hyphen stays a name —
+		// probe's ruling on a leading hyphen (#373) — and -i/--interactive
+		// keep the picker slot the doctor page teaches.
+		if strings.HasPrefix(a, "--") && !interactive(a) {
+			return l.badOption("doctor", a)
+		}
 		rest = append(rest, a)
 	}
 	args = rest
