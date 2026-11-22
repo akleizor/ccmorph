@@ -133,6 +133,16 @@ if [ -z "${ZSH_VERSION:-}" ]; then
   exit 1
 fi
 
+# From here on this file is zsh, and it runs under the options it was written
+# for. zsh reads the user's ~/.zshenv before the first line of any script, and
+# options set there change this file's own syntax: `unsetopt bareglobqual` made
+# the (N:t) module glob below fatal, and `setopt ignorebraces` broke the
+# layout's brace list and every `{ ...; break }` (#778). The same reset as
+# bin/ccmorph and lib/ccmorph-launch.zsh:15-18; the setopt lines name what this
+# file relies on.
+emulate -L zsh
+setopt bare_glob_qual
+unsetopt ignore_braces ignore_close_braces extended_glob
 set -eu
 
 # This installer keeps code and state in ONE directory, which is right for a

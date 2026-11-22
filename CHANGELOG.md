@@ -17,6 +17,11 @@
 
 ### Fixed
 
+- **The installer no longer breaks under options set in `~/.zshenv`.** zsh reads
+  that file before any script, so `unsetopt bareglobqual` or `setopt
+  ignorebraces` there stopped `./install.sh`, `ccmorph update` and the one-line
+  install before anything was copied. The installer now resets zsh's options
+  before its first zsh line, as `ccmorph` itself does (#778).
 - **`ccmorph update <tag>` no longer leaves a new library beside the old
   core.** A GitHub tag archive carries no `ccmorph-core`. The updater now
   checks the download for the binary before it runs that tag's installer,
