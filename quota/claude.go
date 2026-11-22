@@ -78,14 +78,16 @@ func claudeWindows(body []byte) ([]Window, error) {
 			continue
 		}
 		id := windowID(l.Kind)
-		ws = append(ws, Window{ID: id, Label: windowLabel(id), Used: *l.Percent / 100, ResetsAt: epoch(l.ResetsAt)})
+		used := *l.Percent / 100
+		ws = append(ws, Window{ID: id, Label: windowLabel(id), Used: &used, ResetsAt: epoch(l.ResetsAt)})
 	}
 	if len(ws) == 0 {
 		add := func(id string, w *claudeWindow) {
 			if w == nil || w.Utilization == nil {
 				return
 			}
-			ws = append(ws, Window{ID: id, Label: windowLabel(id), Used: *w.Utilization / 100, ResetsAt: epoch(w.ResetsAt)})
+			used := *w.Utilization / 100
+			ws = append(ws, Window{ID: id, Label: windowLabel(id), Used: &used, ResetsAt: epoch(w.ResetsAt)})
 		}
 		add("5h", u.FiveHour)
 		add("7d", u.SevenDay)

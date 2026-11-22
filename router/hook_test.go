@@ -112,7 +112,8 @@ func quotaSnapshot(t *testing.T, used map[string]float64) {
 	reset := time.Now().Add(150 * time.Minute).Unix()
 	var entries []quota.Entry
 	for n, u := range used {
-		entries = append(entries, quota.Entry{Profile: n, Kind: "claude", Windows: []quota.Window{{ID: "5h", Used: u, ResetsAt: &reset}}})
+		u := u
+		entries = append(entries, quota.Entry{Profile: n, Kind: "claude", Windows: []quota.Window{{ID: "5h", Used: &u, ResetsAt: &reset}}})
 	}
 	if err := writeJSON(filepath.Join(routerDir(), "quota.json"), snapshot{ReadAt: nowSec(), Entries: entries}); err != nil {
 		t.Fatal(err)
