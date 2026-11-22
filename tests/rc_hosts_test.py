@@ -2680,13 +2680,15 @@ def test_a_truncated_api_reply_does_not_stop_the_supervisor(tmp_path, monkeypatc
     srv.bind(("127.0.0.1", 0))
     srv.listen(8)
 
+    seen = []        # every request the listener was asked for, as `posts` records hand-backs
+
     def serve():
         while True:
             try:
                 c, _ = srv.accept()
             except OSError:
                 return
-            c.recv(65536)
+            seen.append(c.recv(65536))       # before the reply: a call that returned saw this
             c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 500\r\n\r\n" + b'{"data": []}')
             c.close()
     threading.Thread(target=serve, daemon=True).start()
@@ -2698,6 +2700,9 @@ def test_a_truncated_api_reply_does_not_stop_the_supervisor(tmp_path, monkeypatc
         m.purge_archived([str(repo)], 10**10, 86400)
     finally:
         srv.close()
+    assert len(seen) >= 3, (
+        f"only {len(seen)} request(s) reached the listener: each of the three calls must "
+        "read the truncated reply through api() for the 2026-10-14 exit to be guarded at all")
 
 
 def test_purge_days_is_a_setting_not_a_folder():
