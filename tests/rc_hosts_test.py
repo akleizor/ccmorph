@@ -3467,6 +3467,33 @@ def test_a_config_reload_never_dies_on_account_resolution(tmp_path, monkeypatch,
         assert (tmp_path / "state" / "profiles" / ".rc-bridge" / "inference").read_text() == "route\n"
 
 
+def test_a_signed_out_session_report_never_dies_on_account_resolution(tmp_path, monkeypatch, capsys):
+    """Two Claude account profiles turned the signed-out 401 report into a crash
+    loop: host_sessions() named the account in its fix line with default_account(),
+    a one-shot CLI helper whose refusal exits the process, and the refusal is a
+    SystemExit raised inside the very `except LOGIN_ERRORS` handler that caught the
+    401, so it escaped the supervisor at every active check -- and since the flag
+    landed after the log line, launchd's next start met the same crash (GH-805,
+    the shape #596 recorded for the reload branch). The report must stand on its
+    own: a fix line that names no account when none can be named, and the
+    once-per-episode flag landing with it."""
+    m = load()
+    _two_account_profiles(tmp_path / "state")   # the real default_account() now refuses: SystemExit
+    login = {"expiresAt": 0, "accessToken": "expired"}   # signed out: no refreshToken
+    monkeypatch.setattr(m, "account_login", lambda: login)
+    monkeypatch.setattr(m, "host_envs", lambda folders: {"env": "repo"})
+
+    def unauthorized(token, status):
+        raise m.urllib.error.HTTPError("url", 401, "Unauthorized", None, None)
+    monkeypatch.setattr(m, "sessions", unauthorized)
+
+    assert m.host_sessions(["repo"], "active") == ("", [])
+    out = capsys.readouterr().out
+    assert "active session check failed: HTTP Error 401: Unauthorized; fix: ccmorph login" in out
+    assert m.host_sessions(["repo"], "active") == ("", [])   # once per episode
+    assert "session check failed" not in capsys.readouterr().out
+
+
 def test_a_first_config_with_inference_creates_its_switch_log(tmp_path, monkeypatch):
     """A fresh state dir whose first config carries `inference=<profile>` died
     FileNotFoundError on its first reload: the bring-up Popen's stderr opened
