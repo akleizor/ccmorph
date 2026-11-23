@@ -8616,6 +8616,9 @@ test_relay_relaunch_keeps_a_mapped_alias_allowed() {
   # that is not the marker (sol-alias[2M], sol-alias[beta]) and the marker on
   # an id no map names (ghost-model[1M]). An id that is neither a map key nor a
   # served row stays out, as it does today.
+  # The claude-sonnet-5-5[1M]:absent leg this replaced was retired by Alex's
+  # decision on #544 (answer A), which accepts the flipped leg with these three:
+  # https://github.com/akleizor/ccmorph/issues/544#issuecomment-7090416651
   local spec model expect launched allowed
   for spec in 'sol-alias:allowed' 'claude-sonnet-5-5:allowed' \
               'claude-sonnet-5-5[1m]:allowed' 'claude-sonnet-5-5[1M]:allowed' \

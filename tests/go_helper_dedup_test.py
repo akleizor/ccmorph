@@ -429,6 +429,11 @@ def test_the_tier_words_are_spelled_once():
 # walks its own leaf. The first-bracket cut's one deliberate home is named
 # with its reason in BRACKET_CUT_HOMES; everywhere else the marker comes off
 # through tier.TrimWindowMarker, which removes only a trailing one.
+#
+# The walk reads .go files only. The leaf is a Go package, and the Remote
+# Control add-on's Python cannot import it, so its two strips of the marker —
+# pinned_model in addons/remote-control/rc_route.py and pinned_tiers in
+# addons/remote-control/ccmorph-rc — are outside this guard.
 MARKER = '"[1m]"'
 MARKERS = ('"[1m]"', '"[1M]"')
 BRACKET_CUT = ', "[",'
