@@ -2,9 +2,12 @@ package adapter
 
 import (
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -130,5 +133,26 @@ func TestCachedRouteReadsTheClassificationCache(t *testing.T) {
 		if got := CachedRoute(base+"/", dir, model); got != want {
 			t.Fatalf("%s: got %q, want %q", model, got, want)
 		}
+	}
+}
+
+// A check run inside a Remote Control session reaches its upstream through a
+// proxy that signs with the session's extra CA: the check must trust it, as
+// quota's reads do.
+func TestCheckTrustsTheSessionsExtraCA(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `{}`) }))
+	defer srv.Close()
+	t.Setenv("NODE_EXTRA_CA_CERTS", "")
+	if r := Check(srv.URL, "k", "m", "", false, []string{"anthropic"}); r.OK || r.Status != 0 {
+		t.Fatalf("an untrusted certificate answered: %+v", r)
+	}
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	block := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
+	if err := os.WriteFile(ca, block, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NODE_EXTRA_CA_CERTS", ca)
+	if r := Check(srv.URL, "k", "m", "", false, []string{"anthropic"}); !r.OK {
+		t.Fatalf("the session's CA was not trusted: %+v", r)
 	}
 }

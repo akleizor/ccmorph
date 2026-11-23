@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/netroute"
 	"github.com/akleizor/ccmorph/ordjson"
+	"github.com/akleizor/ccmorph/shim"
 )
 
 // CheckResult is one `ccmorph check` answer; its JSON is the --json contract.
@@ -93,7 +95,11 @@ func checkRoute(base, secret, model, route string, oauth bool) CheckResult {
 	}
 	r := CheckResult{Route: route}
 	start := time.Now()
-	resp, err := do(client, "POST", ctxwindow.APIURL(base, path), body, hdr, probeTimeout)
+	// The client a probe uses, also trusting a session's extra CA: a check run
+	// inside a Remote Control session reaches Anthropic through its proxy.
+	c := &http.Client{CheckRedirect: shim.CheckRedirect, Transport: &http.Transport{Proxy: probeProxy,
+		DisableKeepAlives: true, TLSClientConfig: netroute.ExtraCAs()}}
+	resp, err := do(c, "POST", ctxwindow.APIURL(base, path), body, hdr, probeTimeout)
 	if err != nil {
 		// The URL can carry a base's userinfo: name only the cause.
 		var ue *url.Error
