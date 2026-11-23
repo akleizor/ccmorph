@@ -1075,12 +1075,23 @@ Omit the profile or the setting to choose it in a picker.
 The value is printed to stdout; name both in scripts.
 Effort: ` + strings.Join(profile.Efforts, ", ") + `. Available models come from the profile.
 base_url prints the endpoint; api_key prints the key or token (a secret,
-the same as ccmorph cred). --json prints every field in one object.
+the same as ccmorph cred). --json prints every field in one object; it may
+stand before or after the profile, and with the profile omitted it is
+chosen the same way as above.
+With the profile omitted, a leading model or effort names the setting and
+the profile is chosen: with one profile it is the answer, with more its
+picker opens. A profile named model or effort stays reachable by naming
+both words, the profile first: get model model, or get model base_url
+for its other fields.
 Scripts read a profile only through get, never from its files.`},
 	"set": {"", `Save a default for new sessions: the model or the effort level.
 Omit the profile, the setting or the value to choose it in a picker.
 The saved value goes to stdout for a script to capture; a terminal shows
 one confirming line. Name all three in scripts.
+With the profile omitted, a leading model or effort is the setting and the
+profile is chosen: one saved profile is selected, more open its picker.
+A profile named model or effort stays reachable by naming both words,
+the profile first: set model effort high.
 Effort: ` + strings.Join(profile.Efforts, ", ") + `. Available models come from the profile.`},
 	"login": {"ccmorph login [profile|-i]", `Sign in again: a Claude account profile with its browser login, a
 provider-backed profile with its own, or let Claude Code use an API-key
