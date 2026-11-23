@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // GH-370: the set form's warning trusted the discovered table — empty whenever
@@ -180,4 +181,42 @@ func TestTheProbeNudgeRecordsItsSpawnBeforeItReturns(t *testing.T) {
 	if !strings.Contains(string(b), "probe nudge spawned profile=gw") {
 		t.Fatalf("the launcher must record the spawn before it goes on, got: %q", b)
 	}
+}
+
+// GH-768 review: the spawn record must not rotate the launch log after the
+// probe's child has inherited its descriptor. l.log rewrites a log past
+// 100 KiB by atomic rename; a child still writing to the old inode would lose
+// its diagnostics. probeNudge records through the open append handle instead.
+func TestTheProbeSpawnRecordNeverRotatesTheLogUnderItsChild(t *testing.T) {
+	libexec, dir := t.TempDir(), t.TempDir()
+	logPath := filepath.Join(dir, "launch.log")
+	release := filepath.Join(dir, "release")
+	// Past the rotation threshold: one more line written through l.log rotates.
+	seed := strings.Repeat(strings.Repeat("x", 199)+"\n", 512)
+	if err := os.WriteFile(logPath, []byte(seed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nuntil [ -f \"$CCMORPH_TEST_RELEASE\" ]; do sleep 0.02; done\nprintf 'probe-child-finished\\n'\n"
+	if err := os.WriteFile(filepath.Join(libexec, "ccmorph-core"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CCMORPH_TEST_RELEASE", release)
+	l := &launcher{libexec: libexec, logPath: logPath, memo: map[string]string{}}
+
+	l.probeNudge("gw")
+	if b, _ := os.ReadFile(logPath); !strings.Contains(string(b), "probe nudge spawned profile=gw") {
+		t.Fatalf("the spawn record must be on disk when probeNudge returns")
+	}
+
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if b, err := os.ReadFile(logPath); err == nil && strings.Contains(string(b), "probe-child-finished") {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("the probe's own output vanished from the launch log: the spawn record rotated the file under its child")
 }
