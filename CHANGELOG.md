@@ -18,13 +18,20 @@
 
 ### Fixed
 
+- **`ccmorph hop` typed in a plain terminal now says what is wrong.** The bare
+  command answered with its usage line, which shows the profile as optional, so
+  the command looked valid and the mistake stayed unnamed until a profile was
+  added; only then came the real answer. Outside a Claude Code session, hop
+  with or without a profile now gives that one answer, `not inside a Claude
+  Code session`, and names the forms to type inside the session
+  (`/ccmorph:hop` or `! ccmorph hop`); a usage line appears only for input that
+  is wrong (#362).
 - **Remote Control hosts pin the route profile's tiers.** `ccmorph-rc-hosts` kept
   its own tier map in `tier.<alias>=` lines, which drifted from the profile: an alias
   the profile mapped to a gateway model went out as the native Claude id, which the
   gateway refused (HTTP 400 on every Explore agent). Hosts now pin each alias the
   route profile maps outside its own Claude family, read through
   `ccmorph get <route> --json`; a `tier.` line still overrides one alias.
-
 - **The installer no longer breaks under options set in `~/.zshenv`.** zsh reads
   that file before any script, so `unsetopt bareglobqual` or `setopt
   ignorebraces` there stopped `./install.sh`, `ccmorph update` and the one-line
