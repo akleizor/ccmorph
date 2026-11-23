@@ -233,3 +233,25 @@ func TestPsProcessTableDoesNotWaitOnAGrandchildHoldingThePipe(t *testing.T) {
 		t.Fatalf("a grandchild holding the pipe kept the read for %v; WaitDelay must close it", elapsed)
 	}
 }
+
+// A pass killed at the caller's deadline must not leave the rows it already
+// read standing as a table: rows without their command answer every argv
+// question — runningAdapter's adapter hunt included — with silence, and on a
+// busy machine that half read was reported as "this profile needs no
+// translator" instead of the designed skip (GH-819). The read declines.
+func TestPsProcessTableDeclinesWithoutItsCommandColumn(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"[ \"$2\" = \"pid=,command=\" ] && exec sleep 30\n" +
+		"printf '%s\\n' '1 1 init'\n"
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	if got := psProcessTable(ctx); got != nil {
+		t.Fatalf("a read whose command column died at the bound must decline, got %d rows carrying no command", len(got))
+	}
+}

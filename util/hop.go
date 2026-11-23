@@ -59,7 +59,9 @@ func psCmd(ctx context.Context, args ...string) *exec.Cmd {
 // of their own: a ps without lstart then costs the times and not the rows hop
 // needs, and a line that does not parse leaves its row at the cannot-tell zero.
 // Every pass runs under ctx, so a stalled ps is killed with the caller's
-// deadline rather than outliving the read.
+// deadline rather than outliving the read. The rows without their command are
+// no table: a pass that cannot read it declines the read, because a half-read
+// table answers argv questions — and the adapter question — with silence.
 func psProcessTable(ctx context.Context) map[int]psRow {
 	raw, err := psCmd(ctx, "-axo", "pid=,ppid=,comm=").Output()
 	if err != nil {
@@ -77,15 +79,29 @@ func psProcessTable(ctx context.Context) map[int]psRow {
 			rows[pid] = psRow{ppid: ppid, comm: strings.Join(f[2:], " ")}
 		}
 	}
-	if raw, err := psCmd(ctx, "-axo", "pid=,command=").Output(); err == nil {
-		for _, l := range strings.Split(string(raw), "\n") {
-			l = strings.TrimSpace(l)
-			p, rest, _ := strings.Cut(l, " ")
-			if pid, err := strconv.Atoi(p); err == nil {
-				r := rows[pid]
-				r.args = strings.TrimSpace(rest)
-				rows[pid] = r
-			}
+	// ww: an unbounded command column. ps sizes that column to COLUMNS (or the
+	// caller's terminal) when the output is a pipe, and a caller that exports
+	// COLUMNS — a pytest-xdist worker does, GH-819 — cut a live session's argv
+	// right through the middle, so the adapter hunt read
+	// "/Users/…/.venv/bin/python /private/var/…" and stopped: the session was
+	// there and the read claimed there was none. The reader's question is
+	// never the caller's terminal's width, so ask for the whole line.
+	cmdRaw, err := psCmd(ctx, "-axwwo", "pid=,command=").Output()
+	if err != nil {
+		// Without the command column no argv question can be answered: rows
+		// of comm alone let findAdapter miss the adapter it hunts and say
+		// there is none. A pass killed at the bound leaves exactly that half
+		// table standing as a success — the half-reported answer GH-467
+		// promised never to give. Decline with the rest of the read.
+		return nil
+	}
+	for _, l := range strings.Split(string(cmdRaw), "\n") {
+		l = strings.TrimSpace(l)
+		p, rest, _ := strings.Cut(l, " ")
+		if pid, err := strconv.Atoi(p); err == nil {
+			r := rows[pid]
+			r.args = strings.TrimSpace(rest)
+			rows[pid] = r
 		}
 	}
 	// lstart is "Mon Jan _2 15:04:05 2006" in the locale's words, so the read
