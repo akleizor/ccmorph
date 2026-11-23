@@ -3885,3 +3885,227 @@ def test_a_failed_write_inference_raises_its_own_error_and_leaves_no_temp(tmp_pa
     assert raised.value is injected
     assert path.read_text() == "route\n"
     assert sorted(p.name for p in path.parent.iterdir()) == ["inference"]
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root writes into a mode-0500 directory")
+def test_a_refused_inference_word_does_not_take_the_supervisor_down(tmp_path, monkeypatch, capsys):
+    """GH-845: the reload branch called rc_module().write_inference() outside
+    every guard, and write_inference re-raises the OSError its cleanup cannot
+    swallow (pinned at #596). A full disk or a read-only `.rc-bridge/` therefore
+    ended main(), and launchd restarted the supervisor into the same crash. The
+    failure is one log line naming the cause, the tick continues, and the word
+    is retried on a later tick until the bridge takes it."""
+    m = load()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=gateway\n{repo}\n")     # no inference= line: the word is route
+    bridge = tmp_path / "bridge"
+    bridge.mkdir()
+    bridge.chmod(0o500)                            # the bridge dir refuses every write
+    monkeypatch.setattr(m, "INFERENCE", bridge / "inference")
+
+    def start(self):
+        self.proc, self.started = FakeProc(), m.time.time()
+
+    ticks = [0]
+    def sleep(_):
+        ticks[0] += 1
+        if ticks[0] == 2:
+            bridge.chmod(0o700)                    # the operator repairs the bridge dir
+        if ticks[0] > 4:
+            raise SystemExit
+
+    run_main(m, monkeypatch, tmp_path, cfg, start, sleep=sleep)
+    out = capsys.readouterr().out
+    assert out.count("inference route: not applied") == 1   # retried without a line per tick
+    assert "Permission denied" in out
+    assert (bridge / "inference").read_text() == "route\n"  # the retry landed the word
+
+
+def test_a_missing_switch_launcher_does_not_take_the_supervisor_down(tmp_path, monkeypatch, capsys):
+    """GH-845, fresh-start shape (merge-gate finding): the reload resolves the
+    inference word through account_candidates(), which imports HERE/ccmorph-rc.
+    A launchd restart of a partial install therefore raised FileNotFoundError
+    before the bring-up guard could run, and the first tick never finished. The
+    resolution is retried every tick; once the launcher returns, the same tick
+    resolves the word and brings the profile up."""
+    m = load()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=gateway\n{repo}\ninference=oli\n")
+    real_here, real_edge_ready = m.HERE, m.edge_ready
+    addons = tmp_path / "addons"                   # no ccmorph-rc beside the script
+    monkeypatch.setattr(m, "HERE", addons)
+    popens = []
+    ticks = [0]
+    def sleep(_):
+        ticks[0] += 1
+        if ticks[0] == 3:                          # the launcher returns after two more ticks
+            monkeypatch.setattr(m, "HERE", real_here)
+            monkeypatch.setattr(m.subprocess, "Popen",
+                                lambda cmd, **kw: popens.append(cmd) or FakeProc())
+        if ticks[0] > 5:
+            raise SystemExit
+
+    def start(self):
+        self.proc, self.started = FakeProc(), m.time.time()
+
+    # The real edge_ready() runs too: it loads the same launcher module from HERE.
+    run_main(m, monkeypatch, tmp_path, cfg, start, sleep=sleep, edge_ready=real_edge_ready)
+    out = capsys.readouterr().out
+    assert out.count("inference: cannot resolve the word") == 1   # retried without a line per tick
+    assert out.count("gateway: cannot read its edge") == 1        # the same missing module, once
+    assert str(addons / "ccmorph-rc") in out and "No such file or directory" in out
+    assert popens == [[str(real_here / "ccmorph-rc"), "oli", "--switch"]]   # the retry brought it up
+
+
+def test_a_missing_switch_launcher_at_bring_up_is_logged_and_retried(tmp_path, monkeypatch, capsys):
+    """GH-845, the running supervisor's shape (merge-gate finding): the launcher
+    module is already loaded, so the word resolves and the --switch Popen is the
+    site that meets the missing binary. It is guarded, logged once with the cause
+    and retried; the test fails if the handler re-raises its FileNotFoundError,
+    which the fresh-start test above cannot see because its Popen is only reached
+    after HERE is restored."""
+    m = load()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=gateway\n{repo}\ninference=oli\n")
+    real_here = m.HERE
+    m.rc_module()                                  # loaded once per run; only the binary goes missing
+    addons = tmp_path / "addons"                   # no ccmorph-rc beside the script
+    monkeypatch.setattr(m, "HERE", addons)
+    popens = []
+    ticks = [0]
+    def sleep(_):
+        ticks[0] += 1
+        if ticks[0] == 3:                          # the launcher returns after two more tries
+            monkeypatch.setattr(m, "HERE", real_here)
+            monkeypatch.setattr(m.subprocess, "Popen",
+                                lambda cmd, **kw: popens.append(cmd) or FakeProc())
+        if ticks[0] > 5:
+            raise SystemExit
+
+    def start(self):
+        self.proc, self.started = FakeProc(), m.time.time()
+
+    run_main(m, monkeypatch, tmp_path, cfg, start, sleep=sleep)
+    out = capsys.readouterr().out
+    assert out.count("inference oli: not applied") == 1   # retried without a line per tick
+    assert str(addons / "ccmorph-rc") in out and "No such file or directory" in out
+    assert popens == [[str(real_here / "ccmorph-rc"), "oli", "--switch"]]   # the retry brought it up
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root writes into a mode-0500 directory")
+def test_a_read_only_bridge_does_not_end_the_tick_at_host_start(tmp_path, monkeypatch, capsys):
+    """GH-845, merge-gate finding: guarding the inference write was not enough
+    on a read-only `.rc-bridge/`. The same tick's Host.start() created
+    `.rc-bridge/logs` and let PermissionError escape tend(), so no later tick
+    retried and launchd restarted the supervisor into the same crash. The start
+    is guarded where tend() calls it: one log line names the cause, the tick
+    continues, and the retries land both the word and the edge start once the
+    bridge is writable. The real Host.start() runs here: the refusal happens
+    before any launcher is exec'd."""
+    m = load()
+    bridge = tmp_path / "state" / "profiles" / ".rc-bridge"   # the real LOGS/EDGES home
+    bridge.mkdir(parents=True)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=gateway\n{repo}\n")
+    monkeypatch.setattr(m, "read_profile_tiers", lambda route: {}, raising=False)
+    monkeypatch.setattr(m, "BACKOFF_MIN", 0)       # every tick may retry, no clock to wait on
+    popens = []
+    monkeypatch.setattr(m.subprocess, "Popen", lambda cmd, **kw: popens.append(cmd) or FakeProc())
+    ticks = [0]
+    def sleep(_):
+        ticks[0] += 1
+        if ticks[0] == 2:
+            bridge.chmod(0o700)                    # the operator repairs the bridge
+        if ticks[0] > 4:
+            raise SystemExit
+    monkeypatch.setattr(m.time, "sleep", sleep)
+    bridge.chmod(0o500)
+    try:
+        with pytest.raises(SystemExit):
+            m.main(["--config", str(cfg)])
+        out = capsys.readouterr().out
+        assert out.count("inference route: not applied") == 1     # the reload's write refused
+        assert out.count(f"{bridge}: cannot start") == 1          # the edge's LOGS mkdir refused
+        assert "Permission denied" in out
+        assert (bridge / "inference").read_text() == "route\n"    # both retried after the repair
+        assert "started via gateway" in out                      # the edge's start got through
+        assert popens and popens[-1][-1] == "--edge"
+    finally:
+        bridge.chmod(0o700)
+
+
+@pytest.mark.parametrize("damage, cause", [
+    pytest.param("mode-000", "Permission denied", id="mode-000-conf"),
+    pytest.param("invalid-utf8", "codec can't decode", id="undecodable-conf"),
+])
+def test_an_unreadable_profile_conf_does_not_take_the_supervisor_down(tmp_path, monkeypatch,
+                                                                     capsys, damage, cause):
+    """GH-845, the #596 class one level down: profile_field read every
+    `*.conf` in the state root with no guard, so one unreadable (mode 000) or
+    invalid-UTF-8 conf made account_candidates() raise at every config reload
+    and launchd restarted the supervisor into the same crash. An unreadable
+    conf is no field: the readable account still resolves, the reload writes
+    its word, and the cause is named on stderr (merged into rc-hosts.log)."""
+    if damage == "mode-000" and os.geteuid() == 0:
+        pytest.skip("root reads a mode-0 file")
+    m = load()
+    state = tmp_path / "state"                     # the autouse CCMORPH_STATE_DIR
+    state.mkdir()
+    (state / "acct.conf").write_text("type=sub\n")
+    bad = state / "bad.conf"
+    if damage == "mode-000":
+        bad.write_text("type=sub\n")
+        bad.chmod(0)
+    else:
+        bad.write_bytes(b"type=sub\n\xff\n")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=gateway\n{repo}\ninference=acct\n")
+    popens = []
+    monkeypatch.setattr(m.subprocess, "Popen", lambda cmd, **kw: popens.append(cmd) or FakeProc())
+
+    def start(self):
+        self.proc, self.started = FakeProc(), m.time.time()
+
+    run_main(m, monkeypatch, tmp_path, cfg, start)
+    err = capsys.readouterr().err
+    assert "bad.conf" in err and "unreadable" in err and cause in err
+    assert popens == []                            # acct resolved: the word is account, no bring-up
+    assert (state / "profiles" / ".rc-bridge" / "inference").read_text() == "account\n"
+
+
+def test_profile_field_reads_an_unreadable_conf_as_no_field(tmp_path, capsys):
+    """GH-845: profile_field is the one reader of a profile's .conf, so the
+    guard belongs there rather than at each caller. A conf that cannot be read
+    (mode 000) or decoded is no field; a missing conf is still no field with no
+    complaint, and a readable one still answers."""
+    rc = load().rc_module()                        # STATE_ROOT is the autouse state dir
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "ok.conf").write_text("type=sub\nmodel=m-1\n")
+    bad = state / "badutf.conf"
+    bad.write_bytes(b"type=sub\n\xff\n")
+    mode0 = state / "mode0.conf"
+    mode0.write_text("type=sub\n")
+    if os.geteuid() != 0:                          # root reads a mode-0 file
+        mode0.chmod(0)
+    assert rc.profile_field("ok", "type") == "sub"
+    assert rc.profile_field("ok", "model") == "m-1"
+    assert rc.profile_field("missing", "type") == ""
+    assert rc.profile_field("badutf", "type") == ""
+    if os.geteuid() != 0:
+        assert rc.profile_field("mode0", "type") == ""
+    err = capsys.readouterr().err
+    assert "badutf.conf" in err and "unreadable" in err and "codec can't decode" in err
+    if os.geteuid() != 0:
+        assert "mode0.conf" in err and "Permission denied" in err
+    assert "missing.conf" not in err               # absent is not a failure

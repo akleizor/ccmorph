@@ -103,6 +103,9 @@ EDGES = STATE_ROOT / "profiles" / ".rc-bridge" / "edges"
 INFERENCE = STATE_ROOT / "profiles" / ".rc-bridge" / "inference"   # ccmorph-rc reads the same file
 
 
+_unread_edges: set[str] = set()   # routes whose edge read failed and was logged
+
+
 def edge_ready(route: str) -> dict | None:
     """The route's shared edge (ccmorph-rc --edge) is up and usable: alive, its proxy
     answers, and its TLS material is still there.
@@ -110,8 +113,21 @@ def edge_ready(route: str) -> dict | None:
     The rule is ccmorph-rc's live_edge, which is also what refuses to serve from an
     edge (#638): a supervisor that adopted a record the launcher rejects would keep
     every host on an edge whose CA is gone, and a phone pointed at it fails closed.
+
+    Reading that rule loads the launcher module beside this script, so a partial
+    install that never wrote ccmorph-rc raised FileNotFoundError out of the tick at
+    every route (#845). An unreadable launcher is "not up": the answer the caller
+    already handles, with one line naming the cause per route while it lasts.
     """
-    return rc_module().live_edge(route)
+    try:
+        edge = rc_module().live_edge(route)
+    except OSError as e:
+        if route not in _unread_edges:
+            _unread_edges.add(route)
+            log(f"{route}: cannot read its edge ({e}); treating it as not up")
+        return None
+    _unread_edges.discard(route)
+    return edge
 
 
 def is_our_edge(pid: int, route: str) -> bool:
@@ -433,6 +449,7 @@ class Host:
         self.login_scans: dict[Path, int] = {}  # bytes of each log the login reader has taken
         self.login_lost: str | None = None     # the failure this run printed, held until acted on
         self.login_restarted = float("-inf")    # when this host was last restarted for its login
+        self.start_failure: tuple[str, str] | None = None   # the last start refusal logged
         name = re.sub(r"[^A-Za-z0-9]+", "-", folder.replace(str(Path.home()), "~")).strip("-")
         self.logfile = LOGS / f"{name}.log"
         self.debugfile = LOGS / f"{name}.debug.log"
@@ -602,7 +619,6 @@ class Host:
         for f in (self.logfile, *(() if self.session_id else (self.debugfile,))):  # --debug-file appends; a pinned host unlinks its own below
             if f.exists() and f.stat().st_size > LOG_CAP:
                 f.replace(f.with_suffix(".log.1"))
-        out = open(self.logfile, "ab")
         env = self.child_env()
         # Everything after `--` belongs to `claude remote-control`; bare arguments
         # belong to `ccmorph-rc` and it rejects flags it does not know (rc=2, retried
@@ -627,14 +643,14 @@ class Host:
             extra += ("--spawn=worktree",)
         claude_args = ("--edge",) if self.edge else ("--", *self.args, *extra)
         self.mark_logs()      # everything the files hold now belongs to a run before this one
-        self.proc = subprocess.Popen(
-            ["/usr/bin/script", "-q", "/dev/null", str(HERE / "ccmorph-rc"), self.route,
-             *claude_args],
-            # stdin is a pipe held open, never /dev/null: script(1) turns EOF into a ^D
-            # on the pty, which a terminal program reads as "quit".
-            cwd=self.folder, env=env, stdin=subprocess.PIPE, stdout=out, stderr=out,
-            start_new_session=True)
-        out.close()
+        with open(self.logfile, "ab") as out:   # closed here even when Popen refuses
+            self.proc = subprocess.Popen(
+                ["/usr/bin/script", "-q", "/dev/null", str(HERE / "ccmorph-rc"), self.route,
+                 *claude_args],
+                # stdin is a pipe held open, never /dev/null: script(1) turns EOF into a ^D
+                # on the pty, which a terminal program reads as "quit".
+                cwd=self.folder, env=env, stdin=subprocess.PIPE, stdout=out, stderr=out,
+                start_new_session=True)
         self.started = time.time()
         log(f"{self.folder}: started via {self.route} (pid {self.proc.pid})")
 
@@ -699,7 +715,21 @@ class Host:
         """Returns True if it launched a host (the caller starts at most one per tick)."""
         if self.proc is None:
             if now >= self.next_try and may_start:
-                self.start()
+                try:
+                    self.start()
+                except OSError as e:
+                    # start() does the host's own filesystem work -- the shared
+                    # bridge dir, LOGS, its log file, the launcher -- and one
+                    # refusal there (a read-only .rc-bridge/, a full disk) used to
+                    # leave main(), so launchd restarted the supervisor into the
+                    # same crash and no later tick retried this host (#845).
+                    failure = (type(e).__name__, str(e))
+                    if failure != self.start_failure:
+                        log(f"{self.folder}: cannot start ({e}); retrying")
+                        self.start_failure = failure
+                    self.next_try = now + BACKOFF_MIN
+                    return False
+                self.start_failure = None
                 return self.proc is not None
             return False
         rc = self.proc.poll()
@@ -1771,6 +1801,10 @@ def main(argv: list[str]) -> int:
     seen = None
     text = ""
     switched = None
+    inference_routes: set[str] = set()   # routes the loaded config names: a retried resolution reads them
+    retry_inference = False    # the inference word could not be resolved: retried every tick
+    pending_inference = None   # a switch word/bring-up the filesystem refused: retried every tick
+    inference_failure = None   # the last failure logged, so a lasting refusal is one line
     clock = Clock()
     stopping = []
     signal.signal(signal.SIGTERM, lambda *_: stopping.append(1))
@@ -1795,21 +1829,13 @@ def main(argv: list[str]) -> int:
                 # `tier.<alias>=` line changes what no host runs and must restart nothing.
                 tiers = {r: route_tiers(r, text) for r in routes}
                 perm = permission_mode(text)
-                # live in every proxy: no host restarts for it
-                target = inference(text, routes, inference_account(text))
-                if target in ("account", "route"):
-                    rc_module().write_inference(target, INFERENCE)
-                elif target != switched:   # a profile is brought up once per change, not on every reload
-                    # LOGS is created by the first Host.start, later in this same tick:
-                    # a fresh state dir whose first config carries inference=<profile>
-                    # died FileNotFoundError on this open, before any edge had started
-                    # -- the same past-the-early-returns hole the #419 comment names (#596).
-                    LOGS.mkdir(parents=True, exist_ok=True)
-                    subprocess.Popen([str(HERE / "ccmorph-rc"), target, "--switch"], stdin=subprocess.DEVNULL,
-                                     stdout=subprocess.DEVNULL, stderr=open(LOGS / "switch.log", "a"),
-                                     start_new_session=True)
-                    log(f"inference: bringing up {target}")
-                switched = target
+                # live in every proxy: no host restarts for it. A profile is brought
+                # up once per change, not on every reload. The word is resolved and
+                # put in force below, where an OSError leaves it pending for the
+                # next tick (#845).
+                inference_routes = routes
+                retry_inference = True
+                pending_inference = None   # a reloaded config supersedes the last word
                 # --permission-mode and the ANTHROPIC_DEFAULT_*_MODEL pins are fixed when
                 # a host's process starts, so a host whose permission or tiers changed has
                 # to be restarted to carry them. The shared edge pins the tiers too; only
@@ -1830,6 +1856,57 @@ def main(argv: list[str]) -> int:
                     hosts.setdefault(folder, Host(folder, route, args, tiers[route], perm))
                 log(f"config: {len(want)} folder(s): " + ", ".join(
                     f"{f} via {r}{' ' + ' '.join(a) if a else ''}" for f, (r, a) in want.items()))
+        # Put the reload's inference word in force. Resolving it can itself touch
+        # the filesystem -- account_candidates() loads the launcher module beside
+        # this script, so a fresh supervisor whose ccmorph-rc was never written
+        # raised FileNotFoundError before the bring-up guard could run (#845).
+        # Both the resolution and the apply (the shared switch file; opening
+        # switch.log and exec'ing the launcher) are guarded: an OSError from
+        # either (a full disk, a read-only .rc-bridge/, a missing launcher) leaves
+        # the work pending and retried on a later tick, as the unrecorded markers
+        # below are; one line names the cause per distinct failure, not one per
+        # second while it lasts.
+        if retry_inference or pending_inference is not None:
+            if retry_inference:
+                try:
+                    target = inference(text, inference_routes, inference_account(text))
+                except OSError as e:
+                    failure = ("resolve", type(e).__name__, e.errno)
+                    if failure != inference_failure:
+                        log(f"inference: cannot resolve the word ({e}); retrying next tick")
+                        inference_failure = failure
+                else:
+                    retry_inference = False
+                    # A resolution failure is over, but an apply failure outlives a
+                    # reload: an unrelated config edit between two refused writes of
+                    # the same word must not log the same cause again (#845 review).
+                    if inference_failure is not None and inference_failure[0] == "resolve":
+                        inference_failure = None
+                    pending_inference = target if (target in ("account", "route")
+                                                   or target != switched) else None
+            if pending_inference is not None:
+                target = pending_inference
+                try:
+                    if target in ("account", "route"):
+                        rc_module().write_inference(target, INFERENCE)
+                    else:
+                        # LOGS is created by the first Host.start, later in this same tick:
+                        # a fresh state dir whose first config carries inference=<profile>
+                        # died FileNotFoundError on this open, before any edge had started
+                        # -- the same past-the-early-returns hole the #419 comment names (#596).
+                        LOGS.mkdir(parents=True, exist_ok=True)
+                        with open(LOGS / "switch.log", "a") as err:
+                            subprocess.Popen([str(HERE / "ccmorph-rc"), target, "--switch"],
+                                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                             stderr=err, start_new_session=True)
+                        log(f"inference: bringing up {target}")
+                except OSError as e:
+                    failure = (target, type(e).__name__, e.errno)
+                    if failure != inference_failure:
+                        log(f"inference {target}: not applied ({e}); retrying next tick")
+                        inference_failure = failure
+                else:
+                    switched, pending_inference, inference_failure = target, None, None
         # A retire whose edit did not land left the pinned line active-looking:
         # write its marker now, on every tick, until one lands -- an unreadable
         # or read-only config is retried rather than abandoned (the state is
