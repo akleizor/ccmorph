@@ -62,3 +62,24 @@ func TestHasConversationKeepsALargeTranscript(t *testing.T) {
 		t.Errorf("ResumeModel = %q, %v; want chosen-model, true", m, ok)
 	}
 }
+
+// A transcript's group bits are the writer's umask, not a verdict on the
+// conversation: the session-end channel authenticates its records, but a hop
+// and model recovery must read a valid same-owner transcript exactly as they
+// did before, 0664 included (#410).
+func TestHasConversationReadsATranscriptOthersMayWrite(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "shared.jsonl")
+	row := `{"type":"assistant","sessionId":"s1","uuid":"u1","timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"assistant","model":"chosen-model","content":"hello"}}`
+	if err := os.WriteFile(p, []byte(row+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p, 0o664); err != nil {
+		t.Fatal(err)
+	}
+	if !HasConversation(p) {
+		t.Error("a same-owner transcript at mode 0664 still holds its conversation")
+	}
+	if m, ok := ResumeModel(p); !ok || m != "chosen-model" {
+		t.Errorf("ResumeModel = %q, %v; want chosen-model, true", m, ok)
+	}
+}

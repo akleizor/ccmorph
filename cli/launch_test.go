@@ -158,9 +158,10 @@ func TestRunClaudeStartsWhenTmpdirCannotBeWritten(t *testing.T) {
 // for the claude that ran as pid, and consumes the record: a launcher that
 // died is swept by gc-stale, never re-read. The file sits in a shared TMPDIR
 // anyone can write, so a record that is not a session id reads as no session
-// rather than reaching the terminal (#285), and a name that is not a regular
-// file — a link another account planted, or a FIFO that would wait for a
-// writer — reads as no record rather than being followed or waited on (#410).
+// rather than reaching the terminal (#285); a name that is not a regular file
+// — a link another account planted, or a FIFO that would wait for a writer —
+// reads as no record rather than being followed or waited on, and neither does
+// a file another account wrote or group and others can write (#410).
 func TestReadEndedSession(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
@@ -185,6 +186,24 @@ func TestReadEndedSession(t *testing.T) {
 	}
 	if got := readEndedSession(4194305); got != "" {
 		t.Fatalf("another session's record read as %q", got)
+	}
+	// A record anyone could rewrite is not this account's own record: the hook
+	// writes its own through mktemp, 0600. An own record others may read but
+	// not write is still the hook's (#410).
+	if err := os.WriteFile(f, []byte("sid-410"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(f, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if got := readEndedSession(4194304); got != "" {
+		t.Fatalf("a record anyone can write read as %q", got)
+	}
+	if err := os.Chmod(f, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := readEndedSession(4194304); got != "sid-410" {
+		t.Fatalf("a record this account owns and others cannot write read as %q", got)
 	}
 	if err := syscall.Mkfifo(f, 0o600); err != nil {
 		t.Fatal(err)
@@ -283,37 +302,158 @@ func TestResumeHintNeedsAConversationToOffer(t *testing.T) {
 // SessionEnd hook for the claude that ran as pid, and consumes the file the
 // hook kept it in: a launcher that died is swept by gc-stale, never re-read.
 // Input that is not Claude Code's JSON reads as no transcript (#359), and a
-// name that is not a regular file — a link another account planted, or a FIFO
-// that would wait for a writer — reads as no input rather than being followed
-// or waited on (#410).
+// name that is not this account's own regular file — a link another account
+// planted, a FIFO that would wait for a writer, or a file that account may
+// write — reads as no input rather than being followed or waited on (#410).
+// The one path the input may name is a transcript inside a store Claude Code
+// writes this account's sessions to; anything else, however large, is not read
+// at all (#410).
 func TestReadEndedTranscript(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	spoken := filepath.Join(home, ".claude", "projects", "p", "sid-359.jsonl")
 	f := filepath.Join(tmp, "ccmorph-session-end.4194304.json")
 	for _, c := range []struct{ name, body, want string }{
-		{"claude code's input", `{"session_id":"sid-359","transcript_path":"/p/sid-359.jsonl","hook_event_name":"SessionEnd"}`, "/p/sid-359.jsonl"},
+		{"claude code's input", `{"session_id":"sid-359","transcript_path":"` + spoken + `","hook_event_name":"SessionEnd"}`, spoken},
+		{"a transcript outside Claude Code's stores", `{"session_id":"sid-359","transcript_path":"/p/sid-359.jsonl"}`, ""},
 		{"input that is not json", "not json", ""},
 		{"empty input", "", ""},
 	} {
 		if err := os.WriteFile(f, []byte(c.body), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if got := readEndedTranscript(4194304); got != c.want {
+		if got := readEndedTranscript(4194304, ""); got != c.want {
 			t.Errorf("%s: read %q, want %q", c.name, got, c.want)
 		}
 		if _, err := os.Stat(f); !os.IsNotExist(err) {
 			t.Errorf("%s: file left behind: %v", c.name, err)
 		}
 	}
-	if got := readEndedTranscript(4194305); got != "" {
+	if got := readEndedTranscript(4194305, ""); got != "" {
 		t.Fatalf("another session's input read as %q", got)
+	}
+	// A profile keeps its sessions under its own config dir; that store is
+	// trusted as Claude Code's own is.
+	profiles := t.TempDir()
+	profileTranscript := filepath.Join(profiles, "work", "projects", "p", "sid-359.jsonl")
+	if err := os.MkdirAll(filepath.Dir(profileTranscript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f, []byte(`{"session_id":"sid-359","transcript_path":"`+profileTranscript+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := readEndedTranscript(4194304, profiles); got != profileTranscript {
+		t.Fatalf("a profile's transcript read as %q, want %q", got, profileTranscript)
 	}
 	if err := syscall.Mkfifo(f, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fifoWriter(f, `{"session_id":"sid-410","transcript_path":"/p/sid-410.jsonl"}`)
-	if got := readEndedTranscript(4194304); got != "" {
+	fifoWriter(f, `{"session_id":"sid-410","transcript_path":"`+spoken+`"}`)
+	if got := readEndedTranscript(4194304, ""); got != "" {
 		t.Fatalf("a fifo at the input's name read as %q", got)
+	}
+}
+
+// The record names sit in a shared TMPDIR, where another account can write
+// first. Only a record this account owned is trusted, because a planted one
+// can name any transcript it likes and would steer the launch's read (#410).
+func TestTheSessionEndChannelRefusesARecordAnotherAccountWrote(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	id := filepath.Join(tmp, "ccmorph-session-end.4194304")
+	in := id + ".json"
+	if err := os.WriteFile(id, []byte("sid-410"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(in, []byte(`{"session_id":"sid-410","transcript_path":"/p/sid-410.jsonl"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prev := recordOwner
+	recordOwner = func() int { return os.Geteuid() + 1 }
+	defer func() { recordOwner = prev }()
+	if got := readEndedSession(4194304); got != "" {
+		t.Fatalf("a record another account wrote read as %q", got)
+	}
+	if got := readEndedTranscript(4194304, ""); got != "" {
+		t.Fatalf("an input another account wrote read as %q", got)
+	}
+}
+
+// A hop carries a session into the target profile's projects with a symlink,
+// and Claude Code writes that session's transcript through it, so a valid
+// SessionEnd input names the link. The reader resolves it to the real
+// transcript instead of dropping the hint for a carried conversation (#410).
+func TestAResumeHintFollowsACarriedSessionLink(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	profiles := t.TempDir()
+	dir := filepath.Join(home, ".claude", "projects", "proj")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	spoken := `{"type":"user","sessionId":"s1","uuid":"u1","timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"user","content":"hi"}}` + "\n"
+	real := filepath.Join(dir, "s1.jsonl")
+	if err := os.WriteFile(real, []byte(spoken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l := &launcher{profileDirs: profiles, ended: "s1"}
+	if !l.carrySession("s1", filepath.Join(profiles, "work", "projects")) {
+		t.Fatal("the session must be carried into the target profile")
+	}
+	link := filepath.Join(profiles, "work", "projects", "proj", "s1.jsonl")
+	if fi, err := os.Lstat(link); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("carrySession must leave a link at %s: %v", link, err)
+	}
+	f := filepath.Join(tmp, "ccmorph-session-end.42.json")
+	if err := os.WriteFile(f, []byte(`{"session_id":"s1","transcript_path":"`+link+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	l.endedTranscript = readEndedTranscript(42, profiles)
+	out, _ := captureStdout(t, func() int { l.resumeHint("work"); return 0 })
+	hint := "\nccmorph: resume this session with: ccmorph run work --resume s1\n"
+	if out != hint {
+		t.Fatalf("a carried conversation lost its resume hint: %q", out)
+	}
+}
+
+// A profile's env may point CLAUDE_CONFIG_DIR somewhere of its own, and Claude
+// Code writes that session's transcript there. The session-end reader trusts
+// that effective store: an empty transcript in it must not offer a resume
+// command, and a spoken one must (#410).
+func TestAnEndedSessionReadsTheConfiguredStore(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	cfg := filepath.Join(root, "custom")
+	transcript := filepath.Join(cfg, "projects", "proj", "s1.jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	script := "#!/bin/sh\nf=\"$TMPDIR/ccmorph-session-end.$$\"\nprintf s1 > \"$f\"\n" +
+		"printf '%s' '{\"session_id\":\"s1\",\"transcript_path\":\"" + transcript + "\"}' > \"$f.json\"\n"
+	if err := os.WriteFile(filepath.Join(root, "ccmorph-core"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	spoken := `{"type":"user","sessionId":"s1","uuid":"u1","timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"user","content":"hi"}}` + "\n"
+	hint := "\nccmorph: resume this session with: ccmorph run work --resume s1\n"
+	for _, c := range []struct{ name, body, want string }{
+		{"an empty transcript in the configured store", "", ""},
+		{"a spoken transcript in the configured store", spoken, hint},
+	} {
+		if err := os.WriteFile(transcript, []byte(c.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		l := &launcher{libexec: root, profileDirs: filepath.Join(root, "profiles")}
+		if rc := l.runClaude([]string{"CLAUDE_CONFIG_DIR=" + cfg}, nil); rc != 0 {
+			t.Fatalf("%s: launch rc %d", c.name, rc)
+		}
+		if out, _ := captureStdout(t, func() int { l.resumeHint("work"); return 0 }); out != c.want {
+			t.Errorf("%s: hint %q, want %q", c.name, out, c.want)
+		}
 	}
 }
 
