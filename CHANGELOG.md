@@ -25,7 +25,9 @@
   signal reaches the sign-in child like HUP and TERM, the rollback takes the
   home and the lock, and the same name adds again with no `rm`. `rm` of a
   leftover lists only the paths that exist and removes the live lock too,
-  keeping it only while a running launch still holds it.
+  keeping it only while a running launch still holds it, and a launch that
+  opened the lock just as `rm` removed it takes the lock at the path again
+  instead of holding a file nothing names.
 
 - **Remote Control hosts pin the route profile's tiers.** `ccmorph-rc-hosts` kept
   its own tier map in `tier.<alias>=` lines, which drifted from the profile: an alias

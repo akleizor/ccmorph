@@ -650,6 +650,135 @@ func TestRemoveLiveTakesAFreeLockAndKeepsAHeldOne(t *testing.T) {
 	}
 }
 
+// GH-837 (merge gate): a launch opens the live lock and only then flocks it.
+// An rm that unlinks in that window leaves the launch locking an inode the
+// path no longer names, while the next HoldLive makes and locks a second file
+// at the same path — two live locks for one profile. HoldLive now checks that
+// the descriptor is still what the path names and starts the take again.
+func TestHoldLiveRetakesTheLockWhenAnRmUnlinksItBeforeTheFlock(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	profiles := filepath.Join(home, ".config/ccmorph/profiles")
+	lock := LiveLockPath(profiles, "p")
+	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The unlink a concurrent rm performs lands between the open and the flock.
+	liveAfterOpen = func() {
+		liveAfterOpen = nil // one unlink, as one concurrent rm does
+		os.Remove(lock)
+	}
+	t.Cleanup(func() { liveAfterOpen = nil })
+	f, why := HoldLive(profiles, "p", nil)
+	if f == nil {
+		t.Fatalf("the take must start again after the unlink: %v", why)
+	}
+	defer ReleaseLive(profiles, "p")
+	if !sameLockInode(f, lock) {
+		t.Fatal("HoldLive must not return a lock on an inode the path no longer names")
+	}
+	// The lock the path names is the only one: a second take on the path is
+	// refused while this process holds it.
+	other, err := os.OpenFile(lock, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if syscall.Flock(int(other.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil {
+		t.Fatal("two descriptors must not hold the live lock at one path")
+	}
+}
+
+// GH-837 (merge gate): the same window seen from rm's side. A file that
+// replaces the one RemoveLive opened is a lock someone else may hold, so rm
+// must not unlink it; it reports the holder instead.
+func TestRemoveLiveKeepsAReplacementLockItDidNotOpen(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	profiles := filepath.Join(home, ".config/ccmorph/profiles")
+	lock := LiveLockPath(profiles, "p")
+	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var holder *os.File
+	liveAfterOpen = func() {
+		liveAfterOpen = nil // one replacement, as one concurrent rm would make
+		os.Remove(lock)
+		h, err := os.OpenFile(lock, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := syscall.Flock(int(h.Fd()), syscall.LOCK_SH); err != nil {
+			t.Fatal(err)
+		}
+		holder = h
+	}
+	t.Cleanup(func() {
+		liveAfterOpen = nil
+		if holder != nil {
+			holder.Close()
+		}
+	})
+	if err := RemoveLive(profiles, "p"); !errors.Is(err, ErrLiveHeld) {
+		t.Fatalf("a lock made at the path after the open must not be unlinked: %v", err)
+	}
+	if _, err := os.Lstat(lock); err != nil {
+		t.Fatalf("the replacement lock must survive: %v", err)
+	}
+}
+
+// GH-837: the merge gate's own sequence, through the public API. A launch
+// that opened the lock before the removal and flocks afterwards holds an
+// inode nothing else can see; the removal and every later holder must agree
+// on the file the path names, and only that file is the live lock.
+func TestALateFlockOnARemovedLockDoesNotDoubleIt(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	profiles := filepath.Join(home, ".config/ccmorph/profiles")
+	lock := LiveLockPath(profiles, "p")
+	if err := os.MkdirAll(filepath.Dir(lock), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A launch opens the lock; no flock yet.
+	stale, err := os.OpenFile(lock, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stale.Close()
+	if err := RemoveLive(profiles, "p"); err != nil {
+		t.Fatalf("an unlocked lock file is removable: %v", err)
+	}
+	if syscall.Flock(int(stale.Fd()), syscall.LOCK_SH) != nil {
+		t.Fatalf("the late flock is what the race allows: %v", err)
+	}
+	f, why := HoldLive(profiles, "p", nil)
+	if f == nil {
+		t.Fatalf("the launch's take must succeed on the file the path names now: %v", why)
+	}
+	defer ReleaseLive(profiles, "p")
+	if !sameLockInode(f, lock) {
+		t.Fatal("HoldLive must hold the inode the path names")
+	}
+	if sameLockInode(stale, lock) {
+		t.Fatal("the late flock must cover an inode the path no longer names")
+	}
+	// Only one live lock exists: the path's, held by HoldLive.
+	other, err := os.OpenFile(lock, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	if syscall.Flock(int(other.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil {
+		t.Fatal("the removed inode's flock must not pass for a second live lock")
+	}
+}
+
 // #185: the transcripts v0.5.0 and earlier merges parked beside a profile
 // exist nowhere else and are merged into the shared store at the next idle
 // launch, so their sessions return to /resume; a file the store already holds
