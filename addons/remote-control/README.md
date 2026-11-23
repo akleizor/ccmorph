@@ -137,8 +137,10 @@ map is applied, so a provider such as codex receives its own models. `inference=
 in `rc-hosts` does the same from the config. A proxy started before this feature needs one
 restart to load it.
 
-A tier pinned with `tier.<alias>=` names the route's model on that bare alias, so under
-another target pick that model by its full id instead.
+`ccmorph-rc-hosts` pins the route profile's tiers (each alias its profile maps outside
+its own Claude family, as `ccmorph get <route> --json` reports them); a
+`tier.<alias>=<model>` line in `rc-hosts` overrides one. A pinned tier names the route's
+model on that bare alias, so under another target pick that model by its full id instead.
 
 ## How it works
 

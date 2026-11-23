@@ -10,12 +10,19 @@
 ### Added
 
 - **`ccmorph router on` routes subagent work across your profiles.** Off by default. With it on, sessions get a `delegate` tool and Agent hooks: free gateways first, then the subscription furthest behind its pace, then paid keys, and inside a profile the cheapest model that fits the task's kind and tier. `ccmorph router status`, `dispatch` (`--dry-run` to see the pick only) and `report` show and check it. `dispatch` also serves scripts and services: `--timeout` bounds the whole run, flags after `--` reach the worker's claude, and the caller's `CCMORPH_TASK` tags its spend. The hooks never deny an Agent call: when no pick fits the session, the call runs as written.
-- **`ccmorph get <profile> <field|--json>` is the one public read of a profile.** `api_key` prints the key or token (the same as `cred`, which stays), and `--json` prints profile, type, base_url, api_key, model and effort in one object.
+- **`ccmorph get <profile> <field|--json>` is the one public read of a profile.** `api_key` prints the key or token (the same as `cred`, which stays), and `--json` prints profile, type, base_url, api_key, model, effort and the tier map a launch resolves (`tiers`, `{alias: model}`) in one object.
 - **`ccmorph price <model>... [--json]`** reads cached list prices per million tokens, using the same model lookup as usage pricing.
 - Adapter usage rows record the launching session as `parent` when available.
 - **`ccmorph quota` reads Google AI plans.** An `antigravity` profile shows each quota pool (Gemini, and the weekly pool the Claude and gpt-oss models share) with its reset; `--json` windows carry the `models` that draw on them.
 
 ### Fixed
+
+- **Remote Control hosts pin the route profile's tiers.** `ccmorph-rc-hosts` kept
+  its own tier map in `tier.<alias>=` lines, which drifted from the profile: an alias
+  the profile mapped to a gateway model went out as the native Claude id, which the
+  gateway refused (HTTP 400 on every Explore agent). Hosts now pin each alias the
+  route profile maps outside its own Claude family, read through
+  `ccmorph get <route> --json`; a `tier.` line still overrides one alias.
 
 - **The installer no longer breaks under options set in `~/.zshenv`.** zsh reads
   that file before any script, so `unsetopt bareglobqual` or `setopt
