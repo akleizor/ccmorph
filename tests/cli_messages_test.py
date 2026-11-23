@@ -14,7 +14,7 @@ from fake_adapter import CORE_DISPATCH
 
 ROOT = Path(__file__).resolve().parents[1]
 # Commands that never open a picker: their help pages say nothing about one (#263).
-PICKERLESS = ('list', 'quota', 'price', 'mv', 'rm', 'hop', 'profile', 'update', 'uninstall')
+PICKERLESS = ('list', 'quota', 'price', 'check', 'mv', 'rm', 'hop', 'profile', 'update', 'uninstall')
 PICKER_WORDS = r'picker|arrow|\besc\b|fzf|search|↑|↓'
 
 
@@ -130,7 +130,7 @@ def test_help_is_concise_truthful_and_read_only(tmp_path):
                             text=True, timeout=HANG_TIMEOUT)
     for verb in ('run', 'add', 'list', 'use', 'config', 'inspect', 'doctor', 'models',
                  'get', 'set', 'login', 'mv', 'rm', 'hop', 'cred', 'probe', 'context',
-                 'update', 'uninstall', 'quota', 'price', 'profile'):
+                 'update', 'uninstall', 'quota', 'price', 'check', 'profile'):
         assert 'ccmorph ' + verb in result.stdout
         detail = subprocess.run([cli, 'help', verb], env=env, capture_output=True,
                                 text=True, timeout=HANG_TIMEOUT)

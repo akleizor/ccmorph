@@ -37,9 +37,9 @@ the ledger without running anything.
   --family F    restrict the shortlist to models of family F; when none
                 qualifies dispatch fails naming F, --dry-run exits 3; refused
                 when --profile and --model are both named
-  --no-decider  never ask the decider while picking: kind and tier come from
-                the keyword rules, an unlabeled model is labeled by its name;
-                a configured decider still scores the finished answer
+  --no-decider  never ask the decider: kind and tier come from the keyword
+                rules, an unlabeled model is labeled by its name, and the
+                finished answer is not scored (the caller judges it)
   --refresh     read quota live now instead of the stored snapshot, which is
                 served up to 5 minutes old; a named --profile and --model too
   --effort E    run at effort E instead of the tier's

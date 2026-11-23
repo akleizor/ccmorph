@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/akleizor/ccmorph/util"
+	"github.com/akleizor/ccmorph/util/tier"
 	"os"
 	"strings"
 
@@ -89,7 +90,8 @@ func (l *launcher) getSet(verb string, args []string) int {
 			args = append(args, v)
 		}
 	}
-	// get is the one public read of a profile, so scripts never parse its .conf.
+	// get is the one public read of a profile, so scripts never parse its .conf;
+	// --json adds the tier map ({alias: model}) a launch resolves.
 	if verb == "get" && key == "api_key" {
 		return l.cred([]string{name})
 	}
@@ -99,9 +101,21 @@ func (l *launcher) getSet(verb string, args []string) int {
 			return 1
 		}
 		if key == "--json" {
-			out := map[string]string{"profile": name, "type": f["type"], "base_url": f["base_url"], "api_key": credOf(f)}
+			out := map[string]any{"profile": name, "type": f["type"], "base_url": f["base_url"], "api_key": credOf(f)}
 			out["model"], _ = l.configStoreQ("get", name, "model")
 			out["effort"], _ = l.configStoreQ("get", name, "effort")
+			// The tier map a launch serves, through resolveTier, so a caller that
+			// pins tiers (the Remote Control supervisor) reads them here rather
+			// than keeping a second copy that drifts.
+			tiers := map[string]string{}
+			for _, word := range tier.TierWords {
+				if m, ok := resolveTier(word,
+					func(key string) (string, bool) { v, ok := f["env."+key]; return v, ok },
+					func(word string) (string, bool) { return l.tierAlias(name, word) }); ok {
+					tiers[word] = m
+				}
+			}
+			out["tiers"] = tiers
 			b, _ := json.Marshal(out)
 			fmt.Println(string(b))
 			return 0

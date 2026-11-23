@@ -1,15 +1,13 @@
 package quota
 
 import (
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
+	"github.com/akleizor/ccmorph/netroute"
 	"github.com/akleizor/ccmorph/util"
 )
 
@@ -154,10 +152,10 @@ func claudePlan(subscriptionType, rateLimitTier string) string {
 	return ""
 }
 
-// subscriptionToken is the profile's claude.ai access token and the plan tier
+// SubscriptionToken is the profile's claude.ai access token and the plan tier
 // recorded beside it, from the keychain item Claude Code keeps for that config
 // dir (macOS) or its .credentials.json.
-func subscriptionToken(dir string) (string, string, error) {
+func SubscriptionToken(dir string) (string, string, error) {
 	raw, err := util.ReadSigninCredentials(dir, readKeychain)
 	if err != nil {
 		return "", "", errors.New("not signed in")
@@ -189,16 +187,8 @@ func httpClient() *http.Client {
 		return &http.Client{Transport: transport, Timeout: 15 * time.Second}
 	}
 	tr := http.DefaultTransport.(*http.Transport).Clone()
-	if path := os.Getenv("NODE_EXTRA_CA_CERTS"); path != "" {
-		if pem, err := os.ReadFile(path); err == nil {
-			pool, err := x509.SystemCertPool()
-			if err != nil {
-				pool = x509.NewCertPool()
-			}
-			if pool.AppendCertsFromPEM(pem) {
-				tr.TLSClientConfig = &tls.Config{RootCAs: pool}
-			}
-		}
+	if cfg := netroute.ExtraCAs(); cfg != nil {
+		tr.TLSClientConfig = cfg
 	}
 	return &http.Client{Transport: tr, Timeout: 15 * time.Second}
 }

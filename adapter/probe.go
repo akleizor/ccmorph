@@ -146,6 +146,12 @@ func postImpl(u string, body map[string]any, headers map[string]string) (int, st
 		}
 		return 200, ""
 	}
+	return resp.StatusCode, strings.ReplaceAll(ordjson.TruncRunes(refusalText(raw), 600), "\n", " ")
+}
+
+// refusalText is an error body's own explanation: the message field of the
+// shapes gateways answer in, else the body itself.
+func refusalText(raw []byte) string {
 	detail := strings.ToValidUTF8(string(raw), "�")
 	var parsed map[string]any
 	if json.Unmarshal([]byte(detail), &parsed) == nil {
@@ -162,7 +168,7 @@ func postImpl(u string, body map[string]any, headers map[string]string) (int, st
 			}
 		}
 	}
-	return resp.StatusCode, strings.ReplaceAll(ordjson.TruncRunes(detail, 600), "\n", " ")
+	return detail
 }
 
 // postJSON returns the parsed response object, or nil on any failure.

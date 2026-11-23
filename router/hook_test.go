@@ -39,8 +39,8 @@ func TestTheMCPServerListsDelegateAndRefusesAnEmptyPrompt(t *testing.T) {
 	if !strings.Contains(out.String(), `"name":"delegate"`) {
 		t.Fatalf("tools/list: %s", out.String())
 	}
-	for _, p := range []string{`"family"`, `"no_decider"`, `"refresh"`, "never asks the decider while picking",
-		"still scores the finished answer", "also when profile and model are both set"} {
+	for _, p := range []string{`"family"`, `"no_decider"`, `"refresh"`, "the finished answer is not scored",
+		"the caller judges it", "also when profile and model are both set"} {
 		if !strings.Contains(out.String(), p) {
 			t.Fatalf("delegate schema lacks %s: %s", p, out.String())
 		}

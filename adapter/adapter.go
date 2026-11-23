@@ -138,8 +138,7 @@ func findTranslator() string {
 // decides it, in which case there is no honest verdict.
 func TranslatorVerdict(base, cacheDir, model, listing string) (needed, known bool) {
 	upstream := strings.TrimRight(base, "/")
-	cache := filepath.Join(cacheDir, ".adapter-cache", hashHex(upstream)[:16]+".json")
-	rows := cachedRows(upstream, cache)
+	rows := cachedRows(upstream, cachePath(cacheDir, upstream))
 	var doc map[string]any
 	_ = json.Unmarshal([]byte(listing), &doc)
 	data, _ := doc["data"].([]any)
@@ -221,6 +220,11 @@ func profileEnv(profile string) map[string]string {
 		}
 	}
 	return env
+}
+
+// cachePath is the classification cache of one endpoint under a profiles dir.
+func cachePath(dir, upstream string) string {
+	return filepath.Join(dir, ".adapter-cache", hashHex(upstream)[:16]+".json")
 }
 
 func hashHex(s string) string {
@@ -625,7 +629,7 @@ func Main(argv []string) int {
 	// another already classified starts instantly. The stored endpoint is still
 	// checked on load, so a hash collision or a moved URL is never mis-served.
 	routeIdentity := hashHex("[" + q(upstream) + ", " + q(key) + "]")
-	cacheFile := filepath.Join(profileDirs, ".adapter-cache", hashHex(upstream)[:16]+".json")
+	cacheFile := cachePath(profileDirs, upstream)
 
 	if a.ensureConfig != "" {
 		return ensureConfig(a, required, upstream, key, routeIdentity, cacheFile, upstreamProxy, shimBinary, extras)

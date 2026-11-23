@@ -18,7 +18,7 @@ const delegateDoc = `Run delegated work and return only its final answer. Use th
 
 Set kind and tier yourself: you know the task. tier small = search, read, list, summarise or a mechanical edit; mid = ordinary coding or investigation; top = research, design or hard multi-step debugging. Omit them only when unsure; the router then guesses from the prompt. Leave profile and model unset unless the user pinned them.
 
-family, no_decider and refresh do on this tool exactly what --family, --no-decider and --refresh do on ccmorph router dispatch: family restricts the shortlist to one model family and the call errors when none qualifies or when profile and model are both set; no_decider never asks the decider while picking (kind and tier come from the keyword rules, an unlabeled model is labeled by its name), though a configured decider still scores the finished answer; refresh reads quota live instead of the snapshot cached up to 5 minutes, also when profile and model are both set.`
+family, no_decider and refresh do on this tool exactly what --family, --no-decider and --refresh do on ccmorph router dispatch: family restricts the shortlist to one model family and the call errors when none qualifies or when profile and model are both set; no_decider never asks the decider (kind and tier come from the keyword rules, an unlabeled model is labeled by its name, and the finished answer is not scored: the caller judges it); refresh reads quota live instead of the snapshot cached up to 5 minutes, also when profile and model are both set.`
 
 // delegateArgs decodes a tools/call payload by type, so a value of the wrong
 // type (profile: 42, no_decider: "yes") fails the unmarshal and the call is

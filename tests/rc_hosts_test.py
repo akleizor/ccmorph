@@ -726,14 +726,17 @@ class FakeProc:
 
 
 def run_main(m, monkeypatch, tmp_path, cfg, start, sleep=None,
-             edge_ready=lambda route: True, clock=None, args=None, logs=True):
+             edge_ready=lambda route: True, clock=None, args=None, logs=True,
+             profile_tiers=lambda route: {}):
     """Drive m.main() over cfg until the scripted sleep raises SystemExit: logs
     under tmp_path, Host.start faked by `start`, the clock read from `clock`
     when given. `args` replaces the `--config` argument list main() gets.
     Without a `sleep`, main() stops on its fifth sleep. `logs=False` leaves
     tmp_path/logs absent: a fresh state dir whose first reload reaches the
-    switch bring-up before any Host.start created LOGS (issue #596)."""
+    switch bring-up before any Host.start created LOGS (issue #596).
+    `profile_tiers` answers for `ccmorph get <route> --json`'s tier map."""
     monkeypatch.setattr(m, "LOGS", tmp_path / "logs")
+    monkeypatch.setattr(m, "read_profile_tiers", profile_tiers, raising=False)
     if logs:
         (tmp_path / "logs").mkdir(exist_ok=True)
     monkeypatch.setattr(m, "edge_ready", edge_ready)
@@ -1342,6 +1345,84 @@ def test_tier_alias_points_one_alias_at_the_route_model(tmp_path, monkeypatch):
     assert m.tier_map(text) == {"fable": "gpt-6-astra"}
     assert m.parse(text.format(a=tmp_path)) == {str(tmp_path): ("gateway", ("--session-id", "session_01X"))}
     assert m.tier_map("route=gateway\n") == {}          # untouched config: identity
+
+
+# The live llmgate route profile and the rc-hosts tier lines on 2026-11-22.
+LLMGATE_TIERS = {"fable": "gpt-6-astra", "opus": "claude-opus-5-5",
+                 "sonnet": "claude-sonnet-5-5", "haiku": "deepseek-v4.1-flash"}
+LIVE_TIER_LINES = ("route=llmgate\ntier.fable=gpt-6-astra\ntier.haiku=deepseek-v4.1-flash\n"
+                   "permission=bypassPermissions\nidle_days=1\npurge_days=7\n")
+
+
+def test_tiers_come_from_the_route_profile_and_lines_override():
+    """The route profile is the one tier map: only an alias it maps outside its
+    own Claude family is pinned (opus/sonnet stay native 1:1), and a `tier.` line
+    overrides one alias. Today's config computes the map the hosts already run,
+    with or without its now-duplicate lines, so landing this restarts no host."""
+    m = load()
+    want = {"fable": "gpt-6-astra", "haiku": "deepseek-v4.1-flash"}
+    assert m.tier_map(LIVE_TIER_LINES, LLMGATE_TIERS) == want
+    assert m.tier_map(LIVE_TIER_LINES) == want                    # the lines the hosts started on
+    assert m.tier_map("route=llmgate\n", LLMGATE_TIERS) == want   # duplicate lines removed
+    assert m.tier_map("tier.haiku=other\n", LLMGATE_TIERS)["haiku"] == "other"   # a line wins
+    assert m.tier_map("", {"opus": "claude-opus-5-5[1m]"}) == {}  # same family, any spelling
+
+
+def test_a_profile_tier_reaches_a_host_without_a_tier_line(tmp_path, monkeypatch):
+    """2026-11-22: rc-hosts pinned only fable, so every phone session sent haiku as
+    the native claude-haiku-5-5, which the gateway does not serve -- HTTP 400 on
+    every Explore agent. The route profile's haiku must reach the host's env."""
+    m = load()
+    monkeypatch.delenv("ANTHROPIC_DEFAULT_HAIKU_MODEL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_DEFAULT_OPUS_MODEL", raising=False)
+    a = tmp_path / "a"
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=gateway\ntier.fable=gpt-6-astra\n{a}\n")
+    monkeypatch.setattr(m, "cycle", lambda *args: False)
+    envs = {}
+    def start(self):
+        envs[self.folder] = self.child_env()
+        self.proc, self.started = FakeProc(), m.time.time()
+    asked = []
+    run_main(m, monkeypatch, tmp_path, cfg, start,
+             profile_tiers=lambda route: asked.append(route) or dict(LLMGATE_TIERS))
+    assert asked and set(asked) == {"gateway"}
+    env = envs[str(a)]
+    assert env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "deepseek-v4.1-flash"
+    assert env["ANTHROPIC_DEFAULT_FABLE_MODEL"] == "gpt-6-astra"
+    assert "ANTHROPIC_DEFAULT_OPUS_MODEL" not in env              # same family: native 1:1
+    assert envs[str(m.EDGES.parent)]["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "deepseek-v4.1-flash"
+
+
+def test_a_failed_profile_read_keeps_the_last_map_and_logs_once(monkeypatch):
+    """A read that fails must not change a host's tiers (that would restart it):
+    the last map read stays, the `tier.` lines alone before any read worked, and
+    the failure is one log line, not one per reload."""
+    m = load()
+    logged, answers = [], [None, dict(LLMGATE_TIERS), None, None]
+    monkeypatch.setattr(m, "log", logged.append)
+    monkeypatch.setattr(m, "read_profile_tiers", lambda route: answers.pop(0))
+    lines = "tier.fable=gpt-6-astra\n"
+    assert m.route_tiers("gw", lines) == {"fable": "gpt-6-astra"}  # never read: the lines alone
+    full = {"fable": "gpt-6-astra", "haiku": "deepseek-v4.1-flash"}
+    assert m.route_tiers("gw", lines) == full
+    assert m.route_tiers("gw", lines) == full                      # failed: the last map read
+    assert m.route_tiers("gw", lines) == full
+    assert len(logged) == 2                                        # one per failure episode
+
+
+def test_the_profile_tiers_are_read_from_ccmorph_get(monkeypatch):
+    """The owner answers, never the .conf: `ccmorph-core cli get <route> --json`."""
+    m = load()
+    seen = []
+    def run(cmd, **kw):
+        seen.append(cmd)
+        return SimpleNamespace(returncode=0, stdout='{"profile": "gw", "tiers": {"haiku": "x"}}')
+    monkeypatch.setattr(m.subprocess, "run", run)
+    assert m.read_profile_tiers("gw") == {"haiku": "x"}
+    assert seen[0][1:] == ["cli", "get", "gw", "--json"]
+    monkeypatch.setattr(m.subprocess, "run", lambda cmd, **kw: SimpleNamespace(returncode=1, stdout=""))
+    assert m.read_profile_tiers("gw") is None
 
 
 @pytest.mark.parametrize("ambient_opus", [None, "parent-pinned-opus"],

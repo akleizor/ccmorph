@@ -44,9 +44,11 @@ func TestDispatchCarriesTheQualityFailEscalationAndLeavesAPassingAnswerAlone(t *
 		name      string
 		score     float64
 		escalates bool
+		flags     []string
 	}{
-		{"quality fail", 0.1, true},
-		{"pass", 0.9, false},
+		{"quality fail", 0.1, true, nil},
+		{"pass", 0.9, false, nil},
+		{"no decider", 0.1, false, []string{"--no-decider"}}, // the caller judges the outcome itself (harness-doctor)
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			hookEnv(t, true)
@@ -55,7 +57,8 @@ func TestDispatchCarriesTheQualityFailEscalationAndLeavesAPassingAnswerAlone(t *
 				t.Fatal(err)
 			}
 			var out, errOut bytes.Buffer
-			if code := Main([]string{"dispatch", "--kind", "code", "--tier", "mid", "fix the bug"}, strings.NewReader(""), &out, &errOut); code != 0 {
+			args := append(append([]string{"dispatch"}, tc.flags...), "--kind", "code", "--tier", "mid", "fix the bug")
+			if code := Main(args, strings.NewReader(""), &out, &errOut); code != 0 {
 				t.Fatalf("dispatch exit %d: %s", code, errOut.String())
 			}
 			if got := out.String(); got != "a decent answer" {
