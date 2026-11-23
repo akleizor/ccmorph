@@ -413,8 +413,11 @@ func (l *launcher) probeNudge(name string) {
 	if cmd.Start() == nil {
 		// The launcher records the spawn itself, before it goes on: whoever
 		// waits for the launch to exit reads a decided answer, never a race
-		// with the detached child's own first write (#768).
-		l.log("probe nudge spawned profile=" + name)
+		// with the detached child's own first write (#768). The line goes
+		// through the handle the child inherited, never l.log: that call
+		// rotates a full log by rename, and every later probe diagnostic
+		// would vanish into the old inode.
+		l.logLine(f, "probe nudge spawned profile="+name)
 		go cmd.Wait()
 	}
 	f.Close()
