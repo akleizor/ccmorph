@@ -261,6 +261,65 @@ func configure(o *Options) *http.Client {
 	return o.Client
 }
 `, "none"},
+
+		// Scope is lexical: a local hides the package only inside its block.
+		{"nested block does not shadow", `package p
+
+import web "net/http"
+
+func f() {
+	{ web := struct{ Client int }{}; _ = web.Client }
+	_ = &web.Client{}
+}
+`, "refused"},
+		{"a local shadows inside its block", `package p
+
+import web "net/http"
+
+func f() {
+	web := struct{ Client int }{}
+	_ = web.Client
+}
+`, "none"},
+		{"an initializer sees the import", `package p
+
+import web "net/http"
+
+func f() {
+	web := web.Client{}
+	_ = web
+}
+`, "refused"},
+		{"if init does not leak", `package p
+
+import web "net/http"
+
+func f() {
+	if web := 1; web > 0 {
+		_ = web
+	}
+	_ = &web.Client{}
+}
+`, "refused"},
+		{"if init shadows inside its body", `package p
+
+import (
+	"net/http"
+
+	"github.com/akleizor/ccmorph/netroute"
+)
+
+type factory struct{}
+
+func (factory) NewTransport() http.RoundTripper { return nil }
+
+func f(x bool) *http.Client {
+	if netroute := (factory{}); x {
+		return &http.Client{Transport: netroute.NewTransport()}
+	}
+	return nil
+}
+`, "refused"},
 	}
 	for _, k := range cases {
 		k := k
@@ -357,6 +416,28 @@ func TestAnOptionsOwnFieldsAreNoClientRewire(t *testing.T) {
 		if !x.allowed {
 			t.Errorf("%s: unrelated field refused: %s", x.pos, x.why)
 		}
+	}
+}
+
+// TestALocalInANestedBlockDoesNotShadowTheImport is the evaluator's lexical
+// repro: a local web inside a block hides the net/http import only until that
+// block closes, so the &web.Client{} after it is the real client and must be
+// refused for using http.DefaultTransport.
+func TestALocalInANestedBlockDoesNotShadowTheImport(t *testing.T) {
+	const src = `package p
+import web "net/http"
+func f() {
+	{ web := struct{ Client int }{}; _ = web.Client }
+	_ = &web.Client{}
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "synthetic.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inspectFile(fset, f)) == 0 {
+		t.Fatal("guard missed the HTTP client after web went out of scope")
 	}
 }
 
@@ -493,106 +574,282 @@ func (n names) is(expr ast.Expr, pkgs map[string]bool, sel string) bool {
 	return ok && pkgs[id.Name] && !n.shadowed[id]
 }
 
-// shadowQualifiers marks every package-qualifier ident, and the new builtin, a
-// local declaration shadows at that point. A use inside a function sees that
-// function's parameters, receivers and named results, and every := or var
-// declared before it in a block of that function or of a literal around it; a
-// nested literal's own declarations stay there.
-func shadowQualifiers(regions []ast.Node, n names) map[*ast.Ident]bool {
-	out := map[*ast.Ident]bool{}
-	mark := func(id *ast.Ident) {
-		if out[id] {
-			return
-		}
-		for _, scope := range regions {
-			if containsNode(scope, id) && scopeDeclares(scope, id.Name, id.Pos()) {
-				out[id] = true
-				return
-			}
-		}
-	}
-	for _, r := range regions {
-		ast.Inspect(r, func(node ast.Node) bool {
-			switch x := node.(type) {
-			case *ast.SelectorExpr:
-				if id, ok := x.X.(*ast.Ident); ok && (n.http[id.Name] || n.netroute[id.Name]) {
-					mark(id)
-				}
-			case *ast.CallExpr:
-				if id, ok := x.Fun.(*ast.Ident); ok && id.Name == "new" {
-					mark(id)
-				}
-			}
-			return true
-		})
-	}
-	return out
+// qualifierShadows marks every package-qualifier ident, and the new builtin, a
+// local binding hides at that use. Scope is lexical, as Go's is: a parameter,
+// receiver or named result covers its function's body; a :=, var, const, type
+// or range declaration covers its own block from the end of the declaration,
+// including the statements after it and the blocks nested in them, and nothing
+// after that block closes. A block's local therefore cannot hide a later
+// web.Client from the guard (#829).
+func qualifierShadows(f *ast.File, n names) map[*ast.Ident]bool {
+	w := &scopeWalk{nm: n, shadow: map[*ast.Ident]bool{}}
+	w.file(f)
+	return w.shadow
 }
 
-// scopeDeclares is whether scope binds name before at: a parameter, receiver or
-// named result anywhere in its signature, or a := / var / range declaration
-// ahead of the use. A nested func literal's bindings are not asked here; that
-// literal is its own region.
-func scopeDeclares(scope ast.Node, name string, at token.Pos) bool {
-	found := false
-	ast.Inspect(scope, func(node ast.Node) bool {
-		switch x := node.(type) {
+// scopeWalk carries the scopes visible at the node it is visiting.
+type scopeWalk struct {
+	nm      names
+	shadow  map[*ast.Ident]bool
+	visible []map[string]bool
+}
+
+func (w *scopeWalk) push() { w.visible = append(w.visible, map[string]bool{}) }
+
+func (w *scopeWalk) pop() { w.visible = w.visible[:len(w.visible)-1] }
+
+func (w *scopeWalk) declare(name string) {
+	if name != "" && name != "_" && len(w.visible) > 0 {
+		w.visible[len(w.visible)-1][name] = true
+	}
+}
+
+func (w *scopeWalk) isVisible(name string) bool {
+	for _, scope := range w.visible {
+		if scope[name] {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *scopeWalk) file(f *ast.File) {
+	for _, decl := range f.Decls {
+		switch x := decl.(type) {
 		case *ast.FuncDecl:
-			if signatureNames(x.Type, x.Recv, name) {
-				found = true
-			}
-		case *ast.FuncLit:
-			if signatureNames(x.Type, nil, name) {
-				found = true
-			}
-			if node != scope {
-				return false // its declarations are not this scope's
-			}
-		case *ast.AssignStmt:
-			if x.Tok == token.DEFINE {
-				for _, lhs := range x.Lhs {
-					if id, ok := lhs.(*ast.Ident); ok && id.Name == name && id.Pos() < at {
-						found = true
+			w.funcLike(x.Type, x.Body, x.Recv)
+		case *ast.GenDecl:
+			for _, spec := range x.Specs {
+				if vs, ok := spec.(*ast.ValueSpec); ok {
+					w.typeExpr(vs.Type)
+					for _, v := range vs.Values {
+						w.expr(v)
 					}
 				}
 			}
+		}
+	}
+}
+
+// funcLike walks a function declaration or literal: its signature types see the
+// enclosing scopes, then its parameters and results cover the body.
+func (w *scopeWalk) funcLike(t *ast.FuncType, body *ast.BlockStmt, recv *ast.FieldList) {
+	w.fieldTypes(recv)
+	w.fieldTypes(t.Params)
+	w.fieldTypes(t.Results)
+	w.push()
+	w.fieldNames(recv)
+	w.fieldNames(t.Params)
+	w.fieldNames(t.Results)
+	w.block(body)
+	w.pop()
+}
+
+func (w *scopeWalk) fieldTypes(fl *ast.FieldList) {
+	if fl == nil {
+		return
+	}
+	for _, f := range fl.List {
+		w.typeExpr(f.Type)
+	}
+}
+
+func (w *scopeWalk) fieldNames(fl *ast.FieldList) {
+	if fl == nil {
+		return
+	}
+	for _, f := range fl.List {
+		for _, id := range f.Names {
+			w.declare(id.Name)
+		}
+	}
+}
+
+func (w *scopeWalk) block(b *ast.BlockStmt) {
+	if b == nil {
+		return
+	}
+	w.push()
+	for _, s := range b.List {
+		w.stmt(s)
+	}
+	w.pop()
+}
+
+func (w *scopeWalk) stmt(s ast.Stmt) {
+	if s == nil {
+		return
+	}
+	switch x := s.(type) {
+	case *ast.BlockStmt:
+		w.block(x)
+	case *ast.AssignStmt:
+		for _, e := range x.Lhs {
+			if _, ok := e.(*ast.Ident); !ok {
+				w.expr(e)
+			}
+		}
+		for _, e := range x.Rhs {
+			w.expr(e)
+		}
+		if x.Tok == token.DEFINE {
+			for _, e := range x.Lhs {
+				if id, ok := e.(*ast.Ident); ok {
+					w.declare(id.Name)
+				}
+			}
+		}
+	case *ast.DeclStmt:
+		if d, ok := x.Decl.(*ast.GenDecl); ok {
+			w.genDecl(d)
+		}
+	case *ast.ExprStmt:
+		w.expr(x.X)
+	case *ast.ReturnStmt:
+		for _, e := range x.Results {
+			w.expr(e)
+		}
+	case *ast.IfStmt:
+		w.push()
+		w.stmt(x.Init)
+		w.expr(x.Cond)
+		w.block(x.Body)
+		w.stmt(x.Else)
+		w.pop()
+	case *ast.ForStmt:
+		w.push()
+		w.stmt(x.Init)
+		w.expr(x.Cond)
+		w.stmt(x.Post)
+		w.block(x.Body)
+		w.pop()
+	case *ast.RangeStmt:
+		w.expr(x.X)
+		w.push()
+		if x.Tok == token.DEFINE {
+			for _, e := range []ast.Expr{x.Key, x.Value} {
+				if id, ok := e.(*ast.Ident); ok {
+					w.declare(id.Name)
+				}
+			}
+		} else {
+			for _, e := range []ast.Expr{x.Key, x.Value} {
+				if _, ok := e.(*ast.Ident); !ok {
+					w.expr(e)
+				}
+			}
+		}
+		w.block(x.Body)
+		w.pop()
+	case *ast.SwitchStmt:
+		w.push()
+		w.stmt(x.Init)
+		w.expr(x.Tag)
+		w.block(x.Body)
+		w.pop()
+	case *ast.TypeSwitchStmt:
+		w.push()
+		w.stmt(x.Init)
+		if as, ok := x.Assign.(*ast.AssignStmt); ok {
+			for _, e := range as.Lhs {
+				if _, ok := e.(*ast.Ident); !ok {
+					w.expr(e)
+				}
+			}
+			for _, e := range as.Rhs {
+				w.expr(e)
+			}
+			for _, e := range as.Lhs {
+				if id, ok := e.(*ast.Ident); ok {
+					w.declare(id.Name)
+				}
+			}
+		} else {
+			w.stmt(x.Assign)
+		}
+		w.block(x.Body)
+		w.pop()
+	case *ast.SelectStmt:
+		w.block(x.Body)
+	case *ast.CaseClause:
+		w.push()
+		for _, e := range x.List {
+			w.expr(e)
+		}
+		for _, s := range x.Body {
+			w.stmt(s)
+		}
+		w.pop()
+	case *ast.CommClause:
+		w.push()
+		w.stmt(x.Comm)
+		for _, s := range x.Body {
+			w.stmt(s)
+		}
+		w.pop()
+	case *ast.LabeledStmt:
+		w.stmt(x.Stmt)
+	case *ast.GoStmt:
+		w.expr(x.Call)
+	case *ast.DeferStmt:
+		w.expr(x.Call)
+	case *ast.SendStmt:
+		w.expr(x.Chan)
+		w.expr(x.Value)
+	case *ast.IncDecStmt:
+		w.expr(x.X)
+	}
+}
+
+func (w *scopeWalk) genDecl(d *ast.GenDecl) {
+	for _, spec := range d.Specs {
+		switch s := spec.(type) {
 		case *ast.ValueSpec:
-			for _, id := range x.Names {
-				if id.Name == name && id.Pos() < at {
-					found = true
+			w.typeExpr(s.Type)
+			for _, v := range s.Values {
+				w.expr(v)
+			}
+			for _, id := range s.Names {
+				w.declare(id.Name)
+			}
+		case *ast.TypeSpec:
+			w.typeExpr(s.Type)
+			w.declare(s.Name.Name)
+		}
+	}
+}
+
+// typeExpr walks a type expression: its selectors matter, but a func literal
+// cannot occur in one.
+func (w *scopeWalk) typeExpr(expr ast.Expr) {
+	if expr == nil {
+		return
+	}
+	w.expr(expr)
+}
+
+func (w *scopeWalk) expr(e ast.Expr) {
+	if e == nil {
+		return
+	}
+	ast.Inspect(e, func(node ast.Node) bool {
+		switch x := node.(type) {
+		case *ast.FuncLit:
+			w.funcLike(x.Type, x.Body, nil)
+			return false
+		case *ast.SelectorExpr:
+			if id, ok := x.X.(*ast.Ident); ok {
+				if (w.nm.http[id.Name] || w.nm.netroute[id.Name]) && w.isVisible(id.Name) {
+					w.shadow[id] = true
 				}
 			}
-		case *ast.RangeStmt:
-			if x.Tok == token.DEFINE {
-				for _, e := range []ast.Expr{x.Key, x.Value} {
-					if id, ok := e.(*ast.Ident); ok && id.Name == name && id.Pos() < at {
-						found = true
-					}
-				}
+		case *ast.CallExpr:
+			if id, ok := x.Fun.(*ast.Ident); ok && id.Name == "new" && w.isVisible("new") {
+				w.shadow[id] = true
 			}
 		}
 		return true
 	})
-	return found
-}
-
-// signatureNames is whether a function type's parameters or results, or a
-// method's receiver, declare name.
-func signatureNames(t *ast.FuncType, recv *ast.FieldList, name string) bool {
-	check := func(fl *ast.FieldList) bool {
-		if fl == nil {
-			return false
-		}
-		for _, f := range fl.List {
-			for _, id := range f.Names {
-				if id.Name == name {
-					return true
-				}
-			}
-		}
-		return false
-	}
-	return check(recv) || check(t.Params) || check(t.Results)
 }
 
 // inspectFile reports every client construction, transport construction and
@@ -602,7 +859,7 @@ func signatureNames(t *ast.FuncType, recv *ast.FieldList, name string) bool {
 func inspectFile(fset *token.FileSet, f *ast.File) []finding {
 	regions := proofRegions(f)
 	n := fileNames(f)
-	n.shadowed = shadowQualifiers(regions, n)
+	n.shadowed = qualifierShadows(f, n)
 	var out []finding
 	add := func(node ast.Node, allowed bool, msg string) {
 		out = append(out, finding{pos: fset.Position(node.Pos()), allowed: allowed, why: msg})
