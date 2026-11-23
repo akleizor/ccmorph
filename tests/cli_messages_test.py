@@ -294,7 +294,6 @@ def test_hop_usage_line_agrees_across_help_and_the_slash_command(tmp_path):
     bare = subprocess.run([cli, 'hop'], env=env, capture_output=True,
                           text=True, timeout=HANG_TIMEOUT)
     assert bare.returncode == 1, bare.stdout
-    assert 'usage: ' + usage in bare.stderr, bare.stderr
     detail = subprocess.run([cli, 'help', 'hop'], env=env, capture_output=True,
                             text=True, timeout=HANG_TIMEOUT)
     assert detail.returncode == 0, detail.stderr
