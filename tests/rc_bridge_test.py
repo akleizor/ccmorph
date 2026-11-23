@@ -342,6 +342,32 @@ def test_the_edge_record_names_the_tiers_its_proxy_pins():
     assert (record["pid"], record["port"], record["ca"]) == (1, 47100, "/ca.pem")
 
 
+def test_an_edge_state_name_is_cleaned_from_the_route(tmp_path, monkeypatch):
+    """A folder host's log name is cleaned of path characters before it is joined onto
+    LOGS; the edge's state names were built from the raw `route=` (issue #846):
+    `route=gw/eu` sent the record and its temp write into a subdirectory that is
+    never created, and live_edge read `EDGES/gw/eu.json`, so a bridge of such a
+    route could never find the edge that was up. The cleaned name sits directly
+    under EDGES, keeps a safe token's name stable, and does not merge `gw/eu` and
+    `gw_eu` onto one state file."""
+    rc = _launcher()
+    monkeypatch.setattr(rc, "EDGES", tmp_path)
+    name = rc.edge_name("gw/eu")
+    assert "/" not in name and name.startswith("gw-eu-")     # cleaned, never a subdirectory
+    assert rc.edge_name("gw") == "gw"                        # a live edge keeps its file name
+    assert rc.edge_name("gw_eu") != name                     # cleaning merges no two routes
+    for weird in ("..", "-"):                                # never empty, never a traversal
+        n = rc.edge_name(weird)
+        assert n and "/" not in n and ".." not in n
+    monkeypatch.setattr(rc.os, "kill", lambda pid, sig: None)     # the pid is fake: liveness is not under test
+    monkeypatch.setattr(rc.socket, "create_connection", lambda addr, timeout=None: contextlib.nullcontext())
+    ca = tmp_path / "ca.pem"
+    ca.write_text("pem")
+    (tmp_path / f"{name}.json").write_text(json.dumps({"pid": 4242, "port": 1, "ca": str(ca)}))
+    assert rc.live_edge("gw/eu") is not None                 # live_edge reads the cleaned name
+    assert not (tmp_path / "gw").exists()
+
+
 def test_a_tier_pinned_by_the_caller_survives_into_the_session():
     # rc-hosts pins tier.fable=gpt-6-astra because the route serves no claude-fable
     # model. session_env strips model aliases, and used to strip that pin with them.

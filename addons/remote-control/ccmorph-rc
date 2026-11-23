@@ -74,10 +74,30 @@ def edge_port(route: str) -> int:
     return 47100 + zlib.crc32(route.encode()) % 800
 
 
+def safe_part(value: str) -> str:
+    """Any token as one file-name part: every run of characters a path segment
+    cannot hold becomes a single dash. Folder log names have always cleaned this
+    way; the edge's names did not, so `route=gw/eu` opened its log inside a
+    directory nothing creates and its FileNotFoundError escaped the supervisor's
+    tick, which launchd restarted into the same crash (#846)."""
+    return re.sub(r"[^A-Za-z0-9]+", "-", value).strip("-")
+
+
+def edge_name(route: str) -> str:
+    """The route as the file-name part of its edge's log and state file. A route
+    that is already one safe token keeps it, so a live edge is not renamed; but
+    cleaning alone merges routes -- `gw/eu` and `gw_eu` both become `gw-eu` --
+    and one edge state file for two routes hands one route's proxy to the
+    other's bridges, so a route the rule had to change also carries its own
+    checksum."""
+    safe = safe_part(route)
+    return safe if safe == route else f"{safe}-{zlib.crc32(route.encode()) & 0xFFFFFFFF:08x}"
+
+
 def live_edge(route: str) -> dict | None:
     """The route's shared edge if its process is alive and its proxy answers."""
     try:
-        edge = json.loads((EDGES / f"{route}.json").read_text())
+        edge = json.loads((EDGES / f"{edge_name(route)}.json").read_text())
         os.kill(int(edge["pid"]), 0)
         with socket.create_connection(("127.0.0.1", int(edge["port"])), timeout=1):
             pass
@@ -566,9 +586,9 @@ def main(argv: list[str]) -> None:
     if args.edge:
         EDGES.mkdir(parents=True, exist_ok=True)
         record = edge_record(me, port, ca, upstream, route_env, os.environ)
-        tmp = EDGES / f".{route}.json.tmp"
+        tmp = EDGES / f".{edge_name(route)}.json.tmp"
         tmp.write_text(json.dumps(record))
-        tmp.replace(EDGES / f"{route}.json")
+        tmp.replace(EDGES / f"{edge_name(route)}.json")
         print(f"ccmorph-rc: shared edge for '{route}' on 127.0.0.1:{port} ({upstream})", file=sys.stderr)
         while True:                        # adapter and proxy follow this pid; stay up
             time.sleep(15)

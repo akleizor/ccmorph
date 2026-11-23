@@ -1847,6 +1847,28 @@ def test_a_created_edge_leaves_no_git_repo_in_the_state_dir(tmp_path, monkeypatc
     assert not (m.EDGES.parent / ".git").exists()      # ... without a repo in the state dir
 
 
+def test_a_slashed_route_gets_a_cleaned_edge_log_and_survives_the_tick(tmp_path, monkeypatch, capsys):
+    """A folder host's log name is cleaned of path characters before it is joined onto
+    LOGS; the edge host's was built from the raw `route=` (issue #846): `route=gw/eu`
+    opened `edge-gw/eu.log` inside a directory nothing ever creates, and the
+    FileNotFoundError escaped the tick with no guard, so launchd restarted the
+    supervisor into the same crash and Remote Control went down on one config line.
+    The edge now starts -- naming the line in the log -- and its log sits directly
+    under LOGS under the cleaned name."""
+    m = load()
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=gw/eu\n{tmp_path}/a\n")
+    (tmp_path / "a").mkdir()
+    # the real Host.start, with only the spawn faked: the open() that raised is
+    # the one this tick runs, and main() must outlive it.
+    monkeypatch.setattr(m.subprocess, "Popen", lambda cmd, **kw: FakeProc())
+    run_main(m, monkeypatch, tmp_path, cfg, m.Host.start, edge_ready=lambda route: False)
+    assert "started via gw/eu" in capsys.readouterr().out
+    logs = sorted(p.name for p in (tmp_path / "logs").glob("edge-*.log"))
+    assert len(logs) == 1 and logs[0].startswith("edge-gw-eu-")   # cleaned, one file
+    assert not (tmp_path / "logs" / "gw").exists()                # never a subdirectory
+
+
 def test_every_processless_session_is_handed_back_and_retried_slowly(tmp_path, monkeypatch):
     """Archive removes a clean worktree and unarchive never restarts it (2026-10-10);
     a session idle without a process waited hours on a message (2026-10-12)."""
