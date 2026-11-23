@@ -978,7 +978,7 @@ func TestAWarmCacheIsNotAModelChoice(t *testing.T) { // issue #357
 // refusingTransport is the issue's stand-in gateway as an HTTP transport: it
 // answers the model list (HTTP 200) but refuses every /v1/messages request with
 // the given status and body, and answers every other message path with the 404
-// of a route it does not implement. Swapped into the adapter's client, the
+// of a route it does not implement. Swapped in as the probe client, the
 // whole launch path runs for real over it with no socket.
 type refusingTransport struct {
 	status int
@@ -1006,7 +1006,7 @@ func (f *refusingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 func refuseMessages(t *testing.T, status int, body string) *refusingTransport {
 	t.Helper()
 	gw := &refusingTransport{status: status, body: body}
-	swap(t, &client, &http.Client{Transport: gw})
+	swap(t, &probeClient, func() *http.Client { return &http.Client{Transport: gw} })
 	swap(t, &frontDirectlyFn, func(_ *cliArgs, _, _, _ string, _ []Row, _ map[string]string, _ []string, _ map[string]any) int {
 		panic("a refused message must not front a session")
 	})
@@ -1166,7 +1166,7 @@ func TestAnUnimplementedPathIsNotARefusalOfEveryDialect(t *testing.T) { // issue
 	// chat-only gateway must classify through its working dialect instead of
 	// dying on the Messages API's 501 (INTENT: any provider's model can run).
 	gw := &chatOnlyTransport{}
-	swap(t, &client, &http.Client{Transport: gw})
+	swap(t, &probeClient, func() *http.Client { return &http.Client{Transport: gw} })
 	dir := t.TempDir()
 	rows, err := classify("https://standin", "k", filepath.Join(dir, "cache.json"), "chat-only-1", true)
 	if err != nil {
