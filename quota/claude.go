@@ -1,15 +1,13 @@
 package quota
 
 import (
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
+	"github.com/akleizor/ccmorph/netroute"
 	"github.com/akleizor/ccmorph/util"
 )
 
@@ -189,16 +187,8 @@ func httpClient() *http.Client {
 		return &http.Client{Transport: transport, Timeout: 15 * time.Second}
 	}
 	tr := http.DefaultTransport.(*http.Transport).Clone()
-	if path := os.Getenv("NODE_EXTRA_CA_CERTS"); path != "" {
-		if pem, err := os.ReadFile(path); err == nil {
-			pool, err := x509.SystemCertPool()
-			if err != nil {
-				pool = x509.NewCertPool()
-			}
-			if pool.AppendCertsFromPEM(pem) {
-				tr.TLSClientConfig = &tls.Config{RootCAs: pool}
-			}
-		}
+	if cfg := netroute.ExtraCAs(); cfg != nil {
+		tr.TLSClientConfig = cfg
 	}
 	return &http.Client{Transport: tr, Timeout: 15 * time.Second}
 }
