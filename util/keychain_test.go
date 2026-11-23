@@ -2,6 +2,7 @@ package util
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -14,7 +15,10 @@ import (
 // profile.RemovableName, and rm reaches KeychainDelete. The gate that refuses
 // it is profile's one name rule, so no keychain command may run. The fake
 // security is also the proof the observation works: a name the gate accepts
-// does reach it.
+// does reach it. Its log path is passed as data (calls.path beside the
+// script), never substituted into the script source: an operator's TMPDIR may
+// hold a space, and a substituted path would break the shell line (REVIEW.md,
+// env is a tool).
 func TestKeychainDeleteRefusesALongStemWithoutTouchingTheKeychain(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("KeychainDelete only runs on darwin")
@@ -22,8 +26,11 @@ func TestKeychainDeleteRefusesALongStemWithoutTouchingTheKeychain(t *testing.T) 
 	dir := t.TempDir()
 	calls := filepath.Join(dir, "calls")
 	script := filepath.Join(dir, "security")
-	body := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"" + calls + "\"\n"
+	body := "#!/bin/sh\ncalls=$(cat \"$(dirname \"$0\")/calls.path\") || exit 1\nprintf '%s\\n' \"$*\" >> \"$calls\"\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "calls.path"), []byte(calls+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -52,12 +59,18 @@ func TestKeychainDeleteRefusesALongStemWithoutTouchingTheKeychain(t *testing.T) 
 //	                                which is what the eval below relies on. eval here
 //	                                only ever sees a line this package's own code wrote
 //	                                to the test's stub, never anything from outside.
-//	security find-generic-password  prints the stored secret for -s/-a, or exits 44
-//	                                (not found) like the real CLI, so nothing is invented
+//	security find-generic-password  prints the stored secret only with -w, exactly like
+//	                                the real CLI — without -w it prints attributes and
+//	                                no password, and a caller that dropped -w reads
+//	                                metadata instead of a secret — or exits 44 (not
+//	                                found), so nothing is invented
+//
+// The item directory is passed as data (items.path beside the script), never
+// substituted into the script source: an operator's TMPDIR may hold a space.
 const securityStub = `#!/bin/sh
-# @ITEMS@ is substituted per test by keychainStub, so every run reads and
-# writes only its own temp dir.
-ITEMS=@ITEMS@
+me=$(dirname "$0")
+ITEMS=$(cat "$me/items.path") || exit 1
+[ -n "$ITEMS" ] || exit 1
 case "$1" in
 default-keychain)
 	exit 0
@@ -83,19 +96,23 @@ default-keychain)
 ;;
 find-generic-password)
 	shift
-	svc="" acct=""
+	svc="" acct="" w=""
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
 		-s) svc="$2"; shift 2 ;;
 		-a) acct="$2"; shift 2 ;;
+		-w) w=1; shift ;;
 		*) shift ;;
 		esac
 	done
-	if [ -n "$svc" ] && [ -n "$acct" ] && [ -f "$ITEMS/$svc.$acct" ]; then
+	if [ -z "$svc" ] || [ -z "$acct" ]; then exit 1; fi
+	if [ ! -f "$ITEMS/$svc.$acct" ]; then exit 44; fi
+	if [ -n "$w" ]; then
 		printf '%s\n' "$(cat "$ITEMS/$svc.$acct")"
-		exit 0
+	else
+		printf 'class: "genp"\nattributes:\n'
 	fi
-	exit 44
+	exit 0
 ;;
 esac
 exit 127
@@ -108,9 +125,11 @@ func keychainStub(t *testing.T) string {
 	t.Helper()
 	bin := t.TempDir()
 	items := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "items.path"), []byte(items+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	script := filepath.Join(bin, "security")
-	body := strings.ReplaceAll(securityStub, "@ITEMS@", items)
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte(securityStub), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return bin
@@ -125,7 +144,7 @@ func keychainStub(t *testing.T) string {
 // through the stub above: runs share no identity and no file, and the flow
 // needs no login keychain. It stays darwin-only because KeychainMigrate
 // returns before the keychain off darwin; the round-trip below covers the
-// stub's quoting there, where it can run.
+// stub's quoting and its -w rule there, where it can run.
 func TestKeychainMigrateMovesThePlainKeyAndReadsItBack(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("KeychainMigrate returns early off darwin (util/keychain.go)")
@@ -152,8 +171,19 @@ func TestKeychainMigrateMovesThePlainKeyAndReadsItBack(t *testing.T) {
 // this round-trip — the same stub, the same secret, the same q() quoting a
 // Mac's real security would parse — runs on the gate's Linux passes too.
 // Without it, a stub or quoting bug would first show on a Mac, where no
-// check here can see it.
+// check here can see it. The stub must also answer like the real CLI: the
+// password reaches stdout only through -w, so a caller that dropped -w from
+// profile.KeychainGet reads metadata, not the secret.
 func TestKeychainPutGetRoundTripsTheQuotedSecret(t *testing.T) {
+	// The stub must survive an operator's TMPDIR carrying a space: its paths
+	// are passed as data, never substituted into shell source (REVIEW.md:
+	// env is a tool). Set before keychainStub, whose temp dirs then sit
+	// inside the spaced path on every platform, Mac CI included.
+	spaced := filepath.Join(t.TempDir(), "with spaces")
+	if err := os.Mkdir(spaced, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", spaced)
 	t.Setenv("PATH", keychainStub(t)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	ref := keychainRef("stubprobe", "api_key")
 	secret := `sk-"quoted"\back`
@@ -163,6 +193,11 @@ func TestKeychainPutGetRoundTripsTheQuotedSecret(t *testing.T) {
 	got, err := profile.KeychainGet(ref)
 	if err != nil || got != secret {
 		t.Fatalf("got %q %v", got, err)
+	}
+	out, _ := exec.Command("security", "find-generic-password", "-s", profile.KeychainService,
+		"-a", "stubprobe.api_key").Output()
+	if strings.Contains(string(out), "sk-") {
+		t.Fatalf("the stub printed the password without -w, so a KeychainGet that dropped -w could not fail: %q", out)
 	}
 	if _, err := profile.KeychainGet("keychain:nostored.api_key"); err == nil {
 		t.Fatal("the stub answered for an account it never stored")
