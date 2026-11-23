@@ -527,7 +527,12 @@ func recoverFirstArchive(path string, folder []paths.UsageArchiveRow) error {
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		return errors.New("archive is not an orphan index")
 	}
-	meta, err := os.ReadFile(path + ".idx")
+	// The one store read this landing left unguarded: a FIFO, socket or device
+	// left under an orphan index's name would block this open, and the whole
+	// compaction with it, while it holds the store's exclusive lock (INTENT 8,
+	// #654's rule; #804). Through paths it answers ErrNotRegular, which joins
+	// out of compactDay as every other archive damage is joined.
+	meta, err := paths.ReadRegularFile(path + ".idx")
 	if err != nil {
 		return err
 	}
