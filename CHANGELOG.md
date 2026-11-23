@@ -7,6 +7,14 @@
 
 ## Unreleased
 
+## v0.5.30 — 2026-11-23
+
+Cut from main, so it carries every change merged after v0.5.29.
+
+### Added
+
+- **`ccmorph check <profile> <model> [--json]` asks one model whether it answers now.** One real request with one output token and no tools, on the route a session of that profile takes; `--json` prints `{"ok","route","status","ms","note"}` with the upstream's own reason. Exit 0 answered, 1 refused, 2 usage (#818).
+
 ### Added
 
 - **`ccmorph router on` routes subagent work across your profiles.** Off by default. With it on, sessions get a `delegate` tool and Agent hooks: free gateways first, then the subscription furthest behind its pace, then paid keys, and inside a profile the cheapest model that fits the task's kind and tier. `ccmorph router status`, `dispatch` (`--dry-run` to see the pick only) and `report` show and check it. `dispatch` also serves scripts and services: `--timeout` bounds the whole run, flags after `--` reach the worker's claude, and the caller's `CCMORPH_TASK` tags its spend. The hooks never deny an Agent call: when no pick fits the session, the call runs as written.
