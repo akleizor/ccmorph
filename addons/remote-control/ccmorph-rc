@@ -53,7 +53,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 # the routing decision beside this script, however it was loaded (test, install, exec)
 sys.path.insert(0, str(HERE))
-from rc_route import ACCOUNT_METADATA  # noqa: E402
+from rc_route import ACCOUNT_METADATA, edge_name, safe_part  # noqa: E402
 LIB_DIR = Path(os.environ.get("CCMORPH_LIB_DIR") or HERE.parent.parent / "lib")
 CCMORPH = LIB_DIR / "ccmorph.sh"
 ADAPTER = LIB_DIR.parent / "libexec" / "ccmorph-core"
@@ -77,7 +77,7 @@ def edge_port(route: str) -> int:
 def live_edge(route: str) -> dict | None:
     """The route's shared edge if its process is alive and its proxy answers."""
     try:
-        edge = json.loads((EDGES / f"{route}.json").read_text())
+        edge = json.loads((EDGES / f"{edge_name(route)}.json").read_text())
         os.kill(int(edge["pid"]), 0)
         with socket.create_connection(("127.0.0.1", int(edge["port"])), timeout=1):
             pass
@@ -577,9 +577,9 @@ def main(argv: list[str]) -> None:
     if args.edge:
         EDGES.mkdir(parents=True, exist_ok=True)
         record = edge_record(me, port, ca, upstream, route_env, os.environ)
-        tmp = EDGES / f".{route}.json.tmp"
+        tmp = EDGES / f".{edge_name(route)}.json.tmp"
         tmp.write_text(json.dumps(record))
-        tmp.replace(EDGES / f"{route}.json")
+        tmp.replace(EDGES / f"{edge_name(route)}.json")
         print(f"ccmorph-rc: shared edge for '{route}' on 127.0.0.1:{port} ({upstream})", file=sys.stderr)
         while True:                        # adapter and proxy follow this pid; stay up
             time.sleep(15)

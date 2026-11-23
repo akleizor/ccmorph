@@ -10,6 +10,7 @@ header is dropped before the route key is set, and OAuth-only beta flags go with
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from urllib.parse import urlsplit
@@ -26,6 +27,35 @@ ACCOUNT_METADATA = "rc_account"
 
 
 SWITCH_WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+
+
+def safe_part(value: str) -> str:
+    """Any token as one file-name part: every run of characters a path segment
+    cannot hold becomes a single dash. Folder log names have always cleaned this
+    way; the edge's names did not, so `route=gw/eu` opened its log inside a
+    directory nothing creates and its FileNotFoundError escaped the supervisor's
+    tick, which launchd restarted into the same crash (#846)."""
+    return re.sub(r"[^A-Za-z0-9]+", "-", value).strip("-")
+
+
+def edge_name(route: str) -> str:
+    """The route as the file-name part of its edge's log and state file -- the
+    one rule both scripts name edges by. A token a single path component can
+    hold keeps it WHOLE: `gw_eu.json` is the name a live edge wrote before this
+    rule existed (underscores are valid in profile names, profile/profile.go),
+    and renaming the names of rows already on disk leaves a restarted supervisor
+    blind to its own edge and starting a second one against the same fixed port.
+    Only a route that cannot be one component -- one holding `/` or a NUL, or
+    `.`/`..` -- is cleaned, and then cleaning alone would merge `gw/eu` and
+    `gw_eu` onto one state file and hand one route's proxy to the other's
+    bridges, so the cleaned name carries a digest of the whole route: sha256,
+    because an operator-steerable checksum (CRC32, the gate-refused first
+    attempt) builds that collision on purpose. Lives here, beside SWITCH_WORD,
+    so neither script must load the other -- or the launcher -- to name a file
+    during a reload (the #845 class: a partial install must not crash one)."""
+    if route and "/" not in route and "\x00" not in route and route not in (".", ".."):
+        return route
+    return f"{safe_part(route)}-{hashlib.sha256(route.encode()).hexdigest()[:16]}"
 
 
 def inference_target(switch: str | None) -> str:
