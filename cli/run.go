@@ -758,6 +758,13 @@ var sessionID = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 // or Claude Code's small JSON input, so anything larger is not a record.
 const endedRecordMax = 64 << 10
 
+// recordOwner is whose private file a session-end record must be: the account
+// the hook wrote it as. The names sit in a shared TMPDIR, where another account
+// can write first, and a planted record can name any transcript it likes, so
+// the bytes are trusted only from a file this account owns (#410). A variable
+// so a test can pose as the other account.
+var recordOwner = os.Geteuid
+
 // readEndedSession reads the session id Claude Code's SessionEnd hook recorded
 // for the claude that ran as pid, and consumes the record: the hint prints
 // once, and a launcher that died leaves reaping to gc-stale, never a re-read.
@@ -765,11 +772,12 @@ const endedRecordMax = 64 << 10
 // session's claude is a grandchild with another pid, and its transcripts die
 // with its view, so nothing of it is ever read here. The file sits in a shared
 // TMPDIR anyone can write, so a record that is not a session id reads as no
-// session rather than reaching the terminal (#285), and a planted link, FIFO or
-// device at its name is refused without being followed or waited on (#410).
+// session rather than reaching the terminal (#285); a planted link, FIFO or
+// device at its name is refused without being followed or waited on, and so is
+// a file another account wrote or group and others can write (#410).
 func readEndedSession(pid int) string {
 	f := filepath.Join(tmpDir(), "ccmorph-session-end."+strconv.Itoa(pid))
-	b, ok := util.ReadRegular(f, endedRecordMax)
+	b, ok := util.ReadPrivateRegular(f, endedRecordMax, recordOwner())
 	if !ok {
 		return ""
 	}
@@ -785,11 +793,16 @@ func readEndedSession(pid int) string {
 // hook of the claude that ran as pid — the hook keeps Claude Code's JSON input
 // beside the id record — and consumes the file, as readEndedSession does. It
 // names where that session's conversation is, or would be had a message been
-// sent. "" when there is no input, it is not Claude Code's JSON (#359), or it
-// is not a regular file at the name the hook is expected to write (#410).
-func readEndedTranscript(pid int) string {
+// sent. "" when there is no input, it is not Claude Code's JSON (#359), it is
+// not this account's own private file at the name the hook is expected to write
+// (#410), or it names a path outside the stores Claude Code writes this
+// account's sessions to (#410): the input is untrusted, so the one file it may
+// steer a read to is a transcript inside those stores, whatever its size.
+// profileDirs is where the profiles keep their config dirs, whose own projects
+// stores count with Claude Code's.
+func readEndedTranscript(pid int, profileDirs string) string {
 	f := filepath.Join(tmpDir(), "ccmorph-session-end."+strconv.Itoa(pid)+".json")
-	b, ok := util.ReadRegular(f, endedRecordMax)
+	b, ok := util.ReadPrivateRegular(f, endedRecordMax, recordOwner())
 	if !ok {
 		return ""
 	}
@@ -797,10 +810,38 @@ func readEndedTranscript(pid int) string {
 	var in struct {
 		TranscriptPath string `json:"transcript_path"`
 	}
-	if json.Unmarshal(b, &in) != nil {
+	if json.Unmarshal(b, &in) != nil || !transcriptStore(in.TranscriptPath, profileDirs) {
 		return ""
 	}
 	return in.TranscriptPath
+}
+
+// transcriptStore reports whether p lies inside a projects store Claude Code
+// writes this account's sessions to: its own history, or any profile's under
+// profileDirs. The session-end input arrives at a name in a shared TMPDIR, so
+// the one path it may name is one of these — a file elsewhere, however large,
+// is not read (#410). A profile's root is only trusted while its projects
+// folder exists, the same walk sessionFile takes.
+func transcriptStore(p, profileDirs string) bool {
+	if p == "" || !filepath.IsAbs(p) {
+		return false
+	}
+	p = filepath.Clean(p)
+	roots := []string{filepath.Join(os.Getenv("HOME"), ".claude", "projects")}
+	if profileDirs != "" {
+		more, _ := filepath.Glob(filepath.Join(globQuote(profileDirs), "*", "projects"))
+		roots = append(roots, more...)
+	}
+	for _, root := range roots {
+		if !filepath.IsAbs(root) {
+			continue
+		}
+		rel, err := filepath.Rel(filepath.Clean(root), p)
+		if err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // resumeHint prints the command that resumes the session Claude Code just
@@ -1703,7 +1744,7 @@ func (l *launcher) runClaude(env, args []string) int {
 	l.child = nil
 	l.mu.Unlock()
 	l.ended = readEndedSession(cmd.Process.Pid)
-	l.endedTranscript = readEndedTranscript(cmd.Process.Pid)
+	l.endedTranscript = readEndedTranscript(cmd.Process.Pid, l.profileDirs)
 	if err == nil {
 		return 0
 	}
