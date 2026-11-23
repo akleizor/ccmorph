@@ -228,7 +228,8 @@ func execIndex(args []string) int {
 }
 
 // runningAdapter is "<pid>\t<holder>:<name>,..." for the profile's running adapter,
-// "" when there is none, and __UNKNOWN__ when the process table cannot be read.
+// "" when there is none, and __UNKNOWN__ when the process table cannot be read
+// or was read without the command column this question is made of.
 // The holders are the spawned children worth checking (cliproxyapi; a
 // CCMORPH_SHIM_HOOKS build, any child but ccmorph-core) and, when no hooks child exists,
 // the adapter process itself as "shim": the stock shim is served in-process, so
@@ -245,7 +246,10 @@ func runningAdapter(profile string) string {
 	go func() { done <- processTableWithin(ctx) }()
 	select {
 	case t := <-done:
-		if t == nil {
+		if t == nil || argvUnreadable(t) {
+			// Nothing read, or read without the command column this question
+			// is made of: either way the designed answer is the decline, not
+			// an absence the read never saw (GH-819).
 			return "__UNKNOWN__"
 		}
 		return adapterSession(t, profile)

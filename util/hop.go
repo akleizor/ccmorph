@@ -13,10 +13,15 @@ import (
 )
 
 type psRow struct {
-	ppid  int
-	comm  string
-	args  string
-	start time.Time // when the process started; zero when the table cannot tell
+	ppid int
+	comm string
+	args string
+	// argvUnknown marks a read that never saw its command column: args is
+	// empty here because the read could not see it, not because the process
+	// runs nothing. An absence of argv may be reported from a row only when
+	// this is false (GH-819).
+	argvUnknown bool
+	start       time.Time // when the process started; zero when the table cannot tell
 }
 
 // sysctlTable is sysctlProcessTable. A variable so a test can reach the ps
@@ -59,9 +64,26 @@ func psCmd(ctx context.Context, args ...string) *exec.Cmd {
 // of their own: a ps without lstart then costs the times and not the rows hop
 // needs, and a line that does not parse leaves its row at the cannot-tell zero.
 // Every pass runs under ctx, so a stalled ps is killed with the caller's
-// deadline rather than outliving the read.
+// deadline rather than outliving the read. A read that cannot see its command
+// column keeps its rows — pid, parent and executable still answer the ancestry
+// questions other callers ask — and marks every row, so an argv question, the
+// adapter question included, declines over the mark rather than confirming an
+// absence the read never saw.
 func psProcessTable(ctx context.Context) map[int]psRow {
-	raw, err := psCmd(ctx, "-axo", "pid=,ppid=,comm=").Output()
+	// ww on every pass that ends in a text column: ps sizes that column to
+	// $COLUMNS when its output is a pipe, and a caller that exports COLUMNS —
+	// a pytest-xdist worker does — cuts a live session's argv mid-line
+	// (GH-819). macOS ps is stricter still: $COLUMNS, else 79 columns whenever
+	// none of its three standard fds is a terminal (adv_cmds ps.c), which is
+	// every ps this read ever runs — its output is a pipe. So on darwin the
+	// fallback read could never see a whole command line, and a Mac that
+	// reaches it (its kernel read declined; processTableWithin falls back by
+	// design) read "needs no translator" wherever an adapter ran, at any
+	// width, even run alone. The second -w lifts the limit whole on procps
+	// and Apple's ps alike, over $COLUMNS and over 79; the reader's question
+	// is never the caller's terminal's width. A cut comm is a `claude` whose
+	// path ends mid-word, so the comm pass asks the same way.
+	raw, err := psCmd(ctx, "-axwwo", "pid=,ppid=,comm=").Output()
 	if err != nil {
 		return nil
 	}
@@ -77,15 +99,29 @@ func psProcessTable(ctx context.Context) map[int]psRow {
 			rows[pid] = psRow{ppid: ppid, comm: strings.Join(f[2:], " ")}
 		}
 	}
-	if raw, err := psCmd(ctx, "-axo", "pid=,command=").Output(); err == nil {
-		for _, l := range strings.Split(string(raw), "\n") {
-			l = strings.TrimSpace(l)
-			p, rest, _ := strings.Cut(l, " ")
-			if pid, err := strconv.Atoi(p); err == nil {
-				r := rows[pid]
-				r.args = strings.TrimSpace(rest)
-				rows[pid] = r
-			}
+	cmdRaw, err := psCmd(ctx, "-axwwo", "pid=,command=").Output()
+	if err != nil {
+		// This read cannot see any command line — the pass was killed at the
+		// bound, or ps could not give it. The rows stand (a nested launch
+		// reading this table still has to find the Claude Code it was started
+		// under, from comm alone), but every argv question over them is
+		// unanswered, not answered "none": the mark is what runningAdapter
+		// declines over, where a half table once reported "needs no
+		// translator" — the half-reported answer GH-467 promised never to
+		// give.
+		for pid, r := range rows {
+			r.argvUnknown = true
+			rows[pid] = r
+		}
+		return rows
+	}
+	for _, l := range strings.Split(string(cmdRaw), "\n") {
+		l = strings.TrimSpace(l)
+		p, rest, _ := strings.Cut(l, " ")
+		if pid, err := strconv.Atoi(p); err == nil {
+			r := rows[pid]
+			r.args = strings.TrimSpace(rest)
+			rows[pid] = r
 		}
 	}
 	// lstart is "Mon Jan _2 15:04:05 2006" in the locale's words, so the read
@@ -114,6 +150,17 @@ func psProcessTable(ctx context.Context) map[int]psRow {
 		}
 	}
 	return rows
+}
+
+// argvUnreadable says the table was read without its command column: what its
+// rows do not name may not be reported as absent (GH-819).
+func argvUnreadable(t map[int]psRow) bool {
+	for _, r := range t {
+		if r.argvUnknown {
+			return true
+		}
+	}
+	return false
 }
 
 var shellComm = regexp.MustCompile(`^-?(zsh|bash|sh|dash)$`)
