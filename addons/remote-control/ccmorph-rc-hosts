@@ -14,15 +14,18 @@ Config (default $CCMORPH_STATE_DIR/rc-hosts, i.e. ~/.config/ccmorph/rc-hosts):
 Each folder gets `ccmorph-rc <route>` (under a pty: remote-control is a terminal
 program). A host that exits is relaunched with backoff, and ccmorph-rc resumes the
 folder's previous host, so a network drop or 403 costs a restart, not the sessions.
-A live edge from a previous run is reused only when it pins the configured tiers;
+A live edge from a previous run is reused only when it pins the configured tiers
+(the route profile's, from `ccmorph get <route> --json`, overlaid by `tier.` lines);
 otherwise it is stopped and replaced -- and only ever by the pid its own record
 names, once that process's command line says it is this route's edge.
 The config is re-read when it changes: a new folder starts, a removed one stops,
 and a changed route restarts that folder's host on the new provider. A changed
-`permission=` or a `tier.<alias>=` naming an alias a session actually reads
-restarts every host it reaches too -- both are fixed when a host's process
-starts, so a restart is the only way they take effect (the shared edge pins the
-tier mapping; only folders carry a permission).
+`permission=` or a changed tier pin restarts every host it reaches too -- both
+are fixed when a host's process starts, so a restart is the only way they take
+effect (the shared edge pins the tier mapping; only folders carry a permission).
+Tier pins come from the route profile (each alias it maps outside its own Claude
+family), read at each reload; a `tier.<alias>=<model>` line overrides one alias.
+A profile edit alone is picked up at the next reload of this file.
 
 A worktree session (`.claude/worktrees/...`) is never pinned: it shares its repo
 host's environment, and pinning it takes over that host's row in the app.
@@ -267,15 +270,21 @@ def inference(text: str, routes: set[str], account: str) -> str:
     return "account" if name == account else "route" if name is None or name in routes else name
 
 
-def tier_map(text: str) -> dict[str, str]:
-    """{alias: model} from `tier.<alias>=<model>` lines.
+def tier_map(text: str, profile: dict[str, str] | None = None) -> dict[str, str]:
+    """{alias: model} a host pins: the route profile's tier map, overlaid by
+    `tier.<alias>=<model>` lines in this config.
 
-    Phone sessions otherwise send Claude Code's own aliases (fable/opus/sonnet/
-    haiku) to the route 1:1. A gateway serving no model for an alias -- gateway has
-    no claude-fable-* -- needs that one alias pointed at what it does serve, and
-    that belongs to the config rather than to every session's environment.
+    The route profile is the source: `profile` is its tiers as `ccmorph get
+    <route> --json` reports them (route_tiers reads it). Only an alias it maps
+    outside its own Claude family is pinned -- opus -> claude-opus-5-5 stays
+    native 1:1, as phone sessions send Claude Code's own aliases to the route --
+    so a gateway that serves no claude-haiku-* gets the haiku model the profile
+    names (2026-11-22: a second, hand-kept copy of the map here pinned only
+    fable, and every Explore agent got HTTP 400). A `tier.` line is an explicit
+    override and wins over the profile.
     """
-    out = {}
+    out = {a: m for a, m in (profile or {}).items()
+           if isinstance(m, str) and m and not m.lower().startswith(f"claude-{a}")}
     for raw in text.splitlines():
         line = raw.split("#", 1)[0].strip()
         if line.startswith(TIER_PREFIX) and "=" in line:
@@ -283,6 +292,39 @@ def tier_map(text: str) -> dict[str, str]:
             if alias.strip() and model.strip():
                 out[alias.strip()] = model.strip()
     return out
+
+
+_profile_tiers: dict[str, dict[str, str]] = {}   # route -> its last read tier map
+_unread_routes: set[str] = set()                 # routes whose failed read was logged
+
+
+def read_profile_tiers(route: str) -> dict[str, str] | None:
+    """The route profile's tier map from its owner, `ccmorph get <route> --json`,
+    or None when it cannot be read. Never its .conf: the format is ccmorph's."""
+    try:
+        out = subprocess.run([str(rc_module().ADAPTER), "cli", "get", route, "--json"],
+                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+        tiers = json.loads(out.stdout)["tiers"] if out.returncode == 0 else None
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        return None
+    return tiers if isinstance(tiers, dict) else None
+
+
+def route_tiers(route: str, text: str) -> dict[str, str]:
+    """The tiers a host of route pins: tier_map over the profile's map. A failed
+    read keeps the last map read for the route (none: the `tier.` lines alone),
+    so a passing failure restarts no host, and is logged once per episode."""
+    read = read_profile_tiers(route)
+    if read is None:
+        if route not in _unread_routes:
+            _unread_routes.add(route)
+            log(f"{route}: cannot read the profile's tiers (ccmorph get {route} --json); "
+                "pinning the last read map and the tier. lines")
+        read = _profile_tiers.get(route, {})
+    else:
+        _unread_routes.discard(route)
+        _profile_tiers[route] = read
+    return {a: m for a, m in tier_map(text, read).items() if a in ALIAS_ENV}
 
 
 def pin_refusal(folder: str, argv: list[str]) -> str | None:
@@ -1689,12 +1731,14 @@ def main(argv: list[str]) -> int:
                 # again would restart -- un-archive -- the conversation it was
                 # retired for, so it stays out until the marker lands (#355).
                 want = {f: v for f, v in parse(text).items() if f not in unrecorded}
+                routes = {r for r, _ in want.values()}
+                # Each route pins its profile's tiers, overlaid by `tier.` lines (route_tiers).
                 # Only the aliases Host.start exports reach a session, so an unknown
                 # `tier.<alias>=` line changes what no host runs and must restart nothing.
-                tiers = {a: m for a, m in tier_map(text).items() if a in ALIAS_ENV}
+                tiers = {r: route_tiers(r, text) for r in routes}
                 perm = permission_mode(text)
                 # live in every proxy: no host restarts for it
-                target = inference(text, {r for r, _ in want.values()}, inference_account(text))
+                target = inference(text, routes, inference_account(text))
                 if target in ("account", "route"):
                     rc_module().write_inference(target, INFERENCE)
                 elif target != switched:   # a profile is brought up once per change, not on every reload
@@ -1708,25 +1752,24 @@ def main(argv: list[str]) -> int:
                                      start_new_session=True)
                     log(f"inference: bringing up {target}")
                 switched = target
-                routes = {r for r, _ in want.values()}
                 # --permission-mode and the ANTHROPIC_DEFAULT_*_MODEL pins are fixed when
                 # a host's process starts, so a host whose permission or tiers changed has
                 # to be restarted to carry them. The shared edge pins the tiers too; only
                 # folders carry a permission.
                 for folder in list(hosts):
                     h = hosts[folder]
-                    if h.edge and h.route in routes and h.tiers == tiers:
+                    if h.edge and h.route in routes and h.tiers == tiers[h.route]:
                         continue
-                    if (h.edge or want.get(folder) != (h.route, h.args) or h.tiers != tiers
+                    if (h.edge or want.get(folder) != (h.route, h.args) or h.tiers != tiers.get(h.route)
                             or h.permission != perm):
                         hosts.pop(folder).stop()
                 for route in sorted(routes):   # edges first: bridges start only once theirs is up
                     if f"edge:{route}" not in hosts:
-                        e = Host(str(EDGES.parent), route, tiers=tiers)
+                        e = Host(str(EDGES.parent), route, tiers=tiers[route])
                         e.edge, e.logfile = True, LOGS / f"edge-{route}.log"
                         hosts = {f"edge:{route}": e, **hosts}
                 for folder, (route, args) in want.items():
-                    hosts.setdefault(folder, Host(folder, route, args, tiers, perm))
+                    hosts.setdefault(folder, Host(folder, route, args, tiers[route], perm))
                 log(f"config: {len(want)} folder(s): " + ", ".join(
                     f"{f} via {r}{' ' + ' '.join(a) if a else ''}" for f, (r, a) in want.items()))
         # A retire whose edit did not land left the pinned line active-looking:

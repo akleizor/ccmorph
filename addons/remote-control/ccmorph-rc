@@ -188,8 +188,9 @@ def session_env(base, route_env: dict, route_models: bool) -> dict:
     endpoint being dialed, so it must not hinge on how aliases are chosen."""
     # Model aliases are Claude Code's own (1:1 real Claude ids) unless --route-models
     # asks for the route's map. The one thing carried in from the caller is a tier the
-    # config pinned (`tier.<alias>=<model>` in rc-hosts): forwarding an alias the route
-    # cannot serve is the caller's call, and it names the alias explicitly.
+    # supervisor pinned (the route profile's out-of-family tiers, overridden by
+    # `tier.<alias>=<model>` in rc-hosts): forwarding an alias the route cannot serve is
+    # the caller's call, and it names the alias explicitly.
     env = {k: v for k, v in base.items() if k not in strip_env()}
     env.update({k: route_env[k] for k in ROUTE_ENV if k in route_env})
     # Message threads: on a first-party login Claude Code may send only the newest

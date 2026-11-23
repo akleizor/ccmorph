@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"os/user"
@@ -2041,12 +2042,37 @@ func TestGetReadsEveryProfileField(t *testing.T) {
 	if out := strings.TrimSpace(get("api_key")); out != "k-plain-123" {
 		t.Errorf("get api_key: %q", out)
 	}
-	var all map[string]string
+	var all map[string]any
 	if err := json.Unmarshal([]byte(get("--json")), &all); err != nil {
 		t.Fatal(err)
 	}
 	if all["base_url"] != "https://gw.test" || all["api_key"] != "k-plain-123" || all["model"] != "m-first" || all["type"] != "apikey" {
 		t.Errorf("get --json: %v", all)
+	}
+	if tiers, ok := all["tiers"].(map[string]any); !ok || len(tiers) != 0 {
+		t.Errorf("get --json tiers with none bound: %v", all["tiers"])
+	}
+}
+
+// get --json carries the tier map a launch resolves, so the Remote Control
+// supervisor pins tiers from the route profile instead of a second copy that
+// drifted (2026-11-22: haiku went out native to a gateway that serves none).
+func TestGetJSONCarriesTheProfilesTierMap(t *testing.T) {
+	name := "gw"
+	l := storeTestLauncher(t, name, "type=apikey\nbase_url=https://gw.test\napi_key=k\n"+
+		"env.ANTHROPIC_DEFAULT_FABLE_MODEL=gpt-6-astra\nenv.ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-5-5\n"+
+		"env.ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-v4.1-flash\n", "{\"env\":{}}\n")
+	out, rc := captureStdout(t, func() int { return l.getSet("get", []string{name, "--json"}) })
+	if rc != 0 {
+		t.Fatalf("get --json: rc %d", rc)
+	}
+	var all struct{ Tiers map[string]string }
+	if err := json.Unmarshal([]byte(out), &all); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"fable": "gpt-6-astra", "opus": "claude-opus-5-5", "haiku": "deepseek-v4.1-flash"}
+	if !maps.Equal(all.Tiers, want) {
+		t.Errorf("get --json tiers = %v, want %v", all.Tiers, want)
 	}
 }
 
