@@ -46,14 +46,25 @@ var (
 			"required":   []any{"x"}}}}
 )
 
-// client never carries the profile's credential to another origin (CheckRedirect
-// refuses it, which reads as a transport error and so as indeterminate).
+// probeClient is the one client every classification probe and `ccmorph check`
+// use; a test swaps the variable to stand a gateway in the probe's place.
+var probeClient = newProbeClient
+
+// newProbeClient builds a probe's client afresh on every call, so its TLS
+// config reads NODE_EXTRA_CA_CERTS at call time: inside a Remote Control
+// session the route to the upstream is a local proxy signed with the CA the
+// session exported, and a probe that does not trust it fails the handshake
+// before any request leaves (#822). It never carries the profile's credential
+// to another origin (CheckRedirect refuses it, which reads as a transport
+// error and so as indeterminate).
+func newProbeClient() *http.Client {
+	return &http.Client{CheckRedirect: shim.CheckRedirect, Transport: &http.Transport{
+		Proxy: probeProxy, DisableKeepAlives: true, TLSClientConfig: netroute.ExtraCAs()}}
+}
+
 // loopback never uses a proxy, whatever http_proxy says: a proxy cannot reach
-// this machine's 127.0.0.1.
-var (
-	client   = &http.Client{CheckRedirect: shim.CheckRedirect, Transport: &http.Transport{Proxy: probeProxy, DisableKeepAlives: true}}
-	loopback = &http.Client{CheckRedirect: shim.CheckRedirect, Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true}}
-)
+// this machine's 127.0.0.1. It speaks plain http, so it trusts nothing extra.
+var loopback = &http.Client{CheckRedirect: shim.CheckRedirect, Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true}}
 
 // probeVia is the profile's CCMORPH_UPSTREAM_PROXY: compatibility probes
 // must take the same route as the serve path, or a LAN gateway the process
@@ -134,7 +145,7 @@ func refusedMessage(status int) bool {
 }
 
 func postImpl(u string, body map[string]any, headers map[string]string) (int, string) {
-	resp, err := do(client, "POST", u, body, headers, probeTimeout)
+	resp, err := do(probeClient(), "POST", u, body, headers, probeTimeout)
 	if err != nil {
 		return 0, err.Error()
 	}
@@ -173,7 +184,7 @@ func refusalText(raw []byte) string {
 
 // postJSON returns the parsed response object, or nil on any failure.
 func postJSON(u string, body map[string]any, headers map[string]string) map[string]any {
-	resp, err := do(client, "POST", u, body, headers, probeTimeout)
+	resp, err := do(probeClient(), "POST", u, body, headers, probeTimeout)
 	if err != nil {
 		return nil
 	}
@@ -226,7 +237,7 @@ func (e messageRefusal) Error() string {
 // claude-<junk>-<reversed-id> when they see it.
 func inventoryListing(base, key string, c *http.Client) ([]any, []string, error) {
 	if c == nil {
-		c = client
+		c = probeClient()
 	}
 	resp, err := do(c, "GET", ctxwindow.APIURL(base, "/v1/models"), nil, keyHeaders(key), 60*time.Second)
 	if err != nil {
@@ -378,7 +389,7 @@ const noInference = "cannot determine protocol without inference"
 // a rejected key's 401, so the caller can refuse without inference — and 0
 // only when nothing answered (#374).
 func dialectAuto(base, key, model string) (string, string, int) {
-	resp, err := do(client, "GET", ctxwindow.APIURL(base, "/v1/models"), nil, keyHeaders(key), probeTimeout)
+	resp, err := do(probeClient(), "GET", ctxwindow.APIURL(base, "/v1/models"), nil, keyHeaders(key), probeTimeout)
 	var doc map[string]any
 	status := 0
 	if err == nil {

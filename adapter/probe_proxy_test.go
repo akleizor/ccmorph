@@ -16,7 +16,7 @@ func TestProbesUseTheProfileUpstreamProxy(t *testing.T) {
 	noAmbientProxy(t)
 	swap(t, &probeVia, &url.URL{Scheme: "http", Host: "127.0.0.1:18480"})
 	req, _ := http.NewRequest("GET", "https://gateway.lan:18443/v1/models", nil)
-	if u, _ := client.Transport.(*http.Transport).Proxy(req); u == nil || u.Host != "127.0.0.1:18480" {
+	if u, _ := probeClient().Transport.(*http.Transport).Proxy(req); u == nil || u.Host != "127.0.0.1:18480" {
 		t.Fatalf("probe ignored the profile proxy: got %v", u)
 	}
 }
@@ -31,7 +31,7 @@ func TestProbesNeverProxyLoopback(t *testing.T) {
 		"http://[::1]:61183/v1/models",
 	} {
 		req, _ := http.NewRequest("GET", target, nil)
-		if u, _ := client.Transport.(*http.Transport).Proxy(req); u != nil {
+		if u, _ := probeClient().Transport.(*http.Transport).Proxy(req); u != nil {
 			t.Fatalf("%s: probe used the proxy %v", target, u)
 		}
 	}
@@ -79,11 +79,21 @@ func noAmbientProxy(t *testing.T) {
 	t.Setenv("no_proxy", "")
 }
 
+// fixedProbeClient pins one client built by the factory so a test can inspect
+// the transport the probe will actually use: the factory builds a fresh client
+// per call, since its TLS config reads NODE_EXTRA_CA_CERTS at call time.
+func fixedProbeClient(t *testing.T) *http.Client {
+	t.Helper()
+	c := probeClient()
+	swap(t, &probeClient, func() *http.Client { return c })
+	return c
+}
+
 // A gateway this process cannot dial is reachable only through the profile's
 // proxy: the probe must dial the proxy, never the unresolvable host (GH-580).
 func TestProbesDialTheGatewayThroughTheProfileProxy(t *testing.T) {
 	noAmbientProxy(t)
-	dials := recordDials(t, client.Transport.(*http.Transport))
+	dials := recordDials(t, fixedProbeClient(t).Transport.(*http.Transport))
 	swap(t, &probeVia, &url.URL{Scheme: "http", Host: "bridge.invalid:3128"})
 
 	inventory("http://gateway.lan:8443", "k", nil)
@@ -94,7 +104,7 @@ func TestProbesDialTheGatewayThroughTheProfileProxy(t *testing.T) {
 // own 127.0.0.1 through a remote proxy. A loopback base is dialed directly.
 func TestProbesNeverSendALoopbackBaseThroughTheProfileProxy(t *testing.T) {
 	noAmbientProxy(t)
-	dials := recordDials(t, client.Transport.(*http.Transport))
+	dials := recordDials(t, fixedProbeClient(t).Transport.(*http.Transport))
 	swap(t, &probeVia, &url.URL{Scheme: "http", Host: "bridge.invalid:3128"})
 
 	inventory("http://127.0.0.1:4000", "k", nil)
@@ -106,7 +116,7 @@ func TestProbesNeverSendALoopbackBaseThroughTheProfileProxy(t *testing.T) {
 func TestProbesHonourNoProxyUnderTheProfileProxy(t *testing.T) {
 	noAmbientProxy(t)
 	t.Setenv("NO_PROXY", "gateway.lan")
-	dials := recordDials(t, client.Transport.(*http.Transport))
+	dials := recordDials(t, fixedProbeClient(t).Transport.(*http.Transport))
 	swap(t, &probeVia, &url.URL{Scheme: "http", Host: "bridge.invalid:3128"})
 
 	inventory("https://gateway.lan:18443", "k", nil)
