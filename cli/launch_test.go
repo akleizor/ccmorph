@@ -2505,3 +2505,42 @@ func TestASessionEndStoreSpelledThroughALinkKeepsItsLine(t *testing.T) {
 		}
 	}
 }
+
+// A relative CLAUDE_CONFIG_DIR is passed to the child unchanged and resolved
+// against the launch's working directory, which is the child's, so its projects
+// store is the session's store whether the hook names the transcript absolutely
+// or relatively (#410).
+func TestAnEndedSessionReadsARelativeConfiguredStore(t *testing.T) {
+	root := realTempDir(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Chdir(root)
+	transcript := filepath.Join(root, "custom", "projects", "proj", "s1.jsonl")
+	if err := os.MkdirAll(filepath.Dir(transcript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	spoken := `{"type":"user","sessionId":"s1","uuid":"u1","timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"user","content":"hi"}}` + "\n"
+	hint := "\nccmorph: resume this session with: ccmorph run work --resume s1\n"
+	for _, named := range []string{transcript, "custom/projects/proj/s1.jsonl"} {
+		script := "#!/bin/sh\nf=\"$TMPDIR/ccmorph-session-end.$$\"\nprintf s1 > \"$f\"\n" +
+			"printf '%s' '{\"session_id\":\"s1\",\"transcript_path\":\"" + named + "\"}' > \"$f.json\"\n"
+		if err := os.WriteFile(filepath.Join(root, "ccmorph-core"), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range []struct{ name, body, want string }{
+			{"an empty transcript", "", ""},
+			{"a spoken transcript", spoken, hint},
+		} {
+			if err := os.WriteFile(transcript, []byte(c.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			l := &launcher{libexec: root, profileDirs: filepath.Join(root, "profiles")}
+			if rc := l.runClaude([]string{"CLAUDE_CONFIG_DIR=custom"}, nil); rc != 0 {
+				t.Fatalf("%s named %q: launch rc %d", c.name, named, rc)
+			}
+			if out, _ := captureStdout(t, func() int { l.resumeHint("work"); return 0 }); out != c.want {
+				t.Errorf("%s named %q: hint %q, want %q", c.name, named, out, c.want)
+			}
+		}
+	}
+}
