@@ -398,3 +398,64 @@ func TestRunningAdapterDeclinesOverATableWithoutCommandLines(t *testing.T) {
 		t.Fatalf("a table that does not show this process cannot vouch for its argv, got %q", got)
 	}
 }
+
+// One of the read shapes behind the report, named rather than assumed: Apple's
+// ps prints only the executable name for a process whose arguments it cannot
+// read. A live adapter is running here; the table names it and this process by
+// command name only. Before the self-check this was the silent "" — doctor
+// read the missing command lines as a confirmed absence (GH-819).
+func TestRunningAdapterDeclinesOverAPsShowingOnlyNames(t *testing.T) {
+	profile := "nn" + strconv.Itoa(os.Getpid())
+	adapter := holdProc(t, os.Args[0], BridgeFiles(t.TempDir(), "p")[2],
+		"/x/ccmorph-core", "adapter", profile)
+	orig := sysctlTable
+	sysctlTable = func() (map[int]psRow, bool) { return nil, false }
+	t.Cleanup(func() { sysctlTable = orig })
+
+	dir := t.TempDir()
+	script := fmt.Sprintf("#!/bin/sh\ncase \"$2\" in\n"+
+		"pid=,ppid=,comm=) printf '%%s\\n' '%d %d %s' '%d %d ccmorph-core';;\n"+
+		"pid=,command=) printf '%%s\\n' '%d %s' '%d ccmorph-core';;\n"+
+		"esac\n",
+		os.Getpid(), os.Getppid(), filepath.Base(os.Args[0]),
+		adapter.Process.Pid, os.Getpid(),
+		os.Getpid(), filepath.Base(os.Args[0]), adapter.Process.Pid)
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	if got := runningAdapter(profile); got != "__UNKNOWN__" {
+		t.Fatalf("command names only is not a confirmed absence, got %q", got)
+	}
+}
+
+// The other read shape, at the reader's own edge: a real long adapter argv,
+// read through the real ps with the real kernel read forced off. procps cuts
+// the command column to $COLUMNS on a pipe (the pytest-xdist workers export
+// 80); Apple's ps cuts a piped command column to 79 even with no COLUMNS at
+// all. -ww asks for the whole line on both, which is what makes the session
+// show here at any width (GH-819).
+func TestPsFallbackReadsALongAdapterArgvWhole(t *testing.T) {
+	profile := "lg" + strconv.Itoa(os.Getpid())
+	longPath := "/x/" + strings.Repeat("a-long-install-path/", 6) + "ccmorph-core"
+	adapter := holdProc(t, os.Args[0], BridgeFiles(t.TempDir(), "p")[2],
+		longPath, "adapter", profile, "--auto", "--parent-pid", "400")
+	want := fmt.Sprintf("%d\t%d:shim", adapter.Process.Pid, adapter.Process.Pid)
+	orig := sysctlTable
+	sysctlTable = func() (map[int]psRow, bool) { return nil, false }
+	t.Cleanup(func() { sysctlTable = orig })
+
+	t.Run("COLUMNS=80", func(t *testing.T) {
+		t.Setenv("COLUMNS", "80")
+		if got := runningAdapter(profile); got != want {
+			t.Fatalf("a cut command column hid the live adapter, got %q want %q", got, want)
+		}
+	})
+	t.Run("COLUMNS unset", func(t *testing.T) {
+		t.Setenv("COLUMNS", "")
+		os.Unsetenv("COLUMNS")
+		if got := runningAdapter(profile); got != want {
+			t.Fatalf("the piped default width hid the live adapter, got %q want %q", got, want)
+		}
+	})
+}
