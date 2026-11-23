@@ -233,3 +233,43 @@ func TestPsProcessTableDoesNotWaitOnAGrandchildHoldingThePipe(t *testing.T) {
 		t.Fatalf("a grandchild holding the pipe kept the read for %v; WaitDelay must close it", elapsed)
 	}
 }
+
+// TestPsCommandLineIsNotCutAtColumns pins why the command pass asks ps for
+// -ww: ps cuts command lines at COLUMNS, and a test runner sets 80, so a
+// session whose path is longer vanished from the table and doctor answered
+// that no adapter was running (#829). The child runs from a path well past 80
+// columns, and the row must still name it whole.
+func TestPsCommandLineIsNotCutAtColumns(t *testing.T) {
+	if err := exec.Command("ps", "-o", "pid=", "-p", "1").Run(); err != nil {
+		t.Skipf("ps cannot run here: %v", err)
+	}
+	dir := filepath.Join(t.TempDir(), strings.Repeat("very-long-directory-name/", 6))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, "ccmorph-core")
+	if len(script) <= 80 {
+		t.Fatalf("the test path must exceed ps's 80-column cut, got %d chars", len(script))
+	}
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n/bin/sleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COLUMNS", "80")
+	cmd := exec.Command(script, "adapter", "wide-profile", "--parent-pid", "400")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		r, ok := psProcessTable(context.Background())[cmd.Process.Pid]
+		if ok && strings.Contains(r.args, script) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the command line is cut at COLUMNS: row %+v does not name %s", r, script)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
