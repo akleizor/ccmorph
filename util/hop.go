@@ -163,6 +163,21 @@ func argvUnreadable(t map[int]psRow) bool {
 	return false
 }
 
+// argvSelfSeen says whether t shows this process's own command line whole: the
+// one argv any reader can be checked against. A read that shows it cut, empty,
+// as the bare executable name or not at all cannot be trusted to show an
+// adapter's either, so an absence read from it is no answer (GH-819). ps and
+// the kernel readers answer for every same-user process alike, so this one
+// row carries the same verdict a per-process refusal would.
+func argvSelfSeen(t map[int]psRow) bool {
+	r, ok := t[os.Getpid()]
+	if !ok {
+		return false
+	}
+	want := strings.Join(strings.Fields(strings.Join(os.Args, " ")), " ")
+	return want != "" && strings.Join(strings.Fields(r.args), " ") == want
+}
+
 var shellComm = regexp.MustCompile(`^-?(zsh|bash|sh|dash)$`)
 
 // launcherComm is the Go launcher. claude runs as its child (the core's

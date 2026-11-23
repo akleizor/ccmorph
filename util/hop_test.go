@@ -2,6 +2,7 @@ package util
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -306,5 +307,94 @@ func TestProcessTableKeepsAncestryWithoutItsCommandColumn(t *testing.T) {
 	}
 	if got := runningAdapter("demo" + strconv.Itoa(os.Getpid())); got != "__UNKNOWN__" {
 		t.Fatalf("an unreadable command column is not a confirmed absence, got %q", got)
+	}
+}
+
+// argvSelfSeen is the check a reader can make of its own read: this process's
+// own command line, whole. A read that shows it cut, bare, empty or missing
+// cannot be trusted to show any other process's whole (GH-819).
+func TestArgvSelfSeen(t *testing.T) {
+	j := strings.Join(os.Args, " ")
+	cases := []struct {
+		name string
+		row  *psRow
+		want bool
+	}{
+		{"this process missing from the table", nil, false},
+		{"no command line at all", &psRow{}, false},
+		{"the bare executable name", &psRow{args: filepath.Base(os.Args[0])}, false},
+		{"cut mid-line", &psRow{args: j[:len(j)/2]}, false},
+		{"whole", &psRow{args: j}, true},
+		{"whole through ps's column padding", &psRow{args: strings.Join(os.Args, "  ")}, true},
+		{"whole with trailing space", &psRow{args: j + "  "}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tab := map[int]psRow{os.Getpid() - 1: {ppid: 1}}
+			if c.row != nil {
+				tab[os.Getpid()] = *c.row
+			}
+			if got := argvSelfSeen(tab); got != c.want {
+				t.Fatalf("got %v, want %v (row %+v)", got, c.want, tab[os.Getpid()])
+			}
+		})
+	}
+}
+
+// runningAdapter answers from a read it can verify against itself: the adapter
+// is a real live process here, and only the table's command lines are shaped
+// per case. A table that cannot show this process's own argv whole declines —
+// it is the same read that hid the faked adapter on the affected machine —
+// while a read that merely misses other users' processes still answers (GH-819).
+func TestRunningAdapterDeclinesOverATableWithoutCommandLines(t *testing.T) {
+	profile := "nc" + strconv.Itoa(os.Getpid())
+	adapter := holdProc(t, os.Args[0], BridgeFiles(t.TempDir(), "p")[2],
+		"/x/ccmorph-core", "adapter", profile)
+	base := processTable()
+	if _, ok := base[adapter.Process.Pid]; !ok {
+		t.Fatal("the live adapter must be in the real table")
+	}
+	if !argvSelfSeen(base) {
+		t.Fatal("the reader's own read must show this process's argv whole before shaping tables from it")
+	}
+	want := fmt.Sprintf("%d\t%d:shim", adapter.Process.Pid, adapter.Process.Pid)
+	orig := sysctlTable
+	t.Cleanup(func() { sysctlTable = orig })
+
+	shaped := func(edit func(map[int]psRow)) {
+		t.Helper()
+		cp := make(map[int]psRow, len(base))
+		for pid, r := range base {
+			cp[pid] = r
+		}
+		edit(cp)
+		sysctlTable = func() (map[int]psRow, bool) { return cp, true }
+	}
+
+	shaped(func(cp map[int]psRow) {
+		for pid, r := range cp {
+			r.args = ""
+			cp[pid] = r
+		}
+	})
+	if got := runningAdapter(profile); got != "__UNKNOWN__" {
+		t.Fatalf("a table showing no command lines is not a confirmed absence, got %q", got)
+	}
+
+	shaped(func(cp map[int]psRow) {
+		for pid, r := range cp {
+			if pid != os.Getpid() && pid != adapter.Process.Pid {
+				r.args = ""
+				cp[pid] = r
+			}
+		}
+	})
+	if got := runningAdapter(profile); got != want {
+		t.Fatalf("a read that shows this process and the adapter whole must answer, got %q want %q", got, want)
+	}
+
+	shaped(func(cp map[int]psRow) { delete(cp, os.Getpid()) })
+	if got := runningAdapter(profile); got != "__UNKNOWN__" {
+		t.Fatalf("a table that does not show this process cannot vouch for its argv, got %q", got)
 	}
 }
