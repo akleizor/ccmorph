@@ -233,3 +233,78 @@ func TestPsProcessTableDoesNotWaitOnAGrandchildHoldingThePipe(t *testing.T) {
 		t.Fatalf("a grandchild holding the pipe kept the read for %v; WaitDelay must close it", elapsed)
 	}
 }
+
+// A pass killed at the caller's deadline must neither lose the rows the other
+// columns did answer nor leave their argv questions open in silence: the rows
+// stand for the callers that read ancestry from comm, and every argv question
+// — runningAdapter's adapter hunt included — reads the mark and declines,
+// where the same half read once reported "this profile needs no translator"
+// (GH-819). The stall is the deadline itself: the stalled pass execs an
+// absolute sleep, so a PATH holding nothing else cannot end it early, and the
+// marker names the second pass as the one that ran and was stopped at the
+// bound — the same care as TestRunningAdapterEndsAPsStalledPastItsBound.
+func TestPsProcessTableDeclinesWithoutItsCommandColumn(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "asked-for-command")
+	pidFile := filepath.Join(dir, "ps.pid")
+	script := "#!/bin/sh\n" +
+		"if [ \"$2\" = \"pid=,command=\" ]; then : > '" + marker +
+		"'; echo $$ > '" + pidFile + "'; exec /bin/sleep 30; fi\n" +
+		"printf '%s\\n' '10 9 helper' '9 1 claude'\n"
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() {
+		b, err := os.ReadFile(pidFile)
+		if err != nil {
+			return
+		}
+		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 {
+			syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	got := psProcessTable(ctx)
+	if len(got) == 0 {
+		t.Fatal("a read that saw pid, ppid and comm must keep those rows")
+	}
+	if !underClaude(got, 10) {
+		t.Fatalf("comm alone must still answer the ancestry question: %+v", got)
+	}
+	if !argvUnreadable(got) {
+		t.Fatal("a table read without its command column must not answer argv questions")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("the command pass must have run to be stopped at the bound: %v", err)
+	}
+}
+
+// The same half read arriving at once rather than stalled — the command pass
+// simply failing — must cost a nested launch nothing: the launch reads this
+// table to find the Claude Code it was started under, and the first pass named
+// it. Doctor's adapter question, an argv question, is the one that declines
+// (GH-819 review).
+func TestProcessTableKeepsAncestryWithoutItsCommandColumn(t *testing.T) {
+	orig := sysctlTable
+	sysctlTable = func() (map[int]psRow, bool) { return nil, false }
+	t.Cleanup(func() { sysctlTable = orig })
+
+	dir := t.TempDir()
+	script := "#!/bin/sh\ncase \"$2\" in\n" +
+		"pid=,ppid=,comm=) printf '%s\\n' '10 9 helper' '9 1 claude';;\n" +
+		"pid=,command=) exit 1;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	if !underClaude(processTable(), 10) {
+		t.Fatal("lost known Claude ancestor")
+	}
+	if got := runningAdapter("demo" + strconv.Itoa(os.Getpid())); got != "__UNKNOWN__" {
+		t.Fatalf("an unreadable command column is not a confirmed absence, got %q", got)
+	}
+}

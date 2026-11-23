@@ -514,9 +514,10 @@ def _until_a_model(profile):
         + profile + " model <model-id>")
 
 
-@pytest.mark.parametrize("slow", ["", "ps", "lsof"],
+@pytest.mark.parametrize("slow", ["", "ps", "lsof", "columns"],
                          ids=["prompt", "ps-over-deadline-issue-467",
-                              "lsof-over-deadline-issue-467"])
+                              "lsof-over-deadline-issue-467",
+                              "narrow-columns-issue-819"])
 @pytest.mark.parametrize("shape", ["translator-route", "native-route", "hooks-build"])
 def test_doctor_reports_existing_adapter_without_starting_it(tmp_path, shape, slow):
     curl = """#!/bin/sh
@@ -531,8 +532,16 @@ printf '%s\n' '__CCMORPH_STATUS__200'
     # unstubbed setup run).
     decoy, listeners, ports, stop = _adapter_tree(tmp_path, profile, shape)
     _adapter_stubs(tmp_path / "bin", slow, ports)
+    # A pytest-xdist worker exports COLUMNS, and ps sizes its command column
+    # to it: this suite's own fan-out ran every doctor check under an 80-column
+    # ps, and the fakes' argv is longer than that — the session was open and
+    # doctor read a command line cut through its middle and answered "needs no
+    # translator" (GH-819). The reader's question is never the caller's
+    # terminal's width, so every shape also runs under a narrow one.
+    env_extra = {"COLUMNS": "80"} if slow == "columns" else None
     try:
-        result, _, bindir = run_doctor(tmp_path, conf, curl, profile=profile)
+        result, _, bindir = run_doctor(tmp_path, conf, curl, profile=profile,
+                                       env_extra=env_extra)
         assert result.returncode == 0, result.stderr
         # One adapter line by default, in every case (also when the table read
         # blew its bound): whether this profile needs a translator now, never
@@ -554,7 +563,7 @@ printf '%s\n' '__CCMORPH_STATUS__200'
         # Read-only: the profile's own hook never ran, so nothing was started.
         assert not (bindir / "doctor.marker").exists()
         verbose, _, _ = run_doctor(tmp_path, conf, curl, args=("--verbose",),
-                                   profile=profile)
+                                   profile=profile, env_extra=env_extra)
         assert verbose.returncode == 0, verbose.stderr
         assert_adapter_report(verbose.stdout, decoy, listeners)
         assert not (bindir / "doctor.marker").exists()
