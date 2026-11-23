@@ -17,6 +17,14 @@
 
 ### Fixed
 
+- **`ccmorph hop` typed in a plain terminal now says what is wrong.** The bare
+  command answered with its usage line, which shows the profile as optional, so
+  the command looked valid and the mistake stayed unnamed until a profile was
+  added; only then came the real answer. Outside a Claude Code session, hop
+  with or without a profile now gives that one answer, `not inside a Claude
+  Code session`, and names the forms to type inside the session
+  (`/ccmorph:hop` or `! ccmorph hop`); a usage line appears only for input that
+  is wrong (#362).
 - **The installer no longer breaks under options set in `~/.zshenv`.** zsh reads
   that file before any script, so `unsetopt bareglobqual` or `setopt
   ignorebraces` there stopped `./install.sh`, `ccmorph update` and the one-line
