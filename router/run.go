@@ -182,6 +182,9 @@ func Dispatch(ctx context.Context, r Request, cwd string) Outcome {
 	if r.Timeout > 0 {
 		c.Timeout = r.Timeout
 	}
+	if r.NoDecider { // no decider call at all, the result check included: a caller that judges the outcome itself asks for this
+		c.Decider = nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(c.Timeout*float64(time.Second)))
 	defer cancel()
 	deadline, _ := ctx.Deadline()
