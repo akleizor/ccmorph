@@ -290,3 +290,40 @@ func TestAdapterLine(t *testing.T) {
 		})
 	}
 }
+
+// The decline names its read (GH-819): which of the reader's routes failed is
+// what a machine needs to see in doctor --verbose, and is the diagnosis this
+// issue could not otherwise get on the affected one. Three shapes, each
+// injected at one read: ps missing (unread), rows with no command line at all
+// (no whole command lines), and a table explicitly marked as never having seen
+// its command column (same answer through the mark).
+func TestRunningAdapterWhyNamesTheDecline(t *testing.T) {
+	orig := sysctlTable
+	t.Cleanup(func() { sysctlTable = orig })
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sysctlTable = func() (map[int]psRow, bool) { return nil, false }
+	t.Setenv("PATH", dir)
+	if got, why := runningAdapterWhy("nope" + strconv.Itoa(os.Getpid())); got != "__UNKNOWN__" || why != tableUnread {
+		t.Fatalf("a ps that cannot answer is unread: got %q, %q", got, why)
+	}
+
+	self := psRow{ppid: os.Getppid(), comm: "x"}
+	sysctlTable = func() (map[int]psRow, bool) {
+		return map[int]psRow{os.Getpid(): self}, true
+	}
+	if got, why := runningAdapterWhy("nope" + strconv.Itoa(os.Getpid())); got != "__UNKNOWN__" || why != tableNoArgv {
+		t.Fatalf("rows without their command line are no whole command lines: got %q, %q", got, why)
+	}
+
+	selfWhole := psRow{ppid: os.Getppid(), comm: "x", args: strings.Join(os.Args, " "), argvUnknown: true}
+	sysctlTable = func() (map[int]psRow, bool) {
+		return map[int]psRow{os.Getpid(): selfWhole}, true
+	}
+	if got, why := runningAdapterWhy("nope" + strconv.Itoa(os.Getpid())); got != "__UNKNOWN__" || why != tableNoArgv {
+		t.Fatalf("a table marked as never seeing its command column names that: got %q, %q", got, why)
+	}
+}

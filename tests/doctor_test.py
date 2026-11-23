@@ -686,7 +686,10 @@ def test_doctor_lines_stay_plain_words_issue_272(tmp_path):
             assert banned not in result.stdout, (banned, result.stdout)
         assert "profile settings: valid JSON (" in result.stdout, result.stdout
         if sys.platform != "darwin":
-            assert "SKIP adapter: could not tell whether a translator is running" in result.stdout
+            # The skip names which read declined (GH-819): off darwin the table
+            # read is this run's own sleep-2 ps, so the reason is the bound.
+            assert ("SKIP adapter: could not tell whether a translator is running "
+                    "(the process list took over a second to read)") in result.stdout
         else:
             assert_adapter_report(result.stdout, decoy, listeners)
         # A broken settings file is told how to be dealt with, not just that it is broken.

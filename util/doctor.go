@@ -200,7 +200,7 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 	// translator now, and can launch find one — or is left out when only a billed
 	// check could answer. Pids, listeners and a failed ps are
 	// internal detail: --verbose only.
-	running := runningAdapter(name)
+	running, why := runningAdapterWhy(name)
 	if kind, msg := adapterLine(name, model, listing, running, need(listing)); kind != "" {
 		fix := ""
 		if kind == "FAIL" {
@@ -211,7 +211,10 @@ func DoctorRoute(name, typ, base, model, modelMap string, need func(listing stri
 	if verbose {
 		switch {
 		case running == "__UNKNOWN__":
-			row("SKIP", "adapter: could not tell whether a translator is running")
+			// Which read declined, named (GH-819): the default line stays one
+			// plain sentence, and --verbose tells a machine whose own route
+			// hides adapters which route that was.
+			row("SKIP", "adapter: could not tell whether a translator is running ("+why+")")
 		case running != "":
 			pid, children, _ := strings.Cut(running, "\t")
 			for _, spec := range strings.Split(children, ",") {
