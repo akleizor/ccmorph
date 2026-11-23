@@ -12,7 +12,6 @@ import (
 
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/profile"
-	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // A credential held in the login keychain is written in the conf as
@@ -78,13 +77,9 @@ func KeychainMigrate(state string) error {
 // quoted) is testable where no security(1) binary answers; the fake on PATH
 // stands in for it there.
 func keychainWalk(state string) error {
-	confs, _ := filepath.Glob(filepath.Join(GlobQuote(state), "*.conf"))
 	var errs []error
-	for _, conf := range confs {
+	for _, conf := range ValidConfs(state) {
 		name := strings.TrimSuffix(filepath.Base(conf), ".conf")
-		if !ctxwindow.ValidProfileName(name) || paths.IsSymlink(conf) {
-			continue
-		}
 		if err := keychainMove(conf, name, nil); err != nil {
 			errs = append(errs, err)
 		}

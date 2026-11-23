@@ -34,15 +34,12 @@ type served struct {
 	models      []string
 }
 
-// profileNames is every valid, non-symlinked conf in the profile root.
+// profileNames is every valid, non-symlinked conf in the profile root,
+// the one scan util.ValidConfs holds for both its readers (#848).
 func profileNames() []string {
-	confs, _ := filepath.Glob(filepath.Join(util.GlobQuote(paths.ProfileRoot()), "*.conf"))
 	var names []string
-	for _, c := range confs {
-		n := strings.TrimSuffix(filepath.Base(c), ".conf")
-		if profile.ValidName(n) && !paths.IsSymlink(c) {
-			names = append(names, n)
-		}
+	for _, conf := range util.ValidConfs(paths.ProfileRoot()) {
+		names = append(names, strings.TrimSuffix(filepath.Base(conf), ".conf"))
 	}
 	return names
 }
