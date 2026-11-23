@@ -2622,3 +2622,86 @@ func TestCatalogueURLsAreFixed(t *testing.T) {
 		t.Fatal(modelsdev.URL, canonicalCatalogueURL)
 	}
 }
+
+// GH-775: a reply that defers the request (a timeout, a rate limit, an
+// overloaded upstream) states nothing about the model, so it is not a verdict.
+func TestRetryLaterReplyIsNotAVerdictIssue775(t *testing.T) {
+	ctx := context.Background()
+	always := func(code int, body string) Opener {
+		return &fake{reply: func(Request) ([]byte, error) { return nil, httpErr(code, body) }}
+	}
+	for _, code := range []int{408, 429, 502, 503, 504} {
+		if got, answered := ValidationWindow(ctx, "https://gw", "k", "m", always(code, "try again later"), time.Second); got != 0 || answered {
+			t.Errorf("HTTP %d was recorded as a verdict: window %d answered %v", code, got, answered)
+		}
+	}
+	for _, code := range []int{400, 404, 500} {
+		if got, answered := ValidationWindow(ctx, "https://gw", "k", "m", always(code, "no window stated"), time.Second); got != 0 || !answered {
+			t.Errorf("HTTP %d is a verdict: window %d answered %v", code, got, answered)
+		}
+	}
+	if got, answered := ValidationWindow(ctx, "https://gw", "k", "m", always(503, "maximum context length is 131072"), time.Second); got != 131072 || !answered {
+		t.Errorf("a retry-later reply that states the window must still size the model: window %d answered %v", got, answered)
+	}
+	replies := []error{httpErr(429, "slow down"), httpErr(400, "no window stated")}
+	mixed := &fake{reply: func(Request) ([]byte, error) { e := replies[0]; replies = replies[1:]; return nil, e }}
+	if got, answered := ValidationWindow(ctx, "https://gw", "k", "m", mixed, time.Second); got != 0 || !answered {
+		t.Errorf("a 429 then a 400 naming no window is a verdict: window %d answered %v", got, answered)
+	}
+}
+
+// busyGateway rate-limits slow-model until it is healthy; refused-model is
+// always answered with no window stated. A 429 defers the request: it is not a
+// verdict.
+type busyGateway struct{ healthy bool }
+
+func (g busyGateway) Open(_ context.Context, r Request, _ time.Duration) ([]byte, error) {
+	if strings.Contains(string(r.Body), "slow-model") {
+		if g.healthy {
+			return nil, &HTTPError{400, []byte("maximum context length is 131072")}
+		}
+		return nil, &HTTPError{429, []byte("rate limited")}
+	}
+	return nil, &HTTPError{400, []byte("no window stated")}
+}
+
+// GH-775: a launch whose probe was only rate-limited records no miss for that
+// model, so the next healthy launch sizes it; the answered model keeps its miss.
+func TestRateLimitedProbeLeavesTheModelForTheNextLaunchIssue775(t *testing.T) {
+	dir := state(t)
+	conf := filepath.Join(dir, "gw.conf")
+	put(t, conf, "type=apikey\nbase_url=https://gw.invalid\napi_key=k\n")
+	listing := `{"data":[{"id":"slow-model"},{"id":"refused-model"}]}`
+	captureStderr(t)
+
+	if c := SizeListing(context.Background(), "gw", listing, "https://gw.invalid", "canary", busyGateway{}); c != 0 {
+		t.Fatalf("the rate-limited launch exited %d", c)
+	}
+	_, fields, err := ReadConf(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, missed := DiscoveredMisses(fields)["slow-model"]; missed {
+		t.Errorf("the launch recorded a miss for a model whose probe never answered: %v", DiscoveredMisses(fields))
+	}
+	if _, missed := DiscoveredMisses(fields)["refused-model"]; !missed {
+		t.Fatalf("the answered-unsizeable model's miss was not recorded: %v", DiscoveredMisses(fields))
+	}
+
+	if c := SizeListing(context.Background(), "gw", listing, "https://gw.invalid", "canary", busyGateway{healthy: true}); c != 0 {
+		t.Fatalf("the healthy launch exited %d", c)
+	}
+	w := windowsOf("gw")
+	if got := w["slow-model"]; got != 131072 {
+		t.Fatalf("the healthy launch did not re-size the rate-limited model: %v", w)
+	}
+	if got, sized := w["refused-model"]; sized {
+		t.Fatalf("the answered-unsizeable model was sized %d instead of kept out: %v", got, w)
+	}
+	if c := SizeListing(context.Background(), "gw", listing, "https://gw.invalid", "canary", probeMustNotRun{t}); c != 0 {
+		t.Fatalf("the third launch exited %d", c)
+	}
+	if w := windowsOf("gw"); len(w) != 1 || w["slow-model"] != 131072 {
+		t.Fatalf("the recorded state changed on a launch with nothing to size: %v", w)
+	}
+}

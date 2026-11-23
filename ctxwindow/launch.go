@@ -26,13 +26,24 @@ const (
 
 var validationWindow = regexpMust(`(?i)(?:max_model_len|max_total_tokens|maximum context length is)\D{0,20}(\d[\d,]*)`)
 
+// retryLater reports an HTTP status that defers a request instead of judging
+// it: a timeout (408, 504), a rate limit (429), or an overloaded or unreachable
+// upstream (502, 503). Such a reply says nothing about the model (#775).
+func retryLater(code int) bool {
+	switch code {
+	case 408, 429, 502, 503, 504:
+		return true
+	}
+	return false
+}
+
 // ValidationWindow is the window a gateway states when it refuses an impossible
 // max_tokens. The request is rejected at validation, before any generation, and
 // many servers (vLLM behind most internal gateways) name the model's total
-// length in that refusal. answered reports whether the gateway answered at all:
-// an accepted request or an HTTP response. A transport error, a request
-// deadline, or the caller's cancellation states nothing and is not a verdict
-// (#775).
+// length in that refusal. answered reports whether the gateway judged the
+// request: it accepted it, or replied with a status other than a retry-later one
+// (408, 429, 502, 503, 504). A transport error, a request deadline, the caller's
+// cancellation or a retry-later reply states nothing and is not a verdict (#775).
 func ValidationWindow(ctx context.Context, base, key, model string, op Opener, timeout time.Duration) (window int64, answered bool) {
 	op = pick(op)
 	for _, sh := range shapes {
@@ -56,14 +67,16 @@ func ValidationWindow(ctx context.Context, base, key, model string, op Opener, t
 		}
 		he, ok := err.(*HTTPError)
 		if !ok {
-			continue // a slow or rate-limited shape says nothing; ask the other one
+			continue // no response at all says nothing; ask the other shape
 		}
-		answered = true
 		detail := unicodeGT.Replace(decodeReplace(he.Body))
 		if m := validationWindow.FindStringSubmatch(detail); m != nil {
 			if n, ok := parseCount(m[1]); ok {
 				return n, true
 			}
+		}
+		if !retryLater(he.Code) {
+			answered = true // the gateway judged the request and named no window
 		}
 	}
 	return 0, answered
