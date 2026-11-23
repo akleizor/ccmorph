@@ -817,7 +817,13 @@ class AdapterTest(unittest.TestCase):
 
     def _tethers(self, adapter_pid):
         """The `ccmorph-core tether <adapter_pid> ...` processes running now."""
-        out = subprocess.run(["ps", "-A", "-o", "pid=,command="],
+        # ww for the same reason the readers ask for it (GH-819): pytest's
+        # capture exports COLUMNS=80, and a piped ps sizes its command column
+        # to it (Apple's ps to 79 even without one), so on a checkout whose
+        # path is long the tether line was cut before "tether <pid>" and a
+        # live tether read as none — the very silent width cut this issue is
+        # about, here in the suite's own ps.
+        out = subprocess.run(["ps", "-Awwo", "pid=,command="],
                              capture_output=True, text=True, check=True,
                              timeout=HANG_TIMEOUT).stdout
         pattern = re.compile(rf"\stether {adapter_pid}(\s|$)")

@@ -2,6 +2,7 @@ package util
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -232,4 +233,229 @@ func TestPsProcessTableDoesNotWaitOnAGrandchildHoldingThePipe(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("a grandchild holding the pipe kept the read for %v; WaitDelay must close it", elapsed)
 	}
+}
+
+// A pass killed at the caller's deadline must neither lose the rows the other
+// columns did answer nor leave their argv questions open in silence: the rows
+// stand for the callers that read ancestry from comm, and every argv question
+// — runningAdapter's adapter hunt included — reads the mark and declines,
+// where the same half read once reported "this profile needs no translator"
+// (GH-819). The stall is the deadline itself: the stalled pass execs an
+// absolute sleep, so a PATH holding nothing else cannot end it early, and the
+// marker names the second pass as the one that ran and was stopped at the
+// bound — the same care as TestRunningAdapterEndsAPsStalledPastItsBound.
+func TestPsProcessTableDeclinesWithoutItsCommandColumn(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "asked-for-command")
+	pidFile := filepath.Join(dir, "ps.pid")
+	script := "#!/bin/sh\n" +
+		"if [ \"$2\" = \"pid=,command=\" ]; then : > '" + marker +
+		"'; echo $$ > '" + pidFile + "'; exec /bin/sleep 30; fi\n" +
+		"printf '%s\\n' '10 9 helper' '9 1 claude'\n"
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() {
+		b, err := os.ReadFile(pidFile)
+		if err != nil {
+			return
+		}
+		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid > 0 {
+			syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	got := psProcessTable(ctx)
+	if len(got) == 0 {
+		t.Fatal("a read that saw pid, ppid and comm must keep those rows")
+	}
+	if !underClaude(got, 10) {
+		t.Fatalf("comm alone must still answer the ancestry question: %+v", got)
+	}
+	if !argvUnreadable(got) {
+		t.Fatal("a table read without its command column must not answer argv questions")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("the command pass must have run to be stopped at the bound: %v", err)
+	}
+}
+
+// The same half read arriving at once rather than stalled — the command pass
+// simply failing — must cost a nested launch nothing: the launch reads this
+// table to find the Claude Code it was started under, and the first pass named
+// it. Doctor's adapter question, an argv question, is the one that declines
+// (GH-819 review).
+func TestProcessTableKeepsAncestryWithoutItsCommandColumn(t *testing.T) {
+	orig := sysctlTable
+	sysctlTable = func() (map[int]psRow, bool) { return nil, false }
+	t.Cleanup(func() { sysctlTable = orig })
+
+	dir := t.TempDir()
+	script := "#!/bin/sh\ncase \"$2\" in\n" +
+		"pid=,ppid=,comm=) printf '%s\\n' '10 9 helper' '9 1 claude';;\n" +
+		"pid=,command=) exit 1;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	if !underClaude(processTable(), 10) {
+		t.Fatal("lost known Claude ancestor")
+	}
+	if got := runningAdapter("demo" + strconv.Itoa(os.Getpid())); got != "__UNKNOWN__" {
+		t.Fatalf("an unreadable command column is not a confirmed absence, got %q", got)
+	}
+}
+
+// argvSelfSeen is the check a reader can make of its own read: this process's
+// own command line, whole. A read that shows it cut, bare, empty or missing
+// cannot be trusted to show any other process's whole (GH-819).
+func TestArgvSelfSeen(t *testing.T) {
+	j := strings.Join(os.Args, " ")
+	cases := []struct {
+		name string
+		row  *psRow
+		want bool
+	}{
+		{"this process missing from the table", nil, false},
+		{"no command line at all", &psRow{}, false},
+		{"the bare executable name", &psRow{args: filepath.Base(os.Args[0])}, false},
+		{"cut mid-line", &psRow{args: j[:len(j)/2]}, false},
+		{"whole", &psRow{args: j}, true},
+		{"whole through ps's column padding", &psRow{args: strings.Join(os.Args, "  ")}, true},
+		{"whole with trailing space", &psRow{args: j + "  "}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tab := map[int]psRow{os.Getpid() - 1: {ppid: 1}}
+			if c.row != nil {
+				tab[os.Getpid()] = *c.row
+			}
+			if got := argvSelfSeen(tab); got != c.want {
+				t.Fatalf("got %v, want %v (row %+v)", got, c.want, tab[os.Getpid()])
+			}
+		})
+	}
+}
+
+// runningAdapter answers from a read it can verify against itself: the adapter
+// is a real live process here, and only the table's command lines are shaped
+// per case. A table that cannot show this process's own argv whole declines —
+// it is the same read that hid the faked adapter on the affected machine —
+// while a read that merely misses other users' processes still answers (GH-819).
+func TestRunningAdapterDeclinesOverATableWithoutCommandLines(t *testing.T) {
+	profile := "nc" + strconv.Itoa(os.Getpid())
+	adapter := holdProc(t, os.Args[0], BridgeFiles(t.TempDir(), "p")[2],
+		"/x/ccmorph-core", "adapter", profile)
+	base := processTable()
+	if _, ok := base[adapter.Process.Pid]; !ok {
+		t.Fatal("the live adapter must be in the real table")
+	}
+	if !argvSelfSeen(base) {
+		t.Fatal("the reader's own read must show this process's argv whole before shaping tables from it")
+	}
+	want := fmt.Sprintf("%d\t%d:shim", adapter.Process.Pid, adapter.Process.Pid)
+	orig := sysctlTable
+	t.Cleanup(func() { sysctlTable = orig })
+
+	shaped := func(edit func(map[int]psRow)) {
+		t.Helper()
+		cp := make(map[int]psRow, len(base))
+		for pid, r := range base {
+			cp[pid] = r
+		}
+		edit(cp)
+		sysctlTable = func() (map[int]psRow, bool) { return cp, true }
+	}
+
+	shaped(func(cp map[int]psRow) {
+		for pid, r := range cp {
+			r.args = ""
+			cp[pid] = r
+		}
+	})
+	if got := runningAdapter(profile); got != "__UNKNOWN__" {
+		t.Fatalf("a table showing no command lines is not a confirmed absence, got %q", got)
+	}
+
+	shaped(func(cp map[int]psRow) {
+		for pid, r := range cp {
+			if pid != os.Getpid() && pid != adapter.Process.Pid {
+				r.args = ""
+				cp[pid] = r
+			}
+		}
+	})
+	if got := runningAdapter(profile); got != want {
+		t.Fatalf("a read that shows this process and the adapter whole must answer, got %q want %q", got, want)
+	}
+
+	shaped(func(cp map[int]psRow) { delete(cp, os.Getpid()) })
+	if got := runningAdapter(profile); got != "__UNKNOWN__" {
+		t.Fatalf("a table that does not show this process cannot vouch for its argv, got %q", got)
+	}
+}
+
+// One of the read shapes behind the report, named rather than assumed: Apple's
+// ps prints only the executable name for a process whose arguments it cannot
+// read. A live adapter is running here; the table names it and this process by
+// command name only. Before the self-check this was the silent "" — doctor
+// read the missing command lines as a confirmed absence (GH-819).
+func TestRunningAdapterDeclinesOverAPsShowingOnlyNames(t *testing.T) {
+	profile := "nn" + strconv.Itoa(os.Getpid())
+	adapter := holdProc(t, os.Args[0], BridgeFiles(t.TempDir(), "p")[2],
+		"/x/ccmorph-core", "adapter", profile)
+	orig := sysctlTable
+	sysctlTable = func() (map[int]psRow, bool) { return nil, false }
+	t.Cleanup(func() { sysctlTable = orig })
+
+	dir := t.TempDir()
+	script := fmt.Sprintf("#!/bin/sh\ncase \"$2\" in\n"+
+		"pid=,ppid=,comm=) printf '%%s\\n' '%d %d %s' '%d %d ccmorph-core';;\n"+
+		"pid=,command=) printf '%%s\\n' '%d %s' '%d ccmorph-core';;\n"+
+		"esac\n",
+		os.Getpid(), os.Getppid(), filepath.Base(os.Args[0]),
+		adapter.Process.Pid, os.Getpid(),
+		os.Getpid(), filepath.Base(os.Args[0]), adapter.Process.Pid)
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	if got := runningAdapter(profile); got != "__UNKNOWN__" {
+		t.Fatalf("command names only is not a confirmed absence, got %q", got)
+	}
+}
+
+// The other read shape, at the reader's own edge: a real long adapter argv,
+// read through the real ps with the real kernel read forced off. procps cuts
+// the command column to $COLUMNS on a pipe (the pytest-xdist workers export
+// 80); Apple's ps cuts a piped command column to 79 even with no COLUMNS at
+// all. -ww asks for the whole line on both, which is what makes the session
+// show here at any width (GH-819).
+func TestPsFallbackReadsALongAdapterArgvWhole(t *testing.T) {
+	profile := "lg" + strconv.Itoa(os.Getpid())
+	longPath := "/x/" + strings.Repeat("a-long-install-path/", 6) + "ccmorph-core"
+	adapter := holdProc(t, os.Args[0], BridgeFiles(t.TempDir(), "p")[2],
+		longPath, "adapter", profile, "--auto", "--parent-pid", "400")
+	want := fmt.Sprintf("%d\t%d:shim", adapter.Process.Pid, adapter.Process.Pid)
+	orig := sysctlTable
+	sysctlTable = func() (map[int]psRow, bool) { return nil, false }
+	t.Cleanup(func() { sysctlTable = orig })
+
+	t.Run("COLUMNS=80", func(t *testing.T) {
+		t.Setenv("COLUMNS", "80")
+		if got := runningAdapter(profile); got != want {
+			t.Fatalf("a cut command column hid the live adapter, got %q want %q", got, want)
+		}
+	})
+	t.Run("COLUMNS unset", func(t *testing.T) {
+		t.Setenv("COLUMNS", "")
+		os.Unsetenv("COLUMNS")
+		if got := runningAdapter(profile); got != want {
+			t.Fatalf("the piped default width hid the live adapter, got %q want %q", got, want)
+		}
+	})
 }
