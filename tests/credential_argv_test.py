@@ -67,7 +67,11 @@ class CredentialArgv(unittest.TestCase):
                     nonlocal seen
                     if proc.poll() is not None:
                         return True
-                    ps = subprocess.run(["ps", "-axo", "args="], capture_output=True, text=True, timeout=HANG_TIMEOUT).stdout
+                    # ww (GH-819): with COLUMNS=80 in the environment (pytest's
+                    # capture sets it), a piped ps cuts args= to it — a key past
+                    # column 80 would never be seen, and promise 5 would pass by
+                    # not looking. The scan must read every line whole.
+                    ps = subprocess.run(["ps", "-axwwo", "args="], capture_output=True, text=True, timeout=HANG_TIMEOUT).stdout
                     seen = seen or key in ps
                     return False
                 if not wait_until(finished, HANG_TIMEOUT):

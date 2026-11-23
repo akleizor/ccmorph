@@ -179,7 +179,12 @@ func GCStale(state, profiles, tmp string) {
 		if live == nil {
 			// A failed scan names nothing, so every old candidate is reaped.
 			s := ""
-			if raw, err := exec.Command("ps", "-axo", "command").Output(); err == nil {
+			// ww: without it a piped ps cuts every command line to $COLUMNS —
+			// and, on macOS, to 79 columns whenever no fd is a terminal
+			// (adv_cmds ps.c) — so a bridge whose path sits past the cut reads
+			// as dead and this sweep deletes a live session's state. Same cut
+			// as the adapter hunt's (GH-819); here the miss deletes.
+			if raw, err := exec.Command("ps", "-axwwo", "command").Output(); err == nil {
 				s = string(raw)
 			}
 			live = &s

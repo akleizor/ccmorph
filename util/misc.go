@@ -227,13 +227,32 @@ func execIndex(args []string) int {
 	return 0
 }
 
+// The three ways the adapter read can decline, as words for doctor --verbose:
+// which read failed, not just that one did (GH-819). A machine whose own route
+// declines — whatever that route is — says which one it took.
+const (
+	tableSlow   = "the process list took over a second to read"
+	tableUnread = "the process list could not be read"
+	tableNoArgv = "the process list showed no whole command lines"
+)
+
 // runningAdapter is "<pid>\t<holder>:<name>,..." for the profile's running adapter,
-// "" when there is none, and __UNKNOWN__ when the process table cannot be read.
+// "" when there is none, and __UNKNOWN__ when the process table cannot be read,
+// was read without the command column this question is made of, or shows this
+// process's own command line cut or missing — the one argv the reader can
+// verify itself against, so a read that fails it cannot be trusted to show an
+// adapter's whole either (GH-819).
 // The holders are the spawned children worth checking (cliproxyapi; a
 // CCMORPH_SHIM_HOOKS build, any child but ccmorph-core) and, when no hooks child exists,
 // the adapter process itself as "shim": the stock shim is served in-process, so
 // its listener is the adapter's own.
-func runningAdapter(profile string) string {
+func runningAdapter(profile string) string { got, _ := runningAdapterWhy(profile); return got }
+
+// runningAdapterWhy is runningAdapter with the reason for a decline: "" with a
+// real answer, and one of the table* sentences with __UNKNOWN__ — the read that
+// failed, named, so doctor --verbose tells a machine which of its own routes
+// hid its adapter (GH-819).
+func runningAdapterWhy(profile string) (string, string) {
 	// Bounded at a second (GH-467): the sysctl read is the kernel's own cost,
 	// but the ps it falls back to makes three passes — an answer past the bound
 	// is SKIP, never a hang and never a half report. The goroutine cannot be
@@ -245,12 +264,26 @@ func runningAdapter(profile string) string {
 	go func() { done <- processTableWithin(ctx) }()
 	select {
 	case t := <-done:
-		if t == nil {
-			return "__UNKNOWN__"
+		if t == nil || argvUnreadable(t) || !argvSelfSeen(t) {
+			// Nothing read, read without the command column this question is
+			// made of, or read without this process's own command line whole:
+			// either way the designed answer is the decline, not an absence
+			// the read never saw. A pass the deadline killed answers slow even
+			// when it came back with its rows — the bound is the cause there
+			// (GH-467) — and a table that outlived it without whole command
+			// lines answers that, not an absence (GH-819).
+			switch {
+			case ctx.Err() != nil:
+				return "__UNKNOWN__", tableSlow
+			case t == nil:
+				return "__UNKNOWN__", tableUnread
+			default:
+				return "__UNKNOWN__", tableNoArgv
+			}
 		}
-		return adapterSession(t, profile)
+		return adapterSession(t, profile), ""
 	case <-ctx.Done():
-		return "__UNKNOWN__"
+		return "__UNKNOWN__", tableSlow
 	}
 }
 
