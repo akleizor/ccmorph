@@ -25,7 +25,7 @@ const retiredVerb = "mea" + "sure"
 var ownVerbs = map[string]bool{"list": true, "inspect": true, "show": true, "add": true, "config": true,
 	"login": true, "default": true, "use": true, "rm": true, "mv": true, "get": true, "set": true,
 	"context": true, "cred": true, "secret": true, "creds": true, "probe": true, "hop": true, "profile": true,
-	"help": true, "version": true, "run": true, "start": true, "price": true, "router": true, retiredVerb: true}
+	"help": true, "version": true, "run": true, "start": true, "price": true, "router": true, "check": true, retiredVerb: true}
 
 // helpAsked reports whether any word asks for help.
 func helpAsked(words []string) bool {
@@ -39,7 +39,7 @@ func helpAsked(words []string) bool {
 var verbArity = map[string]int{"list": 0, "use": 1, "cred": 1, "inspect": 1, "context": 3,
 	"models": 2, "rm": 1, "mv": 2, "get": 2, "set": 3, "config": 1, "add": 1, "login": 1,
 	"hop": 1, "quota": 2, "doctor": 2, "update": 1, "uninstall": 0, "version": 0, "help": 1,
-	"profile": 0}
+	"profile": 0, "check": 3}
 
 // usageLine is the Usage line of a command's help page, shared with its errors
 // so the two cannot drift apart.
@@ -62,7 +62,7 @@ func (l *launcher) extraArg(verb, word string) int {
 
 // realVerbs is every verb `ccmorph <verb>` answers to, in one list for the typo
 // hint: a word one edit away from exactly one of these is told to run it.
-var realVerbs = []string{"add", "config", "context", "cred", "doctor", "get", "help", "hop",
+var realVerbs = []string{"add", "check", "config", "context", "cred", "doctor", "get", "help", "hop",
 	"inspect", "list", "login", "models", "mv", "price", "probe", "profile", "quota", "rm", "router", "run", "set",
 	"uninstall", "update", "use", "version"}
 
@@ -194,7 +194,7 @@ func (l *launcher) dispatch(args []string) int {
 	case "_env":
 		return l.envVerb(args[1:])
 	case "list", "use", "cred", "inspect", "context", "models", "_models", "rm", "mv", "get", "set",
-		"_menu", "_ui", "config", "add", "login", "hop", "profile", "quota", "price", "router":
+		"_menu", "_ui", "config", "add", "login", "hop", "profile", "quota", "price", "router", "check":
 		return l.verb(args)
 	}
 	return l.unknown(first, args)
@@ -887,6 +887,7 @@ func (l *launcher) usageAt(topic string, width int) int {
 			head("More commands:")
 			help("ccmorph models <profile>", "List models from an API-key endpoint")
 			help("ccmorph price <model>...", "Read cached model list prices")
+			help("ccmorph check <profile> <model>", "Ask one model one token: does it answer now?")
 			// The line is the command's own synopsis, so the list and the
 			// command's page cannot drift apart again (GH-730).
 			help(router.Usage, "Spread subagents across profiles; off by default")
@@ -1018,6 +1019,12 @@ For a single setting: ccmorph set <profile> model|effort [value]
 Masking is a line in the profile's conf file, not a menu item: on an API-key
 gateway profile, env.CCMORPH_MASK=1 in ~/.config/ccmorph/<profile>.conf sends
 secrets as placeholders; ccmorph inspect shows whether it is on.`},
+	"check": {"ccmorph check <profile> <model> [--json]", `Ask one model of a profile whether it answers right now: one real request
+with one output token, on the route a session of that profile takes, with
+its own credential. Each route is asked at most once.
+Exit 0 when it answers, 1 when it refuses, 2 for a usage error.
+--json prints {"ok","route","status","ms","note"}; note is the upstream's
+own reason, empty when it answers. No secret is ever printed.`},
 	"list": {"ccmorph list", "List saved profiles. * marks the default used by ccmorph run; private marks one whose history is deleted when the session ends."},
 	"price": {"ccmorph price <model>... [--json]", `Read cached model list prices in US dollars per million tokens.
 A missing model in a populated cache is unpriced; --json omits it. The cache is never fetched.

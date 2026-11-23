@@ -291,6 +291,8 @@ is removed without that confirmation.
 
 `ccmorph price <model>... [--json]` shows cached list prices per million tokens; models without a cached price are unpriced.
 
+`ccmorph check <profile> <model> [--json]` asks one model whether it answers right now: one real request with one output token (16 on the Responses route, its floor), no tools, on the route a session of that profile takes (an API key's cached dialect, else the Anthropic, Responses and Chat routes in turn, each at most once; a Claude account or token with its own sign-in; a provider through its bridge, started for the check and stopped after it). `--json` prints `{"ok":bool,"route":"anthropic|responses|chat","status":int,"ms":int,"note":string}`, where note is the upstream's own reason, empty when it answers. Exit 0 when it answers, 1 when it refuses, 2 for a usage error. No key or token is ever printed.
+
 Each profile can carry its own default model and effort, used by every new
 session on it. `get` reads one setting; `set` writes one:
 

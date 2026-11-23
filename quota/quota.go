@@ -134,7 +134,7 @@ func Main(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 func read(client *http.Client, name, kind, arg, extra string) Entry {
 	switch kind {
 	case "sub":
-		token, plan, err := subscriptionToken(arg)
+		token, plan, err := SubscriptionToken(arg)
 		if err != nil {
 			// The same command cred and login name: a missing sign-in has a
 			// working fix, and quota is where a person first sees the state.

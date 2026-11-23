@@ -91,7 +91,7 @@ func writeCreds(t *testing.T, home, name, raw string) string {
 	return dir
 }
 
-// keychainFrom makes subscriptionToken see creds[dir] on macOS.
+// keychainFrom makes SubscriptionToken see creds[dir] on macOS.
 func keychainFrom(t *testing.T, creds map[string]string) {
 	t.Helper()
 	if runtime.GOOS != "darwin" {
@@ -1075,7 +1075,7 @@ func TestSubscriptionTokenNamesTheKeychainAccount(t *testing.T) {
 		return []byte(`{"claudeAiOauth":{"accessToken":"live","expiresAt":1893456000000}}`), nil
 	}
 	dir := filepath.Join(t.TempDir(), "live")
-	tok, plan, err := subscriptionToken(dir)
+	tok, plan, err := SubscriptionToken(dir)
 	if err != nil || tok != "live" || plan != "" {
 		t.Fatalf("%q %q %v", tok, plan, err)
 	}
