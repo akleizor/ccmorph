@@ -506,6 +506,16 @@ TRANSLATOR_NOW = ("OK adapter: this profile needs a translator now: "
                   "an open session on it is running cliproxyapi")
 NO_TRANSLATOR_NOW = ("OK adapter: this profile needs no translator now: "
                      "its open session runs without one")
+def _verbose_out(tmp_path, conf, curl, profile, env_extra=None):
+    """doctor --verbose over the still-running fakes, for failure messages only
+    (assert messages are evaluated on failure): the verbose SKIP line names the
+    read that declined (GH-819), so a case that fails on somebody's machine
+    says which route on that machine hid the session it fakes."""
+    verbose, _, _ = run_doctor(tmp_path, conf, curl, args=("--verbose",),
+                               profile=profile, env_extra=env_extra)
+    return "\n--verbose--\n" + verbose.stdout
+
+
 def _until_a_model(profile):
     return re.compile(
         r"INFO adapter: this profile needs no translator until a model is chosen "
@@ -557,9 +567,11 @@ printf '%s\n' '__CCMORPH_STATUS__200'
             # the bound; darwin's sysctl answers first, so the session shows.
             assert _until_a_model(profile).fullmatch(adapters[0]), result.stdout
         elif shape == "native-route":
-            assert adapters == [NO_TRANSLATOR_NOW], result.stdout
+            assert adapters == [NO_TRANSLATOR_NOW], result.stdout + _verbose_out(
+                tmp_path, conf, curl, profile, env_extra)
         else:
-            assert adapters == [TRANSLATOR_NOW], result.stdout
+            assert adapters == [TRANSLATOR_NOW], result.stdout + _verbose_out(
+                tmp_path, conf, curl, profile, env_extra)
         # Read-only: the profile's own hook never ran, so nothing was started.
         assert not (bindir / "doctor.marker").exists()
         verbose, _, _ = run_doctor(tmp_path, conf, curl, args=("--verbose",),
