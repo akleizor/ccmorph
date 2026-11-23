@@ -12,7 +12,6 @@ import (
 
 	"github.com/akleizor/ccmorph/ctxwindow"
 	"github.com/akleizor/ccmorph/profile"
-	"github.com/akleizor/ccmorph/util/paths"
 )
 
 // A credential held in the login keychain is written in the conf as
@@ -70,13 +69,17 @@ func KeychainMigrate(state string) error {
 	if exec.Command("security", "default-keychain").Run() != nil {
 		return nil // no login keychain (a CI or scratch $HOME): the conf stays 0600
 	}
-	confs, _ := filepath.Glob(filepath.Join(state, "*.conf"))
+	return keychainWalk(state)
+}
+
+// keychainWalk migrates every valid, non-symlinked conf under state. Split from
+// KeychainMigrate so the walk itself (GH-848: the root must reach the glob
+// quoted) is testable where no security(1) binary answers; the fake on PATH
+// stands in for it there.
+func keychainWalk(state string) error {
 	var errs []error
-	for _, conf := range confs {
+	for _, conf := range ValidConfs(state) {
 		name := strings.TrimSuffix(filepath.Base(conf), ".conf")
-		if !ctxwindow.ValidProfileName(name) || paths.IsSymlink(conf) {
-			continue
-		}
 		if err := keychainMove(conf, name, nil); err != nil {
 			errs = append(errs, err)
 		}

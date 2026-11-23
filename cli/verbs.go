@@ -143,13 +143,10 @@ func (l *launcher) price(args []string) int {
 	return 0
 }
 
-// globQuote quotes a literal path for use in front of a glob pattern. The zsh
-// globbed a quoted "$_CCMORPH_DIR" followed by the pattern's own
-// metacharacters, so the directory stayed literal; a joined Go pattern parses
-// the whole path as syntax, and a `[` or `*` in it matches the wrong thing.
-func globQuote(path string) string {
-	return strings.NewReplacer(`\`, `\\`, `*`, `\*`, `?`, `\?`, `[`, `\[`).Replace(path)
-}
+// globQuote is util.GlobQuote under the name the cli's scans already call:
+// a literal path in front of a glob pattern, so a `[` or `*` in a custom root
+// matches the root's own name and not the wrong thing (#848).
+func globQuote(path string) string { return util.GlobQuote(path) }
 
 // confNames is "$_CCMORPH_DIR"/*.conf(N), by name.
 func (l *launcher) confNames() []string {
