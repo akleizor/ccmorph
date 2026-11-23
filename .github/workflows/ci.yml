@@ -102,7 +102,8 @@ jobs:
             hdiutil create -size 32m -fs HFS+ -volname ccmsecond -attach "$RUNNER_TEMP/second.dmg"
             export CCMORPH_TEST_SECOND_FS=/Volumes/ccmsecond
           fi
-          go vet ./... && go build ./... && go test ./... && make shim
+          # the gate's own Go target: vet, test, and the umask 077 and NO_PROXY='*' reruns (#774), never a copy of it
+          go build ./... && make test-go shim
       - name: zsh suite
         run: zsh tests/ccmorph_test.zsh
       - name: installer suite
@@ -124,7 +125,7 @@ jobs:
           python -m pip install pytest pytest-timeout
           # -v names each test as it runs, so a log cut off by the cap above still
           # shows where it stopped; --durations names the slow ones on a full run.
-          python -m pytest tests/ -v --durations=25
+          CCMORPH_LIB_DIR="$PWD/lib" python -m pytest tests/ -v --durations=25  # as gate-py, CONTRIBUTING and INTENT run it
 
   python-floor:
     timeout-minutes: 20
