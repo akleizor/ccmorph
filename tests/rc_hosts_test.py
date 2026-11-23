@@ -1879,6 +1879,106 @@ def test_a_created_edge_leaves_no_git_repo_in_the_state_dir(tmp_path, monkeypatc
     assert not (m.EDGES.parent / ".git").exists()      # ... without a repo in the state dir
 
 
+def test_a_slashed_route_gets_a_cleaned_edge_log_and_survives_the_tick(tmp_path, monkeypatch, capsys):
+    """A folder host's log name is cleaned of path characters before it is joined onto
+    LOGS; the edge host's was built from the raw `route=` (issue #846): `route=gw/eu`
+    opened `edge-gw/eu.log` inside a directory nothing ever creates, and the
+    FileNotFoundError escaped the tick with no guard, so launchd restarted the
+    supervisor into the same crash and Remote Control went down on one config line.
+    The edge now starts -- naming the line in the log -- and its log sits directly
+    under LOGS under the cleaned name."""
+    m = load()
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=gw/eu\n{tmp_path}/a\n")
+    (tmp_path / "a").mkdir()
+    # the real Host.start, with only the spawn faked: the open() that raised is
+    # the one this tick runs, and main() must outlive it.
+    monkeypatch.setattr(m.subprocess, "Popen", lambda cmd, **kw: FakeProc())
+    run_main(m, monkeypatch, tmp_path, cfg, m.Host.start, edge_ready=lambda route: False)
+    assert "started via gw/eu" in capsys.readouterr().out
+    logs = sorted(p.name for p in (tmp_path / "logs").glob("edge-*.log"))
+    assert len(logs) == 1 and logs[0].startswith("edge-gw-eu-")   # cleaned, one file
+    assert not (tmp_path / "logs" / "gw").exists()                # never a subdirectory
+
+
+def test_two_routes_that_clean_alike_open_their_own_edge_logs(tmp_path, monkeypatch):
+    """#846 review: the first fix named a cleaned route with a CRC32 suffix, and
+    two distinct profile names can be steered onto one checksum -- both edges
+    then opened one log and wrote one state record, so one route adopted the
+    other's edge. These two long underscore-heavy routes -- the reviewer's pair,
+    equal stems and equal CRC32 -- now keep their whole names, because a token a
+    single file name can hold is never renamed."""
+    m = load()
+    a = "a____b_c___d__e___f__g___h__i_j____k__l_m____n____o___p_q"
+    b = "a_b____c____d__e___f___g___h____i__j___k_l_m____n___o_p___q"
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route={a}\n{tmp_path}/a\n{tmp_path}/b route={b}\n")
+    for d in "ab":
+        (tmp_path / d).mkdir()
+    logs = []
+    def spawn(cmd, **kw):                    # the real start(), with only the spawn faked
+        if "--edge" in cmd:
+            logs.append(Path(kw["stdout"].name))
+        return FakeProc()
+    monkeypatch.setattr(m.subprocess, "Popen", spawn)
+    run_main(m, monkeypatch, tmp_path, cfg, m.Host.start, edge_ready=lambda route: False)
+    assert len(logs) == 2 and len(set(logs)) == 2       # one log per edge, never one shared log
+    assert all(p.parent == tmp_path / "logs" for p in logs)   # both directly under LOGS
+
+
+def test_a_second_route_pushed_onto_an_owned_edge_name_is_refused_in_the_log(tmp_path, monkeypatch, capsys):
+    """Any digest has an equal-name case somewhere, so the supervisor keeps the
+    promise itself rather than trusting it: a route whose edge name the first
+    route already owns is refused with a line naming both, as a refused pin line
+    is (#342) -- never silently sharing the log or the state record."""
+    m = load()
+    monkeypatch.setattr(m, "edge_name", lambda route: "one-name")   # force the collision
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route=first\n{tmp_path}/a\n{tmp_path}/b route=second\n")
+    for d in "ab":
+        (tmp_path / d).mkdir()
+    monkeypatch.setattr(m.subprocess, "Popen", lambda cmd, **kw: FakeProc())
+    run_main(m, monkeypatch, tmp_path, cfg, m.Host.start, edge_ready=lambda route: False)
+    out = capsys.readouterr().out
+    assert "refused" in out and "one-name" in out and "second" in out
+    assert len(list((tmp_path / "logs").glob("edge-*.log"))) == 1   # the second opened nothing
+
+
+def test_a_reload_cannot_move_a_running_edges_name_to_another_route(tmp_path, monkeypatch, capsys):
+    """#846 review round 2: the refusal was computed per reload only, so a config
+    that later added a route wanting a RUNNING edge's name -- `gw-eu-<digest>`
+    is exactly what `edge_name("gw/eu")` emits -- let the new route win the name
+    and "refused" the live edge without stopping it: on the next tick two active
+    edges opened the same log. A running edge OWNS its name across reloads; the
+    reload refuses the would-be twin instead of moving the name off the live edge."""
+    import hashlib
+    m = load()
+    route = "gw/eu"
+    alias = f"gw-eu-{hashlib.sha256(route.encode()).hexdigest()[:16]}"   # the digest edge_name itself emits
+    cfg = tmp_path / "rc-hosts"
+    cfg.write_text(f"route={route}\n{tmp_path}/a\n")
+    for d in "ab":
+        (tmp_path / d).mkdir()
+    logs = []
+    def spawn(cmd, **kw):                    # the real start(), with only the spawn faked
+        if "--edge" in cmd:
+            logs.append(Path(kw["stdout"].name))
+        return FakeProc()
+    monkeypatch.setattr(m.subprocess, "Popen", spawn)
+    ticks = [0]
+    def sleep(_):
+        ticks[0] += 1
+        if ticks[0] == 1:                    # mid-run: a new route arrives wanting that name
+            cfg.write_text(f"route={route}\n{tmp_path}/a\n{tmp_path}/b route={alias}\n")
+        if ticks[0] > 4:                     # the rewrite's own mtime drives the reload
+            raise SystemExit                 # (ns granularity, as every reload test here assumes)
+    run_main(m, monkeypatch, tmp_path, cfg, m.Host.start, sleep=sleep, edge_ready=lambda route: False)
+    assert len(logs) == len(set(logs)), f"two active edges opened the same log: {logs}"
+    assert len(logs) == 1                                        # still the one edge that was already up
+    out = capsys.readouterr().out
+    assert "refused" in out and alias in out and "already owns" in out
+
+
 def test_every_processless_session_is_handed_back_and_retried_slowly(tmp_path, monkeypatch):
     """Archive removes a clean worktree and unarchive never restarts it (2026-10-10);
     a session idle without a process waited hours on a message (2026-10-12)."""

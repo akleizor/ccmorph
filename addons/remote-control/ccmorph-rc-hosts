@@ -97,6 +97,11 @@ from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+# the edge-name rule lives beside this script, however it was loaded (test,
+# install, exec) -- and naming a file must not load the launcher (#845: a
+# partial install's reload must survive).
+sys.path.insert(0, str(HERE))
+from rc_route import edge_name, safe_part  # noqa: E402
 STATE_ROOT = Path(os.environ.get("CCMORPH_STATE_DIR") or
                   Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "ccmorph")
 LOGS = STATE_ROOT / "profiles" / ".rc-bridge" / "logs"
@@ -456,7 +461,7 @@ class Host:
         self.login_lost: str | None = None     # the failure this run printed, held until acted on
         self.login_restarted = float("-inf")    # when this host was last restarted for its login
         self.start_failure: tuple[str, str] | None = None   # the last start refusal logged
-        name = re.sub(r"[^A-Za-z0-9]+", "-", folder.replace(str(Path.home()), "~")).strip("-")
+        name = safe_part(folder.replace(str(Path.home()), "~"))
         self.logfile = LOGS / f"{name}.log"
         self.debugfile = LOGS / f"{name}.debug.log"
 
@@ -1856,10 +1861,25 @@ def main(argv: list[str]) -> int:
                     if (h.edge or want.get(folder) != (h.route, h.args) or h.tiers != tiers.get(h.route)
                             or h.permission != perm):
                         hosts.pop(folder).stop()
+                # Every route owns its edge's log and state name, and a running edge
+                # owns its name ACROSS reloads: a route added later whose name is the
+                # same is refused, never handed the name the live edge's log and
+                # record already sit at (#846).
+                edge_names = {}
+                for h in hosts.values():
+                    if h.edge:
+                        edge_names[edge_name(h.route)] = h.route
+                refused = set()
+                for route in sorted(routes):   # a digest has equal-name cases somewhere,
+                    name = edge_name(route)    # so the supervisor refuses one rather
+                    owner = edge_names.setdefault(name, route)   # than let two share
+                    if owner != route:         # one log and one state record (#846)
+                        log(f"edge: {route} refused, {owner} already owns the name {name}")
+                        refused.add(route)
                 for route in sorted(routes):   # edges first: bridges start only once theirs is up
-                    if f"edge:{route}" not in hosts:
+                    if route not in refused and f"edge:{route}" not in hosts:
                         e = Host(str(EDGES.parent), route, tiers=tiers[route])
-                        e.edge, e.logfile = True, LOGS / f"edge-{route}.log"
+                        e.edge, e.logfile = True, LOGS / f"edge-{edge_name(route)}.log"
                         hosts = {f"edge:{route}": e, **hosts}
                 for folder, (route, args) in want.items():
                     hosts.setdefault(folder, Host(folder, route, args, tiers[route], perm))
