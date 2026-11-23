@@ -208,15 +208,25 @@ func TestLabelsReadTheVendorsOwnTierWords(t *testing.T) {
 }
 
 func TestHardFailureTellsAnAccountRefusalFromAnAnswer(t *testing.T) {
+	// Claude Code prints this startup warning on every run, so it rides along
+	// with any failure's stderr; its word "auth" is routine, not a refusal.
+	connector := "claude.ai connectors are disabled because ANTHROPIC_API_KEY or another auth source is set and takes precedence over your claude.ai login"
 	for text, want := range map[string]string{
 		"API Error: 429 rate limit exceeded": "quota",
 		"Error: 401 unauthorized":            "auth",
 		"":                                   "empty",
 		"The quota module has a bug at line 3; fixed.": "",
+		"API Error: 500 Post \"https://gw.example:18443/v1/messages?beta=true\": net/http: TLS handshake timeout\n" + connector: "timeout",
+		"API Error: 500 Bad Gateway\n" + connector:  "",
+		"API Error: 401 Unauthorized\n" + connector: "auth",
+		"Error: authentication failed":              "auth",
 	} {
 		if got := hardFailure(text, false, ""); got != want {
 			t.Errorf("%q: got %q, want %q", text, got, want)
 		}
+	}
+	if got := hardFailure(connector, true, ""); got != "" {
+		t.Errorf("a failed run whose only stderr is the routine connector warning: got %q, want the generic kind", got)
 	}
 }
 

@@ -406,7 +406,10 @@ var (
 		re   *regexp.Regexp
 	}{
 		{"quota", regexp.MustCompile(`(?i)\b(quota|rate.?limit|usage limit|429)\b`)},
-		{"auth", regexp.MustCompile(`(?i)\b(auth(?:entication|orization)?|unauthorized|forbidden|401|403)\b`)},
+		// The bare word "auth" is never a refusal: Claude Code prints a routine
+		// startup warning naming an "auth source" on every run, and its word
+		// would hide the real failure (a gateway 500, a TLS timeout) behind auth.
+		{"auth", regexp.MustCompile(`(?i)\b(authentication|authorization|unauthorized|forbidden|401|403)\b`)},
 		{"timeout", regexp.MustCompile(`(?i)\b(timed?\s*out|timeout|deadline exceeded)\b`)},
 	}
 	errorOpening = regexp.MustCompile(`(?i)^\s*(?:(?:api )?(?:error|failed)\s*:|(?:quota|rate.?limit|usage limit) (?:exceeded|reached)|` +
