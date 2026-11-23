@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -61,12 +62,28 @@ func psCmd(ctx context.Context, args ...string) *exec.Cmd {
 // Every pass runs under ctx, so a stalled ps is killed with the caller's
 // deadline rather than outliving the read.
 func psProcessTable(ctx context.Context) map[int]psRow {
-	raw, err := psCmd(ctx, "-axo", "pid=,ppid=,comm=").Output()
-	if err != nil {
+	// The three passes are independent reads of one kernel table, so they run
+	// at once: a caller with a one-second bound (runningAdapter, GH-467) pays
+	// the slowest pass, not their sum, and survives a loaded host that would
+	// otherwise lose the bound and answer SKIP with a session live (#829).
+	var rowsRaw, argsRaw, startRaw []byte
+	var rowsErr, argsErr, startErr error
+	var wg sync.WaitGroup
+	wg.Add(3)
+	go func() { defer wg.Done(); rowsRaw, rowsErr = psCmd(ctx, "-axo", "pid=,ppid=,comm=").Output() }()
+	go func() { defer wg.Done(); argsRaw, argsErr = psCmd(ctx, "-axww", "-o", "pid=,command=").Output() }()
+	go func() {
+		defer wg.Done()
+		lstart := psCmd(ctx, "-axo", "pid=,lstart=")
+		lstart.Env = append(os.Environ(), "LC_ALL=C")
+		startRaw, startErr = lstart.Output()
+	}()
+	wg.Wait()
+	if rowsErr != nil {
 		return nil
 	}
 	rows := map[int]psRow{}
-	for _, l := range strings.Split(string(raw), "\n") {
+	for _, l := range strings.Split(string(rowsRaw), "\n") {
 		f := strings.Fields(l)
 		if len(f) < 3 {
 			continue
@@ -81,8 +98,8 @@ func psProcessTable(ctx context.Context) map[int]psRow {
 	// under a test runner), and a cut after the executable hides the "adapter
 	// <profile>" and --parent-pid that name a session, so a live adapter read as
 	// absent would start a second one (#829).
-	if raw, err := psCmd(ctx, "-axww", "-o", "pid=,command=").Output(); err == nil {
-		for _, l := range strings.Split(string(raw), "\n") {
+	if argsErr == nil {
+		for _, l := range strings.Split(string(argsRaw), "\n") {
 			l = strings.TrimSpace(l)
 			p, rest, _ := strings.Cut(l, " ")
 			if pid, err := strconv.Atoi(p); err == nil {
@@ -95,10 +112,8 @@ func psProcessTable(ctx context.Context) map[int]psRow {
 	// lstart is "Mon Jan _2 15:04:05 2006" in the locale's words, so the read
 	// pins LC_ALL and the fields are joined back for the one layout parsed. A
 	// ps that lacks lstart prints an error and exits non-zero: no times.
-	lstart := psCmd(ctx, "-axo", "pid=,lstart=")
-	lstart.Env = append(os.Environ(), "LC_ALL=C")
-	if raw, err := lstart.Output(); err == nil {
-		for _, l := range strings.Split(string(raw), "\n") {
+	if startErr == nil {
+		for _, l := range strings.Split(string(startRaw), "\n") {
 			f := strings.Fields(l)
 			if len(f) < 6 {
 				continue
