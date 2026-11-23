@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 
-from support import HANG_TIMEOUT
+from support import HANG_TIMEOUT, stdin_a_terminal
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -104,8 +104,11 @@ ccmorph _ui pick model demo
 ccmorph _menu demo
 ccmorph models demo
 '''
-    r = subprocess.run(['zsh', '-fc', script, '_', str(ROOT / 'lib/ccmorph.sh')],
-                       env=env, text=True, capture_output=True, timeout=HANG_TIMEOUT)
+    # The two pickers need a terminal (#725); stdin is a pty and stdout/stderr
+    # stay pipes, so the listing lines below are still read apart from the rest.
+    with stdin_a_terminal() as tty:
+        r = subprocess.run(['zsh', '-fc', script, '_', str(ROOT / 'lib/ccmorph.sh')],
+                           env=env, stdin=tty, text=True, capture_output=True, timeout=HANG_TIMEOUT)
     assert r.returncode == 0, r.stderr
     # The fzf fixture returns every input line; picker functions return its first ID.
     assert r.stdout.splitlines()[:2] == ['allowed', 'allowed']

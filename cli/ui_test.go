@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -180,6 +181,10 @@ func TestReceiptNeverCutsTheChoiceIssue361(t *testing.T) {
 // own label, not the description fzf padded onto it — the picker already
 // showed the description, and the receipt cut it mid-phrase (#361).
 func TestSearchReceiptNamesTheLabelNotTheDescriptionIssue361(t *testing.T) {
+	// The person's path: a terminal is there to answer, so the picker runs.
+	oldProbe := pickerHasTerminal
+	pickerHasTerminal = func() bool { return true }
+	t.Cleanup(func() { pickerHasTerminal = oldProbe })
 	dir := t.TempDir()
 	// Pure builtins: PATH holds only this dir, so the fake must not call out
 	// to head or cat. It answers fzf by printing stdin's first row.
@@ -226,6 +231,100 @@ func TestTypedLinesCountsTheWrap(t *testing.T) {
 	}
 }
 
+// The no-terminal picker path (GH-725): a `go test` process often has no
+// terminal, but a developer's machine would let a real fzf find the terminal
+// the test process lacks. So each case runs uiSelect in a child that has no
+// controlling terminal at all (a session of its own), with a fixture fzf at
+// the front of its PATH. In that state the picker must not be launched and an
+// answer it could have printed is not a person's choice: every body below
+// would answer, wait, fail or cancel if it were run, and the marker proves
+// none of them ran — the refusal is the only possible pass.
+func TestSearchPickerWithoutTerminalIssue725(t *testing.T) {
+	// A version probe answers first: the picker asks fzf for its window size,
+	// and a fixture that slept there would fail for the wrong reason. The
+	// marker is written by any body that reaches the selection itself.
+	mark := "[ \"${1:-}\" = --version ] && exit 0\n[ -n \"${_CCM725_MARKER:-}\" ] && printf invoked > \"$_CCM725_MARKER\""
+	cases := []struct{ name, body string }{
+		{"a picker that would answer without a terminal", mark + "\nprintf 'demo\\tDemo profile\\n'\n"},
+		{"a picker that would wait for a key", mark + "\nexec sleep 30\n"},
+		{"a picker that would fail the way fzf fails with no terminal", mark + "\nexit 2\n"},
+		{"a picker that would read Esc as a cancel", mark + "\nexit 130\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			marker := filepath.Join(dir, "invoked")
+			fake := "#!/bin/sh\n" + tc.body
+			if err := os.WriteFile(filepath.Join(dir, "fzf"), []byte(fake), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			start := time.Now()
+			out, stderr, code := runPickerChild(t, dir, marker)
+			elapsed := time.Since(start)
+			if code != 2 {
+				t.Fatalf("uiSelect rc = %d, want 2 (the no-terminal refusal)\nstdout: %s\nstderr: %s", code, out, stderr)
+			}
+			if _, err := os.Stat(marker); err == nil {
+				t.Fatalf("the picker ran with no terminal to answer it; it must not be launched")
+			}
+			if !strings.Contains(out+stderr, "ccmorph: selection needs a terminal; pass the value directly") {
+				t.Fatalf("want the named refusal in output\nstdout: %s\nstderr: %s", out, stderr)
+			}
+			if !strings.Contains(out+stderr, "demo") {
+				t.Fatalf("want the offered rows in the refusal\nstdout: %s\nstderr: %s", out, stderr)
+			}
+			if strings.Contains(out+stderr, "Cancelled") {
+				t.Fatalf("a refusal is not a cancel\nstdout: %s\nstderr: %s", out, stderr)
+			}
+			if elapsed > 5*time.Second {
+				t.Fatalf("the refusal took %s; no picker may be run or waited on", elapsed)
+			}
+		})
+	}
+}
+
+// runPickerChild drives one uiSelect("search") in a child that has no
+// controlling terminal (Setsid: the state the issue's scripts, pipes and CI
+// jobs are in) and only the fixture fzf on PATH, and returns the child's
+// stdout, stderr and exit code — the code uiSelect returned.
+func runPickerChild(t *testing.T, pathDir, marker string) (string, string, int) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=TestSearchPickerWithoutTerminalChildHelper", "-test.v=false")
+	cmd.Env = append(os.Environ(),
+		"_CCM725_CHILD=1",
+		"PATH="+pathDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"_CCM725_MARKER="+marker,
+		"TERM=xterm",
+	)
+	devnull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devnull.Close()
+	cmd.Stdin = devnull
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return stdout.String(), stderr.String(), ee.ExitCode()
+		}
+		t.Fatalf("child: %v", err)
+	}
+	return stdout.String(), stderr.String(), 0
+}
+
+// TestSearchPickerWithoutTerminalChildHelper is the helper above's child: one
+// uiSelect, its answer on stdout, its exit status the picker's rc.
+func TestSearchPickerWithoutTerminalChildHelper(t *testing.T) {
+	if os.Getenv("_CCM725_CHILD") != "1" {
+		t.Skip("helper child: run by TestSearchPickerWithoutTerminalIssue725")
+	}
+	v, rc := uiSelect("search", "Profile", "demo\tDemo profile", "labels")
+	fmt.Printf("choice=%s rc=%d\n", v, rc)
+	os.Exit(rc)
+}
+
 // A numbered round is left as the receipt uiInput folded it to: one row, or
 // two when the question and the answer cannot share a line. The erase before
 // the next draw counts those rows, so a two-row receipt must not be taken for
@@ -247,6 +346,10 @@ func TestReceiptHeightCountsTheFold(t *testing.T) {
 // A search picker the person leaves (fzf answers Esc with exit 130) prints the
 // one Cancelled line every picker answers with — not silence, not a usage line.
 func TestSearchCancelPrintsTheOneCancelledLineIssue280(t *testing.T) {
+	// The person's path: a terminal is there to answer, so the picker runs.
+	oldProbe := pickerHasTerminal
+	pickerHasTerminal = func() bool { return true }
+	t.Cleanup(func() { pickerHasTerminal = oldProbe })
 	dir := t.TempDir()
 	fzf := "#!/bin/sh\nexit 130\n"
 	if err := os.WriteFile(filepath.Join(dir, "fzf"), []byte(fzf), 0o755); err != nil {

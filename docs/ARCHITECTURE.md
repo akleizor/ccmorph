@@ -374,7 +374,12 @@ Only the module handles key reads, terminal modes, cursor movement, and fzf argv
 The source installer ships it beside `lib/ccmorph.sh`.
 
 `TERM=dumb` and search without fzf use the module's numbered renderer. `NO_COLOR`
-removes styling. Esc/EOF cancels selection; confirmations never default to Yes.
+removes styling. A selection needs a terminal: when neither stdin nor `/dev/tty`
+can carry the picker, the picker is not launched at all, and the command prints
+`ccmorph: selection needs a terminal; pass the value directly` with the offered
+rows and a non-zero exit status — a script, pipe or CI job never waits for keys
+that cannot arrive, and no answer produced without a terminal is taken (#725).
+Esc/EOF cancels selection; confirmations never default to Yes.
 Menus go to stderr, selected IDs alone to stdout; text and secret input return in
 `REPLY`. Hidden input disables echo before displaying its prompt. Explicit
 arguments and the existing piped configuration sequence retain their behavior.

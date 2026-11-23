@@ -941,6 +941,86 @@ test_search_picker_on_an_old_fzf_never_hides_rows_silently_issue_278() {
   return $rc
 }
 
+# #725: a call with no terminal anywhere to answer must refuse by name, never
+# wait and never take an answer it could not have shown anyone. The fzf here
+# marks its own launch: were it started, the test fails even if it somehow
+# answered. The verb is launched detached from any controlling terminal (a
+# session of its own, exactly the state a script, pipe or CI job is in): the
+# suite itself may run on a developer's terminal, and there a real picker may
+# lawfully wait for that developer's keys -- what this guards is the state
+# where no keys can ever arrive. `run -i`, `config`, `inspect` and `inspect -i`
+# under a closed stdin must each exit at once, non-zero, with the missing
+# terminal named -- not hang, not print the picker's Cancelled, and not launch
+# the picker at all. (A TERM that allows fzf is forced: the refusal must be
+# the picker's own condition, not a dumb-terminal detour around it.)
+test_pickers_refuse_by_name_without_a_terminal_issue_725() {
+  local test_home=$(mktemp -d)
+  setup_home "$test_home"
+  export _CCMORPH_PROFILE_DIRS="$HOME/.config/ccmorph/profiles"
+  write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://gateway.invalid'
+  printf '%s\n' \
+    '#!/bin/sh' \
+    '[ "$1" = --version ] && { echo "0.75.0 (fake)"; exit 0; }' \
+    'echo $$ > "$HOME/fzf.pid"' \
+    'exec sleep 120' \
+    > "$HOME/bin/fzf"
+  chmod +x "$HOME/bin/fzf"
+  source "$CCMORPH_SOURCE"
+
+  # Detach launcher: fork, give the child a session (and so no controlling
+  # terminal), exec the verb there, forward its exit code. The child's pid
+  # goes to a file so a timeout can end the whole chain. python3 is already
+  # the suite's fixture interpreter (write_profile_context).
+  local detach='import os, sys
+pid = os.fork()
+if pid == 0:
+    os.setsid()
+    os.execvp(sys.argv[1], sys.argv[1:])
+    os._exit(127)
+open(os.environ["HOME"] + "/verb.pid", "w").write(str(pid))
+_, status = os.waitpid(pid, 0)
+sys.exit(status >> 8 if os.WIFEXITED(status) else 1)'
+
+  local -a verbs=('run -i' 'config' 'inspect' 'inspect -i')
+  local v out job i code rc=0
+  for v in $verbs; do
+    out="$HOME/refusal.out"
+    : > "$out"; : > "$HOME/verb.pid"; : > "$HOME/fzf.pid"
+    # v stays one scalar here on purpose: ${=v} inside double quotes would
+    # split the "-i" into a separate argument to python, and the picker's
+    # flag would die silently before the detached shell ever saw it.
+    ( TERM=xterm-256color python3 -c "$detach" zsh -c \
+        "source ${(q)CCMORPH_SOURCE} && ccmorph $v" </dev/null >"$out" 2>&1 ) &
+    job=$!
+    i=0
+    while (( ++i <= 200 )); do kill -0 $job 2>/dev/null || break; command sleep 0.1; done
+    if kill -0 $job 2>/dev/null; then
+      # The picker's own wait is still running: end it, fail the verb, and
+      # say nothing about its output -- there will be none to read.
+      [[ ! -s "$HOME/fzf.pid" ]] || kill -KILL $(<$HOME/fzf.pid) 2>/dev/null
+      [[ ! -s "$HOME/verb.pid" ]] || kill -KILL $(<$HOME/verb.pid) 2>/dev/null
+      kill -KILL $job 2>/dev/null; wait $job 2>/dev/null
+      print -u2 -- "ccmorph $v with no terminal waited forever instead of refusing"
+      rc=1
+      continue
+    fi
+    wait $job; code=$?
+    (( code != 0 )) || { print -u2 -- "ccmorph $v with no terminal must exit non-zero (got 0)"; rc=1; }
+    assert_contains "$(<"$out")" 'needs a terminal' \
+      "ccmorph $v must name the missing terminal as the cause" || rc=1
+    assert_not_contains "$(<"$out")" 'Cancelled' \
+      "ccmorph $v with no picker run must not answer with Cancelled" || rc=1
+    # The fzf here would have printed a choice had it run: the answer is not
+    # taken without a terminal, so the picker must not be launched at all.
+    [[ ! -s "$HOME/fzf.pid" ]] || {
+      print -u2 -- "ccmorph $v launched a picker with no terminal to answer it"
+      rc=1
+    }
+  done
+  rm -rf "$test_home"
+  return $rc
+}
+
 # The five levels are Claude Code's own fixed enum, so this picker needs no
 # endpoint call -- and must not make one.
 test_set_effort_interactively_offers_the_engine_levels() {
@@ -2598,7 +2678,12 @@ test_cancelled_profile_picker_launches_nothing() {
   local test_home
   test_home=$(mktemp -d)
   setup_home "$test_home"
-  printf '%s\n' '#!/bin/sh' 'exit 130' > "$HOME/bin/fzf"
+  # The fixture records that it was reached: a test that only sees a non-zero
+  # exit cannot tell Esc from a picker that was refused for want of a terminal
+  # (#725), so the Esc here must be the picker's own.
+  printf '%s\n' '#!/bin/sh' \
+    '[ "$1" = --version ] && { echo "0.75.0 (fake)"; exit 0; }' \
+    'printf "%s\\n" ran >> "$HOME/fzf.invoked"' 'exit 130' > "$HOME/bin/fzf"
   chmod +x "$HOME/bin/fzf"
   write_apikey_conf alpha 'api_key=sk-test-alpha'
   source "$CCMORPH_SOURCE"
@@ -2608,6 +2693,10 @@ test_cancelled_profile_picker_launches_nothing() {
     print -u2 -- 'a cancelled profile picker must abort the launch'
     rc=1
   fi
+  [[ -s "$HOME/fzf.invoked" ]] || {
+    print -u2 -- 'the cancel must come from the picker, not from a refused launch'
+    rc=1
+  }
   [[ ! -s "$CCMORPH_TEST_LOG" ]] || {
     print -u2 -- 'a cancelled profile picker must not launch Claude Code'
     rc=1
@@ -2698,7 +2787,11 @@ test_launch_aborts_when_pick_is_cancelled() {
   test_home=$(mktemp -d)
   setup_home "$test_home"
   fake_gateway
-  printf '%s\n' '#!/bin/sh' 'exit 130' > "$HOME/bin/fzf"
+  # Same receipt as above: the Esc must be answered by the picker itself, not
+  # by a no-terminal refusal that aborts for another reason (#725).
+  printf '%s\n' '#!/bin/sh' \
+    '[ "$1" = --version ] && { echo "0.75.0 (fake)"; exit 0; }' \
+    'printf "%s\\n" ran >> "$HOME/fzf.invoked"' 'exit 130' > "$HOME/bin/fzf"
   chmod +x "$HOME/bin/fzf"
   write_apikey_conf gw 'api_key=sk_prod_test' 'base_url=https://gateway.invalid'
   source "$CCMORPH_SOURCE"
@@ -2708,6 +2801,10 @@ test_launch_aborts_when_pick_is_cancelled() {
     print -u2 -- 'a cancelled picker must abort the launch, not start a session'
     rc=1
   fi
+  [[ -s "$HOME/fzf.invoked" ]] || {
+    print -u2 -- 'the cancel must come from the picker, not from a refused launch'
+    rc=1
+  }
   [[ ! -s "$CCMORPH_TEST_LOG" ]] || {
     print -u2 -- 'a cancelled picker must not launch Claude Code at all'
     rc=1
@@ -11682,6 +11779,51 @@ test_every_credential_type_states_how_it_authenticates() {
   return $rc
 }
 
+# Tests whose picker a person answers. Since GH-725 a picker is opened only
+# where a terminal can carry it; without one the command refuses by name. This
+# suite runs headless in CI, so each of these tests re-enters the suite in a
+# pty child -- stdin a terminal, exactly the state they describe -- and the
+# child's own assertions are the test, not a copy. A test that also passes
+# headless stays in the list harmlessly: with a terminal on stdin it runs in
+# place. The list is data, not a second copy of any test.
+_ccm_terminal_tests=(
+  test_cancelled_profile_picker_launches_nothing
+  test_interactive_asks_no_model_where_ccmorph_owns_no_list
+  test_launch_aborts_when_pick_is_cancelled
+  test_launch_interactive_opens_on_the_saved_model_issue_377
+  test_launch_interactive_resolves_a_real_model
+  test_launch_interactive_resolves_the_account
+  test_launch_interactive_with_an_account_asks_only_the_model
+  test_menu_keeps_a_catalogue_value_spelled_at_keep
+  test_menu_returns_a_bare_model_id
+  test_menu_with_no_account_chains_from_the_account_chooser
+  test_profile_pick_precedes_model_pick
+  test_profile_picker_does_not_change_default
+  test_public_model_picker_flag_asks_only_for_model
+  test_search_picker_on_an_old_fzf_never_hides_rows_silently_issue_278
+  test_set_model_interactively_saves_the_chosen_id
+  test_the_former_pick_name_still_works
+)
+
+# _ccm_run_test_under_a_terminal NAME: run one test in its own suite process
+# with a pty on stdin. The child is the same suite, filtered to the one name
+# and pinned to one shard, so its PASS/FAIL is the test's own verdict; a child
+# that dies, hangs (the pty helper's deadline) or passes zero tests fails here
+# instead of passing on an empty run.
+_ccm_run_test_under_a_terminal() {
+  local name="$1" log rc=0
+  log=$(mktemp)
+  run_under_a_terminal "$log" env CCMORPH_TEST_FILTER="$name" \
+    CCMORPH_TEST_SHARD=0/1 CCMORPH_TEST_JOBS=1 zsh "$SCRIPT_DIR/ccmorph_test.zsh" || rc=1
+  grep -q "All 1 tests passed" "$log" || rc=1
+  if (( rc != 0 )); then
+    print -u2 -- "$name did not pass under a terminal; its output was:"
+    print -u2 -- "$(<"$log")"
+  fi
+  rm -f "$log"
+  return $rc
+}
+
 run_test() {
   local name="$1" rc=0
   [[ -z "${CCMORPH_TEST_FILTER:-}" || "$name" == *"$CCMORPH_TEST_FILTER"* ]] || return 0
@@ -11689,7 +11831,11 @@ run_test() {
   [[ -z "${CCMORPH_TEST_SHARD:-}" ]] ||
     (( tests_seen++ % ${CCMORPH_TEST_SHARD#*/} == ${CCMORPH_TEST_SHARD%/*} )) || return 0
   (( ++tests_run ))
-  "$name" || rc=1
+  if (( ${_ccm_terminal_tests[(I)$name]} )) && [[ ! -t 0 ]]; then
+    _ccm_run_test_under_a_terminal "$name" || rc=1
+  else
+    "$name" || rc=1
+  fi
   # GH-434: fail a test whose child outlives it -- the leak that stranded the
   # landing batch -- and reap the child so nothing escapes the suite.
   _ccm_test_sweep_homes $(( _ccm_test_homes_mark + 1 )) || rc=1
@@ -12077,6 +12223,7 @@ run_test test_model_command_sets_the_profiles_default_model
 run_test test_set_model_interactively_saves_the_chosen_id
 run_test test_set_effort_interactively_offers_the_engine_levels
 run_test test_search_picker_on_an_old_fzf_never_hides_rows_silently_issue_278
+run_test test_pickers_refuse_by_name_without_a_terminal_issue_725
 run_test test_the_picker_without_fzf_names_the_direct_command_and_the_choices
 run_test test_a_test_home_hides_the_machines_bridge_issue_414
 run_test test_a_bridged_path_entry_keeps_its_coresident_tools_issue_476
