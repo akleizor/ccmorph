@@ -140,7 +140,7 @@ func TestDispatchHelpStatesEveryFlag(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	for _, want := range []string{"--family", "--no-decider", "--refresh", "--kind", "--tier", "--profile", "--model", "--cwd",
-		"--dry-run", "still scores the finished answer", "when --profile and --model are both named",
+		"--dry-run", "finished answer is not scored", "when --profile and --model are both named",
 		"--dry-run exits 3", "a named --profile and --model too"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("dispatch --help omits %s:\n%s", want, out.String())
