@@ -296,6 +296,37 @@ def archive_rows(path):
         raise ValueError(f"archive {path.name}: {exc}") from exc
 
 
+def same_named_rows(old_data, new_data):
+    """util/paths.SameNamedRows is the store's one merge rule, mirrored here
+    (#654, #804): two rows that share a file name are one turn, and the newer
+    one wins, only when their identity agrees — a non-empty response_id both
+    hold, a turn_id that must match whenever it is there, and an empty turn
+    only when both rows carry equal string timestamps. A non-finite token
+    parses as a number no member string can equal — the Go readers normalize it
+    to null before comparing, and a member that is not a string is not a
+    match — so it keeps both. A side that does not parse to a JSON object at
+    all — bytes that are truncated, or a bare scalar a crashed write left — is
+    not the same turn as anything either: the owner checks that shape once, and
+    so does this mirror, instead of calling a member accessor on whatever came
+    back and raising here inside the generator, where export's per-receipt
+    handler cannot see it."""
+    if old_data == new_data:
+        return True  # util/paths' bytes.Equal first check: no parse needed
+    try:
+        old = json.loads(old_data, parse_constant=float)
+        new = json.loads(new_data, parse_constant=float)
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return False
+    rid, turn = old.get("response_id"), old.get("turn_id", "")
+    new_turn = new.get("turn_id", "")
+    return (isinstance(rid, str) and bool(rid) and rid == new.get("response_id")
+            and isinstance(turn, str) and isinstance(new_turn, str) and turn == new_turn
+            and (turn or (isinstance(old.get("timestamp"), str)
+                          and old.get("timestamp") == new.get("timestamp"))))
+
+
 def receipt_rows(root, since):
     """Folder and archived receipts in original path order, under the store move lock.
     A listed receipt whose name is gone by its read comes back with data None (#583);
@@ -401,33 +432,10 @@ def receipt_rows(root, since):
                             previous = rows.get(entry.name)
                             if previous is not None:
                                 old_data, old_mtime = previous
-                                same = old_data == data
-                                if not same:
-                                    # util/paths.SameNamedRows is the store's one merge
-                                    # rule, mirrored here (#654): a non-finite token parses
-                                    # as a number no member string can equal — the Go
-                                    # readers normalize it to null before comparing, and a
-                                    # member that is not a string is not a match — and an
-                                    # empty turn is only one row when both rows carry a
-                                    # string timestamp. A row that does not parse is not
-                                    # the same turn as anything: it is kept beside its
-                                    # sibling and skipped when the export reads it, the
-                                    # Go readers' reading, instead of raising here inside
-                                    # the generator where export's per-receipt handler
-                                    # cannot see it (#654).
-                                    try:
-                                        old = json.loads(old_data, parse_constant=float)
-                                        new = json.loads(data, parse_constant=float)
-                                    except (ValueError, TypeError):
-                                        old = new = None
-                                    if old is not None and new is not None:
-                                        rid, turn = old.get("response_id"), old.get("turn_id", "")
-                                        new_turn = new.get("turn_id", "")
-                                        same = (isinstance(rid, str) and bool(rid) and rid == new.get("response_id")
-                                                and isinstance(turn, str) and isinstance(new_turn, str) and turn == new_turn
-                                                and (turn or (isinstance(old.get("timestamp"), str)
-                                                               and old.get("timestamp") == new.get("timestamp"))))
-                                if not same:
+                                if not same_named_rows(old_data, data):
+                                    # A row that is not the same turn is kept beside its
+                                    # sibling and skipped when the export reads it, the Go
+                                    # readers' reading (#654).
                                     conflicts.append((entry.name, previous))
                                 elif old_mtime > mtime:
                                     continue
@@ -465,6 +473,12 @@ def export(root, output, since=None):
             row = json.loads(data, parse_constant=float)
         except ValueError:
             continue  # truncated, zero-byte or otherwise unparseable: one row, never the run
+        if not isinstance(row, dict):
+            # A bare scalar is not a receipt either: util/paths.parseDoc's one
+            # rule for every Go reader — nil unless the bytes are a JSON object
+            # — so it is skipped as the same unparseable row, never read for
+            # members it does not have (#804).
+            continue
         try:  # every receipt in range is parsed: its own stamp decides the range
             converted = convert(row)
         except (ValueError, KeyError, TypeError) as exc:
