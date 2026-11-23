@@ -25,6 +25,12 @@
   route profile maps outside its own Claude family, read through
   `ccmorph get <route> --json`; a `tier.` line still overrides one alias.
 
+- **`ccmorph inspect` names the saved model on the launches-as line for every
+  profile kind.** A Claude account, Claude token or provider profile with a
+  saved model read `launches as  claude (Claude Code picks the model)` under a
+  model row naming that model, though a plain launch starts it; the line now
+  reads `claude --model <id>`, as an API key profile's already did, and the
+  unsaved words show only when no model is saved (#389).
 - **The installer no longer breaks under options set in `~/.zshenv`.** zsh reads
   that file before any script, so `unsetopt bareglobqual` or `setopt
   ignorebraces` there stopped `./install.sh`, `ccmorph update` and the one-line
