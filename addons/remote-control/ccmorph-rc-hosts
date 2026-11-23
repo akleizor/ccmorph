@@ -10,6 +10,7 @@ Config (default $CCMORPH_STATE_DIR/rc-hosts, i.e. ~/.config/ccmorph/rc-hosts):
     ~/code/secondary-project route=ds    # a folder may name its own route
     ~/x -- --session-id session_01…   # args after -- go to remote-control (one
                                       # conversation pinned by id)
+    retire=~/project                  # stop hosting this folder (its line may stay)
 
 Each folder gets `ccmorph-rc <route>` (under a pty: remote-control is a terminal
 program). A host that exits is relaunched with backoff, and ccmorph-rc resumes the
@@ -221,6 +222,34 @@ PERMISSION_MODES = ("default", "acceptEdits", "auto", "bypassPermissions", "dont
 TIER_PREFIX = "tier."
 
 
+def settings_key(reader) -> str | None:
+    """The registry prefix this reader is registered under, or None when the
+    registry no longer names it. Every reader finds its own key here, so the key
+    lives in SETTINGS_READERS alone: dropping an entry silences the reader with
+    parse()'s skip, instead of leaving a parser that consumes a line parse()
+    treats as a folder -- the ghost host this registry exists to prevent."""
+    return next((prefix for prefix, r in SETTINGS_READERS.items() if r is reader), None)
+
+
+def setting_value(text: str, reader) -> str | None:
+    """The value of the one line `reader` reads, under the prefix the registry
+    registers it with, or None when the line (or the registry entry) is absent."""
+    prefix = settings_key(reader)
+    if prefix is None:
+        return None
+    m = re.search(rf"^\s*{re.escape(prefix)}(\S+)", text, re.M)
+    return m.group(1) if m else None
+
+
+def setting_values(text: str, reader) -> list[str]:
+    """Every value of the lines `reader` reads, under its registry prefix; none
+    when the registry does not name it."""
+    prefix = settings_key(reader)
+    if prefix is None:
+        return []
+    return re.findall(rf"^\s*{re.escape(prefix)}(\S+)", text, re.M)
+
+
 def permission_mode(text: str) -> str | None:
     """`permission=<mode>` -- the permission mode every spawned session starts in.
 
@@ -229,11 +258,8 @@ def permission_mode(text: str) -> str | None:
     deliberate choice about sessions reachable from any signed-in device, so it
     belongs in the config where it is visible and reversible, not in a default.
     """
-    m = re.search(r"^\s*permission=(\S+)", text, re.M)
-    return m.group(1) if m and m.group(1) in PERMISSION_MODES else None
-
-
-INFERENCE_LINE = re.compile(r"^\s*inference=(\S+)", re.M)
+    value = setting_value(text, permission_mode)
+    return value if value in PERMISSION_MODES else None
 
 
 def inference_name(text: str) -> str | None:
@@ -241,8 +267,7 @@ def inference_name(text: str) -> str | None:
     config carries none. The line-start anchor is the whole rule: a comment
     that merely mentions `inference=` is not a mapping and may not reach
     account resolution (issue #596)."""
-    m = INFERENCE_LINE.search(text)
-    return m.group(1) if m else None
+    return setting_value(text, inference_name)
 
 
 def inference_account(text: str) -> str:
@@ -285,12 +310,14 @@ def tier_map(text: str, profile: dict[str, str] | None = None) -> dict[str, str]
     """
     out = {a: m for a, m in (profile or {}).items()
            if isinstance(m, str) and m and not m.lower().startswith(f"claude-{a}")}
-    for raw in text.splitlines():
-        line = raw.split("#", 1)[0].strip()
-        if line.startswith(TIER_PREFIX) and "=" in line:
-            alias, _, model = line[len(TIER_PREFIX):].partition("=")
-            if alias.strip() and model.strip():
-                out[alias.strip()] = model.strip()
+    prefix = settings_key(tier_map)
+    if prefix is not None:
+        for raw in text.splitlines():
+            line = raw.split("#", 1)[0].strip()
+            if line.startswith(prefix) and "=" in line:
+                alias, _, model = line[len(prefix):].partition("=")
+                if alias.strip() and model.strip():
+                    out[alias.strip()] = model.strip()
     return out
 
 
@@ -352,9 +379,11 @@ def pin_refusal(folder: str, argv: list[str]) -> str | None:
 
 
 def parse(text: str) -> dict[str, tuple[str, tuple[str, ...]]]:
-    """{absolute folder: (route, remote-control args)}, excluding archived bridges."""
+    """{absolute folder: (route, remote-control args)}, excluding archived and
+    retired bridges."""
     route, folders = None, {}
     archived = archived_set(text)
+    retired = retire_set(text)
     for raw in text.splitlines():
         line = raw.split("#", 1)[0].strip()
         if not line:
@@ -362,15 +391,15 @@ def parse(text: str) -> dict[str, tuple[str, tuple[str, ...]]]:
         if line.startswith("route="):
             route = line[6:].strip()
             continue
-        if line.startswith(("idle_days=", "purge_days=", "park_hours=", "permission=", "retire=", "archived=")) or line.startswith(TIER_PREFIX):
+        if line.startswith(SETTINGS_PREFIXES):
             continue                         # settings, not folders
         head, _, args = line.partition(" -- ")
         path, _, rest = head.partition(" ")
         folder = resolve(path)
         if folder is None:
             continue                     # unresolvable: resolve() logged the refusal
-        if folder in archived:
-            continue                         # archived in the app: never reattach it
+        if folder in archived or folder in retired:
+            continue         # archived in the app, or retired in the config: never reattach it
         argv = args.split()
         refused = pin_refusal(folder, argv)
         if refused:
@@ -685,39 +714,68 @@ class Host:
         return False
 
 
-def days_setting(text: str, name: str, default: float) -> float:
-    """A `<name>=<days>` config line, or its documented default when absent or
-    not a number: `[0-9.]+` matches `.` and `1..0`, which float() rejects, and
-    the idle check must not take the supervisor down for one bad line."""
-    m = re.search(rf"^\s*{name}=([0-9.]+)", text, re.M)
+def days_setting(text: str, prefix: str | None, default: float) -> float:
+    """A `<prefix><days>` config line, or its documented default when absent, not
+    a number, or no longer named by the settings registry: `[0-9.]+` matches `.`
+    and `1..0`, which float() rejects, and the idle check must not take the
+    supervisor down for one bad line."""
+    if prefix is None:
+        return default
+    m = re.search(rf"^\s*{re.escape(prefix)}([0-9.]+)", text, re.M)
     if not m:
         return default
     try:
         return float(m.group(1))
     except ValueError:
-        log(f"config: {name}={m.group(1)} is not a number; using the default {default:g}")
+        log(f"config: {prefix}{m.group(1)} is not a number; using the default {default:g}")
         return default
 
 
 def idle_days(text: str) -> float:
-    return days_setting(text, "idle_days", 1.0)
+    return days_setting(text, settings_key(idle_days), 1.0)
 
 
 def purge_days(text: str) -> float:
-    return days_setting(text, "purge_days", 7.0)
+    return days_setting(text, settings_key(purge_days), 7.0)
 
 
 def park_hours(text: str) -> float:
-    return days_setting(text, "park_hours", 6.0)   # 0 keeps every idle session's process
-
-
-ARCHIVED_RE = re.compile(r"^\s*archived=(\S+)", re.M)
+    return days_setting(text, settings_key(park_hours), 6.0)   # 0 keeps every idle session's process
 
 
 def archived_set(text: str) -> set[str]:
     """Folders archived in the app, kept until idle cleanup comments their line
     out. An unresolvable marker is dropped: it can match no folder."""
-    return {f for f in map(resolve, ARCHIVED_RE.findall(text)) if f}
+    return {f for f in map(resolve, setting_values(text, archived_set)) if f}
+
+
+def retire_set(text: str) -> set[str]:
+    """Folders the config retires from hosting: the line may stay (so nothing is
+    commented out by hand), but no host starts for the folder and its bridge is
+    never reattached. An unresolvable marker is dropped: it can match no folder."""
+    return {f for f in map(resolve, setting_values(text, retire_set)) if f}
+
+
+# The one settings registry: a settings line (anything but `route=`, which
+# parse() reads itself) is skipped as "settings, not folders" exactly when a
+# reader here consumes it, and SETTINGS_PREFIXES -- the skip tuple parse() uses
+# -- is derived from this dict. It is the source of truth in both directions:
+# every reader finds its own prefix through settings_key(), so it reads nothing
+# once its entry is gone, and parse() stops skipping that line in the same edit.
+# One list, so the two sides cannot drift again: `inference=` was read but not
+# skipped, so a documented line became a ghost host, and `retire=` was skipped
+# but no parser read it (GH-655).
+SETTINGS_READERS = {
+    "idle_days=": idle_days,
+    "purge_days=": purge_days,
+    "park_hours=": park_hours,
+    "permission=": permission_mode,
+    "inference=": inference_name,
+    "archived=": archived_set,
+    "retire=": retire_set,
+    TIER_PREFIX: tier_map,
+}
+SETTINGS_PREFIXES = tuple(SETTINGS_READERS)
 
 
 def session_entries(text: str):
