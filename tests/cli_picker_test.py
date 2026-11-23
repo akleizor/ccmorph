@@ -1466,6 +1466,8 @@ class PickerTTYTest(unittest.TestCase):
             env=env, input='y\n', capture_output=True, text=True, timeout=HANG_TIMEOUT)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('Removed demo', result.stdout)
+        # No active file: the confirmation must not invent a default (#844).
+        self.assertNotIn('This is your current default', result.stderr)
         self.assertFalse((self.state / 'demo.conf').exists())
         self.assertFalse((self.state / 'profiles' / 'demo').exists())
 
@@ -1485,6 +1487,76 @@ class PickerTTYTest(unittest.TestCase):
         self.assertTrue((self.state / 'demo.conf').is_file())
         self.assertEqual(self.field('demo', 'api_key'), 'old-secret')
         self.assertTrue((self.state / 'profiles' / 'demo').is_dir())
+
+    def test_rm_confirmation_names_the_default_and_promotes_the_only_survivor_issue_844(self):
+        # Two halves of #844 in a terminal: the confirmation says the profile
+        # is the current default before the Yes/No, and the one profile left
+        # takes the default in the same breath instead of leaving plain
+        # `ccmorph run` dead.
+        env = self.env()
+        self.profile()
+        self.profile('other', endpoint='https://other.example', key='other-secret')
+        (self.state / 'active').write_text('demo\n')
+        rc, out, missed = run_pty('ccmorph rm demo', env, [(b'Remove this profile?', b'\x1b[B\r')])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertLess(out.index('This is your current default'),
+                        out.index('Remove this profile?'),
+                        'the default sentence must come before the question')
+        self.assertIn('default profile removed — other is now the default',
+                      '\n'.join(screen(out)), out)
+        self.assertEqual((self.state / 'active').read_text(), 'other\n')
+
+    def test_rm_in_a_terminal_asks_which_survivor_becomes_the_default_issue_844(self):
+        # Several survivors cannot be chosen for the person; the profile picker
+        # asks, and the choice is written as the new default.
+        env = self.env(fzf=True)
+        for name in ('demo', 'alpha', 'beta'):
+            self.profile(name, endpoint=f'https://{name}.example', key=f'{name}-secret')
+        (self.state / 'active').write_text('demo\n')
+        self.spec('Profile=beta')
+        rc, out, missed = run_pty('ccmorph rm demo', env, [(b'Remove this profile?', b'\x1b[B\r')])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertIn('beta is now the default', '\n'.join(screen(out)), out)
+        self.assertEqual((self.state / 'active').read_text(), 'beta\n')
+        _, rows = self.first_menu()
+        offered = [row.split('\t')[0] for row in rows]
+        self.assertIn('alpha', offered)
+        self.assertIn('beta', offered)
+        self.assertNotIn('demo', offered)
+
+    def test_rm_in_a_terminal_names_the_survivors_when_the_default_picker_is_left_issue_844(self):
+        # Leaving the survivor picker is not a failed removal: the profile is
+        # gone, the default stays unset, and the summary names every surviving
+        # profile and the command that chooses one.
+        env = self.env(fzf=True)
+        for name in ('demo', 'alpha', 'beta'):
+            self.profile(name, endpoint=f'https://{name}.example', key=f'{name}-secret')
+        (self.state / 'active').write_text('demo\n')
+        self.spec('Profile=CANCEL')
+        rc, out, missed = run_pty('ccmorph rm demo', env, [(b'Remove this profile?', b'\x1b[B\r')])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        self.assertFalse((self.state / 'active').exists())
+        text = '\n'.join(screen(out))
+        self.assertIn('default profile removed — set one: ccmorph use <profile>', text, out)
+        self.assertIn('profiles: alpha beta', text, out)
+
+    def test_rm_of_a_non_default_profile_in_a_terminal_leaves_the_default_issue_844(self):
+        # The other side of the confirmation: removing a profile that is not
+        # the default says nothing about the default and does not touch it.
+        env = self.env()
+        self.profile()
+        self.profile('other', endpoint='https://other.example', key='other-secret')
+        (self.state / 'active').write_text('demo\n')
+        rc, out, missed = run_pty('ccmorph rm other', env, [(b'Remove this profile?', b'\x1b[B\r')])
+        self.assertIsNone(missed, out)
+        self.assertEqual(rc, 0, out)
+        text = '\n'.join(screen(out))
+        self.assertNotIn('current default', text)
+        self.assertNotIn('default profile removed', text)
+        self.assertEqual((self.state / 'active').read_text(), 'demo\n')
 
     def test_current_value_is_not_offered_twice(self):
         env = self.env(fzf=True)

@@ -41,11 +41,11 @@ class ProfileCommands(unittest.TestCase):
             self.assertEqual(removed.returncode, 0, removed.stderr)
             self.assertFalse((state / 'renamed.conf').exists())
             self.assertFalse((profiles / 'renamed').exists())
-            self.assertFalse((state / 'active').exists())
             # Piped in with its answer (no terminal, so the [y/N] line answers;
-            # #724 made rm ask whoever runs it), removing the default still
-            # says the default is gone and how to set one (#652).
-            self.assertIn('default profile removed — set one: ccmorph use <profile>',
+            # #724 made rm ask whoever runs it). The one surviving profile
+            # takes the default at once (#844), so a plain run keeps working.
+            self.assertEqual((state / 'active').read_text(), 'other\n')
+            self.assertIn('default profile removed — other is now the default',
                           removed.stderr)
             self.assertIn('"m": 222222', (profiles / 'other/models.json').read_text())
             self.assertEqual((shared / 'history').read_text(), 'keep')

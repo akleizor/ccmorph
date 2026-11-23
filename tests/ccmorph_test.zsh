@@ -10665,6 +10665,182 @@ test_a_bare_invocation_prints_usage_and_launches_nothing() {
   return $rc
 }
 
+# GH-844: removing the default profile used to destroy it without a word and
+# leave plain `ccmorph run` dead while other profiles still existed; #652 named
+# the loss only after the irreversible step. The confirmation now says the
+# profile is the current default before the Yes/No, and the only survivor takes
+# the default at once so `run` keeps working.
+test_rm_of_the_default_says_so_and_promotes_the_only_survivor_issue_844() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  # setup_home seeds a proxy profile; this test counts survivors, so keep the
+  # fixture to the two profiles it makes itself.
+  command rm -f "$HOME/.config/ccmorph/proxy.conf"
+  write_apikey_conf gw 'api_key=k' 'base_url=https://gateway.invalid'
+  write_apikey_conf vp 'api_key=k' 'base_url=https://gateway.invalid'
+  source "$CCMORPH_SOURCE"
+
+  ccmorph use gw >/dev/null || {
+    print -u2 -- 'could not set the default profile'
+    rm -rf "$test_home"; return 1
+  }
+
+  local rc=0 out before active=""
+  out=$(print y | ccmorph rm gw 2>&1) || {
+    print -u2 -- "rm of the default failed: $out"
+    rc=1
+  }
+  # The sentence belongs to the confirmation, before the question is asked.
+  before=${out%%Remove this profile?*}
+  assert_contains "$before" 'This is your current default' \
+    'the confirmation must name the profile as the current default before asking' || rc=1
+  assert_contains "$out" 'default profile removed — vp is now the default' \
+    'the only survivor must be promoted by name' || rc=1
+  [[ -e "$HOME/.config/ccmorph/active" ]] && active=$(<"$HOME/.config/ccmorph/active")
+  [[ "$active" == vp ]] || {
+    print -u2 -- "the only survivor must become the default, active=${(qqq)active}"
+    rc=1
+  }
+  # The failure the issue reported: the next plain run died with "no default
+  # profile set" while vp existed. It now launches.
+  out=$(ccmorph run 2>&1) || {
+    print -u2 -- "plain ccmorph run failed after the promotion: $out"
+    rc=1
+  }
+  assert_not_contains "$out" 'no default profile set' \
+    'plain ccmorph run must use the promoted default' || rc=1
+
+  rm -rf "$test_home"
+  return $rc
+}
+
+# GH-844: with several survivors a pipe cannot choose for the person, so the
+# removal refuses to guess: it names every surviving profile and the command
+# that chooses one.
+test_rm_of_the_default_names_every_survivor_when_several_remain_issue_844() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  # setup_home seeds a proxy profile; this test counts survivors, so keep the
+  # fixture to the profiles it makes itself.
+  command rm -f "$HOME/.config/ccmorph/proxy.conf"
+  write_apikey_conf gw 'api_key=k' 'base_url=https://gateway.invalid'
+  write_apikey_conf vp 'api_key=k' 'base_url=https://gateway.invalid'
+  write_apikey_conf other 'api_key=k' 'base_url=https://gateway.invalid'
+  source "$CCMORPH_SOURCE"
+
+  ccmorph use gw >/dev/null || {
+    print -u2 -- 'could not set the default profile'
+    rm -rf "$test_home"; return 1
+  }
+
+  local rc=0 out
+  out=$(print y | ccmorph rm gw 2>&1) || {
+    print -u2 -- "rm of the default failed: $out"
+    rc=1
+  }
+  assert_contains "$out" 'default profile removed — set one: ccmorph use <profile>' \
+    'the refusal must still name the ccmorph use command' || rc=1
+  assert_contains "$out" 'profiles: other vp' \
+    'the refusal must name every surviving profile' || rc=1
+  assert_not_contains "$out" 'is now the default' \
+    'a pipe must not pick one survivor for the person' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/active" ]] || {
+    print -u2 -- 'a piped refusal must leave no default behind'
+    rc=1
+  }
+
+  rm -rf "$test_home"
+  return $rc
+}
+
+# GH-844: the other side of the confirmation — a non-default removal says
+# nothing about the default and leaves it exactly where it was.
+test_rm_of_a_non_default_profile_leaves_the_default_alone_issue_844() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  # Keep the fixture to the profiles this test compares; setup_home's proxy
+  # profile is not part of the question.
+  command rm -f "$HOME/.config/ccmorph/proxy.conf"
+  write_apikey_conf gw 'api_key=k' 'base_url=https://gateway.invalid'
+  write_apikey_conf vp 'api_key=k' 'base_url=https://gateway.invalid'
+  source "$CCMORPH_SOURCE"
+
+  ccmorph use gw >/dev/null || {
+    print -u2 -- 'could not set the default profile'
+    rm -rf "$test_home"; return 1
+  }
+
+  local rc=0 out active=""
+  out=$(print y | ccmorph rm vp 2>&1) || {
+    print -u2 -- "rm of a non-default failed: $out"
+    rc=1
+  }
+  assert_contains "$out" 'Removed vp' 'the profile must still be removed' || rc=1
+  assert_not_contains "$out" 'current default' \
+    'a non-default removal must not mention the default in the confirmation' || rc=1
+  assert_not_contains "$out" 'default profile removed' \
+    'a non-default removal must not report a lost default' || rc=1
+  [[ -e "$HOME/.config/ccmorph/active" ]] && active=$(<"$HOME/.config/ccmorph/active")
+  [[ "$active" == gw ]] || {
+    print -u2 -- "the untouched default must stay, active=${(qqq)active}"
+    rc=1
+  }
+
+  rm -rf "$test_home"
+  return $rc
+}
+
+# GH-844: nothing survives, so there is no default to promote; the notice #652
+# added stays, and a conf that cannot be read is never promoted into it.
+test_rm_of_the_last_profile_keeps_the_set_one_notice_issue_844() {
+  local test_home
+  test_home=$(mktemp -d)
+  setup_home "$test_home"
+  # setup_home seeds a proxy profile; this test counts survivors, so keep the
+  # fixture to the profiles it makes itself.
+  command rm -f "$HOME/.config/ccmorph/proxy.conf"
+  write_apikey_conf gw 'api_key=k' 'base_url=https://gateway.invalid'
+  printf '%s\n' 'type=quantum' > "$HOME/.config/ccmorph/broken.conf"
+  source "$CCMORPH_SOURCE"
+
+  ccmorph use gw >/dev/null || {
+    print -u2 -- 'could not set the default profile'
+    rm -rf "$test_home"; return 1
+  }
+
+  local rc=0 out
+  out=$(print y | ccmorph rm gw 2>&1) || {
+    print -u2 -- "rm of the last profile failed: $out"
+    rc=1
+  }
+  assert_contains "$out" 'default profile removed — set one: ccmorph use <profile>' \
+    'with no readable survivor the set-one notice must stay' || rc=1
+  assert_not_contains "$out" 'is now the default' \
+    'an unreadable conf must never be promoted' || rc=1
+  [[ ! -e "$HOME/.config/ccmorph/active" ]] || {
+    print -u2 -- 'no survivor leaves no default behind'
+    rc=1
+  }
+
+  # The leftover confirmation is a confirmation too: a default whose .conf is
+  # gone still says so before its private state is removed.
+  mkdir -p "$HOME/.config/ccmorph/profiles/old"
+  printf '%s\n' old > "$HOME/.config/ccmorph/active"
+  out=$(print y | ccmorph rm old 2>&1) || {
+    print -u2 -- "rm of leftover default state failed: $out"
+    rc=1
+  }
+  before=${out%%Remove these leftovers?*}
+  assert_contains "$before" 'This is your current default' \
+    'the leftover confirmation must name the default it destroys' || rc=1
+
+  rm -rf "$test_home"
+  return $rc
+}
+
 test_the_launcher_adds_nothing_unrequested() {
   # A launch must pass argv through untouched. There is no silent permission
   # bypass: `--dangerously-skip-permissions` reaches the launcher only when the
@@ -11959,6 +12135,10 @@ run_test test_the_installer_wires_no_shell_and_installs_managed_commands
 run_test test_the_command_resolves_its_library_and_forwards_every_argument
 run_test test_the_command_reports_a_library_it_cannot_load
 run_test test_a_bare_invocation_prints_usage_and_launches_nothing
+run_test test_rm_of_the_default_says_so_and_promotes_the_only_survivor_issue_844
+run_test test_rm_of_the_default_names_every_survivor_when_several_remain_issue_844
+run_test test_rm_of_a_non_default_profile_leaves_the_default_alone_issue_844
+run_test test_rm_of_the_last_profile_keeps_the_set_one_notice_issue_844
 run_test test_run_keeps_native_command_delimiters
 run_test test_the_launcher_adds_nothing_unrequested
 run_test test_source_names_no_operator_profile

@@ -47,12 +47,22 @@ func (l *launcher) rm(args []string) int {
 		return rc
 	}
 	pdir, auth := filepath.Join(l.profileDirs, name), filepath.Join(l.dir, "auth", name)
+	// The confirmation says what the removal costs before the Yes/No (#844).
+	// readActiveFile is the side-effect-free half of the active read: a No must
+	// leave the file untouched, and the destructive read stays below, after the
+	// removal, so a `use` running in another terminal is never overwritten.
+	defaultNote := ""
+	// A name active() would refuse is no default a run could use, so it is not
+	// announced as one either (an rm may still accept a legacy long name).
+	if active, ok := l.readActiveFile(); ok && active == name && profile.ValidName(active) {
+		defaultNote = " This is your current default."
+	}
 	if !l.exists(name) {
 		if !paths.Lexists(pdir) && !paths.Lexists(auth) {
 			l.noProfile(name)
 			return 1
 		}
-		fmt.Fprintf(os.Stderr, "Profile '%s' has no .conf. Remove leftover private state?\n  %s\n  %s\nShared conversation history will be kept.\n", name, pdir, auth)
+		fmt.Fprintf(os.Stderr, "Profile '%s' has no .conf. Remove leftover private state?\n  %s\n  %s\nShared conversation history will be kept.%s\n", name, pdir, auth, defaultNote)
 		if rc := uiConfirm("Remove these leftovers?"); rc != 0 {
 			// Esc at a terminal is already answered by the picker's own Cancelled
 			// line (rc 2), and a second line would make rm the one command that
@@ -78,7 +88,7 @@ func (l *launcher) rm(args []string) int {
 		if paths.Lexists(auth) {
 			detail += "\n  " + auth
 		}
-		fmt.Fprintf(os.Stderr, "Remove profile '%s', its saved credential and private sign-in state?\n%s\nShared conversation history will be kept. This cannot be undone.\n", name, detail)
+		fmt.Fprintf(os.Stderr, "Remove profile '%s', its saved credential and private sign-in state?\n%s\nShared conversation history will be kept. This cannot be undone.%s\n", name, detail, defaultNote)
 		if rc := uiConfirm("Remove this profile?"); rc != 0 {
 			switch {
 			case rc == 2 && !isTTY(0):
@@ -118,10 +128,48 @@ func (l *launcher) rm(args []string) int {
 	fmt.Println(l.accent + "Removed" + l.reset + " " + name)
 	if clearedDefault {
 		// The default left with the profile; the removal summary is where that
-		// belongs, not two steps downstream at the next failed run (#652).
-		l.err("default profile removed — set one: ccmorph use <profile>")
+		// belongs, not two steps downstream at the next failed run (#652), and
+		// with a survivor it hands the default on instead of leaving plain
+		// `run` dead (#844).
+		l.reportDefaultRemoval()
 	}
 	return 0
+}
+
+// reportDefaultRemoval answers a removal that took the default with it (#844):
+// a sole surviving profile is promoted at once, a terminal with several asks
+// which one with the profile picker, and anything else names the survivors and
+// the command that chooses. Before #844 the notice only said the default was
+// gone, so the next plain `run` was the first word of it.
+func (l *launcher) reportDefaultRemoval() {
+	var names []string
+	for _, d := range l.describeProfiles("", nil, nil) {
+		names = append(names, d.name)
+	}
+	if len(names) == 1 {
+		l.promoteDefault(names[0])
+		return
+	}
+	if len(names) > 1 && isTTY(0) {
+		if picked, ok := l.menuProfile(); ok {
+			l.promoteDefault(picked)
+			return
+		}
+	}
+	l.err("default profile removed — set one: ccmorph use <profile>")
+	if len(names) > 1 {
+		l.err("profiles: " + strings.Join(names, " "))
+	}
+}
+
+// promoteDefault writes a survivor into the active file and says so; a failed
+// write leaves the removal done and names the profile that could not be set.
+func (l *launcher) promoteDefault(name string) {
+	if err := atomicWrite(filepath.Join(l.dir, "active"), name+"\n"); err != nil {
+		l.err("default profile removed — could not set '" + name + "' as the default")
+		return
+	}
+	l.err("default profile removed — " + name + " is now the default")
 }
 
 // removeProfileDir is _ccm_remove_profile_dir: history moves to native first.
