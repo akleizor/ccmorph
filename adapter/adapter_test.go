@@ -218,11 +218,35 @@ func TestRenderUpstreamProxyOnlyWhenSet(t *testing.T) { // test_upstream_proxy_i
 	t.Setenv("NO_PROXY", "")
 	t.Setenv("no_proxy", "")
 	cfg := render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "http://127.0.0.1:18480", "", nil, false)
-	if !strings.Contains(cfg, "\nproxy-url: \"http://127.0.0.1:18480\"\n") {
+	if !strings.Contains(cfg, "proxy-url: \"http://127.0.0.1:18480\"\n") {
 		t.Fatal("proxy-url missing")
 	}
 	if strings.Contains(render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", "", "", nil, false), "proxy-url") {
 		t.Fatal("proxy-url rendered without a proxy")
+	}
+	// GH-585: a top-level proxy-url is cliproxyapi's GLOBAL proxy, so the
+	// translator's own update and auth checks (api.github.com, registry.npmjs.org,
+	// cpamc.router-for.me) would dial the bridge too, and its allowlist -- the
+	// gateway host only -- refuses them every cycle, forever. The route belongs on
+	// each credential that dials the gateway: that is the only traffic
+	// env.CCMORPH_UPSTREAM_PROXY exists for (the LAN gateway a launchd session has
+	// no route to without the bridge's Local Network grant).
+	scoped := render([]Row{
+		{Model: "m-anthropic", Dialect: "anthropic", Status: 200},
+		{Model: "m-responses", Dialect: "responses", Status: 200},
+		{Model: "m-chat", Dialect: "chat", Status: 200},
+	}, "k", 1234, "https://gw", "/unused", "http://127.0.0.1:18480", "", nil, false)
+	if strings.Contains(scoped, "\nproxy-url:") {
+		t.Fatal("proxy rendered at top level: the translator's own update traffic joins the bridge (#585)")
+	}
+	for _, want := range []string{
+		"    base-url: \"https://gw\"\n    proxy-url: \"http://127.0.0.1:18480\"\n",
+		"    base-url: \"https://gw/v1\"\n    proxy-url: \"http://127.0.0.1:18480\"\n",
+		"    api-key-entries:\n      - api-key: \"k\"\n        proxy-url: \"http://127.0.0.1:18480\"\n",
+	} {
+		if !strings.Contains(scoped, want) {
+			t.Errorf("proxy-url not scoped into an upstream entry, want:\n%s", want)
+		}
 	}
 	// An unusable knob names no route: the translator keeps the environment's
 	// resolution, the same decision the probes and the shim take (GH-580
@@ -239,7 +263,7 @@ func TestRenderUpstreamProxyOnlyWhenSet(t *testing.T) { // test_upstream_proxy_i
 	// be a different route.
 	pasted := "http://alice:p^ss@proxy:3128?token=qq"
 	cfg = render([]Row{row("anthropic")}, "k", 1234, "https://gw", "/unused", pasted, "", nil, false)
-	if want := "\nproxy-url: \""; !strings.Contains(cfg, want) {
+	if want := "proxy-url: \""; !strings.Contains(cfg, want) {
 		t.Fatalf("proxy-url missing; a pasted userinfo inside the authority still names the proxy")
 	}
 	start := strings.Index(cfg, "proxy-url: \"") + len("proxy-url: \"")
@@ -1790,7 +1814,16 @@ func TestPrintConfigPrintsDespiteAProbeFailure(t *testing.T) { // test_print_con
 	swap(t, &probeVia, nil) // Main sets it from the profile and never resets it
 	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "abc123", "ANTHROPIC_BASE_URL": "https://gateway",
 		"CCMORPH_UPSTREAM_PROXY": "http://alice:" + deadProxyPW + "@127.0.0.1:8118"})
-	swap(t, &profileDirs, t.TempDir())
+	// A cached row is what a real profile has after its first launch. Without
+	// one the failed probe prints a config with no credential entry at all, so
+	// the proxy this test exists to see redacted -- now rendered per entry
+	// (#585) -- would have nothing to sit on.
+	dir := t.TempDir()
+	cache := filepath.Join(dir, ".adapter-cache", hashHex("https://gateway")[:16]+".json")
+	os.MkdirAll(filepath.Dir(cache), 0o755)
+	writeCacheJSON(t, cache, map[string]any{"endpoint": "https://gateway", "anthropic_path": "/v1/messages",
+		"thinking_probe": thinkingProbeVersion, "rows": []any{rowJSON(row("anthropic"))}})
+	swap(t, &profileDirs, dir)
 	t.Setenv("TMPDIR", t.TempDir())
 	swap(t, &classifyFn, func(_, _, _, _ string, _ bool) ([]Row, error) {
 		return nil, fmt.Errorf("Get %q: proxyconnect tcp: dial tcp 127.0.0.1:8118: connect: connection refused", "https://gateway/v1/models")
@@ -1824,7 +1857,15 @@ func TestPrintConfigPrintsThroughADeadProfileProxy(t *testing.T) { // test_print
 	swap(t, &probeVia, nil)
 	stubProfile(t, map[string]string{"ANTHROPIC_API_KEY": "abc123", "ANTHROPIC_BASE_URL": "http://gateway.invalid",
 		"CCMORPH_UPSTREAM_PROXY": "http://alice:" + deadProxyPW + "@127.0.0.1:1/p?token=qq"})
-	swap(t, &profileDirs, t.TempDir())
+	// The failed probe falls back to this cached row, so the printed config
+	// carries the credential entry the proxy is scoped to (#585); with no rows
+	// there is no entry for the redaction below to prove.
+	dir := t.TempDir()
+	cache := filepath.Join(dir, ".adapter-cache", hashHex("http://gateway.invalid")[:16]+".json")
+	os.MkdirAll(filepath.Dir(cache), 0o755)
+	writeCacheJSON(t, cache, map[string]any{"endpoint": "http://gateway.invalid", "anthropic_path": "/v1/messages",
+		"thinking_probe": thinkingProbeVersion, "rows": []any{rowJSON(row("anthropic"))}})
+	swap(t, &profileDirs, dir)
 	t.Setenv("TMPDIR", t.TempDir())
 	swap(t, &freePortFn, func() (int, error) { return 1234, nil })
 

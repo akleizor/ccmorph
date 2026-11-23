@@ -160,17 +160,26 @@ func render(rows []Row, key string, port int, upstream, authdir, proxy, shimPath
 	// instead of a route the probes would never dial (GH-580). The exemptions
 	// come first: a gateway on this machine or under NO_PROXY is dialed
 	// directly, never sent to a remote proxy.
-	proxyLine := ""
+	//
+	// The route is rendered on each credential entry that dials the gateway,
+	// never top-level: a top-level proxy-url is cliproxyapi's global proxy, so
+	// the translator's own update and auth checks (api.github.com,
+	// registry.npmjs.org, cpamc.router-for.me) would dial the bridge too, whose
+	// allowlist holds only the gateway host -- refused every cycle, forever
+	// (#585). On an entry it overrides the global proxy for exactly that
+	// credential's upstream calls, which is the traffic this exists for.
+	entryProxy, keyProxy := "", ""
 	if u := netroute.Parse(proxy); u != nil {
 		if up, err := url.Parse(upstream); err != nil || !netroute.Exempt(up) {
-			proxyLine = "proxy-url: " + q(u.String()) + "\n"
+			entryProxy = "    proxy-url: " + q(u.String()) + "\n"
+			keyProxy = "        proxy-url: " + q(u.String()) + "\n"
 		}
 	}
 	var out strings.Builder
 	fmt.Fprintf(&out, `host: "127.0.0.1"
 port: %d
 auth-dir: %s
-%s
+
 # Re-send a request the upstream dropped transiently (unexpected EOF, 408, or
 # 5xx) before Claude Code ever sees the error. Only pre-stream failures can be
 # retried -- once the SSE stream has emitted bytes a mid-stream drop is already
@@ -187,7 +196,7 @@ disable-image-generation: "chat"
 # so nothing new is minted and no second credential exists.
 api-keys:
   - %s
-`, port, q(authdir), proxyLine, q(key))
+`, port, q(authdir), q(key))
 
 	if len(passthrough) > 0 {
 		fmt.Fprintf(&out, `
@@ -217,11 +226,11 @@ api-keys:
 claude-api-key:
   - api-key: %s
     base-url: %s
-    disable-cooling: true
+%s    disable-cooling: true
     rebuild-mid-system-message: true
     connection-pool: {}
 %s%s    models:
-%s`, q(key), q(upstream), cloakLine, claudeHdr, block(passthrough))
+%s`, q(key), q(upstream), entryProxy, cloakLine, claudeHdr, block(passthrough))
 	}
 
 	if len(responses) > 0 {
@@ -231,10 +240,10 @@ claude-api-key:
 codex-api-key:
   - api-key: %s
     base-url: %s
-    disable-cooling: true
+%s    disable-cooling: true
     connection-pool: {}
     models:
-%s`, q(key), q(openaiBase), block(responses))
+%s`, q(key), q(openaiBase), entryProxy, block(responses))
 	}
 
 	if len(chat) > 0 {
@@ -247,8 +256,8 @@ openai-compatibility:
     disable-cooling: true
     api-key-entries:
       - api-key: %s
-    models:
-%s`, q(openaiBase), q(key), block(chat))
+%s    models:
+%s`, q(openaiBase), q(key), keyProxy, block(chat))
 	}
 
 	if len(noreason) > 0 || len(caps) > 0 || len(nothink) > 0 || len(passthrough) > 0 {

@@ -462,6 +462,18 @@ class AdapterTest(unittest.TestCase):
             '  print "ANTHROPIC_API_KEY=stub-key"\n'
             f"  print 'CCMORPH_UPSTREAM_PROXY={proxy}'\n"
             "}\n")
+        # A cached row, as after a real first launch: with none, the failed
+        # probe prints a config with no credential entry, and the per-entry
+        # route (#585) this test redacts would have nothing to sit on.
+        base = "http://gateway.invalid"
+        cache = self.cache_file(base)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps({
+            "endpoint": base, "anthropic_path": "/v1/messages",
+            "thinking_probe": 2,
+            "rows": [{"model": "m-anthropic", "dialect": "anthropic",
+                      "note": "", "status": 200, "cap": None,
+                      "nothink": False, "id_recycle": False}]}))
         out = self.run_adapter("--print-config")
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn('proxy-url: "http://127.0.0.1:1/p"', out.stdout)
@@ -471,6 +483,9 @@ class AdapterTest(unittest.TestCase):
         for leak in (password, "user:", "token=qq", "stub-key"):
             self.assertNotIn(leak, out.stdout)
             self.assertNotIn(leak, out.stderr)
+        # A fresh profile again for the launch half: the print's cache would
+        # otherwise hand it a model to launch instead of the dead dial.
+        cache.unlink()
         launch = self.run_adapter()
         self.assertEqual(launch.returncode, 1, launch.stderr)
         self.assertIn("proxyconnect tcp: dial tcp 127.0.0.1:1", launch.stderr)
