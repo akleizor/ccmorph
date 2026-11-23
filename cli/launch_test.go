@@ -158,9 +158,10 @@ func TestRunClaudeStartsWhenTmpdirCannotBeWritten(t *testing.T) {
 // for the claude that ran as pid, and consumes the record: a launcher that
 // died is swept by gc-stale, never re-read. The file sits in a shared TMPDIR
 // anyone can write, so a record that is not a session id reads as no session
-// rather than reaching the terminal (#285), and a name that is not a regular
-// file — a link another account planted, or a FIFO that would wait for a
-// writer — reads as no record rather than being followed or waited on (#410).
+// rather than reaching the terminal (#285); a name that is not a regular file
+// — a link another account planted, or a FIFO that would wait for a writer —
+// reads as no record rather than being followed or waited on, and neither does
+// a file another account wrote or group and others can write (#410).
 func TestReadEndedSession(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
@@ -185,6 +186,24 @@ func TestReadEndedSession(t *testing.T) {
 	}
 	if got := readEndedSession(4194305); got != "" {
 		t.Fatalf("another session's record read as %q", got)
+	}
+	// A record anyone could rewrite is not this account's own record: the hook
+	// writes its own through mktemp, 0600. An own record others may read but
+	// not write is still the hook's (#410).
+	if err := os.WriteFile(f, []byte("sid-410"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(f, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if got := readEndedSession(4194304); got != "" {
+		t.Fatalf("a record anyone can write read as %q", got)
+	}
+	if err := os.Chmod(f, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := readEndedSession(4194304); got != "sid-410" {
+		t.Fatalf("a record this account owns and others cannot write read as %q", got)
 	}
 	if err := syscall.Mkfifo(f, 0o600); err != nil {
 		t.Fatal(err)
@@ -283,37 +302,84 @@ func TestResumeHintNeedsAConversationToOffer(t *testing.T) {
 // SessionEnd hook for the claude that ran as pid, and consumes the file the
 // hook kept it in: a launcher that died is swept by gc-stale, never re-read.
 // Input that is not Claude Code's JSON reads as no transcript (#359), and a
-// name that is not a regular file — a link another account planted, or a FIFO
-// that would wait for a writer — reads as no input rather than being followed
-// or waited on (#410).
+// name that is not this account's own regular file — a link another account
+// planted, a FIFO that would wait for a writer, or a file that account may
+// write — reads as no input rather than being followed or waited on (#410).
+// The one path the input may name is a transcript inside a store Claude Code
+// writes this account's sessions to; anything else, however large, is not read
+// at all (#410).
 func TestReadEndedTranscript(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	spoken := filepath.Join(home, ".claude", "projects", "p", "sid-359.jsonl")
 	f := filepath.Join(tmp, "ccmorph-session-end.4194304.json")
+	l := &launcher{}
 	for _, c := range []struct{ name, body, want string }{
-		{"claude code's input", `{"session_id":"sid-359","transcript_path":"/p/sid-359.jsonl","hook_event_name":"SessionEnd"}`, "/p/sid-359.jsonl"},
+		{"claude code's input", `{"session_id":"sid-359","transcript_path":"` + spoken + `","hook_event_name":"SessionEnd"}`, spoken},
+		{"a transcript outside Claude Code's stores", `{"session_id":"sid-359","transcript_path":"/p/sid-359.jsonl"}`, ""},
 		{"input that is not json", "not json", ""},
 		{"empty input", "", ""},
 	} {
 		if err := os.WriteFile(f, []byte(c.body), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if got := readEndedTranscript(4194304); got != c.want {
+		if got := l.readEndedTranscript(4194304); got != c.want {
 			t.Errorf("%s: read %q, want %q", c.name, got, c.want)
 		}
 		if _, err := os.Stat(f); !os.IsNotExist(err) {
 			t.Errorf("%s: file left behind: %v", c.name, err)
 		}
 	}
-	if got := readEndedTranscript(4194305); got != "" {
+	if got := l.readEndedTranscript(4194305); got != "" {
 		t.Fatalf("another session's input read as %q", got)
+	}
+	// A profile keeps its sessions under its own config dir; that store is
+	// trusted as Claude Code's own is.
+	profiles := t.TempDir()
+	lp := &launcher{profileDirs: profiles}
+	profileTranscript := filepath.Join(profiles, "work", "projects", "p", "sid-359.jsonl")
+	if err := os.MkdirAll(filepath.Dir(profileTranscript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f, []byte(`{"session_id":"sid-359","transcript_path":"`+profileTranscript+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := lp.readEndedTranscript(4194304); got != profileTranscript {
+		t.Fatalf("a profile's transcript read as %q, want %q", got, profileTranscript)
 	}
 	if err := syscall.Mkfifo(f, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fifoWriter(f, `{"session_id":"sid-410","transcript_path":"/p/sid-410.jsonl"}`)
-	if got := readEndedTranscript(4194304); got != "" {
+	fifoWriter(f, `{"session_id":"sid-410","transcript_path":"`+spoken+`"}`)
+	if got := l.readEndedTranscript(4194304); got != "" {
 		t.Fatalf("a fifo at the input's name read as %q", got)
+	}
+}
+
+// The record names sit in a shared TMPDIR, where another account can write
+// first. Only a record this account owned is trusted, because a planted one
+// can name any transcript it likes and would steer the launch's read (#410).
+func TestTheSessionEndChannelRefusesARecordAnotherAccountWrote(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	id := filepath.Join(tmp, "ccmorph-session-end.4194304")
+	in := id + ".json"
+	if err := os.WriteFile(id, []byte("sid-410"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(in, []byte(`{"session_id":"sid-410","transcript_path":"/p/sid-410.jsonl"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prev := recordOwner
+	recordOwner = func() int { return os.Geteuid() + 1 }
+	defer func() { recordOwner = prev }()
+	if got := readEndedSession(4194304); got != "" {
+		t.Fatalf("a record another account wrote read as %q", got)
+	}
+	if got := (&launcher{}).readEndedTranscript(4194304); got != "" {
+		t.Fatalf("an input another account wrote read as %q", got)
 	}
 }
 

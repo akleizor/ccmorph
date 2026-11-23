@@ -494,15 +494,18 @@ func UnwireStatusline(path string, owned ...string) error {
 
 var commandArgs = regexp.MustCompile(`(?s)<command-args>(.*?)</command-args>`)
 
-// ReadRegular reads path only when it names a regular file, and never waits on
-// what it finds: a FIFO in a directory another account can write, or a device
-// that never ends, is refused rather than read, and so is a symlink at the final
-// name (nothing ccmorph writes there is one), so a planted one cannot send the
-// read somewhere else (#410). A positive limit also bounds the read, for a file
-// whose whole body is one small message at a name anyone can plant; a transcript
-// passes 0 and is read whole, because a conversation's size is the user's — a
-// limit there would take the resume line from a session that earned it.
-func ReadRegular(path string, limit int64) ([]byte, bool) {
+// ReadPrivateRegular reads path only when it names a regular file this
+// account wrote, and never waits on what it finds: a FIFO in a directory
+// another account can write, or a device that never ends, is refused rather
+// than read, and so is a symlink at the final name (nothing ccmorph writes
+// there is one), so a planted one cannot send the read somewhere else; a file
+// owned by another account, or group and others can write, is not this
+// account's record at all (#410). A positive limit also bounds the read, for a
+// file whose whole body is one small message at a name anyone can plant; a
+// transcript passes 0 and is read whole, because a conversation's size is the
+// user's — a limit there would take the resume line from a session that earned
+// it.
+func ReadPrivateRegular(path string, limit int64, owner int) ([]byte, bool) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, false
@@ -510,6 +513,10 @@ func ReadRegular(path string, limit int64) ([]byte, bool) {
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil || !fi.Mode().IsRegular() || (limit > 0 && fi.Size() > limit) {
+		return nil, false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok || int(st.Uid) != owner || fi.Mode().Perm()&0o022 != 0 {
 		return nil, false
 	}
 	var r io.Reader = f
@@ -523,9 +530,13 @@ func ReadRegular(path string, limit int64) ([]byte, bool) {
 	return b, true
 }
 
-// transcript reads a session transcript: one JSON record per line, unreadable lines skipped.
+// transcript reads a session transcript: one JSON record per line, unreadable
+// lines skipped. It reads only a regular file this account owns: the same
+// reader serves the transcript path a session-end record names, so it refuses
+// another account's file even when a link under a trusted store names it
+// (#410). There is no size cap — a conversation's length is the user's.
 func transcript(path string) (recs []*ordjson.Obj, ok bool) {
-	b, ok := ReadRegular(path, 0)
+	b, ok := ReadPrivateRegular(path, 0, os.Geteuid())
 	if !ok || !utf8.Valid(b) {
 		return nil, false
 	}
