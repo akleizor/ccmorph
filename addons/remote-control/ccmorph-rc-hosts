@@ -140,7 +140,7 @@ def is_our_edge(pid: int, route: str) -> bool:
     edge included -- is left alone, and so is a command line that cannot be read.
     """
     try:
-        ps = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
+        ps = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "command="],
                             capture_output=True, text=True, errors="replace", timeout=10).stdout
     except (OSError, ValueError, subprocess.SubprocessError):
         return False
@@ -1124,7 +1124,7 @@ def ps_argv(pid: int) -> "list[str] | None":
     the caller falls back to a liveness probe rather than reading silence as
     an exit (#297)."""
     try:
-        seen = subprocess.run(["ps", "-p", str(pid), "-o", "command="], capture_output=True,
+        seen = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "command="], capture_output=True,
                               text=True, errors="replace", timeout=10)
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
@@ -1253,7 +1253,7 @@ def restart_logged_out(hosts: "dict[str, Host]", now: float) -> list[str]:
 def session_pid(sid: str) -> int | None:
     """The pid of the host child serving session `sid` (`--session-id <sid>` in its argv)."""
     try:
-        out = subprocess.run(["ps", "-Ao", "pid=,command="], capture_output=True, text=True,
+        out = subprocess.run(["ps", "-Aww", "-o", "pid=,command="], capture_output=True, text=True,
                              errors="replace", timeout=10).stdout
     except (OSError, ValueError, subprocess.SubprocessError):
         return None

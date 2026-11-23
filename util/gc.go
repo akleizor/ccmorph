@@ -179,7 +179,10 @@ func GCStale(state, profiles, tmp string) {
 		if live == nil {
 			// A failed scan names nothing, so every old candidate is reaped.
 			s := ""
-			if raw, err := exec.Command("ps", "-axo", "command").Output(); err == nil {
+			// -ww: a command line truncated at COLUMNS could hide the path that
+			// proves an overlay is still in use, and the reaper would delete a
+			// live one (#829).
+			if raw, err := exec.Command("ps", "-axww", "-o", "command").Output(); err == nil {
 				s = string(raw)
 			}
 			live = &s

@@ -77,7 +77,11 @@ func psProcessTable(ctx context.Context) map[int]psRow {
 			rows[pid] = psRow{ppid: ppid, comm: strings.Join(f[2:], " ")}
 		}
 	}
-	if raw, err := psCmd(ctx, "-axo", "pid=,command=").Output(); err == nil {
+	// -ww asks for every column: ps truncates command lines to COLUMNS (80
+	// under a test runner), and a cut after the executable hides the "adapter
+	// <profile>" and --parent-pid that name a session, so a live adapter read as
+	// absent would start a second one (#829).
+	if raw, err := psCmd(ctx, "-axww", "-o", "pid=,command=").Output(); err == nil {
 		for _, l := range strings.Split(string(raw), "\n") {
 			l = strings.TrimSpace(l)
 			p, rest, _ := strings.Cut(l, " ")
