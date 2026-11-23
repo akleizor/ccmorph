@@ -37,3 +37,28 @@ func TestHasConversationNeedsARecordClaudeCodeCanResume(t *testing.T) {
 		}
 	}
 }
+
+// The transcript reader refuses a plant at the name (#410) but must not refuse
+// the file for its size: a conversation's length is the user's, and a cap would
+// take the resume line from a long session, its hop's --resume and its
+// recovered model. The first cut of #410 capped the read at 256 MiB and did
+// exactly that, so this transcript is deliberately larger.
+func TestHasConversationKeepsALargeTranscript(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "big.jsonl")
+	spoken := `{"type":"user","sessionId":"s1","uuid":"u1","timestamp":"2026-01-01T00:00:00.000Z","message":{"role":"user","content":"hi"}}` + "\n" +
+		`{"type":"assistant","sessionId":"s1","uuid":"u2","timestamp":"2026-01-01T00:00:01.000Z","message":{"role":"assistant","model":"chosen-model","content":"hello"}}` + "\n"
+	if err := os.WriteFile(p, []byte(spoken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The tail is a hole past any small cap: it parses as no record, and the
+	// conversation before it must still count.
+	if err := os.Truncate(p, 257<<20); err != nil {
+		t.Fatal(err)
+	}
+	if !HasConversation(p) {
+		t.Error("a transcript larger than 256 MiB still holds its conversation")
+	}
+	if m, ok := ResumeModel(p); !ok || m != "chosen-model" {
+		t.Errorf("ResumeModel = %q, %v; want chosen-model, true", m, ok)
+	}
+}
